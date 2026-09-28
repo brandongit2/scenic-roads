@@ -1,0 +1,10 @@
+[package]
+name = "roadcore"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow.workspace = true
+memmap2.workspace = true
+bytemuck.workspace = true
+png = "0.18"

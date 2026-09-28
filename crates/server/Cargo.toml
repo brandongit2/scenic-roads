@@ -1,0 +1,18 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+roadcore = { path = "../roadcore" }
+anyhow.workspace = true
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tower-http = { version = "0.6", features = ["fs", "set-header", "compression-gzip"] }
+tower = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+png = "0.18"
+base64 = "0.22"
+rayon = { workspace = true }
+bytemuck = { workspace = true }

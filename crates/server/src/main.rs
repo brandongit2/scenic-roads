@@ -1,0 +1,579 @@
+//! HTTP backend: road tiles, basemap, fonts, way details and elevation profiles.
+//!
+//! usage: server [--data data/build] [--web web/dist] [--fonts data/fonts] [--port 8080]
+
+mod drives;
+mod terrain;
+mod viewshed;
+
+use anyhow::Result;
+use axum::{
+    extract::{Path, Query, State},
+    http::{header, HeaderValue, StatusCode},
+    response::{IntoResponse, Response},
+    routing::get,
+    Json, Router,
+};
+use roadcore::{archive::Archive, class, climb::ClimbRec, dist_m, flag, Array, DemSource, Ways, E7};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tower_http::services::{ServeDir, ServeFile};
+use tower_http::set_header::SetResponseHeaderLayer;
+
+pub struct GridData {
+    pub idx: roadcore::grid::GridIndex,
+    pub terrain: roadcore::grid::Layer<i16>,
+    pub canopy: Option<roadcore::grid::Layer<u8>>,
+    pub class: Option<roadcore::grid::Layer<u8>>,
+}
+
+pub struct AppState {
+    ways: Ways,
+    terrain: Option<Archive>,
+    /// Precomputed slope pyramid (see pipeline `slope`); tiles missing here are computed on the fly.
+    slope: Option<Archive>,
+    grid: Option<GridData>,
+    drives: Option<drives::DriveIndex>,
+    /// Per-vertex scenic channels (for profiles).
+    vch: Option<Array<[u8; roadcore::scenic::ch::N]>>,
+    data_dir: PathBuf,
+    strings: Vec<String>,
+    elev: Array<i16>,
+    grade: Array<u8>,
+    src: Array<u8>,
+    tiles: Archive,
+    climbs: Array<ClimbRec>,
+    climb_geom: Array<[i32; 2]>,
+    meta: serde_json::Value,
+    /// Endpoint coordinate → ways that start or end there.
+    ends: HashMap<[i32; 2], Vec<u32>>,
+}
+
+pub type S = Arc<AppState>;
+
+fn arg(name: &str, default: &str) -> String {
+    let a: Vec<String> = std::env::args().collect();
+    a.iter()
+        .position(|x| x == name)
+        .and_then(|i| a.get(i + 1).cloned())
+        .unwrap_or_else(|| default.to_string())
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let data = PathBuf::from(arg("--data", "data/build"));
+    let web = PathBuf::from(arg("--web", "web/dist"));
+    let fonts = PathBuf::from(arg("--fonts", "data/fonts"));
+    let port: u16 = arg("--port", "8080").parse()?;
+    let t0 = std::time::Instant::now();
+
+    let ways = Ways::open(&data)?;
+    let strings = roadcore::read_strings(&data)?;
+    let mut ends: HashMap<[i32; 2], Vec<u32>> = HashMap::with_capacity(ways.ways().len() * 2);
+    {
+        let v = ways.verts();
+        for (i, w) in ways.ways().iter().enumerate() {
+            ends.entry(v[w.vstart as usize]).or_default().push(i as u32);
+            ends.entry(v[(w.vstart + w.vcount as u64 - 1) as usize]).or_default().push(i as u32);
+        }
+    }
+    let meta: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(data.join("roads.json"))?)?;
+    let grid = roadcore::grid::GridIndex::load(&data).ok().and_then(|idx| {
+        Some(GridData {
+            idx,
+            terrain: roadcore::grid::Layer::open(&data.join("grid.terrain.i16")).ok()?,
+            canopy: roadcore::grid::Layer::open(&data.join("grid.canopy.u8")).ok(),
+            class: roadcore::grid::Layer::open(&data.join("grid.class.u8")).ok(),
+        })
+    });
+    let drives = match drives::DriveIndex::open(&data, &ways) {
+        Ok(d) => Some(d),
+        Err(e) => {
+            eprintln!("scenic drives unavailable: {e}");
+            None
+        }
+    };
+    let vch = Array::open(&data.join("scenic.u8")).ok().filter(|a: &Array<[u8; roadcore::scenic::ch::N]>| a.get().len() == ways.verts().len());
+    let state = Arc::new(AppState {
+        terrain: Archive::open(&data.join("terrain.tiles")).ok(),
+        slope: Archive::open(&data.join("slope.tiles")).ok(),
+        grid,
+        drives,
+        vch,
+        data_dir: data.clone(),
+        elev: Array::open(&data.join("final.i16"))?,
+        grade: Array::open(&data.join("grade.u8"))?,
+        src: Array::open(&data.join("src.u8"))?,
+        tiles: Archive::open(&data.join("roads.tiles"))?,
+        climbs: Array::open(&data.join("climbs.bin"))?,
+        climb_geom: Array::open(&data.join("climbs.geom"))?,
+        ways,
+        strings,
+        meta,
+        ends,
+    });
+    eprintln!("loaded {} ways in {:.1?}", state.ways.ways().len(), t0.elapsed());
+
+    let app = Router::new()
+        .route("/tiles/roads/{z}/{x}/{y}", get(road_tile))
+        .route("/api/meta", get(meta_h))
+        .route("/api/way/{idx}", get(way_h))
+        .route("/api/profile/{idx}", get(profile_h))
+        .route("/api/climbs", get(climbs_h))
+        .route("/api/viewshed", get(viewshed::viewshed))
+        .route("/api/drives", get(drives::drives))
+        .route("/api/layer/{name}", get(layer_h))
+        .route("/tiles/terrain/{z}/{x}/{y}", get(terrain::terrain_tile))
+        .route("/tiles/slope/{z}/{x}/{y}", get(terrain::slope_tile))
+        .route_service("/tiles/base.pmtiles", ServeFile::new(data.join("base.pmtiles")))
+        .nest_service("/fonts", ServeDir::new(fonts))
+        // App files revalidate on every load (cheap 304s) so a rebuilt frontend is picked up.
+        .fallback_service(
+            tower::ServiceBuilder::new()
+                .layer(SetResponseHeaderLayer::if_not_present(header::CACHE_CONTROL, HeaderValue::from_static("no-cache")))
+                .service(ServeDir::new(&web).fallback(ServeFile::new(web.join("index.html")))),
+        )
+        .layer(tower_http::compression::CompressionLayer::new().gzip(true))
+        .with_state(state);
+
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    eprintln!("listening on http://{addr}");
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+async fn road_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>) -> Response {
+    match s.tiles.get(z, x, y) {
+        Some(b) => (
+            [
+                (header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream")),
+                (header::CONTENT_ENCODING, HeaderValue::from_static("gzip")),
+                (header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400")),
+            ],
+            b.to_vec(),
+        )
+            .into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
+    }
+}
+
+/// Static GeoJSON layers produced by the pipeline.
+async fn layer_h(State(s): State<S>, Path(name): Path<String>) -> Response {
+    let file = match name.as_str() {
+        "pois" => "pois.json",
+        "heritage" => "heritage.json",
+        "special" => "special.json",
+        "indigenous" => "indigenous.json",
+        "heritage-areas" => "heritage-areas.json",
+        "sources" => "heritage-sources.json",
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    match tokio::fs::read(s.data_dir.join(file)).await {
+        Ok(b) => ([(header::CONTENT_TYPE, "application/geo+json"), (header::CACHE_CONTROL, "public, max-age=3600")], b).into_response(),
+        Err(_) => ([(header::CONTENT_TYPE, "application/geo+json")], r#"{"type":"FeatureCollection","features":[]}"#).into_response(),
+    }
+}
+
+async fn meta_h(State(s): State<S>) -> Json<serde_json::Value> {
+    Json(s.meta.clone())
+}
+
+#[derive(Serialize)]
+struct WayInfo {
+    idx: u32,
+    osm_id: i64,
+    class: &'static str,
+    name: String,
+    r#ref: String,
+    surface: String,
+    maxspeed: u16,
+    lanes: u8,
+    link: bool,
+    bridge: bool,
+    tunnel: bool,
+    unpaved: bool,
+    oneway: bool,
+    toll: bool,
+    covered: bool,
+    /// Designated scenic route this road is part of.
+    route: String,
+    length_m: f64,
+    elev_min: f32,
+    elev_max: f32,
+    /// Share of vertices per DEM source.
+    sources: Vec<(String, f32)>,
+}
+
+fn way_info(s: &AppState, idx: u32) -> Option<WayInfo> {
+    let w = s.ways.ways().get(idx as usize)?;
+    let r = w.vstart as usize..(w.vstart + w.vcount as u64) as usize;
+    let v = &s.ways.verts()[r.clone()];
+    let e = &s.elev.get()[r.clone()];
+    let len: f64 = v
+        .windows(2)
+        .map(|p| dist_m(p[0][0] as f64 * E7, p[0][1] as f64 * E7, p[1][0] as f64 * E7, p[1][1] as f64 * E7))
+        .sum();
+    let mut counts = [0u32; 4];
+    for &c in &s.src.get()[r] {
+        counts[(c as usize).min(3)] += 1;
+    }
+    let n = w.vcount as f32;
+    let sources = (1..4)
+        .filter(|&k| counts[k] > 0)
+        .map(|k| (DemSource::label(k as u8).to_string(), counts[k] as f32 / n))
+        .collect();
+    let st = |i: u32| s.strings.get(i as usize).cloned().unwrap_or_default();
+    Some(WayInfo {
+        idx,
+        osm_id: w.id,
+        class: class::NAMES[w.class as usize],
+        name: st(w.name),
+        r#ref: st(w.ref_),
+        surface: st(w.surface),
+        maxspeed: w.maxspeed,
+        lanes: w.lanes,
+        link: w.flags & flag::LINK != 0,
+        bridge: w.flags & flag::BRIDGE != 0,
+        tunnel: w.flags & flag::TUNNEL != 0,
+        unpaved: w.flags & flag::UNPAVED != 0,
+        oneway: w.flags & flag::ONEWAY != 0,
+        toll: w.flags & flag::TOLL != 0,
+        covered: w.flags & flag::COVERED != 0,
+        route: st(w.route),
+        length_m: len,
+        elev_min: e.iter().copied().min().unwrap_or(0) as f32 / 10.0,
+        elev_max: e.iter().copied().max().unwrap_or(0) as f32 / 10.0,
+        sources,
+    })
+}
+
+async fn way_h(State(s): State<S>, Path(idx): Path<u32>) -> Response {
+    match way_info(&s, idx) {
+        Some(w) => ([(header::CACHE_CONTROL, "public, max-age=86400")], Json(w)).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+// ---- profiles -----------------------------------------------------------------------
+
+/// What makes two ways "the same road": shared route ref, else shared name,
+/// else (unnamed) same class.
+#[derive(PartialEq)]
+enum RoadKey {
+    Refs(Vec<String>),
+    Name(String),
+    Unnamed(u8),
+}
+
+fn road_key(s: &AppState, i: usize) -> RoadKey {
+    let w = &s.ways.ways()[i];
+    let r = &s.strings[w.ref_ as usize];
+    let n = &s.strings[w.name as usize];
+    if !r.is_empty() {
+        RoadKey::Refs(r.split(';').map(|x| x.trim().to_string()).collect())
+    } else if !n.is_empty() {
+        RoadKey::Name(n.clone())
+    } else {
+        RoadKey::Unnamed(w.class)
+    }
+}
+
+fn same_road(key: &RoadKey, s: &AppState, j: usize) -> bool {
+    let w = &s.ways.ways()[j];
+    match key {
+        RoadKey::Refs(refs) => {
+            let r = &s.strings[w.ref_ as usize];
+            !r.is_empty() && r.split(';').any(|x| refs.iter().any(|y| y == x.trim()))
+        }
+        RoadKey::Name(n) => &s.strings[w.name as usize] == n,
+        RoadKey::Unnamed(c) => w.name == 0 && w.ref_ == 0 && w.class == *c,
+    }
+}
+
+/// Oriented way: (index, reversed).
+type OWay = (u32, bool);
+
+fn way_pts(s: &AppState, ow: OWay) -> Vec<usize> {
+    let w = &s.ways.ways()[ow.0 as usize];
+    let r = w.vstart as usize..(w.vstart + w.vcount as u64) as usize;
+    if ow.1 { r.rev().collect() } else { r.collect() }
+}
+
+fn heading(v: &[[i32; 2]], a: usize, b: usize) -> f64 {
+    let (x0, y0) = (v[a][0] as f64 * E7, v[a][1] as f64 * E7);
+    let (x1, y1) = (v[b][0] as f64 * E7, v[b][1] as f64 * E7);
+    (y1 - y0).atan2((x1 - x0) * y0.to_radians().cos())
+}
+
+/// Walk from vertex `last` (arrived from `prev`) along ways of the same road, taking the
+/// straightest continuation at each junction. `backwards` = walking against the direction
+/// of travel, which flips which way a oneway may be entered. Returned ways are oriented in
+/// walking order.
+fn extend(s: &AppState, key: &RoadKey, used: &mut HashSet<u32>, mut last: usize, mut prev: usize, max_len_m: f64, backwards: bool) -> Vec<OWay> {
+    let v = s.ways.verts();
+    let mut out = Vec::new();
+    let mut total = 0.0;
+    loop {
+        let Some(cands) = s.ends.get(&v[last]) else { break };
+        let h_in = heading(v, prev, last);
+        let mut best: Option<(f64, OWay)> = None;
+        for &c in cands {
+            if used.contains(&c) || !same_road(key, s, c as usize) {
+                continue;
+            }
+            let w = &s.ways.ways()[c as usize];
+            let first = w.vstart as usize;
+            let lastv = (w.vstart + w.vcount as u64 - 1) as usize;
+            let rev = v[first] != v[last];
+            // Don't drive a oneway the wrong way (that's the other carriageway).
+            if w.flags & flag::ONEWAY != 0 && rev != backwards {
+                continue;
+            }
+            let (a, b) = if rev { (lastv, lastv - 1) } else { (first, first + 1) };
+            let mut turn = (heading(v, a, b) - h_in).abs();
+            if turn > std::f64::consts::PI {
+                turn = 2.0 * std::f64::consts::PI - turn;
+            }
+            if turn > 100f64.to_radians() {
+                continue;
+            }
+            if best.map_or(true, |(t, _)| turn < t) {
+                best = Some((turn, (c, rev)));
+            }
+        }
+        let Some((_, ow)) = best else { break };
+        used.insert(ow.0);
+        let pts = way_pts(s, ow);
+        for p in pts.windows(2) {
+            total += dist_m(v[p[0]][0] as f64 * E7, v[p[0]][1] as f64 * E7, v[p[1]][0] as f64 * E7, v[p[1]][1] as f64 * E7);
+        }
+        last = *pts.last().unwrap();
+        prev = pts[pts.len() - 2];
+        out.push(ow);
+        if total > max_len_m || out.len() > 50_000 {
+            break;
+        }
+    }
+    out
+}
+
+#[derive(Serialize)]
+struct Profile {
+    way: WayInfo,
+    ways: Vec<u32>,
+    /// Flattened [lon, lat] pairs of the displayed geometry (simplified).
+    coords: Vec<[f64; 2]>,
+    dist: Vec<f32>,
+    elev: Vec<f32>,
+    grade: Vec<f32>,
+    length_m: f64,
+    elev_min: f32,
+    elev_max: f32,
+    climb_m: f64,
+    descent_m: f64,
+    max_grade: f32,
+    avg_grade: f32,
+    sources: Vec<(String, f64)>,
+    truncated: bool,
+    /// Scenic channels per displayed point (roadcore::scenic::ch), when available.
+    ch: Vec<[u8; roadcore::scenic::ch::N]>,
+}
+
+async fn profile_h(State(s): State<S>, Path(idx): Path<u32>) -> Response {
+    let s2 = s.clone();
+    match tokio::task::spawn_blocking(move || build_profile(&s2, idx)).await {
+        Ok(Some(p)) => Json(p).into_response(),
+        _ => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+fn build_profile(s: &AppState, idx: u32) -> Option<Profile> {
+    let info = way_info(s, idx)?;
+    let ways = s.ways.ways();
+    let v = s.ways.verts();
+    let key = road_key(s, idx as usize);
+    let mut used: HashSet<u32> = HashSet::from([idx]);
+    let w0 = &ways[idx as usize];
+    let first = w0.vstart as usize;
+    let lastv = (w0.vstart + w0.vcount as u64 - 1) as usize;
+    const MAX_M: f64 = 400_000.0;
+    let fwd = extend(s, &key, &mut used, lastv, lastv - 1, MAX_M, false);
+    let back = extend(s, &key, &mut used, first, first + 1, MAX_M, true);
+    let truncated = fwd.len() >= 50_000 || back.len() >= 50_000;
+    let mut chain: Vec<OWay> = back.into_iter().rev().map(|(i, r)| (i, !r)).collect();
+    chain.push((idx, false));
+    chain.extend(fwd);
+
+    // Concatenate vertex indices along the chain.
+    let mut vi: Vec<usize> = Vec::new();
+    for ow in &chain {
+        let pts = way_pts(s, *ow);
+        let skip = if vi.last().is_some_and(|&l| v[l] == v[pts[0]]) { 1 } else { 0 };
+        vi.extend_from_slice(&pts[skip..]);
+    }
+    let el = s.elev.get();
+    let gr = s.grade.get();
+    let src = s.src.get();
+    let mut dist = Vec::with_capacity(vi.len());
+    let mut acc = 0f64;
+    let (mut climb, mut descent) = (0f64, 0f64);
+    let mut src_len = [0f64; 4];
+    dist.push(0.0);
+    for k in 1..vi.len() {
+        let (a, b) = (vi[k - 1], vi[k]);
+        let d = dist_m(v[a][0] as f64 * E7, v[a][1] as f64 * E7, v[b][0] as f64 * E7, v[b][1] as f64 * E7);
+        acc += d;
+        dist.push(acc);
+        let de = (el[b] - el[a]) as f64 / 10.0;
+        if de > 0.0 { climb += de } else { descent -= de }
+        src_len[(src[b] as usize).min(3)] += d;
+    }
+    let (mut emin, mut emax, mut gmax) = (i16::MAX, i16::MIN, 0u8);
+    for &i in &vi {
+        emin = emin.min(el[i]);
+        emax = emax.max(el[i]);
+        gmax = gmax.max(gr[i]);
+    }
+    // Downsample for transport: keep ~1 vertex per 10 m, plus local extrema.
+    let step = (acc / 20000.0).max(10.0);
+    let mut keep = Vec::new();
+    let mut next = 0.0;
+    for k in 0..vi.len() {
+        let is_ext = k > 0 && k + 1 < vi.len() && {
+            let (p, c, n) = (el[vi[k - 1]], el[vi[k]], el[vi[k + 1]]);
+            (c > p && c >= n) || (c < p && c <= n)
+        };
+        if dist[k] >= next || k + 1 == vi.len() || (is_ext && step > 10.0 && (dist[k] - dist[*keep.last().unwrap_or(&0)]) > 2.0) {
+            keep.push(k);
+            next = dist[k] + step;
+        }
+    }
+    let total = acc.max(1e-9);
+    Some(Profile {
+        way: info,
+        ways: chain.iter().map(|o| o.0).collect(),
+        coords: keep.iter().map(|&k| [v[vi[k]][0] as f64 * E7, v[vi[k]][1] as f64 * E7]).collect(),
+        dist: keep.iter().map(|&k| dist[k] as f32).collect(),
+        elev: keep.iter().map(|&k| el[vi[k]] as f32 / 10.0).collect(),
+        grade: keep.iter().map(|&k| gr[vi[k]] as f32 / 2.0).collect(),
+        length_m: acc,
+        elev_min: emin as f32 / 10.0,
+        elev_max: emax as f32 / 10.0,
+        climb_m: climb,
+        descent_m: descent,
+        max_grade: gmax as f32 / 2.0,
+        avg_grade: ((climb + descent) / total * 100.0) as f32,
+        sources: (1..4)
+            .filter(|&k| src_len[k] > 0.0)
+            .map(|k| (DemSource::label(k as u8).to_string(), src_len[k] / total))
+            .collect(),
+        truncated,
+        ch: s.vch.as_ref().map(|a| keep.iter().map(|&k| a.get()[vi[k]]).collect()).unwrap_or_default(),
+    })
+}
+
+// ---- climbs -------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct ClimbQuery {
+    /// west,south,east,north
+    bbox: String,
+    #[serde(default)]
+    sort: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Bitmask of visible road classes.
+    #[serde(default)]
+    classes: Option<u32>,
+    /// Bit 0 paved, bit 1 unpaved.
+    #[serde(default)]
+    surface: Option<u8>,
+}
+
+#[derive(Serialize)]
+struct ClimbOut {
+    way: u32,
+    name: String,
+    r#ref: String,
+    class: &'static str,
+    gain_m: f32,
+    length_m: f32,
+    avg_grade: f32,
+    max_grade: f32,
+    start_elev: f32,
+    top_elev: f32,
+    unpaved: bool,
+    geom: Vec<[f64; 2]>,
+}
+
+#[derive(Serialize)]
+struct ClimbList {
+    total: usize,
+    climbs: Vec<ClimbOut>,
+}
+
+async fn climbs_h(State(s): State<S>, Query(q): Query<ClimbQuery>) -> Response {
+    let b: Vec<f64> = q.bbox.split(',').filter_map(|x| x.parse().ok()).collect();
+    if b.len() != 4 {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let (w, so, e, n) = ((b[0] / E7) as i64, (b[1] / E7) as i64, (b[2] / E7) as i64, (b[3] / E7) as i64);
+    let classes = q.classes.unwrap_or(u32::MAX);
+    let surface = q.surface.unwrap_or(3);
+    let mut hits: Vec<(f32, &ClimbRec)> = s
+        .climbs
+        .get()
+        .iter()
+        .filter(|c| {
+            let (x, y) = (c.mid[0] as i64, c.mid[1] as i64);
+            x >= w && x <= e && y >= so && y <= n
+                && (classes >> c.class) & 1 == 1
+                && (surface >> (c.unpaved & 1)) & 1 == 1
+        })
+        .map(|c| {
+            let avg = c.gain_m / c.length_m.max(1.0);
+            let key = match q.sort.as_deref() {
+                Some("grade") => avg,
+                // FIETS-style difficulty: gain² / length.
+                Some("score") => c.gain_m * c.gain_m / c.length_m.max(1.0),
+                _ => c.gain_m,
+            };
+            (key, c)
+        })
+        .collect();
+    let total = hits.len();
+    let limit = q.limit.unwrap_or(25).min(100);
+    if hits.len() > limit {
+        hits.select_nth_unstable_by(limit, |a, b| b.0.total_cmp(&a.0));
+        hits.truncate(limit);
+    }
+    hits.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let geom = s.climb_geom.get();
+    let climbs = hits
+        .into_iter()
+        .map(|(_, c)| {
+            let lw = &s.ways.ways()[c.label_way as usize];
+            ClimbOut {
+                way: c.way,
+                name: s.strings[lw.name as usize].clone(),
+                r#ref: s.strings[lw.ref_ as usize].clone(),
+                class: class::NAMES[c.class as usize],
+                gain_m: c.gain_m,
+                length_m: c.length_m,
+                avg_grade: c.gain_m / c.length_m.max(1.0) * 100.0,
+                max_grade: c.max_grade,
+                start_elev: c.start_elev,
+                top_elev: c.top_elev,
+                unpaved: c.unpaved != 0,
+                geom: geom[c.geom_start as usize..(c.geom_start + c.geom_count) as usize]
+                    .iter()
+                    .map(|p| [p[0] as f64 * E7, p[1] as f64 * E7])
+                    .collect(),
+            }
+        })
+        .collect();
+    Json(ClimbList { total, climbs }).into_response()
+}

@@ -1,0 +1,10 @@
+/data/
+/target/
+/tools/
+node_modules/
+/web/dist/
+.venv/
+__pycache__/
+.DS_Store
+*.tmp
+*.log

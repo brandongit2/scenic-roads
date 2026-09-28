@@ -1,0 +1,515 @@
+#!/usr/bin/env python3
+"""Officially designated places and areas, from the designating authorities wherever they
+publish usable data.
+
+Heritage sites (heritage.json, points) — level 1 World Heritage · 2 national · 3 national
+register · 4 provincial/state · 5 municipal:
+  1  UNESCO World Heritage List (whc.unesco.org syndication; unesco-whc.json, private use —
+     copyright notice kept on every feature, descriptions not reproduced)
+  2  Canada: Parks Canada Directory of Federal Heritage Designations, located by federal.py
+     (National Historic Sites, heritage lighthouses & railway stations, federal heritage
+     buildings); US: National Historic Landmarks (NPS)
+  3  US: National Register of Historic Places (NPS)
+  4  Quebec: Répertoire du patrimoine culturel (MCC) classified / declared / national;
+     Ontario: Ontario Heritage Act Register (Ontario Heritage Trust), ministerial decisions;
+     Nova Scotia: Registered Heritage Properties; NB, PEI, NL: Canadian Register of Historic
+     Places (crhp.py)
+  5  municipal designations from the same sources, plus Halifax (HRM) and Moncton open data
+Heritage areas (heritage-areas.json, polygons): Quebec heritage-site perimeters, Ontario
+  heritage conservation districts.
+Special areas (special.json): UNESCO biosphere reserves and Global Geoparks, dark-sky places —
+  official registries (special-official.json) with OSM boundaries where mapped; Wikidata only
+  if that file is missing.
+Protected areas and Indigenous lands come from OSM (data/areas/areas.geojsonseq).
+
+All areas are rasterised into grid.areas.u8 bits (roadcore::scenic::flag): PARK, HERITAGE,
+SPECIAL_AREA, INDIGENOUS. Afterwards run `scenic <build> flags` to refresh the road flags.
+
+usage: heritage.py <build_dir>
+"""
+from __future__ import annotations
+
+import csv
+import io
+import json
+import math
+import os
+import re
+import sys
+import time
+import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+from rasterio import features
+from rasterio.transform import from_bounds
+from shapely import STRtree, wkt
+from shapely.geometry import Point, box, mapping, shape
+from shapely.ops import transform as shp_transform
+from tqdm import tqdm
+
+UA = {"User-Agent": "road-elevations/0.1 (personal offline map)"}
+H = Path(__file__).resolve().parent.parent / "data" / "heritage"
+NRHP = "https://mapservices.nps.gov/arcgis/rest/services/cultural_resources/nrhp_locations/MapServer/0/query"
+STATES = ["NEW YORK", "VERMONT", "NEW HAMPSHIRE", "MAINE", "MASSACHUSETTS", "CONNECTICUT", "RHODE ISLAND"]
+PARK, HERITAGE, SPECIAL, INDIGENOUS = 1 << 1, 1 << 4, 1 << 6, 1 << 7
+csv.field_size_limit(1 << 24)
+
+
+def get(url: str, params: dict | None = None, accept: str | None = None) -> bytes:
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    h = dict(UA)
+    if accept:
+        h["Accept"] = accept
+    for attempt in range(12):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers=h), timeout=180) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if attempt == 11:
+                raise
+            # Respect rate limits (the Wikidata query service may allow only 1 request/min).
+            wait = int(e.headers.get("Retry-After") or 0) or (65 if e.code == 429 else 2 ** attempt)
+            print(f"  HTTP {e.code}; waiting {wait} s", file=sys.stderr)
+            time.sleep(wait)
+        except Exception as e:  # noqa: BLE001
+            if attempt == 11:
+                raise
+            print(f"  retry ({e})", file=sys.stderr)
+            time.sleep(2 ** min(attempt, 6))
+    raise RuntimeError("unreachable")
+
+
+def sparql(q: str, cache: str) -> list[dict]:
+    """Run a Wikidata query, caching the CSV (delete data/heritage/wd-*.csv to refresh)."""
+    path = H / cache
+    if path.exists():
+        b = path.read_bytes()
+    else:
+        b = get("https://query.wikidata.org/sparql", {"query": q}, accept="text/csv")
+        path.write_bytes(b)
+        time.sleep(61)  # stay under the query service's rate limit
+    return list(csv.DictReader(io.StringIO(b.decode("utf-8"))))
+
+
+def point(s: str):
+    m = re.match(r"Point\(([-\d.eE]+) ([-\d.eE]+)\)", s or "")
+    return (float(m.group(1)), float(m.group(2))) if m else None
+
+
+def site(lon, lat, **props) -> dict:
+    return {"type": "Feature", "geometry": {"type": "Point", "coordinates": [round(float(lon), 6), round(float(lat), 6)]},
+            "properties": {k: v for k, v in props.items() if v not in (None, "", "None")}}
+
+
+def title(s: str | None) -> str | None:
+    return s.title() if s and s.isupper() else s
+
+
+def iso_date(ms) -> str | None:
+    try:
+        return datetime.fromtimestamp(int(ms) / 1000, timezone.utc).strftime("%Y-%m-%d") if ms else None
+    except (TypeError, ValueError):
+        return None
+
+
+# ---- sources -----------------------------------------------------------------------------------
+
+def unesco() -> list[dict]:
+    d = json.loads((H / "unesco-whc.json").read_text())
+    out = []
+    for s in d["sites"]:
+        for lon, lat in s["pois"]:
+            out.append(site(lon, lat, name=s["site"], level=1, designation="UNESCO World Heritage Site",
+                            category=s["category"], date=s["date_inscribed"], criteria=s["criteria"],
+                            in_danger=s["in_danger"] or None, url=s["url"], source="UNESCO World Heritage Centre",
+                            notice=d["notice"]))
+    return out
+
+
+def federal() -> list[dict]:
+    d = json.loads((H / "federal.json").read_text())
+    for f in d["features"]:
+        p = f["properties"]
+        p["authority"] = "Government of Canada"
+        if not p.get("location", "").startswith("wikidata") or "paired" in p.get("location", ""):
+            p["approx"] = True  # located via OSM or by a looser name match: check before relying on it
+    return d["features"]
+
+
+def nrhp() -> list[dict]:
+    path = H / "nrhp.json"
+    if not path.exists():
+        feats = []
+        where = "State IN (" + ",".join(f"'{s}'" for s in STATES) + ")"
+        total = json.loads(get(NRHP, {"where": where, "returnCountOnly": "true", "f": "json"}))["count"]
+        for off in tqdm(range(0, total, 2000), desc="NPS National Register", unit="page"):
+            d = json.loads(get(NRHP, {
+                "where": where, "outFields": "RESNAME,ResType,City,State,Is_NHL,CertDate,NRIS_Refnum,NARA_URL",
+                "resultOffset": off, "resultRecordCount": 2000, "outSR": 4326, "f": "geojson"}))
+            feats += d.get("features", [])
+        path.write_text(json.dumps({"type": "FeatureCollection", "features": feats}))
+    out = []
+    for f in json.loads(path.read_text())["features"]:
+        g, p = f.get("geometry"), f["properties"]
+        if not g or g.get("type") != "Point":
+            continue
+        nhl = str(p.get("Is_NHL") or "").strip().lower() in ("y", "yes", "true", "1", "x")
+        out.append(site(*g["coordinates"][:2], name=title(p.get("RESNAME")), level=2 if nhl else 3,
+                        designation="National Historic Landmark" if nhl else "National Register of Historic Places",
+                        type=p.get("ResType"), municipality=title(p.get("City")), date=iso_date(p.get("CertDate")),
+                        authority="National Park Service",
+                        url=p.get("NARA_URL") or f"https://npgallery.nps.gov/AssetDetail/NRIS/{p.get('NRIS_Refnum')}",
+                        source="NPS National Register"))
+    return out
+
+
+QC = H / "qc"
+QC_SRC = "Répertoire du patrimoine culturel du Québec (MCC, CC BY 4.0)"
+
+
+def quebec() -> tuple[list[dict], list[dict]]:
+    pts, areas = [], []
+
+    def props(p, level, desig):
+        return dict(name=p["nom_bien"], level=level, designation=desig, date=(p.get("date_attri_stat_jurid_princ")
+                    or p.get("date_attribution_stat_jurid_principal_actuel") or "")[:10],
+                    authority=(p.get("autorite_protection") or p.get("autorite") or "").strip(),
+                    municipality=p.get("municipalite"), category=p.get("categorie"),
+                    url=p.get("url_rpcq"), source=QC_SRC)
+
+    for fn, desig in (("immeubles-classes-points.geojson", "Immeuble patrimonial classé"),
+                      ("sites-patrimoniaux-classes-par-la-ministre-de-la-culture-et-des-communications.geojson", "Site patrimonial classé"),
+                      ("sites-patrimoniaux-declares-par-le-gouvernement-du-quebec.geojson", "Site patrimonial déclaré")):
+        for f in json.loads((QC / fn).read_text())["features"]:
+            p = f["properties"]
+            if p["statut_juridique_princ"] not in ("Classement", "Déclaration"):
+                continue  # notices of intent are not designations yet
+            g = f["geometry"]
+            if not g or not g["coordinates"]:
+                continue
+            c = g["coordinates"][0] if g["type"] == "MultiPoint" else g["coordinates"]
+            pts.append(site(*c, **props(p, 4, desig)))
+    for fn, desig in (("sites-patrimoniaux-classes-par-la-ministre-de-la-culture-et-des-communications-perimetres.geojson", "Site patrimonial classé"),
+                      ("sites-patrimoniaux-declares-par-le-gouvernement-du-quebec-perimetres.geojson", "Site patrimonial déclaré")):
+        for f in json.loads((QC / fn).read_text())["features"]:
+            p = f["properties"]
+            if f["geometry"] and p["statut_juridique_princ"] in ("Classement", "Déclaration"):
+                areas.append({"type": "Feature", "geometry": f["geometry"], "properties": props(p, 4, desig)})
+    for fn, level, desig in (("site-patrimonial-national-declare-par-la-loi-sur-le-patrimoine-culturel-par-le-gouvernement-du-.csv", 4, "Site patrimonial national"),
+                             ("immeubles-patrimoniaux-cites-par-les-municipalites-et-les-communautes-autochtones.csv", 5, "Immeuble patrimonial cité"),
+                             ("sites-patrimoniaux-cites-par-les-municipalites-et-les-communautes-autochtones.csv", 5, "Site patrimonial cité")):
+        for r in csv.DictReader(open(QC / fn, encoding="utf-8")):
+            try:
+                lon, lat = float(r["longitude"]), float(r["latitude"])
+            except ValueError:
+                g = (r.get("geometrie") or "").strip()
+                if not g or g.upper() == "NULL":
+                    continue
+                c = wkt.loads(g).representative_point()
+                lon, lat = c.x, c.y
+            pts.append(site(lon, lat, **props(r, level, desig)))
+    return pts, areas
+
+
+ON_SRC = "Ontario Heritage Act Register (Ontario Heritage Trust; personal non-commercial use)"
+
+
+def ontario() -> tuple[list[dict], list[dict]]:
+    pts = []
+    for f in json.loads((H / "on" / "oht-register.geojson").read_text())["features"]:
+        p, g = f["properties"], f["geometry"]
+        if p.get("Heritage_Conserv_District"):
+            continue  # Part V: represented by its district polygon
+        if g:
+            lon, lat = g["coordinates"][:2]
+        elif p.get("Latitude") and p.get("Longitude"):
+            lon, lat = p["Longitude"], p["Latitude"]
+        else:
+            continue
+        prov = p.get("OHASectionName") == "Ministerial Decisions"
+        name = p.get("Property_Name") or p.get("Address")
+        pts.append(site(lon, lat, name=name, level=4 if prov else 5,
+                        designation="Provincial designation (Ontario Heritage Act)" if prov else "Designated under Part IV, Ontario Heritage Act",
+                        authority="Minister of Citizenship and Multiculturalism" if prov else p.get("Municipality_Display"),
+                        municipality=p.get("Municipality_Display"), address=p.get("Address") if p.get("Address") != name else None,
+                        type=p.get("Historical_Function_Type"),
+                        built=p.get("Construction_End_Year") or p.get("Construction_Start_Year"),
+                        url="https://www.heritagetrust.on.ca/oha/search-the-oha-register", source=ON_SRC))
+    areas = []
+    for f in json.loads((H / "on" / "hcd.geojson").read_text())["features"]:
+        p = f["properties"]
+        if not f["geometry"] or (p.get("Status") or "").lower().startswith("under"):
+            continue
+        areas.append({"type": "Feature", "geometry": f["geometry"], "properties": dict(
+            name=p["HCD_Name"], level=5, designation="Heritage Conservation District (Part V)", municipality=p.get("Municipality"),
+            authority=p.get("Municipality"), bylaw=p.get("Bylaw_number"), properties_count=p.get("Number_of_Properties"),
+            url=p.get("OHA_Register_Link"), source=ON_SRC)})
+    return pts, areas
+
+
+def nova_scotia() -> list[dict]:
+    out = []
+    for r in csv.DictReader(open(H / "ns" / "registered.csv", encoding="utf-8")):
+        try:
+            lon, lat = float(r["longitude"]), float(r["latitude"])
+        except ValueError:
+            continue
+        out.append(site(lon, lat, name=r["property_name"], level=4, designation="Provincially Registered Heritage Property",
+                        authority="Province of Nova Scotia", municipality=r["community"], type=r["type"],
+                        date=r["notice_of_registration_date"][:10], built=r.get("year_built"),
+                        url="https://data.novascotia.ca/d/7pnv-7sdm", source="Nova Scotia Registered Heritage Properties (NS Open Government Licence)"))
+    for f in json.loads((H / "ns" / "hrm.geojson").read_text())["features"]:
+        if not f["geometry"]:
+            continue
+        p = f["properties"]
+        c = shape(f["geometry"]).representative_point()
+        out.append(site(c.x, c.y, name=p.get("HRTG_NM") or "Heritage property", level=5,
+                        designation="Municipally Registered Heritage Property", authority="Halifax Regional Municipality",
+                        municipality="Halifax", built=p.get("HRTG_YEAR"), date=iso_date(p.get("REG_DATE")),
+                        url="https://www.halifax.ca/about-halifax/regional-community-planning/heritage-properties-programs",
+                        source="Halifax Regional Municipality open data"))
+    return out
+
+
+def new_brunswick_moncton() -> list[dict]:
+    out = []
+    for f in json.loads((H / "nb" / "moncton-Heritage_Properties.geojson").read_text())["features"]:
+        if not f["geometry"]:
+            continue
+        p = f["properties"]
+        c = shape(f["geometry"]).representative_point()
+        out.append(site(c.x, c.y, name=title(p.get("LOCATION")) or "Heritage property", level=5,
+                        designation="Municipal heritage property (By-law Z-1116)", authority="City of Moncton",
+                        municipality="Moncton", url="https://www.moncton.ca", source="City of Moncton open data"))
+    return out
+
+
+def crhp() -> list[dict]:
+    path = H / "crhp.json"
+    return json.loads(path.read_text())["features"] if path.exists() else []
+
+
+def dedupe(feats: list[dict], radius_m=40.0) -> list[dict]:
+    """Drop municipal points that sit on another source's point of the same or higher level with
+    a similar name (e.g. Moncton or HRM properties also listed in the Canadian Register)."""
+    def nm(s):
+        s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().lower()
+        return set(re.findall(r"[a-z0-9]{3,}", s))
+    grid = {}
+    for i, f in enumerate(feats):
+        lon, lat = f["geometry"]["coordinates"]
+        grid.setdefault((round(lon, 3), round(lat, 3)), []).append(i)
+    drop = set()
+    for i, f in enumerate(feats):
+        p = f["properties"]
+        if p["level"] < 5:
+            continue
+        lon, lat = f["geometry"]["coordinates"]
+        for dx in (-0.001, 0, 0.001):
+            for dy in (-0.001, 0, 0.001):
+                for j in grid.get((round(lon + dx, 3), round(lat + dy, 3)), []):
+                    if j == i or j in drop:
+                        continue
+                    q = feats[j]["properties"]
+                    if q["source"] == p["source"] or q["level"] > p["level"]:
+                        continue
+                    lo2, la2 = feats[j]["geometry"]["coordinates"]
+                    d = math.hypot((lon - lo2) * 111320 * math.cos(math.radians(lat)), (lat - la2) * 110540)
+                    if d <= radius_m and (nm(p["name"]) & nm(q["name"])) and j not in drop:
+                        drop.add(i)
+    return [f for i, f in enumerate(feats) if i not in drop]
+
+
+# ---- special places ------------------------------------------------------------------------------
+
+def special_wikidata() -> list[dict]:
+    kinds = {"Q158454": "biosphere", "Q53444003": "geopark", "Q1324355": "geopark",
+             "Q52216504": "dark_sky", "Q72114283": "dark_sky", "Q3457162": "dark_sky"}
+    rows = sparql("""
+SELECT ?item ?coord ?k (SAMPLE(?en) AS ?name) (SAMPLE(?a) AS ?area) (SAMPLE(?art) AS ?wiki) WHERE {
+  VALUES ?k { """ + " ".join("wd:" + k for k in kinds) + """ }
+  VALUES ?country { wd:Q16 wd:Q30 }
+  { ?item wdt:P31 ?k } UNION { ?item wdt:P1435 ?k }
+  ?item wdt:P17 ?country ; wdt:P625 ?coord .
+  OPTIONAL { ?item wdt:P2046 ?a }
+  OPTIONAL { ?item rdfs:label ?en FILTER(LANG(?en) = "en") }
+  OPTIONAL { ?art schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> }
+} GROUP BY ?item ?coord ?k""", "wd-special.csv")
+    out = {}
+    for r in rows:
+        p = point(r["coord"])
+        if not p:
+            continue
+        q = r["item"].rsplit("/", 1)[1]
+        try:
+            area = float(r["area"]) if r["area"] else None
+        except ValueError:
+            area = None
+        out[q] = {"lon": p[0], "lat": p[1], "kind": kinds[r["k"].rsplit("/", 1)[1]], "name": r["name"],
+                  "area_km2": area, "url": r["wiki"] or r["item"], "source": "Wikidata"}
+    return list(out.values())
+
+
+def special_official() -> list[dict] | None:
+    path = H / "special-official.json"
+    if not path.exists():
+        return None
+    d = json.loads(path.read_text())
+    return [{**p, "source": p.get("certifier", "official registry")} for p in d["places"]]
+
+
+# ---- rasterise areas onto the z11 grid ----------------------------------------------------------
+
+R = 6378137.0
+
+
+def to_merc(x, y, z=None):
+    x = np.asarray(x) * math.pi / 180 * R
+    y = np.log(np.tan(math.pi / 4 + np.clip(np.asarray(y), -85, 85) * math.pi / 360)) * R
+    return x, y
+
+
+def rasterise(b: Path, shapes_bits: list[tuple]) -> None:
+    tiles = np.fromfile(b / "grid.idx", dtype=np.uint32).reshape(-1, 2)
+    out = np.zeros((len(tiles), 256, 256), np.uint8)
+    geoms = [g for g, _ in shapes_bits]
+    tree = STRtree(geoms)
+    world = 2 * math.pi * R
+    for i, (tx, ty) in enumerate(tqdm(tiles, desc="areas → z11 grid", unit="tile")):
+        x0 = tx / 2048 * world - world / 2
+        x1 = (tx + 1) / 2048 * world - world / 2
+        y1 = world / 2 - ty / 2048 * world
+        y0 = world / 2 - (ty + 1) / 2048 * world
+        hits = tree.query(box(x0, y0, x1, y1))
+        if len(hits) == 0:
+            continue
+        tr = from_bounds(x0, y0, x1, y1, 256, 256)
+        for bit in (PARK, HERITAGE, SPECIAL, INDIGENOUS):
+            sel = [geoms[h] for h in hits if shapes_bits[h][1] == bit]
+            if sel:
+                m = features.rasterize(((g, 1) for g in sel), out_shape=(256, 256), transform=tr, dtype=np.uint8,
+                                       all_touched=bit == HERITAGE)
+                out[i] |= (m * bit).astype(np.uint8)
+    out.tofile(b / "grid.areas.u8.tmp")
+    os.replace(b / "grid.areas.u8.tmp", b / "grid.areas.u8")
+
+
+PARK_TITLE = re.compile(r"park|forest|reserve|wilderness|wildlife|refuge|sanctuary|preserve|conservation area|natural area|recreation area|seashore|lakeshore", re.I)
+
+
+def norm_name(s: str) -> str:
+    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().lower()
+    return " ".join(re.findall(r"[a-z0-9]+", s))
+
+
+def write_json(path: Path, obj) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
+    os.replace(tmp, path)
+
+
+def main():
+    b = Path(sys.argv[1] if len(sys.argv) > 1 else "../data/build")
+    areas_path = b.parent / "areas" / "areas.geojsonseq"
+    tiles = {tuple(t) for t in np.fromfile(b / "grid.idx", dtype=np.uint32).reshape(-1, 2).tolist()}
+
+    def covered(lon, lat):
+        x = (lon + 180) / 360 * 2048
+        y = (1 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2 * 2048
+        return (int(x), int(y)) in tiles
+
+    counts = {}
+    sites, harea = [], []
+    for label, fn in (("UNESCO World Heritage", unesco), ("Parks Canada DFHD (federal)", federal),
+                      ("NPS National Register", nrhp), ("Quebec RPCQ", quebec), ("Ontario Heritage Act Register", ontario),
+                      ("Nova Scotia + Halifax", nova_scotia), ("Moncton", new_brunswick_moncton),
+                      ("Canadian Register (NB, PEI, NL)", crhp)):
+        r = fn()
+        pts, ars = r if isinstance(r, tuple) else (r, [])
+        pts = [f for f in pts if covered(*f["geometry"]["coordinates"])]
+        counts[label] = len(pts) + len(ars)
+        print(f"heritage: {label:34s} {len(pts):6d} sites, {len(ars):4d} areas")
+        sites += pts
+        harea += ars
+    n0 = len(sites)
+    sites = dedupe(sites)
+    print(f"heritage: {n0 - len(sites)} municipal duplicates dropped")
+    write_json(b / "heritage.json", {"type": "FeatureCollection", "features": sites})
+    write_json(b / "heritage-areas.json", {"type": "FeatureCollection", "features": harea})
+    by = {}
+    for f in sites:
+        by[f["properties"]["level"]] = by.get(f["properties"]["level"], 0) + 1
+    print("heritage.json:", len(sites), "sites by level", dict(sorted(by.items())))
+
+    # Special places: official registries, else Wikidata.
+    sp = special_official()
+    if sp is None:
+        print("special areas: special-official.json missing — falling back to Wikidata")
+        sp = special_wikidata()
+    sp = [s for s in sp if covered(s["lon"], s["lat"])]
+    hints = {norm_name(s.get("polygon_hint") or s["name"]): s for s in sp}
+
+    print("protected areas & Indigenous lands (OSM)…")
+    shapes, special_feats, indigenous_feats, matched = [], [], [], set()
+    for line in tqdm(open(areas_path), desc="areas", unit="poly"):
+        f = json.loads(line.strip("\x1e"))
+        p = f["properties"]
+        try:
+            g = shape(f["geometry"])
+        except Exception:  # noqa: BLE001
+            continue
+        if g.is_empty:
+            continue
+        name = p.get("name", "")
+        ptitle = p.get("protection_title", "")
+        s = hints.get(norm_name(name))
+        # Use the mapped boundary only if it plausibly is the designated area: biosphere
+        # reserves and geoparks are usually far larger than the park named in the hint.
+        if s is not None and s.get("area_km2") and g.area * 111.32 ** 2 * math.cos(math.radians(s["lat"])) < 0.5 * s["area_km2"]:
+            s = None
+        if s is not None and g.distance(Point(s["lon"], s["lat"])) < 0.3:
+            key = norm_name(s.get("polygon_hint") or s["name"])
+            if key not in matched:
+                matched.add(key)
+                special_feats.append({"type": "Feature", "geometry": mapping(g.simplify(0.0003)),
+                                      "properties": {k: v for k, v in s.items() if k not in ("lon", "lat")}})
+                shapes.append((shp_transform(to_merc, g.simplify(0.0002, preserve_topology=True)), SPECIAL))
+        if p.get("boundary") == "aboriginal_lands":
+            bit = INDIGENOUS
+            indigenous_feats.append({"type": "Feature", "geometry": mapping(g.simplify(0.0003, preserve_topology=True)),
+                                     "properties": {"name": name}})
+        elif (p.get("boundary") == "national_park" or p.get("leisure") == "nature_reserve"
+              or p.get("protect_class") in ("1", "1a", "1b", "2", "3", "4", "5", "6") or PARK_TITLE.search(ptitle)):
+            bit = PARK
+        else:
+            continue
+        shapes.append((shp_transform(to_merc, g.simplify(0.0002, preserve_topology=True)), bit))
+    for s in sp:
+        if norm_name(s.get("polygon_hint") or s["name"]) in matched:
+            continue
+        r_km = math.sqrt(s["area_km2"] / math.pi) if s.get("area_km2") else (15.0 if s["kind"] != "dark_sky" else 8.0)
+        r_km = min(max(r_km, 3.0), 60.0)
+        circ = Point(s["lon"], s["lat"]).buffer(r_km / 111.0, 48)
+        circ = shp_transform(lambda x, y, lo=s["lon"], la=s["lat"]: (lo + (x - lo) / math.cos(math.radians(la)), y), circ)
+        special_feats.append({"type": "Feature", "geometry": mapping(circ),
+                              "properties": {**{k: v for k, v in s.items() if k not in ("lon", "lat")}, "approx": True}})
+        shapes.append((shp_transform(to_merc, circ), SPECIAL))
+    print(f"special areas: {len(sp)} ({len(matched)} with OSM boundaries)")
+    for f in harea:
+        shapes.append((shp_transform(to_merc, shape(f["geometry"])), HERITAGE))
+    write_json(b / "special.json", {"type": "FeatureCollection", "features": special_feats})
+    write_json(b / "indigenous.json", {"type": "FeatureCollection", "features": indigenous_feats})
+    write_json(b / "heritage-sources.json", {"counts": counts, "special": len(sp), "built": datetime.now(timezone.utc).isoformat()[:19]})
+    print(f"rasterising {len(shapes)} polygons")
+    rasterise(b, shapes)
+    print("done — now run: scenic <build> flags")
+
+
+if __name__ == "__main__":
+    main()
