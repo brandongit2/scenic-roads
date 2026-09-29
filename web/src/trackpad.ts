@@ -1,18 +1,29 @@
 import type { Map as MLMap } from 'maplibre-gl';
-import { anchorAt, dolly, orbit, type Anchor } from './camera3d';
+import { anchorAt, centrePoint, dolly, ownPan, orbit, panTo, setLocationAt, type Anchor } from './camera3d';
 
 /**
  * Trackpad-first navigation, anchored at the cursor:
- *   two-finger drag            → pan         (wheel events without modifiers)
+ *   two-finger drag            → pan         (wheel events without modifiers; the ground at the
+ *                                              view centre moves with the fingers)
+ *   click-drag                 → pan         (the grabbed ground stays under the pointer)
  *   pinch                      → zoom        (wheel + ctrlKey in Chromium/Firefox, GestureEvent in Safari)
  *   ⌥ Option + two-finger drag → x rotates, y tilts
  *   right-drag / Ctrl-drag     → rotate + tilt
  * A mouse wheel zooms with short, snappy easing. Zoom, rotation and tilt keep the 3D point
  * under the cursor fixed on screen (see camera3d.ts).
  */
-export function installTrackpad(map: MLMap) {
+export interface CameraControls {
+  /** Smooth zoom by dz levels about a screen point (default: the view centre). */
+  zoomBy(dz: number, px?: number, py?: number): void;
+  /** Animated rotate / tilt about the ground at the view centre. */
+  orbitBy(dBearing: number, dPitch: number): void;
+}
+
+export function installTrackpad(map: MLMap): CameraControls {
   map.scrollZoom.disable();
+  map.doubleClickZoom.disable(); // replaced by the cursor-anchored zoom below
   map.dragRotate.disable(); // replaced by the cursor-anchored orbit below
+  map.dragPan.disable(); // replaced by the ground-anchored pan below
   const el = map.getCanvasContainer();
   let lastEvent = 0;
   let burstMouse = false;
@@ -53,7 +64,39 @@ export function installTrackpad(map: MLMap) {
       if (dBearing && orbit(map, a, dBearing, 0, px, py)) return;
       return;
     }
-    map.jumpTo({ bearing: map.getBearing() + dBearing, pitch: Math.max(0, Math.min(map.getMaxPitch(), map.getPitch() + dPitch)) });
+    map.jumpTo({
+      bearing: map.getBearing() + dBearing,
+      pitch: Math.max(0, Math.min(map.getMaxPitch(), map.getPitch() + dPitch)),
+      elevation: map.getCenterElevation(), // jumpTo would otherwise move the pivot to the terrain
+    });
+  };
+
+  // ---- pan ----
+  // A two-finger pan grabs the ground at the view centre and moves it with the fingers, the
+  // camera keeping its height (MapLibre's pan moves the pivot plane, sea level on the globe, so
+  // over high ground seen from close by it would be several times too fast). Where the ground
+  // is close to that plane, MapLibre's pan is used as is (a = null). The grabbed point is
+  // re-picked after a pause or once it has travelled far from the centre.
+  let grab: { a: Anchor | null; x: number; y: number; t: number } | null = null;
+  const panStep = (dx: number, dy: number) => {
+    const now = performance.now();
+    const c = centrePoint(map);
+    const cv = map.getCanvas(); // (the canvas container itself has no height)
+    const far = grab && Math.hypot(grab.x - c.x, grab.y - c.y) > 0.25 * Math.min(cv.clientWidth, cv.clientHeight);
+    if (!grab || now - grab.t > 250 || far) {
+      const a = anchorAt(map, c.x, c.y);
+      grab = { a: a?.ground && ownPan(map, a) ? a : null, x: c.x, y: c.y, t: now };
+    }
+    grab.t = now;
+    if (grab.a) {
+      if (panTo(map, grab.a, grab.x - dx, grab.y - dy)) {
+        grab.x -= dx;
+        grab.y -= dy;
+        return;
+      }
+      grab = null; // re-pick on the next event
+    }
+    map.panBy([dx, dy], { animate: false });
   };
 
   // ---- smooth wheel zoom ----
@@ -83,10 +126,6 @@ export function installTrackpad(map: MLMap) {
       raf = requestAnimationFrame(step);
     }
   };
-  map.on('movestart', (e) => {
-    // A user drag cancels a running wheel zoom.
-    if ((e as { originalEvent?: Event }).originalEvent?.type === 'mousedown') zLeft = 0;
-  });
 
   el.addEventListener(
     'wheel',
@@ -107,8 +146,8 @@ export function installTrackpad(map: MLMap) {
         dx *= 16;
         dy *= 16;
       } else if (e.deltaMode === 2) {
-        dx *= rect.height;
-        dy *= rect.height;
+        dx *= map.getCanvas().clientHeight;
+        dy *= map.getCanvas().clientHeight;
       }
       if (e.ctrlKey) {
         // Pinch (or Ctrl + wheel).
@@ -121,7 +160,7 @@ export function installTrackpad(map: MLMap) {
       } else if (e.altKey) {
         orbitAt(-dx * 0.35, dy * 0.3, anchorFor(px, py), px, py);
       } else {
-        map.panBy([dx, dy], { animate: false });
+        panStep(dx, dy);
       }
     },
     { passive: false },
@@ -156,6 +195,43 @@ export function installTrackpad(map: MLMap) {
   el.addEventListener('pointercancel', end, true);
   el.addEventListener('contextmenu', (e) => e.preventDefault());
 
+  // Left-drag: the ground under the pointer at the start stays under the pointer (MapLibre's own
+  // grab where the ground is close to the pivot plane). Clicks still reach MapLibre: nothing here
+  // stops the mouse events.
+  let hold: { id: number; a: Anchor; own: boolean; moved: boolean; x0: number; y0: number } | null = null;
+  el.addEventListener('pointerdown', (e: PointerEvent) => {
+    if (e.button !== 0 || e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) return;
+    const rect = el.getBoundingClientRect();
+    const a = anchorAt(map, e.clientX - rect.left, e.clientY - rect.top);
+    if (!a) return; // sky
+    hold = { id: e.pointerId, a, own: a.ground && ownPan(map, a), moved: false, x0: e.clientX, y0: e.clientY };
+    zLeft = 0;
+  });
+  el.addEventListener('pointermove', (e: PointerEvent) => {
+    if (!hold || e.pointerId !== hold.id) return;
+    if (!hold.moved) {
+      if (Math.hypot(e.clientX - hold.x0, e.clientY - hold.y0) < 3) return; // still a click
+      hold.moved = true;
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        /* pointer already gone */
+      }
+      el.classList.add('grabbing');
+    }
+    const rect = el.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    if (!hold.own || !panTo(map, hold.a, x, y)) setLocationAt(map, hold.a.ll, x, y);
+  });
+  const release = (e: PointerEvent) => {
+    if (!hold || e.pointerId !== hold.id) return;
+    if (hold.moved && el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+    el.classList.remove('grabbing');
+    hold = null;
+  };
+  el.addEventListener('pointerup', release);
+  el.addEventListener('pointercancel', release);
+
   // Safari pinch (relative to the previous event: the zoom number itself can be re-levelled).
   let lastScale = 1;
   let gx = 0, gy = 0;
@@ -176,4 +252,33 @@ export function installTrackpad(map: MLMap) {
     zoomAt(gx, gy, dz, ga);
   }, { passive: false });
   g.addEventListener('gestureend', (e: any) => e.preventDefault(), { passive: false });
+
+  // Double-click zooms in about the point (Shift: out).
+  el.addEventListener('dblclick', (e: MouseEvent) => {
+    const rect = el.getBoundingClientRect();
+    smoothZoom(e.clientX - rect.left, e.clientY - rect.top, e.shiftKey ? -1 : 1);
+  });
+
+  let orbRaf = 0;
+  return {
+    zoomBy(dz, px, py) {
+      const c = centrePoint(map);
+      smoothZoom(px ?? c.x, py ?? c.y, dz);
+    },
+    orbitBy(dBearing, dPitch) {
+      cancelAnimationFrame(orbRaf);
+      const c = centrePoint(map);
+      const a = anchorAt(map, c.x, c.y);
+      const t0 = performance.now();
+      let done = 0;
+      const tick = (now: number) => {
+        const k = Math.min(1, (now - t0) / 350);
+        const e = 1 - (1 - k) ** 3;
+        orbitAt(dBearing * (e - done), dPitch * (e - done), a, c.x, c.y);
+        done = e;
+        if (k < 1) orbRaf = requestAnimationFrame(tick);
+      };
+      orbRaf = requestAnimationFrame(tick);
+    },
+  };
 }

@@ -3,7 +3,7 @@ import type { Map as MLMap } from 'maplibre-gl';
 import * as maplibregl from 'maplibre-gl';
 import mlcontour from 'maplibre-contour';
 import { HYPSO } from './basemap';
-import { PALETTES } from './palettes';
+import { PALETTES, baseKey, isRev, paletteFn } from './palettes';
 import type { Dist } from './roads/stats';
 import type { Terrain } from './state';
 
@@ -24,23 +24,21 @@ function ramp(stops: [number, string][]): (t: number) => RGB {
 }
 
 const atlas = ramp(HYPSO.slice(1).map(([e, c]) => [e / 1900, c] as [number, string]));
-const pal = (key: string) => (t: number) => (PALETTES.find((p) => p.key === key) ?? PALETTES[0]).fn(t);
-
-/** Tint colour ramps. 'roads' follows the current road palette. */
-export const TINT_PALETTES: { key: string; label: string; fn?: (t: number) => RGB }[] = [
-  { key: 'atlas', label: 'Atlas (green → brown → white)', fn: atlas },
+/** Tint colour ramps: terrain ramps ('roads' follows the current road palette), then every shared
+ * ramp. Keys ending in "_r" are reversed. */
+export const TINT_PALETTES: { key: string; label: string; group: string; fn?: (t: number) => RGB }[] = [
+  { key: 'atlas', label: 'Atlas (green → brown → white)', group: 'Terrain', fn: atlas },
   {
     key: 'steep',
     label: 'Slope classes (green → red → purple)',
+    group: 'Terrain',
     fn: ramp([[0, '#20352a'], [0.1, '#2f5a3a'], [0.2, '#7a9a3e'], [0.3, '#d2c14a'], [0.45, '#e58a3a'], [0.6, '#d6453b'], [0.8, '#a3337f'], [1, '#5b2a8f']]),
   },
-  { key: 'roads', label: 'Same as roads' },
-  { key: 'earth', label: 'Earth tones', fn: ramp([[0, '#23321f'], [0.3, '#4b5a2e'], [0.55, '#7d6a3e'], [0.8, '#8f5e44'], [1, '#d9c9b4']]) },
-  { key: 'glacier', label: 'Glacier (blue → white)', fn: ramp([[0, '#0f2440'], [0.4, '#2e5f8a'], [0.75, '#7fb2d4'], [1, '#eef6ff']]) },
-  { key: 'grey', label: 'Greyscale', fn: ramp([[0, '#101318'], [1, '#d8dde5']]) },
-  { key: 'viridis', label: 'Viridis', fn: pal('viridis') },
-  { key: 'magma', label: 'Magma', fn: pal('magma') },
-  { key: 'turbo', label: 'Turbo', fn: pal('turbo') },
+  { key: 'roads', label: 'Same as roads', group: 'Terrain' },
+  { key: 'earth', label: 'Earth tones', group: 'Terrain', fn: ramp([[0, '#23321f'], [0.3, '#4b5a2e'], [0.55, '#7d6a3e'], [0.8, '#8f5e44'], [1, '#d9c9b4']]) },
+  { key: 'glacier', label: 'Glacier (blue → white)', group: 'Terrain', fn: ramp([[0, '#0f2440'], [0.4, '#2e5f8a'], [0.75, '#7fb2d4'], [1, '#eef6ff']]) },
+  { key: 'grey', label: 'Greyscale', group: 'Terrain', fn: ramp([[0, '#101318'], [1, '#d8dde5']]) },
+  ...PALETTES.map((p) => ({ key: p.key, label: p.label, group: p.group, fn: p.fn })),
 ];
 
 export interface TintContext {
@@ -96,7 +94,9 @@ export function tintRange(t: Terrain, ctx: TintContext): [number, number] {
 }
 
 function tintFn(t: Terrain, ctx: TintContext): (u: number) => RGB {
-  const fn = t.tintPalette === 'roads' ? pal(ctx.roadPalette) : (TINT_PALETTES.find((p) => p.key === t.tintPalette)?.fn ?? atlas);
+  const base = baseKey(t.tintPalette);
+  const f0 = base === 'roads' ? paletteFn(ctx.roadPalette) : (TINT_PALETTES.find((p) => p.key === base)?.fn ?? atlas);
+  const fn = isRev(t.tintPalette) ? (u: number) => f0(1 - u) : f0;
   const g = t.tintCurve;
   return (u) => fn(Math.pow(Math.max(0, Math.min(1, u)), g));
 }
@@ -138,7 +138,7 @@ export function applyTint(map: MLMap, t: Terrain, ctx: TintContext) {
   if (!t.tint) return;
   const [lo, hi] = tintRange(t, ctx);
   const span = hi - lo;
-  const sig = [id + t.tintPalette + t.tintFade[t.tintVar] + ':' + t.tintFadeSpan[t.tintVar], t.tintPalette === 'roads' ? ctx.roadPalette : '', t.tintBands, t.tintCurve, t.tintOpacity, lo.toFixed(1), hi.toFixed(1)].join('|');
+  const sig = [id + t.tintPalette + t.tintFade[t.tintVar] + ':' + t.tintFadeSpan[t.tintVar], baseKey(t.tintPalette) === 'roads' ? ctx.roadPalette : '', t.tintBands, t.tintCurve, t.tintOpacity, lo.toFixed(1), hi.toFixed(1)].join('|');
   if (sig === tintSig) return;
   // Ignore sub-2 % drifts of a fitted range (avoids re-uploading the ramp while panning).
   const prev = tintSig.split('|');
@@ -172,10 +172,12 @@ export function applyTint(map: MLMap, t: Terrain, ctx: TintContext) {
 }
 
 /** Opacity of every label layer (the profile / marker labels stay opaque). */
-export function applyLabelOpacity(map: MLMap, v: number) {
+export function applyLabelOpacity(map: MLMap, v: number, scale: (id: string) => number = () => 1) {
   for (const l of map.getStyle().layers) {
     if (l.type !== 'symbol' || l.id === 'marks-label') continue;
-    map.setPaintProperty(l.id, 'text-opacity', l.id === 'contour-label' ? v * 0.85 : v);
+    const k = scale(l.id);
+    if (Number.isNaN(k)) continue; // set elsewhere (landmark names follow their dots)
+    map.setPaintProperty(l.id, 'text-opacity', (l.id === 'contour-label' ? v * 0.85 : v) * k);
   }
 }
 

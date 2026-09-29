@@ -1,7 +1,10 @@
-// Colour ramps, baked into a 256 × N RGBA lookup texture for the road shader.
-// Polynomial fits of matplotlib's viridis / magma / plasma (Matt Zucker) and
-// Google's turbo. Each ramp is trimmed at the dark end so it stays legible on
-// the dark background.
+// Colour ramps, shared by every colour-map picker, and baked into a 256 × 2N RGBA lookup texture
+// (each ramp forwards and reversed) for the road shader. Polynomial fits of matplotlib's viridis /
+// magma / plasma (Matt Zucker) and Google's turbo, plus ramps sampled from their reference
+// implementations by dem/ramps.py (data/ramps.json: matplotlib, seaborn, ColorBrewer, Crameri's
+// Scientific colour maps, cmocean, colorcet). Each is trimmed at the dark end so it stays legible
+// on the dark background. A key ending in "_r" is the ramp reversed.
+import RAMPS from './data/ramps.json';
 
 type RGB = [number, number, number];
 
@@ -70,19 +73,25 @@ function hexStops(stops: [number, string][]): (t: number) => RGB {
 export interface Palette {
   key: string;
   label: string;
+  /** Section of the picker list. */
+  group: string;
   fn: (t: number) => RGB;
 }
 
 const trim = (f: (t: number) => RGB, a: number, b = 1) => (t: number) => f(a + (b - a) * t);
 
-export const PALETTES: Palette[] = [
-  { key: 'viridis', label: 'Viridis', fn: trim((t) => poly(VIRIDIS, t), 0.14) },
-  { key: 'magma', label: 'Magma', fn: trim((t) => poly(MAGMA, t), 0.22, 0.98) },
-  { key: 'plasma', label: 'Plasma', fn: trim((t) => poly(PLASMA, t), 0.06, 0.96) },
-  { key: 'turbo', label: 'Turbo', fn: trim(turbo, 0.06, 0.96) },
+/** Picker sections, in order (layer-specific ramps come first, under their own heading). */
+export const PALETTE_GROUPS = ['Perceptual', 'Scientific', 'Rainbow', 'Multi-hue', 'Single hue', 'Diverging'];
+
+const BUILTIN: Palette[] = [
+  { key: 'viridis', label: 'Viridis', group: 'Perceptual', fn: trim((t) => poly(VIRIDIS, t), 0.14) },
+  { key: 'magma', label: 'Magma', group: 'Perceptual', fn: trim((t) => poly(MAGMA, t), 0.22, 0.98) },
+  { key: 'plasma', label: 'Plasma', group: 'Perceptual', fn: trim((t) => poly(PLASMA, t), 0.06, 0.96) },
+  { key: 'turbo', label: 'Turbo', group: 'Rainbow', fn: trim(turbo, 0.06, 0.96) },
   {
     key: 'hypso',
     label: 'Hypsometric',
+    group: 'Multi-hue',
     fn: hexStops([
       [0, '#2f7d57'], [0.18, '#6fa65a'], [0.36, '#c8c46e'], [0.54, '#c9965a'],
       [0.72, '#a86b53'], [0.88, '#b89a92'], [1, '#f4f1ec'],
@@ -91,38 +100,70 @@ export const PALETTES: Palette[] = [
   {
     // For signed metrics (ridge ↔ valley): cool below, neutral grey at the middle, warm above.
     key: 'diverge',
-    label: 'Diverging',
+    label: 'Blue–grey–orange',
+    group: 'Diverging',
     fn: hexStops([[0, '#3d7fd9'], [0.25, '#79a9df'], [0.5, '#8b919c'], [0.75, '#e6a25c'], [1, '#ff6a3d']]),
   },
 ];
 
+const SAMPLED: Palette[] = (RAMPS as { key: string; label: string; group: string; stops: string[] }[]).map((r) => ({
+  key: r.key,
+  label: r.label,
+  group: r.group,
+  fn: hexStops(r.stops.map((c, i) => [i / (r.stops.length - 1), c] as [number, string])),
+}));
+
+export const PALETTES: Palette[] = [...BUILTIN, ...SAMPLED].sort((a, b) => PALETTE_GROUPS.indexOf(a.group) - PALETTE_GROUPS.indexOf(b.group));
+
+/** Picker items for the shared ramps. */
+export const PALETTE_ITEMS = PALETTES.map(({ key, label, group }) => ({ key, label, group }));
+
+// Reversed ramps: the key with "_r" appended.
+const REV = '_r';
+export const isRev = (key: string) => key.endsWith(REV);
+export const baseKey = (key: string) => (isRev(key) ? key.slice(0, -REV.length) : key);
+export const withRev = (key: string, rev: boolean) => baseKey(key) + (rev ? REV : '');
+
+/** A ramp by key (reversed for "_r"); unknown keys fall back to the first. */
+export function paletteFn(key: string): (t: number) => RGB {
+  const p = PALETTES.find((x) => x.key === baseKey(key)) ?? PALETTES[0];
+  return isRev(key) ? (t) => p.fn(1 - t) : p.fn;
+}
+
 export const LUT_W = 256;
 
+/** Lookup texture rows: ramp i forwards at 2i, reversed at 2i + 1. */
+export const LUT_ROWS = PALETTES.length * 2;
+export const paletteRow = (key: string) => Math.max(0, PALETTES.findIndex((p) => p.key === baseKey(key))) * 2 + (isRev(key) ? 1 : 0);
+
 export function buildLut(): Uint8Array {
-  const data = new Uint8Array(LUT_W * PALETTES.length * 4);
-  PALETTES.forEach((p, row) => {
-    for (let i = 0; i < LUT_W; i++) {
-      const c = p.fn(i / (LUT_W - 1));
-      const o = (row * LUT_W + i) * 4;
-      for (let k = 0; k < 3; k++) data[o + k] = Math.max(0, Math.min(255, Math.round(c[k] * 255)));
-      data[o + 3] = 255;
+  const data = new Uint8Array(LUT_W * LUT_ROWS * 4);
+  PALETTES.forEach((p, i) => {
+    for (const rev of [0, 1]) {
+      const row = i * 2 + rev;
+      for (let x = 0; x < LUT_W; x++) {
+        const t = x / (LUT_W - 1);
+        const c = p.fn(rev ? 1 - t : t);
+        const o = (row * LUT_W + x) * 4;
+        for (let k = 0; k < 3; k++) data[o + k] = Math.max(0, Math.min(255, Math.round(c[k] * 255)));
+        data[o + 3] = 255;
+      }
     }
   });
   return data;
 }
 
 export function paletteCss(key: string, steps = 12): string {
-  const p = PALETTES.find((x) => x.key === key) ?? PALETTES[0];
+  const fn = paletteFn(key);
   const parts: string[] = [];
   for (let i = 0; i <= steps; i++) {
-    const c = p.fn(i / steps).map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255));
+    const c = fn(i / steps).map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255));
     parts.push(`rgb(${c[0]},${c[1]},${c[2]}) ${((i / steps) * 100).toFixed(1)}%`);
   }
   return `linear-gradient(90deg, ${parts.join(', ')})`;
 }
 
 export function paletteRgb(key: string, t: number): string {
-  const p = PALETTES.find((x) => x.key === key) ?? PALETTES[0];
-  const c = p.fn(Math.max(0, Math.min(1, t))).map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255));
+  const c = paletteFn(key)(Math.max(0, Math.min(1, t))).map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255));
   return `rgb(${c[0]},${c[1]},${c[2]})`;
 }

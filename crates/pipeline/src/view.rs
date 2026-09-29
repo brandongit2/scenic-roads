@@ -4,6 +4,9 @@
 //! canopy height, earth curvature with standard refraction). Each ray starts from that
 //! direction's near-field horizon (terrain + 5 m tree canopy within 300 m), so roadside
 //! trees block distant views. Visible area is accumulated per ray sector.
+//!
+//! Cached (crate::scache): a sample keeps its last metrics while its position, eye, near field
+//! and roadside values are the same and no analysis-grid tile within ~2 tiles (≥ 15 km) is new.
 
 use crate::count_bar;
 use anyhow::Result;
@@ -98,21 +101,46 @@ pub fn run(dir: &Path) -> Result<()> {
         g.class.is_some(),
     );
 
-    let pb = count_bar(samples.len() as u64, "viewsheds");
-    let chans: Vec<[u8; ch::N]> = samples
+    // Previous metrics (still in the build) by sample key, unless new grid tiles are within reach.
+    let cdir = crate::scache::dir(dir);
+    let change = crate::scache::GridChange::load(&cdir, "view", &g.idx.tiles);
+    let prev = crate::scache::Prev::load(&cdir, "view");
+    let old = Array::<u8>::open(&dir.join("samples.metrics.u8")).ok().filter(|a| a.get().len() == prev.len() * ch::NBASE && !prev.is_empty());
+    let keys: Vec<u64> = samples
         .par_iter()
         .enumerate()
         .map(|(i, s)| {
-            let c = sample_metrics(&g, s, &near[i * NEAR_AZ..(i + 1) * NEAR_AZ], &roadside[i * 2..i * 2 + 2]);
+            let k = crate::scache::mix(crate::scache::sample_key(s), bytemuck::cast_slice(&near[i * NEAR_AZ..(i + 1) * NEAR_AZ]));
+            crate::scache::mix(k, &roadside[i * 2..i * 2 + 2])
+        })
+        .collect();
+    let pb = count_bar(samples.len() as u64, "viewsheds");
+    let reused = std::sync::atomic::AtomicUsize::new(0);
+    let chans: Vec<[u8; ch::NBASE]> = samples
+        .par_iter()
+        .enumerate()
+        .map(|(i, s)| {
             if i % 4096 == 0 {
                 pb.inc(4096);
             }
-            c
+            if let Some(o) = &old {
+                if !change.near(s.lon as f64 * E7, s.lat as f64 * E7, 2) {
+                    if let Some(r) = prev.row(keys[i]) {
+                        reused.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return o.get()[r * ch::NBASE..(r + 1) * ch::NBASE].try_into().unwrap();
+                    }
+                }
+            }
+            sample_metrics(&g, s, &near[i * NEAR_AZ..(i + 1) * NEAR_AZ], &roadside[i * 2..i * 2 + 2])
         })
         .collect();
     pb.finish_and_clear();
+    eprintln!("view: {} of {} samples reused from the last run", reused.into_inner(), samples.len());
+    drop(old);
     std::fs::write(roadcore::tmp(dir, "samples.metrics.u8"), bytemuck::cast_slice(&chans))?;
     roadcore::commit(dir, &["samples.metrics.u8"])?;
+    crate::scache::Prev::save(&cdir, "view", &keys)?;
+    crate::scache::GridChange::save(&cdir, "view", &g.idx.tiles)?;
     let mean = |c: usize| chans.iter().map(|x| x[c] as f64).sum::<f64>() / chans.len().max(1) as f64;
     eprintln!(
         "view: mean view {:.0}, water {:.0}, vista {:.1} km, enclosure {:.0} %",
@@ -131,18 +159,25 @@ pub fn run(dir: &Path) -> Result<()> {
 /// channels (→ samples.ch.u8, scenic.u8).
 pub fn flags(dir: &Path) -> Result<()> {
     let idx = GridIndex::load(dir)?;
-    let areas = Layer::<u8>::open(&dir.join("grid.areas.u8")).ok();
+    // Designation areas on the grid; one from before the grid changed (the network grew) is
+    // ignored until `heritage.py` rebuilds it.
+    let terrain_cells = Layer::<i16>::open(&dir.join("grid.terrain.i16"))?.data().len();
+    let areas = Layer::<u8>::open(&dir.join("grid.areas.u8")).ok().filter(|a| a.data().len() == terrain_cells);
     let samples_a = Array::<Sample>::open(&dir.join("samples.bin"))?;
     let samples = samples_a.get();
-    let base = Array::<[u8; ch::N]>::open(&dir.join("samples.metrics.u8"))?;
+    let base = Array::<[u8; ch::NBASE]>::open(&dir.join("samples.metrics.u8"))?;
     anyhow::ensure!(base.get().len() == samples.len(), "samples.metrics.u8 does not match samples.bin; rerun `scenic view`");
+    // Roadside buildings (`scenic buildings`); none until it has run for these samples.
+    let bld_a = Array::<u8>::open(&dir.join("samples.bld.u8")).ok().filter(|a| a.get().len() == samples.len());
+    let bld = bld_a.as_ref().map(|a| a.get());
     let viewpoints = PointHash::new(&load_points(&dir.join("pois.json"), &["viewpoint"]));
     let heritage = PointHash::new(&load_points(&dir.join("heritage.json"), &[]));
     eprintln!(
-        "flags: {} viewpoints, {} heritage sites, areas {}",
+        "flags: {} viewpoints, {} heritage sites, areas {}, roadside buildings {}",
         viewpoints.len(),
         heritage.len(),
-        areas.is_some()
+        areas.is_some(),
+        bld.is_some()
     );
     let pb = count_bar(samples.len() as u64, "sample flags");
     let chans: Vec<[u8; ch::N]> = samples
@@ -150,7 +185,9 @@ pub fn flags(dir: &Path) -> Result<()> {
         .zip(base.get().par_iter())
         .enumerate()
         .map(|(i, (s, b))| {
-            let mut c = *b;
+            let mut c = [0u8; ch::N];
+            c[..ch::NBASE].copy_from_slice(b);
+            c[ch::BLDG] = bld.map_or(0, |x| x[i]);
             let (lon, lat) = (s.lon as f64 * E7, s.lat as f64 * E7);
             let mut f = c[ch::FLAGS] & sf::WATERFRONT;
             if viewpoints.within(lon, lat, 1000.0) {
@@ -230,8 +267,8 @@ pub fn eye_height(s: &Sample, grid: &GridIndex, terr: &[i16]) -> f32 {
     roadcore::grid::terrain_bilinear(grid, terr, gx, gy).map_or(s.eye, |t| s.eye.max(t + 1.5))
 }
 
-fn sample_metrics(g: &Grids, s: &Sample, near: &[i8], roadside: &[u8]) -> [u8; ch::N] {
-    let mut c = [0u8; ch::N];
+fn sample_metrics(g: &Grids, s: &Sample, near: &[i8], roadside: &[u8]) -> [u8; ch::NBASE] {
+    let mut c = [0u8; ch::NBASE];
     let (lon, lat) = (s.lon as f64 * E7, s.lat as f64 * E7);
     let (gx, gy) = cell_of(lon, lat);
     let cm = cell_m(lat);

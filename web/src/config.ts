@@ -1,14 +1,31 @@
-// Road classes (must match roadcore::class, ordered minor → major).
+// Road classes (must match roadcore::class, ordered minor → major), then the passenger rail
+// groups (rails.tiles).
 export const CLASS_KEYS = [
   'service', 'living_street', 'residential', 'unclassified', 'tertiary',
   'secondary', 'primary', 'trunk', 'motorway', 'ferry',
+  'tram', 'metro', 'commuter', 'intercity', 'heritage',
 ] as const;
 export const CLASS_LABELS = [
   'Service', 'Living street', 'Residential', 'Unclassified', 'Tertiary',
   'Secondary', 'Primary', 'Trunk', 'Motorway', 'Ferry',
+  'Tram', 'Metro', 'Commuter rail', 'Intercity rail', 'Heritage railway',
 ];
-export const NCLASS = 10;
+export const NCLASS = 15;
+/** Road classes (and ferries) come first. */
+export const NROAD = 10;
 export const FERRY = 9;
+/** Minor road classes: service to unclassified (0–3). */
+export const MINOR_MAX_CLASS = 3;
+export const RAIL0 = 10;
+/** Passenger rail groups: class RAIL0 + index; a track can serve several (line flags). */
+export const RAIL_GROUPS = [
+  { key: 'tram', label: 'Trams' },
+  { key: 'metro', label: 'Metro · rapid transit' },
+  { key: 'commuter', label: 'Commuter · regional' },
+  { key: 'intercity', label: 'Intercity · sleepers' },
+  { key: 'heritage', label: 'Heritage · mountain railways' },
+] as const;
+export const NRAIL = RAIL_GROUPS.length;
 
 // Tile style byte bits (roadcore::tile::style), and the extra GPU end-of-line bit.
 export const ST_UNPAVED = 1 << 4;
@@ -26,11 +43,20 @@ export const GROUPS = [
   { key: 'ferry', label: 'Car ferries', classes: [9] },
 ] as const;
 export const NGROUP = GROUPS.length;
-/** Statistics are kept per (group, surface): index = group * 2 + (unpaved ? 1 : 0). */
-export const NSG = NGROUP * 2;
+/** Statistics are kept per (group, surface, named): index = (group * 2 + unpaved) * 2 + unnamed. */
+export const NSG = NGROUP * 4;
+/** Per-line flags (tile v3+): the road has neither a name nor a route number; roads: one-way,
+ * toll; rail: the service groups using the track (bits from LF_RAIL_SHIFT). */
+export const LF_UNNAMED = 1;
+export const LF_ONEWAY = 2;
+export const LF_TOLL = 4;
+export const LF_RAIL_SHIFT = 1;
+/** Statistics group of each class: road groups for roads, the rail group for rail (each layer
+ * keeps its own statistics, so the indices don't collide). */
 export const CLASS_GROUP: number[] = (() => {
   const g = new Array(NCLASS).fill(0);
   GROUPS.forEach((gr, i) => gr.classes.forEach((c) => (g[c] = i)));
+  for (let k = 0; k < NRAIL; k++) g[RAIL0 + k] = k;
   return g;
 })();
 
@@ -51,7 +77,18 @@ export const WIDTHS: number[][] = [
   [1.0, 1.4, 2.2, 3.6, 7.0, 14], // trunk
   [1.1, 1.6, 2.4, 4.0, 8.0, 16], // motorway
   [0.5, 0.7, 1.0, 1.4, 2.0, 3], // ferry
+  [0.3, 0.45, 0.8, 1.4, 2.6, 4], // tram
+  [0.5, 0.7, 1.1, 1.8, 3.2, 5], // metro
+  [0.6, 0.8, 1.3, 2.0, 3.4, 5.5], // commuter
+  [0.8, 1.0, 1.5, 2.2, 3.6, 6], // intercity
+  [0.7, 0.9, 1.4, 2.1, 3.6, 6], // heritage
 ];
+// Casing width (CSS px) at zooms CASING_Z (no casing below the first), and the scenic-route
+// halo width at zooms GLOW_Z.
+export const CASING_Z: [number, number, number] = [9.5, 12, 16];
+export const CASING_W: [number, number, number] = [0.35, 0.9, 1.6];
+export const GLOW_Z: [number, number, number, number] = [4, 8, 12, 16];
+export const GLOW_W: [number, number, number, number] = [1.2, 1.8, 2.6, 4];
 // Colour strength (mix with background) at zooms FADE_Z: minor roads fade when zoomed out.
 export const FADE_Z = [4, 7, 10, 13];
 export const FADES: number[][] = [
@@ -65,6 +102,11 @@ export const FADES: number[][] = [
   [1, 1, 1, 1],
   [1, 1, 1, 1],
   [0.55, 0.65, 0.8, 0.9],
+  [0.5, 0.65, 0.9, 1],
+  [0.8, 0.9, 1, 1],
+  [0.9, 1, 1, 1],
+  [1, 1, 1, 1],
+  [1, 1, 1, 1],
 ];
 
 export function interp(zs: number[], vs: number[], z: number): number {

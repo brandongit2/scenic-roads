@@ -1,6 +1,7 @@
 // Aggregate per-cell quantile sketches of the tiles in view into view statistics.
-import { CELLS, CLASS_GROUP, EQ, GQ, NCLASS, NSG } from '../config';
+import { CELLS, CLASS_GROUP, EQ, GQ, NCLASS, NGROUP, NSG } from '../config';
 import { RoadLayer, type RoadTile } from './layer';
+import type { DecodedTile } from './types';
 
 export interface Extreme {
   elev: number;
@@ -13,7 +14,11 @@ export interface ViewStats {
   totalKm: number;
   /** Paved / unpaved km of the enabled classes, regardless of the surface filter. */
   surfaceKm: [number, number];
+  /** Toll-free, toll km in view (roads). */
+  tollKm: [number, number];
   classKm: number[];
+  /** Unnamed roads per group (km, shown or not), of the enabled classes and surfaces. */
+  unnamedKm: number[];
   /** Merged elevation distribution: `bins` over [lo, hi]. */
   elev: Dist | null;
   grade: Dist | null;
@@ -107,10 +112,35 @@ function merge(sketches: { q: Float32Array; off: number; w: number }[], nq: numb
   return new Dist(lo, hi, out, total);
 }
 
-export function viewStats(layer: RoadLayer, groupMask: number, classMask: number, surfaceMask = 3): ViewStats {
+/** Road length (m) of clen entry `k` whose whole road is `lenRange` long (m, inclusive). */
+function lenIn(d: DecodedTile, k: number, lenRange: [number, number] | null): number {
+  if (!lenRange) return d.clen[k];
+  const lo = d.rlStart[k], hi = d.rlStart[k + 1];
+  if (lo === hi) return 0;
+  // First entry with road length ≥ x (or > x), by binary search within the run.
+  const find = (x: number, strict: boolean) => {
+    let a = lo, b = hi;
+    while (a < b) {
+      const m = (a + b) >> 1;
+      if (strict ? d.rlRoad[m] <= x : d.rlRoad[m] < x) a = m + 1;
+      else b = m;
+    }
+    return a;
+  };
+  return d.rlCum[find(lenRange[1], true)] - d.rlCum[find(lenRange[0], false)];
+}
+
+/** `unnamedHide`: groups (bits) whose unnamed roads are hidden. `lenRange`: whole-road length
+ * filter (m) and `tollMask` (bit 0 toll-free, bit 1 toll) for the km counts; the elevation /
+ * grade distributions ignore both. The surface and toll km count either side of their own
+ * toggle (what turning it on would show) within the other filters. */
+export function viewStats(layer: RoadLayer, groupMask: number, classMask: number, surfaceMask = 3, unnamedHide = 0,
+                          lenRange: [number, number] | null = null, tollMask = 3): ViewStats {
   const tiles = layer.viewTiles();
   const classKm = new Array(NCLASS).fill(0);
+  const unnamedKm = new Array(NGROUP).fill(0);
   const surfaceKm: [number, number] = [0, 0];
+  const tollKm: [number, number] = [0, 0];
   const eS: { q: Float32Array; off: number; w: number }[] = [];
   const gS: { q: Float32Array; off: number; w: number }[] = [];
   let elo = Infinity, ehi = -Infinity;
@@ -128,14 +158,24 @@ export function viewStats(layer: RoadLayer, groupMask: number, classMask: number
         cells++;
         for (let k = 0; k < NCLASS; k++) {
           if (!((classMask >> k) & 1)) continue;
+          const g = CLASS_GROUP[k];
           for (let u = 0; u < 2; u++) {
-            const km = d.clen[(cell * NCLASS + k) * 2 + u] / 1000;
-            surfaceKm[u] += km;
-            if ((surfaceMask >> u) & 1) classKm[k] += km;
+            for (let un = 0; un < 2; un++) {
+              for (let tl = 0; tl < 2; tl++) {
+                const km = lenIn(d, (((cell * NCLASS + k) * 2 + u) * 2 + un) * 2 + tl, lenRange) / 1000;
+                const su = (surfaceMask >> u) & 1, to = (tollMask >> tl) & 1;
+                if (un && su && to) unnamedKm[g] += km;
+                if (un && (unnamedHide >> g) & 1) continue;
+                if (to) surfaceKm[u] += km;
+                if (su) tollKm[tl] += km;
+                if (su && to) classKm[k] += km;
+              }
+            }
           }
         }
         for (let sg = 0; sg < NSG; sg++) {
-          if (!((groupMask >> (sg >> 1)) & 1) || !((surfaceMask >> (sg & 1)) & 1)) continue;
+          const g = sg >> 2, u = (sg >> 1) & 1, un = sg & 1;
+          if (!((groupMask >> g) & 1) || !((surfaceMask >> u) & 1) || (un && (unnamedHide >> g) & 1)) continue;
           const cg = cell * NSG + sg;
           const w = d.glen[cg];
           if (!(w > 0)) continue;
@@ -160,7 +200,9 @@ export function viewStats(layer: RoadLayer, groupMask: number, classMask: number
   return {
     totalKm: classKm.reduce((a, b) => a + b, 0),
     surfaceKm,
+    tollKm,
     classKm,
+    unnamedKm,
     elev: merge(eS, EQ, elo, ehi === elo ? elo + 1 : ehi),
     grade: merge(gS, GQ, 0, 40),
     highest,

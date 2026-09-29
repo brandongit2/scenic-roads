@@ -1,10 +1,11 @@
-// Colour modes, scenic score components, weights and presets.
+// Colour modes and scenic score components (weight presets: presets.ts).
 // Component normalisation must match crates/server/src/drives.rs.
 
 export type Mode =
   | 'elev' | 'grade' | 'relief'
   | 'score' | 'view' | 'water' | 'vista' | 'drama' | 'ridge' | 'curvy'
-  | 'openness' | 'trees' | 'forest' | 'fields' | 'built';
+  | 'openness' | 'trees' | 'forest' | 'fields' | 'built' | 'bldg'
+  | 'map';
 
 export interface ModeDef {
   key: Mode;
@@ -49,7 +50,11 @@ export const MODES: ModeDef[] = [
   { key: 'forest', label: 'Forest cover', short: 'Forest', id: 12, unit: '%', range: [0, 100], auto: false, domain: [0, 100], thrDefault: 50, step: 1, help: 'Share of land within 150 m under trees taller than 5 m.', fmt: (v) => `${n0(v)} %` },
   { key: 'fields', label: 'Open land', short: 'Fields', id: 13, unit: '%', range: [0, 100], auto: false, domain: [0, 100], thrDefault: 30, step: 1, help: 'Fields, meadows and bare land within 1 km (pastoral views).', fmt: (v) => `${n0(v)} %` },
   { key: 'built', label: 'Built-up', short: 'Built', id: 14, unit: '%', range: [0, 100], auto: false, domain: [0, 100], thrDefault: 20, step: 1, help: 'Built-up land within 500 m.', fmt: (v) => `${n0(v)} %` },
+  { key: 'bldg', label: 'Roadside buildings', short: 'Buildings', id: 15, unit: '%', range: [0, 100], auto: false, domain: [0, 100], thrDefault: 25, step: 1, help: 'Share of the road frontage (both sides, ±50 m) lined with buildings within 30 m, fading out at 80 m. Heights are not counted.', fmt: (v) => `${n0(v)} %` },
+  { key: 'map', label: 'Street map', short: 'Map', id: 20, unit: '', range: [0, 1], auto: false, domain: [0, 1], thrDefault: 0, step: 1, help: 'Roads as on a street map: fixed colours by road size, route network or attribute.', fmt: () => '' },
 ];
+/** Scenic metrics (the "Scenic" display type). */
+export const isScenic = (m: ModeDef) => m.id >= 3 && m.id < 20;
 
 export const modeDef = (k: Mode) => MODES.find((m) => m.key === k) ?? MODES[0];
 
@@ -59,41 +64,32 @@ export interface Component {
   key: string;
   label: string;
   help: string;
+  /** Weight for presets saved before this factor existed (else 0). */
+  def?: number;
+  /** Measured factors (not yes/no flags): short label, unit and value (a number) for the hover bars. */
+  bar?: { short: string; unit: string; text: (ch: ArrayLike<number>) => string };
 }
 
+const signed = (v: number) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${n0(Math.abs(v))}`;
+const area = (v: number) => (v < 1 ? v.toFixed(2) : v < 10 ? v.toFixed(1) : n0(v));
+
 export const COMPONENTS: Component[] = [
-  { key: 'views', label: 'Views', help: 'Visible area (trees & terrain block the view)' },
-  { key: 'water', label: 'Water in view', help: 'Visible lake / river / sea area' },
-  { key: 'vista', label: 'Long vistas', help: 'Farthest visible distance' },
-  { key: 'relief', label: 'Mountains', help: 'Terrain relief within 3 km' },
-  { key: 'ridge', label: 'Ridge roads', help: 'Road above its surroundings' },
-  { key: 'curvy', label: 'Twisty', help: 'Curvature' },
-  { key: 'unblocked', label: 'No tree walls', help: 'Not enclosed by roadside trees / cuts' },
-  { key: 'forest', label: 'Forest', help: 'Forest cover (foliage); negative = prefer open country' },
-  { key: 'fields', label: 'Farmland', help: 'Open fields & meadows nearby' },
-  { key: 'built', label: 'Built-up', help: 'Towns nearby (negative = away from towns)' },
+  { key: 'views', label: 'Views', help: 'Visible area (trees & terrain block the view)', bar: { short: 'Views', unit: 'km²', text: (c) => area(u8Area(c[0])) } },
+  { key: 'water', label: 'Water in view', help: 'Visible lake / river / sea area', bar: { short: 'Water', unit: 'km²', text: (c) => area(u8Area(c[1])) } },
+  { key: 'vista', label: 'Long vistas', help: 'Farthest visible distance (full at 15 km)', bar: { short: 'Vista', unit: 'km', text: (c) => (c[8] / 17).toFixed(1) } },
+  { key: 'relief', label: 'Mountains', help: 'Terrain relief within 3 km (full at 600 m)', bar: { short: 'Mountains', unit: 'm', text: (c) => n0(c[2] * 3) } },
+  { key: 'ridge', label: 'Ridge roads', help: 'Road above its surroundings (full at +60 m)', bar: { short: 'Ridge', unit: 'm', text: (c) => signed((c[3] - 128) * 2) } },
+  { key: 'curvy', label: 'Twisty', help: 'Curvature (full at 400 °/km)', bar: { short: 'Twisty', unit: '°/km', text: (c) => n0(c[4] * 4) } },
+  { key: 'unblocked', label: 'No tree walls', help: 'Not enclosed by roadside trees / cuts', bar: { short: 'Open', unit: '%', text: (c) => n0(100 - c[5] / 2.55) } },
+  { key: 'forest', label: 'Forest', help: 'Forest cover (foliage); negative = prefer open country', bar: { short: 'Forest', unit: '%', text: (c) => n0(c[10] / 2.55) } },
+  { key: 'built', label: 'Built-up', help: 'Towns nearby (negative = away from towns)', bar: { short: 'Built-up', unit: '%', text: (c) => n0(c[6] / 2.55) } },
+  { key: 'bldg', label: 'Roadside buildings', def: -1, help: 'Buildings lining the road, the closer together the more (negative = away from villages and strip development)', bar: { short: 'Buildings', unit: '%', text: (c) => n0(c[12] / 2.55) } },
   { key: 'route', label: 'Scenic route', help: 'Designated byway / route touristique' },
   { key: 'viewpoint', label: 'Viewpoints', help: 'Mapped viewpoint within 1 km' },
-  { key: 'waterfront', label: 'Waterfront', help: 'Water within 100 m' },
-  { key: 'park', label: 'Parks', help: 'Inside a park or protected area' },
-  { key: 'heritage', label: 'Heritage', help: 'Designated heritage site within 500 m' },
-  { key: 'special', label: 'UNESCO / dark sky', help: 'Biosphere reserve, geopark or dark-sky preserve' },
 ];
 export const NCOMP = COMPONENTS.length;
 
-export const PRESETS: Record<string, { label: string; w: number[] }> = {
-  balanced: { label: 'Balanced', w: [1, 1, 0.5, 0.8, 0.3, 0.6, 0.6, 0, 0, 0, 0.5, 0.4, 0.4, 0, 0, 0] },
-  vistas: { label: 'Big vistas', w: [1.5, 0.6, 1.2, 0.6, 0.8, 0.1, 1, -0.2, 0.2, -0.3, 0.3, 0.6, 0.2, 0, 0, 0] },
-  water: { label: 'Lakes & coast', w: [0.5, 1.6, 0.4, 0.2, 0, 0.3, 0.6, 0, 0, -0.2, 0.3, 0.3, 1.2, 0, 0, 0] },
-  mountains: { label: 'Mountains', w: [0.8, 0.3, 0.6, 1.6, 0.6, 0.6, 0.4, 0, 0, -0.3, 0.3, 0.4, 0.1, 0.2, 0, 0] },
-  twisty: { label: 'Twisty', w: [0.4, 0.2, 0.2, 0.6, 0, 2, 0.2, 0, 0, -0.5, 0.2, 0, 0, 0, 0, 0] },
-  foliage: { label: 'Foliage', w: [0.3, 0.3, 0.1, 0.6, 0, 0.5, -0.2, 1.4, 0.2, -0.6, 0.4, 0.2, 0.2, 0.3, 0, 0] },
-  backroads: { label: 'Quiet backroads', w: [0.6, 0.5, 0.3, 0.5, 0.2, 0.5, 0.4, 0.2, 0.6, -1.2, 0.2, 0.2, 0.2, 0.3, 0, 0] },
-  culture: { label: 'Heritage', w: [0.5, 0.5, 0.2, 0.3, 0, 0.2, 0.3, 0, 0.3, 0, 0.8, 0.4, 0.3, 0.3, 1.5, 0.5] },
-};
-export const DEFAULT_WEIGHTS = PRESETS.balanced.w;
-
-/** Components from the 12 channel bytes (see roadcore::scenic::ch). */
+/** Components (0..1, COMPONENTS order) from the 13 channel bytes (see roadcore::scenic::ch). */
 export function components(ch: ArrayLike<number>): number[] {
   const f = ch[7];
   const b = (m: number) => ((f & m) !== 0 ? 1 : 0);
@@ -106,10 +102,25 @@ export function components(ch: ArrayLike<number>): number[] {
     Math.min(1, (ch[4] * 4) / 400),
     1 - ch[5] / 255,
     ch[10] / 255,
-    ch[9] / 255,
     ch[6] / 255,
-    b(1), b(4), b(8), b(2), b(16), b(64),
+    (ch[12] ?? 0) / 255,
+    b(1), b(4),
   ];
+}
+
+/**
+ * Older weight lists → the current 12: 16 values (before waterfront, parks, heritage,
+ * UNESCO/dark-sky and farmland were dropped from the score), 11 (before roadside buildings, which
+ * then weigh −1).
+ */
+export function migrateWeights(w: unknown): number[] | null {
+  if (!Array.isArray(w) || !w.every((v) => typeof v === 'number' && Number.isFinite(v))) return null;
+  if (w.length === NCOMP) return w as number[];
+  const bldg = COMPONENTS.findIndex((c) => c.key === 'bldg');
+  const add = (v: number[]) => [...v.slice(0, bldg), COMPONENTS[bldg].def ?? 0, ...v.slice(bldg)];
+  if (w.length === 11) return add(w as number[]);
+  if (w.length === 16) return add([0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11].map((i) => w[i] as number));
+  return null;
 }
 
 export function scoreOf(ch: ArrayLike<number>, w: number[]): number {
@@ -151,6 +162,10 @@ export function metricOf(mode: Mode, elevM: number, gradePct: number, ch: ArrayL
       return ch[9] / 2.55;
     case 'built':
       return ch[6] / 2.55;
+    case 'bldg':
+      return (ch[12] ?? 0) / 2.55;
+    case 'map':
+      return 0;
   }
 }
 

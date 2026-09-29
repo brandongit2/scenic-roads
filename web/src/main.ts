@@ -5,27 +5,39 @@ import { Protocol } from 'pmtiles';
 // MapLibre resolves its worker at runtime, which bundlers can't see; bundle it explicitly.
 import mlWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import './style.css';
-import { getProfile, getWay, type Drive, type Meta, type Profile, type WayInfo } from './api';
-import { baseStyle, LAYER_GROUPS } from './basemap';
-import { AREA_LAYERS, Overlays, POINT_LAYERS } from './overlays';
+import { getProfile, getRoadWays, getWay, roadWays, setVersions, ver, type Drive, type Meta, type Profile, type Ride, type WayInfo } from './api';
+import { applyOverlayOpacity, baseStyle, LABEL_LAYERS, LAYER_GROUPS, overlayLabelScale, partIds } from './basemap';
+import { areaLayers, Overlays, POINT_LAYERS, withDetails } from './overlays';
+import { loadDetail, peekDetail, refKey } from './details';
 import { paletteRgb } from './palettes';
-import { RoadLayer, type HoverInfo } from './roads/layer';
+import { RoadLayer, type HoverInfo, type RoadStyle, type SchemeUniforms } from './roads/layer';
+import { CASING_CLASSES_MASK, RAIL0, RAIL_GROUPS } from './config';
+import { mapScheme, rgb, schemeUniforms } from './mapschemes';
+import { RAIL_GROUP_COLOURS, railMetricDef, railMetricOf } from './rail';
+import type { FeatureSummary } from './overlays';
+import { RailCard } from './ui/rail';
+import { FerryCard } from './ui/ferry';
+import { Ferries } from './ferries';
+import { ferryMetricDef } from './ferry';
+import { cdfOf, passes, scaleU } from './ui/scale';
+import { applyTrees } from './trees';
 import { distFromSamples, viewStats, type Dist, type Extreme, type ViewStats } from './roads/stats';
-import { FLAG_LABELS, metricOf, modeDef, u8Area } from './scenic';
+import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
-import { Store, classMask, fromHash, fromSaved, groupMask, surfaceMask, toHash } from './state';
+import { Store, classMask, defaults, labelShown, fromHash, fromSaved, groupMask, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Stretch } from './state';
 import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyTerrain, applyTint, tintCss, tintRange, type TintContext } from './terrain';
 import { installTrackpad } from './trackpad';
 import { Boot } from './ui/boot';
-import { ClimbsPane, type Climb } from './ui/climbs';
 import { ColourCard } from './ui/colour';
 import { fmt, h, toast } from './ui/dom';
 import { DrivesPane } from './ui/drives';
 import { LayersCard } from './ui/layers';
 import { NavControls } from './ui/nav';
 import { ProfilePanel } from './ui/profile';
-import { StatsCard } from './ui/stats';
+import { StatsCard, type InViewExtra, type ViewPlace } from './ui/stats';
+import { SightsPane } from './ui/sights';
+import { LinesPane, RidesPane } from './ui/rides';
 import { Strip } from './ui/strip';
 import { ViewshedTool } from './ui/viewshed';
 
@@ -45,6 +57,7 @@ async function main() {
     const r = await fetch('/api/meta');
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     meta = await r.json();
+    setVersions(meta.versions);
   } catch (e) {
     boot.fail(0, `backend not reachable (${(e as Error).message})`);
     return;
@@ -59,7 +72,7 @@ async function main() {
   const v = store.s.view;
   const map = new maplibregl.Map({
     container: 'map',
-    style: baseStyle(location.origin),
+    style: baseStyle(location.origin, meta.baseParts ?? []),
     center: v ? [v.lng, v.lat] : [-70, 46],
     zoom: v ? v.zoom : 5,
     bearing: v?.bearing ?? 0,
@@ -74,32 +87,57 @@ async function main() {
     renderWorldCopies: false,
     fadeDuration: 120,
     // The camera does not ride up and down with the terrain under the view centre.
-    centerClampedToGround: store.s.terrain.cameraFollow,
+    centerClampedToGround: false,
   });
-  unlinkCameraFromTerrain(map, () => store.s.terrain.cameraFollow);
-  if (v?.elev && !store.s.terrain.cameraFollow) map.jumpTo({ elevation: v.elev });
+  unlinkCameraFromTerrain(map);
+  if (v?.elev) map.jumpTo({ elevation: v.elev });
   // Once the terrain is ready, set the pivot for the view (camera fixed; see camera3d.relevel).
   const levelOnce = () => {
     if (map.queryTerrainElevation(map.getCenter()) === null) return;
     map.off('idle', levelOnce);
     cam3d.relevel(map);
   };
-  if (!store.s.terrain.cameraFollow && store.s.terrain.on) map.on('idle', levelOnce);
+  if (store.s.terrain.on) map.on('idle', levelOnce);
   if (!v) {
-    map.fitBounds([[-80.6, 40.4], [-52.6, 51.8]], { duration: 0, padding: { top: 20, bottom: 90, left: 340, right: 290 } });
+    map.fitBounds([[-80.6, 40.4], [-52.6, 51.8]], { duration: 0, padding: { top: 20, bottom: 20, left: 340, right: 20 } });
     // 3D terrain is on by default: start with a gentle tilt so it shows.
     if (store.s.terrain.on) map.jumpTo({ pitch: 40 });
   }
-  installTrackpad(map);
+  const cameraControls = installTrackpad(map);
+  // The view has settled: no camera change for SETTLE_MS. The trackpad camera moves by jumpTo, so
+  // MapLibre fires movestart / moveend around every wheel event (60–120 a second in a gesture):
+  // work that follows the view (in-view summaries, lists, the link) waits for this instead.
+  const SETTLE_MS = 160;
+  const settledFns: (() => void)[] = [];
+  const onSettled = (f: () => void) => settledFns.push(f);
+  let settleTimer = 0;
+  let moving = false;
+  let quiet = false; // camera changes that don't move the view (re-levelling the pivot)
+  map.on('move', () => {
+    if (quiet) return;
+    moving = true;
+    clearTimeout(settleTimer);
+    settleTimer = window.setTimeout(() => {
+      moving = false;
+      for (const f of settledFns) f();
+    }, SETTLE_MS);
+  });
+  // Depth precision on the globe (see cam3d.tuneDepth): before every frame the camera moved for.
+  map.on('move', () => cam3d.tuneDepth(map));
+  map.on('load', () => cam3d.tuneDepth(map));
+  map.on('terrain', () => cam3d.tuneDepth(map));
 
   // ---- road layer & range animation ----------------------------------------------
   const s0 = store.s;
   const roads = new RoadLayer({
+    freqFilter: { on: false, min: 0, max: 0, unknown: true },
     mode: s0.mode,
     palette: s0.palette,
     range: [...s0.range] as [number, number],
     classMask: classMask(s0),
     surfaceMask: surfaceMask(s0),
+    tollMask: tollMask(s0),
+    unnamedHide: unnamedHideClasses(s0),
     weight: s0.weight,
     threshold: { ...s0.threshold },
     visible: s0.layers.roads,
@@ -110,16 +148,135 @@ async function main() {
     exaggeration: s0.terrain.exaggeration,
     lowFade: s0.lowFade,
     lowSpan: s0.lowSpan,
-    perspective: s0.perspective,
-    blendOverlaps: s0.blendOverlaps,
+    occlude: s0.occlude,
+    lenMin: roadLenM(s0)[0],
+    lenMax: roadLenM(s0)[1],
+    direct: 0,
+    scheme: null,
+    single: [1, 1, 1],
+    modeId: null,
+    railMask: 0,
+    railWeights: [],
+    pattern: 0,
+    casingMask: CASING_CLASSES_MASK,
   });
   roads.bounds = meta.bounds;
   roads.version = String(meta.built);
+  // Street-map colours (Map display type), rebuilt when the scheme changes.
+  let schemeKey = '';
+  let schemeU: SchemeUniforms | null = null;
+  const applyMapMode = (s: AppState) => {
+    const st = roads.style;
+    const on = s.mode === 'map';
+    if (on && schemeKey !== s.mapScheme) {
+      schemeKey = s.mapScheme;
+      schemeU = schemeUniforms(mapScheme(s.mapScheme));
+    }
+    st.direct = on ? 1 : 0;
+    st.scheme = on ? schemeU : null;
+    // Street maps case every road when zoomed in.
+    st.casingMask = on ? 0x1ff : CASING_CLASSES_MASK;
+  };
+  applyMapMode(s0);
+
+  // ---- passenger rail -------------------------------------------------------------
+  const railScheme: SchemeUniforms = (() => {
+    const u = schemeUniforms(mapScheme('mono'));
+    RAIL_GROUP_COLOURS.forEach((c, k) => {
+      u.classCol.set(rgb(c), (RAIL0 + k) * 3);
+      u.classCas.set(rgb('#07090c'), (RAIL0 + k) * 3);
+    });
+    return u;
+  })();
+  const rails = new RoadLayer(
+    { ...roads.style, classMask: 0x7c00, surfaceMask: 3, tollMask: 3, unnamedHide: 0, threshold: { on: false, dir: 'above', value: 0 }, routeGlow: false, lenMin: 0, lenMax: Infinity, equalize: false },
+    {
+      id: 'rails',
+      rail: true,
+      metric: (_st, e, g, ch, ground, style, fq) =>
+        railMetricOf(store.s.rail.metric, { elev: e, grade: g, ground, bridge: (style & 96) === 32, tunnel: (style & 64) !== 0, ch, freq: fq }, store.s.rail.weights),
+    },
+  );
+  rails.bounds = meta.bounds;
+  rails.version = String(meta.built);
+  // The tilted tile cover unprojects onto the terrain (not the camera pivot's level).
+  roads.groundSamples = rails.groundSamples = (pts) => cam3d.coverSamples(map, pts);
+  let railCur: [number, number] = [...s0.rail.range] as [number, number];
+  // Rail equalisation lookup (from the rail distribution in view), when on.
+  let railCdf: Uint8Array | null = null;
+  let railCdfKey = '';
+  const applyRailStyle = (s: AppState) => {
+    const r = s.rail, st: RoadStyle = rails.style;
+    st.visible = r.on;
+    st.railMask = railMask(s);
+    st.direct = r.colour === 'line' ? 2 : r.colour === 'group' ? 3 : r.colour === 'single' ? 4 : 0;
+    st.scheme = railScheme;
+    st.single = rgb(r.single);
+    st.modeId = railMetricDef(r.metric).id;
+    st.palette = r.palette;
+    st.railWeights = [...r.weights];
+    st.freqFilter = { on: r.freqOn, min: r.freqMin, max: r.freqMax, unknown: r.freqUnknown };
+    // Map → Line weight scales rail too (relative to its default), on top of the rail card's own.
+    st.weight = r.weight * (s.weight / defaults.weight);
+    st.pattern = r.ties ? 1 : 0;
+    st.casingMask = r.casing ? 0x7c00 : 0;
+    const metric = r.colour === 'metric';
+    st.lowFade = metric ? r.lowFade : 0;
+    st.lowSpan = r.lowSpan;
+    st.equalize = metric && r.equalize;
+    st.threshold = metric ? { ...r.threshold } : { on: false, dir: 'above', value: 0 };
+    st.terrain3d = s.terrain.on;
+    st.exaggeration = s.terrain.exaggeration;
+    st.occlude = s.occlude;
+    st.range = railCur;
+  };
+  applyRailStyle(s0);
+  // Rail service frequency per way (railfreq): sorted way indices and trains a day each way.
+  let railFreqLoading = false;
+  const loadRailFreq = () => {
+    if (railFreqLoading) return;
+    railFreqLoading = true;
+    fetch(`/api/railfreq${ver('rail-freq.bin')}`)
+      .then((r) => (r.ok ? r.arrayBuffer() : null))
+      .then((b) => {
+        if (!b || b.byteLength < 8) return;
+        const n = b.byteLength / 8;
+        const dv = new DataView(b);
+        // Negative: a lower bound (MTR lines with only published headways).
+        const ways = new Uint32Array(n), vals = new Float32Array(n);
+        for (let i = 0; i < n; i++) {
+          ways[i] = dv.getUint32(i * 8, true);
+          vals[i] = dv.getFloat32(i * 8 + 4, true);
+        }
+        const find = (w: number) => {
+          let lo = 0, hi = n - 1;
+          while (lo <= hi) {
+            const m = (lo + hi) >> 1;
+            if (ways[m] < w) lo = m + 1;
+            else if (ways[m] > w) hi = m - 1;
+            else return m;
+          }
+          return -1;
+        };
+        rails.setLineValues((w) => {
+          const i = find(w);
+          return i < 0 ? -1 : Math.abs(vals[i]);
+        }, (w) => {
+          const i = find(w);
+          return i >= 0 && vals[i] < 0;
+        });
+      })
+      .catch(() => (railFreqLoading = false));
+  };
+  if (s0.rail.on) loadRailFreq();
 
   let stats: ViewStats | null = null;
+  let railStats: ViewStats | null = null;
+  /** Distribution of the rail colour metric over rail in view. */
+  let railDist: Dist | null = null;
   /** Distribution of the current colour metric over roads in view. */
   let mdist: Dist | null = null;
-  let extraRows: [string, string, string?][] = [];
+  let viewExtra: InViewExtra = {};
   let statsDirty = true;
   let lastStats = 0;
   let cur: [number, number] = [...s0.range] as [number, number];
@@ -146,12 +303,15 @@ async function main() {
     return [lo, hi];
   };
 
-  const computeStats = () => {
+  /** The In view statistics; `full`: also the summaries that need a settled view (landmarks,
+   * summit, ferries, busiest line), which are kept from the last settle while moving. */
+  const computeStats = (full = true) => {
     const s = store.s;
-    stats = viewStats(roads, groupMask(s), classMask(s), surfaceMask(s));
+    const lr = roadLenM(s);
+    stats = viewStats(roads, groupMask(s), classMask(s), surfaceMask(s), unnamedHideGroups(s), lr[0] > 0 || lr[1] < Infinity ? lr : null, tollMask(s));
     const d = modeDef(s.mode);
     // Scenic summary for the stats card + the current metric's distribution, in one pass.
-    const modes = ['score', 'openness', 'trees', 'vista'] as const;
+    const modes = ['score', 'openness', 'trees', 'vista', 'bldg'] as const;
     const scenicMode = d.id >= 3 && !(modes as readonly string[]).includes(s.mode) ? [s.mode] : [];
     const smp = roads.metricSamples([...modes, ...scenicMode], s.weights, 90_000);
     const dists = modes.map((m, i) => distFromSamples(smp.v[i], smp.w, ...modeDef(m).domain));
@@ -161,15 +321,37 @@ async function main() {
       const i = (modes as readonly string[]).indexOf(s.mode);
       mdist = i >= 0 ? dists[i] : distFromSamples(smp.v[modes.length], smp.w, ...d.domain);
     }
-    const [sc, op, tr, vi] = dists;
-    extraRows = sc && sc.total > 0
-      ? [
-          ['Scenic score', `${sc.quantile(0.5).toFixed(0)} median · ${sc.quantile(0.9).toFixed(0)} p90`, 'With the current weights (Colour → Scenic → Score)'],
-          ['Open views', `${((op?.above(50) ?? 0) * 100).toFixed(0)} % of length`, 'Share of road length where at least half the directions are not blocked by trees or terrain within 300 m'],
-          ['Roadside trees', `${tr?.quantile(0.5).toFixed(0)} m median`, 'Typical tree height within 30 m of the road (Meta/WRI canopy height)'],
-          ['Vista distance', `${vi?.quantile(0.5).toFixed(1)} km median · ${vi?.quantile(0.9).toFixed(1)} p90`],
-        ]
-      : [];
+    // Rail: km per service group, and the colour metric's distribution.
+    const r = s.rail;
+    railStats = r.on ? viewStats(rails, 31, 0x7c00, 3, 0, null) : null;
+    if (r.on && r.colour === 'metric') {
+      const rd = railMetricDef(r.metric);
+      const smpR = rails.sampleWith([(e, g, ch, ground, style, fq) =>
+        railMetricOf(r.metric, { elev: e, grade: g, ground, bridge: (style & 96) === 32, tunnel: (style & 64) !== 0, ch, freq: fq }, r.weights)]);
+      // Lines without a timetable have no frequency (NaN): left out of the distribution.
+      const keep = smpR.v[0].map((v) => (Number.isNaN(v) ? 0 : 1));
+      const vv = smpR.v[0].filter((_, i) => keep[i]), ww = smpR.w.filter((_, i) => keep[i]);
+      railDist = distFromSamples(vv, ww, ...rd.domain);
+    } else railDist = null;
+    const [sc, , , vi] = dists;
+    viewExtra = full ? inViewExtra(sc, vi) : { ...viewExtra, ...scenicExtra(sc, vi) };
+  };
+
+  const updateRailCdf = () => {
+    const r = store.s.rail;
+    if (!r.equalize || r.colour !== 'metric' || !railDist || railDist.total <= 0) {
+      if (railCdf) {
+        railCdf = null;
+        railCdfKey = '';
+        rails.setCdf(null);
+      }
+      return;
+    }
+    const key = `${r.metric}|${railCur[0].toFixed(3)}|${railCur[1].toFixed(3)}|${railDist.total.toFixed(0)}`;
+    if (key === railCdfKey) return;
+    railCdfKey = key;
+    railCdf = cdfOf(railDist, railCur);
+    rails.setCdf(railCdf);
   };
 
   const updateCdf = () => {
@@ -235,28 +417,121 @@ async function main() {
   const colour = new ColourCard(
     document.getElementById('colour')!,
     store,
-    `Ontario · Québec · Atlantic Canada · New York · New England<br>` +
+    `Canada · Saint-Pierre-et-Miquelon · New York · New England · France · Britain & Ireland · Channel Islands · Iberia · Hong Kong<br>` +
       `${fmt.n(km)} km of drivable public road · ${(meta.vertices / 1e6).toFixed(0)} M elevation samples ` +
-      `(${pct(meta.dem.hrdem)} % lidar, ${pct(meta.dem.usgs3dep)} % 3DEP, ${pct(meta.dem.mrdem)} % MRDEM)`,
+      `(${pct(meta.dem.hrdem)} % lidar, ${pct(meta.dem.usgs3dep)} % 3DEP, ${pct(meta.dem.mrdem)} % MRDEM, ${pct(meta.dem.fabdem ?? 0)} % FABDEM)`,
   );
+  const railCard = new RailCard(store);
+  document.getElementById('colour')!.append(railCard.el);
+  const ferryCard = new FerryCard(store);
+  document.getElementById('colour')!.append(ferryCard.el);
+  // Palette previews while hovering a ramp list (null: back to the chosen palette).
+  colour.onPalettePreview = (k) => {
+    roads.style.palette = k ?? store.s.palette;
+    map.triggerRepaint();
+  };
+  railCard.onPalettePreview = (k) => {
+    rails.style.palette = k ?? store.s.rail.palette;
+    map.triggerRepaint();
+  };
+  ferryCard.onPalettePreview = (k) => ferries.apply(k ? { ...store.s, ferry: { ...store.s.ferry, palette: k } } : store.s);
   const layers = new LayersCard(document.getElementById('layers')!, store);
   wireTintPreview();
   const statsEl = document.getElementById('stats')!;
   const statsCard = new StatsCard(statsEl);
-  // The layers card fills the height the stats card leaves free.
-  new ResizeObserver(() => document.documentElement.style.setProperty('--stats-h', `${statsEl.offsetHeight + 12}px`)).observe(statsEl);
-  const climbs = new ClimbsPane(statsCard.climbsRoot);
   const drives = new DrivesPane(statsCard.drivesRoot);
-  const strip = new Strip(document.getElementById('strip')!, map);
+  const sights = new SightsPane(statsCard.sightsRoot);
+  const rides = new RidesPane(statsCard.ridesRoot);
+  const lines = new LinesPane(statsCard.linesRoot);
+  const strip = new Strip(document.getElementById('strip')!, map, () => store.s.weights);
+  strip.railWeights = () => store.s.rail.weights;
   const profile = new ProfilePanel(document.getElementById('profile')!);
-  new NavControls(document.getElementById('nav')!, map, store);
+  new NavControls(document.getElementById('nav')!, map, store, cameraControls);
   const viewshed = new ViewshedTool(document.getElementById('viewshed')!, map);
   const overlays = new Overlays(map, layers);
+  overlays.onScale = (dist, range, cdf) => layers.lmScale.update(dist, range, cdf);
+  overlays.onView = () => {
+    markDirty();
+    sights.refresh();
+  };
+  sights.kinds = () => overlays.viewLandmarks.filter((l) => store.s.overlays[l.key]);
+  sights.query = (k) => overlays.topInView(k);
+  sights.onSelect = (x) => overlays.openAt(x.lngLat, x.layer);
+  sights.onHover = (x) => {
+    marks.high = x ? point(x.lngLat, 'high') : null;
+    setMarks();
+  };
+  /** The In view summary beyond roads: rail and ferries, landmarks and terrain (each while shown). */
+  const scenicExtra = (sc: Dist | null | undefined, vi: Dist | null | undefined): InViewExtra => ({
+    scenic: sc && sc.total > 0 ? [sc.quantile(0.5), sc.quantile(0.9)] : null,
+    vista: vi && vi.total > 0 ? [vi.quantile(0.5), vi.quantile(0.9)] : null,
+  });
+  const inViewExtra = (sc: Dist | null | undefined, vi: Dist | null | undefined): InViewExtra => {
+    const s = store.s;
+    const x: InViewExtra = scenicExtra(sc, vi);
+    if (s.rail.on && railStats) {
+      const groups = RAIL_GROUPS.map((g, k) => ({ label: g.label, colour: RAIL_GROUP_COLOURS[k], km: railStats!.classKm[RAIL0 + k] }));
+      const total = groups.reduce((a, g) => a + g.km, 0);
+      const b = rails.busiestInView();
+      x.rail = { total, groups, busiest: b ? { name: railName.get(b.way) ?? 'Rail line', perDay: b.perDay, lngLat: b.lngLat } : null, highest: railStats.highest };
+      if (b && !railName.has(b.way)) getWay(b.way).then((info) => {
+        // The line's name without a route's direction or service codes ("Highland Sleeper").
+        railName.set(b.way, (info?.name || '').split(':')[0].trim() || 'Rail line');
+        markDirty();
+      });
+    }
+    if (s.ferry.on) x.ferry = ferries.viewSummary();
+    const lms = overlays.viewLandmarks.filter((l) => s.overlays[l.key]);
+    if (lms.length) x.landmarks = lms;
+    const summit = overlays.summitInView();
+    const hi = Math.max(summit?.ele ?? -Infinity, stats?.highest?.elev ?? -Infinity);
+    const lo = stats?.lowest?.elev;
+    x.terrain = {
+      summit,
+      relief: Number.isFinite(hi) && lo !== undefined ? hi - lo : null,
+      above1000: stats?.elev ? stats.elev.above(1000) : null,
+    };
+    return x;
+  };
+  const railName = new Map<number, string>();
+  statsCard.onPlace = (pl: ViewPlace) => {
+    if (pl.layer) overlays.openAt(pl.lngLat, pl.layer);
+    else map.flyTo({ center: pl.lngLat, zoom: Math.max(map.getZoom(), 11), duration: 900 });
+  };
+  statsCard.onPlaceHover = (pl: ViewPlace | null) => {
+    marks.high = pl ? point(pl.lngLat, 'high') : null;
+    setMarks();
+  };
   profile.colour = () => ({ palette: store.s.palette, mode: store.s.mode, range: cur, weights: store.s.weights, cdf: store.s.equalize ? cdf : null });
   const progressEl = document.getElementById('progress')!;
   const progressBar = progressEl.querySelector<HTMLDivElement>('.bar')!;
   let overlayBusy: string | null = null;
   overlays.onBusy = (label) => (overlayBusy = label);
+  const ferries = new Ferries(map);
+  ferries.onBusy = (label) => (overlayBusy = label);
+  const updateFerries = () => {
+    if (!ferries.loaded || !store.s.ferry.on) {
+      layers.updateFerry(null);
+      ferryCard.update(null);
+      return;
+    }
+    const v = ferries.inView();
+    layers.updateFerry(v.km);
+    ferryCard.update(v.cov);
+    // The metric scale: distribution of the ferry lines in view, auto-fitted range, lookup.
+    const f = store.s.ferry;
+    const d = ferryMetricDef(f.metric);
+    const dist = ferries.metricDist();
+    const range: [number, number] = !f.auto ? f.range
+      : dist && dist.total > 0 ? spread(dist.quantile(f.fit[0] / 100), dist.quantile(f.fit[1] / 100), d.step * 4) : f.range;
+    const fcdf = f.equalize ? cdfOf(dist, range) : null;
+    ferries.setScale(range, fcdf);
+    ferryCard.updateScale(dist, range, fcdf);
+  };
+  ferries.onLoaded = updateFerries;
+  onSettled(updateFerries);
+  // Landmark prominence: the histogram (and an auto-fitted range) follow the landmarks in view.
+  onSettled(() => overlays.prominence(store.s));
 
   // Markers: profile cursor, highest / lowest road in view, viewshed eye.
   const marks: Record<string, GeoJSON.Feature | null> = { cursor: null, high: null, low: null, viewshed: null };
@@ -280,7 +555,8 @@ async function main() {
     setMarks();
   };
   statsCard.onFly = (x: Extreme) => {
-    map.flyTo({ center: x.lngLat, zoom: Math.max(map.getZoom(), 14), duration: 1200 });
+    const ll = maplibregl.LngLat.convert(x.lngLat);
+    map.flyTo({ ...cam3d.frame(map, ll, map.queryTerrainElevation(ll) ?? 0, Math.max(map.getZoom(), 14)), duration: 1200 });
     const kind = x === stats?.highest ? 'high' : 'low';
     marks[kind] = point(x.lngLat, kind, fmt.m(x.elev));
     setMarks();
@@ -289,87 +565,189 @@ async function main() {
       setMarks();
     }, 6000);
   };
-  const fitPad = { top: 80, bottom: 320, left: 360, right: 320 };
+  // The colour card covers the map's left side and the profile panel its bottom.
+  const fitPad = { top: 60, bottom: 270, left: 350, right: 60 };
+  /** fitBounds, but framed from the ground at the centre rather than from sea level (cam3d.frame). */
+  const fitGround = (b: maplibregl.LngLatBounds, padding: maplibregl.PaddingOptions, maxZoom?: number) => {
+    const cam = map.cameraForBounds(b, { padding, maxZoom, bearing: map.getBearing() }); // keep the bearing
+    if (!cam?.center || cam.zoom === undefined) return;
+    const ll = maplibregl.LngLat.convert(cam.center);
+    map.flyTo({ ...cam3d.frame(map, ll, map.queryTerrainElevation(ll) ?? 0, cam.zoom), duration: 900 });
+  };
   const bboxQuery = () => {
     const b = map.getBounds();
     return [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].map((x) => x.toFixed(5)).join(',');
   };
+  /** Outline of the ground in view, for the lists "in view" (scenic drives, climbs): the screen
+   * unprojected, up to where the ground gets too foreshortened to see (a pixel covering more than
+   * 4× the ground it covers at the centre). A tilted view is a trapezoid whose bounding box takes in
+   * far more (Portugal from Québec), and near the horizon a sliver of another continent can show. */
+  // Computed once per camera (several "in view" summaries ask for it), on the terrain-free globe or
+  // plane: map.unproject ray-marches the 3D terrain on the CPU, and a thousand of those per outline
+  // took most of the frame budget.
+  let outlineKey = '';
+  let outline: maplibregl.LngLat[] = [];
+  const groundOutline = (): maplibregl.LngLat[] => {
+    const c = map.getCanvas();
+    const W = c.clientWidth, H = c.clientHeight, N = 10;
+    const ctr = map.getCenter();
+    const key = `${W}x${H}|${ctr.lng.toFixed(6)},${ctr.lat.toFixed(6)}|${map.getZoom().toFixed(4)}|${map.getBearing().toFixed(2)}|${map.getPitch().toFixed(2)}|${map.getCenterElevation().toFixed(0)}`;
+    if (key === outlineKey) return outline;
+    type Tr = { screenPointToLocation?: (p: maplibregl.Point) => maplibregl.LngLat };
+    const m = map as unknown as { _camera?: { transform?: Tr }; transform?: Tr };
+    const tr = m._camera?.transform ?? m.transform;
+    const ground = (x: number, y: number) => {
+      const ll = tr?.screenPointToLocation ? tr.screenPointToLocation(new maplibregl.Point(x, y)) : map.unproject([x, y]);
+      return ll && Number.isFinite(ll.lng) && Number.isFinite(ll.lat) ? maplibregl.LngLat.convert(ll) : null;
+    };
+    const mpp = (x: number, y: number) => {
+      const a = ground(x, y), b = ground(x, y - 4);
+      return a && b ? a.distanceTo(b) / 4 : Infinity;
+    };
+    const limit = 4 * Math.max(1e-3, mpp(W / 2, H / 2));
+    // Highest usable point in each column (ground resolution only coarsens toward the horizon):
+    // a binary search up from the bottom edge.
+    const top = (x: number) => {
+      if (mpp(x, 4) <= limit) return 0;
+      let lo = 4, hi = H; // mpp(lo) > limit, mpp(hi) ≤ limit (or the bottom edge)
+      while (hi - lo > H / 64) {
+        const m = (lo + hi) / 2;
+        if (mpp(x, m) > limit) lo = m;
+        else hi = m;
+      }
+      return hi;
+    };
+    const xs = Array.from({ length: N + 1 }, (_, i) => (W * i) / N);
+    const tops = xs.map(top);
+    const pts: [number, number][] = [];
+    xs.forEach((x) => pts.push([x, H])); // bottom, left → right
+    for (let i = 1; i < N; i++) pts.push([W, H + ((tops[N] - H) * i) / N]); // right edge, up
+    for (let i = N; i >= 0; i--) pts.push([xs[i], tops[i]]); // top, right → left
+    for (let i = N - 1; i > 0; i--) pts.push([0, H + ((tops[0] - H) * i) / N]); // left edge, down
+    outlineKey = key;
+    outline = pts.map(([x, y]) => ground(x, y)).filter((ll): ll is maplibregl.LngLat => !!ll);
+    return outline;
+  };
+  const polyQuery = () => groundOutline().map((ll) => `${ll.lng.toFixed(4)},${ll.lat.toFixed(4)}`).join(',');
+  // Landmarks and ferries "in view" use the same outline (the bounding box of a globe or tilted
+  // view takes in far more: Toronto from northern British Columbia).
+  overlays.viewOutline = () => groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]);
+  ferries.viewOutline = overlays.viewOutline;
 
-  // Top climbs: live list for the view; hover highlights, click opens the profile.
-  let pinnedClimb: Climb | null = null;
-  const setClimb = (c: Climb | null) => map.getSource<GeoJSONSource>('climb')?.setData(line(c ? c.geom : null));
-  climbs.query = () => ({ bbox: bboxQuery(), classes: classMask(store.s), surface: surfaceMask(store.s) });
-  climbs.onHover = (c) => setClimb(c ?? pinnedClimb);
-  climbs.onSelect = (c) => {
-    pinnedClimb = c;
-    setClimb(c);
-    const g = c.geom;
-    profile.highlight({ start: g[0], end: g[g.length - 1], label: `Climb +${fmt.n(c.gain_m)} m · ${fmt.dist(c.length_m)} · ${c.avg_grade.toFixed(1)} %` });
-    store.set({ selected: c.way });
+  // A climb or scenic drive picked from a list is a stretch of the selected road (store.s.stretch,
+  // so links carry it). Its line on the map: the list's geometry, or, when it came from a link,
+  // the stretch cut out of the road's profile once loaded.
+  let pinned: [number, number][] | null = null;
+  let profileCoords: [number, number][] | null = null;
+  const cut = (coords: [number, number][], a: [number, number], b: [number, number]) => {
+    const near = (q: [number, number]) => {
+      const k = Math.cos((q[1] * Math.PI) / 180);
+      let best = 0, bd = Infinity;
+      coords.forEach((c, i) => {
+        const d = ((c[0] - q[0]) * k) ** 2 + (c[1] - q[1]) ** 2;
+        if (d < bd) [bd, best] = [d, i];
+      });
+      return best;
+    };
+    const [i, j] = [near(a), near(b)].sort((x, y) => x - y);
+    return coords.slice(i, j + 1);
+  };
+  const setClimb = (g: [number, number][] | null) => map.getSource<GeoJSONSource>('climb')?.setData(line(g));
+  const setDriveHl = (g: [number, number][] | null) => map.getSource<GeoJSONSource>('drive-hl')?.setData(line(g));
+  const drawStretch = () => {
+    const st = store.s.selected !== null ? store.s.stretch : null;
+    if (st && !pinned && profileCoords) pinned = cut(profileCoords, st.a, st.b);
+    setClimb(st?.kind === 'climb' ? pinned : null);
+    setDriveHl(st?.kind === 'drive' ? pinned : null);
+  };
+  const applyStretch = () => {
+    const st = store.s.selected !== null ? store.s.stretch : null;
+    if (!st) pinned = null;
+    profile.highlight(st ? { start: st.a, end: st.b, label: st.label } : null);
+    drawStretch();
+  };
+  const driveStretch = (d: Drive): Stretch => ({
+    kind: 'drive', a: d.geom[0], b: d.geom[d.geom.length - 1], label: `Scenic ${d.score.toFixed(0)} · ${fmt.dist(d.length_m)}`,
+  });
+  const boundsOf = (g: [number, number][]) => {
     const b = new maplibregl.LngLatBounds();
     for (const q of g) b.extend(q);
-    map.fitBounds(b, { padding: fitPad, duration: 900, maxZoom: 15 });
+    return b;
+  };
+  const pick = (way: number, st: Stretch, geom: [number, number][]) => {
+    store.set({ selected: way, stretch: st });
+    pinned = geom;
+    drawStretch();
+    fitGround(boundsOf(geom), fitPad, 15);
+  };
+  /** Link to this app showing a stretch: framed from the ground, its road selected (Cmd-click → new tab). */
+  const linkTo = (way: number, st: Stretch, geom: [number, number][]) => {
+    const cam = map.cameraForBounds(boundsOf(geom), { padding: fitPad, maxZoom: 15, bearing: map.getBearing() });
+    let view = store.s.view;
+    if (cam?.center && cam.zoom !== undefined) {
+      const ll = maplibregl.LngLat.convert(cam.center);
+      const f = cam3d.frame(map, ll, map.queryTerrainElevation(ll) ?? 0, cam.zoom);
+      view = { zoom: f.zoom, lat: f.center.lat, lng: f.center.lng, bearing: f.bearing, pitch: f.pitch, elev: f.elevation };
+    }
+    return location.pathname + location.search + toHash({ ...store.s, selected: way, stretch: st, view });
   };
 
   // Scenic drives.
-  let pinnedDrive: Drive | null = null;
-  const setDriveHl = (d: Drive | null) => map.getSource<GeoJSONSource>('drive-hl')?.setData(line(d ? d.geom : null));
-  drives.query = () => ({ bbox: bboxQuery(), classes: classMask(store.s), surface: surfaceMask(store.s), weights: store.s.weights });
+  drives.query = () => ({ bbox: bboxQuery(), poly: polyQuery(), classes: classMask(store.s), surface: surfaceMask(store.s), toll: tollMask(store.s), unnamed: unnamedHideClasses(store.s), len: roadLenKm(store.s), weights: store.s.weights });
   drives.onResults = (ds) =>
     map.getSource<GeoJSONSource>('drives')?.setData({
       type: 'FeatureCollection',
       features: ds.map((d) => ({ type: 'Feature', properties: { score: d.score }, geometry: { type: 'LineString', coordinates: d.geom } })),
     });
-  drives.onHover = (d) => setDriveHl(d ?? pinnedDrive);
-  drives.onSelect = (d) => {
-    pinnedDrive = d;
-    setDriveHl(d);
-    const g = d.geom;
-    profile.highlight({ start: g[0], end: g[g.length - 1], label: `Scenic ${d.score.toFixed(0)} · ${fmt.dist(d.length_m)}` });
-    store.set({ selected: d.way });
-    const b = new maplibregl.LngLatBounds();
-    for (const q of g) b.extend(q);
-    map.fitBounds(b, { padding: fitPad, duration: 900, maxZoom: 15 });
+  drives.onHover = (d) => (d ? setDriveHl(d.geom) : drawStretch());
+  drives.onSelect = (d) => pick(d.way, driveStretch(d), d.geom);
+  drives.linkFor = (d) => linkTo(d.way, driveStretch(d), d.geom);
+
+  // Scenic rides and rail lines: the rail weights and service groups shown.
+  const railQuery = () => ({ bbox: bboxQuery(), poly: polyQuery(), weights: store.s.rail.weights, groups: railMask(store.s) });
+  rides.query = railQuery;
+  lines.query = railQuery;
+  const rideStretch = (r: Ride): Stretch => ({
+    kind: 'drive', a: r.geom[0], b: r.geom[r.geom.length - 1], label: `Scenic ride ${r.score.toFixed(0)} · ${fmt.dist(r.length_m)}`,
+  });
+  rides.onResults = (rs) => drives.onResults(rs.map((r) => ({ score: r.score, geom: r.geom }) as unknown as Drive));
+  rides.onHover = (r) => (r ? setDriveHl(r.geom) : drawStretch());
+  rides.onSelect = (r) => pick(r.way, rideStretch(r), r.geom);
+  lines.onHover = (l) => {
+    map.getSource<GeoJSONSource>('drive-hl')?.setData(l ? { type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates: l.geom } } : line(null));
+    if (!l) drawStretch();
+  };
+  lines.onSelect = (l) => {
+    const b = boundsOf(l.geom.flat());
+    map.fitBounds(b, { padding: fitPad, maxZoom: 14, duration: 900 });
   };
 
   statsCard.onTab = (k) => {
-    if (k === 'climbs') climbs.refresh(true);
-    else if (!pinnedClimb) setClimb(null);
     if (k === 'drives') drives.refresh(true);
-    else {
-      drives.onResults([]);
-      if (!pinnedDrive) setDriveHl(null);
-    }
+    else if (k === 'rides') rides.refresh(true);
+    else drives.onResults([]);
+    if (k === 'lines') lines.refresh(true);
+    if (k === 'sights') sights.refresh();
+    drawStretch(); // drop hover highlights of the list left behind
   };
-  map.on('moveend', () => {
-    climbs.refresh();
+  onSettled(() => {
     drives.refresh();
+    rides.refresh();
+    lines.refresh();
   });
+  const applyDrivesShown = () => map.getLayer('drives-line') && map.setLayoutProperty('drives-line', 'visibility', drives.showOnMap ? 'visible' : 'none');
+  drives.onShowChange = applyDrivesShown;
 
   statsCard.show(statsCard.tab); // restored tab: run its loaders now that callbacks exist
 
   statsCard.wayName = async (x) => {
     const info = await getWay(x.tile.data!.lineWay[x.line]);
+    // Rail: the line's name without a route's direction or service codes.
+    if (info && ['tram', 'metro', 'commuter', 'intercity', 'heritage'].includes(info.class)) return info.name.split(':')[0].trim();
     return info ? [info.ref, info.name].filter(Boolean).join(' ') : '';
   };
 
   // Hover readouts for the scenic channels.
-  strip.extra = (hov) => {
-    const c = hov.ch;
-    const w = store.s.weights;
-    const out: HTMLElement[] = [];
-    const kv = (k: string, v: string, title?: string) => h('span', { class: 'kv', title }, `${k} `, h('b', {}, v));
-    if (c.every((x) => x === 0)) return out;
-    out.push(kv('scenic', metricOf('score', 0, 0, c, w).toFixed(0), 'Scenic score with the current weights'));
-    out.push(kv('view', `${fmtArea(u8Area(c[0]))}`, 'Visible area within 15 km, trees and terrain blocking'));
-    if (c[1] > 10) out.push(kv('water', fmtArea(u8Area(c[1])), 'Visible water area'));
-    out.push(kv('vista', `${(c[8] / 17).toFixed(1)} km`, 'Mean farthest visible distance'));
-    out.push(kv('open', `${Math.round(100 - c[5] / 2.55)} %`, 'Directions not blocked within 300 m'));
-    out.push(kv('trees', `${Math.round(c[11] / 8)} m`, 'Roadside tree height (p95 within 30 m)'));
-    const flags = FLAG_LABELS.filter(([m]) => c[7] & m).map(([, l]) => l);
-    if (flags.length) out.push(h('span', { class: 'kv flags' }, flags.join(' · ')));
-    return out;
-  };
 
   let basemapLoading = false;
   map.on('dataloading', () => (basemapLoading = true));
@@ -384,21 +762,28 @@ async function main() {
       [busy ? `Loading roads ${p.loaded}/${p.wanted}` : '', basemapLoading ? 'basemap & terrain…' : '', overlayBusy ?? ''].filter(Boolean).join(' · '),
     );
     colour.update(mdist, cur, cdf);
+    railCard.update(railDist, railCur, railCdf);
     layers.update(stats);
-    statsCard.update(stats, p, roads.zt, extraRows);
+    layers.updateRail(railStats);
+    statsCard.update(stats, p, roads.zt, viewExtra);
   };
 
-  // Frame loop: statistics (throttled) and eased colour range.
+  // Frame loop: statistics (throttled) and eased colour range. It runs while there is something to
+  // do (stats to compute, a range still easing, panels to refresh) and sleeps otherwise.
   let last = performance.now();
   let lastPanel = 0;
+  let ticking = false;
+  let panelsDue = false;
   const tick = (now: number) => {
     const dt = now - last;
     last = now;
-    let panels = false;
-    if (statsDirty && now - lastStats > 150) {
+    let panels = panelsDue;
+    let easing = false;
+    // While the camera moves, the cheap statistics only, and less often; everything once settled.
+    if (statsDirty && now - lastStats > (moving ? 400 : 150)) {
       statsDirty = false;
       lastStats = now;
-      computeStats();
+      computeStats(!moving);
       panels = true;
     }
     const t = target();
@@ -411,59 +796,146 @@ async function main() {
       roads.style.range = cur;
       map.triggerRepaint();
       panels = true;
+      easing = true;
     }
-    if (panels && now - lastPanel > 60) {
+    {
+      const r = store.s.rail;
+      const rd = railMetricDef(r.metric);
+      const tt: [number, number] = !r.auto ? r.range
+        : railDist && railDist.total > 0 ? spread(railDist.quantile(r.fit[0] / 100), railDist.quantile(r.fit[1] / 100), rd.step * 4) : railCur;
+      const nr: [number, number] = [railCur[0] + (tt[0] - railCur[0]) * k, railCur[1] + (tt[1] - railCur[1]) * k];
+      if (Math.abs(nr[0] - railCur[0]) + Math.abs(nr[1] - railCur[1]) > rd.step * 0.01) {
+        railCur = nr;
+        rails.style.range = railCur;
+        map.triggerRepaint();
+        panels = true;
+        easing = true;
+      }
+    }
+    panelsDue = panels && now - lastPanel <= 60;
+    if (panels && !panelsDue) {
       lastPanel = now;
       updateCdf();
+      updateRailCdf();
       refreshTint();
       refresh();
       profile.redraw();
     }
-    requestAnimationFrame(tick);
+    if (statsDirty || easing || panelsDue) requestAnimationFrame(tick);
+    else ticking = false;
   };
-  requestAnimationFrame(tick);
-
-  roads.onChange = () => {
+  function wake() {
+    if (ticking) return;
+    ticking = true;
+    last = performance.now();
+    requestAnimationFrame(tick);
+  }
+  /** The statistics need recomputing (and the loop wakes to do it). */
+  function markDirty() {
     statsDirty = true;
+    wake();
+  }
+  wake();
+
+  rails.onChange = () => markDirty();
+  roads.onChange = () => {
+    markDirty();
     const p = roads.progress();
     if (!bootDone) {
       boot.sub(3, p.wanted ? p.loaded / p.wanted : 0, `${p.loaded}/${p.wanted}`);
       if (p.wanted > 0 && p.loaded >= p.wanted) finishBoot();
     }
   };
-  map.on('move', () => (statsDirty = true));
+  map.on('move', () => markDirty());
+  onSettled(() => markDirty());
 
   // ---- hover & selection -----------------------------------------------------------
   const wayCache = new Map<number, WayInfo | null>();
   let hovered: HoverInfo | null = null;
   let pickAt: { x: number; y: number } | null = null;
+  const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
   const colourOf = (hv: HoverInfo) => {
     const s = store.s;
+    const cls = hv.style & 15;
+    if (cls >= RAIL0) {
+      const r = s.rail;
+      const lc = hv.tile.data!.lineColour[hv.hit.line];
+      if (r.colour === 'line') return lc ? hex(lc - 1) : RAIL_GROUP_COLOURS[cls - RAIL0];
+      if (r.colour === 'group') return RAIL_GROUP_COLOURS[cls - RAIL0];
+      if (r.colour === 'single') return r.single;
+      const v = railMetricOf(r.metric, { elev: hv.elev, grade: hv.grade, ground: hv.ground, bridge: (hv.style & 96) === 32, tunnel: (hv.style & 64) !== 0, ch: hv.ch, freq: hv.fq }, r.weights);
+      if (Number.isNaN(v)) return '#5c6673';
+      if (!passes(v, r.threshold, railCur)) return '#3a414c';
+      return paletteRgb(r.palette, scaleU(v, railCur, r.equalize ? railCdf : null));
+    }
+    if (s.mode === 'map') return mapScheme(s.mapScheme).fill[cls] ?? '#888';
     const val = metricOf(s.mode, hv.elev, hv.grade, hv.ch, s.weights);
     let u = Math.max(0, Math.min(1, (val - cur[0]) / (cur[1] - cur[0])));
     if (s.equalize && cdf) u = cdf[Math.min(255, Math.floor(u * 255 + 0.5))] / 255;
     return paletteRgb(s.palette, u);
   };
   const interactive = () => [...POINT_LAYERS].filter((id) => map.getLayer(id) && map.getLayoutProperty(id, 'visibility') !== 'none');
+  // A hovered stop, site or area: shown at once, then again with its details when they arrive.
+  let featKey = '';
+  const showFeat = (f: FeatureSummary, areas: FeatureSummary[]) => {
+    const key = f.ref ? refKey(f.ref) : '';
+    featKey = key;
+    const d = f.ref ? peekDetail(f.ref) : undefined;
+    strip.showFeature(d !== undefined ? withDetails(f, d) : f, areas);
+    if (f.ref && d === undefined) {
+      loadDetail(f.ref).then((dd) => {
+        if (featKey === key) strip.showFeature(withDetails(f, dd), areas);
+      });
+    }
+  };
   const doPick = () => {
     const pt = pickAt;
     pickAt = null;
     if (!pt || driving) return;
-    hovered = roads.pick(pt.x, pt.y);
-    roads.setHover(hovered);
-    const onPoi = !hovered && interactive().length > 0 && map.queryRenderedFeatures([[pt.x - 4, pt.y - 4], [pt.x + 4, pt.y + 4]], { layers: interactive() }).length > 0;
-    map.getCanvas().style.cursor = viewshed.active ? 'crosshair' : hovered || onPoi ? 'pointer' : '';
-    if (!hovered) return strip.show(null, null, '');
+    featKey = '';
+    // Markers first (small targets), then the nearest road or rail line, then the highlighted
+    // areas under the cursor.
+    const feats = overlays.hoverAt(pt);
+    // Ferries next (car ferries are in the road layer too; their ferry details say more).
+    const ferry = feats.point ? null : ferries.hoverAt(pt);
+    if (ferry) {
+      hovered = null;
+      roads.setHover(null);
+      rails.setHover(null);
+      map.getCanvas().style.cursor = viewshed.active ? 'crosshair' : 'pointer';
+      hoverAreas = feats.areas;
+      return strip.showFeature(ferry, feats.areas);
+    }
+    const hr = feats.point ? null : roads.pick(pt.x, pt.y);
+    const hl = feats.point || !store.s.rail.on ? null : rails.pick(pt.x, pt.y);
+    hovered = hr && hl ? (hl.px <= hr.px ? hl : hr) : hr ?? hl;
+    const layer = hovered && hovered === hl ? rails : roads;
+    (layer === rails ? roads : rails).setHover(null);
+    // Highlight the whole road (or line), not just the way under the cursor (fetched once per road).
+    const road = hovered ? roadWays(hovered.way) : undefined;
+    layer.setHover(hovered, road ?? null);
+    if (hovered && !road) {
+      getRoadWays(hovered.way).then((set) => {
+        if (set && hovered && set.has(hovered.way)) layer.setHover(hovered, set);
+      });
+    }
+    map.getCanvas().style.cursor = viewshed.active ? 'crosshair' : hovered || feats.point ? 'pointer' : '';
+    hoverAreas = feats.areas;
+    if (!hovered) {
+      const f = feats.point ?? feats.areas[0];
+      return f ? showFeat(f, feats.areas) : strip.show(null, null, '');
+    }
     const hv = hovered;
     const cached = wayCache.get(hv.way);
-    strip.show(hv, cached === undefined ? 'loading' : cached, colourOf(hv));
+    strip.show(hv, cached === undefined ? 'loading' : cached, colourOf(hv), hoverAreas);
     if (cached === undefined) {
       getWay(hv.way).then((info) => {
         wayCache.set(hv.way, info);
-        if (hovered?.way === hv.way) strip.show(hovered, info, colourOf(hovered));
+        if (hovered?.way === hv.way) strip.show(hovered, info, colourOf(hovered), hoverAreas);
       });
     }
   };
+  let hoverAreas: FeatureSummary[] = [];
   // Last cursor position on the map (terrain-aware), for the Street View shortcut.
   let cursorLL: maplibregl.LngLat | null = null;
   map.on('mousemove', (e) => {
@@ -472,22 +944,30 @@ async function main() {
     cursorLL = e.lngLat;
   });
   map.getCanvas().addEventListener('mouseleave', () => (cursorLL = null));
+  // Back on the map, a slider, dropdown or button used earlier lets go of the keyboard, so keys
+  // (G, Esc, arrows) reach the map; a text field keeps it (you may still be typing).
+  map.getCanvas().addEventListener('mouseenter', () => {
+    const a = document.activeElement;
+    // Number fields too: blurring commits them, and keys then reach the map (G, M, O).
+    const num = a instanceof HTMLInputElement && a.type === 'number';
+    if (a instanceof HTMLElement && a !== document.body && (num || !isTyping(a)) && !a.closest('.maplibregl-canvas-container')) a.blur();
+  });
   map.getCanvas().addEventListener('mouseleave', () => {
     hovered = null;
     roads.setHover(null);
+    rails.setHover(null);
     strip.show(null, null, '');
   });
 
   let profileAbort: AbortController | null = null;
   const select = async (way: number | null) => {
     profileAbort?.abort();
+    profileCoords = null;
     if (way === null) {
       profile.hide();
       map.getSource<GeoJSONSource>('selection')?.setData(line(null));
-      pinnedClimb = null;
-      setClimb(null);
-      pinnedDrive = null;
-      setDriveHl(null);
+      pinned = null;
+      drawStretch();
       return;
     }
     profileAbort = new AbortController();
@@ -497,15 +977,17 @@ async function main() {
       const p = await getProfile(way, profileAbort.signal);
       profile.show(p);
       map.getSource<GeoJSONSource>('selection')?.setData(line(p.coords));
+      profileCoords = p.coords;
+      drawStretch();
     } catch (e) {
       if ((e as Error).name !== 'AbortError') profile.error((e as Error).message);
     }
   };
-  profile.onClose = () => store.set({ selected: null });
+  profile.onClose = () => store.set({ selected: null, stretch: null });
   profile.onZoom = (p) => {
     const b = new maplibregl.LngLatBounds();
     for (const c of p.coords) b.extend(c);
-    map.fitBounds(b, { padding: { top: 60, bottom: 300, left: 340, right: 300 }, duration: 900 });
+    fitGround(b, { top: 60, bottom: 270, left: 350, right: 60 });
   };
 
   // ---- fly-along "Drive" ------------------------------------------------------------
@@ -549,10 +1031,11 @@ async function main() {
       const want = brg(at(d - 50), at(d + 450));
       let diff = ((want - bearing + 540) % 360) - 180;
       bearing += diff * Math.min(1, dt * 1.8);
-      // The drive camera follows the road's height on purpose (smoothed).
+      // The drive camera follows the road's height on purpose (smoothed): zoom 14.6 from the
+      // road, not from sea level (on the globe that would put it inside the mountains).
       const ground = map.queryTerrainElevation(pos) ?? 0;
       elev = elev === null ? ground : elev + (ground - elev) * Math.min(1, dt * 2);
-      map.jumpTo({ center: pos, bearing, pitch: 70, zoom: 14.6, elevation: elev });
+      map.jumpTo(cam3d.frame(map, new maplibregl.LngLat(pos[0], pos[1]), elev, 14.6, 70, bearing));
       marks.cursor = point(pos, 'cursor');
       setMarks();
       if (d >= L) return driving?.stop();
@@ -582,57 +1065,89 @@ async function main() {
       return;
     }
     if (overlays.click(e.point, POINT_LAYERS)) return;
-    const hv = roads.pick(e.point.x, e.point.y);
-    if (hv) {
+    if (ferries.click(e.point, e.lngLat)) {
       overlays.closePopup();
-      pinnedClimb = null;
-      setClimb(null);
-      pinnedDrive = null;
-      setDriveHl(null);
-      profile.highlight(null);
-      store.set({ selected: hv.way });
       return;
     }
-    overlays.click(e.point, AREA_LAYERS);
+    ferries.closePopup();
+    const hr = roads.pick(e.point.x, e.point.y);
+    const hl = store.s.rail.on ? rails.pick(e.point.x, e.point.y) : null;
+    const hv = hr && hl ? (hl.px <= hr.px ? hl : hr) : hr ?? hl;
+    if (hv) {
+      overlays.closePopup();
+      store.set({ selected: hv.way, stretch: null });
+      return;
+    }
+    overlays.click(e.point, areaLayers());
   });
   layers.onViewshed = () => (viewshed.active ? viewshed.cancel() : viewshed.start());
+  layers.trees.onPreview = (palette) => applyTrees(map, palette ? { ...store.s.trees, palette } : store.s.trees);
   viewshed.onActive = (on) => layers.setViewshedActive(on);
   viewshed.onMark = (ll) => {
     marks.viewshed = ll ? point(ll, 'viewshed') : null;
     setMarks();
   };
   window.addEventListener('keydown', (e) => {
-    // G: Google Street View at the cursor (snapped to the hovered road), facing the map's bearing.
-    if ((e.key === 'g' || e.key === 'G') && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
-      if (!cursorLL) return toast('Point at the map, then press G for Street View');
+    // At the cursor (snapped to the hovered road): G Google Street View, facing the map's bearing;
+    // M Google Maps and O OpenStreetMap with a marker there, at about the current zoom.
+    const k = e.key.toLowerCase();
+    const SITES: Record<string, string> = { g: 'Street View', m: 'Google Maps', o: 'OpenStreetMap' };
+    if (SITES[k] && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (isTyping(e.target)) return;
+      if (!cursorLL) return toast(`Point at the map, then press ${k.toUpperCase()} for ${SITES[k]}`);
+      // Not for a focused control (a dropdown would jump to an option starting with the letter).
+      e.preventDefault();
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
       const [lng, lat] = hovered ? hovered.lngLat : [cursorLL.lng, cursorLL.lat];
-      const heading = ((map.getBearing() % 360) + 360) % 360;
-      const q = new URLSearchParams({ api: '1', map_action: 'pano', viewpoint: `${lat.toFixed(6)},${lng.toFixed(6)}`, heading: heading.toFixed(0), pitch: '0', fov: '90' });
-      window.open(`https://www.google.com/maps/@?${q.toString().replace(/%2C/g, ",")}`, '_blank', 'noopener');
-      toast('Opening Street View (nearest panorama, if any)');
+      const ll = `${lat.toFixed(6)},${lng.toFixed(6)}`;
+      if (k === 'g') {
+        const heading = ((map.getBearing() % 360) + 360) % 360;
+        const q = new URLSearchParams({ api: '1', map_action: 'pano', viewpoint: ll, heading: heading.toFixed(0), pitch: '0', fov: '90' });
+        window.open(`https://www.google.com/maps/@?${q.toString().replace(/%2C/g, ',')}`, '_blank', 'noopener');
+        toast('Opening Street View (nearest panorama, if any)');
+      } else if (k === 'm') {
+        // Google Maps and OSM zoom levels are one higher than MapLibre's (256 vs 512 px tiles).
+        const z = Math.min(21, Math.max(3, map.getZoom() + 1)).toFixed(1);
+        window.open(`https://www.google.com/maps/place/${ll}/@${ll},${z}z`, '_blank', 'noopener');
+        toast('Opening Google Maps at the cursor');
+      } else {
+        const z = Math.round(Math.min(19, Math.max(3, map.getZoom() + 1)));
+        const la = lat.toFixed(6), lo = lng.toFixed(6);
+        window.open(`https://www.openstreetmap.org/?mlat=${la}&mlon=${lo}#map=${z}/${la}/${lo}`, '_blank', 'noopener');
+        toast('Opening OpenStreetMap at the cursor');
+      }
       return;
     }
     if (e.key !== 'Escape') return;
+    if (document.querySelector('dialog[open]')) return; // the dialog closes itself
     if (driving) return stopDrive();
     if (viewshed.active) return viewshed.cancel();
     overlays.closePopup();
-    store.set({ selected: null });
+    store.set({ selected: null, stretch: null });
   });
 
   // ---- state → map ------------------------------------------------------------------
-  // MapLibre's globe, which hands over to flat Web Mercator at zoom 11–12. That can't go deeper:
-  // the globe camera measures its distance from sea level and must stay above the terrain, so
-  // with exaggerated mountains (Mt Washington ≈ 5.7 km at ×3) a globe at zoom 13–14 could not
-  // get close. At 11–12 the camera is 30–60 km out and the curvature across the screen is
-  // under a pixel. The cursor-anchored camera handles both (camera3d.ts).
-  const applyProjection = () => map.setProjection({ type: store.s.globe ? 'globe' : 'mercator' });
+  // A true globe for all but street level, so tilted views show the real horizon distance and dip
+  // and far ranges sinking below it; it hands over to flat Web Mercator at zoom 15.5–16.5, where
+  // the horizon is 30–80 km out in the fog (and globe rendering, in float32, would wobble).
+  // The cursor-anchored camera handles both (camera3d.ts).
+  const applyProjection = () =>
+    map.setProjection({
+      type: store.s.globe
+        ? (['interpolate', ['linear'], ['zoom'], 15.5, 'vertical-perspective', 16.5, 'mercator'] as unknown as 'globe')
+        : 'mercator',
+    });
   const applyLayers = () => {
+    const vis = (id: string, show: boolean) => {
+      for (const pid of partIds(id)) if (map.getLayer(pid)) map.setLayoutProperty(pid, 'visibility', show ? 'visible' : 'none');
+    };
     for (const [k, ids] of Object.entries(LAYER_GROUPS)) {
-      const on = store.s.layers[k as 'water' | 'boundaries' | 'places'];
-      for (const id of ids) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
+      const on = store.s.layers[k as 'water' | 'boundaries'];
+      ids.forEach((id, i) => vis(id, on && (k !== 'boundaries' || store.s.boundaryLevels[i])));
     }
+    // Place and water labels (overlay and ferry labels follow their layers: overlays.ts, ferries.ts).
+    for (const k of ['city', 'town', 'village', 'minor', 'state'] as const) for (const id of LABEL_LAYERS[k]) vis(id, labelShown(store.s, k));
+    for (const id of LABEL_LAYERS.water) vis(id, store.s.layers.water && labelShown(store.s, 'water'));
   };
   let hashTimer = 0;
   const writeHash = () => {
@@ -648,6 +1163,8 @@ async function main() {
     st.palette = s.palette;
     st.classMask = classMask(s);
     st.surfaceMask = surfaceMask(s);
+    st.tollMask = tollMask(s);
+    st.unnamedHide = unnamedHideClasses(s);
     st.weight = s.weight;
     st.threshold = { ...s.threshold };
     st.visible = s.layers.roads;
@@ -658,35 +1175,52 @@ async function main() {
     st.exaggeration = s.terrain.exaggeration;
     st.lowFade = s.lowFade;
     st.lowSpan = s.lowSpan;
-    st.perspective = s.perspective;
-    st.blendOverlaps = s.blendOverlaps;
-    if (ch.has('mode')) snap = true;
-    if (ch.has('groups') || ch.has('surface') || ch.has('layers') || ch.has('mode') || ch.has('weights')) statsDirty = true;
+    st.occlude = s.occlude;
+    [st.lenMin, st.lenMax] = roadLenM(s);
+    applyMapMode(s);
+    applyRailStyle(s);
+    if (ch.has('rail')) {
+      markDirty();
+      railCard.sync();
+      if (s.rail.on) loadRailFreq();
+      map.triggerRepaint();
+    }
+    if ((ch.has('layers') || ch.has('labelKinds')) && styleReady) overlays.apply(s);
+    if ((ch.has('ferry') || ch.has('layers') || ch.has('weight') || ch.has('labelKinds')) && styleReady) {
+      ferries.apply(s);
+      updateFerries();
+    }
+    if (ch.has('ferry')) ferryCard.sync();
+    if (ch.has('trees') && styleReady) applyTrees(map, s.trees);
+    if (ch.has('groups') || ch.has('unnamed') || ch.has('roadLen') || ch.has('roadLenOn') || ch.has('surface') || ch.has('toll') || ch.has('layers') || ch.has('mode') || ch.has('weights')) markDirty();
     if (ch.has('equalize') || ch.has('mode')) cdfKey = '';
     if (styleReady) {
-      if (ch.has('layers')) applyLayers();
+      if (ch.has('layers') || ch.has('boundaryLevels') || ch.has('labelKinds')) applyLayers();
       if (ch.has('terrain')) {
-        map.setCenterClampedToGround(s.terrain.cameraFollow);
         // Terrain on/off or re-exaggerated: re-pivot for the new ground (camera stays put).
-        if (!s.terrain.cameraFollow && (s.terrain.on ? s.terrain.exaggeration : 0) !== lastExaggeration) {
+        if ((s.terrain.on ? s.terrain.exaggeration : 0) !== lastExaggeration) {
           if (!s.terrain.on) cam3d.repivot(map, 0); // flat map: pivot at sea level
           else map.on('idle', levelOnce);
         }
         lastExaggeration = s.terrain.on ? s.terrain.exaggeration : 0;
         applyTerrain(map, s.terrain, location.origin);
-        applyLabelOpacity(map, s.labelOpacity);
+        applyLabelOpacity(map, s.labelOpacity, overlayLabelScale(s.poiOpacity));
       }
       if (ch.has('terrain') || ch.has('palette') || ch.has('mode')) refreshTint();
-      if (ch.has('labelOpacity')) applyLabelOpacity(map, s.labelOpacity);
+      if (ch.has('labelOpacity') || ch.has('poiOpacity')) applyLabelOpacity(map, s.labelOpacity, overlayLabelScale(s.poiOpacity));
+      if (ch.has('poiOpacity')) applyOverlayOpacity(map, s.poiOpacity);
+      if (ch.has('poiOpacity') || ch.has('poiEmphasis') || ch.has('landmarks') || ch.has('labelOpacity')) overlays.prominence(s);
       if (ch.has('globe')) applyProjection();
-      if (ch.has('overlays') || ch.has('heritageLevels')) overlays.apply(s);
+      if (ch.has('overlays') || ch.has('heritageOff') || ch.has('stopFilters') || ch.has('stopUnknown')) overlays.apply(s);
     }
-    if (ch.has('groups') || ch.has('surface')) {
-      climbs.refresh();
-      drives.refresh();
-    }
+    if (ch.has('groups') || ch.has('unnamed') || ch.has('roadLen') || ch.has('roadLenOn') || ch.has('surface') || ch.has('toll')) drives.refresh();
     if (ch.has('weights')) drives.refresh();
+    if (ch.has('rail')) {
+      rides.refresh();
+      lines.refresh();
+    }
     if (ch.has('selected')) select(s.selected);
+    if (ch.has('selected') || ch.has('stretch')) applyStretch();
     if (!ch.has('view')) {
       colour.sync();
       layers.sync(s);
@@ -695,23 +1229,27 @@ async function main() {
     }
     map.triggerRepaint();
     writeHash();
+    wake(); // the colour range may have a new target
   });
   // Keep the zoom level meaningful: after every move, put the camera pivot on the terrain at the
   // view centre *without moving the camera* (zoom and centre are re-solved from the camera
   // position). Nothing moves on screen; tile detail, line widths and labels follow the real
   // distance to the ground. The camera itself never follows the terrain.
   const relevel = () => {
-    if (driving || store.s.terrain.cameraFollow || !store.s.terrain.on) return;
+    if (driving || !store.s.terrain.on) return;
     cam3d.relevel(map);
   };
   // Only once a gesture has settled: mid-gesture the zoom number (and with it widths, labels and
-  // tile detail) must change smoothly.
-  let relevelTimer = 0;
-  map.on('moveend', () => {
-    clearTimeout(relevelTimer);
-    relevelTimer = window.setTimeout(relevel, 300);
+  // tile detail) must change smoothly. First of the settled steps (the rest see the new zoom); the
+  // camera doesn't move, so it doesn't start another settle.
+  settledFns.unshift(() => {
+    quiet = true;
+    try {
+      relevel();
+    } finally {
+      quiet = false;
+    }
   });
-  map.on('movestart', () => clearTimeout(relevelTimer));
 
   // Pasted / edited links: apply the new state without a reload.
   window.addEventListener('hashchange', () => {
@@ -720,10 +1258,10 @@ async function main() {
     store.set(rest);
     if (view) map.jumpTo({ center: [view.lng, view.lat], zoom: view.zoom, bearing: view.bearing, pitch: view.pitch });
   });
-  map.on('moveend', () => {
+  onSettled(() => {
     if (driving) return;
     const c = map.getCenter();
-    const elev = store.s.terrain.cameraFollow ? 0 : map.getCenterElevation();
+    const elev = map.getCenterElevation();
     store.set({ view: { zoom: map.getZoom(), lat: c.lat, lng: c.lng, bearing: map.getBearing(), pitch: map.getPitch(), elev } });
   });
 
@@ -742,13 +1280,21 @@ async function main() {
     styleReady = true;
     applyProjection();
     map.addLayer(roads, 'water-name-line');
+    map.addLayer(rails, 'water-name-line');
     applyLayers();
     applyTerrain(map, store.s.terrain, location.origin);
-    applyLabelOpacity(map, store.s.labelOpacity);
+    applyTrees(map, store.s.trees);
+    applyLabelOpacity(map, store.s.labelOpacity, overlayLabelScale(store.s.poiOpacity));
+    applyOverlayOpacity(map, store.s.poiOpacity);
     refreshTint();
     overlays.apply(store.s);
+    ferries.apply(store.s);
+    applyDrivesShown();
     boot.at(3);
-    if (store.s.selected !== null) select(store.s.selected);
+    if (store.s.selected !== null) {
+      select(store.s.selected);
+      applyStretch();
+    }
     // Never block the UI for long on a slow first view.
     setTimeout(finishBoot, 12000);
   };
@@ -758,21 +1304,20 @@ async function main() {
     map.once('load', attach);
   }
   map.on('error', (e) => console.warn(e.error?.message ?? e));
-  (window as any).__app = { map, roads, store, cam3d };
+  (window as any).__app = { map, roads, rails, store, cam3d, ferries };
 }
 
 /**
  * MapLibre eases the camera pivot toward the terrain under the target on every animation
- * (easeTo, flyTo, fitBounds) even with centerClampedToGround off. When the camera shouldn't
- * follow the terrain, keep only the bookkeeping part (minimum elevation for clipping).
+ * (easeTo, flyTo, fitBounds) even with centerClampedToGround off. The camera never follows the
+ * terrain here: keep only the bookkeeping part (minimum elevation for clipping).
  */
-function unlinkCameraFromTerrain(map: maplibregl.Map, follow: () => boolean) {
+function unlinkCameraFromTerrain(map: maplibregl.Map) {
   type Cam = { terrain?: { getMinTileElevationForLngLatZoom: (c: unknown, z: number) => number }; _updateElevation?: (k: number, tr: any) => void };
   const cam = (map as unknown as { _camera?: Cam })._camera;
   const orig = cam?._updateElevation;
   if (!cam || !orig) return;
-  cam._updateElevation = function (k: number, tr: any) {
-    if (follow()) return orig.call(this, k, tr);
+  cam._updateElevation = function (_k: number, tr: any) {
     const terrain = (this as Cam).terrain;
     if (terrain) tr.setMinElevationForCurrentTile(terrain.getMinTileElevationForLngLatZoom(tr.center, tr.tileZoom));
   };
@@ -792,8 +1337,11 @@ function unlinkCameraFromTerrain(map: maplibregl.Map, follow: () => boolean) {
   }
 }
 
-function fmtArea(km2: number) {
-  return (km2 < 1 ? km2.toFixed(2) : km2 < 10 ? km2.toFixed(1) : Math.round(km2).toLocaleString('en-CA')) + ' km²';
+/** Whether key presses on this element are text being typed (not a slider, dropdown or button). */
+function isTyping(el: EventTarget | null): boolean {
+  if (el instanceof HTMLTextAreaElement) return true;
+  if (el instanceof HTMLInputElement) return !['range', 'checkbox', 'radio', 'button', 'submit', 'reset', 'color', 'file'].includes(el.type);
+  return el instanceof HTMLElement && el.isContentEditable;
 }
 
 main();

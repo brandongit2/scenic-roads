@@ -3,7 +3,7 @@
 import { getDrives, type Drive } from '../api';
 import { COMPONENTS } from '../scenic';
 import * as prefs from '../prefs';
-import { fmt, h } from './dom';
+import { cap, fmt, h, openRow } from './dom';
 
 const LENGTHS = [2, 5, 10, 25];
 
@@ -19,7 +19,13 @@ export class DrivesPane {
   onResults: (d: Drive[]) => void = () => {};
   onHover: (d: Drive | null) => void = () => {};
   onSelect: (d: Drive) => void = () => {};
-  query: () => { bbox: string; classes: number; surface: number; weights: number[] } = () => ({ bbox: '', classes: 0, surface: 3, weights: [] });
+  /** Listed stretches drawn on the map all the time (else only the hovered one). */
+  showOnMap = prefs.load('drives.showOnMap', true);
+  onShowChange: (on: boolean) => void = () => {};
+  /** URL showing this drive (rows are links, so Cmd-click opens a new tab). */
+  linkFor: (d: Drive) => string = () => '#';
+  /** `len`: whole-road length filter [min, max], km (0 = no limit). */
+  query: () => { bbox: string; poly: string; classes: number; surface: number; toll: number; unnamed: number; len: [number, number]; weights: number[] } = () => ({ bbox: '', poly: '', classes: 0, surface: 3, toll: 3, unnamed: 0, len: [0, 0], weights: [] });
 
   constructor(readonly root: HTMLElement) {
     this.list = h('div', { class: 'climbs' });
@@ -31,9 +37,17 @@ export class DrivesPane {
       this.seg.push(b);
       seg.append(b);
     }
+    const show = h('input', { type: 'checkbox' });
+    show.checked = this.showOnMap;
+    show.addEventListener('change', () => {
+      this.showOnMap = show.checked;
+      prefs.save('drives.showOnMap', show.checked);
+      this.onShowChange(show.checked);
+    });
     root.append(
       seg,
-      h('div', { class: 'climbs-meta' }, this.count, this.spin),
+      h('div', { class: 'climbs-meta' }, this.count, this.spin,
+        h('label', { class: 'show-map', title: 'Highlight the listed stretches on the map all the time (hovering a row always highlights it)' }, show, 'On map')),
       this.list,
       h('div', { class: 'faint', style: 'font-size:10.5px;margin-top:6px;line-height:1.45' },
         'Best stretch of each continuous road, ranked by the mean scenic score with your weights (Colour → Scenic → Score). Hover to highlight, click for the profile.'),
@@ -59,14 +73,14 @@ export class DrivesPane {
   private async load() {
     const q = this.query();
     const w = q.weights.map((v) => v.toFixed(2)).join(',');
-    const key = `${q.bbox}|${q.classes}|${q.surface}|${w}|${this.len}`;
+    const key = `${q.poly || q.bbox}|${q.classes}|${q.surface}|${q.toll}|${q.unnamed}|${q.len}|${w}|${this.len}`;
     if (key === this.lastKey) return;
     this.lastKey = key;
     this.abort?.abort();
     this.abort = new AbortController();
     this.spin.hidden = false;
     try {
-      const d = await getDrives({ bbox: q.bbox, w, len: String(this.len), limit: '30', classes: String(q.classes), surface: String(q.surface) }, this.abort.signal);
+      const d = await getDrives({ bbox: q.bbox, poly: q.poly, w, len: String(this.len), limit: '30', classes: String(q.classes), surface: String(q.surface), toll: String(q.toll), unnamed: String(q.unnamed), lmin: String(q.len[0] * 1000), lmax: String(q.len[1] * 1000) }, this.abort.signal);
       this.render(d);
       this.onResults(d.drives);
     } catch (e) {
@@ -80,25 +94,25 @@ export class DrivesPane {
   }
 
   private render(d: { total: number; drives: Drive[] }) {
-    this.count.textContent = d.total ? `${fmt.n(d.total)} roads in view · top ${d.drives.length}` : 'No roads long enough in view';
+    this.count.textContent = d.total ? `${fmt.n(d.total)} roads of ${this.len} km or more in view · top ${d.drives.length}` : `No roads of ${this.len} km or more in view`;
     this.list.replaceChildren(
       ...d.drives.map((c, i) => {
         const title = h('span', { class: 'ct' });
         if (c.ref) title.append(h('span', { class: 'ref' }, c.ref));
-        title.append(c.name || c.route || (c.ref ? '' : `Unnamed ${c.class.replace('_', ' ')}`));
+        title.append(cap(c.name) || c.route || (c.ref ? '' : `Unnamed ${c.class.replace('_', ' ')}`));
         // Top three contributing components (value × positive weight is done server-side via
         // the score; here show the strongest raw factors).
         const top = c.parts
           .map((v, k) => [v, k] as [number, number])
-          .filter(([v, k]) => v > 0.05 && k < 10)
+          .filter(([v, k]) => v > 0.05 && COMPONENTS[k].bar)
           .sort((a, b) => b[0] - a[0])
           .slice(0, 3)
           .map(([v, k]) => `${COMPONENTS[k].label} ${Math.round(v * 100)}`);
-        const flags = [c.parts[10] > 0.3 ? 'scenic route' : '', c.parts[12] > 0.3 ? 'waterfront' : '', c.parts[11] > 0.3 ? 'viewpoints' : '']
+        const flags = [c.parts[9] > 0.3 ? 'scenic route' : '', c.parts[10] > 0.3 ? 'viewpoints' : '']
           .filter(Boolean);
         const bar = h('i', { class: 'sbar' });
         bar.style.width = `${Math.max(4, c.score)}%`;
-        const row = h('div', { class: 'climb', onclick: () => this.onSelect(c) },
+        const row = h('a', { class: 'climb', href: this.linkFor(c), onclick: (e: MouseEvent) => openRow(e, () => this.onSelect(c)) },
           h('span', { class: 'rank' }, String(i + 1)),
           h('div', { class: 'cbody' },
             h('div', { class: 'cl1' }, title, h('b', {}, c.score.toFixed(0))),

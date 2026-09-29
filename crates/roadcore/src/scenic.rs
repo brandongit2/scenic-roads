@@ -3,9 +3,12 @@
 //!   samples.bin        `Sample` records (every ~100 m along each road)
 //!   near.i8            32 near-field horizon angles per sample (0.5° units, −128 = none)
 //!   roadside.u8        [roadside tree height ×8 m, forest cover within 150 m ×255] per sample
+//!   samples.metrics.u8 `ch::NBASE` channels per sample (viewsheds and land cover, `scenic view`)
+//!   samples.bld.u8     roadside buildings per sample (`scenic buildings`)
 //!   samples.ch.u8      `ch::N` channels per sample
 //!   scenic.u8          `ch::N` channels per vertex
-//!   vterrain.i16       drape height per vertex (metres) for 3D rendering
+//!   vterrain.i16       drape height per vertex (metres) for 3D rendering: the terrain surface
+//!                      (under bridges too: decks are drawn at max(this, elevation)); tunnels: elevation
 
 use bytemuck::{Pod, Zeroable};
 
@@ -14,6 +17,8 @@ pub const NEAR_AZ: usize = 32;
 pub const NEAR_MAX_M: f64 = 300.0;
 pub const FAR_MAX_M: f64 = 15_000.0;
 pub const EYE_M: f32 = 1.5;
+/// Eye height above the rail for passengers (window of a standard carriage).
+pub const RAIL_EYE_M: f32 = 2.8;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -63,7 +68,12 @@ pub mod ch {
     pub const COVER: usize = 10;
     /// Roadside tree height, 1/8 m units.
     pub const TREEH: usize = 11;
-    pub const N: usize = 12;
+    /// Buildings lining the road: share of the frontage within ±50 m (both sides) with a building
+    /// within 30 m of the centreline, fading to none at 80 m, ×255 (`pipeline::buildings`).
+    pub const BLDG: usize = 12;
+    /// Channels computed by `scenic view` (samples.metrics.u8); the rest are merged in by `flags`.
+    pub const NBASE: usize = 12;
+    pub const N: usize = 13;
 }
 
 /// Bits of `ch::FLAGS`.

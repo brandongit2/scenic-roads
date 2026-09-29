@@ -2,14 +2,12 @@
 //! current weights.
 //!
 //! Score components (all 0..1) — must match `web/src/scenic.ts`:
-//!   0 views      VIEW/255              8 fields      OPEN/255
-//!   1 water      WATER/255             9 built-up    BUILT/255 (usually a negative weight)
-//!   2 vista      VISTA/255            10 scenic route  flag
-//!   3 relief     min(1, RELIEF·3/600) 11 viewpoint     flag
-//!   4 ridge      clamp((TPI−128)·2/60) 12 waterfront    flag
-//!   5 curvy      min(1, CURVY·4/400)  13 park          flag
-//!   6 unblocked  1 − ENCLOSURE/255    14 heritage      flag
-//!   7 forest     COVER/255            15 special area  flag
+//!   0 views      VIEW/255              6 unblocked  1 − ENCLOSURE/255
+//!   1 water      WATER/255             7 forest     COVER/255
+//!   2 vista      VISTA/255             8 built-up   BUILT/255 (usually a negative weight)
+//!   3 relief     min(1, RELIEF·3/600)  9 roadside buildings  BLDG/255 (negative by default)
+//!   4 ridge      clamp((TPI−128)·2/60) 10 scenic route  flag
+//!   5 curvy      min(1, CURVY·4/400)   11 viewpoint     flag
 //! score = Σ wᵢcᵢ / Σ max(wᵢ, 0), clamped to 0..1.
 
 use crate::S;
@@ -25,7 +23,7 @@ use roadcore::{class, Array, Ways, E7};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-pub const NCOMP: usize = 16;
+pub const NCOMP: usize = 12;
 
 pub fn components(c: &[u8; ch::N]) -> [f32; NCOMP] {
     let f = c[ch::FLAGS];
@@ -39,14 +37,10 @@ pub fn components(c: &[u8; ch::N]) -> [f32; NCOMP] {
         (c[ch::CURVY] as f32 * 4.0 / 400.0).min(1.0),
         1.0 - c[ch::ENCLOSURE] as f32 / 255.0,
         c[ch::COVER] as f32 / 255.0,
-        c[ch::OPEN] as f32 / 255.0,
         c[ch::BUILT] as f32 / 255.0,
+        c[ch::BLDG] as f32 / 255.0,
         b(flag::SCENIC_ROUTE),
         b(flag::VIEWPOINT),
-        b(flag::WATERFRONT),
-        b(flag::PARK),
-        b(flag::HERITAGE),
-        b(flag::SPECIAL_AREA),
     ]
 }
 
@@ -117,6 +111,8 @@ impl DriveIndex {
 #[derive(Deserialize)]
 pub struct Q {
     bbox: String,
+    /// Outline of the ground in view (see `Region`).
+    poly: Option<String>,
     /// Comma-separated weights, NCOMP values.
     w: String,
     /// Stretch length, km.
@@ -124,6 +120,13 @@ pub struct Q {
     limit: Option<usize>,
     classes: Option<u32>,
     surface: Option<u8>,
+    /// Bit 0 toll-free, bit 1 toll.
+    toll: Option<u8>,
+    /// Classes (bits) whose unnamed roads (no name, no ref) are left out.
+    unnamed: Option<u32>,
+    /// Whole-road length filter, metres (0 = no limit).
+    lmin: Option<f32>,
+    lmax: Option<f32>,
 }
 
 #[derive(Serialize)]
@@ -155,11 +158,8 @@ pub async fn drives(State(s): State<S>, Query(q): Query<Q>) -> Response {
 
 fn compute(st: &crate::AppState, q: Q) -> Option<Out> {
     let ix = st.drives.as_ref()?;
-    let b: Vec<f64> = q.bbox.split(',').filter_map(|x| x.parse().ok()).collect();
-    if b.len() != 4 {
-        return None;
-    }
-    let bb = [(b[0] / E7) as i32, (b[1] / E7) as i32, (b[2] / E7) as i32, (b[3] / E7) as i32];
+    let region = crate::Region::parse(&q.bbox, q.poly.as_deref())?;
+    let bb = region.bb;
     let wv: Vec<f32> = q.w.split(',').filter_map(|x| x.parse().ok()).collect();
     if wv.len() != NCOMP {
         return None;
@@ -170,6 +170,8 @@ fn compute(st: &crate::AppState, q: Q) -> Option<Out> {
     let len = q.len.unwrap_or(5.0).clamp(0.5, 100.0) * 1000.0;
     let classes = q.classes.unwrap_or(u32::MAX);
     let surface = q.surface.unwrap_or(3);
+    let toll = q.toll.unwrap_or(3);
+    let unnamed = q.unnamed.unwrap_or(0);
     let (samples, chs) = (ix.samples.get(), ix.ch.get());
     let ways = st.ways.ways();
 
@@ -186,11 +188,19 @@ fn compute(st: &crate::AppState, q: Q) -> Option<Out> {
             }
             let w0 = &ways[samples[ix.seq[a] as usize].way as usize];
             let unp = (w0.flags & roadcore::flag::UNPAVED != 0) as u8;
-            if (classes >> w0.class) & 1 == 0 || (surface >> unp) & 1 == 0 {
+            let tl = (w0.flags & roadcore::flag::TOLL != 0) as u8;
+            if (classes >> w0.class) & 1 == 0 || (surface >> unp) & 1 == 0 || (toll >> tl) & 1 == 0 {
                 return None;
             }
+            if (unnamed >> w0.class) & 1 == 1 && w0.name == 0 && w0.ref_ == 0 {
+                return None;
+            }
+            if !st.road_len_ok(samples[ix.seq[a] as usize].way, q.lmin, q.lmax) {
+                return None;
+            }
+            // Only roads with a continuous stretch of the chosen length ("best n km of each road").
             let total = ix.dist[e - 1] - ix.dist[a];
-            if total < len.min(1000.0) {
+            if total < len {
                 return None;
             }
             // Prefix sums of score × spacing for windowed means.
@@ -208,12 +218,12 @@ fn compute(st: &crate::AppState, q: Q) -> Option<Out> {
                 while j + 1 < sc.len() && ix.dist[a + j] - ix.dist[a + i] < len {
                     j += 1;
                 }
-                if ix.dist[a + j] - ix.dist[a + i] < len.min(total) * 0.95 {
+                if ix.dist[a + j] - ix.dist[a + i] < len {
                     break;
                 }
                 let m = ((pre[j + 1] - pre[i]) / (j + 1 - i) as f64) as f32;
                 let mid = &samples[ix.seq[a + (i + j) / 2] as usize];
-                let inside = mid.lon >= bb[0] && mid.lon <= bb[2] && mid.lat >= bb[1] && mid.lat <= bb[3];
+                let inside = region.contains(mid.lon, mid.lat);
                 if inside && best.is_none_or(|b| m > b.0) {
                     best = Some((m, a + i, a + j));
                 }

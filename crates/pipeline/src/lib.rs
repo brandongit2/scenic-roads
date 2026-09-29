@@ -1,5 +1,8 @@
+pub mod buildings;
 pub mod climbs;
 pub mod elev;
+pub mod roads;
+pub mod scache;
 pub mod terr;
 pub mod view;
 

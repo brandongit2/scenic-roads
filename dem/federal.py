@@ -205,7 +205,7 @@ def main():
         it, how = wd_match(rec)
         if it:
             used_q.add(it["q"])
-            located.append((rec, it["lon"], it["lat"], how, it["wiki"] or f"https://www.wikidata.org/wiki/{it['q']}"))
+            located.append((rec, it["lon"], it["lat"], how, it["wiki"] or f"https://www.wikidata.org/wiki/{it['q']}", it.get("fr")))
         else:
             unmatched.append(rec)
 
@@ -233,7 +233,7 @@ def main():
         used_q.add(it["q"])
         rec = unmatched[ri]
         located.append((rec, it["lon"], it["lat"], f"wikidata (paired {sim:.2f}: '{it['en'] or it['fr']}')",
-                        it["wiki"] or f"https://www.wikidata.org/wiki/{it['q']}"))
+                        it["wiki"] or f"https://www.wikidata.org/wiki/{it['q']}", it.get("fr")))
     unmatched = [r for i, r in enumerate(unmatched) if i not in done_r]
 
     # OSM fallback for the rest.
@@ -259,14 +259,17 @@ def main():
             cand += [h for h in hits.get(nm, []) if province_of(provs, h[0], h[1]) == rec["prov"]]
         if cand:
             lon, lat, osm_name = cand[0]
-            located.append((rec, lon, lat, f"OSM ('{osm_name}')", None))
+            located.append((rec, lon, lat, f"OSM ('{osm_name}')", None, osm_name))
         else:
             still.append(rec)
 
     feats = []
-    for rec, lon, lat, how, url in located:
+    for rec, lon, lat, how, url, local in located:
+        # Québec: the French name (the matched Wikidata item's label, or the OSM name, which is local).
+        name = local if rec["prov"] == "CA-QC" and local else rec["name"]
         feats.append({"type": "Feature", "geometry": {"type": "Point", "coordinates": [round(lon, 6), round(lat, 6)]},
-                      "properties": {"name": rec["name"], "designation": rec["type"], "level": 2, "date": rec["date"],
+                      "properties": {"name": name, "name_en": rec["name"] if name != rec["name"] else None,
+                                     "designation": rec["type"], "level": 2, "date": rec["date"],
                                      "dfhd_id": rec["id"], "url": url or DFHD_URL, "source": "Parks Canada DFHD",
                                      "location": how}})
     (H / "federal.json").write_text(json.dumps({"type": "FeatureCollection", "features": feats}, ensure_ascii=False))
@@ -276,7 +279,7 @@ def main():
     with open(H / "federal-report.csv", "w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(["status", "designation", "province", "name", "dfhd_id", "local_area", "located_via", "lon", "lat"])
-        for rec, lon, lat, how, _ in located:
+        for rec, lon, lat, how, _, _local in located:
             w.writerow(["located", rec["type"], rec["prov"], rec["name"], rec["id"], rec["area"], how, f"{lon:.5f}", f"{lat:.5f}"])
         for rec in still:
             w.writerow(["MISSING (not located)", rec["type"], rec["prov"], rec["name"], rec["id"], rec["area"], "", "", ""])

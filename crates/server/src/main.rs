@@ -2,7 +2,9 @@
 //!
 //! usage: server [--data data/build] [--web web/dist] [--fonts data/fonts] [--port 8080]
 
+mod details;
 mod drives;
+mod rides;
 mod terrain;
 mod viewshed;
 
@@ -14,7 +16,7 @@ use axum::{
     routing::get,
     Json, Router,
 };
-use roadcore::{archive::Archive, class, climb::ClimbRec, dist_m, flag, Array, DemSource, Ways, E7};
+use roadcore::{archive::Archive, class, climb::ClimbRec, dist_m, flag, Array, DemSource, Ways, E7, NDEM};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -36,6 +38,7 @@ pub struct AppState {
     slope: Option<Archive>,
     grid: Option<GridData>,
     drives: Option<drives::DriveIndex>,
+    rails_ix: Option<rides::RailIndex>,
     /// Per-vertex scenic channels (for profiles).
     vch: Option<Array<[u8; roadcore::scenic::ch::N]>>,
     data_dir: PathBuf,
@@ -44,11 +47,18 @@ pub struct AppState {
     grade: Array<u8>,
     src: Array<u8>,
     tiles: Archive,
+    /// Passenger rail tiles (absent before the first build with rail).
+    rails: Option<Archive>,
+    /// Tree cover layer (`dem/trees.py`): cover, canopy height, leaf type; Terrarium WebP tiles.
+    trees: [Option<Archive>; 3],
     climbs: Array<ClimbRec>,
     climb_geom: Array<[i32; 2]>,
+    /// Per way: length of the whole road it belongs to, metres (pipeline `roads`).
+    road_len: Option<Array<f32>>,
     meta: serde_json::Value,
     /// Endpoint coordinate → ways that start or end there.
     ends: HashMap<[i32; 2], Vec<u32>>,
+    details: details::Details,
 }
 
 pub type S = Arc<AppState>;
@@ -79,7 +89,47 @@ async fn main() -> Result<()> {
             ends.entry(v[(w.vstart + w.vcount as u64 - 1) as usize]).or_default().push(i as u32);
         }
     }
-    let meta: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(data.join("roads.json"))?)?;
+    let mut meta: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(data.join("roads.json"))?)?;
+    // Build time of each data file the app fetches from. Tiles and layers are cached by the
+    // browser, so the app puts these in their URLs: a rebuilt file gets new URLs.
+    let versions: serde_json::Map<String, serde_json::Value> = [
+        "roads.tiles", "rails.tiles", "terrain.tiles", "slope.tiles", "base.pmtiles", "ways.bin", "pois.json",
+        "heritage.json", "special.json", "indigenous.json", "heritage-areas.json", "heritage-sources.json", "ferries.json",
+        "ferry-lines.json", "trees-cover.tiles", "trees-height.tiles", "trees-leaf.tiles", "rail-freq.bin",
+        "details-poi.jsonl", "details-heritage.jsonl", "details-harea.jsonl", "details-special.jsonl", "details-indigenous.jsonl",
+        "details-park.jsonl", "peaks.json", "props-heritage.jsonl", "layer-summary.json", "layer-pois.json", "layer-heritage.json",
+        "layer-special.json", "layer-indigenous.json", "layer-heritage-areas.json",
+    ]
+    .iter()
+    .filter_map(|f| {
+        let t = std::fs::metadata(data.join(f)).and_then(|m| m.modified()).ok()?;
+        let secs = t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+        Some((f.to_string(), serde_json::Value::from(secs)))
+    })
+    .collect();
+    // Basemap parts: regions added after base.pmtiles was built, one archive each (see Makefile).
+    let mut versions = versions;
+    let mut parts: Vec<String> = std::fs::read_dir(data.join("base-parts"))
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".pmtiles")).map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    parts.sort();
+    for p in &parts {
+        if let Some(secs) = std::fs::metadata(data.join("base-parts").join(format!("{p}.pmtiles")))
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        {
+            versions.insert(format!("base-parts/{p}.pmtiles"), serde_json::Value::from(secs.as_secs()));
+        }
+    }
+    if let Some(m) = meta.as_object_mut() {
+        m.insert("versions".into(), serde_json::Value::Object(versions));
+        m.insert("baseParts".into(), serde_json::json!(parts));
+    }
     let grid = roadcore::grid::GridIndex::load(&data).ok().and_then(|idx| {
         Some(GridData {
             idx,
@@ -95,20 +145,32 @@ async fn main() -> Result<()> {
             None
         }
     };
+    let rails_ix = match rides::RailIndex::open(&data, &ways, &strings) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            eprintln!("rail lines unavailable: {e}");
+            None
+        }
+    };
     let vch = Array::open(&data.join("scenic.u8")).ok().filter(|a: &Array<[u8; roadcore::scenic::ch::N]>| a.get().len() == ways.verts().len());
     let state = Arc::new(AppState {
         terrain: Archive::open(&data.join("terrain.tiles")).ok(),
         slope: Archive::open(&data.join("slope.tiles")).ok(),
         grid,
         drives,
+        rails_ix,
         vch,
         data_dir: data.clone(),
         elev: Array::open(&data.join("final.i16"))?,
         grade: Array::open(&data.join("grade.u8"))?,
         src: Array::open(&data.join("src.u8"))?,
         tiles: Archive::open(&data.join("roads.tiles"))?,
+        trees: TREE_VARS.map(|v| Archive::open(&data.join(format!("trees-{v}.tiles"))).ok()),
+        rails: Archive::open(&data.join("rails.tiles")).ok(),
         climbs: Array::open(&data.join("climbs.bin"))?,
         climb_geom: Array::open(&data.join("climbs.geom"))?,
+        road_len: Array::open(&data.join("roadlen.f32")).ok().filter(|a: &Array<f32>| a.get().len() == ways.ways().len()),
+        details: details::Details::load(&data),
         ways,
         strings,
         meta,
@@ -118,16 +180,25 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .route("/tiles/roads/{z}/{x}/{y}", get(road_tile))
+        .route("/tiles/rails/{z}/{x}/{y}", get(rail_tile))
+        .route("/tiles/trees/{var}/{z}/{x}/{y}", get(tree_tile))
+        .route("/api/railfreq", get(rail_freq_h))
+        .route("/api/detail/{layer}/{i}", get(details::detail))
+        .route("/api/park", get(details::park))
         .route("/api/meta", get(meta_h))
         .route("/api/way/{idx}", get(way_h))
         .route("/api/profile/{idx}", get(profile_h))
+        .route("/api/road/{idx}", get(road_h))
         .route("/api/climbs", get(climbs_h))
         .route("/api/viewshed", get(viewshed::viewshed))
         .route("/api/drives", get(drives::drives))
+        .route("/api/rides", get(rides::rides))
+        .route("/api/raillines", get(rides::lines))
         .route("/api/layer/{name}", get(layer_h))
         .route("/tiles/terrain/{z}/{x}/{y}", get(terrain::terrain_tile))
         .route("/tiles/slope/{z}/{x}/{y}", get(terrain::slope_tile))
         .route_service("/tiles/base.pmtiles", ServeFile::new(data.join("base.pmtiles")))
+        .nest_service("/tiles/base-parts", ServeDir::new(data.join("base-parts")))
         .nest_service("/fonts", ServeDir::new(fonts))
         // App files revalidate on every load (cheap 304s) so a rebuilt frontend is picked up.
         .fallback_service(
@@ -146,7 +217,43 @@ async fn main() -> Result<()> {
 }
 
 async fn road_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>) -> Response {
-    match s.tiles.get(z, x, y) {
+    gz_tile(s.tiles.get(z, x, y))
+}
+
+async fn rail_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>) -> Response {
+    gz_tile(s.rails.as_ref().and_then(|a| a.get(z, x, y)))
+}
+
+/// Rail service frequency per way (pipeline `railfreq`): (u32 way, f32 trains a day each way).
+async fn rail_freq_h(State(s): State<S>) -> Response {
+    match tokio::fs::read(s.data_dir.join("rail-freq.bin")).await {
+        Ok(b) => ([(header::CONTENT_TYPE, "application/octet-stream"), (header::CACHE_CONTROL, "public, max-age=86400")], b).into_response(),
+        Err(_) => StatusCode::NO_CONTENT.into_response(),
+    }
+}
+
+const TREE_VARS: [&str; 3] = ["cover", "height", "leaf"];
+
+/// Tree cover tiles: stored as served (lossless WebP). Missing tiles have nothing to show.
+async fn tree_tile(State(s): State<S>, Path((var, z, x, y)): Path<(String, u8, u32, u32)>) -> Response {
+    let Some(i) = TREE_VARS.iter().position(|v| *v == var) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match s.trees[i].as_ref().and_then(|a| a.get(z, x, y)) {
+        Some(b) => (
+            [
+                (header::CONTENT_TYPE, HeaderValue::from_static("image/webp")),
+                (header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400")),
+            ],
+            b.to_vec(),
+        )
+            .into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
+    }
+}
+
+fn gz_tile(t: Option<&[u8]>) -> Response {
+    match t {
         Some(b) => (
             [
                 (header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream")),
@@ -169,9 +276,16 @@ async fn layer_h(State(s): State<S>, Path(name): Path<String>) -> Response {
         "indigenous" => "indigenous.json",
         "heritage-areas" => "heritage-areas.json",
         "sources" => "heritage-sources.json",
+        "ferries" => "ferries.json",
+        "ferry-lines" => "ferry-lines.json",
+        "summary" => "layer-summary.json",
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
-    match tokio::fs::read(s.data_dir.join(file)).await {
+    // The overlays as the map draws them (dem/layers.py: lean properties, draw order, simplified
+    // polygons), when built.
+    let lean = s.data_dir.join(format!("layer-{file}"));
+    let path = if tokio::fs::try_exists(&lean).await.unwrap_or(false) { lean } else { s.data_dir.join(file) };
+    match tokio::fs::read(path).await {
         Ok(b) => ([(header::CONTENT_TYPE, "application/geo+json"), (header::CACHE_CONTROL, "public, max-age=3600")], b).into_response(),
         Err(_) => ([(header::CONTENT_TYPE, "application/geo+json")], r#"{"type":"FeatureCollection","features":[]}"#).into_response(),
     }
@@ -198,8 +312,13 @@ struct WayInfo {
     oneway: bool,
     toll: bool,
     covered: bool,
-    /// Designated scenic route this road is part of.
+    /// Designated scenic route this road is part of; rail: the services using the track.
     route: String,
+    /// Rail: service groups using the track (class names), line colour (#rrggbb).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    rail: Vec<&'static str>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    colour: String,
     length_m: f64,
     elev_min: f32,
     elev_max: f32,
@@ -216,12 +335,12 @@ fn way_info(s: &AppState, idx: u32) -> Option<WayInfo> {
         .windows(2)
         .map(|p| dist_m(p[0][0] as f64 * E7, p[0][1] as f64 * E7, p[1][0] as f64 * E7, p[1][1] as f64 * E7))
         .sum();
-    let mut counts = [0u32; 4];
+    let mut counts = [0u32; NDEM];
     for &c in &s.src.get()[r] {
-        counts[(c as usize).min(3)] += 1;
+        counts[(c as usize).min(NDEM - 1)] += 1;
     }
     let n = w.vcount as f32;
-    let sources = (1..4)
+    let sources = (1..NDEM)
         .filter(|&k| counts[k] > 0)
         .map(|k| (DemSource::label(k as u8).to_string(), counts[k] as f32 / n))
         .collect();
@@ -243,6 +362,8 @@ fn way_info(s: &AppState, idx: u32) -> Option<WayInfo> {
         toll: w.flags & flag::TOLL != 0,
         covered: w.flags & flag::COVERED != 0,
         route: st(w.route),
+        rail: (0..5).filter(|k| w.rail >> k & 1 == 1).map(|k| class::NAMES[class::TRAM as usize + k]).collect(),
+        colour: if w.colour != 0 { format!("#{:06x}", w.colour & 0xff_ffff) } else { String::new() },
         length_m: len,
         elev_min: e.iter().copied().min().unwrap_or(0) as f32 / 10.0,
         elev_max: e.iter().copied().max().unwrap_or(0) as f32 / 10.0,
@@ -390,13 +511,12 @@ async fn profile_h(State(s): State<S>, Path(idx): Path<u32>) -> Response {
     }
 }
 
-fn build_profile(s: &AppState, idx: u32) -> Option<Profile> {
-    let info = way_info(s, idx)?;
-    let ways = s.ways.ways();
-    let v = s.ways.verts();
+/// The whole road a way belongs to: the ways of the same road continuing from it both ways,
+/// oriented in order (see `extend`), and whether the walk was cut short.
+fn road_chain(s: &AppState, idx: u32) -> Option<(Vec<OWay>, bool)> {
+    let w0 = s.ways.ways().get(idx as usize)?;
     let key = road_key(s, idx as usize);
     let mut used: HashSet<u32> = HashSet::from([idx]);
-    let w0 = &ways[idx as usize];
     let first = w0.vstart as usize;
     let lastv = (w0.vstart + w0.vcount as u64 - 1) as usize;
     const MAX_M: f64 = 400_000.0;
@@ -406,6 +526,22 @@ fn build_profile(s: &AppState, idx: u32) -> Option<Profile> {
     let mut chain: Vec<OWay> = back.into_iter().rev().map(|(i, r)| (i, !r)).collect();
     chain.push((idx, false));
     chain.extend(fwd);
+    Some((chain, truncated))
+}
+
+/// Way ids of the whole road a way belongs to (for highlighting it on hover).
+async fn road_h(State(s): State<S>, Path(idx): Path<u32>) -> Response {
+    let s2 = s.clone();
+    match tokio::task::spawn_blocking(move || road_chain(&s2, idx)).await {
+        Ok(Some((chain, _))) => ([(header::CACHE_CONTROL, "public, max-age=86400")], Json(chain.iter().map(|o| o.0).collect::<Vec<u32>>())).into_response(),
+        _ => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+fn build_profile(s: &AppState, idx: u32) -> Option<Profile> {
+    let info = way_info(s, idx)?;
+    let v = s.ways.verts();
+    let (chain, truncated) = road_chain(s, idx)?;
 
     // Concatenate vertex indices along the chain.
     let mut vi: Vec<usize> = Vec::new();
@@ -420,7 +556,7 @@ fn build_profile(s: &AppState, idx: u32) -> Option<Profile> {
     let mut dist = Vec::with_capacity(vi.len());
     let mut acc = 0f64;
     let (mut climb, mut descent) = (0f64, 0f64);
-    let mut src_len = [0f64; 4];
+    let mut src_len = [0f64; NDEM];
     dist.push(0.0);
     for k in 1..vi.len() {
         let (a, b) = (vi[k - 1], vi[k]);
@@ -429,7 +565,7 @@ fn build_profile(s: &AppState, idx: u32) -> Option<Profile> {
         dist.push(acc);
         let de = (el[b] - el[a]) as f64 / 10.0;
         if de > 0.0 { climb += de } else { descent -= de }
-        src_len[(src[b] as usize).min(3)] += d;
+        src_len[(src[b] as usize).min(NDEM - 1)] += d;
     }
     let (mut emin, mut emax, mut gmax) = (i16::MAX, i16::MIN, 0u8);
     for &i in &vi {
@@ -466,7 +602,7 @@ fn build_profile(s: &AppState, idx: u32) -> Option<Profile> {
         descent_m: descent,
         max_grade: gmax as f32 / 2.0,
         avg_grade: ((climb + descent) / total * 100.0) as f32,
-        sources: (1..4)
+        sources: (1..NDEM)
             .filter(|&k| src_len[k] > 0.0)
             .map(|k| (DemSource::label(k as u8).to_string(), src_len[k] / total))
             .collect(),
@@ -475,12 +611,68 @@ fn build_profile(s: &AppState, idx: u32) -> Option<Profile> {
     })
 }
 
+// ---- the area in view -----------------------------------------------------------------
+
+/// The part of the map in view: a bounding box and, when the client sends it, the outline of the
+/// ground on screen. On a tilted globe the bounding box of a view that reaches a pole spans every
+/// longitude, far more than is on screen (North America's view would take in Europe).
+pub struct Region {
+    /// west, south, east, north (E7 degrees).
+    pub bb: [i32; 4],
+    poly: Vec<[f64; 2]>,
+}
+
+impl Region {
+    /// `bbox`: west,south,east,north; `poly`: lon,lat,lon,lat,… (degrees), at least 3 points.
+    pub fn parse(bbox: &str, poly: Option<&str>) -> Option<Region> {
+        let pts: Vec<[f64; 2]> = poly
+            .map(|p| {
+                let v: Vec<f64> = p.split(',').filter_map(|x| x.parse().ok()).collect();
+                v.chunks_exact(2).map(|c| [c[0], c[1]]).collect()
+            })
+            .unwrap_or_default();
+        if pts.len() >= 3 {
+            let (mut w, mut so, mut e, mut n) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+            for p in &pts {
+                (w, e, so, n) = (w.min(p[0]), e.max(p[0]), so.min(p[1]), n.max(p[1]));
+            }
+            let bb = [(w / E7) as i32, (so / E7) as i32, (e / E7) as i32, (n / E7) as i32];
+            return Some(Region { bb, poly: pts });
+        }
+        let b: Vec<f64> = bbox.split(',').filter_map(|x| x.parse().ok()).collect();
+        (b.len() == 4).then(|| Region { bb: [(b[0] / E7) as i32, (b[1] / E7) as i32, (b[2] / E7) as i32, (b[3] / E7) as i32], poly: Vec::new() })
+    }
+
+    /// Point (E7 degrees) in view.
+    pub fn contains(&self, lon: i32, lat: i32) -> bool {
+        if lon < self.bb[0] || lon > self.bb[2] || lat < self.bb[1] || lat > self.bb[3] {
+            return false;
+        }
+        if self.poly.is_empty() {
+            return true;
+        }
+        let (x, y) = (lon as f64 * E7, lat as f64 * E7);
+        let mut inside = false;
+        let n = self.poly.len();
+        for i in 0..n {
+            let (a, b) = (self.poly[i], self.poly[(i + n - 1) % n]);
+            if (a[1] > y) != (b[1] > y) && x < (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]) + a[0] {
+                inside = !inside;
+            }
+        }
+        inside
+    }
+}
+
 // ---- climbs -------------------------------------------------------------------------
 
 #[derive(Deserialize)]
 struct ClimbQuery {
     /// west,south,east,north
     bbox: String,
+    /// Outline of the ground in view (see `Region`).
+    #[serde(default)]
+    poly: Option<String>,
     #[serde(default)]
     sort: Option<String>,
     #[serde(default)]
@@ -491,6 +683,31 @@ struct ClimbQuery {
     /// Bit 0 paved, bit 1 unpaved.
     #[serde(default)]
     surface: Option<u8>,
+    /// Bit 0 toll-free, bit 1 toll.
+    #[serde(default)]
+    toll: Option<u8>,
+    /// Classes (bits) whose unnamed roads (no name, no ref) are left out.
+    #[serde(default)]
+    unnamed: Option<u32>,
+    /// Whole-road length filter, metres (0 = no limit).
+    #[serde(default)]
+    lmin: Option<f32>,
+    #[serde(default)]
+    lmax: Option<f32>,
+}
+
+impl AppState {
+    /// The way's whole road is within the length filter [lmin, lmax] (m; 0 = no limit).
+    pub fn road_len_ok(&self, way: u32, lmin: Option<f32>, lmax: Option<f32>) -> bool {
+        let (lo, hi) = (lmin.unwrap_or(0.0), lmax.filter(|&v| v > 0.0).unwrap_or(f32::INFINITY));
+        if lo <= 0.0 && hi == f32::INFINITY {
+            return true;
+        }
+        let Some(rl) = self.road_len.as_ref().and_then(|a| a.get().get(way as usize).copied()) else { return true };
+        // Tiles carry whole metres.
+        let r = rl.round();
+        r >= lo && r <= hi
+    }
 }
 
 #[derive(Serialize)]
@@ -516,22 +733,27 @@ struct ClimbList {
 }
 
 async fn climbs_h(State(s): State<S>, Query(q): Query<ClimbQuery>) -> Response {
-    let b: Vec<f64> = q.bbox.split(',').filter_map(|x| x.parse().ok()).collect();
-    if b.len() != 4 {
+    let Some(region) = Region::parse(&q.bbox, q.poly.as_deref()) else {
         return StatusCode::BAD_REQUEST.into_response();
-    }
-    let (w, so, e, n) = ((b[0] / E7) as i64, (b[1] / E7) as i64, (b[2] / E7) as i64, (b[3] / E7) as i64);
+    };
     let classes = q.classes.unwrap_or(u32::MAX);
     let surface = q.surface.unwrap_or(3);
+    let toll = q.toll.unwrap_or(3);
+    let unnamed = q.unnamed.unwrap_or(0);
     let mut hits: Vec<(f32, &ClimbRec)> = s
         .climbs
         .get()
         .iter()
         .filter(|c| {
-            let (x, y) = (c.mid[0] as i64, c.mid[1] as i64);
-            x >= w && x <= e && y >= so && y <= n
+            region.contains(c.mid[0], c.mid[1])
                 && (classes >> c.class) & 1 == 1
                 && (surface >> (c.unpaved & 1)) & 1 == 1
+                && (toll >> (s.ways.ways()[c.label_way as usize].flags & flag::TOLL != 0) as u8) & 1 == 1
+                && !((unnamed >> c.class) & 1 == 1 && {
+                    let lw = &s.ways.ways()[c.label_way as usize];
+                    lw.name == 0 && lw.ref_ == 0
+                })
+                && s.road_len_ok(c.label_way, q.lmin, q.lmax)
         })
         .map(|c| {
             let avg = c.gain_m / c.length_m.max(1.0);

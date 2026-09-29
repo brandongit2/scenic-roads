@@ -3,7 +3,7 @@ import type { Profile } from '../api';
 import { paletteRgb } from '../palettes';
 import { metricOf, modeDef, type Mode } from '../scenic';
 import * as prefs from '../prefs';
-import { fmt, h, niceStep, setupCanvas } from './dom';
+import { cap, fmt, h, niceStep, setupCanvas } from './dom';
 
 export interface ProfileColour {
   palette: string;
@@ -108,7 +108,7 @@ export class ProfilePanel {
     const w = p.way;
     const title = h('div', { class: 'name' });
     if (w.ref) title.append(h('span', { class: 'pill', style: 'color:var(--text)' }, w.ref));
-    title.append(h('span', {}, w.name || (w.ref ? `Route ${w.ref}` : `Unnamed ${w.class.replace('_', ' ')}`)));
+    title.append(h('span', {}, cap(w.name) || (w.ref ? `Route ${w.ref}` : `Unnamed ${w.class.replace('_', ' ')}`)));
     const chip = (k: string, v: string) => h('span', {}, `${k} `, h('b', {}, v));
     const src = p.sources.map(([s, f]) => `${s.replace(/ \(.*\)/, '')} ${(f * 100).toFixed(0)} %`).join(' · ');
     this.root.replaceChildren(

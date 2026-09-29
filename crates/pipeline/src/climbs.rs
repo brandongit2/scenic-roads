@@ -27,7 +27,7 @@ pub type OWay = (u32, bool);
 pub fn strokes(net: &Net) -> Vec<Vec<OWay>> {
     let n = net.ways.len();
     let mut used = vec![false; n];
-    let usable = |w: usize| net.ways[w].class != class::FERRY;
+    let usable = |w: usize| net.ways[w].class != class::FERRY && !class::is_rail(net.ways[w].class);
     let mutual = |from: usize, c: usize, c_starts: bool| {
         let side = if c_starts { 0 } else { 1 };
         net.cont[c][side].is_some_and(|(b, _)| b as usize == from)

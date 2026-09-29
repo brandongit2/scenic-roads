@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Land cover on the z11 analysis grid (grid.idx) from ESA WorldCover 2021 (10 m).
+"""Land cover on the z11 analysis grid (grid.idx) from ESA WorldCover 2021 (10 m). Incremental:
+tiles done in the last run are copied (see main).
 
 Reads WorldCover's 1/4 overview (~40 m) over each grid tile and samples it at the cell
 centres (nearest). Classes are collapsed to roadcore::grid::class:
@@ -88,14 +89,35 @@ def main():
     b: Path = args.build
     tiles = np.fromfile(b / "grid.idx", dtype=np.uint32).reshape(-1, 2)
     out = np.memmap(b / "grid.class.u8.tmp", dtype=np.uint8, mode="w+", shape=(len(tiles), 256, 256))
+    # Tiles classified in the last run are copied from its grid.class.u8 (still in place; its
+    # tile order is in data/cache/steps/landcover.tiles); only new tiles are read from WorldCover.
+    cache = b.parent / "cache" / "steps" / "landcover.tiles"
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    todo = list(range(len(tiles)))
+    if cache.exists() and (b / "grid.class.u8").exists():
+        prev = np.fromfile(cache, dtype=np.uint32).reshape(-1, 2)
+        old = np.memmap(b / "grid.class.u8", dtype=np.uint8, mode="r")
+        if old.size == len(prev) * 65536:
+            old = old.reshape(-1, 256, 256)
+            slot = {(int(x), int(y)): i for i, (x, y) in enumerate(prev)}
+            todo = []
+            for i, (x, y) in enumerate(tiles):
+                j = slot.get((int(x), int(y)))
+                if j is None:
+                    todo.append(i)
+                else:
+                    out[i] = old[j]
+        del old
+    print(f"land cover: {len(tiles)} grid tiles, {len(tiles) - len(todo)} from the last run, {len(todo)} to classify")
     with ThreadPoolExecutor(args.workers) as pool:
-        futs = {pool.submit(tile_classes, int(t[0]), int(t[1])): i for i, t in enumerate(tiles)}
+        futs = {pool.submit(tile_classes, int(tiles[i][0]), int(tiles[i][1])): i for i in todo}
         for f in tqdm(as_completed(futs), total=len(futs), desc="WorldCover → z11 grid", unit="tile"):
             out[futs[f]] = f.result()
     out.flush()
     counts = np.bincount(np.asarray(out).ravel(), minlength=8)
     del out
     os.replace(b / "grid.class.u8.tmp", b / "grid.class.u8")
+    tiles.tofile(cache)
     names = ["none", "trees", "shrub", "open", "built", "water", "wetland", "snow"]
     tot = counts.sum()
     print("classes:", {n: f"{c / tot * 100:.1f} %" for n, c in zip(names, counts)})

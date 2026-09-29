@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Provincial and municipal historic places for New Brunswick, Prince Edward Island and
-Newfoundland and Labrador from the Canadian Register of Historic Places (historicplaces.ca,
-Parks Canada with the provinces). These provinces publish no open dataset with coordinates.
+"""Provincial and municipal historic places for New Brunswick, Prince Edward Island,
+Newfoundland and Labrador, the western provinces and the territories from the Canadian Register of
+Historic Places (historicplaces.ca, Parks Canada with the provinces). These publish no open
+dataset with coordinates (Quebec, Ontario and Nova Scotia do: heritage.py reads those).
 
 1. A map-bounds search per province (all results on one page) lists every place with its
    coordinates.
@@ -37,6 +38,13 @@ PROVINCES = {
     "New Brunswick": ("CA-NB", (-69.1, 44.5, -63.7, 48.1)),
     "Prince Edward Island": ("CA-PE", (-64.5, 45.9, -61.9, 47.1)),
     "Newfoundland and Labrador": ("CA-NL", (-67.9, 46.5, -52.5, 60.5)),
+    "Manitoba": ("CA-MB", (-102.1, 48.9, -88.9, 60.1)),
+    "Saskatchewan": ("CA-SK", (-110.0, 49.0, -101.3, 60.0)),
+    "Alberta": ("CA-AB", (-120.0, 49.0, -110.0, 60.0)),
+    "British Columbia": ("CA-BC", (-139.1, 48.2, -114.0, 60.0)),
+    "Yukon": ("CA-YT", (-141.0, 60.0, -123.8, 69.7)),
+    "Northwest Territories": ("CA-NT", (-136.5, 60.0, -101.9, 78.8)),
+    "Nunavut": ("CA-NU", (-120.7, 51.6, -61.0, 83.2)),
 }
 CREDIT = "Canadian Register of Historic Places (historicplaces.ca)"
 
@@ -71,7 +79,10 @@ def list_places(bbox) -> list[dict]:
     form = hidden_fields(t)
     form.update({"__EVENTTARGET": sel, "__EVENTARGUMENT": "", sel: "65535"})
     t = fetch(url, form)
-    places = json.loads(re.search(r"placeLayer = (\[.*?\]);", t, re.S).group(1))
+    raw = re.search(r"placeLayer = (\[.*?\]);", t, re.S).group(1)
+    # Some names hold stray backslashes and raw control characters (not valid JSON).
+    raw = re.sub(r'\\(["\\/bfnrt]|u[0-9a-fA-F]{4})|\\', lambda m: m.group(0) if m.group(1) else "\\\\", raw)
+    places = json.loads(raw, strict=False)
     if len(places) < total:
         print(f"  warning: {len(places)} of {total} listed", file=sys.stderr)
     return places

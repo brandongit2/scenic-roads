@@ -2,9 +2,14 @@
 """Sample national DEMs at every road vertex.
 
 Priority per vertex (first source with valid data wins):
+  North America (west of 40° W)
   1. NRCan HRDEM 2 m lidar mosaic, read at its 8 m overview  (Canada, where lidar exists)
   2. USGS 3DEP 1/3 arc-second (~10 m)                         (United States)
   3. NRCan MRDEM 30 m                                         (Canada + border fallback)
+  Elsewhere (Europe, Hong Kong), and North American points none of the above cover
+  4. FABDEM v1-2 30 m: Copernicus DEM with forests and buildings removed (University of
+     Bristol; CC BY-NC-SA 4.0, personal use). Its 1° tiles are read in place inside the
+     official 10° zips (stored uncompressed, so GDAL range-reads them through /vsizip).
 
 Only the COG blocks that contain road vertices are fetched (HTTP range requests); nothing
 is stored except the per-vertex results.
@@ -31,7 +36,7 @@ from pathlib import Path
 
 os.environ.update(
     GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
-    CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif",
+    CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif,.zip",
     GDAL_HTTP_MAX_RETRY="10",
     GDAL_HTTP_RETRY_DELAY="2",
     GDAL_HTTP_TIMEOUT="90",
@@ -49,8 +54,10 @@ HERE = Path(__file__).resolve().parent
 NRCAN = "https://canelevation-dem.s3.ca-central-1.amazonaws.com"
 MRDEM = f"/vsicurl/{NRCAN}/mrdem-30/mrdem-30-dtm.tif"
 USGS = "/vsicurl/https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF/current/{t}/USGS_13_{t}.tif"
+FABDEM = "/vsizip//vsicurl/https://data.bris.ac.uk/datasets/s5hqmjcdj8yo2ibzi9b4ew3sn/{z}_FABDEM_V1-2.zip/{t}_FABDEM_V1-2.tif"
 
-SRC_HRDEM, SRC_3DEP, SRC_MRDEM = 1, 2, 3
+SRC_HRDEM, SRC_3DEP, SRC_MRDEM, SRC_FABDEM = 1, 2, 3, 4
+NA_WEST_OF = -40.0  # North America: the national DEMs above; elsewhere FABDEM
 NODATA_BELOW = -1000.0  # all three sources use large negative nodata values
 
 _tls = threading.local()
@@ -131,6 +138,31 @@ def sample_raster(url, level, idx, px, py, elev, src, code, pool, desc, block=51
         src[ii] = code
         good += int(ok.sum())
     return good
+
+
+def fabdem_name(lat0: int, lon0: int) -> str:
+    """FABDEM tile / zip corner name, e.g. N43E007 (latitude and longitude of the SW corner)."""
+    return f"{'N' if lat0 >= 0 else 'S'}{abs(lat0):02d}{'E' if lon0 >= 0 else 'W'}{abs(lon0):03d}"
+
+
+def fabdem_groups(lon, lat, idx):
+    """Group point indices by FABDEM 1° tile: {(tile, zip): indices}. Tiles are named by their
+    SW corner; the 10° zips by their SW and NE corners."""
+    if idx.size == 0:
+        return {}
+    la, lo = np.floor(lat[idx]).astype(np.int64), np.floor(lon[idx]).astype(np.int64)
+    tkey = (la + 90) * 1000 + (lo + 180)
+    order = np.argsort(tkey, kind="stable")
+    tk = tkey[order]
+    starts = np.flatnonzero(np.r_[True, tk[1:] != tk[:-1]])
+    groups = {}
+    for s, e in zip(starts, np.r_[starts[1:], tk.size]):
+        k = int(tk[s])
+        lat0, lon0 = k // 1000 - 90, k % 1000 - 180
+        la10, lo10 = lat0 // 10 * 10, lon0 // 10 * 10
+        z = f"{fabdem_name(la10, lo10)}-{fabdem_name(la10 + 10, lo10 + 10)}"
+        groups[(fabdem_name(lat0, lon0), z)] = idx[order[s:e]]
+    return groups
 
 
 def usgs_groups(lon, lat, idx):
@@ -217,16 +249,22 @@ def main():
         elev[miss[ok]] = loc_elev[ok]
         src[miss[ok]] = loc_src[ok]
 
-    # Project to EPSG:3979 (Canada Atlas Lambert, used by HRDEM and MRDEM).
+    # North American vertices use the national DEMs, the rest FABDEM.
+    na = lon < NA_WEST_OF
+    local = np.flatnonzero(na)
+    elsewhere = np.flatnonzero(~na)
+    print(f"  {local.size:,} in North America, {elsewhere.size:,} elsewhere")
+
+    # Project to EPSG:3979 (Canada Atlas Lambert, used by HRDEM and MRDEM); NaN outside North America.
     tr = Transformer.from_crs("EPSG:4326", "EPSG:3979", always_xy=True)
-    x = np.empty(miss.size, np.float64)
-    y = np.empty(miss.size, np.float64)
+    x = np.full(miss.size, np.nan, np.float64)
+    y = np.full(miss.size, np.nan, np.float64)
     step = 5_000_000
-    for i in tqdm(range(0, miss.size, step), desc="project → EPSG:3979", unit="chunk"):
-        x[i : i + step], y[i : i + step] = tr.transform(lon[i : i + step], lat[i : i + step])
+    for i in tqdm(range(0, local.size, step), desc="project → EPSG:3979", unit="chunk"):
+        sel = local[i : i + step]
+        x[sel], y[sel] = tr.transform(lon[sel], lat[sel])
 
     pool = ThreadPoolExecutor(max_workers=args.workers)
-    local = np.arange(miss.size)
 
     # ---- 1. HRDEM lidar (8 m overview of the 2 m mosaic) ----------------------------
     index = json.loads((HERE / "hrdem_tile_index.geojson").read_text())
@@ -238,7 +276,7 @@ def main():
             continue
         xs = [p[0] for p in f["geometry"]["coordinates"][0]]
         ys = [p[1] for p in f["geometry"]["coordinates"][0]]
-        sel = local[(x >= min(xs)) & (x < max(xs)) & (y > min(ys)) & (y <= max(ys))]
+        sel = local[(x[local] >= min(xs)) & (x[local] < max(xs)) & (y[local] > min(ys)) & (y[local] <= max(ys))]
         if sel.size:
             tiles.append((tid, sel))
     tiles.sort(key=lambda t: -t[1].size)
@@ -254,7 +292,7 @@ def main():
         mark(name)
 
     # ---- 2. USGS 3DEP 1/3" -----------------------------------------------------------
-    left = local[np.isnan(loc_elev)]
+    left = local[np.isnan(loc_elev[local])]
     groups = usgs_groups(lon, lat, left)
     print(f"3DEP: {left.size:,} vertices left, {len(groups)} candidate 1° tiles")
     for tname, sel in tqdm(sorted(groups.items(), key=lambda kv: -kv[1].size), desc="USGS 3DEP tiles", unit="tile"):
@@ -272,24 +310,44 @@ def main():
 
     # ---- 3. MRDEM 30 m fallback ---------------------------------------------------------
     if "mrdem" not in done:
-        left = local[np.isnan(loc_elev)]
+        left = local[np.isnan(loc_elev[local])]
         print(f"MRDEM: {left.size:,} vertices left")
         if left.size:
             got = sample_raster(MRDEM, None, left, x[left], y[left], loc_elev, loc_src, SRC_MRDEM, pool, "MRDEM 30 m blocks")
             print(f"  MRDEM: {got:,}/{left.size:,}")
         scatter()
         mark("mrdem")
+
+    # ---- 4. FABDEM 30 m (outside North America, and North American points none of the national
+    # DEMs cover, e.g. Saint-Pierre-et-Miquelon) --------------------------------------------
+    uncovered = local[np.isnan(loc_elev[local])]
+    if uncovered.size:
+        print(f"FABDEM fallback: {uncovered.size:,} North American vertices without a national DEM")
+    groups = fabdem_groups(lon, lat, np.concatenate([elsewhere, uncovered]))
+    print(f"FABDEM: {elsewhere.size:,} vertices, {len(groups)} 1° tiles")
+    for (tname, zname), sel in tqdm(sorted(groups.items(), key=lambda kv: -kv[1].size), desc="FABDEM tiles", unit="tile"):
+        name = f"fabdem:{tname}"
+        if name in done:
+            continue
+        try:
+            got = sample_raster(FABDEM.format(z=zname, t=tname), None, sel, lon[sel], lat[sel], loc_elev, loc_src, SRC_FABDEM, pool, f"  {tname} ({sel.size:,} pts)")
+        except rasterio.errors.RasterioIOError:
+            got = 0  # no tile: open sea
+        tqdm.write(f"  FABDEM {tname}: {got:,}/{sel.size:,}")
+        scatter()
+        mark(name)
     pool.shutdown()
 
     # ---- finish: stats, atomic rename, refresh cache ---------------------------------
     elev.flush()
     src.flush()
-    counts = np.bincount(src, minlength=4)
+    counts = np.bincount(src, minlength=5)
     stats = {
         "vertices": int(n),
         "hrdem": int(counts[1]),
         "usgs3dep": int(counts[2]),
         "mrdem": int(counts[3]),
+        "fabdem": int(counts[4]),
         "missing": int(counts[0]),
         "sampled_this_run": int(miss.size),
         "seconds": round(time.time() - t_start, 1),

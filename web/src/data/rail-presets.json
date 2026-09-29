@@ -1,0 +1,30 @@
+{
+  "about": "Built-in rail ride-factor presets. Weights are keyed by factor (see RAIL_COMPONENTS in rail.ts); missing factors weigh 0. The first preset is the default. Edits made in the app are kept in the browser and replace this list there.",
+  "presets": [
+    {
+      "id": "balanced",
+      "name": "Balanced",
+      "weights": { "views": 1, "water": 1.2, "vista": 0.8, "relief": 1, "ledge": 0.8, "altitude": 0.4, "viaduct": 0.8, "tunnel": -1, "gradient": 0.4, "curvy": 0.3, "freq": 0.3 }
+    },
+    {
+      "id": "mountain",
+      "name": "Mountain lines",
+      "weights": { "views": 1, "water": 0.4, "vista": 1, "relief": 2, "ledge": 1.5, "altitude": 1.5, "viaduct": 1, "tunnel": -0.8, "gradient": 1.2, "curvy": 0.8, "freq": 0 }
+    },
+    {
+      "id": "coastal",
+      "name": "Coastal & water",
+      "weights": { "views": 0.8, "water": 2, "vista": 1.2, "relief": 0.3, "ledge": 0.6, "altitude": 0, "viaduct": 0.6, "tunnel": -1.2, "gradient": 0, "curvy": 0.3, "freq": 0.2 }
+    },
+    {
+      "id": "engineering",
+      "name": "Viaducts & engineering",
+      "weights": { "views": 0.6, "water": 0.6, "vista": 0.6, "relief": 0.8, "ledge": 1.5, "altitude": 0.4, "viaduct": 2, "tunnel": 0.2, "gradient": 1.2, "curvy": 1, "freq": 0 }
+    },
+    {
+      "id": "frequent",
+      "name": "Frequent service",
+      "weights": { "views": 0.8, "water": 0.8, "vista": 0.5, "relief": 0.6, "ledge": 0.5, "altitude": 0.2, "viaduct": 0.4, "tunnel": -1, "gradient": 0.2, "curvy": 0.2, "freq": 1.5 }
+    }
+  ]
+}

@@ -37,14 +37,14 @@ fn d(v: &[[i32; 2]], a: usize, b: usize) -> f64 {
     dist_m(v[a][0] as f64 * E7, v[a][1] as f64 * E7, v[b][0] as f64 * E7, v[b][1] as f64 * E7)
 }
 
-fn heading(v: &[[i32; 2]], a: usize, b: usize) -> f64 {
+pub(crate) fn heading(v: &[[i32; 2]], a: usize, b: usize) -> f64 {
     let lat = v[a][1] as f64 * E7;
     let dx = (v[b][0] - v[a][0]) as f64 * lat.to_radians().cos();
     let dy = (v[b][1] - v[a][1]) as f64;
     dy.atan2(dx)
 }
 
-fn turn(a: f64, b: f64) -> f64 {
+pub(crate) fn turn(a: f64, b: f64) -> f64 {
     let mut t = (a - b).abs();
     if t > std::f64::consts::PI {
         t = 2.0 * std::f64::consts::PI - t;
@@ -59,6 +59,8 @@ pub struct Net<'a> {
     pub ends: Vec<[u32; 2]>,
     /// Continuation at [start, end]: (way, true if that way's *start* is at the shared node).
     pub cont: Vec<[Option<(u32, bool)>; 2]>,
+    /// Ways at each node: (way, true if the way *starts* there).
+    pub inc: Vec<Vec<(u32, bool)>>,
 }
 
 impl<'a> Net<'a> {
@@ -121,7 +123,7 @@ impl<'a> Net<'a> {
                 [pick(ends[i][0], s + 1, s), pick(ends[i][1], e - 1, e)]
             })
             .collect();
-        Net { ways, verts, ends, cont }
+        Net { ways, verts, ends, cont, inc }
     }
 
     /// Samples (distance from the endpoint, vertex index) walking outward from way `w`'s

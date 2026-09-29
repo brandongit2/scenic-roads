@@ -1,14 +1,21 @@
-// A select for colour ramps: each option shows its gradient, and hovering (or arrowing to) an
-// option previews it live; leaving the list or Escape reverts, a click commits.
+// The app's colour-map picker: a dropdown whose options show their gradients under section
+// headings; hovering (or arrowing to) an option previews it live, leaving the list or Escape
+// reverts, a click commits. A ⇄ toggle beside it reverses the ramp (key + "_r"); the list then
+// shows every ramp reversed.
+import { baseKey, isRev, withRev } from '../palettes';
 import { h } from './dom';
 
 export interface RampItem {
   key: string;
   label: string;
+  /** Section heading (consecutive items with the same group share one). */
+  group?: string;
 }
 
 export class RampSelect {
-  readonly el: HTMLButtonElement;
+  readonly el: HTMLSpanElement;
+  private btn: HTMLButtonElement;
+  private rev: HTMLButtonElement;
   private swatch: HTMLSpanElement;
   private label: HTMLSpanElement;
   private menu: HTMLDivElement | null = null;
@@ -26,9 +33,16 @@ export class RampSelect {
   ) {
     this.swatch = h('span', { class: 'ramp-sw' });
     this.label = h('span', { class: 'ramp-lb' });
-    this.el = h('button', { class: 'ramp-btn', type: 'button', title: 'Colour ramp (hover an option to preview it on the map)' }, this.swatch, this.label, h('i', {}, '▾'));
-    this.el.addEventListener('click', () => (this.menu ? this.close(true) : this.open()));
-    this.el.addEventListener('keydown', (e) => {
+    this.btn = h('button', { class: 'ramp-btn', type: 'button', title: 'Colour ramp (hover an option to preview it on the map)' }, this.swatch, this.label, h('i', {}, '▾'));
+    this.rev = h('button', { class: 'ramp-rev', type: 'button', title: 'Reverse the colour ramp' }, '⇄');
+    this.rev.addEventListener('click', () => {
+      const key = withRev(this.value, !isRev(this.value));
+      this.set(key);
+      this.onPick(key);
+    });
+    this.el = h('span', { class: 'ramp-pick' }, this.btn, this.rev);
+    this.btn.addEventListener('click', () => (this.menu ? this.close(true) : this.open()));
+    this.btn.addEventListener('keydown', (e) => {
       if (!this.menu && (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ')) {
         e.preventDefault();
         this.open();
@@ -43,22 +57,33 @@ export class RampSelect {
 
   /** Re-render the button's swatch (the ramps depend on other settings). */
   refresh() {
-    const it = this.items.find((i) => i.key === this.value) ?? this.items[0];
-    this.swatch.style.background = this.css(it.key);
+    const base = baseKey(this.value);
+    const it = this.items.find((i) => i.key === base) ?? this.items[0];
+    this.swatch.style.background = this.css(this.keyOf(it));
     this.label.textContent = it.label;
+    this.rev.classList.toggle('on', isRev(this.value));
+  }
+
+  /** An item's key in the current direction. */
+  private keyOf(it: RampItem) {
+    return withRev(it.key, isRev(this.value));
   }
 
   private open() {
-    const r = this.el.getBoundingClientRect();
+    const r = this.btn.getBoundingClientRect();
+    const base = baseKey(this.value);
+    const nodes: HTMLElement[] = [];
     this.rows = this.items.map((it, i) => {
+      if (it.group && it.group !== this.items[i - 1]?.group) nodes.push(h('div', { class: 'ramp-group' }, it.group));
       const sw = h('span', { class: 'ramp-sw' });
-      sw.style.background = this.css(it.key);
-      const row = h('div', { class: 'ramp-item' + (it.key === this.value ? ' sel' : ''), role: 'option' }, sw, h('span', {}, it.label));
+      sw.style.background = this.css(this.keyOf(it));
+      const row = h('div', { class: 'ramp-item' + (it.key === base ? ' sel' : ''), role: 'option' }, sw, h('span', {}, it.label));
       row.addEventListener('mouseenter', () => this.highlight(i));
       row.addEventListener('click', () => this.pick(i));
+      nodes.push(row);
       return row;
     });
-    const menu = h('div', { class: 'ramp-menu', role: 'listbox' }, ...this.rows);
+    const menu = h('div', { class: 'ramp-menu', role: 'listbox' }, ...nodes);
     menu.addEventListener('mouseleave', () => {
       this.active = -1;
       this.rows.forEach((x) => x.classList.remove('active'));
@@ -71,9 +96,10 @@ export class RampSelect {
     menu.style.left = `${Math.max(8, Math.min(window.innerWidth - mw - 8, r.right - mw))}px`;
     menu.style.top = `${r.bottom + 4 + mh < window.innerHeight ? r.bottom + 4 : Math.max(8, r.top - 4 - mh)}px`;
     this.menu = menu;
-    this.active = this.items.findIndex((i) => i.key === this.value);
+    this.active = this.items.findIndex((i) => i.key === base);
+    this.rows[this.active]?.scrollIntoView({ block: 'nearest' });
     const outside = (e: PointerEvent) => {
-      if (!menu.contains(e.target as Node) && !this.el.contains(e.target as Node)) this.close(true);
+      if (!menu.contains(e.target as Node) && !this.btn.contains(e.target as Node)) this.close(true);
     };
     const esc = (e: KeyboardEvent) => this.keys(e);
     const away = () => this.close(true);
@@ -109,11 +135,11 @@ export class RampSelect {
     this.active = i;
     this.rows.forEach((x, k) => x.classList.toggle('active', k === i));
     this.rows[i]?.scrollIntoView({ block: 'nearest' });
-    this.onPreview(this.items[i].key);
+    this.onPreview(this.keyOf(this.items[i]));
   }
 
   private pick(i: number) {
-    const key = this.items[i].key;
+    const key = this.keyOf(this.items[i]);
     this.close(false);
     this.onPreview(null);
     this.set(key);
@@ -126,6 +152,6 @@ export class RampSelect {
     this.off.forEach((f) => f());
     this.off = [];
     if (revert) this.onPreview(null);
-    this.el.focus();
+    this.btn.focus();
   }
 }

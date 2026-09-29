@@ -1,6 +1,6 @@
 //! Scenic analysis of the road network.
 //!
-//! usage: scenic <build_dir> prep|canopy|view|flags|all  (flags: cheap rerun after POI/heritage/area changes)
+//! usage: scenic <build_dir> prep|canopy|view|buildings [dir]|flags|all  (flags: cheap rerun after POI/heritage/area changes)
 //!
 //! prep    road sample points (~100 m apart) with observer eye heights; per-vertex drape
 //!         heights on the Terrarium surface (what MapLibre renders in 3D)
@@ -8,16 +8,22 @@
 //!           · z11 grid layers: canopy height (p75 of 5 m max-pooled cells) and cover
 //!           · near-field horizons: 32 rays per sample through terrain + trees to 300 m
 //!           · roadside tree height and forest cover per sample
+//!         Cached (pipeline::scache): grid tiles and samples done before are copied, and only
+//!         10° canopy tiles with something new are read.
 //! view    far-field viewshed and landscape metrics → per-sample and per-vertex channels
+//! buildings  roadside buildings per sample from Overture footprints (data/buildings, `dem/buildings.py`)
+//! seed-cache  fill the canopy and view caches (data/cache/scenic) from this build's outputs, so
+//!         the next run reuses them (for builds made before the caches existed)
 
 use anyhow::{bail, Context, Result};
 use pipeline::count_bar;
+use pipeline::scache::{self, GridChange};
 use pipeline::terr::TerrainCache;
 use pipeline::view::eye_height;
 use rayon::prelude::*;
 use roadcore::archive::Archive;
 use roadcore::grid::{GridIndex, CELLS};
-use roadcore::scenic::{sflag, Sample, EYE_M, NEAR_AZ, NEAR_MAX_M, SAMPLE_SPACING_M};
+use roadcore::scenic::{sflag, Sample, EYE_M, NEAR_AZ, NEAR_MAX_M, RAIL_EYE_M, SAMPLE_SPACING_M};
 use roadcore::{class, dist_m, flag, merc, Array, Ways, E7};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -33,6 +39,8 @@ fn main() -> Result<()> {
         "canopy" => canopy(&dir)?,
         "view" => pipeline::view::run(&dir)?,
         "flags" => pipeline::view::flags(&dir)?,
+        "buildings" => pipeline::buildings::run(&dir, &PathBuf::from(args.get(3).map(String::as_str).unwrap_or("data/buildings")))?,
+        "seed-cache" => seed_cache(&dir)?,
         "all" => {
             prep(&dir)?;
             canopy(&dir)?;
@@ -41,6 +49,36 @@ fn main() -> Result<()> {
         s => bail!("unknown step {s}"),
     }
     eprintln!("scenic {step}: done in {:.0?}", t0.elapsed());
+    Ok(())
+}
+
+// ---- caches ------------------------------------------------------------------------------
+
+fn seed_cache(dir: &Path) -> Result<()> {
+    use roadcore::scenic::ch;
+    let grid = GridIndex::load(dir)?;
+    let samples_a = Array::<Sample>::open(&dir.join("samples.bin"))?;
+    let samples = samples_a.get();
+    let near_a = Array::<i8>::open(&dir.join("near.i8"))?;
+    let near = near_a.get();
+    let road_a = Array::<u8>::open(&dir.join("roadside.u8"))?;
+    let roadside = road_a.get();
+    let met_a = Array::<u8>::open(&dir.join("samples.metrics.u8"))?;
+    let met = met_a.get();
+    anyhow::ensure!(near.len() == samples.len() * NEAR_AZ && roadside.len() == samples.len() * 2 && met.len() == samples.len() * ch::NBASE, "build outputs out of step");
+    let cdir = scache::dir(dir);
+    let keys: Vec<u64> = samples.par_iter().map(scache::sample_key).collect();
+    scache::Prev::save(&cdir, "canopy", &keys)?;
+    GridChange::save(&cdir, "canopy", &grid.tiles)?;
+    anyhow::ensure!(std::fs::metadata(dir.join("grid.canopy.u8"))?.len() as usize == grid.tiles.len() * CELLS, "grid layers out of step");
+    let vkeys: Vec<u64> = samples
+        .par_iter()
+        .enumerate()
+        .map(|(i, s)| scache::mix(scache::mix(scache::sample_key(s), bytemuck::cast_slice(&near[i * NEAR_AZ..(i + 1) * NEAR_AZ])), &roadside[i * 2..i * 2 + 2]))
+        .collect();
+    scache::Prev::save(&cdir, "view", &vkeys)?;
+    GridChange::save(&cdir, "view", &grid.tiles)?;
+    eprintln!("seed-cache: {} samples, {} grid tiles", samples.len(), grid.tiles.len());
     Ok(())
 }
 
@@ -68,13 +106,14 @@ fn prep(dir: &Path) -> Result<()> {
                 let v = &verts[s..s + n];
                 let tunnel = w.flags & flag::TUNNEL != 0;
                 let bridge = w.flags & flag::BRIDGE != 0 && !tunnel;
-                // Drape heights: the rendered terrain surface; bridges keep their deck,
-                // tunnels their true (buried) level.
+                // Drape heights: the rendered terrain surface; tunnels keep their true (buried)
+                // level. Bridges store the ground beneath: the renderer lifts the deck to
+                // max(ground, elevation), and the difference is the viaduct's height.
                 for (j, p) in v.iter().enumerate() {
                     let (mx, my) = merc(p[0] as f64 * E7, p[1] as f64 * E7);
                     let t = tc.at(mx, my);
                     let e = fin[s + j] as f32 / 10.0;
-                    let h = if tunnel { e } else if bridge { t.max(e) } else { t };
+                    let h = if tunnel { e } else { t };
                     drape.push(h.round().clamp(-500.0, 9000.0) as i16);
                 }
                 if w.class == class::FERRY {
@@ -104,7 +143,8 @@ fn prep(dir: &Path) -> Result<()> {
                         dist: d as f32,
                         lon: lon.round() as i32,
                         lat: lat.round() as i32,
-                        eye: ground + EYE_M,
+                        // Rail: a carriage window is higher than a car's.
+                        eye: ground + if class::is_rail(w.class) { RAIL_EYE_M } else { EYE_M },
                         flags: if tunnel { sflag::TUNNEL } else if bridge { sflag::BRIDGE } else { 0 },
                         _pad: [0; 3],
                     });
@@ -278,12 +318,81 @@ fn canopy(dir: &Path) -> Result<()> {
             need.insert(((lat / 10.0).ceil() as i32 * 10, (lon / 10.0).floor() as i32 * 10));
         }
     }
-    eprintln!("canopy: {} ten-degree tiles, {} samples", need.len(), samples.len());
-
+    // Previous results: samples and grid tiles done in the last run (its outputs are still here),
+    // unless new terrain is within reach.
+    let cdir = scache::dir(dir);
+    let change = GridChange::load(&cdir, "canopy", &grid.tiles);
+    let prev = scache::Prev::load(&cdir, "canopy");
+    let old_near = Array::<i8>::open(&dir.join("near.i8")).ok().filter(|a| a.get().len() == prev.len() * NEAR_AZ && !prev.is_empty());
+    let old_road = Array::<u8>::open(&dir.join("roadside.u8")).ok().filter(|a| a.get().len() == prev.len() * 2);
     let near: Vec<AtomicI8> = (0..samples.len() * NEAR_AZ).map(|_| AtomicI8::new(i8::MIN)).collect();
     let roadside: Vec<AtomicU8> = (0..samples.len() * 2).map(|_| AtomicU8::new(0)).collect();
+    let todo_s: Vec<bool> = samples
+        .par_iter()
+        .enumerate()
+        .map(|(si, s)| {
+            let (Some(on), Some(or)) = (&old_near, &old_road) else { return true };
+            if change.near(s.lon as f64 * E7, s.lat as f64 * E7, 1) {
+                return true;
+            }
+            match prev.row(scache::sample_key(s)) {
+                Some(r) => {
+                    let (on, or) = (on.get(), or.get());
+                    for a in 0..NEAR_AZ {
+                        near[si * NEAR_AZ + a].store(on[r * NEAR_AZ + a], Relaxed);
+                    }
+                    roadside[si * 2].store(or[r * 2], Relaxed);
+                    roadside[si * 2 + 1].store(or[r * 2 + 1], Relaxed);
+                    false
+                }
+                None => true,
+            }
+        })
+        .collect();
     let mut canopy_out = vec![0u8; grid.tiles.len() * CELLS];
     let mut cover_out = vec![0u8; grid.tiles.len() * CELLS];
+    // Grid tiles: copied from the last run's layers where the tile was there.
+    let mut todo_t = vec![true; grid.tiles.len()];
+    let old_can = Array::<u8>::open(&dir.join("grid.canopy.u8")).ok().filter(|a| a.get().len() == change.prev_len() * CELLS && change.prev_len() > 0);
+    let old_cov = Array::<u8>::open(&dir.join("grid.cover.u8")).ok().filter(|a| a.get().len() == change.prev_len() * CELLS);
+    if let (Some(oc), Some(ov)) = (&old_can, &old_cov) {
+        let slot = change.prev_slots();
+        for (i, t) in grid.tiles.iter().enumerate() {
+            if let Some(&j) = slot.get(t) {
+                canopy_out[i * CELLS..(i + 1) * CELLS].copy_from_slice(&oc.get()[j * CELLS..(j + 1) * CELLS]);
+                cover_out[i * CELLS..(i + 1) * CELLS].copy_from_slice(&ov.get()[j * CELLS..(j + 1) * CELLS]);
+                todo_t[i] = false;
+            }
+        }
+    }
+    let n_s = todo_s.iter().filter(|&&t| t).count();
+    let n_t = todo_t.iter().filter(|&&t| t).count();
+    // 10° tiles with something to do (a sample or grid tile, with the near-field margin).
+    let margin = NEAR_MAX_M / 111_000.0 * 2.0;
+    let touches = |top: i32, left: i32, lon: f64, lat: f64| {
+        lon >= left as f64 - margin && lon <= left as f64 + 10.0 + margin && lat <= top as f64 + margin && lat >= top as f64 - 10.0 - margin
+    };
+    need.retain(|&(top, left)| {
+        samples.iter().zip(&todo_s).any(|(s, &t)| t && touches(top, left, s.lon as f64 * E7, s.lat as f64 * E7))
+            || grid.tiles.iter().zip(&todo_t).any(|(g, &t)| {
+                if !t {
+                    return false;
+                }
+                let lon = (g[0] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD * 360.0 - 180.0;
+                let y = (g[1] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD;
+                let lat = (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees();
+                touches(top, left, lon, lat) || (lon - (left as f64 + 5.0)).abs() < 6.0 && (lat - (top as f64 - 5.0)).abs() < 6.0
+            })
+    });
+    eprintln!(
+        "canopy: {} samples ({} to do, {} cached), {} grid tiles ({} to do), {} ten-degree tiles to read",
+        samples.len(),
+        n_s,
+        samples.len() - n_s,
+        grid.tiles.len(),
+        n_t,
+        need.len()
+    );
     let pb = count_bar(need.len() as u64, "canopy 10° tiles");
     for &(top, left) in &need {
         let name = |st: &str| format!("meta_chm_lat={top}.0_lon={left}.0_{st}.tif");
@@ -305,8 +414,11 @@ fn canopy(dir: &Path) -> Result<()> {
         };
         drop(files);
 
-        // Grid layers: cells whose centre lies in this tile (4 sub-samples per cell).
-        canopy_out.par_chunks_mut(CELLS).zip(cover_out.par_chunks_mut(CELLS)).zip(&grid.tiles).for_each(|((can, cov), tile)| {
+        // Grid layers: cells whose centre lies in this tile (4 sub-samples per cell), for tiles to do.
+        canopy_out.par_chunks_mut(CELLS).zip(cover_out.par_chunks_mut(CELLS)).zip(grid.tiles.par_iter().zip(&todo_t)).for_each(|((can, cov), (tile, &todo))| {
+            if !todo {
+                return;
+            }
             for cy in 0..256usize {
                 for cx in 0..256usize {
                     let (gx, gy) = (tile[0] as f64 * 256.0 + cx as f64, tile[1] as f64 * 256.0 + cy as f64);
@@ -328,9 +440,11 @@ fn canopy(dir: &Path) -> Result<()> {
             }
         });
 
-        // Near field for samples in (or within 300 m of) this tile.
-        let margin = NEAR_MAX_M / 111_000.0 * 2.0;
+        // Near field for samples to do in (or within 300 m of) this tile.
         samples.par_iter().enumerate().for_each(|(si, s)| {
+            if !todo_s[si] {
+                return;
+            }
             let (lon, lat) = (s.lon as f64 * E7, s.lat as f64 * E7);
             if lon < t.left - margin || lon > t.left + 10.0 + margin || lat > t.top + margin || lat < t.top - 10.0 - margin {
                 return;
@@ -348,6 +462,10 @@ fn canopy(dir: &Path) -> Result<()> {
     std::fs::write(roadcore::tmp(dir, "near.i8"), bytemuck::cast_slice(&near_bytes))?;
     std::fs::write(roadcore::tmp(dir, "roadside.u8"), &road_bytes)?;
     roadcore::commit(dir, &["grid.canopy.u8", "grid.cover.u8", "near.i8", "roadside.u8"])?;
+    // What each row is, for the next run.
+    let keys: Vec<u64> = samples.par_iter().map(scache::sample_key).collect();
+    scache::Prev::save(&cdir, "canopy", &keys)?;
+    GridChange::save(&cdir, "canopy", &grid.tiles)?;
     Ok(())
 }
 

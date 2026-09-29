@@ -1,13 +1,32 @@
-import type { ExpressionSpecification, LayerSpecification, StyleSpecification } from 'maplibre-gl';
+import type { ExpressionSpecification, LayerSpecification, StyleSpecification, VectorSourceSpecification } from 'maplibre-gl';
+import { ver } from './api';
 
 // Base style: terrain (hillshade, tint, 3D mesh source), context layers from the self-built
 // Planetiler tiles, designation / stop overlays (GeoJSON, loaded on demand) and labels.
 // Layer ids are grouped so the UI can toggle them.
 export const LAYER_GROUPS: Record<string, string[]> = {
-  water: ['water', 'waterway', 'water-name-line', 'water-name'],
-  boundaries: ['boundary-county', 'boundary-state', 'boundary-country'],
-  places: ['place-minor', 'place-village', 'place-town', 'place-city', 'place-state'],
+  water: ['water', 'waterway'],
+  // Countries, provinces & states, counties & regions (order of AppState.boundaryLevels).
+  boundaries: ['boundary-country', 'boundary-state', 'boundary-county'],
 };
+
+/** Label layers by kind (state.ts LABEL_KINDS), all under "Place labels". Overlay labels also need
+ * their overlay on, water labels the water layer. */
+export const LABEL_LAYERS: Record<string, string[]> = {
+  city: ['place-city'],
+  town: ['place-town'],
+  village: ['place-village'],
+  minor: ['place-minor'],
+  state: ['place-state'],
+  water: ['water-name', 'water-name-line'],
+  parks: ['park-label'],
+  heritage: ['heritage-label'],
+  areas: ['special-label', 'indigenous-label'],
+  stops: ['poi-viewpoint-label', 'poi-peak-label', 'poi-waterfall-label', 'poi-lighthouse-label', 'poi-covered_bridge-label', 'poi-rest-label', 'poi-trailhead-label'],
+  ferries: ['ferry-label', 'ferry-terminal-label'],
+};
+/** The label kind of a layer id, if it is a label layer. */
+export const labelKindOf = (id: string): string | undefined => Object.keys(LABEL_LAYERS).find((k) => LABEL_LAYERS[k].includes(id.split('@')[0]));
 
 /** Overlay key → layer ids (see state.ts OVERLAYS). */
 export const OVERLAY_LAYERS: Record<string, string[]> = {
@@ -34,9 +53,41 @@ export const OVERLAY_SOURCE: Record<string, string | null> = {
   viewpoint: 'pois', peak: 'pois', waterfall: 'pois', lighthouse: 'pois', covered_bridge: 'pois', rest: 'pois', trailhead: 'pois',
 };
 
-/** Colours of heritage levels 1–5 (World Heritage → municipal). */
-export const HERITAGE_COLORS = ['#ffd166', '#ff9f68', '#e7a0ff', '#8fb8ff', '#9fb0c4'];
-export const HERITAGE_LEVELS = ['World Heritage', 'National', 'National Register', 'Provincial / state', 'Municipal'];
+/** Heritage site groups (Layers → Heritage sites), with their colours. */
+export const HERITAGE_GROUPS = [
+  { key: 'w', label: 'World Heritage', colour: '#ffd166' },
+  { key: 'n', label: 'National', colour: '#ff9f68' },
+  { key: 'p', label: 'Provincial / state', colour: '#8fb8ff' },
+  { key: 'm', label: 'Municipal', colour: '#9fb0c4' },
+] as const;
+
+/** Kinds of designation within the groups (feature property `t`, from dem/heritagetiers.py; same
+ * keys). Kinds cut across jurisdictions. */
+export const HERITAGE_TIERS: { key: string; label: string; help: string }[] = [
+  { key: 'w.c', label: 'Cultural', help: 'Cultural World Heritage Sites' },
+  { key: 'w.n', label: 'Natural & mixed', help: 'Natural and mixed World Heritage Sites' },
+  { key: 'n.top', label: 'Top grade', help: 'Grade I and A, Category A, monuments historiques classés, Bienes de interés cultural, monumentos nacionais, NIAH national rating, declared monuments' },
+  { key: 'n.second', label: 'Second grade', help: 'Grade II* and B+, Category B, monuments historiques inscrits, imóveis de interesse público, the US National Register, Andalusia\'s protected heritage, Hong Kong Grade 1' },
+  { key: 'n.lower', label: 'Lower grades', help: 'Graded without statutory protection: Hong Kong Grades 2 and 3' },
+  { key: 'n.mon', label: 'Ancient & scheduled monuments', help: 'Scheduled monuments, monuments in state care or under preservation orders, protected monuments' },
+  { key: 'n.land', label: 'Parks, gardens & battlefields', help: 'Registered parks and gardens, gardens and designed landscapes, registered and inventory battlefields' },
+  { key: 'n.hist', label: 'Historic sites & landmarks', help: 'National Historic Sites of Canada, US National Historic Landmarks' },
+  { key: 'n.fed', label: 'Federal heritage buildings', help: 'Classified and recognized federal heritage buildings, heritage railway stations and heritage lighthouses (Canada)' },
+  { key: 'p.des', label: 'Designated', help: 'Protected by a provincial, state or territorial designation: immeubles classés, provincial historic resources, heritage sites and properties' },
+  { key: 'p.reg', label: 'Registered or recognised', help: 'On a provincial register without full protection' },
+  { key: 'p.area', label: 'Sites, districts & parks', help: 'Heritage sites and districts designated as a whole (sites patrimoniaux, historic areas), provincial parks listed as historic places' },
+  { key: 'm.des', label: 'Designated', help: 'Protected by a municipal by-law or citation: Ontario Part IV, immeubles cités, municipal heritage sites and properties, imóveis de interesse municipal' },
+  { key: 'm.reg', label: 'On a local register', help: 'Listed on a community or local heritage register, without designation' },
+  { key: 'm.area', label: 'Conservation areas & districts', help: 'Heritage conservation areas, sites patrimoniaux cités, conjuntos and sítios de interesse municipal' },
+  { key: 'm.agr', label: 'Agreements & covenants', help: 'Heritage revitalization agreements, conservation covenants and preservation agreements' },
+];
+
+/** A site's kind: its `t`, or from its level for data stamped before kinds existed. */
+export const HERITAGE_TIER: ExpressionSpecification = ['coalesce', ['get', 't'], ['match', ['get', 'level'], 1, 'w.c', 2, 'n.top', 3, 'n.second', 4, 'p.des', 'm.des']];
+export const heritageTierOf = (p: Record<string, unknown>): string =>
+  typeof p.t === 'string' ? p.t : (['w.c', 'n.top', 'n.second', 'p.des', 'm.des'][(Number(p.level) || 5) - 1] ?? 'm.des');
+export const heritageGroupOf = (tier: string) => HERITAGE_GROUPS.find((g) => g.key === tier[0]) ?? HERITAGE_GROUPS[3];
+const HERITAGE_COLOUR = ['match', ['slice', HERITAGE_TIER, 0, 1], ...HERITAGE_GROUPS.slice(0, 3).flatMap((g) => [g.key, g.colour]), HERITAGE_GROUPS[3].colour] as unknown as ExpressionSpecification;
 
 /** POI kinds → [overlay key, colour]. */
 export const POI_STYLE: Record<string, [string, string]> = {
@@ -49,20 +100,129 @@ export const POI_STYLE: Record<string, [string, string]> = {
   trailhead: ['trailhead', '#b5e36f'],
 };
 
-const name: ExpressionSpecification = ['coalesce', ['get', 'name'], ['get', 'name:latin']];
+/** A label with its first letter upper-cased (Québec and French names often start lower-case:
+ * "lac Saint-Jean", "canal de Coteau-du-Lac"). */
+const capE = (e: ExpressionSpecification): ExpressionSpecification => ['concat', ['upcase', ['slice', e, 0, 1]], ['slice', e, 1]];
+const name: ExpressionSpecification = capE(['coalesce', ['get', 'name'], ['get', 'name:latin'], '']);
 const HALO = '#0b0e13';
 /** All labels slightly transparent. */
 const TEXT_OPACITY = 0.8;
+/** Names appear once a place's interest isolation spans this many pixels (interest.py mz: the zoom
+ * where it spans one), the best-known winning collisions. */
+export const LABEL_SPACING_PX = 90;
+export const spacingFilter = (px: number): ExpressionSpecification | null =>
+  px > 0 ? ['>=', ['zoom'], ['+', ['coalesce', ['get', 'mz'], -99], Math.log2(px)]] : null;
 
 export const HYPSO: [number, string][] = [
   [-10, '#16323a'], [0, '#1c3a2c'], [150, '#28503a'], [350, '#4d6a3f'], [600, '#76713f'],
   [900, '#86643f'], [1200, '#8c7766'], [1500, '#a7a3a0'], [1900, '#e8e8e8'],
 ];
 
-export function baseStyle(origin: string): StyleSpecification {
+/** Basemap parts: regions added after base.pmtiles was built (server meta.baseParts), each its own
+ * archive drawn with clones of every basemap layer (id "<layer>@<part>"). */
+let PARTS: string[] = [];
+/** A basemap layer's id and its clones for the parts. */
+export const partIds = (id: string): string[] => [id, ...PARTS.map((p) => `${id}@${p}`)];
+/** The basemap layer a (possibly cloned) layer id is. */
+export const baseId = (id: string): string => id.split('@')[0];
+
+/** Stops & sights opacity (Layers → Stops & sights): scales each overlay layer's own opacity
+ * (dots and their outlines, area fills and edges; labels via applyLabelOpacity's scale). */
+type PaintKey = Parameters<import('maplibre-gl').Map['setPaintProperty']>[1];
+const OPACITY_PROPS: Record<string, PaintKey[]> = { circle: ['circle-opacity', 'circle-stroke-opacity'], fill: ['fill-opacity'], line: ['line-opacity'] };
+const OVERLAY_IDS = new Set(Object.values(OVERLAY_LAYERS).flat());
+const baseOpacity = new Map<string, unknown>();
+/** An opacity value × f: numbers, each output of a zoom curve (zoom must stay the curve's input),
+ * other expressions wrapped. */
+function scaleOpacity(v: unknown, f: number): unknown {
+  if (v === undefined) return f;
+  if (typeof v === 'number') return v * f;
+  if (Array.isArray(v) && v[0] === 'interpolate') return [...v.slice(0, 3), ...v.slice(3).map((x, i) => (i % 2 ? scaleOpacity(x, f) : x))];
+  if (Array.isArray(v) && v[0] === 'step') return [...v.slice(0, 2), ...v.slice(2).map((x, i) => (i % 2 ? x : scaleOpacity(x, f)))];
+  return ['*', f, v];
+}
+export function applyOverlayOpacity(map: import('maplibre-gl').Map, f: number) {
+  for (const id of [...OVERLAY_IDS].flatMap(partIds)) {
+    const l = map.getLayer(id);
+    if (!l || SIG_LAYERS.includes(id)) continue; // their opacity: prominencePaint
+    for (const prop of OPACITY_PROPS[l.type] ?? []) {
+      const key = `${id}|${prop}`;
+      if (!baseOpacity.has(key)) baseOpacity.set(key, map.getPaintProperty(id, prop));
+      map.setPaintProperty(id, prop, scaleOpacity(baseOpacity.get(key), f) as ExpressionSpecification);
+    }
+  }
+}
+/** A landmark's score for prominence, 0–1: fame (fa, log10 of monthly pageviews; 5 = 100,000 a
+ * month) and rarity (interest isolation ia, log scale from 50 m to 20,000 km), mixed by `balance`
+ * (0 fame only, 1 rarity only). */
+export const landmarkScoreOf = (fa: number, ia: number, balance: number): number =>
+  (1 - balance) * Math.min(1, fa / 5) + balance * Math.min(1, Math.max(0, (Math.log10(Math.max(0.05, ia)) + 1.3) / 5.6));
+const scoreExpr = (balance: number): ExpressionSpecification => [
+  '+',
+  ['*', 1 - balance, ['min', 1, ['/', ['coalesce', ['get', 'fa'], 0], 5]]],
+  ['*', balance, ['min', 1, ['max', 0, ['/', ['+', ['log10', ['max', 0.05, ['coalesce', ['get', 'ia'], 20000]]], 1.3], 5.6]]]],
+];
+/** Dot radius at a zoom before prominence: stops, and heritage sites by designation level. */
+const POI_R: [number, number][] = [[3, 0.8], [7, 1.5], [12, 2.5], [16, 3.8]];
+const HER_R: [number, number][][] = [[[5, 3.8], [10, 5.2], [15, 6.8]], [[5, 2.2], [10, 3.3], [15, 5.2]], [[5, 1.2], [10, 2.2], [15, 3.8]]];
+export const SIG_LAYERS = [...Object.keys(POI_STYLE).map((k) => `poi-${k}`), 'heritage-pt'];
+/** Radius and opacity of a landmark layer's dots by prominence: each dot's score placed on the
+ * scale (u: linear over `range`, or through `eqStops` [score, u] when equalised). Size runs from
+ * 30 % (u = 0) to 125 % (u = 1), `emphasis` 0 keeping every dot alike; opacity follows the road
+ * low-end fade (fadeAlpha); dots outside a highlight are dimmed and shrunk. opacity: the Stops &
+ * sights opacity. */
+export function prominencePaint(id: string, sc: {
+  range: [number, number]; eqStops: [number, number][] | null; lowFade: number; lowSpan: number;
+  threshold: { on: boolean; dir: 'above' | 'below' | 'low'; value: number }; balance: number;
+}, emphasis: number, opacity: number) {
+  const score = scoreExpr(sc.balance);
+  const [r0, r1] = sc.range;
+  const u: ExpressionSpecification = sc.eqStops && sc.eqStops.length > 1
+    ? ['interpolate', ['linear'], score, ...sc.eqStops.flat()] as unknown as ExpressionSpecification
+    : ['min', 1, ['max', 0, ['/', ['-', score, r0], Math.max(1e-6, r1 - r0)]]];
+  const fade: ExpressionSpecification = ['-', 1, ['*', sc.lowFade, ['^', ['-', 1, ['min', 1, ['/', u, Math.max(sc.lowSpan, 1e-3)]]], 1.5]]];
+  const t = sc.threshold;
+  const pass: ExpressionSpecification | boolean = !t.on ? true
+    : t.dir === 'low' ? ['>=', score, r0] : t.dir === 'below' ? ['<=', score, t.value] : ['>=', score, t.value];
+  const size: ExpressionSpecification = ['*', ['case', pass, 1, 0.6], ['+', 1, ['*', emphasis, ['-', ['+', 0.3, ['*', 0.95, u]], 1]]]];
+  const radius = id === 'heritage-pt'
+    ? ['interpolate', ['linear'], ['zoom'], ...[5, 10, 15].flatMap((z, k) => [z, ['*', ['match', ['get', 'level'], 1, HER_R[0][k][1], 2, HER_R[1][k][1], HER_R[2][k][1]], size]])]
+    : ['interpolate', ['linear'], ['zoom'], ...POI_R.flatMap(([z, r]) => [z, ['*', r, size]])];
+  return {
+    radius: radius as unknown as ExpressionSpecification,
+    opacity: ['*', 0.95 * opacity, ['*', fade, ['case', pass, 1, 0.12]]] as ExpressionSpecification,
+    /** Names fade with their dots (times the label opacity). */
+    label: (labelOpacity: number) => ['*', labelOpacity * opacity, ['*', fade, ['case', pass, 1, 0.12]]] as ExpressionSpecification,
+  };
+}
+
+/** Names of the landmark layers: their opacity follows their dots' (prominencePaint). */
+export const LANDMARK_LABELS: Record<string, string> = Object.fromEntries(SIG_LAYERS.map((id) => [id, id === 'heritage-pt' ? 'heritage-label' : `${id}-label`]));
+const LANDMARK_LABEL_IDS = new Set(Object.values(LANDMARK_LABELS));
+/** Label opacity scale for a layer: the Stops & sights opacity on overlay labels; NaN leaves the
+ * landmark names alone (set with their dots). */
+export const overlayLabelScale = (f: number) => (id: string) => (LANDMARK_LABEL_IDS.has(id) ? NaN : OVERLAY_IDS.has(baseId(id)) ? f : 1);
+
+function withBaseParts(style: StyleSpecification, origin: string, parts: string[]): StyleSpecification {
+  PARTS = parts;
+  if (!parts.length) return style;
+  const base = style.sources.base as VectorSourceSpecification;
+  for (const p of parts) {
+    style.sources[`base-${p}`] = { ...base, url: `pmtiles://${origin}/tiles/base-parts/${p}.pmtiles${ver(`base-parts/${p}.pmtiles`)}` };
+  }
+  const out: LayerSpecification[] = [];
+  for (const l of style.layers) {
+    out.push(l);
+    if ('source' in l && l.source === 'base') for (const p of parts) out.push({ ...l, id: `${l.id}@${p}`, source: `base-${p}` } as LayerSpecification);
+  }
+  style.layers = out;
+  return style;
+}
+
+export function baseStyle(origin: string, parts: string[] = []): StyleSpecification {
   const dem = {
     type: 'raster-dem' as const,
-    tiles: [`${origin}/tiles/terrain/{z}/{x}/{y}`],
+    tiles: [`${origin}/tiles/terrain/{z}/{x}/{y}${ver('terrain.tiles')}`],
     encoding: 'terrarium' as const,
     tileSize: 256,
     maxzoom: 12,
@@ -73,20 +233,24 @@ export function baseStyle(origin: string): StyleSpecification {
   for (const [key, [, colour]] of Object.entries(POI_STYLE)) {
     const kinds = key === 'rest' ? ['rest_area', 'picnic_site'] : [key];
     const flt: ExpressionSpecification = ['in', ['get', 'kind'], ['literal', kinds]];
-    const minz = key === 'peak' ? 10 : key === 'viewpoint' || key === 'lighthouse' || key === 'covered_bridge' ? 7 : 9;
+    // Every dot at every zoom, sized and faded by prominence among the landmarks in view
+    // (prominencePaint), the best-known on top; names once their interest isolation spans
+    // LABEL_SPACING_PX.
     poiLayers.push(
       {
         id: `poi-${key}`,
         type: 'circle',
         source: 'pois',
-        minzoom: minz,
         filter: flt,
+        // Best-known on top by the source's order (overlays.ts sorts by fame): a circle-sort-key
+        // splits every circle into its own draw call.
         layout: { visibility: 'none' },
         paint: {
-          'circle-radius': ['interpolate', ['linear'], ['zoom'], 7, 2.2, 12, 3.6, 16, 5.5],
+          // Radius and opacity follow prominence (prominencePaint, overlays.ts).
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 0.8, 7, 1.5, 12, 2.5, 16, 3.8],
           'circle-color': colour,
           'circle-stroke-color': HALO,
-          'circle-stroke-width': 1,
+          'circle-stroke-width': ['interpolate', ['linear'], ['zoom'], 3, 0.3, 8, 0.8],
           'circle-opacity': 0.95,
           'circle-pitch-alignment': 'viewport',
         },
@@ -95,13 +259,14 @@ export function baseStyle(origin: string): StyleSpecification {
         id: `poi-${key}-label`,
         type: 'symbol',
         source: 'pois',
-        minzoom: Math.max(11, minz + 2),
+        minzoom: 5,
         filter: ['all', flt, ['!=', ['get', 'name'], '']],
         layout: {
           visibility: 'none',
+          'symbol-sort-key': ['-', 0, ['coalesce', ['get', 'fa'], 0]],
           'text-field': key === 'peak'
-            ? ['case', ['to-boolean', ['get', 'ele']], ['concat', ['get', 'name'], '\n', ['to-string', ['round', ['get', 'ele']]], ' m'], ['get', 'name']]
-            : ['get', 'name'],
+            ? ['case', ['to-boolean', ['get', 'ele']], ['concat', capE(['get', 'name']), '\n', ['to-string', ['round', ['get', 'ele']]], ' m'], capE(['get', 'name'])]
+            : capE(['get', 'name']),
           'text-font': ['Noto Sans Regular'],
           'text-size': 10.5,
           'text-offset': [0, 0.8],
@@ -115,19 +280,23 @@ export function baseStyle(origin: string): StyleSpecification {
   }
   const hvis = { visibility: 'none' as const };
 
-  return {
+  return withBaseParts({
     version: 8,
     glyphs: `${origin}/fonts/{fontstack}/{range}.pbf`,
     sources: {
       base: {
         type: 'vector',
-        url: `pmtiles://${origin}/tiles/base.pmtiles`,
+        url: `pmtiles://${origin}/tiles/base.pmtiles${ver('base.pmtiles')}`,
         attribution: '© OpenStreetMap contributors · OpenMapTiles · NRCan HRDEM/MRDEM · USGS 3DEP',
       },
       dem,
       'dem-hs': { ...dem },
       // Terrain slope in percent, Terrarium-encoded as if it were elevation (server-side).
-      slope: { ...dem, tiles: [`${origin}/tiles/slope/{z}/{x}/{y}`], attribution: '' },
+      slope: { ...dem, tiles: [`${origin}/tiles/slope/{z}/{x}/{y}${ver('slope.tiles')}`], attribution: '' },
+      // Tree cover layer (dem/trees.py): values Terrarium-encoded as if they were elevation.
+      ...Object.fromEntries((['cover', 'height', 'leaf'] as const).map((v) => [`trees-${v}`, {
+        ...dem, minzoom: 4, tiles: [`${origin}/tiles/trees/${v}/{z}/{x}/{y}${ver(`trees-${v}.tiles`)}`], attribution: '',
+      }])),
       selection: empty,
       climb: empty,
       drives: empty,
@@ -138,6 +307,7 @@ export function baseStyle(origin: string): StyleSpecification {
       'heritage-areas': empty,
       special: empty,
       indigenous: empty,
+      ferries: empty,
     },
     layers: [
       { id: 'bg', type: 'background', paint: { 'background-color': '#0b0e13' } },
@@ -159,8 +329,25 @@ export function baseStyle(origin: string): StyleSpecification {
         paint: {
           'color-relief-color': ['interpolate', ['linear'], ['elevation'], 0, '#1f3b2c', 100, '#8a3aa0'] as unknown as ExpressionSpecification,
           'color-relief-opacity': 0.45,
+          // Below z11 the tiles are sampled from the z12 slopes (see pipeline `slope`): blending
+          // neighbouring values would turn a steep/gentle mix into uniform middling slopes, so
+          // each pixel keeps its value. From z11 the full-detail slopes are smooth to interpolate.
+          resampling: ['step', ['zoom'], 'nearest', 11, 'linear'],
         },
       } as LayerSpecification,
+      // Tree cover (colours set by trees.ts), under the hill-shading so the relief reads through it.
+      ...(['cover', 'height', 'leaf'] as const).map((v) => ({
+        id: `trees-${v}`,
+        type: 'color-relief',
+        source: `trees-${v}`,
+        layout: { visibility: 'none' },
+        paint: {
+          'color-relief-color': ['interpolate', ['linear'], ['elevation'], 0, 'rgba(0,0,0,0)', 100, '#57a24f'] as unknown as ExpressionSpecification,
+          'color-relief-opacity': 0.6,
+          // Leaf type is categorical: no blending between classes.
+          resampling: v === 'leaf' ? 'nearest' : 'linear',
+        },
+      }) as LayerSpecification),
       {
         id: 'hillshade',
         type: 'hillshade',
@@ -295,6 +482,15 @@ export function baseStyle(origin: string): StyleSpecification {
         filter: ['all', ['==', ['get', 'admin_level'], 2], ['!=', ['get', 'maritime'], 1]],
         paint: { 'line-color': '#6c7586', 'line-width': ['interpolate', ['linear'], ['zoom'], 4, 1, 10, 2], 'line-dasharray': [5, 2] },
       },
+      // Passenger ferries (colour, width, dashes and filters set by ferries.ts).
+      {
+        id: 'ferry-line',
+        type: 'line',
+        source: 'ferries',
+        filter: ['==', ['geometry-type'], 'LineString'],
+        layout: { visibility: 'none', 'line-cap': 'butt', 'line-join': 'round' },
+        paint: { 'line-color': '#6aa8ff', 'line-width': 1.5, 'line-opacity': 0.9 },
+      },
       {
         id: 'sel-halo',
         type: 'line',
@@ -405,7 +601,7 @@ export function baseStyle(origin: string): StyleSpecification {
         minzoom: 8,
         layout: {
           visibility: 'none',
-          'text-field': ['get', 'name'],
+          'text-field': capE(['get', 'name']),
           'text-font': ['Noto Sans Italic'],
           'text-size': 10.5,
           'text-max-width': 9,
@@ -420,7 +616,7 @@ export function baseStyle(origin: string): StyleSpecification {
         minzoom: 5,
         layout: {
           visibility: 'none',
-          'text-field': ['get', 'name'],
+          'text-field': capE(['get', 'name']),
           'text-font': ['Noto Sans Italic'],
           'text-size': 11,
           'text-max-width': 9,
@@ -437,19 +633,19 @@ export function baseStyle(origin: string): StyleSpecification {
         id: 'heritage-pt',
         type: 'circle',
         source: 'heritage',
-        layout: { visibility: 'none', 'circle-sort-key': ['-', 10, ['get', 'level']] },
+        layout: { visibility: 'none' }, // drawn in the source's order (by fame), as the stops
         minzoom: 4,
         filter: ['<=', ['get', 'level'], 5],
         paint: {
           'circle-radius': [
             'interpolate', ['linear'], ['zoom'],
-            5, ['match', ['get', 'level'], 1, 5, 2, 3, 1.6],
-            10, ['match', ['get', 'level'], 1, 7, 2, 4.5, 3],
-            15, ['match', ['get', 'level'], 1, 9, 2, 7, 5],
+            5, ['match', ['get', 'level'], 1, 3.8, 2, 2.2, 1.2],
+            10, ['match', ['get', 'level'], 1, 5.2, 2, 3.3, 2.2],
+            15, ['match', ['get', 'level'], 1, 6.8, 2, 5.2, 3.8],
           ],
-          'circle-color': ['match', ['get', 'level'], 1, HERITAGE_COLORS[0], 2, HERITAGE_COLORS[1], 3, HERITAGE_COLORS[2], 4, HERITAGE_COLORS[3], HERITAGE_COLORS[4]],
+          'circle-color': HERITAGE_COLOUR,
           'circle-stroke-color': HALO,
-          'circle-stroke-width': ['match', ['get', 'level'], 1, 1.5, 1],
+          'circle-stroke-width': ['match', ['get', 'level'], 1, 1.2, 0.8],
           'circle-opacity': ['interpolate', ['linear'], ['zoom'], 5, ['match', ['get', 'level'], 1, 1, 2, 0.9, 0.55], 11, 0.95],
           'circle-pitch-alignment': 'viewport',
         },
@@ -460,22 +656,74 @@ export function baseStyle(origin: string): StyleSpecification {
         source: 'heritage',
         layout: {
           visibility: 'none',
-          'text-field': ['get', 'name'],
+          'text-field': capE(['get', 'name']),
           'text-font': ['Noto Sans Regular'],
           'text-size': ['match', ['get', 'level'], 1, 12, 2, 11, 10.5],
           'text-offset': [0, 0.9],
           'text-anchor': 'top',
           'text-max-width': 9,
           'text-optional': true,
-          'symbol-sort-key': ['get', 'level'],
+          // Best-known first (pageviews; designation group breaks ties).
+          'symbol-sort-key': ['-', 0, ['coalesce', ['get', 'fa'], ['-', 5, ['get', 'level']]]],
         },
         filter: ['any', ['<=', ['get', 'level'], 1], ['all', ['<=', ['get', 'level'], 2], ['>=', ['zoom'], 9]], ['>=', ['zoom'], 13]],
         paint: {
-          'text-color': ['match', ['get', 'level'], 1, HERITAGE_COLORS[0], 2, HERITAGE_COLORS[1], 3, HERITAGE_COLORS[2], 4, HERITAGE_COLORS[3], HERITAGE_COLORS[4]],
+          'text-color': HERITAGE_COLOUR,
           'text-halo-color': HALO,
           'text-halo-width': 1.3,
           'text-opacity': TEXT_OPACITY,
         },
+      },
+      {
+        id: 'ferry-terminal',
+        type: 'circle',
+        source: 'ferries',
+        minzoom: 9,
+        filter: ['==', ['get', 'kind'], 'terminal'],
+        layout: { visibility: 'none' },
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 9, 1.8, 14, 3.5],
+          'circle-color': '#9cc9ff',
+          'circle-stroke-color': HALO,
+          'circle-stroke-width': 1,
+          'circle-pitch-alignment': 'viewport',
+        },
+      },
+      {
+        id: 'ferry-label',
+        type: 'symbol',
+        source: 'ferries',
+        minzoom: 8,
+        filter: ['all', ['==', ['geometry-type'], 'LineString'], ['!=', ['get', 'n'], '']],
+        layout: {
+          visibility: 'none',
+          'symbol-placement': 'line',
+          'symbol-spacing': 400,
+          'text-field': capE(['get', 'n']),
+          'text-font': ['Noto Sans Italic'],
+          'text-size': 10.5,
+          'text-max-angle': 30,
+          'text-offset': [0, -0.7],
+        },
+        paint: { 'text-color': '#9cc9ff', 'text-halo-color': HALO, 'text-halo-width': 1.3, 'text-opacity': TEXT_OPACITY },
+      },
+      {
+        id: 'ferry-terminal-label',
+        type: 'symbol',
+        source: 'ferries',
+        minzoom: 11,
+        filter: ['==', ['get', 'kind'], 'terminal'],
+        layout: {
+          visibility: 'none',
+          'text-field': capE(['get', 'n']),
+          'text-font': ['Noto Sans Regular'],
+          'text-size': 10,
+          'text-offset': [0, 0.8],
+          'text-anchor': 'top',
+          'text-max-width': 8,
+          'text-optional': true,
+        },
+        paint: { 'text-color': '#9cc9ff', 'text-halo-color': HALO, 'text-halo-width': 1.3, 'text-opacity': TEXT_OPACITY },
       },
       {
         id: 'place-minor',
@@ -579,5 +827,5 @@ export function baseStyle(origin: string): StyleSpecification {
         paint: { 'text-color': '#ffffff', 'text-halo-color': HALO, 'text-halo-width': 1.6, 'text-opacity': 0.9 },
       },
     ],
-  };
+  }, origin, parts);
 }

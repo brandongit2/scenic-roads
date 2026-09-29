@@ -4,8 +4,8 @@ publish usable data.
 
 Heritage sites (heritage.json, points) — level 1 World Heritage · 2 national · 3 national
 register · 4 provincial/state · 5 municipal:
-  1  UNESCO World Heritage List (whc.unesco.org syndication; unesco-whc.json, private use —
-     copyright notice kept on every feature, descriptions not reproduced)
+  1  UNESCO World Heritage List (data.unesco.org dataset whc001, CC BY-SA 4.0; one point per
+     component site; descriptions not reproduced)
   2  Canada: Parks Canada Directory of Federal Heritage Designations, located by federal.py
      (National Historic Sites, heritage lighthouses & railway stations, federal heritage
      buildings); US: National Historic Landmarks (NPS)
@@ -15,6 +15,8 @@ register · 4 provincial/state · 5 municipal:
      Nova Scotia: Registered Heritage Properties; NB, PEI, NL: Canadian Register of Historic
      Places (crhp.py)
   5  municipal designations from the same sources, plus Halifax (HRM) and Moncton open data
+  Outside North America, the national registers in heritage_eu.py (France, Andorra, …), with
+  the same levels: 2 highest national grade, 3 other national grades, 4 regional, 5 local.
 Heritage areas (heritage-areas.json, polygons): Quebec heritage-site perimeters, Ontario
   heritage conservation districts.
 Special areas (special.json): UNESCO biosphere reserves and Global Geoparks, dark-sky places —
@@ -51,6 +53,8 @@ from shapely import STRtree, wkt
 from shapely.geometry import Point, box, mapping, shape
 from shapely.ops import transform as shp_transform
 from tqdm import tqdm
+
+import heritage_eu
 
 UA = {"User-Agent": "road-elevations/0.1 (personal offline map)"}
 H = Path(__file__).resolve().parent.parent / "data" / "heritage"
@@ -111,6 +115,22 @@ def title(s: str | None) -> str | None:
     return s.title() if s and s.isupper() else s
 
 
+def tidy_quotes(s: str | None) -> str | None:
+    """Registers' quoting glitches: doubled quotes (CSV escaping kept), quotes around the whole
+    name, spaces just inside quotes ('dite " maison Jézéquel "')."""
+    if not s or '"' not in s:
+        return s
+    s = re.sub(r'"{2,}', '"', s).strip()
+    if len(s) > 1 and s[0] == s[-1] == '"' and s[1:-1].count('"') % 2 == 0:
+        s = s[1:-1].strip()
+    elif s[0] == '"' and s.count('"') % 2 == 1:  # an opening quote left unmatched
+        s = s[1:].strip()
+    parts = s.split('"')
+    if len(parts) % 2 == 1:  # balanced: odd parts are quoted
+        s = '"'.join(t.strip() if i % 2 else t for i, t in enumerate(parts))
+    return s
+
+
 def iso_date(ms) -> str | None:
     try:
         return datetime.fromtimestamp(int(ms) / 1000, timezone.utc).strftime("%Y-%m-%d") if ms else None
@@ -119,18 +139,6 @@ def iso_date(ms) -> str | None:
 
 
 # ---- sources -----------------------------------------------------------------------------------
-
-def unesco() -> list[dict]:
-    d = json.loads((H / "unesco-whc.json").read_text())
-    out = []
-    for s in d["sites"]:
-        for lon, lat in s["pois"]:
-            out.append(site(lon, lat, name=s["site"], level=1, designation="UNESCO World Heritage Site",
-                            category=s["category"], date=s["date_inscribed"], criteria=s["criteria"],
-                            in_danger=s["in_danger"] or None, url=s["url"], source="UNESCO World Heritage Centre",
-                            notice=d["notice"]))
-    return out
-
 
 def federal() -> list[dict]:
     d = json.loads((H / "federal.json").read_text())
@@ -356,12 +364,105 @@ SELECT ?item ?coord ?k (SAMPLE(?en) AS ?name) (SAMPLE(?a) AS ?area) (SAMPLE(?art
     return list(out.values())
 
 
+# Local names the registries and Wikidata don't supply.
+LOCAL_NAMES = {
+    "Regional Natural Park of Vercors": "Parc naturel régional du Vercors",
+    "Regional Natural Park of Morvan": "Parc naturel régional du Morvan",
+    "Regional Natural Park of Millevaches in Limousin": "Parc naturel régional de Millevaches en Limousin",
+    "Graciosa Island Biosphere Reserve": "Reserva da Biosfera da Ilha Graciosa",
+    "Lanzarote and Chinijo Islands UNESCO Global Geopark": "Geoparque Mundial UNESCO Lanzarote y Archipiélago Chinijo",
+    "Courel Mountains UNESCO Global Geopark": "Xeoparque Mundial UNESCO Montañas do Courel",
+    "Calatrava Volcanoes. Ciudad Real UNESCO Global Geopark": "Geoparque Mundial UNESCO Volcanes de Calatrava. Ciudad Real",
+}
+
+
 def special_official() -> list[dict] | None:
     path = H / "special-official.json"
     if not path.exists():
         return None
     d = json.loads(path.read_text())
-    return [{**p, "source": p.get("certifier", "official registry")} for p in d["places"]]
+    out = [{**p, "source": p.get("certifier", "official registry")} for p in d["places"]]
+    # Names in the region's language (the registries publish English): the label of the Wikidata
+    # biosphere reserve / geopark / dark-sky place nearest it (≤ 80 km) that shares a distinctive
+    # word with its name, else of the item a name search finds, when it names the same kind of
+    # place. The English name stays the key for matching OSM polygons.
+    cache_path = H / "special-wd-labels.json"
+    cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
+    kind_word = {"biosphere": ("biosf", "biosph"), "geopark": ("geopar", "géopar", "xeopar", "地質公園")}
+    langs = ("en", "fr", "es", "pt", "ca", "gl", "zh")
+    items = []
+    try:
+        rows = heritage_eu.wd_sparql("""SELECT ?item ?coord """ + " ".join(f"?{l}" for l in langs) + """ WHERE {
+              VALUES ?cls { wd:Q158454 wd:Q28055306 wd:Q61453609 wd:Q1324355 wd:Q53444003 wd:Q72114283 }
+              { ?item wdt:P31 ?cls } UNION { ?item wdt:P1435 ?cls }
+              ?item wdt:P625 ?coord . """ + " ".join(f'OPTIONAL {{ ?item rdfs:label ?{l} FILTER(LANG(?{l}) = "{l}") }}' for l in langs) + " }",
+            H / "special-wd-items.json")
+        for r in rows:
+            m = re.match(r"Point\(([-\d.eE]+) ([-\d.eE]+)\)", r.get("coord", ""))
+            if m:
+                items.append((float(m.group(1)), float(m.group(2)), {l: r[l][:1].upper() + r[l][1:] for l in langs if r.get(l)}))
+    except Exception as e:  # noqa: BLE001
+        print(f"special areas: Wikidata items: {e}")
+    stop = {"biosphere", "reserve", "unesco", "global", "geopark", "international", "dark", "sky", "park", "national", "regional",
+            "natural", "transboundary", "the", "and", "of", "de", "del", "la", "las", "los", "le", "du", "des", "et", "e", "y", "da", "do", "das", "dos",
+            "mont", "mount", "monte", "montes", "monts", "sierra", "sierras", "serra", "island", "isla", "ilha", "cabo", "costa", "valle", "valles",
+            "vall", "massif", "lake", "lac", "lago", "reserva", "reserve", "réserve", "biosfera", "biosphère", "parc", "parque"}
+    tokens = lambda t: {w for w in norm_name(t).split() if len(w) >= 4 and w not in stop}  # noqa: E731
+    for p in out:
+        lang = heritage_eu.lang_at(p["lon"], p["lat"])
+        if lang == "en":
+            continue
+        words = kind_word.get(p.get("kind"))
+        if words is None:  # dark-sky places: reserves and parks by their own names
+            words = ("parc", "parque", "park") if "park" in p["name"].lower() and "sky" not in p["name"].lower() else ("ciel", "étoil", "cielo", "estrell", "céu", "cel ")
+
+        def fits(local):
+            if not local or local == p["name"]:
+                return False
+            if words:
+                return any(w in local.lower() for w in words)
+            return bool(tokens(local) & tokens(p["name"]))
+        pick = lambda labels: labels.get(lang) or (labels.get("es") if lang in ("ca", "gl") else None)  # noqa: E731
+        local = None
+        mine = tokens(p["name"])
+        best = None
+        for lon, lat, labels in items:
+            d = math.hypot((lon - p["lon"]) * math.cos(math.radians(p["lat"])), lat - p["lat"]) * 111.2
+            if d > 80:
+                continue
+            common = mine & set().union(*(tokens(v) for v in labels.values()))
+            # Most of the name's own words, or one of them very close by.
+            if common and (len(common) >= 0.5 * len(mine) or d < 25) and fits(pick(labels)) and (best is None or (len(common), -d) > best[0]):
+                best = ((len(common), -d), pick(labels))
+        if best:
+            local = best[1]
+        else:
+            labels = heritage_eu.wd_search_labels(p["name"], cache)
+            local = pick(labels) if fits(pick(labels)) else None
+        if not local:
+            # No local label anywhere: the local generic term with the place's own name, when that
+            # name isn't itself English ("Reserva de la Biosfera Doñana", not "… Marshes and Tides").
+            core = re.sub(r"\s*(\(.*?\)|UNESCO Global Geopark|Transboundary Biosphere Reserve|Biosphere Reserve|International Dark Sky (Reserve|Park))\s*",
+                          " ", p["name"]).strip()
+            english = re.search(r"\b(and|of|the|between|in|city|islands?|mountains?|volcanoes|marshes|tides|coast|intercontinental)\b", core, re.I)
+            sky = "Park" if p["name"].endswith("Dark Sky Park") else "Reserve"
+            term = {"biosphere": {"fr": "Réserve de biosphère", "es": "Reserva de la Biosfera", "pt": "Reserva da Biosfera", "ca": "Reserva de la Biosfera",
+                                  "gl": "Reserva da Biosfera"},
+                    "geopark": {"fr": "Géoparc mondial UNESCO", "es": "Geoparque Mundial UNESCO", "pt": "Geoparque Mundial UNESCO",
+                                "ca": "Geoparc Mundial UNESCO", "gl": "Xeoparque Mundial UNESCO"},
+                    "dark_sky": {"fr": f"{'Parc' if sky == 'Park' else 'Réserve'} internationale de ciel étoilé".replace("Parc internationale", "Parc international"),
+                                 "es": f"{'Parque' if sky == 'Park' else 'Reserva'} internacional de cielo oscuro",
+                                 "ca": f"{'Parc' if sky == 'Park' else 'Reserva'} internacional de cel fosc",
+                                 "pt": f"{'Parque' if sky == 'Park' else 'Reserva'} internacional de céu escuro"} if "Dark Sky" in p["name"] else {}}.get(p.get("kind"), {}).get(lang)
+            local = LOCAL_NAMES.get(p["name"])
+            if not local:
+                if not term or english or core == p["name"]:
+                    continue
+                local = f"{term} {core}"
+        p.setdefault("polygon_hint", p["name"])
+        p["name_en"], p["name"] = p["name"], local
+    cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=0))
+    return out
 
 
 # ---- rasterise areas onto the z11 grid ----------------------------------------------------------
@@ -426,10 +527,11 @@ def main():
 
     counts = {}
     sites, harea = [], []
-    for label, fn in (("UNESCO World Heritage", unesco), ("Parks Canada DFHD (federal)", federal),
+    # UNESCO for every country (heritage_eu.unesco), then the national and regional registers.
+    for label, fn in (*heritage_eu.SOURCES[:1], ("Parks Canada DFHD (federal)", federal),
                       ("NPS National Register", nrhp), ("Quebec RPCQ", quebec), ("Ontario Heritage Act Register", ontario),
                       ("Nova Scotia + Halifax", nova_scotia), ("Moncton", new_brunswick_moncton),
-                      ("Canadian Register (NB, PEI, NL)", crhp)):
+                      ("Canadian Register (NB, PEI, NL, West, North)", crhp), *heritage_eu.SOURCES[1:]):
         r = fn()
         pts, ars = r if isinstance(r, tuple) else (r, [])
         pts = [f for f in pts if covered(*f["geometry"]["coordinates"])]
@@ -437,6 +539,12 @@ def main():
         print(f"heritage: {label:34s} {len(pts):6d} sites, {len(ars):4d} areas")
         sites += pts
         harea += ars
+    for f in sites + harea:
+        for k in ("name", "name_en"):
+            if k in f["properties"]:
+                v = tidy_quotes(f["properties"][k])
+                # Registers that shout ("FRANK SLIDE"): title case.
+                f["properties"][k] = v.title() if v and v.isupper() and len(v) > 3 else v
     n0 = len(sites)
     sites = dedupe(sites)
     print(f"heritage: {n0 - len(sites)} municipal duplicates dropped")
@@ -453,7 +561,11 @@ def main():
         print("special areas: special-official.json missing — falling back to Wikidata")
         sp = special_wikidata()
     sp = [s for s in sp if covered(s["lon"], s["lat"])]
-    hints = {norm_name(s.get("polygon_hint") or s["name"]): s for s in sp}
+    # Entries by the OSM name to look for; several can share one (e.g. a biosphere reserve named
+    # for the national park it surrounds), so each is matched on its own.
+    hints: dict[str, list[int]] = {}
+    for i, s in enumerate(sp):
+        hints.setdefault(norm_name(s.get("polygon_hint") or s["name"]), []).append(i)
 
     print("protected areas & Indigenous lands (OSM)…")
     shapes, special_feats, indigenous_feats, matched = [], [], [], set()
@@ -468,15 +580,14 @@ def main():
             continue
         name = p.get("name", "")
         ptitle = p.get("protection_title", "")
-        s = hints.get(norm_name(name))
-        # Use the mapped boundary only if it plausibly is the designated area: biosphere
-        # reserves and geoparks are usually far larger than the park named in the hint.
-        if s is not None and s.get("area_km2") and g.area * 111.32 ** 2 * math.cos(math.radians(s["lat"])) < 0.5 * s["area_km2"]:
-            s = None
-        if s is not None and g.distance(Point(s["lon"], s["lat"])) < 0.3:
-            key = norm_name(s.get("polygon_hint") or s["name"])
-            if key not in matched:
-                matched.add(key)
+        for i in hints.get(norm_name(name), []):
+            s = sp[i]
+            # Use the mapped boundary only if it plausibly is the designated area: biosphere
+            # reserves and geoparks are usually far larger than the park named in the hint.
+            if i in matched or (s.get("area_km2") and g.area * 111.32 ** 2 * math.cos(math.radians(s["lat"])) < 0.5 * s["area_km2"]):
+                continue
+            if g.distance(Point(s["lon"], s["lat"])) < 0.3:
+                matched.add(i)
                 special_feats.append({"type": "Feature", "geometry": mapping(g.simplify(0.0003)),
                                       "properties": {k: v for k, v in s.items() if k not in ("lon", "lat")}})
                 shapes.append((shp_transform(to_merc, g.simplify(0.0002, preserve_topology=True)), SPECIAL))
@@ -490,8 +601,8 @@ def main():
         else:
             continue
         shapes.append((shp_transform(to_merc, g.simplify(0.0002, preserve_topology=True)), bit))
-    for s in sp:
-        if norm_name(s.get("polygon_hint") or s["name"]) in matched:
+    for i, s in enumerate(sp):
+        if i in matched:
             continue
         r_km = math.sqrt(s["area_km2"] / math.pi) if s.get("area_km2") else (15.0 if s["kind"] != "dark_sky" else 8.0)
         r_km = min(max(r_km, 3.0), 60.0)

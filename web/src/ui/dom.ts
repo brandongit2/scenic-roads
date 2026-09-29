@@ -17,6 +17,9 @@ export function h<K extends keyof HTMLElementTagNameMap>(tag: K, attrs: Attrs = 
 const nf0 = new Intl.NumberFormat('en-CA', { maximumFractionDigits: 0 });
 const nf1 = new Intl.NumberFormat('en-CA', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
+/** First letter upper-case, the rest as is ("canal de Coteau-du-Lac" → "Canal de Coteau-du-Lac"). */
+export const cap = (s: string | null | undefined): string => (s ? s.charAt(0).toLocaleUpperCase() + s.slice(1) : s ?? '');
+
 export const fmt = {
   m: (v: number) => `${nf0.format(v)} m`,
   m1: (v: number) => `${nf1.format(v)} m`,
@@ -56,4 +59,12 @@ export function setupCanvas(c: HTMLCanvasElement): CanvasRenderingContext2D {
   const ctx = c.getContext('2d')!;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   return ctx;
+}
+
+/** Click on a row that is also a link: a plain click acts in place, modified clicks (Cmd, Ctrl,
+ * Shift) are left to the browser (new tab / window). Middle clicks never reach `click`. */
+export function openRow(e: MouseEvent, act: () => void) {
+  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+  e.preventDefault();
+  act();
 }

@@ -25,7 +25,8 @@ use std::path::Path;
 
 pub const WAYS_MAGIC: &[u8; 8] = b"RDWAYS02";
 
-/// Road classes, ordered minor → major so that sorting by class gives draw order.
+/// Road classes, ordered minor → major so that sorting by class gives draw order, then the
+/// passenger rail groups (rails.tiles).
 pub mod class {
     pub const SERVICE: u8 = 0;
     pub const LIVING_STREET: u8 = 1;
@@ -37,11 +38,61 @@ pub mod class {
     pub const TRUNK: u8 = 7;
     pub const MOTORWAY: u8 = 8;
     pub const FERRY: u8 = 9;
-    pub const COUNT: usize = 10;
+    /// Passenger rail: the way's most important service group (`WayRec::rail` has them all).
+    pub const TRAM: u8 = 10;
+    pub const METRO: u8 = 11;
+    pub const COMMUTER: u8 = 12;
+    pub const INTERCITY: u8 = 13;
+    /// Heritage & tourist railways, rack railways and funiculars.
+    pub const HERITAGE: u8 = 14;
+    pub const COUNT: usize = 15;
+    /// Road classes (and ferries) come first.
+    pub const NROAD: usize = 10;
     pub const NAMES: [&str; COUNT] = [
         "service", "living_street", "residential", "unclassified", "tertiary",
         "secondary", "primary", "trunk", "motorway", "ferry",
+        "tram", "metro", "commuter", "intercity", "heritage",
     ];
+    pub fn is_rail(c: u8) -> bool {
+        c >= TRAM
+    }
+}
+
+/// Route networks by signage, for the street-map colourings (`WayRec::network`).
+pub mod network {
+    pub const NONE: u8 = 0;
+    pub const US_INTERSTATE: u8 = 1;
+    pub const US_HIGHWAY: u8 = 2;
+    pub const US_STATE: u8 = 3;
+    pub const US_COUNTY: u8 = 4;
+    pub const CA_AUTOROUTE: u8 = 5;
+    pub const CA_PROVINCIAL: u8 = 6;
+    pub const CA_REGIONAL: u8 = 7;
+    pub const FR_AUTOROUTE: u8 = 10;
+    pub const FR_NATIONALE: u8 = 11;
+    pub const FR_DEPARTEMENTALE: u8 = 12;
+    pub const FR_METROPOLE: u8 = 13;
+    pub const GB_MOTORWAY: u8 = 20;
+    pub const GB_A_PRIMARY: u8 = 21;
+    pub const GB_A: u8 = 22;
+    pub const GB_B: u8 = 23;
+    pub const IE_MOTORWAY: u8 = 24;
+    pub const IE_NATIONAL_PRIMARY: u8 = 25;
+    pub const IE_NATIONAL_SECONDARY: u8 = 26;
+    pub const IE_REGIONAL: u8 = 27;
+    pub const ES_AUTOVIA: u8 = 30;
+    pub const ES_NACIONAL: u8 = 31;
+    pub const ES_AUTONOMICA: u8 = 32;
+    pub const ES_LOCAL: u8 = 33;
+    pub const PT_AUTOESTRADA: u8 = 40;
+    pub const PT_IP: u8 = 41;
+    pub const PT_IC: u8 = 42;
+    pub const PT_NACIONAL: u8 = 43;
+    pub const PT_REGIONAL: u8 = 44;
+    pub const HK_ROUTE: u8 = 50;
+    pub const AD_GENERAL: u8 = 60;
+    pub const AD_SECUNDARIA: u8 = 61;
+    pub const E_ROAD: u8 = 70;
 }
 
 /// Per-way flag bits.
@@ -65,7 +116,12 @@ pub enum DemSource {
     Hrdem = 1,
     Usgs3dep = 2,
     Mrdem = 3,
+    /// FABDEM 30 m (Copernicus DEM with forests and buildings removed), outside North America.
+    Fabdem = 4,
 }
+
+/// Number of DEM source codes, `None` included.
+pub const NDEM: usize = 5;
 
 impl DemSource {
     pub fn label(v: u8) -> &'static str {
@@ -73,6 +129,7 @@ impl DemSource {
             1 => "NRCan HRDEM lidar (8 m)",
             2 => "USGS 3DEP (10 m)",
             3 => "NRCan MRDEM (30 m)",
+            4 => "FABDEM (30 m)",
             _ => "none",
         }
     }
@@ -93,10 +150,16 @@ pub struct WayRec {
     pub class: u8,
     pub flags: u8,
     pub lanes: u8,
-    pub _pad: [u8; 3],
-    /// Name of the designated scenic route this way belongs to (string index, 0 = none).
+    /// Route network by signage (`network`), roads only.
+    pub network: u8,
+    /// Passenger rail: bit per service group using the track (bit k = class TRAM + k).
+    pub rail: u8,
+    pub _pad: u8,
+    /// Roads: name of the designated scenic route this way belongs to. Rail: the services
+    /// using the track (" · "-separated). String index, 0 = none.
     pub route: u32,
-    pub _pad2: u32,
+    /// Rail: line colour 0xRRGGBB with bit 24 set (0 = none).
+    pub colour: u32,
 }
 
 const _: () = assert!(std::mem::size_of::<WayRec>() == 48);
@@ -111,6 +174,22 @@ pub fn tmp(dir: &Path, name: &str) -> std::path::PathBuf {
 pub fn commit(dir: &Path, names: &[&str]) -> Result<()> {
     for n in names {
         std::fs::rename(tmp(dir, n), dir.join(n)).with_context(|| format!("commit {n}"))?;
+    }
+    Ok(())
+}
+
+/// Like `commit`, but an output identical to the one in place is dropped, keeping the old file
+/// and its time (so make doesn't take a rewrite of the same content for a change).
+pub fn commit_if_changed(dir: &Path, names: &[&str]) -> Result<()> {
+    for n in names {
+        let (t, d) = (tmp(dir, n), dir.join(n));
+        let same = std::fs::metadata(&d).ok().zip(std::fs::metadata(&t).ok()).is_some_and(|(a, b)| a.len() == b.len())
+            && std::fs::read(&d)? == std::fs::read(&t)?;
+        if same {
+            std::fs::remove_file(&t)?;
+        } else {
+            std::fs::rename(&t, &d).with_context(|| format!("commit {n}"))?;
+        }
     }
     Ok(())
 }

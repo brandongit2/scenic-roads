@@ -1,6 +1,7 @@
 /data/
 /target/
-/tools/
+/tools/*
+!/tools/bench/
 node_modules/
 /web/dist/
 .venv/

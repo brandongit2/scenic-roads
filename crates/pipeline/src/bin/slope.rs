@@ -1,12 +1,19 @@
 //! Terrain slope tiles (percent, Terrarium-encoded as if it were elevation) for the slope tint.
 //!
-//! usage: slope <build_dir>
+//! usage: slope <build_dir> [--seed]
 //!
 //! Slope depends on scale: computed directly from a coarse DEM, steep ground averages out and
 //! low zooms look flatter. So slope is computed once at the finest level (z12, Horn's method with
-//! neighbouring tiles) and every coarser tile is the *mean of the slopes* beneath it. Pixels with
+//! neighbouring tiles), and each coarser pixel takes the slope of one of the pixels beneath it,
+//! picked pseudo-randomly: every level then has the same distribution of slopes as z12 (a mean
+//! would keep the average but lose the steep and gentle tails, which is what the tint shows), and
+//! seen from afar the fine mix of colours reads as the right blend, like a halftone. Pixels with
 //! no finer data (far from roads, where the terrain archive stops at z8) fall back to the slope of
 //! that level's own DEM. Writes slope.tiles (served at /tiles/slope/{z}/{x}/{y}).
+//!
+//! Incremental: the terrain tiles of the last run are listed in data/cache/steps/slope.keys, and
+//! only slope tiles whose terrain (the tile, its neighbours or their ancestors) is new are
+//! recomputed, with their parents; the rest are copied from the previous slope.tiles.
 
 use anyhow::Result;
 use pipeline::count_bar;
@@ -66,19 +73,31 @@ fn slope_tile(arc: &Archive, z: u8, x: u32, y: u32) -> Option<Vec<f32>> {
     Some(out)
 }
 
-/// Sum and count of child slopes per parent pixel.
+/// Slope picked for each parent pixel, and whether a finer tile supplied it.
 struct Acc {
-    sum: Vec<f32>,
-    cnt: Vec<u16>,
+    val: Vec<f32>,
+    has: Vec<bool>,
 }
 
-/// Terrarium PNG of whole-percent slopes: R and B are then constant and only G varies, which
-/// compresses several times better than the elevation encoder's fast settings.
+/// Which of a parent pixel's 2×2 children it takes (0..4): a hash of its position, so the pick
+/// is uniform, uncorrelated between neighbours and levels, and reproducible.
+fn pick(z: u8, gx: u32, gy: u32) -> usize {
+    let mut h = ((z as u64) << 56) ^ ((gx as u64) << 28) ^ gy as u64;
+    h = (h ^ (h >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    h = (h ^ (h >> 27)).wrapping_mul(0x94d049bb133111eb);
+    ((h ^ (h >> 31)) & 3) as usize
+}
+
+/// Terrarium PNG of slopes in 1/16 % steps: R is constant, B takes 16 levels, which compresses
+/// far better than the elevation encoder's full precision. (Whole percents were too coarse: the
+/// map interpolates between pixels, and around a colour threshold integer steps left lens-shaped
+/// blotches centred on single pixels instead of smooth edges.)
 fn encode(v: &[f32]) -> Vec<u8> {
     let mut rgb = Vec::with_capacity(v.len() * 3);
     for &s in v {
-        let e = s.round().clamp(0.0, 500.0) as u32 + 32768;
-        rgb.extend_from_slice(&[(e >> 8) as u8, e as u8, 0]);
+        let q = (s.clamp(0.0, 500.0) * 16.0).round() as u32; // 1/16 %
+        let e = (q >> 4) + 32768;
+        rgb.extend_from_slice(&[(e >> 8) as u8, e as u8, ((q & 15) << 4) as u8]);
     }
     let mut out = Vec::new();
     {
@@ -93,10 +112,61 @@ fn encode(v: &[f32]) -> Vec<u8> {
     out
 }
 
+fn decode(png_bytes: &[u8]) -> Option<Vec<f32>> {
+    let mut dec = png::Decoder::new(std::io::Cursor::new(png_bytes));
+    dec.set_transformations(png::Transformations::EXPAND);
+    let mut r = dec.read_info().ok()?;
+    let mut buf = vec![0u8; r.output_buffer_size()?];
+    let info = r.next_frame(&mut buf).ok()?;
+    let ch = info.color_type.samples();
+    Some((0..TS * TS).map(|i| {
+        let p = &buf[i * ch..];
+        let q = ((((p[0] as u32) << 8 | p[1] as u32).saturating_sub(32768)) << 4) | (p[2] as u32 >> 4);
+        q as f32 / 16.0
+    }).collect())
+}
+
 fn main() -> Result<()> {
     let dir = PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "data/build".into()));
     let t0 = std::time::Instant::now();
     let arc = Archive::open(&dir.join("terrain.tiles"))?;
+    // Last run: its terrain keys and slope tiles (still in place until the commit).
+    let cdir = dir.parent().unwrap_or(std::path::Path::new(".")).join("cache/steps");
+    std::fs::create_dir_all(&cdir)?;
+    let keys_path = cdir.join("slope.keys");
+    // --seed: record the current terrain keys (for a slope.tiles built before this cache existed).
+    if std::env::args().any(|a| a == "--seed") {
+        let keys: Vec<u64> = arc.entries().iter().map(|e| e.key).collect();
+        std::fs::write(&keys_path, bytemuck::cast_slice(&keys))?;
+        eprintln!("slope: seeded {} terrain keys", keys.len());
+        return Ok(());
+    }
+    let prev_keys: Option<std::collections::HashSet<u64>> = std::fs::read(&keys_path)
+        .ok()
+        .filter(|b| b.len() % 8 == 0 && !b.is_empty())
+        .map(|b| bytemuck::cast_slice::<u8, u64>(&b).iter().copied().collect());
+    let old = Archive::open(&dir.join("slope.tiles")).ok().filter(|_| prev_keys.is_some());
+    let new_terrain: std::collections::HashSet<u64> = match &prev_keys {
+        Some(p) => arc.entries().iter().map(|e| e.key).filter(|k| !p.contains(k)).collect(),
+        None => std::collections::HashSet::new(),
+    };
+    let key = |z: u8, x: i64, y: i64| roadcore::archive::tile_key(z, x.rem_euclid(1 << z) as u32, y.clamp(0, (1 << z) - 1) as u32);
+    // A tile whose terrain (itself, a neighbour, or an ancestor of those) is new.
+    let terrain_changed = |z: u8, x: u32, y: u32| -> bool {
+        if old.is_none() {
+            return true;
+        }
+        for dy in -1i64..=1 {
+            for dx in -1i64..=1 {
+                for dz in 0..=z {
+                    if new_terrain.contains(&key(z - dz, (x as i64 + dx) >> dz, (y as i64 + dy) >> dz)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    };
     let mut by_z: Vec<Vec<(u32, u32)>> = vec![Vec::new(); MAXZ as usize + 1];
     for e in arc.entries() {
         let z = (e.key >> 58) as u8;
@@ -105,69 +175,102 @@ fn main() -> Result<()> {
         }
     }
     let mut aw = ArchiveWriter::create(&roadcore::tmp(&dir, "slope.tiles"), r#"{"format":"png","encoding":"terrarium","value":"slope percent"}"#)?;
-    // Accumulators for the level being built, filled from the level above.
+    let in_old = |z: u8, x: u32, y: u32| old.as_ref().is_some_and(|o| o.get(z, x, y).is_some());
+    // Accumulators for the level being built, filled from the level above; and the parents that
+    // exist because of finer tiles.
     let mut acc: HashMap<(u32, u32), Acc> = HashMap::new();
-    let mut written = 0usize;
+    let mut present: std::collections::HashSet<(u32, u32)> = Default::default();
+    let mut dirty_below: std::collections::HashSet<(u32, u32)> = Default::default();
+    let (mut written, mut copied) = (0usize, 0usize);
     for z in (0..=MAXZ).rev() {
         // Tiles at this level: those in the terrain archive plus parents of finer slope tiles.
         let mut tiles: Vec<(u32, u32)> = by_z[z as usize].clone();
-        for k in acc.keys() {
-            if arc.get(z, k.0, k.1).is_none() {
-                tiles.push(*k);
-            }
-        }
+        tiles.extend(present.iter().copied().filter(|k| arc.get(z, k.0, k.1).is_none()));
         tiles.sort_unstable();
         tiles.dedup();
+        // Recomputed: new terrain here (or nearby, or above), a recomputed child, or not there
+        // last time. Everything else is copied.
+        let parents_of_dirty: std::collections::HashSet<(u32, u32)> = dirty_below.iter().map(|&(x, y)| (x / 2, y / 2)).collect();
+        let dirty: std::collections::HashSet<(u32, u32)> = tiles
+            .par_iter()
+            .filter(|&&(x, y)| old.is_none() || parents_of_dirty.contains(&(x, y)) || !in_old(z, x, y) || terrain_changed(z, x, y))
+            .copied()
+            .collect();
+        let dirty_parents: std::collections::HashSet<(u32, u32)> = dirty.iter().map(|&(x, y)| (x / 2, y / 2)).collect();
+        let parent_dirty = |x: u32, y: u32| -> bool {
+            z > 0 && {
+                let (px, py) = (x / 2, y / 2);
+                dirty_parents.contains(&(px, py)) || !in_old(z - 1, px, py) || terrain_changed(z - 1, px, py)
+            }
+        };
         let pb = count_bar(tiles.len() as u64, &format!("slope z{z}"));
         let mut next: HashMap<(u32, u32), Acc> = HashMap::new();
+        let mut next_present: std::collections::HashSet<(u32, u32)> = Default::default();
         for chunk in tiles.chunks(1024) {
-            let done: Vec<((u32, u32), Vec<f32>)> = chunk
+            // (tile, encoded tile, values when the parent needs them)
+            let done: Vec<((u32, u32), Vec<u8>, Option<Vec<f32>>)> = chunk
                 .par_iter()
                 .filter_map(|&(x, y)| {
+                    pb.inc(1);
+                    if !dirty.contains(&(x, y)) {
+                        let blob = old.as_ref()?.get(z, x, y)?.to_vec();
+                        let vals = if parent_dirty(x, y) { decode(&blob) } else { None };
+                        return Some(((x, y), blob, vals));
+                    }
                     let a = acc.get(&(x, y));
-                    let full = a.is_some_and(|a| a.cnt.iter().all(|&c| c > 0));
+                    let full = a.is_some_and(|a| a.has.iter().all(|&h| h));
                     // Direct slope only where the finer levels don't cover the tile.
                     let direct = if full { None } else { slope_tile(&arc, z, x, y) };
-                    let mut v = vec![0f32; TS * TS];
-                    for p in 0..TS * TS {
-                        v[p] = match a {
-                            Some(a) if a.cnt[p] > 0 => a.sum[p] / a.cnt[p] as f32,
-                            _ => direct.as_ref().map_or(0.0, |d| d[p]),
-                        };
-                    }
                     if a.is_none() && direct.is_none() {
                         return None;
                     }
-                    pb.inc(1);
-                    Some(((x, y), v))
+                    let mut v = vec![0f32; TS * TS];
+                    for p in 0..TS * TS {
+                        v[p] = match a {
+                            Some(a) if a.has[p] => a.val[p],
+                            _ => direct.as_ref().map_or(0.0, |d| d[p]),
+                        };
+                    }
+                    Some(((x, y), encode(&v), Some(v)))
                 })
                 .collect();
-            for ((x, y), v) in &done {
-                aw.add(z, *x, *y, &encode(v), TS * TS * 3)?;
-                written += 1;
+            for ((x, y), blob, vals) in &done {
+                aw.add(z, *x, *y, blob, TS * TS * 3)?;
+                if dirty.contains(&(*x, *y)) {
+                    written += 1;
+                } else {
+                    copied += 1;
+                }
                 if z == 0 {
                     continue;
                 }
-                // 2×2 mean into the parent's quadrant.
                 let (px, py) = (x / 2, y / 2);
+                next_present.insert((px, py));
+                // One of each 2×2 block into the parent's quadrant (when it is recomputed).
+                let Some(v) = vals else { continue };
                 let (ox, oy) = ((x % 2) as usize * 128, (y % 2) as usize * 128);
-                let p = next.entry((px, py)).or_insert_with(|| Acc { sum: vec![0.0; TS * TS], cnt: vec![0; TS * TS] });
+                let p = next.entry((px, py)).or_insert_with(|| Acc { val: vec![0.0; TS * TS], has: vec![false; TS * TS] });
                 for j in 0..128 {
                     for i in 0..128 {
-                        let s = v[(2 * j) * TS + 2 * i] + v[(2 * j) * TS + 2 * i + 1] + v[(2 * j + 1) * TS + 2 * i] + v[(2 * j + 1) * TS + 2 * i + 1];
                         let k = (oy + j) * TS + ox + i;
-                        p.sum[k] += s / 4.0;
-                        p.cnt[k] += 1;
+                        let c = pick(z - 1, px * TS as u32 + (ox + i) as u32, py * TS as u32 + (oy + j) as u32);
+                        p.val[k] = v[(2 * j + c / 2) * TS + 2 * i + c % 2];
+                        p.has[k] = true;
                     }
                 }
             }
         }
         pb.finish_and_clear();
-        eprintln!("slope z{z}: {} tiles", tiles.len());
+        eprintln!("slope z{z}: {} tiles ({} recomputed)", tiles.len(), dirty.len());
         acc = next;
+        present = next_present;
+        dirty_below = dirty;
     }
     aw.finish()?;
+    drop(old);
     roadcore::commit(&dir, &["slope.tiles"])?;
-    eprintln!("slope: {written} tiles in {:.0?}", t0.elapsed());
+    let keys: Vec<u64> = arc.entries().iter().map(|e| e.key).collect();
+    std::fs::write(&keys_path, bytemuck::cast_slice(&keys))?;
+    eprintln!("slope: {written} tiles computed, {copied} copied, in {:.0?}", t0.elapsed());
     Ok(())
 }

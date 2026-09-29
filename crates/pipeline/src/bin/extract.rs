@@ -1,10 +1,19 @@
-//! Extract car-accessible public roads (and car ferries) from OSM PBF extracts.
+//! Extract car-accessible public roads (and car ferries) and passenger rail lines from OSM PBF
+//! extracts.
+//!
+//! Rail: tracks (railway=rail, light_rail, subway, tram, narrow_gauge, funicular, monorail,
+//! preserved; no yards or sidings) used by a passenger route relation (route=train, tram, subway,
+//! light_rail, monorail, funicular), grouped by service: trams, metro / rapid transit, commuter &
+//! regional, intercity (sleepers included), heritage & mountain (tourist lines, rack railways,
+//! funiculars). Tracks without a route relation are kept when their type says what they are
+//! (tram, subway, funicular, preserved or tourist lines).
 //!
 //! usage: extract <out_dir> <spacing_m> <file.osm.pbf>...
 //!
 //! Pass 1 collects matching ways; pass 2 resolves node coordinates and private gates.
 //! Output geometry is densified so consecutive vertices are at most `spacing_m` apart,
-//! which lets the DEM stage sample every raster cell a road crosses.
+//! which lets the DEM stage sample every raster cell a road crosses. Outside North America the
+//! elevation source is 30 m (FABDEM), so there the spacing is at least `COARSE_SPACING_M`.
 
 use anyhow::{Context, Result};
 use osmpbf::{Element, ElementReader};
@@ -28,6 +37,22 @@ struct RawWay {
     ref_: String,
     surface: String,
     refs: Vec<i64>,
+    /// Rail: service groups (bits, see `WayRec::rail`), line colour; `rail_fallback` = group
+    /// when no route relation uses the track (u8::MAX: dropped then).
+    rail: u8,
+    colour: u32,
+    rail_fallback: u8,
+}
+
+/// A passenger rail service (route relation) using a track.
+struct RailUse {
+    way: i64,
+    group: u8,
+    colour: u32,
+    /// Short label: the ref, else the name.
+    label: String,
+    name: String,
+    ref_: String,
 }
 
 #[derive(Default)]
@@ -37,6 +62,9 @@ struct Pass1 {
     scenic: Vec<(i64, String)>,
     /// Points of interest mapped as areas: (kind, name, node refs).
     poi_ways: Vec<(&'static str, String, Vec<i64>)>,
+    /// Hiking routes: (name, member way ids).
+    hikes: Vec<(String, Vec<i64>)>,
+    rail_uses: Vec<RailUse>,
 }
 
 impl Pass1 {
@@ -47,6 +75,8 @@ impl Pass1 {
         a.ways.append(&mut b.ways);
         a.scenic.append(&mut b.scenic);
         a.poi_ways.append(&mut b.poi_ways);
+        a.hikes.append(&mut b.hikes);
+        a.rail_uses.append(&mut b.rail_uses);
         a
     }
 }
@@ -88,6 +118,20 @@ fn scenic_route(t: &Tags) -> Option<String> {
     hit.then(|| if name_raw.is_empty() { t.get("network").unwrap_or("Scenic route").to_string() } else { name_raw.to_string() })
 }
 
+/// Car parks for a trail: named for one ("… Trail Parking", "Stationnement du sentier …",
+/// "Sentiers de randonnée") or tagged for hiking. Whole words only ("trailer" parking isn't).
+fn trail_parking(t: &Tags) -> bool {
+    if !t.is("amenity", "parking") {
+        return false;
+    }
+    if t.is("hiking", "yes") || t.is("trailhead", "yes") {
+        return true;
+    }
+    let name = t.get("name").unwrap_or("").to_lowercase();
+    name.split(|c: char| !c.is_alphanumeric())
+        .any(|w| matches!(w, "trail" | "trails" | "trailhead" | "sentier" | "sentiers" | "randonnée" | "randonnee" | "hiking"))
+}
+
 fn poi_kind(t: &Tags) -> Option<&'static str> {
     if t.is("highway", "rest_area") {
         Some("rest_area")
@@ -95,10 +139,13 @@ fn poi_kind(t: &Tags) -> Option<&'static str> {
         Some("picnic_site")
     } else if t.is("highway", "trailhead") {
         Some("trailhead")
+    } else if trail_parking(t) {
+        Some("trail_parking") // a trailhead; see the de-duplication below
+    } else if t.is("natural", "peak") {
+        // Before viewpoints: summits are often tagged as both (Mont Blanc).
+        Some("peak")
     } else if t.is("tourism", "viewpoint") {
         Some("viewpoint")
-    } else if t.is("natural", "peak") {
-        Some("peak")
     } else if t.is("waterway", "waterfall") {
         Some("waterfall")
     } else if t.is("man_made", "lighthouse") {
@@ -151,6 +198,197 @@ const UNPAVED: &[&str] = &[
     "unpaved", "gravel", "fine_gravel", "dirt", "earth", "ground", "sand", "grass", "compacted",
     "pebblestone", "mud", "rock", "woodchips", "clay", "grass_paver", "shells", "salt", "snow", "ice",
 ];
+
+/// A passenger-capable track: (group when no route relation uses it, or u8::MAX), flags.
+fn rail_track(t: &Tags) -> Option<(u8, u8)> {
+    let kind = t.get("railway")?;
+    if !matches!(kind, "rail" | "light_rail" | "subway" | "tram" | "narrow_gauge" | "funicular" | "monorail" | "preserved") {
+        return None;
+    }
+    if matches!(t.get("service"), Some("yard" | "siding" | "spur" | "crossover")) || t.is("area", "yes")
+        || matches!(t.get("usage"), Some("industrial" | "military" | "freight" | "test"))
+    {
+        return None;
+    }
+    let tourist = kind == "preserved" || t.is("railway:preserved", "yes") || t.is("usage", "tourism") || t.is("tourism", "yes");
+    let rack = t.get("railway:rack").or(t.get("rack")).is_some_and(|v| v != "no");
+    let fallback = if tourist || rack || kind == "funicular" {
+        class::HERITAGE
+    } else {
+        match kind {
+            "tram" => class::TRAM,
+            "subway" | "monorail" | "light_rail" => class::METRO,
+            _ => u8::MAX,
+        }
+    };
+    let mut f = 0u8;
+    if t.get("bridge").is_some_and(|v| v != "no") {
+        f |= flag::BRIDGE;
+    }
+    if t.get("tunnel").is_some_and(|v| v != "no" && v != "culvert") {
+        f |= flag::TUNNEL;
+    }
+    Some((fallback, f))
+}
+
+/// Names that mark a long-distance service when a train route has no `service` tag.
+const INTERCITY_WORDS: &[&str] = &[
+    "tgv", "inoui", "ouigo", "intercités", "intercites", "eurostar", "thalys", "lyria", "ave ", "alvia", "euromed",
+    "iryo", "avlo", "talgo", "alfa pendular", "intercidades", "amtrak", "via rail", "acela", "lner", "avanti",
+    "crosscountry", "cross country", "sleeper", "night riviera", "nightjet", "intercity", "inter city", "inter-city",
+    "enterprise", "adirondack", "maple leaf", "vermonter", "ethan allen", "downeaster", "lake shore", "the canadian",
+    "the ocean", "northeast regional", "hull chelsea", "transcantábrico", "costa verde express", "al andalus",
+];
+
+/// Service group of a passenger route relation.
+fn rail_route(t: &Tags) -> Option<u8> {
+    let route = t.get("route")?;
+    let tourist = matches!(t.get("service"), Some("tourism" | "heritage")) || t.is("tourism", "yes") || t.is("historic", "yes")
+        || t.is("railway:preserved", "yes") || t.is("heritage:railway", "yes");
+    Some(match route {
+        "tram" => if tourist { class::HERITAGE } else { class::TRAM },
+        "subway" | "light_rail" | "monorail" => class::METRO,
+        "funicular" => class::HERITAGE,
+        "train" => {
+            if tourist {
+                class::HERITAGE
+            } else {
+                match t.get("service") {
+                    Some("long_distance" | "high_speed" | "night" | "international" | "car_shuttle") => class::INTERCITY,
+                    Some(_) => class::COMMUTER,
+                    None => {
+                        let text = ["name", "brand", "network", "operator"].iter().filter_map(|k| t.get(k)).collect::<Vec<_>>().join(" ").to_lowercase();
+                        if INTERCITY_WORDS.iter().any(|w| text.contains(w)) { class::INTERCITY } else { class::COMMUTER }
+                    }
+                }
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// OSM `colour` (#rgb, #rrggbb or a CSS name) as 0x01RRGGBB; 0 = none.
+fn parse_colour(v: Option<&str>) -> u32 {
+    let Some(v) = v else { return 0 };
+    let v = v.trim().to_lowercase();
+    let hex = v.strip_prefix('#').unwrap_or(&v);
+    let rgb = if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        u32::from_str_radix(hex, 16).ok()
+    } else if hex.len() == 3 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        let n = u32::from_str_radix(hex, 16).ok().unwrap_or(0);
+        Some(((n >> 8 & 15) * 0x110000) | ((n >> 4 & 15) * 0x1100) | ((n & 15) * 0x11))
+    } else {
+        match v.as_str() {
+            "red" => Some(0xff0000), "blue" => Some(0x0000ff), "green" => Some(0x008000), "yellow" => Some(0xffff00),
+            "orange" => Some(0xffa500), "purple" => Some(0x800080), "brown" => Some(0xa52a2a), "black" => Some(0x000000),
+            "white" => Some(0xffffff), "grey" | "gray" => Some(0x808080), "pink" => Some(0xffc0cb), "cyan" | "aqua" => Some(0x00ffff),
+            "magenta" | "fuchsia" => Some(0xff00ff), "navy" => Some(0x000080), "maroon" => Some(0x800000), "olive" => Some(0x808000),
+            "teal" => Some(0x008080), "lime" => Some(0x00ff00), "silver" => Some(0xc0c0c0), "gold" => Some(0xffd700),
+            "violet" => Some(0xee82ee), "darkgreen" => Some(0x006400), "darkblue" => Some(0x00008b), "lightblue" => Some(0xadd8e6),
+            _ => None,
+        }
+    };
+    rgb.map_or(0, |c| c | 1 << 24)
+}
+
+/// Route network by signage from the ref, road class and location (rough country boxes where
+/// ref formats collide: "A1" is a UK A road, a Portuguese autoestrada or a Jersey road).
+fn network_code(lon: f64, lat: f64, ref_: &str, c: u8) -> u8 {
+    use roadcore::network as n;
+    let first = ref_.split(';').next().unwrap_or("").trim();
+    let up = first.to_uppercase();
+    let pre: String = up.chars().take_while(|ch| ch.is_ascii_alphabetic()).collect();
+    let rest = &up[pre.len()..];
+    let sep = rest.chars().next();
+    let num = rest.trim_start_matches([' ', '-']).chars().next().is_some_and(|ch| ch.is_ascii_digit());
+    if lon < -40.0 {
+        // North America.
+        if first.is_empty() {
+            return n::NONE;
+        }
+        if (pre == "I" || up.starts_with("I-")) && num {
+            return n::US_INTERSTATE;
+        }
+        if pre == "US" && num {
+            return n::US_HIGHWAY;
+        }
+        if matches!(pre.as_str(), "NY" | "VT" | "NH" | "ME" | "MA" | "CT" | "RI" | "PA" | "NJ" | "SR") && num {
+            return n::US_STATE;
+        }
+        if pre == "CR" || pre == "CO" {
+            return n::US_COUNTY;
+        }
+        if pre == "A" || c == class::MOTORWAY {
+            return n::CA_AUTOROUTE;
+        }
+        return if c >= class::PRIMARY { n::CA_PROVINCIAL } else { n::CA_REGIONAL };
+    }
+    if (113.8..114.5).contains(&lon) && (22.1..22.6).contains(&lat) {
+        return if first.chars().next().is_some_and(|ch| ch.is_ascii_digit()) { n::HK_ROUTE } else { n::NONE };
+    }
+    if first.is_empty() || !num {
+        return n::NONE;
+    }
+    if pre == "E" {
+        return n::E_ROAD;
+    }
+    // Andorra: CG-1 … CG-6, CS-xxx.
+    if (1.40..1.79).contains(&lon) && (42.42..42.66).contains(&lat) && matches!(pre.as_str(), "CG" | "CS") {
+        return if pre == "CG" { n::AD_GENERAL } else { n::AD_SECUNDARIA };
+    }
+    // France and Monaco write "A 7", "N 7", "D 1075", "M 6007".
+    if sep == Some(' ') {
+        match pre.as_str() {
+            "A" => return n::FR_AUTOROUTE,
+            "N" | "RN" => return n::FR_NATIONALE,
+            "D" | "RD" => return n::FR_DEPARTEMENTALE,
+            "M" => return n::FR_METROPOLE,
+            _ => {}
+        }
+    }
+    // Spain writes "A-7", "AP-7", "N-340", "C-31", "CV-500", "M-30" …
+    if sep == Some('-') && lat < 44.0 && lon < 4.5 && !(lon < -6.2 && lat < 42.2 && pre.len() <= 2 && matches!(pre.as_str(), "A" | "IP" | "IC" | "N" | "EN" | "R" | "ER" | "M" | "EM")) {
+        return match pre.as_str() {
+            "A" | "AP" | "AG" | "AC" | "AS" | "AV" | "EX" if c >= class::TRUNK => n::ES_AUTOVIA,
+            "A" | "AP" => n::ES_AUTOVIA,
+            "N" => n::ES_NACIONAL,
+            _ if c >= class::SECONDARY => n::ES_AUTONOMICA,
+            _ => n::ES_LOCAL,
+        };
+    }
+    // Portugal (mainland box): A, IP, IC, N/EN, R/ER, M/EM.
+    if lon < -6.1 && lat < 42.2 && lat > 36.8 {
+        return match pre.as_str() {
+            "A" => n::PT_AUTOESTRADA,
+            "IP" => n::PT_IP,
+            "IC" => n::PT_IC,
+            "N" | "EN" => n::PT_NACIONAL,
+            _ => n::PT_REGIONAL,
+        };
+    }
+    // Ireland (the Republic): M, N (national primary ≤ 33, secondary above), R.
+    let ireland = lon < -5.9 && (51.3..55.5).contains(&lat) && !(lon > -8.2 && lat > 54.0 && !matches!(pre.as_str(), "N" | "R"));
+    if ireland && matches!(pre.as_str(), "M" | "N" | "R") {
+        let k: u32 = rest.trim_start_matches([' ', '-']).chars().take_while(|ch| ch.is_ascii_digit()).collect::<String>().parse().unwrap_or(0);
+        return match pre.as_str() {
+            "M" => n::IE_MOTORWAY,
+            "N" if k <= 33 => n::IE_NATIONAL_PRIMARY,
+            "N" => n::IE_NATIONAL_SECONDARY,
+            _ => n::IE_REGIONAL,
+        };
+    }
+    // Great Britain, Northern Ireland, Isle of Man, Channel Islands: M, A (primary = trunk), B.
+    if lat > 49.1 {
+        return match pre.as_str() {
+            "M" => n::GB_MOTORWAY,
+            "A" if c >= class::TRUNK => n::GB_A_PRIMARY,
+            "A" => n::GB_A,
+            "B" => n::GB_B,
+            _ => n::NONE,
+        };
+    }
+    n::NONE
+}
 
 fn classify(t: &Tags) -> Option<(u8, u8)> {
     if t.is("route", "ferry") {
@@ -262,6 +500,8 @@ fn main() -> Result<()> {
     let mut ways: Vec<RawWay> = Vec::new();
     let mut scenic: Vec<(i64, String)> = Vec::new();
     let mut poi_ways: Vec<(&'static str, String, Vec<i64>)> = Vec::new();
+    let mut hikes: Vec<(String, Vec<i64>)> = Vec::new();
+    let mut rail_uses: Vec<RailUse> = Vec::new();
     for p in &inputs {
         let name = p.file_name().unwrap().to_string_lossy().replace(".osm.pbf", "");
         let r = open_reader(p, &format!("ways · {name}"))?;
@@ -286,11 +526,50 @@ fn main() -> Result<()> {
                                 ref_: t.get("ref").unwrap_or("").replace('\n', " "),
                                 surface: t.get("surface").unwrap_or("").replace('\n', " "),
                                 refs: w.refs().collect(),
+                                rail: 0,
+                                colour: 0,
+                                rail_fallback: u8::MAX,
+                            });
+                        } else if let Some((fallback, f)) = rail_track(&t) {
+                            out.ways.push(RawWay {
+                                id: w.id(),
+                                route: String::new(),
+                                class: class::TRAM, // set from the services below
+                                flags: f,
+                                lanes: 0,
+                                maxspeed: parse_maxspeed(t.get("maxspeed")),
+                                name: t.get("name").unwrap_or("").replace('\n', " "),
+                                ref_: String::new(),
+                                surface: String::new(),
+                                refs: w.refs().collect(),
+                                rail: 0,
+                                colour: parse_colour(t.get("colour")),
+                                rail_fallback: fallback,
                             });
                         }
                     }
                     Element::Relation(r) => {
                         let t = Tags(r.tags().collect());
+                        if matches!(t.get("route"), Some("hiking" | "foot")) {
+                            let name = t.get("name").or(t.get("ref")).unwrap_or("").replace('\n', " ");
+                            let ids: Vec<i64> = r.members().filter(|m| m.member_type == osmpbf::RelMemberType::Way).map(|m| m.member_id).collect();
+                            if !ids.is_empty() {
+                                out.hikes.push((name, ids));
+                            }
+                        }
+                        if let Some(group) = rail_route(&t) {
+                            let (name, ref_) = (t.get("name").unwrap_or("").replace('\n', " "), t.get("ref").unwrap_or("").replace('\n', " "));
+                            let label = if ref_.is_empty() { name.clone() } else { ref_.clone() };
+                            let colour = parse_colour(t.get("colour"));
+                            for m in r.members() {
+                                if m.member_type == osmpbf::RelMemberType::Way {
+                                    let role = m.role().unwrap_or("");
+                                    if role.is_empty() || matches!(role, "forward" | "backward" | "main" | "route") {
+                                        out.rail_uses.push(RailUse { way: m.member_id, group, colour, label: label.clone(), name: name.clone(), ref_: ref_.clone() });
+                                    }
+                                }
+                            }
+                        }
                         if let Some(route) = scenic_route(&t) {
                             for m in r.members() {
                                 if m.member_type == osmpbf::RelMemberType::Way {
@@ -310,9 +589,68 @@ fn main() -> Result<()> {
         ways.append(&mut got.ways);
         scenic.append(&mut got.scenic);
         poi_ways.append(&mut got.poi_ways);
+        hikes.append(&mut got.hikes);
+        rail_uses.append(&mut got.rail_uses);
     }
     ways.par_sort_unstable_by_key(|w| w.id);
     ways.dedup_by_key(|w| w.id);
+    // Rail: the services using each track. The primary group (drawing class, colour, name) is
+    // the most important one: heritage > intercity > commuter > metro > tram.
+    {
+        let rank = |g: u8| match g {
+            class::HERITAGE => 0,
+            class::INTERCITY => 1,
+            class::COMMUTER => 2,
+            class::METRO => 3,
+            _ => 4,
+        };
+        rail_uses.par_sort_unstable_by(|a, b| a.way.cmp(&b.way).then(rank(a.group).cmp(&rank(b.group))).then(a.label.cmp(&b.label)));
+        rail_uses.dedup_by(|a, b| a.way == b.way && a.group == b.group && a.label == b.label);
+        let (mut kept, mut dropped, mut via_routes) = (0usize, 0usize, 0usize);
+        for w in ways.iter_mut() {
+            if w.class != class::TRAM {
+                continue; // roads (rail tracks are all provisionally TRAM here)
+            }
+            let lo = rail_uses.partition_point(|u| u.way < w.id);
+            let hi = rail_uses.partition_point(|u| u.way <= w.id);
+            let uses = &rail_uses[lo..hi];
+            if uses.is_empty() {
+                if w.rail_fallback == u8::MAX {
+                    w.class = u8::MAX; // freight-only or unknown: dropped below
+                    dropped += 1;
+                    continue;
+                }
+                w.class = w.rail_fallback;
+                w.rail = 1 << (w.class - class::TRAM);
+                kept += 1;
+                continue;
+            }
+            via_routes += 1;
+            kept += 1;
+            for u in uses {
+                w.rail |= 1 << (u.group - class::TRAM);
+            }
+            let p = &uses[0];
+            w.class = p.group;
+            if p.colour != 0 {
+                w.colour = p.colour;
+            }
+            // Name: the primary service's name (the track's own name is usually an infrastructure
+            // line name); refs: every service's ref, so a hovered line follows its own service.
+            if !p.name.is_empty() {
+                w.name = p.name.clone();
+            }
+            let mut refs: Vec<&str> = uses.iter().map(|u| u.ref_.as_str()).filter(|r| !r.is_empty()).collect();
+            refs.dedup();
+            w.ref_ = refs.join(";");
+            let mut labels: Vec<&str> = uses.iter().map(|u| u.label.as_str()).filter(|l| !l.is_empty()).collect();
+            labels.dedup();
+            let more = labels.len().saturating_sub(4);
+            w.route = labels[..labels.len().min(4)].join(" · ") + &if more > 0 { format!(" +{more}") } else { String::new() };
+        }
+        ways.retain(|w| w.class != u8::MAX);
+        eprintln!("rail: {kept} passenger tracks ({via_routes} on route relations), {dropped} other tracks dropped");
+    }
     // Flag members of scenic routes (shortest route name wins when a way is in several).
     scenic.par_sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.len().cmp(&b.1.len())));
     scenic.dedup_by_key(|x| x.0);
@@ -326,8 +664,59 @@ fn main() -> Result<()> {
     }
     eprintln!("pass 1: {} unique ways, {} on scenic routes ({:.0?})", ways.len(), n_scenic, t0.elapsed());
 
+    // ---- Pass 1b: end nodes of hiking-route member ways (relations come after ways in a file) ----
+    let mut hike_ids: Vec<i64> = hikes.iter().flat_map(|h| h.1.iter().copied()).collect();
+    hike_ids.par_sort_unstable();
+    hike_ids.dedup();
+    let mut hike_ends: Vec<(i64, i64, i64)> = Vec::new(); // (way id, first node, last node)
+    if !hike_ids.is_empty() {
+        for p in &inputs {
+            let name = p.file_name().unwrap().to_string_lossy().replace(".osm.pbf", "");
+            let r = open_reader(p, &format!("hiking routes · {name}"))?;
+            let mut got = r.par_map_reduce(
+                |el| match el {
+                    Element::Way(w) if hike_ids.binary_search(&w.id()).is_ok() => {
+                        let refs: Vec<i64> = w.refs().collect();
+                        match (refs.first(), refs.last()) {
+                            (Some(&a), Some(&b)) => vec![(w.id(), a, b)],
+                            _ => Vec::new(),
+                        }
+                    }
+                    _ => Vec::new(),
+                },
+                Vec::new,
+                |mut a, mut b| {
+                    a.append(&mut b);
+                    a
+                },
+            )?;
+            hike_ends.append(&mut got);
+        }
+        hike_ends.par_sort_unstable();
+        hike_ends.dedup_by_key(|e| e.0);
+    }
+    // A route's ends: way ends used once (the route's own start and finish, where it meets a road
+    // or car park). Only simple linear routes (exactly two such ends): branches and loops don't say
+    // which end is the way in.
+    let mut route_ends: Vec<(String, i64)> = Vec::new();
+    for (name, ids) in &hikes {
+        let mut deg: HashMap<i64, u32> = HashMap::new();
+        for id in ids {
+            if let Ok(i) = hike_ends.binary_search_by_key(id, |e| e.0) {
+                *deg.entry(hike_ends[i].1).or_default() += 1;
+                *deg.entry(hike_ends[i].2).or_default() += 1;
+            }
+        }
+        let ends: Vec<i64> = deg.iter().filter(|(_, &d)| d == 1).map(|(&n, _)| n).collect();
+        if ends.len() == 2 {
+            route_ends.extend(ends.into_iter().map(|n| (name.clone(), n)));
+        }
+    }
+    eprintln!("        {} hiking routes, {} route ends", hikes.len(), route_ends.len());
+
     let mut needed: Vec<i64> = ways.iter().flat_map(|w| w.refs.iter().copied()).collect();
     needed.extend(poi_ways.iter().flat_map(|p| p.2.iter().copied()));
+    needed.extend(route_ends.iter().map(|e| e.1));
     needed.par_sort_unstable();
     needed.dedup();
     eprintln!("        {} unique nodes needed", needed.len());
@@ -403,7 +792,96 @@ fn main() -> Result<()> {
         pois.push(Poi { kind, lon: (sx / n) as i32, lat: (sy / n) as i32, name: name.clone(), ele: None });
     }
 
+    // Hiking-route ends within 300 m of a drivable road are trailheads (named after the route).
+    {
+        let cell = |lon: i32, lat: i32| ((lon as i64).div_euclid(30_000), (lat as i64).div_euclid(30_000)); // ≈ 0.003°
+        let mut cand: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+        let mut pts: Vec<(i32, i32)> = Vec::new();
+        for (k, (_, n)) in route_ends.iter().enumerate() {
+            let v = needed.binary_search(n).ok().map(|i| coords[i].load(Relaxed)).unwrap_or(u64::MAX);
+            let p = if v == u64::MAX { (i32::MIN, 0) } else { (v as u32 as i32, (v >> 32) as u32 as i32) };
+            pts.push(p);
+            if p.0 != i32::MIN {
+                cand.entry(cell(p.0, p.1)).or_default().push(k);
+            }
+        }
+        let mut near = vec![false; route_ends.len()];
+        for w in ways.iter().filter(|w| !class::is_rail(w.class)) {
+            for r in &w.refs {
+                let Ok(i) = needed.binary_search(r) else { continue };
+                let v = coords[i].load(Relaxed);
+                if v == u64::MAX {
+                    continue;
+                }
+                let (lon, lat) = (v as u32 as i32, (v >> 32) as u32 as i32);
+                let (cx, cy) = cell(lon, lat);
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        for &k in cand.get(&(cx + dx, cy + dy)).map(|v| v.as_slice()).unwrap_or(&[]) {
+                            if !near[k] && dist_m(lon as f64 * E7, lat as f64 * E7, pts[k].0 as f64 * E7, pts[k].1 as f64 * E7) < 300.0 {
+                                near[k] = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut n = 0;
+        for (k, (name, _)) in route_ends.iter().enumerate() {
+            if near[k] {
+                pois.push(Poi { kind: "trail_route", lon: pts[k].0, lat: pts[k].1, name: name.clone(), ele: None });
+                n += 1;
+            }
+        }
+        eprintln!("        {n} hiking-route ends near roads");
+    }
+    // One trailhead per spot: mapped trailheads first, then trail car parks, then route ends; any
+    // within 150 m of one already kept is dropped (lending it its name if it has none).
+    {
+        let rank = |k: &str| match k {
+            "trailhead" => 0,
+            "trail_parking" => 1,
+            "trail_route" => 2,
+            _ => 3,
+        };
+        let mut order: Vec<usize> = (0..pois.len()).filter(|&i| rank(pois[i].kind) < 3).collect();
+        order.sort_by_key(|&i| rank(pois[i].kind));
+        let mut drop = vec![false; pois.len()];
+        let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+        let cell = |p: &Poi| ((p.lon as i64).div_euclid(20_000), (p.lat as i64).div_euclid(20_000)); // ≈ 0.002°
+        for i in order {
+            let (cx, cy) = cell(&pois[i]);
+            let near = |j: usize| dist_m(pois[i].lon as f64 * E7, pois[i].lat as f64 * E7, pois[j].lon as f64 * E7, pois[j].lat as f64 * E7) < 150.0;
+            let dup = (-1..=1)
+                .flat_map(|dx| (-1..=1).map(move |dy| (cx + dx, cy + dy)))
+                .flat_map(|c| grid.get(&c).cloned().unwrap_or_default())
+                .find(|&j| near(j));
+            match dup {
+                Some(j) => {
+                    if pois[j].name.is_empty() && !pois[i].name.is_empty() {
+                        pois[j].name = pois[i].name.clone();
+                    }
+                    drop[i] = true;
+                }
+                None => grid.entry((cx, cy)).or_default().push(i),
+            }
+        }
+        let mut i = 0;
+        pois.retain(|_| {
+            i += 1;
+            !drop[i - 1]
+        });
+        for p in &mut pois {
+            if rank(p.kind) < 3 {
+                p.kind = "trailhead";
+            }
+        }
+    }
+
     // ---- Assemble, drop gated minor roads, densify --------------------------------
+    // North America (west of 40° W) has 1–10 m lidar and DEMs; elsewhere FABDEM is 30 m.
+    const COARSE_SPACING_M: f64 = 15.0;
+    let spacing_at = |lon_e7: i32| if (lon_e7 as f64) * E7 < -40.0 { spacing } else { spacing.max(COARSE_SPACING_M) };
     let lookup = |id: i64| -> Option<(usize, i32, i32)> {
         let i = needed.binary_search(&id).ok()?;
         let v = coords[i].load(Relaxed);
@@ -484,6 +962,7 @@ fn main() -> Result<()> {
             Ok(())
         };
         emit(b.pts[0], &mut wv)?;
+        let spacing = spacing_at(b.pts[0][0]);
         for s in b.pts.windows(2) {
             let (a, c) = (s[0], s[1]);
             let (ax, ay, cx, cy) = (a[0] as f64 * E7, a[1] as f64 * E7, c[0] as f64 * E7, c[1] as f64 * E7);
@@ -514,9 +993,11 @@ fn main() -> Result<()> {
             class: w.class,
             flags: w.flags,
             lanes: w.lanes,
-            _pad: [0; 3],
+            network: if class::is_rail(w.class) { 0 } else { network_code(b.pts[0][0] as f64 * E7, b.pts[0][1] as f64 * E7, &w.ref_, w.class) },
+            rail: w.rail,
+            _pad: 0,
             route: intern(&w.route),
-            _pad2: 0,
+            colour: w.colour,
         });
         if w.flags & flag::COVERED != 0 {
             let m = b.pts[b.pts.len() / 2];

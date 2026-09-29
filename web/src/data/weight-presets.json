@@ -1,0 +1,122 @@
+{
+  "about": "Built-in scenic score weight presets. Weights are keyed by component (see COMPONENTS in scenic.ts); missing components weigh 0. The first preset is the default. Edits made in the app are kept in the browser and replace this list there.",
+  "presets": [
+    {
+      "id": "balanced",
+      "name": "Balanced",
+      "weights": {
+        "views": 1,
+        "water": 1,
+        "vista": 0.5,
+        "relief": 0.8,
+        "ridge": 0.3,
+        "curvy": 0.6,
+        "unblocked": 0.6,
+        "bldg": -0.8,
+        "route": 0.5,
+        "viewpoint": 0.4
+      }
+    },
+    {
+      "id": "vistas",
+      "name": "Big vistas",
+      "weights": {
+        "views": 1.5,
+        "water": 0.6,
+        "vista": 1.2,
+        "relief": 0.6,
+        "ridge": 0.8,
+        "curvy": 0.1,
+        "unblocked": 1,
+        "forest": -0.2,
+        "built": -0.3,
+        "bldg": -0.8,
+        "route": 0.3,
+        "viewpoint": 0.6
+      }
+    },
+    {
+      "id": "water",
+      "name": "Lakes & coast",
+      "weights": {
+        "views": 0.5,
+        "water": 1.6,
+        "vista": 0.4,
+        "relief": 0.2,
+        "curvy": 0.3,
+        "unblocked": 0.6,
+        "built": -0.2,
+        "bldg": -0.6,
+        "route": 0.3,
+        "viewpoint": 0.3
+      }
+    },
+    {
+      "id": "mountains",
+      "name": "Mountains",
+      "weights": {
+        "views": 0.8,
+        "water": 0.3,
+        "vista": 0.6,
+        "relief": 1.6,
+        "ridge": 0.6,
+        "curvy": 0.6,
+        "unblocked": 0.4,
+        "built": -0.3,
+        "bldg": -0.8,
+        "route": 0.3,
+        "viewpoint": 0.4
+      }
+    },
+    {
+      "id": "twisty",
+      "name": "Twisty",
+      "weights": {
+        "views": 0.4,
+        "water": 0.2,
+        "vista": 0.2,
+        "relief": 0.6,
+        "curvy": 2,
+        "unblocked": 0.2,
+        "built": -0.5,
+        "bldg": -1.0,
+        "route": 0.2
+      }
+    },
+    {
+      "id": "foliage",
+      "name": "Foliage",
+      "weights": {
+        "views": 0.3,
+        "water": 0.3,
+        "vista": 0.1,
+        "relief": 0.6,
+        "curvy": 0.5,
+        "unblocked": -0.2,
+        "forest": 1.4,
+        "built": -0.6,
+        "bldg": -1.0,
+        "route": 0.4,
+        "viewpoint": 0.2
+      }
+    },
+    {
+      "id": "backroads",
+      "name": "Quiet backroads",
+      "weights": {
+        "views": 0.6,
+        "water": 0.5,
+        "vista": 0.3,
+        "relief": 0.5,
+        "ridge": 0.2,
+        "curvy": 0.5,
+        "unblocked": 0.4,
+        "forest": 0.2,
+        "built": -1.2,
+        "bldg": -1.5,
+        "route": 0.2,
+        "viewpoint": 0.2
+      }
+    }
+  ]
+}
