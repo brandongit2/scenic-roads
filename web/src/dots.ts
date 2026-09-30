@@ -23,7 +23,7 @@
 // Morton order, into a heights texture the dots read. No per-dot work on the CPU, and a dot's
 // height always matches the mesh under it.
 import type { CustomLayerInterface, CustomRenderMethodInput, Map as MLMap } from 'maplibre-gl';
-import { HALO, HERITAGE_GROUPS, HER_R, POI_R, POI_STYLE, landmarkScoreOf } from './basemap';
+import { HALO, HERITAGE_GROUPS, HER_R, POI_R, POI_STYLE, landmarkScoreOf, type NameScale } from './basemap';
 import { CHUNK_Z, DRAW_STRIDE, HEIGHT_W, HPOS_STRIDE, LOD_LEVELS, LOD_Z0, VIS_WORDS, tileRun, type DotData } from './dotlayout';
 import { link, perspectiveP22 } from './roads/layer';
 
@@ -424,6 +424,22 @@ export class LandmarkDots implements CustomLayerInterface {
     if (!this.from || !this.to) return this.to!;
     const t = Math.min(1, (now - this.t0) / EASE_MS);
     return t >= 1 ? this.to : mixParams(this.from, this.to, easeInOut(t));
+  }
+
+  /** The scale as the dots are drawn at `now`, for their names (basemap.ts nameOpacity); null
+   * before the first. */
+  nameScale(now = performance.now()): NameScale | null {
+    if (!this.to || !this.scale) return null;
+    const q = this.current(now), th = this.scale.threshold;
+    return {
+      r0: q.r0, r1: q.r1, eq: this.scale.eq ? q.eq : null, lowFade: q.lowFade, lowSpan: q.lowSpan,
+      thr: { on: th.on, dir: th.dir, value: q.thrValue }, balance: q.balance, opacity: q.opacity,
+    };
+  }
+
+  /** Whether the dots are still easing to the latest scale. */
+  easing(now = performance.now()): boolean {
+    return !!this.to && now - this.t0 < EASE_MS;
   }
 
   /** A dot's radius (CSS px) as drawn now, for hit-testing (layer: its MapLibre layer id). */

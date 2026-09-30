@@ -208,11 +208,6 @@ export function applyLineWidths(map: import('maplibre-gl').Map, lw: LineWeights)
  * (0 fame only, 1 rarity only). */
 export const landmarkScoreOf = (fa: number, ia: number, balance: number): number =>
   (1 - balance) * Math.min(1, fa / 5) + balance * Math.min(1, Math.max(0, (Math.log10(Math.max(0.05, ia)) + 1.3) / 5.6));
-const scoreExpr = (balance: number): ExpressionSpecification => [
-  '+',
-  ['*', 1 - balance, ['min', 1, ['/', ['coalesce', ['get', 'fa'], 0], 5]]],
-  ['*', balance, ['min', 1, ['max', 0, ['/', ['+', ['log10', ['max', 0.05, ['coalesce', ['get', 'ia'], 20000]]], 1.3], 5.6]]]],
-];
 /** Dot radius at a zoom before prominence: stops, and heritage sites by designation level. */
 export const POI_R: [number, number][] = [[3, 0.8], [7, 1.5], [12, 2.5], [16, 3.8]];
 export const HER_R: [number, number][][] = [[[5, 3.8], [10, 5.2], [15, 6.8]], [[5, 2.2], [10, 3.3], [15, 5.2]], [[5, 1.2], [10, 2.2], [15, 3.8]]];
@@ -225,27 +220,41 @@ export const SIG_LAYERS = [...Object.keys(POI_STYLE).map((k) => `poi-${k}`), 'he
 const hitPaint = (radius: ExpressionSpecification) => ({
   'circle-radius': radius, 'circle-opacity': 0, 'circle-stroke-opacity': 0, 'circle-stroke-width': 0, 'circle-pitch-alignment': 'viewport' as const,
 });
-/** The names' opacity on a landmark layer by prominence: each place's score placed on the scale
- * (u: linear over `range`, or through `eqStops` [score, u] when equalised), faded as its dot is
- * (dots.ts: the low-end fade, dimmed outside a highlight), times the Stops & sights and label
- * opacities. */
-export function labelOpacityExpr(sc: {
-  range: [number, number]; eqStops: [number, number][] | null; lowFade: number; lowSpan: number;
-  threshold: { on: boolean; dir: 'above' | 'below' | 'low'; value: number }; balance: number;
-}, opacity: number, labelOpacity: number): ExpressionSpecification {
-  const score = scoreExpr(sc.balance);
-  const [r0, r1] = sc.range;
-  const u: ExpressionSpecification = sc.eqStops && sc.eqStops.length > 1
-    ? ['interpolate', ['linear'], score, ...sc.eqStops.flat()] as unknown as ExpressionSpecification
-    : ['min', 1, ['max', 0, ['/', ['-', score, r0], Math.max(1e-6, r1 - r0)]]];
-  const fade: ExpressionSpecification = ['-', 1, ['*', sc.lowFade, ['^', ['-', 1, ['min', 1, ['/', u, Math.max(sc.lowSpan, 1e-3)]]], 1.5]]];
-  const t = sc.threshold;
-  const pass: ExpressionSpecification | boolean = !t.on ? true
-    : t.dir === 'low' ? ['>=', score, r0] : t.dir === 'below' ? ['<=', score, t.value] : ['>=', score, t.value];
-  return ['*', labelOpacity * opacity, ['*', fade, ['case', pass, 1, 0.12]]];
+/** The prominence scale as the landmark names fade by it: the dots' (dots.ts nameScale), easing
+ * with them. `eq`: u at 33 scores evenly over r0–r1 when equalised. */
+export interface NameScale {
+  r0: number;
+  r1: number;
+  eq: number[] | null;
+  lowFade: number;
+  lowSpan: number;
+  thr: { on: boolean; dir: 'above' | 'below' | 'low'; value: number };
+  balance: number;
+  /** The Stops & sights opacity. */
+  opacity: number;
 }
+/** A landmark name's opacity on the scale, before Label opacity: its score placed on the scale (u),
+ * faded at the low end as its dot is, dimmed where the threshold dims the dot, times the Stops &
+ * sights opacity. */
+export function nameOpacity(fa: number, ia: number, s: NameScale): number {
+  const sc = landmarkScoreOf(fa, ia, s.balance);
+  const t = Math.min(1, Math.max(0, (sc - s.r0) / Math.max(s.r1 - s.r0, 1e-6)));
+  let u = t;
+  if (s.eq) {
+    const k = t * 32, i = Math.min(31, Math.floor(k));
+    u = s.eq[i] + (s.eq[i + 1] - s.eq[i]) * (k - i);
+  }
+  const fade = 1 - s.lowFade * (1 - Math.min(1, u / Math.max(s.lowSpan, 1e-3))) ** 1.5;
+  const th = s.thr;
+  const pass = !th.on || (th.dir === 'low' ? sc >= s.r0 : th.dir === 'below' ? sc <= th.value : sc >= th.value);
+  return s.opacity * fade * (pass ? 1 : 0.12);
+}
+/** The landmark names' text-opacity: Label opacity times each name's own (nameOpacity), a feature
+ * state while it eases (namefade.ts), else as its tile was made (`o`, landmarks.worker.ts tile). */
+export const nameOpacityPaint = (labelOpacity: number): ExpressionSpecification =>
+  ['*', labelOpacity, ['coalesce', ['feature-state', 'o'], ['get', 'o'], 0]];
 
-/** Names of the landmark layers: their opacity follows their dots' (labelOpacityExpr). */
+/** Names of the landmark layers: their opacity follows their dots' (nameOpacity). */
 export const LANDMARK_LABELS: Record<string, string> = Object.fromEntries(SIG_LAYERS.map((id) => [id, id === 'heritage-pt' ? 'heritage-label' : `${id}-label`]));
 const LANDMARK_LABEL_IDS = new Set(Object.values(LANDMARK_LABELS));
 /** Label opacity scale for a layer: the Stops & sights opacity on overlay labels; NaN leaves the
@@ -327,7 +336,7 @@ export function baseStyle(parts: string[] = [], labels = false): StyleSpecificat
           'text-max-width': 8,
           'text-optional': true,
         },
-        paint: { 'text-color': colour, 'text-halo-color': HALO, 'text-halo-width': 1.3, 'text-opacity': TEXT_OPACITY },
+        paint: { 'text-color': colour, 'text-halo-color': HALO, 'text-halo-width': 1.3, 'text-opacity': nameOpacityPaint(TEXT_OPACITY) },
       },
     );
   }
@@ -770,7 +779,7 @@ export function baseStyle(parts: string[] = [], labels = false): StyleSpecificat
           'text-color': HERITAGE_COLOUR,
           'text-halo-color': HALO,
           'text-halo-width': 1.3,
-          'text-opacity': TEXT_OPACITY,
+          'text-opacity': nameOpacityPaint(TEXT_OPACITY),
         },
       },
       {

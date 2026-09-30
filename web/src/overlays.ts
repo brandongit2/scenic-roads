@@ -4,7 +4,7 @@ import * as maplibregl from 'maplibre-gl';
 import { cdfOf } from './ui/scale';
 import { Dist } from './roads/stats';
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
-import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LABEL_SPACING_PX, LANDMARK_LABELS, OVERLAY_LAYERS, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, labelOpacityExpr, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, baseId, labelKindOf, partIds } from './basemap';
+import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LABEL_SPACING_PX, LANDMARK_LABELS, OVERLAY_LAYERS, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, baseId, labelKindOf, partIds, type NameScale } from './basemap';
 import { OVERLAYS, labelShown, type AppState, type LabelKind, type OverlayKey } from './state';
 import { ver } from './api';
 import { hostFor } from './hosts';
@@ -12,7 +12,8 @@ import { tasks } from './tasks';
 import { withEnglish } from './english';
 import { enrichArea, enrichHeritage, enrichPoi, loadDetail, type Detail, type DetailRef, type Enriched } from './details';
 import { stopFilterExpr, stopFilterPass } from './stopfilters';
-import type { KindQuery, LandmarkItem, LandmarkRequest, LandmarkResponse } from './landmarks.worker';
+import type { KindQuery, LandmarkItem, LandmarkRequest, LandmarkResponse, TileNames } from './landmarks.worker';
+import { NameFader } from './namefade';
 import type { LandmarkDots } from './dots';
 import { fitPopup } from './popupfit';
 import { cap, fmt, h } from './ui/dom';
@@ -99,13 +100,20 @@ const isPoints = (src: string): src is PointSource => src === 'heritage' || src.
  * held. Registered before any map asks; the requests wait for the Overlays' worker. */
 let tileWorker: Worker | null = null;
 let tileSeq = 0;
-const tileReplies = new Map<number, (data: ArrayBuffer) => void>();
+const tileReplies = new Map<number, (m: Extract<LandmarkResponse, { type: 'tile' }>) => void>();
 const tileQueue: LandmarkRequest[] = [];
+/** The dots' scale as it stands, for the names' opacity in a tile, and where the tiles' named
+ * points go (namefade.ts): set by the Overlays. */
+let tileScale: () => NameScale | null = () => null;
+let tileNames: (src: string, z: number, x: number, y: number, names: TileNames) => void = () => {};
 maplibregl.addProtocol(POINT_TILES, (params) => new Promise((resolve) => {
-  const [src, z, x, y] = params.url.replace(`${POINT_TILES}://`, '').split('/');
+  const [src, z, x, y] = params.url.replace(`${POINT_TILES}://`, '').split('/').map((v, i) => (i ? parseInt(v, 10) : v)) as [string, number, number, number];
   const id = ++tileSeq;
-  tileReplies.set(id, (data) => resolve({ data }));
-  const req: LandmarkRequest = { type: 'tile', id, src, z: Number(z), x: Number(x), y: parseInt(y, 10) };
+  tileReplies.set(id, (m) => {
+    tileNames(src, z, x, y, m.names);
+    resolve({ data: m.data });
+  });
+  const req: LandmarkRequest = { type: 'tile', id, src, z, x, y, scale: tileScale() };
   if (tileWorker) tileWorker.postMessage(req);
   else tileQueue.push(req);
 }));
@@ -142,7 +150,13 @@ export class Overlays {
   private baseFilters = new Map<string, unknown>();
   private state: AppState | null = null;
 
+  /** The landmark names, easing with the dots. */
+  private names: NameFader;
+
   constructor(private map: MLMap, private layers: LayersCard, private dots: LandmarkDots) {
+    this.names = new NameFader(map, dots);
+    tileScale = () => dots.nameScale();
+    tileNames = (src, z, x, y, names) => this.names.tile(src, z, x, y, names);
     this.worker.onmessage = (ev: MessageEvent<LandmarkResponse>) => this.onWorker(ev.data);
     tileWorker = this.worker;
     for (const r of tileQueue.splice(0)) this.worker.postMessage(r);
@@ -169,7 +183,7 @@ export class Overlays {
 
   private onWorker(m: LandmarkResponse) {
     if (m.type === 'tile') {
-      tileReplies.get(m.id)?.(m.data);
+      tileReplies.get(m.id)?.(m);
       tileReplies.delete(m.id);
     } else if (m.type === 'loaded') {
       const src = m.src as PointSource;
@@ -364,16 +378,14 @@ export class Overlays {
       range, eq: eqStops ? eqStops.map(([, u]) => u) : null, lowFade: lm.lowFade, lowSpan: lm.lowSpan,
       threshold: lm.threshold, balance: lm.balance, emphasis: s.poiEmphasis, opacity: s.poiOpacity,
     });
-    // Their names fade with them, in MapLibre's symbol layers: the range to 0.005 (finer is
-    // invisible), as a changed paint re-evaluates every loaded feature.
-    const q = (v: number) => Math.round(v * 200) / 200;
-    const rq: [number, number] = [q(range[0]), q(range[1])];
-    const eq = eqStops?.map(([a, b]) => [q(a), q(b)] as [number, number]) ?? null;
+    // Their names ease with them (namefade.ts: feature states, not a paint expression of the scale,
+    // which MapLibre snaps and lays the whole source out again for); Label opacity is the layers'.
+    this.names.kick();
     for (const id of SIG_LAYERS) {
       const lid = LANDMARK_LABELS[id];
       const k = (id === 'heritage-pt' ? 'heritage' : id.slice(4)) as OverlayKey;
       if (!map.getLayer(lid) || !s.overlays[k]) continue; // hidden: styled when shown (apply → prominence)
-      const v = labelOpacityExpr({ range: rq, eqStops: eq, lowFade: lm.lowFade, lowSpan: lm.lowSpan, threshold: lm.threshold, balance: lm.balance }, s.poiOpacity, s.labelOpacity);
+      const v = nameOpacityPaint(s.labelOpacity);
       const key = `${lid}|text-opacity`, j = JSON.stringify(v);
       if (this.painted.get(key) === j) continue;
       this.painted.set(key, j);

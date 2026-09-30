@@ -5,7 +5,7 @@
 // names and hit-testing: MapLibre's own GeoJSON tiler held another copy of every file, some 4.7 KB
 // a point (2.4 GB for the half-million), and the page's workers together neared the browser's
 // memory limit for a page.
-import { HERITAGE_GROUPS, POINT_TILE_LAYER, heritageTierOf, landmarkScoreOf } from './basemap';
+import { HERITAGE_GROUPS, POINT_TILE_LAYER, heritageTierOf, landmarkScoreOf, nameOpacity, type NameScale } from './basemap';
 import { layoutDots, morton, tileRun, visWords, type DotAux, type DotData } from './dotlayout';
 import { encodePoints, type TilePoint } from './mvt';
 import { stopFilterPass, type StopFilter } from './stopfilters';
@@ -40,8 +40,9 @@ export type LandmarkRequest =
   | { type: 'count'; id: number; kind: KindQuery }
   /** Which points of each kind's source pass its filters, for the dots (dots.ts). */
   | { type: 'mask'; id: number; kinds: KindQuery[] }
-  /** A map tile of a source's points (vector tile, layer POINT_TILE_LAYER). */
-  | { type: 'tile'; id: number; src: string; z: number; x: number; y: number };
+  /** A map tile of a source's points (vector tile, layer POINT_TILE_LAYER), its names' opacity on
+   * the dots' scale as it stands (null before the first). */
+  | { type: 'tile'; id: number; src: string; z: number; x: number; y: number; scale: NameScale | null };
 
 export type LandmarkResponse =
   /** dots: the points laid out for drawing (dots.ts, dotlayout.ts). */
@@ -62,7 +63,18 @@ export type LandmarkResponse =
       summit: { name: string; ele: number; lngLat: [number, number] } | null;
     }
   | { type: 'count'; id: number; n: number; of: number }
-  | { type: 'tile'; id: number; data: ArrayBuffer };
+  | { type: 'tile'; id: number; data: ArrayBuffer; names: TileNames };
+
+/** A point tile's named points (namefade.ts): feature id, fame, isolation, and the zoom where the
+ * name's isolation spans a pixel (mz; -99 without); `scaled`: the names' opacity is in the tile
+ * (not before the first scale). */
+export interface TileNames {
+  ids: Uint32Array;
+  fa: Float32Array;
+  ia: Float32Array;
+  mz: Float32Array;
+  scaled: boolean;
+}
 
 interface Index {
   features: GeoJSON.Feature[];
@@ -196,15 +208,25 @@ function tile(m: Extract<LandmarkRequest, { type: 'tile' }>) {
   let ks = Array.from({ length: k1 - k0 }, (_, i) => k0 + i);
   if (m.z < TILE_CAP_Z && ks.length > TILE_MAX) ks = ks.sort((a, b) => t.rank[b] - t.rank[a]).slice(0, TILE_MAX);
   const n = 2 ** m.z;
+  // Each name's opacity on the scale as it stands (o), so a tile's names show as their dots do from
+  // the start, and the named points for the names' easing (namefade.ts).
+  const ids: number[] = [], fas: number[] = [], ias: number[] = [], mzs: number[] = [];
   const pts: TilePoint[] = ks.map((k) => {
     const f = t.features[t.ids[k]];
     const [lon, lat] = (f.geometry as GeoJSON.Point).coordinates;
     const s = Math.sin((lat * Math.PI) / 180);
     const x = (lon + 180) / 360, y = 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI);
-    return { x: (x * n - m.x) * 4096, y: (y * n - m.y) * 4096, id: t.ids[k], props: f.properties ?? {} };
+    let props = f.properties ?? {};
+    if (props.name && !props.pt) {
+      const fa = Number(props.fa) || 0, ia = props.ia == null ? 20000 : Number(props.ia);
+      ids.push(t.ids[k]), fas.push(fa), ias.push(ia), mzs.push(props.mz == null ? -99 : Number(props.mz));
+      if (m.scale) props = { ...props, o: Math.round(nameOpacity(fa, ia, m.scale) * 250) / 250 };
+    }
+    return { x: (x * n - m.x) * 4096, y: (y * n - m.y) * 4096, id: t.ids[k], props };
   });
   const data = encodePoints(POINT_TILE_LAYER, pts).buffer as ArrayBuffer;
-  post({ type: 'tile', id: m.id, data }, [data]);
+  const names: TileNames = { ids: Uint32Array.from(ids), fa: Float32Array.from(fas), ia: Float32Array.from(ias), mz: Float32Array.from(mzs), scaled: !!m.scale };
+  post({ type: 'tile', id: m.id, data, names }, [data, names.ids.buffer, names.fa.buffer, names.ia.buffer, names.mz.buffer]);
 }
 
 function index(fc: GeoJSON.FeatureCollection, heritage: boolean): Index {
