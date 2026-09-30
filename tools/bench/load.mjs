@@ -52,6 +52,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // Requests by id (page and worker sessions share Chrome's request ids).
 const reqs = new Map();
 let recording = false;
+/** Wall clock of the last network event recorded. */
+let lastNet = 0;
 // --profile: the sessions profiled (page = undefined), and their worker URLs.
 const profiled = new Map();
 listeners.push(async (method, p, sessionId) => {
@@ -68,6 +70,7 @@ listeners.push(async (method, p, sessionId) => {
     return;
   }
   if (!recording) return;
+  if (method.startsWith('Network.')) lastNet = Date.now();
   if (method === 'Network.requestWillBeSent') {
     reqs.set(p.requestId, { url: p.request.url, issued: p.timestamp, type: p.type, worker: !!sessionId });
   } else if (method === 'Network.responseReceived') {
@@ -141,7 +144,9 @@ try {
       if (s.tiles && s.loaded && s.roads && marks.mapTiles === undefined) marks.mapTiles = el;
     }
     const inflight = [...reqs.values()].filter((r) => r.end === undefined).length;
-    if (inflight === 0 && reqs.size > 0) {
+    // Quiet: nothing in flight, or no network event for 2 s (a request whose end Chrome never
+    // reports would otherwise hold the load open for the whole four minutes).
+    if ((inflight === 0 || Date.now() - lastNet > 2000) && reqs.size > 0) {
       quietSince ||= el;
       // Done: the network quiet for 2 s and the map finished (its tiles, the overlays tiled).
       if (el - quietSince > 2000 && (marks.mapTiles !== undefined || el > 60000)) {

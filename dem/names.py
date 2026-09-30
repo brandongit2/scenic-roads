@@ -456,7 +456,8 @@ def check(batch: str) -> None:
     src = Path(batch)
     out = src.with_name(src.stem + ".out.jsonl")
     region_ = src.stem.split("-")[0]
-    names = [x["n"] for x in jsonl(src)]
+    rows = jsonl(src)
+    names = [x["n"] for x in rows]
     bad, got = [], []
     for i, line in enumerate(open(out, encoding="utf-8") if out.exists() else [], 1):
         try:
@@ -500,6 +501,17 @@ def check(batch: str) -> None:
         bad.append(f"{len(got)} output lines for {len(names)} names")
     elif not bad:
         bad += drift(names, [x.get("en") for x in got])
+    # Nulls where English was wanted (translators that gave up and nulled the rest):
+    # a Latin-script name in a batch has a generic word English translates, so only places keep
+    # theirs, and few others are English already (at most 14 % in a finished batch). Not in
+    # Britain and Ireland, where most are (Loch Ness, Kinder Scout National Nature Reserve).
+    if len(got) == len(names) and region_ != "gb":
+        cand = [i for i, x in enumerate(rows) if x.get("k") != "place" and latin(x["n"])]
+        empty = [i for i in cand if not (got[i].get("en") or "").strip()]
+        if len(cand) >= 10 and len(empty) > 0.2 * len(cand):
+            bad.append(f"{len(empty)} of the {len(cand)} names that aren't places are null ("
+                       + ", ".join(repr(names[i]) for i in empty[:4]) + " …): English leaves few of them alone, "
+                       "so give each its English (Río Urdiales: Urdiales River, Pico Bajero: Bajero Peak)")
     print("\n".join(bad[:40]) + (f"\n… and {len(bad) - 40} more" if len(bad) > 40 else "") if bad
           else f"{len(got)} lines, all good", file=sys.stderr)
     sys.exit(1 if bad else 0)
