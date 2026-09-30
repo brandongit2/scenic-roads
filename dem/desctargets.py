@@ -6,12 +6,13 @@ LOCAL_KM around wherever it is (interest isolation), so remote regions get some 
 
   targets N [--local]   rank the candidates and write data/heritage/desc/targets.jsonl (the top N
               by fame, with --local also the locally best), then fetch their articles' lead
-              sections and split the ones not yet described into batches for the writers
-              (v2-NNN.jsonl).
+              sections and split the ones not yet given to the writers into new batches
+              (v2-NNN.jsonl, numbered on from the finished ones, which stay with their outputs).
   skipped     the lines the writers skipped (the extract was about something else, or said only
-              where the place is), in batches for researching from other sources (RESEARCH.md):
-              research-NNN.jsonl; the researchers' notes go to research-NNN.notes.jsonl and the
-              descriptions written from them, with their sources, to research-NNN.out.jsonl.
+              where the place is) and not yet researched, in new batches for researching from
+              other sources (RESEARCH.md): research-NNN.jsonl; the researchers' notes go to
+              research-NNN.notes.jsonl and the descriptions written from them, with their sources,
+              to research-NNN.out.jsonl ("drop" where nothing reliable was found).
 
 usage: desctargets.py targets N [--local] | skipped
 """
@@ -85,6 +86,19 @@ def candidates() -> list[dict]:
     return sorted(out.values(), key=lambda r: -r["fa"])
 
 
+def batches(prefix: str) -> tuple[list[Path], int]:
+    """The finished batches of a kind (those with an output; unfinished ones are deleted, to be
+    made again) and the number the next one takes."""
+    done, nxt = [], 0
+    for p in sorted(D.glob(f"{prefix}-[0-9][0-9][0-9].jsonl")):
+        if p.with_name(p.stem + ".out.jsonl").exists():
+            done.append(p)
+            nxt = max(nxt, int(p.stem[-3:]) + 1)
+        else:
+            p.unlink()
+    return done, nxt
+
+
 def targets(n: int, with_local: bool = False) -> None:
     cands = candidates()
     top = cands[:n]
@@ -102,30 +116,31 @@ def targets(n: int, with_local: bool = False) -> None:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
     ex = hd.fetch_extracts(pick)
     done = hd.long_descriptions(prefer_v2_only=True)
-    todo = [ex[r["qid"]] for r in pick if r["qid"] in ex and r["qid"] not in done]
-    for old in D.glob("v2-*.jsonl"):
-        if not old.name.endswith(".out.jsonl"):
-            old.unlink()
+    # Sites already given to the writers (the ones they skipped go to research) aren't again.
+    kept, first = batches("v2")
+    given = {r["qid"] for p in kept for r in jsonl(p)}
+    todo = [ex[r["qid"]] for r in pick if r["qid"] in ex and r["qid"] not in done and r["qid"] not in given]
     for b in range(0, len(todo), BATCH):
-        with open(D / f"v2-{b // BATCH:03d}.jsonl", "w", encoding="utf-8") as f:
+        with open(D / f"v2-{first + b // BATCH:03d}.jsonl", "w", encoding="utf-8") as f:
             for r in todo[b:b + BATCH]:
                 f.write(json.dumps({k: r[k] for k in ("qid", "name", "designation", "place", "lang", "title", "extract")}, ensure_ascii=False) + "\n")
-    print(f"{len(ex)} extracts; {len(todo)} to write in {(len(todo) + BATCH - 1) // BATCH} batches (v2-NNN.jsonl)", file=sys.stderr)
+    print(f"{len(ex)} extracts; {len(done)} described; {len(todo)} to write in {(len(todo) + BATCH - 1) // BATCH} batches "
+          f"(v2-{first:03d} on)", file=sys.stderr)
 
 
 def skipped() -> None:
     done = hd.long_descriptions(prefer_v2_only=True)  # pilot-round descriptions (old voice) don't count
+    kept, first = batches("research")
+    researched = {r.get("qid") for p in kept for r in jsonl(p)}  # (dropped ones too)
     rows = []
     for p in sorted(D.glob("v2-[0-9][0-9][0-9].jsonl")):
         if p.with_name(p.stem + ".out.jsonl").exists():  # batches still being written don't count yet
-            rows += [r for r in jsonl(p) if r["qid"] not in done]
-    for old in D.glob("research-[0-9][0-9][0-9].jsonl"):
-        old.unlink()
+            rows += [r for r in jsonl(p) if r["qid"] not in done and r["qid"] not in researched]
     for b in range(0, len(rows), RESEARCH_BATCH):
-        with open(D / f"research-{b // RESEARCH_BATCH:03d}.jsonl", "w", encoding="utf-8") as f:
+        with open(D / f"research-{first + b // RESEARCH_BATCH:03d}.jsonl", "w", encoding="utf-8") as f:
             for r in rows[b:b + RESEARCH_BATCH]:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    print(f"{len(rows)} skipped, in {(len(rows) + RESEARCH_BATCH - 1) // RESEARCH_BATCH} batches (research-NNN.jsonl)", file=sys.stderr)
+    print(f"{len(rows)} skipped, in {(len(rows) + RESEARCH_BATCH - 1) // RESEARCH_BATCH} batches (research-{first:03d} on)", file=sys.stderr)
 
 
 if __name__ == "__main__":

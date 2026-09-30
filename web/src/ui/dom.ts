@@ -60,11 +60,3 @@ export function setupCanvas(c: HTMLCanvasElement): CanvasRenderingContext2D {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   return ctx;
 }
-
-/** Click on a row that is also a link: a plain click acts in place, modified clicks (Cmd, Ctrl,
- * Shift) are left to the browser (new tab / window). Middle clicks never reach `click`. */
-export function openRow(e: MouseEvent, act: () => void) {
-  if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-  e.preventDefault();
-  act();
-}

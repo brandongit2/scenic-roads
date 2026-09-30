@@ -1,5 +1,5 @@
 {
-  "about": "The map's regions: the one place to add one. Each has an id and either a Geofabrik extract path (its outline is Geofabrik's .poly) or an Overpass area query plus a bbox (outline). `buildings` names the Overture building file that covers it (see `buildings` below: west, south, east, north; boxes may overlap). Build with `make data`: the steps reuse everything already done (see README, Adding a region).",
+  "about": "The map's regions: the one place to add one. Each has an id and either a Geofabrik extract path (its outline is Geofabrik's .poly), a Geofabrik extract plus the OSM relation to cut it to (clip_relation) and a bbox (outline), or an Overpass area query plus a bbox (outline). `buildings` names the Overture building file that covers it (see `buildings` below: west, south, east, north; boxes may overlap). Build with `make data`: the steps reuse everything already done (see README, Adding a region).",
   "regions": [
     { "id": "quebec", "geofabrik": "north-america/canada/quebec", "buildings": "quebec" },
     { "id": "ontario", "geofabrik": "north-america/canada/ontario", "buildings": "ontario" },
@@ -31,7 +31,10 @@
     { "id": "monaco", "geofabrik": "europe/monaco", "buildings": "france" },
     { "id": "hong-kong", "geofabrik": "asia/china/hong-kong", "buildings": "hong-kong" },
     { "id": "gibraltar", "overpass": "area[\"ISO3166-1\"=\"GI\"][admin_level=2]", "bbox": [-5.37, 36.10, -5.33, 36.16], "buildings": "iberia" },
-    { "id": "saint-pierre-et-miquelon", "overpass": "area[\"ISO3166-1\"=\"PM\"]", "bbox": [-56.48, 46.74, -56.10, 47.15], "buildings": "newfoundland" }
+    { "id": "saint-pierre-et-miquelon", "overpass": "area[\"ISO3166-1\"=\"PM\"]", "bbox": [-56.48, 46.74, -56.10, 47.15], "buildings": "newfoundland" },
+    { "id": "taiwan", "geofabrik": "asia/taiwan", "buildings": "taiwan" },
+    { "id": "japan", "geofabrik": "asia/japan", "buildings": "japan" },
+    { "id": "singapore", "geofabrik": "asia/malaysia-singapore-brunei", "clip_relation": 536780, "bbox": [103.59, 1.13, 104.10, 1.48], "buildings": "singapore" }
   ],
   "buildings": {
     "ontario": [-95.2, 41.6, -74.3, 56.9],
@@ -47,6 +50,9 @@
     "iberia": [-9.6, 35.9, 4.4, 43.8],
     "azores": [-31.5, 36.8, -24.9, 39.8],
     "madeira": [-17.4, 32.3, -16.2, 33.2],
-    "hong-kong": [113.8, 22.1, 114.5, 22.6]
+    "hong-kong": [113.8, 22.1, 114.5, 22.6],
+    "taiwan": [[119.3, 21.8, 122.1, 25.35], [118.2, 24.37, 118.5, 24.52], [119.9, 25.9, 120.55, 26.4]],
+    "japan": [[122.9, 24.0, 132.1, 34.0], [129.1, 34.0, 129.6, 34.8], [130.8, 30.0, 142.4, 41.6], [139.3, 41.3, 145.9, 45.6], [141.9, 24.0, 142.4, 27.8]],
+    "singapore": [103.59, 1.13, 104.10, 1.48]
   }
 }

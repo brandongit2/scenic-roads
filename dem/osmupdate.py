@@ -2,7 +2,7 @@
 """OSM data for the regions in regions.json: data/osm/merged.osm.pbf, updated incrementally.
 
 merged.regions lists the regions merged.osm.pbf holds. A region not in it is downloaded (its
-Geofabrik extract, or its Overpass area) and merged into merged.osm.pbf (each object once, at
+Geofabrik extract, a Geofabrik extract cut to its boundary relation, or its Overpass area) and merged into merged.osm.pbf (each object once, at
 its newest version). With --refresh every region is downloaded again (Geofabrik
 only sends newer extracts) and merged.osm.pbf is rebuilt from them.
 
@@ -50,7 +50,19 @@ def merge(files: list[Path]) -> None:
 def fetch(r: dict) -> Path:
     """Download a region's extract (Geofabrik only sends a newer one than ours)."""
     out = OSM / f"{r['id']}.osm.pbf"
-    if "geofabrik" in r:
+    if "clip_relation" in r:
+        # A country Geofabrik only has with its neighbours (Singapore in malaysia-singapore-brunei;
+        # too big for Overpass): the neighbours' extract, cut to the country's boundary relation.
+        parent = OSM / f"{r['id']}.parent.osm.pbf"
+        run("curl", "-sSL", "--fail", "-A", UA, "-o", str(parent), f"https://download.geofabrik.de/{r['geofabrik']}-latest.osm.pbf")
+        # The boundary in full from the OSM API: its sea edges lie outside the neighbours' extract.
+        rel = OSM / f"{r['id']}.boundary.osm"
+        run("curl", "-sSL", "--fail", "-A", UA, "-o", str(rel), f"https://api.openstreetmap.org/api/0.6/relation/{r['clip_relation']}/full")
+        run("osmium", "extract", "-p", str(rel), str(parent), "-o", str(out), "--overwrite")
+        parent.unlink()
+        rel.unlink()
+        print(f"{r['id']}: cut from {r['geofabrik']}", file=sys.stderr)
+    elif "geofabrik" in r:
         part = out.with_suffix(".part")
         z = ["-z", str(out)] if out.exists() else []
         run("curl", "-sSL", "--fail", "-A", UA, *z, "-o", str(part), f"https://download.geofabrik.de/{r['geofabrik']}-latest.osm.pbf")

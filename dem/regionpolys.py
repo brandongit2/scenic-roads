@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Outlines of the regions (regions.json): Geofabrik's .poly for each Geofabrik region, saved to
-data/trees/poly/<id>.poly (fetched once). Regions taken from Overpass use their bbox instead
+data/trees/poly/<id>.poly (fetched once). Regions taken from Overpass or cut from a larger extract use their bbox instead
 (leaftype.regions()).
 
 usage: regionpolys.py
@@ -20,8 +20,8 @@ UA = "road-elevations/0.1 (personal offline map)"
 def main():
     POLY.mkdir(parents=True, exist_ok=True)
     for r in json.loads((ROOT / "regions.json").read_text())["regions"]:
-        if "geofabrik" not in r:
-            continue
+        if "geofabrik" not in r or "clip_relation" in r:
+            continue  # outlined by its bbox
         p = POLY / f"{r['id']}.poly"
         if p.exists():
             continue

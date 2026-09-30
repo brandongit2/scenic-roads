@@ -7,7 +7,7 @@
 
 use crate::S;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, RawQuery, State},
     http::{header, HeaderValue},
     response::{IntoResponse, Response},
 };
@@ -18,18 +18,20 @@ use std::sync::{Mutex, OnceLock};
 static SYNTH: OnceLock<Mutex<HashMap<(u8, u32, u32), Vec<u8>>>> = OnceLock::new();
 static FLAT: OnceLock<Vec<u8>> = OnceLock::new();
 
-fn png(b: Vec<u8>) -> Response {
+fn png(b: Vec<u8>, versioned: bool) -> Response {
     (
         [
             (header::CONTENT_TYPE, HeaderValue::from_static("image/png")),
-            (header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400")),
+            (header::CACHE_CONTROL, crate::cache::cache_control(versioned, "public, max-age=86400")),
         ],
         b,
     )
         .into_response()
 }
 
-pub async fn terrain_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>) -> Response {
+pub async fn terrain_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery) -> Response {
+    let v = crate::cache::versioned(q.as_deref());
+    let png = |b: Vec<u8>| png(b, v);
     let Some(arc) = s.terrain.as_ref() else {
         return png(FLAT.get_or_init(|| encode_terrain_png(&vec![0.0; 65536], 256, 256).unwrap()).clone());
     };
@@ -60,7 +62,9 @@ pub async fn terrain_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u3
 
 static SLOPE: OnceLock<Mutex<HashMap<(u8, u32, u32), Vec<u8>>>> = OnceLock::new();
 
-pub async fn slope_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>) -> Response {
+pub async fn slope_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery) -> Response {
+    let v = crate::cache::versioned(q.as_deref());
+    let png = |b: Vec<u8>| png(b, v);
     let flat = || FLAT.get_or_init(|| encode_terrain_png(&vec![0.0; 65536], 256, 256).unwrap()).clone();
     if let Some(b) = s.slope.as_ref().and_then(|a| a.get(z, x, y)) {
         return png(b.to_vec());

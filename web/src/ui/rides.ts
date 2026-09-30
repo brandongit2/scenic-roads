@@ -1,6 +1,8 @@
 // "Scenic rides" and "Rail lines" tabs: passenger lines in view scored server-side with the
 // current ride-factor weights (Passenger rail → Metric → Ride score).
 import { getRailLines, getRides, type RailLine, type Ride } from '../api';
+import { legibleRgb } from '../linecolour';
+import { withEnglish } from '../english';
 import { RAIL_COMPONENTS } from '../rail';
 import * as prefs from '../prefs';
 import { cap, fmt, h } from './dom';
@@ -10,7 +12,7 @@ type Query = { bbox: string; poly: string; weights: number[]; groups: number };
 
 const swatch = (colour: number) => {
   const i = h('i', { class: 'dot' });
-  i.style.background = colour ? `#${(colour & 0xffffff).toString(16).padStart(6, '0')}` : 'var(--line-strong)';
+  i.style.background = colour ? `#${legibleRgb(colour & 0xffffff).toString(16).padStart(6, '0')}` : 'var(--line-strong)';
   return i;
 };
 const trains = (t: number) => (t >= 10 ? fmt.n(Math.round(t)) : t > 0 ? t.toFixed(1) : '');
@@ -26,6 +28,8 @@ abstract class RailPane<T> {
   query: () => Query = () => ({ bbox: '', poly: '', weights: [], groups: 31 });
   onHover: (x: T | null) => void = () => {};
   onSelect: (x: T) => void = () => {};
+  /** The row under the pointer (M, O open it). */
+  hovered: T | null = null;
 
   constructor(readonly root: HTMLElement) {}
 
@@ -67,14 +71,14 @@ abstract class RailPane<T> {
         h('div', { class: 'cl2' }, sub),
       ),
     );
-    r.addEventListener('mouseenter', () => this.onHover(x));
-    r.addEventListener('mouseleave', () => this.onHover(null));
+    r.addEventListener('mouseenter', () => this.onHover((this.hovered = x)));
+    r.addEventListener('mouseleave', () => this.onHover((this.hovered = null)));
     return r;
   }
 }
 
 export class RidesPane extends RailPane<Ride> {
-  private len = prefs.load('rides.len', 10);
+  private len = prefs.load('rides.len', 25);
   private seg: HTMLButtonElement[] = [];
   onResults: (r: Ride[]) => void = () => {};
 
@@ -88,8 +92,8 @@ export class RidesPane extends RailPane<Ride> {
     }
     root.append(seg, h('div', { class: 'climbs-meta' }, this.count, this.spin), this.list,
       h('div', { class: 'faint', style: 'font-size:10.5px;margin-top:6px;line-height:1.45' },
-        'Best stretch of each passenger line in view, ranked by the mean ride score with your ride-factor weights (Passenger rail → Metric). Hover to highlight, click for the profile.'));
-    this.setLen(LENGTHS.includes(this.len) ? this.len : 10);
+        'Best stretch of each passenger line in view, ranked by the mean ride score with your ride-factor weights (Passenger rail → Metric). Hover to highlight (M: Google Maps, O: OpenStreetMap), click to select.'));
+    this.setLen(LENGTHS.includes(this.len) ? this.len : 25);
   }
 
   private setLen(l: number) {
@@ -106,6 +110,7 @@ export class RidesPane extends RailPane<Ride> {
 
   protected async fetch(q: Query, w: string, signal: AbortSignal) {
     const d = await getRides({ bbox: q.bbox, poly: q.poly, w, len: String(this.len), limit: '30', groups: String(q.groups) }, signal);
+    this.hovered = null;
     this.count.textContent = d.total ? `${fmt.n(d.total)} lines of ${this.len} km or more in view · top ${d.rides.length}` : `No lines of ${this.len} km or more in view`;
     this.list.replaceChildren(...d.rides.map((r, i) => {
       const top = r.parts
@@ -114,7 +119,7 @@ export class RidesPane extends RailPane<Ride> {
         .sort((a, b) => b[0] - a[0])
         .slice(0, 3)
         .map(([v, k]) => `${RAIL_COMPONENTS[k].short} ${Math.round(v * 100)}`);
-      const title = h('span', { class: 'ct' }, swatch(r.colour), cap(r.name) || 'Rail line');
+      const title = h('span', { class: 'ct' }, swatch(r.colour), cap(r.name && withEnglish(r.name, r.geom[0])) || 'Rail line');
       return this.row(i, title, r.score, [fmt.dist(r.length_m), r.trains ? `${trains(r.trains)} trains a day` : '', ...top].filter(Boolean).join(' · '), r);
     }));
     this.onResults(d.rides);
@@ -124,7 +129,7 @@ export class RidesPane extends RailPane<Ride> {
 const SORTS = [['score', 'Ride score'], ['trains', 'Trains a day'], ['length', 'Length']] as const;
 
 export class LinesPane extends RailPane<RailLine> {
-  private sort: string = prefs.load('lines.sort', 'score');
+  private sort: string = prefs.load('lines.sort', 'length');
   private sortBtns: HTMLButtonElement[] = [];
 
   constructor(root: HTMLElement) {
@@ -137,7 +142,7 @@ export class LinesPane extends RailPane<RailLine> {
     }
     root.append(seg, h('div', { class: 'climbs-meta' }, this.count, this.spin), this.list,
       h('div', { class: 'faint', style: 'font-size:10.5px;margin-top:6px;line-height:1.45' },
-        'Passenger lines in view: length in view, mean ride score with your ride-factor weights, and trains a day each way on the busiest part (published timetables). Hover to highlight, click to fit.'));
+        'Passenger lines in view: length in view, mean ride score with your ride-factor weights, and trains a day each way on the busiest part (published timetables). Hover to highlight (M: Google Maps, O: OpenStreetMap), click to select.'));
     this.setSort(this.sort);
   }
 
@@ -155,9 +160,10 @@ export class LinesPane extends RailPane<RailLine> {
 
   protected async fetch(q: Query, w: string, signal: AbortSignal) {
     const d = await getRailLines({ bbox: q.bbox, poly: q.poly, w, limit: '40', groups: String(q.groups), sort: this.sort }, signal);
+    this.hovered = null;
     this.count.textContent = d.total ? `${fmt.n(d.total)} lines in view · top ${d.lines.length}` : 'No passenger lines in view';
     this.list.replaceChildren(...d.lines.map((l, i) => {
-      const title = h('span', { class: 'ct' }, swatch(l.colour), cap(l.name));
+      const title = h('span', { class: 'ct' }, swatch(l.colour), cap(withEnglish(l.name, l.geom[0]?.[0])));
       const svc = l.services.split(' · ').map((x) => x.split(':')[0].trim()).filter((x, k, a) => x && x !== l.name && a.indexOf(x) === k).slice(0, 3).join(', ');
       return this.row(i, title, l.score, [`${fmt.dist(l.length_m)} in view`, l.trains ? `${trains(l.trains)} trains a day` : '', svc].filter(Boolean).join(' · '), l);
     }));

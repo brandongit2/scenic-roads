@@ -4,8 +4,12 @@
 // served by the backend (make serve / preview "backend"):
 //
 //   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --remote-debugging-port=9333 \
-//     --user-data-dir=/tmp/bench-chrome --use-angle=metal --enable-gpu --ignore-gpu-blocklist about:blank
-//   node tools/bench/bench.mjs [--url URL] [--runs pan,pinch,orbit,hover] [--secs 5] [--profile] [--trace file.json]
+//     --user-data-dir=/tmp/bench-chrome --use-angle=metal --enable-gpu --ignore-gpu-blocklist \
+//     --disable-gpu-vsync --disable-frame-rate-limit about:blank
+//
+// The last two flags uncap the frame rate (headless Chrome otherwise ticks at 60 Hz), so fps is
+// throughput and the frame intervals can be read against a 120 Hz display's 8.3 ms budget.
+//   node tools/bench/bench.mjs [--url URL] [--runs pan,pinch,orbit,hover] [--secs 5] [--profile [--profile-out f]] [--trace file.json]
 //                              [--set "js run in the page before the runs, e.g. __app.store.set({...})"] [--label name]
 //
 // Input is real: trackpad two-finger pans, pinches and ⌥-orbits are wheel events dispatched to the
@@ -64,11 +68,19 @@ const close = async () => {
 // Uncaught exceptions in the page (reported with the results).
 const exceptions = [];
 on('Runtime.exceptionThrown', (p) => exceptions.push(`${p.exceptionDetails.exception?.description ?? p.exceptionDetails.text}`.split('\n').slice(0, 3).join(' | ')));
+// A crashed page never answers: report it and stop rather than wait forever.
+on('Inspector.targetCrashed', () => {
+  console.error('page crashed');
+  console.log(JSON.stringify({ crashed: true, exceptions }));
+  process.exit(3);
+});
 
 try {
   await send('Runtime.enable');
   await send('Page.enable');
-  await send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: DPR, mobile: false });
+  await send('Inspector.enable').catch(() => {});
+  // --native: a real (headed) window at its own size and pixel ratio, paced by the display.
+  if (!args.native) await send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: DPR, mobile: false });
   await send('Emulation.setFocusEmulationEnabled', { enabled: true });
   await send('Page.bringToFront');
 
@@ -90,23 +102,33 @@ try {
   // Instrument: frames, long tasks, MapLibre's render (CPU), GPU time per frame.
   const load = await evaluate(`
     const app = window.__app, map = app.map;
-    const B = window.__bench = { lt: [], renders: [], gpu: [], frames: [], custom: {} };
+    const B = window.__bench = { lt: [], renders: [], gpu: [], gpuMoved: [], frames: [], custom: {}, lastCam: '' };
     new PerformanceObserver((l) => { for (const e of l.getEntries()) B.lt.push([e.startTime, e.duration]); }).observe({ type: 'longtask', buffered: true });
     const gl = map.painter.context.gl;
     const tq = gl.getExtension('EXT_disjoint_timer_query_webgl2');
     const queries = [];
     const orig = map._render.bind(map);
+    // Frames that moved the camera are kept apart: uncapped, many frames render between two input
+    // events with the camera unchanged, and those can reuse work (e.g. cached projections), so the
+    // moving frames' cost is what a display gets on every frame of a gesture.
     map._render = function (t) {
       const a = performance.now();
+      const c = map.getCenter(), cam = [c.lng, c.lat, map.getZoom(), map.getBearing(), map.getPitch()].join(',');
+      const moved = cam !== B.lastCam;
+      B.lastCam = cam;
       let q = null;
       if (tq && !B.qBusy) { q = gl.createQuery(); gl.beginQuery(tq.TIME_ELAPSED_EXT, q); B.qBusy = true; }
       const r = orig(t);
-      if (q) { gl.endQuery(tq.TIME_ELAPSED_EXT); B.qBusy = false; queries.push(q); }
-      B.renders.push([a, performance.now() - a]);
+      if (q) { gl.endQuery(tq.TIME_ELAPSED_EXT); B.qBusy = false; queries.push([q, moved]); }
+      B.renders.push([a, performance.now() - a, moved]);
       for (let i = queries.length - 1; i >= 0; i--) {
-        const qq = queries[i];
+        const [qq, mv] = queries[i];
         if (gl.getQueryParameter(qq, gl.QUERY_RESULT_AVAILABLE)) {
-          if (!gl.getParameter(tq.GPU_DISJOINT_EXT)) B.gpu.push(gl.getQueryParameter(qq, gl.QUERY_RESULT) / 1e6);
+          if (!gl.getParameter(tq.GPU_DISJOINT_EXT)) {
+            const ms = gl.getQueryParameter(qq, gl.QUERY_RESULT) / 1e6;
+            B.gpu.push(ms);
+            if (mv) B.gpuMoved.push(ms);
+          }
           gl.deleteQuery(qq);
           queries.splice(i, 1);
         }
@@ -140,7 +162,11 @@ try {
       sources: Object.keys(map.getStyle().sources).length,
     };
   `, 300);
-  if (args['profile-load']) load.profile = topFunctions((await send('Profiler.stop')).profile, 25);
+  if (args['profile-load']) {
+    const { profile } = await send('Profiler.stop');
+    load.profile = topFunctions(profile, 25);
+    if (args['profile-out']) fs.writeFileSync(String(args['profile-out']).replace(/(\.cpuprofile)?$/, '-load.cpuprofile'), JSON.stringify(profile));
+  }
   const heap = await send('Runtime.getHeapUsage').catch(() => null);
   load.wallMs = Date.now() - tLoad;
   if (heap) load.heapMB = Math.round(heap.usedSize / 1e6);
@@ -183,7 +209,7 @@ try {
         app.store.set(s);
         await new Promise((r) => { map.once('idle', r); map.triggerRepaint(); setTimeout(r, 30000); });
         await new Promise((r) => setTimeout(r, 300));
-        B.renders.length = 0; B.gpu.length = 0;
+        B.renders.length = 0; B.gpu.length = 0; B.gpuMoved.length = 0;
         const t0 = performance.now();
         await new Promise((res) => { const f = () => { if (performance.now() - t0 > ${SECS * 1000}) return res(); map.triggerRepaint(); requestAnimationFrame(f); }; f(); });
         await new Promise((r) => setTimeout(r, 200));
@@ -196,9 +222,10 @@ try {
     }
   }
   for (const name of RUNS) {
-    const g = gestures[name];
-    if (!(name in gestures)) continue;
-    await evaluate(`const B = window.__bench; B.lt.length = 0; B.renders.length = 0; B.gpu.length = 0; B.frames.length = 0; for (const k in B.custom) B.custom[k].length = 0; B.t0 = performance.now();`);
+    // A digit suffix repeats a run (pan2: the pan again, e.g. with its tiles and shaders warm).
+    const g = gestures[name.replace(/\d+$/, '')];
+    if (!(name.replace(/\d+$/, '') in gestures)) continue;
+    await evaluate(`const B = window.__bench; B.lt.length = 0; B.renders.length = 0; B.gpu.length = 0; B.gpuMoved.length = 0; B.frames.length = 0; for (const k in B.custom) B.custom[k].length = 0; B.t0 = performance.now();`);
     if (args.profile) {
       await send('Profiler.enable');
       await send('Profiler.setSamplingInterval', { interval: 200 });
@@ -211,15 +238,16 @@ try {
       traceDone = new Promise((r) => on('Tracing.tracingComplete', () => r(chunks)));
       await send('Tracing.start', { traceConfig: { includedCategories: ['devtools.timeline', 'disabled-by-default-devtools.timeline', 'v8.execute', 'blink', 'gpu', 'toplevel', 'disabled-by-default-devtools.timeline.frame'] }, transferMode: 'ReportEvents' });
     }
-    if (name === 'static') await evaluate(`const map = window.__app.map, B = window.__bench; B.repaint = true; const f = () => { if (!B.repaint) return; map.triggerRepaint(); requestAnimationFrame(f); }; f();`);
+    const kind = name.replace(/\d+$/, '');
+    if (kind === 'static') await evaluate(`const map = window.__app.map, B = window.__bench; B.repaint = true; const f = () => { if (!B.repaint) return; map.triggerRepaint(); requestAnimationFrame(f); }; f();`);
     const t0 = Date.now();
-    while (name === 'static' && Date.now() - t0 < SECS * 1000) await sleep(50);
-    if (name === 'static') await evaluate(`window.__bench.repaint = false;`);
+    while (kind === 'static' && Date.now() - t0 < SECS * 1000) await sleep(50);
+    if (kind === 'static') await evaluate(`window.__bench.repaint = false;`);
     while (g && Date.now() - t0 < SECS * 1000) {
       const t = (Date.now() - t0) / 1000;
       const a = Date.now();
       await g(t);
-      const wait = (name === 'hover' ? 16 : 8) - (Date.now() - a);
+      const wait = (kind === 'hover' ? 16 : 8) - (Date.now() - a);
       if (wait > 0) await sleep(wait);
     }
     const r = await evaluate(`
@@ -232,14 +260,17 @@ try {
       const q = (a, p) => (a.length ? +a[Math.min(a.length - 1, Math.floor(p * a.length))].toFixed(1) : null);
       const during = B.lt.filter(([s]) => s >= B.t0 && s <= tEnd), after = B.lt.filter(([s]) => s > tEnd);
       const rd = B.renders.filter(([s]) => s >= B.t0 && s <= tEnd).map(([, d]) => d).sort((a, b) => a - b);
-      const gpu = [...B.gpu].sort((a, b) => a - b);
+      const rdMoved = B.renders.filter(([s, , m]) => m && s >= B.t0 && s <= tEnd).map(([, d]) => d).sort((a, b) => a - b);
+      const gpu = [...B.gpu].sort((a, b) => a - b), gpuMoved = [...B.gpuMoved].sort((a, b) => a - b);
       const custom = Object.fromEntries(Object.entries(B.custom).map(([k, v]) => { const s = [...v].sort((a, b) => a - b); return [k, { p50: q(s, 0.5), p95: q(s, 0.95) }]; }));
       return {
         fps: +(fr.length / ((tEnd - B.t0) / 1000)).toFixed(1),
         frameMs: { p50: q(dts, 0.5), p90: q(dts, 0.9), p99: q(dts, 0.99), max: q(dts, 1) },
-        over20ms: dts.filter((d) => d > 20).length, over50ms: dts.filter((d) => d > 50).length, frames: dts.length,
+        over8ms: dts.filter((d) => d > 8.4).length, over17ms: dts.filter((d) => d > 16.8).length, over50ms: dts.filter((d) => d > 50).length, frames: dts.length,
         renderCpuMs: { p50: q(rd, 0.5), p95: q(rd, 0.95), max: q(rd, 1), n: rd.length },
         gpuMs: { p50: q(gpu, 0.5), p95: q(gpu, 0.95), n: gpu.length },
+        // Frames that moved the camera: what every frame of a gesture costs on a display.
+        moved: { cpu: { p50: q(rdMoved, 0.5), p95: q(rdMoved, 0.95), n: rdMoved.length }, gpu: { p50: q(gpuMoved, 0.5), p95: q(gpuMoved, 0.95), n: gpuMoved.length } },
         customMs: custom,
         longTasks: { during: during.length, duringMs: Math.round(during.reduce((a, [, d]) => a + d, 0)), after: after.length, afterMs: Math.round(after.reduce((a, [, d]) => a + d, 0)), longest: Math.round(Math.max(0, ...B.lt.map(([, d]) => d))) },
         settleMs: Math.round(settleMs),
@@ -248,17 +279,26 @@ try {
     if (args.profile) {
       const { profile } = await send('Profiler.stop');
       r.profile = topFunctions(profile, 25);
+      // --profile-out file: the raw CPU profile of each run (file-<run>.cpuprofile, opens in DevTools).
+      if (args['profile-out']) fs.writeFileSync(String(args['profile-out']).replace(/(\.cpuprofile)?$/, `-${name}.cpuprofile`), JSON.stringify(profile));
     }
     if (traceDone) {
       await send('Tracing.end');
       const events = await traceDone;
       r.threads = threadBusy(events);
-      fs.writeFileSync(String(args.trace).replace(/(\.json)?$/, `-${name}.json`), JSON.stringify({ traceEvents: events }));
+      // Written in slices: a busy trace is larger than the longest string V8 can build.
+      const file = String(args.trace).replace(/(\.json)?$/, `-${name}.json`);
+      fs.writeFileSync(file, '{"traceEvents":[');
+      for (let i = 0; i < events.length; i += 20000) fs.appendFileSync(file, (i ? ',' : '') + events.slice(i, i + 20000).map((e) => '\n' + JSON.stringify(e)).join(','));
+      fs.appendFileSync(file, ']}');
     }
     out.runs[name] = r;
     // Let the view settle between runs.
     await sleep(500);
   }
+  // --after "js returning a value": evaluated after the runs, reported as `after` (instrumentation
+  // installed with --set can report here).
+  if (args.after) out.after = await evaluate(String(args.after));
   out.exceptions = { count: exceptions.length, first: [...new Set(exceptions)].slice(0, 5) };
   console.log(JSON.stringify(out, null, 1));
 } finally {

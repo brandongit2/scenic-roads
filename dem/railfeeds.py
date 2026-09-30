@@ -27,7 +27,7 @@ from leaftype import regions
 ROOT = Path(__file__).resolve().parent.parent
 R = ROOT / "data" / "rail"
 UA = "road-elevations/0.1 (personal offline map)"
-COUNTRIES = {"CA", "US", "FR", "ES", "PT", "GB", "IE", "IM", "JE", "GG", "HK", "MC", "AD", "GI"}
+COUNTRIES = {"CA", "US", "FR", "ES", "PT", "GB", "IE", "IM", "JE", "GG", "HK", "MC", "AD", "GI", "JP", "TW", "SG"}
 RAIL_TYPES = {0, 1, 2, 5, 7, 12} | set(range(100, 200)) | set(range(400, 500)) | set(range(900, 1000)) | {1400}
 
 

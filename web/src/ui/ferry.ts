@@ -31,11 +31,6 @@ export class FerryCard {
   private note: HTMLDivElement;
   private single: HTMLInputElement;
   private singleBox: HTMLDivElement;
-  private weight: HTMLInputElement;
-  private weightOut: HTMLOutputElement;
-  private opacity: HTMLInputElement;
-  private opacityOut: HTMLOutputElement;
-  private dashed: HTMLInputElement;
   private coverage: FerryCoverage | null = null;
 
   constructor(private store: Store) {
@@ -93,19 +88,9 @@ export class FerryCard {
     this.single = h('input', { type: 'color' });
     this.single.addEventListener('input', () => F({ single: this.single.value }));
     this.singleBox = h('div', { class: 'row2' }, h('span', { class: 'muted' }, 'Colour'), this.single);
-    this.weight = h('input', { type: 'range', min: 0.25, max: 3, step: 0.05, title: 'Line weight (double-click: default)' });
-    this.weightOut = h('output');
-    this.weight.addEventListener('input', () => F({ weight: Number(this.weight.value) }));
-    this.weight.addEventListener('dblclick', () => F({ weight: 1 }));
-    this.opacity = h('input', { type: 'range', min: 0.05, max: 1, step: 0.05, title: 'Line opacity (double-click: default)' });
-    this.opacityOut = h('output');
-    this.opacity.addEventListener('input', () => F({ opacity: Number(this.opacity.value) }));
-    this.opacity.addEventListener('dblclick', () => F({ opacity: 0.9 }));
-    this.dashed = h('input', { type: 'checkbox' });
-    this.dashed.addEventListener('change', () => F({ dashed: this.dashed.checked }));
 
     this.el = h('div', { class: 'rail-card ferry-card' },
-      h('label', { class: 'rail-hd' }, this.on, h('span', {}, 'Ferries'), h('span', { class: 'faint' }, 'Layers → ferry groups')),
+      h('label', { class: 'rail-hd' }, this.on, h('span', {}, 'Ferries'), h('span', { class: 'faint' }, 'Layers → groups, opacity, dashes')),
       h('div', { class: 'rail-bd' },
         seg,
         this.freqBox,
@@ -113,9 +98,6 @@ export class FerryCard {
         this.seasonLegend,
         this.note,
         this.singleBox,
-        h('div', { class: 'fade' }, h('span', { class: 'muted' }, 'Line weight'), this.weight, this.weightOut),
-        h('div', { class: 'fade' }, h('span', { class: 'muted' }, 'Opacity'), this.opacity, this.opacityOut),
-        h('div', { class: 'toggles' }, h('label', { title: 'Dashed lines, as on paper maps' }, this.dashed, 'Dashed')),
       ),
     );
     this.sync();
@@ -142,11 +124,6 @@ export class FerryCard {
     );
     this.scale.sync();
     this.single.value = f.single;
-    this.weight.value = String(f.weight);
-    this.weightOut.value = `${f.weight.toFixed(2)}×`;
-    this.opacity.value = String(f.opacity);
-    this.opacityOut.value = `${Math.round(f.opacity * 100)} %`;
-    this.dashed.checked = f.dashed;
     this.renderCov();
   }
 

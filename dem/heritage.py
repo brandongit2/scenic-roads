@@ -388,8 +388,8 @@ def special_official() -> list[dict] | None:
     # place. The English name stays the key for matching OSM polygons.
     cache_path = H / "special-wd-labels.json"
     cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
-    kind_word = {"biosphere": ("biosf", "biosph"), "geopark": ("geopar", "géopar", "xeopar", "地質公園")}
-    langs = ("en", "fr", "es", "pt", "ca", "gl", "zh")
+    kind_word = {"biosphere": ("biosf", "biosph", "エコパーク", "生物圏"), "geopark": ("geopar", "géopar", "xeopar", "地質公園", "ジオパーク")}
+    langs = ("en", "fr", "es", "pt", "ca", "gl", "zh", "ja", "zh-hant")
     items = []
     try:
         rows = heritage_eu.wd_sparql("""SELECT ?item ?coord """ + " ".join(f"?{l}" for l in langs) + """ WHERE {
@@ -521,6 +521,8 @@ def main():
     tiles = {tuple(t) for t in np.fromfile(b / "grid.idx", dtype=np.uint32).reshape(-1, 2).tolist()}
 
     def covered(lon, lat):
+        if not (-85 < lat < 85 and -180 <= lon <= 180):
+            return False  # a register's bad coordinates
         x = (lon + 180) / 360 * 2048
         y = (1 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2 * 2048
         return (int(x), int(y)) in tiles

@@ -6,13 +6,21 @@ Priority per vertex (first source with valid data wins):
   1. NRCan HRDEM 2 m lidar mosaic, read at its 8 m overview  (Canada, where lidar exists)
   2. USGS 3DEP 1/3 arc-second (~10 m)                         (United States)
   3. NRCan MRDEM 30 m                                         (Canada + border fallback)
-  Elsewhere (Europe, Hong Kong), and North American points none of the above cover
+  Japan (GSI's own order, per pixel)
+  5. GSI lidar DEMs (Geospatial Information Authority of Japan elevation tiles, read at z15, ~4 m
+     pixels): 1A (1 m, averaged by GSI to z15), then 5A (5 m); then 5B / 5C photogrammetry
+  6. GSI 10 m DEM (10B, z14: dem_png)
+  Taiwan
+  7. MOI 20 m DTM (Ministry of the Interior; Open Government Data License): GeoTIFFs placed in
+     data/sources/moi-dtm (tgos.tw, which answers 403 outside Taiwan); FABDEM without them, and
+     cached FABDEM values in Taiwan are sampled again once they're there
+  Elsewhere (Europe, Hong Kong, Singapore), and points none of the above cover
   4. FABDEM v1-2 30 m: Copernicus DEM with forests and buildings removed (University of
      Bristol; CC BY-NC-SA 4.0, personal use). Its 1° tiles are read in place inside the
      official 10° zips (stored uncompressed, so GDAL range-reads them through /vsizip).
 
-Only the COG blocks that contain road vertices are fetched (HTTP range requests); nothing
-is stored except the per-vertex results.
+Only the COG blocks (and GSI tiles) that contain road vertices are fetched (HTTP range
+requests); nothing is stored except the per-vertex results, and Taiwan's DTM file.
 
 Incremental: after a run, a sorted (vertex → elevation, source) cache is kept. Densified
 geometry is deterministic, so unchanged roads reproduce identical vertices and are served
@@ -26,6 +34,7 @@ usage: sample.py <build_dir> [--workers N] [--cache DIR] [--no-cache]
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import math
 import os
@@ -56,8 +65,22 @@ MRDEM = f"/vsicurl/{NRCAN}/mrdem-30/mrdem-30-dtm.tif"
 USGS = "/vsicurl/https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF/current/{t}/USGS_13_{t}.tif"
 FABDEM = "/vsizip//vsicurl/https://data.bris.ac.uk/datasets/s5hqmjcdj8yo2ibzi9b4ew3sn/{z}_FABDEM_V1-2.zip/{t}_FABDEM_V1-2.tif"
 
-SRC_HRDEM, SRC_3DEP, SRC_MRDEM, SRC_FABDEM = 1, 2, 3, 4
+GSI = "cyberjapandata.gsi.go.jp"
+UA = "road-elevations/0.1 (personal offline map)"
+GSI_WORKERS = 16  # concurrent tile requests to GSI (S3 behind CloudFront; latency-bound)
+# Taiwan's MOI 20 m DTM, downloaded once (see README).
+MOI_DTM = sorted((HERE.parent / "data" / "sources" / "moi-dtm").glob("*.tif"))
+
+SRC_HRDEM, SRC_3DEP, SRC_MRDEM, SRC_FABDEM, SRC_GSI5A, SRC_GSI5, SRC_GSI10, SRC_MOI = 1, 2, 3, 4, 5, 6, 7, 8
 NA_WEST_OF = -40.0  # North America: the national DEMs above; elsewhere FABDEM
+
+
+def in_japan(lon, lat):
+    return (lon > 122.5) & (lon < 154.0) & (lat > 20.0) & (lat < 46.5)
+
+
+def in_taiwan(lon, lat):
+    return (lon > 118.0) & (lon <= 122.5) & (lat > 21.5) & (lat < 26.6)
 NODATA_BELOW = -1000.0  # all three sources use large negative nodata values
 
 _tls = threading.local()
@@ -125,7 +148,10 @@ def sample_raster(url, level, idx, px, py, elev, src, code, pool, desc, block=51
         bxi, byi = k % nbx, k // nbx
         x0, y0 = bxi * block, byi * block
         w, h = min(block, W - x0), min(block, H - y0)
-        a = open_ds(url, level).read(1, window=Window(x0, y0, w, h), out_dtype="float32")
+        ds = open_ds(url, level)
+        a = ds.read(1, window=Window(x0, y0, w, h), out_dtype="float32")
+        if ds.nodata is not None and ds.nodata >= NODATA_BELOW:
+            a[a == np.float32(ds.nodata)] = -1e9
         return s, e, bilinear(a, cf[s:e] - x0, rf[s:e] - y0)
 
     good = 0
@@ -178,6 +204,77 @@ def usgs_groups(lon, lat, idx):
         k = int(tk[s])
         groups[f"n{k // 1000:02d}w{k % 1000:03d}"] = idx[order[s:e]]
     return groups
+
+
+def gsi_tile(layer: str, z: int, x: int, y: int) -> np.ndarray | None:
+    """One GSI elevation tile (256 × 256, metres; NaN where there's no data), or None if there's
+    no tile. PNG tiles: x = R·2¹⁶ + G·2⁸ + B, h = 0.01·x below 2²³, 0.01·(x − 2²⁴) above, and
+    2²³ is no data. One kept-alive connection per thread."""
+    import http.client
+
+    for attempt in range(8):
+        conn = getattr(_tls, "gsi", None)
+        if conn is None:
+            conn = _tls.gsi = http.client.HTTPSConnection(GSI, timeout=60)
+        try:
+            conn.request("GET", f"/xyz/{layer}/{z}/{x}/{y}.png", headers={"User-Agent": UA})
+            r = conn.getresponse()
+            body = r.read()
+        except (OSError, http.client.HTTPException):
+            conn.close()
+            _tls.gsi = None
+            time.sleep(2 * (attempt + 1))
+            continue
+        if r.status == 404:
+            return None
+        if r.status != 200:
+            time.sleep(2 * (attempt + 1))
+            continue
+        from PIL import Image
+
+        a = np.asarray(Image.open(io.BytesIO(body)).convert("RGB"), dtype=np.int64)
+        v = (a[..., 0] << 16) | (a[..., 1] << 8) | a[..., 2]
+        h = np.where(v < 1 << 23, v, v - (1 << 24)).astype(np.float32) * np.float32(0.01)
+        h[v == 1 << 23] = np.nan
+        return h
+    raise RuntimeError(f"GSI {layer}/{z}/{x}/{y}: no answer")
+
+
+def gsi_pass(layer, z, code, lon, lat, idx, elev, src, pool, desc):
+    """Sample the GSI layer at points `idx`; fills points it has data for. Values sit at pixel
+    centres; a point near a tile edge clamps to it (under a pixel off)."""
+    if idx.size == 0:
+        return 0
+    n = 2**z
+    fx = (lon[idx] + 180.0) / 360.0 * n
+    fy = (1.0 - np.log(np.tan(np.radians(lat[idx])) + 1.0 / np.cos(np.radians(lat[idx]))) / math.pi) / 2.0 * n
+    tx, ty = np.floor(fx).astype(np.int64), np.floor(fy).astype(np.int64)
+    key = tx * n + ty
+    order = np.argsort(key, kind="stable")
+    key = key[order]
+    starts = np.flatnonzero(np.r_[True, key[1:] != key[:-1]])
+    ends = np.r_[starts[1:], key.size]
+
+    def work(s, e):
+        sel = order[s:e]
+        k = int(key[s])
+        a = gsi_tile(layer, z, k // n, k % n)
+        if a is None:
+            return sel, None
+        c = (fx[sel] - k // n) * 256 - 0.5
+        r = (fy[sel] - k % n) * 256 - 0.5
+        return sel, bilinear(np.where(np.isnan(a), np.float32(-1e9), a), c, r)
+
+    good = 0
+    for f in tqdm(as_completed([pool.submit(work, s, e) for s, e in zip(starts, ends)]), total=starts.size, desc=desc, unit="tile", mininterval=1):
+        sel, v = f.result()
+        if v is None:
+            continue
+        ok = np.isfinite(v)
+        elev[idx[sel[ok]]] = v[ok]
+        src[idx[sel[ok]]] = code
+        good += int(ok.sum())
+    return good
 
 
 def pack(v: np.ndarray) -> np.ndarray:
@@ -233,6 +330,17 @@ def main():
                 src[i : i + 10_000_000][hit] = csrc[pos_c[hit]]
                 hit_total += int(hit.sum())
             print(f"cache: reused {hit_total:,} of {n:,} vertices ({hit_total / max(n, 1) * 100:.1f} %)")
+            if MOI_DTM:
+                # Taiwan's roads sampled from FABDEM before the MOI DTM was here: sample them again.
+                redo = 0
+                for i in range(0, n, 10_000_000):
+                    v = verts[i : i + 10_000_000]
+                    bad = (src[i : i + 10_000_000] == SRC_FABDEM) & in_taiwan(v[:, 0] * 1e-7, v[:, 1] * 1e-7)
+                    elev[i : i + 10_000_000][bad] = np.nan
+                    src[i : i + 10_000_000][bad] = 0
+                    redo += int(bad.sum())
+                if redo:
+                    print(f"cache: {redo:,} Taiwanese vertices sampled from FABDEM, now from the MOI DTM")
         del keys
         mark("cache")
 
@@ -318,11 +426,42 @@ def main():
         scatter()
         mark("mrdem")
 
-    # ---- 4. FABDEM 30 m (outside North America, and North American points none of the national
-    # DEMs cover, e.g. Saint-Pierre-et-Miquelon) --------------------------------------------
+    # ---- 5. Japan: GSI 5 m (5A lidar, then 5B / 5C photogrammetry), then 10 m ------------------
+    jp = elsewhere[in_japan(lon[elsewhere], lat[elsewhere])]
+    if jp.size:
+        gpool = ThreadPoolExecutor(max_workers=GSI_WORKERS)
+        for layer, z, code in (("dem1a_png", 15, SRC_GSI5A), ("dem5a_png", 15, SRC_GSI5A), ("dem5b_png", 15, SRC_GSI5), ("dem5c_png", 15, SRC_GSI5), ("dem_png", 14, SRC_GSI10)):
+            name = f"gsi:{layer}"
+            if name in done:
+                continue
+            left = jp[np.isnan(loc_elev[jp])]
+            got = gsi_pass(layer, z, code, lon, lat, left, loc_elev, loc_src, gpool, f"GSI {layer} ({left.size:,} pts)")
+            print(f"  GSI {layer}: {got:,}/{left.size:,}")
+            scatter()
+            mark(name)
+        gpool.shutdown()
+
+    # ---- 6. Taiwan: MOI 20 m DTM (a local file per island group) --------------------------------
+    tw = elsewhere[in_taiwan(lon[elsewhere], lat[elsewhere])]
+    for path in MOI_DTM if tw.size else []:
+        name = f"moi:{path.name}"
+        if name in done:
+            continue
+        left = tw[np.isnan(loc_elev[tw])]
+        with rasterio.open(path) as ds:
+            crs = ds.crs
+        px, py = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(lon[left], lat[left])
+        got = sample_raster(str(path), None, left, np.asarray(px), np.asarray(py), loc_elev, loc_src, SRC_MOI, pool, f"MOI {path.name}")
+        print(f"  MOI {path.name}: {got:,}/{left.size:,}")
+        scatter()
+        mark(name)
+
+    # ---- 4. FABDEM 30 m (the rest outside North America, and North American points none of the
+    # national DEMs cover, e.g. Saint-Pierre-et-Miquelon) -----------------------------------------
     uncovered = local[np.isnan(loc_elev[local])]
     if uncovered.size:
         print(f"FABDEM fallback: {uncovered.size:,} North American vertices without a national DEM")
+    elsewhere = elsewhere[np.isnan(loc_elev[elsewhere])]
     groups = fabdem_groups(lon, lat, np.concatenate([elsewhere, uncovered]))
     print(f"FABDEM: {elsewhere.size:,} vertices, {len(groups)} 1° tiles")
     for (tname, zname), sel in tqdm(sorted(groups.items(), key=lambda kv: -kv[1].size), desc="FABDEM tiles", unit="tile"):
@@ -341,13 +480,17 @@ def main():
     # ---- finish: stats, atomic rename, refresh cache ---------------------------------
     elev.flush()
     src.flush()
-    counts = np.bincount(src, minlength=5)
+    counts = np.bincount(src, minlength=9)
     stats = {
         "vertices": int(n),
         "hrdem": int(counts[1]),
         "usgs3dep": int(counts[2]),
         "mrdem": int(counts[3]),
         "fabdem": int(counts[4]),
+        "gsi5a": int(counts[5]),
+        "gsi5": int(counts[6]),
+        "gsi10": int(counts[7]),
+        "moi": int(counts[8]),
         "missing": int(counts[0]),
         "sampled_this_run": int(miss.size),
         "seconds": round(time.time() - t_start, 1),

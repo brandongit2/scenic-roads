@@ -3,7 +3,7 @@
 
 Each site in data/build/heritage.json whose register has a Wikidata property (NHLE P1216, Mérimée
 P380, HES P709, NRHP P649, Cadw P1459/P3007, DGPC P1702, CRHP P477, RPCQ P633, IPAC P1600, UNESCO
-P757, Irish SMR P4057; Parks Canada DFHD links to the item itself) is looked up on the Wikidata
+P757, Irish SMR P4057, Japan's national cultural properties P4275, Taiwan's NCHDB P6890; Parks Canada DFHD links to the item itself) is looked up on the Wikidata
 Query Service in batches: descriptions (en, fr, es, pt, ca), Wikipedia article titles in those
 languages, the number of Wikipedia/Wikimedia sitelinks (a notability measure), inception, and the
 labels of its type (P31), architectural style (P149) and architect (P84). English Wikipedia's
@@ -64,6 +64,8 @@ RULES = [
     ("P633", r"patrimoine-culturel\.gouv\.qc\.ca/rpcq/detail\.do\?methode=consulter&id=(\d+)"),
     ("P1600", r"invarquit\.cultura\.gencat\.cat/card/(\d+)"),
     ("P757", r"whc\.unesco\.org/en/list/(\d+)"),
+    ("P4275", r"kunishitei\.bunka\.go\.jp/heritage/detail/(\d+/\d+)"),
+    ("P6890", r"nchdb\.boch\.gov\.tw/assets/advanceSearch/(\w+/\d+)"),
     ("P4057", r"query=[^&]*?%2CSMRS%2C([A-Z]{2}\d{3}-\d{3}(?:\d{3})?)"),
     ("QID", r"wikidata\.org/wiki/(Q\d+)"),
 ]

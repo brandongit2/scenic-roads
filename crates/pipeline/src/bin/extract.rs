@@ -8,12 +8,16 @@
 //! funiculars). Tracks without a route relation are kept when their type says what they are
 //! (tram, subway, funicular, preserved or tourist lines).
 //!
-//! usage: extract <out_dir> <spacing_m> <file.osm.pbf>...
+//! usage: extract <out_dir> <spacing_m> [--rail-rels-only] <file.osm.pbf>...
 //!
 //! Pass 1 collects matching ways; pass 2 resolves node coordinates and private gates.
+//! Besides the ways: rail-rels.bin, each rail track's primary service (the route relation that
+//! names it; the app opens it on openstreetmap.org), sorted little-endian (i64 OSM way id, i64
+//! relation id). `--rail-rels-only` writes just that (a build made before it existed), after
+//! pass 1.
 //! Output geometry is densified so consecutive vertices are at most `spacing_m` apart,
-//! which lets the DEM stage sample every raster cell a road crosses. Outside North America the
-//! elevation source is 30 m (FABDEM), so there the spacing is at least `COARSE_SPACING_M`.
+//! which lets the DEM stage sample every raster cell a road crosses. Outside North America and
+//! Japan the elevation sources are 20–30 m, so there the spacing is at least `COARSE_SPACING_M`.
 
 use anyhow::{Context, Result};
 use osmpbf::{Element, ElementReader};
@@ -47,6 +51,8 @@ struct RawWay {
 /// A passenger rail service (route relation) using a track.
 struct RailUse {
     way: i64,
+    /// The route relation.
+    rel: i64,
     group: u8,
     colour: u32,
     /// Short label: the ref, else the name.
@@ -326,6 +332,36 @@ fn network_code(lon: f64, lat: f64, ref_: &str, c: u8) -> u8 {
     if (113.8..114.5).contains(&lon) && (22.1..22.6).contains(&lat) {
         return if first.chars().next().is_some_and(|ch| ch.is_ascii_digit()) { n::HK_ROUTE } else { n::NONE };
     }
+    // Singapore: expressways by their initials (PIE, AYE, CTE…).
+    if (103.5..104.2).contains(&lon) && (1.1..1.5).contains(&lat) {
+        return if c == class::MOTORWAY && !first.is_empty() { n::SG_EXPRESSWAY } else { n::NONE };
+    }
+    let lead_digit = first.chars().next().is_some_and(|ch| ch.is_ascii_digit());
+    // Japan: expressways (E-numbers, or any motorway), national routes (trunk roads with a number),
+    // prefectural roads (other numbered roads).
+    if (122.5..154.0).contains(&lon) && (20.0..46.5).contains(&lat) {
+        return if c == class::MOTORWAY || (pre == "E" && num) {
+            n::JP_EXPRESSWAY
+        } else if !lead_digit {
+            n::NONE
+        } else if c == class::TRUNK {
+            n::JP_NATIONAL
+        } else {
+            n::JP_PREFECTURAL
+        };
+    }
+    // Taiwan: national freeways (motorways, 1–10), provincial highways (1–88), county roads
+    // (101–205); a heavenly-stem suffix (甲乙丙…) marks a branch. Township roads (a county
+    // character, 南74) count as unnumbered.
+    if (118.0..122.5).contains(&lon) && (21.5..26.6).contains(&lat) {
+        let k: u32 = first.chars().take_while(|ch| ch.is_ascii_digit()).collect::<String>().parse().unwrap_or(0);
+        return match k {
+            0 => n::NONE,
+            _ if c == class::MOTORWAY && k <= 10 => n::TW_FREEWAY,
+            1..=99 => n::TW_PROVINCIAL,
+            _ => n::TW_COUNTY,
+        };
+    }
     if first.is_empty() || !num {
         return n::NONE;
     }
@@ -486,8 +522,10 @@ fn open_reader(path: &Path, label: &str) -> Result<ElementReader<ProgressRead<st
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
+    let rail_rels_only = args.iter().any(|a| a == "--rail-rels-only");
+    let args: Vec<String> = args.into_iter().filter(|a| a != "--rail-rels-only").collect();
     if args.len() < 4 {
-        eprintln!("usage: extract <out_dir> <spacing_m> <file.osm.pbf>...");
+        eprintln!("usage: extract <out_dir> <spacing_m> [--rail-rels-only] <file.osm.pbf>...");
         std::process::exit(2);
     }
     let out = PathBuf::from(&args[1]);
@@ -565,7 +603,7 @@ fn main() -> Result<()> {
                                 if m.member_type == osmpbf::RelMemberType::Way {
                                     let role = m.role().unwrap_or("");
                                     if role.is_empty() || matches!(role, "forward" | "backward" | "main" | "route") {
-                                        out.rail_uses.push(RailUse { way: m.member_id, group, colour, label: label.clone(), name: name.clone(), ref_: ref_.clone() });
+                                        out.rail_uses.push(RailUse { way: m.member_id, rel: r.id(), group, colour, label: label.clone(), name: name.clone(), ref_: ref_.clone() });
                                     }
                                 }
                             }
@@ -596,6 +634,7 @@ fn main() -> Result<()> {
     ways.dedup_by_key(|w| w.id);
     // Rail: the services using each track. The primary group (drawing class, colour, name) is
     // the most important one: heritage > intercity > commuter > metro > tram.
+    let mut rail_rels: Vec<(i64, i64)> = Vec::new();
     {
         let rank = |g: u8| match g {
             class::HERITAGE => 0,
@@ -604,7 +643,7 @@ fn main() -> Result<()> {
             class::METRO => 3,
             _ => 4,
         };
-        rail_uses.par_sort_unstable_by(|a, b| a.way.cmp(&b.way).then(rank(a.group).cmp(&rank(b.group))).then(a.label.cmp(&b.label)));
+        rail_uses.par_sort_unstable_by(|a, b| a.way.cmp(&b.way).then(rank(a.group).cmp(&rank(b.group))).then(a.label.cmp(&b.label)).then(a.rel.cmp(&b.rel)));
         rail_uses.dedup_by(|a, b| a.way == b.way && a.group == b.group && a.label == b.label);
         let (mut kept, mut dropped, mut via_routes) = (0usize, 0usize, 0usize);
         for w in ways.iter_mut() {
@@ -631,6 +670,7 @@ fn main() -> Result<()> {
                 w.rail |= 1 << (u.group - class::TRAM);
             }
             let p = &uses[0];
+            rail_rels.push((w.id, p.rel));
             w.class = p.group;
             if p.colour != 0 {
                 w.colour = p.colour;
@@ -650,6 +690,14 @@ fn main() -> Result<()> {
         }
         ways.retain(|w| w.class != u8::MAX);
         eprintln!("rail: {kept} passenger tracks ({via_routes} on route relations), {dropped} other tracks dropped");
+    }
+    // (in way id order, as the ways are)
+    let rail_rels_bytes: Vec<u8> = rail_rels.iter().flat_map(|(w, r)| w.to_le_bytes().into_iter().chain(r.to_le_bytes())).collect();
+    std::fs::write(roadcore::tmp(&out, "rail-rels.bin"), &rail_rels_bytes)?;
+    if rail_rels_only {
+        roadcore::commit(&out, &["rail-rels.bin"])?;
+        eprintln!("wrote rail-rels.bin: {} tracks ({:.0?})", rail_rels.len(), t0.elapsed());
+        return Ok(());
     }
     // Flag members of scenic routes (shortest route name wins when a way is in several).
     scenic.par_sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.len().cmp(&b.1.len())));
@@ -879,9 +927,14 @@ fn main() -> Result<()> {
     }
 
     // ---- Assemble, drop gated minor roads, densify --------------------------------
-    // North America (west of 40° W) has 1–10 m lidar and DEMs; elsewhere FABDEM is 30 m.
+    // North America (west of 40° W) and Japan (GSI) have 1–10 m lidar and DEMs; elsewhere the DEMs
+    // are 20–30 m (Taiwan's MOI DTM, FABDEM).
     const COARSE_SPACING_M: f64 = 15.0;
-    let spacing_at = |lon_e7: i32| if (lon_e7 as f64) * E7 < -40.0 { spacing } else { spacing.max(COARSE_SPACING_M) };
+    let spacing_at = |p: [i32; 2]| {
+        let (lon, lat) = (p[0] as f64 * E7, p[1] as f64 * E7);
+        let japan = (122.5..154.0).contains(&lon) && (20.0..46.5).contains(&lat);
+        if lon < -40.0 || japan { spacing } else { spacing.max(COARSE_SPACING_M) }
+    };
     let lookup = |id: i64| -> Option<(usize, i32, i32)> {
         let i = needed.binary_search(&id).ok()?;
         let v = coords[i].load(Relaxed);
@@ -962,7 +1015,7 @@ fn main() -> Result<()> {
             Ok(())
         };
         emit(b.pts[0], &mut wv)?;
-        let spacing = spacing_at(b.pts[0][0]);
+        let spacing = spacing_at(b.pts[0]);
         for s in b.pts.windows(2) {
             let (a, c) = (s[0], s[1]);
             let (ax, ay, cx, cy) = (a[0] as f64 * E7, a[1] as f64 * E7, c[0] as f64 * E7, c[1] as f64 * E7);
@@ -1029,7 +1082,7 @@ fn main() -> Result<()> {
     }
     eprintln!("POIs: {counts:?}");
     std::fs::write(roadcore::tmp(&out, "pois.json"), serde_json::to_vec(&serde_json::json!({ "type": "FeatureCollection", "features": features }))?)?;
-    roadcore::commit(&out, &["verts.bin", "ways.bin", "strings.txt", "pois.json"])?;
+    roadcore::commit(&out, &["verts.bin", "ways.bin", "strings.txt", "pois.json", "rail-rels.bin"])?;
 
     eprintln!("\nwrote {} ways, {} vertices ({} original nodes), {} strings", recs.len(), vtotal, orig_total, strings.len());
     let mut total = 0.0;

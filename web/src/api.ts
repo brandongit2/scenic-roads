@@ -1,3 +1,5 @@
+import { tasks } from './tasks';
+
 export interface WayInfo {
   idx: number;
   osm_id: number;
@@ -61,6 +63,8 @@ export interface Meta {
   versions?: Record<string, number>;
   /** Basemap parts (regions added after base.pmtiles), by name. */
   baseParts?: string[];
+  /** Whether the basemap labels have their own archive (labels.pmtiles). */
+  labels?: boolean;
 }
 
 // Tiles and layers are cached by the browser, so their URLs carry the build time of the file
@@ -114,9 +118,11 @@ export function getRoadWays(idx: number): Promise<Set<number> | null> {
 }
 
 export async function getProfile(idx: number, signal?: AbortSignal): Promise<Profile> {
-  const r = await fetch(`/api/profile/${idx}`, { signal });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
+  return tasks.track('profile', 'Profile', (async () => {
+    const r = await fetch(`/api/profile/${idx}`, { signal });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  })(), 'the road\'s elevation profile');
 }
 
 export interface Drive {
@@ -133,9 +139,11 @@ export interface Drive {
 }
 
 export async function getDrives(q: Record<string, string>, signal?: AbortSignal): Promise<{ total: number; drives: Drive[] }> {
-  const r = await fetch(`/api/drives?${new URLSearchParams(q)}`, { signal });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
+  return tasks.track('drives', 'Drives', (async () => {
+    const r = await fetch(`/api/drives?${new URLSearchParams(q)}`, { signal });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  })(), 'finding the scenic drives in view');
 }
 
 /** A scenic ride: the best stretch of a passenger line (server /api/rides). */
@@ -143,6 +151,8 @@ export interface Ride {
   score: number;
   length_m: number;
   way: number;
+  /** Its line's OSM route relation (0: none known). */
+  rel: number;
   name: string;
   services: string;
   /** 0xRRGGBB with bit 24 set, 0 = none. */
@@ -161,19 +171,25 @@ export interface RailLine {
   score: number;
   trains: number;
   way: number;
+  /** Its OSM route relation (0: none known). */
+  rel: number;
   geom: [number, number][][];
 }
 
 export async function getRides(q: Record<string, string>, signal?: AbortSignal): Promise<{ total: number; rides: Ride[] }> {
-  const r = await fetch(`/api/rides?${new URLSearchParams(q)}`, { signal });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
+  return tasks.track('rides', 'Rides', (async () => {
+    const r = await fetch(`/api/rides?${new URLSearchParams(q)}`, { signal });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  })(), 'finding the scenic rides in view');
 }
 
 export async function getRailLines(q: Record<string, string>, signal?: AbortSignal): Promise<{ total: number; lines: RailLine[] }> {
-  const r = await fetch(`/api/raillines?${new URLSearchParams(q)}`, { signal });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
+  return tasks.track('raillines', 'Rail lines', (async () => {
+    const r = await fetch(`/api/raillines?${new URLSearchParams(q)}`, { signal });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  })(), 'listing the lines in view');
 }
 
 export interface Viewshed {
@@ -188,7 +204,9 @@ export interface Viewshed {
 
 export async function getViewshed(lng: number, lat: number, r: number, eye: number, signal?: AbortSignal): Promise<Viewshed> {
   const q = new URLSearchParams({ lng: lng.toFixed(6), lat: lat.toFixed(6), r: String(r), eye: String(eye) });
-  const res = await fetch(`/api/viewshed?${q}`, { signal });
-  if (!res.ok) throw new Error(res.status === 404 ? 'no terrain data here' : `HTTP ${res.status}`);
-  return res.json();
+  return tasks.track('viewshed', 'Viewshed', (async () => {
+    const res = await fetch(`/api/viewshed?${q}`, { signal });
+    if (!res.ok) throw new Error(res.status === 404 ? 'no terrain data here' : `HTTP ${res.status}`);
+    return res.json();
+  })(), 'computing what is visible');
 }

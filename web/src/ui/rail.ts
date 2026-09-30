@@ -33,10 +33,6 @@ export class RailCard {
   private weightsBox: HTMLDivElement;
   private wInputs: HTMLInputElement[] = [];
   private wOuts: HTMLOutputElement[] = [];
-  private weight: HTMLInputElement;
-  private weightOut: HTMLOutputElement;
-  private ties: HTMLInputElement;
-  private casing: HTMLInputElement;
   private dist: Dist | null = null;
   private range: [number, number] = [0, 1];
 
@@ -122,28 +118,15 @@ export class RailCard {
     this.singleBox = h('div', { class: 'row2' }, h('span', { class: 'muted' }, 'Colour'), this.single);
     this.note = h('div', { class: 'faint note' });
 
-    this.weight = h('input', { type: 'range', min: 0.25, max: 3, step: 0.05, title: 'Line weight (double-click: default)' });
-    this.weightOut = h('output');
-    this.weight.addEventListener('input', () => R({ weight: Number(this.weight.value) }));
-    this.weight.addEventListener('dblclick', () => R({ weight: 1 }));
-    this.ties = h('input', { type: 'checkbox' });
-    this.ties.addEventListener('change', () => R({ ties: this.ties.checked }));
-    this.casing = h('input', { type: 'checkbox' });
-    this.casing.addEventListener('change', () => R({ casing: this.casing.checked }));
 
     this.el = h('div', { class: 'rail-card' },
-      h('label', { class: 'rail-hd' }, this.on, h('span', {}, 'Passenger rail'), h('span', { class: 'faint' }, 'Layers → rail groups')),
+      h('label', { class: 'rail-hd' }, this.on, h('span', {}, 'Passenger rail'), h('span', { class: 'faint' }, 'Layers → groups, opacity')),
       h('div', { class: 'rail-bd' },
         seg,
         this.metricBox,
         this.groupLegend,
         this.singleBox,
         this.note,
-        h('div', { class: 'fade' }, h('span', { class: 'muted' }, 'Line weight'), this.weight, this.weightOut),
-        h('div', { class: 'toggles' },
-          h('label', { title: 'Draw lines as railways: a thin line with cross-ties' }, this.ties, 'Railway ties'),
-          h('label', { title: 'Dark outline when zoomed in' }, this.casing, 'Casing'),
-        ),
       ),
     );
     this.sync();
@@ -172,10 +155,6 @@ export class RailCard {
       this.wOuts[i].classList.toggle('neg', v < 0);
       this.wOuts[i].classList.toggle('zero', v === 0);
     });
-    this.weight.value = String(r.weight);
-    this.weightOut.value = `${r.weight.toFixed(2)}×`;
-    this.ties.checked = r.ties;
-    this.casing.checked = r.casing;
   }
 
   /** The metric's distribution over rail in view, the range in use and the lookup (if equalising). */

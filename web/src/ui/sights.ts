@@ -3,6 +3,7 @@
 import type { OverlayKey } from '../state';
 import * as prefs from '../prefs';
 import { cap, fmt, h } from './dom';
+import { withEnglish } from '../english';
 
 export interface Sight {
   k: OverlayKey;
@@ -22,6 +23,8 @@ export class SightsPane {
   query: (kind: OverlayKey | null) => Sight[] = () => [];
   onHover: (s: Sight | null) => void = () => {};
   onSelect: (s: Sight) => void = () => {};
+  /** The row under the pointer (M, O open it). */
+  hovered: Sight | null = null;
 
   constructor(readonly root: HTMLElement) {
     this.chips = h('div', { class: 'sight-chips' });
@@ -32,7 +35,7 @@ export class SightsPane {
       h('div', { class: 'climbs-meta' }, this.count),
       this.list,
       h('div', { class: 'faint', style: 'font-size:10.5px;margin-top:6px;line-height:1.45' },
-        'Landmarks in view by prominence: how well known they are (Wikipedia pageviews) and how rare nearby, as set in Layers → Stops & sights. Hover to mark, click for details.'),
+        'Landmarks in view by prominence: how well known they are (Wikipedia pageviews) and how rare nearby, as set in Layers → Stops & sights. Hover to mark (M: Google Maps, O: OpenStreetMap), click for details.'),
     );
   }
 
@@ -61,6 +64,7 @@ export class SightsPane {
       return;
     }
     const items = this.query(this.kind);
+    this.hovered = null;
     const total = kinds.filter((k) => !this.kind || k.key === this.kind).reduce((a, k) => a + k.n, 0);
     this.count.textContent = `${fmt.n(total)} in view · top ${items.length}`;
     const colour = new Map(kinds.map((k) => [k.key, k.colour]));
@@ -81,13 +85,13 @@ export class SightsPane {
       const row = h('a', { class: 'climb', onclick: () => this.onSelect(s) },
         h('span', { class: 'rank' }, String(i + 1)),
         h('div', { class: 'cbody' },
-          h('div', { class: 'cl1' }, h('span', { class: 'ct' }, dot, cap(p.name) || `Unnamed ${String(label.get(s.k) ?? '').toLowerCase()}`), h('b', {}, String(Math.round(s.score * 100)))),
+          h('div', { class: 'cl1' }, h('span', { class: 'ct' }, dot, cap(p.name && withEnglish(p.name, s.lngLat, p.en ?? p.name_en)) || `Unnamed ${String(label.get(s.k) ?? '').toLowerCase()}`), h('b', {}, String(Math.round(s.score * 100)))),
           h('div', { class: 'sbarw' }, bar),
           h('div', { class: 'cl2' }, [label.get(s.k), ...facts].filter(Boolean).join(' · ')),
         ),
       );
-      row.addEventListener('mouseenter', () => this.onHover(s));
-      row.addEventListener('mouseleave', () => this.onHover(null));
+      row.addEventListener('mouseenter', () => this.onHover((this.hovered = s)));
+      row.addEventListener('mouseleave', () => this.onHover((this.hovered = null)));
       return row;
     }));
   }

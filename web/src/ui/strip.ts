@@ -1,5 +1,5 @@
-// Bottom strip. Row 1: the hovered road — name, elevation, grade, then the scenic score and each
-// measured score factor as a bar (full = the factor at its cap), then roadside tree height. A rail
+// Bottom strip. Row 1: the hovered road — its name, then the scenic score and each measured score
+// factor as a bar (full = the factor at its cap), then roadside tree height. A rail
 // line shows its services and the ride factors in the same slots; a marker or highlighted area
 // (with no road under the cursor) gets one descriptive line.
 // Row 2: yes/no flags as chips, road tags and elevation sources on the left; loading status,
@@ -8,11 +8,13 @@
 import type { Map as MLMap } from 'maplibre-gl';
 import { CLASS_LABELS, RAIL0, RAIL_GROUPS, ST_BRIDGE, ST_LINK, ST_TUNNEL, ST_UNPAVED } from '../config';
 import type { FeatureSummary } from '../overlays';
+import { legibleCss } from '../linecolour';
+import { withEnglish } from '../english';
 import { RAIL_COMPONENTS, fmtTrains, railComponents, railScore, type RailSample } from '../rail';
 import type { HoverInfo } from '../roads/layer';
 import type { WayInfo } from '../api';
 import { COMPONENTS, FLAG_LABELS, components, scoreOf } from '../scenic';
-import { cap, fmt, h, toast } from './dom';
+import { cap, fmt, h } from './dom';
 
 const VALUE_FONT = '600 10px -apple-system, system-ui, sans-serif';
 let measureCtx: CanvasRenderingContext2D | null = null;
@@ -72,9 +74,6 @@ class Bar {
 export class Strip {
   private r1: HTMLDivElement;
   private road: HTMLSpanElement;
-  private elev: HTMLElement;
-  private sw: HTMLSpanElement;
-  private grade: HTMLElement;
   private trees: HTMLElement;
   private score: Bar;
   private bars: { i: number; bar: Bar }[];
@@ -84,7 +83,7 @@ export class Strip {
   private scale: HTMLSpanElement;
   private loading: HTMLSpanElement;
   private credits: HTMLDialogElement;
-  private last: { hov: HoverInfo; info: WayInfo | null | 'loading'; colour: string; areas: FeatureSummary[] } | null = null;
+  private last: { hov: HoverInfo; info: WayInfo | null | 'loading'; areas: FeatureSummary[] } | null = null;
   private featLine: HTMLSpanElement;
   /** Which factors the bars currently show. */
   private barsFor: 'road' | 'rail' = 'road';
@@ -94,71 +93,68 @@ export class Strip {
 
   constructor(root: HTMLElement, private map: MLMap, private weights: () => number[]) {
     const idle = h('span', { class: 'hint' },
-      'Hover a road for elevation & scenic metrics · click for its profile · two-finger drag pans, pinch zooms, ⌥ + two-finger drag or right-drag tilts & rotates around the cursor · G: Street View, M: Google Maps, O: OpenStreetMap at the cursor');
+      'Hover a road for its scenic metrics · click for its elevation profile · two-finger drag pans, pinch zooms, ⌥ + two-finger drag or right-drag tilts & rotates around the cursor · G: Street View, M: Google Maps, O: OpenStreetMap at the cursor');
     const cell = (label: string, title: string) => {
       const b = h('b');
       return { el: h('div', { class: 'cell', title }, h('span', { class: 'lbl' }, label), b), b };
     };
     this.road = h('span', { class: 'road' });
-    const e = cell('Elevation', 'Road elevation at the cursor');
-    this.sw = h('span', { class: 'sw' });
-    e.b.before(this.sw);
-    this.elev = e.b;
-    const g = cell('Grade', 'Road grade at the cursor');
-    this.grade = g.b;
     const t = cell('Trees', 'Roadside tree height (p95 within 30 m)');
     this.trees = t.b;
     this.score = new Bar('Scenic', '', 'Scenic score with the current weights (0–100)', 'score');
     this.bars = COMPONENTS.flatMap((c, i) => (c.bar ? [{ i, bar: new Bar(c.bar.short, c.bar.unit, `${c.label}: ${c.help}`) }] : []));
     this.featLine = h('span', { class: 'featline' });
     this.r1 = h('div', { class: 'r1 idle' },
-      idle, this.featLine, this.road, e.el, g.el, this.score.el, ...this.bars.map((b) => b.bar.el), t.el);
+      idle, this.featLine, this.road, this.score.el, ...this.bars.map((b) => b.bar.el), t.el);
+    this.r1.style.setProperty('--bars', String(this.bars.length)); // a column each (style.css)
 
     this.info = h('span', { class: 'info' });
     this.coord = h('span', { class: 'coord num' });
     this.zoom = h('span', { class: 'zoom num' });
     this.scale = h('span', { class: 'scale' });
     this.loading = h('span', { class: 'status' });
-    const copy = h('button', {
-      title: 'Copy a link to this view',
-      onclick: async () => {
-        await navigator.clipboard.writeText(location.href);
-        toast('Link copied');
-      },
-    }, 'Copy link');
     this.credits = creditsDialog();
     const credits = h('button', { title: 'Data sources, credits and licences', onclick: () => this.credits.showModal() }, '© Credits');
     root.append(
       this.r1,
       h('div', { class: 'r2' },
         this.info,
-        h('span', { class: 'right' }, this.loading, this.coord, this.zoom, this.scale, copy, credits),
+        h('span', { class: 'right' }, this.loading, this.coord, this.zoom, this.scale, credits),
       ),
       this.credits,
     );
     map.on('move', () => this.view());
     map.on('mousemove', (ev) => (this.coord.textContent = fmt.coord(ev.lngLat.lat, ev.lngLat.lng)));
     // Bar widths change with the window: re-place the values.
-    new ResizeObserver(() => this.last && this.show(this.last.hov, this.last.info, this.last.colour, this.last.areas)).observe(this.r1);
+    new ResizeObserver(() => this.last && this.show(this.last.hov, this.last.info, this.last.areas)).observe(this.r1);
     this.view();
   }
+
+  /** What the zoom and scale readouts show (they change only when it does: every camera move
+   * calls view). */
+  private shownView = '';
 
   private view() {
     const z = this.map.getZoom();
     const c = this.map.getCenter();
-    this.zoom.textContent = `z ${z.toFixed(1)}`;
     // Metric scale bar (~100 px).
     const mpp = (40075016.686 * Math.cos((c.lat * Math.PI) / 180)) / (512 * 2 ** z);
     const target = 100 * mpp;
     const p = 10 ** Math.floor(Math.log10(target));
     const nice = [1, 2, 5, 10].map((k) => k * p).filter((v) => v <= target).pop() ?? p;
+    const zs = `z ${z.toFixed(1)}`, px = Math.round(nice / mpp);
+    const key = `${zs}|${nice}|${px}`;
+    if (key === this.shownView) return;
+    this.shownView = key;
+    this.zoom.textContent = zs;
     const bar = h('i');
-    bar.style.width = `${nice / mpp}px`;
+    bar.style.width = `${px}px`;
     this.scale.replaceChildren(bar, fmt.dist(nice));
   }
 
-  setLoading(text: string) {
-    this.loading.textContent = text;
+  /** The status element (tasks.ts keeps it up to date). */
+  get status(): HTMLElement {
+    return this.loading;
   }
 
   /** A marker or highlighted area (no road under the cursor), with the other areas it lies in. */
@@ -168,11 +164,15 @@ export class Strip {
     this.r1.classList.add('feat');
     const dot = h('i', { class: f.area ? 'fa' : 'fp' });
     dot.style.background = f.colour;
-    this.featLine.replaceChildren(dot, h('b', {}, cap(f.title)), h('span', { class: 'kind' }, f.kind), ...f.facts.map((x) => h('span', { class: 'fact' }, x)));
+    // The name keeps its room; the designation and then the facts give way (ending in …).
+    this.featLine.replaceChildren(dot, h('b', {}, cap(f.title)), h('span', { class: 'kind' }, f.kind),
+      h('span', { class: 'facts' }, ...f.facts.map((x) => h('span', { class: 'fact' }, x))));
     this.featLine.title = [f.title, f.kind, ...f.facts].join(' · ');
     const others = areas.filter((a) => a.title !== f.title);
     if (f.also?.length) {
-      const c = h('span', { class: 'chip', title: `Also here: ${f.also.join(' · ')} (click for all)` }, `+${f.also.length} here: ${f.also[0]}${f.also.length > 1 ? ' …' : ''}`);
+      // A pill of its own, apart from the facts before it.
+      const c = h('span', { class: 'also', title: `Also here: ${f.also.join(' · ')} (click for all)` },
+        h('span', { class: 'n' }, `+${f.also.length} here`), `${f.also[0]}${f.also.length > 1 ? ' …' : ''}`);
       this.featLine.append(c);
     }
     const second = f.desc ? h('span', { class: 'src desc', title: cap(f.desc) }, cap(f.desc)) : f.source ? h('span', { class: 'src' }, `Source: ${f.source}`) : null;
@@ -204,7 +204,7 @@ export class Strip {
     this.score.label('Scenic', '', to === 'road' ? 'Scenic score with the current weights (0–100)' : 'Ride score with the rail weights (0–100)');
   }
 
-  show(hov: HoverInfo | null, info: WayInfo | null | 'loading', colour: string, areas: FeatureSummary[] = []) {
+  show(hov: HoverInfo | null, info: WayInfo | null | 'loading', areas: FeatureSummary[] = []) {
     this.r1.classList.remove('feat');
     if (!hov) {
       this.last = null;
@@ -212,10 +212,10 @@ export class Strip {
       this.info.replaceChildren();
       return;
     }
-    this.last = { hov, info, colour, areas };
+    this.last = { hov, info, areas };
     this.r1.classList.remove('idle');
     const st = hov.style;
-    if ((st & 15) >= RAIL0) return this.showRail(hov, info, colour, areas);
+    if ((st & 15) >= RAIL0) return this.showRail(hov, info, areas);
     this.relabel('road');
 
     // Row 1.
@@ -223,12 +223,9 @@ export class Strip {
     if (info === 'loading') this.road.append(h('span', { class: 'spin' }));
     else if (info) {
       if (info.ref) this.road.append(h('span', { class: 'ref' }, info.ref));
-      this.road.append(cap(info.name) || (info.ref ? '' : 'Unnamed road'));
+      this.road.append(cap(info.name && withEnglish(info.name, hov.lngLat)) || (info.ref ? '' : 'Unnamed road'));
     }
     this.road.title = this.road.textContent ?? '';
-    this.sw.style.background = colour;
-    this.elev.textContent = fmt.m1(hov.elev);
-    this.grade.textContent = fmt.pct(hov.grade);
     const c = hov.ch;
     const none = c.every((x) => x === 0); // no scenic analysis here
     const w = this.weights();
@@ -261,7 +258,7 @@ export class Strip {
     this.info.replaceChildren(...chips, ...this.areaChips(areas), h('span', { class: 'tags' }, tags.join(' · ')), ...(src ? [h('span', { class: 'src' }, src)] : []));
   }
 
-  private showRail(hov: HoverInfo, info: WayInfo | null | 'loading', colour: string, areas: FeatureSummary[]) {
+  private showRail(hov: HoverInfo, info: WayInfo | null | 'loading', areas: FeatureSummary[]) {
     this.relabel('rail');
     const st = hov.style;
     this.road.replaceChildren();
@@ -269,15 +266,12 @@ export class Strip {
     else if (info) {
       if (info.colour) {
         const sw = h('i', { class: 'line-sw' });
-        sw.style.background = info.colour;
+        sw.style.background = legibleCss(info.colour) ?? info.colour;
         this.road.append(sw);
       }
-      this.road.append(cap(info.name) || info.route || CLASS_LABELS[st & 15]);
+      this.road.append(cap(info.name && withEnglish(info.name, hov.lngLat)) || info.route || CLASS_LABELS[st & 15]);
     }
     this.road.title = [info && info !== 'loading' ? info.route : '', this.road.textContent].filter(Boolean).join(' · ');
-    this.sw.style.background = colour;
-    this.elev.textContent = fmt.m1(hov.elev);
-    this.grade.textContent = fmt.pct(hov.grade);
     const smp: RailSample = { elev: hov.elev, grade: hov.grade, ground: hov.ground ?? hov.elev, bridge: !!(st & ST_BRIDGE), tunnel: !!(st & ST_TUNNEL), ch: hov.ch, freq: hov.fq ?? -1 };
     const none = hov.ch.every((x) => x === 0);
     const w = this.railWeights();
@@ -316,7 +310,9 @@ function creditsDialog(): HTMLDialogElement {
   const rows: [string, string, string][] = [
     ['Roads, water, boundaries, places, parks, points of interest, Indigenous land boundaries', 'OpenStreetMap (Geofabrik extracts); basemap schema by OpenMapTiles', '© OpenStreetMap contributors, ODbL'],
     ['Road elevation, North America', 'NRCan HRDEM lidar → USGS 3DEP 10 m → NRCan MRDEM 30 m', 'OGL–Canada / public domain'],
-    ['Road elevation, Europe & Hong Kong', 'FABDEM v1-2 30 m (University of Bristol / Fathom; Hawker et al. 2022). FABDEM is produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.', 'CC BY-NC-SA 4.0 (non-commercial)'],
+    ['Road elevation, Japan', 'Created by editing GSI Tiles (elevation tiles (Fundamental Geospatial Data Digital Elevation Model)): 地理院タイル（標高タイル（基盤地図情報数値標高モデル））を加工して作成, Geospatial Information Authority of Japan (maps.gsi.go.jp/development/ichiran.html)', 'GSI terms of use (Public Data License 1.0)'],
+    ['Road elevation, Taiwan', '內政部 2025年版全臺灣20公尺網格數值地形模型DTM資料 (Ministry of the Interior, Taiwan, 20 m DTM, 2025 edition). The Open Data is made available to the public under the Open Government Data License, User can make use of it when complying to the condition and obligation of its terms. Open Government Data License: https://data.gov.tw/license', 'Open Government Data License 1.0'],
+    ['Road elevation, Europe, Hong Kong, Singapore (and Taiwan without the MOI DTM)', 'FABDEM v1-2 30 m (University of Bristol / Fathom; Hawker et al. 2022). FABDEM is produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.', 'CC BY-NC-SA 4.0 (non-commercial)'],
     ['3D terrain, hill-shading, contours, slope', 'Terrain Tiles (Terrarium) on AWS Open Data', 'Mapzen / various open sources'],
     ['Tree canopy height & cover (scenic factors, tree cover layer)', 'Meta & WRI global canopy height', 'CC BY 4.0'],
     ['Forest leaf type, Europe', '© European Union, Copernicus Land Monitoring Service 2018, European Environment Agency (EEA): High Resolution Layer Dominant Leaf Type', 'Copernicus free and open data policy (attribution)'],
@@ -341,6 +337,9 @@ function creditsDialog(): HTMLDialogElement {
     ['Spain heritage', 'Generalitat de Catalunya; Junta de Castilla y León; Gobierno de Aragón; Generalitat Valenciana; Xunta de Galicia; Gobierno de Navarra (IDENA); Junta de Extremadura; IAPH (Junta de Andalucía)', 'Per region: CC BY / CC BY-SA / free use with credit'],
     ['Portugal heritage', 'Património Cultural, I.P., Atlas do Património Classificado e em Vias de Classificação', 'CC BY-NC 4.0'],
     ['Hong Kong heritage', 'Antiquities and Monuments Office, via the Common Spatial Data Infrastructure (CSDI) Portal', 'DATA.GOV.HK terms'],
+    ['Japan heritage', '出典：文化庁 国指定文化財等データベース（https://kunishitei.bunka.go.jp/）を加工して作成 (Agency for Cultural Affairs, Database of National Cultural Properties, edited); preservation districts: 国土数値情報（伝統的建造物群保存地区データ）(MLIT)', 'PDL 1.0 (CC BY 4.0 compatible); CC BY 4.0'],
+    ['Taiwan heritage', '文化部文化資產局 2026 文化資產個案 (Bureau of Cultural Heritage, Ministry of Culture). The Open Data is made available to the public under the Open Government Data License, User can make use of it when complying to the condition and obligation of its terms. Open Government Data License: https://data.gov.tw/license', 'Open Government Data License 1.0'],
+    ['Singapore heritage', 'Contains information from Monuments (NHB), Historic Sites (NHB) and Master Plan 2019 SDCP Conservation Area layer (URA) accessed on 2026-09-29 from data.gov.sg which is made available under the terms of the Singapore Open Data Licence version 1.0 https://data.gov.sg/open-data-licence', 'Singapore Open Data Licence 1.0'],
     ['Local-language names (some UNESCO sites, biosphere reserves, geoparks, Québec federal sites)', 'Wikidata', 'CC0'],
     ['Passenger rail lines and services', 'OpenStreetMap route relations and tracks', '© OpenStreetMap contributors, ODbL'],
     ['Stops & sights details', 'OpenStreetMap tags (heights, lights, hill lists, facilities); Wikidata facts (heights, flow, prominence, isolation, inception, descriptions) via QLever (University of Freiburg)', 'ODbL; Wikidata CC0'],
@@ -348,7 +347,7 @@ function creditsDialog(): HTMLDialogElement {
     ['Heritage descriptions', 'Wikidata items matched by register ID; English Wikipedia short descriptions; for the most notable sites, 2–3 sentence summaries of their Wikipedia articles written by Claude', 'Wikidata CC0; Wikipedia CC BY-SA 4.0'],
     ['Park & area details', 'Areas computed from the boundaries; OpenStreetMap protected-area tags; Wikidata (inception, visitors, operator)', 'ODbL; Wikidata CC0'],
     ['Colour ramps', 'matplotlib (viridis, magma, plasma, inferno, cividis, cubehelix), seaborn (mako, rocket), Google (turbo), ColorBrewer (Cynthia Brewer), Fabio Crameri\u2019s Scientific colour maps (batlow, hawaii, La Jolla, Oslo, Bamako, Tokyo, Vik, Berlin), cmocean (ice), colorcet (fire, Peter Kovesi)', 'ColorBrewer: Apache 2.0; Crameri, cmocean: MIT; colorcet: CC BY 4.0'],
-    ['Rail service frequency', 'Operators\u2019 GTFS timetables (112 feeds via the Mobility Database catalogue and operators: SNCF, Renfe, IDFM, TfI, MTA, MBTA, GO, exo, VIA, Amtrak and others; Great Britain: the Rail Delivery Group timetable as GTFS by Catenary Transit); MTR frequencies from mtr.com.hk (exact for the Airport Express and High Speed Rail, whose timetables are published in full; other lines a lower bound, at least the service hours at the slowest published off-peak headway)', 'Each operator\u2019s open-data terms'],
+    ['Rail service frequency', 'Operators\u2019 GTFS timetables (112 feeds via the Mobility Database catalogue and operators: SNCF, Renfe, IDFM, TfI, MTA, MBTA, GO, exo, VIA, Amtrak and others; Great Britain: the Rail Delivery Group timetable as GTFS by Catenary Transit; Singapore: Land Transport Authority, LTA DataMall, under the Singapore Open Data Licence 1.0); MTR frequencies from mtr.com.hk (exact for the Airport Express and High Speed Rail, whose timetables are published in full; other lines a lower bound, at least the service hours at the slowest published off-peak headway)', 'Each operator\u2019s open-data terms'],
     ['Ferry routes and terminals', 'OpenStreetMap ferry routes and route relations', '© OpenStreetMap contributors, ODbL'],
     ['Ferry sailings', 'Operators\u2019 published GTFS timetables (listed in each line\u2019s source: MBTA, NYC Ferry, NYC DOT, NY Waterway, STQ, Halifax Transit, BreizhGo, Bacs de Seine, Brittany Ferries, Transtejo Soflusa, Hong Kong Transport Department and others), operators\u2019 timetable pages, and OSM interval tags', 'Each operator\u2019s open-data terms'],
     ['Roadside buildings', 'Overture Maps Foundation buildings (OpenStreetMap, Microsoft and Google footprints)', 'ODbL · CDLA Permissive 2.0'],

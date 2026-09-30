@@ -166,6 +166,19 @@ export function installTrackpad(map: MLMap): CameraControls {
     { passive: false },
   );
 
+  // A drag isn't a click. MapLibre drops a click whose pointer moved from where it went down, but
+  // moving the camera (jumpTo) resets its handlers and with them where the pointer went down, so
+  // after a drag here its click would still fire: the click that ends a drag is dropped before
+  // MapLibre sees it (capture on the container, which holds the canvas).
+  let dragged = false;
+  el.addEventListener('pointerdown', () => (dragged = false), true);
+  el.addEventListener('click', (e) => {
+    if (!dragged) return;
+    dragged = false;
+    e.stopImmediatePropagation();
+    e.preventDefault();
+  }, true);
+
   // Right-drag or Ctrl + left-drag: rotate (x) and tilt (y) around the point under the cursor.
   // The anchor stays pinned where the drag started (ax, ay).
   let drag: { id: number; x: number; y: number; ax: number; ay: number; a: Anchor | null } | null = null;
@@ -183,6 +196,7 @@ export function installTrackpad(map: MLMap): CameraControls {
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     drag.x = e.clientX;
     drag.y = e.clientY;
+    if (dx || dy) dragged = true;
     orbitAt(-dx * 0.5, -dy * 0.5, drag.a, drag.ax, drag.ay);
     e.stopPropagation();
   }, true);
@@ -212,6 +226,7 @@ export function installTrackpad(map: MLMap): CameraControls {
     if (!hold.moved) {
       if (Math.hypot(e.clientX - hold.x0, e.clientY - hold.y0) < 3) return; // still a click
       hold.moved = true;
+      dragged = true;
       try {
         el.setPointerCapture(e.pointerId);
       } catch {

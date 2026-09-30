@@ -1,5 +1,7 @@
 // Elevation profile panel for a selected road.
 import type { Profile } from '../api';
+import { legibleCss } from '../linecolour';
+import { withEnglish } from '../english';
 import { paletteRgb } from '../palettes';
 import { metricOf, modeDef, type Mode } from '../scenic';
 import * as prefs from '../prefs';
@@ -26,11 +28,15 @@ const SERIES: [Mode | 'none', string][] = [
 ];
 
 const ZERO = new Array(12).fill(0);
+/** The overlay series' colour (its line, label and readout). */
+const SERIES_RGB = '255,196,92';
 
 export class ProfilePanel {
   private p: Profile | null = null;
   private canvas: HTMLCanvasElement = h('canvas');
   private hoverX: number | null = null;
+  /** The point hovered on the chart: where, the road's heading there, and whether it's rail. */
+  private hovered: { lngLat: [number, number]; heading: number; rail: boolean } | null = null;
   /** A stretch to emphasise (e.g. a climb picked from the list), matched to the profile by position. */
   private hl: { start: [number, number]; end: [number, number]; label: string } | null = null;
   private hlIdx: [number, number] | null = null;
@@ -40,7 +46,7 @@ export class ProfilePanel {
   onDrive: (p: Profile) => void = () => {};
   colour: () => ProfileColour = () => ({ palette: 'viridis', mode: 'elev', range: [0, 1], weights: [], cdf: null });
   private series: Mode | 'none' = (() => {
-    const v = prefs.load<string>('profile.series', 'none');
+    const v = prefs.load<string>('profile.series', 'vista');
     return (SERIES.some(([k]) => k === v) ? v : 'none') as Mode | 'none';
   })();
 
@@ -51,6 +57,7 @@ export class ProfilePanel {
     });
     this.canvas.addEventListener('pointerleave', () => {
       this.hoverX = null;
+      this.hovered = null;
       this.draw();
       this.onHover(null);
     });
@@ -97,8 +104,14 @@ export class ProfilePanel {
     this.p = null;
     this.hl = null;
     this.hlIdx = null;
+    this.hovered = null;
     this.root.hidden = true;
     this.onHover(null);
+  }
+
+  /** The point under the pointer on the chart (G, M and O open it), if any. */
+  hoverPoint() {
+    return this.hoverX !== null && this.p && !this.root.hidden ? this.hovered : null;
   }
 
   show(p: Profile) {
@@ -108,7 +121,7 @@ export class ProfilePanel {
     const w = p.way;
     const title = h('div', { class: 'name' });
     if (w.ref) title.append(h('span', { class: 'pill', style: 'color:var(--text)' }, w.ref));
-    title.append(h('span', {}, cap(w.name) || (w.ref ? `Route ${w.ref}` : `Unnamed ${w.class.replace('_', ' ')}`)));
+    title.append(h('span', {}, cap(w.name && withEnglish(w.name, p.coords[p.coords.length >> 1])) || (w.ref ? `Route ${w.ref}` : `Unnamed ${w.class.replace('_', ' ')}`)));
     const chip = (k: string, v: string) => h('span', {}, `${k} `, h('b', {}, v));
     const src = p.sources.map(([s, f]) => `${s.replace(/ \(.*\)/, '')} ${(f * 100).toFixed(0)} %`).join(' · ');
     this.root.replaceChildren(
@@ -212,6 +225,16 @@ export class ProfilePanel {
     const X = (d: number) => L.l + (d / total) * pw;
     const Y = (e: number) => L.t + ph - ((e - lo) / (hi - lo)) * ph;
     const col = this.colour();
+    /** The area's colour at a distance along (the metric's palette, as on the map). */
+    const areaRgb = (j: number, t: number) => {
+      const e = p.elev[j] + (p.elev[j + 1] - p.elev[j]) * t;
+      const g = p.grade[j] + (p.grade[j + 1] - p.grade[j]) * t;
+      const chs = p.ch?.length ? p.ch[t < 0.5 ? j : j + 1] : null;
+      const v = chs || col.mode === 'elev' || col.mode === 'grade' || col.mode === 'relief' ? metricOf(col.mode, e, g, chs ?? ZERO, col.weights) : e;
+      let u = Math.max(0, Math.min(1, (v - col.range[0]) / (col.range[1] - col.range[0])));
+      if (col.cdf) u = col.cdf[Math.min(255, Math.floor(u * 255 + 0.5))] / 255;
+      return paletteRgb(col.palette, u);
+    };
 
     // Grid.
     ctx.font = '10px -apple-system, system-ui, sans-serif';
@@ -251,12 +274,7 @@ export class ProfilePanel {
       while (j < n - 2 && p.dist[j + 1] < d) j++;
       const t = (d - p.dist[j]) / Math.max(1e-9, p.dist[j + 1] - p.dist[j]);
       const e = p.elev[j] + (p.elev[j + 1] - p.elev[j]) * t;
-      const g = p.grade[j] + (p.grade[j + 1] - p.grade[j]) * t;
-      const chs = p.ch?.length ? p.ch[t < 0.5 ? j : j + 1] : null;
-      const v = chs || col.mode === 'elev' || col.mode === 'grade' || col.mode === 'relief' ? metricOf(col.mode, e, g, chs ?? ZERO, col.weights) : e;
-      let u = Math.max(0, Math.min(1, (v - col.range[0]) / (col.range[1] - col.range[0])));
-      if (col.cdf) u = col.cdf[Math.min(255, Math.floor(u * 255 + 0.5))] / 255;
-      ctx.fillStyle = paletteRgb(col.palette, u);
+      ctx.fillStyle = areaRgb(j, t);
       ctx.globalAlpha = 0.55;
       const y = Y(e);
       ctx.fillRect(L.l + px, y, 1.2, L.t + ph - y);
@@ -282,7 +300,7 @@ export class ProfilePanel {
       sdef = modeDef(m);
       const [a, b] = sdef.domain[0] < 0 ? sdef.domain : [0, m === 'score' ? 100 : sdef.range[1]];
       sv = (i: number) => (metricOf(m, p.elev[i], p.grade[i], p.ch[i], col.weights) - a) / (b - a);
-      ctx.strokeStyle = 'rgba(255,196,92,0.9)';
+      ctx.strokeStyle = `rgba(${SERIES_RGB},0.9)`;
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       for (let i = 0; i < n; i += step) {
@@ -291,7 +309,7 @@ export class ProfilePanel {
         else ctx.lineTo(x, y);
       }
       ctx.stroke();
-      ctx.fillStyle = 'rgba(255,196,92,0.75)';
+      ctx.fillStyle = `rgba(${SERIES_RGB},0.75)`;
       ctx.textAlign = 'right';
       ctx.textBaseline = 'top';
       ctx.font = '10px -apple-system, system-ui, sans-serif';
@@ -299,6 +317,7 @@ export class ProfilePanel {
     }
 
     // Hover readout.
+    this.hovered = null;
     if (this.hoverX !== null && this.hoverX >= L.l && this.hoverX <= W - L.r) {
       const d = ((this.hoverX - L.l) / pw) * total;
       let k = 0;
@@ -322,20 +341,37 @@ export class ProfilePanel {
       ctx.beginPath();
       ctx.arc(x, y, 3.5, 0, Math.PI * 2);
       ctx.fill();
-      let label = `${fmt.dist(d)} · ${fmt.m1(e)} · ${fmt.pct(g)}`;
+      // Readout: the distance, then each series' value in its colour (the elevation in the area's
+      // colour here, lifted to read on the dark box).
+      const parts: [string, string][] = [[fmt.dist(d), '#fff'], [fmt.m1(e), legibleCss(areaRgb(k, t)) ?? '#fff']];
       if (sdef && this.series !== 'none' && p.ch?.length === n)
-        label += ` · ${sdef.short} ${sdef.fmt(metricOf(this.series, e, g, p.ch[t < 0.5 ? k : k + 1], col.weights))}`;
+        parts.push([`${sdef.short} ${sdef.fmt(metricOf(this.series, e, g, p.ch[t < 0.5 ? k : k + 1], col.weights))}`, `rgb(${SERIES_RGB})`]);
       ctx.font = '600 11px -apple-system, system-ui, sans-serif';
-      const tw = ctx.measureText(label).width + 12;
+      const SEP = ' · ';
+      const sepW = ctx.measureText(SEP).width;
+      const widths = parts.map(([s]) => ctx.measureText(s).width);
+      const tw = widths.reduce((a, w) => a + w, 0) + sepW * (parts.length - 1) + 12;
       const bx = Math.min(W - L.r - tw, Math.max(L.l, x + 8));
       ctx.fillStyle = 'rgba(11,14,19,0.9)';
       ctx.fillRect(bx, L.t, tw, 18);
-      ctx.fillStyle = '#fff';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(label, bx + 6, L.t + 9);
-      const lng = p.coords[k][0] + (p.coords[k + 1][0] - p.coords[k][0]) * t;
-      const lat = p.coords[k][1] + (p.coords[k + 1][1] - p.coords[k][1]) * t;
+      let tx = bx + 6;
+      parts.forEach(([s, c], i) => {
+        if (i) {
+          ctx.fillStyle = 'rgba(255,255,255,0.4)';
+          ctx.fillText(SEP, tx, L.t + 9);
+          tx += sepW;
+        }
+        ctx.fillStyle = c;
+        ctx.fillText(s, tx, L.t + 9);
+        tx += widths[i];
+      });
+      const [x0, y0] = p.coords[k], [x1, y1] = p.coords[k + 1];
+      const lng = x0 + (x1 - x0) * t, lat = y0 + (y1 - y0) * t;
+      // Heading along the road (as drawn: start → end), for Street View.
+      const heading = ((Math.atan2((x1 - x0) * Math.cos((lat * Math.PI) / 180), y1 - y0) * 180) / Math.PI + 360) % 360;
+      this.hovered = { lngLat: [lng, lat], heading, rail: !!p.way.rail?.length };
       this.onHover([lng, lat], fmt.m(e));
     }
   }

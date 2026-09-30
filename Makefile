@@ -30,7 +30,7 @@ UV    := cd dem && uv run python
 .PHONY: all data osm fonts web run dev clean-build heritage ferries
 all: data web
 
-data: $(BUILD)/roads.tiles $(BUILD)/slope.tiles basemap-parts $(BUILD)/ferries.json $(BUILD)/rail-freq.bin $(BUILD)/trees-cover.tiles details fonts
+data: $(BUILD)/roads.tiles $(BUILD)/slope.tiles basemap-parts $(BUILD)/names-en.json $(BUILD)/labels.pmtiles $(BUILD)/ferries.json $(BUILD)/rail-freq.bin $(BUILD)/stations.json $(BUILD)/whs-shapes.json $(BUILD)/trees-cover.tiles details fonts
 
 # Conditional download: curl -z only fetches when the server copy is newer than ours.
 # OSM: data/osm/merged.osm.pbf holds every region; a region added to regions.json is downloaded
@@ -137,7 +137,7 @@ $(FER)/terminals.geojsonseq: $(OSM)/merged.osm.pbf
 	@mkdir -p $(FER)
 	osmium tags-filter $< nw/amenity=ferry_terminal -o $(FER)/terminals.osm.pbf --overwrite
 	osmium export $(FER)/terminals.osm.pbf -f geojsonseq -a type,id -o $@ --overwrite
-$(BUILD)/ferries.json: $(FER)/ways.geojsonseq $(FER)/terminals.geojsonseq dem/ferries.py $(wildcard $(FER)/freq/*.json)
+$(BUILD)/ferries.json: $(FER)/ways.geojsonseq $(FER)/terminals.geojsonseq dem/ferries.py $(wildcard $(FER)/freq/*.json) $(wildcard $(BUILD)/names-en.json)
 	$(UV) ferries.py
 # Re-derive the GTFS sailings (downloads feeds not yet cached), then rebuild the ferry layer.
 ferries: $(FER)/ways.geojsonseq $(FER)/terminals.geojsonseq
@@ -154,7 +154,8 @@ $(RAIL)/feeds_v2.csv:
 	curl -sSL -o $@ https://files.mobilitydatabase.org/feeds_v2.csv
 $(RAIL)/feeds.json: $(RAIL)/feeds_v2.csv dem/railfeeds.py regions.json $(DATA)/trees/poly/.done
 	$(UV) railfeeds.py
-$(RAIL)/pairs.bin: $(RAIL)/feeds.json dem/railgtfs.py
+# Keyed feeds (data/keys.env) join when their key is added.
+$(RAIL)/pairs.bin: $(RAIL)/feeds.json dem/railgtfs.py $(wildcard $(DATA)/keys.env)
 	$(UV) railgtfs.py
 $(RAIL)/hk-stations.geojsonseq: | $(OSM)/merged.osm.pbf
 	osmium extract -b 113.8,22.1,114.5,22.6 $(OSM)/merged.osm.pbf -o $(RAIL)/hk.osm.pbf --overwrite
@@ -165,21 +166,62 @@ $(RAIL)/pairs-mtr.bin: $(RAIL)/mtr.json $(RAIL)/hk-stations.geojsonseq dem/mtrpa
 	$(UV) mtrpairs.py
 $(BUILD)/rail-freq.bin: $(BUILD)/ways.bin $(RAIL)/pairs.bin $(RAIL)/pairs-mtr.bin crates/pipeline/src/bin/railfreq.rs | target/release/railfreq
 	./target/release/railfreq $(BUILD) $(RAIL)/pairs.bin $(RAIL)/pairs-mtr.bin
+# Rail stops: every stop of a passenger route relation, with its lines' stop spacing (which sets
+# when and how big its dot shows).
+$(RAIL)/stops/relations.opl: $(OSM)/merged.osm.pbf
+	@mkdir -p $(RAIL)/stops
+	osmium tags-filter $< r/route=train,subway,tram,light_rail,monorail,funicular -o $(RAIL)/stops/routes.osm.pbf --overwrite
+	osmium tags-filter $(RAIL)/stops/routes.osm.pbf nw/public_transport nw/railway=station,halt,stop,tram_stop,platform -o $(RAIL)/stops/stopobj.osm.pbf --overwrite
+	osmium export $(RAIL)/stops/stopobj.osm.pbf -f geojsonseq -a type,id -o $(RAIL)/stops/stops.geojsonseq --overwrite
+	osmium cat $(RAIL)/stops/routes.osm.pbf -t relation -f opl -o $@ --overwrite
+$(BUILD)/stations.json: $(RAIL)/stops/relations.opl dem/stations.py $(wildcard $(BUILD)/names-en.json)
+	$(UV) stations.py
+
+# English for non-English names (see README, English names): OSM's names and the English they
+# have, the ones to translate in batches (Claude Haiku, by hand: `make names-batches`, then
+# data/names/tr/TRANSLATORS.md), and the table (data/names/english.json, and the app's share of it,
+# names-en.json). Our layers carry theirs (en): they're built again when the table changes. The
+# basemap's names are drawn from labels.pmtiles: OSM's named objects with the table's English
+# written in as name:en, tiled on their own (the basemap stays as it is). (Editing names.py doesn't
+# redo the 15-minute inventory: delete it.)
+NAMES := $(DATA)/names
+$(NAMES)/named.osm.pbf: $(OSM)/merged.osm.pbf
+	$(UV) names.py filter
+$(NAMES)/inventory.jsonl: $(NAMES)/named.osm.pbf $(BUILD)/.interest
+	$(UV) names.py inventory
+.PHONY: names-batches
+names-batches: $(NAMES)/inventory.jsonl
+	$(UV) names.py batches
+$(BUILD)/names-en.json: $(NAMES)/inventory.jsonl $(wildcard $(NAMES)/tr/*.out.jsonl) dem/names.py
+	$(UV) names.py table
+$(NAMES)/name-en.osc.gz: $(NAMES)/named.osm.pbf $(BUILD)/names-en.json
+	$(UV) names.py patch
+$(NAMES)/named-en.osm.pbf: $(NAMES)/named.osm.pbf $(NAMES)/name-en.osc.gz
+	osmium apply-changes $< $(NAMES)/name-en.osc.gz -o $@ --overwrite
+LABELS_TILER = java -Xmx5g -jar tools/planetiler.jar --download --storage=mmap --force \
+	  --only-layers=waterway,place,water_name,park --languages=en,fr --maxzoom=14
+$(BUILD)/labels.pmtiles: $(NAMES)/named-en.osm.pbf | tools/planetiler.jar
+	$(LABELS_TILER) --osm-path=$< --output=$(BUILD)/labels.new.pmtiles && mv $(BUILD)/labels.new.pmtiles $@
+
+# World Heritage Sites as their lines and areas from OSM (after the heritage step lists the sites),
+# and whs-sites.json: one dot for a site in several components, each site's Wikidata items.
+$(BUILD)/whs-shapes.json: $(OSM)/merged.osm.pbf $(BUILD)/grid.areas.u8 dem/whsshapes.py
+	$(UV) whsshapes.py
 
 # Details for hover and popups (see README): POI tags and Wikidata facts, peak prominence and
 # isolation, heritage sites' Wikidata facts and descriptions, area sizes and park details.
 .PHONY: details
 details: $(BUILD)/.layers
 # The overlays as the map loads them: lean properties, draw order, simplified polygons (layers.py).
-$(BUILD)/.layers: $(BUILD)/.interest $(wildcard $(BUILD)/heritage-areas.json $(BUILD)/indigenous.json $(BUILD)/special.json) dem/layers.py
+$(BUILD)/.layers: $(BUILD)/.interest $(wildcard $(BUILD)/heritage-areas.json $(BUILD)/indigenous.json $(BUILD)/special.json $(BUILD)/names-en.json) dem/layers.py
 	$(UV) layers.py && touch $(CURDIR)/$@
 # How interesting each stop and heritage site is (fame from Wikipedia pageviews, rarity nearby),
 # for thinning the map zoomed out and choosing what gets a written description (last: it rewrites
 # pois.json and heritage.json after filterprops).
-$(BUILD)/.interest: $(BUILD)/.filterprops $(DATA)/pageviews/items.json dem/interest.py
+$(BUILD)/.interest: $(BUILD)/.filterprops $(DATA)/pageviews/items.json $(BUILD)/whs-shapes.json dem/interest.py
 	$(UV) interest.py && touch $(CURDIR)/$@
 # Pageviews from Wikimedia's monthly dumps (one month per season, ~5 GB each, streamed).
-$(DATA)/pageviews/items.json: $(HER)/wd/items.jsonl $(BUILD)/details-poi.jsonl dem/pageviews.py
+$(DATA)/pageviews/items.json: $(HER)/wd/items.jsonl $(BUILD)/details-poi.jsonl $(BUILD)/whs-shapes.json dem/pageviews.py
 	$(UV) pageviews.py
 # The numbers the Stops & sights filters use, stamped onto the map layers (last: it rewrites them).
 $(BUILD)/.filterprops: $(BUILD)/details-poi.jsonl $(BUILD)/peaks.json $(BUILD)/details-heritage.jsonl $(BUILD)/details-park.jsonl dem/filterprops.py dem/heritagetiers.py

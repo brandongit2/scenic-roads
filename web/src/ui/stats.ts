@@ -2,6 +2,7 @@ import { CLASS_LABELS, NROAD } from '../config';
 import type { LoadProgress } from '../roads/layer';
 import type { Extreme, ViewStats } from '../roads/stats';
 import * as prefs from '../prefs';
+import { withEnglish } from '../english';
 import { fmt, h } from './dom';
 
 // Neutral class colours (elevation owns the hue elsewhere).
@@ -14,8 +15,9 @@ const TABS: Tab[] = ['stats', 'drives', 'rides', 'lines', 'sights'];
 export interface ViewPlace {
   name: string;
   lngLat: [number, number];
-  /** Map layer of a landmark (for its popup). */
+  /** Map layer and properties of a landmark (for its popup). */
   layer?: string;
+  props?: Record<string, any>;
 }
 
 /** The In view summary beyond the road statistics (each part only while its layer is on). */
@@ -43,7 +45,7 @@ export class StatsCard {
   onTab: (tab: Tab) => void = () => {};
   onFly: (e: Extreme) => void = () => {};
   onMark: (e: Extreme | null, kind: 'high' | 'low') => void = () => {};
-  /** A linked place: fly there (and open a landmark's popup); hover marks it. */
+  /** A linked place: fly there (a landmark: open its popup where the map is); hover marks it. */
   onPlace: (p: ViewPlace) => void = () => {};
   onPlaceHover: (p: ViewPlace | null) => void = () => {};
   wayName: (tileLine: Extreme) => Promise<string> = async () => '';
@@ -82,11 +84,17 @@ export class StatsCard {
     this.onTab(k);
   }
 
+  /** The statistics the card shows (rebuilt only for new ones). */
+  private shown: { st: ViewStats | null; x: InViewExtra } | null = null;
+
   update(st: ViewStats | null, p: LoadProgress, zt: number, x: InViewExtra = {}) {
     this.spin.hidden = p.loaded >= p.wanted;
     this.render.textContent =
       `Tiles z${zt}: ${p.loaded}/${p.wanted}` + (p.inflight ? ` (${p.inflight} loading)` : '') +
       ` · ${p.tilesDrawn} drawn · ${fmt.big(p.vertices)} vertices · ${fmt.mb(p.gpuBytes)} GPU`;
+    // The rest only for new statistics: the panels also refresh while the colour ranges ease.
+    if (this.shown && this.shown.st === st && this.shown.x === x && !(st?.totalKm === 0 && p.loaded < p.wanted)) return;
+    this.shown = { st, x };
     const parts: Node[] = [];
     const head = (t: string) => h('div', { class: 'iv-head' }, t);
     const place = (pl: ViewPlace | null, text: string) => {
@@ -94,7 +102,17 @@ export class StatsCard {
       const a = h('a', { title: 'Show on map', onclick: () => this.onPlace(pl) }, text);
       a.addEventListener('mouseenter', () => this.onPlaceHover(pl));
       a.addEventListener('mouseleave', () => this.onPlaceHover(null));
-      return h('dd', { class: 'ext' }, h('span', { class: 'xname', title: pl.name }, pl.name), a);
+      const nm = withEnglish(pl.name, pl.lngLat, pl.props?.en ?? pl.props?.name_en ?? pl.props?.['name:en']);
+      return h('dd', { class: 'ext' }, h('span', { class: 'xname', title: nm }, nm), a);
+    };
+    // A landmark: its name, which selects it.
+    const landmark = (pl: ViewPlace | null) => {
+      if (!pl) return h('dd', {}, '—');
+      const nm = withEnglish(pl.name, pl.lngLat, pl.props?.en ?? pl.props?.name_en ?? pl.props?.['name:en']);
+      const a = h('a', { title: `${nm} · select on the map`, onclick: () => this.onPlace(pl) }, nm);
+      a.addEventListener('mouseenter', () => this.onPlaceHover(pl));
+      a.addEventListener('mouseleave', () => this.onPlaceHover(null));
+      return h('dd', { class: 'ext' }, a);
     };
     const ext = (e: Extreme | null, kind: 'high' | 'low') => {
       if (!e) return h('dd', {}, '—');
@@ -103,8 +121,8 @@ export class StatsCard {
       a.addEventListener('mouseleave', () => this.onMark(null, kind));
       const name = h('span', { class: 'xname' });
       this.wayName(e).then((n) => {
-        name.textContent = n;
-        name.title = n;
+        name.textContent = n && withEnglish(n, e.lngLat);
+        name.title = name.textContent;
       });
       return h('dd', { class: 'ext' }, name, a);
     };
@@ -173,7 +191,7 @@ export class StatsCard {
         if (!l.n) continue;
         const sw = h('i', { class: 'dot' });
         sw.style.background = l.colour;
-        dl.append(h('dt', {}, sw, `${l.label} · ${fmt.n(l.n)}`), place(l.best, l.best ? 'best-known' : ''));
+        dl.append(h('dt', { title: `${l.label} · ${fmt.n(l.n)} in view` }, sw, h('span', { class: 'lbl' }, l.label), h('span', { class: 'n' }, `· ${fmt.n(l.n)}`)), landmark(l.best));
       }
       parts.push(h('div', { class: 'sep' }), head('Landmarks'), dl);
     }

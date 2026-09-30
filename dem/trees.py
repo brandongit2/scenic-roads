@@ -21,7 +21,11 @@ fingerprinted in data/cache/trees/blocks.json and its zoom-8 values kept in data
 a block whose fingerprint is unchanged has its zoom 8–12 tiles copied from the previous archives,
 so adding a region only computes its own blocks (zoom 7–4 are rebuilt from the kept values).
 
-usage: trees.py <build_dir> [workers] [--bbox=w,s,e,n] [--vars=cover,height,leaf]
+A canopy square the last build used and no longer in the cache stops the run (data/cache/trees/
+squares.json): its blocks would come out empty (a build on a machine holding only part of the
+cache). --allow-missing builds anyway.
+
+usage: trees.py <build_dir> [workers] [--bbox=w,s,e,n] [--vars=cover,height,leaf] [--allow-missing]
 """
 from __future__ import annotations
 
@@ -295,6 +299,12 @@ def main():
             if rp.intersects(box(*b)) and (only is None or only.intersects(box(*b))):
                 blocks.append((bx, by))
     print(f"{len(blocks)} zoom-{ZBLOCK} blocks")
+    # The canopy squares touching the regions: any the last build had and the cache hasn't now?
+    have = sorted(sq for sq in squares() if rp.intersects(box(sq[1], sq[0] - 10, sq[1] + 10, sq[0])))
+    used_path = CACHE / "squares.json"
+    gone = sorted({tuple(x) for x in json.loads(used_path.read_text())} - set(have)) if used_path.exists() else []
+    if gone and "--allow-missing" not in sys.argv:
+        sys.exit(f"canopy squares used by the last build are missing from {CHM} (top, left): {gone}; copy them in, or --allow-missing")
     meta = '{"source":"Meta/WRI canopy height; Copernicus HRL DLT 2018; NALCMS 2020","encoding":"terrarium","format":"webp"}'
     # Blocks unchanged since the last run: tiles copied from the previous archives, zoom-8 values
     # from the cache (not for --bbox trial runs).
@@ -342,6 +352,7 @@ def main():
     print()
     if use_cache:
         sig_path.write_text(json.dumps(sigs))
+        used_path.write_text(json.dumps(have))
     # Zoom 7 → 4 from the zoom-8 blocks.
     level = tops
     for z in range(ZBLOCK - 1, ZMIN - 1, -1):

@@ -1,11 +1,11 @@
 import { GROUPS, NGROUP, NRAIL } from './config';
-import { RAIL_DEFAULT_WEIGHTS, RAIL_METRICS, RNCOMP, railMetricDef, type RailColour, type RailMetric } from './rail';
+import { RAIL_METRICS, RNCOMP, railMetricDef, type RailColour, type RailMetric } from './rail';
 import { MAP_SCHEMES } from './mapschemes';
 import { FERRY_METRICS, NFERRY, ferryMetricDef, type FerryColour, type FerryMetric } from './ferry';
 import { baseKey } from './palettes';
 import { STOP_FILTERS, filtersFromHash, filtersToHash, type StopFilter } from './stopfilters';
 import { TREE_PALETTES, type TreeState, type TreeStyle, type TreeVar } from './trees';
-import { BUILTIN, DEFAULT_PRESET, DEFAULT_WEIGHTS, RAIL_DEFAULT_PRESET, presets, railPresets, sameWeights } from './presets';
+import { BUILTIN, DEFAULT_PRESET, DEFAULT_WEIGHTS, RAIL_DEFAULT_PRESET, RAIL_DEFAULT_WEIGHTS, presets, railPresets, sameWeights } from './presets';
 import { MODES, migrateWeights, modeDef, type Mode } from './scenic';
 
 export type { Mode };
@@ -14,7 +14,7 @@ export type HillshadeMethod = 'standard' | 'basic' | 'combined' | 'igor' | 'mult
 export type TintRange = 'region' | 'view' | 'roads' | 'custom';
 export type TintVar = 'elev' | 'slope';
 
-/** Overlay layers (designations, stops, context) — all off by default except parks. */
+/** Overlay layers (designations, stops, context). */
 export const OVERLAYS = [
   // key, label, group
   ['parks', 'Parks & protected areas', 'map'],
@@ -45,6 +45,7 @@ export const LABEL_KINDS = [
   ['areas', 'Biospheres, geoparks & Indigenous lands', 'Names of those areas, where shown'],
   ['stops', 'Stops & sights', 'Names of the viewpoints, peaks, waterfalls, lighthouses and other stops shown'],
   ['ferries', 'Ferries & terminals', 'Ferry line and terminal names'],
+  ['stations', 'Rail stations & stops', 'Names of the rail stops shown, once their line\'s stops are well apart on screen'],
 ] as const;
 export type LabelKind = (typeof LABEL_KINDS)[number][0];
 
@@ -103,6 +104,12 @@ function parseScaleTail(v: string[], d: ScaleFields): Pick<ScaleFields, 'fit' | 
     threshold: { on: v[4] === '1', dir: THR_OF[v[5]] ?? d.threshold.dir, value: n(v[6], d.threshold.value) },
   };
 }
+
+/** Landmark fit ranks: whole numbers, the low end's rank below (after) the top end's. */
+export const topRanks = (lo: number, hi: number): [number, number] => {
+  const h = Math.max(1, Math.round(hi));
+  return [Math.max(h + 1, Math.round(lo)), h];
+};
 
 /** The display types; each keeps its own colour settings (the scenic metrics share one set). */
 export type ModeGroup = 'elev' | 'grade' | 'relief' | 'scenic' | 'map';
@@ -167,7 +174,7 @@ function validLook(v: unknown): MetricLook | null {
   return x as MetricLook;
 }
 
-/** Passenger rail layer and its styling (top-left panel, "Rail" section). */
+/** Passenger rail layer and its colouring (top-left panel, "Rail" section). */
 export interface RailState extends ScaleFields {
   on: boolean;
   /** Service groups shown: trams, metro, commuter, intercity, heritage & mountain. */
@@ -179,11 +186,8 @@ export interface RailState extends ScaleFields {
   weights: number[];
   /** Ride-factor preset name ('' = custom). */
   preset: string;
-  /** Line weight multiplier. */
-  weight: number;
-  /** Railway symbol (thin line with cross-ties) instead of a solid line. */
-  ties: boolean;
-  casing: boolean;
+  /** The rail layer's opacity, 0.1..1 (Layers). */
+  opacity: number;
   /** Colour for 'single'. */
   single: string;
   /** Service-frequency filter (Layers): trains a day each way, 0 = no limit; keep unknown lines. */
@@ -193,7 +197,7 @@ export interface RailState extends ScaleFields {
   freqUnknown: boolean;
 }
 const RAIL_COLOURS: RailColour[] = ['line', 'group', 'metric', 'single'];
-/** Passenger ferries and their styling (top-left panel, "Ferries" section). */
+/** Passenger ferries and their colouring (top-left panel, "Ferries" section). */
 export interface FerryState extends ScaleFields {
   on: boolean;
   /** Service groups shown: urban & commuter, short crossings, long-distance & overnight, cable & chain. */
@@ -202,8 +206,7 @@ export interface FerryState extends ScaleFields {
   /** What the metric colouring shows (sailings a day, season length). */
   metric: FerryMetric;
   looks: Partial<Record<FerryMetric, MetricLook>>;
-  weight: number;
-  /** Line opacity 0..1. */
+  /** Line opacity 0..1 and dashed lines (Layers). */
   opacity: number;
   dashed: boolean;
   single: string;
@@ -263,8 +266,9 @@ export interface AppState {
   surface: { paved: boolean; unpaved: boolean };
   /** Toll-free and toll roads shown (OSM toll=yes). */
   toll: { free: boolean; toll: boolean };
-  /** Line weight multiplier. */
-  weight: number;
+  lineWeights: LineWeights;
+  /** Opacity of the roads layer (every display type), 0.1..1. */
+  roadOpacity: number;
   routeGlow: boolean;
   /** Transparency at the low end of the colour scale (0..1) and the share of the scale it spans. */
   lowFade: number;
@@ -277,10 +281,13 @@ export interface AppState {
    * 1 the least prominent tiny and faint. */
   poiEmphasis: number;
   /** Landmark prominence: a scale over each dot's score (0–1: fame and rarity mixed by `balance`,
-   * 0 fame only … 1 rarity only), like the road colour scales: range (auto-fitted to percentiles
-   * of the landmarks in view, locked or full), equalisation, low-end fade and highlight. The
-   * palette only draws the legend. */
-  landmarks: ScaleFields & { balance: number };
+   * 0 fame only … 1 rarity only), like the road colour scales: range (auto-fitted to ranks of the
+   * landmarks in view, locked or full), equalisation, low-end fade and highlight. The palette only
+   * draws the legend. `top`: the auto-fitted range runs from the score of the top[0]-th best
+   * landmark in view to that of the top[1]-th (counts, not percentiles: a share of the landmarks
+   * in view would light up many times more of them where they are dense, Europe against Canada;
+   * one bar for everything in view keeps regions comparable). `fit` is unused. */
+  landmarks: ScaleFields & { balance: number; top: [number, number] };
   /** Globe projection (flattens to Web Mercator as you zoom in). */
   globe: boolean;
   /** With 3D terrain: hide roads behind it rather than drawing them faint. */
@@ -307,65 +314,90 @@ export interface AppState {
   view: { zoom: number; lat: number; lng: number; bearing: number; pitch: number; elev: number } | null;
 }
 
-export const WEIGHT_MIN = 0.1;
-export const WEIGHT_MAX = 1;
+/** Kinds of line with their own weight (Layers → Map, under Global line weight): key, label, help;
+ * in the panel's order and the link's. */
+export const LINE_KINDS = [
+  ['roads', 'Roads', 'Roads, and the highlights along them: selected road, scenic drives, climbs'],
+  ['rail', 'Rail', 'Passenger rail lines and their stop dots'],
+  ['ferries', 'Ferries', 'Ferry lines and their terminal dots'],
+  ['borders', 'Borders', 'Borders of countries, provinces & states and counties'],
+  ['rivers', 'Rivers & canals', 'Rivers, canals and streams'],
+  ['outlines', 'Area outlines', 'Outlines of parks, heritage sites and districts, biospheres, geoparks, dark-sky places and Indigenous lands, and World Heritage lines such as canals and walls'],
+] as const;
+export type LineKind = (typeof LINE_KINDS)[number][0];
+/** Line weights: `global` scales every line on the map (contour lines too); each kind's is
+ * relative to it. */
+export type LineWeights = { global: number } & Record<LineKind, number>;
+/** Slider limits of the weights (global, and each kind's). */
+export const WEIGHT_RANGE: [number, number] = [0.25, 3];
+const clampWeight = (v: number) => Math.min(WEIGHT_RANGE[1], Math.max(WEIGHT_RANGE[0], v));
+/** A kind of line's weight in effect: the global weight times its own. */
+export const lineWeight = (s: AppState, kind: LineKind) => s.lineWeights.global * s.lineWeights[kind];
+/** Road widths at weight 1 (roads/layer.ts WIDTHS × this). */
+export const ROAD_WEIGHT = 0.5;
 
+// The defaults (as set up in the app on 2026-09-30): scenic score in PuBuGn over the top fifth of
+// the roads in view, with Big vistas; no unnamed service roads, no roads under 500 m; rail by ride
+// score (My preset), ferries by sailings a day; the tree mask; the slope tint; landmarks and
+// heritage on.
 export const defaults: AppState = {
-  mode: 'elev',
+  mode: 'score',
   looks: {},
   scales: {},
-  palette: 'viridis',
+  palette: 'pubugn',
   auto: true,
-  range: [0, 600],
-  fit: [1, 99],
+  range: [0, 100],
+  fit: [80, 99.9],
   equalize: false,
   weights: [...DEFAULT_WEIGHTS],
   preset: DEFAULT_PRESET,
   groups: new Array(NGROUP).fill(true),
-  unnamed: new Array(NGROUP).fill(true),
-  roadLen: [0, 0],
+  unnamed: GROUPS.map((g) => g.key !== 'service'),
+  roadLen: [0.5, 0],
   roadLenOn: true,
-  mapScheme: 'carto',
+  mapScheme: 'blueprint',
   rail: {
-    on: true, groups: new Array(NRAIL).fill(true), colour: 'line', metric: 'rscore', looks: {},
-    ...scaleOfLook(freshLook([0, 100], 0.4)),
-    weights: [...RAIL_DEFAULT_WEIGHTS], preset: RAIL_DEFAULT_PRESET, weight: 1, ties: true, casing: true, single: '#e8ecf2',
+    on: true, groups: new Array(NRAIL).fill(true), colour: 'metric', metric: 'rscore', looks: {},
+    ...scaleOfLook({ ...freshLook([0, 100], 0.6), palette: 'rocket', fit: [70, 99.8] }),
+    weights: [...RAIL_DEFAULT_WEIGHTS], preset: RAIL_DEFAULT_PRESET, opacity: 1, single: '#e8ecf2',
     freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true,
   },
   trees: {
-    on: false, variable: 'cover', style: 'ramp', opacity: 0.55, palette: 'greens',
-    cutCover: 20, cutHeight: 5, maskCover: 50, maskHeight: 10, maskColour: '#3f8f4f',
+    on: true, variable: 'cover', style: 'mask', opacity: 0.05, palette: 'greens',
+    cutCover: 20, cutHeight: 5, maskCover: 20, maskHeight: 10, maskColour: '#03a300',
   },
-  ferry: { on: true, groups: new Array(NFERRY).fill(true), colour: 'service', metric: 'freq', looks: {},
-    ...scaleOfLook({ ...freshLook(FERRY_METRICS[0].range, 0), fit: [0, 100] }),
-    weight: 1, opacity: 0.9, dashed: true, single: '#8fc8ff',
+  ferry: { on: true, groups: new Array(NFERRY).fill(true), colour: 'freq', metric: 'freq', looks: {},
+    ...scaleOfLook({ ...freshLook(FERRY_METRICS[0].range, 0.45), fit: [0, 100], palette: 'oslo', lowSpan: 0.5 }),
+    opacity: 0.9, dashed: true, single: '#8fc8ff',
     freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true },
   surface: { paved: true, unpaved: true },
   toll: { free: true, toll: true },
-  weight: 0.5,
+  lineWeights: { global: 1, roads: 1.5, rail: 0.5, ferries: 0.5, borders: 1, rivers: 1, outlines: 1 },
+  roadOpacity: 1,
   routeGlow: false,
-  lowFade: 0.7,
+  lowFade: 0.8,
   lowSpan: 0.6,
-  labelOpacity: 0.8,
-  poiOpacity: 1,
-  poiEmphasis: 0.85,
-  landmarks: { palette: 'oslo', auto: true, range: [0, 1], fit: [50, 99.9], equalize: false, lowFade: 0.8, lowSpan: 0.6, threshold: { on: false, dir: 'above', value: 0.5 }, balance: 0.5 },
+  labelOpacity: 0.5,
+  poiOpacity: 0.7,
+  poiEmphasis: 1,
+  landmarks: { palette: 'oslo', auto: true, range: [0, 1], fit: [70, 99.9], equalize: false, lowFade: 0.8, lowSpan: 0.4, threshold: { on: false, dir: 'above', value: 0.5 }, balance: 0.3, top: [250, 10] },
   globe: true,
-  occlude: false,
+  occlude: true,
   layers: { roads: true, water: true, boundaries: true, places: true },
   boundaryLevels: [true, true, true],
   labelKinds: Object.fromEntries(LABEL_KINDS.map(([k]) => [k, true])) as Record<LabelKind, boolean>,
-  overlays: Object.fromEntries(OVERLAYS.map(([k]) => [k, false])) as Record<OverlayKey, boolean>,
+  // Every stop and sight, heritage sites and districts and Indigenous lands (not parks, biospheres & co.).
+  overlays: Object.fromEntries(OVERLAYS.map(([k]) => [k, k !== 'parks' && k !== 'special'])) as Record<OverlayKey, boolean>,
   heritageOff: [],
   stopFilters: {},
-  stopUnknown: {},
+  stopUnknown: { waterfall: false },
   terrain: {
-    on: true, exaggeration: 3, hillshade: true, method: 'combined', light: 315, shade: 0.55,
-    tint: false, tintVar: 'elev', tintOpacity: 0.45, tintPalette: 'atlas', tintRange: 'region', tintMin: 0, tintMax: 1900, tintBands: 0, tintCurve: 1,
-    tintFade: { elev: 0, slope: 1 }, tintFadeSpan: { elev: 0.5, slope: 0.35 },
+    on: true, exaggeration: 3, hillshade: true, method: 'combined', light: 315, shade: 0.15,
+    tint: true, tintVar: 'slope', tintOpacity: 0.1, tintPalette: 'plasma_r', tintRange: 'custom', tintMin: 10, tintMax: 70, tintBands: 0, tintCurve: 1,
+    tintFade: { elev: 0, slope: 1 }, tintFadeSpan: { elev: 0.5, slope: 0.1 },
     contours: false, sky: true,
   },
-  threshold: { on: false, dir: 'above', value: 500 },
+  threshold: { on: false, dir: 'above', value: 60 },
   selected: null,
   stretch: null,
   view: null,
@@ -405,7 +437,7 @@ export class Store {
     const looks = { ...s.looks, [modeGroup(s.mode)]: lookOf(s) };
     const scales = { ...s.scales, [s.mode]: { auto: s.auto, range: [...s.range], thrValue: s.threshold.value } as Scale };
     const d = modeDef(mode);
-    const lk = looks[modeGroup(mode)] ?? lookOf(defaults);
+    const lk = looks[modeGroup(mode)] ?? (modeGroup(mode) === modeGroup(defaults.mode) ? lookOf(defaults) : FRESH_LOOK);
     const sc = scales[mode] ?? { auto: d.auto, range: [...d.range] as [number, number], thrValue: d.thrDefault };
     this.set({
       mode, looks, scales,
@@ -414,6 +446,10 @@ export class Store {
     });
   }
 }
+
+/** A display type's colours the first time it is picked, unless it is the default one (whose are
+ * the defaults'). */
+const FRESH_LOOK: Look = { palette: 'viridis', fit: [1, 99], equalize: false, lowFade: 0.7, lowSpan: 0.6, thrOn: false, thrDir: 'above' };
 
 function lookOf(s: AppState): Look {
   return {
@@ -486,10 +522,13 @@ export function groupMask(s: AppState): number {
 }
 
 // ---- URL hash ------------------------------------------------------------------------------
-// #map=zoom/lat/lng/bearing/pitch&m=score&p=viridis&r=lo,hi&eq=1&pr=vistas&wt=…&g=11111&sf=pu&w=0.5
+// #map=zoom/lat/lng/bearing/pitch&m=score&p=viridis&r=lo,hi&eq=1&pr=vistas&wt=…&g=11111&sf=pu&lw=1,1,1,1,1,1,1
 //  &l=rwbp&o=<overlay bits>&hl=<levels>&t3=…&t=a500&s=123
 
 const ob = (k: OverlayKey) => OVERLAYS.findIndex((o) => o[0] === k);
+/** The service-frequency weight given to rail weights from before the factor existed (then the
+ * default preset's). */
+const FREQ_WEIGHT_ADDED = 0.3;
 const HM: HillshadeMethod[] = ['standard', 'basic', 'combined', 'igor', 'multidirectional'];
 
 export function toHash(s: AppState): string {
@@ -515,22 +554,26 @@ export function toHash(s: AppState): string {
   if (!s.roadLenOn) p.set('rlo', '0');
   if (s.mapScheme !== defaults.mapScheme) p.set('ms', s.mapScheme);
   const r = s.rail, dr = defaults.rail;
+  // (Fields 8–10, empty: line weight, ties and casing in older links.)
   const rs = [
     r.on ? 1 : 0, r.groups.map((g) => (g ? 1 : 0)).join(''), r.colour, r.metric, r.palette, r.auto ? 1 : 0,
-    +r.range[0].toFixed(2), +r.range[1].toFixed(2), +r.weight.toFixed(2), r.ties ? 1 : 0, r.casing ? 1 : 0, r.single.replace('#', ''), +r.lowFade.toFixed(2),
+    +r.range[0].toFixed(2), +r.range[1].toFixed(2), '', '', '', r.single.replace('#', ''), +r.lowFade.toFixed(2),
     r.freqOn ? 1 : 0, +r.freqMin.toFixed(2), +r.freqMax.toFixed(2), r.freqUnknown ? 1 : 0,
     r.fit[0], r.fit[1], r.equalize ? 1 : 0, +r.lowSpan.toFixed(2), r.threshold.on ? 1 : 0, THR_CODE[r.threshold.dir], +r.threshold.value.toFixed(3),
+    +r.opacity.toFixed(2),
   ].join(',');
   const rsd = [
     dr.on ? 1 : 0, dr.groups.map((g) => (g ? 1 : 0)).join(''), dr.colour, dr.metric, dr.palette, dr.auto ? 1 : 0,
-    dr.range[0], dr.range[1], dr.weight, dr.ties ? 1 : 0, dr.casing ? 1 : 0, dr.single.replace('#', ''), dr.lowFade,
+    dr.range[0], dr.range[1], '', '', '', dr.single.replace('#', ''), dr.lowFade,
     dr.freqOn ? 1 : 0, dr.freqMin, dr.freqMax, dr.freqUnknown ? 1 : 0,
     dr.fit[0], dr.fit[1], dr.equalize ? 1 : 0, dr.lowSpan, dr.threshold.on ? 1 : 0, THR_CODE[dr.threshold.dir], dr.threshold.value,
+    dr.opacity,
   ].join(',');
   if (rs !== rsd) p.set('rs', rs);
   if (r.weights.some((w, i) => w !== dr.weights[i])) p.set('rw', r.weights.map((w) => +w.toFixed(2)).join(','));
   if (r.preset !== dr.preset) p.set('rp', r.preset || 'custom');
-  const fy = (f: FerryState) => [f.on ? 1 : 0, f.groups.map((g) => (g ? 1 : 0)).join(''), f.colour, f.palette, +f.weight.toFixed(2), f.dashed ? 1 : 0, f.single.replace('#', ''), +f.opacity.toFixed(2),
+  // (Field 4, empty: line weight in older links.)
+  const fy = (f: FerryState) => [f.on ? 1 : 0, f.groups.map((g) => (g ? 1 : 0)).join(''), f.colour, f.palette, '', f.dashed ? 1 : 0, f.single.replace('#', ''), +f.opacity.toFixed(2),
     f.freqOn ? 1 : 0, +f.freqMin.toFixed(2), +f.freqMax.toFixed(2), f.freqUnknown ? 1 : 0,
     f.metric, f.auto ? 1 : 0, +f.range[0].toFixed(3), +f.range[1].toFixed(3), f.fit[0], f.fit[1], f.equalize ? 1 : 0, +f.lowFade.toFixed(2), +f.lowSpan.toFixed(2),
     f.threshold.on ? 1 : 0, THR_CODE[f.threshold.dir], +f.threshold.value.toFixed(3)].join(',');
@@ -539,7 +582,9 @@ export function toHash(s: AppState): string {
   if (tc(s.trees) !== tc(defaults.trees)) p.set('tc', tc(s.trees));
   if (!(s.surface.paved && s.surface.unpaved)) p.set('sf', `${s.surface.paved ? 'p' : ''}${s.surface.unpaved ? 'u' : ''}`);
   if (!(s.toll.free && s.toll.toll)) p.set('tl', `${s.toll.free ? 'f' : ''}${s.toll.toll ? 't' : ''}`);
-  if (s.weight !== defaults.weight) p.set('w', s.weight.toFixed(2));
+  const lw = (l: LineWeights) => [l.global, ...LINE_KINDS.map(([k]) => l[k])].map((v) => +v.toFixed(2)).join(',');
+  if (lw(s.lineWeights) !== lw(defaults.lineWeights)) p.set('lw', lw(s.lineWeights));
+  if (s.roadOpacity !== defaults.roadOpacity) p.set('ro', s.roadOpacity.toFixed(2));
   if (s.routeGlow) p.set('rg', '1');
   const l = s.layers;
   if (!(l.roads && l.water && l.boundaries && l.places)) p.set('l', `${l.roads ? 'r' : ''}${l.water ? 'w' : ''}${l.boundaries ? 'b' : ''}${l.places ? 'p' : ''}`);
@@ -569,7 +614,7 @@ export function toHash(s: AppState): string {
   if (s.poiOpacity !== defaults.poiOpacity) p.set('po', s.poiOpacity.toFixed(2));
   if (s.poiEmphasis !== defaults.poiEmphasis) p.set('pe', s.poiEmphasis.toFixed(2));
   const lm = (l: AppState['landmarks']) => [+l.balance.toFixed(2), l.auto ? 1 : 0, +l.range[0].toFixed(3), +l.range[1].toFixed(3), +l.lowFade.toFixed(2),
-    l.fit[0], l.fit[1], l.equalize ? 1 : 0, +l.lowSpan.toFixed(2), l.threshold.on ? 1 : 0, THR_CODE[l.threshold.dir], +l.threshold.value.toFixed(3)].join(',');
+    l.fit[0], l.fit[1], l.equalize ? 1 : 0, +l.lowSpan.toFixed(2), l.threshold.on ? 1 : 0, THR_CODE[l.threshold.dir], +l.threshold.value.toFixed(3), l.top[0], l.top[1]].join(',');
   if (lm(s.landmarks) !== lm(defaults.landmarks)) p.set('lm', lm(s.landmarks));
   if (!s.globe) p.set('gb', '0');
   if (s.occlude) p.set('oc', '1');
@@ -637,9 +682,6 @@ export function fromHash(hash: string): AppState {
       palette: rs[4] || r.palette,
       auto: rs[5] === '1',
       range: [num(rs[6], r.range[0]), num(rs[7], r.range[1])],
-      weight: Math.min(3, Math.max(0.25, num(rs[8], r.weight))),
-      ties: rs[9] === '1',
-      casing: rs[10] === '1',
       single: /^[0-9a-f]{6}$/i.test(rs[11]) ? `#${rs[11]}` : r.single,
       lowFade: Math.min(1, Math.max(0, num(rs[12], r.lowFade))),
       freqOn: rs[13] === '1',
@@ -647,19 +689,22 @@ export function fromHash(hash: string): AppState {
       freqMax: Math.max(0, num(rs[15] ?? '', r.freqMax)),
       freqUnknown: rs[16] === undefined ? r.freqUnknown : rs[16] === '1',
       ...(rs.length >= 24 ? parseScaleTail(rs.slice(17), r) : {}),
+      opacity: rs[24] ? Math.min(1, Math.max(0.1, num(rs[24], r.opacity))) : r.opacity,
     };
+    // Older links: the rail card's line weight.
+    if (rs[8]) s.lineWeights.rail = clampWeight(num(rs[8], 1));
   }
   const fy = p.get('fy')?.split(',');
   if (fy && fy.length >= 7) {
     const f = s.ferry;
-    const w = Number(fy[4]);
     const op = Number(fy[7]);
+    // Older links: the ferry card's line weight.
+    if (fy[4] && Number.isFinite(Number(fy[4]))) s.lineWeights.ferries = clampWeight(Number(fy[4]));
     s.ferry = {
       on: fy[0] === '1',
       groups: fy[1].length === NFERRY ? [...fy[1]].map((c) => c === '1') : f.groups,
       colour: FERRY_COLOURS.includes(fy[2] as FerryColour) ? (fy[2] as FerryColour) : f.colour,
       palette: fy[3] || f.palette,
-      weight: Number.isFinite(w) && fy[4] !== '' ? Math.min(3, Math.max(0.25, w)) : f.weight,
       dashed: fy[5] === '1',
       single: /^[0-9a-f]{6}$/i.test(fy[6]) ? `#${fy[6]}` : f.single,
       opacity: fy[7] !== undefined && fy[7] !== '' && Number.isFinite(op) ? Math.min(1, Math.max(0.05, op)) : f.opacity,
@@ -695,7 +740,7 @@ export function fromHash(hash: string): AppState {
   }
   const rw = p.get('rw')?.split(',').map(Number);
   // Links from before the service-frequency factor carry one weight fewer.
-  if (rw && rw.length === RNCOMP - 1) rw.push(RAIL_DEFAULT_WEIGHTS[RNCOMP - 1]);
+  if (rw && rw.length === RNCOMP - 1) rw.push(FREQ_WEIGHT_ADDED);
   if (rw && rw.length === RNCOMP && rw.every(Number.isFinite)) s.rail = { ...s.rail, weights: rw };
   // Rail preset: a link to one this browser has (else custom, keeping the weights), or the default.
   const rp = p.get('rp');
@@ -705,8 +750,15 @@ export function fromHash(hash: string): AppState {
   if (sf !== null) s.surface = { paved: sf.includes('p'), unpaved: sf.includes('u') };
   const tl = p.get('tl');
   if (tl !== null) s.toll = { free: tl.includes('f'), toll: tl.includes('t') };
+  // Older links: the road line weight (0.5 by default), which scaled rail and ferries too.
   const w = Number(p.get('w'));
-  if (p.get('w') && w >= WEIGHT_MIN && w <= WEIGHT_MAX) s.weight = w;
+  if (p.get('w') && w > 0) s.lineWeights.global = clampWeight(w / ROAD_WEIGHT);
+  const lw = p.get('lw')?.split(',').map(Number);
+  if (lw && lw.length === LINE_KINDS.length + 1 && lw.every((v) => Number.isFinite(v) && v > 0)) {
+    s.lineWeights = { global: clampWeight(lw[0]), ...(Object.fromEntries(LINE_KINDS.map(([k], i) => [k, clampWeight(lw[i + 1])])) as Record<LineKind, number>) };
+  }
+  const ro = Number(p.get('ro'));
+  if (p.get('ro') && ro >= 0.1 && ro <= 1) s.roadOpacity = ro;
   s.routeGlow = p.get('rg') === '1';
   const l = p.get('l');
   if (l !== null) s.layers = { roads: l.includes('r'), water: l.includes('w'), boundaries: l.includes('b'), places: l.includes('p') };
@@ -722,7 +774,8 @@ export function fromHash(hash: string): AppState {
   const sqx = p.get('sqx');
   if (sqx) s.stopUnknown = Object.fromEntries(sqx.split(',').filter((k) => OVERLAYS.some((o) => o[0] === k)).map((k) => [k, false]));
   const lk = p.get('lk');
-  if (lk && lk.length === LABEL_KINDS.length) s.labelKinds = Object.fromEntries(LABEL_KINDS.map(([k], i) => [k, lk[i] === '1'])) as Record<LabelKind, boolean>;
+  // Kinds added since the link was made (beyond its length) stay on.
+  if (lk && lk.length <= LABEL_KINDS.length) s.labelKinds = Object.fromEntries(LABEL_KINDS.map(([k], i) => [k, i >= lk.length || lk[i] === '1'])) as Record<LabelKind, boolean>;
   const t3 = p.get('t3')?.split(',').map(Number);
   if (t3 && t3.length >= 9 && t3.every(Number.isFinite)) {
     s.terrain = {
@@ -761,13 +814,14 @@ export function fromHash(hash: string): AppState {
   const pe = Number(p.get('pe'));
   if (p.get('pe') && pe >= 0 && pe <= 1) s.poiEmphasis = pe;
   const lmv = p.get('lm')?.split(',');
-  if (lmv && lmv.length === 12) {
+  if (lmv && lmv.length >= 12) {
     const d = defaults.landmarks;
     const num = (x: string, dv: number, lo: number, hi: number) => (x !== '' && Number.isFinite(Number(x)) ? Math.min(hi, Math.max(lo, Number(x))) : dv);
     const r0 = num(lmv[2], d.range[0], 0, 1), r1 = num(lmv[3], d.range[1], 0, 1);
     s.landmarks = {
       ...d, balance: num(lmv[0], d.balance, 0, 1), auto: lmv[1] !== '0', range: r1 > r0 ? [r0, r1] : d.range,
       lowFade: num(lmv[4], d.lowFade, 0, 1), ...parseScaleTail(lmv.slice(5), d),
+      top: lmv.length >= 14 ? topRanks(num(lmv[12], d.top[0], 1, 100000), num(lmv[13], d.top[1], 1, 100000)) : d.top,
     };
   }
   const t = p.get('t');
@@ -810,8 +864,16 @@ export function fromSaved(o: unknown): AppState {
   if (w) rest.weights = w;
   // Rail weights saved before the service-frequency factor: one fewer.
   const rs = rest.rail as { weights?: unknown } | undefined;
-  if (rs && Array.isArray(rs.weights) && rs.weights.length === RNCOMP - 1) rs.weights = [...rs.weights, RAIL_DEFAULT_WEIGHTS[RNCOMP - 1]];
+  if (rs && Array.isArray(rs.weights) && rs.weights.length === RNCOMP - 1) rs.weights = [...rs.weights, FREQ_WEIGHT_ADDED];
   merge(s as unknown as Record<string, unknown>, rest);
+  if (!rest.lineWeights) {
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
+    const w = num(rest.weight), rw = num((rest.rail as { weight?: unknown } | undefined)?.weight), fw = num((rest.ferry as { weight?: unknown } | undefined)?.weight);
+    if (w) s.lineWeights.global = clampWeight(w / ROAD_WEIGHT);
+    if (rw) s.lineWeights.rail = clampWeight(rw);
+    if (fw) s.lineWeights.ferries = clampWeight(fw);
+  }
+  for (const k of ['global', ...LINE_KINDS.map(([k]) => k)] as const) s.lineWeights[k] = clampWeight(s.lineWeights[k]);
   if (Array.isArray(rest.heritageOff)) s.heritageOff = rest.heritageOff.filter((k): k is string => typeof k === 'string');
   else if (Array.isArray(rest.heritageLevels) && rest.heritageLevels.length === 5) s.heritageOff = offFromLevels(rest.heritageLevels.map(Boolean));
   // Saved settings of the other display types and modes.
@@ -832,6 +894,8 @@ export function fromSaved(o: unknown): AppState {
   }
   if (!MODES.some((m) => m.key === s.mode)) s.mode = defaults.mode;
   if (!MAP_SCHEMES.some((m) => m.key === s.mapScheme)) s.mapScheme = defaults.mapScheme;
+  const lt = s.landmarks.top as unknown;
+  s.landmarks.top = Array.isArray(lt) && lt.length === 2 && lt.every((x) => Number.isFinite(x)) ? topRanks(lt[0], lt[1]) : defaults.landmarks.top;
   if (!RAIL_COLOURS.includes(s.rail.colour)) s.rail.colour = defaults.rail.colour;
   if (!RAIL_METRICS.some((m) => m.key === s.rail.metric)) s.rail.metric = defaults.rail.metric;
   if (!FERRY_COLOURS.includes(s.ferry.colour)) s.ferry.colour = defaults.ferry.colour;

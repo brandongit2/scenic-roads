@@ -24,27 +24,35 @@ export class PickGrid {
     const i16 = (this.i16 = new Int16Array(verts));
     const u8 = new Uint8Array(verts);
     this.u32 = new Uint32Array(verts);
-    this.cell = extent / G;
+    const cell = (this.cell = extent / G);
+    const c = (v: number) => Math.max(0, Math.min(G - 1, Math.floor(v / cell)));
+    // Each segment's cells (x0, y0, x1, y1; 255: a line's end), for both passes. Built on the first
+    // hover over a tile, a hundred thousand segments and more: no allocation per segment.
+    const n = Math.max(0, nverts - 1);
+    const box = new Uint8Array(n * 4);
     const counts = new Uint32Array(G * G + 1);
-    const range = (i: number): [number, number, number, number] | null => {
-      if (u8[i * STRIDE + 9] & GPU_EOL) return null;
+    for (let i = 0; i < n; i++) {
+      const o = i * 4;
+      if (u8[i * STRIDE + 9] & GPU_EOL) {
+        box[o] = 255;
+        continue;
+      }
       const x0 = i16[i * S2], y0 = i16[i * S2 + 1], x1 = i16[(i + 1) * S2], y1 = i16[(i + 1) * S2 + 1];
-      const c = (v: number) => Math.max(0, Math.min(G - 1, Math.floor(v / this.cell)));
-      return [c(Math.min(x0, x1)), c(Math.min(y0, y1)), c(Math.max(x0, x1)), c(Math.max(y0, y1))];
-    };
-    for (let i = 0; i + 1 < nverts; i++) {
-      const r = range(i);
-      if (!r) continue;
-      for (let cy = r[1]; cy <= r[3]; cy++) for (let cx = r[0]; cx <= r[2]; cx++) counts[cy * G + cx + 1]++;
+      const ax = c(Math.min(x0, x1)), ay = c(Math.min(y0, y1)), bx = c(Math.max(x0, x1)), by = c(Math.max(y0, y1));
+      box[o] = ax;
+      box[o + 1] = ay;
+      box[o + 2] = bx;
+      box[o + 3] = by;
+      for (let cy = ay; cy <= by; cy++) for (let cx = ax; cx <= bx; cx++) counts[cy * G + cx + 1]++;
     }
     for (let k = 1; k <= G * G; k++) counts[k] += counts[k - 1];
     this.start = counts.slice();
     this.items = new Uint32Array(counts[G * G]);
-    const fill = counts.slice();
-    for (let i = 0; i + 1 < nverts; i++) {
-      const r = range(i);
-      if (!r) continue;
-      for (let cy = r[1]; cy <= r[3]; cy++) for (let cx = r[0]; cx <= r[2]; cx++) this.items[fill[cy * G + cx]++] = i;
+    const fill = counts;
+    for (let i = 0; i < n; i++) {
+      const o = i * 4;
+      if (box[o] === 255) continue;
+      for (let cy = box[o + 1]; cy <= box[o + 3]; cy++) for (let cx = box[o]; cx <= box[o + 2]; cx++) this.items[fill[cy * G + cx]++] = i;
     }
   }
 

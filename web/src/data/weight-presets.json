@@ -1,5 +1,6 @@
 {
-  "about": "Built-in scenic score weight presets. Weights are keyed by component (see COMPONENTS in scenic.ts); missing components weigh 0. The first preset is the default. Edits made in the app are kept in the browser and replace this list there.",
+  "about": "Built-in scenic score weight presets. Weights are keyed by component (see COMPONENTS in scenic.ts); missing components weigh 0. `default` is the app's default preset (else the first). Edits made in the app are kept in the browser and replace this list there.",
+  "default": "vistas",
   "presets": [
     {
       "id": "balanced",
@@ -12,7 +13,7 @@
         "ridge": 0.3,
         "curvy": 0.6,
         "unblocked": 0.6,
-        "bldg": -0.8,
+        "bldg": -1,
         "route": 0.5,
         "viewpoint": 0.4
       }
@@ -21,18 +22,17 @@
       "id": "vistas",
       "name": "Big vistas",
       "weights": {
-        "views": 1.5,
-        "water": 0.6,
-        "vista": 1.2,
-        "relief": 0.6,
-        "ridge": 0.8,
-        "curvy": 0.1,
-        "unblocked": 1,
-        "forest": -0.2,
-        "built": -0.3,
-        "bldg": -0.8,
+        "views": 2,
+        "water": 0.4,
+        "vista": 2,
+        "relief": 2,
+        "ridge": 2,
+        "curvy": 0.4,
+        "forest": -0.6,
+        "built": -1.5,
+        "bldg": -1.5,
         "route": 0.3,
-        "viewpoint": 0.6
+        "viewpoint": 0.2
       }
     },
     {
@@ -46,7 +46,7 @@
         "curvy": 0.3,
         "unblocked": 0.6,
         "built": -0.2,
-        "bldg": -0.6,
+        "bldg": -1,
         "route": 0.3,
         "viewpoint": 0.3
       }
@@ -63,7 +63,7 @@
         "curvy": 0.6,
         "unblocked": 0.4,
         "built": -0.3,
-        "bldg": -0.8,
+        "bldg": -1,
         "route": 0.3,
         "viewpoint": 0.4
       }
@@ -79,7 +79,7 @@
         "curvy": 2,
         "unblocked": 0.2,
         "built": -0.5,
-        "bldg": -1.0,
+        "bldg": -1,
         "route": 0.2
       }
     },
@@ -95,27 +95,37 @@
         "unblocked": -0.2,
         "forest": 1.4,
         "built": -0.6,
-        "bldg": -1.0,
+        "bldg": -1,
         "route": 0.4,
         "viewpoint": 0.2
       }
     },
     {
       "id": "backroads",
-      "name": "Quiet backroads",
+      "name": "Ridges",
       "weights": {
-        "views": 0.6,
-        "water": 0.5,
-        "vista": 0.3,
-        "relief": 0.5,
-        "ridge": 0.2,
-        "curvy": 0.5,
+        "relief": 2,
+        "ridge": 2,
+        "curvy": 1.5,
         "unblocked": 0.4,
-        "forest": 0.2,
-        "built": -1.2,
-        "bldg": -1.5,
-        "route": 0.2,
-        "viewpoint": 0.2
+        "built": -1.5,
+        "bldg": -1,
+        "viewpoint": 0.4
+      }
+    },
+    {
+      "id": "culture",
+      "name": "Heritage",
+      "weights": {
+        "views": 0.5,
+        "water": 0.5,
+        "vista": 0.2,
+        "relief": 0.3,
+        "curvy": 0.2,
+        "unblocked": 0.3,
+        "bldg": -1,
+        "route": 0.8,
+        "viewpoint": 0.4
       }
     }
   ]

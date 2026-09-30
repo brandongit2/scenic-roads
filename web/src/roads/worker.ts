@@ -14,7 +14,11 @@
 //   16 u32 line index        within the tile
 //   20 u8 × 12               scenic channels (roadcore::scenic::ch order)
 
-import { CELLS, CLASS_GROUP, EQ, GQ, GPU_EOL, LF_TOLL, LF_UNNAMED, MINOR_MAX_CLASS, NCLASS, NSG, ST_BRIDGE, ST_LINK, ST_TUNNEL, ST_UNPAVED, FERRY } from '../config';
+import {
+  CELLS, CLASS_GROUP, EQ, GQ, GPU_EOL, LF_TOLL, LF_UNNAMED, MINOR_MAX_CLASS, NCLASS, NSG, SPRITE_MAXZ, SPRITE_SEG_PX, ST_BRIDGE, ST_LINK, ST_TUNNEL, ST_UNPAVED, FERRY,
+} from '../config';
+import { levelZero, lodCells, lodSig, pieceLists, type LodFilter } from './lod';
+import { legibleRgb } from '../linecolour';
 import { NCH, STRIDE, chOff, type DecodedTile, type WorkerRequest, type WorkerResponse } from './types';
 
 const inflight = new Map<number, AbortController>();
@@ -34,12 +38,12 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const buf = new Uint8Array(await res.arrayBuffer());
     const t0 = performance.now();
-    const tile = decode(buf, msg.z, msg.y);
+    const tile = decode(buf, msg.z, msg.y, msg.lod);
     tile.decodeMs = performance.now() - t0;
     tile.bytes = buf.byteLength;
     post({ type: 'tile', id: msg.id, tile }, [
-      tile.verts, tile.lineStart.buffer, tile.lineWay.buffer, tile.lineStyle.buffer, tile.lineFlags.buffer, tile.lineRoadLen.buffer, tile.lineAttr.buffer, tile.lineColour.buffer,
-      tile.rlStart.buffer, tile.rlRoad.buffer, tile.rlCum.buffer, tile.eq.buffer, tile.gq.buffer, tile.glen.buffer, tile.clen.buffer, tile.ext.buffer,
+      tile.verts, tile.lineStart.buffer, tile.lineWay.buffer, tile.wayOrder.buffer, tile.lineStyle.buffer, tile.lineFlags.buffer, tile.lineRoadLen.buffer, tile.lineAttr.buffer, tile.lineColour.buffer,
+      tile.rlStart.buffer, tile.rlRoad.buffer, tile.rlCum.buffer, tile.pieces.buffer, tile.eq.buffer, tile.gq.buffer, tile.glen.buffer, tile.clen.buffer, tile.ext.buffer,
     ]);
   } catch (e) {
     if ((e as Error).name !== 'AbortError') post({ type: 'error', id: msg.id, message: String(e) });
@@ -52,7 +56,7 @@ function post(m: WorkerResponse, transfer: Transferable[] = []) {
   (self as unknown as DedicatedWorkerGlobalScope).postMessage(m, transfer);
 }
 
-function decode(b: Uint8Array, z: number, ty: number): DecodedTile {
+function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): DecodedTile {
   let pos = 4;
   const version = b[2];
   if (b[0] !== 0x52 || b[1] !== 0x54 || version < 4 || version > 6) throw new Error('bad tile header (expected RT v4–v6)');
@@ -69,7 +73,7 @@ function decode(b: Uint8Array, z: number, ty: number): DecodedTile {
   const zz = (v: number) => (v % 2 === 0 ? v / 2 : -(v + 1) / 2);
 
   const nlines = rv();
-  const nverts = rv();
+  let nverts = rv();
   const lineStyle = b.slice(pos, pos + nlines);
   pos += nlines;
   const lineFlags = b.slice(pos, pos + nlines);
@@ -77,53 +81,68 @@ function decode(b: Uint8Array, z: number, ty: number): DecodedTile {
   const lineWay = new Uint32Array(nlines);
   let w = 0;
   for (let i = 0; i < nlines; i++) lineWay[i] = w += zz(rv());
-  const lineStart = new Uint32Array(nlines + 1);
+  let lineStart = new Uint32Array(nlines + 1);
   for (let i = 0; i < nlines; i++) lineStart[i + 1] = lineStart[i] + rv();
   const trueLen = new Float32Array(nlines);
   for (let i = 0; i < nlines; i++) trueLen[i] = rv() / 10;
   const roadLen = new Float32Array(nlines);
   for (let i = 0; i < nlines; i++) roadLen[i] = rv();
-  // v5: per-line attributes (network, maxspeed ÷ 2, lanes, surface) and line colour (0xRRGGBB + 1).
+  // v5: per-line attributes (network, maxspeed ÷ 2, lanes, surface) and line colour (0xRRGGBB + 1),
+  // made legible on the dark map (linecolour.ts).
   let lineAttr = new Uint8Array(nlines * 4);
   const lineColour = new Uint32Array(nlines);
   if (version >= 5) {
     lineAttr = b.slice(pos, pos + nlines * 4);
     pos += nlines * 4;
-    for (let i = 0; i < nlines; i++) lineColour[i] = rv();
+    for (let i = 0; i < nlines; i++) {
+      const c = rv();
+      lineColour[i] = c ? legibleRgb(c - 1) + 1 : 0;
+    }
   }
 
-  const verts = new ArrayBuffer(nverts * STRIDE);
+  let verts = new ArrayBuffer(nverts * STRIDE);
+  const S2 = STRIDE / 2, S4 = STRIDE / 4;
+  {
+    const i16 = new Int16Array(verts);
+    const u8 = new Uint8Array(verts);
+    let x = 0, y = 0;
+    for (let i = 0; i < nverts; i++) {
+      x += zz(rv());
+      y += zz(rv());
+      i16[i * S2] = x;
+      i16[i * S2 + 1] = y;
+    }
+    let e = 0;
+    for (let i = 0; i < nverts; i++) {
+      e += zz(rv());
+      i16[i * S2 + 2] = e;
+    }
+    for (let i = 0; i < nverts; i++) u8[i * STRIDE + 8] = b[pos++];
+    let h = 0;
+    for (let i = 0; i < nverts; i++) {
+      h += zz(rv());
+      i16[i * S2 + 3] = h;
+    }
+    // Scenic channels: 12 (v4, v5) or 13 (v6: roadside buildings, kept in the vertex's spare byte).
+    for (let c = 0; c < (version >= 6 ? NCH : 12); c++) {
+      let v = 0;
+      for (let i = 0; i < nverts; i++) {
+        v += zz(rv());
+        u8[i * STRIDE + chOff(c)] = v;
+      }
+    }
+  }
+
+  // Zoomed-out tiles are drawn as one point sprite per piece (layer.ts), which needs every piece
+  // short on screen: split the few long ones.
+  if (z <= SPRITE_MAXZ) {
+    const s = subdivide(verts, nverts, lineStart, (SPRITE_SEG_PX * extent) / 256);
+    if (s) ({ verts, nverts, lineStart } = s);
+  }
   const i16 = new Int16Array(verts);
   const u8 = new Uint8Array(verts);
   const f32 = new Float32Array(verts);
   const u32 = new Uint32Array(verts);
-  const S2 = STRIDE / 2, S4 = STRIDE / 4;
-  let x = 0, y = 0;
-  for (let i = 0; i < nverts; i++) {
-    x += zz(rv());
-    y += zz(rv());
-    i16[i * S2] = x;
-    i16[i * S2 + 1] = y;
-  }
-  let e = 0;
-  for (let i = 0; i < nverts; i++) {
-    e += zz(rv());
-    i16[i * S2 + 2] = e;
-  }
-  for (let i = 0; i < nverts; i++) u8[i * STRIDE + 8] = b[pos++];
-  let h = 0;
-  for (let i = 0; i < nverts; i++) {
-    h += zz(rv());
-    i16[i * S2 + 3] = h;
-  }
-  // Scenic channels: 12 (v4, v5) or 13 (v6: roadside buildings, kept in the vertex's spare byte).
-  for (let c = 0; c < (version >= 6 ? NCH : 12); c++) {
-    let v = 0;
-    for (let i = 0; i < nverts; i++) {
-      v += zz(rv());
-      u8[i * STRIDE + chOff(c)] = v;
-    }
-  }
 
   // Metres per tile unit at this tile's latitude.
   const n = Math.PI - (2 * Math.PI * (ty + 0.5)) / (1 << z);
@@ -174,6 +193,7 @@ function decode(b: Uint8Array, z: number, ty: number): DecodedTile {
 
   let bridgeStart = nverts;
   let firstBridgeLine = nlines;
+  let maxSeg = 0;
   for (let l = 0; l < nlines; l++) {
     const st = lineStyle[l];
     const cls = st & 15;
@@ -200,6 +220,7 @@ function decode(b: Uint8Array, z: number, ty: number): DecodedTile {
         const sl = Math.sqrt(dx * dx + dy * dy);
         d += sl;
         simp += sl;
+        if (sl > maxSeg) maxSeg = sl;
       }
       f32[i * S4 + 3] = d;
       u32[i * S4 + 4] = l;
@@ -292,6 +313,16 @@ function decode(b: Uint8Array, z: number, ty: number): DecodedTile {
     at += bEnd - a;
   });
   nStart[nlines] = at;
+  // The lines in order of way id: (way, line) pairs as 64-bit integers (line in the low word, little
+  // endian) in the typed array's native sort.
+  const pairs = new Uint32Array(nlines * 2);
+  for (let k = 0; k < nlines; k++) {
+    pairs[2 * k] = k;
+    pairs[2 * k + 1] = nWay[k];
+  }
+  new BigUint64Array(pairs.buffer).sort();
+  const wayOrder = new Uint32Array(nlines);
+  for (let i = 0; i < nlines; i++) wayOrder[i] = pairs[2 * i];
   const bridgeEnd = nverts - bridgeStart;
   // The minor classes among the roads: after the majors, before tunnels & ferries (a contiguous run,
   // as the roads go major → minor).
@@ -312,11 +343,59 @@ function decode(b: Uint8Array, z: number, ty: number): DecodedTile {
     if (!Number.isNaN(ext[k * 8 + 4])) ext[k * 8 + 7] = newIndex[ext[k * 8 + 7]];
   }
 
+  minorStart = Math.max(minorStart, bridgeEnd);
+  minorEnd = Math.max(minorEnd, bridgeEnd);
+  const { pieces, levels } = pieceLists(out, levelZero(out, nverts), [bridgeEnd, minorStart, minorEnd], extent, lodCells(z, lod), lod, nRoad);
+
   return {
-    extent, nverts, nlines, verts: out, lineStart: nStart, lineWay: nWay, lineStyle: nStyle, lineFlags: nFlags, lineRoadLen: nRoad, lineAttr: nAttr, lineColour: nColour, bridgeEnd,
-    minorStart: Math.max(minorStart, bridgeEnd), minorEnd: Math.max(minorEnd, bridgeEnd),
+    extent, nverts, nlines, verts: out, lineStart: nStart, lineWay: nWay, wayOrder, lineStyle: nStyle, lineFlags: nFlags, lineRoadLen: nRoad, lineAttr: nAttr, lineColour: nColour, bridgeEnd,
+    minorStart, minorEnd, maxSeg, pieces, levels, lodSig: lodCells(z, lod).length ? lodSig(lod) : '',
     eq, gq, glen, clen, rlStart, rlRoad, rlCum, ext, mpu, bytes: 0, decodeMs: 0,
   };
+}
+
+/**
+ * Splits pieces longer than `maxLen` tile units into equal parts, interpolating the vertex fields
+ * decoded so far (position, elevation, drape height, grade, scenic channels; the flags channel
+ * steps at the middle, as in the tile builder). Returns null when no piece is that long.
+ */
+function subdivide(verts: ArrayBuffer, nverts: number, lineStart: Uint32Array, maxLen: number): { verts: ArrayBuffer; nverts: number; lineStart: Uint32Array<ArrayBuffer> } | null {
+  const i16 = new Int16Array(verts);
+  const S2 = STRIDE / 2;
+  const nlines = lineStart.length - 1;
+  const parts = (i: number) => {
+    const dx = i16[(i + 1) * S2] - i16[i * S2], dy = i16[(i + 1) * S2 + 1] - i16[i * S2 + 1];
+    return Math.ceil(Math.sqrt(dx * dx + dy * dy) / maxLen);
+  };
+  let extra = 0;
+  for (let l = 0; l < nlines; l++) for (let i = lineStart[l]; i + 1 < lineStart[l + 1]; i++) extra += Math.max(1, parts(i)) - 1;
+  if (!extra) return null;
+  const out = new ArrayBuffer((nverts + extra) * STRIDE);
+  const o8 = new Uint8Array(out), o16 = new Int16Array(out);
+  const u8 = new Uint8Array(verts);
+  const starts = new Uint32Array(nlines + 1);
+  const FLAGS_BYTE = chOff(7);
+  let at = 0;
+  for (let l = 0; l < nlines; l++) {
+    starts[l] = at;
+    const a = lineStart[l], b = lineStart[l + 1];
+    for (let i = a; i < b; i++) {
+      o8.set(u8.subarray(i * STRIDE, (i + 1) * STRIDE), at * STRIDE);
+      at++;
+      if (i + 1 >= b) break;
+      const k = parts(i);
+      for (let j = 1; j < k; j++) {
+        const t = j / k;
+        for (let f = 0; f < 4; f++) o16[at * S2 + f] = Math.round(i16[i * S2 + f] + (i16[(i + 1) * S2 + f] - i16[i * S2 + f]) * t);
+        for (const off of [8, 11, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]) {
+          o8[at * STRIDE + off] = off === FLAGS_BYTE ? u8[(t < 0.5 ? i : i + 1) * STRIDE + off] : Math.round(u8[i * STRIDE + off] + (u8[(i + 1) * STRIDE + off] - u8[i * STRIDE + off]) * t);
+        }
+        at++;
+      }
+    }
+  }
+  starts[nlines] = at;
+  return { verts: out, nverts: at, lineStart: starts };
 }
 
 /** Weighted quantiles per (cell, group) run of composite-sorted keys. */

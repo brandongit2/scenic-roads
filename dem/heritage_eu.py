@@ -31,6 +31,17 @@ level 1 World Heritage · 2 national, highest grade · 3 national, other grades 
            interesse municipal (5); mainland only. CC BY-NC 4.0.
   Hong Kong: Antiquities and Monuments Office via the CSDI Portal: declared monuments (2), graded
            historic buildings Grade I (3), II (4), III (5).
+  Japan:   Agency for Cultural Affairs, 国指定文化財等データベース (its CSV export, per prefecture;
+           PDL 1.0): National Treasures and special historic sites, places of scenic beauty and
+           natural monuments (2); Important Cultural Properties (buildings), historic sites, places
+           of scenic beauty, natural monuments, cultural landscapes, preservation districts, and the
+           registered buildings and monuments (3); district areas from MLIT's A43 (CC BY 4.0).
+  Taiwan:  Bureau of Cultural Heritage open data (Open Government Data License): national monuments,
+           archaeological sites, important settlements and landscapes (2); historic sites (3); city
+           and county monuments and archaeological sites, settlements, cultural landscapes, historic
+           and commemorative buildings (4, designated or registered by the local governments).
+  Singapore: data.gov.sg (Singapore Open Data Licence): NHB National Monuments (2) and historic site
+           markers (3); URA conservation areas (3, areas).
   The lowest listing grades (England and Wales Grade II, Scotland C, Northern Ireland B1/B2:
   ~400,000 buildings) are left out: too many to show as points.
   No usable open register: Monaco, Isle of Man (permission required), Jersey (token-protected),
@@ -158,7 +169,8 @@ def area(geom: dict, **props) -> dict:
 def lang_at(lon: float, lat: float) -> str:
     """Primary language of the place (rough boxes, enough to pick a label): French in Québec,
     France and Monaco; Catalan in Catalonia, the Balearics and Andorra; Galician in Galicia;
-    Spanish elsewhere in Spain; Portuguese in Portugal; Chinese in Hong Kong; else English."""
+    Spanish elsewhere in Spain; Portuguese in Portugal; Chinese in Hong Kong (traditional in
+    Taiwan); Japanese in Japan; else English."""
     if lon < -40:
         # Maine's border with Québec runs from (-71.1, 45.3) to (-70.0, 46.4) to (-69.2, 47.45).
         maine = lon > -71.1 and lat < (45.3 + (lon + 71.1) if lon <= -70.0 else 46.4 + (lon + 70.0) * 1.36)
@@ -166,6 +178,12 @@ def lang_at(lon: float, lat: float) -> str:
         return "fr" if quebec else "en"
     if 113.8 < lon < 114.5 and 22.1 < lat < 22.6:
         return "zh"
+    if 122.5 < lon < 154.0 and 20.0 < lat < 46.5:
+        return "ja"
+    if 118.0 < lon <= 122.5 and 21.5 < lat < 26.6:
+        return "zh-hant"
+    if 103.5 < lon < 104.2 and 1.1 < lat < 1.5:
+        return "en"
     if 1.40 < lon < 1.79 and 42.42 < lat < 42.66:
         return "ca"
     if (lat > 49.4 and lon < 1.7 and not (lon > -2.0 and lat < 51.0 and lon > 1.4)) or (-2.8 < lon < -1.9 and 49.1 < lat < 49.8):
@@ -202,7 +220,7 @@ def wd_sparql(query: str, cache: Path) -> list[dict]:
     return [{k: v["value"] for k, v in b.items()} for b in d["results"]["bindings"]]
 
 
-def wd_search_labels(name: str, cache: dict, langs=("fr", "es", "pt", "ca", "gl", "zh"), search_lang: str = "en") -> dict:
+def wd_search_labels(name: str, cache: dict, langs=("fr", "es", "pt", "ca", "gl", "zh", "ja", "zh-hant"), search_lang: str = "en") -> dict:
     """Labels of the Wikidata item a name finds first (cached in `cache`; polite pacing, backing
     off when rate-limited)."""
     key = name if search_lang == "en" else f"{search_lang}:{name}"
@@ -245,16 +263,23 @@ COMPONENT = re.compile(r"\{name: (.*?), ref: ([^,]*), latitude: (-?[\d.]+), long
 def unesco() -> tuple[list[dict], list[dict]]:
     d = json.loads(fetch("https://data.unesco.org/api/explore/v2.1/catalog/datasets/whc001/exports/json",
                          H / "unesco" / "whc001.json").read_text())
-    # Names UNESCO doesn't publish (Portuguese, Catalan, Galician): Wikidata's labels by site id.
+    # Names UNESCO doesn't publish (Portuguese, Catalan, Galician, Japanese): Wikidata's labels by site id.
     wd: dict[str, dict] = {}
     try:
-        for r in wd_sparql("""SELECT ?id ?pt ?ca ?gl WHERE { ?item wdt:P757 ?id .
+        rows: dict[str, list[dict]] = {}
+        for r in wd_sparql("""SELECT ?id ?pt ?ca ?gl ?ja WHERE { ?item wdt:P757 ?id .
               OPTIONAL { ?item rdfs:label ?pt FILTER(LANG(?pt) = "pt") } OPTIONAL { ?item rdfs:label ?ca FILTER(LANG(?ca) = "ca") }
-              OPTIONAL { ?item rdfs:label ?gl FILTER(LANG(?gl) = "gl") } }""", H / "unesco" / "wd-labels.json"):
+              OPTIONAL { ?item rdfs:label ?gl FILTER(LANG(?gl) = "gl") } OPTIONAL { ?item rdfs:label ?ja FILTER(LANG(?ja) = "ja") } }""",
+                           H / "unesco" / "wd-labels-ja.json"):
             m = re.fullmatch(r"(\d+)(?:bis|ter|quater)?", r["id"])  # "320bis" (extension) → 320; not components ("875-001")
             if m:
-                prev = wd.setdefault(m.group(1), {})
-                for k in ("pt", "ca", "gl"):
+                rows.setdefault(m.group(1), []).append(r)
+        # Several items can carry a site's id (Chūgū-ji, one temple of the Hōryū-ji area, has 660):
+        # the site's own item, usually the one labelled in the most languages, first.
+        for sid, rs in rows.items():
+            prev = wd.setdefault(sid, {})
+            for r in sorted(rs, key=lambda r: -sum(bool(r.get(k)) for k in ("pt", "ca", "gl", "ja"))):
+                for k in ("pt", "ca", "gl", "ja"):
                     if r.get(k) and not prev.get(k):
                         prev[k] = r[k][:1].upper() + r[k][1:]
     except Exception as e:  # noqa: BLE001
@@ -266,11 +291,11 @@ def unesco() -> tuple[list[dict], list[dict]]:
             comps = [(s["coordinates"]["lon"], s["coordinates"]["lat"], None)]
         untag = lambda v: re.sub(r"<[^>]+>", "", v).strip() if v else v  # noqa: E731 (names carry <i> markup)
         names = {k: untag(v) for k, v in {"en": s["name_en"], "fr": s.get("name_fr"), "es": s.get("name_es"), "zh": s.get("name_zh"),
-                                          **wd.get(str(s["id_no"]), {})}.items() if k in ("en", "fr", "es", "zh", "pt", "ca", "gl")}
+                                          **wd.get(str(s["id_no"]), {})}.items() if k in ("en", "fr", "es", "zh", "pt", "ca", "gl", "ja", "zh-hant")}
         s["name_en"] = names["en"]
         # One country: its language (regional within Spain and Canada); several: by location.
         isos = [c.strip().lower() for c in (s.get("iso_codes") or "").split(",") if c.strip()]
-        country = {"fr": "fr", "mc": "fr", "pt": "pt", "ad": "ca", "gb": "en", "ie": "en", "us": "en", "gi": "en"}.get(isos[0]) if len(isos) == 1 else None
+        country = {"fr": "fr", "mc": "fr", "pt": "pt", "ad": "ca", "gb": "en", "ie": "en", "us": "en", "gi": "en", "jp": "ja", "sg": "en"}.get(isos[0]) if len(isos) == 1 else None
         for lon, lat, cname in comps:
             here = lang_at(lon, lat)
             lang = country or (here if len(isos) != 1 or isos[0] in ("es", "ca") else here)
@@ -908,9 +933,224 @@ def hong_kong() -> tuple[list[dict], list[dict]]:
     return pts, []
 
 
+# ---- Japan -----------------------------------------------------------------------------------
+
+JP_SRC = "Agency for Cultural Affairs, 国指定文化財等データベース (edited); 国土数値情報 A43 (MLIT, CC BY 4.0)"
+JP = "https://kunishitei.bunka.go.jp"
+JP_PREFS = ("北海道 青森県 岩手県 宮城県 秋田県 山形県 福島県 茨城県 栃木県 群馬県 埼玉県 千葉県 東京都 神奈川県 新潟県 富山県 石川県 福井県 山梨県 長野県 "
+            "岐阜県 静岡県 愛知県 三重県 滋賀県 京都府 大阪府 兵庫県 奈良県 和歌山県 鳥取県 島根県 岡山県 広島県 山口県 徳島県 香川県 愛媛県 高知県 福岡県 "
+            "佐賀県 長崎県 熊本県 大分県 宮崎県 鹿児島県 沖縄県").split()
+# register_sub_id: buildings (National Treasures, Important Cultural Properties), monuments (historic
+# sites, places of scenic beauty, natural monuments), cultural landscapes, preservation districts,
+# registered buildings and monuments.
+JP_CATS = (102, 401, 412, 103, 101, 411)
+JP_401 = {"特別史跡": (2, "Special Historic Site"), "特別名勝": (2, "Special Place of Scenic Beauty"),
+          "特別天然記念物": (2, "Special Natural Monument"), "史跡": (3, "Historic Site"), "名勝": (3, "Place of Scenic Beauty"),
+          "天然記念物": (3, "Natural Monument")}
+
+
+def jp_csv(cat: int, pref: str) -> Path:
+    """The database's CSV export for one category and prefecture (its search form: a session, then
+    the results page's token for the export; more than ~2,000 rows at once time out). Cached."""
+    import http.cookiejar
+    import time
+
+    path = H / "jp" / f"{cat}-{pref}.csv"
+    if path.exists():
+        return path
+    op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    op.addheaders = list(UA.items())
+    tok = lambda html: re.search(r'name="_csrfToken" autocomplete="off" value="([^"]*)"', html).group(1)
+    form = lambda t: urllib.parse.urlencode({"_method": "POST", "_csrfToken": t, "screen_id": "index", "page_no": 1,
+                                             "register_sub_id": cat, "seat_pref": pref}).encode()
+    for attempt in range(4):
+        try:
+            t = tok(op.open(f"{JP}/bsys/index", timeout=120).read().decode())
+            html = op.open(f"{JP}/bsys/searchlist", form(t), timeout=300).read().decode()
+            m = re.search(r'utile/csv-list.*?name="_csrfToken" autocomplete="off" value="([^"]*)"', html, re.S)
+            body = op.open(f"{JP}/utile/csv-list", form(m.group(1)), timeout=300).read() if m else b""
+            break
+        except (urllib.error.URLError, TimeoutError, AttributeError) as e:
+            print(f"  kunishitei {cat} {pref}: {e}; again", file=sys.stderr)
+            time.sleep(10 * (attempt + 1))
+    else:
+        raise RuntimeError(f"kunishitei {cat} {pref}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
+    print(f"  kunishitei {cat} {pref}: {body.count(b'\n') - 1 if body else 0} rows", file=sys.stderr)
+    time.sleep(1)
+    return path
+
+
+def jp_date(v: str) -> str | None:
+    return f"{v[:4]}-{v[4:6]}-{v[6:8]}" if v and len(v) == 8 and v.isdigit() and v != "00000000" else None
+
+
+def japan() -> tuple[list[dict], list[dict]]:
+    pts, seen = [], set()
+    for cat in JP_CATS:
+        for pref in JP_PREFS:
+            text = jp_csv(cat, pref).read_bytes().decode("utf-8-sig", "replace")
+            rows = list(csv.DictReader(io.StringIO(text)))
+            # Buildings: one row per building (棟) of a designation; a designation with a National
+            # Treasure among its buildings counts as one.
+            treasure = {(r.get("名称"), r.get("所在地")) for r in rows if (r.get("種別1") or "").strip() == "国宝"}
+            for r in rows:
+                mid = r.get("管理対象ID")
+                key = (cat, r.get("名称"), r.get("所在地"))
+                try:
+                    lat, lon = float(r["緯度"]), float(r["経度"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if key in seen or not (20 < lat < 46.5 and 122 < lon < 154):
+                    continue
+                seen.add(key)
+                name = re.sub(r"\s+", " ", r.get("名称") or "").strip()
+                k1, k2 = (r.get("種別1") or "").strip(), (r.get("種別2") or "").strip()
+                if cat == 102:
+                    nt = key[1:] in treasure
+                    level, des = (2, "National Treasure (国宝)") if nt else (3, "Important Cultural Property (重要文化財)")
+                    date = jp_date(r.get("国宝指定年月日") if nt else r.get("重文指定年月日"))
+                elif cat == 401:
+                    kinds = sorted({JP_401[k] + (k,) for k in (k1, k2) if k in JP_401})
+                    if not kinds:
+                        continue
+                    level = kinds[0][0]
+                    des = " · ".join(f"{e} ({j})" for _, e, j in kinds)
+                    date = jp_date(r.get("重文指定年月日"))
+                else:
+                    level, des = {412: (3, "Important Cultural Landscape (重要文化的景観)"),
+                                  103: (3, "Important Preservation District for Groups of Traditional Buildings (重要伝統的建造物群保存地区)"),
+                                  101: (3, "Registered Tangible Cultural Property (登録有形文化財)"),
+                                  411: (3, "Registered Monument (登録記念物)")}[cat]
+                    date = jp_date(r.get("重文指定年月日"))
+                pts.append(site(lon, lat, name=name, level=level, designation=des, date=date, municipality=r.get("所在地"),
+                                authority="文化庁 (Agency for Cultural Affairs)", url=f"{JP}/heritage/detail/{cat}/{mid}", source=JP_SRC))
+    # Preservation districts as areas: MLIT's National Land Numerical Information A43 (2019, CC BY 4.0).
+    import shapefile
+
+    z = fetch("https://nlftp.mlit.go.jp/ksj/gml/data/A43/A43-18/A43-18_GML.zip", H / "jp" / "A43-18_GML.zip")
+    with zipfile.ZipFile(z) as zf:
+        stem = next(n[:-4] for n in zf.namelist() if n.endswith(".shp"))
+        r = shapefile.Reader(shp=io.BytesIO(zf.read(stem + ".shp")), shx=io.BytesIO(zf.read(stem + ".shx")),
+                             dbf=io.BytesIO(zf.read(stem + ".dbf")), encoding="cp932")
+        areas = [area(sr.shape.__geo_interface__, name=sr.record["A43_004"], level=3 if sr.record["A43_005"] == 1 else 4,
+                      designation="Important Preservation District for Groups of Traditional Buildings (重要伝統的建造物群保存地区)"
+                      if sr.record["A43_005"] == 1 else "Preservation District for Groups of Traditional Buildings (伝統的建造物群保存地区)",
+                      date=jp_date(str(sr.record["A43_008"])), municipality=sr.record["A43_006"], url=sr.record["A43_010"], source=JP_SRC)
+                 for sr in r.iterShapeRecords()]
+    return pts, areas
+
+
+# ---- Taiwan ----------------------------------------------------------------------------------
+
+TW_SRC = ("文化部文化資產局 2026 文化資產個案 (Bureau of Cultural Heritage, Ministry of Culture). The Open Data is made available to the public "
+          "under the Open Government Data License, User can make use of it when complying to the condition and obligation of its terms. "
+          "Open Government Data License: https://data.gov.tw/license")
+TW = "https://data.boch.gov.tw/opendata/v2/assetsCase"
+
+
+def tw_list(v):
+    """List fields come as Python-literal strings."""
+    import ast
+
+    if isinstance(v, str):
+        try:
+            return ast.literal_eval(v)
+        except (ValueError, SyntaxError):
+            return []
+    return v or []
+
+
+def taiwan() -> tuple[list[dict], list[dict]]:
+    pts = []
+    for cat in ("1.1", "1.2", "1.3", "1.4", "2.1", "3.1", "3.2"):
+        for r in json.loads(fetch(f"{TW}/{cat}.json", H / "tw" / f"{cat}.json").read_text()):
+            try:
+                lat, lon = float(r["latitude"]), float(r["longitude"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if 118 < lat < 123 and 21 < lon < 27:
+                lat, lon = lon, lat  # a few records have them the other way round
+            if not (21 < lat < 27 and 118 < lon < 123):
+                continue
+            ann = sorted(tw_list(r.get("announcementList")), key=lambda a: a.get("registerDate") or "")
+            if ann and re.search("廢止|撤銷|解除", ann[-1].get("classification") or ""):
+                continue  # delisted (a reclassification is re-designated the same day, listed after)
+            code, cname = r.get("assetsClassifyCode") or "", r.get("assetsClassifyName") or ""
+            level, des = {
+                "1.1.1": (2, "National monument (國定古蹟)"), "1.1.2": (4, "Special municipality monument (直轄市定古蹟)"),
+                "1.1.3": (4, "County / city monument (縣(市)定古蹟)"),
+                "1.3.2": (2, "Important settlement (重要聚落建築群)"), "1.3.1": (4, "Settlement (聚落建築群)"),
+                "2.1.1": (2, "National archaeological site (國定考古遺址)"), "2.1.2": (4, "Special municipality archaeological site (直轄市定考古遺址)"),
+                "2.1.3": (4, "County / city archaeological site (縣(市)定考古遺址)"),
+            }.get(code) or {"1.2": (4, "Historic building (歷史建築)"), "1.4": (4, "Commemorative building (紀念建築)"),
+                            "3.2": (3, "Historic site (史蹟)"),
+                            "3.1": (2, "Important cultural landscape (重要文化景觀)") if "重要" in cname else (4, "Cultural landscape (文化景觀)"),
+                            }.get(cat, (4, cname))
+            addr = next(iter(tw_list(r.get("addresses"))), {}) or {}
+            pts.append(site(lon, lat, name=r.get("caseName"), level=level, designation=des,
+                            date=(ann[0].get("registerDate") or "")[:10].replace("/", "-") if ann else None,
+                            municipality="".join(x for x in (addr.get("cityName"), addr.get("distName")) if x) or None,
+                            authority=r.get("govInstitutionName"), url=r.get("caseUrl"), source=TW_SRC))
+    return pts, []
+
+
+# ---- Singapore -------------------------------------------------------------------------------
+
+SG_SRC = ("Contains information from {} accessed on {} from data.gov.sg which is made available under the terms of the Singapore "
+          "Open Data Licence version 1.0 https://data.gov.sg/open-data-licence")
+
+
+def sg_dataset(did: str) -> tuple[dict, str]:
+    """A data.gov.sg dataset (the poll-download flow: a signed link; answers slowly without a key). Cached."""
+    import time
+
+    path = H / "sg" / f"{did}.geojson"
+    if not path.exists():
+        for attempt in range(8):
+            try:
+                with urllib.request.urlopen(urllib.request.Request(f"https://api-open.data.gov.sg/v1/public/api/datasets/{did}/poll-download",
+                                                                   headers=UA), timeout=120) as r:
+                    url = (json.loads(r.read()).get("data") or {}).get("url")
+            except urllib.error.HTTPError as e:
+                if e.code != 429:
+                    raise
+                url = None  # rate-limited without a key: wait
+            if url:
+                break
+            time.sleep(15 * (attempt + 1))
+        else:
+            raise RuntimeError(f"data.gov.sg {did}: no download link")
+        fetch(url, path)
+    return json.loads(path.read_text()), time.strftime("%Y-%m-%d", time.localtime(path.stat().st_mtime))
+
+
+def singapore() -> tuple[list[dict], list[dict]]:
+    pts, areas = [], []
+    for did, title, level, des in (("d_b29c230ec6b609e29ed42f71ca9a8767", "Monuments (NHB)", 2, "National Monument"),
+                                   ("d_31e16b12809e66673e90d8b04fdee1b2", "Historic Sites (NHB)", 3, "Historic site marker (NHB)")):
+        fc, day = sg_dataset(did)
+        for f in fc["features"]:
+            p, c = f["properties"], rep_point(f["geometry"])
+            if not c:
+                continue
+            addr = " ".join(str(p[k]) for k in ("ADDRESSBLOCKHOUSENUMBER", "ADDRESSSTREETNAME") if p.get(k) not in (None, "None", ""))
+            pts.append(site(*c, name=p.get("NAME"), level=level, designation=des, municipality=addr or None,
+                            authority="National Heritage Board", url=p.get("HYPERLINK"), source=SG_SRC.format(title, day)))
+    fc, day = sg_dataset("d_8c8162ffb9deb8d11b00623048f65a70")
+    for f in fc["features"]:
+        areas.append(area(f["geometry"], name=f["properties"].get("NAME"), level=3, designation="Conservation area (URA)",
+                          authority="Urban Redevelopment Authority", source=SG_SRC.format("Master Plan 2019 SDCP Conservation Area layer (URA)", day)))
+    return pts, areas
+
+
 SOURCES += [
     ("Ireland: NIAH + SMR", ireland),
     ("Spain: regional BIC registers", spain),
     ("Portugal: Atlas do Património", portugal),
     ("Hong Kong: AMO", hong_kong),
+    ("Japan: Agency for Cultural Affairs", japan),
+    ("Taiwan: Bureau of Cultural Heritage", taiwan),
+    ("Singapore: NHB + URA", singapore),
 ]

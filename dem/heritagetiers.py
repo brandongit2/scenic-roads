@@ -13,19 +13,20 @@ import re
 
 # (kind, pattern on the designation), first match wins within the site's level group.
 NATIONAL = [
-    ("n.mon", r"scheduled monument|state care monument|preservation order|national monument in state care|protected monument"),
-    ("n.land", r"park and garden|garden and designed landscape|battlefield"),
+    ("n.mon", r"scheduled monument|state care monument|preservation order|national monument in state care|protected monument"
+              r"|^historic site \("),
+    ("n.land", r"park and garden|garden and designed landscape|battlefield|^place of scenic beauty|cultural landscape"),
     ("n.hist", r"national historic site of canada|national historic landmark"),
     ("n.fed", r"federal heritage building|heritage railway station|heritage lighthouse"),
-    ("n.lower", r"graded historic building, grade [23]\b"),
+    ("n.lower", r"graded historic building, grade [23]\b|registered tangible cultural property|registered monument \(|historic site marker"),
     ("n.second", r"graded historic building, grade 1\b|grade ii\*|grade b\+|category b\b|grade b\b|ungraded|monument historique inscrit"
                  r"|interesse público|bé inventariat|patrimonio protegido|national register of historic places"),
     ("n.top", r"grade i\b|grade a\b|category a\b|monument historique classé|inter[eéè]s (cultural|nacional)|monumento nacional"
               r"|(national|international) rating|declared monument"),
 ]
 PROVINCIAL = [
-    ("p.area", r"site patrimonial|heritage district|historic area|provincial park"),
-    ("p.reg", r"^registered historic (place|site)|recognized"),
+    ("p.area", r"site patrimonial|heritage district|historic area|provincial park|settlement|cultural landscape|preservation district"),
+    ("p.reg", r"^registered historic (place|site)|recognized|^historic building \(|commemorative building"),
 ]
 MUNICIPAL = [
     ("m.area", r"site patrimonial cité|conservation area|conjunto de interesse|sítio de interesse"),

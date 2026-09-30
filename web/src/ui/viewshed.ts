@@ -25,7 +25,7 @@ export class ViewshedTool {
       h('option', { value: 5 }, 'Roof / platform (5 m)'),
       h('option', { value: 20 }, 'Tower (20 m)'),
     );
-    this.radius.value = String(prefs.load('viewshed.r', 15));
+    this.radius.value = String(prefs.load('viewshed.r', 25));
     this.eye.value = String(prefs.load('viewshed.eye', 1.7));
     if (!this.radius.value) this.radius.value = '15';
     if (!this.eye.value) this.eye.value = '1.7';

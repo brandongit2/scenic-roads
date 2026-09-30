@@ -41,6 +41,9 @@ export interface ScaleOpts {
   spanDefault: number;
   /** A fixed caption instead of the auto-fit controls, no dragging (e.g. relief). */
   fixedCaption?: () => string | null;
+  /** Auto-fit to ranks in view (the low end at the n-th best, the top at the m-th) instead of
+   * percentiles (landmarks). */
+  rank?: { get: () => [number, number]; set: (v: [number, number]) => void };
   onPreview: (palette: string | null) => void;
 }
 
@@ -85,6 +88,8 @@ export class ScaleControls {
   private pills: HTMLDivElement;
   private pal: RampSelect;
   private fitLo: HTMLInputElement;
+  private rankLo: HTMLInputElement | null = null;
+  private rankHi: HTMLInputElement | null = null;
   private fitHi: HTMLInputElement;
   private fade: HTMLInputElement;
   private fadeOut: HTMLOutputElement;
@@ -123,6 +128,26 @@ export class ScaleControls {
     };
     this.fitLo = pct(0);
     this.fitHi = pct(1);
+    if (o.rank) {
+      const rank = o.rank;
+      const inp = (i: 0 | 1) => {
+        const e = h('input', {
+          type: 'number', class: 'pct', min: 1, step: 1,
+          title: i ? `Full size from this rank up: the n-th best ${o.noun} in view` : `The scale's low end: the n-th best ${o.noun} in view (the rest fade)`,
+        });
+        e.addEventListener('change', () => {
+          const v = Math.max(1, Math.round(Number(e.value) || 1));
+          const r: [number, number] = [...rank.get()];
+          r[i] = v;
+          // The edited one keeps its value and pushes the other along.
+          if (r[0] <= r[1]) r[1 - i] = i ? v + 1 : Math.max(1, v - 1);
+          rank.set(r[0] > r[1] ? r : [r[1] + 1, r[1]]);
+        });
+        return e;
+      };
+      this.rankLo = inp(0);
+      this.rankHi = inp(1);
+    }
     this.legend = h('div', { class: 'legend' }, this.canvas, h('div', { class: 'caption' }, this.caption, this.pills));
 
     this.pal = new RampSelect(PALETTE_ITEMS, (k) => paletteCss(k), (k) => o.set({ palette: k }), (k) => o.onPreview(k));
@@ -188,7 +213,12 @@ export class ScaleControls {
     if (fixed) {
       this.caption.textContent = fixed;
     } else {
-      if (s.auto) this.caption.replaceChildren('Auto-fit to percentiles ', this.fitLo, '–', this.fitHi, ` of ${this.o.noun} in view`);
+      if (s.auto && this.o.rank && this.rankLo && this.rankHi) {
+        const [lo, hi] = this.o.rank.get();
+        this.rankLo.value = String(lo);
+        this.rankHi.value = String(hi);
+        this.caption.replaceChildren('Auto-fit: the best ', this.rankLo, ` ${this.o.noun} in view, full size from #`, this.rankHi);
+      } else if (s.auto) this.caption.replaceChildren('Auto-fit to percentiles ', this.fitLo, '–', this.fitHi, ` of ${this.o.noun} in view`);
       else this.caption.textContent = 'Fixed range · drag the handles';
       this.fitLo.value = String(s.fit[0]);
       this.fitHi.value = String(s.fit[1]);

@@ -17,6 +17,11 @@
   mz  the zoom from which that distance spans one pixel (512 px tiles); the map shows a place from
       mz + log2(spacing in px).
 
+A World Heritage Site in several components (whsshapes.py) counts once, at its dot: its lead
+component carries the site's isolation there, and the others (drawn small, close in) have none. A
+World Heritage Site's fame is its best-known item's: its own or one of its components' (the Rideau
+Canal's own item has no articles; the canal's has).
+
 The map shows a place from the zoom where its isolation spans enough pixels (an even density at
 every zoom, the best-known and locally best first), sized and labelled by fame.
 
@@ -33,6 +38,8 @@ import sys
 from pathlib import Path
 
 import numpy as np
+
+import whsshapes
 
 ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
@@ -168,11 +175,17 @@ def main() -> None:
     hfc = json.load(open(B / "heritage.json"))
     hdet = jsonl("details-heritage.jsonl")
     hf = hfc["features"]
+    whs = whsshapes.load_sites()
+    role = whsshapes.roles(hf, whs)
     base = np.zeros(len(hf))
     for i, f in enumerate(hf):
         p = f["properties"]
         d = hdet.get(p.get("i"), {})
         fm, pv = fame(d.get("qid"), d.get("sl", 0))
+        sid = whsshapes.whs_id(p)
+        for q in whs.get(sid, {}).get("q", []) if sid else []:
+            if views.get(q) and math.log10(1 + views[q]) > fm:
+                fm, pv = math.log10(1 + views[q]), views[q]
         tie = 0.5 * bool(p.get("name")) + 0.2 * bool(d.get("qid")) + 0.3 * (5 - (p.get("level") or 5)) / 4
         base[i] = fm + 0.01 * tie
         for k in ("fa", "pv", "ia", "mz"):
@@ -180,13 +193,17 @@ def main() -> None:
         p["fa"] = round(float(base[i]), 3)
         if pv:
             p["pv"] = round(pv)
-    lon = np.array([f["geometry"]["coordinates"][0] for f in hf])
-    lat = np.array([f["geometry"]["coordinates"][1] for f in hf])
-    ia = isolation(lon, lat, base)
-    for i, f in enumerate(hf):
-        f["properties"]["ia"] = round(float(ia[i]), 1)
-        f["properties"]["mz"] = min_zoom(lat[i], float(ia[i]))
-    print(f"interest: heritage        {len(hf):7d}, {int((ia >= 20).sum())} best within 20 km", file=sys.stderr)
+    # Isolation among the sites as the map shows them: a merged site once, at its dot.
+    at = {i: whs[sid]["dot"] for i, (r, sid) in role.items() if r == "lead"}
+    keep = np.array([i for i in range(len(hf)) if role.get(i, ("",))[0] != "part"], dtype=np.int64)
+    lon = np.array([at[i][0] if i in at else hf[i]["geometry"]["coordinates"][0] for i in keep])
+    lat = np.array([at[i][1] if i in at else hf[i]["geometry"]["coordinates"][1] for i in keep])
+    ia = isolation(lon, lat, base[keep])
+    for n, i in enumerate(keep):
+        hf[i]["properties"]["ia"] = round(float(ia[n]), 1)
+        hf[i]["properties"]["mz"] = min_zoom(lat[n], float(ia[n]))
+    print(f"interest: heritage        {len(keep):7d}, {int((ia >= 20).sum())} best within 20 km "
+          f"({len(at)} World Heritage Sites as one dot, {len(hf) - len(keep)} of their components apart)", file=sys.stderr)
     write(hfc, "heritage.json")
 
 

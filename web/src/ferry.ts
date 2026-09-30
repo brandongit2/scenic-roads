@@ -173,6 +173,8 @@ export function ferryColourOf(p: Record<string, any>, st: FerryScale, range: [nu
 /** A line's details (ferry-lines.json). */
 export interface FerryLine {
   name: string;
+  /** English name, where the name isn't English (dem/names.py). */
+  en?: string;
   ref: string;
   operator: string;
   network: string;

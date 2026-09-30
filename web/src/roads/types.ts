@@ -1,3 +1,5 @@
+import type { LodFilter } from './lod';
+
 /** Bytes per GPU vertex (see worker.ts). */
 export const STRIDE = 32;
 /** Scenic channels per vertex (roadcore::scenic::ch): 0–11 at bytes 20–31, 12 (roadside
@@ -13,6 +15,8 @@ export interface DecodedTile {
   verts: ArrayBuffer;
   lineStart: Uint32Array;
   lineWay: Uint32Array;
+  /** The lines in order of way id (a road's lines by binary search: layer.ts lineState). */
+  wayOrder: Uint32Array;
   lineStyle: Uint8Array;
   /** Per-line flags (LF_UNNAMED). */
   lineFlags: Uint8Array;
@@ -29,6 +33,13 @@ export interface DecodedTile {
    * they are thinner than a pixel. */
   minorStart: number;
   minorEnd: number;
+  /** Longest piece (tile units): whether the tile can be drawn as point sprites (layer.ts). */
+  maxSeg: number;
+  /** The pieces' first vertices for the sprite draw, at each level of detail (lod.ts), the coarser
+   * levels for the road filters in `lodSig`. */
+  pieces: Uint32Array<ArrayBuffer>;
+  levels: PieceLevel[];
+  lodSig: string;
   /** Elevation quantile sketches, [cell][group*2+unpaved][EQ], metres (NaN = empty). */
   eq: Float32Array;
   /** Grade quantile sketches, [cell][group][GQ], percent. */
@@ -51,8 +62,17 @@ export interface DecodedTile {
   decodeMs: number;
 }
 
+/** A level of detail of a tile's piece list: pieces kept (one per `cell` tile units, 0: all) at
+ * pieces[off …], and how many of them come before the roads, before the minor classes, before the
+ * tunnels & ferries, and in all (the draw groups, see DecodedTile). */
+export interface PieceLevel {
+  cell: number;
+  off: number;
+  n: [number, number, number, number];
+}
+
 export type WorkerRequest =
-  | { type: 'load'; id: number; url: string; z: number; x: number; y: number }
+  | { type: 'load'; id: number; url: string; z: number; x: number; y: number; lod: LodFilter | null }
   | { type: 'abort'; id: number };
 
 export type WorkerResponse =

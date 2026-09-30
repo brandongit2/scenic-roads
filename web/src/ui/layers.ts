@@ -4,14 +4,14 @@ import { FERRY_GROUPS, FERRY_GROUP_COLOURS } from '../ferry';
 import { HERITAGE_GROUPS, HERITAGE_TIERS, POI_STYLE } from '../basemap';
 import type { ViewStats } from '../roads/stats';
 import { filtersOf, type StopFilter } from '../stopfilters';
-import { LABEL_KINDS, OVERLAYS, WEIGHT_MAX, WEIGHT_MIN, defaults, type AppState, type HillshadeMethod, type OverlayKey, type Store, type TintRange, type TintVar } from '../state';
+import { LABEL_KINDS, LINE_KINDS, OVERLAYS, WEIGHT_RANGE, defaults, type AppState, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintRange, type TintVar } from '../state';
 import { baseKey, isRev, withRev } from '../palettes';
 import { TINT_PALETTES, TINT_VARS } from '../terrain';
 import * as prefs from '../prefs';
 import { fmt, h } from './dom';
-import { ScaleControls } from './scale';
 import { RampSelect } from './rampselect';
 import { TreeSection } from './trees';
+import { toggleAllStops } from './stops';
 
 const SW = [2.6, 2, 1.4, 1, 1.4];
 const METHODS: [HillshadeMethod, string][] = [
@@ -64,8 +64,13 @@ export class LayersCard {
   private surfKm: [HTMLSpanElement, HTMLSpanElement];
   private tollBox: { free: HTMLInputElement; toll: HTMLInputElement };
   private tollKm: [HTMLSpanElement, HTMLSpanElement];
-  private weight: HTMLInputElement;
-  private weightOut: HTMLOutputElement;
+  /** Line weights: the global one, then each kind's. */
+  private lw: { key: 'global' | LineKind; input: HTMLInputElement; out: HTMLOutputElement }[] = [];
+  private railOp: HTMLInputElement;
+  private railOpOut: HTMLOutputElement;
+  private ferryOp: HTMLInputElement;
+  private ferryOpOut: HTMLOutputElement;
+  private ferryDashed: HTMLInputElement;
   private glow: HTMLInputElement;
   private boundaryBoxes: HTMLInputElement[] = [];
   private occlude: HTMLInputElement;
@@ -82,16 +87,15 @@ export class LayersCard {
   private globe: HTMLInputElement;
   private labelOp: HTMLInputElement;
   private labelOpOut: HTMLOutputElement;
+  private roadOp: HTMLInputElement;
+  private roadOpOut: HTMLOutputElement;
   private poiOp: HTMLInputElement;
   private poiOpOut: HTMLOutputElement;
-  private poiEm: HTMLInputElement;
-  private poiEmOut: HTMLOutputElement;
   /** Landmark prominence: the shared scale controls (histogram, fit, fade, highlight) over the
    * landmark score, and the fame ↔ rarity balance. */
-  readonly lmScale: ScaleControls;
-  private lmBal: HTMLInputElement;
-  private lmBalOut: HTMLOutputElement;
   private ov: Partial<Record<OverlayKey, HTMLInputElement>> = {};
+  /** Every stop & sight at once (the kinds that were on come back when it's ticked again). */
+  private stopsAll!: HTMLInputElement;
   private ovState: Partial<Record<OverlayKey, HTMLSpanElement>> = {};
   /** Heritage groups and their kinds of designation (checkbox, site count). */
   private hGroups: { key: string; c: HTMLInputElement; n: HTMLSpanElement }[] = [];
@@ -188,8 +192,12 @@ export class LayersCard {
     });
     this.railFreq = new FreqFilterRow('Trains a day', 'Trains a day each way on a typical weekday (all services on the track), from operators\u2019 timetables. Empty = no limit.',
       'Tracks without a timetable', () => this.store.s.rail, (p) => this.store.set({ rail: { ...this.store.s.rail, ...p } }));
+    this.railOp = slider(0.1, 1, 0.05, (v) => this.store.set({ rail: { ...this.store.s.rail, opacity: v } }), defaults.rail.opacity);
+    this.railOp.title = 'Opacity of the rail lines and their stop dots (double-click: default)';
+    this.railOpOut = h('output');
     this.railSection = [
       tog(this.rail, 'Passenger rail', h('span', { class: 'km faint' }, 'km in view'), 'tog', 'Tracks used by passenger services (OSM route relations), plus trams, metros, funiculars and heritage lines'),
+      h('div', { class: 'row', title: 'Opacity of the rail lines and their stop dots' }, h('span', { class: 'muted' }, 'Opacity'), this.railOp, this.railOpOut),
       railGroups,
       ...this.railFreq.nodes,
     ];
@@ -209,16 +217,30 @@ export class LayersCard {
       sw.style.background = FERRY_GROUP_COLOURS[i];
       ferryGroups.append(tog(c, h('span', { class: 'lbl' }, sw, g.label), km, 'tog sub', g.help));
     });
+    this.ferryOp = slider(0.05, 1, 0.05, (v) => this.store.set({ ferry: { ...this.store.s.ferry, opacity: v } }), defaults.ferry.opacity);
+    this.ferryOp.title = 'Opacity of the ferry lines and their terminal dots (double-click: default)';
+    this.ferryOpOut = h('output');
+    this.ferryDashed = cb((v) => this.store.set({ ferry: { ...this.store.s.ferry, dashed: v } }));
     this.ferrySection = [
       tog(this.ferry, 'Ferries', h('span', { class: 'km faint' }, 'km in view'), 'tog',
         'Passenger ferries, car ferries included (OSM ferry routes). Car ferries are also part of the road network (Roads → Car ferries).'),
+      h('div', { class: 'row', title: 'Opacity of the ferry lines and their terminal dots' }, h('span', { class: 'muted' }, 'Opacity'), this.ferryOp, this.ferryOpOut),
       ferryGroups,
       ...(this.ferryFreq = new FreqFilterRow('Sailings a day', 'Sailings a day each way, from operators\u2019 timetables (on a stretch used by several lines, added up). Empty = no limit.',
         'Lines without a timetable', () => this.store.s.ferry, (p) => this.store.set({ ferry: { ...this.store.s.ferry, ...p } }))).nodes,
+      tog(this.ferryDashed, 'Dashed lines', '', 'tog', 'Ferry lines dashed, as on paper maps'),
     ];
-    this.weight = slider(WEIGHT_MIN, WEIGHT_MAX, 0.05, (v) => this.store.set({ weight: v }), defaults.weight);
-    this.weight.title = 'Width of roads, passenger rail and ferries (double-click: default)';
-    this.weightOut = h('output');
+    // Line weights: the global one scales every line on the map; each kind's is relative to it.
+    const lwRow = (key: 'global' | LineKind, label: string, help: string) => {
+      const input = slider(WEIGHT_RANGE[0], WEIGHT_RANGE[1], 0.05, (v) => this.store.set({ lineWeights: { ...this.store.s.lineWeights, [key]: v } }), 1);
+      input.title = 'Double-click: default';
+      const out = h('output');
+      this.lw.push({ key, input, out });
+      return h('div', { class: key === 'global' ? 'row lw top' : 'row lw', title: help }, h('span', key === 'global' ? {} : { class: 'muted' }, label), input, out);
+    };
+    const lineWeights = h('div', { class: 'lw-block' },
+      lwRow('global', 'Global line weight', 'Width of every line on the map (contour lines too); the weights below are relative to it'),
+      ...LINE_KINDS.map(([k, label, help]) => lwRow(k, label, help)));
     this.glow = cb((v) => this.store.set({ routeGlow: v }));
     this.occlude = cb((v) => this.store.set({ occlude: v }));
 
@@ -309,25 +331,13 @@ export class LayersCard {
       tintHi: h('span'),
     };
     this.labelOp = slider(0, 1, 0.05, (v) => this.store.set({ labelOpacity: v }), defaults.labelOpacity);
+    this.roadOp = slider(0.1, 1, 0.05, (v) => this.store.set({ roadOpacity: v }), defaults.roadOpacity);
+    this.roadOp.title = 'Opacity of the roads, in every display type (double-click: default)';
+    this.roadOpOut = h('output');
     this.globe = cb((v) => this.store.set({ globe: v }));
     this.labelOpOut = h('output');
     this.poiOp = slider(0.1, 1, 0.05, (v) => this.store.set({ poiOpacity: v }), defaults.poiOpacity);
     this.poiOpOut = h('output');
-    this.poiEm = slider(0, 1, 0.05, (v) => this.store.set({ poiEmphasis: v }), defaults.poiEmphasis);
-    this.poiEmOut = h('output');
-    const lmSet = (patch: Partial<AppState['landmarks']>) => this.store.set({ landmarks: { ...this.store.s.landmarks, ...patch } });
-    this.lmScale = new ScaleControls({
-      get: () => this.store.s.landmarks,
-      set: lmSet,
-      metric: () => ({ domain: [0, 1], step: 0.01, fmt: (v) => String(Math.round(v * 100)) }),
-      noun: 'landmarks',
-      measure: 'landmarks',
-      fadeDefault: defaults.landmarks.lowFade,
-      spanDefault: defaults.landmarks.lowSpan,
-      onPreview: () => {},
-    });
-    this.lmBal = slider(0, 1, 0.05, (v) => lmSet({ balance: v }), defaults.landmarks.balance);
-    this.lmBalOut = h('output');
     const row = (label: string, input: HTMLElement, out?: HTMLElement) => h('div', { class: 'row' }, h('span', { class: 'muted' }, label), input, out ?? h('span'));
 
     this.t.customBox.append(row('Min', this.t.tintMin, this.t.tintMinOut), row('Max', this.t.tintMax, this.t.tintMaxOut));
@@ -432,6 +442,9 @@ export class LayersCard {
     // Built once: the toggles register themselves (this.ov) for syncing.
     const designations = byGroup('designations');
 
+    // All stops & sights at once (as the top-left panel's Stops & sights toggle).
+    this.stopsAll = cb(() => toggleAllStops(this.store));
+
     this.viewshedBtn = h('button', { class: 'pill wide', title: 'Click a spot on the map to see everything visible from there (trees and terrain block the view)', onclick: () => this.onViewshed() }, 'What can I see from here?');
 
     root.append(
@@ -439,7 +452,7 @@ export class LayersCard {
       h('div', { class: 'bd scroll' },
         this.section('map', 'Map',
           tog(this.globe, 'Globe', '', 'tog', 'Globe projection; flattens to Web Mercator as you zoom in'),
-          h('div', { class: 'row', title: 'Width of roads, passenger rail and ferries' }, h('span', { class: 'muted' }, 'Line weight'), this.weight, this.weightOut),
+          lineWeights,
           tog(this.other.water, 'Water'),
           tog(this.other.boundaries, 'Boundaries'),
           ...BOUNDARY_LEVELS.map(([label, help], i) => {
@@ -461,6 +474,7 @@ export class LayersCard {
         ),
         this.section('roads', 'Roads',
           tog(this.roads, 'Roads', h('span', { class: 'km faint' }, 'km in view')),
+          h('div', { class: 'row', title: 'Opacity of the roads, in every display type' }, h('span', { class: 'muted' }, 'Opacity'), this.roadOp, this.roadOpOut),
           groups,
           tog(this.surf.paved, 'Paved', this.surfKm[0], 'tog sub'),
           tog(this.surf.unpaved, 'Unpaved (dashed)', this.surfKm[1], 'tog sub'),
@@ -489,13 +503,8 @@ export class LayersCard {
           tog(this.t.sky, 'Sky & distance fog', '', 'tog', 'Visible when the map is tilted'),
         ),
         this.section('stops', 'Stops & sights',
-          h('div', { class: 'row', title: 'Dots, areas and their labels (labels also follow Label opacity)' }, h('span', { class: 'muted' }, 'Opacity'), this.poiOp, this.poiOpOut),
-          h('div', { class: 'lm-scale', title: 'Landmark score in view (0–100): how well known (Wikipedia pageviews) and how rare nearby (distance to a better-known one of its kind). Dots are sized and faded along this scale.' },
-            this.lmScale.legend, this.lmScale.fadeRow, this.lmScale.thrRow),
-          h('div', { class: 'row', title: 'What makes a landmark prominent: how well known it is (Wikipedia pageviews) or how rare it is nearby (distance to a better-known one of its kind)' },
-            h('span', { class: 'muted' }, 'Fame ↔ rarity'), this.lmBal, this.lmBalOut),
-          h('div', { class: 'row', title: 'How much dot size varies along the scale. 0: all dots the same size.' },
-            h('span', { class: 'muted' }, 'Size contrast'), this.poiEm, this.poiEmOut),
+          tog(this.stopsAll, 'Show stops & sights', '', 'tog', 'Every kind below at once. Off hides them all; on brings back the kinds you had on'),
+          h('div', { class: 'row', title: 'Dots, areas and their labels (labels also follow Label opacity). Sizes and fades along the landmark score: the top-left panel' }, h('span', { class: 'muted' }, 'Opacity'), this.poiOp, this.poiOpOut),
           ...byGroup('map'),
           ...designations.slice(0, 1),
           levels,
@@ -597,8 +606,16 @@ export class LayersCard {
       if (document.activeElement !== e) e.value = s.roadLen[i] ? String(s.roadLen[i]) : '';
       e.disabled = !s.layers.roads || !s.roadLenOn;
     });
-    this.weight.value = String(s.weight);
-    this.weightOut.value = `${s.weight.toFixed(2)}×`;
+    for (const { key, input, out } of this.lw) {
+      input.value = String(s.lineWeights[key]);
+      out.value = `${s.lineWeights[key].toFixed(2)}×`;
+    }
+    this.railOp.value = String(s.rail.opacity);
+    this.railOpOut.value = `${Math.round(s.rail.opacity * 100)} %`;
+    this.ferryOp.value = String(s.ferry.opacity);
+    this.ferryOpOut.value = `${Math.round(s.ferry.opacity * 100)} %`;
+    this.ferryDashed.checked = s.ferry.dashed;
+    this.ferryDashed.disabled = !s.ferry.on;
     this.glow.checked = s.routeGlow;
     this.occlude.checked = s.occlude;
     this.rail.checked = s.rail.on;
@@ -666,14 +683,10 @@ export class LayersCard {
     this.globe.checked = s.globe;
     this.labelOp.value = String(s.labelOpacity);
     this.labelOpOut.value = `${Math.round(s.labelOpacity * 100)} %`;
+    this.roadOp.value = String(s.roadOpacity);
+    this.roadOpOut.value = `${Math.round(s.roadOpacity * 100)} %`;
     this.poiOp.value = String(s.poiOpacity);
     this.poiOpOut.value = `${Math.round(s.poiOpacity * 100)} %`;
-    this.poiEm.value = String(s.poiEmphasis);
-    this.poiEmOut.value = `${Math.round(s.poiEmphasis * 100)} %`;
-    const lm = s.landmarks;
-    this.lmBal.value = String(lm.balance);
-    this.lmBalOut.value = lm.balance <= 0 ? 'fame' : lm.balance >= 1 ? 'rarity' : `${Math.round((1 - lm.balance) * 100)}:${Math.round(lm.balance * 100)}`;
-    this.lmScale.sync();
     this.t.contours.checked = t.contours;
     this.t.sky.checked = t.sky;
     this.other.water.checked = s.layers.water;
@@ -689,6 +702,9 @@ export class LayersCard {
       c.disabled = !s.layers.places;
     });
     for (const [k] of OVERLAYS) if (this.ov[k]) this.ov[k]!.checked = s.overlays[k];
+    const nOn = OVERLAYS.filter(([k]) => s.overlays[k]).length;
+    this.stopsAll.checked = nOn > 0;
+    this.stopsAll.indeterminate = nOn > 0 && nOn < OVERLAYS.length;
     for (const t of this.hTiers) {
       t.c.checked = !s.heritageOff.includes(t.key);
       t.c.disabled = !s.overlays.heritage;

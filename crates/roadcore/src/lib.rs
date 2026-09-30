@@ -90,6 +90,13 @@ pub mod network {
     pub const PT_NACIONAL: u8 = 43;
     pub const PT_REGIONAL: u8 = 44;
     pub const HK_ROUTE: u8 = 50;
+    pub const JP_EXPRESSWAY: u8 = 51;
+    pub const JP_NATIONAL: u8 = 52;
+    pub const JP_PREFECTURAL: u8 = 53;
+    pub const TW_FREEWAY: u8 = 54;
+    pub const TW_PROVINCIAL: u8 = 55;
+    pub const TW_COUNTY: u8 = 56;
+    pub const SG_EXPRESSWAY: u8 = 57;
     pub const AD_GENERAL: u8 = 60;
     pub const AD_SECUNDARIA: u8 = 61;
     pub const E_ROAD: u8 = 70;
@@ -116,12 +123,20 @@ pub enum DemSource {
     Hrdem = 1,
     Usgs3dep = 2,
     Mrdem = 3,
-    /// FABDEM 30 m (Copernicus DEM with forests and buildings removed), outside North America.
+    /// FABDEM 30 m (Copernicus DEM with forests and buildings removed), elsewhere.
     Fabdem = 4,
+    /// GSI 5 m, airborne lidar (Japan).
+    Gsi5a = 5,
+    /// GSI 5 m, photogrammetry (Japan).
+    Gsi5 = 6,
+    /// GSI 10 m (Japan).
+    Gsi10 = 7,
+    /// Taiwan MOI 20 m DTM.
+    Moi = 8,
 }
 
 /// Number of DEM source codes, `None` included.
-pub const NDEM: usize = 5;
+pub const NDEM: usize = 9;
 
 impl DemSource {
     pub fn label(v: u8) -> &'static str {
@@ -130,6 +145,10 @@ impl DemSource {
             2 => "USGS 3DEP (10 m)",
             3 => "NRCan MRDEM (30 m)",
             4 => "FABDEM (30 m)",
+            5 => "GSI lidar (5 m)",
+            6 => "GSI (5 m)",
+            7 => "GSI (10 m)",
+            8 => "MOI DTM (20 m)",
             _ => "none",
         }
     }

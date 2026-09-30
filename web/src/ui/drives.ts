@@ -3,7 +3,8 @@
 import { getDrives, type Drive } from '../api';
 import { COMPONENTS } from '../scenic';
 import * as prefs from '../prefs';
-import { cap, fmt, h, openRow } from './dom';
+import { cap, fmt, h } from './dom';
+import { withEnglish } from '../english';
 
 const LENGTHS = [2, 5, 10, 25];
 
@@ -19,11 +20,11 @@ export class DrivesPane {
   onResults: (d: Drive[]) => void = () => {};
   onHover: (d: Drive | null) => void = () => {};
   onSelect: (d: Drive) => void = () => {};
+  /** The row under the pointer (G, M, O open it). */
+  hovered: Drive | null = null;
   /** Listed stretches drawn on the map all the time (else only the hovered one). */
-  showOnMap = prefs.load('drives.showOnMap', true);
+  showOnMap = prefs.load('drives.showOnMap', false);
   onShowChange: (on: boolean) => void = () => {};
-  /** URL showing this drive (rows are links, so Cmd-click opens a new tab). */
-  linkFor: (d: Drive) => string = () => '#';
   /** `len`: whole-road length filter [min, max], km (0 = no limit). */
   query: () => { bbox: string; poly: string; classes: number; surface: number; toll: number; unnamed: number; len: [number, number]; weights: number[] } = () => ({ bbox: '', poly: '', classes: 0, surface: 3, toll: 3, unnamed: 0, len: [0, 0], weights: [] });
 
@@ -50,7 +51,7 @@ export class DrivesPane {
         h('label', { class: 'show-map', title: 'Highlight the listed stretches on the map all the time (hovering a row always highlights it)' }, show, 'On map')),
       this.list,
       h('div', { class: 'faint', style: 'font-size:10.5px;margin-top:6px;line-height:1.45' },
-        'Best stretch of each continuous road, ranked by the mean scenic score with your weights (Colour → Scenic → Score). Hover to highlight, click for the profile.'),
+        'Best stretch of each continuous road, ranked by the mean scenic score with your weights (Colour → Scenic → Score). Hover to highlight (G: Street View, M: Google Maps, O: OpenStreetMap), click to select.'),
     );
     const l = prefs.load('drives.len', 5);
     this.setLen(LENGTHS.includes(l) ? l : 5);
@@ -94,12 +95,13 @@ export class DrivesPane {
   }
 
   private render(d: { total: number; drives: Drive[] }) {
+    this.hovered = null;
     this.count.textContent = d.total ? `${fmt.n(d.total)} roads of ${this.len} km or more in view · top ${d.drives.length}` : `No roads of ${this.len} km or more in view`;
     this.list.replaceChildren(
       ...d.drives.map((c, i) => {
         const title = h('span', { class: 'ct' });
         if (c.ref) title.append(h('span', { class: 'ref' }, c.ref));
-        title.append(cap(c.name) || c.route || (c.ref ? '' : `Unnamed ${c.class.replace('_', ' ')}`));
+        title.append(cap(c.name && withEnglish(c.name, c.geom[c.geom.length >> 1])) || c.route || (c.ref ? '' : `Unnamed ${c.class.replace('_', ' ')}`));
         // Top three contributing components (value × positive weight is done server-side via
         // the score; here show the strongest raw factors).
         const top = c.parts
@@ -112,7 +114,7 @@ export class DrivesPane {
           .filter(Boolean);
         const bar = h('i', { class: 'sbar' });
         bar.style.width = `${Math.max(4, c.score)}%`;
-        const row = h('a', { class: 'climb', href: this.linkFor(c), onclick: (e: MouseEvent) => openRow(e, () => this.onSelect(c)) },
+        const row = h('a', { class: 'climb', onclick: () => this.onSelect(c) },
           h('span', { class: 'rank' }, String(i + 1)),
           h('div', { class: 'cbody' },
             h('div', { class: 'cl1' }, title, h('b', {}, c.score.toFixed(0))),
@@ -120,8 +122,8 @@ export class DrivesPane {
             h('div', { class: 'cl2' }, `${fmt.dist(c.length_m)} · ${[...top, ...flags].join(' · ')}`),
           ),
         );
-        row.addEventListener('mouseenter', () => this.onHover(c));
-        row.addEventListener('mouseleave', () => this.onHover(null));
+        row.addEventListener('mouseenter', () => this.onHover((this.hovered = c)));
+        row.addEventListener('mouseleave', () => this.onHover((this.hovered = null)));
         return row;
       }),
     );

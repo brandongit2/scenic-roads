@@ -6,21 +6,27 @@
 //! f32 lon_a, lat_a, lon_b, lat_b, u8 mode (0 tram, 1 metro, 2 rail, 3 funicular; bit 0x80: the
 //! count is a lower bound; 0x20 / 0x40: stop A / B is beyond the map), f32 trains — the trains from stop A to stop B on a typical weekday. Each pair is matched onto the rail ways
 //! of ways.bin: each stop snaps to its nearest few tracks within 300 m, or 1 km when there are none
-//! that close (a stop between the two tracks of a double-track line may be nearest the wrong one), then a shortest path runs along
+//! that close (a stop between the two tracks of a double-track line may be nearest the wrong one),
+//! at the foot of the perpendicular from the stop (so on every track the stop is at the same cross-section: a
+//! train arriving on one track and leaving on another isn't counted twice there), then a shortest path runs along
 //! the track graph from any of A's to any of B's (junctions and way ends as nodes; tracks of
 //! another kind of service cost 4× so paths keep to the right network; dangling track ends are
 //! bridged to other tracks within 100 m, since only tracks used by route relations are in
 //! ways.bin and relations skip bits of station throats), at most 3× the straight distance + 3 km.
-//! Every way on the path gets the pair's trains. When one stop is beyond the map's regions (flagged
+//! The pair's trains run over the path: the stretches of track from stop A to stop B, the first
+//! and last only in part, so every point of the track has its trains (a way is often longer than
+//! the gap between stations: a metro line's track can be one 15 km way, and adding up the pairs on
+//! it would count each train once per station). When one stop is beyond the map's regions (flagged
 //! by railgtfs; a cross-border service, at most 300 km on) and no track is near it, the path runs
 //! from the other to the dead-end track nearest it, when that end is at most 0.8× the pair's
 //! distance from it.
 //!
-//! A path takes one track of a multi-track line (OSM maps each track as its own way), so a
-//! track's own count says little: the trains are then added up across the corridor. At a few
-//! points along each way, every other track running parallel within 40 m (same kind of service,
-//! not just touching end to end) is found, and the way gets the sum of their counts (the median
-//! over its points); parallel tracks with no trains of their own get the corridor's too.
+//! A path takes one track of a multi-track line (OSM maps each track as its own way), not always
+//! its direction's, so a track's own count says little: the trains are then added up across the
+//! corridor. At a few points along each way, every other track running parallel within 40 m (same
+//! kind of service, not just touching end to end) is found, and the way gets the sum of their
+//! trains at that cross-section (the median over its points; each train is on one of the tracks
+//! there); parallel tracks with no trains of their own get the corridor's too.
 //!
 //! Output: rail-freq.bin, sorted (u32 way index, f32 trains a day each way — both directions added
 //! and halved; negative when any of it is a lower bound, i.e. "at least") for the rail ways with
@@ -125,22 +131,37 @@ fn main() -> Result<()> {
     let mut edges: Vec<Edge> = Vec::new();
     // Per rail vertex (for snapping): position, edge, offset, groups.
     let mut grid: HashMap<(i32, i32), Vec<(f64, f64, At, u8)>> = HashMap::new();
-    for &w in &rail {
+    // Per rail way: its stretches (first edge, count: made in order along it) and the distance
+    // along it at each vertex, for the trains at a point of it.
+    let mut way_edges: Vec<(u32, u32)> = Vec::with_capacity(rail.len());
+    let mut along: Vec<Vec<f32>> = Vec::with_capacity(rail.len());
+    // Per edge: its rail way (index) and where along it the edge starts.
+    let mut edge_way: Vec<(u32, f32)> = Vec::new();
+    for (ri, &w) in rail.iter().enumerate() {
         let wr = &ways[w as usize];
         let v = &verts[wr.vstart as usize..(wr.vstart + wr.vcount as u64) as usize];
+        let first = edges.len() as u32;
+        let mut pre = vec![0f32; v.len()];
         if v.len() < 2 {
+            way_edges.push((first, 0));
+            along.push(pre);
             continue;
         }
         let mut start = 0usize;
         let mut acc = 0.0f64;
+        let mut total = 0.0f64;
         let mut pending: Vec<(f64, f64, f64)> = vec![(v[0][0] as f64 * E7, v[0][1] as f64 * E7, 0.0)];
         for k in 1..v.len() {
             let (x0, y0, x1, y1) = (v[k - 1][0] as f64 * E7, v[k - 1][1] as f64 * E7, v[k][0] as f64 * E7, v[k][1] as f64 * E7);
-            acc += dist_m(x0, y0, x1, y1);
+            let d = dist_m(x0, y0, x1, y1);
+            acc += d;
+            total += d;
+            pre[k] = total as f32;
             pending.push((x1, y1, acc));
             if node_of.contains_key(&v[k]) || k + 1 == v.len() {
                 let e = edges.len() as u32;
                 edges.push(Edge { u: node_of[&v[start]], v: node_of[&v[k]], len: acc as f32, way: w, groups: wr.rail });
+                edge_way.push((ri as u32, pre[start]));
                 for &(x, y, off) in &pending {
                     grid.entry(((x / CELL).floor() as i32, (y / CELL).floor() as i32)).or_default().push((x, y, At { edge: e, off: off as f32 }, wr.rail));
                 }
@@ -149,6 +170,8 @@ fn main() -> Result<()> {
                 pending = vec![(x1, y1, 0.0)];
             }
         }
+        way_edges.push((first, edges.len() as u32 - first));
+        along.push(pre);
     }
     let n_nodes = node_of.len();
     drop(node_of);
@@ -203,6 +226,35 @@ fn main() -> Result<()> {
     eprintln!("gap links: {}", edges.len() - n_real);
     eprintln!("rail graph: {} ways, {} nodes, {} edges ({:.0?})", rail.len(), n_nodes, edges.len(), t0.elapsed());
 
+    // A stop's point on a track: from its nearest vertex, the foot of the perpendicular on the
+    // segments either side (within the vertex's stretch), and the distance to it.
+    let foot = |p: [f64; 2], at: At| -> (At, f64) {
+        let (ri, start) = edge_way[at.edge as usize];
+        let (a, len) = (&along[ri as usize], edges[at.edge as usize].len);
+        let wr = &ways[rail[ri as usize] as usize];
+        let v = &verts[wr.vstart as usize..(wr.vstart + wr.vcount as u64) as usize];
+        let x = start + at.off;
+        let k = a.partition_point(|&d| d < x).min(a.len() - 1);
+        let k = [k.saturating_sub(1), k, (k + 1).min(a.len() - 1)].into_iter().min_by(|&m, &n| (a[m] - x).abs().total_cmp(&(a[n] - x).abs())).unwrap();
+        let (kx, ky) = (111_320.0 * p[1].to_radians().cos(), 110_570.0);
+        let pt = |q: [i32; 2]| [q[0] as f64 * E7, q[1] as f64 * E7];
+        let mut best = (f64::MAX, x);
+        for (s, t) in [(k.wrapping_sub(1), k), (k, k + 1)] {
+            if s >= v.len() || t >= v.len() {
+                continue;
+            }
+            let (a0, a1) = (pt(v[s]), pt(v[t]));
+            let d = [(a1[0] - a0[0]) * kx, (a1[1] - a0[1]) * ky];
+            let q = [(p[0] - a0[0]) * kx, (p[1] - a0[1]) * ky];
+            let dd = d[0] * d[0] + d[1] * d[1];
+            let u = if dd > 0.0 { ((q[0] * d[0] + q[1] * d[1]) / dd).clamp(0.0, 1.0) } else { 0.0 };
+            let dist = ((q[0] - d[0] * u).powi(2) + (q[1] - d[1] * u).powi(2)).sqrt();
+            if dist < best.0 {
+                best = (dist, a[s] + (a[t] - a[s]) * u as f32);
+            }
+        }
+        (At { edge: at.edge, off: (best.1 - start).clamp(0.0, len) }, best.0)
+    };
     // The nearest point of each nearby track (way), right kind of track first, up to a few; with
     // the distance from the stop, which is added to the path cost.
     let snap_within = |p: [f64; 2], bits: u8, max_m: f64| -> Vec<(At, f32)> {
@@ -231,7 +283,10 @@ fn main() -> Result<()> {
         let mut c: Vec<(f64, bool, At)> = per_way.into_values().collect();
         c.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.total_cmp(&b.0)));
         c.truncate(SNAP_CANDIDATES);
-        c.into_iter().map(|(d, _, at)| (at, d as f32)).collect()
+        c.into_iter().map(|(d, _, at)| {
+            let (at, df) = foot(p, at);
+            (at, df.min(d) as f32)
+        }).collect()
     };
     // A stop with no track near it (a rural station whose route relation runs along another track
     // of the line) takes the nearest within SNAP_FAR_M.
@@ -242,17 +297,16 @@ fn main() -> Result<()> {
 
     let debug = std::env::var("RAILFREQ_DEBUG").is_ok();
     let n_rail = rail.len();
-    let rail_index: HashMap<u32, u32> = rail.iter().enumerate().map(|(i, &w)| (w, i as u32)).collect();
-    let (sums, lower, matched, partial) = pairs
+    let (mut runs, matched, partial) = pairs
         .par_chunks(2048)
         .map(|chunk| {
-            let mut sums = vec![0f32; n_rail];
-            let mut lower = vec![false; n_rail];
+            // Where each pair's trains run: (edge, from, to along it, trains, a lower bound).
+            let mut runs: Vec<(u32, f32, f32, f32, bool)> = Vec::new();
             let mut matched = 0usize;
             let mut partial = 0usize;
             let mut dist: HashMap<u32, f32> = HashMap::new();
             let mut prev: HashMap<u32, u32> = HashMap::new(); // node → edge taken to reach it
-            let mut src: HashMap<u32, u32> = HashMap::new(); // start node → A's stretch it came from
+            let mut src: HashMap<u32, At> = HashMap::new(); // start node → the point of A's stretch it came from
             for p in chunk {
                 let bits = mode_bits(p.mode);
                 let (ca, cb) = (snap(p.a, bits), snap(p.b, bits));
@@ -271,17 +325,10 @@ fn main() -> Result<()> {
                     }
                 };
                 let cost = |e: &Edge, len: f32| if e.groups & bits != 0 { len } else { len * OFF_MODE };
-                let add = |e: u32, sums: &mut Vec<f32>, lower: &mut Vec<bool>| {
-                    let w = edges[e as usize].way;
-                    if w != u32::MAX {
-                        let i = rail_index[&w] as usize;
-                        sums[i] += p.n;
-                        lower[i] |= p.lower;
-                    }
-                };
+                let mut run = |e: u32, from: f32, to: f32| runs.push((e, from.min(to), from.max(to), p.n, p.lower));
                 // Both stops on the same stretch of track.
-                if let Some(&(a, _)) = ca.iter().find(|(a, _)| cb.iter().any(|(b, _)| b.edge == a.edge)) {
-                    add(a.edge, &mut sums, &mut lower);
+                if let Some((a, b)) = ca.iter().find_map(|(a, _)| cb.iter().find(|(b, _)| b.edge == a.edge).map(|(b, _)| (*a, *b))) {
+                    run(a.edge, a.off, b.off);
                     matched += 1;
                     continue;
                 }
@@ -296,24 +343,25 @@ fn main() -> Result<()> {
                     for (node, c) in [(ea.u, d0 + cost(ea, a.off)), (ea.v, d0 + cost(ea, ea.len - a.off))] {
                         if dist.get(&node).is_none_or(|&d| c < d) {
                             dist.insert(node, c);
-                            src.insert(node, a.edge);
+                            src.insert(node, a);
                             heap.push(Reverse((c.to_bits(), node)));
                         }
                     }
                 }
                 // Reaching either end of one of B's stretches, plus the rest of it.
-                let finish = |node: u32, d: f32| -> (f32, u32) {
-                    let mut best = (f32::INFINITY, u32::MAX);
+                let none = At { edge: u32::MAX, off: 0.0 };
+                let finish = |node: u32, d: f32| -> (f32, At) {
+                    let mut best = (f32::INFINITY, none);
                     for &(b, d0) in &cb {
                         let eb = &edges[b.edge as usize];
                         let f = if node == eb.u { d + cost(eb, b.off) + d0 } else if node == eb.v { d + cost(eb, eb.len - b.off) + d0 } else { f32::INFINITY };
                         if f < best.0 {
-                            best = (f, b.edge);
+                            best = (f, b);
                         }
                     }
                     best
                 };
-                let mut best = (f32::INFINITY, u32::MAX, u32::MAX); // cost, node, B's edge
+                let mut best = (f32::INFINITY, u32::MAX, none); // cost, node, B's point
                 let mut end = (BEYOND_SHARE * straight, u32::MAX); // beyond: the track end nearest the stop
                 while let Some(Reverse((cbits, u))) = heap.pop() {
                     let c = f32::from_bits(cbits);
@@ -358,6 +406,9 @@ fn main() -> Result<()> {
                     continue;
                 }
                 matched += 1;
+                // The end of a stretch at a node: its offset there.
+                let at_node = |e: &Edge, node: u32| if node == e.u { 0.0 } else { e.len };
+                let mut n = best.1;
                 if beyond.is_some() {
                     partial += 1;
                     if debug {
@@ -365,18 +416,19 @@ fn main() -> Result<()> {
                         eprintln!("BEYOND {} {:.5},{:.5} {:.5},{:.5} {} → end {:.5},{:.5}", p.mode, p.a[0], p.a[1], p.b[0], p.b[1], p.n, q[0], q[1]);
                     }
                 } else {
-                    add(best.2, &mut sums, &mut lower);
+                    // B's stretch, from where the path reaches it to the stop.
+                    run(best.2.edge, at_node(&edges[best.2.edge as usize], n), best.2.off);
                 }
-                let mut n = best.1;
                 let mut guard = 0;
                 loop {
-                    if let Some(&se) = src.get(&n) {
-                        add(se, &mut sums, &mut lower);
+                    if let Some(&a) = src.get(&n) {
+                        // A's stretch, from the stop to where the path leaves it.
+                        run(a.edge, a.off, at_node(&edges[a.edge as usize], n));
                         break;
                     }
                     let Some(&ei) = prev.get(&n) else { break };
-                    add(ei, &mut sums, &mut lower);
                     let e = &edges[ei as usize];
+                    run(ei, 0.0, e.len);
                     n = if e.u == n { e.v } else { e.u };
                     guard += 1;
                     if guard > 100_000 {
@@ -384,18 +436,68 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            (sums, lower, matched, partial)
+            (runs, matched, partial)
         })
-        .reduce(
-            || (vec![0f32; n_rail], vec![false; n_rail], 0usize, 0usize),
-            |(mut a, mut la, ma, pa), (b, lb, mb, pb)| {
-                a.iter_mut().zip(&b).for_each(|(x, y)| *x += y);
-                la.iter_mut().zip(&lb).for_each(|(x, y)| *x |= y);
-                (a, la, ma + mb, pa + pb)
-            },
-        );
+        .reduce(|| (Vec::new(), 0usize, 0usize), |(mut a, ma, pa), (mut b, mb, pb)| {
+            a.append(&mut b);
+            (a, ma + mb, pa + pb)
+        });
     eprintln!("{partial} pairs with one stop beyond the tracks run to the nearest track end toward it");
-    let (sums, lower) = corridors(&rail, ways, verts, &sums, &lower);
+    // The trains at each point of each stretch: breakpoints (from here on, this many), a sweep over
+    // its runs (a run ending where another starts doesn't overlap it; one of no length covers a point).
+    runs.par_sort_unstable_by_key(|r| r.0);
+    let mut cov_off = vec![0u32; edges.len() + 1];
+    let mut cov: Vec<(f32, f32)> = Vec::new();
+    let mut edge_lower = vec![false; edges.len()];
+    let mut by_edge = runs.chunk_by(|x, y| x.0 == y.0).peekable();
+    for e in 0..edges.len() {
+        cov_off[e] = cov.len() as u32;
+        let Some(rs) = by_edge.next_if(|rs| rs[0].0 as usize == e) else { continue };
+        let mut ev: Vec<(f32, f32)> = rs.iter().flat_map(|&(_, from, to, n, _)| [(from, n), (to.max(from + 0.5), -n)]).collect();
+        ev.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.total_cmp(&y.1))); // ends first where they meet starts
+        let mut cur = 0f32;
+        for (pos, d) in ev {
+            cur += d;
+            if cov.len() > cov_off[e] as usize && cov.last().is_some_and(|l| l.0 == pos) {
+                cov.last_mut().unwrap().1 = cur;
+            } else {
+                cov.push((pos, cur));
+            }
+        }
+        edge_lower[e] = rs.iter().any(|r| r.4);
+    }
+    cov_off[edges.len()] = cov.len() as u32;
+    drop(runs);
+    let cov_at = |e: usize, x: f32| -> f32 {
+        let pts = &cov[cov_off[e] as usize..cov_off[e + 1] as usize];
+        let k = pts.partition_point(|p| p.0 <= x);
+        if k == 0 { 0.0 } else { pts[k - 1].1.max(0.0) }
+    };
+    // Trains at a distance along a rail way (and whether it's a lower bound).
+    let at = |i: usize, x: f32| -> (f32, bool) {
+        let (first, n) = way_edges[i];
+        let mut start = 0f32;
+        for e in first..first + n {
+            let len = edges[e as usize].len;
+            if x <= start + len || e + 1 == first + n {
+                let c = cov_at(e as usize, (x - start).clamp(0.0, len));
+                return (c, c > 0.0 && edge_lower[e as usize]);
+            }
+            start += len;
+        }
+        (0.0, false)
+    };
+    // Each way's most trains anywhere on it (for a way with none at its sampled points).
+    let most: Vec<(f32, bool)> = (0..n_rail)
+        .map(|i| {
+            let (first, n) = way_edges[i];
+            (first..first + n).fold((0f32, false), |(m, lo), e| {
+                let top = cov[cov_off[e as usize] as usize..cov_off[e as usize + 1] as usize].iter().fold(0f32, |a, p| a.max(p.1));
+                (m.max(top), lo || (top > 0.0 && edge_lower[e as usize]))
+            })
+        })
+        .collect();
+    let (sums, lower) = corridors(&rail, ways, verts, &along, &at, &most);
     let mut out: Vec<u8> = Vec::new();
     let mut n_ways = 0usize;
     for (i, &s) in sums.iter().enumerate() {
@@ -425,10 +527,18 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Trains summed across each corridor: per way, at 25/50/75 % of its length, the counts of every
-/// track (itself included) running parallel within CORRIDOR_M whose nearest point there is not
-/// one of its ends; the median of those sums. Lower-bound flags carry over likewise.
-fn corridors(rail: &[u32], ways: &[roadcore::WayRec], verts: &[[i32; 2]], sums: &[f32], lower: &[bool]) -> (Vec<f32>, Vec<bool>) {
+/// Trains summed across each corridor: per way, at 25/50/75 % of its length, its trains there
+/// and those of every track (itself included) running parallel within CORRIDOR_M whose nearest
+/// point there is not one of its ends, at that point; the median of those sums (a way with none
+/// there: its most anywhere). Lower-bound flags carry over likewise.
+fn corridors(
+    rail: &[u32],
+    ways: &[roadcore::WayRec],
+    verts: &[[i32; 2]],
+    along: &[Vec<f32>],
+    at: &(impl Fn(usize, f32) -> (f32, bool) + Sync),
+    most: &[(f32, bool)],
+) -> (Vec<f32>, Vec<bool>) {
     let pts = |i: usize| -> Vec<[f64; 2]> {
         let wr = &ways[rail[i] as usize];
         verts[wr.vstart as usize..(wr.vstart + wr.vcount as u64) as usize].iter().map(|p| [p[0] as f64 * E7, p[1] as f64 * E7]).collect()
@@ -448,13 +558,18 @@ fn corridors(rail: &[u32], ways: &[roadcore::WayRec], verts: &[[i32; 2]], sums: 
             }
         }
     }
+    // The distance along way i at segment k, fraction t of it.
+    let dist_along = |i: usize, k: usize, t: f64| -> f32 {
+        let a = &along[i];
+        a[k] + (a[k + 1] - a[k]) * t as f32
+    };
     let groups: Vec<u8> = rail.iter().map(|&w| ways[w as usize].rail).collect();
     let res: Vec<(f32, bool)> = (0..rail.len())
         .into_par_iter()
         .map(|i| {
             let v = pts(i);
             if v.len() < 2 {
-                return (sums[i], lower[i]);
+                return most[i];
             }
             // Local metres per degree.
             let ky = 111_320.0;
@@ -474,8 +589,8 @@ fn corridors(rail: &[u32], ways: &[roadcore::WayRec], verts: &[[i32; 2]], sums: 
                 let p = [v[k][0] + (v[k + 1][0] - v[k][0]) * t, v[k][1] + (v[k + 1][1] - v[k][1]) * t];
                 let dir = [(v[k + 1][0] - v[k][0]) * kx, (v[k + 1][1] - v[k][1]) * ky];
                 let dn = (dir[0] * dir[0] + dir[1] * dir[1]).sqrt().max(1e-9);
-                // Nearest point of each other way near p: (distance, parallel, interior).
-                let mut near: HashMap<u32, (f64, bool, bool)> = HashMap::new();
+                // Nearest point of each other way near p: (distance, parallel, interior, distance along it).
+                let mut near: HashMap<u32, (f64, bool, bool, f32)> = HashMap::new();
                 let (cx, cy) = ((p[0] / CELL).floor() as i32, (p[1] / CELL).floor() as i32);
                 for dx in -1..=1 {
                     for dy in -1..=1 {
@@ -498,28 +613,29 @@ fn corridors(rail: &[u32], ways: &[roadcore::WayRec], verts: &[[i32; 2]], sums: 
                             let cos = ((s[0] * dir[0] + s[1] * dir[1]) / (ss.sqrt().max(1e-9) * dn)).abs();
                             let last = wr.vcount as usize - 2;
                             let end = (sk == 0 && u <= 1e-6) || (sk as usize == last && u >= 1.0 - 1e-6);
-                            let e = near.entry(j).or_insert((f64::MAX, false, false));
+                            let e = near.entry(j).or_insert((f64::MAX, false, false, 0.0));
                             if dist < e.0 {
-                                *e = (dist, cos > 0.94, !end);
+                                *e = (dist, cos > 0.94, !end, dist_along(j as usize, sk as usize, u));
                             }
                         }
                     }
                 }
-                let mut sum = sums[i];
-                let mut lo = lower[i];
-                for (&j, &(_, parallel, interior)) in &near {
+                let (mut sum, mut lo) = at(i, dist_along(i, k, t));
+                for (&j, &(_, parallel, interior, x)) in &near {
                     if parallel && interior {
-                        sum += sums[j as usize];
-                        lo |= lower[j as usize] && sums[j as usize] > 0.0;
+                        let (c, l) = at(j as usize, x);
+                        sum += c;
+                        lo |= l;
                     }
                 }
                 samples.push((sum, lo));
             }
             samples.sort_by(|a, b| a.0.total_cmp(&b.0));
-            samples[samples.len() / 2]
+            let m = samples[samples.len() / 2];
+            if m.0 > 0.0 { m } else { most[i] }
         })
         .collect();
-    let n_gain = res.iter().zip(sums).filter(|((c, _), &s)| *c > 0.0 && s <= 0.0).count();
+    let n_gain = res.iter().zip(most).filter(|((c, _), (s, _))| *c > 0.0 && *s <= 0.0).count();
     eprintln!("corridors: {} tracks without trains of their own get their corridor's", n_gain);
     res.into_iter().unzip()
 }

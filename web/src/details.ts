@@ -60,9 +60,14 @@ const wikiTag = (t: string): [string, string] | null => {
   const mm = String(t).match(/^([a-z]{2,3}):(.+)$/);
   return mm ? wiki(mm[1], mm[2]) : null;
 };
-const osmLink = (osm: string): [string, string] | null => {
+/** An OSM object ('n123', 'w45', 'r6') as its path on openstreetmap.org ('node/123'). */
+export const osmPath = (osm: unknown): string | null => {
   const mm = String(osm ?? '').match(/^([nwr])(\d+)$/);
-  return mm ? ['OpenStreetMap', `https://www.openstreetmap.org/${{ n: 'node', w: 'way', r: 'relation' }[mm[1]]}/${mm[2]}`] : null;
+  return mm ? `${{ n: 'node', w: 'way', r: 'relation' }[mm[1]]}/${mm[2]}` : null;
+};
+const osmLink = (osm: string): [string, string] | null => {
+  const path = osmPath(osm);
+  return path ? ['OpenStreetMap', `https://www.openstreetmap.org/${path}`] : null;
 };
 const HILL_LISTS: [string, string][] = [['munro', 'Munro'], ['corbett', 'Corbett'], ['graham', 'Graham'], ['donald', 'Donald'], ['marilyn', 'Marilyn'],
   ['hewitt', 'Hewitt'], ['wainwright', 'Wainwright'], ['nuttall', 'Nuttall']];
@@ -196,11 +201,8 @@ export function enrichPoi(kind: string, props: Record<string, any>, d: Detail): 
     if (yes(d.picnic_table) || yes(d.bench)) has.push('tables');
     if (yes(d.fireplace) || yes(d.bbq)) has.push('barbecue');
     if (yes(d.parking)) has.push('parking');
-    if (has.length) {
-      facts.push(has.join(', '));
-      rows.push(['Facilities', has.join(', ')]);
-    }
-    if (d.fee === 'yes') facts.push('fee');
+    if (has.length) rows.push(['Facilities', has.join(', ')]);
+    if (d.fee === 'yes') rows.push(['Fee', 'charged']);
     if (d.opening_hours) rows.push(['Hours', d.opening_hours]);
   }
   if (d.heritage) rows.push(['Heritage', `protected (level ${d.heritage})`]);
@@ -234,16 +236,11 @@ export function enrichHeritage(d: Detail): Enriched {
   const facts: string[] = [], rows: [string, string][] = [], links: [string, string][] = [];
   // The site's own record (dem/layers.py leaves it out of the map's layer).
   const p = d.props ?? {};
-  if (p.date) facts.push(`designated ${p.date}`);
-  if (p.municipality) facts.push(String(p.municipality));
   if (p.category ?? p.type) facts.push(String(p.category ?? p.type));
   if (p.in_danger) facts.push('in danger');
   if (d.long && d.short) facts.push(d.short);
   if (d.inst?.length) rows.push(['Type', d.inst.slice(0, 3).join(', ')]);
-  if (d.style?.length) {
-    facts.push(d.style[0]);
-    rows.push(['Style', d.style.join(', ')]);
-  }
+  if (d.style?.length) rows.push(['Style', d.style.join(', ')]);
   if (d.arch?.length) rows.push(['Architect', d.arch.join(', ')]);
   if (d.inception) {
     facts.push(`built ${year(d.inception)}`);
@@ -258,11 +255,13 @@ export function enrichHeritage(d: Detail): Enriched {
   };
 }
 
-export function enrichArea(d: Detail): Enriched {
+/** omit: what the area's own register already gives (its area, its year), in the hover line and
+ * the popup, so the mapped outline's area and Wikidata's year don't repeat them. */
+export function enrichArea(d: Detail, omit: { area?: boolean; since?: boolean } = {}): Enriched {
   const facts: string[] = [], rows: [string, string][] = [], links: [string, string][] = [];
   const wd = d.wd ?? {};
   const a = Number(d.area_km2);
-  if (a > 0) {
+  if (a > 0 && !omit.area) {
     const txt = a < 1 ? `${fmt.n(Math.round(a * 100))} ha` : `${fmt.n(a < 100 ? +a.toFixed(1) : Math.round(a))} km²`;
     facts.push(txt);
     rows.push(['Area', txt]);
@@ -271,7 +270,7 @@ export function enrichArea(d: Detail): Enriched {
   if (title) rows.push(['Protection', title]);
   if (d.protect_class) rows.push(['IUCN / class', d.protect_class]);
   const since = d.start_date ?? wd.inception;
-  if (since) {
+  if (since && !omit.since) {
     facts.push(`since ${year(since)}`);
     rows.push(['Established', year(since)]);
   }

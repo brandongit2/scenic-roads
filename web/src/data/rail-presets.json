@@ -1,5 +1,6 @@
 {
-  "about": "Built-in rail ride-factor presets. Weights are keyed by factor (see RAIL_COMPONENTS in rail.ts); missing factors weigh 0. The first preset is the default. Edits made in the app are kept in the browser and replace this list there.",
+  "about": "Built-in rail ride-factor presets. Weights are keyed by factor (see RAIL_COMPONENTS in rail.ts); missing factors weigh 0. `default` is the app's default preset (else the first). Edits made in the app are kept in the browser and replace this list there.",
+  "default": "my-preset",
   "presets": [
     {
       "id": "balanced",
@@ -25,6 +26,11 @@
       "id": "frequent",
       "name": "Frequent service",
       "weights": { "views": 0.8, "water": 0.8, "vista": 0.5, "relief": 0.6, "ledge": 0.5, "altitude": 0.2, "viaduct": 0.4, "tunnel": -1, "gradient": 0.2, "curvy": 0.2, "freq": 1.5 }
+    },
+    {
+      "id": "my-preset",
+      "name": "My preset",
+      "weights": { "views": 0.7, "water": 0.3, "vista": 0.8, "relief": 1, "ledge": 2, "altitude": 0, "viaduct": 2, "tunnel": -1, "gradient": 0.3, "curvy": 0.3, "freq": 1 }
     }
   ]
 }

@@ -63,6 +63,20 @@ export const CLASS_GROUP: number[] = (() => {
 // Tile pyramid served by the backend.
 export const TILE_MINZOOM = 4;
 export const TILE_MAXZOOM = 14;
+/** Tiles up to this zoom have their pieces split to at most SPRITE_SEG_PX (of a 256 px tile), so
+ * the renderer can draw them as point sprites (roads/layer.ts). */
+export const SPRITE_MAXZ = 11;
+export const SPRITE_SEG_PX = 8;
+/** Largest sprite (CSS px) the renderer draws a piece as; tiles with longer pieces on screen are
+ * drawn as quads. A large sprite is mostly empty pixels, but even so far cheaper than a quad. */
+export const SPRITE_MAX_CSS = 128;
+/** Cells (tile units) of the levels of detail (roads/lod.ts): the coarsest tiles get
+ * them all (for views zoomed out beyond them), the others those up to 8 (drawn at most a zoom
+ * level out from their own, except far off in tilted views, where the cover picks coarse tiles). */
+export const LOD_CELLS = [1, 2, 4, 8, 16, 32, 64];
+/** Largest cell (device px on screen) a level of detail may use: a pixel, which a road kept there
+ * covers (roads are at least a device pixel wide). */
+export const LOD_CELL_PX = 1;
 
 // Line widths in CSS px at MapLibre zooms WIDTH_Z, per class.
 export const WIDTH_Z = [4, 7, 10, 13, 16, 19];

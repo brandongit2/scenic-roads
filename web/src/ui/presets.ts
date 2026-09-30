@@ -69,7 +69,6 @@ export class PresetBar {
         btn('Save as…', 'Save the current weights as a new preset', () => open({ kind: 'saveas' })),
         btn('Rename…', 'Rename this preset', () => open({ kind: 'rename' }), !cur),
         btn('Delete', 'Delete this preset', () => open({ kind: 'delete' }), !cur || presets.list.length <= 1),
-        h('span', { class: 'grow' }),
       );
       if (presets.custom) this.row.append(btn('Built-ins', 'Replace your presets with the built-in ones', () => open({ kind: 'restore' })));
       return;

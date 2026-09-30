@@ -4,6 +4,11 @@ import * as maplibregl from 'maplibre-gl';
 import { inPolygon } from './overlays';
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';
 import { ver } from './api';
+import { hostFor } from './hosts';
+import { tasks } from './tasks';
+import { fitPopup } from './popupfit';
+import { legibleCss } from './linecolour';
+import { withEnglish } from './english';
 import {
   FERRY_GROUP_COLOURS, FERRY_GROUPS, NFERRY, ferryColourExpr, ferryColourOf, ferryMetricDef, ferryOpacityExpr, fmtDuration, fmtPerDay, freqText,
   lineTitle, operatorColour, type FerryLine,
@@ -11,12 +16,80 @@ import {
 import type { FeatureSummary } from './overlays';
 import { distFromSamples, type Dist } from './roads/stats';
 import { passes } from './ui/scale';
-import { defaults, labelShown, type AppState, type FerryState } from './state';
+import { labelShown, lineWeight, type AppState, type FerryState } from './state';
 import { cap, fmt, h } from './ui/dom';
 
 const LINE = 'ferry-line';
 const LABELS = ['ferry-label', 'ferry-terminal-label'];
 const TERMINALS = 'ferry-terminal';
+/** A terminal takes the colour of a line within this many pixels of it. */
+const TERMINAL_PX = 6;
+/** Lines as far as this from a terminal count (TERMINAL_PX at zoom 4, where terminals appear). */
+const NEAR_M = 30000;
+
+/** Per feature, its line's bounding box (west, south, east, north; not a line: empty). */
+function lineBoxes(fs: Feature[]): Float64Array {
+  const out = new Float64Array(fs.length * 4).fill(NaN);
+  fs.forEach((f, i) => {
+    if (f.geometry.type !== 'LineString') return;
+    let w = Infinity, s = Infinity, e = -Infinity, n = -Infinity;
+    for (const [x, y] of (f.geometry as GeoJSON.LineString).coordinates) {
+      if (x < w) w = x;
+      if (x > e) e = x;
+      if (y < s) s = y;
+      if (y > n) n = y;
+    }
+    out.set([w, s, e, n], i * 4);
+  });
+  return out;
+}
+
+/** Per terminal (Point feature, by index), the lines (LineString features, by index) within
+ * NEAR_M of it, nearest first: [line index, metres]. Segments bucketed on a grid of NEAR_M. A
+ * generator (yields every few terminals: idle.ts runs it between frames), returning the map. */
+function* nearLines(fs: Feature[]): Generator<void, Map<number, [number, number][]>> {
+  const M = 111320; // metres per degree of latitude
+  const cell = NEAR_M / M; // degrees
+  const grid = new Map<string, [number, number, number, number, number][]>();
+  fs.forEach((f, li) => {
+    if (f.geometry.type !== 'LineString') return;
+    const c = (f.geometry as GeoJSON.LineString).coordinates;
+    for (let k = 0; k + 1 < c.length; k++) {
+      const [x0, y0] = c[k], [x1, y1] = c[k + 1];
+      for (let gy = Math.floor(Math.min(y0, y1) / cell); gy <= Math.floor(Math.max(y0, y1) / cell); gy++)
+        for (let gx = Math.floor(Math.min(x0, x1) / cell); gx <= Math.floor(Math.max(x0, x1) / cell); gx++) {
+          const key = `${gx}/${gy}`;
+          let b = grid.get(key);
+          if (!b) grid.set(key, (b = []));
+          b.push([li, x0, y0, x1, y1]);
+        }
+    }
+  });
+  const out = new Map<number, [number, number][]>();
+  yield;
+  for (let ti = 0; ti < fs.length; ti++) {
+    const f = fs[ti];
+    if (ti % 64 === 63) yield;
+    if (f.geometry.type !== 'Point') continue;
+    const [px, py] = (f.geometry as GeoJSON.Point).coordinates;
+    const kx = M * Math.cos((py * Math.PI) / 180);
+    const best = new Map<number, number>();
+    const gx0 = Math.floor(px / cell), gy0 = Math.floor(py / cell);
+    const rx = Math.ceil(NEAR_M / Math.max(1, kx) / cell);
+    for (let gy = gy0 - 1; gy <= gy0 + 1; gy++)
+      for (let gx = gx0 - rx; gx <= gx0 + rx; gx++)
+        for (const [li, x0, y0, x1, y1] of grid.get(`${gx}/${gy}`) ?? []) {
+          // Point to segment, in metres on the local plane.
+          const ax = (x0 - px) * kx, ay = (y0 - py) * M, bx = (x1 - px) * kx, by = (y1 - py) * M;
+          const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+          const t = l2 > 0 ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / l2)) : 0;
+          const m = Math.hypot(ax + t * dx, ay + t * dy);
+          if (m <= NEAR_M && m < (best.get(li) ?? Infinity)) best.set(li, m);
+        }
+    out.set(ti, [...best.entries()].sort((a, b) => a[1] - b[1]));
+  }
+  return out;
+}
 
 type Feature = GeoJSON.Feature<GeoJSON.Geometry, Record<string, any>>;
 
@@ -35,7 +108,6 @@ export class Ferries {
   private range: [number, number] = [0, 1];
   private cdf: Uint8Array | null = null;
   onLoaded: () => void = () => {};
-  onBusy: (label: string | null) => void = () => {};
 
   constructor(private map: MLMap) {}
 
@@ -45,18 +117,18 @@ export class Ferries {
 
   private ensure() {
     if (this.loading) return;
-    this.onBusy('Loading ferries…');
+    tasks.begin('ferries', 'Ferries', 'downloading the lines and timetables');
     this.loading = Promise.all([
-      fetch(`/api/layer/ferries${ver('ferries.json')}`).then((r) => (r.ok ? r.json() : null)),
-      fetch(`/api/layer/ferry-lines${ver('ferry-lines.json')}`).then((r) => (r.ok ? r.json() : null)),
+      fetch(`${hostFor('layers')}/api/layer/ferries${ver('ferries.json')}`).then((r) => (r.ok ? r.json() : null)),
+      fetch(`${hostFor('layers')}/api/layer/ferry-lines${ver('ferry-lines.json')}`).then((r) => (r.ok ? r.json() : null)),
     ])
       .then(([fc, lines]) => {
-        this.onBusy(null);
+        tasks.end('ferries');
         if (!fc) return;
         for (const f of fc.features as Feature[]) {
           const p = f.properties;
           if (f.geometry.type !== 'LineString') continue;
-          p.oc = p.col || operatorColour(p.op);
+          p.oc = legibleCss(p.col) ?? operatorColour(p.op);
           p.gs = String(p.gs ?? '') || digits(p.gb);
           p.km = lengthKm((f.geometry as GeoJSON.LineString).coordinates);
         }
@@ -65,7 +137,7 @@ export class Ferries {
         this.map.getSource<GeoJSONSource>('ferries')?.setData(fc);
         this.onLoaded();
       })
-      .catch(() => this.onBusy(null));
+      .catch(() => tasks.end('ferries'));
   }
 
   apply(s: AppState) {
@@ -87,12 +159,54 @@ export class Ferries {
     map.setFilter('ferry-label', ['all', ['==', ['geometry-type'], 'LineString'], ['!=', ['get', 'n'], ''], groups, freq]);
     this.paint();
     const o = f.opacity;
-    map.setPaintProperty(TERMINALS, 'circle-opacity', Math.min(1, o + 0.05));
-    map.setPaintProperty(TERMINALS, 'circle-stroke-opacity', Math.min(1, o + 0.05));
-    // Map → Line weight scales ferries too (relative to its default), on top of the card's own.
-    const w = f.weight * (s.weight / defaults.weight);
+    // (shown once coloured: recolourTerminals)
+    const shown = (v: number): ExpressionSpecification => ['case', ['boolean', ['feature-state', 'k'], false], v, 0];
+    map.setPaintProperty(TERMINALS, 'circle-opacity', shown(Math.min(1, o + 0.05)));
+    map.setPaintProperty(TERMINALS, 'circle-stroke-opacity', shown(Math.min(1, o + 0.05)));
+    const w = lineWeight(s, 'ferries');
     map.setPaintProperty(LINE, 'line-width', ['interpolate', ['linear'], ['zoom'], 3, 0.6 * w, 7, 1.1 * w, 11, 1.8 * w, 15, 3 * w, 18, 4.5 * w]);
+    map.setPaintProperty(TERMINALS, 'circle-radius', ['interpolate', ['linear'], ['zoom'], 4, 1 * w, 9, 1.8 * w, 14, 3.5 * w]);
     map.setPaintProperty(LINE, 'line-dasharray', f.dashed ? ['literal', [2.5, 1.6]] : ['literal', [1, 0]]);
+  }
+
+  /** Per terminal (its index in the data, its feature id): the ferry lines within NEAR_M of it,
+   * nearest first, as [line index, metres]. Found once. */
+  private nearLines: Map<number, [number, number][]> | null = null;
+  /** Colour set per terminal (null: ferry blue). */
+  private terminalColours = new Map<number, string | null>();
+
+  /** Each terminal takes the colour of the nearest ferry line shown within TERMINAL_PX of it, else
+   * ferry blue; from the data, not the rendered features (on the 3D globe their queries ray-march
+   * the terrain). Only terminals whose colour changed are set (`all`: every one). A generator: it
+   * yields every few terminals (idle.ts runs it between frames). */
+  *recolourTerminals(all = false): Generator<void, void> {
+    const map = this.map, st = this.style, fc = this.fc;
+    if (!st || !fc || !map.getLayer(TERMINALS) || map.getLayoutProperty(TERMINALS, 'visibility') === 'none') return;
+    this.nearLines ??= yield* nearLines(fc.features as Feature[]);
+    if (all) this.terminalColours.clear();
+    const shown = (p: Record<string, any>) => {
+      const v = Number(p.f);
+      return st.groups.some((on, i) => on && String(p.gs).includes(String(i)))
+        && (!st.freqOn || (v < 0 ? st.freqUnknown : (!(st.freqMin > 0) || v >= st.freqMin) && (!(st.freqMax > 0) || v <= st.freqMax)));
+    };
+    const pxM = 40075016.686 / (512 * 2 ** map.getZoom());
+    let k = 0;
+    for (const [ti, near] of this.nearLines) {
+      if (++k % 256 === 0) yield;
+      const lat = ((fc.features[ti].geometry as GeoJSON.Point).coordinates[1] * Math.PI) / 180;
+      const maxM = TERMINAL_PX * pxM * Math.cos(lat);
+      let c: string | null = null;
+      for (const [li, m] of near) {
+        if (m > maxM) break;
+        const p = (fc.features[li] as Feature).properties;
+        if (!shown(p)) continue;
+        c = ferryColourOf(p, st, this.range, this.cdf);
+        break;
+      }
+      if (this.terminalColours.has(ti) && this.terminalColours.get(ti) === c) continue;
+      this.terminalColours.set(ti, c);
+      map.setFeatureState({ source: 'ferries', id: ti }, { c, k: true });
+    }
   }
 
   /** Colour and opacity (after a style change, or a new scale range or lookup). */
@@ -162,17 +276,26 @@ export class Ferries {
   /** Outline of the ground in view (lng, lat), as the "in view" lists use. */
   viewOutline: (() => [number, number][]) | null = null;
 
+  /** Per feature, the bounding box of a line (west, south, east, north), for skipping lines out of
+   * view; found once. */
+  private boxes: Float64Array | null = null;
+
   /** Ferry routes in view (after the filters): count, seasonal ones, the busiest crossing. */
   viewSummary(): { routes: number; seasonal: number; busiest: { name: string; perDay: number; lngLat: [number, number] } | null } {
     const out = { routes: 0, seasonal: 0, busiest: null as { name: string; perDay: number; lngLat: [number, number] } | null };
     if (!this.fc) return out;
     const poly = this.viewOutline?.() ?? [];
     const b = this.map.getBounds();
-    const [w, s, e, n] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+    let [w, s, e, n] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
     const test = poly.length >= 3 ? inPolygon(poly) : (x: number, y: number) => x >= w && x <= e && y >= s && y <= n;
+    if (poly.length >= 3) for (const [x, y] of poly) [w, s, e, n] = [Math.min(w, x), Math.min(s, y), Math.max(e, x), Math.max(n, y)];
+    const fs = this.fc.features as Feature[];
+    this.boxes ??= lineBoxes(fs);
+    const bx = this.boxes;
     const seen = new Set<string>();
-    for (const f of this.fc.features as Feature[]) {
-      if (f.geometry.type !== 'LineString') continue;
+    for (let fi = 0; fi < fs.length; fi++) {
+      const f = fs[fi];
+      if (f.geometry.type !== 'LineString' || bx[fi * 4] > e || bx[fi * 4 + 2] < w || bx[fi * 4 + 1] > n || bx[fi * 4 + 3] < s) continue;
       const c = (f.geometry as GeoJSON.LineString).coordinates;
       const inside = c.filter(([x, y]) => test(x, y));
       if (!inside.length) continue;
@@ -231,7 +354,7 @@ export class Ferries {
     const route = l.from && l.to ? `${l.from} → ${l.to}${l.via ? ` via ${l.via.replace(/;/g, ', ')}` : ''}` : '';
     const src = l.freq?.source ? `Sailings: ${l.freq.source}${l.freq.checked ? ` (${l.freq.checked})` : ''}` : 'Sailings: no timetable found yet';
     return {
-      title: cap(lineTitle(l)) + (ls.length > 1 ? ` +${ls.length - 1}` : ''),
+      title: cap(withEnglish(lineTitle(l), null, l.en)) + (ls.length > 1 ? ` +${ls.length - 1}` : ''),
       kind: FERRY_GROUPS[l.group].one + (l.vehicles ? ' · cars & foot passengers' : ' · foot passengers'),
       colour: st ? ferryColourOf(p, st, this.range, this.cdf) : FERRY_GROUP_COLOURS[p.g],
       facts,
@@ -251,9 +374,9 @@ export class Ferries {
     const link = (url: string | undefined, label: string) => (url ? h('a', { href: url, target: '_blank', rel: 'noopener' }, `${label} ↗`) : null);
     ls.forEach(([, l], i) => {
       const dot = h('span', { class: 'dot' });
-      dot.style.background = l.colour || FERRY_GROUP_COLOURS[l.group];
+      dot.style.background = legibleCss(l.colour) ?? FERRY_GROUP_COLOURS[l.group];
       const items = [
-        h('div', { class: 'ttl' }, cap(lineTitle(l)), l.ref && l.name && !l.name.includes(l.ref) ? h('span', { class: 'faint' }, ` ${l.ref}`) : ''),
+        h('div', { class: 'ttl' }, cap(withEnglish(lineTitle(l), null, l.en)), l.ref && l.name && !l.name.includes(l.ref) ? h('span', { class: 'faint' }, ` ${l.ref}`) : ''),
         h('div', { class: 'sub' }, dot, FERRY_GROUPS[l.group].label, h('span', { class: 'faint' }, l.vehicles ? ' · cars & foot passengers' : ' · foot passengers')),
         kv('Route', l.from && l.to ? `${l.from} → ${l.to}` : null),
         kv('Via', l.via ? l.via.replace(/;/g, ', ') : null),
@@ -271,7 +394,10 @@ export class Ferries {
       body.append(...(items.filter((x) => x !== null) as Node[]));
     });
     this.popup?.remove();
-    this.popup = new maplibregl.Popup({ closeButton: true, maxWidth: '320px', className: 'dark-pop', offset: 8 }).setLngLat(at).setDOMContent(body).addTo(this.map);
+    const popup = new maplibregl.Popup({ closeButton: true, maxWidth: '320px', className: 'dark-pop', offset: 8 });
+    const fit = fitPopup(this.map, popup, body);
+    this.popup = popup.setLngLat(at).setDOMContent(fit.el).addTo(this.map);
+    fit.fit();
     return true;
   }
 

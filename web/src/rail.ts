@@ -85,7 +85,6 @@ export const RAIL_COMPONENTS: RailComponent[] = [
   { key: 'freq', label: 'Service frequency', short: 'Trains', unit: '/day', help: 'Trains a day each way (full at 100 a day, log scale); tracks without a timetable leave it out of the score', text: (s) => (s.freq >= 0 ? fmtTrains(s.freq) : '–') },
 ];
 export const RNCOMP = RAIL_COMPONENTS.length;
-export const RAIL_DEFAULT_WEIGHTS = [1, 1.2, 0.8, 1, 0.8, 0.4, 0.8, -1, 0.4, 0.3, 0.3];
 /** Index of the service-frequency factor (left out of the score where unknown). */
 export const RAIL_FREQ = 10;
 

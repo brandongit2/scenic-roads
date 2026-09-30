@@ -6,6 +6,7 @@ import { HYPSO } from './basemap';
 import { PALETTES, baseKey, isRev, paletteFn } from './palettes';
 import type { Dist } from './roads/stats';
 import type { Terrain } from './state';
+import { ver } from './api';
 
 type RGB = [number, number, number];
 
@@ -187,7 +188,7 @@ function setupContours(map: MLMap, origin: string) {
   if (contoursReady) return;
   contoursReady = true;
   const demSource = new mlcontour.DemSource({
-    url: `${origin}/tiles/terrain/{z}/{x}/{y}`,
+    url: `${origin}/tiles/terrain/{z}/{x}/{y}${ver('terrain.tiles')}`,
     encoding: 'terrarium',
     maxzoom: 12,
     worker: true,
@@ -246,6 +247,7 @@ function setupContours(map: MLMap, origin: string) {
 
 export function applyTerrain(map: MLMap, t: Terrain, origin: string) {
   map.setTerrain(t.on ? { source: 'dem', exaggeration: t.exaggeration } : null);
+  fastTerrainCoords(map);
   // Hillshade.
   if (map.getLayer('hillshade')) {
     map.setLayoutProperty('hillshade', 'visibility', t.hillshade ? 'visible' : 'none');
@@ -281,8 +283,10 @@ export function applyTerrain(map: MLMap, t: Terrain, origin: string) {
           'sky-horizon-blend': 0.6,
           'horizon-fog-blend': 0.6,
           'fog-ground-blend': 0.75,
-          // Faint atmosphere around the globe when zoomed out.
-          'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 0.55, 4, 0.35, 7, 0],
+          // No atmosphere: with this light it drew nothing visible (not one pixel changed, even at
+          // full strength), yet its scattering shader ran for every pixel below zoom 7 (1.6 ms of
+          // GPU a frame).
+          'atmosphere-blend': 0,
         }
       : {
           'sky-color': '#0b0e13',
@@ -294,4 +298,137 @@ export function applyTerrain(map: MLMap, t: Terrain, origin: string) {
           'atmosphere-blend': 0,
         },
   );
+}
+
+interface CanonicalID {
+  x: number;
+  y: number;
+  z: number;
+  equals(o: CanonicalID): boolean;
+  isChildOf(o: CanonicalID): boolean;
+}
+interface TileID {
+  canonical: CanonicalID;
+  clone(): TileID & { terrainRttPosMatrix32f?: Float32Array };
+}
+interface TerrainTiles {
+  _renderableTilesKeys: string[];
+  _tiles: Record<string, { tileID: TileID }>;
+  _getTerrainCoordsForRegularTile?: (tileID: TileID) => Record<string, TileID>;
+}
+
+/**
+ * MapLibre's terrain draping asks, every frame, for each tile of each draped source, which terrain
+ * tiles it overlaps (TerrainTileManager._getTerrainCoordsForRegularTile). It copies the tile id and
+ * allocates a matrix for every terrain tile before checking whether the two are related at all:
+ * tilted, with a hundred terrain tiles in view, that was tens of thousands of allocations a frame and
+ * the largest share of the main thread's time. The same result here, the matrices built only for the
+ * related tiles (ortho, translate and scale as in gl-matrix).
+ */
+function fastTerrainCoords(map: MLMap) {
+  const tm = (map as unknown as { terrain?: { tileManager?: TerrainTiles } }).terrain?.tileManager;
+  const proto = tm && (Object.getPrototypeOf(tm) as TerrainTiles & { __fastCoords?: boolean });
+  if (!proto || proto.__fastCoords || typeof proto._getTerrainCoordsForRegularTile !== 'function') return;
+  if (!Array.isArray(tm._renderableTilesKeys) || typeof tm._tiles !== 'object') return;
+  const EXTENT = 8192;
+  const ortho = (r: number) => {
+    const m = new Float64Array(16);
+    m[0] = 2 / r;
+    m[5] = -2 / r;
+    m[10] = -2;
+    m[12] = -1;
+    m[13] = 1;
+    m[14] = -1;
+    m[15] = 1;
+    return m;
+  };
+  const translate = (m: Float64Array, x: number, y: number) => {
+    for (let i = 0; i < 4; i++) m[12 + i] += m[i] * x + m[4 + i] * y;
+  };
+  proto._getTerrainCoordsForRegularTile = function (this: TerrainTiles, tileID: TileID) {
+    const coords: Record<string, TileID> = {};
+    const c = tileID.canonical;
+    for (const key of this._renderableTilesKeys) {
+      const t = this._tiles[key].tileID.canonical;
+      let mat: Float64Array;
+      if (t.equals(c)) {
+        mat = ortho(EXTENT);
+      } else if (t.z > c.z && t.isChildOf(c)) {
+        const dz = t.z - c.z;
+        const dx = t.x - ((t.x >> dz) << dz), dy = t.y - ((t.y >> dz) << dz);
+        const size = EXTENT >> dz;
+        mat = ortho(size);
+        translate(mat, -dx * size, -dy * size);
+      } else if (c.z > t.z && c.isChildOf(t)) {
+        const dz = c.z - t.z;
+        const dx = c.x - ((c.x >> dz) << dz), dy = c.y - ((c.y >> dz) << dz);
+        const size = EXTENT >> dz;
+        mat = ortho(EXTENT);
+        translate(mat, dx * size, dy * size);
+        const k = 1 / 2 ** dz;
+        for (let i = 0; i < 4; i++) {
+          mat[i] *= k;
+          mat[4 + i] *= k;
+          mat[8 + i] = 0;
+        }
+      } else {
+        continue;
+      }
+      const coord = tileID.clone();
+      coord.terrainRttPosMatrix32f = new Float32Array(mat);
+      coords[key] = coord;
+    }
+    return coords;
+  };
+  proto.__fastCoords = true;
+}
+
+/**
+ * With 3D terrain, MapLibre turns a screen point into a map point by marching a ray through the
+ * terrain (screenTerrainPointToMercatorCoordinate), a tenth of a millisecond and more a point. A
+ * feature query does it for its box's corners in every source it looks in, and a hover here asks a
+ * dozen sources (markers, areas, ferries, roads): some 140 marches, 13 ms a hover. The results are
+ * kept per point until the camera moves or the map draws again (new terrain tiles, a new frame), so
+ * each distinct point is marched once.
+ */
+export function cacheTerrainRays(map: MLMap) {
+  type Ray = (this: RayHost, p: { x: number; y: number }, terrain: unknown) => unknown;
+  type RayHost = { screenTerrainPointToMercatorCoordinate: Ray; __rays?: { gen: number; terrain: unknown; m: Map<string, unknown> } };
+  let gen = 0;
+  const own = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+  const patch = (t: unknown) => {
+    // The class that defines the method (the transforms' classes may inherit from one another).
+    let proto = t ? (Object.getPrototypeOf(t) as (RayHost & { __rayCache?: boolean }) | null) : null;
+    while (proto && !own(proto, 'screenTerrainPointToMercatorCoordinate')) proto = Object.getPrototypeOf(proto);
+    if (!proto || own(proto, '__rayCache') || typeof proto.screenTerrainPointToMercatorCoordinate !== 'function') return;
+    const orig = proto.screenTerrainPointToMercatorCoordinate;
+    proto.__rayCache = true;
+    proto.screenTerrainPointToMercatorCoordinate = function (p, terrain) {
+      const c = (this.__rays ??= { gen: -1, terrain: null, m: new Map() });
+      if (c.gen !== gen || c.terrain !== terrain) {
+        c.gen = gen;
+        c.terrain = terrain;
+        c.m.clear();
+      }
+      const key = `${p.x},${p.y}`;
+      if (c.m.has(key)) return c.m.get(key);
+      const r = orig.call(this, p, terrain);
+      c.m.set(key, r);
+      return r;
+    };
+  };
+  // The transform changes with the projection (the globe's comes with the style): its classes are
+  // patched as they appear.
+  let seen: unknown = null;
+  const ensure = () => {
+    const tr = (map as unknown as { _camera?: { transform?: Record<string, unknown> } })._camera?.transform;
+    if (!tr || tr === seen) return;
+    seen = tr;
+    for (const t of [tr, tr._mercatorTransform, tr._verticalPerspectiveTransform]) patch(t);
+  };
+  for (const ev of ['move', 'render', 'resize'] as const) map.on(ev, () => {
+    gen++;
+    ensure();
+  });
+  ensure();
 }

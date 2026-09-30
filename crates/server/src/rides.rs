@@ -42,6 +42,9 @@ pub struct RailIndex {
     bbox: Vec<[i32; 4]>,
     /// Line identities (index = key).
     names: Vec<String>,
+    /// Rail way → the route relation of its primary service, the one that names it
+    /// (rail-rels.bin; the app opens it on openstreetmap.org).
+    rels: HashMap<u32, i64>,
 }
 
 impl RailIndex {
@@ -73,6 +76,18 @@ impl RailIndex {
             range[w] = (a as u32, k as u32);
         }
         let is_rail = |w: &roadcore::WayRec| w.class >= class::TRAM && w.class <= class::HERITAGE;
+        // rail-rels.bin: sorted (i64 OSM way id, i64 relation id) records.
+        let rr: Vec<(i64, i64)> = std::fs::read(dir.join("rail-rels.bin"))
+            .map(|b| b.chunks_exact(16).map(|c| (i64::from_le_bytes(c[..8].try_into().unwrap()), i64::from_le_bytes(c[8..].try_into().unwrap()))).collect())
+            .unwrap_or_default();
+        let rels: HashMap<u32, i64> = if rr.is_empty() {
+            HashMap::new()
+        } else {
+            (0..wr.len())
+                .filter(|&i| is_rail(&wr[i]))
+                .filter_map(|i| rr.binary_search_by_key(&wr[i].id, |x| x.0).ok().map(|k| (i as u32, rr[k].1)))
+                .collect()
+        };
         // A line's identity: its name without a route's direction ("Highland Sleeper: London
         // Euston => Fort William" → "Highland Sleeper"), else the first service using the track.
         let mut names: Vec<String> = vec![String::new()];
@@ -160,8 +175,8 @@ impl RailIndex {
             key.push(id);
             bbox.push(bb);
         }
-        eprintln!("rail lines: {} chains from {} rail ways", key.len(), rail.len());
-        Ok(Self { samples, ch: chs, freq, off, seq, dist, key, bbox, names })
+        eprintln!("rail lines: {} chains from {} rail ways ({} with a route relation)", key.len(), rail.len(), rels.len());
+        Ok(Self { samples, ch: chs, freq, off, seq, dist, key, bbox, names, rels })
     }
 
     /// Components of sample t of the sequence (neighbours give the gradient).
@@ -228,6 +243,8 @@ pub struct Ride {
     score: f32,
     length_m: f32,
     way: u32,
+    /// Its line's route relation (0: none known).
+    rel: i64,
     name: String,
     services: String,
     colour: u32,
@@ -321,11 +338,13 @@ fn compute_rides(st: &crate::AppState, q: Q) -> Option<RidesOut> {
             let n = (j + 1 - i) as f32;
             parts.iter_mut().for_each(|p| *p /= n);
             let first = &samples[ix.seq[i] as usize];
-            let lw = &ways[samples[ix.seq[(i + j) / 2] as usize].way as usize];
+            let mid = samples[ix.seq[(i + j) / 2] as usize].way;
+            let lw = &ways[mid as usize];
             Ride {
                 score: m * 100.0,
                 length_m: ix.dist[j] - ix.dist[i],
                 way: first.way,
+                rel: ix.rels.get(&mid).copied().unwrap_or(0),
                 name: ix.names[ix.key[k] as usize].clone(),
                 services: st.strings[lw.route as usize].clone(),
                 colour: lw.colour,
@@ -351,6 +370,8 @@ pub struct Line {
     score: f32,
     trains: f32,
     way: u32,
+    /// The route relation (0: none known).
+    rel: i64,
     /// The line's pieces in view (for highlighting).
     geom: Vec<Vec<[f64; 2]>>,
 }
@@ -442,6 +463,7 @@ fn compute_lines(st: &crate::AppState, q: Q) -> Option<LinesOut> {
                 score: a.sc / a.len.max(1.0) * 100.0,
                 trains: a.trains,
                 way: a.way,
+                rel: ix.rels.get(&a.way).copied().unwrap_or(0),
                 geom: a.geom,
             }
         })

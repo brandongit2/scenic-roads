@@ -130,13 +130,16 @@ function lenIn(d: DecodedTile, k: number, lenRange: [number, number] | null): nu
   return d.rlCum[find(lenRange[1], true)] - d.rlCum[find(lenRange[0], false)];
 }
 
-/** `unnamedHide`: groups (bits) whose unnamed roads are hidden. `lenRange`: whole-road length
+/** The roads (or rail) in view: km by class, group, surface and toll, elevation and grade
+ * distributions, extremes. A tile at a time: a generator, which main.ts runs a few milliseconds a
+ * frame. `unnamedHide`: groups (bits) whose unnamed roads are hidden. `lenRange`: whole-road length
  * filter (m) and `tollMask` (bit 0 toll-free, bit 1 toll) for the km counts; the elevation /
  * grade distributions ignore both. The surface and toll km count either side of their own
  * toggle (what turning it on would show) within the other filters. */
-export function viewStats(layer: RoadLayer, groupMask: number, classMask: number, surfaceMask = 3, unnamedHide = 0,
-                          lenRange: [number, number] | null = null, tollMask = 3): ViewStats {
+export function* viewStatsGen(layer: RoadLayer, groupMask: number, classMask: number, surfaceMask = 3, unnamedHide = 0,
+                              lenRange: [number, number] | null = null, tollMask = 3): Generator<void, ViewStats> {
   const tiles = layer.viewTiles();
+  const b = layer.viewBounds();
   const classKm = new Array(NCLASS).fill(0);
   const unnamedKm = new Array(NGROUP).fill(0);
   const surfaceKm: [number, number] = [0, 0];
@@ -148,10 +151,12 @@ export function viewStats(layer: RoadLayer, groupMask: number, classMask: number
   let lowest: Extreme | null = null;
   let cells = 0;
   for (const t of tiles) {
-    const d = t.data!;
-    const [x0, y0, x1, y1] = layer.viewRectIn(t);
+    const d = t.data;
+    if (!d) continue;
+    const [x0, y0, x1, y1] = layer.viewRectIn(t, b);
     const c = (v: number) => Math.max(0, Math.min(CELLS - 1, Math.floor((v / d.extent) * CELLS)));
     if (x1 < 0 || y1 < 0 || x0 > d.extent || y0 > d.extent) continue;
+    yield;
     for (let cy = c(y0); cy <= c(y1); cy++) {
       for (let cx = c(x0); cx <= c(x1); cx++) {
         const cell = cy * CELLS + cx;

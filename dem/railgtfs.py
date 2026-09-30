@@ -14,7 +14,8 @@ downloaded (data/rail/gtfs, big ones deleted afterwards) and read:
     as 0.14 a day rather than none).
 The same train published in two feeds (a national feed and a regional one, an aggregate and its
 parts) is counted once: trips are keyed by first and last stop (to ~1 km) and times (to the
-minute), across all feeds.
+minute), across all feeds. Where that doesn't catch them (an aggregate republishing an operator's
+feed with its own times), the operator's feed `replaces` the other, which is left out.
 
 Writes data/rail/pairs.bin: per (stop A, stop B, mode) the number of trains that day from A to B;
 little-endian f32 lon_a, lat_a, lon_b, lat_b, u8 mode (0 tram, 1 metro, 2 rail, 3 funicular;
@@ -58,6 +59,39 @@ EXTRA = [
     {"id": "hk-pfaedle", "provider": "Hong Kong Transport Department (trams, Peak Tram), via Catenary Transit", "url": "https://github.com/catenarytransit/pfaedled-gtfs-actions/releases/download/latest/hk-gtfs-pfaedle.zip", "licence": "DATA.GOV.HK terms",
      "local": str(ROOT / "data" / "rail" / "gtfs" / "hk-pfaedle.zip")},
 ]
+
+# Feeds behind an API key (data/keys.env, KEY=value lines, git-ignored): added when their key is
+# there; `get` names how the download link is obtained.
+KEYS = ROOT / "data" / "keys.env"
+
+
+def keys() -> dict[str, str]:
+    if not KEYS.exists():
+        return {}
+    return {k.strip(): v.strip() for k, _, v in (l.partition("=") for l in KEYS.read_text().splitlines()) if v.strip() and not k.startswith("#")}
+
+
+def keyed_feeds() -> list[dict]:
+    k = keys()
+    out = []
+    if k.get("LTA_ACCOUNT_KEY"):
+        # (The Mobility Database's Singapore feed has the same trains, mostly at other times.)
+        out.append({"id": "sg-lta-train", "provider": "Land Transport Authority, LTA DataMall (MRT and LRT)", "licence": "Singapore Open Data Licence 1.0",
+                    "url": "https://datamall2.mytransport.sg/ltaodataservice/GTFSScheduleTrain", "get": "lta", "replaces": ["mdb-1076"]})
+    return out
+
+
+def keyed_link(feed: dict) -> str | None:
+    """The download link of a keyed feed (LTA: a signed link, valid 15 minutes, in the answer)."""
+    import ast
+    import urllib.request
+
+    if feed["get"] == "lta":
+        req = urllib.request.Request(feed["url"], headers={"User-Agent": UA, "AccountKey": keys()["LTA_ACCOUNT_KEY"], "accept": "application/json"})
+        v = json.loads(urllib.request.urlopen(req, timeout=60).read())["value"]
+        v = ast.literal_eval(v) if isinstance(v, str) else v
+        return v[0]["link"] if v else None
+    return None
 
 
 def mode_of(t: int) -> int | None:
@@ -103,7 +137,10 @@ def fetch(feed: dict) -> Path | None:
     if path.exists() and zipfile.is_zipfile(path):
         return path
     tmp = path.with_suffix(".part")
-    r = subprocess.run(["curl", "-sSL", "--fail", "-m", "3600", "-A", UA, "-o", str(tmp), feed["url"]])
+    url = keyed_link(feed) if feed.get("get") else feed["url"]
+    if not url:
+        return None
+    r = subprocess.run(["curl", "-sSL", "--fail", "-m", "3600", "-A", UA, "-o", str(tmp), url])
     if r.returncode != 0 or not zipfile.is_zipfile(tmp):
         tmp.unlink(missing_ok=True)
         return None
@@ -222,7 +259,8 @@ def main():
     only = set(sys.argv[1:])
     feeds = json.loads((R / "feeds.json").read_text())
     # National operators first (so duplicates in regional aggregates are the ones dropped).
-    order = EXTRA + feeds
+    order = EXTRA + keyed_feeds() + feeds
+    replaced = {r: f["id"] for f in order for r in f.get("replaces", ())}
     pairs: dict[tuple, int] = defaultdict(int)
     weekly: dict[tuple, float] = defaultdict(float)
     seen: set = set()
@@ -230,6 +268,9 @@ def main():
     used = []
     for feed in order:
         if only and feed["id"] not in only:
+            continue
+        if feed["id"] in replaced:
+            used.append({**{k: feed[k] for k in ("id", "provider", "url", "licence") if k in feed}, "status": f"replaced by {replaced[feed['id']]}"})
             continue
         zpath = fetch(feed)
         if not zpath:

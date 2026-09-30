@@ -105,11 +105,14 @@ export class PresetList {
   }
 }
 
+/** The app's default preset: the file's `default`, else its first. */
+const defaultOf = (list: Preset[], id: string | undefined) => list.find((p) => p.id === id) ?? list[0];
+
 export const presets = new PresetList('weightPresets', COMPONENTS, builtin.presets);
 export const BUILTIN: Preset[] = presets.builtin;
-/** Weights of the first built-in preset: the app's default. */
-export const DEFAULT_WEIGHTS = BUILTIN[0].w;
-export const DEFAULT_PRESET = BUILTIN[0].id;
+export const DEFAULT_PRESET = defaultOf(BUILTIN, builtin.default).id;
+export const DEFAULT_WEIGHTS = defaultOf(BUILTIN, builtin.default).w;
 
 export const railPresets = new PresetList('railWeightPresets', RAIL_COMPONENTS, railBuiltin.presets);
-export const RAIL_DEFAULT_PRESET = railPresets.builtin[0].id;
+export const RAIL_DEFAULT_PRESET = defaultOf(railPresets.builtin, railBuiltin.default).id;
+export const RAIL_DEFAULT_WEIGHTS = defaultOf(railPresets.builtin, railBuiltin.default).w;

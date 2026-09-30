@@ -428,6 +428,13 @@ export function coverSamples(map: MLMap, pts: { x: number; y: number }[]): { lng
   if (!Number.isFinite(lo)) return null;
   const levels = hi - lo < 20 ? [lo] : [lo, (lo + hi) / 2, hi];
   const out: { lng: number; lat: number; mpp: number }[] = [];
+  // The same rays from the transform's matrices directly: MapLibre's unprojection allocates a few
+  // vectors per point, and there are a thousand and more points each time the camera turns.
+  const fast = globe ? globeRays(tr, pts, levels, radPerPx, out) : mercatorRays(tr, pts, levels, radPerPx, camLL, camAlt, out);
+  if (fast) {
+    if (!fast.length) return out;
+    pts = fast;
+  }
   if (globe) {
     const C = ecef(camLL, camAlt);
     const CC = dot(C, C);
@@ -462,6 +469,79 @@ export function coverSamples(map: MLMap, pts: { x: number; y: number }[]): { lng
     }
   }
   return out;
+}
+
+type Mat = ArrayLike<number>;
+
+/**
+ * coverSamples on the globe: each screen point's view ray (the globe transform's inverse
+ * view-projection, on its unit sphere) meets the sphere at each level. Points whose ray misses the
+ * planet (sky: MapLibre then takes the nearest point of the horizon) are returned for the general
+ * path; null without the transform's internals.
+ */
+function globeRays(tr: Tr, pts: { x: number; y: number }[], levels: number[], radPerPx: number, out: { lng: number; lat: number; mpp: number }[]) {
+  const vp = (tr as unknown as { _verticalPerspectiveTransform?: { _globeViewProjMatrixF64Inverted?: Mat; _cameraPosition?: Mat; width: number; height: number } })._verticalPerspectiveTransform;
+  const M = vp?._globeViewProjMatrixF64Inverted, O = vp?._cameraPosition;
+  if (!vp || !M || !O || !(vp.width > 0) || !(vp.height > 0)) return null;
+  const w = vp.width, h = vp.height;
+  const o0 = O[0], o1 = O[1], o2 = O[2], oo = o0 * o0 + o1 * o1 + o2 * o2;
+  const radii = levels.map((e) => 1 + e / R);
+  const rest: { x: number; y: number }[] = [];
+  for (const p of pts) {
+    const nx = (p.x / w) * 2 - 1, ny = 1 - (p.y / h) * 2;
+    const q = M[3] * nx + M[7] * ny + M[11] + M[15];
+    let dx = (M[0] * nx + M[4] * ny + M[8] + M[12]) / q - o0;
+    let dy = (M[1] * nx + M[5] * ny + M[9] + M[13]) / q - o1;
+    let dz = (M[2] * nx + M[6] * ny + M[10] + M[14]) / q - o2;
+    // (Math.hypot is several times slower.)
+    const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    dx /= len;
+    dy /= len;
+    dz /= len;
+    const b = o0 * dx + o1 * dy + o2 * dz;
+    if (!(b * b - (oo - 1) > 0)) {
+      rest.push(p);
+      continue;
+    }
+    for (const r of radii) {
+      const disc = b * b - (oo - r * r);
+      if (disc <= 0) continue;
+      const t = -b - Math.sqrt(disc);
+      if (t <= 0) continue;
+      const x = o0 + dx * t, y = o1 + dy * t, z = o2 + dz * t;
+      out.push({ lng: Math.atan2(x, z) / DEG, lat: Math.asin(y / Math.sqrt(x * x + y * y + z * z)) / DEG, mpp: Math.max(0.01, t * R * radPerPx) });
+    }
+  }
+  return rest;
+}
+
+/** coverSamples on the flat map: each screen point's ray (the transform's inverse pixel matrix) meets
+ * the plane at each level; as screenPointToLocationAtElevation, which the rest (none) would take. */
+function mercatorRays(tr: Tr, pts: { x: number; y: number }[], levels: number[], radPerPx: number, camLL: LngLat, camAlt: number, out: { lng: number; lat: number; mpp: number }[]) {
+  type MT = { _pixelMatrixInverse?: Mat; worldSize: number; elevation: number };
+  // (The globe's transform holds a flat one; a flat map's is one.)
+  const mt = (tr as unknown as { _mercatorTransform?: MT })._mercatorTransform ?? (tr as unknown as MT);
+  const M = mt?._pixelMatrixInverse;
+  if (!mt || !M || !(mt.worldSize > 0)) return null;
+  const ws = mt.worldSize, el = mt.elevation;
+  const cosLat = Math.cos(camLL.lat * DEG);
+  for (const p of pts) {
+    const x0 = M[0] * p.x + M[4] * p.y + M[12], y0 = M[1] * p.x + M[5] * p.y + M[13];
+    const z0 = M[2] * p.x + M[6] * p.y + M[14], w0 = M[3] * p.x + M[7] * p.y + M[15];
+    const w1 = w0 + M[11];
+    const nx = x0 / w0, ny = y0 / w0, nz = z0 / w0 + el;
+    const fx = (x0 + M[8]) / w1, fy = (y0 + M[9]) / w1, fz = (z0 + M[10]) / w1 + el;
+    for (const e of levels) {
+      const t = nz === fz ? 0 : (e - nz) / (fz - nz);
+      const lng = ((nx + (fx - nx) * t) / ws) * 360 - 180;
+      const lat = (360 / Math.PI) * Math.atan(Math.exp(((180 - ((ny + (fy - ny) * t) / ws) * 360) * Math.PI) / 180)) - 90;
+      if (!Number.isFinite(lng) || !Number.isFinite(lat)) continue;
+      const dx = (lng - camLL.lng) * DEG * R * cosLat, dy = (lat - camLL.lat) * DEG * R;
+      const dz = camAlt - e;
+      out.push({ lng, lat, mpp: Math.max(0.01, Math.sqrt(dx * dx + dy * dy + dz * dz) * radPerPx) });
+    }
+  }
+  return [];
 }
 
 /** Terrain height (m, exaggerated) where a screen point's ray meets the ground (refined twice). */

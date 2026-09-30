@@ -964,6 +964,8 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bytemuck",
+ "bytes",
+ "flate2",
  "png",
  "rayon",
  "roadcore",

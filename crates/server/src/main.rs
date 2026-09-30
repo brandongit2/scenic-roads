@@ -2,6 +2,7 @@
 //!
 //! usage: server [--data data/build] [--web web/dist] [--fonts data/fonts] [--port 8080]
 
+mod cache;
 mod details;
 mod drives;
 mod rides;
@@ -10,8 +11,8 @@ mod viewshed;
 
 use anyhow::Result;
 use axum::{
-    extract::{Path, Query, State},
-    http::{header, HeaderValue, StatusCode},
+    extract::{Path, Query, RawQuery, State},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
     Json, Router,
@@ -59,6 +60,8 @@ pub struct AppState {
     /// Endpoint coordinate → ways that start or end there.
     ends: HashMap<[i32; 2], Vec<u32>>,
     details: details::Details,
+    /// The overlay layer files, gzipped once (cache.rs).
+    packs: Arc<cache::Packs>,
 }
 
 pub type S = Arc<AppState>;
@@ -98,7 +101,8 @@ async fn main() -> Result<()> {
         "ferry-lines.json", "trees-cover.tiles", "trees-height.tiles", "trees-leaf.tiles", "rail-freq.bin",
         "details-poi.jsonl", "details-heritage.jsonl", "details-harea.jsonl", "details-special.jsonl", "details-indigenous.jsonl",
         "details-park.jsonl", "peaks.json", "props-heritage.jsonl", "layer-summary.json", "layer-pois.json", "layer-heritage.json",
-        "layer-special.json", "layer-indigenous.json", "layer-heritage-areas.json",
+        "layer-special.json", "layer-indigenous.json", "layer-heritage-areas.json", "stations.json", "whs-shapes.json", "names-en.json",
+        "labels.pmtiles",
     ]
     .iter()
     .filter_map(|f| {
@@ -107,8 +111,17 @@ async fn main() -> Result<()> {
         Some((f.to_string(), serde_json::Value::from(secs)))
     })
     .collect();
-    // Basemap parts: regions added after base.pmtiles was built, one archive each (see Makefile).
     let mut versions = versions;
+    // Overlay files split per kind (layer-pois-<kind>.json …): every layer file.
+    for e in std::fs::read_dir(&data).into_iter().flatten().flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if n.starts_with("layer-") && n.ends_with(".json") && !versions.contains_key(&n) {
+            if let Some(secs) = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()) {
+                versions.insert(n, serde_json::Value::from(secs.as_secs()));
+            }
+        }
+    }
+    // Basemap parts: regions added after base.pmtiles was built, one archive each (see Makefile).
     let mut parts: Vec<String> = std::fs::read_dir(data.join("base-parts"))
         .map(|rd| {
             rd.filter_map(|e| e.ok())
@@ -129,6 +142,9 @@ async fn main() -> Result<()> {
     if let Some(m) = meta.as_object_mut() {
         m.insert("versions".into(), serde_json::Value::Object(versions));
         m.insert("baseParts".into(), serde_json::json!(parts));
+        // The basemap's labels with their English (names.py patch; Makefile): drawn from their own
+        // archive when there is one.
+        m.insert("labels".into(), serde_json::json!(data.join("labels.pmtiles").exists()));
     }
     let grid = roadcore::grid::GridIndex::load(&data).ok().and_then(|idx| {
         Some(GridData {
@@ -171,12 +187,28 @@ async fn main() -> Result<()> {
         climb_geom: Array::open(&data.join("climbs.geom"))?,
         road_len: Array::open(&data.join("roadlen.f32")).ok().filter(|a: &Array<f32>| a.get().len() == ways.ways().len()),
         details: details::Details::load(&data),
+        packs: Arc::new(cache::Packs::default()),
         ways,
         strings,
         meta,
         ends,
     });
     eprintln!("loaded {} ways in {:.1?}", state.ways.ways().len(), t0.elapsed());
+    // Compress the overlay files now, so the first page load finds them ready.
+    state.packs.warm(
+        std::fs::read_dir(&data)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        let n = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                        n.starts_with("layer-") && n.ends_with(".json")
+                            || matches!(n, "ferries.json" | "ferry-lines.json" | "stations.json" | "whs-shapes.json" | "heritage-sources.json" | "names-en.json")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    );
 
     let app = Router::new()
         .route("/tiles/roads/{z}/{x}/{y}", get(road_tile))
@@ -195,11 +227,18 @@ async fn main() -> Result<()> {
         .route("/api/rides", get(rides::rides))
         .route("/api/raillines", get(rides::lines))
         .route("/api/layer/{name}", get(layer_h))
+        .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
         .route("/tiles/terrain/{z}/{x}/{y}", get(terrain::terrain_tile))
         .route("/tiles/slope/{z}/{x}/{y}", get(terrain::slope_tile))
         .route_service("/tiles/base.pmtiles", ServeFile::new(data.join("base.pmtiles")))
+        .route_service("/tiles/labels.pmtiles", ServeFile::new(data.join("labels.pmtiles")))
         .nest_service("/tiles/base-parts", ServeDir::new(data.join("base-parts")))
-        .nest_service("/fonts", ServeDir::new(fonts))
+        .nest_service(
+            "/fonts",
+            tower::ServiceBuilder::new()
+                .layer(SetResponseHeaderLayer::if_not_present(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=2592000")))
+                .service(ServeDir::new(fonts)),
+        )
         // App files revalidate on every load (cheap 304s) so a rebuilt frontend is picked up.
         .fallback_service(
             tower::ServiceBuilder::new()
@@ -207,27 +246,44 @@ async fn main() -> Result<()> {
                 .service(ServeDir::new(&web).fallback(ServeFile::new(web.join("index.html")))),
         )
         .layer(tower_http::compression::CompressionLayer::new().gzip(true))
+        // Versioned URLs (?v=build time) never change: cached for good, whatever served them.
+        .layer(axum::middleware::from_fn(|req: axum::extract::Request, next: axum::middleware::Next| async move {
+            let v = cache::versioned(req.uri().query());
+            let mut res = next.run(req).await;
+            if v && res.status().is_success() {
+                res.headers_mut().insert(header::CACHE_CONTROL, cache::cache_control(true, ""));
+            }
+            res
+        }))
+        // Data from other host names of this machine (the app spreads its downloads over several:
+        // the browser's six connections per host would otherwise queue them one kind at a time).
+        .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     eprintln!("listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    // Also on IPv6 loopback, which "localhost" names may resolve to first.
+    if let Ok(l6) = tokio::net::TcpListener::bind(std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port))).await {
+        let app6 = app.clone();
+        tokio::spawn(async move { axum::serve(l6, app6).await });
+    }
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-async fn road_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>) -> Response {
-    gz_tile(s.tiles.get(z, x, y))
+async fn road_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery) -> Response {
+    gz_tile(s.tiles.get(z, x, y), cache::versioned(q.as_deref()))
 }
 
-async fn rail_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>) -> Response {
-    gz_tile(s.rails.as_ref().and_then(|a| a.get(z, x, y)))
+async fn rail_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery) -> Response {
+    gz_tile(s.rails.as_ref().and_then(|a| a.get(z, x, y)), cache::versioned(q.as_deref()))
 }
 
 /// Rail service frequency per way (pipeline `railfreq`): (u32 way, f32 trains a day each way).
-async fn rail_freq_h(State(s): State<S>) -> Response {
+async fn rail_freq_h(State(s): State<S>, RawQuery(q): RawQuery) -> Response {
     match tokio::fs::read(s.data_dir.join("rail-freq.bin")).await {
-        Ok(b) => ([(header::CONTENT_TYPE, "application/octet-stream"), (header::CACHE_CONTROL, "public, max-age=86400")], b).into_response(),
+        Ok(b) => ([(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream")), (header::CACHE_CONTROL, cache::cache_control(cache::versioned(q.as_deref()), "public, max-age=86400"))], b).into_response(),
         Err(_) => StatusCode::NO_CONTENT.into_response(),
     }
 }
@@ -235,7 +291,7 @@ async fn rail_freq_h(State(s): State<S>) -> Response {
 const TREE_VARS: [&str; 3] = ["cover", "height", "leaf"];
 
 /// Tree cover tiles: stored as served (lossless WebP). Missing tiles have nothing to show.
-async fn tree_tile(State(s): State<S>, Path((var, z, x, y)): Path<(String, u8, u32, u32)>) -> Response {
+async fn tree_tile(State(s): State<S>, Path((var, z, x, y)): Path<(String, u8, u32, u32)>, RawQuery(q): RawQuery) -> Response {
     let Some(i) = TREE_VARS.iter().position(|v| *v == var) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -243,7 +299,7 @@ async fn tree_tile(State(s): State<S>, Path((var, z, x, y)): Path<(String, u8, u
         Some(b) => (
             [
                 (header::CONTENT_TYPE, HeaderValue::from_static("image/webp")),
-                (header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400")),
+                (header::CACHE_CONTROL, cache::cache_control(cache::versioned(q.as_deref()), "public, max-age=86400")),
             ],
             b.to_vec(),
         )
@@ -252,13 +308,13 @@ async fn tree_tile(State(s): State<S>, Path((var, z, x, y)): Path<(String, u8, u
     }
 }
 
-fn gz_tile(t: Option<&[u8]>) -> Response {
+fn gz_tile(t: Option<&[u8]>, versioned: bool) -> Response {
     match t {
         Some(b) => (
             [
                 (header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream")),
                 (header::CONTENT_ENCODING, HeaderValue::from_static("gzip")),
-                (header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=86400")),
+                (header::CACHE_CONTROL, cache::cache_control(versioned, "public, max-age=86400")),
             ],
             b.to_vec(),
         )
@@ -267,27 +323,34 @@ fn gz_tile(t: Option<&[u8]>) -> Response {
     }
 }
 
-/// Static GeoJSON layers produced by the pipeline.
-async fn layer_h(State(s): State<S>, Path(name): Path<String>) -> Response {
+/// Static GeoJSON layers produced by the pipeline (gzipped once, cache.rs).
+async fn layer_h(State(s): State<S>, Path(name): Path<String>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
     let file = match name.as_str() {
-        "pois" => "pois.json",
-        "heritage" => "heritage.json",
-        "special" => "special.json",
-        "indigenous" => "indigenous.json",
-        "heritage-areas" => "heritage-areas.json",
-        "sources" => "heritage-sources.json",
-        "ferries" => "ferries.json",
-        "ferry-lines" => "ferry-lines.json",
-        "summary" => "layer-summary.json",
+        "pois" => "pois.json".to_string(),
+        "heritage" => "heritage.json".to_string(),
+        "special" => "special.json".to_string(),
+        "indigenous" => "indigenous.json".to_string(),
+        "heritage-areas" => "heritage-areas.json".to_string(),
+        "sources" => "heritage-sources.json".to_string(),
+        "ferries" => "ferries.json".to_string(),
+        "ferry-lines" => "ferry-lines.json".to_string(),
+        "summary" => "layer-summary.json".to_string(),
+        "stations" => "stations.json".to_string(),
+        "whs-shapes" => "whs-shapes.json".to_string(),
+        "summits" => "summits.json".to_string(),
+        // English for non-English names (dem/names.py).
+        "names-en" => "names-en.json".to_string(),
+        // Stops & sights of one kind (dem/layers.py splits them: most of the file is peaks).
+        n if n.starts_with("pois-") && n[5..].chars().all(|c| c.is_ascii_lowercase() || c == '_') => format!("{n}.json"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
     // The overlays as the map draws them (dem/layers.py: lean properties, draw order, simplified
     // polygons), when built.
     let lean = s.data_dir.join(format!("layer-{file}"));
-    let path = if tokio::fs::try_exists(&lean).await.unwrap_or(false) { lean } else { s.data_dir.join(file) };
-    match tokio::fs::read(path).await {
-        Ok(b) => ([(header::CONTENT_TYPE, "application/geo+json"), (header::CACHE_CONTROL, "public, max-age=3600")], b).into_response(),
-        Err(_) => ([(header::CONTENT_TYPE, "application/geo+json")], r#"{"type":"FeatureCollection","features":[]}"#).into_response(),
+    let path = if lean.exists() { lean } else { s.data_dir.join(&file) };
+    match cache::respond(&s.packs, &path, "application/geo+json", &headers, cache::versioned(q.as_deref())).await {
+        Some(r) => r,
+        None => ([(header::CONTENT_TYPE, "application/geo+json")], r#"{"type":"FeatureCollection","features":[]}"#).into_response(),
     }
 }
 
