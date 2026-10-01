@@ -21,6 +21,13 @@ properties the map draws, filters and labels with, in draw order, with polygons 
 Named features carry `en`, their English where it truly differs (names.py english_at: a heritage
 site's own, else the table's for where it is), for the labels and the app's text.
 
+A point's name shows from mz (interest.py: where the nearest more interesting place of its kind
+spans the label spacing). A name repeated nearby waits longer: until the nearest more interesting
+place of the same kind and name is 2**NAME_GAP times the spacing away on screen. A region's name
+on several peaks, a trail's at each of its trailheads, a terrace's houses listed one by one or a
+generic "Lookout" are then named once, not over and over, until zoomed in far enough to tell them
+apart. Only the labels wait: the dots, counts and lists are the same.
+
 Also layer-summary.json: per polygon overlay, the feature count and each feature's area (km²),
 for the Layers panel's counts under the area filters, without loading the polygons.
 
@@ -30,18 +37,24 @@ from __future__ import annotations
 
 import json
 import sys
+from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
 from shapely.geometry import mapping, shape
 
 import names
 import whsshapes
+from interest import isolation, min_zoom
 
 ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
 # Heritage properties kept on the map (style, filters, labels, hover title, Sights list).
 HERITAGE_KEEP = {"i", "name", "en", "designation", "t", "level", "fa", "ia", "mz", "pv", "sl", "dy", "by", "wp", "approx", "np", "pt", "cn"}
 SIMPLIFY_DEG = 1e-5
+# A repeated name waits until the nearest more interesting one is this many zooms farther away on
+# screen than the label spacing (3: eight times as far, about two to a screen).
+NAME_GAP = 3.0
 
 
 def rounded(g):
@@ -90,12 +103,42 @@ def merged_sites(feats: list[dict]) -> list[dict]:
     return out
 
 
+def same_names(feats: list[dict], kind) -> int:
+    """Repeated names wait (module docstring): each named place's mz at least NAME_GAP after the zoom
+    where the nearest more interesting place of its kind and name spans a pixel (interest.py
+    isolation; between equally known ones, the more isolated is the more interesting). Returns how
+    many wait longer."""
+    groups: dict[tuple[str, str], list[int]] = defaultdict(list)
+    for i, f in enumerate(feats):
+        p = f["properties"]
+        name = " ".join((p.get("name") or "").casefold().split())
+        if name and p.get("mz") is not None:
+            groups[(kind(p), name)].append(i)
+    n = 0
+    for idx in groups.values():
+        if len(idx) < 2:
+            continue
+        ps = [feats[i]["properties"] for i in idx]
+        lon = np.array([feats[i]["geometry"]["coordinates"][0] for i in idx])
+        lat = np.array([feats[i]["geometry"]["coordinates"][1] for i in idx])
+        # (fame is rounded to 0.001: the isolation term never outweighs a real difference)
+        score = np.array([(p.get("fa") or 0.0) + 1e-4 * (p.get("ia") or 0.0) / (1 + (p.get("ia") or 0.0)) for p in ps])
+        iso = isolation(lon, lat, score)
+        for j, p in enumerate(ps):
+            mz = round(min_zoom(float(lat[j]), float(iso[j])) + NAME_GAP, 2)
+            if mz > p["mz"]:
+                p["mz"] = mz
+                n += 1
+    return n
+
+
 def points(src: str, keep: set[str] | None, heritage: bool) -> None:
     fc = json.load(open(B / f"{src}.json"))
     if heritage:
         fc["features"] = merged_sites(fc["features"])
     fame = (lambda p: p["fa"] if p.get("fa") is not None else (5 - (p.get("level") or 5)) if heritage else 0.0)
     fc["features"].sort(key=lambda f: fame(f["properties"]))
+    waits = same_names(fc["features"], (lambda p: "heritage") if heritage else (lambda p: POI_KIND.get(p.get("kind"), p.get("kind"))))
     props, seen = [], set()
     wiki = names.wiki_titles() if heritage else {}
     n_en = 0
@@ -121,7 +164,7 @@ def points(src: str, keep: set[str] | None, heritage: bool) -> None:
             for r in sorted(props, key=lambda r: r["i"]):
                 out.write(json.dumps(r, ensure_ascii=False, separators=(",", ":")) + "\n")
         tmp.replace(B / f"props-{src}.jsonl")
-    print(f"layers: {src}: {len(fc['features'])} points ({n_en} with English)", file=sys.stderr)
+    print(f"layers: {src}: {len(fc['features'])} points ({n_en} with English; {waits} names wait for a better-known one of the same name)", file=sys.stderr)
 
 
 def whs_outlines() -> None:
