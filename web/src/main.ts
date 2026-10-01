@@ -7,10 +7,10 @@ import mlWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import './style.css';
 import { getProfile, getRoadWays, getWay, roadWays, setVersions, ver, type Drive, type Meta, type Profile, type Ride, type WayInfo } from './api';
 import { loadEnglish } from './english';
-import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, LABEL_LAYERS, LAYER_GROUPS, overlayLabelScale, partIds, POI_STYLE } from './basemap';
+import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, LAYER_GROUPS, overlayLabelScale, partIds, POI_STYLE } from './basemap';
 import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
-import { areaLayers, landmarkRef, Overlays, POINT_LAYERS, withDetails } from './overlays';
+import { areaLayers, landmarkRef, Overlays, POINT_LAYERS, summariseFeature, withDetails } from './overlays';
 import { loadDetail, osmPath, peekDetail, refKey } from './details';
 import { paletteRgb } from './palettes';
 import { RoadLayer, type HoverInfo, type RoadStyle, type SchemeUniforms } from './roads/layer';
@@ -526,6 +526,7 @@ async function main() {
     marks.high = x ? point(x.lngLat, 'high') : null;
     setMarks();
     if (x) sightOsm(x); // ready for O
+    listHover(x ? { feature: { layer: x.layer, props: x.props, lngLat: x.lngLat } } : null);
   };
   /** The In view summary beyond roads: rail and ferries, landmarks and terrain (each while shown). */
   const scenicExtra = (sc: Dist | null | undefined, vi: Dist | null | undefined): InViewExtra => ({
@@ -567,6 +568,11 @@ async function main() {
   statsCard.onPlaceHover = (pl: ViewPlace | null) => {
     marks.high = pl ? point(pl.lngLat, 'high') : null;
     setMarks();
+    if (!pl) return listHover(null);
+    if (pl.layer) return listHover({ feature: { layer: pl.layer, props: pl.props ?? {}, lngLat: pl.lngLat } });
+    if (pl === viewExtra.rail?.busiest) return listHover({ layer: rails, at: pl.lngLat });
+    if (pl === viewExtra.ferry?.busiest) return listHover({ ferryAt: pl.lngLat });
+    listHover(null);
   };
   profile.colour = () => ({ palette: store.s.palette, mode: store.s.mode, range: cur, weights: store.s.weights, cdf: store.s.equalize ? cdf : null });
   const ferries = new Ferries(map);
@@ -596,7 +602,7 @@ async function main() {
   onSettled(() => overlays.prominence(store.s));
 
   // Markers: profile cursor, highest / lowest road in view, viewshed eye.
-  const marks: Record<string, GeoJSON.Feature | null> = { cursor: null, high: null, low: null, viewshed: null };
+  const marks: Record<string, GeoJSON.Feature | null> = { cursor: null, high: null, low: null, viewshed: null, ring: null };
   const setMarks = () => {
     const src = map.getSource<GeoJSONSource>('marks');
     src?.setData({ type: 'FeatureCollection', features: Object.values(marks).filter(Boolean) as GeoJSON.Feature[] });
@@ -615,6 +621,7 @@ async function main() {
   statsCard.onMark = (x, kind) => {
     marks[kind] = x ? point(x.lngLat, kind, fmt.m(x.elev)) : null;
     setMarks();
+    listHover(x ? { layer: ((x.tile.data?.lineStyle[x.line] ?? 0) & 15) >= RAIL0 ? rails : roads, at: x.lngLat, way: x.tile.data?.lineWay[x.line] } : null);
   };
   statsCard.onFly = (x: Extreme) => {
     const ll = maplibregl.LngLat.convert(x.lngLat);
@@ -753,6 +760,7 @@ async function main() {
     });
   drives.onHover = (d) => {
     if (d) wayOsm(d.way); // ready for O
+    listHover(d ? { layer: roads, at: midpoint(d.geom), way: d.way, geom: [d.geom] } : null);
     return d ? setDriveHl(d.geom) : drawStretch();
   };
   drives.onSelect = (d) => pickStretch(d.way, driveStretch(d), d.geom);
@@ -767,16 +775,116 @@ async function main() {
   rides.onResults = (rs) => drives.onResults(rs.map((r) => ({ score: r.score, geom: r.geom }) as unknown as Drive));
   rides.onHover = (r) => {
     if (r && !r.rel) wayOsm(r.way);
+    listHover(r ? { layer: rails, at: midpoint(r.geom), geom: [r.geom] } : null);
     return r ? setDriveHl(r.geom) : drawStretch();
   };
   rides.onSelect = (r) => pickStretch(r.way, rideStretch(r), r.geom);
   lines.onHover = (l) => {
     if (l && !l.rel) wayOsm(l.way);
+    listHover(l ? { layer: rails, at: midpoint(l.geom.reduce((a, b) => (lineLen(b) > lineLen(a) ? b : a))), geom: l.geom } : null);
     map.getSource<GeoJSONSource>('drive-hl')?.setData(l ? { type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates: l.geom } } : line(null));
     if (!l) drawStretch();
   };
   // A line picked from the list: selected, as a click on it on the map does.
   lines.onSelect = (l) => store.set({ selected: l.way, stretch: null });
+
+  // A list item hovered (Drives, Rides, Rail lines, Sights, In view): the bottom bar shows it as a
+  // hover on the map would, and a road or line too small on screen to see at a glance gets a ring.
+  /** Length of a line (degrees, scaled by latitude: only for comparing lines). */
+  const lineLen = (g: [number, number][]) => {
+    let l = 0;
+    for (let i = 1; i < g.length; i++) l += Math.hypot((g[i][0] - g[i - 1][0]) * Math.cos((g[i][1] * Math.PI) / 180), g[i][1] - g[i - 1][1]);
+    return l;
+  };
+  /** The point halfway along a line. */
+  const midpoint = (g: [number, number][]): [number, number] => {
+    const half = lineLen(g) / 2;
+    let l = 0;
+    for (let i = 1; i < g.length; i++) {
+      const d = Math.hypot((g[i][0] - g[i - 1][0]) * Math.cos((g[i][1] * Math.PI) / 180), g[i][1] - g[i - 1][1]);
+      if (l + d >= half && d > 0) {
+        const t = (half - l) / d;
+        return [g[i - 1][0] + (g[i][0] - g[i - 1][0]) * t, g[i - 1][1] + (g[i][1] - g[i - 1][1]) * t];
+      }
+      l += d;
+    }
+    return g[0];
+  };
+  /** The ring around lines (lng, lat) too small on screen to see at a glance: whose smallest
+   * enclosing circle (with the line's width) is under two of the largest landmark dots across. The
+   * ring clears them by a comfortable margin. */
+  const ringAround = (parts: [number, number][][] | null) => {
+    marks.ring = null;
+    const all = parts?.flat() ?? [];
+    if (all.length) {
+      const step = Math.max(1, Math.floor(all.length / 400));
+      const pts = all.filter((_, i) => i % step === 0 || i === all.length - 1).map((q) => map.project(q));
+      // Ritter's bounding circle: from the point farthest from the first to the one farthest from
+      // that, grown to take in any point outside.
+      const far = (a: { x: number; y: number }) => pts.reduce((b, q) => (Math.hypot(q.x - a.x, q.y - a.y) > Math.hypot(b.x - a.x, b.y - a.y) ? q : b), a);
+      const p1 = far(pts[0]), p2 = far(p1);
+      let cx = (p1.x + p2.x) / 2, cy = (p1.y + p2.y) / 2, r = Math.hypot(p2.x - p1.x, p2.y - p1.y) / 2;
+      for (const q of pts) {
+        const d = Math.hypot(q.x - cx, q.y - cy);
+        if (d > r) {
+          const nr = (r + d) / 2, k = (nr - r) / d;
+          cx += (q.x - cx) * k;
+          cy += (q.y - cy) * k;
+          r = nr;
+        }
+      }
+      const z = map.getZoom();
+      // The largest landmark dot: a World Heritage site at the top of the scale (dots.ts).
+      const stops = HER_R[0], i = stops.findIndex(([sz]) => sz >= z);
+      const base = i < 0 ? stops[stops.length - 1][1] : i === 0 ? stops[0][1] : stops[i - 1][1] + ((stops[i][1] - stops[i - 1][1]) * (z - stops[i - 1][0])) / (stops[i][0] - stops[i - 1][0]);
+      const maxDot = 2 * base * 1.25;
+      const lineW = 3;
+      if (2 * (r + lineW / 2) < 2 * maxDot) {
+        const c = map.unproject([cx, cy]);
+        marks.ring = { type: 'Feature', properties: { kind: 'ring', r: Math.max(10, r + lineW / 2 + Math.max(6, r * 0.6)) }, geometry: { type: 'Point', coordinates: [c.lng, c.lat] } };
+      }
+    }
+    setMarks();
+  };
+  type ListItem =
+    | { layer: RoadLayer; at: [number, number]; way?: number; geom?: [number, number][][] }
+    | { feature: { layer: string; props: Record<string, any>; lngLat: [number, number] } }
+    | { ferryAt: [number, number] };
+  let listTok = 0;
+  const listHover = (x: ListItem | null) => {
+    const tok = ++listTok;
+    if (!x) {
+      ringAround(null);
+      strip.show(null, null);
+      return;
+    }
+    if ('feature' in x) {
+      ringAround(null);
+      const f = summariseFeature(x.feature.layer, x.feature.props, x.feature.lngLat);
+      if (f) showFeat(f, []);
+      return;
+    }
+    if ('ferryAt' in x) {
+      ringAround(null);
+      const p = map.project(x.ferryAt);
+      const f = ferries.hoverAt({ x: p.x, y: p.y });
+      return f ? strip.showFeature(f, []) : strip.show(null, null);
+    }
+    ringAround(x.geom ?? null);
+    // The road's ways where known (a drive spans several), so a road crossing there isn't taken.
+    const set = x.way !== undefined ? roadWays(x.way) : undefined;
+    const ok = set ? (w: number) => set.has(w) : x.way !== undefined ? (w: number) => w === x.way : undefined;
+    const hv = x.layer.pickNear(x.at[0], x.at[1], 4, ok) ?? x.layer.pickNear(x.at[0], x.at[1], 4);
+    if (!hv) return strip.show(null, null);
+    const cached = wayCache.get(hv.way);
+    strip.show(hv, cached === undefined ? 'loading' : cached, []);
+    if (cached === undefined) {
+      getWay(hv.way).then((info) => {
+        wayCache.set(hv.way, info);
+        if (listTok === tok) strip.show(hv, info, []);
+      });
+    }
+  };
 
   statsCard.onTab = (k) => {
     if (k === 'drives') drives.refresh(true);

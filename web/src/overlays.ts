@@ -701,6 +701,10 @@ function named(name: unknown, p: Record<string, any>, at: maplibregl.LngLat | [n
   return name ? cap(withEnglish(String(name), at, p.en ?? p.name_en ?? p['name:en'])) : '';
 }
 
+/** A landmark from a list (its map layer, properties and place), summarised as a hover on it is. */
+export const summariseFeature = (layer: string, props: Record<string, any>, at: [number, number]): FeatureSummary | null =>
+  summarise({ layer: { id: layer }, properties: props } as unknown as MapGeoJSONFeature, maplibregl.LngLat.convert(at));
+
 function summarise(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary | null {
   const p = f.properties ?? {};
   const idx = Number.isFinite(Number(p.i)) && p.i !== undefined ? Number(p.i) : null;

@@ -2241,9 +2241,10 @@ export class RoadLayer implements CustomLayerInterface {
    * The line at a place: the piece nearest (lng, lat) within `px` CSS px (at this zoom, on the
    * flat map) that the filters show, in the finest tile drawn there; null where a tile is drawn
    * but no line is that near, undefined where none is drawn (yet). No screen projection
-   * (map.unproject ray-marches the 3D terrain): for colouring what stands on a line (rail stops).
+   * (map.unproject ray-marches the 3D terrain): for colouring what stands on a line (rail stops),
+   * and for a road or line picked in a list (`wayOk`: only pieces of the ways it accepts).
    */
-  pickNear(lng: number, lat: number, px: number): HoverInfo | null | undefined {
+  pickNear(lng: number, lat: number, px: number, wayOk?: (way: number) => boolean): HoverInfo | null | undefined {
     if (!this.style.visible) return undefined;
     const mx = lon2x(lng), my = lat2y(lat);
     let t: RoadTile | null = null;
@@ -2258,7 +2259,8 @@ export class RoadLayer implements CustomLayerInterface {
     t.pick ??= new PickGrid(d.verts, d.nverts, d.extent);
     const u8 = new Uint8Array(d.verts), u32 = new Uint32Array(d.verts);
     const lenOn = this.lengthFiltered();
-    const hit = t.pick.query((mx * n - t.x) * d.extent, (my * n - t.y) * d.extent, radiusM / d.mpu, () => 0, (seg) => this.pieceShown(d, u8, u32, seg, lenOn));
+    const hit = t.pick.query((mx * n - t.x) * d.extent, (my * n - t.y) * d.extent, radiusM / d.mpu, () => 0,
+      (seg) => this.pieceShown(d, u8, u32, seg, lenOn) && (!wayOk || wayOk(d.lineWay[u32[seg * S4 + 4]])));
     return hit ? this.infoAt(t, hit.seg, hit.t, hit.dist, 0) : null;
   }
 

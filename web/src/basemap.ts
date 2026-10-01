@@ -996,10 +996,33 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
         'text-max-width': 8,
         'symbol-sort-key': ['get', 'rank'],
       }) as LayerSpecification,
+      // A ring around a road or line hovered in a list that is too small on screen to see at a
+      // glance (main.ts ringAround): white over a dark halo, no fill; radius r (px).
+      {
+        id: 'marks-ring-halo',
+        type: 'circle',
+        source: 'marks',
+        filter: ['==', ['get', 'kind'], 'ring'],
+        paint: {
+          'circle-radius': ['get', 'r'], 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': HALO,
+          'circle-stroke-width': 4, 'circle-stroke-opacity': 0.55, 'circle-pitch-alignment': 'viewport',
+        },
+      },
+      {
+        id: 'marks-ring',
+        type: 'circle',
+        source: 'marks',
+        filter: ['==', ['get', 'kind'], 'ring'],
+        paint: {
+          'circle-radius': ['+', ['get', 'r'], 1.25], 'circle-color': 'rgba(0,0,0,0)', 'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 1.5, 'circle-stroke-opacity': 0.95, 'circle-pitch-alignment': 'viewport',
+        },
+      },
       {
         id: 'marks',
         type: 'circle',
         source: 'marks',
+        filter: ['!=', ['get', 'kind'], 'ring'],
         paint: {
           'circle-radius': ['match', ['get', 'kind'], 'cursor', 5, 4.5],
           'circle-color': ['match', ['get', 'kind'], 'high', '#ffffff', 'low', '#0b0e13', 'viewshed', '#ffc45c', '#ffffff'],

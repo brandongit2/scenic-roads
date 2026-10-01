@@ -93,7 +93,7 @@ export class Strip {
 
   constructor(root: HTMLElement, private map: MLMap, private weights: () => number[]) {
     const idle = h('span', { class: 'hint' },
-      'Hover a road for its scenic metrics · click for its elevation profile · two-finger drag pans, pinch zooms, ⌥ + two-finger drag or right-drag tilts & rotates around the cursor · G: Street View, M: Google Maps, O: OpenStreetMap at the cursor');
+      'Two-finger drag pans, pinch zooms, ⌥ + two-finger drag or right-drag tilts & rotates around the cursor · G: Street View, M: Google Maps, O: OpenStreetMap at the cursor');
     const cell = (label: string, title: string) => {
       const b = h('b');
       return { el: h('div', { class: 'cell', title }, h('span', { class: 'lbl' }, label), b), b };
