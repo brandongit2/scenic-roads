@@ -2,6 +2,10 @@
 // sampled from the DEM tiles MapLibre is drawing, over the ground in view (the outline the in-view
 // lists use), each sample weighted by the ground area it stands for. Tiles at several zooms (a
 // tilted view) each count by area, so a far coarse tile counts as much ground as it covers.
+// Water is left out: the sea (0 m) and lakes are perfectly flat in the elevation tiles, where
+// ground practically never is, so a sample equal to its four neighbours (or with no slope in any of
+// its four quarters) is water. With it, an island zoomed out to a speck in the sea had the sea's
+// 0 m take over the percentiles and the equalisation.
 import type { Map as MLMap } from 'maplibre-gl';
 import { Dist } from './roads/stats';
 
@@ -64,6 +68,7 @@ export function terrainDist(map: MLMap, source: string, domain: [number, number]
         if (!inView(lng, lat)) continue;
         if (bytes) {
           const at = ((Math.floor(py) + 2) * dem.stride + Math.floor(px) + 2) * 4;
+          if ((bytes[at] | bytes[at + 1] | bytes[at + 2] | bytes[at + 3]) === 0) continue; // water
           for (let ch = 0; ch < 4; ch++) {
             const u = bytes[at + ch] / 255;
             bins[Math.max(0, Math.min(BINS - 1, Math.floor((u * u * quarters!.max - lo) * k)))] += w / 4;
@@ -71,8 +76,10 @@ export function terrainDist(map: MLMap, source: string, domain: [number, number]
           total += w;
           continue;
         }
-        const v = dem.get(Math.floor(px), Math.floor(py));
+        const fx = Math.floor(px), fy = Math.floor(py);
+        const v = dem.get(fx, fy);
         if (!Number.isFinite(v)) continue;
+        if (dem.get(fx - 1, fy) === v && dem.get(fx + 1, fy) === v && dem.get(fx, fy - 1) === v && dem.get(fx, fy + 1) === v) continue; // water
         bins[Math.max(0, Math.min(BINS - 1, Math.floor((v - lo) * k)))] += w;
         total += w;
       }
