@@ -24,6 +24,9 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
 #map { position: absolute; top: 0; left: var(--left-w); right: var(--side-w); bottom: var(--strip-h); }
+/* I hides the HUD (main.ts): the map takes the whole window. */
+body.hud-off { --left-w: 0px; --side-w: 0px; --strip-h: 0px; }
+body.hud-off :is(#colour, #sidebar, #strip, #nav, #viewshed, #profile, .resizer) { display: none !important; }
 .maplibregl-canvas { outline: none; }
 .maplibregl-ctrl-attrib { display: none; }
 

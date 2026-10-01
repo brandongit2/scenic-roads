@@ -44,6 +44,9 @@ export interface ScaleOpts {
   /** Auto-fit to ranks in view (the low end at the n-th best, the top at the m-th) instead of
    * percentiles (landmarks). */
   rank?: { get: () => [number, number]; set: (v: [number, number]) => void };
+  /** Auto-fit to the best so much of the length in view (the low end at the first amount, full
+   * colour from the second, in `unit`s) instead of percentiles, while `active` (roads' scenic metrics). */
+  len?: { active: () => boolean; get: () => [number, number]; set: (v: [number, number]) => void; unit: string };
   onPreview: (palette: string | null) => void;
 }
 
@@ -90,6 +93,8 @@ export class ScaleControls {
   private fitLo: HTMLInputElement;
   private rankLo: HTMLInputElement | null = null;
   private rankHi: HTMLInputElement | null = null;
+  private lenLo: HTMLInputElement | null = null;
+  private lenHi: HTMLInputElement | null = null;
   private fitHi: HTMLInputElement;
   private fade: HTMLInputElement;
   private fadeOut: HTMLOutputElement;
@@ -147,6 +152,26 @@ export class ScaleControls {
       };
       this.rankLo = inp(0);
       this.rankHi = inp(1);
+    }
+    if (o.len) {
+      const len = o.len;
+      const inp = (i: 0 | 1) => {
+        const e = h('input', {
+          type: 'number', class: 'pct', min: 0.5, step: 0.5,
+          title: i ? `Full colour for the best this many ${len.unit} of ${o.noun} in view` : `The scale's low end: the best this many ${len.unit} of ${o.noun} in view (the rest fade)`,
+        });
+        e.addEventListener('change', () => {
+          const v = Math.max(0.5, Math.round((Number(e.value) || 0.5) * 2) / 2);
+          const r: [number, number] = [...len.get()];
+          r[i] = v;
+          // The edited one keeps its value and pushes the other along.
+          if (r[0] <= r[1]) r[1 - i] = i ? v + 0.5 : Math.max(0.5, v - 0.5);
+          len.set(r[0] > r[1] ? r : [r[1] + 0.5, r[1]]);
+        });
+        return e;
+      };
+      this.lenLo = inp(0);
+      this.lenHi = inp(1);
     }
     this.legend = h('div', { class: 'legend' }, this.canvas, h('div', { class: 'caption' }, this.caption, this.pills));
 
@@ -218,6 +243,11 @@ export class ScaleControls {
         this.rankLo.value = String(lo);
         this.rankHi.value = String(hi);
         this.caption.replaceChildren('Auto-fit: the best ', this.rankLo, ` ${this.o.noun} in view, full size from #`, this.rankHi);
+      } else if (s.auto && this.o.len?.active() && this.lenLo && this.lenHi) {
+        const [lo, hi] = this.o.len.get();
+        this.lenLo.value = String(lo);
+        this.lenHi.value = String(hi);
+        this.caption.replaceChildren('Auto-fit: the best ', this.lenLo, ` ${this.o.len.unit} of ${this.o.noun} in view, full colour from the best `, this.lenHi);
       } else if (s.auto) this.caption.replaceChildren('Auto-fit to percentiles ', this.fitLo, '–', this.fitHi, ` of ${this.o.noun} in view`);
       else this.caption.textContent = 'Fixed range · drag the handles';
       this.fitLo.value = String(s.fit[0]);

@@ -1,15 +1,20 @@
 //! Terrain slope tiles (percent, Terrarium-encoded as if it were elevation) for the slope tint.
 //!
-//! usage: slope <build_dir> [--seed]
+//! usage: slope <build_dir> [--seed] [--coarse]
 //!
-//! Slope depends on scale: computed directly from a coarse DEM, steep ground averages out and
-//! low zooms look flatter. So slope is computed once at the finest level (z12, Horn's method with
-//! neighbouring tiles), and each coarser pixel takes the slope of one of the pixels beneath it,
-//! picked pseudo-randomly: every level then has the same distribution of slopes as z12 (a mean
-//! would keep the average but lose the steep and gentle tails, which is what the tint shows), and
-//! seen from afar the fine mix of colours reads as the right blend, like a halftone. Pixels with
-//! no finer data (far from roads, where the terrain archive stops at z8) fall back to the slope of
-//! that level's own DEM. Writes slope.tiles (served at /tiles/slope/{z}/{x}/{y}).
+//! Slope depends on scale: computed directly from a coarse DEM, the peaks and valleys merge into a
+//! gentle surface and low zooms look flat (the White Mountains' high ground: 25 % at z12, 15 % at
+//! z8, 1.4 % at z4). So slope is computed once at the finest level (z12, Horn's method with
+//! neighbouring tiles), and each coarser pixel takes the mean of the slopes beneath it: the average
+//! steepness of the ground it covers, which every level keeps (there: 25 % down to z8, 19 % at z4).
+//! What fades far out is the steepest class, cliffs narrower than a pixel blending with the gentler
+//! ground beside them (≥ 45 %: 9.7 % of that ground at z12, 6.5 % at z8, none at z4). Until
+//! 2026-09-30 each coarser pixel took one of the slopes beneath it at random, a halftone that kept
+//! the steepest class at every zoom but read as noise zoomed out. Pixels with no finer data (far
+//! from roads, where the terrain archive stops at z8) fall back to the slope of that level's own
+//! DEM. Writes slope.tiles (served at
+//! /tiles/slope/{z}/{x}/{y}). --coarse recomputes every level below z12 from the z12 tiles (after
+//! a change to how they are made).
 //!
 //! Incremental: the terrain tiles of the last run are listed in data/cache/steps/slope.keys, and
 //! only slope tiles whose terrain (the tile, its neighbours or their ancestors) is new are
@@ -73,19 +78,10 @@ fn slope_tile(arc: &Archive, z: u8, x: u32, y: u32) -> Option<Vec<f32>> {
     Some(out)
 }
 
-/// Slope picked for each parent pixel, and whether a finer tile supplied it.
+/// Each parent pixel's slope (the mean of its 2×2 children), and whether a finer tile supplied it.
 struct Acc {
     val: Vec<f32>,
     has: Vec<bool>,
-}
-
-/// Which of a parent pixel's 2×2 children it takes (0..4): a hash of its position, so the pick
-/// is uniform, uncorrelated between neighbours and levels, and reproducible.
-fn pick(z: u8, gx: u32, gy: u32) -> usize {
-    let mut h = ((z as u64) << 56) ^ ((gx as u64) << 28) ^ gy as u64;
-    h = (h ^ (h >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-    h = (h ^ (h >> 27)).wrapping_mul(0x94d049bb133111eb);
-    ((h ^ (h >> 31)) & 3) as usize
 }
 
 /// Terrarium PNG of slopes in 1/16 % steps: R is constant, B takes 16 levels, which compresses
@@ -176,6 +172,8 @@ fn main() -> Result<()> {
     }
     let mut aw = ArchiveWriter::create(&roadcore::tmp(&dir, "slope.tiles"), r#"{"format":"png","encoding":"terrarium","value":"slope percent"}"#)?;
     let in_old = |z: u8, x: u32, y: u32| old.as_ref().is_some_and(|o| o.get(z, x, y).is_some());
+    // --coarse: every level below z12 again (z12 copied).
+    let coarse = std::env::args().any(|a| a == "--coarse");
     // Accumulators for the level being built, filled from the level above; and the parents that
     // exist because of finer tiles.
     let mut acc: HashMap<(u32, u32), Acc> = HashMap::new();
@@ -193,15 +191,15 @@ fn main() -> Result<()> {
         let parents_of_dirty: std::collections::HashSet<(u32, u32)> = dirty_below.iter().map(|&(x, y)| (x / 2, y / 2)).collect();
         let dirty: std::collections::HashSet<(u32, u32)> = tiles
             .par_iter()
-            .filter(|&&(x, y)| old.is_none() || parents_of_dirty.contains(&(x, y)) || !in_old(z, x, y) || terrain_changed(z, x, y))
+            .filter(|&&(x, y)| old.is_none() || (coarse && z < MAXZ) || parents_of_dirty.contains(&(x, y)) || !in_old(z, x, y) || terrain_changed(z, x, y))
             .copied()
             .collect();
         let dirty_parents: std::collections::HashSet<(u32, u32)> = dirty.iter().map(|&(x, y)| (x / 2, y / 2)).collect();
         let parent_dirty = |x: u32, y: u32| -> bool {
-            z > 0 && {
+            z > 0 && (coarse || {
                 let (px, py) = (x / 2, y / 2);
                 dirty_parents.contains(&(px, py)) || !in_old(z - 1, px, py) || terrain_changed(z - 1, px, py)
-            }
+            })
         };
         let pb = count_bar(tiles.len() as u64, &format!("slope z{z}"));
         let mut next: HashMap<(u32, u32), Acc> = HashMap::new();
@@ -246,15 +244,15 @@ fn main() -> Result<()> {
                 }
                 let (px, py) = (x / 2, y / 2);
                 next_present.insert((px, py));
-                // One of each 2×2 block into the parent's quadrant (when it is recomputed).
+                // Each 2×2 block's mean into the parent's quadrant (when it is recomputed).
                 let Some(v) = vals else { continue };
                 let (ox, oy) = ((x % 2) as usize * 128, (y % 2) as usize * 128);
                 let p = next.entry((px, py)).or_insert_with(|| Acc { val: vec![0.0; TS * TS], has: vec![false; TS * TS] });
                 for j in 0..128 {
                     for i in 0..128 {
                         let k = (oy + j) * TS + ox + i;
-                        let c = pick(z - 1, px * TS as u32 + (ox + i) as u32, py * TS as u32 + (oy + j) as u32);
-                        p.val[k] = v[(2 * j + c / 2) * TS + 2 * i + c % 2];
+                        let (a, b) = ((2 * j) * TS + 2 * i, (2 * j + 1) * TS + 2 * i);
+                        p.val[k] = (v[a] + v[a + 1] + v[b] + v[b + 1]) * 0.25;
                         p.has[k] = true;
                     }
                 }

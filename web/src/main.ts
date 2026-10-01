@@ -7,7 +7,7 @@ import mlWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import './style.css';
 import { getProfile, getRoadWays, getWay, roadWays, setVersions, ver, type Drive, type Meta, type Profile, type Ride, type WayInfo } from './api';
 import { loadEnglish } from './english';
-import { applyLineWidths, applyOverlayOpacity, baseStyle, LABEL_LAYERS, LAYER_GROUPS, overlayLabelScale, partIds, POI_STYLE } from './basemap';
+import { applyBoundaryOpacity, applyLineWidths, applyOverlayOpacity, baseStyle, LABEL_LAYERS, LAYER_GROUPS, overlayLabelScale, partIds, POI_STYLE } from './basemap';
 import { LandmarkDots } from './dots';
 import { areaLayers, landmarkRef, Overlays, POINT_LAYERS, withDetails } from './overlays';
 import { loadDetail, osmPath, peekDetail, refKey } from './details';
@@ -32,7 +32,7 @@ import { applyTrees } from './trees';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
-import { ROAD_WEIGHT, Store, classMask, labelShown, fromHash, fromSaved, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Stretch } from './state';
+import { ROAD_WEIGHT, Store, classMask, labelShown, modeGroup, fromHash, fromSaved, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Stretch } from './state';
 import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyTerrain, applyTint, cacheTerrainRays, tintCss, tintRange, type TintContext } from './terrain';
 import { cheaperCovers } from './covers';
@@ -320,6 +320,15 @@ async function main() {
       return e ? spread(e.quantile(0), e.quantile(1), 10) : cur;
     }
     if (!s.auto) return s.range;
+    if (modeGroup(s.mode) === 'scenic') {
+      // The best fitLen[0] screen widths of road in view to the best fitLen[1] (state.ts fitLen): a
+      // fixed amount of road at the view centre's scale, whatever share of the view it is.
+      if (!mdist || mdist.total <= 0 || !stats || stats.totalKm <= 0) return cur;
+      const c = map.getCenter();
+      const widthKm = ((40075.016686 * Math.cos((c.lat * Math.PI) / 180)) / (512 * 2 ** map.getZoom())) * map.getCanvas().clientWidth;
+      const at = (widths: number) => mdist!.quantile(Math.max(0, 1 - (widths * widthKm) / stats!.totalKm));
+      return spread(at(s.fitLen[0]), at(s.fitLen[1]), d.step * 4);
+    }
     const [pl, ph] = s.fit;
     return mdist && mdist.total > 0 ? spread(mdist.quantile(pl / 100), mdist.quantile(ph / 100), d.step * 4) : cur;
   };
@@ -1335,6 +1344,14 @@ async function main() {
       openLink(k, t);
       return;
     }
+    // I: the HUD (panels, bottom bar, controls) off and on, the map filling the window.
+    if (k === 'i' && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target)) {
+      e.preventDefault();
+      const off = document.body.classList.toggle('hud-off');
+      map.resize();
+      if (off) toast('Press I to bring the panels back');
+      return;
+    }
     if (e.key !== 'Escape') return;
     if (document.querySelector('dialog[open]')) return; // the dialog closes itself
     if (driving) return stopDrive();
@@ -1406,7 +1423,7 @@ async function main() {
       map.triggerRepaint();
     }
     if ((ch.has('layers') || ch.has('labelKinds')) && styleReady) overlays.apply(s);
-    if ((ch.has('rail') || ch.has('lineWeights') || ch.has('labelKinds')) && styleReady) stations.apply(s);
+    if ((ch.has('rail') || ch.has('layers') || ch.has('lineWeights') || ch.has('labelKinds')) && styleReady) stations.apply(s);
     if ((ch.has('ferry') || ch.has('layers') || ch.has('lineWeights') || ch.has('labelKinds')) && styleReady) {
       ferries.apply(s);
       updateFerries();
@@ -1432,6 +1449,7 @@ async function main() {
       if (ch.has('terrain') || ch.has('palette') || ch.has('mode')) refreshTint();
       if (ch.has('labelOpacity') || ch.has('poiOpacity')) applyLabelOpacity(map, s.labelOpacity, overlayLabelScale(s.poiOpacity));
       if (ch.has('poiOpacity')) applyOverlayOpacity(map, s.poiOpacity);
+      if (ch.has('boundaryOpacity')) applyBoundaryOpacity(map, s.boundaryOpacity);
       if (ch.has('poiOpacity') || ch.has('poiEmphasis') || ch.has('landmarks') || ch.has('labelOpacity')) overlays.prominence(s);
       if (ch.has('globe')) applyProjection();
       if (ch.has('overlays') || ch.has('heritageOff') || ch.has('stopFilters') || ch.has('stopUnknown')) overlays.apply(s);
@@ -1514,6 +1532,7 @@ async function main() {
     applyTrees(map, store.s.trees);
     applyLabelOpacity(map, store.s.labelOpacity, overlayLabelScale(store.s.poiOpacity));
     applyOverlayOpacity(map, store.s.poiOpacity);
+    applyBoundaryOpacity(map, store.s.boundaryOpacity);
     refreshTint();
     overlays.apply(store.s);
     ferries.apply(store.s);

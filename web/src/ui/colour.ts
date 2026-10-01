@@ -4,7 +4,7 @@ import type { Dist } from '../roads/stats';
 import { COMPONENTS, MODES, isScenic, modeDef, type Mode } from '../scenic';
 import { CLASS_LABELS } from '../config';
 import { MAP_SCHEMES, mapScheme, type MapScheme } from '../mapschemes';
-import type { Store } from '../state';
+import { modeGroup, type Store } from '../state';
 import { h } from './dom';
 import { PresetBar } from './presets';
 import { ScaleControls } from './scale';
@@ -49,6 +49,7 @@ export class ColourCard {
       fadeDefault: 0.7,
       spanDefault: 0.6,
       fixedCaption: () => (store.s.mode === 'relief' ? 'Lowest → highest road in view' : null),
+      len: { active: () => modeGroup(store.s.mode) === 'scenic', get: () => store.s.fitLen, set: (fitLen) => store.set({ fitLen }), unit: 'screen widths' },
       onPreview: (k) => this.onPalettePreview(k),
     });
 

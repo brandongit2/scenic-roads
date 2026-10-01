@@ -89,6 +89,8 @@ export class LayersCard {
   private labelOpOut: HTMLOutputElement;
   private roadOp: HTMLInputElement;
   private roadOpOut: HTMLOutputElement;
+  private boundOp: HTMLInputElement;
+  private boundOpOut: HTMLOutputElement;
   private poiOp: HTMLInputElement;
   private poiOpOut: HTMLOutputElement;
   /** Landmark prominence: the shared scale controls (histogram, fit, fade, highlight) over the
@@ -334,6 +336,9 @@ export class LayersCard {
     this.roadOp = slider(0.1, 1, 0.05, (v) => this.store.set({ roadOpacity: v }), defaults.roadOpacity);
     this.roadOp.title = 'Opacity of the roads, in every display type (double-click: default)';
     this.roadOpOut = h('output');
+    this.boundOp = slider(0, 1, 0.05, (v) => this.store.set({ boundaryOpacity: v }), defaults.boundaryOpacity);
+    this.boundOp.title = 'Opacity of the boundary lines (double-click: default)';
+    this.boundOpOut = h('output');
     this.globe = cb((v) => this.store.set({ globe: v }));
     this.labelOpOut = h('output');
     this.poiOp = slider(0.1, 1, 0.05, (v) => this.store.set({ poiOpacity: v }), defaults.poiOpacity);
@@ -464,6 +469,7 @@ export class LayersCard {
             this.boundaryBoxes.push(c);
             return tog(c, label, '', 'tog sub', help);
           }),
+          h('div', { class: 'row sub', title: 'Opacity of the boundary lines' }, h('span', { class: 'muted' }, 'Opacity'), this.boundOp, this.boundOpOut),
           tog(this.other.places, 'Place labels', '', 'tog', 'Names of places, water, and of the parks, sites and stops shown'),
           ...LABEL_KINDS.map(([k, label, help]) => {
             const c = cb((v) => this.store.set({ labelKinds: { ...this.store.s.labelKinds, [k]: v } }));
@@ -685,6 +691,9 @@ export class LayersCard {
     this.labelOpOut.value = `${Math.round(s.labelOpacity * 100)} %`;
     this.roadOp.value = String(s.roadOpacity);
     this.roadOpOut.value = `${Math.round(s.roadOpacity * 100)} %`;
+    this.boundOp.value = String(s.boundaryOpacity);
+    this.boundOpOut.value = `${Math.round(s.boundaryOpacity * 100)} %`;
+    this.boundOp.disabled = !s.layers.boundaries;
     this.poiOp.value = String(s.poiOpacity);
     this.poiOpOut.value = `${Math.round(s.poiOpacity * 100)} %`;
     this.t.contours.checked = t.contours;

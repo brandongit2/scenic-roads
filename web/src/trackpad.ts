@@ -6,12 +6,25 @@ import { anchorAt, centrePoint, dolly, ownPan, orbit, panTo, setLocationAt, type
  *   two-finger drag            → pan         (wheel events without modifiers; the ground at the
  *                                              view centre moves with the fingers)
  *   click-drag                 → pan         (the grabbed ground stays under the pointer)
- *   pinch                      → zoom        (wheel + ctrlKey in Chromium/Firefox, GestureEvent in Safari)
+ *   pinch                      → zoom        (wheel + ctrlKey in Chromium/Firefox, GestureEvent in Safari),
+ *                                              carrying on briefly after the fingers stop (PINCH_TAU_MS)
+ *   ⌘ Cmd + two-finger drag    → zoom        (vertical)
  *   ⌥ Option + two-finger drag → x rotates, y tilts
  *   right-drag / Ctrl-drag     → rotate + tilt
  * A mouse wheel zooms with short, snappy easing. Zoom, rotation and tilt keep the 3D point
  * under the cursor fixed on screen (see camera3d.ts).
  */
+/** Pinch inertia: the zoom speed of the last PINCH_SAMPLE_MS carries on, decaying with this time
+ * constant (short: it settles in about a third of a second), once no pinch event has come for
+ * PINCH_END_MS (Chromium sends no gesture end); at most PINCH_MAX_DZ more levels. */
+const PINCH_TAU_MS = 110;
+const PINCH_SAMPLE_MS = 70;
+const PINCH_END_MS = 45;
+const PINCH_MAX_DZ = 0.9;
+/** Zoom levels per pixel of a ⌘ two-finger scroll (the trackpad's own momentum carries it on). */
+const CMD_ZOOM_PER_PX = 0.0045;
+/** Firefox on macOS reports a mouse wheel notch as this many pixels (as MapLibre's scroll zoom). */
+const FIREFOX_NOTCH = 4.000244140625;
 export interface CameraControls {
   /** Smooth zoom by dz levels about a screen point (default: the view centre). */
   zoomBy(dz: number, px?: number, py?: number): void;
@@ -27,6 +40,7 @@ export function installTrackpad(map: MLMap): CameraControls {
   const el = map.getCanvasContainer();
   let lastEvent = 0;
   let burstMouse = false;
+  let burstCmd = false;
   // Anchor for the current gesture burst, re-picked when the cursor moves.
   let anchor: { a: Anchor | null; x: number; y: number; t: number } | null = null;
   const anchorFor = (px: number, py: number): Anchor | null => {
@@ -119,12 +133,56 @@ export function installTrackpad(map: MLMap): CameraControls {
     raf = requestAnimationFrame(step);
   };
   const smoothZoom = (px: number, py: number, dz: number) => {
+    stopInertia();
     wheel = { x: px, y: py, a: anchorFor(px, py) };
     zLeft += dz;
     if (!raf) {
       last = performance.now();
       raf = requestAnimationFrame(step);
     }
+  };
+
+  // ---- pinch inertia ----
+  // Recent pinch steps (time, levels) and where they were; when they stop, the speed carries on.
+  const pinchSteps: [number, number][] = [];
+  let pinchAt: { x: number; y: number; a: Anchor | null } | null = null;
+  let pinchEnd = 0;
+  let inertia = 0;
+  const stopInertia = () => {
+    cancelAnimationFrame(inertia);
+    inertia = 0;
+  };
+  const pinchStep = (px: number, py: number, dz: number, a: Anchor | null) => {
+    stopInertia();
+    zLeft = 0;
+    const now = performance.now();
+    pinchSteps.push([now, dz]);
+    while (pinchSteps.length && now - pinchSteps[0][0] > PINCH_SAMPLE_MS) pinchSteps.shift();
+    pinchAt = { x: px, y: py, a };
+    zoomAt(px, py, dz, a);
+    clearTimeout(pinchEnd);
+    pinchEnd = window.setTimeout(pinchRelease, PINCH_END_MS);
+  };
+  // The fingers have stopped: carry on at the zoom speed of the last steps, decaying.
+  const pinchRelease = () => {
+    const at = pinchAt;
+    if (!at || pinchSteps.length < 2) return void (pinchSteps.length = 0);
+    const span = Math.max(16, pinchSteps[pinchSteps.length - 1][0] - pinchSteps[0][0]);
+    let v = pinchSteps.reduce((sum, [, dz]) => sum + dz, 0) / span; // levels per ms
+    pinchSteps.length = 0;
+    // A pause or a slow finish carries nothing; the carry is capped (v·τ levels in all).
+    if (Math.abs(v) < 0.0006) return;
+    v = Math.sign(v) * Math.min(Math.abs(v), PINCH_MAX_DZ / PINCH_TAU_MS);
+    let t0 = performance.now();
+    const tick = (now: number) => {
+      const dt = Math.min(48, now - t0);
+      t0 = now;
+      const dz = v * PINCH_TAU_MS * (1 - Math.exp(-dt / PINCH_TAU_MS));
+      v *= Math.exp(-dt / PINCH_TAU_MS);
+      if (Math.abs(v) < 0.00008 || !zoomAt(at.x, at.y, dz, at.a)) return void (inertia = 0);
+      inertia = requestAnimationFrame(tick);
+    };
+    inertia = requestAnimationFrame(tick);
   };
 
   el.addEventListener(
@@ -138,9 +196,17 @@ export function installTrackpad(map: MLMap): CameraControls {
       // Classify the burst: a mouse wheel reports whole notches (deltaMode 1, or legacy
       // wheelDelta in multiples of 120 that are not the trackpad's −3 × deltaY).
       const wdy = (e as unknown as { wheelDeltaY?: number }).wheelDeltaY;
-      const looksMouse = e.deltaMode === 1 || (e.deltaX === 0 && !!wdy && Math.abs(wdy) % 120 === 0 && wdy !== -3 * e.deltaY);
-      if (now - lastEvent > 280) burstMouse = looksMouse;
-      else if (e.deltaX !== 0 && !e.altKey) burstMouse = false;
+      // A mouse: lines; Chromium's notches (wheelDelta in 120s, not the trackpad's −3 × deltaY);
+      // Firefox's (multiples of FIREFOX_NOTCH); or, opening a burst, a large whole-pixel vertical
+      // step (a trackpad starts small and fractional, with some sideways motion).
+      const looksMouse = e.deltaMode === 1 || (e.deltaX === 0 && e.deltaY !== 0 && (
+        (!!wdy && Math.abs(wdy) % 120 === 0 && wdy !== -3 * e.deltaY) ||
+        Math.abs(e.deltaY) % FIREFOX_NOTCH === 0 ||
+        (now - lastEvent > 280 && Number.isInteger(e.deltaY) && Math.abs(e.deltaY) >= 50 && wdy !== -3 * e.deltaY)));
+      if (now - lastEvent > 280) {
+        burstMouse = looksMouse;
+        burstCmd = e.metaKey && !e.ctrlKey && !looksMouse;
+      } else if (e.deltaX !== 0 && !e.altKey) burstMouse = false;
       lastEvent = now;
       if (e.deltaMode === 1) {
         dx *= 16;
@@ -151,8 +217,12 @@ export function installTrackpad(map: MLMap): CameraControls {
       }
       if (e.ctrlKey) {
         // Pinch (or Ctrl + wheel).
+        pinchStep(px, py, -dy * 0.012, anchorFor(px, py));
+      } else if (burstCmd || (e.metaKey && !burstMouse)) {
+        // ⌘ + two-finger scroll: zoom, the whole burst (its momentum too, Cmd released or not).
+        stopInertia();
         zLeft = 0;
-        zoomAt(px, py, -dy * 0.012, anchorFor(px, py));
+        zoomAt(px, py, -dy * CMD_ZOOM_PER_PX, anchorFor(px, py));
       } else if (burstMouse && !e.altKey) {
         // ~0.55 zoom levels per notch.
         const notches = e.deltaMode === 1 ? e.deltaY / 3 : dy / 100;
@@ -220,6 +290,7 @@ export function installTrackpad(map: MLMap): CameraControls {
     if (!a) return; // sky
     hold = { id: e.pointerId, a, own: a.ground && ownPan(map, a), moved: false, x0: e.clientX, y0: e.clientY };
     zLeft = 0;
+    stopInertia();
   });
   el.addEventListener('pointermove', (e: PointerEvent) => {
     if (!hold || e.pointerId !== hold.id) return;
@@ -264,9 +335,13 @@ export function installTrackpad(map: MLMap): CameraControls {
     e.preventDefault();
     const dz = Math.log2(e.scale / lastScale);
     lastScale = e.scale;
-    zoomAt(gx, gy, dz, ga);
+    pinchStep(gx, gy, dz, ga);
   }, { passive: false });
-  g.addEventListener('gestureend', (e: any) => e.preventDefault(), { passive: false });
+  g.addEventListener('gestureend', (e: any) => {
+    e.preventDefault();
+    clearTimeout(pinchEnd);
+    pinchRelease();
+  }, { passive: false });
 
   // Double-click zooms in about the point (Shift: out).
   el.addEventListener('dblclick', (e: MouseEvent) => {

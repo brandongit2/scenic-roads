@@ -243,8 +243,13 @@ export interface AppState {
   /** Follow the view (true) or keep `range` fixed. */
   auto: boolean;
   range: [number, number];
-  /** Auto-fit percentiles of the roads in view (low, high), 0–100. */
+  /** Auto-fit percentiles of the roads in view (low, high), 0–100 (not the scenic metrics: fitLen). */
   fit: [number, number];
+  /** The scenic metrics' auto-fit: the best this much road in view, in screen widths (road as long
+   * as the view is wide at its centre): the scale's low end at the first, full colour from the
+   * second. A fixed amount of road, not a share of it, so a view of mostly bland streets doesn't
+   * pull the scale down to them (as the landmarks' top ranks). */
+  fitLen: [number, number];
   /** Histogram-equalised colours. */
   equalize: boolean;
   /** Scenic-score weights (see scenic.ts COMPONENTS). */
@@ -269,6 +274,8 @@ export interface AppState {
   lineWeights: LineWeights;
   /** Opacity of the roads layer (every display type), 0.1..1. */
   roadOpacity: number;
+  /** Opacity of the boundary lines (countries, provinces & states, counties), 0..1. */
+  boundaryOpacity: number;
   routeGlow: boolean;
   /** Transparency at the low end of the colour scale (0..1) and the share of the scale it spans. */
   lowFade: number;
@@ -348,6 +355,7 @@ export const defaults: AppState = {
   auto: true,
   range: [0, 100],
   fit: [80, 99.9],
+  fitLen: [15, 1],
   equalize: false,
   weights: [...DEFAULT_WEIGHTS],
   preset: DEFAULT_PRESET,
@@ -374,6 +382,7 @@ export const defaults: AppState = {
   toll: { free: true, toll: true },
   lineWeights: { global: 1, roads: 1.5, rail: 0.5, ferries: 0.5, borders: 1, rivers: 1, outlines: 1 },
   roadOpacity: 1,
+  boundaryOpacity: 1,
   routeGlow: false,
   lowFade: 0.8,
   lowSpan: 0.6,
@@ -544,6 +553,7 @@ export function toHash(s: AppState): string {
   if (s.auto !== d.auto || (!s.auto && (s.range[0] !== d.range[0] || s.range[1] !== d.range[1])))
     p.set('r', s.auto ? 'auto' : `${+s.range[0].toFixed(2)},${+s.range[1].toFixed(2)}`);
   if (s.fit[0] !== defaults.fit[0] || s.fit[1] !== defaults.fit[1]) p.set('fp', `${s.fit[0]},${s.fit[1]}`);
+  if (s.fitLen[0] !== defaults.fitLen[0] || s.fitLen[1] !== defaults.fitLen[1]) p.set('fl', `${s.fitLen[0]},${s.fitLen[1]}`);
   if (s.equalize) p.set('eq', '1');
   // Presets are per browser, so a link carries the weights themselves whenever they aren't the default.
   if (s.preset !== DEFAULT_PRESET) p.set('pr', s.preset || 'custom');
@@ -585,6 +595,7 @@ export function toHash(s: AppState): string {
   const lw = (l: LineWeights) => [l.global, ...LINE_KINDS.map(([k]) => l[k])].map((v) => +v.toFixed(2)).join(',');
   if (lw(s.lineWeights) !== lw(defaults.lineWeights)) p.set('lw', lw(s.lineWeights));
   if (s.roadOpacity !== defaults.roadOpacity) p.set('ro', s.roadOpacity.toFixed(2));
+  if (s.boundaryOpacity !== defaults.boundaryOpacity) p.set('bo', s.boundaryOpacity.toFixed(2));
   if (s.routeGlow) p.set('rg', '1');
   const l = s.layers;
   if (!(l.roads && l.water && l.boundaries && l.places)) p.set('l', `${l.roads ? 'r' : ''}${l.water ? 'w' : ''}${l.boundaries ? 'b' : ''}${l.places ? 'p' : ''}`);
@@ -653,6 +664,8 @@ export function fromHash(hash: string): AppState {
   }
   const fp = p.get('fp')?.split(',').map(Number);
   if (fp && fp.length === 2 && fp.every(Number.isFinite) && fp[0] >= 0 && fp[1] <= 100 && fp[1] > fp[0]) s.fit = [fp[0], fp[1]];
+  const fl = p.get('fl')?.split(',').map(Number);
+  if (fl && fl.length === 2 && fl.every(Number.isFinite) && fl[1] > 0 && fl[0] > fl[1]) s.fitLen = [fl[0], fl[1]];
   s.equalize = p.get('eq') === '1';
   const pr = p.get('pr');
   const wt = migrateWeights(p.get('wt')?.split(',').map(Number));
@@ -759,6 +772,8 @@ export function fromHash(hash: string): AppState {
   }
   const ro = Number(p.get('ro'));
   if (p.get('ro') && ro >= 0.1 && ro <= 1) s.roadOpacity = ro;
+  const bo = Number(p.get('bo'));
+  if (p.get('bo') && bo >= 0 && bo <= 1) s.boundaryOpacity = bo;
   s.routeGlow = p.get('rg') === '1';
   const l = p.get('l');
   if (l !== null) s.layers = { roads: l.includes('r'), water: l.includes('w'), boundaries: l.includes('b'), places: l.includes('p') };

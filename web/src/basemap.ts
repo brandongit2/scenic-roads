@@ -176,6 +176,16 @@ export function applyOverlayOpacity(map: import('maplibre-gl').Map, f: number) {
   }
 }
 
+/** The boundary lines' opacity (Layers → Map → Boundaries), × their own, in every basemap part. */
+export function applyBoundaryOpacity(map: import('maplibre-gl').Map, f: number) {
+  for (const id of [...LAYER_GROUPS.boundaries, 'boundary-country-disputed'].flatMap(partIds)) {
+    if (!map.getLayer(id)) continue;
+    const key = `${id}|line-opacity`;
+    if (!baseOpacity.has(key)) baseOpacity.set(key, map.getPaintProperty(id, 'line-opacity'));
+    map.setPaintProperty(id, 'line-opacity', scalePaint(baseOpacity.get(key), f) as ExpressionSpecification);
+  }
+}
+
 /** Line layers whose widths follow a line weight (Layers → Map), by the kind scaling them on top
  * of the global weight ('global': that alone). Roads, rail and ferries: their own layers. */
 const LINE_WIDTHS: [string, LineKind | 'global'][] = [
@@ -395,10 +405,9 @@ export function baseStyle(parts: string[] = [], labels = false): StyleSpecificat
         paint: {
           'color-relief-color': ['interpolate', ['linear'], ['elevation'], 0, '#1f3b2c', 100, '#8a3aa0'] as unknown as ExpressionSpecification,
           'color-relief-opacity': 0.45,
-          // Below z11 the tiles are sampled from the z12 slopes (see pipeline `slope`): blending
-          // neighbouring values would turn a steep/gentle mix into uniform middling slopes, so
-          // each pixel keeps its value. From z11 the full-detail slopes are smooth to interpolate.
-          resampling: ['step', ['zoom'], 'nearest', 11, 'linear'],
+          // Every level is smooth to interpolate: below z12 each pixel is the mean of the slopes
+          // beneath it (pipeline `slope`).
+          resampling: 'linear',
         },
       } as LayerSpecification,
       // Tree cover (colours set by trees.ts), under the hill-shading so the relief reads through it.
