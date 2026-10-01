@@ -46,7 +46,8 @@ export interface ScaleOpts {
   rank?: { get: () => [number, number]; set: (v: [number, number]) => void };
   /** Auto-fit to the best so much of the length in view (the low end at the first amount, full
    * colour from the second, in `unit`s) instead of percentiles, while `active` (roads' scenic metrics). */
-  len?: { active: () => boolean; get: () => [number, number]; set: (v: [number, number]) => void; unit: string };
+  /** `best`: the word for the top of the scale (default "best"; "busiest" for frequencies). */
+  len?: { active: () => boolean; get: () => [number, number]; set: (v: [number, number]) => void; unit: string; best?: () => string };
   /** A pill that makes the range follow something else (the terrain tint: the road colours'),
    * while `available`; on, the caption says so and Auto / Lock / Full turn it off. */
   follow?: { label: string; title: string; caption: string; available: () => boolean; on: () => boolean; set: (on: boolean) => void };
@@ -166,7 +167,7 @@ export class ScaleControls {
       const inp = (i: 0 | 1) => {
         const e = h('input', {
           type: 'number', class: 'pct', min: 0.5, step: 0.5,
-          title: i ? `Full colour for the best this many ${len.unit} of ${o.noun} in view` : `The scale's low end: the best this many ${len.unit} of ${o.noun} in view (the rest fade)`,
+          title: i ? `Full colour for the ${len.best?.() ?? 'best'} this many ${len.unit} of ${o.noun} in view` : `The scale's low end: the ${len.best?.() ?? 'best'} this many ${len.unit} of ${o.noun} in view (the rest fade)`,
         });
         e.addEventListener('change', () => {
           const v = Math.max(0.5, Math.round((Number(e.value) || 0.5) * 2) / 2);
@@ -258,7 +259,8 @@ export class ScaleControls {
         const [lo, hi] = this.o.len.get();
         this.lenLo.value = String(lo);
         this.lenHi.value = String(hi);
-        this.caption.replaceChildren('Auto-fit: the best ', this.lenLo, ` ${this.o.len.unit} of ${this.o.noun} in view, full colour from the best `, this.lenHi);
+        const best = this.o.len.best?.() ?? 'best';
+        this.caption.replaceChildren(`Auto-fit: the ${best} `, this.lenLo, ` ${this.o.len.unit} of ${this.o.noun} in view, full colour from the ${best} `, this.lenHi);
       } else if (s.auto) this.caption.replaceChildren('Auto-fit to percentiles ', this.fitLo, '–', this.fitHi, ` of ${this.o.noun} in view`);
       else this.caption.textContent = 'Fixed range · drag the handles';
     }

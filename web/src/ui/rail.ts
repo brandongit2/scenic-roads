@@ -63,6 +63,10 @@ export class RailCard {
         return { domain: d.domain, step: d.step, fmt: d.fmt };
       },
       noun: 'rail',
+      len: {
+        active: () => !!railMetricDef(store.s.rail.metric).byLen, get: () => store.s.rail.fitLen, set: (fitLen) => R({ fitLen }), unit: 'screen widths',
+        best: () => ({ freq: 'busiest', viaduct: 'highest', drama: 'highest', curvy: 'twistiest' } as Partial<Record<string, string>>)[store.s.rail.metric] ?? 'best',
+      },
       measure: 'rail length',
       fadeDefault: 0.4,
       spanDefault: 0.6,

@@ -23,6 +23,10 @@ export interface RailMetricDef {
   domain: [number, number];
   step: number;
   diverging?: boolean;
+  /** Auto-fit by the best screen widths of rail in view (RailState.fitLen), as the roads' scenic
+   * metrics are; else (elevation, gradient, ledge ↔ gorge) by percentiles, as the roads'
+   * elevation and grade. */
+  byLen?: boolean;
   help: string;
   fmt: (v: number) => string;
 }
@@ -31,17 +35,17 @@ const n0 = (v: number) => Math.round(v).toLocaleString('en-CA');
 const km2 = (v: number) => (v < 1 ? v.toFixed(2) : v < 10 ? v.toFixed(1) : n0(v)) + ' km²';
 
 export const RAIL_METRICS: RailMetricDef[] = [
-  { key: 'rscore', label: 'Scenic score', id: 30, unit: '', range: [0, 100], domain: [0, 100], step: 1, help: 'Weighted blend of the ride factors below.', fmt: (v) => v.toFixed(0) },
-  { key: 'freq', label: 'Service frequency', id: 32, unit: '/day', range: [0, 2.5], domain: [-1, 3], step: 0.05, help: 'Trains a day each way on a typical weekday (log scale), all services on the track added up, from operators\u2019 published timetables. Grey: no timetable found.', fmt: (v) => `${fmtTrains(10 ** v)} a day` },
+  { key: 'rscore', label: 'Scenic score', id: 30, unit: '', range: [0, 100], domain: [0, 100], step: 1, byLen: true, help: 'Weighted blend of the ride factors below.', fmt: (v) => v.toFixed(0) },
+  { key: 'freq', label: 'Service frequency', id: 32, unit: '/day', range: [0, 2.5], domain: [-1, 3], step: 0.05, byLen: true, help: 'Trains a day each way on a typical weekday (log scale), all services on the track added up, from operators\u2019 published timetables. Grey: no timetable found.', fmt: (v) => `${fmtTrains(10 ** v)} a day` },
   { key: 'elev', label: 'Track elevation', id: 0, unit: 'm', range: [0, 1500], domain: [-50, 3500], step: 10, help: 'Metres above sea level.', fmt: (v) => `${n0(v)} m` },
   { key: 'grade', label: 'Gradient', id: 1, unit: '%', range: [0, 6], domain: [0, 30], step: 0.5, help: 'Track gradient over ~50 m (adhesion railways stay under ~4 %; rack railways go far steeper).', fmt: (v) => `${v.toFixed(1)} %` },
-  { key: 'viaduct', label: 'Viaduct height', id: 31, unit: 'm', range: [0, 60], domain: [0, 150], step: 1, help: 'Height of bridges and viaducts above the ground beneath.', fmt: (v) => `${n0(v)} m` },
-  { key: 'view', label: 'Views', id: 4, unit: 'km²', range: [0, 1], domain: [0, 1], step: 0.01, help: 'Area visible within 15 km from a carriage window.', fmt: (v) => km2(u8Area(v * 255)) },
-  { key: 'water', label: 'Water views', id: 5, unit: 'km²', range: [0, 1], domain: [0, 1], step: 0.01, help: 'Lake, river and sea area visible within 15 km.', fmt: (v) => km2(u8Area(v * 255)) },
-  { key: 'vista', label: 'Vista distance', id: 6, unit: 'km', range: [0, 12], domain: [0, 15], step: 0.1, help: 'Average farthest visible distance over all directions.', fmt: (v) => `${v.toFixed(1)} km` },
-  { key: 'drama', label: 'Mountains', id: 7, unit: 'm', range: [0, 500], domain: [0, 765], step: 5, help: 'Relief of the terrain within 3 km.', fmt: (v) => `${n0(v)} m` },
+  { key: 'viaduct', label: 'Viaduct height', id: 31, unit: 'm', range: [0, 60], domain: [0, 150], step: 1, byLen: true, help: 'Height of bridges and viaducts above the ground beneath.', fmt: (v) => `${n0(v)} m` },
+  { key: 'view', label: 'Views', id: 4, unit: 'km²', range: [0, 1], domain: [0, 1], step: 0.01, byLen: true, help: 'Area visible within 15 km from a carriage window.', fmt: (v) => km2(u8Area(v * 255)) },
+  { key: 'water', label: 'Water views', id: 5, unit: 'km²', range: [0, 1], domain: [0, 1], step: 0.01, byLen: true, help: 'Lake, river and sea area visible within 15 km.', fmt: (v) => km2(u8Area(v * 255)) },
+  { key: 'vista', label: 'Vista distance', id: 6, unit: 'km', range: [0, 12], domain: [0, 15], step: 0.1, byLen: true, help: 'Average farthest visible distance over all directions.', fmt: (v) => `${v.toFixed(1)} km` },
+  { key: 'drama', label: 'Mountains', id: 7, unit: 'm', range: [0, 500], domain: [0, 765], step: 5, byLen: true, help: 'Relief of the terrain within 3 km.', fmt: (v) => `${n0(v)} m` },
   { key: 'ridge', label: 'Ledge ↔ gorge', id: 8, unit: 'm', range: [-60, 60], domain: [-256, 254], step: 2, diverging: true, help: 'Track above (+) or below (−) the surrounding terrain within 1.5 km.', fmt: (v) => `${v > 0 ? '+' : ''}${n0(v)} m` },
-  { key: 'curvy', label: 'Curvature', id: 9, unit: '°/km', range: [0, 300], domain: [0, 1020], step: 5, help: 'Turning per kilometre over ±250 m.', fmt: (v) => `${n0(v)} °/km` },
+  { key: 'curvy', label: 'Curvature', id: 9, unit: '°/km', range: [0, 300], domain: [0, 1020], step: 5, byLen: true, help: 'Turning per kilometre over ±250 m.', fmt: (v) => `${n0(v)} °/km` },
 ];
 export const railMetricDef = (k: RailMetric) => RAIL_METRICS.find((m) => m.key === k) ?? RAIL_METRICS[0];
 

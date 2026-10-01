@@ -133,6 +133,7 @@ export class Ferries {
           p.km = lengthKm((f.geometry as GeoJSON.LineString).coordinates);
         }
         this.fc = fc;
+        this.boxes = null;
         this.lines = lines ?? {};
         this.map.getSource<GeoJSONSource>('ferries')?.setData(fc);
         this.onLoaded();
@@ -231,20 +232,51 @@ export class Ferries {
     if (!this.fc || !st) return null;
     const d = ferryMetricDef(st.metric);
     const b = this.map.getBounds();
-    const [w, s, e, n] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+    const box = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] as const;
     const pass = (v: number) => !st.freqOn || (v < 0 ? st.freqUnknown : (!(st.freqMin > 0) || v >= st.freqMin) && (!(st.freqMax > 0) || v <= st.freqMax));
     const vs: number[] = [], ws: number[] = [];
-    for (const f of this.fc.features as Feature[]) {
-      const p = f.properties;
+    const fs = this.fc.features as Feature[];
+    this.boxes ??= lineBoxes(fs);
+    for (let fi = 0; fi < fs.length; fi++) {
+      const f = fs[fi], p = f.properties;
       if (f.geometry.type !== 'LineString' || !pass(Number(p.f)) || !st.groups.some((on, i) => on && String(p.gs).includes(String(i)))) continue;
-      const c = (f.geometry as GeoJSON.LineString).coordinates;
-      if (!c.some(([x, y]) => x >= w && x <= e && y >= s && y <= n)) continue;
       const v = d.value(p);
       if (Number.isNaN(v)) continue;
+      const km = this.kmInView(fi, box);
+      if (km <= 0) continue;
       vs.push(v);
-      ws.push(Math.max(0.01, p.km));
+      ws.push(km);
     }
     return distFromSamples(Float32Array.from(vs), Float32Array.from(ws), d.domain[0], d.domain[1]);
+  }
+
+  /** Km of a line (feature index) within the bounds (west, south, east, north): its segments
+   * clipped to them, so that the auto-fit's screen widths measure what the view shows (a long
+   * crossing reaching into the view counted whole before). */
+  private kmInView(fi: number, [w, s, e, n]: readonly [number, number, number, number]): number {
+    const bx = this.boxes!;
+    if (bx[fi * 4] > e || bx[fi * 4 + 2] < w || bx[fi * 4 + 1] > n || bx[fi * 4 + 3] < s) return 0;
+    const c = ((this.fc!.features as Feature[])[fi].geometry as GeoJSON.LineString).coordinates;
+    let km = 0;
+    for (let i = 1; i < c.length; i++) {
+      const [x0, y0] = c[i - 1], [x1, y1] = c[i];
+      const dx = x1 - x0, dy = y1 - y0;
+      // Liang–Barsky: the share of the segment inside the box.
+      let t0 = 0, t1 = 1, out = false;
+      for (const [pp, q] of [[-dx, x0 - w], [dx, e - x0], [-dy, y0 - s], [dy, n - y0]]) {
+        if (pp === 0) {
+          if (q < 0) out = true;
+          continue;
+        }
+        const r = q / pp;
+        if (pp < 0) t0 = Math.max(t0, r);
+        else t1 = Math.min(t1, r);
+      }
+      if (out || t1 <= t0) continue;
+      const my = y0 + (dy * (t0 + t1)) / 2;
+      km += (t1 - t0) * Math.hypot(dx * 111.32 * Math.cos((my * Math.PI) / 180), dy * 110.57);
+    }
+    return km;
   }
 
   /** The ferry lines in view (the groups shown, whatever the frequency filter) by sailings a day,
@@ -253,16 +285,18 @@ export class Ferries {
     const st = this.style;
     if (!this.fc || !st) return null;
     const b = this.map.getBounds();
-    const [w, s, e, n] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+    const box = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()] as const;
     const vs: number[] = [], ws: number[] = [];
-    for (const f of this.fc.features as Feature[]) {
-      const p = f.properties;
+    const fs = this.fc.features as Feature[];
+    this.boxes ??= lineBoxes(fs);
+    for (let fi = 0; fi < fs.length; fi++) {
+      const f = fs[fi], p = f.properties;
       const v = Number(p.f);
       if (f.geometry.type !== 'LineString' || !(v > 0) || !st.groups.some((on, i) => on && String(p.gs).includes(String(i)))) continue;
-      const c = (f.geometry as GeoJSON.LineString).coordinates;
-      if (!c.some(([x, y]) => x >= w && x <= e && y >= s && y <= n)) continue;
+      const km = this.kmInView(fi, box);
+      if (km <= 0) continue;
       vs.push(Math.log10(v));
-      ws.push(Math.max(0.01, p.km));
+      ws.push(km);
     }
     return distFromSamples(Float32Array.from(vs), Float32Array.from(ws), Math.log10(0.1), Math.log10(500), 256);
   }

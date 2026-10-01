@@ -117,6 +117,12 @@ const THR_CODE: Record<ThresholdDir, string> = { above: 'a', below: 'b', low: 'l
 const THR_OF: Record<string, ThresholdDir> = { a: 'above', b: 'below', l: 'low' };
 
 /** fit lo, fit hi, equalise, fade span, highlight on, direction, value (hash fields). */
+/** A screen-widths auto-fit from a link (more, then fewer; else `d`). */
+function fitLenOf(a: string | undefined, b: string | undefined, d: [number, number]): [number, number] {
+  const lo = Number(a), hi = Number(b);
+  return a && b && Number.isFinite(lo) && Number.isFinite(hi) && hi > 0 && lo > hi ? [lo, hi] : d;
+}
+
 function parseScaleTail(v: string[], d: ScaleFields): Pick<ScaleFields, 'fit' | 'equalize' | 'lowSpan' | 'threshold'> {
   const n = (x: string, dv: number) => (x !== '' && Number.isFinite(Number(x)) ? Number(x) : dv);
   const lo = Math.min(99.5, Math.max(0, n(v[0], d.fit[0]))), hi = Math.min(100, Math.max(lo + 0.5, n(v[1], d.fit[1])));
@@ -255,6 +261,9 @@ export interface RailState extends ScaleFields {
   freqMin: number;
   freqMax: number;
   freqUnknown: boolean;
+  /** The ranked metrics' auto-fit (rail.ts byLen): the best this much rail in view, in screen
+   * widths, to the best this much (as the roads' fitLen). */
+  fitLen: [number, number];
 }
 const RAIL_COLOURS: RailColour[] = ['line', 'group', 'metric', 'single'];
 /** Passenger ferries and their colouring (top-left panel, "Ferries" section). */
@@ -275,6 +284,9 @@ export interface FerryState extends ScaleFields {
   freqMin: number;
   freqMax: number;
   freqUnknown: boolean;
+  /** Sailings a day's auto-fit (ferry.ts byLen): the busiest this much ferry line in view, in
+   * screen widths, to the busiest this much (as the roads' fitLen). */
+  fitLen: [number, number];
 }
 const FERRY_COLOURS: FerryColour[] = ['service', 'freq', 'season', 'operator', 'single'];
 /** A display type's colour settings (free of units). */
@@ -430,7 +442,7 @@ export const defaults: AppState = {
     on: true, groups: new Array(NRAIL).fill(true), colour: 'metric', metric: 'rscore', looks: {},
     ...scaleOfLook({ ...freshLook([0, 100], 0.6), palette: 'rocket', fit: [70, 99.8] }),
     weights: [...RAIL_DEFAULT_WEIGHTS], preset: RAIL_DEFAULT_PRESET, opacity: 1, single: '#e8ecf2',
-    freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true,
+    freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true, fitLen: [15, 1],
   },
   trees: {
     on: true, variable: 'cover', style: 'mask', opacity: 0.05, palette: 'greens',
@@ -439,7 +451,7 @@ export const defaults: AppState = {
   ferry: { on: true, groups: new Array(NFERRY).fill(true), colour: 'freq', metric: 'freq', looks: {},
     ...scaleOfLook({ ...freshLook(FERRY_METRICS[0].range, 0.45), fit: [0, 100], palette: 'oslo', lowSpan: 0.5 }),
     opacity: 0.9, dashed: true, single: '#8fc8ff',
-    freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true },
+    freqOn: false, freqMin: 0, freqMax: 0, freqUnknown: true, fitLen: [15, 1] },
   surface: { paved: true, unpaved: true },
   toll: { free: true, toll: true },
   lineWeights: { global: 1, roads: 1.5, rail: 0.5, ferries: 0.5, borders: 1, rivers: 1, outlines: 1 },
@@ -636,14 +648,14 @@ export function toHash(s: AppState): string {
     +r.range[0].toFixed(2), +r.range[1].toFixed(2), '', '', '', r.single.replace('#', ''), +r.lowFade.toFixed(2),
     r.freqOn ? 1 : 0, +r.freqMin.toFixed(2), +r.freqMax.toFixed(2), r.freqUnknown ? 1 : 0,
     r.fit[0], r.fit[1], r.equalize ? 1 : 0, +r.lowSpan.toFixed(2), r.threshold.on ? 1 : 0, THR_CODE[r.threshold.dir], +r.threshold.value.toFixed(3),
-    +r.opacity.toFixed(2),
+    +r.opacity.toFixed(2), r.fitLen[0], r.fitLen[1],
   ].join(',');
   const rsd = [
     dr.on ? 1 : 0, dr.groups.map((g) => (g ? 1 : 0)).join(''), dr.colour, dr.metric, dr.palette, dr.auto ? 1 : 0,
     dr.range[0], dr.range[1], '', '', '', dr.single.replace('#', ''), dr.lowFade,
     dr.freqOn ? 1 : 0, dr.freqMin, dr.freqMax, dr.freqUnknown ? 1 : 0,
     dr.fit[0], dr.fit[1], dr.equalize ? 1 : 0, dr.lowSpan, dr.threshold.on ? 1 : 0, THR_CODE[dr.threshold.dir], dr.threshold.value,
-    dr.opacity,
+    dr.opacity, dr.fitLen[0], dr.fitLen[1],
   ].join(',');
   if (rs !== rsd) p.set('rs', rs);
   if (r.weights.some((w, i) => w !== dr.weights[i])) p.set('rw', r.weights.map((w) => +w.toFixed(2)).join(','));
@@ -652,7 +664,7 @@ export function toHash(s: AppState): string {
   const fy = (f: FerryState) => [f.on ? 1 : 0, f.groups.map((g) => (g ? 1 : 0)).join(''), f.colour, f.palette, '', f.dashed ? 1 : 0, f.single.replace('#', ''), +f.opacity.toFixed(2),
     f.freqOn ? 1 : 0, +f.freqMin.toFixed(2), +f.freqMax.toFixed(2), f.freqUnknown ? 1 : 0,
     f.metric, f.auto ? 1 : 0, +f.range[0].toFixed(3), +f.range[1].toFixed(3), f.fit[0], f.fit[1], f.equalize ? 1 : 0, +f.lowFade.toFixed(2), +f.lowSpan.toFixed(2),
-    f.threshold.on ? 1 : 0, THR_CODE[f.threshold.dir], +f.threshold.value.toFixed(3)].join(',');
+    f.threshold.on ? 1 : 0, THR_CODE[f.threshold.dir], +f.threshold.value.toFixed(3), f.fitLen[0], f.fitLen[1]].join(',');
   if (fy(s.ferry) !== fy(defaults.ferry)) p.set('fy', fy(s.ferry));
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
   if (tc(s.trees) !== tc(defaults.trees)) p.set('tc', tc(s.trees));
@@ -771,6 +783,7 @@ export function fromHash(hash: string): AppState {
       freqUnknown: rs[16] === undefined ? r.freqUnknown : rs[16] === '1',
       ...(rs.length >= 24 ? parseScaleTail(rs.slice(17), r) : {}),
       opacity: rs[24] ? Math.min(1, Math.max(0.1, num(rs[24], r.opacity))) : r.opacity,
+      fitLen: fitLenOf(rs[25], rs[26], r.fitLen),
     };
     // Older links: the rail card's line weight.
     if (rs[8]) s.lineWeights.rail = clampWeight(num(rs[8], 1));
@@ -800,6 +813,7 @@ export function fromHash(hash: string): AppState {
       lowFade: fy[19] !== undefined && Number.isFinite(Number(fy[19])) && fy[19] !== '' ? Math.min(1, Math.max(0, Number(fy[19]))) : f.lowFade,
       ...(fy.length >= 24 ? parseScaleTail([fy[16], fy[17], fy[18], fy[20], fy[21], fy[22], fy[23]], f) : {
         fit: f.fit, equalize: f.equalize, lowSpan: f.lowSpan, threshold: f.threshold, palette: fy[3] || f.palette }),
+      fitLen: fitLenOf(fy[24], fy[25], f.fitLen),
     };
   }
   const tcv = p.get('tc')?.split(',');

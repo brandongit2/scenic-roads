@@ -24,6 +24,9 @@ export interface FerryMetricDef {
   range: [number, number];
   domain: [number, number];
   step: number;
+  /** Auto-fit by the busiest screen widths of ferry line in view (FerryState.fitLen), as the
+   * roads' scenic metrics are; else by percentiles (season length: most lines run all year). */
+  byLen?: boolean;
   fmt: (v: number) => string;
   /** The value of a feature (NaN: unknown). */
   value: (p: Record<string, any>) => number;
@@ -35,7 +38,7 @@ export interface FerryMetricDef {
 export const FERRY_METRICS: FerryMetricDef[] = [
   {
     key: 'freq', label: 'Sailings a day', help: 'Sailings a day each way, every line on the stretch added up (log scale). Grey: no timetable found; light grey: a headway is published but not the hours.',
-    range: [Math.log10(1 / 7), 2], domain: [Math.log10(1 / 30), Math.log10(300)], step: 0.02,
+    range: [Math.log10(1 / 7), 2], domain: [Math.log10(1 / 30), Math.log10(300)], step: 0.02, byLen: true,
     fmt: (v) => fmtPerDay(10 ** v).replace(' a day', '/day').replace(' a week', '/wk'),
     value: (p) => (Number(p.f) > 0 ? Math.log10(Number(p.f)) : NaN),
     expr: ['log10', ['max', ['get', 'f'], 0.001]],

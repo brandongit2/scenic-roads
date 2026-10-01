@@ -343,17 +343,18 @@ async function main() {
       return e ? spread(e.quantile(0), e.quantile(1), 10) : cur;
     }
     if (!s.auto) return s.range;
-    if (modeGroup(s.mode) === 'scenic') {
-      // The best fitLen[0] screen widths of road in view to the best fitLen[1] (state.ts fitLen): a
-      // fixed amount of road at the view centre's scale, whatever share of the view it is.
-      if (!mdist || mdist.total <= 0 || !stats || stats.totalKm <= 0) return cur;
-      const c = map.getCenter();
-      const widthKm = ((40075.016686 * Math.cos((c.lat * Math.PI) / 180)) / (512 * 2 ** map.getZoom())) * map.getCanvas().clientWidth;
-      const at = (widths: number) => mdist!.quantile(Math.max(0, 1 - (widths * widthKm) / stats!.totalKm));
-      return spread(at(s.fitLen[0]), at(s.fitLen[1]), d.step * 4);
-    }
+    if (modeGroup(s.mode) === 'scenic') return mdist && mdist.total > 0 && stats && stats.totalKm > 0 ? byLen(mdist, stats.totalKm, s.fitLen, d.step) : cur;
     const [pl, ph] = s.fit;
     return mdist && mdist.total > 0 ? spread(mdist.quantile(pl / 100), mdist.quantile(ph / 100), d.step * 4) : cur;
+  };
+  /** The best fitLen[0] screen widths of line in view to the best fitLen[1] (the roads' scenic
+   * metrics, rail's and ferries' ranked ones): a fixed amount of line at the view centre's scale,
+   * whatever share of the view it is. `dist`: the metric over the lines in view; `km`: their length. */
+  const byLen = (dist: Dist, km: number, fitLen: [number, number], step: number): [number, number] => {
+    const c = map.getCenter();
+    const widthKm = ((40075.016686 * Math.cos((c.lat * Math.PI) / 180)) / (512 * 2 ** map.getZoom())) * map.getCanvas().clientWidth;
+    const at = (widths: number) => dist.quantile(Math.max(0, 1 - (widths * widthKm) / km));
+    return spread(at(fitLen[0]), at(fitLen[1]), step * 4);
   };
   const spread = (lo: number, hi: number, min: number): [number, number] => {
     if (hi - lo < min) {
@@ -663,8 +664,10 @@ async function main() {
     const f = store.s.ferry;
     const d = ferryMetricDef(f.metric);
     ferryDist = ferries.metricDist();
-    ferryTarget = !f.auto ? f.range
-      : ferryDist && ferryDist.total > 0 ? spread(ferryDist.quantile(f.fit[0] / 100), ferryDist.quantile(f.fit[1] / 100), d.step * 4) : f.range;
+    // (its weights are the lines' km in view)
+    ferryTarget = !f.auto || !ferryDist || ferryDist.total <= 0 ? f.range
+      : d.byLen ? byLen(ferryDist, ferryDist.total, f.fitLen, d.step)
+      : spread(ferryDist.quantile(f.fit[0] / 100), ferryDist.quantile(f.fit[1] / 100), d.step * 4);
     if (!ferryCur || ferryKey !== f.metric) {
       ferryKey = f.metric;
       ferryCur = ferryTarget;
@@ -1091,7 +1094,9 @@ async function main() {
       const r = store.s.rail;
       const rd = railMetricDef(r.metric);
       const tt: [number, number] = !r.auto ? r.range
-        : railDist && railDist.total > 0 ? spread(railDist.quantile(r.fit[0] / 100), railDist.quantile(r.fit[1] / 100), rd.step * 4) : railCur;
+        : !railDist || railDist.total <= 0 ? railCur
+        : rd.byLen ? (railStats && railStats.totalKm > 0 ? byLen(railDist, railStats.totalKm, r.fitLen, rd.step) : railCur)
+        : spread(railDist.quantile(r.fit[0] / 100), railDist.quantile(r.fit[1] / 100), rd.step * 4);
       const nr: [number, number] = [railCur[0] + (tt[0] - railCur[0]) * k, railCur[1] + (tt[1] - railCur[1]) * k];
       if (Math.abs(nr[0] - railCur[0]) + Math.abs(nr[1] - railCur[1]) > rd.step * 0.01) {
         railCur = nr;
