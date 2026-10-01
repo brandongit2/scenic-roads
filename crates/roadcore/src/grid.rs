@@ -161,6 +161,143 @@ pub fn decode_terrain_png(bytes: &[u8]) -> Result<Vec<f32>> {
 }
 
 /// Encode metres as a Terrarium RGB PNG (quantised to 1/256 m).
+/// Above Everest: not an elevation. AWS Terrain Tiles fill some voids with 32767 m (a z9 pixel on
+/// the Toyama shore, clusters of hundreds of z12 pixels along the US–Canada border).
+pub const MAX_ELEV: f32 = 8900.0;
+/// A single-pixel spike or pit: more than this many pixel sizes above or below all its neighbours.
+pub const SPIKE_PX: f64 = 3.0;
+
+/// Repairs a 256 × 256 terrain tile in place:
+/// - impossible values (above MAX_ELEV, or NaN) filled in from their valid neighbours, ring by ring
+///   inward (0 if the tile has none);
+/// - spikes standing out of the ground around them, set to the median of the pixels two to three
+///   pixels out (the ring): more than `rise` (max(100 m, half a pixel's size)) above the ring's
+///   highest pixel and by more than twice the ring's range (a summit or a ridge has high flanks in
+///   it); or, where the ring is flat (its middle half within a quarter of `rise`: water, a plain),
+///   more than `rise` and twice a pixel's size (steeper than 45° out to it) above its upper
+///   quartile, which also takes lines through it; a real ridge off a plain is less steep at the
+///   size it's a pixel or two wide (Soffeh, 700 m above the Isfahan plain at z7). AWS's tiles over
+///   Tokyo Bay have clusters at every zoom (1,767 m off Toyosu at z9, an 841 / 665 m pair off
+///   Shinagawa), so that each distance showed its own towers, and a band of 5–24 km values runs
+///   through the Akashi Strait. (Quartiles alone took 1,350 m off Fuji's summit at z7.)
+/// - single-pixel spikes and pits clamped to their neighbours: interior pixels more than max(150 m,
+///   SPIKE_PX × the pixel size) above or below all eight of them, a wall steeper than 70° all
+///   round, which real terrain doesn't have at these sizes (the peaks step clamps at 1.2 × for its
+///   floods; for the map, that would shave a sharp summit at z8).
+/// Returns how many pixels were filled and how many clamped (spikes of either kind and pits).
+pub fn repair_terrain(t: &mut [f32], z: u8, lat: f64) -> (usize, usize) {
+    let w = TS;
+    let bad = |v: f32| !(v <= MAX_ELEV);
+    let mut filled = 0;
+    if t.iter().any(|&v| bad(v)) {
+        if t.iter().all(|&v| bad(v)) {
+            filled = t.len();
+            t.fill(0.0);
+        } else {
+            loop {
+                let src = t.to_vec();
+                let mut left = 0;
+                for y in 0..w {
+                    for x in 0..w {
+                        if !bad(src[y * w + x]) {
+                            continue;
+                        }
+                        let (mut sum, mut n) = (0f32, 0);
+                        for dy in -1i32..=1 {
+                            for dx in -1i32..=1 {
+                                let (xx, yy) = (x as i32 + dx, y as i32 + dy);
+                                if (dx, dy) == (0, 0) || xx < 0 || yy < 0 || xx >= w as i32 || yy >= w as i32 {
+                                    continue;
+                                }
+                                let v = src[yy as usize * w + xx as usize];
+                                if !bad(v) {
+                                    sum += v;
+                                    n += 1;
+                                }
+                            }
+                        }
+                        if n > 0 {
+                            t[y * w + x] = sum / n as f32;
+                            filled += 1;
+                        } else {
+                            left += 1;
+                        }
+                    }
+                }
+                if left == 0 {
+                    break;
+                }
+            }
+        }
+    }
+    let px_m = 40_075_016.7 * lat.to_radians().cos() / ((1u64 << z) as f64 * w as f64);
+    let mut clamped = 0;
+    // Spikes over flatter ground (the ring: pixels two to three out).
+    let rise = (0.5 * px_m).max(100.0) as f32;
+    let src = t.to_vec();
+    let mut ring: Vec<f32> = Vec::with_capacity(40);
+    for y in 0..w {
+        for x in 0..w {
+            let v = src[y * w + x];
+            // (cheap first: some pixel beside it that much lower)
+            let mut low = f32::MAX;
+            for (dx, dy) in [(-1i32, -1i32), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+                let (xx, yy) = (x as i32 + dx, y as i32 + dy);
+                if xx >= 0 && yy >= 0 && xx < w as i32 && yy < w as i32 {
+                    low = low.min(src[yy as usize * w + xx as usize]);
+                }
+            }
+            if !(v > low + rise) {
+                continue;
+            }
+            ring.clear();
+            for dy in -3i32..=3 {
+                for dx in -3i32..=3 {
+                    if dx.abs().max(dy.abs()) < 2 {
+                        continue;
+                    }
+                    let (xx, yy) = (x as i32 + dx, y as i32 + dy);
+                    if xx >= 0 && yy >= 0 && xx < w as i32 && yy < w as i32 {
+                        ring.push(src[yy as usize * w + xx as usize]);
+                    }
+                }
+            }
+            if ring.len() < 12 {
+                continue;
+            }
+            ring.sort_unstable_by(|a, b| a.total_cmp(b));
+            let n = ring.len();
+            let (min, max, q1, q3) = (ring[0], ring[n - 1], ring[n / 4], ring[n * 3 / 4]);
+            if v > max + rise.max(2.0 * (max - min)) || (q3 - q1 <= 0.25 * rise && v > q3 + rise.max(2.0 * px_m as f32)) {
+                t[y * w + x] = ring[n / 2];
+                clamped += 1;
+            }
+        }
+    }
+    // Single-pixel spikes and pits.
+    let thr = (SPIKE_PX * px_m).max(150.0) as f32;
+    let src = t.to_vec();
+    for y in 1..w - 1 {
+        for x in 1..w - 1 {
+            let v = src[y * w + x];
+            let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+            for (dx, dy) in [(-1i32, -1i32), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+                let n = src[(y as i32 + dy) as usize * w + (x as i32 + dx) as usize];
+                lo = lo.min(n);
+                hi = hi.max(n);
+            }
+            if v > hi + thr {
+                t[y * w + x] = hi;
+                clamped += 1;
+            } else if v < lo - thr {
+                t[y * w + x] = lo;
+                clamped += 1;
+            }
+        }
+    }
+    (filled, clamped)
+}
+
 pub fn encode_terrain_png(elev: &[f32], w: u32, h: u32) -> Result<Vec<u8>> {
     let mut rgb = Vec::with_capacity(elev.len() * 3);
     for &e in elev {
@@ -218,3 +355,60 @@ pub fn bilinear(a: &[f32], w: usize, x: f64, y: f64) -> f32 {
     (v00 * (1.0 - fx) + v01 * fx) * (1.0 - fy) + (v10 * (1.0 - fx) + v11 * fx) * fy
 }
 
+#[cfg(test)]
+mod repair_tests {
+    use super::*;
+
+    fn slope_tile() -> Vec<f32> {
+        (0..TS * TS).map(|i| (i % TS) as f32 * 2.0 + 100.0).collect()
+    }
+
+    #[test]
+    fn fills_voids_from_their_surroundings() {
+        let mut t = slope_tile();
+        for y in 100..120 {
+            for x in 100..120 {
+                t[y * TS + x] = 32767.0;
+            }
+        }
+        let (filled, _) = repair_terrain(&mut t, 12, 45.0);
+        assert_eq!(filled, 400);
+        // a plane, filled from its edges: close to the plane inside
+        for y in 100..120 {
+            for x in 100..120 {
+                let want = x as f32 * 2.0 + 100.0;
+                assert!((t[y * TS + x] - want).abs() < 25.0, "{} vs {want}", t[y * TS + x]);
+            }
+        }
+    }
+
+    #[test]
+    fn flattens_spike_clusters_over_flat_ground_and_keeps_ridges() {
+        // a 2-pixel tower in a bay (z9, as off Shinagawa)
+        let mut t = vec![0f32; TS * TS];
+        t[100 * TS + 100] = 841.0;
+        t[100 * TS + 101] = 665.0;
+        let (_, c) = repair_terrain(&mut t, 9, 35.6);
+        assert_eq!(c, 2);
+        assert!(t[100 * TS + 100] < 1.0 && t[100 * TS + 101] < 1.0);
+        // a sharp ridge 300 m above its valleys at z12: kept
+        let mut r: Vec<f32> = (0..TS * TS).map(|i| { let x = (i % TS) as f32; 1000.0 + 300.0 - (x - 128.0).abs() * 60.0 }).map(|v| v.max(1000.0)).collect();
+        let before = r.clone();
+        repair_terrain(&mut r, 12, 45.0);
+        assert_eq!(r, before);
+    }
+
+    #[test]
+    fn clamps_lone_spikes_and_keeps_summits() {
+        let mut t = vec![500f32; TS * TS];
+        t[50 * TS + 50] = 2500.0; // a 2 km needle one z12 pixel wide
+        // a real summit at z8 (~430 m pixels at 45°), a cone 300 m higher a pixel in: kept
+        let mut s: Vec<f32> = (0..TS * TS).map(|i| { let (x, y) = ((i % TS) as i32 - 80, (i / TS) as i32 - 80); 3600.0 - 300.0 * x.abs().max(y.abs()) as f32 }).map(|v| v.max(0.0)).collect();
+        let (_, c) = repair_terrain(&mut t, 12, 45.0);
+        assert_eq!(c, 1);
+        assert_eq!(t[50 * TS + 50], 500.0);
+        let (_, c) = repair_terrain(&mut s, 8, 45.0);
+        assert_eq!(c, 0);
+        assert_eq!(s[80 * TS + 80], 3600.0);
+    }
+}

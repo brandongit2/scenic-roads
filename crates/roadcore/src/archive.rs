@@ -17,6 +17,25 @@ use std::path::Path;
 
 pub const MAGIC: &[u8; 8] = b"RDTILES1";
 
+/// In data/cache/steps: the terrain tiles the last terrain run changed under the same key
+/// (repaired), u64 tile keys. A step that recomputes only where terrain is new also takes these
+/// while the list is newer than its own record of its last run.
+pub const TERRAIN_REPAIRED: &str = "terrain.repaired";
+
+/// The keys in a TERRAIN_REPAIRED list newer than `since` (a step's record of its last run), if any.
+pub fn terrain_repaired_since(steps_dir: &Path, since: &Path) -> Vec<u64> {
+    let list = steps_dir.join(TERRAIN_REPAIRED);
+    let newer = match (std::fs::metadata(&list).and_then(|m| m.modified()), std::fs::metadata(since).and_then(|m| m.modified())) {
+        (Ok(a), Ok(b)) => a > b,
+        (Ok(_), Err(_)) => true,
+        _ => false,
+    };
+    if !newer {
+        return Vec::new();
+    }
+    std::fs::read(list).ok().filter(|b| b.len() % 8 == 0).map(|b| bytemuck::cast_slice::<u8, u64>(&b).to_vec()).unwrap_or_default()
+}
+
 #[inline]
 pub fn tile_key(z: u8, x: u32, y: u32) -> u64 {
     ((z as u64) << 58) | ((x as u64) << 29) | y as u64

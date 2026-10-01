@@ -110,10 +110,16 @@ fn main() -> Result<()> {
         .map(|b| bytemuck::cast_slice::<u8, u64>(&b).iter().copied().collect());
     // (Tiles of another encoding than the quarters are all made again.)
     let old = Archive::open(&dir.join("slope.tiles")).ok().filter(|a| prev_keys.is_some() && a.meta_json.contains("slope4"));
-    let new_terrain: std::collections::HashSet<u64> = match &prev_keys {
+    let mut new_terrain: std::collections::HashSet<u64> = match &prev_keys {
         Some(p) => arc.entries().iter().map(|e| e.key).filter(|k| !p.contains(k)).collect(),
         None => std::collections::HashSet::new(),
     };
+    // Tiles repaired in place since the last run (terrain.rs) count as new.
+    let repaired = roadcore::archive::terrain_repaired_since(&cdir, &keys_path);
+    if !repaired.is_empty() {
+        eprintln!("slope: {} terrain tiles repaired since the last run", repaired.len());
+    }
+    new_terrain.extend(repaired);
     let key = |z: u8, x: i64, y: i64| roadcore::archive::tile_key(z, x.rem_euclid(1 << z) as u32, y.clamp(0, (1 << z) - 1) as u32);
     // A tile whose terrain (itself, a neighbour, or an ancestor of those) is new.
     let terrain_changed = |z: u8, x: u32, y: u32| -> bool {

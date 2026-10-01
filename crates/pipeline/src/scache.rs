@@ -100,14 +100,27 @@ pub struct GridChange {
 
 impl GridChange {
     pub fn load(cache_dir: &Path, step: &str, tiles: &[[u32; 2]]) -> GridChange {
-        match std::fs::read(cache_dir.join(format!("{step}.tiles"))).ok().filter(|b| b.len() % 8 == 0 && !b.is_empty()) {
+        let own = cache_dir.join(format!("{step}.tiles"));
+        let mut c = match std::fs::read(&own).ok().filter(|b| b.len() % 8 == 0 && !b.is_empty()) {
             Some(b) => {
                 let prev = bytemuck::cast_slice::<u8, [u32; 2]>(&b).to_vec();
                 let ps: HashSet<[u32; 2]> = prev.iter().copied().collect();
                 GridChange { new: tiles.iter().filter(|t| !ps.contains(*t)).copied().collect(), prev, first: false }
             }
             None => GridChange { prev: Vec::new(), new: HashSet::new(), first: true },
+        };
+        // Terrain tiles repaired in place since this step's last run (terrain.rs): their grid
+        // tiles count as new (z11 as itself, z12 as its parent).
+        let steps = cache_dir.parent().unwrap_or(Path::new(".")).join("steps");
+        for k in roadcore::archive::terrain_repaired_since(&steps, &own) {
+            let (z, x, y) = ((k >> 58) as u8, ((k >> 29) & 0x1fff_ffff) as u32, (k & 0x1fff_ffff) as u32);
+            match z {
+                11 => c.new.insert([x, y]),
+                12 => c.new.insert([x >> 1, y >> 1]),
+                _ => false,
+            };
         }
+        c
     }
 
     pub fn save(cache_dir: &Path, step: &str, tiles: &[[u32; 2]]) -> Result<()> {
