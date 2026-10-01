@@ -70,12 +70,13 @@ export const SPRITE_SEG_PX = 8;
 /** Largest sprite (CSS px) the renderer draws a piece as; tiles with longer pieces on screen are
  * drawn as quads. A large sprite is mostly empty pixels, but even so far cheaper than a quad. */
 export const SPRITE_MAX_CSS = 128;
-/** Cells (tile units) of the levels of detail (roads/lod.ts): the coarsest tiles get
- * them all (for views zoomed out beyond them), the others those up to 8 (drawn at most a zoom
- * level out from their own, except far off in tilted views, where the cover picks coarse tiles). */
-export const LOD_CELLS = [1, 2, 4, 8, 16, 32, 64];
-/** Largest cell (device px on screen) a level of detail may use: a pixel, which a road kept there
- * covers (roads are at least a device pixel wide). */
+/** Cells (tile units) of the levels of detail (roads/lod.ts): the coarsest tiles get them all
+ * (for views zoomed out beyond them), the others the first (drawn at one to two times their size,
+ * a CSS pixel at most). */
+export const LOD_CELLS = [8, 16, 32, 64];
+/** Largest cell (CSS px on screen) a level of detail may use: a pixel. The pieces it leaves out
+ * pass their area to the ones kept (lod.ts), which the renderer sums (roads/layer.ts), so a view
+ * stays the same, only the area moved within the cell. */
 export const LOD_CELL_PX = 1;
 
 // Line widths in CSS px at MapLibre zooms WIDTH_Z, per class.
@@ -103,22 +104,25 @@ export const CASING_Z: [number, number, number] = [9.5, 12, 16];
 export const CASING_W: [number, number, number] = [0.35, 0.9, 1.6];
 export const GLOW_Z: [number, number, number, number] = [4, 8, 12, 16];
 export const GLOW_W: [number, number, number, number] = [1.2, 1.8, 2.6, 4];
-// Colour strength (mix with background) at zooms FADE_Z: minor roads fade when zoomed out.
+// Colour strength (mix with background) at zooms FADE_Z: minor roads a little fainter than major
+// ones, the same from zoom 10 out: zoomed out, a road's share of a pixel already follows its area
+// (roads/layer.ts), and fading its colour too dimmed whole cities of streets (Paris all but gone
+// at zoom 4, where its streets drew at a third of their colour).
 export const FADE_Z = [4, 7, 10, 13];
 export const FADES: number[][] = [
-  [0.3, 0.45, 0.75, 1],
-  [0.45, 0.6, 0.9, 1],
-  [0.45, 0.6, 0.9, 1],
-  [0.45, 0.6, 0.9, 1],
-  [0.7, 0.85, 1, 1],
-  [0.85, 0.95, 1, 1],
+  [0.75, 0.75, 0.75, 1],
+  [0.9, 0.9, 0.9, 1],
+  [0.9, 0.9, 0.9, 1],
+  [0.9, 0.9, 0.9, 1],
   [1, 1, 1, 1],
   [1, 1, 1, 1],
   [1, 1, 1, 1],
-  [0.55, 0.65, 0.8, 0.9],
-  [0.5, 0.65, 0.9, 1],
-  [0.8, 0.9, 1, 1],
-  [0.9, 1, 1, 1],
+  [1, 1, 1, 1],
+  [1, 1, 1, 1],
+  [0.8, 0.8, 0.8, 0.9],
+  [0.9, 0.9, 0.9, 1],
+  [1, 1, 1, 1],
+  [1, 1, 1, 1],
   [1, 1, 1, 1],
   [1, 1, 1, 1],
 ];

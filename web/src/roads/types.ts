@@ -69,6 +69,9 @@ export interface PieceLevel {
   cell: number;
   off: number;
   n: [number, number, number, number];
+  /** Coarser levels: per vertex, the factor on a kept piece's own area for the pieces it stands
+   * for (log2 × 32; lod.ts). */
+  mult?: Uint8Array;
 }
 
 export type WorkerRequest =

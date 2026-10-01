@@ -158,9 +158,13 @@ layout(location=11) in vec4 a_sb0;  // curvy, enclosure, built, flags
 layout(location=12) in vec4 a_sb1;
 layout(location=13) in vec4 a_sc0;  // vista, open land, forest cover, tree height
 layout(location=14) in vec4 a_sc1;
+// Sprites at a coarser level of detail: the road area of the pieces it left out that this one
+// stands for, log2 × 32 of the factor on its own (lod.ts); 0 elsewhere (the array off).
+layout(location=15) in float a_lod;
 
 uniform vec2 u_viewport;
 uniform vec2 u_tile;        // per tile: device px per tile unit, the hovered line (-1: none)
+uniform float u_cell;       // per tile: the cell (tile units) a dot stands for: its tile's half pixel, or the level of detail's cell
 // Width (px) and colour strength per class at zoom stops, evaluated per segment at the zoom its
 // own distance corresponds to (see below).
 uniform float u_zoom;
@@ -216,8 +220,9 @@ uniform highp sampler2D u_la; // per line (2 texels, 1024 wide): network, maxspe
 // pieces in view that traffic was a good share of the frame.
 flat out vec2 v_s0;
 flat out vec2 v_dir;
-flat out vec4 v_geom;       // half width px, piece length px, dash phase px, pattern (FS_SPRITE)
+flat out vec4 v_geom;       // half width px, piece length px (a dot: its area px², half its cell's side px), dash phase px, pattern + 4 thin + 8 dot (FS_SPRITE)
 flat out uvec2 v_col;       // colour and opacity (all but coverage and the pattern) at both ends, RGBA8
+flat out float v_lin;       // coverage as a share of area (FS_SPRITE): a dot's of its cell, a thin line's of its pixel-wide stroke, × the area it stands for at its level of detail
 uniform float u_maxPt;
 uniform highp sampler2D u_lut;
 uniform highp sampler2D u_cdf;
@@ -411,8 +416,31 @@ void main() {
   float k = clamp(kr, 0.2, 4.0);
   float w = widthAt(cls, ze) + (hov ? 2.0 * u_dpr : 0.0);
   bool dot = kind == 2;
-  float cov = dot ? clamp(a_d0, 0.12, 1.0) : 1.0;
-  if (w < u_dpr) { cov *= w / u_dpr; w = u_dpr; }
+  // Zoomed out, what a road adds to a pixel is its area there (length × width), so a view looks
+  // the same whichever tiles and level of detail draw it: a dot (tile.rs: the roads shorter than
+  // half a pixel in a cell, merged) its road length × the width; a line thinner than a CSS pixel
+  // is drawn a pixel wide; at a coarser level of detail, the pieces left out in the cells a piece
+  // covers add theirs. Coverage is 1 − e^−area (roads in a pixel overlapping at random, as blending
+  // combines what is drawn there), so one piece standing for several covers what they would.
+  float lodK = exp2(a_lod / 32.0);
+  float cov = 1.0, area = 0.0, lin = lodK;
+  bool thin = false;
+  // A dot's cell on screen, half its side (device px). Painted over each other, at least half a
+  // CSS pixel: blending treats what is drawn in a pixel as overlapping at random, so four cells of
+  // a quarter pixel, each fully covered, came out two-thirds covered; summed (ACCUM) as it is.
+  float cellH = 0.5 * u_cell * u_tile.x * k;
+#ifndef ACCUM
+  cellH = max(cellH, 0.5 * u_dpr);
+#endif
+  if (dot) {
+    area = a_d0 * u_tile.x * k * w * lodK;
+    w = u_dpr;
+  } else if (w < u_dpr) {
+    lin = w / u_dpr * lodK;
+    cov = 1.0 - exp(-lin);
+    w = u_dpr;
+    thin = true;
+  }
   float cw = casingAt(ze), gw = route ? glowAt(ze) : 0.0;
   float extra = casing ? (route ? max(gw, cased ? cw : 0.0) : cw) : 0.0;
   float halfw = w * 0.5 + extra;
@@ -422,7 +450,7 @@ void main() {
   // halfw, see the fragment shader); depth at its middle. A point whose centre is off screen is
   // dropped whole, so the centre is kept on screen and the sprite grown to still cover the piece.
   vec2 mid = 0.5 * (s0 + s1), c = clamp(mid, vec2(0.5), u_viewport - 0.5);
-  float size = max(abs(d.x), abs(d.y)) + 2.0 * halfw + 1.0, shift = max(abs(c.x - mid.x), abs(c.y - mid.y));
+  float size = dot ? 2.0 * cellH + 2.0 : max(abs(d.x), abs(d.y)) + 2.0 * halfw + 1.0, shift = max(abs(c.x - mid.x), abs(c.y - mid.y));
   if (shift > 0.5 * size) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0); // wholly off screen
     return;
@@ -472,14 +500,16 @@ void main() {
   float phase = dot ? 0.0 : a_d0 * u_tile.x * k;
 #ifdef SPRITE
   float pattern = casing ? 0.0 : u_pattern == 1 ? 3.0 : cls == 9 ? 2.0 : (style & 16u) != 0u ? 1.0 : 0.0;
-  v_geom = vec4(halfw, len, phase, pattern);
-  v_col = uvec2(endColour(m.x, rgb, cas, fade, casing, route, hov, cov), endColour(m.y, rgb, cas, fade, casing, route, hov, cov));
+  v_geom = vec4(halfw, dot ? cellH : len, phase, pattern + (thin ? 4.0 : 0.0) + (dot ? 8.0 : 0.0));
+  v_lin = dot ? area / max(4.0 * cellH * cellH, 1e-6) : lin;
+  // (Coverage is the fragment shader's, from v_lin.)
+  v_col = uvec2(endColour(m.x, rgb, cas, fade, casing, route, hov, 1.0), endColour(m.y, rgb, cas, fade, casing, route, hov, 1.0));
 #else
   v_m = m;
   v_rgb = rgb;
   v_cas = cas;
   v_geom = vec4(halfw, len, phase, fade);
-  v_cov = cov;
+  v_cov = dot ? clamp(area / (w * w), 0.0, 1.0) : cov;
   v_style = style;
   v_hover = hov ? 1.0 : 0.0;
   v_route = route ? 1.0 : 0.0;
@@ -493,45 +523,116 @@ precision highp float;
 precision highp int;
 flat in vec2 v_s0;
 flat in vec2 v_dir;
-flat in vec4 v_geom;         // half width, length, dash phase, pattern (0 none · 1 unpaved dashes · 2 ferry dashes · 3 railway ties)
+flat in vec4 v_geom;         // half width, length (a dot: half its cell's side px), dash phase, pattern (0 none · 1 unpaved dashes · 2 ferry dashes · 3 railway ties) + 4 thin + 8 dot
 flat in uvec2 v_col;         // colour and opacity at both ends (RGBA8)
+flat in float v_lin;         // coverage as a share of area (see the vertex shader)
 uniform int u_part;          // as in FS_BODY
 uniform float u_dpr;
 uniform float u_opacity;     // the layer's opacity
+#ifdef ACCUM
+// Zoomed out, the roads add up instead of being painted over each other (RoadLayer.accumulate):
+// colour × opacity × coverage and opacity × coverage, summed per pixel.
+layout(location=0) out vec4 o_acc;
+#else
 out vec4 fragColor;
+#endif
 
 vec4 rgba8(uint c) { return vec4(uvec4(c >> 24u, c >> 16u, c >> 8u, c) & 255u) / 255.0; }
 
 void main() {
   vec2 rel = gl_FragCoord.xy - v_s0;
   float along = dot(rel, v_dir), across = dot(rel, vec2(-v_dir.y, v_dir.x));
-  float halfw = v_geom.x, len = v_geom.y, pattern = v_geom.w;
+  float halfw = v_geom.x, len = v_geom.y;
+  bool isDot = v_geom.w > 7.5, thin = !isDot && v_geom.w > 3.5;
+  float pattern = mod(v_geom.w, 4.0);
   float dist = along < 0.0 ? length(vec2(along, across)) : (along > len ? length(vec2(along - len, across)) : abs(across));
-  float a = clamp(halfw + 0.5 - dist, 0.0, 1.0);
+  // g: the share of the pixel covered (it can exceed 1: several roads), a: as painted (at most 1).
+  float g, a;
+  if (isDot) {
+    // The roads merged into it spread evenly over its cell (a square of side 2 × len): each pixel
+    // gets the cell's coverage times how much of the pixel the cell overlaps. The shares sum to
+    // the area wherever the cell falls, so a grid of dots between pixels doesn't beat (moiré), and
+    // cells side by side tile into an even tone.
+    float h = len;
+    vec2 o = max(vec2(0.0), min(rel + 0.5, vec2(h)) - max(rel - 0.5, vec2(-h)));
+    g = v_lin * o.x * o.y;
+    a = (1.0 - exp(-v_lin)) * o.x * o.y;
+  } else if (thin) {
+    // Across, the pixel-wide line; along, the piece box-filtered by a pixel and no round ends,
+    // which would add a dot's worth at every joint of a line cut into short pieces.
+    float sh = clamp(halfw + 0.5 - abs(across), 0.0, 1.0) * max(0.0, min(along + 0.5, len) - max(along - 0.5, 0.0));
+    g = sh * v_lin;
+    a = sh * (1.0 - exp(-v_lin));
+  } else {
+    a = clamp(halfw + 0.5 - dist, 0.0, 1.0);
+    g = a * v_lin;
+  }
   if (a <= 0.0) discard;
+#ifndef ACCUM
   if (u_part == 1 && a < 0.999) discard;
   if (u_part == 2 && a >= 0.999) discard;
-  if (pattern > 2.5 && len > 0.5) {
+#endif
+  if (thin && pattern > 0.5 && pattern < 2.5) {
+    // Dashes on a line under a pixel wide would only alias: their average opacity instead.
+    float kd = pattern > 1.5 ? 0.55 + 0.45 * 0.15 : 0.6 + 0.4 * 0.3;
+    a *= kd;
+    g *= kd;
+  } else if (pattern > 2.5 && len > 0.5 && !thin) {
     // Railway: a thin line with cross-ties.
     float period = max(7.0 * u_dpr, halfw * 5.0);
     float ph = mod(v_geom.z + clamp(along, 0.0, len), period);
     bool tie = ph < max(1.2 * u_dpr, period * 0.16);
     float core = clamp(max(halfw * 0.42, 0.6 * u_dpr) + 0.5 - dist, 0.0, 1.0);
-    if (!tie) a = core;
+    if (!tie) {
+      g = core * v_lin;
+      a = core;
+    }
     if (a <= 0.0) discard;
+#ifndef ACCUM
     if (u_part == 1 && a < 0.999) discard;
     if (u_part == 2 && a >= 0.999) discard;
+#endif
   } else if (pattern > 0.5 && len > 0.5) {
     // Dashes: unpaved roads, ferries.
     bool ferry = pattern > 1.5;
     float w = max(halfw * 2.0, u_dpr);
     float period = ferry ? 10.0 * u_dpr + 2.0 * w : 3.0 * u_dpr + 2.2 * w;
-    if (mod(v_geom.z + clamp(along, 0.0, len), period) > period * (ferry ? 0.55 : 0.6)) a *= ferry ? 0.15 : 0.3;
+    if (mod(v_geom.z + clamp(along, 0.0, len), period) > period * (ferry ? 0.55 : 0.6)) {
+      float kd = ferry ? 0.15 : 0.3;
+      a *= kd;
+      g *= kd;
+    }
   }
   // Colour along the piece, as the quads interpolate the metric (FS_BODY).
   vec4 col = mix(rgba8(v_col.x), rgba8(v_col.y), len > 1e-4 ? clamp(along / len, 0.0, 1.0) : 0.0);
+#ifdef ACCUM
+  o_acc = vec4(col.rgb * col.a * g, col.a * g);
+#else
   a *= col.a * u_opacity;
   fragColor = vec4(col.rgb * a, a);
+#endif
+}`;
+
+// The accumulated roads (FS_SPRITE with ACCUM) onto the map: the pixel's covered share, the sum
+// of the roads' (each road's opacity × its share of the pixel) saturating as x ÷ (1 + x⁴)^¼, which
+// keeps a lone road's and fills a pixel crossed by many, so a city of streets reads denser than
+// the country around it at any zoom; in the mean of their colours, weighted the same way.
+const RESOLVE_VS = `#version 300 es
+void main() {
+  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+const RESOLVE_FS = `#version 300 es
+precision highp float;
+uniform highp sampler2D u_acc;
+uniform float u_opacity;
+out vec4 fragColor;
+void main() {
+  vec4 acc = texelFetch(u_acc, ivec2(gl_FragCoord.xy), 0);
+  if (acc.a <= 1e-5) discard;
+  float x = acc.a * acc.a;
+  float alpha = acc.a / sqrt(sqrt(1.0 + x * x)) * u_opacity;
+  fragColor = vec4(acc.rgb / acc.a * alpha, alpha);
 }`;
 
 const FS_BODY = `
@@ -649,6 +750,8 @@ export interface RoadTile {
   data?: DecodedTile;
   vaoA?: WebGLVertexArrayObject;
   vaoB?: WebGLVertexArrayObject;
+  /** Per level of detail, its area factors (lod.ts mult) on the GPU. */
+  lodBufs?: (WebGLBuffer | undefined)[];
   /** The roads from the first minor class, and from the first tunnel or ferry (DecodedTile.minorStart, minorEnd). */
   vaoM?: WebGLVertexArrayObject;
   vaoT?: WebGLVertexArrayObject;
@@ -807,9 +910,14 @@ export class RoadLayer implements CustomLayerInterface {
   private gl!: WebGL2RenderingContext;
   /** The draw programs per MapLibre projection variant (mercator, globe): quads (instanced) and
    * point sprites; and the current ones. */
-  private progs = new Map<string, { q: Prog; s: Prog }>();
+  private progs = new Map<string, { q: Prog; s: Prog; a: Prog }>();
   private progQ!: Prog;
   private progS!: Prog;
+  /** The sprites summed instead of painted (FS_SPRITE with ACCUM), and the pass putting the sums
+   * on the map (RESOLVE_FS); their float targets (null: none yet, false: not supported). */
+  private progA!: Prog;
+  private resolve: { prog: WebGLProgram; u: Record<string, WebGLUniformLocation | null> } | null = null;
+  private accum: { fb: WebGLFramebuffer; acc: WebGLTexture; w: number; h: number } | null | false = null;
   /** The projection pass's program per projection variant, and the current one. */
   private preps = new Map<string, Prog>();
   private prep!: Prog;
@@ -878,12 +986,12 @@ export class RoadLayer implements CustomLayerInterface {
       for (const n of ['u_extScale', 'u_viewport', 'u_zmul', 'u_lift', 'u_camTile', 'u_ztol', 'u_camDist', 'u_p22', 'u_depth', 'u_depthOn', 'u_projection_matrix',
         'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) pu[n] = gl.getUniformLocation(prep, n);
       this.preps.set(sd.variantName, { prog: prep, u: pu });
-      const draw = (sprite: boolean): Prog => {
-        const def = sprite ? '#define SPRITE\n' : '';
-        const prog = link(gl, head + def + VS_BODY, `#version 300 es\n${sprite ? FS_SPRITE : FS_BODY}`);
+      const draw = (sprite: boolean, accum = false): Prog => {
+        const def = (sprite ? '#define SPRITE\n' : '') + (accum ? '#define ACCUM\n' : '');
+        const prog = link(gl, head + def + VS_BODY, `#version 300 es\n${accum ? '#define ACCUM\n' : ''}${sprite ? FS_SPRITE : FS_BODY}`);
         const u: Record<string, WebGLUniformLocation | null> = {};
         for (const n of [
-          'u_extScale', 'u_viewport', 'u_tile', 'u_zoom', 'u_wz', 'u_wv', 'u_fz', 'u_fv', 'u_cz', 'u_cv', 'u_gz', 'u_gv', 'u_casing', 'u_glow', 'u_casingPass', 'u_casingMask',
+          'u_extScale', 'u_viewport', 'u_tile', 'u_cell', 'u_zoom', 'u_wz', 'u_wv', 'u_fz', 'u_fv', 'u_cz', 'u_cv', 'u_gz', 'u_gv', 'u_casing', 'u_glow', 'u_casingPass', 'u_casingMask',
           'u_classMask', 'u_surfaceMask', 'u_tollMask', 'u_unnamedHide', 'u_lsOn', 'u_hlOn', 'u_hovSel', 'u_ls', 'u_dpr', 'u_mode', 'u_w', 'u_wsum', 'u_zmul', 'u_lift', 'u_camTile', 'u_ztol',
           'u_lut', 'u_cdf', 'u_eq', 'u_palRow', 'u_range', 'u_bg', 'u_dim', 'u_thr', 'u_lowFade', 'u_lowSpan',
           'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane',
@@ -893,11 +1001,12 @@ export class RoadLayer implements CustomLayerInterface {
         ]) u[n] = gl.getUniformLocation(prog, n);
         return { prog, u };
       };
-      p = { q: draw(false), s: draw(true) };
+      p = { q: draw(false), s: draw(true), a: draw(true, true) };
       this.progs.set(sd.variantName, p);
     }
     this.progQ = p.q;
     this.progS = p.s;
+    this.progA = p.a;
     this.prep = this.preps.get(sd.variantName)!;
   }
 
@@ -1336,8 +1445,80 @@ export class RoadLayer implements CustomLayerInterface {
     if (t.vaoS) gl.deleteVertexArray(t.vaoS);
     if (t.ls) gl.deleteTexture(t.ls);
     if (t.la) gl.deleteTexture(t.la);
+    this.freeLodBufs(t);
     t.vbo = t.vaoA = t.vaoB = t.vaoM = t.vaoT = t.vaoS = t.ebo = t.vaoP = t.prepBuf = t.prepFor = t.ls = t.lsFor = t.la = undefined;
     t.lsMask = t.lsLen = t.lsHover = undefined;
+  }
+
+  /** The float targets the sprites are summed into, the drawing buffer's size (null where float
+   * render targets aren't supported: then the sprites are painted over each other, as quads are). */
+  private accumTargets(gl: WebGL2RenderingContext): { fb: WebGLFramebuffer; acc: WebGLTexture; w: number; h: number } | null {
+    if (this.accum === false) return null;
+    const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+    if (this.accum && this.accum.w === w && this.accum.h === h) return this.accum;
+    if (!gl.getExtension('EXT_color_buffer_float')) {
+      this.accum = false;
+      return null;
+    }
+    const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+    if (this.accum) {
+      gl.deleteFramebuffer(this.accum.fb);
+      gl.deleteTexture(this.accum.acc);
+      this.gpuBytes -= this.accum.w * this.accum.h * 8;
+    }
+    const tex = (fmt: number) => {
+      const t = gl.createTexture()!;
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, fmt, w, h);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      return t;
+    };
+    const acc = tex(gl.RGBA16F);
+    const fb = gl.createFramebuffer()!;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, acc, 0);
+    const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFb);
+    if (!ok) {
+      gl.deleteFramebuffer(fb);
+      gl.deleteTexture(acc);
+      this.accum = false;
+      return null;
+    }
+    if (!this.resolve) {
+      const prog = link(gl, RESOLVE_VS, RESOLVE_FS);
+      this.resolve = { prog, u: Object.fromEntries(['u_acc', 'u_opacity'].map((n) => [n, gl.getUniformLocation(prog, n)])) };
+    }
+    this.gpuBytes += w * h * 8;
+    return (this.accum = { fb, acc, w, h });
+  }
+
+  /** The coarser levels' area factors on the GPU (lod.ts mult), uploaded when a level is first drawn. */
+  private lodBuf(t: RoadTile, k: number): WebGLBuffer | null {
+    const mult = t.data?.levels[k]?.mult;
+    if (!mult) return null;
+    t.lodBufs ??= [];
+    let b = t.lodBufs[k];
+    if (!b) {
+      const gl = this.gl;
+      b = t.lodBufs[k] = gl.createBuffer()!;
+      gl.bindBuffer(gl.ARRAY_BUFFER, b);
+      gl.bufferData(gl.ARRAY_BUFFER, mult, gl.STATIC_DRAW);
+      this.gpuBytes += mult.byteLength;
+    }
+    return b;
+  }
+
+  private freeLodBufs(t: RoadTile) {
+    for (const [k, b] of (t.lodBufs ?? []).entries()) {
+      if (!b) continue;
+      this.gl.deleteBuffer(b);
+      this.gpuBytes -= t.data?.levels[k]?.mult?.byteLength ?? 0;
+    }
+    t.lodBufs = undefined;
   }
 
   private evict() {
@@ -1502,8 +1683,9 @@ export class RoadLayer implements CustomLayerInterface {
         break;
       }
       const f = this.lodFilter(d);
-      const lists = pieceLists(d.verts, d.pieces.subarray(0, d.levels[0].n[3]), [d.bridgeEnd, d.minorStart, d.minorEnd], d.extent, lodCells(t.z, f), f, d.lineRoadLen);
+      const lists = pieceLists(d.verts, d.pieces.subarray(0, d.levels[0].n[3]), [d.bridgeEnd, d.minorStart, d.minorEnd], d.extent, lodCells(t.z, f), f, d.lineRoadLen, t.z);
       const gl = this.gl;
+      this.freeLodBufs(t);
       this.gpuBytes += lists.pieces.byteLength - d.pieces.byteLength;
       d.pieces = lists.pieces;
       d.levels = lists.levels;
@@ -1568,11 +1750,12 @@ export class RoadLayer implements CustomLayerInterface {
       // The coarsest level of detail whose cells are still under LOD_CELL_PX on screen (only level 0,
       // the whole tile, while the coarser ones are for other filters).
       let lvl = d.levels[0];
-      if (d.lodSig === this.lodSigFor(t)) for (const l of d.levels) if (l.cell * (t.px ?? pxPerUnit) <= LOD_CELL_PX) lvl = l;
+      if (d.lodSig === this.lodSigFor(t)) for (const l of d.levels) if (l.cell * (t.px ?? pxPerUnit) <= LOD_CELL_PX * dpr) lvl = l;
       const sprite = !!t.sprite;
+      const lodBuf = sprite && lvl !== d.levels[0] ? this.lodBuf(t, d.levels.indexOf(lvl)) : null;
       const pd = sprite ? opts.getProjectionData({ tileID: { wrap: 0, canonical: { x: t.x, y: t.y, z: t.z } }, applyGlobeMatrix: true }) : null;
       return {
-        t, d, pxPerUnit, sprite, lvl, pd, proj: pd ? this.tileProj(frame, pd, t) : null,
+        t, d, pxPerUnit, sprite, lvl, lodBuf, pd, proj: pd ? this.tileProj(frame, pd, t) : null,
         hover: this.hover && this.hover.key === t.key ? this.hover.line : -1,
         // Line state (hovered road, length filter); line attributes (direct colours, and on rail the
         // service frequency, which every mode reads).
@@ -1580,7 +1763,13 @@ export class RoadLayer implements CustomLayerInterface {
         la: direct || this.rail ? this.lineAttrs(t) : null,
       };
     });
+    // Zoomed out (sprite tiles) the roads' fills are summed into float targets and the sums put on
+    // the map (accumulate): a pixel shows what its roads cover, whatever the order they are drawn
+    // in, the tiles or the level of detail (painted over each other, a city's translucent streets
+    // stacked to a bright blot at one zoom and thinned to a few at the next).
+    const acc = tileSetup.some((x) => x.sprite) ? this.accumTargets(gl) : null;
     const active = [this.progQ, this.progS].filter((P) => tileSetup.some((x) => x.sprite === (P === this.progS)));
+    if (acc) active.push(this.progA);
     /** Sets uniforms on every program in use this frame. */
     const each = (f: (u: Prog['u']) => void) => {
       for (const P of active) {
@@ -1660,9 +1849,10 @@ export class RoadLayer implements CustomLayerInterface {
       gl.uniform1i(u.u_hovSel, 0);
       gl.uniform1i(u.u_lsOn, road || lenOn ? 1 : 0);
     });
-    if (active.includes(this.progS)) {
-      gl.useProgram(this.progS.prog);
-      this.setProjFrame(gl, this.progS.u, frame);
+    for (const P of [this.progS, this.progA]) {
+      if (!active.includes(P)) continue;
+      gl.useProgram(P.prog);
+      this.setProjFrame(gl, P.u, frame);
     }
     // The texture unit last made active here (switched only when it changes; MapLibre sets its own
     // state again after a custom layer).
@@ -1673,6 +1863,7 @@ export class RoadLayer implements CustomLayerInterface {
     };
     const bindTile = (u: Prog['u'], x: (typeof tileSetup)[number]) => {
       gl.uniform2f(u.u_tile, x.pxPerUnit, x.hover);
+      gl.uniform1f(u.u_cell, Math.max(x.d.extent / 512, x.lvl.cell));
       if (x.proj) this.setProjTile(gl, u, frame, x.proj);
       if (x.ls) bindUnit(2, x.ls);
       if (x.la) bindUnit(3, x.la);
@@ -1695,14 +1886,20 @@ export class RoadLayer implements CustomLayerInterface {
     // Draws one group (bridges or roads) of every tile; `part` as u_part (the roads' minor
     // classes as above while thin; `occluded`: the pass for roads behind the terrain; `casing`:
     // a casing pass).
+    /** With the fills summed (acc): 'casing', the sprite tiles' casings only, before; 'hover', after,
+     * the quad tiles and only the sprites' hovered road (drawn over the sums, as on a hover). */
+    let phase: 'all' | 'casing' | 'hover' = 'all';
     const drawGroup = (bridges: boolean, part: number, occluded: boolean, casing: boolean) => {
       const skipMinors = casing && !minorsCased;
       for (const P of active) {
+        if (P === this.progA) continue;
         const sprite = P === this.progS;
         const u = P.u;
         gl.useProgram(P.prog);
         for (const x of tileSetup) {
           if (x.sprite !== sprite) continue;
+          if (phase === 'casing' && (!sprite || !casing)) continue;
+          if (phase === 'hover' && sprite && (casing || !(road || x.hover >= 0))) continue;
           const d = x.d, t = x.t;
           if (sprite) {
             // Piece-list entries [a, b) of the tile's level of detail.
@@ -1713,7 +1910,21 @@ export class RoadLayer implements CustomLayerInterface {
             if (bridges ? nb <= 0 : n <= nb) continue;
             bindTile(u, x);
             gl.bindVertexArray(t.vaoS!);
-            if (bridges) {
+            // The level's area factors (attribute 15), or none (level 0: the attribute's default, 0).
+            if (x.lodBuf) {
+              gl.bindBuffer(gl.ARRAY_BUFFER, x.lodBuf);
+              gl.enableVertexAttribArray(15);
+              gl.vertexAttribPointer(15, 1, gl.UNSIGNED_BYTE, false, 1, 0);
+            } else {
+              gl.disableVertexAttribArray(15);
+              gl.vertexAttrib1f(15, 0);
+            }
+            if (phase === 'hover') {
+              gl.uniform1i(u.u_hovSel, 2);
+              if (bridges) run(0, nb);
+              else run(nb, n);
+              gl.uniform1i(u.u_hovSel, 0);
+            } else if (bridges) {
               run(0, nb);
             } else if (skipMinors) {
               run(nb, nm0);
@@ -1812,6 +2023,71 @@ export class RoadLayer implements CustomLayerInterface {
     // passes, and those wholly in front of it out of the pass behind it.
     const flags = three && this.depthFlags;
     each((u) => gl.uniform1i(u.u_passVis, flags ? 1 : 0));
+    /** The sprite tiles' fills summed (FS_SPRITE with ACCUM) and put on the map (RESOLVE_FS). No
+     * depth test in the targets: what the projection pass found behind the terrain is summed again
+     * faint (as the pass behind it paints it); the hovered road is left for the passes after. */
+    const accumulate = (a: NonNullable<typeof acc>) => {
+      const A = this.progA, u = A.u;
+      const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
+      const vp = gl.getParameter(gl.VIEWPORT) as Int32Array;
+      gl.bindFramebuffer(gl.FRAMEBUFFER, a.fb);
+      gl.viewport(0, 0, a.w, a.h);
+      gl.disable(gl.STENCIL_TEST);
+      gl.disable(gl.DEPTH_TEST);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      gl.useProgram(A.prog);
+      gl.uniform1i(u.u_casingPass, 0);
+      gl.uniform1i(u.u_part, 0);
+      const passes: [number, number][] = [[flags ? 1 : 0, 0]];
+      if (behind && flags) passes.push([2, OCCLUDED_ALPHA]);
+      for (const [vis, occ] of passes) {
+        gl.uniform1i(u.u_passVis, vis);
+        gl.uniform1f(u.u_occluded, occ);
+        gl.uniform1i(u.u_tunnelsOnly, occ > 0 && tunnelsOnly ? 1 : 0);
+        for (const x of tileSetup) {
+          if (!x.sprite || x.lvl.n[3] <= 0) continue;
+          gl.uniform1i(u.u_hovSel, road || x.hover >= 0 ? 1 : 0);
+          bindTile(u, x);
+          gl.bindVertexArray(x.t.vaoS!);
+          if (x.lodBuf) {
+            gl.bindBuffer(gl.ARRAY_BUFFER, x.lodBuf);
+            gl.enableVertexAttribArray(15);
+            gl.vertexAttribPointer(15, 1, gl.UNSIGNED_BYTE, false, 1, 0);
+          } else {
+            gl.disableVertexAttribArray(15);
+            gl.vertexAttrib1f(15, 0);
+          }
+          gl.drawElements(gl.POINTS, x.lvl.n[3], gl.UNSIGNED_INT, x.lvl.off * 4);
+        }
+      }
+      gl.uniform1i(u.u_hovSel, 0);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, prevFb);
+      gl.viewport(vp[0], vp[1], vp[2], vp[3]);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      const R = this.resolve!;
+      gl.useProgram(R.prog);
+      bindUnit(6, a.acc);
+      gl.uniform1i(R.u.u_acc, 6);
+      gl.uniform1f(R.u.u_opacity, s.opacity);
+      gl.bindVertexArray(null);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      if (three) gl.enable(gl.DEPTH_TEST);
+      gl.enable(gl.STENCIL_TEST);
+    };
+    if (acc) {
+      // The sprites' casings first (under their fills), then the sums, then the rest.
+      phase = 'casing';
+      if (casingPass) {
+        stage(true, true, BC | F, BC);
+        stage(false, true, RC | F | BC, RC);
+      }
+      accumulate(acc);
+      gl.stencilMask(0xff);
+      gl.clear(gl.STENCIL_BUFFER_BIT);
+      phase = 'hover';
+    }
     // Per group (bridges, then roads): the fill's cores, the casing around them (not under them:
     // a see-through fill, or the layer's opacity, shows the map there, not the casing), then the
     // fill's anti-aliased edges over the casing.

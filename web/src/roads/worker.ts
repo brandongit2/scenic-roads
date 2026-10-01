@@ -10,7 +10,8 @@
 //   9  u8  style             class | UNPAVED | BRIDGE | TUNNEL | EOL (last vertex of a line)
 //   10 u8  line flags        LF_UNNAMED
 //   12 f32 distance          tile units from the start of the line (dash phase);
-//                            for dots (zero-length lines): road-length density weight 0..1
+//                            for dots (zero-length lines): the road length merged into the dot,
+//                            tile units (the renderer draws its area, length × width)
 //   16 u32 line index        within the tile
 //   20 u8 × 12               scenic channels (roadcore::scenic::ch order)
 
@@ -44,6 +45,7 @@ self.onmessage = async (ev: MessageEvent<WorkerRequest>) => {
     post({ type: 'tile', id: msg.id, tile }, [
       tile.verts, tile.lineStart.buffer, tile.lineWay.buffer, tile.wayOrder.buffer, tile.lineStyle.buffer, tile.lineFlags.buffer, tile.lineRoadLen.buffer, tile.lineAttr.buffer, tile.lineColour.buffer,
       tile.rlStart.buffer, tile.rlRoad.buffer, tile.rlCum.buffer, tile.pieces.buffer, tile.eq.buffer, tile.gq.buffer, tile.glen.buffer, tile.clen.buffer, tile.ext.buffer,
+      ...tile.levels.flatMap((l) => (l.mult ? [l.mult.buffer] : [])),
     ]);
   } catch (e) {
     if ((e as Error).name !== 'AbortError') post({ type: 'error', id: msg.id, message: String(e) });
@@ -148,7 +150,6 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
   const n = Math.PI - (2 * Math.PI * (ty + 0.5)) / (1 << z);
   const lat = Math.atan(Math.sinh(n));
   const mpu = (2 * Math.PI * 6371008.8 * Math.cos(lat)) / ((1 << z) * extent);
-  const halfPxM = (mpu * extent) / 512;
 
   // Per-line fills: style/EOL, distance, line index; and collect statistics samples.
   const nsamp = nverts; // upper bound: segments + dots
@@ -240,9 +241,8 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
       const c = cellOf(i16[a * S2], i16[a * S2 + 1]);
       sample(c * NSG + group, i16[a * S2 + 2], u8[a * STRIDE + 8] / 2, tl);
       addLen((((c * NCLASS + cls) * 2 + unp) * 2 + un) * 2 + toll, roadLen[l], tl);
-      // Density weight for the renderer: road length per half-pixel cell, saturating at 2 cells' width.
-      const w = Math.min(1, tl / (2 * halfPxM));
-      for (let i = a; i < bEnd; i++) f32[i * S4 + 3] = w;
+      // The road length the dot stands for, in tile units: the renderer draws its area.
+      for (let i = a; i < bEnd; i++) f32[i * S4 + 3] = tl / mpu;
       continue;
     }
     const f = tl > 0 ? tl / simp : mpu;
@@ -345,7 +345,7 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
 
   minorStart = Math.max(minorStart, bridgeEnd);
   minorEnd = Math.max(minorEnd, bridgeEnd);
-  const { pieces, levels } = pieceLists(out, levelZero(out, nverts), [bridgeEnd, minorStart, minorEnd], extent, lodCells(z, lod), lod, nRoad);
+  const { pieces, levels } = pieceLists(out, levelZero(out, nverts), [bridgeEnd, minorStart, minorEnd], extent, lodCells(z, lod), lod, nRoad, z);
 
   return {
     extent, nverts, nlines, verts: out, lineStart: nStart, lineWay: nWay, wayOrder, lineStyle: nStyle, lineFlags: nFlags, lineRoadLen: nRoad, lineAttr: nAttr, lineColour: nColour, bridgeEnd,
