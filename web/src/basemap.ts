@@ -129,6 +129,10 @@ const bilingual = (native: ExpressionSpecification, en: ExpressionSpecification)
 const inline = (native: ExpressionSpecification, en: ExpressionSpecification): ExpressionSpecification =>
   ['case', ['==', en, ''], native, ['concat', native, ' (', en, ')']];
 export const HALO = '#0b0e13';
+/** The slope source's base shift (Terrarium's + ½): marks its four-slope pixels for the shader. */
+export const SLOPE4_SHIFT = 32768.5;
+/** Slope (percent) at a slope tile channel's top (roadcore::slope::SLOPE_MAX). */
+export const SLOPE4_MAX = 400;
 /** All labels slightly transparent. */
 const TEXT_OPACITY = 0.8;
 /** Names appear once a place's interest isolation spans this many pixels (interest.py mz: the zoom
@@ -418,8 +422,14 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
       ...(labelTiles ? { lbl: { type: 'vector' as const, tiles: [`${base}/tiles/labels/{z}/{x}/{y}${ver('labels.tiles')}`], maxzoom: 12, attribution: '' } } : {}),
       dem,
       'dem-hs': { ...dem },
-      // Terrain slope in percent, Terrarium-encoded as if it were elevation (server-side).
-      slope: { ...dem, tiles: [`${terrain}/tiles/slope/{z}/{x}/{y}${ver('slope.tiles')}`], attribution: '' },
+      // Terrain slope: four slopes a pixel, the quarters of the ground beneath it (roadcore::slope),
+      // which the colour-relief shader colours and averages (vite.config.ts). The encoding is
+      // Terrarium's with a half-unit shift: the colour ramp's stops are packed with it as usual, and
+      // the shader knows the source by it.
+      slope: {
+        ...dem, encoding: 'custom' as const, redFactor: 256, greenFactor: 1, blueFactor: 1 / 256, baseShift: SLOPE4_SHIFT,
+        tiles: [`${terrain}/tiles/slope/{z}/{x}/{y}${ver('slope.tiles')}`], attribution: '',
+      },
       // Tree cover layer (dem/trees.py): values Terrarium-encoded as if they were elevation.
       ...Object.fromEntries((['cover', 'height', 'leaf'] as const).map((v) => [`trees-${v}`, {
         ...dem, minzoom: 4, tiles: [`${trees}/tiles/trees/${v}/{z}/{x}/{y}${ver(`trees-${v}.tiles`)}`], attribution: '',
@@ -459,8 +469,7 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
         paint: {
           'color-relief-color': ['interpolate', ['linear'], ['elevation'], 0, '#1f3b2c', 100, '#8a3aa0'] as unknown as ExpressionSpecification,
           'color-relief-opacity': 0.45,
-          // Every level is smooth to interpolate: below z12 each pixel is the mean of the slopes
-          // beneath it (pipeline `slope`).
+          // Every level is smooth to interpolate (each of a pixel's four slopes on its own channel).
           resampling: 'linear',
         },
       } as LayerSpecification,

@@ -1,9 +1,10 @@
-// "Stops & sights" section of the top-left panel: how the landmark dots (heritage sites, stops and
-// sights) are sized and faded along their score. Which kinds show, their filters and opacity: the
-// Layers panel.
+// How the landmark dots (heritage sites, stops and sights) are sized and faded along their score
+// (the settings panel's Stops & sights section, ui/layers.ts, which has the kinds shown, their
+// filters and the opacity).
 import type { Dist } from '../roads/stats';
 import { OVERLAYS, defaults, type AppState, type Store } from '../state';
 import * as prefs from '../prefs';
+import { Slider } from './controls';
 import { h } from './dom';
 import { ScaleControls } from './scale';
 
@@ -20,17 +21,11 @@ export function toggleAllStops(store: Store) {
 
 export class StopsCard {
   el: HTMLElement;
-  private on: HTMLInputElement;
   private scale: ScaleControls;
-  private bal: HTMLInputElement;
-  private balOut: HTMLOutputElement;
-  private em: HTMLInputElement;
-  private emOut: HTMLOutputElement;
+  private sliders: Slider[];
 
   constructor(private store: Store) {
     const L = (patch: Partial<AppState['landmarks']>) => store.set({ landmarks: { ...store.s.landmarks, ...patch } });
-    this.on = h('input', { type: 'checkbox', title: 'Every kind at once. Off hides them all; on brings back the kinds you had on' });
-    this.on.addEventListener('change', () => toggleAllStops(store));
     this.scale = new ScaleControls({
       get: () => store.s.landmarks,
       set: L,
@@ -42,26 +37,25 @@ export class StopsCard {
       spanDefault: defaults.landmarks.lowSpan,
       onPreview: () => {},
     });
-    const slider = (on: (v: number) => void, reset: number, title: string) => {
-      const e = h('input', { type: 'range', min: 0, max: 1, step: 0.05, title: `${title} (double-click: default)` });
-      e.addEventListener('input', () => on(Number(e.value)));
-      e.addEventListener('dblclick', () => on(reset));
-      return e;
-    };
-    this.bal = slider((v) => L({ balance: v }), defaults.landmarks.balance,
-      'What makes a landmark prominent: how well known it is (Wikipedia pageviews) or how rare it is nearby (distance to a better-known one of its kind)');
-    this.balOut = h('output');
-    this.em = slider((v) => store.set({ poiEmphasis: v }), defaults.poiEmphasis, 'How much dot size varies along the scale. 0: all dots the same size');
-    this.emOut = h('output');
+    this.sliders = [
+      new Slider({
+        label: 'Fame ↔ rarity', min: 0, max: 1, step: 0.05, reset: defaults.landmarks.balance, cls: 'lw',
+        title: 'What makes a landmark prominent: how well known it is (Wikipedia pageviews) or how rare it is nearby (distance to a better-known one of its kind)',
+        get: () => store.s.landmarks.balance, set: (balance) => L({ balance }),
+        fmt: (b) => (b <= 0 ? 'fame' : b >= 1 ? 'rarity' : `${Math.round((1 - b) * 100)}:${Math.round(b * 100)}`),
+      }),
+      new Slider({
+        label: 'Size contrast', min: 0, max: 1, step: 0.05, reset: defaults.poiEmphasis, cls: 'lw',
+        title: 'How much dot size varies along the scale. 0: all dots the same size',
+        get: () => store.s.poiEmphasis, set: (poiEmphasis) => store.set({ poiEmphasis }), fmt: (v) => `${Math.round(v * 100)} %`,
+      }),
+    ];
 
     this.el = h('div', { class: 'rail-card stops-card' },
-      h('label', { class: 'rail-hd' }, this.on, h('span', {}, 'Stops & sights'), h('span', { class: 'faint' }, 'Layers → kinds, opacity')),
       h('div', { class: 'rail-bd' },
         h('div', { class: 'lm-scale', title: 'Landmark score in view (0–100): how well known (Wikipedia pageviews) and how rare nearby (distance to a better-known one of its kind). Dots are sized and faded along this scale.' },
           this.scale.legend, this.scale.fadeRow, this.scale.thrRow),
-        h('div', { class: 'fade lm-more' },
-          h('span', { class: 'muted' }, 'Fame ↔ rarity'), this.bal, this.balOut,
-          h('span', { class: 'muted' }, 'Size contrast'), this.em, this.emOut),
+        ...this.sliders.map((x) => x.el),
       ),
     );
     this.sync();
@@ -70,14 +64,8 @@ export class StopsCard {
   sync() {
     const s = this.store.s;
     const nOn = OVERLAYS.filter(([k]) => s.overlays[k]).length;
-    this.on.checked = nOn > 0;
-    this.on.indeterminate = nOn > 0 && nOn < OVERLAYS.length;
     this.el.classList.toggle('off', nOn === 0);
-    const lm = s.landmarks;
-    this.bal.value = String(lm.balance);
-    this.balOut.value = lm.balance <= 0 ? 'fame' : lm.balance >= 1 ? 'rarity' : `${Math.round((1 - lm.balance) * 100)}:${Math.round(lm.balance * 100)}`;
-    this.em.value = String(s.poiEmphasis);
-    this.emOut.value = `${Math.round(s.poiEmphasis * 100)} %`;
+    for (const x of this.sliders) x.sync();
     this.scale.sync();
   }
 

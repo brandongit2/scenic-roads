@@ -21,12 +21,18 @@ export interface ViewStats {
   unnamedKm: number[];
   /** Merged elevation distribution: `bins` over [lo, hi]. */
   elev: Dist | null;
+  /** Road length in view by its whole road's length (log10 km, ROADLEN_LOG), the length filter
+   * aside; for its histogram. */
+  roadLen: Dist | null;
   grade: Dist | null;
   highest: Extreme | null;
   lowest: Extreme | null;
   complete: boolean;
   cells: number;
 }
+
+/** The road-length histogram's axis: log10 km. */
+export const ROADLEN_LOG: [number, number] = [Math.log10(0.05), Math.log10(5000)];
 
 export class Dist {
   constructor(public lo: number, public hi: number, public bins: Float64Array, public total: number) {}
@@ -150,6 +156,9 @@ export function* viewStatsGen(layer: RoadLayer, groupMask: number, classMask: nu
   let highest: Extreme | null = null;
   let lowest: Extreme | null = null;
   let cells = 0;
+  const RL = 256, rlBins = new Float64Array(RL);
+  let rlTotal = 0;
+  const rlK = RL / (ROADLEN_LOG[1] - ROADLEN_LOG[0]);
   for (const t of tiles) {
     const d = t.data;
     if (!d) continue;
@@ -173,7 +182,18 @@ export function* viewStatsGen(layer: RoadLayer, groupMask: number, classMask: nu
                 if (un && (unnamedHide >> g) & 1) continue;
                 if (to) surfaceKm[u] += km;
                 if (su) tollKm[tl] += km;
-                if (su && to) classKm[k] += km;
+                if (su && to) {
+                  classKm[k] += km;
+                  // By the whole road's length (all of them, whatever the length filter).
+                  const key = (((cell * NCLASS + k) * 2 + u) * 2 + un) * 2 + tl;
+                  for (let m = d.rlStart[key]; m < d.rlStart[key + 1]; m++) {
+                    const kmM = (d.rlCum[m + 1] - d.rlCum[m]) / 1000;
+                    if (!(kmM > 0)) continue;
+                    const b = Math.floor((Math.log10(Math.max(1, d.rlRoad[m]) / 1000) - ROADLEN_LOG[0]) * rlK);
+                    rlBins[Math.max(0, Math.min(RL - 1, b))] += kmM;
+                    rlTotal += kmM;
+                  }
+                }
               }
             }
           }
@@ -209,6 +229,7 @@ export function* viewStatsGen(layer: RoadLayer, groupMask: number, classMask: nu
     classKm,
     unnamedKm,
     elev: merge(eS, EQ, elo, ehi === elo ? elo + 1 : ehi),
+    roadLen: rlTotal > 0 ? new Dist(ROADLEN_LOG[0], ROADLEN_LOG[1], rlBins, rlTotal) : null,
     grade: merge(gS, GQ, 0, 40),
     highest,
     lowest,

@@ -1,6 +1,7 @@
-// "Trees" section of the Layers panel: the tree cover layer and its styling.
+// The settings panel's Trees section (ui/layers.ts): the tree cover layer and its styling.
 import { LEAF_CLASSES, TREE_PALETTES, TREE_VARS, treeColour, treeVarDef, type TreeState, type TreeStyle, type TreeVar } from '../trees';
 import type { Store } from '../state';
+import { Slider, pct } from './controls';
 import { h } from './dom';
 import { RampSelect } from './rampselect';
 
@@ -8,7 +9,8 @@ export class TreeSection {
   readonly nodes: HTMLElement[];
   /** Live preview of a palette while hovering the ramp list (null: back to the chosen one). */
   onPreview: (palette: string | null) => void = () => {};
-  private on: HTMLInputElement;
+  /** The layer's switch (the Trees section's header). */
+  readonly on: HTMLInputElement;
   private varBtns: HTMLButtonElement[] = [];
   private styleBtns: HTMLButtonElement[] = [];
   private styleRow: HTMLElement;
@@ -19,8 +21,7 @@ export class TreeSection {
   private cutLabel: HTMLSpanElement;
   private maskCol: HTMLInputElement;
   private maskRow: HTMLElement;
-  private op: HTMLInputElement;
-  private opOut: HTMLOutputElement;
+  private op: Slider;
   private legend: HTMLDivElement;
   private ticks: HTMLDivElement;
   private note: HTMLDivElement;
@@ -53,10 +54,7 @@ export class TreeSection {
     });
     this.maskCol = h('input', { type: 'color' });
     this.maskCol.addEventListener('input', () => T({ maskColour: this.maskCol.value }));
-    this.op = h('input', { type: 'range', min: 0.05, max: 1, step: 0.05, title: 'Opacity (double-click: default)' });
-    this.opOut = h('output');
-    this.op.addEventListener('input', () => T({ opacity: Number(this.op.value) }));
-    this.op.addEventListener('dblclick', () => T({ opacity: 0.55 }));
+    this.op = new Slider({ label: 'Opacity', min: 0.05, max: 1, step: 0.05, reset: 0.55, get: () => store.s.trees.opacity, set: (opacity) => T({ opacity }), fmt: pct });
     this.legend = h('div', { class: 'tint-bar' });
     this.ticks = h('div', { class: 'tint-ticks' });
     this.note = h('div', { class: 'faint note tree-note' });
@@ -72,11 +70,10 @@ export class TreeSection {
       this.palRow,
       row(this.cutLabel, this.cut, this.cutOut),
       this.maskRow,
-      row('Opacity', this.op, this.opOut),
+      this.op.el,
       this.note,
     );
     this.nodes = [
-      h('label', { class: 'tog', title: 'Tree cover, canopy height or forest leaf type, draped on the terrain' }, this.on, h('span', {}, 'Tree cover'), h('span', { class: 'km faint' }, '~25 m')),
       this.body,
     ];
     this.sync();
@@ -102,8 +99,7 @@ export class TreeSection {
     this.cut.parentElement!.hidden = leaf;
     this.pal.set(t.palette);
     this.maskCol.value = t.maskColour;
-    this.op.value = String(t.opacity);
-    this.opOut.value = `${Math.round(t.opacity * 100)} %`;
+    this.op.sync();
     if (!leaf) {
       const v = mask ? (t.variable === 'cover' ? t.maskCover : t.maskHeight) : t.variable === 'cover' ? t.cutCover : t.cutHeight;
       this.cut.min = String(mask ? 1 : 0);

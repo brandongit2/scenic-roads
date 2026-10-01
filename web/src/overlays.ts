@@ -11,7 +11,7 @@ import { hostFor } from './hosts';
 import { tasks } from './tasks';
 import { withEnglish } from './english';
 import { enrichArea, enrichHeritage, enrichPoi, loadDetail, type Detail, type DetailRef, type Enriched } from './details';
-import { stopFilterExpr, stopFilterPass } from './stopfilters';
+import { filterHists, stopFilterExpr, stopFilterPass } from './stopfilters';
 import type { KindQuery, LandmarkItem, LandmarkRequest, LandmarkResponse, TileNames } from './landmarks.worker';
 import { NameFader } from './namefade';
 import type { LandmarkDots } from './dots';
@@ -163,6 +163,7 @@ export class Overlays {
     this.worker.onmessage = (ev: MessageEvent<LandmarkResponse>) => this.onWorker(ev.data);
     tileWorker = this.worker;
     for (const r of tileQueue.splice(0)) this.worker.postMessage(r);
+    layers.onFiltersOpen = () => this.prominence();
   }
 
   /** The latest mask request per source (the dots' filters), and the filters it was for. */
@@ -363,8 +364,9 @@ export class Overlays {
       const k = (id === 'heritage-pt' ? 'heritage' : id.slice(4)) as OverlayKey;
       const src = OVERLAY_SOURCE[k];
       if (!map.getLayer(id) || !s.overlays[k] || !src || !isPoints(src) || this.indexed.get(src) !== 'ready') continue;
-      kinds.push(this.kindQuery(k, src, id));
+      kinds.push({ ...this.kindQuery(k, src, id), hists: this.layers.filtersOpen(k) });
     }
+    this.areaHists(s);
     const b = map.getBounds();
     this.worker.postMessage({
       type: 'query', id: (this.lastQuery = ++this.queryId), outline: this.viewOutline?.() ?? [], bounds: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()],
@@ -413,6 +415,25 @@ export class Overlays {
     }
     this.onScale?.(dist, range, cdf);
     this.onView?.();
+    this.layers.updateStopFilters(r.fhist);
+  }
+
+  /** The area overlays' filter histograms (those open in the panel): over their features in the
+   * tiles drawn, each once. */
+  private areaHists(s: AppState) {
+    for (const k of ['heritageAreas', 'special', 'indigenous'] as const) {
+      const src = OVERLAY_SOURCE[k];
+      if (!src || !this.sourced.has(src) || !this.layers.filtersOpen(k)) continue;
+      const fh = filterHists(k, s.stopFilters, s.stopUnknown[k] !== false);
+      const seen = new Set<unknown>();
+      for (const f of this.map.querySourceFeatures(src)) {
+        const p = f.properties ?? {};
+        if (seen.has(p.i)) continue;
+        seen.add(p.i);
+        fh.add(p);
+      }
+      this.layers.updateStopFilters(fh.done());
+    }
   }
 
   /** Fly to a landmark and open its popup. */

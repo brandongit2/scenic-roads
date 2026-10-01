@@ -8,7 +8,7 @@
 import { HERITAGE_GROUPS, POINT_TILE_LAYER, heritageTierOf, landmarkScoreOf, nameOpacity, type NameScale } from './basemap';
 import { layoutDots, morton, tileRun, visWords, type DotAux, type DotData } from './dotlayout';
 import { encodePoints, type TilePoint } from './mvt';
-import { stopFilterPass, type StopFilter } from './stopfilters';
+import { filterHists, stopFilterPass, type StopFilter } from './stopfilters';
 import type { OverlayKey } from './state';
 
 export interface LandmarkItem {
@@ -29,6 +29,8 @@ export interface KindQuery {
   off?: string[];
   filters: Record<string, StopFilter>;
   keepUnknown: boolean;
+  /** Also the histograms of its range filters in view (their block is open in the panel). */
+  hists?: boolean;
 }
 
 export type LandmarkRequest =
@@ -60,6 +62,8 @@ export type LandmarkResponse =
       byKind: { key: OverlayKey; n: number; best: { name: string; lngLat: [number, number]; layer: string; props: Record<string, any> } | null }[];
       top: LandmarkItem[];
       topByKind: Record<string, LandmarkItem[]>;
+      /** Range filters' histograms in view (stopfilters.ts filterHists), of the kinds that asked. */
+      fhist: Record<string, { bins: Float64Array; n: number }>;
       summit: { name: string; ele: number; lngLat: [number, number] } | null;
     }
   | { type: 'count'; id: number; n: number; of: number }
@@ -272,6 +276,7 @@ function query(m: Extract<LandmarkRequest, { type: 'query' }>) {
   const test = inOutline(m.outline, m.bounds);
   const scores: number[] = [];
   const byKind: Extract<LandmarkResponse, { type: 'result' }>['byKind'] = [];
+  const fhist: Extract<LandmarkResponse, { type: 'result' }>['fhist'] = {};
   // The most prominent: a running top list overall and per kind (the scores are the Sights order).
   const top: { k: OverlayKey; layer: string; src: string; i: number; score: number }[] = [];
   const perKind: Record<string, typeof top> = {};
@@ -302,6 +307,16 @@ function query(m: Extract<LandmarkRequest, { type: 'query' }>) {
       }
     }
     byKind.push(row);
+    if (q.hists) {
+      // Every one of the kind in view (of the heritage kinds shown), whatever its own filters.
+      const fh = filterHists(q.k, q.filters, q.keepUnknown);
+      const off = q.src === 'heritage' && q.off?.length ? new Set(q.off) : null;
+      for (const i of keptIds(q, ix, true)) {
+        if (off?.has(ix.kind[i]) || !test(ix.lon[i], ix.lat[i])) continue;
+        fh.add(ix.features[i].properties ?? {});
+      }
+      Object.assign(fhist, fh.done());
+    }
   }
   // The highest named peak in view: the first in view of the named peaks by height (summits).
   let summit: Extract<LandmarkResponse, { type: 'result' }>['summit'] = null;
@@ -324,7 +339,8 @@ function query(m: Extract<LandmarkRequest, { type: 'query' }>) {
     type: 'result', id: m.id, hist, n: scores.length, atRanks: scores.length ? [at(m.ranks[0]), at(m.ranks[1])] : null, byKind, summit,
     top: top.map(item),
     topByKind: Object.fromEntries(Object.entries(perKind).map(([k, l]) => [k, l.map(item)])),
-  }, [hist.buffer]);
+    fhist,
+  }, [hist.buffer, ...Object.values(fhist).map((x) => x.bins.buffer)]);
 }
 
 /** Point-in-polygon test (lng, lat ring) with a bounding-box pre-check; without a usable outline,
