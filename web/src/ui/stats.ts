@@ -59,8 +59,9 @@ export class StatsCard {
     this.ridesRoot = h('div', { hidden: true });
     this.linesRoot = h('div', { hidden: true });
     this.sightsRoot = h('div', { hidden: true });
+    // The tab shown, clicked again, folds the lists to their tabs (and back).
     const tab = (k: Tab, label: string, title?: string) => {
-      const b = h('button', { class: 'tab', title: title ?? label, onclick: () => this.show(k) }, label);
+      const b = h('button', { class: 'tab', title: `${title ?? label} (click again to fold the lists)`, onclick: () => (this.tab === k && !this.folded() ? this.fold(true) : (this.fold(false), this.show(k))) }, label);
       this.tabs.push(b);
       return b;
     };
@@ -69,7 +70,17 @@ export class StatsCard {
       h('div', { class: 'bd' }, this.statsPane, this.drivesRoot, this.ridesRoot, this.linesRoot, this.sightsRoot),
     );
     const saved = prefs.load<Tab>('stats.tab', 'stats');
+    this.root = root;
+    this.fold(prefs.load<boolean>('stats.folded', false));
     this.show(TABS.includes(saved) ? saved : 'stats');
+  }
+
+  private root: HTMLElement;
+  private folded = () => this.root.classList.contains('folded');
+  /** Folded to the tabs (remembered). */
+  fold(on: boolean) {
+    this.root.classList.toggle('folded', on);
+    prefs.save('stats.folded', on);
   }
 
   show(k: Tab) {
@@ -137,7 +148,7 @@ export class StatsCard {
         b.append(seg);
         const sw = h('i');
         sw.style.background = it.colour;
-        list.append(h('div', {}, h('span', {}, sw, it.label), h('span', { class: 'num' }, it.km < 10 ? it.km.toFixed(1) : fmt.n(it.km))));
+        list.append(h('div', { title: it.label }, h('span', {}, sw, h('span', { class: 'nm' }, it.label)), h('span', { class: 'num' }, it.km < 10 ? it.km.toFixed(1) : fmt.n(it.km))));
       }
       return [b, list];
     };

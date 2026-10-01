@@ -247,6 +247,26 @@ export class Ferries {
     return distFromSamples(Float32Array.from(vs), Float32Array.from(ws), d.domain[0], d.domain[1]);
   }
 
+  /** The ferry lines in view (the groups shown, whatever the frequency filter) by sailings a day,
+   * log10, weighted by length: the frequency filter's histogram. */
+  freqDist(): Dist | null {
+    const st = this.style;
+    if (!this.fc || !st) return null;
+    const b = this.map.getBounds();
+    const [w, s, e, n] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+    const vs: number[] = [], ws: number[] = [];
+    for (const f of this.fc.features as Feature[]) {
+      const p = f.properties;
+      const v = Number(p.f);
+      if (f.geometry.type !== 'LineString' || !(v > 0) || !st.groups.some((on, i) => on && String(p.gs).includes(String(i)))) continue;
+      const c = (f.geometry as GeoJSON.LineString).coordinates;
+      if (!c.some(([x, y]) => x >= w && x <= e && y >= s && y <= n)) continue;
+      vs.push(Math.log10(v));
+      ws.push(Math.max(0.01, p.km));
+    }
+    return distFromSamples(Float32Array.from(vs), Float32Array.from(ws), Math.log10(0.1), Math.log10(500), 256);
+  }
+
   /** Km of ferry route in view per service group (primary group of each way), and frequency
    * coverage of the lines in view. */
   inView(): { km: number[]; cov: FerryCoverage } {

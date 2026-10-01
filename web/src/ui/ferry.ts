@@ -1,4 +1,4 @@
-// "Ferries" section of the top-left panel: how ferry lines are coloured and drawn.
+// How ferry lines are coloured (the settings panel's Ferries section, ui/layers.ts).
 import { FERRY_GROUP_COLOURS, FERRY_GROUPS, FERRY_METRICS, HEADWAY_ONLY, SEASONS, UNKNOWN, ferryMetricDef, type FerryColour, type FerryMetric } from '../ferry';
 import type { FerryCoverage } from '../ferries';
 import type { Dist } from '../roads/stats';
@@ -16,7 +16,6 @@ const COLOURS: [FerryColour, string, string][] = [
 
 export class FerryCard {
   el: HTMLElement;
-  private on: HTMLInputElement;
   private colBtns: HTMLButtonElement[] = [];
   private freqBox: HTMLDivElement;
   private metricSel: HTMLSelectElement;
@@ -35,8 +34,6 @@ export class FerryCard {
 
   constructor(private store: Store) {
     const F = (patch: Partial<FerryState>) => store.set({ ferry: { ...store.s.ferry, ...patch } });
-    this.on = h('input', { type: 'checkbox' });
-    this.on.addEventListener('change', () => F({ on: this.on.checked }));
     const seg = h('div', { class: 'seg' });
     for (const [k, label, title] of COLOURS) {
       const b = h('button', { title, onclick: () => F({ colour: k }) }, label);
@@ -90,7 +87,6 @@ export class FerryCard {
     this.singleBox = h('div', { class: 'row2' }, h('span', { class: 'muted' }, 'Colour'), this.single);
 
     this.el = h('div', { class: 'rail-card ferry-card' },
-      h('label', { class: 'rail-hd' }, this.on, h('span', {}, 'Ferries'), h('span', { class: 'faint' }, 'Layers → groups, opacity, dashes')),
       h('div', { class: 'rail-bd' },
         seg,
         this.freqBox,
@@ -105,7 +101,6 @@ export class FerryCard {
 
   sync() {
     const f = this.store.s.ferry;
-    this.on.checked = f.on;
     this.el.classList.toggle('off', !f.on);
     this.colBtns.forEach((b, i) => b.classList.toggle('on', COLOURS[i][0] === f.colour));
     this.freqBox.hidden = f.colour !== 'freq';

@@ -1,11 +1,13 @@
-// Colour card: mode, legend histogram with draggable range handles, palette, equalisation,
-// threshold highlight and (for the scenic score) the component weights.
+// How the roads are coloured (the settings panel's Roads section, ui/layers.ts): mode, legend
+// histogram with draggable range handles, palette, equalisation, threshold highlight and (for the
+// scenic score) the component weights; the panel's title above it all.
 import type { Dist } from '../roads/stats';
 import { COMPONENTS, MODES, isScenic, modeDef, type Mode } from '../scenic';
 import { CLASS_LABELS } from '../config';
 import { MAP_SCHEMES, mapScheme, type MapScheme } from '../mapschemes';
 import { modeGroup, type Store } from '../state';
 import { h } from './dom';
+import { WeightGrid } from './controls';
 import { PresetBar } from './presets';
 import { ScaleControls } from './scale';
 
@@ -17,6 +19,8 @@ const BASE: [Mode, string][] = [
 const SCENIC = MODES.filter(isScenic);
 
 export class ColourCard {
+  /** How the roads are coloured (the settings panel's Roads section). */
+  readonly el: HTMLDivElement;
   /** Live preview of a palette while hovering the ramp list (null: back to the chosen one). */
   onPalettePreview: (palette: string | null) => void = () => {};
   private scale: ScaleControls;
@@ -31,8 +35,7 @@ export class ColourCard {
   private schemeLegend: HTMLDivElement;
   private weightsBox: HTMLDivElement;
   private presetBar: PresetBar;
-  private wInputs: HTMLInputElement[] = [];
-  private wOuts: HTMLOutputElement[] = [];
+  private weights: WeightGrid;
   private lastScenic: Mode = 'score';
 
   constructor(root: HTMLElement, private store: Store, subtitle: string) {
@@ -83,46 +86,27 @@ export class ColourCard {
 
     // Weights.
     this.presetBar = new PresetBar(store);
-    const grid = h('div', { class: 'wgrid' });
-    COMPONENTS.forEach((c, i) => {
-      const inp = h('input', { type: 'range', min: -1.5, max: 2, step: 0.1, title: c.help });
-      const out = h('output');
-      inp.addEventListener('input', () => {
-        const w = [...store.s.weights];
-        w[i] = Number(inp.value);
-        store.set({ weights: w });
-      });
-      inp.addEventListener('dblclick', () => {
-        const w = [...store.s.weights];
-        w[i] = 0;
-        store.set({ weights: w });
-      });
-      this.wInputs.push(inp);
-      this.wOuts.push(out);
-      grid.append(h('label', { title: c.help }, c.label), inp, out);
-    });
+    this.weights = new WeightGrid(COMPONENTS, () => store.s.weights, (weights) => store.set({ weights }));
     this.weightsBox = h('div', { class: 'weights' },
       this.presetBar.el,
-      grid,
+      this.weights.el,
       h('div', { class: 'faint note' },
         'Negative weights penalise. Views, vistas and water already account for trees (canopy heights block sight lines). Double-click a slider to zero it.'),
     );
 
-    root.append(
-      h('div', { class: 'title' }, h('h1', {}, 'Scenic roads'), h('p', { class: 'sub', html: subtitle })),
-      h('div', { class: 'bd' },
-        seg,
-        this.scenicSel,
-        this.help,
-        this.mapBox,
-        (this.metricBox = h('div', {},
-          this.scale.legend,
-          this.scale.palRow,
-          this.scale.fadeRow,
-          this.scale.thrRow,
-          this.weightsBox,
-        )),
-      ),
+    root.append(h('div', { class: 'title' }, h('h1', {}, 'Scenic roads'), h('p', { class: 'sub', html: subtitle })));
+    this.el = h('div', { class: 'colour-body' },
+      seg,
+      this.scenicSel,
+      this.help,
+      this.mapBox,
+      (this.metricBox = h('div', {},
+        this.scale.legend,
+        this.scale.palRow,
+        this.scale.fadeRow,
+        this.scale.thrRow,
+        this.weightsBox,
+      )),
     );
 
     this.sync();
@@ -148,13 +132,7 @@ export class ColourCard {
     this.help.textContent = d.help;
     this.weightsBox.hidden = s.mode !== 'score';
     this.presetBar.render();
-    COMPONENTS.forEach((_, i) => {
-      this.wInputs[i].value = String(s.weights[i]);
-      const v = s.weights[i];
-      this.wOuts[i].value = v === 0 ? '·' : (v > 0 ? '+' : '') + v.toFixed(1);
-      this.wOuts[i].classList.toggle('neg', v < 0);
-      this.wOuts[i].classList.toggle('zero', v === 0);
-    });
+    this.weights.sync();
     this.scale.sync();
   }
 

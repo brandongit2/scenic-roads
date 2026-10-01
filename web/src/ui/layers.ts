@@ -2,18 +2,17 @@ import { GROUPS, RAIL0, RAIL_GROUPS } from '../config';
 import { RAIL_GROUP_COLOURS } from '../rail';
 import { FERRY_GROUPS, FERRY_GROUP_COLOURS } from '../ferry';
 import { HERITAGE_GROUPS, HERITAGE_TIERS, POI_STYLE } from '../basemap';
-import type { ViewStats } from '../roads/stats';
-import { filtersOf, type StopFilter } from '../stopfilters';
-import { DEFAULT_DENSITY, DENSITY_KINDS, LABEL_KINDS, LINE_KINDS, OVERLAYS, SPACING_RANGE, WEIGHT_RANGE, defaults, type AppState, type DensityKind, type LabelDensity, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
-import { baseKey, isRev, withRev } from '../palettes';
+import { Dist, type ViewStats } from '../roads/stats';
+import { STOP_FILTERS, axisPos, filtersOf, type StopFilter } from '../stopfilters';
+import { DEFAULT_DENSITY, DENSITY_KINDS, LABEL_KINDS, LINE_KINDS, OVERLAYS, SPACING_RANGE, WEIGHT_RANGE, defaults, type AppState, type LabelDensity, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
 import { TINT_PALETTES, TINT_VARS } from '../terrain';
 import * as prefs from '../prefs';
 import { fmt, h } from './dom';
-import { RampSelect } from './rampselect';
 import { ScaleControls } from './scale';
-import type { Dist } from '../roads/stats';
+import { RangeFilter, Slider, pct, type SliderOpts } from './controls';
 import { TreeSection } from './trees';
 import { toggleAllStops } from './stops';
+import { presets, railPresets } from '../presets';
 
 const SW = [2.6, 2, 1.4, 1, 1.4];
 const METHODS: [HillshadeMethod, string][] = [
@@ -36,6 +35,13 @@ function loadCollapsed(): Record<string, boolean> {
   return prefs.load<Record<string, boolean>>('layers.collapsed', {});
 }
 
+/** A section's switch dims its body while off (synced on change and by the panel's sync). */
+function wrapSwitch(toggle: HTMLInputElement, body: HTMLElement) {
+  const apply = () => body.classList.toggle('off', !toggle.checked && !toggle.indeterminate);
+  toggle.addEventListener('change', apply);
+  (toggle as HTMLInputElement & { syncOff?: () => void }).syncOff = apply;
+}
+
 /** Label density changes while a slider is dragged: at most this often (ms). */
 const DENSITY_MS = 120;
 
@@ -45,8 +51,7 @@ export class LayersCard {
   private groupKm: HTMLSpanElement[] = [];
   private unnamedBoxes: HTMLInputElement[] = [];
   private unnamedKm: HTMLSpanElement[] = [];
-  private lenIn: [HTMLInputElement, HTMLInputElement];
-  private lenOn: HTMLInputElement;
+  private roadLen: RangeFilter;
   /** Tree cover layer controls. */
   readonly trees: TreeSection;
   private railSection: Node[];
@@ -61,49 +66,27 @@ export class LayersCard {
   private ferryKm: HTMLSpanElement[] = [];
   private other: Record<'water' | 'boundaries' | 'places', HTMLInputElement>;
   private labelBoxes: HTMLInputElement[] = [];
-  /** Stops & sights filter controls. */
-  private sfUi: { key: string; flag: boolean; on: HTMLInputElement; lo?: HTMLInputElement; hi?: HTMLInputElement }[] = [];
+  /** Stops & sights filters: must-haves (a checkbox each) and ranges (a histogram each). */
+  private sfFlags: { key: string; on: HTMLInputElement }[] = [];
+  private sfRange = new Map<string, RangeFilter>();
   private sfKeep: Partial<Record<OverlayKey, HTMLInputElement>> = {};
   private sfBlocks: Partial<Record<OverlayKey, { hd: HTMLButtonElement; body: HTMLElement; open: boolean }>> = {};
   private surf: { paved: HTMLInputElement; unpaved: HTMLInputElement };
   private surfKm: [HTMLSpanElement, HTMLSpanElement];
   private tollBox: { free: HTMLInputElement; toll: HTMLInputElement };
   private tollKm: [HTMLSpanElement, HTMLSpanElement];
-  /** Line weights: the global one, then each kind's. */
-  private lw: { key: 'global' | LineKind; input: HTMLInputElement; out: HTMLOutputElement }[] = [];
-  private railOp: HTMLInputElement;
-  private railOpOut: HTMLOutputElement;
-  private ferryOp: HTMLInputElement;
-  private ferryOpOut: HTMLOutputElement;
+  /** Every slider row (synced from the state). */
+  private sliders: Slider[] = [];
   private ferryDashed: HTMLInputElement;
   private glow: HTMLInputElement;
   private boundaryBoxes: HTMLInputElement[] = [];
   private occlude: HTMLInputElement;
   private t: {
-    on: HTMLInputElement; ex: HTMLInputElement; exOut: HTMLOutputElement; hs: HTMLInputElement; method: HTMLSelectElement;
-    light: HTMLInputElement; lightOut: HTMLOutputElement; shade: HTMLInputElement; shadeOut: HTMLOutputElement;
+    on: HTMLInputElement; hs: HTMLInputElement; method: HTMLSelectElement;
     tint: HTMLInputElement; contours: HTMLInputElement; sky: HTMLInputElement;
-    tintBox: HTMLDivElement; tintVar: HTMLSelectElement;
-    tintBands: HTMLSelectElement; tintCurve: HTMLInputElement; tintCurveOut: HTMLOutputElement;
-    tintOp: HTMLInputElement; tintOpOut: HTMLOutputElement;
+    tintBox: HTMLDivElement; tintVar: HTMLSelectElement; tintBands: HTMLSelectElement;
   };
   private globe: HTMLInputElement;
-  private labelOp: HTMLInputElement;
-  private labelOpOut: HTMLOutputElement;
-  private roadOp: HTMLInputElement;
-  private roadOpOut: HTMLOutputElement;
-  private boundOp: HTMLInputElement;
-  private boundOpOut: HTMLOutputElement;
-  private poiOp: HTMLInputElement;
-  private poiOpOut: HTMLOutputElement;
-  /** Label density: the spacing (log2 px), a factor per kind (log2) and the horizon thinning. */
-  private spacing: HTMLInputElement;
-  private spacingOut: HTMLOutputElement;
-  private densities: { k: DensityKind; input: HTMLInputElement; out: HTMLOutputElement }[] = [];
-  private horizon: HTMLInputElement;
-  private horizonOut: HTMLOutputElement;
-  /** Landmark prominence: the shared scale controls (histogram, fit, fade, highlight) over the
-   * landmark score, and the fame ↔ rarity balance. */
   private ov: Partial<Record<OverlayKey, HTMLInputElement>> = {};
   /** Every stop & sight at once (the kinds that were on come back when it's ticked again). */
   private stopsAll!: HTMLInputElement;
@@ -113,7 +96,6 @@ export class LayersCard {
   private hTiers: { key: string; c: HTMLInputElement; n: HTMLSpanElement }[] = [];
   private viewshedBtn: HTMLButtonElement;
   private collapsed = loadCollapsed();
-  /** Elevation span the tint currently uses (for seeding a custom range). */
   /** The terrain tint's colour scale (the shared histogram component). */
   private tintScale!: ScaleControls;
   /** Set by the app: the tint's colour and opacity at a value on the range in use; whether the
@@ -125,8 +107,14 @@ export class LayersCard {
   tintCssFor: (key: string) => string = () => 'transparent';
   /** Live preview of a tint palette on the map (null: back to the chosen one). */
   onTintPreview: (key: string | null) => void = () => {};
+  /** A stop's filters were opened: their histograms are wanted (filtersOpen). */
+  onFiltersOpen: () => void = () => {};
+  /** Every setting back to the app's defaults (confirmed). */
+  onReset: () => void = () => {};
 
-  constructor(private root: HTMLElement, private store: Store) {
+  /** `cards`: how each layer is coloured (colour.ts, rail.ts, ferry.ts, stops.ts), shown in its
+   * section. */
+  constructor(private root: HTMLElement, private store: Store, cards: { roads: HTMLElement; rail: HTMLElement; ferry: HTMLElement; stops: HTMLElement }) {
     const cb = (on: (v: boolean) => void) => {
       const e = h('input', { type: 'checkbox' });
       e.addEventListener('change', () => on(e.checked));
@@ -134,12 +122,13 @@ export class LayersCard {
     };
     const tog = (input: HTMLInputElement, label: string | Node, right: Node | string = '', cls = 'tog', title?: string) =>
       h('label', { class: cls, title }, input, typeof label === 'string' ? h('span', {}, label) : label, typeof right === 'string' ? h('span', { class: 'km' }, right) : right);
-    const slider = (min: number, max: number, step: number, on: (v: number) => void, reset?: number) => {
-      const e = h('input', { type: 'range', min, max, step });
-      e.addEventListener('input', () => on(Number(e.value)));
-      if (reset !== undefined) e.addEventListener('dblclick', () => on(reset));
-      return e;
+    // A slider row, synced with the rest.
+    const sl = (o: SliderOpts) => {
+      const x = new Slider(o);
+      this.sliders.push(x);
+      return x.el;
     };
+    const S = () => this.store.s;
 
     // ---- roads ----
     this.roads = cb((v) => this.setLayer('roads', v));
@@ -176,19 +165,17 @@ export class LayersCard {
     const tb = (k: 'free' | 'toll') => cb((v) => this.store.set({ toll: { ...this.store.s.toll, [k]: v } }));
     this.tollBox = { free: tb('free'), toll: tb('toll') };
     this.tollKm = [h('span', { class: 'km' }), h('span', { class: 'km' })];
-    // Whole-road length filter, km (empty = no limit).
-    const lenInput = (i: 0 | 1, placeholder: string) => {
-      const e = h('input', { type: 'number', min: 0, step: 'any', placeholder, class: 'num' });
-      e.addEventListener('change', () => {
-        const v = Math.max(0, Number(e.value) || 0);
-        const next: [number, number] = [...this.store.s.roadLen];
-        next[i] = v;
-        this.store.set({ roadLen: next });
-      });
-      return e;
-    };
-    this.lenIn = [lenInput(0, 'min'), lenInput(1, 'max')];
-    this.lenOn = cb((v) => this.store.set({ roadLenOn: v }));
+    // Whole-road length filter, km (0 = no limit), over the roads in view by length.
+    this.roadLen = new RangeFilter({
+      label: 'Road length', unit: 'km', domain: [0.05, 5000], axis: 'log',
+      title: 'Length of the whole road (every way with the same name or route number, joined end to end). Drag the handles; to an end for no limit.',
+      get: () => ({ on: this.store.s.roadLenOn, min: this.store.s.roadLen[0], max: this.store.s.roadLen[1] }),
+      set: (p) => this.store.set({
+        ...(p.on !== undefined ? { roadLenOn: p.on } : {}),
+        ...(p.min !== undefined || p.max !== undefined ? { roadLen: [p.min ?? this.store.s.roadLen[0], p.max ?? this.store.s.roadLen[1]] as [number, number] } : {}),
+      }),
+      fmt: (v) => (v >= 10 ? fmt.n(Math.round(v)) : String(+v.toPrecision(2))),
+    });
     this.trees = new TreeSection(this.store);
     // Passenger rail: the layer and its service groups (styling: top-left panel).
     this.rail = cb((v) => this.store.set({ rail: { ...this.store.s.rail, on: v } }));
@@ -206,17 +193,14 @@ export class LayersCard {
       sw.style.background = RAIL_GROUP_COLOURS[i];
       railGroups.append(tog(c, h('span', { class: 'lbl' }, sw, g.label), km, 'tog sub'));
     });
-    this.railFreq = new FreqFilterRow('Trains a day', 'Trains a day each way on a typical weekday (all services on the track), from operators\u2019 timetables. Empty = no limit.',
-      'Tracks without a timetable', () => this.store.s.rail, (p) => this.store.set({ rail: { ...this.store.s.rail, ...p } }));
-    this.railOp = slider(0.1, 1, 0.05, (v) => this.store.set({ rail: { ...this.store.s.rail, opacity: v } }), defaults.rail.opacity);
-    this.railOp.title = 'Opacity of the rail lines and their stop dots (double-click: default)';
-    this.railOpOut = h('output');
-    this.railSection = [
-      tog(this.rail, 'Passenger rail', h('span', { class: 'km faint' }, 'km in view'), 'tog', 'Tracks used by passenger services (OSM route relations), plus trams, metros, funiculars and heritage lines'),
-      h('div', { class: 'row', title: 'Opacity of the rail lines and their stop dots' }, h('span', { class: 'muted' }, 'Opacity'), this.railOp, this.railOpOut),
-      railGroups,
-      ...this.railFreq.nodes,
-    ];
+    this.railFreq = new FreqFilterRow('Trains a day', 'Trains a day each way on a typical weekday (all services on the track), from operators\u2019 timetables. Drag the handles; to an end for no limit.',
+      'Tracks without a timetable', () => this.store.s.rail, (p) => this.store.set({ rail: { ...this.store.s.rail, ...p } }), [0.5, 3000]);
+    this.rail.title = 'Tracks used by passenger services (OSM route relations), plus trams, metros, funiculars and heritage lines';
+    this.railSection = [railGroups, ...this.railFreq.nodes];
+    const railOpRow = sl({
+      label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: defaults.rail.opacity, title: 'Opacity of the rail lines and their stop dots',
+      get: () => S().rail.opacity, set: (opacity) => this.store.set({ rail: { ...S().rail, opacity } }), fmt: pct, disabled: () => !S().rail.on,
+    });
     // Passenger ferries: the layer and its service groups (styling: top-left panel).
     this.ferry = cb((v) => this.store.set({ ferry: { ...this.store.s.ferry, on: v } }));
     const ferryGroups = h('div', { class: 'grp' });
@@ -233,30 +217,28 @@ export class LayersCard {
       sw.style.background = FERRY_GROUP_COLOURS[i];
       ferryGroups.append(tog(c, h('span', { class: 'lbl' }, sw, g.label), km, 'tog sub', g.help));
     });
-    this.ferryOp = slider(0.05, 1, 0.05, (v) => this.store.set({ ferry: { ...this.store.s.ferry, opacity: v } }), defaults.ferry.opacity);
-    this.ferryOp.title = 'Opacity of the ferry lines and their terminal dots (double-click: default)';
-    this.ferryOpOut = h('output');
     this.ferryDashed = cb((v) => this.store.set({ ferry: { ...this.store.s.ferry, dashed: v } }));
+    this.ferry.title = 'Passenger ferries, car ferries included (OSM ferry routes). Car ferries are also part of the road network (Roads → Car ferries).';
+    const ferryOpRow = sl({
+      label: 'Opacity', min: 0.05, max: 1, step: 0.05, reset: defaults.ferry.opacity, title: 'Opacity of the ferry lines and their terminal dots',
+      get: () => S().ferry.opacity, set: (opacity) => this.store.set({ ferry: { ...S().ferry, opacity } }), fmt: pct, disabled: () => !S().ferry.on,
+    });
     this.ferrySection = [
-      tog(this.ferry, 'Ferries', h('span', { class: 'km faint' }, 'km in view'), 'tog',
-        'Passenger ferries, car ferries included (OSM ferry routes). Car ferries are also part of the road network (Roads → Car ferries).'),
-      h('div', { class: 'row', title: 'Opacity of the ferry lines and their terminal dots' }, h('span', { class: 'muted' }, 'Opacity'), this.ferryOp, this.ferryOpOut),
       ferryGroups,
-      ...(this.ferryFreq = new FreqFilterRow('Sailings a day', 'Sailings a day each way, from operators\u2019 timetables (on a stretch used by several lines, added up). Empty = no limit.',
-        'Lines without a timetable', () => this.store.s.ferry, (p) => this.store.set({ ferry: { ...this.store.s.ferry, ...p } }))).nodes,
-      tog(this.ferryDashed, 'Dashed lines', '', 'tog', 'Ferry lines dashed, as on paper maps'),
+      ...(this.ferryFreq = new FreqFilterRow('Sailings a day', 'Sailings a day each way, from operators\u2019 timetables (on a stretch used by several lines, added up). Drag the handles; to an end for no limit.',
+        'Lines without a timetable', () => this.store.s.ferry, (p) => this.store.set({ ferry: { ...this.store.s.ferry, ...p } }), [0.1, 500])).nodes,
     ];
+    const ferryDashedRow = tog(this.ferryDashed, 'Dashed lines', '', 'tog', 'Ferry lines dashed, as on paper maps');
     // Line weights: the global one scales every line on the map; each kind's is relative to it.
-    const lwRow = (key: 'global' | LineKind, label: string, help: string) => {
-      const input = slider(WEIGHT_RANGE[0], WEIGHT_RANGE[1], 0.05, (v) => this.store.set({ lineWeights: { ...this.store.s.lineWeights, [key]: v } }), 1);
-      input.title = 'Double-click: default';
-      const out = h('output');
-      this.lw.push({ key, input, out });
-      return h('div', { class: key === 'global' ? 'row lw top' : 'row lw', title: help }, h('span', key === 'global' ? {} : { class: 'muted' }, label), input, out);
-    };
+    const lwRow = (key: 'global' | LineKind, label: string, help: string, sub = false) => sl({
+      label, min: WEIGHT_RANGE[0], max: WEIGHT_RANGE[1], step: 0.05, reset: 1, title: help, cls: key === 'global' ? 'lw top' : sub ? 'lw sub' : 'lw',
+      get: () => S().lineWeights[key], set: (v) => this.store.set({ lineWeights: { ...S().lineWeights, [key]: v } }), fmt: (v) => `${v.toFixed(2)}×`,
+    });
+    // Each kind's weight in its layer's section; the global one and the map's own lines in Map.
+    const lwOf = Object.fromEntries(LINE_KINDS.filter(([k]) => k === 'roads' || k === 'rail' || k === 'ferries').map(([k, , help]) => [k, lwRow(k, 'Line weight', help)])) as unknown as Record<'roads' | 'rail' | 'ferries', HTMLElement>;
     const lineWeights = h('div', { class: 'lw-block' },
-      lwRow('global', 'Global line weight', 'Width of every line on the map (contour lines too); the weights below are relative to it'),
-      ...LINE_KINDS.map(([k, label, help]) => lwRow(k, label, help)));
+      lwRow('global', 'Global line weight', 'Width of every line on the map (contour lines too); each layer\'s weight is relative to it'),
+      ...LINE_KINDS.filter(([k]) => k === 'borders' || k === 'rivers' || k === 'outlines').map(([k, label, help]) => lwRow(k, label, help, true)));
     this.glow = cb((v) => this.store.set({ routeGlow: v }));
     this.occlude = cb((v) => this.store.set({ occlude: v }));
 
@@ -304,40 +286,62 @@ export class LayersCard {
       onPreview: (key) => this.onTintPreview(key),
     });
     const tintBands = sel([], (v) => T({ tintBands: Number(v) }));
-    // Emphasis slider in log space: −1 … 1 → curve 0.33 … 3.
-    const tintCurve = slider(-1, 1, 0.05, (v) => T({ tintCurve: +(3 ** -v).toFixed(3) }), 0);
     this.t = {
       on: cb((v) => T({ on: v })),
-      ex: slider(1, 6, 0.25, (v) => T({ exaggeration: v }), defaults.terrain.exaggeration),
-      exOut: h('output'),
       hs: cb((v) => T({ hillshade: v })),
       method,
-      light: slider(0, 359, 1, (v) => T({ light: v }), defaults.terrain.light),
-      lightOut: h('output'),
-      shade: slider(0, 1, 0.05, (v) => T({ shade: v }), defaults.terrain.shade),
-      shadeOut: h('output'),
       tint: cb((v) => T({ tint: v })),
       contours: cb((v) => T({ contours: v })),
       sky: cb((v) => T({ sky: v })),
-      tintBox: h('div'),
+      tintBox: h('div', { class: 'tint-box' }),
       tintVar,
       tintBands,
-      tintCurve,
-      tintCurveOut: h('output'),
-      tintOp: slider(0, 1, 0.05, (v) => T({ tintOpacity: v }), defaults.terrain.tintOpacity),
-      tintOpOut: h('output'),
     };
-    this.labelOp = slider(0, 1, 0.05, (v) => this.store.set({ labelOpacity: v }), defaults.labelOpacity);
-    this.roadOp = slider(0.1, 1, 0.05, (v) => this.store.set({ roadOpacity: v }), defaults.roadOpacity);
-    this.roadOp.title = 'Opacity of the roads, in every display type (double-click: default)';
-    this.roadOpOut = h('output');
-    this.boundOp = slider(0, 1, 0.05, (v) => this.store.set({ boundaryOpacity: v }), defaults.boundaryOpacity);
-    this.boundOp.title = 'Opacity of the boundary lines (double-click: default)';
-    this.boundOpOut = h('output');
+    const noShade = () => !TS().hillshade;
+    const exRow = sl({
+      label: 'Height ×', min: 1, max: 6, step: 0.25, reset: defaults.terrain.exaggeration, title: 'Vertical exaggeration of the 3D terrain', cls: 'sub',
+      get: () => TS().exaggeration, set: (exaggeration) => T({ exaggeration }), fmt: (v) => `${v.toFixed(2).replace(/\.?0+$/, '')}×`, disabled: () => !TS().on,
+    });
+    const lightRow = sl({
+      label: 'Light from', min: 0, max: 359, step: 1, reset: defaults.terrain.light, title: 'Direction the light comes from', cls: 'sub',
+      get: () => TS().light, set: (light) => T({ light }), fmt: (v) => `${Math.round(v)}° ${compass(v)}`, disabled: noShade,
+    });
+    const shadeRow = sl({
+      label: 'Strength', min: 0, max: 1, step: 0.05, reset: defaults.terrain.shade, title: 'How dark the shading gets', cls: 'sub',
+      get: () => TS().shade, set: (shade) => T({ shade }), fmt: (v) => v.toFixed(2), disabled: noShade,
+    });
+    // Emphasis in log space: −1 … 1 → curve 3 … 0.33.
+    const curveRow = sl({
+      label: 'Emphasis', min: -1, max: 1, step: 0.05, reset: 1, title: 'Left: more colour steps in the lowlands · right: more in the highlands',
+      scale: { to: (c) => -Math.log(c) / Math.log(3), from: (p) => +(3 ** -p).toFixed(3) },
+      get: () => TS().tintCurve, set: (tintCurve) => T({ tintCurve }),
+      fmt: (c) => {
+        const lc = -Math.log(c) / Math.log(3);
+        return Math.abs(lc) < 0.05 ? 'even' : lc > 0 ? 'low' : 'high';
+      },
+    });
+    const tintOpRow = sl({
+      label: 'Opacity', min: 0, max: 1, step: 0.05, reset: defaults.terrain.tintOpacity, title: 'Opacity of the tint',
+      get: () => TS().tintOpacity, set: (tintOpacity) => T({ tintOpacity }), fmt: pct,
+    });
+    const labelOpRow = sl({
+      label: 'Label opacity', min: 0, max: 1, step: 0.05, reset: defaults.labelOpacity, cls: 'lw', title: 'Opacity of every label on the map',
+      get: () => S().labelOpacity, set: (labelOpacity) => this.store.set({ labelOpacity }), fmt: pct,
+    });
+    const roadOpRow = sl({
+      label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: defaults.roadOpacity, title: 'Opacity of the roads, in every display type',
+      get: () => S().roadOpacity, set: (roadOpacity) => this.store.set({ roadOpacity }), fmt: pct,
+    });
+    const boundOpRow = sl({
+      label: 'Opacity', min: 0, max: 1, step: 0.05, reset: defaults.boundaryOpacity, cls: 'sub', title: 'Opacity of the boundary lines',
+      get: () => S().boundaryOpacity, set: (boundaryOpacity) => this.store.set({ boundaryOpacity }), fmt: pct, disabled: () => !S().layers.boundaries,
+    });
+    const poiOpRow = sl({
+      label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: defaults.poiOpacity,
+      title: 'Dots, areas and their labels (labels also follow Label opacity). Sizes and fades along the landmark score (Prominence)',
+      get: () => S().poiOpacity, set: (poiOpacity) => this.store.set({ poiOpacity }), fmt: pct,
+    });
     this.globe = cb((v) => this.store.set({ globe: v }));
-    this.labelOpOut = h('output');
-    this.poiOp = slider(0.1, 1, 0.05, (v) => this.store.set({ poiOpacity: v }), defaults.poiOpacity);
-    this.poiOpOut = h('output');
     // A new density lays the label tiles (and landmarks' point tiles) out again: while dragging, at
     // most every DENSITY_MS.
     let pending: Partial<LabelDensity> | null = null;
@@ -351,27 +355,33 @@ export class LayersCard {
       pending = { ...pending, ...d };
       if (!timer) timer = window.setTimeout(flush, DENSITY_MS);
     };
-    this.spacing = slider(Math.log2(SPACING_RANGE[0]), Math.log2(SPACING_RANGE[1]), 0.01, (v) => setDensity({ px: Math.round(2 ** v) }), Math.log2(DEFAULT_DENSITY.px));
-    this.spacing.title = 'A label shows once the nearest label of its kind that matters more is this far away on screen: wider, fewer labels (double-click: default)';
-    this.spacingOut = h('output');
-    const densityRows = DENSITY_KINDS.map(([k, label, help]) => {
-      const input = slider(-2, 2, 0.25, (v) => setDensity({ kinds: { ...this.store.s.labelDensity.kinds, ...pending?.kinds, [k]: 2 ** v } }), 0);
-      const out = h('output');
-      this.densities.push({ k, input, out });
-      return h('div', { class: 'row lw dens', title: `${help}: more or fewer than the spacing gives (double-click: ×1)` }, h('span', { class: 'muted' }, label), input, out);
+    const noLabels = () => !S().layers.places;
+    const spacingRow = sl({
+      label: 'Label spacing', min: Math.log2(SPACING_RANGE[0]), max: Math.log2(SPACING_RANGE[1]), step: 0.01, reset: DEFAULT_DENSITY.px, cls: 'lw',
+      title: 'A label shows once the nearest label of its kind that matters more is this far away on screen: wider, fewer labels',
+      scale: { to: Math.log2, from: (p) => Math.round(2 ** p) },
+      get: () => S().labelDensity.px, set: (px) => setDensity({ px }), fmt: (px) => `${px} px`, disabled: noLabels,
     });
-    this.horizon = slider(0, 1, 0.05, (v) => setDensity({ horizon: v }), DEFAULT_DENSITY.horizon);
-    this.horizonOut = h('output');
-    const row = (label: string, input: HTMLElement, out?: HTMLElement) => h('div', { class: 'row' }, h('span', { class: 'muted' }, label), input, out ?? h('span'));
+    const densityRows = DENSITY_KINDS.map(([k, label, help]) => sl({
+      label, min: -2, max: 2, step: 0.25, reset: 1, cls: 'sub', title: `${help}: more or fewer than the spacing gives`,
+      scale: { to: Math.log2, from: (p) => 2 ** p },
+      get: () => S().labelDensity.kinds[k], set: (f) => setDensity({ kinds: { ...S().labelDensity.kinds, ...pending?.kinds, [k]: f } }),
+      fmt: (f) => `×${+f.toFixed(f < 1 ? 2 : 1)}`, disabled: noLabels,
+    }));
+    const horizonRow = sl({
+      label: 'Toward horizon', min: 0, max: 1, step: 0.05, reset: DEFAULT_DENSITY.horizon, cls: 'lw',
+      title: 'In a tilted view, labels thin out with distance beyond the centre, where the ground is foreshortened',
+      get: () => S().labelDensity.horizon, set: (horizon) => setDensity({ horizon }), fmt: pct, disabled: noLabels,
+    });
+    const row = (label: string, input: HTMLElement, cls = 'row') => h('div', { class: cls }, h('span', { class: 'muted' }, label), input, h('span'));
 
     this.t.tintBox.append(
       row('Colour by', this.t.tintVar),
       h('div', { class: 'tint-scale' }, this.tintScale.legend, this.tintScale.palRow, this.tintScale.fadeRow, this.tintScale.thrRow),
       row('Bands', this.t.tintBands),
-      row('Emphasis', this.t.tintCurve, this.t.tintCurveOut),
-      row('Opacity', this.t.tintOp, this.t.tintOpOut),
+      curveRow,
+      tintOpRow,
     );
-    this.t.tintCurve.title = 'Left: more colour steps in the lowlands · right: more in the highlands (double-click resets)';
 
     // ---- overlays ----
     const ovToggle = (k: OverlayKey, label: string) => {
@@ -417,29 +427,26 @@ export class LayersCard {
     const filterBlock = (k: OverlayKey): HTMLElement[] => {
       const defs = filtersOf(k);
       if (!defs.length) return [];
-      const S = () => this.store.s;
-      const setF = (key: string, patch: Partial<StopFilter>) => {
-        const cur = S().stopFilters[key] ?? { on: false, min: 0, max: 0 };
-        this.store.set({ stopFilters: { ...S().stopFilters, [key]: { ...cur, ...patch } } });
-      };
+      const cur = (key: string): StopFilter => S().stopFilters[key] ?? { on: false, min: 0, max: 0 };
+      const setF = (key: string, patch: Partial<StopFilter>) => this.store.set({ stopFilters: { ...S().stopFilters, [key]: { ...cur(key), ...patch } } });
       const rows: HTMLElement[] = [];
       for (const d of defs) {
-        const on = cb((v) => setF(d.key, { on: v }));
         if (d.type === 'flag') {
+          const on = cb((v) => setF(d.key, { on: v }));
           rows.push(tog(on, d.label, '', 'tog sub2', d.help ?? `Only ones with ${d.label.toLowerCase()}`));
-          this.sfUi.push({ key: d.key, flag: true, on });
+          this.sfFlags.push({ key: d.key, on });
           continue;
         }
-        const inp = (side: 'min' | 'max') => {
-          const e = h('input', { type: 'number', class: 'num', placeholder: side, step: d.step ?? 'any' });
-          e.addEventListener('change', () => setF(d.key, { [side]: Number(e.value) || 0, on: true }));
-          return e;
-        };
-        const lo = inp('min'), hi = inp('max');
-        rows.push(h('div', { class: 'row sub len sf', title: `${d.help ? d.help + '. ' : ''}Empty = no limit; untick to switch it off and keep the limits.` },
-          h('label', { class: 'lenon' }, on, h('span', { class: 'muted' }, d.label)),
-          h('span', { class: 'pair' }, lo, h('span', { class: 'faint' }, '–'), hi), h('span', { class: 'muted' }, d.unit === 'year' ? '' : d.unit ?? '')));
-        this.sfUi.push({ key: d.key, flag: false, on, lo, hi });
+        // A histogram of the ones in view along the filter's axis, the limits as its handles.
+        const year = d.unit === 'year';
+        const rf = new RangeFilter({
+          label: d.label, unit: year ? '' : d.unit ?? '', domain: d.domain!, axis: d.axis,
+          title: `${d.help ? d.help + '. ' : ''}The bars: the ones in view. Drag the handles; to an end for no limit.`,
+          get: () => cur(d.key), set: (patch) => setF(d.key, patch),
+          fmt: year ? (y) => (y < 0 ? `${-y} BC` : String(y)) : (v) => (v >= 10 ? fmt.n(Math.round(v)) : String(+v.toPrecision(2))),
+        });
+        this.sfRange.set(d.key, rf);
+        rows.push(rf.el);
       }
       if (defs.some((d) => d.type === 'range')) {
         const keep = cb((v) => this.store.set({ stopUnknown: { ...S().stopUnknown, [k]: v } }));
@@ -451,6 +458,7 @@ export class LayersCard {
       blk.hd.addEventListener('click', () => {
         blk.open = !blk.open;
         this.syncFilters(this.store.s);
+        if (blk.open) this.onFiltersOpen();
       });
       this.sfBlocks[k] = blk;
       return [blk.hd, body];
@@ -464,88 +472,115 @@ export class LayersCard {
 
     this.viewshedBtn = h('button', { class: 'pill wide', title: 'Click a spot on the map to see everything visible from there (trees and terrain block the view)', onclick: () => this.onViewshed() }, 'What can I see from here?');
 
+    const sub = (label: string) => h('div', { class: 'subhd' }, label);
+    const boundaryLevels = BOUNDARY_LEVELS.map(([label, help], i) => {
+      const c = cb((v) => {
+        const next = [...this.store.s.boundaryLevels] as [boolean, boolean, boolean];
+        next[i] = v;
+        this.store.set({ boundaryLevels: next });
+      });
+      this.boundaryBoxes.push(c);
+      return tog(c, label, '', 'tog sub', help);
+    });
+    const labelKinds = LABEL_KINDS.map(([k, label, help]) => {
+      const c = cb((v) => this.store.set({ labelKinds: { ...this.store.s.labelKinds, [k]: v } }));
+      this.labelBoxes.push(c);
+      return tog(c, label, '', 'tog sub', help);
+    });
+    this.roads.title = 'Roads';
+    this.stopsAll.title = 'Every kind at once. Off hides them all; on brings back the kinds you had on';
+    this.other.places.title = 'Names of places, water, and of the parks, sites and stops shown';
     root.append(
-      h('div', { class: 'hd' }, h('h2', {}, 'Layers')),
-      h('div', { class: 'bd scroll' },
-        this.section('map', 'Map',
-          tog(this.globe, 'Globe', '', 'tog', 'Globe projection; flattens to Web Mercator as you zoom in'),
-          lineWeights,
-          tog(this.other.water, 'Water'),
-          tog(this.other.boundaries, 'Boundaries'),
-          ...BOUNDARY_LEVELS.map(([label, help], i) => {
-            const c = cb((v) => {
-              const next = [...this.store.s.boundaryLevels] as [boolean, boolean, boolean];
-              next[i] = v;
-              this.store.set({ boundaryLevels: next });
-            });
-            this.boundaryBoxes.push(c);
-            return tog(c, label, '', 'tog sub', help);
-          }),
-          h('div', { class: 'row sub', title: 'Opacity of the boundary lines' }, h('span', { class: 'muted' }, 'Opacity'), this.boundOp, this.boundOpOut),
-          tog(this.other.places, 'Place labels', '', 'tog', 'Names of places, water, and of the parks, sites and stops shown'),
-          ...LABEL_KINDS.map(([k, label, help]) => {
-            const c = cb((v) => this.store.set({ labelKinds: { ...this.store.s.labelKinds, [k]: v } }));
-            this.labelBoxes.push(c);
-            return tog(c, label, '', 'tog sub', help);
-          }),
-          h('div', { class: 'row lw' }, h('span', { class: 'muted' }, 'Label opacity'), this.labelOp, this.labelOpOut),
-          h('div', { class: 'row lw', title: this.spacing.title }, h('span', { class: 'muted' }, 'Label spacing'), this.spacing, this.spacingOut),
-          ...densityRows,
-          h('div', { class: 'row lw', title: 'In a tilted view, labels thin out with distance beyond the centre, where the ground is foreshortened (double-click: default)' },
-            h('span', { class: 'muted' }, 'Toward horizon'), this.horizon, this.horizonOut),
-        ),
-        this.section('roads', 'Roads',
-          tog(this.roads, 'Roads', h('span', { class: 'km faint' }, 'km in view')),
-          h('div', { class: 'row', title: 'Opacity of the roads, in every display type' }, h('span', { class: 'muted' }, 'Opacity'), this.roadOp, this.roadOpOut),
-          groups,
-          tog(this.surf.paved, 'Paved', this.surfKm[0], 'tog sub'),
-          tog(this.surf.unpaved, 'Unpaved (dashed)', this.surfKm[1], 'tog sub'),
-          tog(this.tollBox.free, 'Toll-free', this.tollKm[0], 'tog sub', 'Roads without a toll'),
-          tog(this.tollBox.toll, 'Toll roads', this.tollKm[1], 'tog sub', 'Roads tagged as tolled in OpenStreetMap (toll=yes), including toll bridges and tunnels'),
-          h('div', { class: 'row sub len', title: 'Length of the whole road (every way with the same name or route number, joined end to end). Empty = no limit; untick to switch the filter off and keep the limits.' },
-            h('label', { class: 'lenon' }, this.lenOn, h('span', { class: 'muted' }, 'Road length')),
-            h('span', { class: 'pair' }, this.lenIn[0], h('span', { class: 'faint' }, '–'), this.lenIn[1]), h('span', { class: 'muted' }, 'km')),
-          tog(this.glow, h('span', { class: 'lbl' }, h('span', { class: 'dot', style: 'background:#f5bd4d' }), 'Scenic-route glow'), '', 'tog', 'Gold halo on designated scenic byways and routes touristiques'),
-          tog(this.occlude, 'Hide roads behind terrain', '', 'tog',
-            'With 3D terrain. Off: roads behind hills are drawn faint, as if seen through them. On: they are hidden.'),
-        ),
-        this.section('rail', 'Passenger rail lines', ...this.railSection),
-        this.section('ferry', 'Ferries', ...this.ferrySection),
-        this.section('trees', 'Trees', ...this.trees.nodes),
-        this.section('terrain', 'Terrain',
-          tog(this.t.on, '3D terrain', '', 'tog', 'Terrain mesh; tilt with ⌥ Option + two-finger drag, right-drag or the buttons'),
-          row('Height ×', this.t.ex, this.t.exOut),
-          tog(this.t.hs, 'Hill-shading'),
-          row('Method', this.t.method),
-          row('Light from', this.t.light, this.t.lightOut),
-          row('Strength', this.t.shade, this.t.shadeOut),
-          tog(this.t.tint, 'Elevation tint', '', 'tog', 'Hypsometric colour of the terrain surface'),
-          this.t.tintBox,
-          tog(this.t.contours, 'Contour lines', '', 'tog', 'Computed on the fly from the terrain tiles'),
-          tog(this.t.sky, 'Sky & distance fog', '', 'tog', 'Visible when the map is tilted'),
-        ),
-        this.section('stops', 'Stops & sights',
-          tog(this.stopsAll, 'Show stops & sights', '', 'tog', 'Every kind below at once. Off hides them all; on brings back the kinds you had on'),
-          h('div', { class: 'row', title: 'Dots, areas and their labels (labels also follow Label opacity). Sizes and fades along the landmark score: the top-left panel' }, h('span', { class: 'muted' }, 'Opacity'), this.poiOp, this.poiOpOut),
-          ...byGroup('map'),
-          ...designations.slice(0, 1),
-          levels,
-          ...designations.slice(1),
-          ...byGroup('stops'),
-        ),
-        this.section('tools', 'Tools', this.viewshedBtn),
-        h('div', { class: 'faint note' }, 'Tunnels faded · bridges cased · zoomed out, brightness = road density'),
+      // One section per layer: its switch in the header, then how it is coloured, what it shows
+      // and how it is drawn.
+      this.section('roads', 'Roads', this.roads,
+        sub('Colour'), cards.roads,
+        sub('Show'),
+        h('div', { class: 'cols-hd faint' }, h('span', {}, 'Road types'), h('span', {}, 'km in view')),
+        groups,
+        tog(this.surf.paved, 'Paved', this.surfKm[0], 'tog sub'),
+        tog(this.surf.unpaved, 'Unpaved (dashed)', this.surfKm[1], 'tog sub'),
+        tog(this.tollBox.free, 'Toll-free', this.tollKm[0], 'tog sub', 'Roads without a toll'),
+        tog(this.tollBox.toll, 'Toll roads', this.tollKm[1], 'tog sub', 'Roads tagged as tolled in OpenStreetMap (toll=yes), including toll bridges and tunnels'),
+        this.roadLen.el,
+        sub('Style'),
+        roadOpRow,
+        lwOf.roads,
+        tog(this.glow, h('span', { class: 'lbl' }, h('span', { class: 'dot', style: 'background:#f5bd4d' }), 'Scenic-route glow'), '', 'tog', 'Gold halo on designated scenic byways and routes touristiques'),
+        tog(this.occlude, 'Hide roads behind terrain', '', 'tog',
+          'With 3D terrain. Off: roads behind hills are drawn faint, as if seen through them. On: they are hidden.'),
       ),
+      this.section('rail', 'Passenger rail', this.rail,
+        sub('Colour'), cards.rail,
+        sub('Show'), ...this.railSection,
+        sub('Style'), railOpRow, lwOf.rail,
+      ),
+      this.section('ferry', 'Ferries', this.ferry,
+        sub('Colour'), cards.ferry,
+        sub('Show'), ...this.ferrySection,
+        sub('Style'), ferryOpRow, lwOf.ferries, ferryDashedRow,
+      ),
+      this.section('stops', 'Stops & sights', this.stopsAll,
+        sub('Prominence'), cards.stops,
+        sub('Show'),
+        ...byGroup('map'),
+        ...designations.slice(0, 1),
+        levels,
+        ...designations.slice(1),
+        ...byGroup('stops'),
+        sub('Style'),
+        poiOpRow,
+      ),
+      this.section('terrain', 'Terrain', null,
+        tog(this.t.on, '3D terrain', '', 'tog', 'Terrain mesh; tilt with ⌥ Option + two-finger drag, right-drag or the buttons'),
+        exRow,
+        tog(this.t.hs, 'Hill-shading'),
+        row('Method', this.t.method, 'row sub'),
+        lightRow,
+        shadeRow,
+        tog(this.t.tint, 'Elevation tint', '', 'tog', 'Colour of the terrain surface by elevation or slope'),
+        this.t.tintBox,
+        tog(this.t.contours, 'Contour lines', '', 'tog', 'Computed on the fly from the terrain tiles'),
+        tog(this.t.sky, 'Sky & distance fog', '', 'tog', 'Visible when the map is tilted'),
+      ),
+      this.section('trees', 'Trees', this.trees.on, ...this.trees.nodes),
+      this.section('map', 'Map', null,
+        tog(this.globe, 'Globe', '', 'tog', 'Globe projection; flattens to Web Mercator as you zoom in'),
+        tog(this.other.water, 'Water'),
+        tog(this.other.boundaries, 'Boundaries'),
+        ...boundaryLevels,
+        boundOpRow,
+        sub('Line weights'),
+        lineWeights,
+      ),
+      this.section('labels', 'Labels', this.other.places,
+        ...labelKinds,
+        labelOpRow,
+        sub('Density'),
+        spacingRow,
+        ...densityRows,
+        horizonRow,
+      ),
+      this.section('tools', 'Tools', null, this.viewshedBtn),
+      this.resetRow(),
+      h('div', { class: 'faint note' }, 'Tunnels faded · bridges cased · zoomed out, brightness = road density'),
     );
     this.sync(store.s);
   }
 
-  private section(key: string, title: string, ...kids: Node[]) {
+  /** A collapsible section; `toggle`: its layer's switch, in the header. */
+  private section(key: string, title: string, toggle: HTMLInputElement | null, ...kids: Node[]) {
     const body = h('div', { class: 'grp' }, ...kids);
-    const head = h('button', { class: 'sec' }, h('span', {}, title), h('i', {}, '▾'));
+    const name = h('button', { class: 'sec-t', type: 'button' }, h('i'), h('span', {}, title));
+    const head = h('div', { class: 'sec' }, name);
+    if (toggle) {
+      toggle.classList.add('switch');
+      head.append(toggle);
+      wrapSwitch(toggle, body);
+    }
     const wrap = h('div', { class: 'section' }, head, body);
     wrap.classList.toggle('closed', !!this.collapsed[key]);
-    head.addEventListener('click', () => {
+    name.addEventListener('click', () => {
       wrap.classList.toggle('closed');
       this.collapsed[key] = wrap.classList.contains('closed');
       prefs.save('layers.collapsed', this.collapsed);
@@ -553,8 +588,55 @@ export class LayersCard {
     return wrap;
   }
 
+  /** Reset to defaults, asked again in place before it happens. */
+  private resetRow() {
+    const ask = h('div', { class: 'reset-ask' });
+    const btn = h('button', { class: 'pill wide', title: 'Every setting back to the app\u2019s defaults (asks first)' }, 'Reset to defaults\u2026');
+    const close = () => {
+      ask.hidden = true;
+      btn.hidden = false;
+    };
+    btn.addEventListener('click', () => {
+      const own = presets.custom || railPresets.custom;
+      ask.replaceChildren(
+        h('div', { class: 'muted' }, `Every setting goes back to the app\u2019s defaults: colours, layers, filters, labels, weights${own ? ', the preset lists (your own presets go too)' : ''} and the panels\u2019 layout. The map stays where it is.`),
+        h('div', { class: 'pills' },
+          h('button', { class: 'pill on', onclick: () => this.onReset() }, 'Reset everything'),
+          h('button', { class: 'pill', onclick: close }, 'Cancel')),
+      );
+      ask.hidden = false;
+      btn.hidden = true;
+    });
+    close();
+    return h('div', { class: 'reset' }, btn, ask);
+  }
+
   private setLayer(k: keyof AppState['layers'], on: boolean) {
     this.store.set({ layers: { ...this.store.s.layers, [k]: on } });
+  }
+
+  /** What is in view along the range filters' axes: roads by whole-road length (log10 km), rail
+   * and ferry lines by trains and sailings a day (log10). */
+  updateFilters(x: { roadLen?: Dist | null; railFreq?: Dist | null; ferryFreq?: Dist | null }) {
+    if (x.roadLen !== undefined) this.roadLen.update(x.roadLen);
+    if (x.railFreq !== undefined) this.railFreq.update(x.railFreq);
+    if (x.ferryFreq !== undefined) this.ferryFreq.update(x.ferryFreq);
+  }
+
+  /** Whether an overlay's filters are open (their histograms wanted: onFiltersOpen). */
+  filtersOpen(k: OverlayKey): boolean {
+    return !!this.sfBlocks[k]?.open && this.store.s.overlays[k];
+  }
+
+  /** The stop filters' histograms in view (stopfilters.ts filterHists: bins over axis positions). */
+  updateStopFilters(hists: Record<string, { bins: Float64Array; n: number }>) {
+    for (const [key, x] of Object.entries(hists)) {
+      const d = STOP_FILTERS.find((f) => f.key === key);
+      const rf = this.sfRange.get(key);
+      if (!d?.domain || !rf) continue;
+      const ax = d.axis ?? 'lin';
+      rf.update(x.n > 0 ? new Dist(axisPos(ax, d.domain[0]), axisPos(ax, d.domain[1]), x.bins, x.n) : null);
+    }
   }
 
   /** The terrain in view, the tint's range in use and its equalisation lookup (if on). */
@@ -567,15 +649,10 @@ export class LayersCard {
     this.viewshedBtn.textContent = on ? 'Click the map… (Esc to cancel)' : 'What can I see from here?';
   }
 
-  /** Loading / count status next to an overlay toggle. */
   /** Stops & sights filter controls from the state. */
   private syncFilters(s: AppState) {
-    for (const u of this.sfUi) {
-      const f = s.stopFilters[u.key];
-      u.on.checked = !!f?.on;
-      if (u.lo && document.activeElement !== u.lo) u.lo.value = f?.min ? String(f.min) : '';
-      if (u.hi && document.activeElement !== u.hi) u.hi.value = f?.max ? String(f.max) : '';
-    }
+    for (const u of this.sfFlags) u.on.checked = !!s.stopFilters[u.key]?.on;
+    for (const rf of this.sfRange.values()) rf.sync();
     for (const [k, c] of Object.entries(this.sfKeep)) c!.checked = s.stopUnknown[k as OverlayKey] !== false;
     for (const [k, b] of Object.entries(this.sfBlocks)) {
       const ov = k as OverlayKey;
@@ -605,6 +682,9 @@ export class LayersCard {
 
   sync(s: AppState) {
     this.trees.sync();
+    queueMicrotask(() => {
+      for (const t of this.root.querySelectorAll<HTMLInputElement & { syncOff?: () => void }>('input.switch')) t.syncOff?.();
+    });
     this.roads.checked = s.layers.roads;
     this.groupBoxes.forEach((c, i) => {
       c.checked = s.groups[i];
@@ -618,20 +698,8 @@ export class LayersCard {
     this.tollBox.free.checked = s.toll.free;
     this.tollBox.toll.checked = s.toll.toll;
     this.tollBox.free.disabled = this.tollBox.toll.disabled = !s.layers.roads;
-    this.lenOn.checked = s.roadLenOn;
-    this.lenOn.disabled = !s.layers.roads;
-    this.lenIn.forEach((e, i) => {
-      if (document.activeElement !== e) e.value = s.roadLen[i] ? String(s.roadLen[i]) : '';
-      e.disabled = !s.layers.roads || !s.roadLenOn;
-    });
-    for (const { key, input, out } of this.lw) {
-      input.value = String(s.lineWeights[key]);
-      out.value = `${s.lineWeights[key].toFixed(2)}×`;
-    }
-    this.railOp.value = String(s.rail.opacity);
-    this.railOpOut.value = `${Math.round(s.rail.opacity * 100)} %`;
-    this.ferryOp.value = String(s.ferry.opacity);
-    this.ferryOpOut.value = `${Math.round(s.ferry.opacity * 100)} %`;
+    this.roadLen.sync();
+    for (const x of this.sliders) x.sync();
     this.ferryDashed.checked = s.ferry.dashed;
     this.ferryDashed.disabled = !s.ferry.on;
     this.glow.checked = s.routeGlow;
@@ -650,19 +718,11 @@ export class LayersCard {
     });
     const t = s.terrain;
     this.t.on.checked = t.on;
-    this.t.ex.value = String(t.exaggeration);
-    this.t.exOut.value = `${t.exaggeration.toFixed(2).replace(/\.?0+$/, '')}×`;
-    this.t.ex.disabled = !t.on;
     this.t.hs.checked = t.hillshade;
     this.t.method.value = t.method;
-    this.t.light.value = String(t.light);
-    this.t.lightOut.value = `${Math.round(t.light)}° ${compass(t.light)}`;
-    this.t.shade.value = String(t.shade);
-    this.t.shadeOut.value = t.shade.toFixed(2);
-    this.t.method.disabled = this.t.light.disabled = this.t.shade.disabled = !t.hillshade;
+    this.t.method.disabled = !t.hillshade;
     this.t.tint.checked = t.tint;
     this.t.tintBox.hidden = !t.tint;
-    const slope = t.tintVar === 'slope';
     const tv = TINT_VARS[t.tintVar];
     this.t.tintVar.value = t.tintVar;
     const opts = (el: HTMLSelectElement, list: [string | number, string][]) => {
@@ -673,35 +733,8 @@ export class LayersCard {
     };
     opts(this.t.tintBands, [[0, 'Smooth'], ...tv.bands.map((b): [number, string] => [b, `${b} ${tv.unit} bands`])]);
     this.t.tintBands.value = String(t.tintBands);
-    const lc = -Math.log(t.tintCurve) / Math.log(3);
-    this.t.tintCurve.value = String(lc);
-    this.t.tintCurveOut.value = Math.abs(lc) < 0.05 ? 'even' : lc > 0 ? 'low' : 'high';
     this.tintScale.sync();
-    this.t.tintOp.value = String(t.tintOpacity);
-    this.t.tintOpOut.value = `${Math.round(t.tintOpacity * 100)} %`;
     this.globe.checked = s.globe;
-    this.labelOp.value = String(s.labelOpacity);
-    this.labelOpOut.value = `${Math.round(s.labelOpacity * 100)} %`;
-    this.roadOp.value = String(s.roadOpacity);
-    this.roadOpOut.value = `${Math.round(s.roadOpacity * 100)} %`;
-    this.boundOp.value = String(s.boundaryOpacity);
-    this.boundOpOut.value = `${Math.round(s.boundaryOpacity * 100)} %`;
-    this.boundOp.disabled = !s.layers.boundaries;
-    this.poiOp.value = String(s.poiOpacity);
-    this.poiOpOut.value = `${Math.round(s.poiOpacity * 100)} %`;
-    const d = s.labelDensity;
-    this.spacing.value = String(Math.log2(d.px));
-    this.spacingOut.value = `${d.px} px`;
-    this.spacing.disabled = !s.layers.places;
-    for (const x of this.densities) {
-      const f = d.kinds[x.k];
-      x.input.value = String(Math.log2(f));
-      x.out.value = `×${+f.toFixed(f < 1 ? 2 : 1)}`;
-      x.input.disabled = !s.layers.places;
-    }
-    this.horizon.value = String(d.horizon);
-    this.horizonOut.value = `${Math.round(d.horizon * 100)} %`;
-    this.horizon.disabled = !s.layers.places;
     this.t.contours.checked = t.contours;
     this.t.sky.checked = t.sky;
     this.other.water.checked = s.layers.water;
@@ -777,45 +810,30 @@ interface FreqState {
   freqUnknown: boolean;
 }
 
+/** A trains or sailings a day filter: the range filter over a log axis (ui/controls.ts), with
+ * whether lines no timetable was found for stay. */
 class FreqFilterRow {
   readonly nodes: HTMLElement[];
-  private on: HTMLInputElement;
-  private min: HTMLInputElement;
-  private max: HTMLInputElement;
-  private unknown: HTMLInputElement;
-  private unknownRow: HTMLElement;
+  private rf: RangeFilter;
 
-  constructor(label: string, title: string, unknownLabel: string, private get: () => FreqState, private set: (p: Partial<FreqState>) => void) {
-    this.on = h('input', { type: 'checkbox' });
-    this.on.addEventListener('change', () => this.set({ freqOn: this.on.checked }));
-    const num = (key: 'freqMin' | 'freqMax', placeholder: string) => {
-      const e = h('input', { type: 'number', min: 0, step: 'any', placeholder, class: 'num' });
-      e.addEventListener('change', () => this.set({ [key]: Math.max(0, Number(e.value) || 0) } as Partial<FreqState>));
-      return e;
-    };
-    this.min = num('freqMin', 'min');
-    this.max = num('freqMax', 'max');
-    this.unknown = h('input', { type: 'checkbox' });
-    this.unknown.addEventListener('change', () => this.set({ freqUnknown: this.unknown.checked }));
-    this.unknownRow = h('label', { class: 'tog sub unnamed', title: 'Keep showing lines no timetable was found for' }, this.unknown, h('span', {}, unknownLabel), h('span', { class: 'km' }));
-    this.nodes = [
-      h('div', { class: 'row sub len', title },
-        h('label', { class: 'lenon' }, this.on, h('span', { class: 'muted' }, label)),
-        h('span', { class: 'pair' }, this.min, h('span', { class: 'faint' }, '–'), this.max), h('span', { class: 'muted' }, '')),
-      this.unknownRow,
-    ];
+  constructor(label: string, title: string, unknownLabel: string, private get: () => FreqState, private set: (p: Partial<FreqState>) => void, domain: [number, number]) {
+    this.rf = new RangeFilter({
+      label, unit: 'a day', title, domain, axis: 'log',
+      get: () => ({ on: this.get().freqOn, min: this.get().freqMin, max: this.get().freqMax }),
+      set: (p) => this.set({ ...(p.on !== undefined ? { freqOn: p.on } : {}), ...(p.min !== undefined ? { freqMin: p.min } : {}), ...(p.max !== undefined ? { freqMax: p.max } : {}) }),
+      fmt: (v) => (v >= 10 ? fmt.n(Math.round(v)) : String(+v.toPrecision(2))),
+      unknown: { label: unknownLabel, title: 'Keep showing lines no timetable was found for', get: () => this.get().freqUnknown, set: (v) => this.set({ freqUnknown: v }) },
+    });
+    this.nodes = [this.rf.el];
   }
 
   sync(layerOn: boolean) {
-    const f = this.get();
-    this.on.checked = f.freqOn;
-    this.on.disabled = !layerOn;
-    for (const [e, v] of [[this.min, f.freqMin], [this.max, f.freqMax]] as const) {
-      if (document.activeElement !== e) e.value = v ? String(v) : '';
-      e.disabled = !layerOn || !f.freqOn;
-    }
-    this.unknown.checked = f.freqUnknown;
-    this.unknown.disabled = !layerOn || !f.freqOn;
-    this.unknownRow.classList.toggle('dim', !f.freqOn);
+    this.rf.sync();
+    this.rf.el.classList.toggle('dim', !layerOn);
+  }
+
+  /** The lines in view by frequency (log10 of a day's count). */
+  update(dist: Dist | null) {
+    this.rf.update(dist);
   }
 }

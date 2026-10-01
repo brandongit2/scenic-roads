@@ -33,7 +33,7 @@ import { applyTrees } from './trees';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
-import { ROAD_WEIGHT, Store, classMask, labelShown, modeGroup, fromHash, fromSaved, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Stretch } from './state';
+import { ROAD_WEIGHT, Store, classMask, defaults, labelShown, modeGroup, fromHash, fromSaved, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Stretch } from './state';
 import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyTerrain, applyTint, cacheTerrainRays, TINT_VARS, tintColourAt, tintCss } from './terrain';
 import { terrainDist } from './terrainstats';
@@ -48,7 +48,7 @@ import { cap, fmt, h, toast } from './ui/dom';
 import { DrivesPane } from './ui/drives';
 import { LayersCard } from './ui/layers';
 import { NavControls } from './ui/nav';
-import { installPanelResize } from './ui/resize';
+import { installListsResize, installPanelResize } from './ui/resize';
 import { ProfilePanel } from './ui/profile';
 import { StatsCard, type InViewExtra, type ViewPlace } from './ui/stats';
 import { SightsPane, type Sight } from './ui/sights';
@@ -323,6 +323,8 @@ async function main() {
   let railStats: ViewStats | null = null;
   /** Distribution of the rail colour metric over rail in view. */
   let railDist: Dist | null = null;
+  /** Rail in view by trains a day (log10), for the frequency filter's histogram. */
+  let railFreqDist: Dist | null = null;
   /** Distribution of the current colour metric over roads in view. */
   let mdist: Dist | null = null;
   let viewExtra: InViewExtra = {};
@@ -373,7 +375,7 @@ async function main() {
     const nSamples = full ? 90_000 : 15_000;
     const d = modeDef(s.mode);
     const fromSketches = s.mode === 'elev' || s.mode === 'relief' || s.mode === 'grade';
-    let st = stats, md = mdist, extra = viewExtra, rst = railStats, rdist = railDist;
+    let st = stats, md = mdist, extra = viewExtra, rst = railStats, rdist = railDist, rfd = railFreqDist;
     if (full || fromSketches || !st) {
       const lr = roadLenM(s);
       st = yield* viewStatsGen(roads, groupMask(s), classMask(s), surfaceMask(s), unnamedHideGroups(s), lr[0] > 0 || lr[1] < Infinity ? lr : null, tollMask(s));
@@ -409,11 +411,18 @@ async function main() {
       const vv = smpR.v[0].filter((_, i) => keep[i]), ww = smpR.w.filter((_, i) => keep[i]);
       rdist = distFromSamples(vv, ww, ...rd.domain);
     } else rdist = null;
+    if (r.on && (full || !rfd)) {
+      // Lines without a timetable (NaN or none) are left out.
+      const smpF = yield* rails.sampleWithGen([(_e, _g, _ch, _ground, _style, fq) => (fq > 0 ? Math.log10(fq) : NaN)], nSamples);
+      const keep = smpF.v[0].map((v) => (Number.isNaN(v) ? 0 : 1));
+      rfd = distFromSamples(smpF.v[0].filter((_, i) => keep[i]), smpF.w.filter((_, i) => keep[i]), Math.log10(0.5), Math.log10(3000), 256);
+    } else if (!r.on) rfd = null;
     stats = st;
     mdist = md;
     viewExtra = extra;
     railStats = rst;
     railDist = rdist;
+    railFreqDist = rfd;
   }
   /** The statistics pass under way (computeStats), run a few ms a frame by the frame loop, and
    * whether it is a full one (dropped when the camera moves: the view it was for is gone). */
@@ -543,11 +552,8 @@ async function main() {
   const km = Math.round(meta.elev_hist_10m_km.reduce((a, b) => a + b, 0));
   const colour = new ColourCard(document.getElementById('colour')!, store, `${fmt.n(km)} km of drivable public road`);
   const railCard = new RailCard(store);
-  document.getElementById('colour')!.append(railCard.el);
   const ferryCard = new FerryCard(store);
-  document.getElementById('colour')!.append(ferryCard.el);
   const stopsCard = new StopsCard(store);
-  document.getElementById('colour')!.append(stopsCard.el);
   // Palette previews while hovering a ramp list (null: back to the chosen palette).
   colour.onPalettePreview = (k) => {
     roads.style.palette = k ?? store.s.palette;
@@ -558,10 +564,15 @@ async function main() {
     map.triggerRepaint();
   };
   ferryCard.onPalettePreview = (k) => ferries.apply(k ? { ...store.s, ferry: { ...store.s.ferry, palette: k } } : store.s);
-  const layers = new LayersCard(document.getElementById('layers')!, store);
+  // Every setting in the left panel, a section per layer, each with how the layer is coloured.
+  const layersRoot = document.createElement('div');
+  layersRoot.id = 'layers';
+  document.getElementById('colour')!.append(layersRoot);
+  const layers = new LayersCard(layersRoot, store, { roads: colour.el, rail: railCard.el, ferry: ferryCard.el, stops: stopsCard.el });
   wireTintPreview();
   const statsEl = document.getElementById('stats')!;
   const statsCard = new StatsCard(statsEl);
+  installListsResize(statsEl);
   const drives = new DrivesPane(statsCard.drivesRoot);
   const sights = new SightsPane(statsCard.sightsRoot);
   const rides = new RidesPane(statsCard.ridesRoot);
@@ -1025,6 +1036,7 @@ async function main() {
     colour.update(mdist, cur, cdf);
     railCard.update(railDist, railCur, railCdf);
     layers.updateTint(terrainD, tintCur, tintCdf);
+    layers.updateFilters({ roadLen: stats?.roadLen ?? null, railFreq: railFreqDist, ferryFreq: store.s.ferry.on ? ferries.freqDist() : null });
     layers.update(stats);
     layers.updateRail(railStats);
     statsCard.update(stats, p, roads.zt, viewExtra);
@@ -1752,6 +1764,17 @@ async function main() {
       quiet = false;
     }
   });
+
+  // Reset to defaults: every saved preference and preset list cleared, the state the defaults with
+  // the map where it is (the address bar and the saved state too, so that nothing pending brings
+  // the old back), and the page loaded again for the panels' own preferences.
+  layers.onReset = () => {
+    prefs.clearAll();
+    store.set({ ...structuredClone(defaults), view: store.s.view });
+    history.replaceState(null, '', toHash(store.s));
+    prefs.save('state', { ...store.s, selected: null });
+    location.reload();
+  };
 
   // Pasted / edited links: apply the new state without a reload.
   window.addEventListener('hashchange', () => {

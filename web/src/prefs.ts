@@ -22,6 +22,17 @@ export function save(key: string, value: unknown) {
 
 const timers = new Map<string, number>();
 
+/** Every saved preference gone, and the saves pending (Reset to defaults). */
+export function clearAll() {
+  for (const t of timers.values()) clearTimeout(t);
+  timers.clear();
+  try {
+    for (const k of Object.keys(localStorage)) if (k.startsWith(NS)) localStorage.removeItem(k);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
 /** save(), coalesced over `ms` (for state that changes on every frame of a drag). */
 export function saveSoon(key: string, value: () => unknown, ms = 300) {
   clearTimeout(timers.get(key));
