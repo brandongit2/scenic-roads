@@ -30,7 +30,7 @@ UV    := cd dem && uv run python
 .PHONY: all data osm fonts web run dev clean-build heritage ferries
 all: data web
 
-data: $(BUILD)/roads.tiles $(BUILD)/slope.tiles basemap-parts $(BUILD)/names-en.json $(BUILD)/labels.pmtiles $(BUILD)/ferries.json $(BUILD)/rail-freq.bin $(BUILD)/stations.json $(BUILD)/whs-shapes.json $(BUILD)/trees-cover.tiles details fonts
+data: $(BUILD)/roads.tiles $(BUILD)/slope.tiles basemap-parts $(BUILD)/names-en.json $(BUILD)/road-en.json $(BUILD)/labels.pmtiles $(BUILD)/ferries.json $(BUILD)/rail-freq.bin $(BUILD)/stations.json $(BUILD)/whs-shapes.json $(BUILD)/trees-cover.tiles details fonts
 
 # Conditional download: curl -z only fetches when the server copy is newer than ours.
 # OSM: data/osm/merged.osm.pbf holds every region; a region added to regions.json is downloaded
@@ -187,6 +187,9 @@ $(BUILD)/stations.json: $(RAIL)/stops/relations.opl dem/stations.py $(wildcard $
 NAMES := $(DATA)/names
 $(NAMES)/named.osm.pbf: $(OSM)/merged.osm.pbf
 	$(UV) names.py filter
+# Roads' English names, OSM's own (name:en), which the server gives with each road.
+$(BUILD)/road-en.json: $(OSM)/merged.osm.pbf dem/roadnames.py
+	$(UV) roadnames.py
 $(NAMES)/inventory.jsonl: $(NAMES)/named.osm.pbf $(BUILD)/.interest
 	$(UV) names.py inventory
 .PHONY: names-batches

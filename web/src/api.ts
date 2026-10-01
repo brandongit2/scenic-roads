@@ -5,6 +5,8 @@ export interface WayInfo {
   osm_id: number;
   class: string;
   name: string;
+  /** Its English name (OSM name:en), when it has one that isn't just the name. */
+  name_en?: string;
   ref: string;
   surface: string;
   maxspeed: number;
@@ -77,11 +79,16 @@ export function setVersions(v: Record<string, number> | undefined) {
 export const ver = (file: string) => (versions[file] ? `?v=${versions[file]}` : '');
 
 const ways = new Map<number, Promise<WayInfo | null>>();
+/** A way's info changes with the ways and with the roads' English names. */
+const wayVer = () => {
+  const a = ver('ways.bin'), b = versions['road-en.json'];
+  return b ? (a ? `${a}-${b}` : `?v=${b}`) : a;
+};
 
 export function getWay(idx: number): Promise<WayInfo | null> {
   let p = ways.get(idx);
   if (!p) {
-    p = fetch(`/api/way/${idx}${ver('ways.bin')}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    p = fetch(`/api/way/${idx}${wayVer()}`).then((r) => (r.ok ? r.json() : null)).catch(() => null);
     ways.set(idx, p);
     if (ways.size > 5000) ways.delete(ways.keys().next().value!);
   }
@@ -130,6 +137,7 @@ export interface Drive {
   length_m: number;
   way: number;
   name: string;
+  name_en?: string;
   ref: string;
   route: string;
   class: string;

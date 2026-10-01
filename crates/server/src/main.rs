@@ -62,6 +62,9 @@ pub struct AppState {
     details: details::Details,
     /// The overlay layer files, gzipped once (cache.rs).
     packs: Arc<cache::Packs>,
+    /// Roads' English names from OSM (dem/roadnames.py), by OSM way id: given with the road
+    /// (name_en), the app shows it after the name in parentheses.
+    road_en: HashMap<i64, String>,
 }
 
 pub type S = Arc<AppState>;
@@ -102,7 +105,7 @@ async fn main() -> Result<()> {
         "details-poi.jsonl", "details-heritage.jsonl", "details-harea.jsonl", "details-special.jsonl", "details-indigenous.jsonl",
         "details-park.jsonl", "peaks.json", "props-heritage.jsonl", "layer-summary.json", "layer-pois.json", "layer-heritage.json",
         "layer-special.json", "layer-indigenous.json", "layer-heritage-areas.json", "stations.json", "whs-shapes.json", "names-en.json",
-        "labels.pmtiles",
+        "labels.pmtiles", "road-en.json",
     ]
     .iter()
     .filter_map(|f| {
@@ -187,6 +190,11 @@ async fn main() -> Result<()> {
         climb_geom: Array::open(&data.join("climbs.geom"))?,
         road_len: Array::open(&data.join("roadlen.f32")).ok().filter(|a: &Array<f32>| a.get().len() == ways.ways().len()),
         details: details::Details::load(&data),
+        road_en: std::fs::read(data.join("road-en.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<HashMap<String, String>>(&b).ok())
+            .map(|m| m.into_iter().filter_map(|(k, v)| k.parse().ok().map(|k| (k, v))).collect())
+            .unwrap_or_default(),
         packs: Arc::new(cache::Packs::default()),
         ways,
         strings,
@@ -364,6 +372,9 @@ struct WayInfo {
     osm_id: i64,
     class: &'static str,
     name: String,
+    /// Its English name (OSM name:en), when it has one that isn't just the name.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    name_en: String,
     r#ref: String,
     surface: String,
     maxspeed: u16,
@@ -413,6 +424,7 @@ fn way_info(s: &AppState, idx: u32) -> Option<WayInfo> {
         osm_id: w.id,
         class: class::NAMES[w.class as usize],
         name: st(w.name),
+        name_en: s.road_en.get(&w.id).cloned().unwrap_or_default(),
         r#ref: st(w.ref_),
         surface: st(w.surface),
         maxspeed: w.maxspeed,
@@ -777,6 +789,8 @@ impl AppState {
 struct ClimbOut {
     way: u32,
     name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    name_en: String,
     r#ref: String,
     class: &'static str,
     gain_m: f32,
@@ -844,6 +858,7 @@ async fn climbs_h(State(s): State<S>, Query(q): Query<ClimbQuery>) -> Response {
             ClimbOut {
                 way: c.way,
                 name: s.strings[lw.name as usize].clone(),
+                name_en: s.road_en.get(&lw.id).cloned().unwrap_or_default(),
                 r#ref: s.strings[lw.ref_ as usize].clone(),
                 class: class::NAMES[c.class as usize],
                 gain_m: c.gain_m,

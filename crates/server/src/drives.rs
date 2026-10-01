@@ -135,6 +135,9 @@ pub struct Drive {
     length_m: f32,
     way: u32,
     name: String,
+    /// Its English name (OSM name:en), when it has one that isn't just the name.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    name_en: String,
     r#ref: String,
     route: String,
     class: &'static str,
@@ -255,6 +258,7 @@ fn compute(st: &crate::AppState, q: Q) -> Option<Out> {
                 length_m: ix.dist[j] - ix.dist[i],
                 way: first.way,
                 name: st.strings[lw.name as usize].clone(),
+                name_en: st.road_en.get(&lw.id).cloned().unwrap_or_default(),
                 r#ref: st.strings[lw.ref_ as usize].clone(),
                 route: st.strings[lw.route as usize].clone(),
                 class: class::NAMES[lw.class as usize],
