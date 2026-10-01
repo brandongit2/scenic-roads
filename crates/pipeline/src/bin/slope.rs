@@ -22,6 +22,9 @@
 //! Incremental: the terrain tiles of the last run are listed in data/cache/steps/slope.keys, and
 //! only slope tiles whose terrain (the tile, its neighbours or their ancestors) is new are
 //! recomputed, with their parents; the rest are copied from the previous slope.tiles.
+//!
+//! Built depth first (build), so memory stays at a few hundred megabytes: level by level, every
+//! tile's quarters waited for the level above (some 28 GB at z11, swapped out until the disk filled).
 
 use anyhow::Result;
 use pipeline::count_bar;
@@ -29,7 +32,8 @@ use rayon::prelude::*;
 use roadcore::archive::{Archive, ArchiveWriter};
 use roadcore::grid::tile_with_fallback;
 use roadcore::slope::{decode_slope4, encode_slope4, merge4, Quarters};
-use std::collections::HashMap;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::path::PathBuf;
 
 const TS: usize = 256;
@@ -82,11 +86,98 @@ fn slope_tile(arc: &Archive, z: u8, x: u32, y: u32) -> Option<Vec<f32>> {
     Some(out)
 }
 
-/// Each parent pixel's quarters (from its 2×2 children's, slope × 100), and whether a finer tile
-/// supplied them.
-struct Acc {
-    val: Vec<[u16; 4]>,
-    has: Vec<bool>,
+/// A tile's own quarters merged 2×2 for its parent's quadrant (128 × 128, slope × 100).
+fn quadrant(v: &[Quarters]) -> Vec<[u16; 4]> {
+    let mut q = vec![[0u16; 4]; 128 * 128];
+    for j in 0..128 {
+        for i in 0..128 {
+            let (a, b) = ((2 * j) * TS + 2 * i, (2 * j + 1) * TS + 2 * i);
+            q[j * 128 + i] = merge4([&v[a], &v[a + 1], &v[b], &v[b + 1]]).map(|s| (s * 100.0).round().clamp(0.0, 65535.0) as u16);
+        }
+    }
+    q
+}
+
+/// What a run builds from: the terrain, the previous slope tiles, every tile to make, which ones
+/// have new terrain; the output and its counts (recomputed, copied) per zoom.
+struct Build<'a> {
+    arc: &'a Archive,
+    old: Option<&'a Archive>,
+    tiles: &'a HashSet<u64>,
+    coarse: bool,
+    terrain_changed: &'a (dyn Fn(u8, u32, u32) -> bool + Sync),
+    aw: &'a std::sync::Mutex<ArchiveWriter>,
+    pb: indicatif::ProgressBar,
+    per_z: Vec<(AtomicUsize, AtomicUsize)>,
+}
+
+/// A tile built (build): whether it was recomputed, and if so its quadrant for its parent.
+struct Built {
+    dirty: bool,
+    quad: Option<Vec<[u16; 4]>>,
+}
+
+/// Tile (z, x, y) after its children, depth first (each subtree in parallel): only the tiles on the
+/// way down are held, a few megabytes, where building a whole level at a time held every tile's
+/// quarters for the level above (some 28 GB at z11, swapped out until the disk filled). Recomputed
+/// when its terrain (itself, a neighbour, or an ancestor of those) is new, a child was, or it wasn't
+/// there last time; else copied. A recomputed tile takes each pixel's quarters from the finer tile
+/// beneath (a copied child decoded again), or where none covers it, the slope of its own terrain.
+fn build(b: &Build, z: u8, x: u32, y: u32) -> Result<Built> {
+    let kids: Vec<((u32, u32), Built)> = if z < MAXZ {
+        (0..4u32)
+            .map(|k| (2 * x + (k & 1), 2 * y + (k >> 1)))
+            .filter(|&(cx, cy)| b.tiles.contains(&roadcore::archive::tile_key(z + 1, cx, cy)))
+            .collect::<Vec<_>>()
+            .into_par_iter()
+            .map(|(cx, cy)| build(b, z + 1, cx, cy).map(|r| ((cx, cy), r)))
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+    b.pb.inc(1);
+    let prev = b.old.and_then(|o| o.get(z, x, y));
+    let dirty = b.old.is_none() || (b.coarse && z < MAXZ) || kids.iter().any(|k| k.1.dirty) || prev.is_none() || (b.terrain_changed)(z, x, y);
+    if !dirty {
+        let blob = prev.unwrap();
+        b.aw.lock().unwrap().add(z, x, y, blob, TS * TS * 4)?;
+        b.per_z[z as usize].1.fetch_add(1, Ordering::Relaxed);
+        return Ok(Built { dirty: false, quad: None });
+    }
+    // The children's quadrants (a copied child's decoded again).
+    let mut val: Option<(Vec<[u16; 4]>, Vec<bool>)> = None;
+    for ((cx, cy), k) in kids {
+        let q = match k.quad {
+            Some(q) => Some(q),
+            None if !k.dirty => b.old.and_then(|o| o.get(z + 1, cx, cy)).and_then(decode_slope4).map(|v| quadrant(&v)),
+            None => None,
+        };
+        let Some(q) = q else { continue };
+        let (val, has) = val.get_or_insert_with(|| (vec![[0; 4]; TS * TS], vec![false; TS * TS]));
+        let (ox, oy) = ((cx % 2) as usize * 128, (cy % 2) as usize * 128);
+        for j in 0..128 {
+            let row = (oy + j) * TS + ox;
+            val[row..row + 128].copy_from_slice(&q[j * 128..(j + 1) * 128]);
+            has[row..row + 128].iter_mut().for_each(|h| *h = true);
+        }
+    }
+    let full = val.as_ref().is_some_and(|(_, has)| has.iter().all(|&h| h));
+    // Direct slope only where the finer levels don't cover the tile.
+    let direct = if full { None } else { slope_tile(b.arc, z, x, y) };
+    if val.is_none() && direct.is_none() {
+        return Ok(Built { dirty: true, quad: None });
+    }
+    let mut v = vec![[0f32; 4]; TS * TS];
+    for p in 0..TS * TS {
+        v[p] = match &val {
+            Some((val, has)) if has[p] => val[p].map(|q| q as f32 / 100.0),
+            _ => [direct.as_ref().map_or(0.0, |d| d[p]); 4],
+        };
+    }
+    let blob = encode_slope4(&v, TS as u32, TS as u32).expect("png");
+    b.aw.lock().unwrap().add(z, x, y, &blob, TS * TS * 4)?;
+    b.per_z[z as usize].0.fetch_add(1, Ordering::Relaxed);
+    Ok(Built { dirty: true, quad: (z > 0).then(|| quadrant(&v)) })
 }
 
 fn main() -> Result<()> {
@@ -137,109 +228,45 @@ fn main() -> Result<()> {
         }
         false
     };
-    let mut by_z: Vec<Vec<(u32, u32)>> = vec![Vec::new(); MAXZ as usize + 1];
-    for e in arc.entries() {
-        let z = (e.key >> 58) as u8;
-        if z <= MAXZ {
-            by_z[z as usize].push((((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32));
-        }
-    }
-    let mut aw = ArchiveWriter::create(&roadcore::tmp(&dir, "slope.tiles"), r#"{"format":"png","encoding":"slope4","value":"slope percent, quarter means"}"#)?;
-    let in_old = |z: u8, x: u32, y: u32| old.as_ref().is_some_and(|o| o.get(z, x, y).is_some());
+    let aw = std::sync::Mutex::new(ArchiveWriter::create(&roadcore::tmp(&dir, "slope.tiles"), r#"{"format":"png","encoding":"slope4","value":"slope percent, quarter means"}"#)?);
     // --coarse: every level below z12 again (z12 copied).
     let coarse = std::env::args().any(|a| a == "--coarse");
-    // Accumulators for the level being built, filled from the level above; and the parents that
-    // exist because of finer tiles.
-    let mut acc: HashMap<(u32, u32), Acc> = HashMap::new();
-    let mut present: std::collections::HashSet<(u32, u32)> = Default::default();
-    let mut dirty_below: std::collections::HashSet<(u32, u32)> = Default::default();
-    let (mut written, mut copied) = (0usize, 0usize);
-    for z in (0..=MAXZ).rev() {
-        // Tiles at this level: those in the terrain archive plus parents of finer slope tiles.
-        let mut tiles: Vec<(u32, u32)> = by_z[z as usize].clone();
-        tiles.extend(present.iter().copied().filter(|k| arc.get(z, k.0, k.1).is_none()));
-        tiles.sort_unstable();
-        tiles.dedup();
-        // Recomputed: new terrain here (or nearby, or above), a recomputed child, or not there
-        // last time. Everything else is copied.
-        let parents_of_dirty: std::collections::HashSet<(u32, u32)> = dirty_below.iter().map(|&(x, y)| (x / 2, y / 2)).collect();
-        let dirty: std::collections::HashSet<(u32, u32)> = tiles
-            .par_iter()
-            .filter(|&&(x, y)| old.is_none() || (coarse && z < MAXZ) || parents_of_dirty.contains(&(x, y)) || !in_old(z, x, y) || terrain_changed(z, x, y))
-            .copied()
-            .collect();
-        let dirty_parents: std::collections::HashSet<(u32, u32)> = dirty.iter().map(|&(x, y)| (x / 2, y / 2)).collect();
-        let parent_dirty = |x: u32, y: u32| -> bool {
-            z > 0 && (coarse || {
-                let (px, py) = (x / 2, y / 2);
-                dirty_parents.contains(&(px, py)) || !in_old(z - 1, px, py) || terrain_changed(z - 1, px, py)
-            })
-        };
-        let pb = count_bar(tiles.len() as u64, &format!("slope z{z}"));
-        let mut next: HashMap<(u32, u32), Acc> = HashMap::new();
-        let mut next_present: std::collections::HashSet<(u32, u32)> = Default::default();
-        for chunk in tiles.chunks(1024) {
-            // (tile, encoded tile, quarters when the parent needs them)
-            let done: Vec<((u32, u32), Vec<u8>, Option<Vec<Quarters>>)> = chunk
-                .par_iter()
-                .filter_map(|&(x, y)| {
-                    pb.inc(1);
-                    if !dirty.contains(&(x, y)) {
-                        let blob = old.as_ref()?.get(z, x, y)?.to_vec();
-                        let vals = if parent_dirty(x, y) { decode_slope4(&blob) } else { None };
-                        return Some(((x, y), blob, vals));
-                    }
-                    let a = acc.get(&(x, y));
-                    let full = a.is_some_and(|a| a.has.iter().all(|&h| h));
-                    // Direct slope only where the finer levels don't cover the tile.
-                    let direct = if full { None } else { slope_tile(&arc, z, x, y) };
-                    if a.is_none() && direct.is_none() {
-                        return None;
-                    }
-                    let mut v = vec![[0f32; 4]; TS * TS];
-                    for p in 0..TS * TS {
-                        v[p] = match a {
-                            Some(a) if a.has[p] => a.val[p].map(|q| q as f32 / 100.0),
-                            _ => [direct.as_ref().map_or(0.0, |d| d[p]); 4],
-                        };
-                    }
-                    let blob = encode_slope4(&v, TS as u32, TS as u32).expect("png");
-                    Some(((x, y), blob, Some(v)))
-                })
-                .collect();
-            for ((x, y), blob, vals) in &done {
-                aw.add(z, *x, *y, blob, TS * TS * 4)?;
-                if dirty.contains(&(*x, *y)) {
-                    written += 1;
-                } else {
-                    copied += 1;
-                }
-                if z == 0 {
-                    continue;
-                }
-                let (px, py) = (x / 2, y / 2);
-                next_present.insert((px, py));
-                // Each 2×2 block's quarters into the parent's quadrant (when it is recomputed).
-                let Some(v) = vals else { continue };
-                let (ox, oy) = ((x % 2) as usize * 128, (y % 2) as usize * 128);
-                let p = next.entry((px, py)).or_insert_with(|| Acc { val: vec![[0; 4]; TS * TS], has: vec![false; TS * TS] });
-                for j in 0..128 {
-                    for i in 0..128 {
-                        let k = (oy + j) * TS + ox + i;
-                        let (a, b) = ((2 * j) * TS + 2 * i, (2 * j + 1) * TS + 2 * i);
-                        let q = merge4([&v[a], &v[a + 1], &v[b], &v[b + 1]]);
-                        p.val[k] = q.map(|s| (s * 100.0).round().clamp(0.0, 65535.0) as u16);
-                        p.has[k] = true;
-                    }
-                }
+    // Every slope tile: the terrain's and their ancestors (a parent of finer tiles exists even where
+    // the terrain archive has none).
+    let mut tiles: HashSet<u64> = HashSet::new();
+    for e in arc.entries() {
+        let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
+        if z > MAXZ {
+            continue;
+        }
+        for dz in 0..=z {
+            if !tiles.insert(roadcore::archive::tile_key(z - dz, x >> dz, y >> dz)) && dz > 0 {
+                break; // (its ancestors are in already)
             }
         }
-        pb.finish_and_clear();
-        eprintln!("slope z{z}: {} tiles ({} recomputed)", tiles.len(), dirty.len());
-        acc = next;
-        present = next_present;
-        dirty_below = dirty;
     }
+    let b = Build {
+        arc: &arc,
+        old: old.as_ref(),
+        tiles: &tiles,
+        coarse,
+        terrain_changed: &terrain_changed,
+        aw: &aw,
+        pb: count_bar(tiles.len() as u64, "slope tiles"),
+        per_z: (0..=MAXZ).map(|_| (AtomicUsize::new(0), AtomicUsize::new(0))).collect(),
+    };
+    if tiles.contains(&roadcore::archive::tile_key(0, 0, 0)) {
+        build(&b, 0, 0, 0)?;
+    }
+    b.pb.finish_and_clear();
+    let (mut written, mut copied) = (0usize, 0usize);
+    for (z, (w, c)) in b.per_z.iter().enumerate().rev() {
+        let (w, c) = (w.load(Ordering::Relaxed), c.load(Ordering::Relaxed));
+        eprintln!("slope z{z}: {} tiles ({w} recomputed)", w + c);
+        written += w;
+        copied += c;
+    }
+    let aw = aw.into_inner().unwrap();
     aw.finish()?;
     drop(old);
     roadcore::commit(&dir, &["slope.tiles"])?;
