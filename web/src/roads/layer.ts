@@ -185,6 +185,7 @@ uniform int u_unnamedHide;  // classes (bits) whose unnamed roads are hidden
 uniform int u_lsOn;          // 1: per-line state in u_ls
 uniform int u_hlOn;          // 1: highlight the lines marked in u_ls (the whole hovered road)
 uniform int u_hovSel;        // 1: leave out the hovered road's pieces · 2: only them · 0: all
+uniform int u_thinSel;       // quads: 1 only the pieces thinner than a pixel (and dots), summed · 2 only the others · 0 all
 uniform highp sampler2D u_ls; // per line of the tile (1024 wide): 1 = part of the hovered road, 2 = outside the length filter
 uniform float u_dpr;
 uniform int u_mode;
@@ -437,9 +438,17 @@ void main() {
     w = u_dpr;
   } else if (w < u_dpr) {
     lin = w / u_dpr * lodK;
-    cov = 1.0 - exp(-lin);
+    // Painted (quads), its share of the stroke: a road reaching a pixel's width covers it as a road
+    // a pixel wide does (1 − e^−lin left it at 63 %, a step in brightness where roads cross a pixel).
+    cov = min(lin, 1.0);
     w = u_dpr;
     thin = true;
+  }
+  // Quad tiles: their pieces thinner than a pixel are summed with the sprites' (RoadLayer.drawFrame, fill),
+  // the others painted.
+  if ((u_thinSel == 1 && !(thin || dot)) || (u_thinSel == 2 && (thin || dot))) {
+    gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+    return;
   }
   float cw = casingAt(ze), gw = route ? glowAt(ze) : 0.0;
   float extra = casing ? (route ? max(gw, cased ? cw : 0.0) : cw) : 0.0;
@@ -509,7 +518,12 @@ void main() {
   v_rgb = rgb;
   v_cas = cas;
   v_geom = vec4(halfw, len, phase, fade);
+#ifdef ACCUM
+  // Summed: the area itself, as the sprites count it (FS_SPRITE).
+  v_cov = dot ? area / (w * w) : lin;
+#else
   v_cov = dot ? clamp(area / (w * w), 0.0, 1.0) : cov;
+#endif
   v_style = style;
   v_hover = hov ? 1.0 : 0.0;
   v_route = route ? 1.0 : 0.0;
@@ -530,7 +544,7 @@ uniform int u_part;          // as in FS_BODY
 uniform float u_dpr;
 uniform float u_opacity;     // the layer's opacity
 #ifdef ACCUM
-// Zoomed out, the roads add up instead of being painted over each other (RoadLayer.accumulate):
+// Zoomed out, the roads add up instead of being painted over each other (RoadLayer.drawFrame, fill):
 // colour × opacity × coverage and opacity × coverage, summed per pixel.
 layout(location=0) out vec4 o_acc;
 #else
@@ -613,10 +627,12 @@ void main() {
 #endif
 }`;
 
-// The accumulated roads (FS_SPRITE with ACCUM) onto the map: the pixel's covered share, the sum
-// of the roads' (each road's opacity × its share of the pixel) saturating as x ÷ (1 + x⁴)^¼, which
-// keeps a lone road's and fills a pixel crossed by many, so a city of streets reads denser than
-// the country around it at any zoom; in the mean of their colours, weighted the same way.
+// The accumulated roads (FS_SPRITE and FS_BODY with ACCUM) onto the map: the pixel's covered
+// share, the sum of the roads' (each road's opacity × its share of the pixel) up to 1, which keeps
+// a lone road's and fills a pixel crossed by many, so a city of streets reads denser than the
+// country around it at any zoom; in the mean of their colours, weighted the same way. A road
+// covering the pixel shows as it does painted (quads): a softer knee (x ÷ (1 + x⁴)^¼) drew it at 84 %,
+// so tiles drawn one way or the other differed in brightness.
 const RESOLVE_VS = `#version 300 es
 void main() {
   vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
@@ -630,8 +646,7 @@ out vec4 fragColor;
 void main() {
   vec4 acc = texelFetch(u_acc, ivec2(gl_FragCoord.xy), 0);
   if (acc.a <= 1e-5) discard;
-  float x = acc.a * acc.a;
-  float alpha = acc.a / sqrt(sqrt(1.0 + x * x)) * u_opacity;
+  float alpha = min(acc.a, 1.0) * u_opacity;
   fragColor = vec4(acc.rgb / acc.a * alpha, alpha);
 }`;
 
@@ -664,18 +679,34 @@ uniform int u_part;          // 0 whole road · 1 core only (stencil-written) ·
 uniform float u_occluded;    // > 0: drawing roads hidden behind terrain, at this opacity
 uniform int u_pattern;       // 1: railway (thin line with cross-ties)
 uniform float u_opacity;     // the layer's opacity
+#ifdef ACCUM
+// A quad tile's pieces thinner than a pixel, summed with the sprites' (RoadLayer.drawFrame, fill): as
+// FS_SPRITE's thin lines, the pixel-wide stroke across and the piece box-filtered along, no round
+// ends (which would add a dot at every joint), dashes at their average opacity. With no sprite in
+// view, painted over the map instead, at u_over (the layer's opacity): a lone street the same as
+// summed, two in a pixel composited rather than added.
+uniform float u_over;
+layout(location=0) out vec4 o_acc;
+#else
 out vec4 fragColor;
+#endif
 
 void main() {
   float along = v_local.x, across = v_local.y;
   float halfw = v_geom.x, len = v_geom.y;
   float dist = along < 0.0 ? length(vec2(along, across)) : (along > len ? length(vec2(along - len, across)) : abs(across));
+#ifdef ACCUM
+  float a = clamp(halfw + 0.5 - abs(across), 0.0, 1.0) * max(0.0, min(along + 0.5, len) - max(along - 0.5, 0.0));
+#else
   float a = clamp(halfw + 0.5 - dist, 0.0, 1.0);
+#endif
   if (a <= 0.0) discard;
+#ifndef ACCUM
   // Overlap control: the core (full coverage) is drawn once per pixel under a stencil, the
   // anti-aliased fringe afterwards only where no core was drawn.
   if (u_part == 1 && a < 0.999) discard;
   if (u_part == 2 && a >= 0.999) discard;
+#endif
   float t = len > 1e-4 ? clamp(along / len, 0.0, 1.0) : 0.0;
   float val = mix(v_m.x, v_m.y, t);
   float u = clamp((val - u_range.x) / max(u_range.y - u_range.x, 1e-6), 0.0, 1.0);
@@ -684,6 +715,7 @@ void main() {
   // Low values fade out so the high end stands out against the terrain (direct colours: their
   // own opacity).
   float lowA = direct ? v_rgb.a - 1.0 : 1.0 - u_lowFade * pow(1.0 - clamp(u / max(u_lowSpan, 1e-3), 0.0, 1.0), 1.5);
+#ifndef ACCUM
   if (u_casingPass == 1) {
     if (v_route > 0.5) {
       float ga = a * 0.85 * mix(1.0, lowA, 0.5) * u_opacity;
@@ -705,6 +737,7 @@ void main() {
     if (u_part == 1 && a < 0.999) discard;
     if (u_part == 2 && a >= 0.999) discard;
   }
+#endif
   vec3 col = direct ? v_rgb.rgb : texture(u_lut, vec2((u * 255.0 + 0.5) / 256.0, u_palRow)).rgb;
   float fade = v_geom.w;
   if (u_thr.x > 0.5 && !direct) {
@@ -715,16 +748,28 @@ void main() {
   uint cls = v_style & 15u;
   bool ferry = cls == 9u;
   if (((v_style & 16u) != 0u || ferry) && len > 0.5) {
+#ifdef ACCUM
+    a *= ferry ? 0.55 + 0.45 * 0.15 : 0.6 + 0.4 * 0.3;
+#else
     float w = max(halfw * 2.0, u_dpr);
     float period = ferry ? 10.0 * u_dpr + 2.0 * w : 3.0 * u_dpr + 2.2 * w;
     float dpx = v_geom.z + clamp(along, 0.0, len);
     if (mod(dpx, period) > period * (ferry ? 0.55 : 0.6)) a *= ferry ? 0.15 : 0.3;
+#endif
   }
   if (v_hover > 0.5) { col = mix(col, vec3(1.0), 0.35); lowA = max(lowA, 0.85); }
+#ifdef ACCUM
+  // (summed: the layer's opacity is the resolve's)
+  a *= v_cov * lowA;
+  if (u_occluded > 0.0) { col = mix(col, u_dim, 0.45); a *= u_occluded; }
+  if (u_over > 0.0) a = min(a, 1.0) * u_over;
+  o_acc = vec4(col * a, a);
+#else
   a *= v_cov * lowA * u_opacity;
   // Behind terrain: faint and greyed, as if seen through it.
   if (u_occluded > 0.0) { col = mix(col, u_dim, 0.45); a *= u_occluded; }
   fragColor = vec4(col * a, a);
+#endif
 }`;
 
 type Prog = { prog: WebGLProgram; u: Record<string, WebGLUniformLocation | null> };
@@ -910,12 +955,14 @@ export class RoadLayer implements CustomLayerInterface {
   private gl!: WebGL2RenderingContext;
   /** The draw programs per MapLibre projection variant (mercator, globe): quads (instanced) and
    * point sprites; and the current ones. */
-  private progs = new Map<string, { q: Prog; s: Prog; a: Prog }>();
+  private progs = new Map<string, { q: Prog; s: Prog; a: Prog; qa: Prog }>();
   private progQ!: Prog;
   private progS!: Prog;
-  /** The sprites summed instead of painted (FS_SPRITE with ACCUM), and the pass putting the sums
-   * on the map (RESOLVE_FS); their float targets (null: none yet, false: not supported). */
+  /** The sprites summed instead of painted (FS_SPRITE with ACCUM), the quads' pieces thinner than a
+   * pixel summed with them (FS_BODY with ACCUM), and the pass putting the sums on the map
+   * (RESOLVE_FS); their float targets (null: none yet, false: not supported). */
   private progA!: Prog;
+  private progQA!: Prog;
   private resolve: { prog: WebGLProgram; u: Record<string, WebGLUniformLocation | null> } | null = null;
   private accum: { fb: WebGLFramebuffer; acc: WebGLTexture; w: number; h: number } | null | false = null;
   /** The projection pass's program per projection variant, and the current one. */
@@ -992,21 +1039,22 @@ export class RoadLayer implements CustomLayerInterface {
         const u: Record<string, WebGLUniformLocation | null> = {};
         for (const n of [
           'u_extScale', 'u_viewport', 'u_tile', 'u_cell', 'u_zoom', 'u_wz', 'u_wv', 'u_fz', 'u_fv', 'u_cz', 'u_cv', 'u_gz', 'u_gv', 'u_casing', 'u_glow', 'u_casingPass', 'u_casingMask',
-          'u_classMask', 'u_surfaceMask', 'u_tollMask', 'u_unnamedHide', 'u_lsOn', 'u_hlOn', 'u_hovSel', 'u_ls', 'u_dpr', 'u_mode', 'u_w', 'u_wsum', 'u_zmul', 'u_lift', 'u_camTile', 'u_ztol',
+          'u_classMask', 'u_surfaceMask', 'u_tollMask', 'u_unnamedHide', 'u_lsOn', 'u_hlOn', 'u_hovSel', 'u_thinSel', 'u_ls', 'u_dpr', 'u_mode', 'u_w', 'u_wsum', 'u_zmul', 'u_lift', 'u_camTile', 'u_ztol',
           'u_lut', 'u_cdf', 'u_eq', 'u_palRow', 'u_range', 'u_bg', 'u_dim', 'u_thr', 'u_lowFade', 'u_lowSpan',
           'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane',
           'u_projection_transition', 'u_projection_fallback_matrix', 'u_camDist', 'u_part', 'u_occluded', 'u_passVis', 'u_tunnelsOnly',
         'u_rail', 'u_railMask', 'u_rw', 'u_rwsum', 'u_fqOn', 'u_fqLo', 'u_fqHi', 'u_fqUnk', 'u_direct', 'u_mapKind', 'u_classCol', 'u_classCas', 'u_netCol', 'u_catCol', 'u_single', 'u_la', 'u_pattern',
-          'u_maxPt', 'u_p22', 'u_depth', 'u_depthOn', 'u_opacity',
+          'u_maxPt', 'u_p22', 'u_depth', 'u_depthOn', 'u_opacity', 'u_over',
         ]) u[n] = gl.getUniformLocation(prog, n);
         return { prog, u };
       };
-      p = { q: draw(false), s: draw(true), a: draw(true, true) };
+      p = { q: draw(false), s: draw(true), a: draw(true, true), qa: draw(false, true) };
       this.progs.set(sd.variantName, p);
     }
     this.progQ = p.q;
     this.progS = p.s;
     this.progA = p.a;
+    this.progQA = p.qa;
     this.prep = this.preps.get(sd.variantName)!;
   }
 
@@ -1637,6 +1685,7 @@ export class RoadLayer implements CustomLayerInterface {
     this.frame = this.projFrame(gl, opts, zoom, s.terrain3d);
     this.depthFlags = !!this.frame.depthTex;
     this.project(gl, opts, draw.filter((t) => !t.sprite), this.frame);
+    this.drawFrame(gl, opts, true);
   }
 
   /** The filters the coarser piece lists follow (lod.ts): the road filters; on rail, the service
@@ -1712,31 +1761,49 @@ export class RoadLayer implements CustomLayerInterface {
     // Where perspective draws roads widest: the view's near edge (half a zoom of margin).
     const pitch = (this.map.getPitch() * Math.PI) / 180, halfFov = (18.43 * Math.PI) / 180;
     const nearZoom = zoom + Math.log2(Math.cos(Math.max(0, pitch - halfFov)) / Math.max(0.05, Math.cos(pitch))) + 0.5;
-    return { zoom, dpr, casingW, glowK, glowW, nearZoom };
+    // And narrowest: the far edge (half a zoom of margin).
+    const farZoom = zoom + Math.log2(Math.max(0.05, Math.cos(Math.min(1.5, pitch + halfFov))) / Math.max(0.05, Math.cos(pitch))) - 0.5;
+    return { zoom, dpr, casingW, glowK, glowW, nearZoom, farZoom };
   }
 
   render(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput) {
     if (!this.prepared) this.prerender(gl, opts);
     this.prepared = false;
+    this.drawFrame(gl, opts, false);
+    this.summed = false;
+  }
+
+  /** The sums filled this frame (prerender), for render to put on the map. */
+  private summed = false;
+
+  /**
+   * The frame's roads. `sums` (prerender): only the summed fills (fill), into their target,
+   * before MapLibre starts the frame's render pass: filled in the middle of it (render), the switch
+   * of targets split the pass, the GPU storing the whole framebuffer and loading it back, a
+   * millisecond and more a frame. Else (render) the rest, with the sums put on the map in their place.
+   */
+  private drawFrame(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput, sums: boolean) {
     const draw = this.drawn;
     const frame = this.frame;
     if (!this.style.visible || draw.length === 0 || !frame) return;
 
-    const { zoom, dpr, casingW, glowK, glowW, nearZoom } = this.frameParams();
+    const { zoom, dpr, casingW, glowK, glowW, nearZoom, farZoom } = this.frameParams();
     this.program(opts.shaderData);
     const s = this.style;
     const three = s.terrain3d;
-    if (three) {
-      gl.enable(gl.DEPTH_TEST);
-      gl.depthFunc(gl.LEQUAL);
-      gl.depthMask(false);
-    } else {
-      gl.disable(gl.DEPTH_TEST);
+    if (!sums) {
+      if (three) {
+        gl.enable(gl.DEPTH_TEST);
+        gl.depthFunc(gl.LEQUAL);
+        gl.depthMask(false);
+      } else {
+        gl.disable(gl.DEPTH_TEST);
+      }
+      gl.disable(gl.STENCIL_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     }
-    gl.disable(gl.STENCIL_TEST);
-    gl.disable(gl.CULL_FACE);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     const casingPass = casingW > 0 || glowW > 0;
 
     const road = this.hoverRoad;
@@ -1764,12 +1831,30 @@ export class RoadLayer implements CustomLayerInterface {
       };
     });
     // Zoomed out (sprite tiles) the roads' fills are summed into float targets and the sums put on
-    // the map (accumulate): a pixel shows what its roads cover, whatever the order they are drawn
-    // in, the tiles or the level of detail (painted over each other, a city's translucent streets
-    // stacked to a bright blot at one zoom and thinned to a few at the next).
-    const acc = tileSetup.some((x) => x.sprite) ? this.accumTargets(gl) : null;
+    // the map (fill, resolveSums): a pixel shows what its roads cover, whatever the order they are
+    // drawn in, the tiles or the level of detail (painted over each other, a city's translucent
+    // streets stacked to a bright blot at one zoom and thinned to a few at the next). Quad tiles
+    // treat their pieces thinner than a pixel (while a class shown is that thin at the view's far
+    // edge) the same way: summed with the sprites beside sprite tiles, else painted over the map by
+    // the same shader, a lone street as summed. Painted with the rest, the first drawn at a pixel
+    // winning, a quad tile's dense streets came out up to half as bright as the same streets on a
+    // sprite tile beside it, tile by tile between z11 and z12 as the tiles switched.
+    let thinnest = Infinity, thinMajor = false;
+    for (let c = 0; c < NCLASS; c++) {
+      if (!((s.classMask >> c) & 1)) continue;
+      const w = interp(WIDTH_Z, WIDTHS[c], farZoom) * s.weight;
+      thinnest = Math.min(thinnest, w);
+      if (w < 1 && c > MINOR_MAX_CLASS) thinMajor = true;
+    }
+    const anySprite = tileSetup.some((x) => x.sprite), anyQuad = tileSetup.some((x) => !x.sprite);
+    const acc = anySprite ? this.accumTargets(gl) : null;
+    // The quads' thin pieces apart from their other pieces: summed beside sprites, else painted
+    // over the map by the same shader (overThin: no targets to fill and resolve).
+    const thinApart = anyQuad && thinnest < 1 && (!!acc || !anySprite);
+    const quadsSummed = thinApart && !!acc, overThin = thinApart && !acc;
     const active = [this.progQ, this.progS].filter((P) => tileSetup.some((x) => x.sprite === (P === this.progS)));
     if (acc) active.push(this.progA);
+    if (thinApart) active.push(this.progQA);
     /** Sets uniforms on every program in use this frame. */
     const each = (f: (u: Prog['u']) => void) => {
       for (const P of active) {
@@ -1892,13 +1977,16 @@ export class RoadLayer implements CustomLayerInterface {
     const drawGroup = (bridges: boolean, part: number, occluded: boolean, casing: boolean) => {
       const skipMinors = casing && !minorsCased;
       for (const P of active) {
-        if (P === this.progA) continue;
+        if (P === this.progA || P === this.progQA) continue;
         const sprite = P === this.progS;
         const u = P.u;
         gl.useProgram(P.prog);
+        // Quads with their thin pieces apart: those pieces' casings before them (phase 'casing', as
+        // the sprites'), and the rest of them after.
+        if (!sprite) gl.uniform1i(u.u_thinSel, thinApart ? (phase === 'casing' ? 1 : 2) : 0);
         for (const x of tileSetup) {
           if (x.sprite !== sprite) continue;
-          if (phase === 'casing' && (!sprite || !casing)) continue;
+          if (phase === 'casing' && !casing) continue;
           if (phase === 'hover' && sprite && (casing || !(road || x.hover >= 0))) continue;
           const d = x.d, t = x.t;
           if (sprite) {
@@ -1981,7 +2069,8 @@ export class RoadLayer implements CustomLayerInterface {
             run(t.vaoM, Math.min(b, n - 1) - a);
             gl.uniform1i(u.u_hovSel, 0);
           }
-          if (!occluded && part !== 2 && b > a) {
+          // (apart: none left to paint)
+          if (!occluded && part !== 2 && b > a && !(thinApart && phase === 'hover')) {
             if (part === 1) gl.uniform1i(u.u_part, 0);
             if (hov) gl.uniform1i(u.u_hovSel, 1);
             run(t.vaoM, Math.min(b, n - 1) - a);
@@ -2000,33 +2089,43 @@ export class RoadLayer implements CustomLayerInterface {
     const behind = three && !s.occlude;
     const tunnelsOnly = this.map.getPitch() < 10;
     const OCCLUDED_ALPHA = 0.3;
-    // Each pixel is painted once per layer: the first core drawn there wins (bridges, then
-    // majors first, see worker.ts), and anti-aliased fringes fill in only outside cores.
-    // Stencil bits: road casing, fill, bridge casing.
-    const RC = 0x80, F = 0x40, BC = 0x20;
-    gl.disable(gl.SCISSOR_TEST);
-    gl.enable(gl.STENCIL_TEST);
-    gl.stencilMask(0xff);
-    gl.clearStencil(0);
-    gl.clear(gl.STENCIL_BUFFER_BIT);
-    const stage = (bridges: boolean, casing: boolean, test: number, write: number, occluded = false, parts = [1, 2]) => {
-      each((u) => gl.uniform1i(u.u_casingPass, casing ? 1 : 0));
-      gl.stencilFunc(gl.EQUAL, 0, test);
-      for (const part of parts) {
-        each((u) => gl.uniform1i(u.u_part, part));
-        gl.stencilMask(part === 1 ? write : 0);
-        gl.stencilOp(gl.KEEP, gl.KEEP, part === 1 ? gl.INVERT : gl.KEEP);
-        drawGroup(bridges, part, occluded, casing);
-      }
-    };
     // Segments the projection pass found wholly behind the terrain are left out of the visible
     // passes, and those wholly in front of it out of the pass behind it.
     const flags = three && this.depthFlags;
     each((u) => gl.uniform1i(u.u_passVis, flags ? 1 : 0));
-    /** The sprite tiles' fills summed (FS_SPRITE with ACCUM) and put on the map (RESOLVE_FS). No
-     * depth test in the targets: what the projection pass found behind the terrain is summed again
-     * faint (as the pass behind it paints it); the hovered road is left for the passes after. */
-    const accumulate = (a: NonNullable<typeof acc>) => {
+    /** The quad tiles' pieces thinner than a pixel (FS_BODY with ACCUM), for one pass (front of the
+     * terrain or behind it): summed, or painted over the map at `over` (the layer's opacity). */
+    const thinQuads = (vis: number, occ: number, over: number) => {
+      const Q = this.progQA, uq = Q.u;
+      gl.useProgram(Q.prog);
+      gl.uniform1i(uq.u_casingPass, 0);
+      gl.uniform1i(uq.u_part, 0);
+      gl.uniform1i(uq.u_thinSel, 1);
+      gl.uniform1f(uq.u_over, over);
+      gl.uniform1i(uq.u_passVis, vis);
+      gl.uniform1f(uq.u_occluded, occ);
+      gl.uniform1i(uq.u_tunnelsOnly, occ > 0 && tunnelsOnly ? 1 : 0);
+      for (const x of tileSetup) {
+        if (x.sprite) continue;
+        const d = x.d, t = x.t, n = d.nverts - d.bridgeEnd, a0 = d.minorStart - d.bridgeEnd;
+        bindTile(uq, x);
+        if (t.vaoB && d.bridgeEnd - 1 > 0) {
+          gl.bindVertexArray(t.vaoB);
+          gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, d.bridgeEnd - 1);
+        }
+        // Only the minor classes thin: from the first minor piece (the tunnels and ferries after).
+        const [vao, from] = thinMajor || !t.vaoM ? [t.vaoA, 0] : [t.vaoM, Math.min(a0, n - 1)];
+        if (vao && n - 1 - from > 0) {
+          gl.bindVertexArray(vao);
+          gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, n - 1 - from);
+        }
+      }
+    };
+    /** The sprite tiles' fills and the quad tiles' pieces thinner than a pixel summed (FS_SPRITE and
+     * FS_BODY with ACCUM) into the target. No depth test there: what the projection pass found
+     * behind the terrain is summed again faint (as the pass behind it paints it); the hovered road
+     * is left for the passes after. */
+    const fill = (a: NonNullable<typeof acc>) => {
       const A = this.progA, u = A.u;
       const prevFb = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
       const vp = gl.getParameter(gl.VIEWPORT) as Int32Array;
@@ -2034,8 +2133,12 @@ export class RoadLayer implements CustomLayerInterface {
       gl.viewport(0, 0, a.w, a.h);
       gl.disable(gl.STENCIL_TEST);
       gl.disable(gl.DEPTH_TEST);
+      gl.disable(gl.SCISSOR_TEST);
+      gl.disable(gl.CULL_FACE);
+      gl.colorMask(true, true, true, true);
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.enable(gl.BLEND);
       gl.blendFunc(gl.ONE, gl.ONE);
       gl.useProgram(A.prog);
       gl.uniform1i(u.u_casingPass, 0);
@@ -2043,9 +2146,14 @@ export class RoadLayer implements CustomLayerInterface {
       const passes: [number, number][] = [[flags ? 1 : 0, 0]];
       if (behind && flags) passes.push([2, OCCLUDED_ALPHA]);
       for (const [vis, occ] of passes) {
+        gl.useProgram(A.prog);
         gl.uniform1i(u.u_passVis, vis);
         gl.uniform1f(u.u_occluded, occ);
         gl.uniform1i(u.u_tunnelsOnly, occ > 0 && tunnelsOnly ? 1 : 0);
+        if (quadsSummed) {
+          thinQuads(vis, occ, 0);
+          gl.useProgram(A.prog);
+        }
         for (const x of tileSetup) {
           if (!x.sprite || x.lvl.n[3] <= 0) continue;
           gl.uniform1i(u.u_hovSel, road || x.hover >= 0 ? 1 : 0);
@@ -2065,6 +2173,20 @@ export class RoadLayer implements CustomLayerInterface {
       gl.uniform1i(u.u_hovSel, 0);
       gl.bindFramebuffer(gl.FRAMEBUFFER, prevFb);
       gl.viewport(vp[0], vp[1], vp[2], vp[3]);
+    };
+    if (sums) {
+      if (acc) {
+        fill(acc);
+        this.summed = true;
+      }
+      gl.bindVertexArray(null);
+      if (unit !== 0) gl.activeTexture(gl.TEXTURE0);
+      return;
+    }
+    /** The sums onto the map (RESOLVE_FS). */
+    const resolveSums = (a: NonNullable<typeof acc>) => {
+      gl.disable(gl.STENCIL_TEST);
+      gl.disable(gl.DEPTH_TEST);
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       const R = this.resolve!;
       gl.useProgram(R.prog);
@@ -2076,14 +2198,46 @@ export class RoadLayer implements CustomLayerInterface {
       if (three) gl.enable(gl.DEPTH_TEST);
       gl.enable(gl.STENCIL_TEST);
     };
-    if (acc) {
-      // The sprites' casings first (under their fills), then the sums, then the rest.
+    // Each pixel is painted once per layer: the first core drawn there wins (bridges, then
+    // majors first, see worker.ts), and anti-aliased fringes fill in only outside cores.
+    // Stencil bits: road casing, fill, bridge casing.
+    const RC = 0x80, F = 0x40, BC = 0x20;
+    gl.disable(gl.SCISSOR_TEST);
+    gl.enable(gl.STENCIL_TEST);
+    gl.stencilMask(0xff);
+    gl.clearStencil(0);
+    gl.clear(gl.STENCIL_BUFFER_BIT);
+    const stage = (bridges: boolean, casing: boolean, test: number, write: number, occluded = false, parts = [1, 2]) => {
+      each((u) => gl.uniform1i(u.u_casingPass, casing ? 1 : 0));
+      gl.stencilFunc(gl.EQUAL, 0, test);
+      for (const part of parts) {
+        each((u) => gl.uniform1i(u.u_part, part));
+        gl.stencilMask(part === 1 ? write : 0);
+        gl.stencilOp(gl.KEEP, gl.KEEP, part === 1 ? gl.INVERT : gl.KEEP);
+        drawGroup(bridges, part, occluded, casing);
+      }
+    };
+    if (acc || overThin) {
+      // The sprites' casings first (under their fills), then the sums (or the quads' thin pieces
+      // over the map), then the rest.
       phase = 'casing';
       if (casingPass) {
         stage(true, true, BC | F, BC);
         stage(false, true, RC | F | BC, RC);
       }
-      accumulate(acc);
+      if (acc) {
+        // (filled in prerender; here only if that didn't run)
+        if (!this.summed) fill(acc);
+        resolveSums(acc);
+      } else {
+        gl.disable(gl.STENCIL_TEST);
+        gl.disable(gl.DEPTH_TEST);
+        thinQuads(flags ? 1 : 0, 0, s.opacity);
+        if (behind && flags) thinQuads(2, OCCLUDED_ALPHA, s.opacity);
+        gl.uniform1f(this.progQA.u.u_over, 0);
+        if (three) gl.enable(gl.DEPTH_TEST);
+        gl.enable(gl.STENCIL_TEST);
+      }
       gl.stencilMask(0xff);
       gl.clear(gl.STENCIL_BUFFER_BIT);
       phase = 'hover';
