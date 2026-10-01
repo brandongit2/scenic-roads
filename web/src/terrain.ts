@@ -250,6 +250,7 @@ function setupContours(map: MLMap, origin: string, density: number) {
 export function applyTerrain(map: MLMap, t: Terrain, origin: string) {
   map.setTerrain(t.on ? { source: 'dem', exaggeration: t.exaggeration } : null);
   fastTerrainCoords(map);
+  finerTerrainMesh(map);
   // Hillshade.
   if (map.getLayer('hillshade')) {
     map.setLayoutProperty('hillshade', 'visibility', t.hillshade ? 'visible' : 'none');
@@ -336,6 +337,31 @@ interface TerrainTiles {
  * the largest share of the main thread's time. The same result here, the matrices built only for the
  * related tiles (ortho, translate and scale as in gl-matrix).
  */
+/** Mesh points a side of each 3D terrain tile (MapLibre's: 128). */
+const TERRAIN_MESH = 252;
+
+/**
+ * The 3D terrain's mesh at its elevation tiles' full detail. MapLibre draws each terrain tile (512
+ * px at its zoom: the view's zoom rounded down) with elevation from the zoom below, one mesh point
+ * per elevation pixel: a height every 4 CSS px at a zoom's start and every 8 just before the next,
+ * so peaks narrower than that shrank as you zoomed out (Fuji: 3,670 m at zoom 8.5, 3,094 m at 7.5),
+ * and each level looked coarse just before the switch. Here a tile takes its own zoom's elevation
+ * (which MapLibre loads for it anyway) and about a mesh point per pixel of it (252 a side for 256 px): a
+ * height every 2–4 CSS px, peaks holding a zoom further out (3,672 m at 7.5). About 1 ms more GPU a frame,
+ * tilted over mountains.
+ */
+function finerTerrainMesh(map: MLMap) {
+  type T = { tileManager?: { deltaZoom: number; _sourceTileCache: Record<string, string> }; meshSize: number; _meshCache: Record<string, { destroy(): void }> };
+  const t = (map as unknown as { terrain?: T }).terrain;
+  if (!t?.tileManager || t.tileManager.deltaZoom === 0 || typeof t.meshSize !== 'number') return;
+  t.tileManager.deltaZoom = 0;
+  t.tileManager._sourceTileCache = {};
+  // (Not 256: the mesh is one draw with 16-bit indices, 65,535 points at most, its skirts included.)
+  t.meshSize = TERRAIN_MESH;
+  for (const k in t._meshCache) t._meshCache[k].destroy();
+  t._meshCache = {};
+}
+
 function fastTerrainCoords(map: MLMap) {
   const tm = (map as unknown as { terrain?: { tileManager?: TerrainTiles } }).terrain?.tileManager;
   const proto = tm && (Object.getPrototypeOf(tm) as TerrainTiles & { __fastCoords?: boolean });

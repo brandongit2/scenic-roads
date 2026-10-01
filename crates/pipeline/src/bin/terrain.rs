@@ -9,8 +9,10 @@
 //! hundreds of z12 pixels along the US–Canada border) and single-pixel spikes and pits are
 //! repaired (roadcore::grid::repair_terrain), finest zoom first, and every pixel above a repaired
 //! one is made again from its four below (the coarse tiles averaged the voids in: 18 km at z8 above
-//! Toyama, kilometres more up to z5). Tiles already in a previous archive are reused (and
-//! repaired the same way). Writes:
+//! Toyama, kilometres more up to z5). From z8 down, every quarter of a tile whose child tile exists
+//! is made again from it (process, REBUILD_Z): AWS's coarse levels come from coarser sources, which
+//! lost peaks as you zoomed out. Tiles already in a previous archive are reused (and repaired the
+//! same way). Writes:
 //!   terrain.tiles       tile archive of Terrarium PNGs (served for MapLibre raster-dem)
 //!   grid.idx            z11 tiles within ~14 km of a road (shared by all analysis layers)
 //!   grid.terrain.i16    their elevations in metres
@@ -76,11 +78,21 @@ fn fetch(agent: &ureq::Agent, z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
 }
 
 /// A tile's elevations repaired (bathymetry to sea level, repair_terrain, then the pixels above the
-/// repaired ones below made again from them: `below`, the four children's repairs). Returns the PNG
-/// to store (the original bytes when nothing changes) and, if it changed, its elevations and the
-/// pixels that moved, for the level above.
-fn process(png: Vec<u8>, z: u8, x: u32, y: u32, below: &HashMap<(u32, u32), Repaired>) -> (Vec<u8>, Option<Repaired>) {
-    let Ok(mut e) = decode_terrain_png(&png) else { return (png, None) };
+/// repaired ones below made again from them: `below`, the four children's repairs). From REBUILD_Z
+/// down, each quarter whose child tile exists is made again whole from it (`quads`: the children's
+/// 2×2 means): AWS's coarse levels come from coarser sources, and lost peaks (Fuji's summit pixel:
+/// 3,106 m at z6, 2,368 m at z5, 2,134 m at z4; from z9, 3,378, 2,715 and 2,337 m). Returns the PNG
+/// to store (the original bytes when nothing changes), its elevations and the pixels that moved if
+/// it changed, and from REBUILD_Z + 1 down its 2×2 means for the level above.
+fn process(
+    png: Vec<u8>,
+    z: u8,
+    x: u32,
+    y: u32,
+    below: &HashMap<(u32, u32), Repaired>,
+    quads: &HashMap<(u32, u32), Vec<f32>>,
+) -> (Vec<u8>, Option<Repaired>, Option<Vec<f32>>) {
+    let Ok(mut e) = decode_terrain_png(&png) else { return (png, None, None) };
     let before = e.clone();
     for v in e.iter_mut() {
         if *v < 0.0 {
@@ -96,14 +108,39 @@ fn process(png: Vec<u8>, z: u8, x: u32, y: u32, below: &HashMap<(u32, u32), Repa
             e[(dy as usize * 128 + cy / 2) * 256 + dx as usize * 128 + cx / 2] = m;
         }
     }
+    if z <= REBUILD_Z {
+        for k in 0..4u32 {
+            let (dx, dy) = (k & 1, k >> 1);
+            let Some(q) = quads.get(&(x * 2 + dx, y * 2 + dy)) else { continue };
+            for j in 0..128 {
+                let row = (dy as usize * 128 + j) * 256 + dx as usize * 128;
+                e[row..row + 128].copy_from_slice(&q[j * 128..(j + 1) * 128]);
+            }
+        }
+    }
     repair_terrain(&mut e, z, tile_lat(z, y));
+    let quad = (z >= 1 && z <= REBUILD_Z + 1).then(|| {
+        let mut q = vec![0f32; 128 * 128];
+        for j in 0..128 {
+            for i in 0..128 {
+                let (cx, cy) = (i * 2, j * 2);
+                q[j * 128 + i] = (e[cy * 256 + cx] + e[cy * 256 + cx + 1] + e[(cy + 1) * 256 + cx] + e[(cy + 1) * 256 + cx + 1]) * 0.25;
+            }
+        }
+        q
+    });
     let moved: Vec<usize> = e.iter().zip(&before).enumerate().filter(|(_, (a, b))| !((*a - *b).abs() <= 0.5)).map(|(i, _)| i).collect();
     if moved.is_empty() {
-        return (png, None);
+        return (png, None, quad);
     }
     let out = encode_terrain_png(&e, 256, 256).unwrap_or(png);
-    (out, Some(Repaired { e, moved }))
+    (out, Some(Repaired { e, moved }), quad)
 }
+
+/// Levels made again from the level below where it exists (process): z8 from z9 (which covers the
+/// ground within a z9 tile of a road; averaging our z12 instead gives the same within a few metres).
+/// The finer levels stay AWS's, so the analysis grid (z11) and what follows from it don't change.
+const REBUILD_Z: u8 = 8;
 
 /// A tile changed by process: its elevations and the pixels that moved by more than half a metre.
 struct Repaired {
@@ -160,12 +197,15 @@ fn main() -> Result<()> {
     let reused = std::sync::atomic::AtomicUsize::new(0);
     let repaired = std::sync::atomic::AtomicUsize::new(0);
     let repaired_keys: Mutex<Vec<u64>> = Mutex::new(Vec::new());
-    // Finest zoom first: a level's repairs are made again in the level above.
+    // Finest zoom first: a level's repairs are made again in the level above, and from z9 down every
+    // tile's 2×2 means (quads) make the level above (process).
     let mut below: HashMap<(u32, u32), Repaired> = HashMap::new();
+    let mut quads: HashMap<(u32, u32), Vec<f32>> = HashMap::new();
     let pool = rayon::ThreadPoolBuilder::new().num_threads(48).build()?;
     for zl in (0..=12u8).rev() {
         let level: Vec<(u32, u32)> = want.iter().filter(|t| t.0 == zl).map(|t| (t.1, t.2)).collect();
         let now: Mutex<HashMap<(u32, u32), Repaired>> = Mutex::new(HashMap::new());
+        let now_quads: Mutex<HashMap<(u32, u32), Vec<f32>>> = Mutex::new(HashMap::new());
         pool.install(|| {
             level.par_iter().for_each(|&(x, y)| {
                 let blob = if let Some(b) = old.as_ref().and_then(|a| a.get(zl, x, y)) {
@@ -176,7 +216,10 @@ fn main() -> Result<()> {
                 };
                 match blob {
                     Some(b) => {
-                        let (b, r) = process(b, zl, x, y, &below);
+                        let (b, r, q) = process(b, zl, x, y, &below, &quads);
+                        if let Some(q) = q {
+                            now_quads.lock().unwrap().insert((x, y), q);
+                        }
                         if let Some(r) = r {
                             repaired.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             repaired_keys.lock().unwrap().push(roadcore::archive::tile_key(zl, x, y));
@@ -192,6 +235,7 @@ fn main() -> Result<()> {
             });
         });
         below = now.into_inner().unwrap();
+        quads = now_quads.into_inner().unwrap();
     }
     pb.finish_and_clear();
     let size = aw.into_inner().unwrap().finish()?;
