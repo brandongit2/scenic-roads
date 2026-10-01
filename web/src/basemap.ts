@@ -1,7 +1,7 @@
 import type { ExpressionSpecification, LayerSpecification, StyleSpecification, VectorSourceSpecification } from 'maplibre-gl';
 import { ver } from './api';
 import { hostFor } from './hosts';
-import type { LineKind, LineWeights } from './state';
+import { DEFAULT_DENSITY, kindSpacing, type DensityKind, type LabelDensity, type LineKind, type LineWeights } from './state';
 
 // Base style: terrain (hillshade, tint, 3D mesh source), context layers from the self-built
 // Planetiler tiles, designation / stop overlays (GeoJSON, loaded on demand) and labels.
@@ -115,9 +115,10 @@ const capE = (e: ExpressionSpecification): ExpressionSpecification => ['concat',
 const name: ExpressionSpecification = capE(['coalesce', ['get', 'name'], ['get', 'name:latin'], '']);
 const anyCase = { 'case-sensitive': false, 'diacritic-sensitive': false };
 /** A feature's own English (property `prop`) where it differs from its name (property `of`) other
- * than in case or accents; '' when none. */
+ * than in case or accents and isn't already in it ("Alba / Scotland"); '' when none. */
 const ownEn = (prop: string, of = 'name'): ExpressionSpecification =>
-  ['case', ['all', ['has', prop], ['!=', ['get', prop], ['coalesce', ['get', of], ''], ['collator', anyCase]]], ['to-string', ['get', prop]], ''] as unknown as ExpressionSpecification;
+  ['case', ['all', ['has', prop], ['!=', ['get', prop], ['coalesce', ['get', of], ''], ['collator', anyCase]], ['!', ['in', ['to-string', ['get', prop]], ['coalesce', ['get', of], '']]]],
+    ['to-string', ['get', prop]], ''] as unknown as ExpressionSpecification;
 /** A basemap feature's English: its name:en where that truly differs, OSM's or our translation,
  * written into the OSM data the basemap is built from (dem/names.py patch). */
 const BASE_EN = ownEn('name:en');
@@ -131,10 +132,47 @@ export const HALO = '#0b0e13';
 /** All labels slightly transparent. */
 const TEXT_OPACITY = 0.8;
 /** Names appear once a place's interest isolation spans this many pixels (interest.py mz: the zoom
- * where it spans one), the best-known winning collisions. */
-export const LABEL_SPACING_PX = 90;
+ * where it spans one), the best-known winning collisions: the default label spacing (state.ts
+ * LabelDensity). */
+export const LABEL_SPACING_PX = DEFAULT_DENSITY.px;
 export const spacingFilter = (px: number): ExpressionSpecification | null =>
   px > 0 ? ['>=', ['zoom'], ['+', ['coalesce', ['get', 'mz'], -99], Math.log2(px)]] : null;
+
+/** The labels by importance (dem/labels.py, served at /tiles/labels): layer → its kind and
+ * classes. Each shows from the zoom where its isolation spans the label spacing (applyLabelDensity). */
+export const LABEL_TILE_LAYERS: Record<string, { kind: string; classes: string[] | null; density: DensityKind }> = {
+  'place-city': { kind: 'place', classes: ['city'], density: 'places' },
+  'place-town': { kind: 'place', classes: ['town'], density: 'places' },
+  'place-village': { kind: 'place', classes: ['village'], density: 'places' },
+  'place-minor': { kind: 'place', classes: ['hamlet', 'suburb', 'quarter', 'neighbourhood', 'locality', 'isolated_dwelling'], density: 'places' },
+  'place-state': { kind: 'state', classes: null, density: 'places' },
+  'water-name': { kind: 'water', classes: null, density: 'water' },
+  'park-label': { kind: 'park', classes: null, density: 'parks' },
+};
+export const labelTileFilter = (id: string, px: number): ExpressionSpecification => {
+  const l = LABEL_TILE_LAYERS[id];
+  return [
+    'all',
+    ['==', ['get', 'k'], l.kind],
+    ...(l.classes ? [['in', ['get', 'c'], ['literal', l.classes]] as ExpressionSpecification] : []),
+    spacingFilter(px)!,
+    // An area's name once the area is big enough on screen (ms, at the default spacing; sooner or
+    // later by half as many zooms as the spacing moves).
+    ['>=', ['zoom'], ['-', ['coalesce', ['get', 'ms'], -99], 0.5 * Math.log2(DEFAULT_DENSITY.px / px)]],
+  ];
+};
+/** Whether the labels come from our label tiles (baseStyle). */
+let LABEL_TILES = false;
+export const labelTilesOn = () => LABEL_TILES;
+
+/** Labels thinned to the label spacing (Layers → Map → Label density): the place, water and park
+ * labels from our label tiles (the landmarks' and stations' are set with their layers). */
+export function applyLabelDensity(map: import('maplibre-gl').Map, d: LabelDensity) {
+  if (!LABEL_TILES) return;
+  for (const [id, l] of Object.entries(LABEL_TILE_LAYERS)) {
+    if (map.getLayer(id)) map.setFilter(id, labelTileFilter(id, kindSpacing(d, l.density)));
+  }
+}
 
 export const HYPSO: [number, string][] = [
   [-10, '#16323a'], [0, '#1c3a2c'], [150, '#28503a'], [350, '#4d6a3f'], [600, '#76713f'],
@@ -290,11 +328,26 @@ function withBaseParts(style: StyleSpecification, parts: string[]): StyleSpecifi
   return style;
 }
 
-export function baseStyle(parts: string[] = [], labels = false): StyleSpecification {
+export function baseStyle(parts: string[] = [], labels = false, labelTiles = false, density: LabelDensity = DEFAULT_DENSITY): StyleSpecification {
   const base = hostFor('base'), terrain = hostFor('terrain'), trees = hostFor('trees');
   // The basemap's names (places, water, parks) from their own archive where there is one: built
   // from OSM's named features with our English in them (dem/names.py patch), for every region.
   const labelSrc = labels ? 'labels' : 'base';
+  // Places, water and parks from the labels by importance, where the server has them: name n,
+  // English en, importance s (the most important placed first).
+  LABEL_TILES = labelTiles;
+  const lt = (id: string, def: Record<string, unknown>, layout: Record<string, unknown>) => {
+    if (!labelTiles) return { ...def, layout };
+    // From the zoom their isolation allows, not the basemap's class zooms.
+    const { minzoom: _, ...rest } = def;
+    return {
+      ...rest, source: 'lbl', 'source-layer': 'l',
+      filter: labelTileFilter(id, kindSpacing(density, LABEL_TILE_LAYERS[id].density)),
+      layout: { ...layout, 'symbol-sort-key': ['-', 0, ['get', 's']] },
+    };
+  };
+  const tname = capE(['coalesce', ['get', 'n'], '']), tEN = ownEn('en', 'n');
+  const nm = labelTiles ? tname : name, en = labelTiles ? tEN : BASE_EN;
   const dem = {
     type: 'raster-dem' as const,
     tiles: [`${terrain}/tiles/terrain/{z}/{x}/{y}${ver('terrain.tiles')}`],
@@ -312,8 +365,8 @@ export function baseStyle(parts: string[] = [], labels = false): StyleSpecificat
     const kinds = key === 'rest' ? ['rest_area', 'picnic_site'] : [key];
     const flt: ExpressionSpecification = ['in', ['get', 'kind'], ['literal', kinds]];
     // Every dot at every zoom, sized and faded by prominence among the landmarks in view
-    // (prominencePaint), the best-known on top; names once their interest isolation spans
-    // LABEL_SPACING_PX.
+    // (prominencePaint), the best-known on top; names once their interest isolation spans the
+    // landmarks' label spacing (overlays.ts).
     poiLayers.push(
       {
         id: `poi-${key}`,
@@ -362,6 +415,7 @@ export function baseStyle(parts: string[] = [], labels = false): StyleSpecificat
         attribution: '© OpenStreetMap contributors · OpenMapTiles · NRCan HRDEM/MRDEM · USGS 3DEP',
       },
       ...(labels ? { labels: { type: 'vector' as const, url: `pmtiles://${base}/tiles/labels.pmtiles${ver('labels.pmtiles')}`, attribution: '' } } : {}),
+      ...(labelTiles ? { lbl: { type: 'vector' as const, tiles: [`${base}/tiles/labels/{z}/{x}/{y}${ver('labels.tiles')}`], maxzoom: 12, attribution: '' } } : {}),
       dem,
       'dem-hs': { ...dem },
       // Terrain slope in percent, Terrarium-encoded as if it were elevation (server-side).
@@ -669,37 +723,35 @@ export function baseStyle(parts: string[] = [], labels = false): StyleSpecificat
         },
         paint: { 'text-color': '#48627e', 'text-halo-color': HALO, 'text-halo-width': 1.2, 'text-opacity': TEXT_OPACITY },
       },
-      {
+      lt('water-name', {
         id: 'water-name',
         type: 'symbol',
         source: labelSrc,
         'source-layer': 'water_name',
-        layout: {
-          'text-field': bilingual(name, BASE_EN),
-          'text-font': ['Noto Sans Italic'],
-          'text-size': ['interpolate', ['linear'], ['zoom'], 5, 10, 12, 13],
-          'text-letter-spacing': 0.06,
-          'text-max-width': 7,
-        },
         paint: { 'text-color': '#4b6582', 'text-halo-color': HALO, 'text-halo-width': 1.2, 'text-opacity': TEXT_OPACITY },
-      },
-      {
+      }, {
+        'text-field': bilingual(nm, en),
+        'text-font': ['Noto Sans Italic'],
+        'text-size': ['interpolate', ['linear'], ['zoom'], 5, 10, 12, 13],
+        'text-letter-spacing': 0.06,
+        'text-max-width': 7,
+      }) as LayerSpecification,
+      lt('park-label', {
         id: 'park-label',
         type: 'symbol',
         source: labelSrc,
         'source-layer': 'park',
         minzoom: 8,
         filter: ['==', ['geometry-type'], 'Point'],
-        layout: {
-          visibility: 'none',
-          'text-field': bilingual(name, BASE_EN),
-          'text-font': ['Noto Sans Italic'],
-          'text-size': ['interpolate', ['linear'], ['zoom'], 8, 10, 13, 12],
-          'text-max-width': 8,
-          'symbol-sort-key': ['get', 'rank'],
-        },
         paint: { 'text-color': '#6fb58a', 'text-halo-color': HALO, 'text-halo-width': 1.3, 'text-opacity': TEXT_OPACITY },
-      },
+      }, {
+        visibility: 'none',
+        'text-field': bilingual(nm, en),
+        'text-font': ['Noto Sans Italic'],
+        'text-size': ['interpolate', ['linear'], ['zoom'], 8, 10, 13, 12],
+        'text-max-width': 8,
+        'symbol-sort-key': ['get', 'rank'],
+      }) as LayerSpecification,
       {
         id: 'indigenous-label',
         type: 'symbol',
@@ -869,80 +921,81 @@ export function baseStyle(parts: string[] = [], labels = false): StyleSpecificat
         },
         paint: { 'text-color': '#c9d2de', 'text-halo-color': HALO, 'text-halo-width': 1.3, 'text-opacity': TEXT_OPACITY },
       },
-      {
+      lt('place-minor', {
         id: 'place-minor',
         type: 'symbol',
         source: labelSrc,
         'source-layer': 'place',
         minzoom: 11.5,
         filter: ['in', ['get', 'class'], ['literal', ['hamlet', 'suburb', 'quarter', 'neighbourhood', 'locality', 'isolated_dwelling']]],
-        layout: { 'text-field': bilingual(name, BASE_EN), 'text-font': ['Noto Sans Regular'], 'text-size': 10.5, 'text-max-width': 8 },
         paint: { 'text-color': '#7f8999', 'text-halo-color': HALO, 'text-halo-width': 1.4, 'text-opacity': TEXT_OPACITY },
-      },
-      {
+      }, { 'text-field': bilingual(nm, en), 'text-font': ['Noto Sans Regular'], 'text-size': 10.5, 'text-max-width': 8 }) as LayerSpecification,
+      lt('place-village', {
         id: 'place-village',
         type: 'symbol',
         source: labelSrc,
         'source-layer': 'place',
         minzoom: 9,
         filter: ['==', ['get', 'class'], 'village'],
-        layout: {
-          'text-field': bilingual(name, BASE_EN),
-          'text-font': ['Noto Sans Regular'],
-          'text-size': ['interpolate', ['linear'], ['zoom'], 9, 10, 14, 13],
-          'text-max-width': 8,
-          'symbol-sort-key': ['get', 'rank'],
-        },
         paint: { 'text-color': '#a2abb9', 'text-halo-color': HALO, 'text-halo-width': 1.4, 'text-opacity': TEXT_OPACITY },
-      },
-      {
+      }, {
+        'text-field': bilingual(nm, en),
+        'text-font': ['Noto Sans Regular'],
+        'text-size': ['interpolate', ['linear'], ['zoom'], 9, 10, 14, 13],
+        'text-max-width': 8,
+        'symbol-sort-key': ['get', 'rank'],
+      }) as LayerSpecification,
+      lt('place-town', {
         id: 'place-town',
         type: 'symbol',
         source: labelSrc,
         'source-layer': 'place',
         minzoom: 6.5,
         filter: ['==', ['get', 'class'], 'town'],
-        layout: {
-          'text-field': bilingual(name, BASE_EN),
-          'text-font': ['Noto Sans Medium'],
-          'text-size': ['interpolate', ['linear'], ['zoom'], 6.5, 10.5, 12, 14, 16, 16],
-          'text-max-width': 8,
-          'symbol-sort-key': ['get', 'rank'],
-        },
         paint: { 'text-color': '#c3cad6', 'text-halo-color': HALO, 'text-halo-width': 1.5, 'text-opacity': TEXT_OPACITY },
-      },
-      {
-        id: 'place-city',
-        type: 'symbol',
-        source: labelSrc,
-        'source-layer': 'place',
-        minzoom: 4,
-        filter: ['==', ['get', 'class'], 'city'],
-        layout: {
-          'text-field': bilingual(name, BASE_EN),
-          'text-font': ['Noto Sans Medium'],
-          'text-size': ['interpolate', ['linear'], ['zoom'], 4, ['case', ['<=', ['get', 'rank'], 3], 13, 11], 10, ['case', ['<=', ['get', 'rank'], 3], 18, 15], 15, 20],
-          'text-max-width': 8,
-          'symbol-sort-key': ['get', 'rank'],
-        },
-        paint: { 'text-color': '#e4e8ef', 'text-halo-color': HALO, 'text-halo-width': 1.6, 'text-opacity': TEXT_OPACITY },
-      },
-      {
+      }, {
+        'text-field': bilingual(nm, en),
+        'text-font': ['Noto Sans Medium'],
+        'text-size': ['interpolate', ['linear'], ['zoom'], 6.5, 10.5, 12, 14, 16, 16],
+        'text-max-width': 8,
+        'symbol-sort-key': ['get', 'rank'],
+      }) as LayerSpecification,
+      // Under the cities in placement (MapLibre places the top layer first): a prefecture's point
+      // sits on its capital, and Yokohama should win over 神奈川県.
+      lt('place-state', {
         id: 'place-state',
         type: 'symbol',
         source: labelSrc,
         'source-layer': 'place',
         maxzoom: 8,
         filter: ['in', ['get', 'class'], ['literal', ['state', 'province']]],
-        layout: {
-          'text-field': bilingual(['upcase', name], ['upcase', BASE_EN]),
-          'text-font': ['Noto Sans Medium'],
-          'text-size': ['interpolate', ['linear'], ['zoom'], 4, 10, 7, 13],
-          'text-letter-spacing': 0.2,
-          'text-max-width': 10,
-        },
         paint: { 'text-color': '#667080', 'text-halo-color': HALO, 'text-halo-width': 1.2, 'text-opacity': TEXT_OPACITY },
-      },
+      }, {
+        'text-field': bilingual(['upcase', nm], ['upcase', en]),
+        'text-font': ['Noto Sans Medium'],
+        'text-size': ['interpolate', ['linear'], ['zoom'], 4, 10, 7, 13],
+        'text-letter-spacing': 0.2,
+        'text-max-width': 10,
+      }) as LayerSpecification,
+      lt('place-city', {
+        id: 'place-city',
+        type: 'symbol',
+        source: labelSrc,
+        'source-layer': 'place',
+        minzoom: 4,
+        filter: ['==', ['get', 'class'], 'city'],
+        paint: { 'text-color': '#e4e8ef', 'text-halo-color': HALO, 'text-halo-width': 1.6, 'text-opacity': TEXT_OPACITY },
+      }, {
+        'text-field': bilingual(nm, en),
+        'text-font': ['Noto Sans Medium'],
+        // The biggest cities larger (the basemap's rank 1–3; the label tiles' importance: a
+        // million people or a capital).
+        'text-size': labelTiles
+          ? ['interpolate', ['linear'], ['zoom'], 4, ['case', ['>=', ['get', 's'], 76], 13, 11], 10, ['case', ['>=', ['get', 's'], 76], 18, 15], 15, 20]
+          : ['interpolate', ['linear'], ['zoom'], 4, ['case', ['<=', ['get', 'rank'], 3], 13, 11], 10, ['case', ['<=', ['get', 'rank'], 3], 18, 15], 15, 20],
+        'text-max-width': 8,
+        'symbol-sort-key': ['get', 'rank'],
+      }) as LayerSpecification,
       {
         id: 'marks',
         type: 'circle',

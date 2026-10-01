@@ -49,6 +49,34 @@ export const LABEL_KINDS = [
 ] as const;
 export type LabelKind = (typeof LABEL_KINDS)[number][0];
 
+/** Label density groups (Layers → Map labels → Density): each a factor on its labels' density. */
+export const DENSITY_KINDS = [
+  ['places', 'Places', 'Cities, towns, villages, hamlets and neighbourhoods, provinces and states'],
+  ['water', 'Water', 'Seas, bays and lakes (river names follow their rivers)'],
+  ['parks', 'Parks', 'Parks and protected areas'],
+  ['landmarks', 'Stops & sights', 'Stops & sights and heritage sites'],
+  ['stations', 'Rail stations', 'Rail stops (by their line\'s stop spacing)'],
+] as const;
+export type DensityKind = (typeof DENSITY_KINDS)[number][0];
+export interface LabelDensity {
+  /** A label shows once the distance to the nearest label of its kind that matters more spans this
+   * many pixels (dem/interest.py isolation; rail stops: their line's stop spacing). */
+  px: number;
+  /** Per kind, a factor on density: ×2 halves its spacing. */
+  kinds: Record<DensityKind, number>;
+  /** Thinning toward the horizon in a pitched view (horizon.ts): 0 none … 1 strong. */
+  horizon: number;
+}
+export const DEFAULT_DENSITY: LabelDensity = { px: 90, kinds: { places: 1, water: 1, parks: 1, landmarks: 1, stations: 1 }, horizon: 0.5 };
+/** The label spacing range (px); per kind, no closer than MIN_SPACING_PX (dem/labels.py MIN_PX:
+ * the label tiles hold a label from the zoom it shows at that). */
+export const SPACING_RANGE: [number, number] = [30, 300];
+export const MIN_SPACING_PX = 16;
+/** A kind's spacing (px): the density's, over the kind's factor; `base` for a kind spaced on its
+ * own scale (rail stops: 70 at the default 90). */
+export const kindSpacing = (d: LabelDensity, kind: DensityKind, base = DEFAULT_DENSITY.px): number =>
+  Math.max(MIN_SPACING_PX, (d.px * base) / DEFAULT_DENSITY.px / Math.max(0.05, d.kinds[kind]));
+
 export interface Terrain {
   /** 3D terrain mesh. */
   on: boolean;
@@ -282,6 +310,8 @@ export interface AppState {
   lowSpan: number;
   /** Opacity of all map labels. */
   labelOpacity: number;
+  /** How densely labels show (Layers → Map labels → Density). */
+  labelDensity: LabelDensity;
   /** Opacity of the Stops & sights layers (dots, areas and, with labelOpacity, their labels). */
   poiOpacity: number;
   /** How strongly stops & sights and heritage dots are sized and faded by prominence: 0 all alike,
@@ -387,6 +417,7 @@ export const defaults: AppState = {
   lowFade: 0.8,
   lowSpan: 0.6,
   labelOpacity: 0.5,
+  labelDensity: { ...DEFAULT_DENSITY, kinds: { ...DEFAULT_DENSITY.kinds } },
   poiOpacity: 0.7,
   poiEmphasis: 1,
   landmarks: { palette: 'oslo', auto: true, range: [0, 1], fit: [70, 99.9], equalize: false, lowFade: 0.8, lowSpan: 0.4, threshold: { on: false, dir: 'above', value: 0.5 }, balance: 0.3, top: [250, 10] },
@@ -622,6 +653,8 @@ export function toHash(s: AppState): string {
   if (tf !== [dt.tintFade.elev, dt.tintFadeSpan.elev, dt.tintFade.slope, dt.tintFadeSpan.slope].join(',')) p.set('tf', tf);
   if (s.lowFade !== defaults.lowFade || s.lowSpan !== defaults.lowSpan) p.set('lf', `${+s.lowFade.toFixed(2)},${+s.lowSpan.toFixed(2)}`);
   if (s.labelOpacity !== defaults.labelOpacity) p.set('lo', s.labelOpacity.toFixed(2));
+  const ldv = (d: LabelDensity) => [d.px, ...DENSITY_KINDS.map(([k]) => +d.kinds[k].toFixed(3)), +d.horizon.toFixed(2)].join(',');
+  if (ldv(s.labelDensity) !== ldv(defaults.labelDensity)) p.set('ld', ldv(s.labelDensity));
   if (s.poiOpacity !== defaults.poiOpacity) p.set('po', s.poiOpacity.toFixed(2));
   if (s.poiEmphasis !== defaults.poiEmphasis) p.set('pe', s.poiEmphasis.toFixed(2));
   const lm = (l: AppState['landmarks']) => [+l.balance.toFixed(2), l.auto ? 1 : 0, +l.range[0].toFixed(3), +l.range[1].toFixed(3), +l.lowFade.toFixed(2),
@@ -824,6 +857,15 @@ export function fromHash(hash: string): AppState {
   s.occlude = p.get('oc') === '1';
   const lo = Number(p.get('lo'));
   if (p.get('lo') && lo >= 0 && lo <= 1) s.labelOpacity = lo;
+  const ld = p.get('ld')?.split(',').map(Number);
+  if (ld && ld.length === DENSITY_KINDS.length + 2 && ld.every(Number.isFinite)) {
+    const c = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+    s.labelDensity = {
+      px: c(ld[0], ...SPACING_RANGE),
+      kinds: Object.fromEntries(DENSITY_KINDS.map(([k], i) => [k, c(ld[i + 1], 0.25, 4)])) as Record<DensityKind, number>,
+      horizon: c(ld[ld.length - 1], 0, 1),
+    };
+  }
   const po = Number(p.get('po'));
   if (p.get('po') && po >= 0 && po <= 1) s.poiOpacity = po;
   const pe = Number(p.get('pe'));

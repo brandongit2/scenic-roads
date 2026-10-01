@@ -65,6 +65,8 @@ pub struct AppState {
     /// Roads' English names from OSM (dem/roadnames.py), by OSM way id: given with the road
     /// (name_en), the app shows it after the name in parentheses.
     road_en: HashMap<i64, String>,
+    /// Place, water and park labels by importance (dem/labels.py): gzip'd vector tiles.
+    labels: Option<Archive>,
 }
 
 pub type S = Arc<AppState>;
@@ -105,7 +107,7 @@ async fn main() -> Result<()> {
         "details-poi.jsonl", "details-heritage.jsonl", "details-harea.jsonl", "details-special.jsonl", "details-indigenous.jsonl",
         "details-park.jsonl", "peaks.json", "props-heritage.jsonl", "layer-summary.json", "layer-pois.json", "layer-heritage.json",
         "layer-special.json", "layer-indigenous.json", "layer-heritage-areas.json", "stations.json", "whs-shapes.json", "names-en.json",
-        "labels.pmtiles", "road-en.json",
+        "labels.pmtiles", "road-en.json", "labels.tiles",
     ]
     .iter()
     .filter_map(|f| {
@@ -148,6 +150,8 @@ async fn main() -> Result<()> {
         // The basemap's labels with their English (names.py patch; Makefile): drawn from their own
         // archive when there is one.
         m.insert("labels".into(), serde_json::json!(data.join("labels.pmtiles").exists()));
+        // Labels by importance (dem/labels.py), for the label density control.
+        m.insert("labelTiles".into(), serde_json::json!(data.join("labels.tiles").exists()));
     }
     let grid = roadcore::grid::GridIndex::load(&data).ok().and_then(|idx| {
         Some(GridData {
@@ -195,6 +199,7 @@ async fn main() -> Result<()> {
             .and_then(|b| serde_json::from_slice::<HashMap<String, String>>(&b).ok())
             .map(|m| m.into_iter().filter_map(|(k, v)| k.parse().ok().map(|k| (k, v))).collect())
             .unwrap_or_default(),
+        labels: Archive::open(&data.join("labels.tiles")).ok(),
         packs: Arc::new(cache::Packs::default()),
         ways,
         strings,
@@ -221,6 +226,7 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/tiles/roads/{z}/{x}/{y}", get(road_tile))
         .route("/tiles/rails/{z}/{x}/{y}", get(rail_tile))
+        .route("/tiles/labels/{z}/{x}/{y}", get(label_tile))
         .route("/tiles/trees/{var}/{z}/{x}/{y}", get(tree_tile))
         .route("/api/railfreq", get(rail_freq_h))
         .route("/api/detail/{layer}/{i}", get(details::detail))
@@ -286,6 +292,22 @@ async fn road_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, Ra
 
 async fn rail_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery) -> Response {
     gz_tile(s.rails.as_ref().and_then(|a| a.get(z, x, y)), cache::versioned(q.as_deref()))
+}
+
+/// A tile of the labels by importance (dem/labels.py): a gzip'd Mapbox vector tile.
+async fn label_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery) -> Response {
+    match s.labels.as_ref().and_then(|a| a.get(z, x, y)) {
+        Some(b) => (
+            [
+                (header::CONTENT_TYPE, HeaderValue::from_static("application/x-protobuf")),
+                (header::CONTENT_ENCODING, HeaderValue::from_static("gzip")),
+                (header::CACHE_CONTROL, cache::cache_control(cache::versioned(q.as_deref()), "public, max-age=86400")),
+            ],
+            b.to_vec(),
+        )
+            .into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
+    }
 }
 
 /// Rail service frequency per way (pipeline `railfreq`): (u32 way, f32 trains a day each way).

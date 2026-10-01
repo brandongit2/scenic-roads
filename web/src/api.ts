@@ -67,6 +67,8 @@ export interface Meta {
   baseParts?: string[];
   /** Whether the basemap labels have their own archive (labels.pmtiles). */
   labels?: boolean;
+  /** Whether the labels by importance are served (labels.tiles, /tiles/labels). */
+  labelTiles?: boolean;
 }
 
 // Tiles and layers are cached by the browser, so their URLs carry the build time of the file

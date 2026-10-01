@@ -4,8 +4,8 @@ import * as maplibregl from 'maplibre-gl';
 import { cdfOf } from './ui/scale';
 import { Dist } from './roads/stats';
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
-import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LABEL_SPACING_PX, LANDMARK_LABELS, OVERLAY_LAYERS, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, baseId, labelKindOf, partIds, type NameScale } from './basemap';
-import { OVERLAYS, labelShown, type AppState, type LabelKind, type OverlayKey } from './state';
+import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, baseId, labelKindOf, partIds, type NameScale } from './basemap';
+import { OVERLAYS, kindSpacing, labelShown, type AppState, type LabelKind, type OverlayKey } from './state';
 import { ver } from './api';
 import { hostFor } from './hosts';
 import { tasks } from './tasks';
@@ -210,6 +210,8 @@ export class Overlays {
   apply(s: AppState) {
     const map = this.map;
     this.state = s;
+    const spacing = kindSpacing(s.labelDensity, 'landmarks');
+    this.names.spacingPx = spacing;
     for (const [k] of OVERLAYS) {
       const on = s.overlays[k];
       const src = OVERLAY_SOURCE[k];
@@ -222,15 +224,15 @@ export class Overlays {
         if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', show ? 'visible' : 'none');
       }
       // Stops & sights filters, with each layer's own filter.
-      // Names appear by interest isolation (LABEL_SPACING_PX); dots always (sized and faded by
-      // significance).
+      // Names appear by interest isolation (the landmarks' label spacing); dots always (sized and
+      // faded by significance).
       if (k !== 'heritage') {
         const extra = stopFilterExpr(k, s.stopFilters, s.stopUnknown[k] !== false);
         for (const id of (OVERLAY_LAYERS[k] ?? []).flatMap(partIds)) {
           if (!map.getLayer(id)) continue;
           if (!this.baseFilters.has(id)) this.baseFilters.set(id, map.getFilter(id) ?? null);
           const base = this.baseFilters.get(id) as ExpressionSpecification | null;
-          const thin = id.startsWith('poi-') && id.endsWith('-label') ? spacingFilter(LABEL_SPACING_PX) : null;
+          const thin = id.startsWith('poi-') && id.endsWith('-label') ? spacingFilter(spacing) : null;
           const parts = [base, extra, thin].filter((x): x is ExpressionSpecification => !!x);
           map.setFilter(id, parts.length > 1 ? ['all', ...parts] : parts[0] ?? null);
         }
@@ -261,8 +263,8 @@ export class Overlays {
         'all',
         ['!', part],
         levels,
-        // Names once a site's interest isolation spans LABEL_SPACING_PX (older data: by level).
-        ['case', ['has', 'mz'], spacingFilter(LABEL_SPACING_PX)!,
+        // Names once a site's interest isolation spans the label spacing (older data: by level).
+        ['case', ['has', 'mz'], spacingFilter(spacing)!,
           ['any', ['<=', ['get', 'level'], 1], ['all', ['<=', ['get', 'level'], 2], ['>=', ['zoom'], 9]], ['>=', ['zoom'], 13]]],
         ...(extra ? [extra] : []),
       ]);

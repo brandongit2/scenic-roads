@@ -4,7 +4,7 @@ import { FERRY_GROUPS, FERRY_GROUP_COLOURS } from '../ferry';
 import { HERITAGE_GROUPS, HERITAGE_TIERS, POI_STYLE } from '../basemap';
 import type { ViewStats } from '../roads/stats';
 import { filtersOf, type StopFilter } from '../stopfilters';
-import { LABEL_KINDS, LINE_KINDS, OVERLAYS, WEIGHT_RANGE, defaults, type AppState, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintRange, type TintVar } from '../state';
+import { DEFAULT_DENSITY, DENSITY_KINDS, LABEL_KINDS, LINE_KINDS, OVERLAYS, SPACING_RANGE, WEIGHT_RANGE, defaults, type AppState, type DensityKind, type LabelDensity, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintRange, type TintVar } from '../state';
 import { baseKey, isRev, withRev } from '../palettes';
 import { TINT_PALETTES, TINT_VARS } from '../terrain';
 import * as prefs from '../prefs';
@@ -33,6 +33,9 @@ const OVERLAY_SWATCH: Partial<Record<OverlayKey, string>> = {
 function loadCollapsed(): Record<string, boolean> {
   return prefs.load<Record<string, boolean>>('layers.collapsed', {});
 }
+
+/** Label density changes while a slider is dragged: at most this often (ms). */
+const DENSITY_MS = 120;
 
 export class LayersCard {
   private roads: HTMLInputElement;
@@ -93,6 +96,12 @@ export class LayersCard {
   private boundOpOut: HTMLOutputElement;
   private poiOp: HTMLInputElement;
   private poiOpOut: HTMLOutputElement;
+  /** Label density: the spacing (log2 px), a factor per kind (log2) and the horizon thinning. */
+  private spacing: HTMLInputElement;
+  private spacingOut: HTMLOutputElement;
+  private densities: { k: DensityKind; input: HTMLInputElement; out: HTMLOutputElement }[] = [];
+  private horizon: HTMLInputElement;
+  private horizonOut: HTMLOutputElement;
   /** Landmark prominence: the shared scale controls (histogram, fit, fade, highlight) over the
    * landmark score, and the fame ↔ rarity balance. */
   private ov: Partial<Record<OverlayKey, HTMLInputElement>> = {};
@@ -343,6 +352,30 @@ export class LayersCard {
     this.labelOpOut = h('output');
     this.poiOp = slider(0.1, 1, 0.05, (v) => this.store.set({ poiOpacity: v }), defaults.poiOpacity);
     this.poiOpOut = h('output');
+    // A new density lays the label tiles (and landmarks' point tiles) out again: while dragging, at
+    // most every DENSITY_MS.
+    let pending: Partial<LabelDensity> | null = null;
+    let timer = 0;
+    const flush = () => {
+      timer = 0;
+      if (pending) this.store.set({ labelDensity: { ...this.store.s.labelDensity, ...pending } });
+      pending = null;
+    };
+    const setDensity = (d: Partial<LabelDensity>) => {
+      pending = { ...pending, ...d };
+      if (!timer) timer = window.setTimeout(flush, DENSITY_MS);
+    };
+    this.spacing = slider(Math.log2(SPACING_RANGE[0]), Math.log2(SPACING_RANGE[1]), 0.01, (v) => setDensity({ px: Math.round(2 ** v) }), Math.log2(DEFAULT_DENSITY.px));
+    this.spacing.title = 'A label shows once the nearest label of its kind that matters more is this far away on screen: wider, fewer labels (double-click: default)';
+    this.spacingOut = h('output');
+    const densityRows = DENSITY_KINDS.map(([k, label, help]) => {
+      const input = slider(-2, 2, 0.25, (v) => setDensity({ kinds: { ...this.store.s.labelDensity.kinds, ...pending?.kinds, [k]: 2 ** v } }), 0);
+      const out = h('output');
+      this.densities.push({ k, input, out });
+      return h('div', { class: 'row lw dens', title: `${help}: more or fewer than the spacing gives (double-click: ×1)` }, h('span', { class: 'muted' }, label), input, out);
+    });
+    this.horizon = slider(0, 1, 0.05, (v) => setDensity({ horizon: v }), DEFAULT_DENSITY.horizon);
+    this.horizonOut = h('output');
     const row = (label: string, input: HTMLElement, out?: HTMLElement) => h('div', { class: 'row' }, h('span', { class: 'muted' }, label), input, out ?? h('span'));
 
     this.t.customBox.append(row('Min', this.t.tintMin, this.t.tintMinOut), row('Max', this.t.tintMax, this.t.tintMaxOut));
@@ -476,7 +509,11 @@ export class LayersCard {
             this.labelBoxes.push(c);
             return tog(c, label, '', 'tog sub', help);
           }),
-          row('Label opacity', this.labelOp, this.labelOpOut),
+          h('div', { class: 'row lw' }, h('span', { class: 'muted' }, 'Label opacity'), this.labelOp, this.labelOpOut),
+          h('div', { class: 'row lw', title: this.spacing.title }, h('span', { class: 'muted' }, 'Label spacing'), this.spacing, this.spacingOut),
+          ...densityRows,
+          h('div', { class: 'row lw', title: 'In a tilted view, labels thin out with distance beyond the centre, where the ground is foreshortened (double-click: default)' },
+            h('span', { class: 'muted' }, 'Toward horizon'), this.horizon, this.horizonOut),
         ),
         this.section('roads', 'Roads',
           tog(this.roads, 'Roads', h('span', { class: 'km faint' }, 'km in view')),
@@ -696,6 +733,19 @@ export class LayersCard {
     this.boundOp.disabled = !s.layers.boundaries;
     this.poiOp.value = String(s.poiOpacity);
     this.poiOpOut.value = `${Math.round(s.poiOpacity * 100)} %`;
+    const d = s.labelDensity;
+    this.spacing.value = String(Math.log2(d.px));
+    this.spacingOut.value = `${d.px} px`;
+    this.spacing.disabled = !s.layers.places;
+    for (const x of this.densities) {
+      const f = d.kinds[x.k];
+      x.input.value = String(Math.log2(f));
+      x.out.value = `×${+f.toFixed(f < 1 ? 2 : 1)}`;
+      x.input.disabled = !s.layers.places;
+    }
+    this.horizon.value = String(d.horizon);
+    this.horizonOut.value = `${Math.round(d.horizon * 100)} %`;
+    this.horizon.disabled = !s.layers.places;
     this.t.contours.checked = t.contours;
     this.t.sky.checked = t.sky;
     this.other.water.checked = s.layers.water;

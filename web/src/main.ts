@@ -7,7 +7,8 @@ import mlWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import './style.css';
 import { getProfile, getRoadWays, getWay, roadWays, setVersions, ver, type Drive, type Meta, type Profile, type Ride, type WayInfo } from './api';
 import { loadEnglish } from './english';
-import { applyBoundaryOpacity, applyLineWidths, applyOverlayOpacity, baseStyle, LABEL_LAYERS, LAYER_GROUPS, overlayLabelScale, partIds, POI_STYLE } from './basemap';
+import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, LABEL_LAYERS, LAYER_GROUPS, overlayLabelScale, partIds, POI_STYLE } from './basemap';
+import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
 import { areaLayers, landmarkRef, Overlays, POINT_LAYERS, withDetails } from './overlays';
 import { loadDetail, osmPath, peekDetail, refKey } from './details';
@@ -94,7 +95,7 @@ async function main() {
   const v = store.s.view;
   const map = new maplibregl.Map({
     container: 'map',
-    style: baseStyle(meta.baseParts ?? [], !!meta.labels),
+    style: baseStyle(meta.baseParts ?? [], !!meta.labels, !!meta.labelTiles, store.s.labelDensity),
     center: v ? [v.lng, v.lat] : [-70, 46],
     zoom: v ? v.zoom : 5,
     bearing: v?.bearing ?? 0,
@@ -1422,8 +1423,8 @@ async function main() {
       if (s.rail.on) loadRailFreq();
       map.triggerRepaint();
     }
-    if ((ch.has('layers') || ch.has('labelKinds')) && styleReady) overlays.apply(s);
-    if ((ch.has('rail') || ch.has('layers') || ch.has('lineWeights') || ch.has('labelKinds')) && styleReady) stations.apply(s);
+    if ((ch.has('layers') || ch.has('labelKinds') || ch.has('labelDensity')) && styleReady) overlays.apply(s);
+    if ((ch.has('rail') || ch.has('layers') || ch.has('lineWeights') || ch.has('labelKinds') || ch.has('labelDensity')) && styleReady) stations.apply(s);
     if ((ch.has('ferry') || ch.has('layers') || ch.has('lineWeights') || ch.has('labelKinds')) && styleReady) {
       ferries.apply(s);
       updateFerries();
@@ -1450,6 +1451,10 @@ async function main() {
       if (ch.has('labelOpacity') || ch.has('poiOpacity')) applyLabelOpacity(map, s.labelOpacity, overlayLabelScale(s.poiOpacity));
       if (ch.has('poiOpacity')) applyOverlayOpacity(map, s.poiOpacity);
       if (ch.has('boundaryOpacity')) applyBoundaryOpacity(map, s.boundaryOpacity);
+      if (ch.has('labelDensity')) {
+        applyLabelDensity(map, s.labelDensity);
+        setHorizonThinning(map, s.labelDensity.horizon);
+      }
       if (ch.has('poiOpacity') || ch.has('poiEmphasis') || ch.has('landmarks') || ch.has('labelOpacity')) overlays.prominence(s);
       if (ch.has('globe')) applyProjection();
       if (ch.has('overlays') || ch.has('heritageOff') || ch.has('stopFilters') || ch.has('stopUnknown')) overlays.apply(s);
@@ -1533,6 +1538,7 @@ async function main() {
     applyLabelOpacity(map, store.s.labelOpacity, overlayLabelScale(store.s.poiOpacity));
     applyOverlayOpacity(map, store.s.poiOpacity);
     applyBoundaryOpacity(map, store.s.boundaryOpacity);
+    setHorizonThinning(map, store.s.labelDensity.horizon);
     refreshTint();
     overlays.apply(store.s);
     ferries.apply(store.s);

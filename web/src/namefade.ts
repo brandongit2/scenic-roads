@@ -35,6 +35,8 @@ export class NameFader {
   private skip = false;
   /** Tiles whose names are fading in (made before the first scale): since when. */
   private fading = new Map<TileNames, number>();
+  /** The landmarks' label spacing (px; their names show from mz + log2 of it). */
+  spacingPx = LABEL_SPACING_PX;
 
   constructor(private map: MLMap, private dots: Scales) {}
 
@@ -73,7 +75,7 @@ export class NameFader {
   private update(sc: NameScale, now: number) {
     const managers = (this.map as unknown as { style?: { tileManagers?: Record<string, TileManagerLike> } }).style?.tileManagers;
     if (!managers) return;
-    const zmax = this.map.getZoom() + MARGIN_Z - Math.log2(LABEL_SPACING_PX);
+    const zmax = this.map.getZoom() + MARGIN_Z - Math.log2(this.spacingPx);
     const shown = new Set<TileNames>();
     for (const [src, tiles] of this.tiles) {
       const tm = managers[src];

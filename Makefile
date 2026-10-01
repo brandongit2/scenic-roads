@@ -30,7 +30,7 @@ UV    := cd dem && uv run python
 .PHONY: all data osm fonts web run dev clean-build heritage ferries
 all: data web
 
-data: $(BUILD)/roads.tiles $(BUILD)/slope.tiles basemap-parts $(BUILD)/names-en.json $(BUILD)/road-en.json $(BUILD)/labels.pmtiles $(BUILD)/ferries.json $(BUILD)/rail-freq.bin $(BUILD)/stations.json $(BUILD)/whs-shapes.json $(BUILD)/trees-cover.tiles details fonts
+data: $(BUILD)/roads.tiles $(BUILD)/slope.tiles basemap-parts $(BUILD)/names-en.json $(BUILD)/road-en.json $(BUILD)/labels.pmtiles $(BUILD)/labels.tiles $(BUILD)/ferries.json $(BUILD)/rail-freq.bin $(BUILD)/stations.json $(BUILD)/whs-shapes.json $(BUILD)/trees-cover.tiles details fonts
 
 # Conditional download: curl -z only fetches when the server copy is newer than ours.
 # OSM: data/osm/merged.osm.pbf holds every region; a region added to regions.json is downloaded
@@ -205,6 +205,10 @@ LABELS_TILER = java -Xmx5g -jar tools/planetiler.jar --download --storage=mmap -
 	  --only-layers=waterway,place,water_name,park --languages=en,fr --maxzoom=14
 $(BUILD)/labels.pmtiles: $(NAMES)/named-en.osm.pbf | tools/planetiler.jar
 	$(LABELS_TILER) --osm-path=$< --output=$(BUILD)/labels.new.pmtiles && mv $(BUILD)/labels.new.pmtiles $@
+# Labels by importance (places, provinces and states, water, parks), each with the zoom its
+# isolation lets it show from: the app's label density (README, Label density).
+$(BUILD)/labels.tiles: $(NAMES)/named.osm.pbf $(BUILD)/names-en.json dem/labels.py dem/interest.py
+	$(UV) labels.py
 
 # World Heritage Sites as their lines and areas from OSM (after the heritage step lists the sites),
 # and whs-sites.json: one dot for a site in several components, each site's Wikidata items.

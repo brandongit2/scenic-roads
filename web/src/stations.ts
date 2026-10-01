@@ -11,11 +11,12 @@ import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'mapli
 import { ver } from './api';
 import { hostFor } from './hosts';
 import { RAIL_GROUP_COLOURS } from './rail';
-import { labelShown, lineWeight, type AppState } from './state';
+import { kindSpacing, labelShown, lineWeight, type AppState } from './state';
 
 const DOTS = 'rail-stop';
 const LABELS = 'rail-stop-label';
-/** A stop shows once its lines' average stop spacing spans this many pixels; its name at LABEL_PX. */
+/** A stop shows once its lines' average stop spacing spans this many pixels; its name at LABEL_PX
+ * (at the default label density; Layers → Map labels → Density scales it). */
 const STOP_PX = 12;
 const LABEL_PX = 70;
 
@@ -44,7 +45,7 @@ export class Stations {
     // Any of the groups calling there shown (m: a bit per group).
     const groups: ExpressionSpecification = ['any', ...r.groups.flatMap((on, i) => (on ? [['==', ['%', ['floor', ['/', ['get', 'm'], 2 ** i]], 2], 1] as ExpressionSpecification] : [])), false];
     map.setFilter(DOTS, ['all', groups, spaced(STOP_PX)]);
-    map.setFilter(LABELS, ['all', groups, spaced(LABEL_PX), ['!=', ['get', 'n'], '']]);
+    map.setFilter(LABELS, ['all', groups, spaced(kindSpacing(s.labelDensity, 'stations', LABEL_PX)), ['!=', ['get', 'n'], '']]);
     // Size by spacing: ×1 at 4 km (a commuter line; about a ferry terminal's dot), smaller for
     // closer stops, larger for wider ones; the rail line weight scales it too.
     const k: ExpressionSpecification = ['*', lineWeight(s, 'rail'), ['min', 1.4, ['max', 0.5, ['+', 1, ['*', 0.15, ['log2', ['/', ['get', 'sp'], 4000]]]]]]];

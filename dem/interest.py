@@ -38,18 +38,19 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 import whsshapes
 
 ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
 PV = ROOT / "data" / "pageviews" / "items.json"
-CELL_KM = 5.0
 # A viewpoint's Wikidata item is often the thing it looks at or stands on; its fame counts only when
 # that is a landscape, a lookout or the like (not a mine, chapel or barrow tagged as a viewpoint).
 VIEW_ITEM = re.compile(r"viewpoint|lookout|observation|belvedere|mirador|mountain|hill|peak|summit|cliff|headland|promontory|"
                        r"point|cape|peninsula|pass|col\b|gorge|canyon|valley|falls|waterfall|geosite|park|tower|lighthouse|beach|bay|island|lake")
-RINGS = 12  # grid search out to ~60 km; farther ones are found by a full scan
+# Isolation within this on the plane, farther by great circle.
+NEAR_KM = 60.0
 
 
 def jsonl(name: str) -> dict:
@@ -71,46 +72,69 @@ def percentile(vals: list[float | None]) -> list[float]:
     return [float(np.searchsorted(arr, v, side="right")) / len(arr) if v is not None else 0.0 for v in vals]
 
 
+def _better(tree: cKDTree, pts: np.ndarray, todo: np.ndarray, rank: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+    """For the points `todo`: the distance to the nearest better-ranked one among their k nearest
+    (inf where none is), and to the k-th nearest."""
+    best, kth = np.empty(len(todo)), np.empty(len(todo))
+    step = max(1, 4_000_000 // k)  # bounded memory: rows × k neighbours
+    for s in range(0, len(todo), step):
+        t = todo[s:s + step]
+        d, j = tree.query(pts[t], k=k)
+        d, j = d.reshape(len(t), k), j.reshape(len(t), k)
+        better = rank[j] < rank[t][:, None]
+        first = better.argmax(axis=1)
+        best[s:s + step] = np.where(better.any(axis=1), d[np.arange(len(t)), first], np.inf)
+        kth[s:s + step] = d[:, -1]
+    return best, kth
+
+
 def isolation(lon: np.ndarray, lat: np.ndarray, score: np.ndarray) -> np.ndarray:
-    """Distance (km) from each point to the nearest point with a higher score (ties: earlier index)."""
+    """Distance (km) from each point to the nearest point with a higher score (ties: earlier index).
+
+    Within NEAR_KM on the plane (each point's x scaled by its own latitude), farther by great-circle
+    distance; by k nearest neighbours, k growing for the points with nothing better among them (a
+    grid search before: quadratic in cities, where a 5 km cell holds thousands of places)."""
     n = len(lon)
+    out = np.full(n, 20000.0)
+    if n < 2:
+        return out
     order = np.lexsort((np.arange(n), -score))  # best first
     rank = np.empty(n, dtype=np.int64)
     rank[order] = np.arange(n)
-    x = lon * 111.32 * np.cos(np.radians(lat))
-    y = lat * 110.57
-    cx, cy = np.floor(x / CELL_KM).astype(np.int64), np.floor(y / CELL_KM).astype(np.int64)
-    grid: dict[tuple[int, int], list[int]] = {}
-    for i in range(n):
-        grid.setdefault((int(cx[i]), int(cy[i])), []).append(i)
-    out = np.full(n, 20000.0)
-    far = []
-    for i in order[1:]:
-        r, gx, gy = rank[i], int(cx[i]), int(cy[i])
-        best = math.inf
-        for k in range(RINGS + 1):
-            if best <= (k - 1) * CELL_KM:
-                break
-            for dx in range(-k, k + 1):
-                for dy in range(-k, k + 1):
-                    if max(abs(dx), abs(dy)) != k:
-                        continue
-                    for j in grid.get((gx + dx, gy + dy), ()):
-                        if rank[j] < r:
-                            d = math.hypot(x[j] - x[i], y[j] - y[i])
-                            if d < best:
-                                best = d
-        if best <= RINGS * CELL_KM:
-            out[i] = best
-        else:
-            far.append(i)
-    # Places with nothing better within the grid search: the nearest better one anywhere
-    # (great-circle distance).
-    lo, la = np.radians(lon), np.radians(lat)
-    for i in far:
-        better = order[: rank[i]]
-        d = np.sin((la[better] - la[i]) / 2) ** 2 + np.cos(la[i]) * np.cos(la[better]) * np.sin((lo[better] - lo[i]) / 2) ** 2
-        out[i] = float(6371 * 2 * np.arcsin(np.sqrt(d.min())))
+    xy = np.column_stack([lon * 111.32 * np.cos(np.radians(lat)), lat * 110.57])
+    tree = cKDTree(xy)
+    todo, far, k = order[1:], [], 16
+    while len(todo):
+        kk = min(k, n)
+        best, kth = _better(tree, xy, todo, rank, kk)
+        near = best <= NEAR_KM
+        out[todo[near]] = best[near]
+        # Beyond NEAR_KM: a better one farther than that, or none among neighbours reaching past it.
+        beyond = ~near & (np.isfinite(best) | (kth > NEAR_KM) | (kk == n))
+        far.append(todo[beyond])
+        todo = todo[~near & ~beyond]
+        k *= 4
+    todo = np.concatenate(far)
+    if not len(todo):
+        return out
+    # The nearest better one anywhere: chords between unit vectors order as great circles do.
+    la, lo = np.radians(lat), np.radians(lon)
+    u = np.column_stack([np.cos(la) * np.cos(lo), np.cos(la) * np.sin(lo), np.sin(la)])
+    stree, k = cKDTree(u), 64
+    km = lambda chord: 6371 * 2 * np.arcsin(np.minimum(1.0, chord / 2))
+    while len(todo):
+        # Few better ones: all of them.
+        few = rank[todo] <= k
+        for i in todo[few]:
+            out[i] = float(km(np.sqrt(((u[order[:rank[i]]] - u[i]) ** 2).sum(axis=1)).min()))
+        todo = todo[~few]
+        if not len(todo):
+            break
+        best, _ = _better(stree, u, todo, rank, min(k, n))
+        hit = np.isfinite(best)
+        out[todo[hit]] = km(best[hit])
+        todo = todo[~hit]
+        k *= 4
     return out
 
 

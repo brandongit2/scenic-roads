@@ -134,6 +134,8 @@ input:disabled, select:disabled { opacity: 0.4; }
 #layers .row.lw { grid-template-columns: 98px 1fr 46px; }
 #layers .row.lw.top { grid-template-columns: 120px 1fr 46px; padding-left: 0; }
 #layers .row.lw > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Label density per kind, under Label spacing (sliders aligned with it). */
+#layers .row.lw.dens { grid-template-columns: 86px 1fr 46px; padding-left: 34px; }
 #layers .row output { color: var(--text); text-align: right; font-size: 11px; }
 #layers .row.len .pair { display: flex; align-items: center; gap: 6px; min-width: 0; }
 #layers .row.len input.num { width: 0; flex: 1; min-width: 0; background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 5px;
