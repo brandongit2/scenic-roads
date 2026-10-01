@@ -48,6 +48,11 @@ uniform float u_p22;         // the perspective matrix's z row (NDC depth = -p22
 // flag segments wholly in front of or behind the terrain (u_depthOn = 0: none, no flags).
 uniform highp sampler2D u_depth;
 uniform int u_depthOn;
+// A stand-in ancestor (RoadLayer.drawSet): only its pieces in the missing tiles it stands in for
+// (their rectangles in this tile's units), by the piece's middle; not over the loaded ones beside
+// them, where summed roads would count twice.
+uniform int u_clipN;
+uniform vec4 u_clip[16];
 float terrainAt(vec2 uv) {
   return dot(textureLod(u_depth, uv, 0.0), vec4(1.0 / (256.0 * 256.0 * 256.0), 1.0 / (256.0 * 256.0), 1.0 / 256.0, 1.0));
 }
@@ -64,6 +69,19 @@ void projectPiece(out vec4 s, out vec4 z) {
   z = vec4(0.0);
   uint style = a_gs0.y;
   if ((style & 128u) != 0u) return; // a line's last vertex: no piece starts there
+  if (u_clipN > 0) {
+    vec2 m = 0.5 * (a_p0 + a_p1);
+    bool keep = false;
+    for (int i = 0; i < 16; i++) {
+      if (i >= u_clipN) break;
+      vec4 r = u_clip[i];
+      if (m.x >= r.x && m.x < r.z && m.y >= r.y && m.y < r.w) {
+        keep = true;
+        break;
+      }
+    }
+    if (!keep) return;
+  }
   vec2 q0 = a_p0 * u_extScale, q1 = a_p1 * u_extScale;
   // Drape heights are the ground; bridge decks stand at their own elevation above it.
   bool bridge = (style & 96u) == 32u;
@@ -812,6 +830,9 @@ export interface RoadTile {
   prepFor?: string;
   /** Drawn as point sprites this frame (else as quads). */
   sprite?: boolean;
+  /** Standing in for missing tiles this frame (an ancestor): their rectangles in its units, x0 y0
+   * x1 y1 each (drawSet); else null, all of it. */
+  clip?: Float32Array | null;
   /** Tilted views: the finest scale (CSS px per metre) of the tilted cover's samples on the tile
    * (NaN: flat view); for this frame, the device px per tile unit its sprite and detail level go by
    * (tilted: from that scale; flat: from the zoom). */
@@ -1030,7 +1051,7 @@ export class RoadLayer implements CustomLayerInterface {
       const head = `#version 300 es\nprecision highp float;\nprecision highp int;\n${sd.vertexShaderPrelude}\n${sd.define}\n`;
       const prep = link(gl, head + PREP_VS, PREP_FS, ['o_s', 'o_z']);
       const pu: Record<string, WebGLUniformLocation | null> = {};
-      for (const n of ['u_extScale', 'u_viewport', 'u_zmul', 'u_lift', 'u_camTile', 'u_ztol', 'u_camDist', 'u_p22', 'u_depth', 'u_depthOn', 'u_projection_matrix',
+      for (const n of ['u_extScale', 'u_viewport', 'u_zmul', 'u_lift', 'u_camTile', 'u_ztol', 'u_camDist', 'u_p22', 'u_depth', 'u_depthOn', 'u_clipN', 'u_clip', 'u_projection_matrix',
         'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) pu[n] = gl.getUniformLocation(prep, n);
       this.preps.set(sd.variantName, { prog: prep, u: pu });
       const draw = (sprite: boolean, accum = false): Prog => {
@@ -1044,7 +1065,7 @@ export class RoadLayer implements CustomLayerInterface {
           'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane',
           'u_projection_transition', 'u_projection_fallback_matrix', 'u_camDist', 'u_part', 'u_occluded', 'u_passVis', 'u_tunnelsOnly',
         'u_rail', 'u_railMask', 'u_rw', 'u_rwsum', 'u_fqOn', 'u_fqLo', 'u_fqHi', 'u_fqUnk', 'u_direct', 'u_mapKind', 'u_classCol', 'u_classCas', 'u_netCol', 'u_catCol', 'u_single', 'u_la', 'u_pattern',
-          'u_maxPt', 'u_p22', 'u_depth', 'u_depthOn', 'u_opacity', 'u_over',
+          'u_maxPt', 'u_p22', 'u_depth', 'u_depthOn', 'u_opacity', 'u_over', 'u_clipN', 'u_clip',
         ]) u[n] = gl.getUniformLocation(prog, n);
         return { prog, u };
       };
@@ -1591,9 +1612,9 @@ export class RoadLayer implements CustomLayerInterface {
     const out = new Map<string, RoadTile>();
     // Stand-ins take the scale of the tiles they stand in for: a child its parent's; an ancestor,
     // drawn over all of its area, the finest of the wanted tiles in it (below).
-    const ancestors = new Set<RoadTile>();
+    const ancestors = new Map<RoadTile, RoadTile[]>();
     const stand = (s: RoadTile, t: RoadTile) => {
-      if (s.z < t.z) ancestors.add(s);
+      if (s.z < t.z) ancestors.set(s, [...(ancestors.get(s) ?? []), t]);
       else s.scale = t.scale;
       out.set(s.key, s);
     };
@@ -1618,12 +1639,23 @@ export class RoadLayer implements CustomLayerInterface {
         }
       }
     }
-    for (const a of ancestors) {
+    for (const t of out.values()) t.clip = null;
+    for (const [a, missing] of ancestors) {
       a.scale = NaN;
       for (const w of wanted) {
         const dz = w.z - a.z;
         if (dz > 0 && w.x >> dz === a.x && w.y >> dz === a.y) a.scale = Number.isNaN(a.scale!) ? w.scale : Math.max(a.scale!, w.scale ?? NaN);
       }
+      // Drawn only over the missing tiles (summed roads would count twice over the loaded ones);
+      // more than the shader takes: their bounding box.
+      if (!a.data) continue;
+      const ext = a.data.extent;
+      const rects = missing.map((t) => {
+        const n = 2 ** (t.z - a.z), k = ext / n;
+        return [(t.x - a.x * n) * k, (t.y - a.y * n) * k, (t.x - a.x * n + 1) * k, (t.y - a.y * n + 1) * k];
+      });
+      a.clip = Float32Array.from(rects.length <= 16 ? rects.flat()
+        : [Math.min(...rects.map((r) => r[0])), Math.min(...rects.map((r) => r[1])), Math.max(...rects.map((r) => r[2])), Math.max(...rects.map((r) => r[3]))]);
     }
     return [...out.values()].filter((t) => t.state === 'ready').sort((a, b) => a.z - b.z);
   }
@@ -1948,6 +1980,10 @@ export class RoadLayer implements CustomLayerInterface {
     };
     const bindTile = (u: Prog['u'], x: (typeof tileSetup)[number]) => {
       gl.uniform2f(u.u_tile, x.pxPerUnit, x.hover);
+      // (the quads' clip is the projection pass's)
+      const clip = x.t.clip;
+      gl.uniform1i(u.u_clipN, clip ? clip.length / 4 : 0);
+      if (clip) gl.uniform4fv(u.u_clip, clip);
       gl.uniform1f(u.u_cell, Math.max(x.d.extent / 512, x.lvl.cell));
       if (x.proj) this.setProjTile(gl, u, frame, x.proj);
       if (x.ls) bindUnit(2, x.ls);
@@ -2372,7 +2408,9 @@ export class RoadLayer implements CustomLayerInterface {
    * for every draw pass to read. A tile keeps its result while the camera, projection and terrain
    * are unchanged (hovering, a colour range easing in, a restyle). */
   private project(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput, tiles: RoadTile[], f: ReturnType<RoadLayer['projFrame']>) {
-    const todo = tiles.filter((t) => t.prepFor !== f.key && t.vaoP && t.data && t.data.nverts > 1);
+    // (a stand-in's clip is part of what the result is for)
+    const keyOf = (t: RoadTile) => (t.clip ? `${f.key}|${t.clip.join(',')}` : f.key);
+    const todo = tiles.filter((t) => t.prepFor !== keyOf(t) && t.vaoP && t.data && t.data.nverts > 1);
     if (!todo.length) return;
     const P = this.prep;
     gl.useProgram(P.prog);
@@ -2383,12 +2421,14 @@ export class RoadLayer implements CustomLayerInterface {
     for (const t of todo) {
       this.ensureQuads(t);
       this.setProjTile(gl, P.u, f, this.tileProj(f, opts.getProjectionData({ tileID: { wrap: 0, canonical: { x: t.x, y: t.y, z: t.z } }, applyGlobeMatrix: true }), t));
+      gl.uniform1i(P.u.u_clipN, t.clip ? t.clip.length / 4 : 0);
+      if (t.clip) gl.uniform4fv(P.u.u_clip, t.clip);
       gl.bindVertexArray(t.vaoP!);
       gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, t.prepBuf!);
       gl.beginTransformFeedback(gl.POINTS);
       gl.drawArrays(gl.POINTS, 0, t.data!.nverts - 1);
       gl.endTransformFeedback();
-      t.prepFor = f.key;
+      t.prepFor = keyOf(t);
     }
     gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, null);
     gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
