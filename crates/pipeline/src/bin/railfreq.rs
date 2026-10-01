@@ -13,6 +13,13 @@
 //! another kind of service cost 4× so paths keep to the right network; dangling track ends are
 //! bridged to other tracks within 100 m, since only tracks used by route relations are in
 //! ways.bin and relations skip bits of station throats), at most 3× the straight distance + 3 km.
+//! The search follows the direction of travel: a train doesn't turn back between two stops, so
+//! leaving a node more than 90° off its heading (60° into or out of a gap link) costs 3 km. Before
+//! that, a stop in a big station whose nearest tracks didn't connect onward sent every train out
+//! along them and back through a gap link, past the station twice (Clapham Junction counted each
+//! train about twice). A pair with no such path along its stops' nearest 4 tracks tries their 12
+//! nearest, the distance from the stop then counted double so the path doesn't end on a track
+//! short of the station.
 //! The pair's trains run over the path: the stretches of track from stop A to stop B, the first
 //! and last only in part, so every point of the track has its trains (a way is often longer than
 //! the gap between stations: a metro line's track can be one 15 km way, and adding up the pairs on
@@ -27,6 +34,11 @@
 //! kind of service, not just touching end to end) is found, and the way gets the sum of their
 //! trains at that cross-section (the median over its points; each train is on one of the tracks
 //! there); parallel tracks with no trains of their own get the corridor's too.
+//!
+//! Debugging: RAILFREQ_AT=lon,lat,metres prints every rail way there with its trains and its
+//! stretches' coverage; RAILFREQ_WAY=<OSM way id> the pairs whose trains run on that way and their
+//! paths; RAILFREQ_STOP=lon,lat the paths of the pairs from or to a stop there; RAILFREQ_DEBUG the
+//! pairs that found no track or path.
 //!
 //! Output: rail-freq.bin, sorted (u32 way index, f32 trains a day each way — both directions added
 //! and halved; negative when any of it is a lower bound, i.e. "at least") for the rail ways with
@@ -46,7 +58,14 @@ const SNAP_FAR_M: f64 = 1000.0;
 const BEYOND_SHARE: f64 = 0.8;
 const BEYOND_MAX_M: f64 = 300_000.0;
 const GAP_M: f64 = 100.0;
-const SNAP_CANDIDATES: usize = 4;
+/// Tracks a stop snaps to, and the weight on its distance from them: then, for a pair with no path
+/// along those, more (see the pair loop).
+const ATTEMPTS: [(usize, f64); 2] = [(4, 1.0), (12, 2.0)];
+/// The cost of turning back at a node (a switch or a gap): a train doesn't reverse between two
+/// stops, but a path that can't get through otherwise still may.
+const REVERSE_M: f32 = 3000.0;
+/// A stretch's heading at each end: toward its first vertex at least this far along.
+const DIR_M: f32 = 15.0;
 const OFF_MODE: f32 = 4.0;
 const CORRIDOR_M: f64 = 40.0;
 const CELL: f64 = 0.002;
@@ -70,6 +89,16 @@ struct Edge {
     way: u32,
     /// Rail groups using the way (bit k = class TRAM + k).
     groups: u8,
+    /// Its heading leaving u, and leaving v (unit vectors, metres east and north).
+    du: [f32; 2],
+    dv: [f32; 2],
+}
+
+/// The unit vector from a to b (lon/lat), in metres east and north.
+fn heading(a: [f64; 2], b: [f64; 2]) -> [f32; 2] {
+    let (dx, dy) = ((b[0] - a[0]) * 111_320.0 * a[1].to_radians().cos(), (b[1] - a[1]) * 110_570.0);
+    let n = (dx * dx + dy * dy).sqrt().max(1e-9);
+    [(dx / n) as f32, (dy / n) as f32]
 }
 
 /// Where a vertex sits: on which edge, how far from its u end.
@@ -160,7 +189,11 @@ fn main() -> Result<()> {
             pending.push((x1, y1, acc));
             if node_of.contains_key(&v[k]) || k + 1 == v.len() {
                 let e = edges.len() as u32;
-                edges.push(Edge { u: node_of[&v[start]], v: node_of[&v[k]], len: acc as f32, way: w, groups: wr.rail });
+                let pt = |q: [i32; 2]| [q[0] as f64 * E7, q[1] as f64 * E7];
+                let j0 = (start + 1..=k).find(|&j| pre[j] - pre[start] >= DIR_M).unwrap_or(k);
+                let j1 = (start..k).rev().find(|&j| pre[k] - pre[j] >= DIR_M).unwrap_or(start);
+                let (du, dv) = (heading(pt(v[start]), pt(v[j0])), heading(pt(v[k]), pt(v[j1])));
+                edges.push(Edge { u: node_of[&v[start]], v: node_of[&v[k]], len: acc as f32, way: w, groups: wr.rail, du, dv });
                 edge_way.push((ri as u32, pre[start]));
                 for &(x, y, off) in &pending {
                     grid.entry(((x / CELL).floor() as i32, (y / CELL).floor() as i32)).or_default().push((x, y, At { edge: e, off: off as f32 }, wr.rail));
@@ -212,7 +245,8 @@ fn main() -> Result<()> {
                     let q = node_pos[j as usize];
                     let d = dist_m(p[0], p[1], q[0], q[1]);
                     if d <= GAP_M {
-                        edges.push(Edge { u: i as u32, v: j, len: (d * 2.0) as f32, way: u32::MAX, groups: 0xff });
+                        let du = heading(p, q);
+                        edges.push(Edge { u: i as u32, v: j, len: (d * 2.0) as f32, way: u32::MAX, groups: 0xff, du, dv: [-du[0], -du[1]] });
                     }
                 }
             }
@@ -257,7 +291,7 @@ fn main() -> Result<()> {
     };
     // The nearest point of each nearby track (way), right kind of track first, up to a few; with
     // the distance from the stop, which is added to the path cost.
-    let snap_within = |p: [f64; 2], bits: u8, max_m: f64| -> Vec<(At, f32)> {
+    let snap_within = |p: [f64; 2], bits: u8, max_m: f64, n: usize, w: f64| -> Vec<(At, f32)> {
         let (cx, cy) = ((p[0] / CELL).floor() as i32, (p[1] / CELL).floor() as i32);
         let rx = (max_m / (CELL * 111_320.0 * p[1].to_radians().cos().max(0.2))).ceil() as i32;
         let ry = (max_m / (CELL * 110_570.0)).ceil() as i32;
@@ -282,20 +316,27 @@ fn main() -> Result<()> {
         }
         let mut c: Vec<(f64, bool, At)> = per_way.into_values().collect();
         c.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.total_cmp(&b.0)));
-        c.truncate(SNAP_CANDIDATES);
+        c.truncate(n);
         c.into_iter().map(|(d, _, at)| {
             let (at, df) = foot(p, at);
-            (at, df.min(d) as f32)
+            (at, (df.min(d) * w) as f32)
         }).collect()
     };
     // A stop with no track near it (a rural station whose route relation runs along another track
     // of the line) takes the nearest within SNAP_FAR_M.
-    let snap = |p: [f64; 2], bits: u8| -> Vec<(At, f32)> {
-        let c = snap_within(p, bits, SNAP_M);
-        if c.is_empty() { snap_within(p, bits, SNAP_FAR_M) } else { c }
+    let snap = |p: [f64; 2], bits: u8, n: usize, w: f64| -> Vec<(At, f32)> {
+        let c = snap_within(p, bits, SNAP_M, n, w);
+        if c.is_empty() { snap_within(p, bits, SNAP_FAR_M, n, w) } else { c }
     };
 
     let debug = std::env::var("RAILFREQ_DEBUG").is_ok();
+    // RAILFREQ_WAY=<OSM way id>: every pair whose trains run on that way, and its path.
+    let debug_way: Option<i64> = std::env::var("RAILFREQ_WAY").ok().and_then(|s| s.parse().ok());
+    // RAILFREQ_STOP=lon,lat: the paths of the pairs from or to a stop within 50 m of there.
+    let debug_stop: Option<[f64; 2]> = std::env::var("RAILFREQ_STOP").ok().and_then(|s| {
+        let v: Vec<f64> = s.split(',').filter_map(|x| x.parse().ok()).collect();
+        (v.len() == 2).then(|| [v[0], v[1]])
+    });
     let n_rail = rail.len();
     let (mut runs, matched, partial) = pairs
         .par_chunks(2048)
@@ -304,135 +345,186 @@ fn main() -> Result<()> {
             let mut runs: Vec<(u32, f32, f32, f32, bool)> = Vec::new();
             let mut matched = 0usize;
             let mut partial = 0usize;
+            // The search's states: a stretch travelled one way (edge × 2, + 1 from v to u), so the
+            // turn at each node is known.
             let mut dist: HashMap<u32, f32> = HashMap::new();
-            let mut prev: HashMap<u32, u32> = HashMap::new(); // node → edge taken to reach it
-            let mut src: HashMap<u32, At> = HashMap::new(); // start node → the point of A's stretch it came from
+            let mut prev: HashMap<u32, u32> = HashMap::new(); // state → the state before it
+            let mut src: HashMap<u32, At> = HashMap::new(); // first state → the point of A's stretch it starts from
             for p in chunk {
+                let r0 = runs.len();
                 let bits = mode_bits(p.mode);
-                let (ca, cb) = (snap(p.a, bits), snap(p.b, bits));
-                // One stop with no track near it (beyond the map, on a cross-border service): the
-                // trains run from the other as far as the track goes toward it.
-                let near = dist_m(p.a[0], p.a[1], p.b[0], p.b[1]) <= BEYOND_MAX_M;
-                let (ca, cb, beyond) = match (ca.is_empty(), cb.is_empty()) {
-                    (false, false) => (ca, cb, None),
-                    (false, true) if near && p.beyond == 2 => (ca, cb, Some(p.b)),
-                    (true, false) if near && p.beyond == 1 => (cb, ca, Some(p.a)),
-                    _ => {
-                        if debug {
-                            eprintln!("MISS snap {} {:.5},{:.5} {:.5},{:.5} {}", p.mode, p.a[0], p.a[1], p.b[0], p.b[1], p.n);
+                // First the nearest few tracks at each stop. With no path along them that doesn't turn
+                // back (a stop in a big station, nearest tracks its line doesn't reach without
+                // reversing), more of them, their distance from the stop counted double so that a path
+                // still runs to the station rather than ending on a track short of it.
+                for (k, &(n_cands, d0_w)) in ATTEMPTS.iter().enumerate() {
+                    let last = k + 1 == ATTEMPTS.len();
+                    let (ca, cb) = (snap(p.a, bits, n_cands, d0_w), snap(p.b, bits, n_cands, d0_w));
+                    // One stop with no track near it (beyond the map, on a cross-border service): the
+                    // trains run from the other as far as the track goes toward it.
+                    let near = dist_m(p.a[0], p.a[1], p.b[0], p.b[1]) <= BEYOND_MAX_M;
+                    let (ca, cb, beyond) = match (ca.is_empty(), cb.is_empty()) {
+                        (false, false) => (ca, cb, None),
+                        (false, true) if near && p.beyond == 2 => (ca, cb, Some(p.b)),
+                        (true, false) if near && p.beyond == 1 => (cb, ca, Some(p.a)),
+                        _ => {
+                            if debug {
+                                eprintln!("MISS snap {} {:.5},{:.5} {:.5},{:.5} {}", p.mode, p.a[0], p.a[1], p.b[0], p.b[1], p.n);
+                            }
+                            break;
                         }
-                        continue;
-                    }
-                };
-                let cost = |e: &Edge, len: f32| if e.groups & bits != 0 { len } else { len * OFF_MODE };
-                let mut run = |e: u32, from: f32, to: f32| runs.push((e, from.min(to), from.max(to), p.n, p.lower));
-                // Both stops on the same stretch of track.
-                if let Some((a, b)) = ca.iter().find_map(|(a, _)| cb.iter().find(|(b, _)| b.edge == a.edge).map(|(b, _)| (*a, *b))) {
-                    run(a.edge, a.off, b.off);
-                    matched += 1;
-                    continue;
-                }
-                let straight = dist_m(p.a[0], p.a[1], p.b[0], p.b[1]);
-                let limit = (straight * 3.0 + 3000.0) as f32;
-                dist.clear();
-                prev.clear();
-                src.clear();
-                let mut heap: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new(); // (cost as bits, node)
-                for &(a, d0) in &ca {
-                    let ea = &edges[a.edge as usize];
-                    for (node, c) in [(ea.u, d0 + cost(ea, a.off)), (ea.v, d0 + cost(ea, ea.len - a.off))] {
-                        if dist.get(&node).is_none_or(|&d| c < d) {
-                            dist.insert(node, c);
-                            src.insert(node, a);
-                            heap.push(Reverse((c.to_bits(), node)));
-                        }
-                    }
-                }
-                // Reaching either end of one of B's stretches, plus the rest of it.
-                let none = At { edge: u32::MAX, off: 0.0 };
-                let finish = |node: u32, d: f32| -> (f32, At) {
-                    let mut best = (f32::INFINITY, none);
-                    for &(b, d0) in &cb {
-                        let eb = &edges[b.edge as usize];
-                        let f = if node == eb.u { d + cost(eb, b.off) + d0 } else if node == eb.v { d + cost(eb, eb.len - b.off) + d0 } else { f32::INFINITY };
-                        if f < best.0 {
-                            best = (f, b);
-                        }
-                    }
-                    best
-                };
-                let mut best = (f32::INFINITY, u32::MAX, none); // cost, node, B's point
-                let mut end = (BEYOND_SHARE * straight, u32::MAX); // beyond: the track end nearest the stop
-                while let Some(Reverse((cbits, u))) = heap.pop() {
-                    let c = f32::from_bits(cbits);
-                    if c > limit || c >= best.0 {
+                    };
+                    let cost = |e: &Edge, len: f32| if e.groups & bits != 0 { len } else { len * OFF_MODE };
+                    let mut run = |e: u32, from: f32, to: f32| runs.push((e, from.min(to), from.max(to), p.n, p.lower));
+                    // Both stops on the same stretch of track.
+                    if let Some((a, b)) = ca.iter().find_map(|(a, _)| cb.iter().find(|(b, _)| b.edge == a.edge).map(|(b, _)| (*a, *b))) {
+                        run(a.edge, a.off, b.off);
+                        matched += 1;
                         break;
                     }
-                    if dist.get(&u).is_some_and(|&d| c > d) {
-                        continue;
-                    }
-                    let (f, eb) = finish(u, c);
-                    if f < best.0 {
-                        best = (f, u, eb);
-                    }
-                    if let Some(t) = beyond {
-                        if adj[u as usize].len() == 1 {
-                            let d = dist_m(node_pos[u as usize][0], node_pos[u as usize][1], t[0], t[1]);
-                            if d < end.0 && c + d as f32 <= limit {
-                                end = (d, u);
+                    let straight = dist_m(p.a[0], p.a[1], p.b[0], p.b[1]);
+                    let limit = (straight * 3.0 + 3000.0) as f32;
+                    dist.clear();
+                    prev.clear();
+                    src.clear();
+                    let mut heap: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new(); // (cost as bits, state)
+                    for &(a, d0) in &ca {
+                        let ea = &edges[a.edge as usize];
+                        for (st, c) in [(a.edge * 2, d0 + cost(ea, ea.len - a.off)), (a.edge * 2 + 1, d0 + cost(ea, a.off))] {
+                            if dist.get(&st).is_none_or(|&d| c < d) {
+                                dist.insert(st, c);
+                                src.insert(st, a);
+                                heap.push(Reverse((c.to_bits(), st)));
                             }
                         }
                     }
-                    for &ei in &adj[u as usize] {
-                        let e = &edges[ei as usize];
-                        let v = if e.u == u { e.v } else { e.u };
-                        let nc = c + cost(e, e.len);
-                        if nc <= limit && dist.get(&v).is_none_or(|&d| nc < d) {
-                            dist.insert(v, nc);
-                            prev.insert(v, ei);
-                            src.remove(&v);
-                            heap.push(Reverse((nc.to_bits(), v)));
+                    // The node a state ends at, and the train's heading there.
+                    let end_of = |st: u32| -> (u32, [f32; 2]) {
+                        let e = &edges[(st / 2) as usize];
+                        if st % 2 == 0 { (e.v, [-e.dv[0], -e.dv[1]]) } else { (e.u, [-e.du[0], -e.du[1]]) }
+                    };
+                    // Leaving a node by a stretch heading more than 90° off the train's: turning back (a
+                    // switch turns a few degrees). Into or out of a gap, more than 60°: two sideways jumps
+                    // across gaps in a row turn a train around as well.
+                    let turn = |h: [f32; 2], d: [f32; 2], gap: bool| {
+                        if h[0] * d[0] + h[1] * d[1] < if gap { 0.5 } else { 0.0 } { REVERSE_M } else { 0.0 }
+                    };
+                    let gap = |e: u32| edges[e as usize].way == u32::MAX;
+                    // Reaching either end of one of B's stretches, plus the rest of it.
+                    let none = At { edge: u32::MAX, off: 0.0 };
+                    let finish = |node: u32, h: [f32; 2], via_gap: bool, d: f32| -> (f32, At) {
+                        let mut best = (f32::INFINITY, none);
+                        for &(b, d0) in &cb {
+                            let eb = &edges[b.edge as usize];
+                            let f = if node == eb.u {
+                                d + turn(h, eb.du, via_gap) + cost(eb, b.off) + d0
+                            } else if node == eb.v {
+                                d + turn(h, eb.dv, via_gap) + cost(eb, eb.len - b.off) + d0
+                            } else {
+                                f32::INFINITY
+                            };
+                            if f < best.0 {
+                                best = (f, b);
+                            }
+                        }
+                        best
+                    };
+                    let mut best = (f32::INFINITY, u32::MAX, none); // cost, state, B's point
+                    let mut end = (BEYOND_SHARE * straight, u32::MAX); // beyond: the state reaching the track end nearest the stop
+                    while let Some(Reverse((cbits, st))) = heap.pop() {
+                        let c = f32::from_bits(cbits);
+                        if c > limit || c >= best.0 {
+                            break;
+                        }
+                        if dist.get(&st).is_some_and(|&d| c > d) {
+                            continue;
+                        }
+                        let (u, h) = end_of(st);
+                        let (f, eb) = finish(u, h, gap(st / 2), c);
+                        if f < best.0 {
+                            best = (f, st, eb);
+                        }
+                        if let Some(t) = beyond {
+                            if adj[u as usize].len() == 1 {
+                                let d = dist_m(node_pos[u as usize][0], node_pos[u as usize][1], t[0], t[1]);
+                                if d < end.0 && c + d as f32 <= limit {
+                                    end = (d, st);
+                                }
+                            }
+                        }
+                        for &ei in &adj[u as usize] {
+                            if ei == st / 2 {
+                                continue; // back along the same stretch
+                            }
+                            let e = &edges[ei as usize];
+                            // Leaving u by e: from its u end toward v, or from its v end.
+                            for (s2, from, dep) in [(ei * 2, e.u, e.du), (ei * 2 + 1, e.v, e.dv)] {
+                                if from != u {
+                                    continue;
+                                }
+                                let nc = c + turn(h, dep, gap(st / 2) || gap(ei)) + cost(e, e.len);
+                                if nc <= limit && dist.get(&s2).is_none_or(|&d| nc < d) {
+                                    dist.insert(s2, nc);
+                                    prev.insert(s2, st);
+                                    src.remove(&s2);
+                                    heap.push(Reverse((nc.to_bits(), s2)));
+                                }
+                            }
                         }
                     }
-                }
-                if beyond.is_some() {
-                    best.1 = end.1;
-                }
-                if best.1 == u32::MAX {
-                    if debug {
-                        let why = if beyond.is_some() { "snap" } else { "path" };
-                        eprintln!("MISS {why} {} {:.5},{:.5} {:.5},{:.5} {}", p.mode, p.a[0], p.a[1], p.b[0], p.b[1], p.n);
+                    if beyond.is_some() {
+                        best.1 = end.1;
                     }
-                    continue;
-                }
-                matched += 1;
-                // The end of a stretch at a node: its offset there.
-                let at_node = |e: &Edge, node: u32| if node == e.u { 0.0 } else { e.len };
-                let mut n = best.1;
-                if beyond.is_some() {
-                    partial += 1;
-                    if debug {
-                        let q = node_pos[best.1 as usize];
-                        eprintln!("BEYOND {} {:.5},{:.5} {:.5},{:.5} {} → end {:.5},{:.5}", p.mode, p.a[0], p.a[1], p.b[0], p.b[1], p.n, q[0], q[1]);
+                    if best.1 == u32::MAX {
+                        if debug && last {
+                            let why = if beyond.is_some() { "snap" } else { "path" };
+                            eprintln!("MISS {why} {} {:.5},{:.5} {:.5},{:.5} {}", p.mode, p.a[0], p.a[1], p.b[0], p.b[1], p.n);
+                        }
+                        continue;
                     }
-                } else {
-                    // B's stretch, from where the path reaches it to the stop.
-                    run(best.2.edge, at_node(&edges[best.2.edge as usize], n), best.2.off);
-                }
-                let mut guard = 0;
-                loop {
-                    if let Some(&a) = src.get(&n) {
-                        // A's stretch, from the stop to where the path leaves it.
-                        run(a.edge, a.off, at_node(&edges[a.edge as usize], n));
-                        break;
+                    matched += 1;
+                    // The end of a stretch at a node: its offset there.
+                    let at_node = |e: &Edge, node: u32| if node == e.u { 0.0 } else { e.len };
+                    let mut st = best.1;
+                    if beyond.is_some() {
+                        partial += 1;
+                        if debug {
+                            let q = node_pos[end_of(st).0 as usize];
+                            eprintln!("BEYOND {} {:.5},{:.5} {:.5},{:.5} {} → end {:.5},{:.5}", p.mode, p.a[0], p.a[1], p.b[0], p.b[1], p.n, q[0], q[1]);
+                        }
+                    } else {
+                        // B's stretch, from where the path reaches it to the stop.
+                        run(best.2.edge, at_node(&edges[best.2.edge as usize], end_of(st).0), best.2.off);
                     }
-                    let Some(&ei) = prev.get(&n) else { break };
-                    let e = &edges[ei as usize];
-                    run(ei, 0.0, e.len);
-                    n = if e.u == n { e.v } else { e.u };
-                    guard += 1;
-                    if guard > 100_000 {
-                        break;
+                    let mut guard = 0;
+                    loop {
+                        let e = &edges[(st / 2) as usize];
+                        if let Some(&a) = src.get(&st) {
+                            // A's stretch, from the stop to the end the path leaves it by.
+                            run(a.edge, a.off, at_node(e, end_of(st).0));
+                            break;
+                        }
+                        run(st / 2, 0.0, e.len);
+                        let Some(&ps) = prev.get(&st) else { break };
+                        st = ps;
+                        guard += 1;
+                        if guard > 100_000 {
+                            break;
+                        }
+                    }
+                    break;
+                }
+                let at_stop = debug_stop.is_some_and(|q| dist_m(q[0], q[1], p.a[0], p.a[1]) < 50.0 || dist_m(q[0], q[1], p.b[0], p.b[1]) < 50.0);
+                if debug_way.is_some() || at_stop {
+                    let dw = debug_way.unwrap_or(0);
+                    let mine = &runs[r0..];
+                    if at_stop || mine.iter().any(|r| edges[r.0 as usize].way != u32::MAX && ways[edges[r.0 as usize].way as usize].id == dw) {
+                        let path: Vec<String> = mine.iter().rev().map(|r| {
+                            let e = &edges[r.0 as usize];
+                            let id = if e.way == u32::MAX { 0 } else { ways[e.way as usize].id };
+                            format!("{id}[{:.0}-{:.0}/{:.0}]", r.1, r.2, e.len)
+                        }).collect();
+                        eprintln!("WAY {dw}: {:.5},{:.5} -> {:.5},{:.5} mode {} trains {}: {}", p.a[0], p.a[1], p.b[0], p.b[1], p.mode, p.n, path.join(" "));
                     }
                 }
             }
@@ -498,6 +590,25 @@ fn main() -> Result<()> {
         })
         .collect();
     let (sums, lower) = corridors(&rail, ways, verts, &along, &at, &most);
+    // RAILFREQ_AT=lon,lat,metres: every rail way there, its trains a day each way, and the trains
+    // along each of its stretches (both directions: count@metres from the stretch's start).
+    if let Some(v) = std::env::var("RAILFREQ_AT").ok().map(|s| s.split(',').filter_map(|x| x.parse::<f64>().ok()).collect::<Vec<_>>()).filter(|v| v.len() == 3) {
+        for (i, &w) in rail.iter().enumerate() {
+            let wr = &ways[w as usize];
+            let vs = &verts[wr.vstart as usize..(wr.vstart + wr.vcount as u64) as usize];
+            if !vs.iter().any(|p| dist_m(v[0], v[1], p[0] as f64 * E7, p[1] as f64 * E7) <= v[2]) {
+                continue;
+            }
+            let (first, n) = way_edges[i];
+            let stretches: Vec<String> = (first..first + n)
+                .map(|e| {
+                    let pts = &cov[cov_off[e as usize] as usize..cov_off[e as usize + 1] as usize];
+                    format!("[{:.0} m: {}]", edges[e as usize].len, pts.iter().map(|p| format!("{:.0}@{:.0}", p.1, p.0)).collect::<Vec<_>>().join(" "))
+                })
+                .collect();
+            eprintln!("AT way {} ({:.0} m): {:.0} a day each way (own most {:.0}) {}", wr.id, along[i].last().copied().unwrap_or(0.0), sums[i] / 2.0, most[i].0 / 2.0, stretches.join(" "));
+        }
+    }
     let mut out: Vec<u8> = Vec::new();
     let mut n_ways = 0usize;
     for (i, &s) in sums.iter().enumerate() {
