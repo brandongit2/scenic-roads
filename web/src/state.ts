@@ -11,7 +11,6 @@ import { MODES, migrateWeights, modeDef, type Mode } from './scenic';
 export type { Mode };
 
 export type HillshadeMethod = 'standard' | 'basic' | 'combined' | 'igor' | 'multidirectional';
-export type TintRange = 'region' | 'view' | 'roads' | 'custom';
 export type TintVar = 'elev' | 'slope';
 
 /** Overlay layers (designations, stops, context). */
@@ -92,20 +91,16 @@ export interface Terrain {
   /** What the tint colours: elevation, or terrain slope (%). */
   tintVar: TintVar;
   tintOpacity: number;
-  /** Tint colour ramp (see terrain.ts TINT_PALETTES; 'roads' follows the road palette). */
-  tintPalette: string;
-  /** Elevation span of the ramp: whole region, fitted to the view, the road colour range, or custom. */
-  tintRange: TintRange;
-  tintMin: number;
-  tintMax: number;
-  /** Band height in metres, 0 = smooth. */
+  /** The tint's colour scale per variable (ui/scale.ts, as the roads'): palette (terrain.ts
+   * TINT_PALETTES; 'roads' follows the road palette), range auto-fitted to the terrain in view
+   * (percentiles `fit`), locked or full, equalisation, low-end fade and highlight. */
+  tintScales: Record<TintVar, ScaleFields>;
+  /** The range follows the road colours' while roads show elevation (or grade, for slope). */
+  tintMatch: boolean;
+  /** Band height in metres (or percent slope), 0 = smooth. */
   tintBands: number;
   /** Ramp exponent: < 1 spends more colour on lowlands, > 1 on highlands. */
   tintCurve: number;
-  /** Transparency at the low end of the tint ramp (1 = fully transparent at the bottom), per variable. */
-  tintFade: { elev: number; slope: number };
-  /** Share of the ramp the fade spans, per variable. */
-  tintFadeSpan: { elev: number; slope: number };
   contours: boolean;
   sky: boolean;
 }
@@ -133,6 +128,43 @@ function parseScaleTail(v: string[], d: ScaleFields): Pick<ScaleFields, 'fit' | 
   };
 }
 
+/** A colour scale's fields in a link: palette, auto, range, fit, equalise, fades, highlight. */
+function scaleStr(x: ScaleFields): string {
+  return [x.palette, x.auto ? 1 : 0, +x.range[0].toFixed(3), +x.range[1].toFixed(3), +x.lowFade.toFixed(2),
+    x.fit[0], x.fit[1], x.equalize ? 1 : 0, +x.lowSpan.toFixed(2), x.threshold.on ? 1 : 0, THR_CODE[x.threshold.dir], +x.threshold.value.toFixed(3)].join(',');
+}
+function parseScale(v: string[], d: ScaleFields): ScaleFields {
+  const n = (x: string | undefined, dv: number) => (x !== undefined && x !== '' && Number.isFinite(Number(x)) ? Number(x) : dv);
+  const lo = n(v[2], d.range[0]), hi = n(v[3], d.range[1]);
+  return {
+    palette: v[0] || d.palette, auto: v[1] === '1', range: hi > lo ? [lo, hi] : [...d.range], lowFade: Math.min(1, Math.max(0, n(v[4], d.lowFade))),
+    ...parseScaleTail(v.slice(5), d),
+  };
+}
+
+/** The tint from settings saved or linked before its colour scale: the old palette, range mode
+ * (whole region, fitted to the view, the roads', custom min–max) and fades, per variable. */
+function migrateTint(t: Terrain, o: Record<string, unknown>): Terrain {
+  const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+  const tv: TintVar = o.tintVar === 'elev' ? 'elev' : o.tintVar === 'slope' ? 'slope' : t.tintVar;
+  const sc = { ...t.tintScales[tv] };
+  if (typeof o.tintPalette === 'string' && o.tintPalette) sc.palette = o.tintPalette;
+  const full: [number, number] = tv === 'slope' ? [0, 100] : [0, 1900];
+  if (o.tintRange === 'view') sc.auto = true;
+  else if (o.tintRange === 'region') Object.assign(sc, { auto: false, range: full });
+  else if (o.tintRange === 'custom' && num(o.tintMin) && num(o.tintMax) && o.tintMax > o.tintMin) Object.assign(sc, { auto: false, range: [o.tintMin, o.tintMax] });
+  const fade = o.tintFade as Record<string, unknown> | undefined, span = o.tintFadeSpan as Record<string, unknown> | undefined;
+  const out: Terrain = { ...t, tintVar: tv, tintMatch: o.tintRange === 'roads', tintScales: { ...t.tintScales, [tv]: sc } };
+  for (const k of ['elev', 'slope'] as const) {
+    const f = fade?.[k], sp = span?.[k];
+    if (num(f) || num(sp)) out.tintScales[k] = { ...out.tintScales[k], ...(num(f) ? { lowFade: Math.min(1, Math.max(0, f)) } : {}), ...(num(sp) ? { lowSpan: Math.min(1, Math.max(0.05, sp)) } : {}) };
+  }
+  if (num(o.tintBands)) out.tintBands = Math.max(0, o.tintBands);
+  if (num(o.tintCurve)) out.tintCurve = Math.min(3, Math.max(0.3, o.tintCurve));
+  if (num(o.tintOpacity)) out.tintOpacity = Math.min(1, Math.max(0, o.tintOpacity));
+  return out;
+}
+
 /** Landmark fit ranks: whole numbers, the low end's rank below (after) the top end's. */
 export const topRanks = (lo: number, hi: number): [number, number] => {
   const h = Math.max(1, Math.round(hi));
@@ -158,8 +190,8 @@ export interface MetricLook {
   thrValue: number;
 }
 
-/** The colour-scale fields shared by roads, rail and ferries (see ui/scale.ts). */
-interface ScaleFields {
+/** The colour-scale fields shared by roads, rail, ferries and the terrain tint (see ui/scale.ts). */
+export interface ScaleFields {
   palette: string;
   auto: boolean;
   range: [number, number];
@@ -433,8 +465,11 @@ export const defaults: AppState = {
   stopUnknown: { waterfall: false },
   terrain: {
     on: true, exaggeration: 3, hillshade: true, method: 'combined', light: 315, shade: 0.15,
-    tint: true, tintVar: 'slope', tintOpacity: 0.1, tintPalette: 'plasma_r', tintRange: 'custom', tintMin: 10, tintMax: 70, tintBands: 0, tintCurve: 1,
-    tintFade: { elev: 0, slope: 1 }, tintFadeSpan: { elev: 0.5, slope: 0.1 },
+    tint: true, tintVar: 'slope', tintOpacity: 0.1, tintBands: 0, tintCurve: 1, tintMatch: false,
+    tintScales: {
+      elev: { palette: 'atlas', auto: true, range: [0, 1900], fit: [1, 99], equalize: false, lowFade: 0, lowSpan: 0.5, threshold: { on: false, dir: 'above', value: 1000 } },
+      slope: { palette: 'plasma_r', auto: false, range: [10, 70], fit: [2, 98], equalize: false, lowFade: 1, lowSpan: 0.1, threshold: { on: false, dir: 'above', value: 30 } },
+    },
     contours: false, sky: true,
   },
   threshold: { on: false, dir: 'above', value: 60 },
@@ -646,11 +681,11 @@ export function toHash(s: AppState): string {
   ].join(',');
   const td = [dt.on ? 1 : 0, dt.exaggeration, dt.hillshade ? 1 : 0, HM.indexOf(dt.method), dt.light, dt.shade, dt.tint ? 1 : 0, dt.contours ? 1 : 0, dt.sky ? 1 : 0].join(',');
   if (tt !== td) p.set('t3', tt);
-  const tn = [t.tintPalette, t.tintRange, Math.round(t.tintMin), Math.round(t.tintMax), t.tintBands, +t.tintCurve.toFixed(2), +t.tintOpacity.toFixed(2), t.tintVar].join(',');
-  const tnd = [dt.tintPalette, dt.tintRange, dt.tintMin, dt.tintMax, dt.tintBands, dt.tintCurve, dt.tintOpacity, dt.tintVar].join(',');
-  if (tn !== tnd) p.set('tn', tn);
-  const tf = [t.tintFade.elev, t.tintFadeSpan.elev, t.tintFade.slope, t.tintFadeSpan.slope].map((v) => +v.toFixed(2)).join(',');
-  if (tf !== [dt.tintFade.elev, dt.tintFadeSpan.elev, dt.tintFade.slope, dt.tintFadeSpan.slope].join(',')) p.set('tf', tf);
+  const tv = (x: Terrain) => [x.tintVar, x.tintBands, +x.tintCurve.toFixed(2), +x.tintOpacity.toFixed(2), x.tintMatch ? 1 : 0].join(',');
+  if (tv(t) !== tv(dt)) p.set('tv', tv(t));
+  for (const [k, key] of [['elev', 'te'], ['slope', 'ts']] as const) {
+    if (scaleStr(t.tintScales[k]) !== scaleStr(dt.tintScales[k])) p.set(key, scaleStr(t.tintScales[k]));
+  }
   if (s.lowFade !== defaults.lowFade || s.lowSpan !== defaults.lowSpan) p.set('lf', `${+s.lowFade.toFixed(2)},${+s.lowSpan.toFixed(2)}`);
   if (s.labelOpacity !== defaults.labelOpacity) p.set('lo', s.labelOpacity.toFixed(2));
   const ldv = (d: LabelDensity) => [d.px, ...DENSITY_KINDS.map(([k]) => +d.kinds[k].toFixed(3)), +d.horizon.toFixed(2)].join(',');
@@ -832,21 +867,22 @@ export function fromHash(hash: string): AppState {
       light: t3[4], shade: Math.min(1, Math.max(0, t3[5])), tint: t3[6] === 1, contours: t3[7] === 1, sky: t3[8] === 1,
     };
   }
-  const tn = p.get('tn')?.split(',');
-  if (tn && tn.length >= 7) {
-    const n = tn.slice(2, 7).map(Number);
-    if (n.every(Number.isFinite) && n[1] > n[0]) {
-      s.terrain = {
-        ...s.terrain, tintPalette: tn[0], tintRange: (['region', 'view', 'roads', 'custom'] as const).find((r) => r === tn[1]) ?? 'region',
-        tintMin: n[0], tintMax: n[1], tintBands: Math.max(0, n[2]), tintCurve: Math.min(3, Math.max(0.3, n[3])), tintOpacity: Math.min(1, Math.max(0, n[4])),
-        tintVar: tn[7] === 'slope' ? 'slope' : 'elev',
-      };
-    }
+  // Links from before the tint's scale (palette, range mode, min, max, …; fades per variable).
+  const tn = p.get('tn')?.split(','), tf = p.get('tf')?.split(',').map(Number);
+  if (tn && tn.length >= 7) s.terrain = migrateTint(s.terrain, { tintPalette: tn[0], tintRange: tn[1], tintMin: Number(tn[2]), tintMax: Number(tn[3]),
+    tintBands: Number(tn[4]), tintCurve: Number(tn[5]), tintOpacity: Number(tn[6]), tintVar: tn[7],
+    ...(tf && tf.length === 4 && tf.every(Number.isFinite) ? { tintFade: { elev: tf[0], slope: tf[2] }, tintFadeSpan: { elev: tf[1], slope: tf[3] } } : {}) });
+  const tvv = p.get('tv')?.split(',');
+  if (tvv && tvv.length >= 5) {
+    const n = (v: string, d: number) => (v !== '' && Number.isFinite(Number(v)) ? Number(v) : d);
+    s.terrain = {
+      ...s.terrain, tintVar: tvv[0] === 'elev' ? 'elev' : 'slope', tintBands: Math.max(0, n(tvv[1], 0)), tintCurve: Math.min(3, Math.max(0.3, n(tvv[2], 1))),
+      tintOpacity: Math.min(1, Math.max(0, n(tvv[3], s.terrain.tintOpacity))), tintMatch: tvv[4] === '1',
+    };
   }
-  const tf = p.get('tf')?.split(',').map(Number);
-  if (tf && tf.length === 4 && tf.every(Number.isFinite)) {
-    const c = (v: number, lo: number) => Math.min(1, Math.max(lo, v));
-    s.terrain = { ...s.terrain, tintFade: { elev: c(tf[0], 0), slope: c(tf[2], 0) }, tintFadeSpan: { elev: c(tf[1], 0.05), slope: c(tf[3], 0.05) } };
+  for (const [k, key] of [['elev', 'te'], ['slope', 'ts']] as const) {
+    const v = p.get(key)?.split(',');
+    if (v) s.terrain = { ...s.terrain, tintScales: { ...s.terrain.tintScales, [k]: parseScale(v, s.terrain.tintScales[k]) } };
   }
   const lf = p.get('lf')?.split(',').map(Number);
   if (lf && lf.length === 2 && lf.every(Number.isFinite)) {
@@ -923,6 +959,8 @@ export function fromSaved(o: unknown): AppState {
   const rs = rest.rail as { weights?: unknown } | undefined;
   if (rs && Array.isArray(rs.weights) && rs.weights.length === RNCOMP - 1) rs.weights = [...rs.weights, FREQ_WEIGHT_ADDED];
   merge(s as unknown as Record<string, unknown>, rest);
+  const oldT = rest.terrain as Record<string, unknown> | undefined;
+  if (oldT && 'tintPalette' in oldT && !('tintScales' in oldT)) s.terrain = migrateTint(s.terrain, oldT);
   if (!rest.lineWeights) {
     const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null);
     const w = num(rest.weight), rw = num((rest.rail as { weight?: unknown } | undefined)?.weight), fw = num((rest.ferry as { weight?: unknown } | undefined)?.weight);

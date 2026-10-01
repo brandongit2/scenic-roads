@@ -4,8 +4,7 @@ import * as maplibregl from 'maplibre-gl';
 import mlcontour from 'maplibre-contour';
 import { HYPSO } from './basemap';
 import { PALETTES, baseKey, isRev, paletteFn } from './palettes';
-import type { Dist } from './roads/stats';
-import type { Terrain } from './state';
+import type { ScaleFields, Terrain } from './state';
 import { ver } from './api';
 
 type RGB = [number, number, number];
@@ -42,134 +41,103 @@ export const TINT_PALETTES: { key: string; label: string; group: string; fn?: (t
   ...PALETTES.map((p) => ({ key: p.key, label: p.label, group: p.group, fn: p.fn })),
 ];
 
-export interface TintContext {
-  /** Current road palette key. */
-  roadPalette: string;
-  /** Current (animated) road colour range and whether it is an elevation range. */
-  roadRange: [number, number];
-  roadIsElevation: boolean;
-  /** Road colours show grade (%), comparable with terrain slope. */
-  roadIsGrade: boolean;
-  /** Elevation distribution of roads in view. */
-  elev: Dist | null;
-}
-
-let tintSig = '';
-
-/** Default spans and custom-range limits per tint variable (m or %). */
+/** Per tint variable: the scale's whole domain, its step, the unit, and the band heights offered. */
 export const TINT_VARS = {
-  elev: { full: [0, 1900] as [number, number], custom: [0, 1900] as [number, number], limits: [-50, 1950, 10] as const, unit: 'm', bands: [25, 50, 100, 200, 500] },
-  slope: { full: [0, 100] as [number, number], custom: [0, 60] as [number, number], limits: [0, 200, 1] as const, unit: '%', bands: [2, 5, 10, 15, 20, 25] },
+  elev: { domain: [-100, 4900] as [number, number], step: 10, unit: 'm', bands: [25, 50, 100, 200, 500] },
+  slope: { domain: [0, 200] as [number, number], step: 1, unit: '%', bands: [2, 5, 10, 15, 20, 25] },
 };
 
-/** Span of the tint ramp for the current settings (metres, or percent slope). */
-export function tintRange(t: Terrain, ctx: TintContext): [number, number] {
-  if (t.tintVar === 'slope') {
-    const full = TINT_VARS.slope.full;
-    switch (t.tintRange) {
-      case 'custom':
-        return [t.tintMin, Math.max(t.tintMin + 1, t.tintMax)];
-      case 'roads':
-        return ctx.roadIsGrade ? ctx.roadRange : full;
-      default:
-        return full; // 'view' can't be fitted for slope (no terrain statistics): full scale
-    }
-  }
-  const fit = (): [number, number] | null => {
-    const e = ctx.elev;
-    if (!e || e.total <= 0) return null;
-    const lo = e.quantile(0.005), hi = e.quantile(1);
-    // Terrain rises above the roads: leave headroom for summits.
-    return [Math.max(-20, lo - 20), Math.max(lo + 80, hi + (hi - lo) * 0.4 + 40)];
-  };
-  switch (t.tintRange) {
-    case 'custom':
-      return [t.tintMin, Math.max(t.tintMin + 10, t.tintMax)];
-    case 'view':
-      return fit() ?? [0, 1900];
-    case 'roads':
-      return ctx.roadIsElevation ? ctx.roadRange : (fit() ?? [0, 1900]);
-    default:
-      return [0, 1900];
-  }
+/** Colour along the ramp (0..1) for a palette key, with the emphasis curve ('roads': the road
+ * palette). */
+export function tintColourFn(palette: string, curve: number, roadPalette: string): (u: number) => RGB {
+  const base = baseKey(palette);
+  const f0 = base === 'roads' ? paletteFn(roadPalette) : (TINT_PALETTES.find((p) => p.key === base)?.fn ?? atlas);
+  const fn = isRev(palette) ? (u: number) => f0(1 - u) : f0;
+  return (u) => fn(Math.pow(Math.max(0, Math.min(1, u)), curve));
 }
 
-function tintFn(t: Terrain, ctx: TintContext): (u: number) => RGB {
-  const base = baseKey(t.tintPalette);
-  const f0 = base === 'roads' ? paletteFn(ctx.roadPalette) : (TINT_PALETTES.find((p) => p.key === base)?.fn ?? atlas);
-  const fn = isRev(t.tintPalette) ? (u: number) => f0(1 - u) : f0;
-  const g = t.tintCurve;
-  return (u) => fn(Math.pow(Math.max(0, Math.min(1, u)), g));
-}
-
-/** Tint opacity along the ramp (same curve as the road low-end fade). */
-function tintAlpha(t: Terrain): (u: number) => number {
-  const f = t.tintFade[t.tintVar], sp = Math.max(0.05, t.tintFadeSpan[t.tintVar]);
-  return (u) => 1 - f * Math.pow(1 - Math.max(0, Math.min(1, u / sp)), 1.5);
-}
+/** Opacity along the ramp (same curve as the road low-end fade). */
+const fadeFn = (sc: ScaleFields) => {
+  const sp = Math.max(0.05, sc.lowSpan);
+  return (u: number) => 1 - sc.lowFade * Math.pow(1 - Math.max(0, Math.min(1, u / sp)), 1.5);
+};
 
 const rgba = (c: RGB, a: number) =>
   `rgba(${c.map((v) => Math.round(Math.max(0, Math.min(1, v)) * 255)).join(',')},${Math.max(0, Math.min(1, a)).toFixed(3)})`;
 
-/** CSS gradient of the current tint ramp (for the legend). */
-export function tintCss(t: Terrain, ctx: TintContext): string {
-  const f = tintFn(t, ctx);
-  const al = tintAlpha(t);
-  const [lo, hi] = tintRange(t, ctx);
-  const parts: string[] = [];
+/** The tint's colour and opacity at a value (metres or percent), on the range in use: banded,
+ * equalised (cdf over the range), faded at the low end; outside the highlight, transparent. */
+export function tintColourAt(t: Terrain, sc: ScaleFields, range: [number, number], cdf: Uint8Array | null, roadPalette: string): (v: number) => [RGB, number] {
+  const col = tintColourFn(sc.palette, t.tintCurve, roadPalette);
+  const al = fadeFn(sc);
+  const [lo, hi] = range;
   const B = t.tintBands;
+  return (v) => {
+    const thr = sc.threshold;
+    if (thr.on && !(thr.dir === 'low' ? v >= lo : thr.dir === 'below' ? v <= thr.value : v >= thr.value)) return [[0, 0, 0], 0];
+    const e = B > 0 ? (Math.floor(v / B) + 0.5) * B : v;
+    let u = Math.max(0, Math.min(1, (e - lo) / (hi - lo || 1e-9)));
+    if (cdf) u = cdf[Math.min(255, Math.floor(u * 255 + 0.5))] / 255;
+    return [col(u), al(u)];
+  };
+}
+
+/** CSS gradient of the tint over a range (the palette list's swatches). */
+export function tintCss(t: Terrain, sc: ScaleFields, range: [number, number], roadPalette: string): string {
+  const at = tintColourAt(t, { ...sc, threshold: { ...sc.threshold, on: false } }, range, null, roadPalette);
+  const parts: string[] = [];
   const n = 24;
   for (let i = 0; i <= n; i++) {
-    let u = i / n;
-    if (B > 0) {
-      const e = lo + u * (hi - lo);
-      u = ((Math.floor(e / B) + 0.5) * B - lo) / (hi - lo);
-    }
-    parts.push(`${rgba(f(u), al(u))} ${((i / n) * 100).toFixed(1)}%`);
+    const [c, a] = at(range[0] + (i / n) * (range[1] - range[0]));
+    parts.push(`${rgba(c, Math.max(0.12, a))} ${((i / n) * 100).toFixed(1)}%`);
   }
   return `linear-gradient(90deg, ${parts.join(', ')})`;
 }
 
-/** Update the colour-relief layer; cheap to call often (no-op when nothing changed). */
-export function applyTint(map: MLMap, t: Terrain, ctx: TintContext) {
+let tintSig = '';
+
+/** Update the colour-relief layer for the range in use (eased by the caller, main.ts); cheap to
+ * call every frame: a no-op when nothing changed, else the ramp without style validation. */
+export function applyTint(map: MLMap, t: Terrain, sc: ScaleFields, range: [number, number], cdf: Uint8Array | null, roadPalette: string, cdfKey = '') {
   if (!map.getLayer('tint') || !map.getLayer('tint-slope')) return;
   const id = t.tintVar === 'slope' ? 'tint-slope' : 'tint';
-  map.setLayoutProperty('tint', 'visibility', t.tint && id === 'tint' ? 'visible' : 'none');
-  map.setLayoutProperty('tint-slope', 'visibility', t.tint && id === 'tint-slope' ? 'visible' : 'none');
+  const vis = (l: string) => (t.tint && id === l ? 'visible' : 'none');
+  if (map.getLayoutProperty('tint', 'visibility') !== vis('tint')) map.setLayoutProperty('tint', 'visibility', vis('tint'));
+  if (map.getLayoutProperty('tint-slope', 'visibility') !== vis('tint-slope')) map.setLayoutProperty('tint-slope', 'visibility', vis('tint-slope'));
   if (!t.tint) return;
-  const [lo, hi] = tintRange(t, ctx);
+  const [lo, hi] = range;
   const span = hi - lo;
-  const sig = [id + t.tintPalette + t.tintFade[t.tintVar] + ':' + t.tintFadeSpan[t.tintVar], baseKey(t.tintPalette) === 'roads' ? ctx.roadPalette : '', t.tintBands, t.tintCurve, t.tintOpacity, lo.toFixed(1), hi.toFixed(1)].join('|');
+  const sig = [id, JSON.stringify(sc), baseKey(sc.palette) === 'roads' ? roadPalette : '', t.tintBands, t.tintCurve, t.tintOpacity, cdf ? cdfKey : '', lo.toPrecision(5), hi.toPrecision(5)].join('|');
   if (sig === tintSig) return;
-  // Ignore sub-2 % drifts of a fitted range (avoids re-uploading the ramp while panning).
-  const prev = tintSig.split('|');
-  if (prev.length === 7 && prev.slice(0, 5).join('|') === sig.split('|').slice(0, 5).join('|')) {
-    const [plo, phi] = [Number(prev[5]), Number(prev[6])];
-    if (Math.abs(plo - lo) < span * 0.02 && Math.abs(phi - hi) < span * 0.02) return;
-  }
   tintSig = sig;
-  const f = tintFn(t, ctx);
-  const al = tintAlpha(t);
-  const col = (u: number) => rgba(f(u), al(u));
-  let expr: unknown[];
+  const at = tintColourAt(t, sc, range, cdf, roadPalette);
+  const col = (v: number) => {
+    const [c, a] = at(v);
+    return rgba(c, a);
+  };
+  // Values to place stops at: band edges (each a pair of stops 1 cm apart: colour-relief only
+  // takes `interpolate`), else even steps (more when equalised: the lookup bends the ramp), and
+  // the highlight's edge.
+  const vs: number[] = [];
+  const thr = sc.threshold;
   if (t.tintBands > 0) {
-    // Bands: one colour per band, sampled at its middle. (colour-relief only accepts
-    // `interpolate`, so each band edge is a pair of stops 1 cm apart.)
     let B = t.tintBands;
     while (span / B > 90) B *= 2;
-    const first = Math.floor(lo / B) * B;
-    const band = (e: number) => col((Math.floor(e / B) * B + B / 2 - lo) / span);
-    const eps = Math.min(0.01, B / 100);
-    expr = ['interpolate', ['linear'], ['elevation'], first, band(first)];
-    for (let e = first + B; e < hi; e += B) expr.push(e - eps, band(e - B), e, band(e));
-    expr.push(Math.max(hi, first + B) + 1, band(hi));
+    const first = Math.floor(lo / B) * B, eps = Math.min(0.01, B / 100);
+    vs.push(first);
+    for (let e = first + B; e < hi; e += B) vs.push(e - eps, e);
+    vs.push(Math.max(hi, first + B) + 1);
   } else {
-    expr = ['interpolate', ['linear'], ['elevation']];
-    const n = 32;
-    for (let i = 0; i <= n; i++) expr.push(lo + (i / n) * span, col(i / n));
+    const n = cdf ? 64 : 32;
+    for (let i = 0; i <= n; i++) vs.push(lo + (i / n) * span);
   }
-  map.setPaintProperty(id, 'color-relief-color', expr as never);
-  map.setPaintProperty(id, 'color-relief-opacity', t.tintOpacity);
+  if (thr.on && thr.dir !== 'low') vs.push(thr.value - span * 1e-4, thr.value);
+  else if (thr.on) vs.push(lo - span * 1e-4, lo);
+  const stops = [...new Set(vs)].sort((a, b) => a - b);
+  const expr: unknown[] = ['interpolate', ['linear'], ['elevation']];
+  for (const v of stops) expr.push(v, col(v));
+  map.setPaintProperty(id, 'color-relief-color', expr as never, { validate: false });
+  map.setPaintProperty(id, 'color-relief-opacity', t.tintOpacity, { validate: false });
 }
 
 /** Opacity of every label layer (the profile / marker labels stay opaque). */

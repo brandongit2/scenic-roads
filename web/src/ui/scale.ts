@@ -5,7 +5,7 @@ import { PALETTE_ITEMS, paletteCss, paletteRgb } from '../palettes';
 import type { Dist } from '../roads/stats';
 import type { ThresholdDir } from '../state';
 import { h, niceStep, setupCanvas } from './dom';
-import { RampSelect } from './rampselect';
+import { RampSelect, type RampItem } from './rampselect';
 
 /** The unit-free and in-units settings of one colour scale. */
 export interface ScaleValue {
@@ -47,6 +47,14 @@ export interface ScaleOpts {
   /** Auto-fit to the best so much of the length in view (the low end at the first amount, full
    * colour from the second, in `unit`s) instead of percentiles, while `active` (roads' scenic metrics). */
   len?: { active: () => boolean; get: () => [number, number]; set: (v: [number, number]) => void; unit: string };
+  /** A pill that makes the range follow something else (the terrain tint: the road colours'),
+   * while `available`; on, the caption says so and Auto / Lock / Full turn it off. */
+  follow?: { label: string; title: string; caption: string; available: () => boolean; on: () => boolean; set: (on: boolean) => void };
+  /** The palettes offered and their swatches (default: the shared ramps). */
+  palettes?: { items: RampItem[]; css: (key: string) => string };
+  /** Colour and opacity at a value (default: the palette at its scale position, faded at the low
+   * end), e.g. the terrain tint's own ramps, bands and emphasis. */
+  colourAt?: (v: number) => [string, number];
   onPreview: (palette: string | null) => void;
 }
 
@@ -175,7 +183,7 @@ export class ScaleControls {
     }
     this.legend = h('div', { class: 'legend' }, this.canvas, h('div', { class: 'caption' }, this.caption, this.pills));
 
-    this.pal = new RampSelect(PALETTE_ITEMS, (k) => paletteCss(k), (k) => o.set({ palette: k }), (k) => o.onPreview(k));
+    this.pal = new RampSelect(o.palettes?.items ?? PALETTE_ITEMS, o.palettes?.css ?? ((k) => paletteCss(k)), (k) => o.set({ palette: k }), (k) => o.onPreview(k));
     this.palRow = h('div', { class: 'pal-row' }, h('span', { class: 'muted' }, 'Colours'), this.pal.el);
 
     this.fade = h('input', { type: 'range', min: 0, max: 1, step: 0.05, title: `How transparent ${o.noun} at the low end of the colour scale become (double-click: default)` });
@@ -235,8 +243,11 @@ export class ScaleControls {
     this.thrOut.value = d.fmt(this.thrValue());
     this.pills.replaceChildren();
     const fixed = this.o.fixedCaption?.();
+    const follow = this.o.follow?.available() && this.o.follow.on() ? this.o.follow : null;
     if (fixed) {
       this.caption.textContent = fixed;
+    } else if (follow) {
+      this.caption.textContent = follow.caption;
     } else {
       if (s.auto && this.o.rank && this.rankLo && this.rankHi) {
         const [lo, hi] = this.o.rank.get();
@@ -250,13 +261,18 @@ export class ScaleControls {
         this.caption.replaceChildren('Auto-fit: the best ', this.lenLo, ` ${this.o.len.unit} of ${this.o.noun} in view, full colour from the best `, this.lenHi);
       } else if (s.auto) this.caption.replaceChildren('Auto-fit to percentiles ', this.fitLo, '–', this.fitHi, ` of ${this.o.noun} in view`);
       else this.caption.textContent = 'Fixed range · drag the handles';
+    }
+    if (!fixed) {
       this.fitLo.value = String(s.fit[0]);
       this.fitHi.value = String(s.fit[1]);
+      const off = () => follow?.set(false);
       this.pills.append(
-        h('button', { class: 'pill' + (s.auto ? ' on' : ''), title: `Follow the ${this.o.noun} in view`, onclick: () => this.o.set({ auto: true }) }, 'Auto'),
-        h('button', { class: 'pill' + (!s.auto ? ' on' : ''), title: 'Freeze the current range', onclick: () => this.o.set({ auto: false, range: [...this.range] as [number, number] }) }, 'Lock'),
-        h('button', { class: 'pill', title: `Whole scale: ${d.fmt(d.domain[0])} – ${d.fmt(d.domain[1])}`, onclick: () => this.o.set({ auto: false, range: [...d.domain] as [number, number] }) }, 'Full'),
+        h('button', { class: 'pill' + (s.auto && !follow ? ' on' : ''), title: `Follow the ${this.o.noun} in view`, onclick: () => (off(), this.o.set({ auto: true })) }, 'Auto'),
+        h('button', { class: 'pill' + (!s.auto && !follow ? ' on' : ''), title: 'Freeze the current range', onclick: () => (off(), this.o.set({ auto: false, range: [...this.range] as [number, number] })) }, 'Lock'),
+        h('button', { class: 'pill', title: `Whole scale: ${d.fmt(d.domain[0])} – ${d.fmt(d.domain[1])}`, onclick: () => (off(), this.o.set({ auto: false, range: [...d.domain] as [number, number] })) }, 'Full'),
       );
+      const f = this.o.follow;
+      if (f?.available()) this.pills.append(h('button', { class: 'pill' + (f.on() ? ' on' : ''), title: f.title, onclick: () => f.set(!f.on()) }, f.label));
     }
     this.pills.append(
       h('button', {
@@ -298,10 +314,11 @@ export class ScaleControls {
   }
 
   private colourAt(v: number): string {
-    return paletteRgb(this.o.get().palette, this.uAt(v));
+    return this.o.colourAt ? this.o.colourAt(v)[0] : paletteRgb(this.o.get().palette, this.uAt(v));
   }
 
   private alphaAt(v: number): number {
+    if (this.o.colourAt) return this.o.colourAt(v)[1];
     const s = this.o.get();
     return fadeAlpha(this.uAt(v), s.lowFade, s.lowSpan);
   }

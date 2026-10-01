@@ -35,7 +35,8 @@ import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
 import { ROAD_WEIGHT, Store, classMask, labelShown, modeGroup, fromHash, fromSaved, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Stretch } from './state';
 import * as cam3d from './camera3d';
-import { applyLabelOpacity, applyTerrain, applyTint, cacheTerrainRays, tintCss, tintRange, type TintContext } from './terrain';
+import { applyLabelOpacity, applyTerrain, applyTint, cacheTerrainRays, TINT_VARS, tintColourAt, tintCss } from './terrain';
+import { terrainDist } from './terrainstats';
 import { cheaperCovers } from './covers';
 import { steadierPlacement } from './placement';
 import { slicedGlyphs } from './glyphs';
@@ -153,6 +154,25 @@ async function main() {
     }, SETTLE_MS);
   });
   steadierPlacement(map, () => moving);
+  /** Work that follows the view while the camera moves too, at most every `ms` (the last move gets
+   * its turn after the interval); with onSettled for when it settles. */
+  const duringMoves = (f: () => void, ms: number) => {
+    let at = 0, timer = 0;
+    map.on('move', () => {
+      if (quiet) return;
+      const wait = ms - (performance.now() - at);
+      if (wait <= 0) {
+        at = performance.now();
+        f();
+      } else if (!timer) {
+        timer = window.setTimeout(() => {
+          timer = 0;
+          at = performance.now();
+          f();
+        }, wait);
+      }
+    });
+  };
   // Depth precision on the globe (see cam3d.tuneDepth): before every frame the camera moved for.
   map.on('move', () => cam3d.tuneDepth(map));
   map.on('load', () => cam3d.tuneDepth(map));
@@ -399,6 +419,7 @@ async function main() {
    * whether it is a full one (dropped when the camera moves: the view it was for is gone). */
   let statsJob: Generator<void, void> | null = null;
   let statsJobFull = false;
+  let lastFullStats = 0;
   /** Time a pass may take a frame (ms): at rest, and while the camera moves (the frame's own work
    * then fills most of its 8 ms). */
   const STATS_MS = 3;
@@ -444,36 +465,75 @@ async function main() {
     roads.setCdf(out);
   };
 
-  // Elevation tint: its range can follow the view or the road colours, so refresh it with the stats.
-  const tintCtx = (): TintContext => ({
-    roadPalette: store.s.palette,
-    roadRange: cur,
-    roadIsElevation: store.s.mode === 'elev' || store.s.mode === 'relief',
-    roadIsGrade: store.s.mode === 'grade',
-    elev: stats?.elev ?? null,
-  });
-  let lastTintLegend = '';
+  // Terrain tint: a colour scale like the roads' (ui/scale.ts), over the terrain in view (its
+  // histogram from the DEM tiles drawn, terrainstats.ts). Its range eases to the target as the
+  // road colours' does (frame loop), and the terrain is measured again every few hundred
+  // milliseconds while the view changes, mid-gesture too.
+  let terrainD: Dist | null = null;
+  let terrainDirty = true;
+  let lastTerrain = 0;
+  let tintCur: [number, number] = [...s0.terrain.tintScales[s0.terrain.tintVar].range] as [number, number];
+  let tintSnap = true;
+  let tintCdf: Uint8Array | null = null;
+  let tintCdfKey = '';
   let tintPreview: string | null = null;
+  let tintKey = `${s0.terrain.tint}|${s0.terrain.tintVar}`;
+  /** Roads coloured so that the tint can follow their range: by elevation (or grade, for slope). */
+  const tintMatchable = () => (store.s.terrain.tintVar === 'slope' ? store.s.mode === 'grade' : store.s.mode === 'elev' || store.s.mode === 'relief');
+  const tintScale = () => {
+    const t = store.s.terrain;
+    const sc = t.tintScales[t.tintVar];
+    return tintPreview ? { ...sc, palette: tintPreview } : sc;
+  };
+  const tintTarget = (): [number, number] => {
+    const t = store.s.terrain;
+    const sc = t.tintScales[t.tintVar];
+    if (t.tintMatch && tintMatchable()) return cur;
+    if (!sc.auto) return sc.range;
+    if (!terrainD || terrainD.total <= 0) return tintCur;
+    return spread(terrainD.quantile(sc.fit[0] / 100), terrainD.quantile(sc.fit[1] / 100), TINT_VARS[t.tintVar].step * 4);
+  };
+  const measureTerrain = () => {
+    const t = store.s.terrain;
+    lastTerrain = performance.now();
+    terrainDirty = false;
+    if (!t.tint || !styleReady) return;
+    const d = terrainDist(map, t.tintVar === 'slope' ? 'slope' : 'dem-hs', TINT_VARS[t.tintVar].domain, groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]));
+    if (d) terrainD = d;
+  };
+  const updateTintCdf = () => {
+    const sc = store.s.terrain.tintScales[store.s.terrain.tintVar];
+    if (!sc.equalize || !terrainD || terrainD.total <= 0) {
+      tintCdf = null;
+      tintCdfKey = '';
+      return;
+    }
+    const key = `${tintCur[0].toPrecision(4)}|${tintCur[1].toPrecision(4)}|${terrainD.total.toPrecision(6)}`;
+    if (key === tintCdfKey) return;
+    tintCdfKey = key;
+    tintCdf = cdfOf(terrainD, tintCur);
+  };
+  let tintAt: ((v: number) => [[number, number, number], number]) | null = null;
   const refreshTint = () => {
     if (!styleReady) return;
-    const t = tintPreview ? { ...store.s.terrain, tintPalette: tintPreview } : store.s.terrain;
-    const ctx = tintCtx();
-    applyTint(map, t, ctx);
-    if (!t.tint) return;
-    const r = tintRange(t, ctx);
-    const css = tintCss(t, ctx);
-    const key = `${css}|${r[0].toFixed(0)}|${r[1].toFixed(0)}`;
-    if (key !== lastTintLegend) {
-      lastTintLegend = key;
-      layers.setTintLegend(css, r);
-    }
+    updateTintCdf();
+    const t = store.s.terrain;
+    applyTint(map, t, tintScale(), tintCur, tintCdf, store.s.palette, tintCdfKey);
+    tintAt = null;
   };
 
   const wireTintPreview = () => {
-    layers.tintCssFor = (key) => tintCss({ ...store.s.terrain, tintPalette: key }, tintCtx());
+    layers.tintCssFor = (key) => tintCss(store.s.terrain, { ...tintScale(), palette: key }, tintCur, store.s.palette);
+    layers.tintColourAt = (v) => {
+      tintAt ??= tintColourAt(store.s.terrain, tintScale(), tintCur, tintCdf, store.s.palette);
+      const [c, a] = tintAt(v);
+      return [`rgb(${c.map((x) => Math.round(Math.max(0, Math.min(1, x)) * 255)).join(',')})`, a];
+    };
+    layers.tintMatchAvailable = tintMatchable;
     layers.onTintPreview = (key) => {
       tintPreview = key;
       refreshTint();
+      layers.updateTint(terrainD, tintCur, tintCdf);
     };
     layers.sync(store.s);
   };
@@ -586,20 +646,43 @@ async function main() {
     const v = ferries.inView();
     layers.updateFerry(v.km);
     ferryCard.update(v.cov);
-    // The metric scale: distribution of the ferry lines in view, auto-fitted range, lookup.
+    // The metric scale: distribution of the ferry lines in view and the auto-fitted range, which
+    // the frame loop eases to (ferryEase).
     const f = store.s.ferry;
     const d = ferryMetricDef(f.metric);
-    const dist = ferries.metricDist();
-    const range: [number, number] = !f.auto ? f.range
-      : dist && dist.total > 0 ? spread(dist.quantile(f.fit[0] / 100), dist.quantile(f.fit[1] / 100), d.step * 4) : f.range;
-    const fcdf = f.equalize ? cdfOf(dist, range) : null;
-    ferries.setScale(range, fcdf);
-    ferryCard.updateScale(dist, range, fcdf);
+    ferryDist = ferries.metricDist();
+    ferryTarget = !f.auto ? f.range
+      : ferryDist && ferryDist.total > 0 ? spread(ferryDist.quantile(f.fit[0] / 100), ferryDist.quantile(f.fit[1] / 100), d.step * 4) : f.range;
+    if (!ferryCur || ferryKey !== f.metric) {
+      ferryKey = f.metric;
+      ferryCur = ferryTarget;
+      ferryEase(true);
+    }
+    wake();
+  };
+  let ferryDist: Dist | null = null;
+  let ferryTarget: [number, number] | null = null;
+  let ferryCur: [number, number] | null = null;
+  let ferryKey = '';
+  let ferryPainted = 0;
+  /** The ferry scale's eased range applied: the lines' colours are a data-driven expression (each
+   * change lays the ferry source out again), so at most every 100 ms while it eases. */
+  const ferryEase = (force = false) => {
+    if (!ferryCur) return;
+    const now = performance.now();
+    if (!force && now - ferryPainted < 100) return;
+    ferryPainted = now;
+    const fcdf = store.s.ferry.equalize ? cdfOf(ferryDist, ferryCur) : null;
+    ferries.setScale(ferryCur, fcdf);
+    ferryCard.updateScale(ferryDist, ferryCur, fcdf);
   };
   ferries.onLoaded = updateFerries;
   onSettled(updateFerries);
-  // Landmark prominence: the histogram (and an auto-fitted range) follow the landmarks in view.
+  duringMoves(updateFerries, 300);
+  // Landmark prominence: the histogram (and an auto-fitted range) follow the landmarks in view, while
+  // the camera moves too (a query at a time; the dots ease to each new scale).
   onSettled(() => overlays.prominence(store.s));
+  duringMoves(() => overlays.prominenceSoon(store.s), 300);
 
   // Markers: profile cursor, highest / lowest road in view, viewshed eye.
   const marks: Record<string, GeoJSON.Feature | null> = { cursor: null, high: null, low: null, viewshed: null, ring: null };
@@ -899,6 +982,13 @@ async function main() {
     rides.refresh();
     lines.refresh();
   });
+  // The lists follow the view while it moves too, every 1.5 s (a request at a time: a newer one
+  // replaces the one under way).
+  duringMoves(() => {
+    drives.refresh();
+    rides.refresh();
+    lines.refresh();
+  }, 1500);
   const applyDrivesShown = () => map.getLayer('drives-line') && map.setLayoutProperty('drives-line', 'visibility', drives.showOnMap ? 'visible' : 'none');
   drives.onShowChange = applyDrivesShown;
 
@@ -933,6 +1023,7 @@ async function main() {
     const p = roads.progress();
     colour.update(mdist, cur, cdf);
     railCard.update(railDist, railCur, railCdf);
+    layers.updateTint(terrainD, tintCur, tintCdf);
     layers.update(stats);
     layers.updateRail(railStats);
     statsCard.update(stats, p, roads.zt, viewExtra);
@@ -953,7 +1044,10 @@ async function main() {
     // A pass runs STATS_MS a frame (STATS_MOVING_MS while moving) until it ends.
     if (!statsJob && statsDirty && now - lastStats > (moving ? 400 : 150)) {
       statsDirty = false;
-      statsJobFull = !moving;
+      // While moving, the cheap pass (what the colour ranges follow), and every 2.5 s a full one:
+      // the In view summary follows the view too, a little behind.
+      statsJobFull = !moving || now - lastFullStats > 2500;
+      if (statsJobFull) lastFullStats = now;
       statsJob = computeStats(statsJobFull);
     }
     if (statsJob) {
@@ -994,6 +1088,39 @@ async function main() {
         easing = true;
       }
     }
+    if (ferryCur && ferryTarget && store.s.ferry.on) {
+      const ft = ferryTarget, span = Math.max(1e-9, ft[1] - ft[0]);
+      const nf: [number, number] = [ferryCur[0] + (ft[0] - ferryCur[0]) * k, ferryCur[1] + (ft[1] - ferryCur[1]) * k];
+      if (Math.abs(nf[0] - ferryCur[0]) + Math.abs(nf[1] - ferryCur[1]) > span * 0.002) {
+        ferryCur = nf;
+        ferryEase();
+        easing = true;
+      } else if (ferryCur !== ft && (Math.abs(ft[0] - ferryCur[0]) + Math.abs(ft[1] - ferryCur[1]) > 0)) {
+        ferryCur = ft;
+        ferryEase(true);
+      }
+    }
+    {
+      // Terrain tint: measured again every 300 ms while the view changes (150 ms at rest), the
+      // range easing to its target as the roads' does.
+      const t = store.s.terrain;
+      if (t.tint && terrainDirty && now - lastTerrain > (moving ? 300 : 150)) {
+        measureTerrain();
+        panels = true;
+      }
+      if (t.tint) {
+        const tt = tintTarget();
+        const kt = tintSnap ? 1 : k;
+        tintSnap = false;
+        const nt: [number, number] = [tintCur[0] + (tt[0] - tintCur[0]) * kt, tintCur[1] + (tt[1] - tintCur[1]) * kt];
+        if (Math.abs(nt[0] - tintCur[0]) + Math.abs(nt[1] - tintCur[1]) > TINT_VARS[t.tintVar].step * 0.01) {
+          tintCur = nt;
+          refreshTint();
+          panels = true;
+          easing = true;
+        }
+      }
+    }
     panelsDue = panels && now - lastPanel <= 60;
     if (panels && !panelsDue) {
       lastPanel = now;
@@ -1006,7 +1133,7 @@ async function main() {
         profile.redraw();
       }, { moving: true });
     }
-    if (statsDirty || statsJob || easing || panelsDue) requestAnimationFrame(tick);
+    if (statsDirty || statsJob || easing || panelsDue || (store.s.terrain.tint && terrainDirty)) requestAnimationFrame(tick);
     else ticking = false;
   };
   function wake() {
@@ -1032,8 +1159,15 @@ async function main() {
     }
   };
   map.on('move', () => {
-    if (statsJob && statsJobFull) statsJob = null;
+    terrainDirty = true;
     markDirty();
+  });
+  // New elevation or slope tiles: the terrain in view again.
+  map.on('sourcedata', (e) => {
+    if ((e.sourceId === 'dem-hs' || e.sourceId === 'slope') && (e as { tile?: unknown }).tile && store.s.terrain.tint) {
+      terrainDirty = true;
+      wake();
+    }
   });
   onSettled(() => markDirty());
 
@@ -1063,10 +1197,9 @@ async function main() {
     return paletteRgb(s.palette, u);
   };
   // Rail stop and ferry terminal dots in the colour of their line at that point; each shows only
-  // once coloured (stations.ts, ferries.ts). In idle time while the camera is still (idle.ts),
-  // after a render, at most every 100 ms: the dots shown and not yet coloured, and all of them
+  // once coloured (stations.ts, ferries.ts). In idle time (idle.ts), after a render, at most every
+  // 100 ms (300 ms while the camera moves): the dots shown and not yet coloured, and all of them
   // again when the lines' colours or the rail tiles drawn change; a few milliseconds at a time.
-  // Not during gestures: new stops wait for the view to settle.
   let dotsKey = '';
   let dotsAt = 0;
   function* colourDots(): Generator<void, void> {
@@ -1084,8 +1217,10 @@ async function main() {
   }
   const colourDotsSoon = () => {
     if (idle.has('dots')) return;
-    const wait = 100 - (performance.now() - dotsAt);
-    if (wait <= 0) idle.run('dots', colourDots);
+    // While the camera moves too (every 300 ms): the lines' colours ease as their range follows
+    // the view, and the stops follow them.
+    const wait = (moving ? 300 : 100) - (performance.now() - dotsAt);
+    if (wait <= 0) idle.run('dots', colourDots, { moving: true });
     else window.setTimeout(colourDotsSoon, wait);
   };
   // Again when the view settles, stop or terminal tiles arrive, the rail drawn changes or its
@@ -1555,7 +1690,18 @@ async function main() {
       }
       // (after the terrain: contour lines are added when first shown)
       if (ch.has('lineWeights') || ch.has('terrain')) applyLineWidths(map, s.lineWeights);
-      if (ch.has('terrain') || ch.has('palette') || ch.has('mode')) refreshTint();
+      if (ch.has('terrain') || ch.has('palette') || ch.has('mode')) {
+        // Another variable (metres ↔ percent) or the tint just shown: measure and snap to it.
+        const tk = `${s.terrain.tint}|${s.terrain.tintVar}`;
+        if (tk !== tintKey) {
+          tintKey = tk;
+          tintSnap = true;
+          terrainD = null;
+          terrainDirty = true;
+        }
+        refreshTint();
+        wake();
+      }
       if (ch.has('labelOpacity') || ch.has('poiOpacity')) applyLabelOpacity(map, s.labelOpacity, overlayLabelScale(s.poiOpacity));
       if (ch.has('poiOpacity')) applyOverlayOpacity(map, s.poiOpacity);
       if (ch.has('boundaryOpacity')) applyBoundaryOpacity(map, s.boundaryOpacity);

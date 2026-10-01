@@ -134,6 +134,9 @@ export class Overlays {
   private queryId = 0;
   /** The in-view query whose answer is awaited (the ids are shared with the mask requests). */
   private lastQuery = 0;
+  /** The last query answered, and whether another is wanted once it is (prominenceSoon). */
+  private answered = 0;
+  private again = false;
   private countId = 0;
   private countFor = new Map<number, OverlayKey>();
   /** Feature counts and areas of the polygon overlays (layer-summary.json), for their counts. */
@@ -203,7 +206,14 @@ export class Overlays {
     } else if (m.type === 'mask') {
       if (this.maskIds.get(m.src) === m.id) this.dots.setMask(m.src, m.vis);
     } else if (m.type === 'result') {
-      if (m.id === this.lastQuery) this.applyResult(m);
+      if (m.id === this.lastQuery) {
+        this.answered = m.id;
+        this.applyResult(m);
+        if (this.again) {
+          this.again = false;
+          this.prominence();
+        }
+      }
     }
   }
 
@@ -331,6 +341,14 @@ export class Overlays {
       filters: Object.fromEntries(Object.entries(s.stopFilters).filter(([key]) => key.startsWith(`${k}.`))),
       keepUnknown: s.stopUnknown[k] !== false,
     };
+  }
+
+  /** prominence while the camera moves: while a query is out, one more once it is answered (the
+   * worker takes a query at a time, and a backlog would lag the view). */
+  prominenceSoon(s: AppState) {
+    this.state = s;
+    if (this.lastQuery !== this.answered) this.again = true;
+    else this.prominence(s);
   }
 
   /** Size and fade the landmark dots by prominence: the scores of the visible landmarks in view (all

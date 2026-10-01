@@ -4,12 +4,14 @@ import { FERRY_GROUPS, FERRY_GROUP_COLOURS } from '../ferry';
 import { HERITAGE_GROUPS, HERITAGE_TIERS, POI_STYLE } from '../basemap';
 import type { ViewStats } from '../roads/stats';
 import { filtersOf, type StopFilter } from '../stopfilters';
-import { DEFAULT_DENSITY, DENSITY_KINDS, LABEL_KINDS, LINE_KINDS, OVERLAYS, SPACING_RANGE, WEIGHT_RANGE, defaults, type AppState, type DensityKind, type LabelDensity, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintRange, type TintVar } from '../state';
+import { DEFAULT_DENSITY, DENSITY_KINDS, LABEL_KINDS, LINE_KINDS, OVERLAYS, SPACING_RANGE, WEIGHT_RANGE, defaults, type AppState, type DensityKind, type LabelDensity, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
 import { baseKey, isRev, withRev } from '../palettes';
 import { TINT_PALETTES, TINT_VARS } from '../terrain';
 import * as prefs from '../prefs';
 import { fmt, h } from './dom';
 import { RampSelect } from './rampselect';
+import { ScaleControls } from './scale';
+import type { Dist } from '../roads/stats';
 import { TreeSection } from './trees';
 import { toggleAllStops } from './stops';
 
@@ -81,11 +83,9 @@ export class LayersCard {
     on: HTMLInputElement; ex: HTMLInputElement; exOut: HTMLOutputElement; hs: HTMLInputElement; method: HTMLSelectElement;
     light: HTMLInputElement; lightOut: HTMLOutputElement; shade: HTMLInputElement; shadeOut: HTMLOutputElement;
     tint: HTMLInputElement; contours: HTMLInputElement; sky: HTMLInputElement;
-    tintBox: HTMLDivElement; tintVar: HTMLSelectElement; tintPal: RampSelect; tintRange: HTMLSelectElement; customBox: HTMLDivElement;
-    tintMin: HTMLInputElement; tintMinOut: HTMLOutputElement; tintMax: HTMLInputElement; tintMaxOut: HTMLOutputElement;
+    tintBox: HTMLDivElement; tintVar: HTMLSelectElement;
     tintBands: HTMLSelectElement; tintCurve: HTMLInputElement; tintCurveOut: HTMLOutputElement;
     tintOp: HTMLInputElement; tintOpOut: HTMLOutputElement;
-    tintFade: HTMLInputElement; tintFadeOut: HTMLOutputElement; tintSpan: HTMLInputElement; tintSpanOut: HTMLOutputElement; tintLegend: HTMLDivElement; tintLo: HTMLSpanElement; tintHi: HTMLSpanElement;
   };
   private globe: HTMLInputElement;
   private labelOp: HTMLInputElement;
@@ -114,7 +114,12 @@ export class LayersCard {
   private viewshedBtn: HTMLButtonElement;
   private collapsed = loadCollapsed();
   /** Elevation span the tint currently uses (for seeding a custom range). */
-  private tintNow: [number, number] | null = null;
+  /** The terrain tint's colour scale (the shared histogram component). */
+  private tintScale!: ScaleControls;
+  /** Set by the app: the tint's colour and opacity at a value on the range in use; whether the
+   * road colours can be matched (roads coloured by elevation, or grade for slope). */
+  tintColourAt: (v: number) => [string, number] = () => ['rgb(0,0,0)', 0];
+  tintMatchAvailable: () => boolean = () => false;
   onViewshed: () => void = () => {};
   /** Tint ramp gradient for a palette key under the current settings (set by the app). */
   tintCssFor: (key: string) => string = () => 'transparent';
@@ -266,40 +271,41 @@ export class LayersCard {
       e.addEventListener('change', () => on(e.value));
       return e;
     };
-    const tintPal = new RampSelect(
-      TINT_PALETTES.map((p) => ({ key: p.key, label: p.label, group: p.group })),
-      (key) => this.tintCssFor(key),
-      (key) => T({ tintPalette: key }),
-      (key) => this.onTintPreview(key),
-    );
     const tintVar = sel([['elev', 'Elevation'], ['slope', 'Terrain slope']], (v) => {
       const tv = v as TintVar;
       const t = this.store.s.terrain;
-      const d = TINT_VARS[tv];
-      // Switch to the variable's defaults where the old setting doesn't carry over.
-      T({
-        tintVar: tv,
-        tintMin: d.custom[0],
-        tintMax: d.custom[1],
-        tintBands: d.bands.includes(t.tintBands) ? t.tintBands : 0,
-        tintRange: tv === 'slope' && t.tintRange === 'view' ? 'region' : t.tintRange,
-        tintPalette: tv === 'slope' && baseKey(t.tintPalette) === 'atlas' ? withRev('steep', isRev(t.tintPalette))
-          : tv === 'elev' && baseKey(t.tintPalette) === 'steep' ? withRev('atlas', isRev(t.tintPalette)) : t.tintPalette,
-      });
+      // Each variable keeps its own scale; bands carry over where the new variable offers them.
+      T({ tintVar: tv, tintBands: TINT_VARS[tv].bands.includes(t.tintBands) ? t.tintBands : 0 });
     });
-    const tintRange = sel([], (v) => {
-      const patch: Partial<AppState['terrain']> = { tintRange: v as TintRange };
-      // Start a custom range from what is on screen now.
-      const step = TINT_VARS[this.store.s.terrain.tintVar].limits[2];
-      if (v === 'custom' && this.tintNow) Object.assign(patch, { tintMin: Math.round(this.tintNow[0] / step) * step, tintMax: Math.round(this.tintNow[1] / step) * step });
-      T(patch);
+    // The tint's colour scale: the shared histogram component over the terrain in view.
+    const TS = () => this.store.s.terrain;
+    this.tintScale = new ScaleControls({
+      get: () => TS().tintScales[TS().tintVar],
+      set: (patch) => {
+        const t = TS();
+        // Choosing a range of its own stops following the roads'.
+        T({ tintScales: { ...t.tintScales, [t.tintVar]: { ...t.tintScales[t.tintVar], ...patch } }, ...('auto' in patch || 'range' in patch ? { tintMatch: false } : {}) });
+      },
+      metric: () => {
+        const tv = TINT_VARS[TS().tintVar];
+        const slope = TS().tintVar === 'slope';
+        return { domain: tv.domain, step: tv.step, fmt: slope ? (x: number) => `${Math.round(x)} %` : (x: number) => fmt.m(x), hiPlus: slope };
+      },
+      noun: 'terrain',
+      measure: 'land area',
+      fadeDefault: 0.6,
+      spanDefault: 0.3,
+      follow: {
+        label: 'Match roads', title: 'Follow the road colours\' range (roads coloured by elevation, or by grade for slope)', caption: 'Following the road colours\' range',
+        available: () => this.tintMatchAvailable(), on: () => TS().tintMatch, set: (on) => T({ tintMatch: on }),
+      },
+      palettes: { items: TINT_PALETTES.map((p) => ({ key: p.key, label: p.label, group: p.group })), css: (key) => this.tintCssFor(key) },
+      colourAt: (v) => this.tintColourAt(v),
+      onPreview: (key) => this.onTintPreview(key),
     });
     const tintBands = sel([], (v) => T({ tintBands: Number(v) }));
     // Emphasis slider in log space: −1 … 1 → curve 0.33 … 3.
     const tintCurve = slider(-1, 1, 0.05, (v) => T({ tintCurve: +(3 ** -v).toFixed(3) }), 0);
-    const gap = () => TINT_VARS[this.store.s.terrain.tintVar].limits[2];
-    const tintMin = slider(-50, 1950, 10, (v) => T({ tintMin: Math.min(v, this.store.s.terrain.tintMax - gap()) }));
-    const tintMax = slider(-50, 1950, 10, (v) => T({ tintMax: Math.max(v, this.store.s.terrain.tintMin + gap()) }));
     this.t = {
       on: cb((v) => T({ on: v })),
       ex: slider(1, 6, 0.25, (v) => T({ exaggeration: v }), defaults.terrain.exaggeration),
@@ -315,31 +321,11 @@ export class LayersCard {
       sky: cb((v) => T({ sky: v })),
       tintBox: h('div'),
       tintVar,
-      tintPal,
-      tintRange,
-      customBox: h('div'),
-      tintMin,
-      tintMinOut: h('output'),
-      tintMax,
-      tintMaxOut: h('output'),
       tintBands,
       tintCurve,
       tintCurveOut: h('output'),
       tintOp: slider(0, 1, 0.05, (v) => T({ tintOpacity: v }), defaults.terrain.tintOpacity),
-      tintFade: slider(0, 1, 0.05, (v) => {
-        const t = this.store.s.terrain;
-        T({ tintFade: { ...t.tintFade, [t.tintVar]: v } });
-      }),
-      tintFadeOut: h('output'),
-      tintSpan: slider(0.05, 1, 0.05, (v) => {
-        const t = this.store.s.terrain;
-        T({ tintFadeSpan: { ...t.tintFadeSpan, [t.tintVar]: v } });
-      }),
-      tintSpanOut: h('output'),
       tintOpOut: h('output'),
-      tintLegend: h('div', { class: 'tint-bar' }),
-      tintLo: h('span'),
-      tintHi: h('span'),
     };
     this.labelOp = slider(0, 1, 0.05, (v) => this.store.set({ labelOpacity: v }), defaults.labelOpacity);
     this.roadOp = slider(0.1, 1, 0.05, (v) => this.store.set({ roadOpacity: v }), defaults.roadOpacity);
@@ -378,20 +364,13 @@ export class LayersCard {
     this.horizonOut = h('output');
     const row = (label: string, input: HTMLElement, out?: HTMLElement) => h('div', { class: 'row' }, h('span', { class: 'muted' }, label), input, out ?? h('span'));
 
-    this.t.customBox.append(row('Min', this.t.tintMin, this.t.tintMinOut), row('Max', this.t.tintMax, this.t.tintMaxOut));
     this.t.tintBox.append(
-      h('div', { class: 'tint-legend' }, this.t.tintLegend, h('div', { class: 'tint-ticks' }, this.t.tintLo, this.t.tintHi)),
       row('Colour by', this.t.tintVar),
-      row('Colours', this.t.tintPal.el),
-      row('Range', this.t.tintRange),
-      this.t.customBox,
+      h('div', { class: 'tint-scale' }, this.tintScale.legend, this.tintScale.palRow, this.tintScale.fadeRow, this.tintScale.thrRow),
       row('Bands', this.t.tintBands),
       row('Emphasis', this.t.tintCurve, this.t.tintCurveOut),
       row('Opacity', this.t.tintOp, this.t.tintOpOut),
-      row('Fade low end', this.t.tintFade, this.t.tintFadeOut),
-      row('Fade span', this.t.tintSpan, this.t.tintSpanOut),
     );
-    this.t.tintFade.title = 'Transparency at the bottom of the ramp: 100 % makes flat ground (or the lowest elevations) fully transparent';
     this.t.tintCurve.title = 'Left: more colour steps in the lowlands · right: more in the highlands (double-click resets)';
 
     // ---- overlays ----
@@ -578,13 +557,9 @@ export class LayersCard {
     this.store.set({ layers: { ...this.store.s.layers, [k]: on } });
   }
 
-  /** Tint legend: gradient and the elevation span it covers. */
-  setTintLegend(css: string, range: [number, number]) {
-    this.tintNow = range;
-    this.t.tintLegend.style.background = css;
-    const u = (v: number) => (this.store.s.terrain.tintVar === 'slope' ? `${Math.round(v)} % (${Math.round((Math.atan(v / 100) * 180) / Math.PI)}°)` : fmt.m(v));
-    this.t.tintLo.textContent = u(range[0]);
-    this.t.tintHi.textContent = u(range[1]);
+  /** The terrain in view, the tint's range in use and its equalisation lookup (if on). */
+  updateTint(dist: Dist | null, range: [number, number], cdf: Uint8Array | null) {
+    this.tintScale.update(dist, range, cdf);
   }
 
   setViewshedActive(on: boolean) {
@@ -690,37 +665,18 @@ export class LayersCard {
     const slope = t.tintVar === 'slope';
     const tv = TINT_VARS[t.tintVar];
     this.t.tintVar.value = t.tintVar;
-    this.t.tintPal.set(t.tintPalette);
     const opts = (el: HTMLSelectElement, list: [string | number, string][]) => {
       const sig = list.map((o) => o.join(':')).join('|');
       if (el.dataset.sig === sig) return;
       el.dataset.sig = sig;
       el.replaceChildren(...list.map(([k, l]) => h('option', { value: k }, l)));
     };
-    opts(this.t.tintRange, slope
-      ? [['region', 'Full scale (0–100 %, 45°)'], ['roads', 'Match road grade colours'], ['custom', 'Custom']]
-      : [['region', 'Whole region (0–1,900 m)'], ['view', 'Fit to view'], ['roads', 'Match road colours'], ['custom', 'Custom']]);
     opts(this.t.tintBands, [[0, 'Smooth'], ...tv.bands.map((b): [number, string] => [b, `${b} ${tv.unit} bands`])]);
-    this.t.tintRange.value = slope && t.tintRange === 'view' ? 'region' : t.tintRange;
-    for (const el of [this.t.tintMin, this.t.tintMax]) {
-      el.min = String(tv.limits[0]);
-      el.max = String(tv.limits[1]);
-      el.step = String(tv.limits[2]);
-    }
-    this.t.customBox.hidden = t.tintRange !== 'custom';
-    this.t.tintMin.value = String(t.tintMin);
-    this.t.tintMax.value = String(t.tintMax);
-    this.t.tintMinOut.value = slope ? `${t.tintMin} %` : fmt.m(t.tintMin);
-    this.t.tintMaxOut.value = slope ? `${t.tintMax} %` : fmt.m(t.tintMax);
     this.t.tintBands.value = String(t.tintBands);
     const lc = -Math.log(t.tintCurve) / Math.log(3);
     this.t.tintCurve.value = String(lc);
     this.t.tintCurveOut.value = Math.abs(lc) < 0.05 ? 'even' : lc > 0 ? 'low' : 'high';
-    this.t.tintFade.value = String(t.tintFade[t.tintVar]);
-    this.t.tintFadeOut.value = t.tintFade[t.tintVar] === 0 ? 'off' : `${Math.round(t.tintFade[t.tintVar] * 100)} %`;
-    this.t.tintSpan.value = String(t.tintFadeSpan[t.tintVar]);
-    this.t.tintSpanOut.value = `${Math.round(t.tintFadeSpan[t.tintVar] * 100)} %`;
-    this.t.tintSpan.disabled = t.tintFade[t.tintVar] === 0;
+    this.tintScale.sync();
     this.t.tintOp.value = String(t.tintOpacity);
     this.t.tintOpOut.value = `${Math.round(t.tintOpacity * 100)} %`;
     this.globe.checked = s.globe;
