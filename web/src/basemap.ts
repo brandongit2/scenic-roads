@@ -229,14 +229,14 @@ export function applyBoundaryOpacity(map: import('maplibre-gl').Map, f: number) 
 }
 
 /** Line layers whose widths follow a line weight (Layers → Map), by the kind scaling them on top
- * of the global weight ('global': that alone). Roads, rail and ferries: their own layers. */
+ * of the global weight ('global': that alone). Roads, rail, ferries and contour lines: their own
+ * layers. */
 const LINE_WIDTHS: [string, LineKind | 'global'][] = [
   ['boundary-county', 'borders'], ['boundary-state', 'borders'], ['boundary-country', 'borders'], ['boundary-country-disputed', 'borders'],
   ['waterway', 'rivers'],
   ['park-line', 'outlines'], ['indigenous-line', 'outlines'], ['special-line', 'outlines'], ['heritage-area-line', 'outlines'], ['whs-line', 'outlines'],
   // The highlights along roads stay wider than the road they mark.
   ['sel-halo', 'roads'], ['drives-line', 'roads'], ['drive-hl', 'roads'], ['climb-casing', 'roads'], ['climb-line', 'roads'],
-  ['contour-line', 'global'],
 ];
 const baseWidth = new Map<string, unknown>();
 /** Widths (and blurs) of those layers present: each its own × the weights. */

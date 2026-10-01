@@ -471,7 +471,7 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 /* Trees section */
 #layers .row .seg { grid-column: 2 / 4; }
 #layers .tree-body.off { opacity: 0.45; }
-#layers .tree-body .row input[type='color'] { width: 100%; height: 18px; border: 1px solid var(--line-strong); border-radius: 5px; background: none; padding: 0; grid-column: 2 / 4; }
+#layers .tree-body .row input[type='color'], #layers .tint-box .row input[type='color'] { width: 100%; height: 18px; border: 1px solid var(--line-strong); border-radius: 5px; background: none; padding: 0; grid-column: 2 / 4; }
 #layers .tree-chips { display: flex; gap: 12px; font-size: 10.5px; color: var(--muted); }
 #layers .tree-chips .lg { display: flex; align-items: center; gap: 5px; }
 #layers .tree-chips i { width: 14px; height: 6px; border-radius: 2px; }

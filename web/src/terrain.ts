@@ -6,6 +6,7 @@ import { HYPSO } from './basemap';
 import { PALETTES, baseKey, isRev, paletteFn } from './palettes';
 import type { ScaleFields, Terrain } from './state';
 import { ver } from './api';
+import { CONTOUR_MINZOOM } from './contours';
 
 type RGB = [number, number, number];
 
@@ -150,12 +151,32 @@ export function applyLabelOpacity(map: MLMap, v: number, scale: (id: string) => 
   }
 }
 
-let contoursReady = false;
+/** Contour intervals [minor, major] (m) by tile zoom, from that zoom up; the density shifts
+ * the zooms (Layers → Terrain → Interval). No finer than 5 m: the terrain tiles' cells are tens of metres. */
+const INTERVALS: [number, [number, number]][] = [[7, [500, 2500]], [8, [200, 1000]], [10, [100, 500]], [11, [50, 250]], [12, [20, 100]], [14, [10, 50]], [16, [5, 25]]];
+/** The intervals contour tiles of zoom `z` get at a density. */
+export function contourInterval(z: number, density = 0): [number, number] {
+  let r = INTERVALS[0][1];
+  for (const [k, v] of INTERVALS) if (z + density >= k) r = v;
+  return r;
+}
 
-function setupContours(map: MLMap, origin: string) {
-  if (contoursReady) return;
-  contoursReady = true;
-  const demSource = new mlcontour.DemSource({
+let demSource: InstanceType<typeof mlcontour.DemSource> | null = null;
+let contourDensity = 0;
+const contourUrl = (density: number) => {
+  const thresholds: Record<number, [number, number]> = {};
+  for (let z = 8; z <= 16; z++) thresholds[z] = contourInterval(z, density);
+  return demSource!.contourProtocolUrl({ thresholds, elevationKey: 'ele', levelKey: 'level', contourLayer: 'contours', overzoom: 1 });
+};
+
+/**
+ * The contours source and its layers, the first time they are shown. The lines themselves are
+ * drawn by ContourLayer (contours.ts) from the source's tiles: 'contour-line' only keeps them
+ * loaded (it matches no line), with the labels.
+ */
+function setupContours(map: MLMap, origin: string, density: number) {
+  if (map.getSource('contours')) return;
+  demSource ??= new mlcontour.DemSource({
     url: `${origin}/tiles/terrain/{z}/{x}/{y}${ver('terrain.tiles')}`,
     encoding: 'terrarium',
     maxzoom: 12,
@@ -163,32 +184,17 @@ function setupContours(map: MLMap, origin: string) {
     cacheSize: 200,
   });
   demSource.setupMaplibre(maplibregl);
-  map.addSource('contours', {
-    type: 'vector',
-    tiles: [
-      demSource.contourProtocolUrl({
-        // [minor, major] interval (m) per zoom
-        thresholds: { 8: [200, 1000], 10: [100, 500], 11: [50, 250], 12: [20, 100], 14: [10, 50], 16: [5, 25] },
-        elevationKey: 'ele',
-        levelKey: 'level',
-        contourLayer: 'contours',
-        overzoom: 1,
-      }),
-    ],
-    maxzoom: 16,
-  });
+  contourDensity = density;
+  map.addSource('contours', { type: 'vector', tiles: [contourUrl(density)], maxzoom: 16 });
   map.addLayer(
     {
       id: 'contour-line',
       type: 'line',
       source: 'contours',
       'source-layer': 'contours',
-      minzoom: 8,
-      paint: {
-        'line-color': '#a9b6c8',
-        'line-opacity': ['match', ['get', 'level'], 1, 0.34, 0.16],
-        'line-width': ['match', ['get', 'level'], 1, 0.9, 0.5],
-      },
+      minzoom: CONTOUR_MINZOOM,
+      filter: ['==', ['get', 'ele'], -1e9],
+      paint: { 'line-opacity': 0 },
     },
     'boundary-county',
   );
@@ -199,9 +205,15 @@ function setupContours(map: MLMap, origin: string) {
       source: 'contours',
       'source-layer': 'contours',
       minzoom: 11,
-      filter: ['>', ['get', 'level'], 0],
+      // (no 0 m line: contours.worker.ts)
+      filter: ['all', ['>', ['get', 'level'], 0], ['>', ['get', 'ele'], 0]],
       layout: {
         'symbol-placement': 'line',
+        // Facing the viewer, along the line as it shows on screen: lying on the ground, tilted
+        // views foreshortened them past reading. MapLibre sizes screen-facing text by half the
+        // perspective (0.5 + 0.5 × the view centre's distance ÷ the label's, at most 4×).
+        'text-pitch-alignment': 'viewport',
+        'text-rotation-alignment': 'map',
         'text-field': ['concat', ['number-format', ['get', 'ele'], {}], ' m'],
         'text-font': ['Noto Sans Regular'],
         'text-size': 9.5,
@@ -237,10 +249,19 @@ export function applyTerrain(map: MLMap, t: Terrain, origin: string) {
     }
     map.setPaintProperty('hillshade', 'hillshade-exaggeration', t.shade);
   }
-  // Contours.
-  if (t.contours) setupContours(map, origin);
-  for (const id of ['contour-line', 'contour-label'])
-    if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', t.contours ? 'visible' : 'none');
+  // Contours (the lines: ContourLayer).
+  const cl = t.contour;
+  if (t.contours) setupContours(map, origin, cl.density);
+  const src = map.getSource('contours') as maplibregl.VectorTileSource | undefined;
+  if (src) {
+    if (cl.density !== contourDensity) {
+      contourDensity = cl.density;
+      src.setTiles([contourUrl(cl.density)]);
+    }
+    map.setLayoutProperty('contour-line', 'visibility', t.contours ? 'visible' : 'none');
+    map.setLayoutProperty('contour-label', 'visibility', t.contours && cl.labels ? 'visible' : 'none');
+    map.setPaintProperty('contour-label', 'text-color', cl.colour);
+  }
   // Sky / horizon fog (only visible when pitched).
   map.setSky(
     t.sky

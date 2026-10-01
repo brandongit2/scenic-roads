@@ -36,6 +36,7 @@ import * as prefs from './prefs';
 import { ROAD_WEIGHT, Store, classMask, defaults, labelShown, modeGroup, fromHash, fromSaved, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Stretch } from './state';
 import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyTerrain, applyTint, cacheTerrainRays, TINT_VARS, tintColourAt, tintCss } from './terrain';
+import { ContourLayer, type ContourDraw } from './contours';
 import { terrainDist } from './terrainstats';
 import { cheaperCovers } from './covers';
 import { steadierPlacement } from './placement';
@@ -586,6 +587,16 @@ async function main() {
   // The landmark dots, drawn on the GPU (dots.ts); the overlays feed them.
   const dots = new LandmarkDots();
   dots.setTerrain({ on: store.s.terrain.on, exaggeration: store.s.terrain.exaggeration, occlude: store.s.occlude });
+  // Contour lines (contours.ts), from the terrain settings and the global line weight.
+  const contours = new ContourLayer();
+  const contourStyle = (s: AppState): Partial<ContourDraw> => {
+    const t = s.terrain, c = t.contour, k = s.lineWeights.global * c.weight;
+    return {
+      on: t.contours, terrain3d: t.on, exaggeration: t.exaggeration, colour: c.colour, opacity: [c.minor, c.major],
+      width: [0.5 * k, 0.9 * k], perspective: c.perspective, ring: c.ring,
+    };
+  };
+  contours.set(contourStyle(store.s));
   const overlays = new Overlays(map, layers, dots);
   overlays.onScale = (dist, range, cdf) => stopsCard.update(dist, range, cdf);
   overlays.onView = () => {
@@ -1676,6 +1687,7 @@ async function main() {
     st.opacity = s.roadOpacity;
     [st.lenMin, st.lenMax] = roadLenM(s);
     dots.setTerrain({ on: s.terrain.on, exaggeration: s.terrain.exaggeration, occlude: s.occlude });
+    contours.set(contourStyle(s));
     applyMapMode(s);
     applyRailStyle(s);
     if (ch.has('rail')) {
@@ -1812,6 +1824,9 @@ async function main() {
     applyProjection();
     map.addLayer(roads, 'water-name-line');
     map.addLayer(rails, 'water-name-line');
+    // Under the roads, above every layer draped on the terrain (one between them would split the
+    // draping in two: the terrain drawn twice).
+    map.addLayer(contours, 'roads');
     // Under every landmark name (and above the parts of World Heritage Sites).
     map.addLayer(dots, `poi-${Object.keys(POI_STYLE)[0]}`);
     applyLayers();
@@ -1842,7 +1857,7 @@ async function main() {
     map.once('load', attach);
   }
   map.on('error', (e) => console.warn(e.error?.message ?? e));
-  (window as any).__app = { map, roads, rails, store, cam3d, ferries, dots, overlays, idle };
+  (window as any).__app = { map, roads, rails, store, cam3d, ferries, dots, overlays, idle, contours };
 }
 
 /**

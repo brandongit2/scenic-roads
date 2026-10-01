@@ -4,8 +4,8 @@ import { FERRY_GROUPS, FERRY_GROUP_COLOURS } from '../ferry';
 import { HERITAGE_GROUPS, HERITAGE_TIERS, POI_STYLE } from '../basemap';
 import { Dist, type ViewStats } from '../roads/stats';
 import { STOP_FILTERS, axisPos, filtersOf, type StopFilter } from '../stopfilters';
-import { DEFAULT_DENSITY, DENSITY_KINDS, LABEL_KINDS, LINE_KINDS, OVERLAYS, SPACING_RANGE, WEIGHT_RANGE, defaults, type AppState, type LabelDensity, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
-import { TINT_PALETTES, TINT_VARS } from '../terrain';
+import { DEFAULT_DENSITY, DENSITY_KINDS, LABEL_KINDS, LINE_KINDS, OVERLAYS, SPACING_RANGE, WEIGHT_RANGE, defaults, type AppState, type ContourLook, type LabelDensity, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
+import { TINT_PALETTES, TINT_VARS, contourInterval } from '../terrain';
 import * as prefs from '../prefs';
 import { fmt, h } from './dom';
 import { ScaleControls } from './scale';
@@ -85,6 +85,7 @@ export class LayersCard {
     on: HTMLInputElement; hs: HTMLInputElement; method: HTMLSelectElement;
     tint: HTMLInputElement; contours: HTMLInputElement; sky: HTMLInputElement;
     tintBox: HTMLDivElement; tintVar: HTMLSelectElement; tintBands: HTMLSelectElement;
+    contourBox: HTMLDivElement; contourLabels: HTMLInputElement; contourCol: HTMLInputElement;
   };
   private globe: HTMLInputElement;
   private ov: Partial<Record<OverlayKey, HTMLInputElement>> = {};
@@ -286,6 +287,8 @@ export class LayersCard {
       onPreview: (key) => this.onTintPreview(key),
     });
     const tintBands = sel([], (v) => T({ tintBands: Number(v) }));
+    const C = () => this.store.s.terrain.contour;
+    const setC = (patch: Partial<ContourLook>) => T({ contour: { ...C(), ...patch } });
     this.t = {
       on: cb((v) => T({ on: v })),
       hs: cb((v) => T({ hillshade: v })),
@@ -296,7 +299,11 @@ export class LayersCard {
       tintBox: h('div', { class: 'tint-box' }),
       tintVar,
       tintBands,
+      contourBox: h('div', { class: 'tint-box' }),
+      contourLabels: cb((labels) => setC({ labels })),
+      contourCol: h('input', { type: 'color', title: 'Colour of the lines and their labels' }),
     };
+    this.t.contourCol.addEventListener('input', () => setC({ colour: this.t.contourCol.value }));
     const noShade = () => !TS().hillshade;
     const exRow = sl({
       label: 'Height ×', min: 1, max: 6, step: 0.25, reset: defaults.terrain.exaggeration, title: 'Vertical exaggeration of the 3D terrain', cls: 'sub',
@@ -324,6 +331,37 @@ export class LayersCard {
       label: 'Opacity', min: 0, max: 1, step: 0.05, reset: defaults.terrain.tintOpacity, title: 'Opacity of the tint',
       get: () => TS().tintOpacity, set: (tintOpacity) => T({ tintOpacity }), fmt: pct,
     });
+    // Contour lines: interval, width and perspective, opacity, colour, labels, the rings left out.
+    const contourRows = [
+      sl({
+        label: 'Interval', min: -2, max: 2, step: 1, reset: 0,
+        title: 'Closer or wider lines: the minor / major interval at this zoom (finer as you zoom in)',
+        get: () => C().density, set: (density) => setC({ density }),
+        fmt: (v) => `${contourInterval(Math.floor(S().view?.zoom ?? 12), v).join(' / ')} m`,
+      }),
+      sl({
+        label: 'Width', min: 0.25, max: 3, step: 0.05, reset: 1, title: 'Width of the lines (the global line weight applies on top)',
+        get: () => C().weight, set: (weight) => setC({ weight }), fmt: (v) => `${v.toFixed(2)}×`,
+      }),
+      sl({
+        label: 'Perspective', min: 0, max: 1, step: 0.05, reset: 1,
+        title: 'Tilted, how much the lines narrow with distance: 0 the same width everywhere, 100 % as if drawn on the ground',
+        get: () => C().perspective, set: (perspective) => setC({ perspective }), fmt: pct,
+      }),
+      sl({
+        label: 'Major lines', min: 0, max: 1, step: 0.02, reset: defaults.terrain.contour.major, title: 'Opacity of every fifth line (the labelled ones)',
+        get: () => C().major, set: (major) => setC({ major }), fmt: pct,
+      }),
+      sl({
+        label: 'Minor lines', min: 0, max: 1, step: 0.02, reset: defaults.terrain.contour.minor, title: 'Opacity of the lines between',
+        get: () => C().minor, set: (minor) => setC({ minor }), fmt: pct,
+      }),
+      sl({
+        label: 'Hide rings', min: 0, max: 24, step: 1, reset: defaults.terrain.contour.ring,
+        title: 'Leave out closed rings smaller than this across (at their tile\'s scale): specks of flat land a hair above an interval',
+        get: () => C().ring, set: (ring) => setC({ ring }), fmt: (v) => (v > 0 ? `< ${v} px` : 'none'),
+      }),
+    ];
     const labelOpRow = sl({
       label: 'Label opacity', min: 0, max: 1, step: 0.05, reset: defaults.labelOpacity, cls: 'lw', title: 'Opacity of every label on the map',
       get: () => S().labelOpacity, set: (labelOpacity) => this.store.set({ labelOpacity }), fmt: pct,
@@ -375,6 +413,12 @@ export class LayersCard {
     });
     const row = (label: string, input: HTMLElement, cls = 'row') => h('div', { class: cls }, h('span', { class: 'muted' }, label), input, h('span'));
 
+    this.t.contourBox.append(
+      ...contourRows.slice(0, 5),
+      row('Colour', this.t.contourCol),
+      tog(this.t.contourLabels, 'Labels', '', 'tog', 'Elevations along the major lines'),
+      contourRows[5],
+    );
     this.t.tintBox.append(
       row('Colour by', this.t.tintVar),
       h('div', { class: 'tint-scale' }, this.tintScale.legend, this.tintScale.palRow, this.tintScale.fadeRow, this.tintScale.thrRow),
@@ -541,6 +585,7 @@ export class LayersCard {
         tog(this.t.tint, 'Elevation tint', '', 'tog', 'Colour of the terrain surface by elevation or slope'),
         this.t.tintBox,
         tog(this.t.contours, 'Contour lines', '', 'tog', 'Computed on the fly from the terrain tiles'),
+        this.t.contourBox,
         tog(this.t.sky, 'Sky & distance fog', '', 'tog', 'Visible when the map is tilted'),
       ),
       this.section('trees', 'Trees', this.trees.on, ...this.trees.nodes),
@@ -736,6 +781,9 @@ export class LayersCard {
     this.tintScale.sync();
     this.globe.checked = s.globe;
     this.t.contours.checked = t.contours;
+    this.t.contourBox.hidden = !t.contours;
+    this.t.contourLabels.checked = t.contour.labels;
+    this.t.contourCol.value = t.contour.colour;
     this.t.sky.checked = t.sky;
     this.other.water.checked = s.layers.water;
     this.other.boundaries.checked = s.layers.boundaries;

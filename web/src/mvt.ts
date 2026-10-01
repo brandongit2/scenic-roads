@@ -1,6 +1,7 @@
 // A minimal Mapbox Vector Tile encoder for one layer of points (the landmarks worker's tiles, see
 // landmarks.worker.ts tile): feature ids, point geometry, flat properties (strings, numbers,
-// booleans; others as JSON text). https://github.com/mapbox/vector-tile-spec (2.1).
+// booleans; others as JSON text). And a reader of one layer's lines (readLines: the contour tiles,
+// contours.worker.ts). https://github.com/mapbox/vector-tile-spec (2.1).
 
 /** A point in tile units (0 … extent) with its id and properties. */
 export interface TilePoint {
@@ -117,4 +118,124 @@ export function encodePoints(layer: string, points: TilePoint[], extent = 4096):
   const tw = new Writer();
   if (points.length) tw.bytes(3, lw.done());
   return tw.done().slice();
+}
+
+/** A line feature: its properties and its runs of points (tile units, x and y in turn; a closed
+ * path repeats its first point at the end). */
+export interface TileLine {
+  props: Record<string, string | number | boolean>;
+  runs: number[][];
+}
+
+/** One layer's line features (LineString, MultiLineString) and its extent, or null if the tile has
+ * no such layer. */
+export function readLines(buf: ArrayBuffer, layer: string): { extent: number; lines: TileLine[] } | null {
+  const b = new Uint8Array(buf);
+  const dv = new DataView(buf);
+  let pos = 0;
+  const varint = () => {
+    let v = 0, mul = 1, byte: number;
+    do {
+      byte = b[pos++];
+      v += (byte & 0x7f) * mul;
+      mul *= 128;
+    } while (byte & 0x80 && pos < b.length);
+    return v;
+  };
+  const skip = (wire: number) => {
+    if (wire === 0) varint();
+    else if (wire === 1) pos += 8;
+    else if (wire === 2) pos += varint();
+    else if (wire === 5) pos += 4;
+    else throw new Error(`mvt: wire type ${wire}`);
+  };
+  const unzig = (n: number) => (n % 2 === 1 ? -(n + 1) / 2 : n / 2);
+  const utf8d = new TextDecoder();
+  const str = (end: number) => utf8d.decode(b.subarray(pos, (pos = end)));
+  // The tile: its layers (field 3); the one named.
+  while (pos < b.length) {
+    const tag = varint();
+    if (tag >> 3 !== 3 || (tag & 7) !== 2) {
+      skip(tag & 7);
+      continue;
+    }
+    const lend = varint() + pos;
+    let name = '', extent = 4096;
+    const keys: string[] = [], values: (string | number | boolean)[] = [], feats: [number, number][] = [];
+    while (pos < lend) {
+      const t = varint(), f = t >> 3;
+      if (f === 1 && (t & 7) === 2) name = str(varint() + pos);
+      else if (f === 2 && (t & 7) === 2) {
+        const n = varint();
+        feats.push([pos, pos + n]);
+        pos += n;
+      } else if (f === 3 && (t & 7) === 2) keys.push(str(varint() + pos));
+      else if (f === 4 && (t & 7) === 2) {
+        const vend = varint() + pos;
+        let v: string | number | boolean = 0;
+        while (pos < vend) {
+          const vt = varint(), vf = vt >> 3;
+          if (vf === 1) v = str(varint() + pos);
+          else if (vf === 2) {
+            v = dv.getFloat32(pos, true);
+            pos += 4;
+          } else if (vf === 3) {
+            v = dv.getFloat64(pos, true);
+            pos += 8;
+          } else if (vf === 4 || vf === 5) v = varint();
+          else if (vf === 6) v = unzig(varint());
+          else if (vf === 7) v = varint() !== 0;
+          else skip(vt & 7);
+        }
+        values.push(v);
+      } else if (f === 5 && (t & 7) === 0) extent = varint();
+      else skip(t & 7);
+    }
+    if (name !== layer) continue;
+    const lines: TileLine[] = [];
+    for (const [fs, fe] of feats) {
+      pos = fs;
+      const props: TileLine['props'] = {};
+      let type = 0, gs = -1, ge = -1;
+      while (pos < fe) {
+        const t = varint(), f = t >> 3;
+        if (f === 2 && (t & 7) === 2) {
+          const tend = varint() + pos;
+          while (pos < tend) {
+            const k = varint(), v = varint();
+            if (k < keys.length && v < values.length) props[keys[k]] = values[v];
+          }
+        } else if (f === 3 && (t & 7) === 0) type = varint();
+        else if (f === 4 && (t & 7) === 2) {
+          ge = varint() + pos;
+          gs = pos;
+          pos = ge;
+        } else skip(t & 7);
+      }
+      if (type !== 2 || gs < 0) continue;
+      // Geometry: MoveTo starts a run, LineTo continues it, ClosePath repeats its first point.
+      pos = gs;
+      const runs: number[][] = [];
+      let x = 0, y = 0, run: number[] | null = null;
+      while (pos < ge) {
+        const c = varint(), id = c & 7, count = c >> 3;
+        if (id === 7) {
+          if (run && run.length >= 2) run.push(run[0], run[1]);
+          continue;
+        }
+        for (let i = 0; i < count; i++) {
+          x += unzig(varint());
+          y += unzig(varint());
+          if (id === 1) {
+            if (run && run.length >= 4) runs.push(run);
+            run = [x, y];
+          } else run?.push(x, y);
+        }
+      }
+      if (run && run.length >= 4) runs.push(run);
+      if (runs.length) lines.push({ props, runs });
+    }
+    return { extent, lines };
+  }
+  return null;
 }

@@ -102,7 +102,28 @@ export interface Terrain {
   /** Ramp exponent: < 1 spends more colour on lowlands, > 1 on highlands. */
   tintCurve: number;
   contours: boolean;
+  /** How the contour lines look (contours.ts draws them). */
+  contour: ContourLook;
   sky: boolean;
+}
+
+/** Contour lines' look (Layers → Terrain). */
+export interface ContourLook {
+  /** Width × (the global line weight on top). */
+  weight: number;
+  /** Opacity of the minor and the major (every fifth, labelled) lines. */
+  minor: number;
+  major: number;
+  /** #rrggbb */
+  colour: string;
+  /** Interval: the intervals' zoom table shifted by this (1: each zoom's finer intervals a zoom sooner). */
+  density: number;
+  /** How much widths follow the distance, tilted: 0 the same everywhere … 1 as the ground. */
+  perspective: number;
+  labels: boolean;
+  /** Closed rings smaller than this across (CSS px at their tile's zoom) left out: specks of flat
+   * land a hair above an interval. */
+  ring: number;
 }
 
 export type ThresholdDir = 'above' | 'below' | 'low';
@@ -482,7 +503,9 @@ export const defaults: AppState = {
       elev: { palette: 'atlas', auto: true, range: [0, 1900], fit: [1, 99], equalize: false, lowFade: 0, lowSpan: 0.5, threshold: { on: false, dir: 'above', value: 1000 } },
       slope: { palette: 'plasma_r', auto: false, range: [10, 70], fit: [2, 98], equalize: false, lowFade: 1, lowSpan: 0.1, threshold: { on: false, dir: 'above', value: 30 } },
     },
-    contours: false, sky: true,
+    contours: false,
+    contour: { weight: 1, minor: 0.16, major: 0.34, colour: '#a9b6c8', density: 0, perspective: 1, labels: true, ring: 6 },
+    sky: true,
   },
   threshold: { on: false, dir: 'above', value: 60 },
   selected: null,
@@ -695,6 +718,8 @@ export function toHash(s: AppState): string {
   if (tt !== td) p.set('t3', tt);
   const tv = (x: Terrain) => [x.tintVar, x.tintBands, +x.tintCurve.toFixed(2), +x.tintOpacity.toFixed(2), x.tintMatch ? 1 : 0].join(',');
   if (tv(t) !== tv(dt)) p.set('tv', tv(t));
+  const cl = (c: ContourLook) => [+c.weight.toFixed(2), +c.minor.toFixed(2), +c.major.toFixed(2), c.colour.slice(1), c.density, +c.perspective.toFixed(2), c.labels ? 1 : 0, c.ring].join(',');
+  if (cl(t.contour) !== cl(dt.contour)) p.set('cl', cl(t.contour));
   for (const [k, key] of [['elev', 'te'], ['slope', 'ts']] as const) {
     if (scaleStr(t.tintScales[k]) !== scaleStr(dt.tintScales[k])) p.set(key, scaleStr(t.tintScales[k]));
   }
@@ -892,6 +917,19 @@ export function fromHash(hash: string): AppState {
     s.terrain = {
       ...s.terrain, tintVar: tvv[0] === 'elev' ? 'elev' : 'slope', tintBands: Math.max(0, n(tvv[1], 0)), tintCurve: Math.min(3, Math.max(0.3, n(tvv[2], 1))),
       tintOpacity: Math.min(1, Math.max(0, n(tvv[3], s.terrain.tintOpacity))), tintMatch: tvv[4] === '1',
+    };
+  }
+  const cl = p.get('cl')?.split(',');
+  if (cl && cl.length >= 8) {
+    const n = (v: string, d: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
+    const d = defaults.terrain.contour;
+    s.terrain = {
+      ...s.terrain,
+      contour: {
+        weight: n(cl[0], d.weight, 0.25, 3), minor: n(cl[1], d.minor, 0, 1), major: n(cl[2], d.major, 0, 1),
+        colour: /^[0-9a-f]{6}$/i.test(cl[3]) ? `#${cl[3].toLowerCase()}` : d.colour, density: Math.round(n(cl[4], d.density, -2, 2)),
+        perspective: n(cl[5], d.perspective, 0, 1), labels: cl[6] !== '0', ring: Math.round(n(cl[7], d.ring, 0, 24)),
+      },
     };
   }
   for (const [k, key] of [['elev', 'te'], ['slope', 'ts']] as const) {
