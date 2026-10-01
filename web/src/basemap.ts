@@ -188,6 +188,12 @@ export const HYPSO: [number, string][] = [
 let PARTS: string[] = [];
 /** A basemap layer's id and its clones for the parts. */
 export const partIds = (id: string): string[] => [id, ...PARTS.map((p) => `${id}@${p}`)];
+/** The basemap's archives, base.pmtiles and the parts', as their sources read them (coast.worker.ts
+ * reads their water). */
+export const basemapArchives = (): string[] => {
+  const base = hostFor('base');
+  return [`${base}/tiles/base.pmtiles${ver('base.pmtiles')}`, ...PARTS.map((p) => `${base}/tiles/base-parts/${p}.pmtiles${ver(`base-parts/${p}.pmtiles`)}`)];
+};
 /** The basemap layer a (possibly cloned) layer id is. */
 export const baseId = (id: string): string => id.split('@')[0];
 

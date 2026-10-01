@@ -1,7 +1,8 @@
 // A minimal Mapbox Vector Tile encoder for one layer of points (the landmarks worker's tiles, see
 // landmarks.worker.ts tile): feature ids, point geometry, flat properties (strings, numbers,
-// booleans; others as JSON text). And a reader of one layer's lines (readLines: the contour tiles,
-// contours.worker.ts). https://github.com/mapbox/vector-tile-spec (2.1).
+// booleans; others as JSON text). And a reader of one layer's lines or polygons (readLines: the
+// contour tiles, contours.worker.ts; readPolygons: the basemap's water, coast.worker.ts).
+// https://github.com/mapbox/vector-tile-spec (2.1).
 
 /** A point in tile units (0 … extent) with its id and properties. */
 export interface TilePoint {
@@ -120,8 +121,8 @@ export function encodePoints(layer: string, points: TilePoint[], extent = 4096):
   return tw.done().slice();
 }
 
-/** A line feature: its properties and its runs of points (tile units, x and y in turn; a closed
- * path repeats its first point at the end). */
+/** A line or polygon feature: its properties and its runs of points (tile units, x and y in turn;
+ * a closed path, every polygon ring, repeats its first point at the end). */
 export interface TileLine {
   props: Record<string, string | number | boolean>;
   runs: number[][];
@@ -130,6 +131,16 @@ export interface TileLine {
 /** One layer's line features (LineString, MultiLineString) and its extent, or null if the tile has
  * no such layer. */
 export function readLines(buf: ArrayBuffer, layer: string): { extent: number; lines: TileLine[] } | null {
+  return readGeometry(buf, layer, 2);
+}
+
+/** One layer's polygon features (rings: exterior and holes, as the tile has them) and its extent,
+ * or null if the tile has no such layer. */
+export function readPolygons(buf: ArrayBuffer, layer: string): { extent: number; lines: TileLine[] } | null {
+  return readGeometry(buf, layer, 3);
+}
+
+function readGeometry(buf: ArrayBuffer, layer: string, geomType: number): { extent: number; lines: TileLine[] } | null {
   const b = new Uint8Array(buf);
   const dv = new DataView(buf);
   let pos = 0;
@@ -212,7 +223,7 @@ export function readLines(buf: ArrayBuffer, layer: string): { extent: number; li
           pos = ge;
         } else skip(t & 7);
       }
-      if (type !== 2 || gs < 0) continue;
+      if (type !== geomType || gs < 0) continue;
       // Geometry: MoveTo starts a run, LineTo continues it, ClosePath repeats its first point.
       pos = gs;
       const runs: number[][] = [];

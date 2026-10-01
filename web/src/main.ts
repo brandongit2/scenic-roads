@@ -7,7 +7,7 @@ import mlWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import './style.css';
 import { getProfile, getRoadWays, getWay, roadWays, setVersions, ver, type Drive, type Meta, type Profile, type Ride, type WayInfo } from './api';
 import { loadEnglish } from './english';
-import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, partIds, POI_STYLE } from './basemap';
+import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, partIds, POI_STYLE, basemapArchives } from './basemap';
 import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
 import { areaLayers, landmarkRef, Overlays, POINT_LAYERS, summariseFeature, withDetails } from './overlays';
@@ -35,7 +35,8 @@ import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
 import { ROAD_WEIGHT, Store, classMask, defaults, labelShown, modeGroup, fromHash, fromSaved, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Stretch } from './state';
 import * as cam3d from './camera3d';
-import { applyLabelOpacity, applyTerrain, applyTint, cacheTerrainRays, TINT_VARS, tintColourAt, tintCss } from './terrain';
+import { applyLabelOpacity, applyLabelSize, applyTerrain, applyTint, cacheTerrainRays, TINT_VARS, tintColourAt, tintCss } from './terrain';
+import { applyWater, updateCoastRamp } from './coast';
 import { ContourLayer, type ContourDraw } from './contours';
 import { terrainDist } from './terrainstats';
 import { cheaperCovers } from './covers';
@@ -1190,7 +1191,20 @@ async function main() {
   map.on('move', () => {
     terrainDirty = true;
     markDirty();
+    if (styleReady) updateCoastRamp(map, store.s.water);
   });
+  let labelSizeTimer = 0, labelSizeAt = 0;
+  const labelSizeSoon = () => {
+    const run = () => {
+      labelSizeTimer = 0;
+      labelSizeAt = performance.now();
+      applyLabelSize(map, store.s.labelSize, store.s.terrain.contour.labelSize);
+    };
+    if (labelSizeTimer) return;
+    const wait = Math.max(0, 150 - (performance.now() - labelSizeAt));
+    if (wait === 0) run();
+    else labelSizeTimer = window.setTimeout(run, wait);
+  };
   // New elevation or slope tiles: the terrain in view again.
   map.on('sourcedata', (e) => {
     if ((e.sourceId === 'dem-hs' || e.sourceId === 'slope') && (e as { tile?: unknown }).tile && store.s.terrain.tint) {
@@ -1718,6 +1732,9 @@ async function main() {
         applyTerrain(map, s.terrain, hostFor('terrain'));
         applyLabelOpacity(map, s.labelOpacity, overlayLabelScale(s.poiOpacity));
       }
+      // Label sizes lay the labels out again: at most every 150 ms while a slider is dragged.
+      if (ch.has('labelSize') || ch.has('terrain')) labelSizeSoon();
+      if (ch.has('water') || ch.has('layers')) applyWater(map, s.water, basemapArchives, s.layers.water);
       // (after the terrain: contour lines are added when first shown)
       if (ch.has('lineWeights') || ch.has('terrain')) applyLineWidths(map, s.lineWeights);
       if (ch.has('terrain') || ch.has('palette') || ch.has('mode')) {
@@ -1831,6 +1848,8 @@ async function main() {
     map.addLayer(dots, `poi-${Object.keys(POI_STYLE)[0]}`);
     applyLayers();
     applyTerrain(map, store.s.terrain, hostFor('terrain'));
+    applyLabelSize(map, store.s.labelSize, store.s.terrain.contour.labelSize);
+    applyWater(map, store.s.water, basemapArchives, store.s.layers.water);
     applyLineWidths(map, store.s.lineWeights);
     applyTrees(map, store.s.trees);
     applyLabelOpacity(map, store.s.labelOpacity, overlayLabelScale(store.s.poiOpacity));

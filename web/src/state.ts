@@ -124,6 +124,31 @@ export interface ContourLook {
   /** Closed rings smaller than this across (CSS px at their tile's zoom) left out: specks of flat
    * land a hair above an interval. */
   ring: number;
+  /** Size of the contour labels (× Label size). */
+  labelSize: number;
+}
+
+/** Water colour and the coastal shading (coast.ts). */
+export interface WaterLook {
+  /** #rrggbb, the sea's (lakes and rivers a shade lighter). */
+  colour: string;
+  /** Shading along the coasts: a band of colour over the water, fading out from the shore. */
+  shade: boolean;
+  /** Band width, CSS px at the view centre (a ground distance: narrower further off when tilted). */
+  width: number;
+  /** Opacity at the shore. */
+  strength: number;
+  /** Fade exponent across the band: 1 linear, higher hugs the shore. */
+  falloff: number;
+  /** #rrggbb */
+  shadeColour: string;
+  /** A thin line along the shore, its opacity. */
+  shore: number;
+  /** Lines along the coast inside the band, like an engraved map's (0 none), and their opacity. */
+  ripples: number;
+  rippleStrength: number;
+  /** Lake and river shores too, not just the sea's. */
+  lakes: boolean;
 }
 
 export type ThresholdDir = 'above' | 'below' | 'low';
@@ -375,6 +400,10 @@ export interface AppState {
   lowSpan: number;
   /** Opacity of all map labels. */
   labelOpacity: number;
+  /** Size of all map labels (× their own). */
+  labelSize: number;
+  /** Water colour and the shading along coasts (Layers → Map → Water). */
+  water: WaterLook;
   /** How densely labels show (Layers → Map labels → Density). */
   labelDensity: LabelDensity;
   /** Opacity of the Stops & sights layers (dots, areas and, with labelOpacity, their labels). */
@@ -482,6 +511,11 @@ export const defaults: AppState = {
   lowFade: 0.8,
   lowSpan: 0.6,
   labelOpacity: 0.5,
+  labelSize: 1,
+  water: {
+    colour: '#0c1622', shade: true, width: 28, strength: 0.22, falloff: 1.8, shadeColour: '#4f7fa8',
+    shore: 0.25, ripples: 0, rippleStrength: 0.35, lakes: false,
+  },
   labelDensity: { ...DEFAULT_DENSITY, kinds: { ...DEFAULT_DENSITY.kinds } },
   poiOpacity: 0.7,
   poiEmphasis: 1,
@@ -504,7 +538,7 @@ export const defaults: AppState = {
       slope: { palette: 'plasma_r', auto: false, range: [10, 70], fit: [2, 98], equalize: false, lowFade: 1, lowSpan: 0.1, threshold: { on: false, dir: 'above', value: 30 } },
     },
     contours: false,
-    contour: { weight: 1, minor: 0.16, major: 0.34, colour: '#a9b6c8', density: 0, perspective: 1, labels: true, ring: 6 },
+    contour: { weight: 1, minor: 0.16, major: 0.34, colour: '#a9b6c8', density: 0, perspective: 1, labels: true, ring: 6, labelSize: 1 },
     sky: true,
   },
   threshold: { on: false, dir: 'above', value: 60 },
@@ -718,13 +752,17 @@ export function toHash(s: AppState): string {
   if (tt !== td) p.set('t3', tt);
   const tv = (x: Terrain) => [x.tintVar, x.tintBands, +x.tintCurve.toFixed(2), +x.tintOpacity.toFixed(2), x.tintMatch ? 1 : 0].join(',');
   if (tv(t) !== tv(dt)) p.set('tv', tv(t));
-  const cl = (c: ContourLook) => [+c.weight.toFixed(2), +c.minor.toFixed(2), +c.major.toFixed(2), c.colour.slice(1), c.density, +c.perspective.toFixed(2), c.labels ? 1 : 0, c.ring].join(',');
+  const cl = (c: ContourLook) => [+c.weight.toFixed(2), +c.minor.toFixed(2), +c.major.toFixed(2), c.colour.slice(1), c.density, +c.perspective.toFixed(2), c.labels ? 1 : 0, c.ring, +c.labelSize.toFixed(2)].join(',');
   if (cl(t.contour) !== cl(dt.contour)) p.set('cl', cl(t.contour));
   for (const [k, key] of [['elev', 'te'], ['slope', 'ts']] as const) {
     if (scaleStr(t.tintScales[k]) !== scaleStr(dt.tintScales[k])) p.set(key, scaleStr(t.tintScales[k]));
   }
   if (s.lowFade !== defaults.lowFade || s.lowSpan !== defaults.lowSpan) p.set('lf', `${+s.lowFade.toFixed(2)},${+s.lowSpan.toFixed(2)}`);
   if (s.labelOpacity !== defaults.labelOpacity) p.set('lo', s.labelOpacity.toFixed(2));
+  if (s.labelSize !== defaults.labelSize) p.set('lz', s.labelSize.toFixed(2));
+  const wa = (w: WaterLook) => [w.colour.slice(1), w.shade ? 1 : 0, w.width, +w.strength.toFixed(2), +w.falloff.toFixed(2), w.shadeColour.slice(1),
+    +w.shore.toFixed(2), w.ripples, +w.rippleStrength.toFixed(2), w.lakes ? 1 : 0].join(',');
+  if (wa(s.water) !== wa(defaults.water)) p.set('wa', wa(s.water));
   const ldv = (d: LabelDensity) => [d.px, ...DENSITY_KINDS.map(([k]) => +d.kinds[k].toFixed(3)), +d.horizon.toFixed(2)].join(',');
   if (ldv(s.labelDensity) !== ldv(defaults.labelDensity)) p.set('ld', ldv(s.labelDensity));
   if (s.poiOpacity !== defaults.poiOpacity) p.set('po', s.poiOpacity.toFixed(2));
@@ -929,6 +967,7 @@ export function fromHash(hash: string): AppState {
         weight: n(cl[0], d.weight, 0.25, 3), minor: n(cl[1], d.minor, 0, 1), major: n(cl[2], d.major, 0, 1),
         colour: /^[0-9a-f]{6}$/i.test(cl[3]) ? `#${cl[3].toLowerCase()}` : d.colour, density: Math.round(n(cl[4], d.density, -2, 2)),
         perspective: n(cl[5], d.perspective, 0, 1), labels: cl[6] !== '0', ring: Math.round(n(cl[7], d.ring, 0, 24)),
+        labelSize: n(cl[8] ?? '', d.labelSize, 0.5, 2.5),
       },
     };
   }
@@ -945,6 +984,19 @@ export function fromHash(hash: string): AppState {
   s.occlude = p.get('oc') === '1';
   const lo = Number(p.get('lo'));
   if (p.get('lo') && lo >= 0 && lo <= 1) s.labelOpacity = lo;
+  const lz = Number(p.get('lz'));
+  if (p.get('lz') && Number.isFinite(lz)) s.labelSize = Math.min(2, Math.max(0.5, lz));
+  const wa = p.get('wa')?.split(',');
+  if (wa && wa.length >= 10) {
+    const n = (v: string, d: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
+    const hex = (v: string, d: string) => (/^[0-9a-f]{6}$/i.test(v) ? `#${v.toLowerCase()}` : d);
+    const d = defaults.water;
+    s.water = {
+      colour: hex(wa[0], d.colour), shade: wa[1] !== '0', width: Math.round(n(wa[2], d.width, 2, 80)), strength: n(wa[3], d.strength, 0, 1),
+      falloff: n(wa[4], d.falloff, 0.5, 4), shadeColour: hex(wa[5], d.shadeColour), shore: n(wa[6], d.shore, 0, 1),
+      ripples: Math.round(n(wa[7], d.ripples, 0, 8)), rippleStrength: n(wa[8], d.rippleStrength, 0, 1), lakes: wa[9] === '1',
+    };
+  }
   const ld = p.get('ld')?.split(',').map(Number);
   if (ld && ld.length === DENSITY_KINDS.length + 2 && ld.every(Number.isFinite)) {
     const c = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));

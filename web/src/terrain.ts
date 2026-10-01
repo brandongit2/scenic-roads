@@ -141,6 +141,28 @@ export function applyTint(map: MLMap, t: Terrain, sc: ScaleFields, range: [numbe
   map.setPaintProperty(id, 'color-relief-opacity', t.tintOpacity, { validate: false });
 }
 
+const baseTextSize = new Map<string, unknown>();
+/** Size of every label layer × `k` (the profile / marker labels as they are; contour labels × their
+ * own size on top). A layout property: MapLibre lays the labels out again. */
+export function applyLabelSize(map: MLMap, k: number, contourK: number) {
+  for (const l of map.getStyle().layers) {
+    if (l.type !== 'symbol' || l.id === 'marks-label') continue;
+    if (!baseTextSize.has(l.id)) baseTextSize.set(l.id, map.getLayoutProperty(l.id, 'text-size') ?? 16);
+    const f = k * (l.id === 'contour-label' ? contourK : 1);
+    const v = baseTextSize.get(l.id);
+    const cur = JSON.stringify(map.getLayoutProperty(l.id, 'text-size'));
+    const want = f === 1 ? v : scaleSize(v, f);
+    if (JSON.stringify(want) !== cur) map.setLayoutProperty(l.id, 'text-size', want as never);
+  }
+}
+/** A text size × f: a number, each output of a zoom curve, else the expression × f. */
+function scaleSize(v: unknown, f: number): unknown {
+  if (typeof v === 'number') return +(v * f).toFixed(3);
+  if (Array.isArray(v) && v[0] === 'interpolate') return [...v.slice(0, 3), ...v.slice(3).map((x, i) => (i % 2 ? scaleSize(x, f) : x))];
+  if (Array.isArray(v) && v[0] === 'step') return [...v.slice(0, 2), ...v.slice(2).map((x, i) => (i % 2 ? x : scaleSize(x, f)))];
+  return ['*', f, v];
+}
+
 /** Opacity of every label layer (the profile / marker labels stay opaque). */
 export function applyLabelOpacity(map: MLMap, v: number, scale: (id: string) => number = () => 1) {
   for (const l of map.getStyle().layers) {

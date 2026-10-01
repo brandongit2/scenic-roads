@@ -4,7 +4,7 @@ import { FERRY_GROUPS, FERRY_GROUP_COLOURS } from '../ferry';
 import { HERITAGE_GROUPS, HERITAGE_TIERS, POI_STYLE } from '../basemap';
 import { Dist, type ViewStats } from '../roads/stats';
 import { STOP_FILTERS, axisPos, filtersOf, type StopFilter } from '../stopfilters';
-import { DEFAULT_DENSITY, DENSITY_KINDS, LABEL_KINDS, LINE_KINDS, OVERLAYS, SPACING_RANGE, WEIGHT_RANGE, defaults, type AppState, type ContourLook, type LabelDensity, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
+import { DEFAULT_DENSITY, DENSITY_KINDS, LABEL_KINDS, LINE_KINDS, OVERLAYS, SPACING_RANGE, WEIGHT_RANGE, defaults, type AppState, type ContourLook, type LabelDensity, type WaterLook, type HillshadeMethod, type LineKind, type OverlayKey, type Store, type TintVar } from '../state';
 import { TINT_PALETTES, TINT_VARS, contourInterval } from '../terrain';
 import * as prefs from '../prefs';
 import { fmt, h } from './dom';
@@ -65,6 +65,8 @@ export class LayersCard {
   private ferryBoxes: HTMLInputElement[] = [];
   private ferryKm: HTMLSpanElement[] = [];
   private other: Record<'water' | 'boundaries' | 'places', HTMLInputElement>;
+  /** Water colour and coastal shading (Map). */
+  private water!: { box: HTMLDivElement; col: HTMLInputElement; shade: HTMLInputElement; shadeBox: HTMLDivElement; shadeCol: HTMLInputElement; lakes: HTMLInputElement };
   private labelBoxes: HTMLInputElement[] = [];
   /** Stops & sights filters: must-haves (a checkbox each) and ranges (a histogram each). */
   private sfFlags: { key: string; on: HTMLInputElement }[] = [];
@@ -361,11 +363,36 @@ export class LayersCard {
         title: 'Leave out closed rings smaller than this across (at their tile\'s scale): specks of flat land a hair above an interval',
         get: () => C().ring, set: (ring) => setC({ ring }), fmt: (v) => (v > 0 ? `< ${v} px` : 'none'),
       }),
+      sl({
+        label: 'Label size', min: 0.5, max: 2.5, step: 0.05, reset: defaults.terrain.contour.labelSize, title: 'Size of the contour labels (Labels → Label size applies on top)',
+        get: () => C().labelSize, set: (labelSize) => setC({ labelSize }), fmt: (v) => `${v.toFixed(2)}×`, disabled: () => !C().labels,
+      }),
     ];
     const labelOpRow = sl({
       label: 'Label opacity', min: 0, max: 1, step: 0.05, reset: defaults.labelOpacity, cls: 'lw', title: 'Opacity of every label on the map',
       get: () => S().labelOpacity, set: (labelOpacity) => this.store.set({ labelOpacity }), fmt: pct,
     });
+    const labelSizeRow = sl({
+      label: 'Label size', min: 0.6, max: 1.8, step: 0.05, reset: defaults.labelSize, cls: 'lw', title: 'Size of every label on the map (contour labels: their own size on top, under Terrain)',
+      get: () => S().labelSize, set: (labelSize) => this.store.set({ labelSize }), fmt: (v) => `${v.toFixed(2)}×`,
+    });
+    // Water: its colour, and the shading along the coasts (coast.ts).
+    const W = () => S().water;
+    const setW = (patch: Partial<WaterLook>) => this.store.set({ water: { ...W(), ...patch } });
+    const colour = (title: string, set: (v: string) => void) => {
+      const e = h('input', { type: 'color', title });
+      e.addEventListener('input', () => set(e.value));
+      return e;
+    };
+    this.water = {
+      box: h('div', { class: 'tint-box' }),
+      col: colour('Colour of the sea (lakes and rivers a shade lighter)', (c) => setW({ colour: c })),
+      shade: cb((shade) => setW({ shade })),
+      shadeBox: h('div', { class: 'tint-box' }),
+      shadeCol: colour('Colour of the shading (lighter than the water brightens it, darker deepens it)', (c) => setW({ shadeColour: c })),
+      lakes: cb((lakes) => setW({ lakes })),
+    };
+    const d = defaults.water;
     const roadOpRow = sl({
       label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: defaults.roadOpacity, title: 'Opacity of the roads, in every display type',
       get: () => S().roadOpacity, set: (roadOpacity) => this.store.set({ roadOpacity }), fmt: pct,
@@ -413,10 +440,44 @@ export class LayersCard {
     });
     const row = (label: string, input: HTMLElement, cls = 'row') => h('div', { class: cls }, h('span', { class: 'muted' }, label), input, h('span'));
 
+    this.water.shadeBox.append(
+      sl({
+        label: 'Width', min: 2, max: 80, step: 1, reset: d.width, title: 'How far the shading reaches from the shore (px at the view centre; tilted, narrower further off)',
+        get: () => W().width, set: (width) => setW({ width }), fmt: (v) => `${v} px`,
+      }),
+      sl({
+        label: 'Strength', min: 0, max: 1, step: 0.02, reset: d.strength, title: 'Opacity of the shading at the shore',
+        get: () => W().strength, set: (strength) => setW({ strength }), fmt: pct,
+      }),
+      sl({
+        label: 'Falloff', min: 0.5, max: 4, step: 0.05, reset: d.falloff, title: 'How it fades across the band: low stays strong further out, high hugs the shore',
+        get: () => W().falloff, set: (falloff) => setW({ falloff }), fmt: (v) => (v < 0.95 ? 'broad' : v > 2.95 ? 'tight' : v.toFixed(1)),
+      }),
+      row('Colour', this.water.shadeCol),
+      sl({
+        label: 'Shoreline', min: 0, max: 1, step: 0.02, reset: d.shore, title: 'A thin line right along the shore',
+        get: () => W().shore, set: (shore) => setW({ shore }), fmt: pct,
+      }),
+      sl({
+        label: 'Ripples', min: 0, max: 8, step: 1, reset: d.ripples, title: 'Lines following the coast within the band, as on engraved maps',
+        get: () => W().ripples, set: (ripples) => setW({ ripples }), fmt: (v) => (v ? String(v) : 'none'),
+      }),
+      sl({
+        label: 'Ripple lines', min: 0, max: 1, step: 0.02, reset: d.rippleStrength, title: 'Opacity of the ripple lines',
+        get: () => W().rippleStrength, set: (rippleStrength) => setW({ rippleStrength }), fmt: pct, disabled: () => W().ripples === 0,
+      }),
+      tog(this.water.lakes, 'Lakes & rivers', '', 'tog', 'Shade lake and river shores too, not only the sea\'s'),
+    );
+    this.water.box.append(
+      row('Colour', this.water.col),
+      tog(this.water.shade, 'Coastal shading', '', 'tog', 'A band of colour over the water along the coasts, fading out from the shore'),
+      this.water.shadeBox,
+    );
     this.t.contourBox.append(
       ...contourRows.slice(0, 5),
       row('Colour', this.t.contourCol),
       tog(this.t.contourLabels, 'Labels', '', 'tog', 'Elevations along the major lines'),
+      contourRows[6],
       contourRows[5],
     );
     this.t.tintBox.append(
@@ -592,6 +653,7 @@ export class LayersCard {
       this.section('map', 'Map', null,
         tog(this.globe, 'Globe', '', 'tog', 'Globe projection; flattens to Web Mercator as you zoom in'),
         tog(this.other.water, 'Water'),
+        this.water.box,
         tog(this.other.boundaries, 'Boundaries'),
         ...boundaryLevels,
         boundOpRow,
@@ -601,6 +663,7 @@ export class LayersCard {
       this.section('labels', 'Labels', this.other.places,
         ...labelKinds,
         labelOpRow,
+        labelSizeRow,
         sub('Density'),
         spacingRow,
         ...densityRows,
@@ -786,6 +849,12 @@ export class LayersCard {
     this.t.contourCol.value = t.contour.colour;
     this.t.sky.checked = t.sky;
     this.other.water.checked = s.layers.water;
+    this.water.box.hidden = !s.layers.water;
+    this.water.col.value = s.water.colour;
+    this.water.shade.checked = s.water.shade;
+    this.water.shadeBox.hidden = !s.water.shade;
+    this.water.shadeCol.value = s.water.shadeColour;
+    this.water.lakes.checked = s.water.lakes;
     this.other.boundaries.checked = s.layers.boundaries;
     this.boundaryBoxes.forEach((c, i) => {
       c.checked = s.boundaryLevels[i];
