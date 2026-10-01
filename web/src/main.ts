@@ -7,7 +7,7 @@ import mlWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import './style.css';
 import { getProfile, getRoadWays, getWay, roadWays, setVersions, ver, type Drive, type Meta, type Profile, type Ride, type WayInfo } from './api';
 import { loadEnglish } from './english';
-import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, LAYER_GROUPS, overlayLabelScale, partIds, POI_STYLE } from './basemap';
+import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, partIds, POI_STYLE } from './basemap';
 import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
 import { areaLayers, landmarkRef, Overlays, POINT_LAYERS, summariseFeature, withDetails } from './overlays';
@@ -498,7 +498,8 @@ async function main() {
     lastTerrain = performance.now();
     terrainDirty = false;
     if (!t.tint || !styleReady) return;
-    const d = terrainDist(map, t.tintVar === 'slope' ? 'slope' : 'dem-hs', TINT_VARS[t.tintVar].domain, groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]));
+    const slope = t.tintVar === 'slope';
+    const d = terrainDist(map, slope ? 'slope' : 'dem-hs', TINT_VARS[t.tintVar].domain, groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]), slope ? { max: SLOPE4_MAX } : null);
     if (d) terrainD = d;
   };
   const updateTintCdf = () => {

@@ -1,4 +1,6 @@
-//! Terrain slope tiles (percent, Terrarium-encoded as if it were elevation) for the slope tint.
+//! Terrain slope tiles for the slope tint: per pixel four slopes (percent), the means of the four
+//! quarters of the z12 slopes beneath it (roadcore::slope: the map colours each and averages the
+//! colours, so a pixel shows the mix of colours its ground would).
 //!
 //! usage: slope <build_dir> [--seed] [--coarse]
 //!
@@ -7,10 +9,11 @@
 //! z8, 1.4 % at z4). So slope is computed once at the finest level (z12, Horn's method with
 //! neighbouring tiles), and each coarser pixel takes the mean of the slopes beneath it: the average
 //! steepness of the ground it covers, which every level keeps (there: 25 % down to z8, 19 % at z4).
-//! What fades far out is the steepest class, cliffs narrower than a pixel blending with the gentler
-//! ground beside them (≥ 45 %: 9.7 % of that ground at z12, 6.5 % at z8, none at z4). Until
-//! 2026-09-30 each coarser pixel took one of the slopes beneath it at random, a halftone that kept
-//! the steepest class at every zoom but read as noise zoomed out. Pixels with no finer data (far
+//! The mean alone faded the steepest class far out, cliffs narrower than a pixel blending with the
+//! gentler ground beside them (≥ 45 %: 9.7 % of that ground at z12, 6.5 % at z8, none at z4), so
+//! each pixel keeps the quarters of the slopes beneath it: a parent's from its four children's 16,
+//! sorted (roadcore::slope::merge4). Until 2026-09-30 each coarser pixel took one of the slopes
+//! beneath it at random, a halftone that kept the steepest class at every zoom but read as noise. Pixels with no finer data (far
 //! from roads, where the terrain archive stops at z8) fall back to the slope of that level's own
 //! DEM. Writes slope.tiles (served at
 //! /tiles/slope/{z}/{x}/{y}). --coarse recomputes every level below z12 from the z12 tiles (after
@@ -25,6 +28,7 @@ use pipeline::count_bar;
 use rayon::prelude::*;
 use roadcore::archive::{Archive, ArchiveWriter};
 use roadcore::grid::tile_with_fallback;
+use roadcore::slope::{decode_slope4, encode_slope4, merge4, Quarters};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -78,48 +82,11 @@ fn slope_tile(arc: &Archive, z: u8, x: u32, y: u32) -> Option<Vec<f32>> {
     Some(out)
 }
 
-/// Each parent pixel's slope (the mean of its 2×2 children), and whether a finer tile supplied it.
+/// Each parent pixel's quarters (from its 2×2 children's, slope × 100), and whether a finer tile
+/// supplied them.
 struct Acc {
-    val: Vec<f32>,
+    val: Vec<[u16; 4]>,
     has: Vec<bool>,
-}
-
-/// Terrarium PNG of slopes in 1/16 % steps: R is constant, B takes 16 levels, which compresses
-/// far better than the elevation encoder's full precision. (Whole percents were too coarse: the
-/// map interpolates between pixels, and around a colour threshold integer steps left lens-shaped
-/// blotches centred on single pixels instead of smooth edges.)
-fn encode(v: &[f32]) -> Vec<u8> {
-    let mut rgb = Vec::with_capacity(v.len() * 3);
-    for &s in v {
-        let q = (s.clamp(0.0, 500.0) * 16.0).round() as u32; // 1/16 %
-        let e = (q >> 4) + 32768;
-        rgb.extend_from_slice(&[(e >> 8) as u8, e as u8, ((q & 15) << 4) as u8]);
-    }
-    let mut out = Vec::new();
-    {
-        let mut enc = png::Encoder::new(&mut out, TS as u32, TS as u32);
-        enc.set_color(png::ColorType::Rgb);
-        enc.set_depth(png::BitDepth::Eight);
-        enc.set_compression(png::Compression::Balanced);
-        enc.set_filter(png::Filter::Adaptive);
-        let mut w = enc.write_header().expect("png");
-        w.write_image_data(&rgb).expect("png");
-    }
-    out
-}
-
-fn decode(png_bytes: &[u8]) -> Option<Vec<f32>> {
-    let mut dec = png::Decoder::new(std::io::Cursor::new(png_bytes));
-    dec.set_transformations(png::Transformations::EXPAND);
-    let mut r = dec.read_info().ok()?;
-    let mut buf = vec![0u8; r.output_buffer_size()?];
-    let info = r.next_frame(&mut buf).ok()?;
-    let ch = info.color_type.samples();
-    Some((0..TS * TS).map(|i| {
-        let p = &buf[i * ch..];
-        let q = ((((p[0] as u32) << 8 | p[1] as u32).saturating_sub(32768)) << 4) | (p[2] as u32 >> 4);
-        q as f32 / 16.0
-    }).collect())
 }
 
 fn main() -> Result<()> {
@@ -141,7 +108,8 @@ fn main() -> Result<()> {
         .ok()
         .filter(|b| b.len() % 8 == 0 && !b.is_empty())
         .map(|b| bytemuck::cast_slice::<u8, u64>(&b).iter().copied().collect());
-    let old = Archive::open(&dir.join("slope.tiles")).ok().filter(|_| prev_keys.is_some());
+    // (Tiles of another encoding than the quarters are all made again.)
+    let old = Archive::open(&dir.join("slope.tiles")).ok().filter(|a| prev_keys.is_some() && a.meta_json.contains("slope4"));
     let new_terrain: std::collections::HashSet<u64> = match &prev_keys {
         Some(p) => arc.entries().iter().map(|e| e.key).filter(|k| !p.contains(k)).collect(),
         None => std::collections::HashSet::new(),
@@ -170,7 +138,7 @@ fn main() -> Result<()> {
             by_z[z as usize].push((((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32));
         }
     }
-    let mut aw = ArchiveWriter::create(&roadcore::tmp(&dir, "slope.tiles"), r#"{"format":"png","encoding":"terrarium","value":"slope percent"}"#)?;
+    let mut aw = ArchiveWriter::create(&roadcore::tmp(&dir, "slope.tiles"), r#"{"format":"png","encoding":"slope4","value":"slope percent, quarter means"}"#)?;
     let in_old = |z: u8, x: u32, y: u32| old.as_ref().is_some_and(|o| o.get(z, x, y).is_some());
     // --coarse: every level below z12 again (z12 copied).
     let coarse = std::env::args().any(|a| a == "--coarse");
@@ -205,14 +173,14 @@ fn main() -> Result<()> {
         let mut next: HashMap<(u32, u32), Acc> = HashMap::new();
         let mut next_present: std::collections::HashSet<(u32, u32)> = Default::default();
         for chunk in tiles.chunks(1024) {
-            // (tile, encoded tile, values when the parent needs them)
-            let done: Vec<((u32, u32), Vec<u8>, Option<Vec<f32>>)> = chunk
+            // (tile, encoded tile, quarters when the parent needs them)
+            let done: Vec<((u32, u32), Vec<u8>, Option<Vec<Quarters>>)> = chunk
                 .par_iter()
                 .filter_map(|&(x, y)| {
                     pb.inc(1);
                     if !dirty.contains(&(x, y)) {
                         let blob = old.as_ref()?.get(z, x, y)?.to_vec();
-                        let vals = if parent_dirty(x, y) { decode(&blob) } else { None };
+                        let vals = if parent_dirty(x, y) { decode_slope4(&blob) } else { None };
                         return Some(((x, y), blob, vals));
                     }
                     let a = acc.get(&(x, y));
@@ -222,18 +190,19 @@ fn main() -> Result<()> {
                     if a.is_none() && direct.is_none() {
                         return None;
                     }
-                    let mut v = vec![0f32; TS * TS];
+                    let mut v = vec![[0f32; 4]; TS * TS];
                     for p in 0..TS * TS {
                         v[p] = match a {
-                            Some(a) if a.has[p] => a.val[p],
-                            _ => direct.as_ref().map_or(0.0, |d| d[p]),
+                            Some(a) if a.has[p] => a.val[p].map(|q| q as f32 / 100.0),
+                            _ => [direct.as_ref().map_or(0.0, |d| d[p]); 4],
                         };
                     }
-                    Some(((x, y), encode(&v), Some(v)))
+                    let blob = encode_slope4(&v, TS as u32, TS as u32).expect("png");
+                    Some(((x, y), blob, Some(v)))
                 })
                 .collect();
             for ((x, y), blob, vals) in &done {
-                aw.add(z, *x, *y, blob, TS * TS * 3)?;
+                aw.add(z, *x, *y, blob, TS * TS * 4)?;
                 if dirty.contains(&(*x, *y)) {
                     written += 1;
                 } else {
@@ -244,15 +213,16 @@ fn main() -> Result<()> {
                 }
                 let (px, py) = (x / 2, y / 2);
                 next_present.insert((px, py));
-                // Each 2×2 block's mean into the parent's quadrant (when it is recomputed).
+                // Each 2×2 block's quarters into the parent's quadrant (when it is recomputed).
                 let Some(v) = vals else { continue };
                 let (ox, oy) = ((x % 2) as usize * 128, (y % 2) as usize * 128);
-                let p = next.entry((px, py)).or_insert_with(|| Acc { val: vec![0.0; TS * TS], has: vec![false; TS * TS] });
+                let p = next.entry((px, py)).or_insert_with(|| Acc { val: vec![[0; 4]; TS * TS], has: vec![false; TS * TS] });
                 for j in 0..128 {
                     for i in 0..128 {
                         let k = (oy + j) * TS + ox + i;
                         let (a, b) = ((2 * j) * TS + 2 * i, (2 * j + 1) * TS + 2 * i);
-                        p.val[k] = (v[a] + v[a + 1] + v[b] + v[b + 1]) * 0.25;
+                        let q = merge4([&v[a], &v[a + 1], &v[b], &v[b + 1]]);
+                        p.val[k] = q.map(|s| (s * 100.0).round().clamp(0.0, 65535.0) as u16);
                         p.has[k] = true;
                     }
                 }

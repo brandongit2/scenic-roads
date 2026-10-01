@@ -5,7 +5,7 @@
 import type { Map as MLMap } from 'maplibre-gl';
 import { Dist } from './roads/stats';
 
-type Dem = { dim: number; get(x: number, y: number): number };
+type Dem = { dim: number; stride: number; data: Uint32Array; get(x: number, y: number): number };
 type TileLike = { tileID: { canonical: { z: number; x: number; y: number } }; dem?: Dem | null };
 type TileManagerLike = { getRenderableIds(): string[]; getTileByID(id: string): TileLike | undefined };
 
@@ -33,9 +33,10 @@ function inside(poly: [number, number][]): (lng: number, lat: number) => boolean
   };
 }
 
-/** The distribution of a raster-dem source's values (`decode`: the tile's value → what is measured)
- * over the ground in view, in `domain`; null while no tile in view is loaded. */
-export function terrainDist(map: MLMap, source: string, domain: [number, number], outline: [number, number][], decode: (v: number) => number = (v) => v): Dist | null {
+/** The distribution of a raster-dem source's values over the ground in view, in `domain`; null
+ * while no tile in view is loaded. `quarters`: the slope source's four slopes a pixel (roadcore::
+ * slope, each 255 × √(slope ÷ max) on its own channel), each a quarter of the pixel's ground. */
+export function terrainDist(map: MLMap, source: string, domain: [number, number], outline: [number, number][], quarters: { max: number } | null = null): Dist | null {
   const tm = (map as unknown as { style?: { tileManagers?: Record<string, TileManagerLike> } }).style?.tileManagers?.[source];
   if (!tm) return null;
   const inView = inside(outline);
@@ -50,6 +51,7 @@ export function terrainDist(map: MLMap, source: string, domain: [number, number]
     const { z, x, y } = t.tileID.canonical;
     const n = 2 ** z;
     const step = dem.dim / SIDE;
+    const bytes = quarters ? new Uint8Array(dem.data.buffer, dem.data.byteOffset, dem.data.byteLength) : null;
     for (let j = 0; j < SIDE; j++) {
       const py = (j + 0.5) * step;
       const lat = y2lat((y + py / dem.dim) / n);
@@ -60,7 +62,16 @@ export function terrainDist(map: MLMap, source: string, domain: [number, number]
         const px = (i + 0.5) * step;
         const lng = ((x + px / dem.dim) / n) * 360 - 180;
         if (!inView(lng, lat)) continue;
-        const v = decode(dem.get(Math.floor(px), Math.floor(py)));
+        if (bytes) {
+          const at = ((Math.floor(py) + 2) * dem.stride + Math.floor(px) + 2) * 4;
+          for (let ch = 0; ch < 4; ch++) {
+            const u = bytes[at + ch] / 255;
+            bins[Math.max(0, Math.min(BINS - 1, Math.floor((u * u * quarters!.max - lo) * k)))] += w / 4;
+          }
+          total += w;
+          continue;
+        }
+        const v = dem.get(Math.floor(px), Math.floor(py));
         if (!Number.isFinite(v)) continue;
         bins[Math.max(0, Math.min(BINS - 1, Math.floor((v - lo) * k)))] += w;
         total += w;

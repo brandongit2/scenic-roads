@@ -17,6 +17,7 @@ use std::sync::{Mutex, OnceLock};
 
 static SYNTH: OnceLock<Mutex<HashMap<(u8, u32, u32), Vec<u8>>>> = OnceLock::new();
 static FLAT: OnceLock<Vec<u8>> = OnceLock::new();
+static FLAT_SLOPE: OnceLock<Vec<u8>> = OnceLock::new();
 
 fn png(b: Vec<u8>, versioned: bool) -> Response {
     (
@@ -65,7 +66,8 @@ static SLOPE: OnceLock<Mutex<HashMap<(u8, u32, u32), Vec<u8>>>> = OnceLock::new(
 pub async fn slope_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery) -> Response {
     let v = crate::cache::versioned(q.as_deref());
     let png = |b: Vec<u8>| png(b, v);
-    let flat = || FLAT.get_or_init(|| encode_terrain_png(&vec![0.0; 65536], 256, 256).unwrap()).clone();
+    // (Tiles made here, where the slope archive has none, in its encoding: four equal quarters.)
+    let flat = || FLAT_SLOPE.get_or_init(|| roadcore::slope::encode_slope4(&vec![[0.0; 4]; 65536], 256, 256).unwrap()).clone();
     if let Some(b) = s.slope.as_ref().and_then(|a| a.get(z, x, y)) {
         return png(b.to_vec());
     }
@@ -122,7 +124,8 @@ pub async fn slope_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)
                 out[(j * 256 + i) as usize] = ((dzdx * dzdx + dzdy * dzdy).sqrt() * 100.0).min(500.0);
             }
         }
-        encode_terrain_png(&out, 256, 256).ok()
+        let q: Vec<[f32; 4]> = out.iter().map(|&v| [v; 4]).collect();
+        roadcore::slope::encode_slope4(&q, 256, 256).ok()
     })
     .await
     .ok()
