@@ -72,6 +72,12 @@ impl NamesState {
         h
     }
 
+    /// Each reading area's translations version (for the catalog's status).
+    pub fn versions(&self) -> std::collections::BTreeMap<&'static str, u64> {
+        let g = self.names.read().unwrap();
+        names::area::AREAS.iter().map(|a| (*a, g.as_ref().map(|n| n.version(a)).unwrap_or(0))).collect()
+    }
+
     /// A version over every reading area (for files that span them all).
     pub fn version_all(&self) -> u64 {
         let g = self.names.read().unwrap();

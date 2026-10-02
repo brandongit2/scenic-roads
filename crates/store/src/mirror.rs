@@ -210,6 +210,11 @@ impl Mirror {
         replace_file(&p, &serde_json::to_vec(&snapshot)?, None).with_context(|| format!("write {}", p.display()))
     }
 
+    /// Whether pack `content_name`'s index is cached on this Mac.
+    pub fn has_index(&self, content_name: &str) -> bool {
+        parse_content_name(content_name).is_some_and(|c| self.root.join("idx").join(format!("{}.idx", c.hash16)).exists())
+    }
+
     /// Pack `content_name`'s index from the local cache, else from `loader` (which reads the
     /// pack, locally or through the pool), cached for next time.
     pub fn index(&self, content_name: &str, loader: impl FnOnce() -> Result<PackIndex>) -> Result<PackIndex> {

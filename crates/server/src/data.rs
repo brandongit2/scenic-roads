@@ -105,6 +105,8 @@ pub struct Data {
     pub mirror_gen: std::sync::atomic::AtomicU64,
     /// The last attempt to mount the share.
     last_mount: Mutex<Option<std::time::Instant>>,
+    /// Whether the build agent runs a job, and when that was read.
+    busy: Mutex<Option<(std::time::Instant, bool)>>,
 }
 
 /// A data development override: serve a local folder laid out like the NAS project folder.
@@ -136,6 +138,7 @@ impl Data {
             generation: Default::default(),
             mirror_gen: Default::default(),
             last_mount: Mutex::new(None),
+            busy: Mutex::new(None),
         });
         match o.nas_root {
             Some(root) => d.set_nas(Some(root)),
@@ -408,6 +411,51 @@ impl Data {
         cat.basemap.iter().filter_map(|l| self.content(l)).map(|c| Ok((c.clone(), self.src(&c)?))).collect()
     }
 
+    /// Whether the build Mac is running a job (its heartbeat on the NAS, fresh, with a job that
+    /// isn't paused). Read at most every 30 s.
+    pub fn agent_busy(&self) -> bool {
+        let mut g = self.busy.lock().unwrap();
+        if let Some((t, b)) = *g {
+            if t.elapsed() < Duration::from_secs(30) {
+                return b;
+            }
+        }
+        let b = (|| -> Option<bool> {
+            let (root, pool) = (self.nas_root()?, self.pool()?);
+            let v: serde_json::Value = serde_json::from_slice(&pool.read_all(&root.join("state/status.json")).ok()?).ok()?;
+            let beat = v.get("beat")?.as_u64()?;
+            let fresh = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs().saturating_sub(beat) < 600;
+            let job = v.get("job").filter(|j| !j.is_null())?;
+            Some(fresh && job.get("paused").is_none_or(|p| p.is_null()))
+        })()
+        .unwrap_or(false);
+        *g = Some((std::time::Instant::now(), b));
+        b
+    }
+
+    /// Caches the index of every pack of the catalog that isn't on this Mac (a few at a time, so
+    /// the NAS isn't flooded), so an offline start can still answer 304s and find tiles.
+    pub fn keep_indexes(&self, cat: &Catalog) {
+        let Some(m) = &self.mirror else { return };
+        let mut n = 0;
+        for l in cat.layers.values() {
+            for logical in l.root.iter().chain(l.lo.values()).chain(l.hi.values()) {
+                let Some(content) = cat.files.get(logical).map(|f| f.file.clone()) else { continue };
+                if m.local(&content).is_some() || self.indexes.lock().unwrap().get(&content).is_some() || m.has_index(&content) {
+                    continue;
+                }
+                if let Err(e) = self.index(&content) {
+                    eprintln!("index {content}: {e:#}");
+                    return;
+                }
+                n += 1;
+                if n >= 200 {
+                    return;
+                }
+            }
+        }
+    }
+
     /// Drops what was opened from the NAS and is now on this Mac, so the local copy serves it
     /// (offline too). Views read from the NAS are dropped whole; they're rebuilt on next use.
     pub fn forget_remote(&self) {
@@ -448,7 +496,8 @@ impl Data {
                     if let (Some(root), Some(pool)) = (d.nas_root(), d.pool()) {
                         if pool.is_online() {
                             let cat = d.catalog();
-                            let pause = || false;
+                            // Paused while the build Mac runs a job: its uploads have the NAS first.
+                            let pause = || d.agent_busy();
                             match m.sync(&cat, &root, &pool, &pause) {
                                 Ok(s) => {
                                     if s.copied > 0 {
@@ -457,6 +506,10 @@ impl Data {
                                     }
                                 }
                                 Err(e) => eprintln!("mirror: {e:#}"),
+                            }
+                            // Every pack's index on this Mac too, for offline starts.
+                            if !d.agent_busy() {
+                                d.keep_indexes(&cat);
                             }
                         }
                     }

@@ -483,6 +483,7 @@ async fn catalog_h(State(s): State<S>) -> Response {
         "nas": s.data.nas_root().map(|p| p.display().to_string()),
         "app": s.updater.running(),
         "agent": agent,
+        "names": s.names.versions(),
     });
     ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
 }
