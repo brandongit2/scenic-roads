@@ -8,6 +8,7 @@ pub mod hipack;
 pub mod layers;
 pub mod legacy;
 pub mod osmpass;
+pub mod outlines;
 pub mod out;
 pub mod roads;
 pub mod scache;

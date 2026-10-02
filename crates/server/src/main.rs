@@ -48,6 +48,8 @@ pub struct AppState {
     road_en: Mutex<Option<(u64, Arc<HashMap<u64, String>>)>>,
     /// Trains a day per rail way (OSM id), sorted, per catalog.
     rail_freq: Mutex<Option<(u64, Arc<Vec<(u32, f32)>>)>>,
+    /// The build agent's heartbeat (state/status.json), re-read at most every 30 s.
+    agent: Mutex<Option<(std::time::Instant, serde_json::Value)>>,
 }
 
 pub type S = Arc<AppState>;
@@ -127,6 +129,22 @@ impl AppState {
         Some(d)
     }
 
+    /// The build agent's heartbeat, as it wrote it (null when there's none or the NAS is away).
+    fn agent_status(&self) -> serde_json::Value {
+        let mut cur = self.agent.lock().unwrap();
+        if let Some((t, v)) = cur.as_ref() {
+            if t.elapsed() < std::time::Duration::from_secs(30) {
+                return v.clone();
+            }
+        }
+        let v = match (self.data.nas_root(), self.data.pool()) {
+            (Some(root), Some(pool)) if pool.is_online() => pool.read_all(&root.join("state/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::Value::Null),
+            _ => serde_json::Value::Null,
+        };
+        *cur = Some((std::time::Instant::now(), v.clone()));
+        v
+    }
+
     /// Whether the details, rail frequencies and roads' English names of this catalog are loaded.
     fn loaded(&self) -> bool {
         let g = self.generation();
@@ -173,6 +191,7 @@ async fn main() -> Result<()> {
         details: Mutex::new(None),
         road_en: Mutex::new(None),
         rail_freq: Mutex::new(None),
+        agent: Mutex::new(None),
     });
 
     tokio::spawn(warm(state.clone()));
@@ -380,6 +399,8 @@ async fn meta_h(State(s): State<S>) -> Response {
 }
 
 async fn catalog_h(State(s): State<S>) -> Response {
+    let s2 = s.clone();
+    let agent = tokio::task::spawn_blocking(move || s2.agent_status()).await.unwrap_or(serde_json::Value::Null);
     let cat = s.data.catalog();
     let body = serde_json::json!({
         "n": cat.n,
@@ -391,6 +412,7 @@ async fn catalog_h(State(s): State<S>) -> Response {
         "online": s.data.online(),
         "nas": s.data.nas_root().map(|p| p.display().to_string()),
         "app": s.updater.running(),
+        "agent": agent,
     });
     ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
 }

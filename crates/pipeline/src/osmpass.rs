@@ -234,7 +234,7 @@ pub fn walk_all(units: &[UnitLinks]) -> Vec<(u64, RoadVal)> {
 }
 
 /// Stage list, in order.
-pub const STAGES: &[&str] = &["copy", "filter", "sets", "basemap", "cut3", "cut6", "roads"];
+pub const STAGES: &[&str] = &["copy", "filter", "sets", "outlines", "basemap", "cut3", "cut6", "roads"];
 
 /// Run (or resume) the pass for `date` from `planet` (on the NAS).
 pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extract_bin: &Path, planetiler: &Path) -> Result<()> {
@@ -264,6 +264,17 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         }
         out.save()?;
         mark(scratch, "sets")?;
+    }
+    if !done(scratch, "outlines").exists() {
+        // Administrative and ISO 3166 outlines from the outline set (crate::outlines).
+        let set = scratch.join("set-outlines.osm.pbf");
+        let set = if set.exists() { set } else { out.path(out.get(&format!("sources/osm/{date}/sets/outlines")).context("the outline set")?) };
+        let file = scratch.join("outlines.sect");
+        let s = crate::outlines::assemble(&set, &scratch.join("outlines-work"), &file)?;
+        eprintln!("outlines: {} ({} points, {} simplified); by level {:?}", s.outlines, s.points, s.simplified_points, s.by_level);
+        out.put_file(&format!("sources/osm/{date}/outlines"), "sect", &file)?;
+        out.save()?;
+        mark(scratch, "outlines")?;
     }
     if !done(scratch, "basemap").exists() {
         let b = scratch.join("basemap-input.osm.pbf");
