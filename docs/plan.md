@@ -372,12 +372,19 @@ It shows only when it truly differs from the name.
 - Label and basemap tiles are rewritten on the fly, about 1 ms each, and cached.
 
 **Files:** `translations/<area>/*.jsonl`, with any names and any number of files.
-- Lines are `{"n", "en"}`. Extra fields, like the translators' `via`, are ignored.
+- Lines are the translation work's display format: `{"n", "main", "sub"}`. `n` is the name as in
+  OSM; `main` is what the label shows (the native name, or a translation when the name is only
+  ordinary words: Église → Church); `sub` is the smaller second line (OSM's English, a
+  romanisation such as Matsu-shima, or a translation), or null.
+- Older `{"n", "en"}` lines mean main = n, sub = en. Extra fields (`case`, `via`, `check`) are
+  ignored.
+- On map labels, main is the label and sub the line under it; in the app's text, "main (sub)".
 - Later file names win.
 - A file is read once its size and modification time have held for 10 s. An unfinished last line
   is ignored.
-- Areas: `ja`, `zh-tw`, `zh-hk`, `en-sg`, `latin-…`. The old keys `jp`, `tw`, `hk`, `sg` and
-  `latin` are accepted as folder names.
+- Areas are the translation work's codes: `jp`, `tw`, `hk`, `sg`, `fr` (France, Monaco), `ib`
+  (Spain, mainland Portugal, Andorra, Gibraltar), `pt` (Azores, Madeira), `na` (Canada, the US),
+  `gb` (Britain, Ireland, Isle of Man, Channel Islands). New countries get new codes.
 - Reading areas come from the country outlines; there are no hard-coded boxes.
 
 **Todo:** `translations/todo/<area>.jsonl`, with priority metrics. The agent regenerates it after
