@@ -188,10 +188,27 @@ The following apply by location, from a module registry with coverage areas, not
 - Adding a region never changes an earlier one. Removing one queues the regions whose ownership
   grows.
 
-**Context.** A region computes over its whole extract, then writes only what it owns.
+**Context.** A region computes over its whole extract plus its neighbours' roads within 100 km of
+the border (read from their published ways and elevations), then writes only what it owns.
 - Geofabrik keeps crossing ways and multipolygons complete; route relations are not completed.
-- So junction smoothing, bridges, tunnels and ferries, whole roads and rail matching all see the
-  neighbours' ways inside the overlap.
+- So junction smoothing, bridges, tunnels and ferries, whole roads, climbs and rail matching all
+  see across the border.
+
+**Borders are seamless once both neighbours exist:**
+- **Drawn layers:** global or shared, so they have no borders.
+- **Roads** are drawn whole (each belongs to one region). Their colours come from data with no
+  borders: elevations from the DEM picked by location, scenic metrics from the global layers.
+- **Network-derived values** are computed with the 100 km context, so both sides agree: whole-road
+  lengths (the length filter), climbs, strokes. A climb crossing a border belongs to the region
+  where it starts.
+- **At view time** the server chains drives, rides, whole-road highlights and their lengths across
+  regions by shared OSM nodes, so these are exact and unbounded.
+- **When a neighbour is added or refreshed,** the region's border-dependent steps rerun in the
+  background: climbs, road lengths and the tile packs they touch. They depend only on the
+  neighbour's base data (ways, elevations), never on its derived outputs, so nothing ping-pongs.
+- **The only seam left** is a neighbour not yet added: the data ends there, as at the map's edge
+  today. Between a neighbour's publish and the border rerun (minutes), border climbs can be
+  incomplete.
 
 **IDs:**
 - `gid = region index << 32 | local index`.
@@ -366,9 +383,10 @@ reference.
 **Order of work:**
 1. requests;
 2. translation and description changes;
-3. global packs that new coverage needs;
-4. stale regions after step-version bumps, oldest first, when idle;
-5. refreshes, when idle and on power:
+3. border reruns for neighbours of regions that just published;
+4. global packs that new coverage needs;
+5. stale regions after step-version bumps, oldest first, when idle;
+6. refreshes, when idle and on power:
    - OSM, per region every ~3 months;
    - Overture, registers and timetables every ~6 months;
    - the basemap yearly.
@@ -456,6 +474,11 @@ publishes the app.
 | 25 | Version bumps | Background, oldest first, background priority |
 | 26 | Backups; manual inputs | Snapshots plus a trash-safe mirror; `inputs/manual`, `keys.env` |
 | 27 | Landmarks per kind | Per-kind files per region; top files below z7 |
+
+### After the review
+
+The user asked how seamless borders can be. Answer: the 100 km neighbour context, border reruns
+when a neighbour publishes, and chaining at view time (§5 "Borders").
 
 ### Round 2
 

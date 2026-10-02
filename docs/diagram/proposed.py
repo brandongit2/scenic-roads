@@ -124,7 +124,7 @@ def build(check=False):
     # ---- 5. roads (per road point) -------------------------------------------------------------
     y0 = y1 + GAP
     cy = y0 + 24
-    n_ext = d.card('net', 'd1', cy, 'extract', 'Rust', ['the whole extract as context;', 'writes the ways it owns'],
+    n_ext = d.card('net', 'd1', cy, 'extract', 'Rust', ['its extract, plus neighbours’', 'roads within 100 km; writes', 'the ways it owns'],
                    [(['ways.bin · verts.bin'], 'flat arrays · gids'), (['pois.json'], None)], scope='region')
     n_samp = d.card('terr', 'd2', cy, 'sample.py · tile elev', 'Py · Rust', ['DEMs chosen by location,', 'then clean-up and grade'],
                     [(['elev.f32 · src.u8', 'final.i16 · grade.u8'], 'flat arrays')], kept='its own DEM cache', scope='region')
@@ -134,7 +134,8 @@ def build(check=False):
     n_tile = d.card('net', 'd4', cy, 'tile', 'Rust', ['z4–14 in chunks, packed by z6;', 'startup indexes'],
                     [(['roads/ · rails/'], 'RT v7 packs'), (['startup.*'], 'endpoints, drives, rail lines')], scope='region')
     s_osm4 = d.src('osm', cy, 'OSM extract', ['roads · rail · ferry lines'])
-    s_dem = d.src('terr', s_osm4.b + 8, 'Road DEMs', ['HRDEM · 3DEP · MRDEM (N. Am.)', 'GSI (Japan) · FABDEM 30 m', 'read by range, road blocks only'])
+    s_dem = d.src('terr', s_osm4.b + 8, 'Road DEMs', ['HRDEM · 3DEP · MRDEM (N. Am.)', 'GSI (Japan) · FABDEM 30 m', 'read by range, road blocks only'],
+                  minh=n_ext.b + 22 - (s_osm4.b + 8))
     p_road = d.pill('net', n_tile.my, ['/tiles/roads · rails', '/api/road · drives …'], note=['every region’s chunks', 'appended; by gid'])
     b_road = d.layer('net', 0, 'Roads & rail lines', ['WebGL, coloured per point:', 'elevation, grade, scenic score'], cy=p_road.my)
     y_sc = max(n_tile.b + 16, b_road.b + 8 + 26.5)
