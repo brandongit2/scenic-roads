@@ -772,7 +772,8 @@ fn main() -> Result<()> {
     // ---- Pass 2: node coordinates + private gates --------------------------------
     let coords: Vec<AtomicU64> = (0..needed.len()).map(|_| AtomicU64::new(u64::MAX)).collect();
     let gates: Vec<AtomicU8> = (0..needed.len()).map(|_| AtomicU8::new(0)).collect();
-    let (lo, hi) = (needed[0], needed[needed.len() - 1]);
+    // An empty range (lo > hi) when nothing is needed: a piece of open sea.
+    let (lo, hi) = (needed.first().copied().unwrap_or(1), needed.last().copied().unwrap_or(0));
     let record = |id: i64, lat: i32, lon: i32, tags: &mut dyn Iterator<Item = (&str, &str)>| -> Vec<Poi> {
         let t = Tags(tags.collect());
         let mut pois = Vec::new();

@@ -10,8 +10,7 @@
   },
   "dependencies": {
     "maplibre-contour": "^0.1.1",
-    "maplibre-gl": "^6.11.2",
-    "pmtiles": "^4.5.0"
+    "maplibre-gl": "^6.11.2"
   },
   "devDependencies": {
     "@types/geojson": "^7946.0.16",

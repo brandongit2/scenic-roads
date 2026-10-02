@@ -9,6 +9,7 @@ import { HERITAGE_GROUPS, POINT_TILE_LAYER, heritageTierOf, landmarkScoreOf, nam
 import { layoutDots, morton, tileRun, visWords, type DotAux, type DotData } from './dotlayout';
 import { encodePoints, type TilePoint } from './mvt';
 import { filterHists, stopFilterPass, type StopFilter } from './stopfilters';
+import { displayName } from './names';
 import type { OverlayKey } from './state';
 
 export interface LandmarkItem {
@@ -91,8 +92,9 @@ interface Index {
 }
 
 const sources = new Map<string, Index>();
-/** Named peaks by height ([lon, lat, ele, name], layer-summits.json), for the highest in view. */
-let summits: [number, number, number, string][] | null = null;
+/** Named peaks by height ([lon, lat, ele, name, main, sub], layer-summits.json with the server's
+ * display names: "" for none), for the highest in view. */
+let summits: [number, number, number, string, string?, string?][] | null = null;
 const kept = new Map<string, { key: string; ids: Uint32Array }>();
 /** Per source, what the dots' filter flags are made from (dotlayout.ts). */
 const dotAux = new Map<string, DotAux>();
@@ -320,9 +322,9 @@ function query(m: Extract<LandmarkRequest, { type: 'query' }>) {
   }
   // The highest named peak in view: the first in view of the named peaks by height (summits).
   let summit: Extract<LandmarkResponse, { type: 'result' }>['summit'] = null;
-  for (const [x, y, ele, name] of summits ?? []) {
+  for (const [x, y, ele, name, main, sub] of summits ?? []) {
     if (!test(x, y)) continue;
-    summit = { name, ele, lngLat: [x, y] };
+    summit = { name: displayName(main, name, sub), ele, lngLat: [x, y] };
     break;
   }
   const item = (x: (typeof top)[number]): LandmarkItem => {

@@ -15,7 +15,7 @@ use axum::{
 };
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::Path as FsPath;
+use std::sync::Arc;
 
 use crate::S;
 
@@ -37,12 +37,19 @@ fn norm(s: &str) -> String {
     s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
 }
 
+/// Reads one of the build's files by its old name's stem ("details-poi", "peaks"), if it exists.
+pub type Fetch<'a> = &'a dyn Fn(&str) -> Option<Arc<Vec<u8>>>;
+
+fn text(fetch: Fetch, stem: &str) -> Option<String> {
+    fetch(stem).map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
 impl Details {
-    pub fn load(dir: &FsPath) -> Self {
+    pub fn load(fetch: Fetch) -> Self {
         let mut by: HashMap<(u8, u32), Box<str>> = HashMap::new();
         // Peak prominence and isolation, merged into the POI records.
         let mut peaks: HashMap<u32, serde_json::Value> = HashMap::new();
-        if let Ok(b) = std::fs::read(dir.join("peaks.json")) {
+        if let Some(b) = fetch("peaks") {
             if let Ok(serde_json::Value::Array(a)) = serde_json::from_slice::<serde_json::Value>(&b) {
                 for mut p in a {
                     if let Some(i) = p.get("i").and_then(|v| v.as_u64()) {
@@ -53,7 +60,7 @@ impl Details {
             }
         }
         for (li, layer) in LAYERS.iter().enumerate() {
-            let Ok(text) = std::fs::read_to_string(dir.join(format!("details-{layer}.jsonl"))) else { continue };
+            let Some(text) = text(fetch, &format!("details-{layer}")) else { continue };
             for line in text.lines() {
                 let Ok(mut v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
                 let Some(i) = v.get("i").and_then(|x| x.as_u64()) else { continue };
@@ -72,7 +79,7 @@ impl Details {
         // Heritage sites' own properties that the map's layer leaves out (dem/layers.py: dates,
         // authority, source, links), as "props".
         if let Some(hi) = LAYERS.iter().position(|l| *l == "heritage") {
-            if let Ok(text) = std::fs::read_to_string(dir.join("props-heritage.jsonl")) {
+            if let Some(text) = text(fetch, "props-heritage") {
                 for line in text.lines() {
                     let Ok(mut p) = serde_json::from_str::<serde_json::Value>(line) else { continue };
                     let Some(i) = p.get("i").and_then(|x| x.as_u64()) else { continue };
@@ -86,7 +93,7 @@ impl Details {
         }
         let mut parks = Vec::new();
         let mut park_names: HashMap<String, Vec<u32>> = HashMap::new();
-        if let Ok(text) = std::fs::read_to_string(dir.join("details-park.jsonl")) {
+        if let Some(text) = text(fetch, "details-park") {
             for line in text.lines() {
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
                 let (Some(name), Some(b)) = (v["name"].as_str(), v["bbox"].as_array()) else { continue };
@@ -109,7 +116,9 @@ fn json(body: &str) -> Response {
 
 pub async fn detail(State(s): State<S>, Path((layer, i)): Path<(String, u32)>) -> Response {
     let Some(li) = LAYERS.iter().position(|l| *l == layer) else { return StatusCode::NOT_FOUND.into_response() };
-    match s.details.by.get(&(li as u8, i)) {
+    let s2 = s.clone();
+    let Ok(Some(d)) = tokio::task::spawn_blocking(move || s2.details()).await else { return StatusCode::SERVICE_UNAVAILABLE.into_response() };
+    match d.by.get(&(li as u8, i)) {
         Some(b) => json(b),
         None => StatusCode::NO_CONTENT.into_response(),
     }
@@ -125,7 +134,8 @@ pub struct ParkQ {
 /// The park of that name whose bounding box holds the point (the smallest, for nested ones), else
 /// the nearest of that name within ~5 km.
 pub async fn park(State(s): State<S>, Query(q): Query<ParkQ>) -> Response {
-    let d = &s.details;
+    let s2 = s.clone();
+    let Ok(Some(d)) = tokio::task::spawn_blocking(move || s2.details()).await else { return StatusCode::SERVICE_UNAVAILABLE.into_response() };
     let Some(ids) = d.park_names.get(&norm(&q.name)) else { return StatusCode::NO_CONTENT.into_response() };
     let pad = 0.002;
     let inside = ids

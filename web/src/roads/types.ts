@@ -14,6 +14,7 @@ export interface DecodedTile {
   /** STRIDE bytes per vertex, see worker.ts */
   verts: ArrayBuffer;
   lineStart: Uint32Array;
+  /** Per line: its way's OSM id (the way APIs take it with a point on the line). */
   lineWay: Uint32Array;
   /** The lines in order of way id (a road's lines by binary search: layer.ts lineState). */
   wayOrder: Uint32Array;

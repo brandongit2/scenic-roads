@@ -8,7 +8,7 @@ import { hostFor } from './hosts';
 import { tasks } from './tasks';
 import { fitPopup } from './popupfit';
 import { legibleCss } from './linecolour';
-import { withEnglish } from './english';
+import { displayName } from './names';
 import {
   FERRY_GROUP_COLOURS, FERRY_GROUPS, NFERRY, ferryColourExpr, ferryColourOf, ferryMetricDef, ferryOpacityExpr, fmtDuration, fmtPerDay, freqText,
   lineTitle, operatorColour, type FerryLine,
@@ -101,6 +101,9 @@ export interface FerryCoverage {
 export class Ferries {
   private fc: GeoJSON.FeatureCollection<GeoJSON.Geometry, Record<string, any>> | null = null;
   lines: Record<string, FerryLine> = {};
+  /** Per line (id), its name's main and sub (names.ts): the line records carry none, but a way of
+   * the line carries its first named line's name (`n`) with them. */
+  private lineNames = new Map<string, { main?: string; sub?: string }>();
   private loading: Promise<void> | null = null;
   private popup: maplibregl.Popup | null = null;
   private style: FerryState | null = null;
@@ -125,16 +128,21 @@ export class Ferries {
       .then(([fc, lines]) => {
         tasks.end('ferries');
         if (!fc) return;
+        this.lines = lines ?? {};
+        this.lineNames.clear();
         for (const f of fc.features as Feature[]) {
           const p = f.properties;
           if (f.geometry.type !== 'LineString') continue;
           p.oc = legibleCss(p.col) ?? operatorColour(p.op);
           p.gs = String(p.gs ?? '') || digits(p.gb);
           p.km = lengthKm((f.geometry as GeoJSON.LineString).coordinates);
+          if (!p.n) continue;
+          for (const id of String(p.lines ?? '').split(',')) {
+            if (!this.lineNames.has(id) && this.lines[id]?.name === p.n) this.lineNames.set(id, { main: p.main, sub: p.sub });
+          }
         }
         this.fc = fc;
         this.boxes = null;
-        this.lines = lines ?? {};
         this.map.getSource<GeoJSONSource>('ferries')?.setData(fc);
         this.onLoaded();
       })
@@ -363,7 +371,7 @@ export class Ferries {
       const perDay = Number(p.f);
       if (perDay > (out.busiest?.perDay ?? 0)) {
         const mid = inside[inside.length >> 1];
-        out.busiest = { name: String(p.n || 'Ferry'), perDay, lngLat: [mid[0], mid[1]] };
+        out.busiest = { name: p.n ? displayName(p.main, String(p.n), p.sub) : 'Ferry', perDay, lngLat: [mid[0], mid[1]] };
       }
     }
     return out;
@@ -385,13 +393,21 @@ export class Ferries {
     return fs[0] ?? null;
   }
 
+  /** A line's title as the app shows it: its name, "main (sub)" where the server gave it them
+   * (on the line's record, else on a way of the line). */
+  private title(id: string, l: FerryLine): string {
+    const d = !l.name ? undefined : l.main || l.sub ? l : this.lineNames.get(id);
+    return cap(displayName(d?.main, lineTitle(l), d?.sub));
+  }
+
   /** The ferry under the cursor, for the bottom bar. */
   hoverAt(pt: { x: number; y: number }): FeatureSummary | null {
     const f = this.at(pt);
     if (!f) return null;
     const p = f.properties ?? {};
-    const ls = String(p.lines ?? '').split(',').map((id) => this.lines[id]).filter(Boolean);
-    if (!ls.length) return null;
+    const ids = String(p.lines ?? '').split(',').filter((id) => this.lines[id]);
+    if (!ids.length) return null;
+    const ls = ids.map((id) => this.lines[id]);
     const l = ls[0];
     const st = this.style;
     const facts: string[] = [];
@@ -408,7 +424,7 @@ export class Ferries {
     const route = l.from && l.to ? `${l.from} → ${l.to}${l.via ? ` via ${l.via.replace(/;/g, ', ')}` : ''}` : '';
     const src = l.freq?.source ? `Sailings: ${l.freq.source}${l.freq.checked ? ` (${l.freq.checked})` : ''}` : 'Sailings: no timetable found yet';
     return {
-      title: cap(withEnglish(lineTitle(l), null, l.en)) + (ls.length > 1 ? ` +${ls.length - 1}` : ''),
+      title: this.title(ids[0], l) + (ls.length > 1 ? ` +${ls.length - 1}` : ''),
       kind: FERRY_GROUPS[l.group].one + (l.vehicles ? ' · cars & foot passengers' : ' · foot passengers'),
       colour: st ? ferryColourOf(p, st, this.range, this.cdf) : FERRY_GROUP_COLOURS[p.g],
       facts,
@@ -426,11 +442,11 @@ export class Ferries {
     const body = h('div', { class: 'pop' });
     const kv = (k: string, v: unknown) => (v === undefined || v === null || v === '' ? null : h('div', { class: 'kv' }, h('span', {}, k), h('b', {}, String(v))));
     const link = (url: string | undefined, label: string) => (url ? h('a', { href: url, target: '_blank', rel: 'noopener' }, `${label} ↗`) : null);
-    ls.forEach(([, l], i) => {
+    ls.forEach(([id, l], i) => {
       const dot = h('span', { class: 'dot' });
       dot.style.background = legibleCss(l.colour) ?? FERRY_GROUP_COLOURS[l.group];
       const items = [
-        h('div', { class: 'ttl' }, cap(withEnglish(lineTitle(l), null, l.en)), l.ref && l.name && !l.name.includes(l.ref) ? h('span', { class: 'faint' }, ` ${l.ref}`) : ''),
+        h('div', { class: 'ttl' }, this.title(id, l), l.ref && l.name && !l.name.includes(l.ref) ? h('span', { class: 'faint' }, ` ${l.ref}`) : ''),
         h('div', { class: 'sub' }, dot, FERRY_GROUPS[l.group].label, h('span', { class: 'faint' }, l.vehicles ? ' · cars & foot passengers' : ' · foot passengers')),
         kv('Route', l.from && l.to ? `${l.from} → ${l.to}` : null),
         kv('Via', l.via ? l.via.replace(/;/g, ', ') : null),

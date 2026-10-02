@@ -152,6 +152,12 @@ export interface WaterLook {
 }
 
 export type ThresholdDir = 'above' | 'below' | 'low';
+/** The selected road or rail line: a way of it (OSM id) and a point on that way (lng, lat), which
+ * the way APIs need with the id. */
+export interface Selection {
+  way: number;
+  at: [number, number];
+}
 export interface Stretch {
   kind: 'climb' | 'drive';
   /** Start and end (lng, lat). */
@@ -438,7 +444,7 @@ export interface AppState {
   terrain: Terrain;
   /** 'low': above the colour scale's low end (its left handle, auto-fitted or not), whatever `value`. */
   threshold: { on: boolean; dir: ThresholdDir; value: number };
-  selected: number | null;
+  selected: Selection | null;
   /** Highlighted stretch of the selected road: a climb or scenic drive picked from a list. */
   stretch: Stretch | null;
   /** elev: camera pivot height (m, exaggerated) when the camera doesn't follow the terrain. */
@@ -667,7 +673,7 @@ export function groupMask(s: AppState): number {
 
 // ---- URL hash ------------------------------------------------------------------------------
 // #map=zoom/lat/lng/bearing/pitch&m=score&p=viridis&r=lo,hi&eq=1&pr=vistas&wt=…&g=11111&sf=pu&lw=1,1,1,1,1,1,1
-//  &l=rwbp&o=<overlay bits>&hl=<levels>&t3=…&t=a500&s=123
+//  &l=rwbp&o=<overlay bits>&hl=<levels>&t3=…&t=a500&s=<way>,<lng>,<lat>
 
 const ob = (k: OverlayKey) => OVERLAYS.findIndex((o) => o[0] === k);
 /** The service-frequency weight given to rail weights from before the factor existed (then the
@@ -773,7 +779,8 @@ export function toHash(s: AppState): string {
   if (!s.globe) p.set('gb', '0');
   if (s.occlude) p.set('oc', '1');
   if (s.threshold.on) p.set('t', `${THR_CODE[s.threshold.dir]}${+s.threshold.value.toFixed(3)}`);
-  if (s.selected !== null) p.set('s', String(s.selected));
+  // The selected way's OSM id and a point on it.
+  if (s.selected !== null) p.set('s', `${s.selected.way},${s.selected.at.map((v) => v.toFixed(5)).join(',')}`);
   if (s.selected !== null && s.stretch) {
     const { kind, a, b, label } = s.stretch;
     p.set('st', `${kind[0]},${[...a, ...b].map((v) => v.toFixed(5)).join(',')},${label}`);
@@ -1023,8 +1030,12 @@ export function fromHash(hash: string): AppState {
   }
   const t = p.get('t');
   if (t && /^[abl]-?[\d.]+$/.test(t)) s.threshold = { on: true, dir: t[0] === 'a' ? 'above' : t[0] === 'b' ? 'below' : 'low', value: Number(t.slice(1)) };
-  const sel = Number(p.get('s'));
-  if (p.get('s') && Number.isInteger(sel)) s.selected = sel;
+  // The selected way and a point on it (older links, a way index alone: no selection).
+  const sel = p.get('s')?.match(/^(\d+),(-?[\d.]+),(-?[\d.]+)$/);
+  if (sel) {
+    const [way, lng, lat] = sel.slice(1).map(Number);
+    if (Number.isSafeInteger(way) && way > 0 && Math.abs(lng) <= 180 && Math.abs(lat) <= 90) s.selected = { way, at: [lng, lat] };
+  }
   const sm = p.get('st')?.match(/^([cd]),(-?[\d.]+),(-?[\d.]+),(-?[\d.]+),(-?[\d.]+),(.*)$/);
   if (sm && s.selected !== null) {
     const n = sm.slice(2, 6).map(Number);

@@ -2,7 +2,7 @@
 name = "store"
 version = "0.1.0"
 edition = "2021"
-description = "NAS storage for the map: packs, sectioned files, catalogs, the NAS I/O pool, the per-Mac mirror, PMTiles reading, vector-tile rewriting"
+description = "NAS storage for the map: content-named files, packs, sectioned files, catalogs, the NAS I/O pool, finding and mounting the share, the per-Mac mirror, PMTiles reading"
 
 [dependencies]
 roadcore = { path = "../roadcore" }
@@ -16,4 +16,6 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zstd = "0.13"
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
 libc = "0.2"
+
+[dev-dependencies]
 tempfile = "3"

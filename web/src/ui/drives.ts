@@ -4,7 +4,7 @@ import { getDrives, type Drive } from '../api';
 import { COMPONENTS } from '../scenic';
 import * as prefs from '../prefs';
 import { cap, fmt, h } from './dom';
-import { withEnglish } from '../english';
+import { displayName } from '../names';
 
 const LENGTHS = [2, 5, 10, 25];
 
@@ -101,7 +101,7 @@ export class DrivesPane {
       ...d.drives.map((c, i) => {
         const title = h('span', { class: 'ct' });
         if (c.ref) title.append(h('span', { class: 'ref' }, c.ref));
-        title.append(cap(c.name && withEnglish(c.name, c.geom[c.geom.length >> 1], c.name_en)) || c.route || (c.ref ? '' : `Unnamed ${c.class.replace('_', ' ')}`));
+        title.append(cap(displayName(c.main, c.name, c.sub)) || c.route || (c.ref ? '' : `Unnamed ${c.class.replace('_', ' ')}`));
         // Top three contributing components (value × positive weight is done server-side via
         // the score; here show the strongest raw factors).
         const top = c.parts

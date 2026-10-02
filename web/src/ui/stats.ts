@@ -2,7 +2,6 @@ import { CLASS_LABELS, NROAD } from '../config';
 import type { LoadProgress } from '../roads/layer';
 import type { Extreme, ViewStats } from '../roads/stats';
 import * as prefs from '../prefs';
-import { withEnglish } from '../english';
 import { fmt, h } from './dom';
 
 // Neutral class colours (elevation owns the hue elsewhere).
@@ -13,6 +12,7 @@ const TABS: Tab[] = ['stats', 'drives', 'rides', 'lines', 'sights'];
 
 /** A place the In view summary links to (fly there; landmarks open their popup). */
 export interface ViewPlace {
+  /** Its name as shown ("main (sub)", names.ts). */
   name: string;
   lngLat: [number, number];
   /** Map layer and properties of a landmark (for its popup). */
@@ -48,6 +48,7 @@ export class StatsCard {
   /** A linked place: fly there (a landmark: open its popup where the map is); hover marks it. */
   onPlace: (p: ViewPlace) => void = () => {};
   onPlaceHover: (p: ViewPlace | null) => void = () => {};
+  /** The name of the road or line an extreme is on, as shown. */
   wayName: (tileLine: Extreme) => Promise<string> = async () => '';
 
   constructor(root: HTMLElement) {
@@ -113,14 +114,12 @@ export class StatsCard {
       const a = h('a', { title: 'Show on map', onclick: () => this.onPlace(pl) }, text);
       a.addEventListener('mouseenter', () => this.onPlaceHover(pl));
       a.addEventListener('mouseleave', () => this.onPlaceHover(null));
-      const nm = withEnglish(pl.name, pl.lngLat, pl.props?.en ?? pl.props?.name_en ?? pl.props?.['name:en']);
-      return h('dd', { class: 'ext' }, h('span', { class: 'xname', title: nm }, nm), a);
+      return h('dd', { class: 'ext' }, h('span', { class: 'xname', title: pl.name }, pl.name), a);
     };
     // A landmark: its name, which selects it.
     const landmark = (pl: ViewPlace | null) => {
       if (!pl) return h('dd', {}, '—');
-      const nm = withEnglish(pl.name, pl.lngLat, pl.props?.en ?? pl.props?.name_en ?? pl.props?.['name:en']);
-      const a = h('a', { title: `${nm} · select on the map`, onclick: () => this.onPlace(pl) }, nm);
+      const a = h('a', { title: `${pl.name} · select on the map`, onclick: () => this.onPlace(pl) }, pl.name);
       a.addEventListener('mouseenter', () => this.onPlaceHover(pl));
       a.addEventListener('mouseleave', () => this.onPlaceHover(null));
       return h('dd', { class: 'ext' }, a);
@@ -132,7 +131,7 @@ export class StatsCard {
       a.addEventListener('mouseleave', () => this.onMark(null, kind));
       const name = h('span', { class: 'xname' });
       this.wayName(e).then((n) => {
-        name.textContent = n && withEnglish(n, e.lngLat);
+        name.textContent = n;
         name.title = name.textContent;
       });
       return h('dd', { class: 'ext' }, name, a);

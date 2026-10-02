@@ -85,6 +85,8 @@ pub struct PoolConfig {
 }
 
 impl PoolConfig {
+    /// `threads` workers and `op_timeout`; a probe every 3 s, under the same timeout; 2 spare
+    /// threads.
     pub fn new(threads: usize, op_timeout: Duration, probe: PathBuf) -> Self {
         Self { threads: threads.max(1), op_timeout, probe, probe_interval: Duration::from_secs(3), probe_timeout: op_timeout, spare: 2 }
     }
@@ -174,6 +176,7 @@ impl IoPool {
         Self::with_config(PoolConfig::new(threads, op_timeout, probe))
     }
 
+    /// A pool with every setting given.
     pub fn with_config(mut cfg: PoolConfig) -> Arc<IoPool> {
         cfg.threads = cfg.threads.max(1);
         let (tx, rx) = mpsc::channel();
@@ -199,6 +202,7 @@ impl IoPool {
         self.inner.online.load(SeqCst)
     }
 
+    /// The breaker's state and the threads' counts.
     pub fn status(&self) -> PoolStatus {
         let c = lock(&self.inner.counts);
         PoolStatus { online: self.is_online(), offline_since: c.offline_since, workers: c.workers, stuck: c.stuck, timeouts: c.timeouts }
@@ -215,7 +219,10 @@ impl IoPool {
         self.inner.trip(why);
     }
 
-    /// Runs `f` on a worker and waits up to the pool's timeout for it.
+    /// Runs `f` on a worker. The caller waits up to the pool's timeout for a worker to take it
+    /// (`Timeout` if none is free, without marking the NAS offline: busy isn't dead), then up to
+    /// the timeout again for it to finish (`Timeout`, and the NAS is marked offline). While the NAS
+    /// is offline, `Offline` at once.
     pub fn call<T, F>(&self, f: F) -> Result<T, IoError>
     where
         F: FnOnce() -> io::Result<T> + Send + 'static,
@@ -342,6 +349,7 @@ impl IoPool {
         self.call(move || fs::read(&p))
     }
 
+    /// `fs::metadata` (following symlinks).
     pub fn stat(&self, path: &Path) -> Result<Metadata, IoError> {
         let p = path.to_owned();
         self.call(move || fs::metadata(&p))
@@ -373,6 +381,7 @@ impl IoPool {
         })
     }
 
+    /// `fs::rename`, replacing `to` if it exists (both on the share).
     pub fn rename(&self, from: &Path, to: &Path) -> Result<(), IoError> {
         let (a, b) = (from.to_owned(), to.to_owned());
         self.call(move || fs::rename(&a, &b))

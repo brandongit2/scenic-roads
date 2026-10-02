@@ -1,4 +1,4 @@
-import type { ExpressionSpecification, LayerSpecification, StyleSpecification, VectorSourceSpecification } from 'maplibre-gl';
+import type { ExpressionSpecification, LayerSpecification, StyleSpecification } from 'maplibre-gl';
 import { ver } from './api';
 import { hostFor } from './hosts';
 import { DEFAULT_DENSITY, kindSpacing, type DensityKind, type LabelDensity, type LineKind, type LineWeights } from './state';
@@ -29,7 +29,7 @@ export const LABEL_LAYERS: Record<string, string[]> = {
   stations: ['rail-stop-label'],
 };
 /** The label kind of a layer id, if it is a label layer. */
-export const labelKindOf = (id: string): string | undefined => Object.keys(LABEL_LAYERS).find((k) => LABEL_LAYERS[k].includes(id.split('@')[0]));
+export const labelKindOf = (id: string): string | undefined => Object.keys(LABEL_LAYERS).find((k) => LABEL_LAYERS[k].includes(id));
 
 /** Overlay key → layer ids (see state.ts OVERLAYS). */
 export const OVERLAY_LAYERS: Record<string, string[]> = {
@@ -112,22 +112,21 @@ export const POI_STYLE: Record<string, [string, string]> = {
 /** A label with its first letter upper-cased (Québec and French names often start lower-case:
  * "lac Saint-Jean", "canal de Coteau-du-Lac"). */
 const capE = (e: ExpressionSpecification): ExpressionSpecification => ['concat', ['upcase', ['slice', e, 0, 1]], ['slice', e, 1]];
-const name: ExpressionSpecification = capE(['coalesce', ['get', 'name'], ['get', 'name:latin'], '']);
-const anyCase = { 'case-sensitive': false, 'diacritic-sensitive': false };
-/** A feature's own English (property `prop`) where it differs from its name (property `of`) other
- * than in case or accents and isn't already in it ("Alba / Scotland"); '' when none. */
-const ownEn = (prop: string, of = 'name'): ExpressionSpecification =>
-  ['case', ['all', ['has', prop], ['!=', ['get', prop], ['coalesce', ['get', of], ''], ['collator', anyCase]], ['!', ['in', ['to-string', ['get', prop]], ['coalesce', ['get', of], '']]]],
-    ['to-string', ['get', prop]], ''] as unknown as ExpressionSpecification;
-/** A basemap feature's English: its name:en where that truly differs, OSM's or our translation,
- * written into the OSM data the basemap is built from (dem/names.py patch). */
-const BASE_EN = ownEn('name:en');
-/** A label: the name, and its English under it, smaller (`en`: '' for none). */
-const bilingual = (native: ExpressionSpecification, en: ExpressionSpecification): ExpressionSpecification =>
-  ['format', native, {}, ['case', ['==', en, ''], '', ['concat', '\n', en]], { 'font-scale': 0.8 }] as unknown as ExpressionSpecification;
-/** Along a line (where a second line would fold into the first): "name (English)". */
-const inline = (native: ExpressionSpecification, en: ExpressionSpecification): ExpressionSpecification =>
-  ['case', ['==', en, ''], native, ['concat', native, ' (', en, ')']];
+// Names as the server gives them (names.ts): `main`, the label, where it differs from the name, and
+// `sub`, its second line, where there is one.
+/** A feature's label: its main, else its name (property `of`: 'name'; 'n' in the label tiles and
+ * our ferry and station files). */
+const mainOf = (of = 'name'): ExpressionSpecification => capE(['coalesce', ['get', 'main'], ['get', of], '']);
+/** A basemap feature's label. */
+const name: ExpressionSpecification = capE(['coalesce', ['get', 'main'], ['get', 'name'], ['get', 'name:latin'], '']);
+/** A feature's sub line ('' for none). */
+const SUB: ExpressionSpecification = ['to-string', ['get', 'sub']];
+/** A label: main, and the sub line under it, smaller. */
+const twoLine = (main: ExpressionSpecification, sub: ExpressionSpecification = SUB): ExpressionSpecification =>
+  ['format', main, {}, ['case', ['==', sub, ''], '', ['concat', '\n', sub]], { 'font-scale': 0.8 }] as unknown as ExpressionSpecification;
+/** Along a line (where a second line would fold into the first): "main (sub)". */
+const inline = (main: ExpressionSpecification, sub: ExpressionSpecification = SUB): ExpressionSpecification =>
+  ['case', ['==', sub, ''], main, ['concat', main, ' (', sub, ')']];
 export const HALO = '#0b0e13';
 /** The slope source's base shift (Terrarium's + ½): marks its four-slope pixels for the shader. */
 export const SLOPE4_SHIFT = 32768.5;
@@ -183,19 +182,11 @@ export const HYPSO: [number, string][] = [
   [900, '#86643f'], [1200, '#8c7766'], [1500, '#a7a3a0'], [1900, '#e8e8e8'],
 ];
 
-/** Basemap parts: regions added after base.pmtiles was built (server meta.baseParts), each its own
- * archive drawn with clones of every basemap layer (id "<layer>@<part>"). */
-let PARTS: string[] = [];
-/** A basemap layer's id and its clones for the parts. */
-export const partIds = (id: string): string[] => [id, ...PARTS.map((p) => `${id}@${p}`)];
-/** The basemap's archives, base.pmtiles and the parts', as their sources read them (coast.worker.ts
- * reads their water). */
-export const basemapArchives = (): string[] => {
-  const base = hostFor('base');
-  return [`${base}/tiles/base.pmtiles${ver('base.pmtiles')}`, ...PARTS.map((p) => `${base}/tiles/base-parts/${p}.pmtiles${ver(`base-parts/${p}.pmtiles`)}`)];
-};
-/** The basemap layer a (possibly cloned) layer id is. */
-export const baseId = (id: string): string => id.split('@')[0];
+/** The basemap's vector tiles (OpenMapTiles schema; the server merges its archives per tile and
+ * attaches the display names), as its source and the coast worker (coast.worker.ts) read them. */
+export const basemapTiles = (): string => `${hostFor('base')}/tiles/base/{z}/{x}/{y}${ver('base.pmtiles')}`;
+/** The basemap's deepest tiles (finer zooms reuse them). */
+export const BASEMAP_MAXZOOM = 14;
 
 /** Stops & sights opacity (Layers → Stops & sights): scales each overlay layer's own opacity
  * (dots and their outlines, area fills and edges; labels via applyLabelOpacity's scale). */
@@ -213,7 +204,7 @@ function scalePaint(v: unknown, f: number): unknown {
   return ['*', f, v];
 }
 export function applyOverlayOpacity(map: import('maplibre-gl').Map, f: number) {
-  for (const id of [...OVERLAY_IDS].flatMap(partIds)) {
+  for (const id of OVERLAY_IDS) {
     const l = map.getLayer(id);
     if (!l || SIG_LAYERS.includes(id)) continue; // their opacity: prominencePaint
     for (const prop of OPACITY_PROPS[l.type] ?? []) {
@@ -224,9 +215,9 @@ export function applyOverlayOpacity(map: import('maplibre-gl').Map, f: number) {
   }
 }
 
-/** The boundary lines' opacity (Layers → Map → Boundaries), × their own, in every basemap part. */
+/** The boundary lines' opacity (Layers → Map → Boundaries), × their own. */
 export function applyBoundaryOpacity(map: import('maplibre-gl').Map, f: number) {
-  for (const id of [...LAYER_GROUPS.boundaries, 'boundary-country-disputed'].flatMap(partIds)) {
+  for (const id of [...LAYER_GROUPS.boundaries, 'boundary-country-disputed']) {
     if (!map.getLayer(id)) continue;
     const key = `${id}|line-opacity`;
     if (!baseOpacity.has(key)) baseOpacity.set(key, map.getPaintProperty(id, 'line-opacity'));
@@ -249,15 +240,13 @@ const baseWidth = new Map<string, unknown>();
 export function applyLineWidths(map: import('maplibre-gl').Map, lw: LineWeights) {
   for (const [id, kind] of LINE_WIDTHS) {
     const f = lw.global * (kind === 'global' ? 1 : lw[kind]);
-    for (const pid of partIds(id)) {
-      if (!map.getLayer(pid)) continue;
-      for (const prop of ['line-width', 'line-blur'] as const) {
-        const key = `${pid}|${prop}`;
-        if (!baseWidth.has(key)) baseWidth.set(key, map.getPaintProperty(pid, prop));
-        const v = baseWidth.get(key);
-        if (prop === 'line-blur' && v === undefined) continue;
-        map.setPaintProperty(pid, prop, (f === 1 ? v : scalePaint(v, f)) as ExpressionSpecification);
-      }
+    if (!map.getLayer(id)) continue;
+    for (const prop of ['line-width', 'line-blur'] as const) {
+      const key = `${id}|${prop}`;
+      if (!baseWidth.has(key)) baseWidth.set(key, map.getPaintProperty(id, prop));
+      const v = baseWidth.get(key);
+      if (prop === 'line-blur' && v === undefined) continue;
+      map.setPaintProperty(id, prop, (f === 1 ? v : scalePaint(v, f)) as ExpressionSpecification);
     }
   }
 }
@@ -317,34 +306,12 @@ export const LANDMARK_LABELS: Record<string, string> = Object.fromEntries(SIG_LA
 const LANDMARK_LABEL_IDS = new Set(Object.values(LANDMARK_LABELS));
 /** Label opacity scale for a layer: the Stops & sights opacity on overlay labels; NaN leaves the
  * landmark names alone (set with their dots). */
-export const overlayLabelScale = (f: number) => (id: string) => (LANDMARK_LABEL_IDS.has(id) ? NaN : OVERLAY_IDS.has(baseId(id)) ? f : 1);
+export const overlayLabelScale = (f: number) => (id: string) => (LANDMARK_LABEL_IDS.has(id) ? NaN : OVERLAY_IDS.has(id) ? f : 1);
 
-function withBaseParts(style: StyleSpecification, parts: string[]): StyleSpecification {
-  const origin = hostFor('base');
-  PARTS = parts;
-  if (!parts.length) return style;
-  const base = style.sources.base as VectorSourceSpecification;
-  for (const p of parts) {
-    style.sources[`base-${p}`] = { ...base, url: `pmtiles://${origin}/tiles/base-parts/${p}.pmtiles${ver(`base-parts/${p}.pmtiles`)}` };
-  }
-  const out: LayerSpecification[] = [];
-  for (const l of style.layers) {
-    out.push(l);
-    if ('source' in l && l.source === 'base') {
-      for (const p of parts) out.push({ ...l, id: `${l.id}@${p}`, source: `base-${p}` } as LayerSpecification);
-    }
-  }
-  style.layers = out;
-  return style;
-}
-
-export function baseStyle(parts: string[] = [], labels = false, labelTiles = false, density: LabelDensity = DEFAULT_DENSITY): StyleSpecification {
+export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DENSITY): StyleSpecification {
   const base = hostFor('base'), terrain = hostFor('terrain'), trees = hostFor('trees');
-  // The basemap's names (places, water, parks) from their own archive where there is one: built
-  // from OSM's named features with our English in them (dem/names.py patch), for every region.
-  const labelSrc = labels ? 'labels' : 'base';
-  // Places, water and parks from the labels by importance, where the server has them: name n,
-  // English en, importance s (the most important placed first).
+  // Places, water and parks from the labels by importance, where the server has them: name n (with
+  // its main and sub), importance s (the most important placed first).
   LABEL_TILES = labelTiles;
   const lt = (id: string, def: Record<string, unknown>, layout: Record<string, unknown>) => {
     if (!labelTiles) return { ...def, layout };
@@ -356,8 +323,7 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
       layout: { ...layout, 'symbol-sort-key': ['-', 0, ['get', 's']] },
     };
   };
-  const tname = capE(['coalesce', ['get', 'n'], '']), tEN = ownEn('en', 'n');
-  const nm = labelTiles ? tname : name, en = labelTiles ? tEN : BASE_EN;
+  const nm = labelTiles ? mainOf('n') : name;
   const dem = {
     type: 'raster-dem' as const,
     tiles: [`${terrain}/tiles/terrain/{z}/{x}/{y}${ver('terrain.tiles')}`],
@@ -399,9 +365,9 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
           visibility: 'none',
           'symbol-sort-key': ['-', 0, ['coalesce', ['get', 'fa'], 0]],
           'text-field': key === 'peak'
-            ? ['format', capE(['get', 'name']), {}, ['case', ['==', ownEn('en'), ''], '', ['concat', '\n', ownEn('en')]], { 'font-scale': 0.8 },
+            ? ['format', mainOf(), {}, ['case', ['==', SUB, ''], '', ['concat', '\n', SUB]], { 'font-scale': 0.8 },
               ['case', ['to-boolean', ['get', 'ele']], ['concat', '\n', ['to-string', ['round', ['get', 'ele']]], ' m'], ''], {}] as unknown as ExpressionSpecification
-            : bilingual(capE(['get', 'name']), ownEn('en')),
+            : twoLine(mainOf()),
           'text-font': ['Noto Sans Regular'],
           'text-size': 10.5,
           'text-offset': [0, 0.8],
@@ -415,16 +381,16 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
   }
   const hvis = { visibility: 'none' as const };
 
-  return withBaseParts({
+  return {
     version: 8,
     glyphs: `${base}/fonts/{fontstack}/{range}.pbf`,
     sources: {
       base: {
         type: 'vector',
-        url: `pmtiles://${base}/tiles/base.pmtiles${ver('base.pmtiles')}`,
+        tiles: [basemapTiles()],
+        maxzoom: BASEMAP_MAXZOOM,
         attribution: '© OpenStreetMap contributors · OpenMapTiles · NRCan HRDEM/MRDEM · USGS 3DEP',
       },
-      ...(labels ? { labels: { type: 'vector' as const, url: `pmtiles://${base}/tiles/labels.pmtiles${ver('labels.pmtiles')}`, attribution: '' } } : {}),
       ...(labelTiles ? { lbl: { type: 'vector' as const, tiles: [`${base}/tiles/labels/{z}/{x}/{y}${ver('labels.tiles')}`], maxzoom: 12, attribution: '' } } : {}),
       dem,
       'dem-hs': { ...dem },
@@ -725,13 +691,13 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
       {
         id: 'water-name-line',
         type: 'symbol',
-        source: labelSrc,
+        source: 'base',
         'source-layer': 'waterway',
         minzoom: 11,
         filter: ['==', ['get', 'class'], 'river'],
         layout: {
           'symbol-placement': 'line',
-          'text-field': inline(name, BASE_EN),
+          'text-field': inline(name),
           'text-font': ['Noto Sans Italic'],
           'text-size': 11,
           'text-letter-spacing': 0.05,
@@ -741,11 +707,11 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
       lt('water-name', {
         id: 'water-name',
         type: 'symbol',
-        source: labelSrc,
+        source: 'base',
         'source-layer': 'water_name',
         paint: { 'text-color': '#4b6582', 'text-halo-color': HALO, 'text-halo-width': 1.2, 'text-opacity': TEXT_OPACITY },
       }, {
-        'text-field': bilingual(nm, en),
+        'text-field': twoLine(nm),
         'text-font': ['Noto Sans Italic'],
         'text-size': ['interpolate', ['linear'], ['zoom'], 5, 10, 12, 13],
         'text-letter-spacing': 0.06,
@@ -754,14 +720,14 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
       lt('park-label', {
         id: 'park-label',
         type: 'symbol',
-        source: labelSrc,
+        source: 'base',
         'source-layer': 'park',
         minzoom: 8,
         filter: ['==', ['geometry-type'], 'Point'],
         paint: { 'text-color': '#6fb58a', 'text-halo-color': HALO, 'text-halo-width': 1.3, 'text-opacity': TEXT_OPACITY },
       }, {
         visibility: 'none',
-        'text-field': bilingual(nm, en),
+        'text-field': twoLine(nm),
         'text-font': ['Noto Sans Italic'],
         'text-size': ['interpolate', ['linear'], ['zoom'], 8, 10, 13, 12],
         'text-max-width': 8,
@@ -774,7 +740,7 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
         minzoom: 8,
         layout: {
           visibility: 'none',
-          'text-field': bilingual(capE(['get', 'name']), ownEn('en')),
+          'text-field': twoLine(mainOf()),
           'text-font': ['Noto Sans Italic'],
           'text-size': 10.5,
           'text-max-width': 9,
@@ -789,7 +755,7 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
         minzoom: 5,
         layout: {
           visibility: 'none',
-          'text-field': bilingual(capE(['get', 'name']), ownEn('en')),
+          'text-field': twoLine(mainOf()),
           'text-font': ['Noto Sans Italic'],
           'text-size': 11,
           'text-max-width': 9,
@@ -840,7 +806,7 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
         'source-layer': POINT_TILE_LAYER,
         layout: {
           visibility: 'none',
-          'text-field': bilingual(capE(['get', 'name']), ownEn('en')),
+          'text-field': twoLine(mainOf()),
           'text-font': ['Noto Sans Regular'],
           'text-size': ['match', ['get', 'level'], 1, 12, 2, 11, 10.5],
           'text-offset': [0, 0.9],
@@ -884,7 +850,7 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
           visibility: 'none',
           'symbol-placement': 'line',
           'symbol-spacing': 400,
-          'text-field': inline(capE(['get', 'n']), ownEn('en', 'n')),
+          'text-field': inline(mainOf('n')),
           'text-font': ['Noto Sans Italic'],
           'text-size': 10.5,
           'text-max-angle': 30,
@@ -900,7 +866,7 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
         filter: ['==', ['get', 'kind'], 'terminal'],
         layout: {
           visibility: 'none',
-          'text-field': bilingual(capE(['get', 'n']), ownEn('en', 'n')),
+          'text-field': twoLine(mainOf('n')),
           'text-font': ['Noto Sans Regular'],
           'text-size': 10,
           'text-offset': [0, 0.8],
@@ -926,7 +892,7 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
         minzoom: 6,
         layout: {
           visibility: 'none',
-          'text-field': bilingual(capE(['get', 'n']), ownEn('en', 'n')),
+          'text-field': twoLine(mainOf('n')),
           'text-font': ['Noto Sans Regular'],
           'text-size': 10,
           'text-offset': [0, 0.8],
@@ -939,22 +905,22 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
       lt('place-minor', {
         id: 'place-minor',
         type: 'symbol',
-        source: labelSrc,
+        source: 'base',
         'source-layer': 'place',
         minzoom: 11.5,
         filter: ['in', ['get', 'class'], ['literal', ['hamlet', 'suburb', 'quarter', 'neighbourhood', 'locality', 'isolated_dwelling']]],
         paint: { 'text-color': '#7f8999', 'text-halo-color': HALO, 'text-halo-width': 1.4, 'text-opacity': TEXT_OPACITY },
-      }, { 'text-field': bilingual(nm, en), 'text-font': ['Noto Sans Regular'], 'text-size': 10.5, 'text-max-width': 8 }) as LayerSpecification,
+      }, { 'text-field': twoLine(nm), 'text-font': ['Noto Sans Regular'], 'text-size': 10.5, 'text-max-width': 8 }) as LayerSpecification,
       lt('place-village', {
         id: 'place-village',
         type: 'symbol',
-        source: labelSrc,
+        source: 'base',
         'source-layer': 'place',
         minzoom: 9,
         filter: ['==', ['get', 'class'], 'village'],
         paint: { 'text-color': '#a2abb9', 'text-halo-color': HALO, 'text-halo-width': 1.4, 'text-opacity': TEXT_OPACITY },
       }, {
-        'text-field': bilingual(nm, en),
+        'text-field': twoLine(nm),
         'text-font': ['Noto Sans Regular'],
         'text-size': ['interpolate', ['linear'], ['zoom'], 9, 10, 14, 13],
         'text-max-width': 8,
@@ -963,13 +929,13 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
       lt('place-town', {
         id: 'place-town',
         type: 'symbol',
-        source: labelSrc,
+        source: 'base',
         'source-layer': 'place',
         minzoom: 6.5,
         filter: ['==', ['get', 'class'], 'town'],
         paint: { 'text-color': '#c3cad6', 'text-halo-color': HALO, 'text-halo-width': 1.5, 'text-opacity': TEXT_OPACITY },
       }, {
-        'text-field': bilingual(nm, en),
+        'text-field': twoLine(nm),
         'text-font': ['Noto Sans Medium'],
         'text-size': ['interpolate', ['linear'], ['zoom'], 6.5, 10.5, 12, 14, 16, 16],
         'text-max-width': 8,
@@ -980,13 +946,13 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
       lt('place-state', {
         id: 'place-state',
         type: 'symbol',
-        source: labelSrc,
+        source: 'base',
         'source-layer': 'place',
         maxzoom: 8,
         filter: ['in', ['get', 'class'], ['literal', ['state', 'province']]],
         paint: { 'text-color': '#667080', 'text-halo-color': HALO, 'text-halo-width': 1.2, 'text-opacity': TEXT_OPACITY },
       }, {
-        'text-field': bilingual(['upcase', nm], ['upcase', en]),
+        'text-field': twoLine(['upcase', nm], ['upcase', SUB]),
         'text-font': ['Noto Sans Medium'],
         'text-size': ['interpolate', ['linear'], ['zoom'], 4, 10, 7, 13],
         'text-letter-spacing': 0.2,
@@ -995,13 +961,13 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
       lt('place-city', {
         id: 'place-city',
         type: 'symbol',
-        source: labelSrc,
+        source: 'base',
         'source-layer': 'place',
         minzoom: 4,
         filter: ['==', ['get', 'class'], 'city'],
         paint: { 'text-color': '#e4e8ef', 'text-halo-color': HALO, 'text-halo-width': 1.6, 'text-opacity': TEXT_OPACITY },
       }, {
-        'text-field': bilingual(nm, en),
+        'text-field': twoLine(nm),
         'text-font': ['Noto Sans Medium'],
         // The biggest cities larger (the basemap's rank 1–3; the label tiles' importance: a
         // million people or a capital).
@@ -1062,5 +1028,5 @@ export function baseStyle(parts: string[] = [], labels = false, labelTiles = fal
         paint: { 'text-color': '#ffffff', 'text-halo-color': HALO, 'text-halo-width': 1.6, 'text-opacity': 0.9 },
       },
     ],
-  }, parts);
+  };
 }

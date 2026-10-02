@@ -4,12 +4,12 @@ import * as maplibregl from 'maplibre-gl';
 import { cdfOf } from './ui/scale';
 import { Dist } from './roads/stats';
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
-import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, baseId, labelKindOf, partIds, type NameScale } from './basemap';
+import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, labelKindOf, type NameScale } from './basemap';
 import { OVERLAYS, kindSpacing, labelShown, type AppState, type LabelKind, type OverlayKey } from './state';
 import { ver } from './api';
 import { hostFor } from './hosts';
 import { tasks } from './tasks';
-import { withEnglish } from './english';
+import { displayName } from './names';
 import { enrichArea, enrichHeritage, enrichPoi, loadDetail, type Detail, type DetailRef, type Enriched } from './details';
 import { filterHists, stopFilterExpr, stopFilterPass } from './stopfilters';
 import type { KindQuery, LandmarkItem, LandmarkRequest, LandmarkResponse, TileNames } from './landmarks.worker';
@@ -81,12 +81,12 @@ const significance = (a: MapGeoJSONFeature, b: MapGeoJSONFeature) =>
 
 /** Point layers are tested before roads on click; area layers after. */
 export const POINT_LAYERS = ['heritage-pt', 'heritage-part', ...Object.keys(OVERLAY_LAYERS).filter((k) => OVERLAY_SOURCE[k]?.startsWith('pois-')).map((k) => `poi-${k}`)];
-/** Area layers (parks: the basemap's, and its parts' clones). */
-export const areaLayers = () => ['whs-fill', 'whs-line', 'heritage-area-fill', 'special-fill', 'indigenous-fill', ...partIds('park-fill')];
-/** World Heritage outlines (layer-whs-shapes.json: n name, c category, i the site's record) as the
- * site's properties, so they show like its dot. */
+/** Area layers (parks: the basemap's). */
+export const AREA_LAYERS = ['whs-fill', 'whs-line', 'heritage-area-fill', 'special-fill', 'indigenous-fill', 'park-fill'];
+/** World Heritage outlines (layer-whs-shapes.json: n name with its main and sub, c category, i the
+ * site's record) as the site's properties, so they show like its dot. */
 const whsAsSite = (p: Record<string, any>): Record<string, any> =>
-  ({ name: p.n, designation: 'UNESCO World Heritage Site', level: 1, t: p.c === 'Cultural' ? 'w.c' : 'w.n', category: p.c, i: p.i });
+  ({ name: p.n, main: p.main, sub: p.sub, designation: 'UNESCO World Heritage Site', level: 1, t: p.c === 'Cultural' ? 'w.c' : 'w.n', category: p.c, i: p.i });
 const isWhs = (id: string) => id === 'whs-fill' || id === 'whs-line';
 
 /** An overlay's layer file, as the map draws it (dem/layers.py), versioned for the browser cache. */
@@ -229,7 +229,7 @@ export class Overlays {
       if (on && src) this.ensure(src, k);
       if (src && isPoints(src)) this.dots.setShown(src, on);
       // Labels follow "Place labels" and their kind's toggle under it.
-      for (const id of (OVERLAY_LAYERS[k] ?? []).flatMap(partIds)) {
+      for (const id of OVERLAY_LAYERS[k] ?? []) {
         const lk = labelKindOf(id) as LabelKind | undefined;
         const show = on && (!lk || labelShown(s, lk));
         if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', show ? 'visible' : 'none');
@@ -239,7 +239,7 @@ export class Overlays {
       // faded by significance).
       if (k !== 'heritage') {
         const extra = stopFilterExpr(k, s.stopFilters, s.stopUnknown[k] !== false);
-        for (const id of (OVERLAY_LAYERS[k] ?? []).flatMap(partIds)) {
+        for (const id of OVERLAY_LAYERS[k] ?? []) {
           if (!map.getLayer(id)) continue;
           if (!this.baseFilters.has(id)) this.baseFilters.set(id, map.getFilter(id) ?? null);
           const base = this.baseFilters.get(id) as ExpressionSpecification | null;
@@ -382,7 +382,7 @@ export class Overlays {
     this.viewLandmarks = r.byKind.map((x) => ({
       key: x.key, label: OVERLAYS.find((o) => o[0] === x.key)?.[1] ?? x.key,
       colour: x.key === 'heritage' ? HERITAGE_GROUPS[1].colour : POI_STYLE[x.key]?.[1] ?? '#888',
-      n: x.n, best: x.best ? { ...x.best, name: cap(x.best.name) } : null,
+      n: x.n, best: x.best ? { ...x.best, name: named(x.best.name, x.best.props) } : null,
     }));
     this.top = r.top;
     this.topByKind = r.topByKind;
@@ -529,10 +529,10 @@ export class Overlays {
       const fs = this.rank(this.onDots(map.queryRenderedFeatures([[pt.x - 5, pt.y - 5], [pt.x + 5, pt.y + 5]], { layers: pts }), pt), pt);
       point = fs.length ? summarise(fs[0], map.unproject([pt.x, pt.y])) : null;
       // Others at the same spot (click lists them all).
-      const names = new Set(fs.slice(1).map((f) => cap(f.properties?.name ?? '')).filter((n) => n && n !== cap(point?.title)));
+      const names = new Set(fs.slice(1).map((f) => named(f.properties?.name, f.properties ?? {})).filter((n) => n && n !== cap(point?.title)));
       if (point && names.size) point.also = [...names];
     }
-    const ars = vis(areaLayers());
+    const ars = vis(AREA_LAYERS);
     const seen = new Set<string>();
     const at = map.unproject([pt.x, pt.y]);
     // World Heritage lines and areas: a few pixels' slack, so a canal or wall is easy to find.
@@ -634,7 +634,7 @@ export class Overlays {
       // The site's record (dates, authority, links, source) comes with its details (props).
       const rows = h('div'), links = h('div', { class: 'links' }), src = h('div', { class: 'src' }), notice = h('div', { class: 'src' });
       const part = lid === 'heritage-part';
-      put(h('div', { class: 'ttl' }, named(part ? p.cn : p.name, part ? {} : p, at) || 'Designated place'),
+      put(h('div', { class: 'ttl' }, named(part ? p.cn : p.name, part ? { main: p.cmain, sub: p.csub } : p) || 'Designated place'),
         part ? h('div', { class: 'sub' }, dot, partOf(p)) : null,
         h('div', { class: 'sub' }, part ? '' : dot, `${p.designation ?? ''}`, h('span', { class: 'faint' }, ` · ${heritageKindLabel(p)}`)),
         rows, links, src, notice);
@@ -657,14 +657,14 @@ export class Overlays {
       if (Number.isFinite(ref.i)) loadDetail(ref).then((d) => d?.props && fill({ ...p, ...d.props }));
     } else if (lid.startsWith('poi-')) {
       put(
-        h('div', { class: 'ttl' }, named(p.name, p, at) || POI_LABEL[p.kind] || 'Point of interest'),
+        h('div', { class: 'ttl' }, named(p.name, p) || POI_LABEL[p.kind] || 'Point of interest'),
         h('div', { class: 'sub' }, POI_LABEL[p.kind] ?? p.kind),
         kv('Elevation', p.ele ? fmt.m(Number(p.ele)) : null),
         h('div', { class: 'src' }, 'Source: OpenStreetMap'),
       );
     } else if (lid === 'special-fill') {
       put(
-        h('div', { class: 'ttl' }, named(p.name, p, at)),
+        h('div', { class: 'ttl' }, named(p.name, p)),
         h('div', { class: 'sub' }, SPECIAL_LABEL[p.kind] ?? p.kind, p.category ? ` · ${p.category}` : ''),
         kv('Certified by', p.certifier),
         kv('Since', p.year),
@@ -675,7 +675,7 @@ export class Overlays {
       );
     } else if (lid === 'heritage-area-fill') {
       put(
-        h('div', { class: 'ttl' }, named(p.name, p, at)),
+        h('div', { class: 'ttl' }, named(p.name, p)),
         h('div', { class: 'sub' }, p.designation ?? 'Heritage district'),
         kv('Designated', p.date),
         kv('Municipality', p.municipality),
@@ -685,10 +685,10 @@ export class Overlays {
         h('div', { class: 'src' }, `Source: ${p.source ?? ''}`),
       );
     } else if (lid === 'indigenous-fill') {
-      put(h('div', { class: 'ttl' }, named(p.name, p, at) || 'Indigenous land'), h('div', { class: 'sub' }, 'Indigenous land / reserve'), h('div', { class: 'src' }, 'Boundary: OpenStreetMap'));
-    } else if (baseId(lid) === 'park-fill') {
+      put(h('div', { class: 'ttl' }, named(p.name, p) || 'Indigenous land'), h('div', { class: 'sub' }, 'Indigenous land / reserve'), h('div', { class: 'src' }, 'Boundary: OpenStreetMap'));
+    } else if (lid === 'park-fill') {
       put(
-        h('div', { class: 'ttl' }, named(p.name || p['name:latin'], p, at) || 'Protected area'),
+        h('div', { class: 'ttl' }, named(p.name || p['name:latin'], p) || 'Protected area'),
         h('div', { class: 'sub' }, String(p.class ?? 'protected area').replace(/_/g, ' ')),
         h('div', { class: 'src' }, 'Boundary: OpenStreetMap'),
       );
@@ -717,7 +717,7 @@ export class Overlays {
 }
 
 /** A World Heritage Site's component: "Part of <site>" (the canal of the Rideau Canal: a component). */
-const partOf = (p: Record<string, any>): string => (p.cn && p.cn !== p.name ? `Part of ${cap(p.name)}` : 'World Heritage component');
+const partOf = (p: Record<string, any>): string => (p.cn && p.cn !== p.name ? `Part of ${named(p.name, p)}` : 'World Heritage component');
 
 /** The same facts as the click popups, condensed for the bottom bar. */
 /** "National · top grade": a heritage site's group and kind. */
@@ -734,10 +734,10 @@ export function landmarkRef(layer: string, p: Record<string, any>): DetailRef | 
   return layer === 'heritage-pt' || layer === 'heritage-part' ? { layer: 'heritage', i } : layer.startsWith('poi-') ? { layer: 'poi', i } : null;
 }
 
-/** A feature's name with its English in parentheses (english.ts): its own (`en`; heritage sites'
- * `name_en`; a basemap feature's `name:en`), else the translation for where it is. */
-function named(name: unknown, p: Record<string, any>, at: maplibregl.LngLat | [number, number]): string {
-  return name ? cap(withEnglish(String(name), at, p.en ?? p.name_en ?? p['name:en'])) : '';
+/** A feature's name as the app shows it, "main (sub)" (names.ts), capitalised; '' for none. `p`:
+ * the properties holding its main and sub (the server's, for the feature's `name` or `n`). */
+function named(name: unknown, p: Record<string, any>): string {
+  return name ? cap(displayName(p.main, String(name), p.sub)) : '';
 }
 
 /** A landmark from a list (its map layer, properties and place), summarised as a hover on it is. */
@@ -753,7 +753,7 @@ function summarise(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary 
     const kind = heritageKindLabel(p);
     const part = lid === 'heritage-part';
     return {
-      title: named(part ? p.cn : p.name, part ? {} : p, at) || 'Designated place', kind: part ? partOf(p) : p.designation ?? kind,
+      title: named(part ? p.cn : p.name, part ? { main: p.cmain, sub: p.csub } : p) || 'Designated place', kind: part ? partOf(p) : p.designation ?? kind,
       colour: heritageGroupOf(heritageTierOf(p)).colour, area: false,
       facts: facts(p.category ?? p.type, p.in_danger && 'in danger'),
       source: p.source ?? '',
@@ -762,14 +762,14 @@ function summarise(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary 
   }
   if (lid.startsWith('poi-')) {
     return {
-      title: named(p.name, p, at) || POI_LABEL[p.kind] || 'Point of interest', kind: POI_LABEL[p.kind] ?? p.kind, colour: '#e79a6b', area: false,
+      title: named(p.name, p) || POI_LABEL[p.kind] || 'Point of interest', kind: POI_LABEL[p.kind] ?? p.kind, colour: '#e79a6b', area: false,
       facts: facts(p.ele && fmt.m(Number(p.ele))), source: 'OpenStreetMap',
       ref: idx !== null ? { layer: 'poi', i: idx } : undefined, what: p.kind,
     };
   }
   if (lid === 'special-fill') {
     return {
-      title: named(p.name, p, at), kind: SPECIAL_LABEL[p.kind] ?? p.kind, colour: SPECIAL_COLOUR, area: true,
+      title: named(p.name, p), kind: SPECIAL_LABEL[p.kind] ?? p.kind, colour: SPECIAL_COLOUR, area: true,
       // (the certifier only where the kind doesn't name it: not "UNESCO" after "UNESCO Biosphere Reserve")
       facts: facts(p.category, p.year && `since ${p.year}`, p.area_km2 && `${fmt.n(Number(p.area_km2))} km²`,
         p.certifier && !(SPECIAL_LABEL[p.kind] ?? '').includes(p.certifier) && p.certifier), source: p.source ?? '',
@@ -778,27 +778,27 @@ function summarise(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary 
   }
   if (lid === 'whs-line' || lid === 'whs-fill') {
     return {
-      title: named(p.n, p, at), kind: 'UNESCO World Heritage Site', colour: HERITAGE_GROUPS[0].colour, area: true,
+      title: named(p.n, p), kind: 'UNESCO World Heritage Site', colour: HERITAGE_GROUPS[0].colour, area: true,
       facts: facts(p.c), source: 'Outline: OpenStreetMap; site: UNESCO World Heritage Centre',
       ref: idx !== null ? { layer: 'heritage', i: idx } : undefined,
     };
   }
   if (lid === 'heritage-area-fill') {
     return {
-      title: named(p.name, p, at), kind: p.designation ?? 'Heritage district', colour: HERITAGE_AREA_COLOUR, area: true,
+      title: named(p.name, p), kind: p.designation ?? 'Heritage district', colour: HERITAGE_AREA_COLOUR, area: true,
       facts: facts(p.municipality), source: p.source ?? '',
       ref: idx !== null ? { layer: 'harea', i: idx } : undefined,
     };
   }
   if (lid === 'indigenous-fill') {
     return {
-      title: named(p.name, p, at) || 'Indigenous land', kind: 'Indigenous land / reserve', colour: INDIGENOUS_COLOUR, area: true, facts: [], source: 'OpenStreetMap',
+      title: named(p.name, p) || 'Indigenous land', kind: 'Indigenous land / reserve', colour: INDIGENOUS_COLOUR, area: true, facts: [], source: 'OpenStreetMap',
       ref: idx !== null ? { layer: 'indigenous', i: idx } : undefined,
     };
   }
-  if (baseId(lid) === 'park-fill') {
+  if (lid === 'park-fill') {
     return {
-      title: named(p.name || p['name:latin'], p, at) || 'Protected area', kind: String(p.class ?? 'protected area').replace(/_/g, ' '), colour: PARK_COLOUR, area: true,
+      title: named(p.name || p['name:latin'], p) || 'Protected area', kind: String(p.class ?? 'protected area').replace(/_/g, ' '), colour: PARK_COLOUR, area: true,
       facts: [], source: 'OpenStreetMap',
       ref: p.name ? { park: { name: String(p.name), lon: at.lng, lat: at.lat } } : undefined,
     };

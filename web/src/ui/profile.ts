@@ -1,7 +1,7 @@
 // Elevation profile panel for a selected road.
 import type { Profile } from '../api';
 import { legibleCss } from '../linecolour';
-import { withEnglish } from '../english';
+import { displayName } from '../names';
 import { paletteRgb } from '../palettes';
 import { metricOf, modeDef, type Mode } from '../scenic';
 import * as prefs from '../prefs';
@@ -121,7 +121,7 @@ export class ProfilePanel {
     const w = p.way;
     const title = h('div', { class: 'name' });
     if (w.ref) title.append(h('span', { class: 'pill', style: 'color:var(--text)' }, w.ref));
-    title.append(h('span', {}, cap(w.name && withEnglish(w.name, p.coords[p.coords.length >> 1], w.name_en)) || (w.ref ? `Route ${w.ref}` : `Unnamed ${w.class.replace('_', ' ')}`)));
+    title.append(h('span', {}, cap(displayName(w.main, w.name, w.sub)) || (w.ref ? `Route ${w.ref}` : `Unnamed ${w.class.replace('_', ' ')}`)));
     const chip = (k: string, v: string) => h('span', {}, `${k} `, h('b', {}, v));
     const src = p.sources.map(([s, f]) => `${s.replace(/ \(.*\)/, '')} ${(f * 100).toFixed(0)} %`).join(' · ');
     this.root.replaceChildren(

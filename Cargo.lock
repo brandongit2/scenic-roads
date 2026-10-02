@@ -700,6 +700,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "flate2",
+ "roadcore",
  "serde",
  "serde_json",
  "unicode-normalization",

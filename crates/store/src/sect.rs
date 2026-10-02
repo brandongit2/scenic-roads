@@ -183,7 +183,7 @@ impl<R> std::fmt::Debug for SectReader<R> {
 impl<R: RangeRead> SectReader<R> {
     /// Reads and checks the header, meta and section table (two range reads, one for a small file).
     pub fn open(src: R) -> Result<Self> {
-        let file_len = src.len();
+        let file_len = src.len()?;
         ensure!(file_len >= HEADER_LEN as u64, "not a sectioned file ({file_len} bytes)");
         let first = src.read_at(0, file_len.min(FIRST_READ) as usize)?;
         ensure!(&first[..8] == MAGIC, "not a sectioned file");

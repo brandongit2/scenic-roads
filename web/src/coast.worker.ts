@@ -3,16 +3,16 @@
 // coast in metres: positive over water, negative over land (only a few pixels' worth: enough for
 // the shoreline to fall between pixels where the colour ramp crosses zero).
 //
-// The water is the basemap's (base.pmtiles and the parts' archives, read here with pmtiles): the
+// The water is the basemap's (its vector tiles, as the map's basemap source reads them): the
 // tile's polygons and its eight neighbours', painted into a canvas MARGIN pixels wider than the
 // tile on every side (a coast just across a tile edge still counts), then an exact Euclidean
 // distance transform (Felzenszwalb & Huttenlocher) each way. Metres per pixel follow each row's
 // latitude, so neighbouring tiles agree along their edges.
-import { PMTiles } from 'pmtiles';
 import { readPolygons } from './mvt';
 
 export type CoastMessage =
-  | { type: 'init'; archives: string[] }
+  /** `tiles`: the basemap's tile URL ({z}, {x}, {y}); `maxzoom`: its deepest tiles. */
+  | { type: 'init'; tiles: string; maxzoom: number }
   | { type: 'tile'; id: number; z: number; x: number; y: number; lakes: boolean }
   | { type: 'cancel'; id: number };
 export interface CoastResponse {
@@ -27,21 +27,19 @@ const MARGIN = 192;
 const N = SIZE + 2 * MARGIN;
 /** Land pixels: their distance to the water, at most this many pixels. */
 const LAND_PX = 2;
-/** The vector tiles' zoom at most (the basemap archives'). */
-const VECTOR_MAXZOOM = 14;
 const EARTH = 40075016.686;
 
-let archives: { pm: PMTiles; header: Promise<{ minZoom: number; maxZoom: number; minLon: number; minLat: number; maxLon: number; maxLat: number } | null> }[] = [];
+/** The basemap's tile URL and its deepest zoom (init). */
+let tiles = '';
+let vectorMaxZoom = 14;
 const cancelled = new Set<number>();
 let queue = Promise.resolve();
 
 self.onmessage = (ev: MessageEvent<CoastMessage>) => {
   const m = ev.data;
   if (m.type === 'init') {
-    archives = m.archives.map((url) => {
-      const pm = new PMTiles(url);
-      return { pm, header: pm.getHeader().catch(() => null) };
-    });
+    tiles = m.tiles;
+    vectorMaxZoom = m.maxzoom;
   } else if (m.type === 'cancel') {
     cancelled.add(m.id);
   } else {
@@ -63,39 +61,34 @@ self.onmessage = (ev: MessageEvent<CoastMessage>) => {
 type Water = { extent: number; rings: number[][][] }; // per feature: its rings
 const waterCache = new Map<string, Promise<Water>>();
 
-/** A vector tile's water polygons, from every archive covering it (the tunnels' left out; the sea
- * only, unless lakes). */
+/** A vector tile's water polygons (the tunnels' left out; the sea only, unless lakes). A tile that
+ * failed to load isn't kept: asked for again, it loads again. */
 function water(z: number, x: number, y: number, lakes: boolean): Promise<Water> {
   const key = `${z}/${x}/${y}/${lakes ? 1 : 0}`;
-  let p = waterCache.get(key);
-  if (!p) {
-    p = loadWater(z, x, y, lakes);
-    waterCache.set(key, p);
-    if (waterCache.size > 400) waterCache.delete(waterCache.keys().next().value!);
-  }
+  const hit = waterCache.get(key);
+  if (hit) return hit;
+  const p = loadWater(z, x, y, lakes);
+  waterCache.set(key, p);
+  p.catch(() => waterCache.get(key) === p && waterCache.delete(key));
+  if (waterCache.size > 400) waterCache.delete(waterCache.keys().next().value!);
   return p;
 }
 
 async function loadWater(z: number, x: number, y: number, lakes: boolean): Promise<Water> {
-  const n = 2 ** z;
-  const lon0 = (x / n) * 360 - 180, lon1 = ((x + 1) / n) * 360 - 180;
-  const lat = (t: number) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * t) / n))) * 180) / Math.PI;
-  const lat0 = lat(y + 1), lat1 = lat(y);
   const out: Water = { extent: 4096, rings: [] };
-  await Promise.all(archives.map(async (a) => {
-    const h = await a.header;
-    if (!h || z < h.minZoom || z > h.maxZoom || lon1 < h.minLon || lon0 > h.maxLon || lat1 < h.minLat || lat0 > h.maxLat) return;
-    const r = await a.pm.getZxy(z, x, y).catch(() => undefined);
-    if (!r?.data) return;
-    const layer = readPolygons(r.data, 'water');
-    if (!layer) return;
-    // (The archives share one extent in practice; rings are scaled to 4096 if not.)
-    const k = 4096 / layer.extent;
-    for (const f of layer.lines) {
-      if (f.props.brunnel === 'tunnel' || (!lakes && f.props.class !== 'ocean')) continue;
-      out.rings.push(k === 1 ? f.runs : f.runs.map((run) => run.map((v) => v * k)));
-    }
-  }));
+  // The tile as the map's basemap source gets it (the browser undoes its gzip); no content: no
+  // basemap there.
+  const r = await fetch(tiles.replace('{z}', String(z)).replace('{x}', String(x)).replace('{y}', String(y)));
+  if (r.status === 204 || r.status === 404) return out;
+  if (!r.ok) throw new Error(`basemap tile ${z}/${x}/${y}: HTTP ${r.status}`);
+  const layer = readPolygons(await r.arrayBuffer(), 'water');
+  if (!layer) return out;
+  // (Rings are scaled to 4096 when the tile's extent differs.)
+  const k = 4096 / layer.extent;
+  for (const f of layer.lines) {
+    if (f.props.brunnel === 'tunnel' || (!lakes && f.props.class !== 'ocean')) continue;
+    out.rings.push(k === 1 ? f.runs : f.runs.map((run) => run.map((v) => v * k)));
+  }
   return out;
 }
 
@@ -107,8 +100,8 @@ const outCanvas = new OffscreenCanvas(SIZE, SIZE);
 const outCtx = outCanvas.getContext('2d')!;
 
 async function coastTile(z: number, x: number, y: number, lakes: boolean): Promise<ArrayBuffer> {
-  // Past the archives' zoom: the deepest tile's water, cut to this one.
-  const zv = Math.min(z, VECTOR_MAXZOOM), dz = z - zv;
+  // Past the basemap's zoom: the deepest tile's water, cut to this one.
+  const zv = Math.min(z, vectorMaxZoom), dz = z - zv;
   const n = 2 ** zv;
   const vx = x >> dz, vy = y >> dz;
   // This tile's place within the vector tile (pixels at its own scale).
@@ -137,8 +130,11 @@ async function coastTile(z: number, x: number, y: number, lakes: boolean): Promi
       }));
     }
   }
-  // (Painted as each arrives: fills are opaque, so the order doesn't matter.)
-  await Promise.all(jobs);
+  // (Painted as each arrives: fills are opaque, so the order doesn't matter.) All of them painted
+  // before the canvas is read, or the next tile clears it; a neighbour that didn't load fails the
+  // tile (its coast would be drawn where its water is missing).
+  const failed = (await Promise.allSettled(jobs)).find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failed) throw failed.reason;
   const px = ctx.getImageData(0, 0, N, N).data;
   const wet = new Uint8Array(N * N);
   let nWet = 0;

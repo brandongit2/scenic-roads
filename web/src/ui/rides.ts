@@ -2,7 +2,7 @@
 // current ride-factor weights (Passenger rail → Metric → Ride score).
 import { getRailLines, getRides, type RailLine, type Ride } from '../api';
 import { legibleRgb } from '../linecolour';
-import { withEnglish } from '../english';
+import { displayName } from '../names';
 import { RAIL_COMPONENTS } from '../rail';
 import * as prefs from '../prefs';
 import { cap, fmt, h } from './dom';
@@ -119,7 +119,7 @@ export class RidesPane extends RailPane<Ride> {
         .sort((a, b) => b[0] - a[0])
         .slice(0, 3)
         .map(([v, k]) => `${RAIL_COMPONENTS[k].short} ${Math.round(v * 100)}`);
-      const title = h('span', { class: 'ct' }, swatch(r.colour), cap(r.name && withEnglish(r.name, r.geom[0])) || 'Rail line');
+      const title = h('span', { class: 'ct' }, swatch(r.colour), cap(displayName(r.main, r.name, r.sub)) || 'Rail line');
       return this.row(i, title, r.score, [fmt.dist(r.length_m), r.trains ? `${trains(r.trains)} trains a day` : '', ...top].filter(Boolean).join(' · '), r);
     }));
     this.onResults(d.rides);
@@ -163,7 +163,7 @@ export class LinesPane extends RailPane<RailLine> {
     this.hovered = null;
     this.count.textContent = d.total ? `${fmt.n(d.total)} lines in view · top ${d.lines.length}` : 'No passenger lines in view';
     this.list.replaceChildren(...d.lines.map((l, i) => {
-      const title = h('span', { class: 'ct' }, swatch(l.colour), cap(withEnglish(l.name, l.geom[0]?.[0])));
+      const title = h('span', { class: 'ct' }, swatch(l.colour), cap(displayName(l.main, l.name, l.sub)));
       const svc = l.services.split(' · ').map((x) => x.split(':')[0].trim()).filter((x, k, a) => x && x !== l.name && a.indexOf(x) === k).slice(0, 3).join(', ');
       return this.row(i, title, l.score, [`${fmt.dist(l.length_m)} in view`, l.trains ? `${trains(l.trains)} trains a day` : '', svc].filter(Boolean).join(' · '), l);
     }));

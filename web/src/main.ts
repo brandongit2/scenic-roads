@@ -1,16 +1,15 @@
 import * as maplibregl from 'maplibre-gl';
 import type { GeoJSONSource } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import { Protocol } from 'pmtiles';
 // MapLibre resolves its worker at runtime, which bundlers can't see; bundle it explicitly.
 import mlWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import './style.css';
-import { getProfile, getRoadWays, getWay, roadWays, setVersions, ver, type Drive, type Meta, type Profile, type Ride, type WayInfo } from './api';
-import { loadEnglish } from './english';
-import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, partIds, POI_STYLE, basemapArchives } from './basemap';
+import { getProfile, getRoadWays, getWay, roadWays, setVersions, ver, version, type Drive, type Meta, type Profile, type Ride, type WayInfo } from './api';
+import { displayName, displayOf, lineName } from './names';
+import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, basemapTiles } from './basemap';
 import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
-import { areaLayers, landmarkRef, Overlays, POINT_LAYERS, summariseFeature, withDetails } from './overlays';
+import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, summariseFeature, withDetails } from './overlays';
 import { loadDetail, osmPath, peekDetail, refKey } from './details';
 import { paletteRgb } from './palettes';
 import { RoadLayer, type HoverInfo, type RoadStyle, type SchemeUniforms } from './roads/layer';
@@ -33,7 +32,7 @@ import { applyTrees } from './trees';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
-import { ROAD_WEIGHT, Store, classMask, defaults, labelShown, modeGroup, fromHash, fromSaved, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Stretch } from './state';
+import { ROAD_WEIGHT, Store, classMask, defaults, labelShown, modeGroup, fromHash, fromSaved, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Selection, type Stretch } from './state';
 import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyLabelSize, applyTerrain, applyTint, cacheTerrainRays, TINT_VARS, tintColourAt, tintCss } from './terrain';
 import { applyWater, updateCoastRamp } from './coast';
@@ -76,7 +75,6 @@ async function main() {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     meta = await r.json();
     setVersions(meta.versions);
-    void loadEnglish();
   } catch (e) {
     boot.fail(0, `backend not reachable (${(e as Error).message})`);
     return;
@@ -91,14 +89,13 @@ async function main() {
   // the basemap and terrain tiles then wait behind a 50 MB overlay file. Several, leaving cores for
   // the road decoders and the landmarks worker.
   maplibregl.setWorkerCount(Math.max(2, Math.min(6, (navigator.hardwareConcurrency || 4) - 3)));
-  maplibregl.addProtocol('pmtiles', new Protocol().tile);
   // Terrain, slope and tree tiles are images: more of them at once than MapLibre's default 16, now
   // that each kind has connections of its own (hosts.ts).
   maplibregl.setMaxParallelImageRequests(32);
   const v = store.s.view;
   const map = new maplibregl.Map({
     container: 'map',
-    style: baseStyle(meta.baseParts ?? [], !!meta.labels, !!meta.labelTiles, store.s.labelDensity),
+    style: baseStyle(!!meta.labelTiles, store.s.labelDensity),
     center: v ? [v.lng, v.lat] : [-70, 46],
     zoom: v ? v.zoom : 5,
     bearing: v?.bearing ?? 0,
@@ -214,7 +211,10 @@ async function main() {
     casingMask: CASING_CLASSES_MASK,
   });
   roads.bounds = meta.bounds;
-  roads.version = String(meta.built);
+  // The tiles' version in their URLs (cached for good): the catalog's for the layer. (Not the
+  // build time in meta: it stayed when the tiles' way column changed from indices to OSM ids, and a
+  // browser holding the older tiles under the same URLs would have kept them.)
+  roads.version = version('roads.tiles') || String(meta.built);
   // Street-map colours (Map display type), rebuilt when the scheme changes.
   let schemeKey = '';
   let schemeU: SchemeUniforms | null = null;
@@ -252,7 +252,7 @@ async function main() {
     },
   );
   rails.bounds = meta.bounds;
-  rails.version = String(meta.built);
+  rails.version = version('rails.tiles') || String(meta.built);
   // The tilted tile cover unprojects onto the terrain (not the camera pivot's level).
   roads.groundSamples = rails.groundSamples = (pts) => cam3d.coverSamples(map, pts);
   let railCur: [number, number] = [...s0.rail.range] as [number, number];
@@ -283,7 +283,8 @@ async function main() {
     st.range = railCur;
   };
   applyRailStyle(s0);
-  // Rail service frequency per way (railfreq): sorted way indices and trains a day each way.
+  // Rail service frequency per way (railfreq): sorted OSM way ids (as the rail tiles' way column)
+  // and trains a day each way.
   let railFreqLoading = false;
   const loadRailFreq = () => {
     if (railFreqLoading) return;
@@ -626,9 +627,9 @@ async function main() {
       const total = groups.reduce((a, g) => a + g.km, 0);
       const b = rails.busiestInView();
       x.rail = { total, groups, busiest: b ? { name: railName.get(b.way) ?? 'Rail line', perDay: b.perDay, lngLat: b.lngLat } : null, highest: railStats.highest };
-      if (b && !railName.has(b.way)) getWay(b.way).then((info) => {
+      if (b && !railName.has(b.way)) getWay(b.way, b.lngLat).then((info) => {
         // The line's name without a route's direction or service codes ("Highland Sleeper").
-        railName.set(b.way, (info?.name || '').split(':')[0].trim() || 'Rail line');
+        railName.set(b.way, (info && lineName(info)) || 'Rail line');
         markDirty();
       });
     }
@@ -645,6 +646,7 @@ async function main() {
     };
     return x;
   };
+  /** The busiest lines' names as shown (by way). */
   const railName = new Map<number, string>();
   statsCard.onPlace = (pl: ViewPlace) => {
     if (pl.layer) overlays.select({ lngLat: pl.lngLat, layer: pl.layer, props: pl.props });
@@ -853,10 +855,10 @@ async function main() {
     for (const q of g) b.extend(q);
     return b;
   };
-  /** A drive or ride picked from a list: its road or line selected and the stretch marked, the map
-   * staying where it is. */
-  const pickStretch = (way: number, st: Stretch, geom: [number, number][]) => {
-    store.set({ selected: way, stretch: st });
+  /** A drive or ride picked from a list: its road or line selected (by its first way and the point
+   * the list gives on it) and the stretch marked, the map staying where it is. */
+  const pickStretch = (sel: Selection, st: Stretch, geom: [number, number][]) => {
+    store.set({ selected: sel, stretch: st });
     pinned = geom;
     drawStretch();
   };
@@ -869,11 +871,10 @@ async function main() {
       features: ds.map((d) => ({ type: 'Feature', properties: { score: d.score }, geometry: { type: 'LineString', coordinates: d.geom } })),
     });
   drives.onHover = (d) => {
-    if (d) wayOsm(d.way); // ready for O
     listHover(d ? { layer: roads, at: midpoint(d.geom), way: d.way, geom: [d.geom] } : null);
     return d ? setDriveHl(d.geom) : drawStretch();
   };
-  drives.onSelect = (d) => pickStretch(d.way, driveStretch(d), d.geom);
+  drives.onSelect = (d) => pickStretch({ way: d.way, at: d.at }, driveStretch(d), d.geom);
 
   // Scenic rides and rail lines: the rail weights and service groups shown.
   const railQuery = () => ({ bbox: bboxQuery(), poly: polyQuery(), weights: store.s.rail.weights, groups: railMask(store.s) });
@@ -884,19 +885,17 @@ async function main() {
   });
   rides.onResults = (rs) => drives.onResults(rs.map((r) => ({ score: r.score, geom: r.geom }) as unknown as Drive));
   rides.onHover = (r) => {
-    if (r && !r.rel) wayOsm(r.way);
     listHover(r ? { layer: rails, at: midpoint(r.geom), geom: [r.geom] } : null);
     return r ? setDriveHl(r.geom) : drawStretch();
   };
-  rides.onSelect = (r) => pickStretch(r.way, rideStretch(r), r.geom);
+  rides.onSelect = (r) => pickStretch({ way: r.way, at: r.at }, rideStretch(r), r.geom);
   lines.onHover = (l) => {
-    if (l && !l.rel) wayOsm(l.way);
     listHover(l ? { layer: rails, at: midpoint(l.geom.reduce((a, b) => (lineLen(b) > lineLen(a) ? b : a))), geom: l.geom } : null);
     map.getSource<GeoJSONSource>('drive-hl')?.setData(l ? { type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates: l.geom } } : line(null));
     if (!l) drawStretch();
   };
   // A line picked from the list: selected, as a click on it on the map does.
-  lines.onSelect = (l) => store.set({ selected: l.way, stretch: null });
+  lines.onSelect = (l) => store.set({ selected: { way: l.way, at: l.at }, stretch: null });
 
   // A list item hovered (Drives, Rides, Rail lines, Sights, In view): the bottom bar shows it as a
   // hover on the map would, and a road or line too small on screen to see at a glance gets a ring.
@@ -989,7 +988,7 @@ async function main() {
     const cached = wayCache.get(hv.way);
     strip.show(hv, cached === undefined ? 'loading' : cached, []);
     if (cached === undefined) {
-      getWay(hv.way).then((info) => {
+      getWay(hv.way, hv.lngLat).then((info) => {
         wayCache.set(hv.way, info);
         if (listTok === tok) strip.show(hv, info, []);
       });
@@ -1022,10 +1021,10 @@ async function main() {
   statsCard.show(statsCard.tab); // restored tab: run its loaders now that callbacks exist
 
   statsCard.wayName = async (x) => {
-    const info = await getWay(x.tile.data!.lineWay[x.line]);
+    const info = await getWay(x.tile.data!.lineWay[x.line], x.lngLat);
     // Rail: the line's name without a route's direction or service codes.
-    if (info && ['tram', 'metro', 'commuter', 'intercity', 'heritage'].includes(info.class)) return info.name.split(':')[0].trim();
-    return info ? [info.ref, info.name].filter(Boolean).join(' ') : '';
+    if (info && ['tram', 'metro', 'commuter', 'intercity', 'heritage'].includes(info.class)) return lineName(info);
+    return info ? [info.ref, displayName(info.main, info.name, info.sub)].filter(Boolean).join(' ') : '';
   };
 
   // Hover readouts for the scenic channels.
@@ -1342,7 +1341,7 @@ async function main() {
     const road = hovered ? roadWays(hovered.way) : undefined;
     layer.setHover(hovered, road ?? null);
     if (hovered && !road) {
-      getRoadWays(hovered.way).then((set) => {
+      getRoadWays(hovered.way, hovered.lngLat).then((set) => {
         if (set && hovered && set.has(hovered.way)) layer.setHover(hovered, set);
       });
     }
@@ -1356,7 +1355,7 @@ async function main() {
     const cached = wayCache.get(hv.way);
     strip.show(hv, cached === undefined ? 'loading' : cached, hoverAreas);
     if (cached === undefined) {
-      getWay(hv.way).then((info) => {
+      getWay(hv.way, hv.lngLat).then((info) => {
         wayCache.set(hv.way, info);
         if (hovered?.way === hv.way) strip.show(hovered, info, hoverAreas);
       });
@@ -1387,10 +1386,10 @@ async function main() {
   });
 
   let profileAbort: AbortController | null = null;
-  const select = async (way: number | null) => {
+  const select = async (sel: Selection | null) => {
     profileAbort?.abort();
     profileCoords = null;
-    if (way === null) {
+    if (sel === null) {
       profile.hide();
       map.getSource<GeoJSONSource>('selection')?.setData(line(null));
       pinned = null;
@@ -1398,10 +1397,10 @@ async function main() {
       return;
     }
     profileAbort = new AbortController();
-    const info = wayCache.get(way) ?? (await getWay(way));
-    profile.loading(info ? info.ref || info.name || 'this road' : 'this road');
+    const info = wayCache.get(sel.way) ?? (await getWay(sel.way, sel.at));
+    profile.loading((info && (info.ref || displayName(info.main, info.name, info.sub))) || 'this road');
     try {
-      const p = await getProfile(way, profileAbort.signal);
+      const p = await getProfile(sel.way, sel.at, profileAbort.signal);
       profile.show(p);
       map.getSource<GeoJSONSource>('selection')?.setData(line(p.coords));
       profileCoords = p.coords;
@@ -1505,10 +1504,10 @@ async function main() {
     if (wl && (!hv || wl.px <= hv.px) && overlays.click(e.point, ['whs-line'])) return;
     if (hv) {
       overlays.closePopup();
-      store.set({ selected: hv.way, stretch: null });
+      store.set({ selected: { way: hv.way, at: hv.lngLat }, stretch: null });
       return;
     }
-    overlays.click(e.point, areaLayers());
+    overlays.click(e.point, AREA_LAYERS);
   });
   layers.onViewshed = () => (viewshed.active ? viewshed.cancel() : viewshed.start());
   layers.trees.onPreview = (palette) => applyTrees(map, palette ? { ...store.s.trees, palette } : store.s.trees);
@@ -1536,15 +1535,8 @@ async function main() {
     /** For the message: "at the cursor", "for “Mount Washington”". */
     what: string;
   }
-  /** A way's OSM object: known, or loading (and cached for next time). */
-  const wayOsm = (way: number): string | null | Promise<string | null> => {
-    const path = (i: WayInfo | null) => (i ? `way/${i.osm_id}` : null);
-    if (wayCache.has(way)) return path(wayCache.get(way)!);
-    return getWay(way).then((i) => {
-      wayCache.set(way, i);
-      return path(i);
-    }, () => null);
-  };
+  /** A way's OSM object (its id is the OSM way id). */
+  const wayOsm = (way: number): string => `way/${way}`;
   /** A landmark's OSM object, from its details record. */
   const sightOsm = (x: Sight): string | null | Promise<string | null> => {
     const ref = landmarkRef(x.layer, x.props);
@@ -1565,24 +1557,25 @@ async function main() {
   };
   const frameZoom = (g: [number, number][]) => map.cameraForBounds(boundsOf(g), { padding: 40 })?.zoom;
   const named = (name: string) => (name ? `for “${name}”` : '');
+  // (Google Maps searches the name itself; the message gives it as the list shows it.)
   const linkTarget = (): LinkTarget | null => {
     const tab = statsCard.tab;
     if (tab === 'drives' && drives.hovered) {
       const d = drives.hovered, name = cap(d.name) || d.ref, mid = halfway(d.geom);
-      return { lngLat: mid.at, heading: mid.heading, zoom: frameZoom(d.geom), search: name || undefined, osm: wayOsm(d.way), streetView: true, what: named(name) || 'for this drive' };
+      return { lngLat: mid.at, heading: mid.heading, zoom: frameZoom(d.geom), search: name || undefined, osm: wayOsm(d.way), streetView: true, what: named(cap(displayName(d.main, d.name, d.sub)) || d.ref) || 'for this drive' };
     }
     if (tab === 'rides' && rides.hovered) {
       const r = rides.hovered;
-      return { lngLat: halfway(r.geom).at, zoom: frameZoom(r.geom), osm: r.rel ? `relation/${r.rel}` : wayOsm(r.way), streetView: false, what: named(cap(r.name)) || 'for this ride' };
+      return { lngLat: halfway(r.geom).at, zoom: frameZoom(r.geom), osm: r.rel ? `relation/${r.rel}` : wayOsm(r.way), streetView: false, what: named(cap(displayName(r.main, r.name, r.sub))) || 'for this ride' };
     }
     if (tab === 'lines' && lines.hovered) {
       const l = lines.hovered;
       const longest = l.geom.reduce((a, b) => (b.length > a.length ? b : a), l.geom[0]);
-      return { lngLat: halfway(longest).at, zoom: frameZoom(l.geom.flat()), osm: l.rel ? `relation/${l.rel}` : wayOsm(l.way), streetView: false, what: named(cap(l.name)) || 'for this line' };
+      return { lngLat: halfway(longest).at, zoom: frameZoom(l.geom.flat()), osm: l.rel ? `relation/${l.rel}` : wayOsm(l.way), streetView: false, what: named(cap(displayName(l.main, l.name, l.sub))) || 'for this line' };
     }
     if (tab === 'sights' && sights.hovered) {
       const x = sights.hovered, name = cap(x.props.name);
-      return { lngLat: x.lngLat, zoom: Math.max(map.getZoom(), 15), search: name || undefined, osm: sightOsm(x), streetView: false, what: named(name) || 'for this place' };
+      return { lngLat: x.lngLat, zoom: Math.max(map.getZoom(), 15), search: name || undefined, osm: sightOsm(x), streetView: false, what: named(cap(displayOf(x.props))) || 'for this place' };
     }
     const hp = profile.hoverPoint();
     if (hp) return { lngLat: hp.lngLat, heading: hp.heading, streetView: !hp.rail, what: 'at this point' };
@@ -1660,7 +1653,7 @@ async function main() {
     });
   const applyLayers = () => {
     const vis = (id: string, show: boolean) => {
-      for (const pid of partIds(id)) if (map.getLayer(pid)) map.setLayoutProperty(pid, 'visibility', show ? 'visible' : 'none');
+      if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', show ? 'visible' : 'none');
     };
     for (const [k, ids] of Object.entries(LAYER_GROUPS)) {
       const on = store.s.layers[k as 'water' | 'boundaries'];
@@ -1734,7 +1727,7 @@ async function main() {
       }
       // Label sizes lay the labels out again: at most every 150 ms while a slider is dragged.
       if (ch.has('labelSize') || ch.has('terrain')) labelSizeSoon();
-      if (ch.has('water') || ch.has('layers')) applyWater(map, s.water, basemapArchives, s.layers.water);
+      if (ch.has('water') || ch.has('layers')) applyWater(map, s.water, basemapTiles, s.layers.water);
       // (after the terrain: contour lines are added when first shown)
       if (ch.has('lineWeights') || ch.has('terrain')) applyLineWidths(map, s.lineWeights);
       if (ch.has('terrain') || ch.has('palette') || ch.has('mode')) {
@@ -1849,7 +1842,7 @@ async function main() {
     applyLayers();
     applyTerrain(map, store.s.terrain, hostFor('terrain'));
     applyLabelSize(map, store.s.labelSize, store.s.terrain.contour.labelSize);
-    applyWater(map, store.s.water, basemapArchives, store.s.layers.water);
+    applyWater(map, store.s.water, basemapTiles, store.s.layers.water);
     applyLineWidths(map, store.s.lineWeights);
     applyTrees(map, store.s.trees);
     applyLabelOpacity(map, store.s.labelOpacity, overlayLabelScale(store.s.poiOpacity));

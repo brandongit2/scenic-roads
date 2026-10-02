@@ -27,7 +27,9 @@ const SUFFIX: &str = ".json.zst";
 /// catalog is read and written again.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Catalog {
+    /// The catalog format version.
     pub fmt: u32,
+    /// The publish number, also the file's name.
     pub n: u64,
     /// RFC 3339 time of the publish.
     #[serde(default)]

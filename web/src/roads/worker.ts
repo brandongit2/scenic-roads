@@ -61,7 +61,8 @@ function post(m: WorkerResponse, transfer: Transferable[] = []) {
 function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): DecodedTile {
   let pos = 4;
   const version = b[2];
-  if (b[0] !== 0x52 || b[1] !== 0x54 || version < 4 || version > 6) throw new Error('bad tile header (expected RT v4–v6)');
+  // (v7 is laid out as v6; its way column holds OSM way ids, lines sorted by draw class then id.)
+  if (b[0] !== 0x52 || b[1] !== 0x54 || version < 4 || version > 7) throw new Error('bad tile header (expected RT v4–v7)');
   const extent = 1 << b[3];
   const rv = (): number => {
     let r = 0, s = 1, c: number;
@@ -80,6 +81,7 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
   pos += nlines;
   const lineFlags = b.slice(pos, pos + nlines);
   pos += nlines;
+  // Way of each line: its OSM id (v7; an index into the build's ways before), delta-coded.
   const lineWay = new Uint32Array(nlines);
   let w = 0;
   for (let i = 0; i < nlines; i++) lineWay[i] = w += zz(rv());

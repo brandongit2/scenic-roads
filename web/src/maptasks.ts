@@ -18,7 +18,7 @@ interface ManagerLike {
 }
 
 function labelOf(id: string): string | null {
-  if (id === 'base' || id.startsWith('base-')) return 'Basemap';
+  if (id === 'base') return 'Basemap';
   if (id === 'dem' || id === 'dem-hs') return 'Terrain';
   if (id === 'slope') return 'Slope';
   if (id === 'contours') return 'Contours';

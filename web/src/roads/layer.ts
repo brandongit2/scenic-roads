@@ -918,11 +918,13 @@ export interface LoadProgress {
 export interface HoverInfo {
   tile: RoadTile;
   hit: PickHit;
+  /** The line's way (OSM id). */
   way: number;
   style: number;
   elev: number; // m
   grade: number; // %
   ch: number[]; // 12 scenic channels
+  /** The point on the line (for the way APIs too). */
   lngLat: [number, number];
   /** Ground height (m) at the point: the terrain beneath, under a bridge the ground below the deck. */
   ground: number;
@@ -2537,7 +2539,8 @@ export class RoadLayer implements CustomLayerInterface {
     return t.ls;
   }
 
-  /** Per-way values for rail lines (trains a day each way; -1 or absent: unknown), or null. */
+  /** Per-way values for rail lines, by OSM way id (trains a day each way; -1 or absent: unknown),
+   * or null. */
   private lineValue: ((way: number) => number) | null = null;
   private lineMin: ((way: number) => boolean) | null = null;
   /** How many times the line values were set (the frequency filter's lists follow them). */
@@ -2558,7 +2561,7 @@ export class RoadLayer implements CustomLayerInterface {
     this.onChange();
   }
 
-  /** Rail: the line in view with the most trains a day, with a point on it. */
+  /** Rail: the line in view with the most trains a day, its way (OSM id) and a point on it. */
   busiestInView(): { perDay: number; way: number; lngLat: [number, number] } | null {
     let best: { perDay: number; way: number; lngLat: [number, number] } | null = null;
     for (const t of this.viewTiles()) {

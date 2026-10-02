@@ -147,6 +147,7 @@ pub fn write_atomic(root: &Path, logical: &str, ext: &str, src: Source<'_>) -> R
 fn present(dest: &Path, size: u64) -> Result<bool> {
     match fs::metadata(dest) {
         Ok(m) if m.is_file() && m.len() == size => Ok(true),
+        Ok(m) if !m.is_file() => bail!("{} exists and isn't a file", dest.display()),
         Ok(m) => bail!(
             "{} exists with {} bytes instead of {size}; content-named files are never rewritten, so it must be removed by hand",
             dest.display(),
@@ -223,9 +224,11 @@ pub(crate) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
             return Ok(());
         }
         let e = io::Error::last_os_error();
-        if !matches!(e.raw_os_error(), Some(libc::ENOTSUP | libc::EINVAL | libc::ENOSYS)) {
+        if e.kind() == io::ErrorKind::AlreadyExists {
             return Err(e);
         }
+        // Any other error may only mean the filesystem can't rename exclusively; a real failure
+        // shows again below.
     }
     match fs::symlink_metadata(to) {
         Ok(_) => Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{} exists", to.display()))),
@@ -249,14 +252,20 @@ impl Drop for TmpFile {
     }
 }
 
-/// Writes `bytes` to `path` through `<path>.tmp` and a rename, replacing what was there (for
+/// Writes `bytes` to `path` through a temporary file and a rename, replacing what was there (for
 /// small local state files, never for content-named ones), with permission bits `mode` if given.
+/// The temporary name is unique to the call (`<path>.<pid>-<n>.tmp`), so concurrent writers of
+/// the same file can't mix their bytes: the last rename wins whole.
 pub(crate) fn replace_file(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let tmp = TmpFile(tmp_path(path));
+    let mut name = OsString::from(path.as_os_str());
+    name.push(format!(".{}-{}.tmp", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    let tmp = TmpFile(PathBuf::from(name));
     let mut f = File::create(&tmp.0)?;
     f.write_all(bytes)?;
     if let Some(mode) = mode {

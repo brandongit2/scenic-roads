@@ -3,7 +3,7 @@
 import type { OverlayKey } from '../state';
 import * as prefs from '../prefs';
 import { cap, fmt, h } from './dom';
-import { withEnglish } from '../english';
+import { displayOf } from '../names';
 
 export interface Sight {
   k: OverlayKey;
@@ -85,7 +85,7 @@ export class SightsPane {
       const row = h('a', { class: 'climb', onclick: () => this.onSelect(s) },
         h('span', { class: 'rank' }, String(i + 1)),
         h('div', { class: 'cbody' },
-          h('div', { class: 'cl1' }, h('span', { class: 'ct' }, dot, cap(p.name && withEnglish(p.name, s.lngLat, p.en ?? p.name_en)) || `Unnamed ${String(label.get(s.k) ?? '').toLowerCase()}`), h('b', {}, String(Math.round(s.score * 100)))),
+          h('div', { class: 'cl1' }, h('span', { class: 'ct' }, dot, cap(displayOf(p)) || `Unnamed ${String(label.get(s.k) ?? '').toLowerCase()}`), h('b', {}, String(Math.round(s.score * 100)))),
           h('div', { class: 'sbarw' }, bar),
           h('div', { class: 'cl2' }, [label.get(s.k), ...facts].filter(Boolean).join(' · ')),
         ),

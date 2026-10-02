@@ -39,6 +39,8 @@ const CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
 const SAVE_EVERY: Duration = Duration::from_secs(60);
 /// Catalogs kept in `catalog/`.
 const KEEP_CATALOGS: usize = 3;
+/// Age past which a temporary file in `idx/` is left over from an interrupted write.
+const STALE_TMP: Duration = Duration::from_secs(3600);
 const PARTIAL: &str = ".partial";
 const USES: &str = ".uses";
 /// The group of files no other group claims (the basemap; anything newer).
@@ -284,6 +286,7 @@ impl Mirror {
     pub fn sync(&self, cat: &Catalog, nas_root: &Path, pool: &IoPool, pause: &dyn Fn() -> bool) -> Result<SyncStats> {
         let mut stats = SyncStats::default();
         let protected = self.protected(cat)?;
+        self.drop_mismatched(cat);
         // Honour the reserve first: the user may have filled the disk since last time.
         self.make_room(0, &protected, &mut stats)?;
         let plan = self.plan(cat);
@@ -327,6 +330,22 @@ impl Mirror {
         self.tidy(cat, &protected);
         self.flush()?;
         Ok(stats)
+    }
+
+    /// Deletes local copies whose size isn't the catalog's (damaged, or cut short while the app
+    /// wasn't running), so they're copied again.
+    fn drop_mismatched(&self, cat: &Catalog) {
+        let bad: Vec<(String, u64, u64)> = {
+            let st = self.state();
+            cat.files.values().filter_map(|f| st.files.get(&f.file).filter(|&&s| s != f.size).map(|&s| (f.file.clone(), s, f.size))).collect()
+        };
+        for (name, have, want) in bad {
+            eprintln!("mirror: {name} is {have} bytes here but {want} in the catalog; copying it again");
+            let p = self.path(&name);
+            if fs::remove_file(&p).is_ok() || !p.exists() {
+                self.state().files.remove(&name);
+            }
+        }
     }
 
     /// Frees space until `need` bytes fit within the budget, evicting unprotected files least
@@ -453,8 +472,9 @@ impl Mirror {
         Ok(Copy::Done)
     }
 
-    /// After a sync: drops partial copies and pack indexes no recent catalog needs, and use
-    /// records of logical names the catalog no longer has.
+    /// After a sync: drops partial copies and pack indexes no recent catalog needs (and temporary
+    /// files an interrupted write left in `idx/`), and use records of logical names the catalog no
+    /// longer has.
     fn tidy(&self, cat: &Catalog, protected: &HashSet<String>) {
         let partial = self.root.join("mirror").join(PARTIAL);
         let mut partials = HashMap::new();
@@ -470,8 +490,13 @@ impl Mirror {
         if let Ok(rd) = fs::read_dir(self.root.join("idx")) {
             for e in rd.flatten() {
                 let name = e.file_name();
-                let Some(h) = name.to_str().and_then(|n| n.strip_suffix(".idx")) else { continue };
-                if !hashes.contains(h) {
+                let Some(name) = name.to_str() else { continue };
+                let stale = match name.strip_suffix(".idx") {
+                    Some(h) => !hashes.contains(h),
+                    // A temporary file an hour old belongs to no write in progress.
+                    None => name.ends_with(".tmp") && e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|a| a > STALE_TMP)),
+                };
+                if stale {
                     let _ = fs::remove_file(e.path());
                 }
             }
@@ -499,8 +524,9 @@ impl Drop for Mirror {
     }
 }
 
-/// Copy order: 0 small worldwide files (and the coverage outline), 1 root and lo packs, 2 hi data
-/// and road values, 3 base packs, 4 hi packs; `LAST_GROUP` for the rest.
+/// Copy order: 0 small worldwide files (and the coverage outline), 1 root and lo packs and the
+/// basemap (drawn on every view), 2 hi data and road values, 3 base packs, 4 hi packs; `LAST_GROUP`
+/// for the rest.
 fn groups(cat: &Catalog) -> HashMap<&str, u8> {
     fn set<'a>(g: &mut HashMap<&'a str, u8>, logical: &'a str, k: u8) {
         let e = g.entry(logical).or_insert(k);
@@ -523,6 +549,9 @@ fn groups(cat: &Catalog) -> HashMap<&str, u8> {
         for v in l.hi.values() {
             set(&mut g, v, 4);
         }
+    }
+    for v in &cat.basemap {
+        set(&mut g, v, 1);
     }
     for v in cat.hidata.values().chain(cat.roads.values()) {
         set(&mut g, v, 2);
@@ -687,18 +716,18 @@ mod tests {
             [
                 "global/coverage",
                 "global/pois",
+                "layers/basemap/basemap",
                 "layers/roads/lo/3-4-2",
                 "layers/roads/root",
                 "global/roads/6-32-21",
                 "hidata/6-32-21",
                 "base/6-32-21",
                 "layers/roads/hi/6-32-21",
-                "layers/basemap/basemap",
             ]
         );
         // Most recently used first within a group.
         m.touch(cat.content("layers/roads/root").unwrap());
-        assert_eq!(logicals(&m, &cat)[2..4], ["layers/roads/root", "layers/roads/lo/3-4-2"]);
+        assert_eq!(logicals(&m, &cat)[2..5], ["layers/roads/root", "layers/basemap/basemap", "layers/roads/lo/3-4-2"]);
 
         let s = m.sync(&cat, nas.root(), &nas.pool, &|| false).unwrap();
         assert_eq!((s.copied, s.failed, s.skipped, s.pending, s.end), (9, 0, 0, 0, SyncEnd::Done));
@@ -725,6 +754,17 @@ mod tests {
         fs::remove_file(m.path(pois)).unwrap();
         assert!(m.local(pois).is_none());
         assert!(m.local("../../etc/passwd").is_none());
+
+        // Cut short while the app wasn't running: found at open, copied again.
+        drop(m);
+        let hi = cat.content("layers/roads/hi/6-32-21").unwrap();
+        let p = home.path().join("mirror").join(hi);
+        let body = fs::read(&p).unwrap();
+        fs::write(&p, &body[..100]).unwrap();
+        let m = mirror(home.path(), 1 << 40, 0);
+        let s = m.sync(&cat, nas.root(), &nas.pool, &|| false).unwrap();
+        assert_eq!((s.copied, s.failed, s.pending), (2, 0, 0), "the cut file and the deleted one");
+        assert_eq!(fs::read(m.local(hi).unwrap()).unwrap(), body);
     }
 
     #[test]
@@ -768,11 +808,11 @@ mod tests {
         assert_eq!(s.end, SyncEnd::Paused);
         assert_eq!(fs::metadata(&part).unwrap().len(), CHUNK);
         assert!(m.local(&base).is_none());
-        assert_eq!(s.copied, 6, "everything before the base pack");
+        assert_eq!(s.copied, 7, "everything before the base pack");
 
         // Resumed: the rest is appended, the whole hash checks out.
         let s = m.sync(&cat, nas.root(), &nas.pool, &|| false).unwrap();
-        assert_eq!((s.copied, s.end, s.pending), (3, SyncEnd::Done, 0));
+        assert_eq!((s.copied, s.end, s.pending), (2, SyncEnd::Done, 0));
         assert_eq!(fs::read(m.local(&base).unwrap()).unwrap(), fs::read(nas.root().join(&base)).unwrap());
         assert!(!part.exists());
 
@@ -834,10 +874,12 @@ mod tests {
         let cat3 = catalog(&nas, 3, 200);
         let s = m.sync(&cat3, nas.root(), &nas.pool, &|| false).unwrap();
         assert!(cat2.files.values().all(|f| m.local(&f.file).is_some()), "catalog 2's files stay");
-        assert_eq!((s.copied, s.skipped, s.evicted, s.pending), (7, 2, 2, 2));
-        for l in ["base/6-32-21", "layers/basemap/basemap"] {
-            assert!(m.local(cat3.content(l).unwrap()).is_none());
-        }
+        let waiting: Vec<&str> = cat3.files.iter().filter(|(_, f)| m.local(&f.file).is_none()).map(|(l, _)| l.as_str()).collect();
+        eprintln!("cat3: {s:?}, waiting {waiting:?}");
+        assert_eq!((s.copied, s.skipped, s.evicted, s.pending), (6, 3, 2, 3));
+        // The basemap, drawn on every view, is copied early; the base pack is what waits.
+        assert!(m.local(cat3.content("layers/basemap/basemap").unwrap()).is_some());
+        assert!(m.local(cat3.content("base/6-32-21").unwrap()).is_none());
         // Within the budget throughout.
         assert!(used(&home.path().join("mirror")) <= total1 + 400_000);
     }

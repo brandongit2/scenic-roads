@@ -9,6 +9,7 @@
 //!   pack [--cache dir] [T …]     pack(T) for z6 tiles T (default: every tile with ways): road and
 //!                                rail hi packs (z9–14) and hidata
 //!   lo [--cache dir] [Q …]       lo packs (z4–8 road and rail tiles) for z3 tiles Q (default: all)
+//!   osm-pass --planet <p> --date <d>  the OSM pass (pieces, sets, basemap, road values); resumable
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalog                      publish a catalog of the build manifest
 //!
@@ -65,12 +66,20 @@ fn main() -> Result<()> {
             let cache = PathBuf::from(opt(&args, "--cache").unwrap_or_else(|| "/tmp/scenic-cache".into()));
             lo(&mut out, &cache, &positional(&args))?
         }
+        "osm-pass" => {
+            let planet = PathBuf::from(opt(&args, "--planet").context("--planet <path>")?);
+            let date = opt(&args, "--date").context("--date YYYY-MM-DD")?;
+            let extract = PathBuf::from(opt(&args, "--extract").unwrap_or_else(|| "target/release/extract".into()));
+            let planetiler = PathBuf::from(opt(&args, "--planetiler").unwrap_or_else(|| "tools/planetiler.jar".into()));
+            pipeline::osmpass::check_tools(&extract, &planetiler)?;
+            pipeline::osmpass::run_pass(&mut out, &planet, &date, &scratch, &extract, &planetiler)?
+        }
         "verify" => {
             let n = out.verify(&SSH, NAS_ROOT)?;
             eprintln!("verified {n} uploads");
         }
         "catalog" => catalog(&mut out)?,
-        s => bail!("unknown step {s:?} (convert-legacy, pack, lo, verify, catalog)"),
+        s => bail!("unknown step {s:?} (convert-legacy, pack, lo, osm-pass, verify, catalog)"),
     }
     out.save()?;
     eprintln!("{step}: done in {:.0?}", t0.elapsed());

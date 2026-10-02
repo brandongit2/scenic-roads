@@ -1,6 +1,6 @@
 //! A read-only PMTiles v3 reader (spec: github.com/protomaps/PMTiles, spec/v3/spec.md), for the
 //! basemap: Planetiler's worldwide archive, served tile by tile (plan §3). It reads through any
-//! `RangeRead`: the mirror's copy mmapped, or the NAS file through the I/O pool.
+//! boxed `RangeRead`: the mirror's copy mmapped, or the NAS file through the I/O pool.
 //!
 //! An archive is a 127-byte header, a root directory, JSON metadata, leaf directories and tile
 //! data. Directories map Hilbert tile ids to tile data (an entry with a run length covers that
@@ -131,6 +131,7 @@ pub struct Header {
 }
 
 impl Header {
+    /// Parses the 127-byte header at the start of `b`.
     pub fn parse(b: &[u8]) -> Result<Self> {
         ensure!(b.len() >= HEADER_LEN && &b[..7] == MAGIC, "not a PMTiles archive");
         ensure!(b[7] == SPEC_VERSION, "PMTiles version {} isn't supported (only {SPEC_VERSION})", b[7]);
@@ -360,28 +361,28 @@ impl Lru {
 }
 
 /// An open archive.
-pub struct PmTiles<R> {
-    src: R,
+pub struct PmTiles {
+    src: Box<dyn RangeRead>,
     header: Header,
     root: Dir,
     leaves: Mutex<Lru>,
 }
 
-impl<R> std::fmt::Debug for PmTiles<R> {
+impl std::fmt::Debug for PmTiles {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PmTiles").field("header", &self.header).field("root_entries", &self.root.len()).finish_non_exhaustive()
     }
 }
 
-impl<R: RangeRead> PmTiles<R> {
+impl PmTiles {
     /// Reads the header and root directory (one range read for a well-formed archive).
-    pub fn open(src: R) -> Result<Self> {
+    pub fn open(src: Box<dyn RangeRead>) -> Result<Self> {
         Self::with_leaf_cache(src, LEAF_CACHE)
     }
 
     /// `open`, keeping up to `leaves` leaf directories.
-    pub fn with_leaf_cache(src: R, leaves: usize) -> Result<Self> {
-        let len = src.len();
+    pub fn with_leaf_cache(src: Box<dyn RangeRead>, leaves: usize) -> Result<Self> {
+        let len = src.len()?;
         ensure!(len >= HEADER_LEN as u64, "not a PMTiles archive ({len} bytes)");
         let first = src.read_at(0, len.min(FIRST_READ) as usize)?;
         let h = Header::parse(&first)?;
@@ -407,8 +408,8 @@ impl<R: RangeRead> PmTiles<R> {
         &self.header
     }
 
-    pub fn source(&self) -> &R {
-        &self.src
+    pub fn source(&self) -> &dyn RangeRead {
+        &*self.src
     }
 
     /// Tile z/x/y as stored (still compressed as `header().tile_compression` says), or None when
@@ -421,12 +422,12 @@ impl<R: RangeRead> PmTiles<R> {
     }
 
     /// Where tile z/x/y's bytes are (absolute offset and length), or None when the archive has no
-    /// such tile. Tiles with the same bytes share a location.
+    /// such tile (or there is no such tile). Tiles with the same bytes share a location.
     pub fn locate(&self, z: u8, x: u32, y: u32) -> Result<Option<(u64, u32)>> {
         if z < self.header.min_zoom || z > self.header.max_zoom {
             return Ok(None);
         }
-        let id = zxy_to_tile_id(z, x, y)?;
+        let Ok(id) = zxy_to_tile_id(z, x, y) else { return Ok(None) };
         let h = &self.header;
         let mut dir = self.root.clone();
         for _ in 0..MAX_DEPTH {
@@ -664,11 +665,12 @@ mod tests {
         (file, tiles.into_iter().map(|(_, z, x, y, b)| (z, x, y, b)).collect())
     }
 
-    fn check(archive: &PmTiles<Vec<u8>>, tiles: &Tiles) {
+    fn check(archive: &PmTiles, tiles: &Tiles) {
         for (z, x, y, body) in tiles {
             assert_eq!(archive.get(*z, *x, *y).unwrap().as_ref(), Some(body), "{z}/{x}/{y}");
         }
         assert_eq!(archive.get(6, 0, 0).unwrap(), None, "beyond max zoom");
+        assert_eq!(archive.get(3, 8, 0).unwrap(), None, "no such tile");
         let mut n = 0;
         let mut addressed = 0;
         archive
@@ -685,7 +687,7 @@ mod tests {
     #[test]
     fn synthetic_archives() {
         let (file, tiles) = build(None);
-        let a = PmTiles::open(file).unwrap();
+        let a = PmTiles::open(Box::new(file)).unwrap();
         let h = a.header().clone();
         assert_eq!((h.tile_type, h.tile_compression, h.internal_compression), (TileType::Mvt, Compression::None, Compression::Gzip));
         assert_eq!((h.min_zoom, h.max_zoom, h.clustered), (0, 5, true));
@@ -698,7 +700,7 @@ mod tests {
         // With leaf directories (and a cache smaller than their number).
         for size in [1, 7, 50] {
             let (file, tiles) = build(Some(size));
-            let a = PmTiles::with_leaf_cache(file, 3).unwrap();
+            let a = PmTiles::with_leaf_cache(Box::new(file), 3).unwrap();
             check(&a, &tiles);
         }
     }
@@ -708,9 +710,9 @@ mod tests {
         let (file, _) = build(Some(10));
         let mut bad = file.clone();
         bad[7] = 2;
-        assert!(PmTiles::open(bad).is_err());
-        assert!(PmTiles::open(file[..100].to_vec()).is_err());
-        assert!(PmTiles::open(file[..file.len() - 1].to_vec()).is_err(), "tile data runs past the end");
+        assert!(PmTiles::open(Box::new(bad)).is_err());
+        assert!(PmTiles::open(Box::new(file[..100].to_vec())).is_err());
+        assert!(PmTiles::open(Box::new(file[..file.len() - 1].to_vec())).is_err(), "tile data runs past the end");
         assert!(parse_directory(&[5, 1]).is_err());
         assert!(parse_directory(&[0xff; 11]).is_err());
         // An offset of 0 for the first entry has nothing to follow.
@@ -719,13 +721,13 @@ mod tests {
     }
 
     /// The Singapore basemap part, when this checkout has it (it isn't in git).
-    fn singapore() -> Option<PmTiles<crate::range::MmapFile>> {
+    fn singapore() -> Option<PmTiles> {
         let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/build/base-parts/singapore.pmtiles");
         if !p.exists() {
             eprintln!("skipping: {} isn't here", p.display());
             return None;
         }
-        Some(PmTiles::open(crate::range::MmapFile::open(&p).unwrap()).unwrap())
+        Some(PmTiles::open(Box::new(crate::range::MmapFile::open(&p).unwrap())).unwrap())
     }
 
     #[test]

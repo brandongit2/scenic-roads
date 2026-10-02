@@ -346,7 +346,8 @@ mod tests {
         fs::write(&path, "[FISHANDCHIPS:PERSONAL]\n# soft=no\n").unwrap();
         assert!(ensure_nsmb_conf_in(home.path(), "fishandchips", "personal").unwrap());
         assert_eq!(fs::read_to_string(&path).unwrap(), "[FISHANDCHIPS:PERSONAL]\nsoft=yes\n# soft=no\n");
-        assert!(!path.with_extension("conf.tmp").exists());
+        let left: Vec<_> = fs::read_dir(path.parent().unwrap()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, ["nsmb.conf"], "no temporary files left behind");
 
         // The file's mode is kept, and a symlinked file is edited where it lives.
         use std::os::unix::fs::PermissionsExt;

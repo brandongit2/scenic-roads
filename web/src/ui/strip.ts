@@ -9,7 +9,7 @@ import type { Map as MLMap } from 'maplibre-gl';
 import { CLASS_LABELS, RAIL0, RAIL_GROUPS, ST_BRIDGE, ST_LINK, ST_TUNNEL, ST_UNPAVED } from '../config';
 import type { FeatureSummary } from '../overlays';
 import { legibleCss } from '../linecolour';
-import { withEnglish } from '../english';
+import { displayName } from '../names';
 import { RAIL_COMPONENTS, fmtTrains, railComponents, railScore, type RailSample } from '../rail';
 import type { HoverInfo } from '../roads/layer';
 import type { WayInfo } from '../api';
@@ -223,7 +223,7 @@ export class Strip {
     if (info === 'loading') this.road.append(h('span', { class: 'spin' }));
     else if (info) {
       if (info.ref) this.road.append(h('span', { class: 'ref' }, info.ref));
-      this.road.append(cap(info.name && withEnglish(info.name, hov.lngLat, info.name_en)) || (info.ref ? '' : 'Unnamed road'));
+      this.road.append(cap(displayName(info.main, info.name, info.sub)) || (info.ref ? '' : 'Unnamed road'));
     }
     this.road.title = this.road.textContent ?? '';
     const c = hov.ch;
@@ -269,7 +269,7 @@ export class Strip {
         sw.style.background = legibleCss(info.colour) ?? info.colour;
         this.road.append(sw);
       }
-      this.road.append(cap(info.name && withEnglish(info.name, hov.lngLat, info.name_en)) || info.route || CLASS_LABELS[st & 15]);
+      this.road.append(cap(displayName(info.main, info.name, info.sub)) || info.route || CLASS_LABELS[st & 15]);
     }
     this.road.title = [info && info !== 'loading' ? info.route : '', this.road.textContent].filter(Boolean).join(' · ');
     const smp: RailSample = { elev: hov.elev, grade: hov.grade, ground: hov.ground ?? hov.elev, bridge: !!(st & ST_BRIDGE), tunnel: !!(st & ST_TUNNEL), ch: hov.ch, freq: hov.fq ?? -1 };

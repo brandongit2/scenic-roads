@@ -51,6 +51,7 @@ pub fn valid_tile(z: u8, x: u32, y: u32) -> bool {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Pod, Zeroable)]
 pub struct Entry {
+    /// `tile_key(z, x, y)`.
     pub key: u64,
     /// Absolute offset of the blob in the pack.
     pub offset: u64,
@@ -195,8 +196,11 @@ impl PackWriter {
 /// A pack's header, meta and index: everything needed to find a tile, kept locally per pack.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PackIndex {
+    /// The pack's format version.
     pub version: u32,
+    /// `FLAG_GZIP`, or 0.
     pub flags: u32,
+    /// The pack's meta JSON (layer, scope, root, zooms, encoding …).
     pub meta: Value,
     /// Where the blobs start (just after the meta JSON).
     pub data_start: u64,
@@ -272,9 +276,26 @@ impl PackIndex {
         Ok(ix)
     }
 
+    /// Parses the header and index of a whole pack in memory (an mmapped local file).
+    pub fn parse_bytes(pack: &[u8]) -> Result<Self> {
+        let h = Head::parse(pack)?;
+        let data_start = HEADER_LEN + h.meta_len;
+        let index = h
+            .count
+            .checked_mul(ENTRY_LEN as u64)
+            .and_then(|n| h.index_offset.checked_add(n))
+            .filter(|&end| end <= pack.len() as u64)
+            .map(|end| &pack[h.index_offset as usize..end as usize]);
+        let Some(index) = index else {
+            bail!("pack index ({} entries at {}) runs past the end ({} bytes); unfinished or cut short?", h.count, h.index_offset, pack.len());
+        };
+        ensure!(data_start <= pack.len(), "pack meta runs past the end");
+        Self::parse(&pack[..data_start], index)
+    }
+
     /// Reads the header and index from a pack: two range reads (one for a small pack).
     pub fn read_from(src: &dyn RangeRead) -> Result<Self> {
-        let file_len = src.len();
+        let file_len = src.len()?;
         ensure!(file_len >= HEADER_LEN as u64, "not a pack ({file_len} bytes)");
         let first = src.read_at(0, file_len.min(FIRST_READ) as usize)?;
         let h = Head::parse(&first)?;
@@ -462,9 +483,10 @@ mod tests {
         write(&q, true);
         assert_eq!(hash16_file(&p).unwrap(), hash16_file(&q).unwrap());
 
-        // Read from memory too (a NAS reader goes through the same code).
+        // Read from memory too (a NAS reader goes through the same code), and parsed in place.
         let bytes = std::fs::read(&p).unwrap();
         assert_eq!(PackIndex::read_from(&bytes).unwrap(), ix);
+        assert_eq!(PackIndex::parse_bytes(m.bytes()).unwrap(), ix);
     }
 
     #[test]
@@ -522,6 +544,8 @@ mod tests {
         // Cut short: the index runs past the end.
         let cut = good[..good.len() - 5].to_vec();
         assert!(PackIndex::read_from(&cut).is_err());
+        assert!(PackIndex::parse_bytes(&cut).is_err());
+        assert!(PackIndex::parse_bytes(&good[..20]).is_err());
 
         // Never finished: the header still says index offset 0.
         let q = dir.path().join("b.pack");

@@ -8,7 +8,7 @@
 // the ground does. Draped on the terrain like the water itself.
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
-import { partIds } from './basemap';
+import { BASEMAP_MAXZOOM } from './basemap';
 import type { WaterLook } from './state';
 import type { CoastMessage, CoastResponse } from './coast.worker';
 
@@ -19,12 +19,13 @@ let next = 0;
 let seq = 0;
 const waiting = new Map<number, { resolve: (b: ArrayBuffer) => void; reject: (e: Error) => void }>();
 
-/** The tiles' protocol and its workers (two: a tile is a burst of CPU, MapLibre asks for many). */
-function setupProtocol(archives: string[]) {
+/** The tiles' protocol and its workers (two: a tile is a burst of CPU, MapLibre asks for many);
+ * `tiles`: the basemap's tile URL. */
+function setupProtocol(tiles: string) {
   if (workers.length) return;
   for (let i = 0; i < 2; i++) {
     const w = new Worker(new URL('./coast.worker.ts', import.meta.url), { type: 'module' });
-    w.postMessage({ type: 'init', archives } satisfies CoastMessage);
+    w.postMessage({ type: 'init', tiles, maxzoom: BASEMAP_MAXZOOM } satisfies CoastMessage);
     w.onmessage = (ev: MessageEvent<CoastResponse>) => {
       const p = waiting.get(ev.data.id);
       if (!p) return;
@@ -54,11 +55,11 @@ function setupProtocol(archives: string[]) {
 const tilesUrl = (lakes: boolean) => `coast://{z}/{x}/{y}?l=${lakes ? 1 : 0}`;
 let lakesShown: boolean | null = null;
 
-/** The source and its layer, the first time the shading shows: over the water (every basemap
- * part's), under the rivers drawn as lines. */
-function setupShading(map: MLMap, w: WaterLook, archives: string[]) {
+/** The source and its layer, the first time the shading shows: over the water, under the rivers
+ * drawn as lines. */
+function setupShading(map: MLMap, w: WaterLook, tiles: string) {
   if (map.getSource('coast')) return;
-  setupProtocol(archives);
+  setupProtocol(tiles);
   lakesShown = w.lakes;
   map.addSource('coast', { type: 'raster-dem', tiles: [tilesUrl(w.lakes)], tileSize: 512, maxzoom: 14, encoding: 'mapbox' });
   map.addLayer({ id: 'coast-shade', type: 'color-relief', source: 'coast', minzoom: 4, paint: { 'color-relief-opacity': 1, resampling: 'linear' } as never }, 'waterway');
@@ -100,15 +101,16 @@ let rampKey = '';
 /**
  * The water's colour (lakes a shade lighter, rivers drawn as lines lighter again, as the basemap
  * had them) and the coastal shading: its layer, its ramp for the view centre's scale (redone when
- * that changes by 5 % or more), sea only or every shore.
+ * that changes by 5 % or more), sea only or every shore. `tiles`: the basemap's tile URL, whose
+ * water the shading is measured from.
  */
-export function applyWater(map: MLMap, w: WaterLook, archives: () => string[], waterShown: boolean) {
+export function applyWater(map: MLMap, w: WaterLook, tiles: () => string, waterShown: boolean) {
   const c = rgb(w.colour);
   const lake = hexOf([c[0] + 3, c[1] + 4, c[2] + 5]), river = hexOf([c[0] + 5, c[1] + 10, c[2] + 13]);
-  for (const id of partIds('water')) if (map.getLayer(id)) map.setPaintProperty(id, 'fill-color', ['match', ['get', 'class'], 'ocean', w.colour, lake]);
-  for (const id of partIds('waterway')) if (map.getLayer(id)) map.setPaintProperty(id, 'line-color', river);
+  if (map.getLayer('water')) map.setPaintProperty('water', 'fill-color', ['match', ['get', 'class'], 'ocean', w.colour, lake]);
+  if (map.getLayer('waterway')) map.setPaintProperty('waterway', 'line-color', river);
   const on = w.shade && waterShown;
-  if (on) setupShading(map, w, archives());
+  if (on) setupShading(map, w, tiles());
   if (!map.getLayer('coast-shade')) return;
   map.setLayoutProperty('coast-shade', 'visibility', on ? 'visible' : 'none');
   if (!on) return;

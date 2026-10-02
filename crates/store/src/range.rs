@@ -12,12 +12,8 @@ use std::sync::Arc;
 
 /// Random access to an immutable file's bytes.
 pub trait RangeRead: Send + Sync {
-    /// The length in bytes.
-    fn len(&self) -> u64;
-
-    fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
+    /// The length in bytes: an error when it can't be learnt (a NAS file whose share is away).
+    fn len(&self) -> Result<u64, IoError>;
 
     /// Exactly `len` bytes at `off`; an error if that runs past the end.
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError>;
@@ -96,8 +92,8 @@ fn ensure_local(f: &File) -> Result<()> {
 }
 
 impl RangeRead for MmapFile {
-    fn len(&self) -> u64 {
-        self.map.len() as u64
+    fn len(&self) -> Result<u64, IoError> {
+        Ok(self.map.len() as u64)
     }
 
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
@@ -139,8 +135,8 @@ impl std::fmt::Debug for PooledFile {
 }
 
 impl RangeRead for PooledFile {
-    fn len(&self) -> u64 {
-        self.len
+    fn len(&self) -> Result<u64, IoError> {
+        Ok(self.len)
     }
 
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
@@ -151,8 +147,8 @@ impl RangeRead for PooledFile {
 
 /// Bytes in memory (tests, small files read whole).
 impl RangeRead for Vec<u8> {
-    fn len(&self) -> u64 {
-        self.as_slice().len() as u64
+    fn len(&self) -> Result<u64, IoError> {
+        Ok(self.as_slice().len() as u64)
     }
 
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
@@ -167,7 +163,7 @@ impl Mapped for Vec<u8> {
 }
 
 impl<T: RangeRead + ?Sized> RangeRead for &T {
-    fn len(&self) -> u64 {
+    fn len(&self) -> Result<u64, IoError> {
         (**self).len()
     }
 
@@ -177,7 +173,7 @@ impl<T: RangeRead + ?Sized> RangeRead for &T {
 }
 
 impl<T: RangeRead + ?Sized> RangeRead for Arc<T> {
-    fn len(&self) -> u64 {
+    fn len(&self) -> Result<u64, IoError> {
         (**self).len()
     }
 
@@ -187,7 +183,7 @@ impl<T: RangeRead + ?Sized> RangeRead for Arc<T> {
 }
 
 impl<T: RangeRead + ?Sized> RangeRead for Box<T> {
-    fn len(&self) -> u64 {
+    fn len(&self) -> Result<u64, IoError> {
         (**self).len()
     }
 
@@ -220,7 +216,7 @@ mod tests {
     use std::time::Duration;
 
     fn check(r: &dyn RangeRead) {
-        assert_eq!(r.len(), 10);
+        assert_eq!(r.len().unwrap(), 10);
         assert_eq!(r.read_at(0, 3).unwrap(), b"012");
         assert_eq!(r.read_at(7, 3).unwrap(), b"789");
         assert_eq!(r.read_at(10, 0).unwrap(), b"");
@@ -254,7 +250,7 @@ mod tests {
         let p = dir.path().join("empty");
         std::fs::write(&p, b"").unwrap();
         let m = MmapFile::open(&p).unwrap();
-        assert!(m.is_empty());
+        assert_eq!(m.len().unwrap(), 0);
         assert_eq!(m.read_at(0, 0).unwrap(), b"");
         assert!(MmapFile::open(&dir.path().join("missing")).is_err());
     }
