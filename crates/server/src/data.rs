@@ -20,31 +20,67 @@ pub const NAS_HOST: &str = store::nas::HOST;
 pub const NAS_SHARE: &str = store::nas::SHARE;
 pub const PROJECT: &str = store::nas::PROJECT;
 
-/// A small bounded cache (least recently inserted out first).
+/// A bounded cache (least recently inserted out first), by entries and by bytes: entries read
+/// from the NAS weigh their size in memory, mapped local files nothing (the OS pages them).
 struct Bounded<V> {
-    map: HashMap<String, V>,
+    map: HashMap<String, (V, u64)>,
     order: std::collections::VecDeque<String>,
     cap: usize,
+    bytes: u64,
+    cap_bytes: u64,
 }
 
 impl<V: Clone> Bounded<V> {
     fn new(cap: usize) -> Self {
-        Bounded { map: HashMap::new(), order: Default::default(), cap }
+        Self::with_bytes(cap, u64::MAX)
+    }
+    fn with_bytes(cap: usize, cap_bytes: u64) -> Self {
+        Bounded { map: HashMap::new(), order: Default::default(), cap, bytes: 0, cap_bytes }
     }
     fn get(&self, k: &str) -> Option<V> {
-        self.map.get(k).cloned()
+        self.map.get(k).map(|(v, _)| v.clone())
     }
     fn put(&mut self, k: String, v: V) {
-        if self.map.insert(k.clone(), v).is_none() {
-            self.order.push_back(k);
-            while self.order.len() > self.cap {
-                if let Some(old) = self.order.pop_front() {
-                    self.map.remove(&old);
+        self.put_weighed(k, v, 0)
+    }
+    fn put_weighed(&mut self, k: String, v: V, weight: u64) {
+        if let Some((_, w)) = self.map.insert(k.clone(), (v, weight)) {
+            self.bytes = self.bytes - w + weight;
+            return;
+        }
+        self.bytes += weight;
+        self.order.push_back(k);
+        while self.order.len() > self.cap || (self.bytes > self.cap_bytes && self.order.len() > 1) {
+            if let Some(old) = self.order.pop_front() {
+                if let Some((_, w)) = self.map.remove(&old) {
+                    self.bytes -= w;
                 }
             }
         }
     }
+    /// Drops the entries `drop` picks.
+    fn retain(&mut self, mut keep: impl FnMut(&str, &V) -> bool) {
+        let gone: Vec<String> = self.map.iter().filter(|(k, (v, _))| !keep(k, v)).map(|(k, _)| k.clone()).collect();
+        for k in gone {
+            if let Some((_, w)) = self.map.remove(&k) {
+                self.bytes -= w;
+            }
+            self.order.retain(|x| x != &k);
+        }
+    }
 }
+
+/// Whether the NAS answers on the SMB port (TCP 445), within two seconds.
+fn smb_reachable() -> bool {
+    use std::net::ToSocketAddrs;
+    let Ok(addrs) = (format!("{NAS_HOST}.local"), 445).to_socket_addrs() else { return false };
+    addrs.into_iter().any(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_secs(2)).is_ok())
+}
+
+/// Memory budgets for what's read from the NAS (a Mac whose mirror isn't complete).
+const BASES_BYTES: u64 = 3 << 30;
+const HIDATA_BYTES: u64 = 1 << 30;
+const SECTS_BYTES: u64 = 1 << 30;
 
 pub struct Data {
     /// ~/Library/Application Support/scenic
@@ -65,6 +101,10 @@ pub struct Data {
     globals: Mutex<Bounded<Arc<Vec<u8>>>>,
     /// Set when the catalog changes, so caches built from the old one are dropped.
     pub generation: std::sync::atomic::AtomicU64,
+    /// Set when the mirror has copied files, so archives opened from the NAS are opened again.
+    pub mirror_gen: std::sync::atomic::AtomicU64,
+    /// The last attempt to mount the share.
+    last_mount: Mutex<Option<std::time::Instant>>,
 }
 
 /// A data development override: serve a local folder laid out like the NAS project folder.
@@ -86,14 +126,16 @@ impl Data {
             mirror,
             cat: RwLock::new(Arc::new(Catalog::default())),
             maps: Mutex::new(Bounded::new(4096)),
-            remotes: Mutex::new(Bounded::new(1024)),
+            remotes: Mutex::new(Bounded::new(128)),
             indexes: Mutex::new(Bounded::new(8192)),
-            sects: Mutex::new(Bounded::new(512)),
-            bases: Mutex::new(Bounded::new(256)),
-            his: Mutex::new(Bounded::new(512)),
+            sects: Mutex::new(Bounded::with_bytes(512, SECTS_BYTES)),
+            bases: Mutex::new(Bounded::with_bytes(256, BASES_BYTES)),
+            his: Mutex::new(Bounded::with_bytes(512, HIDATA_BYTES)),
             roadunits: Mutex::new(None),
             globals: Mutex::new(Bounded::new(128)),
             generation: Default::default(),
+            mirror_gen: Default::default(),
+            last_mount: Mutex::new(None),
         });
         match o.nas_root {
             Some(root) => d.set_nas(Some(root)),
@@ -139,11 +181,22 @@ impl Data {
         *cur = root;
     }
 
-    /// Find the share (mounting it if it's missing).
+    /// Find the share (mounting it if it's missing: only when the NAS answers on the SMB port, so
+    /// away from home nothing tries, and at most every five minutes).
     pub fn find_nas(&self) {
         let found = store::nas::find_mount(NAS_HOST, NAS_SHARE).map(|m| m.point.join(PROJECT));
         if found.is_some() {
             self.set_nas(found);
+            return;
+        }
+        {
+            let mut last = self.last_mount.lock().unwrap();
+            if last.is_some_and(|t| t.elapsed() < Duration::from_secs(300)) {
+                return;
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        if !smb_reachable() {
             return;
         }
         if let Err(e) = store::nas::mount(SMB_URL, Duration::from_secs(20)) {
@@ -218,7 +271,8 @@ impl Data {
             return Ok(Some(s));
         }
         let s = Arc::new(SectView::open(self.src(&content)?).with_context(|| format!("open {content}"))?);
-        self.sects.lock().unwrap().put(content, s.clone());
+        let w = s.remote_bytes();
+        self.sects.lock().unwrap().put_weighed(content, s.clone(), w);
         Ok(Some(s))
     }
 
@@ -232,8 +286,10 @@ impl Data {
         if let Some(v) = self.bases.lock().unwrap().get(&key) {
             return Ok(Some(v));
         }
-        let v = Arc::new(BaseView::new(SectView::open(self.src(&bc)?)?, SectView::open(self.src(&rc)?)?)?);
-        self.bases.lock().unwrap().put(key, v.clone());
+        let (bs, rs) = (SectView::open(self.src(&bc)?)?, SectView::open(self.src(&rc)?)?);
+        let w = bs.remote_bytes() + rs.remote_bytes();
+        let v = Arc::new(BaseView::new(bs, rs)?);
+        self.bases.lock().unwrap().put_weighed(key, v.clone(), w);
         Ok(Some(v))
     }
 
@@ -245,8 +301,10 @@ impl Data {
         if let Some(v) = self.his.lock().unwrap().get(&content) {
             return Ok(Some(v));
         }
-        let v = Arc::new(HiView::new(SectView::open(self.src(&content)?)?)?);
-        self.his.lock().unwrap().put(content, v.clone());
+        let sv = SectView::open(self.src(&content)?)?;
+        let w = sv.remote_bytes();
+        let v = Arc::new(HiView::new(sv)?);
+        self.his.lock().unwrap().put_weighed(content, v.clone(), w);
         Ok(Some(v))
     }
 
@@ -350,17 +408,36 @@ impl Data {
         cat.basemap.iter().filter_map(|l| self.content(l)).map(|c| Ok((c.clone(), self.src(&c)?))).collect()
     }
 
+    /// Drops what was opened from the NAS and is now on this Mac, so the local copy serves it
+    /// (offline too). Views read from the NAS are dropped whole; they're rebuilt on next use.
+    pub fn forget_remote(&self) {
+        let local = |c: &str| self.mirror.as_ref().is_some_and(|m| m.local(c).is_some());
+        self.remotes.lock().unwrap().retain(|c, _| !local(c));
+        self.sects.lock().unwrap().retain(|_, v| !v.is_remote());
+        self.bases.lock().unwrap().retain(|_, v| !v.is_remote());
+        self.his.lock().unwrap().retain(|_, v| !v.is_remote());
+        self.mirror_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Start the background work: the NAS mount, new catalogs, the mirror.
     pub fn spawn_background(self: &Arc<Self>) {
         let d = self.clone();
         std::thread::Builder::new()
             .name("nas".into())
-            .spawn(move || loop {
-                if d.nas_root().is_none() || !d.online() {
-                    d.find_nas();
+            .spawn(move || {
+                let mut last = std::time::Instant::now();
+                loop {
+                    // While the map is in use: every 30 s. Idle: every 10 minutes, so the NAS rests.
+                    let every = if crate::updater::in_use(600) { 30 } else { 600 };
+                    if last.elapsed() >= Duration::from_secs(every) {
+                        if d.nas_root().is_none() || !d.online() {
+                            d.find_nas();
+                        }
+                        d.refresh_catalog();
+                        last = std::time::Instant::now();
+                    }
+                    std::thread::sleep(Duration::from_secs(5));
                 }
-                d.refresh_catalog();
-                std::thread::sleep(Duration::from_secs(30));
             })
             .ok();
         if let Some(m) = self.mirror.clone() {
@@ -376,6 +453,7 @@ impl Data {
                                 Ok(s) => {
                                     if s.copied > 0 {
                                         eprintln!("mirror: {s:?}");
+                                        d.forget_remote();
                                     }
                                 }
                                 Err(e) => eprintln!("mirror: {e:#}"),

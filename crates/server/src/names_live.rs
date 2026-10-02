@@ -146,30 +146,29 @@ impl NamesState {
         self.names.read().unwrap().as_ref().and_then(|n| n.pending())
     }
 
+    /// Reads new and changed translation files into a copy of the tables (they share their
+    /// unchanged parts), then swaps it in: requests never wait for the files.
     fn reload(&self) {
         let t = std::time::Instant::now();
-        let mut g = self.names.write().unwrap();
-        let res = match g.as_mut() {
-            Some(n) => n.refresh(),
-            None => names::display::Names::load(&self.dir).map(|n| {
-                *g = Some(n);
-                true
-            }),
+        let cur = self.names.read().unwrap().clone();
+        let res = match cur {
+            Some(mut n) => n.refresh().map(|changed| (n, changed)),
+            None => names::display::Names::load(&self.dir).map(|n| (n, true)),
         };
         match res {
-            Ok(changed) => {
-                if let Some(n) = g.as_mut() {
-                    for w in n.take_warnings() {
-                        eprintln!("translations: {w}");
-                    }
-                    if changed {
-                        eprintln!("translations: {} lines in {} areas ({:.1?})", n.entries(), n.areas().count(), t.elapsed());
-                    }
+            Ok((mut n, changed)) => {
+                for w in n.take_warnings() {
+                    eprintln!("translations: {w}");
                 }
+                if changed {
+                    eprintln!("translations: {} lines in {} areas ({:.1?})", n.entries(), n.areas().count(), t.elapsed());
+                }
+                *self.names.write().unwrap() = Some(n);
             }
             Err(e) => eprintln!("translations: {e:#}"),
         }
     }
+
 
     /// Copy new and changed files from the NAS folder (once they've stopped changing), and drop
     /// local files gone from it. True when anything changed.

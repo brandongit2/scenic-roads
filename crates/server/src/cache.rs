@@ -42,6 +42,11 @@ pub struct Packs {
 }
 
 impl Packs {
+    /// Drops what was prepared for files no longer in the catalog.
+    pub fn retain_contents(&self, keep: &std::collections::HashSet<String>) {
+        self.cells.lock().unwrap().retain(|(c, _), _| keep.contains(c));
+    }
+
     fn cell(&self, content: &str, names: u64) -> Cell {
         let mut cells = self.cells.lock().unwrap();
         // Older versions of the same file go.

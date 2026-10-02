@@ -63,8 +63,9 @@ pub fn unit_str(key: u64) -> String {
     format!("{}/{}/{}", key >> 58, (key >> 29) & ((1 << 29) - 1), key & ((1 << 29) - 1))
 }
 
-/// The `here` entry of way `id` in the tile of `at` or one next to it.
-pub fn find_here(s: &AppState, id: u64, at: [f64; 2]) -> Option<(Arc<HiView>, Here)> {
+/// The `here` entry of way `id` in the tile of `at` or one next to it; an error when it wasn't
+/// found and a tile couldn't be read (the NAS away), so that isn't taken for "no such way".
+pub fn find_here(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<(Arc<HiView>, Here)>> {
     let (tx, ty) = tile6(at[0], at[1]);
     let mut tiles = vec![(tx, ty)];
     for dx in -1i64..=1 {
@@ -74,28 +75,36 @@ pub fn find_here(s: &AppState, id: u64, at: [f64; 2]) -> Option<(Arc<HiView>, He
             }
         }
     }
+    let mut failed = None;
     for (x, y) in tiles {
-        if let Ok(Some(hv)) = s.data.hidata(&format!("6/{x}/{y}")) {
-            if let Some(h) = hv.find(id) {
-                let h = *h;
-                return Some((hv, h));
+        match s.data.hidata(&format!("6/{x}/{y}")) {
+            Ok(Some(hv)) => {
+                if let Some(h) = hv.find(id) {
+                    let h = *h;
+                    return Ok(Some((hv, h)));
+                }
             }
+            Ok(None) => {}
+            Err(e) => failed = Some(e),
         }
     }
-    None
+    match failed {
+        Some(e) => Err(e),
+        None => Ok(None),
+    }
 }
 
 /// A way by OSM id and a point near it. The "ways here" entry must name a way of that id in its
 /// owner's base pack (a mismatch would mean packs of different catalogs).
-pub fn find_way(s: &AppState, id: u64, at: [f64; 2]) -> Option<Found> {
-    let (_, h) = find_here(s, id, at)?;
-    let base = s.data.base(&unit_str(h.owner)).ok()??;
-    let w = base.ways().get(h.index as usize)?;
+pub fn find_way(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<Found>> {
+    let Some((_, h)) = find_here(s, id, at)? else { return Ok(None) };
+    let Some(base) = s.data.base(&unit_str(h.owner))? else { return Ok(None) };
+    let Some(w) = base.ways().get(h.index as usize) else { return Ok(None) };
     if w.id as u64 != id {
         eprintln!("way {id}: the ways-here index points at way {} in {}", w.id, unit_str(h.owner));
-        return None;
+        return Ok(None);
     }
-    Some(Found { base, index: h.index })
+    Ok(Some(Found { base, index: h.index }))
 }
 
 #[derive(Serialize)]
@@ -195,8 +204,12 @@ fn not_found() -> Response {
 pub async fn way_h(State(s): State<S>, Path(id): Path<u64>, Query(at): Query<At>) -> Response {
     let Some(p) = at.point() else { return (StatusCode::BAD_REQUEST, "at=lon,lat").into_response() };
     let s2 = s.clone();
-    match tokio::task::spawn_blocking(move || find_way(&s2, id, p).map(|f| way_info(&s2, &f))).await {
-        Ok(Some(w)) => ([(header::CACHE_CONTROL, "no-cache")], Json(w)).into_response(),
+    match tokio::task::spawn_blocking(move || find_way(&s2, id, p).map(|f| f.map(|f| way_info(&s2, &f)))).await {
+        Ok(Ok(Some(w))) => ([(header::CACHE_CONTROL, "no-cache")], Json(w)).into_response(),
+        Ok(Err(e)) => {
+            eprintln!("way {id}: {e:#}");
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
         _ => not_found(),
     }
 }
@@ -246,7 +259,7 @@ pub async fn road_h(State(s): State<S>, Path(id): Path<u64>, Query(at): Query<At
     let Some(p) = at.point() else { return (StatusCode::BAD_REQUEST, "at=lon,lat").into_response() };
     let s2 = s.clone();
     let got = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Vec<u64>>> {
-        let Some(f) = find_way(&s2, id, p) else { return Ok(None) };
+        let Some(f) = find_way(&s2, id, p)? else { return Ok(None) };
         let (ways, _) = road_ways(&s2, &f, WINDOW_M)?;
         Ok(Some(ways.iter().map(|w| w.base.ways()[w.index as usize].id as u64).collect()))
     })
@@ -301,7 +314,7 @@ struct V<'a> {
 }
 
 fn build_profile(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<Profile>> {
-    let Some(f) = find_way(s, id, at) else { return Ok(None) };
+    let Some(f) = find_way(s, id, at)? else { return Ok(None) };
     let info = way_info(s, &f);
     let (ways, truncated) = road_ways(s, &f, WINDOW_M)?;
     // Concatenate vertices along the road (a way's first vertex repeats the previous way's last).
@@ -509,6 +522,8 @@ fn climbs(s: &AppState, q: &ClimbQuery, region: &Region) -> ClimbList {
             let geom: Vec<[f64; 2]> = hv.climbgeom()[c.geom_start as usize..(c.geom_start + c.geom_count) as usize].iter().map(|p| [p[0] as f64 * E7, p[1] as f64 * E7]).collect();
             let mid = [c.mid[0] as f64 * E7, c.mid[1] as f64 * E7];
             let (name, rf) = find_way(s, c.label, mid)
+                .ok()
+                .flatten()
                 .map(|f| (f.base.string(f.rec().name).to_string(), f.base.string(f.rec().ref_).to_string()))
                 .unwrap_or_default();
             let name_en = s.road_en(c.label);

@@ -25,8 +25,9 @@ version (plan §8, Format bumps).
 16  u64      index offset
 24  u64      index entry count
 32  u32      meta length n
-36  [u8; n]  meta JSON: {"layer", "scope": "root"|"lo"|"hi", "root": "z/x/y", "minzoom", "maxzoom",
+36  [u8; n]  meta JSON: {"layer", "scope": "root"|"lo"|"hi", "root": "z/x/y",
              "encoding" (e.g. "rt7", "terrarium-png", "slope4-png", "terrarium-webp", "mvt"), …}
+             (zoom ranges are the catalog's, per layer: a pack's header is written before its tiles)
 …            blobs (identical blobs stored once; several entries may share an offset)
 index        count × Entry (32 bytes), sorted by key, 8-byte aligned:
              u64 key, u64 offset, u32 len, u32 raw_len (0 if unknown), u64 xxh3
@@ -94,8 +95,10 @@ u8  dir          0: the way runs with the road; 1: against it
 ```
 
 One chaining (plan §6): at each node, way ends pair by mutual best continuation — same ref (any
-shared token of a multi-ref), else same name, else same class when both are unnamed; straightest
-first within 100°; a oneway only in its direction of travel. Pairs form paths and cycles; a path
+shared token of a multi-ref), else same name, else same class when both are unnamed, else (level
+0) an unnamed way continuing a named one of the same class within 35° (a bridge or a short link
+without its own name); straightest first within 100° (35° at level 0); a oneway only in its
+direction of travel. Pairs form paths and cycles; a path
 walks from its end whose way has the lower id; a cycle starts at its lowest way id, in that way's
 direction.
 

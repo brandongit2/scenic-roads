@@ -265,7 +265,8 @@ The server builds missing deeper tiles from their ancestors.
 
 - **One chaining** for whole roads, strokes, drives, hover, profiles and rides: at each node, way
   ends are paired by mutual best continuation (same ref, else same name, else same class when both
-  are unnamed; straightest first within 100°; oneways in their direction). The pairing at a node
+  are unnamed, else an unnamed way continuing a named one of its class within 35°; straightest
+  first within 100°; oneways in their direction). The pairing at a node
   depends only on the ways through it, so it's computed per piece for nodes inside the unit
   (exact: a piece holds every way through those nodes).
 - Pairings form paths and cycles. A union-find joins them; an ordered walk from an unpaired end (a
@@ -552,3 +553,22 @@ latitude cap; format versions read two at a time.
 - **Testing note:** a freshly built server started from the desktop app's preview waits on macOS's
   network-volume permission prompt; test servers run from the shell, and the launcher (granted
   once) runs the published ones.
+
+**Review of phases 1–2 (Opus, 2026-10-02), adopted:**
+- **GC roots:** the newest catalog always, every catalog of the last 14 days, and the build manifest;
+  an unreferenced file goes only when it's also older than 14 days, and a reused upload is touched.
+- **Catalogs list only what the map reads** (layers, base packs, hidata, global files, the latest
+  outlines), one basemap (the pass's worldwide archive once there is one), and fail on a missing
+  file. Build sources stay out, so mirrors never copy them.
+- **Server caches are keyed by content name**; what's read from the NAS has memory budgets (3 GB of
+  base packs, 1 GB each of hidata and other sections) and at most 128 open NAS files (the open-file
+  limit is raised at start); it's dropped once the mirror has the file, so offline use works.
+- **Writers:** one agent per Mac (a lock); build steps merge their manifest changes under a lock;
+  an orphaned job is stopped only when its leader's start time proves it ours.
+- **App manifests carry SHA-256s**, checked by the updater, which marks programs executable.
+- **"In use" means any request:** an idle server loads nothing (warming starts at the first
+  request), polls the NAS every 10 minutes instead of 30 s, and the agent rewrites its heartbeat
+  only when it changes or every five minutes.
+- **Versioned URLs are cached for good only when their version is current**, so a switch can't pin
+  new data under an old URL. NAS failures are 503s everywhere (way lookups and queries included)
+  and the client doesn't cache them.

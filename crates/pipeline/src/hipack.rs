@@ -259,7 +259,7 @@ fn climbs_in(t: Unit, packs: &[&BasePack], halo: &[Staged]) -> Result<(Vec<Climb
         info.push((rv.len, (w.flags & flag::TOLL != 0) as u8 | ((w.name == 0 && w.ref_ == 0) as u8) << 1));
         ways.push(nw);
     }
-    keyed.par_sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    keyed.par_sort_unstable_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
     // Strokes: runs of a road's ways that follow each other without a gap.
     let mut strokes: Vec<Vec<climbs::OWay>> = Vec::new();
     for (i, k) in keyed.iter().enumerate() {

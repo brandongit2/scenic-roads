@@ -53,6 +53,8 @@ pub struct AppState {
     agent: Mutex<Option<(std::time::Instant, serde_json::Value)>>,
     /// The outlines of the latest OSM pass (the Regions panel).
     pub areas: regions::Areas,
+    /// The current version tokens of the app's URLs, per (catalog generation, translations version).
+    tokens: Mutex<Option<((u64, u64), Arc<std::collections::HashSet<String>>)>>,
 }
 
 pub type S = Arc<AppState>;
@@ -132,6 +134,25 @@ impl AppState {
         Some(d)
     }
 
+    /// The version tokens meta gives out now (what the app puts in `?v=`).
+    fn current_tokens(&self) -> Arc<std::collections::HashSet<String>> {
+        let key = (self.generation(), self.names.version_all());
+        if let Some((k, t)) = self.tokens.lock().unwrap().as_ref() {
+            if *k == key {
+                return t.clone();
+            }
+        }
+        let meta = meta_json(self);
+        let t: std::collections::HashSet<String> = meta
+            .get("versions")
+            .and_then(|v| v.as_object())
+            .map(|m| m.values().filter_map(|v| v.as_str().map(str::to_string).or_else(|| v.as_u64().map(|n| n.to_string()))).collect())
+            .unwrap_or_default();
+        let t = Arc::new(t);
+        *self.tokens.lock().unwrap() = Some((key, t.clone()));
+        t
+    }
+
     /// The build agent's heartbeat, as it wrote it (null when there's none or the NAS is away).
     fn agent_status(&self) -> serde_json::Value {
         let mut cur = self.agent.lock().unwrap();
@@ -163,8 +184,25 @@ fn arg(name: &str) -> Option<String> {
     a.iter().position(|x| x == name).and_then(|i| a.get(i + 1).cloned())
 }
 
+/// Raises the open-file limit (launchd starts us at 256): NAS handles, mapped files and
+/// connections all count.
+fn raise_open_files() {
+    // SAFETY: plain getrlimit/setrlimit on this process.
+    unsafe {
+        let mut l: libc::rlimit = std::mem::zeroed();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut l) == 0 {
+            let want = l.rlim_max.min(10_240);
+            if l.rlim_cur < want {
+                l.rlim_cur = want;
+                libc::setrlimit(libc::RLIMIT_NOFILE, &l);
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    raise_open_files();
     let web = PathBuf::from(arg("--web").unwrap_or_else(|| "web/dist".into()));
     let fonts = PathBuf::from(arg("--fonts").unwrap_or_else(|| "data/fonts".into()));
     let port: u16 = arg("--port").unwrap_or_else(|| "8080".into()).parse()?;
@@ -196,6 +234,7 @@ async fn main() -> Result<()> {
         rail_freq: Mutex::new(None),
         agent: Mutex::new(None),
         areas: regions::Areas::default(),
+        tokens: Mutex::new(None),
     });
 
     tokio::spawn(warm(state.clone()));
@@ -243,16 +282,8 @@ async fn main() -> Result<()> {
                 .service(ServeDir::new(&web).fallback(ServeFile::new(web.join("index.html")))),
         )
         .layer(tower_http::compression::CompressionLayer::new().gzip(true))
-        // Versioned URLs (?v=…) never change: cached for good, whatever served them.
-        .layer(axum::middleware::from_fn(|req: axum::extract::Request, next: axum::middleware::Next| async move {
-            updater::touch();
-            let v = cache::versioned(req.uri().query());
-            let mut res = next.run(req).await;
-            if v && res.status().is_success() {
-                res.headers_mut().insert(header::CACHE_CONTROL, cache::cache_control(true, ""));
-            }
-            res
-        }))
+        // Versioned URLs (?v=…) never change: cached for good when the version is current.
+        .layer(axum::middleware::from_fn_with_state(state.clone(), versioned_caching))
         // Data from other host names of this machine (the app spreads its downloads over several).
         .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
@@ -307,6 +338,10 @@ fn layer_logical(cat: &store::catalog::Catalog, name: &str) -> Option<String> {
 /// rail frequencies, roads' English names and every layer file (with names attached, gzipped).
 /// Again whenever the catalog or the translations change.
 async fn warm(s: S) {
+    // Nothing until the map is first used: an idle server loads nothing (plan §1).
+    while !updater::in_use(u64::MAX) {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
     let mut done = None;
     loop {
         let now = (s.generation(), s.names.version_all());
@@ -322,6 +357,8 @@ async fn warm(s: S) {
             .await
             .unwrap_or(false);
             let cat = s.data.catalog();
+            // Prepared layer files of earlier catalogs go.
+            s.packs.retain_contents(&cat.files.values().map(|f| f.file.clone()).collect());
             let mut layers: Vec<String> = cat
                 .files
                 .keys()
@@ -348,11 +385,34 @@ async fn warm(s: S) {
     }
 }
 
+/// A URL's version token (`v=` in its query).
+fn version_token(query: Option<&str>) -> Option<String> {
+    query?.split('&').find_map(|kv| kv.strip_prefix("v=")).map(|v| v.replace("%2D", "-"))
+}
+
+/// Records the request (for the updater and "in use"), and caches responses to versioned URLs
+/// for good, but only when their version is the current one: an answer fetched under an old
+/// version during a catalog or translations switch may hold the new data, and mustn't be pinned
+/// to the old URL for a year.
+async fn versioned_caching(State(s): State<S>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    updater::touch();
+    let v = version_token(req.uri().query());
+    let mut res = next.run(req).await;
+    if let Some(v) = v {
+        if res.status().is_success() {
+            let current = s.current_tokens().contains(&v);
+            res.headers_mut().insert(header::CACHE_CONTROL, cache::cache_control(current, "no-cache"));
+        }
+    }
+    res
+}
+
 /// What the app needs to start: the build's meta, each layer's version (for its URLs) and zooms,
 /// the NAS status.
 fn meta_json(s: &AppState) -> serde_json::Value {
     let cat = s.data.catalog();
-    let mut meta = cat.meta.clone();
+    // An object even before the first catalog (the app then shows an empty map, not an error).
+    let mut meta = if cat.meta.is_object() { cat.meta.clone() } else { serde_json::json!({}) };
     let mut versions = serde_json::Map::new();
     // Data served with display names changes with the translations too: their versions carry the
     // translations' version, so a browser's copy cached for good under the old URL isn't used.

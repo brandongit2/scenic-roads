@@ -1095,6 +1095,7 @@ dependencies = [
  "bytemuck",
  "bytes",
  "flate2",
+ "libc",
  "memmap2 0.9.11",
  "names",
  "pipeline",

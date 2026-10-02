@@ -65,12 +65,34 @@ struct Smp {
 }
 
 /// Tiles read for a query: the view's, plus those within `margin_km` of it.
-fn tiles_for(s: &AppState, region: &Region, margin_km: f64) -> Vec<Arc<HiView>> {
+/// The hidata of the z6 tiles in view plus a margin; an error when one can't be read (a query
+/// over part of the view would look complete).
+fn tiles_for(s: &AppState, region: &Region, margin_km: f64) -> anyhow::Result<Vec<Arc<HiView>>> {
     let lat = (region.bb[1].unsigned_abs().max(region.bb[3].unsigned_abs()) as f64 * E7).min(85.0);
     let dlat = (margin_km / 111.32 / E7) as i32;
     let dlon = (margin_km / 111.32 / lat.to_radians().cos().max(0.05) / E7) as i32;
     let bb = [region.bb[0].saturating_sub(dlon), region.bb[1].saturating_sub(dlat), region.bb[2].saturating_add(dlon), region.bb[3].saturating_add(dlat)];
-    tiles_in(bb).into_par_iter().filter_map(|(x, y)| s.data.hidata(&format!("6/{x}/{y}")).ok().flatten()).collect()
+    let got: Vec<anyhow::Result<Option<Arc<HiView>>>> = tiles_in(bb).into_par_iter().map(|(x, y)| s.data.hidata(&format!("6/{x}/{y}"))).collect();
+    let mut out = Vec::with_capacity(got.len());
+    for g in got {
+        if let Some(h) = g? {
+            out.push(h);
+        }
+    }
+    Ok(out)
+}
+
+/// A query's answer: 503 when the NAS couldn't be read, 400 for a bad request.
+fn answer<T: serde::Serialize>(r: Result<anyhow::Result<Option<T>>, tokio::task::JoinError>, what: &str) -> Response {
+    match r {
+        Ok(Ok(Some(o))) => Json(o).into_response(),
+        Ok(Ok(None)) => StatusCode::BAD_REQUEST.into_response(),
+        Ok(Err(e)) => {
+            eprintln!("{what}: {e:#}");
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 /// Every sample of the tiles' parts passing `keep(tile, part sample)`, in road and offset order,
@@ -182,13 +204,19 @@ pub struct Out {
 
 pub async fn drives(State(s): State<S>, Query(q): Query<Q>) -> Response {
     let s2 = s.clone();
-    match tokio::task::spawn_blocking(move || compute_drives(&s2, q)).await {
-        Ok(Some(o)) => Json(o).into_response(),
-        _ => StatusCode::NOT_FOUND.into_response(),
-    }
+    let r = tokio::task::spawn_blocking(move || {
+        let mut err = None;
+        let o = compute_drives(&s2, q, &mut err);
+        match err {
+            Some(e) => Err(e),
+            None => Ok(o),
+        }
+    })
+    .await;
+    answer(r, "drives")
 }
 
-fn compute_drives(st: &AppState, q: Q) -> Option<Out> {
+fn compute_drives(st: &AppState, q: Q, err: &mut Option<anyhow::Error>) -> Option<Out> {
     let region = Region::parse(&q.bbox, q.poly.as_deref())?;
     let wv: Vec<f32> = q.w.split(',').filter_map(|x| x.parse().ok()).collect();
     if wv.len() != NCOMP {
@@ -202,7 +230,13 @@ fn compute_drives(st: &AppState, q: Q) -> Option<Out> {
     let surface = q.surface.unwrap_or(3);
     let toll = q.toll.unwrap_or(3);
     let unnamed = q.unnamed.unwrap_or(0);
-    let tiles = tiles_for(st, &region, len as f64 / 2000.0);
+    let tiles = match tiles_for(st, &region, len as f64 / 2000.0) {
+        Ok(t) => t,
+        Err(e) => {
+            *err = Some(e);
+            return None;
+        }
+    };
     let keep = |hv: &HiView, p: &PSample, road_len: f32| {
         let h = &hv.here()[p.way as usize];
         let unp = (h.flags & roadcore::flag::UNPAVED != 0) as u8;
@@ -242,7 +276,7 @@ fn compute_drives(st: &AppState, q: Q) -> Option<Out> {
             let mid_id = hv_m.here()[pm.way as usize].id;
             let first_id = hv_f.here()[pf.way as usize].id;
             let mid_at = [pm.lon as f64 * E7, pm.lat as f64 * E7];
-            let f = find_way(st, mid_id, mid_at)?;
+            let f = find_way(st, mid_id, mid_at).ok().flatten()?;
             let rec = f.rec();
             let name = f.base.string(rec.name).to_string();
             let name_en = st.road_en(mid_id);
@@ -370,7 +404,7 @@ struct LineInfo {
 fn line_info(st: &AppState, tiles: &[Arc<HiView>], s: &Smp) -> Option<LineInfo> {
     let (hv, p, _) = sample(tiles, s);
     let id = hv.here()[p.way as usize].id;
-    let f = find_way(st, id, [p.lon as f64 * E7, p.lat as f64 * E7])?;
+    let f = find_way(st, id, [p.lon as f64 * E7, p.lat as f64 * E7]).ok().flatten()?;
     let r = f.rec();
     Some(LineInfo {
         ident: rail_ident(f.base.string(r.name), f.base.string(r.route)),
@@ -409,18 +443,30 @@ pub struct RidesOut {
 
 pub async fn rides(State(s): State<S>, Query(q): Query<RQ>) -> Response {
     let s2 = s.clone();
-    match tokio::task::spawn_blocking(move || compute_rides(&s2, q)).await {
-        Ok(Some(o)) => Json(o).into_response(),
-        _ => StatusCode::NOT_FOUND.into_response(),
-    }
+    let r = tokio::task::spawn_blocking(move || {
+        let mut err = None;
+        let o = compute_rides(&s2, q, &mut err);
+        match err {
+            Some(e) => Err(e),
+            None => Ok(o),
+        }
+    })
+    .await;
+    answer(r, "rides")
 }
 
-fn compute_rides(st: &AppState, q: RQ) -> Option<RidesOut> {
+fn compute_rides(st: &AppState, q: RQ, err: &mut Option<anyhow::Error>) -> Option<RidesOut> {
     let region = Region::parse(&q.bbox, q.poly.as_deref())?;
     let w = weights(&q)?;
     let len = q.len.unwrap_or(5.0).clamp(0.5, 100.0) * 1000.0;
     let groups = q.groups.unwrap_or(0xff);
-    let tiles = tiles_for(st, &region, len as f64 / 2000.0);
+    let tiles = match tiles_for(st, &region, len as f64 / 2000.0) {
+        Ok(t) => t,
+        Err(e) => {
+            *err = Some(e);
+            return None;
+        }
+    };
     let runs = runs(&tiles, true, &|_, _, _| true);
     let in_view = |s: &Smp| {
         let (_, p, _) = sample(&tiles, s);
@@ -513,17 +559,29 @@ pub struct LinesOut {
 
 pub async fn lines(State(s): State<S>, Query(q): Query<RQ>) -> Response {
     let s2 = s.clone();
-    match tokio::task::spawn_blocking(move || compute_lines(&s2, q)).await {
-        Ok(Some(o)) => Json(o).into_response(),
-        _ => StatusCode::NOT_FOUND.into_response(),
-    }
+    let r = tokio::task::spawn_blocking(move || {
+        let mut err = None;
+        let o = compute_lines(&s2, q, &mut err);
+        match err {
+            Some(e) => Err(e),
+            None => Ok(o),
+        }
+    })
+    .await;
+    answer(r, "lines")
 }
 
-fn compute_lines(st: &AppState, q: RQ) -> Option<LinesOut> {
+fn compute_lines(st: &AppState, q: RQ, err: &mut Option<anyhow::Error>) -> Option<LinesOut> {
     let region = Region::parse(&q.bbox, q.poly.as_deref())?;
     let w = weights(&q)?;
     let groups = q.groups.unwrap_or(0xff);
-    let tiles = tiles_for(st, &region, 0.0);
+    let tiles = match tiles_for(st, &region, 0.0) {
+        Ok(t) => t,
+        Err(e) => {
+            *err = Some(e);
+            return None;
+        }
+    };
     let runs = runs(&tiles, true, &|_, _, _| true);
     struct Acc {
         len: f32,

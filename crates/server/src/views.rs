@@ -95,6 +95,11 @@ impl RemoteFile {
                 let (f, _) = self.handle(true)?;
                 self.pool.read_at(&f, off, len)
             }
+            Err(e) => {
+                // A handle that hung (sleep, a reconnect) isn't used again: the next read reopens.
+                *self.file.lock().unwrap() = None;
+                Err(e)
+            }
             r => r,
         }
     }
@@ -190,6 +195,20 @@ impl SectView {
         self.table.contains_key(name)
     }
 
+    /// Read from the NAS (not a mapped local copy).
+    pub fn is_remote(&self) -> bool {
+        matches!(self.src, Src::Remote(_))
+    }
+
+    /// What it may hold in memory: its sections' sizes when read from the NAS, else nothing.
+    pub fn remote_bytes(&self) -> u64 {
+        if self.is_remote() {
+            self.table.values().map(|&(_, len)| len).sum()
+        } else {
+            0
+        }
+    }
+
     /// `len` bytes from `start` within a section (for sections too big to read whole).
     pub fn get_part(&self, name: &str, start: u64, len: usize) -> Result<Vec<u8>> {
         let &(off, slen) = self.table.get(name).ok_or_else(|| anyhow::anyhow!("no section {name}"))?;
@@ -275,6 +294,9 @@ impl BaseView {
         Ok(v)
     }
 
+    pub fn is_remote(&self) -> bool {
+        self.sect.is_remote()
+    }
     pub fn ways(&self) -> &[WayRec] {
         self.ways.cast()
     }
@@ -336,6 +358,7 @@ impl BaseView {
 /// One z6 tile's hidata.
 pub struct HiView {
     pub tile: String,
+    remote: bool,
     pub here: Blob,
     pub ends: Blob,
     pub parts: Blob,
@@ -349,6 +372,7 @@ impl HiView {
     pub fn new(s: SectView) -> Result<HiView> {
         Ok(HiView {
             tile: s.meta.get("tile").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            remote: s.is_remote(),
             here: s.get("here")?,
             ends: s.get("ends")?,
             parts: s.get("parts")?,
@@ -357,6 +381,9 @@ impl HiView {
             climbs: s.get("climbs")?,
             climbgeom: s.get("climbgeom")?,
         })
+    }
+    pub fn is_remote(&self) -> bool {
+        self.remote
     }
     pub fn here(&self) -> &[Here] {
         self.here.cast()

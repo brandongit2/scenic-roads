@@ -175,6 +175,9 @@ pub struct Agent {
     running: Option<Running>,
     sleep: SleepWatch,
     last_mount_try: Option<Instant>,
+    /// The heartbeat last written to the NAS (without its time) and when: written again only when it
+    /// changes or every five minutes, so an idle NAS can rest.
+    last_beat: Option<(Vec<u8>, Instant)>,
 }
 
 impl Agent {
@@ -190,7 +193,7 @@ impl Agent {
         }
         let mem = std::fs::read(o.home.join("state.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let app = app_version(&o.bin);
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, _lock: lock, o })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, _lock: lock, o })
     }
 
     fn record_path(&self) -> PathBuf {
@@ -358,8 +361,13 @@ impl Agent {
         }
         write_replace(&self.o.home.join("status.json"), &body).ok();
         if let Some(root) = &root {
-            if let Err(e) = write_replace(&root.join("state/status.json"), &body) {
-                eprintln!("agent: heartbeat: {e:#}");
+            let same = serde_json::to_vec(&Status { beat: 0, ..status.clone() })?;
+            let due = self.last_beat.as_ref().is_none_or(|(b, t)| *b != same || t.elapsed() >= Duration::from_secs(300));
+            if due {
+                match write_replace(&root.join("state/status.json"), &body) {
+                    Ok(()) => self.last_beat = Some((same, Instant::now())),
+                    Err(e) => eprintln!("agent: heartbeat: {e:#}"),
+                }
             }
         }
         Ok(ended)

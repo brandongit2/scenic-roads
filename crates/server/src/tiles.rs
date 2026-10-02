@@ -209,14 +209,16 @@ pub async fn base_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>
 /// The basemap archives (PMTiles) of the current catalog, opened.
 #[derive(Default)]
 pub struct Basemap {
-    open: Mutex<Option<(Vec<String>, Vec<(String, Arc<store::pmtiles::PmTiles>)>)>>,
+    /// The archives opened, for (their content names, the mirror's generation then).
+    open: Mutex<Option<((Vec<String>, u64), Vec<(String, Arc<store::pmtiles::PmTiles>)>)>>,
 }
 
 impl Basemap {
     /// Every archive opened, or the first failure (kept only when all open).
     fn archives(&self, data: &crate::data::Data) -> anyhow::Result<Vec<(String, Arc<store::pmtiles::PmTiles>)>> {
         let srcs = data.basemaps()?;
-        let names: Vec<String> = srcs.iter().map(|(c, _)| c.clone()).collect();
+        // Opened again once the mirror has copied files (an archive read from the NAS until then).
+        let names: (Vec<String>, u64) = (srcs.iter().map(|(c, _)| c.clone()).collect(), data.mirror_gen.load(std::sync::atomic::Ordering::Relaxed));
         if let Some((n, a)) = self.open.lock().unwrap().as_ref() {
             if *n == names {
                 return Ok(a.clone());

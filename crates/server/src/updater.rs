@@ -42,6 +42,12 @@ pub fn touch() {
     LAST_REQUEST.store(now(), Ordering::Relaxed);
 }
 
+/// Whether the map has had a request in the last `secs` seconds.
+pub fn in_use(secs: u64) -> bool {
+    let t = LAST_REQUEST.load(Ordering::Relaxed);
+    t != 0 && now().saturating_sub(t) < secs
+}
+
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+libc = "0.2"
 sha2 = "0.10"
 pipeline = { path = "../pipeline" }
 toml = "0.9"
