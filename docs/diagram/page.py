@@ -43,8 +43,7 @@ classes = [('base', 'Map context'), ('place', 'Places & heritage'), ('terr', 'El
            ('scen', 'Scenic metrics'), ('land', 'Land cover & trees'), ('bldg', 'Buildings'), ('osm', 'OpenStreetMap (shared)'), ('mix', 'Several classes')]
 shapes = [('src', 'source'), ('kept', 'kept between runs'), ('card', 'build step, over the files it writes'),
           ('pill', 'server route'), ('layer', 'map layer'), ('computed', 'made in the browser')]
-scopes = [('region', 'built per country, in regions/<id>/'), ('global', 'one worldwide pyramid, grown as regions need it'),
-          ('shared', 'built from all regions, in shared/')]
+scopes = [('region', 'base data, built per region'), ('global', 'one worldwide layer, stored by area')]
 formats = [('flat arrays', 'one value per road point, memory-mapped'), ('z11 grid', 'one raster per layer over grid.idx'),
            ('archive', 'one file: tile blobs + sorted index'), ('PMTiles', 'one file, read by byte range'),
            ('RT v6', 'columnar road tiles, 13 scenic channels a point'), ('Terrarium', 'height (or slope, cover…) as RGB'),
@@ -70,7 +69,7 @@ page = head + f'''<title>Scenic Roads Data Pipeline</title>
 <header>
 <div>
 <h1>Scenic Roads · data pipeline</h1>
-<p class="sub">Proposed: each region is a country; terrain, slope, trees and the basemap form one worldwide store; only the build Mac builds; your translations go in a NAS folder. Nothing here is built yet; “Today” shows the app as it is.</p>
+<p class="sub">Proposed: regions are only how data comes in; everything the map reads is one worldwide layer per kind, stored by area, so region size and borders don’t matter; only the build Mac builds; your translations go in a NAS folder. Nothing here is built yet; “Today” shows the app as it is.</p>
 </div>
 <div class="tabs"><label for="v-new">Proposed</label><label for="v-old">Today</label></div>
 </header>
@@ -80,7 +79,7 @@ page = head + f'''<title>Scenic Roads Data Pipeline</title>
 <h3>Your part</h3>
 <div class="you-grid">
 <div><code>scenic</code><span>view the map</span></div>
-<div><code>scenic add &lt;place&gt;</code><span>add a country: any place name works, it offers the country around it</span></div>
+<div><code>scenic add &lt;place&gt;</code><span>add a region: any place name works; it offers the region around it, or a bigger one</span></div>
 <div><code>translations/</code><span>drop finished translations in this NAS folder; <code>descriptions/</code> likewise</span></div>
 </div>
 <p>Now and then: <code>scenic status</code> · <code>scenic keep &lt;place&gt; [radius]</code> for trips away · <code>scenic remove &lt;place&gt;</code>. Everything else (building, refreshing, copying, backups) happens on its own.</p>
@@ -93,7 +92,7 @@ page = head + f'''<title>Scenic Roads Data Pipeline</title>
 <figure>
 <h3>How each layer is built</h3>
 <div class="scroll">{proposed.build(CHECK)}</div>
-<figcaption>Region steps compute over their whole extract and write only what they own; global layers grow pack by pack as regions need them. Translations and descriptions only rerun the cheap steps.</figcaption>
+<figcaption>Each region writes only the features it owns, split by area; layer steps read every region’s data within 100 km of their pack, so borders don’t show. Translations and descriptions only rerun the cheap steps.</figcaption>
 </figure>
 </div>
 <div class="view-old">

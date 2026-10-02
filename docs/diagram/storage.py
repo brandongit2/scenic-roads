@@ -24,9 +24,8 @@ def build(check=False):
     rows = [('translations/', 'your drop-ins (and descriptions/); builds write todo lists'),
             ('inputs/', 'region recipes, files fetched by hand, keys'),
             ('sources/', 'downloads as fetched: Geofabrik, raw AWS, Overture, canopy …'),
-            ('global/', 'terrain, slope, trees, grids, basemap: one pyramid each, in packs'),
-            ('regions/<id>/', 'each country’s roads, places, names and transit'),
-            ('shared/', 'labels, area overlays, zoomed-out landmarks'),
+            ('regions/<id>/', 'base data per region, split by area'),
+            ('layers/', 'everything the map reads: one worldwide pyramid per kind, in packs'),
             ('app/ · catalog/', 'the app your Macs run; what is current'),
             ('state/', 'requests from any Mac; build progress')]
     top, hh = 16, 47 + 16.5 * len(rows) + 6

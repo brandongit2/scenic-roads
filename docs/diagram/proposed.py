@@ -1,5 +1,5 @@
-"""The proposed pipeline (docs/plan.md v3): global layers in packs, regions per country from Geofabrik,
-shared labels and overlays, English baked in by cheap per-region steps."""
+"""The proposed pipeline (docs/plan.md v4): regions are only how data comes in (base data, per region);
+everything the map reads is one worldwide layer per kind, stored by area in packs."""
 from diag import COLS, Diagram
 
 GAP, PAD = 12, 10
@@ -11,10 +11,10 @@ def build(check=False):
     # ---- 0. OpenStreetMap: one Geofabrik extract per region -----------------------------------
     y0 = 60
     cy = y0 + 24
-    s_osm = d.src('osm', cy, 'OpenStreetMap', ['Geofabrik: an extract per', 'country, refreshed every', '~3 months'],
+    s_osm = d.src('osm', cy, 'OpenStreetMap', ['Geofabrik: an extract per', 'region, refreshed every', '~3 months'],
                   kept=['sources/geofabrik/'])
-    n_fetch = d.card('osm', 'd1', cy, 'fetch', 'Python', ['the country’s extract, clipped', 'where Geofabrik bundles', 'places (Singapore)'],
-                     [(['osm.pbf'], 'PBF · 11 regions ≈ 21 GB')], scope='region')
+    n_fetch = d.card('osm', 'd1', cy, 'fetch', 'Python', ['the region’s extract, clipped', 'where Geofabrik bundles', 'places (Singapore)'],
+                     [(['osm.pbf'], 'PBF · 30 regions ≈ 21 GB')], scope='region')
     d.arrow('osm', (s_osm.r, n_fetch.y + 18), (n_fetch.l, n_fetch.y + 18))
     d.arrow('osm', (n_fetch.r, n_fetch.y + 18), (n_fetch.r + 34, n_fetch.y + 18), label='read by the rows below as “OSM extract”',
             at=(n_fetch.r + 42, n_fetch.y + 22))
@@ -26,9 +26,9 @@ def build(check=False):
     cy = y0 + 24
     s_pl = d.src('osm', cy, 'OSM planet', ['once a year; it only passes', 'through the build Mac'])
     n_base = d.card('base', 'd1', cy, 'basemap', 'osmium · Java', ['planet filtered to water,', 'borders, parks, places;', 'Planetiler, the whole world'],
-                    [(['global/basemap/'], 'packs · MVT z0–14')], scope='global')
-    n_lab = d.card('base', 'd1', n_base.b + 22, 'labels.py', 'Python', ['every region’s labels, and', 'world places outside them'],
-                   [(['shared/labels/'], 'packs · MVT z0–12')], scope='shared')
+                    [(['layers/basemap/'], 'packs · MVT z0–14')], scope='global')
+    n_lab = d.card('base', 'd1', n_base.b + 22, 'labels.py', 'Python', ['ranked over every region’s', 'labels and world places'],
+                   [(['layers/labels/'], 'packs · MVT z0–12')], scope='global')
     p_base = d.pill('base', n_base.y + 30, ['/tiles/base'], note='the pack for the tile')
     b_base = d.layer('base', 0, 'Basemap', ['water · borders · parks · rivers'], cy=p_base.my)
     b_coast = d.layer('base', b_base.b + 8, 'Coastal shading', ['distance to shore, from the', 'basemap’s water, in a worker'], computed=True)
@@ -77,11 +77,11 @@ def build(check=False):
                    ['registers apply by location;', 'Wikidata facts, descriptions;', 'peaks’ prominence (Rust)'],
                    [(['heritage.json · peaks.json', 'details-*.jsonl'], 'GeoJSON · JSONL'), (['grid.areas.u8'], 'designated areas')],
                    minh=s_wd.b - cy, scope='region')
-    n_lay = d.card('place', 'd2', cy, 'landmarks', 'Python', ['fame from pageviews, rarity', 'nearby; a file per kind'],
-                   [(['landmarks/<kind>.json'], 'GeoJSON · English baked in')], scope='region')
-    n_shr = d.card('place', 'd3', cy, 'overlays · top', 'Python', ['area outlines tiled; the', 'best known for zoomed out'],
-                   [(['shared/overlays/'], 'packs · MVT'), (['shared/top/<kind>.json'], None)], scope='shared')
-    p_lay = d.pill('place', n_lay.y + 30, ['/api/landmarks/…', '/api/detail/<gid>'], note='top file below z7')
+    n_lay = d.card('place', 'd2', cy, 'landmarks · stops', 'Python', ['per area and kind; fame', 'ranked over all regions'],
+                   [(['layers/landmarks/'], 'packs · English baked in')], scope='global')
+    n_shr = d.card('place', 'd3', cy, 'overlays', 'Python', ['heritage areas, Indigenous', 'lands, World Heritage outlines'],
+                   [(['layers/overlays/'], 'packs · MVT')], scope='global')
+    p_lay = d.pill('place', n_lay.y + 30, ['/api/landmarks/…', '/api/detail/<gid>'], note='the pack for the area')
     b_lm = d.layer('place', 0, 'Landmarks', ['dots on the GPU; names tiled', 'in a worker; popups'], cy=p_lay.my)
     p_ov = d.pill('place', b_lm.b + 30, ['/tiles/overlays'])
     b_ov = d.layer('place', 0, 'Area overlays', ['heritage areas, Indigenous', 'lands, World Heritage outlines'], cy=p_ov.my)
@@ -102,9 +102,9 @@ def build(check=False):
     s_aws = d.src('terr', cy, 'AWS Terrain Tiles', ['Terrarium PNG · ~27 m at z12', 'kept raw, never edited'],
                   kept=['sources/aws/ (raw packs)'])
     n_terr = d.card('terr', 'd1', cy, 'terrain', 'Rust', ['z0–9 world; z10–12 inside', 'outlines (z11, z10 nearer', 'the poles); repaired once'],
-                    [(['global/terrain/'], 'packs · Terrarium PNG')], scope='global')
+                    [(['layers/terrain/'], 'packs · Terrarium PNG')], scope='global')
     n_slope = d.card('terr', 'd2', cy + 34, 'slope', 'Rust', ['Horn at the finest level;', 'each pixel 4 quarter means'],
-                     [(['global/slope/'], 'packs · PNG')], scope='global')
+                     [(['layers/slope/'], 'packs · PNG')], scope='global')
     p_t = d.pill('terr', cy + 12, ['/tiles/terrain'], note='the pack for the tile')
     b_terr = d.layer('terr', 0, '3D terrain · hill-shading', ['elevation tint'], cy=p_t.my)
     b_cont = d.layer('terr', b_terr.b + 8, 'Contour lines', ['traced from terrain tiles'], computed=True)
@@ -124,23 +124,23 @@ def build(check=False):
     # ---- 5. roads (per road point) -------------------------------------------------------------
     y0 = y1 + GAP
     cy = y0 + 24
-    n_ext = d.card('net', 'd1', cy, 'extract', 'Rust', ['its extract, plus neighbours’', 'roads within 100 km; writes', 'the ways it owns'],
-                   [(['ways.bin · verts.bin'], 'flat arrays · gids'), (['pois.json'], None)], scope='region')
+    n_ext = d.card('net', 'd1', cy, 'extract', 'Rust', ['writes the ways it owns,', 'complete, by area (z6)'],
+                   [(['ways · verts shards'], 'flat arrays · gids'), (['pois shards'], None)], scope='region')
     n_samp = d.card('terr', 'd2', cy, 'sample.py · tile elev', 'Py · Rust', ['DEMs chosen by location,', 'then clean-up and grade'],
                     [(['elev.f32 · src.u8', 'final.i16 · grade.u8'], 'flat arrays')], kept='its own DEM cache', scope='region')
     n_scen = d.card('scen', 'd3', cy, 'scenic', 'Rust', ['samples every 100 m: horizons', 'to 300 m past trees & buildings,', 'views to 15 km, designations'],
                     [(['scenic.u8'], '13 per road point'), (['samples.* · near.i8', 'vterrain.i16'], 'query & build files')],
                     kept='its own scenic cache', scope='region')
-    n_tile = d.card('net', 'd4', cy, 'tile', 'Rust', ['z4–14 in chunks, packed by z6;', 'startup indexes'],
-                    [(['roads/ · rails/'], 'RT v7 packs'), (['startup.*'], 'endpoints, drives, rail lines')], scope='region')
+    n_tile = d.card('net', 'd4', cy, 'roads & rails', 'Rust', ['per z6 pack: every region’s', 'ways within 100 km; strokes,', 'lengths, climbs, tiles'],
+                    [(['layers/roads/ · rails/'], 'packs · RT z4–14'), (['indexes'], 'endpoints, strokes, samples')], scope='global')
     s_osm4 = d.src('osm', cy, 'OSM extract', ['roads · rail · ferry lines'])
     s_dem = d.src('terr', s_osm4.b + 8, 'Road DEMs', ['HRDEM · 3DEP · MRDEM (N. Am.)', 'GSI (Japan) · FABDEM 30 m', 'read by range, road blocks only'],
                   minh=n_ext.b + 22 - (s_osm4.b + 8))
-    p_road = d.pill('net', n_tile.my, ['/tiles/roads · rails', '/api/road · drives …'], note=['every region’s chunks', 'appended; by gid'])
+    p_road = d.pill('net', n_tile.my, ['/tiles/roads · rails', '/api/road · drives …'], note=['the pack for the tile;', 'APIs by gid'])
     b_road = d.layer('net', 0, 'Roads & rail lines', ['WebGL, coloured per point:', 'elevation, grade, scenic score'], cy=p_road.my)
     y_sc = max(n_tile.b + 16, b_road.b + 8 + 26.5)
     p_scen = d.pill('scen', y_sc, ['/api/drives · rides', '/api/viewshed'])
-    b_scen = d.layer('scen', 0, 'Drives · rides · viewshed', ['joined across borders by', 'shared endpoints'], cy=p_scen.my)
+    b_scen = d.layer('scen', 0, 'Drives · rides · viewshed', ['chained across packs by', 'shared OSM nodes'], cy=p_scen.my)
     ys = cy + 18
     d.arrow('osm', (s_osm4.r, ys), (n_ext.l, ys))
     d.arrow('net', (n_ext.r, ys), (n_samp.l, ys))
@@ -160,13 +160,13 @@ def build(check=False):
     cy = y0 + 24
     s_wc = d.src('land', cy, 'ESA WorldCover', ['10 m land cover, 2021'])
     n_lc = d.card('land', 'd1', cy, 'grids', 'Python', ['land cover, canopy, cover at', 'z11, near every region’s roads'],
-                  [(['global/grids/'], 'packs · z11 rasters')], scope='global')
+                  [(['layers/grids/'], 'packs · z11 rasters')], scope='global')
     y2 = max(s_wc.b, n_lc.b) + 22
     s_bld = d.src('bldg', y2, 'Overture buildings', ['footprints; heights known', 'for 12–58 %'], kept=['sources/overture/'])
     s_off = d.src('bldg', s_bld.b + 8, 'Official 3D buildings', ['PLATEAU in Japan (250+ cities)', 'first; others where needed'],
                   kept=['inputs/manual/ · sources/'])
     n_bld = d.card('bldg', 'd1', y2, 'buildings · later', 'Rust', ['height: official, else tagged,', 'else floors × 3 m, else', 'typical for its kind'],
-                   [(['global/buildings/'], 'packs · MVT z13–14'), (['buildings.f32'], 'boxes & heights, for scenic')],
+                   [(['layers/buildings/'], 'packs · MVT z13–14'), (['buildings.f32'], 'boxes & heights, for scenic')],
                    scope='global', minh=s_off.b - y2)
     p_bld = d.pill('bldg', n_bld.y + 64, ['/tiles/buildings'], note='z13–14, overzoomed')
     b_bld = d.layer('bldg', 0, '3D buildings', ['extruded on the terrain', '(MapLibre), zoom 14 and in'], cy=p_bld.my)
@@ -177,7 +177,7 @@ def build(check=False):
     s_can = d.src('land', max(s_off.b, n_bld.b) + 12, 'Canopy height · leaf type', ['Meta & WRI (1.2 m imagery)', 'Copernicus HRL · NALCMS'],
                   kept=['sources/canopy/ (10°)'])
     n_trees = d.card('land', 'd1', s_can.y + 30, 'trees', 'Python', ['cover · height · leaf type', 'inside outlines'],
-                     [(['global/trees/'], 'packs · Terrarium WebP')], scope='global')
+                     [(['layers/trees/'], 'packs · Terrarium WebP')], scope='global')
     p_trees = d.pill('land', n_trees.my, ['/tiles/trees/{var}'], note='the pack for the tile')
     b_trees = d.layer('land', 0, 'Tree cover · height · leaf', ['colour-relief on the GPU'], cy=p_trees.my)
     d.arrow('land', (s_wc.r, n_lc.y + 18), (n_lc.l, n_lc.y + 18))
@@ -193,7 +193,7 @@ def build(check=False):
     s_tt = d.src('net', cy, 'Timetables', ['GTFS via Mobility Database,', 'operators’ own timetables'], kept=['sources/gtfs/ · inputs/'])
     s_osm6 = d.src('osm', s_tt.b + 8, 'OSM extract', ['ferry routes · rail stops'])
     n_tr = d.card('net', 'd1', cy, 'train & ferry service', 'Rust · Py', ['railfreq · gtfs · ferries · stations', 'feeds apply by location'],
-                  [(['rail-freq.bin'], 'trains a day per rail way'), (['ferries · stations'], 'per kind, English baked in')],
+                  [(['rail-freq shards'], 'trains a day per rail way'), (['ferries · stations'], 'into the stop & ferry layers')],
                   minh=s_osm6.b - cy, scope='region')
     p_tr = d.pill('net', n_tr.y + 40, ['/api/railfreq', '/api/ferries', '/api/stations'])
     b_tr = d.layer('net', 0, 'Ferries · rail stops', ['rail lines by trains a day,', 'sailings a day per route'], cy=p_tr.my)
@@ -223,12 +223,12 @@ def build(check=False):
     d.arrow('base', (n_tab.r, n_tab.b - 14), (xw, n_tab.b - 14), (xw, n_lay.t), cross=True, label='English', at=(xw + 6, n_lay.t - 16))
 
     heads = [(COLS['src'][0], 'SOURCES', 'dashed: kept on the NAS'),
-             (COLS['d1'][0], 'BUILD STEPS → FILES THEY WRITE', 'on the NAS: global/, regions/<id>/ or shared/; run by the build Mac'),
+             (COLS['d1'][0], 'BUILD STEPS → FILES THEY WRITE', 'on the NAS: layers/ or regions/<id>/; run by the build Mac'),
              (COLS['srv'][0], 'SERVER (RUST)', 'Mac’s copy, else the NAS'), (COLS['brw'][0], 'MAP (BROWSER)', None)]
-    aria = ('Proposed data pipeline. Each region is a country, fetched as a Geofabrik extract. Terrain, slope, trees, the analysis grids, '
-            'the basemap and later 3D buildings are global layers: one worldwide tile pyramid each, stored in packs and grown as regions '
-            'need them; the basemap comes from the OSM planet once a year. Roads, rail, places, names and transit are built per region, '
-            'computing over the whole extract and writing the features each region owns. Labels, area overlays and zoomed-out landmark '
-            'files are shared, built from all regions. English names come from your translation files, baked in by cheap per-region '
-            'steps that rerun within minutes of a drop. The server reads the Mac’s copy of a file if it has it, else the NAS’s.')
+    aria = ('Proposed data pipeline. Regions are only how data comes in: each is fetched as a Geofabrik extract and processed on '
+            'its own into base data, stored by area. Everything the map reads is one worldwide layer per kind, stored by area in packs: '
+            'terrain, slope, trees, the analysis grids, the basemap and later buildings from global sources; roads and rails, landmarks, '
+            'stops, overlays and labels built per area from every region’s base data within 100 km, so region borders are seamless. '
+            'English names come from your translation files, baked in by cheap per-region steps. The server reads the Mac’s copy of a '
+            'file if it has it, else the NAS’s.')
     return d.svg(h, aria, heads)
