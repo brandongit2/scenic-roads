@@ -318,13 +318,18 @@ pub fn encode_terrain_png(elev: &[f32], w: u32, h: u32) -> Result<Vec<u8>> {
 
 /// Decode tile (z, x, y); if absent, crop + bilinearly upsample the nearest stored ancestor.
 pub fn tile_with_fallback(arc: &crate::archive::Archive, z: u8, x: u32, y: u32) -> Option<Vec<f32>> {
-    if let Some(b) = arc.get(z, x, y) {
-        return decode_terrain_png(b).ok();
+    tile_with_fallback_by(&|z, x, y| arc.get(z, x, y).map(<[u8]>::to_vec), z, x, y)
+}
+
+/// `tile_with_fallback` over any source of Terrarium PNG tiles.
+pub fn tile_with_fallback_by(get: &dyn Fn(u8, u32, u32) -> Option<Vec<u8>>, z: u8, x: u32, y: u32) -> Option<Vec<f32>> {
+    if let Some(b) = get(z, x, y) {
+        return decode_terrain_png(&b).ok();
     }
     for dz in 1..=z.min(8) {
         let (pz, px, py) = (z - dz, x >> dz, y >> dz);
-        let Some(b) = arc.get(pz, px, py) else { continue };
-        let p = decode_terrain_png(b).ok()?;
+        let Some(b) = get(pz, px, py) else { continue };
+        let p = decode_terrain_png(&b).ok()?;
         let n = 1u32 << dz;
         let (ox, oy) = ((x - (px << dz)) as f64 * 256.0 / n as f64, (y - (py << dz)) as f64 * 256.0 / n as f64);
         let s = 1.0 / n as f64;

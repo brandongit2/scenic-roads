@@ -2,6 +2,10 @@
 /target/
 /tools/*
 !/tools/bench/
+!/tools/launcher/
+/tools/launcher/scenic-launcher
+!/tools/nas/
+!/tools/check/
 node_modules/
 /web/dist/
 .venv/

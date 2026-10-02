@@ -1,9 +1,16 @@
+pub mod basepack;
 pub mod buildings;
+pub mod chain;
 pub mod climbs;
 pub mod elev;
+pub mod hipack;
+pub mod layers;
+pub mod legacy;
+pub mod out;
 pub mod roads;
 pub mod scache;
 pub mod terr;
+pub mod tiling;
 pub mod view;
 
 use indicatif::{ProgressBar, ProgressStyle};

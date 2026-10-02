@@ -1,10 +1,10 @@
-//! Road and rail tile encoding ("RT" v6). Columnar, delta + zigzag varint, gzip'd by the archive.
+//! Road and rail tile encoding ("RT" v7). Columnar, delta + zigzag varint, gzip'd by the archive.
 //!
-//!   u8 'R', u8 'T', u8 version (6), u8 log2(extent)
+//!   u8 'R', u8 'T', u8 version (7), u8 log2(extent)
 //!   varint nlines, varint nverts
 //!   nlines × u8      style byte: class (bits 0-3) | UNPAVED<<4 | BRIDGE<<5 | TUNNEL<<6 | LINK<<7
 //!   nlines × u8      line flags (`lflag`)
-//!   nlines × varint  zigzag delta of way index (index into ways.bin)
+//!   nlines × varint  zigzag delta of the OSM way id (v6: index into ways.bin)
 //!   nlines × varint  vertex count
 //!   nlines × varint  true (full-resolution) length of the piece, decimetres
 //!   nlines × varint  length of the whole road the way belongs to, metres (`pipeline::roads`)
@@ -17,9 +17,10 @@
 //!   nverts × varint  zigzag delta drape height (terrain surface for 3D), metres
 //!   13 × (nverts × varint)  zigzag delta of each scenic channel (roadcore::scenic::ch; v5: 12)
 //!
-//! Lines are stored minor → major so the client can draw a tile in one ordered pass.
+//! Lines are stored minor → major so the client can draw a tile in one ordered pass, and by way id
+//! within a draw class.
 
-pub const VERSION: u8 = 6;
+pub const VERSION: u8 = 7;
 pub const NCH: usize = crate::scenic::ch::N;
 
 pub mod style {

@@ -14,6 +14,7 @@
 pub mod archive;
 pub mod climb;
 pub mod grid;
+pub mod packs;
 pub mod scenic;
 pub mod slope;
 pub mod tile;

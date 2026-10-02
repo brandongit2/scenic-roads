@@ -11,7 +11,7 @@
 use crate::elev::{is_structure, Net};
 use rayon::prelude::*;
 use roadcore::climb::ClimbRec;
-use roadcore::{class, dist_m, flag, E7};
+use roadcore::{class, dist_m, flag, WayRec, E7};
 
 const STEP_M: f64 = 25.0;
 const MIN_GAIN_M: f64 = 40.0;
@@ -83,12 +83,11 @@ struct Series {
     dist: Vec<f64>,
 }
 
-fn series(net: &Net, stroke: &[OWay]) -> Series {
-    let v = net.verts;
+fn series(ways: &[WayRec], v: &[[i32; 2]], stroke: &[OWay]) -> Series {
     let mut vi: Vec<usize> = Vec::new();
     let mut owner: Vec<u32> = Vec::new();
     for (k, &(w, rev)) in stroke.iter().enumerate() {
-        let wr = &net.ways[w as usize];
+        let wr = &ways[w as usize];
         let s = wr.vstart as usize;
         let n = wr.vcount as usize;
         let it: Box<dyn Iterator<Item = usize>> = if rev { Box::new((s..s + n).rev()) } else { Box::new(s..s + n) };
@@ -184,17 +183,22 @@ pub struct Climbs {
 }
 
 pub fn find(net: &Net, elev: &[f32]) -> Climbs {
-    let st = strokes(net);
-    let v = net.verts;
+    find_on(net.ways, net.verts, elev, strokes(net))
+}
+
+/// Climbs along the given strokes (oriented ways, in order along each) of `ways` / `verts`, with
+/// `elev` per vertex (metres).
+pub fn find_on(ways: &[WayRec], verts: &[[i32; 2]], elev: &[f32], st: Vec<Vec<OWay>>) -> Climbs {
+    let v = verts;
     let per: Vec<(Vec<ClimbRec>, Vec<Vec<[i32; 2]>>)> = st
         .par_iter()
         .map(|stroke| {
             let mut recs = Vec::new();
             let mut geoms = Vec::new();
-            if stroke.iter().all(|&(w, _)| is_structure(&net.ways[w as usize])) {
+            if stroke.iter().all(|&(w, _)| is_structure(&ways[w as usize])) {
                 return (recs, geoms);
             }
-            let s = series(net, stroke);
+            let s = series(ways, v, stroke);
             if s.vi.len() < 3 {
                 return (recs, geoms);
             }
@@ -202,7 +206,7 @@ pub fn find(net: &Net, elev: &[f32]) -> Climbs {
             let total = *s.dist.last().unwrap();
             // Allowed directions: oneway ways must be traversed forwards.
             let oneway = |forward: bool| {
-                stroke.iter().all(|&(w, rev)| net.ways[w as usize].flags & flag::ONEWAY == 0 || rev != forward)
+                stroke.iter().all(|&(w, rev)| ways[w as usize].flags & flag::ONEWAY == 0 || rev != forward)
             };
             for forward in [true, false] {
                 if !oneway(forward) {
@@ -245,7 +249,7 @@ pub fn find(net: &Net, elev: &[f32]) -> Climbs {
                     let mut cls = 0u8;
                     let mut unpaved = 0u8;
                     for k in s.owner[ia]..=s.owner[ib] {
-                        let w = &net.ways[stroke[k as usize].0 as usize];
+                        let w = &ways[stroke[k as usize].0 as usize];
                         cls = cls.max(if w.class == class::FERRY { 0 } else { w.class });
                         if w.flags & flag::UNPAVED != 0 {
                             unpaved = 1;

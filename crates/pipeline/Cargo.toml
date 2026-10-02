@@ -5,6 +5,10 @@ edition = "2021"
 
 [dependencies]
 roadcore = { path = "../roadcore" }
+store = { path = "../store" }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+zstd = "0.13"
 anyhow.workspace = true
 rayon.workspace = true
 memmap2.workspace = true
