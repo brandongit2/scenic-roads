@@ -1,0 +1,376 @@
+//! Terrain tiles (docs/plan.md §6, global-source layers): AWS's Terrarium tiles, repaired.
+//!
+//! Levels are made finest first: each tile is repaired (bathymetry to sea level, voids and spikes,
+//! `roadcore::grid::repair_terrain`), the pixels above a repaired one are made again from it, and
+//! from `REBUILD_Z` down every quarter whose child exists is made again from that child (AWS's
+//! coarse levels come from coarser sources and lose peaks). Today's `terrain` step runs this over a
+//! region's archive; `scenic-build terrain` runs it per z6 pack.
+
+use roadcore::grid::{decode_terrain_png, encode_terrain_png, repair_terrain};
+use std::collections::HashMap;
+use std::time::Duration;
+
+pub const URL: &str = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";
+
+/// An HTTP agent for AWS's tiles.
+pub fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(60)))
+        .user_agent("road-elevations/0.1 (personal offline map)")
+        .build()
+        .into()
+}
+
+/// One of AWS's tiles; None when it has none (the open sea at fine zooms) or it can't be fetched.
+pub fn fetch(agent: &ureq::Agent, z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
+    let url = format!("{URL}/{z}/{x}/{y}.png");
+    for attempt in 0..5 {
+        match agent.get(&url).call() {
+            Ok(mut r) => {
+                if let Ok(b) = r.body_mut().with_config().limit(20_000_000).read_to_vec() {
+                    return Some(b);
+                }
+            }
+            Err(ureq::Error::StatusCode(404 | 403)) => return None,
+            Err(_) => {}
+        }
+        std::thread::sleep(Duration::from_millis(300 << attempt));
+    }
+    None
+}
+
+
+/// A tile's elevations repaired (bathymetry to sea level, repair_terrain, then the pixels above the
+/// repaired ones below made again from them: `below`, the four children's repairs). From REBUILD_Z
+/// down, each quarter whose child tile exists is made again whole from it (`quads`: the children's
+/// 2×2 means): AWS's coarse levels come from coarser sources, and lost peaks (Fuji's summit pixel:
+/// 3,106 m at z6, 2,368 m at z5, 2,134 m at z4; from z9, 3,378, 2,715 and 2,337 m). Returns the PNG
+/// to store (the original bytes when nothing changes), its elevations and the pixels that moved if
+/// it changed, and from REBUILD_Z + 1 down its 2×2 means for the level above.
+pub fn process(
+    png: Vec<u8>,
+    z: u8,
+    x: u32,
+    y: u32,
+    below: &HashMap<(u32, u32), Repaired>,
+    quads: &HashMap<(u32, u32), Vec<f32>>,
+) -> (Vec<u8>, Option<Repaired>, Option<Vec<f32>>) {
+    let Ok(mut e) = decode_terrain_png(&png) else { return (png, None, None) };
+    let before = e.clone();
+    for v in e.iter_mut() {
+        if *v < 0.0 {
+            *v = 0.0;
+        }
+    }
+    for k in 0..4u32 {
+        let (dx, dy) = (k & 1, k >> 1);
+        let Some(c) = below.get(&(x * 2 + dx, y * 2 + dy)) else { continue };
+        for &i in &c.moved {
+            let (cx, cy) = ((i % 256) & !1, (i / 256) & !1);
+            let m = (c.e[cy * 256 + cx] + c.e[cy * 256 + cx + 1] + c.e[(cy + 1) * 256 + cx] + c.e[(cy + 1) * 256 + cx + 1]) * 0.25;
+            e[(dy as usize * 128 + cy / 2) * 256 + dx as usize * 128 + cx / 2] = m;
+        }
+    }
+    if z <= REBUILD_Z {
+        for k in 0..4u32 {
+            let (dx, dy) = (k & 1, k >> 1);
+            let Some(q) = quads.get(&(x * 2 + dx, y * 2 + dy)) else { continue };
+            for j in 0..128 {
+                let row = (dy as usize * 128 + j) * 256 + dx as usize * 128;
+                e[row..row + 128].copy_from_slice(&q[j * 128..(j + 1) * 128]);
+            }
+        }
+    }
+    repair_terrain(&mut e, z, tile_lat(z, y));
+    let quad = (z >= 1 && z <= REBUILD_Z + 1).then(|| {
+        let mut q = vec![0f32; 128 * 128];
+        for j in 0..128 {
+            for i in 0..128 {
+                let (cx, cy) = (i * 2, j * 2);
+                q[j * 128 + i] = (e[cy * 256 + cx] + e[cy * 256 + cx + 1] + e[(cy + 1) * 256 + cx] + e[(cy + 1) * 256 + cx + 1]) * 0.25;
+            }
+        }
+        q
+    });
+    let moved: Vec<usize> = e.iter().zip(&before).enumerate().filter(|(_, (a, b))| !((*a - *b).abs() <= 0.5)).map(|(i, _)| i).collect();
+    if moved.is_empty() {
+        return (png, None, quad);
+    }
+    let out = encode_terrain_png(&e, 256, 256).unwrap_or(png);
+    (out, Some(Repaired { e, moved }), quad)
+}
+
+/// Levels made again from the level below where it exists (process): z8 from z9 (which covers the
+/// ground within a z9 tile of a road; averaging our z12 instead gives the same within a few metres).
+/// The finer levels stay AWS's, so the analysis grid (z11) and what follows from it don't change.
+pub const REBUILD_Z: u8 = 8;
+
+/// A tile changed by process: its elevations and the pixels that moved by more than half a metre.
+pub struct Repaired {
+    pub e: Vec<f32>,
+    pub moved: Vec<usize>,
+}
+
+
+/// Latitude of a tile's centre.
+pub fn tile_lat(z: u8, ty: u32) -> f64 {
+    let y = (ty as f64 + 0.5) / (1u64 << z) as f64;
+    (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees()
+}
+
+
+// ---- per pack ----------------------------------------------------------------------------------
+
+use crate::coverage::Coverage;
+use crate::out::Out;
+use rayon::prelude::*;
+use std::sync::Mutex;
+
+/// Finest zoom per latitude (pixels stay at least ~15 m): z12 to 67°, z11 to 79°, z10 beyond.
+pub fn max_zoom_at(lat: f64) -> u8 {
+    match lat.abs() {
+        l if l <= 67.0 => 12,
+        l if l <= 79.0 => 11,
+        _ => 10,
+    }
+}
+
+/// Whether the coverage comes within `km` of the tile (an 8×8 grid of points over the tile grown by
+/// `km`; thin coverage between them is caught by the tiles around it).
+pub fn near_coverage(cov: &Coverage, z: u8, x: u32, y: u32, km: f64) -> bool {
+    let b = crate::stage::tile_box_grown(z, x, y, km);
+    let e7 = |v: f64| (v * 1e7).round() as i32;
+    if !cov.meets_box([e7(b[0]), e7(b[1]), e7(b[2]), e7(b[3])]) {
+        return false;
+    }
+    (0..8).any(|i| (0..8).any(|j| cov.contains([e7(b[0] + (b[2] - b[0]) * (i as f64 + 0.5) / 8.0), e7(b[1] + (b[3] - b[1]) * (j as f64 + 0.5) / 8.0)])))
+}
+
+/// A layer's tiles as the build manifest has them now (its latest uploads).
+pub struct ManifestTiles<'a> {
+    out: &'a Out,
+    layer: String,
+    open: Mutex<HashMap<String, Option<std::sync::Arc<(std::fs::File, u64, store::pack::PackIndex)>>>>,
+}
+
+impl<'a> ManifestTiles<'a> {
+    pub fn new(out: &'a Out, layer: &str) -> Self {
+        ManifestTiles { out, layer: layer.to_string(), open: Mutex::new(HashMap::new()) }
+    }
+
+    pub fn logical(layer: &str, z: u8, x: u32, y: u32) -> String {
+        match z {
+            0..=2 => format!("layers/{layer}/root/0-0-0"),
+            3..=8 => format!("layers/{layer}/lo/3-{}-{}", x >> (z - 3), y >> (z - 3)),
+            _ => format!("layers/{layer}/hi/6-{}-{}", x >> (z - 6), y >> (z - 6)),
+        }
+    }
+
+    pub fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
+        use std::os::unix::fs::FileExt;
+        let logical = Self::logical(&self.layer, z, x, y);
+        let entry = {
+            let mut open = self.open.lock().unwrap();
+            if !open.contains_key(&logical) {
+                let v = match self.out.get(&logical) {
+                    Some(c) => {
+                        let f = std::fs::File::open(self.out.path(c))?;
+                        let len = f.metadata()?.len();
+                        let src = FileSource(&f, len);
+                        let idx = store::pack::PackIndex::read_from(&src)?;
+                        Some(std::sync::Arc::new((f, len, idx)))
+                    }
+                    None => None,
+                };
+                open.insert(logical.clone(), v);
+            }
+            open.get(&logical).cloned().flatten()
+        };
+        let Some(e) = entry else { return Ok(None) };
+        let Some(ent) = e.2.find(z, x, y) else { return Ok(None) };
+        let mut b = vec![0u8; ent.len as usize];
+        e.0.read_exact_at(&mut b, ent.offset)?;
+        Ok(Some(b))
+    }
+}
+
+struct FileSource<'a>(&'a std::fs::File, u64);
+
+impl store::range::RangeRead for FileSource<'_> {
+    fn len(&self) -> Result<u64, store::iopool::IoError> {
+        Ok(self.1)
+    }
+    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::iopool::IoError> {
+        use std::os::unix::fs::FileExt;
+        let mut b = vec![0u8; len];
+        self.0.read_exact_at(&mut b, off).map_err(store::iopool::IoError::Io)?;
+        Ok(b)
+    }
+}
+
+/// AWS's raw tiles, kept in a local cache (the build Mac's), so packs are always made from the
+/// same immutable source: processing a tile twice isn't idempotent, so stored (processed) tiles are
+/// never an input. A tile AWS doesn't have is remembered as `.none`.
+pub struct RawTiles {
+    dir: std::path::PathBuf,
+    agent: ureq::Agent,
+}
+
+impl RawTiles {
+    pub fn new(dir: &std::path::Path) -> Self {
+        RawTiles { dir: dir.to_path_buf(), agent: agent() }
+    }
+
+    /// The raw tile, and whether it came from AWS just now.
+    pub fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)> {
+        let d = self.dir.join(format!("{z}/{x}"));
+        let p = d.join(format!("{y}.png"));
+        if let Ok(b) = std::fs::read(&p) {
+            return Ok((Some(b), false));
+        }
+        let none = d.join(format!("{y}.none"));
+        if none.exists() {
+            return Ok((None, false));
+        }
+        std::fs::create_dir_all(&d)?;
+        match fetch_checked(&self.agent, z, x, y)? {
+            Some(b) => {
+                let tmp = d.join(format!("{y}.png.{}.tmp", std::process::id()));
+                std::fs::write(&tmp, &b)?;
+                std::fs::rename(&tmp, &p)?;
+                Ok((Some(b), true))
+            }
+            None => {
+                std::fs::write(&none, b"")?;
+                Ok((None, true))
+            }
+        }
+    }
+}
+
+/// One of AWS's tiles: None when AWS says it has none (404, 403); an error when it can't be
+/// fetched (so a network failure isn't remembered as "no tile").
+pub fn fetch_checked(agent: &ureq::Agent, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
+    let url = format!("{URL}/{z}/{x}/{y}.png");
+    let mut last = None;
+    for attempt in 0..5 {
+        match agent.get(&url).call() {
+            Ok(mut r) => match r.body_mut().with_config().limit(20_000_000).read_to_vec() {
+                Ok(b) => return Ok(Some(b)),
+                Err(e) => last = Some(anyhow::anyhow!("{url}: {e}")),
+            },
+            Err(ureq::Error::StatusCode(404 | 403)) => return Ok(None),
+            Err(e) => last = Some(anyhow::anyhow!("{url}: {e}")),
+        }
+        std::thread::sleep(Duration::from_millis(300 << attempt));
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("{url}: no answer")))
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+pub struct PackReport {
+    pub hi_tiles: usize,
+    pub lo_tiles: usize,
+    pub fetched: usize,
+    pub missing: usize,
+    pub repaired: usize,
+}
+
+/// Makes the terrain of the z6 tiles `ts` (all in z3 tile `q`) near the coverage: their hi packs
+/// (z9–12, or coarser at high latitudes), then `q`'s lo pack (z3–8) with them folded in. Always
+/// from AWS's raw tiles (`raw`, cached locally), so the same coverage gives the same bytes.
+pub fn build_q(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], cov: &Coverage) -> anyhow::Result<PackReport> {
+    let mut rep = PackReport::default();
+    let fetched = std::sync::atomic::AtomicUsize::new(0);
+    let missing = std::sync::atomic::AtomicUsize::new(0);
+    let repaired = std::sync::atomic::AtomicUsize::new(0);
+    let get = |z: u8, x: u32, y: u32| -> anyhow::Result<Option<Vec<u8>>> {
+        let (b, new) = raw.get(z, x, y)?;
+        if new {
+            fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        if b.is_none() {
+            missing.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(b)
+    };
+    // One level: every tile fetched or reused, then processed with what the level below made.
+    let level = |z: u8, tiles: Vec<(u32, u32)>, below: &HashMap<(u32, u32), Repaired>, quads: &HashMap<(u32, u32), Vec<f32>>| -> anyhow::Result<(Vec<(u32, u32, Vec<u8>)>, HashMap<(u32, u32), Repaired>, HashMap<(u32, u32), Vec<f32>>)> {
+        let done: Vec<anyhow::Result<Option<(u32, u32, Vec<u8>, Option<Repaired>, Option<Vec<f32>>)>>> = tiles
+            .par_iter()
+            .map(|&(x, y)| {
+                let Some(b) = get(z, x, y)? else { return Ok(None) };
+                let (b, r, q) = process(b, z, x, y, below, quads);
+                Ok(Some((x, y, b, r, q)))
+            })
+            .collect();
+        let (mut outs, mut nb, mut nq) = (Vec::new(), HashMap::new(), HashMap::new());
+        for d in done {
+            if let Some((x, y, b, r, q)) = d? {
+                if let Some(r) = r {
+                    repaired.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    nb.insert((x, y), r);
+                }
+                if let Some(q) = q {
+                    nq.insert((x, y), q);
+                }
+                outs.push((x, y, b));
+            }
+        }
+        Ok((outs, nb, nq))
+    };
+    let mut below: HashMap<(u32, u32), Repaired> = HashMap::new();
+    let mut quads: HashMap<(u32, u32), Vec<f32>> = HashMap::new();
+    let mut hi: HashMap<(u32, u32), Vec<(u8, u32, u32, Vec<u8>)>> = HashMap::new();
+    // z12 → z9 inside each z6 tile, near the coverage, as fine as the latitude allows.
+    for z in (9..=12u8).rev() {
+        let mut tiles = Vec::new();
+        for &(tx, ty) in ts {
+            let s = 1u32 << (z - 6);
+            for x in tx * s..(tx + 1) * s {
+                for y in ty * s..(ty + 1) * s {
+                    if z <= max_zoom_at(tile_lat(z, y)) && near_coverage(cov, z, x, y, 20.0) {
+                        tiles.push((x, y));
+                    }
+                }
+            }
+        }
+        let (outs, nb, nq) = level(z, tiles, &below, &quads)?;
+        for (x, y, b) in outs {
+            hi.entry((x >> (z - 6), y >> (z - 6))).or_default().push((z, x, y, b));
+        }
+        (below, quads) = (nb, nq);
+    }
+    // z8 → z3: the whole of q, the levels above what was just made folded in.
+    let mut lo: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
+    for z in (3..=8u8).rev() {
+        let s = 1u32 << (z - 3);
+        let tiles: Vec<(u32, u32)> = (q.0 * s..(q.0 + 1) * s).flat_map(|x| (q.1 * s..(q.1 + 1) * s).map(move |y| (x, y))).collect();
+        let (outs, nb, nq) = level(z, tiles, &below, &quads)?;
+        lo.extend(outs.into_iter().map(|(x, y, b)| (z, x, y, b)));
+        (below, quads) = (nb, nq);
+    }
+    rep.fetched = fetched.into_inner();
+    rep.missing = missing.into_inner();
+    rep.repaired = repaired.into_inner();
+    // Upload: each z6 tile's hi pack, then q's lo pack.
+    for &(tx, ty) in ts {
+        let mut tiles = hi.remove(&(tx, ty)).unwrap_or_default();
+        tiles.sort_by_key(|t| (t.0, t.1, t.2));
+        rep.hi_tiles += tiles.len();
+        let mut it = tiles.into_iter().map(|(z, x, y, b)| {
+            let n = b.len() as u32;
+            (z, x, y, b, n)
+        });
+        crate::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, tx, ty), &mut it)?;
+    }
+    lo.sort_by_key(|t| (t.0, t.1, t.2));
+    rep.lo_tiles = lo.len();
+    let mut it = lo.into_iter().map(|(z, x, y, b)| {
+        let n = b.len() as u32;
+        (z, x, y, b, n)
+    });
+    crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut it)?;
+    out.save()?;
+    Ok(rep)
+}

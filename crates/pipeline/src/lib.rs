@@ -15,6 +15,7 @@ pub mod roads;
 pub mod scache;
 pub mod stage;
 pub mod terr;
+pub mod terrain_pack;
 pub mod tiling;
 pub mod unit;
 pub mod view;

@@ -19,16 +19,16 @@
 
 use anyhow::Result;
 use pipeline::count_bar;
+use pipeline::terrain_pack::{fetch, process, tile_lat, Repaired};
 use rayon::prelude::*;
 use roadcore::archive::{Archive, ArchiveWriter};
-use roadcore::grid::{decode_terrain_png, encode_terrain_png, repair_terrain, GridIndex, CELLS};
+use roadcore::grid::{decode_terrain_png, repair_terrain, GridIndex, CELLS};
 use roadcore::{Ways, E7};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-const URL: &str = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";
 
 fn tile_of(lon: f64, lat: f64, z: u8) -> (i64, i64) {
     let n = (1u64 << z) as f64;
@@ -58,94 +58,6 @@ pub fn near_roads(verts: &[[i32; 2]], z: u8, ring: i64) -> Vec<[u32; 2]> {
         }
     }
     out.into_iter().map(|(x, y)| [x as u32, y as u32]).collect()
-}
-
-fn fetch(agent: &ureq::Agent, z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
-    let url = format!("{URL}/{z}/{x}/{y}.png");
-    for attempt in 0..5 {
-        match agent.get(&url).call() {
-            Ok(mut r) => {
-                if let Ok(b) = r.body_mut().with_config().limit(20_000_000).read_to_vec() {
-                    return Some(b);
-                }
-            }
-            Err(ureq::Error::StatusCode(404 | 403)) => return None,
-            Err(_) => {}
-        }
-        std::thread::sleep(Duration::from_millis(300 << attempt));
-    }
-    None
-}
-
-/// A tile's elevations repaired (bathymetry to sea level, repair_terrain, then the pixels above the
-/// repaired ones below made again from them: `below`, the four children's repairs). From REBUILD_Z
-/// down, each quarter whose child tile exists is made again whole from it (`quads`: the children's
-/// 2×2 means): AWS's coarse levels come from coarser sources, and lost peaks (Fuji's summit pixel:
-/// 3,106 m at z6, 2,368 m at z5, 2,134 m at z4; from z9, 3,378, 2,715 and 2,337 m). Returns the PNG
-/// to store (the original bytes when nothing changes), its elevations and the pixels that moved if
-/// it changed, and from REBUILD_Z + 1 down its 2×2 means for the level above.
-fn process(
-    png: Vec<u8>,
-    z: u8,
-    x: u32,
-    y: u32,
-    below: &HashMap<(u32, u32), Repaired>,
-    quads: &HashMap<(u32, u32), Vec<f32>>,
-) -> (Vec<u8>, Option<Repaired>, Option<Vec<f32>>) {
-    let Ok(mut e) = decode_terrain_png(&png) else { return (png, None, None) };
-    let before = e.clone();
-    for v in e.iter_mut() {
-        if *v < 0.0 {
-            *v = 0.0;
-        }
-    }
-    for k in 0..4u32 {
-        let (dx, dy) = (k & 1, k >> 1);
-        let Some(c) = below.get(&(x * 2 + dx, y * 2 + dy)) else { continue };
-        for &i in &c.moved {
-            let (cx, cy) = ((i % 256) & !1, (i / 256) & !1);
-            let m = (c.e[cy * 256 + cx] + c.e[cy * 256 + cx + 1] + c.e[(cy + 1) * 256 + cx] + c.e[(cy + 1) * 256 + cx + 1]) * 0.25;
-            e[(dy as usize * 128 + cy / 2) * 256 + dx as usize * 128 + cx / 2] = m;
-        }
-    }
-    if z <= REBUILD_Z {
-        for k in 0..4u32 {
-            let (dx, dy) = (k & 1, k >> 1);
-            let Some(q) = quads.get(&(x * 2 + dx, y * 2 + dy)) else { continue };
-            for j in 0..128 {
-                let row = (dy as usize * 128 + j) * 256 + dx as usize * 128;
-                e[row..row + 128].copy_from_slice(&q[j * 128..(j + 1) * 128]);
-            }
-        }
-    }
-    repair_terrain(&mut e, z, tile_lat(z, y));
-    let quad = (z >= 1 && z <= REBUILD_Z + 1).then(|| {
-        let mut q = vec![0f32; 128 * 128];
-        for j in 0..128 {
-            for i in 0..128 {
-                let (cx, cy) = (i * 2, j * 2);
-                q[j * 128 + i] = (e[cy * 256 + cx] + e[cy * 256 + cx + 1] + e[(cy + 1) * 256 + cx] + e[(cy + 1) * 256 + cx + 1]) * 0.25;
-            }
-        }
-        q
-    });
-    let moved: Vec<usize> = e.iter().zip(&before).enumerate().filter(|(_, (a, b))| !((*a - *b).abs() <= 0.5)).map(|(i, _)| i).collect();
-    if moved.is_empty() {
-        return (png, None, quad);
-    }
-    let out = encode_terrain_png(&e, 256, 256).unwrap_or(png);
-    (out, Some(Repaired { e, moved }), quad)
-}
-
-/// Levels made again from the level below where it exists (process): z8 from z9 (which covers the
-/// ground within a z9 tile of a road; averaging our z12 instead gives the same within a few metres).
-/// The finer levels stay AWS's, so the analysis grid (z11) and what follows from it don't change.
-const REBUILD_Z: u8 = 8;
-
-/// A tile changed by process: its elevations and the pixels that moved by more than half a metre.
-struct Repaired {
-    e: Vec<f32>,
-    moved: Vec<usize>,
 }
 
 fn main() -> Result<()> {
@@ -262,12 +174,6 @@ fn main() -> Result<()> {
     build_grid(&dir, grid_tiles)?;
     eprintln!("done ({:.0?})", t0.elapsed());
     Ok(())
-}
-
-/// Latitude of a tile's centre.
-fn tile_lat(z: u8, ty: u32) -> f64 {
-    let y = (ty as f64 + 0.5) / (1u64 << z) as f64;
-    (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees()
 }
 
 /// `--scan`: what repair_terrain would change, per zoom, with the worst tiles (read only).

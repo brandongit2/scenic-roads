@@ -14,6 +14,9 @@
 //!                                base(U) from the pass's pieces (today's steps on a unit folder):
 //!                                default every unit whose piece meets the coverage
 //!   roadunits                    the road → units index from every unit's road values
+//!   terrain [T …] [--regions dir] [--pass d] [--raw dir]  terrain packs for z6 tiles T near the
+//!                                coverage (default: all of them): hi z9–12, then their z3 lo packs,
+//!                                from AWS's raw tiles (cached in --raw)
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalog                      publish a catalog of the build manifest
@@ -86,6 +89,7 @@ fn main() -> Result<()> {
         "catalog" => catalog(&mut out)?,
         "unit" => unit_step(&mut out, &args, &scratch)?,
         "roadunits" => roadunits(&mut out)?,
+        "terrain" => terrain_step(&mut out, &args)?,
         "put" => {
             // put <logical> <ext> <file>: upload a file under a logical name (manual operations).
             let p = positional(&args);
@@ -601,5 +605,51 @@ fn roadunits(out: &mut Out) -> Result<()> {
     let flat: Vec<u64> = pairs.iter().flat_map(|&(r, u)| [r, u]).collect();
     put_sect(out, "global/roadunits", serde_json::json!({"fmt": 1, "pairs": pairs.len()}), &[("pairs", b(&flat))])?;
     eprintln!("roadunits: {} roads×units over {} units", pairs.len(), units.len());
+    Ok(())
+}
+
+/// The coverage of the regions (recipes in --regions, else inputs/regions; outlines from --pass,
+/// else the latest complete pass).
+fn coverage_of(out: &Out, args: &[String]) -> Result<pipeline::coverage::Coverage> {
+    let regions = opt(args, "--regions").map(PathBuf::from).unwrap_or_else(|| out.root().join("inputs/regions"));
+    let (recipes, bad) = pipeline::agent::recipes::load(&regions);
+    for (f, e) in &bad {
+        eprintln!("skipping region {f}: {e}");
+    }
+    anyhow::ensure!(!recipes.is_empty(), "no regions in {}", regions.display());
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root()));
+    let outlines = date
+        .as_deref()
+        .and_then(|d| out.get(&format!("sources/osm/{d}/outlines")).map(|n| out.path(n)))
+        .map(|p| pipeline::outlines::Outlines::open(&p))
+        .transpose()?;
+    pipeline::coverage::Coverage::from_recipes(&recipes, outlines.as_ref(), &out.root().join("inputs/outlines"))
+}
+
+fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
+    let cov = coverage_of(out, args)?;
+    let mut ts: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
+    if ts.is_empty() {
+        for x in 0..64u32 {
+            for y in 0..64u32 {
+                if pipeline::terrain_pack::near_coverage(&cov, 6, x, y, 20.0) {
+                    ts.push(Unit { z: 6, x, y });
+                }
+            }
+        }
+    }
+    let mut by_q: BTreeMap<(u32, u32), Vec<(u32, u32)>> = BTreeMap::new();
+    for t in &ts {
+        by_q.entry((t.x >> 3, t.y >> 3)).or_default().push((t.x, t.y));
+    }
+    eprintln!("terrain: {} z6 tiles in {} z3 packs", ts.len(), by_q.len());
+    // AWS's raw tiles, kept on this Mac (the build cache).
+    let raw_dir = PathBuf::from(opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
+    let raw = pipeline::terrain_pack::RawTiles::new(&raw_dir);
+    for (q, list) in by_q {
+        let t = std::time::Instant::now();
+        let r = pipeline::terrain_pack::build_q(out, &raw, q, &list, &cov)?;
+        eprintln!("terrain 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
+    }
     Ok(())
 }
