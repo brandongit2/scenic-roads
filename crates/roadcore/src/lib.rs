@@ -1,7 +1,7 @@
 //! On-disk formats shared by the pipeline and the server.
 //!
 //! Build directory layout (all little-endian):
-//!   ways.bin     16-byte header ("RDWAYS01", u64 count) + `WayRec` records
+//!   ways.bin     16-byte header ("RDWAYS02", u64 count) + `WayRec` records
 //!   verts.bin    [i32; 2] per vertex: lon, lat in 1e-7 degrees (densified geometry)
 //!   strings.txt  newline-separated string table; line 0 is the empty string
 //!   elev.f32     raw DEM sample per vertex (NaN = no data)          — dem stage

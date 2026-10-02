@@ -304,7 +304,11 @@ fn canopy(dir: &Path) -> Result<()> {
     let terr = terr_l.data();
     let samples_a = Array::<Sample>::open(&dir.join("samples.bin"))?;
     let samples = samples_a.get();
-    let cache = dir.parent().unwrap().join("cache/chm10");
+    // The canopy files: data/cache/chm10 next to the build, or under SCENIC_CACHE (shared by units).
+    let cache = match std::env::var_os("SCENIC_CACHE") {
+        Some(c) => PathBuf::from(c).join("chm10"),
+        None => dir.parent().unwrap().join("cache/chm10"),
+    };
     std::fs::create_dir_all(&cache)?;
     let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(1800))).build().into();
 

@@ -10,6 +10,10 @@
 //!                                rail hi packs (z9–14) and hidata
 //!   lo [--cache dir] [Q …]       lo packs (z4–8 road and rail tiles) for z3 tiles Q (default: all)
 //!   osm-pass --planet <p> --date <d>  the OSM pass (pieces, sets, basemap, road values); resumable
+//!   unit [U …] [--pass d] [--layers-root r] [--regions dir] [--dem dir] [--cache-dir dir] [--buildings dir]
+//!                                base(U) from the pass's pieces (today's steps on a unit folder):
+//!                                default every unit whose piece meets the coverage
+//!   roadunits                    the road → units index from every unit's road values
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalog                      publish a catalog of the build manifest
 //!
@@ -79,6 +83,8 @@ fn main() -> Result<()> {
             eprintln!("verified {n} uploads");
         }
         "catalog" => catalog(&mut out)?,
+        "unit" => unit_step(&mut out, &args, &scratch)?,
+        "roadunits" => roadunits(&mut out)?,
         s => bail!("unknown step {s:?} (convert-legacy, pack, lo, osm-pass, verify, catalog)"),
     }
     out.save()?;
@@ -447,4 +453,121 @@ fn chrono_now() -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem / 60 % 60, rem % 60)
+}
+
+// ---- base(U) from the pass ------------------------------------------------------------------
+
+/// The pass's road values of a unit: (OSM way id, record), sorted by id.
+fn pass_roads(out: &Out, date: &str, u: Unit) -> Result<Vec<(u64, pipeline::legacy::RoadRec)>> {
+    let Some(name) = out.get(&format!("sources/osm/{date}/roads/{}", u.dash())) else { return Ok(Vec::new()) };
+    let b = std::fs::read(out.path(name))?;
+    Ok(b.chunks_exact(32).map(|c| (u64::from_le_bytes(c[..8].try_into().unwrap()), bytemuck::pod_read_unaligned(&c[8..32]))).collect())
+}
+
+fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    use pipeline::coverage::Coverage;
+    use pipeline::unit::{build_folder, owns, Tools};
+    let date = match opt(args, "--pass") {
+        Some(d) => d,
+        None => pipeline::osmpass::latest_pass(out.root()).context("no complete OSM pass on the NAS (--pass)")?,
+    };
+    let regions = opt(args, "--regions").map(PathBuf::from).unwrap_or_else(|| out.root().join("inputs/regions"));
+    let (recipes, bad) = pipeline::agent::recipes::load(&regions);
+    for (f, e) in &bad {
+        eprintln!("unit: skipping region {f}: {e}");
+    }
+    anyhow::ensure!(!recipes.is_empty(), "no regions in {}", regions.display());
+    let outlines_file = out.get(&format!("sources/osm/{date}/outlines")).map(|n| out.path(n));
+    let outlines = outlines_file.as_deref().map(pipeline::outlines::Outlines::open).transpose()?;
+    let cov = Coverage::from_recipes(&recipes, outlines.as_ref(), &out.root().join("inputs/outlines"))?;
+    // Global-source layers: this root's catalog, or another's (a pilot builds against the real one).
+    let layers_root = opt(args, "--layers-root").map(PathBuf::from).unwrap_or_else(|| out.root().to_path_buf());
+    let cat = store::catalog::latest(&layers_root.join("catalog"))?.context("no catalog for the global-source layers")?;
+    let bin = std::env::current_exe()?.parent().context("bin")?.to_path_buf();
+    let tools = Tools {
+        bin,
+        dem: PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into())),
+        cache: PathBuf::from(opt(args, "--cache-dir").unwrap_or_else(|| "data/cache".into())),
+        buildings: opt(args, "--buildings").map(PathBuf::from),
+        spacing_m: 8,
+    };
+    // The units: as asked, else every unit whose piece meets the coverage.
+    let pieces: serde_json::Value = serde_json::from_slice(&std::fs::read(out.path(out.get(&format!("sources/osm/{date}/pieces")).context("the pass's pieces list")?))?)?;
+    let mut units: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
+    if units.is_empty() {
+        for k in pieces["pieces"].as_object().context("pieces")?.keys() {
+            let u = Unit::parse(k).context("unit")?;
+            if cov.meets_box(tile_bounds(u.z, u.x, u.y)) {
+                units.push(u);
+            }
+        }
+    }
+    eprintln!("unit: pass {date}, {} region(s), {} unit(s)", recipes.len(), units.len());
+    for u in units {
+        let t = std::time::Instant::now();
+        let dir = scratch.join("units").join(u.dash());
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir)?;
+        }
+        let piece_logical = format!("sources/osm/{date}/pieces/{}", u.dash());
+        let Some(piece) = out.get(&piece_logical).map(|n| out.path(n)) else {
+            eprintln!("unit {}: no piece (nothing there)", u.slash());
+            continue;
+        };
+        let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
+        std::fs::copy(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
+        let rep = build_folder(u, &local_piece, &dir, &cov, &layers_root, &cat, &tools)?;
+        std::fs::remove_file(&local_piece).ok();
+        eprintln!("unit {}: {} of {} ways touch the coverage, {} owned", u.slash(), rep.kept_ways, rep.piece_ways, rep.owned);
+        if rep.kept_ways == 0 || rep.owned == 0 {
+            continue;
+        }
+        // The owned ways, in base-pack order, with the pass's road values.
+        let lg = Legacy::open(&dir)?;
+        let tb = tile_bounds(u.z, u.x, u.y);
+        let idx: Vec<u32> = lg.units().remove(&u).unwrap_or_default().into_iter().filter(|&i| owns(tb, lg.first_vertex(&lg.ways.ways()[i as usize]))).collect();
+        let built = format!("pass:{date}");
+        let bs = legacy::base_sections(&lg, u, &idx, &built);
+        let secs: Vec<(&str, &[u8])> = bs.sections.iter().map(|(n, v)| (*n, v.as_slice())).collect();
+        put_sect(out, &format!("base/{}", u.dash()), bs.meta, &secs)?;
+        let vals = pass_roads(out, &date, u)?;
+        let ways = lg.ways.ways();
+        let verts = lg.ways.verts();
+        let recs: Vec<pipeline::legacy::RoadRec> = idx
+            .iter()
+            .map(|&i| {
+                let w = &ways[i as usize];
+                match vals.binary_search_by_key(&(w.id as u64), |v| v.0) {
+                    Ok(k) => vals[k].1,
+                    Err(_) => {
+                        // Not chained (a ferry, a one-vertex way): its own road.
+                        let vs = &verts[Legacy::range(w)];
+                        let len: f64 = vs.windows(2).map(|p| roadcore::dist_m(p[0][0] as f64 * 1e-7, p[0][1] as f64 * 1e-7, p[1][0] as f64 * 1e-7, p[1][1] as f64 * 1e-7)).sum();
+                        pipeline::legacy::RoadRec { road: w.id as u64, len: len as f32, offset: 0.0, dir: 0, _pad: [0; 7] }
+                    }
+                }
+            })
+            .collect();
+        put_sect(out, &format!("global/roads/{}", u.dash()), serde_json::json!({"fmt": 1, "unit": u.slash()}), &[("roads", b(&recs))])?;
+        out.save()?;
+        eprintln!("unit {}: base pack of {} ways in {:.0?}", u.slash(), idx.len(), t.elapsed());
+    }
+    Ok(())
+}
+
+/// The road → units index from every unit's road values in the manifest.
+fn roadunits(out: &mut Out) -> Result<()> {
+    let mut pairs: Vec<(u64, u64)> = Vec::new();
+    let units: Vec<(Unit, String)> = out.manifest.iter().filter_map(|(k, v)| k.strip_prefix("global/roads/").and_then(Unit::parse).map(|u| (u, v.clone()))).collect();
+    for (u, content) in &units {
+        let r = store::sect::SectReader::open(store::range::MmapFile::open(&out.path(content))?)?;
+        let recs: Vec<pipeline::legacy::RoadRec> = r.read_pod("roads")?;
+        pairs.extend(recs.iter().map(|x| (x.road, u.key())));
+    }
+    pairs.sort_unstable();
+    pairs.dedup();
+    let flat: Vec<u64> = pairs.iter().flat_map(|&(r, u)| [r, u]).collect();
+    put_sect(out, "global/roadunits", serde_json::json!({"fmt": 1, "pairs": pairs.len()}), &[("pairs", b(&flat))])?;
+    eprintln!("roadunits: {} roads×units over {} units", pairs.len(), units.len());
+    Ok(())
 }

@@ -20,9 +20,13 @@ use roadcore::scenic::Sample;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-/// The cache directory (data/cache/scenic, next to the build directory).
+/// The cache directory (data/cache/scenic, next to the build directory; `SCENIC_SCACHE` when set,
+/// as a unit's build folder sets it to its own).
 pub fn dir(build: &Path) -> PathBuf {
-    let d = build.parent().unwrap_or(Path::new(".")).join("cache/scenic");
+    let d = match std::env::var_os("SCENIC_SCACHE") {
+        Some(d) => PathBuf::from(d),
+        None => build.parent().unwrap_or(Path::new(".")).join("cache/scenic"),
+    };
     let _ = std::fs::create_dir_all(&d);
     d
 }

@@ -1,0 +1,196 @@
+//! A unit's local copies of the global-source layers, in the files the legacy steps read
+//! (docs/plan.md §6, base(U)): `terrain.tiles` (z0–12) and the z11 grids (`grid.idx`,
+//! `grid.terrain.i16`, `grid.class.u8`, `grid.areas.u8`, and canopy and cover when the catalog has
+//! them), over the unit grown by a margin (viewsheds see 15 km past the unit's buffer ways).
+//!
+//! Read from the catalog's packs on the NAS with plain reads (never mmapped), each pack's index once.
+
+use anyhow::{Context, Result};
+use roadcore::archive::ArchiveWriter;
+use roadcore::grid::{decode_terrain_png, CELLS};
+use std::collections::HashMap;
+use std::os::unix::fs::FileExt;
+use std::path::{Path, PathBuf};
+use store::catalog::Catalog;
+use store::pack::PackIndex;
+
+/// How far past the unit the copies reach, km (10 km of buffer ways, then 15 km of view, rounded up).
+pub const MARGIN_KM: f64 = 30.0;
+
+/// A pack file on the NAS read with positioned reads.
+struct PackFile {
+    file: std::fs::File,
+    len: u64,
+}
+
+impl store::range::RangeRead for PackFile {
+    fn len(&self) -> Result<u64, store::iopool::IoError> {
+        Ok(self.len)
+    }
+    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::iopool::IoError> {
+        let mut b = vec![0u8; len];
+        self.file.read_exact_at(&mut b, off).map_err(store::iopool::IoError::Io)?;
+        Ok(b)
+    }
+}
+
+/// Tiles of a layer, from its packs.
+pub struct LayerReader<'a> {
+    root: &'a Path,
+    cat: &'a Catalog,
+    layer: String,
+    open: HashMap<String, Option<(PackFile, PackIndex)>>,
+}
+
+impl<'a> LayerReader<'a> {
+    pub fn new(root: &'a Path, cat: &'a Catalog, layer: &str) -> LayerReader<'a> {
+        LayerReader { root, cat, layer: layer.to_string(), open: HashMap::new() }
+    }
+
+    pub fn exists(&self) -> bool {
+        self.cat.layers.contains_key(&self.layer)
+    }
+
+    /// The pack (logical name) holding a tile: root z0–2, lo z3–8 by z3 tile, hi z9–14 by z6 tile.
+    fn pack_of(&self, z: u8, x: u32, y: u32) -> Option<String> {
+        let l = self.cat.layers.get(&self.layer)?;
+        match z {
+            0..=2 => l.root.clone(),
+            3..=8 => l.lo.get(&format!("3/{}/{}", x >> (z - 3), y >> (z - 3))).cloned(),
+            _ => l.hi.get(&format!("6/{}/{}", x >> (z - 6), y >> (z - 6))).cloned(),
+        }
+    }
+
+    /// A tile's blob as stored (None when the layer has no such tile).
+    pub fn get(&mut self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
+        let Some(logical) = self.pack_of(z, x, y) else { return Ok(None) };
+        if !self.open.contains_key(&logical) {
+            let opened = match self.cat.files.get(&logical) {
+                Some(f) => {
+                    let p = self.root.join(&f.file);
+                    let file = std::fs::File::open(&p).with_context(|| format!("open {}", p.display()))?;
+                    let len = file.metadata()?.len();
+                    let pf = PackFile { file, len };
+                    let idx = PackIndex::read_from(&pf).with_context(|| format!("index of {}", p.display()))?;
+                    Some((pf, idx))
+                }
+                None => None,
+            };
+            self.open.insert(logical.clone(), opened);
+        }
+        let Some((pf, idx)) = self.open.get(&logical).and_then(Option::as_ref) else { return Ok(None) };
+        Ok(idx.get(pf, z, x, y)?.map(|(_, b)| b))
+    }
+}
+
+/// The tiles at `z` meeting the box (w, s, e, n in degrees).
+pub fn tiles_in(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
+    let n = 1u32 << z;
+    let x = |lon: f64| (((lon + 180.0) / 360.0 * n as f64).floor().max(0.0) as u32).min(n - 1);
+    let y = |lat: f64| {
+        let r = lat.clamp(-85.05, 85.05).to_radians();
+        (((1.0 - (r.tan() + 1.0 / r.cos()).ln() / std::f64::consts::PI) / 2.0 * n as f64).floor().max(0.0) as u32).min(n - 1)
+    };
+    let (x0, x1, y0, y1) = (x(b[0]), x(b[2]), y(b[3]), y(b[1]));
+    (x0..=x1).flat_map(|tx| (y0..=y1).map(move |ty| (tx, ty))).collect()
+}
+
+/// A z/x/y tile's box (degrees) grown by `km`.
+pub fn tile_box_grown(z: u8, x: u32, y: u32, km: f64) -> [f64; 4] {
+    let n = (1u64 << z) as f64;
+    let lon = |t: f64| t / n * 360.0 - 180.0;
+    let lat = |t: f64| (std::f64::consts::PI * (1.0 - 2.0 * t / n)).sinh().atan().to_degrees();
+    let (w, e, s, nn) = (lon(x as f64), lon(x as f64 + 1.0), lat(y as f64 + 1.0), lat(y as f64));
+    let dy = km / 110.574;
+    let dx = km / (111.320 * nn.abs().max(s.abs()).min(85.0).to_radians().cos());
+    [w - dx, (s - dy).max(-85.05), e + dx, (nn + dy).min(85.05)]
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+pub struct Staged {
+    pub terrain_tiles: usize,
+    pub grid_tiles: usize,
+    pub grids: Vec<String>,
+}
+
+/// Writes `terrain.tiles` and the grids for the box `b` (degrees) into `dir`.
+pub fn stage(root: &Path, cat: &Catalog, b: [f64; 4], dir: &Path) -> Result<Staged> {
+    std::fs::create_dir_all(dir)?;
+    let mut st = Staged::default();
+    // Terrain z0–12 as the legacy archive (PNG blobs as they are).
+    let mut terrain = LayerReader::new(root, cat, "terrain");
+    let tmp = dir.join("terrain.tiles.tmp");
+    let mut w = ArchiveWriter::create(&tmp, r#"{"format":"png","encoding":"terrarium"}"#)?;
+    let mut z11: HashMap<(u32, u32), Vec<u8>> = HashMap::new();
+    for z in 0..=12u8 {
+        for (x, y) in tiles_in(z, b) {
+            if let Some(blob) = terrain.get(z, x, y)? {
+                w.add(z, x, y, &blob, blob.len())?;
+                st.terrain_tiles += 1;
+                if z == 11 {
+                    z11.insert((x, y), blob);
+                }
+            }
+        }
+    }
+    w.finish()?;
+    std::fs::rename(&tmp, dir.join("terrain.tiles"))?;
+
+    // The grids over the z11 tiles of the box.
+    let mut tiles: Vec<[u32; 2]> = tiles_in(11, b).into_iter().map(|(x, y)| [x, y]).collect();
+    tiles.sort_unstable_by_key(|t| (t[1], t[0]));
+    let idx = roadcore::grid::GridIndex::new(tiles);
+    let tiles = idx.tiles.clone();
+    st.grid_tiles = tiles.len();
+    let mut terr: Vec<i16> = vec![0; tiles.len() * CELLS];
+    for (s, t) in tiles.iter().enumerate() {
+        let Some(png) = z11.get(&(t[0], t[1])) else { continue };
+        let e = decode_terrain_png(png).with_context(|| format!("terrain 11/{}/{}", t[0], t[1]))?;
+        for (o, v) in terr[s * CELLS..(s + 1) * CELLS].iter_mut().zip(e) {
+            *o = v.round().clamp(-500.0, 9000.0) as i16;
+        }
+    }
+    write_file(dir, "grid.terrain.i16", bytemuck::cast_slice(&terr))?;
+    st.grids.push("terrain".into());
+    for var in ["class", "areas", "canopy", "cover"] {
+        let mut l = LayerReader::new(root, cat, &format!("grid-{var}"));
+        if !l.exists() {
+            continue;
+        }
+        let mut data = vec![0u8; tiles.len() * CELLS];
+        for (s, t) in tiles.iter().enumerate() {
+            if let Some(z) = l.get(11, t[0], t[1])? {
+                let cells = zstd::decode_all(&z[..]).with_context(|| format!("grid-{var} 11/{}/{}", t[0], t[1]))?;
+                anyhow::ensure!(cells.len() == CELLS, "grid-{var} 11/{}/{}: {} cells", t[0], t[1], cells.len());
+                data[s * CELLS..(s + 1) * CELLS].copy_from_slice(&cells);
+            }
+        }
+        write_file(dir, &format!("grid.{var}.u8"), &data)?;
+        st.grids.push(var.into());
+    }
+    idx.save(&dir.join("grid.idx.tmp"))?;
+    std::fs::rename(dir.join("grid.idx.tmp"), dir.join("grid.idx"))?;
+    Ok(st)
+}
+
+fn write_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
+    let p = dir.join(name);
+    let tmp = dir.join(format!("{name}.tmp"));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, &p)?;
+    Ok(p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tile_ranges() {
+        // The z6 tile of Newcastle (6/31/19) grown by 30 km meets its neighbours.
+        let b = tile_box_grown(6, 31, 19, 30.0);
+        let t = tiles_in(6, b);
+        assert!(t.contains(&(31, 19)) && t.contains(&(30, 19)) && t.contains(&(32, 20)), "{t:?}");
+        assert_eq!(tiles_in(11, tile_box_grown(6, 31, 19, 0.0)).len(), 33 * 33);
+    }
+}

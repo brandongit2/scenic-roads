@@ -13,8 +13,10 @@ pub mod outlines;
 pub mod out;
 pub mod roads;
 pub mod scache;
+pub mod stage;
 pub mod terr;
 pub mod tiling;
+pub mod unit;
 pub mod view;
 
 use indicatif::{ProgressBar, ProgressStyle};
