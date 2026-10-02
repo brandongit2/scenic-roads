@@ -190,6 +190,16 @@ impl SectView {
         self.table.contains_key(name)
     }
 
+    /// `len` bytes from `start` within a section (for sections too big to read whole).
+    pub fn get_part(&self, name: &str, start: u64, len: usize) -> Result<Vec<u8>> {
+        let &(off, slen) = self.table.get(name).ok_or_else(|| anyhow::anyhow!("no section {name}"))?;
+        ensure!(start.checked_add(len as u64).is_some_and(|e| e <= slen), "bytes {start}+{len} outside section {name} ({slen})");
+        match &self.src {
+            Src::Local(m) => Ok(m[(off + start) as usize..(off + start) as usize + len].to_vec()),
+            Src::Remote(r) => Ok(r.read_at(off + start, len)?),
+        }
+    }
+
     /// A section's bytes (an empty blob when it's missing).
     pub fn get(&self, name: &str) -> Result<Blob> {
         let Some(&(off, len)) = self.table.get(name) else { return Ok(Blob::from_vec(Vec::new())) };

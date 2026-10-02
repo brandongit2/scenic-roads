@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+pipeline = { path = "../pipeline" }
+toml = "0.9"
+unicode-normalization = "0.1"
 roadcore = { path = "../roadcore" }
 store = { path = "../store" }
 names = { path = "../names" }

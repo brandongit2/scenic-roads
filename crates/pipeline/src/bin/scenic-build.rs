@@ -14,6 +14,7 @@
 //!                                base(U) from the pass's pieces (today's steps on a unit folder):
 //!                                default every unit whose piece meets the coverage
 //!   roadunits                    the road → units index from every unit's road values
+//!   put <logical> <ext> <file>   upload a file under a logical name
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalog                      publish a catalog of the build manifest
 //!
@@ -85,6 +86,16 @@ fn main() -> Result<()> {
         "catalog" => catalog(&mut out)?,
         "unit" => unit_step(&mut out, &args, &scratch)?,
         "roadunits" => roadunits(&mut out)?,
+        "put" => {
+            // put <logical> <ext> <file>: upload a file under a logical name (manual operations).
+            let p = positional(&args);
+            let (Some(l), Some(ext), Some(f)) = (p.first(), p.get(1), p.get(2)) else { bail!("put <logical> <ext> <file>") };
+            let tmp = scratch.join(format!("put-{}", std::path::Path::new(f).file_name().unwrap().to_string_lossy()));
+            std::fs::create_dir_all(&scratch)?;
+            std::fs::copy(f, &tmp)?;
+            let name = out.put_file(l, ext, &tmp)?;
+            eprintln!("{l} -> {name}");
+        }
         s => bail!("unknown step {s:?} (convert-legacy, pack, lo, osm-pass, verify, catalog)"),
     }
     out.save()?;
@@ -404,6 +415,10 @@ fn catalog(out: &mut Out) -> Result<()> {
     }
     if let Some(r) = layers.get_mut("rails") {
         (r.minzoom, r.maxzoom) = (4, 14);
+    }
+    // The latest pass's outlines, for the Regions panel and the modules.
+    if let Some(l) = out.manifest.keys().filter(|k| k.starts_with("sources/osm/") && k.ends_with("/outlines")).max() {
+        global.insert("outlines".to_string(), l.clone());
     }
     let meta: serde_json::Value = out.get("global/legacy/roads").and_then(|n| std::fs::read(out.path(n)).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let units: Vec<String> = base.keys().cloned().collect();

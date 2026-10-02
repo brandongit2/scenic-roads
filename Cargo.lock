@@ -1097,6 +1097,7 @@ dependencies = [
  "flate2",
  "memmap2 0.9.11",
  "names",
+ "pipeline",
  "png",
  "rayon",
  "roadcore",
@@ -1104,8 +1105,10 @@ dependencies = [
  "serde_json",
  "store",
  "tokio",
+ "toml",
  "tower",
  "tower-http",
+ "unicode-normalization",
  "zstd",
 ]
 

@@ -13,6 +13,7 @@ mod data;
 mod details;
 mod names_live;
 mod query;
+mod regions;
 mod terrain;
 mod tiles;
 mod updater;
@@ -50,6 +51,8 @@ pub struct AppState {
     rail_freq: Mutex<Option<(u64, Arc<Vec<(u32, f32)>>)>>,
     /// The build agent's heartbeat (state/status.json), re-read at most every 30 s.
     agent: Mutex<Option<(std::time::Instant, serde_json::Value)>>,
+    /// The outlines of the latest OSM pass (the Regions panel).
+    pub areas: regions::Areas,
 }
 
 pub type S = Arc<AppState>;
@@ -192,6 +195,7 @@ async fn main() -> Result<()> {
         road_en: Mutex::new(None),
         rail_freq: Mutex::new(None),
         agent: Mutex::new(None),
+        areas: regions::Areas::default(),
     });
 
     tokio::spawn(warm(state.clone()));
@@ -219,6 +223,12 @@ async fn main() -> Result<()> {
         .route("/api/raillines", get(query::lines))
         .route("/api/layer/{name}", get(layer_h))
         .route("/api/names", get(names_h))
+        .route("/api/regions", get(regions::list).post(regions::add))
+        .route("/api/regions/{id}", axum::routing::put(regions::edit).delete(regions::remove))
+        .route("/api/areas", get(regions::at))
+        .route("/api/areas/search", get(regions::search))
+        .route("/api/areas/{id}", get(regions::one))
+        .route("/api/coverage", get(regions::coverage))
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
         .nest_service(
             "/fonts",
