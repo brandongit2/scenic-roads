@@ -5,7 +5,7 @@ W = 1484
 COLS = {'src': (16, 180), 'd1': (224, 196), 'd2': (450, 196), 'd3': (676, 196), 'd4': (902, 196),
         'srv': (1124, 140), 'brw': (1286, 182)}
 CLASSES = ['base', 'place', 'terr', 'net', 'scen', 'land', 'bldg', 'osm', 'mix']
-TAB = {'region': 'PER REGION', 'global': 'GLOBAL', 'shared': 'SHARED', 'world': 'WORLD', 'both': 'WORLD + PER REGION'}
+TAB = {'area': 'PER AREA', 'global': 'WORLDWIDE'}
 
 
 class Bx:

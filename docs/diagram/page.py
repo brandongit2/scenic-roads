@@ -43,7 +43,7 @@ classes = [('base', 'Map context'), ('place', 'Places & heritage'), ('terr', 'El
            ('scen', 'Scenic metrics'), ('land', 'Land cover & trees'), ('bldg', 'Buildings'), ('osm', 'OpenStreetMap (shared)'), ('mix', 'Several classes')]
 shapes = [('src', 'source'), ('kept', 'kept between runs'), ('card', 'build step, over the files it writes'),
           ('pill', 'server route'), ('layer', 'map layer'), ('computed', 'made in the browser')]
-scopes = [('region', 'base data, built per region'), ('global', 'one worldwide layer, stored by area')]
+scopes = [('area', 'built per area (a z6 tile, 300–600 km)'), ('global', 'built once for the whole world')]
 formats = [('flat arrays', 'one value per road point, memory-mapped'), ('z11 grid', 'one raster per layer over grid.idx'),
            ('archive', 'one file: tile blobs + sorted index'), ('PMTiles', 'one file, read by byte range'),
            ('RT v6', 'columnar road tiles, 13 scenic channels a point'), ('Terrarium', 'height (or slope, cover…) as RGB'),
@@ -69,7 +69,7 @@ page = head + f'''<title>Scenic Roads Data Pipeline</title>
 <header>
 <div>
 <h1>Scenic Roads · data pipeline</h1>
-<p class="sub">Proposed: regions are only how data comes in; everything the map reads is one worldwide layer per kind, stored by area, so region size and borders don’t matter; only the build Mac builds; your translations go in a NAS folder. Nothing here is built yet; “Today” shows the app as it is.</p>
+<p class="sub">Proposed: OpenStreetMap comes from one worldwide download, cut by area, and a region is only an outline of what to build, so region size and borders never show; only the build Mac builds; your translations go in a NAS folder and show up within a minute. Nothing here is built yet; “Today” shows the app as it is.</p>
 </div>
 <div class="tabs"><label for="v-new">Proposed</label><label for="v-old">Today</label></div>
 </header>
@@ -78,11 +78,11 @@ page = head + f'''<title>Scenic Roads Data Pipeline</title>
 <section class="you" aria-label="Your part">
 <h3>Your part</h3>
 <div class="you-grid">
-<div><code>scenic</code><span>view the map</span></div>
-<div><code>scenic add &lt;place&gt;</code><span>add a region: any place name works; it offers the region around it, or a bigger one</span></div>
-<div><code>translations/</code><span>drop finished translations in this NAS folder; <code>descriptions/</code> likewise</span></div>
+<div><code>localhost:8080</code><span>view the map: it’s always running on both Macs (<code>scenic</code> opens it too)</span></div>
+<div><code>Regions panel</code><span>add a region: search any place, then take the unit around it or a bigger one; it appears as it’s built</span></div>
+<div><code>translations/&lt;area&gt;/</code><span>drop finished translations in this NAS folder; both Macs show them within a minute. <code>descriptions/</code> likewise</span></div>
 </div>
-<p>Now and then: <code>scenic status</code> · <code>scenic keep &lt;place&gt; [radius]</code> for trips away · <code>scenic remove &lt;place&gt;</code>. Everything else (building, refreshing, copying, backups) happens on its own.</p>
+<p>Now and then: “Keep this view” for trips away · remove a region in the panel · <code>scenic status</code>. Everything else (building, refreshing, copying, backups) happens on its own.</p>
 </section>
 <figure>
 <h3>Where the data lives</h3>
@@ -92,7 +92,7 @@ page = head + f'''<title>Scenic Roads Data Pipeline</title>
 <figure>
 <h3>How each layer is built</h3>
 <div class="scroll">{proposed.build(CHECK)}</div>
-<figcaption>Each region writes only the features it owns, split by area; layer steps read every region’s data within 100 km of their pack, so borders don’t show. Translations and descriptions only rerun the cheap steps.</figcaption>
+<figcaption>Every step runs per area (a z6 tile) or once for the whole world; regions only say which areas to build. Values that span areas (whole roads, rail service, ferries, big parks) come from worldwide steps, and each area reads its neighbours within 100 km, so tile edges and region borders don’t show. Translations need no rebuild.</figcaption>
 </figure>
 </div>
 <div class="view-old">
