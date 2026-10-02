@@ -1,7 +1,7 @@
 # Plan: regions as modules, data on the NAS
 
-**Version 5**, 2026-10-02: rebuilt after the third Opus review (§12). Re-review v5 before
-implementing.
+**Version 5**, 2026-10-02: rebuilt after the third Opus review (§12), plus resilience to the build
+Mac being asleep, away or unplugged (§8, Interruptions). Re-review v5 before implementing.
 
 - Design only; nothing is built yet. Build only when the user says so.
 - Owner: Claude. The user asked me to own the design and to treat their earlier requirements as
@@ -38,7 +38,7 @@ a terminal.
 `zh-tw/`, …). Both Macs show them within a minute, with nothing rebuilt. Names that still lack
 English are listed in `translations/todo/`. Descriptions work the same way (§7).
 
-**Everything else is automatic:** building, refreshing (when the build Mac is idle and on power),
+**Everything else is automatic:** building, refreshing (whenever the build Mac is plugged in),
 publishing, caching, distributing the app, backups. Commands are safe to re-run. Messages say what
 happened and what to do, in plain words.
 
@@ -47,8 +47,8 @@ happened and what to do, in plain words.
 A **z6 tile** is about 600 km across at the equator and 300 km at 60°. All work happens on the build
 Mac, in four kinds of job:
 
-1. **The OSM pass** runs twice a year, or when asked. The planet passes through the build Mac and
-   leaves behind:
+1. **The OSM pass** runs twice a year, or when asked. The NAS fetches the planet; the build Mac
+   processes it whenever it's next plugged in at home, and leaves behind:
    - **pieces:** filtered OSM per z6 tile, each with a 10 km buffer, for all land;
    - **worldwide sets:** rail (tracks, stations, routes), ferries, designated areas (complete),
      places, and country outlines;
@@ -74,7 +74,7 @@ NAS root: `personal/projects/scenic-roads/`.
 README.md                     one screen: what's here; the two folders that are yours
 translations/  descriptions/  the user's drop-ins (README; todo/ written by the agent)
 inputs/                       regions/<id>.toml, outlines/, manual/ (MOI DTM, fhd.xlsx), keys.env, timetables/
-sources/                      osm/<date>/ (pieces/, sets/), aws/, canopy/, overture/, registers/, gtfs/, pageviews/, basemap/
+sources/                      osm/<date>/ (the planet, pieces/, sets/), aws/, canopy/, overture/, registers/, gtfs/, pageviews/, basemap/
 base/                         base packs, one per z6 tile
 global/                       the worldwide steps' outputs, sliced per tile; names tables
 layers/<layer>/               root, lo and hi packs
@@ -118,8 +118,12 @@ rewritten.
 - `scenic agent` runs under the launcher, with openjdk@21, rustup and the mise shims on its PATH.
 - **Priority:** jobs run at `taskpolicy -c utility`. `-b` would confine them to the 4 efficiency
   cores, about 17× slower (measured).
-  - Each job holds `caffeinate -i -w <pid>`, so idle sleep doesn't stop it.
-  - One job runs at a time. A closed lid pauses the job, and it resumes on wake.
+  - Jobs use half the cores while the user is active on the M4, and all of them when it's idle.
+  - Each job holds `caffeinate -s -w <pid>`. That stops idle sleep on power only, so a job paused
+    on battery never keeps the Mac awake.
+  - One job runs at a time.
+- **It may be asleep, away or unplugged at any time.** Work waits and resumes; see §8,
+  Interruptions.
 - **Staging is bounded per job:** the OSM pass (~150 GB peak; it runs alone), one base(T), one
   pack(T) with its halo, or one global-source pack.
 - 40 GB stays free for swap.
@@ -205,15 +209,23 @@ A country without a module gets defaults: FABDEM, no register, no timetables, co
 
 ### The OSM pass (twice a year)
 
-1. Download the planet to the M4's SSD (~90 GB) and verify its checksum.
-2. Run `osmium tags-filter` three times:
+1. **The NAS fetches the planet,** so the laptop's whereabouts never matter.
+   - A scheduled task on the NAS (DSM's Task Scheduler, set up once) runs a small script daily
+     with `curl`. The script lives in the project folder, so updating it needs no DSM changes.
+   - When the newest planet on the NAS is six months old, it downloads the newest dated planet
+     (~90 GB) from a mirror. It resumes by byte range after any interruption, verifies the MD5,
+     then renames it into `sources/osm/<date>/`.
+   - The NAS is always on and wired, and it does nothing heavier than this.
+2. The M4 copies the planet to its SSD when it's next at home and plugged in. The copy is
+   resumable and takes about 30 minutes.
+3. Run `osmium tags-filter` three times:
    - (a) the tags the pipeline reads (no buildings, addresses or land use);
    - (b) the basemap's tags;
    - (c) the worldwide sets, with relations complete.
-3. Delete the planet.
-4. Cut (a) into z3 pieces, then each z3 piece into z6 pieces. The cut keeps ways whole, completes
+4. Delete the local copy. The NAS keeps the planet until the next pass finishes.
+5. Cut (a) into z3 pieces, then each z3 piece into z6 pieces. The cut keeps ways whole, completes
    multipolygons and adds a 10 km buffer. Upload each piece, then delete it locally.
-5. Run Planetiler on (b), with its jar and extras pinned. The extras are Natural Earth and the OSM
+6. Run Planetiler on (b), with its jar and extras pinned. The extras are Natural Earth and the OSM
    water polygons, kept in `sources/basemap/`.
 
 Measure the filter ratios before the first pass.
@@ -373,7 +385,7 @@ with a token, and checks it before writing a catalog.
 
 **Order:**
 1. requests;
-2. the OSM pass, if there's none yet or one is due;
+2. the OSM pass, when the NAS holds a newer planet than the pieces come from;
 3. global-source packs for new coverage (plus 20 km);
 4. base(T) for changed tiles;
 5. the worldwide steps;
@@ -384,9 +396,35 @@ with a token, and checks it before writing a catalog.
 
 Then, when idle:
 - stale work after step-version bumps, oldest first;
-- refreshes, when idle and on power:
-  - the OSM pass twice a year. Every tile rebuilds, but reuse makes that cheap.
+- refreshes:
+  - the OSM pass, whenever the NAS has fetched a new planet. Every tile rebuilds, but reuse makes
+    that cheap.
   - Overture, registers and timetables every ~6 months.
+
+**Interruptions.** The build Mac may be asleep, away from home or unplugged at any time, and may
+close its lid mid-job. Nothing depends on it being available at a given time.
+- **No deadlines.** Refreshes only become due. Until the work is done, the map serves the last
+  catalog, and requests queue on the NAS.
+- **Conditions per step.** CPU work needs power. Steps that touch the NAS need the NAS. Local steps
+  (filtering or cutting a planet already copied) carry on away from home if the Mac is plugged in.
+  When a condition lapses, the agent pauses the job (`SIGSTOP` to its process group) and resumes it
+  (`SIGCONT`) when it holds again.
+- **Sleep.** A closed lid suspends every process, and they continue on wake. Lost connections are
+  retried: downloads and copies resume by byte range, and NAS operations go through the I/O pool
+  with timeouts and a remount.
+- **Kills** (a reboot, a crash, an update) lose at most the current stage:
+  - per-tile and worldwide jobs take minutes, and simply rerun;
+  - the OSM pass is a chain of stages with completion markers (copy, three filters, cut per z3
+    piece, Planetiler, uploads per piece), each under about an hour.
+- **Atomic writes.** Every file is uploaded to a temporary name, checked against its hash, then
+  renamed. A catalog is written last, with a checksum line, and readers take the highest complete
+  one. Anything half-written is never referenced. GC never deletes files under 14 days old, and it
+  removes temporary files older than a day.
+- **Staging is disposable.** Everything on the M4's SSD can be copied from the NAS again. The agent
+  deletes it if the Mac's free space falls below its floor, or after a job has been paused for a
+  week.
+- **Status.** The agent writes a heartbeat. The app shows what's waiting and why: "Build Mac last
+  seen yesterday; Kanto waits for it to be plugged in at home." 
 
 **Determinism:** the same inputs give the same bytes: sorted outputs, no hash-map order, fixed
 reductions. Each step gets a "build twice, compare hashes" test.
@@ -435,6 +473,7 @@ renamed `scenic-metrics`.
    - move both Macs' project data to the NAS, except `data/build`: ~60 GB here, ~90 GB on the M4
      (approved);
    - move `keys.env` to `inputs/` (approved);
+   - the NAS's planet fetch: one DSM scheduled task, created by the user or with their OK;
    - remove the empty `road-elevations` folder (approved);
    - measure the internet speed.
 
@@ -477,6 +516,11 @@ renamed `scenic-metrics`.
 - **The OSM pass's disk and time on the M4:** measure first; it runs alone.
 - **macOS network-volume permission:** tested in phase 1.
 - **Hard SMB mounts:** the I/O pool, `getfsstat`, offline start.
+- **The build Mac's availability:** work progresses only while the M4 is awake, plugged in and,
+  for NAS steps, at home. A closed lid stops building, because macOS sleeps a closed laptop, and
+  that stays as it is. Nothing is lost while it waits. If waiting proves too slow, let the other Mac
+  take per-tile jobs as well. That isn't planned, because it needs a toolchain on both Macs and a
+  movable writer lease.
 - **Dense tiles with their halo** (Tokyo) must fit in 48 GB: measure in phase 4. If one doesn't,
   split that tile's pack job by z7.
 - **Remote DEM servers** may be slow or change. Today's cache seeds the first builds, and reuse
@@ -528,6 +572,10 @@ step further: OSM comes from the planet, cut by tile. That fixes the four blocke
 - **Sea tiles** are deduplicated, not skipped, and Planetiler's extras are pinned.
 - **Chaining** is by offsets, not node ids.
 - **Wording.**
+
+**After the review (the user's question about the laptop):** the NAS fetches the planet; jobs
+pause and resume by condition; stages, atomic writes and disposable staging; a heartbeat in the app
+(§8, Interruptions).
 
 **Simplifications adopted:**
 - S2: no Mac records;

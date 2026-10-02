@@ -11,7 +11,7 @@ def build(check=False):
     # ---- 0. OpenStreetMap: the planet, cut by area; your regions are outlines -----------------
     y0 = 60
     cy = y0 + 24
-    s_osm = d.src('osm', cy, 'OSM planet', ['the whole world, twice a', 'year; it only passes', 'through the build Mac'],
+    s_osm = d.src('osm', cy, 'OSM planet', ['the whole world; the NAS', 'fetches it twice a year,', 'resuming if interrupted'],
                   kept=['sources/osm/<date>/'])
     n_pass = d.card('osm', 'd1', cy, 'OSM pass', 'osmium', ['filtered, then cut by area', '(z6 tiles, 10 km buffer);', 'sets kept whole, worldwide'],
                     [(['pieces/<z6>.osm.pbf'], 'PBF · all land ≈ 45 GB'), (['sets/'], 'rail, ferries, areas, places')], scope='global')

@@ -23,7 +23,7 @@ def build(check=False):
 
     rows = [('translations/', 'your drop-ins (and descriptions/): the servers read them directly'),
             ('inputs/', 'your region outlines, files fetched by hand, keys'),
-            ('sources/', 'OSM pieces and sets (twice a year), raw AWS, canopy, registers …'),
+            ('sources/', 'the planet (the NAS fetches it), OSM pieces and sets, raw AWS …'),
             ('base/', 'per area (z6 tile): its ways, with elevations and scenic values'),
             ('global/', 'worldwide results (whole roads, rail, fame, names), sliced per area'),
             ('layers/', 'everything the map reads: one worldwide pyramid per kind, in packs'),
@@ -45,8 +45,8 @@ def build(check=False):
     bx = 1326
     box(bx, top, W - 16 - bx, hh, 'Browser', ['the map: MapLibre', 'and WebGL'])
     by, bh = top + hh + 52, 74
-    box(nx, by, nw, bh, 'Build Mac (M4) · the only builder', ['one area or one worldwide step at a time: staged on its SSD, pushed back,',
-                                                                'cleared; low priority; the planet passes through twice a year'])
+    box(nx, by, nw, bh, 'Build Mac (M4) · the only builder', ['one area or one worldwide step at a time, staged on its SSD; it pauses',
+                                                                'while asleep, away or unplugged, and resumes after; nothing is lost'])
 
     mid = top + hh / 2
     arrow((228, mid), (nx, mid), label='downloads', at=(257, mid - 7), anchor='middle')
