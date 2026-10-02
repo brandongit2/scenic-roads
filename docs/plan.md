@@ -32,6 +32,9 @@ a terminal.
   in.
 - **See it on the map.** Coverage is drawn on the map, and progress shows in the status bar. New
   areas appear as they finish.
+- **Edit a region:** rename it, split it into smaller units, merge it with others, or change its
+  outline (pick other units, or drag the outline's points on the map). Renaming, splitting and
+  merging rebuild nothing; changing what's covered rebuilds only the areas that changed.
 - **Keep this view** keeps an area on this Mac for trips. It shows the size first, and toggles.
 
 **Translations:** the user drops `.jsonl` files into `translations/<area>/` on the NAS (`ja/`,
@@ -162,9 +165,10 @@ rewritten.
 
 ## 5. Coverage and regions
 
-**Recipe** (`inputs/regions/<id>.toml`): `id`, `name`, and `outline`. The outline is one of:
+**Recipe** (`inputs/regions/<id>.toml`): `id`, `name`, and `outline`. The outline is a list whose
+union is the region; each entry is one of:
 - `geofabrik:<id>`;
-- a `.poly` file in `inputs/outlines/`;
+- a `.poly` file in `inputs/outlines/` (the panel writes one when an outline is drawn or edited);
 - a place and a radius.
 
 **Coverage** is the union of the outlines.
@@ -173,6 +177,16 @@ rewritten.
 
 **Granularity is free.** Tiles, not regions, are the unit of work, and the union of outlines has no
 inner borders. England as 48 county outlines builds exactly what one England outline builds.
+
+**Redefining regions is a recipe edit.** Splitting, merging, renaming or redrawing a region changes
+only `inputs/regions/` (and `inputs/outlines/`).
+- Builds depend on coverage, never on regions. base(T)'s fingerprint holds T's selection (the
+  sorted ids of the features it builds), not the outlines' shapes.
+- So a change that covers the same ground rebuilds nothing.
+- A change that grows or shrinks coverage rebuilds only the tiles whose selection changed, the packs
+  within 100 km of them, and the worldwide slices that follow.
+- Shrinking leaves global-source tiles (terrain, slope, trees, grids) in place; they're harmless.
+- Merging makes one recipe whose outline lists the parts; splitting makes one recipe per part.
 
 **Today's set:**
 - 34 regions become 30 outlines. Monaco, Isle of Man, Guernsey-Jersey and Gibraltar lie inside
