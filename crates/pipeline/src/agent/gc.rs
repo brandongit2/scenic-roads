@@ -1,6 +1,6 @@
-//! Removing replaced files from the NAS (docs/plan.md §3, GC): every content-named file that no
-//! catalog of the last `keep_days` references and that is itself older than `keep_days` (younger
-//! files may belong to work in flight), plus abandoned `.tmp` files and old catalogs.
+//! Removing replaced files from the NAS (docs/plan.md §3, GC): every content-named file that
+//! neither the newest catalog, nor a catalog of the last `keep_days`, nor the build's manifest
+//! references, and that is itself older than `keep_days`; abandoned `.tmp` files; old catalogs.
 //!
 //! Deletions go through SMB: on this share they're permanent (no Recycle Bin entry; tested
 //! 2026-10-02), and the build Mac can't use SSH unattended (1Password asks each session).
@@ -38,11 +38,11 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
     let old = |t: SystemTime| now.duration_since(t).is_ok_and(|d| d > keep);
     let mut rep = Report { dry_run, ..Default::default() };
 
-    // Catalogs: the latest always, and every one of the last `keep_days`.
+    // Catalogs: the newest always, and every one of the last `keep_days`.
     let cat_dir = root.join("catalog");
     let ns = if cat_dir.exists() { store::catalog::list(&cat_dir).context("list catalogs")? } else { Vec::new() };
     // Before the first catalog there's nothing to keep track of, so nothing is removed.
-    let Some(&latest) = ns.last() else { return Ok(rep) };
+    let Some(&latest) = ns.iter().max() else { return Ok(rep) };
     let mut referenced: BTreeSet<String> = BTreeSet::new();
     let mut drop_cats: Vec<PathBuf> = Vec::new();
     for &n in &ns {
@@ -56,6 +56,13 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         let cat = store::catalog::read(&p).with_context(|| format!("read {}", p.display()))?;
         referenced.extend(cat.files.values().map(|f| f.file.clone()));
         rep.catalogs_kept += 1;
+    }
+    // The build's manifest: everything a build has uploaded and may publish next (work in flight,
+    // and outputs reused by name). Unreadable, nothing is removed.
+    let manifest = root.join("state/build/manifest.json");
+    if manifest.exists() {
+        let m: std::collections::BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(&manifest).context("read the build manifest")?).context("parse the build manifest")?;
+        referenced.extend(m.into_values());
     }
     rep.referenced = referenced.len();
     let tops: BTreeSet<String> = referenced.iter().filter_map(|f| f.split('/').next()).filter(|t| !NEVER.contains(t)).map(str::to_string).collect();
@@ -148,6 +155,53 @@ mod tests {
         assert!(root.join("layers/roads/hi/6-1-3.1111111111111111.pack").exists());
         assert!(root.join("sources/osm/x.3333333333333333.osm.pbf").exists());
         assert!(root.join("layers/roads/README").exists());
+    }
+
+    #[test]
+    fn keeps_the_newest_catalog_however_old() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let mk = |n: u64, file: &str| {
+            let p = root.join(file);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, b"x").unwrap();
+            age(&p, 60);
+            let mut cat = store::catalog::Catalog::new(n);
+            let logical = file.rsplit_once('.').unwrap().0.rsplit_once('.').unwrap().0;
+            cat.files.insert(logical.into(), store::catalog::FileRef { file: file.into(), ..Default::default() });
+            let c = store::catalog::write(&root.join("catalog"), &cat).unwrap();
+            age(&c, 60);
+        };
+        mk(1, "layers/a/hi/6-1-1.1111111111111111.pack");
+        mk(2, "layers/a/hi/6-1-1.2222222222222222.pack");
+        mk(3, "layers/a/hi/6-1-1.3333333333333333.pack");
+        let r = run(root, 14, false).unwrap();
+        assert_eq!((r.catalogs_kept, r.catalogs_removed, r.removed), (1, 2, 2));
+        assert!(root.join("layers/a/hi/6-1-1.3333333333333333.pack").exists());
+        assert_eq!(store::catalog::latest(&root.join("catalog")).unwrap().unwrap().n, 3);
+        assert_eq!(store::catalog::next_n(&root.join("catalog")).unwrap(), 4);
+    }
+
+    #[test]
+    fn the_build_manifest_keeps_its_files() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let f = "base/6-1-1.4444444444444444.sect";
+        fs::create_dir_all(root.join("base")).unwrap();
+        fs::write(root.join(f), b"x").unwrap();
+        age(&root.join(f), 60);
+        let cat = store::catalog::Catalog::new(1);
+        store::catalog::write(&root.join("catalog"), &cat).unwrap();
+        // Not in the catalog, old, but the build uploaded it: kept. (A catalog file elsewhere so
+        // `base/` is swept at all.)
+        let mut cat2 = store::catalog::Catalog::new(2);
+        cat2.files.insert("base/6-1-2".into(), store::catalog::FileRef { file: "base/6-1-2.5555555555555555.sect".into(), ..Default::default() });
+        store::catalog::write(&root.join("catalog"), &cat2).unwrap();
+        fs::create_dir_all(root.join("state/build")).unwrap();
+        fs::write(root.join("state/build/manifest.json"), format!("{{\"base/6-1-1\": \"{f}\"}}")).unwrap();
+        let r = run(root, 14, false).unwrap();
+        assert_eq!(r.removed, 0);
+        assert!(root.join(f).exists());
     }
 
     #[test]

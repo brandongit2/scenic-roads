@@ -53,12 +53,38 @@ pub struct Running {
 }
 
 /// The job record kept on disk while a job runs, so an agent started after a crash can stop an
-/// orphaned job before running it again.
+/// orphaned job before running it again. The group leader's start time tells it from an unrelated
+/// process that got the same id after a restart.
 #[derive(Serialize, Deserialize)]
 struct Record {
     id: String,
     pgid: i32,
     started: u64,
+    #[serde(default)]
+    leader_start: u64,
+}
+
+/// A process's start time (seconds since the epoch), when it exists.
+fn process_start(pid: i32) -> Option<u64> {
+    // SAFETY: proc_bsdinfo is plain old data; proc_pidinfo fills at most `size` bytes of it.
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let n = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size) };
+    (n == size).then_some(info.pbi_start_tvsec)
+}
+
+/// The processes of a process group.
+fn group_members(pgid: i32) -> Vec<i32> {
+    const PROC_PGRP_ONLY: u32 = 2;
+    let mut buf = vec![0i32; 1024];
+    // SAFETY: the buffer holds `len` pids and its size in bytes is passed.
+    let n = unsafe { libc::proc_listpids(PROC_PGRP_ONLY, pgid as u32, buf.as_mut_ptr().cast(), (buf.len() * 4) as libc::c_int) };
+    if n <= 0 {
+        return Vec::new();
+    }
+    buf.truncate(n as usize / 4);
+    buf.retain(|&p| p > 0);
+    buf
 }
 
 impl Running {
@@ -81,7 +107,7 @@ impl Running {
         // Awake while it runs, on mains power only (-s), ending with it (-w).
         let caffeinate = Command::new("/usr/bin/caffeinate").args(["-s", "-w", &child.id().to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok();
         let started = now_s();
-        let rec = Record { id: spec.id.clone(), pgid, started };
+        let rec = Record { id: spec.id.clone(), pgid, started, leader_start: process_start(pgid).unwrap_or(0) };
         std::fs::write(record, serde_json::to_vec(&rec)?)?;
         Ok(Running { spec, child, caffeinate, pgid, started, log, paused: None, started_at: Instant::now() })
     }
@@ -108,9 +134,12 @@ impl Running {
     }
 
     /// Stops the whole group: SIGTERM (after SIGCONT, so a paused job can handle it), then SIGKILL
-    /// after `grace`.
+    /// after `grace` to whatever of it is left.
     pub fn stop(&mut self, grace: Duration) {
-        stop_group(self.pgid, grace, || self.child.try_wait().ok().flatten().is_some());
+        let child = &mut self.child;
+        stop_group(self.pgid, grace, || {
+            let _ = child.try_wait();
+        });
         let _ = self.child.wait();
         if let Some(c) = self.caffeinate.as_mut() {
             let _ = c.kill();
@@ -131,7 +160,9 @@ impl Drop for Running {
     }
 }
 
-fn stop_group(pgid: i32, grace: Duration, mut gone: impl FnMut() -> bool) {
+/// Stops every process of a group: SIGTERM, then SIGKILL after `grace` if any is left. `reap`
+/// collects our own exited child, so it doesn't linger in the group as a zombie.
+fn stop_group(pgid: i32, grace: Duration, mut reap: impl FnMut()) {
     // SAFETY: signals to a process group we started.
     unsafe {
         libc::killpg(pgid, libc::SIGCONT);
@@ -139,13 +170,15 @@ fn stop_group(pgid: i32, grace: Duration, mut gone: impl FnMut() -> bool) {
     }
     let t = Instant::now();
     while t.elapsed() < grace {
-        if gone() {
+        reap();
+        if group_members(pgid).is_empty() {
             return;
         }
         std::thread::sleep(Duration::from_millis(200));
     }
     // SAFETY: as above.
     unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    reap();
 }
 
 /// Stops a job left running by an agent that ended without stopping it (a crash, a kill), from its
@@ -153,12 +186,17 @@ fn stop_group(pgid: i32, grace: Duration, mut gone: impl FnMut() -> bool) {
 pub fn stop_orphan(record: &Path) {
     let Ok(b) = std::fs::read(record) else { return };
     if let Ok(r) = serde_json::from_slice::<Record>(&b) {
-        // SAFETY: signal 0 only checks that the group exists.
-        if r.pgid > 1 && unsafe { libc::killpg(r.pgid, 0) } == 0 {
+        let members = if r.pgid > 1 { group_members(r.pgid) } else { Vec::new() };
+        // Ours when the leader is the process we started; or, the leader gone, when every member
+        // started after the job did (a group id isn't reused while any member lives).
+        let ours = !members.is_empty()
+            && match process_start(r.pgid) {
+                Some(t) => r.leader_start != 0 && t == r.leader_start,
+                None => members.iter().all(|&p| process_start(p).is_some_and(|t| t + 2 >= r.started)),
+            };
+        if ours {
             eprintln!("agent: stopping {} left running by an earlier agent (group {})", r.id, r.pgid);
-            // SAFETY: as above.
-            let exists = || unsafe { libc::killpg(r.pgid, 0) } != 0;
-            stop_group(r.pgid, Duration::from_secs(30), exists);
+            stop_group(r.pgid, Duration::from_secs(30), || {});
         }
     }
     std::fs::remove_file(record).ok();

@@ -17,6 +17,14 @@ pub struct Current {
     pub version: String,
     /// Paths relative to the version's folder.
     pub files: Vec<String>,
+    /// Each file's SHA-256 (hex), checked after the copy (absent in older manifests).
+    #[serde(default)]
+    pub sha256: std::collections::BTreeMap<String, String>,
+}
+
+/// Whether bytes are a program: a Mach-O binary or a script.
+fn executable(b: &[u8]) -> bool {
+    b.starts_with(&[0xcf, 0xfa, 0xed, 0xfe]) || b.starts_with(&[0xca, 0xfe, 0xba, 0xbe]) || b.starts_with(b"#!")
 }
 
 pub struct Updater {
@@ -77,11 +85,20 @@ impl Updater {
                 if f.contains("..") {
                     bail!("bad path in app/current.json: {f}");
                 }
-                let b = pool.read_all(&root.join("app").join(&cur.version).join(f))?;
+                // In pieces through the pool: one slow whole-file read would trip the breaker.
+                let src = crate::views::RemoteFile::new(root.join("app").join(&cur.version).join(f), pool.clone());
+                let b = src.read_all()?;
+                if let Some(want) = cur.sha256.get(f) {
+                    use sha2::Digest;
+                    let got = format!("{:x}", sha2::Sha256::digest(&b));
+                    if &got != want {
+                        bail!("app {}: {f} doesn't match its SHA-256 (copied {got}, published {want})", cur.version);
+                    }
+                }
                 let p = tmp.join(f);
                 std::fs::create_dir_all(p.parent().unwrap())?;
                 std::fs::write(&p, &b)?;
-                if f == "server" {
+                if executable(&b) {
                     use std::os::unix::fs::PermissionsExt;
                     std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755))?;
                 }

@@ -2,19 +2,27 @@
 //! content-named files, with a build manifest (logical name → file) the catalog is made from.
 //!
 //! A file is first written locally (the build Mac's SSD), hashed, then copied to `<name>.tmp` on
-//! the NAS and renamed. The copy is verified on the NAS itself (SHA-256 over SSH, see `verify`)
-//! before any catalog references it, so a corrupt upload is never served.
+//! the NAS, read back past the client's cache and checked against its hash, and renamed into place
+//! (`store::naming::write_atomic`). A file already there is reused and touched, so GC sees it as
+//! in use. `verify` can also check uploads on the NAS itself (SHA-256 over SSH, run by hand).
+//!
+//! Several steps may run at once (the agent's job and a manual one): each records its own changes
+//! and merges them into the manifest on disk under a lock when it saves.
 
 use anyhow::{bail, Context, Result};
 use sha2::Digest;
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub struct Out {
     root: PathBuf,
     /// Logical name → content name of every file this build wrote or reused.
     pub manifest: BTreeMap<String, String>,
+    /// This run's changes to the manifest (None: removed), merged into the file when saving.
+    changes: BTreeMap<String, Option<String>>,
+    /// Uploads this run checked (no longer pending), likewise.
+    checked: std::collections::BTreeSet<String>,
     /// Content name → SHA-256 (hex) of uploads not yet verified on the NAS.
     pending: BTreeMap<String, String>,
     manifest_path: PathBuf,
@@ -50,7 +58,7 @@ impl Out {
             Ok(b) => serde_json::from_slice(&b).unwrap_or_default(),
             Err(_) => BTreeMap::new(),
         };
-        Ok(Out { root: root.to_path_buf(), manifest, pending, manifest_path, scratch: scratch.to_path_buf() })
+        Ok(Out { root: root.to_path_buf(), manifest, changes: BTreeMap::new(), checked: Default::default(), pending, manifest_path, scratch: scratch.to_path_buf() })
     }
 
     pub fn root(&self) -> &Path {
@@ -73,7 +81,8 @@ impl Out {
     }
 
     /// Upload a local file under `logical` (the local file is removed afterwards). Returns its
-    /// content name. An identical file already on the NAS is reused, not copied again.
+    /// content name. An identical file already on the NAS is reused (and touched), not copied again;
+    /// one of the same name with another size is an error (content-named files are never rewritten).
     pub fn put_file(&mut self, logical: &str, ext: &str, local: &Path) -> Result<String> {
         if logical.contains('.') {
             bail!("logical names have no dots: {logical}");
@@ -81,26 +90,22 @@ impl Out {
         let h = store::naming::hash16_file(local)?;
         let name = store::naming::content_name(logical, &h, ext);
         let dest = self.root.join(&name);
-        let size = std::fs::metadata(local)?.len();
-        let exists = std::fs::metadata(&dest).map(|m| m.len() == size).unwrap_or(false);
-        if !exists {
-            let sha = sha256_file(local)?;
-            if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)?;
+        let existed = dest.exists();
+        let sha = if existed { None } else { Some(sha256_file(local)?) };
+        let got = store::naming::write_atomic(&self.root, logical, ext, store::naming::Source::File(local))?;
+        anyhow::ensure!(got == name, "{logical}: wrote {got}, expected {name}");
+        if existed {
+            // In use again: a fresh time keeps GC's age rule from taking it before a catalog does.
+            if let Ok(f) = std::fs::File::options().write(true).open(&dest) {
+                f.set_modified(std::time::SystemTime::now()).ok();
             }
-            let tmp = self.root.join(format!("{name}.tmp"));
-            {
-                let mut src = std::fs::File::open(local)?;
-                let mut dst = std::fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
-                std::io::copy(&mut src, &mut dst)?;
-                dst.flush()?;
-                dst.sync_all()?;
-            }
-            std::fs::rename(&tmp, &dest)?;
+        }
+        if let Some(sha) = sha {
             self.pending.insert(name.clone(), sha);
         }
         std::fs::remove_file(local).ok();
         self.manifest.insert(logical.to_string(), name.clone());
+        self.changes.insert(logical.to_string(), Some(name.clone()));
         Ok(name)
     }
 
@@ -114,16 +119,38 @@ impl Out {
     /// Record a logical name as gone (its file stays until GC).
     pub fn remove(&mut self, logical: &str) {
         self.manifest.remove(logical);
+        self.changes.insert(logical.to_string(), None);
     }
 
-    pub fn save(&self) -> Result<()> {
-        let dir = self.manifest_path.parent().unwrap();
-        std::fs::create_dir_all(dir)?;
-        for (p, v) in [(&self.manifest_path, serde_json::to_vec_pretty(&self.manifest)?), (&dir.join("pending.json"), serde_json::to_vec_pretty(&self.pending)?)] {
-            let tmp = p.with_extension("json.tmp");
+    /// Writes this run's changes into the manifest on disk (re-read under a lock, so another step's
+    /// changes saved meanwhile are kept), and the unverified uploads likewise.
+    pub fn save(&mut self) -> Result<()> {
+        let dir = self.manifest_path.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&dir)?;
+        let _lock = BuildLock::take(&self.root)?;
+        let mut on_disk: BTreeMap<String, String> = match std::fs::read(&self.manifest_path) {
+            Ok(b) => serde_json::from_slice(&b).context("state/build/manifest.json")?,
+            Err(_) => BTreeMap::new(),
+        };
+        for (k, v) in &self.changes {
+            match v {
+                Some(n) => on_disk.insert(k.clone(), n.clone()),
+                None => on_disk.remove(k),
+            };
+        }
+        let pending_path = dir.join("pending.json");
+        let mut pending: BTreeMap<String, String> = std::fs::read(&pending_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        pending.extend(self.pending.clone());
+        pending.retain(|k, _| !self.checked.contains(k));
+        for (p, v) in [(&self.manifest_path, serde_json::to_vec_pretty(&on_disk)?), (&pending_path, serde_json::to_vec_pretty(&pending)?)] {
+            let tmp = p.with_extension(format!("json.{}.tmp", std::process::id()));
             std::fs::write(&tmp, v)?;
             std::fs::rename(&tmp, p)?;
         }
+        self.manifest = on_disk;
+        self.pending = pending;
+        self.changes.clear();
+        self.checked.clear();
         Ok(())
     }
 
@@ -160,6 +187,7 @@ impl Out {
         for n in &names {
             if !bad.contains(n) {
                 self.pending.remove(n);
+                self.checked.insert(n.clone());
             }
         }
         if !bad.is_empty() {
@@ -170,12 +198,34 @@ impl Out {
             cmd.status().ok();
             for n in &bad {
                 self.pending.remove(n);
-                self.manifest.retain(|_, v| v != n);
+                self.checked.insert(n.clone());
+                let gone: Vec<String> = self.manifest.iter().filter(|(_, v)| *v == n).map(|(k, _)| k.clone()).collect();
+                for k in gone {
+                    self.remove(&k);
+                }
             }
             self.save()?;
             bail!("{} uploads failed verification and were removed: {}", bad.len(), bad.join(", "));
         }
         self.save()?;
         Ok(ok)
+    }
+}
+
+/// An exclusive lock for saving a root's manifest, held on this Mac (the one writer, plan §3) in a
+/// local file named after the root: released when dropped.
+pub struct BuildLock(#[allow(dead_code)] std::fs::File);
+
+impl BuildLock {
+    pub fn take(root: &Path) -> Result<BuildLock> {
+        use std::os::fd::AsRawFd;
+        let key = store::naming::hash16(root.to_string_lossy().as_bytes());
+        let p = std::env::temp_dir().join(format!("scenic-build-{key}.lock"));
+        let f = std::fs::File::options().create(true).truncate(false).write(true).open(&p).with_context(|| format!("open {}", p.display()))?;
+        // SAFETY: flock on a descriptor we own; it blocks until the lock is ours.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            return Err(std::io::Error::last_os_error()).context("lock the build manifest");
+        }
+        Ok(BuildLock(f))
     }
 }

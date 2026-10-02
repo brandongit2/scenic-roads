@@ -128,19 +128,46 @@ pub fn find_root(mount: bool) -> Option<PathBuf> {
     None
 }
 
+/// A check of the share still waiting on a hung mount: no second one starts meanwhile.
+static CHECKING: AtomicBool = AtomicBool::new(false);
+
 /// Whether `root` answers within a few seconds (a stat on a worker thread; a hung share counts as
-/// away, and the thread is left to finish on its own).
+/// away, and its thread is left to finish on its own, the only one until it does).
 fn answers(root: &Path) -> bool {
+    if CHECKING.swap(true, Ordering::SeqCst) {
+        return false;
+    }
     let (tx, rx) = std::sync::mpsc::channel();
     let p = root.to_path_buf();
     std::thread::spawn(move || {
-        let _ = tx.send(std::fs::metadata(p.join("catalog")).is_ok());
+        let ok = std::fs::metadata(p.join("catalog")).is_ok();
+        CHECKING.store(false, Ordering::SeqCst);
+        let _ = tx.send(ok);
     });
     rx.recv_timeout(Duration::from_secs(8)).unwrap_or(false)
 }
 
+/// The agent's lock (one agent per Mac): an exclusive flock on a local file, held while it runs.
+pub struct AgentLock(#[allow(dead_code)] std::fs::File);
+
+impl AgentLock {
+    /// None when another agent holds it.
+    pub fn try_take(home: &Path) -> Result<Option<AgentLock>> {
+        use std::os::fd::AsRawFd;
+        std::fs::create_dir_all(home)?;
+        let f = std::fs::File::options().create(true).truncate(false).write(true).open(home.join("agent.lock"))?;
+        // SAFETY: flock on a descriptor we own.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Ok(None);
+        }
+        Ok(Some(AgentLock(f)))
+    }
+}
+
 pub struct Agent {
     o: Options,
+    /// Held unless another agent runs (then this one only plans and reports: a dry run).
+    _lock: Option<AgentLock>,
     host: String,
     app: String,
     started: u64,
@@ -151,11 +178,19 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(o: Options) -> Result<Agent> {
+    pub fn new(mut o: Options) -> Result<Agent> {
         std::fs::create_dir_all(&o.home).with_context(|| format!("create {}", o.home.display()))?;
+        let lock = AgentLock::try_take(&o.home)?;
+        if lock.is_none() {
+            anyhow::ensure!(o.dry_run, "another agent is running on this Mac (its lock is {})", o.home.join("agent.lock").display());
+            eprintln!("agent: another agent is running; planning only");
+        }
+        if lock.is_none() {
+            o.dry_run = true;
+        }
         let mem = std::fs::read(o.home.join("state.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let app = app_version(&o.bin);
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, o })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, _lock: lock, o })
     }
 
     fn record_path(&self) -> PathBuf {
@@ -198,7 +233,9 @@ impl Agent {
             libc::signal(libc::SIGTERM, on_signal as libc::sighandler_t);
             libc::signal(libc::SIGINT, on_signal as libc::sighandler_t);
         }
-        jobs::stop_orphan(&self.record_path());
+        if self._lock.is_some() {
+            jobs::stop_orphan(&self.record_path());
+        }
         loop {
             let quick = self.step()?;
             if self.o.once || STOP.load(Ordering::SeqCst) {
@@ -246,15 +283,12 @@ impl Agent {
                 std::fs::remove_file(self.record_path()).ok();
                 ended = true;
             } else if slept > 30 && r.spec.restart_after_sleep && r.spec.needs.nas {
-                // Open SMB handles often don't survive sleep: run the stage again from its inputs.
+                // Open SMB handles often don't survive sleep: stop it; the plan below starts it again
+                // from its completion markers once its conditions hold.
                 eprintln!("agent: slept {slept} s; restarting {}", r.spec.id);
-                let spec = r.spec.clone();
                 r.stop(Duration::from_secs(30));
                 self.running = None;
                 std::fs::remove_file(self.record_path()).ok();
-                if !self.o.dry_run {
-                    self.start(spec, &c)?;
-                }
             } else if let Some(why) = lapsed(&r.spec.needs, &c) {
                 if r.paused.is_none() {
                     eprintln!("agent: pausing {}: {why}", r.spec.id);
@@ -290,7 +324,13 @@ impl Agent {
                     waiting.push(Waiting { what: spec.what.clone(), why: "would start now (dry run)".into() });
                     break;
                 }
-                self.start(spec, &c)?;
+                let (id, what) = (spec.id.clone(), spec.what.clone());
+                if let Err(e) = self.start(spec, &c) {
+                    // It couldn't even start (a missing program, a full disk): retried later.
+                    eprintln!("agent: can't start {id}: {e:#}");
+                    self.finished(&id, &what, false, 0, format!("couldn't start: {e:#}"));
+                    continue;
+                }
                 break;
             }
         }
@@ -311,6 +351,11 @@ impl Agent {
             bad_recipes: bad,
         };
         let body = serde_json::to_vec_pretty(&status)?;
+        if self._lock.is_none() {
+            // Another agent writes the heartbeat; this one only reports.
+            eprintln!("{}", String::from_utf8_lossy(&body));
+            return Ok(ended);
+        }
         write_replace(&self.o.home.join("status.json"), &body).ok();
         if let Some(root) = &root {
             if let Err(e) = write_replace(&root.join("state/status.json"), &body) {

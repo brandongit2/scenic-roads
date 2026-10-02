@@ -46,8 +46,13 @@ cp target/release/server target/release/scenic target/release/scenic-build targe
 rsync -a web/dist/ $dest.tmp/web/
 rsync -a $fonts/ $dest.tmp/fonts/
 mv $dest.tmp $dest
-files=$(cd $dest && find . -type f ! -name .DS_Store | sed 's|^\./||' | sort | python3 -c "import json,sys;print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))")
+# The manifest: every file with its SHA-256 (the servers check their copies against it).
+manifest=$(cd $dest && find . -type f ! -name .DS_Store | sed 's|^\./||' | sort | python3 -c "
+import hashlib, json, sys
+files = [l.strip() for l in sys.stdin if l.strip()]
+sha = {f: hashlib.sha256(open(f, 'rb').read()).hexdigest() for f in files}
+print(json.dumps({'version': sys.argv[1], 'files': files, 'sha256': sha}))" "$version")
 [[ -f $NAS/app/current.json ]] && cp $NAS/app/current.json $NAS/app/previous.json
-print -r -- "{\"version\": \"$version\", \"files\": $files}" > $NAS/app/current.json.tmp
+print -r -- "$manifest" > $NAS/app/current.json.tmp
 mv $NAS/app/current.json.tmp $NAS/app/current.json
 echo "published $version"

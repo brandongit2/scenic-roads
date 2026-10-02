@@ -222,30 +222,31 @@ impl Data {
         Ok(Some(s))
     }
 
-    /// A unit's base pack with its road values ("6/32/21").
+    /// A unit's base pack with its road values ("6/32/21"). Cached by content: a new catalog's
+    /// pack for the same unit is another entry.
     pub fn base(&self, unit: &str) -> Result<Option<Arc<BaseView>>> {
         let cat = self.catalog();
         let (Some(b), Some(r)) = (cat.base.get(unit), cat.roads.get(unit)) else { return Ok(None) };
-        let key = format!("{b}|{r}");
+        let (Some(bc), Some(rc)) = (self.content(b), self.content(r)) else { return Ok(None) };
+        let key = format!("{bc}|{rc}");
         if let Some(v) = self.bases.lock().unwrap().get(&key) {
             return Ok(Some(v));
         }
-        let (Some(bc), Some(rc)) = (self.content(b), self.content(r)) else { return Ok(None) };
         let v = Arc::new(BaseView::new(SectView::open(self.src(&bc)?)?, SectView::open(self.src(&rc)?)?)?);
         self.bases.lock().unwrap().put(key, v.clone());
         Ok(Some(v))
     }
 
-    /// A z6 tile's hidata ("6/32/21").
+    /// A z6 tile's hidata ("6/32/21"), cached by content.
     pub fn hidata(&self, tile: &str) -> Result<Option<Arc<HiView>>> {
         let cat = self.catalog();
         let Some(l) = cat.hidata.get(tile) else { return Ok(None) };
-        if let Some(v) = self.his.lock().unwrap().get(l) {
+        let Some(content) = self.content(l) else { return Ok(None) };
+        if let Some(v) = self.his.lock().unwrap().get(&content) {
             return Ok(Some(v));
         }
-        let Some(content) = self.content(l) else { return Ok(None) };
         let v = Arc::new(HiView::new(SectView::open(self.src(&content)?)?)?);
-        self.his.lock().unwrap().put(l.clone(), v.clone());
+        self.his.lock().unwrap().put(content, v.clone());
         Ok(Some(v))
     }
 

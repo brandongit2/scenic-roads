@@ -124,10 +124,17 @@ pub fn run(root: &Path, local: Option<&Path>, today: &str, keep_days: u64) -> Re
         let blob = match known {
             Some(b) if blobs.join(&b).exists() => b,
             _ => {
-                let h = store::naming::hash16_file(&p)?;
+                // Copy first, then name the copy by its own hash: a file changing meanwhile can't end
+                // up under another content's name.
+                let tmp = blobs.join(format!(".incoming-{}.tmp", std::process::id()));
+                let n = std::fs::copy(&p, &tmp).with_context(|| format!("copy {}", p.display()))?;
+                let h = store::naming::hash16_file(&tmp)?;
                 let dst = blobs.join(&h);
-                if !dst.exists() {
-                    rep.new_bytes += copy_atomic(&p, &dst)?;
+                if dst.exists() {
+                    std::fs::remove_file(&tmp)?;
+                } else {
+                    std::fs::rename(&tmp, &dst)?;
+                    rep.new_bytes += n;
                     rep.new_blobs += 1;
                 }
                 h
@@ -173,6 +180,9 @@ fn prune(dir: &Path, today: &str, keep_days: u64) -> Result<(usize, usize)> {
     if let Ok(rd) = std::fs::read_dir(dir.join("blobs")) {
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
+            if n.starts_with('.') {
+                continue;
+            }
             if !live.contains(&n) {
                 std::fs::remove_file(e.path())?;
                 blobs_removed += 1;
@@ -193,6 +203,9 @@ fn mirror(dir: &Path, local: &Path, today: &str, keep_days: u64) -> Result<()> {
     }
     if let Ok(rd) = std::fs::read_dir(dir.join("blobs")) {
         for e in rd.flatten() {
+            if e.file_name().to_string_lossy().starts_with('.') {
+                continue;
+            }
             let dst = local.join("blobs").join(e.file_name());
             if !dst.exists() {
                 copy_atomic(&e.path(), &dst)?;

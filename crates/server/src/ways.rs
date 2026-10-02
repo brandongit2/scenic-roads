@@ -85,10 +85,16 @@ pub fn find_here(s: &AppState, id: u64, at: [f64; 2]) -> Option<(Arc<HiView>, He
     None
 }
 
-/// A way by OSM id and a point near it.
+/// A way by OSM id and a point near it. The "ways here" entry must name a way of that id in its
+/// owner's base pack (a mismatch would mean packs of different catalogs).
 pub fn find_way(s: &AppState, id: u64, at: [f64; 2]) -> Option<Found> {
     let (_, h) = find_here(s, id, at)?;
     let base = s.data.base(&unit_str(h.owner)).ok()??;
+    let w = base.ways().get(h.index as usize)?;
+    if w.id as u64 != id {
+        eprintln!("way {id}: the ways-here index points at way {} in {}", w.id, unit_str(h.owner));
+        return None;
+    }
     Some(Found { base, index: h.index })
 }
 

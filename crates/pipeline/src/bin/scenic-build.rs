@@ -360,10 +360,17 @@ fn lo(out: &mut Out, cache: &Path, only: &[String]) -> Result<()> {
 fn catalog(out: &mut Out) -> Result<()> {
     let mut layers: BTreeMap<String, LayerOut> = BTreeMap::new();
     let (mut base, mut roads, mut hidata, mut global, mut basemap) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), Vec::new());
+    // The basemap: the newest pass's worldwide archive when there is one, else today's (legacy)
+    // basemap and its parts; never both (the server merges every archive listed).
+    let world = out.manifest.keys().filter(|k| k.starts_with("layers/basemap/world-")).max().cloned();
     for logical in out.manifest.keys() {
         let parts: Vec<&str> = logical.split('/').collect();
         match parts.as_slice() {
-            ["layers", "basemap", _] => basemap.push(logical.clone()),
+            ["layers", "basemap", name] => {
+                if world.as_deref() == Some(logical.as_str()) || (world.is_none() && name.starts_with("legacy-")) {
+                    basemap.push(logical.clone());
+                }
+            }
             ["layers", layer, scope, key] => {
                 let u = Unit::parse(key).context("pack key")?;
                 let enc = match *layer {
@@ -422,10 +429,20 @@ fn catalog(out: &mut Out) -> Result<()> {
     }
     let meta: serde_json::Value = out.get("global/legacy/roads").and_then(|n| std::fs::read(out.path(n)).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let units: Vec<String> = base.keys().cloned().collect();
-    let files: BTreeMap<String, serde_json::Value> = out.manifest.iter().map(|(l, n)| {
-        let size = std::fs::metadata(out.path(n)).map(|m| m.len()).unwrap_or(0);
-        (l.clone(), serde_json::json!({"file": n, "size": size, "fmt": 1}))
-    }).collect();
+    // Only what the map reads: build sources (the planet's pieces, sets and road values) stay out,
+    // or every Mac's mirror would copy them. A file missing on the NAS stops the publish.
+    let served = |l: &str| {
+        (l.starts_with("layers/") && (!l.starts_with("layers/basemap/") || basemap.iter().any(|b| b == l)))
+            || l.starts_with("base/")
+            || l.starts_with("hidata/")
+            || l.starts_with("global/")
+            || global.values().any(|g| g == l)
+    };
+    let mut files: BTreeMap<String, serde_json::Value> = BTreeMap::new();
+    for (l, n) in out.manifest.iter().filter(|(l, _)| served(l)) {
+        let size = std::fs::metadata(out.path(n)).with_context(|| format!("{l}: {n} is missing on the NAS"))?.len();
+        files.insert(l.clone(), serde_json::json!({"file": n, "size": size, "fmt": 1}));
+    }
     let dir = out.root().join("catalog");
     std::fs::create_dir_all(&dir)?;
     let n = store::catalog::next_n(&dir)?;
