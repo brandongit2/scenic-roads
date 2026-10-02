@@ -49,7 +49,7 @@ $(DATA)/trees/poly/.done: regions.json dem/regionpolys.py
 
 # Binaries are order-only prerequisites of the data steps: editing code doesn't rebuild data
 # (delete an output to redo its step).
-target/release/extract target/release/tile target/release/server target/release/terrain target/release/scenic target/release/slope target/release/railfreq target/release/peaks: $(RUST_SRC)
+target/release/extract target/release/tile target/release/server target/release/terrain target/release/scenic-metrics target/release/slope target/release/railfreq target/release/peaks: $(RUST_SRC)
 	cargo build --release && touch target/release/{extract,tile,server,terrain,scenic,slope,railfreq,peaks}
 
 # 1. car-accessible roads + ferries, densified
@@ -78,12 +78,12 @@ $(BUILD)/grid.class.u8: $(BUILD)/terrain.tiles dem/landcover.py
 #    step's clean-up, run on its own first).
 $(BUILD)/final.i16: $(BUILD)/elev.f32 | target/release/tile
 	./target/release/tile $(BUILD) elev
-$(BUILD)/samples.bin: $(BUILD)/final.i16 $(BUILD)/terrain.tiles | target/release/scenic
-	./target/release/scenic $(BUILD) prep
+$(BUILD)/samples.bin: $(BUILD)/final.i16 $(BUILD)/terrain.tiles | target/release/scenic-metrics
+	./target/release/scenic-metrics $(BUILD) prep
 $(BUILD)/roadside.u8: $(BUILD)/samples.bin
-	./target/release/scenic $(BUILD) canopy
+	./target/release/scenic-metrics $(BUILD) canopy
 $(BUILD)/samples.metrics.u8: $(BUILD)/roadside.u8 $(BUILD)/grid.class.u8
-	./target/release/scenic $(BUILD) view
+	./target/release/scenic-metrics $(BUILD) view
 
 # 6. designations from the official registers (see README), rasterised areas, road flags
 $(DATA)/areas/areas.geojsonseq: $(OSM)/merged.osm.pbf
@@ -111,11 +111,11 @@ $(BUILD)/grid.areas.u8: $(HER)/federal.json $(HER)/crhp.json $(DATA)/areas/areas
 $(DATA)/buildings/.done: regions.json
 	$(UV) buildings.py && touch $(CURDIR)/$@
 $(BUILD)/samples.bld.u8: $(BUILD)/samples.metrics.u8 $(DATA)/buildings/.done
-	./target/release/scenic $(BUILD) buildings $(DATA)/buildings
+	./target/release/scenic-metrics $(BUILD) buildings $(DATA)/buildings
 $(BUILD)/scenic.u8: $(BUILD)/samples.metrics.u8 $(BUILD)/samples.bld.u8 $(BUILD)/grid.areas.u8
-	./target/release/scenic $(BUILD) flags
+	./target/release/scenic-metrics $(BUILD) flags
 heritage:
-	$(UV) heritage.py ../$(BUILD) && ./target/release/scenic $(BUILD) flags && ./target/release/tile $(BUILD) 4 14
+	$(UV) heritage.py ../$(BUILD) && ./target/release/scenic-metrics $(BUILD) flags && ./target/release/tile $(BUILD) 4 14
 
 # 7. elevation clean-up, climbs, tile pyramid (with drape heights and scenic channels)
 $(BUILD)/roads.tiles: $(BUILD)/elev.f32 $(BUILD)/scenic.u8 | target/release/tile

@@ -15,10 +15,10 @@ use store::iopool::IoPool;
 use store::pack::PackIndex;
 
 /// The NAS share and the project folder on it.
-pub const SMB_URL: &str = "smb://brandontsang@fishandchips/personal";
-pub const NAS_HOST: &str = "fishandchips";
-pub const NAS_SHARE: &str = "personal";
-pub const PROJECT: &str = "projects/scenic-roads";
+pub const SMB_URL: &str = store::nas::SMB_URL;
+pub const NAS_HOST: &str = store::nas::HOST;
+pub const NAS_SHARE: &str = store::nas::SHARE;
+pub const PROJECT: &str = store::nas::PROJECT;
 
 /// A small bounded cache (least recently inserted out first).
 struct Bounded<V> {

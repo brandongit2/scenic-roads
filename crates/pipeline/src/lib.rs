@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod basepack;
 pub mod buildings;
 pub mod chain;

@@ -13,6 +13,13 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// The NAS: its host, the share holding the project, the project folder in it, and the URL to
+/// mount the share by (the password comes from the Keychain).
+pub const HOST: &str = "fishandchips";
+pub const SHARE: &str = "personal";
+pub const PROJECT: &str = "projects/scenic-roads";
+pub const SMB_URL: &str = "smb://brandontsang@fishandchips/personal";
+
 /// A mounted SMB share.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mount {

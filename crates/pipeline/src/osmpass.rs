@@ -369,7 +369,33 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         std::fs::remove_file(&filtered).ok();
         std::fs::remove_dir_all(&p6).ok();
     }
+    // The pass is complete: its summary marks it so (the agent's `pass_done`).
+    if out.get(&format!("sources/osm/{date}/pass")).is_none() {
+        let summary = serde_json::json!({ "date": date, "units": pieces.pieces.len() });
+        out.put_bytes(&format!("sources/osm/{date}/pass"), "json", &serde_json::to_vec_pretty(&summary)?)?;
+        out.save()?;
+    }
     Ok(())
+}
+
+/// Whether the pass from the planet of `date` is complete on the NAS (its `pass.<hash>.json`).
+pub fn pass_done(root: &Path, date: &str) -> bool {
+    std::fs::read_dir(root.join("sources/osm").join(date))
+        .map(|rd| rd.flatten().any(|e| e.file_name().to_str().is_some_and(|n| n.starts_with("pass.") && n.ends_with(".json"))))
+        .unwrap_or(false)
+}
+
+/// The date of the newest complete pass on the NAS.
+pub fn latest_pass(root: &Path) -> Option<String> {
+    let dir = root.join("sources/osm");
+    let mut dates: Vec<String> = std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.len() == 10 && n.as_bytes()[4] == b'-' && pass_done(root, n))
+        .collect();
+    dates.sort();
+    dates.pop()
 }
 
 /// A copy of a scratch file for `put_file`, which consumes its input.

@@ -6,6 +6,7 @@
 /tools/launcher/scenic-launcher
 !/tools/nas/
 !/tools/check/
+!/tools/app/
 node_modules/
 /web/dist/
 .venv/

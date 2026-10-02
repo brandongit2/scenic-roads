@@ -1,0 +1,528 @@
+//! The build agent (docs/plan.md §8): `scenic agent`, a login item on the build Mac under the
+//! launcher. It works out what needs doing, runs one job at a time when that job's conditions
+//! hold (mains power, the NAS), pauses it when they lapse, and writes a heartbeat the app shows.
+//!
+//! Each loop (every 20 s, sooner when a job ends):
+//! 1. conditions: power, the NAS (mounting it when missing), the user's activity, sleep;
+//! 2. the running job: finished (recorded; failures retried with a growing delay), paused or
+//!    resumed, restarted after sleep when it touches the NAS;
+//! 3. otherwise the first runnable job of the plan: the OSM pass when the NAS holds a newer planet,
+//!    then backups and cleanup once a day (later phases add layers, units and packs);
+//! 4. the heartbeat: `state/status.json` on the NAS, and a copy in the agent's local folder.
+//!
+//! Nothing depends on the build Mac being available: until work is done, the map serves the last
+//! catalog. A job is a child process (see `jobs`) that resumes from its own completion markers, so
+//! stopping it at any time loses at most its current stage.
+
+pub mod backup;
+pub mod cond;
+pub mod gc;
+pub mod jobs;
+pub mod recipes;
+
+use anyhow::{Context, Result};
+use cond::{Conditions, SleepWatch};
+use jobs::{now_s, JobSpec, Needs, Running};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+
+/// Free space the OSM pass needs on the build Mac (the planet, the filtered file and the pieces).
+pub const PASS_SPACE: u64 = 150 << 30;
+
+/// Where things are.
+#[derive(Clone, Debug)]
+pub struct Options {
+    /// The NAS project folder; None: find the share (and mount it when missing).
+    pub root: Option<PathBuf>,
+    /// The agent's local folder (`~/Library/Application Support/scenic/agent`).
+    pub home: PathBuf,
+    /// The folder of the programs jobs run (`scenic-build`, `extract`): the agent's own.
+    pub bin: PathBuf,
+    /// Plan and report, start nothing.
+    pub dry_run: bool,
+    /// One loop, then exit (tests, `scenic agent --once`).
+    pub once: bool,
+}
+
+/// The heartbeat (`state/status.json`), what the app's status bar and `scenic status` show.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Status {
+    pub host: String,
+    pub pid: u32,
+    /// The app version the agent runs (its folder under app/), or "development".
+    pub app: String,
+    /// Seconds since the epoch.
+    pub beat: u64,
+    pub started: u64,
+    pub conditions: Conditions,
+    pub job: Option<JobView>,
+    /// Work that can't run yet, and why, in plain words.
+    pub waiting: Vec<Waiting>,
+    /// The last jobs to finish, newest first.
+    pub recent: Vec<Done>,
+    /// Region recipes, and the ones that don't parse.
+    pub regions: Vec<recipes::Recipe>,
+    pub bad_recipes: Vec<(String, String)>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JobView {
+    pub id: String,
+    pub what: String,
+    pub started: u64,
+    /// Why it's paused, when it is.
+    pub paused: Option<String>,
+    /// Its log's last lines.
+    pub tail: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Waiting {
+    pub what: String,
+    pub why: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Done {
+    pub id: String,
+    pub what: String,
+    pub ok: bool,
+    pub ended: u64,
+    pub secs: u64,
+    /// The log's last lines when it failed.
+    pub note: String,
+}
+
+/// What the agent remembers between runs (its local folder's `state.json`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct Memory {
+    /// Per job id: failures in a row and when it may run again.
+    retry: BTreeMap<String, (u32, u64)>,
+    /// When each daily job last succeeded (seconds since the epoch).
+    last_ok: BTreeMap<String, u64>,
+    recent: Vec<Done>,
+}
+
+static STOP: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_signal(_: libc::c_int) {
+    STOP.store(true, Ordering::SeqCst);
+}
+
+/// The NAS project folder: the share's mount (mounting it when missing and `mount` is set).
+pub fn find_root(mount: bool) -> Option<PathBuf> {
+    use store::nas::{find_mount, HOST, PROJECT, SHARE, SMB_URL};
+    if let Some(m) = find_mount(HOST, SHARE) {
+        return Some(m.point.join(PROJECT));
+    }
+    if mount {
+        if let Err(e) = store::nas::mount(SMB_URL, Duration::from_secs(60)) {
+            eprintln!("agent: mounting the NAS: {e:#}");
+        }
+        return find_mount(HOST, SHARE).map(|m| m.point.join(PROJECT));
+    }
+    None
+}
+
+/// Whether `root` answers within a few seconds (a stat on a worker thread; a hung share counts as
+/// away, and the thread is left to finish on its own).
+fn answers(root: &Path) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let p = root.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tx.send(std::fs::metadata(p.join("catalog")).is_ok());
+    });
+    rx.recv_timeout(Duration::from_secs(8)).unwrap_or(false)
+}
+
+pub struct Agent {
+    o: Options,
+    host: String,
+    app: String,
+    started: u64,
+    mem: Memory,
+    running: Option<Running>,
+    sleep: SleepWatch,
+    last_mount_try: Option<Instant>,
+}
+
+impl Agent {
+    pub fn new(o: Options) -> Result<Agent> {
+        std::fs::create_dir_all(&o.home).with_context(|| format!("create {}", o.home.display()))?;
+        let mem = std::fs::read(o.home.join("state.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let app = app_version(&o.bin);
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, o })
+    }
+
+    fn record_path(&self) -> PathBuf {
+        self.o.home.join("job.json")
+    }
+
+    fn save(&self) {
+        if let Ok(b) = serde_json::to_vec_pretty(&self.mem) {
+            let tmp = self.o.home.join("state.json.tmp");
+            if std::fs::write(&tmp, b).is_ok() {
+                std::fs::rename(&tmp, self.o.home.join("state.json")).ok();
+            }
+        }
+    }
+
+    /// The NAS root, when mounted and answering; tries to mount it every five minutes otherwise.
+    fn root(&mut self) -> Option<PathBuf> {
+        let root = match &self.o.root {
+            Some(r) => Some(r.clone()),
+            None => {
+                let try_mount = self.last_mount_try.is_none_or(|t| t.elapsed() > Duration::from_secs(300));
+                let r = find_root(false).or_else(|| {
+                    if try_mount {
+                        self.last_mount_try = Some(Instant::now());
+                        find_root(true)
+                    } else {
+                        None
+                    }
+                });
+                r
+            }
+        };
+        root.filter(|r| answers(r))
+    }
+
+    /// Runs until stopped (SIGTERM, SIGINT), or for one loop with `once`.
+    pub fn run(&mut self) -> Result<()> {
+        // SAFETY: the handler only stores to an atomic.
+        unsafe {
+            libc::signal(libc::SIGTERM, on_signal as libc::sighandler_t);
+            libc::signal(libc::SIGINT, on_signal as libc::sighandler_t);
+        }
+        jobs::stop_orphan(&self.record_path());
+        loop {
+            let quick = self.step()?;
+            if self.o.once || STOP.load(Ordering::SeqCst) {
+                break;
+            }
+            // A newer app is in place and nothing runs: exit, and the launcher starts the new one.
+            if self.running.is_none() && self.newer_app() {
+                eprintln!("agent: a newer app is installed; restarting into it");
+                break;
+            }
+            let wait = if quick { 2 } else { 20 };
+            for _ in 0..wait {
+                if STOP.load(Ordering::SeqCst) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        }
+        if let Some(mut r) = self.running.take() {
+            eprintln!("agent: stopping {}", r.spec.id);
+            r.stop(Duration::from_secs(30));
+            std::fs::remove_file(self.record_path()).ok();
+        }
+        Ok(())
+    }
+
+    /// One loop; true when a job just ended (look again soon).
+    fn step(&mut self) -> Result<bool> {
+        let slept = self.sleep.slept();
+        let root = self.root();
+        let c = Conditions { ac: cond::on_ac(), nas: root.is_some(), idle_s: cond::idle_seconds() };
+        let mut waiting: Vec<Waiting> = Vec::new();
+        let mut ended = false;
+
+        // The running job.
+        if let Some(r) = self.running.as_mut() {
+            if let Some(st) = r.poll()? {
+                let secs = r.elapsed().as_secs();
+                let ok = st.success();
+                let note = if ok { String::new() } else { format!("{st}\n{}", jobs::tail(&r.log, 20)) };
+                let (id, what) = (r.spec.id.clone(), r.spec.what.clone());
+                eprintln!("agent: {id} {} after {secs} s", if ok { "finished" } else { "failed" });
+                self.finished(&id, &what, ok, secs, note);
+                self.running = None;
+                std::fs::remove_file(self.record_path()).ok();
+                ended = true;
+            } else if slept > 30 && r.spec.restart_after_sleep && r.spec.needs.nas {
+                // Open SMB handles often don't survive sleep: run the stage again from its inputs.
+                eprintln!("agent: slept {slept} s; restarting {}", r.spec.id);
+                let spec = r.spec.clone();
+                r.stop(Duration::from_secs(30));
+                self.running = None;
+                std::fs::remove_file(self.record_path()).ok();
+                if !self.o.dry_run {
+                    self.start(spec, &c)?;
+                }
+            } else if let Some(why) = lapsed(&r.spec.needs, &c) {
+                if r.paused.is_none() {
+                    eprintln!("agent: pausing {}: {why}", r.spec.id);
+                }
+                r.pause(&why);
+            } else if r.paused.is_some() {
+                eprintln!("agent: resuming {}", r.spec.id);
+                r.resume();
+            }
+        }
+
+        // The plan: start the first job that can run.
+        let plan = match &root {
+            Some(root) => self.plan(root, &c, &mut waiting),
+            None => {
+                waiting.push(Waiting { what: "All building".into(), why: "the NAS isn't reachable (away from home, or it's off)".into() });
+                Vec::new()
+            }
+        };
+        if self.running.is_none() {
+            for spec in plan {
+                if let Some(why) = lapsed(&spec.needs, &c) {
+                    waiting.push(Waiting { what: spec.what.clone(), why });
+                    continue;
+                }
+                if let Some(&(n, until)) = self.mem.retry.get(&spec.id) {
+                    if now_s() < until {
+                        waiting.push(Waiting { what: spec.what.clone(), why: format!("failed {n} time{} in a row; trying again in {} min", if n == 1 { "" } else { "s" }, (until - now_s()).div_ceil(60)) });
+                        continue;
+                    }
+                }
+                if self.o.dry_run {
+                    waiting.push(Waiting { what: spec.what.clone(), why: "would start now (dry run)".into() });
+                    break;
+                }
+                self.start(spec, &c)?;
+                break;
+            }
+        }
+
+        // The heartbeat.
+        let (regions, bad) = root.as_ref().map(|r| recipes::load(&r.join("inputs/regions"))).unwrap_or_default();
+        let status = Status {
+            host: self.host.clone(),
+            pid: std::process::id(),
+            app: self.app.clone(),
+            beat: now_s(),
+            started: self.started,
+            conditions: c,
+            job: self.running.as_ref().map(|r| JobView { id: r.spec.id.clone(), what: r.spec.what.clone(), started: r.started, paused: r.paused.clone(), tail: jobs::tail(&r.log, 3) }),
+            waiting,
+            recent: self.mem.recent.clone(),
+            regions,
+            bad_recipes: bad,
+        };
+        let body = serde_json::to_vec_pretty(&status)?;
+        write_replace(&self.o.home.join("status.json"), &body).ok();
+        if let Some(root) = &root {
+            if let Err(e) = write_replace(&root.join("state/status.json"), &body) {
+                eprintln!("agent: heartbeat: {e:#}");
+            }
+        }
+        Ok(ended)
+    }
+
+    fn start(&mut self, spec: JobSpec, c: &Conditions) -> Result<()> {
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+        // Half the cores while the user is active, all of them when away.
+        let threads = if c.user_active() { (cores / 2).max(1) } else { cores };
+        let log = self.o.home.join("logs").join(format!("{}.log", spec.id.replace([' ', '/'], "-")));
+        eprintln!("agent: starting {} ({threads} threads)", spec.id);
+        self.running = Some(Running::start(spec, threads, log, &self.record_path())?);
+        Ok(())
+    }
+
+    fn finished(&mut self, id: &str, what: &str, ok: bool, secs: u64, note: String) {
+        if ok {
+            self.mem.retry.remove(id);
+            self.mem.last_ok.insert(id.to_string(), now_s());
+        } else {
+            let n = self.mem.retry.get(id).map(|r| r.0).unwrap_or(0) + 1;
+            // 10 min, 20, 40 … up to 6 h.
+            let delay = (600u64 << (n - 1).min(6)).min(6 * 3600);
+            self.mem.retry.insert(id.to_string(), (n, now_s() + delay));
+        }
+        self.mem.recent.insert(0, Done { id: id.into(), what: what.into(), ok, ended: now_s(), secs, note });
+        self.mem.recent.truncate(20);
+        self.save();
+    }
+
+    /// Due when it last succeeded more than `every` ago (or never).
+    fn due(&self, id: &str, every: Duration) -> bool {
+        self.mem.last_ok.get(id).is_none_or(|&t| now_s().saturating_sub(t) >= every.as_secs())
+    }
+
+    /// The work there is, in order (docs/plan.md §8, Order).
+    fn plan(&self, root: &Path, _c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+        let mut out = Vec::new();
+        let build = self.o.bin.join("scenic-build");
+        let me = self.o.bin.join("scenic");
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+
+        // 1. The OSM pass, when the NAS holds a newer planet than the last complete pass.
+        let have = crate::osmpass::latest_pass(root);
+        if let Ok(Some((planet, date))) = crate::osmpass::newer_planet(root, have.as_deref()) {
+            let what = format!("OpenStreetMap pass (planet of {date})");
+            let scratch = self.o.home.join("scratch").join(format!("osm-{date}"));
+            let jar = root.join("sources/basemap/planetiler.jar");
+            let free = cond::free_bytes(&self.o.home).unwrap_or(0);
+            let started = scratch.exists();
+            if !jar.exists() {
+                waiting.push(Waiting { what, why: "sources/basemap/planetiler.jar is missing on the NAS".into() });
+            } else if !started && free < PASS_SPACE {
+                waiting.push(Waiting { what, why: format!("needs {} GB free on this Mac ({} GB free)", PASS_SPACE >> 30, free >> 30) });
+            } else {
+                out.push(JobSpec {
+                    id: format!("osm-pass {date}"),
+                    what,
+                    cmd: vec![
+                        s(&build),
+                        "osm-pass".into(),
+                        "--root".into(),
+                        s(root),
+                        "--scratch".into(),
+                        s(&scratch),
+                        "--planet".into(),
+                        s(&planet),
+                        "--date".into(),
+                        date,
+                        "--extract".into(),
+                        s(&self.o.bin.join("extract")),
+                        "--planetiler".into(),
+                        s(&jar),
+                    ],
+                    needs: Needs { ac: true, nas: true },
+                    restart_after_sleep: true,
+                });
+            }
+        }
+
+        // Later phases: global-source layers for new coverage, then per wave base(U) and pack(T)
+        // and a catalog, then rankings.
+
+        // Daily: the user's folders backed up, replaced files removed.
+        if self.due("backup", Duration::from_secs(86400)) {
+            out.push(JobSpec {
+                id: "backup".into(),
+                what: "Backing up translations, descriptions and inputs".into(),
+                cmd: vec![s(&me), "backup".into(), "--root".into(), s(root), "--local".into(), s(&self.o.home.join("backups"))],
+                needs: Needs { ac: false, nas: true },
+                restart_after_sleep: true,
+            });
+        }
+        if self.due("gc", Duration::from_secs(86400)) {
+            out.push(JobSpec {
+                id: "gc".into(),
+                what: "Removing replaced files from the NAS".into(),
+                cmd: vec![s(&me), "gc".into(), "--root".into(), s(root)],
+                needs: Needs { ac: false, nas: true },
+                restart_after_sleep: true,
+            });
+        }
+        out
+    }
+
+    /// A newer app is installed locally (`../current` points elsewhere than the agent's folder).
+    fn newer_app(&self) -> bool {
+        let Some(apps) = self.o.bin.parent() else { return false };
+        if self.app == "development" {
+            return false;
+        }
+        std::fs::read_link(apps.join("current")).ok().and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned())).is_some_and(|cur| cur != self.app)
+    }
+}
+
+/// Why a job can't run under `c`, if it can't.
+fn lapsed(n: &Needs, c: &Conditions) -> Option<String> {
+    if n.nas && !c.nas {
+        return Some("the NAS isn't reachable".into());
+    }
+    if n.ac && !c.ac {
+        return Some("on battery: waiting for mains power".into());
+    }
+    None
+}
+
+/// The app version of the programs in `bin` (`…/app/<version>/`), or "development".
+fn app_version(bin: &Path) -> String {
+    let canon = bin.canonicalize().unwrap_or_else(|_| bin.to_path_buf());
+    match (canon.parent().and_then(|p| p.file_name()), canon.file_name()) {
+        (Some(app), Some(v)) if app == "app" => v.to_string_lossy().into_owned(),
+        _ => "development".into(),
+    }
+}
+
+/// Writes a small file that is replaced each time (status files), through a `.tmp` and a rename.
+fn write_replace(p: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
+    std::fs::rename(&tmp, p).with_context(|| format!("rename to {}", p.display()))?;
+    Ok(())
+}
+
+/// The status a `scenic status` shows: the NAS's heartbeat, else this Mac's copy.
+pub fn read_status(root: Option<&Path>, home: &Path) -> Option<Status> {
+    root.and_then(|r| std::fs::read(r.join("state/status.json")).ok())
+        .or_else(|| std::fs::read(home.join("status.json")).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn agent(root: &Path, home: &Path) -> Agent {
+        Agent::new(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/nonexistent/bin"), dry_run: true, once: true }).unwrap()
+    }
+
+    #[test]
+    fn plans_daily_jobs_and_writes_a_heartbeat() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        std::fs::create_dir_all(root.join("inputs/regions")).unwrap();
+        recipes::add(&root.join("inputs/regions"), &recipes::Recipe { id: "x".into(), name: "X".into(), outline: vec!["osm:1".into()] }).unwrap();
+        let mut a = agent(&root, &home);
+        a.step().unwrap();
+        let st = read_status(Some(&root), &home).unwrap();
+        assert_eq!(st.regions.len(), 1);
+        assert!(st.conditions.nas);
+        assert!(st.waiting.iter().any(|w| w.what.starts_with("Backing up")), "{:?}", st.waiting);
+        // Once backed up today, it isn't due.
+        a.mem.last_ok.insert("backup".into(), now_s());
+        let mut w = Vec::new();
+        assert!(!a.plan(&root, &st.conditions, &mut w).iter().any(|j| j.id == "backup"));
+    }
+
+    #[test]
+    fn osm_pass_waits_for_space_or_runs() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("sources/osm/2026-09-28")).unwrap();
+        std::fs::write(root.join("sources/osm/2026-09-28/planet.osm.pbf"), b"x").unwrap();
+        std::fs::create_dir_all(root.join("sources/basemap")).unwrap();
+        std::fs::write(root.join("sources/basemap/planetiler.jar"), b"x").unwrap();
+        let a = agent(&root, &home);
+        let mut w = Vec::new();
+        let plan = a.plan(&root, &Conditions { ac: true, nas: true, idle_s: 0 }, &mut w);
+        let free = cond::free_bytes(&home).unwrap_or(0);
+        if free >= PASS_SPACE {
+            assert!(plan.iter().any(|j| j.id == "osm-pass 2026-09-28"));
+        } else {
+            assert!(w.iter().any(|x| x.why.contains("GB free")), "{w:?}");
+        }
+        // A complete pass of that planet: nothing to do.
+        std::fs::write(root.join("sources/osm/2026-09-28/pass.0123456789abcdef.json"), b"{}").unwrap();
+        let mut w = Vec::new();
+        assert!(!a.plan(&root, &Conditions::default(), &mut w).iter().any(|j| j.id.starts_with("osm-pass")));
+    }
+
+    #[test]
+    fn conditions_gate_jobs() {
+        let n = Needs { ac: true, nas: true };
+        assert!(lapsed(&n, &Conditions { ac: true, nas: true, idle_s: 0 }).is_none());
+        assert!(lapsed(&n, &Conditions { ac: false, nas: true, idle_s: 0 }).unwrap().contains("battery"));
+        assert!(lapsed(&n, &Conditions { ac: true, nas: false, idle_s: 0 }).unwrap().contains("NAS"));
+    }
+}
