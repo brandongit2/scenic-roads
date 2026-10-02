@@ -2,7 +2,7 @@
 
 **Version 6**, 2026-10-02: v5 after the fourth Opus review (§13). Implementation started on the
 user's go-ahead; Opus reviews at each phase may amend this plan when an unforeseen constraint
-justifies it (record the change in §13).
+justifies it (record the change in §13). Amended in phases 1–2 (§13, Implementation).
 
 - Owner: Claude. The user asked me to own the design, to treat their earlier requirements as
   malleable, and to prefer correctness to speed (fix rough edges rather than work around them).
@@ -101,8 +101,8 @@ rewritten.
 - The catalog is the only index: one zstd JSON per publish, with a checksum line. Readers take the
   highest complete one.
 
-**Deletions go through SSH on the NAS** (`rm`), never SMB: SMB deletions land in the share's Recycle
-Bin and would pile up replaced packs.
+**Deletions go through SMB.** On this share they're permanent (tested 2026-10-02: a file deleted over
+SMB leaves nothing in the Recycle Bin), and the build Mac can't use SSH unattended (§13).
 
 **Packs, never one file per tile.** SMB manages about 80 random reads per second per file.
 - **Our layers** (roads, rails, terrain, slope, trees, labels, overlays, landmarks, stations) use
@@ -121,7 +121,7 @@ Bin and would pile up replaced packs.
 - the user's folders.
 
 **GC** keeps every file that any catalog from the last 14 days references, and every file under 14
-days old (in-flight work). It deletes over SSH.
+days old (in-flight work). It deletes over SMB, only in the folders catalogs index.
 
 **Backups:** when the user's folders or `inputs/` change, the agent keeps a dated copy for 30 days
 under `state/backups/`, mirrored to the build Mac. Everything else can be regenerated. (A separate
@@ -223,7 +223,8 @@ which defaults each region uses.
 
 1. **The NAS fetches the planet.** `nas/fetch-planet.sh` downloads the newest dated planet from a
    mirror, resuming after any interruption, checks its MD5 and renames it into `sources/osm/<date>/`.
-   The agent starts it over SSH when a pass is due; it runs on the NAS on its own.
+   DSM's Task Scheduler runs it daily (it does nothing until the newest planet is six months old,
+   or `nas/fetch-now` exists, which the agent can create over SMB); it runs on the NAS on its own.
 2. The M4 copies the planet to its SSD (resumable, ~30 min).
 3. `osmium tags-filter`, generous, from the filters every step declares:
    - (a) what the pipeline reads, including `landuse=forest` and the buildings the heritage step
@@ -451,7 +452,7 @@ At each phase's end an Opus agent reviews the work against this plan.
    - Both Macs run the published server through the launcher. Compare with the legacy server
      (golden responses, screenshots), and measure performance against the baseline.
 2. **Agent and moves.** The agent (recipes, heartbeat, scheduler with conditions, gated app
-   publishing, GC over SSH); move both Macs' project data to the NAS and delete local copies
+   publishing, GC); move both Macs' project data to the NAS and delete local copies
    (approved); `keys.env` to `inputs/`; descriptions to `descriptions/`; remove the empty
    `road-elevations` folder.
 3. **The OSM pass and global-source layers:** filter ratios, the pass (pieces, sets, road values,
@@ -484,7 +485,8 @@ At each phase's end an Opus agent reviews the work against this plan.
 
 ## 12. Answers to the review's questions (2026-10-02)
 
-- `personal` has its Recycle Bin on and no snapshots: deletions go over SSH; a separate share is
+- `personal` has its Recycle Bin on and no snapshots, but SMB deletions bypass it (tested): GC
+  deletes over SMB; a separate share is
   offered, not assumed.
 - No map freeze: phase 1 serves today's data in the new formats on both Macs.
 - The new chaining's lengths, highlights and drives differ from today's; compared by distribution.
@@ -522,3 +524,31 @@ translations applied when serving; an always-on server and a Regions panel.
 **v4 and earlier:** everything the map reads stored by area; one worldwide basemap; the M4 as the
 only writer; numbered catalogs; per-tile ETags; terrain from AWS with a sea-mask clamp and a
 latitude cap; format versions read two at a time.
+
+**Implementation (phases 1–2, 2026-10-02):**
+- **No SSH from the build Mac.** 1Password asks for every new SSH session, so nothing unattended
+  uses it: GC deletes over SMB; uploads are checked by `write_atomic`'s read-back (the NAS-side
+  SHA-256 check, `scenic-build verify`, is a manual extra from an app Mac); the planet fetch runs
+  from DSM's Task Scheduler.
+- **Units are z6 tiles** for now; the z7/z8 split comes with phase 4 if a dense unit needs it.
+- **Failures are never cached.** A read the NAS can't answer is a 503 (a versioned 2xx is cached for
+  a year), and nothing built from a failed read is kept: details, layer files, basemap archives,
+  whole roads. NAS files are read in 1 MB pieces with their handles kept open, so a busy NAS doesn't
+  trip the circuit breaker on one big read.
+- **Names:** separate places and roads tables per area (road names read the roads table first,
+  everything else the places table, each falling back to the other); `todo`/`skipped` lines are
+  ignored; a sub already among main's parts is dropped. Basemap ETags take the areas within a tile
+  of the tile (Planetiler's label buffer). URL versions of named data include the translations
+  version.
+- **Programs:** `scenic` is the user's command and the agent; the legacy analysis binary is
+  `scenic-metrics`; the published app carries `server`, `scenic`, `scenic-build` and `extract`.
+- **The agent** (`pipeline::agent`): one job at a time as a child process group (utility priority,
+  `caffeinate -s -w`), SIGSTOP/SIGCONT on conditions, restarted after sleep when it touches the NAS,
+  failures retried after 10 min doubling to 6 h, orphans of a crashed agent stopped at start; daily
+  content-addressed backups (30 days, mirrored locally) and GC; the OSM pass when a newer planet is
+  complete on the NAS and 150 GB are free. Later phases add their jobs to its plan.
+- **Golden test** (`golden`, legacy server vs new): Singapore on the converted data: 400/400 ways
+  equal, profile elevations equal at all shared vertices, layer counts and details equal.
+- **Testing note:** a freshly built server started from the desktop app's preview waits on macOS's
+  network-volume permission prompt; test servers run from the shell, and the launcher (granted
+  once) runs the published ones.
