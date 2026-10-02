@@ -3,6 +3,7 @@ pub mod basepack;
 pub mod buildings;
 pub mod chain;
 pub mod climbs;
+pub mod coverage;
 pub mod elev;
 pub mod hipack;
 pub mod layers;
