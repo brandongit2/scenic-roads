@@ -56,12 +56,54 @@ legend = ('<section class="legend" aria-label="Legend">'
           '<div><h2>Formats</h2><ul class="cols2">' + ''.join(f'<li><code>{E(c)}</code><span class="g">{E(n)}</span></li>' for c, n in formats) + '</ul></div>'
           '</section>')
 
+# Implementation progress (docs/plan.md §10), as of the date shown.
+PROGRESS_AT = '2 October 2026, 20:15'
+PHASES = [
+    ('done-ish', 'Foundations on today’s data', 'Packs, catalogs, the NAS access layer and the mirror; the server and the map rewritten to read them. Today’s data converted onto the NAS (roads, terrain, slope, trees, labels).',
+     'Left: road tiles for every area, then publish and install on both Macs, compared with today’s map.'),
+    ('mostly', 'Build agent and moving the data', 'The agent runs one job at a time, pauses on battery or away from the NAS, writes a heartbeat, backs up your folders daily and clears replaced files. This Mac’s data is on the NAS; keys and descriptions moved.',
+     'Left: install it on the build Mac; move the rest of the build Mac’s data.'),
+    ('active', 'Worldwide OpenStreetMap pass', 'Works end to end on Taiwan and on Britain: pieces per area, worldwide road values, outlines of every administrative area, the basemap. Terrain and slope for new areas, made the same way every time.',
+     'Left: the planet download (70 of 95 GB), then the real pass; trees and overlays for new areas.'),
+    ('active', 'Per-area building', 'Each area built from its piece with today’s steps, then packed; the agent works out what’s stale and builds only that.',
+     'Left: the pilot (Northumberland and the Scottish Borders), compared with today’s data across their border.'),
+    ('active', 'In the browser', 'Areas and regions answerable by the server (search, what contains a point, outlines); your descriptions show without a rebuild.',
+     'Left: the Regions panel, the status bar and catalog switching (being built); sights by view.'),
+    ('later', 'Switching over', 'Today’s 30 regions as outlines, built the new way, compared, then switched to.', ''),
+]
+STATE = {'done-ish': ('nearly done', 'st-near'), 'mostly': ('mostly done', 'st-near'), 'active': ('in progress', 'st-on'), 'later': ('later', 'st-later')}
+
+
+def progress_html():
+    rows = []
+    for i, (st, name, what, left) in enumerate(PHASES, 1):
+        label, cls = STATE[st]
+        rows.append(f'<li><span class="pn">{i}</span><div class="pb"><div class="ph"><b>{E(name)}</b><span class="chip {cls}">{E(label)}</span></div>'
+                    f'<p>{E(what)}</p>' + (f'<p class="left">{E(left)}</p>' if left else '') + '</div></li>')
+    return (f'<section class="prog" aria-label="Progress"><h3>Progress · {E(PROGRESS_AT)}</h3><ol>' + ''.join(rows) + '</ol></section>')
+
+
+PROG_CSS = """
+.prog{margin:0 0 16px;padding:12px 14px;border:1px solid var(--rule);border-radius:10px;background:var(--surface)}
+.prog h3{font:600 10.5px/1 var(--sans);letter-spacing:.08em;color:var(--faint);text-transform:uppercase;margin:0 0 10px}
+.prog ol{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.prog li{display:flex;gap:10px;align-items:flex-start}
+.prog .pn{flex:none;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font:600 11px/1 var(--mono);color:var(--muted);border:1px solid var(--rule)}
+.prog .pb{min-width:0;flex:1}
+.prog .ph{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:baseline}
+.prog .ph b{font:600 14px/1.3 var(--sans);color:var(--fg)}
+.prog p{margin:3px 0 0;color:var(--muted);font-size:12.5px;line-height:1.45}
+.prog p.left{color:var(--fg)}
+.chip{font:500 10.5px/1 var(--mono);padding:3px 6px;border-radius:999px;border:1px solid currentColor;white-space:nowrap}
+.st-near{color:var(--c-land)}.st-on{color:var(--c-net)}.st-later{color:var(--faint)}
+"""
+
 head = '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n' if FULL else ''
 page = head + f'''<title>Scenic Roads Data Pipeline</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;600&display=swap">
-<style>{diag.CSS}</style>
+<style>{diag.CSS}{PROG_CSS}</style>
 {'</head><body>' if FULL else ''}
 <main>
 <input type="radio" name="view" id="v-new" class="vsel" checked aria-label="Proposed">
@@ -69,7 +111,7 @@ page = head + f'''<title>Scenic Roads Data Pipeline</title>
 <header>
 <div>
 <h1>Scenic Roads · data pipeline</h1>
-<p class="sub">Proposed: OpenStreetMap comes from one worldwide download, cut by area, and a region is only an outline of what to build, so region size and borders never show; only the build Mac builds; your translations go in a NAS folder and show up within a minute. Nothing here is built yet; “Today” shows the app as it is.</p>
+<p class="sub">Proposed: OpenStreetMap comes from one worldwide download, cut by area, and a region is only an outline of what to build, so region size and borders never show; only the build Mac builds; your translations go in a NAS folder and show up within a minute. Being built now (progress below); “Today” shows the app as it is.</p>
 </div>
 <div class="tabs"><label for="v-new">Proposed</label><label for="v-old">Today</label></div>
 </header>
@@ -84,6 +126,7 @@ page = head + f'''<title>Scenic Roads Data Pipeline</title>
 </div>
 <p>Now and then: “Keep this view” for trips away · remove a region in the panel · <code>scenic status</code>. Everything else (building, refreshing, copying, backups) happens on its own.</p>
 </section>
+{progress_html()}
 <figure>
 <h3>Where the data lives</h3>
 <div class="scroll">{storage.build(CHECK)}</div>
