@@ -618,3 +618,21 @@ latitude cap; format versions read two at a time.
   ways with a binary search; converted files without it are sorted once in memory.
 - **Catalog zoom ranges** come from each layer's definition (terrain z0–12, slope z0–11, …), not the
   legacy conversion's record.
+- **The OSM pass cuts a quarter at a time.** osmium keeps id sets per output spanning the whole id
+  range: measured, about 4 GB of memory per output on a planet-sized input, so a 32- or 64-way cut
+  couldn't fit in 48 GB. The cut is a depth-first quad tree (four outputs per run) from the
+  filtered planet down to z6; each piece is uploaded and its chaining inputs kept as soon as it's
+  cut, and files go once everything below them is done. The filtered planet is read from the NAS
+  when the build Mac is short of room. The agent starts a pass with 80 GB free.
+- **The NAS breaker** trips only when the share also fails a quick probe after an overrun: on a busy
+  link a slow read fails alone instead of taking the map offline. The client asks for tiles that
+  failed again (2 s, doubling to a minute; at once when the NAS is back).
+- **The map's meta** (bounds, road km by elevation) is added up from the units' summaries (each base
+  pack's own; for converted packs worked out once and kept in `state/build/summaries.json`). Checked
+  on today's data: the same ways, vertices and rail km, total road km within rounding.
+- **Install (2026-10-03):** both Macs run the published app; the build Mac's server keeps a 150 GB
+  reserve so its mirror yields to builds. Today's `data/build` is gone from both Macs.
+- **Known limit, to fix before high regions:** elevations are i16 decimetres everywhere (base packs,
+  the unit steps' arrays, the client's GPU attribute) and clamped at ±3,200 m, as today (the Pico de
+  Veleta road shows 3,200 m). Roads in the Andes or the Himalaya reach 5,800 m: they need a wider
+  encoding (u16 decimetres from −500 m keeps the size) across the pipeline, the server and the client.
