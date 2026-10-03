@@ -88,10 +88,14 @@ impl UnitZ12 {
             .par_iter()
             .map(|&(x, y)| {
                 if let Some(b) = packs.get(Z12, x, y)? {
+                    anyhow::ensure!(decode_terrain_png(&b).is_ok(), "the terrain pack's z12 {x}/{y} doesn't decode");
                     return Ok(((x, y), Some(Arc::new(b)), 0));
                 }
                 match raw.get(Z12, x, y)?.0 {
                     Some(b) => {
+                        // A cached tile that doesn't decode is fetched again, once.
+                        let b = if decode_terrain_png(&b).is_ok() { b } else { raw.refetch(Z12, x, y)?.with_context(|| format!("AWS's z12 {x}/{y} is gone"))? };
+                        anyhow::ensure!(decode_terrain_png(&b).is_ok(), "AWS's z12 {x}/{y} doesn't decode");
                         let (png, _, _) = crate::terrain_pack::process(b, Z12, x, y, &HashMap::new(), &HashMap::new());
                         Ok(((x, y), Some(Arc::new(png)), 1))
                     }
@@ -118,14 +122,20 @@ impl UnitZ12 {
         UnitZ12 { tiles: tiles.into_iter().map(|(k, v)| (k, v.map(Arc::new))).collect(), unexpected: AtomicUsize::new(0), from: (0, 0, 0) }
     }
 
-    /// A tile's elevations, despiked (zeros for the sea); None for one not read before.
+    /// A tile's elevations, despiked (zeros for the sea); None for one not read before (or not
+    /// decoding, which `load` rules out), counted.
     fn decoded(&self, x: u32, y: u32) -> Option<Vec<f32>> {
         match self.tiles.get(&(x, y)) {
-            Some(Some(png)) => {
-                let mut e = decode_terrain_png(png).ok()?;
-                despike(&mut e, Z12, tile_lat(Z12, y));
-                Some(e)
-            }
+            Some(Some(png)) => match decode_terrain_png(png) {
+                Ok(mut e) => {
+                    despike(&mut e, Z12, tile_lat(Z12, y));
+                    Some(e)
+                }
+                Err(_) => {
+                    self.unexpected.fetch_add(1, Ordering::Relaxed);
+                    None
+                }
+            },
             Some(None) => Some(vec![0f32; 256 * 256]),
             None => {
                 self.unexpected.fetch_add(1, Ordering::Relaxed);
@@ -467,11 +477,12 @@ pub fn run(peaks: &[UnitPeak], summits: &[Summit], base8: &Z8Base, z12: &UnitZ12
         out.sort_unstable();
         out
     };
-    // A z12 pixel is ~38 m at the equator: the reach for the summits that can matter (their 150 m
-    // search, twice) and for the claims (within 300 m of one of those).
+    // A z12 pixel is at most ~38 m (the equator): the reach for the summits that can matter (their
+    // 150 m search, twice) and for the claims. A summit's summit pixel is within r + 0.71 pixels
+    // of it (r = ⌈150 m / pixel⌉), so two sharing one are under 300 m + 3.42 pixels apart.
     let px_km = 0.0382;
     let near_km = FINE_REACH_KM + 2.0 * (0.150 + 2.0 * px_km);
-    let claim_km = near_km + 0.300 + 2.0 * px_km;
+    let claim_km = near_km + 0.300 + 3.5 * px_km;
     let mut need: BTreeSet<u32> = BTreeSet::new();
     let mut extra: Vec<Summit> = Vec::new();
     for p in peaks {
@@ -527,7 +538,7 @@ pub fn run(peaks: &[UnitPeak], summits: &[Summit], base8: &Z8Base, z12: &UnitZ12
         let win = if ks.len() > 1 {
             let score = |k: usize| {
                 let s = &seen[k];
-                let dd = ((s.1 .0 - s.2 .0).pow(2) + (s.1 .1 - s.2 .1).pow(2)) as f32;
+                let dd = d0.d2(s.1, s.2) as f32;
                 (if s.4.is_finite() { s.4 } else { f32::MIN / 2.0 }, -dd)
             };
             *ks.iter()

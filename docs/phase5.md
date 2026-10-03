@@ -401,15 +401,19 @@ key couldn't name what was read; and extract's point order changed between runs.
     (Fuji 2,081.8 → 2,076.3 km, Wikipedia 2,077; Ben Nevis 739.9 → 738.6, Wikipedia 739; Mont
     Blanc 2,828.0 → 2,804.7). Mont Blanc's flood spends its 40M pixels and stops at the same col
     as today's (128 m, a lower bound in both): 54 s, 3.4 GB.
-- **`items`** (Python, network, per pass): after the candidates and `work/whs-sites` exist. The
-  QIDs of the current units' candidates, the heritage records and the areas. Facts as
-  poidetails.py and heritagewd.py fetch them, for single-QID tags (as today: a multi-QID tag gets
-  no facts); pageviews for the first QID, the mean of four months pinned per pass. Everything is
-  fetched again at each pass; between passes only QIDs it hasn't seen (a run started by new
-  coverage doesn't move fame elsewhere). Each item's Wikipedia articles are listed again at each
-  pass too (today's wp.jsonl never refreshes, so new articles never count); new articles between
-  passes are batched (each run streams the four dumps again, ~20 GB). `sources/items/<d>/facts`,
-  the QLever index date recorded; `sources/pageviews/<months>/views`. User-Agent
+- **`items`** (Python, network, per pass; dem/items.py): after the candidates exist. The QIDs of
+  the current units' candidates (the heritage records' and areas' items stay with the heritage
+  job until the registers are built here). Facts as poidetails.py fetches them, for single-QID
+  tags (as today: a multi-QID tag gets no facts); pageviews for the first QID, the mean of four
+  months pinned per pass: the last November, February, May and August that ended at least 20 days
+  before the pass (their dumps are out). Everything is fetched again at each pass; between passes
+  only QIDs it hasn't seen (a run started by new coverage doesn't move fame elsewhere). Each
+  item's Wikipedia articles are listed again at each pass too (today's wp.jsonl never refreshes,
+  so new articles never count); new articles between passes are batched (each run streams the
+  four dumps again, ~20 GB). The caches are appended 5,000 items at a time, so a run stopped
+  midway keeps what it fetched; a pageview month is cached only when curl, bzip2 and grep all
+  finished cleanly. `sources/items/<d>/facts`, `views` and `meta` (the months and the first and
+  last days anything was fetched: QLever's index is whatever it serves those days). User-Agent
   "road-elevations/0.1 (personal offline map)" (no contact address: identifying details stay out
   of requests), the APIs' rate limits; with no contact Wikimedia may refuse by User-Agent, so a
   403 or any failed batch fails the job loudly (today's heritagewd.shortdescs skips a failed batch

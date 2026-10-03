@@ -587,7 +587,41 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         out.put_bytes(&format!("sources/osm/{date}/pass"), "json", &serde_json::to_vec_pretty(&summary)?)?;
         out.save()?;
     }
+    let n = retire_older(out, date);
+    if n > 0 {
+        out.save()?;
+        eprintln!("osm-pass: {n} entries of older passes retired");
+    }
     Ok(())
+}
+
+/// A pass date (YYYY-MM-DD).
+pub fn is_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10 && b.iter().enumerate().all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() })
+}
+
+/// Removes the manifest's entries of passes older than `date` (their planet's pieces, sets, road
+/// values and outlines; the summits, route ends, items and heritage made from them) once `date`'s
+/// pass is complete: every job reads the newest pass, so nothing reads them again (GC deletes
+/// their files 14 days later). How many went.
+pub fn retire_older(out: &mut Out, date: &str) -> usize {
+    let old: Vec<String> = out
+        .manifest
+        .keys()
+        .filter(|l| {
+            let s: Vec<&str> = l.split('/').collect();
+            match s.as_slice() {
+                ["sources", "osm", d, _, ..] | ["sources", "items", d, ..] | ["work", "heritage", d, ..] | ["work", "summits", d] | ["work", "trailends", d] => is_date(d) && *d < date,
+                _ => false,
+            }
+        })
+        .cloned()
+        .collect();
+    for l in &old {
+        out.remove(l);
+    }
+    old.len()
 }
 
 /// Whether the pass from the planet of `date` is complete on the NAS (its `pass.<hash>.json`).
@@ -650,6 +684,33 @@ pub fn check_tools(extract_bin: &Path, planetiler: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn older_passes_retire() {
+        let d = tempfile::tempdir().unwrap();
+        let mut out = Out::open(d.path(), &d.path().join("scratch")).unwrap();
+        for l in [
+            "sources/osm/2026-03-28/pieces/6-1-2",
+            "sources/osm/2026-03-28/sets/summits",
+            "sources/osm/2026-03-28/outlines",
+            "sources/osm/2026-09-28/pieces/6-1-2",
+            "sources/osm/2026-09-28/outlines",
+            "work/summits/2026-03-28",
+            "work/summits/2026-09-28",
+            "work/trailends/2026-03-28",
+            "sources/items/2026-03-28/facts",
+            "work/heritage/2026-03-28/layer-heritage",
+            "work/pois/6-1-2",
+            "base/6-1-2",
+            "global/roads/6-1-2",
+        ] {
+            out.put_bytes(l, "json", b"{}").unwrap();
+        }
+        assert_eq!(retire_older(&mut out, "2026-09-28"), 7);
+        let left: Vec<&str> = out.manifest.keys().map(String::as_str).collect();
+        assert_eq!(left, ["base/6-1-2", "global/roads/6-1-2", "sources/osm/2026-09-28/outlines", "sources/osm/2026-09-28/pieces/6-1-2", "work/pois/6-1-2", "work/summits/2026-09-28"]);
+        assert!(is_date("2026-09-28") && !is_date("2026-9-28") && !is_date("6-1-2"));
+    }
 
     #[test]
     fn links_round_trip() {

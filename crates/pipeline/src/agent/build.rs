@@ -210,17 +210,31 @@ pub fn summits_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Op
 /// The peaks' version (crate::peaks::unit).
 pub const PEAKS_V: u32 = 1;
 
-/// The units with candidates, each with its peaks' key: the candidates, the summits, the z8, and
-/// the terrain hi packs within 30 km of it (its peaks' z12: the packs', else AWS's raw tiles,
-/// which don't change).
-pub fn peaks_keys(date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
+/// The z6 tiles meeting a box (degrees), x wrapping at the antimeridian.
+fn tiles_in_wrapped(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
+    let mut out = crate::stage::tiles_in(z, [b[0].max(-180.0), b[1], b[2].min(180.0), b[3]]);
+    if b[0] < -180.0 {
+        out.extend(crate::stage::tiles_in(z, [b[0] + 360.0, b[1], 180.0, b[3]]));
+    }
+    if b[2] > 180.0 {
+        out.extend(crate::stage::tiles_in(z, [-180.0, b[1], b[2] - 360.0, b[3]]));
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The coverage's units with candidates, each with its peaks' key: the candidates, the summits,
+/// the z8, and the terrain hi packs within 30 km of it, across the antimeridian too (its peaks'
+/// z12: the packs', else AWS's raw tiles, which don't change).
+pub fn peaks_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let common = [get(&format!("work/summits/{date}")), get(&crate::terrain_z8::logical()), get(&crate::terrain_z8::max_logical())].join(",");
     let mut out = Vec::new();
-    for (l, c) in m.range("work/pois/".to_string()..) {
-        let Some(u) = l.strip_prefix("work/pois/").and_then(Unit::parse) else { break };
+    for (u, _) in pois_keys(cov, date, m) {
+        let Some(c) = m.get(&format!("work/pois/{}", u.dash())) else { continue };
         let mut inputs = vec![format!("peaks {PEAKS_V}"), c.clone(), common.clone()];
-        for (x, y) in crate::stage::tiles_in(6, crate::stage::tile_box_grown(u.z, u.x, u.y, 30.0)) {
+        for (x, y) in tiles_in_wrapped(6, crate::stage::tile_box_grown(u.z, u.x, u.y, 30.0)) {
             inputs.push(get(&format!("layers/terrain/hi/6-{x}-{y}")).to_string());
         }
         let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
@@ -230,8 +244,9 @@ pub fn peaks_keys(date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String
 }
 
 /// The candidates' version (crate::candidates, extract `--candidates`): bumping it makes every
-/// unit's candidates again, not the units.
-pub const POIS_V: u32 = 1;
+/// unit's candidates again, not the units. 2: the trailhead searches reach as far east and west
+/// at every latitude; a covered bridge's length only for a line.
+pub const POIS_V: u32 = 2;
 
 /// The facts and pageviews of the candidates' items, per pass (dem/items.py).
 pub const ITEMS_V: u32 = 1;
@@ -260,7 +275,8 @@ pub fn pois_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Ve
         if !cov.meets_box(tb) {
             continue;
         }
-        units.push((u, h(&[&format!("pois {POIS_V}"), c, &cov_fp(cov, tb), ends])));
+        // (The coverage over the piece: the clip tests ways' nodes, which reach past the tile.)
+        units.push((u, h(&[&format!("pois {POIS_V}"), c, &cov_fp(cov, grown_e7(u.z, u.x, u.y, 10.0)), ends])));
     }
     units
 }
@@ -333,47 +349,33 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         work.push(Work { step: "unit".into(), targets: stale_units });
         return work;
     }
-    // Their landmark candidates (once the pass's hiking-route ends exist).
-    if m.contains_key(&format!("work/trailends/{date}")) {
-        let stale_pois: Vec<(String, String)> = pois_keys(cov, date, m).into_iter().filter(|(u, k)| stale(&done.pois, &u.slash(), k)).map(|(u, k)| (u.slash(), k)).collect();
-        if !stale_pois.is_empty() {
-            work.push(Work { step: "pois".into(), targets: stale_pois });
-            return work;
-        }
+    // After the units, two chains that don't wait for each other: the roads', then a catalog
+    // once it's done (new roads with the landmarks as they were; another catalog follows the
+    // landmarks), then the landmarks'. The agent runs the first of these not waiting out a
+    // failure, so a landmark job failing (Wikidata or a pageview dump down) doesn't hold up the
+    // roads, nor the roads the landmarks.
+    match roads_chain(date, m, done, inputs) {
+        Some(w) => work.push(w),
+        None => work.extend(catalog_work(m, done)),
     }
-    // Their peaks (once the pass's summits exist).
-    if m.contains_key(&format!("work/summits/{date}")) {
-        let stale_peaks: Vec<(String, String)> = peaks_keys(date, m).into_iter().filter(|(u, k)| stale(&done.peaks, &u.slash(), k)).map(|(u, k)| (u.slash(), k)).collect();
-        if !stale_peaks.is_empty() {
-            work.push(Work { step: "peaks".into(), targets: stale_peaks });
-            return work;
-        }
-    }
-    // The candidates' items' facts and pageviews (network; only new items within a pass).
-    let pois_now = current_pois(cov, date, m);
-    if !pois_now.is_empty() {
-        let mut inputs = vec![format!("items {ITEMS_V}"), date.to_string()];
-        inputs.extend(pois_now.iter().map(|s| s.to_string()));
-        let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
-        let k = h(&refs);
-        if done.lo.get("items").map(String::as_str) != Some(k.as_str()) {
-            work.push(Work { step: "items".into(), targets: vec![("items".into(), k)] });
-            return work;
-        }
-    }
+    work.extend(landmarks_chain(cov, date, m, done));
+    work
+}
 
+/// The roads' chain after the units: the road → units index, pack(T), lo, rail stops and ferries,
+/// the terrain and slope roots; its first stale step.
+fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
+    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
+    let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
     // The road → units index, once the units' road values are made.
-    {
-        let roads: Vec<String> = m.range("global/roads/".to_string()..).take_while(|(l, _)| l.starts_with("global/roads/")).map(|(l, c)| format!("{l}={c}")).collect();
-        if !roads.is_empty() {
-            let mut inputs = vec![format!("roadunits {ROADUNITS_V}")];
-            inputs.extend(roads);
-            let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
-            let k = h(&refs);
-            if done.lo.get("roadunits").map(String::as_str) != Some(k.as_str()) {
-                work.push(Work { step: "roadunits".into(), targets: vec![("roadunits".into(), k)] });
-                return work;
-            }
+    let roads: Vec<String> = m.range("global/roads/".to_string()..).take_while(|(l, _)| l.starts_with("global/roads/")).map(|(l, c)| format!("{l}={c}")).collect();
+    if !roads.is_empty() {
+        let mut ins = vec![format!("roadunits {ROADUNITS_V}")];
+        ins.extend(roads);
+        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+        let k = h(&refs);
+        if done.lo.get("roadunits").map(String::as_str) != Some(k.as_str()) {
+            return Some(Work { step: "roadunits".into(), targets: vec![("roadunits".into(), k)] });
         }
     }
 
@@ -392,14 +394,14 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     let mut los: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
     for &(x, y) in &tiles {
         let gb = grown_e7(6, x, y, 110.0);
-        let mut inputs = vec![format!("pack {PACK_V}")];
+        let mut ins = vec![format!("pack {PACK_V}")];
         for (u, c) in &base_units {
             let ub = crate::hipack::tile_bounds(u.z, u.x, u.y);
             if ub[0] <= gb[2] && ub[2] >= gb[0] && ub[1] <= gb[3] && ub[3] >= gb[1] {
-                inputs.push(c.clone());
+                ins.push(c.clone());
             }
         }
-        let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
         let k = h(&refs);
         let ts = format!("6/{x}/{y}");
         if stale(&done.pack, &ts, &k) {
@@ -408,14 +410,13 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         los.entry((x >> 3, y >> 3)).or_default().push(k);
     }
     if !packs.is_empty() {
-        work.push(Work { step: "pack".into(), targets: packs });
-        return work;
+        return Some(Work { step: "pack".into(), targets: packs });
     }
     let mut lo = Vec::new();
     for (q, ks) in los {
-        let mut inputs = vec![format!("lo {LO_V}")];
-        inputs.extend(ks);
-        let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+        let mut ins = vec![format!("lo {LO_V}")];
+        ins.extend(ks);
+        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
         let k = h(&refs);
         let qs = format!("3/{}/{}", q.0, q.1);
         if stale(&done.lo, &qs, &k) {
@@ -423,29 +424,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         }
     }
     if !lo.is_empty() {
-        work.push(Work { step: "lo".into(), targets: lo });
-        return work;
-    }
-
-    // The landmark points, from every current unit's candidates and peaks, the items' facts and
-    // pageviews (today's until the items job has run), today's heritage sites.
-    if !pois_now.is_empty() && m.contains_key(&format!("work/summits/{date}")) {
-        let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-        let mut inputs = vec![format!("marks {MARKS_V}"), get(&format!("sources/items/{date}/facts")).to_string(), get(&format!("sources/items/{date}/views")).to_string()];
-        for l in ["global/legacy/layer-heritage", "global/legacy/details-heritage"] {
-            inputs.push(get(l).to_string());
-        }
-        for (u, _) in pois_keys(cov, date, m) {
-            for p in ["work/pois", "work/peaks"] {
-                inputs.push(get(&format!("{p}/{}", u.dash())).to_string());
-            }
-        }
-        let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
-        let k = h(&refs);
-        if done.lo.get("marks").map(String::as_str) != Some(k.as_str()) {
-            work.push(Work { step: "marks".into(), targets: vec![("marks".into(), k)] });
-            return work;
-        }
+        return Some(Work { step: "lo".into(), targets: lo });
     }
 
     // Rail stops and ferries near the built units, from the pass's sets.
@@ -461,28 +440,79 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
             let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
             let k = h(&refs);
             if done.lo.get(step).map(String::as_str) != Some(k.as_str()) {
-                work.push(Work { step: step.into(), targets: vec![(step.to_string(), k)] });
-                return work;
+                return Some(Work { step: step.into(), targets: vec![(step.to_string(), k)] });
             }
         }
     }
 
     // The terrain and slope roots (z0–2), from their lo packs.
     for (layer, step) in [("terrain", "terrain-root"), ("slope", "slope-root")] {
-        let mut inputs = vec![format!("{step} 1")];
-        inputs.extend(m.range(format!("layers/{layer}/lo/")..).take_while(|(l, _)| l.starts_with(&format!("layers/{layer}/lo/"))).map(|(_, c)| c.clone()));
-        if inputs.len() == 1 {
+        let mut ins = vec![format!("{step} 1")];
+        ins.extend(m.range(format!("layers/{layer}/lo/")..).take_while(|(l, _)| l.starts_with(&format!("layers/{layer}/lo/"))).map(|(_, c)| c.clone()));
+        if ins.len() == 1 {
             continue;
         }
-        let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
         let k = h(&refs);
         if done.lo.get(step).map(String::as_str) != Some(k.as_str()) {
-            work.push(Work { step: step.into(), targets: vec![(step.to_string(), k)] });
-            return work;
+            return Some(Work { step: step.into(), targets: vec![(step.to_string(), k)] });
         }
     }
+    None
+}
 
-    // A catalog when what it would list has changed since the last one.
+/// The landmarks' chain after the units: candidates, peaks, the items' facts and pageviews, the
+/// landmark points; its first stale step.
+fn landmarks_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
+    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
+    let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
+    let units: Vec<(Unit, String)> = pois_keys(cov, date, m);
+    // The candidates (once the pass's hiking-route ends exist).
+    if !m.contains_key(&format!("work/trailends/{date}")) {
+        return None;
+    }
+    let stale_pois: Vec<(String, String)> = units.iter().filter(|(u, k)| stale(&done.pois, &u.slash(), k)).map(|(u, k)| (u.slash(), k.clone())).collect();
+    if !stale_pois.is_empty() {
+        return Some(Work { step: "pois".into(), targets: stale_pois });
+    }
+    // Their peaks (once the pass's summits exist).
+    if !m.contains_key(&format!("work/summits/{date}")) {
+        return None;
+    }
+    let stale_peaks: Vec<(String, String)> = peaks_keys(cov, date, m).into_iter().filter(|(u, k)| stale(&done.peaks, &u.slash(), k)).map(|(u, k)| (u.slash(), k)).collect();
+    if !stale_peaks.is_empty() {
+        return Some(Work { step: "peaks".into(), targets: stale_peaks });
+    }
+    // The candidates' items' facts and pageviews (network; only new items within a pass).
+    let pois_now = current_pois(cov, date, m);
+    if pois_now.is_empty() {
+        return None;
+    }
+    let mut ins = vec![format!("items {ITEMS_V}"), date.to_string()];
+    ins.extend(pois_now.iter().map(|s| s.to_string()));
+    let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+    let k = h(&refs);
+    if done.lo.get("items").map(String::as_str) != Some(k.as_str()) {
+        return Some(Work { step: "items".into(), targets: vec![("items".into(), k)] });
+    }
+    // The landmark points, from every current unit's candidates and peaks, the items' facts and
+    // pageviews, today's heritage sites (the files markconv::today_heritage reads).
+    let mut ins = vec![format!("marks {MARKS_V}"), get(&format!("sources/items/{date}/facts")).to_string(), get(&format!("sources/items/{date}/views")).to_string()];
+    for l in ["global/legacy/layer-heritage", "global/legacy/details-heritage", "global/legacy/props-heritage"] {
+        ins.push(get(l).to_string());
+    }
+    for (u, _) in &units {
+        for p in ["work/pois", "work/peaks"] {
+            ins.push(get(&format!("{p}/{}", u.dash())).to_string());
+        }
+    }
+    let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+    let k = h(&refs);
+    (done.lo.get("marks").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "marks".into(), targets: vec![("marks".into(), k)] })
+}
+
+/// A catalog when what it would list has changed since the last one.
+fn catalog_work(m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
     let served: Vec<String> = m
         .iter()
         .filter(|(l, _)| {
@@ -492,10 +522,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         .collect();
     let refs: Vec<&str> = served.iter().map(String::as_str).collect();
     let k = h(&refs);
-    if done.catalog.as_deref() != Some(k.as_str()) {
-        work.push(Work { step: "catalog".into(), targets: vec![("catalog".into(), k)] });
-    }
-    work
+    (done.catalog.as_deref() != Some(k.as_str())).then(|| Work { step: "catalog".into(), targets: vec![("catalog".into(), k)] })
 }
 
 #[cfg(test)]
@@ -558,5 +585,43 @@ mod tests {
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "unit");
         assert_eq!(w[0].targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), vec!["6/28/16"]);
+    }
+
+    #[test]
+    fn roads_and_landmarks_dont_wait_for_each_other() {
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        let mut done = Keys::default();
+        let steps = |w: &[Work]| w.iter().map(|x| x.step.clone()).collect::<Vec<_>>();
+        // Terrain, slope, and the unit done.
+        m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
+        for _ in 0..3 {
+            let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+            done.record(&w[0].step, &w[0].targets);
+        }
+        m.insert("base/6-28-16".into(), "base/6-28-16.6666666666666666.base".into());
+        m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.7777777777777777.roads".into());
+        m.insert("work/trailends/d".into(), "work/trailends/d.8888888888888888.json".into());
+        // Both chains' first steps; no catalog while the roads' chain has work.
+        let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+        assert_eq!(steps(&w), vec!["roadunits", "pois"]);
+        // The roads' chain to its end (the landmarks' still waiting): then a catalog first.
+        for _ in 0..10 {
+            let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+            if w[0].step == "catalog" {
+                break;
+            }
+            assert_eq!(w.last().unwrap().step, "pois");
+            done.record(&w[0].step, &w[0].targets);
+        }
+        let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+        assert_eq!(steps(&w), vec!["catalog", "pois"]);
+        done.record("catalog", &w[0].targets);
+        // The candidates made: the peaks wait for the pass's summits; nothing else to do.
+        done.record("pois", &w[1].targets);
+        m.insert("work/pois/6-28-16".into(), "work/pois/6-28-16.9999999999999999.json".into());
+        assert!(plan(&c, "d", &m, &done, &BTreeMap::new()).is_empty());
+        m.insert("work/summits/d".into(), "work/summits/d.aaaaaaaaaaaaaaaa.bin".into());
+        assert_eq!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())), vec!["peaks"]);
     }
 }

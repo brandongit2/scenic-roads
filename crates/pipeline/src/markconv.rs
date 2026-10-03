@@ -288,8 +288,13 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
             Ok((t, local))
         })
         .collect::<Result<_>>()?;
+    // What this write uploads: every markdata tile and marks pack it doesn't is stale and goes
+    // from the manifest at the end (a tile or kind that lost its points, a region removed).
+    let mut wrote: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for (t, local) in &written {
-        out.put_file(&format!("markdata/6-{}-{}", t.0, t.1), "sect", local)?;
+        let l = format!("markdata/6-{}-{}", t.0, t.1);
+        out.put_file(&l, "sect", local)?;
+        wrote.insert(l);
     }
     eprintln!("marks: {} markdata tiles in {:.1?}", written.len(), t0.elapsed());
 
@@ -331,7 +336,9 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
         }
         for ((scope, rz, rx, ry), mut tiles) in packs {
             tiles.sort_by_key(|t| roadcore::archive::tile_key(t.0, t.1, t.2));
-            crate::layers::write_pack(out, &format!("marks-{kind}"), "rdmt", true, scope, (rz, rx, ry), &mut tiles.into_iter())?;
+            if let Some((l, _)) = crate::layers::write_pack(out, &format!("marks-{kind}"), "rdmt", true, scope, (rz, rx, ry), &mut tiles.into_iter())? {
+                wrote.insert(l);
+            }
         }
     }
     // Totals per kind (the `kind` property: rest is rest_area and picnic_site) and heritage tier, for
@@ -348,6 +355,14 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
         }
     }
     out.put_bytes("global/marks/summary", "json", &serde_json::to_vec(&serde_json::json!({ "fmt": 1, "kinds": totals, "tiers": tiers }))?)?;
+    let stale: Vec<String> = out.manifest.keys().filter(|k| (k.starts_with("markdata/") || k.starts_with("layers/marks-")) && !wrote.contains(*k)).cloned().collect();
+    for k in &stale {
+        out.remove(k);
+    }
+    if !stale.is_empty() {
+        eprintln!("marks: {} stale markdata tiles and packs dropped", stale.len());
+    }
+    out.save()?;
     Ok(Converted { points: all.len(), tiles: written.len(), thinned })
 }
 

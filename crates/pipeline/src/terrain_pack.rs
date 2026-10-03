@@ -233,16 +233,29 @@ impl RawTiles {
             return Ok((None, false));
         }
         std::fs::create_dir_all(&d)?;
+        self.fetch(z, x, y).map(|b| (b, true))
+    }
+
+    /// The raw tile fetched again (a cached one that doesn't decode), replacing the cached one.
+    pub fn refetch(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
+        let d = self.dir.join(format!("{z}/{x}"));
+        std::fs::remove_file(d.join(format!("{y}.png"))).ok();
+        std::fs::create_dir_all(&d)?;
+        self.fetch(z, x, y)
+    }
+
+    fn fetch(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
+        let d = self.dir.join(format!("{z}/{x}"));
         match fetch_checked(&self.agent, z, x, y)? {
             Some(b) => {
                 let tmp = d.join(format!("{y}.png.{}.tmp", std::process::id()));
                 std::fs::write(&tmp, &b)?;
-                std::fs::rename(&tmp, &p)?;
-                Ok((Some(b), true))
+                std::fs::rename(&tmp, d.join(format!("{y}.png")))?;
+                Ok(Some(b))
             }
             None => {
-                std::fs::write(&none, b"")?;
-                Ok((None, true))
+                std::fs::write(d.join(format!("{y}.none")), b"")?;
+                Ok(None)
             }
         }
     }

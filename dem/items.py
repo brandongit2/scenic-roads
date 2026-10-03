@@ -2,21 +2,25 @@
 """Facts and pageviews for the landmark candidates' Wikidata items, per pass epoch (the `items`
 job, docs/phase5.md "items").
 
-Input (--qids): JSON {"facts": [QIDs], "views": [QIDs]}: the items whose tag is one QID (the
-facts poidetails.py attached), and every item's first QID with the heritage and World Heritage
-items (whose pageviews rank them). The scenic-build `items` step writes it.
+Input (--qids): JSON {"facts": [QIDs], "views": [QIDs]}, from the current units' candidates:
+"facts" the items of tags that are one QID (as today: a multi-QID tag gets no facts), "views"
+every candidate's first QID. (The heritage sites' pageviews are still the heritage job's.) The
+scenic-build `items` step writes it.
 
 Per epoch (--epoch, the pass's date): everything is fetched again at a new epoch; within one,
 only items not seen yet (a run started by new coverage doesn't move anyone else's fame). Caches
-under --cache:
-  facts-<epoch>.json       QID → poidetails.py's record (sitelinks, descriptions, heights …)
+under --cache, appended a chunk at a time (a run stopped midway keeps what it fetched):
+  facts-<epoch>.jsonl      QID → poidetails.py's record (sitelinks, descriptions, heights …)
   wp-<epoch>.jsonl         QID → its Wikipedia articles (heritagewd.wikipedias)
+  fetched-<epoch>.json     the first and last days anything was fetched for the epoch
   months/<m>.json, <m>.counted.json   one month's views per article (pageviews.month_views)
-The four months are the last November, February, May and August before the epoch, pinned for it.
+Older epochs' files, and months older than the epoch's, go at the end of a run.
+The four months are the last November, February, May and August whose dumps are out by the epoch
+(ended at least 20 days before it), pinned for it.
 
 Output (--out dir): facts.json (QID → record) and views.json (QID → mean monthly views over the
-four months, 1 dp), with meta.json (epoch, months, counts). Every failed query or download fails
-the run (no silently skipped batch).
+four months, 1 dp), with meta.json (epoch, months, the days fetched, counts). Every failed query or
+download fails the run (no silently skipped batch).
 
 usage: items.py --qids qids.json --epoch 2026-09-28 --cache dir --out dir
 """
@@ -25,6 +29,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -33,16 +38,21 @@ import heritagewd
 import pageviews
 import poidetails
 
+# Items fetched between cache writes.
+CHUNK = 5000
+
 
 def months_before(epoch: str) -> list[str]:
-    """The last November, February, May and August before the epoch's month, oldest first."""
+    """The last November, February, May and August that ended at least 20 days before the epoch
+    (dumps.wikimedia.org publishes a month's dump in its first days), oldest first."""
     d = datetime.date.fromisoformat(epoch)
     out, y, m = [], d.year, d.month
     while len(out) < 4:
+        end = datetime.date(y, m, 1)  # the day after the month before (y, m) ended
         m -= 1
         if m == 0:
             y, m = y - 1, 12
-        if m in (2, 5, 8, 11):
+        if m in (2, 5, 8, 11) and (d - end).days >= 20:
             out.append(f"{y:04d}-{m:02d}")
     return sorted(out)
 
@@ -55,6 +65,30 @@ def write_json(p: Path, v) -> None:
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(v, ensure_ascii=False))
     tmp.replace(p)
+
+
+def read_jsonl(p: Path) -> dict[str, dict]:
+    """Records by "qid"; a last line cut short (a run stopped mid-write) is dropped from the file."""
+    out: dict[str, dict] = {}
+    if not p.exists():
+        return out
+    b = p.read_bytes()
+    whole = b[: b.rfind(b"\n") + 1]
+    if len(whole) != len(b):
+        with open(p, "r+b") as f:
+            f.truncate(len(whole))
+    for line in whole.decode("utf-8").splitlines():
+        r = json.loads(line)
+        out[r["qid"]] = r
+    return out
+
+
+def append_jsonl(p: Path, rows: list[dict]) -> None:
+    with open(p, "a", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def main() -> None:
@@ -70,36 +104,40 @@ def main() -> None:
     want = json.loads(Path(a.qids).read_text())
     facts_q = sorted(set(want.get("facts", [])))
     views_q = sorted(set(want.get("views", [])))
+    dpath = cache / f"fetched-{a.epoch}.json"
+    fetched = load_json(dpath, {})
+
+    def note_fetch() -> None:
+        today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+        fetched.setdefault("first", today)
+        fetched["last"] = today
+        write_json(dpath, fetched)
 
     # Facts: this epoch's, only the new items fetched.
-    fpath = cache / f"facts-{a.epoch}.json"
-    facts = load_json(fpath, {})
+    fpath = cache / f"facts-{a.epoch}.jsonl"
+    facts = {q: {k: v for k, v in r.items() if k != "qid"} for q, r in read_jsonl(fpath).items()}
     todo = [q for q in facts_q if q not in facts]
     print(f"facts: {len(facts_q)} items, {len(todo)} to fetch", file=sys.stderr, flush=True)
-    if todo:
-        got = poidetails.wikidata(todo)
+    for k in range(0, len(todo), CHUNK):
+        part = todo[k:k + CHUNK]
+        got = poidetails.wikidata(part)
         # Items QLever doesn't know (merged, deleted) are remembered as such, not asked again.
-        for q in todo:
-            facts[q] = got.get(q, {"sl": 0, "missing": True})
-        write_json(fpath, facts)
+        rows = [{"qid": q, **got.get(q, {"sl": 0, "missing": True})} for q in part]
+        append_jsonl(fpath, rows)
+        for r in rows:
+            facts[r["qid"]] = {k2: v for k2, v in r.items() if k2 != "qid"}
+        note_fetch()
 
     # Each item's Wikipedia articles: this epoch's.
     wpath = cache / f"wp-{a.epoch}.jsonl"
-    wp: dict[str, dict] = {}
-    if wpath.exists():
-        for line in open(wpath, encoding="utf-8"):
-            r = json.loads(line)
-            wp[r["qid"]] = r
+    wp = read_jsonl(wpath)
     need = [q for q in views_q if q not in wp]
     print(f"articles: {len(views_q)} items, {len(need)} to look up", file=sys.stderr, flush=True)
-    if need:
-        for q, r in heritagewd.wikipedias(need).items():
-            wp[q] = {"qid": q, **r}
-        tmp = wpath.with_suffix(".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            for r in wp.values():
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        tmp.replace(wpath)
+    for k in range(0, len(need), CHUNK):
+        rows = [{"qid": q, **r} for q, r in heritagewd.wikipedias(need[k:k + CHUNK]).items()]
+        append_jsonl(wpath, rows)
+        wp.update((r["qid"], r) for r in rows)
+        note_fetch()
 
     # Pageviews over the epoch's four months (pageviews.month_views caches each month's counts).
     months = months_before(a.epoch)
@@ -114,7 +152,15 @@ def main() -> None:
 
     write_json(out / "facts.json", {q: facts[q] for q in facts_q if not facts[q].get("missing")})
     write_json(out / "views.json", views)
-    write_json(out / "meta.json", {"epoch": a.epoch, "months": months, "facts": len(facts_q), "views": len(views)})
+    write_json(out / "meta.json", {"epoch": a.epoch, "months": months, "fetched": [fetched.get("first"), fetched.get("last")], "facts": len(facts_q), "views": len(views)})
+    # Older epochs' caches go, and months before this epoch's (later epochs' months are later).
+    for p in cache.iterdir():
+        stem = p.name.split(".", 1)[0]
+        if p.is_file() and "-" in stem and stem.split("-", 1)[0] in ("facts", "wp", "fetched") and stem.split("-", 1)[1] < a.epoch:
+            p.unlink()
+    for p in (cache / "months").glob("*.json"):
+        if p.name[:7] < months[0]:
+            p.unlink()
     print(f"items: {len(facts_q)} facts, {len(views)} items with views", file=sys.stderr)
 
 

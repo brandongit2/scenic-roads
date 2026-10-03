@@ -23,6 +23,7 @@ usage: pageviews.py
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -55,13 +56,18 @@ def month_views(month: str, wanted: set[str]) -> dict[str, int]:
         return got
     print(f"  {month}: counting {len(todo)} articles", file=sys.stderr, flush=True)
     y, m = month.split("-")
-    langs = "|".join(sorted({a.split("|", 1)[0].replace("-", "\\-") for a in todo}))
-    cmd = (f"curl -sSL --fail -A '{UA}' '{DUMP.format(y=y, m=m)}' | bzip2 -dc | "
-           f"LC_ALL=C grep -E '^({langs})\\.wikipedia '")
+    langs = "|".join(sorted({a.split("|", 1)[0] for a in todo}))
     t0 = time.time()
     new: dict[str, int] = {}
-    p = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
-    for line in p.stdout:
+    # curl | bzip2 -dc | grep, each one's exit checked: a download cut short (curl's error, bzip2's
+    # truncated stream) fails the month instead of caching what arrived as counted.
+    curl = subprocess.Popen(["curl", "-sSL", "--fail", "-A", UA, DUMP.format(y=y, m=m)], stdout=subprocess.PIPE)
+    bz = subprocess.Popen(["bzip2", "-dc"], stdin=curl.stdout, stdout=subprocess.PIPE)
+    curl.stdout.close()
+    grep = subprocess.Popen(["grep", "-E", f"^({langs})\\.wikipedia "], stdin=bz.stdout, stdout=subprocess.PIPE,
+                            env={**os.environ, "LC_ALL": "C"}, text=True, encoding="utf-8", errors="replace")
+    bz.stdout.close()
+    for line in grep.stdout:
         # wiki title page_id access monthly_total hourly
         f = line.split(" ", 5)
         if len(f) < 5:
@@ -69,8 +75,10 @@ def month_views(month: str, wanted: set[str]) -> dict[str, int]:
         key = f"{f[0][:-10]}|{f[1]}"
         if key in todo:
             new[key] = new.get(key, 0) + int(f[4])
-    if p.wait() != 0:
-        raise RuntimeError(f"{month}: download failed")
+    rc = (curl.wait(), bz.wait(), grep.wait())
+    # (grep exits 1 when nothing matched.)
+    if rc[0] != 0 or rc[1] != 0 or rc[2] not in (0, 1):
+        raise RuntimeError(f"{month}: download failed (curl {rc[0]}, bzip2 {rc[1]}, grep {rc[2]})")
     got.update(new)
     path.parent.mkdir(parents=True, exist_ok=True)
     for dst, v in ((path, got), (counted_path, sorted(counted | todo))):

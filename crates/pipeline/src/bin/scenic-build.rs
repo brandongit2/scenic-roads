@@ -777,6 +777,17 @@ fn local_copy(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> {
             std::fs::remove_file(e.path()).ok();
         }
     }
+    // Older passes' copies of the same file go too.
+    if let Some(d) = logical.split('/').find(|s| pipeline::osmpass::is_date(s)) {
+        let me = logical.replace('/', "-");
+        let (pre, post) = me.split_once(d).context("date")?;
+        for e in std::fs::read_dir(cache)?.flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n != me && n.len() == me.len() && n.starts_with(pre) && n.ends_with(post) && pipeline::osmpass::is_date(&n[pre.len()..pre.len() + 10]) {
+                std::fs::remove_dir_all(e.path()).ok();
+            }
+        }
+    }
     Ok(local)
 }
 

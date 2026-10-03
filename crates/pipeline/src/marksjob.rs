@@ -248,6 +248,7 @@ pub fn summits_list(pts: &[Point]) -> Vec<(marks::SummitRec, String)> {
     named
         .into_iter()
         .enumerate()
-        .map(|(rank, (e, x, y, n))| (marks::SummitRec { rank: rank as u32, lon: marks::e7(py_round(x, 5)), lat: marks::e7(py_round(y, 5)), pad: 0, ele: py_round(e, 0) }, n))
+        // (Today's layers.py rounded the points to 6 decimals, then the summits list to 5.)
+        .map(|(rank, (e, x, y, n))| (marks::SummitRec { rank: rank as u32, lon: marks::e7(py_round(py_round(x, 6), 5)), lat: marks::e7(py_round(py_round(y, 6), 5)), pad: 0, ele: py_round(e, 0) }, n))
         .collect()
 }

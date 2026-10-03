@@ -534,85 +534,63 @@ impl Agent {
         out
     }
 
-    /// The next build step for the regions, as a job (docs/plan.md §8): what `build::plan` finds
-    /// stale, its targets in one run of `scenic-build`.
+    /// The build steps for the regions, as jobs (docs/plan.md §8), in order: the newest pass's
+    /// worldwide jobs, each gated by its own inputs, then what `build::plan` finds stale (its
+    /// chains), each step's targets in one run of `scenic-build`. The agent runs the first not
+    /// waiting out a failure, so one failing job doesn't hold up the others.
     fn region_work(&self, root: &Path, pass: Option<&str>, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
         let (recipes, _) = recipes::load(&root.join("inputs/regions"));
         let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let s = |p: &Path| p.to_string_lossy().into_owned();
+        let build_bin = s(&self.o.bin.join("scenic-build"));
+        let mut jobs: Vec<JobSpec> = Vec::new();
+        let job = |id: String, what: &str, step: &str, extra: Vec<String>, record: Option<build::Work>| {
+            let scratch = self.o.home.join("scratch").join(step);
+            let mut cmd = vec![build_bin.clone(), step.to_string(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
+            cmd.extend(extra);
+            JobSpec { id, what: what.into(), cmd, needs: Needs { ac: true, nas: true }, restart_after_sleep: true, record }
+        };
         // Per pass, worldwide: the sets it lacks in their current filters (a set added or changed
-        // since it ran), the hiking routes' ends, the labels by importance.
+        // since it ran), the hiking routes' ends, AWS's z8 (once), the summits, the labels.
         if let Some(date) = pass {
+            let keys = build::Keys::load(root);
+            let p = vec!["--pass".to_string(), date.to_string()];
             if !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(date, st.0))) {
-                let scratch = self.o.home.join("scratch").join("pass-sets");
-                return vec![JobSpec {
-                    id: format!("pass-sets {date}"),
-                    what: "OpenStreetMap sets the newest pass lacks".into(),
-                    cmd: vec![s(&self.o.bin.join("scenic-build")), "pass-sets".into(), "--root".into(), s(root), "--scratch".into(), s(&scratch), "--pass".into(), date.to_string()],
-                    needs: Needs { ac: true, nas: true },
-                    restart_after_sleep: true,
-                    record: None,
-                }];
+                jobs.push(job(format!("pass-sets {date}"), "OpenStreetMap sets the newest pass lacks", "pass-sets", p.clone(), None));
             }
-            if let Some(w) = build::trailends_work(date, &manifest, &build::Keys::load(root)) {
-                let scratch = self.o.home.join("scratch").join("trailends");
-                return vec![JobSpec {
-                    id: format!("trailends {date}"),
-                    what: "Hiking routes' ends for the whole world".into(),
-                    cmd: vec![s(&self.o.bin.join("scenic-build")), "trailends".into(), "--root".into(), s(root), "--scratch".into(), s(&scratch), "--pass".into(), date.to_string()],
-                    needs: Needs { ac: true, nas: true },
-                    restart_after_sleep: true,
-                    record: Some(w),
-                }];
+            if let Some(w) = build::trailends_work(date, &manifest, &keys) {
+                jobs.push(job(format!("trailends {date}"), "Hiking routes' ends for the whole world", "trailends", p.clone(), Some(w)));
             }
-            // AWS's z8 worldwide, once (the peaks' coarse stage), then the pass's summits.
             if !manifest.contains_key(&crate::terrain_z8::logical()) {
-                let scratch = self.o.home.join("scratch").join("terrain-z8");
-                return vec![JobSpec {
-                    id: "terrain-z8".into(),
-                    what: "Coarse terrain for the whole world".into(),
-                    cmd: vec![s(&self.o.bin.join("scenic-build")), "terrain-z8".into(), "--root".into(), s(root), "--scratch".into(), s(&scratch), "--raw".into(), s(&self.o.home.join("cache").join("aws-terrarium"))],
-                    needs: Needs { ac: true, nas: true },
-                    restart_after_sleep: true,
-                    record: None,
-                }];
+                jobs.push(job("terrain-z8".into(), "Coarse terrain for the whole world", "terrain-z8", vec!["--raw".into(), s(&self.o.home.join("cache").join("aws-terrarium"))], None));
             }
-            if let Some(w) = build::summits_work(date, &manifest, &build::Keys::load(root)) {
-                let scratch = self.o.home.join("scratch").join("summits");
-                return vec![JobSpec {
-                    id: format!("summits {date}"),
-                    what: "Summits for the whole world".into(),
-                    cmd: vec![s(&self.o.bin.join("scenic-build")), "summits".into(), "--root".into(), s(root), "--scratch".into(), s(&scratch), "--pass".into(), date.to_string(), "--cache".into(), s(&self.o.home.join("cache"))],
-                    needs: Needs { ac: true, nas: true },
-                    restart_after_sleep: true,
-                    record: Some(w),
-                }];
+            if let Some(w) = build::summits_work(date, &manifest, &keys) {
+                jobs.push(job(format!("summits {date}"), "Summits for the whole world", "summits", [p.clone(), vec!["--cache".into(), s(&self.o.home.join("cache"))]].concat(), Some(w)));
             }
-            if let Some(w) = build::labels_work(date, &manifest, &build::Keys::load(root)) {
-                let scratch = self.o.home.join("scratch").join("labels");
-                return vec![JobSpec {
-                    id: format!("labels {date}"),
-                    what: "Place labels for the whole world".into(),
-                    cmd: vec![s(&self.o.bin.join("scenic-build")), "labels".into(), "--root".into(), s(root), "--scratch".into(), s(&scratch), "--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem"))],
-                    needs: Needs { ac: true, nas: true },
-                    restart_after_sleep: true,
-                    record: Some(w),
-                }];
+            if let Some(w) = build::labels_work(date, &manifest, &keys) {
+                jobs.push(job(format!("labels {date}"), "Place labels for the whole world", "labels", [p.clone(), vec!["--dem".into(), s(&self.o.bin.join("dem"))]].concat(), Some(w)));
             }
         }
         if recipes.is_empty() {
-            return Vec::new();
+            return jobs;
         }
         let Some(date) = pass else {
             waiting.push(Waiting { what: "Building the regions".into(), why: "the first OpenStreetMap pass (it makes the outlines regions are drawn from)".into() });
-            return Vec::new();
+            return jobs;
         };
-        let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).and_then(|c| crate::outlines::Outlines::open(&root.join(c)).ok());
+        let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).map(|c| crate::outlines::Outlines::open(&root.join(c))).transpose();
+        let outlines = match outlines {
+            Ok(o) => o,
+            Err(e) => {
+                waiting.push(Waiting { what: "Building the regions".into(), why: format!("the pass's outlines: {e:#}") });
+                return jobs;
+            }
+        };
         let cov = match crate::coverage::Coverage::from_recipes(&recipes, outlines.as_ref(), &root.join("inputs/outlines")) {
             Ok(c) => c,
             Err(e) => {
                 waiting.push(Waiting { what: "Building the regions".into(), why: format!("{e:#}") });
-                return Vec::new();
+                return jobs;
             }
         };
         let done = build::Keys::load(root);
@@ -624,89 +602,72 @@ impl Agent {
             let all: Vec<u8> = files.iter().flat_map(|(n, b)| n.bytes().chain(b.iter().copied())).collect();
             inputs.insert("ferries-freq".into(), store::naming::hash16(&all));
         }
-        let Some(w) = build::plan(&cov, date, &manifest, &done, &inputs).into_iter().next() else { return Vec::new() };
-        // Held for review: the catalog goes to catalog-held/ (no server reads it), once.
         let held = root.join("inputs/hold-catalog").exists();
-        if w.step == "catalog" && held {
-            let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();
-            if done.catalog_held.as_deref() == Some(k.as_str()) {
-                waiting.push(Waiting { what: "Publishing the new map data".into(), why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into() });
-                return Vec::new();
-            }
-            let scratch = self.o.home.join("scratch").join("catalog");
-            return vec![JobSpec {
-                id: "catalog-held".into(),
-                what: "The new map data, held for review".into(),
-                cmd: vec![s(&self.o.bin.join("scenic-build")), "catalog".into(), "--root".into(), s(root), "--scratch".into(), s(&scratch), "--held".into()],
-                needs: Needs { ac: false, nas: true },
-                restart_after_sleep: true,
-                record: Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }),
-            }];
-        }
         let cache = self.o.home.join("cache");
-        let scratch = self.o.home.join("scratch").join(&w.step);
-        let mut cmd = vec![s(&self.o.bin.join("scenic-build")), w.step.clone(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
-        cmd.extend(w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries") && !t.ends_with("-root")));
-        match w.step.as_str() {
-            "terrain" | "terrain-root" => cmd.extend(["--raw".into(), s(&cache.join("aws-terrarium"))]),
-            "pois" | "marks" | "stations" => cmd.extend(["--pass".into(), date.to_string()]),
-            "ferries" => cmd.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem"))]),
-            "items" => cmd.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache".into(), s(&cache)]),
-            "peaks" => cmd.extend([
-                "--pass".into(),
-                date.to_string(),
-                "--raw".into(),
-                s(&cache.join("aws-terrarium")),
-                "--cache".into(),
-                s(&cache),
-                "--coarse-threads".into(),
-                "6".into(),
-            ]),
-            "unit" => cmd.extend([
-                "--pass".into(),
-                date.to_string(),
-                "--dem".into(),
-                s(&self.o.bin.join("dem")),
-                "--cache-dir".into(),
-                s(&cache),
-                "--buildings".into(),
-                s(&root.join("sources/legacy/m1/buildings")),
-            ]),
-            // The server's mirror on this Mac (the agent's home is inside the app's) has the
-            // same files: used instead of a second copy where it has them.
-            "pack" | "lo" => {
-                cmd.extend(["--cache".into(), s(&cache.join("base"))]);
-                if let Some(app) = self.o.home.parent() {
-                    cmd.extend(["--mirror".into(), s(&app.join("mirror"))]);
+        for w in build::plan(&cov, date, &manifest, &done, &inputs) {
+            // Held for review: the catalog goes to catalog-held/ (no server reads it), once.
+            if w.step == "catalog" && held {
+                let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();
+                if done.catalog_held.as_deref() == Some(k.as_str()) {
+                    waiting.push(Waiting { what: "Publishing the new map data".into(), why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into() });
+                    continue;
                 }
+                let mut j = job("catalog-held".into(), "The new map data, held for review", "catalog", vec!["--held".into()], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
+                j.needs = Needs { ac: false, nas: true };
+                jobs.push(j);
+                continue;
             }
-            _ => {}
+            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries") && !t.ends_with("-root")).collect();
+            match w.step.as_str() {
+                "terrain" | "terrain-root" => extra.extend(["--raw".into(), s(&cache.join("aws-terrarium"))]),
+                "pois" | "marks" | "stations" => extra.extend(["--pass".into(), date.to_string()]),
+                "ferries" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem"))]),
+                "items" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache".into(), s(&cache)]),
+                "peaks" => extra.extend(["--pass".into(), date.to_string(), "--raw".into(), s(&cache.join("aws-terrarium")), "--cache".into(), s(&cache), "--coarse-threads".into(), "6".into()]),
+                "unit" => extra.extend([
+                    "--pass".into(),
+                    date.to_string(),
+                    "--dem".into(),
+                    s(&self.o.bin.join("dem")),
+                    "--cache-dir".into(),
+                    s(&cache),
+                    "--buildings".into(),
+                    s(&root.join("sources/legacy/m1/buildings")),
+                ]),
+                // The server's mirror on this Mac (the agent's home is inside the app's) has the
+                // same files: used instead of a second copy where it has them.
+                "pack" | "lo" => {
+                    extra.extend(["--cache".into(), s(&cache.join("base"))]);
+                    if let Some(app) = self.o.home.parent() {
+                        extra.extend(["--mirror".into(), s(&app.join("mirror"))]);
+                    }
+                }
+                _ => {}
+            }
+            let n = w.targets.len();
+            let what = match w.step.as_str() {
+                "terrain" => format!("Terrain for the regions ({n} area{})", if n == 1 { "" } else { "s" }),
+                "slope" => format!("Slope for the regions ({n} area{})", if n == 1 { "" } else { "s" }),
+                "unit" => format!("Roads, elevations and scenery ({n} area{})", if n == 1 { "" } else { "s" }),
+                "pois" => format!("Landmark candidates ({n} area{})", if n == 1 { "" } else { "s" }),
+                "peaks" => format!("Peaks' prominence and isolation ({n} area{})", if n == 1 { "" } else { "s" }),
+                "items" => "Wikidata facts and Wikipedia pageviews for the landmarks".to_string(),
+                "marks" => "Landmarks for the map".to_string(),
+                "roadunits" => "Which areas each road crosses".to_string(),
+                "stations" => "Rail stops near the regions".to_string(),
+                "ferries" => "Ferries near the regions".to_string(),
+                "pack" => format!("Map tiles ({n} area{})", if n == 1 { "" } else { "s" }),
+                "lo" => "Zoomed-out map tiles".to_string(),
+                "terrain-root" | "slope-root" => "World-level terrain and slope".to_string(),
+                _ => "Publishing the new map data".to_string(),
+            };
+            let id = format!("{} {}", w.step, w.targets.first().map(|t| t.0.as_str()).unwrap_or(""));
+            let step = w.step.clone();
+            let mut j = job(id, &what, &step, extra, Some(w));
+            j.needs = Needs { ac: step != "catalog", nas: true };
+            jobs.push(j);
         }
-        let n = w.targets.len();
-        let what = match w.step.as_str() {
-            "terrain" => format!("Terrain for the regions ({n} area{})", if n == 1 { "" } else { "s" }),
-            "slope" => format!("Slope for the regions ({n} area{})", if n == 1 { "" } else { "s" }),
-            "unit" => format!("Roads, elevations and scenery ({n} area{})", if n == 1 { "" } else { "s" }),
-            "pois" => format!("Landmark candidates ({n} area{})", if n == 1 { "" } else { "s" }),
-            "peaks" => format!("Peaks' prominence and isolation ({n} area{})", if n == 1 { "" } else { "s" }),
-            "items" => "Wikidata facts and Wikipedia pageviews for the landmarks".to_string(),
-            "marks" => "Landmarks for the map".to_string(),
-            "roadunits" => "Which areas each road crosses".to_string(),
-            "stations" => "Rail stops near the regions".to_string(),
-            "ferries" => "Ferries near the regions".to_string(),
-            "pack" => format!("Map tiles ({n} area{})", if n == 1 { "" } else { "s" }),
-            "lo" => "Zoomed-out map tiles".to_string(),
-            "terrain-root" | "slope-root" => "World-level terrain and slope".to_string(),
-            _ => "Publishing the new map data".to_string(),
-        };
-        vec![JobSpec {
-            id: format!("{} {}", w.step, w.targets.first().map(|t| t.0.as_str()).unwrap_or("")),
-            what,
-            cmd,
-            needs: Needs { ac: w.step != "catalog", nas: true },
-            restart_after_sleep: true,
-            record: Some(w),
-        }]
+        jobs
     }
 
     /// A newer app is installed locally (`../current` points elsewhere than the agent's folder).

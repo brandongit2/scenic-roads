@@ -143,6 +143,15 @@ fn line_m(nodes: &[[i32; 2]]) -> u32 {
     (km * 1000.0).round_ties_even() as u32
 }
 
+/// How many grid cells of `cell_e7` (E7 degrees) east and west a search of `r_m` metres around a
+/// point at `lat_e7` must look (a degree of longitude shrinks with the latitude; north and south,
+/// one cell, as the cells are wider than the searches).
+fn lon_cells(lat_e7: i32, r_m: f64, cell_e7: i64) -> i64 {
+    let lat = (lat_e7 as f64 * E7).abs() + 0.01;
+    let r_deg = r_m / (111_000.0 * lat.min(85.0).to_radians().cos());
+    ((r_deg / (cell_e7 as f64 * E7)).ceil() as i64).max(1)
+}
+
 fn keep_of(kind: &str) -> &'static [&'static str] {
     match kind {
         "peak" => &["prominence", "isolation", "munro", "corbett", "graham", "donald", "marilyn", "hewitt", "wainwright", "nuttall",
@@ -985,7 +994,8 @@ fn main() -> Result<()> {
                 }
                 let (lon, lat) = (v as u32 as i32, (v >> 32) as u32 as i32);
                 let (cx, cy) = cell(lon, lat);
-                for dx in -1..=1 {
+                let kx = lon_cells(lat, 300.0, 30_000);
+                for dx in -kx..=kx {
                     for dy in -1..=1 {
                         for &k in cand.get(&(cx + dx, cy + dy)).map(|v| v.as_slice()).unwrap_or(&[]) {
                             if !near[k] && dist_m(lon as f64 * E7, lat as f64 * E7, pts[k].0 as f64 * E7, pts[k].1 as f64 * E7) < 300.0 {
@@ -1025,7 +1035,8 @@ fn main() -> Result<()> {
         for i in order {
             let (cx, cy) = cell(&pois[i]);
             let near = |j: usize| dist_m(pois[i].lon as f64 * E7, pois[i].lat as f64 * E7, pois[j].lon as f64 * E7, pois[j].lat as f64 * E7) < 150.0;
-            let dup = (-1..=1)
+            let kx = lon_cells(pois[i].lat, 150.0, 20_000);
+            let dup = (-kx..=kx)
                 .flat_map(|dx| (-1..=1).map(move |dy| (cx + dx, cy + dy)))
                 .flat_map(|c| grid.get(&c).cloned().unwrap_or_default())
                 .find(|&j| near(j));
@@ -1180,9 +1191,11 @@ fn main() -> Result<()> {
         if w.flags & flag::COVERED != 0 {
             let m = b.pts[b.pts.len() / 2];
             let tags = bridge_tags.binary_search_by_key(&w.id, |b| b.0).map(|i| bridge_tags[i].1.clone()).unwrap_or_default();
-            // Its own nodes (the points are densified): what poidetails.py measured.
+            // Its own nodes (the points are densified): what poidetails.py measured, for a line
+            // (not a closed way) of some length.
             let nodes: Vec<[i32; 2]> = w.refs.iter().filter_map(|&r| lookup(r).map(|(_, lat, lon)| [lon, lat])).collect();
-            let length_m = Some(line_m(&nodes));
+            let line = w.refs.first() != w.refs.last() && nodes.windows(2).any(|p| p[0] != p[1]);
+            let length_m = line.then(|| line_m(&nodes));
             pois.push(Poi { kind: "covered_bridge", lon: m[0], lat: m[1], name: w.name.clone(), ele: None, osm: Some(format!("w{}", w.id)), key: None, tags, nodes, length_m });
         }
     }
