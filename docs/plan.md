@@ -408,7 +408,11 @@ mid-job. Nothing depends on it being available at a given time.
 - **Atomic writes** (§3); anything half-written is never referenced.
 - **Staging is disposable:** the build cache can always be refilled from the NAS.
 - **Status:** the agent writes a heartbeat; the app shows what's waiting and why ("Build Mac last
-  seen yesterday; Kanto waits for it to be plugged in at home").
+  seen yesterday; Kanto waits for it to be plugged in at home"). A menu bar item on both Macs
+  (Scenic.app, tools/status; asked for 2026-10-03) shows the state as an icon (building, paused,
+  waiting, nothing to build, a problem, out of touch), the details in its menu, and a notification
+  for every change; it asks the local server (`/api/build`: this Mac's agent's status when it runs
+  here, else the NAS's copy).
 
 **Determinism:** the same inputs give the same bytes (sorted outputs, no hash-map order, fixed
 reductions). Each step has a "build twice, compare hashes" test.
