@@ -129,6 +129,7 @@ fn main() -> Result<()> {
         "peaks" => peaks_step(&mut out, &args, &scratch)?,
         "marks" => marks_step(&mut out, &args)?,
         "items" => items_step(&mut out, &args, &scratch)?,
+        "heritage" => heritage_step(&mut out, &args, &scratch)?,
         "slope" => slope_step(&mut out, &args)?,
         "labels" => labels_step(&mut out, &args, &scratch)?,
         "pass-sets" => {
@@ -940,6 +941,120 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     }
     out.save()?;
     eprintln!("items: {} items with facts asked, {} for views", facts.len(), views.len());
+    Ok(())
+}
+
+/// heritage [--pass <date>] [--snapshot dir] [--dem dir] [--cache dir]: heritage sites and areas
+/// for the coverage, their Wikidata matches and details, the World Heritage outlines and sites,
+/// area details, fame and the overlays' layers, by today's scripts run unchanged in a stand-in
+/// root laid out as the repository's (docs/phase5.md "Heritage and area flags"): `dem/` the
+/// app's scripts; `data/heritage/` a local copy of the registers' snapshot (today's: the legacy
+/// caches), which the scripts add their caches to; the pass's areas, named objects and provinces
+/// exported as today's files; its kept filtered planet as `data/osm/merged.osm.pbf` (the World
+/// Heritage parts); no stops & sights (the marks job's). Its outputs go to
+/// work/heritage/<date>/<file>.
+fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    use std::process::Command;
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+    let cov = coverage_of(out, args)?;
+    let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
+    let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
+    let snapshot = opt(args, "--snapshot").map(PathBuf::from).unwrap_or_else(|| out.root().join("sources/legacy/m1/heritage"));
+    let t0 = std::time::Instant::now();
+    let run = |mut c: Command, what: &str| -> Result<()> {
+        let st = c.status().with_context(|| format!("run {what}"))?;
+        anyhow::ensure!(st.success(), "{what} failed: {st}");
+        Ok(())
+    };
+    let root = scratch.join("heritage-root");
+    std::fs::remove_dir_all(&root).ok();
+    for d in ["dem", "data/build", "data/areas", "data/osm"] {
+        std::fs::create_dir_all(root.join(d))?;
+    }
+    // The scripts and their Python project, as the app has them.
+    for e in std::fs::read_dir(&dem)?.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if e.path().is_file() && (n.ends_with(".py") || n == "pyproject.toml" || n == "uv.lock" || n == ".python-version") {
+            std::fs::copy(e.path(), root.join("dem").join(&n))?;
+        }
+    }
+    // The registers' snapshot, copied once and kept (only what changed is copied again).
+    let her = cache.join("heritage-data");
+    std::fs::create_dir_all(&her)?;
+    let mut c = Command::new("rsync");
+    c.arg("-a").arg(format!("{}/", snapshot.display())).arg(format!("{}/", her.display()));
+    run(c, "rsync (the registers' snapshot)")?;
+    std::os::unix::fs::symlink(&her, root.join("data/heritage"))?;
+    // The pass's sets as today's files.
+    let set = |name: &str| -> Result<PathBuf> { Ok(out.path(out.get(&pipeline::osmpass::set_name(&date, name)).with_context(|| format!("the pass's {name} set"))?)) };
+    let osmium = |args: &[&std::ffi::OsStr]| {
+        let mut c = Command::new("osmium");
+        c.args(args);
+        c
+    };
+    let os = |s: &str| std::ffi::OsString::from(s);
+    let (areas, named, outlines) = (set("areas")?, set("named")?, set("outlines")?);
+    let areas_out = root.join("data/areas/areas.geojsonseq");
+    run(osmium(&[&os("export"), areas.as_os_str(), &os("-f"), &os("geojsonseq"), &os("--geometry-types=polygon"), &os("-a"), &os("type,id"), &os("-o"), areas_out.as_os_str(), &os("--overwrite")]), "osmium export (areas)")?;
+    std::fs::create_dir_all(her.join("osm"))?;
+    let named_out = her.join("osm/named.geojsonseq");
+    run(osmium(&[&os("export"), named.as_os_str(), &os("-f"), &os("geojsonseq"), &os("-o"), named_out.as_os_str(), &os("--overwrite")]), "osmium export (named)")?;
+    let prov = scratch.join("prov.osm.pbf");
+    run(osmium(&[&os("tags-filter"), outlines.as_os_str(), &os("r/admin_level=4"), &os("-o"), prov.as_os_str(), &os("--overwrite")]), "osmium tags-filter (provinces)")?;
+    let prov_out = her.join("osm/prov.geojsonseq");
+    run(osmium(&[&os("export"), prov.as_os_str(), &os("-f"), &os("geojsonseq"), &os("--geometry-types=polygon"), &os("-o"), prov_out.as_os_str(), &os("--overwrite")]), "osmium export (provinces)")?;
+    // The kept filtered planet, for the World Heritage parts.
+    let filtered = out.path(out.get(&format!("sources/osm/{date}/filtered")).context("the pass's filtered planet")?);
+    std::os::unix::fs::symlink(&filtered, root.join("data/osm/merged.osm.pbf"))?;
+    // No stops & sights; the coverage's shapes (heritage.py --cover).
+    let b = root.join("data/build");
+    std::fs::write(b.join("pois.json"), br#"{"type":"FeatureCollection","features":[]}"#)?;
+    std::fs::write(b.join("details-poi.jsonl"), b"")?;
+    std::fs::write(b.join("peaks.json"), b"[]")?;
+    let feats: Vec<serde_json::Value> = cov
+        .shapes
+        .iter()
+        .map(|sh| {
+            let polys: Vec<serde_json::Value> = sh.rings.iter().map(|r| serde_json::json!([r.iter().map(|p| [p[0] as f64 * 1e-7, p[1] as f64 * 1e-7]).collect::<Vec<_>>()])).collect();
+            serde_json::json!({"type": "Feature", "geometry": {"type": "MultiPolygon", "coordinates": polys}, "properties": {"source": sh.source}})
+        })
+        .collect();
+    std::fs::write(b.join("cover.geojson"), serde_json::to_vec(&serde_json::json!({"type": "FeatureCollection", "features": feats}))?)?;
+    let inputs: std::collections::BTreeSet<String> = ["pois.json", "details-poi.jsonl", "peaks.json", "cover.geojson"].iter().map(|s| s.to_string()).collect();
+    // Today's chain.
+    let venv = cache.join("heritage-venv");
+    for (script, sargs) in [
+        ("heritage.py", vec!["../data/build", "--cover", "../data/build/cover.geojson"]),
+        ("heritagewd.py", vec![]),
+        ("heritagedetails.py", vec![]),
+        ("areadetails.py", vec![]),
+        ("whsshapes.py", vec![]),
+        ("filterprops.py", vec![]),
+        ("pageviews.py", vec![]),
+        ("interest.py", vec![]),
+        ("layers.py", vec![]),
+    ] {
+        let t = std::time::Instant::now();
+        let mut c = Command::new("uv");
+        c.current_dir(root.join("dem")).env("UV_PROJECT_ENVIRONMENT", &venv).args(["run", "python", script]).args(&sargs);
+        run(c, script)?;
+        eprintln!("heritage: {script} done ({:.0?})", t.elapsed());
+    }
+    // Outputs.
+    let mut n = 0;
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&b)?.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
+    files.sort();
+    for p in files {
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        if inputs.contains(&name) || name.ends_with(".tmp") || name.starts_with('.') {
+            continue;
+        }
+        let (stem, ext) = name.split_once('.').unwrap_or((name.as_str(), "bin"));
+        out.put_file(&format!("work/heritage/{date}/{stem}"), ext, &p)?;
+        n += 1;
+    }
+    out.save()?;
+    eprintln!("heritage: {n} files ({:.0?})", t0.elapsed());
     Ok(())
 }
 

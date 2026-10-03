@@ -28,7 +28,7 @@ All areas are rasterised into grid.areas.u8 bits (roadcore::scenic::flag): PARK,
 SPECIAL_AREA, INDIGENOUS. Afterwards run `scenic <build> flags` to refresh the road flags.
 
 With --cover <file> (the `heritage` job, docs/phase5.md "Heritage and area flags"): what is covered
-is inside that file's polygons (GeoJSON features: the coverage grown by 20 km), not the build's
+is within 20 km of that file's polygons (GeoJSON features: the coverage), not the build's
 analysis grid, and the areas aren't rasterised: their polygons, each with its flag bit, go to
 area-shapes.geojsonseq for the units to rasterise onto their own grids (areaflags.py).
 
@@ -55,7 +55,7 @@ import numpy as np
 from rasterio import features
 from rasterio.transform import from_bounds
 from shapely import STRtree, wkt
-from shapely.geometry import Point, box, mapping, shape
+from shapely.geometry import Point, Polygon, box, mapping, shape
 from shapely.ops import transform as shp_transform
 from tqdm import tqdm
 
@@ -532,14 +532,26 @@ def main():
     if cover_path is None:
         tiles = {tuple(t) for t in np.fromfile(b / "grid.idx", dtype=np.uint32).reshape(-1, 2).tolist()}
     else:
-        cover = [shape(f["geometry"]) for f in json.loads(cover_path.read_text())["features"]]
+        # The coverage's polygons, grown by 20 km on the ground (in Web Mercator metres, scaled at
+        # each polygon's latitude).
+        cover = []
+        for f in json.loads(cover_path.read_text())["features"]:
+            # A coverage shape's rings by the even-odd rule (they carry no outer/inner roles).
+            g = None
+            for ring in f["geometry"]["coordinates"]:
+                r = Polygon(ring[0]).buffer(0)
+                g = r if g is None else g.symmetric_difference(r)
+            if g is None or g.is_empty:
+                continue
+            lat_c = g.centroid.y
+            cover.append(shp_transform(to_merc, g).buffer(20000 / math.cos(math.radians(lat_c))))
         cover_tree = STRtree(cover)
 
     def covered(lon, lat):
         if not (-85 < lat < 85 and -180 <= lon <= 180):
             return False  # a register's bad coordinates
         if cover_path is not None:
-            p = Point(lon, lat)
+            p = Point(*to_merc(lon, lat))
             return any(cover[k].contains(p) for k in cover_tree.query(p))
         x = (lon + 180) / 360 * 2048
         y = (1 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2 * 2048
