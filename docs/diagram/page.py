@@ -57,18 +57,18 @@ legend = ('<section class="legend" aria-label="Legend">'
           '</section>')
 
 # Implementation progress (docs/plan.md §10), as of the date shown.
-PROGRESS_AT = '3 October 2026, 00:15'
+PROGRESS_AT = '3 October 2026, 03:00'
 PHASES = [
     ('done-ish', 'Foundations on today’s data', 'Both Macs run the new app from the NAS. Compared with today’s map in nine places (Québec, Tokyo, London, Chamonix, Vancouver, Hong Kong, Taipei, Lisbon, Northumberland): roads, elevation profiles, every tile layer and popup details all equal. The map reads only the pages a request needs from the NAS (a first hover in Tokyo: 66 s before, 1.9 s now).',
      'Left: the speed check against today’s app once this Mac’s local copy is in.'),
     ('mostly', 'Build agent and moving the data', 'The agent runs on the build Mac from the installed app: one job at a time, waits for mains power, backs up your folders and clears replaced files. Both Macs’ data is on the NAS, checked file by file; the old build folders are gone.',
      'Left: the build Mac’s caches, being copied, then moved into the agent’s.'),
-    ('active', 'Worldwide OpenStreetMap pass', 'Cuts the planet a quarter at a time so it fits the build Mac’s memory and disk (checked identical to the old cut). Running on the full planet since 3 October, midnight.',
-     'Left: the pass itself (a few hours); trees and overlays for new areas.'),
+    ('active', 'Worldwide OpenStreetMap pass', 'Cuts the planet a quarter at a time so it fits the build Mac’s memory and disk (checked identical to the old cut). Running on the full planet since 3 October, 00:40: the planet is filtered (60.6 GB, 68 % of it) and being copied to the NAS, slowly while the NAS is also busy with its own sync (13 MB/s).',
+     'Left: the worldwide sets, outlines, basemap, cutting into areas and road values (several hours); trees and overlays for new areas.'),
     ('mostly', 'Per-area building', 'Pilot done: Northumberland and the Scottish Borders built the new way match today’s data (same roads, elevations within 1 m, every scenery score and flag), and roads cross their border seamlessly.',
      'Left: rankings for new areas (fame, ferries, rail service).'),
-    ('active', 'In the browser', 'The Regions panel, the status bar and switching to new data in place. Tiles that fail while the NAS is busy or away are asked for again by themselves.',
-     'Left: sights, stations and overlays by view (being designed), so new areas get them too.'),
+    ('active', 'In the browser', 'The Regions panel, the status bar and switching to new data in place. Tiles that fail while the NAS is busy or away are asked for again by themselves. Landmarks by view: today’s 584,000 stops & sights and heritage sites become per-area points and zoomed-out tiles; the In view numbers, Sights lists and popups come from the server, equal to today’s in every one of 163 views checked, and the browser holds only what’s near the view (its landmarks memory: about 1 MB instead of 180 MB).',
+     'Left: publishing landmarks by view; overlays, stations and ferries the same way; faster zoomed-out drive lists (designed, under review); landmarks for new areas.'),
     ('later', 'Switching over', 'Today’s 30 regions as outlines, built the new way after the pass, compared, then switched to.', ''),
 ]
 STATE = {'done-ish': ('nearly done', 'st-near'), 'mostly': ('mostly done', 'st-near'), 'active': ('in progress', 'st-on'), 'later': ('later', 'st-later')}
