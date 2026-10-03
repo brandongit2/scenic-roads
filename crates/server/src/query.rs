@@ -95,8 +95,9 @@ fn answer<T: serde::Serialize>(r: Result<anyhow::Result<Option<T>>, tokio::task:
 }
 
 /// Every sample of the tiles' parts passing `keep(tile, part sample)`, in road and offset order,
-/// cut into runs of consecutive samples.
-fn runs(tiles: &[QTile], rail: bool, keep: &(dyn Fn(&QTile, &PSample, f32) -> bool + Sync)) -> Vec<Vec<Smp>> {
+/// cut into runs of consecutive samples. Roads shorter than `min_len` (m) are left out: no window
+/// that long fits on them (drives, rides; rail lines want every run).
+fn runs(tiles: &[QTile], rail: bool, min_len: f32, keep: &(dyn Fn(&QTile, &PSample, f32) -> bool + Sync)) -> Vec<Vec<Smp>> {
     let mut all: Vec<Smp> = tiles
         .par_iter()
         .enumerate()
@@ -104,7 +105,7 @@ fn runs(tiles: &[QTile], rail: bool, keep: &(dyn Fn(&QTile, &PSample, f32) -> bo
             let ps = hv.psamples();
             let mut out = Vec::new();
             for p in hv.parts() {
-                if class::is_rail(p.class) != rail {
+                if class::is_rail(p.class) != rail || p.road_len < min_len {
                     continue;
                 }
                 for k in p.first..p.first + p.count {
@@ -247,7 +248,7 @@ fn compute_drives(st: &AppState, q: Q, err: &mut Option<anyhow::Error>) -> Optio
             && !((unnamed >> h.class) & 1 == 1 && h.extra & here_extra::UNNAMED != 0)
             && len_ok(road_len, q.lmin, q.lmax)
     };
-    let runs = runs(&tiles, false, &keep);
+    let runs = runs(&tiles, false, len, &keep);
     let in_view = |s: &Smp| {
         let (_, p, _) = sample(&tiles, s);
         region.contains(p.lon, p.lat)
@@ -498,7 +499,7 @@ fn compute_rides(st: &AppState, q: RQ, err: &mut Option<anyhow::Error>) -> Optio
             return None;
         }
     };
-    let runs = runs(&tiles, true, &|_, _, _| true);
+    let runs = runs(&tiles, true, len, &|_, _, _| true);
     let in_view = |s: &Smp| {
         let (_, p, _) = sample(&tiles, s);
         region.contains(p.lon, p.lat)
@@ -617,7 +618,7 @@ fn compute_lines(st: &AppState, q: RQ, err: &mut Option<anyhow::Error>) -> Optio
             return None;
         }
     };
-    let runs = runs(&tiles, true, &|_, _, _| true);
+    let runs = runs(&tiles, true, 0.0, &|_, _, _| true);
     struct Acc {
         len: f32,
         sc: f32,

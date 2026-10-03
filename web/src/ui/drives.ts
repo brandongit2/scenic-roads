@@ -110,7 +110,7 @@ export class DrivesPane {
           .sort((a, b) => b[0] - a[0])
           .slice(0, 3)
           .map(([v, k]) => `${COMPONENTS[k].label} ${Math.round(v * 100)}`);
-        const flags = [c.parts[9] > 0.3 ? 'scenic route' : '', c.parts[10] > 0.3 ? 'viewpoints' : '']
+        const flags = [c.parts[10] > 0.3 ? 'scenic route' : '', c.parts[11] > 0.3 ? 'viewpoints' : '']
           .filter(Boolean);
         const bar = h('i', { class: 'sbar' });
         bar.style.width = `${Math.max(4, c.score)}%`;

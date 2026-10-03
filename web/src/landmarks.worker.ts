@@ -139,7 +139,9 @@ self.onmessage = async (ev: MessageEvent<LandmarkRequest>) => {
   if (m.type === 'marks') {
     mvBase = m.base;
     mv = m.cfg ? new MarksView(m.cfg, m.base, (set, dots) => post({ type: 'dots', src: srcOf(set.kind), dots }, [dots.draw, dots.hpos, dots.morton.buffer, dots.chunks.buffer])) : null;
-    for (const [src, w] of tileWaits) for (const t of w.splice(0)) tile(t);
+    // By view, the name tiles asked for meanwhile are answered now; else they wait for their
+    // source's file (load), as before.
+    if (mv) for (const w of tileWaits.values()) for (const t of w.splice(0)) tile(t);
     return;
   }
   if (m.type === 'view') {

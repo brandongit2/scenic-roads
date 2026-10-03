@@ -295,13 +295,13 @@ export class MarksView {
     const sig = `${tz}|${tiles.map(({ x, y }) => `${x}/${y}`).join(',')}|${[...(xs?.keys() ?? [])].join(',')}|${q}|${cellsOf.map((c) => (c ? 1 : 0)).join('')}`;
     if (prev && prev.sig === sig) return;
     // (World Heritage components aren't dots: they show close in, from the name tiles.)
-    const isDot = ([ti, i]: [number, number]) => !(all[ti].flags[i] & F_COMPONENT);
-    refs.splice(0, refs.length, ...refs.filter(isDot));
-    refs.sort((a, b) => all[a[0]].rank[a[1]] - all[b[0]].rank[b[1]]);
+    // (No spread of the refs into a call: a set can hold more points than the stack has arguments.)
+    const dots = refs.filter(([ti, i]) => !(all[ti].flags[i] & F_COMPONENT));
+    dots.sort((a, b) => all[a[0]].rank[a[1]] - all[b[0]].rank[b[1]]);
     // Pseudo-points: the thinned tiles' speck cells.
     let np = 0;
     if (tz < BLOCK_Z) for (const c of cellsOf) np += c?.code.length ?? 0;
-    const n = refs.length, N = np + n;
+    const n = dots.length, N = np + n;
     const lon = new Float64Array(N), lat = new Float64Array(N), fa = new Float32Array(N), ia = new Float32Array(N);
     const cls = new Uint8Array(N), tier = new Uint8Array(N), weight = new Uint32Array(N);
     const row = new Uint32Array(n), tiu = new Uint16Array(n);
@@ -323,7 +323,7 @@ export class MarksView {
       }
     }
     for (let r = 0; r < n; r++, j++) {
-      const [ti, i] = refs[r];
+      const [ti, i] = dots[r];
       const t = all[ti];
       tiu[r] = ti;
       row[r] = i;
