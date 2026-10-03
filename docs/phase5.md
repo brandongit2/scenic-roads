@@ -361,11 +361,51 @@ At world scale, a globe query would read 0.2–0.4 GB: a per-z3 summary then.
 - **`global/railfreq`** is another whole-world file the client loads: per-z6 blocks before going
   worldwide.
 
-## Zoomed-out queries (designed separately) [I6]
+## Zoomed-out queries [I6]
 
-Plan §6 "Served": drives and rides over more than ~6 hi packs use 1 km summaries in the lo packs.
-query.rs:74 still reads every z6 hidata in the bounding box.
+Plan §6 "Served": drives, rides and rail lines over many hi packs use 1 km summaries. Today
+query.rs reads every z6 hidata within the view plus half the window length. Measured on today's map:
+drives over Western Europe take 2.9 s warm and 8 s cold (England and Wales: 0.9 s and 3.6 s). At world
+scale a continental view is hundreds of z6 tiles.
 
-This is phase 5's other part, and it's independent of the landmarks. It gets its own design and
-review after step 3 above: the summary format in lo(T3), how pack(T) makes it, and how query.rs
-joins summaries with hi parts at the view's edge.
+### Summaries: `lodata/3-x-y` (sectioned, per z3 tile)
+
+The lo step writes them from the hidata of the z3 tile's 64 z6 tiles: each road's query samples
+(~100 m apart) grouped into bins of ~1 km.
+- A bin is consecutive samples of one road that share the filters' attributes (class, unpaved, toll,
+  unnamed; rail service bits). It closes at 1,000 m along the road, a gap of 300 m (`GAP_M`) or an
+  attribute change.
+- `lparts`: `LPart { u64 road; f32 offset (the first bin's); u32 first; u32 count; f32 road_len;
+  u8 class; u8 flags (unpaved, toll, unnamed); u8 rail (service bits); u8 pad }`: a road's
+  consecutive bins inside the z3 tile, as hidata's parts are inside z6 tiles.
+- `lbins`: `LBin { u64 way (the OSM way at the bin's middle sample); f32 offset (middle); i32 lon,
+  lat (middle sample); f32 len (first to last sample); u16 n (samples); u16 pad }`.
+- `lcomp`: `[u8; 12]` per bin, the mean of each component over its samples (× 255): roads the 12
+  drive components; rail the 11 ride components but frequency (which comes from `railfreq` at query
+  time, as now), the grade term from the bin's own samples.
+- A part's bins carry its line's identity for rail (relation, services, colour) in `lrail`, so rides
+  and lines don't look up base packs per run zoomed out.
+
+### Server
+
+- When the view plus its margin needs more than 6 z6 tiles with hidata, the query reads the z3
+  lodata instead and runs the same algorithm on bins:
+  - a bin's score from its component means with the same weights, clamped per bin (a sample's is
+    clamped per sample);
+  - windows by offset as now (at least the length asked), their middle bin in view;
+  - geometry from the bins' positions; `parts` the components' means weighted by each bin's samples.
+- Below that, hidata as now.
+- Rides and rail lines: frequency from each bin's way; a line's identity from `lrail`.
+
+### Accuracy and checks
+
+Zoomed out, windows start on bin edges and the clamp applies to a bin's mean, so the lists change a
+little. A test compares the summaries' answers with hidata's on a dozen continental views:
+- the top 20 overlap by 90 % or more;
+- scores within 2 points;
+- totals within 5 %.
+
+### Sizes and keys
+
+- A bin is ~44 B per km of road: about 270 MB for today's 6.1 M km, a few MB per z3 tile.
+- lodata(Q)'s key is the content names of its 64 hidata files; it's in the catalog as `lodata`.
