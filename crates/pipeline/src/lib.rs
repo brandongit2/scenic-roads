@@ -25,6 +25,7 @@ pub mod terrain_pack;
 pub mod tiling;
 pub mod unit;
 pub mod view;
+pub mod vtgen;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::Read;

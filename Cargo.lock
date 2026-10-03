@@ -748,6 +748,7 @@ dependencies = [
  "indicatif",
  "libc",
  "memmap2 0.9.11",
+ "names",
  "osmpbf",
  "png",
  "rayon",

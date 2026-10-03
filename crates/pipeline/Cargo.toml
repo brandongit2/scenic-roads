@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 roadcore = { path = "../roadcore" }
 store = { path = "../store" }
+names = { path = "../names" }
 sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 zstd = "0.13"
