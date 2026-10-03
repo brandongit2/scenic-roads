@@ -6,6 +6,7 @@ pub mod climbs;
 pub mod coverage;
 pub mod elev;
 pub mod hipack;
+pub mod interest;
 pub mod layers;
 pub mod legacy;
 pub mod markconv;
