@@ -387,15 +387,22 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
             eprintln!("basemap: {} GB free; reading the filtered planet from the NAS", free(scratch) >> 30);
             std::fs::remove_file(&filtered)?;
         }
-        let src = if filtered.exists() { filtered.clone() } else { filtered_nas(out, date)? };
         let b = scratch.join("basemap-input.osm.pbf");
-        let mut c = osmium();
-        c.args(["tags-filter", "--overwrite", "-o"]).arg(&b).arg(&src).args(FILTER_BASEMAP);
-        run(c, "osmium tags-filter (basemap)")?;
+        // (Kept until the basemap is made: a failed Planetiler run doesn't filter the planet again.)
+        if !(b.exists() && done(scratch, "basemap-input").exists()) {
+            let src = if filtered.exists() { filtered.clone() } else { filtered_nas(out, date)? };
+            let mut c = osmium();
+            c.args(["tags-filter", "--overwrite", "-o"]).arg(&b).arg(&src).args(FILTER_BASEMAP);
+            run(c, "osmium tags-filter (basemap)")?;
+            mark(scratch, "basemap-input")?;
+        }
         let pm = scratch.join("basemap.pmtiles");
         let downloads = out.root().join("sources/basemap");
         std::fs::create_dir_all(&downloads)?;
+        // Run in the scratch folder, its files named relative to it: Planetiler reads `--output` as
+        // a URI, which a space in the path ("Application Support") breaks.
         let mut j = Command::new("/opt/homebrew/opt/openjdk@21/bin/java");
+        j.current_dir(scratch);
         j.args(["-Xmx24g", "-jar"]).arg(planetiler).args([
             "--download",
             "--storage=mmap",
@@ -406,13 +413,14 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
             "--maxzoom=14",
         ]);
         j.arg(format!("--download-dir={}", downloads.display()));
-        j.arg(format!("--tmpdir={}", scratch.join("planetiler-tmp").display()));
-        j.arg(format!("--osm-path={}", b.display()));
-        j.arg(format!("--output={}", pm.display()));
+        j.arg("--tmpdir=planetiler-tmp");
+        j.arg("--osm-path=basemap-input.osm.pbf");
+        j.arg("--output=basemap.pmtiles");
         run(j, "planetiler (basemap)")?;
         out.put_file(&format!("layers/basemap/world-{date}"), "pmtiles", &pm)?;
         out.save()?;
         std::fs::remove_file(&b).ok();
+        std::fs::remove_file(done(scratch, "basemap-input")).ok();
         std::fs::remove_dir_all(scratch.join("planetiler-tmp")).ok();
         mark(scratch, "basemap")?;
     }
