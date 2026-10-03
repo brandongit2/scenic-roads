@@ -498,6 +498,15 @@ hold up the roads.
   assignment); the server serves the overlays job's summary and sources list
   (`global/heritage/…`) over today's. Until the switch is compared with today's map, the cutover's
   marks and overlays use today's heritage, so its first comparison changes the roads and flags only.
+- **Checks (2026-10-03):** today's whole chain in the stand-in root, on today's inputs and the
+  seeds, made 17 of today's outputs byte for byte (every details file, the area layers, the World
+  Heritage outlines and sites, props-heritage) with no query or download (every answer cached).
+  heritage and layer-heritage differ only in fame: today's lacks pageviews for 2,280 sites
+  (recent World Heritage inscriptions, Japanese and Taiwanese register sites…), its fame having
+  been worked out before the build Mac's last pageview run; the run's totals equal that last run's
+  for all 63,618 items. The switch on those outputs: the overlays job makes all 309 of today's
+  overlay packs and ovdata byte for byte (with today's dots); the heritage points match today's by
+  reference, 4,885 of 224,095 differing in fame and what follows from it (pv, fa, mz, ia).
 
 ## Storage
 
