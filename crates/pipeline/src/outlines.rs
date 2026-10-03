@@ -230,12 +230,19 @@ pub struct Summary {
 pub fn assemble(set: &Path, work: &Path, out: &Path) -> Result<Summary> {
     std::fs::create_dir_all(work)?;
     let geo = work.join("outlines.geojsonseq");
+    // Node locations in a sparse index on disk (16 bytes a node): osmium's default can switch to a
+    // dense array as big as the highest node id (about 100 GB for the planet's).
+    let idx = work.join("outlines-nodes.idx");
+    std::fs::remove_file(&idx).ok();
     let st = Command::new("osmium")
-        .args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "-a", "type,id", "--overwrite", "-o"])
+        .args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "-a", "type,id", "--overwrite"])
+        .arg(format!("--index-type=sparse_file_array,{}", idx.display()))
+        .arg("-o")
         .arg(&geo)
         .arg(set)
         .status()
         .context("run osmium export")?;
+    std::fs::remove_file(&idx).ok();
     ensure!(st.success(), "osmium export of {} failed: {st}", set.display());
     let r = assemble_geojsonseq(&geo, out);
     std::fs::remove_file(&geo).ok();
