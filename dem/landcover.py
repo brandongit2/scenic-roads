@@ -7,7 +7,11 @@ centres (nearest). Classes are collapsed to roadcore::grid::class:
   1 trees (+ mangroves)   2 shrub   3 open (grass, crop, bare, moss/lichen)
   4 built-up   5 water   6 herbaceous wetland   7 snow/ice   0 no data
 
-usage: landcover.py <build_dir> [--workers N]
+With --only (the unit builds, scenic-build unit): classifies just the grid slots listed there
+(u32, grid.idx order; the tiles the packs lack) and keeps the rest of grid.class.u8 as staged. No
+cross-run cache then: each unit has its own folder.
+
+usage: landcover.py <build_dir> [--workers N] [--only <slots.u32>]
 """
 from __future__ import annotations
 
@@ -85,9 +89,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("build", type=Path)
     ap.add_argument("--workers", type=int, default=32)
+    ap.add_argument("--only", type=Path)
     args = ap.parse_args()
     b: Path = args.build
     tiles = np.fromfile(b / "grid.idx", dtype=np.uint32).reshape(-1, 2)
+    if args.only is not None:
+        only(b, tiles, np.fromfile(args.only, dtype=np.uint32), args.workers)
+        return
     out = np.memmap(b / "grid.class.u8.tmp", dtype=np.uint8, mode="w+", shape=(len(tiles), 256, 256))
     # Tiles classified in the last run are copied from its grid.class.u8 (still in place; its
     # tile order is in data/cache/steps/landcover.tiles); only new tiles are read from WorldCover.
@@ -118,8 +126,30 @@ def main():
     del out
     os.replace(b / "grid.class.u8.tmp", b / "grid.class.u8")
     tiles.tofile(cache)
+    report(counts)
+
+
+def only(b: Path, tiles: np.ndarray, slots: np.ndarray, workers: int):
+    """Classifies the listed slots into a copy of the staged grid.class.u8."""
+    src = np.fromfile(b / "grid.class.u8", dtype=np.uint8)
+    if src.size != len(tiles) * 65536:
+        raise SystemExit(f"grid.class.u8 has {src.size} cells for {len(tiles)} grid tiles")
+    if slots.size and int(slots.max()) >= len(tiles):
+        raise SystemExit(f"slot {int(slots.max())} beyond the {len(tiles)} grid tiles")
+    out = src.reshape(-1, 256, 256)
+    print(f"land cover: {len(tiles)} grid tiles, {len(tiles) - len(slots)} from the packs, {len(slots)} to classify")
+    with ThreadPoolExecutor(workers) as pool:
+        futs = {pool.submit(tile_classes, int(tiles[i][0]), int(tiles[i][1])): int(i) for i in slots}
+        for f in tqdm(as_completed(futs), total=len(futs), desc="WorldCover → z11 grid", unit="tile"):
+            out[futs[f]] = f.result()
+    out.tofile(b / "grid.class.u8.tmp")
+    os.replace(b / "grid.class.u8.tmp", b / "grid.class.u8")
+    report(np.bincount(out[slots].ravel(), minlength=8) if slots.size else np.zeros(8, np.int64))
+
+
+def report(counts: np.ndarray):
     names = ["none", "trees", "shrub", "open", "built", "water", "wetland", "snow"]
-    tot = counts.sum()
+    tot = max(int(counts.sum()), 1)
     print("classes:", {n: f"{c / tot * 100:.1f} %" for n, c in zip(names, counts)})
 
 

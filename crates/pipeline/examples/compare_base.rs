@@ -25,6 +25,8 @@ fn main() -> anyhow::Result<()> {
     let mut elev_diff: Vec<f32> = Vec::new();
     let mut ch_diff = [0u64; 13];
     let mut ch_n = 0u64;
+    // Per flag bit (roadcore::scenic::flag): set in A, set in B, A only, B only.
+    let mut bits = [[0u64; 4]; 8];
     let mut road_len_ratio: Vec<f32> = Vec::new();
     for (i, w) in wa.iter().enumerate() {
         let r = w.vstart as usize..(w.vstart + w.vcount as u64) as usize;
@@ -51,6 +53,14 @@ fn main() -> anyhow::Result<()> {
                 for c in 0..13 {
                     ch_diff[c] += (sa[k][c] as i32 - sb[kj][c] as i32).unsigned_abs() as u64;
                 }
+                let (fa, fb) = (sa[k][7], sb[kj][7]);
+                for (b, n) in bits.iter_mut().enumerate() {
+                    let (x, y) = (fa >> b & 1 == 1, fb >> b & 1 == 1);
+                    n[0] += x as u64;
+                    n[1] += y as u64;
+                    n[2] += (x && !y) as u64;
+                    n[3] += (y && !x) as u64;
+                }
                 ch_n += 1;
             }
         }
@@ -74,6 +84,12 @@ fn main() -> anyhow::Result<()> {
     );
     if ch_n > 0 {
         println!("scenic channels, mean |Δ| per vertex (0–255): {}", ch_diff.iter().map(|d| format!("{:.1}", *d as f64 / ch_n as f64)).collect::<Vec<_>>().join(" "));
+        let names = ["scenic route", "park", "viewpoint", "waterfront", "heritage", "covered bridge", "special area", "indigenous"];
+        for (b, n) in bits.iter().enumerate() {
+            if n.iter().any(|&v| v > 0) {
+                println!("  flag {:<14} A {:>6.2} %  B {:>6.2} %  A only {}  B only {}", names[b], 100.0 * n[0] as f64 / ch_n as f64, 100.0 * n[1] as f64 / ch_n as f64, n[2], n[3]);
+            }
+        }
     }
     println!("road length B/A: p10 {:.2} p50 {:.2} p90 {:.2}", q(&road_len_ratio, 0.1), q(&road_len_ratio, 0.5), q(&road_len_ratio, 0.9));
     Ok(())

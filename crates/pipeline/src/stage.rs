@@ -157,7 +157,7 @@ pub fn stage(root: &Path, cat: &Catalog, b: [f64; 4], dir: &Path) -> Result<Stag
     for var in ["class", "areas", "canopy", "cover"] {
         let mut l = LayerReader::new(root, cat, &format!("grid-{var}"));
         let mut data = vec![0u8; tiles.len() * CELLS];
-        let mut missing = 0;
+        let mut missing: Vec<u32> = Vec::new();
         for (s, t) in tiles.iter().enumerate() {
             match if l.exists() { l.get(11, t[0], t[1])? } else { None } {
                 Some(z) => {
@@ -165,12 +165,15 @@ pub fn stage(root: &Path, cat: &Catalog, b: [f64; 4], dir: &Path) -> Result<Stag
                     anyhow::ensure!(cells.len() == CELLS, "grid-{var} 11/{}/{}: {} cells", t[0], t[1], cells.len());
                     data[s * CELLS..(s + 1) * CELLS].copy_from_slice(&cells);
                 }
-                None => missing += 1,
+                None => missing.push(s as u32),
             }
         }
         write_file(dir, &format!("grid.{var}.u8"), &data)?;
+        // The slots (grid.idx order) the packs lack, for the step that makes them (landcover.py
+        // --only for class).
+        write_file(dir, &format!("grid.{var}.missing.u32"), bytemuck::cast_slice(&missing))?;
         st.grids.push(var.into());
-        st.missing.insert(var.into(), missing);
+        st.missing.insert(var.into(), missing.len());
     }
     idx.save(&dir.join("grid.idx.tmp"))?;
     std::fs::rename(dir.join("grid.idx.tmp"), dir.join("grid.idx"))?;
