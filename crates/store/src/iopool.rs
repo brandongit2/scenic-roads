@@ -144,6 +144,13 @@ enum Msg<T> {
     Done(io::Result<T>, bool),
 }
 
+/// See `Inner::alive`.
+#[derive(Default)]
+struct Alive {
+    started: Option<Instant>,
+    answer: Option<(Instant, bool)>,
+}
+
 #[derive(Default)]
 struct Counts {
     workers: usize,
@@ -159,8 +166,10 @@ struct Inner {
     online: AtomicBool,
     closed: AtomicBool,
     prober_running: AtomicBool,
-    /// A liveness probe (after an overrun) is in flight.
-    checking: AtomicBool,
+    /// The liveness probe after an overrun: when the one in flight started, and the last answer
+    /// (when it came, and whether the share answered). Overruns arriving meanwhile wait for it.
+    alive: Mutex<Alive>,
+    alive_cv: std::sync::Condvar,
     counts: Mutex<Counts>,
     listener: Mutex<Option<Arc<Listener>>>,
 }
@@ -193,7 +202,8 @@ impl IoPool {
             online: AtomicBool::new(true),
             closed: AtomicBool::new(false),
             prober_running: AtomicBool::new(false),
-            checking: AtomicBool::new(false),
+            alive: Mutex::new(Alive::default()),
+            alive_cv: std::sync::Condvar::new(),
             counts: Mutex::new(Counts::default()),
             listener: Mutex::new(None),
         });
@@ -452,24 +462,45 @@ impl Inner {
         }
     }
 
-    /// Whether the share answers a probe within `t`, on a helper thread. One at a time: while an
-    /// earlier probe is still stuck, the share doesn't count as answering.
+    /// Whether the share answers a probe within `t` of the probe's start, on a helper thread. One
+    /// probe at a time: an overrun while one is in flight waits for its answer (many reads
+    /// overrunning together on a busy link make one probe, not a trip each); a probe still
+    /// unanswered after `t` means the share doesn't answer.
     fn alive_within(self: &Arc<Self>, t: Duration) -> bool {
-        if self.checking.swap(true, SeqCst) {
-            return false;
+        let mut g = lock(&self.alive);
+        let start = match g.started {
+            Some(s) => s,
+            None => {
+                let now = Instant::now();
+                g.started = Some(now);
+                let (me, path) = (self.clone(), self.cfg.probe.clone());
+                let spawned = thread::Builder::new().name("nas-alive".into()).spawn(move || {
+                    let ok = probe_ok(&path);
+                    let mut g = lock(&me.alive);
+                    g.started = None;
+                    g.answer = Some((Instant::now(), ok));
+                    me.alive_cv.notify_all();
+                });
+                if spawned.is_err() {
+                    g.started = None;
+                    return false;
+                }
+                now
+            }
+        };
+        let deadline = start + t;
+        loop {
+            if let Some((at, ok)) = g.answer {
+                if at >= start {
+                    return ok;
+                }
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            g = self.alive_cv.wait_timeout(g, left).unwrap_or_else(|e| e.into_inner()).0;
         }
-        let (tx, rx) = mpsc::channel();
-        let (me, path) = (self.clone(), self.cfg.probe.clone());
-        let spawned = thread::Builder::new().name("nas-alive".into()).spawn(move || {
-            let ok = probe_ok(&path);
-            me.checking.store(false, SeqCst);
-            let _ = tx.send(ok);
-        });
-        if spawned.is_err() {
-            self.checking.store(false, SeqCst);
-            return false;
-        }
-        matches!(rx.recv_timeout(t), Ok(true))
     }
 
     /// Opens the breaker (if closed) and makes sure a prober is running.
@@ -747,6 +778,50 @@ mod tests {
         // Other calls go on meanwhile, and the slow thread rejoins.
         assert_eq!(pool.call(|| Ok(5)).unwrap(), 5);
         assert!(eventually(3, || pool.status().stuck == 0));
+    }
+
+    #[test]
+    fn many_overruns_on_a_busy_share_make_one_probe_and_no_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = IoPool::with_config(cfg(dir.path().to_owned(), 8, 100));
+        // Eight reads started together all overrun; the share answers probes.
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let p = pool.clone();
+                thread::spawn(move || p.call(|| {
+                    thread::sleep(Duration::from_millis(500));
+                    Ok(())
+                }))
+            })
+            .collect();
+        for h in handles {
+            assert!(matches!(h.join().unwrap(), Err(IoError::Timeout)));
+        }
+        assert!(pool.is_online(), "a busy share isn't offline");
+        assert_eq!(pool.status().timeouts, 8);
+        assert!(eventually(3, || pool.status().stuck == 0));
+    }
+
+    #[test]
+    fn overruns_on_a_gone_share_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let probe = dir.path().join("share");
+        fs::create_dir(&probe).unwrap();
+        let pool = IoPool::with_config(PoolConfig { probe_interval: Duration::from_secs(60), ..cfg(probe.clone(), 4, 100) });
+        fs::remove_dir(&probe).unwrap();
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let p = pool.clone();
+                thread::spawn(move || p.call(|| {
+                    thread::sleep(Duration::from_millis(400));
+                    Ok(())
+                }))
+            })
+            .collect();
+        for h in handles {
+            assert!(matches!(h.join().unwrap(), Err(IoError::Timeout)));
+        }
+        assert!(!pool.is_online());
     }
 
     #[test]

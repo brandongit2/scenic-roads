@@ -64,10 +64,15 @@ impl<K: Hash + Eq + Clone, V: Clone> Lru<K, V> {
         }
     }
 
-    pub fn clear(&mut self) {
-        self.map.clear();
-        self.by_use.clear();
-        self.bytes = 0;
+    /// Keeps only the entries `keep` says.
+    pub fn retain(&mut self, keep: impl Fn(&K) -> bool) {
+        let gone: Vec<K> = self.map.keys().filter(|k| !keep(k)).cloned().collect();
+        for k in gone {
+            if let Some((_, w, used)) = self.map.remove(&k) {
+                self.bytes -= w;
+                self.by_use.remove(&used);
+            }
+        }
     }
 
     pub fn bytes(&self) -> u64 {
@@ -75,9 +80,12 @@ impl<K: Hash + Eq + Clone, V: Clone> Lru<K, V> {
     }
 }
 
-/// Pages by (file, page number); whole sections by (file, offset).
+/// Pages by (file, page number); whole sections by (file, offset, length) (an empty section can
+/// share its offset with the next one); sections being read whole right now, so a second request
+/// waits for the first read instead of making its own.
 static PAGES: LazyLock<Mutex<Lru<(u64, u64), Arc<Vec<u8>>>>> = LazyLock::new(|| Mutex::new(Lru::new(PAGES_BYTES)));
-static WHOLES: LazyLock<Mutex<Lru<(u64, u64), Blob>>> = LazyLock::new(|| Mutex::new(Lru::new(WHOLES_BYTES)));
+static WHOLES: LazyLock<Mutex<Lru<(u64, u64, u64), Blob>>> = LazyLock::new(|| Mutex::new(Lru::new(WHOLES_BYTES)));
+static READING: LazyLock<(Mutex<std::collections::HashSet<(u64, u64, u64)>>, std::sync::Condvar)> = LazyLock::new(Default::default);
 
 /// The page numbers bytes [off, off + len) span (len > 0).
 fn span(off: u64, len: u64) -> std::ops::RangeInclusive<u64> {
@@ -136,25 +144,55 @@ pub fn prefetch(f: &RemoteFile, ranges: &[(u64, u64)]) -> Result<(), IoError> {
     want.par_iter().try_for_each(|&i| page(f, i).map(|_| ()))
 }
 
-/// Bytes [off, off + len) of `f` (a section) read whole and kept.
+/// Bytes [off, off + len) of `f` (a section) read whole and kept: read straight into aligned memory
+/// (no second copy), once however many requests want it at the same time.
 pub fn whole(f: &RemoteFile, off: u64, len: u64) -> Result<Blob, IoError> {
-    if let Some(b) = cached_whole(f, off) {
-        return Ok(b);
+    if len == 0 {
+        return Ok(Blob::from_vec(Vec::new()));
     }
-    let b = Blob::from_vec(f.read_at(off, len as usize)?);
-    WHOLES.lock().unwrap().put((f.id, off), b.clone(), len);
-    Ok(b)
+    let key = (f.id, off, len);
+    let (reading, cv) = &*READING;
+    {
+        let mut r = reading.lock().unwrap();
+        loop {
+            if let Some(b) = WHOLES.lock().unwrap().get(&key) {
+                return Ok(b);
+            }
+            if r.insert(key) {
+                break;
+            }
+            r = cv.wait(r).unwrap();
+        }
+    }
+    let got = f.read_aligned(off, len as usize);
+    if let Ok(b) = &got {
+        WHOLES.lock().unwrap().put(key, b.clone(), len);
+    }
+    reading.lock().unwrap().remove(&key);
+    cv.notify_all();
+    got
 }
 
-/// The section at `off` of `f`, if it's in memory whole.
-pub fn cached_whole(f: &RemoteFile, off: u64) -> Option<Blob> {
-    WHOLES.lock().unwrap().get(&(f.id, off))
+/// The section at [off, off + len) of `f`, if it's in memory whole.
+pub fn cached_whole(f: &RemoteFile, off: u64, len: u64) -> Option<Blob> {
+    WHOLES.lock().unwrap().get(&(f.id, off, len))
 }
 
-/// Drops everything (the mirror now has the files).
-pub fn forget() {
-    PAGES.lock().unwrap().clear();
-    WHOLES.lock().unwrap().clear();
+/// Keeps `b` (something made from a section, e.g. an index) under the whole sections' budget, by a
+/// key of its own (`tag` past every offset).
+pub fn keep_derived(f: &RemoteFile, tag: u64, b: Blob) {
+    let n = b.bytes().len() as u64;
+    WHOLES.lock().unwrap().put((f.id, u64::MAX - tag, 0), b, n);
+}
+
+pub fn derived(f: &RemoteFile, tag: u64) -> Option<Blob> {
+    WHOLES.lock().unwrap().get(&(f.id, u64::MAX - tag, 0))
+}
+
+/// Drops what was read from the files `ids` (the mirror has them now; other NAS files keep theirs).
+pub fn forget(ids: &std::collections::HashSet<u64>) {
+    PAGES.lock().unwrap().retain(|k| !ids.contains(&k.0));
+    WHOLES.lock().unwrap().retain(|k| !ids.contains(&k.0));
 }
 
 /// Bytes held: (pages, whole sections).
@@ -198,6 +236,17 @@ mod tests {
         assert_eq!(missing(&f, &[(0, 10), (PAGE * 2, 1)]), 0);
         let w = whole(&f, 7, 1000).unwrap();
         assert_eq!(w.bytes(), &data[7..1007]);
-        assert!(cached_whole(&f, 7).is_some());
+        assert!(cached_whole(&f, 7, 1000).is_some());
+        // An empty section at the same offset as a section after it is its own (empty) thing.
+        assert!(whole(&f, 7, 0).unwrap().bytes().is_empty());
+        assert_eq!(whole(&f, 7, 1000).unwrap().bytes(), &data[7..1007]);
+        // Forgetting a file drops its pages and sections, not other files'.
+        let p2 = dir.path().join("g");
+        std::fs::write(&p2, &data[..2000]).unwrap();
+        let g = RemoteFile::new(p2, f.pool.clone());
+        whole(&g, 0, 100).unwrap();
+        forget(&[f.id].into_iter().collect());
+        assert!(cached_whole(&f, 7, 1000).is_none() && cached_whole(&g, 0, 100).is_some());
+        assert_eq!(missing(&f, &[(0, 10)]), PAGE);
     }
 }

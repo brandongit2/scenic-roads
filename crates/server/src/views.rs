@@ -133,6 +133,20 @@ impl RemoteFile {
         let n = self.len()? as usize;
         self.read_at(0, n)
     }
+
+    /// `len` bytes from `off` into 8-byte aligned memory, piece by piece (never a second copy of
+    /// the whole).
+    pub fn read_aligned(&self, off: u64, len: usize) -> Result<Blob, store::iopool::IoError> {
+        let mut words = vec![0u64; len.div_ceil(8)];
+        let buf = &mut bytemuck::cast_slice_mut::<u64, u8>(&mut words)[..len];
+        let mut at = 0usize;
+        while at < len {
+            let n = (len - at).min(PIECE);
+            buf[at..at + n].copy_from_slice(&self.read_piece(off + at as u64, n)?);
+            at += n;
+        }
+        Ok(Blob::Own(Arc::new(words), len))
+    }
 }
 
 impl store::range::RangeRead for RemoteFile {
@@ -337,8 +351,8 @@ impl<T: Pod> Sect<T> {
         self.check(&r)?;
         match &self.at {
             At::Blob(b) => Ok(Cow::Borrowed(&b.cast::<T>()[r])),
-            At::Remote { file, off, .. } => {
-                if let Some(b) = pages::cached_whole(file, *off) {
+            At::Remote { file, off, len } => {
+                if let Some(b) = pages::cached_whole(file, *off, *len) {
                     return Ok(Cow::Owned(b.cast::<T>()[r].to_vec()));
                 }
                 let sz = std::mem::size_of::<T>();
@@ -358,6 +372,14 @@ impl<T: Pod> Sect<T> {
         Ok((0..idx.len()).map(|k| g.get(k)[0]).collect())
     }
 
+    /// The NAS file it's read from (None when mapped).
+    pub fn remote_file(&self) -> Option<&RemoteFile> {
+        match &self.at {
+            At::Remote { file, .. } => Some(file),
+            At::Blob(_) => None,
+        }
+    }
+
     /// The whole section (from the NAS: read once and kept while memory allows).
     pub fn all(&self) -> Result<Blob> {
         match &self.at {
@@ -375,7 +397,7 @@ impl<T: Pod> Sect<T> {
         match &self.at {
             At::Blob(b) => Ok(Gathered::In(b.clone(), ranges.to_vec())),
             At::Remote { file, off, len } => {
-                if let Some(b) = pages::cached_whole(file, *off) {
+                if let Some(b) = pages::cached_whole(file, *off, *len) {
                     return Ok(Gathered::In(b, ranges.to_vec()));
                 }
                 let sz = std::mem::size_of::<T>() as u64;
@@ -415,6 +437,9 @@ impl<T: Pod> Sect<T> {
     }
 }
 
+/// `pages::keep_derived` tag of the by-road index made from a road values file.
+const BYROAD_TAG: u64 = 1;
+
 /// One unit's base pack and road values. Sections are read as asked, never up front.
 pub struct BaseView {
     pub unit: String,
@@ -429,8 +454,9 @@ pub struct BaseView {
     pub roads: Sect<RoadRec>,
     /// (road, way index), sorted: the road values file's index, when it has one.
     byroad: Option<Sect<[u64; 2]>>,
-    /// The same made from the road values, for files without it.
-    made_byroad: Mutex<Option<Arc<Vec<[u64; 2]>>>>,
+    /// The same made from the road values, for files without it (mapped files: kept here; NAS
+    /// files: under the whole sections' budget, `pages::keep_derived`).
+    made_byroad: Mutex<Option<Blob>>,
     remote: bool,
 }
 
@@ -487,20 +513,25 @@ impl BaseView {
         if let Some(ix) = &self.byroad {
             return Ok(ix.equal_range(road, |e| e[0])?.iter().map(|e| e[1] as u32).collect());
         }
-        let ix = {
+        let blob = {
             let mut g = self.made_byroad.lock().unwrap();
-            match g.as_ref() {
-                Some(ix) => ix.clone(),
-                None => {
+            let remote = self.roads.remote_file();
+            match (g.clone(), remote.and_then(|f| pages::derived(f, BYROAD_TAG))) {
+                (Some(b), _) | (None, Some(b)) => b,
+                (None, None) => {
                     let all = self.roads.all()?;
                     let mut ix: Vec<[u64; 2]> = all.cast::<RoadRec>().iter().enumerate().map(|(i, r)| [r.road, i as u64]).collect();
                     ix.sort_unstable();
-                    let ix = Arc::new(ix);
-                    *g = Some(ix.clone());
-                    ix
+                    let b = Blob::from_vec(bytemuck::cast_slice(&ix).to_vec());
+                    match remote {
+                        Some(f) => pages::keep_derived(f, BYROAD_TAG, b.clone()),
+                        None => *g = Some(b.clone()),
+                    }
+                    b
                 }
             }
         };
+        let ix: &[[u64; 2]] = blob.cast();
         let (a, b) = (ix.partition_point(|e| e[0] < road), ix.partition_point(|e| e[0] <= road));
         Ok(ix[a..b].iter().map(|e| e[1] as u32).collect())
     }
@@ -579,6 +610,9 @@ pub struct RoadUnits {
 impl RoadUnits {
     pub fn new(s: &SectView) -> Result<RoadUnits> {
         Ok(RoadUnits { pairs: s.sect("pairs")? })
+    }
+    pub fn is_remote(&self) -> bool {
+        self.pairs.remote_file().is_some()
     }
     /// The unit keys a road has ways in.
     pub fn units(&self, road: u64) -> Result<Vec<u64>> {

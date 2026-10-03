@@ -64,7 +64,11 @@ its first vertex (deepest unit of the pass's unit set that contains it).
 ## Base pack (`base/<z>-<x>-<y>.<h>.sect`): what one unit owns
 
 Meta: `{"fmt": 1, "unit": "z/x/y", "ways", "verts", "samples", "extent": [w, s, e, n] E7 of all
-owned geometry, "source": "legacy:<build>" | "osm:<date>"}`.
+owned geometry, "source": "legacy:<build>" | "pass:<date>", "scenic": bool, "drape": bool (whether
+those sections are there), "summary": {…}}`. `summary` (packs from 2026-10-03 on; the catalog works
+it out from the sections for older ones) is what the map's meta adds up: `extent`, `ways`,
+`vertices`, `elev_min`/`elev_max` (roads, not rail, metres), `hist` (road km by 10 m of elevation at
+segment midpoints, 256 bands) and `rail_km` (track km per service group).
 
 | Section | Record | Notes |
 |---|---|---|
@@ -154,7 +158,7 @@ zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. 
   "roads": {"6/32/21": "<logical>"},
   "hidata": {"6/32/21": "<logical>"},
   "global": {"pois.json": "<logical>"},
-  "meta": {"…": "the app's meta (bounds, elevation histogram, dem counts …)"},
+  "meta": {"…": "the map's meta, added up from the units' summaries: minzoom, maxzoom, bounds, ways, vertices, elev_min, elev_max, elev_hist_10m_km, rail_km, classes, built"},
   "credits": [],
   "coverage": {"regions": [], "outline": "<logical of coverage GeoJSON>"}
 }

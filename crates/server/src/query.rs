@@ -266,6 +266,7 @@ fn compute_drives(st: &AppState, q: Q, err: &mut Option<anyhow::Error>) -> Optio
     let total = hits.len();
     hits.sort_by(|x, y| y.0.total_cmp(&x.0));
     hits.truncate(q.limit.unwrap_or(20).min(100));
+    let fe = FirstErr::default();
     let drives = hits
         .into_iter()
         .filter_map(|(m, ri, i, j)| {
@@ -275,7 +276,7 @@ fn compute_drives(st: &AppState, q: Q, err: &mut Option<anyhow::Error>) -> Optio
             let mid_id = hv_m.here()[pm.way as usize].id;
             let first_id = hv_f.here()[pf.way as usize].id;
             let mid_at = [pm.lon as f64 * E7, pm.lat as f64 * E7];
-            let f = find_way(st, mid_id, mid_at).ok().flatten()?;
+            let f = fe.keep(find_way(st, mid_id, mid_at))?;
             let rec = f.rec();
             let name = f.base.string(rec.name).to_string();
             let name_en = st.road_en(mid_id);
@@ -308,6 +309,9 @@ fn compute_drives(st: &AppState, q: Q, err: &mut Option<anyhow::Error>) -> Optio
             })
         })
         .collect();
+    if fe.into(err) {
+        return None;
+    }
     Some(Out { total, drives })
 }
 
@@ -400,20 +404,48 @@ struct LineInfo {
     class: u8,
 }
 
-fn line_info(st: &AppState, tiles: &[QTile], s: &Smp) -> Option<LineInfo> {
+fn line_info(st: &AppState, tiles: &[QTile], s: &Smp) -> anyhow::Result<Option<LineInfo>> {
     let (hv, p, _) = sample(tiles, s);
     let id = hv.here()[p.way as usize].id;
-    let f = find_way(st, id, [p.lon as f64 * E7, p.lat as f64 * E7]).ok().flatten()?;
+    let Some(f) = find_way(st, id, [p.lon as f64 * E7, p.lat as f64 * E7])? else { return Ok(None) };
     let r = f.rec();
-    Some(LineInfo {
+    Ok(Some(LineInfo {
         ident: rail_ident(f.base.string(r.name), f.base.string(r.route)),
         services: f.base.string(r.route).to_string(),
         colour: r.colour,
-        rel: f.base.rail_rel(f.index).ok().flatten().unwrap_or(0),
+        rel: f.base.rail_rel(f.index)?.unwrap_or(0),
         way: id,
         rail: r.rail,
         class: r.class,
-    })
+    }))
+}
+
+/// The first error met in a query's (parallel) lookups: a NAS read that failed makes the answer a
+/// 503, never a list that looks complete without what couldn't be read.
+#[derive(Default)]
+struct FirstErr(std::sync::Mutex<Option<anyhow::Error>>);
+
+impl FirstErr {
+    fn keep<T>(&self, r: anyhow::Result<Option<T>>) -> Option<T> {
+        match r {
+            Ok(v) => v,
+            Err(e) => {
+                self.0.lock().unwrap().get_or_insert(e);
+                None
+            }
+        }
+    }
+
+    /// Moves the error, if any, into `err`; true when there was one.
+    fn into(self, err: &mut Option<anyhow::Error>) -> bool {
+        match self.0.into_inner().unwrap() {
+            Some(e) => {
+                *err = Some(e);
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -471,6 +503,7 @@ fn compute_rides(st: &AppState, q: RQ, err: &mut Option<anyhow::Error>) -> Optio
         let (_, p, _) = sample(&tiles, s);
         region.contains(p.lon, p.lat)
     };
+    let fe = FirstErr::default();
     let mut hits: Vec<(f32, usize, usize, usize, LineInfo)> = runs
         .par_iter()
         .enumerate()
@@ -478,7 +511,7 @@ fn compute_rides(st: &AppState, q: RQ, err: &mut Option<anyhow::Error>) -> Optio
             if run.len() < 2 || run[run.len() - 1].off - run[0].off < len {
                 return None;
             }
-            let info = line_info(st, &tiles, &run[0])?;
+            let info = fe.keep(line_info(st, &tiles, &run[0]))?;
             if !shown(info.class, info.rail, groups) {
                 return None;
             }
@@ -508,7 +541,7 @@ fn compute_rides(st: &AppState, q: RQ, err: &mut Option<anyhow::Error>) -> Optio
             parts.iter_mut().for_each(|p| *p /= n);
             let (hv_f, pf, _) = sample(&tiles, &run[i]);
             let mid = sample(&tiles, &run[(i + j) / 2]).1;
-            let mid_info = line_info(st, &tiles, &run[(i + j) / 2]);
+            let mid_info = fe.keep(line_info(st, &tiles, &run[(i + j) / 2]));
             let d = st.names.display(names::Kind::Place, &info.ident, None, mid.lon as f64 * E7, mid.lat as f64 * E7);
             Ride {
                 score: m * 100.0,
@@ -530,6 +563,9 @@ fn compute_rides(st: &AppState, q: RQ, err: &mut Option<anyhow::Error>) -> Optio
             }
         })
         .collect();
+    if fe.into(err) {
+        return None;
+    }
     Some(RidesOut { total, rides })
 }
 
@@ -590,10 +626,11 @@ fn compute_lines(st: &AppState, q: RQ, err: &mut Option<anyhow::Error>) -> Optio
         at: [f64; 2],
         geom: Vec<Vec<[f64; 2]>>,
     }
+    let fe = FirstErr::default();
     let parts: Vec<Acc> = runs
         .par_iter()
         .filter_map(|run| {
-            let info = line_info(st, &tiles, &run[0])?;
+            let info = fe.keep(line_info(st, &tiles, &run[0]))?;
             if info.ident.is_empty() || !shown(info.class, info.rail, groups) {
                 return None;
             }
@@ -664,5 +701,8 @@ fn compute_lines(st: &AppState, q: RQ, err: &mut Option<anyhow::Error>) -> Optio
         _ => lines.sort_by(|x, y| y.score.total_cmp(&x.score)),
     }
     lines.truncate(q.limit.unwrap_or(40).min(100));
+    if fe.into(err) {
+        return None;
+    }
     Some(LinesOut { total, lines })
 }

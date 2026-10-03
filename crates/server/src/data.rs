@@ -458,11 +458,26 @@ impl Data {
     /// (offline too). Views read from the NAS are dropped whole; they're rebuilt on next use.
     pub fn forget_remote(&self) {
         let local = |c: &str| self.mirror.as_ref().is_some_and(|m| m.local(c).is_some());
-        self.remotes.lock().unwrap().retain(|c, _| !local(c));
+        // What was read from the files now here goes with their handles (other NAS files keep
+        // theirs: they're still read from the NAS).
+        let mut gone: std::collections::HashSet<u64> = Default::default();
+        self.remotes.lock().unwrap().retain(|c, r| {
+            let keep = !local(c);
+            if !keep {
+                gone.insert(r.id);
+            }
+            keep
+        });
+        crate::pages::forget(&gone);
         self.sects.lock().unwrap().retain(|_, v| !v.is_remote());
         self.bases.lock().unwrap().retain(|_, v| !v.is_remote());
         self.his.lock().unwrap().retain(|_, v| !v.is_remote());
-        crate::pages::forget();
+        // The road → units index too: reopened from the mirror on next use (offline then works).
+        let mut ru = self.roadunits.lock().unwrap();
+        if ru.as_ref().is_some_and(|(_, r)| r.is_remote()) {
+            *ru = None;
+        }
+        drop(ru);
         self.mirror_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
