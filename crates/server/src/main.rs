@@ -217,8 +217,11 @@ async fn main() -> Result<()> {
     let reserve_gb: u64 = arg("--reserve-gb").map(|v| v.parse()).transpose()?.unwrap_or(50);
     let no_mirror = std::env::args().any(|a| a == "--no-mirror");
     let root = arg("--root").map(PathBuf::from);
-    if let Err(e) = store::nas::ensure_nsmb_conf(data::NAS_HOST, data::NAS_SHARE) {
-        eprintln!("nsmb.conf: {e:#}");
+    // Soft mounts whichever name the share is mounted by.
+    for host in [data::NAS_HOST, store::nas::LAN_HOST] {
+        if let Err(e) = store::nas::ensure_nsmb_conf(host, data::NAS_SHARE) {
+            eprintln!("nsmb.conf: {e:#}");
+        }
     }
     let d = data::Data::open(data::Options { home: home.clone(), nas_root: root.clone(), mirror: !no_mirror && root.is_none(), reserve_gb })?;
     eprintln!("catalog {} · NAS {}", d.catalog().n, d.nas_root().map(|p| p.display().to_string()).unwrap_or_else(|| "not mounted".into()));

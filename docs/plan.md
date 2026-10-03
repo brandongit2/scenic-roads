@@ -668,3 +668,10 @@ latitude cap; format versions read two at a time.
     through, the server remounted the share by itself (its 10-minute loop when idle).
   - Worth doing: the pass's uploads could leave headroom (a rate limit), and the server could
     detect a hung mount (the breaker's probe times out) and remount it rather than wait.
+- **The NAS by its LAN name (2026-10-03):** both Macs had the share mounted as `fishandchips`,
+  which Tailscale's DNS resolves to the NAS's tailnet address (100.77.42.3), so all SMB traffic
+  went through the tunnel. The NAS runs Tailscale with userspace networking, which is CPU-bound:
+  SMB writes ran at 12 MB/s, and a 400 MB SSH stream took 11.2 s through Tailscale against 5.6 s on
+  the LAN. Pausing the NAS's indexing lowered its I/O wait (44 % → 21 %) but not the upload. The app
+  now mounts `fishandchips.local` (it only mounts at home, checked by that name), keeps
+  `nsmb.conf`'s soft mounts for both names, and logs a mount by the bare name.

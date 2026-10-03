@@ -109,6 +109,8 @@ pub struct Data {
     last_mount: Mutex<Option<std::time::Instant>>,
     /// Whether the build agent runs a job, and when that was read.
     busy: Mutex<Option<(std::time::Instant, bool)>>,
+    /// A mount by the bare name has been reported (once).
+    warned_tunnel: std::sync::atomic::AtomicBool,
 }
 
 /// A data development override: serve a local folder laid out like the NAS project folder.
@@ -142,6 +144,7 @@ impl Data {
             mirror_gen: Default::default(),
             last_mount: Mutex::new(None),
             busy: Mutex::new(None),
+            warned_tunnel: Default::default(),
         });
         match o.nas_root {
             Some(root) => d.set_nas(Some(root)),
@@ -190,7 +193,13 @@ impl Data {
     /// Find the share (mounting it if it's missing: only when the NAS answers on the SMB port, so
     /// away from home nothing tries, and at most every five minutes).
     pub fn find_nas(&self) {
-        let found = store::nas::find_mount(NAS_HOST, NAS_SHARE).map(|m| m.point.join(PROJECT));
+        let mount = store::nas::find_mount(NAS_HOST, NAS_SHARE);
+        if let Some(m) = &mount {
+            if !store::nas::by_lan_name(m) && !self.warned_tunnel.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!("NAS: mounted as {} (Tailscale's DNS can route that through the tunnel, at a fraction of the LAN's speed); new mounts use {}", m.from, store::nas::LAN_HOST);
+            }
+        }
+        let found = mount.map(|m| m.point.join(PROJECT));
         if found.is_some() {
             self.set_nas(found);
             return;

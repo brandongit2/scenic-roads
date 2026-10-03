@@ -15,10 +15,23 @@ use std::time::{Duration, Instant};
 
 /// The NAS: its host, the share holding the project, the project folder in it, and the URL to
 /// mount the share by (the password comes from the Keychain).
+///
+/// The share is mounted by the NAS's LAN name (Bonjour, `.local`): the bare name resolves through
+/// Tailscale's DNS to its tailnet address when Tailscale runs, and the NAS's Tailscale (userspace
+/// networking) is CPU-bound: SMB writes through it ran at 12 MB/s on 2026-10-03, and an SSH stream
+/// at half the LAN's rate. The share is only mounted at home (the server checks the LAN name
+/// first), so the LAN name always resolves then.
 pub const HOST: &str = "fishandchips";
+pub const LAN_HOST: &str = "fishandchips.local";
 pub const SHARE: &str = "personal";
 pub const PROJECT: &str = "projects/scenic-roads";
-pub const SMB_URL: &str = "smb://brandontsang@fishandchips/personal";
+pub const SMB_URL: &str = "smb://brandontsang@fishandchips.local/personal";
+
+/// Whether a mount reaches the NAS by its LAN name (not the bare name, which Tailscale's DNS can
+/// send through the tunnel).
+pub fn by_lan_name(m: &Mount) -> bool {
+    matches_from(&m.from, LAN_HOST, SHARE) || m.from.to_lowercase().contains("._smb._tcp.local/")
+}
 
 /// A mounted SMB share.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -283,6 +296,11 @@ mod tests {
             assert!(!matches_from(from, "fishandchips", "personal"), "{from}");
         }
         assert!(matches_from("//me@nas/My%20Share", "nas", "my share"));
+        // Mounted by the LAN name (or Bonjour's service name), not the bare name.
+        let m = |from: &str| Mount { point: PathBuf::from("/Volumes/personal"), from: from.to_string() };
+        assert!(by_lan_name(&m("//brandontsang@fishandchips.local/personal")));
+        assert!(by_lan_name(&m("//brandontsang@FISHANDCHIPS._smb._tcp.local/Personal")));
+        assert!(!by_lan_name(&m("//brandontsang@fishandchips/personal")));
         assert!(matches_from("//me@[fe80::1]/data", "fe80::1", "data"));
         assert!(!matches_from("//me@nas/personal", "", "personal"));
         assert_eq!(percent_decode("a%2Fb%zz%4"), "a/b%zz%4");
