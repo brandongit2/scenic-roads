@@ -813,8 +813,19 @@ fn write_replace(p: &Path, bytes: &[u8]) -> Result<()> {
     }
     let tmp = p.with_extension("json.tmp");
     std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, p).with_context(|| format!("rename to {}", p.display()))?;
-    Ok(())
+    // On the NAS's SMB share a rename over a file another Mac has open (its server reading the
+    // heartbeat) fails as busy for a moment: tried again a few times before giving up this beat.
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(&tmp, p) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.raw_os_error() == Some(libc::EBUSY) && tries < 8 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            Err(e) => return Err(anyhow::Error::new(e).context(format!("rename to {}", p.display()))),
+        }
+    }
 }
 
 /// The status a `scenic status` shows: the NAS's heartbeat, else this Mac's copy.
