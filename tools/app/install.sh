@@ -13,7 +13,7 @@ mkdir -p "$HOME_S/app" "$HOME_S/run"
 if [[ ! -d "$HOME_S/app/$version" ]]; then
   rsync -a "$NAS/app/$version/" "$HOME_S/app/$version.tmp/"
   for b in server scenic scenic-build extract tile scenic-metrics; do
-    [[ -f "$HOME_S/app/$version.tmp/$b" ]] && chmod +x "$HOME_S/app/$version.tmp/$b"
+    if [[ -f "$HOME_S/app/$version.tmp/$b" ]]; then chmod +x "$HOME_S/app/$version.tmp/$b"; fi
   done
   mv "$HOME_S/app/$version.tmp" "$HOME_S/app/$version"
 fi
