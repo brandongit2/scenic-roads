@@ -57,18 +57,18 @@ legend = ('<section class="legend" aria-label="Legend">'
           '</section>')
 
 # Implementation progress (docs/plan.md §10), as of the date shown.
-PROGRESS_AT = '3 October 2026, 03:00'
+PROGRESS_AT = '3 October 2026, 06:10'
 PHASES = [
     ('done-ish', 'Foundations on today’s data', 'Both Macs run the new app from the NAS. Compared with today’s map in nine places (Québec, Tokyo, London, Chamonix, Vancouver, Hong Kong, Taipei, Lisbon, Northumberland): roads, elevation profiles, every tile layer and popup details all equal. The map reads only the pages a request needs from the NAS (a first hover in Tokyo: 66 s before, 1.9 s now).',
      'Left: the speed check against today’s app once this Mac’s local copy is in.'),
-    ('mostly', 'Build agent and moving the data', 'The agent runs on the build Mac from the installed app: one job at a time, waits for mains power, backs up your folders and clears replaced files. Both Macs’ data is on the NAS, checked file by file; the old build folders are gone.',
+    ('mostly', 'Build agent and moving the data', 'The agent runs on the build Mac from the installed app: one job at a time, waits for mains power, backs up your folders and clears replaced files. Both Macs’ data is on the NAS, checked file by file; the old build folders are gone. Both Macs now reach the NAS over the home network rather than Tailscale (60 MB/s instead of 12), and an unattended Mac never waits on a password prompt.',
      'Left: the build Mac’s caches, being copied, then moved into the agent’s.'),
-    ('active', 'Worldwide OpenStreetMap pass', 'Cuts the planet a quarter at a time so it fits the build Mac’s memory and disk (checked identical to the old cut). Running on the full planet since 3 October, 00:40: the planet is filtered (60.6 GB, 68 % of it) and being copied to the NAS, slowly while the NAS is also busy with its own sync (13 MB/s).',
-     'Left: the worldwide sets, outlines, basemap, cutting into areas and road values (several hours); trees and overlays for new areas.'),
-    ('mostly', 'Per-area building', 'Pilot done: Northumberland and the Scottish Borders built the new way match today’s data (same roads, elevations within 1 m, every scenery score and flag), and roads cross their border seamlessly.',
+    ('active', 'Worldwide OpenStreetMap pass', 'Cuts the planet a quarter at a time so it fits the build Mac’s memory and disk (checked identical to the old cut). Since 3 October, 00:40: filtered (60.6 GB, 68 % of the planet) and on the NAS, the worldwide sets and outlines made. Its basemap stage hit a bug (a space in the build Mac’s folder name broke Planetiler), fixed; it resumes with the sets the new landmark jobs need.',
+     'Left: the basemap, cutting into areas and road values (several hours); trees and overlays for new areas.'),
+    ('mostly', 'Per-area building', 'Pilot done: Northumberland and the Scottish Borders built the new way match today’s data (same roads, elevations within 1 m, every scenery score and flag), and roads cross their border seamlessly. Rail lines now carry their identity in each area’s data, so rides and rail lines no longer read the base data (rides cold from the NAS: 1.9 s → 0.12 s).',
      'Left: rankings for new areas (fame, ferries, rail service).'),
-    ('active', 'In the browser', 'The Regions panel, the status bar and switching to new data in place. Tiles that fail while the NAS is busy or away are asked for again by themselves. Landmarks by view: today’s 584,000 stops & sights and heritage sites become per-area points and zoomed-out tiles; the In view numbers, Sights lists and popups come from the server, equal to today’s in every one of 163 views checked, and the browser holds only what’s near the view (its landmarks memory: about 1 MB instead of 180 MB).',
-     'Left: publishing landmarks by view; overlays, stations and ferries the same way; faster zoomed-out drive lists (designed, under review); landmarks for new areas.'),
+    ('mostly', 'In the browser', 'Live on both Macs: landmarks by view (today’s 584,000 stops & sights and heritage sites, the In view numbers, lists and popups equal to today’s in 163 views), and now the area overlays, rail stops and ferries by view as well (the same stops and ferry numbers as today). Against today’s whole files: 3–4× less browser memory (53–74 MB instead of 186–232), the map done loading sooner (London 3.3 s instead of 4.7, Alps 2.9 instead of 4.7), the same frame rates. Zoomed-out drive, ride and rail-line lists come from 500 m summaries (“≈” by the count), within a point or two of the exact scores; they switch on once the areas are re-packed.',
+     'Left: landmarks and overlays for new areas (from the pass’s new sets, the registers and Wikidata).'),
     ('later', 'Switching over', 'Today’s 30 regions as outlines, built the new way after the pass, compared, then switched to.', ''),
 ]
 STATE = {'done-ish': ('nearly done', 'st-near'), 'mostly': ('mostly done', 'st-near'), 'active': ('in progress', 'st-on'), 'later': ('later', 'st-later')}
