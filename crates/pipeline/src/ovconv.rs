@@ -1,0 +1,283 @@
+//! Today's area overlays, parks, stations and ferries as tiles and data by view (docs/phase5.md
+//! "Areas", "Stations", "Ferries"): the `convert-legacy-overlays` step.
+//!
+//! - **Areas** (`layers/ov-{heritage-areas,indigenous,special,whs}`): vector tiles (layer `a`), the
+//!   lean files' properties with each feature's id (docs/phase5.md "Ids") and `own`, the z3 tile
+//!   whose `ovdata` holds its details. World Heritage outlines carry their site dot's id and
+//!   position (`px`, `py`), whose popup they open.
+//! - **`ovdata/3-x-y`**: the areas' details by id, and the parks' records (looked up by name near a
+//!   point), owned by the z3 tile of their box's centre.
+
+use crate::hipack::{grow, meets, tile_bounds};
+use crate::layers::{pack_of, write_pack};
+use crate::legacy::Unit;
+use crate::markconv::{self, legacy_bytes};
+use crate::marks::{self, IdSource};
+use crate::out::Out;
+use crate::vtgen::{self, Feature, Geom};
+use anyhow::{bail, Context, Result};
+use names::mvt::Value as MvtValue;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+/// The areas' vector-tile layer.
+pub const LAYER: &str = "a";
+pub const MAXZ: u8 = 12;
+/// Hi tiles (z9–12) only where the coverage is, and this far around it.
+const HALO_KM: f64 = 20.0;
+
+/// An area overlay: its catalog layer, today's lean file, its details (file, and the key its
+/// records go under in ovdata and the detail route).
+struct Area {
+    layer: &'static str,
+    file: &'static str,
+    details: Option<(&'static str, &'static str)>,
+}
+
+const AREAS: [Area; 4] = [
+    Area { layer: "ov-heritage-areas", file: "layer-heritage-areas", details: Some(("details-harea", "harea")) },
+    Area { layer: "ov-indigenous", file: "layer-indigenous", details: Some(("details-indigenous", "indigenous")) },
+    Area { layer: "ov-special", file: "layer-special", details: Some(("details-special", "special")) },
+    Area { layer: "ov-whs", file: "layer-whs-shapes", details: None },
+];
+
+pub struct Converted {
+    pub areas: usize,
+    pub tiles: usize,
+    pub ovdata: usize,
+    pub parks: usize,
+}
+
+/// A GeoJSON geometry as vtgen's, and its bounding box (None: not a line or area).
+fn geom_of(g: &Value) -> Option<(Geom, [f64; 4])> {
+    let pt = |c: &Value| -> Option<[f64; 2]> { Some([c[0].as_f64()?, c[1].as_f64()?]) };
+    let line = |c: &Value| -> Option<Vec<[f64; 2]>> { c.as_array()?.iter().map(pt).collect() };
+    let poly = |c: &Value| -> Option<Vec<Vec<[f64; 2]>>> { c.as_array()?.iter().map(line).collect() };
+    let c = &g["coordinates"];
+    let geom = match g["type"].as_str()? {
+        "Polygon" => Geom::Polygons(vec![poly(c)?]),
+        "MultiPolygon" => Geom::Polygons(c.as_array()?.iter().map(poly).collect::<Option<_>>()?),
+        "LineString" => Geom::Lines(vec![line(c)?]),
+        "MultiLineString" => Geom::Lines(c.as_array()?.iter().map(line).collect::<Option<_>>()?),
+        _ => return None,
+    };
+    let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    let mut add = |p: &[f64; 2]| {
+        b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])];
+    };
+    match &geom {
+        Geom::Polygons(ps) => ps.iter().flatten().flatten().for_each(&mut add),
+        Geom::Lines(ls) => ls.iter().flatten().for_each(&mut add),
+        Geom::Points(ps) => ps.iter().for_each(&mut add),
+    }
+    b[0].is_finite().then_some((geom, b))
+}
+
+/// A JSON property as a vector-tile value (None: null, or not a scalar).
+fn mvt_value(v: &Value) -> Option<MvtValue> {
+    Some(match v {
+        Value::String(s) => MvtValue::String(s.clone()),
+        Value::Bool(b) => MvtValue::Bool(*b),
+        Value::Number(n) => match (n.as_i64(), n.as_f64()) {
+            (Some(i), _) => MvtValue::Sint(i),
+            (None, Some(f)) => MvtValue::Double(f),
+            _ => return None,
+        },
+        _ => return None,
+    })
+}
+
+/// The z3 tile ("3/x/y") holding a point.
+fn z3_of(lon: f64, lat: f64) -> String {
+    Unit::of_point(3, [marks::e7(lon), marks::e7(lat)]).slash()
+}
+
+/// The z6 tiles meeting the coverage (the base packs' units) grown by `HALO_KM`: where hi tiles go.
+fn hi_cover(out: &Out) -> HashSet<(u32, u32)> {
+    let grown: Vec<_> = out.manifest.keys().filter_map(|k| k.strip_prefix("base/")).filter_map(Unit::parse).map(|u| grow(tile_bounds(u.z, u.x, u.y), HALO_KM)).collect();
+    let mut s = HashSet::new();
+    for x in 0..64u32 {
+        for y in 0..64u32 {
+            let b = tile_bounds(6, x, y);
+            if grown.iter().any(|g| meets(*g, b)) {
+                s.insert((x, y));
+            }
+        }
+    }
+    s
+}
+
+/// Each heritage record's (`i`) dot: its id and place, as `convert-legacy-marks` made them.
+fn heritage_dots(out: &Out) -> Result<HashMap<u64, (u64, f64, f64)>> {
+    let (pts, ids) = markconv::points_with_ids(out)?;
+    let k = marks::kind_index("heritage").unwrap();
+    let mut m = HashMap::new();
+    for (p, id) in pts.iter().zip(ids) {
+        if p.kind != k || p.pt.flags & marks::flag::COMPONENT != 0 {
+            continue;
+        }
+        let Some(i) = p.info.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()).and_then(|v| v["i"].as_u64()) else { continue };
+        m.insert(i, (id, p.lon, p.lat));
+    }
+    Ok(m)
+}
+
+/// Today's details records by their index (`i`).
+fn details_by_i(out: &Out, file: &str) -> Result<HashMap<u64, String>> {
+    let b = legacy_bytes(out, file)?;
+    let mut m = HashMap::new();
+    for line in b.split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
+        let v: Value = serde_json::from_slice(line).with_context(|| format!("{file}: a record"))?;
+        if let Some(i) = v["i"].as_u64() {
+            m.insert(i, String::from_utf8_lossy(line).into_owned());
+        }
+    }
+    Ok(m)
+}
+
+/// Records (JSON) under ids in ovdata: sorted ids, offsets (n + 1), the records end to end.
+#[derive(Default)]
+struct Recs {
+    rows: Vec<(u64, String)>,
+}
+
+impl Recs {
+    fn sections(mut self) -> (Vec<u64>, Vec<u32>, Vec<u8>) {
+        self.rows.sort_by_key(|r| r.0);
+        let mut offs = vec![0u32];
+        let mut bytes = Vec::new();
+        let ids = self.rows.iter().map(|r| r.0).collect();
+        for (_, s) in &self.rows {
+            bytes.extend_from_slice(s.as_bytes());
+            offs.push(bytes.len() as u32);
+        }
+        (ids, offs, bytes)
+    }
+}
+
+pub fn convert(out: &mut Out) -> Result<Converted> {
+    let t0 = std::time::Instant::now();
+    let cover = hi_cover(out);
+    let want = |z: u8, x: u32, y: u32| z < 9 || cover.contains(&(x >> (z - 6), y >> (z - 6)));
+    let dots = heritage_dots(out)?;
+    eprintln!("overlays: {} heritage dots, {} z6 tiles for hi tiles ({:.1?})", dots.len(), cover.len(), t0.elapsed());
+    // ovdata per z3 owner: per details key, records by id; and parks.
+    let mut owned: BTreeMap<String, BTreeMap<&'static str, Recs>> = BTreeMap::new();
+    let (mut areas, mut ntiles) = (0usize, 0usize);
+    for a in &AREAS {
+        let fc: Value = serde_json::from_slice(&legacy_bytes(out, a.file)?)?;
+        let feats = fc["features"].as_array().with_context(|| format!("{}: no features", a.file))?;
+        let details = match a.details {
+            Some((f, _)) => details_by_i(out, f)?,
+            None => HashMap::new(),
+        };
+        let mut src: Vec<IdSource> = Vec::new();
+        // Per feature: it, its id (outlines: their dot's), its details record, its owner.
+        let mut made: Vec<(Feature, Option<u64>, String, String)> = Vec::new();
+        let mut empty = 0;
+        for (n, f) in feats.iter().enumerate() {
+            let Some((geom, bb)) = geom_of(&f["geometry"]) else {
+                // (Nothing to draw or click: a multipolygon without polygons.)
+                if f["geometry"]["coordinates"].as_array().is_some_and(|c| c.is_empty()) {
+                    empty += 1;
+                    continue;
+                }
+                bail!("{} #{n}: geometry {}", a.file, f["geometry"]["type"])
+            };
+            let mut props = f["properties"].as_object().cloned().unwrap_or_default();
+            let i = props.remove("i").and_then(|v| v.as_u64());
+            let (cx, cy) = ((bb[0] + bb[2]) / 2.0, (bb[1] + bb[3]) / 2.0);
+            let rec = i.and_then(|i| details.get(&i));
+            let mut id = None;
+            if a.details.is_none() {
+                // A World Heritage outline: its site's dot (id, place).
+                let (dot, lon, lat) = *i.and_then(|i| dots.get(&i)).with_context(|| format!("{} #{n}: no heritage dot for record {i:?}", a.file))?;
+                id = Some(dot);
+                props.insert("px".into(), serde_json::json!(lon));
+                props.insert("py".into(), serde_json::json!(lat));
+            } else {
+                let osm = rec.and_then(|r| serde_json::from_str::<Value>(r).ok()).and_then(|v| v["osm"].as_str().and_then(marks::osm_id));
+                let name = props.get("name").and_then(Value::as_str).unwrap_or("");
+                let reference = format!("legacy:{}|{name}|{},{}", a.layer, marks::e7(cx), marks::e7(cy));
+                src.push(IdSource { osm, reference, canon: Value::Object(props.clone()).to_string() });
+            }
+            let own = z3_of(cx, cy);
+            if a.details.is_some() {
+                props.insert("own".into(), serde_json::json!(own));
+            }
+            let mvt: Vec<(String, MvtValue)> = props.iter().filter_map(|(k, v)| mvt_value(v).map(|m| (k.clone(), m))).collect();
+            made.push((Feature { id: 0, geom, props: mvt, minzoom: 0 }, id, rec.cloned().unwrap_or_default(), own));
+        }
+        // Ids for the overlays with details (their own group); outlines have their dots'.
+        if a.details.is_some() {
+            let ids = marks::assign_ids(&src)?;
+            for ((f, id, _, _), new) in made.iter_mut().zip(ids) {
+                f.id = new;
+                *id = Some(new);
+            }
+        } else {
+            for (f, id, _, _) in made.iter_mut() {
+                f.id = id.unwrap();
+            }
+        }
+        if let Some((_, key)) = a.details {
+            for (_, id, rec, own) in &made {
+                if !rec.is_empty() {
+                    owned.entry(own.clone()).or_default().entry(key).or_default().rows.push((id.unwrap(), rec.clone()));
+                }
+            }
+        }
+        areas += made.len();
+        let feats: Vec<Feature> = made.into_iter().map(|m| m.0).collect();
+        // The tiles, gzipped, by pack.
+        let mut packs: BTreeMap<(&'static str, u8, u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
+        let mut err = None;
+        vtgen::tiles(LAYER, &feats, 0, MAXZ, &want, &mut |z, x, y, raw| match names::mvt::gzip(&raw) {
+            Ok(gz) => packs.entry(pack_of(z, x, y)).or_default().push((z, x, y, gz, raw.len() as u32)),
+            Err(e) => {
+                err.get_or_insert(e);
+            }
+        });
+        if let Some(e) = err {
+            return Err(e);
+        }
+        for ((scope, rz, rx, ry), mut tiles) in packs {
+            tiles.sort_by_key(|t| (t.0, t.1, t.2));
+            ntiles += tiles.len();
+            write_pack(out, a.layer, "mvt", true, scope, (rz, rx, ry), &mut tiles.into_iter())?;
+        }
+        eprintln!("overlays: {} {} features ({empty} without geometry), {ntiles} tiles so far ({:.1?})", a.layer, feats.len(), t0.elapsed());
+    }
+    // Parks: owned by their box's centre.
+    let pb = legacy_bytes(out, "details-park")?;
+    let mut parks = 0;
+    for line in pb.split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
+        let v: Value = serde_json::from_slice(line).context("details-park: a record")?;
+        let b = &v["bbox"];
+        let (Some(w), Some(s), Some(e), Some(n)) = (b[0].as_f64(), b[1].as_f64(), b[2].as_f64(), b[3].as_f64()) else { continue };
+        let own = z3_of((w + e) / 2.0, (s + n) / 2.0);
+        let r = owned.entry(own).or_default().entry("parks").or_default();
+        let k = r.rows.len() as u64;
+        r.rows.push((k, String::from_utf8_lossy(line).into_owned()));
+        parks += 1;
+    }
+    // ovdata, per z3 tile.
+    let n_ov = owned.len();
+    for (tile, keys) in owned {
+        let u = Unit::parse(&tile).unwrap();
+        let logical = format!("ovdata/{}", u.dash());
+        let local = out.scratch_file(&format!("{logical}.sect"));
+        let counts: BTreeMap<&str, usize> = keys.iter().map(|(k, r)| (*k, r.rows.len())).collect();
+        let mut w = store::sect::SectWriter::create(&local, serde_json::json!({"fmt": 1, "tile": tile, "records": counts}))?;
+        for (key, recs) in keys {
+            let (ids, offs, bytes) = recs.sections();
+            w.add_pod(&format!("{key}.ids"), &ids)?;
+            w.add_pod(&format!("{key}.offs"), &offs)?;
+            w.add(&format!("{key}.recs"), &bytes)?;
+        }
+        w.finish()?;
+        out.put_file(&logical, "sect", &local)?;
+    }
+    eprintln!("overlays: {areas} areas, {ntiles} tiles, {n_ov} ovdata, {parks} parks ({:.1?})", t0.elapsed());
+    Ok(Converted { areas, tiles: ntiles, ovdata: n_ov, parks })
+}

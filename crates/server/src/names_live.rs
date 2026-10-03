@@ -9,17 +9,22 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// Which tiles: our label tiles (name `n`, English `en`), or the basemap (OpenMapTiles schema).
+/// Which tiles: our label tiles (name `n`, English `en`), the basemap (OpenMapTiles schema), or
+/// the area overlays (layer `a`: name `name`, World Heritage outlines `n`; English `en`).
 #[derive(Clone, Copy)]
 pub enum Rules {
     Labels,
     Basemap,
+    Areas,
 }
+
+const AREAS: names::mvt::LayerRule<'static> = names::mvt::LayerRule { layer: "a", name_keys: &["name", "n"], en_keys: &["en"] };
 
 fn rules(r: Rules) -> &'static [names::mvt::LayerRule<'static>] {
     match r {
         Rules::Labels => &[names::mvt::LABELS],
         Rules::Basemap => &[names::mvt::OPENMAPTILES],
+        Rules::Areas => &[AREAS],
     }
 }
 

@@ -4,7 +4,7 @@ import * as maplibregl from 'maplibre-gl';
 import { cdfOf } from './ui/scale';
 import { Dist } from './roads/stats';
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
-import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, pointTiles, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, labelKindOf, type NameScale } from './basemap';
+import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, OV_LAYER, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, ovTilesOn, pointTiles, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, labelKindOf, type NameScale } from './basemap';
 import { OVERLAYS, kindSpacing, labelShown, type AppState, type LabelKind, type OverlayKey } from './state';
 import { keepable, onVersions, ver } from './api';
 import { hostFor } from './hosts';
@@ -59,7 +59,7 @@ function enrichOf(f: FeatureSummary, d: Detail): Enriched | null {
   if (!f.ref) return null;
   if ('park' in f.ref) return enrichArea(d);
   if ('mark' in f.ref) return f.ref.mark.kind === 'heritage' ? enrichHeritage(d) : enrichPoi(f.what ?? '', {}, d);
-  switch (f.ref.layer) {
+  switch ('area' in f.ref ? f.ref.area.layer : f.ref.layer) {
     case 'poi': return enrichPoi(f.what ?? '', {}, d);
     case 'heritage': return enrichHeritage(d);
     // The register's area and year (in the summary) rather than the mapped outline's and
@@ -247,8 +247,11 @@ export class Overlays {
    * asked for again. */
   private reload(files: string[]) {
     const changed = (src: string) => files.includes(`layer-${src}.json`) || files.includes(`${src}.json`);
-    for (const src of this.sourced) if (changed(src)) this.map.getSource<GeoJSONSource>(src)?.setData(layerUrl(src));
-    if (this.whsRequested && changed('whs-shapes')) this.map.getSource<GeoJSONSource>('whs')?.setData(layerUrl('whs-shapes'));
+    // (Vector tiles by view get their new versions with the other tiles: main.ts onVersions.)
+    if (!ovTilesOn()) {
+      for (const src of this.sourced) if (changed(src)) this.map.getSource<GeoJSONSource>(src)?.setData(layerUrl(src));
+      if (this.whsRequested && changed('whs-shapes')) this.map.getSource<GeoJSONSource>('whs')?.setData(layerUrl('whs-shapes'));
+    }
     for (const [src, st] of this.indexed) {
       if (!changed(src) || this.byView(src)) continue;
       if (st === 'ready') this.reindex(src);
@@ -395,7 +398,7 @@ export class Overlays {
     if (map.getLayer('whs-line')) {
       if (s.overlays.heritage && !this.whsRequested) {
         this.whsRequested = true;
-        map.getSource<GeoJSONSource>('whs')?.setData(layerUrl('whs-shapes'));
+        if (!ovTilesOn()) map.getSource<GeoJSONSource>('whs')?.setData(layerUrl('whs-shapes'));
       }
       const byKind: ExpressionSpecification = ['case', ['in', ['get', 'c'], ['literal', ['Natural', 'Mixed']]], shown.includes('w.n'), shown.includes('w.c')];
       map.setFilter('whs-line', byKind);
@@ -567,11 +570,13 @@ export class Overlays {
       const src = OVERLAY_SOURCE[k];
       if (!src || !this.sourced.has(src) || !this.layers.filtersOpen(k)) continue;
       const fh = filterHists(k, s.stopFilters, s.stopUnknown[k] !== false);
+      // (Each feature once: by its id in vector tiles, which repeat it in every tile it crosses.)
       const seen = new Set<unknown>();
-      for (const f of this.map.querySourceFeatures(src)) {
+      for (const f of this.map.querySourceFeatures(src, ovTilesOn() ? { sourceLayer: OV_LAYER } : undefined)) {
         const p = f.properties ?? {};
-        if (seen.has(p.i)) continue;
-        seen.add(p.i);
+        const k = ovTilesOn() ? f.id : p.i;
+        if (seen.has(k)) continue;
+        seen.add(k);
         fh.add(p);
       }
       this.layers.updateStopFilters(fh.done());
@@ -621,7 +626,8 @@ export class Overlays {
     }
     if (this.sourced.has(src)) return;
     this.sourced.add(src);
-    this.map.getSource<GeoJSONSource>(src)?.setData(layerUrl(src));
+    // (Vector tiles by view load themselves.)
+    if (!ovTilesOn()) this.map.getSource<GeoJSONSource>(src)?.setData(layerUrl(src));
     this.refreshStatus(k, src);
   }
 
@@ -915,6 +921,11 @@ function markRef(layer: string, p: Record<string, any>, at: [number, number]): D
 function summarise(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary | null {
   const p = f.properties ?? {};
   const idx = Number.isFinite(Number(p.i)) && p.i !== undefined ? Number(p.i) : null;
+  // By view: an area's details by its id and their z3 tile; a World Heritage outline opens its
+  // site dot's (id, place).
+  const ovId = typeof f.id === 'number' && p.i === undefined ? f.id : null;
+  const areaRef = (layer: 'harea' | 'special' | 'indigenous'): DetailRef | undefined =>
+    ovId !== null && p.own ? { area: { layer, id: ovId, own: String(p.own) } } : idx !== null ? { layer, i: idx } : undefined;
   const lid = f.layer.id;
   // A point by view: its details by id, at the point (else where the pointer is).
   const g = f.geometry as { type?: string; coordinates?: [number, number] } | undefined;
@@ -945,27 +956,27 @@ function summarise(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary 
       // (the certifier only where the kind doesn't name it: not "UNESCO" after "UNESCO Biosphere Reserve")
       facts: facts(p.category, p.year && `since ${p.year}`, p.area_km2 && `${fmt.n(Number(p.area_km2))} km²`,
         p.certifier && !(SPECIAL_LABEL[p.kind] ?? '').includes(p.certifier) && p.certifier), source: p.source ?? '',
-      ref: idx !== null ? { layer: 'special', i: idx } : undefined,
+      ref: areaRef('special'),
     };
   }
   if (lid === 'whs-line' || lid === 'whs-fill') {
     return {
       title: named(p.n, p), kind: 'UNESCO World Heritage Site', colour: HERITAGE_GROUPS[0].colour, area: true,
       facts: facts(p.c), source: 'Outline: OpenStreetMap; site: UNESCO World Heritage Centre',
-      ref: idx !== null ? { layer: 'heritage', i: idx } : undefined,
+      ref: ovId !== null && p.px !== undefined ? { mark: { kind: 'heritage', id: ovId, at: [Number(p.px), Number(p.py)] } } : idx !== null ? { layer: 'heritage', i: idx } : undefined,
     };
   }
   if (lid === 'heritage-area-fill') {
     return {
       title: named(p.name, p), kind: p.designation ?? 'Heritage district', colour: HERITAGE_AREA_COLOUR, area: true,
       facts: facts(p.municipality), source: p.source ?? '',
-      ref: idx !== null ? { layer: 'harea', i: idx } : undefined,
+      ref: areaRef('harea'),
     };
   }
   if (lid === 'indigenous-fill') {
     return {
       title: named(p.name, p) || 'Indigenous land', kind: 'Indigenous land / reserve', colour: INDIGENOUS_COLOUR, area: true, facts: [], source: 'OpenStreetMap',
-      ref: idx !== null ? { layer: 'indigenous', i: idx } : undefined,
+      ref: areaRef('indigenous'),
     };
   }
   if (lid === 'park-fill') {

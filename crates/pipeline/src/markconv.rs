@@ -17,7 +17,7 @@ use std::path::PathBuf;
 pub const POI_KINDS: [&str; 7] = ["viewpoint", "peak", "waterfall", "lighthouse", "covered_bridge", "rest", "trailhead"];
 
 /// A legacy file's bytes: this Mac's mirror copy when there is one, else the NAS's.
-fn legacy_bytes(out: &Out, stem: &str) -> Result<Vec<u8>> {
+pub(crate) fn legacy_bytes(out: &Out, stem: &str) -> Result<Vec<u8>> {
     let logical = format!("global/legacy/{stem}");
     let content = out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?;
     let mirror = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support/scenic/mirror").join(content));
@@ -205,6 +205,18 @@ pub struct Converted {
     pub thinned: usize,
 }
 
+/// Today's points with the ids `write` gives them (the same inputs, the same assignment): for the
+/// overlays' World Heritage outlines, which carry their site dot's id.
+pub fn points_with_ids(out: &Out) -> Result<(Vec<Point>, Vec<u64>)> {
+    let pts = load_points(out)?;
+    let ids = marks::assign_ids(&id_sources(&pts))?;
+    Ok((pts, ids))
+}
+
+fn id_sources(pts: &[Point]) -> Vec<IdSource> {
+    pts.iter().map(|p| IdSource { osm: p.osm, reference: p.reference.clone(), canon: format!("{}{}", Value::Object(p.props.clone()), p.info.as_deref().unwrap_or("")) }).collect()
+}
+
 /// Converts today's points: see [`write`].
 pub fn convert(out: &mut Out) -> Result<Converted> {
     let pts = load_points(out)?;
@@ -218,11 +230,7 @@ pub fn convert(out: &mut Out) -> Result<Converted> {
 /// highest in view.
 pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) -> Result<Converted> {
     let t0 = std::time::Instant::now();
-    let src: Vec<IdSource> = pts
-        .iter()
-        .map(|p| IdSource { osm: p.osm, reference: p.reference.clone(), canon: format!("{}{}", Value::Object(p.props.clone()), p.info.as_deref().unwrap_or("")) })
-        .collect();
-    let ids = marks::assign_ids(&src)?;
+    let ids = marks::assign_ids(&id_sources(&pts))?;
     let mut all: Vec<(u64, Pt)> = ids.into_iter().zip(pts).collect();
     eprintln!("marks: {} points with ids in {:.1?}", all.len(), t0.elapsed());
 

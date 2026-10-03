@@ -68,6 +68,8 @@ export interface Meta {
   versions?: Record<string, string | number>;
   /** Whether the labels by importance are served (labels.tiles, /tiles/labels). */
   labelTiles?: boolean;
+  /** The area overlays come as vector tiles by view (docs/phase5.md "Areas"). */
+  ovTiles?: boolean;
   /** The catalog's number (catalog.ts follows it). */
   catalog?: number;
 }

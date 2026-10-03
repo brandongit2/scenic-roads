@@ -14,6 +14,7 @@ mod descriptions;
 mod details;
 mod livefolder;
 mod names_live;
+mod ovdata;
 mod marks;
 mod markview;
 mod pages;
@@ -262,6 +263,8 @@ async fn main() -> Result<()> {
         .route("/tiles/roads/{z}/{x}/{y}", get(tiles::road_tile))
         .route("/tiles/rails/{z}/{x}/{y}", get(tiles::rail_tile))
         .route("/tiles/labels/{z}/{x}/{y}", get(tiles::label_tile))
+        .route("/tiles/ov/{name}/{z}/{x}/{y}", get(ovdata::ov_tile))
+        .route("/api/overlays/detail/{layer}/{id}", get(ovdata::detail))
         .route("/tiles/base/{z}/{x}/{y}", get(tiles::base_tile))
         .route("/tiles/trees/{var}/{z}/{x}/{y}", get(tiles::tree_tile))
         .route("/tiles/terrain/{z}/{x}/{y}", get(terrain::terrain_tile))
@@ -437,6 +440,9 @@ async fn versioned_caching(State(s): State<S>, req: axum::extract::Request, next
 
 /// What the app needs to start: the build's meta, each layer's version (for its URLs) and zooms,
 /// the NAS status.
+/// The area overlays served as vector tiles (`/tiles/ov/{name}`, catalog layers `ov-{name}`).
+const OV_LAYERS: [&str; 4] = ["heritage-areas", "indigenous", "special", "whs"];
+
 fn meta_json(s: &AppState) -> serde_json::Value {
     let cat = s.data.catalog();
     // An object even before the first catalog (the app then shows an empty map, not an error).
@@ -467,6 +473,12 @@ fn meta_json(s: &AppState) -> serde_json::Value {
             versions.insert(old.into(), if layer == "labels" { named(v) } else { serde_json::Value::from(v) });
         }
     }
+    // The area overlays' tiles (names attached).
+    for l in OV_LAYERS {
+        if cat.layers.contains_key(&format!("ov-{l}")) {
+            versions.insert(format!("ov-{l}.tiles"), named(s.data.layer_version(&format!("ov-{l}"))));
+        }
+    }
     // Way info and whole roads change with any data (the catalog's number) and carry names.
     versions.insert("ways.bin".into(), named(format!("c{}", cat.n)));
     // The basemap: its archives' content names.
@@ -486,6 +498,8 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         m.insert("catalog".into(), serde_json::json!(cat.n));
         m.insert("online".into(), serde_json::json!(s.data.online()));
         m.insert("labelTiles".into(), serde_json::json!(cat.layers.contains_key("labels")));
+        // The area overlays as vector tiles by view (all of them, or today's files).
+        m.insert("ovTiles".into(), serde_json::json!(OV_LAYERS.iter().all(|l| cat.layers.contains_key(&format!("ov-{l}"))) && !cat.ovdata.is_empty()));
         m.insert("labels".into(), serde_json::json!(false));
         m.insert("baseParts".into(), serde_json::json!([]));
     }

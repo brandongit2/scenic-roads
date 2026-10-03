@@ -8,13 +8,17 @@ export type DetailRef =
   | { layer: 'poi' | 'heritage' | 'harea' | 'special' | 'indigenous'; i: number }
   | { park: { name: string; lon: number; lat: number } }
   /** A point by view (docs/phase5.md): its kind, id and place. */
-  | { mark: { kind: string; id: number; at: [number, number] } };
+  | { mark: { kind: string; id: number; at: [number, number] } }
+  /** An area overlay by view: its details' layer, id, and the z3 tile holding them ("3/x/y"). */
+  | { area: { layer: 'harea' | 'special' | 'indigenous'; id: number; own: string } };
 export type Detail = Record<string, any>;
 
 const cache = new Map<string, Promise<Detail | null>>();
+/** An area's details layer → its overlay's tiles (`ov-…`). */
+const AREA_TILES = { harea: 'heritage-areas', special: 'special', indigenous: 'indigenous' } as const;
 
 export const refKey = (r: DetailRef) =>
-  'park' in r ? `park:${r.park.name}@${r.park.lon.toFixed(2)},${r.park.lat.toFixed(2)}` : 'mark' in r ? `mark:${r.mark.kind}:${r.mark.id}` : `${r.layer}:${r.i}`;
+  'park' in r ? `park:${r.park.name}@${r.park.lon.toFixed(2)},${r.park.lat.toFixed(2)}` : 'mark' in r ? `mark:${r.mark.kind}:${r.mark.id}` : 'area' in r ? `area:${r.area.layer}:${r.area.id}` : `${r.layer}:${r.i}`;
 
 /** The version of the points by view (their details' URLs carry it). */
 let marksV: string | null = null;
@@ -36,6 +40,10 @@ export function getDetail(r: DetailRef): Promise<Detail | null> {
     let url: string;
     if ('mark' in r) {
       url = `/api/marks/detail/${r.mark.kind}/${r.mark.id}?at=${r.mark.at[0]},${r.mark.at[1]}${marksV !== null ? `&v=${marksV}` : ''}`;
+    } else if ('area' in r) {
+      // Versioned by the overlay's tiles (made with its details).
+      const v = version(`ov-${AREA_TILES[r.area.layer]}`);
+      url = `/api/overlays/detail/${r.area.layer}/${r.area.id}?${new URLSearchParams({ own: r.area.own, ...(v ? { v } : {}) })}`;
     } else {
       const files = 'park' in r ? ['details-park.jsonl'] : [`details-${r.layer}.jsonl`, ...(r.layer === 'poi' ? ['peaks.json'] : r.layer === 'heritage' ? ['props-heritage.jsonl'] : [])];
       const vs = files.map(version);

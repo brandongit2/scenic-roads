@@ -112,13 +112,20 @@ fn recall(key: &(u8, u8, u32, u32, u64, u64)) -> Option<Arc<Vec<u8>>> {
 
 /// Labels by importance (dem/labels.py): gzip'd MVT, one layer "l", name n, OSM's English en.
 pub async fn label_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
+    named_mvt_tile(s, "labels".into(), crate::names_live::Rules::Labels, z, x, y, q, headers).await
+}
+
+/// A layer's gzip'd MVT tile with display names attached (`rules`: which layer and properties).
+#[allow(clippy::too_many_arguments)]
+pub async fn named_mvt_tile(s: S, layer: String, rules: crate::names_live::Rules, z: u8, x: u32, y: u32, q: Option<String>, headers: HeaderMap) -> Response {
     let v = versioned(q.as_deref());
     let s2 = s.clone();
-    let h = match tokio::task::spawn_blocking(move || s2.data.tile_hash("labels", z, x, y)).await {
+    let l2 = layer.clone();
+    let h = match tokio::task::spawn_blocking(move || s2.data.tile_hash(&l2, z, x, y)).await {
         Ok(Ok(Some(h))) => h,
         Ok(Ok(None)) => return StatusCode::NO_CONTENT.into_response(),
         Ok(Err(e)) => {
-            eprintln!("labels {z}/{x}/{y}: {e:#}");
+            eprintln!("{layer} {z}/{x}/{y}: {e:#}");
             return StatusCode::SERVICE_UNAVAILABLE.into_response();
         }
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -128,14 +135,16 @@ pub async fn label_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)
     if etag_match(&headers, &etag) {
         return not_modified(&etag, v);
     }
+    // (Tiles of different layers have different contents, so the content hash keys them apart.)
     let key = (0u8, z, x, y, h, nv);
     if let Some(b) = recall(&key) {
         return respond(b.to_vec(), "application/x-protobuf", true, &etag, v);
     }
     let s2 = s.clone();
+    let l2 = layer.clone();
     let made = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Vec<u8>>> {
-        let Some((b, _)) = s2.data.tile("labels", z, x, y)? else { return Ok(None) };
-        Ok(Some(s2.names.attach_gz(b.bytes(), z, x, y, crate::names_live::Rules::Labels)))
+        let Some((b, _)) = s2.data.tile(&l2, z, x, y)? else { return Ok(None) };
+        Ok(Some(s2.names.attach_gz(b.bytes(), z, x, y, rules)))
     })
     .await;
     match made {
@@ -146,7 +155,7 @@ pub async fn label_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)
         }
         Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(e)) => {
-            eprintln!("labels {z}/{x}/{y}: {e:#}");
+            eprintln!("{layer} {z}/{x}/{y}: {e:#}");
             StatusCode::SERVICE_UNAVAILABLE.into_response()
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),

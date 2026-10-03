@@ -59,6 +59,9 @@ pub struct Catalog {
     /// Landmark points per z6 tile ("6/x/y" → logical name; docs/phase5.md).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub markdata: BTreeMap<String, String>,
+    /// Area overlays' details and the parks' records per z3 tile ("3/x/y" → logical name).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ovdata: BTreeMap<String, String>,
     /// Small worldwide files by what they are (e.g. "pois.json" → logical name).
     #[serde(default)]
     pub global: BTreeMap<String, String>,
@@ -143,7 +146,7 @@ impl Catalog {
         for b in &self.basemap {
             out.push(("basemap".into(), b.as_str()));
         }
-        for (what, m) in [("base", &self.base), ("roads", &self.roads), ("hidata", &self.hidata), ("global", &self.global)] {
+        for (what, m) in [("base", &self.base), ("roads", &self.roads), ("hidata", &self.hidata), ("markdata", &self.markdata), ("ovdata", &self.ovdata), ("global", &self.global)] {
             for (k, v) in m {
                 out.push((format!("{what}[{k}]"), v.as_str()));
             }
