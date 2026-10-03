@@ -298,11 +298,21 @@ def main() -> None:
     args()
     t0 = time.time()
     subprocess.run(["osmium", "tags-filter", "--overwrite", "-R", str(SRC), *NODE_FILTERS, "-o", str(NODES)], check=True)
-    subprocess.run(["osmium", "tags-filter", "--overwrite", str(SRC), *AREA_FILTERS, "-o", str(AREAS)], check=True)
+    # Only named areas become labels: the unnamed (most lakes and ponds) go before their nodes are
+    # read. Members of a named relation stay (as its references), named or not.
+    all_areas = AREAS.with_name(AREAS.name.replace(".osm.pbf", "-all.osm.pbf"))
+    subprocess.run(["osmium", "tags-filter", "--overwrite", str(SRC), *AREA_FILTERS, "-o", str(all_areas)], check=True)
+    subprocess.run(["osmium", "tags-filter", "--overwrite", str(all_areas), "wr/name", "-o", str(AREAS)], check=True)
+    all_areas.unlink(missing_ok=True)
     rows: list[tuple[str, str, str, float, float, float, str | None, float | None, float | None]] = []
     Points(rows).apply_file(str(NODES))
     print(f"{len(rows)} label points ({time.time() - t0:.0f} s)", file=sys.stderr)
-    Areas(rows).apply_file(str(AREAS), locations=True)
+    # Node locations in a sparse index on disk (16 bytes a node): pyosmium's default switches to a
+    # dense array as big as the highest node id (about 100 GB for the planet's ids).
+    idx = AREAS.with_name("labels-nodes.idx")
+    idx.unlink(missing_ok=True)
+    Areas(rows).apply_file(str(AREAS), locations=True, idx=f"sparse_file_array,{idx}")
+    idx.unlink(missing_ok=True)
     print(f"{len(rows)} labels read ({time.time() - t0:.0f} s)", file=sys.stderr)
     keep = dedupe(rows, np.array([r[5] for r in rows]), np.array([r[3] for r in rows]), np.array([r[4] for r in rows]))
     rows = [r for r, k in zip(rows, keep) if k]
