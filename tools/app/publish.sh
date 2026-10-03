@@ -55,16 +55,21 @@ cp target/release/server target/release/scenic target/release/scenic-build targe
    target/release/tile target/release/scenic-metrics $dest.tmp/
 mkdir -p $dest.tmp/dem
 git ls-files dem | while read f; do cp "$f" "$dest.tmp/$f"; done
-# The menu bar item (tools/status): an app bundle, signed ad hoc.
-mkdir -p "$dest.tmp/Scenic.app/Contents/MacOS"
-swiftc -O -swift-version 5 -o "$dest.tmp/Scenic.app/Contents/MacOS/scenic-status" tools/status/main.swift
-cp tools/status/Info.plist "$dest.tmp/Scenic.app/Contents/Info.plist"
-codesign -s - --force "$dest.tmp/Scenic.app"
+# The menu bar item (tools/status): an app bundle, built and signed ad hoc on this Mac (codesign
+# refuses a bundle on the NAS, whose SMB share adds Finder info), then copied without extended
+# attributes (none to keep as AppleDouble files).
+sb=$(mktemp -d)/Scenic.app
+mkdir -p "$sb/Contents/MacOS"
+swiftc -O -swift-version 5 -o "$sb/Contents/MacOS/scenic-status" tools/status/main.swift
+cp tools/status/Info.plist "$sb/Contents/Info.plist"
+xattr -cr "$sb"
+codesign -s - --force "$sb"
+cp -RX "$sb" "$dest.tmp/"
 rsync -a web/dist-publish/ $dest.tmp/web/
 rsync -a $fonts/ $dest.tmp/fonts/
 mv $dest.tmp $dest
 # The manifest: every file with its SHA-256 (the servers check their copies against it).
-manifest=$(cd $dest && find . -type f ! -name .DS_Store | sed 's|^\./||' | sort | python3 -c "
+manifest=$(cd $dest && find . -type f ! -name .DS_Store ! -name '._*' | sed 's|^\./||' | sort | python3 -c "
 import hashlib, json, sys
 files = [l.strip() for l in sys.stdin if l.strip()]
 sha = {f: hashlib.sha256(open(f, 'rb').read()).hexdigest() for f in files}
