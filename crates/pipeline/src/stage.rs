@@ -3,11 +3,15 @@
 //! `grid.terrain.i16`, `grid.class.u8`, `grid.areas.u8`, and canopy and cover when the catalog has
 //! them), over the unit grown by a margin (viewsheds see 15 km past the unit's buffer ways).
 //!
-//! Read from the catalog's packs on the NAS with plain reads (never mmapped), each pack's index once.
+//! Read from the packs on the NAS with plain reads (never mmapped), each pack's index once: the
+//! ones this build's manifest names now (`Source::Manifest`, what the unit keys hash), or a
+//! published catalog's (`Source::Catalog`, another root's for a pilot).
 //!
 //! Also today's heritage sites (`heritage.json`, for the flags step), clipped from the converted
 //! worldwide file (`Heritage`).
 
+use crate::out::Out;
+use crate::terrain_pack::ManifestTiles;
 use anyhow::{Context, Result};
 use roadcore::archive::ArchiveWriter;
 use roadcore::grid::{decode_terrain_png, CELLS};
@@ -21,40 +25,90 @@ use store::range::PlainFile;
 pub const MARGIN_KM: f64 = 30.0;
 
 
+/// Where the global-source layers are read from.
+pub enum Source<'a> {
+    /// This build's manifest as it is now: the packs the unit keys hash, including what earlier
+    /// jobs of the same plan wrote (the catalog is published only at its end).
+    Manifest(&'a Out),
+    /// A published catalog under a root (another root's, for a pilot built against the real one).
+    Catalog(&'a Path, &'a Catalog),
+}
+
+impl Source<'_> {
+    /// The pack (logical name) holding a tile of `layer`: root z0–2, lo z3–8 by z3 tile, hi z9–14
+    /// by z6 tile.
+    fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
+        match self {
+            Source::Manifest(_) => Some(ManifestTiles::logical(layer, z, x, y)),
+            Source::Catalog(_, cat) => {
+                let l = cat.layers.get(layer)?;
+                match z {
+                    0..=2 => l.root.clone(),
+                    3..=8 => l.lo.get(&format!("3/{}/{}", x >> (z - 3), y >> (z - 3))).cloned(),
+                    _ => l.hi.get(&format!("6/{}/{}", x >> (z - 6), y >> (z - 6))).cloned(),
+                }
+            }
+        }
+    }
+
+    /// The file of a pack or worldwide file, by logical name (None: there's none).
+    fn file(&self, logical: &str) -> Option<PathBuf> {
+        match self {
+            Source::Manifest(out) => out.get(logical).map(|c| out.path(c)),
+            Source::Catalog(root, cat) => cat.files.get(logical).map(|f| root.join(&f.file)),
+        }
+    }
+
+    fn has_layer(&self, layer: &str) -> bool {
+        match self {
+            Source::Manifest(out) => {
+                let p = format!("layers/{layer}/");
+                out.manifest.range(p.clone()..).next().is_some_and(|(l, _)| l.starts_with(&p))
+            }
+            Source::Catalog(_, cat) => cat.layers.contains_key(layer),
+        }
+    }
+
+    /// A worldwide file (`what` as in `Catalog::global`: `global/<what>`): its path and size.
+    fn global(&self, what: &str) -> Result<Option<(PathBuf, u64)>> {
+        match self {
+            Source::Manifest(out) => {
+                let Some(c) = out.get(&format!("global/{what}")) else { return Ok(None) };
+                let p = out.path(c);
+                let size = std::fs::metadata(&p).with_context(|| format!("{}", p.display()))?.len();
+                Ok(Some((p, size)))
+            }
+            Source::Catalog(root, cat) => {
+                let Some(logical) = cat.global.get(what) else { return Ok(None) };
+                let f = cat.files.get(logical).with_context(|| format!("catalog: no file for {logical}"))?;
+                Ok(Some((root.join(&f.file), f.size)))
+            }
+        }
+    }
+}
+
 /// Tiles of a layer, from its packs.
 pub struct LayerReader<'a> {
-    root: &'a Path,
-    cat: &'a Catalog,
+    src: &'a Source<'a>,
     layer: String,
     open: HashMap<String, Option<(PlainFile, PackIndex)>>,
 }
 
 impl<'a> LayerReader<'a> {
-    pub fn new(root: &'a Path, cat: &'a Catalog, layer: &str) -> LayerReader<'a> {
-        LayerReader { root, cat, layer: layer.to_string(), open: HashMap::new() }
+    pub fn new(src: &'a Source<'a>, layer: &str) -> LayerReader<'a> {
+        LayerReader { src, layer: layer.to_string(), open: HashMap::new() }
     }
 
     pub fn exists(&self) -> bool {
-        self.cat.layers.contains_key(&self.layer)
-    }
-
-    /// The pack (logical name) holding a tile: root z0–2, lo z3–8 by z3 tile, hi z9–14 by z6 tile.
-    fn pack_of(&self, z: u8, x: u32, y: u32) -> Option<String> {
-        let l = self.cat.layers.get(&self.layer)?;
-        match z {
-            0..=2 => l.root.clone(),
-            3..=8 => l.lo.get(&format!("3/{}/{}", x >> (z - 3), y >> (z - 3))).cloned(),
-            _ => l.hi.get(&format!("6/{}/{}", x >> (z - 6), y >> (z - 6))).cloned(),
-        }
+        self.src.has_layer(&self.layer)
     }
 
     /// A tile's blob as stored (None when the layer has no such tile).
     pub fn get(&mut self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
-        let Some(logical) = self.pack_of(z, x, y) else { return Ok(None) };
+        let Some(logical) = self.src.pack_of(&self.layer, z, x, y) else { return Ok(None) };
         if !self.open.contains_key(&logical) {
-            let opened = match self.cat.files.get(&logical) {
-                Some(f) => {
-                    let p = self.root.join(&f.file);
+            let opened = match self.src.file(&logical) {
+                Some(p) => {
                     let pf = PlainFile::open(&p).with_context(|| format!("open {}", p.display()))?;
                     let idx = PackIndex::read_from(&pf).with_context(|| format!("index of {}", p.display()))?;
                     Some((pf, idx))
@@ -101,11 +155,11 @@ pub struct Staged {
 }
 
 /// Writes `terrain.tiles` and the grids for the box `b` (degrees) into `dir`.
-pub fn stage(root: &Path, cat: &Catalog, b: [f64; 4], dir: &Path) -> Result<Staged> {
+pub fn stage(src: &Source, b: [f64; 4], dir: &Path) -> Result<Staged> {
     std::fs::create_dir_all(dir)?;
     let mut st = Staged::default();
     // Terrain z0–12 as the legacy archive (PNG blobs as they are).
-    let mut terrain = LayerReader::new(root, cat, "terrain");
+    let mut terrain = LayerReader::new(src, "terrain");
     let tmp = dir.join("terrain.tiles.tmp");
     let mut w = ArchiveWriter::create(&tmp, r#"{"format":"png","encoding":"terrarium"}"#)?;
     let mut z11: HashMap<(u32, u32), Vec<u8>> = HashMap::new();
@@ -140,7 +194,7 @@ pub fn stage(root: &Path, cat: &Catalog, b: [f64; 4], dir: &Path) -> Result<Stag
     write_file(dir, "grid.terrain.i16", bytemuck::cast_slice(&terr))?;
     st.grids.push("terrain".into());
     for var in ["class", "areas", "canopy", "cover"] {
-        let mut l = LayerReader::new(root, cat, &format!("grid-{var}"));
+        let mut l = LayerReader::new(src, &format!("grid-{var}"));
         let mut data = vec![0u8; tiles.len() * CELLS];
         let mut missing: Vec<u32> = Vec::new();
         for (s, t) in tiles.iter().enumerate() {
@@ -165,22 +219,21 @@ pub fn stage(root: &Path, cat: &Catalog, b: [f64; 4], dir: &Path) -> Result<Stag
     Ok(st)
 }
 
-/// A local copy of one of the catalog's worldwide files (`what` as in `Catalog::global`), made once
-/// under `cache/global/` (content-named, so a copy is never stale; older copies go). None when the
-/// catalog has no such file.
-pub fn local_global(root: &Path, cat: &Catalog, what: &str, cache: &Path) -> Result<Option<PathBuf>> {
-    let Some(logical) = cat.global.get(what) else { return Ok(None) };
-    let f = cat.files.get(logical).with_context(|| format!("catalog: no file for {logical}"))?;
-    let name = Path::new(&f.file).file_name().context("global file name")?.to_string_lossy().into_owned();
+/// A local copy of one of the worldwide files (`what` as in `Catalog::global`), made once under
+/// `cache/global/` (content-named, so a copy is never stale; older copies go). None when there's no
+/// such file.
+pub fn local_global(src: &Source, what: &str, cache: &Path) -> Result<Option<PathBuf>> {
+    let Some((file, size)) = src.global(what)? else { return Ok(None) };
+    let name = file.file_name().context("global file name")?.to_string_lossy().into_owned();
     let dir = cache.join("global").join(what.replace('/', "-"));
     let local = dir.join(&name);
-    if std::fs::metadata(&local).is_ok_and(|m| m.len() == f.size) {
+    if std::fs::metadata(&local).is_ok_and(|m| m.len() == size) {
         return Ok(Some(local));
     }
     std::fs::create_dir_all(&dir)?;
     let tmp = dir.join(format!("{name}.tmp"));
-    std::fs::copy(root.join(&f.file), &tmp).with_context(|| format!("copy {}", f.file))?;
-    anyhow::ensure!(std::fs::metadata(&tmp)?.len() == f.size, "{}: not the catalog's size", f.file);
+    std::fs::copy(&file, &tmp).with_context(|| format!("copy {}", file.display()))?;
+    anyhow::ensure!(std::fs::metadata(&tmp)?.len() == size, "{}: not the expected size", file.display());
     std::fs::rename(&tmp, &local)?;
     for e in std::fs::read_dir(&dir)?.flatten() {
         if e.file_name().to_string_lossy() != name {
@@ -198,9 +251,9 @@ pub struct Heritage {
 }
 
 impl Heritage {
-    /// None when the catalog has no heritage sites.
-    pub fn load(root: &Path, cat: &Catalog, cache: &Path) -> Result<Option<Heritage>> {
-        let Some(p) = local_global(root, cat, "legacy/heritage", cache)? else { return Ok(None) };
+    /// None when there are no heritage sites.
+    pub fn load(src: &Source, cache: &Path) -> Result<Option<Heritage>> {
+        let Some(p) = local_global(src, "legacy/heritage", cache)? else { return Ok(None) };
         Ok(Some(Heritage::parse(&std::fs::read(&p)?).with_context(|| format!("parse {}", p.display()))?))
     }
 

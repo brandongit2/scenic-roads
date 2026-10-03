@@ -585,7 +585,11 @@ latitude cap; format versions read two at a time.
 - **base(U) runs today's steps on a unit-sized folder** (extract on the piece, cut to the ways
   touching the coverage, sample.py on the unit's own slice of the per-vertex DEM cache, tile elev,
   scenic-metrics), with terrain.tiles and the z11 grids staged from the packs, then today's
-  conversion for the ways the unit owns, with the pass's road values.
+  conversion for the ways the unit owns, with the pass's road values. The packs (and the heritage
+  sites) are the build manifest's as it is when the unit runs, which is what its key hashes: a
+  terrain job of the same plan is in a catalog only at the plan's end (until 2026-10-03 units staged
+  from the last published catalog, so after a terrain job they could stage old or missing terrain
+  under the new key). `--layers-root` (a pilot) still stages from another root's catalog.
 - **The agent plans the regions' work by job keys** (`state/build/jobs.json`): terrain, slope, units,
   packs, lo, catalog, each target keyed by what it reads; the first stale step runs as one job.
   Spatial waves come later; for now each step runs over all its stale targets.

@@ -672,6 +672,14 @@ fn pass_roads(out: &Out, date: &str, u: Unit) -> Result<Vec<(u64, pipeline::lega
     Ok(b.chunks_exact(32).map(|c| (u64::from_le_bytes(c[..8].try_into().unwrap()), bytemuck::pod_read_unaligned(&c[8..32]))).collect())
 }
 
+/// The unit step's global-source layers: the manifest's, or a pilot's published catalog.
+fn layers_source<'a>(out: &'a Out, pilot: &'a Option<(PathBuf, store::catalog::Catalog)>) -> pipeline::stage::Source<'a> {
+    match pilot {
+        Some((r, c)) => pipeline::stage::Source::Catalog(r, c),
+        None => pipeline::stage::Source::Manifest(out),
+    }
+}
+
 fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::coverage::Coverage;
     use pipeline::unit::{build_folder, owns, Tools};
@@ -688,9 +696,16 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let outlines_file = out.get(&format!("sources/osm/{date}/outlines")).map(|n| out.path(n));
     let outlines = outlines_file.as_deref().map(pipeline::outlines::Outlines::open).transpose()?;
     let cov = Coverage::from_recipes(&recipes, outlines.as_ref(), &out.root().join("inputs/outlines"))?;
-    // Global-source layers: this root's catalog, or another's (a pilot builds against the real one).
-    let layers_root = opt(args, "--layers-root").map(PathBuf::from).unwrap_or_else(|| out.root().to_path_buf());
-    let cat = store::catalog::latest(&layers_root.join("catalog"))?.context("no catalog for the global-source layers")?;
+    // Global-source layers: as this build's manifest has them now (what the unit keys hash: a
+    // terrain job of the same plan is published only with its catalog, at the end), or another
+    // root's published catalog (a pilot builds against the real one).
+    let pilot = match opt(args, "--layers-root").map(PathBuf::from) {
+        Some(r) => {
+            let c = store::catalog::latest(&r.join("catalog"))?.context("no catalog for the global-source layers")?;
+            Some((r, c))
+        }
+        None => None,
+    };
     let bin = std::env::current_exe()?.parent().context("bin")?.to_path_buf();
     let tools = Tools {
         bin,
@@ -700,7 +715,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         spacing_m: 8,
     };
     // Today's heritage sites, for every unit's flags.
-    let heritage = pipeline::stage::Heritage::load(&layers_root, &cat, &tools.cache)?;
+    let heritage = pipeline::stage::Heritage::load(&layers_source(out, &pilot), &tools.cache)?;
     match &heritage {
         Some(h) => eprintln!("unit: {} heritage sites", h.len()),
         None => eprintln!("unit: no heritage sites in the catalog"),
@@ -730,7 +745,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         };
         let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
         std::fs::copy(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
-        let rep = build_folder(u, &local_piece, &dir, &cov, &layers_root, &cat, &tools, heritage.as_ref())?;
+        let rep = build_folder(u, &local_piece, &dir, &cov, &layers_source(out, &pilot), &tools, heritage.as_ref())?;
         std::fs::remove_file(&local_piece).ok();
         // Grids its packs lacked (new coverage), made in the folder: the unit's own z6 tile's go up,
         // for later units and packs. (The canopy step made canopy and cover for every tile.)

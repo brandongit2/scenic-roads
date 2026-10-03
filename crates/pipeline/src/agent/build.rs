@@ -139,7 +139,8 @@ pub fn labels_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Opt
 }
 
 /// The units whose piece meets the coverage, each with its key: what it reads (its piece and road
-/// values, the coverage near it, the staged layers near it).
+/// values, the coverage near it, the heritage sites, the staged layers near it as the manifest has
+/// them, which is what the unit step stages from).
 pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let mut units: Vec<(Unit, String)> = Vec::new();
@@ -149,7 +150,8 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Ve
         if !cov.meets_box(tb) {
             continue;
         }
-        let mut inputs = vec![format!("unit {UNIT_V}"), c.clone(), get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(), cov_fp(cov, grown_e7(u.z, u.x, u.y, 10.0))];
+        // (The heritage sites: the flags step's.)
+        let mut inputs = vec![format!("unit {UNIT_V}"), c.clone(), get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(), cov_fp(cov, grown_e7(u.z, u.x, u.y, 10.0)), get("global/legacy/heritage").to_string()];
         let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
         for (x, y) in crate::stage::tiles_in(6, b) {
             for layer in ["terrain", "grid-class", "grid-areas", "grid-canopy", "grid-cover"] {

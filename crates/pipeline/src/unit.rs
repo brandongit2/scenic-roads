@@ -123,9 +123,9 @@ pub struct Report {
     pub heritage: usize,
 }
 
-/// Runs today's steps for unit `u` in `dir` from `piece`, with the coverage and the catalog's
-/// global-source layers on the NAS (`root`, `cat`). Leaves the build folder ready for conversion.
-pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, root: &Path, cat: &store::catalog::Catalog, tools: &Tools, heritage: Option<&crate::stage::Heritage>) -> Result<Report> {
+/// Runs today's steps for unit `u` in `dir` from `piece`, with the coverage and the global-source
+/// layers on the NAS (`src`). Leaves the build folder ready for conversion.
+pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &crate::stage::Source, tools: &Tools, heritage: Option<&crate::stage::Heritage>) -> Result<Report> {
     std::fs::create_dir_all(dir)?;
     let log = dir.join("steps.log");
     let mut rep = Report { unit: u.slash(), ..Default::default() };
@@ -155,7 +155,7 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, root: &Pa
     run(c, "elevations (sample.py)", &log)?;
     // 4. The global-source layers the steps read, from the packs.
     let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
-    rep.staged = crate::stage::stage(root, cat, b, dir)?;
+    rep.staged = crate::stage::stage(src, b, dir)?;
     // Today's heritage sites around the unit (the flags step's `heritage.json`).
     if let Some(h) = heritage {
         rep.heritage = h.write_in(b, dir)?;
