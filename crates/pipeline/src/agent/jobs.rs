@@ -54,6 +54,9 @@ pub struct Running {
     pub log: PathBuf,
     pub paused: Option<String>,
     started_at: Instant,
+    /// Its progress when it first reported this kind of progress: the estimate's start (time,
+    /// fraction, unit).
+    pub progress_base: Option<(Instant, f64, String)>,
 }
 
 /// The job record kept on disk while a job runs, so an agent started after a crash can stop an
@@ -112,7 +115,7 @@ impl Running {
         let started = now_s();
         let rec = Record { id: spec.id.clone(), pgid, started, leader_start: process_start(pgid).unwrap_or(0) };
         std::fs::write(record, serde_json::to_vec(&rec)?)?;
-        Ok(Running { spec, child, caffeinate, pgid, started, log, paused: None, started_at: Instant::now() })
+        Ok(Running { spec, child, caffeinate, pgid, started, log, paused: None, started_at: Instant::now(), progress_base: None })
     }
 
     /// Pauses the job's whole process group (`why` goes to the status), and lets the Mac sleep.
@@ -218,11 +221,40 @@ pub fn stop_orphan(record: &Path) {
 
 /// The last `n` lines of a log.
 pub fn tail(log: &Path, n: usize) -> String {
-    let Ok(b) = std::fs::read(log) else { return String::new() };
-    let s = String::from_utf8_lossy(&b[b.len().saturating_sub(64 << 10)..]).into_owned();
+    let s = end_of(log);
     // Progress bars redraw with carriage returns: keep each line's last state.
     let lines: Vec<&str> = s.lines().map(|l| l.rsplit('\r').next().unwrap_or(l)).filter(|l| !l.trim().is_empty()).collect();
     lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
+/// A log's last 64 KB (logs grow long: only the end is read).
+fn end_of(log: &Path) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = File::open(log) else { return String::new() };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let _ = f.seek(SeekFrom::Start(len.saturating_sub(64 << 10)));
+    let mut b = Vec::new();
+    let _ = f.read_to_end(&mut b);
+    String::from_utf8_lossy(&b).into_owned()
+}
+
+/// Says how far a job is, for the agent (`progress`): `progress: <done>/<total> <unit>` on stderr,
+/// which goes to the job's log.
+pub fn report(done: u64, total: u64, unit: &str) {
+    eprintln!("progress: {}/{total} {unit}", done.min(total));
+}
+
+/// How far a job says it is: its log's last `progress: <done>/<total> <unit>` line (build steps
+/// print them: scenic-build's `progress`).
+pub fn progress(log: &Path) -> Option<(f64, f64, String)> {
+    let s = end_of(log);
+    s.lines().rev().map(|l| l.rsplit('\r').next().unwrap_or(l)).find_map(|l| {
+        let rest = l.trim().strip_prefix("progress: ")?;
+        let (frac, unit) = rest.split_once(' ').unwrap_or((rest, ""));
+        let (d, t) = frac.split_once('/')?;
+        let (d, t) = (d.parse::<f64>().ok()?, t.parse::<f64>().ok()?);
+        (t > 0.0).then(|| (d.min(t), t, unit.trim().to_string()))
+    })
 }
 
 #[cfg(test)]

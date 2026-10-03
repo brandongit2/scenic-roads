@@ -337,31 +337,31 @@ pub fn region_states(cov: &Coverage, regions: &[(String, Coverage)], date: &str,
 /// `m` (logical → content) and what was done (`done`).
 /// `inputs`: digests of what jobs read from `inputs/` (not in the manifest), by name:
 /// "ferries-freq" (the ferry timetables).
-pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Vec<Work> {
+/// Terrain's and slope's targets (their z3 packs near the coverage), each with its key, done or not.
+pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>) -> (Vec<(String, String)>, Vec<(String, String)>) {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    let by_q = coverage_tiles(cov);
-    let mut work = Vec::new();
-    let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
-
-    // Terrain, then slope, per z3 pack.
-    let mut terrain = Vec::new();
-    let mut slope = Vec::new();
-    for (q, ts) in &by_q {
+    let (mut terrain, mut slope) = (Vec::new(), Vec::new());
+    for (q, ts) in &coverage_tiles(cov) {
         let qs = format!("3/{}/{}", q.0, q.1);
         let tlist: Vec<String> = ts.iter().map(|t| format!("6/{}/{}", t.0, t.1)).collect();
-        let k = h(&[&format!("terrain {TERRAIN_V}"), &tlist.join(" "), &cov_fp(cov, grown_e7(3, q.0, q.1, 20.0))]);
-        if stale(&done.terrain, &qs, &k) {
-            terrain.push((qs.clone(), k));
-        }
+        terrain.push((qs.clone(), h(&[&format!("terrain {TERRAIN_V}"), &tlist.join(" "), &cov_fp(cov, grown_e7(3, q.0, q.1, 20.0))])));
         // Slope reads the terrain packs of q (as they are now; a terrain job changes them first).
         let mut inputs = vec![format!("slope {SLOPE_V}"), get(&format!("layers/terrain/lo/3-{}-{}", q.0, q.1)).to_string()];
         inputs.extend(ts.iter().map(|t| get(&format!("layers/terrain/hi/6-{}-{}", t.0, t.1)).to_string()));
         let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
-        let k = h(&refs);
-        if stale(&done.slope, &qs, &k) {
-            slope.push((qs, k));
-        }
+        slope.push((qs, h(&refs)));
     }
+    (terrain, slope)
+}
+
+pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Vec<Work> {
+    let mut work = Vec::new();
+    let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
+
+    // Terrain, then slope, per z3 pack.
+    let (terrain, slope) = terrain_slope_targets(cov, m);
+    let terrain: Vec<(String, String)> = terrain.into_iter().filter(|(t, k)| stale(&done.terrain, t, k)).collect();
+    let slope: Vec<(String, String)> = slope.into_iter().filter(|(t, k)| stale(&done.slope, t, k)).collect();
     let had_terrain = !terrain.is_empty();
     if had_terrain {
         work.push(Work { step: "terrain".into(), targets: terrain });
@@ -404,24 +404,10 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     work
 }
 
-/// The roads' chain after the units: the road → units index, pack(T), lo, rail stops and ferries,
-/// the terrain and slope roots; its first stale step.
-fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
+/// pack(T)'s targets (z6 tiles within 100 km, plus the pieces' buffer, of a unit with a base pack)
+/// and lo's (their z3 tiles), each with its key, done or not.
+fn pack_lo_targets(m: &BTreeMap<String, String>) -> (Vec<(String, String)>, Vec<(String, String)>) {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
-    // The road → units index, once the units' road values are made.
-    let roads: Vec<String> = m.range("global/roads/".to_string()..).take_while(|(l, _)| l.starts_with("global/roads/")).map(|(l, c)| format!("{l}={c}")).collect();
-    if !roads.is_empty() {
-        let mut ins = vec![format!("roadunits {ROADUNITS_V}")];
-        ins.extend(roads);
-        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-        let k = h(&refs);
-        if done.lo.get("roadunits").map(String::as_str) != Some(k.as_str()) {
-            return Some(Work { step: "roadunits".into(), targets: vec![("roadunits".into(), k)] });
-        }
-    }
-
-    // pack(T): z6 tiles within 100 km (plus the pieces' buffer) of a unit with a base pack.
     let base_units: Vec<(Unit, String)> = m
         .iter()
         .filter_map(|(l, c)| l.strip_prefix("base/").and_then(Unit::parse).map(|u| (u, format!("{c}+{}", get(&format!("global/roads/{}", u.dash()))))))
@@ -445,26 +431,43 @@ fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &B
         }
         let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
         let k = h(&refs);
-        let ts = format!("6/{x}/{y}");
-        if stale(&done.pack, &ts, &k) {
-            packs.push((ts, k.clone()));
-        }
+        packs.push((format!("6/{x}/{y}"), k.clone()));
         los.entry((x >> 3, y >> 3)).or_default().push(k);
     }
+    let lo = los
+        .into_iter()
+        .map(|(q, ks)| {
+            let mut ins = vec![format!("lo {LO_V}")];
+            ins.extend(ks);
+            let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+            (format!("3/{}/{}", q.0, q.1), h(&refs))
+        })
+        .collect();
+    (packs, lo)
+}
+
+/// The roads' chain after the units: the road → units index, pack(T), lo, rail stops and ferries,
+/// the terrain and slope roots; its first stale step.
+fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
+    let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
+    // The road → units index, once the units' road values are made.
+    let roads: Vec<String> = m.range("global/roads/".to_string()..).take_while(|(l, _)| l.starts_with("global/roads/")).map(|(l, c)| format!("{l}={c}")).collect();
+    if !roads.is_empty() {
+        let mut ins = vec![format!("roadunits {ROADUNITS_V}")];
+        ins.extend(roads);
+        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+        let k = h(&refs);
+        if done.lo.get("roadunits").map(String::as_str) != Some(k.as_str()) {
+            return Some(Work { step: "roadunits".into(), targets: vec![("roadunits".into(), k)] });
+        }
+    }
+
+    let (packs, lo) = pack_lo_targets(m);
+    let packs: Vec<(String, String)> = packs.into_iter().filter(|(t, k)| stale(&done.pack, t, k)).collect();
     if !packs.is_empty() {
         return Some(Work { step: "pack".into(), targets: packs });
     }
-    let mut lo = Vec::new();
-    for (q, ks) in los {
-        let mut ins = vec![format!("lo {LO_V}")];
-        ins.extend(ks);
-        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-        let k = h(&refs);
-        let qs = format!("3/{}/{}", q.0, q.1);
-        if stale(&done.lo, &qs, &k) {
-            lo.push((qs, k));
-        }
-    }
+    let lo: Vec<(String, String)> = lo.into_iter().filter(|(t, k)| stale(&done.lo, t, k)).collect();
     if !lo.is_empty() {
         return Some(Work { step: "lo".into(), targets: lo });
     }
@@ -598,8 +601,111 @@ fn landmarks_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, don
     None
 }
 
+/// One line of the build's checklist (the status, the menu bar): a step to the end, with how much of
+/// it is done: targets done of all (`total` None until an earlier step makes them known), or for a
+/// group of single jobs how many are left (`left`).
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Step {
+    pub what: String,
+    /// The agent's steps it covers (a job's id starts with one: "unit 6/31/20").
+    pub steps: Vec<String>,
+    #[serde(default)]
+    pub done: usize,
+    #[serde(default)]
+    pub total: Option<usize>,
+    #[serde(default)]
+    pub left: Option<usize>,
+    #[serde(default)]
+    pub unit: String,
+}
+
+impl Step {
+    pub fn finished(&self) -> bool {
+        self.left == Some(0) || self.total.is_some_and(|t| self.done >= t && self.left.is_none())
+    }
+}
+
+/// The regions' steps (build::checklist's lines), for before there's a pass to size them by.
+pub fn checklist_to_come() -> Vec<Step> {
+    [
+        ("Terrain", &["terrain"][..]),
+        ("Slope", &["slope"]),
+        ("Heritage sites and designated areas", &["heritage-sites"]),
+        ("Roads, elevations and scenery", &["unit"]),
+        ("Map tiles", &["pack", "lo"]),
+        ("Road index, rail stops, ferries, world terrain", &["roadunits", "stations", "ferries", "terrain-root", "slope-root"]),
+        ("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"]),
+        ("Publishing the new map data", &["catalog", "catalog-held"]),
+    ]
+    .iter()
+    .map(|(what, steps)| Step { what: what.to_string(), steps: steps.iter().map(|s| s.to_string()).collect(), ..Default::default() })
+    .collect()
+}
+
+/// The works a chain would still run, one after another, as if each succeeded (its targets recorded
+/// with their keys as they are now).
+fn remaining(done: &Keys, next: impl Fn(&Keys) -> Option<Work>) -> Vec<Work> {
+    let mut d = done.clone();
+    let mut out = Vec::new();
+    while let Some(w) = next(&d) {
+        if out.len() >= 64 {
+            break;
+        }
+        d.record(&w.step, &w.targets);
+        out.push(w);
+    }
+    out
+}
+
+/// The regions' build to the end, step by step (the pass's own steps are the agent's): terrain,
+/// slope, the heritage sites, the areas, the map tiles, the road index, rail stops and ferries, the
+/// landmarks, publishing.
+/// `held`: the catalog is held for review (inputs/hold-catalog): publishing is its held copy.
+pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, held: bool) -> Vec<Step> {
+    let count = |all: &[(String, String)], map: &BTreeMap<String, String>| all.iter().filter(|(t, k)| map.get(t) == Some(k)).count();
+    let per = |what: &str, steps: &[&str], all: &[(String, String)], map: &BTreeMap<String, String>, unit: &str, known: bool| Step {
+        what: what.into(),
+        steps: steps.iter().map(|s| s.to_string()).collect(),
+        done: count(all, map),
+        total: known.then_some(all.len()),
+        left: None,
+        unit: unit.into(),
+    };
+    let group = |what: &str, steps: &[&str], left: Option<usize>| Step { what: what.into(), steps: steps.iter().map(|s| s.to_string()).collect(), left, ..Default::default() };
+    let mut out = Vec::new();
+    let (terrain, slope) = terrain_slope_targets(cov, m);
+    out.push(per("Terrain", &["terrain"], &terrain, &done.terrain, "parts", true));
+    out.push(per("Slope", &["slope"], &slope, &done.slope, "parts", true));
+    let sites_left = heritage_sites_work(cov, date, m, done).is_some() || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources"));
+    out.push(group("Heritage sites and designated areas", &["heritage-sites"], Some(sites_left as usize)));
+    let pieces = m.keys().any(|l| l.starts_with(&format!("sources/osm/{date}/pieces/")));
+    let units: Vec<(String, String)> = unit_keys(cov, date, m).into_iter().map(|(u, k)| (u.slash(), k)).collect();
+    out.push(per("Roads, elevations and scenery", &["unit"], &units, &done.unit, "areas", pieces));
+    let (packs, lo) = pack_lo_targets(m);
+    let built = m.keys().any(|l| l.starts_with("base/"));
+    let mut tiles = per("Map tiles", &["pack", "lo"], &packs, &done.pack, "tiles", built);
+    tiles.done += count(&lo, &done.lo);
+    tiles.total = tiles.total.map(|t| t + lo.len());
+    out.push(tiles);
+    let roads_left = remaining(done, |d| roads_chain(date, m, d, inputs)).iter().filter(|w| !matches!(w.step.as_str(), "pack" | "lo")).count();
+    out.push(group("Road index, rail stops, ferries, world terrain", &["roadunits", "stations", "ferries", "terrain-root", "slope-root"], built.then_some(roads_left)));
+    let landmarks = remaining(done, |d| landmarks_chain(cov, date, m, d));
+    let lm_left: usize = landmarks.iter().map(|w| if matches!(w.step.as_str(), "pois" | "peaks") { w.targets.len() } else { 1 }).sum();
+    out.push(group("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"], pieces.then_some(lm_left)));
+    let key = catalog_key(m);
+    let publish_left = if held { done.catalog_held.as_deref() != Some(key.as_str()) } else { done.catalog.as_deref() != Some(key.as_str()) } as usize;
+    out.push(group("Publishing the new map data", &["catalog", "catalog-held"], built.then_some(publish_left)));
+    out
+}
+
 /// A catalog when what it would list has changed since the last one.
 fn catalog_work(m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
+    let k = catalog_key(m);
+    (done.catalog.as_deref() != Some(k.as_str())).then(|| Work { step: "catalog".into(), targets: vec![("catalog".into(), k)] })
+}
+
+/// What a catalog would list: the served files' logical and content names, hashed.
+fn catalog_key(m: &BTreeMap<String, String>) -> String {
     let served: Vec<String> = m
         .iter()
         .filter(|(l, _)| {
@@ -608,8 +714,7 @@ fn catalog_work(m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
         .map(|(l, c)| format!("{l}={c}"))
         .collect();
     let refs: Vec<&str> = served.iter().map(String::as_str).collect();
-    let k = h(&refs);
-    (done.catalog.as_deref() != Some(k.as_str())).then(|| Work { step: "catalog".into(), targets: vec![("catalog".into(), k)] })
+    h(&refs)
 }
 
 #[cfg(test)]
@@ -701,6 +806,47 @@ mod tests {
         assert_eq!(key(&m), k0, "a slice far away");
         m.insert(crate::heritage::areas_logical("d", 28, 16), "work/heritage/d/areas/6-28-16.9090909090909090.jsonl".into());
         assert_ne!(key(&m), k0, "its own tile's areas");
+    }
+
+    #[test]
+    fn checklist_counts_to_the_end() {
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        let mut done = Keys::default();
+        let line = |l: &[Step], what: &str| l.iter().find(|s| s.what.starts_with(what)).cloned().unwrap();
+        m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
+        heritage_inputs(&mut m, "d");
+        let l = checklist(&c, "d", &m, &done, &BTreeMap::new(), false);
+        assert_eq!(l.len(), 8);
+        assert_eq!((line(&l, "Terrain").done, line(&l, "Terrain").total), (0, Some(1)));
+        assert_eq!((line(&l, "Roads").done, line(&l, "Roads").total), (0, Some(1)));
+        assert_eq!(line(&l, "Map tiles").total, None, "no areas built: the tiles aren't known yet");
+        assert_eq!(line(&l, "Heritage").left, Some(1));
+        // Terrain, slope, the heritage sites and the area done.
+        for step in ["terrain", "slope", "heritage-sites", "unit"] {
+            let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+            assert_eq!(w[0].step, step);
+            if step == "heritage-sites" {
+                heritage_done(&mut m, &mut done, "d", &w[0]);
+            } else {
+                done.record(&w[0].step, &w[0].targets);
+            }
+        }
+        m.insert("base/6-28-16".into(), "base/6-28-16.6666666666666666.base".into());
+        m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.7777777777777777.roads".into());
+        let l = checklist(&c, "d", &m, &done, &BTreeMap::new(), false);
+        for what in ["Terrain", "Slope", "Heritage", "Roads"] {
+            assert!(line(&l, what).finished(), "{what} done");
+        }
+        let tiles = line(&l, "Map tiles");
+        assert!(tiles.total.is_some_and(|t| t > 1) && tiles.done == 0 && !tiles.finished());
+        assert!(line(&l, "Road index").left.is_some_and(|n| n >= 1));
+        assert_eq!(line(&l, "Publishing").left, Some(1));
+        // Held for review: publishing is the held catalog.
+        let k = catalog_key(&m);
+        done.catalog_held = Some(k);
+        assert!(line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), true), "Publishing").finished());
+        assert!(!line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), false), "Publishing").finished());
     }
 
     #[test]

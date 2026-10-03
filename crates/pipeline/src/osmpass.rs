@@ -403,7 +403,9 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         copy_resume(planet, &local_planet)?;
         mark(scratch, "copy")?;
     }
+    let stage = |k: u64, name: &str| crate::agent::jobs::report(k, 6, &format!("stages ({name})"));
     if !done(scratch, "filter").exists() {
+        stage(0, "filtering the planet");
         let src = if copy_first { local_planet.clone() } else { planet.to_path_buf() };
         let mut c = osmium();
         c.args(["tags-filter", "--overwrite", "-o"]).arg(&filtered).arg(&src).args(FILTER_A);
@@ -414,6 +416,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         mark(scratch, "filter")?;
     }
     if !done(scratch, "sets").exists() {
+        stage(1, "the worldwide sets");
         for (name, _, exprs) in SETS {
             let o = scratch.join(format!("set-{name}.osm.pbf"));
             let mut c = osmium();
@@ -435,6 +438,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         mark(scratch, "sets-added")?;
     }
     if !done(scratch, "outlines").exists() {
+        stage(2, "the outlines");
         // Administrative and ISO 3166 outlines from the outline set (crate::outlines).
         let set = scratch.join("set-outlines.osm.pbf");
         let set = if set.exists() { set } else { out.path(out.get(&set_name(date, "outlines")).context("the outline set")?) };
@@ -449,6 +453,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
     // the local copy while there's room, else from the NAS's.
     let free = |p: &Path| crate::agent::cond::free_bytes(p).unwrap_or(0);
     if !done(scratch, "basemap").exists() {
+        stage(3, "the worldwide basemap");
         if filtered.exists() && free(scratch) < BASEMAP_ROOM {
             eprintln!("basemap: {} GB free; reading the filtered planet from the NAS", free(scratch) >> 30);
             std::fs::remove_file(&filtered)?;
@@ -513,11 +518,21 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         let local = filtered.exists();
         let src = if local { filtered.clone() } else { filtered_nas(out, date)? };
         let work = scratch.join("extract-work");
+        // Progress by data: the pieces' sizes against the filtered planet's (their buffers overlap a
+        // little, so it's capped just short of the end), the pieces uploaded before a restart too.
+        let total_mb = std::fs::metadata(&src)?.len() >> 20;
+        let prefix = format!("sources/osm/{date}/pieces/");
+        let mut done_mb: u64 = out.manifest.range(prefix.clone()..).take_while(|(l, _)| l.starts_with(&prefix)).filter_map(|(_, c)| std::fs::metadata(out.path(c)).ok()).map(|m| m.len() >> 20).sum();
+        let cut_report = |mb: u64| crate::agent::jobs::report(mb.min(total_mb.saturating_sub(1)), total_mb, "MB cut into areas (stage 5 of 6)");
+        cut_report(done_mb);
         cut_tree(&src, Unit { z: 0, x: 0, y: 0 }, local, &tree, &mut |u, f| {
             let logical = format!("sources/osm/{date}/pieces/{}", u.dash());
             if out.get(&logical).is_none() {
+                let mb = std::fs::metadata(f).map(|m| m.len() >> 20).unwrap_or(0);
                 out.put_file(&logical, "osm.pbf", &copy_keep(f, scratch)?)?;
                 out.save()?;
+                done_mb += mb;
+                cut_report(done_mb);
             }
             let lf = links.join(format!("{}.bin", u.dash()));
             if !lf.exists() {
@@ -547,7 +562,9 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         // Every unit's chaining inputs (kept by the cut, else worked out from its piece), then the
         // worldwide walk; values sliced by owner unit.
         let mut all: Vec<(Unit, UnitLinks)> = Vec::new();
-        for (u, _) in &pieces.pieces {
+        let n = pieces.pieces.len() as u64;
+        for (k, (u, _)) in pieces.pieces.iter().enumerate() {
+            crate::agent::jobs::report(k as u64, n, "areas' road links read (stage 6 of 6)");
             let unit = Unit::parse(u).context("unit")?;
             let lf = links.join(format!("{}.bin", unit.dash()));
             let ul = match UnitLinks::load(&lf) {

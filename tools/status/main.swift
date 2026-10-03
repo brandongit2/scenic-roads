@@ -40,6 +40,32 @@ struct Status: Decodable {
     let waiting: [Waiting]
     let recent: [Done]
     let built: [String: Built]?
+    /// The build to the end (agents from 2026-10-03 on).
+    let checklist: [Step]?
+}
+
+/// A step of the build to the end: done of total (total unknown until an earlier step makes it), or
+/// for a group of single jobs how many are left.
+struct Step: Decodable {
+    let what: String
+    let steps: [String]
+    let done: Int?
+    let total: Int?
+    let left: Int?
+    let unit: String?
+
+    var finished: Bool {
+        if let l = left { return l == 0 }
+        if let t = total, let d = done { return d >= t }
+        return false
+    }
+}
+
+struct JobProgress: Decodable {
+    let done: Double
+    let total: Double
+    let unit: String
+    let eta_s: Int?
 }
 
 struct Conditions: Decodable {
@@ -54,6 +80,7 @@ struct Job: Decodable {
     let started: Int
     let paused: String?
     let tail: String?
+    let progress: JobProgress?
 }
 
 struct Waiting: Decodable {
@@ -98,7 +125,7 @@ func duration(_ secs: Int) -> String {
     if secs < 3600 { return "\(secs / 60)\(nb)min" }
     if secs < 2 * 86400 {
         let m = secs / 60 % 60
-        return m == 0 ? "\(secs / 3600)\(nb)h" : "\(secs / 3600)\(nb)h \(m)\(nb)min"
+        return m == 0 ? "\(secs / 3600)\(nb)h" : "\(secs / 3600)\(nb)h\(nb)\(m)\(nb)min"
     }
     return "\(secs / 86400)\(nb)days"
 }
@@ -135,12 +162,22 @@ func classify(_ r: Reply?) -> (Kind, String) {
 
 /// One line of the menu: plain, small and dim, or the log's monospace.
 enum Style {
-    case title, plain, small, mono, header, separator
+    case title, plain, small, mono, header, separator, bar, stepDone, stepNow, stepToDo
 }
 
 struct Line {
     let text: String
     let style: Style
+    /// For a bar: how far (0–1).
+    var fraction: Double = 0
+}
+
+/// "12,345".
+func grouped(_ v: Double) -> String {
+    let f = NumberFormatter()
+    f.numberStyle = .decimal
+    f.maximumFractionDigits = 0
+    return f.string(from: NSNumber(value: v)) ?? "\(Int(v))"
 }
 
 /// The menu's lines for an answer, under the state's line.
@@ -149,6 +186,13 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
     guard let r = r, let s = r.status else { return out }
     if let j = s.job {
         out.append(Line(text: j.what, style: .plain))
+        // How far the job says it is, and the time it has left at its pace.
+        if let p = j.progress {
+            let frac = p.total > 0 ? p.done / p.total : 0
+            var t = "\(Int((frac * 100).rounded(.down)))% · \(grouped(p.done)) of \(grouped(p.total)) \(p.unit)"
+            if let e = p.eta_s, j.paused == nil { t += " · about \(duration(e)) left" }
+            out.append(Line(text: t, style: .bar, fraction: frac))
+        }
         if let p = j.paused { out.append(Line(text: p, style: .small)) }
         out.append(Line(text: "Running \(duration(r.now - j.started)) (since \(clock(j.started)))", style: .small))
         // The log's last lines, without the terminal's colour codes.
@@ -161,6 +205,28 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
     out.append(Line(text: "\(power) · NAS \(s.conditions.nas ? "reachable" : "not reachable")", style: .small))
     out.append(Line(text: "\(s.host) · \(r.local ? "this Mac" : "via the NAS") · heard from \(duration(r.now - s.beat)) ago", style: .small))
     if let app = s.app { out.append(Line(text: "App \(app)", style: .small)) }
+    // The build to the end: each step done, under way, or to come.
+    if let steps = s.checklist, !steps.isEmpty {
+        let now = s.job.map { String($0.id.split(separator: " ").first ?? "") }
+        let finished = steps.filter(\.finished).count
+        out.append(Line(text: "", style: .separator))
+        out.append(Line(text: "To the end: \(finished) of \(steps.count) steps done", style: .header))
+        for st in steps {
+            var count = ""
+            if let t = st.total, let d = st.done, !st.finished {
+                count = ": \(grouped(Double(d))) of \(grouped(Double(t))) \(st.unit ?? "")"
+            } else if let l = st.left, l > 0 {
+                count = l == 1 ? ": 1 job left" : ": \(l) jobs left"
+            }
+            if st.finished {
+                out.append(Line(text: "✓ \(st.what)", style: .stepDone))
+            } else if let n = now, st.steps.contains(n) {
+                out.append(Line(text: "▸ \(st.what)\(count)", style: .stepNow))
+            } else {
+                out.append(Line(text: "○ \(st.what)\(count)", style: .stepToDo))
+            }
+        }
+    }
     if !s.waiting.isEmpty {
         out.append(Line(text: "", style: .separator))
         out.append(Line(text: "Waiting", style: .header))
@@ -198,9 +264,35 @@ func fontFor(_ style: Style) -> (NSFont, NSColor) {
     let size = NSFont.smallSystemFontSize
     switch style {
     case .title: return (.boldSystemFont(ofSize: NSFont.systemFontSize), .labelColor)
-    case .plain, .separator: return (.menuFont(ofSize: 0), .labelColor)
-    case .small, .header: return (.menuFont(ofSize: size), .secondaryLabelColor)
+    case .plain, .separator, .stepNow: return (.menuFont(ofSize: 0), .labelColor)
+    case .small, .header, .bar, .stepDone: return (.menuFont(ofSize: size), .secondaryLabelColor)
+    case .stepToDo: return (.menuFont(ofSize: 0), .secondaryLabelColor)
     case .mono: return (.monospacedSystemFont(ofSize: size - 1, weight: .regular), .secondaryLabelColor)
+    }
+}
+
+/// A progress bar with its line of text under it (the menu's, not clickable).
+final class BarView: NSView {
+    init(_ text: String, fraction: Double) {
+        let w = LineView.width - 2 * LineView.inset
+        let (font, color) = fontFor(.bar)
+        let label = LineView(text, font: font, color: color, wrapAnywhere: false)
+        let barH: CGFloat = 12
+        super.init(frame: NSRect(x: 0, y: 0, width: LineView.width, height: label.frame.height + barH + 4))
+        let bar = NSProgressIndicator(frame: NSRect(x: LineView.inset, y: label.frame.height + 2, width: w, height: barH))
+        bar.style = .bar
+        bar.isIndeterminate = false
+        bar.controlSize = .small
+        bar.minValue = 0
+        bar.maxValue = 1
+        bar.doubleValue = max(0, min(1, fraction))
+        addSubview(bar)
+        label.setFrameOrigin(.zero)
+        addSubview(label)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("not from a nib")
     }
 }
 
@@ -306,7 +398,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // A line of information, not a button: it wraps rather than being cut short, and
             // neither highlights nor does anything when clicked.
             let it = NSMenuItem(title: l.text, action: nil, keyEquivalent: "")
-            it.view = LineView(l.text, font: font, color: color, wrapAnywhere: l.style == .mono)
+            it.view = l.style == .bar ? BarView(l.text, fraction: l.fraction) : LineView(l.text, font: font, color: color, wrapAnywhere: l.style == .mono)
             m.addItem(it)
         }
         m.addItem(.separator())
@@ -395,7 +487,10 @@ if args.contains("--print") {
     done.wait()
     let (kind, line) = classify(r)
     print("icon: \(kind.symbol)")
-    for l in lines(r, line) { print(l.style == .separator ? "────" : (l.style == .title ? "" : "  ") + l.text) }
+    for l in lines(r, line) {
+        let bar = l.style == .bar ? "[" + String(repeating: "█", count: Int(l.fraction * 20)) + String(repeating: "░", count: 20 - Int(l.fraction * 20)) + "] " : ""
+        print(l.style == .separator ? "────" : (l.style == .title ? "" : "  ") + bar + l.text)
+    }
 } else if let i = args.firstIndex(of: "--render"), i + 1 < args.count {
     // The menu's information lines as views, stacked as the menu stacks them, drawn into a PNG.
     let done = DispatchSemaphore(value: 0)
@@ -410,7 +505,7 @@ if args.contains("--print") {
     d.reply = r
     let (kind, line) = classify(r)
     let views: [NSView] = lines(r, line).map { l in
-        l.style == .separator ? NSView(frame: NSRect(x: 0, y: 0, width: LineView.width, height: 11)) : LineView(l.text, font: fontFor(l.style).0, color: fontFor(l.style).1, wrapAnywhere: l.style == .mono)
+        l.style == .separator ? NSView(frame: NSRect(x: 0, y: 0, width: LineView.width, height: 11)) : l.style == .bar ? BarView(l.text, fraction: l.fraction) : LineView(l.text, font: fontFor(l.style).0, color: fontFor(l.style).1, wrapAnywhere: l.style == .mono)
     } + (r?.log != nil ? ["Open the Build Log"] : []).map { LineView($0, font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false) }
         + [LineView("Open the Map", font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false)]
     _ = (d, kind)

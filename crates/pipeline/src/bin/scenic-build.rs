@@ -443,6 +443,7 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
     eprintln!("pack: {} tiles from {} units", ts.len(), packs.len());
     let t0 = std::time::Instant::now();
     for (k, t) in ts.iter().enumerate() {
+        pipeline::agent::jobs::report(k as u64, ts.len() as u64, "map tiles");
         let tb = tile_bounds(t.z, t.x, t.y);
         let halo_b = grow(tb, 100.0);
         let near: Vec<&BasePack> = refs.iter().copied().filter(|bp| meets(bp.extent, halo_b)).collect();
@@ -498,6 +499,7 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Re
     eprintln!("lo: {} tiles from {} units", qs.len(), packs.len());
     let t0 = std::time::Instant::now();
     for (k, q) in qs.iter().enumerate() {
+        pipeline::agent::jobs::report(k as u64, qs.len() as u64, "zoomed-out tiles");
         let qb = tile_bounds(q.z, q.x, q.y);
         let near: Vec<&BasePack> = refs.iter().copied().filter(|bp| meets(bp.extent, qb)).collect();
         let staged = hipack::ways_in(&near, qb)?;
@@ -741,7 +743,9 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let trailends = out.get(&format!("work/trailends/{date}")).map(|c| out.path(c)).context("no hiking-route ends for the pass (the trailends step)")?;
     let extract = std::env::current_exe()?.parent().context("bin")?.join("extract");
     std::fs::create_dir_all(scratch)?;
-    for u in positional(args).iter().filter_map(|s| Unit::parse(s)) {
+    let units: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
+    for (k, &u) in units.iter().enumerate() {
+        pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas");
         let t = std::time::Instant::now();
         let Some(piece) = out.get(&format!("sources/osm/{date}/pieces/{}", u.dash())).map(|n| out.path(n)) else {
             eprintln!("pois {}: no piece", u.slash());
@@ -840,7 +844,9 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let base8 = unit::Z8Base::new(&summits);
     let z8 = open_z8(out, &cache)?;
     std::fs::create_dir_all(scratch)?;
-    for u in positional(args).iter().filter_map(|s| Unit::parse(s)) {
+    let units: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
+    for (k, &u) in units.iter().enumerate() {
+        pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas");
         let t = std::time::Instant::now();
         let pois = out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c)).with_context(|| format!("no candidates for {} (the pois step)", u.slash()))?;
         let peaks: Vec<unit::UnitPeak> = pipeline::candidates::read(&pois)?
@@ -1053,7 +1059,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::create_dir_all(root.join("data/names"))?;
     std::os::unix::fs::symlink(seeds.join("names/english.json"), root.join("data/names/english.json"))?;
     // Today's chain.
-    for (script, sargs) in [
+    let chain = [
         ("heritagewd.py", vec![]),
         ("heritagedetails.py", vec![]),
         ("areadetails.py", vec![]),
@@ -1062,8 +1068,10 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         ("pageviews.py", vec!["--epoch", date.as_str()]),
         ("interest.py", vec![]),
         ("layers.py", vec![]),
-    ] {
-        heritage_script(&root, &cache, script, &sargs)?;
+    ];
+    for (k, (script, sargs)) in chain.iter().enumerate() {
+        pipeline::agent::jobs::report(k as u64, chain.len() as u64, &format!("scripts ({script})"));
+        heritage_script(&root, &cache, script, sargs)?;
     }
     // Outputs (not the stops & sights' stand-ins, nor the layers made from them), the pass's
     // earlier ones this run didn't make dropped.
@@ -1361,7 +1369,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
     }
     eprintln!("unit: pass {date}, {} region(s), {} unit(s)", recipes.len(), units.len());
-    for u in units {
+    let n = units.len() as u64;
+    for (k, u) in units.into_iter().enumerate() {
+        pipeline::agent::jobs::report(k as u64, n, "areas");
         let t = std::time::Instant::now();
         let dir = scratch.join("units").join(u.dash());
         if dir.exists() {
@@ -1495,7 +1505,9 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
     // AWS's raw tiles, kept on this Mac (the build cache).
     let raw_dir = PathBuf::from(opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
     let raw = pipeline::terrain_pack::RawTiles::new(&raw_dir);
-    for (q, list) in by_q {
+    let n = by_q.len() as u64;
+    for (k, (q, list)) in by_q.into_iter().enumerate() {
+        pipeline::agent::jobs::report(k as u64, n, "parts");
         let t = std::time::Instant::now();
         let r = pipeline::terrain_pack::build_q(out, &raw, q, &list, &cov)?;
         eprintln!("terrain 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
@@ -1507,7 +1519,9 @@ fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
     let by_q = terrain_targets(&cov, args)?;
     eprintln!("slope: {} z6 tiles in {} z3 packs", by_q.values().map(Vec::len).sum::<usize>(), by_q.len());
-    for (q, list) in by_q {
+    let n = by_q.len() as u64;
+    for (k, (q, list)) in by_q.into_iter().enumerate() {
+        pipeline::agent::jobs::report(k as u64, n, "parts");
         let t = std::time::Instant::now();
         let r = pipeline::slope_pack::build_q(out, q, &list)?;
         eprintln!("slope 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());

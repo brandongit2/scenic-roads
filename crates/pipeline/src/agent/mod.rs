@@ -90,6 +90,9 @@ pub struct Status {
     /// Per region, how many of its areas are built (after the first pass).
     #[serde(default)]
     pub built: BTreeMap<String, build::RegionState>,
+    /// The build to the end, step by step: the pass's steps, then the regions'.
+    #[serde(default)]
+    pub checklist: Vec<build::Step>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -101,6 +104,18 @@ pub struct JobView {
     pub paused: Option<String>,
     /// Its log's last lines.
     pub tail: String,
+    /// How far it says it is (its log's last `progress:` line), with an estimate of the time left
+    /// from its pace since it started saying so.
+    #[serde(default)]
+    pub progress: Option<JobProgress>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct JobProgress {
+    pub done: f64,
+    pub total: f64,
+    pub unit: String,
+    pub eta_s: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -206,7 +221,7 @@ pub struct Agent {
     /// changes or every five minutes, so an idle NAS can rest.
     last_beat: Option<(Vec<u8>, Instant)>,
     /// How far each region is built, and when that was worked out.
-    progress: Option<(Instant, BTreeMap<String, build::RegionState>)>,
+    progress: Option<(Instant, BTreeMap<String, build::RegionState>, Vec<build::Step>)>,
 }
 
 impl Agent {
@@ -387,12 +402,25 @@ impl Agent {
         // The heartbeat.
         let (regions, bad) = root.as_ref().map(|r| recipes::load(&r.join("inputs/regions"))).unwrap_or_default();
         // (Recomputed after a job ends, or every five minutes: it reads the manifest and outlines.)
-        if ended || self.progress.as_ref().is_none_or(|(t, _)| t.elapsed() >= Duration::from_secs(300)) {
+        if ended || self.progress.as_ref().is_none_or(|(t, _, _)| t.elapsed() >= Duration::from_secs(300)) {
             if let Some(r) = root.as_ref() {
-                self.progress = Some((Instant::now(), region_progress(r, &regions)));
+                self.progress = Some((Instant::now(), region_progress(r, &regions), self.checklist(r, &regions)));
             }
         }
-        let built = self.progress.as_ref().map(|(_, b)| b.clone()).unwrap_or_default();
+        let built = self.progress.as_ref().map(|(_, b, _)| b.clone()).unwrap_or_default();
+        let checklist = self.progress.as_ref().map(|(_, _, c)| c.clone()).unwrap_or_default();
+        // The running job's progress, and from its pace the time it has left.
+        let job_progress = self.running.as_mut().and_then(|r| {
+            let (done, total, unit) = jobs::progress(&r.log)?;
+            let frac = done / total;
+            let fresh = r.progress_base.as_ref().is_none_or(|b| b.2 != unit || frac < b.1);
+            if fresh {
+                r.progress_base = Some((Instant::now(), frac, unit.clone()));
+            }
+            let (t0, f0, _) = r.progress_base.as_ref().unwrap();
+            let eta_s = (frac > *f0 && r.paused.is_none()).then(|| (t0.elapsed().as_secs_f64() * (1.0 - frac) / (frac - f0)) as u64);
+            Some(JobProgress { done, total, unit, eta_s })
+        });
         let status = Status {
             host: self.host.clone(),
             pid: std::process::id(),
@@ -400,12 +428,13 @@ impl Agent {
             beat: now_s(),
             started: self.started,
             conditions: c,
-            job: self.running.as_ref().map(|r| JobView { id: r.spec.id.clone(), what: r.spec.what.clone(), started: r.started, paused: r.paused.clone(), tail: jobs::tail(&r.log, 3) }),
+            job: self.running.as_ref().map(|r| JobView { id: r.spec.id.clone(), what: r.spec.what.clone(), started: r.started, paused: r.paused.clone(), tail: jobs::tail(&r.log, 3), progress: job_progress.clone() }),
             waiting,
             recent: self.mem.recent.clone(),
             regions,
             bad_recipes: bad,
             built,
+            checklist,
         };
         let body = serde_json::to_vec_pretty(&status)?;
         if self._lock.is_none() {
@@ -595,14 +624,7 @@ impl Agent {
             }
         };
         let done = build::Keys::load(root);
-        // What jobs read from inputs/ beside the manifest: the ferry timetables.
-        let mut inputs: BTreeMap<String, String> = BTreeMap::new();
-        if let Ok(rd) = std::fs::read_dir(root.join("inputs/ferries/freq")) {
-            let mut files: Vec<(String, Vec<u8>)> = rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).ok()?))).collect();
-            files.sort();
-            let all: Vec<u8> = files.iter().flat_map(|(n, b)| n.bytes().chain(b.iter().copied())).collect();
-            inputs.insert("ferries-freq".into(), store::naming::hash16(&all));
-        }
+        let inputs = ferry_inputs(root);
         let held = root.join("inputs/hold-catalog").exists();
         let cache = self.o.home.join("cache");
         for (w, total) in batches(build::plan(&cov, date, &manifest, &done, &inputs)) {
@@ -676,6 +698,56 @@ impl Agent {
         jobs
     }
 
+    /// The build to the end (the status's checklist): the OSM pass (its stages, from the markers its
+    /// scratch folder keeps), the pass's worldwide jobs, then the regions' steps (build::checklist).
+    fn checklist(&self, root: &Path, regions: &[recipes::Recipe]) -> Vec<build::Step> {
+        let mut out = Vec::new();
+        let have = crate::osmpass::latest_pass(root);
+        // The pass: a newer planet's under way (or waiting), else done.
+        let pass_stages = ["filter", "sets", "outlines", "basemap", "cut", "roads"];
+        let mut pass = build::Step { what: "OpenStreetMap pass".into(), steps: vec!["osm-pass".into()], total: Some(pass_stages.len()), unit: "stages".into(), ..Default::default() };
+        match crate::osmpass::newer_planet(root, have.as_deref()) {
+            Ok(Some((_, date))) => {
+                let scratch = self.o.home.join("scratch").join(format!("osm-{date}"));
+                pass.done = pass_stages.iter().filter(|s| scratch.join(format!("{s}.done")).exists()).count();
+            }
+            _ => pass.done = if have.is_some() { pass_stages.len() } else { 0 },
+        }
+        out.push(pass);
+        let Some(date) = have else {
+            // Nothing to size the rest by until a pass is complete: its steps, to come.
+            out.push(build::Step { what: "Worldwide sets, route ends, summits, labels".into(), steps: ["pass-sets", "trailends", "terrain-z8", "summits", "labels"].iter().map(|s| s.to_string()).collect(), ..Default::default() });
+            out.extend(build::checklist_to_come());
+            return out;
+        };
+        let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let keys = build::Keys::load(root);
+        // The pass's worldwide jobs.
+        let left = [
+            !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(&date, st.0))),
+            build::trailends_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&crate::osmpass::set_name(&date, "hikes")),
+            !manifest.contains_key(&crate::terrain_z8::logical()),
+            build::summits_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&format!("work/summits/{date}")),
+            build::labels_work(&date, &manifest, &keys).is_some(),
+        ]
+        .iter()
+        .filter(|&&l| l)
+        .count();
+        out.push(build::Step {
+            what: "Worldwide sets, route ends, summits, labels".into(),
+            steps: ["pass-sets", "trailends", "terrain-z8", "summits", "labels"].iter().map(|s| s.to_string()).collect(),
+            left: Some(left),
+            ..Default::default()
+        });
+        if regions.is_empty() {
+            return out;
+        }
+        let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).and_then(|c| crate::outlines::Outlines::open(&root.join(c)).ok());
+        let Ok(cov) = crate::coverage::Coverage::from_recipes(regions, outlines.as_ref(), &root.join("inputs/outlines")) else { return out };
+        out.extend(build::checklist(&cov, &date, &manifest, &keys, &ferry_inputs(root), root.join("inputs/hold-catalog").exists()));
+        out
+    }
+
     /// A newer app is installed locally (`../current` points elsewhere than the agent's folder).
     fn newer_app(&self) -> bool {
         let Some(apps) = self.o.bin.parent() else { return false };
@@ -698,6 +770,18 @@ fn region_progress(root: &Path, regions: &[recipes::Recipe]) -> BTreeMap<String,
         .filter_map(|r| crate::coverage::Coverage::from_recipes(std::slice::from_ref(r), outlines.as_ref(), &dir).ok().map(|c| (r.id.clone(), c)))
         .collect();
     build::region_states(&cov, &each, &date, &manifest, &build::Keys::load(root))
+}
+
+/// What jobs read from inputs/ beside the manifest: the ferry timetables' digest.
+fn ferry_inputs(root: &Path) -> BTreeMap<String, String> {
+    let mut inputs: BTreeMap<String, String> = BTreeMap::new();
+    if let Ok(rd) = std::fs::read_dir(root.join("inputs/ferries/freq")) {
+        let mut files: Vec<(String, Vec<u8>)> = rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).ok()?))).collect();
+        files.sort();
+        let all: Vec<u8> = files.iter().flat_map(|(n, b)| n.bytes().chain(b.iter().copied())).collect();
+        inputs.insert("ferries-freq".into(), store::naming::hash16(&all));
+    }
+    inputs
 }
 
 /// Why a job can't run under `c`, if it can't.
