@@ -28,6 +28,8 @@
 //!                                the parks' as ovdata per z3 tile (docs/phase5.md)
 //!   stations --pass d [--geojson f]  the rail stops of the pass's rail set within the coverage,
 //!                                as the stations' tiles
+//!   ferries --pass d [--dem dir]  the pass's ferries set through ferries.py (with
+//!                                inputs/ferries/freq), as the ferries' blocks
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalog                      publish a catalog of the build manifest
@@ -122,6 +124,13 @@ fn main() -> Result<()> {
             let gj = opt(&args, "--geojson").map(PathBuf::from);
             let (n, tiles) = pipeline::ovconv::stations_job(&mut out, &date, gj.as_deref())?;
             eprintln!("stations: {n} stops in {tiles} tiles");
+        }
+        "ferries" => {
+            // ferries --pass <date> [--dem dir]: the pass's ferries set through ferries.py, as blocks.
+            let date = opt(&args, "--pass").context("--pass <date>")?;
+            let dem = PathBuf::from(opt(&args, "--dem").unwrap_or_else(|| "dem".into()));
+            let n = pipeline::ovconv::ferries_job(&mut out, &date, &dem)?;
+            eprintln!("ferries: {n} blocks");
         }
         "convert-legacy-overlays" => {
             let c = pipeline::ovconv::convert(&mut out)?;

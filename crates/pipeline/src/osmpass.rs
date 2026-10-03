@@ -19,7 +19,7 @@ use std::process::Command;
 /// What the pipeline reads from OSM: the union of every step's tags, generous (a tag left out costs a
 /// new planet download). Referenced nodes and members come along.
 pub const FILTER_A: &[&str] = &[
-    "nwr/highway", "nwr/railway", "r/route", "nwr/public_transport", "nwr/amenity", "nwr/tourism", "nwr/historic",
+    "nwr/highway", "nwr/railway", "r/route", "w/route=ferry", "nwr/public_transport", "nwr/amenity", "nwr/tourism", "nwr/historic",
     "nwr/heritage", "nwr/natural", "nwr/waterway", "nwr/water", "nwr/man_made", "nwr/leisure", "nwr/boundary",
     "nwr/building=train_station,church,cathedral,temple,shrine,mosque,synagogue,castle", "nwr/landuse=forest,reservoir,basin,salt_pond",
     "nwr/military", "nwr/place", "n/barrier", "nwr/aerialway", "nwr/mountain_pass", "nwr/wikidata",

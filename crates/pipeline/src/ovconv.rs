@@ -335,6 +335,55 @@ fn simplify_m(c: &[[f64; 2]], tol_m: f64) -> Vec<[f64; 2]> {
 fn ferries(out: &mut Out, ntiles: &mut usize) -> Result<usize> {
     let fc: Value = serde_json::from_slice(&legacy_bytes(out, "ferries")?)?;
     let lines: serde_json::Map<String, Value> = serde_json::from_slice(&legacy_bytes(out, "ferry-lines")?)?;
+    ferry_blocks(out, &fc, &lines, ntiles)
+}
+
+/// The `ferries` job (docs/phase5.md "Build"): the pass's `ferries` set exported as ferries.py
+/// reads it (the Makefile's osmium steps), ferries.py with the timetables (`inputs/ferries/freq`:
+/// GTFS-derived sailings and the ones looked up by hand), and the blocks from what it writes.
+pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path) -> Result<usize> {
+    use std::process::Command;
+    let logical = format!("sources/osm/{date}/sets/ferries");
+    let set = out.path(out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?);
+    let work = out.scratch.join("ferries-work");
+    std::fs::remove_dir_all(&work).ok();
+    std::fs::create_dir_all(work.join("freq"))?;
+    let run = |mut c: Command, what: &str| -> Result<()> {
+        let o = c.output().with_context(|| format!("run {what}"))?;
+        anyhow::ensure!(o.status.success(), "{what}: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or(""));
+        Ok(())
+    };
+    let osmium = |args: &[&str]| {
+        let mut c = Command::new("osmium");
+        c.current_dir(&work).args(args);
+        c
+    };
+    let set_s = set.to_string_lossy().into_owned();
+    run(osmium(&["tags-filter", &set_s, "w/route=ferry", "r/route=ferry", "-o", "ferries.osm.pbf", "--overwrite"]), "osmium (ferry routes)")?;
+    run(osmium(&["export", "ferries.osm.pbf", "-f", "geojsonseq", "--geometry-types=linestring", "-a", "type,id", "-o", "ways.geojsonseq", "--overwrite"]), "osmium export (ways)")?;
+    run(osmium(&["cat", "ferries.osm.pbf", "-t", "relation", "-f", "opl", "-o", "relations.opl", "--overwrite"]), "osmium cat (relations)")?;
+    run(osmium(&["tags-filter", &set_s, "nw/amenity=ferry_terminal", "-o", "terminals.osm.pbf", "--overwrite"]), "osmium (terminals)")?;
+    run(osmium(&["export", "terminals.osm.pbf", "-f", "geojsonseq", "-a", "type,id", "-o", "terminals.geojsonseq", "--overwrite"]), "osmium export (terminals)")?;
+    let freq = out.root().join("inputs/ferries/freq");
+    let mut n_freq = 0;
+    for e in std::fs::read_dir(&freq).with_context(|| format!("{} (the timetables)", freq.display()))?.flatten() {
+        if e.path().extension().is_some_and(|x| x == "json") {
+            std::fs::copy(e.path(), work.join("freq").join(e.file_name()))?;
+            n_freq += 1;
+        }
+    }
+    let mut py = Command::new("uv");
+    py.current_dir(dem).args(["run", "python", "ferries.py", "--src"]).arg(&work).arg("--out").arg(&work);
+    run(py, "ferries.py")?;
+    let fc: Value = serde_json::from_slice(&std::fs::read(work.join("ferries.json"))?)?;
+    let lines: serde_json::Map<String, Value> = serde_json::from_slice(&std::fs::read(work.join("ferry-lines.json"))?)?;
+    eprintln!("ferries: {} features, {} lines ({n_freq} timetable files)", fc["features"].as_array().map_or(0, Vec::len), lines.len());
+    let mut ntiles = 0;
+    ferry_blocks(out, &fc, &lines, &mut ntiles)
+}
+
+/// Ferries as blocks (see the module's docs), from ferries.json and ferry-lines.json as written.
+fn ferry_blocks(out: &mut Out, fc: &Value, lines: &serde_json::Map<String, Value>, ntiles: &mut usize) -> Result<usize> {
     let feats = fc["features"].as_array().context("ferries: no features")?;
     // Per feature: its geometry (a way's line, a terminal's point), properties, id.
     struct F {

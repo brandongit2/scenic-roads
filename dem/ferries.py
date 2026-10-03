@@ -21,7 +21,10 @@ Outputs (data/build/): ferries.json (GeoJSON: one feature per way, plus terminal
 ferry-lines.json (every line's details, for the hover card). Names carry en, their English where it
 truly differs (names.py english_at).
 
-usage: ferries.py
+usage: ferries.py [--src DIR] [--out DIR]
+  --src: the OSM exports (ways.geojsonseq, relations.opl, terminals.geojsonseq) and freq/ (default
+         data/ferries; the build's ferries job passes its work folder)
+  --out: where ferries.json and ferry-lines.json go (default data/build)
 """
 from __future__ import annotations
 
@@ -502,4 +505,9 @@ def rank(rec: dict) -> int:
 
 
 if __name__ == "__main__":
+    args = sys.argv[1:]
+    if "--src" in args:
+        F = Path(args[args.index("--src") + 1])
+    if "--out" in args:
+        OUT = Path(args[args.index("--out") + 1])
     sys.exit(main())
