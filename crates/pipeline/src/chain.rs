@@ -227,25 +227,36 @@ pub fn pair(links: &[Link], refs: &[u32], at_node: &(dyn Fn([i32; 2]) -> bool + 
 
 /// Walk the paired ways into roads.
 pub fn walk(links: &[Link], partner: &[[u32; 2]]) -> Vec<RoadVal> {
-    let n = links.len();
+    walk_by(links.len(), |i| links[i].id, |i| links[i].len, |i| links[i].kind != KIND_NONE, partner)
+}
+
+/// `walk` over any way storage: each way's OSM id, length and whether it chains at all (the
+/// worldwide walk keeps only ids and lengths, a planet's worth in memory).
+pub fn walk_by(n: usize, id: impl Fn(usize) -> u64 + Sync, len: impl Fn(usize) -> f32, chained: impl Fn(usize) -> bool, partner: &[[u32; 2]]) -> Vec<RoadVal> {
     let mut out = vec![RoadVal { road: 0, len: 0.0, offset: 0.0, dir: 0 }; n];
     let mut done = vec![false; n];
-    // Lowest id first, so a cycle is met at its lowest way.
-    let mut order: Vec<u32> = (0..n as u32).collect();
-    order.par_sort_unstable_by_key(|&i| (links[i as usize].id, i));
+    // Lowest id first, so a cycle is met at its lowest way (no order needed when sorted already).
+    let sorted = (1..n).all(|i| id(i - 1) <= id(i));
+    let order: Vec<u32> = if sorted {
+        Vec::new()
+    } else {
+        let mut o: Vec<u32> = (0..n as u32).collect();
+        o.par_sort_unstable_by_key(|&i| (id(i as usize), i));
+        o
+    };
     let next = |w: usize, end: usize| -> Option<(usize, usize)> {
         let p = partner[w][end];
         (p != NONE).then(|| ((p >> 1) as usize, (p & 1) as usize))
     };
     let mut chain: Vec<(usize, u8)> = Vec::new();
-    for &i in &order {
-        let i = i as usize;
+    for k in 0..n {
+        let i = if sorted { k } else { order[k] as usize };
         if done[i] {
             continue;
         }
-        if links[i].kind == KIND_NONE {
+        if !chained(i) {
             done[i] = true;
-            out[i] = RoadVal { road: links[i].id, len: links[i].len, offset: 0.0, dir: 0 };
+            out[i] = RoadVal { road: id(i), len: len(i), offset: 0.0, dir: 0 };
             continue;
         }
         // The terminal reached leaving `i` by `end`: (way, its free end), or None for a cycle.
@@ -268,7 +279,7 @@ pub fn walk(links: &[Link], partner: &[[u32; 2]]) -> Vec<RoadVal> {
             (Some(a), Some(b)) => {
                 if a.0 == b.0 {
                     (a.0, 0) // a single way: in its own direction
-                } else if links[a.0].id < links[b.0].id || (links[a.0].id == links[b.0].id && a.0 < b.0) {
+                } else if id(a.0) < id(b.0) || (id(a.0) == id(b.0) && a.0 < b.0) {
                     a
                 } else {
                     b
@@ -287,12 +298,12 @@ pub fn walk(links: &[Link], partner: &[[u32; 2]]) -> Vec<RoadVal> {
                 _ => break,
             }
         }
-        let road = chain.iter().map(|&(w, _)| links[w].id).min().unwrap_or(0);
-        let total: f64 = chain.iter().map(|&(w, _)| links[w].len as f64).sum();
+        let road = chain.iter().map(|&(w, _)| id(w)).min().unwrap_or(0);
+        let total: f64 = chain.iter().map(|&(w, _)| len(w) as f64).sum();
         let mut off = 0f64;
         for &(w, dir) in &chain {
             out[w] = RoadVal { road, len: total as f32, offset: off as f32, dir };
-            off += links[w].len as f64;
+            off += len(w) as f64;
         }
     }
     out

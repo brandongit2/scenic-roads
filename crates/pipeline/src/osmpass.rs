@@ -118,10 +118,11 @@ fn filtered_nas(out: &Out, date: &str) -> Result<PathBuf> {
 /// Cuts `input` (the data of tile `t` and its buffer) down to the z6 pieces below `t`, a quarter at
 /// a time and depth first, calling `each` on every non-empty z6 piece. osmium keeps id sets per
 /// output that span the whole id range (about 4 GB each on a planet-sized input, measured), so a
-/// run makes four; a piece goes once everything below it is done, so the tree's files never all
-/// sit on disk at once. Resumable: `<tile>.cut` marks a tile whose quarters were cut, and a piece
-/// still there is one not yet done.
-fn cut_tree(input: &Path, t: Unit, work: &Path, each: &mut dyn FnMut(Unit, &Path) -> Result<()>) -> Result<()> {
+/// run makes four. Each piece goes as soon as its quarters are cut, so the tree's files on disk add
+/// up to about one copy of the input (plus the buffers' overlap), however uneven the data.
+/// Resumable: `<tile>.cut` marks a tile whose quarters were cut, `<tile>.done` one whose whole
+/// subtree is done.
+fn cut_tree(input: &Path, t: Unit, consume: bool, work: &Path, each: &mut dyn FnMut(Unit, &Path) -> Result<()>) -> Result<()> {
     let kids: Vec<Unit> = (0..2u32).flat_map(|i| (0..2u32).map(move |j| Unit { z: t.z + 1, x: t.x * 2 + i, y: t.y * 2 + j })).collect();
     let dir = work.join(format!("z{}", t.z + 1));
     let marker = work.join(format!("{}.cut", t.dash()));
@@ -129,19 +130,29 @@ fn cut_tree(input: &Path, t: Unit, work: &Path, each: &mut dyn FnMut(Unit, &Path
         cut(input, &kids, &dir, 4)?;
         std::fs::write(&marker, b"")?;
     }
+    // Its quarters are on disk: the input goes (`consume`: a piece of this tree, not the root's).
+    if consume {
+        std::fs::remove_file(input).ok();
+    }
     for k in kids {
-        let f = dir.join(format!("{}.osm.pbf", k.dash()));
-        if !f.exists() {
+        let done = work.join(format!("{}.done", k.dash()));
+        if done.exists() {
             continue;
         }
-        if !is_empty_piece(&f) {
-            if k.z == 6 {
+        let f = dir.join(format!("{}.osm.pbf", k.dash()));
+        let cut_already = work.join(format!("{}.cut", k.dash())).exists();
+        if f.exists() && is_empty_piece(&f) {
+            std::fs::remove_file(&f)?;
+        } else if k.z == 6 {
+            // Gone without its mark: done just before an interruption (uploaded, links kept).
+            if f.exists() {
                 each(k, &f)?;
-            } else {
-                cut_tree(&f, k, work, each)?;
+                std::fs::remove_file(&f)?;
             }
+        } else if f.exists() || cut_already {
+            cut_tree(&f, k, true, work, each)?;
         }
-        std::fs::remove_file(&f)?;
+        std::fs::write(&done, b"")?;
     }
     Ok(())
 }
@@ -293,26 +304,25 @@ pub fn unit_links(extract: &Path, piece: &Path, unit: Unit, work: &Path) -> Resu
 }
 
 /// The worldwide walk over every unit's chaining inputs: road values by OSM way id.
-pub fn walk_all(units: &[UnitLinks]) -> Vec<(u64, RoadVal)> {
+/// The worldwide walk over every unit's chaining inputs: the ways (OSM id, length), sorted by id,
+/// and each one's road value in the same order. Each unit's pairs are dropped once used: at planet
+/// scale (some 250 M ways) the walk then stays near 20 GB.
+pub fn walk_all(units: &mut [UnitLinks]) -> (Vec<(u64, f32)>, Vec<RoadVal>) {
     let mut ways: Vec<(u64, f32)> = units.iter().flat_map(|u| u.ways.iter().copied()).collect();
     ways.par_sort_unstable_by_key(|w| w.0);
     ways.dedup_by_key(|w| w.0);
     let index = |id: u64| ways.binary_search_by_key(&id, |w| w.0).ok();
-    let mut links: Vec<Link> = ways.iter().map(|&(id, len)| Link { id, kind: chain::KIND_ROAD, len, ..Default::default() }).collect();
-    let mut partner = vec![[chain::NONE; 2]; links.len()];
-    for u in units {
-        for &(a, b) in &u.pairs {
+    let mut partner = vec![[chain::NONE; 2]; ways.len()];
+    for u in units.iter_mut() {
+        for &(a, b) in &std::mem::take(&mut u.pairs) {
             let (Some(ia), Some(ib)) = (index(a >> 1), index(b >> 1)) else { continue };
             partner[ia][(a & 1) as usize] = (ib as u32) << 1 | (b & 1) as u32;
             partner[ib][(b & 1) as usize] = (ia as u32) << 1 | (a & 1) as u32;
         }
     }
-    // Ways that pair with nothing still get a road of their own.
-    for l in &mut links {
-        l.kind = chain::KIND_ROAD;
-    }
-    let vals = chain::walk(&links, &partner);
-    ways.iter().map(|w| w.0).zip(vals).collect()
+    // Every way gets a road, of its own when it pairs with nothing.
+    let vals = chain::walk_by(ways.len(), |i| ways[i].0, |i| ways[i].1, |_| true, &partner);
+    (ways, vals)
 }
 
 /// Stage list, in order.
@@ -404,16 +414,18 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
     let tree = scratch.join("cut");
     let links = scratch.join("links");
     if !done(scratch, "cut").exists() {
-        // The pieces come to a little more than the filtered file (ways kept whole, buffers), a
-        // quarter of it at a time below the first cut.
+        // The first cut writes about the filtered file again (its four quarters); below it each
+        // piece goes as soon as it's cut, so the tree stays near that size. The local filtered
+        // file is kept for the first cut only when there's room for both, and goes after it.
         let flen = std::fs::metadata(&filtered).or_else(|_| std::fs::metadata(filtered_nas(out, date)?).map_err(anyhow::Error::from))?.len();
-        if filtered.exists() && !tree.join("0-0-0.cut").exists() && free(scratch) < flen / 8 * 11 + (10 << 30) {
+        if filtered.exists() && !tree.join("0-0-0.cut").exists() && free(scratch) < flen / 8 * 10 + (20 << 30) {
             eprintln!("cut: {} GB free; reading the filtered planet from the NAS", free(scratch) >> 30);
             std::fs::remove_file(&filtered)?;
         }
-        let src = if filtered.exists() { filtered.clone() } else { filtered_nas(out, date)? };
+        let local = filtered.exists();
+        let src = if local { filtered.clone() } else { filtered_nas(out, date)? };
         let work = scratch.join("extract-work");
-        cut_tree(&src, Unit { z: 0, x: 0, y: 0 }, &tree, &mut |u, f| {
+        cut_tree(&src, Unit { z: 0, x: 0, y: 0 }, local, &tree, &mut |u, f| {
             let logical = format!("sources/osm/{date}/pieces/{}", u.dash());
             if out.get(&logical).is_none() {
                 out.put_file(&logical, "osm.pbf", &copy_keep(f, scratch)?)?;
@@ -436,10 +448,11 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         }
         out.put_bytes(&format!("sources/osm/{date}/pieces"), "json", &serde_json::to_vec_pretty(&pieces)?)?;
         out.save()?;
-        std::fs::remove_dir_all(&tree).ok();
-        std::fs::remove_file(&filtered).ok();
+        // Marked first: the clean-up below is safe to repeat, the cut isn't cheap to.
         mark(scratch, "cut")?;
     }
+    std::fs::remove_dir_all(&tree).ok();
+    std::fs::remove_file(&filtered).ok();
     let name = out.get(&format!("sources/osm/{date}/pieces")).context("pieces list")?.to_string();
     let pieces: Pieces = serde_json::from_slice(&std::fs::read(out.path(&name))?)?;
     if !done(scratch, "roads").exists() {
@@ -458,16 +471,16 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
             };
             all.push((unit, ul));
         }
-        let lists: Vec<UnitLinks> = all.iter().map(|(_, l)| UnitLinks { ways: l.ways.clone(), pairs: l.pairs.clone() }).collect();
-        let vals = walk_all(&lists);
-        for (unit, ul) in &all {
+        let (units, mut lists): (Vec<Unit>, Vec<UnitLinks>) = all.into_iter().unzip();
+        let (ways, vals) = walk_all(&mut lists);
+        for (unit, ul) in units.iter().zip(&lists) {
             let mut recs: Vec<u8> = Vec::with_capacity(ul.ways.len() * 32);
             let mut ids: Vec<u64> = ul.ways.iter().map(|w| w.0).collect();
             ids.sort_unstable();
             ids.dedup();
             for id in ids {
-                let Ok(k) = vals.binary_search_by_key(&id, |v| v.0) else { continue };
-                let v = vals[k].1;
+                let Ok(k) = ways.binary_search_by_key(&id, |w| w.0) else { continue };
+                let v = vals[k];
                 // (u64 way id, then the RoadRec layout)
                 recs.extend_from_slice(&id.to_le_bytes());
                 recs.extend_from_slice(bytemuck::bytes_of(&roadcore::packs::RoadRec { road: v.road, len: v.len, offset: v.offset, dir: v.dir, _pad: [0; 7] }));
