@@ -83,6 +83,10 @@ impl Updater {
         if cur.version == running || cur.version.is_empty() || cur.version.contains('/') {
             return Ok(false);
         }
+        // Already in place, waiting for the map to be idle to restart into it.
+        if std::fs::read_link(self.home.join("app/current")).ok().is_some_and(|l| l.as_os_str() == cur.version.as_str()) {
+            return Ok(false);
+        }
         let dest = self.home.join("app").join(&cur.version);
         if !dest.exists() {
             let tmp = self.home.join("app").join(format!("{}.tmp", cur.version));
@@ -161,19 +165,25 @@ impl Updater {
         let me = self.clone();
         std::thread::Builder::new()
             .name("updater".into())
-            .spawn(move || loop {
-                if !me.pending.load(Ordering::Relaxed) {
-                    match me.check(&data) {
-                        Ok(true) => me.pending.store(true, Ordering::Relaxed),
-                        Ok(false) => {}
-                        Err(e) => eprintln!("app update: {e:#}"),
+            .spawn(move || {
+                // Checked every five minutes, waiting for an idle map or not: a version published
+                // while another waits takes its place.
+                let mut last: Option<std::time::Instant> = None;
+                loop {
+                    if last.is_none_or(|t| t.elapsed() >= Duration::from_secs(300)) {
+                        last = Some(std::time::Instant::now());
+                        match me.check(&data) {
+                            Ok(true) => me.pending.store(true, Ordering::Relaxed),
+                            Ok(false) => {}
+                            Err(e) => eprintln!("app update: {e:#}"),
+                        }
                     }
+                    if me.pending.load(Ordering::Relaxed) && now().saturating_sub(LAST_REQUEST.load(Ordering::Relaxed)) >= 60 {
+                        eprintln!("exiting for the new app");
+                        std::process::exit(0);
+                    }
+                    std::thread::sleep(Duration::from_secs(10));
                 }
-                if me.pending.load(Ordering::Relaxed) && now().saturating_sub(LAST_REQUEST.load(Ordering::Relaxed)) >= 60 {
-                    eprintln!("exiting for the new app");
-                    std::process::exit(0);
-                }
-                std::thread::sleep(Duration::from_secs(if me.pending.load(Ordering::Relaxed) { 10 } else { 300 }));
             })
             .ok();
     }
