@@ -11,6 +11,15 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::Path;
 
+/// An `ele` tag in metres (feet converted), as extract reads it; the candidates and the summits
+/// hold it rounded (`f32::round`), as extract writes it.
+pub fn parse_ele(v: Option<&str>) -> Option<f32> {
+    let v = v?.trim();
+    let num: String = v.chars().take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-').collect();
+    let n: f32 = num.parse().ok()?;
+    Some(if v.contains("ft") || v.contains('\'') { n * 0.3048 } else { n })
+}
+
 /// One candidate.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Cand {

@@ -565,6 +565,29 @@ impl Agent {
                     record: Some(w),
                 }];
             }
+            // AWS's z8 worldwide, once (the peaks' coarse stage), then the pass's summits.
+            if !manifest.contains_key(&crate::terrain_z8::logical()) {
+                let scratch = self.o.home.join("scratch").join("terrain-z8");
+                return vec![JobSpec {
+                    id: "terrain-z8".into(),
+                    what: "Coarse terrain for the whole world".into(),
+                    cmd: vec![s(&self.o.bin.join("scenic-build")), "terrain-z8".into(), "--root".into(), s(root), "--scratch".into(), s(&scratch), "--raw".into(), s(&self.o.home.join("cache").join("aws-terrarium"))],
+                    needs: Needs { ac: true, nas: true },
+                    restart_after_sleep: true,
+                    record: None,
+                }];
+            }
+            if let Some(w) = build::summits_work(date, &manifest, &build::Keys::load(root)) {
+                let scratch = self.o.home.join("scratch").join("summits");
+                return vec![JobSpec {
+                    id: format!("summits {date}"),
+                    what: "Summits for the whole world".into(),
+                    cmd: vec![s(&self.o.bin.join("scenic-build")), "summits".into(), "--root".into(), s(root), "--scratch".into(), s(&scratch), "--pass".into(), date.to_string(), "--cache".into(), s(&self.o.home.join("cache"))],
+                    needs: Needs { ac: true, nas: true },
+                    restart_after_sleep: true,
+                    record: Some(w),
+                }];
+            }
             if let Some(w) = build::labels_work(date, &manifest, &build::Keys::load(root)) {
                 let scratch = self.o.home.join("scratch").join("labels");
                 return vec![JobSpec {
@@ -601,6 +624,16 @@ impl Agent {
         match w.step.as_str() {
             "terrain" | "terrain-root" => cmd.extend(["--raw".into(), s(&cache.join("aws-terrarium"))]),
             "pois" => cmd.extend(["--pass".into(), date.to_string()]),
+            "peaks" => cmd.extend([
+                "--pass".into(),
+                date.to_string(),
+                "--raw".into(),
+                s(&cache.join("aws-terrarium")),
+                "--cache".into(),
+                s(&cache),
+                "--coarse-threads".into(),
+                "6".into(),
+            ]),
             "unit" => cmd.extend([
                 "--pass".into(),
                 date.to_string(),
@@ -627,6 +660,7 @@ impl Agent {
             "slope" => format!("Slope for the regions ({n} area{})", if n == 1 { "" } else { "s" }),
             "unit" => format!("Roads, elevations and scenery ({n} area{})", if n == 1 { "" } else { "s" }),
             "pois" => format!("Landmark candidates ({n} area{})", if n == 1 { "" } else { "s" }),
+            "peaks" => format!("Peaks' prominence and isolation ({n} area{})", if n == 1 { "" } else { "s" }),
             "pack" => format!("Map tiles ({n} area{})", if n == 1 { "" } else { "s" }),
             "lo" => "Zoomed-out map tiles".to_string(),
             "terrain-root" | "slope-root" => "World-level terrain and slope".to_string(),

@@ -113,6 +113,18 @@ fn main() -> Result<()> {
         "pois" => pois_step(&mut out, &args, &scratch)?,
         "roadunits" => roadunits(&mut out)?,
         "terrain" => terrain_step(&mut out, &args)?,
+        "terrain-z8" => {
+            // terrain-z8 [--raw dir]: AWS's z8 worldwide, repaired (pipeline::terrain_z8), once.
+            if out.get(&pipeline::terrain_z8::logical()).is_some() {
+                eprintln!("terrain-z8: already made ({})", pipeline::terrain_z8::logical());
+            } else {
+                let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
+                let (n, none) = pipeline::terrain_z8::build(&mut out, &pipeline::terrain_pack::RawTiles::new(&raw_dir))?;
+                eprintln!("terrain-z8: {n} tiles ({none} of open sea)");
+            }
+        }
+        "summits" => summits_step(&mut out, &args, &scratch)?,
+        "peaks" => peaks_step(&mut out, &args, &scratch)?,
         "slope" => slope_step(&mut out, &args)?,
         "labels" => labels_step(&mut out, &args, &scratch)?,
         "pass-sets" => {
@@ -735,6 +747,99 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         std::fs::remove_file(&local).ok();
         std::fs::remove_file(&file).ok();
         eprintln!("pois {}: {} candidates ({:.0?})", u.slash(), cands.len(), t.elapsed());
+    }
+    Ok(())
+}
+
+/// A local copy of a NAS file by logical name, made once under `cache/<logical>/` (content-named,
+/// so never stale; older copies go).
+fn local_copy(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> {
+    let content = out.get(logical).with_context(|| format!("no {logical} in the manifest"))?;
+    let src = out.path(content);
+    let name = Path::new(content).file_name().context("file name")?.to_string_lossy().into_owned();
+    let dir = cache.join(logical.replace('/', "-"));
+    let local = dir.join(&name);
+    let size = std::fs::metadata(&src)?.len();
+    if std::fs::metadata(&local).is_ok_and(|m| m.len() == size) {
+        return Ok(local);
+    }
+    std::fs::create_dir_all(&dir)?;
+    let tmp = dir.join(format!("{name}.tmp"));
+    std::fs::copy(&src, &tmp).with_context(|| format!("copy {}", src.display()))?;
+    std::fs::rename(&tmp, &local)?;
+    for e in std::fs::read_dir(&dir)?.flatten() {
+        if e.file_name().to_string_lossy() != name {
+            std::fs::remove_file(e.path()).ok();
+        }
+    }
+    Ok(local)
+}
+
+/// The z8 artifact, from local copies under `cache`.
+fn open_z8(out: &Out, cache: &Path) -> Result<pipeline::terrain_z8::Z8> {
+    let pack = local_copy(out, &pipeline::terrain_z8::logical(), cache)?;
+    let maxes = local_copy(out, &pipeline::terrain_z8::max_logical(), cache)?;
+    pipeline::terrain_z8::Z8::open(&pack, &maxes, 4096)
+}
+
+/// summits [--pass <date>] [--cache dir]: every summit worldwide with its z8 height (pipeline::summits).
+fn summits_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+    let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
+    let t = std::time::Instant::now();
+    let set = local_copy(out, &pipeline::osmpass::set_name(&date, "summits"), &cache)?;
+    let mut summits = pipeline::summits::read_set(&set)?;
+    let z8 = open_z8(out, &cache)?;
+    let raised = pipeline::summits::add_z8(&mut summits, &z8)?;
+    std::fs::create_dir_all(scratch)?;
+    let file = scratch.join("summits.jsonl.zst");
+    pipeline::summits::write(&file, &summits)?;
+    out.put_file(&format!("work/summits/{date}"), "jsonl.zst", &file)?;
+    out.save()?;
+    std::fs::remove_file(&file).ok();
+    eprintln!("summits: {} ({} with a z8 height) ({:.0?})", summits.len(), raised, t.elapsed());
+    Ok(())
+}
+
+/// peaks <units…> [--pass <date>] [--raw dir] [--cache dir] [--coarse-threads n]: prominence and
+/// isolation of each unit's peak candidates (pipeline::peaks::unit), as `work/peaks/<u>`.
+fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    use pipeline::peaks::unit;
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+    let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
+    let raw = pipeline::terrain_pack::RawTiles::new(&PathBuf::from(opt(args, "--raw").unwrap_or_else(|| cache.join("aws-terrarium").to_string_lossy().into_owned())));
+    let coarse_threads: usize = opt(args, "--coarse-threads").map(|s| s.parse()).transpose()?.unwrap_or(4);
+    let summits = pipeline::summits::read(&local_copy(out, &format!("work/summits/{date}"), &cache)?)?;
+    let base8 = unit::Z8Base::new(&summits);
+    let z8 = open_z8(out, &cache)?;
+    std::fs::create_dir_all(scratch)?;
+    for u in positional(args).iter().filter_map(|s| Unit::parse(s)) {
+        let t = std::time::Instant::now();
+        let pois = out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c)).with_context(|| format!("no candidates for {} (the pois step)", u.slash()))?;
+        let peaks: Vec<unit::UnitPeak> = pipeline::candidates::read(&pois)?
+            .into_iter()
+            .filter(|c| c.kind == "peak")
+            .filter_map(|c| Some(unit::UnitPeak { id: c.osm.clone()?, key: c.key, lon: c.lon, lat: c.lat, ele: c.ele }))
+            .collect();
+        let want = unit::tiles_wanted(&peaks.iter().map(|p| (p.lon as f64 * 1e-7, p.lat as f64 * 1e-7)).collect::<Vec<_>>(), 29.5);
+        let z12 = unit::UnitZ12::load(out, &raw, &want)?;
+        let res = unit::run(&peaks, &summits, &base8, &z12, &z8, coarse_threads)?;
+        let file = scratch.join(format!("peaks-{}.jsonl.zst", u.dash()));
+        {
+            use std::io::Write;
+            let mut w = zstd::Encoder::new(std::fs::File::create(&file)?, 9)?.auto_finish();
+            for (key, o) in &res {
+                let mut v = o.json();
+                v.as_object_mut().unwrap().remove("i");
+                v["key"] = key.clone().into();
+                serde_json::to_writer(&mut w, &v)?;
+                w.write_all(b"\n")?;
+            }
+        }
+        out.put_file(&format!("work/peaks/{}", u.dash()), "jsonl.zst", &file)?;
+        out.save()?;
+        std::fs::remove_file(&file).ok();
+        eprintln!("peaks {}: {} peaks; z12 tiles {} from the packs, {} from AWS, {} sea ({:.0?})", u.slash(), res.len(), z12.from.0, z12.from.1, z12.from.2, t.elapsed());
     }
     Ok(())
 }

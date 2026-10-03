@@ -28,6 +28,8 @@
 //! (lower bound), c ([lon, lat] of the col), ce (col m), iso (km), il (lower bound), hi ([lon, lat]
 //! of the nearest higher ground)}.
 
+pub mod unit;
+
 use rayon::prelude::*;
 use roadcore::archive::Archive;
 use roadcore::grid::decode_terrain_png;

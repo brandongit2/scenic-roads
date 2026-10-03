@@ -35,6 +35,9 @@ pub struct Keys {
     /// The units' landmark candidates.
     #[serde(default)]
     pub pois: BTreeMap<String, String>,
+    /// The units' peaks' prominence and isolation.
+    #[serde(default)]
+    pub peaks: BTreeMap<String, String>,
     #[serde(default)]
     pub pack: BTreeMap<String, String>,
     #[serde(default)]
@@ -64,6 +67,7 @@ impl Keys {
             "slope" => &mut self.slope,
             "unit" => &mut self.unit,
             "pois" => &mut self.pois,
+            "peaks" => &mut self.peaks,
             "pack" => &mut self.pack,
             _ => &mut self.lo,
         }
@@ -75,7 +79,7 @@ impl Keys {
             self.catalog = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || matches!(step, "labels" | "trailends") {
+        if step.ends_with("-root") || matches!(step, "labels" | "trailends" | "summits") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -184,6 +188,39 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Ve
     units
 }
 
+/// Every summit worldwide with its z8 height, once per pass (crate::summits): what the units' peaks
+/// read.
+pub const SUMMITS_V: u32 = 1;
+
+pub fn summits_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
+    let set = m.get(&crate::osmpass::set_name(date, "summits"))?;
+    let (z8, z8m) = (m.get(&crate::terrain_z8::logical())?, m.get(&crate::terrain_z8::max_logical())?);
+    let k = h(&[&format!("summits {SUMMITS_V}"), set, z8, z8m]);
+    (done.lo.get("summits").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "summits".into(), targets: vec![("summits".into(), k)] })
+}
+
+/// The peaks' version (crate::peaks::unit).
+pub const PEAKS_V: u32 = 1;
+
+/// The units with candidates, each with its peaks' key: the candidates, the summits, the z8, and
+/// the terrain hi packs within 30 km of it (its peaks' z12: the packs', else AWS's raw tiles,
+/// which don't change).
+pub fn peaks_keys(date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
+    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
+    let common = [get(&format!("work/summits/{date}")), get(&crate::terrain_z8::logical()), get(&crate::terrain_z8::max_logical())].join(",");
+    let mut out = Vec::new();
+    for (l, c) in m.range("work/pois/".to_string()..) {
+        let Some(u) = l.strip_prefix("work/pois/").and_then(Unit::parse) else { break };
+        let mut inputs = vec![format!("peaks {PEAKS_V}"), c.clone(), common.clone()];
+        for (x, y) in crate::stage::tiles_in(6, crate::stage::tile_box_grown(u.z, u.x, u.y, 30.0)) {
+            inputs.push(get(&format!("layers/terrain/hi/6-{x}-{y}")).to_string());
+        }
+        let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+        out.push((u, h(&refs)));
+    }
+    out
+}
+
 /// The candidates' version (crate::candidates, extract `--candidates`): bumping it makes every
 /// unit's candidates again, not the units.
 pub const POIS_V: u32 = 1;
@@ -276,6 +313,14 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         let stale_pois: Vec<(String, String)> = pois_keys(cov, date, m).into_iter().filter(|(u, k)| stale(&done.pois, &u.slash(), k)).map(|(u, k)| (u.slash(), k)).collect();
         if !stale_pois.is_empty() {
             work.push(Work { step: "pois".into(), targets: stale_pois });
+            return work;
+        }
+    }
+    // Their peaks (once the pass's summits exist).
+    if m.contains_key(&format!("work/summits/{date}")) {
+        let stale_peaks: Vec<(String, String)> = peaks_keys(date, m).into_iter().filter(|(u, k)| stale(&done.peaks, &u.slash(), k)).map(|(u, k)| (u.slash(), k)).collect();
+        if !stale_peaks.is_empty() {
+            work.push(Work { step: "peaks".into(), targets: stale_peaks });
             return work;
         }
     }

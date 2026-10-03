@@ -244,12 +244,6 @@ fn poi_kind(t: &Tags, candidates: bool) -> Option<&'static str> {
     }
 }
 
-fn parse_ele(v: Option<&str>) -> Option<f32> {
-    let v = v?.trim();
-    let num: String = v.chars().take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-').collect();
-    let n: f32 = num.parse().ok()?;
-    Some(if v.contains("ft") || v.contains('\'') { n * 0.3048 } else { n })
-}
 
 struct Tags<'a>(Vec<(&'a str, &'a str)>);
 
@@ -900,7 +894,7 @@ fn main() -> Result<()> {
                     lon,
                     lat,
                     name: t.get("name").unwrap_or("").to_string(),
-                    ele: parse_ele(t.get("ele")),
+                    ele: pipeline::candidates::parse_ele(t.get("ele")),
                     osm: Some(format!("n{id}")),
                     key: None,
                     tags: kept_tags(&t, kind),
