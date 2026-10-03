@@ -11,14 +11,15 @@
 //   scenic-status --print                   the icon and menu for the status now, as text
 //   scenic-status --replay a.json b.json …  the notifications a sequence of answers would send
 //   scenic-status --render menu.png          the menu's lines drawn as they lay out (dark), for checking
-// SCENIC_STATUS_SERVER overrides the server (http://127.0.0.1:8080).
+//   scenic-status --wait-replaced           waits, without a window, until a newer app is installed
+// SCENIC_STATUS_SERVER overrides the server (http://127.0.0.1:8080), SCENIC_HOME the app folder.
 
 import AppKit
 import CoreServices
 import UserNotifications
 
 let server = URL(string: ProcessInfo.processInfo.environment["SCENIC_STATUS_SERVER"] ?? "http://127.0.0.1:8080")!
-let home = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/scenic")
+let home = ProcessInfo.processInfo.environment["SCENIC_HOME"].map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/scenic")
 /// Without a heartbeat for this long, the build Mac counts as out of touch (asleep, off, away).
 let outOfTouch = 15 * 60
 
@@ -255,6 +256,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Known to Launch Services by its bundle (notifications need it): the launcher starts the
         // executable inside it directly.
         LSRegisterURL(Bundle.main.bundleURL as CFURL, true)
+        _ = launchedFrom
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
         show()
         poll()
@@ -365,14 +367,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-/// Quits when the installed app's `current` link points at another version than this one's: the
-/// launcher then starts the new one.
+/// The app version folder this process was started from, resolved when it starts (it's run through
+/// the `current` link, which later points elsewhere).
+let launchedFrom = Bundle.main.bundleURL.resolvingSymlinksInPath().deletingLastPathComponent().path
+
+/// Quits when the installed app's `current` link points at another version than the one this
+/// process started from: the launcher then starts the new one.
 func quitIfReplaced() {
     let apps = home.appendingPathComponent("app").resolvingSymlinksInPath().path
-    let mine = Bundle.main.bundleURL.resolvingSymlinksInPath().deletingLastPathComponent().path
-    guard mine.hasPrefix(apps + "/") else { return }
+    guard launchedFrom.hasPrefix(apps + "/") else { return }
     let current = home.appendingPathComponent("app/current").resolvingSymlinksInPath().path
-    if current != mine { exit(0) }
+    if current != launchedFrom {
+        print("replaced by \(current)")
+        exit(0)
+    }
 }
 
 let args = CommandLine.arguments
@@ -421,6 +429,14 @@ if args.contains("--print") {
     NSAppearance(named: .darkAqua)!.performAsCurrentDrawingAppearance { canvas.cacheDisplay(in: canvas.bounds, to: rep) }
     try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: args[i + 1]))
     print("drew \(views.count) lines, \(Int(height)) pt high")
+} else if args.contains("--wait-replaced") {
+    // What the menu bar item does every minute, every second: quits once replaced.
+    _ = launchedFrom
+    print("started from \(launchedFrom)")
+    while true {
+        quitIfReplaced()
+        Thread.sleep(forTimeInterval: 1)
+    }
 } else if let i = args.firstIndex(of: "--replay") {
     // The notifications a sequence of answers would send.
     let d = AppDelegate()
