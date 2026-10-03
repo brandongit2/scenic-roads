@@ -27,6 +27,10 @@ export const MORTON_Z = 16;
 /** Zooms of the speck cells: LOD_Z0 … LOD_Z0 + LOD_LEVELS - 1. */
 export const LOD_Z0 = 9;
 export const LOD_LEVELS = 8;
+/** Specks are drawn once per cell of at most this many device pixels. */
+export const LOD_PX = 2;
+/** The speck cells' zoom at the view centre (dots.ts u_lodZ); none from LOD_Z0 + LOD_LEVELS. */
+export const lodZoom = (zoom: number, dpr: number) => zoom + Math.log2((512 * dpr) / LOD_PX);
 /** Per point, in draw order, the filter flags (visWords): 3 words. */
 export const VIS_WORDS = 3;
 

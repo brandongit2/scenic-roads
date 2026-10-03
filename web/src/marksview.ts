@@ -4,7 +4,7 @@
 // extras, laid out for the dots with their filter flags; the In view statistics and counts from
 // the server. Replaces the whole files the worker indexed before.
 
-import { layoutDots, tileRun, visWords, type DotAux, type DotData } from './dotlayout';
+import { LOD_LEVELS, LOD_Z0, layoutDots, lodZoom, tileRun, visWords, type DotAux, type DotData } from './dotlayout';
 import { CELL_DZ, F_COMPONENT, F_NAMED, cellCentre, decodeMarkTile, extraTile, type MarkTile } from './marktile';
 import { stopFilterPass, type StopFilter } from './stopfilters';
 
@@ -123,8 +123,10 @@ export class MarksView {
   /** The tile zoom shown (6: blocks), per the view's zoom with hysteresis; the far band's. */
   tz = -1;
   private zf = -1;
-  /** The map's zoom, the kinds shown, the near box (the ground in view) and the far one. */
+  /** The map's zoom (and the display's pixel ratio), the kinds shown, the near box (the ground in
+   * view) and the far one. */
   private zoom = 0;
+  private dpr = 1;
   private kinds: string[] = [];
   private box: Box = [-180, -85, 180, 85];
   private far: Box | null = null;
@@ -149,6 +151,7 @@ export class MarksView {
     private base: string,
     private onSet: (s: KindSet, dots: DotData, vis: Uint32Array | null) => void,
     private onRefresh: (kind: string, tiles: [number, number, number][]) => void,
+    private onStale: () => void,
   ) {
     this.z6 = new Set(cfg.tiles);
   }
@@ -163,9 +166,10 @@ export class MarksView {
 
   /** The view changed: the tiles it needs per kind shown are loaded (the sets follow as they
    * come). `box`: the ground in view; `far`: in a tilted view, the visible area beyond it. */
-  view(zoom: number, box: Box, far: Box | null, kinds: string[]) {
+  view(zoom: number, dpr: number, box: Box, far: Box | null, kinds: string[]) {
     if (this.disposed) return;
     this.zoom = zoom;
+    this.dpr = dpr;
     this.kinds = kinds.filter((k) => this.cfg.kinds.includes(k));
     this.box = box;
     this.far = far;
@@ -191,9 +195,16 @@ export class MarksView {
     return tz === BLOCK_Z ? ts.filter(([x, y]) => this.z6.has(`6/${x}/${y}`)) : ts;
   }
 
-  /** A tilted view's far tiles (thinned, at zf): those of the far box. */
+  /** A tilted view's far tiles (thinned, at zf): those of the far box that the near tiles (at tz,
+   * around the view) don't cover. */
   private farTiles(): [number, number][] {
-    return this.far ? tilesIn(this.zf, this.far) : [];
+    if (!this.far) return [];
+    const d = this.tz - this.zf;
+    const near = new Set(tilesIn(this.tz, grow(this.box, 0.5)).map(([x, y]) => `${x}/${y}`));
+    return tilesIn(this.zf, this.far).filter(([x, y]) => {
+      for (let i = 0; i < 1 << d; i++) for (let j = 0; j < 1 << d; j++) if (!near.has(`${(x << d) + i}/${(y << d) + j}`)) return true;
+      return false;
+    });
   }
 
   private url(kind: string, z: number, x: number, y: number) {
@@ -234,6 +245,7 @@ export class MarksView {
       fetch(url)
         .then(async (r) => {
           if (r.status === 204 || r.status === 404) return null;
+          if (r.status === 409) this.onStale();
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           return decodeMarkTile(await r.arrayBuffer());
         })
@@ -241,7 +253,7 @@ export class MarksView {
           (t) => {
             e.t = t;
             e.state = t ? 'ok' : 'none';
-            this.bytes += t?.bytes ?? 0;
+            if (this.entries.get(k) === e) this.bytes += t?.bytes ?? 0;
           },
           () => {
             e.state = 'error';
@@ -266,7 +278,9 @@ export class MarksView {
     if (this.retryTimer || this.disposed) return;
     this.retryTimer = setTimeout(() => {
       this.retryTimer = null;
-      this.view(this.zoom, this.box, this.far, this.kinds);
+      // (Failed speck tiles too: compose leaves them alone, so they don't loop.)
+      for (const [k, e] of [...this.entries]) if (e.state === 'error' && k.split('|').length > 2) this.entries.delete(k);
+      this.view(this.zoom, this.dpr, this.box, this.far, this.kinds);
     }, RETRY_MS);
   }
 
@@ -364,20 +378,27 @@ export class MarksView {
       if (e?.t) far.push({ t: e.t, z: zf, x, y });
     }
     const outside = (lon: number, lat: number) => !nearKeys.has(tileAt(lon, lat, tz));
-    // Filtered specks: the cells of the query asked for, once all of them are in.
-    const q = tz < BLOCK_Z ? this.qFetch.get(kind) ?? '' : '';
+    // The far cells, while the dots draw specks (dots.ts u_lodZ): past it each would draw as a
+    // dot of its own, a grid on the far ground.
+    const farSpecks = far.length > 0 && lodZoom(this.zoom, this.dpr) < LOD_Z0 + LOD_LEVELS;
+    // Filtered specks: the cells of the query asked for (thinned tiles, near or far), once they're
+    // in; a failed one waits for the retry rather than being asked for again here. (A set without
+    // cells doesn't depend on the query.)
+    const q = tz < BLOCK_Z || farSpecks ? this.qFetch.get(kind) ?? '' : '';
+    const empty = { code: new Uint32Array(), count: new Uint32Array(), tier: new Uint8Array() };
     const cellsOf = (tiles: typeof near) =>
       tiles.map(({ t, z, x, y }) => {
         if (z === BLOCK_Z) return null;
         if (!q) return t.cells;
-        const e = this.ensure(kind, z, x, y, q);
-        return e.state === 'ok' && e.t ? e.t.cells : e.state === 'none' ? { code: new Uint32Array(), count: new Uint32Array(), tier: new Uint8Array() } : null;
+        const k = `${key(kind, z, x, y)}|${q}`;
+        const e = this.entries.get(k)?.state === 'error' ? this.entries.get(k)! : this.ensure(kind, z, x, y, q);
+        return e.state === 'ok' && e.t ? e.t.cells : e.state === 'none' ? empty : null;
       });
-    const nearCells = cellsOf(near), farCells = cellsOf(far);
+    const nearCells = cellsOf(near), farCells = farSpecks ? cellsOf(far) : [];
     const xs = tz < BLOCK_Z ? this.extras.get(kind) : undefined;
     // What it's made of, before anything is built: the same as drawn, nothing to do.
     const sig = [tz, zf, near.map(({ x, y }) => `${x}/${y}`).join(','), far.map(({ x, y }) => `${x}/${y}`).join(','), [...(xs?.keys() ?? [])].join(','), q,
-      [...nearCells, ...farCells].map((c) => (c ? 1 : 0)).join('')].join('|');
+      [...nearCells, ...farCells].map((c) => (c ? 1 : 0)).join(''), farSpecks].join('|');
     if (prev && prev.sig === sig) return;
     // Real points: the near tiles', the far tiles' outside them, the extras not in a tile; dots
     // only (World Heritage components show close in, from the name tiles); in rank order.
@@ -420,7 +441,7 @@ export class MarksView {
       });
     };
     if (tz < BLOCK_Z) addCells(near, nearCells, false);
-    addCells(far, farCells, true);
+    if (farSpecks) addCells(far, farCells, true);
     const np = cellPts.length, n = dots.length, N = np + n;
     const lon = new Float64Array(N), lat = new Float64Array(N), fa = new Float32Array(N), ia = new Float32Array(N);
     const cls = new Uint8Array(N), tier = new Uint8Array(N), weight = new Uint32Array(N);
@@ -480,10 +501,8 @@ export class MarksView {
         // Speck requests for the values passed on the way are dropped.
         this.queue = this.queue.filter((r) => !(r.k.startsWith(`${kind}|`) && r.k.split('|').length > 2 && !r.k.endsWith(`|${q}`)));
         for (const [k, e] of [...this.entries]) if (e.state === 'loading' && k.startsWith(`${kind}|`) && k.split('|').length > 2 && !k.endsWith(`|${q}`) && !this.queue.some((r) => r.k === k)) this.entries.delete(k);
-        if (this.tz < BLOCK_Z) {
-          this.dirty.add(kind);
-          this.soon();
-        }
+        this.dirty.add(kind);
+        this.soon();
       }, SPECKS_IDLE_MS));
     }
     const s = this.sets.get(kind);
@@ -497,7 +516,7 @@ export class MarksView {
     const fields = FIELDS[s.kind] ?? [];
     const vis = new Uint8Array(s.np + s.n);
     // (Cells made for other filters than these, until the right ones come: hidden.)
-    const own = s.q === (s.tz < BLOCK_Z ? this.qWant.get(s.kind) ?? '' : '');
+    const own = s.q === (this.qWant.get(s.kind) ?? '');
     for (let j = 0; j < s.np; j++) vis[j] = own && !offT.has(s.tier[j]) ? 1 : 0;
     const p: Record<string, number | undefined> = {};
     for (let r = 0; r < s.n; r++) {

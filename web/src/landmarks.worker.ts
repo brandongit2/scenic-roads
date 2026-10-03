@@ -41,7 +41,7 @@ export type LandmarkRequest =
   | { type: 'marks'; cfg: MarksCfg | null; base: string }
   /** By view: the map's zoom, the ground in view (lon/lat box), in a tilted view the visible area
    * beyond it, and the point sources shown. */
-  | { type: 'view'; zoom: number; box: [number, number, number, number]; far: [number, number, number, number] | null; srcs: string[] }
+  | { type: 'view'; zoom: number; dpr: number; box: [number, number, number, number]; far: [number, number, number, number] | null; srcs: string[] }
   | { type: 'load'; src: string; url: string }
   | { type: 'summits'; url: string }
   | { type: 'query'; id: number; outline: [number, number][]; bounds: [number, number, number, number]; balance: number; kinds: KindQuery[]; top: number;
@@ -155,6 +155,7 @@ self.onmessage = async (ev: MessageEvent<LandmarkRequest>) => {
           m.base,
           (set, dots, vis) => post({ type: 'dots', src: srcOf(set.kind), dots, vis }, [dots.draw, dots.hpos, dots.morton.buffer, dots.chunks.buffer, ...(vis ? [vis.buffer] : [])]),
           (kind, tiles) => post({ type: 'refresh', src: srcOf(kind), tiles }),
+          () => post({ type: 'stale' }),
         )
       : null;
     // By view, the name tiles asked for meanwhile are answered now; else they wait for their
@@ -163,7 +164,7 @@ self.onmessage = async (ev: MessageEvent<LandmarkRequest>) => {
     return;
   }
   if (m.type === 'view') {
-    mv?.view(m.zoom, m.box, m.far, m.srcs.map(kindOf));
+    mv?.view(m.zoom, m.dpr, m.box, m.far, m.srcs.map(kindOf));
     return;
   }
   if (mv && m.type !== 'load' && m.type !== 'summits') return byView(mv, m);

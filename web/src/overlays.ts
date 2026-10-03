@@ -239,7 +239,7 @@ export class Overlays {
       const b = this.map.getBounds();
       far = norm([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
     }
-    this.worker.postMessage({ type: 'view', zoom: this.map.getZoom(), box, far, srcs } satisfies LandmarkRequest);
+    this.worker.postMessage({ type: 'view', zoom: this.map.getZoom(), dpr: window.devicePixelRatio || 1, box, far, srcs } satisfies LandmarkRequest);
   }
 
   /** Layer files with new versions (a new catalog): the sources that have them get them again, the

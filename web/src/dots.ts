@@ -24,7 +24,7 @@
 // height always matches the mesh under it.
 import type { CustomLayerInterface, CustomRenderMethodInput, Map as MLMap } from 'maplibre-gl';
 import { HALO, HERITAGE_GROUPS, HER_R, POI_R, POI_STYLE, landmarkScoreOf, type NameScale } from './basemap';
-import { CHUNK_Z, DRAW_STRIDE, HEIGHT_W, HPOS_STRIDE, LOD_LEVELS, LOD_Z0, VIS_WORDS, tileRun, type DotData } from './dotlayout';
+import { CHUNK_Z, DRAW_STRIDE, HEIGHT_W, HPOS_STRIDE, LOD_LEVELS, LOD_Z0, VIS_WORDS, lodZoom, tileRun, type DotData } from './dotlayout';
 import { link, perspectiveP22 } from './roads/layer';
 
 export type { DotData } from './dotlayout';
@@ -48,8 +48,6 @@ const NONE = -1e6; // ground height not yet known
 const OCCLUDED_ALPHA = 0.3;
 /** Below this zoom a source draws in world units, in runs of chunks; from it, chunk by chunk. */
 const WORLD_MAX_Z = 10;
-/** Specks are drawn once per cell of at most this many device pixels. */
-const LOD_PX = 2;
 const K = 1 << CHUNK_Z;
 
 const hex = (c: string): [number, number, number] => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16) / 255) as [number, number, number];
@@ -720,7 +718,7 @@ export class LandmarkDots implements CustomLayerInterface {
     const mpp = (40075016.686 * Math.cos((c.lat * Math.PI) / 180)) / (512 * 2 ** zoom);
     const world = zoom < WORLD_MAX_Z;
     gl.uniform1i(u.u_world, world ? 1 : 0);
-    gl.uniform1f(u.u_lodZ, zoom + Math.log2((512 * dpr) / LOD_PX));
+    gl.uniform1f(u.u_lodZ, lodZoom(zoom, dpr));
     gl.uniform2f(u.u_viewport, gl.drawingBufferWidth, gl.drawingBufferHeight);
     gl.uniform1f(u.u_dpr, dpr);
     gl.uniform1f(u.u_maxPt, this.maxPt);
