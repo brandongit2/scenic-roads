@@ -392,28 +392,20 @@ pub fn inside(rings: &[&[[i32; 2]]], p: [i32; 2]) -> bool {
     c
 }
 
-/// The outlines, read whole into memory (the build Mac's use; the server reads by part).
+/// The outlines: records and names in memory, rings read from the file as asked, with plain
+/// reads (the NAS's file is never mapped, nor read whole: its points are gigabytes for the
+/// planet), as the server's index reads them.
 pub struct Outlines {
     pub recs: Vec<OutlineRec>,
-    rings: Vec<Ring>,
-    points: Vec<[i32; 2]>,
-    srings: Vec<Ring>,
-    spoints: Vec<[i32; 2]>,
     strings: Vec<String>,
+    file: store::sect::SectReader<store::range::PlainFile>,
 }
 
 impl Outlines {
     pub fn open(path: &Path) -> Result<Outlines> {
-        let r = store::sect::SectReader::open(store::range::MmapFile::open(path)?)?;
+        let r = store::sect::SectReader::open(store::range::PlainFile::open(path)?)?;
         ensure!(r.meta().get("fmt").and_then(|v| v.as_str()) == Some(FORMAT), "{}: not {FORMAT}", path.display());
-        Ok(Outlines {
-            recs: r.read_pod("recs")?,
-            rings: r.read_pod("rings")?,
-            points: r.read_pod("points")?,
-            srings: r.read_pod("srings")?,
-            spoints: r.read_pod("spoints")?,
-            strings: String::from_utf8(r.read("strings")?)?.split('\n').map(str::to_string).collect(),
-        })
+        Ok(Outlines { recs: r.read_pod("recs")?, strings: String::from_utf8(r.read("strings")?)?.split('\n').map(str::to_string).collect(), file: r })
     }
 
     pub fn string(&self, i: u32) -> &str {
@@ -424,39 +416,53 @@ impl Outlines {
         self.recs.binary_search_by_key(&id, |r| r.id).ok().map(|k| &self.recs[k])
     }
 
-    pub fn rings(&self, o: &OutlineRec) -> Vec<&[[i32; 2]]> {
-        self.rings[o.rings as usize..(o.rings + o.nrings) as usize].iter().map(|r| &self.points[r.start as usize..r.start as usize + r.count as usize]).collect()
+    /// Rings `first..first + n` of `rings` with their points from `points`, and their kinds.
+    fn read_rings(&self, rings: &str, points: &str, first: u32, n: u32) -> Result<Vec<(u32, Vec<[i32; 2]>)>> {
+        let rs: Vec<Ring> = bytemuck::pod_collect_to_vec(&self.file.read_part(rings, first as u64 * std::mem::size_of::<Ring>() as u64, n as usize * std::mem::size_of::<Ring>())?);
+        let (Some(a), Some(b)) = (rs.first(), rs.last()) else { return Ok(Vec::new()) };
+        let (start, end) = (a.start as u64, b.start as u64 + b.count as u64);
+        let pts: Vec<[i32; 2]> = bytemuck::pod_collect_to_vec(&self.file.read_part(points, start * 8, ((end - start) * 8) as usize)?);
+        Ok(rs.iter().map(|r| (r.kind, pts[(r.start as u64 - start) as usize..(r.start as u64 - start) as usize + r.count as usize].to_vec())).collect())
+    }
+
+    pub fn rings(&self, o: &OutlineRec) -> Result<Vec<Vec<[i32; 2]>>> {
+        Ok(self.read_rings("rings", "points", o.rings, o.nrings)?.into_iter().map(|r| r.1).collect())
     }
 
     /// The simplified rings grouped as polygons (an outer ring, then its holes).
-    pub fn simple_polygons(&self, o: &OutlineRec) -> Vec<Vec<&[[i32; 2]]>> {
-        let mut out: Vec<Vec<&[[i32; 2]]>> = Vec::new();
-        for r in &self.srings[o.srings as usize..(o.srings + o.nsrings) as usize] {
-            let pts = &self.spoints[r.start as usize..r.start as usize + r.count as usize];
+    pub fn simple_polygons(&self, o: &OutlineRec) -> Result<Vec<Vec<Vec<[i32; 2]>>>> {
+        let mut out: Vec<Vec<Vec<[i32; 2]>>> = Vec::new();
+        for (kind, pts) in self.read_rings("srings", "spoints", o.srings, o.nsrings)? {
             match out.last_mut() {
-                Some(p) if r.kind == 1 => p.push(pts),
+                Some(p) if kind == 1 => p.push(pts),
                 _ => out.push(vec![pts]),
             }
         }
-        out
+        Ok(out)
     }
 
-    pub fn simple_rings(&self, o: &OutlineRec) -> Vec<&[[i32; 2]]> {
-        self.srings[o.srings as usize..(o.srings + o.nsrings) as usize].iter().map(|r| &self.spoints[r.start as usize..r.start as usize + r.count as usize]).collect()
+    pub fn simple_rings(&self, o: &OutlineRec) -> Result<Vec<Vec<[i32; 2]>>> {
+        Ok(self.read_rings("srings", "spoints", o.srings, o.nsrings)?.into_iter().map(|r| r.1).collect())
     }
 
     /// Every outline containing `p`, smallest area first.
-    pub fn containing(&self, p: [i32; 2]) -> Vec<&OutlineRec> {
-        let mut v: Vec<&OutlineRec> = self.recs.iter().filter(|o| p[0] >= o.bbox[0] && p[0] <= o.bbox[2] && p[1] >= o.bbox[1] && p[1] <= o.bbox[3]).filter(|o| inside(&self.rings(o), p)).collect();
+    pub fn containing(&self, p: [i32; 2]) -> Result<Vec<&OutlineRec>> {
+        let mut v = Vec::new();
+        for o in self.recs.iter().filter(|o| p[0] >= o.bbox[0] && p[0] <= o.bbox[2] && p[1] >= o.bbox[1] && p[1] <= o.bbox[3]) {
+            let rings = self.rings(o)?;
+            if inside(&rings.iter().map(Vec::as_slice).collect::<Vec<_>>(), p) {
+                v.push(o);
+            }
+        }
         v.sort_by(|a, b| a.area_km2.total_cmp(&b.area_km2));
-        v
+        Ok(v)
     }
 
     /// The ISO 3166-1 and 3166-2 codes at `p` ("" where none).
-    pub fn iso_at(&self, p: [i32; 2]) -> (String, String) {
-        let c = self.containing(p);
+    pub fn iso_at(&self, p: [i32; 2]) -> Result<(String, String)> {
+        let c = self.containing(p)?;
         let pick = |f: u8| c.iter().find(|o| o.flags & f != 0).map(|o| self.string(o.iso).to_string()).unwrap_or_default();
-        (pick(flag::ISO1), pick(flag::ISO2))
+        Ok((pick(flag::ISO1), pick(flag::ISO2)))
     }
 }
 
@@ -488,12 +494,12 @@ mod tests {
         assert_eq!(s.outlines, 2);
         let o = Outlines::open(&out).unwrap();
         let e7 = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
-        assert_eq!(o.containing(e7(0.2, 0.2)).iter().map(|r| r.id).collect::<Vec<_>>(), vec![7, 3]);
+        assert_eq!(o.containing(e7(0.2, 0.2)).unwrap().iter().map(|r| r.id).collect::<Vec<_>>(), vec![7, 3]);
         // In the hole: only the country.
-        assert_eq!(o.containing(e7(0.5, 0.5)).iter().map(|r| r.id).collect::<Vec<_>>(), vec![3]);
-        assert_eq!(o.iso_at(e7(0.2, 0.2)), ("XX".to_string(), "XX-SQ".to_string()));
+        assert_eq!(o.containing(e7(0.5, 0.5)).unwrap().iter().map(|r| r.id).collect::<Vec<_>>(), vec![3]);
+        assert_eq!(o.iso_at(e7(0.2, 0.2)).unwrap(), ("XX".to_string(), "XX-SQ".to_string()));
         assert_eq!(o.string(o.by_id(7).unwrap().name_en), "Square");
-        assert_eq!(o.simple_polygons(o.by_id(7).unwrap()).iter().map(Vec::len).collect::<Vec<_>>(), vec![2], "the hole nests in its polygon");
+        assert_eq!(o.simple_polygons(o.by_id(7).unwrap()).unwrap().iter().map(Vec::len).collect::<Vec<_>>(), vec![2], "the hole nests in its polygon");
         assert_eq!(o.string(o.by_id(7).unwrap().country), "XX", "inside the country");
         assert_eq!(o.string(o.by_id(3).unwrap().country), "", "a country has none");
         let a = o.by_id(7).unwrap().area_km2;

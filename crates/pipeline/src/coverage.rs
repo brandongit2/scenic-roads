@@ -240,7 +240,7 @@ impl Coverage {
                     Outline::Osm(id) => {
                         let o = outlines.context("no outlines yet (the OSM pass makes them)")?;
                         let rec = o.by_id(id).with_context(|| format!("{source}: relation {id} isn't an administrative or ISO 3166 outline of this pass"))?;
-                        Shape::new(source, o.rings(rec).into_iter().map(<[_]>::to_vec).collect(), OSM_BUFFER_M)
+                        Shape::new(source, o.rings(rec)?, OSM_BUFFER_M)
                     }
                     Outline::Geofabrik(id) => {
                         let p = outline_dir.join("geofabrik").join(format!("{}.poly", id.replace('/', "-")));

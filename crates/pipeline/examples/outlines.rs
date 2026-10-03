@@ -13,9 +13,9 @@ fn main() -> anyhow::Result<()> {
     for p in &a[3..] {
         let v: Vec<f64> = p.split(',').map(|x| x.parse().unwrap()).collect();
         let q = [(v[0] * 1e7) as i32, (v[1] * 1e7) as i32];
-        let c = o.containing(q);
+        let c = o.containing(q)?;
         println!("{p}: {}", c.iter().map(|r| format!("{} {} (level {}, {}, {:.0} km²)", r.id, o.string(r.name), r.level, o.string(r.iso), r.area_km2)).collect::<Vec<_>>().join(" ⊂ "));
-        println!("  ISO {:?}", o.iso_at(q));
+        println!("  ISO {:?}", o.iso_at(q)?);
     }
     Ok(())
 }
