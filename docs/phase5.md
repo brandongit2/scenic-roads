@@ -343,7 +343,11 @@ key couldn't name what was read; and extract's point order changed between runs.
   (made again from z9 near roads), so before trusting the coarse values: raw z8 against today's z8
   over today's coverage, per pixel and at the cols and nearest higher ground of today's
   coarse-stage peaks. If they drift too far, the coverage-free fallback is z8 as the 2×2 means of
-  processed raw z9 everywhere (today's rule, worldwide: 262,144 tiles to fetch).
+  processed raw z9 everywhere (today's rule, worldwide: 262,144 tiles to fetch). Measured
+  2026-10-03 on 864 mountainous z8 tiles of today's packs (max ≥ 1,000 m; 51.7 M land pixels):
+  today − raw per pixel, mean −0.1 m, |diff| median 0.0, p95 6.2, p99 34.5 m (max 1,514 m, a
+  repair); each tile's maximum, today − raw: p5 −15.8, median and p95 0.0, extremes −103 and
+  +200 m (a summit today's z9 means kept). Raw z8 it is.
 - **`summits`** (per pass): the `summits` set (natural=peak or volcano, nodes and ways), sorted
   by OSM id. A summit has one identity: the same position and `ele` read as a candidate or as a
   neighbour (a node's position; a way's centre as extract makes it, the integer mean of its
@@ -360,7 +364,11 @@ key couldn't name what was read; and extract's point order changed between runs.
     as stored), never its floats; a tile not cached is fetched, and a failed fetch fails the job.
     z12 has no children, so the two are the same bytes for packs the terrain job made from raw.
     Today's packs came from the legacy terrain step, which repaired stored tiles again (not
-    idempotent): checked on a sample, else the terrain job makes today's coverage again first.
+    idempotent). Measured 2026-10-03 on 2,406 land z12 tiles of today's hi packs: 2,390
+    byte-identical to the raw tile processed alike; the other 16 differ by under half a metre
+    along coasts (bathymetry clamping) or in one to three single pixels by 126–303 m (spikes and
+    pits one repair kept), which the peaks' own despike clamps either way; every tile's maximum
+    equal. So no terrain rebuild first.
   - Summits near a peak: each summit within 28 km + 2 × (150 m + 2 pixels) gets its summit pixel
     (highest within 150 m), its height (max(ele, DEM) when `ele` is within −30/+200 m of the DEM's,
     else the DEM's) and its claim (several on one pixel: the highest tagged, then the nearest to
