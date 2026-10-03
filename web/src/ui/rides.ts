@@ -6,9 +6,10 @@ import { displayName } from '../names';
 import { RAIL_COMPONENTS } from '../rail';
 import * as prefs from '../prefs';
 import { cap, fmt, h } from './dom';
+import { APPROX_TIP } from './drives';
 
 const LENGTHS = [2, 5, 10, 25];
-type Query = { bbox: string; poly: string; weights: number[]; groups: number };
+type Query = { bbox: string; poly: string; weights: number[]; groups: number; approx: boolean };
 
 const swatch = (colour: number) => {
   const i = h('i', { class: 'dot' });
@@ -25,7 +26,7 @@ abstract class RailPane<T> {
   private abort: AbortController | null = null;
   private timer = 0;
   protected lastKey = '';
-  query: () => Query = () => ({ bbox: '', poly: '', weights: [], groups: 31 });
+  query: () => Query = () => ({ bbox: '', poly: '', weights: [], groups: 31, approx: false });
   onHover: (x: T | null) => void = () => {};
   onSelect: (x: T) => void = () => {};
   /** The row under the pointer (M, O open it). */
@@ -45,7 +46,7 @@ abstract class RailPane<T> {
   private async load() {
     const q = this.query();
     const w = q.weights.map((v) => v.toFixed(2)).join(',');
-    const key = `${q.poly || q.bbox}|${q.groups}|${w}|${this.extraKey()}`;
+    const key = `${q.poly || q.bbox}|${q.groups}|${w}|${this.extraKey()}|${q.approx}`;
     if (key === this.lastKey) return;
     this.lastKey = key;
     this.abort?.abort();
@@ -109,9 +110,10 @@ export class RidesPane extends RailPane<Ride> {
   }
 
   protected async fetch(q: Query, w: string, signal: AbortSignal) {
-    const d = await getRides({ bbox: q.bbox, poly: q.poly, w, len: String(this.len), limit: '30', groups: String(q.groups) }, signal);
+    const d = await getRides({ bbox: q.bbox, poly: q.poly, w, len: String(this.len), limit: '30', groups: String(q.groups), ...(q.approx ? { approx: '1' } : {}) }, signal);
     this.hovered = null;
-    this.count.textContent = d.total ? `${fmt.n(d.total)} lines of ${this.len} km or more in view · top ${d.rides.length}` : `No lines of ${this.len} km or more in view`;
+    this.count.textContent = d.total ? `${d.approx ? '≈ ' : ''}${fmt.n(d.total)} lines of ${this.len} km or more in view · top ${d.rides.length}` : `No lines of ${this.len} km or more in view`;
+    this.count.title = d.approx ? APPROX_TIP : '';
     this.list.replaceChildren(...d.rides.map((r, i) => {
       const top = r.parts
         .map((v, k) => [v, k] as [number, number])
@@ -159,9 +161,10 @@ export class LinesPane extends RailPane<RailLine> {
   }
 
   protected async fetch(q: Query, w: string, signal: AbortSignal) {
-    const d = await getRailLines({ bbox: q.bbox, poly: q.poly, w, limit: '40', groups: String(q.groups), sort: this.sort }, signal);
+    const d = await getRailLines({ bbox: q.bbox, poly: q.poly, w, limit: '40', groups: String(q.groups), sort: this.sort, ...(q.approx ? { approx: '1' } : {}) }, signal);
     this.hovered = null;
-    this.count.textContent = d.total ? `${fmt.n(d.total)} lines in view · top ${d.lines.length}` : 'No passenger lines in view';
+    this.count.textContent = d.total ? `${d.approx ? '≈ ' : ''}${fmt.n(d.total)} lines in view · top ${d.lines.length}` : 'No passenger lines in view';
+    this.count.title = d.approx ? APPROX_TIP : '';
     this.list.replaceChildren(...d.lines.map((l, i) => {
       const title = h('span', { class: 'ct' }, swatch(l.colour), cap(displayName(l.main, l.name, l.sub)));
       const svc = l.services.split(' · ').map((x) => x.split(':')[0].trim()).filter((x, k, a) => x && x !== l.name && a.indexOf(x) === k).slice(0, 3).join(', ');

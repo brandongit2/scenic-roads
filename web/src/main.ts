@@ -826,6 +826,19 @@ async function main() {
     return outline;
   };
   const polyQuery = () => groundOutline().map((ll) => `${ll.lng.toFixed(4)},${ll.lat.toFixed(4)}`).join(',');
+  // Zoomed-out lists (docs/phase5.md "Zoomed-out queries"): from the server's summaries when the
+  // outline's box is wider than 1,200 km, exact again below 900 km (between, as it was: panning or a
+  // resize doesn't flip it), one mode for drives, rides and rail lines.
+  let approxLists: boolean | null = null;
+  const approxQuery = (): boolean => {
+    const o = groundOutline();
+    if (o.length < 3) return approxLists ?? false;
+    let [w, s, e, n] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const p of o) [w, s, e, n] = [Math.min(w, p.lng), Math.min(s, p.lat), Math.max(e, p.lng), Math.max(n, p.lat)];
+    const km = Math.max((e - w) * 111.32 * Math.cos((((s + n) / 2) * Math.PI) / 180), (n - s) * 111.32);
+    approxLists = approxLists === null ? km > 1050 : approxLists ? km > 900 : km > 1200;
+    return approxLists;
+  };
   // Landmarks and ferries "in view" use the same outline (the bounding box of a globe or tilted
   // view takes in far more: Toronto from northern British Columbia).
   overlays.viewOutline = () => groundOutline().map((ll) => [ll.lng, ll.lat] as [number, number]);
@@ -872,15 +885,17 @@ async function main() {
     return b;
   };
   /** A drive or ride picked from a list: its road or line selected (by its first way and the point
-   * the list gives on it) and the stretch marked, the map staying where it is. */
-  const pickStretch = (sel: Selection, st: Stretch, geom: [number, number][]) => {
+   * the list gives on it) and the stretch marked, the map staying where it is. A zoomed-out list's
+   * geometry (its summaries' samples, 500 m apart) isn't kept: the stretch is cut from the road's
+   * profile once loaded, as a link's is. */
+  const pickStretch = (sel: Selection, st: Stretch, geom: [number, number][] | null) => {
     store.set({ selected: sel, stretch: st });
     pinned = geom;
     drawStretch();
   };
 
   // Scenic drives.
-  drives.query = () => ({ bbox: bboxQuery(), poly: polyQuery(), classes: classMask(store.s), surface: surfaceMask(store.s), toll: tollMask(store.s), unnamed: unnamedHideClasses(store.s), len: roadLenKm(store.s), weights: store.s.weights });
+  drives.query = () => ({ bbox: bboxQuery(), poly: polyQuery(), classes: classMask(store.s), surface: surfaceMask(store.s), toll: tollMask(store.s), unnamed: unnamedHideClasses(store.s), len: roadLenKm(store.s), weights: store.s.weights, approx: approxQuery() });
   drives.onResults = (ds) =>
     map.getSource<GeoJSONSource>('drives')?.setData({
       type: 'FeatureCollection',
@@ -890,10 +905,10 @@ async function main() {
     listHover(d ? { layer: roads, at: midpoint(d.geom), way: d.way, geom: [d.geom] } : null);
     return d ? setDriveHl(d.geom) : drawStretch();
   };
-  drives.onSelect = (d) => pickStretch({ way: d.way, at: d.at }, driveStretch(d), d.geom);
+  drives.onSelect = (d) => pickStretch({ way: d.way, at: d.at }, driveStretch(d), d.approx ? null : d.geom);
 
   // Scenic rides and rail lines: the rail weights and service groups shown.
-  const railQuery = () => ({ bbox: bboxQuery(), poly: polyQuery(), weights: store.s.rail.weights, groups: railMask(store.s) });
+  const railQuery = () => ({ bbox: bboxQuery(), poly: polyQuery(), weights: store.s.rail.weights, groups: railMask(store.s), approx: approxQuery() });
   rides.query = railQuery;
   lines.query = railQuery;
   const rideStretch = (r: Ride): Stretch => ({
@@ -904,7 +919,7 @@ async function main() {
     listHover(r ? { layer: rails, at: midpoint(r.geom), geom: [r.geom] } : null);
     return r ? setDriveHl(r.geom) : drawStretch();
   };
-  rides.onSelect = (r) => pickStretch({ way: r.way, at: r.at }, rideStretch(r), r.geom);
+  rides.onSelect = (r) => pickStretch({ way: r.way, at: r.at }, rideStretch(r), r.approx ? null : r.geom);
   lines.onHover = (l) => {
     listHover(l ? { layer: rails, at: midpoint(l.geom.reduce((a, b) => (lineLen(b) > lineLen(a) ? b : a))), geom: l.geom } : null);
     map.getSource<GeoJSONSource>('drive-hl')?.setData(l ? { type: 'Feature', properties: {}, geometry: { type: 'MultiLineString', coordinates: l.geom } } : line(null));

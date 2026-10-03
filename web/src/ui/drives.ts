@@ -7,6 +7,8 @@ import { cap, fmt, h } from './dom';
 import { displayName } from '../names';
 
 const LENGTHS = [2, 5, 10, 25];
+/** What "≈" by a list's count means. */
+export const APPROX_TIP = 'Zoomed out: found in 500 m summaries of the roads (scores within a point or two of the exact ones); zoom in for exact lists.';
 
 export class DrivesPane {
   private len = 5;
@@ -25,8 +27,9 @@ export class DrivesPane {
   /** Listed stretches drawn on the map all the time (else only the hovered one). */
   showOnMap = prefs.load('drives.showOnMap', false);
   onShowChange: (on: boolean) => void = () => {};
-  /** `len`: whole-road length filter [min, max], km (0 = no limit). */
-  query: () => { bbox: string; poly: string; classes: number; surface: number; toll: number; unnamed: number; len: [number, number]; weights: number[] } = () => ({ bbox: '', poly: '', classes: 0, surface: 3, toll: 3, unnamed: 0, len: [0, 0], weights: [] });
+  /** `len`: whole-road length filter [min, max], km (0 = no limit); `approx`: zoomed out (the
+   * server's summaries). */
+  query: () => { bbox: string; poly: string; classes: number; surface: number; toll: number; unnamed: number; len: [number, number]; weights: number[]; approx: boolean } = () => ({ bbox: '', poly: '', classes: 0, surface: 3, toll: 3, unnamed: 0, len: [0, 0], weights: [], approx: false });
 
   constructor(readonly root: HTMLElement) {
     this.list = h('div', { class: 'climbs' });
@@ -74,14 +77,14 @@ export class DrivesPane {
   private async load() {
     const q = this.query();
     const w = q.weights.map((v) => v.toFixed(2)).join(',');
-    const key = `${q.poly || q.bbox}|${q.classes}|${q.surface}|${q.toll}|${q.unnamed}|${q.len}|${w}|${this.len}`;
+    const key = `${q.poly || q.bbox}|${q.classes}|${q.surface}|${q.toll}|${q.unnamed}|${q.len}|${w}|${this.len}|${q.approx}`;
     if (key === this.lastKey) return;
     this.lastKey = key;
     this.abort?.abort();
     this.abort = new AbortController();
     this.spin.hidden = false;
     try {
-      const d = await getDrives({ bbox: q.bbox, poly: q.poly, w, len: String(this.len), limit: '30', classes: String(q.classes), surface: String(q.surface), toll: String(q.toll), unnamed: String(q.unnamed), lmin: String(q.len[0] * 1000), lmax: String(q.len[1] * 1000) }, this.abort.signal);
+      const d = await getDrives({ bbox: q.bbox, poly: q.poly, w, len: String(this.len), limit: '30', classes: String(q.classes), surface: String(q.surface), toll: String(q.toll), unnamed: String(q.unnamed), lmin: String(q.len[0] * 1000), lmax: String(q.len[1] * 1000), ...(q.approx ? { approx: '1' } : {}) }, this.abort.signal);
       this.render(d);
       this.onResults(d.drives);
     } catch (e) {
@@ -94,9 +97,10 @@ export class DrivesPane {
     }
   }
 
-  private render(d: { total: number; drives: Drive[] }) {
+  private render(d: { total: number; drives: Drive[]; approx?: boolean }) {
     this.hovered = null;
-    this.count.textContent = d.total ? `${fmt.n(d.total)} roads of ${this.len} km or more in view · top ${d.drives.length}` : `No roads of ${this.len} km or more in view`;
+    this.count.textContent = d.total ? `${d.approx ? '≈ ' : ''}${fmt.n(d.total)} roads of ${this.len} km or more in view · top ${d.drives.length}` : `No roads of ${this.len} km or more in view`;
+    this.count.title = d.approx ? APPROX_TIP : '';
     this.list.replaceChildren(
       ...d.drives.map((c, i) => {
         const title = h('span', { class: 'ct' });

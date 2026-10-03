@@ -226,13 +226,21 @@ export interface Drive {
   /** Mean score components over the stretch (scenic.ts COMPONENTS order). */
   parts: number[];
   geom: [number, number][];
+  /** From the zoomed-out summaries: its geometry is their samples' (approx answers). */
+  approx?: boolean;
 }
 
-export async function getDrives(q: Record<string, string>, signal?: AbortSignal): Promise<{ total: number; drives: Drive[] }> {
+/** Marks an answer's items with its `approx` (from the zoomed-out summaries). */
+function marked<T extends { approx?: boolean }, R extends { approx?: boolean }>(r: R, items: (r: R) => T[]): R {
+  if (r.approx) for (const x of items(r)) x.approx = true;
+  return r;
+}
+
+export async function getDrives(q: Record<string, string>, signal?: AbortSignal): Promise<{ total: number; drives: Drive[]; approx?: boolean }> {
   return tasks.track('drives', 'Drives', (async () => {
     const r = await fetch(`/api/drives?${new URLSearchParams(q)}`, { signal });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return r.json();
+    return marked(await r.json(), (x: { drives: Drive[] }) => x.drives);
   })(), 'finding the scenic drives in view');
 }
 
@@ -255,6 +263,7 @@ export interface Ride {
   trains: number;
   parts: number[];
   geom: [number, number][];
+  approx?: boolean;
 }
 
 /** A passenger line in view (server /api/raillines). */
@@ -276,15 +285,15 @@ export interface RailLine {
   geom: [number, number][][];
 }
 
-export async function getRides(q: Record<string, string>, signal?: AbortSignal): Promise<{ total: number; rides: Ride[] }> {
+export async function getRides(q: Record<string, string>, signal?: AbortSignal): Promise<{ total: number; rides: Ride[]; approx?: boolean }> {
   return tasks.track('rides', 'Rides', (async () => {
     const r = await fetch(`/api/rides?${new URLSearchParams(q)}`, { signal });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return r.json();
+    return marked(await r.json(), (x: { rides: Ride[] }) => x.rides);
   })(), 'finding the scenic rides in view');
 }
 
-export async function getRailLines(q: Record<string, string>, signal?: AbortSignal): Promise<{ total: number; lines: RailLine[] }> {
+export async function getRailLines(q: Record<string, string>, signal?: AbortSignal): Promise<{ total: number; lines: RailLine[]; approx?: boolean }> {
   return tasks.track('raillines', 'Rail lines', (async () => {
     const r = await fetch(`/api/raillines?${new URLSearchParams(q)}`, { signal });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
