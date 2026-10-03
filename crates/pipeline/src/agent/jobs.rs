@@ -33,6 +33,9 @@ pub struct JobSpec {
     /// Restart from scratch after the Mac slept (a stage that touched the NAS may hold dead SMB
     /// handles). Jobs resume from their completion markers, so this only repeats the current stage.
     pub restart_after_sleep: bool,
+    /// A build step's targets and keys, recorded in state/build/jobs.json when it succeeds.
+    #[serde(default)]
+    pub record: Option<super::build::Work>,
 }
 
 /// Seconds since the epoch.
@@ -216,7 +219,7 @@ mod tests {
     use super::*;
 
     fn spec(cmd: &[&str]) -> JobSpec {
-        JobSpec { id: "t".into(), what: "test".into(), cmd: cmd.iter().map(|s| s.to_string()).collect(), needs: Needs::default(), restart_after_sleep: false }
+        JobSpec { id: "t".into(), what: "test".into(), cmd: cmd.iter().map(|s| s.to_string()).collect(), needs: Needs::default(), restart_after_sleep: false, record: None }
     }
 
     #[test]

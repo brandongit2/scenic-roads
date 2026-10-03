@@ -15,6 +15,7 @@
 //! stopping it at any time loses at most its current stage.
 
 pub mod backup;
+pub mod build;
 pub mod cond;
 pub mod gc;
 pub mod jobs;
@@ -278,6 +279,15 @@ impl Agent {
             if let Some(st) = r.poll()? {
                 let secs = r.elapsed().as_secs();
                 let ok = st.success();
+                if ok {
+                    if let (Some(w), Some(root)) = (r.spec.record.clone(), root.as_ref()) {
+                        let mut k = build::Keys::load(root);
+                        k.record(&w.step, &w.targets);
+                        if let Err(e) = k.save(root) {
+                            eprintln!("agent: recording {}: {e:#}", r.spec.id);
+                        }
+                    }
+                }
                 let note = if ok { String::new() } else { format!("{st}\n{}", jobs::tail(&r.log, 20)) };
                 let (id, what) = (r.spec.id.clone(), r.spec.what.clone());
                 eprintln!("agent: {id} {} after {secs} s", if ok { "finished" } else { "failed" });
@@ -444,12 +454,13 @@ impl Agent {
                     ],
                     needs: Needs { ac: true, nas: true },
                     restart_after_sleep: true,
+                    record: None,
                 });
             }
         }
 
-        // Later phases: global-source layers for new coverage, then per wave base(U) and pack(T)
-        // and a catalog, then rankings.
+        // The regions: terrain and slope near the coverage, base(U), pack(T), lo, a catalog.
+        out.extend(self.region_work(root, have.as_deref(), waiting));
 
         // Daily: the user's folders backed up, replaced files removed.
         if self.due("backup", Duration::from_secs(86400)) {
@@ -459,6 +470,7 @@ impl Agent {
                 cmd: vec![s(&me), "backup".into(), "--root".into(), s(root), "--local".into(), s(&self.o.home.join("backups"))],
                 needs: Needs { ac: false, nas: true },
                 restart_after_sleep: true,
+                record: None,
             });
         }
         if self.due("gc", Duration::from_secs(86400)) {
@@ -468,9 +480,71 @@ impl Agent {
                 cmd: vec![s(&me), "gc".into(), "--root".into(), s(root)],
                 needs: Needs { ac: false, nas: true },
                 restart_after_sleep: true,
+                record: None,
             });
         }
         out
+    }
+
+    /// The next build step for the regions, as a job (docs/plan.md §8): what `build::plan` finds
+    /// stale, its targets in one run of `scenic-build`.
+    fn region_work(&self, root: &Path, pass: Option<&str>, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+        let (recipes, _) = recipes::load(&root.join("inputs/regions"));
+        if recipes.is_empty() {
+            return Vec::new();
+        }
+        let Some(date) = pass else {
+            waiting.push(Waiting { what: "Building the regions".into(), why: "the first OpenStreetMap pass (it makes the outlines regions are drawn from)".into() });
+            return Vec::new();
+        };
+        let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).and_then(|c| crate::outlines::Outlines::open(&root.join(c)).ok());
+        let cov = match crate::coverage::Coverage::from_recipes(&recipes, outlines.as_ref(), &root.join("inputs/outlines")) {
+            Ok(c) => c,
+            Err(e) => {
+                waiting.push(Waiting { what: "Building the regions".into(), why: format!("{e:#}") });
+                return Vec::new();
+            }
+        };
+        let done = build::Keys::load(root);
+        let Some(w) = build::plan(&cov, date, &manifest, &done).into_iter().next() else { return Vec::new() };
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let cache = self.o.home.join("cache");
+        let scratch = self.o.home.join("scratch").join(&w.step);
+        let mut cmd = vec![s(&self.o.bin.join("scenic-build")), w.step.clone(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
+        cmd.extend(w.targets.iter().map(|t| t.0.clone()).filter(|t| t != "catalog"));
+        match w.step.as_str() {
+            "terrain" => cmd.extend(["--raw".into(), s(&cache.join("aws-terrarium"))]),
+            "unit" => cmd.extend([
+                "--pass".into(),
+                date.to_string(),
+                "--dem".into(),
+                s(&self.o.bin.join("dem")),
+                "--cache-dir".into(),
+                s(&cache),
+                "--buildings".into(),
+                s(&root.join("sources/legacy/m1/buildings")),
+            ]),
+            "pack" | "lo" => cmd.extend(["--cache".into(), s(&cache.join("base"))]),
+            _ => {}
+        }
+        let n = w.targets.len();
+        let what = match w.step.as_str() {
+            "terrain" => format!("Terrain for the regions ({n} area{})", if n == 1 { "" } else { "s" }),
+            "slope" => format!("Slope for the regions ({n} area{})", if n == 1 { "" } else { "s" }),
+            "unit" => format!("Roads, elevations and scenery ({n} area{})", if n == 1 { "" } else { "s" }),
+            "pack" => format!("Map tiles ({n} area{})", if n == 1 { "" } else { "s" }),
+            "lo" => "Zoomed-out map tiles".to_string(),
+            _ => "Publishing the new map data".to_string(),
+        };
+        vec![JobSpec {
+            id: format!("{} {}", w.step, w.targets.first().map(|t| t.0.as_str()).unwrap_or("")),
+            what,
+            cmd,
+            needs: Needs { ac: w.step != "catalog", nas: true },
+            restart_after_sleep: true,
+            record: Some(w),
+        }]
     }
 
     /// A newer app is installed locally (`../current` points elsewhere than the agent's folder).

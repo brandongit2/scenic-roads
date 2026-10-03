@@ -41,8 +41,12 @@ kill $pid; wait $pid 2>/dev/null || true
 version=$(date -u +%Y%m%d-%H%M)-$(git rev-parse --short HEAD)$( [[ -n $(git status --porcelain -- crates web/src) ]] && echo -dirty )
 dest=$NAS/app/$version
 mkdir -p $dest.tmp/web $dest.tmp/fonts
-# The server, and the build agent with the programs its jobs run (the build Mac runs them from here).
-cp target/release/server target/release/scenic target/release/scenic-build target/release/extract $dest.tmp/
+# The server, and the build agent with the programs its jobs run (the build Mac runs them from here):
+# the pipeline's binaries, and the Python steps (dem/, run with uv) with their lock file.
+cp target/release/server target/release/scenic target/release/scenic-build target/release/extract \
+   target/release/tile target/release/scenic-metrics $dest.tmp/
+mkdir -p $dest.tmp/dem
+git ls-files dem | while read f; do cp "$f" "$dest.tmp/$f"; done
 rsync -a web/dist/ $dest.tmp/web/
 rsync -a $fonts/ $dest.tmp/fonts/
 mv $dest.tmp $dest
