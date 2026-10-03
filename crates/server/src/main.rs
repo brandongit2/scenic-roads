@@ -455,8 +455,9 @@ fn version_token(query: Option<&str>) -> Option<String> {
 /// version during a catalog or translations switch may hold the new data, and mustn't be pinned
 /// to the old URL for a year.
 async fn versioned_caching(State(s): State<S>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
-    // (An open page's polls of the catalog aren't use: a tab left open would hold an update off.)
-    if !matches!(req.uri().path(), "/api/catalog" | "/api/ping") {
+    // (An open page's polls of the catalog aren't use: a tab left open would hold an update off;
+    // nor the menu bar item's of the build's status, every five seconds.)
+    if !matches!(req.uri().path(), "/api/catalog" | "/api/ping" | "/api/build") {
         updater::touch();
     }
     let v = version_token(req.uri().query());
