@@ -31,8 +31,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 
-/// Free space the OSM pass needs on the build Mac (the planet, the filtered file and the pieces).
-pub const PASS_SPACE: u64 = 150 << 30;
+/// Free space the OSM pass needs on the build Mac (the filtered file, Planetiler's work and the
+/// pieces; the planet is read from the NAS when there's no room to copy it).
+pub const PASS_SPACE: u64 = crate::osmpass::LOCAL_HEADROOM;
 
 /// Where things are.
 #[derive(Clone, Debug)]

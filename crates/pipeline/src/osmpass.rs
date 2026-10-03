@@ -43,6 +43,10 @@ pub const FILTER_BASEMAP: &[&str] = &[
     "nwr/leisure=nature_reserve,park", "nwr/boundary=administrative,national_park,protected_area,disputed", "nwr/place",
 ];
 
+/// Room the rest of the pass needs on the build Mac besides a local copy of the planet (the
+/// filtered file, Planetiler's work, the pieces).
+pub const LOCAL_HEADROOM: u64 = 100 << 30;
+
 /// Piece buffer around a unit, km.
 pub const BUFFER_KM: f64 = 10.0;
 
@@ -243,13 +247,19 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
     std::fs::create_dir_all(scratch)?;
     let local_planet = scratch.join("planet.osm.pbf");
     let filtered = scratch.join("filtered.osm.pbf");
-    if !done(scratch, "copy").exists() && !done(scratch, "filter").exists() {
+    // The planet is read once (by the filter): copied first when there's room for it (resumable),
+    // else read from the NAS as it streams (an interruption then repeats the filter).
+    let planet_len = std::fs::metadata(planet).map(|m| m.len()).unwrap_or(u64::MAX);
+    let room = crate::agent::cond::free_bytes(scratch).unwrap_or(0);
+    let copy_first = done(scratch, "copy").exists() || room > planet_len.saturating_add(LOCAL_HEADROOM);
+    if copy_first && !done(scratch, "copy").exists() && !done(scratch, "filter").exists() {
         copy_resume(planet, &local_planet)?;
         mark(scratch, "copy")?;
     }
     if !done(scratch, "filter").exists() {
+        let src = if copy_first { local_planet.clone() } else { planet.to_path_buf() };
         let mut c = osmium();
-        c.args(["tags-filter", "--overwrite", "-o"]).arg(&filtered).arg(&local_planet).args(FILTER_A);
+        c.args(["tags-filter", "--overwrite", "-o"]).arg(&filtered).arg(&src).args(FILTER_A);
         run(c, "osmium tags-filter (the pipeline's tags)")?;
         out.put_file(&format!("sources/osm/{date}/filtered"), "osm.pbf", &copy_keep(&filtered, scratch)?)?;
         out.save()?;
