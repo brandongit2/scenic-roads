@@ -101,9 +101,16 @@ pub fn copy_room(planet_len: u64) -> u64 {
     planet_len + planet_len / 4 * 3 + (10 << 30)
 }
 
-/// Room the basemap's work needs (its input, Planetiler's temporary files, the archive); short of
-/// it, the local filtered file goes and the basemap's filter reads the NAS's copy.
+/// Room the basemap's filter needs (its output, ~16 GB for the planet); short of it, the local
+/// filtered file goes and the filter reads the NAS's copy.
 const BASEMAP_ROOM: u64 = 50 << 30;
+
+/// Room Planetiler needs for the basemap, from its input: it asked for 81 GB (54 GB of feature
+/// storage) for the planet's 16.3 GB input, so six times the input. On 2026-10-03 it had 84 GB
+/// beside the 60 GB local filtered file and ran out three times, hours in.
+pub fn planetiler_room(input_len: u64) -> u64 {
+    input_len * 6
+}
 
 /// Piece buffer around a unit, km.
 pub const BUFFER_KM: f64 = 10.0;
@@ -455,6 +462,15 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
             run(c, "osmium tags-filter (basemap)")?;
             mark(scratch, "basemap-input")?;
         }
+        // Planetiler's room: the local filtered file goes first (the cut reads the NAS's copy then).
+        let need = planetiler_room(std::fs::metadata(&b)?.len());
+        if free(scratch) < need && filtered.exists() {
+            eprintln!("basemap: {} GB free, Planetiler needs ~{} GB; the cut will read the filtered planet from the NAS", free(scratch) >> 30, need >> 30);
+            std::fs::remove_file(&filtered)?;
+        }
+        // (A run that failed may have left its temporary files.)
+        std::fs::remove_dir_all(scratch.join("planetiler-tmp")).ok();
+        ensure!(free(scratch) >= need, "basemap: Planetiler needs ~{} GB free on this Mac, {} GB are", need >> 30, free(scratch) >> 30);
         let pm = scratch.join("basemap.pmtiles");
         let downloads = out.root().join("sources/basemap");
         std::fs::create_dir_all(&downloads)?;
