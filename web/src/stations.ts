@@ -32,6 +32,15 @@ export class Stations {
   private railMask = 0;
   /** Stops coloured for the colouring of the moment (feature id → colour; null: their group's). */
   private coloured = new Map<number, string | null>();
+  /** At start-up, the stops' tiles wait for the roads in view (as the overlays: release()). */
+  private held = true;
+  private state: AppState | null = null;
+
+  release() {
+    if (!this.held) return;
+    this.held = false;
+    if (this.state) this.apply(this.state);
+  }
 
   constructor(private map: MLMap) {
     // New stops (a new catalog): fetched again if they were, and coloured anew (their feature ids
@@ -54,14 +63,16 @@ export class Stations {
   apply(s: AppState) {
     const map = this.map;
     const r = s.rail;
+    this.state = s;
     if (!map.getLayer(DOTS)) return;
     if (r.on && !this.requested) {
       this.requested = true;
       if (!stationTilesOn()) map.getSource<GeoJSONSource>('stations')?.setData(stopsUrl());
     }
     this.railMask = r.groups.reduce((m, on, i) => (on ? m | (1 << i) : m), 0);
-    map.setLayoutProperty(DOTS, 'visibility', r.on ? 'visible' : 'none');
-    map.setLayoutProperty(LABELS, 'visibility', r.on && labelShown(s, 'stations') ? 'visible' : 'none');
+    const on = r.on && !(this.held && stationTilesOn());
+    map.setLayoutProperty(DOTS, 'visibility', on ? 'visible' : 'none');
+    map.setLayoutProperty(LABELS, 'visibility', on && labelShown(s, 'stations') ? 'visible' : 'none');
     // Any of the groups calling there shown (m: a bit per group).
     const groups: ExpressionSpecification = ['any', ...r.groups.flatMap((on, i) => (on ? [['==', ['%', ['floor', ['/', ['get', 'm'], 2 ** i]], 2], 1] as ExpressionSpecification] : [])), false];
     map.setFilter(DOTS, ['all', groups, spaced(STOP_PX)]);

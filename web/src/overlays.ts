@@ -4,7 +4,7 @@ import * as maplibregl from 'maplibre-gl';
 import { cdfOf } from './ui/scale';
 import { Dist } from './roads/stats';
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
-import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, OV_LAYER, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, ovTilesOn, pointTiles, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, labelKindOf, type NameScale } from './basemap';
+import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, OV_LAYER, OV_SOURCES, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, ovTilesOn, pointTiles, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, labelKindOf, type NameScale } from './basemap';
 import { OVERLAYS, kindSpacing, labelShown, type AppState, type LabelKind, type OverlayKey } from './state';
 import { keepable, onVersions, ver } from './api';
 import { hostFor } from './hosts';
@@ -373,7 +373,10 @@ export class Overlays {
       // Labels follow "Place labels" and their kind's toggle under it.
       for (const id of OVERLAY_LAYERS[k] ?? []) {
         const lk = labelKindOf(id) as LabelKind | undefined;
-        const show = on && (!lk || labelShown(s, lk));
+        // (By view, the areas' tiles wait for the roads in view as their files do: release().)
+        const src = map.getLayer(id)?.source;
+        const held = this.held && ovTilesOn() && !!src && src in OV_SOURCES;
+        const show = on && (!lk || labelShown(s, lk)) && !held;
         if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', show ? 'visible' : 'none');
       }
       // Stops & sights filters, with each layer's own filter.

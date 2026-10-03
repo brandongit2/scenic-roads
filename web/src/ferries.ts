@@ -139,6 +139,14 @@ export class Ferries {
   private tick = 0;
   /** The blocks the data shown was merged from. */
   private merged = '';
+  /** At start-up, the blocks wait for the roads in view (as the overlays: release()). */
+  private held = true;
+
+  release() {
+    if (!this.held) return;
+    this.held = false;
+    if (this.byBlocks && this.style?.on) this.view();
+  }
 
   constructor(private map: MLMap) {
     // New ferry files (a new catalog): fetched again if they were.
@@ -155,7 +163,7 @@ export class Ferries {
       if (this.style?.on) this.ensure();
     });
     map.on('moveend', () => {
-      if (this.byBlocks && this.style?.on) this.view();
+      if (this.byBlocks && this.style?.on && !this.held) this.view();
     });
   }
 
@@ -268,8 +276,8 @@ export class Ferries {
     const f = s.ferry;
     this.style = f;
     if (f.on) {
-      if (this.byBlocks) this.view();
-      else this.ensure();
+      if (!this.byBlocks) this.ensure();
+      else if (!this.held) this.view();
     }
     if (!map.getLayer(LINE)) return;
     const vis = (id: string, on: boolean) => map.getLayer(id) && map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');

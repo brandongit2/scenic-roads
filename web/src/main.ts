@@ -1887,7 +1887,12 @@ async function main() {
     if (bootDone) return;
     bootDone = true;
     boot.done();
+    releaseOverlays();
+  };
+  const releaseOverlays = () => {
     overlays.release();
+    stations.release();
+    ferries.release();
   };
   boot.at(2);
   // Attach as soon as the style is parsed; basemap tiles keep streaming in behind.
@@ -1951,7 +1956,7 @@ async function main() {
     }
     // Never block the UI for long on a slow first view; overlays start within 2 s either way.
     setTimeout(finishBoot, 12000);
-    setTimeout(() => overlays.release(), 2000);
+    setTimeout(releaseOverlays, 2000);
   };
   if ((map as unknown as { style?: { _loaded?: boolean } }).style?._loaded) attach();
   else {
