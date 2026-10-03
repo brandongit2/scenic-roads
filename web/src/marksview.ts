@@ -110,6 +110,9 @@ export class MarksView {
   private dirty = new Set<string>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private z6: Set<string>;
+  /** Per kind, its active filters as the speck query (`q=`), or '' for none: below zoom 6 a
+   * filtered kind's speck cells are the server's for the points passing them. */
+  private filt = new Map<string, string>();
 
   constructor(public cfg: MarksCfg, private base: string, private onSet: (s: KindSet, dots: DotData) => void) {
     this.z6 = new Set(cfg.tiles);
@@ -141,9 +144,10 @@ export class MarksView {
     return z === BLOCK_Z ? `${this.base}/api/marks/block/${kind}/6/${x}/${y}?v=${this.cfg.v}` : `${this.base}/api/marks/tile/${kind}/${z}/${x}/${y}?v=${this.cfg.v}`;
   }
 
-  /** Starts loading a tile (once). */
-  ensure(kind: string, z: number, x: number, y: number): Entry {
-    const k = key(kind, z, x, y);
+  /** Starts loading a tile (once): a thinned tile or block, or with `q` a thinned tile's speck
+   * cells for the points passing a filter. */
+  ensure(kind: string, z: number, x: number, y: number, q = ''): Entry {
+    const k = q ? `${key(kind, z, x, y)}|${q}` : key(kind, z, x, y);
     let e = this.entries.get(k);
     if (e && e.state !== 'error') {
       e.used = ++this.tick;
@@ -151,7 +155,8 @@ export class MarksView {
     }
     e = { t: null, state: 'loading', used: ++this.tick };
     this.entries.set(k, e);
-    this.queue.push({ k, url: this.url(kind, z, x, y) });
+    const url = q ? `${this.base}/api/marks/specks/${kind}/${z}/${x}/${y}?q=${encodeURIComponent(q)}&v=${this.cfg.v}` : this.url(kind, z, x, y);
+    this.queue.push({ k, url });
     this.pump();
     return e;
   }
@@ -280,7 +285,14 @@ export class MarksView {
       refs.push([tiles.length + ti, i]);
     }
     const all: MarkTile[] = [...tiles.map((x) => x.t), ...extraTiles];
-    const sig = `${tz}|${tiles.map(({ x, y }) => `${x}/${y}`).join(',')}|${[...(xs?.keys() ?? [])].join(',')}`;
+    // A filtered kind's speck cells below zoom 6: the server's for its tiles (none until they come).
+    const q = tz < BLOCK_Z ? this.filt.get(kind) ?? '' : '';
+    const cellsOf = tiles.map(({ t, z, x, y }) => {
+      if (!q) return t.cells;
+      const e = this.ensure(kind, z, x, y, q);
+      return e.state === 'ok' && e.t ? e.t.cells : null;
+    });
+    const sig = `${tz}|${tiles.map(({ x, y }) => `${x}/${y}`).join(',')}|${[...(xs?.keys() ?? [])].join(',')}|${q}|${cellsOf.map((c) => (c ? 1 : 0)).join('')}`;
     if (prev && prev.sig === sig) return;
     // (World Heritage components aren't dots: they show close in, from the name tiles.)
     const isDot = ([ti, i]: [number, number]) => !(all[ti].flags[i] & F_COMPONENT);
@@ -288,7 +300,7 @@ export class MarksView {
     refs.sort((a, b) => all[a[0]].rank[a[1]] - all[b[0]].rank[b[1]]);
     // Pseudo-points: the thinned tiles' speck cells.
     let np = 0;
-    if (tz < BLOCK_Z) for (const { t } of tiles) np += t.cells.code.length;
+    if (tz < BLOCK_Z) for (const c of cellsOf) np += c?.code.length ?? 0;
     const n = refs.length, N = np + n;
     const lon = new Float64Array(N), lat = new Float64Array(N), fa = new Float32Array(N), ia = new Float32Array(N);
     const cls = new Uint8Array(N), tier = new Uint8Array(N), weight = new Uint32Array(N);
@@ -296,8 +308,10 @@ export class MarksView {
     // Pseudo-points first (drawn under, as the least known), then the points in rank order.
     let j = 0;
     if (tz < BLOCK_Z) {
-      for (const { t, z, x, y } of tiles) {
-        const c = t.cells;
+      for (let ti = 0; ti < tiles.length; ti++) {
+        const { z, x, y } = tiles[ti];
+        const c = cellsOf[ti];
+        if (!c) continue;
         for (let q = 0; q < c.code.length; q++, j++) {
           [lon[j], lat[j]] = cellCentre(z, x, y, c.code[q]);
           fa[j] = 0;
@@ -329,16 +343,27 @@ export class MarksView {
   }
 
   /** A kind's filter flags per point in draw order (dotlayout.ts visWords input): its filters and
-   * switched-off tiers; speck cells shown unless the kind is filtered (their points' values aren't
-   * here: the server's filtered cells stand in, in a later step). */
+   * switched-off tiers. Speck cells are a filtered kind's own (the server's for its filters: a new
+   * filter lays the set out again when they come), so only their tiers hide them. */
   mask(kind: string, filters: Record<string, StopFilter>, keepUnknown: boolean, off: string[]): Uint8Array | null {
+    const pass = stopFilterPass(kind as never, filters, keepUnknown);
+    const active = pass ? Object.fromEntries(Object.entries(filters).filter(([, f]) => f.on)) : null;
+    const q = active ? JSON.stringify({ filters: active, keepUnknown }) : '';
+    if ((this.filt.get(kind) ?? '') !== q) {
+      this.filt.set(kind, q);
+      if (this.tz < BLOCK_Z) {
+        this.dirty.add(kind);
+        this.soon();
+      }
+    }
     const s = this.sets.get(kind);
     if (!s) return null;
-    const pass = stopFilterPass(kind as never, filters, keepUnknown);
     const offT = new Set(off.map((t) => TIERS.indexOf(t)));
     const fields = FIELDS[kind] ?? [];
     const vis = new Uint8Array(s.np + s.n);
-    for (let j = 0; j < s.np; j++) vis[j] = !pass && !offT.has(s.tier[j]) ? 1 : 0;
+    // (Cells made for other filters than these, until the right ones come: hidden.)
+    const own = s.sig.split('|')[3] === (s.tz < BLOCK_Z ? q : '');
+    for (let j = 0; j < s.np; j++) vis[j] = own && !offT.has(s.tier[j]) ? 1 : 0;
     const p: Record<string, number | undefined> = {};
     for (let r = 0; r < s.n; r++) {
       const t = s.tile[s.ti[r]], i = s.row[r];
