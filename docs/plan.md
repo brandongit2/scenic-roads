@@ -572,3 +572,25 @@ latitude cap; format versions read two at a time.
 - **Versioned URLs are cached for good only when their version is current**, so a switch can't pin
   new data under an old URL. NAS failures are 503s everywhere (way lookups and queries included)
   and the client doesn't cache them.
+
+**Implementation (phases 3–5, 2026-10-02):**
+- **Outlines** are a stage of the OSM pass (`sources/osm/<date>/outlines`, a sectioned file of
+  administrative levels 2–8 and ISO 3166 areas with simplified copies); catalogs name the latest as
+  `global.outlines`. **Coverage** gives each outline a cell grid (centre state and nearby edges) so a
+  point test reads one cell; `osm:` outlines get the 1 km coastal buffer.
+- **Terrain and slope for new coverage** are per z3 pack: its z6 tiles' hi packs, then the lo pack
+  with them folded in. Always from AWS's raw tiles (a raw-tile cache on the build Mac): processing
+  a processed tile isn't idempotent, so stored tiles are never inputs; slope parents are made from
+  their children as stored. Both are deterministic (checked: identical packs on reruns).
+- **base(U) runs today's steps on a unit-sized folder** (extract on the piece, cut to the ways
+  touching the coverage, sample.py on the unit's own slice of the per-vertex DEM cache, tile elev,
+  scenic-metrics), with terrain.tiles and the z11 grids staged from the packs, then today's
+  conversion for the ways the unit owns, with the pass's road values.
+- **The agent plans the regions' work by job keys** (`state/build/jobs.json`): terrain, slope, units,
+  packs, lo, catalog, each target keyed by what it reads; the first stale step runs as one job.
+  Spatial waves come later; for now each step runs over all its stale targets.
+- **Descriptions** (`descriptions/`) are served like translations: copied while the map is in use,
+  laid over popup details (later file names win; `drop` removes). Today's written descriptions are
+  in `descriptions/heritage/`, prefixed 1–4 to keep their old order.
+- **Regions panel API:** `/api/regions` (recipes, created exclusively), `/api/areas` (containing a
+  point, by name, one outline) and `/api/coverage`.
