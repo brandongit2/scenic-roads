@@ -339,6 +339,11 @@ At world scale, a globe query would read 0.2–0.4 GB: a per-z3 summary then.
 3. **Overlays, stations and ferries converted:**
    - the client's vector sources and ferry blocks;
    - counts and summary.
+   - Done 2026-10-03 (`convert-legacy-overlays`, pipeline::ovconv): areas, details and parks,
+     stations and ferries by view, the app switching on the catalog's layers (meta `ovTiles`,
+     `stationTiles`, `ferryBlocks`); checked against today's files: the same stops drawn (London
+     500, Paris 952), ferries' in-view km, routes and terminal colours equal, area popups with
+     their details. Counts and the areas' summary stay today's (`layer-summary`).
 4. **The inputs for today's coverage**, compared with today's files:
    - the pass's `marks`, `summits` and `named` sets, from the kept filtered planet;
    - `registers`, `heritage` and `items`.

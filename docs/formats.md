@@ -194,6 +194,25 @@ server makes z6 blocks from markdata. Little-endian; each column starts 8-byte a
 A thinned tile at zoom z holds the points with kz ≤ z, and the rest as speck cells. Served props
 carry `main`/`sub` (and `cmain`/`csub` from `cn`) as the layer files do.
 
+## Overlays by view (pipeline::ovconv, `convert-legacy-overlays`; docs/phase5.md)
+
+- **Areas** `layers/ov-{heritage-areas,indigenous,special,whs}/{root,lo,hi}` (encoding `mvt`,
+  z0–12; hi tiles within the coverage + 20 km): gzip'd vector tiles, extent 4096, layer `a`; each
+  feature with its id (docs/phase5.md "Ids") and the lean file's properties, and `own` ("3/x/y",
+  the ovdata holding its details); a World Heritage outline's id is its site dot's, with `px`, `py`
+  its place. Served with `main`/`sub` from `name` (outlines: `n`).
+- **`ovdata/3-<x>-<y>.<h>.sect`** per z3 tile (owner: the tile of a feature's or park's box
+  centre): per key (`harea`, `indigenous`, `special`, `parks`) `<key>.ids` (u64, sorted; parks:
+  their order), `<key>.offs` (u32, n + 1) and `<key>.recs` (the records, JSON, end to end); meta
+  `{"fmt": 1, "tile": "3/x/y", "records": {key: n}}`.
+- **Stations** `layers/stations/{root,lo,hi}` (encoding `mvt`, z0–12): layer `s`, `n, en, g, m,
+  sp, mz` and an id; a tile at zoom z holds the stops shown at zooms up to z + 1 (`mz` ≤ z − 2.58),
+  zoom 12 every stop.
+- **Ferries** `layers/ferries/{root,lo}` (encoding `geojson-gz`, blocks at zooms 0, 3 and 6):
+  `{"type": "FeatureCollection", "features": […], "lines": {id: record}}`, gzip'd: the ways touching
+  the tile (each with its id `way × 4 + 1` and whole length `km`; simplified to 5 km at zoom 0, 300 m
+  at 3), the terminals within 30 km (from zoom 3), the records of its ways' lines.
+
 ## Catalog (`catalog/<n>.json.zst`)
 
 zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. Readers list
@@ -213,6 +232,7 @@ zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. 
   "roads": {"6/32/21": "<logical>"},
   "hidata": {"6/32/21": "<logical>"},
   "markdata": {"6/32/21": "<logical>"},
+  "ovdata": {"3/4/2": "<logical>"},
   "global": {"pois.json": "<logical>"},
   "meta": {"…": "the map's meta, added up from the units' summaries: minzoom, maxzoom, bounds, ways, vertices, elev_min, elev_max, elev_hist_10m_km, rail_km, classes, built"},
   "credits": [],
@@ -249,6 +269,13 @@ queue/                  region edits waiting for the NAS
   `/api/marks/specks/{kind}/{z}/{x}/{y}?q=` (filtered speck cells); `/api/marks/count?kind=&q=`;
   `/api/marks/detail/{kind}/{id}?at=lon,lat`. `/api/catalog` lists `marks`: the tiles with points,
   the kinds with tiles, and their totals.
+- Overlays by view: `/tiles/ov/{heritage-areas,indigenous,special,whs}/{z}/{x}/{y}`,
+  `/tiles/stations/{z}/{x}/{y}` (MVT, names attached), `/tiles/ferries/{z}/{x}/{y}` (a block,
+  names on ways and lines); `/api/overlays/detail/{harea,indigenous,special}/{id}?own=3/x/y`;
+  `/api/park` from ovdata when the catalog has it. `/api/meta` says `ovTiles`, `stationTiles`,
+  `ferryBlocks`, and versions the tiles as `ov-<name>.tiles`, `stations.tiles`, `ferries.tiles`.
+- Drives, rides and rail lines take `approx=1` (zoomed out: from hidata's summaries when every tile
+  in view has them; the answer says `approx`).
 - `/api/catalog`: the catalog's `n`, layers' zoom ranges, meta, credits, coverage, the NAS status,
   and translation versions per area.
 - Names: every response carrying a name carries `main` and, when there is one, `sub`.
