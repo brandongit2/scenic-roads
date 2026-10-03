@@ -104,6 +104,24 @@ struct Poi {
     tags: Vec<(String, String)>,
 }
 
+impl Poi {
+    /// Its place in the one order points are kept in (docs/phase5.md "Candidates"): nodes, ways,
+    /// then hiking-route ends, by id, then kind (a way can be a point of interest and a covered
+    /// bridge). The readers' threads deliver points in no particular order.
+    fn order(&self) -> (u8, i64, i64, &'static str) {
+        let num = |s: &str| s.parse::<i64>().unwrap_or(0);
+        match (&self.osm, &self.key) {
+            (Some(o), _) if o.starts_with('n') => (0, num(&o[1..]), 0, self.kind),
+            (Some(o), _) => (1, num(&o[1..]), 0, self.kind),
+            (None, Some(k)) => {
+                let mut it = k.trim_start_matches("trail:").split(':');
+                (2, num(it.next().unwrap_or("")), num(it.next().unwrap_or("")), self.kind)
+            }
+            (None, None) => (3, 0, 0, self.kind),
+        }
+    }
+}
+
 /// Tags every stop & sight keeps for its details, and each kind's own (dem/poidetails.py).
 const KEEP_COMMON: &[&str] = &["name", "ele", "description", "website", "wikipedia", "wikidata", "operator", "access", "fee", "opening_hours", "start_date", "heritage", "alt_name", "name:en", "image"];
 
@@ -937,8 +955,10 @@ fn main() -> Result<()> {
         }
         eprintln!("        {n} hiking-route ends near roads");
     }
-    // One trailhead per spot: mapped trailheads first, then trail car parks, then route ends; any
-    // within 150 m of one already kept is dropped (lending it its name if it has none).
+    // One trailhead per spot: mapped trailheads first, then trail car parks, then route ends (each
+    // rank in the points' one order); any within 150 m of one already kept is dropped (lending it
+    // its name if it has none).
+    pois.sort_by(|a, b| a.order().cmp(&b.order()));
     {
         let rank = |k: &str| match k {
             "trailhead" => 0,
@@ -1120,7 +1140,8 @@ fn main() -> Result<()> {
     ww.write_all(bytemuck::cast_slice(&recs))?;
     ww.flush()?;
     std::fs::write(roadcore::tmp(&out, "strings.txt"), strings.join("\n"))?;
-    // Points of interest for the map and the scenic metrics.
+    // Points of interest for the map and the scenic metrics, in their one order.
+    pois.sort_by(|a, b| a.order().cmp(&b.order()));
     let features: Vec<serde_json::Value> = pois
         .iter()
         .map(|p| {
