@@ -581,11 +581,17 @@ fn open_reader(path: &Path, label: &str) -> Result<ElementReader<ProgressRead<st
 }
 
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
     let rail_rels_only = args.iter().any(|a| a == "--rail-rels-only");
-    let args: Vec<String> = args.into_iter().filter(|a| a != "--rail-rels-only").collect();
+    args.retain(|a| a != "--rail-rels-only");
+    // The pass's hiking-route ends (pipeline::trailends), instead of working them out from the input.
+    let trailends: Option<PathBuf> = args.iter().position(|a| a == "--trailends").map(|i| {
+        let p = PathBuf::from(args.get(i + 1).cloned().unwrap_or_default());
+        args.drain(i..(i + 2).min(args.len()));
+        p
+    });
     if args.len() < 4 {
-        eprintln!("usage: extract <out_dir> <spacing_m> [--rail-rels-only] <file.osm.pbf>...");
+        eprintln!("usage: extract <out_dir> <spacing_m> [--rail-rels-only] [--trailends <file>] <file.osm.pbf>...");
         std::process::exit(2);
     }
     let out = PathBuf::from(&args[1]);
@@ -780,6 +786,11 @@ fn main() -> Result<()> {
     eprintln!("pass 1: {} unique ways, {} on scenic routes ({:.0?})", ways.len(), n_scenic, t0.elapsed());
 
     // ---- Pass 1b: end nodes of hiking-route member ways (relations come after ways in a file) ----
+    // (Not when the pass's ends are given: those are the whole routes', and carry their positions.)
+    let given_ends: Option<Vec<pipeline::trailends::End>> = trailends.as_deref().map(pipeline::trailends::read).transpose()?;
+    if given_ends.is_some() {
+        hikes.clear();
+    }
     let mut hike_ids: Vec<i64> = hikes.iter().flat_map(|h| h.1.iter().copied()).collect();
     hike_ids.par_sort_unstable();
     hike_ids.dedup();
@@ -827,11 +838,23 @@ fn main() -> Result<()> {
             route_ends.extend(ends.into_iter().map(|n| (name.clone(), n, *rel)));
         }
     }
-    eprintln!("        {} hiking routes, {} route ends", hikes.len(), route_ends.len());
+    // The pass's ends, and where they are.
+    let mut end_pos: HashMap<i64, (i32, i32)> = HashMap::new();
+    if let Some(es) = &given_ends {
+        for e in es {
+            route_ends.push((e.name.clone(), e.node, e.rel));
+            end_pos.insert(e.node, (e.lon, e.lat));
+        }
+        eprintln!("        {} hiking-route ends given", route_ends.len());
+    } else {
+        eprintln!("        {} hiking routes, {} route ends", hikes.len(), route_ends.len());
+    }
 
     let mut needed: Vec<i64> = ways.iter().flat_map(|w| w.refs.iter().copied()).collect();
     needed.extend(poi_ways.iter().flat_map(|p| p.2.iter().copied()));
-    needed.extend(route_ends.iter().map(|e| e.1));
+    if given_ends.is_none() {
+        needed.extend(route_ends.iter().map(|e| e.1));
+    }
     needed.par_sort_unstable();
     needed.dedup();
     eprintln!("        {} unique nodes needed", needed.len());
@@ -917,8 +940,13 @@ fn main() -> Result<()> {
         let mut cand: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
         let mut pts: Vec<(i32, i32)> = Vec::new();
         for (k, (_, n, _)) in route_ends.iter().enumerate() {
-            let v = needed.binary_search(n).ok().map(|i| coords[i].load(Relaxed)).unwrap_or(u64::MAX);
-            let p = if v == u64::MAX { (i32::MIN, 0) } else { (v as u32 as i32, (v >> 32) as u32 as i32) };
+            let p = match end_pos.get(n) {
+                Some(&p) => p,
+                None => {
+                    let v = needed.binary_search(n).ok().map(|i| coords[i].load(Relaxed)).unwrap_or(u64::MAX);
+                    if v == u64::MAX { (i32::MIN, 0) } else { (v as u32 as i32, (v >> 32) as u32 as i32) }
+                }
+            };
             pts.push(p);
             if p.0 != i32::MIN {
                 cand.entry(cell(p.0, p.1)).or_default().push(k);

@@ -124,14 +124,21 @@ pub struct Report {
 }
 
 /// Runs today's steps for unit `u` in `dir` from `piece`, with the coverage and the global-source
-/// layers on the NAS (`src`). Leaves the build folder ready for conversion.
-pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &crate::stage::Source, tools: &Tools, heritage: Option<&crate::stage::Heritage>) -> Result<Report> {
+/// layers on the NAS (`src`), and the pass's hiking-route ends (`trailends`, crate::trailends;
+/// without them extract works them out from the piece, as before). Leaves the build folder ready
+/// for conversion.
+#[allow(clippy::too_many_arguments)]
+pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &crate::stage::Source, tools: &Tools, heritage: Option<&crate::stage::Heritage>, trailends: Option<&Path>) -> Result<Report> {
     std::fs::create_dir_all(dir)?;
     let log = dir.join("steps.log");
     let mut rep = Report { unit: u.slash(), ..Default::default() };
     // 1. Every way of the piece, densified.
     let mut c = Command::new(tools.bin.join("extract"));
-    c.arg(dir).arg(tools.spacing_m.to_string()).arg(piece);
+    c.arg(dir).arg(tools.spacing_m.to_string());
+    if let Some(t) = trailends {
+        c.arg("--trailends").arg(t);
+    }
+    c.arg(piece);
     run(c, "extract", &log)?;
     rep.piece_ways = roadcore::Ways::open(dir)?.ways().len();
     // 2. Only what touches the coverage goes on.

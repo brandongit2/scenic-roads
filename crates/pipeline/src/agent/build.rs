@@ -71,7 +71,7 @@ impl Keys {
             self.catalog = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || step == "labels" {
+        if step.ends_with("-root") || matches!(step, "labels" | "trailends") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -128,12 +128,22 @@ pub fn coverage_tiles(cov: &Coverage) -> BTreeMap<(u32, u32), Vec<(u32, u32)>> {
     by_q
 }
 
+/// Every hiking route's ends, worldwide, once per pass (crate::trailends): what the units' extract
+/// reads.
+pub const TRAILENDS_V: u32 = 1;
+
+pub fn trailends_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
+    let set = m.get(&crate::osmpass::set_name(date, "hikes"))?;
+    let k = h(&[&format!("trailends {TRAILENDS_V}"), set]);
+    (done.lo.get("trailends").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "trailends".into(), targets: vec![("trailends".into(), k)] })
+}
+
 /// The labels by importance, worldwide, once per pass (or labels step version): independent of the
 /// regions.
 pub const LABELS_V: u32 = 1;
 
 pub fn labels_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
-    let set = m.get(&format!("sources/osm/{date}/sets/labels"))?;
+    let set = m.get(&crate::osmpass::set_name(date, "labels"))?;
     let k = h(&[&format!("labels {LABELS_V}"), set]);
     (done.lo.get("labels").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "labels".into(), targets: vec![("labels".into(), k)] })
 }
@@ -150,8 +160,15 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Ve
         if !cov.meets_box(tb) {
             continue;
         }
-        // (The heritage sites: the flags step's.)
-        let mut inputs = vec![format!("unit {UNIT_V}"), c.clone(), get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(), cov_fp(cov, grown_e7(u.z, u.x, u.y, 10.0)), get("global/legacy/heritage").to_string()];
+        // (The heritage sites: the flags step's; the hiking-route ends: extract's.)
+        let mut inputs = vec![
+            format!("unit {UNIT_V}"),
+            c.clone(),
+            get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(),
+            cov_fp(cov, grown_e7(u.z, u.x, u.y, 10.0)),
+            get("global/legacy/heritage").to_string(),
+            get(&format!("work/trailends/{date}")).to_string(),
+        ];
         let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
         for (x, y) in crate::stage::tiles_in(6, b) {
             for layer in ["terrain", "grid-class", "grid-areas", "grid-canopy", "grid-cover"] {

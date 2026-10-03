@@ -529,8 +529,31 @@ impl Agent {
         let (recipes, _) = recipes::load(&root.join("inputs/regions"));
         let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let s = |p: &Path| p.to_string_lossy().into_owned();
-        // The labels by importance, worldwide, after each pass.
+        // Per pass, worldwide: the sets it lacks in their current filters (a set added or changed
+        // since it ran), the hiking routes' ends, the labels by importance.
         if let Some(date) = pass {
+            if !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(date, st.0))) {
+                let scratch = self.o.home.join("scratch").join("pass-sets");
+                return vec![JobSpec {
+                    id: format!("pass-sets {date}"),
+                    what: "OpenStreetMap sets the newest pass lacks".into(),
+                    cmd: vec![s(&self.o.bin.join("scenic-build")), "pass-sets".into(), "--root".into(), s(root), "--scratch".into(), s(&scratch), "--pass".into(), date.to_string()],
+                    needs: Needs { ac: true, nas: true },
+                    restart_after_sleep: true,
+                    record: None,
+                }];
+            }
+            if let Some(w) = build::trailends_work(date, &manifest, &build::Keys::load(root)) {
+                let scratch = self.o.home.join("scratch").join("trailends");
+                return vec![JobSpec {
+                    id: format!("trailends {date}"),
+                    what: "Hiking routes' ends for the whole world".into(),
+                    cmd: vec![s(&self.o.bin.join("scenic-build")), "trailends".into(), "--root".into(), s(root), "--scratch".into(), s(&scratch), "--pass".into(), date.to_string()],
+                    needs: Needs { ac: true, nas: true },
+                    restart_after_sleep: true,
+                    record: Some(w),
+                }];
+            }
             if let Some(w) = build::labels_work(date, &manifest, &build::Keys::load(root)) {
                 let scratch = self.o.home.join("scratch").join("labels");
                 return vec![JobSpec {

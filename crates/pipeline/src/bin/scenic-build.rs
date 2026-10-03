@@ -114,6 +114,30 @@ fn main() -> Result<()> {
         "terrain" => terrain_step(&mut out, &args)?,
         "slope" => slope_step(&mut out, &args)?,
         "labels" => labels_step(&mut out, &args, &scratch)?,
+        "pass-sets" => {
+            // pass-sets [--pass <date>]: the sets the pass lacks in their current filters
+            // (osmpass::SETS versions), from its kept filtered planet.
+            let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+            let src = out.path(out.get(&format!("sources/osm/{date}/filtered")).context("the pass's filtered planet")?);
+            std::fs::create_dir_all(&scratch)?;
+            let n = pipeline::osmpass::make_missing_sets(&mut out, &date, &src, &scratch)?;
+            eprintln!("pass-sets: {n} made");
+        }
+        "trailends" => {
+            // trailends [--pass <date>]: every hiking route's ends, worldwide, from the hikes set.
+            let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+            let set = out.path(out.get(&pipeline::osmpass::set_name(&date, "hikes")).context("the pass has no hikes set (pass-sets makes it)")?);
+            std::fs::create_dir_all(&scratch)?;
+            let local = scratch.join("set-hikes.osm.pbf");
+            std::fs::copy(&set, &local).with_context(|| format!("copy {}", set.display()))?;
+            let ends = pipeline::trailends::ends(&local)?;
+            let file = scratch.join("trailends.jsonl.zst");
+            pipeline::trailends::write(&file, &ends)?;
+            out.put_file(&format!("work/trailends/{date}"), "jsonl.zst", &file)?;
+            out.save()?;
+            std::fs::remove_file(&local).ok();
+            eprintln!("trailends: {} ends", ends.len());
+        }
         "convert-legacy-marks" => {
             let c = pipeline::markconv::convert(&mut out)?;
             eprintln!("marks: {} points, {} markdata tiles, {} thinned tiles", c.points, c.tiles, c.thinned);
@@ -731,6 +755,12 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             }
         }
     }
+    // The pass's hiking-route ends (the trailends step's), so that a route leaving a piece shows the
+    // same ends in every unit.
+    let trailends = out.get(&format!("work/trailends/{date}")).map(|c| out.path(c));
+    if trailends.is_none() {
+        eprintln!("unit: no work/trailends/{date} (the trailends step makes it): ends worked out from each piece");
+    }
     eprintln!("unit: pass {date}, {} region(s), {} unit(s)", recipes.len(), units.len());
     for u in units {
         let t = std::time::Instant::now();
@@ -745,7 +775,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         };
         let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
         std::fs::copy(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
-        let rep = build_folder(u, &local_piece, &dir, &cov, &layers_source(out, &pilot), &tools, heritage.as_ref())?;
+        let rep = build_folder(u, &local_piece, &dir, &cov, &layers_source(out, &pilot), &tools, heritage.as_ref(), trailends.as_deref())?;
         std::fs::remove_file(&local_piece).ok();
         // Grids its packs lacked (new coverage), made in the folder: the unit's own z6 tile's go up,
         // for later units and packs. (The canopy step made canopy and cover for every tile.)
@@ -887,7 +917,7 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         Some(d) => d,
         None => pipeline::osmpass::latest_pass(out.root()).context("no complete OSM pass")?,
     };
-    let set = out.get(&format!("sources/osm/{date}/sets/labels")).context("the pass has no labels set (passes before 2026-10-02)")?.to_string();
+    let set = out.get(&pipeline::osmpass::set_name(&date, "labels")).context("the pass has no labels set (passes before 2026-10-02)")?.to_string();
     let work = scratch.join("labels");
     std::fs::create_dir_all(&work)?;
     let local = work.join("labels-set.osm.pbf");

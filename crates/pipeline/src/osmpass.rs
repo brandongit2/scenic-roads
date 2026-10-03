@@ -25,32 +25,65 @@ pub const FILTER_A: &[&str] = &[
     "nwr/military", "nwr/place", "n/barrier", "nwr/aerialway", "nwr/mountain_pass", "nwr/wikidata",
 ];
 
-/// The worldwide sets, each a filter of the filtered planet.
-pub const SETS: &[(&str, &[&str])] = &[
-    ("rail", &["nwr/railway", "nwr/public_transport", "r/route=train,subway,tram,light_rail,monorail,funicular,railway"]),
-    ("ferries", &["w/route=ferry", "r/route=ferry", "nwr/amenity=ferry_terminal"]),
-    ("areas", &["wr/boundary=national_park,protected_area,aboriginal_lands", "wr/leisure=nature_reserve"]),
-    ("places", &["n/place"]),
-    ("outlines", &["r/boundary=administrative", "r/ISO3166-1", "r/ISO3166-2"]),
+/// The worldwide sets, each a filter of the filtered planet, with its filter's version: a changed
+/// filter gets a new version, and so a new logical name (`set_name`), which the latest pass makes
+/// from its kept filtered planet (`scenic-build pass-sets`); readers ask for the current one.
+pub const SETS: &[(&str, u32, &[&str])] = &[
+    ("rail", 1, &["nwr/railway", "nwr/public_transport", "r/route=train,subway,tram,light_rail,monorail,funicular,railway"]),
+    ("ferries", 1, &["w/route=ferry", "r/route=ferry", "nwr/amenity=ferry_terminal"]),
+    ("areas", 1, &["wr/boundary=national_park,protected_area,aboriginal_lands", "wr/leisure=nature_reserve"]),
+    ("places", 1, &["n/place"]),
+    ("outlines", 1, &["r/boundary=administrative", "r/ISO3166-1", "r/ISO3166-2"]),
     // The labels by importance (dem/labels.py): places, seas, bays and straits, water and parks.
-    ("labels", &["n/place", "n/natural=bay,strait", "wr/natural=water,bay,strait", "wr/boundary=national_park,protected_area", "wr/leisure=nature_reserve"]),
+    ("labels", 1, &["n/place", "n/natural=bay,strait", "wr/natural=water,bay,strait", "wr/boundary=national_park,protected_area", "wr/leisure=nature_reserve"]),
     // The landmark jobs' (docs/phase5.md "Build"). `marks`: the point kinds' objects (extract.rs
-    // poi_kind; covered bridges; car parks tagged for hiking; car parks named for a trail and
-    // hiking routes' ends come from the units' pieces).
-    ("marks", &[
+    // poi_kind; covered bridges; car parks tagged for hiking; car parks named for a trail come
+    // from the units' pieces, hiking routes' ends from `hikes`).
+    ("marks", 1, &[
         "nwr/highway=rest_area,trailhead", "nwr/tourism=picnic_site,viewpoint", "nwr/natural=peak,volcano", "nwr/waterway=waterfall",
         "nwr/man_made=lighthouse", "w/covered=yes", "w/bridge=covered", "nwr/hiking=yes", "nwr/trailhead=yes",
     ]),
-    // Summits with elevations, worldwide (prominence and isolation; `ele` checked in the job).
-    ("summits", &["n/natural=peak,volcano"]),
+    // Summits, worldwide, for prominence and isolation: peaks and volcanoes, nodes and ways (2: ways
+    // too, as the peaks among the candidates are).
+    ("summits", 2, &["nw/natural=peak,volcano"]),
+    // Hiking and foot routes with their member ways, for the routes' ends (pipeline::trailends).
+    ("hikes", 1, &["r/route=hiking,foot"]),
     // Today's heritage filter (Makefile: named.osm.pbf), and World Heritage objects, for locating
     // register records.
-    ("named", &[
+    ("named", 1, &[
         "nwr/historic", "nwr/heritage", "nwr/tourism=museum,attraction,viewpoint", "nwr/man_made=lighthouse", "nwr/railway=station",
         "nwr/building=train_station,church,cathedral", "nwr/amenity=place_of_worship", "nwr/boundary=protected_area,national_park",
         "nwr/leisure=park", "nwr/military", "nwr/ref:whc", "nwr/heritage:operator=whc",
     ]),
 ];
+
+/// A set's logical name in its current version (version 1 is the plain name).
+pub fn set_name(date: &str, name: &str) -> String {
+    match SETS.iter().find(|s| s.0 == name).map(|s| s.1).unwrap_or(1) {
+        1 => format!("sources/osm/{date}/sets/{name}"),
+        v => format!("sources/osm/{date}/sets/{name}-v{v}"),
+    }
+}
+
+/// The sets a pass lacks in their current versions.
+pub fn missing_sets(out: &Out, date: &str) -> Vec<&'static (&'static str, u32, &'static [&'static str])> {
+    SETS.iter().filter(|s| out.get(&set_name(date, s.0)).is_none()).collect()
+}
+
+/// Makes the sets a pass lacks (`missing_sets`) from its filtered planet `src`.
+pub fn make_missing_sets(out: &mut Out, date: &str, src: &Path, scratch: &Path) -> Result<usize> {
+    let missing = missing_sets(out, date);
+    for (name, _, exprs) in &missing {
+        let o = scratch.join(format!("set-{name}.osm.pbf"));
+        let mut c = osmium();
+        c.args(["tags-filter", "--overwrite", "-o"]).arg(&o).arg(src).args(*exprs);
+        run(c, &format!("osmium tags-filter (set {name})"))?;
+        out.put_file(&set_name(date, name), "osm.pbf", &o)?;
+        out.save()?;
+        std::fs::remove_file(&o).ok();
+    }
+    Ok(missing.len())
+}
 
 /// The basemap's input (Planetiler's OpenMapTiles layers water, waterway, boundary, place,
 /// water_name, park).
@@ -374,37 +407,30 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         mark(scratch, "filter")?;
     }
     if !done(scratch, "sets").exists() {
-        for (name, exprs) in SETS {
+        for (name, _, exprs) in SETS {
             let o = scratch.join(format!("set-{name}.osm.pbf"));
             let mut c = osmium();
             c.args(["tags-filter", "--overwrite", "-o"]).arg(&o).arg(&filtered).args(*exprs);
             run(c, &format!("osmium tags-filter (set {name})"))?;
-            out.put_file(&format!("sources/osm/{date}/sets/{name}"), "osm.pbf", &o)?;
+            // (Kept: the outlines stage below reads its set from here.)
+            out.put_file(&set_name(date, name), "osm.pbf", &o)?;
         }
         out.save()?;
         mark(scratch, "sets")?;
     }
-    // Sets added since this pass began (a pass resumed by a newer app): made now, from the same
-    // filtered file (the local copy while it's there).
+    // Sets added or changed since this pass began (a pass resumed by a newer app): made now, from
+    // the same filtered file (the local copy while it's there).
     if !done(scratch, "sets-added").exists() {
-        let missing: Vec<&(&str, &[&str])> = SETS.iter().filter(|(name, _)| out.get(&format!("sources/osm/{date}/sets/{name}")).is_none()).collect();
-        if !missing.is_empty() {
+        if !missing_sets(out, date).is_empty() {
             let src = if filtered.exists() { filtered.clone() } else { filtered_nas(out, date)? };
-            for (name, exprs) in missing {
-                let o = scratch.join(format!("set-{name}.osm.pbf"));
-                let mut c = osmium();
-                c.args(["tags-filter", "--overwrite", "-o"]).arg(&o).arg(&src).args(*exprs);
-                run(c, &format!("osmium tags-filter (set {name})"))?;
-                out.put_file(&format!("sources/osm/{date}/sets/{name}"), "osm.pbf", &o)?;
-                out.save()?;
-            }
+            make_missing_sets(out, date, &src, scratch)?;
         }
         mark(scratch, "sets-added")?;
     }
     if !done(scratch, "outlines").exists() {
         // Administrative and ISO 3166 outlines from the outline set (crate::outlines).
         let set = scratch.join("set-outlines.osm.pbf");
-        let set = if set.exists() { set } else { out.path(out.get(&format!("sources/osm/{date}/sets/outlines")).context("the outline set")?) };
+        let set = if set.exists() { set } else { out.path(out.get(&set_name(date, "outlines")).context("the outline set")?) };
         let file = scratch.join("outlines.sect");
         let s = crate::outlines::assemble(&set, &scratch.join("outlines-work"), &file)?;
         eprintln!("outlines: {} ({} points, {} simplified); by level {:?}", s.outlines, s.points, s.simplified_points, s.by_level);

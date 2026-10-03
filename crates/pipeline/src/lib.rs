@@ -25,6 +25,7 @@ pub mod stations;
 pub mod summary;
 pub mod terr;
 pub mod terrain_pack;
+pub mod trailends;
 pub mod tiling;
 pub mod unit;
 pub mod view;

@@ -343,7 +343,7 @@ fn ferries(out: &mut Out, ntiles: &mut usize) -> Result<usize> {
 /// GTFS-derived sailings and the ones looked up by hand), and the blocks from what it writes.
 pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path) -> Result<usize> {
     use std::process::Command;
-    let logical = format!("sources/osm/{date}/sets/ferries");
+    let logical = crate::osmpass::set_name(date, "ferries");
     let set = out.path(out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?);
     let work = out.scratch.join("ferries-work");
     std::fs::remove_dir_all(&work).ok();
@@ -540,7 +540,7 @@ pub fn station_props(s: &crate::stations::Stop) -> serde_json::Map<String, Value
 /// (+ 20 km, the hi tiles' reach) as the stations' tiles; each stop's id its lowest member's
 /// (docs/phase5.md "Ids").
 pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>) -> Result<(usize, usize)> {
-    let logical = format!("sources/osm/{date}/sets/rail");
+    let logical = crate::osmpass::set_name(date, "rail");
     let set = out.path(out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?);
     let t0 = std::time::Instant::now();
     let all = crate::stations::stops(&set)?;
