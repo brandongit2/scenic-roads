@@ -88,7 +88,7 @@ fn prep(dir: &Path) -> Result<()> {
     let wv = Ways::open(dir)?;
     let ways = wv.ways();
     let verts = wv.verts();
-    let fin = Array::<i16>::open(&dir.join("final.i16"))?;
+    let fin = roadcore::elev::Stored::open(dir)?;
     let fin = fin.get();
     let arc = Archive::open(&dir.join("terrain.tiles"))?;
     let pb = count_bar(ways.len() as u64, "samples + drape");
@@ -112,7 +112,7 @@ fn prep(dir: &Path) -> Result<()> {
                 for (j, p) in v.iter().enumerate() {
                     let (mx, my) = merc(p[0] as f64 * E7, p[1] as f64 * E7);
                     let t = tc.at(mx, my);
-                    let e = fin[s + j] as f32 / 10.0;
+                    let e = fin.m(s + j);
                     let h = if tunnel { e } else { t };
                     drape.push(h.round().clamp(-500.0, 9000.0) as i16);
                 }
@@ -134,7 +134,8 @@ fn prep(dir: &Path) -> Result<()> {
                     let t = if cd[j] > cd[j - 1] { (d - cd[j - 1]) / (cd[j] - cd[j - 1]) } else { 0.0 };
                     let lon = v[j - 1][0] as f64 + (v[j][0] - v[j - 1][0]) as f64 * t;
                     let lat = v[j - 1][1] as f64 + (v[j][1] - v[j - 1][1]) as f64 * t;
-                    let e = (fin[s + j - 1] as f64 + (fin[s + j] - fin[s + j - 1]) as f64 * t) as f32 / 10.0;
+                    let (e0, e1) = (fin.dm(s + j - 1), fin.dm(s + j));
+                    let e = (e0 as f64 + (e1 - e0) as f64 * t) as f32 / 10.0;
                     let (mx, my) = merc(lon * E7, lat * E7);
                     let terrain = tc.at(mx, my);
                     let ground = if tunnel { e } else { terrain.max(e) };

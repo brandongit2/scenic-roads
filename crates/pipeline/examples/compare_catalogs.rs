@@ -71,7 +71,7 @@ fn compare(pa: &BasePack, pb: &BasePack) -> anyhow::Result<Stats> {
         st.same_geom += 1;
         for (k, kj) in r.zip(rj) {
             st.verts += 1;
-            let d = (ea[k] as f32 - eb[kj] as f32).abs() / 10.0;
+            let d = (ea.m(k) - eb.m(kj)).abs();
             st.elev_eq += (d == 0.0) as usize;
             st.elev_1m += (d <= 1.0) as usize;
             st.elev_max = st.elev_max.max(d);

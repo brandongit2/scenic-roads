@@ -17,7 +17,8 @@ use std::path::Path;
 /// Step versions: bumping one rebuilds that step everywhere (oldest first, when idle).
 pub const TERRAIN_V: u32 = 1;
 pub const SLOPE_V: u32 = 1;
-pub const UNIT_V: u32 = 1;
+/// 2: elevations up to 6,053 m (`final.u16`, base packs' `elevu`; were clamped at ±3,200 m).
+pub const UNIT_V: u32 = 2;
 /// 2: hidata with rail lines' identity (`railinfo`) and the zoomed-out summaries (`lsum`).
 pub const PACK_V: u32 = 2;
 pub const LO_V: u32 = 1;

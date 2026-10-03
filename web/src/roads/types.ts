@@ -2,6 +2,11 @@ import type { LodFilter } from './lod';
 
 /** Bytes per GPU vertex (see worker.ts). */
 export const STRIDE = 32;
+/** A vertex's elevation (decimetres) and drape height (metres) are stored as unsigned 16-bit with
+ * these added: elevations from −500 m to 6,053 m (roads in the Andes and the Himalaya reach
+ * 5,800 m), drape heights from −500 m. */
+export const ELEV_OFF = 5000;
+export const DRAPE_OFF = 500;
 /** Scenic channels per vertex (roadcore::scenic::ch): 0–11 at bytes 20–31, 12 (roadside
  * buildings, tiles v6+) in the spare byte 11. */
 export const NCH = 13;

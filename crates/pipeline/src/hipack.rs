@@ -84,7 +84,7 @@ pub fn way_inputs<'a>(packs: &[&'a BasePack], staged: &[Staged]) -> Result<Vec<W
                 rec: w,
                 id: w.id as u32,
                 verts: &bp.verts()?[r.clone()],
-                elev_dm: &bp.elev()?[r.clone()],
+                elev_dm: bp.elev()?.slice(r.clone()),
                 grade: &bp.grade()?[r.clone()],
                 drape: bp.drape().map(|d| &d[r.clone()]),
                 sc: bp.scenic().map(|a| &a[r.clone()]),
@@ -292,7 +292,8 @@ fn climbs_in(t: Unit, packs: &[&BasePack], halo: &[Staged]) -> Result<(Vec<Climb
         let mut nw = w;
         nw.vstart = verts.len() as u64;
         verts.extend_from_slice(v);
-        elev.extend(bp.elev()?[r].iter().map(|&d| d as f32 / 10.0));
+        let e = bp.elev()?.slice(r);
+        elev.extend((0..e.len()).map(|i| e.m(i)));
         let rv = bp.road_vals()?[s.way as usize];
         keyed.push((rv.road, rv.offset, ways.len() as u32, rv.dir == 1, way_len(v) as f32));
         ids.push(w.id as u64);

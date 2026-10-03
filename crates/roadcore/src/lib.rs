@@ -6,13 +6,15 @@
 //!   strings.txt  newline-separated string table; line 0 is the empty string
 //!   elev.f32     raw DEM sample per vertex (NaN = no data)          — dem stage
 //!   src.u8       DEM source per vertex (see `DemSource`)             — dem stage
-//!   final.i16    processed elevation per vertex, decimetres          — tile stage
+//!   final.u16    processed elevation per vertex, decimetres + 5000   — tile stage (`elev`; older
+//!                folders: final.i16, signed)
 //!   grade.u8     |grade| per vertex, 0.5 % units                     — tile stage
 //!   roads.tiles  tile archive, see `archive`
 //!   climbs.bin   `climb::ClimbRec` records; climbs.geom: [i32; 2] polylines they index into
 
 pub mod archive;
 pub mod climb;
+pub mod elev;
 pub mod grid;
 pub mod packs;
 pub mod lsum;

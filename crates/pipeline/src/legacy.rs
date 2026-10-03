@@ -5,6 +5,7 @@
 use crate::chain::{self, Interner, Link};
 use anyhow::{ensure, Result};
 use rayon::prelude::*;
+use roadcore::elev::{self, Elevs};
 use roadcore::scenic::{ch, Sample};
 use roadcore::{class, flag, merc, Array, Ways, WayRec};
 use std::collections::BTreeMap;
@@ -47,7 +48,7 @@ impl Unit {
 pub struct Legacy {
     pub ways: Ways,
     pub strings: Vec<String>,
-    pub elev: Array<i16>,
+    pub elev: elev::Stored,
     pub raw: Array<f32>,
     pub grade: Array<u8>,
     pub src: Array<u8>,
@@ -66,7 +67,7 @@ impl Legacy {
         let a = |n: &str| -> Result<Array<u8>> { Array::open(&dir.join(n)) };
         let s = Legacy {
             strings: roadcore::read_strings(dir)?,
-            elev: Array::open(&dir.join("final.i16"))?,
+            elev: elev::Stored::open(dir)?,
             raw: Array::open(&dir.join("elev.f32"))?,
             grade: a("grade.u8")?,
             src: a("src.u8")?,
@@ -231,7 +232,8 @@ pub fn base_sections(lg: &Legacy, unit: Unit, idx: &[u32], built: &str) -> BaseS
             ext = [ext[0].min(p[0]), ext[1].min(p[1]), ext[2].max(p[0]), ext[3].max(p[1])];
         }
         v.extend_from_slice(&verts[r.clone()]);
-        el.extend_from_slice(&lg.elev.get()[r.clone()]);
+        let le = lg.elev.get().slice(r.clone());
+        el.extend((0..le.len()).map(|i| elev::to_u16(le.dm(i))));
         raw.extend_from_slice(&lg.raw.get()[r.clone()]);
         gr.extend_from_slice(&lg.grade.get()[r.clone()]);
         src.extend_from_slice(&lg.src.get()[r.clone()]);
@@ -274,12 +276,12 @@ pub fn base_sections(lg: &Legacy, unit: Unit, idx: &[u32], built: &str) -> BaseS
         "source": built,
         "scenic": lg.scenic.is_some(),
         "drape": lg.drape.is_some(),
-        "summary": crate::summary::Summary::of(&ways, &v, &el),
+        "summary": crate::summary::Summary::of(&ways, &v, Elevs::U16(&el)),
     });
     let mut sections: Vec<(&'static str, Vec<u8>)> = vec![
         ("ways", bytes(&ways).to_vec()),
         ("verts", bytes(&v).to_vec()),
-        ("elev", bytes(&el).to_vec()),
+        ("elevu", bytes(&el).to_vec()),
         ("raw", bytes(&raw).to_vec()),
         ("grade", gr),
         ("src", src),

@@ -44,7 +44,7 @@ fn main() -> anyhow::Result<()> {
         same_geom += 1;
         for (k, kj) in r.clone().zip(rj.clone()) {
             verts += 1;
-            let d = (ea[k] as f32 - eb[kj] as f32).abs() / 10.0;
+            let d = (ea.m(k) - eb.m(kj)).abs();
             elev_eq += (d == 0.0) as usize;
             elev_close += (d <= 1.0) as usize;
             elev_diff.push(d);

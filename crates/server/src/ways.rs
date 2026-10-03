@@ -340,7 +340,7 @@ pub async fn profile_h(State(s): State<S>, Path(id): Path<u64>, Query(at): Query
 /// One unit's share of a road: its ways' per-vertex data, read together.
 struct UnitVerts {
     verts: Gathered<[i32; 2]>,
-    elev: Gathered<i16>,
+    elev: Vec<Vec<i32>>,
     grade: Gathered<u8>,
     src: Gathered<u8>,
     scenic: Option<Gathered<[u8; roadcore::scenic::ch::N]>>,
@@ -370,7 +370,7 @@ fn build_profile(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<P
     }
     let has_ch = units.iter().all(|u| u.scenic.is_some());
     // Concatenate vertices along the road (a way's first vertex repeats the previous way's last).
-    let (mut pts, mut els, mut grs, mut srcs, mut chs): (Vec<[i32; 2]>, Vec<i16>, Vec<u8>, Vec<u8>, Vec<[u8; roadcore::scenic::ch::N]>) = Default::default();
+    let (mut pts, mut els, mut grs, mut srcs, mut chs): (Vec<[i32; 2]>, Vec<i32>, Vec<u8>, Vec<u8>, Vec<[u8; roadcore::scenic::ch::N]>) = Default::default();
     for (k, rw) in ways.iter().enumerate() {
         let (u, j) = slot[k];
         let uv = &units[u];
@@ -382,7 +382,7 @@ fn build_profile(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<P
         };
         for &i in &order[skip..] {
             pts.push(uv.verts.get(j)[i]);
-            els.push(uv.elev.get(j)[i]);
+            els.push(uv.elev[j][i]);
             grs.push(uv.grade.get(j)[i]);
             srcs.push(uv.src.get(j)[i]);
             if has_ch {
@@ -416,7 +416,7 @@ fn build_profile(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<P
         }
         src_len[(src(&vs[k]) as usize).min(NDEM - 1)] += d;
     }
-    let (mut emin, mut emax, mut gmax) = (i16::MAX, i16::MIN, 0u8);
+    let (mut emin, mut emax, mut gmax) = (i32::MAX, i32::MIN, 0u8);
     for v in &vs {
         emin = emin.min(el(v));
         emax = emax.max(el(v));

@@ -30,13 +30,19 @@ import { metricOf, modeDef, NCOMP, type Mode } from '../scenic';
 import { RNCOMP, freqCode } from '../rail';
 import { PickGrid, type PickHit } from './pick';
 import { lodCells, lodSig, pieceLists, type LodFilter } from './lod';
-import { NCH, STRIDE, chOff, type DecodedTile, type WorkerRequest, type WorkerResponse } from './types';
+import { DRAPE_OFF, ELEV_OFF, NCH, STRIDE, chOff, type DecodedTile, type WorkerRequest, type WorkerResponse } from './types';
 
 // The projection of a piece (vertex i to i + 1): both ends on screen, their depths, its
 // perspective scale, whether it is drawn at all and where it stands against the terrain. Shared
 // by the projection pass (for the quads) and the sprite draw, after MapLibre's projection prelude;
 // the including shader declares u_viewport, u_zmul and the attributes a_p0, a_p1, a_eh0, a_eh1 and
 // a_gs0.
+// A vertex's elevation (dm) and drape height (m) as stored (unsigned 16-bit, offset: types.ts
+// ELEV_OFF, DRAPE_OFF), as the shaders read them.
+const EH_GLSL = `
+#define a_eh0 (a_ehr0 - vec2(${ELEV_OFF.toFixed(1)}, ${DRAPE_OFF.toFixed(1)}))
+#define a_eh1 (a_ehr1 - vec2(${ELEV_OFF.toFixed(1)}, ${DRAPE_OFF.toFixed(1)}))
+`;
 const PROJECT_GLSL = `
 uniform float u_extScale;
 uniform float u_lift;
@@ -134,8 +140,9 @@ void projectPiece(out vec4 s, out vec4 z) {
 const PREP_VS = `
 layout(location=0) in vec2 a_p0;
 layout(location=1) in vec2 a_p1;
-layout(location=2) in vec2 a_eh0;
-layout(location=3) in vec2 a_eh1;
+layout(location=2) in vec2 a_ehr0;
+layout(location=3) in vec2 a_ehr1;
+${EH_GLSL}
 layout(location=4) in uvec4 a_gs0;
 uniform vec2 u_viewport;
 uniform float u_zmul;
@@ -163,8 +170,9 @@ layout(location=1) in vec2 a_p1;
 layout(location=0) in vec4 a_s;     // both ends on screen (px)
 layout(location=1) in vec4 a_z;     // both ends' depth, perspective scale, kind + 4 × terrain visibility (PREP_VS)
 #endif
-layout(location=2) in vec2 a_eh0;   // elevation dm, drape m
-layout(location=3) in vec2 a_eh1;
+layout(location=2) in vec2 a_ehr0;  // elevation dm, drape m (stored unsigned, offset: EH_GLSL)
+layout(location=3) in vec2 a_ehr1;
+${EH_GLSL}
 layout(location=4) in uvec4 a_gs0;   // grade, style, line flags, roadside buildings
 layout(location=5) in uvec4 a_g1;    // the next vertex's (grade, -, -, roadside buildings)
 layout(location=6) in float a_d0;
@@ -1486,9 +1494,10 @@ export class RoadLayer implements CustomLayerInterface {
     t.vaoP = gl.createVertexArray()!;
     gl.bindVertexArray(t.vaoP);
     gl.bindBuffer(gl.ARRAY_BUFFER, t.vbo!);
-    for (const [loc, off] of [[0, 0], [1, STRIDE], [2, 4], [3, STRIDE + 4]]) {
+    // Positions signed; elevation and drape height unsigned (EH_GLSL).
+    for (const [loc, off, type] of [[0, 0, gl.SHORT], [1, STRIDE, gl.SHORT], [2, 4, gl.UNSIGNED_SHORT], [3, STRIDE + 4, gl.UNSIGNED_SHORT]]) {
       gl.enableVertexAttribArray(loc);
-      gl.vertexAttribPointer(loc, 2, gl.SHORT, false, STRIDE, off);
+      gl.vertexAttribPointer(loc, 2, type, false, STRIDE, off);
     }
     gl.enableVertexAttribArray(4);
     gl.vertexAttribIPointer(4, 4, gl.UNSIGNED_BYTE, STRIDE, 8);
@@ -1557,8 +1566,8 @@ export class RoadLayer implements CustomLayerInterface {
       f(0, 2, gl.SHORT, 0);
       f(1, 2, gl.SHORT, STRIDE);
     }
-    f(2, 2, gl.SHORT, 4);
-    f(3, 2, gl.SHORT, STRIDE + 4);
+    f(2, 2, gl.UNSIGNED_SHORT, 4);
+    f(3, 2, gl.UNSIGNED_SHORT, STRIDE + 4);
     i(4, 4, gl.UNSIGNED_BYTE, 8);
     i(5, 4, gl.UNSIGNED_BYTE, STRIDE + 8);
     f(6, 1, gl.FLOAT, 12);
@@ -2841,15 +2850,15 @@ export class RoadLayer implements CustomLayerInterface {
   private infoAt(t: RoadTile, seg: number, tt: number, dist: number, px: number): HoverInfo {
     const d = t.data!;
     const n = 2 ** t.z;
-    const u8 = new Uint8Array(d.verts), i16 = new Int16Array(d.verts), u32 = new Uint32Array(d.verts);
-    const e = (i16[seg * S2 + 2] * (1 - tt) + i16[(seg + 1) * S2 + 2] * tt) / 10;
+    const u8 = new Uint8Array(d.verts), i16 = new Int16Array(d.verts), u16 = new Uint16Array(d.verts), u32 = new Uint32Array(d.verts);
+    const e = (u16[seg * S2 + 2] * (1 - tt) + u16[(seg + 1) * S2 + 2] * tt - ELEV_OFF) / 10;
     const g = (u8[seg * STRIDE + 8] * (1 - tt) + u8[(seg + 1) * STRIDE + 8] * tt) / 2;
     const ch: number[] = [];
     for (let q = 0; q < NCH; q++) {
       const va = u8[seg * STRIDE + chOff(q)], vb = u8[(seg + 1) * STRIDE + chOff(q)];
       ch.push(q === 7 ? (tt < 0.5 ? va : vb) : va * (1 - tt) + vb * tt);
     }
-    const ground = i16[seg * S2 + 3] * (1 - tt) + i16[(seg + 1) * S2 + 3] * tt;
+    const ground = u16[seg * S2 + 3] * (1 - tt) + u16[(seg + 1) * S2 + 3] * tt - DRAPE_OFF;
     const line = u32[seg * S4 + 4];
     const qx = i16[seg * S2] + (i16[(seg + 1) * S2] - i16[seg * S2]) * tt;
     const qy = i16[seg * S2 + 1] + (i16[(seg + 1) * S2 + 1] - i16[seg * S2 + 1]) * tt;
@@ -2888,7 +2897,7 @@ export class RoadLayer implements CustomLayerInterface {
       const d = t.data;
       if (!d) continue;
       const [x0, y0, x1, y1] = this.viewRectIn(t, b);
-      const i16 = new Int16Array(d.verts);
+      const i16 = new Int16Array(d.verts), u16 = new Uint16Array(d.verts);
       const u8 = new Uint8Array(d.verts);
       const u32s = new Uint32Array(d.verts);
       for (let i = 0; i + 1 < d.nverts; i += step) {
@@ -2900,7 +2909,7 @@ export class RoadLayer implements CustomLayerInterface {
         if (x < x0 || x > x1 || y < y0 || y > y1) continue;
         const len = Math.hypot(i16[(i + 1) * S2] - x, i16[(i + 1) * S2 + 1] - y) * d.mpu + 1;
         for (let k = 0; k < NCH; k++) ch[k] = u8[i * STRIDE + chOff(k)];
-        const e = i16[i * S2 + 2] / 10, g = u8[i * STRIDE + 8] / 2, gr = i16[i * S2 + 3];
+        const e = (u16[i * S2 + 2] - ELEV_OFF) / 10, g = u8[i * STRIDE + 8] / 2, gr = u16[i * S2 + 3] - DRAPE_OFF;
         const fq = this.lineFreq(d, u32s[i * S4 + 4]);
         for (let m = 0; m < fns.length; m++) vs[m].push(fns[m](e, g, ch, gr, st, fq));
         ws.push(len);
@@ -2930,7 +2939,7 @@ export class RoadLayer implements CustomLayerInterface {
       const d = t.data;
       if (!d) continue;
       const [x0, y0, x1, y1] = this.viewRectIn(t, b);
-      const i16 = new Int16Array(d.verts);
+      const i16 = new Int16Array(d.verts), u16 = new Uint16Array(d.verts);
       const u8 = new Uint8Array(d.verts);
       for (let i = 0; i + 1 < d.nverts; i += step) {
         const st = u8[i * STRIDE + 9];
@@ -2939,7 +2948,7 @@ export class RoadLayer implements CustomLayerInterface {
         if (x < x0 || x > x1 || y < y0 || y > y1) continue;
         const len = Math.hypot(i16[(i + 1) * S2] - x, i16[(i + 1) * S2 + 1] - y) * d.mpu + 1;
         for (let k = 0; k < NCH; k++) ch[k] = u8[i * STRIDE + chOff(k)];
-        const e = i16[i * S2 + 2] / 10, g = u8[i * STRIDE + 8] / 2;
+        const e = (u16[i * S2 + 2] - ELEV_OFF) / 10, g = u8[i * STRIDE + 8] / 2;
         for (let m = 0; m < modes.length; m++) vs[m].push(metricOf(modes[m], e, g, ch, weights));
         ws.push(len);
       }

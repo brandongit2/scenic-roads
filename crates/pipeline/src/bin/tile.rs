@@ -1,7 +1,7 @@
 //! Post-process sampled elevations and cut the road tile pyramid.
 //!
 //! usage: tile <build_dir> [minzoom] [maxzoom]
-//!        tile <build_dir> elev      processed elevations only (final.i16, grade.u8), which the
+//!        tile <build_dir> elev      processed elevations only (final.u16, grade.u8), which the
 //!                                   scenic stage needs before the tiles can be cut
 //!
 //! Elevations are post-processed first (see `pipeline::elev`).
@@ -12,6 +12,7 @@
 use anyhow::Result;
 use pipeline::tiling::{self, WayIn};
 use roadcore::archive::ArchiveWriter;
+use roadcore::elev::{self, Elevs};
 use roadcore::tile::{TileLine, NCH};
 use roadcore::{class, dist_m, Array, Ways, E7};
 use std::path::PathBuf;
@@ -40,11 +41,13 @@ fn main() -> Result<()> {
     let strings = roadcore::read_strings(&dir)?;
     let net = pipeline::elev::Net::build(ways, verts);
     let p = pipeline::elev::process(&net, raw);
+    let du: Vec<u16> = p.elev.iter().map(|&e| elev::to_u16((e * 10.0).round() as i32)).collect();
     if elev_only {
-        let dm: Vec<i16> = p.elev.iter().map(|&e| (e * 10.0).round().clamp(-32000.0, 32000.0) as i16).collect();
-        std::fs::write(roadcore::tmp(&dir, "final.i16"), bytemuck::cast_slice(&dm))?;
+        std::fs::write(roadcore::tmp(&dir, "final.u16"), bytemuck::cast_slice(&du))?;
         std::fs::write(roadcore::tmp(&dir, "grade.u8"), &p.grade)?;
-        roadcore::commit(&dir, &["final.i16", "grade.u8"])?;
+        roadcore::commit(&dir, &["final.u16", "grade.u8"])?;
+        // (A folder made before final.u16: its readers would take the new file anyway.)
+        std::fs::remove_file(dir.join("final.i16")).ok();
         eprintln!("elevations processed ({:.0?})", t0.elapsed());
         return Ok(());
     }
@@ -66,8 +69,7 @@ fn main() -> Result<()> {
     let road_len = pipeline::roads::lengths(&net, &strings);
     std::fs::write(roadcore::tmp(&dir, "roadlen.f32"), bytemuck::cast_slice(&road_len))?;
     drop(net);
-    let dm: Vec<i16> = p.elev.iter().map(|&e| (e * 10.0).round().clamp(-32000.0, 32000.0) as i16).collect();
-    std::fs::write(roadcore::tmp(&dir, "final.i16"), bytemuck::cast_slice(&dm))?;
+    std::fs::write(roadcore::tmp(&dir, "final.u16"), bytemuck::cast_slice(&du))?;
     std::fs::write(roadcore::tmp(&dir, "grade.u8"), &p.grade)?;
     eprintln!("elevations processed ({:.0?})", t0.elapsed());
 
@@ -123,7 +125,7 @@ fn main() -> Result<()> {
                 rec: w,
                 id: w.id as u32,
                 verts: &verts[r.clone()],
-                elev_dm: &dm[r.clone()],
+                elev_dm: Elevs::U16(&du[r.clone()]),
                 grade: &p.grade[r.clone()],
                 drape: drape_all.map(|d| &d[r.clone()]),
                 sc: sc_all.map(|a| &a[r.clone()]),
@@ -167,9 +169,10 @@ fn main() -> Result<()> {
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs()
     );
     std::fs::write(roadcore::tmp(&dir, "roads.json"), meta)?;
-    // final.i16 / grade.u8 are usually what `tile elev` wrote already: a rewrite would make the
+    // final.u16 / grade.u8 are usually what `tile elev` wrote already: a rewrite would make the
     // scenic steps that read them look out of date.
-    roadcore::commit_if_changed(&dir, &["final.i16", "grade.u8"])?;
+    roadcore::commit_if_changed(&dir, &["final.u16", "grade.u8"])?;
+    std::fs::remove_file(dir.join("final.i16")).ok();
     roadcore::commit(&dir, &["climbs.bin", "climbs.geom", "strokes.off", "strokes.u32", "roadlen.f32", "roads.tiles", "rails.tiles", "roads.json"])?;
     eprintln!("done in {:.0?}", t0.elapsed());
     Ok(())

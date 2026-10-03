@@ -632,10 +632,13 @@ latitude cap; format versions read two at a time.
   on today's data: the same ways, vertices and rail km, total road km within rounding.
 - **Install (2026-10-03):** both Macs run the published app; the build Mac's server keeps a 150 GB
   reserve so its mirror yields to builds. Today's `data/build` is gone from both Macs.
-- **Known limit, to fix before high regions:** elevations are i16 decimetres everywhere (base packs,
-  the unit steps' arrays, the client's GPU attribute) and clamped at ±3,200 m, as today (the Pico de
-  Veleta road shows 3,200 m). Roads in the Andes or the Himalaya reach 5,800 m: they need a wider
-  encoding (u16 decimetres from −500 m keeps the size) across the pipeline, the server and the client.
+- **Elevations up to 6,053 m (2026-10-03):** they were i16 decimetres everywhere (base packs, the
+  unit steps' arrays, the client's GPU attribute), clamped at ±3,200 m (the Pico de Veleta road showed
+  3,200 m); roads in the Andes or the Himalaya reach 5,800 m. Now u16 decimetres from −500 m, the same
+  size (`roadcore::elev`): the tile step writes `final.u16`, base packs carry `elevu`, the client keeps
+  them unsigned in its vertices (the tiles' varint deltas were never limited). Readers take the old
+  form too, so nothing has to be converted; the unit step's version went up (2) so every area is made
+  again with it, which the new planet's pass does anyway.
 - **The build Mac's disk:** the pack and lo steps read base packs from this Mac's mirror where it has
   them (same content names) and copy only the rest into the agent's pack cache, which drops replaced
   packs on every run and is cleared when an OSM pass starts (its space counts as free for the pass's

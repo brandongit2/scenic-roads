@@ -2,6 +2,7 @@
 //! map's meta (`Catalog::meta`): where the data is, its way and vertex counts, and road length by
 //! elevation (what `tile` used to write as `roads.json` for the whole build).
 
+use roadcore::elev::Elevs;
 use roadcore::{class, dist_m, WayRec, E7};
 use serde::{Deserialize, Serialize};
 
@@ -31,14 +32,14 @@ impl Default for Summary {
 
 impl Summary {
     /// Of a unit's ways, their vertices and processed elevations (decimetres), as in its base pack.
-    pub fn of(ways: &[WayRec], verts: &[[i32; 2]], elev_dm: &[i16]) -> Summary {
+    pub fn of(ways: &[WayRec], verts: &[[i32; 2]], elev_dm: Elevs) -> Summary {
         let mut s = Summary { ways: ways.len() as u64, vertices: verts.len() as u64, ..Default::default() };
         for p in verts {
             s.extent = [s.extent[0].min(p[0]), s.extent[1].min(p[1]), s.extent[2].max(p[0]), s.extent[3].max(p[1])];
         }
         for w in ways {
             let r = w.vstart as usize..(w.vstart + w.vcount as u64) as usize;
-            let (v, e) = (&verts[r.clone()], &elev_dm[r]);
+            let (v, e) = (&verts[r.clone()], elev_dm.slice(r));
             let seg = |k: usize| dist_m(v[k - 1][0] as f64 * E7, v[k - 1][1] as f64 * E7, v[k][0] as f64 * E7, v[k][1] as f64 * E7);
             if class::is_rail(w.class) {
                 let l: f64 = (1..v.len()).map(seg).sum();
@@ -50,12 +51,12 @@ impl Summary {
                 continue;
             }
             for k in 1..v.len() {
-                let m = (e[k - 1] as f32 + e[k] as f32) * 0.05;
+                let m = (e.dm(k - 1) as f32 + e.dm(k) as f32) * 0.05;
                 s.hist[((m / 10.0).max(0.0) as usize).min(BANDS - 1)] += seg(k) / 1000.0;
             }
-            for &x in e {
-                s.elev_min = s.elev_min.min(x as f32 / 10.0);
-                s.elev_max = s.elev_max.max(x as f32 / 10.0);
+            for k in 0..e.len() {
+                s.elev_min = s.elev_min.min(e.m(k));
+                s.elev_max = s.elev_max.max(e.m(k));
             }
         }
         s
@@ -110,7 +111,9 @@ mod tests {
         let verts = [[0, 0], [0, 90_000], [0, 180_000], [100_000, 0], [100_000, 90_000]];
         let elev = [50i16, 150, 250, 0, 0];
         let ways = [way(0, 3, class::PRIMARY, 0), way(3, 2, class::INTERCITY, 0b10)];
-        let s = Summary::of(&ways, &verts, &elev);
+        let s = Summary::of(&ways, &verts, Elevs::I16(&elev));
+        let su: Vec<u16> = elev.iter().map(|&d| roadcore::elev::to_u16(d as i32)).collect();
+        assert_eq!(serde_json::to_string(&Summary::of(&ways, &verts, Elevs::U16(&su))).unwrap(), serde_json::to_string(&s).unwrap());
         let seg = dist_m(0.0, 0.0, 0.0, 0.009);
         // Midpoints at 10 m and 20 m: bands 1 and 2.
         assert!((s.hist[1] - seg / 1000.0).abs() < 1e-9 && (s.hist[2] - seg / 1000.0).abs() < 1e-9);

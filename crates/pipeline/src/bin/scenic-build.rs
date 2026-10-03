@@ -484,7 +484,14 @@ fn units_meta(out: &Out, base: &BTreeMap<String, String>) -> Result<serde_json::
             let r = store::sect::SectReader::open(store::range::PlainFile::open(&out.path(&content))?)?;
             let s = match r.meta().get("summary").and_then(|v| serde_json::from_value::<Summary>(v.clone()).ok()) {
                 Some(s) => s,
-                None => Summary::of(&r.read_pod::<roadcore::WayRec>("ways")?, &r.read_pod::<[i32; 2]>("verts")?, &r.read_pod::<i16>("elev")?),
+                None => {
+                    let (ways, verts) = (r.read_pod::<roadcore::WayRec>("ways")?, r.read_pod::<[i32; 2]>("verts")?);
+                    if r.section("elevu").is_some() {
+                        Summary::of(&ways, &verts, roadcore::elev::Elevs::U16(&r.read_pod::<u16>("elevu")?))
+                    } else {
+                        Summary::of(&ways, &verts, roadcore::elev::Elevs::I16(&r.read_pod::<i16>("elev")?))
+                    }
+                }
             };
             known.insert(content.clone(), s);
             made += 1;

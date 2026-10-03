@@ -5,6 +5,7 @@ use crate::legacy::Unit;
 use roadcore::packs::{RoadRec, Sub9};
 use anyhow::{bail, ensure, Context, Result};
 use memmap2::Mmap;
+use roadcore::elev::Elevs;
 use roadcore::scenic::{ch, Sample};
 use roadcore::WayRec;
 use std::collections::HashMap;
@@ -87,8 +88,13 @@ impl BasePack {
     pub fn verts(&self) -> Result<&[[i32; 2]]> {
         self.sect.slice("verts")
     }
-    pub fn elev(&self) -> Result<&[i16]> {
-        self.sect.slice("elev")
+    /// Processed elevations (`roadcore::elev`): `elevu`, or `elev` in packs made before it.
+    pub fn elev(&self) -> Result<Elevs<'_>> {
+        if self.sect.has("elevu") {
+            Ok(Elevs::U16(self.sect.slice("elevu")?))
+        } else {
+            Ok(Elevs::I16(self.sect.slice("elev")?))
+        }
     }
     pub fn grade(&self) -> Result<&[u8]> {
         self.sect.slice("grade")

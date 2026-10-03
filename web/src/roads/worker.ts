@@ -20,7 +20,7 @@ import {
 } from '../config';
 import { levelZero, lodCells, lodSig, pieceLists, type LodFilter } from './lod';
 import { legibleRgb } from '../linecolour';
-import { NCH, STRIDE, chOff, type DecodedTile, type WorkerRequest, type WorkerResponse } from './types';
+import { DRAPE_OFF, ELEV_OFF, NCH, STRIDE, chOff, type DecodedTile, type WorkerRequest, type WorkerResponse } from './types';
 
 const inflight = new Map<number, AbortController>();
 
@@ -113,16 +113,17 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
       i16[i * S2] = x;
       i16[i * S2 + 1] = y;
     }
+    const u16 = new Uint16Array(verts);
     let e = 0;
     for (let i = 0; i < nverts; i++) {
       e += zz(rv());
-      i16[i * S2 + 2] = e;
+      u16[i * S2 + 2] = Math.min(65535, Math.max(0, e + ELEV_OFF));
     }
     for (let i = 0; i < nverts; i++) u8[i * STRIDE + 8] = b[pos++];
     let h = 0;
     for (let i = 0; i < nverts; i++) {
       h += zz(rv());
-      i16[i * S2 + 3] = h;
+      u16[i * S2 + 3] = Math.min(65535, Math.max(0, h + DRAPE_OFF));
     }
     // Scenic channels: 13 (the last, roadside buildings, kept in the vertex's spare byte).
     for (let c = 0; c < NCH; c++) {
@@ -141,6 +142,7 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
     if (s) ({ verts, nverts, lineStart } = s);
   }
   const i16 = new Int16Array(verts);
+  const u16 = new Uint16Array(verts);
   const u8 = new Uint8Array(verts);
   const f32 = new Float32Array(verts);
   const u32 = new Uint32Array(verts);
@@ -226,7 +228,7 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
       u32[i * S4 + 4] = l;
       // Extremes per cell/group (vertex-exact).
       const cg = cellOf(i16[i * S2], i16[i * S2 + 1]) * NSG + group;
-      const ev = i16[i * S2 + 2] / 10;
+      const ev = (u16[i * S2 + 2] - ELEV_OFF) / 10;
       if (ev > ext[cg * 8]) {
         ext[cg * 8] = ev; ext[cg * 8 + 1] = i16[i * S2]; ext[cg * 8 + 2] = i16[i * S2 + 1]; ext[cg * 8 + 3] = l;
       }
@@ -238,7 +240,7 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
     const tl = trueLen[l];
     if (simp <= 0) {
       const c = cellOf(i16[a * S2], i16[a * S2 + 1]);
-      sample(c * NSG + group, i16[a * S2 + 2], u8[a * STRIDE + 8] / 2, tl);
+      sample(c * NSG + group, u16[a * S2 + 2] - ELEV_OFF, u8[a * STRIDE + 8] / 2, tl);
       addLen((((c * NCLASS + cls) * 2 + unp) * 2 + un) * 2 + toll, roadLen[l], tl);
       // The road length the dot stands for, in tile units: the renderer draws its area.
       for (let i = a; i < bEnd; i++) f32[i * S4 + 3] = tl / mpu;
@@ -251,7 +253,7 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
       if (sl === 0) continue;
       const c = cellOf((x0 + x1) / 2, (y0 + y1) / 2);
       const lenM = sl * f;
-      sample(c * NSG + group, (i16[(i - 1) * S2 + 2] + i16[i * S2 + 2]) / 2, (u8[(i - 1) * STRIDE + 8] + u8[i * STRIDE + 8]) / 4, lenM);
+      sample(c * NSG + group, (u16[(i - 1) * S2 + 2] + u16[i * S2 + 2]) / 2 - ELEV_OFF, (u8[(i - 1) * STRIDE + 8] + u8[i * STRIDE + 8]) / 4, lenM);
       addLen((((c * NCLASS + cls) * 2 + unp) * 2 + un) * 2 + toll, roadLen[l], lenM);
     }
   }
@@ -370,7 +372,8 @@ function subdivide(verts: ArrayBuffer, nverts: number, lineStart: Uint32Array, m
   for (let l = 0; l < nlines; l++) for (let i = lineStart[l]; i + 1 < lineStart[l + 1]; i++) extra += Math.max(1, parts(i)) - 1;
   if (!extra) return null;
   const out = new ArrayBuffer((nverts + extra) * STRIDE);
-  const o8 = new Uint8Array(out), o16 = new Int16Array(out);
+  const o8 = new Uint8Array(out), o16 = new Int16Array(out), ou16 = new Uint16Array(out);
+  const u16 = new Uint16Array(verts);
   const u8 = new Uint8Array(verts);
   const starts = new Uint32Array(nlines + 1);
   const FLAGS_BYTE = chOff(7);
@@ -385,7 +388,9 @@ function subdivide(verts: ArrayBuffer, nverts: number, lineStart: Uint32Array, m
       const k = parts(i);
       for (let j = 1; j < k; j++) {
         const t = j / k;
-        for (let f = 0; f < 4; f++) o16[at * S2 + f] = Math.round(i16[i * S2 + f] + (i16[(i + 1) * S2 + f] - i16[i * S2 + f]) * t);
+        // (Position signed; elevation and drape height unsigned, offset: types.ts ELEV_OFF.)
+        for (let f = 0; f < 2; f++) o16[at * S2 + f] = Math.round(i16[i * S2 + f] + (i16[(i + 1) * S2 + f] - i16[i * S2 + f]) * t);
+        for (let f = 2; f < 4; f++) ou16[at * S2 + f] = Math.round(u16[i * S2 + f] + (u16[(i + 1) * S2 + f] - u16[i * S2 + f]) * t);
         for (const off of [8, 11, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]) {
           o8[at * STRIDE + off] = off === FLAGS_BYTE ? u8[(t < 0.5 ? i : i + 1) * STRIDE + off] : Math.round(u8[i * STRIDE + off] + (u8[(i + 1) * STRIDE + off] - u8[i * STRIDE + off]) * t);
         }

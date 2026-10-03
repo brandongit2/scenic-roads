@@ -74,7 +74,7 @@ segment midpoints, 256 bands) and `rail_km` (track km per service group).
 |---|---|---|
 | `ways` | `WayRec` (48 B, roadcore) | sorted by (z9 key of first vertex, Morton of first vertex); `vstart` is local; `name`, `ref_`, `surface`, `route` index `strings` |
 | `verts` | `[i32; 2]` | densified geometry |
-| `elev` | `i16` | processed elevation, decimetres (legacy `final.i16`) |
+| `elevu` | `u16` | processed elevation, decimetres + 5,000 (−500 to 6,053.5 m; `final.u16`); packs made before 2026-10-03 have `elev` instead: `i16`, decimetres, clamped at ±3,200 m (`final.i16`). Readers take either (`roadcore::elev`) |
 | `raw` | `f32` | raw DEM sample (legacy `elev.f32`), NaN = none |
 | `grade` | `u8` | \|grade\|, 0.5 % units |
 | `src` | `u8` | DEM source (`DemSource`) |

@@ -9,6 +9,7 @@
 use crate::count_bar;
 use flate2::{write::GzEncoder, Compression};
 use rayon::prelude::*;
+use roadcore::elev::{self, Elevs};
 use roadcore::scenic::ch;
 use roadcore::tile::{encode, lflag, style, surface, TileLine, NCH};
 use roadcore::{class, dist_m, flag, merc, WayRec, E7};
@@ -200,8 +201,8 @@ pub struct WayIn<'a> {
     /// The way column: OSM way id (RT v7), or the legacy build's way index (RT v6).
     pub id: u32,
     pub verts: &'a [[i32; 2]],
-    /// Processed elevation, decimetres.
-    pub elev_dm: &'a [i16],
+    /// Processed elevation (`roadcore::elev`).
+    pub elev_dm: Elevs<'a>,
     pub grade: &'a [u8],
     /// Drape height (m) for 3D, when the scenic analysis has run.
     pub drape: Option<&'a [i16]>,
@@ -233,7 +234,7 @@ pub fn cut(z: u8, ways: &[WayIn], keep: &(dyn Fn(u32, u32) -> bool + Sync), prog
                     [x * scale, y * scale]
                 })
                 .collect();
-            let e: Vec<f32> = w.elev_dm.iter().map(|&d| d as f32 / 10.0).collect();
+            let e: Vec<f32> = (0..w.elev_dm.len()).map(|i| w.elev_dm.m(i)).collect();
             let kept = simplify(&xy, &e, tol, etol);
             let cd = cumdist(w.verts);
             let pts: Vec<P> = kept
@@ -291,7 +292,7 @@ pub fn cut(z: u8, ways: &[WayIn], keep: &(dyn Fn(u32, u32) -> bool + Sync), prog
                         continue;
                     }
                     tl.pts.push(pt);
-                    tl.elev.push((q.e * 10.0).round().clamp(-32000.0, 32000.0) as i16);
+                    tl.elev.push(((q.e * 10.0).round() as i32).clamp(elev::MIN_DM, elev::MAX_DM));
                     tl.grade.push(q.g.round().clamp(0.0, 255.0) as u8);
                     tl.drape.push(q.h.round().clamp(-500.0, 9000.0) as i16);
                     tl.sc.push(q.sc.map(|v| v.round().clamp(0.0, 255.0) as u8));
@@ -447,7 +448,7 @@ pub fn encode_zoom(z: u8, maxz: u8, pieces: &[(u64, TileLine)], progress: Option
                     cell
                 };
                 let sw = d.len;
-                let ev = (d.e / sw).round() as i16;
+                let ev = (d.e / sw).round() as i32;
                 let gv = (d.g / sw).round().clamp(0.0, 255.0) as u8;
                 let hv = (d.h / sw).round().clamp(-500.0, 9000.0) as i16;
                 let mut cv = [0u8; NCH];

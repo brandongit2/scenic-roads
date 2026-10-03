@@ -79,7 +79,8 @@ pub struct TileLine {
     /// 0 = none, else 0xRRGGBB + 1.
     pub colour: u32,
     pub pts: Vec<[i32; 2]>,
-    pub elev: Vec<i16>,
+    /// Decimetres.
+    pub elev: Vec<i32>,
     pub grade: Vec<u8>,
     pub drape: Vec<i16>,
     pub sc: Vec<[u8; NCH]>,

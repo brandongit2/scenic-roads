@@ -6,6 +6,7 @@ use crate::pages;
 use anyhow::{bail, ensure, Context, Result};
 use bytemuck::Pod;
 use memmap2::Mmap;
+use roadcore::elev::Elevs;
 use roadcore::packs::{Climb, Here, LBin, LPart, PSample, Part, RailInfo, RailRel, RoadRec};
 use roadcore::scenic::ch;
 use roadcore::WayRec;
@@ -437,6 +438,37 @@ impl<T: Pod> Sect<T> {
     }
 }
 
+/// A base pack's processed elevations (`roadcore::elev`): `elevu`, or `elev` in packs made before
+/// it.
+pub enum ElevSect {
+    I16(Sect<i16>),
+    U16(Sect<u16>),
+}
+
+impl ElevSect {
+    /// The elevations (decimetres) of vertices `r`.
+    pub fn range(&self, r: Range<usize>) -> Result<Vec<i32>> {
+        Ok(match self {
+            ElevSect::I16(s) => Elevs::I16(&s.range(r)?).to_dm(),
+            ElevSect::U16(s) => Elevs::U16(&s.range(r)?).to_dm(),
+        })
+    }
+
+    /// Several ranges' elevations (decimetres) at once (`Sect::gather`).
+    pub fn gather(&self, ranges: &[Range<usize>]) -> Result<Vec<Vec<i32>>> {
+        Ok(match self {
+            ElevSect::I16(s) => {
+                let g = s.gather(ranges)?;
+                (0..ranges.len()).map(|k| Elevs::I16(g.get(k)).to_dm()).collect()
+            }
+            ElevSect::U16(s) => {
+                let g = s.gather(ranges)?;
+                (0..ranges.len()).map(|k| Elevs::U16(g.get(k)).to_dm()).collect()
+            }
+        })
+    }
+}
+
 /// `pages::keep_derived` tag of the by-road index made from a road values file.
 const BYROAD_TAG: u64 = 1;
 
@@ -445,7 +477,7 @@ pub struct BaseView {
     pub unit: String,
     pub ways: Sect<WayRec>,
     pub verts: Sect<[i32; 2]>,
-    pub elev: Sect<i16>,
+    pub elev: ElevSect,
     pub grade: Sect<u8>,
     pub src: Sect<u8>,
     pub scenic: Option<Sect<[u8; ch::N]>>,
@@ -468,7 +500,7 @@ impl BaseView {
             unit,
             ways: base.sect("ways")?,
             verts: base.sect("verts")?,
-            elev: base.sect("elev")?,
+            elev: if base.has("elevu") { ElevSect::U16(base.sect("elevu")?) } else { ElevSect::I16(base.sect("elev")?) },
             grade: base.sect("grade")?,
             src: base.sect("src")?,
             scenic: if base.has("scenic") { Some(base.sect("scenic")?) } else { None },

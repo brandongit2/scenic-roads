@@ -132,7 +132,7 @@ def build(check=False):
     n_ext = d.card('net', 'd1', cy, 'extract', 'Rust', ['the ways each tile owns,', 'inside the coverage'],
                    [(['ways · verts'], 'in base/<z6>.pack'), (['junction pairings'], None)], scope='area')
     n_samp = d.card('terr', 'd2', cy, 'sample.py · tile elev', 'Py · Rust', ['DEMs chosen by location,', 'then clean-up and grade'],
-                    [(['elev.f32 · src.u8', 'final.i16 · grade.u8'], 'in the base pack')], kept='its last run is its cache', scope='area')
+                    [(['elev.f32 · src.u8', 'final.u16 · grade.u8'], 'in the base pack')], kept='its last run is its cache', scope='area')
     n_scen = d.card('scen', 'd3', cy, 'scenic', 'Rust', ['samples every 100 m: horizons', 'to 300 m past trees & buildings,', 'views to 15 km, designations'],
                     [(['scenic.u8'], '13 per road point'), (['samples.* · near.i8', 'vterrain.i16'], 'in the base pack')],
                     kept='its last run is its cache', scope='area')

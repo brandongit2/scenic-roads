@@ -76,9 +76,9 @@ $(BUILD)/grid.class.u8: $(BUILD)/terrain.tiles dem/landcover.py
 # 5. scenic analysis: 100 m road samples → tree canopy (Meta/WRI) near-field horizons →
 #    15 km viewsheds and landscape metrics. The samples need the processed elevations (the tile
 #    step's clean-up, run on its own first).
-$(BUILD)/final.i16: $(BUILD)/elev.f32 | target/release/tile
+$(BUILD)/final.u16: $(BUILD)/elev.f32 | target/release/tile
 	./target/release/tile $(BUILD) elev
-$(BUILD)/samples.bin: $(BUILD)/final.i16 $(BUILD)/terrain.tiles | target/release/scenic-metrics
+$(BUILD)/samples.bin: $(BUILD)/final.u16 $(BUILD)/terrain.tiles | target/release/scenic-metrics
 	./target/release/scenic-metrics $(BUILD) prep
 $(BUILD)/roadside.u8: $(BUILD)/samples.bin
 	./target/release/scenic-metrics $(BUILD) canopy
