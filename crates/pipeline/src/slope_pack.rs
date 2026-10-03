@@ -246,3 +246,47 @@ pub fn build_q(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<Report
 pub fn decodes(b: &[u8]) -> bool {
     decode_terrain_png(b).is_ok()
 }
+
+/// The root pack (z0–2) made from the 64 z3 slope tiles as stored (their quadrants), where a z3
+/// tile is missing from its own terrain's slope.
+pub fn build_root(out: &mut Out) -> Result<usize> {
+    let terr = ManifestTiles::new(out, "terrain");
+    let have = ManifestTiles::new(out, "slope");
+    let get = |z: u8, x: u32, y: u32| -> Option<Vec<u8>> { terr.get(z, x, y).ok().flatten() };
+    let mut below: HashMap<(u32, u32), Vec<[u16; 4]>> = HashMap::new();
+    for x in 0..8u32 {
+        for y in 0..8u32 {
+            if let Some(v) = have.get(3, x, y)?.and_then(|b| decode_slope4(&b)) {
+                below.insert((x, y), quadrant(&v));
+            }
+        }
+    }
+    let mut made: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
+    for z in (0..=2u8).rev() {
+        let n = 1u32 << z;
+        let mut next = HashMap::new();
+        for x in 0..n {
+            for y in 0..n {
+                let kids: Vec<((u32, u32), Vec<[u16; 4]>)> = (0..4u32).filter_map(|k| {
+                    let c = (2 * x + (k & 1), 2 * y + (k >> 1));
+                    below.get(&c).map(|q| (c, q.clone()))
+                }).collect();
+                if let Some(v) = compose(&get, z, x, y, &kids) {
+                    let (blob, v) = stored(&v);
+                    made.push((z, x, y, blob));
+                    if z > 0 {
+                        next.insert((x, y), quadrant(&v));
+                    }
+                }
+            }
+        }
+        below = next;
+    }
+    drop((terr, have));
+    made.sort_by_key(|t| (t.0, t.1, t.2));
+    let n = made.len();
+    let mut it = made.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
+    crate::layers::write_pack(out, "slope", "slope4-png", false, "root", (0, 0, 0), &mut it)?;
+    out.save()?;
+    Ok(n)
+}

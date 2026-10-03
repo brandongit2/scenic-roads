@@ -69,6 +69,13 @@ impl Keys {
             self.catalog = done.first().map(|d| d.1.clone());
             return;
         }
+        if step.ends_with("-root") {
+            // Kept with the lo keys, under the step's own name.
+            for (t, k) in done {
+                self.lo.insert(t.clone(), k.clone());
+            }
+            return;
+        }
         let m = self.map(step);
         for (t, k) in done {
             m.insert(t.clone(), k.clone());
@@ -233,6 +240,21 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         return work;
     }
 
+    // The terrain and slope roots (z0–2), from their lo packs.
+    for (layer, step) in [("terrain", "terrain-root"), ("slope", "slope-root")] {
+        let mut inputs = vec![format!("{step} 1")];
+        inputs.extend(m.range(format!("layers/{layer}/lo/")..).take_while(|(l, _)| l.starts_with(&format!("layers/{layer}/lo/"))).map(|(_, c)| c.clone()));
+        if inputs.len() == 1 {
+            continue;
+        }
+        let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+        let k = h(&refs);
+        if done.lo.get(step).map(String::as_str) != Some(k.as_str()) {
+            work.push(Work { step: step.into(), targets: vec![(step.to_string(), k)] });
+            return work;
+        }
+    }
+
     // A catalog when what it would list has changed since the last one.
     let served: Vec<String> = m
         .iter()
@@ -273,6 +295,10 @@ mod tests {
         let w = plan(&c, "2026-09-28", &m, &done);
         assert_eq!(w[0].step, "slope");
         done.record("slope", &w[0].targets);
+        // The root from the lo pack (no slope lo pack in this test: no slope root).
+        let w = plan(&c, "2026-09-28", &m, &done);
+        assert_eq!(w[0].step, "terrain-root");
+        done.record("terrain-root", &w[0].targets);
         let w = plan(&c, "2026-09-28", &m, &done);
         assert_eq!(w[0].step, "catalog");
         done.record("catalog", &w[0].targets);

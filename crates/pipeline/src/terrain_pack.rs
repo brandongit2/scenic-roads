@@ -374,3 +374,53 @@ pub fn build_q(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], 
     out.save()?;
     Ok(rep)
 }
+
+/// The root pack (z0–2) remade from the 64 z3 tiles as stored in the lo packs (their 2×2 means),
+/// over AWS's raw z0–2 tiles; deterministic given the lo packs.
+pub fn build_root(out: &mut Out, raw: &RawTiles) -> anyhow::Result<usize> {
+    let have = ManifestTiles::new(out, "terrain");
+    let mut quads: HashMap<(u32, u32), Vec<f32>> = HashMap::new();
+    for x in 0..8u32 {
+        for y in 0..8u32 {
+            let stored = match have.get(3, x, y)? {
+                Some(b) => Some(b),
+                None => raw.get(3, x, y)?.0,
+            };
+            let Some(b) = stored else { continue };
+            let Ok(e) = decode_terrain_png(&b) else { continue };
+            let mut q = vec![0f32; 128 * 128];
+            for j in 0..128 {
+                for i in 0..128 {
+                    let (cx, cy) = (i * 2, j * 2);
+                    q[j * 128 + i] = (e[cy * 256 + cx] + e[cy * 256 + cx + 1] + e[(cy + 1) * 256 + cx] + e[(cy + 1) * 256 + cx + 1]) * 0.25;
+                }
+            }
+            quads.insert((x, y), q);
+        }
+    }
+    let mut tiles: Vec<(u8, u32, u32, Vec<u8>, u32)> = Vec::new();
+    let below: HashMap<(u32, u32), Repaired> = HashMap::new();
+    for z in (0..=2u8).rev() {
+        let n = 1u32 << z;
+        let mut next = HashMap::new();
+        for x in 0..n {
+            for y in 0..n {
+                let Some(b) = raw.get(z, x, y)?.0 else { continue };
+                let (b, _, q) = process(b, z, x, y, &below, &quads);
+                if let Some(q) = q {
+                    next.insert((x, y), q);
+                }
+                let l = b.len() as u32;
+                tiles.push((z, x, y, b, l));
+            }
+        }
+        quads = next;
+    }
+    drop(have);
+    tiles.sort_by_key(|t| (t.0, t.1, t.2));
+    let n = tiles.len();
+    let mut it = tiles.into_iter();
+    crate::layers::write_pack(out, "terrain", "terrarium-png", false, "root", (0, 0, 0), &mut it)?;
+    out.save()?;
+    Ok(n)
+}

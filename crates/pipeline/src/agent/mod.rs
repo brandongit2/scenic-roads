@@ -512,9 +512,9 @@ impl Agent {
         let cache = self.o.home.join("cache");
         let scratch = self.o.home.join("scratch").join(&w.step);
         let mut cmd = vec![s(&self.o.bin.join("scenic-build")), w.step.clone(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
-        cmd.extend(w.targets.iter().map(|t| t.0.clone()).filter(|t| t != "catalog"));
+        cmd.extend(w.targets.iter().map(|t| t.0.clone()).filter(|t| t != "catalog" && !t.ends_with("-root")));
         match w.step.as_str() {
-            "terrain" => cmd.extend(["--raw".into(), s(&cache.join("aws-terrarium"))]),
+            "terrain" | "terrain-root" => cmd.extend(["--raw".into(), s(&cache.join("aws-terrarium"))]),
             "unit" => cmd.extend([
                 "--pass".into(),
                 date.to_string(),
@@ -535,6 +535,7 @@ impl Agent {
             "unit" => format!("Roads, elevations and scenery ({n} area{})", if n == 1 { "" } else { "s" }),
             "pack" => format!("Map tiles ({n} area{})", if n == 1 { "" } else { "s" }),
             "lo" => "Zoomed-out map tiles".to_string(),
+            "terrain-root" | "slope-root" => "World-level terrain and slope".to_string(),
             _ => "Publishing the new map data".to_string(),
         };
         vec![JobSpec {

@@ -19,6 +19,7 @@
 //!                                from AWS's raw tiles (cached in --raw)
 //!   slope [T …] [--regions dir]  slope packs (z3–11) of z6 tiles T from the terrain packs
 //!                                (default: every z6 tile near the coverage)
+//!   terrain-root, slope-root     their z0–2 root packs, from the lo packs' z3 tiles
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalog                      publish a catalog of the build manifest
@@ -93,6 +94,15 @@ fn main() -> Result<()> {
         "roadunits" => roadunits(&mut out)?,
         "terrain" => terrain_step(&mut out, &args)?,
         "slope" => slope_step(&mut out, &args)?,
+        "terrain-root" => {
+            let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
+            let n = pipeline::terrain_pack::build_root(&mut out, &pipeline::terrain_pack::RawTiles::new(&raw_dir))?;
+            eprintln!("terrain root: {n} tiles");
+        }
+        "slope-root" => {
+            let n = pipeline::slope_pack::build_root(&mut out)?;
+            eprintln!("slope root: {n} tiles");
+        }
         "put" => {
             // put <logical> <ext> <file>: upload a file under a logical name (manual operations).
             let p = positional(&args);
