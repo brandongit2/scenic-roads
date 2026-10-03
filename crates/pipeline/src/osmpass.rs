@@ -47,6 +47,10 @@ pub const FILTER_BASEMAP: &[&str] = &[
 /// filtered file, Planetiler's work, the pieces).
 pub const LOCAL_HEADROOM: u64 = 100 << 30;
 
+/// Room the basemap's work needs (its input, Planetiler's temporary files, the archive); short of
+/// it, the local filtered file goes and the basemap's filter reads the NAS's copy.
+const BASEMAP_ROOM: u64 = 50 << 30;
+
 /// Piece buffer around a unit, km.
 pub const BUFFER_KM: f64 = 10.0;
 
@@ -106,8 +110,40 @@ pub fn copy_resume(src: &Path, dst: &Path) -> Result<()> {
 }
 
 /// Every z3 tile, with its pieces' bounds (the tile grown by the buffer).
-fn z3_tiles() -> Vec<Unit> {
-    (0..8u32).flat_map(|x| (0..8u32).map(move |y| Unit { z: 3, x, y })).collect()
+/// The pass's filtered planet on the NAS.
+fn filtered_nas(out: &Out, date: &str) -> Result<PathBuf> {
+    Ok(out.path(out.get(&format!("sources/osm/{date}/filtered")).context("the filtered planet on the NAS")?))
+}
+
+/// Cuts `input` (the data of tile `t` and its buffer) down to the z6 pieces below `t`, a quarter at
+/// a time and depth first, calling `each` on every non-empty z6 piece. osmium keeps id sets per
+/// output that span the whole id range (about 4 GB each on a planet-sized input, measured), so a
+/// run makes four; a piece goes once everything below it is done, so the tree's files never all
+/// sit on disk at once. Resumable: `<tile>.cut` marks a tile whose quarters were cut, and a piece
+/// still there is one not yet done.
+fn cut_tree(input: &Path, t: Unit, work: &Path, each: &mut dyn FnMut(Unit, &Path) -> Result<()>) -> Result<()> {
+    let kids: Vec<Unit> = (0..2u32).flat_map(|i| (0..2u32).map(move |j| Unit { z: t.z + 1, x: t.x * 2 + i, y: t.y * 2 + j })).collect();
+    let dir = work.join(format!("z{}", t.z + 1));
+    let marker = work.join(format!("{}.cut", t.dash()));
+    if !marker.exists() {
+        cut(input, &kids, &dir, 4)?;
+        std::fs::write(&marker, b"")?;
+    }
+    for k in kids {
+        let f = dir.join(format!("{}.osm.pbf", k.dash()));
+        if !f.exists() {
+            continue;
+        }
+        if !is_empty_piece(&f) {
+            if k.z == 6 {
+                each(k, &f)?;
+            } else {
+                cut_tree(&f, k, work, each)?;
+            }
+        }
+        std::fs::remove_file(&f)?;
+    }
+    Ok(())
 }
 
 /// An osmium extract config: one bbox per tile (grown by the buffer) → `dir/<z-x-y>.osm.pbf`.
@@ -151,11 +187,51 @@ pub struct Pieces {
 }
 
 /// One unit's chaining inputs: its owned ways (OSM id, length) and the pairs made at its nodes.
-#[derive(Default)]
+#[derive(Default, Debug, PartialEq)]
 pub struct UnitLinks {
     pub ways: Vec<(u64, f32)>,
     /// (way a << 1 | end a, way b << 1 | end b) by OSM id.
     pub pairs: Vec<(u64, u64)>,
+}
+
+const LINKS_MAGIC: &[u8; 8] = b"RDLINK01";
+
+impl UnitLinks {
+    /// Kept between the cut and the walk: the counts, then 16 bytes per way (id, length as f64
+    /// bits) and per pair.
+    pub fn save(&self, path: &Path) -> Result<()> {
+        let mut b = Vec::with_capacity(24 + 16 * (self.ways.len() + self.pairs.len()));
+        b.extend_from_slice(LINKS_MAGIC);
+        b.extend_from_slice(&(self.ways.len() as u64).to_le_bytes());
+        b.extend_from_slice(&(self.pairs.len() as u64).to_le_bytes());
+        for &(id, len) in &self.ways {
+            b.extend_from_slice(&id.to_le_bytes());
+            b.extend_from_slice(&(len as f64).to_bits().to_le_bytes());
+        }
+        for &(a, c) in &self.pairs {
+            b.extend_from_slice(&a.to_le_bytes());
+            b.extend_from_slice(&c.to_le_bytes());
+        }
+        if let Some(d) = path.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, &b)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    pub fn load(path: &Path) -> Result<UnitLinks> {
+        let b = std::fs::read(path)?;
+        anyhow::ensure!(b.len() >= 24 && &b[..8] == LINKS_MAGIC, "{}: not a links file", path.display());
+        let u = |i: usize| u64::from_le_bytes(b[i..i + 8].try_into().unwrap());
+        let (nw, np) = (u(8) as usize, u(16) as usize);
+        anyhow::ensure!(b.len() == 24 + 16 * (nw + np), "{}: truncated", path.display());
+        let ways = (0..nw).map(|k| (u(24 + 16 * k), f64::from_bits(u(32 + 16 * k)) as f32)).collect();
+        let at = 24 + 16 * nw;
+        let pairs = (0..np).map(|k| (u(at + 16 * k), u(at + 8 + 16 * k))).collect();
+        Ok(UnitLinks { ways, pairs })
+    }
 }
 
 /// Run `extract` on a piece and work out its unit's chaining inputs.
@@ -240,7 +316,7 @@ pub fn walk_all(units: &[UnitLinks]) -> Vec<(u64, RoadVal)> {
 }
 
 /// Stage list, in order.
-pub const STAGES: &[&str] = &["copy", "filter", "sets", "outlines", "basemap", "cut3", "cut6", "roads"];
+pub const STAGES: &[&str] = &["copy", "filter", "sets", "outlines", "basemap", "cut", "roads"];
 
 /// Run (or resume) the pass for `date` from `planet` (on the NAS).
 pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extract_bin: &Path, planetiler: &Path) -> Result<()> {
@@ -288,10 +364,18 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         out.save()?;
         mark(scratch, "outlines")?;
     }
+    // From here the filtered file is read twice more (the basemap's filter, the first cut): from
+    // the local copy while there's room, else from the NAS's.
+    let free = |p: &Path| crate::agent::cond::free_bytes(p).unwrap_or(0);
     if !done(scratch, "basemap").exists() {
+        if filtered.exists() && free(scratch) < BASEMAP_ROOM {
+            eprintln!("basemap: {} GB free; reading the filtered planet from the NAS", free(scratch) >> 30);
+            std::fs::remove_file(&filtered)?;
+        }
+        let src = if filtered.exists() { filtered.clone() } else { filtered_nas(out, date)? };
         let b = scratch.join("basemap-input.osm.pbf");
         let mut c = osmium();
-        c.args(["tags-filter", "--overwrite", "-o"]).arg(&b).arg(&filtered).args(FILTER_BASEMAP);
+        c.args(["tags-filter", "--overwrite", "-o"]).arg(&b).arg(&src).args(FILTER_BASEMAP);
         run(c, "osmium tags-filter (basemap)")?;
         let pm = scratch.join("basemap.pmtiles");
         let downloads = out.root().join("sources/basemap");
@@ -317,56 +401,61 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         std::fs::remove_dir_all(scratch.join("planetiler-tmp")).ok();
         mark(scratch, "basemap")?;
     }
-    let p3 = scratch.join("pieces3");
-    if !done(scratch, "cut3").exists() {
-        cut(&filtered, &z3_tiles(), &p3, 32)?;
-        mark(scratch, "cut3")?;
-    }
-    let mut pieces = Pieces { date: date.to_string(), ..Default::default() };
-    let p6 = scratch.join("pieces6");
-    if !done(scratch, "cut6").exists() {
-        for q in z3_tiles() {
-            let src = p3.join(format!("{}.osm.pbf", q.dash()));
-            if is_empty_piece(&src) {
-                continue;
+    let tree = scratch.join("cut");
+    let links = scratch.join("links");
+    if !done(scratch, "cut").exists() {
+        // The pieces come to a little more than the filtered file (ways kept whole, buffers), a
+        // quarter of it at a time below the first cut.
+        let flen = std::fs::metadata(&filtered).or_else(|_| std::fs::metadata(filtered_nas(out, date)?).map_err(anyhow::Error::from))?.len();
+        if filtered.exists() && !tree.join("0-0-0.cut").exists() && free(scratch) < flen / 8 * 11 + (10 << 30) {
+            eprintln!("cut: {} GB free; reading the filtered planet from the NAS", free(scratch) >> 30);
+            std::fs::remove_file(&filtered)?;
+        }
+        let src = if filtered.exists() { filtered.clone() } else { filtered_nas(out, date)? };
+        let work = scratch.join("extract-work");
+        cut_tree(&src, Unit { z: 0, x: 0, y: 0 }, &tree, &mut |u, f| {
+            let logical = format!("sources/osm/{date}/pieces/{}", u.dash());
+            if out.get(&logical).is_none() {
+                out.put_file(&logical, "osm.pbf", &copy_keep(f, scratch)?)?;
+                out.save()?;
             }
-            let kids: Vec<Unit> = (0..8).flat_map(|i| (0..8).map(move |j| Unit { z: 6, x: q.x * 8 + i, y: q.y * 8 + j })).collect();
-            let dir = p6.join(q.dash());
-            if !done(&dir, "cut").exists() {
-                cut(&src, &kids, &dir, 64)?;
-                mark(&dir, "cut")?;
+            let lf = links.join(format!("{}.bin", u.dash()));
+            if !lf.exists() {
+                let ul = unit_links(extract_bin, f, u, &work)?;
+                eprintln!("roads: {} {} ways, {} pairs", u.slash(), ul.ways.len(), ul.pairs.len());
+                ul.save(&lf)?;
             }
-            for u in kids {
-                let f = dir.join(format!("{}.osm.pbf", u.dash()));
-                if is_empty_piece(&f) {
-                    std::fs::remove_file(&f).ok();
-                    continue;
-                }
-                let logical = format!("sources/osm/{date}/pieces/{}", u.dash());
-                if out.get(&logical).is_none() {
-                    out.put_file(&logical, "osm.pbf", &copy_keep(&f, scratch)?)?;
-                }
-                pieces.pieces.insert(u.slash(), logical);
+            Ok(())
+        })?;
+        let mut pieces = Pieces { date: date.to_string(), ..Default::default() };
+        let prefix = format!("sources/osm/{date}/pieces/");
+        for k in out.manifest.keys().filter(|k| k.starts_with(&prefix)) {
+            if let Some(u) = Unit::parse(&k[prefix.len()..]) {
+                pieces.pieces.insert(u.slash(), k.clone());
             }
-            out.save()?;
         }
         out.put_bytes(&format!("sources/osm/{date}/pieces"), "json", &serde_json::to_vec_pretty(&pieces)?)?;
         out.save()?;
-        std::fs::remove_dir_all(&p3).ok();
-        mark(scratch, "cut6")?;
-    } else {
-        let name = out.get(&format!("sources/osm/{date}/pieces")).context("pieces list")?.to_string();
-        pieces = serde_json::from_slice(&std::fs::read(out.path(&name))?)?;
+        std::fs::remove_dir_all(&tree).ok();
+        std::fs::remove_file(&filtered).ok();
+        mark(scratch, "cut")?;
     }
+    let name = out.get(&format!("sources/osm/{date}/pieces")).context("pieces list")?.to_string();
+    let pieces: Pieces = serde_json::from_slice(&std::fs::read(out.path(&name))?)?;
     if !done(scratch, "roads").exists() {
-        // Every unit's chaining inputs, then the worldwide walk; values sliced by owner unit.
+        // Every unit's chaining inputs (kept by the cut, else worked out from its piece), then the
+        // worldwide walk; values sliced by owner unit.
         let mut all: Vec<(Unit, UnitLinks)> = Vec::new();
         for (u, _) in &pieces.pieces {
             let unit = Unit::parse(u).context("unit")?;
-            let local = p6.join(Unit { z: 3, x: unit.x >> 3, y: unit.y >> 3 }.dash()).join(format!("{}.osm.pbf", unit.dash()));
-            let src = if local.exists() { local } else { out.path(out.get(&format!("sources/osm/{date}/pieces/{}", unit.dash())).context("piece")?) };
-            let ul = unit_links(extract_bin, &src, unit, &scratch.join("extract-work"))?;
-            eprintln!("roads: {} {} ways, {} pairs", u, ul.ways.len(), ul.pairs.len());
+            let lf = links.join(format!("{}.bin", unit.dash()));
+            let ul = match UnitLinks::load(&lf) {
+                Ok(ul) => ul,
+                Err(_) => {
+                    let src = out.path(out.get(&format!("sources/osm/{date}/pieces/{}", unit.dash())).context("piece")?);
+                    unit_links(extract_bin, &src, unit, &scratch.join("extract-work"))?
+                }
+            };
             all.push((unit, ul));
         }
         let lists: Vec<UnitLinks> = all.iter().map(|(_, l)| UnitLinks { ways: l.ways.clone(), pairs: l.pairs.clone() }).collect();
@@ -389,8 +478,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         mark(scratch, "roads")?;
     }
     if done(scratch, "roads").exists() {
-        std::fs::remove_file(&filtered).ok();
-        std::fs::remove_dir_all(&p6).ok();
+        std::fs::remove_dir_all(&links).ok();
     }
     // The pass is complete: its summary marks it so (the agent's `pass_done`).
     if out.get(&format!("sources/osm/{date}/pass")).is_none() {
@@ -456,4 +544,20 @@ pub fn check_tools(extract_bin: &Path, planetiler: &Path) -> Result<()> {
         bail!("no Planetiler at {}", planetiler.display());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn links_round_trip() {
+        let d = tempfile::tempdir().unwrap();
+        let ul = UnitLinks { ways: vec![(1, 12.5), (u64::MAX - 3, 0.25)], pairs: vec![(2, 3), (7 << 1 | 1, 9 << 1)] };
+        let p = d.path().join("l/6-1-2.bin");
+        ul.save(&p).unwrap();
+        assert_eq!(UnitLinks::load(&p).unwrap(), ul);
+        std::fs::write(&p, &std::fs::read(&p).unwrap()[..30]).unwrap();
+        assert!(UnitLinks::load(&p).is_err());
+    }
 }
