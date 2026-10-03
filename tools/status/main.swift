@@ -10,6 +10,7 @@
 //   swiftc -O -swift-version 5 -o Scenic.app/Contents/MacOS/scenic-status tools/status/main.swift
 //   scenic-status --print                   the icon and menu for the status now, as text
 //   scenic-status --replay a.json b.json …  the notifications a sequence of answers would send
+//   scenic-status --render menu.png          the menu's lines drawn as they lay out (dark), for checking
 // SCENIC_STATUS_SERVER overrides the server (http://127.0.0.1:8080).
 
 import AppKit
@@ -89,21 +90,27 @@ enum Kind {
     }
 }
 
-/// "45 s", "12 min", "3 h 5 min", "2 days".
+/// "45 s", "12 min", "3 h 5 min", "2 days" (number and unit never split across lines).
 func duration(_ secs: Int) -> String {
-    if secs < 60 { return "\(max(secs, 0)) s" }
-    if secs < 3600 { return "\(secs / 60) min" }
+    let nb = "\u{00A0}"
+    if secs < 60 { return "\(max(secs, 0))\(nb)s" }
+    if secs < 3600 { return "\(secs / 60)\(nb)min" }
     if secs < 2 * 86400 {
         let m = secs / 60 % 60
-        return m == 0 ? "\(secs / 3600) h" : "\(secs / 3600) h \(m) min"
+        return m == 0 ? "\(secs / 3600)\(nb)h" : "\(secs / 3600)\(nb)h \(m)\(nb)min"
     }
-    return "\(secs / 86400) days"
+    return "\(secs / 86400)\(nb)days"
 }
 
 func clock(_ t: Int) -> String {
     let f = DateFormatter()
     f.dateFormat = Calendar.current.isDateInToday(Date(timeIntervalSince1970: TimeInterval(t))) ? "HH:mm" : "d MMM HH:mm"
     return f.string(from: Date(timeIntervalSince1970: TimeInterval(t)))
+}
+
+/// Home folders as "~" (the build Mac's paths, as its log shows them).
+func tildes(_ s: String) -> String {
+    s.replacingOccurrences(of: "/Users/[^/ ]+/", with: "~/", options: .regularExpression)
 }
 
 func clip(_ s: String, _ n: Int = 80) -> String {
@@ -140,13 +147,13 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
     var out = [Line(text: line, style: .title)]
     guard let r = r, let s = r.status else { return out }
     if let j = s.job {
-        out.append(Line(text: clip(j.what), style: .plain))
-        if let p = j.paused { out.append(Line(text: clip(p), style: .small)) }
+        out.append(Line(text: j.what, style: .plain))
+        if let p = j.paused { out.append(Line(text: p, style: .small)) }
         out.append(Line(text: "Running \(duration(r.now - j.started)) (since \(clock(j.started)))", style: .small))
         // The log's last lines, without the terminal's colour codes.
         let plain = (j.tail ?? "").replacingOccurrences(of: "\u{1B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
         for l in plain.split(separator: "\n").suffix(3) where !l.trimmingCharacters(in: .whitespaces).isEmpty {
-            out.append(Line(text: clip(String(l).trimmingCharacters(in: .whitespaces), 90), style: .mono))
+            out.append(Line(text: tildes(String(l).trimmingCharacters(in: .whitespaces)), style: .mono))
         }
     }
     let power = s.conditions.ac ? "Mains power" : "Battery\(s.conditions.battery.map { " \($0)%" } ?? "")"
@@ -156,14 +163,25 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
     if !s.waiting.isEmpty {
         out.append(Line(text: "", style: .separator))
         out.append(Line(text: "Waiting", style: .header))
-        for w in s.waiting.prefix(6) { out.append(Line(text: clip("\(w.what): \(w.why)", 90), style: .plain)) }
+        for w in s.waiting.prefix(6) { out.append(Line(text: "\(w.what): \(w.why)", style: .plain)) }
     }
     if !s.recent.isEmpty {
         out.append(Line(text: "", style: .separator))
         out.append(Line(text: "Recent", style: .header))
-        for d in s.recent.prefix(6) {
-            let how = d.ok ? duration(d.secs) : "failed after \(duration(d.secs))"
-            out.append(Line(text: clip("\(d.ok ? "✓" : "✗") \(d.what): \(how), \(clock(d.ended))", 90), style: .plain))
+        // The last jobs, a run of the same job with the same outcome as one entry.
+        var runs: [(Done, Int)] = []
+        for d in s.recent {
+            if let last = runs.last, last.0.id == d.id, last.0.ok == d.ok {
+                runs[runs.count - 1].1 += 1
+            } else {
+                runs.append((d, 1))
+            }
+        }
+        for (d, n) in runs.prefix(6) {
+            out.append(Line(text: "\(d.ok ? "✓" : "✗") \(d.what)", style: .plain))
+            let times = n > 1 ? "\(d.ok ? "done" : "failed") \(n) times, the last" : (d.ok ? "done" : "failed")
+            let how = d.ok ? "in \(duration(d.secs))" : "after \(duration(d.secs))"
+            out.append(Line(text: "\(times) \(how) at \(clock(d.ended))", style: .small))
         }
     }
     if let built = s.built, !built.isEmpty {
@@ -172,6 +190,43 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
         out.append(Line(text: "Areas built: \(b) of \(t) in \(built.count) region\(built.count == 1 ? "" : "s")", style: .small))
     }
     return out
+}
+
+/// A line's font and colour in the menu.
+func fontFor(_ style: Style) -> (NSFont, NSColor) {
+    let size = NSFont.smallSystemFontSize
+    switch style {
+    case .title: return (.boldSystemFont(ofSize: NSFont.systemFontSize), .labelColor)
+    case .plain, .separator: return (.menuFont(ofSize: 0), .labelColor)
+    case .small, .header: return (.menuFont(ofSize: size), .secondaryLabelColor)
+    case .mono: return (.monospacedSystemFont(ofSize: size - 1, weight: .regular), .secondaryLabelColor)
+    }
+}
+
+/// A menu line that wraps within the menu's width instead of being cut short with "…", and isn't
+/// clickable (a view: no highlight, no action).
+final class LineView: NSView {
+    static let width: CGFloat = 420
+    /// The menu's text inset, as its own items have it.
+    static let inset: CGFloat = 14
+
+    init(_ text: String, font: NSFont, color: NSColor, wrapAnywhere: Bool) {
+        let w = LineView.width - 2 * LineView.inset
+        let label = NSTextField(wrappingLabelWithString: text)
+        label.font = font
+        label.textColor = color
+        label.isSelectable = false
+        label.lineBreakMode = wrapAnywhere ? .byCharWrapping : .byWordWrapping
+        label.preferredMaxLayoutWidth = w
+        let h = ceil(label.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: w, height: 10_000)).height ?? font.pointSize + 4)
+        super.init(frame: NSRect(x: 0, y: 0, width: LineView.width, height: h + 4))
+        label.frame = NSRect(x: LineView.inset, y: 2, width: w, height: h)
+        addSubview(label)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("not from a nib")
+    }
 }
 
 /// What notifications compare: the job, whether it's paused, the last finished job, out of touch.
@@ -240,21 +295,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func menu(_ kind: Kind, _ line: String) -> NSMenu {
         let m = NSMenu()
         m.autoenablesItems = false
-        let size = NSFont.smallSystemFontSize
         for l in lines(reply, line) {
             if l.style == .separator {
                 m.addItem(.separator())
                 continue
             }
-            let (font, color): (NSFont, NSColor) = switch l.style {
-            case .title: (.boldSystemFont(ofSize: NSFont.systemFontSize), .labelColor)
-            case .plain: (.menuFont(ofSize: 0), .labelColor)
-            case .small, .header: (.menuFont(ofSize: size), .secondaryLabelColor)
-            case .mono: (.monospacedSystemFont(ofSize: size - 1, weight: .regular), .secondaryLabelColor)
-            case .separator: (.menuFont(ofSize: 0), .labelColor)
-            }
+            let (font, color) = fontFor(l.style)
+            // A line of information, not a button: it wraps rather than being cut short, and
+            // neither highlights nor does anything when clicked.
             let it = NSMenuItem(title: l.text, action: nil, keyEquivalent: "")
-            it.attributedTitle = NSAttributedString(string: l.text, attributes: [.font: font, .foregroundColor: color])
+            it.view = LineView(l.text, font: font, color: color, wrapAnywhere: l.style == .mono)
             m.addItem(it)
         }
         m.addItem(.separator())
@@ -338,6 +388,39 @@ if args.contains("--print") {
     let (kind, line) = classify(r)
     print("icon: \(kind.symbol)")
     for l in lines(r, line) { print(l.style == .separator ? "────" : (l.style == .title ? "" : "  ") + l.text) }
+} else if let i = args.firstIndex(of: "--render"), i + 1 < args.count {
+    // The menu's information lines as views, stacked as the menu stacks them, drawn into a PNG.
+    let done = DispatchSemaphore(value: 0)
+    var r: Reply?
+    URLSession.shared.dataTask(with: server.appendingPathComponent("api/build")) { data, _, _ in
+        r = data.flatMap { try? JSONDecoder().decode(Reply.self, from: $0) }
+        done.signal()
+    }.resume()
+    done.wait()
+    _ = NSApplication.shared
+    let d = AppDelegate()
+    d.reply = r
+    let (kind, line) = classify(r)
+    let views: [NSView] = lines(r, line).map { l in
+        l.style == .separator ? NSView(frame: NSRect(x: 0, y: 0, width: LineView.width, height: 11)) : LineView(l.text, font: fontFor(l.style).0, color: fontFor(l.style).1, wrapAnywhere: l.style == .mono)
+    } + (r?.log != nil ? ["Open the Build Log"] : []).map { LineView($0, font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false) }
+        + [LineView("Open the Map", font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false)]
+    _ = (d, kind)
+    let height = views.reduce(CGFloat(0)) { $0 + $1.frame.height } + 16
+    let canvas = NSView(frame: NSRect(x: 0, y: 0, width: LineView.width, height: height))
+    canvas.appearance = NSAppearance(named: .darkAqua)
+    canvas.wantsLayer = true
+    canvas.layer?.backgroundColor = NSColor(white: 0.17, alpha: 1).cgColor
+    var y = height - 8
+    for v in views {
+        y -= v.frame.height
+        v.setFrameOrigin(NSPoint(x: 0, y: y))
+        canvas.addSubview(v)
+    }
+    let rep = canvas.bitmapImageRepForCachingDisplay(in: canvas.bounds)!
+    NSAppearance(named: .darkAqua)!.performAsCurrentDrawingAppearance { canvas.cacheDisplay(in: canvas.bounds, to: rep) }
+    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: args[i + 1]))
+    print("drew \(views.count) lines, \(Int(height)) pt high")
 } else if let i = args.firstIndex(of: "--replay") {
     // The notifications a sequence of answers would send.
     let d = AppDelegate()
