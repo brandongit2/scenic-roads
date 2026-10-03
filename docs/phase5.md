@@ -238,14 +238,18 @@ The jobs form a chain without cycles: every input exists before its reader runs.
 
 | Job | Reads | Writes |
 |---|---|---|
-| OSM pass, three more sets | the filtered planet (kept on the NAS) | `marks`: the point kinds' objects with tags and positions (ways and areas as points by today's rules); `summits`: natural=peak and volcano nodes with `ele`, worldwide; `named`: today's heritage filter (historic, heritage, museum/attraction/viewpoint, lighthouse, station, church and place of worship, protected area and park, military; Makefile:98–100) plus `ref:whc` and `heritage:operator=whc`, for locating register records |
+| OSM pass, four more sets | the filtered planet (kept on the NAS) | `marks`: the point kinds' objects with tags and positions (ways and areas as points by today's rules); `summits`: natural=peak and volcano nodes and ways, with or without `ele`, worldwide; `hikes`: hiking and foot route relations with their member ways; `named`: today's heritage filter (historic, heritage, museum/attraction/viewpoint, lighthouse, station, church and place of worship, protected area and park, military; Makefile:98–100) plus `ref:whc` and `heritage:operator=whc`, for locating register records |
+| `trailends` (per pass) | the `hikes` set | `work/trailends/<d>`: every simple linear hiking route's two ends worldwide (way ends used once, exactly two), with the route's name and relation id |
+| `terrain-z8` (once; network) | AWS's raw z8 tiles (the build Mac's raw-tile cache) | `sources/terrain-z8` (not served): every z8 tile repaired (`terrain_pack::process` with no children, so no coverage in it), with each tile's maximum |
+| `summits` (per pass) | the `summits` set, `sources/terrain-z8` | `work/summits/<d>`: every summit (OSM id, E7 position, kind, `ele` as the candidates have them), sorted by id, and the z8 overlay (below) |
 | `registers` (network; twice a year) | the register modules whose areas meet the coverage (whole jurisdictions); UNESCO's list and the World Heritage items; the special-area lists; the register-id → QID tables (Wikidata, per register property) | `sources/registers/<d>/<module>/…` (raw) |
 | `heritage` | registers, `named`, the `outlines` set (provinces), coverage | `work/heritage/<d>/`: located, filtered points with tiers and records, per z6 slice; heritage areas. heritage.py's rules: the municipal dedupe, federal.py's locating, and `covered()`, which becomes "within the coverage + 20 km" (today it tests the analysis grids, which base(U) makes later) |
 | `overlays` (geometry) | the `areas` and `named` sets; the kept filtered planet, for World Heritage parts by QID (as whsshapes.py does on merged.osm.pbf); heritage areas, special lists, UNESCO, coverage | `ov-*` packs; `grid-areas` near the coverage; `work/whs-sites` |
-| `items` (network; per pass) | the QIDs of the `marks` set within the coverage, the `areas` set, heritage records (`work/heritage`), UNESCO | `sources/items/<d>/facts`, `sources/pageviews/<seasons>/views` |
 | `unit`, base(U) | as now, plus the heritage points within U + 500 m (for road flags; today's converted `heritage.json` until `heritage` runs) | the base pack |
-| `unit-marks` | U's slice of `marks`, the worldwide `summits` set, U's piece (trailheads: hiking-route ends), coverage, terrain z12 within U + 30 km and z8 worldwide (cached on the build Mac; isolation searches up to 5,000 km) | `work/marks/<u>`: candidates (key, kind, position, name, en, ele, OSM id, QID, kept tags, peak result) |
-| `marks` (worldwide) | every `work/marks/*`, `work/heritage`, facts, pageviews, `work/whs-sites` | `marks-*` packs, `markdata`, `global/marks/summary` |
+| `pois` (per unit) | U's piece, `work/trailends/<d>`, the coverage near U | `work/pois/<u>`: U's candidates (below) |
+| `peaks` (per unit; network) | `work/pois/<u>`'s peaks, `work/summits`, z12 within 30 km of each peak (the terrain packs, else the same tile from the raw-tile cache, processed alike), `sources/terrain-z8` | `work/peaks/<u>`: prominence and isolation by candidate key |
+| `items` (network; per pass) | the QIDs of every current unit's `work/pois` (single-QID tags for facts, the first QID for pageviews), the `areas` set, heritage records (`work/heritage`), `work/whs-sites`, UNESCO | `sources/items/<d>/facts`, `sources/pageviews/<months>/views` |
+| `marks` (worldwide) | the current units' `work/pois` and `work/peaks`, `work/heritage`, facts, pageviews, `work/whs-sites` | `marks-*` packs, `markdata`, `global/marks/summary` |
 | `ovdata` | the overlays' areas, facts | `ovdata` |
 | `stations` | the `rail` set, coverage | `stations` packs |
 | `ferries` | the `ferries` set, GTFS and the hand timetables, coverage | `ferries` packs |
@@ -253,29 +257,41 @@ The jobs form a chain without cycles: every input exists before its reader runs.
 Each job's key is its step version plus the content names of what it reads.
 
 **Agent order:**
-1. pass; registers whenever stale (network);
-2. heritage, then items (network);
-3. terrain, slope, overlays;
-4. unit, unit-marks;
-5. pack, lo, roots;
-6. marks, ovdata, stations, ferries;
-7. catalog.
+1. pass, then the sets it lacks (`pass-sets`), trailends; registers whenever stale (network);
+2. terrain-z8 once, then summits; terrain, slope;
+3. heritage, overlays;
+4. unit; pois;
+5. peaks;
+6. items (network: after the candidates and `work/whs-sites` exist);
+7. pack, lo, roots;
+8. marks, ovdata, stations, ferries;
+9. catalog.
+
+Network jobs (terrain, terrain-z8, peaks, items, registers): a tile or answer that can't be
+fetched fails the job (retried later), never counts as "none".
 
 **Determinism across units:**
-- **Peaks:** prominence and isolation come from the worldwide `summits` set. Every tagged summit
-  raises its pixel wherever its unit is, and ties go by id. The result doesn't depend on unit
-  borders or the coverage (plan §6).
-- **Neighbourhood rules** (trailheads within 150 m): run on U plus the piece's buffer in a global
-  order by key. A kept point belongs to the unit that owns it, so neighbouring units agree.
+- **Peaks:** a peak's result reads only what lies within 28 km of it at z12 and the worldwide z8,
+  both the same whichever unit computes it and whatever the coverage (z12: the packs' tiles or
+  the same raw tile processed alike; z8: one artifact). The summits near it count at their own
+  heights, worked out the same way wherever they are; ties go by tagged height, distance, then OSM
+  id (plan §6). A z12 tile AWS doesn't have (404: open sea) is sea level in every unit, never an
+  upsampled ancestor.
+- **Neighbourhood rules** (trailheads within 150 m): run on U plus the piece's buffer in one order
+  (rank, then key), so neighbouring units agree on the points near their border. A kept point
+  belongs to the unit that owns it. Hiking-route ends come from the whole route (`trailends`), not
+  from the piece, where a route leaving and coming back would show other ends. (At the coverage's
+  edge a point kept outside it can still drop one inside, and take its name: the clip comes
+  after the dedup, so that every unit agrees.)
 - **The municipal heritage dedupe (40 m):** runs worldwide in `heritage`, ordered by key.
 
 **Where today's steps go:**
 
 | Today | New job | Language |
 |---|---|---|
-| extract.rs POIs | `marks` set, `unit-marks` | Rust, today's rules, keeping OSM ids and tags (no 60 m matching) |
-| poidetails.py | `marks` (kept tags and facts) | Rust |
-| peaks.rs | `unit-marks` | Rust |
+| extract.rs POIs | `pois` (`work/pois/<u>`; extract `--candidates`), with the pass's `trailends` | Rust, today's rules, keeping OSM ids and tags (no 60 m matching) |
+| poidetails.py | `pois` (kept tags, `length_m`, `viewpoint`, the re-kinds), `items` (facts), `marks` | Rust; Python for the fetches |
+| peaks.rs | `peaks` (`pipeline::peaks`, the binary kept as a thin wrapper for today's builds) | Rust |
 | heritage.py, heritage_eu.py, federal.py, crhp.py, heritagewd.py's matching | `heritage` | Python on staged inputs, like landcover.py and labels.py. The registers become modules declaring their jurisdictions (today NRHP covers 7 states, hard-coded) |
 | heritagewd.py's fetches, pageviews.py | `items` | Python |
 | heritagedetails.py, interest.py, layers.py, filterprops.py | `marks` | Rust, sorted so it's deterministic, rounding as Python does (half-even on the exact binary value; mz from the unrounded ia), distances across the antimeridian |
@@ -284,40 +300,134 @@ Each job's key is its step version plus the content names of what it reads.
 | stations.py | `stations` | Rust |
 | ferries.py, gtfs, hand timetables | `ferries` | Python |
 
-### Steps 4–5: how the landmark jobs run (implementation notes, 2026-10-03)
+### Steps 4–5: how the landmark jobs run (implementation notes, 2026-10-03, revised after review)
 
-- **`unit-marks` runs inside the unit job**, after `extract` (which writes the piece's
-  `pois.json`, now with OSM ids, keys and kept tags) and the staging of `terrain.tiles` (z0–12 over
-  U + 30 km): the unit folder already holds what it reads.
-  - Candidates: the points U owns (`unit::owns`, as base(U) owns ways), with kind, position, name,
-    `en` (name:en), `ele`, OSM id or key, QID (`wikidata`), kept tags.
-  - Peaks: peaks.rs as a library (`pipeline::peaks`), on U's peaks. The summit overlay is raised by
-    every summit of the worldwide `summits` set within the flood's and search's reach (not only
-    U's), ties by OSM id, so a peak's result doesn't depend on where unit borders fall. z12 from
-    the staged `terrain.tiles`; z8 from the terrain packs and, beyond the coverage, AWS's raw z8
-    tiles (cached on the build Mac, fetched on first use), so floods and isolation searches aren't
-    cut at U + 30 km (isolation up to 5,000 km; a lower bound past it, as today at a region's edge).
-  - Writes `work/marks/<u>` (zstd JSON lines, sorted by key): `{key, kind, lon, lat, name, en, ele,
-    osm, qid, tags, peak}`; its key: the step version, U's piece, the `summits` set, the terrain
-    packs read.
-- **`items`** (Python, network, after the pass): the QIDs of every `work/marks/*` candidate, the
-  heritage records and the areas → Wikidata facts as poidetails.py and heritagewd.py fetch them
-  (`sources/items/<d>/facts`, by QID, reusing a fact younger than 90 days), and pageviews per season
-  as pageviews.py (`sources/pageviews/<seasons>/views`). User-Agent "road-elevations/0.1 (personal
-  offline map)", the APIs' rate limits.
-- **`marks`** (Rust, worldwide): every `work/marks/*` → `marksjob::Candidate` (details: the kept
-  tags, `osm`, the facts as `wd`, `length_m`; peak) → `marksjob::poi_points` (today's fame,
-  isolation, label zooms, filter properties: exact against today's map on today's inputs) → with
-  the heritage points (today's converted files until `heritage` runs) → `markconv::write`.
-- **Step 4's comparison:** for units of today's coverage, the candidates against today's
-  `pois.json`/`peaks.json`/`details-poi` (counts per kind, positions within 1 m, the same OSM ids,
-  prominence and isolation within today's tolerance), then the `marks` job's output against today's
-  converted points.
+The first notes ran peaks inside the unit job on U's staged terrain. Reviewed (Opus): a flood near
+U's border went on over coarse ancestors past the staged box, so results depended on where U
+was; the z8 of the packs depends on the coverage (made again from z9 only where z9 exists); the
+key couldn't name what was read; and extract's point order changed between runs. Revised:
+
+- **Candidates, their own job per unit (`pois`)**, so that a change to their rules doesn't make
+  every unit again (the unit's own extract keeps today's points: its view step reads the
+  viewpoints for the road flags). `pois` runs extract on U's piece with `--candidates` and the
+  pass's `trailends`, then writes `work/pois/<u>` (zstd JSON lines sorted by key); its key: its
+  step version, U's piece, the coverage near U, `trailends`.
+  - One order: by (trailhead rank, key, kind) before the 150 m dedup, so the kept point and the
+    name it lends don't depend on thread timing; keys `n<id>`, `w<id>`, `trail:<relation>:<node>`,
+    plus the kind (one way can be a point of interest and a covered bridge). Done 2026-10-03:
+    Taiwan's three runs had differed by 92–123 trailheads; now byte-identical.
+  - Hiking-route ends: the pass's `trailends` near the piece's roads (the 300 m road test stays
+    per unit). Done 2026-10-03 (extract `--trailends`).
+  - Clipped after the dedup to the points U owns that are in the coverage (nodes inside it; ways
+    with a node inside it).
+  - Kinds as today's map has them: natural=peak (nodes, ways' centres), and a viewpoint that is
+    also a volcano re-kinded to a peak, as poidetails.py did (pure volcanoes aren't points: they
+    are often a crater node beside the rim's peaks; they stay in the summits). In the candidates
+    only, not in the unit's points.
+  - Each candidate: `key, kind, lon, lat` (E7 integers), `name, ele, osm, qid` (the `wikidata` tag
+    as tagged), `en` (name:en; in Japan name:ja-Latn or name:ja_rm, kept for it: the server shows
+    it when there's no translation line), kept tags (poidetails' lists; not `image`, which today's
+    details never had and which would move fame), and what poidetails.py added: `length_m` for
+    covered bridges (its planar formula over the way's own nodes, rounded half-even),
+    `viewpoint: "yes"` for peaks tagged tourism=viewpoint.
+- **`trailends`** (per pass): the `hikes` set's routes (route=hiking or foot), each way's end
+  nodes, the ends used once; exactly two make a simple linear route. Worldwide, so every unit sees
+  the same ends of a route that leaves its piece. Done 2026-10-03, with the pass's sets versioned
+  (osmpass::SETS: a changed filter is a new set, `summits-v2`) and `pass-sets`, which makes the
+  sets a finished pass lacks from its kept filtered planet.
+- **`terrain-z8`** (once, network): AWS's 65,536 raw z8 tiles, repaired as the packs' tiles are
+  (`terrain_pack::process`, no children: the voids filled with 32,767 m and the spike clusters
+  go), in one content-named pack under `sources/` (a `global/` file would be served and mirrored),
+  with each tile's maximum. Coverage-free, so the isolation searches and the coarse floods give
+  the same answer whatever is built. AWS's own z8 comes from a coarser source than today's
+  (made again from z9 near roads), so before trusting the coarse values: raw z8 against today's z8
+  over today's coverage, per pixel and at the cols and nearest higher ground of today's
+  coarse-stage peaks. If they drift too far, the coverage-free fallback is z8 as the 2×2 means of
+  processed raw z9 everywhere (today's rule, worldwide: 262,144 tiles to fetch).
+- **`summits`** (per pass): the `summits` set (natural=peak or volcano, nodes and ways), sorted
+  by OSM id. A summit has one identity: the same position and `ele` read as a candidate or as a
+  neighbour (a node's position; a way's centre as extract makes it, the integer mean of its
+  nodes with the closing node counted twice, truncated; `ele` parsed and rounded as extract does,
+  by shared code). The z8 overlay: each summit's z8 pixel raised to its tagged `ele` when that is
+  plausible there: at most 8,900 m, at most 1,500 m over the highest z8 pixel within one pixel,
+  and at most twice that plus 300 m (feet tagged as metres overshoot by 2.28 times the height,
+  which a fixed margin lets through below ~1,100 m); else left alone. Calibrated on today's
+  coverage: the tags this accepts that the z12 check (below) rejects, counted.
+- **`peaks`** (per unit, its own job, network): `pipeline::peaks`, today's peaks.rs as a library
+  (done 2026-10-03: byte-identical to today's binary), on U's peak candidates.
+  - z12: a tile is the terrain pack's when the manifest has it, else AWS's raw tile from the
+    build Mac's cache processed the same way, read back from the PNG `process` returns (quantised
+    as stored), never its floats; a tile not cached is fetched, and a failed fetch fails the job.
+    z12 has no children, so the two are the same bytes for packs the terrain job made from raw.
+    Today's packs came from the legacy terrain step, which repaired stored tiles again (not
+    idempotent): checked on a sample, else the terrain job makes today's coverage again first.
+  - Summits near a peak: each summit within 28 km + 2 × (150 m + 2 pixels) gets its summit pixel
+    (highest within 150 m), its height (max(ele, DEM) when `ele` is within −30/+200 m of the DEM's,
+    else the DEM's) and its claim (several on one pixel: the highest tagged, then the nearest to
+    it, then the lowest OSM id; the others start from their own point), all from z12 the same way
+    for every unit.
+  - Fine stage (z12, today's 600k-pixel flood): a flood that would read a pixel more than 28 km
+    from the summit stops, and the peak goes to the coarse stage. The isolation search (25 km)
+    counts only pixels within 25 km and never opens a tile whose great-circle lower bound is
+    beyond, so its result depends only on z12 within 25 km. So U + 30 km of z12 always suffices.
+  - Coarse stage (z8): the flood (40M pixels) and the isolation search over `terrain-z8` with the
+    z8 overlay, where the summits within the fine radius (28.3 km) count at their z12 heights (the
+    peak's own included: a tag over 200 m above its DEM would otherwise make its own pixel its
+    higher ground), the tag rule beyond. Tiles in order of a great-circle lower bound (today's
+    bound used the summit's metres per pixel, wrong toward the poles past ~1,000 km), x wrapping
+    at the antimeridian, a tile skipped when neither its maximum nor its overlay is higher, tiles
+    decoded through a bounded cache; `terrain-z8` and `work/summits` read from local
+    content-named copies. Nothing higher within 5,000 km: a lower bound of the radius searched
+    (today: 25 km, flagged).
+  - "Sea" is ≤ 0 m, and `process` clamps every negative value to 0: polders and depressions count
+    as sea (as today), until plan §6's sea-masked terrain.
+  - Writes `work/peaks/<u>` (by candidate key: e, p, pl, c, ce, iso, il, hi); its key: the step
+    version, a digest of U's peak candidates, `work/summits`, the terrain hi packs within U + 30
+    km, `terrain-z8`.
+- **`items`** (Python, network, per pass): after the candidates and `work/whs-sites` exist. The
+  QIDs of the current units' candidates, the heritage records and the areas. Facts as
+  poidetails.py and heritagewd.py fetch them, for single-QID tags (as today: a multi-QID tag gets
+  no facts); pageviews for the first QID, the mean of four months pinned per pass. Everything is
+  fetched again at each pass; between passes only QIDs it hasn't seen (a run started by new
+  coverage doesn't move fame elsewhere). Each item's Wikipedia articles are listed again at each
+  pass too (today's wp.jsonl never refreshes, so new articles never count); new articles between
+  passes are batched (each run streams the four dumps again, ~20 GB). `sources/items/<d>/facts`,
+  the QLever index date recorded; `sources/pageviews/<months>/views`. User-Agent
+  "road-elevations/0.1 (personal offline map)" (no contact address: identifying details stay out
+  of requests), the APIs' rate limits; with no contact Wikimedia may refuse by User-Agent, so a
+  403 or any failed batch fails the job loudly (today's heritagewd.shortdescs skips a failed batch
+  silently).
+- **`marks`** (Rust, worldwide): the current units' `work/pois` and `work/peaks` (from the
+  manifest, not every file under `work/`) in one order by key → `marksjob::Candidate` (details:
+  kept tags, `osm`, facts as `wd`, `length_m`, `viewpoint`) → `marksjob::poi_points` → with the
+  heritage points → `markconv::write` (its summits list: by −ele, stable over fame order). An OSM
+  id that repeats (a way that is a point of interest and a covered bridge) gets a reference from
+  its key, as `assign_ids` needs. Written descriptions aren't read here (they are applied when
+  serving, plan §7): a Wikipedia summary's source article goes in its description line, as `src`
+  already does for researched ones, and the server's credit uses it, so records need no
+  `long_src`.
+- **Step 4's comparison, one change at a time:**
+  1. Port: `pipeline::peaks` on today's archive and `pois.json` with today's overlay rule gives
+     today's `peaks.json` byte for byte.
+  2. Determinism: a unit run twice gives the same bytes; two neighbouring units agree on every
+     point and peak within 10 km of their border.
+  3. One planet: a region-sized extract and the union of its units' candidates are the same
+     (counts, E7 positions, OSM ids, tags).
+  4. Against today's files: nodes by exact E7 position, then by details-poi's `osm`; adds,
+     removes and moves per kind, trailheads per source.
+  5. Peaks: exact where both used the same z12 and finished in the fine stage (those that went
+     coarse differ by design, reported apart); otherwise, of peaks with ≥ 50 m prominence, 95 %
+     within |Δe| ≤ 30 m, |Δp| ≤ max(20 m, 10 %), |Δiso| ≤ max(0.5 km, 10 %), the rest listed;
+     today's lower bounds (`pl`, `il`) checked as new ≥ old.
+  6. marks: exact on today's inputs (marks_regression), then new candidates with today's facts
+     and pageviews, then fresh facts: per kind the fa rank correlation, the top 100 per z6 tile
+     (≥ 90 % the same), the mz and kz histograms, a dozen In view answers (top 60), screenshots.
 
 ## Storage
 
 - `markdata/` and `ovdata/` are catalog maps (formats.md), so GC handles them.
-- `work/` holds build intermediates (`work/marks/<u>`, `work/heritage/<d>`, `work/whs-sites`). The
+- `work/` holds build intermediates (`work/pois/<u>`, `work/peaks/<u>`, `work/trailends/<d>`,
+  `work/summits/<d>`, `work/heritage/<d>`, `work/whs-sites`). The
   agent's GC keeps what the newest job keys name and removes the rest.
 - Nothing in `work/` is in a catalog.
 
@@ -390,7 +500,8 @@ At world scale, a globe query would read 0.2–0.4 GB: a per-z3 summary then.
    - the pass's `marks`, `summits` and `named` sets, from the kept filtered planet;
    - `registers`, `heritage` and `items`.
 5. **The new jobs:**
-   - `unit-marks` and `marks` in Rust, with the legacy-input regression;
+   - the candidates in the unit job, `trailends`, `terrain-z8`, `summits`, `peaks` and `marks` in
+     Rust, with the legacy-input regression (Step 4's comparison, above);
    - `overlays`, `ovdata`, `stations` and `ferries`;
    - a pilot new region.
 6. **Agent keys, order and waves.**
@@ -404,7 +515,8 @@ At world scale, a globe query would read 0.2–0.4 GB: a per-z3 summary then.
 - **Fame and isolation drift once recomputed:** the legacy-input regression comes first.
 - **Peaks read z8 terrain worldwide:** cached on the build Mac.
 - **Registers fetched whole:** format changes and id stability (module tests pin record ids).
-- **Fetch volume for ~1 M QIDs worldwide:** incremental, and limited to the coverage's candidates.
+- **Fetch volume for ~1 M QIDs worldwide:** limited to the coverage's candidates; everything again
+  at each pass (twice a year), only new QIDs in between.
 - **`global/railfreq`** is another whole-world file the client loads: per-z6 blocks before going
   worldwide.
 
