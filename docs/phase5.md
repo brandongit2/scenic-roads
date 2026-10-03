@@ -344,6 +344,18 @@ At world scale, a globe query would read 0.2–0.4 GB: a per-z3 summary then.
      `stationTiles`, `ferryBlocks`); checked against today's files: the same stops drawn (London
      500, Paris 952), ferries' in-view km, routes and terminal colours equal, area popups with
      their details. Counts and the areas' summary stay today's (`layer-summary`).
+   - Measured 2026-10-03 (bench Chrome, headless, 1512×900 @2, both servers reading the NAS without
+     a mirror, every landmark and overlay on; by view = catalog 5, files = catalog 3, same app):
+
+     | | by view | files |
+     |---|---|---|
+     | heap after load (London z7 / Alps z8 tilted / Europe z4.5) | 74 / 53 / 54 MB | 186 / 232 / 213 MB |
+     | cold load: boot / map done / quiet, Europe z4.5 | 4.3–4.7 / 4.3–4.7 / 6.4–6.9 s | 4.9–5.2 / 5.7–5.9 / 7.1–7.4 s |
+     | the same, London z7 | 2.7 / 3.3 / 5.3 s | 2.4 / 4.7 / 6.0 s |
+     | the same, Alps z8 tilted | 2.9 / 2.9 / 5.1 s | 2.3 / 4.7 / 6.6 s |
+     | landmark and overlay data at load | 1.7–9.3 MB | 35.6 MB |
+     | pan / pinch / orbit, London z7 (fps, uncapped) | 215 / 177 / 173 | 220 / 176 / 192 |
+     | the same, Europe z4.5 | 194 / 84 / 143 | 183 / 88 / 152 |
 4. **The inputs for today's coverage**, compared with today's files:
    - the pass's `marks`, `summits` and `named` sets, from the kept filtered planet;
    - `registers`, `heritage` and `items`.
