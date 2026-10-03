@@ -93,10 +93,11 @@ pub(crate) fn put_names(s: &AppState, o: &mut serde_json::Map<String, serde_json
 /// - GeoJSON: on each feature's properties, for `name` (or `n`), and `cmain`/`csub` for a World
 ///   Heritage component's own name (`cn`);
 /// - the summits (`{"p": [[lon, lat, ele, name], …]}`): main and sub appended to each ("" for none);
-/// - the ferry lines (`{id: {name, ends: [[lon, lat], …], …}}`): on each line.
+/// - the ferry lines (`{id: {name, ends: [[lon, lat], …], …}}`): on each line; a ferry block's
+///   features and its lines (`lines`), both.
 ///
 /// A file with nothing to name is served as it is (re-encoding would sort its keys).
-fn with_names(s: &AppState, raw: &[u8]) -> Vec<u8> {
+pub(crate) fn with_names(s: &AppState, raw: &[u8]) -> Vec<u8> {
     let Ok(mut v) = serde_json::from_slice::<serde_json::Value>(raw) else { return raw.to_vec() };
     let mut changed = false;
     if let Some(feats) = v.get_mut("features").and_then(|f| f.as_array_mut()) {
@@ -107,6 +108,14 @@ fn with_names(s: &AppState, raw: &[u8]) -> Vec<u8> {
             let own = EN_KEYS.iter().find_map(|k| props.get(*k).and_then(|x| x.as_str()).filter(|x| !x.is_empty())).map(str::to_owned);
             changed |= put_names(s, props, key, own.as_deref(), at, "");
             changed |= put_names(s, props, "cn", None, at, "c");
+        }
+        // A ferry block's lines (pipeline::ovconv) too.
+        if let Some(lines) = v.get_mut("lines").and_then(|l| l.as_object_mut()) {
+            for l in lines.values_mut() {
+                let Some(o) = l.as_object_mut() else { continue };
+                let Some(at) = o.get("ends").and_then(|e| e.get(0)).and_then(|p| Some([p.get(0)?.as_f64()?, p.get(1)?.as_f64()?])) else { continue };
+                changed |= put_names(s, o, "name", None, at, "");
+            }
         }
     } else if let Some(peaks) = v.get_mut("p").and_then(|p| p.as_array_mut()) {
         for e in peaks {

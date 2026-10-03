@@ -265,6 +265,7 @@ async fn main() -> Result<()> {
         .route("/tiles/labels/{z}/{x}/{y}", get(tiles::label_tile))
         .route("/tiles/ov/{name}/{z}/{x}/{y}", get(ovdata::ov_tile))
         .route("/tiles/stations/{z}/{x}/{y}", get(tiles::station_tile))
+        .route("/tiles/ferries/{z}/{x}/{y}", get(tiles::ferry_block))
         .route("/api/overlays/detail/{layer}/{id}", get(ovdata::detail))
         .route("/tiles/base/{z}/{x}/{y}", get(tiles::base_tile))
         .route("/tiles/trees/{var}/{z}/{x}/{y}", get(tiles::tree_tile))
@@ -475,8 +476,10 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         }
     }
     // The area overlays' and the rail stops' tiles (names attached).
-    if cat.layers.contains_key("stations") {
-        versions.insert("stations.tiles".into(), named(s.data.layer_version("stations")));
+    for l in ["stations", "ferries"] {
+        if cat.layers.contains_key(l) {
+            versions.insert(format!("{l}.tiles"), named(s.data.layer_version(l)));
+        }
     }
     for l in OV_LAYERS {
         if cat.layers.contains_key(&format!("ov-{l}")) {
@@ -504,6 +507,7 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         m.insert("labelTiles".into(), serde_json::json!(cat.layers.contains_key("labels")));
         // The area overlays as vector tiles by view (all of them, or today's files).
         m.insert("stationTiles".into(), serde_json::json!(cat.layers.contains_key("stations")));
+        m.insert("ferryBlocks".into(), serde_json::json!(cat.layers.contains_key("ferries")));
         m.insert("ovTiles".into(), serde_json::json!(OV_LAYERS.iter().all(|l| cat.layers.contains_key(&format!("ov-{l}"))) && !cat.ovdata.is_empty()));
         m.insert("labels".into(), serde_json::json!(false));
         m.insert("baseParts".into(), serde_json::json!([]));

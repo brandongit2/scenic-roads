@@ -98,6 +98,28 @@ export interface FerryCoverage {
   known: number;
 }
 
+/** A block of ferries by view (pipeline::ovconv): the ways touching its tile, the terminals near
+ * it, its lines' records. */
+type Block = { features: Feature[]; lines: Record<string, FerryLine> };
+/** The blocks' zoom for a view's: the world's below 3, z3 tiles' below 6, z6 tiles' from 6. */
+const blockZoom = (zoom: number) => (zoom < 3 ? 0 : zoom < 6 ? 3 : 6);
+/** Blocks kept (the least recently used go). */
+const BLOCKS_MAX = 96;
+
+/** The tiles at zoom z covering a box (west, south, east, north). */
+function tilesOver(z: number, [w, s, e, n]: [number, number, number, number]): string[] {
+  const N = 2 ** z;
+  const tx = (lon: number) => Math.min(N - 1, Math.max(0, Math.floor(((lon + 180) / 360) * N)));
+  const ty = (lat: number) => {
+    const sn = Math.sin((Math.max(-85.05, Math.min(85.05, lat)) * Math.PI) / 180);
+    return Math.min(N - 1, Math.max(0, Math.floor((0.5 - Math.log((1 + sn) / (1 - sn)) / (4 * Math.PI)) * N)));
+  };
+  const out: string[] = [];
+  const spans: [number, number][] = e - w >= 360 ? [[-180, 180]] : w <= e ? [[w, e]] : [[w, 180], [-180, e]];
+  for (const [a, b] of spans) for (let x = tx(a); x <= tx(b); x++) for (let y = ty(n); y <= ty(s); y++) out.push(`${z}/${x}/${y}`);
+  return out;
+}
+
 export class Ferries {
   private fc: GeoJSON.FeatureCollection<GeoJSON.Geometry, Record<string, any>> | null = null;
   lines: Record<string, FerryLine> = {};
@@ -111,18 +133,112 @@ export class Ferries {
   private range: [number, number] = [0, 1];
   private cdf: Uint8Array | null = null;
   onLoaded: () => void = () => {};
+  /** By view: blocks for the view, merged by id (the catalog has them), else the whole files. */
+  byBlocks = false;
+  private blocks = new Map<string, { b: Block | null | 'loading'; used: number }>();
+  private tick = 0;
+  /** The blocks the data shown was merged from. */
+  private merged = '';
 
   constructor(private map: MLMap) {
     // New ferry files (a new catalog): fetched again if they were.
-    onVersions(['ferries.json', 'ferry-lines.json'], () => {
+    onVersions(['ferries.json', 'ferry-lines.json', 'ferries.tiles'], (files) => {
+      if (this.byBlocks) {
+        if (!files.includes('ferries.tiles')) return;
+        this.blocks.clear();
+        this.merged = '';
+        if (this.style?.on) this.view();
+        return;
+      }
       if (!this.loading) return;
       this.loading = null;
       if (this.style?.on) this.ensure();
     });
+    map.on('moveend', () => {
+      if (this.byBlocks && this.style?.on) this.view();
+    });
+  }
+
+  /** By view: the blocks the view needs, asked for; once they're in, merged (ways and terminals
+   * once each, by id) and shown. */
+  private view() {
+    const b = this.map.getBounds();
+    const z = blockZoom(this.map.getZoom());
+    const keys = tilesOver(z, [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
+    let pending = false;
+    for (const k of keys) {
+      const e = this.blocks.get(k);
+      if (e) {
+        e.used = ++this.tick;
+        pending ||= e.b === 'loading';
+        continue;
+      }
+      pending = true;
+      const entry: { b: Block | null | 'loading'; used: number } = { b: 'loading', used: ++this.tick };
+      this.blocks.set(k, entry);
+      tasks.begin('ferries', 'Ferries', 'downloading the lines and timetables in view');
+      fetch(`${hostFor('layers')}/tiles/ferries/${k}${ver('ferries.tiles')}`)
+        .then(keepable)
+        .then(async (r) => (r.status === 204 ? null : r.ok ? ((await r.json()) as Block) : Promise.reject(new Error(`HTTP ${r.status}`))))
+        .then(
+          (blk) => {
+            entry.b = blk;
+          },
+          // (A failed block isn't kept: asked again with the next view.)
+          () => this.blocks.delete(k),
+        )
+        .finally(() => {
+          if (![...this.blocks.values()].some((x) => x.b === 'loading')) tasks.end('ferries');
+          this.view();
+        });
+    }
+    // The least recently used blocks go past the budget (never one in view).
+    if (this.blocks.size > BLOCKS_MAX) {
+      const now = new Set(keys);
+      for (const [k] of [...this.blocks].filter(([k, e]) => !now.has(k) && e.b !== 'loading').sort((x, y) => x[1].used - y[1].used).slice(0, this.blocks.size - BLOCKS_MAX)) this.blocks.delete(k);
+    }
+    const key = keys.join(',');
+    if (pending || key === this.merged) return;
+    this.merged = key;
+    const feats = new Map<number, Feature>();
+    const lines: Record<string, FerryLine> = {};
+    for (const k of keys) {
+      const e = this.blocks.get(k)?.b;
+      if (!e || e === 'loading') continue;
+      for (const f of e.features) if (!feats.has(f.id as number)) feats.set(f.id as number, structuredClone(f));
+      Object.assign(lines, e.lines);
+    }
+    this.adopt({ type: 'FeatureCollection', features: [...feats.values()] }, lines);
   }
 
   get loaded() {
     return this.fc !== null;
+  }
+
+  /** New data (the whole files, or the view's blocks merged): drawn, with the ways' colours and
+   * lengths (a block's ways carry their whole length; the files' are measured), and the
+   * terminals' colours and feature states anew. */
+  private adopt(fc: GeoJSON.FeatureCollection<GeoJSON.Geometry, Record<string, any>>, lines: Record<string, FerryLine>) {
+    this.lines = lines;
+    this.lineNames.clear();
+    for (const f of fc.features as Feature[]) {
+      const p = f.properties;
+      if (f.geometry.type !== 'LineString') continue;
+      p.oc = legibleCss(p.col) ?? operatorColour(p.op);
+      p.gs = String(p.gs ?? '') || digits(p.gb);
+      p.km ??= lengthKm((f.geometry as GeoJSON.LineString).coordinates);
+      if (!p.n) continue;
+      for (const id of String(p.lines ?? '').split(',')) {
+        if (!this.lineNames.has(id) && this.lines[id]?.name === p.n) this.lineNames.set(id, { main: p.main, sub: p.sub });
+      }
+    }
+    this.fc = fc;
+    this.boxes = null;
+    this.nearLines = null;
+    this.terminalColours.clear();
+    this.map.removeFeatureState({ source: 'ferries' });
+    this.map.getSource<GeoJSONSource>('ferries')?.setData(fc);
+    this.onLoaded();
   }
 
   private ensure() {
@@ -138,27 +254,7 @@ export class Ferries {
       .then(([fc, lines]) => {
         tasks.end('ferries');
         if (!fc || this.loading !== req) return;
-        this.lines = lines ?? {};
-        this.lineNames.clear();
-        for (const f of fc.features as Feature[]) {
-          const p = f.properties;
-          if (f.geometry.type !== 'LineString') continue;
-          p.oc = legibleCss(p.col) ?? operatorColour(p.op);
-          p.gs = String(p.gs ?? '') || digits(p.gb);
-          p.km = lengthKm((f.geometry as GeoJSON.LineString).coordinates);
-          if (!p.n) continue;
-          for (const id of String(p.lines ?? '').split(',')) {
-            if (!this.lineNames.has(id) && this.lines[id]?.name === p.n) this.lineNames.set(id, { main: p.main, sub: p.sub });
-          }
-        }
-        // (New data, a new catalog's: the terminals' colours and feature states go with the old.)
-        this.fc = fc;
-        this.boxes = null;
-        this.nearLines = null;
-        this.terminalColours.clear();
-        this.map.removeFeatureState({ source: 'ferries' });
-        this.map.getSource<GeoJSONSource>('ferries')?.setData(fc);
-        this.onLoaded();
+        this.adopt(fc, lines ?? {});
       })
       .catch(() => {
         tasks.end('ferries');
@@ -171,7 +267,10 @@ export class Ferries {
     const map = this.map;
     const f = s.ferry;
     this.style = f;
-    if (f.on) this.ensure();
+    if (f.on) {
+      if (this.byBlocks) this.view();
+      else this.ensure();
+    }
     if (!map.getLayer(LINE)) return;
     const vis = (id: string, on: boolean) => map.getLayer(id) && map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
     vis(LINE, f.on);
@@ -209,7 +308,13 @@ export class Ferries {
   *recolourTerminals(all = false): Generator<void, void> {
     const map = this.map, st = this.style, fc = this.fc;
     if (!st || !fc || !map.getLayer(TERMINALS) || map.getLayoutProperty(TERMINALS, 'visibility') === 'none') return;
-    this.nearLines ??= yield* nearLines(fc.features as Feature[]);
+    // (Spread over frames: new data meanwhile (the view's blocks merged anew) ends this run, whose
+    // indices are the old data's; the next run colours the new.)
+    if (!this.nearLines) {
+      const near = yield* nearLines(fc.features as Feature[]);
+      if (this.fc !== fc) return;
+      this.nearLines = near;
+    }
     if (all) this.terminalColours.clear();
     const shown = (p: Record<string, any>) => {
       const v = Number(p.f);
@@ -219,7 +324,10 @@ export class Ferries {
     const pxM = 40075016.686 / (512 * 2 ** map.getZoom());
     let k = 0;
     for (const [ti, near] of this.nearLines) {
-      if (++k % 256 === 0) yield;
+      if (++k % 256 === 0) {
+        yield;
+        if (this.fc !== fc) return;
+      }
       const lat = ((fc.features[ti].geometry as GeoJSON.Point).coordinates[1] * Math.PI) / 180;
       const maxM = TERMINAL_PX * pxM * Math.cos(lat);
       let c: string | null = null;

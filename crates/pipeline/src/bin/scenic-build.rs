@@ -116,7 +116,7 @@ fn main() -> Result<()> {
         }
         "convert-legacy-overlays" => {
             let c = pipeline::ovconv::convert(&mut out)?;
-            eprintln!("overlays: {} areas and {} stations in {} tiles, {} ovdata, {} parks", c.areas, c.stations, c.tiles, c.ovdata, c.parks);
+            eprintln!("overlays: {} areas, {} stations and {} ferry blocks in {} tiles, {} ovdata, {} parks", c.areas, c.stations, c.ferries, c.tiles, c.ovdata, c.parks);
         }
         "terrain-root" => {
             let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
@@ -499,6 +499,8 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
         // Thinned tiles; z6 blocks come from markdata.
         l if l.starts_with("marks-") => (0, 5),
         l if l.starts_with("ov-") || l == "stations" => (0, pipeline::ovconv::MAXZ),
+        // Blocks at zooms 0, 3 and 6 (the app picks one by the view's zoom).
+        "ferries" => (0, 6),
         _ => return None,
     })
 }
@@ -530,6 +532,7 @@ fn catalog(out: &mut Out) -> Result<()> {
                     l if l.starts_with("grid-") => "u8-zstd",
                     l if l.starts_with("marks-") => "rdmt",
                     l if l.starts_with("ov-") || l == "stations" => "mvt",
+                    "ferries" => "geojson-gz",
                     _ => "unknown",
                 };
                 let zs = match *scope {

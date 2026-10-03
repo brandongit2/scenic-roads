@@ -10,6 +10,10 @@
 //! - **Stations** (`layers/stations`): vector tiles (layer `s`: `n, en, g, m, sp, mz` and an id);
 //!   a tile at zoom z holds the stops that show at zooms up to z + 1 (a stop's dot from `mz` +
 //!   log2(12 px), stations.ts), zoom 12 every stop.
+//! - **Ferries** (`layers/ferries`, gzip'd GeoJSON blocks): the world at zoom 0 (ways simplified
+//!   to 5 km), each z3 tile (300 m) and z6 tile (whole): the ways touching it, the terminals near
+//!   it, its ways' lines' records; each way with its whole length (`km`) and an id, so the app
+//!   merges blocks by id and measures what's in view on the geometry it has.
 
 use crate::hipack::{grow, meets, tile_bounds};
 use crate::layers::{pack_of, write_pack};
@@ -50,6 +54,7 @@ pub struct Converted {
     pub ovdata: usize,
     pub parks: usize,
     pub stations: usize,
+    pub ferries: usize,
 }
 
 /// The stations' vector-tile layer.
@@ -272,8 +277,146 @@ pub fn convert(out: &mut Out) -> Result<Converted> {
         out.put_file(&logical, "sect", &local)?;
     }
     let stations = stations(out, &want, &mut ntiles)?;
-    eprintln!("overlays: {areas} areas, {stations} stations, {ntiles} tiles, {n_ov} ovdata, {parks} parks ({:.1?})", t0.elapsed());
-    Ok(Converted { areas, tiles: ntiles, ovdata: n_ov, parks, stations })
+    let ferries = ferries(out, &mut ntiles)?;
+    eprintln!("overlays: {areas} areas, {stations} stations, {ferries} ferry blocks, {ntiles} tiles, {n_ov} ovdata, {parks} parks ({:.1?})", t0.elapsed());
+    Ok(Converted { areas, tiles: ntiles, ovdata: n_ov, parks, stations, ferries })
+}
+
+/// How far from a block its terminals and ways reach (ferries.ts NEAR_M: a terminal takes the
+/// colour of a line this near).
+const FERRY_NEAR_KM: f64 = 30.0;
+
+/// A line's length (km), as ferries.ts measures it.
+fn length_km(c: &[[f64; 2]]) -> f64 {
+    c.windows(2)
+        .map(|w| {
+            let k = (((w[0][1] + w[1][1]) / 2.0).to_radians()).cos();
+            ((w[1][0] - w[0][0]) * k).hypot(w[1][1] - w[0][1]) * 111.195
+        })
+        .sum()
+}
+
+/// A line simplified (Douglas–Peucker) to `tol_m` metres.
+fn simplify_m(c: &[[f64; 2]], tol_m: f64) -> Vec<[f64; 2]> {
+    if c.len() <= 2 || tol_m <= 0.0 {
+        return c.to_vec();
+    }
+    let k = (c.iter().map(|p| p[1]).sum::<f64>() / c.len() as f64).to_radians().cos() * 111_195.0;
+    let xy: Vec<(f64, f64)> = c.iter().map(|p| (p[0] * k, p[1] * 111_195.0)).collect();
+    let mut keep = vec![false; c.len()];
+    keep[0] = true;
+    keep[c.len() - 1] = true;
+    let mut stack = vec![(0usize, c.len() - 1)];
+    while let Some((a, b)) = stack.pop() {
+        if b <= a + 1 {
+            continue;
+        }
+        let (ax, ay, bx, by) = (xy[a].0, xy[a].1, xy[b].0, xy[b].1);
+        let (dx, dy) = (bx - ax, by - ay);
+        let l2 = dx * dx + dy * dy;
+        let (mut best, mut at) = (-1.0, a);
+        for (i, &(px, py)) in xy.iter().enumerate().take(b).skip(a + 1) {
+            let t = if l2 > 0.0 { (((px - ax) * dx + (py - ay) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            let d = (px - ax - t * dx).hypot(py - ay - t * dy);
+            if d > best {
+                (best, at) = (d, i);
+            }
+        }
+        if best > tol_m {
+            keep[at] = true;
+            stack.push((a, at));
+            stack.push((at, b));
+        }
+    }
+    c.iter().zip(keep).filter(|(_, k)| *k).map(|(p, _)| *p).collect()
+}
+
+/// Today's ferries as blocks (see the module's docs).
+fn ferries(out: &mut Out, ntiles: &mut usize) -> Result<usize> {
+    let fc: Value = serde_json::from_slice(&legacy_bytes(out, "ferries")?)?;
+    let lines: serde_json::Map<String, Value> = serde_json::from_slice(&legacy_bytes(out, "ferry-lines")?)?;
+    let feats = fc["features"].as_array().context("ferries: no features")?;
+    // Per feature: its geometry (a way's line, a terminal's point), properties, id.
+    struct F {
+        line: Option<Vec<[f64; 2]>>,
+        pt: [f64; 2],
+        bbox: [f64; 4],
+        props: serde_json::Map<String, Value>,
+        id: u64,
+    }
+    let mut fs = Vec::with_capacity(feats.len());
+    let mut src = Vec::new();
+    let mut terminals = Vec::new();
+    for (n, f) in feats.iter().enumerate() {
+        let g = &f["geometry"];
+        let pt = |c: &Value| -> Option<[f64; 2]> { Some([c[0].as_f64()?, c[1].as_f64()?]) };
+        let mut props = f["properties"].as_object().cloned().unwrap_or_default();
+        match g["type"].as_str() {
+            Some("LineString") => {
+                let c: Vec<[f64; 2]> = g["coordinates"].as_array().context("a ferry way")?.iter().filter_map(pt).collect();
+                let way = f["id"].as_u64().with_context(|| format!("ferries #{n}: a way without its id"))?;
+                let bbox = c.iter().fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]);
+                props.insert("km".into(), serde_json::json!((length_km(&c) * 1000.0).round() / 1000.0));
+                fs.push(F { pt: c[0], line: Some(c), bbox, props, id: way * 4 + 1 });
+            }
+            Some("Point") => {
+                let p = pt(&g["coordinates"]).with_context(|| format!("ferries #{n}: a terminal without its place"))?;
+                let name = props.get("n").and_then(Value::as_str).unwrap_or("");
+                src.push(IdSource { osm: None, reference: format!("legacy:terminal|{name}|{},{}", marks::e7(p[0]), marks::e7(p[1])), canon: Value::Object(props.clone()).to_string() });
+                terminals.push(fs.len());
+                fs.push(F { line: None, pt: p, bbox: [p[0], p[1], p[0], p[1]], props, id: 0 });
+            }
+            t => bail!("ferries #{n}: geometry {t:?}"),
+        }
+    }
+    for (&k, id) in terminals.iter().zip(marks::assign_ids(&src)?) {
+        fs[k].id = id;
+    }
+    // Blocks: (zoom, simplification); which features each holds.
+    let deg = |b: [i32; 4]| [b[0] as f64 * roadcore::E7, b[1] as f64 * roadcore::E7, b[2] as f64 * roadcore::E7, b[3] as f64 * roadcore::E7];
+    let meets_f = |a: [f64; 4], b: [f64; 4]| a[0] <= b[2] && b[0] <= a[2] && a[1] <= b[3] && b[1] <= a[3];
+    let mut packs: BTreeMap<(&'static str, u8, u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
+    let mut blocks = 0;
+    for (z, tol) in [(0u8, 5000.0), (3, 300.0), (6, 0.0)] {
+        let n = 1u32 << z;
+        for x in 0..n {
+            for y in 0..n {
+                let b = deg(grow(tile_bounds(z, x, y), FERRY_NEAR_KM));
+                let mut feats = Vec::new();
+                let mut ids: Vec<String> = Vec::new();
+                for f in &fs {
+                    // (Terminals appear from zoom 4: none in the world's block.)
+                    if !meets_f(f.bbox, b) || (z == 0 && f.line.is_none()) {
+                        continue;
+                    }
+                    let geom = match &f.line {
+                        Some(c) => serde_json::json!({"type": "LineString", "coordinates": simplify_m(c, tol)}),
+                        None => serde_json::json!({"type": "Point", "coordinates": f.pt}),
+                    };
+                    if f.line.is_some() {
+                        ids.extend(f.props.get("lines").and_then(Value::as_str).unwrap_or("").split(',').filter(|s| !s.is_empty()).map(str::to_string));
+                    }
+                    feats.push(serde_json::json!({"type": "Feature", "id": f.id, "geometry": geom, "properties": f.props}));
+                }
+                if feats.is_empty() {
+                    continue;
+                }
+                ids.sort();
+                ids.dedup();
+                let recs: serde_json::Map<String, Value> = ids.iter().filter_map(|i| lines.get(i).map(|l| (i.clone(), l.clone()))).collect();
+                let raw = serde_json::to_vec(&serde_json::json!({"type": "FeatureCollection", "features": feats, "lines": recs}))?;
+                let gz = names::mvt::gzip(&raw)?;
+                packs.entry(pack_of(z, x, y)).or_default().push((z, x, y, gz, raw.len() as u32));
+                blocks += 1;
+            }
+        }
+    }
+    for ((scope, rz, rx, ry), mut tiles) in packs {
+        tiles.sort_by_key(|t| (t.0, t.1, t.2));
+        *ntiles += tiles.len();
+        write_pack(out, "ferries", "geojson-gz", true, scope, (rz, rx, ry), &mut tiles.into_iter())?;
+    }
+    Ok(blocks)
 }
 
 /// Writes a layer's tiles (gzipped, in packs by scope).

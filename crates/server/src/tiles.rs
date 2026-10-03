@@ -115,6 +115,43 @@ pub async fn label_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)
     named_mvt_tile(s, "labels".into(), crate::names_live::Rules::Labels, z, x, y, q, headers).await
 }
 
+/// Ferries by view (pipeline::ovconv): a block of gzip'd GeoJSON (the ways touching the tile, the
+/// terminals near it, its lines' records), names attached.
+pub async fn ferry_block(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
+    let v = versioned(q.as_deref());
+    let nv = s.names.version_all();
+    let s2 = s.clone();
+    let got = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<(u64, Vec<u8>)>> {
+        let Some(h) = s2.data.tile_hash("ferries", z, x, y)? else { return Ok(None) };
+        let key = (2u8, z, x, y, h, nv);
+        if let Some(b) = recall(&key) {
+            return Ok(Some((h, b.to_vec())));
+        }
+        let Some((b, _)) = s2.data.tile("ferries", z, x, y)? else { return Ok(None) };
+        let raw = names::mvt::gunzip_if_gzip(b.bytes())?;
+        let named = crate::cache::with_names(&s2, &raw);
+        let gz = names::mvt::gzip(&named)?;
+        remember(key, Arc::new(gz.clone()));
+        Ok(Some((h, gz)))
+    })
+    .await;
+    match got {
+        Ok(Ok(Some((h, body)))) => {
+            let etag = format!("\"{h:016x}-{nv:x}\"");
+            if etag_match(&headers, &etag) {
+                return not_modified(&etag, v);
+            }
+            respond(body, "application/geo+json", true, &etag, v)
+        }
+        Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(e)) => {
+            eprintln!("ferries {z}/{x}/{y}: {e:#}");
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
 /// Rail stops by view (pipeline::ovconv): gzip'd MVT, layer "s", name n.
 pub async fn station_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
     named_mvt_tile(s, "stations".into(), crate::names_live::Rules::Stations, z, x, y, q, headers).await

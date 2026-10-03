@@ -677,6 +677,7 @@ async function main() {
   };
   profile.colour = () => ({ palette: store.s.palette, mode: store.s.mode, range: cur, weights: store.s.weights, cdf: store.s.equalize ? cdf : null });
   const ferries = new Ferries(map);
+  ferries.byBlocks = !!meta.ferryBlocks;
   const stations = new Stations(map);
   const updateFerries = () => {
     if (!ferries.loaded || !store.s.ferry.on) {
@@ -1873,7 +1874,7 @@ async function main() {
     // labels come from our tiles (the style is made for one or the other).
     roads.setSource(version('roads.tiles'), m.bounds);
     rails.setSource(version('rails.tiles'), m.bounds);
-    if (!!m.labelTiles !== labelTilesOn() || !!m.ovTiles !== ovTilesOn() || !!m.stationTiles !== stationTilesOn()) watch?.wantReload('New map data');
+    if (!!m.labelTiles !== labelTilesOn() || !!m.ovTiles !== ovTilesOn() || !!m.stationTiles !== stationTilesOn() || !!m.ferryBlocks !== ferries.byBlocks) watch?.wantReload('New map data');
     markDirty();
   };
   regions.onFit = (b) => fitGround(new maplibregl.LngLatBounds([b[0], b[1]], [b[2], b[3]]), { top: 60, bottom: 60, left: 60, right: 340 });

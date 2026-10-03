@@ -72,6 +72,8 @@ export interface Meta {
   ovTiles?: boolean;
   /** The rail stops come as vector tiles by view. */
   stationTiles?: boolean;
+  /** The ferries come as blocks by view. */
+  ferryBlocks?: boolean;
   /** The catalog's number (catalog.ts follows it). */
   catalog?: number;
 }
