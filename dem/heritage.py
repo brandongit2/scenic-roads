@@ -27,7 +27,12 @@ Protected areas and Indigenous lands come from OSM (data/areas/areas.geojsonseq)
 All areas are rasterised into grid.areas.u8 bits (roadcore::scenic::flag): PARK, HERITAGE,
 SPECIAL_AREA, INDIGENOUS. Afterwards run `scenic <build> flags` to refresh the road flags.
 
-usage: heritage.py <build_dir>
+With --cover <file> (the `heritage` job, docs/phase5.md "Heritage and area flags"): what is covered
+is inside that file's polygons (GeoJSON features: the coverage grown by 20 km), not the build's
+analysis grid, and the areas aren't rasterised: their polygons, each with its flag bit, go to
+area-shapes.geojsonseq for the units to rasterise onto their own grids (areaflags.py).
+
+usage: heritage.py <build_dir> [--cover <coverage.geojson>]
 """
 from __future__ import annotations
 
@@ -516,13 +521,26 @@ def write_json(path: Path, obj) -> None:
 
 
 def main():
-    b = Path(sys.argv[1] if len(sys.argv) > 1 else "../data/build")
+    args = [a for a in sys.argv[1:]]
+    cover_path = None
+    if "--cover" in args:
+        i = args.index("--cover")
+        cover_path = Path(args[i + 1])
+        del args[i:i + 2]
+    b = Path(args[0] if args else "../data/build")
     areas_path = b.parent / "areas" / "areas.geojsonseq"
-    tiles = {tuple(t) for t in np.fromfile(b / "grid.idx", dtype=np.uint32).reshape(-1, 2).tolist()}
+    if cover_path is None:
+        tiles = {tuple(t) for t in np.fromfile(b / "grid.idx", dtype=np.uint32).reshape(-1, 2).tolist()}
+    else:
+        cover = [shape(f["geometry"]) for f in json.loads(cover_path.read_text())["features"]]
+        cover_tree = STRtree(cover)
 
     def covered(lon, lat):
         if not (-85 < lat < 85 and -180 <= lon <= 180):
             return False  # a register's bad coordinates
+        if cover_path is not None:
+            p = Point(lon, lat)
+            return any(cover[k].contains(p) for k in cover_tree.query(p))
         x = (lon + 180) / 360 * 2048
         y = (1 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2 * 2048
         return (int(x), int(y)) in tiles
@@ -571,6 +589,8 @@ def main():
 
     print("protected areas & Indigenous lands (OSM)…")
     shapes, special_feats, indigenous_feats, matched = [], [], [], set()
+    # The same polygons in degrees, with their bits (the units rasterise them: --cover).
+    shapes_ll: list[tuple] = []
     for line in tqdm(open(areas_path), desc="areas", unit="poly"):
         f = json.loads(line.strip("\x1e"))
         p = f["properties"]
@@ -593,6 +613,7 @@ def main():
                 special_feats.append({"type": "Feature", "geometry": mapping(g.simplify(0.0003)),
                                       "properties": {k: v for k, v in s.items() if k not in ("lon", "lat")}})
                 shapes.append((shp_transform(to_merc, g.simplify(0.0002, preserve_topology=True)), SPECIAL))
+                shapes_ll.append((g.simplify(0.0002, preserve_topology=True), SPECIAL))
         if p.get("boundary") == "aboriginal_lands":
             bit = INDIGENOUS
             indigenous_feats.append({"type": "Feature", "geometry": mapping(g.simplify(0.0003, preserve_topology=True)),
@@ -603,6 +624,7 @@ def main():
         else:
             continue
         shapes.append((shp_transform(to_merc, g.simplify(0.0002, preserve_topology=True)), bit))
+        shapes_ll.append((g.simplify(0.0002, preserve_topology=True), bit))
     for i, s in enumerate(sp):
         if i in matched:
             continue
@@ -613,12 +635,22 @@ def main():
         special_feats.append({"type": "Feature", "geometry": mapping(circ),
                               "properties": {**{k: v for k, v in s.items() if k not in ("lon", "lat")}, "approx": True}})
         shapes.append((shp_transform(to_merc, circ), SPECIAL))
+        shapes_ll.append((circ, SPECIAL))
     print(f"special areas: {len(sp)} ({len(matched)} with OSM boundaries)")
     for f in harea:
         shapes.append((shp_transform(to_merc, shape(f["geometry"])), HERITAGE))
+        shapes_ll.append((shape(f["geometry"]), HERITAGE))
     write_json(b / "special.json", {"type": "FeatureCollection", "features": special_feats})
     write_json(b / "indigenous.json", {"type": "FeatureCollection", "features": indigenous_feats})
     write_json(b / "heritage-sources.json", {"counts": counts, "special": len(sp), "built": datetime.now(timezone.utc).isoformat()[:19]})
+    if cover_path is not None:
+        tmp = b / "area-shapes.geojsonseq.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            for g, bit in shapes_ll:
+                f.write(json.dumps({"type": "Feature", "geometry": mapping(g), "properties": {"bit": int(bit)}}, separators=(",", ":")) + "\n")
+        os.replace(tmp, b / "area-shapes.geojsonseq")
+        print(f"area-shapes.geojsonseq: {len(shapes_ll)} polygons (the units rasterise them)")
+        return
     print(f"rasterising {len(shapes)} polygons")
     rasterise(b, shapes)
     print("done — now run: scenic <build> flags")
