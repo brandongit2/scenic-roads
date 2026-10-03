@@ -18,7 +18,7 @@ added later (a new region's sites, a new language) stream the month again, for t
 
 Writes data/pageviews/items.json (per item: average monthly views over the sampled months).
 
-usage: pageviews.py
+usage: pageviews.py [--epoch YYYY-MM-DD]   (--epoch: that pass's months, months_before; else MONTHS)
 """
 from __future__ import annotations
 
@@ -40,6 +40,24 @@ UA = "road-elevations/0.1 (personal offline map)"
 LANGS = {"en", "fr", "es", "ca", "pt", "zh", "zh-yue", "ja", "cy", "ga", "gd", "gl", "eu", "oc", "br", "co", "ast", "an", "gv"}
 MONTHS = ["2025-11", "2026-02", "2026-05", "2026-08"]
 DUMP = "https://dumps.wikimedia.org/other/pageview_complete/monthly/{y}/{y}-{m}/pageviews-{y}{m}-user.bz2"
+
+
+def months_before(epoch: str) -> list[str]:
+    """The last November, February, May and August that ended at least 20 days before the epoch
+    (dumps.wikimedia.org publishes a month's dump in its first days), oldest first: a pass's months,
+    the same for the items job and the heritage chain."""
+    import datetime
+
+    d = datetime.date.fromisoformat(epoch)
+    out, y, m = [], d.year, d.month
+    while len(out) < 4:
+        end = datetime.date(y, m, 1)  # the day after the month before (y, m) ended
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+        if m in (2, 5, 8, 11) and (d - end).days >= 20:
+            out.append(f"{y:04d}-{m:02d}")
+    return sorted(out)
 
 
 def month_views(month: str, wanted: set[str]) -> dict[str, int]:
@@ -90,6 +108,9 @@ def month_views(month: str, wanted: set[str]) -> dict[str, int]:
 
 
 def main() -> None:
+    global MONTHS
+    if "--epoch" in sys.argv:
+        MONTHS = months_before(sys.argv[sys.argv.index("--epoch") + 1])
     OUT.mkdir(parents=True, exist_ok=True)
     qids: set[str] = set()
     for line in open(W / "items.jsonl", encoding="utf-8"):
@@ -117,9 +138,7 @@ def main() -> None:
     if need:
         for q, r in heritagewd.wikipedias(need).items():
             wp[q] = {"qid": q, **r}
-        with open(wp_path, "w", encoding="utf-8") as f:
-            for r in wp.values():
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        heritagewd.write_atomic(wp_path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in wp.values()))
     arts_of = {q: [a for a in wp.get(q, {}).get("arts", []) if "|" in a and a.split("|", 1)[0] in LANGS] for q in qids}
 
     wanted = {a.split("|", 1)[0] + "|" + a.split("|", 1)[1].replace(" ", "_") for arts in arts_of.values() for a in arts}
@@ -130,7 +149,7 @@ def main() -> None:
     months = len(MONTHS)
     per_item = {q: round(sum(views.get(a.split("|", 1)[0] + "|" + a.split("|", 1)[1].replace(" ", "_"), 0) for a in arts) / months, 1)
                 for q, arts in arts_of.items() if arts}
-    (OUT / "items.json").write_text(json.dumps(per_item, ensure_ascii=False))
+    heritagewd.write_atomic(OUT / "items.json", json.dumps(per_item, ensure_ascii=False))
     top = sorted(per_item.items(), key=lambda x: -x[1])[:10]
     print(f"items.json: {len(per_item)} items; most read: {top}", file=sys.stderr)
 

@@ -957,118 +957,181 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     Ok(())
 }
 
-/// heritage [--pass <date>] [--snapshot dir] [--dem dir] [--cache dir]: heritage sites and areas
-/// for the coverage, their Wikidata matches and details, the World Heritage outlines and sites,
-/// area details, fame and the overlays' layers, by today's scripts run unchanged in a stand-in
-/// root laid out as the repository's (docs/phase5.md "Heritage and area flags"): `dem/` the
-/// app's scripts; `data/heritage/` a local copy of the registers' snapshot (today's: the legacy
-/// caches), which the scripts add their caches to; the pass's areas, named objects and provinces
-/// exported as today's files; its kept filtered planet as `data/osm/merged.osm.pbf` (the World
-/// Heritage parts); no stops & sights (the marks job's). Its outputs go to
-/// work/heritage/<date>/<file>.
+/// heritage [--pass <date>] [--dem dir] [--cache dir]: the rest of today's heritage chain
+/// (heritagewd, heritagedetails, areadetails, whsshapes, filterprops' and interest's heritage parts,
+/// pageviews, layers) in the stand-in root on the heritage-sites job's outputs (docs/phase5.md
+/// "Heritage and area flags"), over the same cover: the pass's areas and named objects within it
+/// (named with today's filter), and for the World Heritage parts the kept filtered planet within it
+/// (one clip per pass and cover, kept in the cache), as today's regional extracts were. Today's park
+/// facts and pageview months seed the caches (`sources/registers/legacy-seeds`); the pageview months
+/// are the items job's cache, the epoch's months; the layers' English names use today's names table.
+/// No stops & sights (the marks job's). Its outputs go to `work/heritage/<date>/<file>`.
 fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
-    use std::process::Command;
+    use pipeline::heritage::{base_logical, cover_tiles, tiles_geojson, COVER_Z};
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cov = coverage_of(out, args)?;
     let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
     let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
-    let snapshot = opt(args, "--snapshot").map(PathBuf::from).unwrap_or_else(|| out.root().join("sources/legacy/m1/heritage"));
     let t0 = std::time::Instant::now();
-    let run = |mut c: Command, what: &str| -> Result<()> {
-        let st = c.status().with_context(|| format!("run {what}"))?;
-        anyhow::ensure!(st.success(), "{what} failed: {st}");
-        Ok(())
-    };
-    let root = scratch.join("heritage-root");
-    std::fs::remove_dir_all(&root).ok();
-    for d in ["dem", "data/build", "data/areas", "data/osm"] {
-        std::fs::create_dir_all(root.join(d))?;
-    }
-    // The scripts and their Python project, as the app has them.
-    for e in std::fs::read_dir(&dem)?.flatten() {
-        let n = e.file_name().to_string_lossy().into_owned();
-        if e.path().is_file() && (n.ends_with(".py") || n == "pyproject.toml" || n == "uv.lock" || n == ".python-version") {
-            std::fs::copy(e.path(), root.join("dem").join(&n))?;
-        }
-    }
-    // The registers' snapshot, copied once and kept (only what changed is copied again).
-    let her = cache.join("heritage-data");
-    std::fs::create_dir_all(&her)?;
-    let mut c = Command::new("rsync");
-    c.arg("-a").arg(format!("{}/", snapshot.display())).arg(format!("{}/", her.display()));
-    run(c, "rsync (the registers' snapshot)")?;
-    std::os::unix::fs::symlink(&her, root.join("data/heritage"))?;
-    // The pass's sets as today's files.
-    let set = |name: &str| -> Result<PathBuf> { Ok(out.path(out.get(&pipeline::osmpass::set_name(&date, name)).with_context(|| format!("the pass's {name} set"))?)) };
-    let osmium = |args: &[&std::ffi::OsStr]| {
-        let mut c = Command::new("osmium");
-        c.args(args);
-        c
-    };
-    let os = |s: &str| std::ffi::OsString::from(s);
-    let (areas, named, outlines) = (set("areas")?, set("named")?, set("outlines")?);
-    let areas_out = root.join("data/areas/areas.geojsonseq");
-    run(osmium(&[&os("export"), areas.as_os_str(), &os("-f"), &os("geojsonseq"), &os("--geometry-types=polygon"), &os("-a"), &os("type,id"), &os("-o"), areas_out.as_os_str(), &os("--overwrite")]), "osmium export (areas)")?;
-    std::fs::create_dir_all(her.join("osm"))?;
-    let named_out = her.join("osm/named.geojsonseq");
-    run(osmium(&[&os("export"), named.as_os_str(), &os("-f"), &os("geojsonseq"), &os("-o"), named_out.as_os_str(), &os("--overwrite")]), "osmium export (named)")?;
-    let prov = scratch.join("prov.osm.pbf");
-    run(osmium(&[&os("tags-filter"), outlines.as_os_str(), &os("r/admin_level=4"), &os("-o"), prov.as_os_str(), &os("--overwrite")]), "osmium tags-filter (provinces)")?;
-    let prov_out = her.join("osm/prov.geojsonseq");
-    run(osmium(&[&os("export"), prov.as_os_str(), &os("-f"), &os("geojsonseq"), &os("--geometry-types=polygon"), &os("-o"), prov_out.as_os_str(), &os("--overwrite")]), "osmium export (provinces)")?;
-    // The kept filtered planet, for the World Heritage parts.
-    let filtered = out.path(out.get(&format!("sources/osm/{date}/filtered")).context("the pass's filtered planet")?);
-    std::os::unix::fs::symlink(&filtered, root.join("data/osm/merged.osm.pbf"))?;
-    // No stops & sights; the coverage's shapes (heritage.py --cover).
+    std::fs::create_dir_all(scratch)?;
+    let epoch = heritage_epoch(out, &date, &cache)?;
+    let seeds = registers_extract(out, "sources/registers/legacy-seeds", &cache)?;
+    let root = heritage_root(scratch, &dem, &epoch)?;
     let b = root.join("data/build");
+    // The heritage-sites job's outputs, as heritage.py left them.
+    for stem in ["heritage", "heritage-areas", "special", "indigenous", "heritage-sources"] {
+        let c = out.get(&base_logical(&date, stem)).with_context(|| format!("no {stem} for the pass of {date} (the heritage-sites step)"))?;
+        std::fs::copy(out.path(c), b.join(format!("{stem}.json")))?;
+    }
+    // No stops & sights.
     std::fs::write(b.join("pois.json"), br#"{"type":"FeatureCollection","features":[]}"#)?;
     std::fs::write(b.join("details-poi.jsonl"), b"")?;
     std::fs::write(b.join("peaks.json"), b"[]")?;
-    let feats: Vec<serde_json::Value> = cov
-        .shapes
-        .iter()
-        .map(|sh| {
-            let polys: Vec<serde_json::Value> = sh.rings.iter().map(|r| serde_json::json!([r.iter().map(|p| [p[0] as f64 * 1e-7, p[1] as f64 * 1e-7]).collect::<Vec<_>>()])).collect();
-            serde_json::json!({"type": "Feature", "geometry": {"type": "MultiPolygon", "coordinates": polys}, "properties": {"source": sh.source}})
-        })
-        .collect();
-    std::fs::write(b.join("cover.geojson"), serde_json::to_vec(&serde_json::json!({"type": "FeatureCollection", "features": feats}))?)?;
-    let inputs: std::collections::BTreeSet<String> = ["pois.json", "details-poi.jsonl", "peaks.json", "cover.geojson"].iter().map(|s| s.to_string()).collect();
+    let inputs = ["pois.json", "details-poi.jsonl", "peaks.json"];
+    // The cover, and the pass's sets within it.
+    let tiles = cover_tiles(&cov);
+    let poly = scratch.join("cover.geojson");
+    std::fs::write(&poly, serde_json::to_vec(&tiles_geojson(COVER_Z, &tiles))?)?;
+    areas_over_cover(out, &date, &poly, scratch, &root.join("data/areas/areas.geojsonseq"))?;
+    let named = osmium_clip(&out.path(out.get(&pipeline::osmpass::set_name(&date, "named")).context("the pass's named set")?), &poly, &scratch.join("named-cover.osm.pbf"))?;
+    // Today's filter (Makefile: named.osm.pbf; the set also keeps the World Heritage tags).
+    let named_today = scratch.join("named.osm.pbf");
+    let mut c = pipeline::osmpass::osmium();
+    c.arg("tags-filter").arg(&named).args([
+        "nwr/historic",
+        "nwr/heritage",
+        "nwr/tourism=museum,attraction,viewpoint",
+        "nwr/man_made=lighthouse",
+        "nwr/railway=station",
+        "nwr/building=train_station,church,cathedral",
+        "nwr/amenity=place_of_worship",
+        "nwr/boundary=protected_area,national_park",
+        "nwr/leisure=park",
+        "nwr/military",
+        "-o",
+    ]);
+    c.arg(&named_today).arg("--overwrite");
+    osmium_run(c, "osmium tags-filter (named)")?;
+    std::fs::create_dir_all(epoch.join("osm"))?;
+    let mut c = pipeline::osmpass::osmium();
+    c.arg("export").arg(&named_today).args(["-f", "geojsonseq", "--overwrite", "-o"]).arg(epoch.join("osm/named.geojsonseq"));
+    osmium_run(c, "osmium export (named)")?;
+    std::fs::remove_file(&named).ok();
+    std::fs::remove_file(&named_today).ok();
+    // The kept filtered planet within the cover, once per pass and cover: today's merged extract.
+    let merged = merged_over_cover(out, &date, &poly, &cache)?;
+    std::os::unix::fs::symlink(&merged, root.join("data/osm/merged.osm.pbf"))?;
+    // Today's park facts, seeding this pass's cache of them.
+    let facts = epoch.join("areas-wikidata.json");
+    if !facts.exists() {
+        std::fs::copy(seeds.join("areas/wikidata.json"), &facts)?;
+    }
+    std::os::unix::fs::symlink(&facts, root.join("data/areas/wikidata.json"))?;
+    // The pageview months: the items job's cache (the same files), today's months seeding it.
+    let pv = cache.join("items");
+    std::fs::create_dir_all(pv.join("months"))?;
+    for e in std::fs::read_dir(seeds.join("pageviews/months"))?.flatten() {
+        let dest = pv.join("months").join(e.file_name());
+        if !dest.exists() {
+            std::fs::copy(e.path(), &dest)?;
+        }
+    }
+    std::os::unix::fs::symlink(&pv, root.join("data/pageviews"))?;
+    // Today's names table, for the layers' English names.
+    std::fs::create_dir_all(root.join("data/names"))?;
+    std::os::unix::fs::symlink(seeds.join("names/english.json"), root.join("data/names/english.json"))?;
     // Today's chain.
-    let venv = cache.join("heritage-venv");
     for (script, sargs) in [
-        ("heritage.py", vec!["../data/build", "--cover", "../data/build/cover.geojson"]),
         ("heritagewd.py", vec![]),
         ("heritagedetails.py", vec![]),
         ("areadetails.py", vec![]),
         ("whsshapes.py", vec![]),
         ("filterprops.py", vec![]),
-        ("pageviews.py", vec![]),
+        ("pageviews.py", vec!["--epoch", date.as_str()]),
         ("interest.py", vec![]),
         ("layers.py", vec![]),
     ] {
-        let t = std::time::Instant::now();
-        let mut c = Command::new("uv");
-        c.current_dir(root.join("dem")).env("UV_PROJECT_ENVIRONMENT", &venv).args(["run", "python", script]).args(&sargs);
-        run(c, script)?;
-        eprintln!("heritage: {script} done ({:.0?})", t.elapsed());
+        heritage_script(&root, &cache, script, &sargs)?;
     }
-    // Outputs.
-    let mut n = 0;
+    // Outputs (not the stops & sights' stand-ins, nor the layers made from them), the pass's
+    // earlier ones this run didn't make dropped.
+    let mut wrote: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut files: Vec<PathBuf> = std::fs::read_dir(&b)?.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
     files.sort();
     for p in files {
         let name = p.file_name().unwrap().to_string_lossy().into_owned();
-        if inputs.contains(&name) || name.ends_with(".tmp") || name.starts_with('.') {
+        let (stem, ext) = name.split_once('.').unwrap_or((name.as_str(), "bin"));
+        if inputs.contains(&name.as_str()) || name.ends_with(".tmp") || name.starts_with('.') || stem.starts_with("layer-pois") || stem == "layer-summits" {
             continue;
         }
-        let (stem, ext) = name.split_once('.').unwrap_or((name.as_str(), "bin"));
-        out.put_file(&format!("work/heritage/{date}/{stem}"), ext, &p)?;
-        n += 1;
+        let l = format!("work/heritage/{date}/{stem}");
+        out.put_file(&l, ext, &p)?;
+        wrote.insert(l);
+    }
+    let prefix = format!("work/heritage/{date}/");
+    let stale: Vec<String> = out
+        .manifest
+        .range(prefix.clone()..)
+        .take_while(|(l, _)| l.starts_with(&prefix))
+        .map(|(l, _)| l.clone())
+        .filter(|l| !l[prefix.len()..].contains('/') && !wrote.contains(l))
+        .collect();
+    for l in stale {
+        out.remove(&l);
     }
     out.save()?;
-    eprintln!("heritage: {n} files ({:.0?})", t0.elapsed());
+    eprintln!("heritage: {} files ({:.0?})", wrote.len(), t0.elapsed());
     Ok(())
+}
+
+/// Runs an osmium command, failing with its name.
+fn osmium_run(mut c: std::process::Command, what: &str) -> Result<()> {
+    let st = c.status().with_context(|| format!("run {what}"))?;
+    anyhow::ensure!(st.success(), "{what} failed: {st}");
+    Ok(())
+}
+
+/// `src` within the polygon file (whole relations: smart), into `dest`.
+fn osmium_clip(src: &Path, poly: &Path, dest: &Path) -> Result<PathBuf> {
+    let mut c = pipeline::osmpass::osmium();
+    c.args(["extract", "--strategy", "smart", "--overwrite", "-p"]).arg(poly).arg(src).arg("-o").arg(dest);
+    osmium_run(c, &format!("osmium extract ({})", src.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()))?;
+    Ok(dest.to_path_buf())
+}
+
+/// The pass's protected areas and Indigenous lands within the cover, as today's areas.geojsonseq.
+fn areas_over_cover(out: &Out, date: &str, poly: &Path, scratch: &Path, dest: &Path) -> Result<()> {
+    let set = out.path(out.get(&pipeline::osmpass::set_name(date, "areas")).context("the pass's areas set")?);
+    let clip = osmium_clip(&set, poly, &scratch.join("areas-cover.osm.pbf"))?;
+    let mut c = pipeline::osmpass::osmium();
+    c.args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "-a", "type,id", "--overwrite", "-o"]).arg(dest).arg(&clip);
+    osmium_run(c, "osmium export (areas)")?;
+    std::fs::remove_file(&clip).ok();
+    Ok(())
+}
+
+/// The pass's kept filtered planet within the cover (whole relations), kept in the cache for the
+/// pass and cover (`heritage-merged-<date>-<cover>.osm.pbf`; others go): what today's regional
+/// extracts were to whsshapes.py. Read from the NAS (an hour or so for the 60 GB file: osmium reads
+/// it twice), once per pass and cover.
+fn merged_over_cover(out: &Out, date: &str, poly: &Path, cache: &Path) -> Result<PathBuf> {
+    let id = store::naming::hash16(&std::fs::read(poly)?)[..12].to_string();
+    let name = format!("heritage-merged-{date}-{id}.osm.pbf");
+    let dest = cache.join(&name);
+    if dest.exists() {
+        return Ok(dest);
+    }
+    let src = out.path(out.get(&format!("sources/osm/{date}/filtered")).context("the pass's filtered planet")?);
+    let tmp = cache.join(format!("{name}.tmp.osm.pbf"));
+    osmium_clip(&src, poly, &tmp)?;
+    std::fs::rename(&tmp, &dest)?;
+    for e in std::fs::read_dir(cache)?.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if n.starts_with("heritage-merged-") && n != name {
+            std::fs::remove_file(e.path()).ok();
+        }
+    }
+    Ok(dest)
 }
 
 /// registers-import --from <dir> [--name legacy]: a registers' snapshot (today's: the build Mac's
@@ -1103,20 +1166,8 @@ fn registers_import(out: &mut Out, args: &[String], scratch: &Path) -> Result<()
 /// (`cache/heritage-<date>-<id>`, APFS clones cost nothing), so a pass's runs share their caches and
 /// a new pass or snapshot starts again from the snapshot. Other passes' and snapshots' copies go.
 fn heritage_epoch(out: &Out, date: &str, cache: &Path) -> Result<PathBuf> {
-    let content = out.get("sources/registers/legacy").context("no registers' snapshot in the manifest (scenic-build registers-import)")?.to_string();
-    let id = store::naming::hash16(content.as_bytes())[..12].to_string();
-    std::fs::create_dir_all(cache)?;
-    let snap = cache.join(format!("registers-{id}"));
-    if !snap.join(".done").exists() {
-        std::fs::remove_dir_all(&snap).ok();
-        std::fs::create_dir_all(&snap)?;
-        let mut c = std::process::Command::new("sh");
-        c.env("PATH", format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default()));
-        c.arg("-c").arg(r#"set -e; zstd -dcq "$1" | tar -xf - -C "$2""#).arg("sh").arg(out.path(&content)).arg(&snap);
-        let st = c.status().context("zstd | tar")?;
-        anyhow::ensure!(st.success(), "extracting {content} failed: {st}");
-        std::fs::write(snap.join(".done"), b"")?;
-    }
+    let snap = registers_extract(out, "sources/registers/legacy", cache)?;
+    let id = snap.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_prefix("registers-")).context("registers folder")?.to_string();
     let epoch = cache.join(format!("heritage-{date}-{id}"));
     if !epoch.join(".done").exists() {
         std::fs::remove_dir_all(&epoch).ok();
@@ -1130,14 +1181,46 @@ fn heritage_epoch(out: &Out, date: &str, cache: &Path) -> Result<PathBuf> {
     }
     for e in std::fs::read_dir(cache)?.flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
-        let other_snap = n.starts_with("registers-") && n != format!("registers-{id}");
         let other_epoch = n.strip_prefix("heritage-").is_some_and(|r| r.len() > 11 && pipeline::osmpass::is_date(&r[..10])) && e.path() != epoch;
         // (heritage-data: the first heritage job's rsync'd copy.)
-        if other_snap || other_epoch || n == "heritage-data" {
+        if other_epoch || n == "heritage-data" {
             std::fs::remove_dir_all(e.path()).ok();
         }
     }
     Ok(epoch)
+}
+
+/// An archive of `sources/registers/` extracted once into the cache (`registers-<id>`, by its
+/// content), the current ones kept: the snapshot and the seeds.
+fn registers_extract(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> {
+    let content = out.get(logical).with_context(|| format!("no {logical} in the manifest (scenic-build registers-import)"))?.to_string();
+    let id = store::naming::hash16(content.as_bytes())[..12].to_string();
+    std::fs::create_dir_all(cache)?;
+    let dir = cache.join(format!("registers-{id}"));
+    if !dir.join(".done").exists() {
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir)?;
+        let mut c = std::process::Command::new("sh");
+        c.env("PATH", format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default()));
+        c.arg("-c").arg(r#"set -e; zstd -dcq "$1" | tar -xf - -C "$2""#).arg("sh").arg(out.path(&content)).arg(&dir);
+        let st = c.status().context("zstd | tar")?;
+        anyhow::ensure!(st.success(), "extracting {content} failed: {st}");
+        std::fs::write(dir.join(".done"), b"")?;
+    }
+    // Extracts of archives the manifest no longer names go.
+    let current: std::collections::BTreeSet<String> = out
+        .manifest
+        .range("sources/registers/".to_string()..)
+        .take_while(|(l, _)| l.starts_with("sources/registers/"))
+        .map(|(_, c)| format!("registers-{}", &store::naming::hash16(c.as_bytes())[..12]))
+        .collect();
+    for e in std::fs::read_dir(cache)?.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if n.starts_with("registers-") && !current.contains(&n) {
+            std::fs::remove_dir_all(e.path()).ok();
+        }
+    }
+    Ok(dir)
 }
 
 /// A stand-in root laid out as the repository for today's heritage scripts: `dem/` the app's
@@ -1192,17 +1275,7 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     std::fs::write(&poly, serde_json::to_vec(&tiles_geojson(COVER_Z, &tiles))?)?;
     eprintln!("heritage-sites: {} z{COVER_Z} tiles within 20 km of the coverage ({:.0?})", tiles.len(), t0.elapsed());
     // The pass's protected areas and Indigenous lands within them (whole relations: smart).
-    let set = out.path(out.get(&pipeline::osmpass::set_name(&date, "areas")).context("the pass's areas set")?);
-    let clip = scratch.join("areas-cover.osm.pbf");
-    let mut c = pipeline::osmpass::osmium();
-    c.args(["extract", "--strategy", "smart", "--overwrite", "-p"]).arg(&poly).arg(&set).arg("-o").arg(&clip);
-    let st = c.status().context("run osmium extract")?;
-    anyhow::ensure!(st.success(), "osmium extract (areas) failed: {st}");
-    let mut c = pipeline::osmpass::osmium();
-    c.args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "-a", "type,id", "--overwrite", "-o"]).arg(root.join("data/areas/areas.geojsonseq")).arg(&clip);
-    let st = c.status().context("run osmium export")?;
-    anyhow::ensure!(st.success(), "osmium export (areas) failed: {st}");
-    std::fs::remove_file(&clip).ok();
+    areas_over_cover(out, &date, &poly, scratch, &root.join("data/areas/areas.geojsonseq"))?;
     heritage_script(&root, &cache, "heritage.py", &["../data/build", "--tiles", "../data/build/cover.idx", "--zoom", &COVER_Z.to_string(), "--date", &date])?;
     // The units' slices, then the whole files.
     let sites = slice_sites(&std::fs::read(b.join("heritage.json"))?)?;

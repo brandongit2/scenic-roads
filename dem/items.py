@@ -42,19 +42,8 @@ import poidetails
 CHUNK = 5000
 
 
-def months_before(epoch: str) -> list[str]:
-    """The last November, February, May and August that ended at least 20 days before the epoch
-    (dumps.wikimedia.org publishes a month's dump in its first days), oldest first."""
-    d = datetime.date.fromisoformat(epoch)
-    out, y, m = [], d.year, d.month
-    while len(out) < 4:
-        end = datetime.date(y, m, 1)  # the day after the month before (y, m) ended
-        m -= 1
-        if m == 0:
-            y, m = y - 1, 12
-        if m in (2, 5, 8, 11) and (d - end).days >= 20:
-            out.append(f"{y:04d}-{m:02d}")
-    return sorted(out)
+# The epoch's four months (pageviews.months_before, shared with the heritage chain).
+months_before = pageviews.months_before
 
 
 def load_json(p: Path, default):
