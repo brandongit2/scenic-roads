@@ -115,6 +115,11 @@ pub async fn label_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)
     named_mvt_tile(s, "labels".into(), crate::names_live::Rules::Labels, z, x, y, q, headers).await
 }
 
+/// Rail stops by view (pipeline::ovconv): gzip'd MVT, layer "s", name n.
+pub async fn station_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
+    named_mvt_tile(s, "stations".into(), crate::names_live::Rules::Stations, z, x, y, q, headers).await
+}
+
 /// A layer's gzip'd MVT tile with display names attached (`rules`: which layer and properties).
 #[allow(clippy::too_many_arguments)]
 pub async fn named_mvt_tile(s: S, layer: String, rules: crate::names_live::Rules, z: u8, x: u32, y: u32, q: Option<String>, headers: HeaderMap) -> Response {

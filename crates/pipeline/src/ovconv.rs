@@ -7,6 +7,9 @@
 //!   position (`px`, `py`), whose popup they open.
 //! - **`ovdata/3-x-y`**: the areas' details by id, and the parks' records (looked up by name near a
 //!   point), owned by the z3 tile of their box's centre.
+//! - **Stations** (`layers/stations`): vector tiles (layer `s`: `n, en, g, m, sp, mz` and an id);
+//!   a tile at zoom z holds the stops that show at zooms up to z + 1 (a stop's dot from `mz` +
+//!   log2(12 px), stations.ts), zoom 12 every stop.
 
 use crate::hipack::{grow, meets, tile_bounds};
 use crate::layers::{pack_of, write_pack};
@@ -46,7 +49,13 @@ pub struct Converted {
     pub tiles: usize,
     pub ovdata: usize,
     pub parks: usize,
+    pub stations: usize,
 }
+
+/// The stations' vector-tile layer.
+pub const STATION_LAYER: &str = "s";
+/// A stop's dot shows from its `mz` plus this (log2 of stations.ts STOP_PX).
+const STOP_DZ: f64 = 3.584_962_500_721_156;
 
 /// A GeoJSON geometry as vtgen's, and its bounding box (None: not a line or area).
 fn geom_of(g: &Value) -> Option<(Geom, [f64; 4])> {
@@ -229,23 +238,7 @@ pub fn convert(out: &mut Out) -> Result<Converted> {
         }
         areas += made.len();
         let feats: Vec<Feature> = made.into_iter().map(|m| m.0).collect();
-        // The tiles, gzipped, by pack.
-        let mut packs: BTreeMap<(&'static str, u8, u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
-        let mut err = None;
-        vtgen::tiles(LAYER, &feats, 0, MAXZ, &want, &mut |z, x, y, raw| match names::mvt::gzip(&raw) {
-            Ok(gz) => packs.entry(pack_of(z, x, y)).or_default().push((z, x, y, gz, raw.len() as u32)),
-            Err(e) => {
-                err.get_or_insert(e);
-            }
-        });
-        if let Some(e) = err {
-            return Err(e);
-        }
-        for ((scope, rz, rx, ry), mut tiles) in packs {
-            tiles.sort_by_key(|t| (t.0, t.1, t.2));
-            ntiles += tiles.len();
-            write_pack(out, a.layer, "mvt", true, scope, (rz, rx, ry), &mut tiles.into_iter())?;
-        }
+        write_tiles(out, a.layer, LAYER, &feats, &want, &mut ntiles)?;
         eprintln!("overlays: {} {} features ({empty} without geometry), {ntiles} tiles so far ({:.1?})", a.layer, feats.len(), t0.elapsed());
     }
     // Parks: owned by their box's centre.
@@ -278,6 +271,55 @@ pub fn convert(out: &mut Out) -> Result<Converted> {
         w.finish()?;
         out.put_file(&logical, "sect", &local)?;
     }
-    eprintln!("overlays: {areas} areas, {ntiles} tiles, {n_ov} ovdata, {parks} parks ({:.1?})", t0.elapsed());
-    Ok(Converted { areas, tiles: ntiles, ovdata: n_ov, parks })
+    let stations = stations(out, &want, &mut ntiles)?;
+    eprintln!("overlays: {areas} areas, {stations} stations, {ntiles} tiles, {n_ov} ovdata, {parks} parks ({:.1?})", t0.elapsed());
+    Ok(Converted { areas, tiles: ntiles, ovdata: n_ov, parks, stations })
+}
+
+/// Writes a layer's tiles (gzipped, in packs by scope).
+fn write_tiles(out: &mut Out, layer: &str, mvt_layer: &str, feats: &[Feature], want: &(dyn Fn(u8, u32, u32) -> bool + Sync), ntiles: &mut usize) -> Result<()> {
+    let mut packs: BTreeMap<(&'static str, u8, u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
+    let mut err = None;
+    vtgen::tiles(mvt_layer, feats, 0, MAXZ, want, &mut |z, x, y, raw| match names::mvt::gzip(&raw) {
+        Ok(gz) => packs.entry(pack_of(z, x, y)).or_default().push((z, x, y, gz, raw.len() as u32)),
+        Err(e) => {
+            err.get_or_insert(e);
+        }
+    });
+    if let Some(e) = err {
+        return Err(e);
+    }
+    for ((scope, rz, rx, ry), mut tiles) in packs {
+        tiles.sort_by_key(|t| (t.0, t.1, t.2));
+        *ntiles += tiles.len();
+        write_pack(out, layer, "mvt", true, scope, (rz, rx, ry), &mut tiles.into_iter())?;
+    }
+    Ok(())
+}
+
+/// Today's rail stops (stations.json) as vector tiles: each stop in the tiles of the zooms it shows
+/// at, every stop at zoom 12. Ids: today's stops don't keep their OSM members, so references
+/// (`legacy:station|name|place`).
+fn stations(out: &mut Out, want: &(dyn Fn(u8, u32, u32) -> bool + Sync), ntiles: &mut usize) -> Result<usize> {
+    let fc: Value = serde_json::from_slice(&legacy_bytes(out, "stations")?)?;
+    let feats = fc["features"].as_array().context("stations: no features")?;
+    let mut src = Vec::with_capacity(feats.len());
+    let mut made = Vec::with_capacity(feats.len());
+    for (n, f) in feats.iter().enumerate() {
+        let c = &f["geometry"]["coordinates"];
+        let (Some(lon), Some(lat)) = (c[0].as_f64(), c[1].as_f64()) else { bail!("stations #{n}: not a point") };
+        let props = f["properties"].as_object().cloned().unwrap_or_default();
+        let name = props.get("n").and_then(Value::as_str).unwrap_or("");
+        src.push(IdSource { osm: None, reference: format!("legacy:station|{name}|{},{}", marks::e7(lon), marks::e7(lat)), canon: Value::Object(props.clone()).to_string() });
+        // The first zoom whose tiles serve a view where its dot shows (z + 1 ≥ mz + STOP_DZ).
+        let mz = props.get("mz").and_then(Value::as_f64).unwrap_or(0.0);
+        let minzoom = (mz + STOP_DZ - 1.0).ceil().clamp(0.0, MAXZ as f64) as u8;
+        let mvt: Vec<(String, MvtValue)> = props.iter().filter_map(|(k, v)| mvt_value(v).map(|m| (k.clone(), m))).collect();
+        made.push(Feature { id: 0, geom: Geom::Points(vec![[lon, lat]]), props: mvt, minzoom });
+    }
+    for (f, id) in made.iter_mut().zip(marks::assign_ids(&src)?) {
+        f.id = id;
+    }
+    write_tiles(out, "stations", STATION_LAYER, &made, want, ntiles)?;
+    Ok(made.len())
 }

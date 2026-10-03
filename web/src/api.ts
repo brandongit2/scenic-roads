@@ -70,6 +70,8 @@ export interface Meta {
   labelTiles?: boolean;
   /** The area overlays come as vector tiles by view (docs/phase5.md "Areas"). */
   ovTiles?: boolean;
+  /** The rail stops come as vector tiles by view. */
+  stationTiles?: boolean;
   /** The catalog's number (catalog.ts follows it). */
   catalog?: number;
 }

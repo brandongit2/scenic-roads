@@ -10,21 +10,25 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Which tiles: our label tiles (name `n`, English `en`), the basemap (OpenMapTiles schema), or
-/// the area overlays (layer `a`: name `name`, World Heritage outlines `n`; English `en`).
+/// the area overlays (layer `a`: name `name`, World Heritage outlines `n`; English `en`), or the
+/// rail stops (layer `s`: name `n`, English `en`).
 #[derive(Clone, Copy)]
 pub enum Rules {
     Labels,
     Basemap,
     Areas,
+    Stations,
 }
 
 const AREAS: names::mvt::LayerRule<'static> = names::mvt::LayerRule { layer: "a", name_keys: &["name", "n"], en_keys: &["en"] };
+const STATIONS: names::mvt::LayerRule<'static> = names::mvt::LayerRule { layer: "s", name_keys: &["n"], en_keys: &["en"] };
 
 fn rules(r: Rules) -> &'static [names::mvt::LayerRule<'static>] {
     match r {
         Rules::Labels => &[names::mvt::LABELS],
         Rules::Basemap => &[names::mvt::OPENMAPTILES],
         Rules::Areas => &[AREAS],
+        Rules::Stations => &[STATIONS],
     }
 }
 

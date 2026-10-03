@@ -175,6 +175,10 @@ export const ovTilesOn = () => OV_TILES;
 /** The area overlays' sources and their tile layers' names (`/tiles/ov/{name}`). */
 export const OV_SOURCES: Record<string, string> = { 'heritage-areas': 'heritage-areas', indigenous: 'indigenous', special: 'special', whs: 'whs' };
 export const OV_LAYER = 'a';
+/** The rail stops as vector tiles (`/tiles/stations`, layer `s`) rather than the whole file. */
+let STATION_TILES = false;
+export const stationTilesOn = () => STATION_TILES;
+export const STATION_LAYER = 's';
 
 /** Labels thinned to the label spacing (Layers → Map → Label density): the place, water and park
  * labels from our label tiles (the landmarks' and stations' are set with their layers). */
@@ -209,6 +213,7 @@ export function versionedTiles(): { source: string; file: string; url: string }[
     trees('cover'), trees('height'), trees('leaf'),
     // (The area overlays only when they're vector tiles: a whole file's source has no tiles.)
     ...(OV_TILES ? Object.entries(OV_SOURCES).map(([source, name]) => ({ source, file: `ov-${name}.tiles`, url: `${hostFor('layers')}/tiles/ov/${name}/{z}/{x}/{y}${ver(`ov-${name}.tiles`)}` })) : []),
+    ...(STATION_TILES ? [{ source: 'stations', file: 'stations.tiles', url: `${hostFor('layers')}/tiles/stations/{z}/{x}/{y}${ver('stations.tiles')}` }] : []),
   ];
 }
 /** The basemap's deepest tiles (finer zooms reuse them). */
@@ -334,8 +339,9 @@ const LANDMARK_LABEL_IDS = new Set(Object.values(LANDMARK_LABELS));
  * landmark names alone (set with their dots). */
 export const overlayLabelScale = (f: number) => (id: string) => (LANDMARK_LABEL_IDS.has(id) ? NaN : OVERLAY_IDS.has(id) ? f : 1);
 
-export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DENSITY, ovTiles = false): StyleSpecification {
+export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DENSITY, ovTiles = false, stationTiles = false): StyleSpecification {
   OV_TILES = ovTiles;
+  STATION_TILES = stationTiles;
   const base = hostFor('base');
   const tiles = Object.fromEntries(versionedTiles().map((t) => [t.source, t.url]));
   // Places, water and parks from the labels by importance, where the server has them: name n (with
@@ -445,7 +451,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       ...Object.fromEntries(['heritage-areas', 'special', 'indigenous'].map((src) => [src, ovTiles ? { type: 'vector' as const, tiles: [tiles[src]], maxzoom: 12, attribution: '' } : empty])),
       // Ids for feature state (terminal and stop colours, see ferries.ts and stations.ts).
       ferries: { ...empty, generateId: true },
-      stations: { ...empty, generateId: true },
+      stations: stationTiles ? { type: 'vector' as const, tiles: [tiles.stations], maxzoom: 12, attribution: '' } : { ...empty, generateId: true },
       whs: ovTiles ? { type: 'vector' as const, tiles: [tiles.whs], maxzoom: 12, attribution: '' } : empty,
     },
     layers: [
@@ -1056,9 +1062,11 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       },
     ],
   };
-  // The area overlays' layers read their tiles' layer.
-  if (ovTiles) {
-    for (const l of style.layers) if ('source' in l && typeof l.source === 'string' && l.source in OV_SOURCES) (l as { 'source-layer'?: string })['source-layer'] = OV_LAYER;
+  // The area overlays' and rail stops' layers read their tiles' layers.
+  for (const l of style.layers) {
+    if (!('source' in l) || typeof l.source !== 'string') continue;
+    if (ovTiles && l.source in OV_SOURCES) (l as { 'source-layer'?: string })['source-layer'] = OV_LAYER;
+    if (stationTiles && l.source === 'stations') (l as { 'source-layer'?: string })['source-layer'] = STATION_LAYER;
   }
   return style;
 }

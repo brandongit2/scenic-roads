@@ -9,6 +9,7 @@
 // terrain for the view's corners in every tile, up to a second and more after a gesture.
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';
 import { onVersions, ver } from './api';
+import { STATION_LAYER, stationTilesOn } from './basemap';
 import { hostFor } from './hosts';
 import { RAIL_GROUP_COLOURS } from './rail';
 import { kindSpacing, labelShown, lineWeight, type AppState } from './state';
@@ -34,9 +35,16 @@ export class Stations {
 
   constructor(private map: MLMap) {
     // New stops (a new catalog): fetched again if they were, and coloured anew (their feature ids
-    // are their places in the file).
-    onVersions(['stations.json'], () => {
-      if (!this.requested) return;
+    // are their places in the file). By view, the new tiles come with the others' (main.ts), and
+    // the colours go with them.
+    onVersions(['stations.json', 'stations.tiles'], (files) => {
+      if (stationTilesOn()) {
+        if (!files.includes('stations.tiles')) return;
+        this.coloured.clear();
+        map.removeFeatureState({ source: 'stations', sourceLayer: STATION_LAYER });
+        return;
+      }
+      if (!this.requested || !files.includes('stations.json')) return;
       this.coloured.clear();
       map.removeFeatureState({ source: 'stations' });
       map.getSource<GeoJSONSource>('stations')?.setData(stopsUrl());
@@ -49,7 +57,7 @@ export class Stations {
     if (!map.getLayer(DOTS)) return;
     if (r.on && !this.requested) {
       this.requested = true;
-      map.getSource<GeoJSONSource>('stations')?.setData(stopsUrl());
+      if (!stationTilesOn()) map.getSource<GeoJSONSource>('stations')?.setData(stopsUrl());
     }
     this.railMask = r.groups.reduce((m, on, i) => (on ? m | (1 << i) : m), 0);
     map.setLayoutProperty(DOTS, 'visibility', r.on ? 'visible' : 'none');
@@ -79,7 +87,8 @@ export class Stations {
     if (all) this.coloured.clear();
     // Shown at this zoom (the dots' filter, spaced(STOP_PX)).
     const minZ = map.getZoom() - Math.log2(STOP_PX);
-    const fs = map.querySourceFeatures('stations');
+    const layer = stationTilesOn() ? { sourceLayer: STATION_LAYER } : {};
+    const fs = map.querySourceFeatures('stations', layer);
     yield;
     for (let i = 0; i < fs.length; i++) {
       if (i % 32 === 31) yield;
@@ -91,7 +100,7 @@ export class Stations {
       const [lng, lat] = (f.geometry as GeoJSON.Point).coordinates;
       const c = colourAt(lng, lat);
       if (c === undefined || (c === null && !settled)) continue;
-      map.setFeatureState({ source: 'stations', id }, { c, k: true });
+      map.setFeatureState({ source: 'stations', id, ...layer }, { c, k: true });
       this.coloured.set(id, c);
     }
   }

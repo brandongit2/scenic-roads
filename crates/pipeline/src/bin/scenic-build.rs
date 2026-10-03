@@ -116,7 +116,7 @@ fn main() -> Result<()> {
         }
         "convert-legacy-overlays" => {
             let c = pipeline::ovconv::convert(&mut out)?;
-            eprintln!("overlays: {} areas in {} tiles, {} ovdata, {} parks", c.areas, c.tiles, c.ovdata, c.parks);
+            eprintln!("overlays: {} areas and {} stations in {} tiles, {} ovdata, {} parks", c.areas, c.stations, c.tiles, c.ovdata, c.parks);
         }
         "terrain-root" => {
             let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
@@ -498,7 +498,7 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
         l if l.starts_with("grid-") => (11, 11),
         // Thinned tiles; z6 blocks come from markdata.
         l if l.starts_with("marks-") => (0, 5),
-        l if l.starts_with("ov-") => (0, pipeline::ovconv::MAXZ),
+        l if l.starts_with("ov-") || l == "stations" => (0, pipeline::ovconv::MAXZ),
         _ => return None,
     })
 }
@@ -529,7 +529,7 @@ fn catalog(out: &mut Out) -> Result<()> {
                     l if l.starts_with("trees-") => "terrarium-webp",
                     l if l.starts_with("grid-") => "u8-zstd",
                     l if l.starts_with("marks-") => "rdmt",
-                    l if l.starts_with("ov-") => "mvt",
+                    l if l.starts_with("ov-") || l == "stations" => "mvt",
                     _ => "unknown",
                 };
                 let zs = match *scope {
