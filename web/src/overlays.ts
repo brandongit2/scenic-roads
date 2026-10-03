@@ -4,9 +4,9 @@ import * as maplibregl from 'maplibre-gl';
 import { cdfOf } from './ui/scale';
 import { Dist } from './roads/stats';
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
-import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, labelKindOf, type NameScale } from './basemap';
+import { HERITAGE_GROUPS, HERITAGE_TIER, HERITAGE_TIERS, LANDMARK_LABELS, OVERLAY_LAYERS, POINT_TILES, POI_STYLE, SIG_LAYERS, landmarkScoreOf, nameOpacityPaint, pointTiles, spacingFilter, heritageGroupOf, heritageTierOf, OVERLAY_SOURCE, labelKindOf, type NameScale } from './basemap';
 import { OVERLAYS, kindSpacing, labelShown, type AppState, type LabelKind, type OverlayKey } from './state';
-import { ver } from './api';
+import { keepable, onVersions, ver } from './api';
 import { hostFor } from './hosts';
 import { tasks } from './tasks';
 import { displayName } from './names';
@@ -94,6 +94,8 @@ const layerUrl = (src: string) => `${hostFor('layers')}/api/layer/${src}${ver(`l
 /** Point sources: heritage, and the stops & sights per kind (pois-<kind>). */
 type PointSource = string;
 const isPoints = (src: string): src is PointSource => src === 'heritage' || src.startsWith('pois-');
+/** A point source's index, for the status line. */
+const indexLabel = (src: PointSource) => `${src === 'heritage' ? 'Heritage sites' : OVERLAYS.find(([k]) => OVERLAY_SOURCE[k] === src)?.[1] ?? 'Stops'} list`;
 
 /** The point sources' map tiles (basemap.ts POINT_TILES, `lmk://<source>/{z}/{x}/{y}`): made by the
  * landmarks worker from its index (landmarks.worker.ts tile), so no other copy of the files is
@@ -130,6 +132,10 @@ export class Overlays {
   /** Point sources in the landmarks worker. */
   private whsRequested = false;
   private indexed = new Map<PointSource, 'loading' | 'ready'>();
+  /** Point sources indexed again for new data (their map tiles follow once they are), and those
+   * whose data changed while they were being indexed (indexed again after). */
+  private reindexing = new Set<PointSource>();
+  private stale = new Set<PointSource>();
   private worker = new Worker(new URL('./landmarks.worker.ts', import.meta.url), { type: 'module' });
   private queryId = 0;
   /** The in-view query whose answer is awaited (the ids are shared with the mask requests). */
@@ -142,6 +148,8 @@ export class Overlays {
   /** Feature counts and areas of the polygon overlays (layer-summary.json), for their counts. */
   private summary: Record<string, { n: number; a: (number | null)[] }> | null = null;
   private summaryLoading = false;
+  /** The summary request whose answer is wanted (a newer one, for new data, replaces it). */
+  private summaryTok = 0;
   /** Paint last set per layer and property (unchanged values aren't set again: each set
    * re-evaluates every loaded feature). */
   private painted = new Map<string, string>();
@@ -164,6 +172,33 @@ export class Overlays {
     tileWorker = this.worker;
     for (const r of tileQueue.splice(0)) this.worker.postMessage(r);
     layers.onFiltersOpen = () => this.prominence();
+    onVersions((f) => f.endsWith('.json'), (files) => this.reload(files));
+  }
+
+  /** Layer files with new versions (a new catalog): the sources that have them get them again, the
+   * points are indexed again (the old ones shown meanwhile), the polygon counts and the summits
+   * asked for again. */
+  private reload(files: string[]) {
+    const changed = (src: string) => files.includes(`layer-${src}.json`) || files.includes(`${src}.json`);
+    for (const src of this.sourced) if (changed(src)) this.map.getSource<GeoJSONSource>(src)?.setData(layerUrl(src));
+    if (this.whsRequested && changed('whs-shapes')) this.map.getSource<GeoJSONSource>('whs')?.setData(layerUrl('whs-shapes'));
+    for (const [src, st] of this.indexed) {
+      if (!changed(src)) continue;
+      if (st === 'ready') this.reindex(src);
+      else this.stale.add(src);
+    }
+    if (changed('summary') && (this.summary || this.summaryLoading)) {
+      this.summary = null;
+      this.summaryLoading = false;
+      this.ensureSummary();
+    }
+    if (this.summitsRequested && changed('summits')) this.worker.postMessage({ type: 'summits', url: layerUrl('summits') } satisfies LandmarkRequest);
+  }
+
+  private reindex(src: PointSource) {
+    this.reindexing.add(src);
+    tasks.begin(`index:${src}`, indexLabel(src), 'downloading and indexing the new data');
+    this.worker.postMessage({ type: 'load', src, url: layerUrl(src) } satisfies LandmarkRequest);
   }
 
   /** The latest mask request per source (the dots' filters), and the filters it was for. */
@@ -191,15 +226,29 @@ export class Overlays {
       tileReplies.delete(m.id);
     } else if (m.type === 'loaded') {
       const src = m.src as PointSource;
-      this.indexed.set(src, 'ready');
       tasks.end(`index:${src}`);
-      if (m.dots) {
-        this.dots.setSource(src, m.dots);
-        this.requestMasks([src]);
+      if (!m.ok) {
+        // Not kept: a first load is tried again the next time its kind shows (its map tiles, made
+        // empty meanwhile, then again); new data that failed leaves the old.
+        if (this.indexed.get(src) !== 'ready') {
+          this.indexed.delete(src);
+          this.reindexing.add(src);
+          for (const [key] of OVERLAYS) if (OVERLAY_SOURCE[key] === src) this.layers.setOverlayStatus(key, '');
+        } else this.reindexing.delete(src);
+      } else {
+        this.indexed.set(src, 'ready');
+        // New data: the map's tiles of the points again, from the new index.
+        if (this.reindexing.delete(src)) this.map.getSource<maplibregl.VectorTileSource>(src)?.setTiles([pointTiles(src)]);
+        if (m.dots) {
+          this.dots.setSource(src, m.dots);
+          this.requestMasks([src]);
+        }
+        if (src === 'heritage') this.layers.setHeritageCounts(m.counts);
+        for (const [key] of OVERLAYS) if (OVERLAY_SOURCE[key] === src && this.state?.overlays[key]) this.refreshStatus(key, src);
+        this.prominence();
       }
-      if (src === 'heritage') this.layers.setHeritageCounts(m.counts);
-      for (const [key] of OVERLAYS) if (OVERLAY_SOURCE[key] === src && this.state?.overlays[key]) this.refreshStatus(key, src);
-      this.prominence();
+      // The data changed while it loaded: again.
+      if (this.stale.delete(src)) this.reindex(src);
     } else if (m.type === 'count') {
       const k = this.countFor.get(m.id);
       this.countFor.delete(m.id);
@@ -478,23 +527,31 @@ export class Overlays {
     if (this.indexed.has(src)) return;
     this.indexed.set(src, 'loading');
     for (const [key] of OVERLAYS) if (OVERLAY_SOURCE[key] === src && this.state?.overlays[key]) this.layers.setOverlayStatus(key, '', true);
-    tasks.begin(`index:${src}`, `${src === 'heritage' ? 'Heritage sites' : OVERLAYS.find(([k]) => OVERLAY_SOURCE[k] === src)?.[1] ?? 'Stops'} list`, 'downloading and indexing for the in-view lists and counts');
+    tasks.begin(`index:${src}`, indexLabel(src), 'downloading and indexing for the in-view lists and counts');
     this.worker.postMessage({ type: 'load', src, url: layerUrl(src) } satisfies LandmarkRequest);
   }
 
   private ensureSummary() {
     if (this.summary || this.summaryLoading) return;
     this.summaryLoading = true;
+    const tok = ++this.summaryTok;
     fetch(layerUrl('summary'))
+      .then(keepable)
       .then((r) => (r.ok ? r.json() : null))
-      .catch(() => null)
-      .then((sm) => {
-        this.summary = sm ?? {};
-        for (const [key] of OVERLAYS) {
-          const src = OVERLAY_SOURCE[key];
-          if (src && !isPoints(src) && this.state?.overlays[key]) this.refreshStatus(key, src);
-        }
-      });
+      .then(
+        (sm) => {
+          if (tok !== this.summaryTok) return;
+          this.summary = sm ?? {};
+          for (const [key] of OVERLAYS) {
+            const src = OVERLAY_SOURCE[key];
+            if (src && !isPoints(src) && this.state?.overlays[key]) this.refreshStatus(key, src);
+          }
+        },
+        () => {
+          // Not kept: asked again for the next count.
+          if (tok === this.summaryTok) this.summaryLoading = false;
+        },
+      );
   }
 
   /** Show a popup for the overlay feature at a point, if any. Returns true if handled. */

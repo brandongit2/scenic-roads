@@ -9,6 +9,8 @@
 !/tools/app/
 node_modules/
 /web/dist/
+/web/dist-new/
+/web/dist-publish/
 .venv/
 __pycache__/
 .DS_Store

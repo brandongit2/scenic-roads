@@ -810,6 +810,12 @@ export interface RoadTile {
   y: number;
   state: 'loading' | 'ready' | 'empty' | 'error';
   reqId: number;
+  /** The tiles' version (RoadLayer.setSource) of its data, and the one last asked for. */
+  ver?: string;
+  want?: string;
+  /** New data for the tile `swapFor` (a new version), uploading: it takes that tile's place once
+   * up (RoadLayer.swap). */
+  swapFor?: RoadTile;
   data?: DecodedTile;
   vaoA?: WebGLVertexArrayObject;
   vaoB?: WebGLVertexArrayObject;
@@ -968,8 +974,9 @@ export class RoadLayer implements CustomLayerInterface {
 
   style: RoadStyle;
   bounds: [number, number, number, number] = [-180, -85, 180, 85];
-  /** Build id, appended to tile URLs so a rebuilt dataset bypasses cached tiles. */
-  version = '';
+  /** The tiles' version (the catalog's for the layer), appended to their URLs so new data bypasses
+   * the browser's cached tiles ('' when unknown: no version in the URLs). */
+  private version = '';
   /** Terrain-aware ground points for the tilted tile cover (camera3d.coverSamples); null: flat unprojection. */
   groundSamples: ((pts: { x: number; y: number }[]) => { lng: number; lat: number; mpp: number }[] | null) | null = null;
   onChange: () => void = () => {};
@@ -1100,6 +1107,17 @@ export class RoadLayer implements CustomLayerInterface {
 
   // ---- tiles ----------------------------------------------------------------------
 
+  /** Where the tiles come from: their version and the data's bounds (meta.bounds). A new version (a
+   * new catalog) fetches every tile again as it is wanted, each drawn from its old data until the
+   * new data is up (swap). */
+  setSource(version: string, bounds: [number, number, number, number]) {
+    if (version === this.version && bounds.every((v, i) => v === this.bounds[i])) return;
+    this.version = version;
+    this.bounds = [...bounds];
+    this.coverSig = '';
+    this.map?.triggerRepaint();
+  }
+
   private cover(): RoadTile[] {
     const zoom = this.map.getZoom();
     const pitch = this.map.getPitch();
@@ -1128,7 +1146,9 @@ export class RoadLayer implements CustomLayerInterface {
       if (!keep.has(t.key)) {
         this.workers[id % this.workers.length].postMessage({ type: 'abort', id } satisfies WorkerRequest);
         this.reqs.delete(id);
-        this.tiles.delete(t.key);
+        // (A tile drawn from older data stays, asked for again when wanted again.)
+        if (t.state === 'loading') this.tiles.delete(t.key);
+        else t.want = undefined;
       }
     }
     return out;
@@ -1325,15 +1345,23 @@ export class RoadLayer implements CustomLayerInterface {
   private request(t: RoadTile) {
     const id = this.nextReq++;
     t.reqId = id;
+    t.want = this.version;
     this.reqs.set(id, t);
-    const url = `${hostFor(this.rail ? 'rails' : 'roads')}/tiles/${this.id}/${t.z}/${t.x}/${t.y}?v=${this.version}`;
+    const url = `${hostFor(this.rail ? 'rails' : 'roads')}/tiles/${this.id}/${t.z}/${t.x}/${t.y}${this.version ? `?v=${this.version}` : ''}`;
     this.workers[id % this.workers.length].postMessage({ type: 'load', id, url, z: t.z, x: t.x, y: t.y, lod: this.workerLodFilter() } satisfies WorkerRequest);
+  }
+
+  /** A tile to fetch: never asked for, or not yet for the current version. */
+  private due(t: RoadTile) {
+    return t.state === 'loading' ? t.reqId === 0 : t.want !== this.version;
   }
 
   private onWorker(m: WorkerResponse) {
     const t = this.reqs.get(m.id);
     if (!t) return;
     this.reqs.delete(m.id);
+    if (t.state !== 'loading') return this.refreshed(t, m);
+    t.ver = t.want;
     if (m.type === 'error') {
       t.state = 'error';
       console.warn('tile', t.key, m.message);
@@ -1348,6 +1376,38 @@ export class RoadLayer implements CustomLayerInterface {
     }
     this.map.triggerRepaint();
     this.onChange();
+  }
+
+  /** A tile drawn from older data, fetched again (a new version): the new data is uploaded beside
+   * it and takes its place once up (swap); a failure keeps the old data. */
+  private refreshed(t: RoadTile, m: WorkerResponse) {
+    if (m.type === 'tile' && m.tile) {
+      this.uploads.push({ key: t.key, z: t.z, x: t.x, y: t.y, state: 'loading', reqId: t.reqId, ver: t.want, lastUsed: t.lastUsed, scale: t.scale, data: m.tile, swapFor: t });
+      this.map.triggerRepaint();
+      return;
+    }
+    // (A failure keeps the old data, counted as loaded: not asked for again before the next version.)
+    t.ver = t.want;
+    if (m.type === 'error') console.warn('tile', t.key, m.message);
+    else {
+      // Nothing there any more.
+      this.freeGpu(t);
+      t.data = t.pick = undefined;
+      t.state = 'empty';
+    }
+    this.map.triggerRepaint();
+    this.onChange();
+  }
+
+  /** New data uploaded (`n`) takes the place of its tile's old data: the same tile object, which
+   * the cover, the frame's lists and the statistics hold. */
+  private swap(n: RoadTile) {
+    const t = n.swapFor!;
+    this.freeGpu(t);
+    t.pick = undefined;
+    Object.assign(t, n, { swapFor: undefined, reqId: t.reqId });
+    // Its lines are numbered anew.
+    if (this.hover?.key === t.key) this.hover = null;
   }
 
   /** Decoded tiles waiting for their GPU upload. */
@@ -1367,7 +1427,7 @@ export class RoadLayer implements CustomLayerInterface {
     let bytes = 0, done = false;
     while (this.uploads.length && bytes < UPLOAD_BUDGET) {
       const t = this.uploads[0];
-      if (this.tiles.get(t.key) !== t || !t.data) {
+      if (this.tiles.get(t.key) !== (t.swapFor ?? t) || !t.data) {
         // Dropped meanwhile.
         if (t.vbo) gl.deleteBuffer(t.vbo);
         t.vbo = undefined;
@@ -1390,6 +1450,7 @@ export class RoadLayer implements CustomLayerInterface {
         this.uploads.shift();
         this.upload(t);
         t.state = 'ready';
+        if (t.swapFor) this.swap(t);
         done = true;
       }
     }
@@ -1676,12 +1737,15 @@ export class RoadLayer implements CustomLayerInterface {
   prerender(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput) {
     const wanted = this.cover();
     this.pump();
+    // Missing tiles first, then those drawn from older data (a new version).
     let inflight = this.reqs.size;
-    for (const t of wanted) {
-      if (inflight >= this.maxInflight) break;
-      if (t.state === 'loading' && t.reqId === 0) {
-        this.request(t);
-        inflight++;
+    for (const missing of [true, false]) {
+      for (const t of wanted) {
+        if (inflight >= this.maxInflight) break;
+        if ((t.state === 'loading') === missing && this.due(t)) {
+          this.request(t);
+          inflight++;
+        }
       }
     }
     const now = performance.now();
@@ -2441,7 +2505,8 @@ export class RoadLayer implements CustomLayerInterface {
   // ---- queries ----------------------------------------------------------------------
 
   progress(): LoadProgress {
-    const loaded = this.wanted.filter((t) => t.state !== 'loading').length;
+    // (A tile drawn from an older version counts as loading until its new data is up.)
+    const loaded = this.wanted.filter((t) => t.state !== 'loading' && t.ver === this.version).length;
     let vertices = 0;
     for (const t of this.drawn) vertices += t.data?.nverts ?? 0;
     return { wanted: this.wanted.length, loaded, inflight: this.reqs.size, gpuBytes: this.gpuBytes, vertices, tilesDrawn: this.drawn.length };

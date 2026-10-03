@@ -696,6 +696,16 @@ export class LayersCard {
     return wrap;
   }
 
+  /** A section from another part of the app (the Regions panel), above Reset: closed until first
+   * opened. `onToggle` hears it open and close (at once, if it starts open). */
+  addSection(key: string, title: string, kids: Node[], onToggle: (open: boolean) => void) {
+    this.collapsed[key] ??= true;
+    const wrap = this.section(key, title, null, ...kids);
+    wrap.querySelector('.sec-t')!.addEventListener('click', () => onToggle(!wrap.classList.contains('closed')));
+    this.root.querySelector(':scope > .reset')!.before(wrap);
+    if (!wrap.classList.contains('closed')) onToggle(true);
+  }
+
   /** Reset to defaults, asked again in place before it happens. */
   private resetRow() {
     const ask = h('div', { class: 'reset-ask' });

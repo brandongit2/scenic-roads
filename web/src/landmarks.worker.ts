@@ -117,10 +117,15 @@ const post = (m: LandmarkResponse, transfer: Transferable[] = []) => (self as un
 self.onmessage = async (ev: MessageEvent<LandmarkRequest>) => {
   const m = ev.data;
   if (m.type === 'load') {
+    // (Again for new data: it replaces the source's index, and a failed request or a server error
+    // keeps the old one. No such file: no points.)
     try {
-      const fc = (await (await fetch(m.url)).json()) as GeoJSON.FeatureCollection;
+      const r = await fetch(m.url);
+      if (r.status >= 500) throw new Error(`HTTP ${r.status}`);
+      const fc: GeoJSON.FeatureCollection = r.ok ? await r.json() : { type: 'FeatureCollection', features: [] };
       const ix = index(fc, m.src === 'heritage');
       sources.set(m.src, ix);
+      kept.clear();
       const counts: Record<string, number> = {};
       for (const k of ix.kind) counts[k] = (counts[k] ?? 0) + 1;
       const { data: dots, aux } = dotData(ix, m.src === 'heritage');
@@ -128,17 +133,18 @@ self.onmessage = async (ev: MessageEvent<LandmarkRequest>) => {
       tileIdx.set(m.src, tileIndex(fc.features));
       post({ type: 'loaded', src: m.src, ok: true, counts, dots }, [dots.draw, dots.hpos, dots.morton.buffer, dots.chunks.buffer]);
     } catch {
-      tileIdx.set(m.src, { features: [], codes: new Uint32Array(), ids: new Uint32Array(), rank: new Float32Array() });
+      if (!tileIdx.has(m.src)) tileIdx.set(m.src, { features: [], codes: new Uint32Array(), ids: new Uint32Array(), rank: new Float32Array() });
       post({ type: 'loaded', src: m.src, ok: false, counts: {} });
     }
     for (const t of tileWaits.get(m.src) ?? []) tile(t);
     tileWaits.delete(m.src);
   } else if (m.type === 'summits') {
     try {
-      const d = (await (await fetch(m.url)).json()) as { p: [number, number, number, string][] };
-      summits = d.p;
+      const r = await fetch(m.url);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      summits = ((await r.json()) as { p: [number, number, number, string][] }).p;
     } catch {
-      summits = [];
+      summits ??= [];
     }
   } else if (m.type === 'count') {
     const ix = sources.get(m.kind.src);

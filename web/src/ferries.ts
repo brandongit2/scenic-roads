@@ -3,7 +3,7 @@
 import * as maplibregl from 'maplibre-gl';
 import { inPolygon } from './overlays';
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';
-import { ver } from './api';
+import { keepable, onVersions, ver } from './api';
 import { hostFor } from './hosts';
 import { tasks } from './tasks';
 import { fitPopup } from './popupfit';
@@ -112,7 +112,14 @@ export class Ferries {
   private cdf: Uint8Array | null = null;
   onLoaded: () => void = () => {};
 
-  constructor(private map: MLMap) {}
+  constructor(private map: MLMap) {
+    // New ferry files (a new catalog): fetched again if they were.
+    onVersions(['ferries.json', 'ferry-lines.json'], () => {
+      if (!this.loading) return;
+      this.loading = null;
+      if (this.style?.on) this.ensure();
+    });
+  }
 
   get loaded() {
     return this.fc !== null;
@@ -121,13 +128,16 @@ export class Ferries {
   private ensure() {
     if (this.loading) return;
     tasks.begin('ferries', 'Ferries', 'downloading the lines and timetables');
-    this.loading = Promise.all([
-      fetch(`${hostFor('layers')}/api/layer/ferries${ver('ferries.json')}`).then((r) => (r.ok ? r.json() : null)),
-      fetch(`${hostFor('layers')}/api/layer/ferry-lines${ver('ferry-lines.json')}`).then((r) => (r.ok ? r.json() : null)),
+    // (A server error or a failed request isn't kept: the next time the ferries show, they're
+    // asked for again.)
+    const get = (url: string) => fetch(url).then(keepable).then((r) => (r.ok ? r.json() : null));
+    const req: Promise<void> = Promise.all([
+      get(`${hostFor('layers')}/api/layer/ferries${ver('ferries.json')}`),
+      get(`${hostFor('layers')}/api/layer/ferry-lines${ver('ferry-lines.json')}`),
     ])
       .then(([fc, lines]) => {
         tasks.end('ferries');
-        if (!fc) return;
+        if (!fc || this.loading !== req) return;
         this.lines = lines ?? {};
         this.lineNames.clear();
         for (const f of fc.features as Feature[]) {
@@ -141,12 +151,20 @@ export class Ferries {
             if (!this.lineNames.has(id) && this.lines[id]?.name === p.n) this.lineNames.set(id, { main: p.main, sub: p.sub });
           }
         }
+        // (New data, a new catalog's: the terminals' colours and feature states go with the old.)
         this.fc = fc;
         this.boxes = null;
+        this.nearLines = null;
+        this.terminalColours.clear();
+        this.map.removeFeatureState({ source: 'ferries' });
         this.map.getSource<GeoJSONSource>('ferries')?.setData(fc);
         this.onLoaded();
       })
-      .catch(() => tasks.end('ferries'));
+      .catch(() => {
+        tasks.end('ferries');
+        if (this.loading === req) this.loading = null;
+      });
+    this.loading = req;
   }
 
   apply(s: AppState) {

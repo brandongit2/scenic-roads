@@ -1,7 +1,7 @@
 // Details of stops & sights, heritage sites and areas, from the server (/api/detail, /api/park):
 // fetched on first hover, cached, and turned into bottom-bar facts, a description line and the
 // full list for click popups.
-import { ver } from './api';
+import { keepable, onVersions, version } from './api';
 import { fmt } from './ui/dom';
 
 export type DetailRef = { layer: 'poi' | 'heritage' | 'harea' | 'special' | 'indigenous'; i: number } | { park: { name: string; lon: number; lat: number } };
@@ -11,16 +11,25 @@ const cache = new Map<string, Promise<Detail | null>>();
 
 export const refKey = (r: DetailRef) => ('park' in r ? `park:${r.park.name}@${r.park.lon.toFixed(2)},${r.park.lat.toFixed(2)}` : `${r.layer}:${r.i}`);
 
+/** A detail (null: none). A failed request (a server error, the network) isn't cached: the next
+ * hover asks again. */
 export function getDetail(r: DetailRef): Promise<Detail | null> {
   const k = refKey(r);
   let p = cache.get(k);
   if (!p) {
-    // Versioned by the details files' dates (responses are cached for an hour).
-    const v = (f: string) => ver(f).replace('?v=', '');
+    // Versioned by the details files' versions, when known (a versioned response is cached for
+    // good, so never under an incomplete one).
+    const files = 'park' in r ? ['details-park.jsonl'] : [`details-${r.layer}.jsonl`, ...(r.layer === 'poi' ? ['peaks.json'] : r.layer === 'heritage' ? ['props-heritage.jsonl'] : [])];
+    const vs = files.map(version);
+    const v = vs.every(Boolean) ? vs.join('.') : '';
     const url = 'park' in r
-      ? `/api/park?${new URLSearchParams({ name: r.park.name, lon: String(r.park.lon), lat: String(r.park.lat), v: v('details-park.jsonl') })}`
-      : `/api/detail/${r.layer}/${r.i}?v=${v(`details-${r.layer}.jsonl`)}${r.layer === 'poi' ? `.${v('peaks.json')}` : r.layer === 'heritage' ? `.${v('props-heritage.jsonl')}` : ''}`;
-    p = fetch(url).then((res) => (res.status === 200 ? res.json() : null)).catch(() => null);
+      ? `/api/park?${new URLSearchParams({ name: r.park.name, lon: String(r.park.lon), lat: String(r.park.lat), ...(v ? { v } : {}) })}`
+      : `/api/detail/${r.layer}/${r.i}${v ? `?v=${v}` : ''}`;
+    const q: Promise<Detail | null> = fetch(url).then(keepable).then((res) => (res.status === 200 ? res.json() : null));
+    p = q.catch(() => {
+      if (cache.get(k) === p) cache.delete(k);
+      return null;
+    });
     cache.set(k, p);
   }
   return p;
@@ -32,10 +41,18 @@ export function peekDetail(r: DetailRef): Detail | null | undefined {
   return loaded.get(refKey(r));
 }
 export async function loadDetail(r: DetailRef): Promise<Detail | null> {
-  const d = await getDetail(r);
-  loaded.set(refKey(r), d);
+  const k = refKey(r), p = getDetail(r);
+  const d = await p;
+  // (Not a failure, nor an answer for data replaced meanwhile.)
+  if (cache.get(k) === p) loaded.set(k, d);
   return d;
 }
+
+// New details (a new catalog): asked for again.
+onVersions((f) => f.startsWith('details-') || f === 'peaks.json' || f === 'props-heritage.jsonl', () => {
+  cache.clear();
+  loaded.clear();
+});
 
 /** What a detail adds: facts for the bar, a description line, and rows and links for popups. */
 export interface Enriched {

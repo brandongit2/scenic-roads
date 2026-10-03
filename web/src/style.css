@@ -492,3 +492,81 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 .sight-chips .pill { display: inline-flex; align-items: center; gap: 4px; }
 .sight-chips .dot, .climb .ct .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; }
 .sight-chips .pill .dot { margin-right: 0; }
+
+/* Regions (Layers → Regions, ui/regions.ts): the regions, the areas found, a new region. */
+#layers .rg-list { display: flex; flex-direction: column; gap: 1px; margin: 2px 0; }
+#layers .rg { padding: 3px 6px; margin: 0 -6px; border-radius: 5px; }
+#layers .rg:hover { background: var(--hover); }
+#layers .rg1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+#layers .rg-name { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); cursor: pointer; }
+#layers .rg-name:hover { color: #fff; }
+#layers .rg-id { flex: 1; min-width: 0; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#layers .rg-act { flex: none; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--faint); font-size: 12px; line-height: 16px; opacity: 0; }
+#layers .rg:hover .rg-act, #layers .rg-act.on, #layers .rg-act:focus-visible { opacity: 1; }
+#layers .rg-act:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+#layers .rg2 { margin-top: 1px; color: var(--faint); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#layers .rg-ask { display: grid; gap: 6px; padding: 2px 0; font-size: 11px; line-height: 1.45; }
+#layers .rg-ask .pills .pill, #layers .rg-draft .pills .pill { flex: 1; padding: 3px 8px; }
+#layers .rg-bad { color: #f3c77a; font-size: 10.5px; line-height: 1.4; padding: 2px 0; overflow-wrap: anywhere; }
+#layers .rg-empty { font-size: 11px; padding: 2px 0; }
+#layers :is(.rg-note, .rg-msg, .rg-hint) { font-size: 10.5px; line-height: 1.45; color: var(--muted); }
+#layers :is(.rg-note, .rg-msg, .rg-hint):empty { display: none; }
+#layers .rg-hint { color: var(--faint); margin-top: 4px; }
+#layers .rg-msg { margin-top: 6px; }
+#layers :is(.rg-note, .rg-msg).warn { color: #f3c77a; }
+#layers .rg-search { display: flex; gap: 6px; align-items: center; }
+#layers .rg-search .pill { flex: none; white-space: nowrap; }
+#layers :is(.rg-q, .rg-in, .rg-field input) { min-width: 0; background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 5px; padding: 3px 6px; font-size: 11px; color: var(--text); outline: none; }
+#layers :is(.rg-q, .rg-in, .rg-field input):focus { border-color: rgba(255, 255, 255, 0.28); }
+#layers :is(.rg-q, .rg-in) { flex: 1; }
+#layers .rg-cands { display: flex; flex-direction: column; max-height: 232px; overflow-y: auto; margin: 4px -6px 0; scrollbar-width: thin; }
+#layers .rg-cands:empty { display: none; }
+#layers .cand { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; padding: 3px 6px; border-radius: 5px; cursor: pointer; }
+#layers .cand:hover, #layers .cand.active { background: var(--hover); }
+#layers .cand .cn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+#layers .cand .ck { color: var(--muted); font-size: 10.5px; }
+#layers .cand .cs { grid-column: 1 / -1; color: var(--faint); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#layers .cand.in .cn { color: #dce7f5; }
+#layers .cand.in .cn::before { content: '✓ '; }
+#layers .rg-draft { display: grid; gap: 5px; margin-top: 8px; padding: 7px 8px 8px; border: 1px solid rgba(220, 231, 245, 0.2); border-radius: 7px; background: rgba(220, 231, 245, 0.03); }
+#layers .rg-dhd { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; font-weight: 600; color: #dce7f5; }
+#layers .rg-dhd .faint { font-weight: 400; }
+#layers .rg-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+#layers .rg-chip { display: inline-flex; align-items: center; max-width: 100%; padding: 0 2px 0 7px; border-radius: 999px; background: rgba(220, 231, 245, 0.1); color: #dce7f5; font-size: 10.5px; line-height: 18px; white-space: nowrap; }
+#layers .rg-chip button { border: 0; background: none; padding: 0 4px; color: inherit; opacity: 0.65; font-size: 11px; line-height: 1; }
+#layers .rg-chip button:hover { opacity: 1; }
+#layers .rg-field { display: grid; grid-template-columns: 36px minmax(0, 1fr); align-items: center; gap: 8px; font-size: 11px; }
+#layers .rg-draft .pill:disabled { opacity: 0.5; }
+
+/* The build Mac and the NAS in the status bar (ui/buildstatus.ts): a few words each, the details
+   on a click. */
+#strip .build { display: flex; align-items: center; gap: 10px; min-width: 0; }
+#strip .r2 .build button { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 280px; white-space: nowrap; }
+#strip .r2 .build button > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A narrow window: the status and the build items give way (ending in …), the readouts keep their
+   room. */
+#strip .right { flex: 0 1 auto; min-width: 0; }
+#strip .right > * { flex: none; }
+#strip .right > :is(.status, .build) { flex: 0 1 auto; min-width: 0; }
+#strip .build .dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+#strip .build .dot.run { background: var(--accent); animation: bs-pulse 1.6s ease-in-out infinite; }
+#strip .build .dot.paused { background: #f3c77a; }
+#strip .build .dot.away { background: none; box-shadow: inset 0 0 0 1px var(--faint); }
+@keyframes bs-pulse { 50% { opacity: 0.3; } }
+#strip .r2 .build .bs-nas { color: #f3c77a; }
+#strip .r2 .build .bs-nas .dot { background: #f3c77a; }
+#strip .r2 .build :is(.bs-reload, .bs-nas) { flex: none; }
+#strip .r2 .build .bs-reload { color: var(--accent); }
+#strip .r2 .build .bs-agent { min-width: 70px; }
+#strip .r2 .build button:hover { color: #fff; }
+.bs-pop { position: fixed; z-index: 30; width: 380px; max-width: calc(100vw - 16px); max-height: min(70vh, 640px); overflow-y: auto; padding: 2px 12px 10px; background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); font-size: 11px; line-height: 1.45; scrollbar-width: thin; }
+.bs-pop .bs-hd { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin: 9px 0 3px; color: var(--faint); font-size: 9.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; }
+.bs-pop .bs-hd > :last-child { font-size: 10.5px; font-weight: 400; letter-spacing: 0; text-transform: none; }
+.bs-pop .bs-item { padding: 2px 0; }
+.bs-pop .bs-item + .bs-item { border-top: 1px solid var(--line); }
+.bs-pop .bs-done { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; gap: 6px; }
+.bs-pop .bs-done .what { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bs-pop .ok { color: var(--accent); }
+.bs-pop .fail { color: #ff8b8b; }
+.bs-pop .warn { color: #f3c77a; }
+.bs-pop .bs-log { margin: 3px 0 2px; padding: 4px 6px; max-height: 98px; overflow: auto; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }

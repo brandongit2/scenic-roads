@@ -11,7 +11,8 @@
 import { readPolygons } from './mvt';
 
 export type CoastMessage =
-  /** `tiles`: the basemap's tile URL ({z}, {x}, {y}); `maxzoom`: its deepest tiles. */
+  /** `tiles`: the basemap's tile URL ({z}, {x}, {y}); `maxzoom`: its deepest tiles. Sent again
+   * when they change. */
   | { type: 'init'; tiles: string; maxzoom: number }
   | { type: 'tile'; id: number; z: number; x: number; y: number; lakes: boolean }
   | { type: 'cancel'; id: number };
@@ -38,8 +39,10 @@ let queue = Promise.resolve();
 self.onmessage = (ev: MessageEvent<CoastMessage>) => {
   const m = ev.data;
   if (m.type === 'init') {
+    // (Again for new basemap tiles: their water is read anew.)
     tiles = m.tiles;
     vectorMaxZoom = m.maxzoom;
+    waterCache.clear();
   } else if (m.type === 'cancel') {
     cancelled.add(m.id);
   } else {

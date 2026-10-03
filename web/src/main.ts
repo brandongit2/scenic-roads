@@ -4,9 +4,9 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 // MapLibre resolves its worker at runtime, which bundlers can't see; bundle it explicitly.
 import mlWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import './style.css';
-import { getProfile, getRoadWays, getWay, roadWays, setVersions, ver, version, type Drive, type Meta, type Profile, type Ride, type WayInfo } from './api';
+import { getProfile, getRoadWays, getWay, keepable, onVersions, peekWay, roadWays, setVersions, ver, version, type Drive, type Meta, type Profile, type Ride } from './api';
 import { displayName, displayOf, lineName } from './names';
-import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, basemapTiles } from './basemap';
+import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, basemapTiles, labelTilesOn, versionedTiles } from './basemap';
 import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
 import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, summariseFeature, withDetails } from './overlays';
@@ -25,7 +25,7 @@ import { Stations } from './stations';
 import { tasks, type Task } from './tasks';
 import { idle } from './idle';
 import { mapTasks } from './maptasks';
-import { hostFor, initHosts } from './hosts';
+import { initHosts } from './hosts';
 import { ferryMetricDef } from './ferry';
 import { cdfOf, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
@@ -34,8 +34,10 @@ import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
 import { ROAD_WEIGHT, Store, classMask, defaults, labelShown, modeGroup, fromHash, fromSaved, groupMask, lineWeight, railMask, roadLenKm, roadLenM, surfaceMask, toHash, tollMask, unnamedHideClasses, unnamedHideGroups, type AppState, type Selection, type Stretch } from './state';
 import * as cam3d from './camera3d';
-import { applyLabelOpacity, applyLabelSize, applyTerrain, applyTint, cacheTerrainRays, TINT_VARS, tintColourAt, tintCss } from './terrain';
-import { applyWater, updateCoastRamp } from './coast';
+import { applyLabelOpacity, applyLabelSize, applyTerrain, applyTint, cacheTerrainRays, switchContours, TINT_VARS, tintColourAt, tintCss } from './terrain';
+import { applyWater, switchCoast, updateCoastRamp } from './coast';
+import { CatalogWatch } from './catalog';
+import { RegionLayers } from './regions';
 import { ContourLayer, type ContourDraw } from './contours';
 import { terrainDist } from './terrainstats';
 import { cheaperCovers } from './covers';
@@ -44,6 +46,7 @@ import { slicedGlyphs } from './glyphs';
 import { pacedDrapes } from './drape';
 import { installTrackpad } from './trackpad';
 import { Boot } from './ui/boot';
+import { BuildStatus } from './ui/buildstatus';
 import { ColourCard } from './ui/colour';
 import { cap, fmt, h, toast } from './ui/dom';
 import { DrivesPane } from './ui/drives';
@@ -51,6 +54,7 @@ import { LayersCard } from './ui/layers';
 import { NavControls } from './ui/nav';
 import { installListsResize, installPanelResize } from './ui/resize';
 import { ProfilePanel } from './ui/profile';
+import { RegionsPanel } from './ui/regions';
 import { StatsCard, type InViewExtra, type ViewPlace } from './ui/stats';
 import { SightsPane, type Sight } from './ui/sights';
 import { LinesPane, RidesPane } from './ui/rides';
@@ -210,11 +214,10 @@ async function main() {
     railWeights: [],
     casingMask: CASING_CLASSES_MASK,
   });
-  roads.bounds = meta.bounds;
-  // The tiles' version in their URLs (cached for good): the catalog's for the layer. (Not the
-  // build time in meta: it stayed when the tiles' way column changed from indices to OSM ids, and a
-  // browser holding the older tiles under the same URLs would have kept them.)
-  roads.version = version('roads.tiles') || String(meta.built);
+  // The tiles' version in their URLs (cached for good): the catalog's for the layer, else none. (Not
+  // the build time in meta: it stayed when the tiles' way column changed from indices to OSM ids,
+  // and a browser holding the older tiles under the same URLs would have kept them.)
+  roads.setSource(version('roads.tiles'), meta.bounds);
   // Street-map colours (Map display type), rebuilt when the scheme changes.
   let schemeKey = '';
   let schemeU: SchemeUniforms | null = null;
@@ -251,8 +254,7 @@ async function main() {
         railMetricOf(store.s.rail.metric, { elev: e, grade: g, ground, bridge: (style & 96) === 32, tunnel: (style & 64) !== 0, ch, freq: fq }, store.s.rail.weights),
     },
   );
-  rails.bounds = meta.bounds;
-  rails.version = version('rails.tiles') || String(meta.built);
+  rails.setSource(version('rails.tiles'), meta.bounds);
   // The tilted tile cover unprojects onto the terrain (not the camera pivot's level).
   roads.groundSamples = rails.groundSamples = (pts) => cam3d.coverSamples(map, pts);
   let railCur: [number, number] = [...s0.rail.range] as [number, number];
@@ -284,14 +286,17 @@ async function main() {
   };
   applyRailStyle(s0);
   // Rail service frequency per way (railfreq): sorted OSM way ids (as the rail tiles' way column)
-  // and trains a day each way.
-  let railFreqLoading = false;
+  // and trains a day each way. Loaded for a version of the file (again for a new catalog's); a
+  // failed request isn't kept (asked again the next time rail changes).
+  let railFreqFor: string | null = null;
   const loadRailFreq = () => {
-    if (railFreqLoading) return;
-    railFreqLoading = true;
-    tasks.track('railfreq', 'Rail frequencies', fetch(`/api/railfreq${ver('rail-freq.bin')}`).then((r) => (r.ok ? r.arrayBuffer() : null)), 'trains a day per line')
+    const v = version('rail-freq.bin');
+    if (railFreqFor === v) return;
+    railFreqFor = v;
+    const req = fetch(`/api/railfreq${ver('rail-freq.bin')}`).then(keepable).then((r) => (r.ok ? r.arrayBuffer() : null));
+    tasks.track('railfreq', 'Rail frequencies', req, 'trains a day per line')
       .then((b) => {
-        if (!b || b.byteLength < 8) return;
+        if (railFreqFor !== v || !b || b.byteLength < 8) return;
         const n = b.byteLength / 8;
         const dv = new DataView(b);
         // Negative: a lower bound (MTR lines with only published headways).
@@ -318,7 +323,9 @@ async function main() {
           return i >= 0 && vals[i] < 0;
         });
       })
-      .catch(() => (railFreqLoading = false));
+      .catch(() => {
+        if (railFreqFor === v) railFreqFor = null;
+      });
   };
   if (s0.rail.on) loadRailFreq();
 
@@ -586,6 +593,10 @@ async function main() {
   const profile = new ProfilePanel(document.getElementById('profile')!);
   new NavControls(document.getElementById('nav')!, map, cameraControls);
   const viewshed = new ViewshedTool(document.getElementById('viewshed')!, map);
+  // Regions (Layers → Regions): the regions the map is built for, their coverage on the map, and new
+  // ones made of administrative areas.
+  const regions = new RegionsPanel(new RegionLayers(map));
+  layers.addSection('regions', 'Regions', regions.nodes, (open) => regions.setOpen(open));
   // The landmark dots, drawn on the GPU (dots.ts); the overlays feed them.
   const dots = new LandmarkDots();
   dots.setTerrain({ on: store.s.terrain.on, exaggeration: store.s.terrain.exaggeration, occlude: store.s.occlude });
@@ -750,7 +761,9 @@ async function main() {
   const fitPad = { top: 60, bottom: 270, left: 60, right: 60 };
   /** fitBounds, but framed from the ground at the centre rather than from sea level (cam3d.frame). */
   const fitGround = (b: maplibregl.LngLatBounds, padding: maplibregl.PaddingOptions, maxZoom?: number) => {
-    const cam = map.cameraForBounds(b, { padding, maxZoom, bearing: map.getBearing() }); // keep the bearing
+    // (Keeping the bearing; maxZoom only when given: MapLibre takes an undefined one for a limit,
+    // and the camera comes out NaN.)
+    const cam = map.cameraForBounds(b, { padding, bearing: map.getBearing(), ...(maxZoom !== undefined ? { maxZoom } : {}) });
     if (!cam?.center || cam.zoom === undefined) return;
     const ll = maplibregl.LngLat.convert(cam.center);
     map.flyTo({ ...cam3d.frame(map, ll, map.queryTerrainElevation(ll) ?? 0, cam.zoom), duration: 900 });
@@ -985,11 +998,10 @@ async function main() {
     const ok = set ? (w: number) => set.has(w) : x.way !== undefined ? (w: number) => w === x.way : undefined;
     const hv = x.layer.pickNear(x.at[0], x.at[1], 4, ok) ?? x.layer.pickNear(x.at[0], x.at[1], 4);
     if (!hv) return strip.show(null, null);
-    const cached = wayCache.get(hv.way);
-    strip.show(hv, cached === undefined ? 'loading' : cached, []);
-    if (cached === undefined) {
+    const known = peekWay(hv.way);
+    strip.show(hv, known === undefined ? 'loading' : known, []);
+    if (known === undefined) {
       getWay(hv.way, hv.lngLat).then((info) => {
-        wayCache.set(hv.way, info);
         if (listTok === tok) strip.show(hv, info, []);
       });
     }
@@ -1214,7 +1226,6 @@ async function main() {
   onSettled(() => markDirty());
 
   // ---- hover & selection -----------------------------------------------------------
-  const wayCache = new Map<number, WayInfo | null>();
   let hovered: HoverInfo | null = null;
   let pickAt: { x: number; y: number } | null = null;
   const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
@@ -1328,7 +1339,7 @@ async function main() {
       hovered = null;
       roads.setHover(null);
       rails.setHover(null);
-      map.getCanvas().style.cursor = viewshed.active ? 'crosshair' : 'pointer';
+      map.getCanvas().style.cursor = viewshed.active || regions.picking ? 'crosshair' : 'pointer';
       hoverAreas = feats.areas;
       return strip.showFeature(ferry, feats.areas);
     }
@@ -1345,18 +1356,17 @@ async function main() {
         if (set && hovered && set.has(hovered.way)) layer.setHover(hovered, set);
       });
     }
-    map.getCanvas().style.cursor = viewshed.active ? 'crosshair' : hovered || feats.point ? 'pointer' : '';
+    map.getCanvas().style.cursor = viewshed.active || regions.picking ? 'crosshair' : hovered || feats.point ? 'pointer' : '';
     hoverAreas = feats.areas;
     if (!hovered) {
       const f = feats.point ?? feats.areas[0];
       return f ? showFeat(f, feats.areas) : strip.show(null, null);
     }
     const hv = hovered;
-    const cached = wayCache.get(hv.way);
-    strip.show(hv, cached === undefined ? 'loading' : cached, hoverAreas);
-    if (cached === undefined) {
+    const known = peekWay(hv.way);
+    strip.show(hv, known === undefined ? 'loading' : known, hoverAreas);
+    if (known === undefined) {
       getWay(hv.way, hv.lngLat).then((info) => {
-        wayCache.set(hv.way, info);
         if (hovered?.way === hv.way) strip.show(hovered, info, hoverAreas);
       });
     }
@@ -1397,7 +1407,7 @@ async function main() {
       return;
     }
     profileAbort = new AbortController();
-    const info = wayCache.get(sel.way) ?? (await getWay(sel.way, sel.at));
+    const info = peekWay(sel.way) ?? (await getWay(sel.way, sel.at));
     profile.loading((info && (info.ref || displayName(info.main, info.name, info.sub))) || 'this road');
     try {
       const p = await getProfile(sel.way, sel.at, profileAbort.signal);
@@ -1488,6 +1498,10 @@ async function main() {
   map.on('click', (e) => {
     if (viewshed.active) {
       viewshed.run([e.lngLat.lng, e.lngLat.lat]);
+      return;
+    }
+    if (regions.picking) {
+      void regions.pickAt([e.lngLat.lng, e.lngLat.lat]);
       return;
     }
     if (overlays.click(e.point, POINT_LAYERS)) return;
@@ -1636,6 +1650,7 @@ async function main() {
     if (document.querySelector('dialog[open]')) return; // the dialog closes itself
     if (driving) return stopDrive();
     if (viewshed.active) return viewshed.cancel();
+    if (regions.picking) return regions.stopPicking();
     overlays.closePopup();
     store.set({ selected: null, stretch: null });
   });
@@ -1722,7 +1737,7 @@ async function main() {
           else map.on('idle', levelOnce);
         }
         lastExaggeration = s.terrain.on ? s.terrain.exaggeration : 0;
-        applyTerrain(map, s.terrain, hostFor('terrain'));
+        applyTerrain(map, s.terrain);
         applyLabelOpacity(map, s.labelOpacity, overlayLabelScale(s.poiOpacity));
       }
       // Label sizes lay the labels out again: at most every 150 ms while a slider is dragged.
@@ -1817,6 +1832,36 @@ async function main() {
     store.set({ view: { zoom: map.getZoom(), lat: c.lat, lng: c.lng, bearing: map.getBearing(), pitch: map.getPitch(), elev } });
   });
 
+  // ---- new data, the build Mac, regions -------------------------------------------------
+  // A new catalog (catalog.ts) switches the map to its data in place: the modules that fetch data
+  // follow its versions by themselves (api.ts onVersions), the map's tile sources here, and what
+  // can't follow asks for a reload (the status bar offers it). The status bar shows the build Mac
+  // and the NAS from the same answers.
+  let watch: CatalogWatch | null = null;
+  onVersions(['roads.tiles'], () => roads.setSource(version('roads.tiles'), roads.bounds));
+  onVersions(['rails.tiles'], () => rails.setSource(version('rails.tiles'), rails.bounds));
+  onVersions(['rail-freq.bin'], () => {
+    if (railFreqFor !== null && store.s.rail.on) loadRailFreq();
+  });
+  onVersions(versionedTiles().map((t) => t.file), (files) => {
+    for (const t of versionedTiles()) {
+      if (files.includes(t.file)) (map.getSource(t.source) as { setTiles?: (tiles: string[]) => void } | undefined)?.setTiles?.([t.url]);
+    }
+    if (files.includes('base.pmtiles')) switchCoast(map, basemapTiles());
+    if (files.includes('terrain.tiles')) switchContours(map);
+  });
+  const newCatalog = (m: Meta) => {
+    // What the versions don't say: the data's bounds (where tiles are asked for), and whether the
+    // labels come from our tiles (the style is made for one or the other).
+    roads.setSource(version('roads.tiles'), m.bounds);
+    rails.setSource(version('rails.tiles'), m.bounds);
+    if (!!m.labelTiles !== labelTilesOn()) watch?.wantReload('New map data');
+    markDirty();
+  };
+  regions.onFit = (b) => fitGround(new maplibregl.LngLatBounds([b[0], b[1]], [b[2], b[3]]), { top: 60, bottom: 60, left: 60, right: 340 });
+  regions.onPicking = (on) => (map.getCanvas().style.cursor = on ? 'crosshair' : '');
+  regions.onChanged = () => void watch?.poll();
+
   // ---- boot --------------------------------------------------------------------------
   let bootDone = false;
   const finishBoot = () => {
@@ -1840,7 +1885,7 @@ async function main() {
     // Under every landmark name (and above the parts of World Heritage Sites).
     map.addLayer(dots, `poi-${Object.keys(POI_STYLE)[0]}`);
     applyLayers();
-    applyTerrain(map, store.s.terrain, hostFor('terrain'));
+    applyTerrain(map, store.s.terrain);
     applyLabelSize(map, store.s.labelSize, store.s.terrain.contour.labelSize);
     applyWater(map, store.s.water, basemapTiles, store.s.layers.water);
     applyLineWidths(map, store.s.lineWeights);
@@ -1854,6 +1899,11 @@ async function main() {
     ferries.apply(store.s);
     stations.apply(store.s);
     applyDrivesShown();
+    regions.start();
+    // The catalog and the build Mac from now on (a new catalog finds the style's sources there).
+    watch = new CatalogWatch(meta.catalog);
+    watch.onSwitch = newCatalog;
+    new BuildStatus(strip.buildStatus, watch);
     boot.at(3);
     if (store.s.selected !== null) {
       select(store.s.selected);
@@ -1869,7 +1919,7 @@ async function main() {
     map.once('load', attach);
   }
   map.on('error', (e) => console.warn(e.error?.message ?? e));
-  (window as any).__app = { map, roads, rails, store, cam3d, ferries, dots, overlays, idle, contours };
+  (window as any).__app = { map, roads, rails, store, cam3d, ferries, dots, overlays, idle, contours, regions, catalog: () => watch };
 }
 
 /**

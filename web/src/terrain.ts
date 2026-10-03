@@ -2,10 +2,9 @@
 import type { Map as MLMap } from 'maplibre-gl';
 import * as maplibregl from 'maplibre-gl';
 import mlcontour from 'maplibre-contour';
-import { HYPSO } from './basemap';
+import { HYPSO, terrainTiles } from './basemap';
 import { PALETTES, baseKey, isRev, paletteFn } from './palettes';
 import type { ScaleFields, Terrain } from './state';
-import { ver } from './api';
 import { CONTOUR_MINZOOM } from './contours';
 
 type RGB = [number, number, number];
@@ -191,21 +190,21 @@ const contourUrl = (density: number) => {
   return demSource!.contourProtocolUrl({ thresholds, elevationKey: 'ele', levelKey: 'level', contourLayer: 'contours', overzoom: 1 });
 };
 
+/** The contours' terrain tiles (maplibre-contour fetches them itself, in its worker). */
+function newDemSource() {
+  const d = new mlcontour.DemSource({ url: terrainTiles(), encoding: 'terrarium', maxzoom: 12, worker: true, cacheSize: 200 });
+  d.setupMaplibre(maplibregl);
+  return d;
+}
+
 /**
  * The contours source and its layers, the first time they are shown. The lines themselves are
  * drawn by ContourLayer (contours.ts) from the source's tiles: 'contour-line' only keeps them
  * loaded (it matches no line), with the labels.
  */
-function setupContours(map: MLMap, origin: string, density: number) {
+function setupContours(map: MLMap, density: number) {
   if (map.getSource('contours')) return;
-  demSource ??= new mlcontour.DemSource({
-    url: `${origin}/tiles/terrain/{z}/{x}/{y}${ver('terrain.tiles')}`,
-    encoding: 'terrarium',
-    maxzoom: 12,
-    worker: true,
-    cacheSize: 200,
-  });
-  demSource.setupMaplibre(maplibregl);
+  demSource ??= newDemSource();
   contourDensity = density;
   map.addSource('contours', { type: 'vector', tiles: [contourUrl(density)], maxzoom: 16 });
   map.addLayer(
@@ -247,7 +246,16 @@ function setupContours(map: MLMap, origin: string, density: number) {
   );
 }
 
-export function applyTerrain(map: MLMap, t: Terrain, origin: string) {
+/** New terrain tiles (a new catalog): the contours' DEM source anew (its URL is fixed when made,
+ * under a protocol of its own), and their tiles from it. */
+export function switchContours(map: MLMap) {
+  const src = map.getSource('contours') as maplibregl.VectorTileSource | undefined;
+  if (!demSource || !src) return;
+  demSource = newDemSource();
+  src.setTiles([contourUrl(contourDensity)]);
+}
+
+export function applyTerrain(map: MLMap, t: Terrain) {
   map.setTerrain(t.on ? { source: 'dem', exaggeration: t.exaggeration } : null);
   fastTerrainCoords(map);
   finerTerrainMesh(map);
@@ -274,7 +282,7 @@ export function applyTerrain(map: MLMap, t: Terrain, origin: string) {
   }
   // Contours (the lines: ContourLayer).
   const cl = t.contour;
-  if (t.contours) setupContours(map, origin, cl.density);
+  if (t.contours) setupContours(map, cl.density);
   const src = map.getSource('contours') as maplibregl.VectorTileSource | undefined;
   if (src) {
     if (cl.density !== contourDensity) {

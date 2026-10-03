@@ -122,6 +122,14 @@ export function applyWater(map: MLMap, w: WaterLook, tiles: () => string, waterS
   updateCoastRamp(map, w);
 }
 
+/** The basemap's tiles under a new URL (a new catalog): the workers measure the shore from them,
+ * and the shading's tiles are made again. */
+export function switchCoast(map: MLMap, tiles: string) {
+  if (!workers.length) return;
+  for (const w of workers) w.postMessage({ type: 'init', tiles, maxzoom: BASEMAP_MAXZOOM } satisfies CoastMessage);
+  (map.getSource('coast') as maplibregl.RasterDEMTileSource | undefined)?.setTiles([tilesUrl(!!lakesShown)]);
+}
+
 /** The ramp again for the view centre's scale, if it changed by 5 % or more (zooming). */
 export function updateCoastRamp(map: MLMap, w: WaterLook) {
   if (!map.getLayer('coast-shade') || map.getLayoutProperty('coast-shade', 'visibility') === 'none') return;

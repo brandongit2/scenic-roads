@@ -3,8 +3,9 @@
 // line shows its services and the ride factors in the same slots; a marker or highlighted area
 // (with no road under the cursor) gets one descriptive line.
 // Row 2: yes/no flags as chips, road tags and elevation sources on the left; loading status,
-// cursor position, zoom, scale, links and the credits dialog on the right. Every slot has a fixed
-// width and its elements persist, so nothing moves as the values change.
+// cursor position, zoom, scale, the build Mac and the NAS (buildstatus.ts), links and the credits
+// dialog on the right. Every slot has a fixed width and its elements persist, so nothing moves as
+// the values change.
 import type { Map as MLMap } from 'maplibre-gl';
 import { CLASS_LABELS, RAIL0, RAIL_GROUPS, ST_BRIDGE, ST_LINK, ST_TUNNEL, ST_UNPAVED } from '../config';
 import type { FeatureSummary } from '../overlays';
@@ -82,6 +83,7 @@ export class Strip {
   private zoom: HTMLSpanElement;
   private scale: HTMLSpanElement;
   private loading: HTMLSpanElement;
+  private build: HTMLSpanElement;
   private credits: HTMLDialogElement;
   private last: { hov: HoverInfo; info: WayInfo | null | 'loading'; areas: FeatureSummary[] } | null = null;
   private featLine: HTMLSpanElement;
@@ -113,13 +115,14 @@ export class Strip {
     this.zoom = h('span', { class: 'zoom num' });
     this.scale = h('span', { class: 'scale' });
     this.loading = h('span', { class: 'status' });
+    this.build = h('span');
     this.credits = creditsDialog();
     const credits = h('button', { title: 'Data sources, credits and licences', onclick: () => this.credits.showModal() }, '© Credits');
     root.append(
       this.r1,
       h('div', { class: 'r2' },
         this.info,
-        h('span', { class: 'right' }, this.loading, this.coord, this.zoom, this.scale, credits),
+        h('span', { class: 'right' }, this.loading, this.coord, this.zoom, this.scale, this.build, credits),
       ),
       this.credits,
     );
@@ -155,6 +158,11 @@ export class Strip {
   /** The status element (tasks.ts keeps it up to date). */
   get status(): HTMLElement {
     return this.loading;
+  }
+
+  /** The build Mac's and the NAS's element (ui/buildstatus.ts keeps it up to date). */
+  get buildStatus(): HTMLElement {
+    return this.build;
   }
 
   /** A marker or highlighted area (no road under the cursor), with the other areas it lies in. */

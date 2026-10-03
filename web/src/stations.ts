@@ -8,7 +8,7 @@
 // the rail line at their place: querying the rendered dots on the 3D globe ray-marched the
 // terrain for the view's corners in every tile, up to a second and more after a gesture.
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';
-import { ver } from './api';
+import { onVersions, ver } from './api';
 import { hostFor } from './hosts';
 import { RAIL_GROUP_COLOURS } from './rail';
 import { kindSpacing, labelShown, lineWeight, type AppState } from './state';
@@ -20,6 +20,9 @@ const LABELS = 'rail-stop-label';
 const STOP_PX = 12;
 const LABEL_PX = 70;
 
+/** The stops' layer file. */
+const stopsUrl = () => `${hostFor('layers')}/api/layer/stations${ver('stations.json')}`;
+
 /** From the zoom where the spacing spans `px` pixels (mz: where it spans one). */
 const spaced = (px: number): ExpressionSpecification => ['>=', ['zoom'], ['+', ['get', 'mz'], Math.log2(px)]];
 
@@ -29,7 +32,16 @@ export class Stations {
   /** Stops coloured for the colouring of the moment (feature id → colour; null: their group's). */
   private coloured = new Map<number, string | null>();
 
-  constructor(private map: MLMap) {}
+  constructor(private map: MLMap) {
+    // New stops (a new catalog): fetched again if they were, and coloured anew (their feature ids
+    // are their places in the file).
+    onVersions(['stations.json'], () => {
+      if (!this.requested) return;
+      this.coloured.clear();
+      map.removeFeatureState({ source: 'stations' });
+      map.getSource<GeoJSONSource>('stations')?.setData(stopsUrl());
+    });
+  }
 
   apply(s: AppState) {
     const map = this.map;
@@ -37,7 +49,7 @@ export class Stations {
     if (!map.getLayer(DOTS)) return;
     if (r.on && !this.requested) {
       this.requested = true;
-      map.getSource<GeoJSONSource>('stations')?.setData(`${hostFor('layers')}/api/layer/stations${ver('stations.json')}`);
+      map.getSource<GeoJSONSource>('stations')?.setData(stopsUrl());
     }
     this.railMask = r.groups.reduce((m, on, i) => (on ? m | (1 << i) : m), 0);
     map.setLayoutProperty(DOTS, 'visibility', r.on ? 'visible' : 'none');

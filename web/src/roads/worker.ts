@@ -60,9 +60,9 @@ function post(m: WorkerResponse, transfer: Transferable[] = []) {
 
 function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): DecodedTile {
   let pos = 4;
-  const version = b[2];
-  // (v7 is laid out as v6; its way column holds OSM way ids, lines sorted by draw class then id.)
-  if (b[0] !== 0x52 || b[1] !== 0x54 || version < 4 || version > 7) throw new Error('bad tile header (expected RT v4–v7)');
+  // RT v7 only: its way column holds OSM way ids, lines sorted by draw class then id (older tiles
+  // held the legacy build's way indices, which nothing can look up any more).
+  if (b[0] !== 0x52 || b[1] !== 0x54 || b[2] !== 7) throw new Error(`bad tile header (expected RT v7, got v${b[2]})`);
   const extent = 1 << b[3];
   const rv = (): number => {
     let r = 0, s = 1, c: number;
@@ -81,7 +81,7 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
   pos += nlines;
   const lineFlags = b.slice(pos, pos + nlines);
   pos += nlines;
-  // Way of each line: its OSM id (v7; an index into the build's ways before), delta-coded.
+  // Way of each line: its OSM id, delta-coded.
   const lineWay = new Uint32Array(nlines);
   let w = 0;
   for (let i = 0; i < nlines; i++) lineWay[i] = w += zz(rv());
@@ -91,17 +91,14 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
   for (let i = 0; i < nlines; i++) trueLen[i] = rv() / 10;
   const roadLen = new Float32Array(nlines);
   for (let i = 0; i < nlines; i++) roadLen[i] = rv();
-  // v5: per-line attributes (network, maxspeed ÷ 2, lanes, surface) and line colour (0xRRGGBB + 1),
+  // Per-line attributes (network, maxspeed ÷ 2, lanes, surface) and line colour (0xRRGGBB + 1),
   // made legible on the dark map (linecolour.ts).
-  let lineAttr = new Uint8Array(nlines * 4);
+  const lineAttr = b.slice(pos, pos + nlines * 4);
+  pos += nlines * 4;
   const lineColour = new Uint32Array(nlines);
-  if (version >= 5) {
-    lineAttr = b.slice(pos, pos + nlines * 4);
-    pos += nlines * 4;
-    for (let i = 0; i < nlines; i++) {
-      const c = rv();
-      lineColour[i] = c ? legibleRgb(c - 1) + 1 : 0;
-    }
+  for (let i = 0; i < nlines; i++) {
+    const c = rv();
+    lineColour[i] = c ? legibleRgb(c - 1) + 1 : 0;
   }
 
   let verts = new ArrayBuffer(nverts * STRIDE);
@@ -127,8 +124,8 @@ function decode(b: Uint8Array, z: number, ty: number, lod: LodFilter | null): De
       h += zz(rv());
       i16[i * S2 + 3] = h;
     }
-    // Scenic channels: 12 (v4, v5) or 13 (v6: roadside buildings, kept in the vertex's spare byte).
-    for (let c = 0; c < (version >= 6 ? NCH : 12); c++) {
+    // Scenic channels: 13 (the last, roadside buildings, kept in the vertex's spare byte).
+    for (let c = 0; c < NCH; c++) {
       let v = 0;
       for (let i = 0; i < nverts; i++) {
         v += zz(rv());

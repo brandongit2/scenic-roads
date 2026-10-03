@@ -21,13 +21,14 @@ fi
 export PATH=/opt/homebrew/opt/rustup/bin:$PATH
 cargo build --release -p server -p pipeline 2>&1 | tail -2
 cargo test -q -p store -p names -p pipeline --lib 2>&1 | tail -3
-(cd web && npm run build >/dev/null) || { echo "web build failed"; exit 1; }
+# Built into its own folder: web/dist may be what a development server is serving.
+(cd web && npx tsc --noEmit && npx vite build --outDir dist-publish --emptyOutDir >/dev/null) || { echo "web build failed"; exit 1; }
 fonts=data/fonts
 [[ -d $fonts ]] || fonts=$NAS/app/fonts
 [[ -d $fonts ]] || { echo "no fonts folder (data/fonts or the NAS's app/fonts)"; exit 1; }
 # Smoke test: the new server, its own empty home (no mirror), the NAS's catalog.
 home=$(mktemp -d); port=18080
-./target/release/server --port $port --home $home --no-mirror --web web/dist --fonts $fonts > $home/server.log 2>&1 &
+./target/release/server --port $port --home $home --no-mirror --web web/dist-publish --fonts $fonts > $home/server.log 2>&1 &
 pid=$!
 trap "kill $pid 2>/dev/null; rm -rf $home" EXIT
 ok=1
@@ -47,7 +48,7 @@ cp target/release/server target/release/scenic target/release/scenic-build targe
    target/release/tile target/release/scenic-metrics $dest.tmp/
 mkdir -p $dest.tmp/dem
 git ls-files dem | while read f; do cp "$f" "$dest.tmp/$f"; done
-rsync -a web/dist/ $dest.tmp/web/
+rsync -a web/dist-publish/ $dest.tmp/web/
 rsync -a $fonts/ $dest.tmp/fonts/
 mv $dest.tmp $dest
 # The manifest: every file with its SHA-256 (the servers check their copies against it).

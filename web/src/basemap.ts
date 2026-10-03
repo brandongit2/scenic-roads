@@ -48,6 +48,8 @@ export const OVERLAY_LAYERS: Record<string, string[]> = {
 };
 /** The point overlays' tiles (overlays.ts): their URL scheme and their one layer. */
 export const POINT_TILES = 'lmk';
+/** A point source's tiles (the landmarks worker makes them: overlays.ts). */
+export const pointTiles = (src: string) => `${POINT_TILES}://${src}/{z}/{x}/{y}`;
 export const POINT_TILE_LAYER = 'p';
 /** Overlay key → the source it needs: a GeoJSON source fetched from /api/layer/<name> on first use;
  * heritage and stops (points), tiles made from that file by the landmarks worker. */
@@ -185,6 +187,22 @@ export const HYPSO: [number, string][] = [
 /** The basemap's vector tiles (OpenMapTiles schema; the server merges its archives per tile and
  * attaches the display names), as its source and the coast worker (coast.worker.ts) read them. */
 export const basemapTiles = (): string => `${hostFor('base')}/tiles/base/{z}/{x}/{y}${ver('base.pmtiles')}`;
+/** The terrain tiles (Terrarium), as the terrain sources and the contours (terrain.ts) read them. */
+export const terrainTiles = (): string => `${hostFor('terrain')}/tiles/terrain/{z}/{x}/{y}${ver('terrain.tiles')}`;
+
+/** The style's tile sources whose URLs carry a data file's version, with that file: baseStyle
+ * builds them from here, and a new catalog switches them in place (main.ts). */
+export function versionedTiles(): { source: string; file: string; url: string }[] {
+  const trees = (v: string) => ({ source: `trees-${v}`, file: `trees-${v}.tiles`, url: `${hostFor('trees')}/tiles/trees/${v}/{z}/{x}/{y}${ver(`trees-${v}.tiles`)}` });
+  return [
+    { source: 'base', file: 'base.pmtiles', url: basemapTiles() },
+    { source: 'lbl', file: 'labels.tiles', url: `${hostFor('base')}/tiles/labels/{z}/{x}/{y}${ver('labels.tiles')}` },
+    { source: 'dem', file: 'terrain.tiles', url: terrainTiles() },
+    { source: 'dem-hs', file: 'terrain.tiles', url: terrainTiles() },
+    { source: 'slope', file: 'slope.tiles', url: `${hostFor('terrain')}/tiles/slope/{z}/{x}/{y}${ver('slope.tiles')}` },
+    trees('cover'), trees('height'), trees('leaf'),
+  ];
+}
 /** The basemap's deepest tiles (finer zooms reuse them). */
 export const BASEMAP_MAXZOOM = 14;
 
@@ -309,7 +327,8 @@ const LANDMARK_LABEL_IDS = new Set(Object.values(LANDMARK_LABELS));
 export const overlayLabelScale = (f: number) => (id: string) => (LANDMARK_LABEL_IDS.has(id) ? NaN : OVERLAY_IDS.has(id) ? f : 1);
 
 export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DENSITY): StyleSpecification {
-  const base = hostFor('base'), terrain = hostFor('terrain'), trees = hostFor('trees');
+  const base = hostFor('base');
+  const tiles = Object.fromEntries(versionedTiles().map((t) => [t.source, t.url]));
   // Places, water and parks from the labels by importance, where the server has them: name n (with
   // its main and sub), importance s (the most important placed first).
   LABEL_TILES = labelTiles;
@@ -326,7 +345,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
   const nm = labelTiles ? mainOf('n') : name;
   const dem = {
     type: 'raster-dem' as const,
-    tiles: [`${terrain}/tiles/terrain/{z}/{x}/{y}${ver('terrain.tiles')}`],
+    tiles: [tiles.dem],
     encoding: 'terrarium' as const,
     tileSize: 256,
     maxzoom: 12,
@@ -335,7 +354,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
   const empty = { type: 'geojson' as const, data: { type: 'FeatureCollection' as const, features: [] } };
   // Point overlays (heritage sites, stops & sights): vector tiles the landmarks worker makes from
   // its index (overlays.ts, protocol lmk), no deeper than z12 (finer zooms reuse it).
-  const points = (id: string) => ({ type: 'vector' as const, tiles: [`${POINT_TILES}://${id}/{z}/{x}/{y}`], maxzoom: 12, attribution: '' });
+  const points = (id: string) => ({ type: 'vector' as const, tiles: [pointTiles(id)], maxzoom: 12, attribution: '' });
   const poiLayers: LayerSpecification[] = [];
   for (const [key, [, colour]] of Object.entries(POI_STYLE)) {
     const kinds = key === 'rest' ? ['rest_area', 'picnic_site'] : [key];
@@ -387,11 +406,11 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
     sources: {
       base: {
         type: 'vector',
-        tiles: [basemapTiles()],
+        tiles: [tiles.base],
         maxzoom: BASEMAP_MAXZOOM,
         attribution: '© OpenStreetMap contributors · OpenMapTiles · NRCan HRDEM/MRDEM · USGS 3DEP',
       },
-      ...(labelTiles ? { lbl: { type: 'vector' as const, tiles: [`${base}/tiles/labels/{z}/{x}/{y}${ver('labels.tiles')}`], maxzoom: 12, attribution: '' } } : {}),
+      ...(labelTiles ? { lbl: { type: 'vector' as const, tiles: [tiles.lbl], maxzoom: 12, attribution: '' } } : {}),
       dem,
       'dem-hs': { ...dem },
       // Terrain slope: four slopes a pixel, the quarters of the ground beneath it (roadcore::slope),
@@ -400,11 +419,11 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       // the shader knows the source by it.
       slope: {
         ...dem, encoding: 'custom' as const, redFactor: 256, greenFactor: 1, blueFactor: 1 / 256, baseShift: SLOPE4_SHIFT,
-        tiles: [`${terrain}/tiles/slope/{z}/{x}/{y}${ver('slope.tiles')}`], attribution: '',
+        tiles: [tiles.slope], attribution: '',
       },
       // Tree cover layer (dem/trees.py): values Terrarium-encoded as if they were elevation.
       ...Object.fromEntries((['cover', 'height', 'leaf'] as const).map((v) => [`trees-${v}`, {
-        ...dem, minzoom: 4, tiles: [`${trees}/tiles/trees/${v}/{z}/{x}/{y}${ver(`trees-${v}.tiles`)}`], attribution: '',
+        ...dem, minzoom: 4, tiles: [tiles[`trees-${v}`]], attribution: '',
       }])),
       selection: empty,
       climb: empty,
