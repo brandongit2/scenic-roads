@@ -284,6 +284,36 @@ Each job's key is its step version plus the content names of what it reads.
 | stations.py | `stations` | Rust |
 | ferries.py, gtfs, hand timetables | `ferries` | Python |
 
+### Steps 4–5: how the landmark jobs run (implementation notes, 2026-10-03)
+
+- **`unit-marks` runs inside the unit job**, after `extract` (which writes the piece's
+  `pois.json`, now with OSM ids, keys and kept tags) and the staging of `terrain.tiles` (z0–12 over
+  U + 30 km): the unit folder already holds what it reads.
+  - Candidates: the points U owns (`unit::owns`, as base(U) owns ways), with kind, position, name,
+    `en` (name:en), `ele`, OSM id or key, QID (`wikidata`), kept tags.
+  - Peaks: peaks.rs as a library (`pipeline::peaks`), on U's peaks. The summit overlay is raised by
+    every summit of the worldwide `summits` set within the flood's and search's reach (not only
+    U's), ties by OSM id, so a peak's result doesn't depend on where unit borders fall. z12 from
+    the staged `terrain.tiles`; z8 from the terrain packs and, beyond the coverage, AWS's raw z8
+    tiles (cached on the build Mac, fetched on first use), so floods and isolation searches aren't
+    cut at U + 30 km (isolation up to 5,000 km; a lower bound past it, as today at a region's edge).
+  - Writes `work/marks/<u>` (zstd JSON lines, sorted by key): `{key, kind, lon, lat, name, en, ele,
+    osm, qid, tags, peak}`; its key: the step version, U's piece, the `summits` set, the terrain
+    packs read.
+- **`items`** (Python, network, after the pass): the QIDs of every `work/marks/*` candidate, the
+  heritage records and the areas → Wikidata facts as poidetails.py and heritagewd.py fetch them
+  (`sources/items/<d>/facts`, by QID, reusing a fact younger than 90 days), and pageviews per season
+  as pageviews.py (`sources/pageviews/<seasons>/views`). User-Agent "road-elevations/0.1 (personal
+  offline map)", the APIs' rate limits.
+- **`marks`** (Rust, worldwide): every `work/marks/*` → `marksjob::Candidate` (details: the kept
+  tags, `osm`, the facts as `wd`, `length_m`; peak) → `marksjob::poi_points` (today's fame,
+  isolation, label zooms, filter properties: exact against today's map on today's inputs) → with
+  the heritage points (today's converted files until `heritage` runs) → `markconv::write`.
+- **Step 4's comparison:** for units of today's coverage, the candidates against today's
+  `pois.json`/`peaks.json`/`details-poi` (counts per kind, positions within 1 m, the same OSM ids,
+  prominence and isolation within today's tolerance), then the `marks` job's output against today's
+  converted points.
+
 ## Storage
 
 - `markdata/` and `ovdata/` are catalog maps (formats.md), so GC handles them.
