@@ -119,7 +119,9 @@ def arcgis(url: str, where: str, fields: str, cache: Path, page: int = 2000, ext
         if not got:
             break
     cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps(feats))
+    tmp = cache.with_name(cache.name + ".tmp")
+    tmp.write_text(json.dumps(feats))
+    tmp.replace(cache)
     return feats
 
 
@@ -239,16 +241,13 @@ def wd_search_labels(name: str, cache: dict, langs=("fr", "es", "pt", "ca", "gl"
                     raise
                 time.sleep(float(e.headers.get("Retry-After") or 5) * (attempt + 1))
         return {}
-    try:
-        hits = get({"action": "wbsearchentities", "search": name, "language": search_lang, "limit": 1}).get("search", [])
-        labels = {}
-        if hits:
-            ent = get({"action": "wbgetentities", "ids": hits[0]["id"], "props": "labels", "languages": "|".join(langs)})["entities"][hits[0]["id"]]
-            labels = {k: v["value"][:1].upper() + v["value"][1:] for k, v in ent.get("labels", {}).items()}
-        time.sleep(1.0)
-    except Exception as e:  # noqa: BLE001
-        print(f"  wikidata {name!r}: {e}", file=sys.stderr)
-        return {}
+    # (A failed search fails the run rather than leave the name untranslated, uncached.)
+    hits = get({"action": "wbsearchentities", "search": name, "language": search_lang, "limit": 1}).get("search", [])
+    labels = {}
+    if hits:
+        ent = get({"action": "wbgetentities", "ids": hits[0]["id"], "props": "labels", "languages": "|".join(langs)})["entities"][hits[0]["id"]]
+        labels = {k: v["value"][:1].upper() + v["value"][1:] for k, v in ent.get("labels", {}).items()}
+    time.sleep(1.0)
     cache[key] = labels
     return labels
 
@@ -264,26 +263,24 @@ def unesco() -> tuple[list[dict], list[dict]]:
     d = json.loads(fetch("https://data.unesco.org/api/explore/v2.1/catalog/datasets/whc001/exports/json",
                          H / "unesco" / "whc001.json").read_text())
     # Names UNESCO doesn't publish (Portuguese, Catalan, Galician, Japanese): Wikidata's labels by site id.
+    # (A failed query fails the run: sites missing those names otherwise.)
     wd: dict[str, dict] = {}
-    try:
-        rows: dict[str, list[dict]] = {}
-        for r in wd_sparql("""SELECT ?id ?pt ?ca ?gl ?ja WHERE { ?item wdt:P757 ?id .
-              OPTIONAL { ?item rdfs:label ?pt FILTER(LANG(?pt) = "pt") } OPTIONAL { ?item rdfs:label ?ca FILTER(LANG(?ca) = "ca") }
-              OPTIONAL { ?item rdfs:label ?gl FILTER(LANG(?gl) = "gl") } OPTIONAL { ?item rdfs:label ?ja FILTER(LANG(?ja) = "ja") } }""",
-                           H / "unesco" / "wd-labels-ja.json"):
-            m = re.fullmatch(r"(\d+)(?:bis|ter|quater)?", r["id"])  # "320bis" (extension) → 320; not components ("875-001")
-            if m:
-                rows.setdefault(m.group(1), []).append(r)
-        # Several items can carry a site's id (Chūgū-ji, one temple of the Hōryū-ji area, has 660):
-        # the site's own item, usually the one labelled in the most languages, first.
-        for sid, rs in rows.items():
-            prev = wd.setdefault(sid, {})
-            for r in sorted(rs, key=lambda r: -sum(bool(r.get(k)) for k in ("pt", "ca", "gl", "ja"))):
-                for k in ("pt", "ca", "gl", "ja"):
-                    if r.get(k) and not prev.get(k):
-                        prev[k] = r[k][:1].upper() + r[k][1:]
-    except Exception as e:  # noqa: BLE001
-        print(f"  UNESCO labels from Wikidata: {e}", file=sys.stderr)
+    rows: dict[str, list[dict]] = {}
+    for r in wd_sparql("""SELECT ?id ?pt ?ca ?gl ?ja WHERE { ?item wdt:P757 ?id .
+          OPTIONAL { ?item rdfs:label ?pt FILTER(LANG(?pt) = "pt") } OPTIONAL { ?item rdfs:label ?ca FILTER(LANG(?ca) = "ca") }
+          OPTIONAL { ?item rdfs:label ?gl FILTER(LANG(?gl) = "gl") } OPTIONAL { ?item rdfs:label ?ja FILTER(LANG(?ja) = "ja") } }""",
+                       H / "unesco" / "wd-labels-ja.json"):
+        m = re.fullmatch(r"(\d+)(?:bis|ter|quater)?", r["id"])  # "320bis" (extension) → 320; not components ("875-001")
+        if m:
+            rows.setdefault(m.group(1), []).append(r)
+    # Several items can carry a site's id (Chūgū-ji, one temple of the Hōryū-ji area, has 660):
+    # the site's own item, usually the one labelled in the most languages, first.
+    for sid, rs in rows.items():
+        prev = wd.setdefault(sid, {})
+        for r in sorted(rs, key=lambda r: -sum(bool(r.get(k)) for k in ("pt", "ca", "gl", "ja"))):
+            for k in ("pt", "ca", "gl", "ja"):
+                if r.get(k) and not prev.get(k):
+                    prev[k] = r[k][:1].upper() + r[k][1:]
     pts = []
     for s in d:
         comps = [(float(lo), float(la), n) for n, _ref, la, lo in COMPONENT.findall(s.get("components_list") or "")]

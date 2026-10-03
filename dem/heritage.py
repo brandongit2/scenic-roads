@@ -397,19 +397,17 @@ def special_official() -> list[dict] | None:
     cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
     kind_word = {"biosphere": ("biosf", "biosph", "エコパーク", "生物圏"), "geopark": ("geopar", "géopar", "xeopar", "地質公園", "ジオパーク")}
     langs = ("en", "fr", "es", "pt", "ca", "gl", "zh", "ja", "zh-hant")
+    # (A failed query fails the run: special areas missing their local names otherwise.)
     items = []
-    try:
-        rows = heritage_eu.wd_sparql("""SELECT ?item ?coord """ + " ".join(f"?{l}" for l in langs) + """ WHERE {
-              VALUES ?cls { wd:Q158454 wd:Q28055306 wd:Q61453609 wd:Q1324355 wd:Q53444003 wd:Q72114283 }
-              { ?item wdt:P31 ?cls } UNION { ?item wdt:P1435 ?cls }
-              ?item wdt:P625 ?coord . """ + " ".join(f'OPTIONAL {{ ?item rdfs:label ?{l} FILTER(LANG(?{l}) = "{l}") }}' for l in langs) + " }",
-            H / "special-wd-items.json")
-        for r in rows:
-            m = re.match(r"Point\(([-\d.eE]+) ([-\d.eE]+)\)", r.get("coord", ""))
-            if m:
-                items.append((float(m.group(1)), float(m.group(2)), {l: r[l][:1].upper() + r[l][1:] for l in langs if r.get(l)}))
-    except Exception as e:  # noqa: BLE001
-        print(f"special areas: Wikidata items: {e}")
+    rows = heritage_eu.wd_sparql("""SELECT ?item ?coord """ + " ".join(f"?{l}" for l in langs) + """ WHERE {
+          VALUES ?cls { wd:Q158454 wd:Q28055306 wd:Q61453609 wd:Q1324355 wd:Q53444003 wd:Q72114283 }
+          { ?item wdt:P31 ?cls } UNION { ?item wdt:P1435 ?cls }
+          ?item wdt:P625 ?coord . """ + " ".join(f'OPTIONAL {{ ?item rdfs:label ?{l} FILTER(LANG(?{l}) = "{l}") }}' for l in langs) + " }",
+        H / "special-wd-items.json")
+    for r in rows:
+        m = re.match(r"Point\(([-\d.eE]+) ([-\d.eE]+)\)", r.get("coord", ""))
+        if m:
+            items.append((float(m.group(1)), float(m.group(2)), {l: r[l][:1].upper() + r[l][1:] for l in langs if r.get(l)}))
     stop = {"biosphere", "reserve", "unesco", "global", "geopark", "international", "dark", "sky", "park", "national", "regional",
             "natural", "transboundary", "the", "and", "of", "de", "del", "la", "las", "los", "le", "du", "des", "et", "e", "y", "da", "do", "das", "dos",
             "mont", "mount", "monte", "montes", "monts", "sierra", "sierras", "serra", "island", "isla", "ilha", "cabo", "costa", "valle", "valles",
@@ -468,7 +466,9 @@ def special_official() -> list[dict] | None:
                 local = f"{term} {core}"
         p.setdefault("polygon_hint", p["name"])
         p["name_en"], p["name"] = p["name"], local
-    cache_path.write_text(json.dumps(cache, ensure_ascii=False, indent=0))
+    tmp = cache_path.with_name(cache_path.name + ".tmp")
+    tmp.write_text(json.dumps(cache, ensure_ascii=False, indent=0))
+    os.replace(tmp, cache_path)
     return out
 
 

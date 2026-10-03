@@ -31,6 +31,7 @@ usage: heritagewd.py
 from __future__ import annotations
 
 import json
+import os
 import math
 import re
 import subprocess
@@ -106,27 +107,44 @@ def query(prop: str, ids: list[str]) -> list[dict]:
     return sparql(q)
 
 
+def write_atomic(p: Path, text: str) -> None:
+    """Writes a cache through a temporary file and a rename: a run stopped midway leaves the old
+    file, never a cut-short one."""
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, p)
+
+
 def val(b: dict, k: str) -> str | None:
     return b[k]["value"] if k in b and b[k]["value"] != "" else None
 
 
 def shortdescs(titles: list[str]) -> dict[str, str]:
-    """English Wikipedia short descriptions, 50 titles a request."""
+    """English Wikipedia short descriptions, 50 titles a request: every title asked for is in the
+    answer ("" when it has none). A batch that can't be fetched (an HTTP error, an error answer,
+    no answer after five tries) fails the run instead of leaving titles out."""
     out: dict[str, str] = {}
     for i in range(0, len(titles), 50):
         chunk = titles[i:i + 50]
         url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode(
             {"action": "query", "format": "json", "formatversion": 2, "prop": "pageprops", "ppprop": "wikibase-shortdesc",
              "redirects": 1, "titles": "|".join(chunk)})
+        d, last = None, ""
         for attempt in range(5):
-            r = subprocess.run(["curl", "-sS", "-m", "60", "-A", UA, url], capture_output=True)
+            r = subprocess.run(["curl", "-sS", "--fail", "-m", "60", "-A", UA, url], capture_output=True)
             try:
+                if r.returncode != 0:
+                    raise ValueError(f"curl exit {r.returncode}: {r.stderr.decode(errors='replace').strip()}")
                 d = json.loads(r.stdout)
+                if "error" in d or "query" not in d:
+                    raise ValueError(f"answer without a query: {str(d)[:200]}")
                 break
-            except json.JSONDecodeError:
+            except (ValueError, json.JSONDecodeError) as e:
+                d, last = None, str(e)
                 time.sleep(5 * (attempt + 1))
-        else:
-            continue
+        if d is None:
+            raise RuntimeError(f"short descriptions: titles {i}–{i + len(chunk)} failed five times ({last})")
+        out.update((t, "") for t in chunk)
         back = {n["to"]: n["from"] for n in d.get("query", {}).get("normalized", []) + d.get("query", {}).get("redirects", [])}
         for p in d.get("query", {}).get("pages", []):
             sd = p.get("pageprops", {}).get("wikibase-shortdesc")
@@ -329,9 +347,7 @@ def main():
                 seen[(prop, k)] = rows
             if n % 25 == 0:
                 print(f"  batches {n + 1}/{len(jobs)}", file=sys.stderr, flush=True)
-    with open(id_cache, "w", encoding="utf-8") as f:
-        for (prop, k), rows in seen.items():
-            f.write(json.dumps({"prop": prop, "id": k, "rows": rows}, ensure_ascii=False) + "\n")
+    write_atomic(id_cache, "".join(json.dumps({"prop": prop, "id": k, "rows": rows}, ensure_ascii=False) + "\n" for (prop, k), rows in seen.items()))
 
     def record(b: dict) -> dict:
         rec = {
@@ -374,9 +390,7 @@ def main():
         for prop, res in ex.map(run, [("QID", new_q[k:k + BATCH]) for k in range(0, len(new_q), BATCH)]):
             for k, rows in res.items():
                 seen[(prop, k)] = rows
-    with open(id_cache, "w", encoding="utf-8") as f:
-        for (prop, k), rows in seen.items():
-            f.write(json.dumps({"prop": prop, "id": k, "rows": rows}, ensure_ascii=False) + "\n")
+    write_atomic(id_cache, "".join(json.dumps({"prop": prop, "id": k, "rows": rows}, ensure_ascii=False) + "\n" for (prop, k), rows in seen.items()))
     for q, sites in osm_sites.items():
         for b in seen.get(("QID", q), []):
             r = record(b)
@@ -393,9 +407,7 @@ def main():
     print(f"Wikipedia articles: {len(need)} items to look up", file=sys.stderr, flush=True)
     for q, r in wikipedias(need).items():
         wp[q] = {"qid": q, **r}
-    with open(wp_cache, "w", encoding="utf-8") as f:
-        for r in wp.values():
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    write_atomic(wp_cache, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in wp.values()))
     for r in items:
         w = wp.get(r["qid"], {})
         r["wpn"] = w.get("n", 0)
@@ -405,18 +417,15 @@ def main():
                 r["wiki"][other[0]] = other[1]
     items.sort(key=lambda r: r["i"])
     print(f"{len({r['i'] for r in items if r['wiki']})} of {len(feats)} sites with a Wikipedia article", file=sys.stderr)
-    with open(W / "items.jsonl", "w") as f:
-        for r in items:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    write_atomic(W / "items.jsonl", "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in items))
     titles = sorted({r["wiki"]["en"] for r in items if "en" in r["wiki"]})
     sd_path = W / "enwiki-shortdesc.json"
     have = json.loads(sd_path.read_text()) if sd_path.exists() else {}
     todo = [t for t in titles if t not in have]
     print(f"{len(items)} sites matched to Wikidata; {len(titles)} English articles ({len(todo)} short descriptions to fetch)", file=sys.stderr)
+    # (Titles with no description are "": not asked again.)
     have.update(shortdescs(todo))
-    for t in todo:
-        have.setdefault(t, "")  # none: not asked again
-    sd_path.write_text(json.dumps(have, ensure_ascii=False))
+    write_atomic(sd_path, json.dumps(have, ensure_ascii=False))
     print(f"done: {len(have)} short descriptions", file=sys.stderr)
 
 
