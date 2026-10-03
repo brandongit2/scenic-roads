@@ -34,6 +34,22 @@ pub const SETS: &[(&str, &[&str])] = &[
     ("outlines", &["r/boundary=administrative", "r/ISO3166-1", "r/ISO3166-2"]),
     // The labels by importance (dem/labels.py): places, seas, bays and straits, water and parks.
     ("labels", &["n/place", "n/natural=bay,strait", "wr/natural=water,bay,strait", "wr/boundary=national_park,protected_area", "wr/leisure=nature_reserve"]),
+    // The landmark jobs' (docs/phase5.md "Build"). `marks`: the point kinds' objects (extract.rs
+    // poi_kind; covered bridges; car parks tagged for hiking; car parks named for a trail and
+    // hiking routes' ends come from the units' pieces).
+    ("marks", &[
+        "nwr/highway=rest_area,trailhead", "nwr/tourism=picnic_site,viewpoint", "nwr/natural=peak,volcano", "nwr/waterway=waterfall",
+        "nwr/man_made=lighthouse", "w/covered=yes", "w/bridge=covered", "nwr/hiking=yes", "nwr/trailhead=yes",
+    ]),
+    // Summits with elevations, worldwide (prominence and isolation; `ele` checked in the job).
+    ("summits", &["n/natural=peak,volcano"]),
+    // Today's heritage filter (Makefile: named.osm.pbf), and World Heritage objects, for locating
+    // register records.
+    ("named", &[
+        "nwr/historic", "nwr/heritage", "nwr/tourism=museum,attraction,viewpoint", "nwr/man_made=lighthouse", "nwr/railway=station",
+        "nwr/building=train_station,church,cathedral", "nwr/amenity=place_of_worship", "nwr/boundary=protected_area,national_park",
+        "nwr/leisure=park", "nwr/military", "nwr/ref:whc", "nwr/heritage:operator=whc",
+    ]),
 ];
 
 /// The basemap's input (Planetiler's OpenMapTiles layers water, waterway, boundary, place,
@@ -367,6 +383,23 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         }
         out.save()?;
         mark(scratch, "sets")?;
+    }
+    // Sets added since this pass began (a pass resumed by a newer app): made now, from the same
+    // filtered file (the local copy while it's there).
+    if !done(scratch, "sets-added").exists() {
+        let missing: Vec<&(&str, &[&str])> = SETS.iter().filter(|(name, _)| out.get(&format!("sources/osm/{date}/sets/{name}")).is_none()).collect();
+        if !missing.is_empty() {
+            let src = if filtered.exists() { filtered.clone() } else { filtered_nas(out, date)? };
+            for (name, exprs) in missing {
+                let o = scratch.join(format!("set-{name}.osm.pbf"));
+                let mut c = osmium();
+                c.args(["tags-filter", "--overwrite", "-o"]).arg(&o).arg(&src).args(*exprs);
+                run(c, &format!("osmium tags-filter (set {name})"))?;
+                out.put_file(&format!("sources/osm/{date}/sets/{name}"), "osm.pbf", &o)?;
+                out.save()?;
+            }
+        }
+        mark(scratch, "sets-added")?;
     }
     if !done(scratch, "outlines").exists() {
         // Administrative and ISO 3166 outlines from the outline set (crate::outlines).
