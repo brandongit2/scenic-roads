@@ -126,6 +126,7 @@ fn main() -> Result<()> {
         "summits" => summits_step(&mut out, &args, &scratch)?,
         "peaks" => peaks_step(&mut out, &args, &scratch)?,
         "marks" => marks_step(&mut out, &args)?,
+        "items" => items_step(&mut out, &args, &scratch)?,
         "slope" => slope_step(&mut out, &args)?,
         "labels" => labels_step(&mut out, &args, &scratch)?,
         "pass-sets" => {
@@ -855,8 +856,15 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cov = coverage_of(out, args)?;
     let read_json = |p: PathBuf| -> Result<Value> { Ok(serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("read {}", p.display()))?)?) };
-    let facts_file = opt(args, "--facts").map(PathBuf::from).unwrap_or_else(|| out.root().join("sources/legacy/m1/poi/wikidata.json"));
-    let views_file = opt(args, "--views").map(PathBuf::from).unwrap_or_else(|| out.root().join("sources/legacy/m1/pageviews/items.json"));
+    // The items job's for this pass, else today's.
+    let items = |name: &str, legacy: &str| -> PathBuf {
+        match out.get(&format!("sources/items/{date}/{name}")) {
+            Some(c) => out.path(c),
+            None => out.root().join(legacy),
+        }
+    };
+    let facts_file = opt(args, "--facts").map(PathBuf::from).unwrap_or_else(|| items("facts", "sources/legacy/m1/poi/wikidata.json"));
+    let views_file = opt(args, "--views").map(PathBuf::from).unwrap_or_else(|| items("views", "sources/legacy/m1/pageviews/items.json"));
     let facts: HashMap<String, Value> = serde_json::from_value(read_json(facts_file)?)?;
     let views: HashMap<String, f64> = serde_json::from_value(read_json(views_file)?)?;
     let units = pipeline::agent::build::pois_keys(&cov, &date, &out.manifest);
@@ -892,6 +900,44 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     all.extend(pipeline::markconv::today_heritage(out)?);
     let c = pipeline::markconv::write(out, all, summits)?;
     eprintln!("marks: {} points, {} markdata tiles, {} thinned tiles", c.points, c.tiles, c.thinned);
+    Ok(())
+}
+
+/// items [--pass <date>] [--dem dir] [--cache dir]: facts and pageviews for the current units'
+/// candidates' Wikidata items (dem/items.py, per pass epoch), as sources/items/<date>/{facts,views}.
+fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+    let cov = coverage_of(out, args)?;
+    let dem = PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into()));
+    let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned())).join("items");
+    let (mut facts, mut views) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
+    let is_qid = |q: &str| q.len() > 1 && q.starts_with('Q') && q[1..].bytes().all(|b| b.is_ascii_digit());
+    for (u, _) in pipeline::agent::build::pois_keys(&cov, &date, &out.manifest) {
+        let Some(pc) = out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c)) else { continue };
+        for c in pipeline::candidates::read(&pc)? {
+            let Some(q) = c.qid.as_deref() else { continue };
+            if is_qid(q) {
+                facts.insert(q.to_string());
+            }
+            let first = q.split(';').next().unwrap_or("").trim();
+            if is_qid(first) {
+                views.insert(first.to_string());
+            }
+        }
+    }
+    std::fs::create_dir_all(scratch)?;
+    let qfile = scratch.join("qids.json");
+    std::fs::write(&qfile, serde_json::to_vec(&serde_json::json!({"facts": facts, "views": views}))?)?;
+    let dir = scratch.join("items-out");
+    let mut c = std::process::Command::new("uv");
+    c.current_dir(&dem).args(["run", "python", "items.py", "--qids"]).arg(&qfile).arg("--epoch").arg(&date).arg("--cache").arg(&cache).arg("--out").arg(&dir);
+    let st = c.status().context("run items.py")?;
+    anyhow::ensure!(st.success(), "items.py failed: {st}");
+    for name in ["facts", "views", "meta"] {
+        out.put_file(&format!("sources/items/{date}/{name}"), "json", &dir.join(format!("{name}.json")))?;
+    }
+    out.save()?;
+    eprintln!("items: {} items with facts asked, {} for views", facts.len(), views.len());
     Ok(())
 }
 

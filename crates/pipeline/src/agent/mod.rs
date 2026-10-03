@@ -620,10 +620,11 @@ impl Agent {
         let cache = self.o.home.join("cache");
         let scratch = self.o.home.join("scratch").join(&w.step);
         let mut cmd = vec![s(&self.o.bin.join("scenic-build")), w.step.clone(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
-        cmd.extend(w.targets.iter().map(|t| t.0.clone()).filter(|t| t != "catalog" && !t.ends_with("-root")));
+        cmd.extend(w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks") && !t.ends_with("-root")));
         match w.step.as_str() {
             "terrain" | "terrain-root" => cmd.extend(["--raw".into(), s(&cache.join("aws-terrarium"))]),
-            "pois" => cmd.extend(["--pass".into(), date.to_string()]),
+            "pois" | "marks" => cmd.extend(["--pass".into(), date.to_string()]),
+            "items" => cmd.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache".into(), s(&cache)]),
             "peaks" => cmd.extend([
                 "--pass".into(),
                 date.to_string(),
@@ -661,6 +662,8 @@ impl Agent {
             "unit" => format!("Roads, elevations and scenery ({n} area{})", if n == 1 { "" } else { "s" }),
             "pois" => format!("Landmark candidates ({n} area{})", if n == 1 { "" } else { "s" }),
             "peaks" => format!("Peaks' prominence and isolation ({n} area{})", if n == 1 { "" } else { "s" }),
+            "items" => "Wikidata facts and Wikipedia pageviews for the landmarks".to_string(),
+            "marks" => "Landmarks for the map".to_string(),
             "pack" => format!("Map tiles ({n} area{})", if n == 1 { "" } else { "s" }),
             "lo" => "Zoomed-out map tiles".to_string(),
             "terrain-root" | "slope-root" => "World-level terrain and slope".to_string(),

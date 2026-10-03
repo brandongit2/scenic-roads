@@ -79,7 +79,7 @@ impl Keys {
             self.catalog = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || matches!(step, "labels" | "trailends" | "summits") {
+        if step.ends_with("-root") || matches!(step, "labels" | "trailends" | "summits" | "items" | "marks") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -225,6 +225,16 @@ pub fn peaks_keys(date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String
 /// unit's candidates again, not the units.
 pub const POIS_V: u32 = 1;
 
+/// The facts and pageviews of the candidates' items, per pass (dem/items.py).
+pub const ITEMS_V: u32 = 1;
+/// The landmark points from the candidates (crate::marksjob).
+pub const MARKS_V: u32 = 1;
+
+/// The current units' candidates (their content names), for the worldwide jobs' keys.
+fn current_pois<'a>(cov: &Coverage, date: &str, m: &'a BTreeMap<String, String>) -> Vec<&'a str> {
+    pois_keys(cov, date, m).into_iter().filter_map(|(u, _)| m.get(&format!("work/pois/{}", u.dash())).map(String::as_str)).collect()
+}
+
 /// The units whose piece meets the coverage, each with its candidates' key: its piece, the
 /// coverage over it (the clip) and the pass's hiking-route ends.
 pub fn pois_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
@@ -324,6 +334,18 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
             return work;
         }
     }
+    // The candidates' items' facts and pageviews (network; only new items within a pass).
+    let pois_now = current_pois(cov, date, m);
+    if !pois_now.is_empty() {
+        let mut inputs = vec![format!("items {ITEMS_V}"), date.to_string()];
+        inputs.extend(pois_now.iter().map(|s| s.to_string()));
+        let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+        let k = h(&refs);
+        if done.lo.get("items").map(String::as_str) != Some(k.as_str()) {
+            work.push(Work { step: "items".into(), targets: vec![("items".into(), k)] });
+            return work;
+        }
+    }
 
     // pack(T): z6 tiles within 100 km (plus the pieces' buffer) of a unit with a base pack.
     let base_units: Vec<(Unit, String)> = m
@@ -373,6 +395,27 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     if !lo.is_empty() {
         work.push(Work { step: "lo".into(), targets: lo });
         return work;
+    }
+
+    // The landmark points, from every current unit's candidates and peaks, the items' facts and
+    // pageviews (today's until the items job has run), today's heritage sites.
+    if !pois_now.is_empty() && m.contains_key(&format!("work/summits/{date}")) {
+        let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
+        let mut inputs = vec![format!("marks {MARKS_V}"), get(&format!("sources/items/{date}/facts")).to_string(), get(&format!("sources/items/{date}/views")).to_string()];
+        for l in ["global/legacy/layer-heritage", "global/legacy/details-heritage"] {
+            inputs.push(get(l).to_string());
+        }
+        for (u, _) in pois_keys(cov, date, m) {
+            for p in ["work/pois", "work/peaks"] {
+                inputs.push(get(&format!("{p}/{}", u.dash())).to_string());
+            }
+        }
+        let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+        let k = h(&refs);
+        if done.lo.get("marks").map(String::as_str) != Some(k.as_str()) {
+            work.push(Work { step: "marks".into(), targets: vec![("marks".into(), k)] });
+            return work;
+        }
     }
 
     // The terrain and slope roots (z0–2), from their lo packs.
