@@ -296,7 +296,9 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     // A catalog when what it would list has changed since the last one.
     let served: Vec<String> = m
         .iter()
-        .filter(|(l, _)| l.starts_with("layers/") || l.starts_with("base/") || l.starts_with("hidata/") || l.starts_with("global/") || l.ends_with("/outlines"))
+        .filter(|(l, _)| {
+            ["layers/", "base/", "hidata/", "markdata/", "ovdata/", "global/"].iter().any(|p| l.starts_with(p)) || l.ends_with("/outlines")
+        })
         .map(|(l, c)| format!("{l}={c}"))
         .collect();
     let refs: Vec<&str> = served.iter().map(String::as_str).collect();
