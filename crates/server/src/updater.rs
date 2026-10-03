@@ -118,7 +118,39 @@ impl Updater {
         std::os::unix::fs::symlink(&cur.version, &tmp_link)?;
         std::fs::rename(&tmp_link, &link)?;
         eprintln!("app {} ready; restarting when the map is idle", cur.version);
+        self.prune(&cur.version, running);
         Ok(true)
+    }
+
+    /// Removes app versions nothing needs: keeps the current one, this server's, the build
+    /// agent's (its jobs run programs from its folder; `agent/status.json` says which), and the
+    /// newest other one (to roll back to). Versions are named from their UTC publish time, so they
+    /// sort by age.
+    fn prune(&self, current: &str, running: &str) {
+        let dir = self.home.join("app");
+        let agent: Option<String> = std::fs::read(self.home.join("agent/status.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| v["app"].as_str().map(str::to_string));
+        let Ok(rd) = std::fs::read_dir(&dir) else { return };
+        let mut versions: Vec<String> = rd
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.as_bytes().first().is_some_and(u8::is_ascii_digit) && !n.ends_with(".tmp"))
+            .collect();
+        versions.sort();
+        let mut keep: Vec<&str> = vec![current, running];
+        keep.extend(agent.as_deref());
+        if let Some(v) = versions.iter().rev().find(|v| !keep.contains(&v.as_str())) {
+            keep.push(v);
+        }
+        for v in versions.iter().filter(|v| !keep.contains(&v.as_str())) {
+            match std::fs::remove_dir_all(dir.join(v)) {
+                Ok(()) => eprintln!("app {v}: removed (replaced)"),
+                Err(e) => eprintln!("app {v}: can't remove it: {e}"),
+            }
+        }
     }
 
     /// Check for a new app every five minutes; once one is in place, exit when idle for a minute.
