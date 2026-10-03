@@ -314,3 +314,185 @@ mod tests {
         assert_eq!(min_zoom(0.0, 0.0), py_round((78.2715f64 / 0.01).log2(), 2));
     }
 }
+
+// ---- the filters' values (dem/filterprops.py) ------------------------------------------------------
+
+/// filterprops.py `num`: the first number in a value, a comma as its decimal point ("12,5 m" →
+/// 12.5); none without one.
+pub fn fp_num(v: &serde_json::Value) -> Option<f64> {
+    let s = match v {
+        serde_json::Value::Null => return None,
+        serde_json::Value::String(s) if s.is_empty() => return None,
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Bool(b) => if *b { "True".into() } else { "False".into() },
+        other => other.to_string(),
+    };
+    // -?\d+(?:[.,]\d+)?
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        let start = i;
+        let neg = b[i] == b'-' && i + 1 < b.len() && b[i + 1].is_ascii_digit();
+        let j0 = if neg { i + 1 } else { i };
+        if j0 < b.len() && b[j0].is_ascii_digit() {
+            let mut j = j0;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j + 1 < b.len() && (b[j] == b'.' || b[j] == b',') && b[j + 1].is_ascii_digit() {
+                let mut k = j + 1;
+                while k < b.len() && b[k].is_ascii_digit() {
+                    k += 1;
+                }
+                j = k;
+            }
+            return s[start..j].replace(',', ".").parse().ok();
+        }
+        i += 1;
+    }
+    None
+}
+
+/// filterprops.py `year`: the first run of 3–4 digits (with a minus sign before it).
+pub fn fp_year(v: &serde_json::Value) -> Option<i64> {
+    let s = match v {
+        serde_json::Value::Null => return None,
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Bool(b) => if *b { "True".into() } else { "False".into() },
+        other => other.to_string(),
+    };
+    // -?\d{3,4}: the leftmost match; greedy, so 4 digits when there are.
+    let b = s.as_bytes();
+    for i in 0..b.len() {
+        let neg = b[i] == b'-';
+        let j0 = if neg { i + 1 } else { i };
+        let digits = b[j0.min(b.len())..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if digits >= 3 {
+            return s[i..j0 + digits.min(4)].parse().ok();
+        }
+    }
+    None
+}
+
+fn fp_yes(v: &serde_json::Value) -> bool {
+    matches!(v, serde_json::Value::Bool(true)) || matches!(v.as_str(), Some("yes" | "designated"))
+}
+
+/// Python truthiness of a JSON value.
+fn truthy(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Null => false,
+        serde_json::Value::Bool(b) => *b,
+        serde_json::Value::Number(n) => n.as_f64() != Some(0.0),
+        serde_json::Value::String(s) => !s.is_empty(),
+        serde_json::Value::Array(a) => !a.is_empty(),
+        serde_json::Value::Object(o) => !o.is_empty(),
+    }
+}
+
+/// A Python `round(v, n)` of a JSON number as the files hold it: an integer stays one.
+fn round_json(v: f64, n: usize, was_int: bool) -> serde_json::Value {
+    if was_int {
+        serde_json::json!(v as i64)
+    } else {
+        serde_json::json!(py_round(v, n))
+    }
+}
+
+/// A stop & sight's filter values (filterprops.py `pois`) from its details record `d` (OSM tags and
+/// `wd`, the Wikidata facts) and its peak computation `pk` (prominence `p`, isolation `iso`).
+pub fn poi_filter_props(kind: &str, d: &serde_json::Value, pk: Option<&serde_json::Value>) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::{json, Value};
+    let mut p = serde_json::Map::new();
+    let null = Value::Null;
+    let get = |k: &str| d.get(k).unwrap_or(&null);
+    let wd = d.get("wd").unwrap_or(&null);
+    let wget = |k: &str| wd.get(k).unwrap_or(&null);
+    let is_int = |v: &Value| v.is_i64() || v.is_u64();
+    match kind {
+        "peak" => {
+            // pr: the tag, else Wikidata's, else computed (`round` to an integer).
+            let pr = fp_num(get("prominence")).map(|v| (v, false)).or_else(|| {
+                if wd.get("prominence").is_some() {
+                    wget("prominence").as_f64().map(|v| (v, is_int(wget("prominence"))))
+                } else {
+                    pk.and_then(|k| k.get("p")).and_then(Value::as_f64).map(|v| (v, false))
+                }
+            });
+            if let Some((v, _)) = pr {
+                p.insert("pr".into(), json!(py_round(v, 0) as i64));
+            }
+            let iso = if wd.get("isolation").is_some() { wget("isolation").as_f64().map(|v| v / 1000.0) } else { pk.and_then(|k| k.get("iso")).and_then(Value::as_f64) };
+            if let Some(v) = iso {
+                p.insert("is".into(), json!(py_round(v, 2)));
+            }
+        }
+        "waterfall" => {
+            let h = fp_num(get("height")).map(|v| (v, false)).or_else(|| wget("height").as_f64().map(|v| (v, is_int(wget("height")))));
+            if let Some((v, int)) = h {
+                p.insert("h".into(), round_json(v, 1, int));
+            }
+        }
+        "lighthouse" => {
+            let h = fp_num(get("height")).map(|v| (v, false)).or_else(|| wget("height").as_f64().map(|v| (v, is_int(wget("height")))));
+            let fh_src = if truthy(get("seamark:light:height")) { get("seamark:light:height") } else { get("seamark:light:1:height") };
+            let fh = fp_num(fh_src).map(|v| (v, false)).or_else(|| wget("focal").as_f64().map(|v| (v, is_int(wget("focal")))));
+            let rg_src = if truthy(get("seamark:light:range")) { get("seamark:light:range") } else { get("seamark:light:1:range") };
+            let rg = fp_num(rg_src).map(|v| (v, false));
+            let y = fp_year(if truthy(get("start_date")) { get("start_date") } else { wget("inception") });
+            for (key, v) in [("h", h), ("fh", fh), ("rg", rg)] {
+                if let Some((v, int)) = v {
+                    p.insert(key.into(), round_json(v, 1, int));
+                }
+            }
+            if let Some(y) = y {
+                p.insert("y".into(), json!(y));
+            }
+        }
+        "covered_bridge" => {
+            if truthy(get("length_m")) {
+                p.insert("len".into(), get("length_m").clone());
+            }
+            if let Some(y) = fp_year(if truthy(get("start_date")) { get("start_date") } else { wget("inception") }) {
+                p.insert("y".into(), json!(y));
+            }
+        }
+        "viewpoint" => {
+            let dr = match get("direction") {
+                Value::Null => String::new(),
+                Value::String(s) => s.trim().to_uppercase(),
+                other => other.to_string().trim().to_uppercase(),
+            };
+            // re.fullmatch(r"(\d+)\s*-\s*(\d+)", dr): a span of at least 300° (a whole turn for 0).
+            let range = dr.split_once('-').and_then(|(a, b)| {
+                let (a, b) = (a.trim_end(), b.trim_start());
+                let digits = |x: &str| !x.is_empty() && x.bytes().all(|c| c.is_ascii_digit());
+                (digits(a) && digits(b)).then(|| Some((a.parse::<i64>().ok()?, b.parse::<i64>().ok()?))).flatten()
+            });
+            let pan = matches!(dr.as_str(), "0-360" | "360" | "ALL")
+                || range.is_some_and(|(a, b)| {
+                    let span = (b - a).rem_euclid(360);
+                    (if span == 0 { 360 } else { span }) >= 300
+                });
+            if pan {
+                p.insert("pan".into(), json!(1));
+            }
+            if truthy(get("tower:type")) || get("man_made").as_str() == Some("tower") {
+                p.insert("tw".into(), json!(1));
+            }
+        }
+        "rest_area" | "picnic_site" | "trailhead" => {
+            let fac = (if fp_yes(get("toilets")) { 1 } else { 0 })
+                | (if fp_yes(get("drinking_water")) { 2 } else { 0 })
+                | (if fp_yes(get("shelter")) || fp_yes(get("covered")) { 4 } else { 0 })
+                | (if fp_yes(get("picnic_table")) || fp_yes(get("bench")) { 8 } else { 0 })
+                | (if fp_yes(get("fireplace")) || fp_yes(get("bbq")) { 16 } else { 0 })
+                | (if fp_yes(get("parking")) { 32 } else { 0 });
+            if fac != 0 {
+                p.insert("fac".into(), json!(fac));
+            }
+        }
+        _ => {}
+    }
+    p
+}
