@@ -18,7 +18,8 @@ use std::path::Path;
 pub const TERRAIN_V: u32 = 1;
 pub const SLOPE_V: u32 = 1;
 pub const UNIT_V: u32 = 1;
-pub const PACK_V: u32 = 1;
+/// 2: hidata with rail lines' identity (`railinfo`) and the zoomed-out summaries (`lsum`).
+pub const PACK_V: u32 = 2;
 pub const LO_V: u32 = 1;
 
 /// The keys of the jobs that last succeeded, by step and target ("3/4/2", "6/31/20").

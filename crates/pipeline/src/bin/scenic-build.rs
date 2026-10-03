@@ -384,10 +384,12 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
             layers::write_pack(out, layer, "rt7", true, "hi", (6, t.x, t.y), &mut it)?;
         }
         let hd = hipack::hidata(*t, &near, &in_t, &halo)?;
+        // The zoomed-out summaries (docs/phase5.md), from the same parts.
+        let ls = roadcore::lsum::build(&hd.parts, &hd.psamples, &hd.pch, &hd.here, &hd.railinfo);
         put_sect(
             out,
             &format!("hidata/{}", t.dash()),
-            serde_json::json!({"fmt": 1, "tile": t.slash(), "here": hd.here.len(), "parts": hd.parts.len(), "climbs": hd.climbs.len()}),
+            serde_json::json!({"fmt": 1, "tile": t.slash(), "here": hd.here.len(), "parts": hd.parts.len(), "climbs": hd.climbs.len(), "lsum": roadcore::lsum::LSUM_V}),
             &[
                 ("here", b(&hd.here)),
                 ("ends", b(&hd.ends)),
@@ -398,6 +400,10 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
                 ("climbgeom", b(&hd.climbgeom)),
                 ("railinfo", b(&hd.railinfo)),
                 ("railstr", &hd.railstr),
+                ("lparts", b(&ls.lparts)),
+                ("lbins", b(&ls.lbins)),
+                ("lrparts", b(&ls.lrparts)),
+                ("lrbins", b(&ls.lrbins)),
             ],
         )?;
         out.save()?;

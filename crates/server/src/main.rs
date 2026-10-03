@@ -105,6 +105,12 @@ impl AppState {
 
     /// Trains a day each way on a rail way (0 when unknown).
     pub fn rail_freq(&self, id: u64) -> f32 {
+        query::freq_in(&self.rail_freqs(), id)
+    }
+
+    /// Trains a day per rail way (global/railfreq: (way id as u32, trains) sorted by way), for
+    /// lookups without the lock; empty when it couldn't be read (asked again next time).
+    pub fn rail_freqs(&self) -> Arc<Vec<(u32, f32)>> {
         let g = self.generation();
         let mut cur = self.rail_freq.lock().unwrap();
         if cur.as_ref().is_none_or(|(gg, _)| *gg != g) {
@@ -114,12 +120,11 @@ impl AppState {
                 .map(|b| b.chunks_exact(8).map(|c| (u32::from_le_bytes(c[..4].try_into().unwrap()), f32::from_le_bytes(c[4..].try_into().unwrap()).abs())).collect())
                 .unwrap_or_default();
             if failed.get() {
-                return 0.0;
+                return Arc::new(Vec::new());
             }
             *cur = Some((g, Arc::new(v)));
         }
-        let v = &cur.as_ref().unwrap().1;
-        v.binary_search_by_key(&(id as u32), |x| x.0).map(|k| v[k].1).unwrap_or(0.0)
+        cur.as_ref().unwrap().1.clone()
     }
 
     /// The details behind popups, kept per catalog once read in full; None when a file couldn't

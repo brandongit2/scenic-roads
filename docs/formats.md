@@ -123,6 +123,8 @@ direction.
 | `climbgeom` | `[i32; 2]` | their polylines |
 | `railinfo` | `RailInfo` (32 B) | rail ways' lines, sorted by `here` (since 2026-10-03; older hidata have none: the server reads base packs) |
 | `railstr` | newline-separated | their names and routes (0 is "") |
+| `lparts`, `lrparts` | `LPart` (24 B) | the zoomed-out summaries (meta `"lsum": 1`; docs/phase5.md): roads of 2 km or more, and rail, as parts of bins |
+| `lbins`, `lrbins` | `LBin` (64 B) | their bins: consecutive samples of a part, up to 500 m, one set of drive filter attributes (rail: one way) |
 
 ```
 Here    { u64 id; u64 owner (unit tile key); u32 index (in the owner's base pack); u8 class;
@@ -133,6 +135,12 @@ Part    { u64 road; f32 offset (of the first sample along the road); u32 first (
           u8 flags (bit 0 unpaved, bit 1 toll, bit 2 unnamed); [u8; 6] pad }    // 32 bytes
 PSample { u32 way (here index); f32 offset (along the road, m); i32 lon; i32 lat; f32 eye;
           u8 flags (sflag); [u8; 3] pad }                                         // 24 bytes
+LPart   { u64 road; u32 first (bin index); u32 count; f32 road_len; u32 pad }    // 24 bytes
+LBin    { u64 way (OSM id: a road bin's middle sample's, a rail bin's own); f32 off0 (first
+          sample's offset); f32 len (last − first); i32 lon0, lat0, lonm, latm, lon1, lat1 (first,
+          middle, last samples); u32 rinfo (rail: railinfo row, else u32::MAX); u16 n (samples);
+          u8 class; u8 flags (bit 0 unpaved, bit 1 toll, bit 2 unnamed); [u8; 12] comp (component
+          means × 255: drive components, or ride components but trains a day); [u8; 4] pad }  // 64 bytes
 Climb   { u64 way (OSM id at the start); u64 label (OSM id at the middle); f32 gain_m;
           f32 length_m; f32 start_elev; f32 top_elev; f32 max_grade; f32 road_len (of the
           middle way's road); [i32; 2] mid; u32 geom_start; u32 geom_count; u8 class;

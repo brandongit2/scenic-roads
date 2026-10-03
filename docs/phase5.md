@@ -458,14 +458,18 @@ hidata:
 | | 2 km | 5 km | 10 km | 25 km |
 |---|---|---|---|---|
 | drives: top-20 overlap, lowest (cases ≥ 90 %) | 0.80 (23) | 0.90 (27) | 0.90 (27) | 0.95 (27) |
-| drives: largest score error, top 20 / top 30 | 3.7 / 3.9 | 1.5 / 1.5 | 0.8 / 0.8 | 0.4 / 0.4 |
-| rides: top-20 overlap, lowest (cases ≥ 90 %) | 0.80 (20) | 0.90 (27) | 0.95 (27) | 1.00 (27) |
-| rides: largest score error, top 20 | 1.3 | 0.6 | 0.2 | 0.1 |
+| drives: largest score error, top 20 / top 30 | 2.5 / 2.5 | 1.5 / 1.5 | 0.8 / 0.8 | 0.4 / 0.4 |
+| rides: top-20 overlap, lowest (cases ≥ 90 %) | 0.85 (26) | 0.85 (26) | 0.95 (27) | 0.95 (27) |
+| rides: largest score error, top 20 | 1.2 | 0.6 | 0.3 | 0.1 |
+
+(The implementation's test, `cargo test --release -p server approx_vs_exact -- --ignored`;
+rides with each run its own line, as the mirrored hidata have no `railinfo`.)
 
 - Drives filtered (tertiary to trunk, no toll, no unnamed): every case at 90 % or more.
-- Totals within 0.15 %; rides' trains a day the same for 2,109 of 2,112 hits.
-- Rail lines: km in view within 0.02 %, a line's length within 0.2 % (2.4 % for one crossing the
-  view's edge), scores within 0.24 points, the top 40 overlapping 98–100 % for each sort.
+- Totals within 0.06 %; rides' trains a day the same for 2,125 of 2,136 matched hits (a window
+  ending inside a busier way's bin takes its trains: at most 2.4×).
+- Rail lines: km in view within 0.02 %; a long line's length within 0.2 %, a short one's (2–6 km,
+  at the view's edge) within 8 %; scores within 1.2 points; the top 40 overlapping 98–100 %.
 - Warm, Western Europe: drives at 5 km 372 → 80 ms; bytes read 1,988 → 166 MB (rail 20 MB).
 
 The test (the summaries built from today's hidata by the shared builder, `approx` against exact, a

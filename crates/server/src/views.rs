@@ -6,7 +6,7 @@ use crate::pages;
 use anyhow::{bail, ensure, Context, Result};
 use bytemuck::Pod;
 use memmap2::Mmap;
-use roadcore::packs::{Climb, Here, PSample, Part, RailInfo, RailRel, RoadRec};
+use roadcore::packs::{Climb, Here, LBin, LPart, PSample, Part, RailInfo, RailRel, RoadRec};
 use roadcore::scenic::ch;
 use roadcore::WayRec;
 use std::borrow::Cow;
@@ -555,7 +555,13 @@ pub struct HiView {
     /// The rail ways' lines (pack(T) since 2026-10-03; empty in older hidata).
     pub railinfo: Sect<RailInfo>,
     railstr: SectView,
-    railnames: std::sync::OnceLock<Vec<String>>,
+    railnames: std::sync::OnceLock<Arc<Vec<String>>>,
+    /// The zoomed-out summaries' format (meta `lsum`; 0: none, older hidata), and the sections.
+    pub lsum: u32,
+    pub lparts: Sect<LPart>,
+    pub lbins: Sect<LBin>,
+    pub lrparts: Sect<LPart>,
+    pub lrbins: Sect<LBin>,
 }
 
 impl HiView {
@@ -570,6 +576,11 @@ impl HiView {
             climbs: s.sect("climbs")?,
             climbgeom: s.sect("climbgeom")?,
             railinfo: s.sect("railinfo")?,
+            lsum: s.meta.get("lsum").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+            lparts: s.sect("lparts")?,
+            lbins: s.sect("lbins")?,
+            lrparts: s.sect("lrparts")?,
+            lrbins: s.sect("lrbins")?,
             railstr: s,
             railnames: std::sync::OnceLock::new(),
         })
@@ -583,16 +594,19 @@ impl HiView {
     /// A rail way's line by its place in `here`, and its name and route.
     pub fn rail_info(&self, here: u32) -> Result<Option<(RailInfo, String, String)>> {
         let Some(r) = self.railinfo.equal_range(here, |x| x.here)?.first().copied() else { return Ok(None) };
-        let names = match self.railnames.get() {
-            Some(n) => n,
-            None => {
-                let b = self.railstr.get("railstr")?;
-                let n: Vec<String> = String::from_utf8_lossy(b.bytes()).split('\n').map(str::to_owned).collect();
-                self.railnames.get_or_init(|| n)
-            }
-        };
+        let names = self.rail_names()?;
         let s = |i: u32| names.get(i as usize).cloned().unwrap_or_default();
         Ok(Some((r, s(r.name), s(r.route))))
+    }
+
+    /// The rail lines' names and routes (`railstr`, by the indices in `railinfo`).
+    pub fn rail_names(&self) -> Result<Arc<Vec<String>>> {
+        if let Some(n) = self.railnames.get() {
+            return Ok(n.clone());
+        }
+        let b = self.railstr.get("railstr")?;
+        let n: Vec<String> = String::from_utf8_lossy(b.bytes()).split('\n').map(str::to_owned).collect();
+        Ok(self.railnames.get_or_init(|| Arc::new(n)).clone())
     }
     pub fn is_remote(&self) -> bool {
         self.remote
@@ -604,6 +618,7 @@ impl HiView {
 }
 
 /// A tile's query parts, read whole (what a query scans), and its hidata for the rest.
+#[derive(Clone)]
 pub struct QTile {
     here: Blob,
     parts: Blob,
@@ -627,6 +642,44 @@ impl QTile {
     }
     pub fn pch(&self) -> &[[u8; ch::N]] {
         self.pch.cast()
+    }
+}
+
+/// A tile's zoomed-out summaries, roads' or rail's, read whole (docs/phase5.md "Zoomed-out
+/// queries"); rail with its lines (`railinfo` rows and their names).
+#[derive(Clone)]
+pub struct LTile {
+    parts: Blob,
+    bins: Blob,
+    railinfo: Blob,
+    names: Arc<Vec<String>>,
+}
+
+impl LTile {
+    pub fn new(hv: &HiView, rail: bool) -> Result<LTile> {
+        Ok(if rail {
+            LTile { parts: hv.lrparts.all()?, bins: hv.lrbins.all()?, railinfo: hv.railinfo.all()?, names: hv.rail_names()? }
+        } else {
+            LTile { parts: hv.lparts.all()?, bins: hv.lbins.all()?, railinfo: Blob::from_vec(Vec::new()), names: Arc::new(Vec::new()) }
+        })
+    }
+    /// From records in memory (the tests' summaries of older hidata).
+    #[cfg(test)]
+    pub fn from_records(parts: &[LPart], bins: &[LBin], railinfo: &[RailInfo], names: Vec<String>) -> LTile {
+        let b = |x: &[u8]| Blob::from_vec(x.to_vec());
+        LTile { parts: b(bytemuck::cast_slice(parts)), bins: b(bytemuck::cast_slice(bins)), railinfo: b(bytemuck::cast_slice(railinfo)), names: Arc::new(names) }
+    }
+    pub fn parts(&self) -> &[LPart] {
+        self.parts.cast()
+    }
+    pub fn bins(&self) -> &[LBin] {
+        self.bins.cast()
+    }
+    /// A rail bin's line: its `railinfo` row, name and route.
+    pub fn rail_row(&self, row: u32) -> Option<(RailInfo, &str, &str)> {
+        let r = *self.railinfo.cast::<RailInfo>().get(row as usize)?;
+        let s = |i: u32| self.names.get(i as usize).map_or("", String::as_str);
+        Some((r, s(r.name), s(r.route)))
     }
 }
 

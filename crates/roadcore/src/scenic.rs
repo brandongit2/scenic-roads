@@ -90,6 +90,64 @@ pub mod flag {
 }
 
 /// Log mapping of an area (km²) to 0..255 (0.05 km² .. 700 km²).
+/// The drive score's components of a sample (each 0–1), from its channels.
+pub const NCOMP: usize = 12;
+/// The ride score's components; `FREQ` (trains a day) comes from the timetables at query time.
+pub const RNCOMP: usize = 11;
+pub const FREQ: usize = 10;
+
+pub fn drive_components(c: &[u8; ch::N]) -> [f32; NCOMP] {
+    let f = c[ch::FLAGS];
+    let b = |m: u8| (f & m != 0) as u8 as f32;
+    [
+        c[ch::VIEW] as f32 / 255.0,
+        c[ch::WATER] as f32 / 255.0,
+        c[ch::VISTA] as f32 / 255.0,
+        (c[ch::RELIEF] as f32 * 3.0 / 600.0).min(1.0),
+        ((c[ch::TPI] as f32 - 128.0) * 2.0 / 60.0).clamp(0.0, 1.0),
+        (c[ch::CURVY] as f32 * 4.0 / 400.0).min(1.0),
+        1.0 - c[ch::ENCLOSURE] as f32 / 255.0,
+        c[ch::COVER] as f32 / 255.0,
+        c[ch::BUILT] as f32 / 255.0,
+        c[ch::BLDG] as f32 / 255.0,
+        b(flag::SCENIC_ROUTE),
+        b(flag::VIEWPOINT),
+    ]
+}
+
+/// The ride components of a sample but trains a day (0 at `FREQ`): its channels, eye height,
+/// bridge and tunnel flags (`sflag`), and the grade (%) from its neighbours.
+pub fn ride_components(c: &[u8; ch::N], eye: f32, sflags: u8, grade: f32) -> [f32; RNCOMP] {
+    [
+        c[ch::VIEW] as f32 / 255.0,
+        c[ch::WATER] as f32 / 255.0,
+        c[ch::VISTA] as f32 / 255.0,
+        (c[ch::RELIEF] as f32 * 3.0 / 600.0).min(1.0),
+        ((c[ch::TPI] as f32 - 128.0).abs() * 2.0 / 60.0).min(1.0),
+        ((eye - 3.0) / 1500.0).clamp(0.0, 1.0),
+        if sflags & sflag::BRIDGE != 0 { 0.5 } else { 0.0 },
+        (sflags & sflag::TUNNEL != 0) as u8 as f32,
+        (grade / 4.0).min(1.0),
+        (c[ch::CURVY] as f32 * 4.0 / 400.0).min(1.0),
+        0.0,
+    ]
+}
+
+/// The grade (%) at a sample from its neighbours' eye heights and offsets.
+pub fn grade(eye0: f32, off0: f32, eye1: f32, off1: f32) -> f32 {
+    let dd = (off1 - off0).abs().max(1.0);
+    ((eye1 - eye0).abs() / dd * 100.0).min(30.0)
+}
+
+/// The trains-a-day component (`FREQ`), and whether it's known.
+pub fn freq_component(f: f32) -> (f32, bool) {
+    if f > 0.0 {
+        ((f.max(1.0).log10() / 2.0).clamp(0.0, 1.0), true)
+    } else {
+        (0.0, false)
+    }
+}
+
 pub fn area_u8(km2: f64) -> u8 {
     let v = (1.0 + km2 / 0.05).ln() / (1.0 + 700.0f64 / 0.05).ln();
     (v * 255.0).round().clamp(0.0, 255.0) as u8

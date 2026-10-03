@@ -103,6 +103,48 @@ pub fn point_key(p: [i32; 2]) -> u64 {
     ((p[0] as u32 as u64) << 32) | p[1] as u32 as u64
 }
 
+/// hidata `lparts`, `lrparts` (the zoomed-out summaries, `crate::lsum`): a part's bins.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct LPart {
+    pub road: u64,
+    /// Its first bin in `lbins` (`lrbins`), and how many.
+    pub first: u32,
+    pub count: u32,
+    /// The whole road's length, metres.
+    pub road_len: f32,
+    pub _pad: u32,
+}
+
+/// hidata `lbins`, `lrbins`: consecutive samples of one part (`crate::lsum`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct LBin {
+    /// The OSM way: a road bin's middle sample's, a rail bin's own (one way per rail bin).
+    pub way: u64,
+    /// The first sample's offset along the road, and the last's minus it (metres).
+    pub off0: f32,
+    pub len: f32,
+    /// The first, middle (on `way`) and last samples (E7).
+    pub lon0: i32,
+    pub lat0: i32,
+    pub lonm: i32,
+    pub latm: i32,
+    pub lon1: i32,
+    pub lat1: i32,
+    /// Rail: its row in `railinfo` (`crate::lsum::NO_RINFO`: none).
+    pub rinfo: u32,
+    /// Samples.
+    pub n: u16,
+    pub class: u8,
+    /// Bit 0 unpaved, bit 1 toll, bit 2 unnamed (as `Part`).
+    pub flags: u8,
+    /// Each component's mean over the samples × 255: roads the drive components, rail the ride
+    /// components but trains a day (`crate::scenic`).
+    pub comp: [u8; 12],
+    pub _pad: [u8; 4],
+}
+
 /// hidata `parts`: one road's consecutive samples inside the tile.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
