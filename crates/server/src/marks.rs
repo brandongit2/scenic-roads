@@ -470,7 +470,7 @@ pub fn view_json(s: &S, q: &ViewQ) -> anyhow::Result<Value> {
         let (lon, lat) = (pm::deg(c.pt.lon), pm::deg(c.pt.lat));
         let props = named_props(s, &v.props(c.row as usize)?, lon, lat);
         let kq = &q.kinds[qidx[c.qi as usize]];
-        Ok(json!({ "k": kq.k, "layer": kq.layer, "score": c.score, "props": props, "lngLat": [lon, lat] }))
+        Ok(json!({ "k": kq.k, "layer": kq.layer, "score": c.score, "props": props, "lngLat": [lon, lat], "id": v.ids.get(c.row as usize)? }))
     };
     // Per kind: its count and best-known named point (the highest fame, the first in rank order).
     let mut by_kind = Vec::new();
@@ -484,7 +484,7 @@ pub fn view_json(s: &S, q: &ViewQ) -> anyhow::Result<Value> {
                 let v = &views[c.view as usize];
                 let (lon, lat) = (pm::deg(c.pt.lon), pm::deg(c.pt.lat));
                 let props = named_props(s, &v.props(c.row as usize)?, lon, lat);
-                json!({ "name": props.get("name").and_then(Value::as_str).unwrap_or(""), "lngLat": [lon, lat], "layer": kq.layer, "props": props })
+                json!({ "name": props.get("name").and_then(Value::as_str).unwrap_or(""), "lngLat": [lon, lat], "layer": kq.layer, "props": props, "id": v.ids.get(c.row as usize)? })
             }
             None => Value::Null,
         };

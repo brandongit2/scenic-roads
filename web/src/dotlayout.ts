@@ -109,19 +109,21 @@ function sortByCode(codes: Uint32Array): Uint32Array {
 }
 
 /** What the worker keeps of a layout to send the filter flags: draw position → index, height order
- * → draw position, the Morton codes (height order), fame (draw order). */
+ * → draw position, the Morton codes (height order), fame and how many points each stands for
+ * (draw order; null: one each). */
 export interface DotAux {
   order: Uint32Array;
   byCode: Uint32Array;
   codes: Uint32Array;
   fa: Float32Array;
+  weight: Uint32Array | null;
 }
 
 /**
  * The layout of a source's points (index order in, as the landmarks worker indexes them), and what
  * the worker keeps to send the filters in draw order (visWords).
  */
-export function layoutDots(lon: Float64Array, lat: Float64Array, fa: Float32Array, ia: Float32Array, cls: Uint8Array): { data: DotData; aux: DotAux } {
+export function layoutDots(lon: Float64Array, lat: Float64Array, fa: Float32Array, ia: Float32Array, cls: Uint8Array, weight: Uint32Array | null = null): { data: DotData; aux: DotAux } {
   const n = lon.length, K = 1 << CHUNK_Z, Q = 1 << MORTON_Z;
   const mx = new Float64Array(n), my = new Float64Array(n);
   const chunk = new Uint16Array(n);
@@ -185,20 +187,26 @@ export function layoutDots(lon: Float64Array, lat: Float64Array, fa: Float32Arra
   }
   const faDraw = new Float32Array(n);
   for (let j = 0; j < n; j++) faDraw[j] = fa[order[j]];
-  return { data: { n, draw, hpos, morton: codes, chunks: Uint32Array.from(chunks) }, aux: { order, byCode, codes: codes.slice(), fa: faDraw } };
+  let wDraw: Uint32Array | null = null;
+  if (weight) {
+    wDraw = new Uint32Array(n);
+    for (let j = 0; j < n; j++) wDraw[j] = weight[order[j]];
+  }
+  return { data: { n, draw, hpos, morton: codes, chunks: Uint32Array.from(chunks) }, aux: { order, byCode, codes: codes.slice(), fa: faDraw, weight: wDraw } };
 }
 
 /**
  * The filter flags of a source's points, draw order, VIS_WORDS words each: bit 0 of the first,
  * visible; bits 8–15, the speck cell zooms (LOD_Z0 + bit) at which the point stands for its cell;
  * then a byte per zoom (4 a word): how many visible points it stands for there (at most 255).
- * `vis`: 1 per visible point, draw order.
+ * `vis`: 1 per visible point, draw order. A speck cell from a thinned tile (a pseudo-point) counts as
+ * the points it stands for (aux.weight).
  */
 export function visWords(vis: Uint8Array, aux: DotAux): Uint32Array {
   const n = vis.length;
   const out = new Uint32Array(n * VIS_WORDS);
   for (let j = 0; j < n; j++) out[j * VIS_WORDS] = vis[j];
-  const { byCode, codes, fa } = aux;
+  const { byCode, codes, fa, weight } = aux;
   for (let l = 0; l < LOD_LEVELS; l++) {
     const shift = 2 * (MORTON_Z - LOD_Z0 - l);
     for (let k = 0; k < n; ) {
@@ -207,7 +215,7 @@ export function visWords(vis: Uint8Array, aux: DotAux): Uint32Array {
       for (; k < n && codes[k] >>> shift === cell; k++) {
         const j = byCode[k];
         if (!vis[j]) continue;
-        count++;
+        count += weight ? weight[j] : 1;
         if (fa[j] < bestFa) {
           bestFa = fa[j];
           best = j;

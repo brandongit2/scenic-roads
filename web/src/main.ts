@@ -1556,7 +1556,7 @@ async function main() {
   const wayOsm = (way: number): string => `way/${way}`;
   /** A landmark's OSM object, from its details record. */
   const sightOsm = (x: Sight): string | null | Promise<string | null> => {
-    const ref = landmarkRef(x.layer, x.props);
+    const ref = landmarkRef(x.layer, x.props, x.lngLat);
     if (!ref) return null;
     const d = peekDetail(ref);
     return d !== undefined ? osmPath(d?.osm) : loadDetail(ref).then((dd) => osmPath(dd?.osm), () => null);
@@ -1910,6 +1910,11 @@ async function main() {
     // How far each region is built, from the build Mac's heartbeat.
     const w = watch;
     w.on(() => regions.setProgress(w.status?.agent?.built));
+    // Landmarks by view when the catalog has them (else the whole files).
+    w.on(() => {
+      if (w.status) overlays.setMarks(w.status.marks ?? null);
+      else if (w.unreachable) overlays.setMarks(null);
+    });
     // The NAS back (or the server): what failed meanwhile is asked for now.
     let reachable = true;
     w.on(() => {

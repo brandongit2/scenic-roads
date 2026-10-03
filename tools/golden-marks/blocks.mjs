@@ -3,8 +3,9 @@
 // and the worldwide counts equal the worker's.
 import zlib from 'node:zlib';
 const B = process.argv[2] ?? 'http://localhost:8092';
-const KINDS = ['viewpoint', 'peak', 'waterfall', 'lighthouse', 'covered_bridge', 'rest', 'trailhead'];
-const FIELDS = { peak: ['ele', 'pr', 'is'], waterfall: ['h'], lighthouse: ['h', 'fh', 'rg', 'y'], viewpoint: ['ele', 'pan', 'tw'], covered_bridge: ['len', 'y'], rest: ['fac'], trailhead: ['fac'] };
+const KINDS = ['viewpoint', 'peak', 'waterfall', 'lighthouse', 'covered_bridge', 'rest', 'trailhead', 'heritage'];
+const srcOf = (k) => (k === 'heritage' ? 'heritage' : `pois-${k}`);
+const FIELDS = { peak: ['ele', 'pr', 'is'], waterfall: ['h'], lighthouse: ['h', 'fh', 'rg', 'y'], viewpoint: ['ele', 'pan', 'tw'], covered_bridge: ['len', 'y'], rest: ['fac'], trailhead: ['fac'], heritage: ['by', 'dy', 'wp'] };
 
 export function decode(buf) {
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
@@ -36,7 +37,7 @@ const fail = (m) => { bad++; if (bad < 20) console.log('FAIL', m); };
 const key = (lon, lat, p) => `${lon},${lat},${JSON.stringify(Object.keys(p).sort().map((k) => [k, p[k]]))}`;
 let ndet = 0;
 for (const k of KINDS) {
-  const fc = await (await fetch(`${B}/api/layer/pois-${k}`)).json();
+  const fc = await (await fetch(`${B}/api/layer/${srcOf(k)}`)).json();
   const legacy = new Map();
   for (const f of fc.features) {
     const { i, ...rest } = f.properties;
@@ -69,9 +70,18 @@ for (const k of KINDS) {
       // Popups: every 40th point, by id against today's by index.
       if (j % 40 === 0) {
         ndet++;
-        const [a, c] = await Promise.all([fetch(`${B}/api/marks/detail/${k}/${d.ids[j]}?at=${lon},${lat}`), fetch(`${B}/api/detail/poi/${f.properties.i}`)]);
-        const ta = a.status === 200 ? await a.text() : '', tc = c.status === 200 ? await c.text() : '';
-        if (ta !== tc && JSON.stringify(JSON.parse(ta || 'null')) !== JSON.stringify(JSON.parse(tc || 'null'))) fail(`${k} detail ${d.ids[j]} / i ${f.properties.i}: ${ta.slice(0, 80)} vs ${tc.slice(0, 80)}`);
+        // (Points alike in place and properties are twins: the popup must be one of theirs.)
+        const twins = [f, ...(legacy.get(key(lon, lat, p)) ?? [])];
+        const a = await fetch(`${B}/api/marks/detail/${k}/${d.ids[j]}?at=${lon},${lat}`);
+        const ta = a.status === 200 ? await a.text() : '';
+        let ok = false;
+        for (const tw of twins) {
+          const c = await fetch(`${B}/api/detail/${k === 'heritage' ? 'heritage' : 'poi'}/${tw.properties.i}`);
+          const tc = c.status === 200 ? await c.text() : '';
+          if (ta === tc || JSON.stringify(JSON.parse(ta || 'null')) === JSON.stringify(JSON.parse(tc || 'null'))) ok = true;
+          if (ok) break;
+        }
+        if (!ok) fail(`${k} detail ${d.ids[j]} / i ${f.properties.i}: ${ta.slice(0, 120)}`);
       }
     }
   }

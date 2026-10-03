@@ -10,7 +10,8 @@ import { keepable, onVersions, ver } from './api';
 import { hostFor } from './hosts';
 import { tasks } from './tasks';
 import { displayName } from './names';
-import { enrichArea, enrichHeritage, enrichPoi, loadDetail, type Detail, type DetailRef, type Enriched } from './details';
+import { enrichArea, enrichHeritage, enrichPoi, loadDetail, setMarksVersion, type Detail, type DetailRef, type Enriched } from './details';
+import type { MarksCfg } from './marksview';
 import { filterHists, stopFilterExpr, stopFilterPass } from './stopfilters';
 import type { KindQuery, LandmarkItem, LandmarkRequest, LandmarkResponse, TileNames } from './landmarks.worker';
 import { NameFader } from './namefade';
@@ -57,6 +58,7 @@ export function withDetails(f: FeatureSummary, d: Detail | null): FeatureSummary
 function enrichOf(f: FeatureSummary, d: Detail): Enriched | null {
   if (!f.ref) return null;
   if ('park' in f.ref) return enrichArea(d);
+  if ('mark' in f.ref) return f.ref.mark.kind === 'heritage' ? enrichHeritage(d) : enrichPoi(f.what ?? '', {}, d);
   switch (f.ref.layer) {
     case 'poi': return enrichPoi(f.what ?? '', {}, d);
     case 'heritage': return enrichHeritage(d);
@@ -91,6 +93,8 @@ const isWhs = (id: string) => id === 'whs-fill' || id === 'whs-line';
 
 /** An overlay's layer file, as the map draws it (dem/layers.py), versioned for the browser cache. */
 const layerUrl = (src: string) => `${hostFor('layers')}/api/layer/${src}${ver(`layer-${src}.json`) || ver(`${src}.json`)}`;
+/** The point kinds the catalog must have by view (docs/phase5.md). */
+const MARK_KINDS = ['viewpoint', 'peak', 'waterfall', 'lighthouse', 'covered_bridge', 'rest', 'trailhead', 'heritage'];
 /** Point sources: heritage, and the stops & sights per kind (pois-<kind>). */
 type PointSource = string;
 const isPoints = (src: string): src is PointSource => src === 'heritage' || src.startsWith('pois-');
@@ -102,16 +106,18 @@ const indexLabel = (src: PointSource) => `${src === 'heritage' ? 'Heritage sites
  * held. Registered before any map asks; the requests wait for the Overlays' worker. */
 let tileWorker: Worker | null = null;
 let tileSeq = 0;
-const tileReplies = new Map<number, (m: Extract<LandmarkResponse, { type: 'tile' }>) => void>();
+const tileReplies = new Map<number, (m: Extract<LandmarkResponse, { type: 'tile' | 'tileFailed' }>) => void>();
 const tileQueue: LandmarkRequest[] = [];
 /** The dots' scale as it stands, for the names' opacity in a tile, and where the tiles' named
  * points go (namefade.ts): set by the Overlays. */
 let tileScale: () => NameScale | null = () => null;
 let tileNames: (src: string, z: number, x: number, y: number, names: TileNames) => void = () => {};
-maplibregl.addProtocol(POINT_TILES, (params) => new Promise((resolve) => {
+maplibregl.addProtocol(POINT_TILES, (params) => new Promise((resolve, reject) => {
   const [src, z, x, y] = params.url.replace(`${POINT_TILES}://`, '').split('/').map((v, i) => (i ? parseInt(v, 10) : v)) as [string, number, number, number];
   const id = ++tileSeq;
   tileReplies.set(id, (m) => {
+    // (By view, a tile whose points couldn't be had fails: TileRetry asks again.)
+    if (m.type === 'tileFailed') return reject(new Error('landmark tile unavailable'));
     tileNames(src, z, x, y, m.names);
     resolve({ data: m.data });
   });
@@ -154,6 +160,8 @@ export class Overlays {
    * re-evaluates every loaded feature). */
   private painted = new Map<string, string>();
   private summit: { name: string; ele: number; lngLat: [number, number] } | null = null;
+  /** Points by view (docs/phase5.md): the catalog's; null: whole files; undefined: not known yet. */
+  private marks: MarksCfg | null | undefined = undefined;
   private top: LandmarkItem[] = [];
   private topByKind: Record<string, LandmarkItem[]> = {};
   private popup: maplibregl.Popup | null = null;
@@ -175,6 +183,52 @@ export class Overlays {
     onVersions((f) => f.endsWith('.json'), (files) => this.reload(files));
   }
 
+  /** The catalog's points by view (/api/catalog `marks`, null: none): the point sources whose kind
+   * has them are loaded by view from then on (a new catalog: again, from its tiles). */
+  setMarks(cfg: MarksCfg | null) {
+    // Every kind or none: the In view statistics come from one place.
+    const kinds = cfg?.kinds ?? [];
+    if (cfg && !MARK_KINDS.every((k) => kinds.includes(k))) cfg = null;
+    if (this.marks !== undefined && (this.marks?.v ?? null) === (cfg?.v ?? null)) return;
+    const was = this.marks;
+    this.marks = cfg;
+    if (cfg?.summary?.tiers) this.layers.setHeritageCounts(cfg.summary.tiers);
+    setMarksVersion(cfg?.v ?? null);
+    this.worker.postMessage({ type: 'marks', cfg, base: hostFor('layers') } satisfies LandmarkRequest);
+    if (was !== undefined) {
+      for (const src of this.indexed.keys()) {
+        if (!this.byView(src)) continue;
+        this.map.getSource<maplibregl.VectorTileSource>(src)?.setTiles([`${pointTiles(src)}?v=${cfg?.v ?? 0}`]);
+      }
+    }
+    if (this.state) this.apply(this.state);
+  }
+
+  /** Whether a point source is loaded by view. */
+  private byView(src: string): boolean {
+    return !!this.marks && this.marks.kinds.includes(src === 'heritage' ? 'heritage' : src.slice(5));
+  }
+
+  /** The view for the worker's points by view: zoom, the ground's box, the sources shown. */
+  private sendView() {
+    const s = this.state;
+    if (!this.marks || !s) return;
+    const srcs = [...this.indexed.keys()].filter((src) => this.byView(src) && OVERLAYS.some(([k]) => OVERLAY_SOURCE[k] === src && s.overlays[k]));
+    const poly = this.viewOutline?.() ?? [];
+    let box: [number, number, number, number];
+    if (poly.length >= 3) {
+      const xs = poly.map((p) => p[0]), ys = poly.map((p) => p[1]);
+      box = [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+    } else {
+      const b = this.map.getBounds();
+      box = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()];
+    }
+    // Longitudes into −180…180 (west > east: across the antimeridian), the whole world past 360°.
+    const wrap = (x: number) => ((((x + 180) % 360) + 360) % 360) - 180;
+    box = box[2] - box[0] >= 360 ? [-180, box[1], 180, box[3]] : [wrap(box[0]), box[1], wrap(box[2]), box[3]];
+    this.worker.postMessage({ type: 'view', zoom: this.map.getZoom(), box, srcs } satisfies LandmarkRequest);
+  }
+
   /** Layer files with new versions (a new catalog): the sources that have them get them again, the
    * points are indexed again (the old ones shown meanwhile), the polygon counts and the summits
    * asked for again. */
@@ -183,7 +237,7 @@ export class Overlays {
     for (const src of this.sourced) if (changed(src)) this.map.getSource<GeoJSONSource>(src)?.setData(layerUrl(src));
     if (this.whsRequested && changed('whs-shapes')) this.map.getSource<GeoJSONSource>('whs')?.setData(layerUrl('whs-shapes'));
     for (const [src, st] of this.indexed) {
-      if (!changed(src)) continue;
+      if (!changed(src) || this.byView(src)) continue;
       if (st === 'ready') this.reindex(src);
       else this.stale.add(src);
     }
@@ -221,9 +275,20 @@ export class Overlays {
   }
 
   private onWorker(m: LandmarkResponse) {
-    if (m.type === 'tile') {
+    if (m.type === 'tile' || m.type === 'tileFailed') {
       tileReplies.get(m.id)?.(m);
       tileReplies.delete(m.id);
+    } else if (m.type === 'dots') {
+      // By view: the source's points as drawn now (the view's tiles changed).
+      const src = m.src;
+      const first = this.indexed.get(src) !== 'ready';
+      this.indexed.set(src, 'ready');
+      this.dots.setSource(src, m.dots);
+      this.requestMasks([src]);
+      if (first) {
+        for (const [key] of OVERLAYS) if (OVERLAY_SOURCE[key] === src && this.state?.overlays[key]) this.refreshStatus(key, src);
+        this.prominence();
+      }
     } else if (m.type === 'loaded') {
       const src = m.src as PointSource;
       tasks.end(`index:${src}`);
@@ -366,7 +431,8 @@ export class Overlays {
   /** The highest named peak in view, as of the last prominence pass (indexes the stops & sights if
    * not yet). */
   summitInView(): { name: string; ele: number; lngLat: [number, number] } | null {
-    if (!this.summitsRequested && !this.held) {
+    // (By view, the In view query answers it.)
+    if (!this.summitsRequested && !this.held && this.marks === null) {
       this.summitsRequested = true;
       this.worker.postMessage({ type: 'summits', url: layerUrl('summits') } satisfies LandmarkRequest);
     }
@@ -416,10 +482,12 @@ export class Overlays {
       kinds.push({ ...this.kindQuery(k, src, id), hists: this.layers.filtersOpen(k) });
     }
     this.areaHists(s);
+    this.sendView();
     const b = map.getBounds();
     this.worker.postMessage({
       type: 'query', id: (this.lastQuery = ++this.queryId), outline: this.viewOutline?.() ?? [], bounds: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()],
       balance: s.landmarks.balance, kinds, top: 60, ranks: [s.landmarks.top[0], s.landmarks.top[1]],
+      range: s.landmarks.auto ? null : [s.landmarks.range[0], s.landmarks.range[1]],
     } satisfies LandmarkRequest);
   }
 
@@ -516,7 +584,15 @@ export class Overlays {
     // At start-up, the overlay files wait for the roads in view (release()): parsing them competes
     // with the road tiles for the CPU, and the roads are what the map is for.
     if (this.held) return;
-    if (isPoints(src)) return this.ensureIndex(src);
+    if (isPoints(src)) {
+      // Whole files or by view: known once the catalog's status is in (setMarks applies again).
+      if (this.marks === undefined) return;
+      if (this.byView(src)) {
+        if (!this.indexed.has(src)) this.indexed.set(src, 'loading');
+        return this.sendView();
+      }
+      return this.ensureIndex(src);
+    }
     if (this.sourced.has(src)) return;
     this.sourced.add(src);
     this.map.getSource<GeoJSONSource>(src)?.setData(layerUrl(src));
@@ -568,7 +644,7 @@ export class Overlays {
     fs = ids.every((id) => POINT_LAYERS.includes(id)) ? this.rank(fs, p) : fs.sort(significance);
     const seen = new Set<string>();
     const uniq = fs.filter((f) => {
-      const k = isWhs(f.layer.id) ? `whs|${f.properties?.id}` : `${f.layer.id}|${f.properties?.i ?? ''}|${f.properties?.name ?? ''}`;
+      const k = isWhs(f.layer.id) ? `whs|${f.properties?.id}` : `${f.layer.id}|${f.properties?.mid ?? f.properties?.i ?? ''}|${f.properties?.name ?? ''}`;
       return !seen.has(k) && !!seen.add(k);
     });
     this.show(uniq.slice(0, 6), map.unproject(point), uniq.length);
@@ -784,8 +860,10 @@ function heritageKindLabel(p: Record<string, unknown>): string {
   return `${heritageGroupOf(t).label}${tier ? ` · ${tier.label.toLowerCase()}` : ''}`;
 }
 
-/** A landmark's details record (its OSM object among them), from its layer and properties. */
-export function landmarkRef(layer: string, p: Record<string, any>): DetailRef | null {
+/** A landmark's details record (its OSM object among them), from its layer and properties (and,
+ * for a point by view, where it is). */
+export function landmarkRef(layer: string, p: Record<string, any>, at?: [number, number]): DetailRef | null {
+  if (p.mid !== undefined && at) return markRef(layer, p, at);
   const i = Number(p.i);
   if (p.i === undefined || !Number.isFinite(i)) return null;
   return layer === 'heritage-pt' || layer === 'heritage-part' ? { layer: 'heritage', i } : layer.startsWith('poi-') ? { layer: 'poi', i } : null;
@@ -801,10 +879,20 @@ function named(name: unknown, p: Record<string, any>): string {
 export const summariseFeature = (layer: string, props: Record<string, any>, at: [number, number]): FeatureSummary | null =>
   summarise({ layer: { id: layer }, properties: props } as unknown as MapGeoJSONFeature, maplibregl.LngLat.convert(at));
 
+/** A point by view's details: by kind and id, at its place. */
+function markRef(layer: string, p: Record<string, any>, at: [number, number]): DetailRef | null {
+  const kind = layer === 'heritage-pt' || layer === 'heritage-part' ? 'heritage' : layer.startsWith('poi-') ? layer.slice(4) : null;
+  return kind ? { mark: { kind, id: Number(p.mid), at } } : null;
+}
+
 function summarise(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary | null {
   const p = f.properties ?? {};
   const idx = Number.isFinite(Number(p.i)) && p.i !== undefined ? Number(p.i) : null;
   const lid = f.layer.id;
+  // A point by view: its details by id, at the point (else where the pointer is).
+  const g = f.geometry as { type?: string; coordinates?: [number, number] } | undefined;
+  const pos: [number, number] = g?.type === 'Point' && g.coordinates ? [g.coordinates[0], g.coordinates[1]] : [at.lng, at.lat];
+  const mref = p.mid !== undefined ? markRef(lid, p, pos) : null;
   const facts = (...xs: (string | null | undefined | false)[]) => xs.filter((x): x is string => !!x);
   if (lid === 'heritage-pt' || lid === 'heritage-part') {
     const kind = heritageKindLabel(p);
@@ -814,14 +902,14 @@ function summarise(f: MapGeoJSONFeature, at: maplibregl.LngLat): FeatureSummary 
       colour: heritageGroupOf(heritageTierOf(p)).colour, area: false,
       facts: facts(p.category ?? p.type, p.in_danger && 'in danger'),
       source: p.source ?? '',
-      ref: idx !== null ? { layer: 'heritage', i: idx } : undefined,
+      ref: mref ?? (idx !== null ? { layer: 'heritage', i: idx } : undefined),
     };
   }
   if (lid.startsWith('poi-')) {
     return {
       title: named(p.name, p) || POI_LABEL[p.kind] || 'Point of interest', kind: POI_LABEL[p.kind] ?? p.kind, colour: '#e79a6b', area: false,
       facts: facts(p.ele && fmt.m(Number(p.ele))), source: 'OpenStreetMap',
-      ref: idx !== null ? { layer: 'poi', i: idx } : undefined, what: p.kind,
+      ref: mref ?? (idx !== null ? { layer: 'poi', i: idx } : undefined), what: p.kind,
     };
   }
   if (lid === 'special-fill') {

@@ -4,12 +4,26 @@
 import { keepable, onVersions, version } from './api';
 import { fmt } from './ui/dom';
 
-export type DetailRef = { layer: 'poi' | 'heritage' | 'harea' | 'special' | 'indigenous'; i: number } | { park: { name: string; lon: number; lat: number } };
+export type DetailRef =
+  | { layer: 'poi' | 'heritage' | 'harea' | 'special' | 'indigenous'; i: number }
+  | { park: { name: string; lon: number; lat: number } }
+  /** A point by view (docs/phase5.md): its kind, id and place. */
+  | { mark: { kind: string; id: number; at: [number, number] } };
 export type Detail = Record<string, any>;
 
 const cache = new Map<string, Promise<Detail | null>>();
 
-export const refKey = (r: DetailRef) => ('park' in r ? `park:${r.park.name}@${r.park.lon.toFixed(2)},${r.park.lat.toFixed(2)}` : `${r.layer}:${r.i}`);
+export const refKey = (r: DetailRef) =>
+  'park' in r ? `park:${r.park.name}@${r.park.lon.toFixed(2)},${r.park.lat.toFixed(2)}` : 'mark' in r ? `mark:${r.mark.kind}:${r.mark.id}` : `${r.layer}:${r.i}`;
+
+/** The catalog of the points by view (their details' URLs carry it). */
+let marksV: number | null = null;
+export function setMarksVersion(v: number | null) {
+  if (v === marksV) return;
+  marksV = v;
+  for (const k of [...cache.keys()]) if (k.startsWith('mark:')) cache.delete(k);
+  for (const k of [...loaded.keys()]) if (k.startsWith('mark:')) loaded.delete(k);
+}
 
 /** A detail (null: none). A failed request (a server error, the network) isn't cached: the next
  * hover asks again. */
@@ -19,12 +33,17 @@ export function getDetail(r: DetailRef): Promise<Detail | null> {
   if (!p) {
     // Versioned by the details files' versions, when known (a versioned response is cached for
     // good, so never under an incomplete one).
-    const files = 'park' in r ? ['details-park.jsonl'] : [`details-${r.layer}.jsonl`, ...(r.layer === 'poi' ? ['peaks.json'] : r.layer === 'heritage' ? ['props-heritage.jsonl'] : [])];
-    const vs = files.map(version);
-    const v = vs.every(Boolean) ? vs.join('.') : '';
-    const url = 'park' in r
-      ? `/api/park?${new URLSearchParams({ name: r.park.name, lon: String(r.park.lon), lat: String(r.park.lat), ...(v ? { v } : {}) })}`
-      : `/api/detail/${r.layer}/${r.i}${v ? `?v=${v}` : ''}`;
+    let url: string;
+    if ('mark' in r) {
+      url = `/api/marks/detail/${r.mark.kind}/${r.mark.id}?at=${r.mark.at[0]},${r.mark.at[1]}${marksV !== null ? `&v=${marksV}` : ''}`;
+    } else {
+      const files = 'park' in r ? ['details-park.jsonl'] : [`details-${r.layer}.jsonl`, ...(r.layer === 'poi' ? ['peaks.json'] : r.layer === 'heritage' ? ['props-heritage.jsonl'] : [])];
+      const vs = files.map(version);
+      const v = vs.every(Boolean) ? vs.join('.') : '';
+      url = 'park' in r
+        ? `/api/park?${new URLSearchParams({ name: r.park.name, lon: String(r.park.lon), lat: String(r.park.lat), ...(v ? { v } : {}) })}`
+        : `/api/detail/${r.layer}/${r.i}${v ? `?v=${v}` : ''}`;
+    }
     const q: Promise<Detail | null> = fetch(url).then(keepable).then((res) => (res.status === 200 ? res.json() : null));
     p = q.catch(() => {
       if (cache.get(k) === p) cache.delete(k);

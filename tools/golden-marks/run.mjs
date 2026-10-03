@@ -4,7 +4,8 @@
 //   node run.mjs [base url] [--kinds peak,viewpoint,…]
 const B = process.argv[2]?.startsWith('http') ? process.argv[2] : 'http://localhost:8092';
 const arg = (n) => { const i = process.argv.indexOf(n); return i > 0 ? process.argv[i + 1] : null; };
-const KINDS = (arg('--kinds') ?? 'viewpoint,peak,waterfall,lighthouse,covered_bridge,rest,trailhead').split(',');
+const KINDS = (arg('--kinds') ?? 'viewpoint,peak,waterfall,lighthouse,covered_bridge,rest,trailhead,heritage').split(',');
+const srcOf = (k) => (k === 'heritage' ? 'heritage' : `pois-${k}`);
 
 const waiting = [];
 globalThis.window = globalThis;
@@ -15,7 +16,7 @@ const ask = (msg, match) => new Promise((resolve) => { waiting.push({ match, res
 
 const t0 = Date.now();
 for (const k of KINDS) {
-  const m = await ask({ type: 'load', src: `pois-${k}`, url: `${B}/api/layer/pois-${k}` }, (r) => r.type === 'loaded' && r.src === `pois-${k}`);
+  const m = await ask({ type: 'load', src: srcOf(k), url: `${B}/api/layer/${srcOf(k)}` }, (r) => r.type === 'loaded' && r.src === srcOf(k));
   if (!m.ok) throw new Error(`load ${k} failed`);
 }
 await new Promise((resolve) => { self.onmessage({ data: { type: 'summits', url: `${B}/api/layer/summits` } }); setTimeout(resolve, 3000); });
@@ -29,9 +30,12 @@ const FILTERS = [
   {},
   { peak: { 'peak.pr': { on: true, min: 100, max: 0 } } },
   { peak: { 'peak.ele': { on: true, min: 1000, max: 3000 }, 'peak.is': { on: true, min: 0.45, max: 0 } }, viewpoint: { 'viewpoint.pan': { on: true, min: 0, max: 0 } } },
-  { rest: { 'rest.toilets': { on: true, min: 0, max: 0 } }, waterfall: { 'waterfall.h': { on: true, min: 10, max: 0 } }, lighthouse: { 'lighthouse.y': { on: true, min: 1800, max: 1900 } } },
+  { rest: { 'rest.toilets': { on: true, min: 0, max: 0 } }, waterfall: { 'waterfall.h': { on: true, min: 10, max: 0 } }, lighthouse: { 'lighthouse.y': { on: true, min: 1800, max: 1900 } }, heritage: { 'heritage.by': { on: true, min: 1200, max: 1700 } } },
+  { heritage: { 'heritage.dy': { on: true, min: 1950, max: 0 }, 'heritage.wp': { on: true, min: 0, max: 0 } } },
 ];
-const kindsFor = (fi, keepUnknown, hists) => KINDS.map((k) => ({ k, src: `pois-${k}`, layer: `poi-${k}`, filters: FILTERS[fi][k] ?? {}, keepUnknown, hists }));
+// Heritage tiers switched off, by case.
+const OFF = [[], ['m.des', 'm.reg', 'n.lower'], ['w.c', 'w.n'], []];
+const kindsFor = (fi, keepUnknown, hists, oi = 0) => KINDS.map((k) => ({ k, src: srcOf(k), layer: k === 'heritage' ? 'heritage-pt' : `poi-${k}`, filters: FILTERS[fi][k] ?? {}, keepUnknown, hists, ...(k === 'heritage' ? { off: OFF[oi] } : {}) }));
 
 function* cases() {
   for (const [name, [lon, lat]] of Object.entries(PLACES)) {
@@ -39,7 +43,7 @@ function* cases() {
       const w = (360 * 5) / 2 ** z, h = w * 0.6 * Math.cos((lat * Math.PI) / 180);
       const b = [lon - w / 2, lat - h / 2, lon + w / 2, lat + h / 2];
       const i = z % 4;
-      yield { name: `${name} z${z}`, bounds: b, outline: [], balance: [0, 0.3, 0.5, 1][i], ranks: [[250, 10], [1000, 10], [50, 3], [250, 10]][i], fi: (z / 2) % 4 | 0, keepUnknown: z % 3 !== 0, hists: z % 2 === 0 };
+      yield { name: `${name} z${z}`, bounds: b, outline: [], balance: [0, 0.3, 0.5, 1][i], ranks: [[250, 10], [1000, 10], [50, 3], [250, 10]][i], fi: (z / 2) % 5 | 0, oi: z % 4, keepUnknown: z % 3 !== 0, hists: z % 2 === 0 };
       // A pitched view's outline (a trapezoid) over the same place.
       const out = [[b[0], b[1]], [b[2], b[1]], [lon + w, b[3] + h], [lon - w, b[3] + h], [b[0], b[1]]];
       yield { name: `${name} z${z} outline`, bounds: [lon - w, b[1], lon + w, b[3] + h], outline: out, balance: 0.3, ranks: [250, 10], fi: 0, keepUnknown: true, hists: true };
@@ -79,7 +83,7 @@ function diff(a, b, path = '') {
 
 let n = 0, bad = 0, id = 0, tw = 0, ts = 0;
 for (const c of cases()) {
-  const kinds = kindsFor(c.fi, c.keepUnknown, c.hists);
+  const kinds = kindsFor(c.fi, c.keepUnknown, c.hists, c.oi ?? 0);
   let t = performance.now();
   const w = await ask({ type: 'query', id: ++id, outline: c.outline, bounds: c.bounds, balance: c.balance, kinds, top: 60, ranks: c.ranks }, (r) => r.type === 'result' && r.id === id);
   tw += performance.now() - t;
@@ -94,11 +98,11 @@ for (const c of cases()) {
 }
 // Worldwide counts (the worker's `count`), per kind and filter setting.
 let nc = 0;
-for (const fi of [0, 1, 2, 3]) {
+for (const fi of [0, 1, 2, 3, 4]) {
   for (const keepUnknown of [true, false]) {
-    for (const kq of kindsFor(fi, keepUnknown, false)) {
+    for (const kq of kindsFor(fi, keepUnknown, false, fi % 4)) {
       const w = await ask({ type: 'count', id: ++id, kind: kq }, (r) => r.type === 'count' && r.id === id);
-      const q = JSON.stringify({ filters: kq.filters, keepUnknown: kq.keepUnknown, off: [] });
+      const q = JSON.stringify({ filters: kq.filters, keepUnknown: kq.keepUnknown, off: kq.off ?? [] });
       const s = await (await fetch(`${B}/api/marks/count?kind=${kq.k}&q=${encodeURIComponent(q)}`)).json();
       nc++;
       if (w.n !== s.n || w.of !== s.of) { bad++; console.log(`DIFF count ${kq.k} ${q}: ${w.n}/${w.of} vs ${s.n}/${s.of}`); }

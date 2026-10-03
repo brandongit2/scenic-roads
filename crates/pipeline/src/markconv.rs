@@ -1,8 +1,9 @@
-//! `convert-legacy-marks` (docs/phase5.md "Today's regions", step 1): today's stops and sights
-//! (`global/legacy/layer-pois-<kind>`, with `details-poi`, `peaks` and `layer-summits`) as markdata
-//! per z6 tile and thinned tiles per kind, so the server answers the In view statistics and the app
-//! loads points by view. Fame, isolation and `mz` are kept as they are; a kind's file order is its
-//! rank (the app's tie-break).
+//! `convert-legacy-marks` (docs/phase5.md "Today's regions", steps 1–2): today's stops and sights
+//! (`global/legacy/layer-pois-<kind>`, with `details-poi`, `peaks` and `layer-summits`) and heritage
+//! sites (`layer-heritage`, with `details-heritage` and `props-heritage`) as markdata per z6 tile and
+//! thinned tiles per kind, so the server answers the In view statistics and the app loads points by
+//! view. Fame, isolation and `mz` are kept as they are; a kind's file order is its rank (the app's
+//! tie-break).
 
 use crate::marks::{self, flag, Cell, IdSource, KeepPt, MarkPt, MarkTile, Row, SummitRec, KINDS};
 use crate::out::Out;
@@ -12,7 +13,7 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
-/// The stops & sights kinds (heritage comes in step 2).
+/// The stops & sights kinds (each its own file; heritage is one more).
 pub const POI_KINDS: [&str; 7] = ["viewpoint", "peak", "waterfall", "lighthouse", "covered_bridge", "rest", "trailhead"];
 
 /// A legacy file's bytes: this Mac's mirror copy when there is one, else the NAS's.
@@ -65,10 +66,89 @@ fn poi_details(out: &Out) -> Result<HashMap<u64, (Option<String>, String)>> {
     Ok(by)
 }
 
-/// Every stops & sights point of today's files, with ids.
+/// The heritage records as the server merges them (details-heritage, with props-heritage's record as
+/// `props`), by the layer's `i`.
+fn heritage_details(out: &Out) -> Result<HashMap<u64, Value>> {
+    let mut by: HashMap<u64, Value> = HashMap::new();
+    let text = legacy_bytes(out, "details-heritage")?;
+    for line in text.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+        let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
+        if let Some(i) = v.get("i").and_then(Value::as_u64) {
+            by.insert(i, v);
+        }
+    }
+    let text = legacy_bytes(out, "props-heritage")?;
+    for line in text.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
+        let Ok(mut p) = serde_json::from_slice::<Value>(line) else { continue };
+        let Some(i) = p.get("i").and_then(Value::as_u64) else { continue };
+        p.as_object_mut().map(|o| o.remove("i"));
+        by.entry(i).or_insert_with(|| serde_json::json!({ "i": i }))["props"] = p;
+    }
+    Ok(by)
+}
+
+/// The UNESCO site id in a World Heritage List URL.
+fn whc_site(url: &str) -> Option<&str> {
+    let id = url.split("whc.unesco.org/en/list/").nth(1)?.trim_end_matches('/');
+    (!id.is_empty() && id.chars().all(|c| c.is_ascii_digit())).then_some(id)
+}
+
+/// Today's heritage sites (World Heritage components among them).
+fn heritage_points(out: &Out, pts: &mut Vec<Pt>, refs: &mut Vec<String>) -> Result<()> {
+    let details = heritage_details(out)?;
+    let k = marks::kind_index("heritage").unwrap();
+    let fields = marks::fields("heritage");
+    let fc: Value = serde_json::from_slice(&legacy_bytes(out, "layer-heritage")?)?;
+    let feats = fc["features"].as_array().context("layer-heritage: no features")?;
+    for (rank, f) in feats.iter().enumerate() {
+        let c = &f["geometry"]["coordinates"];
+        let (Some(lon), Some(lat)) = (c[0].as_f64(), c[1].as_f64()) else { continue };
+        let mut props = f["properties"].as_object().cloned().unwrap_or_default();
+        let i = props.remove("i").and_then(|v| v.as_u64());
+        let info = i.and_then(|i| details.get(&i));
+        let fnum = |key: &str| props.get(key).and_then(Value::as_f64);
+        let level = fnum("level");
+        let tier = marks::heritage_tier(props.get("t").and_then(Value::as_str), level);
+        let tier_i = marks::tier_index(tier).unwrap_or(marks::tier_index("m.des").unwrap());
+        // dotData's class: level class (World Heritage, national top grade, the rest) + 3 × group.
+        let l = level.filter(|v| *v != 0.0 && !v.is_nan()).unwrap_or(5.0);
+        let group = ["w", "n", "p", "m"].iter().position(|g| tier.starts_with(g)).unwrap_or(3) as u8;
+        let class = (if l == 1.0 { 0 } else if l == 2.0 { 1 } else { 2 }) + 3 * group;
+        let named = props.get("name").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+        let component = props.get("pt").is_some_and(|v| !v.is_null() && v != &Value::Bool(false) && v.as_f64() != Some(0.0));
+        let pt = MarkPt {
+            lon: marks::e7(lon),
+            lat: marks::e7(lat),
+            fa: fnum("fa").unwrap_or(0.0) as f32,
+            ia: fnum("ia").map_or(marks::IA_UNKNOWN, |v| v as f32),
+            mz: fnum("mz").map_or(f32::NAN, |v| v as f32),
+            rank: rank as u32,
+            kz: marks::KZ_NONE,
+            class,
+            tier: tier_i,
+            flags: if named { flag::NAMED } else { 0 } | if component { flag::COMPONENT } else { 0 },
+        };
+        let fvals = fields.iter().map(|p| marks::num(&props, p)).collect();
+        // References: a World Heritage Site's dot by its UNESCO id; a Canadian federal designation by
+        // its DFHD id; else the legacy reference (tier, place, name, record URL).
+        let url = info.and_then(|v| v["props"]["url"].as_str()).unwrap_or("");
+        let name = props.get(if component { "cn" } else { "name" }).and_then(Value::as_str).unwrap_or("");
+        let reference = match (whc_site(url), component, info.and_then(|v| v["props"]["dfhd_id"].as_str().map(str::to_string).or_else(|| v["props"]["dfhd_id"].as_u64().map(|n| n.to_string())))) {
+            (Some(site), false, _) if tier.starts_with('w') => format!("whc:{site}"),
+            (_, _, Some(d)) => format!("reg:dfhd:{d}"),
+            _ => format!("legacy:heritage|{tier}|{},{}|{name}|{url}", pt.lon, pt.lat),
+        };
+        refs.push(reference);
+        pts.push(Pt { kind: k, lon, lat, pt, fvals, props, info: info.map(Value::to_string), osm: None });
+    }
+    Ok(())
+}
+
+/// Every point of today's files, with ids.
 fn load_points(out: &Out) -> Result<Vec<(u64, Pt)>> {
     let details = poi_details(out)?;
     let mut pts: Vec<Pt> = Vec::new();
+    let mut refs: Vec<String> = Vec::new();
     for kind in POI_KINDS {
         let k = marks::kind_index(kind).unwrap();
         let fc: Value = serde_json::from_slice(&legacy_bytes(out, &format!("layer-pois-{kind}"))?)?;
@@ -99,21 +179,18 @@ fn load_points(out: &Out) -> Result<Vec<(u64, Pt)>> {
                 flags: if named { flag::NAMED } else { 0 } | if picnic { flag::PICNIC } else { 0 },
             };
             let fvals = fields.iter().map(|p| marks::num(&props, p)).collect();
+            let name = props.get("name").and_then(Value::as_str).unwrap_or("");
+            let sub = props.get("kind").and_then(Value::as_str).unwrap_or(kind);
+            refs.push(format!("legacy:poi|{sub}|{},{}|{name}", pt.lon, pt.lat));
             pts.push(Pt { kind: k, lon, lat, pt, fvals, props, info, osm });
         }
     }
+    heritage_points(out, &mut pts, &mut refs)?;
     // Ids over every point of the group (an OSM id is used only when no other point has it).
     let src: Vec<IdSource> = pts
         .iter()
-        .map(|p| {
-            let name = p.props.get("name").and_then(Value::as_str).unwrap_or("");
-            let sub = p.props.get("kind").and_then(Value::as_str).unwrap_or(KINDS[p.kind]);
-            IdSource {
-                osm: p.osm,
-                reference: format!("legacy:poi|{sub}|{},{}|{name}", p.pt.lon, p.pt.lat),
-                canon: format!("{}{}", Value::Object(p.props.clone()), p.info.as_deref().unwrap_or("")),
-            }
-        })
+        .zip(refs)
+        .map(|(p, reference)| IdSource { osm: p.osm, reference, canon: format!("{}{}", Value::Object(p.props.clone()), p.info.as_deref().unwrap_or("")) })
         .collect();
     let ids = marks::assign_ids(&src)?;
     Ok(ids.into_iter().zip(pts).collect())
@@ -226,15 +303,20 @@ pub fn convert(out: &mut Out) -> Result<Converted> {
             crate::layers::write_pack(out, &format!("marks-{kind}"), "rdmt", true, scope, (rz, rx, ry), &mut tiles.into_iter())?;
         }
     }
-    // Totals per kind (the `kind` property: rest is rest_area and picnic_site), for the Layers panel.
+    // Totals per kind (the `kind` property: rest is rest_area and picnic_site) and heritage tier, for
+    // the Layers panel.
     let mut totals: BTreeMap<String, u64> = BTreeMap::new();
+    let mut tiers: BTreeMap<String, u64> = BTreeMap::new();
     for (_, p) in &all {
         if p.pt.flags & flag::COMPONENT == 0 {
             let k = p.props.get("kind").and_then(Value::as_str).unwrap_or(KINDS[p.kind]);
             *totals.entry(k.to_string()).or_default() += 1;
+            if KINDS[p.kind] == "heritage" {
+                *tiers.entry(marks::TIERS[p.pt.tier as usize].to_string()).or_default() += 1;
+            }
         }
     }
-    out.put_bytes("global/marks/summary", "json", &serde_json::to_vec(&serde_json::json!({ "fmt": 1, "kinds": totals }))?)?;
+    out.put_bytes("global/marks/summary", "json", &serde_json::to_vec(&serde_json::json!({ "fmt": 1, "kinds": totals, "tiers": tiers }))?)?;
     Ok(Converted { points: all.len(), tiles: written.len(), thinned })
 }
 

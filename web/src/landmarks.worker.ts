@@ -11,6 +11,8 @@ import { encodePoints, type TilePoint } from './mvt';
 import { filterHists, stopFilterPass, type StopFilter } from './stopfilters';
 import { displayName } from './names';
 import type { OverlayKey } from './state';
+import { F_NAMED, MarksView, type MarksCfg } from './marksview';
+import type { MarkTile } from './marktile';
 
 export interface LandmarkItem {
   k: OverlayKey;
@@ -35,11 +37,17 @@ export interface KindQuery {
 }
 
 export type LandmarkRequest =
+  /** Points by view (docs/phase5.md) from the server at `base` (null: whole files, as before). */
+  | { type: 'marks'; cfg: MarksCfg | null; base: string }
+  /** By view: the map's zoom and box (lon/lat), and the point sources shown. */
+  | { type: 'view'; zoom: number; box: [number, number, number, number]; srcs: string[] }
   | { type: 'load'; src: string; url: string }
   | { type: 'summits'; url: string }
   | { type: 'query'; id: number; outline: [number, number][]; bounds: [number, number, number, number]; balance: number; kinds: KindQuery[]; top: number;
       /** Ranks whose scores to send (the auto-fitted range's ends). */
-      ranks: [number, number] }
+      ranks: [number, number];
+      /** By view: the size range when it's locked (auto off). */
+      range?: [number, number] | null }
   | { type: 'count'; id: number; kind: KindQuery }
   /** Which points of each kind's source pass its filters, for the dots (dots.ts). */
   | { type: 'mask'; id: number; kinds: KindQuery[] }
@@ -50,6 +58,8 @@ export type LandmarkRequest =
 export type LandmarkResponse =
   /** dots: the points laid out for drawing (dots.ts, dotlayout.ts). */
   | { type: 'loaded'; src: string; ok: boolean; counts: Record<string, number>; dots?: DotData }
+  /** By view: a source's points as drawn now (again whenever the tiles in view change). */
+  | { type: 'dots'; src: string; dots: DotData }
   /** The dots' filter flags (dotlayout.ts visWords). */
   | { type: 'mask'; id: number; src: string; vis: Uint32Array }
   | {
@@ -68,13 +78,15 @@ export type LandmarkResponse =
       summit: { name: string; ele: number; lngLat: [number, number] } | null;
     }
   | { type: 'count'; id: number; n: number; of: number }
-  | { type: 'tile'; id: number; data: ArrayBuffer; names: TileNames };
+  | { type: 'tile'; id: number; data: ArrayBuffer; names: TileNames }
+  /** By view: a tile whose points couldn't be had (the map asks again). */
+  | { type: 'tileFailed'; id: number };
 
 /** A point tile's named points (namefade.ts): feature id, fame, isolation, and the zoom where the
  * name's isolation spans a pixel (mz; -99 without); `scaled`: the names' opacity is in the tile
  * (not before the first scale). */
 export interface TileNames {
-  ids: Uint32Array;
+  ids: Float64Array;
   fa: Float32Array;
   ia: Float32Array;
   mz: Float32Array;
@@ -114,8 +126,27 @@ const tileWaits = new Map<string, Extract<LandmarkRequest, { type: 'tile' }>[]>(
 
 const post = (m: LandmarkResponse, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(m, transfer);
 
+/** Points by view, when the catalog has them. */
+let mv: MarksView | null = null;
+let mvBase = '';
+const kindOf = (src: string) => (src === 'heritage' ? 'heritage' : src.slice(5));
+const srcOf = (kind: string) => (kind === 'heritage' ? 'heritage' : `pois-${kind}`);
+/** Ids by view are mark ids (to 2^52); else the whole file's index. */
+const idsOf = (xs: number[]) => Float64Array.from(xs);
+
 self.onmessage = async (ev: MessageEvent<LandmarkRequest>) => {
   const m = ev.data;
+  if (m.type === 'marks') {
+    mvBase = m.base;
+    mv = m.cfg ? new MarksView(m.cfg, m.base, (set, dots) => post({ type: 'dots', src: srcOf(set.kind), dots }, [dots.draw, dots.hpos, dots.morton.buffer, dots.chunks.buffer])) : null;
+    for (const [src, w] of tileWaits) for (const t of w.splice(0)) tile(t);
+    return;
+  }
+  if (m.type === 'view') {
+    mv?.view(m.zoom, m.box, m.srcs.map(kindOf));
+    return;
+  }
+  if (mv && m.type !== 'load' && m.type !== 'summits') return byView(mv, m);
   if (m.type === 'load') {
     // (Again for new data: it replaces the source's index, and a failed request or a server error
     // keeps the old one. No such file: no points.)
@@ -152,7 +183,7 @@ self.onmessage = async (ev: MessageEvent<LandmarkRequest>) => {
     const ids = ix ? keptIds(m.kind, ix, false) : all;
     post({ type: 'count', id: m.id, n: ids.length, of: all.length });
   } else if (m.type === 'tile') {
-    if (tileIdx.has(m.src)) tile(m);
+    if (tileIdx.has(m.src) || mv) tile(m);
     else {
       let w = tileWaits.get(m.src);
       if (!w) tileWaits.set(m.src, (w = []));
@@ -175,6 +206,82 @@ self.onmessage = async (ev: MessageEvent<LandmarkRequest>) => {
     }
   }
 };
+
+/** A request answered from the points by view (and the server). */
+async function byView(v: MarksView, m: LandmarkRequest) {
+  if (m.type === 'query') {
+    const kinds = m.kinds.map((q) => ({ k: q.k, layer: q.layer, filters: q.filters, keepUnknown: q.keepUnknown, hists: !!q.hists, off: q.off ?? [] }));
+    const body = { outline: m.outline, bounds: m.bounds, balance: m.balance, kinds, top: m.top, ranks: m.ranks, tz: v.tz < 0 ? 6 : v.tz, range: m.range ?? null, have: v.extraIds(), v: v.cfg.v };
+    let j: any;
+    try {
+      const r = await fetch(`${mvBase}/api/marks/view`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      j = await r.json();
+    } catch {
+      // Unanswered (the server busy or a new catalog): an empty answer, so the next query goes.
+      j = { hist: [], n: 0, atRanks: null, byKind: [], top: [], topByKind: {}, fhist: {}, summit: null };
+    }
+    if (j.extra) v.setExtras(j.extra);
+    const item = (x: any): LandmarkItem => ({ k: x.k, layer: x.layer, score: x.score, props: { ...x.props, mid: x.id }, lngLat: x.lngLat });
+    const hist = Float64Array.from(j.hist.length ? j.hist : new Array(HIST_BINS).fill(0));
+    const fhist: Record<string, { bins: Float64Array; n: number }> = {};
+    for (const [k, x] of Object.entries(j.fhist as Record<string, { bins: number[]; n: number }>)) fhist[k] = { bins: Float64Array.from(x.bins), n: x.n };
+    post({
+      type: 'result', id: m.id, hist, n: j.n, atRanks: j.atRanks,
+      byKind: j.byKind.map((b: any) => ({ key: b.key, n: b.n, best: b.best && { name: b.best.name, lngLat: b.best.lngLat, layer: b.best.layer, props: { ...b.best.props, mid: b.best.id } } })),
+      top: j.top.map(item), topByKind: Object.fromEntries(Object.entries(j.topByKind as Record<string, any[]>).map(([k, l]) => [k, l.map(item)])),
+      fhist, summit: j.summit,
+    }, [hist.buffer, ...Object.values(fhist).map((x) => x.bins.buffer)]);
+  } else if (m.type === 'mask') {
+    for (const q of m.kinds) {
+      const set = v.sets.get(kindOf(q.src));
+      if (!set) continue;
+      const vis = v.mask(set.kind, q.filters, q.keepUnknown, q.off ?? []);
+      if (!vis) continue;
+      const words = visWords(vis, set.aux);
+      post({ type: 'mask', id: m.id, src: q.src, vis: words }, [words.buffer]);
+    }
+  } else if (m.type === 'count') {
+    const q = JSON.stringify({ filters: m.kind.filters, keepUnknown: m.kind.keepUnknown, off: m.kind.off ?? [] });
+    try {
+      const r = await fetch(`${mvBase}/api/marks/count?kind=${kindOf(m.kind.src)}&q=${encodeURIComponent(q)}&v=${v.cfg.v}`);
+      const c = await r.json();
+      post({ type: 'count', id: m.id, n: c.n, of: c.of });
+    } catch {
+      /* (the count stays as it was) */
+    }
+  } else if (m.type === 'tile') {
+    viewTile(v, m);
+  }
+}
+
+/** A map tile of a source's points by view (names and hit-testing): the points of the server's
+ * tile covering it, capped as the whole-file tiles were. */
+async function viewTile(v: MarksView, m: Extract<LandmarkRequest, { type: 'tile' }>) {
+  let pts = await v.pointsIn(kindOf(m.src), m.z, m.x, m.y);
+  if (!pts) return post({ type: 'tileFailed', id: m.id });
+  if (m.z < TILE_CAP_Z && pts.length > TILE_MAX) {
+    const rank = (p: { t: MarkTile; i: number }) => { const fa = p.t.fa[p.i], ia = p.t.ia[p.i]; return Math.max(landmarkScoreOf(fa, ia, 0), landmarkScoreOf(fa, ia, 1)); };
+    pts = pts.map((p) => [rank(p), p] as const).sort((a, b) => b[0] - a[0]).slice(0, TILE_MAX).map((x) => x[1]);
+  }
+  const n = 2 ** m.z;
+  const ids: number[] = [], fas: number[] = [], ias: number[] = [], mzs: number[] = [];
+  const tps: TilePoint[] = pts.map(({ t, i }) => {
+    const lon = t.lon[i] / 1e7, lat = t.lat[i] / 1e7;
+    const s = Math.sin((lat * Math.PI) / 180);
+    const x = (lon + 180) / 360, y = 0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI);
+    let props: Record<string, any> = { ...t.props(i), mid: t.ids[i] };
+    if (t.flags[i] & F_NAMED && !props.pt) {
+      const fa = t.fa[i], ia = t.ia[i];
+      ids.push(t.ids[i]), fas.push(fa), ias.push(ia), mzs.push(Number.isNaN(t.mz[i]) ? -99 : t.mz[i]);
+      if (m.scale) props = { ...props, o: Math.round(nameOpacity(fa, ia, m.scale) * 250) / 250 };
+    }
+    return { x: (x * n - m.x) * 4096, y: (y * n - m.y) * 4096, id: t.ids[i], props };
+  });
+  const data = encodePoints(POINT_TILE_LAYER, tps).buffer as ArrayBuffer;
+  const names: TileNames = { ids: idsOf(ids), fa: Float32Array.from(fas), ia: Float32Array.from(ias), mz: Float32Array.from(mzs), scaled: !!m.scale };
+  post({ type: 'tile', id: m.id, data, names }, [data, names.ids.buffer, names.fa.buffer, names.ia.buffer, names.mz.buffer]);
+}
 
 /** A source's points laid out for drawing, and their draw order. Heritage class: level class
  * (World Heritage, national top grade, the rest, as the dots' sizes) + 3 × group (colour). */
@@ -215,6 +322,7 @@ function tileIndex(features: GeoJSON.Feature[]) {
 
 /** A map tile of a source's points, sent back as a vector tile. */
 function tile(m: Extract<LandmarkRequest, { type: 'tile' }>) {
+  if (mv) return void viewTile(mv, m);
   const t = tileIdx.get(m.src)!;
   const [k0, k1] = tileRun(t.codes, m.z, m.x, m.y);
   let ks = Array.from({ length: k1 - k0 }, (_, i) => k0 + i);
@@ -237,7 +345,7 @@ function tile(m: Extract<LandmarkRequest, { type: 'tile' }>) {
     return { x: (x * n - m.x) * 4096, y: (y * n - m.y) * 4096, id: t.ids[k], props };
   });
   const data = encodePoints(POINT_TILE_LAYER, pts).buffer as ArrayBuffer;
-  const names: TileNames = { ids: Uint32Array.from(ids), fa: Float32Array.from(fas), ia: Float32Array.from(ias), mz: Float32Array.from(mzs), scaled: !!m.scale };
+  const names: TileNames = { ids: idsOf(ids), fa: Float32Array.from(fas), ia: Float32Array.from(ias), mz: Float32Array.from(mzs), scaled: !!m.scale };
   post({ type: 'tile', id: m.id, data, names }, [data, names.ids.buffer, names.fa.buffer, names.ia.buffer, names.mz.buffer]);
 }
 
