@@ -636,3 +636,10 @@ latitude cap; format versions read two at a time.
   the unit steps' arrays, the client's GPU attribute) and clamped at ±3,200 m, as today (the Pico de
   Veleta road shows 3,200 m). Roads in the Andes or the Himalaya reach 5,800 m: they need a wider
   encoding (u16 decimetres from −500 m keeps the size) across the pipeline, the server and the client.
+- **The build Mac's disk:** the pack and lo steps read base packs from this Mac's mirror where it has
+  them (same content names) and copy only the rest into the agent's pack cache, which drops replaced
+  packs on every run and is cleared when an OSM pass starts (its space counts as free for the pass's
+  80 GB). The pass copies the planet first when there's room for it and a filtered file of up to
+  60 % of it (streaming it ended the first attempt on an SMB I/O error after 31 minutes). The mirror
+  doesn't shrink for builds (it evicts only older catalogs' files); on the build Mac it fills only
+  past a 150 GB reserve. (§4's single shared LRU, cleared before a pass, is still the better shape.)

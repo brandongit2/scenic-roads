@@ -73,11 +73,13 @@ fn main() -> Result<()> {
         }
         "pack" => {
             let cache = PathBuf::from(opt(&args, "--cache").unwrap_or_else(|| "/tmp/scenic-cache".into()));
-            pack(&mut out, &cache, &positional(&args))?
+            let mirror = opt(&args, "--mirror").map(PathBuf::from);
+            pack(&mut out, &cache, mirror.as_deref(), &positional(&args))?
         }
         "lo" => {
             let cache = PathBuf::from(opt(&args, "--cache").unwrap_or_else(|| "/tmp/scenic-cache".into()));
-            lo(&mut out, &cache, &positional(&args))?
+            let mirror = opt(&args, "--mirror").map(PathBuf::from);
+            lo(&mut out, &cache, mirror.as_deref(), &positional(&args))?
         }
         "osm-pass" => {
             let planet = PathBuf::from(opt(&args, "--planet").context("--planet <path>")?);
@@ -85,6 +87,13 @@ fn main() -> Result<()> {
             let extract = PathBuf::from(opt(&args, "--extract").unwrap_or_else(|| "target/release/extract".into()));
             let planetiler = PathBuf::from(opt(&args, "--planetiler").unwrap_or_else(|| "tools/planetiler.jar".into()));
             pipeline::osmpass::check_tools(&extract, &planetiler)?;
+            // Room first: caches the pass makes worthless or can refill (the pack cache).
+            for dir in args.windows(2).filter(|w| w[0] == "--clear").map(|w| PathBuf::from(&w[1])) {
+                if dir.exists() {
+                    eprintln!("osm-pass: clearing {}", dir.display());
+                    std::fs::remove_dir_all(&dir)?;
+                }
+            }
             pipeline::osmpass::run_pass(&mut out, &planet, &date, &scratch, &extract, &planetiler)?
         }
         "verify" => {
@@ -257,7 +266,11 @@ fn copy_to_scratch(out: &Out, p: &Path) -> Result<PathBuf> {
 // ---- base packs, locally ------------------------------------------------------------------
 
 /// Every unit's base pack and road values, copied into `cache` when missing, opened.
-fn open_units(out: &Out, cache: &Path) -> Result<Vec<BasePack>> {
+/// Every unit's base pack and road values, opened from local copies: this Mac's mirror's when it
+/// has them (`mirror`, the server's: same content names, so no second copy), else the cache's,
+/// copied from the NAS when missing. Cached files no unit uses any more go first, so the cache
+/// holds at most one copy of what the mirror lacks.
+fn open_units(out: &Out, cache: &Path, mirror: Option<&Path>) -> Result<Vec<BasePack>> {
     std::fs::create_dir_all(cache)?;
     let mut units: Vec<(String, String, String)> = Vec::new();
     for (k, v) in &out.manifest {
@@ -266,10 +279,17 @@ fn open_units(out: &Out, cache: &Path) -> Result<Vec<BasePack>> {
             units.push((u.to_string(), v.clone(), roads.to_string()));
         }
     }
+    let needed: BTreeSet<&str> = units.iter().flat_map(|(_, b, r)| [b.as_str(), r.as_str()]).collect();
+    prune_cache(cache, &needed)?;
     let mut packs = Vec::with_capacity(units.len());
-    for (u, base, roads) in units {
+    for (u, base, roads) in &units {
         let mut local = Vec::new();
-        for name in [&base, &roads] {
+        for name in [base, roads] {
+            // (The mirror renames a file into place only once it's copied and checked.)
+            if let Some(m) = mirror.map(|m| m.join(name)).filter(|m| m.is_file()) {
+                local.push(m);
+                continue;
+            }
             let p = cache.join(name);
             if !p.exists() {
                 std::fs::create_dir_all(p.parent().unwrap())?;
@@ -283,6 +303,31 @@ fn open_units(out: &Out, cache: &Path) -> Result<Vec<BasePack>> {
         packs.push(BasePack::open(&local[0], &local[1]).with_context(|| format!("unit {u}"))?);
     }
     Ok(packs)
+}
+
+/// Removes from `cache` every file not in `keep` (content names relative to it), and leftovers of
+/// interrupted copies.
+fn prune_cache(cache: &Path, keep: &BTreeSet<&str>) -> Result<()> {
+    let mut stack = vec![cache.to_path_buf()];
+    let mut freed = 0u64;
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir)?.flatten() {
+            let p = e.path();
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(p);
+                continue;
+            }
+            let rel = p.strip_prefix(cache).unwrap_or(&p).to_string_lossy().into_owned();
+            if !keep.contains(rel.as_str()) {
+                freed += e.metadata().map(|m| m.len()).unwrap_or(0);
+                std::fs::remove_file(&p).ok();
+            }
+        }
+    }
+    if freed > 0 {
+        eprintln!("cache: {} MB of replaced base packs removed", freed >> 20);
+    }
+    Ok(())
 }
 
 /// The z-level tiles any way of `packs` touches.
@@ -308,8 +353,8 @@ fn parse_tiles(list: &[String], z: u8) -> Result<Vec<Unit>> {
 
 // ---- pack(T) --------------------------------------------------------------------------------
 
-fn pack(out: &mut Out, cache: &Path, only: &[String]) -> Result<()> {
-    let packs = open_units(out, cache)?;
+fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Result<()> {
+    let packs = open_units(out, cache, mirror)?;
     let refs: Vec<&BasePack> = packs.iter().collect();
     let ts: Vec<Unit> = if only.is_empty() { tiles_touched(&packs, 6)?.into_iter().collect() } else { parse_tiles(only, 6)? };
     eprintln!("pack: {} tiles from {} units", ts.len(), packs.len());
@@ -355,8 +400,8 @@ fn pack(out: &mut Out, cache: &Path, only: &[String]) -> Result<()> {
 
 // ---- lo packs -------------------------------------------------------------------------------
 
-fn lo(out: &mut Out, cache: &Path, only: &[String]) -> Result<()> {
-    let packs = open_units(out, cache)?;
+fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Result<()> {
+    let packs = open_units(out, cache, mirror)?;
     let refs: Vec<&BasePack> = packs.iter().collect();
     let qs: Vec<Unit> = if only.is_empty() { tiles_touched(&packs, 3)?.into_iter().collect() } else { parse_tiles(only, 3)? };
     eprintln!("lo: {} tiles from {} units", qs.len(), packs.len());

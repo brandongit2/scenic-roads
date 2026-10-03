@@ -37,6 +37,22 @@ use std::time::{Duration, Instant};
 /// time, so the pass's peak stays near the filtered file's size.
 pub const PASS_SPACE: u64 = 80 << 30;
 
+/// Bytes of the files under `dir` (0 when it isn't there).
+fn dir_bytes(dir: &Path) -> u64 {
+    let mut n = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(e.path()),
+                Ok(_) => n += e.metadata().map(|m| m.len()).unwrap_or(0),
+                Err(_) => {}
+            }
+        }
+    }
+    n
+}
+
 /// Where things are.
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -442,7 +458,10 @@ impl Agent {
             let what = format!("OpenStreetMap pass (planet of {date})");
             let scratch = self.o.home.join("scratch").join(format!("osm-{date}"));
             let jar = root.join("sources/basemap/planetiler.jar");
-            let free = cond::free_bytes(&self.o.home).unwrap_or(0);
+            // The pack cache is cleared when the pass starts (it refills from the mirror or the NAS):
+            // its space counts as free.
+            let pack_cache = self.o.home.join("cache").join("base");
+            let free = cond::free_bytes(&self.o.home).unwrap_or(0) + dir_bytes(&pack_cache);
             let started = scratch.exists();
             if !jar.exists() {
                 waiting.push(Waiting { what, why: "sources/basemap/planetiler.jar is missing on the NAS".into() });
@@ -467,6 +486,8 @@ impl Agent {
                         s(&self.o.bin.join("extract")),
                         "--planetiler".into(),
                         s(&jar),
+                        "--clear".into(),
+                        s(&pack_cache),
                     ],
                     needs: Needs { ac: true, nas: true },
                     restart_after_sleep: true,
@@ -555,7 +576,14 @@ impl Agent {
                 "--buildings".into(),
                 s(&root.join("sources/legacy/m1/buildings")),
             ]),
-            "pack" | "lo" => cmd.extend(["--cache".into(), s(&cache.join("base"))]),
+            // The server's mirror on this Mac (the agent's home is inside the app's) has the
+            // same files: used instead of a second copy where it has them.
+            "pack" | "lo" => {
+                cmd.extend(["--cache".into(), s(&cache.join("base"))]);
+                if let Some(app) = self.o.home.parent() {
+                    cmd.extend(["--mirror".into(), s(&app.join("mirror"))]);
+                }
+            }
             _ => {}
         }
         let n = w.targets.len();
