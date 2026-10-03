@@ -44,7 +44,9 @@ for u in /api/ping /api/meta /api/catalog / "/tiles/terrain/5/9/11" "/tiles/road
 done
 [[ $ok == 1 ]] || { cat $home/server.log | tail -20; exit 1; }
 kill $pid; wait $pid 2>/dev/null || true
-version=$(date -u +%Y%m%d-%H%M)-$(git rev-parse --short HEAD)$( [[ -n $(git status --porcelain -- crates web/src) ]] && echo -dirty )
+dirty=""
+[[ -z $(git status --porcelain -- crates web/src) ]] || dirty=-dirty
+version=$(date -u +%Y%m%d-%H%M)-$(git rev-parse --short HEAD)$dirty
 dest=$NAS/app/$version
 mkdir -p $dest.tmp/web $dest.tmp/fonts
 # The server, and the build agent with the programs its jobs run (the build Mac runs them from here):
