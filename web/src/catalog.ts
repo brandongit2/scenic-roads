@@ -44,6 +44,8 @@ export interface Agent {
   regions: { id: string; name: string; outline: string[] }[];
   /** Recipes that don't parse: [file, problem]. */
   bad_recipes: [string, string][];
+  /** Per region, how many of its areas are built (after the first OpenStreetMap pass). */
+  built?: Record<string, { built: number; total: number }>;
 }
 
 export interface CatalogStatus {
@@ -58,6 +60,8 @@ export interface CatalogStatus {
   app: string | null;
   /** null: no heartbeat. */
   agent: Agent | null;
+  /** A fingerprint of every version the URLs use: changes with the catalog and the translations. */
+  v?: string;
 }
 
 const POLL_MS = 60_000;
@@ -82,6 +86,9 @@ export class CatalogWatch {
   private app: string | null | undefined = undefined;
 
   /** `n`: the number of the catalog the page started from (meta.catalog). */
+  /** The versions' fingerprint the page's URLs were built with. */
+  private v: string | undefined;
+
   constructor(private n: number | undefined) {
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) return clearTimeout(this.timer);
@@ -133,8 +140,13 @@ export class CatalogWatch {
     this.unreachable = false;
     if (this.app === undefined) this.app = c.app;
     else if (c.app !== this.app) this.reload ||= 'App updated';
-    if (this.n === undefined) this.n = c.n;
-    else if (c.n !== this.n) await this.switchTo().catch((e) => console.warn('new catalog', e));
+    // A new catalog, or new translations (the versions' fingerprint `v` changes without `n`).
+    if (this.n === undefined) {
+      this.n = c.n;
+      this.v = c.v;
+    } else if (c.n !== this.n || (c.v !== undefined && c.v !== this.v)) {
+      await this.switchTo().catch((e) => console.warn('new catalog', e));
+    }
     this.emit();
   }
 
@@ -144,6 +156,7 @@ export class CatalogWatch {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const meta = (await r.json()) as Meta;
     this.n = meta.catalog ?? this.status?.n;
+    this.v = this.status?.v;
     const changed = setVersions(meta.versions);
     this.onSwitch(meta, changed);
   }

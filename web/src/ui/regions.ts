@@ -4,7 +4,7 @@
 // change when it can (the status bar shows it). Renaming rebuilds nothing.
 import * as prefs from '../prefs';
 import {
-  RegionLayers, RegionsError, addRegion, areaName, areaOutline, areasAt, editRegion, entryLabel, getCoverage, km2, levelName, listRegions, removeRegion, searchAreas, slug, validId,
+  QUEUED, RegionLayers, RegionsError, addRegion, areaName, areaOutline, areasAt, editRegion, entryLabel, getCoverage, km2, levelName, listRegions, removeRegion, searchAreas, slug, validId,
   type Area, type Region,
 } from '../regions';
 import { fmt, h } from './dom';
@@ -171,6 +171,11 @@ export class RegionsPanel {
       this.bad = list.value.bad;
       this.note.replaceChildren();
       this.note.classList.remove('warn');
+      // Away from home: the list as last read, with what's waiting to go to the NAS.
+      const pending = list.value.pending ?? 0;
+      if (list.value.offline || pending > 0) {
+        this.note.textContent = [list.value.offline ? 'Away from the NAS: the list as last read' : '', pending ? `${pending} change${pending === 1 ? '' : 's'} waiting to go to the NAS` : ''].filter(Boolean).join(' · ');
+      }
     } else {
       this.note.textContent = says(list.reason);
       this.note.classList.add('warn');
@@ -199,6 +204,25 @@ export class RegionsPanel {
     if (!n && !this.bad.length && this.loadedAt > -Infinity) this.list.append(h('div', { class: 'faint rg-empty' }, 'No regions yet'));
   }
 
+  /** Per region, how many of its areas are built (the build Mac's heartbeat). */
+  private progress: Record<string, { built: number; total: number }> = {};
+
+  setProgress(p: Record<string, { built: number; total: number }> | undefined) {
+    const next = p ?? {};
+    if (JSON.stringify(next) === JSON.stringify(this.progress)) return;
+    this.progress = next;
+    this.renderList();
+  }
+
+  /** A region's state in words: built, building (how many of its areas), or waiting. */
+  private stateOf(id: string): { text: string; cls: string } | null {
+    const p = this.progress[id];
+    if (!p || !p.total) return null;
+    if (p.built >= p.total) return { text: 'built', cls: 'ok' };
+    if (p.built === 0) return { text: 'waiting to build', cls: 'wait' };
+    return { text: `building · ${p.built} of ${p.total} areas`, cls: 'on' };
+  }
+
   private regionRow(r: Region): HTMLElement {
     const fs = this.outlinesOf(r.id);
     const summary = r.outline.map((e) => entryLabel(e, fs.find((f) => f.properties?.entry === e)?.properties as Area | undefined)).join(' + ');
@@ -211,6 +235,7 @@ export class RegionsPanel {
       });
       row.replaceChildren(
         h('div', { class: 'rg1' }, name, h('span', { class: 'rg-id faint' }, r.id),
+          ...(this.stateOf(r.id) ? [h('span', { class: `rg-state ${this.stateOf(r.id)!.cls}` }, this.stateOf(r.id)!.text)] : []),
           h('button', { class: 'rg-act', type: 'button', title: 'Rename', onclick: () => this.rename(r, row, show) }, '✎'),
           h('button', { class: 'rg-act', type: 'button', title: 'Remove…', onclick: () => this.askRemove(r, row, show) }, '×')),
         h('div', { class: 'rg2', title: summary }, summary),
@@ -234,8 +259,8 @@ export class RegionsPanel {
       const name = input.value.trim();
       if (!name || name === r.name) return back();
       try {
-        await editRegion(r.id, { name });
-        this.say(`Renamed “${r.name}” to “${name}” (nothing to rebuild)`);
+        const res = await editRegion(r.id, { name });
+        this.say(res.queued ? QUEUED : `Renamed “${r.name}” to “${name}” (nothing to rebuild)`);
         this.changed();
       } catch (e) {
         this.say(says(e), true);
@@ -259,8 +284,8 @@ export class RegionsPanel {
   private askRemove(r: Region, row: HTMLElement, back: () => void) {
     const go = async () => {
       try {
-        await removeRegion(r.id);
-        this.say(`Removed “${r.name}”. The build Mac takes it off the map when it can; the status bar shows progress.`);
+        const res = await removeRegion(r.id);
+        this.say(res.queued ? QUEUED : `Removed “${r.name}”. The build Mac takes it off the map when it can; the status bar shows progress.`);
         this.changed();
       } catch (e) {
         this.say(says(e), true);
@@ -349,7 +374,7 @@ export class RegionsPanel {
       const row = h('div', { class: `cand${chosen ? ' in' : ''}${i === this.active ? ' active' : ''}`, title: chosen ? 'Click to take it out of the new region' : 'Click to add it to the new region' },
         h('span', { class: 'cn' }, areaName(a)),
         h('span', { class: 'ck' }, km2(a.km2)),
-        h('span', { class: 'cs' }, [a.en && a.en !== a.name ? a.name : '', levelName(a), a.iso, also ? `in “${also}”` : ''].filter(Boolean).join(' · ')));
+        h('span', { class: 'cs' }, [a.en && a.en !== a.name ? a.name : '', levelName(a), a.in_name || a.iso, also ? `in “${also}”` : ''].filter(Boolean).join(' · ')));
       row.addEventListener('mouseenter', () => this.preview(a));
       row.addEventListener('click', () => this.toggle(a));
       return row;
@@ -449,8 +474,8 @@ export class RegionsPanel {
     if (this.regions.some((r) => r.id === id)) return this.say(`There is a region ${id} already: choose another id`, true);
     this.saveBtn.disabled = true;
     try {
-      await addRegion({ id, name, outline: this.draft.map((a) => `osm:${a.id}`) });
-      this.say(`Added “${name}”. The build Mac builds it when it can; the status bar shows progress.`);
+      const res = await addRegion({ id, name, outline: this.draft.map((a) => `osm:${a.id}`) });
+      this.say(res.queued ? QUEUED : `Added “${name}”. The build Mac builds it when it can; the status bar shows progress.`);
       this.clearDraft();
       this.changed();
     } catch (e) {

@@ -1904,6 +1904,9 @@ async function main() {
     watch = new CatalogWatch(meta.catalog);
     watch.onSwitch = newCatalog;
     new BuildStatus(strip.buildStatus, watch);
+    // How far each region is built, from the build Mac's heartbeat.
+    const w = watch;
+    w.on(() => regions.setProgress(w.status?.agent?.built));
     boot.at(3);
     if (store.s.selected !== null) {
       select(store.s.selected);

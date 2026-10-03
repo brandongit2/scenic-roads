@@ -16,6 +16,10 @@ export interface Area {
   iso: string;
   /** An ISO 3166-1 country (Hong Kong is one, at admin_level 3). */
   country: boolean;
+  /** The country it lies in: its ISO 3166-1 code and name ('' for a country, or outlines made
+   * before this was recorded). */
+  in?: string;
+  in_name?: string;
   km2: number;
   bbox: [number, number, number, number];
 }
@@ -53,10 +57,15 @@ async function call<T>(url: string, init?: RequestInit): Promise<T> {
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 const json = (method: string, body: unknown): RequestInit => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
-export const listRegions = () => call<{ regions: Region[]; bad: [string, string][] }>('/api/regions');
-export const addRegion = (r: Region) => call<{ added: string }>('/api/regions', json('POST', r));
-export const editRegion = (id: string, patch: { name?: string; outline?: string[] }) => call<{ edited: string }>(`/api/regions/${encodeURIComponent(id)}`, json('PUT', patch));
-export const removeRegion = (id: string) => call<{ removed: string }>(`/api/regions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+/** The regions; away from home, the last list read with the edits still waiting to go (`pending`). */
+export const listRegions = () => call<{ regions: Region[]; bad: [string, string][]; pending?: number; offline?: boolean }>('/api/regions');
+/** An edit: done on the NAS, or (away from home) kept on this Mac until it's reachable: `queued`. */
+export type EditResult = { done?: boolean; queued?: boolean };
+export const addRegion = (r: Region) => call<EditResult>('/api/regions', json('POST', r));
+export const editRegion = (id: string, patch: { name?: string; outline?: string[] }) => call<EditResult>(`/api/regions/${encodeURIComponent(id)}`, json('PUT', patch));
+export const removeRegion = (id: string) => call<EditResult>(`/api/regions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+/** What to say after an edit kept on this Mac. */
+export const QUEUED = 'Saved on this Mac: it goes to the NAS when you’re home';
 /** The areas containing a point, smallest first. */
 export const areasAt = (lng: number, lat: number) => call<{ areas: Area[] }>(`/api/areas?at=${lng.toFixed(5)},${lat.toFixed(5)}`).then((d) => d.areas);
 /** Areas by the start of their name or English name, largest first. */
@@ -98,10 +107,11 @@ const inRing = (r: Ring, [x, y]: GeoJSON.Position) => {
 };
 
 /**
- * An outline's rings as polygons with their holes. The server sends every ring as a polygon of its
- * own, read even–odd (a ring inside another is a hole in it, an island in that hole a ring again);
- * MapLibre would fill each one solid, an enclave over its surroundings. Nested by containment, each
- * hole goes with the smallest ring around it.
+ * An outline's rings as polygons with their holes. Outlines from passes before ring kinds were
+ * recorded come with every ring as a polygon of its own, read even–odd (a ring inside another is a
+ * hole in it, an island in that hole a ring again), which MapLibre would fill solid, an enclave over
+ * its surroundings; newer ones come nested. Either way the rings are nested again by containment,
+ * each hole with the smallest ring around it.
  */
 function nested(f: GeoJSON.Feature<GeoJSON.MultiPolygon>): GeoJSON.Feature<GeoJSON.MultiPolygon> {
   const rings = f.geometry.coordinates.flat(1);

@@ -68,6 +68,9 @@ pub struct Status {
     /// Region recipes, and the ones that don't parse.
     pub regions: Vec<recipes::Recipe>,
     pub bad_recipes: Vec<(String, String)>,
+    /// Per region, how many of its areas are built (after the first pass).
+    #[serde(default)]
+    pub built: BTreeMap<String, build::RegionState>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -179,6 +182,8 @@ pub struct Agent {
     /// The heartbeat last written to the NAS (without its time) and when: written again only when it
     /// changes or every five minutes, so an idle NAS can rest.
     last_beat: Option<(Vec<u8>, Instant)>,
+    /// How far each region is built, and when that was worked out.
+    progress: Option<(Instant, BTreeMap<String, build::RegionState>)>,
 }
 
 impl Agent {
@@ -194,7 +199,7 @@ impl Agent {
         }
         let mem = std::fs::read(o.home.join("state.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let app = app_version(&o.bin);
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, _lock: lock, o })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, _lock: lock, o })
     }
 
     fn record_path(&self) -> PathBuf {
@@ -350,6 +355,13 @@ impl Agent {
 
         // The heartbeat.
         let (regions, bad) = root.as_ref().map(|r| recipes::load(&r.join("inputs/regions"))).unwrap_or_default();
+        // (Recomputed after a job ends, or every five minutes: it reads the manifest and outlines.)
+        if ended || self.progress.as_ref().is_none_or(|(t, _)| t.elapsed() >= Duration::from_secs(300)) {
+            if let Some(r) = root.as_ref() {
+                self.progress = Some((Instant::now(), region_progress(r, &regions)));
+            }
+        }
+        let built = self.progress.as_ref().map(|(_, b)| b.clone()).unwrap_or_default();
         let status = Status {
             host: self.host.clone(),
             pid: std::process::id(),
@@ -362,6 +374,7 @@ impl Agent {
             recent: self.mem.recent.clone(),
             regions,
             bad_recipes: bad,
+            built,
         };
         let body = serde_json::to_vec_pretty(&status)?;
         if self._lock.is_none() {
@@ -570,6 +583,20 @@ impl Agent {
         }
         std::fs::read_link(apps.join("current")).ok().and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned())).is_some_and(|cur| cur != self.app)
     }
+}
+
+/// Per region, how many of its areas are built (none before the first pass makes the outlines).
+fn region_progress(root: &Path, regions: &[recipes::Recipe]) -> BTreeMap<String, build::RegionState> {
+    let Some(date) = crate::osmpass::latest_pass(root) else { return BTreeMap::new() };
+    let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).and_then(|c| crate::outlines::Outlines::open(&root.join(c)).ok());
+    let dir = root.join("inputs/outlines");
+    let Ok(cov) = crate::coverage::Coverage::from_recipes(regions, outlines.as_ref(), &dir) else { return BTreeMap::new() };
+    let each: Vec<(String, crate::coverage::Coverage)> = regions
+        .iter()
+        .filter_map(|r| crate::coverage::Coverage::from_recipes(std::slice::from_ref(r), outlines.as_ref(), &dir).ok().map(|c| (r.id.clone(), c)))
+        .collect();
+    build::region_states(&cov, &each, &date, &manifest, &build::Keys::load(root))
 }
 
 /// Why a job can't run under `c`, if it can't.

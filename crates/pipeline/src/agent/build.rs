@@ -136,6 +136,50 @@ pub fn labels_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Opt
     (done.lo.get("labels").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "labels".into(), targets: vec![("labels".into(), k)] })
 }
 
+/// The units whose piece meets the coverage, each with its key: what it reads (its piece and road
+/// values, the coverage near it, the staged layers near it).
+pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
+    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
+    let mut units: Vec<(Unit, String)> = Vec::new();
+    for (l, c) in m.range(format!("sources/osm/{date}/pieces/")..) {
+        let Some(u) = l.strip_prefix(&format!("sources/osm/{date}/pieces/")).and_then(Unit::parse) else { break };
+        let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
+        if !cov.meets_box(tb) {
+            continue;
+        }
+        let mut inputs = vec![format!("unit {UNIT_V}"), c.clone(), get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(), cov_fp(cov, grown_e7(u.z, u.x, u.y, 10.0))];
+        let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
+        for (x, y) in crate::stage::tiles_in(6, b) {
+            for layer in ["terrain", "grid-class", "grid-areas", "grid-canopy", "grid-cover"] {
+                inputs.push(get(&format!("layers/{layer}/hi/6-{x}-{y}")).to_string());
+            }
+        }
+        let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+        units.push((u, h(&refs)));
+    }
+    units
+}
+
+/// How far each region is built: of the units its outlines meet, how many are built as the whole
+/// coverage now wants them.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct RegionState {
+    pub built: usize,
+    pub total: usize,
+}
+
+pub fn region_states(cov: &Coverage, regions: &[(String, Coverage)], date: &str, m: &BTreeMap<String, String>, done: &Keys) -> BTreeMap<String, RegionState> {
+    let keys = unit_keys(cov, date, m);
+    regions
+        .iter()
+        .map(|(id, rc)| {
+            let mine: Vec<&(Unit, String)> = keys.iter().filter(|(u, _)| rc.meets_box(crate::hipack::tile_bounds(u.z, u.x, u.y))).collect();
+            let built = mine.iter().filter(|(u, k)| done.unit.get(&u.slash()) == Some(k)).count();
+            (id.clone(), RegionState { built, total: mine.len() })
+        })
+        .collect()
+}
+
 /// The work there is, in order, for the coverage `cov`, the pass of `date`, the build manifest
 /// `m` (logical → content) and what was done (`done`).
 pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Vec<Work> {
@@ -176,24 +220,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     }
 
     // base(U): units whose piece meets the coverage.
-    let mut units: Vec<(Unit, String)> = Vec::new();
-    for (l, c) in m.range(format!("sources/osm/{date}/pieces/")..) {
-        let Some(u) = l.strip_prefix(&format!("sources/osm/{date}/pieces/")).and_then(Unit::parse) else { break };
-        let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
-        if !cov.meets_box(tb) {
-            continue;
-        }
-        // What it reads: its piece and road values, the coverage near it, the staged layers near it.
-        let mut inputs = vec![format!("unit {UNIT_V}"), c.clone(), get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(), cov_fp(cov, grown_e7(u.z, u.x, u.y, 10.0))];
-        let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
-        for (x, y) in crate::stage::tiles_in(6, b) {
-            for layer in ["terrain", "grid-class", "grid-areas", "grid-canopy", "grid-cover"] {
-                inputs.push(get(&format!("layers/{layer}/hi/6-{x}-{y}")).to_string());
-            }
-        }
-        let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
-        units.push((u, h(&refs)));
-    }
+    let units = unit_keys(cov, date, m);
     let stale_units: Vec<(String, String)> = units.iter().filter(|(u, k)| stale(&done.unit, &u.slash(), k)).map(|(u, k)| (u.slash(), k.clone())).collect();
     if !stale_units.is_empty() {
         work.push(Work { step: "unit".into(), targets: stale_units });

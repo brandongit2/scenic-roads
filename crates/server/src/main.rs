@@ -245,6 +245,7 @@ async fn main() -> Result<()> {
     });
 
     tokio::spawn(warm(state.clone()));
+    regions::spawn_flusher(state.clone());
 
     let app = Router::new()
         .route("/tiles/roads/{z}/{x}/{y}", get(tiles::road_tile))
@@ -475,10 +476,25 @@ async fn meta_h(State(s): State<S>) -> Response {
     ([(header::CACHE_CONTROL, "no-store")], Json(meta_json(&s))).into_response()
 }
 
+/// A fingerprint of every version the app's URLs use: it changes with the catalog and with the
+/// translations, so an open page knows to switch.
+fn versions_fingerprint(s: &AppState) -> String {
+    let tokens = s.current_tokens();
+    let mut t: Vec<&String> = tokens.iter().collect();
+    t.sort();
+    let mut h = blake3::Hasher::new();
+    for x in t {
+        h.update(x.as_bytes());
+        h.update(b"\n");
+    }
+    h.finalize().to_hex()[..12].to_string()
+}
+
 async fn catalog_h(State(s): State<S>) -> Response {
     let s2 = s.clone();
     let agent = tokio::task::spawn_blocking(move || s2.agent_status()).await.unwrap_or(serde_json::Value::Null);
     let cat = s.data.catalog();
+    let fingerprint = versions_fingerprint(&s);
     let body = serde_json::json!({
         "n": cat.n,
         "created": cat.created,
@@ -491,6 +507,7 @@ async fn catalog_h(State(s): State<S>) -> Response {
         "app": s.updater.running(),
         "agent": agent,
         "names": s.names.versions(),
+        "v": fingerprint,
     });
     ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
 }

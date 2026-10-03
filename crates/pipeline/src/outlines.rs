@@ -47,7 +47,9 @@ pub struct OutlineRec {
     pub level: u8,
     /// [`flag`]s.
     pub flags: u8,
-    pub _pad: [u8; 6],
+    pub _pad: [u8; 2],
+    /// Strings: the ISO 3166-1 code of the country it lies in ("" for a country, or none found).
+    pub country: u32,
 }
 
 pub mod flag {
@@ -57,13 +59,15 @@ pub mod flag {
     pub const ISO2: u8 = 2;
 }
 
-/// A ring: `count` points of `points` from `start`.
+/// A ring: `count` points of `points` from `start`. A polygon is an outer ring followed by its
+/// inner ones (holes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod, Zeroable, PartialEq)]
 pub struct Ring {
     pub start: u64,
     pub count: u32,
-    pub _pad: u32,
+    /// 0: outer (starts a polygon), 1: inner.
+    pub kind: u32,
 }
 
 const _: () = assert!(std::mem::size_of::<OutlineRec>() == 64);
@@ -270,15 +274,37 @@ pub fn assemble_geojsonseq(geo: &Path, out: &Path) -> Result<Summary> {
         index.insert(s, i);
         i
     };
-    // Simplify in parallel, then lay out.
+    // Simplify in parallel (rings in the same order as the polygons'), then lay out.
     let simplified: Vec<Vec<Vec<[i32; 2]>>> = parsed.par_iter().map(|p| p.polys.iter().flatten().map(|r| simplify(r, tolerance_m(p.level))).collect()).collect();
+    // Which country each one lies in: the country outline holding a point of it.
+    let countries: Vec<(usize, crate::coverage::Shape)> = parsed
+        .par_iter()
+        .enumerate()
+        .filter(|(_, p)| p.flags & flag::ISO1 != 0)
+        .map(|(i, p)| (i, crate::coverage::Shape::new(String::new(), p.polys.iter().flatten().cloned().collect(), 0.0)))
+        .collect();
+    let country_of: Vec<Option<usize>> = parsed
+        .par_iter()
+        .map(|p| {
+            if p.flags & flag::ISO1 != 0 {
+                return None;
+            }
+            // A point inside the area: its outer ring's centre, else its first point.
+            let r = p.polys.first()?.first()?;
+            let n = r.len().max(1) as i64;
+            let c = [(r.iter().map(|q| q[0] as i64).sum::<i64>() / n) as i32, (r.iter().map(|q| q[1] as i64).sum::<i64>() / n) as i32];
+            let inside = |pt: [i32; 2]| countries.iter().find(|(_, sh)| sh.contains(pt)).map(|(i, _)| *i);
+            inside(c).or_else(|| inside(r[0]))
+        })
+        .collect();
     let mut recs = Vec::with_capacity(parsed.len());
     let (mut rings, mut points, mut srings, mut spoints): (Vec<Ring>, Vec<[i32; 2]>, Vec<Ring>, Vec<[i32; 2]>) = Default::default();
     let mut sum = Summary::default();
-    for (p, simple) in parsed.iter().zip(simplified) {
+    for (pi, (p, simple)) in parsed.iter().zip(simplified).enumerate() {
         let mut bbox = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
         let mut area = 0.0;
         let r0 = rings.len();
+        let mut kinds: Vec<u32> = Vec::new();
         for poly in &p.polys {
             for (k, r) in poly.iter().enumerate() {
                 let a = ring_area_m2(r).abs();
@@ -286,15 +312,18 @@ pub fn assemble_geojsonseq(geo: &Path, out: &Path) -> Result<Summary> {
                 for q in r {
                     bbox = [bbox[0].min(q[0]), bbox[1].min(q[1]), bbox[2].max(q[0]), bbox[3].max(q[1])];
                 }
-                rings.push(Ring { start: points.len() as u64, count: r.len() as u32, _pad: 0 });
+                let kind = (k > 0) as u32;
+                kinds.push(kind);
+                rings.push(Ring { start: points.len() as u64, count: r.len() as u32, kind });
                 points.extend_from_slice(r);
             }
         }
         let s0 = srings.len();
-        for r in &simple {
-            srings.push(Ring { start: spoints.len() as u64, count: r.len() as u32, _pad: 0 });
+        for (r, &kind) in simple.iter().zip(&kinds) {
+            srings.push(Ring { start: spoints.len() as u64, count: r.len() as u32, kind });
             spoints.extend_from_slice(r);
         }
+        let country = country_of[pi].map(|c| parsed[c].iso.clone()).unwrap_or_default();
         if rings.len() == r0 {
             continue;
         }
@@ -312,7 +341,8 @@ pub fn assemble_geojsonseq(geo: &Path, out: &Path) -> Result<Summary> {
             nsrings: (srings.len() - s0) as u32,
             level: p.level,
             flags: p.flags,
-            _pad: [0; 6],
+            _pad: [0; 2],
+            country: intern(&country),
         });
     }
     sum.outlines = recs.len();
@@ -391,6 +421,19 @@ impl Outlines {
         self.rings[o.rings as usize..(o.rings + o.nrings) as usize].iter().map(|r| &self.points[r.start as usize..r.start as usize + r.count as usize]).collect()
     }
 
+    /// The simplified rings grouped as polygons (an outer ring, then its holes).
+    pub fn simple_polygons(&self, o: &OutlineRec) -> Vec<Vec<&[[i32; 2]]>> {
+        let mut out: Vec<Vec<&[[i32; 2]]>> = Vec::new();
+        for r in &self.srings[o.srings as usize..(o.srings + o.nsrings) as usize] {
+            let pts = &self.spoints[r.start as usize..r.start as usize + r.count as usize];
+            match out.last_mut() {
+                Some(p) if r.kind == 1 => p.push(pts),
+                _ => out.push(vec![pts]),
+            }
+        }
+        out
+    }
+
     pub fn simple_rings(&self, o: &OutlineRec) -> Vec<&[[i32; 2]]> {
         self.srings[o.srings as usize..(o.srings + o.nsrings) as usize].iter().map(|r| &self.spoints[r.start as usize..r.start as usize + r.count as usize]).collect()
     }
@@ -443,6 +486,9 @@ mod tests {
         assert_eq!(o.containing(e7(0.5, 0.5)).iter().map(|r| r.id).collect::<Vec<_>>(), vec![3]);
         assert_eq!(o.iso_at(e7(0.2, 0.2)), ("XX".to_string(), "XX-SQ".to_string()));
         assert_eq!(o.string(o.by_id(7).unwrap().name_en), "Square");
+        assert_eq!(o.simple_polygons(o.by_id(7).unwrap()).iter().map(Vec::len).collect::<Vec<_>>(), vec![2], "the hole nests in its polygon");
+        assert_eq!(o.string(o.by_id(7).unwrap().country), "XX", "inside the country");
+        assert_eq!(o.string(o.by_id(3).unwrap().country), "", "a country has none");
         let a = o.by_id(7).unwrap().area_km2;
         // 1° × 1° at the equator less a 0.2° × 0.2° hole: about 12,300 − 490 km².
         assert!((a - 11_820.0).abs() < 200.0, "{a}");
