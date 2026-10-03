@@ -643,3 +643,17 @@ latitude cap; format versions read two at a time.
   60 % of it (streaming it ended the first attempt on an SMB I/O error after 31 minutes). The mirror
   doesn't shrink for builds (it evicts only older catalogs' files); on the build Mac it fills only
   past a 150 GB reserve. (§4's single shared LRU, cleared before a pass, is still the better shape.)
+- **Phase 5's design (docs/phase5.md, after an Opus review and its re-check, 2026-10-03):**
+  - Landmark points get their own worldwide `marks` job and stations their own `stations` job.
+    pack(T) writes neither, and the lo packs hold no top landmarks or per-cell counts: those would
+    make every road pack depend on worldwide rankings, and a server scan of per-z6 point columns
+    (`markdata`) answers every In view statistic, which per-z6 counts can't.
+  - The In view statistics come from the server (`/api/marks/view`, the worker's query in Rust,
+    exactly), with the sized points the zoomed-out tiles lack (`extra`).
+  - Points reach the client in a format of their own (E7 positions, typed columns), not MVT.
+  - New folders `markdata/`, `ovdata/` and `work/` (build intermediates, GC'd by job keys); ids
+    as in phase5.md.
+  - Overlays split into geometry (before units) and details (`ovdata`, after items).
+  - The OSM pass gains the `marks`, `summits` and `named` sets; peaks use the worldwide `summits`
+    set, so they don't depend on unit borders or the coverage.
+  - The zoomed-out drive and ride summaries get their own design after phase 5's step 3.
