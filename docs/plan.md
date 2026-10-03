@@ -594,3 +594,27 @@ latitude cap; format versions read two at a time.
   in `descriptions/heritage/`, prefixed 1–4 to keep their old order.
 - **Regions panel API:** `/api/regions` (recipes, created exclusively), `/api/areas` (containing a
   point, by name, one outline) and `/api/coverage`.
+
+**Implementation (phase 4 pilot, 2026-10-02):**
+- **Pilot (Northumberland and the Scottish Borders, units 6/31/19–20) against today's data:** same
+  ways and geometry, all 13 scenic channels and every flag bit equal, elevation within 1 m
+  everywhere (max 1.8 m), grade 99.9 % equal. Two fixes it needed:
+  - land cover is classified only for the grid tiles the packs lack (`stage` lists them;
+    `landcover.py --only`): its cross-run cache assumed one build folder and copied another
+    unit's tiles by position;
+  - today's heritage sites (the converted `heritage.json`) are staged into each unit's folder for
+    the flags step (sites within 500 m), from a content-named local copy.
+- **The golden comparison** (today's server vs the new one on the NAS's converted data, nine
+  places): way info, profiles, terrain, slope, tree and road tiles, layers and popup details all
+  equal. Descriptions laid over details are credited as the builds credit them (`refs`, else the
+  record's Wikipedia article); sights match by their `wikidata`.
+- **NAS reads by page.** A base pack or hidata on the NAS (not yet mirrored) is never read whole
+  for a request: sections are typed views (`Sect`), mapped when local, else read in 256 KB pages
+  for the records a request touches (binary searches over `here`, `byroad` and `roadunits`; a
+  way's ranges), or whole for what a query scans, or for a long road touching much of a section.
+  Budgets: 384 MB of pages, 1.5 GB of whole sections. A cold hover in Kanto (a 3 GB base pack) went
+  from 66 s (which also tripped the breaker under load) to 1.9 s.
+- **Road values files carry `byroad`** (the unit's ways sorted by road), so a profile finds a road's
+  ways with a binary search; converted files without it are sorted once in memory.
+- **Catalog zoom ranges** come from each layer's definition (terrain z0–12, slope z0–11, …), not the
+  legacy conversion's record.

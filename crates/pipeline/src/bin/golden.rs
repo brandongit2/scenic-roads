@@ -9,7 +9,7 @@
 //! - profiles: the elevation at every vertex both profiles hold (the whole road differs by design:
 //!   the new chaining);
 //! - tiles: terrain, slope and tree tiles byte for byte; road and rail tiles present in both;
-//! - layers: feature counts; details: records byte for byte.
+//! - layers: feature counts; details: records value for value.
 //!
 //! Prints a summary and exits non-zero when anything that must match doesn't.
 
@@ -239,7 +239,9 @@ fn main() -> Result<()> {
         for i in (0..2000u32).step_by(97) {
             let (sa, ba) = http.get(&format!("{old}/api/detail/{layer}/{i}"))?;
             let (sb, bb2) = http.get(&format!("{new}/api/detail/{layer}/{i}"))?;
-            if sa != sb || ba != bb2 {
+            // Value for value (a record with a description laid over is re-serialised).
+            let same = ba == bb2 || matches!((serde_json::from_slice::<Value>(&ba), serde_json::from_slice::<Value>(&bb2)), (Ok(x), Ok(y)) if x == y);
+            if sa != sb || !same {
                 det_bad += 1;
                 if det_bad <= 3 {
                     eprintln!("  detail {layer}/{i}: {sa} vs {sb}");
