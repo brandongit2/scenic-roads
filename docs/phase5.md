@@ -480,15 +480,24 @@ hold up the roads.
   dropped of 224,010: roadless places within 20 km (Pimachiowin Aki, Okinoshima, northern Parks
   Canada sites) in, places today's grid reached past borders along roads (northern Sardinia from
   Corsica, Korea's Gaya tumuli) out.
-- **To come, the `heritage` job** (in the landmarks chain, before marks): the rest of the chain on
-  the heritage-sites outputs, with the review's fixes: the `named` set clipped to the cover with
-  today's exact filter, and the World Heritage parts from one clip of the filtered planet per pass
-  and coverage (not the worldwide file); today's park facts (`data/areas/wikidata.json`) and the
-  pageview months (shared with the items job's) seeded into the persistent cache; the names table
-  for `en` (or own English only, decided and recorded); heritagewd.shortdescs and the other silent
-  fallbacks failing loudly, cache writes atomic; pageviews.py taking the epoch's months. Then marks
-  and markconv read `work/heritage/<d>/…`, and the overlays become a job after marks, with marks'
-  ids (ovconv takes the World Heritage dots' ids from the legacy points today).
+- **The `heritage` job** (written; in the landmarks chain before marks): the rest of the chain on
+  the heritage-sites outputs in the same stand-in root, over the same cover: the pass's areas and
+  named objects within it (named with today's exact filter; the set also keeps the World Heritage
+  tags), and for whsshapes the kept filtered planet within it (one clip per pass and cover, in the
+  cache: what today's regional extracts were, not the worldwide file). Today's park facts, pageview
+  months and names table seed it (`sources/registers/legacy-seeds`, 7 MB); the pageview months are
+  the items job's cache, and pageviews.py takes the pass's months (`--epoch`, the rule the items
+  job uses). The `en` of the layers comes from today's names table. heritagewd's short descriptions
+  and the special areas' and UNESCO sites' Wikidata labels now fail the run when a query fails
+  (they used to carry on with names missing, and cache the gaps), and every cache is written
+  through a temporary file. Outputs: `work/heritage/<d>/<stem>` (not the stops & sights' stand-ins).
+- **Its consumers switch together** (written, behind `HERITAGE_JOBS`, off): marks read the pass's
+  heritage (`markconv::heritage_source`) and save the World Heritage dots' ids
+  (`work/marks/heritage-dots`); an `overlays` job after marks makes the area overlays and parks from
+  the same outputs with those ids (ovconv kept them in step by replaying today's whole marks
+  assignment); the server serves the overlays job's summary and sources list
+  (`global/heritage/…`) over today's. Until the switch is compared with today's map, the cutover's
+  marks and overlays use today's heritage, so its first comparison changes the roads and flags only.
 
 ## Storage
 
