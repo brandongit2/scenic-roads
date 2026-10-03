@@ -10,6 +10,7 @@ pub mod interest;
 pub mod layers;
 pub mod legacy;
 pub mod markconv;
+pub mod marksjob;
 pub mod marks;
 pub mod osmpass;
 pub mod outlines;
