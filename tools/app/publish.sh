@@ -34,7 +34,12 @@ trap "kill $pid 2>/dev/null; rm -rf $home" EXIT
 ok=1
 for i in {1..60}; do curl -sf -o /dev/null http://127.0.0.1:$port/api/ping && break; sleep 0.5; done
 for u in /api/ping /api/meta /api/catalog / "/tiles/terrain/5/9/11" "/tiles/roads/10/300/380"; do
-  code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$u")
+  # A busy NAS can answer 503 for a moment (a slow read fails alone): a few tries each.
+  for try in 1 2 3 4 5; do
+    code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$u")
+    [[ $code == 503 ]] || break
+    sleep 3
+  done
   [[ $code == 200 || $code == 204 ]] || { echo "smoke test: $u answered $code"; ok=0; }
 done
 [[ $ok == 1 ]] || { cat $home/server.log | tail -20; exit 1; }

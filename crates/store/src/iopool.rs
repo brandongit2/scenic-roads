@@ -2,10 +2,11 @@
 //! (open, stat, list, read, write, rename) runs on one of a few worker threads while the caller
 //! waits with a timeout, so a stalled SMB mount can never hang a request.
 //!
-//! The pool is a circuit breaker. The first operation that overruns its timeout marks the NAS
-//! offline: its thread is abandoned (counted, and replaced only up to a small fixed number, so
-//! threads stuck in the kernel can't pile up), and from then on calls fail at once with
-//! [`IoError::Offline`] without touching the share. One prober thread checks a probe directory
+//! The pool is a circuit breaker. An operation that overruns its timeout has its thread abandoned
+//! (counted, and replaced only up to a small fixed number, so threads stuck in the kernel can't
+//! pile up); if the share then fails a quick probe too, the NAS is marked offline and from then on
+//! calls fail at once with [`IoError::Offline`] without touching the share. A share that answers
+//! the probe is busy, not gone (another copy saturating the link): only the slow call fails. One prober thread checks a probe directory
 //! every few seconds (a stat, plus a lookup the SMB client can't answer from its caches), under
 //! its own timeout and never two at a time, and closes the breaker when the share answers.
 //! Network errors from a soft mount, and a file missing because the whole share is gone, trip the
@@ -30,8 +31,8 @@ use std::time::{Duration, Instant, SystemTime};
 pub enum IoError {
     /// The NAS is marked offline; the call was refused without touching the share.
     Offline,
-    /// The operation overran its timeout (the NAS is now marked offline), or no worker was free to
-    /// start it in time.
+    /// The operation overran its timeout (the NAS is then marked offline, unless it still answers a
+    /// probe: busy, not gone), or no worker was free to start it in time.
     Timeout,
     /// The operation itself failed.
     Io(io::Error),
@@ -128,6 +129,10 @@ const CANCELLED: u8 = 4;
 /// How often a caller waiting for a worker checks whether the NAS went offline meanwhile.
 const POLL: Duration = Duration::from_millis(50);
 
+/// How long the share has to answer a probe after an operation overran, to count as busy rather
+/// than gone.
+const ALIVE_TIMEOUT: Duration = Duration::from_secs(3);
+
 struct Item {
     state: Arc<AtomicU8>,
     run: Box<dyn FnOnce() + Send>,
@@ -154,6 +159,8 @@ struct Inner {
     online: AtomicBool,
     closed: AtomicBool,
     prober_running: AtomicBool,
+    /// A liveness probe (after an overrun) is in flight.
+    checking: AtomicBool,
     counts: Mutex<Counts>,
     listener: Mutex<Option<Arc<Listener>>>,
 }
@@ -186,6 +193,7 @@ impl IoPool {
             online: AtomicBool::new(true),
             closed: AtomicBool::new(false),
             prober_running: AtomicBool::new(false),
+            checking: AtomicBool::new(false),
             counts: Mutex::new(Counts::default()),
             listener: Mutex::new(None),
         });
@@ -302,7 +310,9 @@ impl IoPool {
                     // Done at the very deadline: no stall after all (the worker un-counts itself).
                     return self.inner.finish(r, gone);
                 }
-                self.inner.trip(&format!("an operation took longer than {timeout:?}"));
+                if !self.inner.alive_within(ALIVE_TIMEOUT) {
+                    self.inner.trip(&format!("an operation took longer than {timeout:?}"));
+                }
                 Err(IoError::Timeout)
             }
         }
@@ -440,6 +450,26 @@ impl Inner {
                 Err(IoError::Io(e))
             }
         }
+    }
+
+    /// Whether the share answers a probe within `t`, on a helper thread. One at a time: while an
+    /// earlier probe is still stuck, the share doesn't count as answering.
+    fn alive_within(self: &Arc<Self>, t: Duration) -> bool {
+        if self.checking.swap(true, SeqCst) {
+            return false;
+        }
+        let (tx, rx) = mpsc::channel();
+        let (me, path) = (self.clone(), self.cfg.probe.clone());
+        let spawned = thread::Builder::new().name("nas-alive".into()).spawn(move || {
+            let ok = probe_ok(&path);
+            me.checking.store(false, SeqCst);
+            let _ = tx.send(ok);
+        });
+        if spawned.is_err() {
+            self.checking.store(false, SeqCst);
+            return false;
+        }
+        matches!(rx.recv_timeout(t), Ok(true))
     }
 
     /// Opens the breaker (if closed) and makes sure a prober is running.
@@ -698,6 +728,25 @@ mod tests {
             let s = pool.status();
             s.stuck == 0 && s.workers == 2
         }));
+    }
+
+    #[test]
+    fn slow_share_that_answers_isnt_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = IoPool::with_config(cfg(dir.path().to_owned(), 2, 100));
+        // An operation overruns while the share still answers probes: busy, not gone.
+        let r = pool.call(|| {
+            thread::sleep(Duration::from_millis(600));
+            Ok(())
+        });
+        assert!(matches!(r, Err(IoError::Timeout)), "{r:?}");
+        assert!(pool.is_online());
+        let st = pool.status();
+        assert_eq!((st.stuck, st.timeouts), (1, 1));
+        assert!(st.offline_since.is_none());
+        // Other calls go on meanwhile, and the slow thread rejoins.
+        assert_eq!(pool.call(|| Ok(5)).unwrap(), 5);
+        assert!(eventually(3, || pool.status().stuck == 0));
     }
 
     #[test]
