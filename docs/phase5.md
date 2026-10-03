@@ -440,6 +440,28 @@ key couldn't name what was read; and extract's point order changed between runs.
      and pageviews, then fresh facts: per kind the fa rank correlation, the top 100 per z6 tile
      (≥ 90 % the same), the mz and kz histograms, a dozen In view answers (top 60), screenshots.
 
+### Heritage and area flags (proposed 2026-10-03, after the cutover starts; to be reviewed)
+
+Today's heritage chain (heritage.py, heritagewd.py, heritagedetails.py, areadetails.py,
+whsshapes.py, filterprops.py's heritage part, pageviews.py, interest.py's heritage part,
+layers.py) runs unchanged as one `heritage` job, in a stand-in root laid out as the repository's
+(`dem/` the app's scripts, `data/heritage/` the registers' snapshot, today's being the legacy
+caches; `data/areas/areas.geojsonseq` from the pass's `areas` set; `data/heritage/osm/` from its
+`named` and `outlines` sets; `data/osm/merged.osm.pbf` its kept filtered planet, which keeps every
+`wikidata`-tagged object, for the World Heritage parts; no stops & sights, which are the marks
+job's). Its outputs (heritage sites and areas, details, World Heritage outlines and sites, the
+overlays' layers, area details) go to `work/heritage/<d>/`; markconv's heritage points and
+ovconv's overlays and area details read them there instead of `global/legacy/`.
+
+Two changes to heritage.py: what is "covered" is within the coverage + 20 km (a polygon file the
+job writes), not today's analysis grid, which units make later; and it no longer rasterises the
+areas onto a grid. The area flags (park, heritage area, special area, Indigenous land) are
+rasterised per unit instead, onto the unit's own z11 grid, from the overlay polygons near it (the
+`areas` set's parks and Indigenous lands, the heritage job's heritage and special areas), so
+there's no worldwide `grid-areas` layer to keep in step: the unit key names those inputs, and the
+heritage job runs before the units. Today's regions keep today's heritage and area grids until
+then.
+
 ## Storage
 
 - `markdata/` and `ovdata/` are catalog maps (formats.md), so GC handles them.
