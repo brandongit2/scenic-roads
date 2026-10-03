@@ -119,13 +119,18 @@ pub struct Report {
     pub owned: usize,
     pub dem_cache: usize,
     pub staged: crate::stage::Staged,
-    /// Heritage sites staged around the unit.
+    /// Heritage sites and designated-area polygons around the unit.
     pub heritage: usize,
+    pub areas: usize,
 }
+
+/// Writes a unit's heritage inputs for its box (degrees) into its folder: `heritage.json` and
+/// `area-shapes.geojsonseq` (crate::heritage::unit_inputs); the sites and polygons written.
+pub type HeritageInputs<'a> = &'a dyn Fn([f64; 4], &Path) -> Result<(usize, usize)>;
 
 /// Runs today's steps for unit `u` in `dir` from `piece`, with the coverage and the global-source
 /// layers on the NAS (`src`). Leaves the build folder ready for conversion.
-pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &crate::stage::Source, tools: &Tools, heritage: Option<&crate::stage::Heritage>) -> Result<Report> {
+pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &crate::stage::Source, tools: &Tools, heritage: HeritageInputs) -> Result<Report> {
     std::fs::create_dir_all(dir)?;
     let log = dir.join("steps.log");
     let mut rep = Report { unit: u.slash(), ..Default::default() };
@@ -156,10 +161,12 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
     // 4. The global-source layers the steps read, from the packs.
     let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     rep.staged = crate::stage::stage(src, b, dir)?;
-    // Today's heritage sites around the unit (the flags step's `heritage.json`).
-    if let Some(h) = heritage {
-        rep.heritage = h.write_in(b, dir)?;
-    }
+    // The heritage sites around the unit (the flags step's `heritage.json`), and the designated
+    // areas rasterised onto its grid (`grid.areas.u8`), from the heritage-sites job's slices.
+    (rep.heritage, rep.areas) = heritage(b, dir)?;
+    let mut c = Command::new("uv");
+    c.current_dir(&tools.dem).args(["run", "python", "areaflags.py"]).arg(dir).arg(dir.join("area-shapes.geojsonseq"));
+    run(c, "area flags (areaflags.py)", &log)?;
     // Land cover the packs lack (new coverage): ESA WorldCover for those grid tiles only; the
     // rest stays as staged.
     if rep.staged.missing.get("class").copied().unwrap_or(0) > 0 {

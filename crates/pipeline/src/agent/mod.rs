@@ -305,7 +305,8 @@ impl Agent {
     fn step(&mut self) -> Result<bool> {
         let slept = self.sleep.slept();
         let root = self.root();
-        let c = Conditions { ac: cond::on_ac(), nas: root.is_some(), idle_s: cond::idle_seconds() };
+        let (ac, battery) = cond::power();
+        let c = Conditions { ac, battery, nas: root.is_some(), idle_s: cond::idle_seconds() };
         let mut waiting: Vec<Waiting> = Vec::new();
         let mut ended = false;
 
@@ -617,12 +618,12 @@ impl Agent {
                 jobs.push(j);
                 continue;
             }
-            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries") && !t.ends_with("-root")).collect();
+            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites") && !t.ends_with("-root")).collect();
             match w.step.as_str() {
                 "terrain" | "terrain-root" => extra.extend(["--raw".into(), s(&cache.join("aws-terrarium"))]),
                 "pois" | "marks" | "stations" => extra.extend(["--pass".into(), date.to_string()]),
                 "ferries" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem"))]),
-                "items" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache".into(), s(&cache)]),
+                "items" | "heritage-sites" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache".into(), s(&cache)]),
                 "peaks" => extra.extend(["--pass".into(), date.to_string(), "--raw".into(), s(&cache.join("aws-terrarium")), "--cache".into(), s(&cache), "--coarse-threads".into(), "6".into()]),
                 "unit" => extra.extend([
                     "--pass".into(),
@@ -654,6 +655,7 @@ impl Agent {
                 "pois" => format!("Landmark candidates ({areas})"),
                 "peaks" => format!("Peaks' prominence and isolation ({areas})"),
                 "items" => "Wikidata facts and Wikipedia pageviews for the landmarks".to_string(),
+                "heritage-sites" => "Heritage sites and designated areas for the regions".to_string(),
                 "marks" => "Landmarks for the map".to_string(),
                 "roadunits" => "Which areas each road crosses".to_string(),
                 "stations" => "Rail stops near the regions".to_string(),
@@ -701,8 +703,10 @@ fn lapsed(n: &Needs, c: &Conditions) -> Option<String> {
     if n.nas && !c.nas {
         return Some("the NAS isn't reachable".into());
     }
-    if n.ac && !c.ac {
-        return Some("on battery: waiting for mains power".into());
+    // CPU work: on mains power, or on battery down to BATTERY_MIN.
+    if n.ac && !c.ac && c.battery.is_none_or(|b| b < cond::BATTERY_MIN) {
+        let at = c.battery.map(|b| format!(" at {b}%")).unwrap_or_default();
+        return Some(format!("on battery{at}: waiting for mains power (it builds on battery down to {}%)", cond::BATTERY_MIN));
     }
     None
 }
@@ -802,7 +806,7 @@ mod tests {
         std::fs::write(root.join("sources/basemap/planetiler.jar"), b"x").unwrap();
         let a = agent(&root, &home);
         let mut w = Vec::new();
-        let plan = a.plan(&root, &Conditions { ac: true, nas: true, idle_s: 0 }, &mut w);
+        let plan = a.plan(&root, &Conditions { ac: true, nas: true, idle_s: 0, ..Default::default() }, &mut w);
         let free = cond::free_bytes(&home).unwrap_or(0);
         if free >= PASS_SPACE {
             assert!(plan.iter().any(|j| j.id == "osm-pass 2026-09-28"));
@@ -833,8 +837,11 @@ mod tests {
     #[test]
     fn conditions_gate_jobs() {
         let n = Needs { ac: true, nas: true };
-        assert!(lapsed(&n, &Conditions { ac: true, nas: true, idle_s: 0 }).is_none());
-        assert!(lapsed(&n, &Conditions { ac: false, nas: true, idle_s: 0 }).unwrap().contains("battery"));
-        assert!(lapsed(&n, &Conditions { ac: true, nas: false, idle_s: 0 }).unwrap().contains("NAS"));
+        assert!(lapsed(&n, &Conditions { ac: true, nas: true, idle_s: 0, battery: None }).is_none());
+        assert!(lapsed(&n, &Conditions { ac: false, nas: true, idle_s: 0, battery: None }).unwrap().contains("battery"));
+        assert!(lapsed(&n, &Conditions { ac: true, nas: false, idle_s: 0, battery: None }).unwrap().contains("NAS"));
+        // On battery: on down to 30 %, then waiting.
+        assert!(lapsed(&n, &Conditions { ac: false, nas: true, idle_s: 0, battery: Some(30) }).is_none());
+        assert!(lapsed(&n, &Conditions { ac: false, nas: true, idle_s: 0, battery: Some(29) }).unwrap().contains("at 29%"));
     }
 }

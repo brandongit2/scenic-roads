@@ -136,7 +136,10 @@ offered, not assumed.)
   them). Build jobs lower themselves with `taskpolicy -c utility` (`-b` confines them to the 4
   efficiency cores, ~17× slower).
   - Half the cores while the user is active, all of them when idle.
-  - Each job holds `caffeinate -s -w <pid>`: no idle sleep on power, and none kept on battery.
+  - Power: CPU jobs run on mains power, or on battery down to 30 % charge (asked for 2026-10-03;
+    it was mains only), then pause until the Mac is plugged in.
+  - Each running job holds `caffeinate -i -s -w <pid>` (no idle sleep, on battery too; no system
+    sleep on mains power), dropped while the job is paused, so a paused Mac can sleep.
   - One CPU job at a time, plus one network-bound fetch job (DEM range reads, AWS tiles).
 - **Build cache:** one LRU cache of build inputs and outputs on the SSD (pieces, base packs, canopy
   10° files, DEM caches), ~120 GB, cleared before the OSM pass. It also serves the M4's own map.
@@ -395,8 +398,8 @@ timetables every ~6 months.
 **Interruptions.** The build Mac may be asleep, away or unplugged at any time, or close its lid
 mid-job. Nothing depends on it being available at a given time.
 - **No deadlines.** Until work is done, the map serves the last catalog.
-- **Conditions per step.** CPU work needs power; NAS steps need the NAS; local steps carry on away
-  from home if plugged in. When a condition lapses, the agent pauses the job (`SIGSTOP` to its
+- **Conditions per step.** CPU work needs power (mains, or the battery above 30 %); NAS steps need
+  the NAS; local steps carry on away from home while there's power. When a condition lapses, the agent pauses the job (`SIGSTOP` to its
   process group) and resumes it (`SIGCONT`) when it holds again.
 - **Sleep** suspends every process. Open SMB handles often don't survive it, so a stage that touched
   the NAS is retried from its inputs after wake; downloads and copies resume by byte range.

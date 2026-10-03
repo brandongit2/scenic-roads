@@ -27,12 +27,14 @@ Protected areas and Indigenous lands come from OSM (data/areas/areas.geojsonseq)
 All areas are rasterised into grid.areas.u8 bits (roadcore::scenic::flag): PARK, HERITAGE,
 SPECIAL_AREA, INDIGENOUS. Afterwards run `scenic <build> flags` to refresh the road flags.
 
-With --cover <file> (the `heritage` job, docs/phase5.md "Heritage and area flags"): what is covered
-is within 20 km of that file's polygons (GeoJSON features: the coverage), not the build's
-analysis grid, and the areas aren't rasterised: their polygons, each with its flag bit, go to
-area-shapes.geojsonseq for the units to rasterise onto their own grids (areaflags.py).
+With --tiles <file> --zoom <z> (the `heritage-sites` job, docs/phase5.md "Heritage and area
+flags"): what is covered is that file's tiles (uint32 x, y pairs at zoom z: those within 20 km of
+the coverage), not the build's analysis grid (grid.idx, zoom 11), and the areas aren't rasterised:
+their polygons, each with its flag bit, go to area-shapes.geojsonseq for the units to rasterise
+onto their own grids (areaflags.py). --date stamps heritage-sources.json with the pass's date
+instead of the time of the run.
 
-usage: heritage.py <build_dir> [--cover <coverage.geojson>]
+usage: heritage.py <build_dir> [--tiles <tiles.u32> --zoom <z>] [--date YYYY-MM-DD]
 """
 from __future__ import annotations
 
@@ -55,7 +57,7 @@ import numpy as np
 from rasterio import features
 from rasterio.transform import from_bounds
 from shapely import STRtree, wkt
-from shapely.geometry import Point, Polygon, box, mapping, shape
+from shapely.geometry import Point, box, mapping, shape
 from shapely.ops import transform as shp_transform
 from tqdm import tqdm
 
@@ -520,41 +522,30 @@ def write_json(path: Path, obj) -> None:
     os.replace(tmp, path)
 
 
+def option(args: list[str], name: str) -> str | None:
+    """Removes `name value` from args and returns the value (None when absent)."""
+    if name not in args:
+        return None
+    i = args.index(name)
+    v = args[i + 1]
+    del args[i:i + 2]
+    return v
+
+
 def main():
     args = [a for a in sys.argv[1:]]
-    cover_path = None
-    if "--cover" in args:
-        i = args.index("--cover")
-        cover_path = Path(args[i + 1])
-        del args[i:i + 2]
+    tiles_path, zoom, date = option(args, "--tiles"), int(option(args, "--zoom") or 11), option(args, "--date")
     b = Path(args[0] if args else "../data/build")
     areas_path = b.parent / "areas" / "areas.geojsonseq"
-    if cover_path is None:
-        tiles = {tuple(t) for t in np.fromfile(b / "grid.idx", dtype=np.uint32).reshape(-1, 2).tolist()}
-    else:
-        # The coverage's polygons, grown by 20 km on the ground (in Web Mercator metres, scaled at
-        # each polygon's latitude).
-        cover = []
-        for f in json.loads(cover_path.read_text())["features"]:
-            # A coverage shape's rings by the even-odd rule (they carry no outer/inner roles).
-            g = None
-            for ring in f["geometry"]["coordinates"]:
-                r = Polygon(ring[0]).buffer(0)
-                g = r if g is None else g.symmetric_difference(r)
-            if g is None or g.is_empty:
-                continue
-            lat_c = g.centroid.y
-            cover.append(shp_transform(to_merc, g).buffer(20000 / math.cos(math.radians(lat_c))))
-        cover_tree = STRtree(cover)
+    # What's covered: the build's analysis grid (z11), or the job's tiles.
+    tiles = {tuple(t) for t in np.fromfile(Path(tiles_path) if tiles_path else b / "grid.idx", dtype=np.uint32).reshape(-1, 2).tolist()}
+    n_tiles = 2 ** zoom
 
     def covered(lon, lat):
         if not (-85 < lat < 85 and -180 <= lon <= 180):
             return False  # a register's bad coordinates
-        if cover_path is not None:
-            p = Point(*to_merc(lon, lat))
-            return any(cover[k].contains(p) for k in cover_tree.query(p))
-        x = (lon + 180) / 360 * 2048
-        y = (1 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2 * 2048
+        x = (lon + 180) / 360 * n_tiles
+        y = (1 - math.log(math.tan(math.radians(lat)) + 1 / math.cos(math.radians(lat))) / math.pi) / 2 * n_tiles
         return (int(x), int(y)) in tiles
 
     counts = {}
@@ -600,8 +591,8 @@ def main():
         hints.setdefault(norm_name(s.get("polygon_hint") or s["name"]), []).append(i)
 
     print("protected areas & Indigenous lands (OSM)…")
-    shapes, special_feats, indigenous_feats, matched = [], [], [], set()
-    # The same polygons in degrees, with their bits (the units rasterise them: --cover).
+    special_feats, indigenous_feats, matched = [], [], set()
+    # The polygons in degrees, with their bits (rasterised below, or by the units: --tiles).
     shapes_ll: list[tuple] = []
     for line in tqdm(open(areas_path), desc="areas", unit="poly"):
         f = json.loads(line.strip("\x1e"))
@@ -624,7 +615,6 @@ def main():
                 matched.add(i)
                 special_feats.append({"type": "Feature", "geometry": mapping(g.simplify(0.0003)),
                                       "properties": {k: v for k, v in s.items() if k not in ("lon", "lat")}})
-                shapes.append((shp_transform(to_merc, g.simplify(0.0002, preserve_topology=True)), SPECIAL))
                 shapes_ll.append((g.simplify(0.0002, preserve_topology=True), SPECIAL))
         if p.get("boundary") == "aboriginal_lands":
             bit = INDIGENOUS
@@ -635,7 +625,6 @@ def main():
             bit = PARK
         else:
             continue
-        shapes.append((shp_transform(to_merc, g.simplify(0.0002, preserve_topology=True)), bit))
         shapes_ll.append((g.simplify(0.0002, preserve_topology=True), bit))
     for i, s in enumerate(sp):
         if i in matched:
@@ -646,16 +635,14 @@ def main():
         circ = shp_transform(lambda x, y, lo=s["lon"], la=s["lat"]: (lo + (x - lo) / math.cos(math.radians(la)), y), circ)
         special_feats.append({"type": "Feature", "geometry": mapping(circ),
                               "properties": {**{k: v for k, v in s.items() if k not in ("lon", "lat")}, "approx": True}})
-        shapes.append((shp_transform(to_merc, circ), SPECIAL))
         shapes_ll.append((circ, SPECIAL))
     print(f"special areas: {len(sp)} ({len(matched)} with OSM boundaries)")
     for f in harea:
-        shapes.append((shp_transform(to_merc, shape(f["geometry"])), HERITAGE))
         shapes_ll.append((shape(f["geometry"]), HERITAGE))
     write_json(b / "special.json", {"type": "FeatureCollection", "features": special_feats})
     write_json(b / "indigenous.json", {"type": "FeatureCollection", "features": indigenous_feats})
-    write_json(b / "heritage-sources.json", {"counts": counts, "special": len(sp), "built": datetime.now(timezone.utc).isoformat()[:19]})
-    if cover_path is not None:
+    write_json(b / "heritage-sources.json", {"counts": counts, "special": len(sp), "built": date or datetime.now(timezone.utc).isoformat()[:19]})
+    if tiles_path is not None:
         tmp = b / "area-shapes.geojsonseq.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             for g, bit in shapes_ll:
@@ -663,8 +650,8 @@ def main():
         os.replace(tmp, b / "area-shapes.geojsonseq")
         print(f"area-shapes.geojsonseq: {len(shapes_ll)} polygons (the units rasterise them)")
         return
-    print(f"rasterising {len(shapes)} polygons")
-    rasterise(b, shapes)
+    print(f"rasterising {len(shapes_ll)} polygons")
+    rasterise(b, [(shp_transform(to_merc, g), bit) for g, bit in shapes_ll])
     print("done — now run: scenic <build> flags")
 
 

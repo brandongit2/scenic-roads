@@ -444,27 +444,51 @@ key couldn't name what was read; and extract's point order changed between runs.
      and pageviews, then fresh facts: per kind the fa rank correlation, the top 100 per z6 tile
      (≥ 90 % the same), the mz and kz histograms, a dozen In view answers (top 60), screenshots.
 
-### Heritage and area flags (proposed 2026-10-03, after the cutover starts; to be reviewed)
+### Heritage and area flags (2026-10-03: reviewed; the sites and flags built, the rest to come)
 
 Today's heritage chain (heritage.py, heritagewd.py, heritagedetails.py, areadetails.py,
 whsshapes.py, filterprops.py's heritage part, pageviews.py, interest.py's heritage part,
-layers.py) runs unchanged as one `heritage` job, in a stand-in root laid out as the repository's
-(`dem/` the app's scripts, `data/heritage/` the registers' snapshot, today's being the legacy
-caches; `data/areas/areas.geojsonseq` from the pass's `areas` set; `data/heritage/osm/` from its
-`named` and `outlines` sets; `data/osm/merged.osm.pbf` its kept filtered planet, which keeps every
-`wikidata`-tagged object, for the World Heritage parts; no stops & sights, which are the marks
-job's). Its outputs (heritage sites and areas, details, World Heritage outlines and sites, the
-overlays' layers, area details) go to `work/heritage/<d>/`; markconv's heritage points and
-ovconv's overlays and area details read them there instead of `global/legacy/`.
+layers.py) runs unchanged in a stand-in root laid out as the repository (`dem/` the app's scripts,
+`data/heritage/` the registers' snapshot), in two jobs, after review (Opus): the units need only
+heritage.py's output, and the rest needs Wikidata and the pageview dumps, whose outages mustn't
+hold up the roads.
 
-Two changes to heritage.py: what is "covered" is within the coverage + 20 km (a polygon file the
-job writes), not today's analysis grid, which units make later; and it no longer rasterises the
-areas onto a grid. The area flags (park, heritage area, special area, Indigenous land) are
-rasterised per unit instead, onto the unit's own z11 grid, from the overlay polygons near it (the
-`areas` set's parks and Indigenous lands, the heritage job's heritage and special areas), so
-there's no worldwide `grid-areas` layer to keep in step: the unit key names those inputs, and the
-heritage job runs before the units. Today's regions keep today's heritage and area grids until
-then.
+- **The registers' snapshot** is one archive in the manifest, `sources/registers/legacy`
+  (`scenic-build registers-import`: 9,337 files, 261 MB; thousands of small files copy slowly over
+  SMB). It's the build Mac's `data/heritage` without `osm/`: today's map was built there (the other
+  Mac's copy has an older federal.json, 1,346 Parks Canada sites against 1,347). The jobs extract it
+  once per archive and clone it per pass (APFS), so a pass's runs share the caches the scripts add
+  and a new pass or snapshot starts from the snapshot again.
+- **`heritage-sites`** (after slope, before the units; local): the cover is the z12 tiles within
+  20 km of the coverage (exact, `Coverage::meets_rect`), heritage.py's `--tiles` replacing today's
+  analysis grid (z11); the pass's `areas` set clipped to the cover (`osmium extract -s smart`, the
+  tiles as rectangles) stands for today's areas.geojsonseq. heritage.py writes the areas' polygons
+  with their flag bits instead of rasterising them. Outputs: `work/heritage/<d>/base/<file>`, and per
+  z6 tile the sites' positions (`pos/6-x-y`, E7, sorted) and the polygons whose bounding box meets
+  the tile (`areas/6-x-y`, keyed by content). Key: the step's version, the pass, its areas set, the
+  snapshot, the coverage. 96 s for today's regions.
+- **The units** (`UNIT_V` 3) read the slices of the z6 tiles their box meets: `heritage.json` for
+  the flags step, and areaflags.py rasterises the polygons onto the unit's own grid (chosen by
+  bounding box: Mercator is monotone per axis, so none touching an edge tile is dropped). Their keys
+  name those slices instead of today's heritage file and the grid-areas packs, which are no longer
+  staged.
+- **Checks:** today's heritage.py in the stand-in root on today's grid and the snapshot gives
+  today's outputs exactly (grid.areas.u8 byte for byte; the sites, heritage areas, special areas and
+  Indigenous lands equal once the properties later steps add are set aside). Rasterised per unit,
+  six units' grids equal today's on all ~6,100 tiles they share with it, and two neighbouring units
+  agree on all 228 tiles they share. The new cover against today's grid: 61 sites added, 24
+  dropped of 224,010: roadless places within 20 km (Pimachiowin Aki, Okinoshima, northern Parks
+  Canada sites) in, places today's grid reached past borders along roads (northern Sardinia from
+  Corsica, Korea's Gaya tumuli) out.
+- **To come, the `heritage` job** (in the landmarks chain, before marks): the rest of the chain on
+  the heritage-sites outputs, with the review's fixes: the `named` set clipped to the cover with
+  today's exact filter, and the World Heritage parts from one clip of the filtered planet per pass
+  and coverage (not the worldwide file); today's park facts (`data/areas/wikidata.json`) and the
+  pageview months (shared with the items job's) seeded into the persistent cache; the names table
+  for `en` (or own English only, decided and recorded); heritagewd.shortdescs and the other silent
+  fallbacks failing loudly, cache writes atomic; pageviews.py taking the epoch's months. Then marks
+  and markconv read `work/heritage/<d>/…`, and the overlays become a job after marks, with marks'
+  ids (ovconv takes the World Heritage dots' ids from the legacy points today).
 
 ## Storage
 

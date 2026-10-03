@@ -1,5 +1,5 @@
-//! The build Mac's conditions (docs/plan.md §8, Interruptions): mains power, the NAS, the user at
-//! the keyboard, and sleep.
+//! The build Mac's conditions (docs/plan.md §8, Interruptions): power (mains, or the battery's
+//! charge), the NAS, the user at the keyboard, and sleep.
 
 use serde::{Deserialize, Serialize};
 use std::process::Command;
@@ -8,10 +8,16 @@ use std::time::{Instant, SystemTime};
 /// Seconds without keyboard or mouse input after which the user counts as away.
 pub const AWAY_S: u64 = 300;
 
+/// On battery, CPU work goes on down to this charge (%), then waits for mains power.
+pub const BATTERY_MIN: u8 = 30;
+
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Conditions {
     /// On mains power.
     pub ac: bool,
+    /// The battery's charge (%), when there's a battery.
+    #[serde(default)]
+    pub battery: Option<u8>,
     /// The NAS share mounted and answering.
     pub nas: bool,
     /// Seconds since the last keyboard or mouse input.
@@ -24,14 +30,24 @@ impl Conditions {
     }
 }
 
-/// On mains power: `pmset -g ps` names the source ("Now drawing from 'AC Power'"). A Mac without a
-/// battery says AC too. When pmset can't be read, mains is assumed (a broken probe shouldn't stop
+/// On mains power, and the battery's charge: `pmset -g ps` names the source ("Now drawing from
+/// 'AC Power'") and lists the battery ("-InternalBattery-0 (id=…)	89%; charging; …"). A Mac without
+/// a battery says AC too. When pmset can't be read, mains is assumed (a broken probe shouldn't stop
 /// all work).
-pub fn on_ac() -> bool {
+pub fn power() -> (bool, Option<u8>) {
     match Command::new("/usr/bin/pmset").args(["-g", "ps"]).output() {
-        Ok(o) => !String::from_utf8_lossy(&o.stdout).contains("'Battery Power'"),
-        Err(_) => true,
+        Ok(o) => parse_power(&String::from_utf8_lossy(&o.stdout)),
+        Err(_) => (true, None),
     }
+}
+
+fn parse_power(ps: &str) -> (bool, Option<u8>) {
+    let ac = !ps.contains("'Battery Power'");
+    let battery = ps.lines().filter(|l| l.contains("InternalBattery")).find_map(|l| {
+        let pct = l.split('%').next()?;
+        pct.rsplit(|c: char| !c.is_ascii_digit()).next()?.parse::<u8>().ok()
+    });
+    (ac, battery)
 }
 
 /// Seconds since the last keyboard or mouse input (IOHIDSystem's HIDIdleTime, in nanoseconds);
@@ -100,6 +116,16 @@ pub fn host_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn power_from_pmset() {
+        let batt = "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=35455075)\t90%; discharging; 3:59 remaining present: true\n";
+        assert_eq!(parse_power(batt), (false, Some(90)));
+        let ac = "Now drawing from 'AC Power'\n -InternalBattery-0 (id=35455075)\t7%; charging; 1:08 remaining present: true\n";
+        assert_eq!(parse_power(ac), (true, Some(7)));
+        // A Mac without a battery.
+        assert_eq!(parse_power("Now drawing from 'AC Power'\n"), (true, None));
+    }
 
     #[test]
     fn idle_from_ioreg() {

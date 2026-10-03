@@ -18,7 +18,9 @@ use std::path::Path;
 pub const TERRAIN_V: u32 = 1;
 pub const SLOPE_V: u32 = 1;
 /// 2: elevations up to 6,053 m (`final.u16`, base packs' `elevu`; were clamped at ±3,200 m).
-pub const UNIT_V: u32 = 2;
+/// 3: heritage sites and area flags from the pass's heritage-sites job (crate::heritage), the
+/// flags rasterised per unit.
+pub const UNIT_V: u32 = 3;
 /// 2: hidata with rail lines' identity (`railinfo`) and the zoomed-out summaries (`lsum`).
 pub const PACK_V: u32 = 2;
 pub const LO_V: u32 = 1;
@@ -87,7 +89,7 @@ impl Keys {
             self.catalog_held = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || matches!(step, "labels" | "trailends" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries") {
+        if step.ends_with("-root") || matches!(step, "labels" | "trailends" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -165,8 +167,8 @@ pub fn labels_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Opt
 }
 
 /// The units whose piece meets the coverage, each with its key: what it reads (its piece and road
-/// values, the coverage near it, the heritage sites, the staged layers near it as the manifest has
-/// them, which is what the unit step stages from).
+/// values, the coverage near it, the heritage sites' and areas' slices near it, the staged layers
+/// near it as the manifest has them, which is what the unit step stages from).
 pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let mut units: Vec<(Unit, String)> = Vec::new();
@@ -176,24 +178,35 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Ve
         if !cov.meets_box(tb) {
             continue;
         }
-        // (The heritage sites: the flags step's.)
         let mut inputs = vec![
             format!("unit {UNIT_V}"),
             c.clone(),
             get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(),
             cov_fp(cov, grown_e7(u.z, u.x, u.y, 10.0)),
-            get("global/legacy/heritage").to_string(),
         ];
         let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
         for (x, y) in crate::stage::tiles_in(6, b) {
-            for layer in ["terrain", "grid-class", "grid-areas", "grid-canopy", "grid-cover"] {
+            for layer in ["terrain", "grid-class", "grid-canopy", "grid-cover"] {
                 inputs.push(get(&format!("layers/{layer}/hi/6-{x}-{y}")).to_string());
             }
+            inputs.push(get(&crate::heritage::pos_logical(date, x, y)).to_string());
+            inputs.push(get(&crate::heritage::areas_logical(date, x, y)).to_string());
         }
         let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
         units.push((u, h(&refs)));
     }
     units
+}
+
+/// The heritage sites and designated areas the units read (crate::heritage), once per pass,
+/// coverage and registers' snapshot.
+pub const HERITAGE_SITES_V: u32 = 1;
+
+pub fn heritage_sites_work(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
+    let set = m.get(&crate::osmpass::set_name(date, "areas"))?;
+    let registers = m.get("sources/registers/legacy")?;
+    let k = h(&[&format!("heritage-sites {HERITAGE_SITES_V}"), date, set, registers, &cov_fp(cov, [i32::MIN, i32::MIN, i32::MAX, i32::MAX])]);
+    (done.lo.get("heritage-sites").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "heritage-sites".into(), targets: vec![("heritage-sites".into(), k)] })
 }
 
 /// Every summit worldwide with its z8 height, once per pass (crate::summits): what the units' peaks
@@ -339,6 +352,16 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         work.push(Work { step: "slope".into(), targets: slope });
     }
     if had_terrain {
+        return work;
+    }
+
+    // The heritage sites and designated areas the units read: before them, once per pass and
+    // coverage (the units wait until there are some).
+    if let Some(w) = heritage_sites_work(cov, date, m, done) {
+        work.push(w);
+        return work;
+    }
+    if !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources")) {
         return work;
     }
 
@@ -535,10 +558,24 @@ mod tests {
         Coverage::from_recipes(&[Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,20".into()] }], None, d.path()).unwrap()
     }
 
+    /// The heritage-sites job's inputs (the pass's areas set, the registers' snapshot).
+    fn heritage_inputs(m: &mut BTreeMap<String, String>, date: &str) {
+        m.insert(crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"));
+        m.insert("sources/registers/legacy".into(), "sources/registers/legacy.3434343434343434.tar.zst".into());
+    }
+
+    /// The heritage-sites job done: its key recorded, its outputs in the manifest.
+    fn heritage_done(m: &mut BTreeMap<String, String>, done: &mut Keys, date: &str, w: &Work) {
+        assert_eq!(w.step, "heritage-sites");
+        done.record(&w.step, &w.targets);
+        m.insert(crate::heritage::base_logical(date, "heritage-sources"), format!("work/heritage/{date}/base/heritage-sources.5656565656565656.json"));
+    }
+
     #[test]
     fn terrain_first_then_slope_then_catalog() {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
+        heritage_inputs(&mut m, "2026-09-28");
         let mut done = Keys::default();
         let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(w.len(), 1);
@@ -551,6 +588,9 @@ mod tests {
         let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "slope");
         done.record("slope", &w[0].targets);
+        // The heritage sites and areas, before any unit (there are none here).
+        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
+        heritage_done(&mut m, &mut done, "2026-09-28", &w[0]);
         // The root from the lo pack (no slope lo pack in this test: no slope root).
         let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "terrain-root");
@@ -582,9 +622,21 @@ mod tests {
         }
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         m.insert("sources/osm/d/pieces/6-40-20".into(), "sources/osm/d/pieces/6-40-20.5555555555555555.osm.pbf".into());
+        // No heritage inputs yet: the units wait.
+        assert!(plan(&c, "d", &m, &done, &BTreeMap::new()).is_empty());
+        heritage_inputs(&mut m, "d");
+        let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+        heritage_done(&mut m, &mut done, "d", &w[0]);
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "unit");
         assert_eq!(w[0].targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), vec!["6/28/16"]);
+        // A unit's key names the heritage slices near it, and only those.
+        let key = |m: &BTreeMap<String, String>| unit_keys(&c, "d", m)[0].1.clone();
+        let k0 = key(&m);
+        m.insert(crate::heritage::pos_logical("d", 40, 20), "work/heritage/d/pos/6-40-20.7878787878787878.json".into());
+        assert_eq!(key(&m), k0, "a slice far away");
+        m.insert(crate::heritage::areas_logical("d", 28, 16), "work/heritage/d/areas/6-28-16.9090909090909090.jsonl".into());
+        assert_ne!(key(&m), k0, "its own tile's areas");
     }
 
     #[test]
@@ -593,11 +645,17 @@ mod tests {
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         let mut done = Keys::default();
         let steps = |w: &[Work]| w.iter().map(|x| x.step.clone()).collect::<Vec<_>>();
-        // Terrain, slope, and the unit done.
+        // Terrain, slope, the heritage sites and the unit done.
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
-        for _ in 0..3 {
+        heritage_inputs(&mut m, "d");
+        for step in ["terrain", "slope", "heritage-sites", "unit"] {
             let w = plan(&c, "d", &m, &done, &BTreeMap::new());
-            done.record(&w[0].step, &w[0].targets);
+            assert_eq!(w[0].step, step);
+            if step == "heritage-sites" {
+                heritage_done(&mut m, &mut done, "d", &w[0]);
+            } else {
+                done.record(&w[0].step, &w[0].targets);
+            }
         }
         m.insert("base/6-28-16".into(), "base/6-28-16.6666666666666666.base".into());
         m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.7777777777777777.roads".into());

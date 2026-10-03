@@ -68,23 +68,6 @@ impl Source<'_> {
             Source::Catalog(_, cat) => cat.layers.contains_key(layer),
         }
     }
-
-    /// A worldwide file (`what` as in `Catalog::global`: `global/<what>`): its path and size.
-    fn global(&self, what: &str) -> Result<Option<(PathBuf, u64)>> {
-        match self {
-            Source::Manifest(out) => {
-                let Some(c) = out.get(&format!("global/{what}")) else { return Ok(None) };
-                let p = out.path(c);
-                let size = std::fs::metadata(&p).with_context(|| format!("{}", p.display()))?.len();
-                Ok(Some((p, size)))
-            }
-            Source::Catalog(root, cat) => {
-                let Some(logical) = cat.global.get(what) else { return Ok(None) };
-                let f = cat.files.get(logical).with_context(|| format!("catalog: no file for {logical}"))?;
-                Ok(Some((root.join(&f.file), f.size)))
-            }
-        }
-    }
 }
 
 /// Tiles of a layer, from its packs.
@@ -193,7 +176,8 @@ pub fn stage(src: &Source, b: [f64; 4], dir: &Path) -> Result<Staged> {
     }
     write_file(dir, "grid.terrain.i16", bytemuck::cast_slice(&terr))?;
     st.grids.push("terrain".into());
-    for var in ["class", "areas", "canopy", "cover"] {
+    // (The area flags are rasterised per unit: crate::heritage, areaflags.py.)
+    for var in ["class", "canopy", "cover"] {
         let mut l = LayerReader::new(src, &format!("grid-{var}"));
         let mut data = vec![0u8; tiles.len() * CELLS];
         let mut missing: Vec<u32> = Vec::new();
@@ -219,87 +203,6 @@ pub fn stage(src: &Source, b: [f64; 4], dir: &Path) -> Result<Staged> {
     Ok(st)
 }
 
-/// A local copy of one of the worldwide files (`what` as in `Catalog::global`), made once under
-/// `cache/global/` (content-named, so a copy is never stale; older copies go). None when there's no
-/// such file.
-pub fn local_global(src: &Source, what: &str, cache: &Path) -> Result<Option<PathBuf>> {
-    let Some((file, size)) = src.global(what)? else { return Ok(None) };
-    let name = file.file_name().context("global file name")?.to_string_lossy().into_owned();
-    let dir = cache.join("global").join(what.replace('/', "-"));
-    let local = dir.join(&name);
-    if std::fs::metadata(&local).is_ok_and(|m| m.len() == size) {
-        return Ok(Some(local));
-    }
-    std::fs::create_dir_all(&dir)?;
-    let tmp = dir.join(format!("{name}.tmp"));
-    std::fs::copy(&file, &tmp).with_context(|| format!("copy {}", file.display()))?;
-    anyhow::ensure!(std::fs::metadata(&tmp)?.len() == size, "{}: not the expected size", file.display());
-    std::fs::rename(&tmp, &local)?;
-    for e in std::fs::read_dir(&dir)?.flatten() {
-        if e.file_name().to_string_lossy() != name {
-            std::fs::remove_file(e.path()).ok();
-        }
-    }
-    Ok(Some(local))
-}
-
-/// Today's heritage sites (the converted `heritage.json`, `legacy/heritage` in the catalog), held
-/// for a run: each unit's folder gets the sites in its box (the flags step marks samples within
-/// 500 m).
-pub struct Heritage {
-    sites: Vec<([f64; 2], Box<serde_json::value::RawValue>)>,
-}
-
-impl Heritage {
-    /// None when there are no heritage sites.
-    pub fn load(src: &Source, cache: &Path) -> Result<Option<Heritage>> {
-        let Some(p) = local_global(src, "legacy/heritage", cache)? else { return Ok(None) };
-        Ok(Some(Heritage::parse(&std::fs::read(&p)?).with_context(|| format!("parse {}", p.display()))?))
-    }
-
-    fn parse(bytes: &[u8]) -> Result<Heritage> {
-        #[derive(serde::Deserialize)]
-        struct Fc {
-            features: Vec<Box<serde_json::value::RawValue>>,
-        }
-        #[derive(serde::Deserialize)]
-        struct Feature {
-            geometry: Geometry,
-        }
-        #[derive(serde::Deserialize)]
-        struct Geometry {
-            #[serde(rename = "type")]
-            kind: String,
-            coordinates: serde_json::Value,
-        }
-        let fc: Fc = serde_json::from_slice(bytes)?;
-        let mut sites = Vec::with_capacity(fc.features.len());
-        for raw in fc.features {
-            let f: Feature = serde_json::from_str(raw.get())?;
-            // Points only, as the flags step reads them.
-            if let (true, Some(lon), Some(lat)) = (f.geometry.kind == "Point", f.geometry.coordinates[0].as_f64(), f.geometry.coordinates[1].as_f64()) {
-                sites.push(([lon, lat], raw));
-            }
-        }
-        Ok(Heritage { sites })
-    }
-
-    pub fn len(&self) -> usize {
-        self.sites.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.sites.is_empty()
-    }
-
-    /// Writes `heritage.json` with the sites inside `b` (w, s, e, n, degrees); returns how many.
-    pub fn write_in(&self, b: [f64; 4], dir: &Path) -> Result<usize> {
-        let inside: Vec<&str> = self.sites.iter().filter(|(p, _)| p[0] >= b[0] && p[0] <= b[2] && p[1] >= b[1] && p[1] <= b[3]).map(|(_, r)| r.get()).collect();
-        let body = format!(r#"{{"type":"FeatureCollection","features":[{}]}}"#, inside.join(","));
-        write_file(dir, "heritage.json", body.as_bytes())?;
-        Ok(inside.len())
-    }
-}
 
 fn write_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
     let p = dir.join(name);
@@ -313,22 +216,6 @@ fn write_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn heritage_sites_in_a_box() {
-        let h = Heritage::parse(
-            br#"{"type":"FeatureCollection","features":[
-            {"type":"Feature","geometry":{"type":"Point","coordinates":[-1.5,55.0]},"properties":{"name":"a"}},
-            {"type":"Feature","geometry":{"type":"Point","coordinates":[2.0,48.8]},"properties":{"name":"b"}},
-            {"type":"Feature","geometry":{"type":"LineString","coordinates":[[0,0],[1,1]]},"properties":{}}]}"#,
-        )
-        .unwrap();
-        assert_eq!(h.len(), 2);
-        let d = tempfile::tempdir().unwrap();
-        assert_eq!(h.write_in([-2.0, 54.0, -1.0, 56.0], d.path()).unwrap(), 1);
-        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(d.path().join("heritage.json")).unwrap()).unwrap();
-        assert_eq!(v["features"][0]["properties"]["name"], "a");
-        assert_eq!(v["features"].as_array().unwrap().len(), 1);
-    }
 
     #[test]
     fn tile_ranges() {

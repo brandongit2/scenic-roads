@@ -115,7 +115,7 @@ pub fn planetiler_room(input_len: u64) -> u64 {
 /// Piece buffer around a unit, km.
 pub const BUFFER_KM: f64 = 10.0;
 
-fn osmium() -> Command {
+pub fn osmium() -> Command {
     let mut c = Command::new("osmium");
     c.env("PATH", format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default()));
     c

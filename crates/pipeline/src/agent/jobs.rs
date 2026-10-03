@@ -1,7 +1,8 @@
 //! Running one build job (docs/plan.md §4 and §8): a child process in its own process group, at
-//! utility priority (`taskpolicy -c utility`), kept awake on mains power (`caffeinate -s -w`),
-//! paused (`SIGSTOP` to the group) while a condition it needs lapses and resumed (`SIGCONT`) when it
-//! holds again, and stopped as a group.
+//! utility priority (`taskpolicy -c utility`), the Mac kept awake while it runs (`caffeinate -i -s
+//! -w`: no idle sleep, on battery too, and no sleep on mains power) but not while it's paused
+//! (`SIGSTOP` to the group while a condition it needs lapses; `SIGCONT` when it holds again), and
+//! stopped as a group.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// What a job needs to run.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Needs {
-    /// Mains power (CPU work).
+    /// Power for CPU work: mains, or the battery above `cond::BATTERY_MIN`.
     pub ac: bool,
     /// The NAS.
     pub nas: bool,
@@ -107,19 +108,22 @@ impl Running {
         c.process_group(0);
         let child = c.spawn().with_context(|| format!("start {}", spec.id))?;
         let pgid = child.id() as i32;
-        // Awake while it runs, on mains power only (-s), ending with it (-w).
-        let caffeinate = Command::new("/usr/bin/caffeinate").args(["-s", "-w", &child.id().to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok();
+        let caffeinate = keep_awake(child.id());
         let started = now_s();
         let rec = Record { id: spec.id.clone(), pgid, started, leader_start: process_start(pgid).unwrap_or(0) };
         std::fs::write(record, serde_json::to_vec(&rec)?)?;
         Ok(Running { spec, child, caffeinate, pgid, started, log, paused: None, started_at: Instant::now() })
     }
 
-    /// Pauses the job's whole process group (`why` goes to the status).
+    /// Pauses the job's whole process group (`why` goes to the status), and lets the Mac sleep.
     pub fn pause(&mut self, why: &str) {
         if self.paused.is_none() {
             // SAFETY: plain syscall on our own child's group.
             unsafe { libc::killpg(self.pgid, libc::SIGSTOP) };
+            if let Some(mut c) = self.caffeinate.take() {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
         }
         self.paused = Some(why.to_string());
     }
@@ -128,6 +132,7 @@ impl Running {
         if self.paused.take().is_some() {
             // SAFETY: as above.
             unsafe { libc::killpg(self.pgid, libc::SIGCONT) };
+            self.caffeinate = keep_awake(self.child.id());
         }
     }
 
@@ -153,6 +158,12 @@ impl Running {
     pub fn elapsed(&self) -> Duration {
         self.started_at.elapsed()
     }
+}
+
+/// Keeps the Mac awake while process `pid` runs: no idle sleep (on battery too: -i), no system sleep
+/// on mains power (-s), ending with it (-w).
+fn keep_awake(pid: u32) -> Option<Child> {
+    Command::new("/usr/bin/caffeinate").args(["-i", "-s", "-w", &pid.to_string()]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok()
 }
 
 impl Drop for Running {

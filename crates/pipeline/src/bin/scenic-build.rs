@@ -130,6 +130,8 @@ fn main() -> Result<()> {
         "marks" => marks_step(&mut out, &args)?,
         "items" => items_step(&mut out, &args, &scratch)?,
         "heritage" => heritage_step(&mut out, &args, &scratch)?,
+        "heritage-sites" => heritage_sites_step(&mut out, &args, &scratch)?,
+        "registers-import" => registers_import(&mut out, &args, &scratch)?,
         "slope" => slope_step(&mut out, &args)?,
         "labels" => labels_step(&mut out, &args, &scratch)?,
         "pass-sets" => {
@@ -1069,6 +1071,151 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     Ok(())
 }
 
+/// registers-import --from <dir> [--name legacy]: a registers' snapshot (today's: the build Mac's
+/// data/heritage, without osm/, which the pass's sets replace) as one archive in the manifest,
+/// `sources/registers/<name>` (tar.zst, files in sorted order): what the heritage jobs extract,
+/// once per archive (thousands of small files are slow to copy over SMB one by one).
+fn registers_import(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    let from = std::fs::canonicalize(opt(args, "--from").context("--from <dir>")?)?;
+    let name = opt(args, "--name").unwrap_or_else(|| "legacy".into());
+    std::fs::create_dir_all(scratch)?;
+    let (list, tar) = (scratch.join("registers.list"), scratch.join("registers.tar.zst"));
+    let mut c = std::process::Command::new("sh");
+    c.env("PATH", format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default()));
+    c.arg("-c")
+        .arg(r#"set -e; cd "$1"; find . -type f ! -path './osm/*' ! -name .DS_Store | LC_ALL=C sort > "$2"; tar -cf - -T "$2" | zstd -T0 -10 -q -f -o "$3""#)
+        .arg("sh")
+        .arg(&from)
+        .arg(&list)
+        .arg(&tar);
+    let st = c.status().context("tar | zstd")?;
+    anyhow::ensure!(st.success(), "archiving {} failed: {st}", from.display());
+    let files = std::fs::read_to_string(&list)?.lines().count();
+    let size = std::fs::metadata(&tar)?.len();
+    let got = out.put_file(&format!("sources/registers/{name}"), "tar.zst", &tar)?;
+    out.save()?;
+    eprintln!("registers-import: {files} files, {} MB → {got}", size >> 20);
+    Ok(())
+}
+
+/// This pass's working copy of the registers' snapshot, which the heritage scripts add their caches
+/// to: the archive extracted once (`cache/registers-<id>`), then cloned per pass
+/// (`cache/heritage-<date>-<id>`, APFS clones cost nothing), so a pass's runs share their caches and
+/// a new pass or snapshot starts again from the snapshot. Other passes' and snapshots' copies go.
+fn heritage_epoch(out: &Out, date: &str, cache: &Path) -> Result<PathBuf> {
+    let content = out.get("sources/registers/legacy").context("no registers' snapshot in the manifest (scenic-build registers-import)")?.to_string();
+    let id = store::naming::hash16(content.as_bytes())[..12].to_string();
+    std::fs::create_dir_all(cache)?;
+    let snap = cache.join(format!("registers-{id}"));
+    if !snap.join(".done").exists() {
+        std::fs::remove_dir_all(&snap).ok();
+        std::fs::create_dir_all(&snap)?;
+        let mut c = std::process::Command::new("sh");
+        c.env("PATH", format!("/opt/homebrew/bin:{}", std::env::var("PATH").unwrap_or_default()));
+        c.arg("-c").arg(r#"set -e; zstd -dcq "$1" | tar -xf - -C "$2""#).arg("sh").arg(out.path(&content)).arg(&snap);
+        let st = c.status().context("zstd | tar")?;
+        anyhow::ensure!(st.success(), "extracting {content} failed: {st}");
+        std::fs::write(snap.join(".done"), b"")?;
+    }
+    let epoch = cache.join(format!("heritage-{date}-{id}"));
+    if !epoch.join(".done").exists() {
+        std::fs::remove_dir_all(&epoch).ok();
+        let st = std::process::Command::new("cp").arg("-c").arg("-R").arg(&snap).arg(&epoch).status()?;
+        if !st.success() {
+            std::fs::remove_dir_all(&epoch).ok();
+            let st = std::process::Command::new("cp").arg("-R").arg(&snap).arg(&epoch).status()?;
+            anyhow::ensure!(st.success(), "copying {} failed: {st}", snap.display());
+        }
+        std::fs::write(epoch.join(".done"), b"")?;
+    }
+    for e in std::fs::read_dir(cache)?.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        let other_snap = n.starts_with("registers-") && n != format!("registers-{id}");
+        let other_epoch = n.strip_prefix("heritage-").is_some_and(|r| r.len() > 11 && pipeline::osmpass::is_date(&r[..10])) && e.path() != epoch;
+        // (heritage-data: the first heritage job's rsync'd copy.)
+        if other_snap || other_epoch || n == "heritage-data" {
+            std::fs::remove_dir_all(e.path()).ok();
+        }
+    }
+    Ok(epoch)
+}
+
+/// A stand-in root laid out as the repository for today's heritage scripts: `dem/` the app's
+/// scripts and their Python project, `data/heritage` this pass's copy of the registers' snapshot.
+fn heritage_root(scratch: &Path, dem: &Path, epoch: &Path) -> Result<PathBuf> {
+    let root = scratch.join("heritage-root");
+    std::fs::remove_dir_all(&root).ok();
+    for d in ["dem", "data/build", "data/areas", "data/osm"] {
+        std::fs::create_dir_all(root.join(d))?;
+    }
+    for e in std::fs::read_dir(dem)?.flatten() {
+        let n = e.file_name().to_string_lossy().into_owned();
+        if e.path().is_file() && (n.ends_with(".py") || n == "pyproject.toml" || n == "uv.lock" || n == ".python-version") {
+            std::fs::copy(e.path(), root.join("dem").join(&n))?;
+        }
+    }
+    std::os::unix::fs::symlink(epoch, root.join("data/heritage"))?;
+    Ok(root)
+}
+
+/// Runs one of today's scripts in a stand-in root (its venv kept in the cache; the lock file as is).
+fn heritage_script(root: &Path, cache: &Path, script: &str, args: &[&str]) -> Result<()> {
+    let t = std::time::Instant::now();
+    let mut c = std::process::Command::new("uv");
+    c.current_dir(root.join("dem")).env("UV_PROJECT_ENVIRONMENT", cache.join("heritage-venv")).args(["run", "--frozen", "python", script]).args(args);
+    let st = c.status().with_context(|| format!("run {script}"))?;
+    anyhow::ensure!(st.success(), "{script} failed: {st}");
+    eprintln!("heritage: {script} done ({:.0?})", t.elapsed());
+    Ok(())
+}
+
+/// heritage-sites [--pass <date>] [--dem dir] [--cache dir]: the heritage sites and designated
+/// areas the units read (pipeline::heritage): today's heritage.py in a stand-in root, over the
+/// tiles within 20 km of the coverage, on the registers' snapshot and the pass's protected areas
+/// (its `areas` set within those tiles, as today's areas.geojsonseq). Its outputs go to
+/// `work/heritage/<date>/base/<file>`, and per z6 tile the sites' positions and the area polygons.
+fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    use pipeline::heritage::{base_logical, cover_tiles, put_slices, slice_areas, slice_sites, tiles_bytes, tiles_geojson, COVER_Z};
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+    let cov = coverage_of(out, args)?;
+    let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
+    let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
+    let t0 = std::time::Instant::now();
+    std::fs::create_dir_all(scratch)?;
+    let epoch = heritage_epoch(out, &date, &cache)?;
+    let root = heritage_root(scratch, &dem, &epoch)?;
+    let b = root.join("data/build");
+    // The cover: its tiles for heritage.py, as rectangles for osmium.
+    let tiles = cover_tiles(&cov);
+    std::fs::write(b.join("cover.idx"), tiles_bytes(&tiles))?;
+    let poly = scratch.join("cover.geojson");
+    std::fs::write(&poly, serde_json::to_vec(&tiles_geojson(COVER_Z, &tiles))?)?;
+    eprintln!("heritage-sites: {} z{COVER_Z} tiles within 20 km of the coverage ({:.0?})", tiles.len(), t0.elapsed());
+    // The pass's protected areas and Indigenous lands within them (whole relations: smart).
+    let set = out.path(out.get(&pipeline::osmpass::set_name(&date, "areas")).context("the pass's areas set")?);
+    let clip = scratch.join("areas-cover.osm.pbf");
+    let mut c = pipeline::osmpass::osmium();
+    c.args(["extract", "--strategy", "smart", "--overwrite", "-p"]).arg(&poly).arg(&set).arg("-o").arg(&clip);
+    let st = c.status().context("run osmium extract")?;
+    anyhow::ensure!(st.success(), "osmium extract (areas) failed: {st}");
+    let mut c = pipeline::osmpass::osmium();
+    c.args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "-a", "type,id", "--overwrite", "-o"]).arg(root.join("data/areas/areas.geojsonseq")).arg(&clip);
+    let st = c.status().context("run osmium export")?;
+    anyhow::ensure!(st.success(), "osmium export (areas) failed: {st}");
+    std::fs::remove_file(&clip).ok();
+    heritage_script(&root, &cache, "heritage.py", &["../data/build", "--tiles", "../data/build/cover.idx", "--zoom", &COVER_Z.to_string(), "--date", &date])?;
+    // The units' slices, then the whole files.
+    let sites = slice_sites(&std::fs::read(b.join("heritage.json"))?)?;
+    let areas = slice_areas(&std::fs::read_to_string(b.join("area-shapes.geojsonseq"))?)?;
+    let (ns, na) = put_slices(out, &date, &sites, &areas)?;
+    for (stem, ext) in [("heritage", "json"), ("heritage-areas", "json"), ("special", "json"), ("indigenous", "json"), ("heritage-sources", "json"), ("area-shapes", "geojsonseq")] {
+        out.put_file(&base_logical(&date, stem), ext, &b.join(format!("{stem}.{ext}")))?;
+    }
+    out.save()?;
+    eprintln!("heritage-sites: {} sites' and {} areas' slices ({:.0?})", ns, na, t0.elapsed());
+    Ok(())
+}
+
 /// The unit step's global-source layers: the manifest's, or a pilot's published catalog.
 fn layers_source<'a>(out: &'a Out, pilot: &'a Option<(PathBuf, store::catalog::Catalog)>) -> pipeline::stage::Source<'a> {
     match pilot {
@@ -1111,12 +1258,12 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         buildings: opt(args, "--buildings").map(PathBuf::from),
         spacing_m: 8,
     };
-    // Today's heritage sites, for every unit's flags.
-    let heritage = pipeline::stage::Heritage::load(&layers_source(out, &pilot), &tools.cache)?;
-    match &heritage {
-        Some(h) => eprintln!("unit: {} heritage sites", h.len()),
-        None => eprintln!("unit: no heritage sites in the catalog"),
-    }
+    // The pass's heritage sites and designated areas (the heritage-sites step), for every unit's
+    // flags.
+    anyhow::ensure!(
+        out.get(&pipeline::heritage::base_logical(&date, "heritage-sources")).is_some(),
+        "no heritage sites for the pass of {date} (the heritage-sites step)"
+    );
     // The units: as asked, else every unit whose piece meets the coverage.
     let pieces: serde_json::Value = serde_json::from_slice(&std::fs::read(out.path(out.get(&format!("sources/osm/{date}/pieces")).context("the pass's pieces list")?))?)?;
     let mut units: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
@@ -1142,7 +1289,11 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         };
         let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
         std::fs::copy(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
-        let rep = build_folder(u, &local_piece, &dir, &cov, &layers_source(out, &pilot), &tools, heritage.as_ref())?;
+        let rep = {
+            let o: &Out = out;
+            let heritage = |b: [f64; 4], d: &Path| pipeline::heritage::unit_inputs(o, &date, b, d);
+            build_folder(u, &local_piece, &dir, &cov, &layers_source(o, &pilot), &tools, &heritage)?
+        };
         std::fs::remove_file(&local_piece).ok();
         // Grids its packs lacked (new coverage), made in the folder: the unit's own z6 tile's go up,
         // for later units and packs. (The canopy step made canopy and cover for every tile.)
@@ -1153,7 +1304,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             let mut tiles = pipeline::stage::grid_tiles_in(&dir, var, u.x, u.y)?.into_iter();
             layers::write_pack(out, &format!("grid-{var}"), "u8-zstd", false, "hi", (6, u.x, u.y), &mut tiles)?;
         }
-        eprintln!("unit {}: {} of {} ways touch the coverage, {} owned", u.slash(), rep.kept_ways, rep.piece_ways, rep.owned);
+        eprintln!("unit {}: {} of {} ways touch the coverage, {} owned; {} heritage sites, {} area polygons", u.slash(), rep.kept_ways, rep.piece_ways, rep.owned, rep.heritage, rep.areas);
         if rep.kept_ways == 0 || rep.owned == 0 {
             continue;
         }
