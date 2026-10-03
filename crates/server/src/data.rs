@@ -15,7 +15,6 @@ use store::iopool::IoPool;
 use store::pack::PackIndex;
 
 /// The NAS share and the project folder on it.
-pub const SMB_URL: &str = store::nas::SMB_URL;
 pub const NAS_HOST: &str = store::nas::HOST;
 pub const NAS_SHARE: &str = store::nas::SHARE;
 pub const PROJECT: &str = store::nas::PROJECT;
@@ -214,8 +213,9 @@ impl Data {
         if !smb_reachable() {
             return;
         }
-        if let Err(e) = store::nas::mount(SMB_URL, Duration::from_secs(20)) {
-            eprintln!("NAS: can't mount {SMB_URL}: {e:#}");
+        let url = store::nas::smb_url();
+        if let Err(e) = store::nas::mount(url, Duration::from_secs(20)) {
+            eprintln!("NAS: can't mount {url}: {e:#}");
         }
         self.set_nas(store::nas::find_mount(NAS_HOST, NAS_SHARE).map(|m| m.point.join(PROJECT)));
     }

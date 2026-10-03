@@ -26,6 +26,28 @@ pub const LAN_HOST: &str = "fishandchips.local";
 pub const SHARE: &str = "personal";
 pub const PROJECT: &str = "projects/scenic-roads";
 pub const SMB_URL: &str = "smb://brandontsang@fishandchips.local/personal";
+/// The share by the bare name, for a Mac whose Keychain has the password only for that name.
+pub const SMB_URL_BARE: &str = "smb://brandontsang@fishandchips/personal";
+
+/// The URL to mount the share by: the LAN name when the Keychain has a password for it (the
+/// `.local` name itself, or the NAS's Bonjour service), else the bare name. Mounting by a name the
+/// Keychain doesn't know asks for the password in a dialog, which an unattended Mac never answers.
+/// (`security` without `-g`/`-w` reads only the items' attributes: no prompt, no secret.)
+pub fn smb_url() -> &'static str {
+    let known = |server: &str| {
+        Command::new("/usr/bin/security")
+            .args(["find-internet-password", "-s", server])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    if known(LAN_HOST) || known(&format!("{HOST}._smb._tcp.local")) {
+        SMB_URL
+    } else {
+        SMB_URL_BARE
+    }
+}
 
 /// Whether a mount reaches the NAS by its LAN name (not the bare name, which Tailscale's DNS can
 /// send through the tunnel).

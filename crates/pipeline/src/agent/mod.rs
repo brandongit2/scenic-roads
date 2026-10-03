@@ -138,12 +138,12 @@ extern "C" fn on_signal(_: libc::c_int) {
 
 /// The NAS project folder: the share's mount (mounting it when missing and `mount` is set).
 pub fn find_root(mount: bool) -> Option<PathBuf> {
-    use store::nas::{find_mount, HOST, PROJECT, SHARE, SMB_URL};
+    use store::nas::{find_mount, HOST, PROJECT, SHARE};
     if let Some(m) = find_mount(HOST, SHARE) {
         return Some(m.point.join(PROJECT));
     }
     if mount {
-        if let Err(e) = store::nas::mount(SMB_URL, Duration::from_secs(60)) {
+        if let Err(e) = store::nas::mount(store::nas::smb_url(), Duration::from_secs(60)) {
             eprintln!("agent: mounting the NAS: {e:#}");
         }
         return find_mount(HOST, SHARE).map(|m| m.point.join(PROJECT));

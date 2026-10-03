@@ -410,12 +410,15 @@ fn version_token(query: Option<&str>) -> Option<String> {
     query?.split('&').find_map(|kv| kv.strip_prefix("v=")).map(|v| v.replace("%2D", "-"))
 }
 
-/// Records the request (for the updater and "in use"), and caches responses to versioned URLs
+/// Records the request (for the updater and "in use"; not the catalog's polls), and caches responses to versioned URLs
 /// for good, but only when their version is the current one: an answer fetched under an old
 /// version during a catalog or translations switch may hold the new data, and mustn't be pinned
 /// to the old URL for a year.
 async fn versioned_caching(State(s): State<S>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
-    updater::touch();
+    // (An open page's polls of the catalog aren't use: a tab left open would hold an update off.)
+    if !matches!(req.uri().path(), "/api/catalog" | "/api/ping") {
+        updater::touch();
+    }
     let v = version_token(req.uri().query());
     let mut res = next.run(req).await;
     if let Some(v) = v {
