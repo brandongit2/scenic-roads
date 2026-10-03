@@ -302,8 +302,8 @@ The server builds missing deeper tiles from their ancestors.
   - the "ways here" index;
   - landmark and station tiles;
   - T's z4–5 contribution.
-- **Lo packs** per z3 tile: roads z3–8, each kind's top landmarks, per-kind counts per z6 cell, and
-  1 km query summaries.
+- **Lo packs** per z3 tile: roads z3–8, each kind's top landmarks, per-kind counts per z6 cell.
+  (The zoomed-out query summaries are sections of hidata: docs/phase5.md.)
 
 ### Rankings over the coverage (cheap, after packs)
 
@@ -329,7 +329,7 @@ Outputs are content-hashed; an output identical to before stops the cascade.
 |---|---|
 | our layers | the pack for the tile; English attached to named features |
 | basemap | tiles from the worldwide PMTiles; English attached |
-| drives, rides | parts from packs in view plus a margin of half the drive length, joined by offset; zoomed out (more than ~6 hi packs): 1 km summaries |
+| drives, rides | parts from packs in view plus a margin of half the drive length, joined by offset; zoomed out (a view over ~1,000 km): 500 m summaries in hidata (docs/phase5.md) |
 | whole road (hover) | the road's parts, from the road → units index |
 | details, profiles | by OSM id plus location (the "ways here" index → base pack) |
 | `/api/catalog` | coverage, credits, versions, progress |

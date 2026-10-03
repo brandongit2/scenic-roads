@@ -352,8 +352,8 @@ At world scale, a globe query would read 0.2–0.4 GB: a per-z3 summary then.
 
 - **Zoomed out:** specks come from cells, and extras are capped. Check with screenshots at
   zooms 2–5, auto and locked, filtered and not.
-- **Continental queries cold from the NAS:** the section caches and the mirror; a per-z3 summary if
-  measurements need it.
+- **Continental queries cold from the NAS:** the section caches and the mirror; zoomed out, the
+  summaries in hidata (above).
 - **Fame and isolation drift once recomputed:** the legacy-input regression comes first.
 - **Peaks read z8 terrain worldwide:** cached on the build Mac.
 - **Registers fetched whole:** format changes and id stability (module tests pin record ids).
@@ -379,15 +379,18 @@ is the revision.
 
 pack(T) writes them into T's hidata, from the same parts it writes `psamples` from, so they're never
 older than the samples (no separate step, catalog field or staleness rule); hidata without them
-(older packs) are queried exactly.
+are queried exactly. Their builder is one pure function (parts, samples, channels, `here`,
+`railinfo` in; the sections out), shared by pack(T) and the tests.
 - **What:** roads at least 2 km long (`LO_MIN_ROAD`, the shortest window answered from summaries:
   no window that long fits on a shorter road), and all rail (rail lines sum every run).
-- **Bins:** consecutive samples of one part (one road inside T). A bin closes 500 m (`BIN_M`)
-  after its first sample, at a gap over `GAP_M` (300 m), where the filters' attributes change
-  (roads: class, unpaved, toll, unnamed), and for rail at every way (one way per rail bin: its
-  trains a day and its line are the way's).
-- `lparts`: `LPart { u64 road; u32 first (lbins index); u32 count; f32 road_len; u32 pad }` (24 B).
-- `lbins`: `LBin` (64 B):
+- **Bins:** consecutive samples of one part (one road inside T; parts already end at gaps over
+  `GAP_M`). A bin closes 500 m (`BIN_M`) after its first sample, where the filters' attributes
+  change (roads: class, unpaved, toll, unnamed), and for rail at every way (one way per rail bin:
+  its trains a day and its line are the way's).
+- Roads in `lparts`/`lbins`, rail in `lrparts`/`lrbins` (rides and rail lines read only rail's ~8 %);
+  hidata's meta says `"lsum": 1`, the format of these sections (a later change can't be misread).
+- `LPart { u64 road; u32 first (bins index); u32 count; f32 road_len; u32 pad }` (24 B).
+- `LBin` (64 B):
   ```
   LBin { u64 way (OSM id: roads the middle sample's way, rail the bin's way);
          f32 off0 (first sample's offset along the road); f32 len (last − first);
@@ -398,50 +401,73 @@ older than the samples (no separate step, catalog field or staleness rule); hida
   ```
   Roads: the 12 drive components. Rail: the 11 ride components but trains a day (from `railfreq` at
   query time, by `way`), the grade term from each sample's neighbours within the part.
-- **Size:** ~4–5 M bins for today's coverage, ~300 MB (~8 % of hidata); the densest z3 tile's 64
-  hidata hold ~50 MB of summaries against ~0.85 GB of query sections.
+- **Size** (measured on the 164 mirrored hidata): 4.9 M road bins, 0.42 M rail bins, 0.43 M parts,
+  349 MB (10 % of the query sections, 7.5 % of hidata); ~400 MB for all of today's 198 tiles; the
+  densest z3 tile's 64 hidata hold ~74 MB against ~0.55–0.9 GB of query sections.
+- **Rollout:** `PACK_V` goes up with this change, so every pack(T) runs again (and every lo job,
+  whose keys include the packs'), which the cutover's re-pack does anyway (railinfo came without a
+  bump); the mirror copies the new hidata (~5.5 GB today).
 
 ### Server
 
-- **The switch is the client's:** it asks with `approx=1` below zoom 5.5 and goes back to exact
-  above 6 (the hysteresis keeps a panned or resized view from flipping modes; tile edges, coastline
-  and pitch don't move it). The server answers from summaries when every z6 hidata of the view
-  plus margin has them and the window is at least `LO_MIN_ROAD` (rail lines: any), else exactly,
-  never mixing; every answer says which (`approx`).
-- **Reads:** `lparts` and `lbins` whole (and `railinfo`, `railstr` for rail), never `here`,
-  `parts`, `psamples` or `pch`.
+- **The switch is the client's:** it asks with `approx=1` when the view outline's bounding box is
+  wider than 1,200 km and goes back to exact below 900 km (stable under panning, tile edges,
+  coastline and pitch, and it follows how much the exact path would read: a pitched or large window
+  at zoom 6 reads 1–2 GB of dense tiles). The server answers from summaries when every z6 hidata of
+  the view plus margin has them and the window is at least `LO_MIN_ROAD` (rail lines: any), else
+  exactly, never mixing; every answer says which (`approx`).
+- **Reads:** the summary sections and (rail) `railinfo`, `railstr`, whole and through the budgeted
+  section cache (`Sect::all`); never `parts`, `psamples` or `pch`. Drive names still come from the
+  top hits' ways (the ways-here index and base packs, paged), as today.
 - **Runs:** bins of one road in offset order across the tiles read; a run splits where a bin's
   `off0` is more than `GAP_M` past the running maximum of the run's last offsets (a road zigzagging
   over a tile edge has bins that overlap).
 - **Windows (drives, rides):** each bin stands for `n` samples spread evenly from `off0` to
   `off0 + len`, each with the bin's score (its component means, the same weights, clamped per bin);
-  today's best-window scan runs on these (at least the length asked, mean over samples, the middle
-  one in view, its position on its bin's chord). So windows start and end inside bins, and means are
-  weighted by samples.
-- **The answer:** `length_m` from the window's end offsets; `geom` from the window's end positions
-  (on their bins' chords) and the bins' first and last samples between; `way`/`at` the first bin's
-  (`lonm`, `latm` is on `way`); names from the middle bin's way (as today, top hits only); `parts`
-  the component means weighted by samples; rides' trains a day the maximum over the window's
-  bins' ways.
+  a run's pseudo-samples are merged in offset order (overlapping bins interleave), and today's
+  best-window scan runs on them (at least the length asked, mean over samples, the middle one in
+  view, its position on its bin's first → middle → last polyline). So windows start and end inside
+  bins, and means are weighted by samples.
+- **The answer:** `length_m` from the window's end offsets; `geom` real sample positions only (the
+  bins' first, middle and last samples, the window's ends at the nearest of them: a chord can leave
+  a hairpin road); `way`/`at` the first bin's (`lonm`, `latm` is on `way`); names from the middle
+  bin's way (as today, top hits only); `parts` the component means weighted by samples. Rides:
+  `name` the line identity of the run's first bin, `rel`, `services` and `colour` the middle bin's
+  `railinfo` row, trains a day the maximum over the window's bins' ways.
 - **Rail lines:** a bin is in view when its middle sample is; a line's length is the sum over its
   bins in view of `next.off0 − off0` within a run (a run's last bin: `len`), its score weighted by
-  those lengths; `geom` the bins' sample positions, a polyline per stretch in view.
-- **Cancelled queries stop:** the request's future dropping (the client aborted a superseded
-  query) sets a flag the computation checks between phases and in its loops.
+  those lengths; `at` the first bin's first sample; `geom` the bins' sample positions, a polyline per
+  stretch in view.
+- **Cancelled queries stop:** when the client aborts, hyper drops the handler's future; a guard in
+  it sets a flag the computation checks before each tile read, in its parallel loops and before
+  each name lookup (`spawn_blocking` work isn't stopped by the drop itself).
 
 ### Client
 
-- `approx=1` by zoom with hysteresis (above); lists from summaries say so ("≈" by the count, and
-  lengths rounded to 0.5 km).
+- One mode for the three panes (drives, rides, rail lines), from the outline's size with the
+  hysteresis above, starting by the band's middle (1,050 km); it's part of each pane's request key.
+- Lists from summaries say so ("≈" by the count). A pick from one doesn't pin its geometry: the
+  stretch is cut from the road's profile, as a link's is.
 
 ### Accuracy and checks
 
-Measured by the review's simulator with this bin model (500 m, windows inside bins), against the
-exact answers on 9 views × 3 presets:
-- windows of 5 km and longer: the top 20 overlap by 90 % or more in every case, scores within
-  1.5 points;
-- 2 km: 23 of 27 cases at 90 % (the lowest 80 %), scores within 3.7 points.
+Measured with this model (bins per z6 part, 500 m, rail per way, u8 components, pseudo-samples in
+offset order) against the exact answers, 9 views × 3 presets (27 cases a length), on the mirrored
+hidata:
 
-The test (`approx` against exact on the same hidata, a dozen continental views, 2/5/10/25 km, three
-presets, drives and rides; rail lines' totals and lengths) holds the implementation to those, and
-totals within 5 %.
+| | 2 km | 5 km | 10 km | 25 km |
+|---|---|---|---|---|
+| drives: top-20 overlap, lowest (cases ≥ 90 %) | 0.80 (23) | 0.90 (27) | 0.90 (27) | 0.95 (27) |
+| drives: largest score error, top 20 / top 30 | 3.7 / 3.9 | 1.5 / 1.5 | 0.8 / 0.8 | 0.4 / 0.4 |
+| rides: top-20 overlap, lowest (cases ≥ 90 %) | 0.80 (20) | 0.90 (27) | 0.95 (27) | 1.00 (27) |
+| rides: largest score error, top 20 | 1.3 | 0.6 | 0.2 | 0.1 |
+
+- Drives filtered (tertiary to trunk, no toll, no unnamed): every case at 90 % or more.
+- Totals within 0.15 %; rides' trains a day the same for 2,109 of 2,112 hits.
+- Rail lines: km in view within 0.02 %, a line's length within 0.2 % (2.4 % for one crossing the
+  view's edge), scores within 0.24 points, the top 40 overlapping 98–100 % for each sort.
+- Warm, Western Europe: drives at 5 km 372 → 80 ms; bytes read 1,988 → 166 MB (rail 20 MB).
+
+The test (the summaries built from today's hidata by the shared builder, `approx` against exact, a
+dozen continental views, 2/5/10/25 km, three presets, drives, rides and rail lines) holds the
+implementation to these, and totals within 1 %.
