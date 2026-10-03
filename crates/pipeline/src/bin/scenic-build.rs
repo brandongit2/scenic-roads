@@ -17,6 +17,8 @@
 //!   terrain [T …] [--regions dir] [--pass d] [--raw dir]  terrain packs for z6 tiles T near the
 //!                                coverage (default: all of them): hi z9–12, then their z3 lo packs,
 //!                                from AWS's raw tiles (cached in --raw)
+//!   slope [T …] [--regions dir]  slope packs (z3–11) of z6 tiles T from the terrain packs
+//!                                (default: every z6 tile near the coverage)
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalog                      publish a catalog of the build manifest
@@ -90,6 +92,7 @@ fn main() -> Result<()> {
         "unit" => unit_step(&mut out, &args, &scratch)?,
         "roadunits" => roadunits(&mut out)?,
         "terrain" => terrain_step(&mut out, &args)?,
+        "slope" => slope_step(&mut out, &args)?,
         "put" => {
             // put <logical> <ext> <file>: upload a file under a logical name (manual operations).
             let p = positional(&args);
@@ -650,6 +653,30 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
         let t = std::time::Instant::now();
         let r = pipeline::terrain_pack::build_q(out, &raw, q, &list, &cov)?;
         eprintln!("terrain 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
+    }
+    Ok(())
+}
+
+fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
+    let mut ts: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
+    if ts.is_empty() {
+        let cov = coverage_of(out, args)?;
+        for x in 0..64u32 {
+            for y in 0..64u32 {
+                if pipeline::terrain_pack::near_coverage(&cov, 6, x, y, 20.0) {
+                    ts.push(Unit { z: 6, x, y });
+                }
+            }
+        }
+    }
+    let mut by_q: BTreeMap<(u32, u32), Vec<(u32, u32)>> = BTreeMap::new();
+    for t in &ts {
+        by_q.entry((t.x >> 3, t.y >> 3)).or_default().push((t.x, t.y));
+    }
+    for (q, list) in by_q {
+        let t = std::time::Instant::now();
+        let r = pipeline::slope_pack::build_q(out, q, &list)?;
+        eprintln!("slope 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
     }
     Ok(())
 }
