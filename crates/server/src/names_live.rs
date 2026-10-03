@@ -4,7 +4,6 @@
 //! map is in use (a request in the last ten minutes), so an idle server leaves the NAS alone.
 
 use crate::data::Data;
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -179,70 +178,6 @@ impl NamesState {
     /// Copy new and changed files from the NAS folder (once they've stopped changing), and drop
     /// local files gone from it. True when anything changed.
     fn sync(&self, data: &Data) -> anyhow::Result<bool> {
-        let (Some(root), Some(pool)) = (data.nas_root(), data.pool()) else { return Ok(false) };
-        if !pool.is_online() {
-            return Ok(false);
-        }
-        let src = root.join("translations");
-        let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
-        let mut changed = false;
-        let mut stack = vec![PathBuf::new()];
-        while let Some(rel) = stack.pop() {
-            let items = pool.list(&src.join(&rel))?;
-            for it in items {
-                if it.name.starts_with('.') || it.name.starts_with('@') || it.name.starts_with('#') {
-                    continue;
-                }
-                let r = rel.join(&it.name);
-                if it.is_dir {
-                    if it.name != "todo" {
-                        stack.push(r);
-                    }
-                    continue;
-                }
-                if !it.name.ends_with(".jsonl") {
-                    continue;
-                }
-                // Stable for 10 s: not being written.
-                let stable = it.modified.and_then(|m| SystemTime::now().duration_since(m).ok()).is_some_and(|d| d >= Duration::from_secs(10));
-                if !stable {
-                    seen.insert(r.clone());
-                    continue;
-                }
-                seen.insert(r.clone());
-                let local = self.dir.join(&r);
-                let same = std::fs::metadata(&local).ok().is_some_and(|m| m.len() == it.len && m.modified().ok() == it.modified);
-                if same {
-                    continue;
-                }
-                let bytes = pool.read_all(&src.join(&r))?;
-                if let Some(p) = local.parent() {
-                    std::fs::create_dir_all(p)?;
-                }
-                let tmp = local.with_extension("jsonl.tmp");
-                std::fs::write(&tmp, &bytes)?;
-                if let Some(m) = it.modified {
-                    let f = std::fs::File::options().write(true).open(&tmp)?;
-                    f.set_modified(m)?;
-                }
-                std::fs::rename(&tmp, &local)?;
-                changed = true;
-            }
-        }
-        // Local files the NAS no longer has.
-        let mut stack = vec![PathBuf::new()];
-        while let Some(rel) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(self.dir.join(&rel)) else { continue };
-            for e in rd.flatten() {
-                let r = rel.join(e.file_name());
-                if e.file_type().is_ok_and(|t| t.is_dir()) {
-                    stack.push(r);
-                } else if r.extension().is_some_and(|x| x == "jsonl") && !seen.contains(&r) {
-                    std::fs::remove_file(self.dir.join(&r)).ok();
-                    changed = true;
-                }
-            }
-        }
-        Ok(changed)
+        crate::livefolder::sync(data, "translations", &self.dir)
     }
 }

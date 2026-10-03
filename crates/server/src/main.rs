@@ -10,7 +10,9 @@
 
 mod cache;
 mod data;
+mod descriptions;
 mod details;
+mod livefolder;
 mod names_live;
 mod query;
 mod regions;
@@ -53,6 +55,8 @@ pub struct AppState {
     agent: Mutex<Option<(std::time::Instant, serde_json::Value)>>,
     /// The outlines of the latest OSM pass (the Regions panel).
     pub areas: regions::Areas,
+    /// The user's descriptions, laid over popup details.
+    pub descriptions: Arc<descriptions::Descriptions>,
     /// The current version tokens of the app's URLs, per (catalog generation, translations version).
     tokens: Mutex<Option<((u64, u64), Arc<std::collections::HashSet<String>>)>>,
 }
@@ -220,6 +224,8 @@ async fn main() -> Result<()> {
     }
     let names = names_live::NamesState::new(&home);
     names.spawn(d.clone());
+    let descs = descriptions::Descriptions::new(&home);
+    descs.spawn(d.clone());
     let up = updater::Updater::new(&home);
     eprintln!("app: {}", up.running().unwrap_or("development (not from the published app)"));
     up.spawn(d.clone());
@@ -234,6 +240,7 @@ async fn main() -> Result<()> {
         rail_freq: Mutex::new(None),
         agent: Mutex::new(None),
         areas: regions::Areas::default(),
+        descriptions: descs,
         tokens: Mutex::new(None),
     });
 

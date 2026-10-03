@@ -110,8 +110,9 @@ impl Details {
     }
 }
 
+/// Details change with the user's descriptions: cached a minute.
 fn json(body: &str) -> Response {
-    ([(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "public, max-age=3600")], body.to_string()).into_response()
+    ([(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "public, max-age=60")], body.to_string()).into_response()
 }
 
 pub async fn detail(State(s): State<S>, Path((layer, i)): Path<(String, u32)>) -> Response {
@@ -119,7 +120,7 @@ pub async fn detail(State(s): State<S>, Path((layer, i)): Path<(String, u32)>) -
     let s2 = s.clone();
     let Ok(Some(d)) = tokio::task::spawn_blocking(move || s2.details()).await else { return StatusCode::SERVICE_UNAVAILABLE.into_response() };
     match d.by.get(&(li as u8, i)) {
-        Some(b) => json(b),
+        Some(b) => json(&s.descriptions.apply(b)),
         None => StatusCode::NO_CONTENT.into_response(),
     }
 }
