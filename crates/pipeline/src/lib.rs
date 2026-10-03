@@ -14,6 +14,7 @@ pub mod marksjob;
 pub mod marks;
 pub mod osmpass;
 pub mod outlines;
+pub mod peaks;
 pub mod ovconv;
 pub mod out;
 pub mod roads;
