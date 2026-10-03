@@ -57,6 +57,8 @@ pub struct AppState {
     rail_freq: Mutex<Option<(u64, Arc<Vec<(u32, f32)>>)>>,
     /// The build agent's heartbeat (state/status.json), re-read at most every 30 s.
     agent: Mutex<Option<(std::time::Instant, serde_json::Value)>>,
+    /// This Mac's app folder (`~/Library/Application Support/scenic`): its own agent's status.
+    home: PathBuf,
     /// The outlines of the latest OSM pass (the Regions panel).
     pub areas: regions::Areas,
     /// The user's descriptions, laid over popup details.
@@ -182,6 +184,25 @@ impl AppState {
         v
     }
 
+    /// The build agent's status for the menu bar (tools/status): this Mac's own agent's when it runs
+    /// here (written every few seconds), else the heartbeat it copies to the NAS (on change, and
+    /// every five minutes); whether it's this Mac's; and, for this Mac's, the running job's log.
+    fn build_status(&self) -> serde_json::Value {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let own: Option<serde_json::Value> = std::fs::read(self.home.join("agent/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        let fresh = own.as_ref().and_then(|v| v["beat"].as_u64()).is_some_and(|b| now.saturating_sub(b) < 120);
+        let (status, local) = match own {
+            Some(v) if fresh => (v, true),
+            _ => (self.agent_status(), false),
+        };
+        let log = if local {
+            status["job"]["id"].as_str().map(|id| self.home.join("agent/logs").join(format!("{}.log", id.replace([' ', '/'], "-"))).display().to_string())
+        } else {
+            None
+        };
+        serde_json::json!({"status": status, "local": local, "now": now, "log": log})
+    }
+
     /// Whether the details, rail frequencies and roads' English names of this catalog are loaded.
     fn loaded(&self) -> bool {
         let g = self.generation();
@@ -251,6 +272,7 @@ async fn main() -> Result<()> {
         road_en: Mutex::new(None),
         rail_freq: Mutex::new(None),
         agent: Mutex::new(None),
+        home: home.clone(),
         areas: regions::Areas::default(),
         descriptions: descs,
         tokens: Mutex::new(None),
@@ -299,6 +321,7 @@ async fn main() -> Result<()> {
         .route("/api/areas/{id}", get(regions::one))
         .route("/api/coverage", get(regions::coverage))
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
+        .route("/api/build", get(build_h))
         .nest_service(
             "/fonts",
             tower::ServiceBuilder::new()
@@ -531,6 +554,12 @@ fn versions_fingerprint(s: &AppState) -> String {
         h.update(b"\n");
     }
     h.finalize().to_hex()[..12].to_string()
+}
+
+/// The build agent's status (AppState::build_status), for the menu bar.
+async fn build_h(State(s): State<S>) -> Response {
+    let body = tokio::task::spawn_blocking(move || s.build_status()).await.unwrap_or(serde_json::Value::Null);
+    ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
 }
 
 async fn catalog_h(State(s): State<S>) -> Response {

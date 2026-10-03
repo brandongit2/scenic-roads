@@ -9,6 +9,7 @@
 !/tools/app/
 !/tools/golden-marks/
 !/tools/cutover/
+!/tools/status/
 node_modules/
 /web/dist/
 /web/dist-new/

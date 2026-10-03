@@ -55,6 +55,11 @@ cp target/release/server target/release/scenic target/release/scenic-build targe
    target/release/tile target/release/scenic-metrics $dest.tmp/
 mkdir -p $dest.tmp/dem
 git ls-files dem | while read f; do cp "$f" "$dest.tmp/$f"; done
+# The menu bar item (tools/status): an app bundle, signed ad hoc.
+mkdir -p "$dest.tmp/Scenic.app/Contents/MacOS"
+swiftc -O -swift-version 5 -o "$dest.tmp/Scenic.app/Contents/MacOS/scenic-status" tools/status/main.swift
+cp tools/status/Info.plist "$dest.tmp/Scenic.app/Contents/Info.plist"
+codesign -s - --force "$dest.tmp/Scenic.app"
 rsync -a web/dist-publish/ $dest.tmp/web/
 rsync -a $fonts/ $dest.tmp/fonts/
 mv $dest.tmp $dest
