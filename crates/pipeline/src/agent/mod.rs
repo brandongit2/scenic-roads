@@ -616,14 +616,41 @@ impl Agent {
             }
         };
         let done = build::Keys::load(root);
-        let Some(w) = build::plan(&cov, date, &manifest, &done).into_iter().next() else { return Vec::new() };
+        // What jobs read from inputs/ beside the manifest: the ferry timetables.
+        let mut inputs: BTreeMap<String, String> = BTreeMap::new();
+        if let Ok(rd) = std::fs::read_dir(root.join("inputs/ferries/freq")) {
+            let mut files: Vec<(String, Vec<u8>)> = rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).ok()?))).collect();
+            files.sort();
+            let all: Vec<u8> = files.iter().flat_map(|(n, b)| n.bytes().chain(b.iter().copied())).collect();
+            inputs.insert("ferries-freq".into(), store::naming::hash16(&all));
+        }
+        let Some(w) = build::plan(&cov, date, &manifest, &done, &inputs).into_iter().next() else { return Vec::new() };
+        // Held for review: the catalog goes to catalog-held/ (no server reads it), once.
+        let held = root.join("inputs/hold-catalog").exists();
+        if w.step == "catalog" && held {
+            let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();
+            if done.catalog_held.as_deref() == Some(k.as_str()) {
+                waiting.push(Waiting { what: "Publishing the new map data".into(), why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into() });
+                return Vec::new();
+            }
+            let scratch = self.o.home.join("scratch").join("catalog");
+            return vec![JobSpec {
+                id: "catalog-held".into(),
+                what: "The new map data, held for review".into(),
+                cmd: vec![s(&self.o.bin.join("scenic-build")), "catalog".into(), "--root".into(), s(root), "--scratch".into(), s(&scratch), "--held".into()],
+                needs: Needs { ac: false, nas: true },
+                restart_after_sleep: true,
+                record: Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }),
+            }];
+        }
         let cache = self.o.home.join("cache");
         let scratch = self.o.home.join("scratch").join(&w.step);
         let mut cmd = vec![s(&self.o.bin.join("scenic-build")), w.step.clone(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
-        cmd.extend(w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks") && !t.ends_with("-root")));
+        cmd.extend(w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries") && !t.ends_with("-root")));
         match w.step.as_str() {
             "terrain" | "terrain-root" => cmd.extend(["--raw".into(), s(&cache.join("aws-terrarium"))]),
-            "pois" | "marks" => cmd.extend(["--pass".into(), date.to_string()]),
+            "pois" | "marks" | "stations" => cmd.extend(["--pass".into(), date.to_string()]),
+            "ferries" => cmd.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem"))]),
             "items" => cmd.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache".into(), s(&cache)]),
             "peaks" => cmd.extend([
                 "--pass".into(),
@@ -664,6 +691,9 @@ impl Agent {
             "peaks" => format!("Peaks' prominence and isolation ({n} area{})", if n == 1 { "" } else { "s" }),
             "items" => "Wikidata facts and Wikipedia pageviews for the landmarks".to_string(),
             "marks" => "Landmarks for the map".to_string(),
+            "roadunits" => "Which areas each road crosses".to_string(),
+            "stations" => "Rail stops near the regions".to_string(),
+            "ferries" => "Ferries near the regions".to_string(),
             "pack" => format!("Map tiles ({n} area{})", if n == 1 { "" } else { "s" }),
             "lo" => "Zoomed-out map tiles".to_string(),
             "terrain-root" | "slope-root" => "World-level terrain and slope".to_string(),

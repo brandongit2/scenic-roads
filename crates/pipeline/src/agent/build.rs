@@ -45,6 +45,10 @@ pub struct Keys {
     /// The served files the last catalog was made from.
     #[serde(default)]
     pub catalog: Option<String>,
+    /// The same for the last catalog held for review (`inputs/hold-catalog`: written to
+    /// catalog-held/, not served).
+    #[serde(default)]
+    pub catalog_held: Option<String>,
 }
 
 impl Keys {
@@ -79,7 +83,11 @@ impl Keys {
             self.catalog = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || matches!(step, "labels" | "trailends" | "summits" | "items" | "marks") {
+        if step == "catalog-held" {
+            self.catalog_held = done.first().map(|d| d.1.clone());
+            return;
+        }
+        if step.ends_with("-root") || matches!(step, "labels" | "trailends" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -227,6 +235,11 @@ pub const POIS_V: u32 = 1;
 
 /// The facts and pageviews of the candidates' items, per pass (dem/items.py).
 pub const ITEMS_V: u32 = 1;
+/// The road → units index from every unit's road values (the server's whole-road lookups).
+pub const ROADUNITS_V: u32 = 1;
+/// Rail stops (pipeline::ovconv::stations_job) and ferries (ferries_job) near the built units.
+pub const STATIONS_V: u32 = 1;
+pub const FERRIES_V: u32 = 1;
 /// The landmark points from the candidates (crate::marksjob).
 pub const MARKS_V: u32 = 1;
 
@@ -274,7 +287,9 @@ pub fn region_states(cov: &Coverage, regions: &[(String, Coverage)], date: &str,
 
 /// The work there is, in order, for the coverage `cov`, the pass of `date`, the build manifest
 /// `m` (logical → content) and what was done (`done`).
-pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Vec<Work> {
+/// `inputs`: digests of what jobs read from `inputs/` (not in the manifest), by name:
+/// "ferries-freq" (the ferry timetables).
+pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Vec<Work> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let by_q = coverage_tiles(cov);
     let mut work = Vec::new();
@@ -344,6 +359,21 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         if done.lo.get("items").map(String::as_str) != Some(k.as_str()) {
             work.push(Work { step: "items".into(), targets: vec![("items".into(), k)] });
             return work;
+        }
+    }
+
+    // The road → units index, once the units' road values are made.
+    {
+        let roads: Vec<String> = m.range("global/roads/".to_string()..).take_while(|(l, _)| l.starts_with("global/roads/")).map(|(l, c)| format!("{l}={c}")).collect();
+        if !roads.is_empty() {
+            let mut inputs = vec![format!("roadunits {ROADUNITS_V}")];
+            inputs.extend(roads);
+            let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+            let k = h(&refs);
+            if done.lo.get("roadunits").map(String::as_str) != Some(k.as_str()) {
+                work.push(Work { step: "roadunits".into(), targets: vec![("roadunits".into(), k)] });
+                return work;
+            }
         }
     }
 
@@ -418,6 +448,25 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         }
     }
 
+    // Rail stops and ferries near the built units, from the pass's sets.
+    let built: Vec<&str> = m.range("base/".to_string()..).take_while(|(l, _)| l.starts_with("base/")).map(|(l, _)| l.as_str()).collect();
+    if !built.is_empty() {
+        for (step, v, set, extra) in [
+            ("stations", STATIONS_V, "rail", String::new()),
+            ("ferries", FERRIES_V, "ferries", inputs.get("ferries-freq").cloned().unwrap_or_default()),
+        ] {
+            let Some(set_c) = m.get(&crate::osmpass::set_name(date, set)) else { continue };
+            let mut ins = vec![format!("{step} {v}"), set_c.clone(), extra];
+            ins.extend(built.iter().map(|s| s.to_string()));
+            let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+            let k = h(&refs);
+            if done.lo.get(step).map(String::as_str) != Some(k.as_str()) {
+                work.push(Work { step: step.into(), targets: vec![(step.to_string(), k)] });
+                return work;
+            }
+        }
+    }
+
     // The terrain and slope roots (z0–2), from their lo packs.
     for (layer, step) in [("terrain", "terrain-root"), ("slope", "slope-root")] {
         let mut inputs = vec![format!("{step} 1")];
@@ -464,7 +513,7 @@ mod tests {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         let mut done = Keys::default();
-        let w = plan(&c, "2026-09-28", &m, &done);
+        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].step, "terrain");
         assert_eq!(w[0].targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), vec!["3/3/2"]);
@@ -472,20 +521,20 @@ mod tests {
         // The terrain job's outputs.
         m.insert("layers/terrain/lo/3-3-2".into(), "layers/terrain/lo/3-3-2.1111111111111111.pack".into());
         m.insert("layers/terrain/hi/6-28-16".into(), "layers/terrain/hi/6-28-16.2222222222222222.pack".into());
-        let w = plan(&c, "2026-09-28", &m, &done);
+        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "slope");
         done.record("slope", &w[0].targets);
         // The root from the lo pack (no slope lo pack in this test: no slope root).
-        let w = plan(&c, "2026-09-28", &m, &done);
+        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "terrain-root");
         done.record("terrain-root", &w[0].targets);
-        let w = plan(&c, "2026-09-28", &m, &done);
+        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "catalog");
         done.record("catalog", &w[0].targets);
-        assert!(plan(&c, "2026-09-28", &m, &done).is_empty(), "nothing more to do");
+        assert!(plan(&c, "2026-09-28", &m, &done, &BTreeMap::new()).is_empty(), "nothing more to do");
         // New terrain content: slope again, then a catalog.
         m.insert("layers/terrain/hi/6-28-16".into(), "layers/terrain/hi/6-28-16.3333333333333333.pack".into());
-        let w = plan(&c, "2026-09-28", &m, &done);
+        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "slope");
     }
 
@@ -495,10 +544,10 @@ mod tests {
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         let mut done = Keys::default();
         // Terrain and slope done.
-        for w in [plan(&c, "d", &m, &done), {
+        for w in [plan(&c, "d", &m, &done, &BTreeMap::new()), {
             let mut d2 = done.clone();
-            d2.record("terrain", &plan(&c, "d", &m, &done)[0].targets);
-            plan(&c, "d", &m, &d2)
+            d2.record("terrain", &plan(&c, "d", &m, &done, &BTreeMap::new())[0].targets);
+            plan(&c, "d", &m, &d2, &BTreeMap::new())
         }] {
             for x in &w {
                 done.record(&x.step, &x.targets);
@@ -506,7 +555,7 @@ mod tests {
         }
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         m.insert("sources/osm/d/pieces/6-40-20".into(), "sources/osm/d/pieces/6-40-20.5555555555555555.osm.pbf".into());
-        let w = plan(&c, "d", &m, &done);
+        let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "unit");
         assert_eq!(w[0].targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), vec!["6/28/16"]);
     }

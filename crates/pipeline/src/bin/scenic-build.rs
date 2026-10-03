@@ -108,7 +108,9 @@ fn main() -> Result<()> {
             let n = out.verify(&SSH, NAS_ROOT)?;
             eprintln!("verified {n} uploads");
         }
-        "catalog" => catalog(&mut out)?,
+        // catalog [--held]: held, it goes to catalog-held/, which no server reads (a build to compare
+        // before it's switched to: inputs/hold-catalog).
+        "catalog" => catalog(&mut out, args.iter().any(|a| a == "--held"))?,
         "unit" => unit_step(&mut out, &args, &scratch)?,
         "pois" => pois_step(&mut out, &args, &scratch)?,
         "roadunits" => roadunits(&mut out)?,
@@ -569,7 +571,7 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
     })
 }
 
-fn catalog(out: &mut Out) -> Result<()> {
+fn catalog(out: &mut Out, held: bool) -> Result<()> {
     let mut layers: BTreeMap<String, LayerOut> = BTreeMap::new();
     let (mut base, mut roads, mut hidata, mut global, mut basemap) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), Vec::new());
     let mut markdata = BTreeMap::new();
@@ -656,7 +658,7 @@ fn catalog(out: &mut Out) -> Result<()> {
         let size = std::fs::metadata(out.path(n)).with_context(|| format!("{l}: {n} is missing on the NAS"))?.len();
         files.insert(l.clone(), serde_json::json!({"file": n, "size": size, "fmt": 1}));
     }
-    let dir = out.root().join("catalog");
+    let dir = out.root().join(if held { "catalog-held" } else { "catalog" });
     std::fs::create_dir_all(&dir)?;
     let n = store::catalog::next_n(&dir)?;
     let cat = serde_json::json!({
@@ -1067,7 +1069,7 @@ fn roadunits(out: &mut Out) -> Result<()> {
     let mut pairs: Vec<(u64, u64)> = Vec::new();
     let units: Vec<(Unit, String)> = out.manifest.iter().filter_map(|(k, v)| k.strip_prefix("global/roads/").and_then(Unit::parse).map(|u| (u, v.clone()))).collect();
     for (u, content) in &units {
-        let r = store::sect::SectReader::open(store::range::MmapFile::open(&out.path(content))?)?;
+        let r = store::sect::SectReader::open(store::range::PlainFile::open(&out.path(content))?)?;
         let recs: Vec<pipeline::legacy::RoadRec> = r.read_pod("roads")?;
         pairs.extend(recs.iter().map(|x| (x.road, u.key())));
     }
