@@ -8,6 +8,8 @@ pub mod elev;
 pub mod hipack;
 pub mod layers;
 pub mod legacy;
+pub mod markconv;
+pub mod marks;
 pub mod osmpass;
 pub mod outlines;
 pub mod out;

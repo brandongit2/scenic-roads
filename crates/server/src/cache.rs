@@ -56,8 +56,8 @@ impl Packs {
 }
 
 /// Name properties in our layer files, and their own-English properties.
-const NAME_KEYS: [&str; 2] = ["name", "n"];
-const EN_KEYS: [&str; 3] = ["en", "name_en", "name:en"];
+pub(crate) const NAME_KEYS: [&str; 2] = ["name", "n"];
+pub(crate) const EN_KEYS: [&str; 3] = ["en", "name_en", "name:en"];
 
 /// The first coordinate of a GeoJSON geometry.
 fn first_point(g: &serde_json::Value) -> Option<[f64; 2]> {
@@ -73,7 +73,7 @@ fn first_point(g: &serde_json::Value) -> Option<[f64; 2]> {
 
 /// Sets `<prefix>main` (when it differs from the name) and `<prefix>sub` (when there is one) on an
 /// object, for the name in `name_key`. Whether it set either.
-fn put_names(s: &AppState, o: &mut serde_json::Map<String, serde_json::Value>, name_key: &str, own: Option<&str>, at: [f64; 2], prefix: &str) -> bool {
+pub(crate) fn put_names(s: &AppState, o: &mut serde_json::Map<String, serde_json::Value>, name_key: &str, own: Option<&str>, at: [f64; 2], prefix: &str) -> bool {
     let Some(name) = o.get(name_key).and_then(|x| x.as_str()).filter(|x| !x.is_empty()).map(str::to_owned) else { return false };
     let d = s.names.display(names::Kind::Place, &name, own, at[0], at[1]);
     let mut set = false;

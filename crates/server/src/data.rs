@@ -98,6 +98,7 @@ pub struct Data {
     sects: Mutex<Bounded<Arc<SectView>>>,
     bases: Mutex<Bounded<Arc<BaseView>>>,
     his: Mutex<Bounded<Arc<HiView>>>,
+    marks: Mutex<Bounded<Arc<crate::markview::MarkView>>>,
     roadunits: Mutex<Option<(String, Arc<RoadUnits>)>>,
     globals: Mutex<Bounded<Arc<Vec<u8>>>>,
     /// Set when the catalog changes, so caches built from the old one are dropped.
@@ -134,6 +135,7 @@ impl Data {
             sects: Mutex::new(Bounded::with_bytes(512, SECTS_BYTES)),
             bases: Mutex::new(Bounded::with_bytes(256, BASES_BYTES)),
             his: Mutex::new(Bounded::new(512)),
+            marks: Mutex::new(Bounded::new(4096)),
             roadunits: Mutex::new(None),
             globals: Mutex::new(Bounded::new(128)),
             generation: Default::default(),
@@ -309,6 +311,19 @@ impl Data {
         Ok(Some(v))
     }
 
+    /// A z6 tile's landmark points ("6/32/21"), cached by content.
+    pub fn markdata(&self, tile: &str) -> Result<Option<Arc<crate::markview::MarkView>>> {
+        let cat = self.catalog();
+        let Some(l) = cat.markdata.get(tile) else { return Ok(None) };
+        let Some(content) = self.content(l) else { return Ok(None) };
+        if let Some(v) = self.marks.lock().unwrap().get(&content) {
+            return Ok(Some(v));
+        }
+        let v = Arc::new(crate::markview::MarkView::new(SectView::open(self.src(&content)?)?, content.clone()).with_context(|| format!("markdata {content}"))?);
+        self.marks.lock().unwrap().put(content, v.clone());
+        Ok(Some(v))
+    }
+
     /// The road → units index.
     pub fn roadunits(&self) -> Result<Option<Arc<RoadUnits>>> {
         let Some(content) = self.content("global/roadunits") else { return Ok(None) };
@@ -472,6 +487,7 @@ impl Data {
         self.sects.lock().unwrap().retain(|_, v| !v.is_remote());
         self.bases.lock().unwrap().retain(|_, v| !v.is_remote());
         self.his.lock().unwrap().retain(|_, v| !v.is_remote());
+        self.marks.lock().unwrap().retain(|_, v| !v.is_remote());
         // The road → units index too: reopened from the mirror on next use (offline then works).
         let mut ru = self.roadunits.lock().unwrap();
         if ru.as_ref().is_some_and(|(_, r)| r.is_remote()) {

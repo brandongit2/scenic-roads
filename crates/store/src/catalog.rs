@@ -56,6 +56,9 @@ pub struct Catalog {
     pub roads: BTreeMap<String, String>,
     #[serde(default)]
     pub hidata: BTreeMap<String, String>,
+    /// Landmark points per z6 tile ("6/x/y" → logical name; docs/phase5.md).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub markdata: BTreeMap<String, String>,
     /// Small worldwide files by what they are (e.g. "pois.json" → logical name).
     #[serde(default)]
     pub global: BTreeMap<String, String>,

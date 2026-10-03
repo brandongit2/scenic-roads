@@ -139,6 +139,49 @@ Climb   { u64 way (OSM id at the start); u64 label (OSM id at the middle); f32 g
 The record types are `roadcore::packs`.
 ```
 
+## Landmark points (`markdata/6-<x>-<y>.<h>.sect`): per z6 tile (docs/phase5.md)
+
+Every point of the 8 kinds (`pipeline::marks::KINDS`) positioned in the tile, sorted by kind, then
+id. Meta: `{"fmt": 1, "tile": "6/x/y", "block": 256, "fields": {kind: [prop, …]}}` (a kind's filter
+properties; a reader checks them against its own).
+
+| Section | Record | Notes |
+|---|---|---|
+| `kinds` | `[u32; 2]` × 8 | per kind: first row, count |
+| `ids` | `u64` | the point's id (phase5.md "Ids"), sorted within its kind |
+| `pts` | `MarkPt` (28 B) | |
+| `fvals` | `f64` | per kind, per field (column), its rows' values; NaN: none |
+| `props`, `props_idx` | zstd blocks; `[u64; 2]` (offset, length) per block | 256 rows a block, each an objects block of the rows' lean properties |
+| `info`, `info_idx` | likewise | popup records (empty: none) |
+| `summits` | `SummitRec` (24 B) | the named peaks with a height in the tile, with their place in the worldwide list |
+| `summit_names` | objects block | their names |
+
+```
+MarkPt    { i32 lon; i32 lat; f32 fa; f32 ia (20000 unknown); f32 mz (NaN none); u32 rank (the
+            tie-break: the kind's order); u8 kz (lowest zoom whose thinned tile keeps it, 6 none);
+            u8 class; u8 tier (heritage, TIERS); u8 flags (1 named, 2 World Heritage component,
+            4 picnic site) }                                                     // 28 bytes
+SummitRec { u32 rank; i32 lon; i32 lat; u32 pad; f64 ele }                        // 24 bytes
+objects block: u32 count, u32 × (count + 1) offsets, then the JSON objects back to back
+```
+
+## Marks tile (RDMT v1): thinned tiles, z6 blocks, served gzip'd
+
+`layers/marks-<kind>/{root,lo}` packs hold the thinned tiles of zooms 0–5 (encoding `rdmt`); the
+server makes z6 blocks from markdata. Little-endian; each column starts 8-byte aligned.
+
+```
+0   "RDMT"; u32 version (1); u32 n (points); u32 nf (fields); u32 nc (speck cells); u32 props bytes;
+    u64 reserved
+32  f64 ids[n]; f64 fvals[nf][n]; i32 lon[n]; i32 lat[n]; f32 fa[n]; f32 ia[n]; f32 mz[n];
+    u32 rank[n]; u8 kz[n]; u8 class[n]; u8 tier[n]; u8 flags[n];
+    u32 cell code[nc] (Morton code within the tile at zoom z + 10); u32 cell count[nc];
+    u8 cell tier[nc]; u32 props offsets[n + 1]; the props (a JSON object per point)
+```
+
+A thinned tile at zoom z holds the points with kz ≤ z, and the rest as speck cells. Served props
+carry `main`/`sub` (and `cmain`/`csub` from `cn`) as the layer files do.
+
 ## Catalog (`catalog/<n>.json.zst`)
 
 zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. Readers list
@@ -157,6 +200,7 @@ zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. 
   "base": {"6/32/21": "<logical>"},
   "roads": {"6/32/21": "<logical>"},
   "hidata": {"6/32/21": "<logical>"},
+  "markdata": {"6/32/21": "<logical>"},
   "global": {"pois.json": "<logical>"},
   "meta": {"…": "the map's meta, added up from the units' summaries: minzoom, maxzoom, bounds, ways, vertices, elev_min, elev_max, elev_hist_10m_km, rail_km, classes, built"},
   "credits": [],
@@ -188,6 +232,11 @@ queue/                  region edits waiting for the NAS
 - Ways: `/api/way/{id}?at=lon,lat`, `/api/profile/{id}?at=lon,lat`, `/api/road/{id}?at=lon,lat`.
   `at` picks the hi pack whose `here` holds the way.
 - `/api/railfreq`: sorted `(u32 way id, f32 trains a day)` pairs.
+- Landmarks (docs/phase5.md): `POST /api/marks/view` (the In view statistics, and `extra`);
+  `/api/marks/tile/{kind}/{z}/{x}/{y}` (z ≤ 5) and `/api/marks/block/{kind}/6/{x}/{y}` (RDMT);
+  `/api/marks/specks/{kind}/{z}/{x}/{y}?q=` (filtered speck cells); `/api/marks/count?kind=&q=`;
+  `/api/marks/detail/{kind}/{id}?at=lon,lat`. `/api/catalog` lists `marks`: the tiles with points,
+  the kinds with tiles, and their totals.
 - `/api/catalog`: the catalog's `n`, layers' zoom ranges, meta, credits, coverage, the NAS status,
   and translation versions per area.
 - Names: every response carrying a name carries `main` and, when there is one, `sub`.

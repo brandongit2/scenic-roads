@@ -14,6 +14,8 @@ mod descriptions;
 mod details;
 mod livefolder;
 mod names_live;
+mod marks;
+mod markview;
 mod pages;
 mod query;
 mod regions;
@@ -259,6 +261,12 @@ async fn main() -> Result<()> {
         .route("/api/railfreq", get(rail_freq_h))
         .route("/api/detail/{layer}/{i}", get(details::detail))
         .route("/api/park", get(details::park))
+        .route("/api/marks/view", axum::routing::post(marks::view))
+        .route("/api/marks/tile/{kind}/{z}/{x}/{y}", get(marks::tile))
+        .route("/api/marks/block/{kind}/{z}/{x}/{y}", get(marks::block))
+        .route("/api/marks/specks/{kind}/{z}/{x}/{y}", get(marks::specks))
+        .route("/api/marks/count", get(marks::count))
+        .route("/api/marks/detail/{kind}/{id}", get(marks::detail))
         .route("/api/meta", get(meta_h))
         .route("/api/catalog", get(catalog_h))
         .route("/api/way/{id}", get(ways::way_h))
@@ -495,6 +503,20 @@ async fn catalog_h(State(s): State<S>) -> Response {
     let s2 = s.clone();
     let agent = tokio::task::spawn_blocking(move || s2.agent_status()).await.unwrap_or(serde_json::Value::Null);
     let cat = s.data.catalog();
+    // Landmarks by view (docs/phase5.md): the z6 tiles with points, the kinds with tiles, and their
+    // totals; absent while the catalog has only today's whole files.
+    let s2 = s.clone();
+    let marks = tokio::task::spawn_blocking(move || -> serde_json::Value {
+        let cat = s2.data.catalog();
+        if cat.markdata.is_empty() {
+            return serde_json::Value::Null;
+        }
+        let kinds: Vec<&str> = cat.layers.keys().filter_map(|l| l.strip_prefix("marks-")).collect();
+        let summary = s2.data.global("global/marks/summary").ok().flatten().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).unwrap_or_default();
+        serde_json::json!({"v": cat.n, "tiles": cat.markdata.keys().collect::<Vec<_>>(), "kinds": kinds, "summary": summary})
+    })
+    .await
+    .unwrap_or(serde_json::Value::Null);
     let fingerprint = versions_fingerprint(&s);
     // Bytes read from the NAS held in memory (files the mirror doesn't have yet).
     let (pages_b, sections_b) = pages::held();
@@ -513,6 +535,7 @@ async fn catalog_h(State(s): State<S>) -> Response {
         "agent": agent,
         "names": s.names.versions(),
         "v": fingerprint,
+        "marks": marks,
     });
     ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
 }

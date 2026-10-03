@@ -22,6 +22,8 @@
 //!   terrain-root, slope-root     their z0–2 root packs, from the lo packs' z3 tiles
 //!   labels [--pass d] [--dem dir]  the labels by importance, worldwide, from the pass's labels set
 //!                                (dem/labels.py), as the labels layer's packs
+//!   convert-legacy-marks         today's stops & sights (global/legacy) as markdata per z6 tile
+//!                                and thinned tiles per kind (docs/phase5.md)
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalog                      publish a catalog of the build manifest
@@ -106,6 +108,10 @@ fn main() -> Result<()> {
         "terrain" => terrain_step(&mut out, &args)?,
         "slope" => slope_step(&mut out, &args)?,
         "labels" => labels_step(&mut out, &args, &scratch)?,
+        "convert-legacy-marks" => {
+            let c = pipeline::markconv::convert(&mut out)?;
+            eprintln!("marks: {} points, {} markdata tiles, {} thinned tiles", c.points, c.tiles, c.thinned);
+        }
         "terrain-root" => {
             let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
             let n = pipeline::terrain_pack::build_root(&mut out, &pipeline::terrain_pack::RawTiles::new(&raw_dir))?;
@@ -476,6 +482,8 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
         l if l.starts_with("trees-") => (4, 12),
         // Analysis grids, not served.
         l if l.starts_with("grid-") => (11, 11),
+        // Thinned tiles; z6 blocks come from markdata.
+        l if l.starts_with("marks-") => (0, 5),
         _ => return None,
     })
 }
@@ -483,6 +491,7 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
 fn catalog(out: &mut Out) -> Result<()> {
     let mut layers: BTreeMap<String, LayerOut> = BTreeMap::new();
     let (mut base, mut roads, mut hidata, mut global, mut basemap) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), Vec::new());
+    let mut markdata = BTreeMap::new();
     // The basemap: the newest pass's worldwide archive when there is one, else today's (legacy)
     // basemap and its parts; never both (the server merges every archive listed).
     let world = out.manifest.keys().filter(|k| k.starts_with("layers/basemap/world-")).max().cloned();
@@ -503,6 +512,7 @@ fn catalog(out: &mut Out) -> Result<()> {
                     "labels" => "mvt",
                     l if l.starts_with("trees-") => "terrarium-webp",
                     l if l.starts_with("grid-") => "u8-zstd",
+                    l if l.starts_with("marks-") => "rdmt",
                     _ => "unknown",
                 };
                 let zs = match *scope {
@@ -520,6 +530,9 @@ fn catalog(out: &mut Out) -> Result<()> {
             }
             ["hidata", t] => {
                 hidata.insert(Unit::parse(t).context("tile")?.slash(), logical.clone());
+            }
+            ["markdata", t] => {
+                markdata.insert(Unit::parse(t).context("tile")?.slash(), logical.clone());
             }
             ["global", ..] => {
                 global.insert(logical.trim_start_matches("global/").to_string(), logical.clone());
@@ -546,6 +559,7 @@ fn catalog(out: &mut Out) -> Result<()> {
         (l.starts_with("layers/") && (!l.starts_with("layers/basemap/") || basemap.iter().any(|b| b == l)))
             || l.starts_with("base/")
             || l.starts_with("hidata/")
+            || l.starts_with("markdata/")
             || l.starts_with("global/")
             || global.values().any(|g| g == l)
     };
@@ -569,6 +583,7 @@ fn catalog(out: &mut Out) -> Result<()> {
         "base": base,
         "roads": roads,
         "hidata": hidata,
+        "markdata": markdata,
         "global": global,
         "meta": meta,
         "credits": [],

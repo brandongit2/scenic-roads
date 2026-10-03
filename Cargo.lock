@@ -760,6 +760,7 @@ dependencies = [
  "toml",
  "ureq",
  "weezl",
+ "xxhash-rust",
  "zstd",
 ]
 
@@ -1112,6 +1113,7 @@ dependencies = [
  "tower",
  "tower-http",
  "unicode-normalization",
+ "xxhash-rust",
  "zstd",
 ]
 
