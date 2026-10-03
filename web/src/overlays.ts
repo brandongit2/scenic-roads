@@ -151,6 +151,9 @@ export class Overlays {
   private again = false;
   private countId = 0;
   private countFor = new Map<number, OverlayKey>();
+  private countLatest = new Map<OverlayKey, number>();
+  /** By view: the server has newer points than the catalog read (main.ts: read it now). */
+  onStale: (() => void) | null = null;
   /** Feature counts and areas of the polygon overlays (layer-summary.json), for their counts. */
   private summary: Record<string, { n: number; a: (number | null)[] }> | null = null;
   private summaryLoading = false;
@@ -186,9 +189,11 @@ export class Overlays {
   /** The catalog's points by view (/api/catalog `marks`, null: none): the point sources whose kind
    * has them are loaded by view from then on (a new catalog: again, from its tiles). */
   setMarks(cfg: MarksCfg | null) {
-    // Every kind or none: the In view statistics come from one place.
-    const kinds = cfg?.kinds ?? [];
-    if (cfg && !MARK_KINDS.every((k) => kinds.includes(k))) cfg = null;
+    // Every kind or none, so the In view statistics come from one place: by view whenever the
+    // catalog has the points' tiles (a kind without points has no thinned tiles, and is still by
+    // view).
+    if (cfg && !cfg.tiles.length) cfg = null;
+    if (cfg) cfg = { ...cfg, kinds: MARK_KINDS };
     if (this.marks !== undefined && (this.marks?.v ?? null) === (cfg?.v ?? null)) return;
     const was = this.marks;
     this.marks = cfg;
@@ -225,8 +230,16 @@ export class Overlays {
     }
     // Longitudes into −180…180 (west > east: across the antimeridian), the whole world past 360°.
     const wrap = (x: number) => ((((x + 180) % 360) + 360) % 360) - 180;
-    box = box[2] - box[0] >= 360 ? [-180, box[1], 180, box[3]] : [wrap(box[0]), box[1], wrap(box[2]), box[3]];
-    this.worker.postMessage({ type: 'view', zoom: this.map.getZoom(), box, srcs } satisfies LandmarkRequest);
+    const norm = (b: [number, number, number, number]): [number, number, number, number] =>
+      b[2] - b[0] >= 360 ? [-180, Math.max(-85.06, b[1]), 180, Math.min(85.06, b[3])] : [wrap(b[0]), Math.max(-85.06, b[1]), wrap(b[2]), Math.min(85.06, b[3])];
+    box = norm(box);
+    // A tilted view sees ground beyond the outline's box, to the horizon: coarser tiles there.
+    let far: [number, number, number, number] | null = null;
+    if (this.map.getPitch() > 45) {
+      const b = this.map.getBounds();
+      far = norm([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]);
+    }
+    this.worker.postMessage({ type: 'view', zoom: this.map.getZoom(), box, far, srcs } satisfies LandmarkRequest);
   }
 
   /** Layer files with new versions (a new catalog): the sources that have them get them again, the
@@ -278,13 +291,20 @@ export class Overlays {
     if (m.type === 'tile' || m.type === 'tileFailed') {
       tileReplies.get(m.id)?.(m);
       tileReplies.delete(m.id);
+    } else if (m.type === 'refresh') {
+      // By view: name tiles whose extras changed (their hit-testing), made again.
+      this.map.refreshTiles(m.src, m.tiles.map(([z, x, y]) => ({ z, x, y })));
+    } else if (m.type === 'stale') {
+      // The server has newer points: the catalog is read now (setMarks follows).
+      this.onStale?.();
     } else if (m.type === 'dots') {
-      // By view: the source's points as drawn now (the view's tiles changed).
+      // By view: the source's points as drawn now (the view's tiles changed), with their flags.
       const src = m.src;
       const first = this.indexed.get(src) !== 'ready';
       this.indexed.set(src, 'ready');
       this.dots.setSource(src, m.dots);
-      this.requestMasks([src]);
+      if (m.vis) this.dots.setMask(src, m.vis);
+      else this.requestMasks([src]);
       if (first) {
         for (const [key] of OVERLAYS) if (OVERLAY_SOURCE[key] === src && this.state?.overlays[key]) this.refreshStatus(key, src);
         this.prominence();
@@ -317,11 +337,16 @@ export class Overlays {
     } else if (m.type === 'count') {
       const k = this.countFor.get(m.id);
       this.countFor.delete(m.id);
-      if (k && this.state?.overlays[k]) this.layers.setOverlayStatus(k, m.n === m.of ? fmt.n(m.of) : `${fmt.n(m.n)} of ${fmt.n(m.of)}`);
+      // (Only the newest count asked for a kind: an older one can answer after it.)
+      if (k && this.state?.overlays[k] && this.countLatest.get(k) === m.id) this.layers.setOverlayStatus(k, m.n === m.of ? fmt.n(m.of) : `${fmt.n(m.n)} of ${fmt.n(m.of)}`);
     } else if (m.type === 'mask') {
       if (this.maskIds.get(m.src) === m.id) this.dots.setMask(m.src, m.vis);
     } else if (m.type === 'result') {
-      if (m.id === this.lastQuery) {
+      if (m.id === this.lastQuery && m.failed) {
+        // Unanswered: what the panel shows stays; asked again in a moment.
+        this.answered = m.id;
+        setTimeout(() => this.state && this.prominenceSoon(this.state), 2000);
+      } else if (m.id === this.lastQuery) {
         this.answered = m.id;
         this.applyResult(m);
         if (this.again) {
@@ -569,6 +594,7 @@ export class Overlays {
       if (this.indexed.get(src) !== 'ready') return; // shown as loading until indexed
       const id = ++this.countId;
       this.countFor.set(id, k);
+      this.countLatest.set(k, id);
       this.worker.postMessage({ type: 'count', id, kind: this.kindQuery(k, src, '') } satisfies LandmarkRequest);
       return;
     }
@@ -786,8 +812,9 @@ export class Overlays {
         notice.textContent = q.notice ?? '';
       };
       fill(p);
-      const ref = { layer: 'heritage' as const, i: Number(p.i) };
-      if (Number.isFinite(ref.i)) loadDetail(ref).then((d) => d?.props && fill({ ...p, ...d.props }));
+      // The site's record: by its index (whole files), or by kind, id and place (by view).
+      const ref = p.mid !== undefined ? summarise(f, at)?.ref : Number.isFinite(Number(p.i)) ? ({ layer: 'heritage', i: Number(p.i) } as const) : undefined;
+      if (ref) loadDetail(ref).then((d) => d?.props && fill({ ...p, ...d.props }));
     } else if (lid.startsWith('poi-')) {
       put(
         h('div', { class: 'ttl' }, named(p.name, p) || POI_LABEL[p.kind] || 'Point of interest'),

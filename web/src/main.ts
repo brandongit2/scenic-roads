@@ -1906,6 +1906,8 @@ async function main() {
     // The catalog and the build Mac from now on (a new catalog finds the style's sources there).
     watch = new CatalogWatch(meta.catalog);
     watch.onSwitch = newCatalog;
+    // Newer points on the server than the page has (a 409): the catalog now, not in a minute.
+    overlays.onStale = () => void watch?.poll();
     new BuildStatus(strip.buildStatus, watch);
     // How far each region is built, from the build Mac's heartbeat.
     const w = watch;

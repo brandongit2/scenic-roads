@@ -244,8 +244,8 @@ const AGE_REF: f64 = 2030.0;
 
 pub fn axis_pos(axis: Axis, v: f64) -> f64 {
     match axis {
-        Axis::Log => v.max(1e-9).log10(),
-        Axis::Age => -(AGE_REF - v).max(1.0).log10(),
+        Axis::Log => log10_js(v.max(1e-9)),
+        Axis::Age => -log10_js((AGE_REF - v).max(1.0)),
         Axis::Lin => v,
     }
 }

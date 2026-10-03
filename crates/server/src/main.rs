@@ -516,7 +516,7 @@ async fn catalog_h(State(s): State<S>) -> Response {
         }
         let kinds: Vec<&str> = cat.layers.keys().filter_map(|l| l.strip_prefix("marks-")).collect();
         let summary = s2.data.global("global/marks/summary").ok().flatten().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()).unwrap_or_default();
-        serde_json::json!({"v": cat.n, "tiles": cat.markdata.keys().collect::<Vec<_>>(), "kinds": kinds, "summary": summary})
+        serde_json::json!({"v": marks::marks_version(&s2), "tiles": cat.markdata.keys().collect::<Vec<_>>(), "kinds": kinds, "summary": summary})
     })
     .await
     .unwrap_or(serde_json::Value::Null);

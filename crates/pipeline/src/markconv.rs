@@ -114,13 +114,20 @@ fn heritage_points(out: &Out, pts: &mut Vec<Pt>) -> Result<()> {
         let fnum = |key: &str| props.get(key).and_then(Value::as_f64);
         let level = fnum("level");
         let tier = marks::heritage_tier(props.get("t").and_then(Value::as_str), level);
-        let tier_i = marks::tier_index(tier).unwrap_or(marks::tier_index("m.des").unwrap());
+        let tier_i = marks::tier_index(tier).with_context(|| format!("layer-heritage #{rank}: unknown tier {tier:?}"))?;
         // dotData's class: level class (World Heritage, national top grade, the rest) + 3 × group.
         let l = level.filter(|v| *v != 0.0 && !v.is_nan()).unwrap_or(5.0);
         let group = ["w", "n", "p", "m"].iter().position(|g| tier.starts_with(g)).unwrap_or(3) as u8;
         let class = (if l == 1.0 { 0 } else if l == 2.0 { 1 } else { 2 }) + 3 * group;
         let named = props.get("name").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
-        let component = props.get("pt").is_some_and(|v| !v.is_null() && v != &Value::Bool(false) && v.as_f64() != Some(0.0));
+        // JavaScript's truthiness, as the app's index reads `pt` (an empty string isn't a part).
+        let component = props.get("pt").is_some_and(|v| match v {
+            Value::Null => false,
+            Value::Bool(b) => *b,
+            Value::Number(n) => n.as_f64().is_some_and(|x| x != 0.0 && !x.is_nan()),
+            Value::String(s) => !s.is_empty(),
+            _ => true,
+        });
         let pt = MarkPt {
             lon: marks::e7(lon),
             lat: marks::e7(lat),

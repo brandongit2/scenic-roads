@@ -39,8 +39,9 @@ export interface KindQuery {
 export type LandmarkRequest =
   /** Points by view (docs/phase5.md) from the server at `base` (null: whole files, as before). */
   | { type: 'marks'; cfg: MarksCfg | null; base: string }
-  /** By view: the map's zoom and box (lon/lat), and the point sources shown. */
-  | { type: 'view'; zoom: number; box: [number, number, number, number]; srcs: string[] }
+  /** By view: the map's zoom, the ground in view (lon/lat box), in a tilted view the visible area
+   * beyond it, and the point sources shown. */
+  | { type: 'view'; zoom: number; box: [number, number, number, number]; far: [number, number, number, number] | null; srcs: string[] }
   | { type: 'load'; src: string; url: string }
   | { type: 'summits'; url: string }
   | { type: 'query'; id: number; outline: [number, number][]; bounds: [number, number, number, number]; balance: number; kinds: KindQuery[]; top: number;
@@ -58,13 +59,20 @@ export type LandmarkRequest =
 export type LandmarkResponse =
   /** dots: the points laid out for drawing (dots.ts, dotlayout.ts). */
   | { type: 'loaded'; src: string; ok: boolean; counts: Record<string, number>; dots?: DotData }
-  /** By view: a source's points as drawn now (again whenever the tiles in view change). */
-  | { type: 'dots'; src: string; dots: DotData }
+  /** By view: a source's points as drawn now (again whenever the tiles in view change), with
+   * their filter flags when its filters are known. */
+  | { type: 'dots'; src: string; dots: DotData; vis: Uint32Array | null }
+  /** By view: name tiles (z, x, y) to make again (extras came or went in them). */
+  | { type: 'refresh'; src: string; tiles: [number, number, number][] }
+  /** By view: the server has newer points (or names) than these: the catalog should be read. */
+  | { type: 'stale' }
   /** The dots' filter flags (dotlayout.ts visWords). */
   | { type: 'mask'; id: number; src: string; vis: Uint32Array }
   | {
       type: 'result';
       id: number;
+      /** The server couldn't answer (the panel keeps the last answer; asked again soon). */
+      failed?: boolean;
       /** The scores in view as a histogram (HIST_BINS over 0–1), how many, and the scores at the
        * query's ranks (fewer in view: the least prominent's). */
       hist: Float64Array;
@@ -129,6 +137,8 @@ const post = (m: LandmarkResponse, transfer: Transferable[] = []) => (self as un
 /** Points by view, when the catalog has them. */
 let mv: MarksView | null = null;
 let mvBase = '';
+/** The newest view query sent: an older answer's extras are left (the newer one knows better). */
+let lastViewQuery = 0;
 const kindOf = (src: string) => (src === 'heritage' ? 'heritage' : src.slice(5));
 const srcOf = (kind: string) => (kind === 'heritage' ? 'heritage' : `pois-${kind}`);
 /** Ids by view are mark ids (to 2^52); else the whole file's index. */
@@ -138,14 +148,22 @@ self.onmessage = async (ev: MessageEvent<LandmarkRequest>) => {
   const m = ev.data;
   if (m.type === 'marks') {
     mvBase = m.base;
-    mv = m.cfg ? new MarksView(m.cfg, m.base, (set, dots) => post({ type: 'dots', src: srcOf(set.kind), dots }, [dots.draw, dots.hpos, dots.morton.buffer, dots.chunks.buffer])) : null;
+    mv?.dispose();
+    mv = m.cfg
+      ? new MarksView(
+          m.cfg,
+          m.base,
+          (set, dots, vis) => post({ type: 'dots', src: srcOf(set.kind), dots, vis }, [dots.draw, dots.hpos, dots.morton.buffer, dots.chunks.buffer, ...(vis ? [vis.buffer] : [])]),
+          (kind, tiles) => post({ type: 'refresh', src: srcOf(kind), tiles }),
+        )
+      : null;
     // By view, the name tiles asked for meanwhile are answered now; else they wait for their
     // source's file (load), as before.
     if (mv) for (const w of tileWaits.values()) for (const t of w.splice(0)) tile(t);
     return;
   }
   if (m.type === 'view') {
-    mv?.view(m.zoom, m.box, m.srcs.map(kindOf));
+    mv?.view(m.zoom, m.box, m.far, m.srcs.map(kindOf));
     return;
   }
   if (mv && m.type !== 'load' && m.type !== 'summits') return byView(mv, m);
@@ -214,16 +232,20 @@ async function byView(v: MarksView, m: LandmarkRequest) {
   if (m.type === 'query') {
     const kinds = m.kinds.map((q) => ({ k: q.k, layer: q.layer, filters: q.filters, keepUnknown: q.keepUnknown, hists: !!q.hists, off: q.off ?? [] }));
     const body = { outline: m.outline, bounds: m.bounds, balance: m.balance, kinds, top: m.top, ranks: m.ranks, tz: v.tz < 0 ? 6 : v.tz, range: m.range ?? null, have: v.extraIds(), v: v.cfg.v };
+    lastViewQuery = m.id;
     let j: any;
     try {
       const r = await fetch(`${mvBase}/api/marks/view`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      if (r.status === 409) post({ type: 'stale' });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       j = await r.json();
     } catch {
-      // Unanswered (the server busy or a new catalog): an empty answer, so the next query goes.
-      j = { hist: [], n: 0, atRanks: null, byKind: [], top: [], topByKind: {}, fhist: {}, summit: null };
+      // Unanswered (the server busy, the NAS away, newer points): the panel keeps what it shows.
+      const none = new Float64Array(HIST_BINS);
+      return post({ type: 'result', id: m.id, failed: true, hist: none, n: 0, atRanks: null, byKind: [], top: [], topByKind: {}, fhist: {}, summit: null }, [none.buffer]);
     }
-    if (j.extra) v.setExtras(j.extra);
+    // (An answer overtaken by a newer query: its extras may leave out ones that query has.)
+    if (j.extra && m.id === lastViewQuery) v.setExtras(j.extra);
     const item = (x: any): LandmarkItem => ({ k: x.k, layer: x.layer, score: x.score, props: { ...x.props, mid: x.id }, lngLat: x.lngLat });
     const hist = Float64Array.from(j.hist.length ? j.hist : new Array(HIST_BINS).fill(0));
     const fhist: Record<string, { bins: Float64Array; n: number }> = {};
@@ -236,17 +258,16 @@ async function byView(v: MarksView, m: LandmarkRequest) {
     }, [hist.buffer, ...Object.values(fhist).map((x) => x.bins.buffer)]);
   } else if (m.type === 'mask') {
     for (const q of m.kinds) {
-      const set = v.sets.get(kindOf(q.src));
-      if (!set) continue;
-      const vis = v.mask(set.kind, q.filters, q.keepUnknown, q.off ?? []);
-      if (!vis) continue;
-      const words = visWords(vis, set.aux);
+      const words = v.mask(kindOf(q.src), q.filters, q.keepUnknown, q.off ?? []);
+      if (!words) continue;
       post({ type: 'mask', id: m.id, src: q.src, vis: words }, [words.buffer]);
     }
   } else if (m.type === 'count') {
     const q = JSON.stringify({ filters: m.kind.filters, keepUnknown: m.kind.keepUnknown, off: m.kind.off ?? [] });
     try {
       const r = await fetch(`${mvBase}/api/marks/count?kind=${kindOf(m.kind.src)}&q=${encodeURIComponent(q)}&v=${v.cfg.v}`);
+      if (r.status === 409) post({ type: 'stale' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const c = await r.json();
       post({ type: 'count', id: m.id, n: c.n, of: c.of });
     } catch {
@@ -263,7 +284,9 @@ async function viewTile(v: MarksView, m: Extract<LandmarkRequest, { type: 'tile'
   let pts = await v.pointsIn(kindOf(m.src), m.z, m.x, m.y);
   if (!pts) return post({ type: 'tileFailed', id: m.id });
   if (m.z < TILE_CAP_Z && pts.length > TILE_MAX) {
-    const rank = (p: { t: MarkTile; i: number }) => { const fa = p.t.fa[p.i], ia = p.t.ia[p.i]; return Math.max(landmarkScoreOf(fa, ia, 0), landmarkScoreOf(fa, ia, 1)); };
+    // (Ranked as the whole-file index did: a Float32Array of the higher score at fame or isolation
+    // alone, ties in Morton order.)
+    const rank = (p: { t: MarkTile; i: number }) => { const fa = p.t.fa[p.i], ia = p.t.ia[p.i]; return Math.fround(Math.max(landmarkScoreOf(fa, ia, 0), landmarkScoreOf(fa, ia, 1))); };
     pts = pts.map((p) => [rank(p), p] as const).sort((a, b) => b[0] - a[0]).slice(0, TILE_MAX).map((x) => x[1]);
   }
   const n = 2 ** m.z;

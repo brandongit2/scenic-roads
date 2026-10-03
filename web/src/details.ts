@@ -16,9 +16,9 @@ const cache = new Map<string, Promise<Detail | null>>();
 export const refKey = (r: DetailRef) =>
   'park' in r ? `park:${r.park.name}@${r.park.lon.toFixed(2)},${r.park.lat.toFixed(2)}` : 'mark' in r ? `mark:${r.mark.kind}:${r.mark.id}` : `${r.layer}:${r.i}`;
 
-/** The catalog of the points by view (their details' URLs carry it). */
-let marksV: number | null = null;
-export function setMarksVersion(v: number | null) {
+/** The version of the points by view (their details' URLs carry it). */
+let marksV: string | null = null;
+export function setMarksVersion(v: string | null) {
   if (v === marksV) return;
   marksV = v;
   for (const k of [...cache.keys()]) if (k.startsWith('mark:')) cache.delete(k);
@@ -44,7 +44,11 @@ export function getDetail(r: DetailRef): Promise<Detail | null> {
         ? `/api/park?${new URLSearchParams({ name: r.park.name, lon: String(r.park.lon), lat: String(r.park.lat), ...(v ? { v } : {}) })}`
         : `/api/detail/${r.layer}/${r.i}${v ? `?v=${v}` : ''}`;
     }
-    const q: Promise<Detail | null> = fetch(url).then(keepable).then((res) => (res.status === 200 ? res.json() : null));
+    // (409: the server has newer points than the ref came from; not kept, asked again later.)
+    const q: Promise<Detail | null> = fetch(url).then(keepable).then((res) => {
+      if (res.status === 409) throw new Error('newer points');
+      return res.status === 200 ? res.json() : null;
+    });
     p = q.catch(() => {
       if (cache.get(k) === p) cache.delete(k);
       return null;
