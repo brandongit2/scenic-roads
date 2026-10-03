@@ -240,8 +240,8 @@ impl Agent {
     pub fn run(&mut self) -> Result<()> {
         // SAFETY: the handler only stores to an atomic.
         unsafe {
-            libc::signal(libc::SIGTERM, on_signal as libc::sighandler_t);
-            libc::signal(libc::SIGINT, on_signal as libc::sighandler_t);
+            libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
+            libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
         }
         if self._lock.is_some() {
             jobs::stop_orphan(&self.record_path());

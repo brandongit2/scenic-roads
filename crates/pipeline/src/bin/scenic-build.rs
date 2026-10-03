@@ -543,6 +543,12 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         buildings: opt(args, "--buildings").map(PathBuf::from),
         spacing_m: 8,
     };
+    // Today's heritage sites, for every unit's flags.
+    let heritage = pipeline::stage::Heritage::load(&layers_root, &cat, &tools.cache)?;
+    match &heritage {
+        Some(h) => eprintln!("unit: {} heritage sites", h.len()),
+        None => eprintln!("unit: no heritage sites in the catalog"),
+    }
     // The units: as asked, else every unit whose piece meets the coverage.
     let pieces: serde_json::Value = serde_json::from_slice(&std::fs::read(out.path(out.get(&format!("sources/osm/{date}/pieces")).context("the pass's pieces list")?))?)?;
     let mut units: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
@@ -568,7 +574,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         };
         let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
         std::fs::copy(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
-        let rep = build_folder(u, &local_piece, &dir, &cov, &layers_root, &cat, &tools)?;
+        let rep = build_folder(u, &local_piece, &dir, &cov, &layers_root, &cat, &tools, heritage.as_ref())?;
         std::fs::remove_file(&local_piece).ok();
         // Grids its packs lacked (new coverage), made in the folder: the unit's own z6 tile's go up,
         // for later units and packs. (The canopy step made canopy and cover for every tile.)
