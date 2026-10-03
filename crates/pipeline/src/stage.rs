@@ -111,6 +111,8 @@ pub struct Staged {
     pub terrain_tiles: usize,
     pub grid_tiles: usize,
     pub grids: Vec<String>,
+    /// Per grid, the z11 tiles its packs don't have (new coverage): made in the folder instead.
+    pub missing: std::collections::BTreeMap<String, usize>,
 }
 
 /// Writes `terrain.tiles` and the grids for the box `b` (degrees) into `dir`.
@@ -154,19 +156,21 @@ pub fn stage(root: &Path, cat: &Catalog, b: [f64; 4], dir: &Path) -> Result<Stag
     st.grids.push("terrain".into());
     for var in ["class", "areas", "canopy", "cover"] {
         let mut l = LayerReader::new(root, cat, &format!("grid-{var}"));
-        if !l.exists() {
-            continue;
-        }
         let mut data = vec![0u8; tiles.len() * CELLS];
+        let mut missing = 0;
         for (s, t) in tiles.iter().enumerate() {
-            if let Some(z) = l.get(11, t[0], t[1])? {
-                let cells = zstd::decode_all(&z[..]).with_context(|| format!("grid-{var} 11/{}/{}", t[0], t[1]))?;
-                anyhow::ensure!(cells.len() == CELLS, "grid-{var} 11/{}/{}: {} cells", t[0], t[1], cells.len());
-                data[s * CELLS..(s + 1) * CELLS].copy_from_slice(&cells);
+            match if l.exists() { l.get(11, t[0], t[1])? } else { None } {
+                Some(z) => {
+                    let cells = zstd::decode_all(&z[..]).with_context(|| format!("grid-{var} 11/{}/{}", t[0], t[1]))?;
+                    anyhow::ensure!(cells.len() == CELLS, "grid-{var} 11/{}/{}: {} cells", t[0], t[1], cells.len());
+                    data[s * CELLS..(s + 1) * CELLS].copy_from_slice(&cells);
+                }
+                None => missing += 1,
             }
         }
         write_file(dir, &format!("grid.{var}.u8"), &data)?;
         st.grids.push(var.into());
+        st.missing.insert(var.into(), missing);
     }
     idx.save(&dir.join("grid.idx.tmp"))?;
     std::fs::rename(dir.join("grid.idx.tmp"), dir.join("grid.idx"))?;
@@ -194,3 +198,22 @@ mod tests {
         assert_eq!(tiles_in(11, tile_box_grown(6, 31, 19, 0.0)).len(), 33 * 33);
     }
 }
+
+/// The grid tiles of `var` inside z6 tile (x, y) from a build folder, as a hi pack's tiles
+/// (zstd, as the converted grids are stored).
+pub fn grid_tiles_in(dir: &Path, var: &str, x6: u32, y6: u32) -> Result<Vec<(u8, u32, u32, Vec<u8>, u32)>> {
+    let idx = roadcore::grid::GridIndex::load(dir)?;
+    let data = std::fs::read(dir.join(format!("grid.{var}.u8")))?;
+    anyhow::ensure!(data.len() == idx.tiles.len() * CELLS, "grid.{var}.u8 out of step with grid.idx");
+    let mut out = Vec::new();
+    for (s, t) in idx.tiles.iter().enumerate() {
+        if (t[0] >> 5, t[1] >> 5) != (x6, y6) {
+            continue;
+        }
+        let cells = &data[s * CELLS..(s + 1) * CELLS];
+        out.push((11u8, t[0], t[1], zstd::encode_all(cells, 9)?, CELLS as u32));
+    }
+    out.sort_by_key(|t| (t.1, t.2));
+    Ok(out)
+}
+

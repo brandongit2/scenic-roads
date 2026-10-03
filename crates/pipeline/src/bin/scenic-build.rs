@@ -557,6 +557,15 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         std::fs::copy(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
         let rep = build_folder(u, &local_piece, &dir, &cov, &layers_root, &cat, &tools)?;
         std::fs::remove_file(&local_piece).ok();
+        // Grids its packs lacked (new coverage), made in the folder: the unit's own z6 tile's go up,
+        // for later units and packs. (The canopy step made canopy and cover for every tile.)
+        for var in ["class", "canopy", "cover"] {
+            if rep.staged.missing.get(var).copied().unwrap_or(0) == 0 {
+                continue;
+            }
+            let mut tiles = pipeline::stage::grid_tiles_in(&dir, var, u.x, u.y)?.into_iter();
+            layers::write_pack(out, &format!("grid-{var}"), "u8-zstd", false, "hi", (6, u.x, u.y), &mut tiles)?;
+        }
         eprintln!("unit {}: {} of {} ways touch the coverage, {} owned", u.slash(), rep.kept_ways, rep.piece_ways, rep.owned);
         if rep.kept_ways == 0 || rep.owned == 0 {
             continue;

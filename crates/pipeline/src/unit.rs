@@ -154,6 +154,12 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, root: &Pa
     // 4. The global-source layers the steps read, from the packs.
     let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     rep.staged = crate::stage::stage(root, cat, b, dir)?;
+    // Land cover the packs lack (new coverage): ESA WorldCover over the folder's grid.
+    if rep.staged.missing.get("class").copied().unwrap_or(0) > 0 {
+        let mut c = Command::new("uv");
+        c.current_dir(&tools.dem).args(["run", "python", "landcover.py"]).arg(dir);
+        run(c, "land cover (landcover.py)", &log)?;
+    }
     // 5. Clean-up and grade; road samples; canopy; views; buildings; flags.
     let mut c = Command::new(tools.bin.join("tile"));
     c.arg(dir).arg("elev");
