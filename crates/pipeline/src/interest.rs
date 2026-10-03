@@ -171,6 +171,84 @@ pub fn isolation(lon: &[f64], lat: &[f64], score: &[f64]) -> Vec<f64> {
     out
 }
 
+/// A viewpoint's Wikidata item counts for its fame only when it's a landscape, a lookout or the
+/// like (interest.py VIEW_ITEM: a mine or chapel tagged as a viewpoint doesn't).
+pub fn view_item(description_en: &str) -> bool {
+    const WORDS: [&str; 30] = [
+        "viewpoint", "lookout", "observation", "belvedere", "mirador", "mountain", "hill", "peak", "summit", "cliff", "headland",
+        "promontory", "point", "cape", "peninsula", "pass", "gorge", "canyon", "valley", "falls", "waterfall", "geosite", "park",
+        "tower", "lighthouse", "beach", "bay", "island", "lake", "col",
+    ];
+    let d = description_en.to_lowercase();
+    WORDS.iter().any(|w| {
+        if *w != "col" {
+            return d.contains(w);
+        }
+        // `col\b`: "col" followed by a non-word character or the end.
+        d.match_indices("col").any(|(i, _)| d[i + 3..].chars().next().is_none_or(|c| !(c.is_alphanumeric() || c == '_')))
+    })
+}
+
+/// Fame from pageviews (log10 of 1 + the monthly average), else a little for Wikidata sitelinks;
+/// and the pageviews when there are any (interest.py `fame`).
+pub fn fame(pv: Option<f64>, sitelinks: u64) -> (f64, Option<f64>) {
+    match pv {
+        Some(pv) if pv != 0.0 => ((1.0 + pv).log10(), Some(pv)),
+        _ => (if sitelinks != 0 { 0.3 * (1.0 + sitelinks as f64).log10() } else { 0.0 }, None),
+    }
+}
+
+/// Each value's rank among the known ones, 0–1 (unknown: 0) (interest.py `percentile`:
+/// searchsorted, side right).
+pub fn percentile(vals: &[Option<f64>]) -> Vec<f64> {
+    let mut known: Vec<f64> = vals.iter().flatten().copied().collect();
+    if known.is_empty() {
+        return vec![0.0; vals.len()];
+    }
+    known.sort_by(f64::total_cmp);
+    vals.iter().map(|v| v.map_or(0.0, |v| known.partition_point(|k| *k <= v) as f64 / known.len() as f64)).collect()
+}
+
+/// A stop & sight's score before isolation (interest.py): fame, plus at most 0.01 for being named,
+/// how much OpenStreetMap says about it (`rich`, of 5 tags, ÷ 3), and its size's rank in its kind.
+pub fn poi_base(fame: f64, named: bool, rich: usize, size_rank: f64) -> f64 {
+    let tie = 0.5 * (named as u8 as f64) + 0.2 * (rich as f64 / 3.0).min(1.0) + 0.3 * size_rank;
+    fame + 0.01 * tie
+}
+
+/// A repeated name waits until the nearest more interesting place of its kind and name is 2^NAME_GAP
+/// times the label spacing away on screen (dem/layers.py).
+pub const NAME_GAP: f64 = 3.0;
+
+/// layers.py `same_names`: each named place's mz at least NAME_GAP after the zoom where the nearest
+/// more interesting place of its kind and name spans a pixel (between equally known ones, the more
+/// isolated is the more interesting). `order`: the places as the layer has them (by fame); `key`:
+/// a place's kind group and name; `fa`, `ia` rounded as the files hold them. Returns how many wait.
+pub fn same_names(order: &[usize], key: &dyn Fn(usize) -> (String, String), lon: &[f64], lat: &[f64], fa: &[f64], ia: &[f64], mz: &mut [f64]) -> usize {
+    let mut groups: std::collections::BTreeMap<(String, String), Vec<usize>> = Default::default();
+    for &i in order {
+        let (kind, name) = key(i);
+        // " ".join(name.casefold().split()): lowercase, with casefold's ß → ss and ς → σ.
+        let name = name.to_lowercase().replace('ß', "ss").replace('ς', "σ").split_whitespace().collect::<Vec<_>>().join(" ");
+        if !name.is_empty() && !mz[i].is_nan() {
+            groups.entry((kind, name)).or_default().push(i);
+        }
+    }
+    let mut n = 0;
+    for idx in groups.values().filter(|v| v.len() >= 2) {
+        let score: Vec<f64> = idx.iter().map(|&i| fa[i] + 1e-4 * ia[i] / (1.0 + ia[i])).collect();
+        let iso = isolation(&idx.iter().map(|&i| lon[i]).collect::<Vec<_>>(), &idx.iter().map(|&i| lat[i]).collect::<Vec<_>>(), &score);
+        for (j, &i) in idx.iter().enumerate() {
+            let m = py_round(min_zoom(lat[i], iso[j]) + NAME_GAP, 2);
+            if m > mz[i] {
+                mz[i] = m;
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
