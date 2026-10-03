@@ -102,6 +102,11 @@ struct Poi {
     key: Option<String>,
     /// The tags its details show (dem/poidetails.py KEEP and COMMON).
     tags: Vec<(String, String)>,
+    /// A way's own nodes (points of interest mapped as ways, covered bridges): for the candidates'
+    /// coverage clip.
+    nodes: Vec<[i32; 2]>,
+    /// A covered bridge's length, as dem/poidetails.py measured it.
+    length_m: Option<u32>,
 }
 
 impl Poi {
@@ -122,8 +127,21 @@ impl Poi {
     }
 }
 
-/// Tags every stop & sight keeps for its details, and each kind's own (dem/poidetails.py).
-const KEEP_COMMON: &[&str] = &["name", "ele", "description", "website", "wikipedia", "wikidata", "operator", "access", "fee", "opening_hours", "start_date", "heritage", "alt_name", "name:en", "image"];
+/// Tags every stop & sight keeps for its details, and each kind's own (dem/poidetails.py; plus the
+/// Japanese romanisations, the English name where there's no name:en).
+const KEEP_COMMON: &[&str] = &["name", "ele", "description", "website", "wikipedia", "wikidata", "operator", "access", "fee", "opening_hours", "start_date", "heritage", "alt_name", "name:en", "name:ja-Latn", "name:ja_rm"];
+
+/// A line's length as dem/poidetails.py measured it (`line_km`: planar, 111.32 km per degree of
+/// longitude at the segment's mean latitude, 110.57 of latitude), in metres rounded half-even.
+fn line_m(nodes: &[[i32; 2]]) -> u32 {
+    let mut km = 0f64;
+    for w in nodes.windows(2) {
+        let (x0, y0, x1, y1) = (w[0][0] as f64 * E7, w[0][1] as f64 * E7, w[1][0] as f64 * E7, w[1][1] as f64 * E7);
+        let kx = 111.32 * ((y0 + y1) / 2.0).to_radians().cos();
+        km += ((x1 - x0) * kx).hypot((y1 - y0) * 110.57);
+    }
+    (km * 1000.0).round_ties_even() as u32
+}
 
 fn keep_of(kind: &str) -> &'static [&'static str] {
     match kind {
@@ -198,7 +216,10 @@ fn trail_parking(t: &Tags) -> bool {
         .any(|w| matches!(w, "trail" | "trails" | "trailhead" | "sentier" | "sentiers" | "randonnée" | "randonnee" | "hiking"))
 }
 
-fn poi_kind(t: &Tags) -> Option<&'static str> {
+/// A point's kind. `candidates`: as the landmark candidates have them (docs/phase5.md "pois"): a
+/// viewpoint that is also a volcano is a peak, as dem/poidetails.py made it (the unit's own
+/// points keep it a viewpoint, for the road flags).
+fn poi_kind(t: &Tags, candidates: bool) -> Option<&'static str> {
     if t.is("highway", "rest_area") {
         Some("rest_area")
     } else if t.is("tourism", "picnic_site") {
@@ -209,6 +230,8 @@ fn poi_kind(t: &Tags) -> Option<&'static str> {
         Some("trail_parking") // a trailhead; see the de-duplication below
     } else if t.is("natural", "peak") {
         // Before viewpoints: summits are often tagged as both (Mont Blanc).
+        Some("peak")
+    } else if candidates && t.is("natural", "volcano") && t.is("tourism", "viewpoint") {
         Some("peak")
     } else if t.is("tourism", "viewpoint") {
         Some("viewpoint")
@@ -584,6 +607,9 @@ fn main() -> Result<()> {
     let mut args: Vec<String> = std::env::args().collect();
     let rail_rels_only = args.iter().any(|a| a == "--rail-rels-only");
     args.retain(|a| a != "--rail-rels-only");
+    // The landmark candidates' points (poi_kind), for the pois job.
+    let candidates = args.iter().any(|a| a == "--candidates");
+    args.retain(|a| a != "--candidates");
     // The pass's hiking-route ends (pipeline::trailends), instead of working them out from the input.
     let trailends: Option<PathBuf> = args.iter().position(|a| a == "--trailends").map(|i| {
         let p = PathBuf::from(args.get(i + 1).cloned().unwrap_or_default());
@@ -591,7 +617,7 @@ fn main() -> Result<()> {
         p
     });
     if args.len() < 4 {
-        eprintln!("usage: extract <out_dir> <spacing_m> [--rail-rels-only] [--trailends <file>] <file.osm.pbf>...");
+        eprintln!("usage: extract <out_dir> <spacing_m> [--rail-rels-only] [--candidates] [--trailends <file>] <file.osm.pbf>...");
         std::process::exit(2);
     }
     let out = PathBuf::from(&args[1]);
@@ -616,7 +642,7 @@ fn main() -> Result<()> {
                 match el {
                     Element::Way(w) => {
                         let t = Tags(w.tags().collect());
-                        if let Some(kind) = poi_kind(&t) {
+                        if let Some(kind) = poi_kind(&t, candidates) {
                             out.poi_ways.push((kind, t.get("name").unwrap_or("").to_string(), w.refs().collect(), w.id(), kept_tags(&t, kind)));
                         }
                         if t.is("covered", "yes") || t.is("bridge", "covered") {
@@ -868,7 +894,7 @@ fn main() -> Result<()> {
         let t = Tags(tags.collect());
         let mut pois = Vec::new();
         if !t.0.is_empty() {
-            if let Some(kind) = poi_kind(&t) {
+            if let Some(kind) = poi_kind(&t, candidates) {
                 pois.push(Poi {
                     kind,
                     lon,
@@ -878,6 +904,8 @@ fn main() -> Result<()> {
                     osm: Some(format!("n{id}")),
                     key: None,
                     tags: kept_tags(&t, kind),
+                    nodes: Vec::new(),
+                    length_m: None,
                 });
             }
         }
@@ -931,7 +959,8 @@ fn main() -> Result<()> {
         }
         let n = pts.len() as i64;
         let (sx, sy) = pts.iter().fold((0i64, 0i64), |a, p| (a.0 + p.0, a.1 + p.1));
-        pois.push(Poi { kind, lon: (sx / n) as i32, lat: (sy / n) as i32, name: name.clone(), ele: None, osm: Some(format!("w{id}")), key: None, tags: tags.clone() });
+        let nodes: Vec<[i32; 2]> = pts.iter().map(|p| [p.0 as i32, p.1 as i32]).collect();
+        pois.push(Poi { kind, lon: (sx / n) as i32, lat: (sy / n) as i32, name: name.clone(), ele: None, osm: Some(format!("w{id}")), key: None, tags: tags.clone(), nodes, length_m: None });
     }
 
     // Hiking-route ends within 300 m of a drivable road are trailheads (named after the route).
@@ -977,7 +1006,7 @@ fn main() -> Result<()> {
         for (k, (name, node, rel)) in route_ends.iter().enumerate() {
             if near[k] {
                 let tags = if name.is_empty() { Vec::new() } else { vec![("name".to_string(), name.clone())] };
-                pois.push(Poi { kind: "trail_route", lon: pts[k].0, lat: pts[k].1, name: name.clone(), ele: None, osm: None, key: Some(format!("trail:{rel}:{node}")), tags });
+                pois.push(Poi { kind: "trail_route", lon: pts[k].0, lat: pts[k].1, name: name.clone(), ele: None, osm: None, key: Some(format!("trail:{rel}:{node}")), tags, nodes: Vec::new(), length_m: None });
                 n += 1;
             }
         }
@@ -1157,7 +1186,10 @@ fn main() -> Result<()> {
         if w.flags & flag::COVERED != 0 {
             let m = b.pts[b.pts.len() / 2];
             let tags = bridge_tags.binary_search_by_key(&w.id, |b| b.0).map(|i| bridge_tags[i].1.clone()).unwrap_or_default();
-            pois.push(Poi { kind: "covered_bridge", lon: m[0], lat: m[1], name: w.name.clone(), ele: None, osm: Some(format!("w{}", w.id)), key: None, tags });
+            // Its own nodes (the points are densified): what poidetails.py measured.
+            let nodes: Vec<[i32; 2]> = w.refs.iter().filter_map(|&r| lookup(r).map(|(_, lat, lon)| [lon, lat])).collect();
+            let length_m = Some(line_m(&nodes));
+            pois.push(Poi { kind: "covered_bridge", lon: m[0], lat: m[1], name: w.name.clone(), ele: None, osm: Some(format!("w{}", w.id)), key: None, tags, nodes, length_m });
         }
     }
     wv.flush()?;
@@ -1179,6 +1211,7 @@ fn main() -> Result<()> {
                 "properties": {
                     "kind": p.kind, "name": p.name, "ele": p.ele.map(|e| e.round()), "osm": p.osm, "key": p.key,
                     "tags": p.tags.iter().map(|(k, v)| (k.clone(), serde_json::Value::from(v.as_str()))).collect::<serde_json::Map<_, _>>(),
+                    "nodes": (!p.nodes.is_empty()).then_some(&p.nodes), "length_m": p.length_m,
                 },
             })
         })

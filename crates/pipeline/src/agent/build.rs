@@ -32,6 +32,9 @@ pub struct Keys {
     pub slope: BTreeMap<String, String>,
     #[serde(default)]
     pub unit: BTreeMap<String, String>,
+    /// The units' landmark candidates.
+    #[serde(default)]
+    pub pois: BTreeMap<String, String>,
     #[serde(default)]
     pub pack: BTreeMap<String, String>,
     #[serde(default)]
@@ -60,6 +63,7 @@ impl Keys {
             "terrain" => &mut self.terrain,
             "slope" => &mut self.slope,
             "unit" => &mut self.unit,
+            "pois" => &mut self.pois,
             "pack" => &mut self.pack,
             _ => &mut self.lo,
         }
@@ -160,14 +164,13 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Ve
         if !cov.meets_box(tb) {
             continue;
         }
-        // (The heritage sites: the flags step's; the hiking-route ends: extract's.)
+        // (The heritage sites: the flags step's.)
         let mut inputs = vec![
             format!("unit {UNIT_V}"),
             c.clone(),
             get(&format!("sources/osm/{date}/roads/{}", u.dash())).to_string(),
             cov_fp(cov, grown_e7(u.z, u.x, u.y, 10.0)),
             get("global/legacy/heritage").to_string(),
-            get(&format!("work/trailends/{date}")).to_string(),
         ];
         let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
         for (x, y) in crate::stage::tiles_in(6, b) {
@@ -177,6 +180,27 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Ve
         }
         let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
         units.push((u, h(&refs)));
+    }
+    units
+}
+
+/// The candidates' version (crate::candidates, extract `--candidates`): bumping it makes every
+/// unit's candidates again, not the units.
+pub const POIS_V: u32 = 1;
+
+/// The units whose piece meets the coverage, each with its candidates' key: its piece, the
+/// coverage over it (the clip) and the pass's hiking-route ends.
+pub fn pois_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
+    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
+    let ends = get(&format!("work/trailends/{date}"));
+    let mut units = Vec::new();
+    for (l, c) in m.range(format!("sources/osm/{date}/pieces/")..) {
+        let Some(u) = l.strip_prefix(&format!("sources/osm/{date}/pieces/")).and_then(Unit::parse) else { break };
+        let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
+        if !cov.meets_box(tb) {
+            continue;
+        }
+        units.push((u, h(&[&format!("pois {POIS_V}"), c, &cov_fp(cov, tb), ends])));
     }
     units
 }
@@ -246,6 +270,14 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     if !stale_units.is_empty() {
         work.push(Work { step: "unit".into(), targets: stale_units });
         return work;
+    }
+    // Their landmark candidates (once the pass's hiking-route ends exist).
+    if m.contains_key(&format!("work/trailends/{date}")) {
+        let stale_pois: Vec<(String, String)> = pois_keys(cov, date, m).into_iter().filter(|(u, k)| stale(&done.pois, &u.slash(), k)).map(|(u, k)| (u.slash(), k)).collect();
+        if !stale_pois.is_empty() {
+            work.push(Work { step: "pois".into(), targets: stale_pois });
+            return work;
+        }
     }
 
     // pack(T): z6 tiles within 100 km (plus the pieces' buffer) of a unit with a base pack.

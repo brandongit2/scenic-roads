@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod basepack;
 pub mod buildings;
+pub mod candidates;
 pub mod chain;
 pub mod climbs;
 pub mod coverage;

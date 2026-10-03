@@ -110,6 +110,7 @@ fn main() -> Result<()> {
         }
         "catalog" => catalog(&mut out)?,
         "unit" => unit_step(&mut out, &args, &scratch)?,
+        "pois" => pois_step(&mut out, &args, &scratch)?,
         "roadunits" => roadunits(&mut out)?,
         "terrain" => terrain_step(&mut out, &args)?,
         "slope" => slope_step(&mut out, &args)?,
@@ -696,6 +697,48 @@ fn pass_roads(out: &Out, date: &str, u: Unit) -> Result<Vec<(u64, pipeline::lega
     Ok(b.chunks_exact(32).map(|c| (u64::from_le_bytes(c[..8].try_into().unwrap()), bytemuck::pod_read_unaligned(&c[8..32]))).collect())
 }
 
+/// pois <units…> [--pass <date>]: each unit's landmark candidates (pipeline::candidates), from
+/// its piece through `extract --candidates` with the pass's hiking-route ends, as `work/pois/<u>`.
+fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    let date = match opt(args, "--pass") {
+        Some(d) => d,
+        None => pipeline::osmpass::latest_pass(out.root()).context("no complete OSM pass on the NAS (--pass)")?,
+    };
+    let regions = opt(args, "--regions").map(PathBuf::from).unwrap_or_else(|| out.root().join("inputs/regions"));
+    let (recipes, _) = pipeline::agent::recipes::load(&regions);
+    anyhow::ensure!(!recipes.is_empty(), "no regions in {}", regions.display());
+    let outlines_file = out.get(&format!("sources/osm/{date}/outlines")).map(|n| out.path(n));
+    let outlines = outlines_file.as_deref().map(pipeline::outlines::Outlines::open).transpose()?;
+    let cov = pipeline::coverage::Coverage::from_recipes(&recipes, outlines.as_ref(), &out.root().join("inputs/outlines"))?;
+    let trailends = out.get(&format!("work/trailends/{date}")).map(|c| out.path(c)).context("no hiking-route ends for the pass (the trailends step)")?;
+    let extract = std::env::current_exe()?.parent().context("bin")?.join("extract");
+    std::fs::create_dir_all(scratch)?;
+    for u in positional(args).iter().filter_map(|s| Unit::parse(s)) {
+        let t = std::time::Instant::now();
+        let Some(piece) = out.get(&format!("sources/osm/{date}/pieces/{}", u.dash())).map(|n| out.path(n)) else {
+            eprintln!("pois {}: no piece", u.slash());
+            continue;
+        };
+        let local = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
+        std::fs::copy(&piece, &local).with_context(|| format!("copy {}", piece.display()))?;
+        let dir = scratch.join(format!("pois-{}", u.dash()));
+        let mut c = std::process::Command::new(&extract);
+        c.arg(&dir).arg("8").arg("--candidates").arg("--trailends").arg(&trailends).arg(&local);
+        let o = c.output().with_context(|| format!("run {}", extract.display()))?;
+        anyhow::ensure!(o.status.success(), "extract --candidates for {}: {}\n{}", u.slash(), o.status, String::from_utf8_lossy(&o.stderr).lines().rev().take(8).collect::<Vec<_>>().join("\n"));
+        let cands = pipeline::candidates::from_pois(&std::fs::read(dir.join("pois.json"))?, u, &cov)?;
+        let file = scratch.join(format!("pois-{}.jsonl.zst", u.dash()));
+        pipeline::candidates::write(&file, &cands)?;
+        out.put_file(&format!("work/pois/{}", u.dash()), "jsonl.zst", &file)?;
+        out.save()?;
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_file(&local).ok();
+        std::fs::remove_file(&file).ok();
+        eprintln!("pois {}: {} candidates ({:.0?})", u.slash(), cands.len(), t.elapsed());
+    }
+    Ok(())
+}
+
 /// The unit step's global-source layers: the manifest's, or a pilot's published catalog.
 fn layers_source<'a>(out: &'a Out, pilot: &'a Option<(PathBuf, store::catalog::Catalog)>) -> pipeline::stage::Source<'a> {
     match pilot {
@@ -755,12 +798,6 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             }
         }
     }
-    // The pass's hiking-route ends (the trailends step's), so that a route leaving a piece shows the
-    // same ends in every unit.
-    let trailends = out.get(&format!("work/trailends/{date}")).map(|c| out.path(c));
-    if trailends.is_none() {
-        eprintln!("unit: no work/trailends/{date} (the trailends step makes it): ends worked out from each piece");
-    }
     eprintln!("unit: pass {date}, {} region(s), {} unit(s)", recipes.len(), units.len());
     for u in units {
         let t = std::time::Instant::now();
@@ -775,7 +812,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         };
         let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
         std::fs::copy(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
-        let rep = build_folder(u, &local_piece, &dir, &cov, &layers_source(out, &pilot), &tools, heritage.as_ref(), trailends.as_deref())?;
+        let rep = build_folder(u, &local_piece, &dir, &cov, &layers_source(out, &pilot), &tools, heritage.as_ref())?;
         std::fs::remove_file(&local_piece).ok();
         // Grids its packs lacked (new coverage), made in the folder: the unit's own z6 tile's go up,
         // for later units and packs. (The canopy step made canopy and cover for every tile.)

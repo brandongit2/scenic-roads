@@ -589,6 +589,7 @@ impl Agent {
         cmd.extend(w.targets.iter().map(|t| t.0.clone()).filter(|t| t != "catalog" && !t.ends_with("-root")));
         match w.step.as_str() {
             "terrain" | "terrain-root" => cmd.extend(["--raw".into(), s(&cache.join("aws-terrarium"))]),
+            "pois" => cmd.extend(["--pass".into(), date.to_string()]),
             "unit" => cmd.extend([
                 "--pass".into(),
                 date.to_string(),
@@ -614,6 +615,7 @@ impl Agent {
             "terrain" => format!("Terrain for the regions ({n} area{})", if n == 1 { "" } else { "s" }),
             "slope" => format!("Slope for the regions ({n} area{})", if n == 1 { "" } else { "s" }),
             "unit" => format!("Roads, elevations and scenery ({n} area{})", if n == 1 { "" } else { "s" }),
+            "pois" => format!("Landmark candidates ({n} area{})", if n == 1 { "" } else { "s" }),
             "pack" => format!("Map tiles ({n} area{})", if n == 1 { "" } else { "s" }),
             "lo" => "Zoomed-out map tiles".to_string(),
             "terrain-root" | "slope-root" => "World-level terrain and slope".to_string(),
