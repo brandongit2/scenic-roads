@@ -85,7 +85,7 @@ impl Overlay {
 }
 
 /// Clamp single-pixel spikes and pits (interior pixels) to their neighbours.
-fn despike(t: &mut [f32], z: u8, lat: f64) {
+pub(crate) fn despike(t: &mut [f32], z: u8, lat: f64) {
     let px_m = 40_075_016.7 * lat.to_radians().cos() / ((1u64 << z) as f64 * TS as f64);
     let thr = (1.2 * px_m).max(150.0) as f32;
     let src = t.to_vec();
@@ -109,7 +109,7 @@ fn despike(t: &mut [f32], z: u8, lat: f64) {
 }
 
 /// Latitude of a tile's centre.
-fn tile_lat(z: u8, ty: u32) -> f64 {
+pub(crate) fn tile_lat(z: u8, ty: u32) -> f64 {
     let y = (ty as f64 + 0.5) / (1u64 << z) as f64;
     (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees()
 }
