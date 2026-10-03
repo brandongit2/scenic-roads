@@ -26,6 +26,8 @@
 //!                                and thinned tiles per kind (docs/phase5.md)
 //!   convert-legacy-overlays      today's area overlays as vector tiles (ov-*), their details and
 //!                                the parks' as ovdata per z3 tile (docs/phase5.md)
+//!   stations --pass d [--geojson f]  the rail stops of the pass's rail set within the coverage,
+//!                                as the stations' tiles
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalog                      publish a catalog of the build manifest
@@ -113,6 +115,13 @@ fn main() -> Result<()> {
         "convert-legacy-marks" => {
             let c = pipeline::markconv::convert(&mut out)?;
             eprintln!("marks: {} points, {} markdata tiles, {} thinned tiles", c.points, c.tiles, c.thinned);
+        }
+        "stations" => {
+            // stations --pass <date> [--geojson file]: the pass's rail set's stops as the stations' tiles.
+            let date = opt(&args, "--pass").context("--pass <date>")?;
+            let gj = opt(&args, "--geojson").map(PathBuf::from);
+            let (n, tiles) = pipeline::ovconv::stations_job(&mut out, &date, gj.as_deref())?;
+            eprintln!("stations: {n} stops in {tiles} tiles");
         }
         "convert-legacy-overlays" => {
             let c = pipeline::ovconv::convert(&mut out)?;

@@ -20,6 +20,7 @@ pub mod roads;
 pub mod scache;
 pub mod slope_pack;
 pub mod stage;
+pub mod stations;
 pub mod summary;
 pub mod terr;
 pub mod terrain_pack;

@@ -454,15 +454,75 @@ fn stations(out: &mut Out, want: &(dyn Fn(u8, u32, u32) -> bool + Sync), ntiles:
         let props = f["properties"].as_object().cloned().unwrap_or_default();
         let name = props.get("n").and_then(Value::as_str).unwrap_or("");
         src.push(IdSource { osm: None, reference: format!("legacy:station|{name}|{},{}", marks::e7(lon), marks::e7(lat)), canon: Value::Object(props.clone()).to_string() });
-        // The first zoom whose tiles serve a view where its dot shows (z + 1 ≥ mz + STOP_DZ).
-        let mz = props.get("mz").and_then(Value::as_f64).unwrap_or(0.0);
-        let minzoom = (mz + STOP_DZ - 1.0).ceil().clamp(0.0, MAXZ as f64) as u8;
-        let mvt: Vec<(String, MvtValue)> = props.iter().filter_map(|(k, v)| mvt_value(v).map(|m| (k.clone(), m))).collect();
-        made.push(Feature { id: 0, geom: Geom::Points(vec![[lon, lat]]), props: mvt, minzoom });
+        made.push(station_feature(lon, lat, &props));
     }
     for (f, id) in made.iter_mut().zip(marks::assign_ids(&src)?) {
         f.id = id;
     }
     write_tiles(out, "stations", STATION_LAYER, &made, want, ntiles)?;
     Ok(made.len())
+}
+
+/// A stop's tile feature: its properties, shown from the first zoom whose tiles serve a view where
+/// its dot shows (z + 1 ≥ mz + STOP_DZ).
+fn station_feature(lon: f64, lat: f64, props: &serde_json::Map<String, Value>) -> Feature {
+    let mz = props.get("mz").and_then(Value::as_f64).unwrap_or(0.0);
+    let minzoom = (mz + STOP_DZ - 1.0).ceil().clamp(0.0, MAXZ as f64) as u8;
+    let mvt: Vec<(String, MvtValue)> = props.iter().filter_map(|(k, v)| mvt_value(v).map(|m| (k.clone(), m))).collect();
+    Feature { id: 0, geom: Geom::Points(vec![[lon, lat]]), props: mvt, minzoom }
+}
+
+/// A stop's properties as the map reads them (stations.py's: n, g, m, sp rounded, mz to 2 places,
+/// en where OSM's English differs).
+pub fn station_props(s: &crate::stations::Stop) -> serde_json::Map<String, Value> {
+    let mut p = serde_json::Map::new();
+    p.insert("n".into(), serde_json::json!(s.name));
+    p.insert("g".into(), serde_json::json!(s.group));
+    p.insert("m".into(), serde_json::json!(s.mask));
+    p.insert("sp".into(), serde_json::json!(crate::interest::py_round(s.spacing, 0) as i64));
+    p.insert("mz".into(), serde_json::json!(crate::interest::py_round(s.mz(), 2)));
+    if let Some(en) = &s.en {
+        p.insert("en".into(), serde_json::json!(en));
+    }
+    p
+}
+
+/// The `stations` job (docs/phase5.md "Build"): the pass's `rail` set's stops within the coverage
+/// (+ 20 km, the hi tiles' reach) as the stations' tiles; each stop's id its lowest member's
+/// (docs/phase5.md "Ids").
+pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>) -> Result<(usize, usize)> {
+    let logical = format!("sources/osm/{date}/sets/rail");
+    let set = out.path(out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?);
+    let t0 = std::time::Instant::now();
+    let all = crate::stations::stops(&set)?;
+    let cover = hi_cover(out);
+    let kept: Vec<&crate::stations::Stop> = all
+        .iter()
+        .filter(|s| {
+            let u = Unit::of_point(6, [marks::e7(s.lon), marks::e7(s.lat)]);
+            cover.contains(&(u.x, u.y))
+        })
+        .collect();
+    eprintln!("stations: {} stops worldwide, {} within the coverage ({:.1?})", all.len(), kept.len(), t0.elapsed());
+    if let Some(p) = geojson {
+        let feats: Vec<Value> = kept
+            .iter()
+            .map(|s| serde_json::json!({"type": "Feature", "geometry": {"type": "Point", "coordinates": [crate::interest::py_round(s.lon, 6), crate::interest::py_round(s.lat, 6)]}, "properties": station_props(s)}))
+            .collect();
+        std::fs::write(p, serde_json::to_vec(&serde_json::json!({"type": "FeatureCollection", "features": feats}))?)?;
+    }
+    let mut made: Vec<Feature> = kept
+        .iter()
+        .map(|s| {
+            let mut f = station_feature(s.lon, s.lat, &station_props(s));
+            let (ty, id) = s.members[0];
+            f.id = id as u64 * 4 + ty as u64;
+            f
+        })
+        .collect();
+    made.sort_by_key(|f| f.id);
+    let want = |z: u8, x: u32, y: u32| z < 9 || cover.contains(&(x >> (z - 6), y >> (z - 6)));
+    let mut ntiles = 0;
+    write_tiles(out, "stations", STATION_LAYER, &made, &want, &mut ntiles)?;
+    Ok((kept.len(), ntiles))
 }
