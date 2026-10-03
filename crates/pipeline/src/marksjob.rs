@@ -171,3 +171,83 @@ pub fn poi_points(cands: &[Candidate], views: &HashMap<String, f64>) -> Vec<Poin
     }
     out
 }
+
+/// The tags today's popups keep, per kind (dem/poidetails.py COMMON and KEEP).
+pub fn detail_keys(kind: &str) -> Vec<&'static str> {
+    let common = ["description", "website", "wikipedia", "wikidata", "operator", "access", "fee", "opening_hours", "start_date", "heritage", "alt_name", "name:en"];
+    let own: &[&str] = match kind {
+        "peak" => &["prominence", "isolation", "munro", "corbett", "graham", "donald", "marilyn", "hewitt", "wainwright", "nuttall", "communication:amateur_radio:sota", "summit:cross", "summit:register", "volcano:status", "volcano:type", "natural"],
+        "waterfall" => &["height", "width", "intermittent", "seasonal"],
+        "lighthouse" => &[
+            "height", "seamark:light:character", "seamark:light:colour", "seamark:light:period", "seamark:light:range", "seamark:light:height", "seamark:light:sequence", "seamark:light:reference", "seamark:name",
+            "building:colour", "tower:type", "historic", "heritage:operator", "seamark:light:1:character", "seamark:light:1:colour", "seamark:light:1:period", "seamark:light:1:range", "seamark:light:1:height",
+        ],
+        "viewpoint" => &["direction", "tower:type", "height", "ele", "man_made"],
+        "picnic_site" => &["toilets", "drinking_water", "shelter", "bench", "picnic_table", "fireplace", "bbq", "covered", "capacity"],
+        "rest_area" => &["toilets", "drinking_water", "shelter", "picnic_table", "bench", "fuel", "restaurant", "shop", "wheelchair", "capacity"],
+        "trailhead" => &["toilets", "drinking_water", "parking", "capacity", "route_ref", "hiking", "shelter"],
+        "covered_bridge" => &["bridge:structure", "bridge:name", "material", "historic", "bridge:ref", "layer"],
+        _ => &[],
+    };
+    common.iter().chain(own).copied().collect()
+}
+
+/// A unit's candidate (crate::candidates) as the job's: its details record as dem/poidetails.py
+/// made it (the kept tags of its kind's lists, `osm`, `length_m`, `viewpoint`, and the facts of a
+/// single-QID tag as `wd`), its peak result (a `work/peaks` record), its key as the reference.
+pub fn from_unit(c: &crate::candidates::Cand, peak: Option<Value>, facts: &HashMap<String, Value>) -> Candidate {
+    let mut d = Map::new();
+    if let Some(o) = &c.osm {
+        d.insert("osm".into(), json!(o));
+    }
+    for k in detail_keys(&c.kind) {
+        if let Some(v) = c.tags.get(k).filter(|v| !v.is_empty()) {
+            d.insert(k.into(), json!(v));
+        }
+    }
+    if let Some(m) = c.length_m {
+        d.insert("length_m".into(), json!(m));
+    }
+    if c.viewpoint {
+        d.insert("viewpoint".into(), json!("yes"));
+    }
+    // As today: the facts only for a tag that is one QID.
+    if let Some(q) = c.qid.as_deref().filter(|q| q.len() > 1 && q.starts_with('Q') && q[1..].bytes().all(|b| b.is_ascii_digit())) {
+        if let Some(f) = facts.get(q) {
+            d.insert("wd".into(), f.clone());
+        }
+    }
+    Candidate {
+        kind: c.kind.clone(),
+        lon: c.lon as f64 * 1e-7,
+        lat: c.lat as f64 * 1e-7,
+        name: c.name.clone(),
+        ele: c.ele.map(f64::from),
+        en: c.en.clone(),
+        details: Value::Object(d),
+        peak,
+        osm: c.osm.as_deref().and_then(marks::osm_id),
+        reference: c.key.clone(),
+    }
+}
+
+/// The named peaks with a height, by height (stable over the map's order), for the highest in
+/// view (dem/layers.py's summits list: positions to 5 decimals, heights whole).
+pub fn summits_list(pts: &[Point]) -> Vec<(marks::SummitRec, String)> {
+    let k = marks::kind_index("peak").unwrap();
+    let mut named: Vec<(f64, f64, f64, String)> = pts
+        .iter()
+        .filter(|p| p.kind == k)
+        .filter_map(|p| {
+            let name = p.props.get("name").and_then(Value::as_str).filter(|s| !s.is_empty())?;
+            let ele = p.props.get("ele").and_then(Value::as_f64)?;
+            Some((ele, p.lon, p.lat, name.to_string()))
+        })
+        .collect();
+    named.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+    named
+        .into_iter()
+        .enumerate()
+        .map(|(rank, (e, x, y, n))| (marks::SummitRec { rank: rank as u32, lon: marks::e7(py_round(x, 5)), lat: marks::e7(py_round(y, 5)), pad: 0, ele: py_round(e, 0) }, n))
+        .collect()
+}

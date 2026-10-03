@@ -199,6 +199,13 @@ fn load_points(out: &Out) -> Result<Vec<Pt>> {
     Ok(pts)
 }
 
+/// Today's heritage sites as points (the `marks` job's until the `heritage` job makes them).
+pub fn today_heritage(out: &Out) -> Result<Vec<Point>> {
+    let mut pts = Vec::new();
+    heritage_points(out, &mut pts)?;
+    Ok(pts)
+}
+
 pub struct Converted {
     pub points: usize,
     pub tiles: usize,

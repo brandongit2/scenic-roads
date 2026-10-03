@@ -125,6 +125,7 @@ fn main() -> Result<()> {
         }
         "summits" => summits_step(&mut out, &args, &scratch)?,
         "peaks" => peaks_step(&mut out, &args, &scratch)?,
+        "marks" => marks_step(&mut out, &args)?,
         "slope" => slope_step(&mut out, &args)?,
         "labels" => labels_step(&mut out, &args, &scratch)?,
         "pass-sets" => {
@@ -841,6 +842,56 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         std::fs::remove_file(&file).ok();
         eprintln!("peaks {}: {} peaks; z12 tiles {} from the packs, {} from AWS, {} sea ({:.0?})", u.slash(), res.len(), z12.from.0, z12.from.1, z12.from.2, t.elapsed());
     }
+    Ok(())
+}
+
+/// marks [--pass <date>] [--facts file] [--views file]: the landmark points from the current units'
+/// candidates and peaks (pipeline::marksjob), with today's heritage sites, as markdata and the
+/// marks packs. Facts (Wikidata, by QID) and monthly pageviews: the items job's when given, else
+/// today's (sources/legacy/m1/poi/wikidata.json, sources/legacy/m1/pageviews/items.json).
+fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
+    use serde_json::Value;
+    use std::collections::HashMap;
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+    let cov = coverage_of(out, args)?;
+    let read_json = |p: PathBuf| -> Result<Value> { Ok(serde_json::from_slice(&std::fs::read(&p).with_context(|| format!("read {}", p.display()))?)?) };
+    let facts_file = opt(args, "--facts").map(PathBuf::from).unwrap_or_else(|| out.root().join("sources/legacy/m1/poi/wikidata.json"));
+    let views_file = opt(args, "--views").map(PathBuf::from).unwrap_or_else(|| out.root().join("sources/legacy/m1/pageviews/items.json"));
+    let facts: HashMap<String, Value> = serde_json::from_value(read_json(facts_file)?)?;
+    let views: HashMap<String, f64> = serde_json::from_value(read_json(views_file)?)?;
+    let units = pipeline::agent::build::pois_keys(&cov, &date, &out.manifest);
+    let mut cands: Vec<(String, pipeline::marksjob::Candidate)> = Vec::new();
+    let (mut with_peaks, mut missing_peaks) = (0, 0);
+    for (u, _) in &units {
+        let Some(pc) = out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c)) else { continue };
+        let mut peaks: HashMap<String, Value> = HashMap::new();
+        if let Some(pk) = out.get(&format!("work/peaks/{}", u.dash())).map(|c| out.path(c)) {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(zstd::Decoder::new(std::fs::File::open(&pk)?)?).lines() {
+                let mut v: Value = serde_json::from_str(&line?)?;
+                let key = v.as_object_mut().and_then(|o| o.remove("key")).and_then(|k| k.as_str().map(str::to_string)).context("a peak without its key")?;
+                peaks.insert(key, v);
+            }
+        }
+        for c in pipeline::candidates::read(&pc)? {
+            let pk = peaks.get(&c.key).cloned();
+            if c.kind == "peak" {
+                if pk.is_some() { with_peaks += 1 } else { missing_peaks += 1 }
+            }
+            cands.push((c.key.clone(), pipeline::marksjob::from_unit(&c, pk, &facts)));
+        }
+    }
+    anyhow::ensure!(missing_peaks == 0, "marks: {missing_peaks} peaks have no prominence yet (the peaks step)");
+    // One order for every candidate, whichever unit it came from.
+    cands.sort_by(|a, b| a.0.cmp(&b.0));
+    let cands: Vec<pipeline::marksjob::Candidate> = cands.into_iter().map(|c| c.1).collect();
+    eprintln!("marks: {} candidates from {} units ({with_peaks} peaks)", cands.len(), units.len());
+    let pts = pipeline::marksjob::poi_points(&cands, &views);
+    let summits = pipeline::marksjob::summits_list(&pts);
+    let mut all = pts;
+    all.extend(pipeline::markconv::today_heritage(out)?);
+    let c = pipeline::markconv::write(out, all, summits)?;
+    eprintln!("marks: {} points, {} markdata tiles, {} thinned tiles", c.points, c.tiles, c.thinned);
     Ok(())
 }
 
