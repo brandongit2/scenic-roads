@@ -657,3 +657,14 @@ latitude cap; format versions read two at a time.
   - The OSM pass gains the `marks`, `summits` and `named` sets; peaks use the worldwide `summits`
     set, so they don't depend on unit borders or the coverage.
   - The zoomed-out drive and ride summaries get their own design after phase 5's step 3.
+- **The pass on 2026-10-03 (the 2026-09-28 planet, 88.6 GB):**
+  - The filtered file is 68 % of the planet (60.6 GB), not the 60 % allowed for. The copy-first
+    rule now allows 75 %.
+  - The build Mac streamed the planet at 75–85 MB/s.
+  - Writes to the NAS ran at 12–13 MB/s while the NAS was also busy with Synology Drive's sync
+    client and Tailscale (44 % I/O wait), so uploading the filtered file took over an hour.
+  - Meanwhile this Mac's SMB session to the share hung: reads and `smbutil` stalled for minutes,
+    even a forced unmount; ping and the build Mac's own reads were fine. Once the unmount went
+    through, the server remounted the share by itself (its 10-minute loop when idle).
+  - Worth doing: the pass's uploads could leave headroom (a rate limit), and the server could
+    detect a hung mount (the breaker's probe times out) and remount it rather than wait.

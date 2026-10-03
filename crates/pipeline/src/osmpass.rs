@@ -44,11 +44,12 @@ pub const FILTER_BASEMAP: &[&str] = &[
 ];
 
 /// Room needed to copy the planet before filtering it: the copy, the filtered file it's deleted
-/// after (allowed up to 60 % of the planet) and 10 GB. Reading the planet straight from the NAS
+/// after (allowed up to 75 % of the planet: 68 % measured on 2026-09-28's, 60.6 of 88.6 GB) and
+/// 10 GB. Reading the planet straight from the NAS
 /// instead is fragile: osmium reads it twice over an hour or more, and one I/O error on the SMB
 /// mount ends the filter (seen on 2026-10-03), whereas the copy resumes after any interruption.
 pub fn copy_room(planet_len: u64) -> u64 {
-    planet_len + planet_len / 10 * 6 + (10 << 30)
+    planet_len + planet_len / 4 * 3 + (10 << 30)
 }
 
 /// Room the basemap's work needs (its input, Planetiler's temporary files, the archive); short of
