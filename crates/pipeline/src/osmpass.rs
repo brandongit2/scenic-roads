@@ -32,6 +32,8 @@ pub const SETS: &[(&str, &[&str])] = &[
     ("areas", &["wr/boundary=national_park,protected_area,aboriginal_lands", "wr/leisure=nature_reserve"]),
     ("places", &["n/place"]),
     ("outlines", &["r/boundary=administrative", "r/ISO3166-1", "r/ISO3166-2"]),
+    // The labels by importance (dem/labels.py): places, seas, bays and straits, water and parks.
+    ("labels", &["n/place", "n/natural=bay,strait", "wr/natural=water,bay,strait", "wr/boundary=national_park,protected_area", "wr/leisure=nature_reserve"]),
 ];
 
 /// The basemap's input (Planetiler's OpenMapTiles layers water, waterway, boundary, place,

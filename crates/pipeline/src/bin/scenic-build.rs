@@ -20,6 +20,8 @@
 //!   slope [T …] [--regions dir]  slope packs (z3–11) of z6 tiles T from the terrain packs
 //!                                (default: every z6 tile near the coverage)
 //!   terrain-root, slope-root     their z0–2 root packs, from the lo packs' z3 tiles
+//!   labels [--pass d] [--dem dir]  the labels by importance, worldwide, from the pass's labels set
+//!                                (dem/labels.py), as the labels layer's packs
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalog                      publish a catalog of the build manifest
@@ -94,6 +96,7 @@ fn main() -> Result<()> {
         "roadunits" => roadunits(&mut out)?,
         "terrain" => terrain_step(&mut out, &args)?,
         "slope" => slope_step(&mut out, &args)?,
+        "labels" => labels_step(&mut out, &args, &scratch)?,
         "terrain-root" => {
             let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
             let n = pipeline::terrain_pack::build_root(&mut out, &pipeline::terrain_pack::RawTiles::new(&raw_dir))?;
@@ -697,5 +700,45 @@ fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
         let r = pipeline::slope_pack::build_q(out, q, &list)?;
         eprintln!("slope 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
     }
+    Ok(())
+}
+
+/// The labels by importance, worldwide (dem/labels.py on the pass's labels set), split into the
+/// labels layer's packs.
+fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    let date = match opt(args, "--pass") {
+        Some(d) => d,
+        None => pipeline::osmpass::latest_pass(out.root()).context("no complete OSM pass")?,
+    };
+    let set = out.get(&format!("sources/osm/{date}/sets/labels")).context("the pass has no labels set (passes before 2026-10-02)")?.to_string();
+    let work = scratch.join("labels");
+    std::fs::create_dir_all(&work)?;
+    let local = work.join("labels-set.osm.pbf");
+    std::fs::copy(out.path(&set), &local).with_context(|| format!("copy {set}"))?;
+    let tiles = work.join("labels.tiles");
+    let dem = PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into()));
+    let st = std::process::Command::new("uv")
+        .current_dir(&dem)
+        .args(["run", "python", "labels.py", "--src"])
+        .arg(&local)
+        .arg("--out")
+        .arg(&tiles)
+        .arg("--work")
+        .arg(&work)
+        .arg("--own-english")
+        .status()
+        .context("run labels.py")?;
+    anyhow::ensure!(st.success(), "labels.py failed: {st}");
+    let arc = roadcore::archive::Archive::open(&tiles)?;
+    let lo = layers::split_archive(out, &arc, "labels", "mvt", true, 14)?;
+    eprintln!("labels: root {:?}, {} lo, {} hi packs", lo.root.is_some(), lo.lo.len(), lo.hi.len());
+    // Packs of an earlier labels layer that this one doesn't have go from the manifest.
+    let keep: std::collections::BTreeSet<String> = lo.root.iter().chain(lo.lo.values()).chain(lo.hi.values()).cloned().collect();
+    let gone: Vec<String> = out.manifest.keys().filter(|k| k.starts_with("layers/labels/") && !keep.contains(*k)).cloned().collect();
+    for k in gone {
+        out.remove(&k);
+    }
+    out.save()?;
+    std::fs::remove_dir_all(&work).ok();
     Ok(())
 }

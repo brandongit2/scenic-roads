@@ -33,6 +33,9 @@ MIN_PX, and in every z12 tile. Properties: n (name), en (English: its own name:e
 table), k, c, mz, ms (areas), s (importance, the placement order).
 
 usage: labels.py   (reads data/names/named.osm.pbf: names.py filter)
+       labels.py --src <pbf> --out <labels.tiles> --work <dir> --own-english
+                  (the new pipeline: the OSM pass's labels set; English only the places' own, as
+                  the server attaches the translations when serving)
 """
 from __future__ import annotations
 
@@ -51,7 +54,7 @@ import osmium
 from shapely import wkb as swkb
 
 from interest import isolation, min_zoom
-from names import english_at
+from names import differs, english_at
 
 ROOT = Path(__file__).resolve().parent.parent
 N = ROOT / "data" / "names"
@@ -272,7 +275,27 @@ class Writer:
         return len(self.index)
 
 
+def args() -> None:
+    """--src, --out, --work, --own-english: where to read and write (else the legacy paths)."""
+    global SRC, NODES, AREAS, OUT, OWN_ENGLISH
+    a = sys.argv[1:]
+    opt = lambda k: a[a.index(k) + 1] if k in a and a.index(k) + 1 < len(a) else None  # noqa: E731
+    if opt("--src"):
+        SRC = Path(opt("--src"))
+    if opt("--work"):
+        w = Path(opt("--work"))
+        w.mkdir(parents=True, exist_ok=True)
+        NODES, AREAS = w / "labels-nodes.osm.pbf", w / "labels-areas.osm.pbf"
+    if opt("--out"):
+        OUT = Path(opt("--out"))
+    OWN_ENGLISH = "--own-english" in a
+
+
+OWN_ENGLISH = False
+
+
 def main() -> None:
+    args()
     t0 = time.time()
     subprocess.run(["osmium", "tags-filter", "--overwrite", "-R", str(SRC), *NODE_FILTERS, "-o", str(NODES)], check=True)
     subprocess.run(["osmium", "tags-filter", "--overwrite", str(SRC), *AREA_FILTERS, "-o", str(AREAS)], check=True)
@@ -317,7 +340,11 @@ def main() -> None:
 
     def english(i: int) -> str | None:
         if i not in en_cache:
-            en_cache[i] = english_at(rows[i][2], (lon[i], lat[i]), rows[i][6])
+            if OWN_ENGLISH:
+                own = rows[i][6]
+                en_cache[i] = own.strip() if own and differs(rows[i][2], own) else None
+            else:
+                en_cache[i] = english_at(rows[i][2], (lon[i], lat[i]), rows[i][6])
         return en_cache[i]
 
     OUT.parent.mkdir(parents=True, exist_ok=True)

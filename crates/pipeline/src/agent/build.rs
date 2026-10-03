@@ -69,7 +69,7 @@ impl Keys {
             self.catalog = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") {
+        if step.ends_with("-root") || step == "labels" {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -124,6 +124,16 @@ pub fn coverage_tiles(cov: &Coverage) -> BTreeMap<(u32, u32), Vec<(u32, u32)>> {
         }
     }
     by_q
+}
+
+/// The labels by importance, worldwide, once per pass (or labels step version): independent of the
+/// regions.
+pub const LABELS_V: u32 = 1;
+
+pub fn labels_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
+    let set = m.get(&format!("sources/osm/{date}/sets/labels"))?;
+    let k = h(&[&format!("labels {LABELS_V}"), set]);
+    (done.lo.get("labels").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "labels".into(), targets: vec![("labels".into(), k)] })
 }
 
 /// The work there is, in order, for the coverage `cov`, the pass of `date`, the build manifest

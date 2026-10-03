@@ -490,6 +490,22 @@ impl Agent {
     /// stale, its targets in one run of `scenic-build`.
     fn region_work(&self, root: &Path, pass: Option<&str>, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
         let (recipes, _) = recipes::load(&root.join("inputs/regions"));
+        let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        // The labels by importance, worldwide, after each pass.
+        if let Some(date) = pass {
+            if let Some(w) = build::labels_work(date, &manifest, &build::Keys::load(root)) {
+                let scratch = self.o.home.join("scratch").join("labels");
+                return vec![JobSpec {
+                    id: format!("labels {date}"),
+                    what: "Place labels for the whole world".into(),
+                    cmd: vec![s(&self.o.bin.join("scenic-build")), "labels".into(), "--root".into(), s(root), "--scratch".into(), s(&scratch), "--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem"))],
+                    needs: Needs { ac: true, nas: true },
+                    restart_after_sleep: true,
+                    record: Some(w),
+                }];
+            }
+        }
         if recipes.is_empty() {
             return Vec::new();
         }
@@ -497,7 +513,6 @@ impl Agent {
             waiting.push(Waiting { what: "Building the regions".into(), why: "the first OpenStreetMap pass (it makes the outlines regions are drawn from)".into() });
             return Vec::new();
         };
-        let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).and_then(|c| crate::outlines::Outlines::open(&root.join(c)).ok());
         let cov = match crate::coverage::Coverage::from_recipes(&recipes, outlines.as_ref(), &root.join("inputs/outlines")) {
             Ok(c) => c,
@@ -508,7 +523,6 @@ impl Agent {
         };
         let done = build::Keys::load(root);
         let Some(w) = build::plan(&cov, date, &manifest, &done).into_iter().next() else { return Vec::new() };
-        let s = |p: &Path| p.to_string_lossy().into_owned();
         let cache = self.o.home.join("cache");
         let scratch = self.o.home.join("scratch").join(&w.step);
         let mut cmd = vec![s(&self.o.bin.join("scenic-build")), w.step.clone(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
