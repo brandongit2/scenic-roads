@@ -43,9 +43,13 @@ pub const FILTER_BASEMAP: &[&str] = &[
     "nwr/leisure=nature_reserve,park", "nwr/boundary=administrative,national_park,protected_area,disputed", "nwr/place",
 ];
 
-/// Room the rest of the pass needs on the build Mac besides a local copy of the planet (the
-/// filtered file, Planetiler's work, the pieces).
-pub const LOCAL_HEADROOM: u64 = 100 << 30;
+/// Room needed to copy the planet before filtering it: the copy, the filtered file it's deleted
+/// after (allowed up to 60 % of the planet) and 10 GB. Reading the planet straight from the NAS
+/// instead is fragile: osmium reads it twice over an hour or more, and one I/O error on the SMB
+/// mount ends the filter (seen on 2026-10-03), whereas the copy resumes after any interruption.
+pub fn copy_room(planet_len: u64) -> u64 {
+    planet_len + planet_len / 10 * 6 + (10 << 30)
+}
 
 /// Room the basemap's work needs (its input, Planetiler's temporary files, the archive); short of
 /// it, the local filtered file goes and the basemap's filter reads the NAS's copy.
@@ -337,7 +341,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
     // else read from the NAS as it streams (an interruption then repeats the filter).
     let planet_len = std::fs::metadata(planet).map(|m| m.len()).unwrap_or(u64::MAX);
     let room = crate::agent::cond::free_bytes(scratch).unwrap_or(0);
-    let copy_first = done(scratch, "copy").exists() || room > planet_len.saturating_add(LOCAL_HEADROOM);
+    let copy_first = done(scratch, "copy").exists() || room > copy_room(planet_len);
     if copy_first && !done(scratch, "copy").exists() && !done(scratch, "filter").exists() {
         copy_resume(planet, &local_planet)?;
         mark(scratch, "copy")?;
