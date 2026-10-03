@@ -25,17 +25,22 @@ fn legacy_bytes(out: &Out, stem: &str) -> Result<Vec<u8>> {
     std::fs::read(&path).with_context(|| format!("read {}", path.display()))
 }
 
-/// One converted point before ids.
-struct Pt {
-    kind: usize,
-    lon: f64,
-    lat: f64,
-    pt: MarkPt,
-    fvals: Vec<f64>,
-    props: Map<String, Value>,
-    info: Option<String>,
-    osm: Option<u64>,
+/// A point for the marks: its kind (an index of KINDS), place, record, the filters' values, lean
+/// properties, popup record, and what its id is made from (an OSM id used when no other point has
+/// it, else the reference). Today's converted points and the `marks` job's alike.
+pub struct Point {
+    pub kind: usize,
+    pub lon: f64,
+    pub lat: f64,
+    pub pt: MarkPt,
+    pub fvals: Vec<f64>,
+    pub props: Map<String, Value>,
+    pub info: Option<String>,
+    pub osm: Option<u64>,
+    pub reference: String,
 }
+
+type Pt = Point;
 
 /// The POI details as the server merges them (details-poi, with peaks.json's record as `peak`), by
 /// the layers' `i`.
@@ -94,7 +99,7 @@ fn whc_site(url: &str) -> Option<&str> {
 }
 
 /// Today's heritage sites (World Heritage components among them).
-fn heritage_points(out: &Out, pts: &mut Vec<Pt>, refs: &mut Vec<String>) -> Result<()> {
+fn heritage_points(out: &Out, pts: &mut Vec<Pt>) -> Result<()> {
     let details = heritage_details(out)?;
     let k = marks::kind_index("heritage").unwrap();
     let fields = marks::fields("heritage");
@@ -138,17 +143,15 @@ fn heritage_points(out: &Out, pts: &mut Vec<Pt>, refs: &mut Vec<String>) -> Resu
             (_, _, Some(d)) => format!("reg:dfhd:{d}"),
             _ => format!("legacy:heritage|{tier}|{},{}|{name}|{url}", pt.lon, pt.lat),
         };
-        refs.push(reference);
-        pts.push(Pt { kind: k, lon, lat, pt, fvals, props, info: info.map(Value::to_string), osm: None });
+        pts.push(Pt { kind: k, lon, lat, pt, fvals, props, info: info.map(Value::to_string), osm: None, reference });
     }
     Ok(())
 }
 
-/// Every point of today's files, with ids.
-fn load_points(out: &Out) -> Result<Vec<(u64, Pt)>> {
+/// Every point of today's files.
+fn load_points(out: &Out) -> Result<Vec<Pt>> {
     let details = poi_details(out)?;
     let mut pts: Vec<Pt> = Vec::new();
-    let mut refs: Vec<String> = Vec::new();
     for kind in POI_KINDS {
         let k = marks::kind_index(kind).unwrap();
         let fc: Value = serde_json::from_slice(&legacy_bytes(out, &format!("layer-pois-{kind}"))?)?;
@@ -181,19 +184,12 @@ fn load_points(out: &Out) -> Result<Vec<(u64, Pt)>> {
             let fvals = fields.iter().map(|p| marks::num(&props, p)).collect();
             let name = props.get("name").and_then(Value::as_str).unwrap_or("");
             let sub = props.get("kind").and_then(Value::as_str).unwrap_or(kind);
-            refs.push(format!("legacy:poi|{sub}|{},{}|{name}", pt.lon, pt.lat));
-            pts.push(Pt { kind: k, lon, lat, pt, fvals, props, info, osm });
+            let reference = format!("legacy:poi|{sub}|{},{}|{name}", pt.lon, pt.lat);
+            pts.push(Pt { kind: k, lon, lat, pt, fvals, props, info, osm, reference });
         }
     }
-    heritage_points(out, &mut pts, &mut refs)?;
-    // Ids over every point of the group (an OSM id is used only when no other point has it).
-    let src: Vec<IdSource> = pts
-        .iter()
-        .zip(refs)
-        .map(|(p, reference)| IdSource { osm: p.osm, reference, canon: format!("{}{}", Value::Object(p.props.clone()), p.info.as_deref().unwrap_or("")) })
-        .collect();
-    let ids = marks::assign_ids(&src)?;
-    Ok(ids.into_iter().zip(pts).collect())
+    heritage_points(out, &mut pts)?;
+    Ok(pts)
 }
 
 pub struct Converted {
@@ -202,11 +198,25 @@ pub struct Converted {
     pub thinned: usize,
 }
 
-/// Converts today's stops & sights: markdata per z6 tile, thinned tiles per kind (packs
-/// `layers/marks-<kind>/{root,lo}`), and `global/marks/summary`.
+/// Converts today's points: see [`write`].
 pub fn convert(out: &mut Out) -> Result<Converted> {
+    let pts = load_points(out)?;
+    let summits = summits(out)?;
+    write(out, pts, summits)
+}
+
+/// Writes points as the map reads them: ids (unique over every point: an OSM id only when no other
+/// point has it), the thinned tiles' keep rule, markdata per z6 tile, thinned tiles per kind (packs
+/// `layers/marks-<kind>/{root,lo}`), and `global/marks/summary`; with the named peaks for the
+/// highest in view.
+pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) -> Result<Converted> {
     let t0 = std::time::Instant::now();
-    let mut all = load_points(out)?;
+    let src: Vec<IdSource> = pts
+        .iter()
+        .map(|p| IdSource { osm: p.osm, reference: p.reference.clone(), canon: format!("{}{}", Value::Object(p.props.clone()), p.info.as_deref().unwrap_or("")) })
+        .collect();
+    let ids = marks::assign_ids(&src)?;
+    let mut all: Vec<(u64, Pt)> = ids.into_iter().zip(pts).collect();
     eprintln!("marks: {} points with ids in {:.1?}", all.len(), t0.elapsed());
 
     // The keep rule, per kind.
@@ -233,7 +243,6 @@ pub fn convert(out: &mut Out) -> Result<Converted> {
     for (j, (_, p)) in all.iter().enumerate() {
         tiles.entry(marks::tile_at(p.lon, p.lat, 6)).or_default().push(j);
     }
-    let summits = summits(out)?;
     let mut summits_by: BTreeMap<(u32, u32), Vec<(SummitRec, String)>> = BTreeMap::new();
     for s in summits {
         summits_by.entry(marks::tile_at(marks::deg(s.0.lon), marks::deg(s.0.lat), 6)).or_default().push(s);
