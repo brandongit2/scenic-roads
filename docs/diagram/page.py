@@ -57,19 +57,19 @@ legend = ('<section class="legend" aria-label="Legend">'
           '</section>')
 
 # Implementation progress (docs/plan.md §10), as of the date shown.
-PROGRESS_AT = '2 October 2026, 20:15'
+PROGRESS_AT = '3 October 2026, 00:15'
 PHASES = [
-    ('done-ish', 'Foundations on today’s data', 'Packs, catalogs, the NAS access layer and the mirror; the server and the map rewritten to read them. Today’s data converted onto the NAS (roads, terrain, slope, trees, labels).',
-     'Left: road tiles for every area, then publish and install on both Macs, compared with today’s map.'),
-    ('mostly', 'Build agent and moving the data', 'The agent runs one job at a time, pauses on battery or away from the NAS, writes a heartbeat, backs up your folders daily and clears replaced files. This Mac’s data is on the NAS; keys and descriptions moved.',
-     'Left: install it on the build Mac; move the rest of the build Mac’s data.'),
-    ('active', 'Worldwide OpenStreetMap pass', 'Works end to end on Taiwan and on Britain: pieces per area, worldwide road values, outlines of every administrative area, the basemap. Terrain and slope for new areas, made the same way every time.',
-     'Left: the planet download (70 of 95 GB), then the real pass; trees and overlays for new areas.'),
-    ('active', 'Per-area building', 'Each area built from its piece with today’s steps, then packed; the agent works out what’s stale and builds only that.',
-     'Left: the pilot (Northumberland and the Scottish Borders), compared with today’s data across their border.'),
-    ('active', 'In the browser', 'Areas and regions answerable by the server (search, what contains a point, outlines); your descriptions show without a rebuild.',
-     'Left: the Regions panel, the status bar and catalog switching (being built); sights by view.'),
-    ('later', 'Switching over', 'Today’s 30 regions as outlines, built the new way, compared, then switched to.', ''),
+    ('done-ish', 'Foundations on today’s data', 'Both Macs run the new app from the NAS. Compared with today’s map in nine places (Québec, Tokyo, London, Chamonix, Vancouver, Hong Kong, Taipei, Lisbon, Northumberland): roads, elevation profiles, every tile layer and popup details all equal. The map reads only the pages a request needs from the NAS (a first hover in Tokyo: 66 s before, 1.9 s now).',
+     'Left: the speed check against today’s app once this Mac’s local copy is in.'),
+    ('mostly', 'Build agent and moving the data', 'The agent runs on the build Mac from the installed app: one job at a time, waits for mains power, backs up your folders and clears replaced files. Both Macs’ data is on the NAS, checked file by file; the old build folders are gone.',
+     'Left: the build Mac’s caches, being copied, then moved into the agent’s.'),
+    ('active', 'Worldwide OpenStreetMap pass', 'Cuts the planet a quarter at a time so it fits the build Mac’s memory and disk (checked identical to the old cut). Running on the full planet since 3 October, midnight.',
+     'Left: the pass itself (a few hours); trees and overlays for new areas.'),
+    ('mostly', 'Per-area building', 'Pilot done: Northumberland and the Scottish Borders built the new way match today’s data (same roads, elevations within 1 m, every scenery score and flag), and roads cross their border seamlessly.',
+     'Left: rankings for new areas (fame, ferries, rail service).'),
+    ('active', 'In the browser', 'The Regions panel, the status bar and switching to new data in place. Tiles that fail while the NAS is busy or away are asked for again by themselves.',
+     'Left: sights, stations and overlays by view (being designed), so new areas get them too.'),
+    ('later', 'Switching over', 'Today’s 30 regions as outlines, built the new way after the pass, compared, then switched to.', ''),
 ]
 STATE = {'done-ish': ('nearly done', 'st-near'), 'mostly': ('mostly done', 'st-near'), 'active': ('in progress', 'st-on'), 'later': ('later', 'st-later')}
 
