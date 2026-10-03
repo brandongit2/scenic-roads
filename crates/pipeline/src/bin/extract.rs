@@ -66,11 +66,13 @@ struct Pass1 {
     ways: Vec<RawWay>,
     /// (member way id, route name) of designated scenic routes.
     scenic: Vec<(i64, String)>,
-    /// Points of interest mapped as areas: (kind, name, node refs).
-    poi_ways: Vec<(&'static str, String, Vec<i64>)>,
-    /// Hiking routes: (name, member way ids).
-    hikes: Vec<(String, Vec<i64>)>,
+    /// Points of interest mapped as areas: (kind, name, node refs, way id, kept tags).
+    poi_ways: Vec<(&'static str, String, Vec<i64>, i64, Vec<(String, String)>)>,
+    /// Hiking routes: (name, member way ids, relation id).
+    hikes: Vec<(String, Vec<i64>, i64)>,
     rail_uses: Vec<RailUse>,
+    /// Covered bridges' kept tags, by way id.
+    bridge_tags: Vec<(i64, Vec<(String, String)>)>,
 }
 
 impl Pass1 {
@@ -82,6 +84,7 @@ impl Pass1 {
         a.scenic.append(&mut b.scenic);
         a.poi_ways.append(&mut b.poi_ways);
         a.hikes.append(&mut b.hikes);
+        a.bridge_tags.append(&mut b.bridge_tags);
         a.rail_uses.append(&mut b.rail_uses);
         a
     }
@@ -93,6 +96,45 @@ struct Poi {
     lat: i32,
     name: String,
     ele: Option<f32>,
+    /// The OSM object it is ("n123", "w5"; none for a hiking route's end).
+    osm: Option<String>,
+    /// A reference for one that isn't an OSM object: a hiking route's end ("trail:<relation>:<node>").
+    key: Option<String>,
+    /// The tags its details show (dem/poidetails.py KEEP and COMMON).
+    tags: Vec<(String, String)>,
+}
+
+/// Tags every stop & sight keeps for its details, and each kind's own (dem/poidetails.py).
+const KEEP_COMMON: &[&str] = &["name", "ele", "description", "website", "wikipedia", "wikidata", "operator", "access", "fee", "opening_hours", "start_date", "heritage", "alt_name", "name:en", "image"];
+
+fn keep_of(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "peak" => &["prominence", "isolation", "munro", "corbett", "graham", "donald", "marilyn", "hewitt", "wainwright", "nuttall",
+            "communication:amateur_radio:sota", "summit:cross", "summit:register", "volcano:status", "volcano:type", "natural", "tourism"],
+        "waterfall" => &["height", "width", "intermittent", "seasonal", "waterway", "natural"],
+        "lighthouse" => &["height", "seamark:light:character", "seamark:light:colour", "seamark:light:period", "seamark:light:range",
+            "seamark:light:height", "seamark:light:sequence", "seamark:light:reference", "seamark:name", "building:colour", "tower:type",
+            "historic", "heritage:operator", "seamark:light:1:character", "seamark:light:1:colour", "seamark:light:1:period",
+            "seamark:light:1:range", "seamark:light:1:height", "man_made"],
+        "viewpoint" => &["direction", "tower:type", "height", "man_made", "tourism"],
+        "picnic_site" => &["toilets", "drinking_water", "shelter", "bench", "picnic_table", "fireplace", "bbq", "covered", "capacity", "tourism", "leisure"],
+        "rest_area" => &["toilets", "drinking_water", "shelter", "picnic_table", "bench", "fuel", "restaurant", "shop", "wheelchair", "capacity", "highway"],
+        "trailhead" | "trail_parking" => &["toilets", "drinking_water", "parking", "capacity", "route_ref", "hiking", "shelter", "highway", "amenity", "trailhead"],
+        "covered_bridge" => &["bridge:structure", "bridge:name", "material", "historic", "bridge:ref", "layer", "bridge", "covered", "length"],
+        _ => &[],
+    }
+}
+
+/// A point's kept tags, sorted by key.
+fn kept_tags(t: &Tags, kind: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = KEEP_COMMON
+        .iter()
+        .chain(keep_of(kind))
+        .filter_map(|k| t.get(k).filter(|v| !v.is_empty()).map(|v| (k.to_string(), v.replace('\n', " "))))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Designated scenic routes: byway/scenic/tourist networks, scenic trails, Quebec's routes
@@ -537,8 +579,9 @@ fn main() -> Result<()> {
     // ---- Pass 1: ways ------------------------------------------------------------
     let mut ways: Vec<RawWay> = Vec::new();
     let mut scenic: Vec<(i64, String)> = Vec::new();
-    let mut poi_ways: Vec<(&'static str, String, Vec<i64>)> = Vec::new();
-    let mut hikes: Vec<(String, Vec<i64>)> = Vec::new();
+    let mut poi_ways: Vec<(&'static str, String, Vec<i64>, i64, Vec<(String, String)>)> = Vec::new();
+    let mut hikes: Vec<(String, Vec<i64>, i64)> = Vec::new();
+    let mut bridge_tags: Vec<(i64, Vec<(String, String)>)> = Vec::new();
     let mut rail_uses: Vec<RailUse> = Vec::new();
     for p in &inputs {
         let name = p.file_name().unwrap().to_string_lossy().replace(".osm.pbf", "");
@@ -550,7 +593,10 @@ fn main() -> Result<()> {
                     Element::Way(w) => {
                         let t = Tags(w.tags().collect());
                         if let Some(kind) = poi_kind(&t) {
-                            out.poi_ways.push((kind, t.get("name").unwrap_or("").to_string(), w.refs().collect()));
+                            out.poi_ways.push((kind, t.get("name").unwrap_or("").to_string(), w.refs().collect(), w.id(), kept_tags(&t, kind)));
+                        }
+                        if t.is("covered", "yes") || t.is("bridge", "covered") {
+                            out.bridge_tags.push((w.id(), kept_tags(&t, "covered_bridge")));
                         }
                         if let Some((c, f)) = classify(&t) {
                             out.ways.push(RawWay {
@@ -592,7 +638,7 @@ fn main() -> Result<()> {
                             let name = t.get("name").or(t.get("ref")).unwrap_or("").replace('\n', " ");
                             let ids: Vec<i64> = r.members().filter(|m| m.member_type == osmpbf::RelMemberType::Way).map(|m| m.member_id).collect();
                             if !ids.is_empty() {
-                                out.hikes.push((name, ids));
+                                out.hikes.push((name, ids, r.id()));
                             }
                         }
                         if let Some(group) = rail_route(&t) {
@@ -629,7 +675,10 @@ fn main() -> Result<()> {
         poi_ways.append(&mut got.poi_ways);
         hikes.append(&mut got.hikes);
         rail_uses.append(&mut got.rail_uses);
+        bridge_tags.append(&mut got.bridge_tags);
     }
+    bridge_tags.par_sort_unstable_by_key(|b| b.0);
+    bridge_tags.dedup_by_key(|b| b.0);
     ways.par_sort_unstable_by_key(|w| w.id);
     ways.dedup_by_key(|w| w.id);
     // Rail: the services using each track. The primary group (drawing class, colour, name) is
@@ -746,8 +795,8 @@ fn main() -> Result<()> {
     // A route's ends: way ends used once (the route's own start and finish, where it meets a road
     // or car park). Only simple linear routes (exactly two such ends): branches and loops don't say
     // which end is the way in.
-    let mut route_ends: Vec<(String, i64)> = Vec::new();
-    for (name, ids) in &hikes {
+    let mut route_ends: Vec<(String, i64, i64)> = Vec::new();
+    for (name, ids, rel) in &hikes {
         let mut deg: HashMap<i64, u32> = HashMap::new();
         for id in ids {
             if let Ok(i) = hike_ends.binary_search_by_key(id, |e| e.0) {
@@ -757,7 +806,7 @@ fn main() -> Result<()> {
         }
         let ends: Vec<i64> = deg.iter().filter(|(_, &d)| d == 1).map(|(&n, _)| n).collect();
         if ends.len() == 2 {
-            route_ends.extend(ends.into_iter().map(|n| (name.clone(), n)));
+            route_ends.extend(ends.into_iter().map(|n| (name.clone(), n, *rel)));
         }
     }
     eprintln!("        {} hiking routes, {} route ends", hikes.len(), route_ends.len());
@@ -785,6 +834,9 @@ fn main() -> Result<()> {
                     lat,
                     name: t.get("name").unwrap_or("").to_string(),
                     ele: parse_ele(t.get("ele")),
+                    osm: Some(format!("n{id}")),
+                    key: None,
+                    tags: kept_tags(&t, kind),
                 });
             }
         }
@@ -824,7 +876,7 @@ fn main() -> Result<()> {
         pois.append(&mut got);
     }
     eprintln!("pass 2 done ({:.0?})", t0.elapsed());
-    for (kind, name, refs) in &poi_ways {
+    for (kind, name, refs, id, tags) in &poi_ways {
         let pts: Vec<(i64, i64)> = refs
             .iter()
             .filter_map(|&r| {
@@ -838,7 +890,7 @@ fn main() -> Result<()> {
         }
         let n = pts.len() as i64;
         let (sx, sy) = pts.iter().fold((0i64, 0i64), |a, p| (a.0 + p.0, a.1 + p.1));
-        pois.push(Poi { kind, lon: (sx / n) as i32, lat: (sy / n) as i32, name: name.clone(), ele: None });
+        pois.push(Poi { kind, lon: (sx / n) as i32, lat: (sy / n) as i32, name: name.clone(), ele: None, osm: Some(format!("w{id}")), key: None, tags: tags.clone() });
     }
 
     // Hiking-route ends within 300 m of a drivable road are trailheads (named after the route).
@@ -846,7 +898,7 @@ fn main() -> Result<()> {
         let cell = |lon: i32, lat: i32| ((lon as i64).div_euclid(30_000), (lat as i64).div_euclid(30_000)); // ≈ 0.003°
         let mut cand: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
         let mut pts: Vec<(i32, i32)> = Vec::new();
-        for (k, (_, n)) in route_ends.iter().enumerate() {
+        for (k, (_, n, _)) in route_ends.iter().enumerate() {
             let v = needed.binary_search(n).ok().map(|i| coords[i].load(Relaxed)).unwrap_or(u64::MAX);
             let p = if v == u64::MAX { (i32::MIN, 0) } else { (v as u32 as i32, (v >> 32) as u32 as i32) };
             pts.push(p);
@@ -876,9 +928,10 @@ fn main() -> Result<()> {
             }
         }
         let mut n = 0;
-        for (k, (name, _)) in route_ends.iter().enumerate() {
+        for (k, (name, node, rel)) in route_ends.iter().enumerate() {
             if near[k] {
-                pois.push(Poi { kind: "trail_route", lon: pts[k].0, lat: pts[k].1, name: name.clone(), ele: None });
+                let tags = if name.is_empty() { Vec::new() } else { vec![("name".to_string(), name.clone())] };
+                pois.push(Poi { kind: "trail_route", lon: pts[k].0, lat: pts[k].1, name: name.clone(), ele: None, osm: None, key: Some(format!("trail:{rel}:{node}")), tags });
                 n += 1;
             }
         }
@@ -1055,7 +1108,8 @@ fn main() -> Result<()> {
         });
         if w.flags & flag::COVERED != 0 {
             let m = b.pts[b.pts.len() / 2];
-            pois.push(Poi { kind: "covered_bridge", lon: m[0], lat: m[1], name: w.name.clone(), ele: None });
+            let tags = bridge_tags.binary_search_by_key(&w.id, |b| b.0).map(|i| bridge_tags[i].1.clone()).unwrap_or_default();
+            pois.push(Poi { kind: "covered_bridge", lon: m[0], lat: m[1], name: w.name.clone(), ele: None, osm: Some(format!("w{}", w.id)), key: None, tags });
         }
     }
     wv.flush()?;
@@ -1073,7 +1127,10 @@ fn main() -> Result<()> {
             serde_json::json!({
                 "type": "Feature",
                 "geometry": { "type": "Point", "coordinates": [p.lon as f64 * E7, p.lat as f64 * E7] },
-                "properties": { "kind": p.kind, "name": p.name, "ele": p.ele.map(|e| e.round()) },
+                "properties": {
+                    "kind": p.kind, "name": p.name, "ele": p.ele.map(|e| e.round()), "osm": p.osm, "key": p.key,
+                    "tags": p.tags.iter().map(|(k, v)| (k.clone(), serde_json::Value::from(v.as_str()))).collect::<serde_json::Map<_, _>>(),
+                },
             })
         })
         .collect();
