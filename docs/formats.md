@@ -84,7 +84,7 @@ owned geometry, "source": "legacy:<build>" | "osm:<date>"}`.
 
 ## Road values (`global/roads/<z>-<x>-<y>.<h>.sect`): per owned way of a unit
 
-One section `roads`, one 24-byte record per way of the unit's base pack, in the same order:
+Section `roads`, one 24-byte record per way of the unit's base pack, in the same order:
 
 ```
 u64 road id      the lowest OSM way id of the road
@@ -93,6 +93,10 @@ f32 offset       metres from the road's start to this way's start, along the roa
 u8  dir          0: the way runs with the road; 1: against it
 [u8; 7] pad
 ```
+
+Section `byroad`: `(u64 road id, u64 way index)` for every way, sorted, so a whole road's ways in
+the unit are one binary search away. (Files from before 2026-10-03 lack it; the server sorts
+`roads` itself for those.)
 
 One chaining (plan §6): at each node, way ends pair by mutual best continuation — same ref (any
 shared token of a multi-ref), else same name, else same class when both are unnamed, else (level

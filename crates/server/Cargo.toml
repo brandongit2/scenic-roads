@@ -28,3 +28,6 @@ png = "0.18"
 base64 = "0.22"
 rayon = { workspace = true }
 bytemuck = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

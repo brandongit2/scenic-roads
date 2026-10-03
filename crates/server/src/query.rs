@@ -6,7 +6,7 @@
 //!
 //! Scores as before (`web/src/scenic.ts`, `web/src/rail.ts`): see `components` and `ride_components`.
 
-use crate::views::HiView;
+use crate::views::QTile;
 use crate::ways::{find_way, len_ok, tiles_in};
 use crate::{AppState, Region, S};
 use axum::{
@@ -21,7 +21,6 @@ use roadcore::scenic::{ch, flag, sflag};
 use roadcore::{class, E7};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 
 pub const NCOMP: usize = 12;
 pub const RNCOMP: usize = 11;
@@ -67,12 +66,12 @@ struct Smp {
 /// Tiles read for a query: the view's, plus those within `margin_km` of it.
 /// The hidata of the z6 tiles in view plus a margin; an error when one can't be read (a query
 /// over part of the view would look complete).
-fn tiles_for(s: &AppState, region: &Region, margin_km: f64) -> anyhow::Result<Vec<Arc<HiView>>> {
+fn tiles_for(s: &AppState, region: &Region, margin_km: f64) -> anyhow::Result<Vec<QTile>> {
     let lat = (region.bb[1].unsigned_abs().max(region.bb[3].unsigned_abs()) as f64 * E7).min(85.0);
     let dlat = (margin_km / 111.32 / E7) as i32;
     let dlon = (margin_km / 111.32 / lat.to_radians().cos().max(0.05) / E7) as i32;
     let bb = [region.bb[0].saturating_sub(dlon), region.bb[1].saturating_sub(dlat), region.bb[2].saturating_add(dlon), region.bb[3].saturating_add(dlat)];
-    let got: Vec<anyhow::Result<Option<Arc<HiView>>>> = tiles_in(bb).into_par_iter().map(|(x, y)| s.data.hidata(&format!("6/{x}/{y}"))).collect();
+    let got: Vec<anyhow::Result<Option<QTile>>> = tiles_in(bb).into_par_iter().map(|(x, y)| s.data.hidata(&format!("6/{x}/{y}"))?.map(QTile::new).transpose()).collect();
     let mut out = Vec::with_capacity(got.len());
     for g in got {
         if let Some(h) = g? {
@@ -97,7 +96,7 @@ fn answer<T: serde::Serialize>(r: Result<anyhow::Result<Option<T>>, tokio::task:
 
 /// Every sample of the tiles' parts passing `keep(tile, part sample)`, in road and offset order,
 /// cut into runs of consecutive samples.
-fn runs(tiles: &[Arc<HiView>], rail: bool, keep: &(dyn Fn(&HiView, &PSample, f32) -> bool + Sync)) -> Vec<Vec<Smp>> {
+fn runs(tiles: &[QTile], rail: bool, keep: &(dyn Fn(&QTile, &PSample, f32) -> bool + Sync)) -> Vec<Vec<Smp>> {
     let mut all: Vec<Smp> = tiles
         .par_iter()
         .enumerate()
@@ -154,8 +153,8 @@ fn best_window(run: &[Smp], sc: &[f32], len: f32, mid_in_view: &dyn Fn(&Smp) -> 
     best
 }
 
-fn sample<'a>(tiles: &'a [Arc<HiView>], s: &Smp) -> (&'a HiView, &'a PSample, &'a [u8; ch::N]) {
-    let hv = &*tiles[s.tile as usize];
+fn sample<'a>(tiles: &'a [QTile], s: &Smp) -> (&'a QTile, &'a PSample, &'a [u8; ch::N]) {
+    let hv = &tiles[s.tile as usize];
     (hv, &hv.psamples()[s.k as usize], &hv.pch()[s.k as usize])
 }
 
@@ -237,7 +236,7 @@ fn compute_drives(st: &AppState, q: Q, err: &mut Option<anyhow::Error>) -> Optio
             return None;
         }
     };
-    let keep = |hv: &HiView, p: &PSample, road_len: f32| {
+    let keep = |hv: &QTile, p: &PSample, road_len: f32| {
         let h = &hv.here()[p.way as usize];
         let unp = (h.flags & roadcore::flag::UNPAVED != 0) as u8;
         let tl = (h.flags & roadcore::flag::TOLL != 0) as u8;
@@ -338,7 +337,7 @@ fn weights(q: &RQ) -> Option<[f32; RNCOMP]> {
 
 /// The ride components of sample `t` of a run (its neighbours give the gradient), and whether its
 /// trains a day are known.
-fn ride_components(st: &AppState, tiles: &[Arc<HiView>], run: &[Smp], t: usize) -> ([f32; RNCOMP], bool) {
+fn ride_components(st: &AppState, tiles: &[QTile], run: &[Smp], t: usize) -> ([f32; RNCOMP], bool) {
     let (hv, p, c) = sample(tiles, &run[t]);
     let (i0, i1) = (t.saturating_sub(1), (t + 1).min(run.len() - 1));
     let (a, b) = (sample(tiles, &run[i0]).1, sample(tiles, &run[i1]).1);
@@ -363,7 +362,7 @@ fn ride_components(st: &AppState, tiles: &[Arc<HiView>], run: &[Smp], t: usize) 
     )
 }
 
-fn ride_score(st: &AppState, tiles: &[Arc<HiView>], run: &[Smp], t: usize, w: &[f32; RNCOMP]) -> f32 {
+fn ride_score(st: &AppState, tiles: &[QTile], run: &[Smp], t: usize, w: &[f32; RNCOMP]) -> f32 {
     let (c, known) = ride_components(st, tiles, run, t);
     let pos: f32 = w.iter().enumerate().map(|(i, v)| if i == FREQ && !known { 0.0 } else { v.max(0.0) }).sum::<f32>().max(1e-6);
     (c.iter().zip(w).map(|(a, b)| a * b).sum::<f32>() / pos).clamp(0.0, 1.0)
@@ -401,7 +400,7 @@ struct LineInfo {
     class: u8,
 }
 
-fn line_info(st: &AppState, tiles: &[Arc<HiView>], s: &Smp) -> Option<LineInfo> {
+fn line_info(st: &AppState, tiles: &[QTile], s: &Smp) -> Option<LineInfo> {
     let (hv, p, _) = sample(tiles, s);
     let id = hv.here()[p.way as usize].id;
     let f = find_way(st, id, [p.lon as f64 * E7, p.lat as f64 * E7]).ok().flatten()?;
@@ -410,7 +409,7 @@ fn line_info(st: &AppState, tiles: &[Arc<HiView>], s: &Smp) -> Option<LineInfo> 
         ident: rail_ident(f.base.string(r.name), f.base.string(r.route)),
         services: f.base.string(r.route).to_string(),
         colour: r.colour,
-        rel: f.base.rail_rel(f.index).unwrap_or(0),
+        rel: f.base.rail_rel(f.index).ok().flatten().unwrap_or(0),
         way: id,
         rail: r.rail,
         class: r.class,

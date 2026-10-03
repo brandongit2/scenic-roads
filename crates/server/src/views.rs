@@ -1,15 +1,20 @@
 //! Typed views of the per-area files (docs/formats.md): sectioned files read from the Mac's mirror
-//! (memory-mapped) or from the NAS (sections read on first use, through the I/O pool, into aligned
-//! memory: NAS files are never mapped).
+//! (memory-mapped) or from the NAS (never mapped: read through the I/O pool, a page at a time for
+//! the few records a request needs, or whole for what a query scans; see `pages`).
 
+use crate::pages;
 use anyhow::{bail, ensure, Context, Result};
 use bytemuck::Pod;
 use memmap2::Mmap;
-use roadcore::packs::{Climb, End, Here, PSample, Part, RailRel, RoadRec, Sub9};
-use roadcore::scenic::{ch, Sample};
+use roadcore::packs::{Climb, Here, PSample, Part, RailRel, RoadRec};
+use roadcore::scenic::ch;
 use roadcore::WayRec;
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::marker::PhantomData;
+use std::ops::Range;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Bytes of one section: a slice of a local file's map, or aligned memory read from the NAS.
@@ -65,14 +70,18 @@ impl store::range::RangeRead for MapRange {
 pub struct RemoteFile {
     pub path: PathBuf,
     pub pool: Arc<store::iopool::IoPool>,
+    /// Unique per instance: its pages' key in `pages`.
+    pub id: u64,
     file: Mutex<Option<(Arc<std::fs::File>, u64)>>,
 }
 
 const PIECE: usize = 1 << 20;
 
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
 impl RemoteFile {
     pub fn new(path: PathBuf, pool: Arc<store::iopool::IoPool>) -> RemoteFile {
-        RemoteFile { path, pool, file: Mutex::new(None) }
+        RemoteFile { path, pool, id: NEXT_ID.fetch_add(1, Ordering::Relaxed), file: Mutex::new(None) }
     }
 
     fn handle(&self, fresh: bool) -> Result<(Arc<std::fs::File>, u64), store::iopool::IoError> {
@@ -209,6 +218,19 @@ impl SectView {
         }
     }
 
+    /// A section as records of `T`, read on demand (an empty one when the file hasn't it).
+    pub fn sect<T: Pod>(&self, name: &str) -> Result<Sect<T>> {
+        let Some(&(off, len)) = self.table.get(name) else { return Ok(Sect::empty()) };
+        let at = match &self.src {
+            Src::Local(m) => {
+                ensure!(off.checked_add(len).is_some_and(|e| e <= m.len() as u64), "section {name} out of bounds");
+                At::Blob(Blob::Map(m.clone(), off as usize, len as usize))
+            }
+            Src::Remote(r) => At::Remote { file: r.clone(), off, len },
+        };
+        Sect::new(at, len, name)
+    }
+
     /// `len` bytes from `start` within a section (for sections too big to read whole).
     pub fn get_part(&self, name: &str, start: u64, len: usize) -> Result<Vec<u8>> {
         let &(off, slen) = self.table.get(name).ok_or_else(|| anyhow::anyhow!("no section {name}"))?;
@@ -248,124 +270,257 @@ impl SectView {
     }
 }
 
-/// One unit's base pack and road values.
+/// Where a section's bytes are.
+#[derive(Clone)]
+enum At {
+    /// Mapped (a mirrored file), or empty.
+    Blob(Blob),
+    /// Bytes [off, off + len) of a file on the NAS.
+    Remote { file: Arc<RemoteFile>, off: u64, len: u64 },
+}
+
+/// A section as records of `T`: a slice of the map when the file is on this Mac; else read from
+/// the NAS as asked, a few records through the page cache or the whole section at once.
+pub struct Sect<T> {
+    at: At,
+    n: usize,
+    _t: PhantomData<fn() -> T>,
+}
+
+/// The records of several ranges of a section (`Sect::gather`).
+pub enum Gathered<T> {
+    /// Ranges of a mapped or whole section.
+    In(Blob, Vec<Range<usize>>),
+    Owned(Vec<Vec<T>>),
+}
+
+impl<T: Pod> Gathered<T> {
+    pub fn get(&self, k: usize) -> &[T] {
+        match self {
+            Gathered::In(b, rs) => &b.cast::<T>()[rs[k].clone()],
+            Gathered::Owned(v) => &v[k],
+        }
+    }
+}
+
+impl<T: Pod> Sect<T> {
+    fn new(at: At, bytes: u64, name: &str) -> Result<Sect<T>> {
+        let sz = std::mem::size_of::<T>() as u64;
+        ensure!(bytes % sz == 0, "section {name}: {bytes} bytes isn't a whole number of {sz}-byte records");
+        let n = (bytes / sz) as usize;
+        if let At::Blob(b) = &at {
+            ensure!(b.cast::<T>().len() == n, "section {name} isn't aligned for its records");
+        }
+        Ok(Sect { at, n, _t: PhantomData })
+    }
+
+    pub fn empty() -> Sect<T> {
+        Sect { at: At::Blob(Blob::from_vec(Vec::new())), n: 0, _t: PhantomData }
+    }
+
+    pub fn len(&self) -> usize {
+        self.n
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.n == 0
+    }
+
+    fn check(&self, r: &Range<usize>) -> Result<()> {
+        ensure!(r.start <= r.end && r.end <= self.n, "records {}..{} outside a section of {}", r.start, r.end, self.n);
+        Ok(())
+    }
+
+    /// Records `r` (borrowed from the map, else read: from the section if it's in memory whole,
+    /// else from its pages).
+    pub fn range(&self, r: Range<usize>) -> Result<Cow<'_, [T]>> {
+        self.check(&r)?;
+        match &self.at {
+            At::Blob(b) => Ok(Cow::Borrowed(&b.cast::<T>()[r])),
+            At::Remote { file, off, .. } => {
+                if let Some(b) = pages::cached_whole(file, *off) {
+                    return Ok(Cow::Owned(b.cast::<T>()[r].to_vec()));
+                }
+                let sz = std::mem::size_of::<T>();
+                let bytes = pages::read(file, off + (r.start * sz) as u64, r.len() * sz)?;
+                Ok(Cow::Owned(bytemuck::pod_collect_to_vec(&bytes)))
+            }
+        }
+    }
+
+    pub fn get(&self, i: usize) -> Result<T> {
+        Ok(self.range(i..i + 1)?[0])
+    }
+
+    /// Several records by index, in the order asked.
+    pub fn get_many(&self, idx: &[usize]) -> Result<Vec<T>> {
+        let g = self.gather(&idx.iter().map(|&i| i..i + 1).collect::<Vec<_>>())?;
+        Ok((0..idx.len()).map(|k| g.get(k)[0]).collect())
+    }
+
+    /// The whole section (from the NAS: read once and kept while memory allows).
+    pub fn all(&self) -> Result<Blob> {
+        match &self.at {
+            At::Blob(b) => Ok(b.clone()),
+            At::Remote { file, off, len } => Ok(pages::whole(file, *off, *len)?),
+        }
+    }
+
+    /// Many ranges at once (a road's ways in a unit): from the NAS, their pages in parallel, or
+    /// the whole section when they'd touch much of it.
+    pub fn gather(&self, ranges: &[Range<usize>]) -> Result<Gathered<T>> {
+        for r in ranges {
+            self.check(r)?;
+        }
+        match &self.at {
+            At::Blob(b) => Ok(Gathered::In(b.clone(), ranges.to_vec())),
+            At::Remote { file, off, len } => {
+                if let Some(b) = pages::cached_whole(file, *off) {
+                    return Ok(Gathered::In(b, ranges.to_vec()));
+                }
+                let sz = std::mem::size_of::<T>() as u64;
+                let bytes: Vec<(u64, u64)> = ranges.iter().map(|r| (off + r.start as u64 * sz, r.len() as u64 * sz)).collect();
+                let need = pages::missing(file, &bytes);
+                if need > len / 2 || need > pages::PAGES_PER_BATCH {
+                    return Ok(Gathered::In(pages::whole(file, *off, *len)?, ranges.to_vec()));
+                }
+                pages::prefetch(file, &bytes)?;
+                Ok(Gathered::Owned(ranges.iter().map(|r| self.range(r.clone()).map(Cow::into_owned)).collect::<Result<_>>()?))
+            }
+        }
+    }
+
+    /// The first index whose record fails `pred` (records sorted so that it holds for a prefix).
+    pub fn partition_point(&self, mut pred: impl FnMut(&T) -> bool) -> Result<usize> {
+        if let At::Blob(b) = &self.at {
+            return Ok(b.cast::<T>().partition_point(pred));
+        }
+        let (mut lo, mut hi) = (0, self.n);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if pred(&self.get(mid)?) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        Ok(lo)
+    }
+
+    /// The records whose key is `k`, in a section sorted by key.
+    pub fn equal_range<K: Ord>(&self, k: K, key: impl Fn(&T) -> K) -> Result<Cow<'_, [T]>> {
+        let a = self.partition_point(|x| key(x) < k)?;
+        let b = self.partition_point(|x| key(x) <= k)?;
+        self.range(a..b.max(a))
+    }
+}
+
+/// One unit's base pack and road values. Sections are read as asked, never up front.
 pub struct BaseView {
     pub unit: String,
-    pub extent: [i32; 4],
-    pub ways: Blob,
-    pub verts: Blob,
-    pub elev: Blob,
-    pub grade: Blob,
-    pub src: Blob,
-    pub scenic: Option<Blob>,
-    pub drape: Option<Blob>,
-    pub strings: Vec<String>,
-    pub rail: Blob,
-    pub roads: Blob,
-    /// Lazily: the samples, and road id → this unit's ways on it.
-    sect: SectView,
-    by_road: std::sync::OnceLock<HashMap<u64, Vec<u32>>>,
+    pub ways: Sect<WayRec>,
+    pub verts: Sect<[i32; 2]>,
+    pub elev: Sect<i16>,
+    pub grade: Sect<u8>,
+    pub src: Sect<u8>,
+    pub scenic: Option<Sect<[u8; ch::N]>>,
+    strings: Vec<String>,
+    rail: Sect<RailRel>,
+    pub roads: Sect<RoadRec>,
+    /// (road, way index), sorted: the road values file's index, when it has one.
+    byroad: Option<Sect<[u64; 2]>>,
+    /// The same made from the road values, for files without it.
+    made_byroad: Mutex<Option<Arc<Vec<[u64; 2]>>>>,
+    remote: bool,
 }
 
 impl BaseView {
     pub fn new(base: SectView, roads: SectView) -> Result<BaseView> {
         let unit = base.meta.get("unit").and_then(|v| v.as_str()).context("base pack without a unit")?.to_string();
-        let ext: Vec<i32> = serde_json::from_value(base.meta.get("extent").cloned().unwrap_or_default()).unwrap_or_default();
         let strings = String::from_utf8_lossy(base.get("strings")?.bytes()).split('\n').map(str::to_owned).collect();
         let v = BaseView {
             unit,
-            extent: if ext.len() == 4 { [ext[0], ext[1], ext[2], ext[3]] } else { [0; 4] },
-            ways: base.get("ways")?,
-            verts: base.get("verts")?,
-            elev: base.get("elev")?,
-            grade: base.get("grade")?,
-            src: base.get("src")?,
-            scenic: if base.has("scenic") { Some(base.get("scenic")?) } else { None },
-            drape: if base.has("drape") { Some(base.get("drape")?) } else { None },
+            ways: base.sect("ways")?,
+            verts: base.sect("verts")?,
+            elev: base.sect("elev")?,
+            grade: base.sect("grade")?,
+            src: base.sect("src")?,
+            scenic: if base.has("scenic") { Some(base.sect("scenic")?) } else { None },
             strings,
-            rail: base.get("rail")?,
-            roads: roads.get("roads")?,
-            sect: base,
-            by_road: std::sync::OnceLock::new(),
+            rail: base.sect("rail")?,
+            roads: roads.sect("roads")?,
+            byroad: if roads.has("byroad") { Some(roads.sect("byroad")?) } else { None },
+            made_byroad: Mutex::new(None),
+            remote: base.is_remote() || roads.is_remote(),
         };
-        if v.road_vals().len() != v.ways().len() {
+        if v.roads.len() != v.ways.len() {
             bail!("road values out of step with the base pack of {}", v.unit);
+        }
+        if let Some(b) = &v.byroad {
+            ensure!(b.len() == v.ways.len(), "road index out of step with the base pack of {}", v.unit);
         }
         Ok(v)
     }
 
     pub fn is_remote(&self) -> bool {
-        self.sect.is_remote()
+        self.remote
     }
-    pub fn ways(&self) -> &[WayRec] {
-        self.ways.cast()
+    pub fn way(&self, i: u32) -> Result<WayRec> {
+        self.ways.get(i as usize)
     }
-    pub fn verts(&self) -> &[[i32; 2]] {
-        self.verts.cast()
-    }
-    pub fn elev(&self) -> &[i16] {
-        self.elev.cast()
-    }
-    pub fn grade(&self) -> &[u8] {
-        self.grade.bytes()
-    }
-    pub fn src(&self) -> &[u8] {
-        self.src.bytes()
-    }
-    pub fn scenic(&self) -> Option<&[[u8; ch::N]]> {
-        self.scenic.as_ref().map(|b| b.cast())
-    }
-    pub fn road_vals(&self) -> &[RoadRec] {
-        self.roads.cast()
-    }
-    pub fn rails(&self) -> &[RailRel] {
-        self.rail.cast()
+    pub fn road_val(&self, i: u32) -> Result<RoadRec> {
+        self.roads.get(i as usize)
     }
     pub fn string(&self, i: u32) -> &str {
         self.strings.get(i as usize).map(String::as_str).unwrap_or("")
     }
-    pub fn range(&self, w: &WayRec) -> std::ops::Range<usize> {
+    pub fn range(&self, w: &WayRec) -> Range<usize> {
         w.vstart as usize..(w.vstart + w.vcount as u64) as usize
     }
-    pub fn samples(&self) -> Result<(Blob, Blob)> {
-        Ok((self.sect.get("samples")?, self.sect.get("samplech")?))
+    /// The bytes these views hold in memory (the names; sections are mapped or paged).
+    pub fn weight(&self) -> u64 {
+        self.strings.iter().map(|s| s.len() as u64 + 24).sum()
     }
-    pub fn sub9(&self) -> Result<Vec<Sub9>> {
-        Ok(self.sect.get("sub9")?.cast::<Sub9>().to_vec())
-    }
+
     /// This unit's ways on road `road`.
-    pub fn on_road(&self, road: u64) -> &[u32] {
-        let m = self.by_road.get_or_init(|| {
-            let mut m: HashMap<u64, Vec<u32>> = HashMap::new();
-            for (i, r) in self.road_vals().iter().enumerate() {
-                m.entry(r.road).or_default().push(i as u32);
+    pub fn on_road(&self, road: u64) -> Result<Vec<u32>> {
+        if let Some(ix) = &self.byroad {
+            return Ok(ix.equal_range(road, |e| e[0])?.iter().map(|e| e[1] as u32).collect());
+        }
+        let ix = {
+            let mut g = self.made_byroad.lock().unwrap();
+            match g.as_ref() {
+                Some(ix) => ix.clone(),
+                None => {
+                    let all = self.roads.all()?;
+                    let mut ix: Vec<[u64; 2]> = all.cast::<RoadRec>().iter().enumerate().map(|(i, r)| [r.road, i as u64]).collect();
+                    ix.sort_unstable();
+                    let ix = Arc::new(ix);
+                    *g = Some(ix.clone());
+                    ix
+                }
             }
-            m
-        });
-        m.get(&road).map(Vec::as_slice).unwrap_or(&[])
+        };
+        let (a, b) = (ix.partition_point(|e| e[0] < road), ix.partition_point(|e| e[0] <= road));
+        Ok(ix[a..b].iter().map(|e| e[1] as u32).collect())
     }
+
     /// The rail way's primary route relation, if known.
-    pub fn rail_rel(&self, way: u32) -> Option<i64> {
-        let r = self.rails();
-        r.binary_search_by_key(&way, |x| x.way).ok().map(|k| r[k].rel())
-    }
-    /// The samples of way `i` (indices into the samples section).
-    pub fn sample_range(samples: &[Sample], i: u32) -> std::ops::Range<usize> {
-        samples.partition_point(|s| s.way < i)..samples.partition_point(|s| s.way <= i)
+    pub fn rail_rel(&self, way: u32) -> Result<Option<i64>> {
+        Ok(self.rail.equal_range(way, |x| x.way)?.first().map(|r| r.rel()))
     }
 }
 
-/// One z6 tile's hidata.
+/// One z6 tile's hidata, read as asked.
 pub struct HiView {
     pub tile: String,
     remote: bool,
-    pub here: Blob,
-    pub ends: Blob,
-    pub parts: Blob,
-    pub psamples: Blob,
-    pub pch: Blob,
-    pub climbs: Blob,
-    pub climbgeom: Blob,
+    pub here: Sect<Here>,
+    pub parts: Sect<Part>,
+    pub psamples: Sect<PSample>,
+    pub pch: Sect<[u8; ch::N]>,
+    pub climbs: Sect<Climb>,
+    pub climbgeom: Sect<[i32; 2]>,
 }
 
 impl HiView {
@@ -373,23 +528,37 @@ impl HiView {
         Ok(HiView {
             tile: s.meta.get("tile").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             remote: s.is_remote(),
-            here: s.get("here")?,
-            ends: s.get("ends")?,
-            parts: s.get("parts")?,
-            psamples: s.get("psamples")?,
-            pch: s.get("pch")?,
-            climbs: s.get("climbs")?,
-            climbgeom: s.get("climbgeom")?,
+            here: s.sect("here")?,
+            parts: s.sect("parts")?,
+            psamples: s.sect("psamples")?,
+            pch: s.sect("pch")?,
+            climbs: s.sect("climbs")?,
+            climbgeom: s.sect("climbgeom")?,
         })
     }
     pub fn is_remote(&self) -> bool {
         self.remote
     }
+    /// The `here` entry of an OSM way id.
+    pub fn find(&self, id: u64) -> Result<Option<Here>> {
+        Ok(self.here.equal_range(id, |x| x.id)?.first().copied())
+    }
+}
+
+/// A tile's query parts, read whole (what a query scans).
+pub struct QTile {
+    here: Blob,
+    parts: Blob,
+    psamples: Blob,
+    pch: Blob,
+}
+
+impl QTile {
+    pub fn new(hv: Arc<HiView>) -> Result<QTile> {
+        Ok(QTile { here: hv.here.all()?, parts: hv.parts.all()?, psamples: hv.psamples.all()?, pch: hv.pch.all()? })
+    }
     pub fn here(&self) -> &[Here] {
         self.here.cast()
-    }
-    pub fn ends(&self) -> &[End] {
-        self.ends.cast()
     }
     pub fn parts(&self) -> &[Part] {
         self.parts.cast()
@@ -400,41 +569,19 @@ impl HiView {
     pub fn pch(&self) -> &[[u8; ch::N]] {
         self.pch.cast()
     }
-    pub fn climbs(&self) -> &[Climb] {
-        self.climbs.cast()
-    }
-    pub fn climbgeom(&self) -> &[[i32; 2]] {
-        self.climbgeom.cast()
-    }
-    /// The `here` entry of an OSM way id.
-    pub fn find(&self, id: u64) -> Option<&Here> {
-        let h = self.here();
-        h.binary_search_by_key(&id, |x| x.id).ok().map(|i| &h[i])
-    }
-    /// Ways with an end at `point` (`roadcore::packs::point_key`).
-    pub fn ends_at(&self, point: u64) -> impl Iterator<Item = &Here> {
-        let e = self.ends();
-        let a = e.partition_point(|x| x.point < point);
-        let b = e.partition_point(|x| x.point <= point);
-        let here = self.here();
-        e[a..b].iter().filter_map(move |x| here.get(x.here as usize))
-    }
 }
 
 /// The road → units index (global/roadunits): sorted (road id, unit tile key) pairs.
 pub struct RoadUnits {
-    pairs: Blob,
+    pairs: Sect<[u64; 2]>,
 }
 
 impl RoadUnits {
     pub fn new(s: &SectView) -> Result<RoadUnits> {
-        Ok(RoadUnits { pairs: s.get("pairs")? })
+        Ok(RoadUnits { pairs: s.sect("pairs")? })
     }
     /// The unit keys a road has ways in.
-    pub fn units(&self, road: u64) -> Vec<u64> {
-        let p: &[[u64; 2]] = self.pairs.cast();
-        let a = p.partition_point(|x| x[0] < road);
-        let b = p.partition_point(|x| x[0] <= road);
-        p[a..b].iter().map(|x| x[1]).collect()
+    pub fn units(&self, road: u64) -> Result<Vec<u64>> {
+        Ok(self.pairs.equal_range(road, |x| x[0])?.iter().map(|x| x[1]).collect())
     }
 }

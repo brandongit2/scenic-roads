@@ -6,7 +6,7 @@
 //! chaining, done when the data was built), found through the road → units index and put in order
 //! by their offsets along the road.
 
-use crate::views::{BaseView, HiView};
+use crate::views::{BaseView, Gathered, HiView};
 use crate::{AppState, Region, S};
 use axum::{
     extract::{Path, Query, State},
@@ -39,15 +39,16 @@ pub fn tile6(lon: f64, lat: f64) -> (u32, u32) {
     (((x * n).floor().clamp(0.0, 63.0)) as u32, ((y * n).floor().clamp(0.0, 63.0)) as u32)
 }
 
-/// A way found: its owner's base pack and its index there.
+/// A way found: its owner's base pack, its index there and its record.
 pub struct Found {
     pub base: Arc<BaseView>,
     pub index: u32,
+    pub rec: WayRec,
 }
 
 impl Found {
     pub fn rec(&self) -> &WayRec {
-        &self.base.ways()[self.index as usize]
+        &self.rec
     }
 }
 
@@ -77,13 +78,11 @@ pub fn find_here(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<(
     }
     let mut failed = None;
     for (x, y) in tiles {
-        match s.data.hidata(&format!("6/{x}/{y}")) {
-            Ok(Some(hv)) => {
-                if let Some(h) = hv.find(id) {
-                    let h = *h;
-                    return Ok(Some((hv, h)));
-                }
-            }
+        match s.data.hidata(&format!("6/{x}/{y}")).and_then(|hv| Ok(match hv {
+            Some(hv) => hv.find(id)?.map(|h| (hv, h)),
+            None => None,
+        })) {
+            Ok(Some(found)) => return Ok(Some(found)),
             Ok(None) => {}
             Err(e) => failed = Some(e),
         }
@@ -99,12 +98,15 @@ pub fn find_here(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<(
 pub fn find_way(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<Found>> {
     let Some((_, h)) = find_here(s, id, at)? else { return Ok(None) };
     let Some(base) = s.data.base(&unit_str(h.owner))? else { return Ok(None) };
-    let Some(w) = base.ways().get(h.index as usize) else { return Ok(None) };
+    if h.index as usize >= base.ways.len() {
+        return Ok(None);
+    }
+    let w = base.way(h.index)?;
     if w.id as u64 != id {
         eprintln!("way {id}: the ways-here index points at way {} in {}", w.id, unit_str(h.owner));
         return Ok(None);
     }
-    Ok(Some(Found { base, index: h.index }))
+    Ok(Some(Found { base, index: h.index, rec: w }))
 }
 
 #[derive(Serialize)]
@@ -146,15 +148,16 @@ pub struct WayInfo {
     road_m: f32,
 }
 
-pub fn way_info(s: &AppState, f: &Found) -> WayInfo {
+pub fn way_info(s: &AppState, f: &Found) -> anyhow::Result<WayInfo> {
     let w = f.rec();
     let bp = &f.base;
     let r = bp.range(w);
-    let v = &bp.verts()[r.clone()];
-    let e = &bp.elev()[r.clone()];
+    let v = bp.verts.range(r.clone())?;
+    let e = bp.elev.range(r.clone())?;
+    anyhow::ensure!(!v.is_empty(), "way {} has no vertices", w.id);
     let len: f64 = v.windows(2).map(|p| dist_m(p[0][0] as f64 * E7, p[0][1] as f64 * E7, p[1][0] as f64 * E7, p[1][1] as f64 * E7)).sum();
     let mut counts = [0u32; NDEM];
-    for &c in &bp.src()[r] {
+    for &c in bp.src.range(r)?.iter() {
         counts[(c as usize).min(NDEM - 1)] += 1;
     }
     let n = w.vcount.max(1) as f32;
@@ -165,8 +168,8 @@ pub fn way_info(s: &AppState, f: &Found) -> WayInfo {
     // Rail lines' names are in the places tables, roads' in the roads tables.
     let kind = if class::is_rail(w.class) { names::Kind::Place } else { names::Kind::Road };
     let d = s.names.display(kind, &name, (!name_en.is_empty()).then_some(name_en.as_str()), mid[0] as f64 * E7, mid[1] as f64 * E7);
-    let rv = bp.road_vals()[f.index as usize];
-    WayInfo {
+    let rv = bp.road_val(f.index)?;
+    Ok(WayInfo {
         idx: w.id as u64,
         osm_id: w.id,
         class: class::NAMES[w.class as usize],
@@ -194,7 +197,7 @@ pub fn way_info(s: &AppState, f: &Found) -> WayInfo {
         sources,
         road: rv.road,
         road_m: rv.len,
-    }
+    })
 }
 
 fn not_found() -> Response {
@@ -204,7 +207,7 @@ fn not_found() -> Response {
 pub async fn way_h(State(s): State<S>, Path(id): Path<u64>, Query(at): Query<At>) -> Response {
     let Some(p) = at.point() else { return (StatusCode::BAD_REQUEST, "at=lon,lat").into_response() };
     let s2 = s.clone();
-    match tokio::task::spawn_blocking(move || find_way(&s2, id, p).map(|f| f.map(|f| way_info(&s2, &f)))).await {
+    match tokio::task::spawn_blocking(move || find_way(&s2, id, p).and_then(|f| f.map(|f| way_info(&s2, &f)).transpose())).await {
         Ok(Ok(Some(w))) => ([(header::CACHE_CONTROL, "no-cache")], Json(w)).into_response(),
         Ok(Err(e)) => {
             eprintln!("way {id}: {e:#}");
@@ -229,18 +232,19 @@ pub struct RoadWay {
 /// An error when a unit the road crosses couldn't be read (the NAS away): a road with gaps would
 /// be cached as if whole.
 pub fn road_ways(s: &AppState, f: &Found, window: f32) -> anyhow::Result<(Vec<RoadWay>, bool)> {
-    let rv = f.base.road_vals()[f.index as usize];
+    let rv = f.base.road_val(f.index)?;
     let (lo, hi) = (rv.offset - window, rv.offset + window);
     let units: Vec<u64> = match s.data.roadunits()? {
-        Some(ru) => ru.units(rv.road),
+        Some(ru) => ru.units(rv.road)?,
         None => vec![unit_key(&f.base.unit).unwrap_or(0)],
     };
     let mut out: Vec<RoadWay> = Vec::new();
     let mut truncated = false;
     for u in units {
         let Some(bp) = s.data.base(&unit_str(u))? else { continue };
-        for &i in bp.on_road(rv.road) {
-            let r = bp.road_vals()[i as usize];
+        let idx = bp.on_road(rv.road)?;
+        let vals = bp.roads.get_many(&idx.iter().map(|&i| i as usize).collect::<Vec<_>>())?;
+        for (&i, r) in idx.iter().zip(&vals) {
             if r.offset < lo || r.offset > hi {
                 truncated = true;
                 continue;
@@ -252,6 +256,32 @@ pub fn road_ways(s: &AppState, f: &Found, window: f32) -> anyhow::Result<(Vec<Ro
     Ok((out, truncated))
 }
 
+/// The ways' records, read unit by unit.
+fn records(ways: &[RoadWay]) -> anyhow::Result<Vec<WayRec>> {
+    let mut out = vec![<WayRec as bytemuck::Zeroable>::zeroed(); ways.len()];
+    for ks in by_unit(ways) {
+        let bp = &ways[ks[0]].base;
+        let recs = bp.ways.get_many(&ks.iter().map(|&k| ways[k].index as usize).collect::<Vec<_>>())?;
+        for (&k, r) in ks.iter().zip(recs) {
+            out[k] = r;
+        }
+    }
+    Ok(out)
+}
+
+/// The positions in `ways` of each unit's ways.
+fn by_unit(ways: &[RoadWay]) -> Vec<Vec<usize>> {
+    let mut groups: Vec<(*const BaseView, Vec<usize>)> = Vec::new();
+    for (k, w) in ways.iter().enumerate() {
+        let p = Arc::as_ptr(&w.base);
+        match groups.iter_mut().find(|g| g.0 == p) {
+            Some(g) => g.1.push(k),
+            None => groups.push((p, vec![k])),
+        }
+    }
+    groups.into_iter().map(|g| g.1).collect()
+}
+
 const WINDOW_M: f32 = 400_000.0;
 
 /// OSM ids of the whole road through a way (for the hover highlight).
@@ -261,7 +291,7 @@ pub async fn road_h(State(s): State<S>, Path(id): Path<u64>, Query(at): Query<At
     let got = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Vec<u64>>> {
         let Some(f) = find_way(&s2, id, p)? else { return Ok(None) };
         let (ways, _) = road_ways(&s2, &f, WINDOW_M)?;
-        Ok(Some(ways.iter().map(|w| w.base.ways()[w.index as usize].id as u64).collect()))
+        Ok(Some(records(&ways)?.iter().map(|r| r.id as u64).collect()))
     })
     .await;
     match got {
@@ -307,36 +337,67 @@ pub async fn profile_h(State(s): State<S>, Path(id): Path<u64>, Query(at): Query
     }
 }
 
-/// One vertex of the road in order: its base pack and index.
-struct V<'a> {
-    bp: &'a BaseView,
-    i: usize,
+/// One unit's share of a road: its ways' per-vertex data, read together.
+struct UnitVerts {
+    verts: Gathered<[i32; 2]>,
+    elev: Gathered<i16>,
+    grade: Gathered<u8>,
+    src: Gathered<u8>,
+    scenic: Option<Gathered<[u8; roadcore::scenic::ch::N]>>,
 }
 
 fn build_profile(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<Profile>> {
     let Some(f) = find_way(s, id, at)? else { return Ok(None) };
-    let info = way_info(s, &f);
+    let info = way_info(s, &f)?;
     let (ways, truncated) = road_ways(s, &f, WINDOW_M)?;
+    let recs = records(&ways)?;
+    // Each way's (unit, position among that unit's ways), and the units' per-vertex data.
+    let mut slot = vec![(0usize, 0usize); ways.len()];
+    let mut units: Vec<UnitVerts> = Vec::new();
+    for ks in by_unit(&ways) {
+        let bp = &ways[ks[0]].base;
+        let ranges: Vec<std::ops::Range<usize>> = ks.iter().map(|&k| bp.range(&recs[k])).collect();
+        for (j, &k) in ks.iter().enumerate() {
+            slot[k] = (units.len(), j);
+        }
+        units.push(UnitVerts {
+            verts: bp.verts.gather(&ranges)?,
+            elev: bp.elev.gather(&ranges)?,
+            grade: bp.grade.gather(&ranges)?,
+            src: bp.src.gather(&ranges)?,
+            scenic: bp.scenic.as_ref().map(|sc| sc.gather(&ranges)).transpose()?,
+        });
+    }
+    let has_ch = units.iter().all(|u| u.scenic.is_some());
     // Concatenate vertices along the road (a way's first vertex repeats the previous way's last).
-    let mut vs: Vec<V> = Vec::new();
-    for rw in &ways {
-        let bp = &*rw.base;
-        let w = &bp.ways()[rw.index as usize];
-        let r = bp.range(w);
-        let idx: Vec<usize> = if rw.rev { r.rev().collect() } else { r.collect() };
-        let skip = match (vs.last(), idx.first()) {
-            (Some(l), Some(&f0)) if l.bp.verts()[l.i] == bp.verts()[f0] => 1,
+    let (mut pts, mut els, mut grs, mut srcs, mut chs): (Vec<[i32; 2]>, Vec<i16>, Vec<u8>, Vec<u8>, Vec<[u8; roadcore::scenic::ch::N]>) = Default::default();
+    for (k, rw) in ways.iter().enumerate() {
+        let (u, j) = slot[k];
+        let uv = &units[u];
+        let n = uv.verts.get(j).len();
+        let order: Vec<usize> = if rw.rev { (0..n).rev().collect() } else { (0..n).collect() };
+        let skip = match (pts.last(), order.first()) {
+            (Some(l), Some(&f0)) if *l == uv.verts.get(j)[f0] => 1,
             _ => 0,
         };
-        vs.extend(idx[skip..].iter().map(|&i| V { bp, i }));
+        for &i in &order[skip..] {
+            pts.push(uv.verts.get(j)[i]);
+            els.push(uv.elev.get(j)[i]);
+            grs.push(uv.grade.get(j)[i]);
+            srcs.push(uv.src.get(j)[i]);
+            if has_ch {
+                chs.push(uv.scenic.as_ref().map(|sc| sc.get(j)[i]).unwrap_or([0; roadcore::scenic::ch::N]));
+            }
+        }
     }
+    let vs: Vec<usize> = (0..pts.len()).collect();
     if vs.len() < 2 {
         return Ok(None);
     }
-    let pt = |v: &V| v.bp.verts()[v.i];
-    let el = |v: &V| v.bp.elev()[v.i];
-    let gr = |v: &V| v.bp.grade()[v.i];
-    let src = |v: &V| v.bp.src()[v.i];
+    let pt = |&v: &usize| pts[v];
+    let el = |&v: &usize| els[v];
+    let gr = |&v: &usize| grs[v];
+    let src = |&v: &usize| srcs[v];
     let mut dist = Vec::with_capacity(vs.len());
     let mut acc = 0f64;
     let (mut climb, mut descent) = (0f64, 0f64);
@@ -376,10 +437,9 @@ fn build_profile(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<P
         }
     }
     let total = acc.max(1e-9);
-    let has_ch = vs.iter().all(|v| v.bp.scenic().is_some());
     Ok(Some(Profile {
         way: info,
-        ways: ways.iter().map(|w| w.base.ways()[w.index as usize].id as u64).collect(),
+        ways: recs.iter().map(|r| r.id as u64).collect(),
         coords: keep.iter().map(|&k| {
             let p = pt(&vs[k]);
             [p[0] as f64 * E7, p[1] as f64 * E7]
@@ -396,7 +456,7 @@ fn build_profile(s: &AppState, id: u64, at: [f64; 2]) -> anyhow::Result<Option<P
         avg_grade: ((climb + descent) / total * 100.0) as f32,
         sources: (1..NDEM).filter(|&k| src_len[k] > 0.0).map(|k| (DemSource::label(k as u8).to_string(), src_len[k] / total)).collect(),
         truncated,
-        ch: if has_ch { keep.iter().map(|&k| vs[k].bp.scenic().unwrap()[vs[k].i]).collect() } else { Vec::new() },
+        ch: if has_ch { keep.iter().map(|&k| chs[vs[k]]).collect() } else { Vec::new() },
     }))
 }
 
@@ -479,20 +539,27 @@ pub async fn climbs_h(State(s): State<S>, Query(q): Query<ClimbQuery>) -> Respon
     let s2 = s.clone();
     let out = tokio::task::spawn_blocking(move || climbs(&s2, &q, &region)).await;
     match out {
-        Ok(l) => Json(l).into_response(),
+        Ok(Ok(l)) => Json(l).into_response(),
+        Ok(Err(e)) => {
+            eprintln!("climbs: {e:#}");
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
-fn climbs(s: &AppState, q: &ClimbQuery, region: &Region) -> ClimbList {
+/// The best climbs in a region; an error when a tile couldn't be read (a list over part of the
+/// region would look complete).
+fn climbs(s: &AppState, q: &ClimbQuery, region: &Region) -> anyhow::Result<ClimbList> {
     let classes = q.classes.unwrap_or(u32::MAX);
     let surface = q.surface.unwrap_or(3);
     let toll = q.toll.unwrap_or(3);
     let unnamed = q.unnamed.unwrap_or(0);
-    let mut hits: Vec<(f32, Arc<HiView>, usize)> = Vec::new();
+    let mut hits: Vec<(f32, Arc<HiView>, roadcore::packs::Climb)> = Vec::new();
     for (x, y) in tiles_in(region.bb) {
-        let Ok(Some(hv)) = s.data.hidata(&format!("6/{x}/{y}")) else { continue };
-        for (i, c) in hv.climbs().iter().enumerate() {
+        let Some(hv) = s.data.hidata(&format!("6/{x}/{y}"))? else { continue };
+        let all = hv.climbs.all()?;
+        for c in all.cast::<roadcore::packs::Climb>() {
             let ok = region.contains(c.mid[0], c.mid[1])
                 && (classes >> c.class) & 1 == 1
                 && (surface >> (c.unpaved & 1)) & 1 == 1
@@ -508,7 +575,7 @@ fn climbs(s: &AppState, q: &ClimbQuery, region: &Region) -> ClimbList {
                 Some("score") => c.gain_m * c.gain_m / c.length_m.max(1.0),
                 _ => c.gain_m,
             };
-            hits.push((key, hv.clone(), i));
+            hits.push((key, hv.clone(), *c));
         }
     }
     let total = hits.len();
@@ -517,18 +584,13 @@ fn climbs(s: &AppState, q: &ClimbQuery, region: &Region) -> ClimbList {
     hits.truncate(limit);
     let climbs = hits
         .into_iter()
-        .map(|(_, hv, i)| {
-            let c = hv.climbs()[i];
-            let geom: Vec<[f64; 2]> = hv.climbgeom()[c.geom_start as usize..(c.geom_start + c.geom_count) as usize].iter().map(|p| [p[0] as f64 * E7, p[1] as f64 * E7]).collect();
+        .map(|(_, hv, c)| -> anyhow::Result<ClimbOut> {
+            let geom: Vec<[f64; 2]> = hv.climbgeom.range(c.geom_start as usize..(c.geom_start + c.geom_count) as usize)?.iter().map(|p| [p[0] as f64 * E7, p[1] as f64 * E7]).collect();
             let mid = [c.mid[0] as f64 * E7, c.mid[1] as f64 * E7];
-            let (name, rf) = find_way(s, c.label, mid)
-                .ok()
-                .flatten()
-                .map(|f| (f.base.string(f.rec().name).to_string(), f.base.string(f.rec().ref_).to_string()))
-                .unwrap_or_default();
+            let (name, rf) = find_way(s, c.label, mid)?.map(|f| (f.base.string(f.rec().name).to_string(), f.base.string(f.rec().ref_).to_string())).unwrap_or_default();
             let name_en = s.road_en(c.label);
             let d = s.names.display(names::Kind::Road, &name, (!name_en.is_empty()).then_some(name_en.as_str()), mid[0], mid[1]);
-            ClimbOut {
+            Ok(ClimbOut {
                 way: c.way,
                 at: geom.first().copied().unwrap_or(mid),
                 name,
@@ -545,8 +607,8 @@ fn climbs(s: &AppState, q: &ClimbQuery, region: &Region) -> ClimbList {
                 top_elev: c.top_elev,
                 unpaved: c.unpaved != 0,
                 geom,
-            }
+            })
         })
-        .collect();
-    ClimbList { total, climbs }
+        .collect::<anyhow::Result<_>>()?;
+    Ok(ClimbList { total, climbs })
 }

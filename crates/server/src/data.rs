@@ -77,9 +77,10 @@ fn smb_reachable() -> bool {
     addrs.into_iter().any(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_secs(2)).is_ok())
 }
 
-/// Memory budgets for what's read from the NAS (a Mac whose mirror isn't complete).
-const BASES_BYTES: u64 = 3 << 30;
-const HIDATA_BYTES: u64 = 1 << 30;
+/// Memory budgets for what's read from the NAS (a Mac whose mirror isn't complete): sectioned
+/// files read whole, and the base views' names. Base packs' and hidata's sections are paged
+/// (`pages`, with its own budget).
+const BASES_BYTES: u64 = 512 << 20;
 const SECTS_BYTES: u64 = 1 << 30;
 
 pub struct Data {
@@ -132,7 +133,7 @@ impl Data {
             indexes: Mutex::new(Bounded::new(8192)),
             sects: Mutex::new(Bounded::with_bytes(512, SECTS_BYTES)),
             bases: Mutex::new(Bounded::with_bytes(256, BASES_BYTES)),
-            his: Mutex::new(Bounded::with_bytes(512, HIDATA_BYTES)),
+            his: Mutex::new(Bounded::new(512)),
             roadunits: Mutex::new(None),
             globals: Mutex::new(Bounded::new(128)),
             generation: Default::default(),
@@ -290,9 +291,8 @@ impl Data {
             return Ok(Some(v));
         }
         let (bs, rs) = (SectView::open(self.src(&bc)?)?, SectView::open(self.src(&rc)?)?);
-        let w = bs.remote_bytes() + rs.remote_bytes();
-        let v = Arc::new(BaseView::new(bs, rs)?);
-        self.bases.lock().unwrap().put_weighed(key, v.clone(), w);
+        let v = Arc::new(BaseView::new(bs, rs).with_context(|| format!("base pack {bc}"))?);
+        self.bases.lock().unwrap().put_weighed(key, v.clone(), v.weight());
         Ok(Some(v))
     }
 
@@ -304,10 +304,8 @@ impl Data {
         if let Some(v) = self.his.lock().unwrap().get(&content) {
             return Ok(Some(v));
         }
-        let sv = SectView::open(self.src(&content)?)?;
-        let w = sv.remote_bytes();
-        let v = Arc::new(HiView::new(sv)?);
-        self.his.lock().unwrap().put_weighed(content, v.clone(), w);
+        let v = Arc::new(HiView::new(SectView::open(self.src(&content)?)?).with_context(|| format!("hidata {content}"))?);
+        self.his.lock().unwrap().put(content, v.clone());
         Ok(Some(v))
     }
 
@@ -464,6 +462,7 @@ impl Data {
         self.sects.lock().unwrap().retain(|_, v| !v.is_remote());
         self.bases.lock().unwrap().retain(|_, v| !v.is_remote());
         self.his.lock().unwrap().retain(|_, v| !v.is_remote());
+        crate::pages::forget();
         self.mirror_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 

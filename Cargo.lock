@@ -1106,6 +1106,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "store",
+ "tempfile",
  "tokio",
  "toml",
  "tower",

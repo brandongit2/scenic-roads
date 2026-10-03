@@ -125,6 +125,14 @@ fn main() -> Result<()> {
 
 // ---- convert-legacy ------------------------------------------------------------------------
 
+/// A unit's road values file: the values per way, and the ways by road (sorted (road, way index)
+/// pairs, for the server's whole-road lookups).
+fn put_roads(out: &mut Out, u: Unit, recs: &[pipeline::legacy::RoadRec]) -> Result<String> {
+    let mut byroad: Vec<[u64; 2]> = recs.iter().enumerate().map(|(i, r)| [r.road, i as u64]).collect();
+    byroad.sort_unstable();
+    put_sect(out, &format!("global/roads/{}", u.dash()), serde_json::json!({"fmt": 1, "unit": u.slash()}), &[("roads", b(recs)), ("byroad", b(&byroad))])
+}
+
 fn put_sect(out: &mut Out, logical: &str, meta: serde_json::Value, sections: &[(&str, &[u8])]) -> Result<String> {
     let local = out.scratch_file(&format!("{logical}.sect"));
     let mut w = store::sect::SectWriter::create(&local, meta)?;
@@ -156,7 +164,7 @@ fn convert_legacy(out: &mut Out, dir: &Path, skip_layers: bool, only: &[Unit]) -
         put_sect(out, &format!("base/{}", u.dash()), bs.meta, &secs)?;
         let recs = legacy::road_records(&vals, idx);
         road_units.extend(recs.iter().map(|r| (r.road, u.key())));
-        put_sect(out, &format!("global/roads/{}", u.dash()), serde_json::json!({"fmt": 1, "unit": u.slash()}), &[("roads", b(&recs))])?;
+        put_roads(out, *u, &recs)?;
         if k % 10 == 0 {
             out.save()?;
             eprintln!("base packs: {}/{} ({:.0?})", k + 1, units.len(), t.elapsed());
@@ -377,6 +385,20 @@ fn lo(out: &mut Out, cache: &Path, only: &[String]) -> Result<()> {
 
 // ---- catalog --------------------------------------------------------------------------------
 
+/// A layer's zoom range as its builders make it (and today's converted data has it).
+fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
+    Some(match layer {
+        "roads" | "rails" => (4, 14),
+        "terrain" | "labels" => (0, 12),
+        // Stored to z11; the server makes z12 on demand.
+        "slope" => (0, 11),
+        l if l.starts_with("trees-") => (4, 12),
+        // Analysis grids, not served.
+        l if l.starts_with("grid-") => (11, 11),
+        _ => return None,
+    })
+}
+
 fn catalog(out: &mut Out) -> Result<()> {
     let mut layers: BTreeMap<String, LayerOut> = BTreeMap::new();
     let (mut base, mut roads, mut hidata, mut global, mut basemap) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), Vec::new());
@@ -424,24 +446,11 @@ fn catalog(out: &mut Out) -> Result<()> {
             _ => {}
         }
     }
-    // Zoom ranges as the layers really have them (from the legacy conversion's record, else the scopes).
-    if let Some(name) = out.get("global/legacy/layers") {
-        if let Ok(b) = std::fs::read(out.path(name)) {
-            if let Ok(rec) = serde_json::from_slice::<BTreeMap<String, LayerOut>>(&b) {
-                for (l, r) in rec {
-                    if let Some(x) = layers.get_mut(&l) {
-                        x.minzoom = r.minzoom;
-                        x.maxzoom = r.maxzoom;
-                    }
-                }
-            }
+    // Zoom ranges as each layer is defined (whichever packs exist yet), else the packs' scopes.
+    for (l, x) in layers.iter_mut() {
+        if let Some(zs) = layer_zooms(l) {
+            (x.minzoom, x.maxzoom) = zs;
         }
-    }
-    if let Some(r) = layers.get_mut("roads") {
-        (r.minzoom, r.maxzoom) = (4, 14);
-    }
-    if let Some(r) = layers.get_mut("rails") {
-        (r.minzoom, r.maxzoom) = (4, 14);
     }
     // The latest pass's outlines, for the Regions panel and the modules.
     if let Some(l) = out.manifest.keys().filter(|k| k.starts_with("sources/osm/") && k.ends_with("/outlines")).max() {
@@ -615,7 +624,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 }
             })
             .collect();
-        put_sect(out, &format!("global/roads/{}", u.dash()), serde_json::json!({"fmt": 1, "unit": u.slash()}), &[("roads", b(&recs))])?;
+        put_roads(out, u, &recs)?;
         out.save()?;
         eprintln!("unit {}: base pack of {} ways in {:.0?}", u.slash(), idx.len(), t.elapsed());
     }

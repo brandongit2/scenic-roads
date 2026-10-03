@@ -14,6 +14,7 @@ mod descriptions;
 mod details;
 mod livefolder;
 mod names_live;
+mod pages;
 mod query;
 mod regions;
 mod terrain;
@@ -495,6 +496,9 @@ async fn catalog_h(State(s): State<S>) -> Response {
     let agent = tokio::task::spawn_blocking(move || s2.agent_status()).await.unwrap_or(serde_json::Value::Null);
     let cat = s.data.catalog();
     let fingerprint = versions_fingerprint(&s);
+    // Bytes read from the NAS held in memory (files the mirror doesn't have yet).
+    let (pages_b, sections_b) = pages::held();
+    let held = serde_json::json!({"pages": pages_b, "sections": sections_b});
     let body = serde_json::json!({
         "n": cat.n,
         "created": cat.created,
@@ -504,6 +508,7 @@ async fn catalog_h(State(s): State<S>) -> Response {
         "credits": cat.credits,
         "online": s.data.online(),
         "nas": s.data.nas_root().map(|p| p.display().to_string()),
+        "held": held,
         "app": s.updater.running(),
         "agent": agent,
         "names": s.names.versions(),
