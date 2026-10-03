@@ -89,7 +89,7 @@ impl Keys {
             self.catalog_held = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || matches!(step, "labels" | "trailends" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites") {
+        if step.ends_with("-root") || matches!(step, "labels" | "trailends" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -270,6 +270,25 @@ pub const STATIONS_V: u32 = 1;
 pub const FERRIES_V: u32 = 1;
 /// The landmark points from the candidates (crate::marksjob).
 pub const MARKS_V: u32 = 1;
+/// The rest of the heritage chain on the heritage-sites outputs (scenic-build heritage), and the
+/// area overlays from it with the marks' World Heritage dots (ovconv::overlays).
+pub const HERITAGE_V: u32 = 1;
+pub const OVERLAYS_V: u32 = 1;
+/// Whether the agent runs those two: off until marks, overlays and the server's files switching to
+/// them together has been compared with today's (docs/phase5.md "Heritage and area flags"); marks
+/// and overlays use today's heritage files meanwhile.
+pub const HERITAGE_JOBS: bool = false;
+
+/// Where the marks' and overlays' heritage comes from (markconv::heritage_source): the pass's
+/// heritage job's outputs when there are any, else today's.
+fn heritage_src(m: &BTreeMap<String, String>, date: &str) -> String {
+    let job = format!("work/heritage/{date}");
+    if ["layer-heritage", "details-heritage", "props-heritage"].iter().all(|s| m.contains_key(&format!("{job}/{s}"))) {
+        job
+    } else {
+        crate::markconv::LEGACY.to_string()
+    }
+}
 
 /// The current units' candidates (their content names), for the worldwide jobs' keys.
 fn current_pois<'a>(cov: &Coverage, date: &str, m: &'a BTreeMap<String, String>) -> Vec<&'a str> {
@@ -518,11 +537,28 @@ fn landmarks_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, don
     if done.lo.get("items").map(String::as_str) != Some(k.as_str()) {
         return Some(Work { step: "items".into(), targets: vec![("items".into(), k)] });
     }
+    // The rest of the heritage chain (network), on the heritage sites.
+    if HERITAGE_JOBS && m.contains_key(&crate::heritage::base_logical(date, "heritage-sources")) {
+        let mut ins = vec![format!("heritage {HERITAGE_V}"), date.to_string()];
+        for stem in ["heritage", "heritage-areas", "special", "indigenous", "heritage-sources"] {
+            ins.push(get(&crate::heritage::base_logical(date, stem)).to_string());
+        }
+        for l in [crate::osmpass::set_name(date, "named"), crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/filtered"), "sources/registers/legacy".into(), "sources/registers/legacy-seeds".into()] {
+            ins.push(get(&l).to_string());
+        }
+        ins.push(cov_fp(cov, [i32::MIN, i32::MIN, i32::MAX, i32::MAX]));
+        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+        let k = h(&refs);
+        if done.lo.get("heritage").map(String::as_str) != Some(k.as_str()) {
+            return Some(Work { step: "heritage".into(), targets: vec![("heritage".into(), k)] });
+        }
+    }
     // The landmark points, from every current unit's candidates and peaks, the items' facts and
-    // pageviews, today's heritage sites (the files markconv::today_heritage reads).
+    // pageviews, the heritage sites (the files markconv reads: the pass's or today's).
+    let src = heritage_src(m, date);
     let mut ins = vec![format!("marks {MARKS_V}"), get(&format!("sources/items/{date}/facts")).to_string(), get(&format!("sources/items/{date}/views")).to_string()];
-    for l in ["global/legacy/layer-heritage", "global/legacy/details-heritage", "global/legacy/props-heritage"] {
-        ins.push(get(l).to_string());
+    for stem in ["layer-heritage", "details-heritage", "props-heritage"] {
+        ins.push(get(&format!("{src}/{stem}")).to_string());
     }
     for (u, _) in &units {
         for p in ["work/pois", "work/peaks"] {
@@ -531,7 +567,35 @@ fn landmarks_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, don
     }
     let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
     let k = h(&refs);
-    (done.lo.get("marks").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "marks".into(), targets: vec![("marks".into(), k)] })
+    if done.lo.get("marks").map(String::as_str) != Some(k.as_str()) {
+        return Some(Work { step: "marks".into(), targets: vec![("marks".into(), k)] });
+    }
+    // The area overlays from the pass's heritage, with the dots the marks gave the World Heritage
+    // sites; their hi tiles where the units are.
+    if HERITAGE_JOBS && src != crate::markconv::LEGACY {
+        let mut ins = vec![format!("overlays {OVERLAYS_V}"), get(crate::markconv::HERITAGE_DOTS).to_string()];
+        for stem in [
+            "layer-heritage-areas",
+            "layer-indigenous",
+            "layer-special",
+            "layer-whs-shapes",
+            "details-harea",
+            "details-indigenous",
+            "details-special",
+            "details-park",
+            "layer-summary",
+            "heritage-sources",
+        ] {
+            ins.push(get(&format!("{src}/{stem}")).to_string());
+        }
+        ins.extend(m.range("base/".to_string()..).take_while(|(l, _)| l.starts_with("base/")).map(|(l, _)| l.clone()));
+        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+        let k = h(&refs);
+        if done.lo.get("overlays").map(String::as_str) != Some(k.as_str()) {
+            return Some(Work { step: "overlays".into(), targets: vec![("overlays".into(), k)] });
+        }
+    }
+    None
 }
 
 /// A catalog when what it would list has changed since the last one.

@@ -383,8 +383,15 @@ fn layer_logical(cat: &store::catalog::Catalog, name: &str) -> Option<String> {
         n if n.starts_with("pois-") && n[5..].chars().all(|c| c.is_ascii_lowercase() || c == '_') => n.to_string(),
         _ => return None,
     };
-    let lean = format!("global/legacy/layer-{file}");
-    Some(if cat.files.contains_key(&lean) { lean } else { format!("global/legacy/{file}") })
+    // The overlays job's copies (global/heritage: the summary, the sources), else today's.
+    for dir in ["global/heritage", "global/legacy"] {
+        for l in [format!("{dir}/layer-{file}"), format!("{dir}/{file}")] {
+            if cat.files.contains_key(&l) {
+                return Some(l);
+            }
+        }
+    }
+    Some(format!("global/legacy/{file}"))
 }
 
 /// Loads what a first click or page load would otherwise wait for: the details behind popups, the

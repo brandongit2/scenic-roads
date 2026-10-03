@@ -18,7 +18,7 @@
 use crate::hipack::{grow, meets, tile_bounds};
 use crate::layers::{pack_of, write_pack};
 use crate::legacy::Unit;
-use crate::markconv::{self, legacy_bytes};
+use crate::markconv::{self, legacy_bytes, src_bytes};
 use crate::marks::{self, IdSource};
 use crate::out::Out;
 use crate::vtgen::{self, Feature, Geom};
@@ -136,9 +136,16 @@ fn heritage_dots(out: &Out) -> Result<HashMap<u64, (u64, f64, f64)>> {
     Ok(m)
 }
 
-/// Today's details records by their index (`i`).
-fn details_by_i(out: &Out, file: &str) -> Result<HashMap<u64, String>> {
-    let b = legacy_bytes(out, file)?;
+/// The heritage dots the last marks job wrote (markconv::HERITAGE_DOTS).
+pub fn marks_dots(out: &Out) -> Result<HashMap<u64, (u64, f64, f64)>> {
+    let c = out.get(markconv::HERITAGE_DOTS).context("no heritage dots (the marks step writes them)")?;
+    let m: BTreeMap<u64, (u64, f64, f64)> = serde_json::from_slice(&std::fs::read(out.path(c))?)?;
+    Ok(m.into_iter().collect())
+}
+
+/// Details records by their index (`i`).
+fn details_by_i(out: &Out, src: &str, file: &str) -> Result<HashMap<u64, String>> {
+    let b = src_bytes(out, src, file)?;
     let mut m = HashMap::new();
     for line in b.split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
         let v: Value = serde_json::from_slice(line).with_context(|| format!("{file}: a record"))?;
@@ -175,14 +182,62 @@ pub fn convert(out: &mut Out) -> Result<Converted> {
     let want = |z: u8, x: u32, y: u32| z < 9 || cover.contains(&(x >> (z - 6), y >> (z - 6)));
     let dots = heritage_dots(out)?;
     eprintln!("overlays: {} heritage dots, {} z6 tiles for hi tiles ({:.1?})", dots.len(), cover.len(), t0.elapsed());
+    let mut ntiles = 0;
+    let (areas, n_ov, parks, _) = areas_and_parks(out, markconv::LEGACY, &dots, &want, &mut ntiles)?;
+    let stations = stations(out, &want, &mut ntiles)?;
+    let ferries = ferries(out, &mut ntiles)?;
+    eprintln!("overlays: {areas} areas, {stations} stations, {ferries} ferry blocks, {ntiles} tiles, {n_ov} ovdata, {parks} parks ({:.1?})", t0.elapsed());
+    Ok(Converted { areas, tiles: ntiles, ovdata: n_ov, parks, stations, ferries })
+}
+
+/// The overlays job (docs/phase5.md "Heritage and area flags"): the area overlays and the parks
+/// from a pass's heritage outputs (`src`), the World Heritage outlines with the dots' ids the marks
+/// job gave them (`dots`); the overlays' packs and ovdata this run didn't write dropped; the
+/// summary and the sources list the map loads whole, as `global/heritage/…`.
+pub fn overlays(out: &mut Out, src: &str, dots: &HashMap<u64, (u64, f64, f64)>) -> Result<(usize, usize, usize, usize)> {
+    let t0 = std::time::Instant::now();
+    let cover = hi_cover(out);
+    let want = |z: u8, x: u32, y: u32| z < 9 || cover.contains(&(x >> (z - 6), y >> (z - 6)));
+    let mut ntiles = 0;
+    let (areas, n_ov, parks, mut wrote) = areas_and_parks(out, src, dots, &want, &mut ntiles)?;
+    for stem in ["layer-summary", "heritage-sources"] {
+        let l = format!("global/heritage/{stem}");
+        out.put_bytes(&l, "json", &src_bytes(out, src, stem)?)?;
+        wrote.insert(l);
+    }
+    let stale: Vec<String> = out
+        .manifest
+        .keys()
+        .filter(|k| AREAS.iter().any(|a| k.starts_with(&format!("layers/{}/", a.layer))) || k.starts_with("ovdata/") || k.starts_with("global/heritage/"))
+        .filter(|k| !wrote.contains(*k))
+        .cloned()
+        .collect();
+    for k in &stale {
+        out.remove(k);
+    }
+    eprintln!("overlays: {areas} areas, {ntiles} tiles, {n_ov} ovdata, {parks} parks from {src}; {} stale dropped ({:.1?})", stale.len(), t0.elapsed());
+    Ok((areas, ntiles, n_ov, parks))
+}
+
+/// The area overlays as tiles and the areas' and parks' details as ovdata, from `src`: counts of
+/// areas, ovdata tiles and parks, and the logical names written.
+fn areas_and_parks(
+    out: &mut Out,
+    src: &str,
+    dots: &HashMap<u64, (u64, f64, f64)>,
+    want: &(dyn Fn(u8, u32, u32) -> bool + Sync),
+    ntiles: &mut usize,
+) -> Result<(usize, usize, usize, std::collections::BTreeSet<String>)> {
+    let t0 = std::time::Instant::now();
+    let mut wrote: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     // ovdata per z3 owner: per details key, records by id; and parks.
     let mut owned: BTreeMap<String, BTreeMap<&'static str, Recs>> = BTreeMap::new();
-    let (mut areas, mut ntiles) = (0usize, 0usize);
+    let mut areas = 0usize;
     for a in &AREAS {
-        let fc: Value = serde_json::from_slice(&legacy_bytes(out, a.file)?)?;
+        let fc: Value = serde_json::from_slice(&src_bytes(out, src, a.file)?)?;
         let feats = fc["features"].as_array().with_context(|| format!("{}: no features", a.file))?;
         let details = match a.details {
-            Some((f, _)) => details_by_i(out, f)?,
+            Some((f, _)) => details_by_i(out, src, f)?,
             None => HashMap::new(),
         };
         let mut src: Vec<IdSource> = Vec::new();
@@ -243,11 +298,11 @@ pub fn convert(out: &mut Out) -> Result<Converted> {
         }
         areas += made.len();
         let feats: Vec<Feature> = made.into_iter().map(|m| m.0).collect();
-        write_tiles(out, a.layer, LAYER, &feats, &want, &mut ntiles)?;
+        wrote.extend(write_tiles(out, a.layer, LAYER, &feats, want, ntiles)?);
         eprintln!("overlays: {} {} features ({empty} without geometry), {ntiles} tiles so far ({:.1?})", a.layer, feats.len(), t0.elapsed());
     }
     // Parks: owned by their box's centre.
-    let pb = legacy_bytes(out, "details-park")?;
+    let pb = src_bytes(out, src, "details-park")?;
     let mut parks = 0;
     for line in pb.split(|&c| c == b'\n').filter(|l| !l.is_empty()) {
         let v: Value = serde_json::from_slice(line).context("details-park: a record")?;
@@ -275,11 +330,9 @@ pub fn convert(out: &mut Out) -> Result<Converted> {
         }
         w.finish()?;
         out.put_file(&logical, "sect", &local)?;
+        wrote.insert(logical);
     }
-    let stations = stations(out, &want, &mut ntiles)?;
-    let ferries = ferries(out, &mut ntiles)?;
-    eprintln!("overlays: {areas} areas, {stations} stations, {ferries} ferry blocks, {ntiles} tiles, {n_ov} ovdata, {parks} parks ({:.1?})", t0.elapsed());
-    Ok(Converted { areas, tiles: ntiles, ovdata: n_ov, parks, stations, ferries })
+    Ok((areas, n_ov, parks, wrote))
 }
 
 /// How far from a block its terminals and ways reach (ferries.ts NEAR_M: a terminal takes the
@@ -469,7 +522,8 @@ fn ferry_blocks(out: &mut Out, fc: &Value, lines: &serde_json::Map<String, Value
 }
 
 /// Writes a layer's tiles (gzipped, in packs by scope).
-fn write_tiles(out: &mut Out, layer: &str, mvt_layer: &str, feats: &[Feature], want: &(dyn Fn(u8, u32, u32) -> bool + Sync), ntiles: &mut usize) -> Result<()> {
+/// The features as vector tiles in the layer's packs; the packs' logical names.
+fn write_tiles(out: &mut Out, layer: &str, mvt_layer: &str, feats: &[Feature], want: &(dyn Fn(u8, u32, u32) -> bool + Sync), ntiles: &mut usize) -> Result<Vec<String>> {
     let mut packs: BTreeMap<(&'static str, u8, u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();
     let mut err = None;
     vtgen::tiles(mvt_layer, feats, 0, MAXZ, want, &mut |z, x, y, raw| match names::mvt::gzip(&raw) {
@@ -481,12 +535,15 @@ fn write_tiles(out: &mut Out, layer: &str, mvt_layer: &str, feats: &[Feature], w
     if let Some(e) = err {
         return Err(e);
     }
+    let mut wrote = Vec::new();
     for ((scope, rz, rx, ry), mut tiles) in packs {
         tiles.sort_by_key(|t| (t.0, t.1, t.2));
         *ntiles += tiles.len();
-        write_pack(out, layer, "mvt", true, scope, (rz, rx, ry), &mut tiles.into_iter())?;
+        if let Some((l, _)) = write_pack(out, layer, "mvt", true, scope, (rz, rx, ry), &mut tiles.into_iter())? {
+            wrote.push(l);
+        }
     }
-    Ok(())
+    Ok(wrote)
 }
 
 /// Today's rail stops (stations.json) as vector tiles: each stop in the tiles of the zooms it shows

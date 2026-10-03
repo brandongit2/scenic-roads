@@ -618,12 +618,12 @@ impl Agent {
                 jobs.push(j);
                 continue;
             }
-            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites") && !t.ends_with("-root")).collect();
+            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays") && !t.ends_with("-root")).collect();
             match w.step.as_str() {
                 "terrain" | "terrain-root" => extra.extend(["--raw".into(), s(&cache.join("aws-terrarium"))]),
-                "pois" | "marks" | "stations" => extra.extend(["--pass".into(), date.to_string()]),
+                "pois" | "marks" | "stations" | "overlays" => extra.extend(["--pass".into(), date.to_string()]),
                 "ferries" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem"))]),
-                "items" | "heritage-sites" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache".into(), s(&cache)]),
+                "items" | "heritage-sites" | "heritage" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache".into(), s(&cache)]),
                 "peaks" => extra.extend(["--pass".into(), date.to_string(), "--raw".into(), s(&cache.join("aws-terrarium")), "--cache".into(), s(&cache), "--coarse-threads".into(), "6".into()]),
                 "unit" => extra.extend([
                     "--pass".into(),
@@ -656,6 +656,8 @@ impl Agent {
                 "peaks" => format!("Peaks' prominence and isolation ({areas})"),
                 "items" => "Wikidata facts and Wikipedia pageviews for the landmarks".to_string(),
                 "heritage-sites" => "Heritage sites and designated areas for the regions".to_string(),
+                "heritage" => "Heritage sites' details, fame and outlines".to_string(),
+                "overlays" => "Area overlays for the map".to_string(),
                 "marks" => "Landmarks for the map".to_string(),
                 "roadunits" => "Which areas each road crosses".to_string(),
                 "stations" => "Rail stops near the regions".to_string(),

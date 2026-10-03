@@ -13,12 +13,36 @@ use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
+/// The heritage dots the last marks wrote: site record (`i`) → [id, lon, lat] (the overlays job's).
+pub const HERITAGE_DOTS: &str = "work/marks/heritage-dots";
+
 /// The stops & sights kinds (each its own file; heritage is one more).
 pub const POI_KINDS: [&str; 7] = ["viewpoint", "peak", "waterfall", "lighthouse", "covered_bridge", "rest", "trailhead"];
 
 /// A legacy file's bytes: this Mac's mirror copy when there is one, else the NAS's.
 pub(crate) fn legacy_bytes(out: &Out, stem: &str) -> Result<Vec<u8>> {
-    let logical = format!("global/legacy/{stem}");
+    src_bytes(out, LEGACY, stem)
+}
+
+/// Today's heritage files' folder (`global/legacy`), the converted build's.
+pub const LEGACY: &str = "global/legacy";
+
+/// Where a pass's heritage comes from: the heritage job's outputs (`work/heritage/<date>`) when
+/// it has made them, else today's.
+pub fn heritage_source(out: &Out, date: &str) -> String {
+    let job = format!("work/heritage/{date}");
+    let has = |stem: &str| out.get(&format!("{job}/{stem}")).is_some();
+    if has("layer-heritage") && has("details-heritage") && has("props-heritage") {
+        job
+    } else {
+        LEGACY.to_string()
+    }
+}
+
+/// A heritage or legacy file's bytes (`<src>/<stem>`): this Mac's mirror copy when there is one,
+/// else the NAS's.
+pub(crate) fn src_bytes(out: &Out, src: &str, stem: &str) -> Result<Vec<u8>> {
+    let logical = format!("{src}/{stem}");
     let content = out.get(&logical).with_context(|| format!("{logical} isn't in the build manifest"))?;
     let mirror = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support/scenic/mirror").join(content));
     let path = mirror.filter(|p| p.exists()).unwrap_or_else(|| out.path(content));
@@ -73,16 +97,16 @@ fn poi_details(out: &Out) -> Result<HashMap<u64, (Option<String>, String)>> {
 
 /// The heritage records as the server merges them (details-heritage, with props-heritage's record as
 /// `props`), by the layer's `i`.
-fn heritage_details(out: &Out) -> Result<HashMap<u64, Value>> {
+fn heritage_details(out: &Out, src: &str) -> Result<HashMap<u64, Value>> {
     let mut by: HashMap<u64, Value> = HashMap::new();
-    let text = legacy_bytes(out, "details-heritage")?;
+    let text = src_bytes(out, src, "details-heritage")?;
     for line in text.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
         let Ok(v) = serde_json::from_slice::<Value>(line) else { continue };
         if let Some(i) = v.get("i").and_then(Value::as_u64) {
             by.insert(i, v);
         }
     }
-    let text = legacy_bytes(out, "props-heritage")?;
+    let text = src_bytes(out, src, "props-heritage")?;
     for line in text.split(|&b| b == b'\n').filter(|l| !l.is_empty()) {
         let Ok(mut p) = serde_json::from_slice::<Value>(line) else { continue };
         let Some(i) = p.get("i").and_then(Value::as_u64) else { continue };
@@ -99,11 +123,11 @@ fn whc_site(url: &str) -> Option<&str> {
 }
 
 /// Today's heritage sites (World Heritage components among them).
-fn heritage_points(out: &Out, pts: &mut Vec<Pt>) -> Result<()> {
-    let details = heritage_details(out)?;
+fn heritage_points(out: &Out, src: &str, pts: &mut Vec<Pt>) -> Result<()> {
+    let details = heritage_details(out, src)?;
     let k = marks::kind_index("heritage").unwrap();
     let fields = marks::fields("heritage");
-    let fc: Value = serde_json::from_slice(&legacy_bytes(out, "layer-heritage")?)?;
+    let fc: Value = serde_json::from_slice(&src_bytes(out, src, "layer-heritage")?)?;
     let feats = fc["features"].as_array().context("layer-heritage: no features")?;
     for (rank, f) in feats.iter().enumerate() {
         let c = &f["geometry"]["coordinates"];
@@ -195,14 +219,14 @@ fn load_points(out: &Out) -> Result<Vec<Pt>> {
             pts.push(Pt { kind: k, lon, lat, pt, fvals, props, info, osm, reference });
         }
     }
-    heritage_points(out, &mut pts)?;
+    heritage_points(out, LEGACY, &mut pts)?;
     Ok(pts)
 }
 
 /// Today's heritage sites as points (the `marks` job's until the `heritage` job makes them).
-pub fn today_heritage(out: &Out) -> Result<Vec<Point>> {
+pub fn heritage_marks(out: &Out, src: &str) -> Result<Vec<Point>> {
     let mut pts = Vec::new();
-    heritage_points(out, &mut pts)?;
+    heritage_points(out, src, &mut pts)?;
     Ok(pts)
 }
 
@@ -240,6 +264,15 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
     let ids = marks::assign_ids(&id_sources(&pts))?;
     let mut all: Vec<(u64, Pt)> = ids.into_iter().zip(pts).collect();
     eprintln!("marks: {} points with ids in {:.1?}", all.len(), t0.elapsed());
+    // The World Heritage outlines' dots, for the overlays: each site's record (`i`) → its dot's id
+    // and place.
+    let kh = marks::kind_index("heritage").unwrap();
+    let dots: BTreeMap<u64, (u64, f64, f64)> = all
+        .iter()
+        .filter(|(_, p)| p.kind == kh && p.pt.flags & flag::COMPONENT == 0)
+        .filter_map(|(id, p)| Some((p.info.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok())?["i"].as_u64()?, (*id, p.lon, p.lat))))
+        .collect();
+    out.put_bytes(HERITAGE_DOTS, "json", &serde_json::to_vec(&dots)?)?;
 
     // The keep rule, per kind.
     let mut by_kind: BTreeMap<usize, Vec<usize>> = BTreeMap::new();

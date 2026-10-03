@@ -131,6 +131,15 @@ fn main() -> Result<()> {
         "items" => items_step(&mut out, &args, &scratch)?,
         "heritage" => heritage_step(&mut out, &args, &scratch)?,
         "heritage-sites" => heritage_sites_step(&mut out, &args, &scratch)?,
+        "overlays" => {
+            // overlays [--pass <date>]: the area overlays and parks from the pass's heritage
+            // outputs, the World Heritage outlines with the marks job's dots (ovconv::overlays).
+            let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+            let src = pipeline::markconv::heritage_source(&out, &date);
+            let dots = pipeline::ovconv::marks_dots(&out)?;
+            pipeline::ovconv::overlays(&mut out, &src, &dots)?;
+            out.save()?;
+        }
         "registers-import" => registers_import(&mut out, &args, &scratch)?,
         "slope" => slope_step(&mut out, &args)?,
         "labels" => labels_step(&mut out, &args, &scratch)?,
@@ -913,7 +922,10 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     let pts = pipeline::marksjob::poi_points(&cands, &views);
     let summits = pipeline::marksjob::summits_list(&pts);
     let mut all = pts;
-    all.extend(pipeline::markconv::today_heritage(out)?);
+    // The pass's heritage (the heritage job's outputs), else today's.
+    let src = pipeline::markconv::heritage_source(out, &date);
+    eprintln!("marks: heritage from {src}");
+    all.extend(pipeline::markconv::heritage_marks(out, &src)?);
     let c = pipeline::markconv::write(out, all, summits)?;
     eprintln!("marks: {} points, {} markdata tiles, {} thinned tiles", c.points, c.tiles, c.thinned);
     Ok(())
