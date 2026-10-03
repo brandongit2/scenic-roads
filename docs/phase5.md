@@ -363,49 +363,85 @@ At world scale, a globe query would read 0.2–0.4 GB: a per-z3 summary then.
 
 ## Zoomed-out queries [I6]
 
-Plan §6 "Served": drives, rides and rail lines over many hi packs use 1 km summaries. Today
-query.rs reads every z6 hidata within the view plus half the window length. Measured on today's map:
-drives over Western Europe take 2.9 s warm and 8 s cold (England and Wales: 0.9 s and 3.6 s). At world
-scale a continental view is hundreds of z6 tiles.
+Plan §6 "Served": drives, rides and rail lines over many hi packs use summaries. Today's queries
+read every z6 hidata within the view plus half the window length (query sections: `here`, `parts`,
+`psamples`, `pch`, 37 B per sample), so a continental view reads gigabytes cold. The road-length
+prefilter (2026-10-03: roads shorter than the window are skipped, identical answers) and rail
+lines' identity in hidata (`railinfo`) took the warm CPU and the cold base-pack reads out; what's
+left is the bytes read.
 
-### Summaries: `lodata/3-x-y` (sectioned, per z3 tile)
+Reviewed (2026-10-03) against a simulator on the 164 mirrored hidata tiles: the first design (1 km
+bins of every road in a per-z3 `lodata`) came out 4× its size estimate, missed its accuracy target
+at the default 5 km (windows cut on bin edges), and its bin record couldn't support the joins. This
+is the revision.
 
-The lo step writes them from the hidata of the z3 tile's 64 z6 tiles: each road's query samples
-(~100 m apart) grouped into bins of ~1 km.
-- A bin is consecutive samples of one road that share the filters' attributes (class, unpaved, toll,
-  unnamed; rail service bits). It closes at 1,000 m along the road, a gap of 300 m (`GAP_M`) or an
-  attribute change.
-- `lparts`: `LPart { u64 road; f32 offset (the first bin's); u32 first; u32 count; f32 road_len;
-  u8 class; u8 flags (unpaved, toll, unnamed); u8 rail (service bits); u8 pad }`: a road's
-  consecutive bins inside the z3 tile, as hidata's parts are inside z6 tiles.
-- `lbins`: `LBin { u64 way (the OSM way at the bin's middle sample); f32 offset (middle); i32 lon,
-  lat (middle sample); f32 len (first to last sample); u16 n (samples); u16 pad }`.
-- `lcomp`: `[u8; 12]` per bin, the mean of each component over its samples (× 255): roads the 12
-  drive components; rail the 11 ride components but frequency (which comes from `railfreq` at query
-  time, as now), the grade term from the bin's own samples.
-- A part's bins carry its line's identity for rail (relation, services, colour) in `lrail`, so rides
-  and lines don't look up base packs per run zoomed out.
+### Summaries: sections of hidata
+
+pack(T) writes them into T's hidata, from the same parts it writes `psamples` from, so they're never
+older than the samples (no separate step, catalog field or staleness rule); hidata without them
+(older packs) are queried exactly.
+- **What:** roads at least 2 km long (`LO_MIN_ROAD`, the shortest window answered from summaries:
+  no window that long fits on a shorter road), and all rail (rail lines sum every run).
+- **Bins:** consecutive samples of one part (one road inside T). A bin closes 500 m (`BIN_M`)
+  after its first sample, at a gap over `GAP_M` (300 m), where the filters' attributes change
+  (roads: class, unpaved, toll, unnamed), and for rail at every way (one way per rail bin: its
+  trains a day and its line are the way's).
+- `lparts`: `LPart { u64 road; u32 first (lbins index); u32 count; f32 road_len; u32 pad }` (24 B).
+- `lbins`: `LBin` (64 B):
+  ```
+  LBin { u64 way (OSM id: roads the middle sample's way, rail the bin's way);
+         f32 off0 (first sample's offset along the road); f32 len (last − first);
+         i32 lon0, lat0 (first sample); i32 lonm, latm (middle sample: on `way`);
+         i32 lon1, lat1 (last sample); u32 rinfo (rail: its `railinfo` row, else u32::MAX);
+         u16 n (samples); u8 class; u8 flags (unpaved, toll, unnamed);
+         [u8; 12] comp (each component's mean over the samples × 255); [u8; 4] pad }
+  ```
+  Roads: the 12 drive components. Rail: the 11 ride components but trains a day (from `railfreq` at
+  query time, by `way`), the grade term from each sample's neighbours within the part.
+- **Size:** ~4–5 M bins for today's coverage, ~300 MB (~8 % of hidata); the densest z3 tile's 64
+  hidata hold ~50 MB of summaries against ~0.85 GB of query sections.
 
 ### Server
 
-- When the view plus its margin needs more than 6 z6 tiles with hidata, the query reads the z3
-  lodata instead and runs the same algorithm on bins:
-  - a bin's score from its component means with the same weights, clamped per bin (a sample's is
-    clamped per sample);
-  - windows by offset as now (at least the length asked), their middle bin in view;
-  - geometry from the bins' positions; `parts` the components' means weighted by each bin's samples.
-- Below that, hidata as now.
-- Rides and rail lines: frequency from each bin's way; a line's identity from `lrail`.
+- **The switch is the client's:** it asks with `approx=1` below zoom 5.5 and goes back to exact
+  above 6 (the hysteresis keeps a panned or resized view from flipping modes; tile edges, coastline
+  and pitch don't move it). The server answers from summaries when every z6 hidata of the view
+  plus margin has them and the window is at least `LO_MIN_ROAD` (rail lines: any), else exactly,
+  never mixing; every answer says which (`approx`).
+- **Reads:** `lparts` and `lbins` whole (and `railinfo`, `railstr` for rail), never `here`,
+  `parts`, `psamples` or `pch`.
+- **Runs:** bins of one road in offset order across the tiles read; a run splits where a bin's
+  `off0` is more than `GAP_M` past the running maximum of the run's last offsets (a road zigzagging
+  over a tile edge has bins that overlap).
+- **Windows (drives, rides):** each bin stands for `n` samples spread evenly from `off0` to
+  `off0 + len`, each with the bin's score (its component means, the same weights, clamped per bin);
+  today's best-window scan runs on these (at least the length asked, mean over samples, the middle
+  one in view, its position on its bin's chord). So windows start and end inside bins, and means are
+  weighted by samples.
+- **The answer:** `length_m` from the window's end offsets; `geom` from the window's end positions
+  (on their bins' chords) and the bins' first and last samples between; `way`/`at` the first bin's
+  (`lonm`, `latm` is on `way`); names from the middle bin's way (as today, top hits only); `parts`
+  the component means weighted by samples; rides' trains a day the maximum over the window's
+  bins' ways.
+- **Rail lines:** a bin is in view when its middle sample is; a line's length is the sum over its
+  bins in view of `next.off0 − off0` within a run (a run's last bin: `len`), its score weighted by
+  those lengths; `geom` the bins' sample positions, a polyline per stretch in view.
+- **Cancelled queries stop:** the request's future dropping (the client aborted a superseded
+  query) sets a flag the computation checks between phases and in its loops.
+
+### Client
+
+- `approx=1` by zoom with hysteresis (above); lists from summaries say so ("≈" by the count, and
+  lengths rounded to 0.5 km).
 
 ### Accuracy and checks
 
-Zoomed out, windows start on bin edges and the clamp applies to a bin's mean, so the lists change a
-little. A test compares the summaries' answers with hidata's on a dozen continental views:
-- the top 20 overlap by 90 % or more;
-- scores within 2 points;
-- totals within 5 %.
+Measured by the review's simulator with this bin model (500 m, windows inside bins), against the
+exact answers on 9 views × 3 presets:
+- windows of 5 km and longer: the top 20 overlap by 90 % or more in every case, scores within
+  1.5 points;
+- 2 km: 23 of 27 cases at 90 % (the lowest 80 %), scores within 3.7 points.
 
-### Sizes and keys
-
-- A bin is ~44 B per km of road: about 270 MB for today's 6.1 M km, a few MB per z3 tile.
-- lodata(Q)'s key is the content names of its 64 hidata files; it's in the catalog as `lodata`.
+The test (`approx` against exact on the same hidata, a dozen continental views, 2/5/10/25 km, three
+presets, drives and rides; rail lines' totals and lengths) holds the implementation to those, and
+totals within 5 %.
