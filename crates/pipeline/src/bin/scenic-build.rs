@@ -396,6 +396,8 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
                 ("pch", b(&hd.pch)),
                 ("climbs", b(&hd.climbs)),
                 ("climbgeom", b(&hd.climbgeom)),
+                ("railinfo", b(&hd.railinfo)),
+                ("railstr", &hd.railstr),
             ],
         )?;
         out.save()?;

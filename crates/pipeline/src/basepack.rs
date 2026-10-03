@@ -114,6 +114,12 @@ impl BasePack {
     pub fn road_vals(&self) -> Result<&[RoadRec]> {
         self.roads.slice("roads")
     }
+    /// A rail way's primary route relation (the `rail` section, sorted by way).
+    pub fn rail_rel(&self, way: u32) -> Option<i64> {
+        let r: &[roadcore::packs::RailRel] = self.sect.slice("rail").ok()?;
+        let i = r.partition_point(|x| x.way < way);
+        r.get(i).filter(|x| x.way == way).map(|x| x.rel())
+    }
     pub fn string(&self, i: u32) -> &str {
         self.strings.get(i as usize).map(String::as_str).unwrap_or("")
     }

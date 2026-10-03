@@ -28,6 +28,25 @@ impl RailRel {
     }
 }
 
+/// hidata `railinfo`: a rail way's line, so rides and rail lines name it without reading its base
+/// pack (sorted by `here`, the way's index in `here`; strings index `railstr`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct RailInfo {
+    pub here: u32,
+    /// Its line's colour (0xRRGGBB, 0: none).
+    pub colour: u32,
+    /// Its primary route relation (0: none).
+    pub rel: i64,
+    /// Its name and its route (the services' names), in `railstr`.
+    pub name: u32,
+    pub route: u32,
+    /// Service bits (WayRec `rail`) and class.
+    pub rail: u8,
+    pub class: u8,
+    pub _pad: [u8; 6],
+}
+
 /// Road values `roads`: one way's place on its road (the one chaining).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]

@@ -109,7 +109,7 @@ pub fn tiles(ways: &[WayIn], zr: u8, xr: u32, yr: u32, zs: std::ops::RangeInclus
     (roads, rails)
 }
 
-pub use roadcore::packs::{here_extra as extra, point_key, Climb, End, Here, PSample, Part};
+pub use roadcore::packs::{here_extra as extra, point_key, Climb, End, Here, PSample, Part, RailInfo};
 
 /// hidata sections of a z6 tile.
 pub struct HiData {
@@ -120,6 +120,9 @@ pub struct HiData {
     pub pch: Vec<[u8; ch::N]>,
     pub climbs: Vec<Climb>,
     pub climbgeom: Vec<[i32; 2]>,
+    /// The rail ways' lines, and their strings (newline-separated; 0 is "").
+    pub railinfo: Vec<RailInfo>,
+    pub railstr: Vec<u8>,
 }
 
 fn way_len(v: &[[i32; 2]]) -> f64 {
@@ -227,7 +230,44 @@ pub fn hidata(t: Unit, packs: &[&BasePack], in_t: &[Staged], halo: &[Staged]) ->
     }
     // Climbs along roads through the halo, kept when they start in T.
     let (climbs, climbgeom) = climbs_in(t, packs, halo)?;
-    Ok(HiData { here, ends, parts, psamples, pch, climbs, climbgeom })
+    // The rail ways' lines (name, route, colour, relation, services), by their place in `here`.
+    let mut strings: Vec<String> = vec![String::new()];
+    let mut index: std::collections::HashMap<String, u32> = std::collections::HashMap::from([(String::new(), 0)]);
+    let mut intern = |s: &str| -> u32 {
+        if let Some(&i) = index.get(s) {
+            return i;
+        }
+        strings.push(s.replace('\n', " "));
+        index.insert(s.to_string(), (strings.len() - 1) as u32);
+        (strings.len() - 1) as u32
+    };
+    let mut railinfo: Vec<RailInfo> = Vec::new();
+    for s in in_t {
+        let bp = packs[s.pack];
+        let w = &bp.ways()?[s.way as usize];
+        if !class::is_rail(w.class) {
+            continue;
+        }
+        let Ok(hi) = here.binary_search_by_key(&(w.id as u64), |h| h.id) else { continue };
+        // (A way in several packs' halos: the one `here` keeps.)
+        if here[hi].owner != bp.unit.key() || here[hi].index != s.way {
+            continue;
+        }
+        railinfo.push(RailInfo {
+            here: hi as u32,
+            colour: w.colour,
+            rel: bp.rail_rel(s.way).unwrap_or(0),
+            name: intern(bp.string(w.name)),
+            route: intern(bp.string(w.route)),
+            rail: w.rail,
+            class: w.class,
+            _pad: [0; 6],
+        });
+    }
+    railinfo.sort_unstable_by_key(|r| r.here);
+    railinfo.dedup_by_key(|r| r.here);
+    let railstr = strings.join("\n").into_bytes();
+    Ok(HiData { here, ends, parts, psamples, pch, climbs, climbgeom, railinfo, railstr })
 }
 
 /// Climbs starting in T, found along the roads of the halo's ways (in order by road offset).

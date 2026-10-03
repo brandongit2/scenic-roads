@@ -6,7 +6,7 @@ use crate::pages;
 use anyhow::{bail, ensure, Context, Result};
 use bytemuck::Pod;
 use memmap2::Mmap;
-use roadcore::packs::{Climb, Here, PSample, Part, RailRel, RoadRec};
+use roadcore::packs::{Climb, Here, PSample, Part, RailInfo, RailRel, RoadRec};
 use roadcore::scenic::ch;
 use roadcore::WayRec;
 use std::borrow::Cow;
@@ -552,6 +552,10 @@ pub struct HiView {
     pub pch: Sect<[u8; ch::N]>,
     pub climbs: Sect<Climb>,
     pub climbgeom: Sect<[i32; 2]>,
+    /// The rail ways' lines (pack(T) since 2026-10-03; empty in older hidata).
+    pub railinfo: Sect<RailInfo>,
+    railstr: SectView,
+    railnames: std::sync::OnceLock<Vec<String>>,
 }
 
 impl HiView {
@@ -565,7 +569,30 @@ impl HiView {
             pch: s.sect("pch")?,
             climbs: s.sect("climbs")?,
             climbgeom: s.sect("climbgeom")?,
+            railinfo: s.sect("railinfo")?,
+            railstr: s,
+            railnames: std::sync::OnceLock::new(),
         })
+    }
+
+    /// The hidata has rail lines' identities (newer pack(T)).
+    pub fn has_railinfo(&self) -> bool {
+        self.railstr.has("railinfo")
+    }
+
+    /// A rail way's line by its place in `here`, and its name and route.
+    pub fn rail_info(&self, here: u32) -> Result<Option<(RailInfo, String, String)>> {
+        let Some(r) = self.railinfo.equal_range(here, |x| x.here)?.first().copied() else { return Ok(None) };
+        let names = match self.railnames.get() {
+            Some(n) => n,
+            None => {
+                let b = self.railstr.get("railstr")?;
+                let n: Vec<String> = String::from_utf8_lossy(b.bytes()).split('\n').map(str::to_owned).collect();
+                self.railnames.get_or_init(|| n)
+            }
+        };
+        let s = |i: u32| names.get(i as usize).cloned().unwrap_or_default();
+        Ok(Some((r, s(r.name), s(r.route))))
     }
     pub fn is_remote(&self) -> bool {
         self.remote
@@ -576,17 +603,18 @@ impl HiView {
     }
 }
 
-/// A tile's query parts, read whole (what a query scans).
+/// A tile's query parts, read whole (what a query scans), and its hidata for the rest.
 pub struct QTile {
     here: Blob,
     parts: Blob,
     psamples: Blob,
     pch: Blob,
+    pub hv: Arc<HiView>,
 }
 
 impl QTile {
     pub fn new(hv: Arc<HiView>) -> Result<QTile> {
-        Ok(QTile { here: hv.here.all()?, parts: hv.parts.all()?, psamples: hv.psamples.all()?, pch: hv.pch.all()? })
+        Ok(QTile { here: hv.here.all()?, parts: hv.parts.all()?, psamples: hv.psamples.all()?, pch: hv.pch.all()?, hv })
     }
     pub fn here(&self) -> &[Here] {
         self.here.cast()

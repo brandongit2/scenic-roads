@@ -121,6 +121,8 @@ direction.
 | `pch` | `[u8; 13]` | per part sample |
 | `climbs` | `Climb` (64 B) | climbs starting in T |
 | `climbgeom` | `[i32; 2]` | their polylines |
+| `railinfo` | `RailInfo` (32 B) | rail ways' lines, sorted by `here` (since 2026-10-03; older hidata have none: the server reads base packs) |
+| `railstr` | newline-separated | their names and routes (0 is "") |
 
 ```
 Here    { u64 id; u64 owner (unit tile key); u32 index (in the owner's base pack); u8 class;
@@ -135,6 +137,8 @@ Climb   { u64 way (OSM id at the start); u64 label (OSM id at the middle); f32 g
           f32 length_m; f32 start_elev; f32 top_elev; f32 max_grade; f32 road_len (of the
           middle way's road); [i32; 2] mid; u32 geom_start; u32 geom_count; u8 class;
           u8 unpaved; u8 flags (middle way: bit 0 toll, bit 1 unnamed); [u8; 5] pad } // 64 bytes
+RailInfo { u32 here; u32 colour; i64 rel (primary route relation, 0 none); u32 name; u32 route
+          (railstr indexes); u8 rail (service bits); u8 class; [u8; 6] pad }      // 32 bytes
 
 The record types are `roadcore::packs`.
 ```

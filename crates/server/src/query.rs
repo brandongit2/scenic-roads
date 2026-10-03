@@ -408,6 +408,11 @@ struct LineInfo {
 fn line_info(st: &AppState, tiles: &[QTile], s: &Smp) -> anyhow::Result<Option<LineInfo>> {
     let (hv, p, _) = sample(tiles, s);
     let id = hv.here()[p.way as usize].id;
+    // From the tile's hidata when it has the lines (no base pack read: cold rides took 7–10 s).
+    if hv.hv.has_railinfo() {
+        let Some((r, name, route)) = hv.hv.rail_info(p.way)? else { return Ok(None) };
+        return Ok(Some(LineInfo { ident: rail_ident(&name, &route), services: route, colour: r.colour, rel: r.rel, way: id, rail: r.rail, class: r.class }));
+    }
     let Some(f) = find_way(st, id, [p.lon as f64 * E7, p.lat as f64 * E7])? else { return Ok(None) };
     let r = f.rec();
     Ok(Some(LineInfo {
