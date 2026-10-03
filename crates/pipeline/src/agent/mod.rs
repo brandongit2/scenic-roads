@@ -604,7 +604,7 @@ impl Agent {
         }
         let held = root.join("inputs/hold-catalog").exists();
         let cache = self.o.home.join("cache");
-        for w in build::plan(&cov, date, &manifest, &done, &inputs) {
+        for (w, total) in batches(build::plan(&cov, date, &manifest, &done, &inputs)) {
             // Held for review: the catalog goes to catalog-held/ (no server reads it), once.
             if w.step == "catalog" && held {
                 let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();
@@ -645,18 +645,20 @@ impl Agent {
                 _ => {}
             }
             let n = w.targets.len();
+            // "3 areas", or "8 of 480 areas" for a batch.
+            let areas = if n == total { format!("{n} area{}", if n == 1 { "" } else { "s" }) } else { format!("{n} of {total} areas") };
             let what = match w.step.as_str() {
-                "terrain" => format!("Terrain for the regions ({n} area{})", if n == 1 { "" } else { "s" }),
-                "slope" => format!("Slope for the regions ({n} area{})", if n == 1 { "" } else { "s" }),
-                "unit" => format!("Roads, elevations and scenery ({n} area{})", if n == 1 { "" } else { "s" }),
-                "pois" => format!("Landmark candidates ({n} area{})", if n == 1 { "" } else { "s" }),
-                "peaks" => format!("Peaks' prominence and isolation ({n} area{})", if n == 1 { "" } else { "s" }),
+                "terrain" => format!("Terrain for the regions ({areas})"),
+                "slope" => format!("Slope for the regions ({areas})"),
+                "unit" => format!("Roads, elevations and scenery ({areas})"),
+                "pois" => format!("Landmark candidates ({areas})"),
+                "peaks" => format!("Peaks' prominence and isolation ({areas})"),
                 "items" => "Wikidata facts and Wikipedia pageviews for the landmarks".to_string(),
                 "marks" => "Landmarks for the map".to_string(),
                 "roadunits" => "Which areas each road crosses".to_string(),
                 "stations" => "Rail stops near the regions".to_string(),
                 "ferries" => "Ferries near the regions".to_string(),
-                "pack" => format!("Map tiles ({n} area{})", if n == 1 { "" } else { "s" }),
+                "pack" => format!("Map tiles ({areas})"),
                 "lo" => "Zoomed-out map tiles".to_string(),
                 "terrain-root" | "slope-root" => "World-level terrain and slope".to_string(),
                 _ => "Publishing the new map data".to_string(),
@@ -732,6 +734,37 @@ pub fn read_status(root: Option<&Path>, home: &Path) -> Option<Status> {
         .and_then(|b| serde_json::from_slice(&b).ok())
 }
 
+/// A step's targets in batches, each its own job recording its own targets (a failure or a restart
+/// into a new app costs one batch, not the whole wave), with the step's total.
+fn batches(plan: Vec<build::Work>) -> Vec<(build::Work, usize)> {
+    let mut out = Vec::new();
+    for w in plan {
+        let (n, total) = (batch_size(&w.step), w.targets.len());
+        if total <= n {
+            out.push((w, total));
+            continue;
+        }
+        for chunk in w.targets.chunks(n) {
+            out.push((build::Work { step: w.step.clone(), targets: chunk.to_vec() }, total));
+        }
+    }
+    out
+}
+
+/// Targets per job for the steps whose work is per area (each z3 pack of terrain or slope takes
+/// tens of minutes; an area's roads and scenery minutes; candidates, peaks and map tiles less).
+fn batch_size(step: &str) -> usize {
+    match step {
+        "terrain" => 1,
+        "slope" | "lo" => 2,
+        "unit" => 6,
+        "peaks" => 12,
+        "pack" => 16,
+        "pois" => 24,
+        _ => usize::MAX,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,6 +813,21 @@ mod tests {
         std::fs::write(root.join("sources/osm/2026-09-28/pass.0123456789abcdef.json"), b"{}").unwrap();
         let mut w = Vec::new();
         assert!(!a.plan(&root, &Conditions::default(), &mut w).iter().any(|j| j.id.starts_with("osm-pass")));
+    }
+
+    #[test]
+    fn steps_in_batches() {
+        let w = |step: &str, n: usize| build::Work { step: step.into(), targets: (0..n).map(|i| (format!("6/{i}/0"), format!("k{i}"))).collect() };
+        let b = batches(vec![w("unit", 14), w("roadunits", 1), w("terrain", 2), w("pois", 3)]);
+        let shape: Vec<(String, usize, usize)> = b.iter().map(|(w, t)| (w.step.clone(), w.targets.len(), *t)).collect();
+        assert_eq!(
+            shape,
+            [("unit", 6, 14), ("unit", 6, 14), ("unit", 2, 14), ("roadunits", 1, 1), ("terrain", 1, 2), ("terrain", 1, 2), ("pois", 3, 3)].map(|(s, n, t)| (s.to_string(), n, t))
+        );
+        // Every target once, in order, with its key.
+        let units: Vec<&(String, String)> = b.iter().filter(|(w, _)| w.step == "unit").flat_map(|(w, _)| &w.targets).collect();
+        assert_eq!(units.len(), 14);
+        assert!(units.iter().enumerate().all(|(i, t)| t.0 == format!("6/{i}/0") && t.1 == format!("k{i}")));
     }
 
     #[test]

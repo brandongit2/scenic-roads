@@ -135,15 +135,12 @@ pub fn max_zoom_at(lat: f64) -> u8 {
     }
 }
 
-/// Whether the coverage comes within `km` of the tile (an 8×8 grid of points over the tile grown by
-/// `km`; thin coverage between them is caught by the tiles around it).
+/// Whether the coverage comes within `km` of the tile: the tile grown by `km` meets it (exactly, so
+/// a small region between sample points isn't missed: Singapore in its z6 tile).
 pub fn near_coverage(cov: &Coverage, z: u8, x: u32, y: u32, km: f64) -> bool {
     let b = crate::stage::tile_box_grown(z, x, y, km);
     let e7 = |v: f64| (v * 1e7).round() as i32;
-    if !cov.meets_box([e7(b[0]), e7(b[1]), e7(b[2]), e7(b[3])]) {
-        return false;
-    }
-    (0..8).any(|i| (0..8).any(|j| cov.contains([e7(b[0] + (b[2] - b[0]) * (i as f64 + 0.5) / 8.0), e7(b[1] + (b[3] - b[1]) * (j as f64 + 0.5) / 8.0)])))
+    cov.meets_rect([e7(b[0]), e7(b[1]), e7(b[2]), e7(b[3])])
 }
 
 /// A layer's tiles as the build manifest has them now (its latest uploads).

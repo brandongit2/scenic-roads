@@ -91,6 +91,53 @@ impl Shape {
             dist2_m(p, a, b, kx) <= lim
         })
     }
+
+    /// Whether the box w, s, e, n (E7, edges included) meets the shape or its buffer (the buffer
+    /// as a box around the box: up to √2 × the buffer at its corners). Exact otherwise: an edge
+    /// meeting the box, else the box wholly inside or wholly outside, which one point tells.
+    pub fn meets_rect(&self, r: [i32; 4]) -> bool {
+        if r[0] > self.bbox[2] || r[2] < self.bbox[0] || r[1] > self.bbox[3] || r[3] < self.bbox[1] {
+            return false;
+        }
+        // The box grown by the buffer, at its latitude furthest from the equator.
+        let lat = (r[1].unsigned_abs().max(r[3].unsigned_abs()) as f64 * 1e-7).min(85.0);
+        let (bx, by) = if self.buffer_m > 0.0 { ((self.buffer_m / (M_PER_E7 * lat.to_radians().cos())).ceil() as i64, (self.buffer_m / M_PER_E7).ceil() as i64) } else { (0, 0) };
+        let rg = [r[0] as i64 - bx, r[1] as i64 - by, r[2] as i64 + bx, r[3] as i64 + by];
+        // Edges near the box: those listed in the grid cells it overlaps (a superset).
+        let g = &self.grid;
+        let cell = |v: f64, v0: f64, size: f64, n: usize| (((v - v0) / size).floor().max(0.0) as usize).min(n - 1);
+        let (cx0, cx1) = (cell(rg[0] as f64, g.x0, g.cw, g.nx), cell(rg[2] as f64, g.x0, g.cw, g.nx));
+        let (cy0, cy1) = (cell(rg[1] as f64, g.y0, g.ch, g.ny), cell(rg[3] as f64, g.y0, g.ch, g.ny));
+        for cy in cy0..=cy1 {
+            for cx in cx0..=cx1 {
+                for &(ri, i) in &g.edges[cy * g.nx + cx] {
+                    let ring = &self.rings[ri as usize];
+                    let (a, b) = (ring[i as usize], ring[(i as usize + 1) % ring.len()]);
+                    if segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) {
+                        return true;
+                    }
+                }
+            }
+        }
+        // No edge meets it: the box is all inside or all outside.
+        self.contains([((r[0] as i64 + r[2] as i64) / 2) as i32, ((r[1] as i64 + r[3] as i64) / 2) as i32])
+    }
+}
+
+/// Whether segment a–b meets the box w, s, e, n (edges included).
+fn segment_meets_box(a: [i64; 2], b: [i64; 2], r: [i64; 4]) -> bool {
+    let inside = |p: [i64; 2]| p[0] >= r[0] && p[0] <= r[2] && p[1] >= r[1] && p[1] <= r[3];
+    if inside(a) || inside(b) {
+        return true;
+    }
+    if a[0].max(b[0]) < r[0] || a[0].min(b[0]) > r[2] || a[1].max(b[1]) < r[1] || a[1].min(b[1]) > r[3] {
+        return false;
+    }
+    // Both ends outside, boxes overlapping: it meets the box when the box's corners aren't all on
+    // one side of its line.
+    let side = |p: [i64; 2]| ((b[0] - a[0]) as i128 * (p[1] - a[1]) as i128 - (b[1] - a[1]) as i128 * (p[0] - a[0]) as i128).signum();
+    let s: Vec<i128> = [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]].iter().map(|&p| side(p)).collect();
+    !(s.iter().all(|&v| v > 0) || s.iter().all(|&v| v < 0))
 }
 
 /// Squared distance (m²) from `p` to the segment a–b, on a local projection (`kx`: metres per E7
@@ -268,6 +315,11 @@ impl Coverage {
         self.shapes.iter().any(|s| s.bbox[0] <= b[2] && s.bbox[2] >= b[0] && s.bbox[1] <= b[3] && s.bbox[3] >= b[1])
     }
 
+    /// Whether the box w, s, e, n (E7) meets the coverage itself (`Shape::meets_rect`).
+    pub fn meets_rect(&self, b: [i32; 4]) -> bool {
+        self.shapes.iter().any(|s| s.meets_rect(b))
+    }
+
     /// Whether a way (its vertices) touches the coverage.
     pub fn touches(&self, verts: &[[i32; 2]]) -> bool {
         verts.iter().any(|&p| self.contains(p))
@@ -364,5 +416,38 @@ mod tests {
         assert!(c.touches(&[e7(0.0, 0.0), e7(10.1, 10.1)]));
         let bad = vec![Recipe { id: "b".into(), name: "B".into(), outline: vec!["osm:1".into()] }];
         assert!(Coverage::from_recipes(&bad, None, d.path()).is_err());
+    }
+
+    #[test]
+    fn boxes_meet_exactly() {
+        let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
+        // Singapore-sized (0.4° × 0.2°), between the points an 8×8 sample of a z6 tile would test.
+        let small = Shape::new("s".into(), vec![vec![e7(103.6, 1.2), e7(104.0, 1.2), e7(104.0, 1.4), e7(103.6, 1.4)]], 0.0);
+        assert!(small.meets_rect(b(101.25, 0.0, 106.875, 5.6)));
+        assert!(!small.meets_rect(b(104.1, 1.0, 105.0, 2.0)));
+        // A box wholly inside a big shape, no edge near it; one wholly in its hole.
+        let big = Shape::new("b".into(), shape_rings(), 0.0);
+        assert!(big.meets_rect(b(-2.45, 54.98, -2.35, 55.02)));
+        assert!(!big.meets_rect(b(-2.05, 54.98, -2.0, 55.02)));
+        // Every box agrees with points: a box meets the shape when a point inside it is inside, and
+        // a box with none of a fine lattice inside and no edge near is outside.
+        for i in 0..60 {
+            for j in 0..40 {
+                let (x, y) = (-3.2 + i as f64 * 0.04, 54.3 + j as f64 * 0.035);
+                let r = b(x, y, x + 0.03, y + 0.02);
+                let any = (0..=6).any(|a| (0..=4).any(|c| big.contains(e7(x + a as f64 * 0.005, y + c as f64 * 0.005))));
+                if any {
+                    assert!(big.meets_rect(r), "box at {x},{y}");
+                }
+            }
+        }
+        // A thin strip crossing a box with no vertex in it and no corner inside.
+        let strip = Shape::new("t".into(), vec![vec![e7(0.0, 10.0), e7(2.0, 10.0), e7(2.0, 10.001), e7(0.0, 10.001)]], 0.0);
+        assert!(strip.meets_rect(b(0.9, 9.9, 1.1, 10.1)));
+        assert!(!strip.meets_rect(b(0.9, 10.01, 1.1, 10.1)));
+        // The buffer: 1 km around an osm: outline.
+        let buffered = Shape::new("o".into(), vec![vec![e7(0.0, 50.0), e7(1.0, 50.0), e7(1.0, 51.0), e7(0.0, 51.0)]], 1000.0);
+        assert!(buffered.meets_rect(b(1.008, 50.5, 1.02, 50.6)));
+        assert!(!buffered.meets_rect(b(1.03, 50.5, 1.04, 50.6)));
     }
 }

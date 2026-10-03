@@ -1225,23 +1225,37 @@ fn coverage_of(out: &Out, args: &[String]) -> Result<pipeline::coverage::Coverag
     pipeline::coverage::Coverage::from_recipes(&recipes, outlines.as_ref(), &out.root().join("inputs/outlines"))
 }
 
-fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
-    let cov = coverage_of(out, args)?;
-    let mut ts: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
-    if ts.is_empty() {
-        for x in 0..64u32 {
-            for y in 0..64u32 {
-                if pipeline::terrain_pack::near_coverage(&cov, 6, x, y, 20.0) {
-                    ts.push(Unit { z: 6, x, y });
-                }
-            }
-        }
+/// The z6 tiles a terrain or slope run makes, by z3 pack: those near the coverage (as the agent's
+/// keys list them, `build::coverage_tiles`) of each z3 pack named (`3/x/y`, as the agent asks), or
+/// the z6 tiles named, or with none named every z6 tile near the coverage.
+fn terrain_targets(cov: &pipeline::coverage::Coverage, args: &[String]) -> Result<BTreeMap<(u32, u32), Vec<(u32, u32)>>> {
+    let near = pipeline::agent::build::coverage_tiles(cov);
+    let named: Vec<Unit> = positional(args).iter().map(|s| Unit::parse(s).with_context(|| format!("not a tile: {s}"))).collect::<Result<_>>()?;
+    if named.is_empty() {
+        return Ok(near);
     }
     let mut by_q: BTreeMap<(u32, u32), Vec<(u32, u32)>> = BTreeMap::new();
-    for t in &ts {
-        by_q.entry((t.x >> 3, t.y >> 3)).or_default().push((t.x, t.y));
+    for t in named {
+        match t.z {
+            3 => {
+                let list = near.get(&(t.x, t.y)).with_context(|| format!("3/{}/{}: no tile of it is near the coverage", t.x, t.y))?;
+                by_q.entry((t.x, t.y)).or_default().extend(list);
+            }
+            6 => by_q.entry((t.x >> 3, t.y >> 3)).or_default().push((t.x, t.y)),
+            z => anyhow::bail!("{z}/{}/{}: terrain and slope take z3 packs or z6 tiles", t.x, t.y),
+        }
     }
-    eprintln!("terrain: {} z6 tiles in {} z3 packs", ts.len(), by_q.len());
+    for list in by_q.values_mut() {
+        list.sort_unstable();
+        list.dedup();
+    }
+    Ok(by_q)
+}
+
+fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
+    let cov = coverage_of(out, args)?;
+    let by_q = terrain_targets(&cov, args)?;
+    eprintln!("terrain: {} z6 tiles in {} z3 packs", by_q.values().map(Vec::len).sum::<usize>(), by_q.len());
     // AWS's raw tiles, kept on this Mac (the build cache).
     let raw_dir = PathBuf::from(opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
     let raw = pipeline::terrain_pack::RawTiles::new(&raw_dir);
@@ -1254,21 +1268,9 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
 }
 
 fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
-    let mut ts: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
-    if ts.is_empty() {
-        let cov = coverage_of(out, args)?;
-        for x in 0..64u32 {
-            for y in 0..64u32 {
-                if pipeline::terrain_pack::near_coverage(&cov, 6, x, y, 20.0) {
-                    ts.push(Unit { z: 6, x, y });
-                }
-            }
-        }
-    }
-    let mut by_q: BTreeMap<(u32, u32), Vec<(u32, u32)>> = BTreeMap::new();
-    for t in &ts {
-        by_q.entry((t.x >> 3, t.y >> 3)).or_default().push((t.x, t.y));
-    }
+    let cov = coverage_of(out, args)?;
+    let by_q = terrain_targets(&cov, args)?;
+    eprintln!("slope: {} z6 tiles in {} z3 packs", by_q.values().map(Vec::len).sum::<usize>(), by_q.len());
     for (q, list) in by_q {
         let t = std::time::Instant::now();
         let r = pipeline::slope_pack::build_q(out, q, &list)?;
