@@ -37,6 +37,7 @@ import * as cam3d from './camera3d';
 import { applyLabelOpacity, applyLabelSize, applyTerrain, applyTint, cacheTerrainRays, switchContours, TINT_VARS, tintColourAt, tintCss } from './terrain';
 import { applyWater, switchCoast, updateCoastRamp } from './coast';
 import { CatalogWatch } from './catalog';
+import { TileRetry } from './retry';
 import { RegionLayers } from './regions';
 import { ContourLayer, type ContourDraw } from './contours';
 import { terrainDist } from './terrainstats';
@@ -116,6 +117,8 @@ async function main() {
     // The camera does not ride up and down with the terrain under the view centre.
     centerClampedToGround: false,
   });
+  // Tiles the NAS couldn't answer are asked for again (retry.ts).
+  const tileRetry = new TileRetry(map);
   unlinkCameraFromTerrain(map);
   cacheTerrainRays(map);
   cheaperCovers(map);
@@ -1907,6 +1910,17 @@ async function main() {
     // How far each region is built, from the build Mac's heartbeat.
     const w = watch;
     w.on(() => regions.setProgress(w.status?.agent?.built));
+    // The NAS back (or the server): what failed meanwhile is asked for now.
+    let reachable = true;
+    w.on(() => {
+      const now = !w.unreachable && w.status?.online !== false;
+      if (now && !reachable) {
+        tileRetry.now();
+        roads.retryNow();
+        rails.retryNow();
+      }
+      reachable = now;
+    });
     boot.at(3);
     if (store.s.selected !== null) {
       select(store.s.selected);

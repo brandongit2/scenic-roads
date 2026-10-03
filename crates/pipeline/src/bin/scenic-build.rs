@@ -385,6 +385,42 @@ fn lo(out: &mut Out, cache: &Path, only: &[String]) -> Result<()> {
 
 // ---- catalog --------------------------------------------------------------------------------
 
+/// The map's meta, added up from the units' summaries: each base pack's own, else worked out from
+/// its sections once (today's converted packs) and kept in `state/build/summaries.json` by content
+/// name (a content name never changes).
+fn units_meta(out: &Out, base: &BTreeMap<String, String>) -> Result<serde_json::Value> {
+    use pipeline::summary::Summary;
+    let path = out.root().join("state/build/summaries.json");
+    let mut known: BTreeMap<String, Summary> = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let mut total = Summary::default();
+    let mut used: std::collections::BTreeSet<String> = Default::default();
+    let mut made = 0;
+    for logical in base.values() {
+        let content = out.get(logical).with_context(|| format!("no file for {logical}"))?.to_string();
+        if !known.contains_key(&content) {
+            let r = store::sect::SectReader::open(store::range::PlainFile::open(&out.path(&content))?)?;
+            let s = match r.meta().get("summary").and_then(|v| serde_json::from_value::<Summary>(v.clone()).ok()) {
+                Some(s) => s,
+                None => Summary::of(&r.read_pod::<roadcore::WayRec>("ways")?, &r.read_pod::<[i32; 2]>("verts")?, &r.read_pod::<i16>("elev")?),
+            };
+            known.insert(content.clone(), s);
+            made += 1;
+        }
+        total.add(&known[&content]);
+        used.insert(content);
+    }
+    if made > 0 || known.len() != used.len() {
+        known.retain(|c, _| used.contains(c));
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, serde_json::to_vec(&known)?)?;
+        std::fs::rename(&tmp, &path)?;
+        eprintln!("catalog: {made} unit summaries made from their packs");
+    }
+    let mut m = total.meta();
+    m["built"] = serde_json::json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs());
+    Ok(m)
+}
+
 /// A layer's zoom range as its builders make it (and today's converted data has it).
 fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
     Some(match layer {
@@ -453,10 +489,11 @@ fn catalog(out: &mut Out) -> Result<()> {
         }
     }
     // The latest pass's outlines, for the Regions panel and the modules.
-    if let Some(l) = out.manifest.keys().filter(|k| k.starts_with("sources/osm/") && k.ends_with("/outlines")).max() {
+    // (Exactly sources/osm/<date>/outlines: the pass's outline set, sets/outlines, is its input.)
+    if let Some(l) = out.manifest.keys().filter(|k| matches!(k.split('/').collect::<Vec<_>>()[..], ["sources", "osm", _, "outlines"])).max() {
         global.insert("outlines".to_string(), l.clone());
     }
-    let meta: serde_json::Value = out.get("global/legacy/roads").and_then(|n| std::fs::read(out.path(n)).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let meta = units_meta(out, &base)?;
     let units: Vec<String> = base.keys().cloned().collect();
     // Only what the map reads: build sources (the planet's pieces, sets and road values) stay out,
     // or every Mac's mirror would copy them. A file missing on the NAS stops the publish.

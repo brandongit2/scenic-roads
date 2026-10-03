@@ -145,6 +145,35 @@ impl RangeRead for PooledFile {
     }
 }
 
+/// A file read with plain positioned reads (no pool, never mapped): for build steps, which may read
+/// the NAS directly (they run alone, and a stalled share just stalls the step).
+pub struct PlainFile {
+    file: File,
+    len: u64,
+}
+
+impl PlainFile {
+    pub fn open(path: &Path) -> std::io::Result<Self> {
+        let file = File::open(path)?;
+        let len = file.metadata()?.len();
+        Ok(Self { file, len })
+    }
+}
+
+impl RangeRead for PlainFile {
+    fn len(&self) -> Result<u64, IoError> {
+        Ok(self.len)
+    }
+
+    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
+        use std::os::unix::fs::FileExt;
+        check_range(self.len, off, len)?;
+        let mut b = vec![0u8; len];
+        self.file.read_exact_at(&mut b, off).map_err(IoError::Io)?;
+        Ok(b)
+    }
+}
+
 /// Bytes in memory (tests, small files read whole).
 impl RangeRead for Vec<u8> {
     fn len(&self) -> Result<u64, IoError> {

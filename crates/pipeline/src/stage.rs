@@ -12,37 +12,21 @@ use anyhow::{Context, Result};
 use roadcore::archive::ArchiveWriter;
 use roadcore::grid::{decode_terrain_png, CELLS};
 use std::collections::HashMap;
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use store::catalog::Catalog;
 use store::pack::PackIndex;
+use store::range::PlainFile;
 
 /// How far past the unit the copies reach, km (10 km of buffer ways, then 15 km of view, rounded up).
 pub const MARGIN_KM: f64 = 30.0;
 
-/// A pack file on the NAS read with positioned reads.
-struct PackFile {
-    file: std::fs::File,
-    len: u64,
-}
-
-impl store::range::RangeRead for PackFile {
-    fn len(&self) -> Result<u64, store::iopool::IoError> {
-        Ok(self.len)
-    }
-    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::iopool::IoError> {
-        let mut b = vec![0u8; len];
-        self.file.read_exact_at(&mut b, off).map_err(store::iopool::IoError::Io)?;
-        Ok(b)
-    }
-}
 
 /// Tiles of a layer, from its packs.
 pub struct LayerReader<'a> {
     root: &'a Path,
     cat: &'a Catalog,
     layer: String,
-    open: HashMap<String, Option<(PackFile, PackIndex)>>,
+    open: HashMap<String, Option<(PlainFile, PackIndex)>>,
 }
 
 impl<'a> LayerReader<'a> {
@@ -71,9 +55,7 @@ impl<'a> LayerReader<'a> {
             let opened = match self.cat.files.get(&logical) {
                 Some(f) => {
                     let p = self.root.join(&f.file);
-                    let file = std::fs::File::open(&p).with_context(|| format!("open {}", p.display()))?;
-                    let len = file.metadata()?.len();
-                    let pf = PackFile { file, len };
+                    let pf = PlainFile::open(&p).with_context(|| format!("open {}", p.display()))?;
                     let idx = PackIndex::read_from(&pf).with_context(|| format!("index of {}", p.display()))?;
                     Some((pf, idx))
                 }

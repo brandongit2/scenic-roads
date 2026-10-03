@@ -810,6 +810,9 @@ export interface RoadTile {
   y: number;
   state: 'loading' | 'ready' | 'empty' | 'error';
   reqId: number;
+  /** Failed fetches in a row, and when to ask again (the server busy or the NAS away). */
+  fails?: number;
+  retryAt?: number;
   /** The tiles' version (RoadLayer.setSource) of its data, and the one last asked for. */
   ver?: string;
   want?: string;
@@ -1351,6 +1354,12 @@ export class RoadLayer implements CustomLayerInterface {
     this.workers[id % this.workers.length].postMessage({ type: 'load', id, url, z: t.z, x: t.x, y: t.y, lod: this.workerLodFilter() } satisfies WorkerRequest);
   }
 
+  /** The server is reachable again: failed tiles are asked for at once. */
+  retryNow() {
+    for (const t of this.tiles.values()) if (t.state === 'error') t.retryAt = 0;
+    this.map.triggerRepaint();
+  }
+
   /** A tile to fetch: never asked for, or not yet for the current version. */
   private due(t: RoadTile) {
     return t.state === 'loading' ? t.reqId === 0 : t.want !== this.version;
@@ -1364,10 +1373,17 @@ export class RoadLayer implements CustomLayerInterface {
     t.ver = t.want;
     if (m.type === 'error') {
       t.state = 'error';
+      // Asked again after a pause that grows with its failures (2 s, doubling to a minute).
+      t.fails = (t.fails ?? 0) + 1;
+      const wait = Math.min(60_000, 2_000 * 2 ** (t.fails - 1));
+      t.retryAt = performance.now() + wait;
+      setTimeout(() => this.map.triggerRepaint(), wait + 50);
       console.warn('tile', t.key, m.message);
     } else if (!m.tile) {
+      t.fails = 0;
       t.state = 'empty';
     } else {
+      t.fails = 0;
       // Uploaded while rendering, a budget per frame (pump).
       t.data = m.tile;
       this.uploads.push(t);
@@ -1737,6 +1753,14 @@ export class RoadLayer implements CustomLayerInterface {
   prerender(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput) {
     const wanted = this.cover();
     this.pump();
+    // Failed tiles in view whose pause is over are missing again.
+    const now0 = performance.now();
+    for (const t of wanted) {
+      if (t.state === 'error' && now0 >= (t.retryAt ?? 0)) {
+        t.state = 'loading';
+        t.reqId = 0;
+      }
+    }
     // Missing tiles first, then those drawn from older data (a new version).
     let inflight = this.reqs.size;
     for (const missing of [true, false]) {
