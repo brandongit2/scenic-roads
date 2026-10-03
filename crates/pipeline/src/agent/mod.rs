@@ -125,6 +125,10 @@ pub struct Done {
 struct Memory {
     /// Per job id: failures in a row and when it may run again.
     retry: BTreeMap<String, (u32, u64)>,
+    /// The app that last saved this: a newer one tries failed jobs again at once (it may be the
+    /// fix).
+    #[serde(default)]
+    app: String,
     /// When each daily job last succeeded (seconds since the epoch).
     last_ok: BTreeMap<String, u64>,
     recent: Vec<Done>,
@@ -216,8 +220,15 @@ impl Agent {
         if lock.is_none() {
             o.dry_run = true;
         }
-        let mem = std::fs::read(o.home.join("state.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let mut mem: Memory = std::fs::read(o.home.join("state.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let app = app_version(&o.bin);
+        if mem.app != app {
+            if !mem.retry.is_empty() {
+                eprintln!("agent: a new app ({app}); failed jobs may run again at once");
+            }
+            mem.retry.clear();
+            mem.app = app.clone();
+        }
         Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, _lock: lock, o })
     }
 
