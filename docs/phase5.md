@@ -390,8 +390,17 @@ key couldn't name what was read; and extract's point order changed between runs.
   - "Sea" is ≤ 0 m, and `process` clamps every negative value to 0: polders and depressions count
     as sea (as today), until plan §6's sea-masked terrain.
   - Writes `work/peaks/<u>` (by candidate key: e, p, pl, c, ce, iso, il, hi); its key: the step
-    version, a digest of U's peak candidates, `work/summits`, the terrain hi packs within U + 30
-    km, `terrain-z8`.
+    version, U's candidates, `work/summits`, the terrain hi packs within U + 30 km, `terrain-z8`.
+  - Done 2026-10-03 (pipeline::peaks::unit, `examples/peaks_check`, every one of today's peaks a
+    summit): the Sierra Nevada's 8,235 peaks in 6.7 s, 8,225 identical to today's peaks.json; the
+    others three pairs swapping a near-tied claim (the check's positions are today's floats, not
+    OSM's E7) and two coarse cols 14 and 22 m higher; two overlapping halves agree with the whole
+    run on every shared peak. Around famous peaks (the worldwide z8, the long searches): Mont
+    Blanc, Fuji, Ben Nevis, Yushan, Robson and Washington keep today's height, prominence (Robson
+    +10 m) and nearest higher pixel; isolations are a little shorter as great-circle distances
+    (Fuji 2,081.8 → 2,076.3 km, Wikipedia 2,077; Ben Nevis 739.9 → 738.6, Wikipedia 739; Mont
+    Blanc 2,828.0 → 2,804.7). Mont Blanc's flood spends its 40M pixels and stops at the same col
+    as today's (128 m, a lower bound in both): 54 s, 3.4 GB.
 - **`items`** (Python, network, per pass): after the candidates and `work/whs-sites` exist. The
   QIDs of the current units' candidates, the heritage records and the areas. Facts as
   poidetails.py and heritagewd.py fetch them, for single-QID tags (as today: a multi-QID tag gets
