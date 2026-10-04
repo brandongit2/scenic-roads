@@ -20,6 +20,7 @@ pub mod cond;
 pub mod gc;
 pub mod jobs;
 pub mod recipes;
+pub mod room;
 
 use anyhow::{Context, Result};
 use cond::{Conditions, SleepWatch};
@@ -417,6 +418,12 @@ impl Agent {
                     break;
                 }
                 let (id, what) = (spec.id.clone(), spec.what.clone());
+                // Room on the disk for it, from the caches that are cheap to fill again.
+                match room::make_room(&self.o.home.join("cache"), room::RESERVE) {
+                    Ok(0) => {}
+                    Ok(n) => eprintln!("agent: {} GB of cached canopy and terrain tiles deleted to keep {} GB free", n >> 30, room::RESERVE >> 30),
+                    Err(e) => eprintln!("agent: making room on the disk: {e:#}"),
+                }
                 if let Err(e) = self.start(spec, &c) {
                     // It couldn't even start (a missing program, a full disk): retried later.
                     eprintln!("agent: can't start {id}: {e:#}");

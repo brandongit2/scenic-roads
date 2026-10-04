@@ -288,8 +288,13 @@ agent/                  (build Mac) status.json, state.json, job.json, agent.loc
 agent/cache/            dem-cache.* (the seed), dem-units/<u>.dem (a unit's samples from its last
                         run: "RDDEM002", u64 count, the points' box (4 × i32), the versions of the
                         DEM rules dem-north-america, -japan, -taiwan, -fabdem it was sampled under
-                        (4 × u32), then the sorted keys, elevations and sources), chm10/ (canopy 10°
-                        files), aws-terrarium/, base/
+                        (4 × u32), then the sorted keys, elevations and sources), scenic-units/<u>/
+                        (a unit's canopy and view results from its last run: the samples' keys and
+                        grid tiles per step, near.i8, roadside.u8, samples.metrics.u8, the canopy and
+                        cover grids as .zst, and basis.json: {v, basis: {"x-y": the z6 tile's terrain
+                        and grid packs' content names}}), chm10/ (canopy 10° files) and aws-terrarium/
+                        (both emptied least recently used first while the disk has under 60 GB
+                        free), base/
 ```
 
 `~/Library/Preferences/nsmb.conf` gets `[FISHANDCHIPS:PERSONAL]` and

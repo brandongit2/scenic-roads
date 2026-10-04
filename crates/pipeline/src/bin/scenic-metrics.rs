@@ -200,6 +200,10 @@ impl Chm10 {
 
 fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path) -> Result<Option<Vec<u8>>> {
     if let Ok(b) = std::fs::read(path) {
+        // Used now: the build agent's room-making deletes the least recently used squares first.
+        if let Ok(f) = std::fs::File::options().append(true).open(path) {
+            f.set_modified(std::time::SystemTime::now()).ok();
+        }
         return Ok((!b.is_empty()).then_some(b));
     }
     for attempt in 0..6 {

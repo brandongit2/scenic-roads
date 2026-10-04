@@ -1516,6 +1516,8 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         };
         let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
         std::fs::copy(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
+        // Its scenic results from its last run, kept in the cache (pipeline::scache::Carry).
+        let carry = pipeline::scache::Carry { dir: tools.cache.join("scenic-units").join(u.dash()), basis: pipeline::unit::layers_basis(u, |l| out.get(l)) };
         let rep = {
             let o: &Out = out;
             let heritage = |b: [f64; 4], d: &Path| pipeline::heritage::unit_inputs(o, &date, b, d);
@@ -1528,7 +1530,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 eprintln!("unit {}: buildings from {n} tiles", u.slash());
                 tools.buildings = Some(bdir);
             }
-            build_folder(u, &local_piece, &dir, &cov, &layers_source(o, &pilot), &tools, &heritage)?
+            build_folder(u, &local_piece, &dir, &cov, &layers_source(o, &pilot), &tools, &heritage, Some(&carry))?
         };
         std::fs::remove_file(&local_piece).ok();
         // Grids its packs lacked (new coverage), made in the folder: the unit's own z6 tile's go up,
@@ -1539,6 +1541,12 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             }
             let mut tiles = pipeline::stage::grid_tiles_in(&dir, var, u.x, u.y)?.into_iter();
             layers::write_pack(out, &format!("grid-{var}"), "u8-zstd", false, "hi", (6, u.x, u.y), &mut tiles)?;
+        }
+        // Its scenic results, for its next run, with the packs as they are now (its own grid tiles
+        // just went up). A cache: not keeping them only costs time later.
+        let keep = pipeline::scache::Carry { basis: pipeline::unit::layers_basis(u, |l| out.get(l)), ..carry };
+        if let Err(e) = keep.save(&dir) {
+            eprintln!("unit {}: its scenic results not kept: {e:#}", u.slash());
         }
         eprintln!("unit {}: {} of {} ways touch the coverage, {} owned; {} heritage sites, {} area polygons", u.slash(), rep.kept_ways, rep.piece_ways, rep.owned, rep.heritage, rep.areas);
         if rep.kept_ways == 0 || rep.owned == 0 {

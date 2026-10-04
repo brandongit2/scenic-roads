@@ -316,6 +316,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
    | `scenic buildings` | Roadside buildings per sample (the release's z8 tiles within 1 km of the area's tile + 20 km and of its own long roads). |
    | `scenic flags` | Designation flags and per-vertex channels. |
 
+   An area's canopy and view results are kept on the build Mac between its runs, so a rerun redoes only the samples that are new or near terrain and grids that changed.
 6. **Roads:**
    - tiles and query data per z6 tile, from the areas whose roads come within 100 km: road and rail tiles (RT v7, 13 scenic channels a point, per-line attributes), climbs, drives' and rides' parts, and zoomed-out summaries;
    - zoomed-out road tiles per z3;

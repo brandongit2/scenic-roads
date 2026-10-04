@@ -486,7 +486,10 @@ The unit job runs today's steps on a unit-sized folder, wiped at each run:
 5. **`tile elev`:** clean-up and grade, with junction context from the piece.
 6. **scenic:** `scenic-metrics` prep, canopy, view, buildings and flags, for every sample. The
    buildings come from the release's z8 tiles within 1 km of U's tile + 20 km and of its own long
-   roads.
+   roads. U's canopy and view results are kept in the build Mac's cache after each run
+   (`scache::Carry`: the samples' keys and results, the canopy and cover grids, and the packs it
+   read); its next run starts from them, so only samples that are new, or near grid tiles whose packs
+   changed since, are done again (none after a change of `scache::SCENIC_V`).
 7. **Output:**
    - the base pack: per-vertex arrays and records, indexed by z9 sub-tile;
    - `global/roads/<u>`;
@@ -736,6 +739,9 @@ are no request files.
 - **Order:** the agent starts the first job that can run, in plan order.
 - **A newly installed app:** the running job finishes under the old one, nothing new starts, and the
   agent exits so the launcher starts the new one.
+- **Room on the disk:** before a job starts, while the build Mac has under 60 GB free, the caches
+  that are cheap to fill again (Meta's canopy squares, AWS's raw terrain tiles) lose their least
+  recently used files.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours. The orphans of a crashed
   agent are stopped at start (only when their leader's start time proves them ours, or the leader is
   gone and every member started after the job).
@@ -922,9 +928,7 @@ are added.
 1. **New regions miss what today's coverage has from converted files:**
    - trees;
    - trains a day.
-2. **The scenic cache doesn't carry over between unit runs:** each unit run recomputes every scenic
-   sample.
-3. **The repo:**
+2. **The repo:**
    - `inputs/keys.env` is read by nothing (`dem/railgtfs.py` still reads `data/keys.env`).
 
 ## 11. Risks and checks
