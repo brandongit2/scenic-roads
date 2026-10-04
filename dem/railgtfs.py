@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Passenger rail service frequency from published timetables (GTFS): trains between consecutive
-stops on a typical weekday, for matching onto the OSM track network (`railfreq`).
+stops on a typical weekday, for matching onto the OSM track network (`railfreq`). The `rail` job
+runs it (docs/plan.md §6, Rail service).
 
-Feeds: data/rail/feeds.json (railfeeds.py: every GTFS feed in the Mobility Database catalogue that
-runs rail in our regions) plus EXTRA below (national operators the catalogue lacks). Each is
-downloaded (data/rail/gtfs, big ones deleted afterwards) and read:
+Feeds (--feeds: railfeeds.py's list, in its order, each with `path`, its zip, and `fetched`, the day
+its timetable counts from), each read:
   - rail routes only (route types: tram, metro, rail, funicular, monorail and the extended ones);
-  - the typical day: the Tuesday, Wednesday or Thursday within the next 90 days (or the last 30)
-    with the median number of rail trips, so holidays don't count; feeds with none are stale;
+  - the typical day: the Tuesday, Wednesday or Thursday from 30 days before the feed's day to 90
+    days after with the median number of rail trips, so holidays don't count; feeds with none are
+    stale. The window follows the feed, not the day it's read, so a zip gives the same counts
+    whenever it's read (--today puts every feed's window at one day instead);
   - every trip that runs that day (headway-based trips expanded), as its stop sequence;
   - trains that don't run every day (the Canadian twice a week): where a stop pair has no train on
     the typical day, the trains of that day's Monday–Sunday week ÷ 7 (so a weekly train reads
@@ -17,81 +19,27 @@ parts) is counted once: trips are keyed by first and last stop (to ~1 km) and ti
 minute), across all feeds. Where that doesn't catch them (an aggregate republishing an operator's
 feed with its own times), the operator's feed `replaces` the other, which is left out.
 
-Writes data/rail/pairs.bin: per (stop A, stop B, mode) the number of trains that day from A to B;
-little-endian f32 lon_a, lat_a, lon_b, lat_b, u8 mode (0 tram, 1 metro, 2 rail, 3 funicular;
-+0x20 when stop A is beyond the map's regions, +0x40 when B is: a cross-border service, which
-railfreq runs as far as the track goes toward it; pairs with both beyond are left out), f32
-trains. And data/rail/feeds-used.json (feed, day, trips, share deduplicated).
+Writes --out: per (stop A, stop B, mode) the number of trains that day from A to B; little-endian
+f32 lon_a, lat_a, lon_b, lat_b, u8 mode (0 tram, 1 metro, 2 rail, 3 funicular), f32 trains. Every
+pair, wherever its stops are: the job then marks the stops beyond the coverage (+0x20 for A, +0x40
+for B: a cross-border service, which railfreq runs as far as the track goes toward it) and leaves
+out pairs with both beyond (pipeline::rail). And --used: per feed its day, trips and duplicates, or
+why it was left out.
 
-usage: railgtfs.py [feed-id ...]
+usage: railgtfs.py --feeds feeds.json --out pairs.bin --used used.json [--today YYYY-MM-DD]
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import io
 import json
-import statistics
 import struct
-import subprocess
 import sys
 import zipfile
 from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
-
-from shapely import contains_xy, prepare
-
-from leaftype import regions
-
-ROOT = Path(__file__).resolve().parent.parent
-R = ROOT / "data" / "rail"
-CACHE = R / "gtfs"
-UA = "road-elevations/0.1 (personal offline map)"
-KEEP_MB = 5000  # downloads bigger than this are deleted once read (cached for reruns)
-
-EXTRA = [
-    {"id": "sncf", "provider": "SNCF Voyageurs (TGV INOUI, OUIGO, Intercités, TER)", "url": "https://eu.ftp.opendatasoft.com/sncf/plandata/Export_OpenData_SNCF_GTFS_NewTripId.zip", "licence": "Licence Ouverte 2.0"},
-    {"id": "renfe-av-ld-md", "provider": "Renfe (AVE, Larga y Media Distancia)", "url": "https://ssl.renfe.com/gtransit/Fichero_AV_LD/google_transit.zip", "licence": "CC BY 4.0"},
-    {"id": "renfe-cercanias", "provider": "Renfe Cercanías / Rodalies", "url": "https://ssl.renfe.com/ftransit/Fichero_CER_FOMENTO/fomento_transit.zip", "licence": "CC BY 4.0"},
-    # Great Britain: the national rail timetable (RDG's ATOC CIF) as GTFS, rebuilt daily by Catenary
-    # Transit (the official download needs a Rail Data Marketplace account).
-    {"id": "gb-national-rail", "provider": "National Rail (GB), RDG timetable via Catenary Transit", "url": "https://github.com/catenarytransit/pfaedled-gtfs-actions/releases/download/latest/nationalrailuk.zip", "licence": "RDG open data (attribution)"},
-    {"id": "hk-pfaedle", "provider": "Hong Kong Transport Department (trams, Peak Tram), via Catenary Transit", "url": "https://github.com/catenarytransit/pfaedled-gtfs-actions/releases/download/latest/hk-gtfs-pfaedle.zip", "licence": "DATA.GOV.HK terms",
-     "local": str(ROOT / "data" / "rail" / "gtfs" / "hk-pfaedle.zip")},
-]
-
-# Feeds behind an API key (data/keys.env, KEY=value lines, git-ignored): added when their key is
-# there; `get` names how the download link is obtained.
-KEYS = ROOT / "data" / "keys.env"
-
-
-def keys() -> dict[str, str]:
-    if not KEYS.exists():
-        return {}
-    return {k.strip(): v.strip() for k, _, v in (l.partition("=") for l in KEYS.read_text().splitlines()) if v.strip() and not k.startswith("#")}
-
-
-def keyed_feeds() -> list[dict]:
-    k = keys()
-    out = []
-    if k.get("LTA_ACCOUNT_KEY"):
-        # (The Mobility Database's Singapore feed has the same trains, mostly at other times.)
-        out.append({"id": "sg-lta-train", "provider": "Land Transport Authority, LTA DataMall (MRT and LRT)", "licence": "Singapore Open Data Licence 1.0",
-                    "url": "https://datamall2.mytransport.sg/ltaodataservice/GTFSScheduleTrain", "get": "lta", "replaces": ["mdb-1076"]})
-    return out
-
-
-def keyed_link(feed: dict) -> str | None:
-    """The download link of a keyed feed (LTA: a signed link, valid 15 minutes, in the answer)."""
-    import ast
-    import urllib.request
-
-    if feed["get"] == "lta":
-        req = urllib.request.Request(feed["url"], headers={"User-Agent": UA, "AccountKey": keys()["LTA_ACCOUNT_KEY"], "accept": "application/json"})
-        v = json.loads(urllib.request.urlopen(req, timeout=60).read())["value"]
-        v = ast.literal_eval(v) if isinstance(v, str) else v
-        return v[0]["link"] if v else None
-    return None
 
 
 def mode_of(t: int) -> int | None:
@@ -129,27 +77,8 @@ def ymd(s: str) -> date:
     return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
 
 
-def fetch(feed: dict) -> Path | None:
-    if feed.get("local") and Path(feed["local"]).exists():
-        return Path(feed["local"])
-    CACHE.mkdir(parents=True, exist_ok=True)
-    path = CACHE / f"{feed['id']}.zip"
-    if path.exists() and zipfile.is_zipfile(path):
-        return path
-    tmp = path.with_suffix(".part")
-    url = keyed_link(feed) if feed.get("get") else feed["url"]
-    if not url:
-        return None
-    r = subprocess.run(["curl", "-sSL", "--fail", "-m", "3600", "-A", UA, "-o", str(tmp), url])
-    if r.returncode != 0 or not zipfile.is_zipfile(tmp):
-        tmp.unlink(missing_ok=True)
-        return None
-    tmp.rename(path)
-    return path
-
-
-def process(feed: dict, zpath: Path, seen: set, pairs: dict, weekly: dict, seen_week: set) -> dict:
-    z = zipfile.ZipFile(zpath)
+def rail_routes(z: zipfile.ZipFile) -> dict[str, tuple[int, str]]:
+    """The feed's rail routes: route id → (mode, short name)."""
     routes = {}
     for r in rows(z, "routes.txt"):
         try:
@@ -158,10 +87,11 @@ def process(feed: dict, zpath: Path, seen: set, pairs: dict, weekly: dict, seen_
             m = None
         if m is not None:
             routes[r["route_id"]] = (m, r.get("route_short_name") or r.get("route_long_name") or "")
-    if not routes:
-        return {"status": "no rail routes"}
-    trips = {t["trip_id"]: (t["route_id"], t["service_id"]) for t in rows(z, "trips.txt") if t.get("route_id") in routes}
-    # Service days.
+    return routes
+
+
+def service_days(z: zipfile.ZipFile, anchor: date) -> dict[str, set[date]]:
+    """Each service's days within 400 days of `anchor` (calendar.txt, then calendar_dates.txt)."""
     days: dict[str, set[date]] = defaultdict(set)
     for c in rows(z, "calendar.txt"):
         try:
@@ -169,8 +99,8 @@ def process(feed: dict, zpath: Path, seen: set, pairs: dict, weekly: dict, seen_
         except (KeyError, ValueError):
             continue
         wd = [c.get(k) == "1" for k in ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")]
-        end = min(end, date.today() + timedelta(days=400))
-        d = max(d, date.today() - timedelta(days=400))
+        end = min(end, anchor + timedelta(days=400))
+        d = max(d, anchor - timedelta(days=400))
         while d <= end:
             if wd[d.weekday()]:
                 days[c["service_id"]].add(d)
@@ -181,18 +111,40 @@ def process(feed: dict, zpath: Path, seen: set, pairs: dict, weekly: dict, seen_
         except (KeyError, ValueError):
             continue
         (days[c["service_id"]].add if c.get("exception_type") == "1" else days[c["service_id"]].discard)(d)
-    # The typical day: median-busy Tue–Thu in the window.
-    today = date.today()
-    cand = [today + timedelta(days=k) for k in range(-30, 91)]
+    return days
+
+
+def typical_day(trips: dict[str, tuple[str, str]], days: dict[str, set[date]], anchor: date) -> date | None:
+    """The median-busy Tuesday–Thursday from 30 days before `anchor` to 90 after, by rail trips; None
+    when there's no weekday service in that window (a stale feed)."""
+    cand = [anchor + timedelta(days=k) for k in range(-30, 91)]
     cand = [d for d in cand if d.weekday() in (1, 2, 3)]
     per_service = defaultdict(int)
     for _, sid in trips.values():
         per_service[sid] += 1
     counts = {d: sum(n for sid, n in per_service.items() if d in days.get(sid, ())) for d in cand}
     busy = sorted((n, d) for d, n in counts.items() if n > 0)
-    if not busy:
+    return busy[len(busy) // 2][1] if busy else None
+
+
+def has_service(zpath: Path, anchor: date) -> bool:
+    """Whether a feed's zip has rail service in its window (railfeeds.py's check of a cached feed)."""
+    with zipfile.ZipFile(zpath) as z:
+        routes = rail_routes(z)
+        trips = {t["trip_id"]: (t["route_id"], t["service_id"]) for t in rows(z, "trips.txt") if t.get("route_id") in routes}
+        return bool(routes) and typical_day(trips, service_days(z, anchor), anchor) is not None
+
+
+def process(zpath: Path, anchor: date, seen: set, pairs: dict, weekly: dict, seen_week: set) -> dict:
+    z = zipfile.ZipFile(zpath)
+    routes = rail_routes(z)
+    if not routes:
+        return {"status": "no rail routes"}
+    trips = {t["trip_id"]: (t["route_id"], t["service_id"]) for t in rows(z, "trips.txt") if t.get("route_id") in routes}
+    days = service_days(z, anchor)
+    day = typical_day(trips, days, anchor)
+    if day is None:
         return {"status": "stale (no weekday service in the window)"}
-    n_med, day = busy[len(busy) // 2]
     active = {tid for tid, (_, sid) in trips.items() if day in days.get(sid, ())}
     # Its week, for trains that don't run that day: trip → days it runs that week.
     week = [day - timedelta(days=day.weekday()) + timedelta(days=k) for k in range(7)]
@@ -256,54 +208,51 @@ def process(feed: dict, zpath: Path, seen: set, pairs: dict, weekly: dict, seen_
 
 
 def main():
-    only = set(sys.argv[1:])
-    feeds = json.loads((R / "feeds.json").read_text())
-    # National operators first (so duplicates in regional aggregates are the ones dropped).
-    order = EXTRA + keyed_feeds() + feeds
-    replaced = {r: f["id"] for f in order for r in f.get("replaces", ())}
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("--feeds", required=True, help="railfeeds.py's list, with each zip's path")
+    ap.add_argument("--out", required=True, help="the stop pairs")
+    ap.add_argument("--used", required=True, help="per feed: its day, trips and duplicates")
+    ap.add_argument("--today", help="every feed's window at this day (YYYY-MM-DD), not the day it was fetched")
+    a = ap.parse_args()
+    feeds = json.loads(Path(a.feeds).read_text())["feeds"]
+    today = date.fromisoformat(a.today) if a.today else None
+    replaced = {r: f["id"] for f in feeds if f.get("path") for r in f.get("replaces", ())}
     pairs: dict[tuple, int] = defaultdict(int)
     weekly: dict[tuple, float] = defaultdict(float)
     seen: set = set()
     seen_week: set = set()
     used = []
-    for feed in order:
-        if only and feed["id"] not in only:
-            continue
+    for k, feed in enumerate(feeds):
+        print(f"progress: {k}/{len(feeds)} feeds", file=sys.stderr, flush=True)
+        facts = {key: feed[key] for key in ("id", "provider", "url", "licence", "fetched") if key in feed}
         if feed["id"] in replaced:
-            used.append({**{k: feed[k] for k in ("id", "provider", "url", "licence") if k in feed}, "status": f"replaced by {replaced[feed['id']]}"})
+            used.append({**facts, "status": f"replaced by {replaced[feed['id']]}"})
             continue
-        zpath = fetch(feed)
-        if not zpath:
-            print(f"{feed['id']}: download failed", file=sys.stderr)
-            used.append({**feed, "status": "download failed"})
+        if not feed.get("path"):
+            used.append({**facts, "status": feed.get("status") or "no zip"})
             continue
+        anchor = today or date.fromisoformat(feed["fetched"])
         try:
-            res = process(feed, zpath, seen, pairs, weekly, seen_week)
+            res = process(Path(feed["path"]), anchor, seen, pairs, weekly, seen_week)
         except (zipfile.BadZipFile, KeyError, csv.Error) as e:
             res = {"status": f"unreadable: {e}"}
-        used.append({**{k: feed[k] for k in ("id", "provider", "url", "licence") if k in feed}, **res})
-        print(f"{feed['id']:<28} {feed['provider'][:40]:<40} {res.get('status')}  {res.get('day', '')} trips {res.get('trips', 0)} dup {res.get('duplicates', 0)}", file=sys.stderr, flush=True)
-        if not feed.get("local") and zpath.stat().st_size > KEEP_MB * 1e6:
-            zpath.unlink()
+        used.append({**facts, **res})
+        print(f"{feed['id']:<28} {feed.get('provider', '')[:40]:<40} {res.get('status')}  {res.get('day', '')} trips {res.get('trips', 0)} dup {res.get('duplicates', 0)}", file=sys.stderr, flush=True)
+    print(f"progress: {len(feeds)}/{len(feeds)} feeds", file=sys.stderr, flush=True)
     # Pairs with no train on the typical day take their weekly average.
     n_week = 0
     for k, v in weekly.items():
         if not pairs.get(k):
             pairs[k] = v
             n_week += 1
-    region = regions()
-    prepare(region)
-    n_beyond = 0
-    with (R / "pairs.bin").open("wb") as f:
+    out = Path(a.out)
+    tmp = out.with_name(out.name + ".tmp")
+    with tmp.open("wb") as f:
         for (ax, ay, bx, by, m), n in pairs.items():
-            out_a, out_b = not contains_xy(region, ax, ay), not contains_xy(region, bx, by)
-            if out_a and out_b:
-                continue
-            n_beyond += out_a or out_b
-            f.write(struct.pack("<ffffBf", ax, ay, bx, by, m | 0x20 * out_a | 0x40 * out_b, float(n)))
-    print(f"{n_beyond} stop pairs with one stop beyond the map", file=sys.stderr)
+            f.write(struct.pack("<ffffBf", ax, ay, bx, by, m, float(n)))
+    tmp.replace(out)
     print(f"{n_week} stop pairs served only on other days of the week (weekly average)", file=sys.stderr)
-    (R / "feeds-used.json").write_text(json.dumps(used, ensure_ascii=False, indent=1))
+    Path(a.used).write_text(json.dumps(used, ensure_ascii=False, indent=1))
     ok = [u for u in used if u.get("status") == "ok"]
     print(f"{len(pairs)} stop pairs from {len(ok)} feeds, {sum(u['trips'] for u in ok)} trains, {sum(u['duplicates'] for u in ok)} duplicates dropped", file=sys.stderr)
 

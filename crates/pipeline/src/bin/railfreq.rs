@@ -149,11 +149,16 @@ fn main() -> Result<()> {
             *c += if k == 0 || k + 1 == v.len() { 2 } else { 1 };
         }
     }
+    // (Numbered in the ways' order, not the map's, so the same input finds the same paths where
+    // costs tie, and gives the same bytes.)
     let mut node_of: HashMap<[i32; 2], u32> = HashMap::new();
-    for (p, c) in &seen {
-        if *c >= 2 {
-            let id = node_of.len() as u32;
-            node_of.insert(*p, id);
+    for &w in &rail {
+        let wr = &ways[w as usize];
+        for p in &verts[wr.vstart as usize..(wr.vstart + wr.vcount as u64) as usize] {
+            if seen[p] >= 2 && !node_of.contains_key(p) {
+                let id = node_of.len() as u32;
+                node_of.insert(*p, id);
+            }
         }
     }
     drop(seen);
@@ -314,10 +319,10 @@ fn main() -> Result<()> {
                 }
             }
         }
-        let mut c: Vec<(f64, bool, At)> = per_way.into_values().collect();
-        c.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.total_cmp(&b.0)));
+        let mut c: Vec<(u32, (f64, bool, At))> = per_way.into_iter().collect();
+        c.sort_by(|(wa, a), (wb, b)| b.1.cmp(&a.1).then(a.0.total_cmp(&b.0)).then(wa.cmp(wb)));
         c.truncate(n);
-        c.into_iter().map(|(d, _, at)| {
+        c.into_iter().map(|(_, (d, _, at))| {
             let (at, df) = foot(p, at);
             (at, (df.min(d) * w) as f32)
         }).collect()
@@ -732,7 +737,10 @@ fn corridors(
                     }
                 }
                 let (mut sum, mut lo) = at(i, dist_along(i, k, t));
-                for (&j, &(_, parallel, interior, x)) in &near {
+                // (Added in the ways' order: a float sum's last bits depend on it.)
+                let mut near: Vec<(u32, (f64, bool, bool, f32))> = near.into_iter().collect();
+                near.sort_unstable_by_key(|n| n.0);
+                for &(j, (_, parallel, interior, x)) in &near {
                     if parallel && interior {
                         let (c, l) = at(j as usize, x);
                         sum += c;

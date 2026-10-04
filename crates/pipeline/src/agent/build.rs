@@ -120,7 +120,7 @@ impl Keys {
             self.catalog_held = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || matches!(step, "labels" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays") {
+        if step.ends_with("-root") || matches!(step, "labels" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -340,6 +340,11 @@ pub const MARKS_V: u32 = 1;
 pub const HERITAGE_V: u32 = 1;
 pub const OVERLAYS_V: u32 = 1;
 
+/// The rail service (crate::rail): the feeds for the coverage, fetched once (dem/railfeeds.py), and
+/// trains a day on its rail ways (dem/railgtfs.py, railfreq: global/railfreq).
+pub const RAIL_FEEDS_V: u32 = 1;
+pub const RAIL_V: u32 = 1;
+
 /// Where the marks' and overlays' heritage comes from (markconv::heritage_source): the pass's
 /// heritage job's outputs when there are any, else today's.
 fn heritage_src(m: &BTreeMap<String, String>, date: &str) -> String {
@@ -474,15 +479,17 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         work.push(w);
         return work;
     }
-    // After the units, two chains that don't wait for each other: the roads', then a catalog
-    // once it's done (new roads with the landmarks as they were; another catalog follows the
-    // landmarks), then the landmarks'. The agent runs the first of these not waiting out a
-    // failure, so a landmark job failing (Wikidata or a pageview dump down) doesn't hold up the
-    // roads, nor the roads the landmarks.
+    // After the units, three chains that don't wait for each other: the roads', then a catalog
+    // once it's done (new roads with the landmarks and trains a day as they were; another catalog
+    // follows each of the others), then the rail service's, then the landmarks'. The agent runs
+    // the first of these not waiting out a failure, so a landmark or rail feed job failing
+    // (Wikidata, a pageview dump or an operator's server down) doesn't hold up the roads, nor the
+    // roads the others.
     match roads_chain(date, m, done, inputs, reach) {
         Some(w) => work.push(w),
         None => work.extend(catalog_work(m, done, inputs)),
     }
+    work.extend(rail_chain(cov, date, m, done, inputs));
     work.extend(landmarks_chain(cov, date, m, done));
     work
 }
@@ -499,6 +506,32 @@ fn spatial_order(u: Unit) -> (i32, i32, u32, u32) {
 fn trees_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
     let stale: Vec<(String, String)> = crate::treepacks::targets(cov, m).into_iter().filter(|(t, k)| done.trees.get(t) != Some(k)).collect();
     (!stale.is_empty()).then(|| Work { step: "trees".into(), targets: stale })
+}
+
+/// The rail service's chain (crate::rail), its first stale step; nothing before the rail sources
+/// are seeded (scenic-build rail-seed), or while inputs/keys.env can't be read (`inputs` "keys" "?").
+/// - rail-feeds reads what decides which feeds there are: the catalogue, the coverage, the pass's
+///   outlines (the countries it's in) and which keys inputs/keys.env holds (`inputs` "keys": their
+///   names, never their values). Not what it writes (the feeds' list, checks and zips), so it doesn't
+///   run again for its own sake.
+/// - rail reads the feeds' list (each feed's zip by content name, and its day), the MTR's pairs, the
+///   pass's rail set and the coverage.
+fn rail_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
+    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
+    let catalogue = m.get(crate::rail::CATALOGUE)?;
+    let keys = inputs.get("keys").map(String::as_str).unwrap_or("");
+    if keys == "?" {
+        return None;
+    }
+    let cover = coverage_all(cov);
+    let k = h(&[&format!("rail-feeds {RAIL_FEEDS_V}"), catalogue, get(&format!("sources/osm/{date}/outlines")), &cover, &format!("keys {keys}")]);
+    if done.lo.get("rail-feeds").map(String::as_str) != Some(k.as_str()) {
+        return Some(Work { step: "rail-feeds".into(), targets: vec![("rail-feeds".into(), k)] });
+    }
+    let feeds = m.get(crate::rail::FEEDS)?;
+    let set = m.get(&crate::osmpass::set_name(date, "rail"))?;
+    let k = h(&[&format!("rail {RAIL_V}"), feeds, get(crate::rail::MTR_PAIRS), set, &cover]);
+    (done.lo.get("rail").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "rail".into(), targets: vec![("rail".into(), k)] })
 }
 
 /// pack(T)'s targets (the z6 tiles the built units' ways reach) and lo's (their z3 tiles), each with
@@ -778,6 +811,7 @@ pub fn checklist_to_come() -> Vec<Step> {
         ("Roads, elevations and scenery", &["unit"]),
         ("Map tiles", &["pack", "lo"]),
         ("Road index, rail stops, ferries, world terrain", &["roadunits", "stations", "ferries", "terrain-root", "slope-root"]),
+        ("Trains a day", &["rail-feeds", "rail"]),
         ("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"]),
         ("Publishing the new map data", &["catalog", "catalog-held"]),
     ]
@@ -802,8 +836,8 @@ fn remaining(done: &Keys, next: impl Fn(&Keys) -> Option<Work>) -> Vec<Work> {
 }
 
 /// The regions' build to the end, step by step (the pass's own steps are the agent's): terrain,
-/// slope, the heritage sites, the areas, the map tiles, the road index, rail stops and ferries, the
-/// landmarks, publishing.
+/// slope, the heritage sites, tree cover, the areas, the map tiles, the road index, rail stops and
+/// ferries, trains a day, the landmarks, publishing.
 /// `held`: the catalog is held for review (inputs/hold-catalog): publishing is its held copy.
 pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, held: bool, reach: Option<&Reaches>) -> Vec<Step> {
     let count = |all: &[(String, String)], map: &BTreeMap<String, String>| all.iter().filter(|(t, k)| map.get(t) == Some(k)).count();
@@ -834,6 +868,10 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     out.push(tiles);
     let roads_left = remaining(done, |d| roads_chain(date, m, d, inputs, reach)).iter().filter(|w| !matches!(w.step.as_str(), "pack" | "lo")).count();
     out.push(group("Road index, rail stops, ferries, world terrain", &["roadunits", "stations", "ferries", "terrain-root", "slope-root"], built.then_some(roads_left)));
+    // (A run of rail-feeds is followed by rail, whose key reads what it writes. Unknown before the
+    // rail sources are seeded.)
+    let rail_left = rail_chain(cov, date, m, done, inputs).map_or(0, |w| if w.step == "rail-feeds" { 2 } else { 1 });
+    out.push(group("Trains a day", &["rail-feeds", "rail"], m.contains_key(crate::rail::CATALOGUE).then_some(rail_left)));
     let landmarks = remaining(done, |d| landmarks_chain(cov, date, m, d));
     let lm_left: usize = landmarks.iter().map(|w| if matches!(w.step.as_str(), "pois" | "peaks") { w.targets.len() } else { 1 }).sum();
     out.push(group("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"], pieces.then_some(lm_left)));
@@ -1026,7 +1064,8 @@ mod tests {
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         unit_inputs(&mut m, "d");
         let l = checklist(&c, "d", &m, &done, &BTreeMap::new(), false);
-        assert_eq!(l.len(), 9);
+        assert_eq!(l.len(), 10);
+        assert_eq!(line(&l, "Trains a day").left, None, "no rail sources: not known");
         assert_eq!((line(&l, "Terrain").done, line(&l, "Terrain").total), (0, Some(1)));
         assert_eq!((line(&l, "Roads, elevations").done, line(&l, "Roads, elevations").total), (0, Some(1)));
         assert_eq!(line(&l, "Map tiles").total, None, "no areas built: the tiles aren't known yet");
@@ -1215,6 +1254,84 @@ mod tests {
     }
 
     #[test]
+    fn trains_a_day_follow_their_feeds() {
+        let d = tempfile::tempdir().unwrap();
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        let mut done = Keys::default();
+        let none = BTreeMap::new();
+        let lta: BTreeMap<String, String> = [("keys".to_string(), "LTA_ACCOUNT_KEY".to_string())].into();
+        // Not seeded: nothing.
+        assert!(rail_chain(&c, "d", &m, &done, &lta).is_none());
+        m.insert(crate::rail::CATALOGUE.into(), "sources/rail/catalogue.1111111111111111.csv".into());
+        m.insert(crate::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.2222222222222222.osm.pbf".into());
+        let w = rail_chain(&c, "d", &m, &done, &lta).unwrap();
+        assert_eq!(w.step, "rail-feeds");
+        done.record(&w.step, &w.targets);
+        // Its list made: then the trains; then nothing, until what decides them changes.
+        m.insert(crate::rail::FEEDS.into(), "sources/rail/feeds.3333333333333333.json".into());
+        let w = rail_chain(&c, "d", &m, &done, &lta).unwrap();
+        assert_eq!(w.step, "rail");
+        done.record(&w.step, &w.targets);
+        assert!(rail_chain(&c, "d", &m, &done, &lta).is_none());
+        // What rail-feeds writes besides the list (the checks, the zips) isn't what anything reads:
+        // no rerun for its own sake.
+        m.insert(crate::rail::CHECKED.into(), "sources/rail/checked.4444444444444444.json".into());
+        m.insert(crate::rail::zip_logical("sncf"), "sources/rail/gtfs/sncf.5555555555555555.zip".into());
+        assert!(rail_chain(&c, "d", &m, &done, &lta).is_none());
+        // A key gone, or the coverage grown: the feeds again.
+        assert_eq!(rail_chain(&c, "d", &m, &done, &none).unwrap().step, "rail-feeds");
+        let bigger = Coverage::from_recipes(&[Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,25".into()] }], None, d.path()).unwrap();
+        assert_eq!(rail_chain(&bigger, "d", &m, &done, &lta).unwrap().step, "rail-feeds");
+        // A new list (a feed fetched), a new pass's rail set, other MTR pairs: the trains again.
+        for (l, f) in [(crate::rail::FEEDS.to_string(), "sources/rail/feeds.6666666666666666.json"), (crate::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.7777777777777777.osm.pbf"), (crate::rail::MTR_PAIRS.to_string(), "sources/rail/mtr-pairs.8888888888888888.bin")] {
+            let mut m2 = m.clone();
+            m2.insert(l, f.into());
+            assert_eq!(rail_chain(&c, "d", &m2, &done, &lta).unwrap().step, "rail");
+        }
+        // inputs/keys.env unreadable for now: nothing, rather than the feeds without their keys.
+        assert!(rail_chain(&c, "d", &m, &Keys::default(), &[("keys".to_string(), "?".to_string())].into()).is_none());
+    }
+
+    #[test]
+    fn trains_a_day_beside_the_roads() {
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        let mut done = Keys::default();
+        let steps = |w: &[Work]| w.iter().map(|x| x.step.clone()).collect::<Vec<_>>();
+        m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
+        unit_inputs(&mut m, "d");
+        m.insert(crate::rail::CATALOGUE.into(), "sources/rail/catalogue.1111111111111111.csv".into());
+        m.insert(crate::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.2222222222222222.osm.pbf".into());
+        // Not before the units.
+        for step in ["terrain", "slope", "trees", "heritage-sites", "unit"] {
+            let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+            assert_eq!(w[0].step, step);
+            assert!(!w.iter().any(|x| x.step.starts_with("rail")), "{:?}", steps(&w));
+            if step == "heritage-sites" {
+                heritage_done(&mut m, &mut done, "d", &w[0]);
+            } else {
+                done.record(&w[0].step, &w[0].targets);
+            }
+        }
+        m.insert("base/6-28-16".into(), "base/6-28-16.6666666666666666.base".into());
+        m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.7777777777777777.roads".into());
+        // Then beside the roads' chain, after it in the order.
+        let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+        assert_eq!(steps(&w), vec!["roadunits", "rail-feeds"]);
+        // The checklist: two jobs left, then one.
+        let line = |m: &BTreeMap<String, String>, done: &Keys| checklist(&c, "d", m, done, &BTreeMap::new(), false).into_iter().find(|s| s.what == "Trains a day").unwrap();
+        assert_eq!(line(&m, &done).left, Some(2));
+        done.record("rail-feeds", &w[1].targets);
+        m.insert(crate::rail::FEEDS.into(), "sources/rail/feeds.3333333333333333.json".into());
+        assert_eq!(line(&m, &done).left, Some(1));
+        let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+        assert_eq!(steps(&w), vec!["roadunits", "rail"]);
+        done.record("rail", &w[1].targets);
+        assert!(line(&m, &done).finished());
+    }
+
+    #[test]
     fn roads_and_landmarks_dont_wait_for_each_other() {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
@@ -1235,7 +1352,8 @@ mod tests {
         m.insert("base/6-28-16".into(), "base/6-28-16.6666666666666666.base".into());
         m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.7777777777777777.roads".into());
         m.insert("work/trailends/d".into(), "work/trailends/d.8888888888888888.json".into());
-        // Both chains' first steps; no catalog while the roads' chain has work.
+        // The roads' and the landmarks' first steps (no rail sources here); no catalog while the
+        // roads' chain has work.
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         assert_eq!(steps(&w), vec!["roadunits", "pois"]);
         // The roads' chain to its end (the landmarks' still waiting): then a catalog first.

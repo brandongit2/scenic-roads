@@ -105,7 +105,7 @@ the NAS does itself. The jobs (§8 has their order and keys):
 5. **Per unit**, for every unit meeting the coverage: base(U), the ways U owns (a way belongs to the
    unit of its first node) that touch the coverage, with per-vertex elevations, grade and scenic
    channels. Each value is computed once.
-6. **Then two chains**, which don't wait for each other:
+6. **Then three chains**, which don't wait for each other:
    - **Roads:**
      - the road → units index;
      - pack(T): tiles, query parts and indexes for each z6 tile T the units' ways reach, from the
@@ -114,6 +114,8 @@ the NAS does itself. The jobs (§8 has their order and keys):
      - rail stops and ferries;
      - the root tiles;
      - then a catalog.
+   - **Rail service** (§6): the timetables of the rail feeds where the coverage is, each fetched
+     once; then trains a day on the coverage's rail ways.
    - **Landmarks** (`docs/phase5.md`):
      - candidates and peaks per unit;
      - then worldwide: Wikidata facts and pageviews;
@@ -132,14 +134,16 @@ deletions over SMB bypass it (tested 2026-10-02).
 ```
 translations/  descriptions/  the user's drop-ins (descriptions/README.md; todo/: planned)
 inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), ferries/freq/ (timetables), moi-dtm/
-               (Taiwan's DTM, put there by hand), hold-catalog
+               (Taiwan's DTM, put there by hand), keys.env (API keys, KEY=value lines: the rail
+               feeds'), hold-catalog
 sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass), basemap/
                (Planetiler's jar and data), registers/ (the registers snapshot), items/<date>/,
                dem-cache/ (today's per-vertex DEM cache, the units' seed), buildings/<release>/
                (Overture's building boxes for the world, in z8 tiles, and their index), trees/
                (leaf/: the leaf-type squares; NALCMS's GeoTIFF), canopy/ (Meta's canopy squares),
-               aws-terrarium/ (AWS's raw terrain tiles), fabdem/ (FABDEM's 1° tiles),
-               terrain-z8-v1, legacy/ (today's map's build inputs, until the cutover)
+               aws-terrarium/ (AWS's raw terrain tiles), fabdem/ (FABDEM's 1° tiles), rail/ (the
+               rail feeds: the catalogue, their zips, the MTR's lines; §6), terrain-z8-v1, legacy/
+               (today's map's build inputs, until the cutover)
 base/          base packs, one per unit
 hidata/        per z6 tile: the ways-here index, query parts, climbs, rail lines, zoomed-out summaries
 markdata/      per z6 tile: landmark points
@@ -202,8 +206,8 @@ steps merge their manifest changes under a lock. The exceptions:
   by the same rule, the planet download 14 days after the newer pass completed, then the empty
   folders.
 - Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/` (registers,
-  the basemap's data, the DEM seed, today's legacy inputs), translations, descriptions, inputs,
-  state, app and nas.
+  the basemap's data, the DEM seed, the rail sources with the files they replaced, today's legacy
+  inputs), translations, descriptions, inputs, state, app and nas.
 
 **Backups.**
 - Daily, the agent copies the user's folders and `inputs/` into a content-addressed store under
@@ -370,7 +374,9 @@ rule (its version bumped) reruns only the units it applies to. The plan is modul
   elsewhere: `extract`);
 - heritage registers (the snapshot, `dem/heritage.py`);
 - timetables:
-  - rail: Mobility Database feeds, `dem/railfeeds.py`, with no job yet;
+  - rail: the Mobility Database catalogue's feeds of the countries the coverage is in (worked out
+    from the pass's outlines: `pipeline::rail::countries`), and national operators' own, each
+    with its country, in `dem/railfeeds.py` (§6, Rail service);
   - ferries: `inputs/ferries/freq`;
 - road network codes (`extract`) and their colours (`web/src/mapschemes.ts`);
 - leaf-type source: EEA in Europe, NALCMS in North America, none elsewhere (`dem/leaftype.py`,
@@ -564,13 +570,62 @@ one pinned release (2026-09-23.1), before any unit runs:
   (`dem/labels.py`, with each thing's own English).
 - **Rail stops:** from the rail set, for the built units' tiles + 20 km.
 - **Ferries:** worldwide, from the ferries set and `inputs/ferries/freq`.
+- **Rail service:** trains a day on the coverage's rail ways (below).
 - **Landmarks:** candidates and peaks per unit, then Wikidata facts and pageviews, marks, and
   overlays (`docs/phase5.md`).
 - **Planned:**
-  - rail service: trains a day on the worldwide track graph, with timetables processed once per
-    feed version. Today the map has today's converted `global/railfreq`;
   - names todo (§7);
   - descriptions todo (§7).
+
+### Rail service
+
+Trains a day on each rail way of the coverage (`global/railfreq`), from operators' published
+timetables (GTFS) and the MTR's hand-researched lines (`pipeline::rail`). Two jobs, after the units,
+in a chain of their own (§8):
+- **`rail-feeds`** finds the feeds where the coverage is (`dem/railfeeds.py`):
+  - The Mobility Database catalogue's active GTFS feeds of the countries the coverage is in, whose
+    box meets it and whose download needs no key.
+    - A country counts when it holds 5 % of one of the coverage's outlines (each point of the
+      outline given to the smallest territory holding it, so Hong Kong's are Hong Kong's, not
+      China's), or the coverage holds half of it (Monaco, Man).
+    - So an outline's margin past a border doesn't bring in the neighbour (1 % of Ontario's outline
+      is the US), but a small outline's wide margin may (Taiwan's is 11 % China, around Kinmen and
+      Matsu).
+  - Of those, the ones that run rail: each checked once, by reading its `routes.txt` out of the zip
+    with range requests.
+  - National operators the catalogue lacks (SNCF, Renfe, Great Britain's timetable as GTFS by
+    Catenary Transit, Hong Kong's trams), and Singapore's LTA feed when `inputs/keys.env` holds its
+    key, each where its country and box are.
+  - Left out: a feed another replaces (an operator's own over a copy: LTA's over the catalogue's
+    Singapore feed, Catenary Transit's Hong Kong trams over the Transport Department's), and a
+    community feed of the MTR's lines, which come from the hand-researched pairs.
+  - Each feed's zip is fetched once, into `sources/rail/gtfs/`. A zip already there is never fetched
+    again, except one that was already out of date when fetched (no rail service in its window): a
+    week later, its copy kept if the new one is the same.
+  - A server that doesn't answer fails the job after three tries (what it checked and fetched is
+    kept); a definite refusal (a 404, a file that isn't a zip) leaves that feed out.
+- **`rail`** counts the trains and matches them onto the tracks:
+  - each feed's trains on its typical weekday (`dem/railgtfs.py`): the median-busy Tuesday to
+    Thursday from 30 days before the day its zip was fetched to 90 days after, so a zip's counts
+    don't depend on the day they're made. A train in two feeds is counted once (the national
+    operators' first). The stop pairs don't depend on the coverage either: the build Mac keeps them
+    for the list of feeds;
+  - the MTR's lines, as stop pairs (from the research, `mtr.json`, by `dem/mtrpairs.py`);
+  - each pair's stops beyond the coverage marked (`railfreq` runs a cross-border service as far as
+    the track goes toward the stop), and pairs with both beyond left out;
+  - `railfreq` matches the pairs onto the rail ways of the pass's rail set that touch the coverage:
+    the set clipped to the tiles within 20 km of it, `extract` at 8 m (as the units), then the ways
+    touching it.
+- **The rail sources** (`sources/rail/`, docs/formats.md) start from today's build's
+  (`scenic-build rail-seed`, run once by hand): its 131 zips, the catalogue with the 1,545 feeds
+  checked for it, and the MTR's lines. The seeded zips count from the day today's figures were
+  counted (2026-09-30), so the job gives today's figures again.
+- **Planned:**
+  - Japan's ODPT and Taiwan's TDX feeds, behind the keys `inputs/keys.env` names for them
+    (`ODPT_KEY`; `TDX_CLIENT_ID`, `TDX_CLIENT_SECRET`), each a keyed feed in `dem/railfeeds.py`
+    once there are values to fetch with. ODPT's licence allows no redistribution of its raw feeds;
+    TDX asks for a credit line (`pipeline::rules::CREDITS`);
+  - the catalogue and the timetables fetched again every ~6 months (§8).
 
 ### Job keys
 
@@ -584,7 +639,13 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   index, and Taiwan's MOI DTM files where its ways meet Taiwan;
 - **pack(T):** the base packs and road values it reads (above);
 - **lo:** the base packs and road values of the units whose owned extent meets its z3 tile (lo has
-  its own version: a change in the tiling it shares with pack bumps both).
+  its own version: a change in the tiling it shares with pack bumps both);
+- **rail-feeds:** what decides which feeds there are: the catalogue, the coverage, the pass's
+  outlines (the countries it's in), and which keys `inputs/keys.env` holds, by name (never their
+  values). Not what it writes (the feeds' list, its checks and zips), so it doesn't run again for
+  its own sake; it waits while `inputs/keys.env` can't be read;
+- **rail:** the feeds' list (each feed's zip by content name, and the day it counts from), the MTR's
+  pairs, the pass's rail set and the coverage.
 
 The landmark jobs, stations, ferries and overlays: `docs/phase5.md`.
 
@@ -796,9 +857,11 @@ are no request files.
    - heritage-sites;
    - every stale unit;
    - a prune of what the coverage no longer builds (§5, Shrinking).
-4. **Two chains**, each contributing its first stale step:
+4. **Three chains**, each contributing its first stale step:
    - **Roads:** a prune of map tiles no unit is near, road → units index, pack, lo, stations,
      ferries, terrain and slope roots. Stations and ferries drop the packs they no longer make.
+   - **Rail service:** `rail-feeds`, then `rail` (§6, Rail service). Nothing before the rail
+     sources are seeded (`scenic-build rail-seed`), which the status says.
    - **Landmarks:** pois, peaks, items, heritage, marks, overlays.
 5. **A catalog** once the roads chain is done: a new one whenever the served files change, or the
    regions it records (their recipes and the outline files they name) do. While
@@ -837,8 +900,8 @@ mid-job. Nothing depends on it being available at a given time.
   in at home").
 
 **Determinism:** the same inputs give the same bytes: sorted outputs, no hash-map order, fixed
-reductions. Checked by hand so far (terrain, slope, units, candidates); planned: a "build twice,
-compare hashes" test per step.
+reductions. Checked by hand so far (terrain, slope, units, candidates, trains a day); planned: a
+"build twice, compare hashes" test per step.
 
 **Validation:**
 - **Built:** every upload is read back and checked against its hash, and a catalog fails on a
@@ -864,7 +927,8 @@ everything is rebuilt.
 - `scenic` is the user's command and the agent;
 - `scenic-build` holds the build steps;
 - `server` serves the map;
-- `extract`, `tile` and `scenic-metrics` are today's steps, which units run;
+- `extract`, `tile` and `scenic-metrics` are today's steps, which units run (the rail job runs
+  `extract` and `railfreq`);
 - the app also carries `dem/` (the Python steps), Scenic.app (the menu bar item), `web/` and
   `fonts/`.
 
@@ -934,8 +998,13 @@ At each phase's end an Opus agent reviews the work against this plan.
      - labels, stations, ferries;
      - the landmark jobs: pois, peaks, items, marks;
      - the rest of the heritage chain and its consumers, checked against today's: 17 outputs and
-       every overlay pack byte for byte; fame differs where today's was stale.
-   - **Not built:** rail service, names and descriptions todo, determinism tests, validation.
+       every overlay pack byte for byte; fame differs where today's was stale;
+     - the rail service (trains a day), checked against today's on a scratch copy of the NAS's
+       sources: every one of the 131 feeds with the same typical day, trips and duplicates, the
+       same 38,445 stop pairs with the same trains, and 185,557 of today's 185,604 rail ways with
+       the same trains a day (34 differ and 13 have none, where the same trains take a parallel
+       track or OSM changed since); two runs give the same bytes.
+   - **Not built:** names and descriptions todo, determinism tests, validation.
 5. **Browser: done.**
    - Built:
      - landmarks, stations, ferries and overlays by view (In view answers equal to the legacy
@@ -948,7 +1017,7 @@ At each phase's end an Opus agent reviews the work against this plan.
 6. **Cutover: under way.**
    1. Today's 34 recipes are installed, with `inputs/hold-catalog`.
    2. The agent builds them after the pass: terrain, slope, tree cover, heritage sites, the units,
-      both chains (the heritage chain included).
+      the three chains (the heritage chain included).
    3. The held catalog is compared with today's map: counts and distributions (lengths, drives and
       climbs change under the new chaining), heritage points and overlays, screenshots and
       performance.
@@ -956,11 +1025,7 @@ At each phase's end an Opus agent reviews the work against this plan.
 7. **Features,** each on its own: 3D buildings, then PLATEAU; building heights in horizons and the
    viewshed tool; the new terrain repair; sharper terrain from national DEMs. Not started.
 
-**Gaps:** the code falls short of the design here. Most need fixing before regions beyond today's
-are added.
-1. **New regions miss what today's coverage has from converted files:** trains a day.
-2. **The repo:**
-   - `inputs/keys.env` is read by nothing (`dem/railgtfs.py` still reads `data/keys.env`).
+**Gaps:** none known between the code and the design.
 
 ## 11. Risks and checks
 
@@ -1002,7 +1067,7 @@ are added.
   - what isn't built marked planned;
   - the gaps listed in §10.
 
-**Implementation decisions since v6 (2026-10-02 and 03), now in the sections above:**
+**Implementation decisions since v6 (2026-10-02 to 04), now in the sections above:**
 - **No SSH from the build Mac:** 1Password asks for every new session. So GC deletes over SMB,
   uploads are checked by reading them back, and the planet fetch runs from DSM.
 - **Units are z6 tiles only;** the split waits for a unit that needs it.
@@ -1018,7 +1083,14 @@ are added.
   (`docs/phase5.md`). Otherwise every road pack would depend on worldwide rankings.
 - **Heritage sites and flags come before the units, in their own job;** the rest of the heritage chain
   comes after the landmark candidates. Wikidata and pageview outages mustn't hold up the roads.
-- **Roads and landmarks build as two chains,** for the same reason.
+- **Roads and landmarks build as two chains,** for the same reason; the rail service is a third
+  (an operator's server down mustn't hold up the roads either).
+- **The rail service reuses today's feeds:** the legacy build's zips, catalogue and checks seed its
+  sources (the user asked, 2026-10-04, that what the research sessions collected be reused, and only
+  what new coverage needs be fetched). A zip counts from the day it was fetched, so it's never
+  fetched again just because time passed.
+- **The rail feeds' countries come from the coverage** (§6, Rail service), so a region in another
+  country has its own feeds.
 - **Elevations are u16 decimetres from −500 m.** They were clamped at ±3,200 m, and roads in the
   Andes and the Himalaya reach 5,800 m.
 - **Failures are never cached, and the breaker needs a failed probe.** A busy link slows reads

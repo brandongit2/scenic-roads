@@ -30,7 +30,7 @@ UV    := cd dem && uv run python
 .PHONY: all data osm fonts web run dev clean-build heritage ferries
 all: data web
 
-data: $(BUILD)/roads.tiles $(BUILD)/slope.tiles basemap-parts $(BUILD)/names-en.json $(BUILD)/road-en.json $(BUILD)/labels.pmtiles $(BUILD)/labels.tiles $(BUILD)/ferries.json $(BUILD)/rail-freq.bin $(BUILD)/stations.json $(BUILD)/whs-shapes.json $(BUILD)/trees-cover.tiles details fonts
+data: $(BUILD)/roads.tiles $(BUILD)/slope.tiles basemap-parts $(BUILD)/names-en.json $(BUILD)/road-en.json $(BUILD)/labels.pmtiles $(BUILD)/labels.tiles $(BUILD)/ferries.json $(BUILD)/stations.json $(BUILD)/whs-shapes.json $(BUILD)/trees-cover.tiles details fonts
 
 # Conditional download: curl -z only fetches when the server copy is newer than ours.
 # OSM: data/osm/merged.osm.pbf holds every region; a region added to regions.json is downloaded
@@ -145,18 +145,11 @@ ferries: $(FER)/ways.geojsonseq $(FER)/terminals.geojsonseq
 	$(UV) gtfs.py
 	$(UV) ferries.py
 
-# Rail service frequency: trains a day from published timetables (GTFS feeds found in the Mobility
-# Database catalogue, plus national operators) and hand-researched MTR lines, matched onto the rail
-# ways (see README).
+# Rail service frequency (trains a day) is the build agent's: its rail-feeds and rail jobs
+# (crates/pipeline/src/rail.rs, docs/plan.md §6) make global/railfreq for the regions from the
+# NAS's rail sources. The MTR's lines, which those sources hold as stop pairs, are made here from
+# the research (data/rail/mtr.json) and the stations' English names in OSM.
 RAIL := $(DATA)/rail
-$(RAIL)/feeds_v2.csv:
-	@mkdir -p $(RAIL)
-	curl -sSL -o $@ https://files.mobilitydatabase.org/feeds_v2.csv
-$(RAIL)/feeds.json: $(RAIL)/feeds_v2.csv dem/railfeeds.py regions.json $(DATA)/trees/poly/.done
-	$(UV) railfeeds.py
-# Keyed feeds (data/keys.env) join when their key is added.
-$(RAIL)/pairs.bin: $(RAIL)/feeds.json dem/railgtfs.py $(wildcard $(DATA)/keys.env)
-	$(UV) railgtfs.py
 $(RAIL)/hk-stations.geojsonseq: | $(OSM)/merged.osm.pbf
 	osmium extract -b 113.8,22.1,114.5,22.6 $(OSM)/merged.osm.pbf -o $(RAIL)/hk.osm.pbf --overwrite
 	osmium tags-filter $(RAIL)/hk.osm.pbf n/railway=station,halt,stop,tram_stop n/public_transport=station w/railway=station -o $(RAIL)/hk-stations.osm.pbf --overwrite
@@ -164,8 +157,6 @@ $(RAIL)/hk-stations.geojsonseq: | $(OSM)/merged.osm.pbf
 	rm -f $(RAIL)/hk.osm.pbf
 $(RAIL)/pairs-mtr.bin: $(RAIL)/mtr.json $(RAIL)/hk-stations.geojsonseq dem/mtrpairs.py
 	$(UV) mtrpairs.py
-$(BUILD)/rail-freq.bin: $(BUILD)/ways.bin $(RAIL)/pairs.bin $(RAIL)/pairs-mtr.bin crates/pipeline/src/bin/railfreq.rs | target/release/railfreq
-	./target/release/railfreq $(BUILD) $(RAIL)/pairs.bin $(RAIL)/pairs-mtr.bin
 # Rail stops: every stop of a passenger route relation, with its lines' stop spacing (which sets
 # when and how big its dot shows).
 $(RAIL)/stops/relations.opl: $(OSM)/merged.osm.pbf

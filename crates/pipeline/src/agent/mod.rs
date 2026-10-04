@@ -703,6 +703,11 @@ impl Agent {
         let held = root.join("inputs/hold-catalog").exists();
         let cache = self.o.home.join("cache");
         let reach = self.current_reach(root, &manifest, &done, date).ok().flatten();
+        if !manifest.contains_key(crate::rail::CATALOGUE) {
+            waiting.push(Waiting { what: "Trains a day".into(), why: "the rail sources aren't on the NAS yet (scenic-build rail-seed)".into() });
+        } else if inputs.get("keys").map(String::as_str) == Some("?") {
+            waiting.push(Waiting { what: "Trains a day".into(), why: "inputs/keys.env can't be read now".into() });
+        }
         for (w, total) in batches(build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref())) {
             // Held for review: the catalog goes to catalog-held/ (no server reads it), once.
             if w.step == "catalog" && held {
@@ -716,12 +721,12 @@ impl Agent {
                 jobs.push(j);
                 continue;
             }
-            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays") && !t.ends_with("-root")).collect();
+            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail") && !t.ends_with("-root")).collect();
             match w.step.as_str() {
                 "terrain" | "terrain-root" => extra.extend(["--raw".into(), s(&cache.join("aws-terrarium"))]),
                 "pois" | "marks" | "stations" | "overlays" => extra.extend(["--pass".into(), date.to_string()]),
-                "ferries" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem"))]),
-                "items" | "heritage-sites" | "heritage" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache".into(), s(&cache)]),
+                "ferries" | "rail-feeds" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem"))]),
+                "items" | "heritage-sites" | "heritage" | "rail" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache".into(), s(&cache)]),
                 "peaks" => extra.extend(["--pass".into(), date.to_string(), "--raw".into(), s(&cache.join("aws-terrarium")), "--cache".into(), s(&cache), "--coarse-threads".into(), "6".into()]),
                 "unit" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache-dir".into(), s(&cache)]),
                 "trees" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--chm".into(), s(&cache.join("chm10"))]),
@@ -752,6 +757,8 @@ impl Agent {
                 "roadunits" => "Which areas each road crosses".to_string(),
                 "stations" => "Rail stops near the regions".to_string(),
                 "ferries" => "Ferries for the whole world".to_string(),
+                "rail-feeds" => "Rail timetables for the regions".to_string(),
+                "rail" => "Trains a day on the regions' rail".to_string(),
                 "pack" => format!("Map tiles ({areas})"),
                 "trees" => format!("Tree cover ({})", areas.replace("area", "large tile")),
                 "lo" => "Zoomed-out map tiles".to_string(),
@@ -869,8 +876,8 @@ impl Agent {
 }
 
 /// What jobs read from inputs/ beside the manifest, by digest: the ferry timetables
-/// ("ferries-freq", by content) and Taiwan's MOI DTM ("moi-dtm", by names, sizes and times: large
-/// files, put there by hand).
+/// ("ferries-freq", by content), Taiwan's MOI DTM ("moi-dtm", by names, sizes and times: large
+/// files, put there by hand), and which keys inputs/keys.env holds ("keys", `key_names`).
 fn input_digests(root: &Path) -> BTreeMap<String, String> {
     let mut inputs: BTreeMap<String, String> = BTreeMap::new();
     if let Ok(rd) = std::fs::read_dir(root.join("inputs/ferries/freq")) {
@@ -897,7 +904,22 @@ fn input_digests(root: &Path) -> BTreeMap<String, String> {
             inputs.insert("moi-dtm".into(), store::naming::hash16(files.join("\n").as_bytes()));
         }
     }
+    inputs.insert("keys".into(), key_names(&root.join("inputs/keys.env")).unwrap_or_else(|| "?".into()));
     inputs
+}
+
+/// The names of the keys a `KEY=value` file holds a value for, sorted and comma-separated ("" when
+/// there's no file; None when it can't be read). Never their values: the names go in job keys.
+fn key_names(path: &Path) -> Option<String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(String::new()),
+        Err(_) => return None,
+    };
+    let mut names: Vec<&str> = text.lines().filter_map(|l| l.split_once('=')).filter(|(k, v)| !k.trim().starts_with('#') && !v.trim().is_empty()).map(|(k, _)| k.trim()).collect();
+    names.sort_unstable();
+    names.dedup();
+    Some(names.join(","))
 }
 
 /// The recipes, and the outline files they name (by size and time), hashed; None when a read fails.
@@ -1102,6 +1124,17 @@ mod tests {
         let units: Vec<&(String, String)> = b.iter().filter(|(w, _)| w.step == "unit").flat_map(|(w, _)| &w.targets).collect();
         assert_eq!(units.len(), 14);
         assert!(units.iter().enumerate().all(|(i, t)| t.0 == format!("6/{i}/0") && t.1 == format!("k{i}")));
+    }
+
+    #[test]
+    fn key_names_only() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("keys.env");
+        assert_eq!(key_names(&p).as_deref(), Some(""), "no file: no keys");
+        std::fs::write(&p, "LTA_ACCOUNT_KEY=s3cr3t\nODPT_KEY=\n# OLD_KEY=x\n TDX_CLIENT_ID = abc \nnot a line\n").unwrap();
+        let names = key_names(&p).unwrap();
+        assert_eq!(names, "LTA_ACCOUNT_KEY,TDX_CLIENT_ID", "the keys with values, by name");
+        assert!(!names.contains("s3cr3t") && !names.contains("abc"));
     }
 
     #[test]

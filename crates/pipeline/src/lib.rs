@@ -18,6 +18,7 @@ pub mod marks;
 pub mod osmpass;
 pub mod outlines;
 pub mod peaks;
+pub mod rail;
 pub mod reach;
 pub mod ovconv;
 pub mod out;

@@ -360,7 +360,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   unit owns within its tile + 20 km, and every way of its piece reaching further, whole;
   `pipeline::reach`); `pass.json`.
 - **Global files:** `global/roads/<u>` (above); `global/roadunits` (sectioned, `pairs`: sorted u64
-  road, u64 unit key); `global/railfreq` (as `/api/railfreq`); `global/marks/summary`
+  road, u64 unit key); `global/railfreq` (as `/api/railfreq`: the `rail` job's, by OSM way id from
+  `railfreq`'s per-way-index output; each way once); `global/marks/summary`
   (`{fmt, kinds, tiers}`); `global/roaden/<u>` (JSON `{OSM way id: English}`: the unit's roads whose
   `name:en` isn't their name); `global/heritage/*`; `global/legacy/*` (today's converted files).
 - **Grid layers:** `grid-{class,canopy,cover}` hi packs of z11 tiles, encoding `u8-zstd`, not served.
@@ -368,7 +369,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   or root) and `sources/terrain-z8-v1-max` (each tile's maximum, f32).
 - **Work files** (zstd JSON lines unless said): `work/pois/<u>`, `work/peaks/<u>`,
   `work/summits/<date>`, `work/trailends/<date>`; `work/heritage/<date>/{base/<stem>,
-  pos/6-x-y.json, areas/6-x-y.jsonl, <stem>}`; `work/marks/heritage-dots.json`.
+  pos/6-x-y.json, areas/6-x-y.jsonl, <stem>}`; `work/marks/heritage-dots.json`;
+  `work/rail/used.json` (railgtfs.py's report: per feed, `id`, `provider`, `url`, `licence`,
+  `fetched`, and `status` with, when "ok", `day`, `trips`, `duplicates`, `rail_routes`).
 - **Other sources:** `sources/items/<date>/{facts,views,meta}.json`; `sources/registers/<name>.tar.zst`;
   `sources/buildings/<release>/8/<x>-<y>.f32` (the release's dot a dash, as in `2026-09-23-1`; not
   content-named: raw little-endian f32 `[xmin, ymin, xmax, ymax]` in degrees, per Overture building
@@ -388,6 +391,26 @@ class, id) within a tile. The client sends the id with the clicked point.
   `sources/dem-cache/dem-cache.{keys.u64,elev.f32,src.u8}` (today's per-vertex DEM cache, the seed
   the build Mac copies once: sorted keys `(lon + 2³¹) << 32 | (lat + 2³¹)` (E7), elevations,
   sources).
+- **The rail sources** (`sources/rail/`, content-named, in the build manifest; `pipeline::rail`, plan
+  §6 Rail service; never swept, so a file one replaces stays):
+  - `catalogue.csv`: the Mobility Database catalogue (`feeds_v2.csv`), as downloaded;
+  - `checked.json`: every catalogue feed checked for rail routes, sorted by `id`: the catalogue's
+    `id`, `provider`, `name`, `country`, `subdivision`, `url`, `licence`, and the check's `size_mb`,
+    `rail_routes`, `examples` and `status` ("ok", "http <code>", "no routes.txt (or no range
+    requests)"; one that got no answer is checked again);
+  - `gtfs/<feed id>.zip`: each feed's GTFS, as fetched;
+  - `fetched.json`: `{zip's content name: "YYYY-MM-DD"}`, the day its timetable counts from (the day
+    it was fetched; the zips seeded from today's build, the day today's figures were counted);
+  - `feeds.json`: `{fmt: 1, feeds: […]}`, the coverage's feeds in the order railgtfs.py reads them,
+    each `{id, provider, name?, country, url, licence, replaces?, rail_routes?}` with `zip` (its
+    content name) and `fetched`, or without them, a `status` saying why it's left out ("replaced by
+    …", a download refused);
+  - `mtr-pairs.bin`: the MTR's lines as stop pairs (below), and `mtr.json`, the research
+    `dem/mtrpairs.py` makes them from.
+- **Stop pairs** (railgtfs.py's, `mtr-pairs`): 21-byte records, f32 lon_a, lat_a, lon_b, lat_b,
+  u8 mode (0 tram, 1 metro, 2 rail, 3 funicular; +0x80 when the trains are a lower bound; +0x20 /
+  +0x40 when stop A / B is beyond the coverage, which the `rail` job sets), f32 trains from A to B on
+  the typical weekday.
 - **State:** `state/status.json` (the agent's heartbeat: conditions, the job and its progress, what
   waits, the checklist to the end); `state/build/{manifest,jobs,pending,summaries}.json`.
 - **The app:** `app/current.json` and `previous.json`: `{version, files, sha256}`.

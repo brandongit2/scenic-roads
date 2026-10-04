@@ -173,21 +173,6 @@ const CRHP_PROVINCES: &[[f64; 4]] = &[
 ];
 /// The states dem/heritage.py asks the National Register for (`STATES`): New York and New England.
 const NRHP_STATES: &[[f64; 4]] = &[[-79.8, 40.4, -66.9, 47.5]];
-/// The countries dem/railfeeds.py takes feeds from (`COUNTRIES`): Canada and the US; France with
-/// Corsica, and Monaco; Spain, Portugal, Andorra and Gibraltar, with the Balearics and the Canaries;
-/// Britain, Ireland, Man and the Channel Islands; Japan, Taiwan, Hong Kong and Singapore.
-const RAIL_FEEDS: &[[f64; 4]] = &[
-    NORTH_AMERICA[0],
-    FRANCE[0],
-    FRANCE[1],
-    [-9.6, 35.9, 4.4, 43.8],
-    [-18.2, 27.6, -13.4, 29.5],
-    [-10.7, 49.1, 1.8, 60.9],
-    JAPAN[0],
-    TAIWAN[0],
-    HONG_KONG[0],
-    SINGAPORE[0],
-];
 
 /// Every data source's credit, in the order the map lists them. The app's own (the colour ramps it
 /// ships) are the app's: web/src/ui/strip.ts.
@@ -420,11 +405,12 @@ pub const CREDITS: &[Credit] = &[
         terms: "ODbL; Wikidata CC0",
         areas: WORLD,
     },
+    // (The rail feeds are those of the countries the coverage is in: crate::rail.)
     Credit {
         what: "Rail service frequency",
-        source: "Operators’ GTFS timetables (112 feeds via the Mobility Database catalogue and operators: SNCF, Renfe, IDFM, TfI, MTA, MBTA, GO, exo, VIA, Amtrak and others; Great Britain: the Rail Delivery Group timetable as GTFS by Catenary Transit; Singapore: Land Transport Authority, LTA DataMall, under the Singapore Open Data Licence 1.0); MTR frequencies from mtr.com.hk (exact for the Airport Express and High Speed Rail, whose timetables are published in full; other lines a lower bound, at least the service hours at the slowest published off-peak headway)",
+        source: "Operators’ GTFS timetables (the feeds that run rail where the map is, via the Mobility Database catalogue and from operators: SNCF, Renfe, IDFM, TfI, MTA, MBTA, GO, exo, VIA, Amtrak and others; Great Britain: the Rail Delivery Group timetable as GTFS by Catenary Transit; Singapore: Land Transport Authority, LTA DataMall, under the Singapore Open Data Licence 1.0); MTR frequencies from mtr.com.hk (exact for the Airport Express and High Speed Rail, whose timetables are published in full; other lines a lower bound, at least the service hours at the slowest published off-peak headway)",
         terms: "Each operator’s open-data terms",
-        areas: RAIL_FEEDS,
+        areas: WORLD,
     },
     Credit {
         what: "Ferry routes and terminals",

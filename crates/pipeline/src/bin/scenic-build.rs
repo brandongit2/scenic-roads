@@ -41,6 +41,14 @@
 //!                                as the stations' tiles
 //!   ferries --pass d [--dem dir]  the pass's ferries set through ferries.py (with
 //!                                inputs/ferries/freq), as the ferries' blocks
+//!   rail-seed [--from dir …]     the rail sources (pipeline::rail) from the legacy build's rail
+//!                                folders (default sources/legacy/m4/rail, then m1's): only what
+//!                                they lack, so it can run again
+//!   rail-feeds [--pass d] [--dem dir]  the rail feeds for the coverage (dem/railfeeds.py), each
+//!                                fetched once into the rail sources
+//!   rail [--pass d] [--dem dir] [--cache dir]  trains a day on the coverage's rail ways
+//!                                (dem/railgtfs.py, then railfreq on the pass's rail set), as
+//!                                global/railfreq
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalog                      publish a catalog of the build manifest
@@ -242,6 +250,19 @@ fn main() -> Result<()> {
             let n = pipeline::ovconv::ferries_job(&mut out, &date, &dem)?;
             eprintln!("ferries: {n} blocks");
         }
+        "rail-seed" => {
+            let mut from: Vec<PathBuf> = args.windows(2).filter(|w| w[0] == "--from").map(|w| PathBuf::from(&w[1])).collect();
+            if from.is_empty() {
+                // The build Macs' legacy rail folders: the M4's holds the feeds today's figures were
+                // counted from, the M1's an earlier subset of them.
+                from = ["m4", "m1"].iter().map(|m| out.root().join("sources/legacy").join(m).join("rail")).filter(|p| p.is_dir()).collect();
+            }
+            anyhow::ensure!(!from.is_empty(), "no legacy rail folders (--from <dir>)");
+            let rep = pipeline::rail::seed(&mut out, &from)?;
+            eprintln!("rail-seed: {} zips, {} feeds' checks, {} added", rep.zips, rep.checked, if rep.files.is_empty() { "no other files".to_string() } else { rep.files.join(", ") });
+        }
+        "rail-feeds" => rail_feeds_step(&mut out, &args, &scratch)?,
+        "rail" => rail_step(&mut out, &args, &scratch)?,
         "convert-legacy-overlays" => {
             let c = pipeline::ovconv::convert(&mut out)?;
             eprintln!("overlays: {} areas, {} stations and {} ferry blocks in {} tiles, {} ovdata, {} parks", c.areas, c.stations, c.ferries, c.tiles, c.ovdata, c.parks);
@@ -327,22 +348,7 @@ fn convert_legacy(out: &mut Out, dir: &Path, skip_layers: bool, only: &[Unit]) -
     out.save()?;
     // Rail service keyed by OSM way id: (u32 way id, f32 trains a day), sorted.
     if let Ok(bytes) = std::fs::read(dir.join("rail-freq.bin")) {
-        let ways = lg.ways.ways();
-        let mut recs: Vec<(u32, f32)> = bytes
-            .chunks_exact(8)
-            .filter_map(|c| {
-                let i = u32::from_le_bytes(c[..4].try_into().unwrap()) as usize;
-                let f = f32::from_le_bytes(c[4..].try_into().unwrap());
-                ways.get(i).map(|w| (w.id as u32, f))
-            })
-            .collect();
-        recs.sort_unstable_by_key(|r| r.0);
-        let mut buf = Vec::with_capacity(recs.len() * 8);
-        for (w, f) in recs {
-            buf.extend_from_slice(&w.to_le_bytes());
-            buf.extend_from_slice(&f.to_le_bytes());
-        }
-        out.put_bytes("global/railfreq", "bin", &buf)?;
+        out.put_bytes(pipeline::rail::RAILFREQ, "bin", &pipeline::rail::by_way_id(lg.ways.ways(), &bytes))?;
     }
     // Today's small files, as they are.
     for e in std::fs::read_dir(dir)? {
@@ -1786,6 +1792,165 @@ fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
         let r = pipeline::slope_pack::build_q(out, q, &list)?;
         eprintln!("slope 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
     }
+    Ok(())
+}
+
+/// rail-feeds [--pass <date>] [--dem dir]: the rail feeds for the coverage (pipeline::rail):
+/// dem/railfeeds.py on the rail sources (the catalogue, the feeds checked so far, the NAS's zips)
+/// with the countries the coverage is in (from the pass's outlines), each feed fetched once, as
+/// `sources/rail/feeds`. What it checked and fetched is kept even when it fails (a feed's server
+/// that doesn't answer), so the next try starts from there.
+fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    use pipeline::rail;
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+    let cov = coverage_of(out, args)?;
+    let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
+    let catalogue = out.path(out.get(rail::CATALOGUE).context("no rail sources (scenic-build rail-seed)")?);
+    stage(0, 3, "the countries the coverage is in");
+    let outlines = pipeline::outlines::Outlines::open(&out.path(out.get(&format!("sources/osm/{date}/outlines")).context("the pass's outlines")?))?;
+    let countries = rail::countries(&cov, &outlines)?;
+    eprintln!("rail-feeds: the coverage is in {}", countries.join(", "));
+    std::fs::create_dir_all(scratch)?;
+    let (cover, checked, cache) = (scratch.join("coverage.geojson"), scratch.join("checked-in.json"), scratch.join("cache.json"));
+    std::fs::write(&cover, serde_json::to_vec(&rail::coverage_geojson(&cov))?)?;
+    match out.get(rail::CHECKED) {
+        Some(c) => std::fs::copy(out.path(c), &checked).map(|_| ())?,
+        None => std::fs::write(&checked, b"[]")?,
+    }
+    let mut fetched = rail::read_fetched(out)?;
+    std::fs::write(&cache, serde_json::to_vec(&rail::cache_index(out, &fetched))?)?;
+    // (Its downloads stay in `found` until they're on the NAS: a run cut short keeps them.)
+    let found = scratch.join("found");
+    stage(1, 3, "finding and fetching the feeds (railfeeds.py)");
+    let st = std::process::Command::new("uv")
+        .current_dir(&dem)
+        .args(["run", "python", "railfeeds.py", "--catalogue"])
+        .arg(&catalogue)
+        .arg("--coverage")
+        .arg(&cover)
+        .arg("--countries")
+        .arg(countries.join(","))
+        .arg("--checked")
+        .arg(&checked)
+        .arg("--cache")
+        .arg(&cache)
+        .arg("--keys")
+        .arg(out.root().join("inputs/keys.env"))
+        .arg("--out")
+        .arg(&found)
+        .status()
+        .context("run railfeeds.py")?;
+    stage(2, 3, "uploading");
+    if found.join("checked.json").exists() {
+        out.put_file(rail::CHECKED, "json", &found.join("checked.json"))?;
+    }
+    if !st.success() {
+        let n = rail::keep_downloads(out, &found.join("gtfs"), &mut fetched)?;
+        out.save()?;
+        bail!("railfeeds.py failed ({st}); the {n} zips it fetched are kept");
+    }
+    let new = rail::put_feeds(out, &found.join("feeds.json"), &found.join("gtfs"), &mut fetched)?;
+    out.save()?;
+    std::fs::remove_dir_all(&found).ok();
+    for f in [cover, checked, cache] {
+        std::fs::remove_file(f).ok();
+    }
+    eprintln!("rail-feeds: {new} zips fetched");
+    Ok(())
+}
+
+/// rail [--pass <date>] [--dem dir] [--cache dir]: trains a day on the coverage's rail ways
+/// (pipeline::rail), as `global/railfreq`. The feeds' stop pairs (dem/railgtfs.py, kept in the
+/// cache for their list of feeds, which doesn't depend on the coverage) and the MTR's, their stops
+/// beyond the coverage marked, matched by `railfreq` onto the rail ways of the pass's rail set that
+/// touch the coverage: the set clipped to the tiles within 20 km of it (as the heritage jobs' cover),
+/// then `extract` (8 m, as the units), then the ways touching it. The feeds' days and trips go to
+/// `work/rail/used`.
+fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    use pipeline::rail;
+    let t0 = std::time::Instant::now();
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+    let cov = coverage_of(out, args)?;
+    let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
+    let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned())).join("rail");
+    let bin = std::env::current_exe()?.parent().context("bin")?.to_path_buf();
+    let feeds = out.get(rail::FEEDS).context("no rail feeds yet (the rail-feeds step)")?.to_string();
+    let set = out.path(out.get(&pipeline::osmpass::set_name(&date, "rail")).context("the pass has no rail set")?);
+    std::fs::create_dir_all(scratch)?;
+    // 1. The feeds' stop pairs, once per list of feeds (and the step's version).
+    stage(0, 5, "the feeds' trains (railgtfs.py)");
+    let raw = cache.join(format!("pairs-{}.bin", store::naming::hash16(format!("{} {feeds}", pipeline::agent::build::RAIL_V).as_bytes())));
+    if !raw.exists() {
+        let (list, pairs, used) = (scratch.join("feeds.json"), scratch.join("pairs-raw.bin"), scratch.join("used.json"));
+        std::fs::write(&list, serde_json::to_vec(&rail::feeds_for_counting(out)?)?)?;
+        let st = std::process::Command::new("uv")
+            .current_dir(&dem)
+            .args(["run", "python", "railgtfs.py", "--feeds"])
+            .arg(&list)
+            .arg("--out")
+            .arg(&pairs)
+            .arg("--used")
+            .arg(&used)
+            .status()
+            .context("run railgtfs.py")?;
+        anyhow::ensure!(st.success(), "railgtfs.py failed: {st}");
+        // Only the current list's pairs are kept.
+        std::fs::create_dir_all(&cache)?;
+        for e in std::fs::read_dir(&cache)?.flatten() {
+            if e.file_name().to_string_lossy().starts_with("pairs-") {
+                std::fs::remove_file(e.path()).ok();
+            }
+        }
+        std::fs::rename(&pairs, &raw).or_else(|_| std::fs::copy(&pairs, &raw).map(|_| ()))?;
+        out.put_file("work/rail/used", "json", &used)?;
+        out.save()?;
+    }
+    // 2. Stops beyond the coverage.
+    stage(1, 5, "stops beyond the coverage");
+    let (pairs, beyond) = rail::mark_beyond(&std::fs::read(&raw)?, &cov);
+    let pairs_file = scratch.join("pairs.bin");
+    std::fs::write(&pairs_file, &pairs)?;
+    let mut inputs = vec![pairs_file.clone()];
+    if let Some(c) = out.get(rail::MTR_PAIRS) {
+        let (mtr, _) = rail::mark_beyond(&std::fs::read(out.path(c))?, &cov);
+        let f = scratch.join("pairs-mtr.bin");
+        std::fs::write(&f, &mtr)?;
+        inputs.push(f);
+    }
+    eprintln!("rail: {} stop pairs from the feeds, {beyond} with a stop beyond the coverage ({:.0?})", pairs.len() / rail::PAIR, t0.elapsed());
+    // 3. The rail ways touching the coverage.
+    stage(2, 5, "the pass's rail over the coverage (osmium)");
+    let local = scratch.join("rail-set.osm.pbf");
+    std::fs::copy(&set, &local).with_context(|| format!("copy {}", set.display()))?;
+    let poly = scratch.join("cover.geojson");
+    std::fs::write(&poly, serde_json::to_vec(&pipeline::heritage::tiles_geojson(pipeline::heritage::COVER_Z, &pipeline::heritage::cover_tiles(&cov)))?)?;
+    let clip = scratch.join("rail-cover.osm.pbf");
+    let mut c = pipeline::osmpass::osmium();
+    c.args(["extract", "--strategy", "complete_ways", "--overwrite", "-p"]).arg(&poly).arg(&local).arg("-o").arg(&clip);
+    osmium_run(c, "osmium extract (the rail set over the coverage)")?;
+    std::fs::remove_file(&local).ok();
+    stage(3, 5, "its rail ways (extract)");
+    let dir = scratch.join("ways");
+    std::fs::remove_dir_all(&dir).ok();
+    let st = std::process::Command::new(bin.join("extract")).arg(&dir).arg("8").arg(&clip).status().context("run extract")?;
+    anyhow::ensure!(st.success(), "extract failed: {st}");
+    std::fs::remove_file(&clip).ok();
+    let (kept, _) = pipeline::unit::subset(&dir, |_, vs| cov.touches(vs))?;
+    eprintln!("rail: {kept} ways touch the coverage ({:.0?})", t0.elapsed());
+    // 4. The trains on them.
+    stage(4, 5, "matching the trains onto the tracks (railfreq)");
+    let st = std::process::Command::new(bin.join("railfreq")).arg(&dir).args(&inputs).status().context("run railfreq")?;
+    anyhow::ensure!(st.success(), "railfreq failed: {st}");
+    let ways = roadcore::Ways::open(&dir)?;
+    let freq = rail::by_way_id(ways.ways(), &std::fs::read(dir.join("rail-freq.bin"))?);
+    out.put_bytes(rail::RAILFREQ, "bin", &freq)?;
+    out.save()?;
+    drop(ways);
+    std::fs::remove_dir_all(&dir).ok();
+    for f in inputs.into_iter().chain([poly, scratch.join("feeds.json")]) {
+        std::fs::remove_file(f).ok();
+    }
+    eprintln!("rail: {} rail ways with trains a day ({:.0?})", freq.len() / 8, t0.elapsed());
     Ok(())
 }
 

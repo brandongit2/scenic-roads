@@ -60,7 +60,7 @@ mkdir -p $dest.tmp/web $dest.tmp/fonts
 # The server, and the build agent with the programs its jobs run (the build Mac runs them from here):
 # the pipeline's binaries, and the Python steps (dem/, run with uv) with their lock file.
 cp target/release/server target/release/scenic target/release/scenic-build target/release/extract \
-   target/release/tile target/release/scenic-metrics $dest.tmp/
+   target/release/tile target/release/scenic-metrics target/release/railfreq $dest.tmp/
 mkdir -p $dest.tmp/dem
 git ls-files dem | while read f; do cp "$f" "$dest.tmp/$f"; done
 # The menu bar item (tools/status): an app bundle, built and signed ad hoc on this Mac (codesign
