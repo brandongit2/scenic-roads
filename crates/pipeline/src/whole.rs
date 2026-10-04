@@ -25,11 +25,13 @@ pub fn write(path: &Path, b: &[u8]) -> Result<()> {
     write_with(path, b, true)
 }
 
-/// `write` without the flush to the disk: for small files written by the hundred thousand (AWS's raw
-/// terrain tiles), whose flushes would swamp the NAS's disks. Each is checked whole when read
-/// (`png_whole`), and taken again when it isn't, so one cut short costs only a fetch.
-pub fn write_unsynced(path: &Path, b: &[u8]) -> Result<()> {
-    write_with(path, b, false)
+/// Writes `b` straight to `path`: no temporary name, flush or check. For small files written by the
+/// hundred thousand over SMB (AWS's raw terrain tiles), where each of those round trips cuts the
+/// rate (55 files a second written in place, 19 by a temporary name), and which are checked whole
+/// when read (`png_whole`) and taken again when they aren't: one cut short costs only a fetch.
+pub fn write_in_place(path: &Path, b: &[u8]) -> Result<()> {
+    let mut f = std::fs::File::create(path).with_context(|| format!("write {}", path.display()))?;
+    f.write_all(b).with_context(|| format!("write {}", path.display()))
 }
 
 fn write_with(path: &Path, b: &[u8], sync: bool) -> Result<()> {

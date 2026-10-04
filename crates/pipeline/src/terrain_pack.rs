@@ -211,8 +211,9 @@ impl store::range::RangeRead for FileSource<'_> {
 /// AWS doesn't have), so each is downloaded once, and in a local cache the NAS fills (the build
 /// Mac's, which may lose them for room), so packs are always made from the same immutable source:
 /// processing a tile twice isn't idempotent, so stored (processed) tiles are never an input. Each
-/// copy is written whole (crate::whole) and checked whole when read: one that isn't (cut short) is
-/// deleted and taken from the next source, the NAS's copy, else AWS.
+/// copy is written straight to its name (crate::whole::write_in_place: the store's writes over SMB
+/// are what the job waits on) and checked whole when read: one that isn't (cut short) is deleted
+/// and taken from the next source, the NAS's copy, else AWS.
 pub struct RawTiles {
     dir: std::path::PathBuf,
     store: Option<std::path::PathBuf>,
@@ -246,7 +247,7 @@ impl RawTiles {
         if let Some(st) = &self.store {
             let sd = st.join(format!("{z}/{x}"));
             if let Some(b) = read_whole(&sd.join(format!("{y}.png"))) {
-                crate::whole::write_unsynced(&p, &b)?;
+                crate::whole::write_in_place(&p, &b)?;
                 return Ok((Some(b), false));
             }
             if sd.join(format!("{y}.none")).exists() {
@@ -303,9 +304,9 @@ impl RawTiles {
         match fetch_checked(&self.agent, z, x, y)? {
             Some(b) => {
                 if let Some(sd) = &sd {
-                    crate::whole::write_unsynced(&sd.join(format!("{y}.png")), &b)?;
+                    crate::whole::write_in_place(&sd.join(format!("{y}.png")), &b)?;
                 }
-                crate::whole::write_unsynced(&d.join(format!("{y}.png")), &b)?;
+                crate::whole::write_in_place(&d.join(format!("{y}.png")), &b)?;
                 Ok(Some(b))
             }
             None => {
