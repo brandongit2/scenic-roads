@@ -59,25 +59,25 @@ legend = ('<section class="legend" aria-label="Legend">'
           '</section>')
 
 # Implementation progress (docs/plan.md §10), as of the date shown.
-PROGRESS_AT = '3 October 2026, 22:45'
+PROGRESS_AT = '4 October 2026, 06:00'
 PHASES = [
     ('done', 'Foundations on today’s data', 'Both Macs run the new app from the NAS. Compared with today’s map in nine places (Québec, Tokyo, London, Chamonix, Vancouver, Hong Kong, Taipei, Lisbon, Northumberland): roads, elevation profiles, every tile layer and popup details all equal. The map reads only the pages a request needs from the NAS (a first hover in Tokyo: 66 s before, 1.9 s now).',
      'Left: a speed check against the old app’s measurements once this Mac’s copy is complete.'),
-    ('done', 'Build agent and moving the data', 'The agent runs on the build Mac from the installed app: one job at a time, on mains power or on battery down to 30 %; it backs up your folders and clears replaced files. Per-area work runs in small batches, so a failure or a new app costs one batch. A menu bar item on both Macs shows whether it’s building, paused or waiting, with the job’s progress bar, the time left and a checklist of every step to the end. Both Macs’ data is on the NAS; both reach it over the home network rather than Tailscale (60 MB/s instead of 12).',
+    ('done', 'Build agent and moving the data', 'The agent runs on the build Mac from the installed app: one job at a time, on mains power or on battery down to 30 %, away from home too (through Tailscale; whole-planet and whole-world jobs wait for home); it backs up your folders and clears replaced files. The M1 builds the lighter areas beside it when it’s open, handing its results to the build Mac, which alone writes the build’s records. A menu bar item on both Macs shows each Mac’s job, its progress bar, the time left and a checklist of every step to the end. Every download is kept on the NAS once and checked whole when read (canopy, raw terrain, FABDEM, leaf type, buildings, rail timetables); today’s build’s canopy squares, leaf-type chunks and timetables are reused, not fetched again.',
      None),
-    ('active', 'Worldwide OpenStreetMap pass', 'The first pass, on the 2026-09-28 planet: filtered (60.6 GB, 64 % of the planet), sets and outlines on the NAS, the worldwide basemap made (Planetiler in 46 minutes; 28.6 GB), the planet cut into areas (about 58 GB). The worldwide coarse terrain for peaks is made.',
-     'Left: the road values, the pass’s last stage; trees for new areas.'),
-    ('mostly', 'Per-area building', 'Pilot done: Northumberland and the Scottish Borders built the new way match today’s data (same roads, elevations within 1.8 m, every scenery score and flag). Elevations reach 6,053 m. Landmarks build as their own chain beside the roads: points of interest (the same every run), peaks’ prominence and isolation independent of area borders (8,225 of 8,235 Sierra Nevada peaks equal today’s; Fuji’s isolation now 2,076 km along the globe, published 2,077), Wikidata facts and pageviews. Heritage sites and designated areas come from the pass before the areas, and each area rasterises its own flags, equal to today’s on every tile. The rest of the heritage chain is written and reproduces today’s outputs byte for byte; it stays off until the switch-over’s comparison.',
-     'Left: trains a day and the names to-do list; switching the heritage chain on.'),
-    ('done', 'In the browser', 'Live on both Macs: landmarks, area overlays, rail stops and ferries by view (the In view numbers, lists and popups equal to today’s in 163 views). Against today’s whole files: 3–4× less browser memory (53–74 MB instead of 186–232), the map done loading sooner (London 3.3 s instead of 4.7, Alps 2.9 instead of 4.7), the same frame rates. Zoomed-out drive, ride and rail-line lists come from 500 m summaries (“≈” by the count). The Regions panel adds, renames and removes regions.',
+    ('done', 'Worldwide OpenStreetMap pass', 'The 2026-09-28 planet: filtered (60.6 GB, 64 % of the planet), sets and outlines, the worldwide basemap (Planetiler in 46 minutes; 28.6 GB), the planet cut into areas (about 58 GB), road values, each area’s reach, summits, labels and hiking routes’ ends. The world’s roadside buildings come from Overture once per release (2.5 billion boxes, scanned in 18 minutes).',
+     None),
+    ('mostly', 'Per-area building', 'Pilot done: Northumberland and the Scottish Borders built the new way match today’s data (same roads, elevations within 1.8 m, every scenery score and flag). Areas run in map order and sample only the roads they own; each area’s scenic results carry over to its next run. Tree cover is built per large tile, and trains a day from the rail feeds of the countries a region is in, for any region (today’s 131 feeds and 185,557 of today’s 185,604 rail ways equal). Landmarks build as their own chain beside the roads. The heritage chain reproduces today’s outputs byte for byte; it stays off until the switch-over’s comparison.',
+     'Left: switching the heritage chain on.'),
+    ('done', 'In the browser', 'Live on both Macs: landmarks, area overlays, rail stops and ferries by view (the In view numbers, lists and popups equal to today’s in 163 views). Against today’s whole files: 3–4× less browser memory (53–74 MB instead of 186–232), the map done loading sooner (London 3.3 s instead of 4.7, Alps 2.9 instead of 4.7), the same frame rates. The Regions panel adds, renames and removes regions; the map shows what each published catalog was built for, and a region not built yet as pending.',
      'Left: drawing, splitting and merging regions in the panel.'),
-    ('active', 'Switching over', 'Today’s 34 regions are recipes on the NAS, held for review: once the pass ends, the agent builds them (terrain, slope, heritage sites, the areas, then roads and landmarks) into a catalog kept apart until it’s compared with today’s map.',
-     'Left: the build, the comparison (heritage included), then the switch itself and deleting today’s converted data.'),
+    ('active', 'Switching over', 'Today’s 34 regions are being built (202 areas): terrain under way, then slope, tree cover and heritage sites, the areas (the M1 helping), roads, trains a day and landmarks, into a catalog kept apart until it’s compared with today’s map.',
+     'Left: the build (about a day), the comparison (heritage included), then the switch itself and deleting today’s converted data.'),
 ]
-GAPS = ('Found when every document was checked against the code (3 October): removing a region keeps what’s already built on the map; '
-        'an old pass’s files stay on the NAS (about 200 GB each); regions beyond today’s 34 would lack trees, roadside buildings, '
-        'trains a day and roads’ own English, which come from today’s converted files. Each is listed in the plan to fix before '
-        'regions beyond today’s are added.')
+GAPS = ('Every gap in the plan’s list is fixed (4 October): removing a region takes what only it covered off the map; an old pass’s files '
+        'go 14 days after the next; new regions get tree cover, roadside buildings, roads’ own English and trains a day from the build '
+        'itself; catalogs record their credits and coverage; each area’s scenic results carry over between its runs; every download is '
+        'kept once and checked whole. The plan lists no gaps now.')
 STATE = {'done': ('done', 'st-near'), 'mostly': ('mostly done', 'st-near'), 'active': ('in progress', 'st-on'), 'later': ('later', 'st-later')}
 
 

@@ -181,7 +181,7 @@ def build(check=False):
     n_lc = d.card('land', 'd1', cy, 'grids', 'Python', ['land cover, canopy, cover at', 'z11, made in each area’s job'],
                   [(['layers/grid-*/'], 'packs · z11, not served')], scope='area')
     y2 = max(s_wc.b, n_lc.b) + 22
-    s_bld = d.src('bldg', y2, 'Overture buildings', ['footprints; heights known', 'for 12–58 %'], kept=['sources/buildings/<release>/ (z8 tiles, the world)'])
+    s_bld = d.src('bldg', y2, 'Overture buildings', ['footprints; heights known', 'for 12–58 %'], kept=['sources/buildings/<rel>/', 'z8 tiles, the world'])
     s_off = d.src('bldg', s_bld.b + 8, 'Official 3D buildings', ['PLATEAU in Japan (250+ cities)', 'first; others where needed'])
     n_bld = d.card('bldg', 'd1', y2, 'buildings · later', 'Rust', ['height: official, else tagged,', 'else floors × 3 m, else', 'typical for its kind'],
                    [(['layers/buildings/'], 'packs · MVT z13–14')], scope='global', minh=s_off.b - y2, later=True)
@@ -192,7 +192,7 @@ def build(check=False):
     d.arrow('bldg', (n_bld.r, p_bld.my), (p_bld.l, p_bld.my))
     d.to_layer('bldg', p_bld, b_bld)
     s_can = d.src('land', max(s_off.b, n_bld.b) + 12, 'Canopy height · leaf type', ['Meta & WRI (1.2 m imagery)', 'Copernicus HRL · NALCMS'],
-                  kept=['the NAS (sources/canopy/, 10° files)', 'sources/trees/leaf/'])
+                  kept=['sources/canopy/ (10°)', 'sources/trees/leaf/'])
     n_trees = d.card('land', 'd1', s_can.y + 30, 'trees', 'Python', ['cover · height · leaf type,', 'z4–12 clipped to the coverage,', 'before the areas'],
                      [(['layers/trees-*/'], 'packs · Terrarium WebP')], scope='pack')
     p_trees = d.pill('land', n_trees.my, ['/tiles/trees/{var}'], note='the pack for the tile')
