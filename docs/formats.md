@@ -381,7 +381,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   last); `sources/trees/leaf/lat<top>_lon<left>.tif` (a 10° square's dominant leaf type at 0.0005°:
   u8 GeoTIFF, 0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data; `dem/leaftype.py`; tag
   `complete=1` when made whole, as the trees job makes them; one made over some regions only,
-  without the tag from the EEA, or not whole, is made again; while an EEA square is being made, its
+  without the tag from the EEA, or not whole, is made again, keeping the chunks of it that were
+  fetched whole (no holes where a probe shows the EEA has data); while an EEA square is being made, its
   chunks are kept as they come in `sources/trees/leaf/parts/lat<top>_lon<left>/<row>-<col>.npy`, or
   `.none` where the EEA has no data, until the square is saved) and `sources/trees/nalcms-2020.tif`
   (NALCMS's 30 m GeoTIFF, 3.4 GB, kept once fetched, its size and CRC-32 checked against the zip's);

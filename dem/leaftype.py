@@ -20,8 +20,8 @@ usage: leaftype.py [eu] [na] [--keep-nalcms]
 
 The build agent's trees job calls `make` for the squares its z3 tile needs (dem/trees.py --z3):
 whole squares, tagged complete (squares made per region hold data only where its regions were,
-and are made again; so is one that isn't whole), with NALCMS's GeoTIFF kept beside them so it's
-downloaded once. An EEA square's chunks are kept on the NAS as they come (`parts/`), so a square
+and are made again, keeping their chunks fetched whole; so is one that isn't whole), with NALCMS's
+GeoTIFF kept beside them so it's downloaded once. An EEA square's chunks are kept on the NAS as they come (`parts/`), so a square
 that fails part way asks again only for what it lacks.
 """
 from __future__ import annotations
@@ -221,6 +221,24 @@ def europe_square(top: int, left: int, out: Path, meets, strict: bool) -> None:
     # The agent's chunks, kept on the NAS as they come (a chunk: its array, or `.none` where the
     # EEA has no data), until the square is saved.
     parts = out / "parts" / f"lat{top}_lon{left}"
+    # Today's square, made over some regions only (not tagged complete): a chunk of it fetched whole
+    # then is kept rather than asked for again. Whole: no holes where the probe shows the EEA has data
+    # (a request that failed then left one: asked again; a fifth of a chunk's land, or of its smallest
+    # split, is far more than the coastline's 0.05 %). The probe comes from the EEA's coarser levels,
+    # so its classes aren't compared, only where there's data.
+    old = None
+    path = out / f"lat{top}_lon{left}.tif"
+    if strict and path.exists():
+        import whole
+
+        if whole.tiff_whole(path):
+            try:
+                with rasterio.open(path) as d:
+                    if (d.width, d.height) == (N, N):
+                        old = d.read(1)
+            except rasterio.errors.RasterioIOError:
+                old = None
+    kept_old = 0
 
     def fetch(j):
         r0, c0, h, w, bb = j
@@ -244,6 +262,14 @@ def europe_square(top: int, left: int, out: Path, meets, strict: bool) -> None:
         if not np.isin(probe, (0, 1, 2)).any():
             (parts / f"{r0}-{c0}.none").write_bytes(b"")
             return np.full((h, w), 255, np.uint8)  # no EEA data here
+        if old is not None:
+            here = old[r0:r0 + h, c0:c0 + w]
+            s = here[2::5, 2::5][:probe.shape[0], :probe.shape[1]]
+            data = lut[probe] != 255
+            if s.shape == probe.shape and np.count_nonzero(data & (s == 255)) <= 0.002 * np.count_nonzero(data):
+                nonlocal kept_old
+                kept_old += 1
+                return here.copy()
         a = eea_chunk(*bb, w, h, strict)
         if a is not None:
             import whole
@@ -265,6 +291,8 @@ def europe_square(top: int, left: int, out: Path, meets, strict: bool) -> None:
                 print(f"  failed chunk {bb}", file=sys.stderr)
                 continue
             a[r0:r0 + h, c0:c0 + w] = lut[chunk]
+    if kept_old:
+        print(f"  {kept_old} chunks kept from today's square", flush=True)
     save(top, left, a, "Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m, read at 0.0005°", out, whole=strict)
     if strict:
         import shutil
