@@ -1124,7 +1124,8 @@ At each phase's end an Opus agent reviews the work against this plan.
       helper building units meanwhile), the units, the three chains (the heritage chain included).
    3. The held catalog is compared with today's map: counts and distributions (lengths, drives and
       climbs change under the new chaining), heritage points and overlays, screenshots and
-      performance.
+      performance. `compare` reports the counts and distributions (units as they're built too:
+      `--new build`).
    4. Then the hold is released, and the converted legacy data deleted.
 7. **Features,** each on its own: 3D buildings, then PLATEAU; building heights in horizons and the
    viewshed tool; the new terrain repair; sharper terrain from national DEMs. Not started.
