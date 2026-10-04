@@ -75,7 +75,9 @@ pub struct Options {
 }
 
 /// The largest piece a helper builds (bytes): denser units need more memory than a 16 GB Mac has.
-const HELPER_MAX_PIECE: u64 = 150 << 20;
+/// (Over the M1's first 205 units, pieces up to 150 MB, its steps' programs took 3.7 GB at most,
+/// and no more for the bigger pieces; the densest, past 400 MB, wait for the build Mac.)
+const HELPER_MAX_PIECE: u64 = 400 << 20;
 /// The free space a helper's jobs start with (its Mac has less room than the build Mac).
 const HELPER_RESERVE: u64 = 15 << 30;
 

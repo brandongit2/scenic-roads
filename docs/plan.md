@@ -288,10 +288,11 @@ records off for the build Mac's agent to merge (§8, Two Macs). The exceptions:
 
 **The M1 helps (16 GB).** Its agent runs as a helper (`scenic agent --helper`, under the launcher
 like the build Mac's; `tools/app/install.sh --helper` sets it up).
-- **What it builds:** units, nothing else; the light ones (pieces up to 150 MB: denser units need
+- **What it builds:** units, nothing else; the lighter ones (pieces up to 400 MB: denser units need
   more memory), taking them from the far end of the list. Each unit's log line gives the most memory
   one of its steps' programs took (scenic-build's own isn't counted), against its piece's size, to
-  set that limit by.
+  set that limit by: over its first 205 units, pieces up to 150 MB, 3.7 GB at most, no more for the
+  bigger pieces.
 - **How:** the build Mac's power rule (mains, or battery down to 30 %); half its cores while its user
   is at it, all but two otherwise; each job started with 15 GB free, from the caches the NAS keeps.
 - **Status:** `state/helpers/<host>.json`. The M1's status bar shows its job from its own status;
