@@ -36,13 +36,7 @@ pub const SETS: &[(&str, u32, &[&str])] = &[
     ("outlines", 1, &["r/boundary=administrative", "r/ISO3166-1", "r/ISO3166-2"]),
     // The labels by importance (dem/labels.py): places, seas, bays and straits, water and parks.
     ("labels", 1, &["n/place", "n/natural=bay,strait", "wr/natural=water,bay,strait", "wr/boundary=national_park,protected_area", "wr/leisure=nature_reserve"]),
-    // The landmark jobs' (docs/phase5.md "Build"). `marks`: the point kinds' objects (extract.rs
-    // poi_kind; covered bridges; car parks tagged for hiking; car parks named for a trail come
-    // from the units' pieces, hiking routes' ends from `hikes`).
-    ("marks", 1, &[
-        "nwr/highway=rest_area,trailhead", "nwr/tourism=picnic_site,viewpoint", "nwr/natural=peak,volcano", "nwr/waterway=waterfall",
-        "nwr/man_made=lighthouse", "w/covered=yes", "w/bridge=covered", "nwr/hiking=yes", "nwr/trailhead=yes",
-    ]),
+    // (The landmark candidates come from the units' pieces, extract `--candidates`, not a set.)
     // Summits, worldwide, for prominence and isolation: peaks and volcanoes, nodes and ways (2: ways
     // too, as the peaks among the candidates are).
     ("summits", 2, &["nw/natural=peak,volcano"]),

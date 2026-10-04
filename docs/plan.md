@@ -82,8 +82,8 @@ messages say what happened and what to do, in plain words.
 the NAS does itself. The jobs (§8 has their order and keys):
 1. **The OSM pass**, when the NAS holds a newer planet. It makes:
    - the filtered planet;
-   - the worldwide sets (rail, ferries, designated areas, places, outlines, labels, landmarks' tags,
-     summits, hiking routes, heritage-named objects);
+   - the worldwide sets (rail, ferries, designated areas, places, outlines, labels, summits, hiking
+     routes, heritage-named objects);
    - the administrative and ISO 3166 outlines;
    - the worldwide basemap;
    - pieces: filtered OSM per unit, with a 10 km buffer and ways kept whole;
@@ -264,8 +264,7 @@ steps merge their manifest changes under a lock. The exceptions:
 - **Offline start:** the last catalog and every pack's index stay local.
 - **In use** means any request in the last ten minutes, except the status polls (`/api/catalog`,
   `/api/ping`, `/api/build`).
-  - An idle server loads nothing; warming starts at the first request. (Gap: every start counts as
-    a use, §10.)
+  - An idle server loads nothing; warming starts at the first request (starting isn't a use).
   - It checks the NAS for a newer catalog every 30 s while in use, every 10 minutes otherwise.
 - **URLs and ETags:**
   - Data URLs carry a content version (`?v=`: a file's hash, a layer's packs' content names, plus
@@ -306,8 +305,10 @@ the region. Each entry is one of these:
   - Renaming a region rebuilds nothing.
   - Changing an outline reruns what its shapes reach: the units, the terrain packs and the
     heritage-sites job.
-  - Two gaps (§10): keys name each shape by its region's id, and they follow shapes' bounding boxes
-    where the design wanted each unit's selection, the ids of the features it builds.
+  - Shapes enter keys by their geometry alone, never by their region, so renaming, splitting or
+    merging regions with the same outlines reruns nothing.
+  - A gap (§10): keys follow shapes' bounding boxes where the design wanted each unit's selection,
+    the ids of the features it builds.
 - **Shrinking** leaves global-source tiles in place, which is harmless.
 
 **Today's set:** 34 recipes (`tools/cutover/regions`).
@@ -495,12 +496,11 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **unit:** its piece, the pass's road values, the coverage's shapes within 10 km, the terrain and
   grid hi packs within 30 km, and its heritage slices;
 - **pack(T):** every base pack and road-values file within T + 110 km;
-- **lo:** its packs' keys.
+- **lo:** the base packs and road values within 110 km of its z3 tile.
 
 The landmark jobs, stations, ferries and overlays: `docs/phase5.md`.
 
-An output identical to before keeps its content name, so jobs keyed on it stop there. lo is the
-exception: its key names its packs' keys, not their outputs.
+An output identical to before keeps its content name, so jobs keyed on it stop there.
 
 ### Served
 
@@ -672,11 +672,14 @@ are no request files.
 - **A job** is one step over a batch of stale targets: terrain 1, slope and lo 2, unit 6, peaks 12,
   pack 16, pois 24, the worldwide steps all. So a failure or a new app costs one batch.
 - **Order:** the agent starts the first job that can run, in plan order.
+- **A newly installed app:** the running job finishes under the old one, nothing new starts, and the
+  agent exits so the launcher starts the new one.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours. The orphans of a crashed
   agent are stopped at start (only when their leader's start time proves them ours, or the leader is
   gone and every member started after the job).
-- **The heartbeat:** the agent writes it with each loop (`state/status.json`, about every 20 s). It
-  holds the job, its progress (from the job's `progress:` lines) with the time left, and a checklist
+- **The heartbeat:** the agent writes it locally with each loop (about every 20 s), and to the NAS
+  (`state/status.json`) when it changes or every five minutes; the user's idle seconds don't count as
+  a change, only whether they're at the Mac. It holds the job, its progress (from the job's `progress:` lines) with the time left, and a checklist
   of every step to the end.
 
 **Order:**
@@ -849,19 +852,14 @@ are added.
 1. **Removing a region removes nothing built.**
    - Its base packs, road values, hidata and road packs stay in the manifest, so every catalog keeps
      serving them and GC never frees them.
-   - A unit left with no ways keeps its old base pack.
    - `scenic remove` and the panel used to promise otherwise; their messages now say so.
 2. **GC never sweeps `sources/`.** A retired pass's planet, filtered file, pieces, sets and road
    values stay, about 200 GB a pass. `work/pois` and `work/peaks` of units that leave the coverage
    stay referenced for good.
 3. **Keys are coarser than the design.**
-   - Coverage enters keys as shapes named by their region's id: changing an id, or splitting and
-     merging regions, would rerun everything they cover.
    - Redrawing an outline reruns every unit whose box meets it, not only those whose features
      changed (the design: U's selection).
    - Unit keys hold no DEM-source or module versions, so a new rule needs a step version bump.
-   - lo's key names its packs' keys, so an identical pack doesn't stop the cascade.
-   - The ferries job is keyed on the built units, though its output doesn't depend on them.
 4. **New regions miss what today's coverage has from converted files:**
    - trees;
    - roadside buildings (Overture boxes for today's regions only);
@@ -880,15 +878,10 @@ are added.
    - The Regions API reads and writes the share outside the I/O pool, so a hung mount can hold a
      request.
    - A basemap tile's 304 still reads the NAS while the basemap isn't mirrored.
-   - The updater counts the server's start as a use, so every start warms the caches and polls as in
-     use for ten minutes.
 8. **The agent:**
-   - It rewrites the NAS heartbeat every loop, because the status includes the user's idle time.
    - It runs nothing away from home, since every job needs the NAS (the design let local steps go
      on).
-   - The pass's `marks` set is read by nothing.
 9. **Catalogs:**
-   - `app` holds the crate's version (0.1.0), not the app's.
    - `credits` and `coverage` are empty: `/api/coverage` builds the coverage per request.
 10. **The repo:**
     - `nas/fetch-planet.sh` lives only on the NAS.

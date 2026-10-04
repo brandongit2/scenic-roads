@@ -15,7 +15,7 @@ def build(check=False):
     s_osm = d.src('osm', cy, 'OSM planet', ['the whole world; the NAS', 'fetches it twice a year,', 'resuming if interrupted'],
                   kept=['sources/osm/<date>/'])
     n_pass = d.card('osm', 'd1', cy, 'OSM pass', 'osmium', ['filtered, then cut by area', '(z6 tiles, 10 km buffer);', 'sets, outlines and every', 'way’s whole road'],
-                    [(['pieces/<z6>.osm.pbf'], 'PBF · all land ≈ 58 GB'), (['sets/ · outlines'], 'ten sets: rail, ferries …'),
+                    [(['pieces/<z6>.osm.pbf'], 'PBF · all land ≈ 58 GB'), (['sets/ · outlines'], 'nine sets: rail, ferries …'),
                      (['roads/<z6>'], 'each way’s road and offset')], scope='global')
     s_reg = d.src('osm', s_osm.b + 8, 'Your regions', ['outlines: administrative areas,', 'Geofabrik units, drawn shapes;', 'their union is the coverage'],
                   kept=['inputs/regions/'])

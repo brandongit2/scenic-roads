@@ -230,7 +230,7 @@ zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. 
 
 ```json
 {
-  "fmt": 1, "n": 7, "created": "2026-10-03T04:05:06Z", "app": "0.1.0 (the pipeline crate's version)",
+  "fmt": 1, "n": 7, "created": "2026-10-03T04:05:06Z", "app": "20261004-0252-2684bda (the published app that made it, or development)",
   "files": {"<logical>": {"file": "<content name>", "size": 123, "fmt": 1}},
   "units": ["6/32/21"],
   "layers": {

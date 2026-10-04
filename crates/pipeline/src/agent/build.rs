@@ -115,15 +115,18 @@ fn h(parts: &[&str]) -> String {
     store::naming::hash16(parts.join("\n").as_bytes())
 }
 
-/// The coverage near a box (w, s, e, n, E7): the shapes meeting it, by source and rings.
+/// The coverage near a box (w, s, e, n, E7): the shapes meeting it, by their geometry (buffer and
+/// rings) alone. Which region or outline entry a shape came from never enters a key, so renaming a
+/// region's id, or splitting and merging regions with the same outlines, reruns nothing.
 fn cov_fp(cov: &Coverage, b: [i32; 4]) -> String {
     let mut v: Vec<String> = cov
         .shapes
         .iter()
         .filter(|s| s.bbox[0] <= b[2] && s.bbox[2] >= b[0] && s.bbox[1] <= b[3] && s.bbox[3] >= b[1])
-        .map(|s| format!("{}:{}", s.source, store::naming::hash16(bytemuck::cast_slice(&s.rings.concat()))))
+        .map(|s| format!("{}:{}", s.buffer_m, store::naming::hash16(bytemuck::cast_slice(&s.rings.concat()))))
         .collect();
     v.sort();
+    v.dedup();
     v.join(",")
 }
 
@@ -405,7 +408,9 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
 }
 
 /// pack(T)'s targets (z6 tiles within 100 km, plus the pieces' buffer, of a unit with a base pack)
-/// and lo's (their z3 tiles), each with its key, done or not.
+/// and lo's (their z3 tiles), each with its key, done or not. Both are keyed on what they read: the
+/// base packs and road values of the units within 110 km (a unit's ways reach no further), so an
+/// identical rebuild of a unit (same content names) reruns neither.
 fn pack_lo_targets(m: &BTreeMap<String, String>) -> (Vec<(String, String)>, Vec<(String, String)>) {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let base_units: Vec<(Unit, String)> = m
@@ -418,31 +423,27 @@ fn pack_lo_targets(m: &BTreeMap<String, String>) -> (Vec<(String, String)>, Vec<
             tiles.insert(t);
         }
     }
-    let mut packs = Vec::new();
-    let mut los: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
-    for &(x, y) in &tiles {
-        let gb = grown_e7(6, x, y, 110.0);
-        let mut ins = vec![format!("pack {PACK_V}")];
-        for (u, c) in &base_units {
-            let ub = crate::hipack::tile_bounds(u.z, u.x, u.y);
-            if ub[0] <= gb[2] && ub[2] >= gb[0] && ub[1] <= gb[3] && ub[3] >= gb[1] {
-                ins.push(c.clone());
-            }
-        }
-        let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-        let k = h(&refs);
-        packs.push((format!("6/{x}/{y}"), k.clone()));
-        los.entry((x >> 3, y >> 3)).or_default().push(k);
-    }
-    let lo = los
-        .into_iter()
-        .map(|(q, ks)| {
-            let mut ins = vec![format!("lo {LO_V}")];
-            ins.extend(ks);
-            let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
-            (format!("3/{}/{}", q.0, q.1), h(&refs))
-        })
-        .collect();
+    // The base units whose box meets a tile's box grown by 110 km.
+    let near = |z: u8, x: u32, y: u32| -> Vec<String> {
+        let gb = grown_e7(z, x, y, 110.0);
+        base_units
+            .iter()
+            .filter(|(u, _)| {
+                let ub = crate::hipack::tile_bounds(u.z, u.x, u.y);
+                ub[0] <= gb[2] && ub[2] >= gb[0] && ub[1] <= gb[3] && ub[3] >= gb[1]
+            })
+            .map(|(_, c)| c.clone())
+            .collect()
+    };
+    let key = |head: String, ins: Vec<String>| {
+        let mut all = vec![head];
+        all.extend(ins);
+        let refs: Vec<&str> = all.iter().map(String::as_str).collect();
+        h(&refs)
+    };
+    let packs: Vec<(String, String)> = tiles.iter().map(|&(x, y)| (format!("6/{x}/{y}"), key(format!("pack {PACK_V}"), near(6, x, y)))).collect();
+    let qs: BTreeSet<(u32, u32)> = tiles.iter().map(|&(x, y)| (x >> 3, y >> 3)).collect();
+    let lo = qs.into_iter().map(|(x, y)| (format!("3/{x}/{y}"), key(format!("lo {LO_V}"), near(3, x, y)))).collect();
     (packs, lo)
 }
 
@@ -472,16 +473,20 @@ fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &B
         return Some(Work { step: "lo".into(), targets: lo });
     }
 
-    // Rail stops and ferries near the built units, from the pass's sets.
+    // Rail stops near the built units, and ferries worldwide, from the pass's sets (once there are
+    // units: before them there are no roads to ride to).
     let built: Vec<&str> = m.range("base/".to_string()..).take_while(|(l, _)| l.starts_with("base/")).map(|(l, _)| l.as_str()).collect();
     if !built.is_empty() {
-        for (step, v, set, extra) in [
-            ("stations", STATIONS_V, "rail", String::new()),
-            ("ferries", FERRIES_V, "ferries", inputs.get("ferries-freq").cloned().unwrap_or_default()),
+        for (step, v, set, extra, per_unit) in [
+            ("stations", STATIONS_V, "rail", String::new(), true),
+            ("ferries", FERRIES_V, "ferries", inputs.get("ferries-freq").cloned().unwrap_or_default(), false),
         ] {
             let Some(set_c) = m.get(&crate::osmpass::set_name(date, set)) else { continue };
             let mut ins = vec![format!("{step} {v}"), set_c.clone(), extra];
-            ins.extend(built.iter().map(|s| s.to_string()));
+            // The stops are clipped to the built units' tiles; the ferries aren't clipped at all.
+            if per_unit {
+                ins.extend(built.iter().map(|s| s.to_string()));
+            }
             let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
             let k = h(&refs);
             if done.lo.get(step).map(String::as_str) != Some(k.as_str()) {
@@ -847,6 +852,55 @@ mod tests {
         done.catalog_held = Some(k);
         assert!(line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), true), "Publishing").finished());
         assert!(!line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), false), "Publishing").finished());
+    }
+
+    #[test]
+    fn keys_dont_name_regions() {
+        let d = tempfile::tempdir().unwrap();
+        let place = "place:-21.9,64.13,20";
+        let cov_of = |rs: &[(&str, &str)]| Coverage::from_recipes(&rs.iter().map(|(id, o)| Recipe { id: id.to_string(), name: "R".into(), outline: vec![o.to_string()] }).collect::<Vec<_>>(), None, d.path()).unwrap();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
+        let keys = |c: &Coverage| (terrain_slope_targets(c, &m), unit_keys(c, "d", &m).into_iter().map(|(u, k)| (u.slash(), k)).collect::<Vec<_>>(), pois_keys(c, "d", &m).into_iter().map(|(_, k)| k).collect::<Vec<_>>());
+        let one = keys(&cov_of(&[("r", place)]));
+        // Renamed, or the same outline in two regions: nothing to rerun.
+        assert_eq!(keys(&cov_of(&[("renamed", place)])), one);
+        assert_eq!(keys(&cov_of(&[("a", place), ("b", place)])), one);
+        // Another outline is another coverage.
+        assert_ne!(keys(&cov_of(&[("r", "place:-21.9,64.13,25")])), one);
+    }
+
+    #[test]
+    fn map_tiles_follow_the_base_packs_near_them() {
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        let put = |m: &mut BTreeMap<String, String>, u: &str, h: &str| {
+            m.insert(format!("base/{u}"), format!("base/{u}.{h}.sect"));
+            m.insert(format!("global/roads/{u}"), format!("global/roads/{u}.{h}.sect"));
+        };
+        put(&mut m, "6-28-16", "1111111111111111");
+        put(&mut m, "6-50-20", "2222222222222222");
+        let lo_of = |m: &BTreeMap<String, String>, q: &str| pack_lo_targets(m).1.into_iter().find(|(t, _)| t == q).unwrap().1;
+        let (near, far) = (lo_of(&m, "3/3/2"), lo_of(&m, "3/6/2"));
+        // A unit rebuilt with new content: the zoomed-out tile over it is stale, the far one isn't.
+        put(&mut m, "6-28-16", "3333333333333333");
+        assert_ne!(lo_of(&m, "3/3/2"), near);
+        assert_eq!(lo_of(&m, "3/6/2"), far);
+    }
+
+    #[test]
+    fn ferries_dont_depend_on_the_built_units() {
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        for set in ["rail", "ferries"] {
+            m.insert(crate::osmpass::set_name("d", set), format!("sources/osm/d/sets/{set}.5555555555555555.osm.pbf"));
+        }
+        m.insert("base/6-28-16".into(), "base/6-28-16.1111111111111111.sect".into());
+        m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.1111111111111111.sect".into());
+        let key = |m: &BTreeMap<String, String>, step: &str| remaining(&Keys::default(), |d| roads_chain("d", m, d, &BTreeMap::new())).into_iter().find(|w| w.step == step).unwrap().targets[0].1.clone();
+        let (stations, ferries) = (key(&m, "stations"), key(&m, "ferries"));
+        m.insert("base/6-40-20".into(), "base/6-40-20.2222222222222222.sect".into());
+        m.insert("global/roads/6-40-20".into(), "global/roads/6-40-20.2222222222222222.sect".into());
+        assert_ne!(key(&m, "stations"), stations, "stops are clipped to the built units");
+        assert_eq!(key(&m, "ferries"), ferries);
     }
 
     #[test]

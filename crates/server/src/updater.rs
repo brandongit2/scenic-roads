@@ -42,7 +42,7 @@ pub fn touch() {
     LAST_REQUEST.store(now(), Ordering::Relaxed);
 }
 
-/// Whether the map has had a request in the last `secs` seconds.
+/// Whether the map has had a request in the last `secs` seconds (never, before the first).
 pub fn in_use(secs: u64) -> bool {
     let t = LAST_REQUEST.load(Ordering::Relaxed);
     t != 0 && now().saturating_sub(t) < secs
@@ -62,7 +62,8 @@ impl Updater {
             (Some(e), Some(a)) if e.starts_with(&a) => e.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()),
             _ => None,
         };
-        touch();
+        // (Starting isn't a use: until a request comes, the server warms nothing and polls the
+        // NAS at the idle rate.)
         Arc::new(Updater { home: home.to_path_buf(), running, pending: AtomicBool::new(false) })
     }
 

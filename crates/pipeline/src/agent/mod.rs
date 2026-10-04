@@ -372,7 +372,13 @@ impl Agent {
                 Vec::new()
             }
         };
-        if self.running.is_none() {
+        // A newer app installed: nothing new starts, so the loop exits between jobs and the launcher
+        // starts the new one (with work queued back to back, it would otherwise never get a turn).
+        let newer = self.running.is_none() && self.newer_app();
+        if newer {
+            waiting.push(Waiting { what: "Building".into(), why: "restarting into the newly installed app".into() });
+        }
+        if self.running.is_none() && !newer {
             for spec in plan {
                 if let Some(why) = lapsed(&spec.needs, &c) {
                     waiting.push(Waiting { what: spec.what.clone(), why });
@@ -444,7 +450,10 @@ impl Agent {
         }
         write_replace(&self.o.home.join("status.json"), &body).ok();
         if let Some(root) = &root {
-            let same = serde_json::to_vec(&Status { beat: 0, ..status.clone() })?;
+            // What's new since the last write, without the time and the user's idle seconds (which
+            // change every loop): only whether the user is at the Mac counts.
+            let idle_s = if c.user_active() { 0 } else { cond::AWAY_S };
+            let same = serde_json::to_vec(&Status { beat: 0, conditions: Conditions { idle_s, ..c }, ..status.clone() })?;
             let due = self.last_beat.as_ref().is_none_or(|(b, t)| *b != same || t.elapsed() >= Duration::from_secs(300));
             if due {
                 match write_replace(&root.join("state/status.json"), &body) {
@@ -798,7 +807,7 @@ fn lapsed(n: &Needs, c: &Conditions) -> Option<String> {
 }
 
 /// The app version of the programs in `bin` (`…/app/<version>/`), or "development".
-fn app_version(bin: &Path) -> String {
+pub fn app_version(bin: &Path) -> String {
     let canon = bin.canonicalize().unwrap_or_else(|_| bin.to_path_buf());
     match (canon.parent().and_then(|p| p.file_name()), canon.file_name()) {
         (Some(app), Some(v)) if app == "app" => v.to_string_lossy().into_owned(),
@@ -891,6 +900,30 @@ mod tests {
         a.mem.last_ok.insert("backup".into(), now_s());
         let mut w = Vec::new();
         assert!(!a.plan(&root, &st.conditions, &mut w).iter().any(|j| j.id == "backup"));
+    }
+
+    #[test]
+    fn a_newer_app_starts_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        // The agent runs from app/v1; app/current points at v2.
+        let apps = d.path().join("app");
+        std::fs::create_dir_all(apps.join("v1")).unwrap();
+        std::fs::create_dir_all(apps.join("v2")).unwrap();
+        std::os::unix::fs::symlink("v2", apps.join("current")).unwrap();
+        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: apps.join("v1"), dry_run: true, once: true }).unwrap();
+        assert_eq!(a.app, "v1");
+        a.step().unwrap();
+        let st = read_status(Some(&root), &home).unwrap();
+        assert!(st.waiting.iter().any(|w| w.why.contains("newly installed app")), "{:?}", st.waiting);
+        assert!(!st.waiting.iter().any(|w| w.why.contains("would start")), "{:?}", st.waiting);
+        // Pointing back at its own version: work starts again.
+        std::fs::remove_file(apps.join("current")).unwrap();
+        std::os::unix::fs::symlink("v1", apps.join("current")).unwrap();
+        a.step().unwrap();
+        let st = read_status(Some(&root), &home).unwrap();
+        assert!(st.waiting.iter().any(|w| w.why.contains("would start")), "{:?}", st.waiting);
     }
 
     #[test]

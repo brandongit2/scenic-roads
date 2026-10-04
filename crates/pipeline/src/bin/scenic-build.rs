@@ -679,7 +679,8 @@ fn catalog(out: &mut Out, held: bool) -> Result<()> {
         "fmt": 1,
         "n": n,
         "created": chrono_now(),
-        "app": env!("CARGO_PKG_VERSION"),
+        // The published app that made it (its folder's name), or "development".
+        "app": std::env::current_exe().ok().and_then(|e| e.parent().map(pipeline::agent::app_version)).unwrap_or_else(|| "development".into()),
         "files": files,
         "units": units,
         "layers": layers,
@@ -1401,6 +1402,16 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
         eprintln!("unit {}: {} of {} ways touch the coverage, {} owned; {} heritage sites, {} area polygons", u.slash(), rep.kept_ways, rep.piece_ways, rep.owned, rep.heritage, rep.areas);
         if rep.kept_ways == 0 || rep.owned == 0 {
+            // None of its ways in the coverage (any more): a base pack and road values from an
+            // earlier coverage go, so the map and the map tiles stop showing them.
+            let gone: Vec<String> = [format!("base/{}", u.dash()), format!("global/roads/{}", u.dash())].into_iter().filter(|l| out.get(l).is_some()).collect();
+            if !gone.is_empty() {
+                for l in &gone {
+                    out.remove(l);
+                }
+                out.save()?;
+                eprintln!("unit {}: removed its earlier {}", u.slash(), gone.join(" and "));
+            }
             continue;
         }
         // The owned ways, in base-pack order, with the pass's road values.
