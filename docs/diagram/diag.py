@@ -1,11 +1,11 @@
-"""Drawing helpers for the pipeline diagrams (today.py, proposed.py, storage.py; page.py puts them together)."""
+"""Drawing helpers for the pipeline diagrams (proposed.py, storage.py; page.py puts them together)."""
 from html import escape as E
 
 W = 1484
 COLS = {'src': (16, 180), 'd1': (224, 196), 'd2': (450, 196), 'd3': (676, 196), 'd4': (902, 196),
         'srv': (1124, 140), 'brw': (1286, 182)}
 CLASSES = ['base', 'place', 'terr', 'net', 'scen', 'land', 'bldg', 'osm', 'mix']
-TAB = {'area': 'PER AREA', 'global': 'WORLDWIDE'}
+TAB = {'area': 'PER AREA', 'pack': 'PER Z3 PACK', 'global': 'WORLDWIDE'}
 
 
 class Bx:
@@ -45,9 +45,10 @@ class Diagram:
         m = f' data-max="{maxw:.0f}"' if self.check and maxw else ''
         return f'<text class="{cls}" x="{x:.1f}" y="{y:.1f}"{a}{m}>{E(s)}</text>'
 
-    def card(self, k, col, y, title, tool, subs, groups, kept=None, minh=0, scope=None):
+    def card(self, k, col, y, title, tool, subs, groups, kept=None, minh=0, scope=None, later=False):
         """A build step (tinted header: name, language, what it does) over the files it writes
-        (body: names, then format and size); scope: a tab saying where its files go."""
+        (body: names, then format and size); scope: a tab saying how it's divided; later: not built
+        yet, or built but off (a dashed outline)."""
         x, w = COLS[col]
         tx = self.tx
         ty = y + 18
@@ -78,7 +79,7 @@ class Diagram:
         el += [f'<rect class="card" x="{x}" y="{y}" width="{w}" height="{h:.1f}" rx="{r}"/>',
                f'<path class="card-hd" d="M{x},{y + hh:.1f} V{y + r} Q{x},{y} {x + r},{y} H{x + w - r} Q{x + w},{y} {x + w},{y + r} V{y + hh:.1f} Z"/>',
                f'<line class="card-sep" x1="{x}" y1="{y + hh:.1f}" x2="{x + w}" y2="{y + hh:.1f}"/>',
-               f'<rect class="card-ol" x="{x}" y="{y}" width="{w}" height="{h:.1f}" rx="{r}"/>',
+               f'<rect class="card-ol{" later" if later else ""}" x="{x}" y="{y}" width="{w}" height="{h:.1f}" rx="{r}"/>',
                tx('tt', x + 9, ty, title, w - 26 - 5.2 * len(tool)),
                tx('tool', x + w - 9, ty - 0.5, tool, anchor='end')]
         for i, s in enumerate(subs):
@@ -201,14 +202,6 @@ main{max-width:1520px;margin:0 auto;padding:22px 16px 28px}
 h1{font:600 20px/1.2 var(--sans);margin:0 0 4px;letter-spacing:-.005em}
 .sub{margin:0;color:var(--muted);font-size:13.5px;max-width:980px}
 header{margin-bottom:14px;display:flex;flex-wrap:wrap;gap:10px 24px;align-items:flex-end;justify-content:space-between}
-.vsel{position:absolute;opacity:0;pointer-events:none}
-.tabs{display:inline-flex;border:1px solid var(--rule);border-radius:9px;padding:3px;background:var(--surface);gap:2px}
-.tabs label{font:600 12.5px var(--sans);padding:5px 14px;border-radius:6px;color:var(--muted);cursor:pointer;user-select:none}
-.tabs label:hover{color:var(--fg)}
-#v-new:checked~header .tabs label[for=v-new],#v-old:checked~header .tabs label[for=v-old]{background:color-mix(in srgb,var(--fg) 10%,var(--surface));color:var(--fg)}
-#v-new:focus-visible~header .tabs label[for=v-new],#v-old:focus-visible~header .tabs label[for=v-old]{outline:2px solid var(--c-base);outline-offset:1px}
-.view-old,#v-old:checked~.view-new,#v-old:checked~.legend .only-new{display:none}
-#v-old:checked~.view-old{display:block}
 .legend{display:flex;flex-wrap:wrap;gap:8px 26px;align-items:flex-start;margin:0 0 14px;padding:10px 12px;border:1px solid var(--rule);border-radius:10px;background:var(--surface)}
 .legend h2{font:600 10.5px/1 var(--sans);letter-spacing:.08em;color:var(--faint);margin:0 0 7px;text-transform:uppercase}
 .legend ul{list-style:none;margin:0;padding:0;display:grid;gap:4px 14px;font-size:12.5px}
@@ -244,10 +237,13 @@ svg .card{fill:var(--surface)}
 svg .card-hd{fill:color-mix(in srgb,var(--k) 17%,var(--surface))}
 svg .card-sep{stroke:color-mix(in srgb,var(--k) 45%,var(--surface));stroke-width:1}
 svg .card-ol{fill:none;stroke:var(--k);stroke-width:1.2}
+svg .card-ol.later{stroke-dasharray:5 3.5}
 svg .tab{fill:color-mix(in srgb,var(--k) 17%,var(--surface));stroke:var(--k);stroke-width:1}
 svg .tab-t{font:600 8px var(--sans);letter-spacing:.08em;fill:var(--muted)}
-svg .tab.world,svg .tab.shared,svg .tab.both,svg .tab.global{fill:var(--k)}
-svg .tab.world+.tab-t,svg .tab.shared+.tab-t,svg .tab.both+.tab-t,svg .tab.global+.tab-t{fill:var(--surface)}
+svg .tab.pack{fill:color-mix(in srgb,var(--k) 55%,var(--surface))}
+svg .tab.pack+.tab-t{fill:var(--fg)}
+svg .tab.global{fill:var(--k)}
+svg .tab.global+.tab-t{fill:var(--surface)}
 svg .src{fill:color-mix(in srgb,var(--k) 7%,var(--surface));stroke:var(--k);stroke-width:1.2}
 svg .kept{fill:none;stroke:var(--k);stroke-width:1;stroke-dasharray:3.5 2.5}
 svg .pill{fill:var(--surface);stroke:var(--k);stroke-width:1}
