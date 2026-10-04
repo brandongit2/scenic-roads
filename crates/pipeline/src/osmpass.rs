@@ -701,7 +701,9 @@ pub fn newer_planet(root: &Path, have: Option<&str>) -> Result<Option<(PathBuf, 
 /// version the planet has, is written once).
 /// A piece that lacks none stays as it is, so only the units whose pieces change are built again,
 /// and a run after it changes nothing. Only the pieces of the units `only` takes. The pieces changed
-/// and the ways they gained.
+/// and the ways they gained. The records are saved once, at the end: a piece changed goes stale the
+/// roads' reach, and with it the units' planning on both Macs, so saving each as it changed would
+/// hold the units up for the whole run (a run stopped part way saves none, and is run again).
 pub fn patch_ferries(out: &mut Out, date: &str, scratch: &Path, only: &dyn Fn(Unit) -> bool) -> Result<(usize, usize)> {
     let set = out.path(out.get(&set_name(date, "ferries")).context("the pass's ferries set")?);
     let work = scratch.join("patch-ferries");
@@ -741,10 +743,10 @@ pub fn patch_ferries(out: &mut Out, date: &str, scratch: &Path, only: &dyn Fn(Un
         c.args(["merge", "--no-progress", "--overwrite", "--output-header", "sorting=Type_then_ID", "-o"]).arg(&merged).arg(&piece).arg(&near);
         quiet(c, "osmium merge (a piece and its ferries)")?;
         out.put_file(logical, "osm.pbf", &merged)?;
-        out.save()?;
         eprintln!("ferries: {} lacked {lacks} of the {} ferry ways it meets", u.slash(), ids.len());
         (changed, gained) = (changed + 1, gained + lacks);
     }
+    out.save()?;
     std::fs::remove_dir_all(&work).ok();
     Ok((changed, gained))
 }

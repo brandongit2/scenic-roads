@@ -472,10 +472,12 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
      ferries set is the planet's own, with every ferry way, and `scenic-build patch-ferries` (by
      hand) gives each piece the set's ferry ways it meets, as the cut keeps ways, and lacks. Only
      the pieces that lack some change, so only their units, their landmark candidates and the
-     reaches are built again. The pieces meeting the regions (their tile and 10 km round,
-     `--near-coverage`) have them; the other pieces that lack some (about 580 of 2,442) get them
-     once the units are built (planned), and so does a ferry that reaches the regions from a farther
-     tile, which owns it.
+     reaches are built again. It saves the records once, at the end: a changed piece makes the
+     reaches stale, and units aren't planned on either Mac until the build Mac remakes them. The
+     pieces meeting the regions (their tile and 10 km round, `--near-coverage`) have them; a run
+     over all the pieces (planned, while the units build) gives them to the other pieces that lack
+     some, about 580 of 2,442, and so to a ferry that reaches the regions from a farther tile,
+     which owns it.
 8. **Road values** (below).
 9. **Finish:** the pass's summary is written, and older passes retire: their entries leave the
    manifest.
