@@ -63,7 +63,9 @@ fn may_go(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> bool {
         eprintln!("room: {} isn't whole: deleted, not kept", p.display());
         return true;
     }
-    let ok = std::fs::create_dir_all(folder).is_ok() && crate::whole::copy(p, &dest).is_ok();
+    // (A raw terrain tile without the flush: there may be hundreds of thousands.)
+    let copy = if *dir == "aws-terrarium" { crate::whole::copy_unsynced } else { crate::whole::copy };
+    let ok = std::fs::create_dir_all(folder).is_ok() && copy(p, &dest).is_ok();
     if ok {
         names.insert(name.to_os_string(), len);
     }

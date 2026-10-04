@@ -288,7 +288,8 @@ agent/                  status.json (the build Mac's; a helper writes helper.jso
                         server shows), state.json,
                         job.json, agent.lock, logs/, cache/
 agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and aws-terrarium/
-                        (copies of the NAS's sources/canopy/ and sources/aws-terrarium/), base/.
+                        (copies of the NAS's sources/canopy/; the raw tiles as fetched, copied to
+                        sources/aws-terrarium/ in bulk), base/.
                         When a job starts with too little free, chm10/ and aws-terrarium/ lose
                         their least recently used files (empty markers kept; a file the NAS lacks
                         copied there first, or kept), until the shortfall is made up.

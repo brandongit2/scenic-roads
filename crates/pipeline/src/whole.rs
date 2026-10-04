@@ -1,9 +1,10 @@
 //! Files kept whole (docs/plan.md §3, Downloads). What's written to the NAS's stores, or copied from
 //! them to a Mac's cache, goes by a temporary name (this Mac's name and the process's, so two Macs
 //! never share one), is flushed to the disk and has its length checked before the rename: a write
-//! cut short never takes the file's name. And a kept file can be checked whole (a PNG to its last
-//! chunk, a TIFF's strips or tiles inside the file), so a copy cut short is fetched again rather than
-//! read for good.
+//! cut short never takes the file's name. (AWS's raw terrain tiles, written by the hundred thousand,
+//! go straight to their names, or without the flush: `write_in_place`, `copy_unsynced`.) And a kept
+//! file can be checked whole (a PNG to its last chunk, a TIFF's strips or tiles inside the file), so
+//! a copy cut short is fetched again rather than read for good.
 
 use anyhow::{ensure, Context, Result};
 use std::io::Write;
@@ -22,26 +23,11 @@ pub fn is_tmp(p: &Path) -> bool {
 
 /// Writes `b` as `path`, whole.
 pub fn write(path: &Path, b: &[u8]) -> Result<()> {
-    write_with(path, b, true)
-}
-
-/// Writes `b` straight to `path`: no temporary name, flush or check. For small files written by the
-/// hundred thousand over SMB (AWS's raw terrain tiles), where each of those round trips cuts the
-/// rate (55 files a second written in place, 19 by a temporary name), and which are checked whole
-/// when read (`png_whole`) and taken again when they aren't: one cut short costs only a fetch.
-pub fn write_in_place(path: &Path, b: &[u8]) -> Result<()> {
-    let mut f = std::fs::File::create(path).with_context(|| format!("write {}", path.display()))?;
-    f.write_all(b).with_context(|| format!("write {}", path.display()))
-}
-
-fn write_with(path: &Path, b: &[u8], sync: bool) -> Result<()> {
     let tmp = tmp_name(path);
     let r = (|| -> Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(b)?;
-        if sync {
-            f.sync_all()?;
-        }
+        f.sync_all()?;
         drop(f);
         let n = std::fs::metadata(&tmp)?.len();
         ensure!(n == b.len() as u64, "{n} of {} bytes written", b.len());
@@ -54,15 +40,36 @@ fn write_with(path: &Path, b: &[u8], sync: bool) -> Result<()> {
     r.with_context(|| format!("write {}", path.display()))
 }
 
+/// Writes `b` straight to `path`: no temporary name, flush or check. For small files written by the
+/// hundred thousand over SMB (AWS's raw terrain tiles), where each of those round trips cuts the
+/// rate (55 files a second written in place, 19 by a temporary name), and which are checked whole
+/// when read (`png_whole`) and taken again when they aren't: one cut short costs only a fetch.
+pub fn write_in_place(path: &Path, b: &[u8]) -> Result<()> {
+    let mut f = std::fs::File::create(path).with_context(|| format!("write {}", path.display()))?;
+    f.write_all(b).with_context(|| format!("write {}", path.display()))
+}
+
 /// Copies `src` to `dst`, whole; the bytes copied.
 pub fn copy(src: &Path, dst: &Path) -> Result<u64> {
+    copy_with(src, dst, true)
+}
+
+/// `copy` without the flush: for raw terrain tiles, copied a tile at a time (each is checked whole
+/// when read, and the source stays until this returns).
+pub fn copy_unsynced(src: &Path, dst: &Path) -> Result<u64> {
+    copy_with(src, dst, false)
+}
+
+fn copy_with(src: &Path, dst: &Path, sync: bool) -> Result<u64> {
     let tmp = tmp_name(dst);
     let r = (|| -> Result<u64> {
         let mut from = std::fs::File::open(src)?;
         let want = from.metadata()?.len();
         let mut to = std::fs::File::create(&tmp)?;
         let n = std::io::copy(&mut from, &mut to)?;
-        to.sync_all()?;
+        if sync {
+            to.sync_all()?;
+        }
         drop(to);
         let got = std::fs::metadata(&tmp)?.len();
         ensure!(n == want && got == want, "{got} of {want} bytes copied");

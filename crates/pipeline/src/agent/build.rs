@@ -288,7 +288,7 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach
         // The terrain near it. Not the analysis grids' packs (grid-class, -canopy, -cover): the
         // units write those where they're missing, so each built unit would change its own key and
         // its neighbours' (built again, over and over); a grid read from its pack or made afresh is
-        // the same, from the terrain here and fixed datasets.
+        // the same, from fixed datasets (WorldCover, Meta's canopy squares).
         let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
         for (x, y) in crate::stage::tiles_in(6, b) {
             inputs.push(get(&format!("layers/terrain/hi/6-{x}-{y}")).to_string());
@@ -486,9 +486,9 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     if had_terrain {
         return work;
     }
-    // The tree cover layers per z3 tile, before the units: one catalog then has them all, and the
-    // canopy squares the jobs fetch (kept on the NAS) are there when the units read them. (Listed,
-    // not waited for: units still run while a trees job waits out a failure.)
+    // The tree cover layers per z3 tile, before the build Mac's units (a helper's run meanwhile: a
+    // canopy square both want is downloaded once, under a lock in the store). (Listed, not waited
+    // for: units still run while a trees job waits out a failure.)
     work.extend(trees_work(cov, m, done));
 
     // The units wait for the heritage sites.

@@ -829,8 +829,9 @@ fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
         .collect()
 }
 
-/// AWS's raw terrain tiles: the local cache `dir`, filled from the NAS's store
-/// (`sources/aws-terrarium/`), where each tile goes when it's downloaded, once.
+/// AWS's raw terrain tiles: the local cache `dir`, where each is downloaded once, filled from the
+/// NAS's store (`sources/aws-terrarium/`, copied there in bulk: tools/nas/raw-tiles.sh) when it
+/// lacks one.
 fn raw_tiles(out: &Out, dir: &Path) -> pipeline::terrain_pack::RawTiles {
     pipeline::terrain_pack::RawTiles::with_store(dir, &out.root().join("sources/aws-terrarium"))
 }

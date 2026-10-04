@@ -475,14 +475,40 @@ def canopy_square(chm: Path, store: Path, top: int, left: int) -> bool:
         f.unlink(missing_ok=True)
         return False
 
+    def fetch_once(kept: Path) -> None:
+        """The NAS's copy of `kept`; else the right to download it there (`<file>.lock`, made
+        exclusively: a unit on the other Mac may want the same square at once), or the copy the
+        holder downloads, waited for. A lock not touched for 30 minutes is a holder that died."""
+        import socket
+
+        store.mkdir(parents=True, exist_ok=True)
+        lock = kept.with_name(kept.name + ".lock")
+        while not kept_whole(kept):
+            try:
+                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError:
+                try:
+                    if time.time() - lock.stat().st_mtime > 1800:
+                        print(f"canopy: taking over {lock}", file=sys.stderr)
+                        lock.unlink(missing_ok=True)
+                        continue
+                except FileNotFoundError:
+                    continue
+                time.sleep(20)
+                continue
+            os.write(fd, f"{socket.gethostname()} {os.getpid()}".encode())
+            os.close(fd)
+            try:
+                download(f"{CHM10_URL}/{kept.name}", kept)
+            finally:
+                lock.unlink(missing_ok=True)
+
     there = True
     for st in ("cover5m", "p95"):
         p = chm / f"meta_chm_lat={top}.0_lon={left}.0_{st}.tif"
         if not kept_whole(p):
             kept = store / p.name
-            if not kept_whole(kept):
-                store.mkdir(parents=True, exist_ok=True)
-                download(f"{CHM10_URL}/{p.name}", kept)
+            fetch_once(kept)
             whole.copy(kept, p)
         if p.stat().st_size == 0:
             there = False

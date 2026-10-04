@@ -294,8 +294,9 @@ impl Agent {
     /// records were merged after this Mac's view of `jobs.json`, or not yet. Keys written after one
     /// are the truth (they may hold a newer build's key), so it no longer counts.
     fn planning_keys(&self, root: &Path) -> Result<build::Keys> {
-        let mut keys = build::Keys::load_with_handoffs(root)?;
+        // (The write time first: keys read after it are at least as new.)
         let written = std::fs::metadata(root.join("state/build/jobs.json")).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+        let mut keys = build::Keys::load_with_handoffs(root)?;
         for (_, step, targets) in self.mem.handed.iter().filter(|(t, _, _)| *t >= written) {
             keys.record(step, targets);
         }

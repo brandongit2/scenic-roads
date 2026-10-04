@@ -234,13 +234,38 @@ fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path, store: Option<&Path>)
         }
         return Ok(b);
     }
+    // The NAS's copy; else the right to download it there (`<file>.lock`, made with create-new: a
+    // unit on one Mac and a trees job on the other may want the same square at once), or the copy
+    // the holder downloads, waited for. A lock not touched for 30 minutes is a holder that died.
+    let mut _lock = None;
     if let Some(st) = store {
-        if let Some(b) = kept(st) {
-            pipeline::whole::write(path, b.as_deref().unwrap_or_default())?;
-            return Ok(b);
-        }
         if let Some(d) = st.parent() {
             std::fs::create_dir_all(d)?;
+        }
+        let lock = st.with_file_name(format!("{}.lock", st.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        loop {
+            if let Some(b) = kept(st) {
+                pipeline::whole::write(path, b.as_deref().unwrap_or_default())?;
+                return Ok(b);
+            }
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
+                Ok(mut f) => {
+                    use std::io::Write;
+                    f.write_all(format!("{} {}", pipeline::agent::cond::host(), std::process::id()).as_bytes()).ok();
+                    _lock = Some(DownloadLock(lock));
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let age = std::fs::metadata(&lock).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+                    if age.is_some_and(|a| a > std::time::Duration::from_secs(1800)) {
+                        eprintln!("canopy: taking over {} (not touched for {:.0?})", lock.display(), age.unwrap_or_default());
+                        std::fs::remove_file(&lock).ok();
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_secs(20));
+                    }
+                }
+                Err(e) => return Err(e).with_context(|| format!("lock {}", lock.display())),
+            }
         }
     }
     let mut missing = 0;
@@ -274,6 +299,15 @@ fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path, store: Option<&Path>)
         std::thread::sleep(std::time::Duration::from_millis(if missing > 0 { 5000 } else { 1000 << attempt }));
     }
     bail!("download failed: {url}")
+}
+
+/// The right to download one canopy file into the NAS's store (fetch_file), given up when dropped.
+struct DownloadLock(PathBuf);
+
+impl Drop for DownloadLock {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.0).ok();
+    }
 }
 
 /// Minimal little-endian TIFF strip index.

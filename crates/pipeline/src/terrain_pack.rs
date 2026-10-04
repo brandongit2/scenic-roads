@@ -239,15 +239,20 @@ impl RawTiles {
         RawTiles { dir: dir.to_path_buf(), store: Some(store.to_path_buf()), agent: agent(), listed: Default::default(), made: Default::default() }
     }
 
-    /// The names in the store's column `z/x`, listed once (none when it isn't there).
-    fn column(&self, st: &std::path::Path, z: u8, x: u32) -> std::sync::Arc<std::collections::HashSet<String>> {
+    /// The names in the store's column `z/x`, listed once (none when it isn't there); None when it
+    /// can't be listed whole now (then each tile is looked for itself, and it's listed again later).
+    fn column(&self, st: &std::path::Path, z: u8, x: u32) -> Option<std::sync::Arc<std::collections::HashSet<String>>> {
         if let Some(c) = self.listed.lock().unwrap().get(&(z, x)) {
-            return c.clone();
+            return Some(c.clone());
         }
-        let names: std::collections::HashSet<String> = std::fs::read_dir(st.join(format!("{z}/{x}"))).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let names: std::collections::HashSet<String> = match std::fs::read_dir(st.join(format!("{z}/{x}"))) {
+            Ok(rd) => rd.map(|e| e.map(|e| e.file_name().to_string_lossy().into_owned())).collect::<std::io::Result<_>>().ok()?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
+            Err(_) => return None,
+        };
         let c = std::sync::Arc::new(names);
         self.listed.lock().unwrap().insert((z, x), c.clone());
-        c
+        Some(c)
     }
 
     /// Makes folder `d` (once).
@@ -276,13 +281,14 @@ impl RawTiles {
         if let Some(st) = &self.store {
             let sd = st.join(format!("{z}/{x}"));
             let col = self.column(st, z, x);
-            if col.contains(&format!("{y}.png")) {
+            let has = |n: String| col.as_ref().map_or_else(|| sd.join(&n).exists(), |c| c.contains(&n));
+            if has(format!("{y}.png")) {
                 if let Some(b) = read_whole(&sd.join(format!("{y}.png"))) {
                     crate::whole::write_in_place(&p, &b)?;
                     return Ok((Some(b), false));
                 }
             }
-            if col.contains(&format!("{y}.none")) {
+            if has(format!("{y}.none")) {
                 std::fs::write(&none, b"")?;
                 return Ok((None, false));
             }
@@ -326,9 +332,8 @@ impl RawTiles {
         self.fetch(z, x, y)
     }
 
-    /// From AWS, into the NAS's store first, then here.
     /// From AWS, into the local cache: the NAS's store gets them in bulk (its small-file writes, a
-    /// tile at a time, set the job's pace: 25 a second against 60 here).
+    /// tile at a time, set the job's pace: 25 a second against 119 here).
     fn fetch(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
         let d = self.dir.join(format!("{z}/{x}"));
         match fetch_checked(&self.agent, z, x, y)? {

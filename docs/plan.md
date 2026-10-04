@@ -479,8 +479,9 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   - **z3–8:** the whole z3 tile. z8 and coarser are made again from their children where those
     exist, since AWS's coarse levels come from coarser sources.
   - **The root (z0–2):** from the lo packs.
-  - **Source:** always AWS's raw tiles, kept on the NAS (`sources/aws-terrarium/`, each downloaded
-    once, 64 at a time) and copied into the build Mac's cache, repaired by `repair_terrain`.
+  - **Source:** always AWS's raw tiles, each downloaded once (64 at a time) into the build Mac's
+    cache and copied to the NAS in bulk (`sources/aws-terrarium/`: §3 Downloads), which fills the
+    cache when it lacks one; repaired by `repair_terrain`.
     Processing a processed tile isn't idempotent, so stored tiles are never inputs.
   - **Below zero:** values are clamped to 0. Planned: a sea mask from the pass's water polygons, so
     that polders and depressions keep their depth.
@@ -493,11 +494,13 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   - Each unit's job makes the grid tiles its packs lack: `landcover.py --only`, and the scenic canopy
     step.
   - It uploads them as its own z6 tile's `grid-*` hi packs. They aren't in the units' keys: a grid
-    read from its pack or made afresh is the same (from the terrain, in the key, and fixed
-    datasets), and a unit writing its tile's would otherwise make it and its neighbours stale.
+    read from its pack or made afresh is the same (from fixed datasets: WorldCover, Meta's canopy
+    squares), and a unit writing its tile's would otherwise make it and its neighbours stale.
 - **Trees** (cover, height, leaf type), zoom 4–12, per z3 tile the coverage meets, clipped to it
-  (`pipeline::treepacks`, `dem/trees.py --z3`), before the units: from Meta's canopy squares (kept
-  on the NAS, `sources/canopy/`, and copied into the agent's cache, where the units read them too)
+  (`pipeline::treepacks`, `dem/trees.py --z3`), before the build Mac's units (the helper's run
+  meanwhile): from Meta's canopy squares (kept on the NAS, `sources/canopy/`, and copied into the
+  agent's cache, where the units read them too; a square both want is downloaded once, under a
+  `<file>.lock` in the store, the other waiting for it)
   and the leaf-type squares on the NAS (`sources/trees/leaf/`), each made whole once (the EEA's
   every chunk, a chunk without EEA data costing one small request; NALCMS's GeoTIFF kept beside
   them) and tagged complete. A z3 tile's run makes all its packs and drops those it no longer has;
@@ -1113,8 +1116,8 @@ At each phase's end an Opus agent reviews the work against this plan.
    - **Not built:** drawing, splitting and merging regions; "Keep this view".
 6. **Cutover: under way.**
    1. Today's 34 recipes are installed, with `inputs/hold-catalog`.
-   2. The agent builds them after the pass: terrain, slope, tree cover, heritage sites, the units,
-      the three chains (the heritage chain included).
+   2. The agent builds them after the pass: heritage sites, terrain, slope and tree cover (the M1's
+      helper building units meanwhile), the units, the three chains (the heritage chain included).
    3. The held catalog is compared with today's map: counts and distributions (lengths, drives and
       climbs change under the new chaining), heritage points and overlays, screenshots and
       performance.
