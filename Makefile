@@ -148,7 +148,10 @@ ferries: $(FER)/ways.geojsonseq $(FER)/terminals.geojsonseq
 # Rail service frequency (trains a day) is the build agent's: its rail-feeds and rail jobs
 # (crates/pipeline/src/rail.rs, docs/plan.md §6) make global/railfreq for the regions from the
 # NAS's rail sources. The MTR's lines, which those sources hold as stop pairs, are made here from
-# the research (data/rail/mtr.json) and the stations' English names in OSM.
+# the research (data/rail/mtr.json) and the stations' English names in OSM. rail-seed puts them in
+# the sources only while they have none, so pairs made again go there by hand:
+#   scenic-build put sources/rail/mtr-pairs bin data/rail/pairs-mtr.bin --root <NAS project folder>
+# (and data/rail/mtr.json as sources/rail/mtr json); the rail job's key follows them.
 RAIL := $(DATA)/rail
 $(RAIL)/hk-stations.geojsonseq: | $(OSM)/merged.osm.pbf
 	osmium extract -b 113.8,22.1,114.5,22.6 $(OSM)/merged.osm.pbf -o $(RAIL)/hk.osm.pbf --overwrite

@@ -399,16 +399,23 @@ class, id) within a tile. The client sends the id with the clicked point.
   §6 Rail service; never swept, so a file one replaces stays):
   - `catalogue.csv`: the Mobility Database catalogue (`feeds_v2.csv`), as downloaded;
   - `checked.json`: every catalogue feed checked for rail routes, sorted by `id`: the catalogue's
-    `id`, `provider`, `name`, `country`, `subdivision`, `url`, `licence`, and the check's `size_mb`,
-    `rail_routes`, `examples` and `status` ("ok", "http <code>", "no routes.txt (or no range
-    requests)"; one that got no answer is checked again);
+    `id`, `provider`, `name`, `country` (as `dem/railfeeds.py` corrects it, for a few),
+    `subdivision`, `url`, `licence`, and the check's `size_mb`, `rail_routes`, `examples` and
+    `status`: "ok"; a definite answer ("http <code>", "no size given", "no range requests", "not a
+    zip", "no routes.txt", "an unknown compression…", "routes.txt unreadable (…)", and
+    today's build's "no routes.txt (or no range requests)"); or "no answer (…)", which is checked
+    again (as is an older "http <code>" with a 429 or a 5xx). The checks seeded from today's build
+    that found no rail routes (or no routes.txt) start as "no answer (today's check, asked again)":
+    its check could take an answer cut short for none;
   - `gtfs/<feed id>.zip`: each feed's GTFS, as fetched;
   - `fetched.json`: `{zip's content name: "YYYY-MM-DD"}`, the day its timetable counts from (the day
-    it was fetched; the zips seeded from today's build, the day today's figures were counted);
+    it was fetched, or last fetched again unchanged; the zips seeded from today's build, the day
+    today's figures were counted);
   - `feeds.json`: `{fmt: 1, feeds: […]}`, the coverage's feeds in the order railgtfs.py reads them,
     each `{id, provider, name?, country, url, licence, replaces?, rail_routes?}` with `zip` (its
     content name) and `fetched`, or without them, a `status` saying why it's left out ("replaced by
-    …", a download refused);
+    …", a download refused, "no answer since <day> (last tried <day>): …", "its check: no answer
+    since <day> (last tried <day>)");
   - `mtr-pairs.bin`: the MTR's lines as stop pairs (below), and `mtr.json`, the research
     `dem/mtrpairs.py` makes them from.
 - **Stop pairs** (railgtfs.py's, `mtr-pairs`): 21-byte records, f32 lon_a, lat_a, lon_b, lat_b,

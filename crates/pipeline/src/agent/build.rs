@@ -508,30 +508,38 @@ fn trees_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys) -> Opti
     (!stale.is_empty()).then(|| Work { step: "trees".into(), targets: stale })
 }
 
-/// The rail service's chain (crate::rail), its first stale step; nothing before the rail sources
-/// are seeded (scenic-build rail-seed), or while inputs/keys.env can't be read (`inputs` "keys" "?").
+/// The rail service's chain (crate::rail), its first stale step (`rail_next`).
+fn rail_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
+    rail_next(cov, date, m, done, inputs).flatten()
+}
+
+/// The rail service's chain (crate::rail): Some(its first stale step, or None when it's done), or
+/// None while it can't go on: before the rail sources are seeded (scenic-build rail-seed), while
+/// inputs/keys.env can't be read (`inputs` "keys" "?"), and, rail-feeds done, without the feeds'
+/// list or the pass's rail set.
 /// - rail-feeds reads what decides which feeds there are: the catalogue, the coverage, the pass's
-///   outlines (the countries it's in) and which keys inputs/keys.env holds (`inputs` "keys": their
-///   names, never their values). Not what it writes (the feeds' list, checks and zips), so it doesn't
-///   run again for its own sake.
+///   outlines (the countries it's in) and which of the keys the feeds use (crate::rail::FEED_KEYS)
+///   inputs/keys.env holds (`inputs` "keys": their names, never their values). Not what it writes
+///   (the feeds' list, checks and zips), so it doesn't run again for its own sake.
 /// - rail reads the feeds' list (each feed's zip by content name, and its day), the MTR's pairs, the
 ///   pass's rail set and the coverage.
-fn rail_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
+fn rail_next(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Option<Work>> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let catalogue = m.get(crate::rail::CATALOGUE)?;
     let keys = inputs.get("keys").map(String::as_str).unwrap_or("");
     if keys == "?" {
         return None;
     }
+    let keys: Vec<&str> = keys.split(',').filter(|k| crate::rail::FEED_KEYS.contains(k)).collect();
     let cover = coverage_all(cov);
-    let k = h(&[&format!("rail-feeds {RAIL_FEEDS_V}"), catalogue, get(&format!("sources/osm/{date}/outlines")), &cover, &format!("keys {keys}")]);
+    let k = h(&[&format!("rail-feeds {RAIL_FEEDS_V}"), catalogue, get(&format!("sources/osm/{date}/outlines")), &cover, &format!("keys {}", keys.join(","))]);
     if done.lo.get("rail-feeds").map(String::as_str) != Some(k.as_str()) {
-        return Some(Work { step: "rail-feeds".into(), targets: vec![("rail-feeds".into(), k)] });
+        return Some(Some(Work { step: "rail-feeds".into(), targets: vec![("rail-feeds".into(), k)] }));
     }
     let feeds = m.get(crate::rail::FEEDS)?;
     let set = m.get(&crate::osmpass::set_name(date, "rail"))?;
     let k = h(&[&format!("rail {RAIL_V}"), feeds, get(crate::rail::MTR_PAIRS), set, &cover]);
-    (done.lo.get("rail").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "rail".into(), targets: vec![("rail".into(), k)] })
+    Some((done.lo.get("rail").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "rail".into(), targets: vec![("rail".into(), k)] }))
 }
 
 /// pack(T)'s targets (the z6 tiles the built units' ways reach) and lo's (their z3 tiles), each with
@@ -868,10 +876,11 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     out.push(tiles);
     let roads_left = remaining(done, |d| roads_chain(date, m, d, inputs, reach)).iter().filter(|w| !matches!(w.step.as_str(), "pack" | "lo")).count();
     out.push(group("Road index, rail stops, ferries, world terrain", &["roadunits", "stations", "ferries", "terrain-root", "slope-root"], built.then_some(roads_left)));
-    // (A run of rail-feeds is followed by rail, whose key reads what it writes. Unknown before the
-    // rail sources are seeded.)
-    let rail_left = rail_chain(cov, date, m, done, inputs).map_or(0, |w| if w.step == "rail-feeds" { 2 } else { 1 });
-    out.push(group("Trains a day", &["rail-feeds", "rail"], m.contains_key(crate::rail::CATALOGUE).then_some(rail_left)));
+    // (A run of rail-feeds is followed by rail, whose key reads what it writes. Unknown while the
+    // chain can't go on: before the rail sources are seeded, while inputs/keys.env can't be read,
+    // without the feeds' list or the pass's rail set.)
+    let rail_left = rail_next(cov, date, m, done, inputs).map(|w| w.map_or(0, |w| if w.step == "rail-feeds" { 2 } else { 1 }));
+    out.push(group("Trains a day", &["rail-feeds", "rail"], rail_left));
     let landmarks = remaining(done, |d| landmarks_chain(cov, date, m, d));
     let lm_left: usize = landmarks.iter().map(|w| if matches!(w.step.as_str(), "pois" | "peaks") { w.targets.len() } else { 1 }).sum();
     out.push(group("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"], pieces.then_some(lm_left)));
@@ -1279,7 +1288,9 @@ mod tests {
         m.insert(crate::rail::CHECKED.into(), "sources/rail/checked.4444444444444444.json".into());
         m.insert(crate::rail::zip_logical("sncf"), "sources/rail/gtfs/sncf.5555555555555555.zip".into());
         assert!(rail_chain(&c, "d", &m, &done, &lta).is_none());
-        // A key gone, or the coverage grown: the feeds again.
+        // Keys no feed uses yet: no rerun. A key gone, or the coverage grown: the feeds again.
+        let more: BTreeMap<String, String> = [("keys".to_string(), "LTA_ACCOUNT_KEY,ODPT_KEY,TDX_CLIENT_ID".to_string())].into();
+        assert!(rail_chain(&c, "d", &m, &done, &more).is_none());
         assert_eq!(rail_chain(&c, "d", &m, &done, &none).unwrap().step, "rail-feeds");
         let bigger = Coverage::from_recipes(&[Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:-21.9,64.13,25".into()] }], None, d.path()).unwrap();
         assert_eq!(rail_chain(&bigger, "d", &m, &done, &lta).unwrap().step, "rail-feeds");
@@ -1329,6 +1340,38 @@ mod tests {
         assert_eq!(steps(&w), vec!["roadunits", "rail"]);
         done.record("rail", &w[1].targets);
         assert!(line(&m, &done).finished());
+    }
+
+    #[test]
+    fn trains_a_day_unknown_while_blocked() {
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        let mut done = Keys::default();
+        let lta: BTreeMap<String, String> = [("keys".to_string(), "LTA_ACCOUNT_KEY".to_string())].into();
+        let line = |m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>| checklist(&c, "d", m, done, inputs, false).into_iter().find(|s| s.what == "Trains a day").unwrap();
+        assert_eq!(line(&m, &done, &lta).left, None, "not seeded");
+        m.insert(crate::rail::CATALOGUE.into(), "sources/rail/catalogue.1111111111111111.csv".into());
+        let w = rail_chain(&c, "d", &m, &done, &lta).unwrap();
+        // inputs/keys.env unreadable: not known, not done.
+        let unreadable: BTreeMap<String, String> = [("keys".to_string(), "?".to_string())].into();
+        assert_eq!(line(&m, &done, &unreadable).left, None);
+        assert!(!line(&m, &done, &unreadable).finished());
+        assert_eq!(line(&m, &done, &lta).left, Some(2));
+        done.record(&w.step, &w.targets);
+        // rail-feeds done, but no feeds' list, or no rail set for the pass: not known, not done.
+        assert_eq!(line(&m, &done, &lta).left, None, "no rail set, no list");
+        m.insert(crate::rail::FEEDS.into(), "sources/rail/feeds.3333333333333333.json".into());
+        assert_eq!(line(&m, &done, &lta).left, None, "no rail set");
+        assert!(!line(&m, &done, &lta).finished());
+        m.insert(crate::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.2222222222222222.osm.pbf".into());
+        assert_eq!(line(&m, &done, &lta).left, Some(1));
+        let w = rail_chain(&c, "d", &m, &done, &lta).unwrap();
+        done.record(&w.step, &w.targets);
+        assert_eq!(line(&m, &done, &lta).left, Some(0));
+        assert!(line(&m, &done, &lta).finished());
+        let mut m2 = m.clone();
+        m2.remove(crate::rail::FEEDS);
+        assert_eq!(line(&m2, &done, &lta).left, None, "the list gone");
     }
 
     #[test]

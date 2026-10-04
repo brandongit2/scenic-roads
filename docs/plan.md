@@ -599,19 +599,34 @@ in a chain of their own (§8):
     - So an outline's margin past a border doesn't bring in the neighbour (1 % of Ontario's outline
       is the US), but a small outline's wide margin may (Taiwan's is 11 % China, around Kinmen and
       Matsu).
+    - A territory with an ISO 3166-2 code brings its country too (Hong Kong and Macau bring China,
+      under which the catalogue files Hong Kong's feeds); the feeds' boxes keep that to those near.
+      Its own code is its code's end, or for the few whose isn't, looked up (`rail::OWN_CODE`:
+      Åland's FI-01 is AX, Guadeloupe's FR-971 GP, Kosovo's RS-KM XK, not Comoros' KM).
+      Where the catalogue files a feed under another country than its trains', `dem/railfeeds.py`
+      corrects it (two of Singapore's, under Malaysia).
   - Of those, the ones that run rail: each checked once, by reading its `routes.txt` out of the zip
-    with range requests.
+    with range requests. An answer counts only whole (the bytes the zip says, with its CRC); one cut
+    short or failing is no answer, and the feed is checked again.
   - National operators the catalogue lacks (SNCF, Renfe, Great Britain's timetable as GTFS by
     Catenary Transit, Hong Kong's trams), and Singapore's LTA feed when `inputs/keys.env` holds its
     key, each where its country and box are.
   - Left out: a feed another replaces (an operator's own over a copy: LTA's over the catalogue's
-    Singapore feed, Catenary Transit's Hong Kong trams over the Transport Department's), and a
-    community feed of the MTR's lines, which come from the hand-researched pairs.
+    three copies of Singapore's timetable, of which one is read without it; Catenary Transit's Hong
+    Kong trams over the Transport Department's) while that one has a zip, and a community feed of
+    the MTR's lines, which come from the hand-researched pairs.
   - Each feed's zip is fetched once, into `sources/rail/gtfs/`. A zip already there is never fetched
-    again, except one that was already out of date when fetched (no rail service in its window): a
-    week later, its copy kept if the new one is the same.
-  - A server that doesn't answer fails the job after three tries (what it checked and fetched is
-    kept); a definite refusal (a 404, a file that isn't a zip) leaves that feed out.
+    again, except one that was already out of date when fetched (no rail service in its window):
+    rail-feeds runs only when its key changes (Job keys, below), and its next run at least a week
+    after the day the zip counts from fetches it again. A new file replaces it; the same file is
+    kept once and counts from that day, so it isn't fetched again for another week; a refusal or no
+    answer leaves the old copy.
+  - A request without an answer (no connection, a 429 or a 5xx, an answer cut short) is tried
+    three times. A feed still without one fails the job (what it checked and fetched is kept), which
+    the agent tries again (waiting up to 6 hours); after 3 days without an answer it's left out
+    instead, its status naming the first and the last day, so `rail` runs without it, and it's tried
+    again the next time rail-feeds runs. A definite refusal (a 404, a file that isn't a zip) leaves
+    that feed out.
 - **`rail`** counts the trains and matches them onto the tracks:
   - each feed's trains on its typical weekday (`dem/railgtfs.py`): the median-busy Tuesday to
     Thursday from 30 days before the day its zip was fetched to 90 days after, so a zip's counts
@@ -626,8 +641,16 @@ in a chain of their own (§8):
     touching it.
 - **The rail sources** (`sources/rail/`, docs/formats.md) start from today's build's
   (`scenic-build rail-seed`, run once by hand): its 131 zips, the catalogue with the 1,545 feeds
-  checked for it, and the MTR's lines. The seeded zips count from the day today's figures were
-  counted (2026-09-30), so the job gives today's figures again.
+  checked for it (the 1,420 found without rail routes, or without routes.txt, seeded as unanswered,
+  so rail-feeds asks again once: today's check could take an answer cut short for none), and the
+  MTR's lines. The seeded zips count from the day today's figures were
+  counted (2026-09-30), so the job gives today's figures again; two were already out of date then
+  (Chiltern Railways', Madrid's Cercanías'), and are fetched again as above. rail-seed writes the
+  catalogue last, once the rest is saved, so a seeding cut short holds the chain until it's run
+  again, adding only what's missing. It never replaces a file: MTR pairs made again
+  (`make data/rail/pairs-mtr.bin`) go in with `scenic-build put sources/rail/mtr-pairs bin
+  data/rail/pairs-mtr.bin --root <NAS project folder>` (and `mtr.json` as `sources/rail/mtr`),
+  which the rail job's key follows.
 - **Planned:**
   - Japan's ODPT and Taiwan's TDX feeds, behind the keys `inputs/keys.env` names for them
     (`ODPT_KEY`; `TDX_CLIENT_ID`, `TDX_CLIENT_SECRET`), each a keyed feed in `dem/railfeeds.py`
@@ -649,9 +672,10 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **lo:** the base packs and road values of the units whose owned extent meets its z3 tile (lo has
   its own version: a change in the tiling it shares with pack bumps both);
 - **rail-feeds:** what decides which feeds there are: the catalogue, the coverage, the pass's
-  outlines (the countries it's in), and which keys `inputs/keys.env` holds, by name (never their
-  values). Not what it writes (the feeds' list, its checks and zips), so it doesn't run again for
-  its own sake; it waits while `inputs/keys.env` can't be read;
+  outlines (the countries it's in), and which of the keys its keyed feeds use
+  (`pipeline::rail::FEED_KEYS`) `inputs/keys.env` holds, by name (never their values). Not what it
+  writes (the feeds' list, its checks and zips), so it doesn't run again for its own sake; it waits
+  while `inputs/keys.env` can't be read;
 - **rail:** the feeds' list (each feed's zip by content name, and the day it counts from), the MTR's
   pairs, the pass's rail set and the coverage.
 

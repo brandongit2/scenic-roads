@@ -1811,7 +1811,7 @@ fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
 /// dem/railfeeds.py on the rail sources (the catalogue, the feeds checked so far, the NAS's zips)
 /// with the countries the coverage is in (from the pass's outlines), each feed fetched once, as
 /// `sources/rail/feeds`. What it checked and fetched is kept even when it fails (a feed's server
-/// that doesn't answer), so the next try starts from there.
+/// that doesn't answer, an upload that fails), so the next try starts from there.
 fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::rail;
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
@@ -1829,9 +1829,9 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
         Some(c) => std::fs::copy(out.path(c), &checked).map(|_| ())?,
         None => std::fs::write(&checked, b"[]")?,
     }
-    let mut fetched = rail::read_fetched(out)?;
-    std::fs::write(&cache, serde_json::to_vec(&rail::cache_index(out, &fetched))?)?;
-    // (Its downloads stay in `found` until they're on the NAS: a run cut short keeps them.)
+    std::fs::write(&cache, serde_json::to_vec(&rail::cache_index(out, &rail::read_fetched(out)?))?)?;
+    // (Its downloads stay in `found` until they're on the NAS: a run cut short keeps them. So does
+    // railfeeds.py's record of the servers that haven't answered, until the job completes.)
     let found = scratch.join("found");
     stage(1, 3, "finding and fetching the feeds (railfeeds.py)");
     let st = std::process::Command::new("uv")
@@ -1855,13 +1855,14 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     stage(2, 3, "uploading");
     if found.join("checked.json").exists() {
         out.put_file(rail::CHECKED, "json", &found.join("checked.json"))?;
+        out.save()?;
     }
     if !st.success() {
-        let n = rail::keep_downloads(out, &found.join("gtfs"), &mut fetched)?;
+        let n = rail::keep_downloads(out, &found.join("gtfs"))?;
         out.save()?;
         bail!("railfeeds.py failed ({st}); the {n} zips it fetched are kept");
     }
-    let new = rail::put_feeds(out, &found.join("feeds.json"), &found.join("gtfs"), &mut fetched)?;
+    let new = rail::put_feeds(out, &found.join("feeds.json"), &found.join("gtfs"))?;
     out.save()?;
     std::fs::remove_dir_all(&found).ok();
     for f in [cover, checked, cache] {
@@ -1913,7 +1914,14 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 std::fs::remove_file(e.path()).ok();
             }
         }
-        std::fs::rename(&pairs, &raw).or_else(|_| std::fs::copy(&pairs, &raw).map(|_| ()))?;
+        // (Where it can't be moved, copied by a temporary name: a copy cut short is never taken for
+        // the pairs.)
+        if std::fs::rename(&pairs, &raw).is_err() {
+            let tmp = raw.with_extension("bin.tmp");
+            std::fs::copy(&pairs, &tmp)?;
+            std::fs::rename(&tmp, &raw)?;
+            std::fs::remove_file(&pairs).ok();
+        }
         out.put_file("work/rail/used", "json", &used)?;
         out.save()?;
     }
