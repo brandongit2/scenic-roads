@@ -243,9 +243,10 @@ records off for the build Mac's agent to merge (§8, Two Macs). The exceptions:
   build's among them), AWS's raw terrain tiles, FABDEM's 1° tiles, the leaf-type sources, Overture's
   buildings. A Mac's copy is a cache filled from the NAS.
   - **AWS's raw terrain tiles** are kept in the build Mac's cache as they come, and copied to the
-    NAS's store in bulk (tar over SSH: a tile at a time, the NAS's small-file writes set a terrain
-    job's pace at 25 a second against 60). Room-making copies one the NAS lacks there before
-    deleting it, so none is fetched twice; only a lost disk before the copy would.
+    NAS's store in bulk (`tools/nas/raw-tiles.sh`, by hand: one tar stream over SSH, unpacked on the
+    NAS; a tile at a time, the NAS's small-file writes set a terrain job's pace at 25 a second
+    against 119). Room-making copies one the NAS lacks there before deleting it, so none is fetched
+    twice; only a lost disk before the copy would.
   - **Whole:** each copy is written by a temporary name (the Mac's and the process's), flushed, and
     its length checked before the rename (raw terrain tiles excepted: written straight to their
     names), and checked whole when read (`pipeline::whole`,
