@@ -14,11 +14,15 @@ pub const URL: &str = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";
 /// Raw tiles downloaded at once (each mostly waits on S3).
 const FETCH_THREADS: usize = 64;
 
-/// An HTTP agent for AWS's tiles.
+/// An HTTP agent for AWS's tiles, keeping a connection for each of the fetching threads (ureq keeps
+/// 3 a host by default: the others would make a new connection, a lookup and a TLS handshake, for
+/// every tile).
 pub fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(60)))
         .user_agent("road-elevations/0.1 (personal offline map)")
+        .max_idle_connections(FETCH_THREADS * 2)
+        .max_idle_connections_per_host(FETCH_THREADS * 2)
         .build()
         .into()
 }
