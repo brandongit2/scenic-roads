@@ -34,6 +34,7 @@ pub mod terrain_pack;
 pub mod terrain_z8;
 pub mod trailends;
 pub mod tiling;
+pub mod treepacks;
 pub mod unit;
 pub mod view;
 pub mod vtgen;

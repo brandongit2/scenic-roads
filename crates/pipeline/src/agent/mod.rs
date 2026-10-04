@@ -721,6 +721,7 @@ impl Agent {
                 "items" | "heritage-sites" | "heritage" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache".into(), s(&cache)]),
                 "peaks" => extra.extend(["--pass".into(), date.to_string(), "--raw".into(), s(&cache.join("aws-terrarium")), "--cache".into(), s(&cache), "--coarse-threads".into(), "6".into()]),
                 "unit" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache-dir".into(), s(&cache)]),
+                "trees" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--chm".into(), s(&cache.join("chm10"))]),
                 // The server's mirror on this Mac (the agent's home is inside the app's) has the
                 // same files: used instead of a second copy where it has them.
                 "pack" | "lo" => {
@@ -749,6 +750,7 @@ impl Agent {
                 "stations" => "Rail stops near the regions".to_string(),
                 "ferries" => "Ferries for the whole world".to_string(),
                 "pack" => format!("Map tiles ({areas})"),
+                "trees" => format!("Tree cover ({})", areas.replace("area", "large tile")),
                 "lo" => "Zoomed-out map tiles".to_string(),
                 "terrain-root" | "slope-root" => "World-level terrain and slope".to_string(),
                 "prune" => "Removing what the regions no longer cover".to_string(),
@@ -1000,7 +1002,7 @@ fn batches(plan: Vec<build::Work>) -> Vec<(build::Work, usize)> {
 /// tens of minutes; an area's roads and scenery minutes; candidates, peaks and map tiles less).
 fn batch_size(step: &str) -> usize {
     match step {
-        "terrain" => 1,
+        "terrain" | "trees" => 1,
         "slope" | "lo" => 2,
         "unit" => 6,
         "peaks" => 12,

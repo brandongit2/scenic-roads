@@ -26,6 +26,12 @@ squares.json): its blocks would come out empty (a build on a machine holding onl
 cache). --allow-missing builds anyway.
 
 usage: trees.py <build_dir> [workers] [--bbox=w,s,e,n] [--vars=cover,height,leaf] [--allow-missing]
+       trees.py --z3 x,y --coverage cov.json --chm dir --leaf dir --out dir [--workers n]
+           the build agent's (crates/pipeline/src/treepacks.rs): one z3 tile of the coverage, its
+           canopy squares fetched into `chm` when missing (the units' cache, the same names) and its
+           leaf-type squares made in `leaf` when missing (leaftype.py); out/trees-*.tiles hold its
+           zoom 4–12 tiles. cov.json: {"shapes": [[ring, …], …]}, each shape's rings in degrees,
+           inside by even–odd (crates/pipeline/src/coverage.rs).
 """
 from __future__ import annotations
 
@@ -153,6 +159,13 @@ def block(args):
     inside = rasterize([(shp_transform(lambda x, y: merc(np.asarray(x), np.asarray(y)), region.intersection(box(w, s, e, n))), 1)],
                        out_shape=(BS, BS), transform=from_bounds(*merc(w, s), *merc(e, n), BS, BS), fill=0, dtype="uint8").astype(bool) \
         if not region.contains(box(w, s, e, n)) else np.ones((BS, BS), bool)
+    out, tops = pyramid(bx, by, cover, height, leaf, inside, want)
+    return (bx, by), out, tops
+
+
+def pyramid(bx: int, by: int, cover: np.ndarray, height: np.ndarray, leaf: np.ndarray, inside: np.ndarray, want) -> tuple[list, dict]:
+    """A zoom-8 block's tiles, zoom 12 to 8, from the canopy's cover (‰) and height (cm) and the leaf
+    type sampled at zoom 12, inside `inside`; and its zoom-8 values, for the zooms above."""
     cov = np.where(inside & (cover <= 1000), cover / 10.0, 0).astype(np.float32)
     hgt = np.where(inside & (cov >= 5), height / 100.0, 0).astype(np.float32)
     lft = np.where(inside, leaf, 255).astype(np.uint8)
@@ -187,7 +200,7 @@ def block(args):
         if shares is not None:
             shares = np.stack([down(a) for a in shares])
         assert cov.shape[0] == size // 2
-    return (bx, by), out, tops
+    return out, tops
 
 
 def down(a: np.ndarray) -> np.ndarray:
@@ -281,6 +294,10 @@ class Writer:
 
 
 def main():
+    if "--z3" in sys.argv:
+        a = sys.argv[1:]
+        z3_main({a[i]: a[i + 1] for i in range(0, len(a) - 1, 2) if a[i].startswith("--")})
+        return
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     build = Path(args[0])
     workers = int(args[1]) if len(args) > 1 else 6
@@ -353,7 +370,15 @@ def main():
     if use_cache:
         sig_path.write_text(json.dumps(sigs))
         used_path.write_text(json.dumps(have))
-    # Zoom 7 → 4 from the zoom-8 blocks.
+    lower_zooms(tops, want, writers)
+    for v, wtr in writers.items():
+        n = wtr.finish()
+        print(f"trees-{v}.tiles: {n} tiles, {(build / f'trees-{v}.tiles').stat().st_size / 1e9:.2f} GB")
+    print(f"done in {time.time() - t0:.0f} s")
+
+
+def lower_zooms(tops: dict, want, writers: dict) -> None:
+    """Zoom 7 → 4 from the zoom-8 blocks' values, into `writers`."""
     level = tops
     for z in range(ZBLOCK - 1, ZMIN - 1, -1):
         nxt = {v: {} for v in want}
@@ -381,10 +406,161 @@ def main():
                     img = terrarium(a, STEP[v])
                     writers[v].add(z, px, py, img, len(img))
         level = nxt
+
+
+# ---- the build agent's: one z3 tile of the coverage ----------------------------------------
+
+CHM10_URL = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_global_v6_float_epsg4326_v3_10deg"
+UA = "road-elevations/0.1 (personal offline map)"
+
+
+def download(url: str, path: Path) -> None:
+    """`url` into `path` (by a temporary name); an empty file when the server has none (404, or S3's
+    403 for a key that isn't there), as scenic-metrics marks it. Anything else is retried, then fails."""
+    import shutil
+    import urllib.error
+    import urllib.request
+
+    tmp = path.with_name(path.name + ".part")
+    last: Exception | None = None
+    for attempt in range(6):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=600) as r, tmp.open("wb") as f:
+                shutil.copyfileobj(r, f, 16 << 20)
+            tmp.rename(path)
+            return
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 404):
+                path.write_bytes(b"")
+                return
+            last = e
+        except OSError as e:
+            last = e
+        time.sleep(2 ** attempt)
+    raise RuntimeError(f"download failed: {url}: {last}")
+
+
+def canopy_square(chm: Path, top: int, left: int) -> bool:
+    """The canopy square's cover and height files in `chm`, fetched when missing; False when Meta
+    has none there."""
+    import os
+
+    there = True
+    for st in ("cover5m", "p95"):
+        p = chm / f"meta_chm_lat={top}.0_lon={left}.0_{st}.tif"
+        if not p.exists():
+            download(f"{CHM10_URL}/{p.name}", p)
+        if p.stat().st_size == 0:
+            there = False
+        else:
+            os.utime(p)  # used now: the agent's room-making deletes the least recently used first
+    return there
+
+
+def shape_mask(shapes: list, w: float, s: float, e: float, n: float) -> np.ndarray:
+    """Pixels of a zoom-8 block inside the coverage: inside an odd number of a shape's rings (its
+    rings in Mercator metres), for any shape."""
+    from rasterio.features import MergeAlg
+    from shapely.geometry import Polygon
+
+    tr = from_bounds(*merc(w, s), *merc(e, n), BS, BS)
+    inside = np.zeros((BS, BS), bool)
+    for rings in shapes:
+        if rings:
+            hits = rasterize([(Polygon(r), 1) for r in rings], out_shape=(BS, BS), transform=tr, fill=0, dtype="uint16", merge_alg=MergeAlg.add)
+            inside |= hits % 2 == 1
+    return inside
+
+
+_SHAPES: list = []
+
+
+def load_shapes(path: str) -> list:
+    """The coverage's shapes (cov.json): per shape, each ring's box (degrees) and the ring in
+    Mercator metres. Each worker loads them once (rings can run to millions of points)."""
+    global _SHAPES
+    _SHAPES = []
+    for rings in json.loads(Path(path).read_text())["shapes"]:
+        rs = [np.asarray(r, np.float64) for r in rings if len(r) >= 3]
+        _SHAPES.append([(float(r[:, 0].min()), float(r[:, 1].min()), float(r[:, 0].max()), float(r[:, 1].max()), np.stack(merc(r[:, 0], r[:, 1]), axis=1)) for r in rs])
+    return _SHAPES
+
+
+def shapes_meeting(w: float, s: float, e: float, n: float) -> list:
+    """Each shape's rings (Mercator metres) whose box meets w, s, e, n (a ring that doesn't can't
+    change which points there are inside)."""
+    return [[r[4] for r in rings if r[0] <= e and r[2] >= w and r[1] <= n and r[3] >= s] for rings in _SHAPES]
+
+
+def z3_block(args):
+    """One zoom-8 block of the agent's z3 tile: sampled at zoom 12 inside the coverage's shapes."""
+    bx, by, chm, leaf_dir, sqs = args
+    px = (np.arange(BS) + bx * BS + 0.5).astype(np.float64)
+    py = (np.arange(BS) + by * BS + 0.5).astype(np.float64)
+    lon, lat = lon_of(px, ZMAX), lat_of(py, ZMAX)
+    w, s, e, n = tile_bounds(ZBLOCK, bx, by)
+    cover = np.zeros((BS, BS), np.uint16)
+    height = np.zeros((BS, BS), np.uint16)
+    leaf = np.full((BS, BS), 255, np.uint8)
+    for top, left in sqs:
+        if left >= e or left + 10 <= w or top <= s or top - 10 >= n:
+            continue
+        stem = Path(chm) / f"meta_chm_lat={top}.0_lon={left}.0"
+        sample(Path(f"{stem}_cover5m.tif"), top, left, 0.00025, lon, lat, cover, lambda v: v == 0)
+        sample(Path(f"{stem}_p95.tif"), top, left, 0.00025, lon, lat, height, lambda v: v == 0)
+        lf = Path(leaf_dir) / f"lat{top}_lon{left}.tif"
+        if lf.exists():
+            sample(lf, top, left, 0.0005, lon, lat, leaf, lambda v: v == 255)
+    out, tops = pyramid(bx, by, cover, height, leaf, shape_mask(shapes_meeting(w, s, e, n), w, s, e, n), VARS)
+    return (bx, by), out, tops
+
+
+def z3_main(args: dict) -> None:
+    import leaftype
+
+    t0 = time.time()
+    qx, qy = (int(v) for v in args["--z3"].split(","))
+    chm, leaf_dir, out = Path(args["--chm"]), Path(args["--leaf"]), Path(args["--out"])
+    for d in (chm, leaf_dir, out):
+        d.mkdir(parents=True, exist_ok=True)
+    workers = int(args.get("--workers", "6"))
+    load_shapes(args["--coverage"])
+
+    def meets(w, s, e, n):
+        return any(shapes_meeting(w, s, e, n))
+
+    # The zoom-8 blocks of the z3 tile that the coverage meets.
+    k = 1 << (ZBLOCK - 3)
+    blocks = [(bx, by) for bx in range(qx * k, (qx + 1) * k) for by in range(qy * k, (qy + 1) * k) if meets(*tile_bounds(ZBLOCK, bx, by))]
+    # The canopy squares they touch, fetched when missing, and their leaf types.
+    want = set()
+    for bx, by in blocks:
+        w, s, e, n = tile_bounds(ZBLOCK, bx, by)
+        for top in range(math.ceil(n / 10) * 10, math.floor(s / 10) * 10, -10):
+            for left in range(math.floor(w / 10) * 10, math.ceil(e / 10) * 10, 10):
+                if top > s and top - 10 < n and left < e and left + 10 > w:
+                    want.add((top, left))
+    sqs = []
+    for i, (top, left) in enumerate(sorted(want)):
+        print(f"progress: {i}/{len(want)} canopy squares", file=sys.stderr, flush=True)
+        if canopy_square(chm, top, left):
+            sqs.append((top, left))
+    leaftype.make(sqs, leaf_dir, out, meets)
+    print(f"trees z3 {qx},{qy}: {len(blocks)} zoom-8 blocks, {len(sqs)} canopy squares ({time.time() - t0:.0f} s)", file=sys.stderr, flush=True)
+    meta = '{"source":"Meta/WRI canopy height; Copernicus HRL DLT 2018; NALCMS 2020","encoding":"terrarium","format":"webp"}'
+    writers = {v: Writer(out / f"trees-{v}.tiles", meta) for v in VARS}
+    tops: dict[str, dict] = {v: {} for v in VARS}
+    with Pool(workers, initializer=load_shapes, initargs=(args["--coverage"],)) as pool:
+        for i, ((bx, by), tiles, t) in enumerate(pool.imap_unordered(z3_block, [(bx, by, str(chm), str(leaf_dir), sqs) for bx, by in blocks])):
+            for name, z, x, y, blob, raw in tiles:
+                writers[name].add(z, x, y, blob, raw)
+            for v in VARS:
+                tops[v][(bx, by)] = t[v]
+            print(f"progress: {i + 1}/{len(blocks)} zoom-8 blocks", file=sys.stderr, flush=True)
+    lower_zooms(tops, VARS, writers)
     for v, wtr in writers.items():
-        n = wtr.finish()
-        print(f"trees-{v}.tiles: {n} tiles, {(build / f'trees-{v}.tiles').stat().st_size / 1e9:.2f} GB")
-    print(f"done in {time.time() - t0:.0f} s")
+        print(f"trees-{v}.tiles: {wtr.finish()} tiles", file=sys.stderr)
+    print(f"trees z3 {qx},{qy}: done in {time.time() - t0:.0f} s", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -26,6 +26,8 @@
 //!                                "lo Q" (road and rail lo packs)
 //!   buildings [--dem dir] [--workers n]  the world's roadside buildings (pipeline::buildtiles):
 //!                                Overture's release, in z8 tiles, onto the NAS with their index
+//!   trees <Q …> [--pass d] [--dem dir] [--chm dir]  the tree cover layers of z3 tiles Q
+//!                                (pipeline::treepacks), clipped to the coverage
 //!   reach [--pass d] [U …]       every unit's reach (pipeline::reach): the boxes of its piece's
 //!                                roads, rail and ferries, owned and all (units named: printed,
 //!                                nothing written)
@@ -205,6 +207,18 @@ fn main() -> Result<()> {
             let threads: usize = std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or(12);
             let workers = opt(&args, "--workers").map(|w| w.parse()).transpose()?.unwrap_or((threads * 2).clamp(4, 32));
             pipeline::buildtiles::build(&mut out, &dem, &scratch, workers)?;
+        }
+        "trees" => {
+            // trees <z3 tile …> [--pass d] [--dem dir] [--chm dir]: the tree cover layers there.
+            let cov = coverage_of(&out, &args)?;
+            let dem = std::fs::canonicalize(opt(&args, "--dem").unwrap_or_else(|| "dem".into()))?;
+            let chm = PathBuf::from(opt(&args, "--chm").unwrap_or_else(|| "data/cache/chm10".into()));
+            let workers: usize = std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or(8);
+            let qs: Vec<Unit> = positional(&args).iter().map(|t| Unit::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))).collect::<Result<_>>()?;
+            for (k, &q) in qs.iter().enumerate() {
+                pipeline::treepacks::build(&mut out, &cov, q, &dem, &chm, &scratch, workers)?;
+                pipeline::agent::jobs::report(k as u64 + 1, qs.len() as u64, "z3 tiles");
+            }
         }
         "prune" => prune_step(&mut out, &args)?,
         "convert-legacy-marks" => {

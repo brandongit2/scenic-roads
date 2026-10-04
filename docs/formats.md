@@ -373,7 +373,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   whose box's centre is in the z8 tile, sorted, bit-identical boxes once; no file for a tile
   without any) and
   `sources/buildings/<release>/index` (JSON `{fmt, release, zoom, tiles: {"8/x/y": count}}`, written
-  last);
+  last); `sources/trees/leaf/lat<top>_lon<left>.tif` (a 10° square's dominant leaf type at 0.0005°:
+  u8 GeoTIFF, 0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data; `dem/leaftype.py`);
   `sources/dem-cache/dem-cache.{keys.u64,elev.f32,src.u8}` (today's per-vertex DEM cache, the seed
   the build Mac copies once: sorted keys `(lon + 2³¹) << 32 | (lat + 2³¹)` (E7), elevations,
   sources).

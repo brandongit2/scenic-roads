@@ -137,7 +137,8 @@ sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, 
                (Planetiler's jar and data), registers/ (the registers snapshot), items/<date>/,
                dem-cache/ (today's per-vertex DEM cache, the units' seed), buildings/<release>/
                (Overture's building boxes for the world, in z8 tiles, and their index),
-               terrain-z8-v1, legacy/ (today's map's build inputs, until the cutover)
+               trees/leaf/ (the leaf-type squares), terrain-z8-v1, legacy/ (today's map's build
+               inputs, until the cutover)
 base/          base packs, one per unit
 hidata/        per z6 tile: the ways-here index, query parts, climbs, rail lines, zoomed-out summaries
 markdata/      per z6 tile: landmark points
@@ -364,7 +365,8 @@ rule (its version bumped) reruns only the units it applies to. The plan is modul
   - rail: Mobility Database feeds, `dem/railfeeds.py`, with no job yet;
   - ferries: `inputs/ferries/freq`;
 - road network codes (`extract`) and their colours (`web/src/mapschemes.ts`);
-- leaf-type source: EEA in Europe, NALCMS in North America, none elsewhere, with no job yet;
+- leaf-type source: EEA in Europe, NALCMS in North America, none elsewhere (`dem/leaftype.py`,
+  made by the trees job where a square is missing);
 - the languages spoken there, for names (§7; today `names::area`'s boxes);
 - credits (`pipeline::rules::CREDITS`, each with the areas whose data comes from its source; a
   catalog lists those meeting its coverage, 20 km around it, or its units' ways).
@@ -441,7 +443,11 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   - Each unit's job makes the grid tiles its packs lack: `landcover.py --only`, and the scenic canopy
     step.
   - It uploads them as its own z6 tile's `grid-*` hi packs.
-- **Trees** (cover, height, leaf type): today's packs, converted. Planned: a job for new coverage.
+- **Trees** (cover, height, leaf type), zoom 4–12, per z3 tile the coverage meets, clipped to it
+  (`pipeline::treepacks`, `dem/trees.py --z3`): from Meta's canopy squares, fetched into the agent's
+  cache as the units fetch them, and the leaf-type squares on the NAS (`sources/trees/leaf/`). A z3
+  tile's run makes all its packs and drops those it no longer has; until its first run, today's
+  converted packs serve.
 - **Area overlays:** see `docs/phase5.md`. The `overlays` job runs after marks, because it needs the
   World Heritage dots' ids. Until its first run, today's converted packs serve.
 - **Buildings (phase 7):** Overture plus official data, giving z13–14 within the coverage.
@@ -741,8 +747,8 @@ are no request files.
 **Scheduler.**
 - **The plan:** every step's targets come with their keys (`state/build/jobs.json`). A target is
   stale when its key changed.
-- **A job** is one step over a batch of stale targets: terrain 1, slope and lo 2, unit 6, peaks 12,
-  pack 16, pois 24, the worldwide steps all. So a failure or a new app costs one batch.
+- **A job** is one step over a batch of stale targets: terrain and trees 1, slope and lo 2, unit 6,
+  peaks 12, pack 16, pois 24, the worldwide steps all. So a failure or a new app costs one batch.
 - **Order:** the agent starts the first job that can run, in plan order.
 - **A newly installed app:** the running job finishes under the old one, nothing new starts, and the
   agent exits so the launcher starts the new one.
@@ -773,9 +779,10 @@ are no request files.
    - heritage-sites;
    - every stale unit;
    - a prune of what the coverage no longer builds (§5, Shrinking).
-4. **Two chains**, each contributing its first stale step:
+4. **Three chains**, each contributing its first stale step:
    - **Roads:** a prune of map tiles no unit is near, road → units index, pack, lo, stations,
      ferries, terrain and slope roots. Stations and ferries drop the packs they no longer make.
+   - **Trees:** the tree cover layers of the z3 tiles whose coverage changed.
    - **Landmarks:** pois, peaks, items, heritage, marks, overlays.
 5. **A catalog** once the roads chain is done: a new one whenever the served files change, or the
    regions it records (their recipes and the outline files they name) do. While
@@ -901,7 +908,7 @@ At each phase's end an Opus agent reviews the work against this plan.
      - the worldwide z8 terrain;
      - grids inside the units.
    - The 2026-09-28 planet's pass is running: the cut is finishing, then road values.
-   - **Not built:** trees for new coverage; the sea mask.
+   - **Not built:** the sea mask.
 4. **Per-unit pipeline and rankings: mostly done.**
    - **Built:**
      - base(U): the pilot (Northumberland and the Scottish Borders) matched today's data, with the
@@ -934,9 +941,7 @@ At each phase's end an Opus agent reviews the work against this plan.
 
 **Gaps:** the code falls short of the design here. Most need fixing before regions beyond today's
 are added.
-1. **New regions miss what today's coverage has from converted files:**
-   - trees;
-   - trains a day.
+1. **New regions miss what today's coverage has from converted files:** trains a day.
 2. **The repo:**
    - `inputs/keys.env` is read by nothing (`dem/railgtfs.py` still reads `data/keys.env`).
 

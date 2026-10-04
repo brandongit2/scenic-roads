@@ -15,6 +15,8 @@ Sources:
   Hong Kong      none (no data).
 
 usage: leaftype.py [eu] [na] [--keep-nalcms]
+
+The build agent's trees job calls `make` for the squares its z3 tile needs (dem/trees.py --z3).
 """
 from __future__ import annotations
 
@@ -104,9 +106,9 @@ def squares(region):
     return out
 
 
-def save(top: int, left: int, a: np.ndarray, source: str):
-    OUT.mkdir(parents=True, exist_ok=True)
-    path = OUT / f"lat{top}_lon{left}.tif"
+def save(top: int, left: int, a: np.ndarray, source: str, out: Path = OUT):
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / f"lat{top}_lon{left}.tif"
     tmp = path.with_suffix(".tmp.tif")
     with rasterio.open(tmp, "w", driver="GTiff", width=N, height=N, count=1, dtype="uint8", crs="EPSG:4326",
                        transform=from_origin(left, top, RES, RES), nodata=255, compress="deflate", tiled=True,
@@ -153,36 +155,44 @@ def europe(region):
     for top, left in squares(region):
         if left < -40 or left >= 40 or (OUT / f"lat{top}_lon{left}.tif").exists():
             continue
-        a = np.full((N, N), 255, np.uint8)
-        jobs = []
-        for r0 in range(0, N, MAX_H):
-            for c0 in range(0, N, MAX_W):
-                h, w = min(MAX_H, N - r0), min(MAX_W, N - c0)
-                bb = (left + c0 * RES, top - (r0 + h) * RES, left + (c0 + w) * RES, top - r0 * RES)
-                if eu.intersects(box(*bb)):
-                    jobs.append((r0, c0, h, w, bb))
-        print(f"lat{top}_lon{left}: {len(jobs)} EEA requests", flush=True)
-        with ThreadPoolExecutor(2) as ex:
-            for (r0, c0, h, w, bb), chunk in zip(jobs, ex.map(lambda j: eea_chunk(*j[4], j[3], j[2]), jobs)):
-                if chunk is None:
-                    print(f"  failed chunk {bb}", file=sys.stderr)
-                    continue
-                lut = np.full(256, 255, np.uint8)
-                lut[[0, 1, 2]] = [0, 1, 2]
-                a[r0:r0 + h, c0:c0 + w] = lut[chunk]
-        save(top, left, a, "Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m, read at 0.0005°")
+        europe_square(top, left, OUT, lambda *bb: eu.intersects(box(*bb)), strict=False)
 
 
-def fetch_nalcms():
-    if NALCMS_TIF.exists():
+def europe_square(top: int, left: int, out: Path, meets, strict: bool) -> None:
+    """One square from the EEA, requested only over the boxes `meets(w, s, e, n)` says matter; a
+    request that keeps failing leaves no data there, or with `strict` fails it (to be tried again)."""
+    a = np.full((N, N), 255, np.uint8)
+    jobs = []
+    for r0 in range(0, N, MAX_H):
+        for c0 in range(0, N, MAX_W):
+            h, w = min(MAX_H, N - r0), min(MAX_W, N - c0)
+            bb = (left + c0 * RES, top - (r0 + h) * RES, left + (c0 + w) * RES, top - r0 * RES)
+            if bb[0] < 40 and bb[2] > -40 and bb[1] < 75 and bb[3] > 20 and meets(*bb):
+                jobs.append((r0, c0, h, w, bb))
+    print(f"lat{top}_lon{left}: {len(jobs)} EEA requests", flush=True)
+    with ThreadPoolExecutor(2) as ex:
+        for (r0, c0, h, w, bb), chunk in zip(jobs, ex.map(lambda j: eea_chunk(*j[4], j[3], j[2]), jobs)):
+            if chunk is None:
+                if strict:
+                    raise RuntimeError(f"EEA leaf type: the request for {bb} keeps failing")
+                print(f"  failed chunk {bb}", file=sys.stderr)
+                continue
+            lut = np.full(256, 255, np.uint8)
+            lut[[0, 1, 2]] = [0, 1, 2]
+            a[r0:r0 + h, c0:c0 + w] = lut[chunk]
+    save(top, left, a, "Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m, read at 0.0005°", out)
+
+
+def fetch_nalcms(tif: Path = NALCMS_TIF):
+    if tif.exists():
         return
-    T.mkdir(parents=True, exist_ok=True)
+    tif.parent.mkdir(parents=True, exist_ok=True)
     head = subprocess.run(["curl", "-sS", "--fail", "-A", UA, "-r", f"{NALCMS_MEMBER_OFFSET}-{NALCMS_MEMBER_OFFSET + 511}", NALCMS_ZIP],
                           capture_output=True, check=True).stdout
     assert head[:4] == b"PK\x03\x04", "unexpected zip layout"
     nlen, elen = struct.unpack("<HH", head[26:30])
     start = NALCMS_MEMBER_OFFSET + 30 + nlen + elen
-    tmp = NALCMS_TIF.with_suffix(".part")
+    tmp = tif.with_suffix(".part")
     print(f"streaming NALCMS GeoTIFF ({NALCMS_COMPRESSED / 1e9:.1f} GB compressed)…")
     p = subprocess.Popen(["curl", "-sS", "--fail", "-A", UA, "-r", f"{start}-{start + NALCMS_COMPRESSED - 1}", NALCMS_ZIP], stdout=subprocess.PIPE)
     dec = zlib.decompressobj(-15)
@@ -196,25 +206,41 @@ def fetch_nalcms():
     print()
     if p.wait() != 0:
         raise SystemExit("NALCMS download failed")
-    tmp.rename(NALCMS_TIF)
+    tmp.rename(tif)
 
 
 def north_america(region, keep: bool):
     todo = [(t, l) for t, l in squares(region) if l < -40 and not (OUT / f"lat{t}_lon{l}.tif").exists()]
+    north_america_squares(todo, OUT, NALCMS_TIF, keep)
+
+
+def north_america_squares(todo: list, out: Path, tif: Path, keep: bool) -> None:
+    """Squares from NALCMS (its GeoTIFF streamed to `tif` first, deleted after unless `keep`)."""
     if not todo:
         return
-    fetch_nalcms()
-    with rasterio.open(NALCMS_TIF) as src:
+    fetch_nalcms(tif)
+    with rasterio.open(tif) as src:
         for top, left in todo:
             t0 = time.time()
             dst = np.full((N, N), 255, np.uint8)
             # NALCMS has no class 0: it is the background outside the continent (no data).
             reproject(rasterio.band(src, 1), dst, dst_transform=from_origin(left, top, RES, RES), dst_crs="EPSG:4326",
                       resampling=Resampling.nearest, src_nodata=0, dst_nodata=255, num_threads=4)
-            save(top, left, NA_MAP[dst], "NALCMS 2020 land cover 30 m (CEC), resampled to 0.0005°")
+            save(top, left, NA_MAP[dst], "NALCMS 2020 land cover 30 m (CEC), resampled to 0.0005°", out)
             print(f"    ({time.time() - t0:.0f} s)")
     if not keep:
-        NALCMS_TIF.unlink()
+        tif.unlink()
+
+
+def make(sqs: list, out: Path, work: Path, meets) -> None:
+    """The leaf-type squares among `sqs` ((top, left)) missing from `out`: Europe's (40° W to 40° E)
+    from the EEA over the boxes `meets(w, s, e, n)` says matter, North America's (west of 40° W)
+    from NALCMS (streamed into `work`, deleted after). None elsewhere (East Asia has no source)."""
+    missing = [(t, l) for t, l in sqs if not (out / f"lat{t}_lon{l}.tif").exists()]
+    for top, left in missing:
+        if -40 <= left < 40:
+            europe_square(top, left, out, meets, strict=True)
+    north_america_squares([(t, l) for t, l in missing if l < -40], out, work / "nalcms-2020.tif", keep=False)
 
 
 def main():
