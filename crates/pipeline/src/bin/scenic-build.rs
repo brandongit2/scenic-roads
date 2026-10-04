@@ -10,8 +10,9 @@
 //!                                rail hi packs (z9–14) and hidata
 //!   lo [--cache dir] [Q …]       lo packs (z4–8 road and rail tiles) for z3 tiles Q (default: all)
 //!   osm-pass --planet <p> --date <d>  the OSM pass (pieces, sets, basemap, road values); resumable
-//!   patch-ferries [--pass d]     the pass's pieces given the standalone ferry ways its filtered
-//!                                planet lacked (pipeline::osmpass::patch_ferries); run by hand
+//!   patch-ferries [--pass d] [--near-coverage]  the pass's pieces given the standalone ferry ways
+//!                                its filtered planet lacked (pipeline::osmpass::patch_ferries), all
+//!                                or those meeting the regions (10 km round); run by hand
 //!   unit [U …] [--pass d] [--layers-root r] [--regions dir] [--dem dir] [--cache-dir dir] [--buildings dir]
 //!                                base(U) from the pass's pieces (today's steps on a unit folder):
 //!                                default every unit whose piece meets the coverage
@@ -133,7 +134,16 @@ fn main() -> Result<()> {
         }
         "patch-ferries" => {
             let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
-            let (pieces, ways) = pipeline::osmpass::patch_ferries(&mut out, &date, &scratch)?;
+            // --near-coverage: the pieces meeting the regions, 10 km round (as their candidates read them).
+            let cov = if args.iter().any(|a| a == "--near-coverage") { Some(coverage_of(&out, &args)?) } else { None };
+            let near = |u: Unit| {
+                cov.as_ref().is_none_or(|c| {
+                    let b = pipeline::stage::tile_box_grown(u.z, u.x, u.y, 10.0);
+                    let e7 = |v: f64| (v * 1e7).round() as i32;
+                    c.meets_rect([e7(b[0]), e7(b[1]), e7(b[2]), e7(b[3])])
+                })
+            };
+            let (pieces, ways) = pipeline::osmpass::patch_ferries(&mut out, &date, &scratch, &near)?;
             eprintln!("patch-ferries: {pieces} pieces of the {date} pass gained {ways} ferry ways");
         }
         "verify" => {

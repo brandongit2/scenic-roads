@@ -699,15 +699,22 @@ pub fn newer_planet(root: &Path, have: Option<&str>) -> Result<Option<(PathBuf, 
 /// it meets as the cut kept ways (its tile and buffer, the smart strategy: whole, with their nodes)
 /// and lacks, merged in (an object both have, at the one version the planet has, is written once).
 /// A piece that lacks none stays as it is, so only the units whose pieces change are built again,
-/// and a run after it changes nothing. The pieces changed and the ways they gained.
-pub fn patch_ferries(out: &mut Out, date: &str, scratch: &Path) -> Result<(usize, usize)> {
+/// and a run after it changes nothing. Only the pieces of the units `only` takes. The pieces changed
+/// and the ways they gained.
+pub fn patch_ferries(out: &mut Out, date: &str, scratch: &Path, only: &dyn Fn(Unit) -> bool) -> Result<(usize, usize)> {
     let set = out.path(out.get(&set_name(date, "ferries")).context("the pass's ferries set")?);
     let work = scratch.join("patch-ferries");
     std::fs::create_dir_all(&work)?;
     let local_set = work.join("ferries.osm.pbf");
     std::fs::copy(&set, &local_set)?;
     let prefix = format!("sources/osm/{date}/pieces/");
-    let pieces: Vec<(Unit, String, String)> = out.manifest.range(prefix.clone()..).take_while(|(l, _)| l.starts_with(&prefix)).filter_map(|(l, c)| Some((Unit::parse(&l[prefix.len()..])?, l.clone(), c.clone()))).collect();
+    let pieces: Vec<(Unit, String, String)> = out
+        .manifest
+        .range(prefix.clone()..)
+        .take_while(|(l, _)| l.starts_with(&prefix))
+        .filter_map(|(l, c)| Some((Unit::parse(&l[prefix.len()..])?, l.clone(), c.clone())))
+        .filter(|(u, _, _)| only(*u))
+        .collect();
     let (mut changed, mut gained) = (0, 0);
     for (k, (u, logical, content)) in pieces.iter().enumerate() {
         crate::agent::jobs::report(k as u64, pieces.len() as u64, "pieces checked for ferries");
@@ -804,7 +811,7 @@ mod tests {
         out.put_file("sources/osm/2026-09-28/pieces/6-40-20", "osm.pbf", &other).unwrap();
         out.put_file("sources/osm/2026-09-28/sets/ferries", "osm.pbf", &set).unwrap();
         let (before, untouched) = (out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap().to_string(), out.get("sources/osm/2026-09-28/pieces/6-40-20").unwrap().to_string());
-        assert_eq!(patch_ferries(&mut out, "2026-09-28", &d.path().join("scratch")).unwrap(), (1, 1));
+        assert_eq!(patch_ferries(&mut out, "2026-09-28", &d.path().join("scratch"), &|_| true).unwrap(), (1, 1));
         // The piece gained the standalone ferry, whole (its node at sea too), and kept the rest once.
         let after = out.path(out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap());
         assert_ne!(out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap(), before);
@@ -813,7 +820,9 @@ mod tests {
         assert_eq!(opl.lines().filter(|l| l.starts_with('n')).count(), 5);
         // A piece with no ferries near it stays as it was; a second run changes nothing.
         assert_eq!(out.get("sources/osm/2026-09-28/pieces/6-40-20").unwrap(), untouched);
-        assert_eq!(patch_ferries(&mut out, "2026-09-28", &d.path().join("scratch")).unwrap(), (0, 0));
+        assert_eq!(patch_ferries(&mut out, "2026-09-28", &d.path().join("scratch"), &|_| true).unwrap(), (0, 0));
+        // Units left out stay as they are.
+        assert_eq!(patch_ferries(&mut out, "2026-09-28", &d.path().join("scratch"), &|u| u.x == 40).unwrap(), (0, 0));
     }
 
     #[test]
