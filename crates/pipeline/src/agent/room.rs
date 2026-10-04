@@ -8,8 +8,8 @@
 //! - Raw tiles go a folder at a time, the least recently used folder (by its newest tile) first, and
 //!   in it the oldest first, so a folder's tiles go together; canopy squares each by their own use.
 //! - A file goes once the NAS's folder, listed once (sixteen at a time: a listing mostly waits on
-//!   the NAS; a folder that can't be listed now keeps its files here this run), has it at the same
-//!   size. One the NAS lacks, or has at another size (downloaded before it kept them, or a copy cut
+//!   the NAS; a folder that can't be listed now, or whose listing is cut short, keeps its files
+//!   here this run), has it at the same size (asked about once more when the listing lacks it). One the NAS lacks, or has at another size (downloaded before it kept them, or a copy cut
 //!   short), is copied there first (whole and flushed: crate::whole), and kept here when that
 //!   fails; one that isn't whole itself (cut short, or a temporary file) is deleted without being
 //!   kept anywhere.
@@ -76,13 +76,29 @@ fn nas_path(cache: &Path, sources: &Path, p: &Path) -> Option<PathBuf> {
     Some(sources.join(store).join(p.strip_prefix(cache.join(dir)).ok()?))
 }
 
-/// A NAS folder's files and their sizes (none when it isn't there; None when it can't be read now).
+/// A NAS folder's files and their sizes (none when it isn't there; None when it can't be read now,
+/// or its listing was cut short: a busy NAS's timeout midway, which would make the files it didn't
+/// get to look missing there).
 fn list(folder: &Path) -> Option<HashMap<OsString, u64>> {
-    match std::fs::read_dir(folder) {
-        Ok(rd) => Some(rd.flatten().filter_map(|e| Some((e.file_name(), e.metadata().ok().filter(|m| m.is_file())?.len()))).collect()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(HashMap::new()),
-        Err(_) => None,
+    let rd = match std::fs::read_dir(folder) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(HashMap::new()),
+        Err(_) => return None,
+    };
+    let mut names = HashMap::new();
+    for e in rd {
+        let e = e.ok()?;
+        match e.metadata() {
+            Ok(m) if m.is_file() => {
+                names.insert(e.file_name(), m.len());
+            }
+            Ok(_) => {}
+            // (Gone since it was listed: a temporary file renamed.)
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
+        }
     }
+    Some(names)
 }
 
 /// What becomes of local cache file `p` (under `cache/<dir>`), its NAS folder listed once.
@@ -91,7 +107,9 @@ fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
     let (Some(folder), Some(name)) = (dest.parent(), dest.file_name()) else { return Fate::Stay };
     let Ok(len) = std::fs::metadata(p).map(|m| m.len()) else { return Fate::Stay };
     let Some(names) = listed.entry(folder.to_path_buf()).or_insert_with(|| list(folder)) else { return Fate::Stay };
-    if names.get(name) == Some(&len) {
+    // Missing from the listing: asked about once more before it's copied (a short listing, a
+    // busy NAS's, without an error).
+    if names.get(name) == Some(&len) || std::fs::metadata(&dest).is_ok_and(|m| m.is_file() && m.len() == len) {
         return Fate::Go;
     }
     if crate::whole::is_tmp(p) || !crate::whole::file_whole(p) {
@@ -351,6 +369,24 @@ mod tests {
 #[cfg(test)]
 mod nas_tests {
     use super::*;
+
+    #[test]
+    fn a_file_a_short_listing_lacks_is_asked_about_before_a_copy() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, nas) = (d.path().join("cache"), d.path().join("nas"));
+        let png = crate::whole::testfiles::png();
+        for p in [c.join("aws-terrarium/9/1/2.png"), nas.join("aws-terrarium/9/1/2.png")] {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, &png).unwrap();
+        }
+        // The folder's listing came back without it (cut short): it's on the NAS, so it may go.
+        let mut listed = Listed::new();
+        listed.insert(nas.join("aws-terrarium/9/1"), Some(HashMap::new()));
+        assert_eq!(fate(&c, &nas, &c.join("aws-terrarium/9/1/2.png"), &mut listed), Fate::Go);
+        // A folder that couldn't be listed keeps its files.
+        listed.insert(nas.join("aws-terrarium/9/1"), None);
+        assert_eq!(fate(&c, &nas, &c.join("aws-terrarium/9/1/2.png"), &mut listed), Fate::Stay);
+    }
 
     #[test]
     fn a_file_the_nas_cant_take_stays() {
