@@ -291,10 +291,10 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
                         (copies of the NAS's sources/canopy/; the raw tiles as fetched, copied to
                         sources/aws-terrarium/ in bulk), base/.
                         When a job starts with too little free, chm10/ and aws-terrarium/ lose
-                        files, chm10/'s first, each least recently used first (raw tiles a folder
-                        at a time; empty markers kept; a file the NAS lacks copied there first, or
-                        kept), until the Mac has a sixth more free than the job needs (the OSM
-                        pass: what it needs).
+                        files: chm10/'s idle an hour first, then the rest least recently used first
+                        (raw tiles a folder at a time; empty markers kept; a file the NAS lacks
+                        copied there first, or kept), until the Mac has a sixth more free than the
+                        job needs (the OSM pass: what it needs).
 ```
 
 `~/Library/Preferences/nsmb.conf` gets `[FISHANDCHIPS:PERSONAL]` and

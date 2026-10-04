@@ -5,17 +5,21 @@
 //! square; scenic-metrics marks a square used when it reads it) and AWS's raw terrain tiles
 //! (`aws-terrarium/`, read once per terrain run). They fill again from the NAS (`sources/canopy/`,
 //! `sources/aws-terrarium/`), never from the internet.
-//! - Canopy squares go first, each by its own use, the least recently used first; then raw tiles a
-//!   folder at a time, the least recently used folder (by its newest tile) first, and in it the
-//!   oldest first, so a folder's tiles go together. One listing of the NAS's canopy folder answers
-//!   for every square's files (hundreds of MB each), while each raw tile folder takes a listing of
-//!   its own for ~14 MB: seconds each when the NAS is busy, hours for tens of GB.
+//! - Canopy squares not read in the last hour go first, each by its own use, the least recently used
+//!   first. One listing of the NAS's canopy folder answers for every square's files (hundreds of MB
+//!   each), while each raw tile folder takes a listing of its own for ~14 MB: seconds each when the
+//!   NAS is busy, hours for tens of GB.
+//! - Then raw tiles a folder at a time and the squares read since, together, the least recently
+//!   used first (a folder by its newest tile, and in it the oldest first, so a folder's tiles go
+//!   together): the squares of the area being built, which the next jobs read again, outlast idle
+//!   tiles.
 //! - A file goes once the NAS's folder, listed once (sixteen at a time: a listing mostly waits on
-//!   the NAS; a folder that can't be listed now, or whose listing is cut short, keeps its files
-//!   here this run), has it at the same size (asked about once more when the listing lacks it). One the NAS lacks, or has at another size (downloaded before it kept them, or a copy cut
-//!   short), is copied there first (whole and flushed: crate::whole), and kept here when that
-//!   fails; one that isn't whole itself (cut short, or a temporary file) is deleted without being
-//!   kept anywhere.
+//!   the NAS; a folder that can't be listed now, or whose listing is cut short, keeps its raw tiles
+//!   here this run, and has each canopy square asked about alone), has it at the same size (asked
+//!   about once more when the listing lacks it). One the NAS lacks, or has at another size
+//!   (downloaded before it kept them, or a copy cut short), is copied there first (whole and
+//!   flushed: crate::whole), and kept here when that fails; one that isn't whole itself (cut short,
+//!   or a temporary file) is deleted without being kept anywhere.
 //!
 //! It ends early when the agent is asked to stop. Nothing else of the cache is deleted here.
 
@@ -37,6 +41,10 @@ pub fn margin(need: u64) -> u64 {
 
 /// NAS folders listed at once.
 const LIST_AHEAD: usize = 16;
+
+/// Canopy squares read this lately (the area being built's, which the next jobs read again) wait
+/// with the raw tiles, in least recently used order; the others go before any tile.
+const RECENT: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// The caches' folders whose files may be deleted, under the agent's cache, each with the NAS's
 /// store of them, under its `sources/`.
@@ -109,10 +117,15 @@ fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
     let Some(dest) = nas_path(cache, sources, p) else { return Fate::Stay };
     let (Some(folder), Some(name)) = (dest.parent(), dest.file_name()) else { return Fate::Stay };
     let Ok(len) = std::fs::metadata(p).map(|m| m.len()) else { return Fate::Stay };
-    let Some(names) = listed.entry(folder.to_path_buf()).or_insert_with(|| list(folder)) else { return Fate::Stay };
+    let there = || std::fs::metadata(&dest).is_ok_and(|m| m.is_file() && m.len() == len);
+    let Some(names) = listed.entry(folder.to_path_buf()).or_insert_with(|| list(folder)) else {
+        // (Its folder can't be listed now: a canopy square, hundreds of MB, is asked about alone;
+        // a raw tile stays this run, a question each costing about what the listing would.)
+        return if !p.starts_with(cache.join("aws-terrarium")) && there() { Fate::Go } else { Fate::Stay };
+    };
     // Missing from the listing: asked about once more before it's copied (a short listing, a
     // busy NAS's, without an error).
-    if names.get(name) == Some(&len) || std::fs::metadata(&dest).is_ok_and(|m| m.is_file() && m.len() == len) {
+    if names.get(name) == Some(&len) || there() {
         return Fate::Go;
     }
     if crate::whole::is_tmp(p) || !crate::whole::file_whole(p) {
@@ -149,9 +162,11 @@ fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_spa
     }
     // (Empty files are markers, "none there", that free nothing.)
     files.retain(|f| f.1 > 0);
-    // Raw tiles by folder, canopy squares each alone; the canopy squares first, then the tiles, each
-    // the least recently used group (by its newest file) first, in each the oldest first.
+    // Raw tiles by folder, canopy squares each alone. The squares not read lately first, then the
+    // tiles and the squares read since, together: each the least recently used group (by its
+    // newest file) first, in each the oldest first.
     let tiles = cache.join("aws-terrarium");
+    let lately = SystemTime::now().checked_sub(RECENT).unwrap_or(SystemTime::UNIX_EPOCH);
     let mut groups: BTreeMap<PathBuf, Vec<(SystemTime, u64, PathBuf)>> = BTreeMap::new();
     for f in files {
         let key = if f.2.starts_with(&tiles) { f.2.parent().map(Path::to_path_buf).unwrap_or_default() } else { f.2.clone() };
@@ -161,7 +176,11 @@ fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_spa
     for g in &mut groups {
         g.sort();
     }
-    groups.sort_by_key(|g| (g.first().is_some_and(|f| f.2.starts_with(&tiles)), g.last().map(|f| f.0)));
+    groups.sort_by_key(|g| {
+        let newest = g.last().map(|f| f.0);
+        let idle_square = !g.first().is_some_and(|f| f.2.starts_with(&tiles)) && newest.is_some_and(|t| t < lately);
+        (!idle_square, newest)
+    });
     let mut room = Room { cache, free_space, target, short: target.saturating_sub(free), since: 0, freed: 0 };
     let (mut listed, mut made) = (Listed::new(), HashSet::new());
     for ahead in groups.chunks(LIST_AHEAD) {
@@ -276,37 +295,36 @@ mod tests {
     }
 
     #[test]
-    fn canopy_squares_go_first_then_tiles_the_least_recently_used_first() {
+    fn idle_canopy_squares_go_first_then_tiles_and_squares_read_lately() {
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
         let nas = &d.path().join("nas");
-        let old = whole(&c.join("chm10/old.tif"), 3000);
-        file(&c.join("chm10/none.tif"), 0, 4000);
-        let png = whole(&c.join("aws-terrarium/12/1/2.png"), 2000);
-        let new = whole(&c.join("chm10/new.tif"), 10);
+        // A tile idle longest, a canopy square idle two hours, another read a minute ago.
+        let png = whole(&c.join("aws-terrarium/12/1/2.png"), 9000);
+        let idle = whole(&c.join("chm10/idle.tif"), 7200);
+        file(&c.join("chm10/none.tif"), 0, 8000);
+        let read = whole(&c.join("chm10/read.tif"), 60);
         file(&c.join("dem-cache.keys.u64"), 100, 9000);
-        assert_eq!(cheap_bytes(c), old + png + new);
+        assert_eq!(cheap_bytes(c), png + idle + read);
         // A disk with 850 free plus what's deleted.
         let all = used(c);
         let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
-        // Short of all but a byte of the two canopy squares: they go, the least recently used
-        // first, before the tile, though it's older than one of them; the marker and the DEM seed
-        // stay.
-        let freed = make_room_with(c, nas, 850 + old + new - 1, 850 + old + new - 1, &disk(850)).unwrap();
-        assert_eq!(freed, old + new);
-        assert!(!c.join("chm10/old.tif").exists() && !c.join("chm10/new.tif").exists());
-        assert!(c.join("aws-terrarium/12/1/2.png").exists() && c.join("chm10/none.tif").exists());
+        // Short of all but a byte of the idle square: it goes before the tile, idle longer; the
+        // marker and the DEM seed stay.
+        assert_eq!(make_room_with(c, nas, 850 + idle - 1, 850 + idle - 1, &disk(850)).unwrap(), idle);
+        assert!(!c.join("chm10/idle.tif").exists() && c.join("aws-terrarium/12/1/2.png").exists());
+        assert!(c.join("chm10/read.tif").exists() && c.join("chm10/none.tif").exists());
         // What went is on the NAS (copied there first: it wasn't).
-        assert!(nas.join("canopy/old.tif").exists() && nas.join("canopy/new.tif").exists());
-        // Then the tile.
-        assert_eq!(make_room_with(c, nas, 850 + old + new + png, 850 + old + new + png, &disk(850)).unwrap(), png);
+        assert!(nas.join("canopy/idle.tif").exists());
+        // Then the tile, before the square read a minute ago.
+        assert_eq!(make_room_with(c, nas, 850 + idle + png, 850 + idle + png, &disk(850)).unwrap(), png);
         assert!(!c.join("aws-terrarium/12/1/2.png").exists() && nas.join("aws-terrarium/12/1/2.png").exists());
+        assert!(c.join("chm10/read.tif").exists());
         // Room enough: nothing goes.
-        whole(&c.join("chm10/again.tif"), 5);
         assert_eq!(make_room_with(c, nas, 1000, 1000, &|_| Ok(1 << 20)).unwrap(), 0);
         // Far short: every cheap file; never the DEM seed.
         make_room_with(c, nas, 1 << 40, 1 << 40, &disk(0)).unwrap();
-        assert!(!c.join("chm10/again.tif").exists() && c.join("dem-cache.keys.u64").exists());
+        assert!(!c.join("chm10/read.tif").exists() && c.join("dem-cache.keys.u64").exists());
         assert!(disk_free(c).unwrap() > 0);
     }
 
@@ -347,14 +365,18 @@ mod tests {
         assert_eq!(make_room_with(c, nas, a + b, a + b, &disk).unwrap(), a + b);
         assert!(c.join("aws-terrarium/12/1/1.png").exists() && c.join("aws-terrarium/12/1/2.png").exists());
         assert!(nas.join("aws-terrarium/12/2/1.png").exists() && nas.join("aws-terrarium/12/2/2.png").exists());
-        // Canopy squares go before the tiles, each by its own use, not its folder's: the one read
-        // long ago goes, the one read since stays, and so do the tiles of column 1.
+        // Canopy squares idle an hour go before any tile, each by its own use, not its folder's: of
+        // two in chm10/, the one read longer ago goes, before column 3, idle longer still; the
+        // other stays.
+        whole(&c.join("aws-terrarium/12/3/1.png"), 9500);
+        whole(&c.join("aws-terrarium/12/3/2.png"), 9000);
         let square = whole(&c.join("chm10/old.tif"), 4500);
-        whole(&c.join("chm10/new.tif"), 50);
+        whole(&c.join("chm10/new.tif"), 4000);
         let all = used(c);
         let disk = move |p: &Path| Ok(all - used(p));
         assert_eq!(make_room_with(c, nas, square, square, &disk).unwrap(), square);
-        assert!(!c.join("chm10/old.tif").exists() && c.join("chm10/new.tif").exists() && c.join("aws-terrarium/12/1/1.png").exists());
+        assert!(!c.join("chm10/old.tif").exists() && c.join("chm10/new.tif").exists());
+        assert!(c.join("aws-terrarium/12/3/1.png").exists() && c.join("aws-terrarium/12/1/1.png").exists());
     }
 
     #[test]
@@ -392,9 +414,19 @@ mod nas_tests {
         let mut listed = Listed::new();
         listed.insert(nas.join("aws-terrarium/9/1"), Some(HashMap::new()));
         assert_eq!(fate(&c, &nas, &c.join("aws-terrarium/9/1/2.png"), &mut listed), Fate::Go);
-        // A folder that couldn't be listed keeps its files.
+        // A folder that couldn't be listed keeps its raw tiles.
         listed.insert(nas.join("aws-terrarium/9/1"), None);
         assert_eq!(fate(&c, &nas, &c.join("aws-terrarium/9/1/2.png"), &mut listed), Fate::Stay);
+        // Its canopy squares are asked about alone: one the NAS has at its size may go, one it
+        // lacks stays.
+        let tif = crate::whole::testfiles::tiff(false);
+        for p in [c.join("chm10/a.tif"), nas.join("canopy/a.tif"), c.join("chm10/b.tif")] {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, &tif).unwrap();
+        }
+        listed.insert(nas.join("canopy"), None);
+        assert_eq!(fate(&c, &nas, &c.join("chm10/a.tif"), &mut listed), Fate::Go);
+        assert_eq!(fate(&c, &nas, &c.join("chm10/b.tif"), &mut listed), Fate::Stay);
     }
 
     #[test]
