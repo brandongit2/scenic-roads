@@ -267,7 +267,9 @@ pub struct BuildLock(#[allow(dead_code)] std::fs::File);
 
 impl BuildLock {
     fn file(root: &Path) -> Result<std::fs::File> {
-        let key = store::naming::hash16(root.to_string_lossy().as_bytes());
+        // By the root's real path: `x`, `x/` and a link to it are one build.
+        let real = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        let key = store::naming::hash16(real.to_string_lossy().as_bytes());
         let p = std::env::temp_dir().join(format!("scenic-build-{key}.lock"));
         std::fs::File::options().create(true).truncate(false).write(true).open(&p).with_context(|| format!("open {}", p.display()))
     }
@@ -302,6 +304,16 @@ impl BuildLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_root_and_its_spelling_with_a_slash_share_the_lock() {
+        let d = tempfile::tempdir().unwrap();
+        let held = BuildLock::take(d.path()).unwrap();
+        let slashed = PathBuf::from(format!("{}/", d.path().display()));
+        assert!(BuildLock::try_take(&slashed).unwrap().is_none());
+        drop(held);
+        assert!(BuildLock::try_take(&slashed).unwrap().is_some());
+    }
 
     #[test]
     fn records_unreadable_are_errors_not_empty() {

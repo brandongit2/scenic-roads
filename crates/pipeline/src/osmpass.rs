@@ -692,12 +692,13 @@ pub fn newer_planet(root: &Path, have: Option<&str>) -> Result<Option<(PathBuf, 
     Ok(Some((dir.join(&last).join("planet.osm.pbf"), last)))
 }
 
-/// Puts into the pass's pieces the ferry ways its filtered planet lacked. A pass filtered before
-/// `FILTER_A` kept `w/route=ferry` (the 2026-09-28 one) had only the ferry ways that are members of
-/// a route relation, so its pieces lacked the standalone ones (Kobe–Miyazaki, Tanger–Tarifa, …);
-/// its ferries set was made again from the planet, with them. Each piece gets the set's ferry ways
-/// it meets as the cut kept ways (its tile and buffer, the smart strategy: whole, with their nodes)
-/// and lacks, merged in (an object both have, at the one version the planet has, is written once).
+/// Puts into the pass's pieces the ferry ways its filtered planet lacks. The 2026-09-28 pass's was
+/// filtered without `w/route=ferry`: it has a ferry way only where another of the filter's tags
+/// kept it (a route relation's member, a `wikidata` tag, …), so its pieces lack the rest
+/// (Kobe–Miyazaki, Tanger–Tarifa, …). Its ferries set is the planet's own, with them. Each piece
+/// gets the set's ferry ways it meets as the cut kept ways (its tile and buffer, the smart
+/// strategy: whole, with their nodes) and lacks, merged in (an object both have, at the one
+/// version the planet has, is written once).
 /// A piece that lacks none stays as it is, so only the units whose pieces change are built again,
 /// and a run after it changes nothing. Only the pieces of the units `only` takes. The pieces changed
 /// and the ways they gained.
@@ -728,15 +729,16 @@ pub fn patch_ferries(out: &mut Out, date: &str, scratch: &Path, only: &dyn Fn(Un
         if ids.is_empty() {
             continue;
         }
-        let piece = work.join("piece.osm.pbf");
-        std::fs::copy(out.path(content), &piece)?;
-        let lacks = ids.len() - way_ids(&piece, Some(&ids))?.len();
+        // (Read where it is: copied only when it lacks some.)
+        let lacks = ids.len() - way_ids(&out.path(content), Some(&ids))?.len();
         if lacks == 0 {
             continue;
         }
+        let piece = work.join("piece.osm.pbf");
+        std::fs::copy(out.path(content), &piece)?;
         let merged = work.join(format!("{}.osm.pbf", u.dash()));
         let mut c = osmium();
-        c.args(["merge", "--no-progress", "--overwrite", "-o"]).arg(&merged).arg(&piece).arg(&near);
+        c.args(["merge", "--no-progress", "--overwrite", "--output-header", "sorting=Type_then_ID", "-o"]).arg(&merged).arg(&piece).arg(&near);
         quiet(c, "osmium merge (a piece and its ferries)")?;
         out.put_file(logical, "osm.pbf", &merged)?;
         out.save()?;
@@ -755,14 +757,20 @@ fn way_ids(file: &Path, among: Option<&std::collections::BTreeSet<i64>>) -> Resu
             c.args(["cat", "--no-progress", "-t", "way", "-f", "opl"]).arg(file);
         }
         Some(ids) => {
-            let list = file.with_extension("ids");
+            let list = std::env::temp_dir().join(format!("scenic-way-ids-{}", std::process::id()));
             std::fs::write(&list, ids.iter().map(|i| format!("w{i}\n")).collect::<String>())?;
             c.args(["getid", "--no-progress", "-f", "opl", "-i"]).arg(&list).arg(file);
         }
     }
-    let o = c.stderr(std::process::Stdio::null()).output().context("run osmium")?;
-    // (getid exits 1 when some of the ids aren't there: that's the answer, not a failure.)
-    ensure!(o.status.success() || (among.is_some() && o.status.code() == Some(1)), "osmium on {} failed: {}", file.display(), o.status);
+    let o = c.output().context("run osmium");
+    if among.is_some() {
+        std::fs::remove_file(std::env::temp_dir().join(format!("scenic-way-ids-{}", std::process::id()))).ok();
+    }
+    let o = o?;
+    // (getid exits 1, saying nothing, when some of the ids aren't there: the answer, not a failure;
+    // a file it can't read says why.)
+    let quiet_miss = among.is_some() && o.status.code() == Some(1) && o.stderr.iter().all(u8::is_ascii_whitespace);
+    ensure!(o.status.success() || quiet_miss, "osmium on {} failed: {}: {}", file.display(), o.status, String::from_utf8_lossy(&o.stderr).trim());
     Ok(String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.strip_prefix('w')?.split(' ').next()?.parse().ok()).collect())
 }
 

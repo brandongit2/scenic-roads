@@ -20,7 +20,7 @@
 //! Nothing is judged here: roads' lengths and climbs change by design under the new chaining, and
 //! newer OSM data moves the counts. The report is read before the hold is released.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use pipeline::basepack::{BasePack, Sect};
 use pipeline::legacy::Unit;
 use rayon::prelude::*;
@@ -114,6 +114,9 @@ struct Stats {
     chan: Vec<[f64; 256]>,
     /// Base packs without scenic channels.
     no_scenic: u64,
+    /// Ways of no known class, and road km of no known DEM source.
+    odd_class: u64,
+    odd_src: f64,
     /// Road km by the length of the road its way is part of (the chaining's), and the roads.
     road_len: [f64; LEN_BINS],
     roads: u64,
@@ -135,6 +138,8 @@ impl Default for Stats {
             src: [0.0; NDEM],
             chan: vec![[0.0; 256]; ch::N],
             no_scenic: 0,
+            odd_class: 0,
+            odd_src: 0.0,
             road_len: [0.0; LEN_BINS],
             roads: 0,
         }
@@ -146,6 +151,9 @@ impl Stats {
         let bp = BasePack::open(base, roads)?;
         let (ways, verts, elev, grade, src, rv) = (bp.ways()?, bp.verts()?, bp.elev()?, bp.grade()?, bp.src()?, bp.road_vals()?);
         let scenic = bp.scenic();
+        let n = verts.len();
+        ensure!(elev.len() == n && grade.len() == n && src.len() == n && scenic.is_none_or(|x| x.len() == n), "a per-vertex section isn't one record per vertex");
+        ensure!(ways.iter().all(|w| (w.vstart + w.vcount as u64) as usize <= n), "a way's vertices run past the vertices");
         let mut s = Stats { units: 1, ways: ways.len() as u64, verts: verts.len() as u64, samples: bp.samples().map(|x| x.len() as u64).unwrap_or(0), no_scenic: scenic.is_none() as u64, ..Default::default() };
         let mut roads = BTreeSet::new();
         for (i, w) in ways.iter().enumerate() {
@@ -153,7 +161,10 @@ impl Stats {
             let v = &verts[r.clone()];
             let seg: Vec<f64> = (1..v.len()).map(|k| dist_m(v[k - 1][0] as f64 * E7, v[k - 1][1] as f64 * E7, v[k][0] as f64 * E7, v[k][1] as f64 * E7) / 1000.0).collect();
             let km: f64 = seg.iter().sum();
-            let c = (w.class as usize).min(CLASSES - 1);
+            let Some(c) = ((w.class as usize) < CLASSES).then_some(w.class as usize) else {
+                s.odd_class += 1;
+                continue;
+            };
             s.class_n[c] += 1;
             s.class_km[c] += km;
             if class::is_rail(w.class) {
@@ -179,7 +190,10 @@ impl Stats {
                 let m = elev.m(j) as f64;
                 s.elev[(((m + 500.0) / 10.0).max(0.0) as usize).min(ELEV_BANDS - 1)] += share;
                 s.grade[grade[j] as usize] += share;
-                s.src[(src[j] as usize).min(NDEM - 1)] += share;
+                match s.src.get_mut(src[j] as usize) {
+                    Some(x) => *x += share,
+                    None => s.odd_src += share,
+                }
                 if let Some(sc) = scenic {
                     for (cv, x) in sc[j].iter().zip(s.chan.iter_mut()) {
                         x[*cv as usize] += share;
@@ -197,6 +211,8 @@ impl Stats {
         self.verts += o.verts;
         self.samples += o.samples;
         self.no_scenic += o.no_scenic;
+        self.odd_class += o.odd_class;
+        self.odd_src += o.odd_src;
         self.roads += o.roads;
         for (a, b) in self.class_n.iter_mut().zip(o.class_n) {
             *a += b;
@@ -248,17 +264,30 @@ fn mean(h: &[f64], value: impl Fn(usize) -> f64) -> f64 {
     h.iter().enumerate().map(|(b, w)| w * value(b)).sum::<f64>() / t
 }
 
-/// The bin where a histogram's weight reaches the share `q`.
-fn quantile(h: &[f64], q: f64) -> usize {
+/// The bin where a histogram's weight reaches the share `q` (None when it has none).
+fn quantile(h: &[f64], q: f64) -> Option<usize> {
     let t: f64 = h.iter().sum();
+    if t == 0.0 {
+        return None;
+    }
     let mut acc = 0.0;
     for (b, w) in h.iter().enumerate() {
         acc += w;
-        if acc >= q * t && t > 0.0 {
-            return b;
+        if acc >= q * t {
+            return Some(b);
         }
     }
-    h.len().saturating_sub(1)
+    Some(h.len() - 1)
+}
+
+/// A table row of two quantiles turned into values, "–" for one that has none.
+fn row_q(out: &mut String, what: &str, a: Option<f64>, b: Option<f64>, unit: &str, digits: usize) {
+    let f = |v: Option<f64>| v.map(|v| format!("{v:.digits$}{unit}")).unwrap_or_else(|| "–".into());
+    let d = match (a, b) {
+        (Some(a), Some(b)) => format!("{:+.digits$}{unit}", b - a),
+        _ => "".into(),
+    };
+    writeln!(out, "| {what} | {} | {} | {d} |", f(a), f(b)).unwrap();
 }
 
 /// The share of a histogram's weight in bin 0.
@@ -379,16 +408,21 @@ fn units_section(out: &mut String, a: &Stats, b: &Stats) {
     if a.no_scenic + b.no_scenic > 0 {
         writeln!(out, "\nBase packs without scenic channels: {} old, {} new.", a.no_scenic, b.no_scenic).unwrap();
     }
+    if a.odd_class + b.odd_class > 0 || a.odd_src + b.odd_src > 0.0 {
+        writeln!(out, "\nWays of no known class (left out): {} old, {} new. Road km of no known DEM source: {} old, {} new.", a.odd_class, b.odd_class, num(a.odd_src), num(b.odd_src)).unwrap();
+    }
 
     writeln!(out, "\n## Elevations\n\n| | old | new | change |\n|---|---:|---:|---:|").unwrap();
     row_f(out, "mean road elevation", a.elev_mean(), b.elev_mean(), " m", 1);
+    // (The top of the 10 m band the share reaches: at least that share of the road km is below it.)
+    let elev_q = |s: &Stats, q: f64| quantile(&s.elev, q).map(|b| (b + 1) as f64 * 10.0 - 500.0);
     for q in [0.1, 0.5, 0.9, 0.99] {
-        let (x, y) = (quantile(&a.elev, q) as f64 * 10.0 - 500.0, quantile(&b.elev, q) as f64 * 10.0 - 500.0);
-        row_f(out, &format!("road km below (p{:.0}, 10 m bands)", q * 100.0), x, y, " m", 0);
+        row_q(out, &format!("{:.0} % of road km below (10 m bands)", q * 100.0), elev_q(a, q), elev_q(b, q), " m", 0);
     }
     row_f(out, "mean |grade|", mean(&a.grade, |g| g as f64 * 0.5), mean(&b.grade, |g| g as f64 * 0.5), " %", 2);
     for q in [0.5, 0.9, 0.99] {
-        row_f(out, &format!("|grade| p{:.0}", q * 100.0), quantile(&a.grade, q) as f64 * 0.5, quantile(&b.grade, q) as f64 * 0.5, " %", 1);
+        let g = |s: &Stats| quantile(&s.grade, q).map(|b| b as f64 * 0.5);
+        row_q(out, &format!("|grade| p{:.0}", q * 100.0), g(a), g(b), " %", 1);
     }
     let (sa, sb) = (a.src_shares(), b.src_shares());
     for d in 0..NDEM {
@@ -410,8 +444,8 @@ fn units_section(out: &mut String, a: &Stats, b: &Stats) {
             b.chan_mean(c) - a.chan_mean(c),
             zero_share(&a.chan[c]) * 100.0,
             zero_share(&b.chan[c]) * 100.0,
-            quantile(&a.chan[c], 0.9),
-            quantile(&b.chan[c], 0.9)
+            quantile(&a.chan[c], 0.9).map(|v| v.to_string()).unwrap_or_else(|| "–".into()),
+            quantile(&b.chan[c], 0.9).map(|v| v.to_string()).unwrap_or_else(|| "–".into())
         )
         .unwrap();
     }
@@ -424,8 +458,8 @@ fn units_section(out: &mut String, a: &Stats, b: &Stats) {
     writeln!(out, "\n## Roads as chained\n\nA way's road is its chain of ways (docs/formats.md, Road values); the length filter and the drives read the road's length.\n\n| | old | new | change |\n|---|---:|---:|---:|").unwrap();
     row(out, "roads (counted in each unit they cross)", a.roads as f64, b.roads as f64);
     for q in [0.1, 0.5, 0.9] {
-        let (x, y) = (len_edge(quantile(&a.road_len, q)), len_edge(quantile(&b.road_len, q)));
-        writeln!(out, "| road km on roads of at least (p{:.0}) | {} m | {} m | {} |", q * 100.0, num(x), num(y), pct(x, y)).unwrap();
+        let l = |s: &Stats| quantile(&s.road_len, q).map(len_edge);
+        row_q(out, &format!("road km on roads of at least (p{:.0})", q * 100.0), l(a), l(b), " m", 0);
     }
 }
 
@@ -434,15 +468,15 @@ fn hi_section(out: &mut String, a: &HiStats, b: &HiStats) {
     row(out, "query parts", a.parts as f64, b.parts as f64);
     row(out, "their samples", a.psamples as f64, b.psamples as f64);
     for q in [0.1, 0.5, 0.9] {
-        let (x, y) = (len_edge(quantile(&a.part_len, q)), len_edge(quantile(&b.part_len, q)));
-        writeln!(out, "| parts on roads of at least (p{:.0}) | {} m | {} m | {} |", q * 100.0, num(x), num(y), pct(x, y)).unwrap();
+        let l = |h: &HiStats| quantile(&h.part_len, q).map(len_edge);
+        row_q(out, &format!("parts on roads of at least (p{:.0})", q * 100.0), l(a), l(b), " m", 0);
     }
     row(out, "climbs", a.climbs as f64, b.climbs as f64);
     row(out, "climbs' gain, m", a.gain_m, b.gain_m);
     row(out, "climbs' length, m", a.climb_m, b.climb_m);
     for q in [0.5, 0.9] {
-        let (x, y) = (quantile(&a.climb_gain, q) as f64 * 20.0, quantile(&b.climb_gain, q) as f64 * 20.0);
-        writeln!(out, "| climbs gaining at least (p{:.0}, 20 m bands) | {} m | {} m | {} |", q * 100.0, num(x), num(y), pct(x, y)).unwrap();
+        let g = |h: &HiStats| quantile(&h.climb_gain, q).map(|b| b as f64 * 20.0);
+        row_q(out, &format!("climbs gaining at least (p{:.0}, 20 m bands)", q * 100.0), g(a), g(b), " m", 0);
     }
 }
 
@@ -583,17 +617,23 @@ fn main() -> Result<()> {
     eprintln!("compare: {} units in both, {same} the same files, {} to compare", both.len(), todo.len());
     let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
     let done = std::sync::atomic::AtomicUsize::new(0);
-    let per: Vec<(Unit, Stats, Stats)> = pool.install(|| {
+    let read: Vec<(Unit, Result<(Stats, Stats)>)> = pool.install(|| {
         todo.par_iter()
             .map(|(u, (ab, ar), (bb, br))| {
-                let a = Stats::of(ab, ar).with_context(|| format!("old {}", u.slash()))?;
-                let b = Stats::of(bb, br).with_context(|| format!("new {}", u.slash()))?;
+                let r = Stats::of(ab, ar).with_context(|| format!("old: {}", ab.display())).and_then(|a| Ok((a, Stats::of(bb, br).with_context(|| format!("new: {}", bb.display()))?)));
                 let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                 eprintln!("compare: {} ({k}/{})", u.slash(), todo.len());
-                Ok((*u, a, b))
+                (*u, r)
             })
-            .collect::<Result<Vec<_>>>()
-    })?;
+            .collect()
+    });
+    let (mut per, mut unread) = (Vec::new(), Vec::new());
+    for (u, r) in read {
+        match r {
+            Ok((a, b)) => per.push((u, a, b)),
+            Err(e) => unread.push((u, format!("{e:#}"))),
+        }
+    }
     let (mut ta, mut tb) = (Stats::default(), Stats::default());
     let mut diffs = Vec::new();
     for (u, a, b) in &per {
@@ -622,6 +662,12 @@ fn main() -> Result<()> {
     let mut out = String::new();
     writeln!(out, "# The map, old and new\n\n- Old: {}\n- New: {}\n- Units: {} in both; {same} in the same files; {} compared. {} only in the old, {} only in the new.", old.label, new.label, both.len(), per.len(), ou.difference(&nu).count(), nu.difference(&ou).count()).unwrap();
     writeln!(out, "\nRoad figures are owned ways' (a way belongs to the unit of its first vertex). Elevations, grades, sources and channels weigh each vertex by half the length of each segment it ends. Roads' lengths and climbs change by design under the new chaining; newer OSM data moves the counts.").unwrap();
+    if !unread.is_empty() {
+        writeln!(out, "\n**Units that couldn't be read** (left out of what follows):\n").unwrap();
+        for (u, e) in &unread {
+            writeln!(out, "- {}: {e}", u.slash()).unwrap();
+        }
+    }
     if !per.is_empty() {
         units_section(&mut out, &ta, &tb);
         per_unit_section(&mut out, &mut diffs);

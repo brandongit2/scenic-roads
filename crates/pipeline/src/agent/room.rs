@@ -8,10 +8,11 @@
 //! - Raw tiles go a folder at a time, the least recently used folder (by its newest tile) first, and
 //!   in it the oldest first, so a folder's tiles go together; canopy squares each by their own use.
 //! - A file goes once the NAS's folder, listed once (sixteen at a time: a listing mostly waits on
-//!   the NAS), has it at the same size. One the NAS lacks, or has at another size (downloaded before
-//!   it kept them, or a copy cut short), is copied there first (whole and flushed: crate::whole), and
-//!   kept here when that fails; one that isn't whole itself (cut short, or a temporary file) is
-//!   deleted without being kept anywhere.
+//!   the NAS; a folder that can't be listed now keeps its files here this run), has it at the same
+//!   size. One the NAS lacks, or has at another size (downloaded before it kept them, or a copy cut
+//!   short), is copied there first (whole and flushed: crate::whole), and kept here when that
+//!   fails; one that isn't whole itself (cut short, or a temporary file) is deleted without being
+//!   kept anywhere.
 //!
 //! Nothing else of the cache is deleted here.
 
@@ -53,8 +54,9 @@ pub fn make_room(cache: &Path, sources: &Path, need: u64, margin: u64) -> Result
     make_room_with(cache, sources, need, need + margin, &disk_free)
 }
 
-/// The NAS folders' files and their sizes, each folder listed once (a folder not there: none).
-type Listed = HashMap<PathBuf, HashMap<OsString, u64>>;
+/// The NAS folders' files and their sizes, each folder listed once (a folder not there: none; one
+/// that can't be listed now: None, and its files stay this run).
+type Listed = HashMap<PathBuf, Option<HashMap<OsString, u64>>>;
 
 /// What becomes of a local cache file.
 #[derive(Debug, PartialEq)]
@@ -74,14 +76,13 @@ fn nas_path(cache: &Path, sources: &Path, p: &Path) -> Option<PathBuf> {
     Some(sources.join(store).join(p.strip_prefix(cache.join(dir)).ok()?))
 }
 
-/// A NAS folder's files and their sizes (none when it isn't there).
-fn list(folder: &Path) -> HashMap<OsString, u64> {
-    std::fs::read_dir(folder)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| Some((e.file_name(), e.metadata().ok().filter(|m| m.is_file())?.len())))
-        .collect()
+/// A NAS folder's files and their sizes (none when it isn't there; None when it can't be read now).
+fn list(folder: &Path) -> Option<HashMap<OsString, u64>> {
+    match std::fs::read_dir(folder) {
+        Ok(rd) => Some(rd.flatten().filter_map(|e| Some((e.file_name(), e.metadata().ok().filter(|m| m.is_file())?.len()))).collect()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(HashMap::new()),
+        Err(_) => None,
+    }
 }
 
 /// What becomes of local cache file `p` (under `cache/<dir>`), its NAS folder listed once.
@@ -89,7 +90,7 @@ fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
     let Some(dest) = nas_path(cache, sources, p) else { return Fate::Stay };
     let (Some(folder), Some(name)) = (dest.parent(), dest.file_name()) else { return Fate::Stay };
     let Ok(len) = std::fs::metadata(p).map(|m| m.len()) else { return Fate::Stay };
-    let names = listed.entry(folder.to_path_buf()).or_insert_with(|| list(folder));
+    let Some(names) = listed.entry(folder.to_path_buf()).or_insert_with(|| list(folder)) else { return Fate::Stay };
     if names.get(name) == Some(&len) {
         return Fate::Go;
     }
@@ -148,8 +149,9 @@ fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_spa
         }
         // Their NAS folders listed at once.
         let folders: BTreeSet<PathBuf> = ahead.iter().filter_map(|g| nas_path(cache, sources, &g.first()?.2)?.parent().map(Path::to_path_buf)).filter(|f| !listed.contains_key(f)).collect();
+        // (A thread that can't start, or fails, leaves its folder to be listed when it's reached.)
         std::thread::scope(|s| {
-            let lists: Vec<_> = folders.iter().map(|f| s.spawn(move || (f.clone(), list(f)))).collect();
+            let lists: Vec<_> = folders.iter().filter_map(|f| std::thread::Builder::new().spawn_scoped(s, move || (f.clone(), list(f))).ok()).collect();
             listed.extend(lists.into_iter().filter_map(|h| h.join().ok()));
         });
         for (_, len, p) in ahead.iter().flatten() {

@@ -467,13 +467,15 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
    - It keeps ways whole, completes multipolygons and adds a 10 km buffer.
    - Each piece is uploaded with its road links (the pairings below) as soon as it's cut. A tile's
      file goes once its four quarters are cut.
-   - The 2026-09-28 pass's (a) predates the filter's `w/route=ferry`: it has only the ferry ways
-     that are members of a route relation. Its ferries set was made again from the planet, and
-     `scenic-build patch-ferries` (by hand) gives each piece the set's ferry ways it meets, as the
-     cut keeps ways, and lacks. Only the pieces that lacked some change, so only their units, their
-     landmark candidates and the reaches are built again. The pieces meeting the regions have them
-     (`--near-coverage`: 3,563 ways in 84 pieces); the other pieces that lack some (about 580 of
-     2,442) get them once the units are built (planned).
+   - The 2026-09-28 pass's (a) was filtered without `w/route=ferry`: it has a ferry way only where
+     another of the filter's tags kept it (a route relation's member, a `wikidata` tag, …). Its
+     ferries set is the planet's own, with every ferry way, and `scenic-build patch-ferries` (by
+     hand) gives each piece the set's ferry ways it meets, as the cut keeps ways, and lacks. Only
+     the pieces that lack some change, so only their units, their landmark candidates and the
+     reaches are built again. The pieces meeting the regions (their tile and 10 km round,
+     `--near-coverage`) have them; the other pieces that lack some (about 580 of 2,442) get them
+     once the units are built (planned), and so does a ferry that reaches the regions from a farther
+     tile, which owns it.
 8. **Road values** (below).
 9. **Finish:** the pass's summary is written, and older passes retire: their entries leave the
    manifest.
