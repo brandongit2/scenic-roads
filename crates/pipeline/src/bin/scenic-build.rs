@@ -1535,14 +1535,24 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
     }
     eprintln!("unit: pass {date}, {} region(s), {} unit(s)", recipes.len(), units.len());
+    // A unit's folders go once it's built; what an earlier job left (a unit that failed) goes now.
+    std::fs::remove_dir_all(scratch.join("units")).ok();
+    for e in std::fs::read_dir(scratch).into_iter().flatten().flatten() {
+        if e.file_name().to_string_lossy().starts_with("piece-") {
+            std::fs::remove_file(e.path()).ok();
+        }
+    }
     let n = units.len() as u64;
     for (k, u) in units.into_iter().enumerate() {
         pipeline::agent::jobs::report(k as u64, n, "areas");
         let t = std::time::Instant::now();
         let dir = scratch.join("units").join(u.dash());
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir)?;
-        }
+        let bdir = scratch.join("units").join(format!("{}-buildings", u.dash()));
+        let clean = || {
+            std::fs::remove_dir_all(&dir).ok();
+            std::fs::remove_dir_all(&bdir).ok();
+        };
+        clean();
         let piece_logical = format!("sources/osm/{date}/pieces/{}", u.dash());
         let Some(piece) = out.get(&piece_logical).map(|n| out.path(n)) else {
             eprintln!("unit {}: no piece (nothing there)", u.slash());
@@ -1559,10 +1569,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             // roads.
             let mut tools = tools.clone();
             if let Some(index) = &buildings {
-                let bdir = scratch.join("units").join(format!("{}-buildings", u.dash()));
                 let n = pipeline::buildtiles::stage(o.root(), index, u, reach.as_ref().and_then(|r| r.get(u)), &bdir)?;
                 eprintln!("unit {}: buildings from {n} tiles", u.slash());
-                tools.buildings = Some(bdir);
+                tools.buildings = Some(bdir.clone());
             }
             build_folder(u, &local_piece, &dir, &cov, &layers_source(o, &pilot), &tools, &heritage, Some(&carry))?
         };
@@ -1592,6 +1601,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 out.save()?;
                 eprintln!("unit {}: removed its earlier {}", u.slash(), gone.join(" and "));
             }
+            clean();
             continue;
         }
         // The owned ways, in base-pack order, with the pass's road values.
@@ -1632,6 +1642,8 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             out.remove(&logical);
         }
         out.save()?;
+        drop(lg);
+        clean();
         eprintln!("unit {}: base pack of {} ways in {:.0?}", u.slash(), idx.len(), t.elapsed());
     }
     Ok(())
