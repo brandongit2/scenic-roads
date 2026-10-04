@@ -81,8 +81,31 @@ impl Keys {
         }
     }
 
-    /// Records a job's targets as done with their keys.
+    /// Records a job's targets as done with their keys. A prune forgets its targets' keys instead
+    /// ("unit 6/x/y", "pois 6/x/y", "pack 6/x/y", "lo 3/x/y"), so a region added back is built again.
     pub fn record(&mut self, step: &str, done: &[(String, String)]) {
+        if step == "prune" {
+            for (t, _) in done {
+                let Some((kind, at)) = t.split_once(' ') else { continue };
+                match kind {
+                    "unit" => {
+                        self.unit.remove(at);
+                    }
+                    "pois" => {
+                        self.pois.remove(at);
+                        self.peaks.remove(at);
+                    }
+                    "pack" => {
+                        self.pack.remove(at);
+                    }
+                    "lo" => {
+                        self.lo.remove(at);
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
         if step == "catalog" {
             self.catalog = done.first().map(|d| d.1.clone());
             return;
@@ -411,6 +434,11 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         work.push(Work { step: "unit".into(), targets: stale_units });
         return work;
     }
+    // What the coverage no longer builds leaves the manifest (and so the next catalog).
+    if let Some(w) = prune_units(cov, date, m, &units) {
+        work.push(w);
+        return work;
+    }
     // After the units, two chains that don't wait for each other: the roads', then a catalog
     // once it's done (new roads with the landmarks as they were; another catalog follows the
     // landmarks), then the landmarks'. The agent runs the first of these not waiting out a
@@ -464,10 +492,55 @@ fn pack_lo_targets(m: &BTreeMap<String, String>) -> (Vec<(String, String)>, Vec<
     (packs, lo)
 }
 
+/// What the coverage no longer builds (`units`: the units it does): the outputs of units it doesn't
+/// (their base pack, road values and English), and the candidates and peaks of units out of the
+/// candidates' set, as prune targets ("unit 6/x/y", "pois 6/x/y"). Catalogs then stop listing them
+/// and GC frees them.
+fn prune_units(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, units: &[(Unit, String)]) -> Option<Work> {
+    let built: BTreeSet<String> = units.iter().map(|(u, _)| u.dash()).collect();
+    let cands: BTreeSet<String> = pois_keys(cov, date, m).iter().map(|(u, _)| u.dash()).collect();
+    let mut t: BTreeSet<String> = BTreeSet::new();
+    for l in m.keys() {
+        for (prefix, set, kind) in [("base/", &built, "unit"), ("global/roads/", &built, "unit"), ("global/roaden/", &built, "unit"), ("work/pois/", &cands, "pois"), ("work/peaks/", &cands, "pois")] {
+            if let Some(u) = l.strip_prefix(prefix).and_then(Unit::parse) {
+                if !set.contains(&u.dash()) {
+                    t.insert(format!("{kind} {}", u.slash()));
+                }
+            }
+        }
+    }
+    (!t.is_empty()).then(|| Work { step: "prune".into(), targets: t.into_iter().map(|x| (x, String::new())).collect() })
+}
+
+/// Map tiles no unit is within 110 km of any more: pack(T)'s outputs (hidata, road and rail hi
+/// packs) of tiles that aren't pack targets, and lo packs of z3 tiles that aren't lo targets, as prune
+/// targets ("pack 6/x/y", "lo 3/x/y").
+fn prune_tiles(m: &BTreeMap<String, String>) -> Option<Work> {
+    let (packs, lo) = pack_lo_targets(m);
+    let packs: BTreeSet<String> = packs.into_iter().map(|(t, _)| t.replace('/', "-")).collect();
+    let lo: BTreeSet<String> = lo.into_iter().map(|(t, _)| t.replace('/', "-")).collect();
+    let mut t: BTreeSet<String> = BTreeSet::new();
+    for l in m.keys() {
+        let hi = l.strip_prefix("hidata/").or_else(|| l.strip_prefix("layers/roads/hi/")).or_else(|| l.strip_prefix("layers/rails/hi/"));
+        if let Some(k) = hi.filter(|k| !packs.contains(*k)) {
+            t.insert(format!("pack {}", k.replace('-', "/")));
+        }
+        let q = l.strip_prefix("layers/roads/lo/").or_else(|| l.strip_prefix("layers/rails/lo/"));
+        if let Some(k) = q.filter(|k| !lo.contains(*k)) {
+            t.insert(format!("lo {}", k.replace('-', "/")));
+        }
+    }
+    (!t.is_empty()).then(|| Work { step: "prune".into(), targets: t.into_iter().map(|x| (x, String::new())).collect() })
+}
+
 /// The roads' chain after the units: the road → units index, pack(T), lo, rail stops and ferries,
 /// the terrain and slope roots; its first stale step.
 fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
+    // Map tiles with no unit within 110 km any more (a region removed) leave the manifest.
+    if let Some(w) = prune_tiles(m) {
+        return Some(w);
+    }
     // The road → units index, once the units' road values are made.
     let roads: Vec<String> = m.range("global/roads/".to_string()..).take_while(|(l, _)| l.starts_with("global/roads/")).map(|(l, c)| format!("{l}={c}")).collect();
     if !roads.is_empty() {
@@ -959,6 +1032,47 @@ mod tests {
         let (none, some) = (keys(&BTreeMap::new()), keys(&[("moi-dtm".to_string(), "1111111111111111".to_string())].into()));
         assert_ne!(none["6/53/27"], some["6/53/27"], "Taipei's unit reruns when the DEM files arrive");
         assert_eq!(none["6/28/16"], some["6/28/16"], "Iceland's doesn't");
+    }
+
+    #[test]
+    fn removing_coverage_prunes_what_it_built() {
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        let mut done = Keys::default();
+        heritage_inputs(&mut m, "d");
+        m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
+        m.insert("sources/osm/d/pieces/6-40-20".into(), "sources/osm/d/pieces/6-40-20.5555555555555555.osm.pbf".into());
+        for step in ["terrain", "slope", "heritage-sites", "unit"] {
+            let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+            assert_eq!(w[0].step, step);
+            if step == "heritage-sites" {
+                heritage_done(&mut m, &mut done, "d", &w[0]);
+            } else {
+                done.record(&w[0].step, &w[0].targets);
+            }
+        }
+        // Built once for a region since removed: 6/40/20's outputs, its candidates, a map tile far
+        // from any unit and the zoomed-out tile over it.
+        for l in ["base/6-40-20", "global/roads/6-40-20", "global/roaden/6-40-20", "work/pois/6-40-20", "hidata/6-40-20", "layers/roads/hi/6-40-20", "layers/roads/lo/3-5-2"] {
+            m.insert(l.into(), format!("{l}.1212121212121212.x"));
+        }
+        done.unit.insert("6/40/20".into(), "old".into());
+        let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+        assert_eq!(w[0].step, "prune");
+        let t: Vec<&str> = w[0].targets.iter().map(|t| t.0.as_str()).collect();
+        assert_eq!(t, vec!["pois 6/40/20", "unit 6/40/20"]);
+        done.record("prune", &w[0].targets);
+        assert!(!done.unit.contains_key("6/40/20"), "a region added back is built again");
+        for l in ["base/6-40-20", "global/roads/6-40-20", "global/roaden/6-40-20", "work/pois/6-40-20"] {
+            m.remove(l);
+        }
+        // The roads' chain: the tiles nothing is near any more go first.
+        m.insert("base/6-28-16".into(), "base/6-28-16.6666666666666666.base".into());
+        m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.7777777777777777.roads".into());
+        let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+        assert_eq!(w[0].step, "prune");
+        let t: Vec<&str> = w[0].targets.iter().map(|t| t.0.as_str()).collect();
+        assert_eq!(t, vec!["lo 3/5/2", "pack 6/40/20"]);
     }
 
     #[test]

@@ -513,12 +513,30 @@ fn ferry_blocks(out: &mut Out, fc: &Value, lines: &serde_json::Map<String, Value
             }
         }
     }
+    let mut wrote = Vec::new();
     for ((scope, rz, rx, ry), mut tiles) in packs {
         tiles.sort_by_key(|t| (t.0, t.1, t.2));
         *ntiles += tiles.len();
-        write_pack(out, "ferries", "geojson-gz", true, scope, (rz, rx, ry), &mut tiles.into_iter())?;
+        if let Some((l, _)) = write_pack(out, "ferries", "geojson-gz", true, scope, (rz, rx, ry), &mut tiles.into_iter())? {
+            wrote.push(l);
+        }
     }
+    drop_stale(out, "ferries", &wrote);
     Ok(blocks)
+}
+
+/// Drops from the manifest every pack of `layer` that a job making the whole layer didn't write this
+/// time: a tile it has nothing for any more (a pass without that ferry, a region removed). How many.
+fn drop_stale(out: &mut Out, layer: &str, wrote: &[String]) -> usize {
+    let prefix = format!("layers/{layer}/");
+    let stale: Vec<String> = out.manifest.keys().filter(|k| k.starts_with(&prefix) && !wrote.contains(*k)).cloned().collect();
+    for k in &stale {
+        out.remove(k);
+    }
+    if !stale.is_empty() {
+        eprintln!("{layer}: {} stale packs dropped", stale.len());
+    }
+    stale.len()
 }
 
 /// Writes a layer's tiles (gzipped, in packs by scope).
@@ -629,6 +647,7 @@ pub fn stations_job(out: &mut Out, date: &str, geojson: Option<&std::path::Path>
     made.sort_by_key(|f| f.id);
     let want = |z: u8, x: u32, y: u32| z < 9 || cover.contains(&(x >> (z - 6), y >> (z - 6)));
     let mut ntiles = 0;
-    write_tiles(out, "stations", STATION_LAYER, &made, &want, &mut ntiles)?;
+    let wrote = write_tiles(out, "stations", STATION_LAYER, &made, &want, &mut ntiles)?;
+    drop_stale(out, "stations", &wrote);
     Ok((kept.len(), ntiles))
 }

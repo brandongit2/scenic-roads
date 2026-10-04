@@ -702,12 +702,14 @@ impl Agent {
                 "pack" => format!("Map tiles ({areas})"),
                 "lo" => "Zoomed-out map tiles".to_string(),
                 "terrain-root" | "slope-root" => "World-level terrain and slope".to_string(),
+                "prune" => "Removing what the regions no longer cover".to_string(),
                 _ => "Publishing the new map data".to_string(),
             };
             let id = format!("{} {}", w.step, w.targets.first().map(|t| t.0.as_str()).unwrap_or(""));
             let step = w.step.clone();
             let mut j = job(id, &what, &step, extra, Some(w));
-            j.needs = Needs { ac: step != "catalog", nas: true };
+            // (A catalog and a prune only write a little: no power needed.)
+            j.needs = Needs { ac: !matches!(step.as_str(), "catalog" | "prune"), nas: true };
             jobs.push(j);
         }
         jobs

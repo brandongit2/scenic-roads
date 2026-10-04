@@ -20,6 +20,10 @@
 //!   slope [T …] [--regions dir]  slope packs (z3–11) of z6 tiles T from the terrain packs
 //!                                (default: every z6 tile near the coverage)
 //!   terrain-root, slope-root     their z0–2 root packs, from the lo packs' z3 tiles
+//!   prune <target …>             drops from the manifest what the coverage no longer builds:
+//!                                "unit U" (its base pack, road values, English), "pois U" (its
+//!                                candidates, peaks), "pack T" (hidata, road and rail hi packs),
+//!                                "lo Q" (road and rail lo packs)
 //!   reach [--pass d] [U …]       every unit's reach (pipeline::reach): the boxes of its piece's
 //!                                roads, rail and ferries, owned and all (units named: printed,
 //!                                nothing written)
@@ -171,6 +175,7 @@ fn main() -> Result<()> {
             eprintln!("trailends: {} ends", ends.len());
         }
         "reach" => reach_step(&mut out, &args, &scratch)?,
+        "prune" => prune_step(&mut out, &args)?,
         "convert-legacy-marks" => {
             let c = pipeline::markconv::convert(&mut out)?;
             eprintln!("marks: {} points, {} markdata tiles, {} thinned tiles", c.points, c.tiles, c.thinned);
@@ -1462,6 +1467,32 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         out.save()?;
         eprintln!("unit {}: base pack of {} ways in {:.0?}", u.slash(), idx.len(), t.elapsed());
     }
+    Ok(())
+}
+
+/// Drops the prune targets' entries from the manifest (agent::build's prune works): the next
+/// catalog leaves them out, and GC frees their files once no catalog of the last 14 days lists them.
+fn prune_step(out: &mut Out, args: &[String]) -> Result<()> {
+    let mut gone = 0;
+    for t in positional(args) {
+        let (kind, at) = t.split_once(' ').with_context(|| format!("{t:?}: a prune target is \"<kind> <z/x/y>\""))?;
+        let d = Unit::parse(at).with_context(|| format!("{t:?}: not a tile"))?.dash();
+        let logicals = match kind {
+            "unit" => vec![format!("base/{d}"), format!("global/roads/{d}"), format!("global/roaden/{d}")],
+            "pois" => vec![format!("work/pois/{d}"), format!("work/peaks/{d}")],
+            "pack" => vec![format!("hidata/{d}"), format!("layers/roads/hi/{d}"), format!("layers/rails/hi/{d}")],
+            "lo" => vec![format!("layers/roads/lo/{d}"), format!("layers/rails/lo/{d}")],
+            k => bail!("{t:?}: unknown prune target {k:?}"),
+        };
+        for l in logicals {
+            if out.get(&l).is_some() {
+                out.remove(&l);
+                gone += 1;
+            }
+        }
+    }
+    out.save()?;
+    eprintln!("prune: {gone} entries dropped from the manifest");
     Ok(())
 }
 

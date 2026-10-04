@@ -109,7 +109,7 @@ fn main() -> Result<()> {
         "remove" => {
             let id = args.get(2).context("scenic remove <id>")?;
             recipes::remove(&root(&args, true)?.join("inputs/regions"), id)?;
-            println!("removed {id}; nothing more is built for it (the areas already built stay on the map for now)");
+            println!("removed {id}; the build Mac takes what only it covered off the map with its next build");
             Ok(())
         }
         "agent" => {

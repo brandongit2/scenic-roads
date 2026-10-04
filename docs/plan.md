@@ -40,7 +40,8 @@ nothing built depends on how the coverage is divided into regions.
   - It makes new regions from administrative areas (levels 2–8 and ISO 3166, from the pass's
     outlines), found by name or by a click on the map (the areas containing the point), each shown
     with its area in km².
-  - It renames regions (rebuilding nothing) and removes them.
+  - It renames regions (rebuilding nothing) and removes them: what only a removed region covered
+    leaves the map with the next build.
   - Edits made away from home wait on the Mac and go to the NAS when it's back.
 - **From a terminal:** `scenic add` and `scenic remove` do the same, straight to the NAS.
 - **Planned:**
@@ -191,7 +192,7 @@ steps merge their manifest changes under a lock. The exceptions:
   days go too, except the newest, and stray `.tmp` files go after 2 days.
 - It sweeps only the folders catalogs index. Translations, descriptions, inputs, state, app, nas and
   sources are never swept.
-- Gaps: see §10. A retired pass's sources stay, and built data stays after its region is removed.
+- Gaps: see §10. A retired pass's sources stay.
 
 **Backups.**
 - Daily, the agent copies the user's folders and `inputs/` into a content-addressed store under
@@ -319,7 +320,10 @@ the region. Each entry is one of these:
     cross the box, and whether a corner is inside), so changing an outline reruns only what its
     changed part reaches: the units (their tile + 20 km, and whether each long way touches the
     coverage), the terrain packs, the landmark candidates and the heritage-sites job.
-- **Shrinking** leaves global-source tiles in place, which is harmless.
+- **Shrinking:** what only the removed part built leaves the manifest once the units are built (a
+  prune): the outputs of units no longer built, their candidates and peaks, and map tiles with no
+  unit within 110 km. The next catalog drops them, and GC frees their files. Global-source tiles
+  (terrain, slope, grids, trees) stay, which is harmless.
 
 **Today's set:** 34 recipes (`tools/cutover/regions`).
 - 31 are Geofabrik outlines, the legacy builds' own.
@@ -713,9 +717,11 @@ are no request files.
 3. **The regions' build:**
    - terrain, then slope (nothing else in the regions' plan runs while terrain is stale);
    - heritage-sites;
-   - every stale unit.
+   - every stale unit;
+   - a prune of what the coverage no longer builds (§5, Shrinking).
 4. **Two chains**, each contributing its first stale step:
-   - **Roads:** road → units index, pack, lo, stations, ferries, terrain and slope roots.
+   - **Roads:** a prune of map tiles no unit is near, road → units index, pack, lo, stations,
+     ferries, terrain and slope roots. Stations and ferries drop the packs they no longer make.
    - **Landmarks:** pois, peaks, items, heritage, marks, overlays.
 5. **A catalog** once the roads chain is done: a new one whenever the served files change. While
    `inputs/hold-catalog` exists, it goes to `catalog-held/` instead.
@@ -869,29 +875,24 @@ At each phase's end an Opus agent reviews the work against this plan.
 
 **Gaps:** the code falls short of the design here. Most need fixing before regions beyond today's
 are added.
-1. **Removing a region removes nothing built.**
-   - Its base packs, road values, hidata and road packs stay in the manifest, so every catalog keeps
-     serving them and GC never frees them.
-   - `scenic remove` and the panel used to promise otherwise; their messages now say so.
-2. **GC never sweeps `sources/`.** A retired pass's planet, filtered file, pieces, sets and road
-   values stay, about 200 GB a pass. `work/pois` and `work/peaks` of units that leave the coverage
-   stay referenced for good.
-3. **New regions miss what today's coverage has from converted files:**
+1. **GC never sweeps `sources/`.** A retired pass's planet, filtered file, pieces, sets and road
+   values stay, about 200 GB a pass.
+2. **New regions miss what today's coverage has from converted files:**
    - trees;
    - roadside buildings (Overture boxes for today's regions only);
    - trains a day.
-4. **The scenic cache doesn't carry over between unit runs:** each unit run recomputes every scenic
+3. **The scenic cache doesn't carry over between unit runs:** each unit run recomputes every scenic
    sample.
-5. **Server details:**
+4. **Server details:**
    - The Regions API reads and writes the share outside the I/O pool, so a hung mount can hold a
      request.
    - A basemap tile's 304 still reads the NAS while the basemap isn't mirrored.
-6. **The agent:**
+5. **The agent:**
    - It runs nothing away from home, since every job needs the NAS (the design let local steps go
      on).
-7. **Catalogs:**
+6. **Catalogs:**
    - `credits` and `coverage` are empty: `/api/coverage` builds the coverage per request.
-8. **The repo:**
+7. **The repo:**
    - `nas/fetch-planet.sh` lives only on the NAS.
    - `inputs/keys.env` is read by nothing (`dem/railgtfs.py` still reads `data/keys.env`).
 

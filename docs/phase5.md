@@ -578,8 +578,8 @@ part, layers.py) runs unchanged.
   - `work/heritage/<d>/…`;
   - `work/marks/heritage-dots`.
 - **GC keeps what the build manifest names.** A retired pass's `work/` entries leave the manifest when
-  a newer pass completes. A unit's `work/pois` and `work/peaks` stay named after the unit leaves the
-  coverage (plan §10).
+  a newer pass completes; a unit's `work/pois` and `work/peaks` leave it with the prune once the unit
+  is out of the candidates' set (plan §5, Shrinking).
 
 ## Today's regions
 
