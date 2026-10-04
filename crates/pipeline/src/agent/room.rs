@@ -14,7 +14,7 @@
 //!   fails; one that isn't whole itself (cut short, or a temporary file) is deleted without being
 //!   kept anywhere.
 //!
-//! Nothing else of the cache is deleted here.
+//! It ends early when the agent is asked to stop. Nothing else of the cache is deleted here.
 
 use anyhow::Result;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -162,7 +162,8 @@ fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_spa
     let mut room = Room { cache, free_space, target, short: target.saturating_sub(free), since: 0, freed: 0 };
     let (mut listed, mut made) = (Listed::new(), HashSet::new());
     for ahead in groups.chunks(LIST_AHEAD) {
-        if room.enough()? {
+        // (Asked to stop: the room made so far does.)
+        if room.enough()? || super::stopping() {
             break;
         }
         // Their NAS folders listed at once.
@@ -173,7 +174,7 @@ fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_spa
             listed.extend(lists.into_iter().filter_map(|h| h.join().ok()));
         });
         for (_, len, p) in ahead.iter().flatten() {
-            if room.enough()? {
+            if room.enough()? || super::stopping() {
                 return Ok(room.freed);
             }
             match fate(cache, sources, p, &mut listed) {

@@ -175,6 +175,12 @@ extern "C" fn on_signal(_: libc::c_int) {
     STOP.store(true, Ordering::SeqCst);
 }
 
+/// Whether the agent has been asked to stop (SIGTERM, SIGINT): long work between loops (making
+/// room) ends early for it.
+pub(crate) fn stopping() -> bool {
+    STOP.load(Ordering::SeqCst)
+}
+
 /// The NAS project folder: the share's mount, by whatever name it's mounted. When it's missing and
 /// `mount` is set, it's mounted: at home by the LAN name, away through Tailscale when the Keychain
 /// has the bare name's password (else nothing: a dialog would ask for it).
