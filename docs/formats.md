@@ -255,7 +255,8 @@ zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. 
 `files` holds every file the catalog references. `credits` and `coverage` are empty for now
 (`/api/coverage` builds the coverage from the recipes per request). GC's roots are the newest
 catalog, every catalog of the last 14 days and the build manifest; an unreferenced file goes once
-it's also older than 14 days, in the folders catalogs index only (plan §3). A held catalog is
+it's also older than 14 days, in the folders catalogs index and retired passes' sources (plan §3). A
+held catalog is
 written to `catalog-held/` instead (`inputs/hold-catalog`).
 
 ## On each Mac (`~/Library/Application Support/scenic/`)

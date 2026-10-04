@@ -6,8 +6,11 @@
 //! 2026-10-02), and the build Mac can't use SSH unattended (1Password asks each session).
 //!
 //! Only the folders catalogs index are swept (`base/`, `global/`, `layers/`, `hidata/`, …: the
-//! first path component of every referenced file). Sources, the user's folders, state and the app
-//! are never touched. With no readable catalog nothing is deleted.
+//! first path component of every referenced file), and the sources of passes older than the newest
+//! complete one (`sources/osm/<date>/`, `sources/items/<date>/`): their content-named files by the
+//! same rule, the rest (the planet download) once the newer pass has been complete for `keep_days`.
+//! The newest pass, a planet waiting for its pass, the rest of `sources/`, the user's folders, state
+//! and the app are never touched. With no readable catalog nothing is deleted.
 
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -26,6 +29,9 @@ pub struct Report {
     pub tmp_removed: usize,
     /// Unreferenced but too young to remove.
     pub young: usize,
+    /// Of the removed, files of retired passes' sources (and their bytes).
+    pub retired_removed: usize,
+    pub retired_bytes: u64,
     pub dry_run: bool,
 }
 
@@ -103,11 +109,70 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
             }
         }
     }
+    // Retired passes' sources: passes older than the newest complete one.
+    if let Some(latest) = crate::osmpass::latest_pass(root) {
+        // When the newest pass completed (its summary's time): a retired pass's plain files (the
+        // planet download) go once that's `keep_days` ago, so a fresh pass can still be compared.
+        let done_at = std::fs::read_dir(root.join("sources/osm").join(&latest))
+            .ok()
+            .and_then(|rd| rd.flatten().find(|e| e.file_name().to_str().is_some_and(|n| n.starts_with("pass.") && n.ends_with(".json"))))
+            .and_then(|e| e.metadata().ok()?.modified().ok());
+        let plain_due = done_at.is_some_and(old);
+        for kind in ["osm", "items"] {
+            let Ok(rd) = std::fs::read_dir(root.join("sources").join(kind)) else { continue };
+            let mut dates: Vec<String> = rd.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|d| crate::osmpass::is_date(d) && *d < latest).collect();
+            dates.sort();
+            for d in dates {
+                let dir = root.join("sources").join(kind).join(&d);
+                sweep_retired(root, &dir, &referenced, &old, plain_due, dry_run, &mut rep)?;
+            }
+        }
+    }
     for p in drop_cats {
         remove(&p, dry_run)?;
         rep.catalogs_removed += 1;
     }
     Ok(rep)
+}
+
+/// One retired pass's folder: content-named files no catalog or manifest names, once old; any other
+/// file once `plain_due`; then the folders left empty.
+fn sweep_retired(root: &Path, dir: &Path, referenced: &BTreeSet<String>, old: &dyn Fn(SystemTime) -> bool, plain_due: bool, dry_run: bool, rep: &mut Report) -> Result<()> {
+    let mut dirs = vec![dir.to_path_buf()];
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            let Ok(md) = e.metadata() else { continue };
+            if md.is_dir() {
+                stack.push(p.clone());
+                dirs.push(p);
+                continue;
+            }
+            rep.files_seen += 1;
+            let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().into_owned();
+            let named = store::naming::parse_content_name(&rel).is_some();
+            let due = if named { !referenced.contains(&rel) && old(md.modified().unwrap_or(SystemTime::now())) } else { plain_due };
+            if due {
+                remove(&p, dry_run)?;
+                rep.removed += 1;
+                rep.removed_bytes += md.len();
+                rep.retired_removed += 1;
+                rep.retired_bytes += md.len();
+            } else if named && !referenced.contains(&rel) {
+                rep.young += 1;
+            }
+        }
+    }
+    // Deepest first: a folder emptied above may let its parent go too.
+    dirs.sort_by_key(|d| std::cmp::Reverse(d.components().count()));
+    for d in dirs {
+        if std::fs::read_dir(&d).is_ok_and(|mut rd| rd.next().is_none()) && !dry_run {
+            std::fs::remove_dir(&d).ok();
+        }
+    }
+    Ok(())
 }
 
 fn remove(p: &Path, dry_run: bool) -> Result<()> {
@@ -202,6 +267,42 @@ mod tests {
         let r = run(root, 14, false).unwrap();
         assert_eq!(r.removed, 0);
         assert!(root.join(f).exists());
+    }
+
+    #[test]
+    fn retired_passes_go_after_the_newer_one_settles() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        let put = |rel: &str, days: u64| {
+            let p = root.join(rel);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(&p, b"x").unwrap();
+            age(&p, days);
+        };
+        // The old pass (retired from the manifest), the newest (complete 20 days ago), and a planet
+        // waiting for its pass.
+        put("sources/osm/2026-03-01/planet.osm.pbf", 200);
+        put("sources/osm/2026-03-01/pieces/6-1-1.1111111111111111.osm.pbf", 200);
+        put("sources/items/2026-03-01/facts.2222222222222222.json", 200);
+        put("sources/osm/2026-09-28/planet.osm.pbf", 30);
+        put("sources/osm/2026-09-28/pass.3333333333333333.json", 20);
+        put("sources/osm/2026-09-28/pieces/6-1-1.4444444444444444.osm.pbf", 25);
+        put("sources/osm/2027-03-01/planet.osm.pbf", 1);
+        put("sources/registers/legacy.5555555555555555.tar.zst", 300);
+        store::catalog::write(&root.join("catalog"), &store::catalog::Catalog::new(1)).unwrap();
+        let r = run(root, 14, false).unwrap();
+        assert_eq!(r.retired_removed, 3, "{r:?}");
+        assert!(!root.join("sources/osm/2026-03-01").exists() && !root.join("sources/items/2026-03-01").exists(), "the retired pass's folders, emptied, go too");
+        for kept in ["sources/osm/2026-09-28/planet.osm.pbf", "sources/osm/2026-09-28/pieces/6-1-1.4444444444444444.osm.pbf", "sources/osm/2027-03-01/planet.osm.pbf", "sources/registers/legacy.5555555555555555.tar.zst"] {
+            assert!(root.join(kept).exists(), "{kept}");
+        }
+        // A newer pass completed only days ago: the old planet waits (its content-named files don't).
+        put("sources/osm/2026-03-01/planet.osm.pbf", 200);
+        put("sources/osm/2026-03-01/roads/6-1-1.6666666666666666.bin", 200);
+        put("sources/osm/2026-09-28/pass.3333333333333333.json", 3);
+        let r = run(root, 14, false).unwrap();
+        assert_eq!(r.retired_removed, 1);
+        assert!(root.join("sources/osm/2026-03-01/planet.osm.pbf").exists());
     }
 
     #[test]

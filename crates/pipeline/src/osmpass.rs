@@ -615,7 +615,7 @@ pub fn is_date(s: &str) -> bool {
 /// Removes the manifest's entries of passes older than `date` (their planet's pieces, sets, road
 /// values and outlines; the summits, route ends, items and heritage made from them) once `date`'s
 /// pass is complete: every job reads the newest pass, so nothing reads them again. (Their files
-/// stay: GC doesn't sweep `sources/` yet, docs/plan.md §10.) How many went.
+/// go with GC: its sweep of retired passes' sources, agent::gc.) How many went.
 pub fn retire_older(out: &mut Out, date: &str) -> usize {
     let old: Vec<String> = out
         .manifest

@@ -190,9 +190,13 @@ steps merge their manifest changes under a lock. The exceptions:
 - **Roots:** the newest catalog, every catalog of the last 14 days, and the build manifest.
 - An unreferenced content-named file goes once it's also older than 14 days. Catalogs older than 14
   days go too, except the newest, and stray `.tmp` files go after 2 days.
-- It sweeps only the folders catalogs index. Translations, descriptions, inputs, state, app, nas and
-  sources are never swept.
-- Gaps: see §10. A retired pass's sources stay.
+- It sweeps the folders catalogs index, and retired passes' sources (`sources/osm/<date>/` and
+  `sources/items/<date>/` of passes older than the newest complete one): their content-named files
+  by the same rule, the planet download 14 days after the newer pass completed, then the empty
+  folders.
+- Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/` (registers,
+  the basemap's data, the DEM seed, today's legacy inputs), translations, descriptions, inputs,
+  state, app and nas.
 
 **Backups.**
 - Daily, the agent copies the user's folders and `inputs/` into a content-addressed store under
@@ -814,7 +818,8 @@ everything is rebuilt.
 | sources kept per pass | ~200 GB | the same |
 | an app Mac's mirror | everything, ~200 GB (M1: budget-limited) | budget-limited |
 
-A retired pass's sources stay until the GC gap (§10) is closed, so each pass adds about 200 GB.
+A retired pass's sources go 14 days after the next pass completes, so the NAS holds about two
+passes' sources at most.
 
 ## 10. Phases and status
 
@@ -875,24 +880,22 @@ At each phase's end an Opus agent reviews the work against this plan.
 
 **Gaps:** the code falls short of the design here. Most need fixing before regions beyond today's
 are added.
-1. **GC never sweeps `sources/`.** A retired pass's planet, filtered file, pieces, sets and road
-   values stay, about 200 GB a pass.
-2. **New regions miss what today's coverage has from converted files:**
+1. **New regions miss what today's coverage has from converted files:**
    - trees;
    - roadside buildings (Overture boxes for today's regions only);
    - trains a day.
-3. **The scenic cache doesn't carry over between unit runs:** each unit run recomputes every scenic
+2. **The scenic cache doesn't carry over between unit runs:** each unit run recomputes every scenic
    sample.
-4. **Server details:**
+3. **Server details:**
    - The Regions API reads and writes the share outside the I/O pool, so a hung mount can hold a
      request.
    - A basemap tile's 304 still reads the NAS while the basemap isn't mirrored.
-5. **The agent:**
+4. **The agent:**
    - It runs nothing away from home, since every job needs the NAS (the design let local steps go
      on).
-6. **Catalogs:**
+5. **Catalogs:**
    - `credits` and `coverage` are empty: `/api/coverage` builds the coverage per request.
-7. **The repo:**
+6. **The repo:**
    - `nas/fetch-planet.sh` lives only on the NAS.
    - `inputs/keys.env` is read by nothing (`dem/railgtfs.py` still reads `data/keys.env`).
 
@@ -917,7 +920,7 @@ are added.
 - **Version bumps at globe scale** would take days: today a bump makes every target stale in the
   normal order.
 - **Way ids past u32** (2040s): the tile format is versioned.
-- **Disk:** each pass adds its sources to the NAS until GC sweeps them (§10).
+- **Disk:** for 14 days after a pass completes, the NAS holds two passes' sources (~400 GB).
 
 ## 12. Changes
 
