@@ -856,6 +856,23 @@ fn input_digests(root: &Path) -> BTreeMap<String, String> {
         let all: Vec<u8> = files.iter().flat_map(|(n, b)| n.bytes().chain(b.iter().copied())).collect();
         inputs.insert("ferries-freq".into(), store::naming::hash16(&all));
     }
+    // The regions as a catalog records them: the recipes, and the outline files they can name (by
+    // size and time).
+    let mut regions: Vec<String> = Vec::new();
+    for (dir, ext) in [("inputs/regions", "toml"), ("inputs/outlines", "poly"), ("inputs/outlines/geofabrik", "poly")] {
+        let Ok(rd) = std::fs::read_dir(root.join(dir)) else { continue };
+        for e in rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == ext)) {
+            let name = format!("{dir}/{}", e.file_name().to_string_lossy());
+            if ext == "toml" {
+                regions.push(format!("{name} {}", std::fs::read_to_string(e.path()).unwrap_or_default()));
+            } else if let Ok(md) = e.metadata() {
+                let t = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+                regions.push(format!("{name} {} {t}", md.len()));
+            }
+        }
+    }
+    regions.sort();
+    inputs.insert("regions".into(), store::naming::hash16(regions.join("\n").as_bytes()));
     if let Ok(rd) = std::fs::read_dir(root.join("inputs/moi-dtm")) {
         let mut files: Vec<String> = rd
             .flatten()
@@ -880,7 +897,7 @@ fn lapsed(n: &Needs, c: &Conditions) -> Option<String> {
         return Some("the NAS isn't reachable".into());
     }
     if n.home && !c.home {
-        return Some("away from home: it reads the whole planet from the NAS, which waits for the home network".into());
+        return Some("away from home: it moves the whole planet or world through the NAS, which waits for the home network".into());
     }
     // CPU work: on mains power, or on battery down to BATTERY_MIN.
     if n.ac && !c.ac && c.battery.is_none_or(|b| b < cond::BATTERY_MIN) {

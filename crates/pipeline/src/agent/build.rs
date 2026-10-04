@@ -468,7 +468,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     // roads, nor the roads the landmarks.
     match roads_chain(date, m, done, inputs, reach) {
         Some(w) => work.push(w),
-        None => work.extend(catalog_work(m, done)),
+        None => work.extend(catalog_work(m, done, inputs)),
     }
     work.extend(landmarks_chain(cov, date, m, done));
     work
@@ -808,27 +808,30 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     let landmarks = remaining(done, |d| landmarks_chain(cov, date, m, d));
     let lm_left: usize = landmarks.iter().map(|w| if matches!(w.step.as_str(), "pois" | "peaks") { w.targets.len() } else { 1 }).sum();
     out.push(group("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"], pieces.then_some(lm_left)));
-    let key = catalog_key(m);
+    let key = catalog_key(m, inputs);
     let publish_left = if held { done.catalog_held.as_deref() != Some(key.as_str()) } else { done.catalog.as_deref() != Some(key.as_str()) } as usize;
     out.push(group("Publishing the new map data", &["catalog", "catalog-held"], built.then_some(publish_left)));
     out
 }
 
-/// A catalog when what it would list has changed since the last one.
-fn catalog_work(m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
-    let k = catalog_key(m);
+/// A catalog when what it would list or record has changed since the last one.
+fn catalog_work(m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
+    let k = catalog_key(m, inputs);
     (done.catalog.as_deref() != Some(k.as_str())).then(|| Work { step: "catalog".into(), targets: vec![("catalog".into(), k)] })
 }
 
-/// What a catalog would list: the served files' logical and content names, hashed.
-fn catalog_key(m: &BTreeMap<String, String>) -> String {
-    let served: Vec<String> = m
+/// What a catalog would list and record, hashed: the served files' logical and content names, and
+/// the regions (`inputs` "regions": their recipes and outline files), so a region renamed, or drawn
+/// inside another, gets a catalog that records it.
+fn catalog_key(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, String>) -> String {
+    let mut served: Vec<String> = m
         .iter()
         .filter(|(l, _)| {
             ["layers/", "base/", "hidata/", "markdata/", "ovdata/", "global/"].iter().any(|p| l.starts_with(p)) || l.ends_with("/outlines")
         })
         .map(|(l, c)| format!("{l}={c}"))
         .collect();
+    served.push(format!("regions {}", inputs.get("regions").map(String::as_str).unwrap_or("-")));
     let refs: Vec<&str> = served.iter().map(String::as_str).collect();
     h(&refs)
 }
@@ -911,6 +914,10 @@ mod tests {
         assert_eq!(w[0].step, "catalog");
         done.record("catalog", &w[0].targets);
         assert!(plan(&c, "2026-09-28", &m, &done, &BTreeMap::new()).is_empty(), "nothing more to do");
+        // A region renamed (or drawn inside another): a catalog that records it, and nothing else.
+        let renamed: BTreeMap<String, String> = [("regions".to_string(), "5a5a5a5a5a5a5a5a".to_string())].into();
+        let w = plan(&c, "2026-09-28", &m, &done, &renamed);
+        assert_eq!(w.iter().map(|w| w.step.as_str()).collect::<Vec<_>>(), vec!["catalog"]);
         // New terrain content: slope again, then a catalog.
         m.insert("layers/terrain/hi/6-28-16".into(), "layers/terrain/hi/6-28-16.3333333333333333.pack".into());
         let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
@@ -995,7 +1002,7 @@ mod tests {
         assert!(line(&l, "Road index").left.is_some_and(|n| n >= 1));
         assert_eq!(line(&l, "Publishing").left, Some(1));
         // Held for review: publishing is the held catalog.
-        let k = catalog_key(&m);
+        let k = catalog_key(&m, &BTreeMap::new());
         done.catalog_held = Some(k);
         assert!(line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), true), "Publishing").finished());
         assert!(!line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), false), "Publishing").finished());
