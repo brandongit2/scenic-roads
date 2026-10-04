@@ -1354,6 +1354,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         dem: PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into())),
         cache: PathBuf::from(opt(args, "--cache-dir").unwrap_or_else(|| "data/cache".into())),
         buildings: opt(args, "--buildings").map(PathBuf::from),
+        moi_dtm: Some(out.root().join("inputs/moi-dtm")),
         spacing_m: 8,
     };
     // Today's DEM cache, where the units' elevations start from (once per build Mac).

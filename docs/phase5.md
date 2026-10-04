@@ -6,9 +6,9 @@ The design behind plan §10 phase 5:
 - the heritage chain;
 - the zoomed-out drive and ride summaries (end of this file).
 
-**Version 4**, 2026-10-03: checked against the code. It's built, except the heritage chain's switch
-(written, off: "Heritage and area flags"). It replaces plan §6's first design, in which pack(T)
-wrote landmark and station tiles and the lo packs held top landmarks and per-cell counts.
+**Version 5**, 2026-10-03: checked against the code, and the heritage chain switched on. It's built.
+It replaces plan §6's first design, in which pack(T) wrote landmark and station tiles and the lo
+packs held top landmarks and per-cell counts.
 
 ## Why
 
@@ -487,9 +487,8 @@ lies near it.
 
 ### Heritage and area flags
 
-**Status:** heritage-sites and the units' flags are built and run. The heritage job, the overlays job
-and the server's switch are written and checked, but the agent doesn't run the two jobs
-(`HERITAGE_JOBS` is off).
+**Status:** built and run: heritage-sites and the units' flags, the heritage job, the overlays job
+and the server's switch to their outputs (checked below).
 
 **The approach.** Today's heritage chain (heritage.py, heritagewd.py, heritagedetails.py,
 areadetails.py, whsshapes.py, filterprops.py's heritage part, pageviews.py, interest.py's heritage
@@ -549,14 +548,12 @@ part, layers.py) runs unchanged.
     labels, fail the run when a query fails. Every cache is written through a temporary file.
   - **Outputs:** `work/heritage/<d>/<stem>`.
 - **The switch.**
-  - `HERITAGE_JOBS` only keeps the agent from running the heritage and overlays jobs. Marks and the
-    server take the pass's heritage on their own whenever the heritage job's outputs are in the
+  - Marks and the server take the pass's heritage whenever the heritage job's outputs are in the
     manifest: `markconv::heritage_source`, and the server's `global/heritage/…` over today's.
   - **The marks job** then saves the World Heritage dots' ids (`work/marks/heritage-dots`).
   - **The overlays job** (after marks) makes the area overlays and parks from the same outputs, with
     those ids. ovconv kept them in step by replaying today's whole marks assignment.
-  - **Before the switch,** the cutover's catalog keeps today's heritage points and area overlays.
-    Its stops & sights, stations and ferries come from the pass.
+  - **Until the heritage job's first run,** catalogs keep today's heritage points and area overlays.
 - **Checks of the chain:**
   - **Reproduction:** today's whole chain in the stand-in root, on today's inputs and the seeds, made
     17 of today's outputs byte for byte: every details file, the area layers, the World Heritage

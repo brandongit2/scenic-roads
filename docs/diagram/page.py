@@ -71,8 +71,8 @@ PHASES = [
      'Left: trains a day and the names to-do list; switching the heritage chain on.'),
     ('done', 'In the browser', 'Live on both Macs: landmarks, area overlays, rail stops and ferries by view (the In view numbers, lists and popups equal to today’s in 163 views). Against today’s whole files: 3–4× less browser memory (53–74 MB instead of 186–232), the map done loading sooner (London 3.3 s instead of 4.7, Alps 2.9 instead of 4.7), the same frame rates. Zoomed-out drive, ride and rail-line lists come from 500 m summaries (“≈” by the count). The Regions panel adds, renames and removes regions.',
      'Left: drawing, splitting and merging regions in the panel.'),
-    ('active', 'Switching over', 'Today’s 34 regions are recipes on the NAS, held for review: once the pass ends, the agent builds them (terrain, slope, heritage sites, 482 areas, then roads and landmarks) into a catalog kept apart until it’s compared with today’s map.',
-     'Left: the build, the comparison, the heritage switch, then the switch itself and deleting today’s converted data.'),
+    ('active', 'Switching over', 'Today’s 34 regions are recipes on the NAS, held for review: once the pass ends, the agent builds them (terrain, slope, heritage sites, the areas, then roads and landmarks) into a catalog kept apart until it’s compared with today’s map.',
+     'Left: the build, the comparison (heritage included), then the switch itself and deleting today’s converted data.'),
 ]
 GAPS = ('Found when every document was checked against the code (3 October): removing a region keeps what’s already built on the map; '
         'an old pass’s files stay on the NAS (about 200 GB each); regions beyond today’s 34 would lack trees, roadside buildings, '

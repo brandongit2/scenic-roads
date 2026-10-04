@@ -127,9 +127,11 @@ deletions over SMB bypass it (tested 2026-10-02).
 
 ```
 translations/  descriptions/  the user's drop-ins (descriptions/README.md; todo/: planned)
-inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), ferries/freq/ (timetables), hold-catalog
+inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), ferries/freq/ (timetables), moi-dtm/
+               (Taiwan's DTM, put there by hand), hold-catalog
 sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass), basemap/
                (Planetiler's jar and data), registers/ (the registers snapshot), items/<date>/,
+               dem-cache/ (today's per-vertex DEM cache, the units' seed),
                terrain-z8-v1, legacy/ (today's map's build inputs, until the cutover)
 base/          base packs, one per unit
 hidata/        per z6 tile: the ways-here index, query parts, climbs, rail lines, zoomed-out summaries
@@ -322,14 +324,14 @@ the region. Each entry is one of these:
 **Today's set:** 34 recipes (`tools/cutover/regions`).
 - 31 are Geofabrik outlines, the legacy builds' own.
 - Gibraltar, Saint-Pierre-et-Miquelon and Singapore are `osm:` relations.
-- Their coverage meets 482 z6 units.
 
 **By location.** These rules depend on where a thing is. Today each is written into its step, and the
 units' ones (DEM order, densification, road network codes) are versioned by area in
 `pipeline::rules`: a unit's key names the versions of the rules where its ways go, so a changed
 rule (its version bumped) reruns only the units it applies to. The plan is modules declared per ISO
 3166-1 country or 3166-2 subdivision, with defaults:
-- DEM order (`dem/sample.py`) and densification spacing (8 m in North America and Japan, 15 m
+- DEM order (`dem/sample.py`; Taiwan's MOI DTM from `inputs/moi-dtm/` when it's there, which
+  reruns Taiwan's units) and densification spacing (8 m in North America and Japan, 15 m
   elsewhere: `extract`);
 - heritage registers (the snapshot, `dem/heritage.py`);
 - timetables:
@@ -413,7 +415,7 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   - It uploads them as its own z6 tile's `grid-*` hi packs.
 - **Trees** (cover, height, leaf type): today's packs, converted. Planned: a job for new coverage.
 - **Area overlays:** see `docs/phase5.md`. The `overlays` job runs after marks, because it needs the
-  World Heritage dots' ids. It's off until the heritage switch; today's converted packs serve.
+  World Heritage dots' ids. Until its first run, today's converted packs serve.
 - **Buildings (phase 7):** Overture plus official data, giving z13–14 within the coverage.
 
 The server builds missing deeper terrain and slope tiles from their ancestors.
@@ -714,8 +716,7 @@ are no request files.
    - every stale unit.
 4. **Two chains**, each contributing its first stale step:
    - **Roads:** road → units index, pack, lo, stations, ferries, terrain and slope roots.
-   - **Landmarks:** pois, peaks, items, heritage, marks, overlays. Heritage and overlays are off
-     (`HERITAGE_JOBS = false`) until the cutover's comparison.
+   - **Landmarks:** pois, peaks, items, heritage, marks, overlays.
 5. **A catalog** once the roads chain is done: a new one whenever the served files change. While
    `inputs/hold-catalog` exists, it goes to `catalog-held/` instead.
 6. **Daily:** backup and GC.
@@ -842,9 +843,9 @@ At each phase's end an Opus agent reviews the work against this plan.
        same ways, elevations within 1.8 m and every scenic channel and flag;
      - heritage sites and flags;
      - labels, stations, ferries;
-     - the landmark jobs: pois, peaks, items, marks.
-   - **Written and checked, off:** the rest of the heritage chain and its consumers. It reproduces
-     today's 17 outputs, and every overlay pack byte for byte; fame differs where today's was stale.
+     - the landmark jobs: pois, peaks, items, marks;
+     - the rest of the heritage chain and its consumers, checked against today's: 17 outputs and
+       every overlay pack byte for byte; fame differs where today's was stale.
    - **Not built:** rail service, names and descriptions todo, determinism tests, validation.
 5. **Browser: done.**
    - Built:
@@ -857,11 +858,12 @@ At each phase's end an Opus agent reviews the work against this plan.
    - **Not built:** drawing, splitting and merging regions; "Keep this view".
 6. **Cutover: under way.**
    1. Today's 34 recipes are installed, with `inputs/hold-catalog`.
-   2. The agent builds them after the pass: terrain, slope, heritage sites, the 482 units, both chains.
+   2. The agent builds them after the pass: terrain, slope, heritage sites, the units, both chains
+      (the heritage chain included).
    3. The held catalog is compared with today's map: counts and distributions (lengths, drives and
-      climbs change under the new chaining), screenshots and performance.
-   4. Then the heritage switch is compared.
-   5. Then the hold is released, and the converted legacy data deleted.
+      climbs change under the new chaining), heritage points and overlays, screenshots and
+      performance.
+   4. Then the hold is released, and the converted legacy data deleted.
 7. **Features,** each on its own: 3D buildings, then PLATEAU; building heights in horizons and the
    viewshed tool; the new terrain repair; sharper terrain from national DEMs. Not started.
 
@@ -877,10 +879,7 @@ are added.
 3. **New regions miss what today's coverage has from converted files:**
    - trees;
    - roadside buildings (Overture boxes for today's regions only);
-   - trains a day;
-   - heritage points and area overlays (until the heritage switch).
-   - Taiwan's MOI DTM has no place on the NAS: tgos.tw refuses requests from outside Taiwan, so
-     FABDEM serves.
+   - trains a day.
 4. **The scenic cache doesn't carry over between unit runs:** each unit run recomputes every scenic
    sample.
 5. **Server details:**

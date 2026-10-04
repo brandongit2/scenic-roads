@@ -248,7 +248,7 @@ def build(check=False):
             'tiles and features get built. Terrain and slope are built per z3 pack near the coverage, heritage sites over the '
             'coverage, each area’s roads, elevations and scenic values per area, reading its neighbours within 110 km; the '
             'basemap, labels, landmarks, rail stops and ferries worldwide. Not built yet: the names to-do list, trees for new '
-            'areas, trains a day, buildings; built but off: the heritage chain and the area overlays it makes. The servers read '
+            'areas, trains a day, buildings. The servers read '
             'your translation files directly and attach English to everything they serve. The server reads the Mac’s copy of a '
             'file if it has it, else the NAS’s.')
     return d.svg(h, aria, heads)

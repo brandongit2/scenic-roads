@@ -184,9 +184,9 @@ pub fn builds(cov: &Coverage, reach: &Reaches, u: Unit) -> bool {
 /// The units the coverage builds (`builds`), each with its key: what it reads (its piece and road
 /// values, the coverage as its ways meet it (`Reach::coverage_key`) and the location rules where
 /// they go (`crate::rules`), the heritage sites' and areas' slices near it, the staged layers near
-/// it as the manifest has them, which is what the unit step stages from). None before the pass's
-/// reaches are made.
-pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Vec<(Unit, String)> {
+/// it as the manifest has them, which is what the unit step stages from, and in Taiwan the MOI
+/// DTM's files, `digests["moi-dtm"]`). None before the pass's reaches are made.
+pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: Option<&Reaches>, digests: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let mut units: Vec<(Unit, String)> = Vec::new();
     let Some(reach) = reach else { return units };
@@ -200,6 +200,10 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach
             r.coverage_key(cov, u),
             crate::rules::versions_meeting(r.extent(u)),
         ];
+        // Taiwan's DEM when it's there (a file dropped in reruns the units it covers).
+        if crate::rules::meets_taiwan(r.extent(u)) {
+            inputs.push(format!("moi-dtm {}", digests.get("moi-dtm").map(String::as_str).unwrap_or("-")));
+        }
         let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
         for (x, y) in crate::stage::tiles_in(6, b) {
             for layer in ["terrain", "grid-class", "grid-canopy", "grid-cover"] {
@@ -290,10 +294,6 @@ pub const MARKS_V: u32 = 1;
 /// area overlays from it with the marks' World Heritage dots (ovconv::overlays).
 pub const HERITAGE_V: u32 = 1;
 pub const OVERLAYS_V: u32 = 1;
-/// Whether the agent runs those two: off until marks, overlays and the server's files switching to
-/// them together has been compared with today's (docs/phase5.md "Heritage and area flags"); marks
-/// and overlays use today's heritage files meanwhile.
-pub const HERITAGE_JOBS: bool = false;
 
 /// Where the marks' and overlays' heritage comes from (markconv::heritage_source): the pass's
 /// heritage job's outputs when there are any, else today's.
@@ -338,8 +338,8 @@ pub struct RegionState {
     pub total: usize,
 }
 
-pub fn region_states(cov: &Coverage, regions: &[(String, Coverage)], date: &str, m: &BTreeMap<String, String>, done: &Keys, reach: Option<&Reaches>) -> BTreeMap<String, RegionState> {
-    let keys = unit_keys(cov, date, m, reach);
+pub fn region_states(cov: &Coverage, regions: &[(String, Coverage)], date: &str, m: &BTreeMap<String, String>, done: &Keys, reach: Option<&Reaches>, digests: &BTreeMap<String, String>) -> BTreeMap<String, RegionState> {
+    let keys = unit_keys(cov, date, m, reach, digests);
     regions
         .iter()
         .map(|(id, rc)| {
@@ -405,7 +405,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     if reach.is_none() {
         return work;
     }
-    let units = unit_keys(cov, date, m, reach);
+    let units = unit_keys(cov, date, m, reach, inputs);
     let stale_units: Vec<(String, String)> = units.iter().filter(|(u, k)| stale(&done.unit, &u.slash(), k)).map(|(u, k)| (u.slash(), k.clone())).collect();
     if !stale_units.is_empty() {
         work.push(Work { step: "unit".into(), targets: stale_units });
@@ -563,7 +563,7 @@ fn landmarks_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, don
         return Some(Work { step: "items".into(), targets: vec![("items".into(), k)] });
     }
     // The rest of the heritage chain (network), on the heritage sites.
-    if HERITAGE_JOBS && m.contains_key(&crate::heritage::base_logical(date, "heritage-sources")) {
+    if m.contains_key(&crate::heritage::base_logical(date, "heritage-sources")) {
         let mut ins = vec![format!("heritage {HERITAGE_V}"), date.to_string()];
         for stem in ["heritage", "heritage-areas", "special", "indigenous", "heritage-sources"] {
             ins.push(get(&crate::heritage::base_logical(date, stem)).to_string());
@@ -597,7 +597,7 @@ fn landmarks_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, don
     }
     // The area overlays from the pass's heritage, with the dots the marks gave the World Heritage
     // sites; their hi tiles where the units are.
-    if HERITAGE_JOBS && src != crate::markconv::LEGACY {
+    if src != crate::markconv::LEGACY {
         let mut ins = vec![format!("overlays {OVERLAYS_V}"), get(crate::markconv::HERITAGE_DOTS).to_string()];
         for stem in [
             "layer-heritage-areas",
@@ -701,7 +701,7 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     let sites_left = heritage_sites_work(cov, date, m, done).is_some() || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources"));
     out.push(group("Heritage sites and designated areas", &["heritage-sites"], Some(sites_left as usize)));
     let pieces = m.keys().any(|l| l.starts_with(&format!("sources/osm/{date}/pieces/")));
-    let units: Vec<(String, String)> = unit_keys(cov, date, m, reach).into_iter().map(|(u, k)| (u.slash(), k)).collect();
+    let units: Vec<(String, String)> = unit_keys(cov, date, m, reach, inputs).into_iter().map(|(u, k)| (u.slash(), k)).collect();
     out.push(per("Roads, elevations and scenery", &["unit"], &units, &done.unit, "areas", pieces && reach.is_some()));
     let (packs, lo) = pack_lo_targets(m);
     let built = m.keys().any(|l| l.starts_with("base/"));
@@ -762,7 +762,7 @@ mod tests {
         super::plan(c, date, m, done, inputs, Some(&reach()))
     }
     fn unit_keys(c: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
-        super::unit_keys(c, date, m, Some(&reach()))
+        super::unit_keys(c, date, m, Some(&reach()), &BTreeMap::new())
     }
     fn checklist(c: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, held: bool) -> Vec<Step> {
         super::checklist(c, date, m, done, inputs, held, Some(&reach()))
@@ -925,16 +925,16 @@ mod tests {
         let long = |verts: &[(f64, f64)]| LongWay { owned: true, verts: verts.iter().map(|&(x, y)| [(x * 1e7) as i32, (y * 1e7) as i32]).collect() };
         r.units.insert("6/29/16".into(), Reach { owned: Some(e7box(-15.0, 64.1, -14.0, 64.2)), long: vec![long(&[(-15.0, 64.15), (-21.9, 64.13)])] });
         r.units.insert("6/30/16".into(), Reach { owned: Some(e7box(-10.0, 63.0, -6.0, 65.0)), long: vec![long(&[(-8.0, 64.0), (-2.0, 60.0)])] });
-        let built: Vec<String> = super::unit_keys(&c, "d", &m, Some(&r)).into_iter().map(|(u, _)| u.slash()).collect();
+        let built: Vec<String> = super::unit_keys(&c, "d", &m, Some(&r), &BTreeMap::new()).into_iter().map(|(u, _)| u.slash()).collect();
         assert_eq!(built, vec!["6/28/16", "6/29/16"]);
         // No reaches yet: no units.
-        assert!(super::unit_keys(&c, "d", &m, None).is_empty());
+        assert!(super::unit_keys(&c, "d", &m, None, &BTreeMap::new()).is_empty());
         // An outline's change outside a unit's whole reach leaves its key; inside it, not.
         let poly = |east: f64| {
             std::fs::write(d.path().join("p.poly"), format!("p\n1\n -22.2 64.0\n -21.8 64.0\n {east} 64.3\n -22.2 64.3\nEND\nEND\n")).unwrap();
             Coverage::from_recipes(&[Recipe { id: "p".into(), name: "P".into(), outline: vec!["poly:p.poly".into()] }], None, d.path()).unwrap()
         };
-        let key = |c: &Coverage| super::unit_keys(c, "d", &m, Some(&r)).into_iter().find(|(u, _)| u.slash() == "6/28/16").unwrap().1;
+        let key = |c: &Coverage| super::unit_keys(c, "d", &m, Some(&r), &BTreeMap::new()).into_iter().find(|(u, _)| u.slash() == "6/28/16").unwrap().1;
         let k0 = key(&poly(30.0));
         assert_ne!(key(&poly(31.0)), k0, "the moved edge crosses 6/28/16's tile");
         let far = |east: f64| {
@@ -943,6 +943,22 @@ mod tests {
         };
         let k1 = key(&far(10.0));
         assert_eq!(key(&far(12.0)), k1, "only vertices far east of the tile moved");
+    }
+
+    #[test]
+    fn taiwans_units_follow_its_dem_files() {
+        let d = tempfile::tempdir().unwrap();
+        let c = Coverage::from_recipes(&[Recipe { id: "t".into(), name: "T".into(), outline: vec!["place:121.5,25.0,20".into(), "place:-21.9,64.13,20".into()] }], None, d.path()).unwrap();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        for u in ["6-28-16", "6-53-27"] {
+            m.insert(format!("sources/osm/d/pieces/{u}"), format!("sources/osm/d/pieces/{u}.4444444444444444.osm.pbf"));
+        }
+        let mut r = reach();
+        r.units.insert("6/53/27".into(), Reach { owned: Some(e7box(121.4, 24.9, 121.6, 25.1)), long: vec![] });
+        let keys = |dig: &BTreeMap<String, String>| super::unit_keys(&c, "d", &m, Some(&r), dig).into_iter().map(|(u, k)| (u.slash(), k)).collect::<BTreeMap<_, _>>();
+        let (none, some) = (keys(&BTreeMap::new()), keys(&[("moi-dtm".to_string(), "1111111111111111".to_string())].into()));
+        assert_ne!(none["6/53/27"], some["6/53/27"], "Taipei's unit reruns when the DEM files arrive");
+        assert_eq!(none["6/28/16"], some["6/28/16"], "Iceland's doesn't");
     }
 
     #[test]

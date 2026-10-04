@@ -180,7 +180,7 @@ Roads are drawn as vectors by a custom WebGL2 layer. The design, its status and 
 | Roads, water, boundaries, places, parks, POIs, Indigenous land boundaries | OpenStreetMap: the planet file, twice a year (today's converted data came from Geofabrik extracts, and for Gibraltar the Overpass API) | © OpenStreetMap contributors, ODbL |
 | Road & rail elevation, North America | NRCan **HRDEM** lidar (8 m overview) → USGS **3DEP** 10 m → NRCan **MRDEM** 30 m | OGL–Canada / public domain |
 | Road & rail elevation, Japan | GSI elevation tiles (地理院タイル 標高タイル, Geospatial Information Authority of Japan), per pixel in GSI's order: DEM1A / DEM5A airborne lidar, DEM5B / 5C photogrammetry, DEM10B; read at z15 (~4 m pixels) and z14 | GSI terms of use (Public Data License 1.0): "Created by editing GSI Tiles (elevation tiles (Fundamental Geospatial Data Digital Elevation Model))" |
-| Road & rail elevation, Taiwan | MOI 20 m DTM (內政部 2025年版全臺灣20公尺網格數值地形模型DTM資料: main island, Penghu, Kinmen; no Matsu). Hosted on tgos.tw, which answers 403 outside Taiwan, so it hasn't been downloaded and FABDEM serves (`dem/sample.py` reads the GeoTIFFs from `data/sources/moi-dtm/` in the app's folder when they're there) | Open Government Data License 1.0 (attribution) |
+| Road & rail elevation, Taiwan | MOI 20 m DTM (內政部 2025年版全臺灣20公尺網格數值地形模型DTM資料: main island, Penghu, Kinmen; no Matsu). Hosted on tgos.tw, which answers 403 outside Taiwan, so it hasn't been downloaded and FABDEM serves. GeoTIFFs put in the NAS's `inputs/moi-dtm/` are used from then on: Taiwan's areas rebuild, sampling again what FABDEM gave | Open Government Data License 1.0 (attribution) |
 | Road & rail elevation, Europe, Hong Kong, Singapore | **FABDEM** v1-2 30 m (University of Bristol / Fathom; Hawker et al. 2022), Copernicus DEM with forests and buildings removed; read tile by tile from Bristol's zips (`/vsizip//vsicurl/`) | CC BY-NC-SA 4.0 (non-commercial; attribution text in © Credits) |
 | 3D terrain, hill-shading, contours, analysis grid | Terrain Tiles (Terrarium) on AWS Open Data, repaired (see Terrain repair) | Mapzen / various open sources |
 | Tree canopy height & cover | Meta & WRI global canopy height (1 m, 10° aggregates: median, p95, cover > 5 m) | CC BY 4.0 |
@@ -264,7 +264,7 @@ On a stretch of sea used by several lines, lines to different ports add up (rout
   - **Isolation** is the great-circle distance to the nearest higher pixel, searching tiles nearest first, out to 5,000 km.
   - **Spikes:** single-pixel spikes and pits in the terrain tiles are clamped first.
   - **Checks:** Mont Blanc, Fuji, Ben Nevis, Yushan, Robson and Mount Washington keep their published heights and prominence. Isolations: Fuji 2,076.3 km (published 2,077), Ben Nevis 738.6 km (739).
-- **Heritage sites** (`dem/heritagewd.py`, today's chain, converted; the `heritage` job runs the same chain on the OSM pass once it's switched on):
+- **Heritage sites** (`dem/heritagewd.py`, today's chain: converted for today's map, and run by the `heritage` job on each OSM pass):
   - **Matching:** sites are matched to Wikidata by register ID, else through the OSM feature at the site (one tagged with a Wikidata item and carrying the same register ID, or clearly the same name; the only link for registers with no Wikidata property).
   - **What the match gives:** Wikipedia articles counted in every language (NHLE, Mérimée, HES, NRHP, Cadw, DGPC, CRHP, RPCQ, IPAC, UNESCO, Irish SMR; the Parks Canada directory already links items); descriptions; sitelinks; inception, type, style and architect; then English Wikipedia's short descriptions.
   - `dem/heritagedetails.py` assembles the details.
@@ -326,7 +326,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
 **Regions** are recipes on the NAS, `inputs/regions/<id>.toml`.
 - **A recipe** has an `id`, a `name`, and outline entries: `osm:<relation>`, `geofabrik:<id>`, `poly:<file>`, `place:<lon>,<lat>,<km>`.
 - **The agent** reruns only what changes reach: the job keys say what each output was made from.
-- **Not yet for regions beyond today's 34:** trees, roadside buildings, trains a day, heritage points and area overlays come from today's converted files, which cover only today's regions (`docs/plan.md` §10).
+- **Not yet for regions beyond today's 34:** trees, roadside buildings and trains a day come from today's converted files, which cover only today's regions (`docs/plan.md` §10).
 - **Region-specific code**, for a new country:
   - road route networks: `network_code` in `extract.rs`, colours in `web/src/mapschemes.ts`;
   - the elevation source: `dem/sample.py`, with densification in `extract.rs`;

@@ -638,7 +638,7 @@ impl Agent {
             }
         };
         let done = build::Keys::load(root);
-        let inputs = ferry_inputs(root);
+        let inputs = input_digests(root);
         let held = root.join("inputs/hold-catalog").exists();
         let cache = self.o.home.join("cache");
         let reach = self.current_reach(root, &manifest, &done, date);
@@ -761,7 +761,7 @@ impl Agent {
         let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).and_then(|c| crate::outlines::Outlines::open(&root.join(c)).ok());
         let Ok(cov) = crate::coverage::Coverage::from_recipes(regions, outlines.as_ref(), &root.join("inputs/outlines")) else { return out };
         let reach = self.current_reach(root, &manifest, &keys, &date);
-        out.extend(build::checklist(&cov, &date, &manifest, &keys, &ferry_inputs(root), root.join("inputs/hold-catalog").exists(), reach.as_deref()));
+        out.extend(build::checklist(&cov, &date, &manifest, &keys, &input_digests(root), root.join("inputs/hold-catalog").exists(), reach.as_deref()));
         out
     }
 
@@ -778,7 +778,7 @@ impl Agent {
             .collect();
         let keys = build::Keys::load(root);
         let reach = self.current_reach(root, &manifest, &keys, &date);
-        build::region_states(&cov, &each, &date, &manifest, &keys, reach.as_deref())
+        build::region_states(&cov, &each, &date, &manifest, &keys, reach.as_deref(), &input_digests(root))
     }
 
     /// The pass's reaches (crate::reach), once they're made for the current version: until then no
@@ -809,14 +809,31 @@ impl Agent {
     }
 }
 
-/// What jobs read from inputs/ beside the manifest: the ferry timetables' digest.
-fn ferry_inputs(root: &Path) -> BTreeMap<String, String> {
+/// What jobs read from inputs/ beside the manifest, by digest: the ferry timetables
+/// ("ferries-freq", by content) and Taiwan's MOI DTM ("moi-dtm", by names, sizes and times: large
+/// files, put there by hand).
+fn input_digests(root: &Path) -> BTreeMap<String, String> {
     let mut inputs: BTreeMap<String, String> = BTreeMap::new();
     if let Ok(rd) = std::fs::read_dir(root.join("inputs/ferries/freq")) {
         let mut files: Vec<(String, Vec<u8>)> = rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).ok()?))).collect();
         files.sort();
         let all: Vec<u8> = files.iter().flat_map(|(n, b)| n.bytes().chain(b.iter().copied())).collect();
         inputs.insert("ferries-freq".into(), store::naming::hash16(&all));
+    }
+    if let Ok(rd) = std::fs::read_dir(root.join("inputs/moi-dtm")) {
+        let mut files: Vec<String> = rd
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "tif"))
+            .filter_map(|e| {
+                let md = e.metadata().ok()?;
+                let t = md.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+                Some(format!("{} {} {t}", e.file_name().to_string_lossy(), md.len()))
+            })
+            .collect();
+        files.sort();
+        if !files.is_empty() {
+            inputs.insert("moi-dtm".into(), store::naming::hash16(files.join("\n").as_bytes()));
+        }
     }
     inputs
 }

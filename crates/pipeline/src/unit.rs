@@ -196,6 +196,8 @@ pub struct Tools {
     pub cache: PathBuf,
     /// Overture building boxes (`data/buildings`), when there are any.
     pub buildings: Option<PathBuf>,
+    /// Taiwan's MOI DTM GeoTIFFs (the NAS's `inputs/moi-dtm/`), for sample.py.
+    pub moi_dtm: Option<PathBuf>,
     /// Densification spacing (m).
     pub spacing_m: u32,
 }
@@ -258,6 +260,9 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
     rep.dem_cache = dem_cache_slice(&tools.cache, slice, &dir.join("dem-cache"))?;
     let mut c = Command::new("uv");
     c.current_dir(&tools.dem).args(["run", "python", "sample.py"]).arg(dir).arg("--cache").arg(dir.join("dem-cache"));
+    if let Some(m) = &tools.moi_dtm {
+        c.env("SCENIC_MOI_DTM", m);
+    }
     run(c, "elevations (sample.py)", &log)?;
     // Its samples, kept for its later runs and its neighbours' (new ones aren't sampled twice).
     dem_samples_keep(&tools.cache, u, &dir.join("dem-cache"))?;

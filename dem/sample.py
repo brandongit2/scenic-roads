@@ -11,9 +11,10 @@ Priority per vertex (first source with valid data wins):
      pixels): 1A (1 m, averaged by GSI to z15), then 5A (5 m); then 5B / 5C photogrammetry
   6. GSI 10 m DEM (10B, z14: dem_png)
   Taiwan
-  7. MOI 20 m DTM (Ministry of the Interior; Open Government Data License): GeoTIFFs placed in
-     data/sources/moi-dtm (tgos.tw, which answers 403 outside Taiwan); FABDEM without them, and
-     cached FABDEM values in Taiwan are sampled again once they're there
+  7. MOI 20 m DTM (Ministry of the Interior; Open Government Data License): GeoTIFFs put by hand in
+     the NAS's inputs/moi-dtm/ (tgos.tw answers 403 outside Taiwan), which the unit step passes as
+     $SCENIC_MOI_DTM (else data/sources/moi-dtm); FABDEM without them, and cached FABDEM values
+     in Taiwan are sampled again once they're there
   Elsewhere (Europe, Hong Kong, Singapore), and points none of the above cover
   4. FABDEM v1-2 30 m: Copernicus DEM with forests and buildings removed (University of
      Bristol; CC BY-NC-SA 4.0, personal use). Its 1° tiles are read in place inside the
@@ -68,8 +69,9 @@ FABDEM = "/vsizip//vsicurl/https://data.bris.ac.uk/datasets/s5hqmjcdj8yo2ibzi9b4
 GSI = "cyberjapandata.gsi.go.jp"
 UA = "road-elevations/0.1 (personal offline map)"
 GSI_WORKERS = 16  # concurrent tile requests to GSI (S3 behind CloudFront; latency-bound)
-# Taiwan's MOI 20 m DTM, downloaded once (see README).
-MOI_DTM = sorted((HERE.parent / "data" / "sources" / "moi-dtm").glob("*.tif"))
+# Taiwan's MOI 20 m DTM, put by hand (see above). Changing its files changes Taiwan's units' keys
+# (crates/pipeline/src/rules.rs, "moi-dtm").
+MOI_DTM = sorted(Path(os.environ.get("SCENIC_MOI_DTM") or HERE.parent / "data" / "sources" / "moi-dtm").glob("*.tif"))
 
 SRC_HRDEM, SRC_3DEP, SRC_MRDEM, SRC_FABDEM, SRC_GSI5A, SRC_GSI5, SRC_GSI10, SRC_MOI = 1, 2, 3, 4, 5, 6, 7, 8
 NA_WEST_OF = -40.0  # North America: the national DEMs above; elsewhere FABDEM
