@@ -894,13 +894,13 @@ are no request files.
 - **Room on the disk:** before a job starts (and before its targets are claimed), when the Mac has
   less free than the job needs (60 GB; the OSM pass, its own 80 GB less the pack cache it clears;
   the M1's helper, 15 GB), the local copies of what the NAS keeps (Meta's canopy squares, AWS's raw
-  terrain tiles) lose their least recently used files until it has a sixth more, so the next jobs
-  start without deleting again.
-  - They go a folder at a time, the least recently used folder (by its newest file) first, so each
-    NAS folder is listed once and its files go together.
-  - A file goes once the NAS has it at the same size; one the NAS lacks, or has at another size, is
-    copied there first (whole), or kept. A file that isn't whole itself (cut short, or temporary)
-    is deleted, not kept.
+  terrain tiles) lose their least recently used files until it has a sixth more (the OSM pass: what
+  it needs), so the next jobs start without deleting again.
+  - Raw tiles go a folder at a time, the least recently used folder (by its newest tile) first, so
+    a folder's tiles go together; canopy squares each by their own use.
+  - A file goes once the NAS has it at the same size (each NAS folder listed once, sixteen at a
+    time). One the NAS lacks, or has at another size, is copied there first (whole and flushed), or
+    kept. A file that isn't whole itself (cut short, or temporary) is deleted, not kept.
   - The OSM pass counts those copies as room.
 - **Units run in map order** (by 10° square, then tile), so what one unit fetches serves the next.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours. The orphans of a crashed

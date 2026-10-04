@@ -1,21 +1,22 @@
 //! Room on the build Mac's disk (docs/plan.md §8): before a job starts, when the disk's free space
 //! is under what the job needs (`RESERVE`, or the OSM pass's own), the local copies of what the NAS
-//! keeps lose their least recently used files until it has a sixth more than that (`margin`), so
-//! the next jobs start without deleting again: Meta's canopy squares (`chm10/`, ~2 GB a 10° square;
-//! scenic-metrics marks a square used when it reads it) and AWS's raw terrain tiles
-//! (`aws-terrarium/`, read once per terrain run). They fill again from the NAS (`sources/canopy/`,
-//! `sources/aws-terrarium/`), never from the internet.
-//! - They go a folder at a time, the least recently used folder (by its newest file) first, and in
-//!   it the oldest first: each NAS folder is listed once, not asked about file by file, and its
-//!   files go together (in mtime order across folders, a listing would serve a handful).
-//! - A file the NAS lacks, or has at another size (downloaded before it kept them, or a copy cut
-//!   short), is copied there first (whole: crate::whole), and kept here when that fails; one that
-//!   isn't whole itself (cut short, or a temporary file) is deleted without being kept anywhere.
+//! keeps lose their least recently used files until it has that and a margin (`margin`: a sixth
+//! more, none for the OSM pass), so the next jobs start without deleting again: Meta's canopy squares
+//! (`chm10/`, ~2 GB a 10° square; scenic-metrics marks a square used when it reads it) and AWS's raw
+//! terrain tiles (`aws-terrarium/`, read once per terrain run). They fill again from the NAS
+//! (`sources/canopy/`, `sources/aws-terrarium/`), never from the internet.
+//! - Raw tiles go a folder at a time, the least recently used folder (by its newest tile) first, and
+//!   in it the oldest first, so a folder's tiles go together; canopy squares each by their own use.
+//! - A file goes once the NAS's folder, listed once (sixteen at a time: a listing mostly waits on
+//!   the NAS), has it at the same size. One the NAS lacks, or has at another size (downloaded before
+//!   it kept them, or a copy cut short), is copied there first (whole and flushed: crate::whole), and
+//!   kept here when that fails; one that isn't whole itself (cut short, or a temporary file) is
+//!   deleted without being kept anywhere.
 //!
 //! Nothing else of the cache is deleted here.
 
 use anyhow::Result;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -24,10 +25,14 @@ use std::time::SystemTime;
 pub const RESERVE: u64 = 60 << 30;
 
 /// What's freed past a job's `need` once the disk is short of it: a sixth more (10 GB past the
-/// build Mac's 60), so the jobs after it start without deleting again.
+/// build Mac's 60), so the jobs after it start without deleting again. (Not for the OSM pass, whose
+/// need is what its conditions admitted it with.)
 pub fn margin(need: u64) -> u64 {
     need / 6
 }
+
+/// NAS folders listed at once.
+const LIST_AHEAD: usize = 16;
 
 /// The caches' folders whose files may be deleted, under the agent's cache, each with the NAS's
 /// store of them, under its `sources/`.
@@ -42,10 +47,10 @@ pub fn cheap_bytes(cache: &Path) -> u64 {
 }
 
 /// When the disk has less than `need` free, deletes from the caches at `cache` until it has `need`
-/// and its `margin` (or they're empty), each cheap file only once the NAS's `sources` has it; the
+/// and `margin` more (or they're empty), each cheap file only once the NAS's `sources` has it; the
 /// bytes deleted.
-pub fn make_room(cache: &Path, sources: &Path, need: u64) -> Result<u64> {
-    make_room_with(cache, sources, need, need + margin(need), &disk_free)
+pub fn make_room(cache: &Path, sources: &Path, need: u64, margin: u64) -> Result<u64> {
+    make_room_with(cache, sources, need, need + margin, &disk_free)
 }
 
 /// The NAS folders' files and their sizes, each folder listed once (a folder not there: none).
@@ -63,21 +68,28 @@ enum Fate {
     Stay,
 }
 
+/// Where local cache file `p` (under `cache/<dir>`) is kept in the NAS's store.
+fn nas_path(cache: &Path, sources: &Path, p: &Path) -> Option<PathBuf> {
+    let (dir, store) = CHEAP.iter().find(|(d, _)| p.starts_with(cache.join(d)))?;
+    Some(sources.join(store).join(p.strip_prefix(cache.join(dir)).ok()?))
+}
+
+/// A NAS folder's files and their sizes (none when it isn't there).
+fn list(folder: &Path) -> HashMap<OsString, u64> {
+    std::fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| Some((e.file_name(), e.metadata().ok().filter(|m| m.is_file())?.len())))
+        .collect()
+}
+
 /// What becomes of local cache file `p` (under `cache/<dir>`), its NAS folder listed once.
 fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
-    let Some((dir, store)) = CHEAP.iter().find(|(d, _)| p.starts_with(cache.join(d))) else { return Fate::Stay };
-    let Ok(rel) = p.strip_prefix(cache.join(dir)) else { return Fate::Stay };
-    let dest = sources.join(store).join(rel);
+    let Some(dest) = nas_path(cache, sources, p) else { return Fate::Stay };
     let (Some(folder), Some(name)) = (dest.parent(), dest.file_name()) else { return Fate::Stay };
     let Ok(len) = std::fs::metadata(p).map(|m| m.len()) else { return Fate::Stay };
-    let names = listed.entry(folder.to_path_buf()).or_insert_with(|| {
-        std::fs::read_dir(folder)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|e| Some((e.file_name(), e.metadata().ok().filter(|m| m.is_file())?.len())))
-            .collect()
-    });
+    let names = listed.entry(folder.to_path_buf()).or_insert_with(|| list(folder));
     if names.get(name) == Some(&len) {
         return Fate::Go;
     }
@@ -88,17 +100,18 @@ fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
     Fate::Copy(dest)
 }
 
-/// Copies local cache file `p` (whole) to `dest` in the NAS's store; whether it's there now.
-fn copy_there(cache: &Path, p: &Path, dest: &Path, listed: &mut Listed) -> bool {
-    let (Some(folder), Some(name)) = (dest.parent(), dest.file_name()) else { return false };
-    let Ok(len) = std::fs::metadata(p).map(|m| m.len()) else { return false };
-    // (A raw terrain tile without the flush: there may be hundreds of thousands.)
-    let copy = if p.starts_with(cache.join("aws-terrarium")) { crate::whole::copy_unsynced } else { crate::whole::copy };
-    let ok = std::fs::create_dir_all(folder).is_ok() && copy(p, dest).is_ok();
-    if ok {
-        listed.entry(folder.to_path_buf()).or_default().insert(name.to_os_string(), len);
+/// Copies local cache file `p` to `dest` in the NAS's store, whole and flushed (the local copy goes
+/// next: unflushed, a power cut on the NAS could lose both); whether it's there now. Each NAS folder
+/// is made once a run (`made`).
+fn copy_there(p: &Path, dest: &Path, made: &mut HashSet<PathBuf>) -> bool {
+    let Some(folder) = dest.parent() else { return false };
+    if !made.contains(folder) {
+        if std::fs::create_dir_all(folder).is_err() {
+            return false;
+        }
+        made.insert(folder.to_path_buf());
     }
-    ok
+    crate::whole::copy(p, dest).is_ok()
 }
 
 /// `make_room` with the disk's free space from `free_space`: nothing when it has `need`, else
@@ -114,26 +127,40 @@ fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_spa
     }
     // (Empty files are markers, "none there", that free nothing.)
     files.retain(|f| f.1 > 0);
-    // By folder, the least recently used folder (its newest file) first; in each, oldest first.
-    let mut by_folder: BTreeMap<PathBuf, Vec<(SystemTime, u64, PathBuf)>> = BTreeMap::new();
+    // Raw tiles by folder, canopy squares each alone; the least recently used group (by its newest
+    // file) first, in each the oldest first.
+    let tiles = cache.join("aws-terrarium");
+    let mut groups: BTreeMap<PathBuf, Vec<(SystemTime, u64, PathBuf)>> = BTreeMap::new();
     for f in files {
-        by_folder.entry(f.2.parent().map(Path::to_path_buf).unwrap_or_default()).or_default().push(f);
+        let key = if f.2.starts_with(&tiles) { f.2.parent().map(Path::to_path_buf).unwrap_or_default() } else { f.2.clone() };
+        groups.entry(key).or_default().push(f);
     }
-    let mut folders: Vec<Vec<(SystemTime, u64, PathBuf)>> = by_folder.into_values().collect();
-    for fs in &mut folders {
-        fs.sort();
+    let mut groups: Vec<Vec<(SystemTime, u64, PathBuf)>> = groups.into_values().collect();
+    for g in &mut groups {
+        g.sort();
     }
-    folders.sort_by_key(|fs| fs.last().map(|f| f.0));
+    groups.sort_by_key(|g| g.last().map(|f| f.0));
     let mut room = Room { cache, free_space, target, short: target.saturating_sub(free), since: 0, freed: 0 };
-    let mut listed = Listed::new();
-    for (_, len, p) in folders.into_iter().flatten() {
+    let (mut listed, mut made) = (Listed::new(), HashSet::new());
+    for ahead in groups.chunks(LIST_AHEAD) {
         if room.enough()? {
             break;
         }
-        match fate(cache, sources, &p, &mut listed) {
-            Fate::Go => room.delete(&p, len),
-            Fate::Copy(dest) if copy_there(cache, &p, &dest, &mut listed) => room.delete(&p, len),
-            Fate::Copy(_) | Fate::Stay => {}
+        // Their NAS folders listed at once.
+        let folders: BTreeSet<PathBuf> = ahead.iter().filter_map(|g| nas_path(cache, sources, &g.first()?.2)?.parent().map(Path::to_path_buf)).filter(|f| !listed.contains_key(f)).collect();
+        std::thread::scope(|s| {
+            let lists: Vec<_> = folders.iter().map(|f| s.spawn(move || (f.clone(), list(f)))).collect();
+            listed.extend(lists.into_iter().filter_map(|h| h.join().ok()));
+        });
+        for (_, len, p) in ahead.iter().flatten() {
+            if room.enough()? {
+                return Ok(room.freed);
+            }
+            match fate(cache, sources, p, &mut listed) {
+                Fate::Go => room.delete(p, *len),
+                Fate::Copy(dest) if copy_there(p, &dest, &mut made) => room.delete(p, *len),
+                Fate::Copy(_) | Fate::Stay => {}
+            }
         }
     }
     Ok(room.freed)
@@ -291,6 +318,14 @@ mod tests {
         assert_eq!(make_room_with(c, nas, a + b, a + b, &disk).unwrap(), a + b);
         assert!(c.join("aws-terrarium/12/1/1.png").exists() && c.join("aws-terrarium/12/1/2.png").exists());
         assert!(nas.join("aws-terrarium/12/2/1.png").exists() && nas.join("aws-terrarium/12/2/2.png").exists());
+        // A canopy square goes by its own use, not its folder's: one read long ago goes before the
+        // tiles of column 1, read since.
+        let square = whole(&c.join("chm10/old.tif"), 4500);
+        whole(&c.join("chm10/new.tif"), 50);
+        let all = used(c);
+        let disk = move |p: &Path| Ok(all - used(p));
+        assert_eq!(make_room_with(c, nas, square, square, &disk).unwrap(), square);
+        assert!(!c.join("chm10/old.tif").exists() && c.join("chm10/new.tif").exists() && c.join("aws-terrarium/12/1/1.png").exists());
     }
 
     #[test]

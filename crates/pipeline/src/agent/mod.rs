@@ -560,10 +560,12 @@ impl Agent {
                     room::RESERVE
                 };
                 // (Never without the NAS: what goes here must be kept there.)
+                // (The OSM pass without the margin: its need is what its conditions admitted it with.)
+                let margin = if id.starts_with("osm-pass") { 0 } else { room::margin(need) };
                 if let Some(r) = &root {
-                    match room::make_room(&cache, &r.join("sources"), need) {
+                    match room::make_room(&cache, &r.join("sources"), need, margin) {
                         Ok(0) => {}
-                        Ok(n) => eprintln!("agent: {} GB of cached canopy squares and terrain tiles deleted for {} GB free", n >> 30, (need + room::margin(need)) >> 30),
+                        Ok(n) => eprintln!("agent: {} GB of cached canopy squares and terrain tiles deleted for {} GB free", n >> 30, (need + margin) >> 30),
                         Err(e) => eprintln!("agent: making room on the disk: {e:#}"),
                     }
                 }

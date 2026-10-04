@@ -2,7 +2,7 @@
 //! them to a Mac's cache, goes by a temporary name (this Mac's name and the process's, so two Macs
 //! never share one), is flushed to the disk and has its length checked before the rename: a write
 //! cut short never takes the file's name. (AWS's raw terrain tiles, written by the hundred thousand,
-//! go straight to their names, or without the flush: `write_in_place`, `copy_unsynced`.) And a kept
+//! go straight to their names: `write_in_place`.) And a kept
 //! file can be checked whole (a PNG to its last chunk, a TIFF's strips or tiles inside the file), so
 //! a copy cut short is fetched again rather than read for good.
 
@@ -51,25 +51,13 @@ pub fn write_in_place(path: &Path, b: &[u8]) -> Result<()> {
 
 /// Copies `src` to `dst`, whole; the bytes copied.
 pub fn copy(src: &Path, dst: &Path) -> Result<u64> {
-    copy_with(src, dst, true)
-}
-
-/// `copy` without the flush: for raw terrain tiles, copied a tile at a time (each is checked whole
-/// when read, and the source stays until this returns).
-pub fn copy_unsynced(src: &Path, dst: &Path) -> Result<u64> {
-    copy_with(src, dst, false)
-}
-
-fn copy_with(src: &Path, dst: &Path, sync: bool) -> Result<u64> {
     let tmp = tmp_name(dst);
     let r = (|| -> Result<u64> {
         let mut from = std::fs::File::open(src)?;
         let want = from.metadata()?.len();
         let mut to = std::fs::File::create(&tmp)?;
         let n = std::io::copy(&mut from, &mut to)?;
-        if sync {
-            to.sync_all()?;
-        }
+        to.sync_all()?;
         drop(to);
         let got = std::fs::metadata(&tmp)?.len();
         ensure!(n == want && got == want, "{got} of {want} bytes copied");
