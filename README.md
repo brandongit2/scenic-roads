@@ -300,7 +300,8 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
      - The rounding is carried from one channel to the next, so their mean keeps an eighth of a step.
      - The server makes z12 on demand.
 3. **Heritage sites and designated areas** over the coverage: `dem/heritage.py`, on the registers' snapshot.
-4. **Each z6 area** runs these steps on its piece:
+4. **Roadside buildings** for the whole world, once per Overture release (2026-09-23.1): every building's box, from the release's bbox columns, in z8 tiles (`pipeline::buildtiles`, `dem/buildings.py --world`).
+5. **Each z6 area** runs these steps on its piece:
 
    | Step | What it does |
    |---|---|
@@ -312,21 +313,21 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
    | `scenic prep` | 100 m samples and drape heights. |
    | `scenic canopy` | Near-field horizons from Meta's 10° canopy files. |
    | `scenic view` | 32-ray far-field viewsheds (roads and rail). |
-   | `scenic buildings` | Roadside buildings per sample (Overture's boxes, today's file). |
+   | `scenic buildings` | Roadside buildings per sample (the release's z8 tiles within 1 km of the area's tile + 20 km and of its own long roads). |
    | `scenic flags` | Designation flags and per-vertex channels. |
 
-5. **Roads:**
+6. **Roads:**
    - tiles and query data per z6 tile, from the areas whose roads come within 100 km: road and rail tiles (RT v7, 13 scenic channels a point, per-line attributes), climbs, drives' and rides' parts, and zoomed-out summaries;
    - zoomed-out road tiles per z3;
    - rail stops;
    - ferries.
-6. **Landmarks:** candidates and peaks per area, Wikidata facts and pageviews, then the points (`marks`).
-7. **A catalog** of every file the map reads. Each Mac's server switches to it in place.
+7. **Landmarks:** candidates and peaks per area, Wikidata facts and pageviews, then the points (`marks`).
+8. **A catalog** of every file the map reads. Each Mac's server switches to it in place.
 
 **Regions** are recipes on the NAS, `inputs/regions/<id>.toml`.
 - **A recipe** has an `id`, a `name`, and outline entries: `osm:<relation>`, `geofabrik:<id>`, `poly:<file>`, `place:<lon>,<lat>,<km>`.
 - **The agent** reruns only what changes reach: the job keys say what each output was made from.
-- **Not yet for regions beyond today's 34:** trees, roadside buildings and trains a day come from today's converted files, which cover only today's regions (`docs/plan.md` §10).
+- **Not yet for regions beyond today's 34:** trees and trains a day come from today's converted files, which cover only today's regions (`docs/plan.md` §10).
 - **Region-specific code**, for a new country (when a rule the units use changes, bump its version in `crates/pipeline/src/rules.rs`, so only the areas it applies to are rebuilt):
   - road route networks: `network_code` in `extract.rs`, colours in `web/src/mapschemes.ts`;
   - the elevation source: `dem/sample.py`, with densification in `extract.rs`;

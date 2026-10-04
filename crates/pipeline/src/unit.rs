@@ -228,6 +228,7 @@ pub fn owns(tb: [i32; 4], p: [i32; 2]) -> bool {
 }
 
 /// Where a unit's steps find their programs and caches.
+#[derive(Clone)]
 pub struct Tools {
     /// `extract`, `tile`, `scenic-metrics`.
     pub bin: PathBuf,
@@ -236,7 +237,8 @@ pub struct Tools {
     /// Shared caches: `chm10/` (canopy 10° files), `dem-cache.*` (today's per-vertex elevations, the
     /// seed) and `dem-units/` (the units' own samples).
     pub cache: PathBuf,
-    /// Overture building boxes (`data/buildings`), when there are any.
+    /// Overture building boxes: a folder of `.f32` files (the unit's tiles staged by
+    /// `buildtiles::stage`), when there are any.
     pub buildings: Option<PathBuf>,
     /// Taiwan's MOI DTM GeoTIFFs (the NAS's `inputs/moi-dtm/`), for sample.py.
     pub moi_dtm: Option<PathBuf>,

@@ -347,8 +347,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   `pieces.json`; `sets/<name>[-v<n>]`; `roads/<u>.bin` (32 B a way: u64 way id and its road values);
   `outlines` (sectioned, meta `fmt` "outlines-1": `recs` (64 B `OutlineRec`), `rings`, `points`,
   `srings`, `spoints`, `strings`); `reach.json.zst` (zstd JSON `{fmt, date, units: {"6/x/y": {owned:
-  [w, s, e, n] or null, long: [{owned, verts: [[lon, lat], …]}]}}}`, E7: the box of the ways a unit
-  owns within its tile + 20 km, and every way of its piece reaching further, whole;
+  [w, s, e, n] or null, long: [{owned, ferry, verts: [[lon, lat], …]}]}}}`, E7: the box of the ways a
+  unit owns within its tile + 20 km, and every way of its piece reaching further, whole;
   `pipeline::reach`); `pass.json`.
 - **Global files:** `global/roads/<u>` (above); `global/roadunits` (sectioned, `pairs`: sorted u64
   road, u64 unit key); `global/railfreq` (as `/api/railfreq`); `global/marks/summary`
@@ -361,6 +361,11 @@ class, id) within a tile. The client sends the id with the clicked point.
   `work/summits/<date>`, `work/trailends/<date>`; `work/heritage/<date>/{base/<stem>,
   pos/6-x-y.json, areas/6-x-y.jsonl, <stem>}`; `work/marks/heritage-dots.json`.
 - **Other sources:** `sources/items/<date>/{facts,views,meta}.json`; `sources/registers/<name>.tar.zst`;
+  `sources/buildings/<release>/8/<x>-<y>.f32` (the release's dot a dash, as in `2026-09-23-1`; not
+  content-named: raw little-endian f32 `[xmin, ymin, xmax, ymax]` in degrees, per Overture building
+  whose box's centre is in the z8 tile, sorted, each once; no file for a tile without any) and
+  `sources/buildings/<release>/index` (JSON `{fmt, release, zoom, tiles: {"8/x/y": count}}`, written
+  last);
   `sources/dem-cache/dem-cache.{keys.u64,elev.f32,src.u8}` (today's per-vertex DEM cache, the seed
   the build Mac copies once: sorted keys `(lon + 2³¹) << 32 | (lat + 2³¹)` (E7), elevations,
   sources).

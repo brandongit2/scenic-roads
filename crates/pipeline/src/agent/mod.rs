@@ -610,12 +610,14 @@ impl Agent {
             let scratch = self.o.home.join("scratch").join(step);
             let mut cmd = vec![build_bin.clone(), step.to_string(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
             cmd.extend(extra);
-            // The pass's whole-planet reads (its missing sets, the units' reach) wait for home.
-            let home = matches!(step, "pass-sets" | "reach");
+            // The pass's whole-planet reads (its missing sets, the units' reach), and the world's
+            // buildings (tens of GB onto the NAS), wait for home.
+            let home = matches!(step, "pass-sets" | "reach" | "buildings");
             JobSpec { id, what: what.into(), cmd, needs: Needs { ac: true, nas: true, home }, restart_after_sleep: true, record }
         };
         // Per pass, worldwide: the sets it lacks in their current filters (a set added or changed
-        // since it ran), the hiking routes' ends, AWS's z8 (once), the summits, the labels.
+        // since it ran), the hiking routes' ends, AWS's z8 (once), Overture's buildings (once per
+        // release), the summits, the labels.
         if let Some(date) = pass {
             let keys = build::Keys::load(root);
             let p = vec!["--pass".to_string(), date.to_string()];
@@ -642,6 +644,9 @@ impl Agent {
             }
             if !manifest.contains_key(&crate::terrain_z8::logical()) {
                 jobs.push(job("terrain-z8".into(), "Coarse terrain for the whole world", "terrain-z8", vec!["--raw".into(), s(&self.o.home.join("cache").join("aws-terrarium"))], None));
+            }
+            if !manifest.contains_key(&crate::buildtiles::index_logical()) {
+                jobs.push(job(format!("buildings {}", crate::buildtiles::RELEASE), "Roadside buildings for the whole world (Overture)", "buildings", vec!["--dem".into(), s(&self.o.bin.join("dem"))], None));
             }
             if let Some(w) = build::summits_work(date, &manifest, &keys) {
                 jobs.push(job(format!("summits {date}"), "Summits for the whole world", "summits", [p.clone(), vec!["--cache".into(), s(&self.o.home.join("cache"))]].concat(), Some(w)));
@@ -697,16 +702,7 @@ impl Agent {
                 "ferries" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem"))]),
                 "items" | "heritage-sites" | "heritage" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache".into(), s(&cache)]),
                 "peaks" => extra.extend(["--pass".into(), date.to_string(), "--raw".into(), s(&cache.join("aws-terrarium")), "--cache".into(), s(&cache), "--coarse-threads".into(), "6".into()]),
-                "unit" => extra.extend([
-                    "--pass".into(),
-                    date.to_string(),
-                    "--dem".into(),
-                    s(&self.o.bin.join("dem")),
-                    "--cache-dir".into(),
-                    s(&cache),
-                    "--buildings".into(),
-                    s(&root.join("sources/legacy/m1/buildings")),
-                ]),
+                "unit" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache-dir".into(), s(&cache)]),
                 // The server's mirror on this Mac (the agent's home is inside the app's) has the
                 // same files: used instead of a second copy where it has them.
                 "pack" | "lo" => {
@@ -768,7 +764,7 @@ impl Agent {
         out.push(pass);
         let Some(date) = have else {
             // Nothing to size the rest by until a pass is complete: its steps, to come.
-            out.push(build::Step { what: "Worldwide sets, route ends, roads' reach, summits, labels".into(), steps: ["pass-sets", "trailends", "reach", "terrain-z8", "summits", "labels"].iter().map(|s| s.to_string()).collect(), ..Default::default() });
+            out.push(build::Step { what: "Worldwide sets, route ends, roads' reach, buildings, summits, labels".into(), steps: ["pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels"].iter().map(|s| s.to_string()).collect(), ..Default::default() });
             out.extend(build::checklist_to_come());
             return out;
         };
@@ -780,6 +776,7 @@ impl Agent {
             build::trailends_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&crate::osmpass::set_name(&date, "hikes")),
             build::reach_work(&date, &manifest, &keys).is_some(),
             !manifest.contains_key(&crate::terrain_z8::logical()),
+            !manifest.contains_key(&crate::buildtiles::index_logical()),
             build::summits_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&format!("work/summits/{date}")),
             build::labels_work(&date, &manifest, &keys).is_some(),
         ]
@@ -787,8 +784,8 @@ impl Agent {
         .filter(|&&l| l)
         .count();
         out.push(build::Step {
-            what: "Worldwide sets, route ends, roads' reach, summits, labels".into(),
-            steps: ["pass-sets", "trailends", "reach", "terrain-z8", "summits", "labels"].iter().map(|s| s.to_string()).collect(),
+            what: "Worldwide sets, route ends, roads' reach, buildings, summits, labels".into(),
+            steps: ["pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels"].iter().map(|s| s.to_string()).collect(),
             left: Some(left),
             ..Default::default()
         });

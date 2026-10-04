@@ -242,6 +242,8 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach
         if crate::rules::meets_taiwan(r.extent(u)) {
             inputs.push(format!("moi-dtm {}", digests.get("moi-dtm").map(String::as_str).unwrap_or("-")));
         }
+        // The roadside buildings it reads (crate::buildtiles: the release's tiles near its roads).
+        inputs.push(format!("buildings {}", get(&crate::buildtiles::index_logical())));
         let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
         for (x, y) in crate::stage::tiles_in(6, b) {
             for layer in ["terrain", "grid-class", "grid-canopy", "grid-cover"] {
@@ -442,6 +444,10 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
 
     // base(U): the units the coverage builds, once the pass's reaches say which.
     if reach.is_none() {
+        return work;
+    }
+    // The roadside buildings the units read: the release's tiles (a worldwide job, once).
+    if !m.contains_key(&crate::buildtiles::index_logical()) {
         return work;
     }
     let units = unit_keys(cov, date, m, reach, inputs);
@@ -862,9 +868,12 @@ mod tests {
     }
 
     /// The heritage-sites job's inputs (the pass's areas set, the registers' snapshot).
-    fn heritage_inputs(m: &mut BTreeMap<String, String>, date: &str) {
+    /// What the units wait for besides terrain and slope: the heritage-sites job's inputs, and the
+    /// release's roadside buildings.
+    fn unit_inputs(m: &mut BTreeMap<String, String>, date: &str) {
         m.insert(crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"));
         m.insert("sources/registers/legacy".into(), "sources/registers/legacy.3434343434343434.tar.zst".into());
+        m.insert(crate::buildtiles::index_logical(), format!("{}.6767676767676767.json", crate::buildtiles::index_logical()));
     }
 
     /// The heritage-sites job done: its key recorded, its outputs in the manifest.
@@ -878,7 +887,7 @@ mod tests {
     fn terrain_first_then_slope_then_catalog() {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
-        heritage_inputs(&mut m, "2026-09-28");
+        unit_inputs(&mut m, "2026-09-28");
         let mut done = Keys::default();
         let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(w.len(), 1);
@@ -927,12 +936,21 @@ mod tests {
         m.insert("sources/osm/d/pieces/6-40-20".into(), "sources/osm/d/pieces/6-40-20.5555555555555555.osm.pbf".into());
         // No heritage inputs yet: the units wait.
         assert!(plan(&c, "d", &m, &done, &BTreeMap::new()).is_empty());
-        heritage_inputs(&mut m, "d");
+        unit_inputs(&mut m, "d");
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         heritage_done(&mut m, &mut done, "d", &w[0]);
+        // Without the release's buildings (the worldwide job), the units wait for them.
+        let index = m.remove(&crate::buildtiles::index_logical()).unwrap();
+        assert!(!plan(&c, "d", &m, &done, &BTreeMap::new()).iter().any(|w| w.step == "unit"));
+        m.insert(crate::buildtiles::index_logical(), index);
         let w = plan(&c, "d", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "unit");
         assert_eq!(w[0].targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), vec!["6/28/16"]);
+        // Buildings made again: every unit again.
+        let k = unit_keys(&c, "d", &m)[0].1.clone();
+        let mut m2 = m.clone();
+        m2.insert(crate::buildtiles::index_logical(), format!("{}.6868686868686868.json", crate::buildtiles::index_logical()));
+        assert_ne!(unit_keys(&c, "d", &m2)[0].1, k);
         // A unit's key names the heritage slices near it, and only those.
         let key = |m: &BTreeMap<String, String>| unit_keys(&c, "d", m)[0].1.clone();
         let k0 = key(&m);
@@ -949,11 +967,11 @@ mod tests {
         let mut done = Keys::default();
         let line = |l: &[Step], what: &str| l.iter().find(|s| s.what.starts_with(what)).cloned().unwrap();
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
-        heritage_inputs(&mut m, "d");
+        unit_inputs(&mut m, "d");
         let l = checklist(&c, "d", &m, &done, &BTreeMap::new(), false);
         assert_eq!(l.len(), 8);
         assert_eq!((line(&l, "Terrain").done, line(&l, "Terrain").total), (0, Some(1)));
-        assert_eq!((line(&l, "Roads").done, line(&l, "Roads").total), (0, Some(1)));
+        assert_eq!((line(&l, "Roads, elevations").done, line(&l, "Roads, elevations").total), (0, Some(1)));
         assert_eq!(line(&l, "Map tiles").total, None, "no areas built: the tiles aren't known yet");
         assert_eq!(line(&l, "Heritage").left, Some(1));
         // Terrain, slope, the heritage sites and the area done.
@@ -1054,7 +1072,7 @@ mod tests {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         let mut done = Keys::default();
-        heritage_inputs(&mut m, "d");
+        unit_inputs(&mut m, "d");
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         m.insert("sources/osm/d/pieces/6-40-20".into(), "sources/osm/d/pieces/6-40-20.5555555555555555.osm.pbf".into());
         for step in ["terrain", "slope", "heritage-sites", "unit"] {
@@ -1147,7 +1165,7 @@ mod tests {
         let steps = |w: &[Work]| w.iter().map(|x| x.step.clone()).collect::<Vec<_>>();
         // Terrain, slope, the heritage sites and the unit done.
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
-        heritage_inputs(&mut m, "d");
+        unit_inputs(&mut m, "d");
         for step in ["terrain", "slope", "heritage-sites", "unit"] {
             let w = plan(&c, "d", &m, &done, &BTreeMap::new());
             assert_eq!(w[0].step, step);

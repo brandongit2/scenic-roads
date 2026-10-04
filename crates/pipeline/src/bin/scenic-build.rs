@@ -24,6 +24,8 @@
 //!                                "unit U" (its base pack, road values, English), "pois U" (its
 //!                                candidates, peaks), "pack T" (hidata, road and rail hi packs),
 //!                                "lo Q" (road and rail lo packs)
+//!   buildings [--dem dir] [--workers n]  the world's roadside buildings (pipeline::buildtiles):
+//!                                Overture's release, in z8 tiles, onto the NAS with their index
 //!   reach [--pass d] [U …]       every unit's reach (pipeline::reach): the boxes of its piece's
 //!                                roads, rail and ferries, owned and all (units named: printed,
 //!                                nothing written)
@@ -197,6 +199,11 @@ fn main() -> Result<()> {
             eprintln!("trailends: {} ends", ends.len());
         }
         "reach" => reach_step(&mut out, &args, &scratch)?,
+        "buildings" => {
+            let dem = std::fs::canonicalize(opt(&args, "--dem").unwrap_or_else(|| "dem".into()))?;
+            let workers = opt(&args, "--workers").map(|w| w.parse()).transpose()?.unwrap_or(24);
+            pipeline::buildtiles::build(&mut out, &dem, &scratch, workers)?;
+        }
         "prune" => prune_step(&mut out, &args)?,
         "convert-legacy-marks" => {
             let c = pipeline::markconv::convert(&mut out)?;
@@ -1473,11 +1480,22 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // The units: as asked, else every unit whose piece meets the coverage.
     let pieces: serde_json::Value = serde_json::from_slice(&std::fs::read(out.path(out.get(&format!("sources/osm/{date}/pieces")).context("the pass's pieces list")?))?)?;
     let mut units: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
+    // The pass's reaches: which units the coverage builds, and the roadside buildings' tiles each
+    // reads (unless a folder of them is given), from the release's (the buildings step).
+    let buildings = match tools.buildings {
+        Some(_) => None,
+        None => Some(pipeline::buildtiles::Index::load(out)?.context("the roadside buildings aren't made (the buildings step)")?),
+    };
+    let reach = if units.is_empty() || tools.buildings.is_none() {
+        Some(pipeline::reach::Reaches::load(out.root(), &out.manifest, &date).map_err(|e| anyhow::anyhow!("the pass's reaches: {e:?}"))?.context("no reaches for the pass (the reach step)")?)
+    } else {
+        None
+    };
     if units.is_empty() {
-        let reach = pipeline::reach::Reaches::load(out.root(), &out.manifest, &date).map_err(|e| anyhow::anyhow!("the pass's reaches: {e:?}"))?.context("no reaches for the pass (the reach step)")?;
+        let reach = reach.as_ref().context("the pass's reaches")?;
         for k in pieces["pieces"].as_object().context("pieces")?.keys() {
             let u = Unit::parse(k).context("unit")?;
-            if pipeline::agent::build::builds(&cov, &reach, u) {
+            if pipeline::agent::build::builds(&cov, reach, u) {
                 units.push(u);
             }
         }
@@ -1501,6 +1519,15 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let rep = {
             let o: &Out = out;
             let heritage = |b: [f64; 4], d: &Path| pipeline::heritage::unit_inputs(o, &date, b, d);
+            // Its roadside buildings: the folder given by hand, else the release's tiles near its
+            // roads.
+            let mut tools = tools.clone();
+            if let Some(index) = &buildings {
+                let bdir = scratch.join("units").join(format!("{}-buildings", u.dash()));
+                let n = pipeline::buildtiles::stage(o.root(), index, u, reach.as_ref().and_then(|r| r.get(u)), &bdir)?;
+                eprintln!("unit {}: buildings from {n} tiles", u.slash());
+                tools.buildings = Some(bdir);
+            }
             build_folder(u, &local_piece, &dir, &cov, &layers_source(o, &pilot), &tools, &heritage)?
         };
         std::fs::remove_file(&local_piece).ok();

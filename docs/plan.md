@@ -134,7 +134,8 @@ inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), ferries/freq/ (
                (Taiwan's DTM, put there by hand), hold-catalog
 sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass), basemap/
                (Planetiler's jar and data), registers/ (the registers snapshot), items/<date>/,
-               dem-cache/ (today's per-vertex DEM cache, the units' seed),
+               dem-cache/ (today's per-vertex DEM cache, the units' seed), buildings/<release>/
+               (Overture's building boxes for the world, in z8 tiles, and their index),
                terrain-z8-v1, legacy/ (today's map's build inputs, until the cutover)
 base/          base packs, one per unit
 hidata/        per z6 tile: the ways-here index, query parts, climbs, rail lines, zoomed-out summaries
@@ -483,8 +484,9 @@ The unit job runs today's steps on a unit-sized folder, wiped at each run:
 4. **Terrain and grids:** terrain z11 and the grids, staged from the packs (as the build manifest has
    them when the unit runs, which is what its key names). Missing grid tiles are made.
 5. **`tile elev`:** clean-up and grade, with junction context from the piece.
-6. **scenic:** `scenic-metrics` prep, canopy, view, buildings (today's Overture boxes) and flags, for
-   every sample.
+6. **scenic:** `scenic-metrics` prep, canopy, view, buildings and flags, for every sample. The
+   buildings come from the release's z8 tiles within 1 km of U's tile + 20 km and of its own long
+   roads.
 7. **Output:**
    - the base pack: per-vertex arrays and records, indexed by z9 sub-tile;
    - `global/roads/<u>`;
@@ -497,6 +499,17 @@ Elevations are u16 decimetres from −500 m (to 6,053.5 m). Packs made before 20
 clamped at ±3,200 m, and readers take both.
 
 Landmark candidates and peaks have their own per-unit jobs (`docs/phase5.md`).
+
+### Roadside buildings: the world, once per release
+
+The buildings job (`pipeline::buildtiles`) makes Overture's building boxes for the whole world, from
+one pinned release (2026-09-23.1), before any unit runs:
+- `dem/buildings.py --world` reads the release's bbox columns (~32 GB of its 277 GB), 24 files at a
+  time (a file alone runs at 0.1–0.2 M buildings a second, waiting on S3), into local parts by z8
+  tile; each file of the release is marked done once written, so a run cut short goes on from
+  there.
+- Each tile's parts are merged onto the NAS (sorted, each building once), then the index.
+- A unit's key names the index, so a new release rebuilds every unit, and nothing else does.
 
 ### Per z6 pack: pack(T)
 
@@ -738,6 +751,7 @@ are no request files.
    - hiking routes' ends;
    - the units' reach (`reach`);
    - `terrain-z8` (once);
+   - roadside buildings (once per Overture release; the units wait for them);
    - summits;
    - labels.
 3. **The regions' build:**
@@ -840,6 +854,7 @@ everything is rebuilt.
 | base packs | ~30 GB | ~300 GB |
 | our layers (terrain and slope for roadless coverage too) | ~150 GB | ~1.2 TB, with buildings |
 | sources kept per pass | ~200 GB | the same |
+| roadside buildings (the world's, once per Overture release; ~2.5 billion boxes) | ~40 GB | the same |
 | an app Mac's mirror | everything, ~200 GB (M1: budget-limited) | budget-limited |
 
 A retired pass's sources go 14 days after the next pass completes, so the NAS holds about two
@@ -906,7 +921,6 @@ At each phase's end an Opus agent reviews the work against this plan.
 are added.
 1. **New regions miss what today's coverage has from converted files:**
    - trees;
-   - roadside buildings (Overture boxes for today's regions only);
    - trains a day.
 2. **The scenic cache doesn't carry over between unit runs:** each unit run recomputes every scenic
    sample.
