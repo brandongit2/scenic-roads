@@ -242,8 +242,9 @@ records off for the build Mac's agent to merge (§8, Two Macs). The exceptions:
 - **Downloads are kept on the NAS, each made once** (`sources/`): Meta's canopy squares (today's
   build's among them), AWS's raw terrain tiles, FABDEM's 1° tiles, the leaf-type sources, Overture's
   buildings. A Mac's copy is a cache filled from the NAS.
-  - **Whole:** each copy is written by a temporary name (the Mac's and the process's), flushed, and
-    its length checked before the rename, and checked whole when read (`pipeline::whole`,
+  - **Whole:** each copy is written by a temporary name (the Mac's and the process's), flushed (not
+    AWS's raw terrain tiles: hundreds of thousands of flushes would swamp the NAS's disks), and its
+    length checked before the rename, and checked whole when read (`pipeline::whole`,
     `dem/whole.py`: a PNG to its last chunk, a TIFF's strips or tiles inside the file; FABDEM's
     copies read back and compared). One that isn't is deleted and taken from the next source: the
     NAS's copy, else the source itself. A canopy file that doesn't decode is taken again too.

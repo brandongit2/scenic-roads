@@ -22,11 +22,24 @@ pub fn is_tmp(p: &Path) -> bool {
 
 /// Writes `b` as `path`, whole.
 pub fn write(path: &Path, b: &[u8]) -> Result<()> {
+    write_with(path, b, true)
+}
+
+/// `write` without the flush to the disk: for small files written by the hundred thousand (AWS's raw
+/// terrain tiles), whose flushes would swamp the NAS's disks. Each is checked whole when read
+/// (`png_whole`), and taken again when it isn't, so one cut short costs only a fetch.
+pub fn write_unsynced(path: &Path, b: &[u8]) -> Result<()> {
+    write_with(path, b, false)
+}
+
+fn write_with(path: &Path, b: &[u8], sync: bool) -> Result<()> {
     let tmp = tmp_name(path);
     let r = (|| -> Result<()> {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(b)?;
-        f.sync_all()?;
+        if sync {
+            f.sync_all()?;
+        }
         drop(f);
         let n = std::fs::metadata(&tmp)?.len();
         ensure!(n == b.len() as u64, "{n} of {} bytes written", b.len());

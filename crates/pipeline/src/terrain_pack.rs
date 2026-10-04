@@ -246,7 +246,7 @@ impl RawTiles {
         if let Some(st) = &self.store {
             let sd = st.join(format!("{z}/{x}"));
             if let Some(b) = read_whole(&sd.join(format!("{y}.png"))) {
-                crate::whole::write(&p, &b)?;
+                crate::whole::write_unsynced(&p, &b)?;
                 return Ok((Some(b), false));
             }
             if sd.join(format!("{y}.none")).exists() {
@@ -303,9 +303,9 @@ impl RawTiles {
         match fetch_checked(&self.agent, z, x, y)? {
             Some(b) => {
                 if let Some(sd) = &sd {
-                    crate::whole::write(&sd.join(format!("{y}.png")), &b)?;
+                    crate::whole::write_unsynced(&sd.join(format!("{y}.png")), &b)?;
                 }
-                crate::whole::write(&d.join(format!("{y}.png")), &b)?;
+                crate::whole::write_unsynced(&d.join(format!("{y}.png")), &b)?;
                 Ok(Some(b))
             }
             None => {
