@@ -89,6 +89,9 @@ def in_taiwan(lon, lat):
 NODATA_BELOW = -1000.0  # all three sources use large negative nodata values
 
 _tls = threading.local()
+# A file's handles' generation: bumped when the file is replaced (a damaged copy taken again), so
+# no thread reads on through a handle to the old one.
+_GEN: dict[str, int] = {}
 
 
 def open_ds(url: str, level: int | None):
@@ -96,7 +99,7 @@ def open_ds(url: str, level: int | None):
     cache = getattr(_tls, "ds", None)
     if cache is None:
         cache = _tls.ds = {}
-    key = (url, level)
+    key = (url, level, _GEN.get(url, 0))
     ds = cache.get(key)
     if ds is None:
         ds = rasterio.open(url, overview_level=level) if level is not None else rasterio.open(url)
@@ -104,11 +107,61 @@ def open_ds(url: str, level: int | None):
     return ds
 
 
+def zip_names(url: str) -> set[str]:
+    """The member names of the zip at `url`, from its central directory (read by byte range: the
+    end records, then the directory). Raises when it can't be read whole."""
+    import http.client
+    import struct
+    import urllib.error
+    import urllib.request
+
+    def get(rng: str) -> bytes:
+        last: Exception | None = None
+        for attempt in range(4):
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": UA, "Range": f"bytes={rng}"})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    b = r.read()
+                    want = r.headers.get("Content-Length")
+                    if r.status != 206 or (want is not None and int(want) != len(b)):
+                        raise OSError(f"range {rng}: status {r.status}, {len(b):,} bytes")
+                    return b
+            except (OSError, http.client.HTTPException) as e:
+                last = e
+            time.sleep(10 * (attempt + 1))
+        raise RuntimeError(f"{url}: its file list can't be read ({last}); the unit is tried again later")
+
+    tail = get("-65558")
+    i = tail.rfind(b"PK\x05\x06")
+    if i < 0 or len(tail) < i + 22:
+        raise RuntimeError(f"{url}: no end of central directory")
+    n, cd_size, cd_off = struct.unpack("<HII", tail[i + 10:i + 20])
+    if 0xFFFF in (n,) or 0xFFFFFFFF in (cd_size, cd_off):
+        j = tail.rfind(b"PK\x06\x07", 0, i)
+        if j < 0:
+            raise RuntimeError(f"{url}: no zip64 end locator")
+        (rec_off,) = struct.unpack("<Q", tail[j + 8:j + 16])
+        rec = get(f"{rec_off}-{rec_off + 55}")
+        if rec[:4] != b"PK\x06\x06":
+            raise RuntimeError(f"{url}: no zip64 end record")
+        n, cd_size, cd_off = struct.unpack("<QQQ", rec[32:56])
+    cd = get(f"{cd_off}-{cd_off + cd_size - 1}")
+    names, p = set(), 0
+    for _ in range(n):
+        if cd[p:p + 4] != b"PK\x01\x02":
+            raise RuntimeError(f"{url}: a damaged central directory")
+        nlen, xlen, clen = struct.unpack("<HHH", cd[p + 28:p + 34])
+        names.add(cd[p + 46:p + 46 + nlen].decode("utf-8", "replace"))
+        p += 46 + nlen + xlen + clen
+    return names
+
+
 def absent(url: str) -> bool:
     """Whether a DEM tile that wouldn't open isn't there at all: the server answers 404 or 403 (S3's
-    answer for a key that doesn't exist), or for a tile inside a zip, the zip is there without it.
-    A timeout, a 5xx, or a plain file that's there but wouldn't open raises instead: the unit's job
-    then fails and is tried again later, rather than keeping a coarser source's value for good."""
+    answer for a key that doesn't exist), or for a tile inside a zip, the zip's own file list (its
+    central directory) lacks it. A timeout, a 5xx, a zip whose list can't be read, or a file that's
+    there but wouldn't open raises instead: the unit's job then fails and is tried again later,
+    rather than keeping a coarser source's value (or FABDEM's `.none`) for good."""
     import http.client
     import urllib.error
     import urllib.request
@@ -124,13 +177,7 @@ def absent(url: str) -> bool:
             if target == plain:
                 # A plain file that answers is there: the open failed in passing.
                 return False
-            # The zip answers: the tile is missing from it if it won't open a second time.
-            time.sleep(5)
-            try:
-                rasterio.open(url).close()
-                return False
-            except rasterio.errors.RasterioIOError:
-                return True
+            return plain[len(target) + 1:] not in zip_names(target)
         except urllib.error.HTTPError as e:
             if e.code in (403, 404, 410):
                 return True
@@ -208,17 +255,22 @@ def sample_raster(url, level, idx, px, py, elev, src, code, pool, desc, block=51
     return good
 
 
-def fabdem_stored(store: Path, zname: str, tname: str) -> str | None:
+def fabdem_stored(store: Path, zname: str, tname: str, again: bool = False) -> str | None:
     """FABDEM tile `tname` from the NAS's store ($SCENIC_FABDEM_STORE), copied there from Bristol's
-    10° zip the first time (a compressed GeoTIFF), so each tile is downloaded once; None for a tile
-    the zip doesn't have (open sea), remembered as `<tile>.none`."""
-    import os
+    10° zip the first time (a compressed GeoTIFF, read back and compared before it takes the name),
+    so each tile is downloaded once; None for a tile the zip doesn't have (open sea), remembered as
+    `<tile>.none`. A stored copy that isn't whole, or (`again`) won't read, is taken again."""
     import socket
+
+    import whole
 
     f = store / f"{tname}_FABDEM_V1-2.tif"
     if f.exists():
-        return str(f)
-    if (store / f"{tname}.none").exists():
+        if not again and whole.tiff_whole(f):
+            return str(f)
+        print(f"FABDEM {tname}: the stored copy {'won’t read' if again else 'isn’t whole'}: taken again", flush=True)
+        f.unlink()
+    elif (store / f"{tname}.none").exists():
         return None
     store.mkdir(parents=True, exist_ok=True)
     url = FABDEM.format(z=zname, t=tname)
@@ -229,12 +281,20 @@ def fabdem_stored(store: Path, zname: str, tname: str) -> str | None:
             data = src.read()
         with rasterio.open(tmp, "w", **profile) as dst:
             dst.write(data)
+        whole.sync(tmp)
+        with rasterio.open(tmp) as back:
+            same = np.array_equal(back.read(), data, equal_nan=True)
+        if not same:
+            raise OSError(f"FABDEM {tname}: the copy written to the store reads back different")
     except rasterio.errors.RasterioIOError:
         tmp.unlink(missing_ok=True)
         if not absent(url):
             raise
         (store / f"{tname}.none").write_bytes(b"")
         return None
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     tmp.rename(f)
     return str(f)
 
@@ -552,9 +612,15 @@ def main():
             try:
                 got = sample_raster(path, None, sel, lon[sel], lat[sel], loc_elev, loc_src, SRC_FABDEM, pool, f"  {tname} ({sel.size:,} pts)")
             except rasterio.errors.RasterioIOError:
-                if store or not absent(path):
-                    raise
-                got = 0  # no tile: open sea
+                if not store:
+                    if not absent(path):
+                        raise
+                    got = 0  # no tile: open sea
+                else:
+                    # The stored copy is damaged: taken again (once), its old handles dropped.
+                    path = fabdem_stored(Path(store), zname, tname, again=True)
+                    _GEN[path] = _GEN.get(path, 0) + 1
+                    got = sample_raster(path, None, sel, lon[sel], lat[sel], loc_elev, loc_src, SRC_FABDEM, pool, f"  {tname} ({sel.size:,} pts)") if path else 0
         tqdm.write(f"  FABDEM {tname}: {got:,}/{sel.size:,}")
         scatter()
         mark(name)

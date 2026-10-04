@@ -236,12 +236,20 @@ steps merge their manifest changes under a lock. The exceptions:
   running, it unmounts a tunnel mount and mounts the share by its LAN name.
 - **Sleep:** each running job holds `caffeinate -i -s -w <pid>`: no idle sleep, on battery too, and no
   system sleep on mains power. It's dropped while the job is paused, so a paused Mac can sleep.
-- **Downloads are kept on the NAS, each made once** (`sources/`): Meta's canopy squares, AWS's raw
-  terrain tiles, FABDEM's 1° tiles, the leaf-type sources, Overture's buildings. A Mac's copy is a
-  cache filled from the NAS. What's fetched again is new data (a planet, Wikidata facts and
-  pageviews, timetables, an Overture release), or a window of the national DEMs (USGS, HRDEM,
-  GSI, the MOI DTM) at points not sampled before: those datasets are read in small windows, and
-  each point's height is kept once sampled.
+- **Downloads are kept on the NAS, each made once** (`sources/`): Meta's canopy squares (today's
+  build's among them), AWS's raw terrain tiles, FABDEM's 1° tiles, the leaf-type sources, Overture's
+  buildings. A Mac's copy is a cache filled from the NAS.
+  - **Whole:** each copy is written by a temporary name (the Mac's and the process's), flushed, and
+    its length checked before the rename, and checked whole when read (`pipeline::whole`,
+    `dem/whole.py`: a PNG to its last chunk, a TIFF's strips or tiles inside the file; FABDEM's
+    copies read back and compared). One that isn't is deleted and taken from the next source: the
+    NAS's copy, else the source itself. A canopy file that doesn't decode is taken again too.
+  - **"Not there"** (a 404, or S3's 403) is remembered only once the source says so twice, a moment
+    apart; FABDEM's `.none` only once its zip's own file list lacks the tile.
+  - **What's fetched again** is new data (a planet, Wikidata facts and pageviews, timetables, an
+    Overture release), or a window of a dataset read in small windows where nothing kept covers it
+    yet: the national DEMs (USGS, HRDEM, MRDEM, GSI, the MOI DTM) at points not sampled before
+    (each point's height is kept once sampled), ESA WorldCover for grid tiles the packs lack.
 - **Caches** (`~/Library/Application Support/scenic/agent/cache`):
   - AWS's raw terrain tiles and canopy 10° files, filled from the NAS: emptied least recently used
     first when a job starts with too little free (§8);
@@ -380,7 +388,7 @@ rule (its version bumped) reruns only the units it applies to. The plan is modul
   - ferries: `inputs/ferries/freq`;
 - road network codes (`extract`) and their colours (`web/src/mapschemes.ts`);
 - leaf-type source: EEA in Europe, NALCMS in North America, none elsewhere (`dem/leaftype.py`,
-  made by the trees job where a square is missing);
+  made by the trees job where a square is missing, not tagged complete, or not whole);
 - the languages spoken there, for names (§7; today `names::area`'s boxes);
 - credits (`pipeline::rules::CREDITS`, each with the areas whose data comes from its source; a
   catalog lists those meeting its coverage, 20 km around it, or its units' ways).
@@ -829,8 +837,10 @@ are no request files.
 - **Room on the disk:** before a job starts, while the build Mac has less free than the job needs
   (60 GB; the OSM pass, its own 80 GB less the pack cache it clears), the local copies of what the
   NAS keeps (Meta's canopy squares, AWS's raw terrain tiles) lose their least recently used files,
-  then the units' kept scenic results, oldest first. A file the NAS lacks is copied there first, or
-  kept. The OSM pass counts those copies as room.
+  then the units' kept scenic results, oldest first. A file goes once the NAS has it at the same
+  size; one the NAS lacks, or has at another size, is copied there first (whole), or kept. A file
+  that isn't whole itself (cut short, or temporary) is deleted, not kept. Each NAS folder is listed
+  once a run. The OSM pass counts those copies as room.
 - **Units run in map order** (by 10° square, then tile), so what one unit fetches serves the next.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours. The orphans of a crashed
   agent are stopped at start (only when their leader's start time proves them ours, or the leader is

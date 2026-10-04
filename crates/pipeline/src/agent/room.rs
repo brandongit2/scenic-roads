@@ -3,13 +3,18 @@
 //! the NAS keeps lose their least recently used files: Meta's canopy squares (`chm10/`, ~2 GB a 10°
 //! square; scenic-metrics marks a square used when it reads it) and AWS's raw terrain tiles
 //! (`aws-terrarium/`, read once per terrain run, so oldest first). They fill again from the NAS
-//! (`sources/canopy/`, `sources/aws-terrarium/`), never from the internet: a file the NAS lacks
-//! (downloaded before it kept them) is copied there first, and kept here when that fails. Then,
+//! (`sources/canopy/`, `sources/aws-terrarium/`), never from the internet: a file the NAS lacks,
+//! or has at another size (downloaded before it kept them, or a copy cut short), is copied there
+//! first (whole: crate::whole), and kept here when that fails; one that isn't whole itself (cut
+//! short, or a temporary file) is deleted without being kept anywhere. Each NAS folder is listed
+//! once per run, not asked about file by file. Then,
 //! last, the units' kept scenic results (`scenic-units/`, a unit's whole folder, least recently
 //! kept first: losing one costs that unit's next run its reuse). The DEM samples are never deleted
 //! here.
 
 use anyhow::Result;
+use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -37,19 +42,36 @@ pub fn make_room(cache: &Path, sources: &Path, reserve: u64) -> Result<u64> {
     make_room_with(cache, sources, reserve, &disk_free)
 }
 
-/// Whether the NAS's store has local cache file `p` (under `cache/<dir>`), copying it there first
-/// when it doesn't; false when it can't.
-fn kept_on_nas(cache: &Path, sources: &Path, p: &Path) -> bool {
+/// The NAS folders' files and their sizes, each folder listed once (a folder not there: none).
+type Listed = HashMap<PathBuf, HashMap<OsString, u64>>;
+
+/// Whether local cache file `p` (under `cache/<dir>`) may go: the NAS's store has it at the same
+/// size, or does once it's copied there (when `p` is whole); or `p` isn't whole (cut short, or a
+/// temporary file), so it's no use anywhere. False when it can't be copied.
+fn may_go(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> bool {
     let Some((dir, store)) = CHEAP.iter().find(|(d, _)| p.starts_with(cache.join(d))) else { return false };
     let Ok(rel) = p.strip_prefix(cache.join(dir)) else { return false };
     let dest = sources.join(store).join(rel);
-    if dest.exists() {
+    let (Some(folder), Some(name)) = (dest.parent(), dest.file_name()) else { return false };
+    let Ok(len) = std::fs::metadata(p).map(|m| m.len()) else { return false };
+    let names = listed.entry(folder.to_path_buf()).or_insert_with(|| {
+        std::fs::read_dir(folder)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| Some((e.file_name(), e.metadata().ok().filter(|m| m.is_file())?.len())))
+            .collect()
+    });
+    if names.get(name) == Some(&len) {
         return true;
     }
-    let tmp = dest.with_extension(format!("{}.adopt", std::process::id()));
-    let ok = dest.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::copy(p, &tmp).is_ok() && std::fs::rename(&tmp, &dest).is_ok();
-    if !ok {
-        std::fs::remove_file(&tmp).ok();
+    if crate::whole::is_tmp(p) || !crate::whole::file_whole(p) {
+        eprintln!("room: {} isn't whole: deleted, not kept", p.display());
+        return true;
+    }
+    let ok = std::fs::create_dir_all(folder).is_ok() && crate::whole::copy(p, &dest).is_ok();
+    if ok {
+        names.insert(name.to_os_string(), len);
     }
     ok
 }
@@ -83,6 +105,7 @@ fn make_room_with(cache: &Path, sources: &Path, reserve: u64, free_space: &dyn F
     kept.sort();
     let mut freed = 0u64;
     let mut since = 0u64;
+    let mut listed = Listed::new();
     let items = files.into_iter().map(|(_, len, p)| (len, p, false)).chain(kept.into_iter().map(|(_, len, p)| (len, p, true)));
     for (len, p, whole) in items {
         // Once what was short is deleted, or every 2 GB, the free space measured again: what a
@@ -94,7 +117,7 @@ fn make_room_with(cache: &Path, sources: &Path, reserve: u64, free_space: &dyn F
             }
             (short, since) = (reserve - free, 0);
         }
-        let ok = if whole { std::fs::remove_dir_all(&p).is_ok() } else { kept_on_nas(cache, sources, &p) && std::fs::remove_file(&p).is_ok() };
+        let ok = if whole { std::fs::remove_dir_all(&p).is_ok() } else { may_go(cache, sources, &p, &mut listed) && std::fs::remove_file(&p).is_ok() };
         if ok {
             freed += len;
             since += len;
@@ -127,10 +150,21 @@ mod tests {
     use std::time::Duration;
 
     fn file(p: &Path, len: usize, age_s: u64) {
+        bytes(p, &vec![0u8; len], age_s);
+    }
+
+    fn bytes(p: &Path, b: &[u8], age_s: u64) {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(p, vec![0u8; len]).unwrap();
+        std::fs::write(p, b).unwrap();
         let f = std::fs::File::options().append(true).open(p).unwrap();
         f.set_modified(SystemTime::now() - Duration::from_secs(age_s)).unwrap();
+    }
+
+    /// A whole file of `p`'s kind (crate::whole), `age_s` old; its length.
+    fn whole(p: &Path, age_s: u64) -> u64 {
+        let b = if p.extension().is_some_and(|x| x == "png") { crate::whole::testfiles::png() } else { crate::whole::testfiles::tiff(false) };
+        bytes(p, &b, age_s);
+        b.len() as u64
     }
 
     /// The bytes under the caches' folders.
@@ -147,26 +181,26 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
         let nas = &d.path().join("nas");
-        file(&c.join("chm10/old.tif"), 100, 3000);
+        let old = whole(&c.join("chm10/old.tif"), 3000);
         file(&c.join("chm10/none.tif"), 0, 4000);
-        file(&c.join("aws-terrarium/12/1/2.png"), 100, 2000);
-        file(&c.join("chm10/new.tif"), 100, 10);
+        let png = whole(&c.join("aws-terrarium/12/1/2.png"), 2000);
+        let new = whole(&c.join("chm10/new.tif"), 10);
         file(&c.join("scenic-units/6-1-2/basis.json"), 100, 9000);
         file(&c.join("dem-units/6-1-2.dem"), 100, 9000);
-        assert_eq!(cheap_bytes(c), 300);
+        assert_eq!(cheap_bytes(c), old + png + new);
         // A disk with 850 free plus what's deleted.
         let all = used(c);
         let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
-        // 150 bytes short: the two oldest cheap files go; the marker, the kept results and the DEM
-        // samples stay.
-        let freed = make_room_with(c, nas, 1000, &disk(850)).unwrap();
-        assert_eq!(freed, 200);
+        // Short of all but a byte of the two oldest cheap files: they go; the marker, the kept
+        // results and the DEM samples stay.
+        let freed = make_room_with(c, nas, 850 + old + png - 1, &disk(850)).unwrap();
+        assert_eq!(freed, old + png);
         assert!(!c.join("chm10/old.tif").exists() && !c.join("aws-terrarium/12/1/2.png").exists());
         assert!(c.join("chm10/new.tif").exists() && c.join("chm10/none.tif").exists() && c.join("scenic-units/6-1-2").exists());
         // What went is on the NAS (copied there first: it wasn't).
         assert!(nas.join("canopy/old.tif").exists() && nas.join("aws-terrarium/12/1/2.png").exists());
         // Room enough: nothing goes.
-        assert_eq!(make_room_with(c, nas, 1000, &|_| Ok(5000)).unwrap(), 0);
+        assert_eq!(make_room_with(c, nas, 1000, &|_| Ok(1 << 20)).unwrap(), 0);
         // Far short: every cheap file, then the kept results; never the DEM samples.
         make_room_with(c, nas, 1 << 40, &disk(0)).unwrap();
         assert!(!c.join("chm10/new.tif").exists() && !c.join("scenic-units/6-1-2").exists() && c.join("dem-units/6-1-2.dem").exists());
@@ -204,11 +238,38 @@ mod nas_tests {
         let d = tempfile::tempdir().unwrap();
         let c = d.path().join("cache");
         std::fs::create_dir_all(c.join("chm10")).unwrap();
-        std::fs::write(c.join("chm10/a.tif"), [1u8; 100]).unwrap();
+        std::fs::write(c.join("chm10/a.tif"), crate::whole::testfiles::tiff(false)).unwrap();
         // The NAS's store is a file, not a folder: nothing can be copied there.
         let nas = d.path().join("nas");
         std::fs::write(&nas, b"").unwrap();
         assert_eq!(make_room_with(&c, &nas, 1000, &|_| Ok(0)).unwrap(), 0);
         assert!(c.join("chm10/a.tif").exists());
+    }
+
+    #[test]
+    fn only_whole_files_are_kept_on_the_nas() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, nas) = (d.path().join("cache"), d.path().join("nas"));
+        let png = crate::whole::testfiles::png();
+        let put = |p: &Path, b: &[u8]| {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, b).unwrap();
+        };
+        // Cut short, or a temporary file: deleted here, not kept there.
+        put(&c.join("aws-terrarium/9/1/1.png"), &png[..png.len() - 5]);
+        put(&c.join("chm10/a.tif.m4.12.tmp"), &crate::whole::testfiles::tiff(false));
+        // The NAS has it at the same size: deleted here, the NAS's copy left as it is.
+        put(&c.join("aws-terrarium/9/1/2.png"), &png);
+        put(&nas.join("aws-terrarium/9/1/2.png"), &vec![7u8; png.len()]);
+        // The NAS has it cut short: its copy replaced with this whole one.
+        put(&c.join("aws-terrarium/9/1/3.png"), &png);
+        put(&nas.join("aws-terrarium/9/1/3.png"), &png[..10]);
+        make_room_with(&c, &nas, 1 << 40, &|_| Ok(0)).unwrap();
+        for f in ["aws-terrarium/9/1/1.png", "chm10/a.tif.m4.12.tmp", "aws-terrarium/9/1/2.png", "aws-terrarium/9/1/3.png"] {
+            assert!(!c.join(f).exists(), "{f} deleted");
+        }
+        assert!(!nas.join("aws-terrarium/9/1/1.png").exists() && !nas.join("canopy/a.tif.m4.12.tmp").exists());
+        assert_eq!(std::fs::read(nas.join("aws-terrarium/9/1/2.png")).unwrap(), vec![7u8; png.len()]);
+        assert_eq!(std::fs::read(nas.join("aws-terrarium/9/1/3.png")).unwrap(), png);
     }
 }

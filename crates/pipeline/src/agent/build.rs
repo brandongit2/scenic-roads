@@ -806,8 +806,8 @@ pub fn checklist_to_come() -> Vec<Step> {
     [
         ("Terrain", &["terrain"][..]),
         ("Slope", &["slope"]),
-        ("Heritage sites and designated areas", &["heritage-sites"]),
         ("Tree cover", &["trees"]),
+        ("Heritage sites and designated areas", &["heritage-sites"]),
         ("Roads, elevations and scenery", &["unit"]),
         ("Map tiles", &["pack", "lo"]),
         ("Road index, rail stops, ferries, world terrain", &["roadunits", "stations", "ferries", "terrain-root", "slope-root"]),
@@ -836,7 +836,7 @@ fn remaining(done: &Keys, next: impl Fn(&Keys) -> Option<Work>) -> Vec<Work> {
 }
 
 /// The regions' build to the end, step by step (the pass's own steps are the agent's): terrain,
-/// slope, the heritage sites, tree cover, the areas, the map tiles, the road index, rail stops and
+/// slope, tree cover, the heritage sites, the areas, the map tiles, the road index, rail stops and
 /// ferries, trains a day, the landmarks, publishing.
 /// `held`: the catalog is held for review (inputs/hold-catalog): publishing is its held copy.
 pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, held: bool, reach: Option<&Reaches>) -> Vec<Step> {
@@ -854,10 +854,10 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     let (terrain, slope) = terrain_slope_targets(cov, m);
     out.push(per("Terrain", &["terrain"], &terrain, &done.terrain, "parts", true));
     out.push(per("Slope", &["slope"], &slope, &done.slope, "parts", true));
+    out.push(per("Tree cover", &["trees"], &crate::treepacks::targets(cov, m), &done.trees, "tiles", true));
     let sites_left = heritage_sites_work(cov, date, m, done).is_some() || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources"));
     out.push(group("Heritage sites and designated areas", &["heritage-sites"], Some(sites_left as usize)));
     let pieces = m.keys().any(|l| l.starts_with(&format!("sources/osm/{date}/pieces/")));
-    out.push(per("Tree cover", &["trees"], &crate::treepacks::targets(cov, m), &done.trees, "tiles", true));
     let units: Vec<(String, String)> = unit_keys(cov, date, m, reach, inputs).into_iter().map(|(u, k)| (u.slash(), k)).collect();
     out.push(per("Roads, elevations and scenery", &["unit"], &units, &done.unit, "areas", pieces && reach.is_some()));
     let (packs, lo) = pack_lo_targets(m, reach);

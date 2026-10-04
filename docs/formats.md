@@ -380,10 +380,13 @@ class, id) within a tile. The client sends the id with the clicked point.
   `sources/buildings/<release>/index` (JSON `{fmt, release, zoom, tiles: {"8/x/y": count}}`, written
   last); `sources/trees/leaf/lat<top>_lon<left>.tif` (a 10° square's dominant leaf type at 0.0005°:
   u8 GeoTIFF, 0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data; `dem/leaftype.py`; tag
-  `complete=1` when made whole, as the trees job makes them; one made over some regions only, or
-  without the tag from the EEA, is made again) and `sources/trees/nalcms-2020.tif` (NALCMS's 30 m
-  GeoTIFF, 3.4 GB, kept once fetched); the downloads kept so each is made once, as the source has
-  them: `sources/canopy/meta_chm_lat=<top>.0_lon=<left>.0_{median,p95,cover5m}.tif` (Meta's canopy
+  `complete=1` when made whole, as the trees job makes them; one made over some regions only,
+  without the tag from the EEA, or not whole, is made again; while an EEA square is being made, its
+  chunks are kept as they come in `sources/trees/leaf/parts/lat<top>_lon<left>/<row>-<col>.npy`, or
+  `.none` where the EEA has no data, until the square is saved) and `sources/trees/nalcms-2020.tif`
+  (NALCMS's 30 m GeoTIFF, 3.4 GB, kept once fetched, its size and CRC-32 checked against the zip's);
+  the downloads kept so each is made once, as the source has them (temporary names end
+  `.<host>.<pid>.tmp`): `sources/canopy/meta_chm_lat=<top>.0_lon=<left>.0_{median,p95,cover5m}.tif` (Meta's canopy
   squares; an empty file for one Meta doesn't have), `sources/aws-terrarium/<z>/<x>/<y>.png` (AWS's
   raw terrain tiles; `<y>.none` for one AWS doesn't have), `sources/fabdem/<tile>_FABDEM_V1-2.tif`
   (FABDEM's 1° tiles out of Bristol's zips, deflate GeoTIFF; `<tile>.none` for one a zip doesn't

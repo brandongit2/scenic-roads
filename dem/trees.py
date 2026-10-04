@@ -416,55 +416,74 @@ UA = "road-elevations/0.1 (personal offline map)"
 
 
 def download(url: str, path: Path) -> None:
-    """`url` into `path` (by a temporary name), whole: a body shorter than its Content-Length (a
-    connection cut) is tried again. An empty file when the server has none (404, or S3's 403 for a
-    key that isn't there), as scenic-metrics marks it. Anything else is retried, then fails."""
+    """`url` into `path` (by a temporary name, flushed), whole: a body shorter than its
+    Content-Length (a connection cut), or not a whole TIFF, is tried again. An empty file when the
+    server has none (404, or S3's 403 for a key that isn't there), so it says twice, a moment apart
+    (it's remembered for good), as scenic-metrics marks it. Anything else is retried, then fails."""
     import os
     import shutil
-    import socket
     import urllib.error
     import urllib.request
 
-    tmp = path.with_name(f"{path.name}.{socket.gethostname()}.{os.getpid()}.part")
+    import whole
+
+    tmp = whole.tmp_name(path)
     last: Exception | None = None
+    missing = 0
     for attempt in range(6):
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=600) as r, tmp.open("wb") as f:
                 want = int(r.headers.get("Content-Length", "-1"))
                 shutil.copyfileobj(r, f, 16 << 20)
+                f.flush()
+                os.fsync(f.fileno())
             got = tmp.stat().st_size
             if want >= 0 and got != want:
                 raise OSError(f"{got:,} of {want:,} bytes")
+            if not whole.tiff_whole(tmp):
+                raise OSError("not a whole TIFF")
             tmp.rename(path)
             return
         except urllib.error.HTTPError as e:
             if e.code in (403, 404):
-                path.write_bytes(b"")
-                return
+                missing += 1
+                if missing == 2:
+                    path.write_bytes(b"")
+                    return
             last = e
         except OSError as e:
             last = e
-        time.sleep(2 ** attempt)
+        tmp.unlink(missing_ok=True)
+        time.sleep(5 if missing else 2 ** attempt)
     raise RuntimeError(f"download failed: {url}: {last}")
 
 
 def canopy_square(chm: Path, store: Path, top: int, left: int) -> bool:
     """The canopy square's cover and height files in `chm`: copied from the NAS's `store`, or
-    downloaded into it first (once); False when Meta has none there."""
+    downloaded into it first (once); False when Meta has none there. A copy that isn't whole (cut
+    short) is deleted and taken again from the next source (crates/pipeline/src/whole.rs)."""
     import os
-    import shutil
+
+    import whole
+
+    def kept_whole(f: Path) -> bool:
+        if not f.exists():
+            return False
+        if f.stat().st_size == 0 or whole.tiff_whole(f):
+            return True
+        print(f"canopy: {f} isn't whole: taken again", file=sys.stderr)
+        f.unlink(missing_ok=True)
+        return False
 
     there = True
     for st in ("cover5m", "p95"):
         p = chm / f"meta_chm_lat={top}.0_lon={left}.0_{st}.tif"
-        if not p.exists():
+        if not kept_whole(p):
             kept = store / p.name
-            if not kept.exists():
+            if not kept_whole(kept):
                 store.mkdir(parents=True, exist_ok=True)
                 download(f"{CHM10_URL}/{p.name}", kept)
-            tmp = p.with_name(f"{p.name}.{os.getpid()}.part")
-            shutil.copyfile(kept, tmp)
-            tmp.rename(p)
+            whole.copy(kept, p)
         if p.stat().st_size == 0:
             there = False
         else:

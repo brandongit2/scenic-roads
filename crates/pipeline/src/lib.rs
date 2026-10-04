@@ -38,6 +38,7 @@ pub mod tiling;
 pub mod treepacks;
 pub mod unit;
 pub mod view;
+pub mod whole;
 pub mod vtgen;
 
 use indicatif::{ProgressBar, ProgressStyle};

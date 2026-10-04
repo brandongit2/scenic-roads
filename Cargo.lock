@@ -744,6 +744,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "crc32fast",
  "flate2",
  "indicatif",
  "libc",

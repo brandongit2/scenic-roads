@@ -192,8 +192,8 @@ def build(check=False):
     d.arrow('bldg', (n_bld.r, p_bld.my), (p_bld.l, p_bld.my))
     d.to_layer('bldg', p_bld, b_bld)
     s_can = d.src('land', max(s_off.b, n_bld.b) + 12, 'Canopy height · leaf type', ['Meta & WRI (1.2 m imagery)', 'Copernicus HRL · NALCMS'],
-                  kept=['the build Mac (10° files)', 'sources/trees/leaf/'])
-    n_trees = d.card('land', 'd1', s_can.y + 30, 'trees', 'Python', ['cover · height · leaf type,', 'z4–12 clipped to the coverage,', 'after the areas'],
+                  kept=['the NAS (sources/canopy/, 10° files)', 'sources/trees/leaf/'])
+    n_trees = d.card('land', 'd1', s_can.y + 30, 'trees', 'Python', ['cover · height · leaf type,', 'z4–12 clipped to the coverage,', 'before the areas'],
                      [(['layers/trees-*/'], 'packs · Terrarium WebP')], scope='pack')
     p_trees = d.pill('land', n_trees.my, ['/tiles/trees/{var}'], note='the pack for the tile')
     b_trees = d.layer('land', 0, 'Tree cover · height · leaf', ['colour-relief on the GPU'], cy=p_trees.my)

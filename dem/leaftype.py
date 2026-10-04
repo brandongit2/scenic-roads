@@ -10,20 +10,25 @@ Sources:
                  0.0005° from the EEA's public image service (exportImage, nearest neighbour).
   North America  NALCMS 2020 land cover, 30 m (CEC; NRCan, USGS, INEGI…): needleleaf forest →
                  conifer, broadleaf deciduous → broadleaf, mixed forest → mixed. The GeoTIFF is
-                 streamed out of CEC's 3.9 GB zip by byte range (only the TIFF is kept, and only
-                 while squares are made).
+                 streamed out of CEC's 3.9 GB zip by byte range, its size and CRC checked against
+                 the zip's (only the TIFF is kept: by the agent for good, in the NAS's
+                 sources/trees/, so it's downloaded once; by hand, while squares are made unless
+                 --keep-nalcms).
   Hong Kong      none (no data).
 
 usage: leaftype.py [eu] [na] [--keep-nalcms]
 
 The build agent's trees job calls `make` for the squares its z3 tile needs (dem/trees.py --z3):
 whole squares, tagged complete (squares made per region hold data only where its regions were,
-and are made again), with NALCMS's GeoTIFF kept beside them so it's downloaded once.
+and are made again; so is one that isn't whole), with NALCMS's GeoTIFF kept beside them so it's
+downloaded once. An EEA square's chunks are kept on the NAS as they come (`parts/`), so a square
+that fails part way asks again only for what it lacks.
 """
 from __future__ import annotations
 
 import io
 import json
+import os
 import re
 import struct
 import subprocess
@@ -114,22 +119,43 @@ NALCMS_BOX = (-180, 14, -50, 84)
 
 
 def complete(path: Path) -> bool:
-    """Whether a square was made whole (tagged so; NALCMS's always are), not only over some regions."""
-    with rasterio.open(path) as d:
-        t = d.tags()
+    """Whether a square was made whole (tagged so; NALCMS's always are), not only over some regions,
+    and is whole on the disk (whole.py)."""
+    import whole
+
+    if not whole.tiff_whole(path):
+        return False
+    try:
+        with rasterio.open(path) as d:
+            t = d.tags()
+    except rasterio.errors.RasterioIOError:
+        return False
     return t.get("complete") == "1" or t.get("source", "").startswith("NALCMS")
 
 
 def save(top: int, left: int, a: np.ndarray, source: str, out: Path = OUT, whole: bool = False):
+    """A square, written by a temporary name (this Mac's and the process's), flushed and checked
+    whole before it takes its name."""
+    import socket
+
+    import whole as wh
+
     out.mkdir(parents=True, exist_ok=True)
     path = out / f"lat{top}_lon{left}.tif"
-    tmp = path.with_suffix(".tmp.tif")
-    with rasterio.open(tmp, "w", driver="GTiff", width=N, height=N, count=1, dtype="uint8", crs="EPSG:4326",
-                       transform=from_origin(left, top, RES, RES), nodata=255, compress="deflate", tiled=True,
-                       blockxsize=512, blockysize=512) as d:
-        d.write(a, 1)
-        d.update_tags(source=source, classes="0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data", **({"complete": "1"} if whole else {}))
-    tmp.rename(path)
+    tmp = out / f"lat{top}_lon{left}.{socket.gethostname()}.{os.getpid()}.tmp.tif"
+    try:
+        with rasterio.open(tmp, "w", driver="GTiff", width=N, height=N, count=1, dtype="uint8", crs="EPSG:4326",
+                           transform=from_origin(left, top, RES, RES), nodata=255, compress="deflate", tiled=True,
+                           blockxsize=512, blockysize=512) as d:
+            d.write(a, 1)
+            d.update_tags(source=source, classes="0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data", **({"complete": "1"} if whole else {}))
+        wh.sync(tmp)
+        if not wh.tiff_whole(tmp):
+            raise OSError(f"{tmp}: written short")
+        tmp.rename(path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     counts = np.bincount(a.ravel(), minlength=256)
     print(f"  lat{top}_lon{left}: broadleaf {counts[1] / a.size:.1%}, conifer {counts[2] / a.size:.1%}, mixed {counts[3] / a.size:.1%}, no data {counts[255] / a.size:.1%}")
 
@@ -192,15 +218,43 @@ def europe_square(top: int, left: int, out: Path, meets, strict: bool) -> None:
             if bb[0] < EEA_BOX[2] and bb[2] > EEA_BOX[0] and bb[1] < EEA_BOX[3] and bb[3] > EEA_BOX[1] and meets(*bb):
                 jobs.append((r0, c0, h, w, bb))
 
+    # The agent's chunks, kept on the NAS as they come (a chunk: its array, or `.none` where the
+    # EEA has no data), until the square is saved.
+    parts = out / "parts" / f"lat{top}_lon{left}"
+
     def fetch(j):
         r0, c0, h, w, bb = j
-        if strict:
-            probe = eea_chunk(*bb, max(1, w // 20), max(1, h // 20), strict)
-            if probe is None:
-                return None
-            if not np.isin(probe, (0, 1, 2)).any():
-                return np.full((h, w), 255, np.uint8)  # no EEA data here
-        return eea_chunk(*bb, w, h, strict)
+        if not strict:
+            return eea_chunk(*bb, w, h, strict)
+        kept = parts / f"{r0}-{c0}.npy"
+        if (parts / f"{r0}-{c0}.none").exists():
+            return np.full((h, w), 255, np.uint8)
+        try:
+            a = np.load(kept)
+            if a.shape == (h, w) and a.dtype == np.uint8:
+                return a
+        except (OSError, ValueError, EOFError):
+            pass
+        # Asked first at a fifth of the resolution (~250 m): a chunk with no EEA data at all (Russia,
+        # the open sea) costs one small request; land of a quarter kilometre shows.
+        probe = eea_chunk(*bb, max(1, w // 5), max(1, h // 5), strict)
+        if probe is None:
+            return None
+        parts.mkdir(parents=True, exist_ok=True)
+        if not np.isin(probe, (0, 1, 2)).any():
+            (parts / f"{r0}-{c0}.none").write_bytes(b"")
+            return np.full((h, w), 255, np.uint8)  # no EEA data here
+        a = eea_chunk(*bb, w, h, strict)
+        if a is not None:
+            import whole
+
+            tmp = whole.tmp_name(kept)
+            with tmp.open("wb") as f:
+                np.save(f, a)
+                f.flush()
+                os.fsync(f.fileno())
+            tmp.rename(kept)
+        return a
 
     print(f"lat{top}_lon{left}: {len(jobs)} EEA chunks", flush=True)
     with ThreadPoolExecutor(2) as ex:
@@ -212,32 +266,59 @@ def europe_square(top: int, left: int, out: Path, meets, strict: bool) -> None:
                 continue
             a[r0:r0 + h, c0:c0 + w] = lut[chunk]
     save(top, left, a, "Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m, read at 0.0005°", out, whole=strict)
+    if strict:
+        import shutil
+
+        shutil.rmtree(parts, ignore_errors=True)
 
 
 def fetch_nalcms(tif: Path = NALCMS_TIF):
+    """NALCMS's GeoTIFF, streamed out of CEC's zip, whole: the deflate stream to its end, and its
+    size and CRC-32 those the zip records, before it takes its name."""
+    import whole
+
     if tif.exists():
         return
     tif.parent.mkdir(parents=True, exist_ok=True)
     head = subprocess.run(["curl", "-sS", "--fail", "-A", UA, "-r", f"{NALCMS_MEMBER_OFFSET}-{NALCMS_MEMBER_OFFSET + 511}", NALCMS_ZIP],
                           capture_output=True, check=True).stdout
-    assert head[:4] == b"PK\x03\x04", "unexpected zip layout"
-    nlen, elen = struct.unpack("<HH", head[26:30])
+    if len(head) < 30 or head[:4] != b"PK\x03\x04":
+        raise SystemExit("NALCMS: unexpected zip layout")
+    crc, csize, usize, nlen, elen = struct.unpack("<IIIHH", head[14:30])
+    if csize != NALCMS_COMPRESSED:
+        raise SystemExit(f"NALCMS: the zip's member is {csize:,} bytes, not {NALCMS_COMPRESSED:,}")
     start = NALCMS_MEMBER_OFFSET + 30 + nlen + elen
-    tmp = tif.with_suffix(".part")
+    tmp = whole.tmp_name(tif)
     print(f"streaming NALCMS GeoTIFF ({NALCMS_COMPRESSED / 1e9:.1f} GB compressed)…")
     p = subprocess.Popen(["curl", "-sS", "--fail", "-A", UA, "-r", f"{start}-{start + NALCMS_COMPRESSED - 1}", NALCMS_ZIP], stdout=subprocess.PIPE)
     dec = zlib.decompressobj(-15)
-    got = 0
-    with tmp.open("wb") as f:
-        while chunk := p.stdout.read(8 << 20):
-            f.write(dec.decompress(chunk))
-            got += len(chunk)
-            print(f"\r  {got / NALCMS_COMPRESSED:.0%}", end="", flush=True)
-        f.write(dec.flush())
-    print()
-    if p.wait() != 0:
-        raise SystemExit("NALCMS download failed")
-    tmp.rename(tif)
+    got = out_n = 0
+    out_crc = 0
+    try:
+        with tmp.open("wb") as f:
+            while chunk := p.stdout.read(8 << 20):
+                b = dec.decompress(chunk)
+                f.write(b)
+                out_n += len(b)
+                out_crc = zlib.crc32(b, out_crc)
+                got += len(chunk)
+                print(f"\r  {got / NALCMS_COMPRESSED:.0%}", end="", flush=True)
+            b = dec.flush()
+            f.write(b)
+            out_n += len(b)
+            out_crc = zlib.crc32(b, out_crc)
+            f.flush()
+            os.fsync(f.fileno())
+        print()
+        if p.wait() != 0:
+            raise SystemExit("NALCMS download failed")
+        if not dec.eof or out_n != usize or out_crc != crc:
+            raise SystemExit(f"NALCMS: {out_n:,} bytes, CRC {out_crc:08x}; the zip says {usize:,}, {crc:08x}")
+        tmp.rename(tif)
+    except BaseException:
+        p.kill()
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def north_america(region, keep: bool):

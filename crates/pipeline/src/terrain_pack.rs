@@ -210,7 +210,9 @@ impl store::range::RangeRead for FileSource<'_> {
 /// AWS's raw tiles, kept on the NAS (`sources/aws-terrarium/<z>/<x>/<y>.png`, `.none` for a tile
 /// AWS doesn't have), so each is downloaded once, and in a local cache the NAS fills (the build
 /// Mac's, which may lose them for room), so packs are always made from the same immutable source:
-/// processing a tile twice isn't idempotent, so stored (processed) tiles are never an input.
+/// processing a tile twice isn't idempotent, so stored (processed) tiles are never an input. Each
+/// copy is written whole (crate::whole) and checked whole when read: one that isn't (cut short) is
+/// deleted and taken from the next source, the NAS's copy, else AWS.
 pub struct RawTiles {
     dir: std::path::PathBuf,
     store: Option<std::path::PathBuf>,
@@ -232,7 +234,7 @@ impl RawTiles {
     pub fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<(Option<Vec<u8>>, bool)> {
         let d = self.dir.join(format!("{z}/{x}"));
         let p = d.join(format!("{y}.png"));
-        if let Ok(b) = std::fs::read(&p) {
+        if let Some(b) = read_whole(&p) {
             return Ok((Some(b), false));
         }
         let none = d.join(format!("{y}.none"));
@@ -243,8 +245,8 @@ impl RawTiles {
         // On the NAS: copied here.
         if let Some(st) = &self.store {
             let sd = st.join(format!("{z}/{x}"));
-            if let Ok(b) = std::fs::read(sd.join(format!("{y}.png"))) {
-                put(&d, &format!("{y}.png"), &b)?;
+            if let Some(b) = read_whole(&sd.join(format!("{y}.png"))) {
+                crate::whole::write(&p, &b)?;
                 return Ok((Some(b), false));
             }
             if sd.join(format!("{y}.none")).exists() {
@@ -301,9 +303,9 @@ impl RawTiles {
         match fetch_checked(&self.agent, z, x, y)? {
             Some(b) => {
                 if let Some(sd) = &sd {
-                    put(sd, &format!("{y}.png"), &b)?;
+                    crate::whole::write(&sd.join(format!("{y}.png")), &b)?;
                 }
-                put(&d, &format!("{y}.png"), &b)?;
+                crate::whole::write(&d.join(format!("{y}.png")), &b)?;
                 Ok(Some(b))
             }
             None => {
@@ -317,29 +319,41 @@ impl RawTiles {
     }
 }
 
-/// Writes `b` as `dir/name` by a temporary name.
-fn put(dir: &std::path::Path, name: &str, b: &[u8]) -> anyhow::Result<()> {
-    let tmp = dir.join(format!("{name}.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, b)?;
-    std::fs::rename(&tmp, dir.join(name))?;
-    Ok(())
+/// A kept tile's bytes when it's there and whole; one that isn't whole is deleted.
+fn read_whole(p: &std::path::Path) -> Option<Vec<u8>> {
+    let b = std::fs::read(p).ok()?;
+    if crate::whole::png_whole(&b) {
+        return Some(b);
+    }
+    eprintln!("terrain: {} isn't whole ({} bytes): fetched again", p.display(), b.len());
+    std::fs::remove_file(p).ok();
+    None
 }
 
-/// One of AWS's tiles: None when AWS says it has none (404, 403); an error when it can't be
-/// fetched (so a network failure isn't remembered as "no tile").
+/// One of AWS's tiles, whole: None when AWS says it has none (404, or S3's 403), twice, a moment
+/// apart (it's remembered for good); an error when it can't be fetched (so a network failure isn't
+/// remembered as "no tile").
 pub fn fetch_checked(agent: &ureq::Agent, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
     let url = format!("{URL}/{z}/{x}/{y}.png");
     let mut last = None;
+    let mut missing = 0;
     for attempt in 0..5 {
         match agent.get(&url).call() {
             Ok(mut r) => match r.body_mut().with_config().limit(20_000_000).read_to_vec() {
-                Ok(b) => return Ok(Some(b)),
+                Ok(b) if crate::whole::png_whole(&b) => return Ok(Some(b)),
+                Ok(b) => last = Some(anyhow::anyhow!("{url}: not a whole PNG ({} bytes)", b.len())),
                 Err(e) => last = Some(anyhow::anyhow!("{url}: {e}")),
             },
-            Err(ureq::Error::StatusCode(404 | 403)) => return Ok(None),
+            Err(ureq::Error::StatusCode(c @ (404 | 403))) => {
+                missing += 1;
+                if missing == 2 {
+                    return Ok(None);
+                }
+                last = Some(anyhow::anyhow!("{url}: {c}"));
+            }
             Err(e) => last = Some(anyhow::anyhow!("{url}: {e}")),
         }
-        std::thread::sleep(Duration::from_millis(300 << attempt));
+        std::thread::sleep(Duration::from_millis(if missing > 0 { 2000 } else { 300 << attempt }));
     }
     Err(last.unwrap_or_else(|| anyhow::anyhow!("{url}: no answer")))
 }

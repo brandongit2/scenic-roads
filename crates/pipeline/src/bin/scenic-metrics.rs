@@ -210,53 +210,68 @@ impl Chm10 {
 }
 
 /// A canopy file: the local cache's copy (`path`), else the NAS's (`store`, copied here), else
-/// downloaded once, into the NAS's store first. An empty file marks one Meta doesn't have.
+/// downloaded once, into the NAS's store first. An empty file marks one Meta doesn't have. Each
+/// copy is written whole and checked whole when read (pipeline::whole): one that isn't (cut short)
+/// is deleted and taken from the next source.
 fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path, store: Option<&Path>) -> Result<Option<Vec<u8>>> {
-    if let Ok(b) = std::fs::read(path) {
+    // A kept copy: Some(None) for Meta's "none there", None when it's missing or not whole.
+    let kept = |p: &Path| -> Option<Option<Vec<u8>>> {
+        let b = std::fs::read(p).ok()?;
+        if b.is_empty() {
+            return Some(None);
+        }
+        if pipeline::whole::tiff_bytes_whole(&b) {
+            return Some(Some(b));
+        }
+        eprintln!("canopy: {} isn't whole ({} bytes): taken again", p.display(), b.len());
+        std::fs::remove_file(p).ok();
+        None
+    };
+    if let Some(b) = kept(path) {
         // Used now: the build agent's room-making deletes the least recently used squares first.
         if let Ok(f) = std::fs::File::options().append(true).open(path) {
             f.set_modified(std::time::SystemTime::now()).ok();
         }
-        return Ok((!b.is_empty()).then_some(b));
+        return Ok(b);
     }
-    let put = |p: &Path, b: &[u8]| -> Result<()> {
-        let tmp = p.with_extension(format!("{}.part", std::process::id()));
-        std::fs::write(&tmp, b)?;
-        std::fs::rename(&tmp, p)?;
-        Ok(())
-    };
     if let Some(st) = store {
-        if let Ok(b) = std::fs::read(st) {
-            put(path, &b)?;
-            return Ok((!b.is_empty()).then_some(b));
+        if let Some(b) = kept(st) {
+            pipeline::whole::write(path, b.as_deref().unwrap_or_default())?;
+            return Ok(b);
         }
         if let Some(d) = st.parent() {
             std::fs::create_dir_all(d)?;
         }
     }
+    let mut missing = 0;
     for attempt in 0..6 {
         match agent.get(url).call() {
             Ok(mut r) => {
                 let want: Option<usize> = r.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
-                // (A body cut short is tried again, never kept.)
-                if let Ok(b) = r.body_mut().with_config().limit(3_000_000_000).read_to_vec().map_err(|e| e.to_string()).and_then(|b| if want.is_none_or(|n| n == b.len()) { Ok(b) } else { Err("cut short".into()) }) {
+                // (A body cut short, or not a whole TIFF, is tried again, never kept.)
+                if let Ok(b) = r.body_mut().with_config().limit(3_000_000_000).read_to_vec().map_err(|e| e.to_string()).and_then(|b| if want.is_none_or(|n| n == b.len()) && pipeline::whole::tiff_bytes_whole(&b) { Ok(b) } else { Err("cut short".into()) }) {
                     if let Some(st) = store {
-                        put(st, &b)?;
+                        pipeline::whole::write(st, &b)?;
                     }
-                    put(path, &b)?;
+                    pipeline::whole::write(path, &b)?;
                     return Ok(Some(b));
                 }
             }
+            // Meta has none there (404, or S3's 403): so it says twice, a moment apart, before
+            // it's remembered for good.
             Err(ureq::Error::StatusCode(404 | 403)) => {
-                if let Some(st) = store {
-                    std::fs::write(st, b"")?;
+                missing += 1;
+                if missing == 2 {
+                    if let Some(st) = store {
+                        pipeline::whole::write(st, b"")?;
+                    }
+                    pipeline::whole::write(path, b"")?;
+                    return Ok(None);
                 }
-                std::fs::write(path, b"")?;
-                return Ok(None);
             }
             Err(_) => {}
         }
-        std::thread::sleep(std::time::Duration::from_millis(1000 << attempt));
+        std::thread::sleep(std::time::Duration::from_millis(if missing > 0 { 5000 } else { 1000 << attempt }));
     }
     bail!("download failed: {url}")
 }
@@ -271,24 +286,26 @@ struct Strips {
 }
 
 fn parse_tiff(b: &[u8]) -> Result<Strips> {
-    let u16_at = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]);
-    let u32_at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
-    let u64_at = |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap());
-    if &b[0..2] != b"II" {
+    // (Every read checked: a file cut short is an error, not a panic.)
+    let at = |o: usize, n: usize| o.checked_add(n).and_then(|e| b.get(o..e)).context("TIFF cut short");
+    let u16_at = |o: usize| at(o, 2).map(|v| u16::from_le_bytes([v[0], v[1]]));
+    let u32_at = |o: usize| at(o, 4).map(|v| u32::from_le_bytes([v[0], v[1], v[2], v[3]]));
+    let u64_at = |o: usize| at(o, 8).map(|v| u64::from_le_bytes(v.try_into().unwrap()));
+    if at(0, 2)? != b"II" {
         bail!("not little-endian TIFF");
     }
-    let big = match u16_at(2) {
+    let big = match u16_at(2)? {
         42 => false,
         43 => true,
         v => bail!("TIFF version {v}"),
     };
-    let ifd = if big { u64_at(8) as usize } else { u32_at(4) as usize };
-    let (count, entry0, esz) = if big { (u64_at(ifd) as usize, ifd + 8, 20) } else { (u16_at(ifd) as usize, ifd + 2, 12) };
+    let ifd = if big { u64_at(8)? as usize } else { u32_at(4)? as usize };
+    let (count, entry0, esz) = if big { (u64_at(ifd)? as usize, ifd + 8, 20) } else { (u16_at(ifd)? as usize, ifd + 2, 12) };
     let mut tags: HashMap<u16, Vec<u64>> = HashMap::new();
     for i in 0..count {
         let e = entry0 + i * esz;
-        let (tag, typ) = (u16_at(e), u16_at(e + 2));
-        let n = if big { u64_at(e + 4) as usize } else { u32_at(e + 4) as usize };
+        let (tag, typ) = (u16_at(e)?, u16_at(e + 2)?);
+        let n = if big { u64_at(e + 4)? as usize } else { u32_at(e + 4)? as usize };
         let sz = match typ {
             3 => 2,
             4 => 4,
@@ -296,14 +313,14 @@ fn parse_tiff(b: &[u8]) -> Result<Strips> {
             _ => continue,
         };
         let inline = if big { 8 } else { 4 };
-        let base = if n * sz <= inline { e + if big { 12 } else { 8 } } else if big { u64_at(e + 12) as usize } else { u32_at(e + 8) as usize };
+        let base = if n * sz <= inline { e + if big { 12 } else { 8 } } else if big { u64_at(e + 12)? as usize } else { u32_at(e + 8)? as usize };
         let vals = (0..n)
             .map(|k| match sz {
-                2 => u16_at(base + k * 2) as u64,
-                4 => u32_at(base + k * 4) as u64,
+                2 => u16_at(base + k * 2).map(u64::from),
+                4 => u32_at(base + k * 4).map(u64::from),
                 _ => u64_at(base + k * 8),
             })
-            .collect();
+            .collect::<Result<Vec<u64>>>()?;
         tags.insert(tag, vals);
     }
     let get = |t: u16| tags.get(&t).and_then(|v| v.first().copied()).context(format!("TIFF tag {t}"));
@@ -318,39 +335,71 @@ fn parse_tiff(b: &[u8]) -> Result<Strips> {
     })
 }
 
-/// Decode a 40000² uint16 LZW TIFF, mapping each value through `f` to u8 (65535 = no data → 0).
-/// Rows `row0..row0 + rows` of a square's file, each value through `f` (no data: 0).
+/// Rows `row0..row0 + rows` of a square's file (a 40000² uint16 LZW TIFF), each value through `f`
+/// (no data, 65535: 0). Each strip holding wanted rows is decoded straight into them; a strip that
+/// doesn't decode whole is an error (the file is damaged: canopy takes it again).
 fn decode_u16(b: &[u8], row0: usize, rows: usize, f: impl Fn(u16) -> u8 + Sync) -> Result<Vec<u8>> {
     let st = parse_tiff(b)?;
     if st.width != C10 || st.height != C10 || st.compression != 5 {
         bail!("unexpected TIFF {}×{} compression {}", st.width, st.height, st.compression);
     }
-    let rps = st.rows_per_strip;
-    let mut out = vec![0u8; C10 * rows];
-    // The strips holding the rows, each decoded into its rows that are wanted.
-    let (s0, s1) = (row0 / rps, (row0 + rows).div_ceil(rps).min(st.strips.len()));
-    let parts: Vec<(usize, Vec<u8>)> = (s0..s1)
-        .into_par_iter()
-        .filter_map(|si| {
-            let (off, len) = st.strips[si];
-            let mut dec = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
-            dec.decode(&b[off..off + len]).ok().map(|raw| (si, raw))
-        })
-        .collect();
-    for (si, raw) in parts {
-        for (k, row) in raw.chunks_exact(C10 * 2).enumerate() {
-            let r = si * rps + k;
-            if r < row0 || r >= row0 + rows {
-                continue;
-            }
-            let dst = &mut out[(r - row0) * C10..(r - row0 + 1) * C10];
-            for (o, v) in dst.iter_mut().zip(row.chunks_exact(2)) {
-                let x = u16::from_le_bytes([v[0], v[1]]);
-                *o = if x == 65535 { 0 } else { f(x) };
-            }
-        }
+    decode_rows(b, &st, row0, rows, f)
+}
+
+/// decode_u16's rows, from an LZW TIFF of any width.
+fn decode_rows(b: &[u8], st: &Strips, row0: usize, rows: usize, f: impl Fn(u16) -> u8 + Sync) -> Result<Vec<u8>> {
+    let (w, rps) = (st.width, st.rows_per_strip.max(1));
+    let mut out = vec![0u8; w * rows];
+    // Each strip's wanted rows: (strip, its first wanted row, those rows of `out`).
+    let mut parts: Vec<(usize, usize, &mut [u8])> = Vec::new();
+    let mut rest: &mut [u8] = &mut out;
+    let mut r = row0;
+    while r < row0 + rows {
+        let si = r / rps;
+        let end = ((si + 1) * rps).min(row0 + rows);
+        let (head, tail) = std::mem::take(&mut rest).split_at_mut((end - r) * w);
+        parts.push((si, r, head));
+        rest = tail;
+        r = end;
     }
+    parts.into_par_iter().try_for_each(|(si, first, dst)| -> Result<()> {
+        let &(off, len) = st.strips.get(si).with_context(|| format!("strip {si} isn't listed"))?;
+        let src = b.get(off..off.saturating_add(len)).with_context(|| format!("strip {si} runs past the file's end"))?;
+        let mut dec = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
+        let raw = dec.decode(src).map_err(|e| anyhow::anyhow!("strip {si}: {e:?}"))?;
+        let skip = (first - si * rps) * w * 2;
+        let vals = raw.get(skip..skip + dst.len() * 2).with_context(|| format!("strip {si} decodes short ({} bytes)", raw.len()))?;
+        for (o, v) in dst.iter_mut().zip(vals.chunks_exact(2)) {
+            let x = u16::from_le_bytes([v[0], v[1]]);
+            *o = if x == 65535 { 0 } else { f(x) };
+        }
+        Ok(())
+    })?;
     Ok(out)
+}
+
+/// One layer of a square: its file (fetch_file) decoded over rows `row0..row0 + rows`
+/// (decode_u16); None when Meta has none there. A file that doesn't decode is damaged: this Mac's
+/// copy is deleted and it's taken again (from the NAS), then the NAS's copy too (from Meta).
+fn canopy_layer(agent: &ureq::Agent, url: &str, path: &Path, store: Option<&Path>, row0: usize, rows: usize, f: fn(u16) -> u8) -> Result<Option<Vec<u8>>> {
+    let mut attempt = 0;
+    loop {
+        let Some(b) = fetch_file(agent, url, path, store)? else { return Ok(None) };
+        match decode_u16(&b, row0, rows, f) {
+            Ok(v) => return Ok(Some(v)),
+            Err(e) if attempt < 2 => {
+                eprintln!("canopy: {}: {e:#}; taken again", path.display());
+                std::fs::remove_file(path).ok();
+                if attempt == 1 {
+                    if let Some(st) = store {
+                        std::fs::remove_file(st).ok();
+                    }
+                }
+            }
+            Err(e) => return Err(e.context(format!("{} (taken again twice)", path.display()))),
+        }
+        attempt += 1;
+    }
 }
 
 fn canopy(dir: &Path) -> Result<()> {
@@ -460,16 +509,6 @@ fn canopy(dir: &Path) -> Result<()> {
     );
     let pb = count_bar(need.len() as u64, "canopy 10° tiles");
     for &(top, left) in &need {
-        let name = |st: &str| format!("meta_chm_lat={top}.0_lon={left}.0_{st}.tif");
-        let files: Vec<Option<Vec<u8>>> = ["median", "p95", "cover5m"]
-            .par_iter()
-            .map(|st| fetch_file(&agent, &format!("{CHM10_URL}/{}", name(st)), &cache.join(name(st)), store.as_ref().map(|s| s.join(name(st))).as_deref()))
-            .collect::<Result<_>>()?;
-        let [Some(med), Some(p95), Some(cov)] = [&files[0], &files[1], &files[2]] else {
-            pb.println(format!("canopy {top},{left}: no data"));
-            pb.inc(1);
-            continue;
-        };
         // The rows the work here reaches: its samples to do, with the near field's margin, and its
         // grid tiles to do.
         let (mut lat_lo, mut lat_hi) = (f64::MAX, f64::MIN);
@@ -497,16 +536,19 @@ fn canopy(dir: &Path) -> Result<()> {
             continue;
         }
         let rows = row1 - row0;
-        let t = Chm10 {
-            left: left as f64,
-            top: top as f64,
-            row0,
-            rows,
-            median: decode_u16(med, row0, rows, |v| ((v as u32 + 50) / 100).min(254) as u8)?,
-            p95: decode_u16(p95, row0, rows, |v| ((v as u32 + 50) / 100).min(254) as u8)?,
-            cover: decode_u16(cov, row0, rows, |v| ((v as u32).min(1000) * 255 / 1000) as u8)?,
+        let name = |st: &str| format!("meta_chm_lat={top}.0_lon={left}.0_{st}.tif");
+        let height: fn(u16) -> u8 = |v| ((v as u32 + 50) / 100).min(254) as u8;
+        let share: fn(u16) -> u8 = |v| ((v as u32).min(1000) * 255 / 1000) as u8;
+        let layers: Vec<Option<Vec<u8>>> = [("median", height), ("p95", height), ("cover5m", share)]
+            .par_iter()
+            .map(|&(st, f)| canopy_layer(&agent, &format!("{CHM10_URL}/{}", name(st)), &cache.join(name(st)), store.as_ref().map(|s| s.join(name(st))).as_deref(), row0, rows, f))
+            .collect::<Result<_>>()?;
+        let Ok([Some(median), Some(p95), Some(cover)]) = <[Option<Vec<u8>>; 3]>::try_from(layers) else {
+            pb.println(format!("canopy {top},{left}: no data"));
+            pb.inc(1);
+            continue;
         };
-        drop(files);
+        let t = Chm10 { left: left as f64, top: top as f64, row0, rows, median, p95, cover };
 
         // Grid layers: cells whose centre lies in this tile (4 sub-samples per cell), for tiles to do.
         canopy_out.par_chunks_mut(CELLS).zip(cover_out.par_chunks_mut(CELLS)).zip(grid.tiles.par_iter().zip(&todo_t)).for_each(|((can, cov), (tile, &todo))| {
@@ -625,3 +667,72 @@ fn near_field(s: &Sample, si: usize, owned: bool, t: &Chm10, grid: &GridIndex, t
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A width × height u16 LZW TIFF, `rps` rows a strip, value = row × 100 + column.
+    fn tiff(width: usize, height: usize, rps: usize) -> Vec<u8> {
+        let mut strips = Vec::new();
+        for r0 in (0..height).step_by(rps) {
+            let raw: Vec<u8> = (r0..(r0 + rps).min(height)).flat_map(|r| (0..width).flat_map(move |c| ((r * 100 + c) as u16).to_le_bytes())).collect();
+            strips.push(weezl::encode::Encoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8).encode(&raw).unwrap());
+        }
+        let n = strips.len();
+        let tags: [(u16, Vec<u32>); 6] = [(256, vec![width as u32]), (257, vec![height as u32]), (259, vec![5]), (278, vec![rps as u32]), (273, vec![0; n]), (279, strips.iter().map(|s| s.len() as u32).collect())];
+        let ifd = 8;
+        let arrays = ifd + 2 + tags.len() * 12 + 4;
+        let mut b = b"II\x2a\x00".to_vec();
+        b.extend_from_slice(&(ifd as u32).to_le_bytes());
+        b.extend_from_slice(&(tags.len() as u16).to_le_bytes());
+        // Arrays of more than one value after the directory, then the strips.
+        let mut at = arrays;
+        let data = arrays + 2 * 4 * n;
+        let offs: Vec<u32> = strips.iter().scan(data, |o, s| { let v = *o; *o += s.len(); Some(v as u32) }).collect();
+        let mut tail = Vec::new();
+        for (tag, vals) in &tags {
+            let vals = if *tag == 273 { &offs } else { vals };
+            b.extend_from_slice(&tag.to_le_bytes());
+            b.extend_from_slice(&4u16.to_le_bytes());
+            b.extend_from_slice(&(vals.len() as u32).to_le_bytes());
+            if vals.len() == 1 {
+                b.extend_from_slice(&vals[0].to_le_bytes());
+            } else {
+                b.extend_from_slice(&(at as u32).to_le_bytes());
+                at += vals.len() * 4;
+                tail.extend(vals.iter().flat_map(|v| v.to_le_bytes()));
+            }
+        }
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend(tail);
+        assert_eq!(b.len(), data);
+        for s in &strips {
+            b.extend_from_slice(s);
+        }
+        b
+    }
+
+    #[test]
+    fn rows_decoded_straight_into_place() {
+        let (w, h) = (5, 7);
+        let b = tiff(w, h, 3);
+        assert!(pipeline::whole::tiff_bytes_whole(&b));
+        let st = parse_tiff(&b).unwrap();
+        let f = |v: u16| (v % 251) as u8;
+        // Windows starting and ending mid-strip, one row, all rows.
+        for (row0, rows) in [(0, 7), (2, 3), (4, 1), (6, 1), (1, 5)] {
+            let got = decode_rows(&b, &st, row0, rows, f).unwrap();
+            let want: Vec<u8> = (row0..row0 + rows).flat_map(|r| (0..w).map(move |c| f((r * 100 + c) as u16))).collect();
+            assert_eq!(got, want, "rows {row0}..{}", row0 + rows);
+        }
+        // Cut short, or a strip damaged: an error, not a panic or zeros.
+        assert!(parse_tiff(&b[..20]).is_err());
+        assert!(decode_rows(&b[..b.len() - 3], &st, 0, 7, f).is_err());
+        let mut bad = b.clone();
+        let (off, len) = st.strips[1];
+        bad[off..off + len].fill(0xff);
+        assert!(decode_rows(&bad, &st, 3, 2, f).is_err());
+        // (Rows away from the damaged strip still decode.)
+        assert!(decode_rows(&bad, &st, 0, 3, f).is_ok());
+    }
+}

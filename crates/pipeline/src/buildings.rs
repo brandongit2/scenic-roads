@@ -55,8 +55,11 @@ impl Index {
                 if w * h < MIN_AREA_M2 || w > 1500.0 || h > 1500.0 {
                     return false;
                 }
-                let cx = ((b[0] + b[2]) * 0.5) as f64;
-                near_road((cx / CELL).floor() as i64, (lat / CELL).floor() as i64)
+                // Kept when a cell its box meets is near a road sample (so a building counts the
+                // same whichever other roads the unit's folder holds).
+                let (x0, x1) = ((b[0] as f64 / CELL).floor() as i64, (b[2] as f64 / CELL).floor() as i64);
+                let (y0, y1) = ((b[1] as f64 / CELL).floor() as i64, (b[3] as f64 / CELL).floor() as i64);
+                (x0..=x1).any(|x| (y0..=y1).any(|y| near_road(x, y)))
             }));
             eprintln!("buildings: {} near roads from {}", boxes.len() - before, f.file_name().unwrap().to_string_lossy());
         }
@@ -83,6 +86,22 @@ impl Index {
     }
 }
 
+/// How far from a sample a building can count: the stretch's half-length, the fade's end, and a
+/// margin.
+const REACH_M: f64 = HALF_M + ZERO_M + 5.0;
+
+/// The cells (x0, x1, y0, y1) within `REACH_M` of a sample at (lon, lat): where its buildings are
+/// looked up.
+fn reach_cells(lon: f64, lat: f64) -> (i64, i64, i64, i64) {
+    let (kx, ky) = (111_320.0 * lat.to_radians().cos(), 110_540.0);
+    (
+        ((lon - REACH_M / kx) / CELL).floor() as i64,
+        ((lon + REACH_M / kx) / CELL).floor() as i64,
+        ((lat - REACH_M / ky) / CELL).floor() as i64,
+        ((lat + REACH_M / ky) / CELL).floor() as i64,
+    )
+}
+
 fn weight(d: f64) -> f64 {
     if d <= FULL_M {
         1.0
@@ -103,13 +122,14 @@ pub fn run(dir: &Path, bdir: &Path) -> Result<()> {
         let c = ways[w as usize].class;
         c < class::TRAM && c != class::FERRY
     };
-    // Cells near road samples (±1 cell), so buildings far from any road aren't kept.
+    // The cells each road sample's buildings are looked up in (`reach_cells`), so a building in
+    // none of them, which no sample could count, isn't kept.
     let mut near: Vec<u64> = samples
         .par_iter()
         .filter(|s| is_road(s.way))
         .flat_map_iter(|s| {
-            let (ix, iy) = ((s.lon as f64 * E7 / CELL).floor() as i64, (s.lat as f64 * E7 / CELL).floor() as i64);
-            (-1..=1).flat_map(move |dx| (-1..=1).map(move |dy| cell_key(ix + dx, iy + dy)))
+            let (x0, x1, y0, y1) = reach_cells(s.lon as f64 * E7, s.lat as f64 * E7);
+            (x0..=x1).flat_map(move |x| (y0..=y1).map(move |y| cell_key(x, y)))
         })
         .collect();
     near.par_sort_unstable();
@@ -158,9 +178,8 @@ pub fn run(dir: &Path, bdir: &Path) -> Result<()> {
                     let kx = 111_320.0 * plat.to_radians().cos();
                     let ky = 110_540.0;
                     // Candidate buildings within reach of the stretch, in metres around the sample.
-                    let reach = HALF_M + ZERO_M + 5.0;
-                    let (x0, x1) = (((plon - reach / kx) / CELL).floor() as i64, ((plon + reach / kx) / CELL).floor() as i64);
-                    let (y0, y1) = (((plat - reach / ky) / CELL).floor() as i64, ((plat + reach / ky) / CELL).floor() as i64);
+                    let reach = REACH_M;
+                    let (x0, x1, y0, y1) = reach_cells(plon, plat);
                     cand.clear();
                     for x in x0..=x1 {
                         for y in y0..=y1 {
@@ -267,4 +286,31 @@ pub fn run(dir: &Path, bdir: &Path) -> Result<()> {
         share(192)
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_building_within_reach_is_kept_wherever_its_centre_is() {
+        // A long building at 60° N: its west end 40 m east of a road sample, its centre 640 m east
+        // (several cells away). It's in the sample's lookup cells, so kept.
+        let d = tempfile::tempdir().unwrap();
+        let (lon, lat) = (10.0, 60.0);
+        let m = 111_320.0 * f64::to_radians(lat).cos();
+        let b = [(lon + 40.0 / m) as f32, (lat - 0.0002) as f32, (lon + 1240.0 / m) as f32, (lat + 0.0002) as f32];
+        std::fs::write(d.path().join("a.f32"), bytemuck::cast_slice::<[f32; 4], u8>(&[b])).unwrap();
+        let (x0, x1, y0, y1) = reach_cells(lon, lat);
+        let mut near: Vec<u64> = (x0..=x1).flat_map(|x| (y0..=y1).map(move |y| cell_key(x, y))).collect();
+        near.sort_unstable();
+        let idx = Index::load(d.path(), &|x, y| near.binary_search(&cell_key(x, y)).is_ok()).unwrap();
+        assert_eq!(idx.boxes.len(), 1);
+        let cx = (((b[0] + b[2]) * 0.5) as f64 / CELL).floor() as i64;
+        assert!(cx - (lon / CELL).floor() as i64 > 1, "its centre is beyond the sample's neighbouring cells");
+        // Beyond reach (its west end 200 m away): not kept.
+        let far = [(lon + 200.0 / m) as f32, b[1], (lon + 1400.0 / m) as f32, b[3]];
+        std::fs::write(d.path().join("a.f32"), bytemuck::cast_slice::<[f32; 4], u8>(&[far])).unwrap();
+        assert_eq!(Index::load(d.path(), &|x, y| near.binary_search(&cell_key(x, y)).is_ok()).unwrap().boxes.len(), 0);
+    }
 }

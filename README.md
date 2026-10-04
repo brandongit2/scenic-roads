@@ -181,7 +181,7 @@ Roads are drawn as vectors by a custom WebGL2 layer. The design, its status and 
 | Road & rail elevation, North America | NRCan **HRDEM** lidar (8 m overview) → USGS **3DEP** 10 m → NRCan **MRDEM** 30 m | OGL–Canada / public domain |
 | Road & rail elevation, Japan | GSI elevation tiles (地理院タイル 標高タイル, Geospatial Information Authority of Japan), per pixel in GSI's order: DEM1A / DEM5A airborne lidar, DEM5B / 5C photogrammetry, DEM10B; read at z15 (~4 m pixels) and z14 | GSI terms of use (Public Data License 1.0): "Created by editing GSI Tiles (elevation tiles (Fundamental Geospatial Data Digital Elevation Model))" |
 | Road & rail elevation, Taiwan | MOI 20 m DTM (內政部 2025年版全臺灣20公尺網格數值地形模型DTM資料: main island, Penghu, Kinmen; no Matsu). Hosted on tgos.tw, which answers 403 outside Taiwan, so it hasn't been downloaded and FABDEM serves. GeoTIFFs put in the NAS's `inputs/moi-dtm/` are used from then on: Taiwan's areas rebuild, sampling again what FABDEM gave | Open Government Data License 1.0 (attribution) |
-| Road & rail elevation, Europe, Hong Kong, Singapore | **FABDEM** v1-2 30 m (University of Bristol / Fathom; Hawker et al. 2022), Copernicus DEM with forests and buildings removed; read tile by tile from Bristol's zips (`/vsizip//vsicurl/`) | CC BY-NC-SA 4.0 (non-commercial; attribution text in © Credits) |
+| Road & rail elevation, Europe, Hong Kong, Singapore | **FABDEM** v1-2 30 m (University of Bristol / Fathom; Hawker et al. 2022), Copernicus DEM with forests and buildings removed; each 1° tile copied once out of Bristol's zips onto the NAS (`sources/fabdem/`), then read from there | CC BY-NC-SA 4.0 (non-commercial; attribution text in © Credits) |
 | 3D terrain, hill-shading, contours, analysis grid | Terrain Tiles (Terrarium) on AWS Open Data, repaired (see Terrain repair) | Mapzen / various open sources |
 | Tree canopy height & cover | Meta & WRI global canopy height (1 m, 10° aggregates: median, p95, cover > 5 m) | CC BY 4.0 |
 | Forest leaf type, Europe | Copernicus HRL Dominant Leaf Type 2018, 10 m (EEA image service; no Azores or Madeira data) | Copernicus free and open data policy |
@@ -300,7 +300,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
      - Each channel is 255 × √(slope ÷ 400 %), so the gentle slopes most ground has get finer steps.
      - The rounding is carried from one channel to the next, so their mean keeps an eighth of a step.
      - The server makes z12 on demand.
-   - **Tree cover** (before the areas): cover, canopy height and leaf type, zoom 4–12, clipped to the coverage (`dem/trees.py`, `pipeline::treepacks`), from Meta's canopy squares and the leaf-type squares (`dem/leaftype.py`, made whole where missing).
+   - **Tree cover** (before the areas): cover, canopy height and leaf type, zoom 4–12, clipped to the coverage (`dem/trees.py`, `pipeline::treepacks`), from Meta's canopy squares and the leaf-type squares (`dem/leaftype.py`, made whole where a square is missing or wasn't made whole).
 3. **Heritage sites and designated areas** over the coverage: `dem/heritage.py`, on the registers' snapshot.
 4. **Roadside buildings** for the whole world, once per Overture release (2026-09-23.1): every building's box, from the release's bbox columns, in z8 tiles (`pipeline::buildtiles`, `dem/buildings.py --world`).
 5. **Each z6 area** runs these steps on its piece:
@@ -340,7 +340,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
   - the credits: `crates/pipeline/src/rules.rs` (`CREDITS`, each source with its areas).
 
 **Machines:**
-- **The NAS** holds the map's data, and every download the build makes, each made once (`sources/`: Meta's canopy squares, AWS's raw terrain tiles, FABDEM's tiles, the leaf-type sources, Overture's buildings). What's fetched again is new data: a planet, Wikidata facts and pageviews, timetables, an Overture release.
+- **The NAS** holds the map's data, and every download the build makes, each made once (`sources/`: Meta's canopy squares, today's build's among them, AWS's raw terrain tiles, FABDEM's tiles, the leaf-type sources, Overture's buildings). Each copy is checked whole when read; one that isn't (cut short) is taken again. What's fetched again is new data (a planet, Wikidata facts and pageviews, timetables, an Overture release), or windows of the datasets read by window (the national DEMs, MRDEM, ESA WorldCover) where nothing kept covers them yet.
 - **Each Mac's server** copies what the catalog lists, within a reserve of free space: 50 GB, or 150 GB on the build Mac.
 - **The build Mac** (48 GB) keeps local copies of the NAS's terrain tiles and canopy squares, and the elevations, and needs 80 GB free to start an OSM pass.
 - **Publishing the app** (`tools/app/publish.sh`) needs Rust and Node.

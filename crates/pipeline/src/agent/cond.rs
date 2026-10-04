@@ -110,6 +110,12 @@ pub fn free_bytes(path: &std::path::Path) -> Option<u64> {
     Some(s.f_bavail as u64 * s.f_bsize as u64)
 }
 
+/// This Mac's name, read once per process (temporary files' names: crate::whole).
+pub fn host() -> &'static str {
+    static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    HOST.get_or_init(host_name)
+}
+
 /// This Mac's name (for the heartbeat).
 pub fn host_name() -> String {
     Command::new("/usr/sbin/scutil")
