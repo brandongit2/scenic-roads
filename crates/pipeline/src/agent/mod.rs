@@ -155,15 +155,23 @@ extern "C" fn on_signal(_: libc::c_int) {
     STOP.store(true, Ordering::SeqCst);
 }
 
-/// The NAS project folder: the share's mount (mounting it when missing and `mount` is set).
+/// The NAS project folder: the share's mount, by whatever name it's mounted. When it's missing and
+/// `mount` is set, it's mounted: at home by the LAN name, away through Tailscale when the Keychain
+/// has the bare name's password (else nothing: a dialog would ask for it).
 pub fn find_root(mount: bool) -> Option<PathBuf> {
     use store::nas::{find_mount, HOST, PROJECT, SHARE};
     if let Some(m) = find_mount(HOST, SHARE) {
         return Some(m.point.join(PROJECT));
     }
     if mount {
-        if let Err(e) = store::nas::mount(store::nas::smb_url(), Duration::from_secs(60)) {
-            eprintln!("agent: mounting the NAS: {e:#}");
+        let url = if store::nas::at_home() { Some(store::nas::smb_url()) } else { store::nas::tunnel_url() };
+        match url {
+            Some(url) => {
+                if let Err(e) = store::nas::mount(url, Duration::from_secs(60)) {
+                    eprintln!("agent: mounting the NAS: {e:#}");
+                }
+            }
+            None => eprintln!("agent: away from home, and the Keychain has no password for the NAS's Tailscale name ({HOST})"),
         }
         return find_mount(HOST, SHARE).map(|m| m.point.join(PROJECT));
     }
@@ -321,9 +329,21 @@ impl Agent {
     /// One loop; true when a job just ended (look again soon).
     fn step(&mut self) -> Result<bool> {
         let slept = self.sleep.slept();
+        let home = store::nas::at_home();
+        // Back home with the share mounted through Tailscale (mounted while away): unmounted while
+        // nothing runs, and mounted again by the LAN name below, at the LAN's speed.
+        if home && self.running.is_none() && self.o.root.is_none() {
+            if let Some(m) = store::nas::find_mount(store::nas::HOST, store::nas::SHARE).filter(|m| !store::nas::by_lan_name(m)) {
+                eprintln!("agent: home again; remounting the NAS by its LAN name (it was mounted as {})", m.from);
+                if let Err(e) = store::nas::unmount(&m.point, Duration::from_secs(30)) {
+                    eprintln!("agent: {e:#}");
+                }
+                self.last_mount_try = None;
+            }
+        }
         let root = self.root();
         let (ac, battery) = cond::power();
-        let c = Conditions { ac, battery, nas: root.is_some(), idle_s: cond::idle_seconds() };
+        let c = Conditions { ac, battery, nas: root.is_some(), home, idle_s: cond::idle_seconds() };
         let mut waiting: Vec<Waiting> = Vec::new();
         let mut ended = false;
 
@@ -541,7 +561,8 @@ impl Agent {
                         "--clear".into(),
                         s(&pack_cache),
                     ],
-                    needs: Needs { ac: true, nas: true },
+                    // (It reads the whole planet: at home only.)
+                    needs: Needs { ac: true, nas: true, home: true },
                     restart_after_sleep: true,
                     record: None,
                 });
@@ -557,7 +578,7 @@ impl Agent {
                 id: "backup".into(),
                 what: "Backing up translations, descriptions and inputs".into(),
                 cmd: vec![s(&me), "backup".into(), "--root".into(), s(root), "--local".into(), s(&self.o.home.join("backups"))],
-                needs: Needs { ac: false, nas: true },
+                needs: Needs { ac: false, nas: true, home: false },
                 restart_after_sleep: true,
                 record: None,
             });
@@ -567,7 +588,7 @@ impl Agent {
                 id: "gc".into(),
                 what: "Removing replaced files from the NAS".into(),
                 cmd: vec![s(&me), "gc".into(), "--root".into(), s(root)],
-                needs: Needs { ac: false, nas: true },
+                needs: Needs { ac: false, nas: true, home: false },
                 restart_after_sleep: true,
                 record: None,
             });
@@ -589,7 +610,9 @@ impl Agent {
             let scratch = self.o.home.join("scratch").join(step);
             let mut cmd = vec![build_bin.clone(), step.to_string(), "--root".into(), s(root), "--scratch".into(), s(&scratch)];
             cmd.extend(extra);
-            JobSpec { id, what: what.into(), cmd, needs: Needs { ac: true, nas: true }, restart_after_sleep: true, record }
+            // The pass's whole-planet reads (its missing sets, the units' reach) wait for home.
+            let home = matches!(step, "pass-sets" | "reach");
+            JobSpec { id, what: what.into(), cmd, needs: Needs { ac: true, nas: true, home }, restart_after_sleep: true, record }
         };
         // Per pass, worldwide: the sets it lacks in their current filters (a set added or changed
         // since it ran), the hiking routes' ends, AWS's z8 (once), the summits, the labels.
@@ -651,7 +674,7 @@ impl Agent {
                     continue;
                 }
                 let mut j = job("catalog-held".into(), "The new map data, held for review", "catalog", vec!["--held".into()], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
-                j.needs = Needs { ac: false, nas: true };
+                j.needs = Needs { ac: false, nas: true, home: false };
                 jobs.push(j);
                 continue;
             }
@@ -709,7 +732,7 @@ impl Agent {
             let step = w.step.clone();
             let mut j = job(id, &what, &step, extra, Some(w));
             // (A catalog and a prune only write a little: no power needed.)
-            j.needs = Needs { ac: !matches!(step.as_str(), "catalog" | "prune"), nas: true };
+            j.needs = Needs { ac: !matches!(step.as_str(), "catalog" | "prune"), nas: true, home: false };
             jobs.push(j);
         }
         jobs
@@ -844,6 +867,9 @@ fn input_digests(root: &Path) -> BTreeMap<String, String> {
 fn lapsed(n: &Needs, c: &Conditions) -> Option<String> {
     if n.nas && !c.nas {
         return Some("the NAS isn't reachable".into());
+    }
+    if n.home && !c.home {
+        return Some("away from home: it reads the whole planet from the NAS, which waits for the home network".into());
     }
     // CPU work: on mains power, or on battery down to BATTERY_MIN.
     if n.ac && !c.ac && c.battery.is_none_or(|b| b < cond::BATTERY_MIN) {
@@ -1013,12 +1039,19 @@ mod tests {
 
     #[test]
     fn conditions_gate_jobs() {
-        let n = Needs { ac: true, nas: true };
-        assert!(lapsed(&n, &Conditions { ac: true, nas: true, idle_s: 0, battery: None }).is_none());
-        assert!(lapsed(&n, &Conditions { ac: false, nas: true, idle_s: 0, battery: None }).unwrap().contains("battery"));
-        assert!(lapsed(&n, &Conditions { ac: true, nas: false, idle_s: 0, battery: None }).unwrap().contains("NAS"));
+        let n = Needs { ac: true, nas: true, home: false };
+        let at = |ac: bool, nas: bool, home: bool, battery: Option<u8>| Conditions { ac, nas, home, idle_s: 0, battery };
+        assert!(lapsed(&n, &at(true, true, true, None)).is_none());
+        assert!(lapsed(&n, &at(false, true, true, None)).unwrap().contains("battery"));
+        assert!(lapsed(&n, &at(true, false, true, None)).unwrap().contains("NAS"));
         // On battery: on down to 30 %, then waiting.
-        assert!(lapsed(&n, &Conditions { ac: false, nas: true, idle_s: 0, battery: Some(30) }).is_none());
-        assert!(lapsed(&n, &Conditions { ac: false, nas: true, idle_s: 0, battery: Some(29) }).unwrap().contains("at 29%"));
+        assert!(lapsed(&n, &at(false, true, true, Some(30))).is_none());
+        assert!(lapsed(&n, &at(false, true, true, Some(29))).unwrap().contains("at 29%"));
+        // Away from home, through Tailscale: on, except the whole-planet reads.
+        assert!(lapsed(&n, &at(true, true, false, None)).is_none());
+        assert!(lapsed(&Needs { home: true, ..n }, &at(true, true, false, None)).unwrap().contains("away from home"));
+        // An older heartbeat without `home` reads as at home.
+        let old: Conditions = serde_json::from_str(r#"{"ac": true, "nas": true, "idle_s": 0}"#).unwrap();
+        assert!(old.home);
     }
 }

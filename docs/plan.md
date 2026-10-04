@@ -62,8 +62,9 @@ nothing built depends on how the coverage is divided into regions.
   `todo/`.
 
 **Everything else is automatic:**
-- **Building and refreshing:** whenever the build Mac is awake, at home, and has power (plugged in,
-  or on battery down to 30 %).
+- **Building and refreshing:** whenever the build Mac is awake, reaches the NAS, and has power
+  (plugged in, or on battery down to 30 %). Away from home it builds through Tailscale, slowly; the
+  OpenStreetMap pass and the other whole-planet reads wait for home.
 - Mirroring to each Mac.
 - **Installing a newly published app:** each Mac's server picks it up and restarts into it when the
   map is idle.
@@ -218,6 +219,11 @@ steps merge their manifest changes under a lock. The exceptions:
   - osmium, Planetiler and the Python steps take what they take.
 - **Power:** CPU jobs run on mains power or on battery down to 30 % charge, then pause until the Mac
   is plugged in. Every job also needs the NAS.
+- **Away from home** the agent mounts the share by the NAS's bare name, which Tailscale's DNS sends
+  through the tunnel (~12 MB/s), when the Keychain has that name's password. Every job runs
+  except the whole-planet reads (the OSM pass, a pass's missing sets, the units' reach), which wait
+  for home. Home again, with no job running, it unmounts a tunnel mount and mounts the share by its
+  LAN name.
 - **Sleep:** each running job holds `caffeinate -i -s -w <pid>`: no idle sleep, on battery too, and no
   system sleep on mains power. It's dropped while the job is paused, so a paused Mac can sleep.
 - **Caches** (`~/Library/Application Support/scenic/agent/cache`):
@@ -254,7 +260,8 @@ steps merge their manifest changes under a lock. The exceptions:
 **Server.**
 - **Finding the NAS:** `getfsstat(MNT_NOWAIT)`, never `statfs`.
   - At home (when `fishandchips.local` answers on port 445), it mounts the share with `osascript`
-    and the Keychain, at most every five minutes.
+    and the Keychain, at most every five minutes. Away it mounts nothing (the build Mac's agent
+    may, through Tailscale: §4, Build Mac).
   - It mounts by the LAN name `fishandchips.local` when the Keychain has its password, else by the
     bare name. The bare name resolves to the NAS's Tailscale address, whose userspace networking held
     SMB to 12 MB/s.
@@ -740,7 +747,8 @@ are no request files.
 mid-job. Nothing depends on it being available at a given time.
 - **No deadlines.** Until work is done, the map serves the last catalog.
 - **Conditions per step:**
-  - Every job needs the NAS. CPU jobs also need power: mains, or the battery at 30 % or more.
+  - Every job needs the NAS: at home, or through Tailscale away from home, except the whole-planet
+    reads, which need home. CPU jobs also need power: mains, or the battery at 30 % or more.
   - When a condition lapses, the agent pauses the job (`SIGSTOP` to its process group) and resumes
     it (`SIGCONT`) when it holds again.
 - **Sleep** suspends every process. Open SMB handles often don't survive it, so a job that touches the
@@ -890,12 +898,9 @@ are added.
    - The Regions API reads and writes the share outside the I/O pool, so a hung mount can hold a
      request.
    - A basemap tile's 304 still reads the NAS while the basemap isn't mirrored.
-4. **The agent:**
-   - It runs nothing away from home, since every job needs the NAS (the design let local steps go
-     on).
-5. **Catalogs:**
+4. **Catalogs:**
    - `credits` and `coverage` are empty: `/api/coverage` builds the coverage per request.
-6. **The repo:**
+5. **The repo:**
    - `nas/fetch-planet.sh` lives only on the NAS.
    - `inputs/keys.env` is read by nothing (`dem/railgtfs.py` still reads `data/keys.env`).
 
@@ -907,7 +912,8 @@ are added.
   - Planned: a rate limit on the pass's uploads, and remounting a hung mount (the breaker's probe
     times out) rather than waiting.
 - **The build Mac's availability:**
-  - work progresses only while the M4 is awake, at home, and has power;
+  - work progresses only while the M4 is awake, reaches the NAS (away from home through Tailscale,
+    at ~12 MB/s, the whole-planet reads waiting for home), and has power;
   - a closed lid stops building, and nothing is lost while it waits;
   - if waiting proves too slow, the other Mac could take per-unit jobs (needs a toolchain there and
     a movable writer lease; not planned).

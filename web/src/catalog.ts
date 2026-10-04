@@ -35,7 +35,8 @@ export interface Agent {
   /** Seconds since the epoch: its last heartbeat, and when it started. */
   beat: number;
   started: number;
-  conditions: { ac: boolean; nas: boolean; idle_s: number };
+  /** `home` false: the NAS through Tailscale (absent from older heartbeats). */
+  conditions: { ac: boolean; nas: boolean; home?: boolean; idle_s: number };
   job: AgentJob | null;
   /** Work that can't run yet, and why. */
   waiting: { what: string; why: string }[];

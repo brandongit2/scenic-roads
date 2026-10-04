@@ -71,6 +71,8 @@ struct JobProgress: Decodable {
 struct Conditions: Decodable {
     let ac: Bool
     let nas: Bool
+    /// At home (false: the NAS through Tailscale); absent from older heartbeats.
+    let home: Bool?
     let battery: Int?
 }
 
@@ -202,7 +204,7 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
         }
     }
     let power = s.conditions.ac ? "Mains power" : "Battery\(s.conditions.battery.map { " \($0)%" } ?? "")"
-    out.append(Line(text: "\(power) · NAS \(s.conditions.nas ? "reachable" : "not reachable")", style: .small))
+    out.append(Line(text: "\(power) · NAS \(!s.conditions.nas ? "not reachable" : s.conditions.home == false ? "through Tailscale" : "reachable")", style: .small))
     out.append(Line(text: "\(s.host) · \(r.local ? "this Mac" : "via the NAS") · heard from \(duration(r.now - s.beat)) ago", style: .small))
     if let app = s.app { out.append(Line(text: "App \(app)", style: .small)) }
     // The build to the end: each step done, under way, or to come.

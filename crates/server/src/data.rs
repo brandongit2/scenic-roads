@@ -69,13 +69,6 @@ impl<V: Clone> Bounded<V> {
     }
 }
 
-/// Whether the NAS answers on the SMB port (TCP 445), within two seconds.
-fn smb_reachable() -> bool {
-    use std::net::ToSocketAddrs;
-    let Ok(addrs) = (format!("{NAS_HOST}.local"), 445).to_socket_addrs() else { return false };
-    addrs.into_iter().any(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_secs(2)).is_ok())
-}
-
 /// Memory budgets for what's read from the NAS (a Mac whose mirror isn't complete): sectioned
 /// files read whole, and the base views' names. Base packs' and hidata's sections are paged
 /// (`pages`, with its own budget).
@@ -212,7 +205,7 @@ impl Data {
             }
             *last = Some(std::time::Instant::now());
         }
-        if !smb_reachable() {
+        if !store::nas::at_home() {
             return;
         }
         let url = store::nas::smb_url();

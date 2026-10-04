@@ -19,6 +19,10 @@ pub struct Needs {
     pub ac: bool,
     /// The NAS.
     pub nas: bool,
+    /// The home network: the job reads the whole planet (or every piece of it) from the NAS, too
+    /// much to read through Tailscale.
+    #[serde(default)]
+    pub home: bool,
 }
 
 /// A job: one step for one unit or pack, or one worldwide step.

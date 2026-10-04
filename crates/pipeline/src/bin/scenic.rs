@@ -55,7 +55,7 @@ fn status(args: &[String]) -> Result<()> {
     println!(
         "  {} · {} · {}",
         if c.ac { "on power" } else { "on battery" },
-        if c.nas { "NAS reachable" } else { "NAS not reachable" },
+        if !c.nas { "NAS not reachable" } else if c.home { "NAS reachable" } else { "NAS reachable through Tailscale (away from home)" },
         if c.user_active() { "in use" } else { "idle" }
     );
     if now_s().saturating_sub(st.beat) > 600 {

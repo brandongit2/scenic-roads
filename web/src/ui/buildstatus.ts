@@ -136,7 +136,7 @@ export class BuildStatus {
         hd('Build Mac', h('span', { class: stale ? 'warn' : 'faint' }, stale ? `last seen ${ago(a.beat)}` : `seen ${ago(a.beat)}`)),
         ...(stale ? [h('div', { class: 'bs-row warn' }, 'Asleep, away or off. As it was then:')] : []),
         h('div', { class: 'bs-row faint' }, [a.host, a.app, ...(stale ? [] : [`running ${span(now() - a.started)}`])].join(' · ')),
-        h('div', { class: 'bs-row' }, [a.conditions.ac ? 'On mains power' : 'On battery', a.conditions.nas ? 'NAS reachable' : 'NAS not reachable', a.conditions.idle_s >= 120 ? `idle ${span(a.conditions.idle_s)}` : 'in use'].join(' · ')),
+        h('div', { class: 'bs-row' }, [a.conditions.ac ? 'On mains power' : 'On battery', !a.conditions.nas ? 'NAS not reachable' : a.conditions.home === false ? 'NAS through Tailscale (away from home)' : 'NAS reachable', a.conditions.idle_s >= 120 ? `idle ${span(a.conditions.idle_s)}` : 'in use'].join(' · ')),
       );
       if (a.job) {
         out.push(

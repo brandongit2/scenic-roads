@@ -16,11 +16,11 @@ use std::time::{Duration, Instant};
 /// The NAS: its host, the share holding the project, the project folder in it, and the URL to
 /// mount the share by (the password comes from the Keychain).
 ///
-/// The share is mounted by the NAS's LAN name (Bonjour, `.local`): the bare name resolves through
-/// Tailscale's DNS to its tailnet address when Tailscale runs, and the NAS's Tailscale (userspace
-/// networking) is CPU-bound: SMB writes through it ran at 12 MB/s on 2026-10-03, and an SSH stream
-/// at half the LAN's rate. The share is only mounted at home (the server checks the LAN name
-/// first), so the LAN name always resolves then.
+/// At home the share is mounted by the NAS's LAN name (Bonjour, `.local`): the bare name resolves
+/// through Tailscale's DNS to its tailnet address when Tailscale runs, and the NAS's Tailscale
+/// (userspace networking) is CPU-bound: SMB writes through it ran at 12 MB/s on 2026-10-03, and an
+/// SSH stream at half the LAN's rate. Away from home only the build agent mounts it, by the bare
+/// name (`tunnel_url`), and it remounts by the LAN name once home (`at_home`).
 pub const HOST: &str = "fishandchips";
 pub const LAN_HOST: &str = "fishandchips.local";
 pub const SHARE: &str = "personal";
@@ -34,19 +34,39 @@ pub const SMB_URL_BARE: &str = "smb://brandontsang@fishandchips/personal";
 /// Keychain doesn't know asks for the password in a dialog, which an unattended Mac never answers.
 /// (`security` without `-g`/`-w` reads only the items' attributes: no prompt, no secret.)
 pub fn smb_url() -> &'static str {
-    let known = |server: &str| {
-        Command::new("/usr/bin/security")
-            .args(["find-internet-password", "-s", server])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    };
-    if known(LAN_HOST) || known(&format!("{HOST}._smb._tcp.local")) {
+    if keychain_knows(LAN_HOST) || keychain_knows(&format!("{HOST}._smb._tcp.local")) {
         SMB_URL
     } else {
         SMB_URL_BARE
     }
+}
+
+/// Whether the Keychain has an internet password for `server` (its attributes only: no prompt).
+fn keychain_knows(server: &str) -> bool {
+    Command::new("/usr/bin/security").args(["find-internet-password", "-s", server]).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+}
+
+/// The URL to mount the share by away from home: the bare name (Tailscale's DNS sends it through the
+/// tunnel), when the Keychain has its password; None otherwise (mounting would ask in a dialog
+/// nobody answers).
+pub fn tunnel_url() -> Option<&'static str> {
+    keychain_knows(HOST).then_some(SMB_URL_BARE)
+}
+
+/// Whether the NAS answers on the SMB port (TCP 445) by its LAN name within two seconds: this Mac
+/// is at home.
+pub fn at_home() -> bool {
+    use std::net::ToSocketAddrs;
+    let Ok(addrs) = (LAN_HOST, 445).to_socket_addrs() else { return false };
+    addrs.into_iter().any(|a| std::net::TcpStream::connect_timeout(&a, Duration::from_secs(2)).is_ok())
+}
+
+/// Unmounts the share at `point`, forced (files open on it fail, as they would with the connection
+/// gone), within `timeout`.
+pub fn unmount(point: &Path, timeout: Duration) -> Result<()> {
+    let mut cmd = Command::new("/usr/sbin/diskutil");
+    cmd.args(["unmount", "force"]).arg(point);
+    run_with_timeout(cmd, timeout).with_context(|| format!("unmount {}", point.display()))
 }
 
 /// Whether a mount reaches the NAS by its LAN name (not the bare name, which Tailscale's DNS can

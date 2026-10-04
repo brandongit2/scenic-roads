@@ -20,8 +20,16 @@ pub struct Conditions {
     pub battery: Option<u8>,
     /// The NAS share mounted and answering.
     pub nas: bool,
+    /// At home: the NAS answers by its LAN name (else the share, if mounted, is reached through
+    /// Tailscale, slowly).
+    #[serde(default = "yes")]
+    pub home: bool,
     /// Seconds since the last keyboard or mouse input.
     pub idle_s: u64,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Conditions {
