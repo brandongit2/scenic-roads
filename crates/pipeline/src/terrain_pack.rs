@@ -218,17 +218,42 @@ pub struct RawTiles {
     dir: std::path::PathBuf,
     store: Option<std::path::PathBuf>,
     agent: ureq::Agent,
+    /// The store's columns (`<z>/<x>/`) as listed once, and the folders made, here and there: over
+    /// SMB each look or mkdir is a round trip, and those, a tile's few, set a terrain job's pace.
+    listed: Mutex<HashMap<(u8, u32), std::sync::Arc<std::collections::HashSet<String>>>>,
+    made: Mutex<std::collections::HashSet<std::path::PathBuf>>,
 }
 
 impl RawTiles {
     /// A local cache alone (no NAS store).
     pub fn new(dir: &std::path::Path) -> Self {
-        RawTiles { dir: dir.to_path_buf(), store: None, agent: agent() }
+        RawTiles { dir: dir.to_path_buf(), store: None, agent: agent(), listed: Default::default(), made: Default::default() }
     }
 
     /// The local cache `dir`, filled from the NAS's `store`, which every download goes to first.
     pub fn with_store(dir: &std::path::Path, store: &std::path::Path) -> Self {
-        RawTiles { dir: dir.to_path_buf(), store: Some(store.to_path_buf()), agent: agent() }
+        RawTiles { dir: dir.to_path_buf(), store: Some(store.to_path_buf()), agent: agent(), listed: Default::default(), made: Default::default() }
+    }
+
+    /// The names in the store's column `z/x`, listed once (none when it isn't there).
+    fn column(&self, st: &std::path::Path, z: u8, x: u32) -> std::sync::Arc<std::collections::HashSet<String>> {
+        if let Some(c) = self.listed.lock().unwrap().get(&(z, x)) {
+            return c.clone();
+        }
+        let names: std::collections::HashSet<String> = std::fs::read_dir(st.join(format!("{z}/{x}"))).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let c = std::sync::Arc::new(names);
+        self.listed.lock().unwrap().insert((z, x), c.clone());
+        c
+    }
+
+    /// Makes folder `d` (once).
+    fn make(&self, d: &std::path::Path) -> std::io::Result<()> {
+        if self.made.lock().unwrap().contains(d) {
+            return Ok(());
+        }
+        std::fs::create_dir_all(d)?;
+        self.made.lock().unwrap().insert(d.to_path_buf());
+        Ok(())
     }
 
     /// The raw tile, and whether it came from AWS just now.
@@ -242,15 +267,18 @@ impl RawTiles {
         if none.exists() {
             return Ok((None, false));
         }
-        std::fs::create_dir_all(&d)?;
-        // On the NAS: copied here.
+        self.make(&d)?;
+        // On the NAS (its column listed once): copied here.
         if let Some(st) = &self.store {
             let sd = st.join(format!("{z}/{x}"));
-            if let Some(b) = read_whole(&sd.join(format!("{y}.png"))) {
-                crate::whole::write_in_place(&p, &b)?;
-                return Ok((Some(b), false));
+            let col = self.column(st, z, x);
+            if col.contains(&format!("{y}.png")) {
+                if let Some(b) = read_whole(&sd.join(format!("{y}.png"))) {
+                    crate::whole::write_in_place(&p, &b)?;
+                    return Ok((Some(b), false));
+                }
             }
-            if sd.join(format!("{y}.none")).exists() {
+            if col.contains(&format!("{y}.none")) {
                 std::fs::write(&none, b"")?;
                 return Ok((None, false));
             }
@@ -299,7 +327,7 @@ impl RawTiles {
         let d = self.dir.join(format!("{z}/{x}"));
         let sd = self.store.as_ref().map(|st| st.join(format!("{z}/{x}")));
         if let Some(sd) = &sd {
-            std::fs::create_dir_all(sd)?;
+            self.make(sd)?;
         }
         match fetch_checked(&self.agent, z, x, y)? {
             Some(b) => {
@@ -516,4 +544,28 @@ pub fn build_root(out: &mut Out, raw: &RawTiles) -> anyhow::Result<usize> {
     crate::layers::write_pack(out, "terrain", "terrarium-png", false, "root", (0, 0, 0), &mut it)?;
     out.save()?;
     Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_tiles_from_the_store() {
+        let d = tempfile::tempdir().unwrap();
+        let (local, store) = (d.path().join("local"), d.path().join("store"));
+        let png = crate::whole::testfiles::png();
+        std::fs::create_dir_all(store.join("9/5")).unwrap();
+        std::fs::write(store.join("9/5/7.png"), &png).unwrap();
+        std::fs::write(store.join("9/5/8.none"), b"").unwrap();
+        // A tile cut short in the store: deleted, so it's taken again (from AWS: not reached here).
+        std::fs::write(store.join("9/5/9.png"), &png[..png.len() / 2]).unwrap();
+        let raw = RawTiles::with_store(&local, &store);
+        let (b, fetched) = raw.get(9, 5, 7).unwrap();
+        assert_eq!((b.as_deref(), fetched), (Some(&png[..]), false));
+        assert_eq!(std::fs::read(local.join("9/5/7.png")).unwrap(), png, "copied here");
+        assert_eq!(raw.get(9, 5, 8).unwrap(), (None, false));
+        assert!(local.join("9/5/8.none").exists());
+        assert!(read_whole(&store.join("9/5/9.png")).is_none() && !store.join("9/5/9.png").exists());
+    }
 }
