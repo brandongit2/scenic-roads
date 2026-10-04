@@ -387,6 +387,8 @@ fn parse_colour(v: Option<&str>) -> u32 {
 
 /// Route network by signage from the ref, road class and location (rough country boxes where
 /// ref formats collide: "A1" is a UK A road, a Portuguese autoestrada or a Jersey road).
+/// (Changing a rule here: bump its version in crates/pipeline/src/rules.rs, "networks-…", so the units
+/// it applies to rerun.)
 fn network_code(lon: f64, lat: f64, ref_: &str, c: u8) -> u8 {
     use roadcore::network as n;
     let first = ref_.split(';').next().unwrap_or("").trim();
@@ -1068,7 +1070,8 @@ fn main() -> Result<()> {
 
     // ---- Assemble, drop gated minor roads, densify --------------------------------
     // North America (west of 40° W) and Japan (GSI) have 1–10 m lidar and DEMs; elsewhere the DEMs
-    // are 20–30 m (Taiwan's MOI DTM, FABDEM).
+    // are 20–30 m (Taiwan's MOI DTM, FABDEM). (Versioned as "spacing" in pipeline::rules; the
+    // units' reach densifies long ways the same way, pipeline::reach::LongWay::touches.)
     const COARSE_SPACING_M: f64 = 15.0;
     let spacing_at = |p: [i32; 2]| {
         let (lon, lat) = (p[0] as f64 * E7, p[1] as f64 * E7);

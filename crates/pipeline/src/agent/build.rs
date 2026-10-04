@@ -25,6 +25,8 @@ pub const SLOPE_V: u32 = 1;
 pub const UNIT_V: u32 = 4;
 /// 2: hidata with rail lines' identity (`railinfo`) and the zoomed-out summaries (`lsum`).
 pub const PACK_V: u32 = 2;
+/// lo's own version: lo isn't keyed on pack's, so a change in what they share (hipack's tiling)
+/// bumps both.
 pub const LO_V: u32 = 1;
 
 /// The keys of the jobs that last succeeded, by step and target ("3/4/2", "6/31/20").
@@ -183,9 +185,22 @@ pub fn trailends_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> 
 /// Each unit's reach (crate::reach), once per pass: which units the coverage builds, and what their
 /// keys read of it.
 pub fn reach_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
-    let pieces = m.get(&format!("sources/osm/{date}/pieces"))?;
-    let k = h(&[&format!("reach {}", crate::reach::REACH_V), pieces]);
-    (done.lo.get("reach").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "reach".into(), targets: vec![("reach".into(), k)] })
+    let k = reach_key(date, m)?;
+    let made = m.contains_key(&crate::reach::logical(date));
+    (!made || done.lo.get("reach").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "reach".into(), targets: vec![("reach".into(), k)] })
+}
+
+/// The reach job's key: its version and the pieces, by content (a piece cut again changes it).
+pub fn reach_key(date: &str, m: &BTreeMap<String, String>) -> Option<String> {
+    let prefix = format!("sources/osm/{date}/pieces/");
+    let pieces: Vec<&str> = m.range(prefix.clone()..).take_while(|(l, _)| l.starts_with(&prefix)).map(|(_, c)| c.as_str()).collect();
+    if pieces.is_empty() {
+        return None;
+    }
+    let mut ins = vec![format!("reach {}", crate::reach::REACH_V)];
+    ins.extend(pieces.iter().map(|s| s.to_string()));
+    let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+    Some(h(&refs))
 }
 
 /// The labels by importance, worldwide, once per pass (or labels step version): independent of the
@@ -308,7 +323,8 @@ pub const POIS_V: u32 = 2;
 pub const ITEMS_V: u32 = 1;
 /// The road → units index from every unit's road values (the server's whole-road lookups).
 pub const ROADUNITS_V: u32 = 1;
-/// Rail stops (pipeline::ovconv::stations_job) and ferries (ferries_job) near the built units.
+/// Rail stops near the built units (pipeline::ovconv::stations_job), and ferries worldwide
+/// (ferries_job).
 pub const STATIONS_V: u32 = 1;
 pub const FERRIES_V: u32 = 1;
 /// The landmark points from the candidates (crate::marksjob).
@@ -444,7 +460,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     // landmarks), then the landmarks'. The agent runs the first of these not waiting out a
     // failure, so a landmark job failing (Wikidata or a pageview dump down) doesn't hold up the
     // roads, nor the roads the landmarks.
-    match roads_chain(date, m, done, inputs) {
+    match roads_chain(date, m, done, inputs, reach) {
         Some(w) => work.push(w),
         None => work.extend(catalog_work(m, done)),
     }
@@ -452,33 +468,32 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     work
 }
 
-/// pack(T)'s targets (z6 tiles within 100 km, plus the pieces' buffer, of a unit with a base pack)
-/// and lo's (their z3 tiles), each with its key, done or not. Both are keyed on what they read: the
-/// base packs and road values of the units within 110 km (a unit's ways reach no further), so an
-/// identical rebuild of a unit (same content names) reruns neither.
-fn pack_lo_targets(m: &BTreeMap<String, String>) -> (Vec<(String, String)>, Vec<(String, String)>) {
+/// pack(T)'s targets (the z6 tiles the built units' ways reach) and lo's (their z3 tiles), each with
+/// its key, done or not. Both are keyed on what they read, the base packs and road values of the
+/// units whose ways come near: for pack(T) within its 100 km halo, for lo inside its tile. A unit's
+/// ways lie in its owned extent (`Reach::owned_extent`: long ways such as ferries reach far), or
+/// without a reach within its tile + 20 km. An identical rebuild of a unit (same content names)
+/// reruns neither.
+fn pack_lo_targets(m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> (Vec<(String, String)>, Vec<(String, String)>) {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
-    let base_units: Vec<(Unit, String)> = m
+    let base_units: Vec<(Unit, String, [i32; 4])> = m
         .iter()
         .filter_map(|(l, c)| l.strip_prefix("base/").and_then(Unit::parse).map(|u| (u, format!("{c}+{}", get(&format!("global/roads/{}", u.dash()))))))
+        .map(|(u, c)| {
+            let ext = reach.and_then(|r| r.get(u)).map(|r| r.owned_extent(u)).unwrap_or_else(|| crate::reach::near_box(u));
+            (u, c, ext)
+        })
         .collect();
+    let deg = |b: [i32; 4]| [b[0] as f64 * 1e-7, b[1] as f64 * 1e-7, b[2] as f64 * 1e-7, b[3] as f64 * 1e-7];
     let mut tiles: BTreeSet<(u32, u32)> = BTreeSet::new();
-    for (u, _) in &base_units {
-        for t in crate::stage::tiles_in(6, crate::stage::tile_box_grown(u.z, u.x, u.y, 110.0)) {
-            tiles.insert(t);
-        }
+    for (_, _, ext) in &base_units {
+        tiles.extend(crate::stage::tiles_in(6, deg(*ext)));
     }
-    // The base units whose box meets a tile's box grown by 110 km.
+    // The units whose extent meets a tile's box grown by `km` (pack's halo: what it reads).
     let near = |z: u8, x: u32, y: u32| -> Vec<String> {
-        let gb = grown_e7(z, x, y, 110.0);
-        base_units
-            .iter()
-            .filter(|(u, _)| {
-                let ub = crate::hipack::tile_bounds(u.z, u.x, u.y);
-                ub[0] <= gb[2] && ub[2] >= gb[0] && ub[1] <= gb[3] && ub[3] >= gb[1]
-            })
-            .map(|(_, c)| c.clone())
-            .collect()
+        let km = if z == 6 { 100.0 } else { 0.0 };
+        let gb = crate::hipack::grow(crate::hipack::tile_bounds(z, x, y), km);
+        base_units.iter().filter(|(_, _, e)| e[0] <= gb[2] && e[2] >= gb[0] && e[1] <= gb[3] && e[3] >= gb[1]).map(|(_, c, _)| c.clone()).collect()
     };
     let key = |head: String, ins: Vec<String>| {
         let mut all = vec![head];
@@ -512,11 +527,11 @@ fn prune_units(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, units: 
     (!t.is_empty()).then(|| Work { step: "prune".into(), targets: t.into_iter().map(|x| (x, String::new())).collect() })
 }
 
-/// Map tiles no unit is within 110 km of any more: pack(T)'s outputs (hidata, road and rail hi
-/// packs) of tiles that aren't pack targets, and lo packs of z3 tiles that aren't lo targets, as prune
-/// targets ("pack 6/x/y", "lo 3/x/y").
-fn prune_tiles(m: &BTreeMap<String, String>) -> Option<Work> {
-    let (packs, lo) = pack_lo_targets(m);
+/// Map tiles no unit's ways reach any more: pack(T)'s outputs (hidata, road and rail hi packs) of
+/// tiles that aren't pack targets, and lo packs of z3 tiles that aren't lo targets, as prune targets
+/// ("pack 6/x/y", "lo 3/x/y").
+fn prune_tiles(m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Option<Work> {
+    let (packs, lo) = pack_lo_targets(m, reach);
     let packs: BTreeSet<String> = packs.into_iter().map(|(t, _)| t.replace('/', "-")).collect();
     let lo: BTreeSet<String> = lo.into_iter().map(|(t, _)| t.replace('/', "-")).collect();
     let mut t: BTreeSet<String> = BTreeSet::new();
@@ -535,10 +550,10 @@ fn prune_tiles(m: &BTreeMap<String, String>) -> Option<Work> {
 
 /// The roads' chain after the units: the road → units index, pack(T), lo, rail stops and ferries,
 /// the terrain and slope roots; its first stale step.
-fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
+fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Option<Work> {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
-    // Map tiles with no unit within 110 km any more (a region removed) leave the manifest.
-    if let Some(w) = prune_tiles(m) {
+    // Map tiles no unit's ways reach any more (a region removed) leave the manifest.
+    if let Some(w) = prune_tiles(m, reach) {
         return Some(w);
     }
     // The road → units index, once the units' road values are made.
@@ -553,7 +568,7 @@ fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &B
         }
     }
 
-    let (packs, lo) = pack_lo_targets(m);
+    let (packs, lo) = pack_lo_targets(m, reach);
     let packs: Vec<(String, String)> = packs.into_iter().filter(|(t, k)| stale(&done.pack, t, k)).collect();
     if !packs.is_empty() {
         return Some(Work { step: "pack".into(), targets: packs });
@@ -776,13 +791,13 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     let pieces = m.keys().any(|l| l.starts_with(&format!("sources/osm/{date}/pieces/")));
     let units: Vec<(String, String)> = unit_keys(cov, date, m, reach, inputs).into_iter().map(|(u, k)| (u.slash(), k)).collect();
     out.push(per("Roads, elevations and scenery", &["unit"], &units, &done.unit, "areas", pieces && reach.is_some()));
-    let (packs, lo) = pack_lo_targets(m);
+    let (packs, lo) = pack_lo_targets(m, reach);
     let built = m.keys().any(|l| l.starts_with("base/"));
     let mut tiles = per("Map tiles", &["pack", "lo"], &packs, &done.pack, "tiles", built);
     tiles.done += count(&lo, &done.lo);
     tiles.total = tiles.total.map(|t| t + lo.len());
     out.push(tiles);
-    let roads_left = remaining(done, |d| roads_chain(date, m, d, inputs)).iter().filter(|w| !matches!(w.step.as_str(), "pack" | "lo")).count();
+    let roads_left = remaining(done, |d| roads_chain(date, m, d, inputs, reach)).iter().filter(|w| !matches!(w.step.as_str(), "pack" | "lo")).count();
     out.push(group("Road index, rail stops, ferries, world terrain", &["roadunits", "stations", "ferries", "terrain-root", "slope-root"], built.then_some(roads_left)));
     let landmarks = remaining(done, |d| landmarks_chain(cov, date, m, d));
     let lm_left: usize = landmarks.iter().map(|w| if matches!(w.step.as_str(), "pois" | "peaks") { w.targets.len() } else { 1 }).sum();
@@ -995,7 +1010,7 @@ mod tests {
         let mut r = reach();
         // 6/29/16's tile is far from the outline, but a road it owns runs west into it; 6/30/16 owns
         // roads only in its own tile, and a long one that stays east.
-        let long = |verts: &[(f64, f64)]| LongWay { owned: true, verts: verts.iter().map(|&(x, y)| [(x * 1e7) as i32, (y * 1e7) as i32]).collect() };
+        let long = |verts: &[(f64, f64)]| LongWay { owned: true, ferry: false, verts: verts.iter().map(|&(x, y)| [(x * 1e7) as i32, (y * 1e7) as i32]).collect() };
         r.units.insert("6/29/16".into(), Reach { owned: Some(e7box(-15.0, 64.1, -14.0, 64.2)), long: vec![long(&[(-15.0, 64.15), (-21.9, 64.13)])] });
         r.units.insert("6/30/16".into(), Reach { owned: Some(e7box(-10.0, 63.0, -6.0, 65.0)), long: vec![long(&[(-8.0, 64.0), (-2.0, 60.0)])] });
         let built: Vec<String> = super::unit_keys(&c, "d", &m, Some(&r), &BTreeMap::new()).into_iter().map(|(u, _)| u.slash()).collect();
@@ -1084,12 +1099,28 @@ mod tests {
         };
         put(&mut m, "6-28-16", "1111111111111111");
         put(&mut m, "6-50-20", "2222222222222222");
-        let lo_of = |m: &BTreeMap<String, String>, q: &str| pack_lo_targets(m).1.into_iter().find(|(t, _)| t == q).unwrap().1;
+        let lo_of = |m: &BTreeMap<String, String>, q: &str| pack_lo_targets(m, None).1.into_iter().find(|(t, _)| t == q).unwrap().1;
         let (near, far) = (lo_of(&m, "3/3/2"), lo_of(&m, "3/6/2"));
         // A unit rebuilt with new content: the zoomed-out tile over it is stale, the far one isn't.
         put(&mut m, "6-28-16", "3333333333333333");
         assert_ne!(lo_of(&m, "3/3/2"), near);
         assert_eq!(lo_of(&m, "3/6/2"), far);
+    }
+
+    #[test]
+    fn a_long_way_reaches_its_map_tiles() {
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert("base/6-28-16".into(), "base/6-28-16.1111111111111111.sect".into());
+        m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.1111111111111111.sect".into());
+        let mut r = reach();
+        // 6/28/16 owns a ferry to Norway (5° E, 60° N), far past 110 km.
+        r.units.insert("6/28/16".into(), Reach { owned: Some(e7box(-22.0, 64.0, -21.7, 64.16)), long: vec![LongWay { owned: true, ferry: true, verts: vec![[-219_000_000, 641_000_000], [50_000_000, 600_000_000]] }] });
+        let (packs, _) = pack_lo_targets(&m, Some(&r));
+        let norway = crate::legacy::Unit::of_point(6, [50_000_000, 600_000_000]).slash();
+        assert!(packs.iter().any(|(t, _)| *t == norway), "the ferry's far end is drawn");
+        // Without the ferry, that tile isn't a target.
+        r.units.insert("6/28/16".into(), Reach { owned: Some(e7box(-22.0, 64.0, -21.7, 64.16)), long: vec![] });
+        assert!(!pack_lo_targets(&m, Some(&r)).0.iter().any(|(t, _)| *t == norway));
     }
 
     #[test]
@@ -1100,7 +1131,7 @@ mod tests {
         }
         m.insert("base/6-28-16".into(), "base/6-28-16.1111111111111111.sect".into());
         m.insert("global/roads/6-28-16".into(), "global/roads/6-28-16.1111111111111111.sect".into());
-        let key = |m: &BTreeMap<String, String>, step: &str| remaining(&Keys::default(), |d| roads_chain("d", m, d, &BTreeMap::new())).into_iter().find(|w| w.step == step).unwrap().targets[0].1.clone();
+        let key = |m: &BTreeMap<String, String>, step: &str| remaining(&Keys::default(), |d| roads_chain("d", m, d, &BTreeMap::new(), None)).into_iter().find(|w| w.step == step).unwrap().targets[0].1.clone();
         let (stations, ferries) = (key(&m, "stations"), key(&m, "ferries"));
         m.insert("base/6-40-20".into(), "base/6-40-20.2222222222222222.sect".into());
         m.insert("global/roads/6-40-20".into(), "global/roads/6-40-20.2222222222222222.sect".into());

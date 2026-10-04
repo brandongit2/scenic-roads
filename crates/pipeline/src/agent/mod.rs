@@ -178,20 +178,20 @@ pub fn find_root(mount: bool) -> Option<PathBuf> {
     None
 }
 
-/// A check of the share still waiting on a hung mount: no second one starts meanwhile.
-static CHECKING: AtomicBool = AtomicBool::new(false);
+/// The shares with a check still waiting on a hung mount: no second one starts meanwhile.
+static CHECKING: std::sync::Mutex<std::collections::BTreeSet<PathBuf>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
 
 /// Whether `root` answers within a few seconds (a stat on a worker thread; a hung share counts as
-/// away, and its thread is left to finish on its own, the only one until it does).
+/// away, and its thread is left to finish on its own, the only one for that share until it does).
 fn answers(root: &Path) -> bool {
-    if CHECKING.swap(true, Ordering::SeqCst) {
+    if !CHECKING.lock().unwrap().insert(root.to_path_buf()) {
         return false;
     }
     let (tx, rx) = std::sync::mpsc::channel();
     let p = root.to_path_buf();
     std::thread::spawn(move || {
         let ok = std::fs::metadata(p.join("catalog")).is_ok();
-        CHECKING.store(false, Ordering::SeqCst);
+        CHECKING.lock().unwrap().remove(&p);
         let _ = tx.send(ok);
     });
     rx.recv_timeout(Duration::from_secs(8)).unwrap_or(false)
@@ -625,8 +625,20 @@ impl Agent {
             if let Some(w) = build::trailends_work(date, &manifest, &keys) {
                 jobs.push(job(format!("trailends {date}"), "Hiking routes' ends for the whole world", "trailends", p.clone(), Some(w)));
             }
+            let reach_job = |w: build::Work| job(format!("reach {date}"), "How far each area's roads reach, for the whole world", "reach", p.clone(), Some(w));
             if let Some(w) = build::reach_work(date, &manifest, &keys) {
-                jobs.push(job(format!("reach {date}"), "How far each area's roads reach, for the whole world", "reach", p.clone(), Some(w)));
+                jobs.push(reach_job(w));
+            } else if let Err(why) = self.current_reach(root, &manifest, &keys, date) {
+                match why {
+                    // Made, but it doesn't decode: made again.
+                    crate::reach::LoadError::Bad(e) => {
+                        waiting.push(Waiting { what: "Building the areas".into(), why: format!("the pass's reaches don't read ({e}); making them again") });
+                        if let Some(k) = build::reach_key(date, &manifest) {
+                            jobs.push(reach_job(build::Work { step: "reach".into(), targets: vec![("reach".into(), k)] }));
+                        }
+                    }
+                    crate::reach::LoadError::Io(e) => waiting.push(Waiting { what: "Building the areas".into(), why: format!("the pass's reaches can't be read now: {e}") }),
+                }
             }
             if !manifest.contains_key(&crate::terrain_z8::logical()) {
                 jobs.push(job("terrain-z8".into(), "Coarse terrain for the whole world", "terrain-z8", vec!["--raw".into(), s(&self.o.home.join("cache").join("aws-terrarium"))], None));
@@ -664,7 +676,7 @@ impl Agent {
         let inputs = input_digests(root);
         let held = root.join("inputs/hold-catalog").exists();
         let cache = self.o.home.join("cache");
-        let reach = self.current_reach(root, &manifest, &done, date);
+        let reach = self.current_reach(root, &manifest, &done, date).ok().flatten();
         for (w, total) in batches(build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref())) {
             // Held for review: the catalog goes to catalog-held/ (no server reads it), once.
             if w.step == "catalog" && held {
@@ -721,7 +733,7 @@ impl Agent {
                 "marks" => "Landmarks for the map".to_string(),
                 "roadunits" => "Which areas each road crosses".to_string(),
                 "stations" => "Rail stops near the regions".to_string(),
-                "ferries" => "Ferries near the regions".to_string(),
+                "ferries" => "Ferries for the whole world".to_string(),
                 "pack" => format!("Map tiles ({areas})"),
                 "lo" => "Zoomed-out map tiles".to_string(),
                 "terrain-root" | "slope-root" => "World-level terrain and slope".to_string(),
@@ -785,7 +797,7 @@ impl Agent {
         }
         let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).and_then(|c| crate::outlines::Outlines::open(&root.join(c)).ok());
         let Ok(cov) = crate::coverage::Coverage::from_recipes(regions, outlines.as_ref(), &root.join("inputs/outlines")) else { return out };
-        let reach = self.current_reach(root, &manifest, &keys, &date);
+        let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         out.extend(build::checklist(&cov, &date, &manifest, &keys, &input_digests(root), root.join("inputs/hold-catalog").exists(), reach.as_deref()));
         out
     }
@@ -802,26 +814,28 @@ impl Agent {
             .filter_map(|r| crate::coverage::Coverage::from_recipes(std::slice::from_ref(r), outlines.as_ref(), &dir).ok().map(|c| (r.id.clone(), c)))
             .collect();
         let keys = build::Keys::load(root);
-        let reach = self.current_reach(root, &manifest, &keys, &date);
+        let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         build::region_states(&cov, &each, &date, &manifest, &keys, reach.as_deref(), &input_digests(root))
     }
 
-    /// The pass's reaches (crate::reach), once they're made for the current version: until then no
-    /// unit is planned (the reach job comes first among the pass's worldwide jobs).
-    fn current_reach(&self, root: &Path, manifest: &BTreeMap<String, String>, keys: &build::Keys, date: &str) -> Option<std::rc::Rc<crate::reach::Reaches>> {
+    /// The pass's reaches (crate::reach), once they're made for the current version (Ok(None)
+    /// until then: no unit is planned, and the reach job comes first among the pass's worldwide
+    /// jobs), or why they can't be read.
+    fn current_reach(&self, root: &Path, manifest: &BTreeMap<String, String>, keys: &build::Keys, date: &str) -> Result<Option<std::rc::Rc<crate::reach::Reaches>>, crate::reach::LoadError> {
         if build::reach_work(date, manifest, keys).is_some() {
-            return None;
+            return Ok(None);
         }
-        let c = manifest.get(&crate::reach::logical(date))?;
+        let Some(c) = manifest.get(&crate::reach::logical(date)) else { return Ok(None) };
         let mut cached = self.reach.borrow_mut();
         if let Some((have, r)) = cached.as_ref() {
             if have == c {
-                return Some(r.clone());
+                return Ok(Some(r.clone()));
             }
         }
-        let r = std::rc::Rc::new(crate::reach::Reaches::load(root, manifest, date)?);
+        let Some(r) = crate::reach::Reaches::load(root, manifest, date)? else { return Ok(None) };
+        let r = std::rc::Rc::new(r);
         *cached = Some((c.clone(), r.clone()));
-        Some(r)
+        Ok(Some(r))
     }
 
     /// A newer app is installed locally (`../current` points elsewhere than the agent's folder).

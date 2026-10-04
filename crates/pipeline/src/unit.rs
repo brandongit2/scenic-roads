@@ -40,10 +40,19 @@ fn dem_in_box(keys: &[u64], elev: &[f32], srcs: &[u8], b: [i32; 4], out: &mut Ve
 }
 
 /// The per-unit DEM samples (`<cache>/dem-units/<unit>.dem`): one file per unit, replaced after each
-/// of its runs (written whole, then renamed): "RDDEM001", the count (u64), the box of its points
-/// (4 × i32, E7), then the sorted keys (u64), elevations (f32) and sources (u8).
+/// of its runs (written whole, then renamed): "RDDEM002", the count (u64), the box of its points
+/// (4 × i32, E7), the versions of `rules::DEM_RULES` it was sampled under (4 × u32), then the
+/// sorted keys (u64), elevations (f32) and sources (u8).
 const DEM_UNITS: &str = "dem-units";
-const DEM_MAGIC: &[u8; 8] = b"RDDEM001";
+const DEM_MAGIC: &[u8; 8] = b"RDDEM002";
+const DEM_HEAD: usize = 48;
+
+/// The DEM rules' versions today's cache (the seed) was sampled under: the first of each.
+const SEED_DEM_VERSIONS: [u32; 4] = [1, 1, 1, 1];
+
+fn current_dem_versions() -> [u32; 4] {
+    crate::rules::DEM_RULES.map(crate::rules::version)
+}
 
 /// Keeps a unit's DEM samples (the `dem-cache.*` sample.py left in `from`: its vertices, cached or
 /// sampled anew) for later runs of it and of its neighbours. Returns how many.
@@ -60,10 +69,13 @@ pub fn dem_samples_keep(cache: &Path, u: Unit, from: &Path) -> Result<usize> {
     }
     let dir = cache.join(DEM_UNITS);
     std::fs::create_dir_all(&dir)?;
-    let mut f = Vec::with_capacity(32 + 13 * n);
+    let mut f = Vec::with_capacity(DEM_HEAD + 13 * n);
     f.extend_from_slice(DEM_MAGIC);
     f.extend_from_slice(&(n as u64).to_le_bytes());
     for v in bb {
+        f.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in current_dem_versions() {
         f.extend_from_slice(&v.to_le_bytes());
     }
     f.extend_from_slice(&kb);
@@ -76,41 +88,71 @@ pub fn dem_samples_keep(cache: &Path, u: Unit, from: &Path) -> Result<usize> {
     Ok(n)
 }
 
+/// The entries of sorted DEM cache arrays inside `b` still valid: those whose DEM rules (by their
+/// source and place, `rules::dem_rules_of`) have the versions they were sampled under (`made`) now;
+/// the rest are left out, so sample.py samples them again under the changed rule.
+fn dem_valid_in_box(keys: &[u64], elev: &[f32], srcs: &[u8], b: [i32; 4], made: [u32; 4], out: &mut Vec<(u64, f32, u8)>) {
+    let now = current_dem_versions();
+    if made == now {
+        dem_in_box(keys, elev, srcs, b, out);
+        return;
+    }
+    let mut all = Vec::new();
+    dem_in_box(keys, elev, srcs, b, &mut all);
+    out.extend(all.into_iter().filter(|&(k, _, src)| {
+        let (lon, lat) = dem_lon_lat(k);
+        crate::rules::dem_rules_of(src, lon, lat).into_iter().all(|r| made[r] == now[r])
+    }));
+}
+
 /// Copies the DEM cache entries inside `b` (w, s, e, n, E7) into `dst` (`dem-cache.*` files, for
 /// sample.py): the seed's (`cache`'s `dem-cache.*`, today's cache), then every unit's kept samples
-/// whose box meets `b` (`dem_samples_keep`), which win over the seed's (they're newer).
+/// whose box meets `b` (`dem_samples_keep`), which win over the seed's (they're newer); entries
+/// sampled under a DEM rule's earlier version are left out. With none, nothing is written (sample.py
+/// samples every vertex). Each unit's file is opened by its header first, and mapped only when its
+/// box meets `b`.
 pub fn dem_cache_slice(cache: &Path, b: [i32; 4], dst: &Path) -> Result<usize> {
+    use std::io::Read;
     std::fs::create_dir_all(dst)?;
+    for n in ["keys.u64", "elev.f32", "src.u8"] {
+        std::fs::remove_file(dst.join(format!("dem-cache.{n}"))).ok();
+    }
     let mut all: Vec<(u64, f32, u8)> = Vec::new();
     let open = |n: &str| roadcore::mmap(&cache.join(format!("dem-cache.{n}")));
     if let (Ok(km), Ok(em), Ok(sm)) = (open("keys.u64"), open("elev.f32"), open("src.u8")) {
         let (keys, elev): (&[u64], &[f32]) = (bytemuck::cast_slice(&km[..]), bytemuck::cast_slice(&em[..]));
         ensure!(keys.len() == elev.len() && keys.len() == sm.len(), "DEM cache files out of step");
-        dem_in_box(keys, elev, &sm[..], b, &mut all);
+        dem_valid_in_box(keys, elev, &sm[..], b, SEED_DEM_VERSIONS, &mut all);
     }
-    // (No seed: the units' samples, or an empty slice, and sample.py samples the rest.)
     let seed = all.len();
     let mut units: Vec<PathBuf> = std::fs::read_dir(cache.join(DEM_UNITS)).map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "dem")).collect()).unwrap_or_default();
     units.sort();
     let mut newer: Vec<(u64, f32, u8)> = Vec::new();
     for p in &units {
-        let f = std::fs::read(p)?;
-        ensure!(f.len() >= 32 && &f[..8] == DEM_MAGIC, "{}: not a DEM samples file", p.display());
-        let n = u64::from_le_bytes(f[8..16].try_into().unwrap()) as usize;
-        ensure!(f.len() == 32 + 13 * n, "{}: truncated", p.display());
-        let i32_at = |i: usize| i32::from_le_bytes(f[i..i + 4].try_into().unwrap());
+        let mut head = [0u8; DEM_HEAD];
+        std::fs::File::open(p).and_then(|mut f| f.read_exact(&mut head)).with_context(|| format!("{}: its header", p.display()))?;
+        ensure!(&head[..8] == DEM_MAGIC, "{}: not a DEM samples file of this version", p.display());
+        let n = u64::from_le_bytes(head[8..16].try_into().unwrap()) as usize;
+        let i32_at = |i: usize| i32::from_le_bytes(head[i..i + 4].try_into().unwrap());
         let ub = [i32_at(16), i32_at(20), i32_at(24), i32_at(28)];
         if ub[0] > b[2] || ub[2] < b[0] || ub[1] > b[3] || ub[3] < b[1] {
             continue;
         }
-        let keys: Vec<u64> = bytemuck::pod_collect_to_vec(&f[32..32 + 8 * n]);
-        let elev: Vec<f32> = bytemuck::pod_collect_to_vec(&f[32 + 8 * n..32 + 12 * n]);
-        dem_in_box(&keys, &elev, &f[32 + 12 * n..], b, &mut newer);
+        let u32_at = |i: usize| u32::from_le_bytes(head[i..i + 4].try_into().unwrap());
+        let made = [u32_at(32), u32_at(36), u32_at(40), u32_at(44)];
+        let m = roadcore::mmap(p)?;
+        ensure!(m.len() == DEM_HEAD + 13 * n, "{}: truncated", p.display());
+        let keys: &[u64] = bytemuck::cast_slice(&m[DEM_HEAD..DEM_HEAD + 8 * n]);
+        let elev: &[f32] = bytemuck::cast_slice(&m[DEM_HEAD + 8 * n..DEM_HEAD + 12 * n]);
+        dem_valid_in_box(keys, elev, &m[DEM_HEAD + 12 * n..], b, made, &mut newer);
     }
     // The units' samples first, so a stable dedup keeps theirs (by file name order among them).
     newer.extend(all);
     newer.sort_by_key(|e| e.0);
     newer.dedup_by_key(|e| e.0);
+    if newer.is_empty() {
+        return Ok(0);
+    }
     let (ok, oe, os): (Vec<u64>, Vec<f32>, Vec<u8>) = (newer.iter().map(|e| e.0).collect(), newer.iter().map(|e| e.1).collect(), newer.iter().map(|e| e.2).collect());
     for (n, bytes) in [("keys.u64", bytemuck::cast_slice::<u64, u8>(&ok)), ("elev.f32", bytemuck::cast_slice(&oe)), ("src.u8", &os[..])] {
         let tmp = dst.join(format!("dem-cache.{n}.tmp"));
@@ -254,9 +296,11 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
         let verts = w.verts();
         rep.owned = w.ways().iter().filter(|r| owns(tb, verts[r.vstart as usize])).count();
     }
-    // 3. Elevations: this unit's slice of the DEM cache, grown by the piece's buffer.
-    let grow = (crate::osmpass::BUFFER_KM * 1.2 / 111.32 * 1e7) as i32;
-    let slice = [tb[0] - 2 * grow, tb[1] - grow, tb[2] + 2 * grow, tb[3] + grow];
+    // 3. Elevations: the DEM cache's slice over every vertex the folder kept (its long ways too).
+    let slice = {
+        let w = roadcore::Ways::open(dir)?;
+        w.verts().iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])])
+    };
     rep.dem_cache = dem_cache_slice(&tools.cache, slice, &dir.join("dem-cache"))?;
     let mut c = Command::new("uv");
     c.current_dir(&tools.dem).args(["run", "python", "sample.py"]).arg(dir).arg("--cache").arg(dir.join("dem-cache"));
@@ -322,8 +366,9 @@ mod tests {
         assert_eq!(n, 3);
         let got: Vec<u64> = bytemuck::pod_collect_to_vec(&std::fs::read(d.path().join("s/dem-cache.keys.u64")).unwrap());
         assert_eq!(got, vec![k(0, 0), k(3, 3), k(5, -1)]);
-        // No cache: an empty slice.
+        // No cache: an empty slice, and no files (sample.py can't map an empty one).
         assert_eq!(dem_cache_slice(&d.path().join("none"), [0, 0, 1, 1], &d.path().join("t")).unwrap(), 0);
+        assert!(!d.path().join("t/dem-cache.keys.u64").exists());
         // A unit's kept samples: in the slices of boxes meeting them, over the seed's.
         let run = d.path().join("run");
         std::fs::create_dir_all(&run).unwrap();
@@ -339,6 +384,38 @@ mod tests {
         assert_eq!(el[1], 30.0, "the unit's sample, not the seed's");
         // A box away from them: the seed's only.
         assert_eq!(dem_cache_slice(d.path(), [-15, -15, -5, 10], &d.path().join("v")).unwrap(), 2);
+    }
+
+    #[test]
+    fn samples_of_a_changed_dem_rule_are_dropped() {
+        let k = dem_key;
+        let e7 = |x: f64| (x * 1e7) as i32;
+        // Québec from HRDEM (1), Québec from FABDEM standing in (4), Tokyo from GSI (5), Paris from
+        // FABDEM (4).
+        let pts = [(e7(-71.2), e7(46.8), 1u8), (e7(-71.3), e7(46.9), 4), (e7(139.7), e7(35.7), 5), (e7(2.35), e7(48.85), 4)];
+        let mut v: Vec<(u64, f32, u8)> = pts.iter().map(|&(x, y, s)| (k(x, y), 1.0, s)).collect();
+        v.sort_by_key(|e| e.0);
+        let (keys, elev, srcs): (Vec<u64>, Vec<f32>, Vec<u8>) = (v.iter().map(|e| e.0).collect(), v.iter().map(|e| e.1).collect(), v.iter().map(|e| e.2).collect());
+        let world = [i32::MIN, i32::MIN, i32::MAX, i32::MAX];
+        let now = current_dem_versions();
+        let kept = |made: [u32; 4]| {
+            let mut out = Vec::new();
+            dem_valid_in_box(&keys, &elev, &srcs, world, made, &mut out);
+            out.iter().map(|e| e.2).collect::<Vec<u8>>()
+        };
+        assert_eq!(kept(now).len(), 4);
+        // North America's rule changed since: both Québec samples go (FABDEM stood in for it there).
+        let mut older = now;
+        older[0] = now[0].wrapping_sub(1);
+        let mut got = kept(older);
+        got.sort();
+        assert_eq!(got, vec![4, 5], "Paris's FABDEM and Tokyo's GSI stay");
+        // FABDEM's: Paris's and Québec's FABDEM sample go, HRDEM's and GSI's stay.
+        let mut older = now;
+        older[3] = now[3].wrapping_sub(1);
+        let mut got = kept(older);
+        got.sort();
+        assert_eq!(got, vec![1, 5]);
     }
 
     #[test]

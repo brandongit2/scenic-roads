@@ -115,7 +115,7 @@ impl Shape {
         if r[0] > self.bbox[2] || r[2] < self.bbox[0] || r[1] > self.bbox[3] || r[3] < self.bbox[1] {
             return false;
         }
-        if self.edges_meeting(self.grown(r), &mut |_, _| true) {
+        if self.edges_meeting(self.grown(r), &mut |_, _, _| true) {
             return true;
         }
         // No edge meets it: the box is all inside or all outside.
@@ -129,9 +129,10 @@ impl Shape {
         [r[0] as i64 - bx, r[1] as i64 - by, r[2] as i64 + bx, r[3] as i64 + by]
     }
 
-    /// Calls `f` with each ring edge meeting the box `rg` (from the grid cells the box overlaps, so
-    /// an edge crossing several cells comes several times), until it returns true; whether one did.
-    fn edges_meeting(&self, rg: [i64; 4], f: &mut dyn FnMut([i32; 2], [i32; 2]) -> bool) -> bool {
+    /// Calls `f` with each ring edge meeting the box `rg`, with its place (ring, index), from the
+    /// grid cells the box overlaps (so an edge crossing several cells comes several times), until it
+    /// returns true; whether one did.
+    fn edges_meeting(&self, rg: [i64; 4], f: &mut dyn FnMut((u32, u32), [i32; 2], [i32; 2]) -> bool) -> bool {
         let g = &self.grid;
         let cell = |v: f64, v0: f64, size: f64, n: usize| (((v - v0) / size).floor().max(0.0) as usize).min(n - 1);
         let (cx0, cx1) = (cell(rg[0] as f64, g.x0, g.cw, g.nx), cell(rg[2] as f64, g.x0, g.cw, g.nx));
@@ -141,7 +142,7 @@ impl Shape {
                 for &(ri, i) in &g.edges[cy * g.nx + cx] {
                     let ring = &self.rings[ri as usize];
                     let (a, b) = (ring[i as usize], ring[(i as usize + 1) % ring.len()]);
-                    if segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) && f(a, b) {
+                    if segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) && f((ri, i), a, b) {
                         return true;
                     }
                 }
@@ -150,29 +151,44 @@ impl Shape {
         false
     }
 
-    /// The shape as it is inside the box w, s, e, n (E7): whether the box's south-west corner is
-    /// inside the rings, and every ring edge meeting the box grown by the buffer. That decides which
-    /// points of the box the shape contains: a point's inside-ness is the corner's, flipped by the
-    /// edges crossing the line between them (inside the box), and its buffer reads the edges within
-    /// the buffer of it. None when the shape has nothing in the box.
+    /// The shape as it is inside the box w, s, e, n (E7): whether a reference point of the box (its
+    /// south-west corner, or the first point up its diagonal on no edge) is inside the rings, and
+    /// every ring edge meeting the box grown by the buffer, each as often as the rings hold it. That
+    /// decides which points of the box the shape contains: a point's inside-ness is the reference
+    /// point's, flipped by the edges crossing the line between them (inside the box), and its buffer
+    /// reads the edges within the buffer of it. None when the shape has nothing in the box.
     fn fingerprint(&self, r: [i32; 4]) -> Option<String> {
         let rg = self.grown(r);
         if rg[0] > self.bbox[2] as i64 || rg[2] < self.bbox[0] as i64 || rg[1] > self.bbox[3] as i64 || rg[3] < self.bbox[1] as i64 {
             return None;
         }
-        let mut edges: Vec<[i32; 4]> = Vec::new();
-        self.edges_meeting(rg, &mut |a, b| {
+        // Each edge once per place in the rings (a cell grid lists an edge in every cell it crosses);
+        // an edge the rings hold twice stays twice, since under even–odd the two cancel.
+        let mut by_place: std::collections::BTreeMap<(u32, u32), [i32; 4]> = std::collections::BTreeMap::new();
+        self.edges_meeting(rg, &mut |at, a, b| {
             // (Direction doesn't matter to which points are inside.)
-            edges.push(if (a[0], a[1]) <= (b[0], b[1]) { [a[0], a[1], b[0], b[1]] } else { [b[0], b[1], a[0], a[1]] });
+            by_place.insert(at, if (a[0], a[1]) <= (b[0], b[1]) { [a[0], a[1], b[0], b[1]] } else { [b[0], b[1], a[0], a[1]] });
             false
         });
-        let corner = self.inside([r[0], r[1]]);
-        if edges.is_empty() && !corner {
+        let mut edges: Vec<[i32; 4]> = by_place.into_values().collect();
+        edges.sort_unstable();
+        // A reference point on no edge, so its inside-ness doesn't depend on how the grid's cells
+        // fall (on an edge, either answer would be right, and the cell decides).
+        let on_edge = |p: [i32; 2]| {
+            edges.iter().any(|e| {
+                let (a, b, p) = ([e[0] as i64, e[1] as i64], [e[2] as i64, e[3] as i64], [p[0] as i64, p[1] as i64]);
+                (b[0] - a[0]) as i128 * (p[1] - a[1]) as i128 == (b[1] - a[1]) as i128 * (p[0] - a[0]) as i128 && p[0] >= a[0].min(b[0]) && p[0] <= a[0].max(b[0]) && p[1] >= a[1].min(b[1]) && p[1] <= a[1].max(b[1])
+            })
+        };
+        let mut reference = [r[0], r[1]];
+        while on_edge(reference) && reference[0] < r[2] && reference[1] < r[3] {
+            reference = [reference[0] + 1, reference[1] + 1];
+        }
+        let inside = self.inside(reference);
+        if edges.is_empty() && !inside {
             return None;
         }
-        edges.sort_unstable();
-        edges.dedup();
-        Some(format!("{}:{}:{}", self.buffer_m, corner as u8, store::naming::hash16(bytemuck::cast_slice(&edges))))
+        Some(format!("{}:{}:{}", self.buffer_m, inside as u8, store::naming::hash16(bytemuck::cast_slice(&edges))))
     }
 }
 
@@ -204,21 +220,19 @@ fn dist2_m(p: [i32; 2], a: [i32; 2], b: [i32; 2], kx: f64) -> f64 {
     (px - ax - t * dx).powi(2) + (py - ay - t * dy).powi(2)
 }
 
-/// Whether segments p1–p2 and q1–q2 cross, counting a touch at q's lower end only (so a ray through
-/// a vertex counts once, as in the even–odd test).
+/// Whether the segment p1–p2 (from a grid cell's centre to a point) crosses the edge q1–q2, for the
+/// even–odd test. An end of the edge lying on the segment's line counts as being on its left, a
+/// fixed side whatever the segment's direction: a ring passing through a vertex on the line is
+/// counted once, and one touching it not at all. (A point exactly on an edge is on the boundary,
+/// where either answer is right.)
 fn segments_cross(p1: [i64; 2], p2: [i64; 2], q1: [i64; 2], q2: [i64; 2]) -> bool {
     let o = |a: [i64; 2], b: [i64; 2], c: [i64; 2]| ((b[0] - a[0]) as i128 * (c[1] - a[1]) as i128 - (b[1] - a[1]) as i128 * (c[0] - a[0]) as i128).signum();
+    let side = |q: [i64; 2]| if o(p1, p2, q) < 0 { -1 } else { 1 };
+    if side(q1) == side(q2) {
+        return false;
+    }
     let (d1, d2) = (o(q1, q2, p1), o(q1, q2, p2));
-    let (d3, d4) = (o(p1, p2, q1), o(p1, p2, q2));
-    // Half-open on q: an endpoint of q exactly on p1–p2 counts when it's q's lower (by y, then x) end.
-    let lower = |a: [i64; 2], b: [i64; 2]| (a[1], a[0]) < (b[1], b[0]);
-    let q_ok = match (d3, d4) {
-        (0, 0) => false,
-        (0, _) => lower(q1, q2),
-        (_, 0) => lower(q2, q1),
-        _ => d3 != d4,
-    };
-    d1 != d2 && d1 != 0 && d2 != 0 && q_ok
+    d1 != 0 && d2 != 0 && d1 != d2
 }
 
 impl Grid {
@@ -504,6 +518,34 @@ mod tests {
         let near = b(0.2, 49.9, 0.4, 49.995);
         let buffered = |south: f64| Coverage { shapes: vec![Shape::new("o".into(), quad(south, 51.0), 1000.0)] }.fingerprint(near);
         assert_ne!(buffered(50.0), buffered(50.001), "the edge moved within the buffer's reach");
+    }
+
+    #[test]
+    fn a_line_through_a_vertex_crosses_once() {
+        // The review's case: from (0, -5) up to (0, 5), through the vertex (0, 0) of a ring
+        // ...(-1, 1) -> (0, 0) -> (1, 1)...: one crossing; a ring touching the line there, none.
+        let (p1, p2) = ([0, -5], [0, 5]);
+        let through = [segments_cross(p1, p2, [-1, 1], [0, 0]), segments_cross(p1, p2, [0, 0], [1, 1])];
+        assert_eq!(through.iter().filter(|&&c| c).count(), 1);
+        let touching = [segments_cross(p1, p2, [-1, 1], [0, 0]), segments_cross(p1, p2, [0, 0], [-1, -1])];
+        assert_eq!(touching.iter().filter(|&&c| c).count(), 0);
+        // And the same along a slanted line.
+        let (p1, p2) = ([-5, -5], [5, 5]);
+        let through = [segments_cross(p1, p2, [-2, 2], [0, 0]), segments_cross(p1, p2, [0, 0], [2, -2])];
+        assert_eq!(through.iter().filter(|&&c| c).count(), 1);
+    }
+
+    #[test]
+    fn a_ring_held_twice_isnt_the_ring() {
+        let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
+        let quad = vec![e7(0.0, 50.0), e7(1.0, 50.0), e7(1.0, 51.0), e7(0.0, 51.0)];
+        let once = Coverage { shapes: vec![Shape::new("a".into(), vec![quad.clone()], 0.0)] };
+        let twice = Coverage { shapes: vec![Shape::new("a".into(), vec![quad.clone(), quad], 0.0)] };
+        // A box across the south edge, its corner outside: under even-odd the doubled ring covers
+        // nothing, so the fingerprints must differ.
+        let across = b(0.2, 49.9, 0.4, 50.1);
+        assert!(twice.shapes[0].contains(e7(0.3, 50.05)) != once.shapes[0].contains(e7(0.3, 50.05)));
+        assert_ne!(once.fingerprint(across), twice.fingerprint(across));
     }
 
     #[test]

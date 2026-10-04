@@ -36,9 +36,53 @@ pub const LONG_KM: f64 = 20.0;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LongWay {
     pub owned: bool,
-    /// Its vertices (E7).
+    /// A ferry route (`extract` doesn't densify those).
+    #[serde(default)]
+    pub ferry: bool,
+    /// Its nodes (E7).
     pub verts: Vec<[i32; 2]>,
 }
+
+impl LongWay {
+    /// Whether the way touches the coverage as the unit step tests it: on the points `extract` puts
+    /// along it (its nodes, and between them every 8 m in North America and Japan, 15 m elsewhere,
+    /// by its first node; ferries not; `rules` "spacing"), so a straight stretch cutting a corner of
+    /// an outline between two nodes counts as it will there.
+    pub fn touches(&self, cov: &Coverage) -> bool {
+        let Some(&first) = self.verts.first() else { return false };
+        if cov.contains(first) {
+            return true;
+        }
+        let (lon, lat) = (first[0] as f64 * roadcore::E7, first[1] as f64 * roadcore::E7);
+        let japan = (122.5..154.0).contains(&lon) && (20.0..46.5).contains(&lat);
+        let spacing = if lon < -40.0 || japan { UNIT_SPACING_M } else { UNIT_SPACING_M.max(COARSE_SPACING_M) };
+        for s in self.verts.windows(2) {
+            let (a, c) = (s[0], s[1]);
+            if !self.ferry {
+                let d = roadcore::dist_m(a[0] as f64 * roadcore::E7, a[1] as f64 * roadcore::E7, c[0] as f64 * roadcore::E7, c[1] as f64 * roadcore::E7);
+                if d > spacing {
+                    let k = (d / spacing).ceil() as i64;
+                    for j in 1..k {
+                        let t = j as f64 / k as f64;
+                        let p = [(a[0] as f64 + (c[0] - a[0]) as f64 * t).round() as i32, (a[1] as f64 + (c[1] - a[1]) as f64 * t).round() as i32];
+                        if cov.contains(p) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            if cov.contains(c) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// The unit step's densification (`unit::Tools::spacing_m`, `extract`'s spacing outside North America
+/// and Japan): the points `LongWay::touches` tests.
+const UNIT_SPACING_M: f64 = 8.0;
+const COARSE_SPACING_M: f64 = 15.0;
 
 /// A unit's reach.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,12 +110,22 @@ pub fn near_box(u: Unit) -> [i32; 4] {
     crate::hipack::grow(crate::hipack::tile_bounds(u.z, u.x, u.y), LONG_KM)
 }
 
+/// Why a pass's reaches couldn't be read.
+#[derive(Debug)]
+pub enum LoadError {
+    /// The file couldn't be read (the NAS): try again later.
+    Io(std::io::Error),
+    /// It was read but doesn't decode (damaged, or another version's): make it again.
+    Bad(String),
+}
+
 impl Reaches {
     /// The pass's reaches from the build manifest (None when the pass has none yet).
-    pub fn load(root: &Path, m: &BTreeMap<String, String>, date: &str) -> Option<Reaches> {
-        let c = m.get(&logical(date))?;
-        let b = zstd::decode_all(std::fs::File::open(root.join(c)).ok()?).ok()?;
-        serde_json::from_slice(&b).ok()
+    pub fn load(root: &Path, m: &BTreeMap<String, String>, date: &str) -> Result<Option<Reaches>, LoadError> {
+        let Some(c) = m.get(&logical(date)) else { return Ok(None) };
+        let raw = std::fs::read(root.join(c)).map_err(LoadError::Io)?;
+        let b = zstd::decode_all(&raw[..]).map_err(|e| LoadError::Bad(format!("{c}: {e}")))?;
+        serde_json::from_slice(&b).map(Some).map_err(|e| LoadError::Bad(format!("{c}: {e}")))
     }
 
     pub fn encode(&self) -> Result<Vec<u8>> {
@@ -87,14 +141,30 @@ impl Reach {
     /// Whether the coverage builds this unit: its owned box meets the coverage, or one of its own
     /// long ways touches it.
     pub fn builds(&self, cov: &Coverage) -> bool {
-        self.owned.is_some_and(|o| cov.meets_rect(o)) || self.long.iter().any(|w| w.owned && cov.touches(&w.verts))
+        self.owned.is_some_and(|o| cov.meets_rect(o)) || self.long.iter().any(|w| w.owned && w.touches(cov))
     }
 
     /// What of the coverage the unit reads, for its key: the coverage inside its tile grown by
     /// `LONG_KM`, and which of its long ways touch the coverage.
     pub fn coverage_key(&self, cov: &Coverage, u: Unit) -> String {
-        let touching: String = self.long.iter().map(|w| if cov.touches(&w.verts) { '1' } else { '0' }).collect();
+        let touching: String = self.long.iter().map(|w| if w.touches(cov) { '1' } else { '0' }).collect();
         format!("{}|{touching}", cov.fingerprint(near_box(u)))
+    }
+
+    /// The box of the ways the unit owns, wherever they go (E7): its tile, its owned box and its own
+    /// long ways. A base pack's ways lie inside it (the map tiles are keyed by it).
+    pub fn owned_extent(&self, u: Unit) -> [i32; 4] {
+        let mut b = crate::hipack::tile_bounds(u.z, u.x, u.y);
+        let mut add = |p: [i32; 4]| b = [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[2]), b[3].max(p[3])];
+        if let Some(o) = self.owned {
+            add(o);
+        }
+        for w in self.long.iter().filter(|w| w.owned) {
+            for p in &w.verts {
+                add([p[0], p[1], p[0], p[1]]);
+            }
+        }
+        b
     }
 
     /// The box of everything the unit's ways reach (E7): its tile grown by `LONG_KM` and its long
@@ -108,8 +178,16 @@ impl Reach {
     }
 }
 
-fn counted(w: &osmpbf::Way) -> bool {
-    w.tags().any(|(k, v)| k == "highway" || k == "railway" || (k == "route" && v == "ferry"))
+/// Whether a way counts (a road, a track or a ferry), and whether it's a ferry.
+fn counted(w: &osmpbf::Way) -> Option<bool> {
+    let mut road = false;
+    for (k, v) in w.tags() {
+        if k == "route" && v == "ferry" {
+            return Some(true);
+        }
+        road |= k == "highway" || k == "railway";
+    }
+    road.then_some(false)
 }
 
 fn within(b: [i32; 4], p: [i32; 2]) -> bool {
@@ -122,18 +200,18 @@ pub fn of_piece(piece: &Path, u: Unit) -> Result<Option<Reach>> {
     #[derive(Default)]
     struct Ways {
         refs: Vec<i64>,
-        /// (way id, start in refs, count)
-        ways: Vec<(i64, usize, usize)>,
+        /// (way id, start in refs, count, a ferry)
+        ways: Vec<(i64, usize, usize, bool)>,
     }
     let r = ElementReader::from_path(piece).with_context(|| format!("open {}", piece.display()))?;
     let mut w = r.par_map_reduce(
         |el| {
             let mut out = Ways::default();
             if let Element::Way(w) = el {
-                if counted(&w) {
+                if let Some(ferry) = counted(&w) {
                     out.refs.extend(w.refs());
                     if !out.refs.is_empty() {
-                        out.ways.push((w.id(), 0, out.refs.len()));
+                        out.ways.push((w.id(), 0, out.refs.len(), ferry));
                     }
                 }
             }
@@ -143,7 +221,7 @@ pub fn of_piece(piece: &Path, u: Unit) -> Result<Option<Reach>> {
         |mut a, b| {
             let off = a.refs.len();
             a.refs.extend_from_slice(&b.refs);
-            a.ways.extend(b.ways.iter().map(|&(id, s, n)| (id, s + off, n)));
+            a.ways.extend(b.ways.iter().map(|&(id, s, n, f)| (id, s + off, n, f)));
             a
         },
     )?;
@@ -181,11 +259,12 @@ pub fn of_piece(piece: &Path, u: Unit) -> Result<Option<Reach>> {
     let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
     let near = near_box(u);
     let mut reach = Reach::default();
-    for &(_, s, n) in &w.ways {
+    for &(_, s, n, ferry) in &w.ways {
         let verts: Vec<[i32; 2]> = w.refs[s..s + n].iter().filter_map(|&id| at(id)).collect();
         let Some(&first) = verts.first() else { continue };
-        // (A way whose first node is missing from the piece can't be owned by anyone here.)
-        let owned = at(w.refs[s]).is_some_and(|p| crate::unit::owns(tb, p));
+        // Owned by its first node the piece has, as `extract` (which drops missing nodes) and the
+        // unit step see it.
+        let owned = crate::unit::owns(tb, first);
         if verts.iter().all(|&p| within(near, p)) {
             if owned {
                 let mut b = reach.owned.unwrap_or([first[0], first[1], first[0], first[1]]);
@@ -195,7 +274,7 @@ pub fn of_piece(piece: &Path, u: Unit) -> Result<Option<Reach>> {
                 reach.owned = Some(b);
             }
         } else {
-            reach.long.push(LongWay { owned, verts });
+            reach.long.push(LongWay { owned, ferry, verts });
         }
     }
     Ok(Some(reach))
@@ -217,7 +296,7 @@ mod tests {
         // A tile owning a ferry from its coast (-20, 65) far east to (0, 60); its own roads far from
         // the coverage.
         let u = Unit { z: 6, x: 28, y: 16 };
-        let ferry = LongWay { owned: true, verts: vec![e7(-20.0, 65.0), e7(-10.0, 62.0), e7(0.0, 60.0)] };
+        let ferry = LongWay { owned: true, ferry: true, verts: vec![e7(-20.0, 65.0), e7(-10.0, 62.0), e7(0.0, 60.0)] };
         let r = Reach { owned: Some([e7(-21.0, 64.5)[0], e7(-21.0, 64.5)[1], e7(-20.5, 65.0)[0], e7(-20.5, 65.0)[1]]), long: vec![ferry] };
         // Coverage around the ferry's far end: built for the ferry.
         assert!(r.builds(&cov("place:0,60,30")));
@@ -231,9 +310,22 @@ mod tests {
     }
 
     #[test]
+    fn a_road_cutting_a_corner_between_nodes_touches() {
+        let d = tempfile::tempdir().unwrap();
+        // A 2 km circle; a straight road whose two nodes are 50 km apart on either side, passing
+        // 1 km from its centre: no node inside, but the points extract puts along it are.
+        let cov = Coverage::from_recipes(&[Recipe { id: "c".into(), name: "C".into(), outline: vec!["place:0,50.0,2".into()] }], None, d.path()).unwrap();
+        let road = LongWay { owned: true, ferry: false, verts: vec![e7(-0.35, 50.009), e7(0.35, 50.009)] };
+        assert!(!cov.touches(&road.verts));
+        assert!(road.touches(&cov));
+        // A ferry isn't densified: its nodes only.
+        assert!(!LongWay { ferry: true, ..road }.touches(&cov));
+    }
+
+    #[test]
     fn reaches_round_trip() {
         let mut r = Reaches { fmt: 1, date: "2026-09-28".into(), ..Default::default() };
-        r.units.insert("6/31/20".into(), Reach { owned: Some([1, 2, 3, 4]), long: vec![LongWay { owned: false, verts: vec![[5, 6], [7, 8]] }] });
+        r.units.insert("6/31/20".into(), Reach { owned: Some([1, 2, 3, 4]), long: vec![LongWay { owned: false, ferry: false, verts: vec![[5, 6], [7, 8]] }] });
         let back: Reaches = serde_json::from_slice(&zstd::decode_all(&r.encode().unwrap()[..]).unwrap()).unwrap();
         assert_eq!(back, r);
         assert_eq!(back.get(Unit { z: 6, x: 31, y: 20 }).unwrap().owned, Some([1, 2, 3, 4]));

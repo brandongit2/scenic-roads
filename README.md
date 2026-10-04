@@ -316,7 +316,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
    | `scenic flags` | Designation flags and per-vertex channels. |
 
 5. **Roads:**
-   - tiles and query data per z6 tile, from the areas within 110 km: road and rail tiles (RT v7, 13 scenic channels a point, per-line attributes), climbs, drives' and rides' parts, and zoomed-out summaries;
+   - tiles and query data per z6 tile, from the areas whose roads come within 100 km: road and rail tiles (RT v7, 13 scenic channels a point, per-line attributes), climbs, drives' and rides' parts, and zoomed-out summaries;
    - zoomed-out road tiles per z3;
    - rail stops;
    - ferries.
@@ -327,7 +327,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
 - **A recipe** has an `id`, a `name`, and outline entries: `osm:<relation>`, `geofabrik:<id>`, `poly:<file>`, `place:<lon>,<lat>,<km>`.
 - **The agent** reruns only what changes reach: the job keys say what each output was made from.
 - **Not yet for regions beyond today's 34:** trees, roadside buildings and trains a day come from today's converted files, which cover only today's regions (`docs/plan.md` §10).
-- **Region-specific code**, for a new country:
+- **Region-specific code**, for a new country (when a rule the units use changes, bump its version in `crates/pipeline/src/rules.rs`, so only the areas it applies to are rebuilt):
   - road route networks: `network_code` in `extract.rs`, colours in `web/src/mapschemes.ts`;
   - the elevation source: `dem/sample.py`, with densification in `extract.rs`;
   - heritage registers: the snapshot; `dem/heritage_eu.py`, kinds in `dem/heritagetiers.py`;

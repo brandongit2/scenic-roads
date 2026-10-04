@@ -483,6 +483,8 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
         let halo = hipack::ways_in(&near, halo_b)?;
         let in_t: Vec<hipack::Staged> = halo.iter().copied().filter(|s| meets(s.bbox, tb)).collect();
         if in_t.is_empty() {
+            // No ways here (any more): what an earlier build made for the tile goes.
+            drop_entries(out, &[format!("hidata/{}", t.dash()), format!("layers/roads/hi/{}", t.dash()), format!("layers/rails/hi/{}", t.dash())])?;
             continue;
         }
         let win = hipack::way_inputs(&near, &in_t)?;
@@ -492,7 +494,9 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
                 let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
                 (z, x, y, e.gz.clone(), e.raw_len as u32)
             });
-            layers::write_pack(out, layer, "rt7", true, "hi", (6, t.x, t.y), &mut it)?;
+            if layers::write_pack(out, layer, "rt7", true, "hi", (6, t.x, t.y), &mut it)?.is_none() {
+                drop_entries(out, &[format!("layers/{layer}/hi/{}", t.dash())])?;
+            }
         }
         let hd = hipack::hidata(*t, &near, &in_t, &halo)?;
         // The zoomed-out summaries (docs/phase5.md), from the same parts.
@@ -523,6 +527,18 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
     Ok(())
 }
 
+/// Drops logical names from the manifest (outputs a step no longer makes), saving when any went.
+fn drop_entries(out: &mut Out, logicals: &[String]) -> Result<()> {
+    let gone: Vec<&String> = logicals.iter().filter(|l| out.get(l).is_some()).collect();
+    for l in &gone {
+        out.remove(l);
+    }
+    if !gone.is_empty() {
+        out.save()?;
+    }
+    Ok(())
+}
+
 // ---- lo packs -------------------------------------------------------------------------------
 
 fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Result<()> {
@@ -537,6 +553,7 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Re
         let near: Vec<&BasePack> = refs.iter().copied().filter(|bp| meets(bp.extent, qb)).collect();
         let staged = hipack::ways_in(&near, qb)?;
         if staged.is_empty() {
+            drop_entries(out, &[format!("layers/roads/lo/{}", q.dash()), format!("layers/rails/lo/{}", q.dash())])?;
             continue;
         }
         let win = hipack::way_inputs(&near, &staged)?;
@@ -546,7 +563,9 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Re
                 let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
                 (z, x, y, e.gz.clone(), e.raw_len as u32)
             });
-            layers::write_pack(out, layer, "rt7", true, "lo", (3, q.x, q.y), &mut it)?;
+            if layers::write_pack(out, layer, "rt7", true, "lo", (3, q.x, q.y), &mut it)?.is_none() {
+                drop_entries(out, &[format!("layers/{layer}/lo/{}", q.dash())])?;
+            }
         }
         out.save()?;
         eprintln!("lo {} ({}/{}): {} ways, {} road tiles ({:.0?})", q.slash(), k + 1, qs.len(), staged.len(), roads.len(), t0.elapsed());
@@ -1418,7 +1437,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let pieces: serde_json::Value = serde_json::from_slice(&std::fs::read(out.path(out.get(&format!("sources/osm/{date}/pieces")).context("the pass's pieces list")?))?)?;
     let mut units: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
     if units.is_empty() {
-        let reach = pipeline::reach::Reaches::load(out.root(), &out.manifest, &date).context("no reaches for the pass (the reach step)")?;
+        let reach = pipeline::reach::Reaches::load(out.root(), &out.manifest, &date).map_err(|e| anyhow::anyhow!("the pass's reaches: {e:?}"))?.context("no reaches for the pass (the reach step)")?;
         for k in pieces["pieces"].as_object().context("pieces")?.keys() {
             let u = Unit::parse(k).context("unit")?;
             if pipeline::agent::build::builds(&cov, &reach, u) {

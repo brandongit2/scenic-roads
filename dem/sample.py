@@ -74,6 +74,9 @@ GSI_WORKERS = 16  # concurrent tile requests to GSI (S3 behind CloudFront; laten
 MOI_DTM = sorted(Path(os.environ.get("SCENIC_MOI_DTM") or HERE.parent / "data" / "sources" / "moi-dtm").glob("*.tif"))
 
 SRC_HRDEM, SRC_3DEP, SRC_MRDEM, SRC_FABDEM, SRC_GSI5A, SRC_GSI5, SRC_GSI10, SRC_MOI = 1, 2, 3, 4, 5, 6, 7, 8
+# Changing which DEM serves where, or how: bump the rule's version in crates/pipeline/src/rules.rs
+# ("dem-north-america", "dem-japan", "dem-taiwan", "dem-fabdem"), so its units rerun and their kept
+# samples from it are sampled again.
 NA_WEST_OF = -40.0  # North America: the national DEMs above; elsewhere FABDEM
 
 
@@ -99,6 +102,43 @@ def open_ds(url: str, level: int | None):
         ds = rasterio.open(url, overview_level=level) if level is not None else rasterio.open(url)
         cache[key] = ds
     return ds
+
+
+def absent(url: str) -> bool:
+    """Whether a DEM tile that wouldn't open isn't there at all: the server answers 404 or 403 (S3's
+    answer for a key that doesn't exist), or for a tile inside a zip, the zip is there without it.
+    A timeout, a 5xx, or a plain file that's there but wouldn't open raises instead: the unit's job
+    then fails and is tried again later, rather than keeping a coarser source's value for good."""
+    import http.client
+    import urllib.error
+    import urllib.request
+
+    plain = url.replace("/vsizip/", "").replace("/vsicurl/", "")
+    target = plain[: plain.index(".zip/") + 4] if ".zip/" in plain else plain
+    last: Exception | None = None
+    for attempt in range(4):
+        try:
+            req = urllib.request.Request(target, method="HEAD", headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=60):
+                pass
+            if target == plain:
+                # A plain file that answers is there: the open failed in passing.
+                return False
+            # The zip answers: the tile is missing from it if it won't open a second time.
+            time.sleep(5)
+            try:
+                rasterio.open(url).close()
+                return False
+            except rasterio.errors.RasterioIOError:
+                return True
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 404, 410):
+                return True
+            last = e
+        except (OSError, http.client.HTTPException) as e:
+            last = e
+        time.sleep(10 * (attempt + 1))
+    raise RuntimeError(f"{target}: no answer ({last}); the unit is tried again later")
 
 
 def bilinear(a: np.ndarray, c: np.ndarray, r: np.ndarray) -> np.ndarray:
@@ -318,7 +358,7 @@ def main():
         src[:] = 0
         keys = pack(verts)
         ck = cache_dir / "dem-cache.keys.u64"
-        if not args.no_cache and ck.exists():
+        if not args.no_cache and ck.exists() and ck.stat().st_size > 0:
             ckeys = np.memmap(ck, dtype=np.uint64, mode="r")
             celev = np.memmap(cache_dir / "dem-cache.elev.f32", dtype=np.float32, mode="r")
             csrc = np.memmap(cache_dir / "dem-cache.src.u8", dtype=np.uint8, mode="r")
@@ -412,6 +452,8 @@ def main():
         try:
             got = sample_raster(USGS.format(t=tname), None, sel, lon[sel], lat[sel], loc_elev, loc_src, SRC_3DEP, pool, f"  {tname} ({sel.size:,} pts)")
         except rasterio.errors.RasterioIOError:
+            if not absent(USGS.format(t=tname)):
+                raise
             got = 0  # no 3DEP tile here (Canada / ocean)
         if got:
             tqdm.write(f"  3DEP {tname}: {got:,}/{sel.size:,}")
@@ -473,6 +515,8 @@ def main():
         try:
             got = sample_raster(FABDEM.format(z=zname, t=tname), None, sel, lon[sel], lat[sel], loc_elev, loc_src, SRC_FABDEM, pool, f"  {tname} ({sel.size:,} pts)")
         except rasterio.errors.RasterioIOError:
+            if not absent(FABDEM.format(z=zname, t=tname)):
+                raise
             got = 0  # no tile: open sea
         tqdm.write(f"  FABDEM {tname}: {got:,}/{sel.size:,}")
         scatter()

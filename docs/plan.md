@@ -106,8 +106,8 @@ the NAS does itself. The jobs (§8 has their order and keys):
 6. **Then two chains**, which don't wait for each other:
    - **Roads:**
      - the road → units index;
-     - pack(T): tiles, query parts and indexes for each z6 tile T, from the base data of every unit
-       within 110 km;
+     - pack(T): tiles, query parts and indexes for each z6 tile T the units' ways reach, from the
+       base data of every unit whose ways come within 100 km;
      - lo packs per z3 tile;
      - rail stops and ferries;
      - the root tiles;
@@ -120,7 +120,7 @@ the NAS does itself. The jobs (§8 has their order and keys):
      - area overlays.
 
 Because road values come from the whole planet, adding a region changes nothing outside its own
-units and the packs within 110 km of them.
+units and the packs their ways come within 100 km of.
 
 ## 3. Storage
 
@@ -230,8 +230,10 @@ steps merge their manifest changes under a lock. The exceptions:
   - AWS's raw terrain tiles;
   - canopy 10° files;
   - the per-vertex DEM cache: today's, copied once from `sources/dem-cache/` (the seed), and each
-    unit's samples from its last run (`dem-units/`), so a vertex is sampled from the DEM servers
-    once;
+    unit's samples from its last run (`dem-units/`, with the DEM rules' versions they were sampled
+    under), so a vertex is sampled from the DEM servers once, and again only when the rule for its
+    source changes (`pipeline::rules`). A tile a server doesn't answer for (a timeout, a 5xx) fails
+    the job, to be tried again, rather than falling back to a coarser source for good;
   - Wikidata and pageview caches;
   - the registers snapshot, extracted;
   - the pack cache: base packs for pack(T) not in its mirror, pruned every run and cleared when an
@@ -334,8 +336,9 @@ the region. Each entry is one of these:
     changed part reaches: the units (their tile + 20 km, and whether each long way touches the
     coverage), the terrain packs, the landmark candidates and the heritage-sites job.
 - **Shrinking:** what only the removed part built leaves the manifest once the units are built (a
-  prune): the outputs of units no longer built, their candidates and peaks, and map tiles with no
-  unit within 110 km. The next catalog drops them, and GC frees their files. Global-source tiles
+  prune): the outputs of units no longer built, their candidates and peaks, and map tiles no unit's
+  ways reach any more; pack and lo also drop what a tile no longer has (a tile without ways, a
+  layer without tiles). The next catalog drops them, and GC frees their files. Global-source tiles
   (terrain, slope, grids, trees) stay, which is harmless.
 
 **Today's set:** 34 recipes (`tools/cutover/regions`).
@@ -367,7 +370,7 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
 - **Tile edges:**
   - per-vertex values are computed once, by the owning unit;
   - road values come from the planet;
-  - climbs come from the 110 km halo;
+  - climbs come from the 100 km halo;
   - queries join road parts by offset.
 - **Where coverage ends,** roads end.
 
@@ -494,7 +497,9 @@ Landmark candidates and peaks have their own per-unit jobs (`docs/phase5.md`).
 
 ### Per z6 pack: pack(T)
 
-- **Reads:** the base packs and road values of every unit whose box meets T + 110 km.
+- **Reads:** the base packs and road values of every unit whose ways come within 100 km of T (its
+  owned extent, from the pass's reach: its tile, the box of its other ways and its own long ways,
+  such as ferries; without a reach, its tile + 20 km).
 - **Writes:**
   - road and rail hi tiles, z9–14;
   - T's hidata:
@@ -532,8 +537,9 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **unit:** its piece, the pass's road values, the coverage as its ways meet it (inside its tile +
   20 km, and whether each long way touches it), the versions of the location rules where its ways
   go, the terrain and grid hi packs within 30 km, and its heritage slices;
-- **pack(T):** every base pack and road-values file within T + 110 km;
-- **lo:** the base packs and road values within 110 km of its z3 tile.
+- **pack(T):** the base packs and road values it reads (above);
+- **lo:** the base packs and road values of the units whose owned extent meets its z3 tile (lo has
+  its own version: a change in the tiling it shares with pack bumps both).
 
 The landmark jobs, stations, ferries and overlays: `docs/phase5.md`.
 
@@ -680,8 +686,10 @@ box function and the per-area folders go.
 - **Names whose converted lines disagree** are split by kind or corrected one by one: a settlement's
   line against a feature's, one thing's English filed for the name, typos.
 - **The build must also carry each thing's own English and its language tags** into what it serves.
-  Today roads' own English exists only for today's coverage (the converted `global/legacy/road-en`),
-  and no job reads Wikidata's English labels yet.
+  Roads' own English comes with each unit (`global/roaden/<u>`, OSM's `name:en`), laid over today's
+  converted table (`global/legacy/road-en`) until that goes with the cutover's converted data: until
+  then a road whose `name:en` was removed since keeps today's. No job reads Wikidata's English labels
+  or the language tags yet.
 
 **Descriptions.**
 - **Today (built):**

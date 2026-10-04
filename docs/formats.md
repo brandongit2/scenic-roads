@@ -274,8 +274,10 @@ translations/  descriptions/   local copies of the NAS folders, compiled by the 
 regions.json            the last regions read; regions-queue/: region edits waiting for the NAS
 agent/                  (build Mac) status.json, state.json, job.json, agent.lock, logs/, cache/
 agent/cache/            dem-cache.* (the seed), dem-units/<u>.dem (a unit's samples from its last
-                        run: "RDDEM001", u64 count, the points' box (4 × i32), then the sorted keys,
-                        elevations and sources), chm10/ (canopy 10° files), aws-terrarium/, base/
+                        run: "RDDEM002", u64 count, the points' box (4 × i32), the versions of the
+                        DEM rules dem-north-america, -japan, -taiwan, -fabdem it was sampled under
+                        (4 × u32), then the sorted keys, elevations and sources), chm10/ (canopy 10°
+                        files), aws-terrarium/, base/
 ```
 
 `~/Library/Preferences/nsmb.conf` gets `[FISHANDCHIPS:PERSONAL]` and

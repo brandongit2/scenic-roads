@@ -39,6 +39,43 @@ pub const RULES: &[Rule] = &[
     Rule { name: "networks-europe", version: 1, areas: WORLD },
 ];
 
+/// The current version of the rule `name` (0 when there's no such rule).
+pub fn version(name: &str) -> u32 {
+    RULES.iter().find(|r| r.name == name).map_or(0, |r| r.version)
+}
+
+/// The DEM rules, in the order the units' kept samples record their versions (`unit`'s DEM cache).
+pub const DEM_RULES: [&str; 4] = ["dem-north-america", "dem-japan", "dem-taiwan", "dem-fabdem"];
+
+/// The DEM rules a sample depends on, by its source (dem/sample.py's `SRC_*`) and place (E7): the
+/// rule that chose its source, and for FABDEM (the fallback) also the rule of the area whose own
+/// DEMs it stood in for. Unknown sources depend on every rule. Indexes into `DEM_RULES`.
+pub fn dem_rules_of(src: u8, lon: i32, lat: i32) -> Vec<usize> {
+    let meets = |a: &[[f64; 4]]| {
+        let (x, y) = (lon as f64 * 1e-7, lat as f64 * 1e-7);
+        a.iter().any(|b| b[0] <= x && x <= b[2] && b[1] <= y && y <= b[3])
+    };
+    match src {
+        1..=3 => vec![0],
+        5..=7 => vec![1],
+        8 => vec![2],
+        4 => {
+            let mut v = vec![3];
+            if meets(NORTH_AMERICA) {
+                v.push(0);
+            }
+            if meets(JAPAN) {
+                v.push(1);
+            }
+            if meets(TAIWAN) {
+                v.push(2);
+            }
+            v
+        }
+        _ => vec![0, 1, 2, 3],
+    }
+}
+
 /// Whether the box w, s, e, n (E7) meets Taiwan, where the MOI DTM (`inputs/moi-dtm/`, put there by
 /// hand) is the DEM when it's there: its files' digest enters those units' keys.
 pub fn meets_taiwan(b: [i32; 4]) -> bool {

@@ -284,7 +284,8 @@ The jobs form a chain without cycles: every input exists before its reader runs.
 **Keys** are mostly the step version plus the content names of what a job reads:
 - heritage-sites, heritage and items include the pass's date, and the coverage enters as a hash of its
   shapes;
-- stations, ferries and overlays name the built units (ferries also the timetables' digest);
+- stations and overlays name the built units; ferries the pass's ferries set and the timetables'
+  digest (they're made worldwide, whatever is built);
 - `pass-sets` and `terrain-z8` have no keys: they run when their versioned outputs are missing.
 
 **Network jobs** (terrain, terrain-z8, peaks, items, heritage): a tile or answer that can't be
