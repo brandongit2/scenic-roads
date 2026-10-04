@@ -589,6 +589,15 @@ fn versions_fingerprint(s: &AppState) -> String {
     h.finalize().to_hex()[..12].to_string()
 }
 
+/// The credits of the sources a catalog's data comes from (© Credits). A catalog made before
+/// catalogs carried them has none, and gets every credit the app knows: what the map showed then.
+fn credits_of(cat: &store::catalog::Catalog) -> serde_json::Value {
+    match cat.credits.as_array() {
+        Some(c) if !c.is_empty() => cat.credits.clone(),
+        _ => serde_json::to_value(pipeline::rules::CREDITS).unwrap_or_default(),
+    }
+}
+
 /// The build agent's status (AppState::build_status), for the menu bar.
 async fn build_h(State(s): State<S>) -> Response {
     let body = tokio::task::spawn_blocking(move || s.build_status()).await.unwrap_or(serde_json::Value::Null);
@@ -622,8 +631,10 @@ async fn catalog_h(State(s): State<S>) -> Response {
         "created": cat.created,
         "units": cat.units.len(),
         "layers": cat.layers.iter().map(|(k, l)| (k.clone(), serde_json::json!({"encoding": l.encoding, "minzoom": l.minzoom, "maxzoom": l.maxzoom, "version": s.data.layer_version(k)}))).collect::<serde_json::Map<_, _>>(),
-        "coverage": cat.coverage,
-        "credits": cat.credits,
+        // The regions it was built for; their outlines are /api/coverage's (this is asked every
+        // minute).
+        "coverage": {"regions": regions::recorded_list(&cat)},
+        "credits": credits_of(&cat),
         "online": s.data.online(),
         "nas": s.data.nas_root().map(|p| p.display().to_string()),
         "held": held,
@@ -733,5 +744,25 @@ impl Region {
             }
         }
         inside
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credits_of_older_catalogs_too() {
+        let mut c = store::catalog::Catalog::new(1);
+        // A catalog made before catalogs carried credits: every credit the app knows.
+        for none in [serde_json::json!([]), serde_json::Value::Null] {
+            c.credits = none;
+            let all = credits_of(&c);
+            assert_eq!(all.as_array().map(Vec::len), Some(pipeline::rules::CREDITS.len()));
+            assert_eq!(all[0]["terms"], "© OpenStreetMap contributors, ODbL");
+        }
+        // Else its own.
+        c.credits = serde_json::json!([{"what": "Roads", "source": "OpenStreetMap", "terms": "ODbL"}]);
+        assert_eq!(credits_of(&c), c.credits);
     }
 }

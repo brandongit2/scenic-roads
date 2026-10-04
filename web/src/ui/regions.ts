@@ -2,10 +2,12 @@
 // coverage they add up to on the map, and new regions made of administrative areas, found by name
 // or by a click on the map. Edits go to the recipes on the NAS; the build Mac builds what they
 // change when it can (the status bar shows it). Renaming rebuilds nothing.
+// The coverage drawn is the one the map's catalog was built for; a recipe it doesn't have (added
+// or redrawn since, or waiting on this Mac to go to the NAS) is listed as pending.
 import * as prefs from '../prefs';
 import {
   QUEUED, RegionLayers, RegionsError, addRegion, areaName, areaOutline, areasAt, editRegion, entryLabel, getCoverage, km2, levelName, listRegions, removeRegion, searchAreas, slug, validId,
-  type Area, type Region,
+  type Area, type Coverage, type Region,
 } from '../regions';
 import { fmt, h } from './dom';
 
@@ -71,7 +73,11 @@ export class RegionsPanel {
 
   private regions: Region[] = [];
   private bad: [string, string][] = [];
-  private coverage: GeoJSON.FeatureCollection<GeoJSON.MultiPolygon> | null = null;
+  private coverage: Coverage | null = null;
+  /** The outlines of the regions the catalog doesn't have yet, from their osm: entries' areas. */
+  private pendingOutlines = new Map<string, Outline[]>();
+  /** The catalog the map shows, as last told (setCatalog). */
+  private catalogN: number | undefined;
   private loadedAt = -Infinity;
   private loadTok = 0;
   private open = false;
@@ -139,6 +145,15 @@ export class RegionsPanel {
     if (this.covBox.checked) void this.refresh();
   }
 
+  /** The map's catalog now (catalog.ts). A new one was built for its own coverage: drawn again
+   * while it's shown or the panel is open. */
+  setCatalog(n: number | undefined) {
+    if (n === undefined || n === this.catalogN) return;
+    this.catalogN = n;
+    const had = this.coverage?.catalog;
+    if (had !== undefined && had !== n && (this.covBox.checked || this.open)) void this.refresh();
+  }
+
   /** The section opened (the list again, unless just loaded) or closed (its previews leave the
    * map). */
   setOpen(open: boolean) {
@@ -182,11 +197,38 @@ export class RegionsPanel {
     }
     this.renderList();
     this.renderCands();
+    this.loadPending(tok);
   }
 
-  /** A region's outlines in the coverage (each entry's; none until the coverage is loaded). */
-  private outlinesOf(id: string): Outline[] {
-    return (this.coverage?.features ?? []).filter((f) => f.properties?.region === id);
+  /** Not on the map yet: the catalog has no region by its id with its outline (added or redrawn
+   * since it was made). Never when the catalog doesn't say which regions it was built for. */
+  private isPending(r: Region): boolean {
+    const built = this.coverage?.regions;
+    if (!built) return false;
+    const c = built.find((b) => b.id === r.id);
+    return !c || c.outline.length !== r.outline.length || c.outline.some((e, i) => e !== r.outline[i]);
+  }
+
+  /** A region's outlines: the catalog's (each entry's; none until the coverage is loaded), or for a
+   * pending one its osm: entries' areas, once loaded. */
+  private outlinesOf(r: Region): Outline[] {
+    if (this.isPending(r)) return this.pendingOutlines.get(r.id) ?? [];
+    return (this.coverage?.features ?? []).filter((f) => f.properties?.region === r.id);
+  }
+
+  /** The pending regions' outlines, from their osm: entries' areas (other entries have none to
+   * show until built), for naming their entries and showing them on the map; then the list again. */
+  private loadPending(tok: number) {
+    const pending = this.regions.filter((r) => this.isPending(r));
+    void Promise.all(pending.map(async (r) => {
+      const fs = await Promise.all(r.outline.filter((e) => e.startsWith('osm:')).map((e) =>
+        areaOutline(Number(e.slice(4))).then((f): Outline => ({ ...f, properties: { ...f.properties, region: r.id, entry: e } }), () => null)));
+      return [r.id, fs.filter((f): f is Outline => f !== null)] as const;
+    })).then((got) => {
+      if (tok !== this.loadTok) return;
+      this.pendingOutlines = new Map(got);
+      if (got.length) this.renderList();
+    });
   }
 
   private renderList() {
@@ -214,20 +256,23 @@ export class RegionsPanel {
     this.renderList();
   }
 
-  /** A region's state in words: built, building (how many of its areas), or waiting. */
-  private stateOf(id: string): { text: string; cls: string } | null {
-    const p = this.progress[id];
-    if (!p || !p.total) return null;
-    if (p.built >= p.total) return { text: 'built', cls: 'ok' };
-    if (p.built === 0) return { text: 'waiting to build', cls: 'wait' };
-    return { text: `building · ${p.built} of ${p.total} areas`, cls: 'on' };
+  /** A region's state in words: waiting or building (how many of its areas), from the build Mac's
+   * heartbeat; else pending while the map's catalog doesn't have it, built when the heartbeat or
+   * the catalog says so. */
+  private stateOf(r: Region): { text: string; cls: string; title?: string } | null {
+    const p = this.progress[r.id];
+    if (p?.total && p.built < p.total) return p.built === 0 ? { text: 'waiting to build', cls: 'wait' } : { text: `building · ${p.built} of ${p.total} areas`, cls: 'on' };
+    if (this.isPending(r)) return { text: 'pending', cls: 'wait', title: 'Not on the map yet: it’s added when the build Mac next publishes the map data' };
+    if (p?.total || this.coverage?.regions) return { text: 'built', cls: 'ok' };
+    return null;
   }
 
   private regionRow(r: Region): HTMLElement {
-    const fs = this.outlinesOf(r.id);
+    const fs = this.outlinesOf(r);
     const summary = r.outline.map((e) => entryLabel(e, fs.find((f) => f.properties?.entry === e)?.properties as Area | undefined)).join(' + ');
     const row = h('div', { class: 'rg' });
     const show = () => {
+      const state = this.stateOf(r);
       const name = h('span', { class: 'rg-name', title: `${r.name}: show it` }, r.name);
       name.addEventListener('click', () => {
         const b = bboxOf(fs);
@@ -235,7 +280,7 @@ export class RegionsPanel {
       });
       row.replaceChildren(
         h('div', { class: 'rg1' }, name, h('span', { class: 'rg-id faint' }, r.id),
-          ...(this.stateOf(r.id) ? [h('span', { class: `rg-state ${this.stateOf(r.id)!.cls}` }, this.stateOf(r.id)!.text)] : []),
+          ...(state ? [h('span', { class: `rg-state ${state.cls}`, title: state.title }, state.text)] : []),
           h('button', { class: 'rg-act', type: 'button', title: 'Rename', onclick: () => this.rename(r, row, show) }, '✎'),
           h('button', { class: 'rg-act', type: 'button', title: 'Remove…', onclick: () => this.askRemove(r, row, show) }, '×')),
         h('div', { class: 'rg2', title: summary }, summary),

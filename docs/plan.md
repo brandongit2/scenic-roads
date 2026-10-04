@@ -36,7 +36,8 @@ nothing built depends on how the coverage is divided into regions.
 
 **The Regions panel** (Settings → Regions):
 - **What it does today:**
-  - It shows the regions and their coverage on the map.
+  - It shows the regions, and on the map the coverage the published data was built for. A recipe
+    the catalog doesn't have yet (added or redrawn since) shows as pending.
   - It makes new regions from administrative areas (levels 2–8 and ISO 3166, from the pass's
     outlines), found by name or by a click on the map (the areas containing the point), each shown
     with its area in km².
@@ -156,7 +157,8 @@ nas/           fetch-planet.sh, which the NAS runs itself (from tools/nas/; publ
 - A write goes to `<name>.tmp`, is read back and checked against its hash, then renamed.
 - An unchanged file keeps its name, so a rebuild uploads only what changed.
 - **Catalogs** list every file the map reads: one zstd JSON per publish, with zstd's content
-  checksum. Readers take the highest that decodes.
+  checksum. Readers take the highest that decodes. Each also records the coverage it was built for
+  (the regions' outlines, simplified) and the credits of the sources its data comes from.
 - **The build manifest** (`state/build/manifest.json`) lists everything built: sources, work and
   outputs.
 - **Job keys** (`state/build/jobs.json`) say what each output was made from.
@@ -360,7 +362,8 @@ rule (its version bumped) reruns only the units it applies to. The plan is modul
 - road network codes (`extract`) and their colours (`web/src/mapschemes.ts`);
 - leaf-type source: EEA in Europe, NALCMS in North America, none elsewhere, with no job yet;
 - the languages spoken there, for names (§7; today `names::area`'s boxes);
-- credits (`web/src/ui/strip.ts`; catalogs carry none yet).
+- credits (`pipeline::rules::CREDITS`, each with the areas whose data comes from its source; a
+  catalog lists those meeting its coverage, 20 km around it, or its units' ways).
 
 Planned for a country without a module: defaults (FABDEM, no register, colours by road class), with
 `scenic status` saying which defaults each region uses.
@@ -556,7 +559,8 @@ An output identical to before keeps its content name, so jobs keyed on it stop t
 | details, profiles | by OSM id plus location (the ways-here index → base pack) |
 | landmarks, overlays, stations, ferries | by view (`docs/phase5.md`) |
 | `/api/meta` | the map's meta, added up from the units' summaries (each base pack's own) |
-| `/api/catalog` | the catalog's number, layers and zoom ranges, versions, the NAS and build state |
+| `/api/catalog` | the catalog's number, layers and zoom ranges, versions, its credits and the regions it was built for, the NAS and build state |
+| `/api/coverage` | the catalog's coverage: each region's outlines, simplified, with the regions (built from the recipes for a catalog made before it was recorded) |
 
 A layer's zoom range comes from its definition (terrain z0–12, slope z0–11, …).
 
@@ -906,9 +910,7 @@ are added.
    - trains a day.
 2. **The scenic cache doesn't carry over between unit runs:** each unit run recomputes every scenic
    sample.
-3. **Catalogs:**
-   - `credits` and `coverage` are empty: `/api/coverage` builds the coverage per request.
-4. **The repo:**
+3. **The repo:**
    - `inputs/keys.env` is read by nothing (`dem/railgtfs.py` still reads `data/keys.env`).
 
 ## 11. Risks and checks

@@ -247,17 +247,29 @@ zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. 
   "global": {"railfreq": "global/railfreq", "roadunits": "global/roadunits", "marks/summary": "…",
              "legacy/<stem>": "…", "heritage/<stem>": "…", "outlines": "sources/osm/<date>/outlines"},
   "meta": {"…": "the map's meta, added up from the units' summaries: minzoom, maxzoom, bounds, ways, vertices, elev_min, elev_max, elev_hist_10m_km, rail_km, classes, built"},
-  "credits": [],
-  "coverage": {"regions": []}
+  "credits": [{"what": "Road elevation, Japan", "source": "Created by editing GSI Tiles …",
+               "terms": "GSI terms of use (Public Data License 1.0)", "areas": [[122.5, 20.0, 154.0, 46.5]]}],
+  "coverage": {"regions": [{"id": "monaco", "name": "Monaco", "outline": ["geofabrik:europe/monaco"],
+               "shapes": {"geofabrik:europe/monaco": [[[[7.4, 43.72], [7.44, 43.72], [7.44, 43.76], [7.4, 43.76], [7.4, 43.72]]]]}}]}
 }
 ```
 
-`files` holds every file the catalog references. `credits` and `coverage` are empty for now
-(`/api/coverage` builds the coverage from the recipes per request). GC's roots are the newest
-catalog, every catalog of the last 14 days and the build manifest; an unreferenced file goes once
-it's also older than 14 days, in the folders catalogs index and retired passes' sources (plan §3). A
-held catalog is
-written to `catalog-held/` instead (`inputs/hold-catalog`).
+`files` holds every file the catalog references.
+- `credits`: the sources its data comes from (`pipeline::rules::CREDITS`), those whose areas meet
+  the coverage, 20 km around it (how far heritage sites and terrain reach) or a built unit's ways
+  (its extent, so a removed region's data keeps its credit while it's served). `areas` is a list of
+  w, s, e, n boxes in degrees, left out for credits that hold everywhere.
+- `coverage`: the regions as their recipes were at publish time (the agent publishes once all of
+  them are built), each outline entry's polygons as GeoJSON MultiPolygon coordinates in degrees to
+  5 decimals, rings closed: `osm:` entries from the pass's simplified outlines, the others simplified
+  by size (60 m to 1 km). An entry that couldn't be read is recorded with no shape.
+- A catalog made before these were recorded has `"credits": []` and `{"regions": []}`: the server
+  then gives every credit, and builds the coverage from the recipes.
+
+GC's roots are the newest catalog, every catalog of the last 14 days and the build manifest; an
+unreferenced file goes once it's also older than 14 days, in the folders catalogs index and retired
+passes' sources (plan §3). A held catalog is written to `catalog-held/` instead
+(`inputs/hold-catalog`).
 
 ## On each Mac (`~/Library/Application Support/scenic/`)
 
@@ -311,11 +323,14 @@ agent/cache/            dem-cache.* (the seed), dem-units/<u>.dem (a unit's samp
   every hidata of the view plus margin has them, and for drives and rides when the window is at
   least 2 km; the answer says `approx`.
 - `/api/catalog`: `n`, `created`, `units` (a count), `layers` (encoding, zoom range, version),
-  `coverage`, `credits`, `online`, `nas`, `held`, `app`, `agent`, `names` (translation versions),
+  `coverage` (the regions it was built for, without outlines), `credits` (every credit for a
+  catalog that has none), `online`, `nas`, `held`, `app`, `agent`, `names` (translation versions),
   `v`, `marks`. The map's meta is `/api/meta`.
 - `/api/names`; `/api/build` (the agent's status: this Mac's when it runs here, else the NAS's copy).
 - Regions (the panel): `/api/regions` (GET, POST), `/api/regions/{id}` (PUT, DELETE),
-  `/api/areas?at=`, `/api/areas/search?q=`, `/api/areas/{id}`, `/api/coverage`.
+  `/api/areas?at=`, `/api/areas/search?q=`, `/api/areas/{id}`, `/api/coverage` (the catalog's
+  coverage as GeoJSON, one feature per outline entry, with `regions` and `catalog`; built from the
+  recipes, without `regions`, for a catalog that records none).
 - Names: MVT tiles and API JSON (ways, drives, `/api/names`) carry `main` and, when there is one,
   `sub`; JSON layer files, ferry blocks and marks tiles carry `main` only where it differs from the
   name; popup records (`/api/detail`, `/api/marks/detail`, `/api/overlays/detail`, `/api/park`) are

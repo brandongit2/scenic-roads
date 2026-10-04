@@ -1,6 +1,6 @@
 // Regions and the areas they're made of (docs/plan.md §1, §5): the server's recipes (/api/regions),
-// the administrative areas to make them from (/api/areas), and the coverage they add up to, drawn
-// on the map (/api/coverage). The panel is ui/regions.ts.
+// the administrative areas to make them from (/api/areas), and the coverage the map's catalog was
+// built for, drawn on the map (/api/coverage). The panel is ui/regions.ts.
 import type { ExpressionSpecification, GeoJSONSource, Map as MLMap } from 'maplibre-gl';
 import { fmt } from './ui/dom';
 
@@ -70,10 +70,14 @@ export const QUEUED = 'Saved on this Mac: it goes to the NAS when you’re home'
 export const areasAt = (lng: number, lat: number) => call<{ areas: Area[] }>(`/api/areas?at=${lng.toFixed(5)},${lat.toFixed(5)}`).then((d) => d.areas);
 /** Areas by the start of their name or English name, largest first. */
 export const searchAreas = (q: string, signal?: AbortSignal) => call<{ areas: Area[] }>(`/api/areas/search?${new URLSearchParams({ q })}`, { signal }).then((d) => d.areas);
-/** Every region's outline entries, simplified for drawing (properties: region, region_name, entry,
- * and an osm: entry's area fields). */
-export const getCoverage = () =>
-  call<GeoJSON.FeatureCollection<GeoJSON.MultiPolygon>>('/api/coverage').then((fc) => ({ ...fc, features: fc.features.map(nested) }));
+/**
+ * The coverage the map's catalog (`catalog`, its number) was built for: each region's outline
+ * entries, simplified for drawing (properties: region, region_name, entry, and an osm: entry's area
+ * fields), and the regions themselves. A catalog made before catalogs recorded their coverage has
+ * no `regions`: its outlines are then the recipes', and which regions it holds isn't known.
+ */
+export type Coverage = GeoJSON.FeatureCollection<GeoJSON.MultiPolygon> & { regions?: Region[]; catalog?: number };
+export const getCoverage = () => call<Coverage>('/api/coverage').then((fc) => ({ ...fc, features: fc.features.map(nested) }));
 
 /** An area's outline (simplified), kept once loaded. */
 const outlines = new Map<number, Promise<GeoJSON.Feature<GeoJSON.MultiPolygon>>>();

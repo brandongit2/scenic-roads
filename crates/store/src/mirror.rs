@@ -529,9 +529,8 @@ impl Drop for Mirror {
     }
 }
 
-/// Copy order: 0 small worldwide files (and the coverage outline), 1 root and lo packs and the
-/// basemap (drawn on every view), 2 hi data and road values, 3 base packs, 4 hi packs; `LAST_GROUP`
-/// for the rest.
+/// Copy order: 0 small worldwide files, 1 root and lo packs and the basemap (drawn on every view),
+/// 2 hi data and road values, 3 base packs, 4 hi packs; `LAST_GROUP` for the rest.
 fn groups(cat: &Catalog) -> HashMap<&str, u8> {
     fn set<'a>(g: &mut HashMap<&'a str, u8>, logical: &'a str, k: u8) {
         let e = g.entry(logical).or_insert(k);
@@ -540,9 +539,6 @@ fn groups(cat: &Catalog) -> HashMap<&str, u8> {
     let mut g = HashMap::new();
     for v in cat.global.values() {
         set(&mut g, v, 0);
-    }
-    if let Some(o) = cat.outline() {
-        set(&mut g, o, 0);
     }
     for l in cat.layers.values() {
         if let Some(r) = &l.root {
@@ -690,7 +686,7 @@ mod tests {
         nas.put(&mut c, "layers/roads/lo/3-4-2", "pack", &bytes(seed + 5, 40_000));
         nas.put(&mut c, "layers/roads/root", "pack", &bytes(seed + 6, 10_000));
         nas.put(&mut c, "global/pois", "json", &bytes(seed + 7, 1_000));
-        nas.put(&mut c, "global/coverage", "geojson", &bytes(seed + 8, 2_000));
+        nas.put(&mut c, "global/marks/summary", "json", &bytes(seed + 8, 2_000));
         lay.root = Some("layers/roads/root".into());
         lay.lo.insert("3/4/2".into(), "layers/roads/lo/3-4-2".into());
         lay.hi.insert("6/32/21".into(), "layers/roads/hi/6-32-21".into());
@@ -700,7 +696,7 @@ mod tests {
         c.roads.insert("6/32/21".into(), "global/roads/6-32-21".into());
         c.hidata.insert("6/32/21".into(), "hidata/6-32-21".into());
         c.global.insert("pois.json".into(), "global/pois".into());
-        c.coverage = json!({"outline": "global/coverage"});
+        c.global.insert("marks/summary".into(), "global/marks/summary".into());
         c.validate().unwrap();
         c
     }
@@ -719,7 +715,7 @@ mod tests {
         assert_eq!(
             logicals(&m, &cat),
             [
-                "global/coverage",
+                "global/marks/summary",
                 "global/pois",
                 "layers/basemap/basemap",
                 "layers/roads/lo/3-4-2",

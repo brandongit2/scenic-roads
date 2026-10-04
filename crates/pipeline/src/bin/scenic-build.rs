@@ -708,6 +708,11 @@ fn catalog(out: &mut Out, held: bool) -> Result<()> {
     }
     let meta = units_meta(out, &base)?;
     let units: Vec<String> = base.keys().cloned().collect();
+    // The coverage it's built for, drawn from the outlines it lists, and the credits of the sources
+    // its data comes from: where the coverage is, and where the units' ways are.
+    let regions = catalog_coverage(out, global.get("outlines").map(String::as_str));
+    let credits = pipeline::rules::catalog_credits(&regions, &unit_extents(out, &base));
+    eprintln!("catalog: {} regions, {} of {} credits", regions.len(), credits.len(), pipeline::rules::CREDITS.len());
     // Only what the map reads: build sources (the planet's pieces, sets and road values) stay out,
     // or every Mac's mirror would copy them. A file missing on the NAS stops the publish.
     let served = |l: &str| {
@@ -749,13 +754,45 @@ fn catalog(out: &mut Out, held: bool) -> Result<()> {
         "ovdata": ovdata,
         "global": global,
         "meta": meta,
-        "credits": [],
-        "coverage": {"regions": []},
+        "credits": credits,
+        "coverage": {"regions": regions},
     });
     let catalog: store::catalog::Catalog = serde_json::from_value(cat)?;
     let path = store::catalog::write(&dir, &catalog)?;
     eprintln!("published {}", path.display());
     Ok(())
+}
+
+/// The coverage a catalog records: the regions as their recipes are now, each outline entry
+/// simplified for drawing (pipeline::coverage::drawn), `osm:` ones from `outlines` (the catalog's
+/// own). The agent publishes once every region's units are built, so the regions are those the
+/// catalog's data is built for; the Regions panel shows recipes it lacks as still to come.
+fn catalog_coverage(out: &Out, outlines: Option<&str>) -> Vec<pipeline::coverage::DrawnRegion> {
+    let (recipes, bad) = pipeline::agent::recipes::load(&out.root().join("inputs/regions"));
+    for (f, e) in &bad {
+        eprintln!("catalog: region {f} left out: {e}");
+    }
+    let outlines = outlines.and_then(|l| out.get(l)).and_then(|c| match pipeline::outlines::Outlines::open(&out.path(c)) {
+        Ok(o) => Some(o),
+        Err(e) => {
+            eprintln!("catalog: the pass's outlines: {e:#}");
+            None
+        }
+    });
+    pipeline::coverage::drawn(&recipes, outlines.as_ref(), &out.root().join("inputs/outlines"))
+}
+
+/// Where each built unit's ways are (E7): its summary's extent, as units_meta left the summaries in
+/// state/build/summaries.json by content name, else its tile.
+fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
+    let known: BTreeMap<String, pipeline::summary::Summary> = std::fs::read(out.root().join("state/build/summaries.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    base.iter()
+        .filter_map(|(u, logical)| match out.get(logical).and_then(|c| known.get(c)) {
+            // (An empty unit's extent is inverted: nothing of it is anywhere.)
+            Some(s) => (s.extent[0] <= s.extent[2]).then_some(s.extent),
+            None => Unit::parse(u).map(|u| tile_bounds(u.z, u.x, u.y)),
+        })
+        .collect()
 }
 
 /// UTC now as RFC 3339 (no chrono dependency).

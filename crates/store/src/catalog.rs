@@ -34,7 +34,7 @@ pub struct Catalog {
     /// RFC 3339 time of the publish.
     #[serde(default)]
     pub created: String,
-    /// The version of the pipeline crate that published it (not the app's: docs/plan.md §10).
+    /// The published app that made it (its folder's name), or "development".
     #[serde(default)]
     pub app: String,
     /// Every file the catalog references, by logical name. GC keeps them, and the files of the last
@@ -68,9 +68,14 @@ pub struct Catalog {
     /// The app's meta (bounds, elevation histogram, DEM counts …).
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub meta: Value,
+    /// The credits of the sources its data comes from: `[{"what", "source", "terms", "areas"?}]`
+    /// (pipeline::rules::Credit). Empty in catalogs made before they were recorded. Kept as JSON,
+    /// as `coverage` is, so a part the app can't read never makes the catalog unreadable.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub credits: Value,
-    /// `{"regions": […], "outline": "<logical of the coverage GeoJSON>"}`.
+    /// The coverage it was built for: `{"regions": [{"id", "name", "outline", "shapes"}]}`, each
+    /// outline entry's polygons simplified for drawing (pipeline::coverage::DrawnRegion). No
+    /// regions in catalogs made before they were recorded.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub coverage: Value,
     #[serde(flatten)]
@@ -127,11 +132,6 @@ impl Catalog {
         self.files.get(logical).map(|f| f.file.as_str())
     }
 
-    /// The logical name of the coverage outline, if any.
-    pub fn outline(&self) -> Option<&str> {
-        self.coverage.get("outline").and_then(Value::as_str)
-    }
-
     /// Every logical name the catalog's sections refer to, with where it's referred from.
     pub fn references(&self) -> Vec<(String, &str)> {
         let mut out = Vec::new();
@@ -150,9 +150,6 @@ impl Catalog {
             for (k, v) in m {
                 out.push((format!("{what}[{k}]"), v.as_str()));
             }
-        }
-        if let Some(o) = self.outline() {
-            out.push(("coverage.outline".into(), o));
         }
         out
     }
@@ -380,7 +377,6 @@ mod tests {
         let hidata = add("hidata/6-32-21", "sect", 60);
         let pois = add("global/pois", "json", 5);
         let basemap = add("layers/basemap/basemap", "pmtiles", 1000);
-        let outline = add("global/coverage", "geojson", 7);
         c.units = vec!["6/32/21".into()];
         c.layers.insert(
             "roads".into(),
@@ -400,8 +396,12 @@ mod tests {
         c.hidata.insert("6/32/21".into(), hidata);
         c.global.insert("pois.json".into(), pois);
         c.meta = json!({"bounds": [1, 2, 3, 4]});
-        c.credits = json!(["OpenStreetMap contributors"]);
-        c.coverage = json!({"regions": ["northumberland"], "outline": outline});
+        c.credits = json!([
+            {"what": "Roads", "source": "OpenStreetMap", "terms": "© OpenStreetMap contributors, ODbL"},
+            {"what": "Road elevation, Japan", "source": "GSI Tiles", "terms": "PDL 1.0", "areas": [[122.5, 20.0, 154.0, 46.5]]}
+        ]);
+        c.coverage = json!({"regions": [{"id": "northumberland", "name": "Northumberland", "outline": ["osm:88066"],
+            "shapes": {"osm:88066": [[[[-2.68941, 55.80271], [-1.46055, 55.07428], [-2.56493, 54.78346], [-2.68941, 55.80271]]]]}}]});
         c
     }
 

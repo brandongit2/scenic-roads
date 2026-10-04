@@ -7,10 +7,15 @@
 //! buffer), so a point test reads one cell: the centre's state, flipped by each of the cell's edges
 //! crossing the segment from the centre to the point, then the buffer's distance to the cell's
 //! edges. Building a grid costs one pass over the edges plus a scanline per row.
+//!
+//! A catalog records the coverage it was built for, simplified for drawing ([`DrawnRegion`]), so
+//! the map draws it from the catalog rather than from the recipes.
 
-use crate::outlines::{inside, Outlines};
+use crate::outlines::{inside, simplify, Outlines};
 use crate::agent::recipes::{parse_outline, Outline, Recipe};
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// Metres per E7 unit of latitude (and of longitude at the equator).
@@ -340,6 +345,20 @@ fn circle(lon: f64, lat: f64, km: f64) -> Vec<[i32; 2]> {
         .collect()
 }
 
+/// The rings of an outline entry that isn't `osm:` (those are the pass's): a Geofabrik or drawn
+/// `.poly` in `outline_dir`, or a place's circle.
+fn file_rings(o: &Outline, outline_dir: &Path) -> Result<Vec<Vec<[i32; 2]>>> {
+    match o {
+        Outline::Geofabrik(id) => {
+            let p = outline_dir.join("geofabrik").join(format!("{}.poly", id.replace('/', "-")));
+            read_poly(&std::fs::read_to_string(&p).with_context(|| format!("{} (fetched when the region is added)", p.display()))?)
+        }
+        Outline::Poly(f) => read_poly(&std::fs::read_to_string(outline_dir.join(f)).with_context(|| format!("inputs/outlines/{f}"))?),
+        Outline::Place { lon, lat, km } => Ok(vec![circle(*lon, *lat, *km)]),
+        Outline::Osm(id) => bail!("osm:{id} is one of the pass's outlines"),
+    }
+}
+
 impl Coverage {
     /// The coverage of `recipes`: `osm:` outlines from `outlines`, `poly:` and Geofabrik outlines
     /// from `outline_dir` (`inputs/outlines/`, Geofabrik's as `geofabrik/<id>.poly`), circles for
@@ -355,16 +374,10 @@ impl Coverage {
                         let rec = o.by_id(id).with_context(|| format!("{source}: relation {id} isn't an administrative or ISO 3166 outline of this pass"))?;
                         Shape::new(source, o.rings(rec)?, OSM_BUFFER_M)
                     }
-                    Outline::Geofabrik(id) => {
-                        let p = outline_dir.join("geofabrik").join(format!("{}.poly", id.replace('/', "-")));
-                        let text = std::fs::read_to_string(&p).with_context(|| format!("{source}: {} (fetched when the region is added)", p.display()))?;
-                        Shape::new(source, read_poly(&text)?, 0.0)
+                    other => {
+                        let rings = file_rings(&other, outline_dir).with_context(|| source.clone())?;
+                        Shape::new(source, rings, 0.0)
                     }
-                    Outline::Poly(f) => {
-                        let text = std::fs::read_to_string(outline_dir.join(&f)).with_context(|| format!("{source}: inputs/outlines/{f}"))?;
-                        Shape::new(source, read_poly(&text)?, 0.0)
-                    }
-                    Outline::Place { lon, lat, km } => Shape::new(source, vec![circle(lon, lat, km)], 0.0),
                 };
                 shapes.push(shape);
             }
@@ -401,6 +414,114 @@ impl Coverage {
     pub fn touches(&self, verts: &[[i32; 2]]) -> bool {
         verts.iter().any(|&p| self.contains(p))
     }
+}
+
+// ---- the coverage a catalog records ------------------------------------------------------------
+
+/// A region as a catalog records it (docs/formats.md, Catalog `coverage`): its recipe when the
+/// catalog was made, and each outline entry's polygons simplified for drawing, as GeoJSON
+/// MultiPolygon coordinates (degrees to 5 decimals, about a metre; rings closed).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DrawnRegion {
+    pub id: String,
+    pub name: String,
+    pub outline: Vec<String>,
+    /// By outline entry; an entry that couldn't be read then has none.
+    #[serde(default)]
+    pub shapes: BTreeMap<String, Vec<Vec<Vec<[f64; 2]>>>>,
+}
+
+impl DrawnRegion {
+    /// Whether its outlines meet the box w, s, e, n (E7, edges included): an edge meeting the box,
+    /// else the box wholly inside an outline (even–odd), which its centre tells.
+    pub fn meets_rect(&self, r: [i32; 4]) -> bool {
+        let rb = [r[0] as i64, r[1] as i64, r[2] as i64, r[3] as i64];
+        let (cx, cy) = ((rb[0] + rb[2]) as f64 / 2.0, (rb[1] + rb[3]) as f64 / 2.0);
+        let e7 = |p: [f64; 2]| [(p[0] * 1e7).round() as i64, (p[1] * 1e7).round() as i64];
+        self.shapes.values().any(|polygons| {
+            let mut inside = false;
+            for ring in polygons.iter().flatten() {
+                for i in 0..ring.len() {
+                    let (a, b) = (e7(ring[i]), e7(ring[(i + 1) % ring.len()]));
+                    if segment_meets_box(a, b, rb) {
+                        return true;
+                    }
+                    let (ay, by) = (a[1] as f64, b[1] as f64);
+                    if (ay > cy) != (by > cy) && cx < (b[0] - a[0]) as f64 * (cy - ay) / (by - ay) + a[0] as f64 {
+                        inside = !inside;
+                    }
+                }
+            }
+            inside
+        })
+    }
+}
+
+/// Every region's outlines for drawing: `osm:` entries as the pass simplified them for the Regions
+/// panel, the others simplified here alike, by size (`draw_tolerance_m`). Each entry is read on its
+/// own, so one that can't be (a relation the pass lacks, a missing `.poly`) loses only its shape,
+/// with a note: the regions are still recorded.
+pub fn drawn(recipes: &[Recipe], outlines: Option<&Outlines>, outline_dir: &Path) -> Vec<DrawnRegion> {
+    recipes
+        .iter()
+        .map(|r| {
+            let mut shapes = BTreeMap::new();
+            for entry in &r.outline {
+                match drawn_entry(entry, outlines, outline_dir) {
+                    Ok(polygons) => {
+                        shapes.insert(entry.clone(), polygons);
+                    }
+                    Err(e) => eprintln!("coverage: {}: {entry}: {e:#}", r.id),
+                }
+            }
+            DrawnRegion { id: r.id.clone(), name: r.name.clone(), outline: r.outline.clone(), shapes }
+        })
+        .collect()
+}
+
+/// One outline entry's polygons for drawing, in degrees. A `.poly`'s or a circle's rings are each a
+/// polygon of their own, as `/api/coverage` always gave them (the app nests holes by containment).
+fn drawn_entry(entry: &str, outlines: Option<&Outlines>, outline_dir: &Path) -> Result<Vec<Vec<Vec<[f64; 2]>>>> {
+    let polygons = match parse_outline(entry)? {
+        Outline::Osm(id) => {
+            let o = outlines.context("no outlines yet (the OSM pass makes them)")?;
+            let rec = o.by_id(id).with_context(|| format!("relation {id} isn't an administrative or ISO 3166 outline of the pass"))?;
+            o.simple_polygons(rec)?
+        }
+        other => {
+            let rings = file_rings(&other, outline_dir)?;
+            let tol = draw_tolerance_m(&rings);
+            rings.iter().map(|r| vec![simplify(r, tol)]).collect()
+        }
+    };
+    Ok(polygons.iter().map(|p| p.iter().map(|r| ring_degrees(r)).collect()).collect())
+}
+
+/// How far a drawn outline may stray from its file's: about a pixel when the whole outline fills a
+/// screen, within the pass's own range for the panel (1 km for countries, 60 m for the smallest
+/// areas).
+fn draw_tolerance_m(rings: &[Vec<[i32; 2]>]) -> f64 {
+    let mut bb = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+    for p in rings.iter().flatten() {
+        bb = [bb[0].min(p[0]), bb[1].min(p[1]), bb[2].max(p[0]), bb[3].max(p[1])];
+    }
+    if bb[0] > bb[2] {
+        return 60.0;
+    }
+    let lat = ((bb[1] as f64 + bb[3] as f64) / 2.0 * 1e-7).to_radians();
+    let w = (bb[2] as f64 - bb[0] as f64) * M_PER_E7 * lat.cos();
+    let h = (bb[3] as f64 - bb[1] as f64) * M_PER_E7;
+    (w.max(h) / 2000.0).clamp(60.0, 1000.0)
+}
+
+/// A ring in degrees to 5 decimals, closed as GeoJSON has it.
+fn ring_degrees(r: &[[i32; 2]]) -> Vec<[f64; 2]> {
+    let d = |v: i32| (v as f64 / 100.0).round() / 1e5;
+    let mut out: Vec<[f64; 2]> = r.iter().map(|p| [d(p[0]), d(p[1])]).collect();
+    if out.len() > 1 && out.first() != out.last() {
+        out.push(out[0]);
+    }
+    out
 }
 
 /// A plain even–odd test, for checking the grid.
@@ -493,6 +614,37 @@ mod tests {
         assert!(c.touches(&[e7(0.0, 0.0), e7(10.1, 10.1)]));
         let bad = vec![Recipe { id: "b".into(), name: "B".into(), outline: vec!["osm:1".into()] }];
         assert!(Coverage::from_recipes(&bad, None, d.path()).is_err());
+        let missing = vec![Recipe { id: "c".into(), name: "C".into(), outline: vec!["geofabrik:europe/gone".into()] }];
+        let e = format!("{:#}", Coverage::from_recipes(&missing, None, d.path()).err().unwrap());
+        assert!(e.starts_with("c: geofabrik:europe/gone: ") && e.contains("geofabrik/europe-gone.poly (fetched when the region is added)"), "{e}");
+    }
+
+    #[test]
+    fn drawn_as_a_catalog_records_it() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("box.poly"), "b\n1\n 10 10\n 11 10\n 11 11\n 10 11\nEND\nEND\n").unwrap();
+        let outline: Vec<String> = ["poly:box.poly", "place:20,20,10", "osm:1", "poly:gone.poly"].map(String::from).to_vec();
+        let recipes = vec![Recipe { id: "a".into(), name: "A".into(), outline: outline.clone() }];
+        let r = &drawn(&recipes, None, d.path())[0];
+        // The recipe as it is; the entries that can't be read (no outlines yet, no file) have no shape.
+        assert_eq!((r.id.as_str(), r.name.as_str(), &r.outline), ("a", "A", &outline));
+        assert_eq!(r.shapes.keys().collect::<Vec<_>>(), ["place:20,20,10", "poly:box.poly"]);
+        // In degrees, rings closed.
+        assert_eq!(r.shapes["poly:box.poly"], vec![vec![vec![[10.0, 10.0], [11.0, 10.0], [11.0, 11.0], [10.0, 11.0], [10.0, 10.0]]]]);
+        let circle = &r.shapes["place:20,20,10"][0][0];
+        assert!(circle.len() > 16 && circle.first() == circle.last(), "{}", circle.len());
+        // Boxes meeting it: across an edge, wholly inside, outside; the circle.
+        let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
+        assert!(r.meets_rect(b(10.9, 10.4, 11.2, 10.6)));
+        assert!(r.meets_rect(b(10.4, 10.4, 10.6, 10.6)), "wholly inside");
+        assert!(!r.meets_rect(b(11.1, 10.4, 11.2, 10.6)));
+        assert!(r.meets_rect(b(19.99, 19.99, 20.01, 20.01)) && !r.meets_rect(b(20.2, 20.2, 20.3, 20.3)));
+        // Stored and read back unchanged.
+        let back: DrawnRegion = serde_json::from_value(serde_json::to_value(r).unwrap()).unwrap();
+        assert_eq!(&back, r);
+        // Simplified by size: a country's outline by up to a kilometre, a town's by 60 m.
+        assert_eq!(draw_tolerance_m(&[vec![e7(0.0, 40.0), e7(30.0, 40.0), e7(30.0, 60.0)]]), 1000.0);
+        assert_eq!(draw_tolerance_m(&[vec![e7(0.0, 40.0), e7(0.01, 40.0), e7(0.01, 40.01)]]), 60.0);
     }
 
     #[test]

@@ -1930,9 +1930,13 @@ async function main() {
     // Newer points on the server than the page has (a 409): the catalog now, not in a minute.
     overlays.onStale = () => void watch?.poll();
     new BuildStatus(strip.buildStatus, watch);
-    // How far each region is built, from the build Mac's heartbeat.
+    // How far each region is built, from the build Mac's heartbeat; the coverage drawn is the
+    // catalog's, so it follows a new one.
     const w = watch;
     w.on(() => regions.setProgress(w.status?.agent?.built));
+    w.on(() => regions.setCatalog(w.status?.n));
+    // The credits of the sources the catalog's data comes from.
+    w.on(() => strip.setCredits(w.status?.credits));
     // Landmarks by view when the catalog has them (else the whole files).
     w.on(() => {
       if (w.status) overlays.setMarks(w.status.marks ?? null);

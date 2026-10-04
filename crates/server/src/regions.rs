@@ -9,7 +9,8 @@
 //!   GET    /api/areas?at=lon,lat    the outlines containing a point, smallest first
 //!   GET    /api/areas/search?q=     outlines by name, largest first
 //!   GET    /api/areas/{id}          one outline, simplified (a GeoJSON feature)
-//!   GET    /api/coverage            every region's outlines, simplified (GeoJSON)
+//!   GET    /api/coverage            the coverage the catalog was built for: its regions' outlines,
+//!                                   simplified (GeoJSON), and the regions
 //!
 //! Outlines come from the latest OSM pass (the catalog's `global.outlines`); records and names are
 //! read once per catalog, rings when an outline is drawn or tested.
@@ -27,6 +28,7 @@ use axum::{
     Json,
 };
 use pipeline::agent::recipes::{self, Recipe};
+use pipeline::coverage::DrawnRegion;
 use pipeline::outlines::{flag, inside, OutlineRec, Ring};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -565,47 +567,104 @@ pub async fn one(State(s): State<S>, Path(id): Path<u64>) -> Response {
     .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-/// Every region's outlines for drawing: osm: entries simplified from the outlines, the others as
-/// written (poly files, place circles).
+/// The regions a catalog records (its `coverage`), each with its outlines simplified for drawing;
+/// none for a catalog made before they were recorded (or one whose coverage this app can't read).
+pub fn recorded(cat: &store::catalog::Catalog) -> Vec<DrawnRegion> {
+    cat.coverage.get("regions").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default()
+}
+
+/// The regions a catalog records, without their outlines (id, name and outline entries), read
+/// straight from its coverage: /api/catalog asks for them every minute.
+pub fn recorded_list(cat: &store::catalog::Catalog) -> Vec<Value> {
+    let regions = cat.coverage.get("regions").and_then(Value::as_array);
+    regions.map(|rs| rs.iter().filter(|r| r.is_object()).map(|r| json!({ "id": r["id"], "name": r["name"], "outline": r["outline"] })).collect()).unwrap_or_default()
+}
+
+/// The recorded regions' outlines as GeoJSON features, one per entry in each recipe's order, with
+/// the properties the panel reads: region, region_name, entry, and an osm: entry's area fields when
+/// the pass's outlines can be read (`ix`).
+fn recorded_features(regions: &[DrawnRegion], ix: Option<&OutlineIndex>) -> Vec<Value> {
+    let mut feats = Vec::new();
+    for r in regions {
+        for entry in &r.outline {
+            let Some(coords) = r.shapes.get(entry) else { continue };
+            let mut props = json!({ "region": r.id, "region_name": r.name, "entry": entry });
+            let area = match recipes::parse_outline(entry) {
+                Ok(recipes::Outline::Osm(id)) => ix.and_then(|ix| ix.by_id(id).map(|o| ix.summary(o))),
+                _ => None,
+            };
+            if let (Some(Value::Object(a)), Some(p)) = (area, props.as_object_mut()) {
+                for (k, v) in a {
+                    p.entry(k).or_insert(v);
+                }
+            }
+            feats.push(json!({ "type": "Feature", "geometry": { "type": "MultiPolygon", "coordinates": coords }, "properties": props }));
+        }
+    }
+    feats
+}
+
+/// The coverage for drawing, as the current catalog recorded it, with the regions it was built for
+/// (`regions`), so the panel can tell which recipes aren't on the map yet (added or redrawn since)
+/// and works away from home. A catalog made before catalogs recorded their coverage has none: then
+/// it's built from the recipes on the NAS, as it was, without `regions`.
 pub async fn coverage(State(s): State<S>) -> Response {
     let s2 = s.clone();
     tokio::task::spawn_blocking(move || -> Result<Response> {
-        let Some((dir, pool)) = nas(&s2) else { return Ok(err(StatusCode::SERVICE_UNAVAILABLE, "the NAS isn't reachable")) };
-        let (regions, _) = load(&pool, &dir)?;
-        let ix = s2.areas.get(&s2)?;
-        let mut feats = Vec::new();
-        for r in &regions {
-            for entry in &r.outline {
-                let extra = json!({ "region": r.id, "region_name": r.name, "entry": entry });
-                match recipes::parse_outline(entry)? {
-                    recipes::Outline::Osm(id) => {
-                        if let Some((ix, o)) = ix.as_ref().and_then(|ix| ix.by_id(id).map(|o| (ix, o))) {
-                            feats.push(feature(ix, o, extra)?);
-                        }
-                    }
-                    other => {
-                        let rings = match other {
-                            recipes::Outline::Place { lon, lat, km } => vec![(0..65)
-                                .map(|i| {
-                                    let t = i as f64 / 64.0 * std::f64::consts::TAU;
-                                    [lon + km / (111.32 * lat.to_radians().cos().max(0.01)) * t.cos(), lat + km / 110.574 * t.sin()]
-                                })
-                                .collect::<Vec<_>>()],
-                            recipes::Outline::Poly(f) => poly_rings(&pool, &dir.parent().unwrap_or(&dir).join("outlines").join(f))?,
-                            recipes::Outline::Geofabrik(g) => poly_rings(&pool, &dir.parent().unwrap_or(&dir).join("outlines/geofabrik").join(format!("{}.poly", g.replace('/', "-"))))?,
-                            recipes::Outline::Osm(_) => unreachable!(),
-                        };
-                        let coords: Vec<Vec<Vec<[f64; 2]>>> = rings.into_iter().map(|r| vec![r]).collect();
-                        feats.push(json!({ "type": "Feature", "geometry": { "type": "MultiPolygon", "coordinates": coords }, "properties": extra }));
-                    }
-                }
-            }
+        let cat = s2.data.catalog();
+        let regions = recorded(&cat);
+        if regions.is_empty() {
+            return coverage_from_recipes(&s2, cat.n);
         }
-        Ok(Json(json!({ "type": "FeatureCollection", "features": feats })).into_response())
+        // The areas' fields are a nicety: without the pass's outlines (the NAS away, not mirrored
+        // yet) the outlines are drawn all the same.
+        let ix = s2.areas.get(&s2).unwrap_or_else(|e| {
+            eprintln!("coverage: the pass's outlines: {e:#}");
+            None
+        });
+        let feats = recorded_features(&regions, ix.as_deref());
+        Ok(Json(json!({ "type": "FeatureCollection", "features": feats, "regions": recorded_list(&cat), "catalog": cat.n })).into_response())
     })
     .await
     .map(|r| r.unwrap_or_else(|e| err(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}"))))
     .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+/// Every region's outlines for drawing, from the recipes on the NAS (a catalog that records none):
+/// osm: entries simplified from the outlines, the others as written (poly files, place circles).
+fn coverage_from_recipes(s: &crate::AppState, n: u64) -> Result<Response> {
+    let Some((dir, pool)) = nas(s) else { return Ok(err(StatusCode::SERVICE_UNAVAILABLE, "the NAS isn't reachable")) };
+    let (regions, _) = load(&pool, &dir)?;
+    let ix = s.areas.get(s)?;
+    let mut feats = Vec::new();
+    for r in &regions {
+        for entry in &r.outline {
+            let extra = json!({ "region": r.id, "region_name": r.name, "entry": entry });
+            match recipes::parse_outline(entry)? {
+                recipes::Outline::Osm(id) => {
+                    if let Some((ix, o)) = ix.as_ref().and_then(|ix| ix.by_id(id).map(|o| (ix, o))) {
+                        feats.push(feature(ix, o, extra)?);
+                    }
+                }
+                other => {
+                    let rings = match other {
+                        recipes::Outline::Place { lon, lat, km } => vec![(0..65)
+                            .map(|i| {
+                                let t = i as f64 / 64.0 * std::f64::consts::TAU;
+                                [lon + km / (111.32 * lat.to_radians().cos().max(0.01)) * t.cos(), lat + km / 110.574 * t.sin()]
+                            })
+                            .collect::<Vec<_>>()],
+                        recipes::Outline::Poly(f) => poly_rings(&pool, &dir.parent().unwrap_or(&dir).join("outlines").join(f))?,
+                        recipes::Outline::Geofabrik(g) => poly_rings(&pool, &dir.parent().unwrap_or(&dir).join("outlines/geofabrik").join(format!("{}.poly", g.replace('/', "-"))))?,
+                        recipes::Outline::Osm(_) => unreachable!(),
+                    };
+                    let coords: Vec<Vec<Vec<[f64; 2]>>> = rings.into_iter().map(|r| vec![r]).collect();
+                    feats.push(json!({ "type": "Feature", "geometry": { "type": "MultiPolygon", "coordinates": coords }, "properties": extra }));
+                }
+            }
+        }
+    }
+    Ok(Json(json!({ "type": "FeatureCollection", "features": feats, "catalog": n })).into_response())
 }
 
 /// A `.poly` file's rings, read whole through the pool.
@@ -789,5 +848,34 @@ mod tests {
         let v = json_of(list(State(s.clone())).await).await;
         assert_eq!((ids(&v), v["pending"].as_u64()), (vec!["kanto".to_string()], Some(0)));
         assert!(root.join("inputs/regions/borders.toml.removed").exists());
+    }
+
+    fn catalog(coverage: Value) -> store::catalog::Catalog {
+        let mut c = store::catalog::Catalog::new(3);
+        c.coverage = coverage;
+        c
+    }
+
+    #[test]
+    fn coverage_as_the_catalog_recorded_it() {
+        let ring = json!([[1.0, 50.0], [2.0, 50.0], [2.0, 51.0], [1.0, 50.0]]);
+        let c = catalog(json!({"regions": [
+            {"id": "b", "name": "B", "outline": ["poly:b.poly", "osm:7"], "shapes": {"poly:b.poly": [[ring]]}},
+            {"id": "a", "name": "A", "outline": ["place:1,2,3"], "shapes": {}},
+        ]}));
+        let r = recorded(&c);
+        assert_eq!(r.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["b", "a"]);
+        // A feature per entry with an outline, with what the panel reads (an osm: entry's area
+        // fields come from the pass's outlines, none here).
+        let f = recorded_features(&r, None);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0]["properties"], json!({"region": "b", "region_name": "B", "entry": "poly:b.poly"}));
+        assert_eq!(f[0]["geometry"], json!({"type": "MultiPolygon", "coordinates": [[ring]]}));
+        // The regions, outlines left out; every region recorded, drawn or not.
+        assert_eq!(recorded_list(&c), [json!({"id": "b", "name": "B", "outline": ["poly:b.poly", "osm:7"]}), json!({"id": "a", "name": "A", "outline": ["place:1,2,3"]})]);
+        // Catalogs made before catalogs recorded their coverage: none (then it's the recipes').
+        for old in [json!({"regions": []}), Value::Null, json!({"regions": ["northumberland"]})] {
+            assert!(recorded(&catalog(old.clone())).is_empty() && recorded_list(&catalog(old)).is_empty());
+        }
     }
 }

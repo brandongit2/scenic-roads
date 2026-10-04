@@ -49,11 +49,23 @@ export interface Agent {
   built?: Record<string, { built: number; total: number }>;
 }
 
+/** A data source's credit (pipeline::rules::Credit): what came from it, the source as its terms
+ * ask to be named, the terms, and the areas [w, s, e, n] whose data comes from it (none: anywhere). */
+export interface Credit {
+  what: string;
+  source: string;
+  terms: string;
+  areas?: [number, number, number, number][];
+}
+
 export interface CatalogStatus {
   n: number;
   /** When it was published (ISO 8601). */
   created: string;
   units: number;
+  /** The credits of the sources the catalog's data comes from (for a catalog made before catalogs
+   * carried them, every credit the server knows). */
+  credits?: Credit[];
   /** Whether the NAS can be reached (map data not mirrored on this Mac may be missing). */
   online: boolean;
   nas: string | null;

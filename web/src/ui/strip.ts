@@ -7,6 +7,7 @@
 // dialog on the right. Every slot has a fixed width and its elements persist, so nothing moves as
 // the values change.
 import type { Map as MLMap } from 'maplibre-gl';
+import type { Credit } from '../catalog';
 import { CLASS_LABELS, RAIL0, RAIL_GROUPS, ST_BRIDGE, ST_LINK, ST_TUNNEL, ST_UNPAVED } from '../config';
 import type { FeatureSummary } from '../overlays';
 import { legibleCss } from '../linecolour';
@@ -84,7 +85,9 @@ export class Strip {
   private scale: HTMLSpanElement;
   private loading: HTMLSpanElement;
   private build: HTMLSpanElement;
-  private credits: HTMLDialogElement;
+  private credits: { d: HTMLDialogElement; set: (data: Credit[]) => void };
+  /** The data's credits shown, as a key (they come again with every catalog poll). */
+  private creditsKey = '';
   private last: { hov: HoverInfo; info: WayInfo | null | 'loading'; areas: FeatureSummary[] } | null = null;
   private featLine: HTMLSpanElement;
   /** Which factors the bars currently show. */
@@ -117,14 +120,14 @@ export class Strip {
     this.loading = h('span', { class: 'status' });
     this.build = h('span');
     this.credits = creditsDialog();
-    const credits = h('button', { title: 'Data sources, credits and licences', onclick: () => this.credits.showModal() }, '© Credits');
+    const credits = h('button', { title: 'Data sources, credits and licences', onclick: () => this.credits.d.showModal() }, '© Credits');
     root.append(
       this.r1,
       h('div', { class: 'r2' },
         this.info,
         h('span', { class: 'right' }, this.loading, this.coord, this.zoom, this.scale, this.build, credits),
       ),
-      this.credits,
+      this.credits.d,
     );
     map.on('move', () => this.view());
     map.on('mousemove', (ev) => (this.coord.textContent = fmt.coord(ev.lngLat.lat, ev.lngLat.lng)));
@@ -163,6 +166,15 @@ export class Strip {
   /** The build Mac's and the NAS's element (ui/buildstatus.ts keeps it up to date). */
   get buildStatus(): HTMLElement {
     return this.build;
+  }
+
+  /** The credits of the sources the map's data comes from, as its catalog lists them (catalog.ts;
+   * none before its first answer). */
+  setCredits(data: Credit[] | undefined) {
+    const key = JSON.stringify(data ?? []);
+    if (key === this.creditsKey) return;
+    this.creditsKey = key;
+    this.credits.set(data ?? []);
   }
 
   /** A marker or highlighted area (no road under the cursor), with the other areas it lies in. */
@@ -313,58 +325,27 @@ export class Strip {
   }
 }
 
-/** Data sources and licences (from the README), in a modal dialog. */
-function creditsDialog(): HTMLDialogElement {
-  const rows: [string, string, string][] = [
-    ['Roads, water, boundaries, places, parks, points of interest, Indigenous land boundaries', 'OpenStreetMap (Geofabrik extracts); basemap schema by OpenMapTiles', '© OpenStreetMap contributors, ODbL'],
-    ['Road elevation, North America', 'NRCan HRDEM lidar → USGS 3DEP 10 m → NRCan MRDEM 30 m', 'OGL–Canada / public domain'],
-    ['Road elevation, Japan', 'Created by editing GSI Tiles (elevation tiles (Fundamental Geospatial Data Digital Elevation Model)): 地理院タイル（標高タイル（基盤地図情報数値標高モデル））を加工して作成, Geospatial Information Authority of Japan (maps.gsi.go.jp/development/ichiran.html)', 'GSI terms of use (Public Data License 1.0)'],
-    ['Road elevation, Taiwan', '內政部 2025年版全臺灣20公尺網格數值地形模型DTM資料 (Ministry of the Interior, Taiwan, 20 m DTM, 2025 edition). The Open Data is made available to the public under the Open Government Data License, User can make use of it when complying to the condition and obligation of its terms. Open Government Data License: https://data.gov.tw/license', 'Open Government Data License 1.0'],
-    ['Road elevation, Europe, Hong Kong, Singapore (and Taiwan without the MOI DTM)', 'FABDEM v1-2 30 m (University of Bristol / Fathom; Hawker et al. 2022). FABDEM is produced using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA; all rights reserved.', 'CC BY-NC-SA 4.0 (non-commercial)'],
-    ['3D terrain, hill-shading, contours, slope', 'Terrain Tiles (Terrarium) on AWS Open Data', 'Mapzen / various open sources'],
-    ['Tree canopy height & cover (scenic factors, tree cover layer)', 'Meta & WRI global canopy height', 'CC BY 4.0'],
-    ['Forest leaf type, Europe', '© European Union, Copernicus Land Monitoring Service 2018, European Environment Agency (EEA): High Resolution Layer Dominant Leaf Type', 'Copernicus free and open data policy (attribution)'],
-    ['Forest leaf type, North America', '2020 Land Cover of North America (NALCMS): Commission for Environmental Cooperation; NRCan/CCRS, USGS, INEGI, CONAFOR', 'CEC terms of use (attribution)'],
-    ['Land cover', 'ESA WorldCover 2021', 'CC BY 4.0'],
-    ['UNESCO World Heritage', 'UNESCO World Heritage Centre, World Heritage List (data.unesco.org)', '© UNESCO World Heritage Centre, CC BY-SA 4.0'],
-    ['France heritage', 'Ministère de la Culture, base Mérimée (POP); sites patrimoniaux remarquables via the Géoportail de l\'Urbanisme', 'Licence Ouverte 2.0'],
-    ['Andorra heritage', 'Govern d\'Andorra, Inventari general del patrimoni cultural (IDE Andorra)', 'Private, personal use only'],
-    ['Canadian federal designations', 'Parks Canada Directory of Federal Heritage Designations', 'OGL–Canada'],
-    ['US designations', 'NPS National Register of Historic Places', 'Public domain'],
-    ['Québec heritage', 'MCC Répertoire du patrimoine culturel', 'CC BY 4.0'],
-    ['Ontario heritage', 'Ontario Heritage Act Register (Ontario Heritage Trust)', 'Personal non-commercial use only'],
-    ['Nova Scotia heritage', 'Registered Heritage Properties; Halifax (HRM) municipal heritage', 'NS Open Government Licence; HRM open data'],
-    ['NB, PEI, NL, western & northern Canada heritage', 'Canadian Register of Historic Places; Moncton open data', 'Non-commercial reproduction with credit'],
-    ['Biosphere reserves, geoparks, dark-sky places', 'UNESCO MAB & Global Geoparks, DarkSky International, RASC', 'Facts from the official registries'],
-    ['England heritage', '© Historic England, National Heritage List for England; contains Ordnance Survey data © Crown copyright and database right', 'OGL v3'],
-    ['Scotland heritage', 'Contains Historic Environment Scotland and Ordnance Survey data © Historic Environment Scotland – Scottish Charity No. SC045925 © Crown copyright and database right', 'OGL v3'],
-    ['Wales heritage', 'Designated Historic Asset GIS Data, The Welsh Historic Environment Service (Cadw), via DataMapWales', 'OGL v3'],
-    ['Northern Ireland heritage', 'Department for Communities, Historic Environment Division', 'OGL v3'],
-    ['Guernsey heritage', 'States of Guernsey Development & Planning Authority', 'gov.gg terms: research and private use'],
-    ['Ireland heritage', 'National Inventory of Architectural Heritage; National Monuments Service (Department of Housing, Local Government and Heritage)', 'CC BY 4.0'],
-    ['Spain heritage', 'Generalitat de Catalunya; Junta de Castilla y León; Gobierno de Aragón; Generalitat Valenciana; Xunta de Galicia; Gobierno de Navarra (IDENA); Junta de Extremadura; IAPH (Junta de Andalucía)', 'Per region: CC BY / CC BY-SA / free use with credit'],
-    ['Portugal heritage', 'Património Cultural, I.P., Atlas do Património Classificado e em Vias de Classificação', 'CC BY-NC 4.0'],
-    ['Hong Kong heritage', 'Antiquities and Monuments Office, via the Common Spatial Data Infrastructure (CSDI) Portal', 'DATA.GOV.HK terms'],
-    ['Japan heritage', '出典：文化庁 国指定文化財等データベース（https://kunishitei.bunka.go.jp/）を加工して作成 (Agency for Cultural Affairs, Database of National Cultural Properties, edited); preservation districts: 国土数値情報（伝統的建造物群保存地区データ）(MLIT)', 'PDL 1.0 (CC BY 4.0 compatible); CC BY 4.0'],
-    ['Taiwan heritage', '文化部文化資產局 2026 文化資產個案 (Bureau of Cultural Heritage, Ministry of Culture). The Open Data is made available to the public under the Open Government Data License, User can make use of it when complying to the condition and obligation of its terms. Open Government Data License: https://data.gov.tw/license', 'Open Government Data License 1.0'],
-    ['Singapore heritage', 'Contains information from Monuments (NHB), Historic Sites (NHB) and Master Plan 2019 SDCP Conservation Area layer (URA) accessed on 2026-09-29 from data.gov.sg which is made available under the terms of the Singapore Open Data Licence version 1.0 https://data.gov.sg/open-data-licence', 'Singapore Open Data Licence 1.0'],
-    ['Local-language names (some UNESCO sites, biosphere reserves, geoparks, Québec federal sites)', 'Wikidata', 'CC0'],
-    ['Passenger rail lines and services', 'OpenStreetMap route relations and tracks', '© OpenStreetMap contributors, ODbL'],
-    ['Stops & sights details', 'OpenStreetMap tags (heights, lights, hill lists, facilities); Wikidata facts (heights, flow, prominence, isolation, inception, descriptions) via QLever (University of Freiburg)', 'ODbL; Wikidata CC0'],
-    ['Peak prominence & isolation', 'Computed from the terrain tiles (key col by priority flood, nearest higher ground); tagged values (OSM, Wikidata) preferred', 'Derived'],
-    ['Heritage descriptions', 'Wikidata items matched by register ID; English Wikipedia short descriptions; for the most notable sites, 2–3 sentence summaries of their Wikipedia articles written by Claude', 'Wikidata CC0; Wikipedia CC BY-SA 4.0'],
-    ['Park & area details', 'Areas computed from the boundaries; OpenStreetMap protected-area tags; Wikidata (inception, visitors, operator)', 'ODbL; Wikidata CC0'],
-    ['Colour ramps', 'matplotlib (viridis, magma, plasma, inferno, cividis, cubehelix), seaborn (mako, rocket), Google (turbo), ColorBrewer (Cynthia Brewer), Fabio Crameri\u2019s Scientific colour maps (batlow, hawaii, La Jolla, Oslo, Bamako, Tokyo, Vik, Berlin), cmocean (ice), colorcet (fire, Peter Kovesi)', 'ColorBrewer: Apache 2.0; Crameri, cmocean: MIT; colorcet: CC BY 4.0'],
-    ['Rail service frequency', 'Operators\u2019 GTFS timetables (112 feeds via the Mobility Database catalogue and operators: SNCF, Renfe, IDFM, TfI, MTA, MBTA, GO, exo, VIA, Amtrak and others; Great Britain: the Rail Delivery Group timetable as GTFS by Catenary Transit; Singapore: Land Transport Authority, LTA DataMall, under the Singapore Open Data Licence 1.0); MTR frequencies from mtr.com.hk (exact for the Airport Express and High Speed Rail, whose timetables are published in full; other lines a lower bound, at least the service hours at the slowest published off-peak headway)', 'Each operator\u2019s open-data terms'],
-    ['Ferry routes and terminals', 'OpenStreetMap ferry routes and route relations', '© OpenStreetMap contributors, ODbL'],
-    ['Ferry sailings', 'Operators\u2019 published GTFS timetables (listed in each line\u2019s source: MBTA, NYC Ferry, NYC DOT, NY Waterway, STQ, Halifax Transit, BreizhGo, Bacs de Seine, Brittany Ferries, Transtejo Soflusa, Hong Kong Transport Department and others), operators\u2019 timetable pages, and OSM interval tags', 'Each operator\u2019s open-data terms'],
-    ['Roadside buildings', 'Overture Maps Foundation buildings (OpenStreetMap, Microsoft and Google footprints)', 'ODbL · CDLA Permissive 2.0'],
-  ];
+/** The app's own credits, whatever data it shows: the colour ramps it ships. The data's come with
+ * its catalog (pipeline::rules::CREDITS, those of the sources its data comes from). */
+const APP_CREDITS: Credit[] = [
+  {
+    what: 'Colour ramps',
+    source: 'matplotlib (viridis, magma, plasma, inferno, cividis, cubehelix), seaborn (mako, rocket), Google (turbo), ColorBrewer (Cynthia Brewer), Fabio Crameri’s Scientific colour maps (batlow, hawaii, La Jolla, Oslo, Bamako, Tokyo, Vik, Berlin), cmocean (ice), colorcet (fire, Peter Kovesi)',
+    terms: 'ColorBrewer: Apache 2.0; Crameri, cmocean: MIT; colorcet: CC BY 4.0',
+  },
+];
+
+/** Data sources and licences in a modal dialog: the catalog's credits (`set`), then the app's. */
+function creditsDialog(): { d: HTMLDialogElement; set: (data: Credit[]) => void } {
+  const body = h('tbody');
+  const set = (data: Credit[]) =>
+    body.replaceChildren(...[...data, ...APP_CREDITS].map((c) => h('tr', {}, h('td', {}, c.what), h('td', {}, c.source), h('td', {}, c.terms))));
+  set([]);
   const d = h('dialog', { class: 'credits' },
     h('div', { class: 'hd' }, h('b', {}, 'Data sources & licences'), h('button', { class: 'x', title: 'Close', onclick: () => d.close() }, '×')),
     h('table', {},
       h('thead', {}, h('tr', {}, h('th', {}, 'What'), h('th', {}, 'Source'), h('th', {}, 'Licence / terms'))),
-      h('tbody', {}, ...rows.map(([a, b, c]) => h('tr', {}, h('td', {}, a), h('td', {}, b), h('td', {}, c)))),
+      body,
     ),
     h('p', { class: 'faint' }, 'For personal use: do not publish or redistribute the built data or a hosted copy of this map.'),
   );
@@ -372,5 +353,5 @@ function creditsDialog(): HTMLDialogElement {
   d.addEventListener('click', (e) => {
     if (e.target === d) d.close();
   });
-  return d;
+  return { d, set };
 }
