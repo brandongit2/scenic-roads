@@ -13,8 +13,10 @@ NAS=brandontsang@fishandchips.local
 STORE=/volume1/personal/projects/scenic-roads/sources/aws-terrarium
 work=$(mktemp -d)
 trap 'rm -rf $work' EXIT
+# (Synology keeps metadata beside each file a Mac wrote over SMB, in @eaDir folders: a folder and
+# a file per tile, which the listing passes over.)
 remote_list() {
-  ssh -o BatchMode=yes $NAS "cd $STORE && find . -type f \( -name '*.png' -o -name '*.none' \) -printf '%P %s\n' | sort"
+  ssh -o BatchMode=yes $NAS "cd $STORE && find . -name @eaDir -prune -o -type f \( -name '*.png' -o -name '*.none' \) -printf '%P %s\n' | sort"
 }
 # (Files at least a minute old: a running job's newest may still be written.)
 (cd "$CACHE" && find . -type f \( -name '*.png' -o -name '*.none' \) -mmin +1 -print0 | xargs -0 stat -f '%N %z' | sed 's|^\./||' | sort) > $work/local
