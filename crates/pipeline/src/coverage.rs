@@ -58,15 +58,22 @@ impl Shape {
         Shape { source, rings, buffer_m, bbox, grid }
     }
 
-    /// Whether `p` (E7) is inside, or within the buffer of the boundary.
-    pub fn contains(&self, p: [i32; 2]) -> bool {
+    /// The grid cell of `p`, which must be inside the box.
+    fn cell(&self, p: [i32; 2]) -> usize {
+        let g = &self.grid;
+        let cx = (((p[0] as f64 - g.x0) / g.cw) as usize).min(g.nx - 1);
+        let cy = (((p[1] as f64 - g.y0) / g.ch) as usize).min(g.ny - 1);
+        cy * g.nx + cx
+    }
+
+    /// Whether `p` (E7) is inside the rings (even–odd), the buffer aside.
+    fn inside(&self, p: [i32; 2]) -> bool {
         if p[0] < self.bbox[0] || p[0] > self.bbox[2] || p[1] < self.bbox[1] || p[1] > self.bbox[3] {
             return false;
         }
         let g = &self.grid;
-        let cx = (((p[0] as f64 - g.x0) / g.cw) as usize).min(g.nx - 1);
-        let cy = (((p[1] as f64 - g.y0) / g.ch) as usize).min(g.ny - 1);
-        let c = cy * g.nx + cx;
+        let c = self.cell(p);
+        let (cx, cy) = (c % g.nx, c / g.nx);
         let centre = [(g.x0 + (cx as f64 + 0.5) * g.cw) as i64, (g.y0 + (cy as f64 + 0.5) * g.ch) as i64];
         let pp = [p[0] as i64, p[1] as i64];
         let mut ins = g.centre[c];
@@ -77,12 +84,21 @@ impl Shape {
                 ins = !ins;
             }
         }
-        if ins {
+        ins
+    }
+
+    /// Whether `p` (E7) is inside, or within the buffer of the boundary.
+    pub fn contains(&self, p: [i32; 2]) -> bool {
+        if p[0] < self.bbox[0] || p[0] > self.bbox[2] || p[1] < self.bbox[1] || p[1] > self.bbox[3] {
+            return false;
+        }
+        if self.inside(p) {
             return true;
         }
         if self.buffer_m <= 0.0 {
             return false;
         }
+        let (g, c) = (&self.grid, self.cell(p));
         let kx = M_PER_E7 * (p[1] as f64 * 1e-7).to_radians().cos();
         let lim = self.buffer_m * self.buffer_m;
         g.edges[c].iter().any(|&(r, i)| {
@@ -99,11 +115,23 @@ impl Shape {
         if r[0] > self.bbox[2] || r[2] < self.bbox[0] || r[1] > self.bbox[3] || r[3] < self.bbox[1] {
             return false;
         }
-        // The box grown by the buffer, at its latitude furthest from the equator.
+        if self.edges_meeting(self.grown(r), &mut |_, _| true) {
+            return true;
+        }
+        // No edge meets it: the box is all inside or all outside.
+        self.contains([((r[0] as i64 + r[2] as i64) / 2) as i32, ((r[1] as i64 + r[3] as i64) / 2) as i32])
+    }
+
+    /// The box w, s, e, n (E7) grown by the buffer, at its latitude furthest from the equator.
+    fn grown(&self, r: [i32; 4]) -> [i64; 4] {
         let lat = (r[1].unsigned_abs().max(r[3].unsigned_abs()) as f64 * 1e-7).min(85.0);
         let (bx, by) = if self.buffer_m > 0.0 { ((self.buffer_m / (M_PER_E7 * lat.to_radians().cos())).ceil() as i64, (self.buffer_m / M_PER_E7).ceil() as i64) } else { (0, 0) };
-        let rg = [r[0] as i64 - bx, r[1] as i64 - by, r[2] as i64 + bx, r[3] as i64 + by];
-        // Edges near the box: those listed in the grid cells it overlaps (a superset).
+        [r[0] as i64 - bx, r[1] as i64 - by, r[2] as i64 + bx, r[3] as i64 + by]
+    }
+
+    /// Calls `f` with each ring edge meeting the box `rg` (from the grid cells the box overlaps, so
+    /// an edge crossing several cells comes several times), until it returns true; whether one did.
+    fn edges_meeting(&self, rg: [i64; 4], f: &mut dyn FnMut([i32; 2], [i32; 2]) -> bool) -> bool {
         let g = &self.grid;
         let cell = |v: f64, v0: f64, size: f64, n: usize| (((v - v0) / size).floor().max(0.0) as usize).min(n - 1);
         let (cx0, cx1) = (cell(rg[0] as f64, g.x0, g.cw, g.nx), cell(rg[2] as f64, g.x0, g.cw, g.nx));
@@ -113,14 +141,38 @@ impl Shape {
                 for &(ri, i) in &g.edges[cy * g.nx + cx] {
                     let ring = &self.rings[ri as usize];
                     let (a, b) = (ring[i as usize], ring[(i as usize + 1) % ring.len()]);
-                    if segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) {
+                    if segment_meets_box([a[0] as i64, a[1] as i64], [b[0] as i64, b[1] as i64], rg) && f(a, b) {
                         return true;
                     }
                 }
             }
         }
-        // No edge meets it: the box is all inside or all outside.
-        self.contains([((r[0] as i64 + r[2] as i64) / 2) as i32, ((r[1] as i64 + r[3] as i64) / 2) as i32])
+        false
+    }
+
+    /// The shape as it is inside the box w, s, e, n (E7): whether the box's south-west corner is
+    /// inside the rings, and every ring edge meeting the box grown by the buffer. That decides which
+    /// points of the box the shape contains: a point's inside-ness is the corner's, flipped by the
+    /// edges crossing the line between them (inside the box), and its buffer reads the edges within
+    /// the buffer of it. None when the shape has nothing in the box.
+    fn fingerprint(&self, r: [i32; 4]) -> Option<String> {
+        let rg = self.grown(r);
+        if rg[0] > self.bbox[2] as i64 || rg[2] < self.bbox[0] as i64 || rg[1] > self.bbox[3] as i64 || rg[3] < self.bbox[1] as i64 {
+            return None;
+        }
+        let mut edges: Vec<[i32; 4]> = Vec::new();
+        self.edges_meeting(rg, &mut |a, b| {
+            // (Direction doesn't matter to which points are inside.)
+            edges.push(if (a[0], a[1]) <= (b[0], b[1]) { [a[0], a[1], b[0], b[1]] } else { [b[0], b[1], a[0], a[1]] });
+            false
+        });
+        let corner = self.inside([r[0], r[1]]);
+        if edges.is_empty() && !corner {
+            return None;
+        }
+        edges.sort_unstable();
+        edges.dedup();
+        Some(format!("{}:{}:{}", self.buffer_m, corner as u8, store::naming::hash16(bytemuck::cast_slice(&edges))))
     }
 }
 
@@ -320,6 +372,17 @@ impl Coverage {
         self.shapes.iter().any(|s| s.meets_rect(b))
     }
 
+    /// The coverage as it is inside the box w, s, e, n (E7): its shapes' fingerprints there
+    /// (`Shape::fingerprint`), each once, by geometry alone (not which region a shape came from).
+    /// Equal fingerprints mean the same points of the box are covered, so a job keyed on the box it
+    /// reads reruns only when the coverage changes there.
+    pub fn fingerprint(&self, b: [i32; 4]) -> String {
+        let mut v: Vec<String> = self.shapes.iter().filter_map(|s| s.fingerprint(b)).collect();
+        v.sort();
+        v.dedup();
+        v.join(",")
+    }
+
     /// Whether a way (its vertices) touches the coverage.
     pub fn touches(&self, verts: &[[i32; 2]]) -> bool {
         verts.iter().any(|&p| self.contains(p))
@@ -416,6 +479,31 @@ mod tests {
         assert!(c.touches(&[e7(0.0, 0.0), e7(10.1, 10.1)]));
         let bad = vec![Recipe { id: "b".into(), name: "B".into(), outline: vec!["osm:1".into()] }];
         assert!(Coverage::from_recipes(&bad, None, d.path()).is_err());
+    }
+
+    #[test]
+    fn fingerprints_see_only_their_box() {
+        let b = |w: f64, s: f64, e: f64, n: f64| [e7(w, s)[0], e7(w, s)[1], e7(e, n)[0], e7(e, n)[1]];
+        let quad = |south: f64, north: f64| vec![vec![e7(0.0, south), e7(1.0, south), e7(1.0, north), e7(0.0, north)]];
+        let fp = |rings: Vec<Vec<[i32; 2]>>, bx: [i32; 4]| Coverage { shapes: vec![Shape::new("r: poly:x".into(), rings, 0.0)] }.fingerprint(bx);
+        // A box across the south edge.
+        let across = b(0.2, 49.9, 0.4, 50.1);
+        let f0 = fp(quad(50.0, 51.0), across);
+        assert!(!f0.is_empty());
+        assert_eq!(fp(quad(50.0, 51.3), across), f0, "the north edge moved, far from the box");
+        assert_ne!(fp(quad(50.05, 51.0), across), f0, "the south edge moved through the box");
+        // A box wholly inside: covered, whatever the edges far away do; wholly outside: nothing.
+        let inner = b(0.4, 50.4, 0.6, 50.6);
+        assert!(!fp(quad(50.0, 51.0), inner).is_empty());
+        assert_eq!(fp(quad(50.0, 51.0), inner), fp(quad(49.0, 52.0), inner));
+        assert_eq!(fp(quad(50.0, 51.0), b(2.0, 50.4, 2.2, 50.6)), "");
+        // Same geometry from another region or entry: the same fingerprint.
+        let two = Coverage { shapes: vec![Shape::new("a: poly:x".into(), quad(50.0, 51.0), 0.0), Shape::new("b: osm:1".into(), quad(50.0, 51.0), 0.0)] };
+        assert_eq!(two.fingerprint(across), f0);
+        // The buffer: an edge 0.5 km outside the box is within a 1 km buffer of it.
+        let near = b(0.2, 49.9, 0.4, 49.995);
+        let buffered = |south: f64| Coverage { shapes: vec![Shape::new("o".into(), quad(south, 51.0), 1000.0)] }.fingerprint(near);
+        assert_ne!(buffered(50.0), buffered(50.001), "the edge moved within the buffer's reach");
     }
 
     #[test]

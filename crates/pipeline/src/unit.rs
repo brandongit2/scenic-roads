@@ -5,8 +5,10 @@
 //!
 //! Before the expensive steps the folder is cut down to the ways that touch the coverage (whoever
 //! owns them: a way just outside still gives the clean-up its junction context at shared nodes).
-//! The global-source layers come from the catalog's packs (`stage`). Each unit has its own slice of
-//! the per-vertex DEM cache (`dem/sample.py` keeps only the vertices of its last run).
+//! The global-source layers come from the catalog's packs (`stage`). Each unit reads a slice of the
+//! per-vertex DEM cache: today's cache (the seed, copied once from the NAS's `sources/dem-cache/`)
+//! and the samples every unit kept from its last run (`dem_samples_keep`), so a vertex is sampled
+//! from the DEM servers once.
 
 use crate::coverage::Coverage;
 use crate::legacy::Unit;
@@ -15,41 +17,139 @@ use roadcore::WayRec;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Copies the DEM cache entries inside `b` (w, s, e, n, E7) from `src` (`dem-cache.*` files) to
-/// `dst`. Keys are `(lon + 2³¹) << 32 | (lat + 2³¹)`, sorted, so a longitude range is contiguous.
-pub fn dem_cache_slice(src: &Path, b: [i32; 4], dst: &Path) -> Result<usize> {
-    std::fs::create_dir_all(dst)?;
-    let open = |n: &str| roadcore::mmap(&src.join(format!("dem-cache.{n}")));
-    let (km, em, sm) = match (open("keys.u64"), open("elev.f32"), open("src.u8")) {
-        (Ok(k), Ok(e), Ok(s)) => (k, e, s),
-        _ => {
-            // No cache yet: an empty slice (sample.py samples everything).
-            return Ok(0);
-        }
-    };
-    let keys: &[u64] = bytemuck::cast_slice(&km[..]);
-    let elev: &[f32] = bytemuck::cast_slice(&em[..]);
-    let srcs: &[u8] = &sm[..];
-    ensure!(keys.len() == elev.len() && keys.len() == srcs.len(), "DEM cache files out of step");
-    let k = |lon: i32, lat: i32| (((lon as i64 + (1i64 << 31)) as u64) << 32) | ((lat as i64 + (1i64 << 31)) as u64);
-    let lo = keys.partition_point(|&x| x < k(b[0], i32::MIN));
-    let hi = keys.partition_point(|&x| x <= k(b[2], i32::MAX));
-    let lat_of = |x: u64| ((x & 0xffff_ffff) as i64 - (1i64 << 31)) as i32;
-    let (mut ok, mut oe, mut os) = (Vec::new(), Vec::new(), Vec::new());
+/// A DEM cache key: `(lon + 2³¹) << 32 | (lat + 2³¹)` (E7), so sorted keys keep a longitude range
+/// contiguous.
+fn dem_key(lon: i32, lat: i32) -> u64 {
+    (((lon as i64 + (1i64 << 31)) as u64) << 32) | ((lat as i64 + (1i64 << 31)) as u64)
+}
+
+fn dem_lon_lat(x: u64) -> (i32, i32) {
+    (((x >> 32) as i64 - (1i64 << 31)) as i32, ((x & 0xffff_ffff) as i64 - (1i64 << 31)) as i32)
+}
+
+/// The entries of sorted DEM cache arrays inside `b` (w, s, e, n, E7).
+fn dem_in_box(keys: &[u64], elev: &[f32], srcs: &[u8], b: [i32; 4], out: &mut Vec<(u64, f32, u8)>) {
+    let lo = keys.partition_point(|&x| x < dem_key(b[0], i32::MIN));
+    let hi = keys.partition_point(|&x| x <= dem_key(b[2], i32::MAX));
     for i in lo..hi {
-        let lat = lat_of(keys[i]);
+        let lat = dem_lon_lat(keys[i]).1;
         if lat >= b[1] && lat <= b[3] {
-            ok.push(keys[i]);
-            oe.push(elev[i]);
-            os.push(srcs[i]);
+            out.push((keys[i], elev[i], srcs[i]));
         }
     }
+}
+
+/// The per-unit DEM samples (`<cache>/dem-units/<unit>.dem`): one file per unit, replaced after each
+/// of its runs (written whole, then renamed): "RDDEM001", the count (u64), the box of its points
+/// (4 × i32, E7), then the sorted keys (u64), elevations (f32) and sources (u8).
+const DEM_UNITS: &str = "dem-units";
+const DEM_MAGIC: &[u8; 8] = b"RDDEM001";
+
+/// Keeps a unit's DEM samples (the `dem-cache.*` sample.py left in `from`: its vertices, cached or
+/// sampled anew) for later runs of it and of its neighbours. Returns how many.
+pub fn dem_samples_keep(cache: &Path, u: Unit, from: &Path) -> Result<usize> {
+    let read = |n: &str| std::fs::read(from.join(format!("dem-cache.{n}")));
+    let (Ok(kb), Ok(eb), Ok(sb)) = (read("keys.u64"), read("elev.f32"), read("src.u8")) else { return Ok(0) };
+    let keys: Vec<u64> = bytemuck::pod_collect_to_vec(&kb);
+    let n = keys.len();
+    ensure!(eb.len() == 4 * n && sb.len() == n, "{}: DEM cache files out of step", from.display());
+    let mut bb = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+    for &k in &keys {
+        let (lon, lat) = dem_lon_lat(k);
+        bb = [bb[0].min(lon), bb[1].min(lat), bb[2].max(lon), bb[3].max(lat)];
+    }
+    let dir = cache.join(DEM_UNITS);
+    std::fs::create_dir_all(&dir)?;
+    let mut f = Vec::with_capacity(32 + 13 * n);
+    f.extend_from_slice(DEM_MAGIC);
+    f.extend_from_slice(&(n as u64).to_le_bytes());
+    for v in bb {
+        f.extend_from_slice(&v.to_le_bytes());
+    }
+    f.extend_from_slice(&kb);
+    f.extend_from_slice(&eb);
+    f.extend_from_slice(&sb);
+    let p = dir.join(format!("{}.dem", u.dash()));
+    let tmp = p.with_extension("dem.tmp");
+    std::fs::write(&tmp, &f)?;
+    std::fs::rename(&tmp, &p)?;
+    Ok(n)
+}
+
+/// Copies the DEM cache entries inside `b` (w, s, e, n, E7) into `dst` (`dem-cache.*` files, for
+/// sample.py): the seed's (`cache`'s `dem-cache.*`, today's cache), then every unit's kept samples
+/// whose box meets `b` (`dem_samples_keep`), which win over the seed's (they're newer).
+pub fn dem_cache_slice(cache: &Path, b: [i32; 4], dst: &Path) -> Result<usize> {
+    std::fs::create_dir_all(dst)?;
+    let mut all: Vec<(u64, f32, u8)> = Vec::new();
+    let open = |n: &str| roadcore::mmap(&cache.join(format!("dem-cache.{n}")));
+    if let (Ok(km), Ok(em), Ok(sm)) = (open("keys.u64"), open("elev.f32"), open("src.u8")) {
+        let (keys, elev): (&[u64], &[f32]) = (bytemuck::cast_slice(&km[..]), bytemuck::cast_slice(&em[..]));
+        ensure!(keys.len() == elev.len() && keys.len() == sm.len(), "DEM cache files out of step");
+        dem_in_box(keys, elev, &sm[..], b, &mut all);
+    }
+    // (No seed: the units' samples, or an empty slice, and sample.py samples the rest.)
+    let seed = all.len();
+    let mut units: Vec<PathBuf> = std::fs::read_dir(cache.join(DEM_UNITS)).map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "dem")).collect()).unwrap_or_default();
+    units.sort();
+    let mut newer: Vec<(u64, f32, u8)> = Vec::new();
+    for p in &units {
+        let f = std::fs::read(p)?;
+        ensure!(f.len() >= 32 && &f[..8] == DEM_MAGIC, "{}: not a DEM samples file", p.display());
+        let n = u64::from_le_bytes(f[8..16].try_into().unwrap()) as usize;
+        ensure!(f.len() == 32 + 13 * n, "{}: truncated", p.display());
+        let i32_at = |i: usize| i32::from_le_bytes(f[i..i + 4].try_into().unwrap());
+        let ub = [i32_at(16), i32_at(20), i32_at(24), i32_at(28)];
+        if ub[0] > b[2] || ub[2] < b[0] || ub[1] > b[3] || ub[3] < b[1] {
+            continue;
+        }
+        let keys: Vec<u64> = bytemuck::pod_collect_to_vec(&f[32..32 + 8 * n]);
+        let elev: Vec<f32> = bytemuck::pod_collect_to_vec(&f[32 + 8 * n..32 + 12 * n]);
+        dem_in_box(&keys, &elev, &f[32 + 12 * n..], b, &mut newer);
+    }
+    // The units' samples first, so a stable dedup keeps theirs (by file name order among them).
+    newer.extend(all);
+    newer.sort_by_key(|e| e.0);
+    newer.dedup_by_key(|e| e.0);
+    let (ok, oe, os): (Vec<u64>, Vec<f32>, Vec<u8>) = (newer.iter().map(|e| e.0).collect(), newer.iter().map(|e| e.1).collect(), newer.iter().map(|e| e.2).collect());
     for (n, bytes) in [("keys.u64", bytemuck::cast_slice::<u64, u8>(&ok)), ("elev.f32", bytemuck::cast_slice(&oe)), ("src.u8", &os[..])] {
         let tmp = dst.join(format!("dem-cache.{n}.tmp"));
         std::fs::write(&tmp, bytes)?;
         std::fs::rename(&tmp, dst.join(format!("dem-cache.{n}")))?;
     }
+    if ok.len() > seed {
+        eprintln!("  DEM cache: {} of the slice's {} entries from units' kept samples", ok.len() - seed, ok.len());
+    }
     Ok(ok.len())
+}
+
+/// Puts today's DEM cache (the seed) in `cache` when it isn't there whole, from the NAS's copy
+/// (`sources/dem-cache/`): once per build Mac. Without one the units sample every vertex anew.
+pub fn dem_seed(root: &Path, cache: &Path) -> Result<()> {
+    let names = ["keys.u64", "elev.f32", "src.u8"];
+    let len = |p: PathBuf| std::fs::metadata(p).map(|m| m.len()).ok();
+    let here: Vec<Option<u64>> = names.iter().map(|n| len(cache.join(format!("dem-cache.{n}")))).collect();
+    let whole = |l: &[Option<u64>]| matches!(l, [Some(k), Some(e), Some(s)] if *k == 8 * *s && *e == 4 * *s);
+    if whole(&here) {
+        return Ok(());
+    }
+    let src = root.join("sources/dem-cache");
+    let there: Vec<Option<u64>> = names.iter().map(|n| len(src.join(format!("dem-cache.{n}")))).collect();
+    if !whole(&there) {
+        eprintln!("unit: no DEM cache to start from on the NAS ({}); sampling every vertex anew", src.display());
+        return Ok(());
+    }
+    std::fs::create_dir_all(cache)?;
+    let t = std::time::Instant::now();
+    // Each file whole before the next (a half-copied one is copied again: its length is wrong).
+    for n in names {
+        let (from, to) = (src.join(format!("dem-cache.{n}")), cache.join(format!("dem-cache.{n}")));
+        let tmp = to.with_extension(format!("{}.tmp", to.extension().unwrap().to_string_lossy()));
+        std::fs::copy(&from, &tmp).with_context(|| format!("copy {}", from.display()))?;
+        std::fs::rename(&tmp, &to)?;
+    }
+    eprintln!("unit: DEM cache copied from the NAS ({:.0?})", t.elapsed());
+    Ok(())
 }
 
 /// Rewrites a build folder's `ways.bin` and `verts.bin` keeping the ways `keep` says (in order);
@@ -91,7 +191,8 @@ pub struct Tools {
     pub bin: PathBuf,
     /// The repository's `dem/` folder (run with `uv run python`).
     pub dem: PathBuf,
-    /// Shared caches: `chm10/` (canopy 10° files) and `dem-cache.*` (per-vertex elevations).
+    /// Shared caches: `chm10/` (canopy 10° files), `dem-cache.*` (today's per-vertex elevations, the
+    /// seed) and `dem-units/` (the units' own samples).
     pub cache: PathBuf,
     /// Overture building boxes (`data/buildings`), when there are any.
     pub buildings: Option<PathBuf>,
@@ -158,6 +259,8 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
     let mut c = Command::new("uv");
     c.current_dir(&tools.dem).args(["run", "python", "sample.py"]).arg(dir).arg("--cache").arg(dir.join("dem-cache"));
     run(c, "elevations (sample.py)", &log)?;
+    // Its samples, kept for its later runs and its neighbours' (new ones aren't sampled twice).
+    dem_samples_keep(&tools.cache, u, &dir.join("dem-cache"))?;
     // 4. The global-source layers the steps read, from the packs.
     let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     rep.staged = crate::stage::stage(src, b, dir)?;
@@ -216,6 +319,21 @@ mod tests {
         assert_eq!(got, vec![k(0, 0), k(3, 3), k(5, -1)]);
         // No cache: an empty slice.
         assert_eq!(dem_cache_slice(&d.path().join("none"), [0, 0, 1, 1], &d.path().join("t")).unwrap(), 0);
+        // A unit's kept samples: in the slices of boxes meeting them, over the seed's.
+        let run = d.path().join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        let mine = [k(3, 3), k(4, 4)];
+        std::fs::write(run.join("dem-cache.keys.u64"), bytemuck::cast_slice(&mine)).unwrap();
+        std::fs::write(run.join("dem-cache.elev.f32"), bytemuck::cast_slice(&[30.0f32, 40.0])).unwrap();
+        std::fs::write(run.join("dem-cache.src.u8"), [1u8, 1]).unwrap();
+        assert_eq!(dem_samples_keep(d.path(), Unit { z: 6, x: 1, y: 2 }, &run).unwrap(), 2);
+        assert_eq!(dem_cache_slice(d.path(), [-5, -5, 10, 10], &d.path().join("u")).unwrap(), 4);
+        let got: Vec<u64> = bytemuck::pod_collect_to_vec(&std::fs::read(d.path().join("u/dem-cache.keys.u64")).unwrap());
+        let el: Vec<f32> = bytemuck::pod_collect_to_vec(&std::fs::read(d.path().join("u/dem-cache.elev.f32")).unwrap());
+        assert_eq!(got, vec![k(0, 0), k(3, 3), k(4, 4), k(5, -1)]);
+        assert_eq!(el[1], 30.0, "the unit's sample, not the seed's");
+        // A box away from them: the seed's only.
+        assert_eq!(dem_cache_slice(d.path(), [-15, -15, -5, 10], &d.path().join("v")).unwrap(), 2);
     }
 
     #[test]

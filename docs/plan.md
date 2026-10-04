@@ -92,6 +92,7 @@ the NAS does itself. The jobs (§8 has their order and keys):
 2. **Worldwide jobs, once per pass:**
    - a finished pass's missing sets;
    - hiking routes' ends;
+   - each unit's reach: where the roads, rail and ferries of its piece go (§5);
    - summits;
    - place labels;
    - once ever, the worldwide z8 terrain for peaks.
@@ -127,7 +128,7 @@ deletions over SMB bypass it (tested 2026-10-02).
 ```
 translations/  descriptions/  the user's drop-ins (descriptions/README.md; todo/: planned)
 inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), ferries/freq/ (timetables), hold-catalog
-sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, pass), basemap/
+sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass), basemap/
                (Planetiler's jar and data), registers/ (the registers snapshot), items/<date>/,
                terrain-z8-v1, legacy/ (today's map's build inputs, until the cutover)
 base/          base packs, one per unit
@@ -215,7 +216,9 @@ steps merge their manifest changes under a lock. The exceptions:
 - **Caches** (`~/Library/Application Support/scenic/agent/cache`):
   - AWS's raw terrain tiles;
   - canopy 10° files;
-  - the per-vertex DEM cache (today's, read as a seed);
+  - the per-vertex DEM cache: today's, copied once from `sources/dem-cache/` (the seed), and each
+    unit's samples from its last run (`dem-units/`), so a vertex is sampled from the DEM servers
+    once;
   - Wikidata and pageview caches;
   - the registers snapshot, extracted;
   - the pack cache: base packs for pack(T) not in its mirror, pruned every run and cleared when an
@@ -299,16 +302,21 @@ the region. Each entry is one of these:
 **Coverage** is the union of the outlines.
 - **What gets built:** a feature is built if it touches the coverage. For a way, that means any node
   inside, as Geofabrik does. Ways are kept whole, so roads end a little past the edge.
-- **Units:** the z6 tiles whose box meets a shape's buffered bounding box. Each tests its own
-  features exactly (a cell grid per outline).
+- **Units:** chosen by their reach, worked out once per pass from each piece's roads, rail and
+  ferries (`sources/osm/<date>/reach`, `pipeline::reach`).
+  - Most of a unit's ways stay within its tile + 20 km; of those, the box of the ones it owns is
+    kept. The few that reach further (ferries, long rural roads) are kept whole.
+  - A unit is built when its owned box meets the coverage, or one of its own long ways touches it.
+    So a road starting in a tile far from every outline is built when it enters the coverage.
+  - The unit step then keeps exactly the ways touching the coverage (a cell grid per outline).
 - **Builds depend on coverage, never on regions.**
   - Renaming a region rebuilds nothing.
-  - Changing an outline reruns what its shapes reach: the units, the terrain packs and the
-    heritage-sites job.
   - Shapes enter keys by their geometry alone, never by their region, so renaming, splitting or
     merging regions with the same outlines reruns nothing.
-  - A gap (§10): keys follow shapes' bounding boxes where the design wanted each unit's selection,
-    the ids of the features it builds.
+  - A job is keyed on the coverage inside the box it reads (`Coverage::fingerprint`: which edges
+    cross the box, and whether a corner is inside), so changing an outline reruns only what its
+    changed part reaches: the units (their tile + 20 km, and whether each long way touches the
+    coverage), the terrain packs, the landmark candidates and the heritage-sites job.
 - **Shrinking** leaves global-source tiles in place, which is harmless.
 
 **Today's set:** 34 recipes (`tools/cutover/regions`).
@@ -316,8 +324,11 @@ the region. Each entry is one of these:
 - Gibraltar, Saint-Pierre-et-Miquelon and Singapore are `osm:` relations.
 - Their coverage meets 482 z6 units.
 
-**By location.** These rules depend on where a thing is. Today each is written into its step; the
-plan is modules declared per ISO 3166-1 country or 3166-2 subdivision, with defaults:
+**By location.** These rules depend on where a thing is. Today each is written into its step, and the
+units' ones (DEM order, densification, road network codes) are versioned by area in
+`pipeline::rules`: a unit's key names the versions of the rules where its ways go, so a changed
+rule (its version bumped) reruns only the units it applies to. The plan is modules declared per ISO
+3166-1 country or 3166-2 subdivision, with defaults:
 - DEM order (`dem/sample.py`) and densification spacing (8 m in North America and Japan, 15 m
   elsewhere: `extract`);
 - heritage registers (the snapshot, `dem/heritage.py`);
@@ -438,7 +449,9 @@ The server builds missing deeper terrain and slope tiles from their ancestors.
 The unit job runs today's steps on a unit-sized folder, wiped at each run:
 1. **extract:** on U's piece, U's ways that touch the coverage, by today's rules. Rail tracks without
    a route relation are kept by type.
-2. **Elevations:** `sample.py`, DEMs by location, on U's slice of the per-vertex DEM cache.
+2. **Elevations:** `sample.py`, DEMs by location, on U's slice of the per-vertex DEM cache (the seed,
+   and the units' kept samples, which win). U's samples are kept afterwards for its later runs and
+   its neighbours'.
 3. **Heritage:** the sites and designated areas of the heritage-sites job's slices within U + 30 km.
    `areaflags.py` rasterises the areas onto U's grid.
 4. **Terrain and grids:** terrain z11 and the grids, staged from the packs (as the build manifest has
@@ -449,7 +462,10 @@ The unit job runs today's steps on a unit-sized folder, wiped at each run:
 7. **Output:**
    - the base pack: per-vertex arrays and records, indexed by z9 sub-tile;
    - `global/roads/<u>`;
+   - `global/roaden/<u>`: the roads' own English (OSM's `name:en` where it isn't the name);
    - `grid-*` hi packs for U's tile when it made grid tiles.
+   - A unit left with none of its ways in the coverage drops its base pack, road values and
+     English.
 
 Elevations are u16 decimetres from −500 m (to 6,053.5 m). Packs made before 2026-10-03 hold i16,
 clamped at ±3,200 m, and readers take both.
@@ -490,11 +506,12 @@ Landmark candidates and peaks have their own per-unit jobs (`docs/phase5.md`).
 ### Job keys
 
 A job's key is its step version plus what it reads, mostly by content name. The ones that cascade:
-- **terrain (per z3 pack):** the z6 tiles to build, and the coverage's shapes near it;
+- **terrain (per z3 pack):** the z6 tiles to build, and the coverage inside its z3 tile + 20 km;
 - **slope:** its terrain pack;
 - **heritage-sites:** the pass, its areas set, the registers snapshot, the coverage;
-- **unit:** its piece, the pass's road values, the coverage's shapes within 10 km, the terrain and
-  grid hi packs within 30 km, and its heritage slices;
+- **unit:** its piece, the pass's road values, the coverage as its ways meet it (inside its tile +
+  20 km, and whether each long way touches it), the versions of the location rules where its ways
+  go, the terrain and grid hi packs within 30 km, and its heritage slices;
 - **pack(T):** every base pack and road-values file within T + 110 km;
 - **lo:** the base packs and road values within 110 km of its z3 tile.
 
@@ -687,6 +704,7 @@ are no request files.
 2. **The pass's worldwide jobs:**
    - `pass-sets`;
    - hiking routes' ends;
+   - the units' reach (`reach`);
    - `terrain-z8` (once);
    - summits;
    - labels.
@@ -856,36 +874,27 @@ are added.
 2. **GC never sweeps `sources/`.** A retired pass's planet, filtered file, pieces, sets and road
    values stay, about 200 GB a pass. `work/pois` and `work/peaks` of units that leave the coverage
    stay referenced for good.
-3. **Keys are coarser than the design.**
-   - Redrawing an outline reruns every unit whose box meets it, not only those whose features
-     changed (the design: U's selection).
-   - Unit keys hold no DEM-source or module versions, so a new rule needs a step version bump.
-4. **New regions miss what today's coverage has from converted files:**
+3. **New regions miss what today's coverage has from converted files:**
    - trees;
    - roadside buildings (Overture boxes for today's regions only);
    - trains a day;
-   - roads' own English;
    - heritage points and area overlays (until the heritage switch).
    - Taiwan's MOI DTM has no place on the NAS: tgos.tw refuses requests from outside Taiwan, so
      FABDEM serves.
-5. **Caches don't carry over between unit runs.**
-   - Each unit run recomputes every scenic sample.
-   - It re-samples new vertices from the DEM servers: today's DEM cache is a read-only seed, and new
-     samples aren't kept.
-6. **Unit selection:** a way starting in a z6 tile whose box meets no shape's bounding box, but
-   entering the coverage, isn't built.
-7. **Server details:**
+4. **The scenic cache doesn't carry over between unit runs:** each unit run recomputes every scenic
+   sample.
+5. **Server details:**
    - The Regions API reads and writes the share outside the I/O pool, so a hung mount can hold a
      request.
    - A basemap tile's 304 still reads the NAS while the basemap isn't mirrored.
-8. **The agent:**
+6. **The agent:**
    - It runs nothing away from home, since every job needs the NAS (the design let local steps go
      on).
-9. **Catalogs:**
+7. **Catalogs:**
    - `credits` and `coverage` are empty: `/api/coverage` builds the coverage per request.
-10. **The repo:**
-    - `nas/fetch-planet.sh` lives only on the NAS.
-    - `inputs/keys.env` is read by nothing (`dem/railgtfs.py` still reads `data/keys.env`).
+8. **The repo:**
+   - `nas/fetch-planet.sh` lives only on the NAS.
+   - `inputs/keys.env` is read by nothing (`dem/railgtfs.py` still reads `data/keys.env`).
 
 ## 11. Risks and checks
 
@@ -903,8 +912,8 @@ are added.
   - the densest (Kanto, a 3 GB base pack converted) is first built in the cutover;
   - if a unit or its 110 km halo doesn't fit in 48 GB, units split into z7 or z8 tiles, and pack(T)
     by z7.
-- **Remote DEM servers** may be slow or change. Today's cache seeds the units; its new samples aren't
-  kept (§10).
+- **Remote DEM servers** may be slow or change. Today's cache seeds the units, and their new samples
+  are kept, on the build Mac only: losing its cache costs sampling those again.
 - **Version bumps at globe scale** would take days: today a bump makes every target stale in the
   normal order.
 - **Way ids past u32** (2040s): the tile format is versioned.

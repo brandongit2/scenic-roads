@@ -38,6 +38,8 @@ struct RawWay {
     lanes: u8,
     maxspeed: u16,
     name: String,
+    /// OSM's English name (`name:en`), roads only.
+    name_en: String,
     ref_: String,
     surface: String,
     refs: Vec<i64>,
@@ -660,6 +662,7 @@ fn main() -> Result<()> {
                                 lanes: t.get("lanes").and_then(|v| v.parse().ok()).unwrap_or(0),
                                 maxspeed: parse_maxspeed(t.get("maxspeed")),
                                 name: t.get("name").unwrap_or("").replace('\n', " "),
+                                name_en: t.get("name:en").unwrap_or("").trim().replace('\n', " "),
                                 ref_: t.get("ref").unwrap_or("").replace('\n', " "),
                                 surface: t.get("surface").unwrap_or("").replace('\n', " "),
                                 refs: w.refs().collect(),
@@ -676,6 +679,7 @@ fn main() -> Result<()> {
                                 lanes: 0,
                                 maxspeed: parse_maxspeed(t.get("maxspeed")),
                                 name: t.get("name").unwrap_or("").replace('\n', " "),
+                                name_en: String::new(),
                                 ref_: String::new(),
                                 surface: String::new(),
                                 refs: w.refs().collect(),
@@ -1142,8 +1146,13 @@ fn main() -> Result<()> {
     let mut vtotal: u64 = 0;
     let mut orig_total: u64 = 0;
     let mut len_by_class = [0f64; class::COUNT];
+    // Roads' own English, by way id, where it isn't their name (name-en.json).
+    let mut name_en: std::collections::BTreeMap<String, String> = Default::default();
     for b in &built {
         let w = &ways[b.w];
+        if !w.name_en.is_empty() && w.name_en != w.name {
+            name_en.insert(w.id.to_string(), w.name_en.clone());
+        }
         let start = vtotal;
         let mut emit = |p: [i32; 2], wv: &mut BufWriter<File>| -> Result<()> {
             wv.write_all(bytemuck::cast_slice(&p))?;
@@ -1207,6 +1216,7 @@ fn main() -> Result<()> {
     ww.write_all(bytemuck::cast_slice(&recs))?;
     ww.flush()?;
     std::fs::write(roadcore::tmp(&out, "strings.txt"), strings.join("\n"))?;
+    std::fs::write(roadcore::tmp(&out, "name-en.json"), serde_json::to_vec(&name_en)?)?;
     // Points of interest for the map and the scenic metrics, in their one order.
     pois.sort_by(|a, b| a.order().cmp(&b.order()));
     let features: Vec<serde_json::Value> = pois
@@ -1229,7 +1239,7 @@ fn main() -> Result<()> {
     }
     eprintln!("POIs: {counts:?}");
     std::fs::write(roadcore::tmp(&out, "pois.json"), serde_json::to_vec(&serde_json::json!({ "type": "FeatureCollection", "features": features }))?)?;
-    roadcore::commit(&out, &["verts.bin", "ways.bin", "strings.txt", "pois.json", "rail-rels.bin"])?;
+    roadcore::commit(&out, &["verts.bin", "ways.bin", "strings.txt", "name-en.json", "pois.json", "rail-rels.bin"])?;
 
     eprintln!("\nwrote {} ways, {} vertices ({} original nodes), {} strings", recs.len(), vtotal, orig_total, strings.len());
     let mut total = 0.0;

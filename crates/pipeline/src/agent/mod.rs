@@ -222,6 +222,8 @@ pub struct Agent {
     last_beat: Option<(Vec<u8>, Instant)>,
     /// How far each region is built, and when that was worked out.
     progress: Option<(Instant, BTreeMap<String, build::RegionState>, Vec<build::Step>)>,
+    /// The pass's reaches as last read, by content name (large: read again only when they change).
+    reach: std::cell::RefCell<Option<(String, std::rc::Rc<crate::reach::Reaches>)>>,
 }
 
 impl Agent {
@@ -244,7 +246,7 @@ impl Agent {
             mem.retry.clear();
             mem.app = app.clone();
         }
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, _lock: lock, o })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), _lock: lock, o })
     }
 
     fn record_path(&self) -> PathBuf {
@@ -410,7 +412,7 @@ impl Agent {
         // (Recomputed after a job ends, or every five minutes: it reads the manifest and outlines.)
         if ended || self.progress.as_ref().is_none_or(|(t, _, _)| t.elapsed() >= Duration::from_secs(300)) {
             if let Some(r) = root.as_ref() {
-                self.progress = Some((Instant::now(), region_progress(r, &regions), self.checklist(r, &regions)));
+                self.progress = Some((Instant::now(), self.region_progress(r, &regions), self.checklist(r, &regions)));
             }
         }
         let built = self.progress.as_ref().map(|(_, b, _)| b.clone()).unwrap_or_default();
@@ -600,6 +602,9 @@ impl Agent {
             if let Some(w) = build::trailends_work(date, &manifest, &keys) {
                 jobs.push(job(format!("trailends {date}"), "Hiking routes' ends for the whole world", "trailends", p.clone(), Some(w)));
             }
+            if let Some(w) = build::reach_work(date, &manifest, &keys) {
+                jobs.push(job(format!("reach {date}"), "How far each area's roads reach, for the whole world", "reach", p.clone(), Some(w)));
+            }
             if !manifest.contains_key(&crate::terrain_z8::logical()) {
                 jobs.push(job("terrain-z8".into(), "Coarse terrain for the whole world", "terrain-z8", vec!["--raw".into(), s(&self.o.home.join("cache").join("aws-terrarium"))], None));
             }
@@ -636,7 +641,8 @@ impl Agent {
         let inputs = ferry_inputs(root);
         let held = root.join("inputs/hold-catalog").exists();
         let cache = self.o.home.join("cache");
-        for (w, total) in batches(build::plan(&cov, date, &manifest, &done, &inputs)) {
+        let reach = self.current_reach(root, &manifest, &done, date);
+        for (w, total) in batches(build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref())) {
             // Held for review: the catalog goes to catalog-held/ (no server reads it), once.
             if w.step == "catalog" && held {
                 let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();
@@ -725,7 +731,7 @@ impl Agent {
         out.push(pass);
         let Some(date) = have else {
             // Nothing to size the rest by until a pass is complete: its steps, to come.
-            out.push(build::Step { what: "Worldwide sets, route ends, summits, labels".into(), steps: ["pass-sets", "trailends", "terrain-z8", "summits", "labels"].iter().map(|s| s.to_string()).collect(), ..Default::default() });
+            out.push(build::Step { what: "Worldwide sets, route ends, roads' reach, summits, labels".into(), steps: ["pass-sets", "trailends", "reach", "terrain-z8", "summits", "labels"].iter().map(|s| s.to_string()).collect(), ..Default::default() });
             out.extend(build::checklist_to_come());
             return out;
         };
@@ -735,6 +741,7 @@ impl Agent {
         let left = [
             !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(&date, st.0))),
             build::trailends_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&crate::osmpass::set_name(&date, "hikes")),
+            build::reach_work(&date, &manifest, &keys).is_some(),
             !manifest.contains_key(&crate::terrain_z8::logical()),
             build::summits_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&format!("work/summits/{date}")),
             build::labels_work(&date, &manifest, &keys).is_some(),
@@ -743,8 +750,8 @@ impl Agent {
         .filter(|&&l| l)
         .count();
         out.push(build::Step {
-            what: "Worldwide sets, route ends, summits, labels".into(),
-            steps: ["pass-sets", "trailends", "terrain-z8", "summits", "labels"].iter().map(|s| s.to_string()).collect(),
+            what: "Worldwide sets, route ends, roads' reach, summits, labels".into(),
+            steps: ["pass-sets", "trailends", "reach", "terrain-z8", "summits", "labels"].iter().map(|s| s.to_string()).collect(),
             left: Some(left),
             ..Default::default()
         });
@@ -753,8 +760,43 @@ impl Agent {
         }
         let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).and_then(|c| crate::outlines::Outlines::open(&root.join(c)).ok());
         let Ok(cov) = crate::coverage::Coverage::from_recipes(regions, outlines.as_ref(), &root.join("inputs/outlines")) else { return out };
-        out.extend(build::checklist(&cov, &date, &manifest, &keys, &ferry_inputs(root), root.join("inputs/hold-catalog").exists()));
+        let reach = self.current_reach(root, &manifest, &keys, &date);
+        out.extend(build::checklist(&cov, &date, &manifest, &keys, &ferry_inputs(root), root.join("inputs/hold-catalog").exists(), reach.as_deref()));
         out
+    }
+
+    /// Per region, how many of its areas are built (none before the first pass makes the outlines).
+    fn region_progress(&self, root: &Path, regions: &[recipes::Recipe]) -> BTreeMap<String, build::RegionState> {
+        let Some(date) = crate::osmpass::latest_pass(root) else { return BTreeMap::new() };
+        let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).and_then(|c| crate::outlines::Outlines::open(&root.join(c)).ok());
+        let dir = root.join("inputs/outlines");
+        let Ok(cov) = crate::coverage::Coverage::from_recipes(regions, outlines.as_ref(), &dir) else { return BTreeMap::new() };
+        let each: Vec<(String, crate::coverage::Coverage)> = regions
+            .iter()
+            .filter_map(|r| crate::coverage::Coverage::from_recipes(std::slice::from_ref(r), outlines.as_ref(), &dir).ok().map(|c| (r.id.clone(), c)))
+            .collect();
+        let keys = build::Keys::load(root);
+        let reach = self.current_reach(root, &manifest, &keys, &date);
+        build::region_states(&cov, &each, &date, &manifest, &keys, reach.as_deref())
+    }
+
+    /// The pass's reaches (crate::reach), once they're made for the current version: until then no
+    /// unit is planned (the reach job comes first among the pass's worldwide jobs).
+    fn current_reach(&self, root: &Path, manifest: &BTreeMap<String, String>, keys: &build::Keys, date: &str) -> Option<std::rc::Rc<crate::reach::Reaches>> {
+        if build::reach_work(date, manifest, keys).is_some() {
+            return None;
+        }
+        let c = manifest.get(&crate::reach::logical(date))?;
+        let mut cached = self.reach.borrow_mut();
+        if let Some((have, r)) = cached.as_ref() {
+            if have == c {
+                return Some(r.clone());
+            }
+        }
+        let r = std::rc::Rc::new(crate::reach::Reaches::load(root, manifest, date)?);
+        *cached = Some((c.clone(), r.clone()));
+        Some(r)
     }
 
     /// A newer app is installed locally (`../current` points elsewhere than the agent's folder).
@@ -765,20 +807,6 @@ impl Agent {
         }
         std::fs::read_link(apps.join("current")).ok().and_then(|t| t.file_name().map(|n| n.to_string_lossy().into_owned())).is_some_and(|cur| cur != self.app)
     }
-}
-
-/// Per region, how many of its areas are built (none before the first pass makes the outlines).
-fn region_progress(root: &Path, regions: &[recipes::Recipe]) -> BTreeMap<String, build::RegionState> {
-    let Some(date) = crate::osmpass::latest_pass(root) else { return BTreeMap::new() };
-    let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-    let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).and_then(|c| crate::outlines::Outlines::open(&root.join(c)).ok());
-    let dir = root.join("inputs/outlines");
-    let Ok(cov) = crate::coverage::Coverage::from_recipes(regions, outlines.as_ref(), &dir) else { return BTreeMap::new() };
-    let each: Vec<(String, crate::coverage::Coverage)> = regions
-        .iter()
-        .filter_map(|r| crate::coverage::Coverage::from_recipes(std::slice::from_ref(r), outlines.as_ref(), &dir).ok().map(|c| (r.id.clone(), c)))
-        .collect();
-    build::region_states(&cov, &each, &date, &manifest, &build::Keys::load(root))
 }
 
 /// What jobs read from inputs/ beside the manifest: the ferry timetables' digest.

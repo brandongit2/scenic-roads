@@ -87,17 +87,19 @@ impl AppState {
         }
     }
 
-    /// OSM's English name of a road (name:en), or "".
+    /// OSM's English name of a road (name:en), or "": today's converted table and each built unit's
+    /// own (`global/roaden/<u>`, which win: they're newer).
     pub fn road_en(&self, id: u64) -> String {
         let g = self.generation();
         let mut cur = self.road_en.lock().unwrap();
         if cur.as_ref().is_none_or(|(gg, _)| *gg != g) {
             let failed = std::cell::Cell::new(false);
-            let map: HashMap<u64, String> = self
-                .global_or_note("global/legacy/road-en", &failed)
-                .and_then(|b| serde_json::from_slice::<HashMap<String, String>>(&b).ok())
-                .map(|m| m.into_iter().filter_map(|(k, v)| k.parse().ok().map(|k| (k, v))).collect())
-                .unwrap_or_default();
+            let units: Vec<String> = self.data.catalog().files.keys().filter(|l| l.starts_with("global/roaden/")).cloned().collect();
+            let mut map: HashMap<u64, String> = HashMap::new();
+            for l in std::iter::once("global/legacy/road-en".to_string()).chain(units) {
+                let part = self.global_or_note(&l, &failed).and_then(|b| serde_json::from_slice::<HashMap<String, String>>(&b).ok()).unwrap_or_default();
+                map.extend(part.into_iter().filter_map(|(k, v)| k.parse().ok().map(|k| (k, v))));
+            }
             if failed.get() {
                 return map.get(&id).cloned().unwrap_or_default();
             }

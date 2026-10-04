@@ -20,6 +20,9 @@
 //!   slope [T …] [--regions dir]  slope packs (z3–11) of z6 tiles T from the terrain packs
 //!                                (default: every z6 tile near the coverage)
 //!   terrain-root, slope-root     their z0–2 root packs, from the lo packs' z3 tiles
+//!   reach [--pass d] [U …]       every unit's reach (pipeline::reach): the boxes of its piece's
+//!                                roads, rail and ferries, owned and all (units named: printed,
+//!                                nothing written)
 //!   labels [--pass d] [--dem dir]  the labels by importance, worldwide, from the pass's labels set
 //!                                (dem/labels.py), as the labels layer's packs
 //!   convert-legacy-marks         today's stops & sights (global/legacy) as markdata per z6 tile
@@ -167,6 +170,7 @@ fn main() -> Result<()> {
             std::fs::remove_file(&local).ok();
             eprintln!("trailends: {} ends", ends.len());
         }
+        "reach" => reach_step(&mut out, &args, &scratch)?,
         "convert-legacy-marks" => {
             let c = pipeline::markconv::convert(&mut out)?;
             eprintln!("marks: {} points, {} markdata tiles, {} thinned tiles", c.points, c.tiles, c.thinned);
@@ -1352,6 +1356,8 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         buildings: opt(args, "--buildings").map(PathBuf::from),
         spacing_m: 8,
     };
+    // Today's DEM cache, where the units' elevations start from (once per build Mac).
+    pipeline::unit::dem_seed(out.root(), &tools.cache)?;
     // The pass's heritage sites and designated areas (the heritage-sites step), for every unit's
     // flags.
     anyhow::ensure!(
@@ -1362,9 +1368,10 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let pieces: serde_json::Value = serde_json::from_slice(&std::fs::read(out.path(out.get(&format!("sources/osm/{date}/pieces")).context("the pass's pieces list")?))?)?;
     let mut units: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
     if units.is_empty() {
+        let reach = pipeline::reach::Reaches::load(out.root(), &out.manifest, &date).context("no reaches for the pass (the reach step)")?;
         for k in pieces["pieces"].as_object().context("pieces")?.keys() {
             let u = Unit::parse(k).context("unit")?;
-            if cov.meets_box(tile_bounds(u.z, u.x, u.y)) {
+            if pipeline::agent::build::builds(&cov, &reach, u) {
                 units.push(u);
             }
         }
@@ -1404,7 +1411,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         if rep.kept_ways == 0 || rep.owned == 0 {
             // None of its ways in the coverage (any more): a base pack and road values from an
             // earlier coverage go, so the map and the map tiles stop showing them.
-            let gone: Vec<String> = [format!("base/{}", u.dash()), format!("global/roads/{}", u.dash())].into_iter().filter(|l| out.get(l).is_some()).collect();
+            let gone: Vec<String> = [format!("base/{}", u.dash()), format!("global/roads/{}", u.dash()), format!("global/roaden/{}", u.dash())].into_iter().filter(|l| out.get(l).is_some()).collect();
             if !gone.is_empty() {
                 for l in &gone {
                     out.remove(l);
@@ -1441,9 +1448,57 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             })
             .collect();
         put_roads(out, u, &recs)?;
+        // The roads' own English (OSM's name:en where it isn't the name), for the server to show
+        // with them.
+        let en: BTreeMap<String, String> = std::fs::read(dir.join("name-en.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let mine: BTreeMap<String, String> = idx.iter().filter_map(|&i| en.get(&ways[i as usize].id.to_string()).map(|e| (ways[i as usize].id.to_string(), e.clone()))).collect();
+        let logical = format!("global/roaden/{}", u.dash());
+        if !mine.is_empty() {
+            out.put_bytes(&logical, "json", &serde_json::to_vec(&mine)?)?;
+        } else if out.get(&logical).is_some() {
+            out.remove(&logical);
+        }
         out.save()?;
         eprintln!("unit {}: base pack of {} ways in {:.0?}", u.slash(), idx.len(), t.elapsed());
     }
+    Ok(())
+}
+
+/// Every unit's reach (pipeline::reach) from its piece, as `sources/osm/<date>/reach`: each piece
+/// copied here and read twice (its ways, then their nodes).
+fn reach_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    use pipeline::reach::{logical, of_piece, Reaches};
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+    let list = out.get(&format!("sources/osm/{date}/pieces")).context("the pass's pieces list")?.to_string();
+    let pieces: pipeline::osmpass::Pieces = serde_json::from_slice(&std::fs::read(out.path(&list))?)?;
+    std::fs::create_dir_all(scratch)?;
+    let local = scratch.join("reach-piece.osm.pbf");
+    let mut all = Reaches { fmt: 1, date: date.clone(), ..Default::default() };
+    let only: Vec<String> = positional(args).iter().filter_map(|s| Unit::parse(s)).map(|u| u.slash()).collect();
+    let todo: Vec<(&String, &String)> = pieces.pieces.iter().filter(|(u, _)| only.is_empty() || only.contains(u)).collect();
+    let n = todo.len() as u64;
+    let t0 = std::time::Instant::now();
+    for (k, (u, l)) in todo.into_iter().enumerate() {
+        pipeline::agent::jobs::report(k as u64, n, "areas");
+        let unit = Unit::parse(u).with_context(|| format!("unit {u}"))?;
+        let src = out.path(out.get(l).with_context(|| format!("{l} isn't in the manifest"))?);
+        std::fs::copy(&src, &local).with_context(|| format!("copy {}", src.display()))?;
+        let t = std::time::Instant::now();
+        if let Some(r) = of_piece(&local, unit).with_context(|| format!("piece {u}"))? {
+            if !only.is_empty() {
+                let (owned, verts) = (r.long.iter().filter(|w| w.owned).count(), r.long.iter().map(|w| w.verts.len()).sum::<usize>());
+                eprintln!("reach {u}: owned box {:?}, {} long ways ({owned} owned, {verts} vertices), extent {:?} ({:.1?}, {} MB)", r.owned, r.long.len(), r.extent(unit), t.elapsed(), std::fs::metadata(&local).map(|m| m.len() >> 20).unwrap_or(0));
+            }
+            all.units.insert(unit.slash(), r);
+        }
+    }
+    std::fs::remove_file(&local).ok();
+    if !only.is_empty() {
+        return Ok(());
+    }
+    out.put_bytes(&logical(&date), "json.zst", &all.encode()?)?;
+    out.save()?;
+    eprintln!("reach: {} units with roads of {} pieces ({:.0?})", all.units.len(), n, t0.elapsed());
     Ok(())
 }
 

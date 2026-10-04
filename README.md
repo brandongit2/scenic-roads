@@ -229,7 +229,7 @@ Roads are drawn as vectors by a custom WebGL2 layer. The design, its status and 
 - **The order:** the translation line for the name in its area's table, else the thing's own English as the sub line. A thing's own English is OSM's `name:en` (in Japan its romanised `name:ja-Latn`), or a heritage site's English (UNESCO's, or its English Wikipedia article's title).
 - **The tables:** nine areas (Japan, Taiwan, Hong Kong, Singapore, France, Iberia, the Azores and Madeira, North America, Britain and Ireland), each with a places table and a roads table. A name's area comes from where its thing is (`crates/names/src/area.rs`).
 - **Where the translations come from:** the translation work (`place-translations`): rules for the names' words, romanisation (Hepburn in Japan, Hanyu Pinyin in Taiwan, the Hong Kong government's), and Claude Haiku for the rest.
-- **Roads:** their own English comes from today's converted data (`global/legacy/road-en`).
+- **Roads:** their own English is OSM's `name:en` where it isn't their name: each built unit's (`global/roaden/<u>`), and today's converted table (`global/legacy/road-en`).
 - **What changes next:** names are going to be read by language instead of by area, with to-do lists of what still lacks English (`docs/plan.md` §7).
 
 **Passenger rail selection.** Tracks (`railway=rail, light_rail, subway, tram, narrow_gauge, funicular, monorail, preserved`; not yards, sidings, crossovers, or freight, industrial or military usage) used by a passenger route relation (`route=train, tram, subway, light_rail, monorail, funicular`). A train route's group comes from its `service` tag (long-distance, high-speed and night → intercity; tourism or heritage → heritage & mountain; else commuter & regional) or, untagged, from its name, brand and operator (TGV, Intercités, AVE, Alvia, Alfa Pendular, Amtrak, VIA Rail, LNER, sleepers…). Tracks with no route relation are kept when their type says what they are: tram, subway and light rail, funiculars and rack railways, preserved and tourist lines. Each track records every group using it, its services' refs and names, and the most important service's colour.
@@ -326,7 +326,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
 **Regions** are recipes on the NAS, `inputs/regions/<id>.toml`.
 - **A recipe** has an `id`, a `name`, and outline entries: `osm:<relation>`, `geofabrik:<id>`, `poly:<file>`, `place:<lon>,<lat>,<km>`.
 - **The agent** reruns only what changes reach: the job keys say what each output was made from.
-- **Not yet for regions beyond today's 34:** trees, roadside buildings, trains a day, roads' own English, heritage points and area overlays come from today's converted files, which cover only today's regions (`docs/plan.md` §10).
+- **Not yet for regions beyond today's 34:** trees, roadside buildings, trains a day, heritage points and area overlays come from today's converted files, which cover only today's regions (`docs/plan.md` §10).
 - **Region-specific code**, for a new country:
   - road route networks: `network_code` in `extract.rs`, colours in `web/src/mapschemes.ts`;
   - the elevation source: `dem/sample.py`, with densification in `extract.rs`;
