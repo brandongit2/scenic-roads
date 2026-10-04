@@ -547,6 +547,26 @@ impl Agent {
                     break;
                 }
                 let (id, what) = (spec.id.clone(), spec.what.clone());
+                // Room on the disk for it, from the caches that are cheap to fill again (the OSM
+                // pass's own need, less the pack cache it clears; a helper's Mac has less room).
+                // Made before its targets are claimed: it can take minutes, and a claim is
+                // refreshed only while a job runs.
+                let cache = self.o.home.join("cache");
+                let need = if self.o.helper {
+                    HELPER_RESERVE
+                } else if id.starts_with("osm-pass") {
+                    PASS_SPACE.saturating_sub(dir_bytes(&cache.join("base"))).max(room::RESERVE)
+                } else {
+                    room::RESERVE
+                };
+                // (Never without the NAS: what goes here must be kept there.)
+                if let Some(r) = &root {
+                    match room::make_room(&cache, &r.join("sources"), need) {
+                        Ok(0) => {}
+                        Ok(n) => eprintln!("agent: {} GB of cached canopy squares and terrain tiles deleted for {} GB free", n >> 30, (need + room::margin(need)) >> 30),
+                        Err(e) => eprintln!("agent: making room on the disk: {e:#}"),
+                    }
+                }
                 // A job another Mac may also want: its targets claimed first; when another holds
                 // one, none starts (the next loop plans without it).
                 if let (Some((step, ts)), Some(r)) = (shared_targets(&spec), &root) {
@@ -563,24 +583,6 @@ impl Agent {
                         continue;
                     }
                     self.claims_fresh = Some(Instant::now());
-                }
-                // Room on the disk for it, from the caches that are cheap to fill again (the OSM
-                // pass's own need, less the pack cache it clears; a helper's Mac has less room).
-                let cache = self.o.home.join("cache");
-                let need = if self.o.helper {
-                    HELPER_RESERVE
-                } else if id.starts_with("osm-pass") {
-                    PASS_SPACE.saturating_sub(dir_bytes(&cache.join("base"))).max(room::RESERVE)
-                } else {
-                    room::RESERVE
-                };
-                // (Never without the NAS: what goes here must be kept there.)
-                if let Some(r) = &root {
-                    match room::make_room(&cache, &r.join("sources"), need) {
-                        Ok(0) => {}
-                        Ok(n) => eprintln!("agent: {} GB of cached canopy squares and terrain tiles deleted for {} GB free", n >> 30, need >> 30),
-                        Err(e) => eprintln!("agent: making room on the disk: {e:#}"),
-                    }
                 }
                 let shared = shared_targets(&spec);
                 if let Err(e) = self.start(spec, &c) {

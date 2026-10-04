@@ -891,13 +891,17 @@ are no request files.
 - **Order:** the agent starts the first job that can run, in plan order.
 - **A newly installed app:** the running job finishes under the old one, nothing new starts, and the
   agent exits so the launcher starts the new one.
-- **Room on the disk:** before a job starts, while the Mac has less free than the job needs (60 GB;
-  the OSM pass, its own 80 GB less the pack cache it clears; the M1's helper, 15 GB), the local
-  copies of what the NAS keeps (Meta's canopy squares, AWS's raw terrain tiles) lose their least
-  recently used files. A file goes once the NAS has it at the same size; one the NAS lacks, or has
-  at another size, is copied there first (whole), or kept. A file that isn't whole itself (cut
-  short, or temporary) is deleted, not kept. Each NAS folder is listed once a run. The OSM pass
-  counts those copies as room.
+- **Room on the disk:** before a job starts (and before its targets are claimed), when the Mac has
+  less free than the job needs (60 GB; the OSM pass, its own 80 GB less the pack cache it clears;
+  the M1's helper, 15 GB), the local copies of what the NAS keeps (Meta's canopy squares, AWS's raw
+  terrain tiles) lose their least recently used files until it has a sixth more, so the next jobs
+  start without deleting again.
+  - They go a folder at a time, the least recently used folder (by its newest file) first, so each
+    NAS folder is listed once and its files go together.
+  - A file goes once the NAS has it at the same size; one the NAS lacks, or has at another size, is
+    copied there first (whole), or kept. A file that isn't whole itself (cut short, or temporary)
+    is deleted, not kept.
+  - The OSM pass counts those copies as room.
 - **Units run in map order** (by 10° square, then tile), so what one unit fetches serves the next.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours. The orphans of a crashed
   agent are stopped at start (only when their leader's start time proves them ours, or the leader is
