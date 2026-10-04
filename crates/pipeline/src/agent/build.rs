@@ -61,8 +61,15 @@ pub struct Keys {
 }
 
 impl Keys {
+    /// The keys for showing (the status): none when they can't be read now.
     pub fn load(root: &Path) -> Keys {
-        std::fs::read(root.join("state/build/jobs.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+        Self::load_strict(root).unwrap_or_default()
+    }
+
+    /// The keys for planning and recording: none when there are none yet, an error when they can't
+    /// be read now (so a job isn't started again, nor the keys written back, from empty ones).
+    pub fn load_strict(root: &Path) -> anyhow::Result<Keys> {
+        crate::out::read_record(&root.join("state/build/jobs.json"))
     }
 
     pub fn save(&self, root: &Path) -> anyhow::Result<()> {

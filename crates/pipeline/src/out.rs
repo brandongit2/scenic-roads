@@ -30,6 +30,16 @@ pub struct Out {
     pub scratch: PathBuf,
 }
 
+/// A JSON record (the manifest, the unverified uploads): empty when there's none yet, an error when
+/// it can't be read now (an SMB hiccup), so nothing is ever written from an empty one by mistake.
+pub fn read_record<T: Default + serde::de::DeserializeOwned>(p: &Path) -> Result<T> {
+    match std::fs::read(p) {
+        Ok(b) => serde_json::from_slice(&b).with_context(|| format!("parse {}", p.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
+        Err(e) => Err(e).with_context(|| format!("read {}", p.display())),
+    }
+}
+
 fn sha256_file(p: &Path) -> Result<String> {
     let mut f = std::fs::File::open(p)?;
     let mut h = sha2::Sha256::new();
@@ -49,15 +59,8 @@ impl Out {
     pub fn open(root: &Path, scratch: &Path) -> Result<Self> {
         std::fs::create_dir_all(scratch)?;
         let manifest_path = root.join("state/build/manifest.json");
-        let manifest = match std::fs::read(&manifest_path) {
-            Ok(b) => serde_json::from_slice(&b).context("state/build/manifest.json")?,
-            Err(_) => BTreeMap::new(),
-        };
-        let pending_path = root.join("state/build/pending.json");
-        let pending = match std::fs::read(&pending_path) {
-            Ok(b) => serde_json::from_slice(&b).unwrap_or_default(),
-            Err(_) => BTreeMap::new(),
-        };
+        let manifest = read_record(&manifest_path)?;
+        let pending = read_record(&root.join("state/build/pending.json"))?;
         Ok(Out { root: root.to_path_buf(), manifest, changes: BTreeMap::new(), checked: Default::default(), pending, manifest_path, scratch: scratch.to_path_buf() })
     }
 
@@ -128,10 +131,7 @@ impl Out {
         let dir = self.manifest_path.parent().unwrap().to_path_buf();
         std::fs::create_dir_all(&dir)?;
         let _lock = BuildLock::take(&self.root)?;
-        let mut on_disk: BTreeMap<String, String> = match std::fs::read(&self.manifest_path) {
-            Ok(b) => serde_json::from_slice(&b).context("state/build/manifest.json")?,
-            Err(_) => BTreeMap::new(),
-        };
+        let mut on_disk: BTreeMap<String, String> = read_record(&self.manifest_path)?;
         for (k, v) in &self.changes {
             match v {
                 Some(n) => on_disk.insert(k.clone(), n.clone()),
@@ -139,7 +139,7 @@ impl Out {
             };
         }
         let pending_path = dir.join("pending.json");
-        let mut pending: BTreeMap<String, String> = std::fs::read(&pending_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let mut pending: BTreeMap<String, String> = read_record(&pending_path)?;
         pending.extend(self.pending.clone());
         pending.retain(|k, _| !self.checked.contains(k));
         for (p, v) in [(&self.manifest_path, serde_json::to_vec_pretty(&on_disk)?), (&pending_path, serde_json::to_vec_pretty(&pending)?)] {
@@ -227,5 +227,33 @@ impl BuildLock {
             return Err(std::io::Error::last_os_error()).context("lock the build manifest");
         }
         Ok(BuildLock(f))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn records_unreadable_are_errors_not_empty() {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("manifest.json");
+        // None yet: empty.
+        assert!(read_record::<BTreeMap<String, String>>(&p).unwrap().is_empty());
+        // Unreadable (a folder in its place, as an I/O error), or not JSON: errors.
+        std::fs::create_dir(&p).unwrap();
+        assert!(read_record::<BTreeMap<String, String>>(&p).is_err());
+        std::fs::remove_dir(&p).unwrap();
+        std::fs::write(&p, b"{not json").unwrap();
+        assert!(read_record::<BTreeMap<String, String>>(&p).is_err());
+        // A save with the manifest unreadable fails, and writes nothing over it.
+        let root = d.path().join("root");
+        let mut out = Out::open(&root, &d.path().join("s")).unwrap();
+        out.changes.insert("a".into(), Some("a.1111111111111111.x".into()));
+        std::fs::create_dir_all(root.join("state/build/manifest.json")).unwrap();
+        assert!(out.save().is_err());
+        assert!(root.join("state/build/manifest.json").is_dir());
+        // And opening with it unreadable fails too.
+        assert!(Out::open(&root, &d.path().join("s")).is_err());
     }
 }

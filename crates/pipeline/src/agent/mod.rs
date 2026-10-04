@@ -355,9 +355,11 @@ impl Agent {
                 let ok = st.success();
                 if ok {
                     if let (Some(w), Some(root)) = (r.spec.record.clone(), root.as_ref()) {
-                        let mut k = build::Keys::load(root);
-                        k.record(&w.step, &w.targets);
-                        if let Err(e) = k.save(root) {
+                        let rec = build::Keys::load_strict(root).and_then(|mut k| {
+                            k.record(&w.step, &w.targets);
+                            k.save(root)
+                        });
+                        if let Err(e) = rec {
                             eprintln!("agent: recording {}: {e:#}", r.spec.id);
                         }
                     }
@@ -618,7 +620,14 @@ impl Agent {
     /// waiting out a failure, so one failing job doesn't hold up the others.
     fn region_work(&self, root: &Path, pass: Option<&str>, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
         let (recipes, _) = recipes::load(&root.join("inputs/regions"));
-        let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        // (The records unreadable now: nothing planned until they are, rather than everything again.)
+        let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match crate::out::read_record(&root.join("state/build/manifest.json")).and_then(|m| Ok((m, build::Keys::load_strict(root)?))) {
+            Ok(r) => r,
+            Err(e) => {
+                waiting.push(Waiting { what: "Building".into(), why: format!("the build's records can't be read now: {e:#}") });
+                return Vec::new();
+            }
+        };
         let s = |p: &Path| p.to_string_lossy().into_owned();
         let build_bin = s(&self.o.bin.join("scenic-build"));
         let mut jobs: Vec<JobSpec> = Vec::new();
@@ -635,7 +644,6 @@ impl Agent {
         // since it ran), the hiking routes' ends, AWS's z8 (once), Overture's buildings (once per
         // release), the summits, the labels.
         if let Some(date) = pass {
-            let keys = build::Keys::load(root);
             let p = vec!["--pass".to_string(), date.to_string()];
             if !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(date, st.0))) {
                 jobs.push(job(format!("pass-sets {date}"), "OpenStreetMap sets the newest pass lacks", "pass-sets", p.clone(), None));
@@ -698,7 +706,7 @@ impl Agent {
                 return jobs;
             }
         };
-        let done = build::Keys::load(root);
+        let done = keys;
         let inputs = input_digests(root);
         let held = root.join("inputs/hold-catalog").exists();
         let cache = self.o.home.join("cache");

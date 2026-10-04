@@ -65,11 +65,9 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
     }
     // The build's manifest: everything a build has uploaded and may publish next (work in flight,
     // and outputs reused by name). Unreadable, nothing is removed.
-    let manifest = root.join("state/build/manifest.json");
-    if manifest.exists() {
-        let m: std::collections::BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(&manifest).context("read the build manifest")?).context("parse the build manifest")?;
-        referenced.extend(m.into_values());
-    }
+    // (Not `exists()`: it's false on an I/O error too, and then the manifest's files would go.)
+    let m: std::collections::BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).context("the build manifest")?;
+    referenced.extend(m.into_values());
     rep.referenced = referenced.len();
     let tops: BTreeSet<String> = referenced.iter().filter_map(|f| f.split('/').next()).filter(|t| !NEVER.contains(t)).map(str::to_string).collect();
 
