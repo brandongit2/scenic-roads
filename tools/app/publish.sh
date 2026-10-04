@@ -78,3 +78,11 @@ print(json.dumps({'version': sys.argv[1], 'files': files, 'sha256': sha}))" "$ve
 print -r -- "$manifest" > $NAS/app/current.json.tmp
 mv $NAS/app/current.json.tmp $NAS/app/current.json
 echo "published $version"
+# The NAS's own planet fetch (DSM's Task Scheduler runs it daily): the repository's copy, when it
+# differs.
+if ! cmp -s tools/nas/fetch-planet.sh $NAS/nas/fetch-planet.sh; then
+  mkdir -p $NAS/nas
+  cp tools/nas/fetch-planet.sh $NAS/nas/fetch-planet.sh.tmp && chmod 755 $NAS/nas/fetch-planet.sh.tmp
+  mv $NAS/nas/fetch-planet.sh.tmp $NAS/nas/fetch-planet.sh
+  echo "updated nas/fetch-planet.sh"
+fi

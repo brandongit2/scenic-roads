@@ -148,7 +148,7 @@ catalog-held/  a catalog kept back for review (while inputs/hold-catalog exists)
 app/           published app versions; current.json, previous.json
 state/         status.json (the agent's heartbeat), build/ (manifest, job keys, pending, summaries),
                backups/, logs/ (the planet fetch)
-nas/           fetch-planet.sh, which the NAS runs itself
+nas/           fetch-planet.sh, which the NAS runs itself (from tools/nas/; publish.sh copies it)
 ```
 
 **Immutable, content-named files.**
@@ -380,7 +380,8 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
 
 ### The OSM pass
 
-1. **The NAS fetches the planet.** `nas/fetch-planet.sh` is on the NAS (not yet in the repo).
+1. **The NAS fetches the planet.** `nas/fetch-planet.sh` runs on the NAS; its source is
+   `tools/nas/fetch-planet.sh`, which `publish.sh` copies there.
    - DSM's Task Scheduler runs it daily. It does nothing until the newest planet there is six months
      old, or `nas/fetch-now` exists.
    - It downloads the newest planet whose MD5 is published, from a mirror, resuming after any
@@ -788,7 +789,8 @@ everything is rebuilt.
 1. builds the server and pipeline;
 2. runs the crates' tests, the type check and the web build;
 3. smoke-tests a server on a spare port against the NAS's catalog;
-4. writes `app/<version>/` and `app/current.json` with every file's SHA-256.
+4. writes `app/<version>/` and `app/current.json` with every file's SHA-256;
+5. copies `tools/nas/fetch-planet.sh` to the NAS's `nas/` when it differs.
 
 `publish.sh --rollback` swaps `current.json` and `previous.json`. The agent never fetches from git.
 
@@ -901,7 +903,6 @@ are added.
 4. **Catalogs:**
    - `credits` and `coverage` are empty: `/api/coverage` builds the coverage per request.
 5. **The repo:**
-   - `nas/fetch-planet.sh` lives only on the NAS.
    - `inputs/keys.env` is read by nothing (`dem/railgtfs.py` still reads `data/keys.env`).
 
 ## 11. Risks and checks
