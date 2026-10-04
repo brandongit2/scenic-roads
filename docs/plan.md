@@ -474,11 +474,11 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
      hand) gives each piece the set's ferry ways it meets, as the cut keeps ways, and lacks. Only
      the pieces that lack some change, so only their units, their landmark candidates and the
      reaches are built again. It saves the records once, at the end: a changed piece makes the
-     reaches stale, and units aren't planned on either Mac until the build Mac remakes them. The
-     pieces meeting the regions (their tile and 10 km round, `--near-coverage`) have them; a run
-     over all the pieces (planned, while the units build) gives them to the other pieces that lack
-     some, about 580 of 2,442, and so to a ferry that reaches the regions from a farther tile,
-     which owns it.
+     reaches stale, and units aren't planned on either Mac until the build Mac remakes them. Every
+     piece has them: those meeting the regions (their tile and 10 km round, `--near-coverage`)
+     gained 3,563 ferry ways in 84 pieces, then a run over all of them, while the units built, 21,452
+     in 567 more (the first 84 lacking none). So does a ferry that reaches the regions from a
+     farther tile, which owns it.
 8. **Road values** (below).
 9. **Finish:** the pass's summary is written, and older passes retire: their entries leave the
    manifest.
