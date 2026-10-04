@@ -401,6 +401,12 @@ impl IoPool {
         })
     }
 
+    /// `fs::create_dir_all`.
+    pub fn create_dir_all(&self, dir: &Path) -> Result<(), IoError> {
+        let d = dir.to_owned();
+        self.call(move || fs::create_dir_all(&d))
+    }
+
     /// `fs::rename`, replacing `to` if it exists (both on the share).
     pub fn rename(&self, from: &Path, to: &Path) -> Result<(), IoError> {
         let (a, b) = (from.to_owned(), to.to_owned());
@@ -412,6 +418,18 @@ impl IoPool {
         let p = path.to_owned();
         self.call(move || {
             let mut f = OpenOptions::new().write(true).create_new(true).open(&p)?;
+            f.write_all(&bytes)?;
+            f.sync_all()
+        })
+    }
+
+    /// Creates or truncates `path` and writes `bytes`, synced. (Callers write a temporary file this
+    /// way and rename it over the real one, so no reader sees half of it; one left by a write that
+    /// never finished is simply written again.)
+    pub fn write(&self, path: &Path, bytes: Vec<u8>) -> Result<(), IoError> {
+        let p = path.to_owned();
+        self.call(move || {
+            let mut f = File::create(&p)?;
             f.write_all(&bytes)?;
             f.sync_all()
         })
@@ -708,6 +726,16 @@ mod tests {
         pool.rename(&p, &q).unwrap();
         let names: Vec<_> = pool.list(dir.path()).unwrap().into_iter().map(|e| (e.name, e.is_dir, e.len)).collect();
         assert_eq!(names, [("b.bin".to_string(), false, 10), ("sub".to_string(), true, names[1].2)]);
+        // A file written through a temporary one, over a stale temporary file, in a new folder.
+        let deeper = dir.path().join("sub/deeper");
+        pool.create_dir_all(&deeper).unwrap();
+        pool.create_dir_all(&deeper).unwrap();
+        let tmp = deeper.join("c.bin.tmp");
+        pool.write(&tmp, b"stale, and longer".to_vec()).unwrap();
+        pool.write(&tmp, b"new".to_vec()).unwrap();
+        pool.rename(&tmp, &deeper.join("c.bin")).unwrap();
+        assert_eq!(fs::read(deeper.join("c.bin")).unwrap(), b"new");
+        assert!(!tmp.exists());
         // An ordinary error leaves the NAS online.
         assert!(matches!(pool.read_all(&dir.path().join("missing")), Err(IoError::Io(e)) if e.kind() == io::ErrorKind::NotFound));
         assert!(pool.is_online());

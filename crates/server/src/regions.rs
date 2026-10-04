@@ -13,9 +13,13 @@
 //!
 //! Outlines come from the latest OSM pass (the catalog's `global.outlines`); records and names are
 //! read once per catalog, rings when an outline is drawn or tested.
+//!
+//! The recipes, and the `.poly` files the coverage draws, are read and written through the NAS I/O
+//! pool like every other access to the share: a mount that hangs fails the request in the pool's
+//! time (a 503, as for any read the NAS can't answer) instead of holding it.
 
 use crate::S;
-use anyhow::{Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -27,6 +31,7 @@ use pipeline::outlines::{flag, inside, OutlineRec, Ring};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
+use store::iopool::{IoError, IoPool};
 
 /// The outlines of the current catalog: records and names in memory, rings read on demand.
 pub struct OutlineIndex {
@@ -160,9 +165,124 @@ fn err(code: StatusCode, msg: impl std::fmt::Display) -> Response {
     (code, Json(json!({ "error": msg.to_string() }))).into_response()
 }
 
-/// The recipes folder on the NAS (None while it's away).
-fn regions_dir(s: &crate::AppState) -> Option<std::path::PathBuf> {
-    s.data.online().then(|| s.data.nas_root()).flatten().map(|r| r.join("inputs/regions"))
+/// The recipes folder on the NAS, and the I/O pool every access to it goes through (None while the
+/// NAS is away).
+fn nas(s: &crate::AppState) -> Option<(std::path::PathBuf, Arc<IoPool>)> {
+    let (root, pool) = (s.data.nas_root()?, s.data.pool()?);
+    pool.is_online().then(|| (root.join("inputs/regions"), pool))
+}
+
+// ---- the recipes on the NAS ---------------------------------------------------------------------
+//
+// Read and written as `recipes` does for the agent and `scenic add` and `scenic remove`, but every
+// access through the pool.
+
+/// Whether a failure means the NAS couldn't be reached: the pool gave up waiting or refused (the
+/// NAS offline), or the error took the NAS offline (a soft mount's network error). Nothing is wrong
+/// with what was asked then, and it can be asked again.
+fn nas_unreachable(e: &anyhow::Error, pool: &IoPool) -> bool {
+    match IoError::find(e) {
+        Some(IoError::Io(_)) => !pool.is_online(),
+        Some(_) => true,
+        None => false,
+    }
+}
+
+/// The recipes, sorted by id, and the files that don't parse (file name, problem).
+type Recipes = (Vec<Recipe>, Vec<(String, String)>);
+
+/// Every recipe in the folder, and the files that don't parse, as `recipes::load` reads them. The
+/// NAS failing midway is an error, never a shorter list.
+fn load(pool: &IoPool, dir: &std::path::Path) -> Result<Recipes> {
+    let items = match pool.list(dir) {
+        Ok(items) => items,
+        // No recipes yet.
+        Err(IoError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e).with_context(|| format!("list {}", dir.display())),
+    };
+    let (mut ok, mut bad) = (Vec::new(), Vec::new());
+    for it in items.into_iter().filter(|it| it.name.ends_with(".toml")) {
+        let p = dir.join(&it.name);
+        let text = match pool.read_all(&p) {
+            Ok(b) => String::from_utf8(b).map_err(anyhow::Error::from),
+            // Removed or renamed since the listing.
+            Err(IoError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            // A file that can't be read is listed with the reason, unless the error took the NAS
+            // offline.
+            Err(IoError::Io(e)) if pool.is_online() => Err(e.into()),
+            Err(e) => return Err(e).with_context(|| format!("read {}", p.display())),
+        };
+        match text.and_then(|t| recipes::parse(&it.name, &t)) {
+            Ok(r) => ok.push(r),
+            Err(e) => bad.push((it.name, format!("{e:#}"))),
+        }
+    }
+    ok.sort_by(|a, b| a.id.cmp(&b.id));
+    bad.sort();
+    Ok((ok, bad))
+}
+
+/// Applies one edit to the folder. A new recipe is created exclusively (`O_EXCL`, so two Macs can't
+/// both create it), a changed one is written to a temporary file renamed over it (no reader sees
+/// half of it), and a removed one is renamed to `.removed`, which keeps it for undoing.
+fn apply(pool: &IoPool, dir: &std::path::Path, q: &Queued) -> Result<()> {
+    match q {
+        Queued::Add { recipe } => {
+            recipe.validate()?;
+            pool.create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+            let p = dir.join(format!("{}.toml", recipe.id));
+            match pool.write_new(&p, toml::to_string(recipe)?.into_bytes()) {
+                Err(IoError::Io(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => bail!("region {} exists already", recipe.id),
+                r => r.with_context(|| format!("create {}", p.display())),
+            }
+        }
+        Queued::Remove { id } => {
+            ensure!(recipes::valid_id(id), "{id:?} isn't a region id");
+            let p = dir.join(format!("{id}.toml"));
+            match pool.rename(&p, &dir.join(format!("{id}.toml.removed"))) {
+                Err(IoError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => bail!("no region {id}"),
+                r => r.with_context(|| format!("rename {}", p.display())),
+            }
+        }
+        Queued::Edit { id, name, outline } => {
+            // (The id makes a path: nothing but a region id may.)
+            ensure!(recipes::valid_id(id), "{id:?} isn't a region id");
+            let file = format!("{id}.toml");
+            let p = dir.join(&file);
+            let text = match pool.read_all(&p) {
+                Err(IoError::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => bail!("no region {id}"),
+                r => r.with_context(|| format!("read {}", p.display()))?,
+            };
+            let mut r = recipes::parse(&file, &String::from_utf8(text)?)?;
+            if let Some(n) = name {
+                r.name = n.clone();
+            }
+            if let Some(o) = outline {
+                r.outline = o.clone();
+            }
+            r.validate()?;
+            let tmp = dir.join(format!("{file}.tmp"));
+            pool.write(&tmp, toml::to_string(&r)?.into_bytes()).with_context(|| format!("write {}", tmp.display()))?;
+            pool.rename(&tmp, &p).with_context(|| format!("rename {}", tmp.display()))?;
+            Ok(())
+        }
+    }
+}
+
+/// A failed edit's status: 503 when the NAS couldn't be reached (as for any read it can't answer;
+/// the panel says to try again), 409 when the region exists already, 404 when there's no such
+/// region, else 400.
+fn status(e: &anyhow::Error, pool: &IoPool) -> StatusCode {
+    let msg = format!("{e:#}");
+    if nas_unreachable(e, pool) {
+        StatusCode::SERVICE_UNAVAILABLE
+    } else if msg.contains("exists") {
+        StatusCode::CONFLICT
+    } else if msg.contains("no region") {
+        StatusCode::NOT_FOUND
+    } else {
+        StatusCode::BAD_REQUEST
+    }
 }
 
 // ---- edits made away from home ------------------------------------------------------------------
@@ -184,8 +304,9 @@ fn queue_dir(s: &crate::AppState) -> std::path::PathBuf {
     s.data.home.join("regions-queue")
 }
 
-fn queued(s: &crate::AppState) -> Vec<(std::path::PathBuf, Queued)> {
-    let mut v: Vec<(std::path::PathBuf, Queued)> = std::fs::read_dir(queue_dir(s))
+/// The edits waiting in `queue` (this Mac's folder of them), oldest first.
+fn queued(queue: &std::path::Path) -> Vec<(std::path::PathBuf, Queued)> {
+    let mut v: Vec<(std::path::PathBuf, Queued)> = std::fs::read_dir(queue)
         .map(|rd| rd.flatten().filter_map(|e| {
             let p = e.path();
             let q: Queued = serde_json::from_slice(&std::fs::read(&p).ok()?).ok()?;
@@ -196,39 +317,14 @@ fn queued(s: &crate::AppState) -> Vec<(std::path::PathBuf, Queued)> {
     v
 }
 
-fn enqueue(s: &crate::AppState, q: &Queued) -> Result<()> {
-    let d = queue_dir(s);
-    std::fs::create_dir_all(&d)?;
+fn enqueue(queue: &std::path::Path, q: &Queued) -> Result<()> {
+    std::fs::create_dir_all(queue)?;
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
-    let p = d.join(format!("{t:024}.json"));
-    let tmp = d.join(format!("{t:024}.json.tmp"));
+    let p = queue.join(format!("{t:024}.json"));
+    let tmp = queue.join(format!("{t:024}.json.tmp"));
     std::fs::write(&tmp, serde_json::to_vec(q)?)?;
     std::fs::rename(&tmp, &p)?;
     Ok(())
-}
-
-/// Applies one edit to the recipes folder.
-fn apply(dir: &std::path::Path, q: &Queued) -> Result<()> {
-    match q {
-        Queued::Add { recipe } => recipes::add(dir, recipe),
-        Queued::Remove { id } => recipes::remove(dir, id),
-        Queued::Edit { id, name, outline } => {
-            let (ok, _) = recipes::load(dir);
-            let mut r = ok.into_iter().find(|r| &r.id == id).with_context(|| format!("no region {id}"))?;
-            if let Some(n) = name {
-                r.name = n.clone();
-            }
-            if let Some(o) = outline {
-                r.outline = o.clone();
-            }
-            r.validate()?;
-            let p = dir.join(format!("{id}.toml"));
-            let tmp = dir.join(format!("{id}.toml.tmp"));
-            std::fs::write(&tmp, toml::to_string(&r)?)?;
-            std::fs::rename(&tmp, &p)?;
-            Ok(())
-        }
-    }
 }
 
 /// The list as these edits leave it (offline: the pending ones).
@@ -259,10 +355,20 @@ fn with_queued(mut list: Vec<Recipe>, q: &[(std::path::PathBuf, Queued)]) -> Vec
 /// Sends the edits made away from home to the NAS, in order, once it's reachable. One that can't
 /// apply any more (its region removed or taken meanwhile) is dropped, with a note in the log.
 pub fn flush(s: &crate::AppState) {
-    let Some(dir) = regions_dir(s) else { return };
-    for (p, q) in queued(s) {
-        match apply(&dir, &q) {
+    let Some((dir, pool)) = nas(s) else { return };
+    flush_to(&pool, &dir, &queue_dir(s));
+}
+
+/// `flush`, from the folder `queue` to the recipes folder `dir`. An edit the NAS doesn't answer
+/// waits, with those after it, for the next time: it's still wanted, and the order is kept.
+fn flush_to(pool: &IoPool, dir: &std::path::Path, queue: &std::path::Path) {
+    for (p, q) in queued(queue) {
+        match apply(pool, dir, &q) {
             Ok(()) => eprintln!("regions: sent an edit made away from home ({q:?})"),
+            Err(e) if nas_unreachable(&e, pool) => {
+                eprintln!("regions: the edits made away from home wait, the NAS didn't take them: {e:#}");
+                return;
+            }
             Err(e) => eprintln!("regions: an edit made away from home no longer applies, dropped: {e:#} ({q:?})"),
         }
         std::fs::remove_file(&p).ok();
@@ -274,7 +380,7 @@ pub fn spawn_flusher(s: S) {
     std::thread::Builder::new()
         .name("regions".into())
         .spawn(move || loop {
-            if !queued(&s).is_empty() {
+            if !queued(&queue_dir(&s)).is_empty() {
                 flush(&s);
             }
             std::thread::sleep(std::time::Duration::from_secs(60));
@@ -285,11 +391,19 @@ pub fn spawn_flusher(s: S) {
 pub async fn list(State(s): State<S>) -> Response {
     let s2 = s.clone();
     tokio::task::spawn_blocking(move || {
-        let q = queued(&s2);
+        let q = queued(&queue_dir(&s2));
         let cache = s2.data.home.join("regions.json");
-        match regions_dir(&s2) {
-            Some(dir) => {
-                let (ok, bad) = recipes::load(&dir);
+        match nas(&s2) {
+            Some((dir, pool)) => {
+                // The NAS not answering is a 503, as for any read it can't answer; the list kept
+                // for going away stays as it was.
+                let (ok, bad) = match load(&pool, &dir) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("regions: {e:#}");
+                        return err(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}"));
+                    }
+                };
                 if let Ok(b) = serde_json::to_vec(&ok) {
                     let tmp = cache.with_extension("json.tmp");
                     if std::fs::write(&tmp, b).is_ok() {
@@ -310,18 +424,22 @@ pub async fn list(State(s): State<S>) -> Response {
     .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-/// An edit: applied on the NAS, or kept on this Mac until it's reachable (202).
+/// An edit: applied on the NAS, or kept on this Mac until it's reachable (202). A NAS that doesn't
+/// answer in time is a 503, as for any request it can't answer, and the edit isn't kept: whether
+/// the share still made it is only known once the list is read again.
 fn edit_or_queue(s: &crate::AppState, q: Queued) -> Response {
-    match regions_dir(s) {
-        Some(dir) => match apply(&dir, &q) {
+    match nas(s) {
+        Some((dir, pool)) => match apply(&pool, &dir, &q) {
             Ok(()) => Json(json!({ "done": true })).into_response(),
             Err(e) => {
-                let msg = format!("{e:#}");
-                let code = if msg.contains("exists") { StatusCode::CONFLICT } else if msg.contains("no region") { StatusCode::NOT_FOUND } else { StatusCode::BAD_REQUEST };
-                err(code, msg)
+                let code = status(&e, &pool);
+                if code == StatusCode::SERVICE_UNAVAILABLE {
+                    eprintln!("regions: {e:#}");
+                }
+                err(code, format!("{e:#}"))
             }
         },
-        None => match enqueue(s, &q) {
+        None => match enqueue(&queue_dir(s), &q) {
             Ok(()) => (StatusCode::ACCEPTED, Json(json!({ "queued": true }))).into_response(),
             Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")),
         },
@@ -452,8 +570,8 @@ pub async fn one(State(s): State<S>, Path(id): Path<u64>) -> Response {
 pub async fn coverage(State(s): State<S>) -> Response {
     let s2 = s.clone();
     tokio::task::spawn_blocking(move || -> Result<Response> {
-        let Some(dir) = regions_dir(&s2) else { return Ok(err(StatusCode::SERVICE_UNAVAILABLE, "the NAS isn't reachable")) };
-        let (regions, _) = recipes::load(&dir);
+        let Some((dir, pool)) = nas(&s2) else { return Ok(err(StatusCode::SERVICE_UNAVAILABLE, "the NAS isn't reachable")) };
+        let (regions, _) = load(&pool, &dir)?;
         let ix = s2.areas.get(&s2)?;
         let mut feats = Vec::new();
         for r in &regions {
@@ -473,8 +591,8 @@ pub async fn coverage(State(s): State<S>) -> Response {
                                     [lon + km / (111.32 * lat.to_radians().cos().max(0.01)) * t.cos(), lat + km / 110.574 * t.sin()]
                                 })
                                 .collect::<Vec<_>>()],
-                            recipes::Outline::Poly(f) => poly_rings(&dir.parent().unwrap_or(&dir).join("outlines").join(f))?,
-                            recipes::Outline::Geofabrik(g) => poly_rings(&dir.parent().unwrap_or(&dir).join("outlines/geofabrik").join(format!("{}.poly", g.replace('/', "-"))))?,
+                            recipes::Outline::Poly(f) => poly_rings(&pool, &dir.parent().unwrap_or(&dir).join("outlines").join(f))?,
+                            recipes::Outline::Geofabrik(g) => poly_rings(&pool, &dir.parent().unwrap_or(&dir).join("outlines/geofabrik").join(format!("{}.poly", g.replace('/', "-"))))?,
                             recipes::Outline::Osm(_) => unreachable!(),
                         };
                         let coords: Vec<Vec<Vec<[f64; 2]>>> = rings.into_iter().map(|r| vec![r]).collect();
@@ -490,7 +608,186 @@ pub async fn coverage(State(s): State<S>) -> Response {
     .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-fn poly_rings(p: &std::path::Path) -> Result<Vec<Vec<[f64; 2]>>> {
-    let text = std::fs::read_to_string(p).with_context(|| format!("{}", p.display()))?;
+/// A `.poly` file's rings, read whole through the pool.
+fn poly_rings(pool: &IoPool, p: &std::path::Path) -> Result<Vec<Vec<[f64; 2]>>> {
+    let text = String::from_utf8(pool.read_all(p).with_context(|| format!("{}", p.display()))?).with_context(|| format!("{}", p.display()))?;
     Ok(pipeline::coverage::read_poly(&text)?.into_iter().map(|r| r.into_iter().map(|q| [q[0] as f64 * 1e-7, q[1] as f64 * 1e-7]).collect()).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    /// A pool over the share `root` that gives up on an operation after 300 ms.
+    fn pool(root: &std::path::Path) -> Arc<IoPool> {
+        let cfg = store::iopool::PoolConfig::new(2, Duration::from_millis(300), root.to_owned());
+        IoPool::with_config(store::iopool::PoolConfig { probe_interval: Duration::from_millis(50), ..cfg })
+    }
+
+    fn recipe(id: &str, name: &str) -> Recipe {
+        Recipe { id: id.into(), name: name.into(), outline: vec!["osm:1877178".into()] }
+    }
+
+    fn rename(id: &str, name: &str) -> Queued {
+        Queued::Edit { id: id.into(), name: Some(name.into()), outline: None }
+    }
+
+    /// Makes `p` a named pipe: reading it waits for a writer that never comes, as a read waits on a
+    /// hung mount.
+    fn hang(p: &std::path::Path) {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
+        // SAFETY: a valid C string.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0, "mkfifo {}", p.display());
+    }
+
+    /// Lets the reads waiting on `hang`'s pipe finish (with nothing), so no pool thread stays stuck.
+    fn release(p: &std::path::Path) {
+        use std::os::unix::fs::OpenOptionsExt;
+        let end = Instant::now() + Duration::from_secs(5);
+        // (A writer that doesn't wait opens once a reader waits, and closes at once.)
+        while let Err(e) = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NONBLOCK).open(p) {
+            assert!(Instant::now() < end, "nothing reads {}: {e}", p.display());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn edits_through_the_pool() {
+        let share = tempfile::tempdir().unwrap();
+        let dir = share.path().join("inputs/regions");
+        let pool = pool(share.path());
+        // No folder yet: no recipes, and the first one added makes it.
+        assert_eq!(load(&pool, &dir).unwrap(), (vec![], vec![]));
+        apply(&pool, &dir, &Queued::Add { recipe: recipe("borders", "Scottish Borders") }).unwrap();
+        // Created exclusively: a taken id is a 409.
+        let e = apply(&pool, &dir, &Queued::Add { recipe: recipe("borders", "Other") }).unwrap_err();
+        assert_eq!(status(&e, &pool), StatusCode::CONFLICT, "{e:#}");
+        // Listed as `recipes::load` lists them: other files left out, broken ones reported.
+        std::fs::write(dir.join("bad.toml"), "id = \"other\"\nname = \"x\"\noutline = [\"osm:1\"]").unwrap();
+        std::fs::write(dir.join("old.toml.removed"), "").unwrap();
+        let (ok, bad) = load(&pool, &dir).unwrap();
+        assert_eq!((ok.clone(), bad.clone()), recipes::load(&dir));
+        assert_eq!((ok, bad.len()), (vec![recipe("borders", "Scottish Borders")], 1));
+        // Changed through a temporary file, also over one an unfinished edit left.
+        apply(&pool, &dir, &rename("borders", "The Borders")).unwrap();
+        std::fs::write(dir.join("borders.toml.tmp"), "half a recipe, and then some").unwrap();
+        apply(&pool, &dir, &Queued::Edit { id: "borders".into(), name: None, outline: Some(vec!["osm:1".into()]) }).unwrap();
+        assert_eq!(load(&pool, &dir).unwrap().0, [Recipe { outline: vec!["osm:1".into()], ..recipe("borders", "The Borders") }]);
+        assert!(!dir.join("borders.toml.tmp").exists());
+        // Removed: renamed to .removed, kept for undoing.
+        apply(&pool, &dir, &Queued::Remove { id: "borders".into() }).unwrap();
+        assert!(load(&pool, &dir).unwrap().0.is_empty());
+        assert!(recipes::parse("borders.toml", &std::fs::read_to_string(dir.join("borders.toml.removed")).unwrap()).is_ok());
+        // No such region: 404. An id that isn't one never makes a path: 400.
+        for q in [Queued::Remove { id: "borders".into() }, rename("borders", "X")] {
+            assert_eq!(status(&apply(&pool, &dir, &q).unwrap_err(), &pool), StatusCode::NOT_FOUND);
+        }
+        let outside = share.path().join("inputs/x.toml");
+        std::fs::write(&outside, toml::to_string(&recipe("x", "X")).unwrap()).unwrap();
+        for q in [Queued::Remove { id: "../x".into() }, rename("../x", "Y")] {
+            assert_eq!(status(&apply(&pool, &dir, &q).unwrap_err(), &pool), StatusCode::BAD_REQUEST);
+        }
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), toml::to_string(&recipe("x", "X")).unwrap());
+        assert!(pool.is_online());
+    }
+
+    #[test]
+    fn a_hung_share_fails_promptly() {
+        let share = tempfile::tempdir().unwrap();
+        let dir = share.path().join("inputs/regions");
+        let pool = pool(share.path());
+        apply(&pool, &dir, &Queued::Add { recipe: recipe("borders", "Scottish Borders") }).unwrap();
+        // A recipe the share never gives.
+        let stuck = dir.join("stuck.toml");
+        hang(&stuck);
+        let t0 = Instant::now();
+        let e = load(&pool, &dir).unwrap_err();
+        assert!(nas_unreachable(&e, &pool), "{e:#}");
+        let e = apply(&pool, &dir, &rename("stuck", "Stuck")).unwrap_err();
+        assert_eq!(status(&e, &pool), StatusCode::SERVICE_UNAVAILABLE, "{e:#}");
+        assert!(t0.elapsed() < Duration::from_secs(3), "{:?}", t0.elapsed());
+        release(&stuck);
+        // The share still answers, so it's busy rather than away: the rest goes on.
+        assert!(pool.is_online());
+        apply(&pool, &dir, &rename("borders", "The Borders")).unwrap();
+    }
+
+    #[test]
+    fn edits_made_away_wait_until_the_nas_takes_them() {
+        let (share, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (dir, queue) = (share.path().join("inputs/regions"), home.path().join("regions-queue"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pool = pool(share.path());
+        enqueue(&queue, &rename("borders", "The Borders")).unwrap();
+        enqueue(&queue, &Queued::Add { recipe: recipe("kanto", "Kanto") }).unwrap();
+        enqueue(&queue, &Queued::Add { recipe: recipe("kanto", "Kanto again") }).unwrap();
+        // The share doesn't give the first edit's recipe: nothing is sent or dropped, out of order.
+        let borders = dir.join("borders.toml");
+        hang(&borders);
+        flush_to(&pool, &dir, &queue);
+        release(&borders);
+        assert_eq!(queued(&queue).len(), 3);
+        assert!(!dir.join("kanto.toml").exists());
+        // It answers: they go in order, and the one that no longer applies (its id taken) is dropped.
+        std::fs::remove_file(&borders).unwrap();
+        std::fs::write(&borders, toml::to_string(&recipe("borders", "Scottish Borders")).unwrap()).unwrap();
+        flush_to(&pool, &dir, &queue);
+        assert!(queued(&queue).is_empty());
+        assert_eq!(load(&pool, &dir).unwrap().0, [recipe("borders", "The Borders"), recipe("kanto", "Kanto")]);
+    }
+
+    #[test]
+    fn a_network_error_is_the_nas_away() {
+        let share = tempfile::tempdir().unwrap();
+        let cfg = store::iopool::PoolConfig::new(1, Duration::from_secs(1), share.path().to_owned());
+        let pool = IoPool::with_config(store::iopool::PoolConfig { probe_interval: Duration::from_secs(60), ..cfg });
+        // The edit's own errors, the NAS there.
+        let denied = anyhow::Error::from(IoError::Io(std::io::Error::from(std::io::ErrorKind::PermissionDenied)));
+        assert!(!nas_unreachable(&denied, &pool));
+        assert_eq!(status(&anyhow::anyhow!("no region x"), &pool), StatusCode::NOT_FOUND);
+        // A soft mount's network error takes the NAS offline: the NAS away, nothing wrong with the edit.
+        let e = anyhow::Error::from(pool.call(|| -> std::io::Result<()> { Err(std::io::Error::from_raw_os_error(libc::ENOTCONN)) }).unwrap_err());
+        assert!(matches!(IoError::find(&e), Some(IoError::Io(_))));
+        assert_eq!(status(&e, &pool), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    async fn json_of(r: Response) -> Value {
+        serde_json::from_slice(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap()).unwrap()
+    }
+
+    fn ids(v: &Value) -> Vec<String> {
+        v["regions"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap().to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn away_edits_wait_on_this_mac() {
+        let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (root, gone) = (nas.path().join("project"), nas.path().join("gone"));
+        std::fs::create_dir_all(root.join("inputs/regions")).unwrap();
+        std::fs::write(root.join("inputs/regions/borders.toml"), toml::to_string(&recipe("borders", "Scottish Borders")).unwrap()).unwrap();
+        let s = crate::test_state(home.path(), &root);
+        let v = json_of(list(State(s.clone())).await).await;
+        assert_eq!((ids(&v), v.get("offline")), (vec!["borders".to_string()], None));
+        // The share goes away: edits wait on this Mac, and the list is the last one read with them.
+        std::fs::rename(&root, &gone).unwrap();
+        s.data.pool().unwrap().mark_offline("test");
+        assert_eq!(add(State(s.clone()), Json(recipe("kanto", "Kanto"))).await.status(), StatusCode::ACCEPTED);
+        assert_eq!(remove(State(s.clone()), Path("borders".into())).await.status(), StatusCode::ACCEPTED);
+        let v = json_of(list(State(s.clone())).await).await;
+        assert_eq!((ids(&v), v["offline"].as_bool(), v["pending"].as_u64()), (vec!["kanto".to_string()], Some(true), Some(2)));
+        assert_eq!(coverage(State(s.clone())).await.status(), StatusCode::SERVICE_UNAVAILABLE);
+        // Back (the pool's prober sees it): they go to the NAS.
+        std::fs::rename(&gone, &root).unwrap();
+        let t0 = Instant::now();
+        while !s.data.online() {
+            assert!(t0.elapsed() < Duration::from_secs(30), "the NAS never came back");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        flush(&s);
+        let v = json_of(list(State(s.clone())).await).await;
+        assert_eq!((ids(&v), v["pending"].as_u64()), (vec!["kanto".to_string()], Some(0)));
+        assert!(root.join("inputs/regions/borders.toml.removed").exists());
+    }
 }

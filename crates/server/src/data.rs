@@ -435,10 +435,15 @@ impl Data {
         h.finalize().to_hex()[..12].to_string()
     }
 
-    /// The basemap's archives (content names), in the catalog's order.
-    pub fn basemaps(&self) -> Result<Vec<(String, Src)>> {
+    /// The basemap's archives in the current catalog: their content names, in the catalog's order.
+    pub fn basemap_names(&self) -> Vec<String> {
         let cat = self.catalog();
-        cat.basemap.iter().filter_map(|l| self.content(l)).map(|c| Ok((c.clone(), self.src(&c)?))).collect()
+        cat.basemap.iter().filter_map(|l| cat.files.get(l).map(|f| f.file.clone())).collect()
+    }
+
+    /// Basemap archives by content name, each from the mirror or on the NAS.
+    pub fn basemaps(&self, contents: &[String]) -> Result<Vec<(String, Src)>> {
+        contents.iter().map(|c| Ok((c.clone(), self.src(c)?))).collect()
     }
 
     /// Whether the build Mac is running a job (its heartbeat on the NAS, fresh, with a job that

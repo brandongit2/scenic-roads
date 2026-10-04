@@ -61,6 +61,15 @@ impl Recipe {
     }
 }
 
+/// A recipe file's text, parsed and checked: it validates, and `name`, its file name, is its id's
+/// (`<id>.toml`). (The map's server reads the files through its NAS I/O pool, then checks them here.)
+pub fn parse(name: &str, text: &str) -> Result<Recipe> {
+    let r: Recipe = toml::from_str(text)?;
+    r.validate()?;
+    ensure!(name.strip_suffix(".toml") == Some(r.id.as_str()), "the file is {name} but its id is {:?}", r.id);
+    Ok(r)
+}
+
 /// Every recipe in `dir` (`inputs/regions`), sorted by id; a file that doesn't parse or validate is
 /// reported in the second list (file name, problem), not dropped silently.
 pub fn load(dir: &Path) -> (Vec<Recipe>, Vec<(String, String)>) {
@@ -69,12 +78,10 @@ pub fn load(dir: &Path) -> (Vec<Recipe>, Vec<(String, String)>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return (ok, bad) };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        let Some(stem) = name.strip_suffix(".toml") else { continue };
-        let r = std::fs::read_to_string(e.path()).map_err(anyhow::Error::from).and_then(|s| toml::from_str::<Recipe>(&s).map_err(anyhow::Error::from)).and_then(|r| {
-            r.validate()?;
-            ensure!(r.id == stem, "the file is {name} but its id is {:?}", r.id);
-            Ok(r)
-        });
+        if !name.ends_with(".toml") {
+            continue;
+        }
+        let r = std::fs::read_to_string(e.path()).map_err(anyhow::Error::from).and_then(|s| parse(&name, &s));
         match r {
             Ok(r) => ok.push(r),
             Err(e) => bad.push((name, format!("{e:#}"))),
@@ -128,10 +135,15 @@ mod tests {
         assert!(add(d.path(), &r).is_err(), "exclusive");
         std::fs::write(d.path().join("bad.toml"), "id = \"other\"\nname = \"x\"\noutline = [\"osm:1\"]").unwrap();
         let (ok, bad) = load(d.path());
-        assert_eq!(ok, vec![r]);
+        assert_eq!(ok, vec![r.clone()]);
         assert_eq!(bad.len(), 1);
         remove(d.path(), "borders").unwrap();
         assert!(load(d.path()).0.is_empty());
         assert!(d.path().join("borders.toml.removed").exists());
+        // A file's text is checked against its name.
+        let text = toml::to_string(&r).unwrap();
+        assert_eq!(parse("borders.toml", &text).unwrap(), r);
+        assert!(parse("other.toml", &text).is_err());
+        assert!(parse("borders.toml", "id = \"borders\"").is_err());
     }
 }

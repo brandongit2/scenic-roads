@@ -1,8 +1,9 @@
 //! Tiles of every layer, from the catalog's packs (and the basemap's PMTiles archives).
 //!
-//! Caching: a tile's ETag is its content hash (plus, for tiles with names, the version of the
-//! translations it uses), answered with a 304 from the pack index alone, never the NAS. URLs the
-//! app versions (`?v=`, the layer's version from the catalog) are cached for good.
+//! Caching: a tile's ETag is its content hash (the basemap's: its archives' content names and its
+//! position), plus, for tiles with names, the version of the translations it uses. A 304 is answered
+//! from the pack index (the basemap's from the catalog) alone, never the NAS. URLs the app versions
+//! (`?v=`, the layer's version from the catalog) are cached for good.
 
 use crate::S;
 use axum::{
@@ -204,28 +205,45 @@ pub async fn named_mvt_tile(s: S, layer: String, rules: crate::names_live::Rules
     }
 }
 
+/// A basemap tile's identity, known from the catalog without reading the tile: its archives'
+/// content names (immutable, so the same names hold the same tiles) and its position. With the
+/// version of the translations it uses, that's everything the served tile is made from.
+fn base_hash(archives: &[String], z: u8, x: u32, y: u32) -> u64 {
+    let mut h = blake3::Hasher::new();
+    for c in archives {
+        h.update(c.as_bytes());
+        h.update(b"\n");
+    }
+    h.update(&[z]);
+    h.update(&x.to_le_bytes());
+    h.update(&y.to_le_bytes());
+    u64::from_le_bytes(h.finalize().as_bytes()[..8].try_into().unwrap())
+}
+
 /// The basemap: the tile from every basemap archive that has it (today's basemap and its parts),
-/// merged, with names attached.
+/// merged, with names attached. Its ETag comes from the catalog, so the browser's copy is confirmed
+/// (304) without reading the archives, which are on the NAS until the mirror has them.
 pub async fn base_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
     let v = versioned(q.as_deref());
+    let archives = s.data.basemap_names();
+    if archives.is_empty() {
+        return StatusCode::NO_CONTENT.into_response();
+    }
     let nv = s.names.version_for_tile(z, x, y, 1.0);
+    let h = base_hash(&archives, z, x, y);
+    let etag = format!("\"{h:016x}-{nv:x}\"");
+    if etag_match(&headers, &etag) {
+        return not_modified(&etag, v);
+    }
+    let key = (1u8, z, x, y, h, nv);
+    if let Some(b) = recall(&key) {
+        return respond(b.to_vec(), "application/x-protobuf", true, &etag, v);
+    }
     let s2 = s.clone();
-    let got = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<(u64, Vec<u8>)>> {
-        let tiles = s2.basemap.tiles(&s2.data, z, x, y)?;
-        if tiles.is_empty() {
-            return Ok(None);
-        }
-        // The tiles' identity: their archives' content names (immutable) and position.
-        let mut hh = blake3::Hasher::new();
-        for (c, _) in &tiles {
-            hh.update(c.as_bytes());
-        }
-        let h = u64::from_le_bytes(hh.finalize().as_bytes()[..8].try_into().unwrap());
-        let key = (1u8, z, x, y, h, nv);
-        if let Some(b) = recall(&key) {
-            return Ok(Some((h, b.to_vec())));
-        }
-        let raw: Vec<Vec<u8>> = tiles.iter().filter_map(|(_, b)| names::mvt::gunzip_if_gzip(b).ok().map(|c| c.into_owned())).collect();
+    let got = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<Vec<u8>>> {
+        // From the archives the ETag names, even if a new catalog came meanwhile.
+        let tiles = s2.basemap.tiles(&s2.data, &archives, z, x, y)?;
+        let raw: Vec<Vec<u8>> = tiles.iter().filter_map(|b| names::mvt::gunzip_if_gzip(b).ok().map(|c| c.into_owned())).collect();
         let merged = match raw.len() {
             0 => return Ok(None),
             1 => raw.into_iter().next().unwrap(),
@@ -237,17 +255,11 @@ pub async fn base_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>
         let out = s2.names.attach_raw(&merged, z, x, y, crate::names_live::Rules::Basemap);
         let gz = names::mvt::gzip(&out)?;
         remember(key, Arc::new(gz.clone()));
-        Ok(Some((h, gz)))
+        Ok(Some(gz))
     })
     .await;
     match got {
-        Ok(Ok(Some((h, body)))) => {
-            let etag = format!("\"{h:016x}-{nv:x}\"");
-            if etag_match(&headers, &etag) {
-                return not_modified(&etag, v);
-            }
-            respond(body, "application/x-protobuf", true, &etag, v)
-        }
+        Ok(Ok(Some(body))) => respond(body, "application/x-protobuf", true, &etag, v),
         Ok(Ok(None)) => StatusCode::NO_CONTENT.into_response(),
         Ok(Err(e)) => {
             eprintln!("basemap {z}/{x}/{y}: {e:#}");
@@ -261,40 +273,142 @@ pub async fn base_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>
 #[derive(Default)]
 pub struct Basemap {
     /// The archives opened, for (their content names, the mirror's generation then).
-    open: Mutex<Option<((Vec<String>, u64), Vec<(String, Arc<store::pmtiles::PmTiles>)>)>>,
+    open: Mutex<Option<((Vec<String>, u64), Vec<Arc<store::pmtiles::PmTiles>>)>>,
 }
 
 impl Basemap {
-    /// Every archive opened, or the first failure (kept only when all open).
-    fn archives(&self, data: &crate::data::Data) -> anyhow::Result<Vec<(String, Arc<store::pmtiles::PmTiles>)>> {
-        let srcs = data.basemaps()?;
+    /// The archives `contents` (content names) opened, or the first failure (kept only when all
+    /// open).
+    fn archives(&self, data: &crate::data::Data, contents: &[String]) -> anyhow::Result<Vec<Arc<store::pmtiles::PmTiles>>> {
         // Opened again once the mirror has copied files (an archive read from the NAS until then).
-        let names: (Vec<String>, u64) = (srcs.iter().map(|(c, _)| c.clone()).collect(), data.mirror_gen.load(std::sync::atomic::Ordering::Relaxed));
-        if let Some((n, a)) = self.open.lock().unwrap().as_ref() {
-            if *n == names {
+        let key: (Vec<String>, u64) = (contents.to_vec(), data.mirror_gen.load(std::sync::atomic::Ordering::Relaxed));
+        if let Some((k, a)) = self.open.lock().unwrap().as_ref() {
+            if *k == key {
                 return Ok(a.clone());
             }
         }
         let mut out = Vec::new();
-        for (c, src) in srcs {
+        for (c, src) in data.basemaps(contents)? {
             let pm = match src {
                 crate::views::Src::Local(m) => store::pmtiles::PmTiles::open(Box::new(crate::views::MapRange(m))),
                 crate::views::Src::Remote(r) => store::pmtiles::PmTiles::open(Box::new(r)),
             };
-            out.push((c.clone(), Arc::new(pm.with_context(|| format!("basemap {c}"))?)));
+            out.push(Arc::new(pm.with_context(|| format!("basemap {c}"))?));
         }
-        *self.open.lock().unwrap() = Some((names, out.clone()));
+        *self.open.lock().unwrap() = Some((key, out.clone()));
         Ok(out)
     }
 
-    /// The tile from each archive that has it: (archive content name, bytes as stored).
-    pub fn tiles(&self, data: &crate::data::Data, z: u8, x: u32, y: u32) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
+    /// The tile from each of the archives `contents` that has it, as stored.
+    pub fn tiles(&self, data: &crate::data::Data, contents: &[String], z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Vec<u8>>> {
         let mut out = Vec::new();
-        for (c, pm) in self.archives(data)? {
+        for pm in self.archives(data, contents)? {
             if let Some(b) = pm.get(z, x, y)? {
-                out.push((c, b));
+                out.push(b);
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A PMTiles archive holding one tile, 0/0/0: the 127-byte header, a root directory of one
+    /// entry (uncompressed), the tile.
+    fn archive(tile: &[u8]) -> Vec<u8> {
+        // One entry: tile id 0, a run of 1, its length, offset 0 (stored plus one).
+        let dir = [1, 0, 1, tile.len() as u8, 1];
+        let (root_at, data_at) = (127u64, 127 + dir.len() as u64);
+        let mut b = b"PMTiles\x03".to_vec();
+        // The root, metadata, leaves and data (offset, length); tiles addressed, entries, contents.
+        for v in [root_at, dir.len() as u64, data_at, 0, data_at, 0, data_at, tile.len() as u64, 1, 1, 1] {
+            b.extend_from_slice(&v.to_le_bytes());
+        }
+        // Clustered, nothing compressed, MVT, z0–0; then bounds and centre, unused.
+        b.extend_from_slice(&[1, 1, 1, 1, 0, 0]);
+        b.extend_from_slice(&[0; 25]);
+        assert_eq!(b.len(), 127);
+        b.extend_from_slice(&dir);
+        b.extend_from_slice(tile);
+        b
+    }
+
+    /// A NAS folder whose catalog's basemap is the one archive `name` (on the NAS when given), and
+    /// its content name.
+    fn nas_with_basemap(name: &str, archive: Option<&[u8]>) -> (tempfile::TempDir, String) {
+        let nas = tempfile::tempdir().unwrap();
+        let logical = format!("layers/basemap/{name}");
+        let content = format!("{logical}.0123456789abcdef.pmtiles");
+        let mut cat = store::catalog::Catalog::new(1);
+        cat.basemap = vec![logical.clone()];
+        cat.files.insert(logical, store::catalog::FileRef { file: content.clone(), size: archive.map_or(0, |a| a.len() as u64), ..Default::default() });
+        store::catalog::write_copy(&nas.path().join("catalog"), &cat).unwrap();
+        if let Some(a) = archive {
+            let p = nas.path().join(&content);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, a).unwrap();
+        }
+        (nas, content)
+    }
+
+    async fn get(s: &S, (z, x, y): (u8, u32, u32), etag: Option<&str>) -> Response {
+        let mut h = HeaderMap::new();
+        if let Some(e) = etag {
+            h.insert(header::IF_NONE_MATCH, HeaderValue::from_str(e).unwrap());
+        }
+        base_tile(State(s.clone()), Path((z, x, y)), RawQuery(None), h).await
+    }
+
+    fn etag_of(r: &Response) -> Option<String> {
+        r.headers().get(header::ETAG).map(|e| e.to_str().unwrap().to_string())
+    }
+
+    #[test]
+    fn basemap_etag_changes_with_what_the_tile_is_made_from() {
+        let a = vec!["layers/basemap/world.0123456789abcdef.pmtiles".to_string()];
+        let ab = vec![a[0].clone(), "layers/basemap/part.0123456789abcdef.pmtiles".to_string()];
+        let h = base_hash(&a, 5, 10, 12);
+        assert_eq!(h, base_hash(&a, 5, 10, 12));
+        for other in [base_hash(&ab, 5, 10, 12), base_hash(&[], 5, 10, 12), base_hash(&a, 6, 10, 12), base_hash(&a, 5, 11, 12), base_hash(&a, 5, 10, 13), base_hash(&a, 5, 12, 10)] {
+            assert_ne!(h, other);
+        }
+    }
+
+    #[tokio::test]
+    async fn basemap_304_reads_nothing() {
+        // The catalog names an archive the NAS doesn't have, so any read of it fails.
+        let (nas, content) = nas_with_basemap("world-gone", None);
+        let home = tempfile::tempdir().unwrap();
+        let s = crate::test_state(home.path(), nas.path());
+        let etag = format!("\"{:016x}-{:x}\"", base_hash(&[content], 3, 4, 2), s.names.version_for_tile(3, 4, 2, 1.0));
+        let r = get(&s, (3, 4, 2), Some(&etag)).await;
+        assert_eq!((r.status(), etag_of(&r)), (StatusCode::NOT_MODIFIED, Some(etag.clone())));
+        // Without the browser's copy, or with another tile's, it has to read, and can't.
+        assert_eq!(get(&s, (3, 4, 2), None).await.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(get(&s, (3, 4, 3), Some(&etag)).await.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn basemap_200_carries_the_etag_its_304_answers() {
+        // An MVT tile of one empty layer, "t".
+        let tile = [0x1a, 0x05, 0x0a, 0x01, b't', 0x78, 0x02];
+        let (nas, content) = nas_with_basemap("world-here", Some(&archive(&tile)));
+        let home = tempfile::tempdir().unwrap();
+        let s = crate::test_state(home.path(), nas.path());
+        let r = get(&s, (0, 0, 0), None).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let etag = etag_of(&r).unwrap();
+        assert_eq!(etag, format!("\"{:016x}-{:x}\"", base_hash(&[content], 0, 0, 0), s.names.version_for_tile(0, 0, 0, 1.0)));
+        let body = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(names::mvt::gunzip_if_gzip(&body).unwrap().as_ref(), &tile[..]);
+        assert_eq!(get(&s, (0, 0, 0), Some(&etag)).await.status(), StatusCode::NOT_MODIFIED);
+        // Again (from memory now): the same ETag.
+        let r = get(&s, (0, 0, 0), None).await;
+        assert_eq!((r.status(), etag_of(&r)), (StatusCode::OK, Some(etag)));
+        // A tile no archive has: 204, without an ETag.
+        let r = get(&s, (1, 0, 0), None).await;
+        assert_eq!((r.status(), etag_of(&r)), (StatusCode::NO_CONTENT, None));
     }
 }

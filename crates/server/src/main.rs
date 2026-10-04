@@ -215,6 +215,29 @@ impl AppState {
     }
 }
 
+/// A server for tests over `root`, a local folder laid out like the NAS project folder (as with
+/// `--root`: the real NAS is never looked for), with this Mac's files in `home`. Nothing runs in
+/// the background.
+#[cfg(test)]
+pub fn test_state(home: &std::path::Path, root: &std::path::Path) -> S {
+    let data = data::Data::open(data::Options { home: home.to_owned(), nas_root: Some(root.to_owned()), mirror: false, reserve_gb: 0 }).unwrap();
+    Arc::new(AppState {
+        updater: updater::Updater::new(home),
+        data,
+        names: names_live::NamesState::new(home),
+        basemap: tiles::Basemap::default(),
+        packs: Arc::new(cache::Packs::default()),
+        details: Mutex::new(None),
+        road_en: Mutex::new(None),
+        rail_freq: Mutex::new(None),
+        agent: Mutex::new(None),
+        home: home.to_owned(),
+        areas: regions::Areas::default(),
+        descriptions: descriptions::Descriptions::new(home),
+        tokens: Mutex::new(None),
+    })
+}
+
 fn arg(name: &str) -> Option<String> {
     let a: Vec<String> = std::env::args().collect();
     a.iter().position(|x| x == name).and_then(|i| a.get(i + 1).cloned())

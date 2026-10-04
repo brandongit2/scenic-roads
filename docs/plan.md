@@ -266,7 +266,8 @@ steps merge their manifest changes under a lock. The exceptions:
     bare name. The bare name resolves to the NAS's Tailscale address, whose userspace networking held
     SMB to 12 MB/s.
 - **`nsmb.conf`** makes the share a soft mount, under both names.
-- **NAS access:** reads go through a bounded I/O pool with timeouts.
+- **NAS access:** reads and writes (the Regions panel's recipes too) go through a bounded I/O pool
+  with timeouts.
   - An overrun trips the breaker (an offline banner) only when a quick probe of the share also fails,
     so on a busy link a slow read fails alone. One prober watches for the NAS's return.
   - NAS files are read in 1 MB pieces with their handles kept open, and are never mmapped.
@@ -289,7 +290,8 @@ steps merge their manifest changes under a lock. The exceptions:
   - A versioned response is cached for good (`immutable`) while that version is current, else it's
     revalidated.
   - ETags are content hashes, combined for named tiles with the versions of the translations they
-    use.
+    use. The basemap's are its archives' content names and the tile's position, known from the
+    catalog, so its 304s read nothing.
 
 **Mirror, per Mac.**
 - At home, each Mac copies every file the current catalog lists, in the background: one file at a
@@ -896,13 +898,9 @@ are added.
    - trains a day.
 2. **The scenic cache doesn't carry over between unit runs:** each unit run recomputes every scenic
    sample.
-3. **Server details:**
-   - The Regions API reads and writes the share outside the I/O pool, so a hung mount can hold a
-     request.
-   - A basemap tile's 304 still reads the NAS while the basemap isn't mirrored.
-4. **Catalogs:**
+3. **Catalogs:**
    - `credits` and `coverage` are empty: `/api/coverage` builds the coverage per request.
-5. **The repo:**
+4. **The repo:**
    - `inputs/keys.env` is read by nothing (`dem/railgtfs.py` still reads `data/keys.env`).
 
 ## 11. Risks and checks

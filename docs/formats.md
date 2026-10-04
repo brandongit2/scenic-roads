@@ -285,7 +285,8 @@ agent/cache/            dem-cache.* (the seed), dem-units/<u>.dem (a unit's samp
 
 - Tiles: `/tiles/{roads,rails,terrain,slope,labels,base}/{z}/{x}/{y}`, `/tiles/trees/{var}/{z}/{x}/{y}`.
   Strong `ETag`: the stored blob's hash, plus the translations versions for named tiles;
-  `/tiles/base`'s is a hash of the basemap archives' content names and the names version; terrain
+  `/tiles/base`'s is a hash of the catalog's basemap archives' content names and the tile's z/x/y, plus
+  the names version (a 304 reads no archive); terrain
   and slope tiles the server makes (missing ones, slope z12) carry none. A request with `?v=` (the
   app's URLs) is `public, max-age=31536000, immutable` while that version is current, else
   `no-cache`.
