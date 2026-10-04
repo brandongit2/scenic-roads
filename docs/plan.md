@@ -100,8 +100,8 @@ the NAS does itself. The jobs (§8 has their order and keys):
    - summits;
    - place labels;
    - once ever, the worldwide z8 terrain for peaks.
-3. **Global-source layers, per z3 pack near the coverage:** terrain, then slope, then tree cover.
-4. **Heritage sites and designated areas:** one job over the coverage plus 20 km.
+3. **Heritage sites and designated areas:** one job over the coverage plus 20 km.
+4. **Global-source layers, per z3 pack near the coverage:** terrain, then slope, then tree cover.
 5. **Per unit**, for every unit meeting the coverage: base(U), the ways U owns (a way belongs to the
    unit of its first node) that touch the coverage, with per-vertex elevations, grade and scenic
    channels. Each value is computed once.
@@ -938,10 +938,11 @@ M1's helper (§4). Only units are shared; everything else runs on the build Mac.
    - summits;
    - labels.
 3. **The regions' build:**
-   - terrain, then slope (nothing else in the regions' plan runs while terrain is stale);
+   - heritage-sites (first, one job: the units wait for it, and for the terrain, so the M1's helper
+     builds units while the build Mac runs slope and tree cover; not waited for by the rest);
+   - terrain, then slope (nothing after them in the regions' plan runs while terrain is stale);
    - tree cover, for the z3 tiles whose coverage changed (listed before the rest, not waited for:
      a failing trees job doesn't hold up the units);
-   - heritage-sites;
    - every stale unit;
    - a prune of what the coverage no longer builds (§5, Shrinking).
 4. **Three chains**, each contributing its first stale step:

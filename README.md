@@ -294,14 +294,14 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
    - the worldwide basemap (Planetiler);
    - pieces per z6 tile, with a 10 km buffer;
    - every way's whole road, from one chaining of the planet.
-2. **Terrain, slope and tree cover** per z3 pack near the coverage; terrain from AWS's raw tiles, repaired (above):
+2. **Heritage sites and designated areas** over the coverage: `dem/heritage.py`, on the registers' snapshot.
+3. **Terrain, slope and tree cover** per z3 pack near the coverage; terrain from AWS's raw tiles, repaired (above):
    - **Terrain:** Terrarium tiles, z9–12 within 20 km of the coverage (capped by latitude: z12 to 67°, z11 to 79°). z8 and coarser are made again from the finer tiles where they exist (2×2 means), since AWS's coarse levels come from coarser sources: Fuji's summit pixel is 3,106 m at z6 and 2,368 m at z5, against 3,378 and 2,715 m from z9.
    - **Slope:** z11 and coarser are stored, as RGBA PNG with four slopes a pixel: the quarter means of the sixteen z12 Horn slopes beneath it, sorted.
      - Each channel is 255 × √(slope ÷ 400 %), so the gentle slopes most ground has get finer steps.
      - The rounding is carried from one channel to the next, so their mean keeps an eighth of a step.
      - The server makes z12 on demand.
    - **Tree cover** (before the areas): cover, canopy height and leaf type, zoom 4–12, clipped to the coverage (`dem/trees.py`, `pipeline::treepacks`), from Meta's canopy squares and the leaf-type squares (`dem/leaftype.py`, made whole where a square is missing or wasn't made whole).
-3. **Heritage sites and designated areas** over the coverage: `dem/heritage.py`, on the registers' snapshot.
 4. **Roadside buildings** for the whole world, once per Overture release (2026-09-23.1): every building's box, from the release's bbox columns, in z8 tiles (`pipeline::buildtiles`, `dem/buildings.py --world`).
 5. **Each z6 area** runs these steps on its piece:
 

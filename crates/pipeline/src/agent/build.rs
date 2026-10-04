@@ -462,6 +462,13 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     let mut work = Vec::new();
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
 
+    // The heritage sites and designated areas the units read: first, once per pass and coverage (one
+    // job, so the M1's helper builds units as soon as the terrain is there, while the build Mac runs
+    // slope and tree cover). Not waited for: terrain still runs while it waits out a failure.
+    let sites = heritage_sites_work(cov, date, m, done);
+    let sites_pending = sites.is_some();
+    work.extend(sites);
+
     // Terrain, then slope, per z3 pack.
     let (terrain, slope) = terrain_slope_targets(cov, m);
     let terrain: Vec<(String, String)> = terrain.into_iter().filter(|(t, k)| stale(&done.terrain, t, k)).collect();
@@ -482,13 +489,8 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     // not waited for: units still run while a trees job waits out a failure.)
     work.extend(trees_work(cov, m, done));
 
-    // The heritage sites and designated areas the units read: before them, once per pass and
-    // coverage (the units wait until there are some).
-    if let Some(w) = heritage_sites_work(cov, date, m, done) {
-        work.push(w);
-        return work;
-    }
-    if !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources")) {
+    // The units wait for the heritage sites.
+    if sites_pending || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources")) {
         return work;
     }
 
@@ -849,10 +851,10 @@ impl Step {
 /// The regions' steps (build::checklist's lines), for before there's a pass to size them by.
 pub fn checklist_to_come() -> Vec<Step> {
     [
-        ("Terrain", &["terrain"][..]),
+        ("Heritage sites and designated areas", &["heritage-sites"][..]),
+        ("Terrain", &["terrain"]),
         ("Slope", &["slope"]),
         ("Tree cover", &["trees"]),
-        ("Heritage sites and designated areas", &["heritage-sites"]),
         ("Roads, elevations and scenery", &["unit"]),
         ("Map tiles", &["pack", "lo"]),
         ("Road index, rail stops, ferries, world terrain", &["roadunits", "stations", "ferries", "terrain-root", "slope-root"]),
@@ -880,9 +882,9 @@ fn remaining(done: &Keys, next: impl Fn(&Keys) -> Option<Work>) -> Vec<Work> {
     out
 }
 
-/// The regions' build to the end, step by step (the pass's own steps are the agent's): terrain,
-/// slope, tree cover, the heritage sites, the areas, the map tiles, the road index, rail stops and
-/// ferries, trains a day, the landmarks, publishing.
+/// The regions' build to the end, step by step (the pass's own steps are the agent's): the
+/// heritage sites, terrain, slope, tree cover, the areas, the map tiles, the road index, rail stops
+/// and ferries, trains a day, the landmarks, publishing.
 /// `held`: the catalog is held for review (inputs/hold-catalog): publishing is its held copy.
 pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, held: bool, reach: Option<&Reaches>) -> Vec<Step> {
     let count = |all: &[(String, String)], map: &BTreeMap<String, String>| all.iter().filter(|(t, k)| map.get(t) == Some(k)).count();
@@ -897,11 +899,11 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     let group = |what: &str, steps: &[&str], left: Option<usize>| Step { what: what.into(), steps: steps.iter().map(|s| s.to_string()).collect(), left, ..Default::default() };
     let mut out = Vec::new();
     let (terrain, slope) = terrain_slope_targets(cov, m);
+    let sites_left = heritage_sites_work(cov, date, m, done).is_some() || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources"));
+    out.push(group("Heritage sites and designated areas", &["heritage-sites"], Some(sites_left as usize)));
     out.push(per("Terrain", &["terrain"], &terrain, &done.terrain, "parts", true));
     out.push(per("Slope", &["slope"], &slope, &done.slope, "parts", true));
     out.push(per("Tree cover", &["trees"], &crate::treepacks::targets(cov, m), &done.trees, "tiles", true));
-    let sites_left = heritage_sites_work(cov, date, m, done).is_some() || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources"));
-    out.push(group("Heritage sites and designated areas", &["heritage-sites"], Some(sites_left as usize)));
     let pieces = m.keys().any(|l| l.starts_with(&format!("sources/osm/{date}/pieces/")));
     let units: Vec<(String, String)> = unit_keys(cov, date, m, reach, inputs).into_iter().map(|(u, k)| (u.slash(), k)).collect();
     out.push(per("Roads, elevations and scenery", &["unit"], &units, &done.unit, "areas", pieces && reach.is_some()));
@@ -1009,6 +1011,10 @@ mod tests {
         let mut m: BTreeMap<String, String> = BTreeMap::new();
         unit_inputs(&mut m, "2026-09-28");
         let mut done = Keys::default();
+        // The heritage sites first (one job: a helper's units then wait only for the terrain).
+        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
+        assert_eq!(w.iter().map(|x| x.step.as_str()).collect::<Vec<_>>(), vec!["heritage-sites", "terrain"]);
+        heritage_done(&mut m, &mut done, "2026-09-28", &w[0]);
         let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(w.len(), 1);
         assert_eq!(w[0].step, "terrain");
@@ -1024,9 +1030,6 @@ mod tests {
         let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!((w[0].step.as_str(), w[0].targets[0].0.as_str()), ("trees", "3/3/2"));
         done.record("trees", &w[0].targets);
-        // The heritage sites and areas, before any unit (there are none here).
-        let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
-        heritage_done(&mut m, &mut done, "2026-09-28", &w[0]);
         // The root from the lo pack (no slope lo pack in this test: no slope root).
         let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "terrain-root");
@@ -1117,7 +1120,7 @@ mod tests {
         assert_eq!(line(&l, "Map tiles").total, None, "no areas built: the tiles aren't known yet");
         assert_eq!(line(&l, "Heritage").left, Some(1));
         // Terrain, slope, the heritage sites and the area done.
-        for step in ["terrain", "slope", "trees", "heritage-sites", "unit"] {
+        for step in ["heritage-sites", "terrain", "slope", "trees", "unit"] {
             let w = plan(&c, "d", &m, &done, &BTreeMap::new());
             assert_eq!(w[0].step, step);
             if step == "heritage-sites" {
@@ -1217,7 +1220,7 @@ mod tests {
         unit_inputs(&mut m, "d");
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         m.insert("sources/osm/d/pieces/6-40-20".into(), "sources/osm/d/pieces/6-40-20.5555555555555555.osm.pbf".into());
-        for step in ["terrain", "slope", "trees", "heritage-sites", "unit"] {
+        for step in ["heritage-sites", "terrain", "slope", "trees", "unit"] {
             let w = plan(&c, "d", &m, &done, &BTreeMap::new());
             assert_eq!(w[0].step, step);
             if step == "heritage-sites" {
@@ -1352,7 +1355,7 @@ mod tests {
         m.insert(crate::rail::CATALOGUE.into(), "sources/rail/catalogue.1111111111111111.csv".into());
         m.insert(crate::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.2222222222222222.osm.pbf".into());
         // Not before the units.
-        for step in ["terrain", "slope", "trees", "heritage-sites", "unit"] {
+        for step in ["heritage-sites", "terrain", "slope", "trees", "unit"] {
             let w = plan(&c, "d", &m, &done, &BTreeMap::new());
             assert_eq!(w[0].step, step);
             assert!(!w.iter().any(|x| x.step.starts_with("rail")), "{:?}", steps(&w));
@@ -1420,7 +1423,7 @@ mod tests {
         // Terrain, slope, the heritage sites and the unit done.
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         unit_inputs(&mut m, "d");
-        for step in ["terrain", "slope", "trees", "heritage-sites", "unit"] {
+        for step in ["heritage-sites", "terrain", "slope", "trees", "unit"] {
             let w = plan(&c, "d", &m, &done, &BTreeMap::new());
             assert_eq!(w[0].step, step);
             if step == "heritage-sites" {
