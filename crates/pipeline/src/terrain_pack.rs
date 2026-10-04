@@ -211,13 +211,13 @@ impl store::range::RangeRead for FileSource<'_> {
     }
 }
 
-/// AWS's raw tiles, kept on the NAS (`sources/aws-terrarium/<z>/<x>/<y>.png`, `.none` for a tile
-/// AWS doesn't have), so each is downloaded once, and in a local cache the NAS fills (the build
-/// Mac's, which may lose them for room), so packs are always made from the same immutable source:
-/// processing a tile twice isn't idempotent, so stored (processed) tiles are never an input. Each
-/// copy is written straight to its name (crate::whole::write_in_place: the store's writes over SMB
-/// are what the job waits on) and checked whole when read: one that isn't (cut short) is deleted
-/// and taken from the next source, the NAS's copy, else AWS.
+/// AWS's raw tiles, kept so each is downloaded once: in the build Mac's cache as they come, and on
+/// the NAS (`sources/aws-terrarium/<z>/<x>/<y>.png`, `.none` for a tile AWS doesn't have), copied
+/// there in bulk, which fills the cache when it lacks one (room-making copies a tile the NAS lacks
+/// there before it deletes it). Packs are always made from the same immutable source: processing a
+/// tile twice isn't idempotent, so stored (processed) tiles are never an input. Each copy is written
+/// straight to its name (crate::whole::write_in_place) and checked whole when read: one that isn't
+/// (cut short) is deleted and taken from the next source, the NAS's copy, else AWS.
 pub struct RawTiles {
     dir: std::path::PathBuf,
     store: Option<std::path::PathBuf>,
@@ -234,7 +234,7 @@ impl RawTiles {
         RawTiles { dir: dir.to_path_buf(), store: None, agent: agent(), listed: Default::default(), made: Default::default() }
     }
 
-    /// The local cache `dir`, filled from the NAS's `store`, which every download goes to first.
+    /// The local cache `dir`, filled from the NAS's `store` where it has a tile.
     pub fn with_store(dir: &std::path::Path, store: &std::path::Path) -> Self {
         RawTiles { dir: dir.to_path_buf(), store: Some(store.to_path_buf()), agent: agent(), listed: Default::default(), made: Default::default() }
     }
@@ -327,24 +327,16 @@ impl RawTiles {
     }
 
     /// From AWS, into the NAS's store first, then here.
+    /// From AWS, into the local cache: the NAS's store gets them in bulk (its small-file writes, a
+    /// tile at a time, set the job's pace: 25 a second against 60 here).
     fn fetch(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
         let d = self.dir.join(format!("{z}/{x}"));
-        let sd = self.store.as_ref().map(|st| st.join(format!("{z}/{x}")));
-        if let Some(sd) = &sd {
-            self.make(sd)?;
-        }
         match fetch_checked(&self.agent, z, x, y)? {
             Some(b) => {
-                if let Some(sd) = &sd {
-                    crate::whole::write_in_place(&sd.join(format!("{y}.png")), &b)?;
-                }
                 crate::whole::write_in_place(&d.join(format!("{y}.png")), &b)?;
                 Ok(Some(b))
             }
             None => {
-                if let Some(sd) = &sd {
-                    std::fs::write(sd.join(format!("{y}.none")), b"")?;
-                }
                 std::fs::write(d.join(format!("{y}.none")), b"")?;
                 Ok(None)
             }
