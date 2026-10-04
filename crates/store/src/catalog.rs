@@ -34,11 +34,11 @@ pub struct Catalog {
     /// RFC 3339 time of the publish.
     #[serde(default)]
     pub created: String,
-    /// The app version that published it.
+    /// The version of the pipeline crate that published it (not the app's: docs/plan.md §10).
     #[serde(default)]
     pub app: String,
-    /// Every file the catalog references, by logical name. GC keeps exactly these (plus 14 days of
-    /// history).
+    /// Every file the catalog references, by logical name. GC keeps them, and the files of the last
+    /// 14 days' catalogs (docs/plan.md §3).
     #[serde(default)]
     pub files: BTreeMap<String, FileRef>,
     /// The built units (tile keys as "z/x/y"), sorted.

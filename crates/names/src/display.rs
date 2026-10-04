@@ -11,8 +11,8 @@
 //! kind's table first, then in the other's. Lines the translation work hasn't done yet (`via`
 //! "todo" or "skipped") are left out, so they don't hide the thing's own English.
 //!
-//! The tables are read straight from the translations folder (`translations/**/*.jsonl` on the
-//! NAS). [`Names::refresh`] picks up dropped, replaced and removed files, reading a file only once
+//! The tables are read from a translations folder (the server's local copy of `translations/` on
+//! the NAS, `translations/**/*.jsonl`). [`Names::refresh`] picks up dropped, replaced and removed files, reading a file only once
 //! its size and modification time have held for ten seconds, so a file still being copied is never
 //! read. Lookups never touch the disk: refresh a clone (cheap, the tables are shared) and swap it
 //! in, so requests never wait on the NAS.

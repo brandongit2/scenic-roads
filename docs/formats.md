@@ -1,11 +1,13 @@
-# Formats (implementation spec for docs/plan.md v6)
+# Formats (implementation spec for docs/plan.md v7)
 
 The contract between the build steps, the NAS, the server and the browser. All integers are
 little-endian. Coordinates are i32 1e-7 degrees (`E7`) unless stated. A tile key is
 `roadcore::archive::tile_key(z, x, y) = z << 58 | x << 29 | y`.
 
 Bump a format's version on any incompatible change; readers accept the current and previous
-version (plan §8, Format bumps).
+version (plan §8, Format bumps). Within a container's version 1, additions are told apart by
+section names and meta keys, and readers take both forms: base packs' `elevu` (else `elev`), road
+values' `byroad`, hidata's `railinfo` and meta `lsum`.
 
 ## Names and hashes
 
@@ -54,12 +56,12 @@ table        count × Section (48 bytes): [u8; 24] name (NUL-padded), u64 offset
 ```
 
 A local file is mmapped and its sections cast in place (64-byte alignment suits every record
-type); a NAS file is read section by section.
+type). A NAS file is read through the I/O pool: in 256 KB pages for the records a request needs, or
+whole sections for what a query scans.
 
 ## Units
 
-A unit is a tile key; in phase 1 every unit is a z6 tile. A way's owner unit is the unit containing
-its first vertex (deepest unit of the pass's unit set that contains it).
+Every unit is a z6 tile (a tile key). A way's owner unit is the z6 tile of its first vertex.
 
 ## Base pack (`base/<z>-<x>-<y>.<h>.sect`): what one unit owns
 
@@ -102,21 +104,23 @@ Section `byroad`: `(u64 road id, u64 way index)` for every way, sorted, so a who
 the unit are one binary search away. (Files from before 2026-10-03 lack it; the server sorts
 `roads` itself for those.)
 
-One chaining (plan §6): at each node, way ends pair by mutual best continuation — same ref (any
-shared token of a multi-ref), else same name, else same class when both are unnamed, else (level
-0) an unnamed way continuing a named one of the same class within 35° (a bridge or a short link
-without its own name); straightest first within 100° (35° at level 0); a oneway only in its
-direction of travel. Pairs form paths and cycles; a path
-walks from its end whose way has the lower id; a cycle starts at its lowest way id, in that way's
-direction.
+One chaining (plan §6): at each node, way ends of the same kind pair by mutual best continuation.
+Levels, best first: same ref (any shared token of a multi-ref; two ways whose refs share none never
+pair), else same name, else same class when both are unnamed (no name and no ref), else (level 0)
+a way with neither continuing one that has a name or a ref, of the same class within 35° (a bridge
+or a short link without its own name). Straightest first within 100° (35° at level 0); a oneway
+only in its direction of travel; ties to the higher level, then the straightest, then the lower way
+id. Rail pairs with rail by line identity (the name before ':', else the first service); ferries
+and ways of fewer than 2 vertices never chain. Pairs form paths and cycles; a path walks from its
+end whose way has the lower id; a cycle starts at its lowest way id, in that way's direction.
 
 ## Hi data (`hidata/<6>-<x>-<y>.<h>.sect`): per z6 pack tile T
 
 | Section | Record | Notes |
 |---|---|---|
-| `here` | `Here` (40 B) | every way drawn in T's tiles, sorted by `id` |
+| `here` | `Here` (40 B) | every way whose box meets T, sorted by `id` |
 | `ends` | `(u64 point, u32 here index, u32 pad)` | both end vertices of each `here` way, sorted by point (`(lon as u32) << 32 \| lat as u32`) |
-| `parts` | `Part` (32 B) | query parts: one road's consecutive samples inside T |
+| `parts` | `Part` (32 B) | query parts: one road's consecutive samples inside T, ended at gaps over 300 m |
 | `psamples` | `PSample` (24 B) | the parts' samples, part by part |
 | `pch` | `[u8; 13]` | per part sample |
 | `climbs` | `Climb` (64 B) | climbs starting in T |
@@ -139,17 +143,18 @@ LPart   { u64 road; u32 first (bin index); u32 count; f32 road_len; u32 pad }   
 LBin    { u64 way (OSM id: a road bin's middle sample's, a rail bin's own); f32 off0 (first
           sample's offset); f32 len (last − first); i32 lon0, lat0, lonm, latm, lon1, lat1 (first,
           middle, last samples); u32 rinfo (rail: railinfo row, else u32::MAX); u16 n (samples);
-          u8 class; u8 flags (bit 0 unpaved, bit 1 toll, bit 2 unnamed); [u8; 12] comp (component
-          means × 255: drive components, or ride components but trains a day); [u8; 4] pad }  // 64 bytes
+          u8 class (rail: the first sample's way's); u8 flags (bit 0 unpaved, bit 1 toll, bit 2
+          unnamed; rail 0); [u8; 12] comp (component means × 255: drive components, or ride
+          components but trains a day); [u8; 4] pad }                                  // 64 bytes
 Climb   { u64 way (OSM id at the start); u64 label (OSM id at the middle); f32 gain_m;
           f32 length_m; f32 start_elev; f32 top_elev; f32 max_grade; f32 road_len (of the
           middle way's road); [i32; 2] mid; u32 geom_start; u32 geom_count; u8 class;
           u8 unpaved; u8 flags (middle way: bit 0 toll, bit 1 unnamed); [u8; 5] pad } // 64 bytes
 RailInfo { u32 here; u32 colour; i64 rel (primary route relation, 0 none); u32 name; u32 route
           (railstr indexes); u8 rail (service bits); u8 class; [u8; 6] pad }      // 32 bytes
+```
 
 The record types are `roadcore::packs`.
-```
 
 ## Landmark points (`markdata/6-<x>-<y>.<h>.sect`): per z6 tile (docs/phase5.md)
 
@@ -194,24 +199,29 @@ server makes z6 blocks from markdata. Little-endian; each column starts 8-byte a
 A thinned tile at zoom z holds the points with kz ≤ z, and the rest as speck cells. Served props
 carry `main`/`sub` (and `cmain`/`csub` from `cn`) as the layer files do.
 
-## Overlays by view (pipeline::ovconv, `convert-legacy-overlays`; docs/phase5.md)
+## Overlays, stations and ferries by view (pipeline::ovconv; docs/phase5.md)
+
+Made by `convert-legacy-overlays` from today's files, and by the `overlays`, `stations` and
+`ferries` jobs from the pass. The `overlays` job also writes `global/heritage/{layer-summary,
+heritage-sources}`.
 
 - **Areas** `layers/ov-{heritage-areas,indigenous,special,whs}/{root,lo,hi}` (encoding `mvt`,
   z0–12; hi tiles within the coverage + 20 km): gzip'd vector tiles, extent 4096, layer `a`; each
-  feature with its id (docs/phase5.md "Ids") and the lean file's properties, and `own` ("3/x/y",
-  the ovdata holding its details); a World Heritage outline's id is its site dot's, with `px`, `py`
-  its place. Served with `main`/`sub` from `name` (outlines: `n`).
+  feature with its id (docs/phase5.md "Ids") as the feature id, the lean file's properties, and
+  (heritage areas, Indigenous lands and special areas) `own` ("3/x/y", the ovdata holding its
+  details); a World Heritage outline's id is its site dot's, with `px`, `py` its place. Served with `main`/`sub` from `name` (outlines: `n`).
 - **`ovdata/3-<x>-<y>.<h>.sect`** per z3 tile (owner: the tile of a feature's or park's box
   centre): per key (`harea`, `indigenous`, `special`, `parks`) `<key>.ids` (u64, sorted; parks:
   their order), `<key>.offs` (u32, n + 1) and `<key>.recs` (the records, JSON, end to end); meta
   `{"fmt": 1, "tile": "3/x/y", "records": {key: n}}`.
 - **Stations** `layers/stations/{root,lo,hi}` (encoding `mvt`, z0–12): layer `s`, `n, en, g, m,
-  sp, mz` and an id; a tile at zoom z holds the stops shown at zooms up to z + 1 (`mz` ≤ z − 2.58),
-  zoom 12 every stop.
+  sp, mz` and the feature id; a tile at zoom z holds the stops shown at zooms up to z + 1 (`mz` ≤
+  z − 2.585), zoom 12 every stop (within the built units' tiles + 20 km).
 - **Ferries** `layers/ferries/{root,lo}` (encoding `geojson-gz`, blocks at zooms 0, 3 and 6):
-  `{"type": "FeatureCollection", "features": […], "lines": {id: record}}`, gzip'd: the ways touching
-  the tile (each with its id `way × 4 + 1` and whole length `km`; simplified to 5 km at zoom 0, 300 m
-  at 3), the terminals within 30 km (from zoom 3), the records of its ways' lines.
+  `{"type": "FeatureCollection", "features": […], "lines": {id: record}}`, gzip'd: the ways whose box
+  meets the tile grown by 30 km (each with its id `way × 4 + 1` and whole length `km`; simplified to
+  5 km at zoom 0, 300 m at 3), the terminals within 30 km (from zoom 3), the records of its ways'
+  lines.
 
 ## Catalog (`catalog/<n>.json.zst`)
 
@@ -220,12 +230,13 @@ zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. 
 
 ```json
 {
-  "fmt": 1, "n": 7, "created": "2026-10-03T04:05:06Z", "app": "<app version that published>",
+  "fmt": 1, "n": 7, "created": "2026-10-03T04:05:06Z", "app": "0.1.0 (the pipeline crate's version)",
   "files": {"<logical>": {"file": "<content name>", "size": 123, "fmt": 1}},
   "units": ["6/32/21"],
   "layers": {
-    "roads": {"encoding": "rt7", "minzoom": 4, "maxzoom": 14, "root": "<logical>",
-              "lo": {"3/4/2": "<logical>"}, "hi": {"6/32/21": "<logical>"}}
+    "terrain": {"encoding": "terrarium-png", "minzoom": 0, "maxzoom": 12, "root": "<logical>",
+                "lo": {"3/4/2": "<logical>"}, "hi": {"6/32/21": "<logical>"}},
+    "roads": {"encoding": "rt7", "minzoom": 4, "maxzoom": 14, "lo": {…}, "hi": {…}}
   },
   "basemap": ["<logical of a .pmtiles>"],
   "base": {"6/32/21": "<logical>"},
@@ -233,37 +244,52 @@ zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. 
   "hidata": {"6/32/21": "<logical>"},
   "markdata": {"6/32/21": "<logical>"},
   "ovdata": {"3/4/2": "<logical>"},
-  "global": {"pois.json": "<logical>"},
+  "global": {"railfreq": "global/railfreq", "roadunits": "global/roadunits", "marks/summary": "…",
+             "legacy/<stem>": "…", "heritage/<stem>": "…", "outlines": "sources/osm/<date>/outlines"},
   "meta": {"…": "the map's meta, added up from the units' summaries: minzoom, maxzoom, bounds, ways, vertices, elev_min, elev_max, elev_hist_10m_km, rail_km, classes, built"},
   "credits": [],
-  "coverage": {"regions": [], "outline": "<logical of coverage GeoJSON>"}
+  "coverage": {"regions": []}
 }
 ```
 
-`files` holds every file the catalog references; GC keeps exactly these (plus 14 days of history).
+`files` holds every file the catalog references. `credits` and `coverage` are empty for now
+(`/api/coverage` builds the coverage from the recipes per request). GC's roots are the newest
+catalog, every catalog of the last 14 days and the build manifest; an unreferenced file goes once
+it's also older than 14 days, in the folders catalogs index only (plan §3). A held catalog is
+written to `catalog-held/` instead (`inputs/hold-catalog`).
 
 ## On each Mac (`~/Library/Application Support/scenic/`)
 
 ```
-bin/scenic-launcher     the login item (never rebuilt)
-run/<name>              what the launcher runs (one argument per line)
-app/<version>/          server, web/, fonts/   (app/current → the one in use)
-mirror/<content name>   local copies, by the same names as on the NAS
-idx/<hash16>.idx        pack indexes
+bin/scenic-launcher     the launcher (never rebuilt)
+run/<name>              what the launcher runs, one argument per line: server, agent (build Mac), status
+app/<version>/          server, scenic, scenic-build, extract, tile, scenic-metrics, dem/, Scenic.app,
+                        web/, fonts/   (app/current → the one in use)
+mirror/<content name>   local copies, by the same names as on the NAS (.partial/: in progress;
+                        .uses: when each file was last used)
+idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trailer)
 catalog/<n>.json.zst    the last catalogs read
-queue/                  region edits waiting for the NAS
+translations/  descriptions/   local copies of the NAS folders, compiled by the server
+regions.json            the last regions read; regions-queue/: region edits waiting for the NAS
+agent/                  (build Mac) status.json, state.json, job.json, agent.lock, logs/, cache/
 ```
 
-`~/Library/Preferences/nsmb.conf` gets `[FISHANDCHIPS:PERSONAL]` with `soft=yes`.
+`~/Library/Preferences/nsmb.conf` gets `[FISHANDCHIPS:PERSONAL]` and
+`[FISHANDCHIPS.LOCAL:PERSONAL]`, both `soft=yes`.
 
 ## Server API (changes)
 
 - Tiles: `/tiles/{roads,rails,terrain,slope,labels,base}/{z}/{x}/{y}`, `/tiles/trees/{var}/{z}/{x}/{y}`.
-  Strong `ETag` = blob hash (plus translations versions for named tiles); `Cache-Control:
-  no-cache` so the browser revalidates.
+  Strong `ETag`: the stored blob's hash, plus the translations versions for named tiles;
+  `/tiles/base`'s is a hash of the basemap archives' content names and the names version; terrain
+  and slope tiles the server makes (missing ones, slope z12) carry none. A request with `?v=` (the
+  app's URLs) is `public, max-age=31536000, immutable` while that version is current, else
+  `no-cache`.
 - Ways: `/api/way/{id}?at=lon,lat`, `/api/profile/{id}?at=lon,lat`, `/api/road/{id}?at=lon,lat`.
-  `at` picks the hi pack whose `here` holds the way.
-- `/api/railfreq`: sorted `(u32 way id, f32 trains a day)` pairs.
+  `at` picks the hidata of the z6 tile holding it, or of one of its eight neighbours, whose `here`
+  holds the way.
+- `/api/railfreq`: sorted `(u32 way id, f32 trains a day each way)` pairs; negative: a lower bound
+  ("at least").
 - Landmarks (docs/phase5.md): `POST /api/marks/view` (the In view statistics, and `extra`);
   `/api/marks/tile/{kind}/{z}/{x}/{y}` (z ≤ 5) and `/api/marks/block/{kind}/6/{x}/{y}` (RDMT);
   `/api/marks/specks/{kind}/{z}/{x}/{y}?q=` (filtered speck cells); `/api/marks/count?kind=&q=`;
@@ -274,13 +300,41 @@ queue/                  region edits waiting for the NAS
   names on ways and lines); `/api/overlays/detail/{harea,indigenous,special}/{id}?own=3/x/y`;
   `/api/park` from ovdata when the catalog has it. `/api/meta` says `ovTiles`, `stationTiles`,
   `ferryBlocks`, and versions the tiles as `ov-<name>.tiles`, `stations.tiles`, `ferries.tiles`.
-- Drives, rides and rail lines take `approx=1` (zoomed out: from hidata's summaries when every tile
-  in view has them; the answer says `approx`).
-- `/api/catalog`: the catalog's `n`, layers' zoom ranges, meta, credits, coverage, the NAS status,
-  and translation versions per area.
-- Names: every response carrying a name carries `main` and, when there is one, `sub`.
+- Drives, rides and rail lines take `approx=1` (zoomed out): answered from hidata's summaries when
+  every hidata of the view plus margin has them, and for drives and rides when the window is at
+  least 2 km; the answer says `approx`.
+- `/api/catalog`: `n`, `created`, `units` (a count), `layers` (encoding, zoom range, version),
+  `coverage`, `credits`, `online`, `nas`, `held`, `app`, `agent`, `names` (translation versions),
+  `v`, `marks`. The map's meta is `/api/meta`.
+- `/api/names`; `/api/build` (the agent's status: this Mac's when it runs here, else the NAS's copy).
+- Regions (the panel): `/api/regions` (GET, POST), `/api/regions/{id}` (PUT, DELETE),
+  `/api/areas?at=`, `/api/areas/search?q=`, `/api/areas/{id}`, `/api/coverage`.
+- Names: MVT tiles and API JSON (ways, drives, `/api/names`) carry `main` and, when there is one,
+  `sub`; JSON layer files, ferry blocks and marks tiles carry `main` only where it differs from the
+  name; popup records (`/api/detail`, `/api/marks/detail`, `/api/overlays/detail`, `/api/park`) are
+  served as stored.
 
 ## RT road tiles, version 7
 
 As v6 (`roadcore::tile`), but the way column holds OSM way ids, and lines are sorted by (draw
 class, id) within a tile. The client sends the id with the clicked point.
+
+## Other files (listed, not specified)
+
+- **The OSM pass** (`sources/osm/<date>/`): `planet.osm.pbf`; `filtered`; `pieces/<u>` and
+  `pieces.json`; `sets/<name>[-v<n>]`; `roads/<u>.bin` (32 B a way: u64 way id and its road values);
+  `outlines` (sectioned, meta `fmt` "outlines-1": `recs` (64 B `OutlineRec`), `rings`, `points`,
+  `srings`, `spoints`, `strings`); `pass.json`.
+- **Global files:** `global/roads/<u>` (above); `global/roadunits` (sectioned, `pairs`: sorted u64
+  road, u64 unit key); `global/railfreq` (as `/api/railfreq`); `global/marks/summary`
+  (`{fmt, kinds, tiers}`); `global/heritage/*`; `global/legacy/*` (today's converted files).
+- **Grid layers:** `grid-{class,canopy,cover}` hi packs of z11 tiles, encoding `u8-zstd`, not served.
+- **Worldwide z8 terrain:** `sources/terrain-z8-v1` (one RDPACK of every z8 tile, meta without scope
+  or root) and `sources/terrain-z8-v1-max` (each tile's maximum, f32).
+- **Work files** (zstd JSON lines unless said): `work/pois/<u>`, `work/peaks/<u>`,
+  `work/summits/<date>`, `work/trailends/<date>`; `work/heritage/<date>/{base/<stem>,
+  pos/6-x-y.json, areas/6-x-y.jsonl, <stem>}`; `work/marks/heritage-dots.json`.
+- **Other sources:** `sources/items/<date>/{facts,views,meta}.json`; `sources/registers/<name>.tar.zst`.
+- **State:** `state/status.json` (the agent's heartbeat: conditions, the job and its progress, what
+  waits, the checklist to the end); `state/build/{manifest,jobs,pending,summaries}.json`.
+- **The app:** `app/current.json` and `previous.json`: `{version, files, sha256}`.

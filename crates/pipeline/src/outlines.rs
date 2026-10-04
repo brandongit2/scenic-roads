@@ -4,7 +4,7 @@
 //!
 //! Assembled from the pass's outline set with `osmium export`, which builds each relation's
 //! (multi)polygon. Kept: administrative areas of levels 2–8, and anything with an ISO 3166 code.
-//! Stored as a sectioned file (`global/outlines`, RDSECT01):
+//! Stored as a sectioned file (`sources/osm/<date>/outlines`, RDSECT01):
 //!
 //! | section | records |
 //! |---|---|

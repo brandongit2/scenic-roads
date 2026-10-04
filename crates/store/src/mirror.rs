@@ -115,7 +115,7 @@ pub struct Mirror {
 
 impl Mirror {
     /// Opens (creating as needed) the mirror under `root`, the app's folder. `reserve_bytes` of
-    /// the disk stay free (plan §4: 50 GB on the M1, the build cache on the M4).
+    /// the disk stay free (plan §4: 50 GB; 150 GB on the build Mac, so builds have room).
     pub fn open(root: PathBuf, reserve_bytes: u64) -> Result<Mirror> {
         for d in ["mirror", "idx", "catalog"] {
             let p = root.join(d);

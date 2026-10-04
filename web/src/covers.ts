@@ -1,6 +1,6 @@
 // Cheaper tile covers. While the camera moves, MapLibre works out every frame, for each source whose
-// layers show, which tiles cover the view: 30-odd sources here (the basemap and its regional parts,
-// terrain, hill-shading, slope, trees, each kind of stop and sight, heritage, the GeoJSON overlays),
+// layers show, which tiles cover the view: a few dozen sources here (the basemap, terrain,
+// hill-shading, slope, trees, each kind of stop and sight, heritage, the area overlays),
 // a quarter of the main thread in tilted views. The same tiles for less work:
 //  - Tile zoom. MapLibre's default (a source's calculateTileZoom) evaluates two numerical integrals,
 //    40-odd cos and pow, for every tile it visits of every source, though they depend only on the

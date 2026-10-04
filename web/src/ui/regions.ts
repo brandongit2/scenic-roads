@@ -285,7 +285,7 @@ export class RegionsPanel {
     const go = async () => {
       try {
         const res = await removeRegion(r.id);
-        this.say(res.queued ? QUEUED : `Removed “${r.name}”. The build Mac takes it off the map when it can; the status bar shows progress.`);
+        this.say(res.queued ? QUEUED : `Removed “${r.name}”. Nothing more is built for it; the areas already built stay on the map for now.`);
         this.changed();
       } catch (e) {
         this.say(says(e), true);

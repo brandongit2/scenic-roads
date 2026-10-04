@@ -106,7 +106,7 @@ pub struct PackWriter {
 
 impl PackWriter {
     /// Starts a pack at `path` (replacing any file there). `meta` is the pack's meta JSON
-    /// (docs/formats.md: layer, scope, root, minzoom, maxzoom, encoding, …).
+    /// (docs/formats.md: layer, scope, root, encoding, …; zoom ranges are the catalog's).
     pub fn create(path: &Path, meta: Value, gzip_blobs: bool) -> Result<Self> {
         let meta = serde_json::to_vec(&meta)?;
         let mlen = u32::try_from(meta.len()).context("meta too large")?;
