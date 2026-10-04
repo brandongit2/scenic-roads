@@ -285,11 +285,13 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach
         }
         // The roadside buildings it reads (crate::buildtiles: the release's tiles near its roads).
         inputs.push(format!("buildings {}", get(&crate::buildtiles::index_logical())));
+        // The terrain near it. Not the analysis grids' packs (grid-class, -canopy, -cover): the
+        // units write those where they're missing, so each built unit would change its own key and
+        // its neighbours' (built again, over and over); a grid read from its pack or made afresh is
+        // the same, from the terrain here and fixed datasets.
         let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
         for (x, y) in crate::stage::tiles_in(6, b) {
-            for layer in ["terrain", "grid-class", "grid-canopy", "grid-cover"] {
-                inputs.push(get(&format!("layers/{layer}/hi/6-{x}-{y}")).to_string());
-            }
+            inputs.push(get(&format!("layers/terrain/hi/6-{x}-{y}")).to_string());
             inputs.push(get(&crate::heritage::pos_logical(date, x, y)).to_string());
             inputs.push(get(&crate::heritage::areas_logical(date, x, y)).to_string());
         }
@@ -1092,6 +1094,24 @@ mod tests {
         assert_eq!(key(&m), k0, "a slice far away");
         m.insert(crate::heritage::areas_logical("d", 28, 16), "work/heritage/d/areas/6-28-16.9090909090909090.jsonl".into());
         assert_ne!(key(&m), k0, "its own tile's areas");
+    }
+
+    #[test]
+    fn a_units_key_stays_when_units_write_grid_packs() {
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
+        let key = |m: &BTreeMap<String, String>| unit_keys(&c, "d", m)[0].1.clone();
+        let k0 = key(&m);
+        // The unit (or a neighbour) writes the grid packs its tile lacked: no rebuild.
+        for layer in ["grid-class", "grid-canopy", "grid-cover"] {
+            m.insert(format!("layers/{layer}/hi/6-28-16"), format!("layers/{layer}/hi/6-28-16.1212121212121212.pack"));
+            m.insert(format!("layers/{layer}/hi/6-29-16"), format!("layers/{layer}/hi/6-29-16.1313131313131313.pack"));
+        }
+        assert_eq!(key(&m), k0);
+        // The terrain changing near it does rebuild it.
+        m.insert("layers/terrain/hi/6-28-16".into(), "layers/terrain/hi/6-28-16.1414141414141414.pack".into());
+        assert_ne!(key(&m), k0);
     }
 
     #[test]

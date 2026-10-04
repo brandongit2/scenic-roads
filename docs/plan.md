@@ -492,7 +492,9 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
 - **Grids (z11):** land cover, canopy and cover, for analysis only (not served).
   - Each unit's job makes the grid tiles its packs lack: `landcover.py --only`, and the scenic canopy
     step.
-  - It uploads them as its own z6 tile's `grid-*` hi packs.
+  - It uploads them as its own z6 tile's `grid-*` hi packs. They aren't in the units' keys: a grid
+    read from its pack or made afresh is the same (from the terrain, in the key, and fixed
+    datasets), and a unit writing its tile's would otherwise make it and its neighbours stale.
 - **Trees** (cover, height, leaf type), zoom 4–12, per z3 tile the coverage meets, clipped to it
   (`pipeline::treepacks`, `dem/trees.py --z3`), before the units: from Meta's canopy squares (kept
   on the NAS, `sources/canopy/`, and copied into the agent's cache, where the units read them too)
