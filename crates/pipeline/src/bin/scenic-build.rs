@@ -55,6 +55,12 @@ use std::path::{Path, PathBuf};
 const SSH: [&str; 8] = ["ssh", "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/cm-%r@%h:%p", "-o", "ControlPersist=12h", "brandontsang@fishandchips.local"];
 const NAS_ROOT: &str = "/volume1/personal/projects/scenic-roads";
 
+/// Stage `k` (from 0) of a step's `n` starting: its progress line, which the agent's status shows
+/// ("2 of 4 steps (what's being done)").
+fn stage(k: u64, n: u64, what: &str) {
+    pipeline::agent::jobs::report(k, n, &format!("steps ({what})"));
+}
+
 fn opt(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
 }
@@ -143,6 +149,7 @@ fn main() -> Result<()> {
             // outputs, the World Heritage outlines with the marks job's dots (ovconv::overlays).
             let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
             let src = pipeline::markconv::heritage_source(&out, &date);
+            stage(0, 1, "making the area overlays' tiles");
             let dots = pipeline::ovconv::marks_dots(&out)?;
             pipeline::ovconv::overlays(&mut out, &src, &dots)?;
             out.save()?;
@@ -152,11 +159,23 @@ fn main() -> Result<()> {
         "labels" => labels_step(&mut out, &args, &scratch)?,
         "pass-sets" => {
             // pass-sets [--pass <date>]: the sets the pass lacks in their current filters
-            // (osmpass::SETS versions), from its kept filtered planet.
+            // (osmpass::SETS versions), from its kept filtered planet: copied here first when
+            // there's room, since osmium reads it two or three times a set (from the NAS over
+            // Wi-Fi that took hours a set).
             let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
-            let src = out.path(out.get(&format!("sources/osm/{date}/filtered")).context("the pass's filtered planet")?);
+            let nas = out.path(out.get(&format!("sources/osm/{date}/filtered")).context("the pass's filtered planet")?);
             std::fs::create_dir_all(&scratch)?;
+            let local = scratch.join("filtered.osm.pbf");
+            let size = std::fs::metadata(&nas)?.len();
+            let room = pipeline::agent::cond::free_bytes(&scratch).unwrap_or(0) + std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0) > size + (20 << 30);
+            let src = if room && !pipeline::osmpass::missing_sets(&out, &date).is_empty() {
+                pipeline::osmpass::copy_resume_with(&nas, &local, &mut |d, t| pipeline::agent::jobs::report(d >> 20, t >> 20, "MB of the filtered planet copied here (then the sets)"))?;
+                local.clone()
+            } else {
+                nas
+            };
             let n = pipeline::osmpass::make_missing_sets(&mut out, &date, &src, &scratch)?;
+            std::fs::remove_file(&local).ok();
             eprintln!("pass-sets: {n} made");
         }
         "trailends" => {
@@ -165,8 +184,11 @@ fn main() -> Result<()> {
             let set = out.path(out.get(&pipeline::osmpass::set_name(&date, "hikes")).context("the pass has no hikes set (pass-sets makes it)")?);
             std::fs::create_dir_all(&scratch)?;
             let local = scratch.join("set-hikes.osm.pbf");
+            stage(0, 3, "copying the hiking routes");
             std::fs::copy(&set, &local).with_context(|| format!("copy {}", set.display()))?;
+            stage(1, 3, "finding their ends");
             let ends = pipeline::trailends::ends(&local)?;
+            stage(2, 3, "uploading");
             let file = scratch.join("trailends.jsonl.zst");
             pipeline::trailends::write(&file, &ends)?;
             out.put_file(&format!("work/trailends/{date}"), "jsonl.zst", &file)?;
@@ -184,6 +206,7 @@ fn main() -> Result<()> {
             // stations --pass <date> [--geojson file]: the pass's rail set's stops as the stations' tiles.
             let date = opt(&args, "--pass").context("--pass <date>")?;
             let gj = opt(&args, "--geojson").map(PathBuf::from);
+            stage(0, 1, "the rail stops' tiles");
             let (n, tiles) = pipeline::ovconv::stations_job(&mut out, &date, gj.as_deref())?;
             eprintln!("stations: {n} stops in {tiles} tiles");
         }
@@ -191,6 +214,7 @@ fn main() -> Result<()> {
             // ferries --pass <date> [--dem dir]: the pass's ferries set through ferries.py, as blocks.
             let date = opt(&args, "--pass").context("--pass <date>")?;
             let dem = PathBuf::from(opt(&args, "--dem").unwrap_or_else(|| "dem".into()));
+            stage(0, 1, "the ferries (ferries.py) and their blocks");
             let n = pipeline::ovconv::ferries_job(&mut out, &date, &dem)?;
             eprintln!("ferries: {n} blocks");
         }
@@ -677,7 +701,12 @@ fn catalog(out: &mut Out, held: bool) -> Result<()> {
             || global.values().any(|g| g == l)
     };
     let mut files: BTreeMap<String, serde_json::Value> = BTreeMap::new();
-    for (l, n) in out.manifest.iter().filter(|(l, _)| served(l)) {
+    let listed: Vec<(&String, &String)> = out.manifest.iter().filter(|(l, _)| served(l)).collect();
+    let (total, step) = (listed.len() as u64, (listed.len() / 100).max(1));
+    for (k, (l, n)) in listed.into_iter().enumerate() {
+        if k % step == 0 {
+            pipeline::agent::jobs::report(k as u64, total, "files checked on the NAS");
+        }
         let size = std::fs::metadata(out.path(n)).with_context(|| format!("{l}: {n} is missing on the NAS"))?.len();
         files.insert(l.clone(), serde_json::json!({"file": n, "size": size, "fmt": 1}));
     }
@@ -828,10 +857,14 @@ fn summits_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
     let t = std::time::Instant::now();
+    stage(0, 4, "copying the summits");
     let set = local_copy(out, &pipeline::osmpass::set_name(&date, "summits"), &cache)?;
+    stage(1, 4, "reading them");
     let mut summits = pipeline::summits::read_set(&set)?;
+    stage(2, 4, "their heights from the worldwide z8 terrain");
     let z8 = open_z8(out, &cache)?;
     let raised = pipeline::summits::add_z8(&mut summits, &z8)?;
+    stage(3, 4, "uploading");
     std::fs::create_dir_all(scratch)?;
     let file = scratch.join("summits.jsonl.zst");
     pipeline::summits::write(&file, &summits)?;
@@ -909,6 +942,7 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     let facts: HashMap<String, Value> = serde_json::from_value(read_json(facts_file)?)?;
     let views: HashMap<String, f64> = serde_json::from_value(read_json(views_file)?)?;
     let units = pipeline::agent::build::pois_keys(&cov, &date, &out.manifest);
+    stage(0, 3, "reading every area's candidates and peaks");
     let mut cands: Vec<(String, pipeline::marksjob::Candidate)> = Vec::new();
     let (mut with_peaks, mut missing_peaks) = (0, 0);
     for (u, _) in &units {
@@ -935,6 +969,7 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     cands.sort_by(|a, b| a.0.cmp(&b.0));
     let cands: Vec<pipeline::marksjob::Candidate> = cands.into_iter().map(|c| c.1).collect();
     eprintln!("marks: {} candidates from {} units ({with_peaks} peaks)", cands.len(), units.len());
+    stage(1, 3, "ranking the landmarks");
     let pts = pipeline::marksjob::poi_points(&cands, &views);
     let summits = pipeline::marksjob::summits_list(&pts);
     let mut all = pts;
@@ -942,6 +977,7 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     let src = pipeline::markconv::heritage_source(out, &date);
     eprintln!("marks: heritage from {src}");
     all.extend(pipeline::markconv::heritage_marks(out, &src)?);
+    stage(2, 3, "writing their tiles");
     let c = pipeline::markconv::write(out, all, summits)?;
     eprintln!("marks: {} points, {} markdata tiles, {} thinned tiles", c.points, c.tiles, c.thinned);
     Ok(())
@@ -956,6 +992,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned())).join("items");
     let (mut facts, mut views) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
     let is_qid = |q: &str| q.len() > 1 && q.starts_with('Q') && q[1..].bytes().all(|b| b.is_ascii_digit());
+    stage(0, 3, "the landmark candidates' Wikidata items");
     for (u, _) in pipeline::agent::build::pois_keys(&cov, &date, &out.manifest) {
         let Some(pc) = out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c)) else { continue };
         for c in pipeline::candidates::read(&pc)? {
@@ -973,10 +1010,12 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let qfile = scratch.join("qids.json");
     std::fs::write(&qfile, serde_json::to_vec(&serde_json::json!({"facts": facts, "views": views}))?)?;
     let dir = scratch.join("items-out");
+    stage(1, 3, "their facts and pageviews (items.py)");
     let mut c = std::process::Command::new("uv");
     c.current_dir(&dem).args(["run", "python", "items.py", "--qids"]).arg(&qfile).arg("--epoch").arg(&date).arg("--cache").arg(&cache).arg("--out").arg(&dir);
     let st = c.status().context("run items.py")?;
     anyhow::ensure!(st.success(), "items.py failed: {st}");
+    stage(2, 3, "uploading");
     for name in ["facts", "views", "meta"] {
         out.put_file(&format!("sources/items/{date}/{name}"), "json", &dir.join(format!("{name}.json")))?;
     }
@@ -1295,6 +1334,7 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
     let t0 = std::time::Instant::now();
     std::fs::create_dir_all(scratch)?;
+    stage(0, 5, "the registers' snapshot");
     let epoch = heritage_epoch(out, &date, &cache)?;
     let root = heritage_root(scratch, &dem, &epoch)?;
     let b = root.join("data/build");
@@ -1305,12 +1345,16 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     std::fs::write(&poly, serde_json::to_vec(&tiles_geojson(COVER_Z, &tiles))?)?;
     eprintln!("heritage-sites: {} z{COVER_Z} tiles within 20 km of the coverage ({:.0?})", tiles.len(), t0.elapsed());
     // The pass's protected areas and Indigenous lands within them (whole relations: smart).
+    stage(1, 5, "protected areas over the coverage (osmium)");
     areas_over_cover(out, &date, &poly, scratch, &root.join("data/areas/areas.geojsonseq"))?;
+    stage(2, 5, "locating the registers' sites (heritage.py)");
     heritage_script(&root, &cache, "heritage.py", &["../data/build", "--tiles", "../data/build/cover.idx", "--zoom", &COVER_Z.to_string(), "--date", &date])?;
+    stage(3, 5, "slicing them per area");
     // The units' slices, then the whole files.
     let sites = slice_sites(&std::fs::read(b.join("heritage.json"))?)?;
     let areas = slice_areas(&std::fs::read_to_string(b.join("area-shapes.geojsonseq"))?)?;
     let (ns, na) = put_slices(out, &date, &sites, &areas)?;
+    stage(4, 5, "uploading");
     for (stem, ext) in [("heritage", "json"), ("heritage-areas", "json"), ("special", "json"), ("indigenous", "json"), ("heritage-sources", "json"), ("area-shapes", "geojsonseq")] {
         out.put_file(&base_logical(&date, stem), ext, &b.join(format!("{stem}.{ext}")))?;
     }
@@ -1538,7 +1582,8 @@ fn reach_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 fn roadunits(out: &mut Out) -> Result<()> {
     let mut pairs: Vec<(u64, u64)> = Vec::new();
     let units: Vec<(Unit, String)> = out.manifest.iter().filter_map(|(k, v)| k.strip_prefix("global/roads/").and_then(Unit::parse).map(|u| (u, v.clone()))).collect();
-    for (u, content) in &units {
+    for (k, (u, content)) in units.iter().enumerate() {
+        pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas' road values read");
         let r = store::sect::SectReader::open(store::range::PlainFile::open(&out.path(content))?)?;
         let recs: Vec<pipeline::legacy::RoadRec> = r.read_pod("roads")?;
         pairs.extend(recs.iter().map(|x| (x.road, u.key())));
@@ -1638,7 +1683,9 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let work = scratch.join("labels");
     std::fs::create_dir_all(&work)?;
     let local = work.join("labels-set.osm.pbf");
+    stage(0, 3, "copying the labels set");
     std::fs::copy(out.path(&set), &local).with_context(|| format!("copy {set}"))?;
+    stage(1, 3, "ranking the labels (labels.py)");
     let tiles = work.join("labels.tiles");
     let dem = PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into()));
     let st = std::process::Command::new("uv")
@@ -1653,6 +1700,7 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         .status()
         .context("run labels.py")?;
     anyhow::ensure!(st.success(), "labels.py failed: {st}");
+    stage(2, 3, "cutting them into packs");
     let arc = roadcore::archive::Archive::open(&tiles)?;
     let lo = layers::split_archive(out, &arc, "labels", "mvt", true, 14)?;
     eprintln!("labels: root {:?}, {} lo, {} hi packs", lo.root.is_some(), lo.lo.len(), lo.hi.len());

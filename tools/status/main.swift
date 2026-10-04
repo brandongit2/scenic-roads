@@ -254,9 +254,10 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
         }
     }
     if let built = s.built, !built.isEmpty {
-        let b = built.values.reduce(0) { $0 + $1.built }, t = built.values.reduce(0) { $0 + $1.total }
+        // Whole regions (the checklist counts the areas, each once: regions share areas).
+        let done = built.values.filter { $0.total > 0 && $0.built >= $0.total }.count
         out.append(Line(text: "", style: .separator))
-        out.append(Line(text: "Areas built: \(b) of \(t) in \(built.count) region\(built.count == 1 ? "" : "s")", style: .small))
+        out.append(Line(text: "Regions built: \(done) of \(built.count)", style: .small))
     }
     return out
 }

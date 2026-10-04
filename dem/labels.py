@@ -294,9 +294,15 @@ def args() -> None:
 OWN_ENGLISH = False
 
 
+def progress(done: int, total: int, unit: str) -> None:
+    """A line the build agent shows as this job's progress (crates/pipeline/src/agent/jobs.rs)."""
+    print(f"progress: {done}/{total} {unit}", file=sys.stderr, flush=True)
+
+
 def main() -> None:
     args()
     t0 = time.time()
+    progress(0, 6, "steps (the label points)")
     subprocess.run(["osmium", "tags-filter", "--overwrite", "-R", str(SRC), *NODE_FILTERS, "-o", str(NODES)], check=True)
     # Only named areas become labels: the unnamed (most lakes and ponds) go before their nodes are
     # read. Members of a named relation stay (as its references), named or not.
@@ -305,12 +311,14 @@ def main() -> None:
     subprocess.run(["osmium", "tags-filter", "--overwrite", str(all_areas), "wr/name", "-o", str(AREAS)], check=True)
     all_areas.unlink(missing_ok=True)
     rows: list[tuple[str, str, str, float, float, float, str | None, float | None, float | None]] = []
+    progress(1, 6, "steps (reading the points)")
     Points(rows).apply_file(str(NODES))
     print(f"{len(rows)} label points ({time.time() - t0:.0f} s)", file=sys.stderr)
     # Node locations in a sparse index on disk (16 bytes a node): pyosmium's default switches to a
     # dense array as big as the highest node id (about 100 GB for the planet's ids).
     idx = AREAS.with_name("labels-nodes.idx")
     idx.unlink(missing_ok=True)
+    progress(2, 6, "steps (reading the named areas)")
     Areas(rows).apply_file(str(AREAS), locations=True, idx=f"sparse_file_array,{idx}")
     idx.unlink(missing_ok=True)
     print(f"{len(rows)} labels read ({time.time() - t0:.0f} s)", file=sys.stderr)
@@ -327,6 +335,7 @@ def main() -> None:
     # The zoom by size or population, relative to the default spacing as mz is.
     absz = np.fmin(zs + math.log2(BIG_PX), np.array([r[8] if r[8] is not None else np.nan for r in rows])) - math.log2(DEFAULT_PX)
     mz = np.zeros(len(rows))
+    progress(3, 6, "steps (each label's isolation)")
     for k in ("place", "state", "water", "park"):
         idx = np.nonzero(kinds == k)[0]
         if not len(idx):
@@ -341,6 +350,7 @@ def main() -> None:
     # (ms shifts by half the spacing's log2: up to this much sooner at MIN_PX.)
     first = np.clip(np.floor(np.fmax(mz + math.log2(MIN_PX), ms - 0.5 * math.log2(DEFAULT_PX / MIN_PX))), 0, MAXZ).astype(int)
     tiles: dict[tuple[int, int, int], list[int]] = defaultdict(list)
+    progress(4, 6, "steps (the tiles each label shows in)")
     for i in range(len(rows)):
         for z in range(first[i], MAXZ + 1):
             n = 1 << z
@@ -359,7 +369,10 @@ def main() -> None:
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     w = Writer(OUT, json.dumps({"format": "pbf", "layer": "l", "maxzoom": MAXZ}))
-    for (z, x, y) in sorted(tiles):
+    step = max(1, len(tiles) // 100)
+    for k, (z, x, y) in enumerate(sorted(tiles)):
+        if k % step == 0:
+            progress(k, len(tiles), "label tiles written")
         n = 1 << z
         ids = sorted(tiles[(z, x, y)], key=lambda i: -score[i])
         pts = []

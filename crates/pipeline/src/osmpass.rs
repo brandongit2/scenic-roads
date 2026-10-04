@@ -64,10 +64,11 @@ pub fn missing_sets(out: &Out, date: &str) -> Vec<&'static (&'static str, u32, &
     SETS.iter().filter(|s| out.get(&set_name(date, s.0)).is_none()).collect()
 }
 
-/// Makes the sets a pass lacks (`missing_sets`) from its filtered planet `src`.
+/// Makes the sets a pass lacks (`missing_sets`) from its filtered planet `src`, reporting each.
 pub fn make_missing_sets(out: &mut Out, date: &str, src: &Path, scratch: &Path) -> Result<usize> {
     let missing = missing_sets(out, date);
-    for (name, _, exprs) in &missing {
+    for (k, (name, _, exprs)) in missing.iter().enumerate() {
+        crate::agent::jobs::report(k as u64, missing.len() as u64, &format!("sets made ({name} now)"));
         let o = scratch.join(format!("set-{name}.osm.pbf"));
         let mut c = osmium();
         c.args(["tags-filter", "--overwrite", "-o"]).arg(&o).arg(src).args(*exprs);
@@ -135,6 +136,11 @@ fn mark(scratch: &Path, stage: &str) -> Result<()> {
 /// Copy a (large) file, resuming a partial copy: what's there already is kept when its size is
 /// shorter than the source's, and the rest appended.
 pub fn copy_resume(src: &Path, dst: &Path) -> Result<()> {
+    copy_resume_with(src, dst, &mut |_, _| {})
+}
+
+/// `copy_resume`, telling `progress` the bytes copied and the total as it goes (each 1 %).
+pub fn copy_resume_with(src: &Path, dst: &Path, progress: &mut dyn FnMut(u64, u64)) -> Result<()> {
     use std::io::{Read, Seek, SeekFrom, Write};
     let total = std::fs::metadata(src)?.len();
     let have = std::fs::metadata(dst).map(|m| m.len()).unwrap_or(0);
@@ -154,6 +160,10 @@ pub fn copy_resume(src: &Path, dst: &Path) -> Result<()> {
             break;
         }
         d.write_all(&buf[..n])?;
+        let step = (total / 100).max(1);
+        if (done + n as u64) / step != done / step {
+            progress(done + n as u64, total);
+        }
         done += n as u64;
         if done % (2 << 30) < n as u64 {
             eprintln!("copy {}: {:.1}/{:.1} GB ({:.0} MB/s)", src.display(), done as f64 / 1e9, total as f64 / 1e9, (done - have) as f64 / 1e6 / t0.elapsed().as_secs_f64());

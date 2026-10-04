@@ -108,6 +108,8 @@ def main() -> None:
     todo = [q for q in facts_q if q not in facts]
     print(f"facts: {len(facts_q)} items, {len(todo)} to fetch", file=sys.stderr, flush=True)
     for k in range(0, len(todo), CHUNK):
+        # (A line the build agent shows as this job's progress.)
+        print(f"progress: {k}/{len(todo)} items' facts fetched from Wikidata", file=sys.stderr, flush=True)
         part = todo[k:k + CHUNK]
         got = poidetails.wikidata(part)
         # Items QLever doesn't know (merged, deleted) are remembered as such, not asked again.
@@ -123,6 +125,7 @@ def main() -> None:
     need = [q for q in views_q if q not in wp]
     print(f"articles: {len(views_q)} items, {len(need)} to look up", file=sys.stderr, flush=True)
     for k in range(0, len(need), CHUNK):
+        print(f"progress: {k}/{len(need)} items' Wikipedia articles looked up", file=sys.stderr, flush=True)
         rows = [{"qid": q, **r} for q, r in heritagewd.wikipedias(need[k:k + CHUNK]).items()]
         append_jsonl(wpath, rows)
         wp.update((r["qid"], r) for r in rows)
