@@ -8,12 +8,13 @@ little-endian float32 [xmin, ymin, xmax, ymax] per building, degrees. The `sceni
 ones near roads. Heights are not used.
 
 usage: buildings.py [region ...]
-       buildings.py --world parts --zoom z --workers n   the whole release for the build agent
-                                             (crates/pipeline/src/buildtiles.rs): every building's
-                                             box, by the zoom-z tile holding its centre, into
-                                             parts/<file>/<z>-<x>-<y>.f32, a folder per file of the
-                                             release with `.done` once written (folders done are
-                                             skipped); `progress: d/t files` lines on stderr
+       buildings.py --world parts --zoom z --workers n --release r   release r whole, for the
+                                             build agent (crates/pipeline/src/buildtiles.rs): every
+                                             building's box, by the zoom-z tile holding its centre,
+                                             into parts/<file>/<z>-<x>-<y>.f32, a folder per file of
+                                             the release with `.done` once written (folders done
+                                             are skipped), and the release's files in
+                                             parts/files.json; `progress: d/t files` on stderr
 """
 from __future__ import annotations
 
@@ -31,11 +32,13 @@ RELEASE = "2026-09-23.1"
 SRC = f"s3://overturemaps-us-west-2/release/{RELEASE}/theme=buildings/type=building/*.parquet"
 OUT = Path(__file__).resolve().parent.parent / "data" / "buildings"
 
-# west, south, east, north, per building file (regions.json "buildings"), or a list of them (Japan,
-# kept clear of Korea). Boxes overlap a little and take in some neighbours; the scenic step only
-# uses buildings near our roads, and a building counted twice changes nothing.
-REGIONS = {k: [tuple(b) for b in (v if isinstance(v[0], list) else [v])]
-           for k, v in json.loads((Path(__file__).resolve().parent.parent / "regions.json").read_text())["buildings"].items()}
+def regions() -> dict[str, list[tuple]]:
+    """West, south, east, north, per building file (regions.json "buildings"), or a list of them
+    (Japan, kept clear of Korea). Boxes overlap a little and take in some neighbours; the scenic
+    step only uses buildings near our roads, and a building counted twice changes nothing. (Read
+    only here: the app's dem/, where the agent runs the world mode, has no regions.json.)"""
+    v = json.loads((Path(__file__).resolve().parent.parent / "regions.json").read_text())["buildings"]
+    return {k: [tuple(x) for x in (b if isinstance(b[0], list) else [b])] for k, b in v.items()}
 
 
 def connect(threads: int | None = None):
@@ -77,11 +80,20 @@ def _scan(i: int, url: str, parts: str, z: int) -> int:
     return len(boxes)
 
 
-def world(parts: Path, z: int, workers: int) -> None:
+def world(parts: Path, z: int, workers: int, release: str) -> None:
     parts.mkdir(parents=True, exist_ok=True)
-    files = [r[0] for r in connect().execute(f"SELECT file FROM glob('{SRC}') ORDER BY file").fetchall()]
+    src = f"s3://overturemaps-us-west-2/release/{release}/theme=buildings/type=building/*.parquet"
+    files = [r[0] for r in connect().execute(f"SELECT file FROM glob('{src}') ORDER BY file").fetchall()]
+    # (An empty listing is a release Overture no longer serves, or a failed listing: never an
+    # empty world.)
+    if not files:
+        sys.exit(f"buildings: no files for release {release} ({src})")
+    listed = parts / "files.json"
+    if listed.exists() and json.loads(listed.read_text()) != files:
+        sys.exit(f"buildings: release {release}'s files aren't those its parts were made from ({listed})")
+    listed.write_text(json.dumps(files))
     todo = [(i, f) for i, f in enumerate(files) if not (parts / f"{i:04d}" / ".done").exists()]
-    print(f"buildings: {len(files)} files in release {RELEASE}, {len(todo)} to scan", file=sys.stderr, flush=True)
+    print(f"buildings: {len(files)} files in release {release}, {len(todo)} to scan", file=sys.stderr, flush=True)
     done, n, t0 = len(files) - len(todo), 0, time.time()
     with ProcessPoolExecutor(workers) as ex:
         for fut in as_completed([ex.submit(_scan, i, f, str(parts), z) for i, f in todo]):
@@ -92,9 +104,10 @@ def world(parts: Path, z: int, workers: int) -> None:
 
 
 def main() -> None:
-    if len(sys.argv) == 7 and sys.argv[1] == "--world" and sys.argv[3] == "--zoom" and sys.argv[5] == "--workers":
-        world(Path(sys.argv[2]), int(sys.argv[4]), int(sys.argv[6]))
+    if len(sys.argv) == 9 and sys.argv[1:8:2] == ["--world", "--zoom", "--workers", "--release"]:
+        world(Path(sys.argv[2]), int(sys.argv[4]), int(sys.argv[6]), sys.argv[8])
         return
+    REGIONS = regions()
     OUT.mkdir(parents=True, exist_ok=True)
     con = connect()
     todo = sys.argv[1:] or list(REGIONS)

@@ -181,7 +181,7 @@ def build(check=False):
     n_lc = d.card('land', 'd1', cy, 'grids', 'Python', ['land cover, canopy, cover at', 'z11, made in each area’s job'],
                   [(['layers/grid-*/'], 'packs · z11, not served')], scope='area')
     y2 = max(s_wc.b, n_lc.b) + 22
-    s_bld = d.src('bldg', y2, 'Overture buildings', ['footprints; heights known', 'for 12–58 %'], kept=['sources/legacy/ (today’s)'])
+    s_bld = d.src('bldg', y2, 'Overture buildings', ['footprints; heights known', 'for 12–58 %'], kept=['sources/buildings/<release>/ (z8 tiles, the world)'])
     s_off = d.src('bldg', s_bld.b + 8, 'Official 3D buildings', ['PLATEAU in Japan (250+ cities)', 'first; others where needed'])
     n_bld = d.card('bldg', 'd1', y2, 'buildings · later', 'Rust', ['height: official, else tagged,', 'else floors × 3 m, else', 'typical for its kind'],
                    [(['layers/buildings/'], 'packs · MVT z13–14')], scope='global', minh=s_off.b - y2, later=True)
@@ -236,7 +236,7 @@ def build(check=False):
     for k, bx, by, lab, dx in [('land', n_lc.r, n_lc.y + 34, 'grids', 40), ('land', s_can.r, s_can.y + 11, 'canopy', 128)]:
         x = n_scen.l + dx
         d.arrow(k, (bx, by), (x, by), (x, n_scen.b), label=lab, at=(COLS['d2'][0] + 8, by - 5), cross=True)
-    yg, xr = s_bld.t - 11, n_scen.l + 84   # today's Overture boxes → roadside buildings
+    yg, xr = s_bld.t - 11, n_scen.l + 84   # the world's Overture boxes, z8 tiles → roadside buildings
     d.arrow('bldg', (s_bld.l + 150, s_bld.t), (s_bld.l + 150, yg), (xr, yg), (xr, n_scen.b), label='roadside buildings',
             at=(COLS['d2'][0] + 8, yg - 5), cross=True)
 

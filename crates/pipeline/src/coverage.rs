@@ -460,8 +460,9 @@ impl DrawnRegion {
 /// Every region's outlines for drawing: `osm:` entries as the pass simplified them for the Regions
 /// panel, the others simplified here alike, by size (`draw_tolerance_m`). Each entry is read on its
 /// own, so one that can't be (a relation the pass lacks, a missing `.poly`) loses only its shape,
-/// with a note: the regions are still recorded.
-pub fn drawn(recipes: &[Recipe], outlines: Option<&Outlines>, outline_dir: &Path) -> Vec<DrawnRegion> {
+/// with a note: the regions are still recorded. A read that fails (the NAS) fails the whole, so
+/// nothing records a region without its outline.
+pub fn drawn(recipes: &[Recipe], outlines: Option<&Outlines>, outline_dir: &Path) -> Result<Vec<DrawnRegion>> {
     recipes
         .iter()
         .map(|r| {
@@ -471,12 +472,18 @@ pub fn drawn(recipes: &[Recipe], outlines: Option<&Outlines>, outline_dir: &Path
                     Ok(polygons) => {
                         shapes.insert(entry.clone(), polygons);
                     }
+                    Err(e) if failed_read(&e) => return Err(e.context(format!("{}: {entry}", r.id))),
                     Err(e) => eprintln!("coverage: {}: {entry}: {e:#}", r.id),
                 }
             }
-            DrawnRegion { id: r.id.clone(), name: r.name.clone(), outline: r.outline.clone(), shapes }
+            Ok(DrawnRegion { id: r.id.clone(), name: r.name.clone(), outline: r.outline.clone(), shapes })
         })
         .collect()
+}
+
+/// Whether `e` is a read that failed (worth trying again), not a file that isn't there.
+pub fn failed_read(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() != std::io::ErrorKind::NotFound))
 }
 
 /// One outline entry's polygons for drawing, in degrees. A `.poly`'s or a circle's rings are each a
@@ -625,7 +632,7 @@ mod tests {
         std::fs::write(d.path().join("box.poly"), "b\n1\n 10 10\n 11 10\n 11 11\n 10 11\nEND\nEND\n").unwrap();
         let outline: Vec<String> = ["poly:box.poly", "place:20,20,10", "osm:1", "poly:gone.poly"].map(String::from).to_vec();
         let recipes = vec![Recipe { id: "a".into(), name: "A".into(), outline: outline.clone() }];
-        let r = &drawn(&recipes, None, d.path())[0];
+        let r = &drawn(&recipes, None, d.path()).unwrap()[0];
         // The recipe as it is; the entries that can't be read (no outlines yet, no file) have no shape.
         assert_eq!((r.id.as_str(), r.name.as_str(), &r.outline), ("a", "A", &outline));
         assert_eq!(r.shapes.keys().collect::<Vec<_>>(), ["place:20,20,10", "poly:box.poly"]);

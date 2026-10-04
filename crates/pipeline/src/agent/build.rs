@@ -814,8 +814,12 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     out
 }
 
-/// A catalog when what it would list or record has changed since the last one.
+/// A catalog when what it would list or record has changed since the last one (not while the
+/// regions can't be read: `inputs` "regions" "?").
 fn catalog_work(m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
+    if inputs.get("regions").map(String::as_str) == Some("?") {
+        return None;
+    }
     let k = catalog_key(m, inputs);
     (done.catalog.as_deref() != Some(k.as_str())).then(|| Work { step: "catalog".into(), targets: vec![("catalog".into(), k)] })
 }
@@ -918,6 +922,9 @@ mod tests {
         let renamed: BTreeMap<String, String> = [("regions".to_string(), "5a5a5a5a5a5a5a5a".to_string())].into();
         let w = plan(&c, "2026-09-28", &m, &done, &renamed);
         assert_eq!(w.iter().map(|w| w.step.as_str()).collect::<Vec<_>>(), vec!["catalog"]);
+        // The regions unreadable for now: no catalog on that.
+        let unread: BTreeMap<String, String> = [("regions".to_string(), "?".to_string())].into();
+        assert!(plan(&c, "2026-09-28", &m, &done, &unread).is_empty());
         // New terrain content: slope again, then a catalog.
         m.insert("layers/terrain/hi/6-28-16".into(), "layers/terrain/hi/6-28-16.3333333333333333.pack".into());
         let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());

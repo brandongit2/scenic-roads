@@ -368,7 +368,8 @@ class, id) within a tile. The client sends the id with the clicked point.
 - **Other sources:** `sources/items/<date>/{facts,views,meta}.json`; `sources/registers/<name>.tar.zst`;
   `sources/buildings/<release>/8/<x>-<y>.f32` (the release's dot a dash, as in `2026-09-23-1`; not
   content-named: raw little-endian f32 `[xmin, ymin, xmax, ymax]` in degrees, per Overture building
-  whose box's centre is in the z8 tile, sorted, each once; no file for a tile without any) and
+  whose box's centre is in the z8 tile, sorted, bit-identical boxes once; no file for a tile
+  without any) and
   `sources/buildings/<release>/index` (JSON `{fmt, release, zoom, tiles: {"8/x/y": count}}`, written
   last);
   `sources/dem-cache/dem-cache.{keys.u64,elev.f32,src.u8}` (today's per-vertex DEM cache, the seed

@@ -201,7 +201,9 @@ fn main() -> Result<()> {
         "reach" => reach_step(&mut out, &args, &scratch)?,
         "buildings" => {
             let dem = std::fs::canonicalize(opt(&args, "--dem").unwrap_or_else(|| "dem".into()))?;
-            let workers = opt(&args, "--workers").map(|w| w.parse()).transpose()?.unwrap_or(24);
+            // Two scans a thread the agent allows (they mostly wait on S3), 4 to 32.
+            let threads: usize = std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or(12);
+            let workers = opt(&args, "--workers").map(|w| w.parse()).transpose()?.unwrap_or((threads * 2).clamp(4, 32));
             pipeline::buildtiles::build(&mut out, &dem, &scratch, workers)?;
         }
         "prune" => prune_step(&mut out, &args)?,
@@ -717,7 +719,7 @@ fn catalog(out: &mut Out, held: bool) -> Result<()> {
     let units: Vec<String> = base.keys().cloned().collect();
     // The coverage it's built for, drawn from the outlines it lists, and the credits of the sources
     // its data comes from: where the coverage is, and where the units' ways are.
-    let regions = catalog_coverage(out, global.get("outlines").map(String::as_str));
+    let regions = catalog_coverage(out, global.get("outlines").map(String::as_str))?;
     let credits = pipeline::rules::catalog_credits(&regions, &unit_extents(out, &base));
     eprintln!("catalog: {} regions, {} of {} credits", regions.len(), credits.len(), pipeline::rules::CREDITS.len());
     // Only what the map reads: build sources (the planet's pieces, sets and road values) stay out,
@@ -774,18 +776,21 @@ fn catalog(out: &mut Out, held: bool) -> Result<()> {
 /// simplified for drawing (pipeline::coverage::drawn), `osm:` ones from `outlines` (the catalog's
 /// own). The agent publishes once every region's units are built, so the regions are those the
 /// catalog's data is built for; the Regions panel shows recipes it lacks as still to come.
-fn catalog_coverage(out: &Out, outlines: Option<&str>) -> Vec<pipeline::coverage::DrawnRegion> {
-    let (recipes, bad) = pipeline::agent::recipes::load(&out.root().join("inputs/regions"));
+/// A read that fails (the NAS) fails the catalog, to be tried again, rather than record a region
+/// without its outline or leave a region out.
+fn catalog_coverage(out: &Out, outlines: Option<&str>) -> Result<Vec<pipeline::coverage::DrawnRegion>> {
+    let dir = out.root().join("inputs/regions");
+    std::fs::read_dir(&dir).with_context(|| format!("the regions ({})", dir.display()))?;
+    let (recipes, bad) = pipeline::agent::recipes::load(&dir);
     for (f, e) in &bad {
+        // (A recipe that reads but doesn't parse is left out; one that doesn't read is the NAS.)
+        std::fs::read(dir.join(f)).with_context(|| format!("region {f}"))?;
         eprintln!("catalog: region {f} left out: {e}");
     }
-    let outlines = outlines.and_then(|l| out.get(l)).and_then(|c| match pipeline::outlines::Outlines::open(&out.path(c)) {
-        Ok(o) => Some(o),
-        Err(e) => {
-            eprintln!("catalog: the pass's outlines: {e:#}");
-            None
-        }
-    });
+    let outlines = match outlines.and_then(|l| out.get(l)) {
+        Some(c) => Some(pipeline::outlines::Outlines::open(&out.path(c)).context("the pass's outlines")?),
+        None => None,
+    };
     pipeline::coverage::drawn(&recipes, outlines.as_ref(), &out.root().join("inputs/outlines"))
 }
 

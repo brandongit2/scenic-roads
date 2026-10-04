@@ -654,6 +654,11 @@ impl Agent {
             }
             if !manifest.contains_key(&crate::buildtiles::index_logical()) {
                 jobs.push(job(format!("buildings {}", crate::buildtiles::RELEASE), "Roadside buildings for the whole world (Overture)", "buildings", vec!["--dem".into(), s(&self.o.bin.join("dem"))], None));
+            } else if let Ok(rd) = std::fs::read_dir(self.o.home.join("scratch/buildings")) {
+                // Made: the scan's parts (~40 GB) go, even from a run stopped before it removed them.
+                for e in rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("parts-")) {
+                    std::fs::remove_dir_all(e.path()).ok();
+                }
             }
             if let Some(w) = build::summits_work(date, &manifest, &keys) {
                 jobs.push(job(format!("summits {date}"), "Summits for the whole world", "summits", [p.clone(), vec!["--cache".into(), s(&self.o.home.join("cache"))]].concat(), Some(w)));
@@ -863,23 +868,9 @@ fn input_digests(root: &Path) -> BTreeMap<String, String> {
         let all: Vec<u8> = files.iter().flat_map(|(n, b)| n.bytes().chain(b.iter().copied())).collect();
         inputs.insert("ferries-freq".into(), store::naming::hash16(&all));
     }
-    // The regions as a catalog records them: the recipes, and the outline files they can name (by
-    // size and time).
-    let mut regions: Vec<String> = Vec::new();
-    for (dir, ext) in [("inputs/regions", "toml"), ("inputs/outlines", "poly"), ("inputs/outlines/geofabrik", "poly")] {
-        let Ok(rd) = std::fs::read_dir(root.join(dir)) else { continue };
-        for e in rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == ext)) {
-            let name = format!("{dir}/{}", e.file_name().to_string_lossy());
-            if ext == "toml" {
-                regions.push(format!("{name} {}", std::fs::read_to_string(e.path()).unwrap_or_default()));
-            } else if let Ok(md) = e.metadata() {
-                let t = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
-                regions.push(format!("{name} {} {t}", md.len()));
-            }
-        }
-    }
-    regions.sort();
-    inputs.insert("regions".into(), store::naming::hash16(regions.join("\n").as_bytes()));
+    // The regions as a catalog records them; "?" when they can't be read now (build::catalog_work
+    // then waits).
+    inputs.insert("regions".into(), regions_digest(root).unwrap_or_else(|| "?".into()));
     if let Ok(rd) = std::fs::read_dir(root.join("inputs/moi-dtm")) {
         let mut files: Vec<String> = rd
             .flatten()
@@ -896,6 +887,36 @@ fn input_digests(root: &Path) -> BTreeMap<String, String> {
         }
     }
     inputs
+}
+
+/// The recipes, and the outline files they name (by size and time), hashed; None when a read fails.
+fn regions_digest(root: &Path) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for e in std::fs::read_dir(root.join("inputs/regions")).ok()?.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".toml") {
+            continue;
+        }
+        let text = std::fs::read_to_string(e.path()).ok()?;
+        for entry in recipes::parse(&name, &text).map(|r| r.outline).unwrap_or_default() {
+            let file = match recipes::parse_outline(&entry) {
+                Ok(recipes::Outline::Poly(f)) => root.join("inputs/outlines").join(f),
+                Ok(recipes::Outline::Geofabrik(g)) => root.join("inputs/outlines/geofabrik").join(format!("{}.poly", g.replace('/', "-"))),
+                _ => continue,
+            };
+            match std::fs::metadata(&file) {
+                Ok(md) => {
+                    let t = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0);
+                    parts.push(format!("{entry} {} {t}", md.len()));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => parts.push(format!("{entry} missing")),
+                Err(_) => return None,
+            }
+        }
+        parts.push(format!("{name} {text}"));
+    }
+    parts.sort();
+    Some(store::naming::hash16(parts.join("\n").as_bytes()))
 }
 
 /// Why a job can't run under `c`, if it can't.

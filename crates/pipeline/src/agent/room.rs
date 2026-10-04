@@ -57,7 +57,7 @@ fn walk(dir: &Path, out: &mut Vec<(SystemTime, u64, PathBuf)>) {
 }
 
 /// The free space on the disk holding `path` (a local disk).
-fn disk_free(path: &Path) -> std::io::Result<u64> {
+pub fn disk_free(path: &Path) -> std::io::Result<u64> {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes())?;
     // SAFETY: `statfs` is plain old data; the path is NUL-terminated.

@@ -44,6 +44,14 @@ for u in /api/ping /api/meta /api/catalog / "/tiles/terrain/5/9/11" "/tiles/road
 done
 [[ $ok == 1 ]] || { cat $home/server.log | tail -20; exit 1; }
 kill $pid; wait $pid 2>/dev/null || true
+# The Python steps the build agent runs load from the app's dem/, which has nothing of the
+# repository around it: each must import there (one read the repository's regions.json once).
+pyt=$(mktemp -d)
+mkdir -p $pyt/dem
+git ls-files dem | while read f; do cp "$f" "$pyt/$f"; done
+steps=(${(f)"$(grep -rhoE '"[a-z_]+\.py"' crates/pipeline/src | tr -d '"' | sed 's/\.py$//' | sort -u)"})
+(cd $pyt/dem && uv run python -c "import importlib, sys; [importlib.import_module(m) for m in sys.argv[1:]]" $steps) || { echo "a Python step doesn't load from the app's dem/"; rm -rf $pyt; exit 1; }
+rm -rf $pyt
 dirty=""
 [[ -z $(git status --porcelain -- crates web/src) ]] || dirty=-dirty
 version=$(date -u +%Y%m%d-%H%M)-$(git rev-parse --short HEAD)$dirty

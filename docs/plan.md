@@ -65,7 +65,8 @@ nothing built depends on how the coverage is divided into regions.
 **Everything else is automatic:**
 - **Building and refreshing:** whenever the build Mac is awake, reaches the NAS, and has power
   (plugged in, or on battery down to 30 %). Away from home it builds through Tailscale, slowly; the
-  OpenStreetMap pass and the other whole-planet reads wait for home.
+  OpenStreetMap pass and the other jobs that move the whole planet or world through the NAS wait
+  for home.
 - Mirroring to each Mac.
 - **Installing a newly published app:** each Mac's server picks it up and restarts into it when the
   map is idle.
@@ -224,14 +225,15 @@ steps merge their manifest changes under a lock. The exceptions:
   is plugged in. Every job also needs the NAS.
 - **Away from home** the agent mounts the share by the NAS's bare name, which Tailscale's DNS sends
   through the tunnel (~12 MB/s), when the Keychain has that name's password. Every job runs
-  except the whole-planet reads (the OSM pass, a pass's missing sets, the units' reach), which wait
-  for home. Home again, with no job running, it unmounts a tunnel mount and mounts the share by its
-  LAN name.
+  except those that move the whole planet or world through the NAS (the OSM pass, a pass's missing
+  sets, the units' reach, the world's buildings), which wait for home. Home again, with no job
+  running, it unmounts a tunnel mount and mounts the share by its LAN name.
 - **Sleep:** each running job holds `caffeinate -i -s -w <pid>`: no idle sleep, on battery too, and no
   system sleep on mains power. It's dropped while the job is paused, so a paused Mac can sleep.
 - **Caches** (`~/Library/Application Support/scenic/agent/cache`):
-  - AWS's raw terrain tiles;
-  - canopy 10° files;
+  - AWS's raw terrain tiles and canopy 10° files: emptied least recently used first while the disk
+    has under 60 GB free when a job starts (§8);
+  - each unit's canopy and view results from its last run (`scenic-units/`, §6 base(U));
   - the per-vertex DEM cache: today's, copied once from `sources/dem-cache/` (the seed), and each
     unit's samples from its last run (`dem-units/`, with the DEM rules' versions they were sampled
     under), so a vertex is sampled from the DEM servers once, and again only when the rule for its
@@ -511,7 +513,9 @@ one pinned release (2026-09-23.1), before any unit runs:
   time (a file alone runs at 0.1–0.2 M buildings a second, waiting on S3), into local parts by z8
   tile; each file of the release is marked done once written, so a run cut short goes on from
   there.
-- Each tile's parts are merged onto the NAS (sorted, each building once), then the index.
+- Each tile's parts are merged onto the NAS (sorted, boxes that are bit for bit the same once, each
+  file read back), then the index. A run cut short leaves the tiles already there as they are; a
+  listing with no files, or a file of the release not scanned, fails the job.
 - A unit's key names the index, so a new release rebuilds every unit, and nothing else does.
 
 ### Per z6 pack: pack(T)
@@ -555,7 +559,8 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **heritage-sites:** the pass, its areas set, the registers snapshot, the coverage;
 - **unit:** its piece, the pass's road values, the coverage as its ways meet it (inside its tile +
   20 km, and whether each long way touches it), the versions of the location rules where its ways
-  go, the terrain and grid hi packs within 30 km, and its heritage slices;
+  go, the terrain and grid hi packs within 30 km, its heritage slices, the roadside buildings'
+  index, and Taiwan's MOI DTM files where its ways meet Taiwan;
 - **pack(T):** the base packs and road values it reads (above);
 - **lo:** the base packs and road values of the units whose owned extent meets its z3 tile (lo has
   its own version: a change in the tiling it shares with pack bumps both).
@@ -769,7 +774,8 @@ are no request files.
    - **Roads:** a prune of map tiles no unit is near, road → units index, pack, lo, stations,
      ferries, terrain and slope roots. Stations and ferries drop the packs they no longer make.
    - **Landmarks:** pois, peaks, items, heritage, marks, overlays.
-5. **A catalog** once the roads chain is done: a new one whenever the served files change. While
+5. **A catalog** once the roads chain is done: a new one whenever the served files change, or the
+   regions it records (their recipes and the outline files they name) do. While
    `inputs/hold-catalog` exists, it goes to `catalog-held/` instead.
 6. **Daily:** backup and GC.
 
@@ -940,7 +946,7 @@ are added.
     times out) rather than waiting.
 - **The build Mac's availability:**
   - work progresses only while the M4 is awake, reaches the NAS (away from home through Tailscale,
-    at ~12 MB/s, the whole-planet reads waiting for home), and has power;
+    at ~12 MB/s, the whole-planet and whole-world jobs waiting for home), and has power;
   - a closed lid stops building, and nothing is lost while it waits;
   - if waiting proves too slow, the other Mac could take per-unit jobs (needs a toolchain there and
     a movable writer lease; not planned).

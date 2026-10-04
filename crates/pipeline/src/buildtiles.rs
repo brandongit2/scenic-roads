@@ -24,6 +24,8 @@ pub const ZOOM: u8 = 8;
 /// How far past a unit's roads its buildings are read (km): a building counts within 80 m of the
 /// road, and is kept by its centre's cell (`buildings`, ~165 m), a cell or so from a sample's.
 const MARGIN_KM: f64 = 1.0;
+/// The free space the scan's local parts need (the release's boxes, ~40 GB).
+const PARTS_ROOM: u64 = 45 << 30;
 
 /// The release as the NAS's names have it ("2026-09-23-1").
 fn release_tag() -> String {
@@ -132,24 +134,35 @@ fn each_box(path: &Path, mut f: impl FnMut([f32; 4])) -> Result<()> {
 /// Makes the release's tiles: `dem/buildings.py --world` (run with uv in `dem`) scans the release
 /// into `scratch/parts-<release>/<file>/<z>-<x>-<y>.f32`, a file of the release at a time, each
 /// marked done when written (a run cut short goes on from there); then each tile's parts are
-/// merged onto the NAS, and the index written last.
+/// merged onto the NAS (a tile already there whole from a run cut short is left), and the index
+/// written last.
 pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Result<()> {
     let parts = scratch.join(format!("parts-{RELEASE}"));
     std::fs::create_dir_all(&parts)?;
+    let free = crate::agent::room::disk_free(&parts)?;
+    let started = std::fs::read_dir(&parts)?.flatten().filter(|e| e.path().join(".done").exists()).count();
+    anyhow::ensure!(free >= PARTS_ROOM || started > 0, "the scan's parts need ~{} GB free; {} GB free", PARTS_ROOM >> 30, free >> 30);
     let t0 = std::time::Instant::now();
     let st = std::process::Command::new("uv")
         .current_dir(dem)
         .args(["run", "python", "buildings.py", "--world"])
         .arg(&parts)
-        .args(["--zoom", &ZOOM.to_string(), "--workers", &workers.to_string()])
+        .args(["--zoom", &ZOOM.to_string(), "--workers", &workers.to_string(), "--release", RELEASE])
         .status()
         .context("run buildings.py")?;
     anyhow::ensure!(st.success(), "buildings.py: {st}");
     eprintln!("buildings: the release scanned ({:.0?})", t0.elapsed());
+    // Every file of the release scanned whole.
+    let files: Vec<String> = serde_json::from_slice(&std::fs::read(parts.join("files.json")).context("the release's files (files.json)")?)?;
+    let done = (0..files.len()).filter(|i| parts.join(format!("{i:04}/.done")).exists()).count();
+    anyhow::ensure!(!files.is_empty() && done == files.len(), "{done} of the release's {} files scanned", files.len());
     // Each tile's parts, from every file of the release.
     let mut by_tile: BTreeMap<Unit, Vec<PathBuf>> = BTreeMap::new();
     for d in std::fs::read_dir(&parts)? {
         let d = d?.path();
+        if !d.is_dir() {
+            continue;
+        }
         anyhow::ensure!(d.join(".done").exists(), "{}: not scanned whole", d.display());
         for f in std::fs::read_dir(&d)? {
             let f = f?.path();
@@ -166,15 +179,23 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
             each_box(f, |b| v.push(b))?;
         }
         let v = canonical(v);
+        let bytes: &[u8] = bytemuck::cast_slice(&v);
         let dest = tile_path(out.root(), *t);
-        std::fs::create_dir_all(dest.parent().context("tile folder")?)?;
-        let tmp = dest.with_extension("f32.tmp");
-        std::fs::write(&tmp, bytemuck::cast_slice::<[f32; 4], u8>(&v)).with_context(|| format!("write {}", tmp.display()))?;
-        std::fs::rename(&tmp, &dest)?;
+        // (Written whole by a run cut short: as it is.)
+        if std::fs::metadata(&dest).map(|m| m.len()).ok() != Some(bytes.len() as u64) {
+            std::fs::create_dir_all(dest.parent().context("tile folder")?)?;
+            let tmp = dest.with_extension(format!("f32.{}.tmp", std::process::id()));
+            std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
+            // Read back, as every write to the NAS is.
+            let back = std::fs::read(&tmp).with_context(|| format!("read back {}", tmp.display()))?;
+            anyhow::ensure!(store::naming::hash16(&back) == store::naming::hash16(bytes), "{}: read back differs", tmp.display());
+            std::fs::rename(&tmp, &dest)?;
+        }
         index.tiles.insert(t.slash(), v.len() as u64);
         crate::agent::jobs::report(k as u64 + 1, total, "tiles");
     }
     let n: u64 = index.tiles.values().sum();
+    anyhow::ensure!(n > 0, "no buildings in the release's {} files", files.len());
     eprintln!("buildings: {n} buildings in {} tiles ({:.0?})", index.tiles.len(), t1.elapsed());
     let local = scratch.join("index.json");
     std::fs::write(&local, serde_json::to_vec(&index)?)?;
@@ -184,8 +205,8 @@ pub fn build(out: &mut Out, dem: &Path, scratch: &Path, workers: usize) -> Resul
     Ok(())
 }
 
-/// A tile's buildings in a fixed order, each once (a building at the seam of two of the release's
-/// files can come from both), so the same buildings make the same file.
+/// A tile's buildings in a fixed order, and boxes that are bit for bit the same once (Overture
+/// holds a few such), so the same buildings make the same file.
 fn canonical(mut v: Vec<[f32; 4]>) -> Vec<[f32; 4]> {
     let key = |b: &[f32; 4]| b.map(f32::to_bits);
     v.sort_unstable_by(|a, b| a.iter().zip(b).map(|(x, y)| x.total_cmp(y)).find(|o| o.is_ne()).unwrap_or(std::cmp::Ordering::Equal));
