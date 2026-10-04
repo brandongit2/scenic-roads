@@ -418,10 +418,13 @@ impl Agent {
                     break;
                 }
                 let (id, what) = (spec.id.clone(), spec.what.clone());
-                // Room on the disk for it, from the caches that are cheap to fill again.
-                match room::make_room(&self.o.home.join("cache"), room::RESERVE) {
+                // Room on the disk for it, from the caches that are cheap to fill again (the OSM
+                // pass's own need, less the pack cache it clears).
+                let cache = self.o.home.join("cache");
+                let need = if id.starts_with("osm-pass") { PASS_SPACE.saturating_sub(dir_bytes(&cache.join("base"))).max(room::RESERVE) } else { room::RESERVE };
+                match room::make_room(&cache, need) {
                     Ok(0) => {}
-                    Ok(n) => eprintln!("agent: {} GB of cached canopy and terrain tiles deleted to keep {} GB free", n >> 30, room::RESERVE >> 30),
+                    Ok(n) => eprintln!("agent: {} GB of cached canopy squares, terrain tiles and kept scenic results deleted for {} GB free", n >> 30, need >> 30),
                     Err(e) => eprintln!("agent: making room on the disk: {e:#}"),
                 }
                 if let Err(e) = self.start(spec, &c) {
@@ -538,9 +541,12 @@ impl Agent {
             let scratch = self.o.home.join("scratch").join(format!("osm-{date}"));
             let jar = root.join("sources/basemap/planetiler.jar");
             // The pack cache is cleared when the pass starts (it refills from the mirror or the NAS):
-            // its space counts as free.
+            // its space counts as free, and so does the cheap caches' (room::make_room frees it).
             let pack_cache = self.o.home.join("cache").join("base");
-            let free = cond::free_bytes(&self.o.home).unwrap_or(0) + dir_bytes(&pack_cache);
+            let mut free = cond::free_bytes(&self.o.home).unwrap_or(0) + dir_bytes(&pack_cache);
+            if free < PASS_SPACE {
+                free += room::cheap_bytes(&self.o.home.join("cache"));
+            }
             let started = scratch.exists();
             if !jar.exists() {
                 waiting.push(Waiting { what, why: "sources/basemap/planetiler.jar is missing on the NAS".into() });

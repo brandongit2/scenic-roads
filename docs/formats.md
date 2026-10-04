@@ -289,12 +289,14 @@ agent/cache/            dem-cache.* (the seed), dem-units/<u>.dem (a unit's samp
                         run: "RDDEM002", u64 count, the points' box (4 × i32), the versions of the
                         DEM rules dem-north-america, -japan, -taiwan, -fabdem it was sampled under
                         (4 × u32), then the sorted keys, elevations and sources), scenic-units/<u>/
-                        (a unit's canopy and view results from its last run: the samples' keys and
-                        grid tiles per step, near.i8, roadside.u8, samples.metrics.u8, the canopy and
-                        cover grids as .zst, and basis.json: {v, basis: {"x-y": the z6 tile's terrain
-                        and grid packs' content names}}), chm10/ (canopy 10° files) and aws-terrarium/
-                        (both emptied least recently used first while the disk has under 60 GB
-                        free), base/
+                        (a unit's canopy and view results from its last run: canopy.keys,
+                        canopy.tiles, view.keys, view.tiles, near.i8, roadside.u8,
+                        samples.metrics.u8, grid.canopy.u8.zst, grid.cover.u8.zst, and basis.json:
+                        {v (scache::SCENIC_V), basis: [[[x, y], hash16 of the z11 tile's terrain and
+                        land cover], …]}), chm10/ (canopy 10° files), aws-terrarium/, base/. When a
+                        job starts with too little free, chm10/ and aws-terrarium/ lose their least
+                        recently used files (empty markers kept), then scenic-units/ whole units,
+                        oldest first, until the shortfall is made up.
 ```
 
 `~/Library/Preferences/nsmb.conf` gets `[FISHANDCHIPS:PERSONAL]` and

@@ -18,7 +18,7 @@
 
 use anyhow::{Context, Result};
 use roadcore::scenic::Sample;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// Bumped when what the canopy or view step computes changes: results kept from before are then
@@ -41,10 +41,10 @@ pub fn unit_dir(build: &Path) -> PathBuf {
     build.join("scache")
 }
 
-/// Key of a road sample: position (1e-7°), eye height (dm) and flags.
+/// Key of a road sample: position (1e-7°), eye height (exactly) and flags.
 pub fn sample_key(s: &Sample) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for v in [s.lon as u32 as u64, s.lat as u32 as u64, ((s.eye * 10.0).round() as i32) as u32 as u64, s.flags as u64] {
+    for v in [s.lon as u32 as u64, s.lat as u32 as u64, s.eye.to_bits() as u64, s.flags as u64] {
         h ^= v;
         h = h.wrapping_mul(0x0000_0100_0000_01b3);
         h ^= h >> 29;
@@ -73,7 +73,7 @@ impl Prev {
         let keys: Vec<u64> = std::fs::read(cache_dir.join(format!("{step}.keys")))
             .ok()
             .filter(|b| b.len() % 8 == 0)
-            .map(|b| bytemuck::cast_slice::<u8, u64>(&b).to_vec())
+            .map(|b| bytemuck::pod_collect_to_vec::<u8, u64>(&b))
             .unwrap_or_default();
         let n = keys.len();
         let mut sorted: Vec<(u64, u32)> = keys.into_iter().enumerate().map(|(i, k)| (k, i as u32)).collect();
@@ -117,12 +117,21 @@ impl GridChange {
         let own = cache_dir.join(format!("{step}.tiles"));
         let mut c = match std::fs::read(&own).ok().filter(|b| b.len() % 8 == 0 && !b.is_empty()) {
             Some(b) => {
-                let prev = bytemuck::cast_slice::<u8, [u32; 2]>(&b).to_vec();
+                let prev: Vec<[u32; 2]> = bytemuck::pod_collect_to_vec(&b);
                 let ps: HashSet<[u32; 2]> = prev.iter().copied().collect();
                 GridChange { new: tiles.iter().filter(|t| !ps.contains(*t)).copied().collect(), prev, first: false }
             }
             None => GridChange { prev: Vec::new(), new: HashSet::new(), first: true },
         };
+        // Tiles whose terrain or land cover changed since a unit's last run (`Carry::restore`): new
+        // for the samples near them, while their last values (canopy, cover) are still copied.
+        if !c.first {
+            if let Ok(b) = std::fs::read(cache_dir.join("changed.tiles")) {
+                if b.len() % 8 == 0 {
+                    c.new.extend(bytemuck::pod_collect_to_vec::<u8, [u32; 2]>(&b));
+                }
+            }
+        }
         // Terrain tiles repaired in place since this step's last run (terrain.rs): their grid
         // tiles count as new (z11 as itself, z12 as its parent).
         let steps = cache_dir.parent().unwrap_or(Path::new(".")).join("steps");
@@ -180,26 +189,45 @@ impl GridChange {
 /// A unit's scenic results kept between its runs (in the agent's cache), so a rerun (a new pass,
 /// a region nearby changed) redoes only the samples that are new or near what changed:
 /// - kept after a run: the canopy and view steps' sample keys and grid tiles, their per-sample
-///   outputs, the canopy and cover grids (zstd), and `basis`, what the unit read of the map's
-///   layers then (per z6 tile, the terrain and grid packs' content names);
+///   outputs, the canopy and cover grids (zstd), and `basis`, a hash of each grid tile's terrain
+///   and land cover as the run had them (`grid.terrain.i16`, `grid.class.u8`);
 /// - restored before the next run's canopy step, as that step's previous run, with the grid tiles
-///   under z6 tiles whose packs have changed since counted as new (`GridChange`), so samples
-///   near them are done again. Results kept under another `SCENIC_V` aren't used.
+///   whose terrain or land cover hash differs now listed in `changed.tiles`: `GridChange` counts
+///   them new for the samples near them (their canopy and cover, from Meta's static squares, are
+///   still copied). Results kept under another `SCENIC_V` aren't used.
 pub struct Carry {
     pub dir: PathBuf,
-    /// "x-y" (z6) → the content names of its packs the unit reads.
-    pub basis: BTreeMap<String, String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Kept {
     v: u32,
-    basis: BTreeMap<String, String>,
+    /// Grid tile → hash of its terrain and land cover.
+    basis: Vec<([u32; 2], String)>,
 }
 
 const KEPT_OUTPUTS: [&str; 3] = ["near.i8", "roadside.u8", "samples.metrics.u8"];
 const KEPT_GRIDS: [&str; 2] = ["grid.canopy.u8", "grid.cover.u8"];
 const KEPT_CACHE: [&str; 4] = ["canopy.keys", "canopy.tiles", "view.keys", "view.tiles"];
+
+/// Each grid tile of the folder with a hash of its terrain and land cover (`grid.idx` order).
+fn grid_basis(build: &Path) -> Result<Vec<([u32; 2], String)>> {
+    let idx = roadcore::grid::GridIndex::load(build)?;
+    let terrain = std::fs::read(build.join("grid.terrain.i16")).context("grid.terrain.i16")?;
+    let class = std::fs::read(build.join("grid.class.u8")).unwrap_or_default();
+    let n = roadcore::grid::CELLS;
+    anyhow::ensure!(terrain.len() == idx.tiles.len() * n * 2, "grid.terrain.i16 out of step with grid.idx");
+    Ok(idx
+        .tiles
+        .iter()
+        .enumerate()
+        .map(|(s, t)| {
+            let mut b = terrain[s * n * 2..(s + 1) * n * 2].to_vec();
+            b.extend_from_slice(class.get(s * n..(s + 1) * n).unwrap_or(&[]));
+            (*t, store::naming::hash16(&b))
+        })
+        .collect())
+}
 
 impl Carry {
     /// Keeps the results of the run in `build` (replacing what was kept), or drops what was kept
@@ -217,6 +245,7 @@ impl Carry {
             }
             return Ok(());
         }
+        let basis = grid_basis(build)?;
         std::fs::create_dir_all(&tmp)?;
         for f in KEPT_OUTPUTS {
             std::fs::copy(build.join(f), tmp.join(f)).with_context(|| format!("keep {f}"))?;
@@ -228,7 +257,7 @@ impl Carry {
             let raw = std::fs::read(build.join(f))?;
             std::fs::write(tmp.join(format!("{f}.zst")), zstd::bulk::compress(&raw, 3)?)?;
         }
-        std::fs::write(tmp.join("basis.json"), serde_json::to_vec(&Kept { v: SCENIC_V, basis: self.basis.clone() })?)?;
+        std::fs::write(tmp.join("basis.json"), serde_json::to_vec(&Kept { v: SCENIC_V, basis })?)?;
         if self.dir.exists() {
             std::fs::remove_dir_all(&self.dir)?;
         }
@@ -236,14 +265,16 @@ impl Carry {
         Ok(())
     }
 
-    /// Puts the kept results into `build` as the canopy and view steps' previous run, with the
-    /// grid tiles under changed packs counted as new. The samples kept, or None when nothing
-    /// usable was kept.
+    /// Puts the kept results into `build` (staged, its land cover made) as the canopy and view
+    /// steps' previous run, with the grid tiles whose terrain or land cover changed since in
+    /// `changed.tiles`. The samples kept, or None when nothing usable was kept.
     pub fn restore(&self, build: &Path) -> Result<Option<usize>> {
         let Some(kept) = std::fs::read(self.dir.join("basis.json")).ok().and_then(|b| serde_json::from_slice::<Kept>(&b).ok()) else { return Ok(None) };
         if kept.v != SCENIC_V {
             return Ok(None);
         }
+        let then: HashMap<[u32; 2], String> = kept.basis.into_iter().collect();
+        let changed: Vec<[u32; 2]> = grid_basis(build)?.into_iter().filter(|(t, h)| then.get(t) != Some(h)).map(|(t, _)| t).collect();
         let cache = unit_dir(build);
         std::fs::create_dir_all(&cache)?;
         for f in KEPT_OUTPUTS {
@@ -256,25 +287,7 @@ impl Carry {
             let z = std::fs::read(self.dir.join(format!("{f}.zst")))?;
             std::fs::write(build.join(f), zstd::stream::decode_all(&z[..])?)?;
         }
-        // The z6 tiles whose packs differ from then: their grid tiles are new.
-        let changed: HashSet<[u32; 2]> = self
-            .basis
-            .iter()
-            .filter(|(t, names)| kept.basis.get(*t) != Some(*names))
-            .map(|(t, _)| t)
-            .chain(kept.basis.keys().filter(|t| !self.basis.contains_key(*t)))
-            .filter_map(|t| t.split_once('-').and_then(|(x, y)| Some([x.parse().ok()?, y.parse().ok()?])))
-            .collect();
-        for step in ["canopy", "view"] {
-            let p = cache.join(format!("{step}.tiles"));
-            let mut tiles: Vec<[u32; 2]> = bytemuck::cast_slice::<u8, [u32; 2]>(&std::fs::read(&p)?).to_vec();
-            for t in tiles.iter_mut() {
-                if changed.contains(&[t[0] >> 5, t[1] >> 5]) {
-                    *t = [u32::MAX, u32::MAX];
-                }
-            }
-            std::fs::write(&p, bytemuck::cast_slice(&tiles))?;
-        }
+        std::fs::write(cache.join("changed.tiles"), bytemuck::cast_slice(&changed))?;
         Ok(Some(std::fs::metadata(cache.join("canopy.keys"))?.len() as usize / 8))
     }
 }
@@ -283,15 +296,19 @@ impl Carry {
 mod tests {
     use super::*;
 
-    fn build_with(d: &Path, keys: &[u64], tiles: &[[u32; 2]]) {
-        let cache = d.join("scache");
+    /// A unit's folder after a run: `tiles` in grid.idx, terrain `elev` for every cell.
+    fn build_with(d: &Path, keys: &[u64], tiles: &[[u32; 2]], elev: &[i16]) {
+        let cache = unit_dir(d);
         std::fs::create_dir_all(&cache).unwrap();
         for f in KEPT_OUTPUTS {
             std::fs::write(d.join(f), format!("{f} of {} samples", keys.len())).unwrap();
         }
         for f in KEPT_GRIDS {
-            std::fs::write(d.join(f), vec![7u8; tiles.len() * 16]).unwrap();
+            std::fs::write(d.join(f), vec![7u8; tiles.len() * roadcore::grid::CELLS]).unwrap();
         }
+        roadcore::grid::GridIndex::new(tiles.to_vec()).save(&d.join("grid.idx")).unwrap();
+        let terrain: Vec<i16> = elev.iter().flat_map(|&e| std::iter::repeat_n(e, roadcore::grid::CELLS)).collect();
+        std::fs::write(d.join("grid.terrain.i16"), bytemuck::cast_slice(&terrain)).unwrap();
         for step in ["canopy", "view"] {
             Prev::save(&cache, step, keys).unwrap();
             GridChange::save(&cache, step, tiles).unwrap();
@@ -302,28 +319,32 @@ mod tests {
     fn a_rerun_takes_the_last_runs_results() {
         let d = tempfile::tempdir().unwrap();
         let (run1, run2, kept) = (d.path().join("run1"), d.path().join("run2"), d.path().join("kept/6-32-21"));
-        // Grid tiles under z6 tiles 32/21 and 33/21.
-        let tiles = [[32 * 32 + 1, 21 * 32 + 1], [33 * 32, 21 * 32 + 5]];
-        build_with(&run1, &[11, 22, 33], &tiles);
-        let basis = |a: &str| -> BTreeMap<String, String> { [("32-21".to_string(), a.to_string()), ("33-21".to_string(), "b1".to_string())].into() };
-        Carry { dir: kept.clone(), basis: basis("a1") }.save(&run1).unwrap();
-        // The next run, in a new folder: the same packs, so nothing is new.
-        std::fs::create_dir_all(&run2).unwrap();
-        assert_eq!(Carry { dir: kept.clone(), basis: basis("a1") }.restore(&run2).unwrap(), Some(3));
+        // (grid.idx keeps its tiles sorted by row, then column.)
+        let tiles = [[1025u32, 673u32], [1056, 677]];
+        build_with(&run1, &[11, 22, 33], &tiles, &[100, 200]);
+        Carry { dir: kept.clone() }.save(&run1).unwrap();
+        // The next run, in a new folder staged the same: nothing is new.
+        build_with(&run2, &[], &tiles, &[100, 200]);
+        assert_eq!(Carry { dir: kept.clone() }.restore(&run2).unwrap(), Some(3));
         assert_eq!(std::fs::read_to_string(run2.join("near.i8")).unwrap(), "near.i8 of 3 samples");
-        assert_eq!(std::fs::read(run2.join("grid.cover.u8")).unwrap(), vec![7u8; 32]);
-        let prev = Prev::load(&run2.join("scache"), "view");
-        assert_eq!(prev.row(22), Some(1));
-        let ch = GridChange::load(&run2.join("scache"), "canopy", &tiles);
-        assert_eq!(ch.count(), 0);
-        // 32/21's packs changed since: its grid tile is new, 33/21's isn't.
+        assert_eq!(std::fs::read(run2.join("grid.cover.u8")).unwrap().len(), 2 * roadcore::grid::CELLS);
+        assert_eq!(Prev::load(&unit_dir(&run2), "view").row(22), Some(1));
+        assert_eq!(GridChange::load(&unit_dir(&run2), "canopy", &tiles).count(), 0);
+        // The second tile's terrain changed since: new for its samples, its slot still copied.
         let run3 = d.path().join("run3");
-        std::fs::create_dir_all(&run3).unwrap();
-        Carry { dir: kept.clone(), basis: basis("a2") }.restore(&run3).unwrap();
-        let ch = GridChange::load(&run3.join("scache"), "canopy", &tiles);
+        build_with(&run3, &[], &tiles, &[100, 250]);
+        Carry { dir: kept.clone() }.restore(&run3).unwrap();
+        let ch = GridChange::load(&unit_dir(&run3), "canopy", &tiles);
         assert_eq!(ch.count(), 1);
-        assert_eq!(ch.prev_len(), 2, "the kept grids' slots stay");
-        assert!(ch.prev_slots().contains_key(&tiles[1]) && !ch.prev_slots().contains_key(&tiles[0]));
+        assert_eq!(ch.prev_len(), 2);
+        assert!(ch.prev_slots().contains_key(&tiles[0]) && ch.prev_slots().contains_key(&tiles[1]));
+        // A sample at the changed tile's centre is near something new; one at the other's isn't.
+        let centre = |t: [u32; 2]| {
+            let lon = (t[0] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD * 360.0 - 180.0;
+            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (t[1] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD)).sinh().atan().to_degrees();
+            (lon, lat)
+        };
+        assert!(ch.near(centre(tiles[1]).0, centre(tiles[1]).1, 1) && !ch.near(centre(tiles[0]).0, centre(tiles[0]).1, 1));
     }
 
     #[test]
@@ -332,12 +353,21 @@ mod tests {
         let kept = d.path().join("kept");
         let run = d.path().join("run");
         std::fs::create_dir_all(&run).unwrap();
-        assert_eq!(Carry { dir: kept.clone(), basis: BTreeMap::new() }.restore(&run).unwrap(), None);
+        assert_eq!(Carry { dir: kept.clone() }.restore(&run).unwrap(), None);
         std::fs::create_dir_all(&kept).unwrap();
-        std::fs::write(kept.join("basis.json"), serde_json::to_vec(&Kept { v: SCENIC_V + 1, basis: BTreeMap::new() }).unwrap()).unwrap();
-        assert_eq!(Carry { dir: kept.clone(), basis: BTreeMap::new() }.restore(&run).unwrap(), None);
+        std::fs::write(kept.join("basis.json"), serde_json::to_vec(&Kept { v: SCENIC_V + 1, basis: Vec::new() }).unwrap()).unwrap();
+        assert_eq!(Carry { dir: kept.clone() }.restore(&run).unwrap(), None);
         // A run that made no scenic results drops what was kept.
-        Carry { dir: kept.clone(), basis: BTreeMap::new() }.save(&run).unwrap();
+        Carry { dir: kept.clone() }.save(&run).unwrap();
         assert!(!kept.exists());
+    }
+
+    #[test]
+    fn odd_cache_files_read_as_none() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("canopy.keys"), [1u8, 2, 3]).unwrap();
+        std::fs::write(d.path().join("canopy.tiles"), [1u8; 12]).unwrap();
+        assert!(Prev::load(d.path(), "canopy").is_empty());
+        assert!(GridChange::load(d.path(), "canopy", &[[1, 2]]).first);
     }
 }

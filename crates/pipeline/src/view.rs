@@ -6,7 +6,8 @@
 //! trees block distant views. Visible area is accumulated per ray sector.
 //!
 //! Cached (crate::scache): a sample keeps its last metrics while its position, eye, near field
-//! and roadside values are the same and no analysis-grid tile within ~2 tiles (≥ 15 km) is new.
+//! and roadside values are the same and no analysis-grid tile within the far field's reach (2
+//! tiles, more above ~67° where they're narrower) is new.
 
 use crate::count_bar;
 use anyhow::Result;
@@ -78,6 +79,9 @@ fn load_points(path: &Path, kinds: &[&str]) -> Vec<(f64, f64)> {
         .unwrap_or_default()
 }
 
+/// A z11 grid tile's width at the equator (m); it narrows with the cosine of the latitude.
+const TILE_M_EQUATOR: f64 = 40_075_016.7 / 2048.0;
+
 /// Heavy pass: viewsheds and landscape metrics per sample (→ samples.ch.u8), then flags and
 /// per-vertex channels.
 pub fn run(dir: &Path) -> Result<()> {
@@ -124,7 +128,11 @@ pub fn run(dir: &Path) -> Result<()> {
                 pb.inc(4096);
             }
             if let Some(o) = &old {
-                if !change.near(s.lon as f64 * E7, s.lat as f64 * E7, 2) {
+                // New grid tiles within the far field's 15 km: 2 z11 tiles, more where they're
+                // narrower (above ~67°).
+                let lat = s.lat as f64 * E7;
+                let ring = ((FAR_MAX_M / (TILE_M_EQUATOR * lat.to_radians().cos().max(0.01))).ceil() as i64).max(2);
+                if !change.near(s.lon as f64 * E7, lat, ring) {
                     if let Some(r) = prev.row(keys[i]) {
                         reused.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return o.get()[r * ch::NBASE..(r + 1) * ch::NBASE].try_into().unwrap();

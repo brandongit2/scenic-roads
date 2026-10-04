@@ -14,7 +14,6 @@ use crate::coverage::Coverage;
 use crate::legacy::Unit;
 use anyhow::{bail, ensure, Context, Result};
 use roadcore::WayRec;
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -275,19 +274,6 @@ pub struct Report {
 /// Writes a unit's heritage inputs for its box (degrees) into its folder: `heritage.json` and
 /// `area-shapes.geojsonseq` (crate::heritage::unit_inputs); the sites and polygons written.
 pub type HeritageInputs<'a> = &'a dyn Fn([f64; 4], &Path) -> Result<(usize, usize)>;
-
-/// What a unit reads of the map's layers, per z6 tile of its staging box (`scache::Carry`'s
-/// basis): the content names of each tile's terrain and grid packs, by `get` (the build manifest).
-pub fn layers_basis<'a>(u: Unit, get: impl Fn(&str) -> Option<&'a str>) -> BTreeMap<String, String> {
-    let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
-    crate::stage::tiles_in(6, b)
-        .into_iter()
-        .map(|(x, y)| {
-            let names: Vec<&str> = ["terrain", "grid-class", "grid-canopy", "grid-cover"].iter().map(|l| get(&format!("layers/{l}/hi/6-{x}-{y}")).unwrap_or("-")).collect();
-            (format!("{x}-{y}"), names.join(" "))
-        })
-        .collect()
-}
 
 /// Runs today's steps for unit `u` in `dir` from `piece`, with the coverage and the global-source
 /// layers on the NAS (`src`), and its scenic results from its last run (`carry`). Leaves the build

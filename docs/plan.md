@@ -231,9 +231,10 @@ steps merge their manifest changes under a lock. The exceptions:
 - **Sleep:** each running job holds `caffeinate -i -s -w <pid>`: no idle sleep, on battery too, and no
   system sleep on mains power. It's dropped while the job is paused, so a paused Mac can sleep.
 - **Caches** (`~/Library/Application Support/scenic/agent/cache`):
-  - AWS's raw terrain tiles and canopy 10° files: emptied least recently used first while the disk
-    has under 60 GB free when a job starts (§8);
-  - each unit's canopy and view results from its last run (`scenic-units/`, §6 base(U));
+  - AWS's raw terrain tiles and canopy 10° files: emptied least recently used first when a job
+    starts with too little free (§8);
+  - each unit's canopy and view results from its last run (`scenic-units/`, §6 base(U)), trimmed
+    after those, oldest first;
   - the per-vertex DEM cache: today's, copied once from `sources/dem-cache/` (the seed), and each
     unit's samples from its last run (`dem-units/`, with the DEM rules' versions they were sampled
     under), so a vertex is sampled from the DEM servers once, and again only when the rule for its
@@ -489,9 +490,10 @@ The unit job runs today's steps on a unit-sized folder, wiped at each run:
 6. **scenic:** `scenic-metrics` prep, canopy, view, buildings and flags, for every sample. The
    buildings come from the release's z8 tiles within 1 km of U's tile + 20 km and of its own long
    roads. U's canopy and view results are kept in the build Mac's cache after each run
-   (`scache::Carry`: the samples' keys and results, the canopy and cover grids, and the packs it
-   read); its next run starts from them, so only samples that are new, or near grid tiles whose packs
-   changed since, are done again (none after a change of `scache::SCENIC_V`).
+   (`scache::Carry`: the samples' keys and results, the canopy and cover grids, and a hash of each
+   grid tile's terrain and land cover); its next run starts from them, so only samples that are new,
+   or near grid tiles whose terrain or land cover changed since (within the far field's 15 km for
+   views), are done again. After a change of `scache::SCENIC_V` every sample is.
 7. **Output:**
    - the base pack: per-vertex arrays and records, indexed by z9 sub-tile;
    - `global/roads/<u>`;
@@ -744,9 +746,10 @@ are no request files.
 - **Order:** the agent starts the first job that can run, in plan order.
 - **A newly installed app:** the running job finishes under the old one, nothing new starts, and the
   agent exits so the launcher starts the new one.
-- **Room on the disk:** before a job starts, while the build Mac has under 60 GB free, the caches
-  that are cheap to fill again (Meta's canopy squares, AWS's raw terrain tiles) lose their least
-  recently used files.
+- **Room on the disk:** before a job starts, while the build Mac has less free than the job needs
+  (60 GB; the OSM pass, its own 80 GB less the pack cache it clears), the caches that are cheap to
+  fill again (Meta's canopy squares, AWS's raw terrain tiles) lose their least recently used files,
+  then the units' kept scenic results, oldest first. The OSM pass counts those caches as room.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours. The orphans of a crashed
   agent are stopped at start (only when their leader's start time proves them ours, or the leader is
   gone and every member started after the job).

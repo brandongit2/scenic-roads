@@ -19,10 +19,12 @@ import argparse
 import math
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-os.environ.update(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", GDAL_HTTP_MAX_RETRY="10", GDAL_HTTP_RETRY_DELAY="2", VSI_CACHE="FALSE")
+UA = "road-elevations/0.1 (personal offline map)"
+os.environ.update(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", GDAL_HTTP_MAX_RETRY="10", GDAL_HTTP_RETRY_DELAY="2", VSI_CACHE="FALSE", GDAL_HTTP_USERAGENT=UA)
 
 import numpy as np  # noqa: E402
 import rasterio  # noqa: E402
@@ -43,11 +45,38 @@ def ds(name: str):
     if cache is None:
         cache = _tls.ds = {}
     if name not in cache:
+        url = URL.format(t=name)
         try:
-            cache[name] = rasterio.open(URL.format(t=name), overview_level=1)
+            cache[name] = rasterio.open(url, overview_level=1)
         except rasterio.errors.RasterioIOError:
+            if not absent(url):
+                raise
             cache[name] = None  # ocean / outside coverage
     return cache[name]
+
+
+def absent(url: str) -> bool:
+    """Whether a WorldCover tile that wouldn't open isn't there at all (S3 answers 404, or 403 for a
+    key that doesn't exist): open sea. A timeout, a 5xx, or a tile that's there raises instead, so
+    the job fails and is tried again rather than keeping water for good (the units keep their
+    results between runs)."""
+    import urllib.error
+    import urllib.request
+
+    plain = url.replace("/vsicurl/", "")
+    last: Exception | None = None
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(urllib.request.Request(plain, method="HEAD", headers={"User-Agent": UA}), timeout=60):
+                return False
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 404):
+                return True
+            last = e
+        except OSError as e:
+            last = e
+        time.sleep(5 * (attempt + 1))
+    raise RuntimeError(f"WorldCover {plain}: {last}")
 
 
 def wc_name(lat0: int, lon0: int) -> str:
