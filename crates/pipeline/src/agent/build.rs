@@ -72,6 +72,20 @@ impl Keys {
         crate::out::read_record(&root.join("state/build/jobs.json"))
     }
 
+    /// The keys with every waiting hand-off's done records on top (crate::handoff): what both agents
+    /// plan with, so neither builds again what the helper built and the build Mac hasn't merged yet.
+    /// The hand-offs are listed first: a merge meanwhile has then put them in the keys read after.
+    pub fn load_with_handoffs(root: &Path) -> anyhow::Result<Keys> {
+        let hs = crate::handoff::waiting(root)?;
+        let mut k = Keys::load_strict(root)?;
+        for (_, h) in hs {
+            if let Some((step, targets)) = &h.done {
+                k.record(step, targets);
+            }
+        }
+        Ok(k)
+    }
+
     pub fn save(&self, root: &Path) -> anyhow::Result<()> {
         let p = root.join("state/build/jobs.json");
         let tmp = root.join(format!("state/build/jobs.json.{}.tmp", std::process::id()));
@@ -92,6 +106,22 @@ impl Keys {
             "trees" => &mut self.trees,
             _ => &mut self.lo,
         }
+    }
+
+    /// The key recorded for `target` of a per-target step.
+    pub fn recorded(&self, step: &str, target: &str) -> Option<&str> {
+        let m = match step {
+            "terrain" => &self.terrain,
+            "slope" => &self.slope,
+            "unit" => &self.unit,
+            "pois" => &self.pois,
+            "peaks" => &self.peaks,
+            "pack" => &self.pack,
+            "lo" => &self.lo,
+            "trees" => &self.trees,
+            _ => return None,
+        };
+        m.get(target).map(String::as_str)
     }
 
     /// Records a job's targets as done with their keys. A prune forgets its targets' keys instead

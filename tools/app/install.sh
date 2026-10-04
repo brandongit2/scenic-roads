@@ -7,11 +7,14 @@
 #   tools/app/install.sh --agent [--seed-cache DIR]  also the build agent (the build Mac only);
 #       DIR (today's data/cache: canopy files, the per-vertex elevation cache) moves into the
 #       agent's cache, so the first builds reuse it
+#   tools/app/install.sh --helper                   also a helper agent (the other Mac: it builds
+#       units beside the build Mac's agent; docs/plan.md §8, Two Macs)
 set -euo pipefail
-agent=0 seed=""
+agent=0 helper=0 seed=""
 while (( $# )); do
   case $1 in
     --agent) agent=1 ;;
+    --helper) helper=1 ;;
     --seed-cache) seed=$2; shift ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
@@ -30,13 +33,17 @@ if [[ ! -d "$HOME_S/app/$version" ]]; then
 fi
 # -h: replace the link itself, not something inside the folder it points to.
 ln -sfh "$version" "$HOME_S/app/current"
+if (( agent && helper )); then
+  echo "--agent or --helper, not both" >&2
+  exit 2
+fi
 # The build Mac keeps room for its builds (the OSM pass starts with 80 GB free, the pack cache holds
 # the base packs): its mirror fills only what's left past 150 GB.
 reserve=50
 if (( agent )); then reserve=150; fi
 printf '%s\n' "$HOME_S/app/current/server" --web "$HOME_S/app/current/web" --fonts "$HOME_S/app/current/fonts" --reserve-gb $reserve > "$HOME_S/run/server"
 launchctl kickstart -k gui/$(id -u)/local.scenic.server
-if (( agent )); then
+if (( agent || helper )); then
   if [[ -n $seed ]]; then
     # Same disk: moves are instant. What the agent's cache already has stays.
     mkdir -p "$HOME_S/agent/cache"
@@ -52,10 +59,32 @@ if (( agent )); then
     echo "uv not found: the agent's unit builds need it (https://docs.astral.sh/uv/)" >&2
     exit 1
   fi
+  run=("$HOME_S/app/current/scenic" agent)
+  if (( helper )); then run+=(--helper); fi
   printf '%s\n' /usr/bin/env "PATH=${uv:h}:/opt/homebrew/opt/openjdk@21/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
-    "$HOME_S/app/current/scenic" agent > "$HOME_S/run/agent"
-  launchctl kickstart -k gui/$(id -u)/local.scenic.agent
-  echo "the build agent runs; see: $HOME_S/app/current/scenic status"
+    "${run[@]}" > "$HOME_S/run/agent"
+  plist="$HOME/Library/LaunchAgents/local.scenic.agent.plist"
+  if [[ -f $plist ]]; then
+    launchctl kickstart -k gui/$(id -u)/local.scenic.agent
+  else
+    mkdir -p "$HOME/Library/Logs/scenic" "$HOME/Library/LaunchAgents"
+    plutil -create xml1 "$plist"
+    plutil -insert Label -string local.scenic.agent "$plist"
+    plutil -insert ProgramArguments -array "$plist"
+    plutil -insert ProgramArguments.0 -string "$HOME_S/bin/scenic-launcher" "$plist"
+    plutil -insert ProgramArguments.1 -string agent "$plist"
+    plutil -insert RunAtLoad -bool true "$plist"
+    plutil -insert KeepAlive -bool true "$plist"
+    plutil -insert ProcessType -string Standard "$plist"
+    plutil -insert StandardOutPath -string "$HOME/Library/Logs/scenic/agent.log" "$plist"
+    plutil -insert StandardErrorPath -string "$HOME/Library/Logs/scenic/agent.log" "$plist"
+    launchctl bootstrap gui/$(id -u) "$plist"
+  fi
+  if (( helper )); then
+    echo "the helper agent runs; its status: /Volumes/personal/projects/scenic-roads/state/helpers/$(scutil --get LocalHostName 2>/dev/null || hostname -s).json"
+  else
+    echo "the build agent runs; see: $HOME_S/app/current/scenic status"
+  fi
 fi
 # The menu bar item (tools/status, both Macs): the launcher runs Scenic.app from `current`, under
 # its own login item.

@@ -7,10 +7,7 @@
 //! or has at another size (downloaded before it kept them, or a copy cut short), is copied there
 //! first (whole: crate::whole), and kept here when that fails; one that isn't whole itself (cut
 //! short, or a temporary file) is deleted without being kept anywhere. Each NAS folder is listed
-//! once per run, not asked about file by file. Then,
-//! last, the units' kept scenic results (`scenic-units/`, a unit's whole folder, least recently
-//! kept first: losing one costs that unit's next run its reuse). The DEM samples are never deleted
-//! here.
+//! once per run, not asked about file by file. Nothing else of the cache is deleted here.
 
 use anyhow::Result;
 use std::collections::HashMap;
@@ -24,10 +21,7 @@ pub const RESERVE: u64 = 60 << 30;
 /// The caches' folders whose files may be deleted, under the agent's cache, each with the NAS's
 /// store of them, under its `sources/`.
 const CHEAP: [(&str, &str); 2] = [("chm10", "canopy"), ("aws-terrarium", "aws-terrarium")];
-/// Kept results, deleted a unit's folder at a time, after the cheap caches.
-const KEPT: &str = "scenic-units";
-
-/// Bytes the cheap caches hold (what `make_room` can free before the kept results).
+/// Bytes the cheap caches hold (what `make_room` can free).
 pub fn cheap_bytes(cache: &Path) -> u64 {
     let mut files = Vec::new();
     for (d, _) in CHEAP {
@@ -89,25 +83,10 @@ fn make_room_with(cache: &Path, sources: &Path, reserve: u64, free_space: &dyn F
     // (Empty files are markers, "none there", that free nothing.)
     files.retain(|f| f.1 > 0);
     files.sort();
-    // Then the kept results, a unit at a time, by when they were kept.
-    let mut kept: Vec<(SystemTime, u64, PathBuf)> = std::fs::read_dir(cache.join(KEPT))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().is_dir())
-        .map(|e| {
-            let t = std::fs::metadata(e.path().join("basis.json")).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH);
-            let mut fs = Vec::new();
-            walk(&e.path(), &mut fs);
-            (t, fs.iter().map(|f| f.1).sum(), e.path())
-        })
-        .collect();
-    kept.sort();
     let mut freed = 0u64;
     let mut since = 0u64;
     let mut listed = Listed::new();
-    let items = files.into_iter().map(|(_, len, p)| (len, p, false)).chain(kept.into_iter().map(|(_, len, p)| (len, p, true)));
-    for (len, p, whole) in items {
+    for (_, len, p) in files {
         // Once what was short is deleted, or every 2 GB, the free space measured again: what a
         // file held isn't always what deleting it frees (snapshots keep it).
         if since >= short.min(2 << 30) {
@@ -117,7 +96,7 @@ fn make_room_with(cache: &Path, sources: &Path, reserve: u64, free_space: &dyn F
             }
             (short, since) = (reserve - free, 0);
         }
-        let ok = if whole { std::fs::remove_dir_all(&p).is_ok() } else { may_go(cache, sources, &p, &mut listed) && std::fs::remove_file(&p).is_ok() };
+        let ok = may_go(cache, sources, &p, &mut listed) && std::fs::remove_file(&p).is_ok();
         if ok {
             freed += len;
             since += len;
@@ -170,7 +149,7 @@ mod tests {
     /// The bytes under the caches' folders.
     fn used(c: &Path) -> u64 {
         let mut fs = Vec::new();
-        for d in ["chm10", "aws-terrarium", "scenic-units", "dem-units"] {
+        for d in ["chm10", "aws-terrarium"] {
             walk(&c.join(d), &mut fs);
         }
         fs.iter().map(|f| f.1).sum()
@@ -185,25 +164,24 @@ mod tests {
         file(&c.join("chm10/none.tif"), 0, 4000);
         let png = whole(&c.join("aws-terrarium/12/1/2.png"), 2000);
         let new = whole(&c.join("chm10/new.tif"), 10);
-        file(&c.join("scenic-units/6-1-2/basis.json"), 100, 9000);
-        file(&c.join("dem-units/6-1-2.dem"), 100, 9000);
+        file(&c.join("dem-cache.keys.u64"), 100, 9000);
         assert_eq!(cheap_bytes(c), old + png + new);
         // A disk with 850 free plus what's deleted.
         let all = used(c);
         let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
-        // Short of all but a byte of the two oldest cheap files: they go; the marker, the kept
-        // results and the DEM samples stay.
+        // Short of all but a byte of the two oldest cheap files: they go; the marker and the DEM
+        // seed stay.
         let freed = make_room_with(c, nas, 850 + old + png - 1, &disk(850)).unwrap();
         assert_eq!(freed, old + png);
         assert!(!c.join("chm10/old.tif").exists() && !c.join("aws-terrarium/12/1/2.png").exists());
-        assert!(c.join("chm10/new.tif").exists() && c.join("chm10/none.tif").exists() && c.join("scenic-units/6-1-2").exists());
+        assert!(c.join("chm10/new.tif").exists() && c.join("chm10/none.tif").exists());
         // What went is on the NAS (copied there first: it wasn't).
         assert!(nas.join("canopy/old.tif").exists() && nas.join("aws-terrarium/12/1/2.png").exists());
         // Room enough: nothing goes.
         assert_eq!(make_room_with(c, nas, 1000, &|_| Ok(1 << 20)).unwrap(), 0);
-        // Far short: every cheap file, then the kept results; never the DEM samples.
+        // Far short: every cheap file; never the DEM seed.
         make_room_with(c, nas, 1 << 40, &disk(0)).unwrap();
-        assert!(!c.join("chm10/new.tif").exists() && !c.join("scenic-units/6-1-2").exists() && c.join("dem-units/6-1-2.dem").exists());
+        assert!(!c.join("chm10/new.tif").exists() && c.join("dem-cache.keys.u64").exists());
         assert!(disk_free(c).unwrap() > 0);
     }
 

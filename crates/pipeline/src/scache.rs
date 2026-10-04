@@ -186,7 +186,7 @@ impl GridChange {
     }
 }
 
-/// A unit's scenic results kept between its runs (in the agent's cache), so a rerun (a new pass,
+/// A unit's scenic results kept between its runs (in the NAS's `cache/scenic-units/`, both Macs'), so a rerun (a new pass,
 /// a region nearby changed) redoes only the samples that are new or near what changed:
 /// - kept after a run: the canopy and view steps' sample keys and grid tiles, their per-sample
 ///   outputs, the canopy and cover grids (zstd), and `basis`, a hash of each grid tile's terrain
@@ -235,7 +235,8 @@ impl Carry {
     pub fn save(&self, build: &Path) -> Result<()> {
         let cache = unit_dir(build);
         let have = KEPT_OUTPUTS.iter().chain(&KEPT_GRIDS).all(|f| build.join(f).exists()) && KEPT_CACHE.iter().all(|f| cache.join(f).exists());
-        let tmp = self.dir.with_extension("tmp");
+        // (This Mac's own temporary folder: both Macs may keep the same unit's at once.)
+        let tmp = self.dir.with_extension(format!("{}.tmp", crate::agent::cond::host()));
         if tmp.exists() {
             std::fs::remove_dir_all(&tmp)?;
         }
@@ -269,7 +270,8 @@ impl Carry {
     /// steps' previous run, with the grid tiles whose terrain or land cover changed since in
     /// `changed.tiles`. The samples kept, or None when nothing usable was kept.
     pub fn restore(&self, build: &Path) -> Result<Option<usize>> {
-        let Some(kept) = std::fs::read(self.dir.join("basis.json")).ok().and_then(|b| serde_json::from_slice::<Kept>(&b).ok()) else { return Ok(None) };
+        let Ok(first) = std::fs::read(self.dir.join("basis.json")) else { return Ok(None) };
+        let Some(kept) = serde_json::from_slice::<Kept>(&first).ok() else { return Ok(None) };
         if kept.v != SCENIC_V {
             return Ok(None);
         }
@@ -288,6 +290,9 @@ impl Carry {
             std::fs::write(build.join(f), zstd::stream::decode_all(&z[..])?)?;
         }
         std::fs::write(cache.join("changed.tiles"), bytemuck::cast_slice(&changed))?;
+        // Replaced meanwhile (the other Mac keeping this unit's results too): what was copied may
+        // mix two runs, so it isn't used. (Two runs on the same basis kept the same results.)
+        anyhow::ensure!(std::fs::read(self.dir.join("basis.json")).ok().as_deref() == Some(&first[..]), "replaced while it was read (the other Mac kept this unit's results meanwhile)");
         Ok(Some(std::fs::metadata(cache.join("canopy.keys"))?.len() as usize / 8))
     }
 }

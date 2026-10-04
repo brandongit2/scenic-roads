@@ -7,6 +7,7 @@ pub mod chain;
 pub mod climbs;
 pub mod coverage;
 pub mod elev;
+pub mod handoff;
 pub mod heritage;
 pub mod hipack;
 pub mod interest;

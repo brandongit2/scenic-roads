@@ -193,10 +193,20 @@ impl AppState {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let own: Option<serde_json::Value> = std::fs::read(self.home.join("agent/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let fresh = own.as_ref().and_then(|v| v["beat"].as_u64()).is_some_and(|b| now.saturating_sub(b) < 120);
-        let (status, local) = match own {
+        let (mut status, local) = match own {
             Some(v) if fresh => (v, true),
             _ => (self.agent_status(), false),
         };
+        // A helper on this Mac (docs/plan.md §8, Two Macs): its own status, fresh, in place of what
+        // the build Mac last read of it (which stops while the build Mac sleeps).
+        let helper: Option<serde_json::Value> = std::fs::read(self.home.join("agent/helper.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        if let (Some(h), Some(obj)) = (helper.filter(|h| h["beat"].as_u64().is_some_and(|b| now.saturating_sub(b) < 120)), status.as_object_mut()) {
+            let host = h["host"].clone();
+            let mut list: Vec<serde_json::Value> = obj.get("helpers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            list.retain(|x| x["host"] != host);
+            list.push(serde_json::json!({"host": host, "beat": h["beat"], "job": h["job"]}));
+            obj.insert("helpers".into(), serde_json::Value::Array(list));
+        }
         let log = if local {
             status["job"]["id"].as_str().map(|id| self.home.join("agent/logs").join(format!("{}.log", id.replace([' ', '/'], "-"))).display().to_string())
         } else {

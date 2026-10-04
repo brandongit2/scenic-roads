@@ -152,6 +152,7 @@ global/        worldwide files: road values per unit (roads/), road → units, r
                landmark totals, heritage/, legacy/ (today's converted files)
 layers/<layer>/  root, lo and hi packs; basemap/world-<date>.<hash>.pmtiles
 work/          build intermediates (not served)
+cache/         what units keep for their later runs, shared by both Macs: dem-units/, scenic-units/
 catalog/       <n>.json.zst: every file the map reads, by content name
 catalog-held/  a catalog kept back for review (while inputs/hold-catalog exists)
 app/           published app versions; current.json, previous.json
@@ -188,8 +189,10 @@ unattended, because 1Password asks to approve every new session.
 - **Base packs, hidata, markdata and ovdata** are sectioned files (named arrays): mapped when local,
   read from the NAS in pages (§4).
 
-**Writers.** The build Mac's agent writes everything built: one agent per Mac (a lock), and build
-steps merge their manifest changes under a lock. The exceptions:
+**Writers.** The build Mac's agent writes the build's records (the manifest, its unverified
+uploads, the job keys): one agent per Mac (a lock), and build steps merge their manifest changes
+under this Mac's lock. The M1's helper uploads its units' files (content-named) and hands its
+records off for the build Mac's agent to merge (§8, Two Macs). The exceptions:
 - **Region recipes:** any Mac's server writes them. A new recipe is created exclusively (`O_EXCL`), a
   rename is rewritten through a temporary file, and a removal is renamed to `.removed`. `scenic add`
   and `scenic remove` write them too.
@@ -253,13 +256,13 @@ steps merge their manifest changes under a lock. The exceptions:
 - **Caches** (`~/Library/Application Support/scenic/agent/cache`):
   - AWS's raw terrain tiles and canopy 10° files, filled from the NAS: emptied least recently used
     first when a job starts with too little free (§8);
-  - each unit's canopy and view results from its last run (`scenic-units/`, §6 base(U)), trimmed
-    after those, oldest first;
   - the per-vertex DEM cache: today's, copied once from `sources/dem-cache/` (the seed), and each
-    unit's samples from its last run (`dem-units/`, with the DEM rules' versions they were sampled
-    under), so a vertex is sampled from the DEM servers once, and again only when the rule for its
-    source changes (`pipeline::rules`). A tile a server doesn't answer for (a timeout, a 5xx) fails
-    the job, to be tried again, rather than falling back to a coarser source for good;
+    unit's samples from its last run (on the NAS, `cache/dem-units/`, which both Macs' units read,
+    named by their box so a unit finds those near it from one listing, with the DEM rules' versions
+    they were sampled under), so a vertex is sampled from the DEM servers once, and again only when
+    the rule for its source changes (`pipeline::rules`). A tile a server doesn't answer for (a
+    timeout, a 5xx) fails the job, to be tried again, rather than falling back to a coarser source
+    for good;
   - Wikidata and pageview caches;
   - the registers snapshot, extracted;
   - the pack cache: base packs for pack(T) not in its mirror, pruned every run and cleared when an
@@ -269,6 +272,24 @@ steps merge their manifest changes under a lock. The exceptions:
   the SSD first when there's room for the planet, a filtered file of up to 75 % of it, and 10 GB;
   otherwise it reads the planet from the NAS.
 - It may be asleep, away or unplugged at any time (§8, Interruptions).
+- **What a unit keeps for its later runs** is on the NAS (`cache/`), shared by both Macs: its DEM
+  samples and its canopy and view results (`scenic-units/`, §6 base(U)), or none when keeping them
+  fails (only a later run's time is lost). What a Mac has in its own cache's `dem-units/` and
+  `scenic-units/` is moved there by its next unit job. Its results read while the other Mac replaces
+  them (both building the unit) aren't used.
+- **A unit's build folders** go once it's built (a failed unit's, when the next unit job starts).
+
+**The M1 helps (16 GB).** Its agent runs as a helper (`scenic agent --helper`, under the launcher
+like the build Mac's; `tools/app/install.sh --helper` sets it up).
+- **What it builds:** units, nothing else; the light ones (pieces up to 150 MB: denser units need
+  more memory), taking them from the far end of the list. Each unit's log line gives the most memory
+  one of its steps' programs took (scenic-build's own isn't counted), against its piece's size, to
+  set that limit by.
+- **How:** the build Mac's power rule (mains, or battery down to 30 %); half its cores while its user
+  is at it, all but two otherwise; each job started with 15 GB free, from the caches the NAS keeps.
+- **Status:** `state/helpers/<host>.json`. The M1's status bar shows its job from its own status;
+  the build Mac's shows it from that file while the build Mac's agent runs. Claims and hand-offs
+  keep the two apart (§8, Two Macs).
 
 **App Macs (both laptops).**
 - **The launcher** (`tools/launcher/launcher.c`) is built once and never rebuilt.
@@ -522,7 +543,8 @@ The unit job runs today's steps on a unit-sized folder, wiped at each run:
 6. **scenic:** `scenic-metrics` prep, canopy, view, buildings and flags, for every sample of the
    ways U owns (the others are context, and their results would be thrown away). The buildings come
    from the release's z8 tiles within 1 km of U's tile + 20 km and of its own long roads. U's canopy
-   and view results are kept in the build Mac's cache after each run (`scache::Carry`: the samples'
+   and view results are kept in the NAS's `cache/scenic-units/` after each run, shared by both Macs
+   (`scache::Carry`: the samples'
    keys and results, the canopy and cover grids, and a hash of each grid tile's terrain and land
    cover); its next run starts from them, so only samples that are new, or near grid tiles whose
    terrain or land cover changed since (within the far field's 15 km for views), are done again.
@@ -858,13 +880,13 @@ are no request files.
 - **Order:** the agent starts the first job that can run, in plan order.
 - **A newly installed app:** the running job finishes under the old one, nothing new starts, and the
   agent exits so the launcher starts the new one.
-- **Room on the disk:** before a job starts, while the build Mac has less free than the job needs
-  (60 GB; the OSM pass, its own 80 GB less the pack cache it clears), the local copies of what the
-  NAS keeps (Meta's canopy squares, AWS's raw terrain tiles) lose their least recently used files,
-  then the units' kept scenic results, oldest first. A file goes once the NAS has it at the same
-  size; one the NAS lacks, or has at another size, is copied there first (whole), or kept. A file
-  that isn't whole itself (cut short, or temporary) is deleted, not kept. Each NAS folder is listed
-  once a run. The OSM pass counts those copies as room.
+- **Room on the disk:** before a job starts, while the Mac has less free than the job needs (60 GB;
+  the OSM pass, its own 80 GB less the pack cache it clears; the M1's helper, 15 GB), the local
+  copies of what the NAS keeps (Meta's canopy squares, AWS's raw terrain tiles) lose their least
+  recently used files. A file goes once the NAS has it at the same size; one the NAS lacks, or has
+  at another size, is copied there first (whole), or kept. A file that isn't whole itself (cut
+  short, or temporary) is deleted, not kept. Each NAS folder is listed once a run. The OSM pass
+  counts those copies as room.
 - **Units run in map order** (by 10° square, then tile), so what one unit fetches serves the next.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours. The orphans of a crashed
   agent are stopped at start (only when their leader's start time proves them ours, or the leader is
@@ -873,6 +895,36 @@ are no request files.
   (`state/status.json`) when it changes or every five minutes; the user's idle seconds don't count as
   a change, only whether they're at the Mac. It holds the job, its progress (from the job's `progress:` lines) with the time left, and a checklist
   of every step to the end.
+
+**Two Macs.** Units are built by whichever Mac's agent claims them first: the build Mac's, and the
+M1's helper (§4). Only units are shared; everything else runs on the build Mac.
+- **Claims:** before a job starts, its targets are claimed on the NAS (`state/build/claims/<step>
+  <target>`, made with create-new, which the share does atomically); a job whose targets another
+  agent holds isn't started, and each agent's plan leaves out what the other holds. A target
+  recorded since the plan read the keys (built meanwhile by the other Mac) isn't started either.
+- **Kept fresh:** every two minutes while the job runs, not while it's paused; dropped when it ends
+  or its agent stops. One not kept fresh for 15 minutes (its Mac asleep, away, or paused) is free
+  again; a time ahead of the reader's clock (the other Mac's runs a little ahead) is fresh. A job
+  whose claim another agent has taken is stopped, unrecorded, its other claims dropped: that agent
+  builds it. An agent drops the claims its Mac's earlier agent left once the NAS answers. Two agents can still
+  both take a stale claim at once (rarely): both build the unit until the one whose claim was taken
+  sees it and stops; the records take each one's hand-off, and the units' content names.
+- **One writer of the records:** the build Mac alone writes the manifest, its unverified uploads
+  and the job keys (its agent, and its jobs). A helper's job saves its changes to `state/build/handoff/<host>/`
+  instead (`pipeline::handoff`), and its agent adds a done record there when the job succeeds; the
+  build Mac's agent merges them (a Mac's in the order written: each named after the last) before it
+  plans, under its own lock (not while a paused job holds it), records the last it merged
+  (`<host>.merged`, so one it can't delete isn't merged again), then deletes them; one that can't be
+  parsed is set aside (`.bad`), and its Mac's done records after it in that merge are dropped (their
+  units are built again). Records, a listing or a hand-off that can't be read now stop the merge
+  and the planning for a loop, and nothing is written. Until they're merged, both agents plan with
+  the done records on top of the keys, so neither builds again what the helper built while the
+  build Mac was away.
+- **Enforced:** the build Mac's agent names its Mac in `state/build/writer` (every five minutes, by
+  its name then), and its jobs carry `SCENIC_BUILD_MAC`; any other save on another Mac outside a
+  helper's job (a step run there by hand) is refused.
+- **Temporary names** are each Mac's own (kept results), and each process's too (uploads), so the
+  two never write into the same one.
 
 **Order:**
 1. **The OSM pass**, when the NAS holds a newer planet than the newest pass.
@@ -1072,14 +1124,13 @@ At each phase's end an Opus agent reviews the work against this plan.
   - work progresses only while the M4 is awake, reaches the NAS (away from home through Tailscale,
     at ~12 MB/s, the whole-planet and whole-world jobs waiting for home), and has power;
   - a closed lid stops building, and nothing is lost while it waits;
-  - if waiting proves too slow, the other Mac could take per-unit jobs (needs a toolchain there and
-    a movable writer lease; not planned).
+  - the M1 builds units too when it's open (§8, Two Macs); everything else waits for the M4.
 - **Dense units:**
   - the densest (Kanto, a 3 GB base pack converted) is first built in the cutover;
   - if a unit or its 110 km halo doesn't fit in 48 GB, units split into z7 or z8 tiles, and pack(T)
     by z7.
 - **Remote DEM servers** may be slow or change. Today's cache seeds the units, and their new samples
-  are kept, on the build Mac only: losing its cache costs sampling those again.
+  are kept on the NAS (`cache/dem-units/`).
 - **Version bumps at globe scale** would take days: today a bump makes every target stale in the
   normal order.
 - **Way ids past u32** (2040s): the tile format is versioned.

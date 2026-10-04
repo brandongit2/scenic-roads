@@ -6,8 +6,11 @@
 //! (`store::naming::write_atomic`). A file already there is reused and touched, so GC sees it as
 //! in use. `verify` can also check uploads on the NAS itself (SHA-256 over SSH, run by hand).
 //!
-//! Several steps may run at once (the agent's job and a manual one): each records its own changes
-//! and merges them into the manifest on disk under a lock when it saves.
+//! Several steps may run at once on the build Mac (the agent's job and a manual one): each records
+//! its own changes and merges them into the manifest on disk under this Mac's lock (`BuildLock`)
+//! when it saves. A helper's job on the other Mac (docs/plan.md §8, Two Macs; `SCENIC_HANDOFF`)
+//! saves its changes as hand-offs instead (crate::handoff), which the build Mac's agent merges: the
+//! build Mac alone writes the manifest.
 
 use anyhow::{bail, Context, Result};
 use sha2::Digest;
@@ -28,6 +31,8 @@ pub struct Out {
     manifest_path: PathBuf,
     /// Local scratch space for files before upload.
     pub scratch: PathBuf,
+    /// A helper's job: where its saves go as hand-offs ($SCENIC_HANDOFF), never the manifest.
+    handoff: Option<PathBuf>,
 }
 
 /// A JSON record (the manifest, the unverified uploads): empty when there's none yet, an error when
@@ -60,8 +65,10 @@ impl Out {
         std::fs::create_dir_all(scratch)?;
         let manifest_path = root.join("state/build/manifest.json");
         let manifest = read_record(&manifest_path)?;
-        let pending = read_record(&root.join("state/build/pending.json"))?;
-        Ok(Out { root: root.to_path_buf(), manifest, changes: BTreeMap::new(), checked: Default::default(), pending, manifest_path, scratch: scratch.to_path_buf() })
+        let handoff = std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from);
+        // (A helper's job hands off only its own uploads.)
+        let pending = if handoff.is_some() { BTreeMap::new() } else { read_record(&root.join("state/build/pending.json"))? };
+        Ok(Out { root: root.to_path_buf(), manifest, changes: BTreeMap::new(), checked: Default::default(), pending, manifest_path, scratch: scratch.to_path_buf(), handoff })
     }
 
     pub fn root(&self) -> &Path {
@@ -126,11 +133,53 @@ impl Out {
     }
 
     /// Writes this run's changes into the manifest on disk (re-read under a lock, so another step's
-    /// changes saved meanwhile are kept), and the unverified uploads likewise.
+    /// changes saved meanwhile are kept), and the unverified uploads likewise. A helper's job hands
+    /// them off instead (crate::handoff).
     pub fn save(&mut self) -> Result<()> {
+        if let Some(dir) = &self.handoff {
+            if self.changes.is_empty() && self.pending.is_empty() && self.checked.is_empty() {
+                return Ok(());
+            }
+            let h = crate::handoff::Handoff { changes: self.changes.clone(), pending: self.pending.clone(), checked: self.checked.iter().cloned().collect(), done: None };
+            crate::handoff::write(dir, &h)?;
+            self.changes.clear();
+            self.pending.clear();
+            self.checked.clear();
+            return Ok(());
+        }
+        // The build Mac alone writes the records (docs/plan.md §8, Two Macs): a save from another
+        // Mac (a step run by hand there, not as a helper's job) is refused, rather than let race it.
+        // Its agent's jobs are the build Mac's (SCENIC_BUILD_MAC); one run by hand, by its name.
+        if std::env::var_os("SCENIC_BUILD_MAC").is_none() {
+            let host = crate::agent::cond::host();
+            match std::fs::read_to_string(self.root.join("state/build/writer")) {
+                Ok(w) if w.trim() != host => bail!("{} is the build Mac, which alone writes the build's records; this Mac ({host}) saves only as a helper's job (SCENIC_HANDOFF)", w.trim()),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e).context("read state/build/writer"),
+            }
+        }
+        let lock = BuildLock::take(&self.root)?;
+        self.save_held(&lock)
+    }
+
+    /// Takes in a hand-off's changes (the build Mac's agent merging them: crate::handoff::merge).
+    pub fn absorb(&mut self, h: &crate::handoff::Handoff) {
+        for (k, v) in &h.changes {
+            match v {
+                Some(n) => self.manifest.insert(k.clone(), n.clone()),
+                None => self.manifest.remove(k),
+            };
+            self.changes.insert(k.clone(), v.clone());
+        }
+        self.pending.extend(h.pending.clone());
+        self.checked.extend(h.checked.iter().cloned());
+    }
+
+    /// `save`, under this Mac's build lock, held.
+    pub fn save_held(&mut self, _lock: &BuildLock) -> Result<()> {
         let dir = self.manifest_path.parent().unwrap().to_path_buf();
         std::fs::create_dir_all(&dir)?;
-        let _lock = BuildLock::take(&self.root)?;
         let mut on_disk: BTreeMap<String, String> = read_record(&self.manifest_path)?;
         for (k, v) in &self.changes {
             match v {
@@ -212,21 +261,41 @@ impl Out {
     }
 }
 
-/// An exclusive lock for saving a root's manifest, held on this Mac (the one writer, plan §3) in a
-/// local file named after the root: released when dropped.
+/// An exclusive lock for saving a root's manifest among this Mac's processes, in a local file named
+/// after the root: released when dropped.
 pub struct BuildLock(#[allow(dead_code)] std::fs::File);
 
 impl BuildLock {
-    pub fn take(root: &Path) -> Result<BuildLock> {
-        use std::os::fd::AsRawFd;
+    fn file(root: &Path) -> Result<std::fs::File> {
         let key = store::naming::hash16(root.to_string_lossy().as_bytes());
         let p = std::env::temp_dir().join(format!("scenic-build-{key}.lock"));
-        let f = std::fs::File::options().create(true).truncate(false).write(true).open(&p).with_context(|| format!("open {}", p.display()))?;
+        std::fs::File::options().create(true).truncate(false).write(true).open(&p).with_context(|| format!("open {}", p.display()))
+    }
+
+    /// Waits until the lock is ours.
+    pub fn take(root: &Path) -> Result<BuildLock> {
+        use std::os::fd::AsRawFd;
+        let f = Self::file(root)?;
         // SAFETY: flock on a descriptor we own; it blocks until the lock is ours.
         if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
             return Err(std::io::Error::last_os_error()).context("lock the build manifest");
         }
         Ok(BuildLock(f))
+    }
+
+    /// The lock when it's free now; None when another holds it (a paused job may, for hours).
+    pub fn try_take(root: &Path) -> Result<Option<BuildLock>> {
+        use std::os::fd::AsRawFd;
+        let f = Self::file(root)?;
+        // SAFETY: flock on a descriptor we own; it doesn't block.
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::EWOULDBLOCK) {
+                return Ok(None);
+            }
+            return Err(e).context("lock the build manifest");
+        }
+        Ok(Some(BuildLock(f)))
     }
 }
 
@@ -255,5 +324,22 @@ mod tests {
         assert!(root.join("state/build/manifest.json").is_dir());
         // And opening with it unreadable fails too.
         assert!(Out::open(&root, &d.path().join("s")).is_err());
+    }
+
+    #[test]
+    fn only_the_build_mac_saves_the_records() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("root");
+        let mut out = Out::open(&root, &d.path().join("s")).unwrap();
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        // Another Mac named the writer: refused.
+        std::fs::write(root.join("state/build/writer"), "not-this-mac").unwrap();
+        out.changes.insert("a".into(), Some("a.1111111111111111.x".into()));
+        assert!(out.save().is_err());
+        assert!(!root.join("state/build/manifest.json").exists());
+        // This Mac: saved.
+        std::fs::write(root.join("state/build/writer"), crate::agent::cond::host()).unwrap();
+        out.save().unwrap();
+        assert!(root.join("state/build/manifest.json").exists());
     }
 }

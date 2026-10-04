@@ -1501,10 +1501,19 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         buildings: opt(args, "--buildings").map(PathBuf::from),
         moi_dtm: Some(out.root().join("inputs/moi-dtm")),
         sources: Some(out.root().join("sources")),
+        shared: Some(out.root().join("cache")),
         spacing_m: 8,
     };
-    // Today's DEM cache, where the units' elevations start from (once per build Mac).
+    // Today's DEM cache, where the units' elevations start from (once per Mac).
     pipeline::unit::dem_seed(out.root(), &tools.cache)?;
+    // What units kept in this Mac's own cache: moved to the shared one (both Macs' units read it).
+    if let Some(shared) = &tools.shared {
+        match pipeline::unit::move_kept_to_shared(&tools.cache, shared) {
+            Ok(0) => {}
+            Ok(n) => eprintln!("unit: moved {n} kept results to the shared cache ({})", shared.display()),
+            Err(e) => eprintln!("unit: moving kept results to the shared cache: {e:#}"),
+        }
+    }
     // The pass's heritage sites and designated areas (the heritage-sites step), for every unit's
     // flags.
     anyhow::ensure!(
@@ -1560,8 +1569,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         };
         let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
         std::fs::copy(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
-        // Its scenic results from its last run, kept in the cache (pipeline::scache::Carry).
-        let carry = pipeline::scache::Carry { dir: tools.cache.join("scenic-units").join(u.dash()) };
+        // Its scenic results from its last run, kept in the shared cache (pipeline::scache::Carry).
+        let carry = pipeline::scache::Carry { dir: tools.scenic_kept(u) };
+        pipeline::unit::take_peak();
         let rep = {
             let o: &Out = out;
             let heritage = |b: [f64; 4], d: &Path| pipeline::heritage::unit_inputs(o, &date, b, d);
@@ -1644,7 +1654,10 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         out.save()?;
         drop(lg);
         clean();
-        eprintln!("unit {}: base pack of {} ways in {:.0?}", u.slash(), idx.len(), t.elapsed());
+        // The most memory one of its steps' programs took, against its piece's size (a helper builds
+        // only pieces a 16 GB Mac can: docs/plan.md §4).
+        let piece_mb = std::fs::metadata(&piece).map(|m| m.len() >> 20).unwrap_or(0);
+        eprintln!("unit {}: base pack of {} ways in {:.0?}; piece {piece_mb} MB, its steps' programs' peak memory {:.1} GB", u.slash(), idx.len(), t.elapsed(), pipeline::unit::take_peak() as f64 / 1e9);
     }
     Ok(())
 }
@@ -2016,3 +2029,4 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::remove_dir_all(&work).ok();
     Ok(())
 }
+

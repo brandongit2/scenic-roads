@@ -42,6 +42,15 @@ struct Status: Decodable {
     let built: [String: Built]?
     /// The build to the end (agents from 2026-10-03 on).
     let checklist: [Step]?
+    /// Other Macs helping, building units (agents from 2026-10-04 on).
+    let helpers: [Helper]?
+}
+
+/// A helper on another Mac, as the main agent last read its status.
+struct Helper: Decodable {
+    let host: String
+    let beat: Int
+    let job: Job?
 }
 
 /// A step of the build to the end: done of total (total unknown until an earlier step makes it), or
@@ -147,15 +156,29 @@ func clip(_ s: String, _ n: Int = 80) -> String {
     s.count <= n ? s : String(s.prefix(n - 1)) + "…"
 }
 
+/// The helpers heard from lately (one not heard from for `outOfTouch` is left out).
+func freshHelpers(_ r: Reply) -> [Helper] {
+    (r.status?.helpers ?? []).filter { r.now - $0.beat <= outOfTouch }
+}
+
 /// The state, with a line saying it.
 func classify(_ r: Reply?) -> (Kind, String) {
     guard let r = r else { return (.unknown, "The map's server on this Mac isn't answering") }
     guard let s = r.status else { return (.unknown, "No word from the build Mac (is the NAS reachable?)") }
-    if r.now - s.beat > outOfTouch { return (.outOfTouch, "Build Mac out of touch since \(clock(s.beat))") }
+    // A helper building counts as building, whatever the build Mac is doing.
+    let helping = freshHelpers(r).filter { $0.job != nil && $0.job?.paused == nil }
+    if r.now - s.beat > outOfTouch {
+        if let h = helping.first { return (.building, clip("Building on \(h.host); build Mac out of touch since \(clock(s.beat))")) }
+        return (.outOfTouch, "Build Mac out of touch since \(clock(s.beat))")
+    }
     if let j = s.job {
-        if j.paused != nil { return (.paused, "Paused") }
+        if j.paused != nil {
+            if let h = helping.first { return (.building, clip("Building on \(h.host); the build Mac's job paused")) }
+            return (.paused, "Paused")
+        }
         return (.building, "Building")
     }
+    if let h = helping.first { return (.building, clip("Building on \(h.host)")) }
     if let w = s.waiting.first(where: { $0.why.contains("failed") }) { return (.problem, clip("Failed: \(w.what)")) }
     if let d = s.recent.first, !d.ok { return (.problem, clip("Failed: \(d.what)")) }
     if let w = s.waiting.first { return (.waiting, clip("Waiting: \(w.what)")) }
@@ -202,6 +225,21 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
         for l in plain.split(separator: "\n").suffix(3) where !l.trimmingCharacters(in: .whitespaces).isEmpty {
             out.append(Line(text: tildes(String(l).trimmingCharacters(in: .whitespaces)), style: .mono))
         }
+    }
+    // The other Macs helping (units only), each with its job.
+    for h in freshHelpers(r) {
+        guard let j = h.job else {
+            out.append(Line(text: "\(h.host) is helping; nothing for it to build now", style: .small))
+            continue
+        }
+        out.append(Line(text: "\(h.host): \(j.what)", style: .plain))
+        if let p = j.progress {
+            let frac = p.total > 0 ? p.done / p.total : 0
+            var t = "\(Int((frac * 100).rounded(.down)))% · \(grouped(p.done)) of \(grouped(p.total)) \(p.unit)"
+            if let e = p.eta_s, j.paused == nil { t += " · about \(duration(e)) left" }
+            out.append(Line(text: t, style: .bar, fraction: frac))
+        }
+        if let p = j.paused { out.append(Line(text: "\(h.host): \(p)", style: .small)) }
     }
     let power = s.conditions.ac ? "Mains power" : "Battery\(s.conditions.battery.map { " \($0)%" } ?? "")"
     out.append(Line(text: "\(power) · NAS \(!s.conditions.nas ? "not reachable" : s.conditions.home == false ? "through Tailscale" : "reachable")", style: .small))

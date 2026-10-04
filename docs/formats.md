@@ -284,21 +284,14 @@ idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trai
 catalog/<n>.json.zst    the last catalogs read
 translations/  descriptions/   local copies of the NAS folders, compiled by the server
 regions.json            the last regions read; regions-queue/: region edits waiting for the NAS
-agent/                  (build Mac) status.json, state.json, job.json, agent.lock, logs/, cache/
-agent/cache/            dem-cache.* (the seed), dem-units/<u>.dem (a unit's samples from its last
-                        run: "RDDEM002", u64 count, the points' box (4 × i32), the versions of the
-                        DEM rules dem-north-america, -japan, -taiwan, -fabdem it was sampled under
-                        (4 × u32), then the sorted keys, elevations and sources), scenic-units/<u>/
-                        (a unit's canopy and view results from its last run: canopy.keys,
-                        canopy.tiles, view.keys, view.tiles, near.i8, roadside.u8,
-                        samples.metrics.u8, grid.canopy.u8.zst, grid.cover.u8.zst, and basis.json:
-                        {v (scache::SCENIC_V), basis: [[[x, y], hash16 of the z11 tile's terrain and
-                        land cover], …]}), chm10/ (canopy 10° files) and aws-terrarium/ (copies of
-                        the NAS's sources/canopy/ and sources/aws-terrarium/), base/. When a job
-                        starts with too little free, chm10/ and aws-terrarium/ lose their least
-                        recently used files (empty markers kept; a file the NAS lacks copied there
-                        first, or kept), then scenic-units/ whole units, oldest first, until the
-                        shortfall is made up.
+agent/                  status.json (the build Mac's; a helper writes helper.json, which that Mac's
+                        server shows), state.json,
+                        job.json, agent.lock, logs/, cache/
+agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and aws-terrarium/
+                        (copies of the NAS's sources/canopy/ and sources/aws-terrarium/), base/.
+                        When a job starts with too little free, chm10/ and aws-terrarium/ lose
+                        their least recently used files (empty markers kept; a file the NAS lacks
+                        copied there first, or kept), until the shortfall is made up.
 ```
 
 `~/Library/Preferences/nsmb.conf` gets `[FISHANDCHIPS:PERSONAL]` and
@@ -422,6 +415,23 @@ class, id) within a tile. The client sends the id with the clicked point.
   u8 mode (0 tram, 1 metro, 2 rail, 3 funicular; +0x80 when the trains are a lower bound; +0x20 /
   +0x40 when stop A / B is beyond the coverage, which the `rail` job sets), f32 trains from A to B on
   the typical weekday.
+- **Kept for units' later runs, both Macs'** (`cache/`, not swept): `cache/dem-units/<u>.<box>.dem`
+  (`<box>`: the points' box as 32 hex digits, w, s, e, n as u32; a unit's DEM samples from its last
+  run: "RDDEM002", u64 count, the points' box (4 × i32), the
+  versions of the DEM rules dem-north-america, -japan, -taiwan, -fabdem it was sampled under (4 ×
+  u32), then the sorted keys, elevations and sources) and `cache/scenic-units/<u>/` (its canopy and
+  view results: canopy.keys, canopy.tiles, view.keys, view.tiles, near.i8, roadside.u8,
+  samples.metrics.u8, grid.canopy.u8.zst, grid.cover.u8.zst, and basis.json: {v (scache::SCENIC_V),
+  basis: [[[x, y], hash16 of the z11 tile's terrain and land cover], …]}).
+- **Two Macs:** `state/build/claims/<step> <target>` (the target's `/` as `-`, e.g. `unit 6-31-20`;
+  the claiming agent, "<host> <pid>"; fresh while its mtime is within 15 minutes);
+  `state/build/handoff/<host>/<ns>-<pid>.json` (a helper's hand-offs, in the order written, each
+  named after the last: JSON `{changes: {logical: content name, or null when removed}, pending:
+  {content name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] or null}`;
+  `pipeline::handoff`), `state/build/handoff/<host>.merged` (the last merged, by name; a `.bad` file
+  is one set aside unparsed); `state/build/writer` (the build Mac's name: the records' one writer);
+  `state/helpers/<host>.json` (a helper's status, as the heartbeat's; the heartbeat lists those
+  fresh within ten minutes as `helpers`).
 - **State:** `state/status.json` (the agent's heartbeat: conditions, the job and its progress, what
   waits, the checklist to the end); `state/build/{manifest,jobs,pending,summaries}.json`.
 - **The app:** `app/current.json` and `previous.json`: `{version, files, sha256}`.

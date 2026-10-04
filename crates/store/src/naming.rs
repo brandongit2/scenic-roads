@@ -202,16 +202,27 @@ fn no_cache(f: &File) {
     let _ = f;
 }
 
-/// `<path>.tmp`.
+/// `<path>.<host>-<pid>.tmp`: this Mac's and this process's, so two writers of the same name (the
+/// two Macs building the same unit) never share one. GC sweeps those abandoned.
 pub(crate) fn tmp_path(path: &Path) -> PathBuf {
+    static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let host = HOST.get_or_init(|| {
+        let mut b = [0u8; 256];
+        // SAFETY: gethostname writes at most `b.len()` bytes into the buffer we own.
+        let ok = unsafe { libc::gethostname(b.as_mut_ptr().cast(), b.len()) } == 0;
+        let n = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+        let h = if ok { String::from_utf8_lossy(&b[..n]).replace(['.', '/'], "-") } else { String::new() };
+        if h.is_empty() { "host".into() } else { h }
+    });
     let mut s = OsString::from(path.as_os_str());
-    s.push(".tmp");
+    s.push(format!(".{host}-{}.tmp", std::process::id()));
     PathBuf::from(s)
 }
 
 /// Renames `from` to `to` unless `to` exists (then `AlreadyExists`). Atomic where the filesystem
 /// supports exclusive renames (APFS); elsewhere (some SMB servers) it checks first, which only a
-/// concurrent writer of the same name could race — and there is one writer (plan §3).
+/// concurrent writer of the same name could race: then the rename finds the name taken, and the
+/// copy there (same name, same content) is checked for its size instead.
 pub(crate) fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
     #[cfg(target_os = "macos")]
     {

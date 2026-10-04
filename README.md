@@ -343,6 +343,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
 - **The NAS** holds the map's data, and every download the build makes, each made once (`sources/`: Meta's canopy squares, today's build's among them, AWS's raw terrain tiles, FABDEM's tiles, the leaf-type sources, Overture's buildings). Each copy is checked whole when read; one that isn't (cut short) is taken again. What's fetched again is new data (a planet, Wikidata facts and pageviews, timetables, an Overture release), or windows of the datasets read by window (the national DEMs, MRDEM, ESA WorldCover) where nothing kept covers them yet.
 - **Each Mac's server** copies what the catalog lists, within a reserve of free space: 50 GB, or 150 GB on the build Mac.
 - **The build Mac** (48 GB) keeps local copies of the NAS's terrain tiles and canopy squares, and the elevations, and needs 80 GB free to start an OSM pass.
+- **The M1** (16 GB) helps when it's open: its agent builds the lighter areas beside the build Mac's (`tools/app/install.sh --helper`), handing its results to the build Mac's agent, which alone writes the build's records.
 - **Publishing the app** (`tools/app/publish.sh`) needs Rust and Node.
 - **The agent** needs [uv](https://docs.astral.sh/uv/), `osmium-tool` and Java 21+ (Homebrew's openjdk@21), and Planetiler's jar on the NAS.
 

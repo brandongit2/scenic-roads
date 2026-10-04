@@ -4,7 +4,8 @@
 //!   scenic add <id> "<name>" <outline>…  a region: outlines are osm:<relation>, geofabrik:<id>,
 //!                                       poly:<file in inputs/outlines>, place:<lon>,<lat>,<km>
 //!   scenic remove <id>                  remove a region (its recipe is kept as .removed)
-//!   scenic agent [--once] [--dry-run] [--home <dir>]  the build agent (the build Mac's login item)
+//!   scenic agent [--once] [--dry-run] [--home <dir>] [--helper]  the build agent (the build Mac's
+//!                                       login item; --helper: the M1's, units only)
 //!   scenic gc [--dry-run] [--days 14]   remove replaced files from the NAS (the agent runs it daily)
 //!   scenic backup [--local <dir>]       back up the user's folders (the agent runs it daily)
 //!
@@ -115,7 +116,7 @@ fn main() -> Result<()> {
         "agent" => {
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
             let home = opt(&args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
-            let o = Options { root: opt(&args, "--root").map(PathBuf::from), home, bin, dry_run: flag(&args, "--dry-run"), once: flag(&args, "--once") };
+            let o = Options { root: opt(&args, "--root").map(PathBuf::from), home, bin, dry_run: flag(&args, "--dry-run"), once: flag(&args, "--once"), helper: flag(&args, "--helper") };
             eprintln!("agent: started (app {}, root {})", o.bin.display(), o.root.as_ref().map(|r| r.display().to_string()).unwrap_or_else(|| "the NAS share".into()));
             agent::Agent::new(o)?.run()
         }

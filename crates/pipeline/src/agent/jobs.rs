@@ -99,9 +99,9 @@ fn group_members(pgid: i32) -> Vec<i32> {
 }
 
 impl Running {
-    /// Starts `spec` with `threads` worker threads (RAYON_NUM_THREADS), its output appended to
-    /// `log`, and records it in `record`.
-    pub fn start(spec: JobSpec, threads: usize, log: PathBuf, record: &Path) -> Result<Running> {
+    /// Starts `spec` with `threads` worker threads (RAYON_NUM_THREADS) and `env`, its output
+    /// appended to `log`, and records it in `record`.
+    pub fn start(spec: JobSpec, threads: usize, env: &[(&str, &str)], log: PathBuf, record: &Path) -> Result<Running> {
         if let Some(d) = log.parent() {
             std::fs::create_dir_all(d)?;
         }
@@ -110,7 +110,7 @@ impl Running {
         let (prog, args) = spec.cmd.split_first().context("empty command")?;
         let mut c = Command::new("/usr/sbin/taskpolicy");
         c.args(["-c", "utility"]).arg(prog).args(args);
-        c.env("RAYON_NUM_THREADS", threads.to_string()).stdin(Stdio::null()).stdout(out).stderr(err);
+        c.env("RAYON_NUM_THREADS", threads.to_string()).envs(env.iter().copied()).stdin(Stdio::null()).stdout(out).stderr(err);
         // Its own process group, so pausing and stopping reach every process it starts.
         c.process_group(0);
         let child = c.spawn().with_context(|| format!("start {}", spec.id))?;
@@ -273,7 +273,7 @@ mod tests {
     fn runs_pauses_and_stops() {
         let d = tempfile::tempdir().unwrap();
         let rec = d.path().join("job.json");
-        let mut r = Running::start(spec(&["/bin/sh", "-c", "echo hello; sleep 30"]), 2, d.path().join("log"), &rec).unwrap();
+        let mut r = Running::start(spec(&["/bin/sh", "-c", "echo hello; sleep 30"]), 2, &[], d.path().join("log"), &rec).unwrap();
         assert!(rec.exists());
         std::thread::sleep(Duration::from_millis(300));
         r.pause("test");
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn exit_status() {
         let d = tempfile::tempdir().unwrap();
-        let mut r = Running::start(spec(&["/bin/sh", "-c", "exit 3"]), 1, d.path().join("log"), &d.path().join("job.json")).unwrap();
+        let mut r = Running::start(spec(&["/bin/sh", "-c", "exit 3"]), 1, &[], d.path().join("log"), &d.path().join("job.json")).unwrap();
         let st = loop {
             if let Some(s) = r.poll().unwrap() {
                 break s;
@@ -301,7 +301,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let rec = d.path().join("job.json");
         // The shell leaves a sleep behind in its group and exits: an orphan, as after a crash.
-        let mut r = Running::start(spec(&["/bin/sh", "-c", "/bin/sleep 60 & echo started"]), 1, d.path().join("log"), &rec).unwrap();
+        let mut r = Running::start(spec(&["/bin/sh", "-c", "/bin/sleep 60 & echo started"]), 1, &[], d.path().join("log"), &rec).unwrap();
         while r.poll().unwrap().is_none() {
             std::thread::sleep(Duration::from_millis(50));
         }
