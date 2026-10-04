@@ -162,6 +162,10 @@ struct Memory {
     /// When each daily job last succeeded (seconds since the epoch).
     last_ok: BTreeMap<String, u64>,
     recent: Vec<Done>,
+    /// A helper's jobs done lately (when, in seconds since the epoch; their step and targets with
+    /// keys): planned as done until the keys show them (Agent::planning_keys), across a restart.
+    #[serde(default)]
+    handed: Vec<(u64, String, Vec<(String, String)>)>,
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -282,6 +286,17 @@ impl Agent {
         }
         let me = format!("{} {}", cond::host_name(), std::process::id());
         Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None })
+    }
+
+    /// The keys to plan with: on the NAS, with the hand-offs' done records on top, and a helper's own
+    /// jobs done lately too (`Memory::handed`: until the keys show them, for a day at most).
+    fn planning_keys(&self, root: &Path) -> Result<build::Keys> {
+        let mut keys = build::Keys::load_with_handoffs(root)?;
+        let lately: Vec<&(u64, String, Vec<(String, String)>)> = self.mem.handed.iter().filter(|(t, step, targets)| now_s().saturating_sub(*t) < 86_400 && !targets.iter().all(|(x, k)| keys.recorded(step, x) == Some(k.as_str()))).collect();
+        for (_, step, targets) in lately {
+            keys.record(step, targets);
+        }
+        Ok(keys)
     }
 
     /// Drops the running job's claims (crate::agent::claims), as it ends.
@@ -411,6 +426,10 @@ impl Agent {
                     if let (Some(w), Some(root)) = (r.spec.record.clone(), root.as_ref()) {
                         // The build Mac's agent records it; a helper hands its record off.
                         let rec = if self.o.helper {
+                            // (Planned as done until the keys show it, whatever this Mac's view
+                            // of the NAS says meanwhile: the record handed off, merged and deleted
+                            // at once, and `jobs.json` read here from before the merge.)
+                            self.mem.handed.push((now_s(), w.step.clone(), w.targets.clone()));
                             crate::handoff::write(&crate::handoff::dir(root, &self.host), &crate::handoff::Handoff { done: Some((w.step.clone(), w.targets.clone())), ..Default::default() })
                         } else {
                             build::Keys::load_strict(root).and_then(|mut k| {
@@ -533,7 +552,7 @@ impl Agent {
                     }
                     // Recorded since this loop read the keys (the other Mac built and released it
                     // meanwhile): not built again.
-                    let done = build::Keys::load_with_handoffs(r).map(|keys| spec.record.as_ref().is_some_and(|w| w.targets.iter().any(|(t, k)| keys.recorded(&w.step, t) == Some(k.as_str()))));
+                    let done = self.planning_keys(r).map(|keys| spec.record.as_ref().is_some_and(|w| w.targets.iter().any(|(t, k)| keys.recorded(&w.step, t) == Some(k.as_str()))));
                     if done.unwrap_or(true) {
                         claims::release(r, &step, &ts, &self.me);
                         waiting.push(Waiting { what: what.clone(), why: "the other Mac built part of it meanwhile (or the keys can't be read now); planning again".into() });
@@ -657,6 +676,7 @@ impl Agent {
     }
 
     fn finished(&mut self, id: &str, what: &str, ok: bool, secs: u64, note: String) {
+        self.mem.handed.retain(|(t, _, _)| now_s().saturating_sub(*t) < 86_400);
         if ok {
             self.mem.retry.remove(id);
             self.mem.last_ok.insert(id.to_string(), now_s());
@@ -769,7 +789,7 @@ impl Agent {
     fn region_work(&self, root: &Path, pass: Option<&str>, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
         let (recipes, _) = recipes::load(&root.join("inputs/regions"));
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
-        let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match crate::out::read_record(&root.join("state/build/manifest.json")).and_then(|m| Ok((m, build::Keys::load_with_handoffs(root)?))) {
+        let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match crate::out::read_record(&root.join("state/build/manifest.json")).and_then(|m| Ok((m, self.planning_keys(root)?))) {
             Ok(r) => r,
             Err(e) => {
                 waiting.push(Waiting { what: "Building".into(), why: format!("the build's records can't be read now: {e:#}") });

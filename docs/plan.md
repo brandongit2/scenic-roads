@@ -925,7 +925,8 @@ M1's helper (§4). Only units are shared; everything else runs on the build Mac.
   units are built again). Records, a listing or a hand-off that can't be read now stop the merge
   and the planning for a loop, and nothing is written. Until they're merged, both agents plan with
   the done records on top of the keys, so neither builds again what the helper built while the
-  build Mac was away.
+  build Mac was away; and a helper with its own jobs done in the last day too, until the keys show
+  them (its view of the NAS can lag a merge that has already deleted the record).
 - **Enforced:** the build Mac's agent names its Mac in `state/build/writer` (every five minutes, by
   its name then), and its jobs carry `SCENIC_BUILD_MAC`; any other save on another Mac outside a
   helper's job (a step run there by hand) is refused.
