@@ -1,12 +1,15 @@
 //! Room on the build Mac's disk (docs/plan.md §8): before a job starts, when the disk's free space
 //! is under what the job needs (`RESERVE`, or the OSM pass's own), the local copies of what the NAS
-//! keeps lose their least recently used files until it has that and a margin (`margin`: a sixth
-//! more, none for the OSM pass), so the next jobs start without deleting again: Meta's canopy squares
-//! (`chm10/`, ~2 GB a 10° square; scenic-metrics marks a square used when it reads it) and AWS's raw
-//! terrain tiles (`aws-terrarium/`, read once per terrain run). They fill again from the NAS
-//! (`sources/canopy/`, `sources/aws-terrarium/`), never from the internet.
-//! - Raw tiles go a folder at a time, the least recently used folder (by its newest tile) first, and
-//!   in it the oldest first, so a folder's tiles go together; canopy squares each by their own use.
+//! keeps lose files until it has that and a margin (`margin`: a sixth more, none for the OSM pass),
+//! so the next jobs start without deleting again: Meta's canopy squares (`chm10/`, ~2 GB a 10°
+//! square; scenic-metrics marks a square used when it reads it) and AWS's raw terrain tiles
+//! (`aws-terrarium/`, read once per terrain run). They fill again from the NAS (`sources/canopy/`,
+//! `sources/aws-terrarium/`), never from the internet.
+//! - Canopy squares go first, each by its own use, the least recently used first; then raw tiles a
+//!   folder at a time, the least recently used folder (by its newest tile) first, and in it the
+//!   oldest first, so a folder's tiles go together. One listing of the NAS's canopy folder answers
+//!   for every square's files (hundreds of MB each), while each raw tile folder takes a listing of
+//!   its own for ~14 MB: seconds each when the NAS is busy, hours for tens of GB.
 //! - A file goes once the NAS's folder, listed once (sixteen at a time: a listing mostly waits on
 //!   the NAS; a folder that can't be listed now, or whose listing is cut short, keeps its files
 //!   here this run), has it at the same size (asked about once more when the listing lacks it). One the NAS lacks, or has at another size (downloaded before it kept them, or a copy cut
@@ -146,8 +149,8 @@ fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_spa
     }
     // (Empty files are markers, "none there", that free nothing.)
     files.retain(|f| f.1 > 0);
-    // Raw tiles by folder, canopy squares each alone; the least recently used group (by its newest
-    // file) first, in each the oldest first.
+    // Raw tiles by folder, canopy squares each alone; the canopy squares first, then the tiles, each
+    // the least recently used group (by its newest file) first, in each the oldest first.
     let tiles = cache.join("aws-terrarium");
     let mut groups: BTreeMap<PathBuf, Vec<(SystemTime, u64, PathBuf)>> = BTreeMap::new();
     for f in files {
@@ -158,7 +161,7 @@ fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_spa
     for g in &mut groups {
         g.sort();
     }
-    groups.sort_by_key(|g| g.last().map(|f| f.0));
+    groups.sort_by_key(|g| (g.first().is_some_and(|f| f.2.starts_with(&tiles)), g.last().map(|f| f.0)));
     let mut room = Room { cache, free_space, target, short: target.saturating_sub(free), since: 0, freed: 0 };
     let (mut listed, mut made) = (Listed::new(), HashSet::new());
     for ahead in groups.chunks(LIST_AHEAD) {
@@ -273,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn the_least_recently_used_cheap_files_go_first() {
+    fn canopy_squares_go_first_then_tiles_the_least_recently_used_first() {
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
         let nas = &d.path().join("nas");
@@ -286,19 +289,24 @@ mod tests {
         // A disk with 850 free plus what's deleted.
         let all = used(c);
         let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
-        // Short of all but a byte of the two oldest cheap files: they go; the marker and the DEM
-        // seed stay.
-        let freed = make_room_with(c, nas, 850 + old + png - 1, 850 + old + png - 1, &disk(850)).unwrap();
-        assert_eq!(freed, old + png);
-        assert!(!c.join("chm10/old.tif").exists() && !c.join("aws-terrarium/12/1/2.png").exists());
-        assert!(c.join("chm10/new.tif").exists() && c.join("chm10/none.tif").exists());
+        // Short of all but a byte of the two canopy squares: they go, the least recently used
+        // first, before the tile, though it's older than one of them; the marker and the DEM seed
+        // stay.
+        let freed = make_room_with(c, nas, 850 + old + new - 1, 850 + old + new - 1, &disk(850)).unwrap();
+        assert_eq!(freed, old + new);
+        assert!(!c.join("chm10/old.tif").exists() && !c.join("chm10/new.tif").exists());
+        assert!(c.join("aws-terrarium/12/1/2.png").exists() && c.join("chm10/none.tif").exists());
         // What went is on the NAS (copied there first: it wasn't).
-        assert!(nas.join("canopy/old.tif").exists() && nas.join("aws-terrarium/12/1/2.png").exists());
+        assert!(nas.join("canopy/old.tif").exists() && nas.join("canopy/new.tif").exists());
+        // Then the tile.
+        assert_eq!(make_room_with(c, nas, 850 + old + new + png, 850 + old + new + png, &disk(850)).unwrap(), png);
+        assert!(!c.join("aws-terrarium/12/1/2.png").exists() && nas.join("aws-terrarium/12/1/2.png").exists());
         // Room enough: nothing goes.
+        whole(&c.join("chm10/again.tif"), 5);
         assert_eq!(make_room_with(c, nas, 1000, 1000, &|_| Ok(1 << 20)).unwrap(), 0);
         // Far short: every cheap file; never the DEM seed.
         make_room_with(c, nas, 1 << 40, 1 << 40, &disk(0)).unwrap();
-        assert!(!c.join("chm10/new.tif").exists() && c.join("dem-cache.keys.u64").exists());
+        assert!(!c.join("chm10/again.tif").exists() && c.join("dem-cache.keys.u64").exists());
         assert!(disk_free(c).unwrap() > 0);
     }
 
@@ -339,8 +347,8 @@ mod tests {
         assert_eq!(make_room_with(c, nas, a + b, a + b, &disk).unwrap(), a + b);
         assert!(c.join("aws-terrarium/12/1/1.png").exists() && c.join("aws-terrarium/12/1/2.png").exists());
         assert!(nas.join("aws-terrarium/12/2/1.png").exists() && nas.join("aws-terrarium/12/2/2.png").exists());
-        // A canopy square goes by its own use, not its folder's: one read long ago goes before the
-        // tiles of column 1, read since.
+        // Canopy squares go before the tiles, each by its own use, not its folder's: the one read
+        // long ago goes, the one read since stays, and so do the tiles of column 1.
         let square = whole(&c.join("chm10/old.tif"), 4500);
         whole(&c.join("chm10/new.tif"), 50);
         let all = used(c);

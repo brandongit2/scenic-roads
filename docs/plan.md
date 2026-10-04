@@ -260,8 +260,8 @@ records off for the build Mac's agent to merge (§8, Two Macs). The exceptions:
     yet: the national DEMs (USGS, HRDEM, MRDEM, GSI, the MOI DTM) at points not sampled before
     (each point's height is kept once sampled), ESA WorldCover for grid tiles the packs lack.
 - **Caches** (`~/Library/Application Support/scenic/agent/cache`):
-  - AWS's raw terrain tiles and canopy 10° files, filled from the NAS: emptied least recently used
-    first when a job starts with too little free (§8);
+  - AWS's raw terrain tiles and canopy 10° files, filled from the NAS: emptied when a job starts
+    with too little free, the canopy files first, each kind least recently used first (§8);
   - the per-vertex DEM cache: today's, copied once from `sources/dem-cache/` (the seed), and each
     unit's samples from its last run (on the NAS, `cache/dem-units/`, which both Macs' units read,
     named by their box so a unit finds those near it from one listing, with the DEM rules' versions
@@ -905,10 +905,12 @@ are no request files.
 - **Room on the disk:** before a job starts (and before its targets are claimed), when the Mac has
   less free than the job needs (60 GB; the OSM pass, its own 80 GB less the pack cache it clears;
   the M1's helper, 15 GB), the local copies of what the NAS keeps (Meta's canopy squares, AWS's raw
-  terrain tiles) lose their least recently used files until it has a sixth more (the OSM pass: what
-  it needs), so the next jobs start without deleting again.
-  - Raw tiles go a folder at a time, the least recently used folder (by its newest tile) first, so
-    a folder's tiles go together; canopy squares each by their own use.
+  terrain tiles) lose files until it has a sixth more (the OSM pass: what it needs), so the next
+  jobs start without deleting again.
+  - Canopy squares go first, each by its own use, the least recently used first; then raw tiles a
+    folder at a time, the least recently used folder (by its newest tile) first, so a folder's
+    tiles go together. One listing of the NAS's canopy folder answers for every square (hundreds of
+    MB a file); each raw tile folder takes its own for ~14 MB, seconds each when the NAS is busy.
   - A file goes once the NAS has it at the same size (each NAS folder listed once, sixteen at a
     time; a file the listing lacks asked about once more; a folder whose listing fails or is cut
     short, as a busy NAS's are, keeps its files that run). One the NAS lacks, or has at another
