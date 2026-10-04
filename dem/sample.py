@@ -52,6 +52,8 @@ os.environ.update(
     GDAL_HTTP_TIMEOUT="90",
     VSI_CACHE="FALSE",
     GDAL_CACHEMAX="256",
+    # (Every request names the map, as the steps' own do: UA below.)
+    GDAL_HTTP_USERAGENT="road-elevations/0.1 (personal offline map)",
 )
 
 import numpy as np  # noqa: E402
