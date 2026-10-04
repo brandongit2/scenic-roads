@@ -385,10 +385,28 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     PEAK.fetch_max(ru.ru_maxrss as u64, std::sync::atomic::Ordering::Relaxed);
     let st = std::process::ExitStatus::from_raw(status);
     if !st.success() {
+        // The end of its log into the job's: the unit's folder, its log with it, goes when the next
+        // job starts.
+        eprintln!("{what}, the end of its log:\n{}", log_tail(log, 40));
         bail!("{what} failed ({st}); see {}", log.display());
     }
     eprintln!("  {what}: {:.0?}", t.elapsed());
     Ok(())
+}
+
+/// The last `n` lines of a log (at most its last 64 KB).
+fn log_tail(log: &Path, n: usize) -> String {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut b = Vec::new();
+    if let Ok(mut f) = std::fs::File::open(log) {
+        let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+        if f.seek(SeekFrom::Start(len.saturating_sub(64 << 10))).is_ok() {
+            f.read_to_end(&mut b).ok();
+        }
+    }
+    let s = String::from_utf8_lossy(&b);
+    let lines: Vec<&str> = s.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
 #[derive(Debug, Default, serde::Serialize)]
@@ -506,6 +524,20 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_logs_last_lines() {
+        let d = tempfile::tempdir().unwrap();
+        let log = d.path().join("steps.log");
+        std::fs::write(&log, (1..=100).map(|i| format!("line {i}\n")).collect::<String>()).unwrap();
+        assert_eq!(log_tail(&log, 3), "line 98\nline 99\nline 100");
+        assert_eq!(log_tail(&d.path().join("none.log"), 3), "");
+        // A failing step: its log's end is kept, and the error names it.
+        let mut c = Command::new("sh");
+        c.args(["-c", "echo why it failed; exit 3"]);
+        let e = run(c, "a step", &log).unwrap_err().to_string();
+        assert!(e.contains("a step failed") && log_tail(&log, 1) == "why it failed");
+    }
 
     #[test]
     fn kept_dem_samples_named_by_their_box() {
