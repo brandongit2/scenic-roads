@@ -163,7 +163,8 @@ struct Memory {
     last_ok: BTreeMap<String, u64>,
     recent: Vec<Done>,
     /// A helper's jobs done lately (when, in seconds since the epoch; their step and targets with
-    /// keys): planned as done until the keys show them (Agent::planning_keys), across a restart.
+    /// keys): planned as done until the keys are written after them (Agent::planning_keys), across
+    /// a restart. A day's are kept.
     #[serde(default)]
     handed: Vec<(u64, String, Vec<(String, String)>)>,
 }
@@ -289,11 +290,13 @@ impl Agent {
     }
 
     /// The keys to plan with: on the NAS, with the hand-offs' done records on top, and a helper's own
-    /// jobs done lately too (`Memory::handed`: until the keys show them, for a day at most).
+    /// jobs done since the keys were last written, as this Mac sees them (`Memory::handed`): those
+    /// records were merged after this Mac's view of `jobs.json`, or not yet. Keys written after one
+    /// are the truth (they may hold a newer build's key), so it no longer counts.
     fn planning_keys(&self, root: &Path) -> Result<build::Keys> {
         let mut keys = build::Keys::load_with_handoffs(root)?;
-        let lately: Vec<&(u64, String, Vec<(String, String)>)> = self.mem.handed.iter().filter(|(t, step, targets)| now_s().saturating_sub(*t) < 86_400 && !targets.iter().all(|(x, k)| keys.recorded(step, x) == Some(k.as_str()))).collect();
-        for (_, step, targets) in lately {
+        let written = std::fs::metadata(root.join("state/build/jobs.json")).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+        for (_, step, targets) in self.mem.handed.iter().filter(|(t, _, _)| *t >= written) {
             keys.record(step, targets);
         }
         Ok(keys)
@@ -1265,6 +1268,25 @@ fn batch_size(step: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_helpers_recent_jobs_count_until_the_keys_are_written_after_them() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("root"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let mut a = agent(&root, &home);
+        let mut keys = build::Keys::default();
+        keys.record("unit", &[("6/1/1".to_string(), "new".to_string())]);
+        keys.save(&root).unwrap();
+        let written = std::fs::metadata(root.join("state/build/jobs.json")).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        // Built before the keys were last written (an older build's key): the keys win.
+        a.mem.handed.push((written - 60, "unit".into(), vec![("6/1/1".into(), "old".into())]));
+        assert_eq!(a.planning_keys(&root).unwrap().recorded("unit", "6/1/1"), Some("new"));
+        // Built after (its record not merged yet, as this Mac sees the keys): it counts.
+        a.mem.handed.push((written + 60, "unit".into(), vec![("6/1/2".into(), "k".into())]));
+        assert_eq!(a.planning_keys(&root).unwrap().recorded("unit", "6/1/2"), Some("k"));
+        assert_eq!(a.planning_keys(&root).unwrap().recorded("unit", "6/1/1"), Some("new"));
+    }
 
     fn agent(root: &Path, home: &Path) -> Agent {
         Agent::new(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/nonexistent/bin"), dry_run: true, once: true, helper: false }).unwrap()
