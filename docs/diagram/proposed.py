@@ -192,9 +192,9 @@ def build(check=False):
     d.arrow('bldg', (n_bld.r, p_bld.my), (p_bld.l, p_bld.my))
     d.to_layer('bldg', p_bld, b_bld)
     s_can = d.src('land', max(s_off.b, n_bld.b) + 12, 'Canopy height · leaf type', ['Meta & WRI (1.2 m imagery)', 'Copernicus HRL · NALCMS'],
-                  kept=['the build Mac (10° files)'])
-    n_trees = d.card('land', 'd1', s_can.y + 30, 'trees · later for new areas', 'Python', ['cover · height · leaf type;', 'today’s, converted'],
-                     [(['layers/trees-*/'], 'packs · Terrarium WebP')], scope='global', later=True)
+                  kept=['the build Mac (10° files)', 'sources/trees/leaf/'])
+    n_trees = d.card('land', 'd1', s_can.y + 30, 'trees', 'Python', ['cover · height · leaf type,', 'z4–12 clipped to the coverage,', 'after the areas'],
+                     [(['layers/trees-*/'], 'packs · Terrarium WebP')], scope='pack')
     p_trees = d.pill('land', n_trees.my, ['/tiles/trees/{var}'], note='the pack for the tile')
     b_trees = d.layer('land', 0, 'Tree cover · height · leaf', ['colour-relief on the GPU'], cy=p_trees.my)
     d.arrow('land', (s_wc.r, n_lc.y + 18), (n_lc.l, n_lc.y + 18))
@@ -247,8 +247,8 @@ def build(check=False):
             'with worldwide sets, outlines and every way’s whole road. Your regions are only outlines: their union says which '
             'tiles and features get built. Terrain and slope are built per z3 pack near the coverage, heritage sites over the '
             'coverage, each area’s roads, elevations and scenic values per area, reading its neighbours within 110 km; the '
-            'basemap, labels, landmarks, rail stops and ferries worldwide. Not built yet: the names to-do list, trees for new '
-            'areas, trains a day, buildings. The servers read '
+            'basemap, labels, landmarks, rail stops and ferries worldwide; tree cover per z3 pack; the roadside buildings worldwide, '
+            'once per Overture release. Not built yet: the names to-do list, trains a day, 3D buildings. The servers read '
             'your translation files directly and attach English to everything they serve. The server reads the Mac’s copy of a '
             'file if it has it, else the NAS’s.')
     return d.svg(h, aria, heads)

@@ -138,7 +138,8 @@ fn main() -> Result<()> {
                 eprintln!("terrain-z8: already made ({})", pipeline::terrain_z8::logical());
             } else {
                 let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
-                let (n, none) = pipeline::terrain_z8::build(&mut out, &pipeline::terrain_pack::RawTiles::new(&raw_dir))?;
+                let raw = raw_tiles(&out, &raw_dir);
+                let (n, none) = pipeline::terrain_z8::build(&mut out, &raw)?;
                 eprintln!("terrain-z8: {n} tiles ({none} of open sea)");
             }
         }
@@ -247,7 +248,8 @@ fn main() -> Result<()> {
         }
         "terrain-root" => {
             let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
-            let n = pipeline::terrain_pack::build_root(&mut out, &pipeline::terrain_pack::RawTiles::new(&raw_dir))?;
+            let raw = raw_tiles(&out, &raw_dir);
+            let n = pipeline::terrain_pack::build_root(&mut out, &raw)?;
             eprintln!("terrain root: {n} tiles");
         }
         "slope-root" => {
@@ -821,6 +823,12 @@ fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
         .collect()
 }
 
+/// AWS's raw terrain tiles: the local cache `dir`, filled from the NAS's store
+/// (`sources/aws-terrarium/`), where each tile goes when it's downloaded, once.
+fn raw_tiles(out: &Out, dir: &Path) -> pipeline::terrain_pack::RawTiles {
+    pipeline::terrain_pack::RawTiles::with_store(dir, &out.root().join("sources/aws-terrarium"))
+}
+
 /// UTC now as RFC 3339 (no chrono dependency).
 fn chrono_now() -> String {
     let s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
@@ -963,7 +971,7 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::peaks::unit;
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
-    let raw = pipeline::terrain_pack::RawTiles::new(&PathBuf::from(opt(args, "--raw").unwrap_or_else(|| cache.join("aws-terrarium").to_string_lossy().into_owned())));
+    let raw = raw_tiles(out, &PathBuf::from(opt(args, "--raw").unwrap_or_else(|| cache.join("aws-terrarium").to_string_lossy().into_owned())));
     let coarse_threads: usize = opt(args, "--coarse-threads").map(|s| s.parse()).transpose()?.unwrap_or(4);
     let summits = pipeline::summits::read(&local_copy(out, &format!("work/summits/{date}"), &cache)?)?;
     let base8 = unit::Z8Base::new(&summits);
@@ -1486,6 +1494,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         cache: PathBuf::from(opt(args, "--cache-dir").unwrap_or_else(|| "data/cache".into())),
         buildings: opt(args, "--buildings").map(PathBuf::from),
         moi_dtm: Some(out.root().join("inputs/moi-dtm")),
+        sources: Some(out.root().join("sources")),
         spacing_m: 8,
     };
     // Today's DEM cache, where the units' elevations start from (once per build Mac).
@@ -1753,9 +1762,9 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
     let by_q = terrain_targets(&cov, args)?;
     eprintln!("terrain: {} z6 tiles in {} z3 packs", by_q.values().map(Vec::len).sum::<usize>(), by_q.len());
-    // AWS's raw tiles, kept on this Mac (the build cache).
+    // AWS's raw tiles: this Mac's cache, filled from the NAS's store.
     let raw_dir = PathBuf::from(opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
-    let raw = pipeline::terrain_pack::RawTiles::new(&raw_dir);
+    let raw = raw_tiles(out, &raw_dir);
     let n = by_q.len() as u64;
     for (k, (q, list)) in by_q.into_iter().enumerate() {
         pipeline::agent::jobs::report(k as u64, n, "parts");

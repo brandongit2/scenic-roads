@@ -208,6 +208,37 @@ def sample_raster(url, level, idx, px, py, elev, src, code, pool, desc, block=51
     return good
 
 
+def fabdem_stored(store: Path, zname: str, tname: str) -> str | None:
+    """FABDEM tile `tname` from the NAS's store ($SCENIC_FABDEM_STORE), copied there from Bristol's
+    10° zip the first time (a compressed GeoTIFF), so each tile is downloaded once; None for a tile
+    the zip doesn't have (open sea), remembered as `<tile>.none`."""
+    import os
+    import socket
+
+    f = store / f"{tname}_FABDEM_V1-2.tif"
+    if f.exists():
+        return str(f)
+    if (store / f"{tname}.none").exists():
+        return None
+    store.mkdir(parents=True, exist_ok=True)
+    url = FABDEM.format(z=zname, t=tname)
+    tmp = store / f"{tname}.{socket.gethostname()}.{os.getpid()}.tmp.tif"
+    try:
+        with rasterio.open(url) as src:
+            profile = src.profile | {"driver": "GTiff", "compress": "deflate", "predictor": 3, "tiled": True, "blockxsize": 512, "blockysize": 512}
+            data = src.read()
+        with rasterio.open(tmp, "w", **profile) as dst:
+            dst.write(data)
+    except rasterio.errors.RasterioIOError:
+        tmp.unlink(missing_ok=True)
+        if not absent(url):
+            raise
+        (store / f"{tname}.none").write_bytes(b"")
+        return None
+    tmp.rename(f)
+    return str(f)
+
+
 def fabdem_name(lat0: int, lon0: int) -> str:
     """FABDEM tile / zip corner name, e.g. N43E007 (latitude and longitude of the SW corner)."""
     return f"{'N' if lat0 >= 0 else 'S'}{abs(lat0):02d}{'E' if lon0 >= 0 else 'W'}{abs(lon0):03d}"
@@ -508,16 +539,22 @@ def main():
     elsewhere = elsewhere[np.isnan(loc_elev[elsewhere])]
     groups = fabdem_groups(lon, lat, np.concatenate([elsewhere, uncovered]))
     print(f"FABDEM: {elsewhere.size:,} vertices, {len(groups)} 1° tiles")
+    store = os.environ.get("SCENIC_FABDEM_STORE")
     for (tname, zname), sel in tqdm(sorted(groups.items(), key=lambda kv: -kv[1].size), desc="FABDEM tiles", unit="tile"):
         name = f"fabdem:{tname}"
         if name in done:
             continue
-        try:
-            got = sample_raster(FABDEM.format(z=zname, t=tname), None, sel, lon[sel], lat[sel], loc_elev, loc_src, SRC_FABDEM, pool, f"  {tname} ({sel.size:,} pts)")
-        except rasterio.errors.RasterioIOError:
-            if not absent(FABDEM.format(z=zname, t=tname)):
-                raise
+        # From the NAS's store, where each tile is downloaded once (else read in place at Bristol).
+        path = fabdem_stored(Path(store), zname, tname) if store else FABDEM.format(z=zname, t=tname)
+        if path is None:
             got = 0  # no tile: open sea
+        else:
+            try:
+                got = sample_raster(path, None, sel, lon[sel], lat[sel], loc_elev, loc_src, SRC_FABDEM, pool, f"  {tname} ({sel.size:,} pts)")
+            except rasterio.errors.RasterioIOError:
+                if store or not absent(path):
+                    raise
+                got = 0  # no tile: open sea
         tqdm.write(f"  FABDEM {tname}: {got:,}/{sel.size:,}")
         scatter()
         mark(name)

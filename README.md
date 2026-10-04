@@ -299,7 +299,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
      - Each channel is 255 × √(slope ÷ 400 %), so the gentle slopes most ground has get finer steps.
      - The rounding is carried from one channel to the next, so their mean keeps an eighth of a step.
      - The server makes z12 on demand.
-   - **Tree cover** (after the areas): cover, canopy height and leaf type, zoom 4–12, clipped to the coverage (`dem/trees.py`, `pipeline::treepacks`), from Meta's canopy squares and the leaf-type squares (`dem/leaftype.py`, made where missing).
+   - **Tree cover** (before the areas): cover, canopy height and leaf type, zoom 4–12, clipped to the coverage (`dem/trees.py`, `pipeline::treepacks`), from Meta's canopy squares and the leaf-type squares (`dem/leaftype.py`, made whole where missing).
 3. **Heritage sites and designated areas** over the coverage: `dem/heritage.py`, on the registers' snapshot.
 4. **Roadside buildings** for the whole world, once per Overture release (2026-09-23.1): every building's box, from the release's bbox columns, in z8 tiles (`pipeline::buildtiles`, `dem/buildings.py --world`).
 5. **Each z6 area** runs these steps on its piece:
@@ -339,9 +339,9 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
   - the credits: `crates/pipeline/src/rules.rs` (`CREDITS`, each source with its areas).
 
 **Machines:**
-- **The NAS** holds the map's data.
+- **The NAS** holds the map's data, and every download the build makes, each made once (`sources/`: Meta's canopy squares, AWS's raw terrain tiles, FABDEM's tiles, the leaf-type sources, Overture's buildings). What's fetched again is new data: a planet, Wikidata facts and pageviews, timetables, an Overture release.
 - **Each Mac's server** copies what the catalog lists, within a reserve of free space: 50 GB, or 150 GB on the build Mac.
-- **The build Mac** (48 GB) keeps caches of AWS's raw terrain tiles, the canopy files and the elevations, and needs 80 GB free to start an OSM pass.
+- **The build Mac** (48 GB) keeps local copies of the NAS's terrain tiles and canopy squares, and the elevations, and needs 80 GB free to start an OSM pass.
 - **Publishing the app** (`tools/app/publish.sh`) needs Rust and Node.
 - **The agent** needs [uv](https://docs.astral.sh/uv/), `osmium-tool` and Java 21+ (Homebrew's openjdk@21), and Planetiler's jar on the NAS.
 

@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 pub const URL: &str = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium";
+/// Raw tiles downloaded at once (each mostly waits on S3).
+const FETCH_THREADS: usize = 64;
 
 /// An HTTP agent for AWS's tiles.
 pub fn agent() -> ureq::Agent {
@@ -205,17 +207,25 @@ impl store::range::RangeRead for FileSource<'_> {
     }
 }
 
-/// AWS's raw tiles, kept in a local cache (the build Mac's), so packs are always made from the
-/// same immutable source: processing a tile twice isn't idempotent, so stored (processed) tiles are
-/// never an input. A tile AWS doesn't have is remembered as `.none`.
+/// AWS's raw tiles, kept on the NAS (`sources/aws-terrarium/<z>/<x>/<y>.png`, `.none` for a tile
+/// AWS doesn't have), so each is downloaded once, and in a local cache the NAS fills (the build
+/// Mac's, which may lose them for room), so packs are always made from the same immutable source:
+/// processing a tile twice isn't idempotent, so stored (processed) tiles are never an input.
 pub struct RawTiles {
     dir: std::path::PathBuf,
+    store: Option<std::path::PathBuf>,
     agent: ureq::Agent,
 }
 
 impl RawTiles {
+    /// A local cache alone (no NAS store).
     pub fn new(dir: &std::path::Path) -> Self {
-        RawTiles { dir: dir.to_path_buf(), agent: agent() }
+        RawTiles { dir: dir.to_path_buf(), store: None, agent: agent() }
+    }
+
+    /// The local cache `dir`, filled from the NAS's `store`, which every download goes to first.
+    pub fn with_store(dir: &std::path::Path, store: &std::path::Path) -> Self {
+        RawTiles { dir: dir.to_path_buf(), store: Some(store.to_path_buf()), agent: agent() }
     }
 
     /// The raw tile, and whether it came from AWS just now.
@@ -230,7 +240,47 @@ impl RawTiles {
             return Ok((None, false));
         }
         std::fs::create_dir_all(&d)?;
+        // On the NAS: copied here.
+        if let Some(st) = &self.store {
+            let sd = st.join(format!("{z}/{x}"));
+            if let Ok(b) = std::fs::read(sd.join(format!("{y}.png"))) {
+                put(&d, &format!("{y}.png"), &b)?;
+                return Ok((Some(b), false));
+            }
+            if sd.join(format!("{y}.none")).exists() {
+                std::fs::write(&none, b"")?;
+                return Ok((None, false));
+            }
+        }
         self.fetch(z, x, y).map(|b| (b, true))
+    }
+
+    /// Fetches the tiles of `tiles` (zoom `z`) not here yet, `threads` at a time: a download mostly
+    /// waits on AWS, so far more of them than cores. The number that came from AWS.
+    pub fn prefetch(&self, z: u8, tiles: &[(u32, u32)], threads: usize) -> anyhow::Result<usize> {
+        use rayon::prelude::*;
+        let todo: Vec<(u32, u32)> = tiles
+            .iter()
+            .copied()
+            .filter(|&(x, y)| {
+                let d = self.dir.join(format!("{z}/{x}"));
+                !d.join(format!("{y}.png")).exists() && !d.join(format!("{y}.none")).exists()
+            })
+            .collect();
+        if todo.is_empty() {
+            return Ok(0);
+        }
+        let fetched = std::sync::atomic::AtomicUsize::new(0);
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
+        pool.install(|| {
+            todo.par_iter().try_for_each(|&(x, y)| -> anyhow::Result<()> {
+                if self.get(z, x, y)?.1 {
+                    fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                Ok(())
+            })
+        })?;
+        Ok(fetched.into_inner())
     }
 
     /// The raw tile fetched again (a cached one that doesn't decode), replacing the cached one.
@@ -241,21 +291,38 @@ impl RawTiles {
         self.fetch(z, x, y)
     }
 
+    /// From AWS, into the NAS's store first, then here.
     fn fetch(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
         let d = self.dir.join(format!("{z}/{x}"));
+        let sd = self.store.as_ref().map(|st| st.join(format!("{z}/{x}")));
+        if let Some(sd) = &sd {
+            std::fs::create_dir_all(sd)?;
+        }
         match fetch_checked(&self.agent, z, x, y)? {
             Some(b) => {
-                let tmp = d.join(format!("{y}.png.{}.tmp", std::process::id()));
-                std::fs::write(&tmp, &b)?;
-                std::fs::rename(&tmp, d.join(format!("{y}.png")))?;
+                if let Some(sd) = &sd {
+                    put(sd, &format!("{y}.png"), &b)?;
+                }
+                put(&d, &format!("{y}.png"), &b)?;
                 Ok(Some(b))
             }
             None => {
+                if let Some(sd) = &sd {
+                    std::fs::write(sd.join(format!("{y}.none")), b"")?;
+                }
                 std::fs::write(d.join(format!("{y}.none")), b"")?;
                 Ok(None)
             }
         }
     }
+}
+
+/// Writes `b` as `dir/name` by a temporary name.
+fn put(dir: &std::path::Path, name: &str, b: &[u8]) -> anyhow::Result<()> {
+    let tmp = dir.join(format!("{name}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, b)?;
+    std::fs::rename(&tmp, dir.join(name))?;
+    Ok(())
 }
 
 /// One of AWS's tiles: None when AWS says it has none (404, 403); an error when it can't be
@@ -306,6 +373,7 @@ pub fn build_q(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], 
     };
     // One level: every tile fetched or reused, then processed with what the level below made.
     let level = |z: u8, tiles: Vec<(u32, u32)>, below: &HashMap<(u32, u32), Repaired>, quads: &HashMap<(u32, u32), Vec<f32>>| -> anyhow::Result<(Vec<(u32, u32, Vec<u8>)>, HashMap<(u32, u32), Repaired>, HashMap<(u32, u32), Vec<f32>>)> {
+        fetched.fetch_add(raw.prefetch(z, &tiles, FETCH_THREADS)?, std::sync::atomic::Ordering::Relaxed);
         let done: Vec<anyhow::Result<Option<(u32, u32, Vec<u8>, Option<Repaired>, Option<Vec<f32>>)>>> = tiles
             .par_iter()
             .map(|&(x, y)| {

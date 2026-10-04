@@ -100,7 +100,7 @@ the NAS does itself. The jobs (§8 has their order and keys):
    - summits;
    - place labels;
    - once ever, the worldwide z8 terrain for peaks.
-3. **Global-source layers, per z3 pack near the coverage:** terrain, then slope.
+3. **Global-source layers, per z3 pack near the coverage:** terrain, then slope, then tree cover.
 4. **Heritage sites and designated areas:** one job over the coverage plus 20 km.
 5. **Per unit**, for every unit meeting the coverage: base(U), the ways U owns (a way belongs to the
    unit of its first node) that touch the coverage, with per-vertex elevations, grade and scenic
@@ -136,9 +136,10 @@ inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), ferries/freq/ (
 sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass), basemap/
                (Planetiler's jar and data), registers/ (the registers snapshot), items/<date>/,
                dem-cache/ (today's per-vertex DEM cache, the units' seed), buildings/<release>/
-               (Overture's building boxes for the world, in z8 tiles, and their index),
-               trees/leaf/ (the leaf-type squares), terrain-z8-v1, legacy/ (today's map's build
-               inputs, until the cutover)
+               (Overture's building boxes for the world, in z8 tiles, and their index), trees/
+               (leaf/: the leaf-type squares; NALCMS's GeoTIFF), canopy/ (Meta's canopy squares),
+               aws-terrarium/ (AWS's raw terrain tiles), fabdem/ (FABDEM's 1° tiles),
+               terrain-z8-v1, legacy/ (today's map's build inputs, until the cutover)
 base/          base packs, one per unit
 hidata/        per z6 tile: the ways-here index, query parts, climbs, rail lines, zoomed-out summaries
 markdata/      per z6 tile: landmark points
@@ -231,9 +232,15 @@ steps merge their manifest changes under a lock. The exceptions:
   running, it unmounts a tunnel mount and mounts the share by its LAN name.
 - **Sleep:** each running job holds `caffeinate -i -s -w <pid>`: no idle sleep, on battery too, and no
   system sleep on mains power. It's dropped while the job is paused, so a paused Mac can sleep.
+- **Downloads are kept on the NAS, each made once** (`sources/`): Meta's canopy squares, AWS's raw
+  terrain tiles, FABDEM's 1° tiles, the leaf-type sources, Overture's buildings. A Mac's copy is a
+  cache filled from the NAS. What's fetched again is new data (a planet, Wikidata facts and
+  pageviews, timetables, an Overture release), or a window of the national DEMs (USGS, HRDEM,
+  GSI, the MOI DTM) at points not sampled before: those datasets are read in small windows, and
+  each point's height is kept once sampled.
 - **Caches** (`~/Library/Application Support/scenic/agent/cache`):
-  - AWS's raw terrain tiles and canopy 10° files: emptied least recently used first when a job
-    starts with too little free (§8);
+  - AWS's raw terrain tiles and canopy 10° files, filled from the NAS: emptied least recently used
+    first when a job starts with too little free (§8);
   - each unit's canopy and view results from its last run (`scenic-units/`, §6 base(U)), trimmed
     after those, oldest first;
   - the per-vertex DEM cache: today's, copied once from `sources/dem-cache/` (the seed), and each
@@ -341,12 +348,13 @@ the region. Each entry is one of these:
   - A job is keyed on the coverage inside the box it reads (`Coverage::fingerprint`: which edges
     cross the box, and whether a corner is inside), so changing an outline reruns only what its
     changed part reaches: the units (their tile + 20 km, and whether each long way touches the
-    coverage), the terrain packs, the landmark candidates and the heritage-sites job.
+    coverage), the terrain packs, the tree cover per z3 tile, the landmark candidates and the
+    heritage-sites job.
 - **Shrinking:** what only the removed part built leaves the manifest once the units are built (a
   prune): the outputs of units no longer built, their candidates and peaks, and map tiles no unit's
   ways reach any more; pack and lo also drop what a tile no longer has (a tile without ways, a
-  layer without tiles). The next catalog drops them, and GC frees their files. Global-source tiles
-  (terrain, slope, grids, trees) stay, which is harmless.
+  layer without tiles). The next catalog drops them, and GC frees their files. Terrain, slope and
+  grid tiles stay, which is harmless; a z3 tile the coverage has left loses its tree cover.
 
 **Today's set:** 34 recipes (`tools/cutover/regions`).
 - 31 are Geofabrik outlines, the legacy builds' own.
@@ -430,8 +438,9 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   - **z3–8:** the whole z3 tile. z8 and coarser are made again from their children where those
     exist, since AWS's coarse levels come from coarser sources.
   - **The root (z0–2):** from the lo packs.
-  - **Source:** always AWS's raw tiles, from a raw-tile cache on the build Mac, repaired by
-    `repair_terrain`. Processing a processed tile isn't idempotent, so stored tiles are never inputs.
+  - **Source:** always AWS's raw tiles, kept on the NAS (`sources/aws-terrarium/`, each downloaded
+    once, 64 at a time) and copied into the build Mac's cache, repaired by `repair_terrain`.
+    Processing a processed tile isn't idempotent, so stored tiles are never inputs.
   - **Below zero:** values are clamped to 0. Planned: a sea mask from the pass's water polygons, so
     that polders and depressions keep their depth.
   - Deterministic: reruns give identical packs.
@@ -444,10 +453,12 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     step.
   - It uploads them as its own z6 tile's `grid-*` hi packs.
 - **Trees** (cover, height, leaf type), zoom 4–12, per z3 tile the coverage meets, clipped to it
-  (`pipeline::treepacks`, `dem/trees.py --z3`): from Meta's canopy squares, fetched into the agent's
-  cache as the units fetch them, and the leaf-type squares on the NAS (`sources/trees/leaf/`). A z3
-  tile's run makes all its packs and drops those it no longer has; until its first run, today's
-  converted packs serve.
+  (`pipeline::treepacks`, `dem/trees.py --z3`), before the units: from Meta's canopy squares (kept
+  on the NAS, `sources/canopy/`, and copied into the agent's cache, where the units read them too)
+  and the leaf-type squares on the NAS (`sources/trees/leaf/`), each made whole once (the EEA's
+  every chunk, a chunk without EEA data costing one small request; NALCMS's GeoTIFF kept beside
+  them) and tagged complete. A z3 tile's run makes all its packs and drops those it no longer has;
+  until its first run, today's converted packs serve.
 - **Area overlays:** see `docs/phase5.md`. The `overlays` job runs after marks, because it needs the
   World Heritage dots' ids. Until its first run, today's converted packs serve.
 - **Buildings (phase 7):** Overture plus official data, giving z13–14 within the coverage.
@@ -486,20 +497,22 @@ The unit job runs today's steps on a unit-sized folder, wiped at each run:
 1. **extract:** on U's piece, U's ways that touch the coverage, by today's rules. Rail tracks without
    a route relation are kept by type.
 2. **Elevations:** `sample.py`, DEMs by location, on U's slice of the per-vertex DEM cache (the seed,
-   and the units' kept samples, which win). U's samples are kept afterwards for its later runs and
+   and the units' kept samples, which win); FABDEM's tiles from the NAS (`sources/fabdem/`, each
+   copied there from Bristol's zips once). U's samples are kept afterwards for its later runs and
    its neighbours'.
 3. **Heritage:** the sites and designated areas of the heritage-sites job's slices within U + 30 km.
    `areaflags.py` rasterises the areas onto U's grid.
 4. **Terrain and grids:** terrain z11 and the grids, staged from the packs (as the build manifest has
    them when the unit runs, which is what its key names). Missing grid tiles are made.
 5. **`tile elev`:** clean-up and grade, with junction context from the piece.
-6. **scenic:** `scenic-metrics` prep, canopy, view, buildings and flags, for every sample. The
-   buildings come from the release's z8 tiles within 1 km of U's tile + 20 km and of its own long
-   roads. U's canopy and view results are kept in the build Mac's cache after each run
-   (`scache::Carry`: the samples' keys and results, the canopy and cover grids, and a hash of each
-   grid tile's terrain and land cover); its next run starts from them, so only samples that are new,
-   or near grid tiles whose terrain or land cover changed since (within the far field's 15 km for
-   views), are done again. After a change of `scache::SCENIC_V` every sample is.
+6. **scenic:** `scenic-metrics` prep, canopy, view, buildings and flags, for every sample of the
+   ways U owns (the others are context, and their results would be thrown away). The buildings come
+   from the release's z8 tiles within 1 km of U's tile + 20 km and of its own long roads. U's canopy
+   and view results are kept in the build Mac's cache after each run (`scache::Carry`: the samples'
+   keys and results, the canopy and cover grids, and a hash of each grid tile's terrain and land
+   cover); its next run starts from them, so only samples that are new, or near grid tiles whose
+   terrain or land cover changed since (within the far field's 15 km for views), are done again.
+   After a change of `scache::SCENIC_V` every sample is.
 7. **Output:**
    - the base pack: per-vertex arrays and records, indexed by z9 sub-tile;
    - `global/roads/<u>`;
@@ -753,9 +766,11 @@ are no request files.
 - **A newly installed app:** the running job finishes under the old one, nothing new starts, and the
   agent exits so the launcher starts the new one.
 - **Room on the disk:** before a job starts, while the build Mac has less free than the job needs
-  (60 GB; the OSM pass, its own 80 GB less the pack cache it clears), the caches that are cheap to
-  fill again (Meta's canopy squares, AWS's raw terrain tiles) lose their least recently used files,
-  then the units' kept scenic results, oldest first. The OSM pass counts those caches as room.
+  (60 GB; the OSM pass, its own 80 GB less the pack cache it clears), the local copies of what the
+  NAS keeps (Meta's canopy squares, AWS's raw terrain tiles) lose their least recently used files,
+  then the units' kept scenic results, oldest first. A file the NAS lacks is copied there first, or
+  kept. The OSM pass counts those copies as room.
+- **Units run in map order** (by 10° square, then tile), so what one unit fetches serves the next.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours. The orphans of a crashed
   agent are stopped at start (only when their leader's start time proves them ours, or the leader is
   gone and every member started after the job).
@@ -776,13 +791,14 @@ are no request files.
    - labels.
 3. **The regions' build:**
    - terrain, then slope (nothing else in the regions' plan runs while terrain is stale);
+   - tree cover, for the z3 tiles whose coverage changed (listed before the rest, not waited for:
+     a failing trees job doesn't hold up the units);
    - heritage-sites;
    - every stale unit;
    - a prune of what the coverage no longer builds (§5, Shrinking).
-4. **Three chains**, each contributing its first stale step:
+4. **Two chains**, each contributing its first stale step:
    - **Roads:** a prune of map tiles no unit is near, road → units index, pack, lo, stations,
      ferries, terrain and slope roots. Stations and ferries drop the packs they no longer make.
-   - **Trees:** the tree cover layers of the z3 tiles whose coverage changed.
    - **Landmarks:** pois, peaks, items, heritage, marks, overlays.
 5. **A catalog** once the roads chain is done: a new one whenever the served files change, or the
    regions it records (their recipes and the outline files they name) do. While
@@ -904,10 +920,11 @@ At each phase's end an Opus agent reviews the work against this plan.
 3. **The OSM pass and global-source layers: mostly done.**
    - **Built:**
      - the pass (filter, sets, outlines, the worldwide basemap, the cut, road values);
-     - terrain and slope per z3 pack;
+     - terrain, slope and tree cover per z3 pack;
      - the worldwide z8 terrain;
+     - the world's roadside buildings, once per Overture release;
      - grids inside the units.
-   - The 2026-09-28 planet's pass is running: the cut is finishing, then road values.
+   - The 2026-09-28 planet's pass is complete, with its worldwide jobs.
    - **Not built:** the sea mask.
 4. **Per-unit pipeline and rankings: mostly done.**
    - **Built:**
@@ -930,8 +947,8 @@ At each phase's end an Opus agent reviews the work against this plan.
    - **Not built:** drawing, splitting and merging regions; "Keep this view".
 6. **Cutover: under way.**
    1. Today's 34 recipes are installed, with `inputs/hold-catalog`.
-   2. The agent builds them after the pass: terrain, slope, heritage sites, the units, both chains
-      (the heritage chain included).
+   2. The agent builds them after the pass: terrain, slope, tree cover, heritage sites, the units,
+      both chains (the heritage chain included).
    3. The held catalog is compared with today's map: counts and distributions (lengths, drives and
       climbs change under the new chaining), heritage points and overlays, screenshots and
       performance.

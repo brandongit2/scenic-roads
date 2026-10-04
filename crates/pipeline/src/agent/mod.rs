@@ -422,10 +422,13 @@ impl Agent {
                 // pass's own need, less the pack cache it clears).
                 let cache = self.o.home.join("cache");
                 let need = if id.starts_with("osm-pass") { PASS_SPACE.saturating_sub(dir_bytes(&cache.join("base"))).max(room::RESERVE) } else { room::RESERVE };
-                match room::make_room(&cache, need) {
-                    Ok(0) => {}
-                    Ok(n) => eprintln!("agent: {} GB of cached canopy squares, terrain tiles and kept scenic results deleted for {} GB free", n >> 30, need >> 30),
-                    Err(e) => eprintln!("agent: making room on the disk: {e:#}"),
+                // (Never without the NAS: what goes here must be kept there.)
+                if let Some(r) = &root {
+                    match room::make_room(&cache, &r.join("sources"), need) {
+                        Ok(0) => {}
+                        Ok(n) => eprintln!("agent: {} GB of cached canopy squares, terrain tiles and kept scenic results deleted for {} GB free", n >> 30, need >> 30),
+                        Err(e) => eprintln!("agent: making room on the disk: {e:#}"),
+                    }
                 }
                 if let Err(e) = self.start(spec, &c) {
                     // It couldn't even start (a missing program, a full disk): retried later.

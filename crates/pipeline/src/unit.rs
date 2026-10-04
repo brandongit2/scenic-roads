@@ -242,6 +242,10 @@ pub struct Tools {
     pub buildings: Option<PathBuf>,
     /// Taiwan's MOI DTM GeoTIFFs (the NAS's `inputs/moi-dtm/`), for sample.py.
     pub moi_dtm: Option<PathBuf>,
+    /// The NAS's `sources/`, where downloads are kept, each downloaded once: Meta's canopy squares
+    /// (`canopy/`) and FABDEM's tiles (`fabdem/`); the local caches fill from it. None: local
+    /// caches alone.
+    pub sources: Option<PathBuf>,
     /// Densification spacing (m).
     pub spacing_m: u32,
 }
@@ -311,6 +315,9 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
     if let Some(m) = &tools.moi_dtm {
         c.env("SCENIC_MOI_DTM", m);
     }
+    if let Some(s) = &tools.sources {
+        c.env("SCENIC_FABDEM_STORE", s.join("fabdem"));
+    }
     run(c, "elevations (sample.py)", &log)?;
     // Its samples, kept for its later runs and its neighbours' (new ones aren't sampled twice).
     dem_samples_keep(&tools.cache, u, &dir.join("dem-cache"))?;
@@ -334,6 +341,7 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
     let mut c = Command::new(tools.bin.join("tile"));
     c.arg(dir).arg("elev");
     run(c, "clean-up and grade (tile elev)", &log)?;
+    let own = format!("{},{},{},{}", tb[0], tb[1], tb[2], tb[3]);
     for step in ["prep", "canopy", "view"] {
         // The last run's results, as the canopy and view steps' previous run.
         if let (Some(c), "canopy") = (carry, step) {
@@ -348,16 +356,16 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
             }
         }
         let mut c = Command::new(tools.bin.join("scenic-metrics"));
-        c.arg(dir).arg(step).env("SCENIC_CACHE", &tools.cache).env("SCENIC_SCACHE", crate::scache::unit_dir(dir));
+        c.arg(dir).arg(step).env("SCENIC_OWN", &own).env("SCENIC_CACHE", &tools.cache).env("SCENIC_SCACHE", crate::scache::unit_dir(dir)).envs(tools.sources.as_ref().map(|s| ("SCENIC_CANOPY_STORE", s.join("canopy"))));
         run(c, &format!("scenic {step}"), &log)?;
     }
     if let Some(bd) = &tools.buildings {
         let mut c = Command::new(tools.bin.join("scenic-metrics"));
-        c.arg(dir).arg("buildings").arg(bd).env("SCENIC_CACHE", &tools.cache).env("SCENIC_SCACHE", crate::scache::unit_dir(dir));
+        c.arg(dir).arg("buildings").arg(bd).env("SCENIC_CACHE", &tools.cache).env("SCENIC_SCACHE", crate::scache::unit_dir(dir)).envs(tools.sources.as_ref().map(|s| ("SCENIC_CANOPY_STORE", s.join("canopy"))));
         run(c, "scenic buildings", &log)?;
     }
     let mut c = Command::new(tools.bin.join("scenic-metrics"));
-    c.arg(dir).arg("flags").env("SCENIC_CACHE", &tools.cache).env("SCENIC_SCACHE", crate::scache::unit_dir(dir));
+    c.arg(dir).arg("flags").env("SCENIC_CACHE", &tools.cache).env("SCENIC_SCACHE", crate::scache::unit_dir(dir)).envs(tools.sources.as_ref().map(|s| ("SCENIC_CANOPY_STORE", s.join("canopy"))));
     run(c, "scenic flags", &log)?;
     Ok(rep)
 }

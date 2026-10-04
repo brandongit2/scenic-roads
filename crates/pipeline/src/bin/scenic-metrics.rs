@@ -88,6 +88,12 @@ fn prep(dir: &Path) -> Result<()> {
     let wv = Ways::open(dir)?;
     let ways = wv.ways();
     let verts = wv.verts();
+    // A unit's folder (`SCENIC_OWN`: its tile, w,s,e,n E7): samples only for the ways it owns (its
+    // output); the rest are there for context, and their results would be thrown away.
+    let own: Option<[i32; 4]> = std::env::var("SCENIC_OWN").ok().and_then(|v| {
+        let b: Vec<i32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+        (b.len() == 4).then(|| [b[0], b[1], b[2], b[3]])
+    });
     let fin = roadcore::elev::Stored::open(dir)?;
     let fin = fin.get();
     let arc = Archive::open(&dir.join("terrain.tiles"))?;
@@ -116,7 +122,7 @@ fn prep(dir: &Path) -> Result<()> {
                     let h = if tunnel { e } else { t };
                     drape.push(h.round().clamp(-500.0, 9000.0) as i16);
                 }
-                if w.class == class::FERRY {
+                if w.class == class::FERRY || own.is_some_and(|tb| !pipeline::unit::owns(tb, v[0])) {
                     pb.inc(1);
                     continue;
                 }
@@ -181,9 +187,13 @@ const CHM10_URL: &str = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v1
 const C10: usize = 40_000;
 const C10_RES: f64 = 0.00025;
 
+/// A 10° square's rows `row0..row0 + rows` (those a unit's work there reaches: the files keep a
+/// row per strip, so the rest isn't decoded).
 struct Chm10 {
     left: f64,
     top: f64,
+    row0: usize,
+    rows: usize,
     median: Vec<u8>, // metres
     p95: Vec<u8>,    // metres
     cover: Vec<u8>,  // share > 5 m, ×255
@@ -194,11 +204,14 @@ impl Chm10 {
     fn idx(&self, lon: f64, lat: f64) -> Option<usize> {
         let c = ((lon - self.left) / C10_RES).floor();
         let r = ((self.top - lat) / C10_RES).floor();
-        (c >= 0.0 && r >= 0.0 && c < C10 as f64 && r < C10 as f64).then(|| r as usize * C10 + c as usize)
+        let (r0, r1) = (self.row0 as f64, (self.row0 + self.rows) as f64);
+        (c >= 0.0 && r >= r0 && c < C10 as f64 && r < r1).then(|| (r as usize - self.row0) * C10 + c as usize)
     }
 }
 
-fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path) -> Result<Option<Vec<u8>>> {
+/// A canopy file: the local cache's copy (`path`), else the NAS's (`store`, copied here), else
+/// downloaded once, into the NAS's store first. An empty file marks one Meta doesn't have.
+fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path, store: Option<&Path>) -> Result<Option<Vec<u8>>> {
     if let Ok(b) = std::fs::read(path) {
         // Used now: the build agent's room-making deletes the least recently used squares first.
         if let Ok(f) = std::fs::File::options().append(true).open(path) {
@@ -206,17 +219,38 @@ fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path) -> Result<Option<Vec<
         }
         return Ok((!b.is_empty()).then_some(b));
     }
+    let put = |p: &Path, b: &[u8]| -> Result<()> {
+        let tmp = p.with_extension(format!("{}.part", std::process::id()));
+        std::fs::write(&tmp, b)?;
+        std::fs::rename(&tmp, p)?;
+        Ok(())
+    };
+    if let Some(st) = store {
+        if let Ok(b) = std::fs::read(st) {
+            put(path, &b)?;
+            return Ok((!b.is_empty()).then_some(b));
+        }
+        if let Some(d) = st.parent() {
+            std::fs::create_dir_all(d)?;
+        }
+    }
     for attempt in 0..6 {
         match agent.get(url).call() {
             Ok(mut r) => {
-                if let Ok(b) = r.body_mut().with_config().limit(3_000_000_000).read_to_vec() {
-                    let tmp = path.with_extension("part");
-                    std::fs::write(&tmp, &b)?;
-                    std::fs::rename(&tmp, path)?;
+                let want: Option<usize> = r.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
+                // (A body cut short is tried again, never kept.)
+                if let Ok(b) = r.body_mut().with_config().limit(3_000_000_000).read_to_vec().map_err(|e| e.to_string()).and_then(|b| if want.is_none_or(|n| n == b.len()) { Ok(b) } else { Err("cut short".into()) }) {
+                    if let Some(st) = store {
+                        put(st, &b)?;
+                    }
+                    put(path, &b)?;
                     return Ok(Some(b));
                 }
             }
             Err(ureq::Error::StatusCode(404 | 403)) => {
+                if let Some(st) = store {
+                    std::fs::write(st, b"")?;
+                }
                 std::fs::write(path, b"")?;
                 return Ok(None);
             }
@@ -285,21 +319,37 @@ fn parse_tiff(b: &[u8]) -> Result<Strips> {
 }
 
 /// Decode a 40000² uint16 LZW TIFF, mapping each value through `f` to u8 (65535 = no data → 0).
-fn decode_u16(b: &[u8], f: impl Fn(u16) -> u8 + Sync) -> Result<Vec<u8>> {
+/// Rows `row0..row0 + rows` of a square's file, each value through `f` (no data: 0).
+fn decode_u16(b: &[u8], row0: usize, rows: usize, f: impl Fn(u16) -> u8 + Sync) -> Result<Vec<u8>> {
     let st = parse_tiff(b)?;
     if st.width != C10 || st.height != C10 || st.compression != 5 {
         bail!("unexpected TIFF {}×{} compression {}", st.width, st.height, st.compression);
     }
-    let mut out = vec![0u8; C10 * C10];
-    out.par_chunks_mut(C10 * st.rows_per_strip).zip(&st.strips).for_each(|(dst, &(off, len))| {
-        let mut dec = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
-        if let Ok(raw) = dec.decode(&b[off..off + len]) {
-            for (o, v) in dst.iter_mut().zip(raw.chunks_exact(2)) {
+    let rps = st.rows_per_strip;
+    let mut out = vec![0u8; C10 * rows];
+    // The strips holding the rows, each decoded into its rows that are wanted.
+    let (s0, s1) = (row0 / rps, (row0 + rows).div_ceil(rps).min(st.strips.len()));
+    let parts: Vec<(usize, Vec<u8>)> = (s0..s1)
+        .into_par_iter()
+        .filter_map(|si| {
+            let (off, len) = st.strips[si];
+            let mut dec = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
+            dec.decode(&b[off..off + len]).ok().map(|raw| (si, raw))
+        })
+        .collect();
+    for (si, raw) in parts {
+        for (k, row) in raw.chunks_exact(C10 * 2).enumerate() {
+            let r = si * rps + k;
+            if r < row0 || r >= row0 + rows {
+                continue;
+            }
+            let dst = &mut out[(r - row0) * C10..(r - row0 + 1) * C10];
+            for (o, v) in dst.iter_mut().zip(row.chunks_exact(2)) {
                 let x = u16::from_le_bytes([v[0], v[1]]);
                 *o = if x == 65535 { 0 } else { f(x) };
             }
         }
-    });
+    }
     Ok(out)
 }
 
@@ -315,7 +365,13 @@ fn canopy(dir: &Path) -> Result<()> {
         None => dir.parent().unwrap().join("cache/chm10"),
     };
     std::fs::create_dir_all(&cache)?;
-    let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(std::time::Duration::from_secs(1800))).build().into();
+    // The NAS's store of them (`sources/canopy/`), where each is downloaded once.
+    let store = std::env::var_os("SCENIC_CANOPY_STORE").map(PathBuf::from);
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(1800)))
+        .user_agent("road-elevations/0.1 (personal offline map)")
+        .build()
+        .into();
 
     // 10° tiles needed: (top latitude, left longitude).
     let mut need: BTreeSet<(i32, i32)> = BTreeSet::new();
@@ -407,19 +463,48 @@ fn canopy(dir: &Path) -> Result<()> {
         let name = |st: &str| format!("meta_chm_lat={top}.0_lon={left}.0_{st}.tif");
         let files: Vec<Option<Vec<u8>>> = ["median", "p95", "cover5m"]
             .par_iter()
-            .map(|st| fetch_file(&agent, &format!("{CHM10_URL}/{}", name(st)), &cache.join(name(st))))
+            .map(|st| fetch_file(&agent, &format!("{CHM10_URL}/{}", name(st)), &cache.join(name(st)), store.as_ref().map(|s| s.join(name(st))).as_deref()))
             .collect::<Result<_>>()?;
         let [Some(med), Some(p95), Some(cov)] = [&files[0], &files[1], &files[2]] else {
             pb.println(format!("canopy {top},{left}: no data"));
             pb.inc(1);
             continue;
         };
+        // The rows the work here reaches: its samples to do, with the near field's margin, and its
+        // grid tiles to do.
+        let (mut lat_lo, mut lat_hi) = (f64::MAX, f64::MIN);
+        for (s, &t) in samples.iter().zip(&todo_s) {
+            let (lon, lat) = (s.lon as f64 * E7, s.lat as f64 * E7);
+            if t && touches(top, left, lon, lat) {
+                (lat_lo, lat_hi) = (lat_lo.min(lat - margin), lat_hi.max(lat + margin));
+            }
+        }
+        for (g, &t) in grid.tiles.iter().zip(&todo_t) {
+            if !t {
+                continue;
+            }
+            let lat_of = |y: f64| (std::f64::consts::PI * (1.0 - 2.0 * y * 256.0 / roadcore::grid::WORLD)).sinh().atan().to_degrees();
+            let lon_of = |x: f64| x * 256.0 / roadcore::grid::WORLD * 360.0 - 180.0;
+            let (w, e, n, so) = (lon_of(g[0] as f64), lon_of(g[0] as f64 + 1.0), lat_of(g[1] as f64), lat_of(g[1] as f64 + 1.0));
+            if e >= left as f64 && w <= left as f64 + 10.0 && so <= top as f64 && n >= top as f64 - 10.0 {
+                (lat_lo, lat_hi) = (lat_lo.min(so), lat_hi.max(n));
+            }
+        }
+        let row0 = ((top as f64 - lat_hi) / C10_RES).floor().clamp(0.0, C10 as f64) as usize;
+        let row1 = (((top as f64 - lat_lo) / C10_RES).ceil() + 1.0).clamp(0.0, C10 as f64) as usize;
+        if row1 <= row0 {
+            pb.inc(1);
+            continue;
+        }
+        let rows = row1 - row0;
         let t = Chm10 {
             left: left as f64,
             top: top as f64,
-            median: decode_u16(med, |v| ((v as u32 + 50) / 100).min(254) as u8)?,
-            p95: decode_u16(p95, |v| ((v as u32 + 50) / 100).min(254) as u8)?,
-            cover: decode_u16(cov, |v| ((v as u32).min(1000) * 255 / 1000) as u8)?,
+            row0,
+            rows,
+            median: decode_u16(med, row0, rows, |v| ((v as u32 + 50) / 100).min(254) as u8)?,
+            p95: decode_u16(p95, row0, rows, |v| ((v as u32 + 50) / 100).min(254) as u8)?,
+            cover: decode_u16(cov, row0, rows, |v| ((v as u32).min(1000) * 255 / 1000) as u8)?,
         };
         drop(files);
 
@@ -539,3 +624,4 @@ fn near_field(s: &Sample, si: usize, owned: bool, t: &Chm10, grid: &GridIndex, t
         }
     }
 }
+

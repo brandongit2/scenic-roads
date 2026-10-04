@@ -293,10 +293,12 @@ agent/cache/            dem-cache.* (the seed), dem-units/<u>.dem (a unit's samp
                         canopy.tiles, view.keys, view.tiles, near.i8, roadside.u8,
                         samples.metrics.u8, grid.canopy.u8.zst, grid.cover.u8.zst, and basis.json:
                         {v (scache::SCENIC_V), basis: [[[x, y], hash16 of the z11 tile's terrain and
-                        land cover], …]}), chm10/ (canopy 10° files), aws-terrarium/, base/. When a
-                        job starts with too little free, chm10/ and aws-terrarium/ lose their least
-                        recently used files (empty markers kept), then scenic-units/ whole units,
-                        oldest first, until the shortfall is made up.
+                        land cover], …]}), chm10/ (canopy 10° files) and aws-terrarium/ (copies of
+                        the NAS's sources/canopy/ and sources/aws-terrarium/), base/. When a job
+                        starts with too little free, chm10/ and aws-terrarium/ lose their least
+                        recently used files (empty markers kept; a file the NAS lacks copied there
+                        first, or kept), then scenic-units/ whole units, oldest first, until the
+                        shortfall is made up.
 ```
 
 `~/Library/Preferences/nsmb.conf` gets `[FISHANDCHIPS:PERSONAL]` and
@@ -374,7 +376,15 @@ class, id) within a tile. The client sends the id with the clicked point.
   without any) and
   `sources/buildings/<release>/index` (JSON `{fmt, release, zoom, tiles: {"8/x/y": count}}`, written
   last); `sources/trees/leaf/lat<top>_lon<left>.tif` (a 10° square's dominant leaf type at 0.0005°:
-  u8 GeoTIFF, 0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data; `dem/leaftype.py`);
+  u8 GeoTIFF, 0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data; `dem/leaftype.py`; tag
+  `complete=1` when made whole, as the trees job makes them; one made over some regions only, or
+  without the tag from the EEA, is made again) and `sources/trees/nalcms-2020.tif` (NALCMS's 30 m
+  GeoTIFF, 3.4 GB, kept once fetched); the downloads kept so each is made once, as the source has
+  them: `sources/canopy/meta_chm_lat=<top>.0_lon=<left>.0_{median,p95,cover5m}.tif` (Meta's canopy
+  squares; an empty file for one Meta doesn't have), `sources/aws-terrarium/<z>/<x>/<y>.png` (AWS's
+  raw terrain tiles; `<y>.none` for one AWS doesn't have), `sources/fabdem/<tile>_FABDEM_V1-2.tif`
+  (FABDEM's 1° tiles out of Bristol's zips, deflate GeoTIFF; `<tile>.none` for one a zip doesn't
+  have);
   `sources/dem-cache/dem-cache.{keys.u64,elev.f32,src.u8}` (today's per-vertex DEM cache, the seed
   the build Mac copies once: sorted keys `(lon + 2³¹) << 32 | (lat + 2³¹)` (E7), elevations,
   sources).

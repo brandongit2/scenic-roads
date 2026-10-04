@@ -26,12 +26,13 @@ squares.json): its blocks would come out empty (a build on a machine holding onl
 cache). --allow-missing builds anyway.
 
 usage: trees.py <build_dir> [workers] [--bbox=w,s,e,n] [--vars=cover,height,leaf] [--allow-missing]
-       trees.py --z3 x,y --coverage cov.json --chm dir --leaf dir --out dir [--workers n]
+       trees.py --z3 x,y --coverage cov.json --chm dir --chm-store dir --leaf dir --out dir [--workers n]
            the build agent's (crates/pipeline/src/treepacks.rs): one z3 tile of the coverage, its
-           canopy squares fetched into `chm` when missing (the units' cache, the same names) and its
-           leaf-type squares made in `leaf` when missing (leaftype.py); out/trees-*.tiles hold its
-           zoom 4–12 tiles. cov.json: {"shapes": [[ring, …], …]}, each shape's rings in degrees,
-           inside by even–odd (crates/pipeline/src/coverage.rs).
+           canopy squares in `chm` (the units' cache, the same names), filled from the NAS's
+           `chm-store`, where each is downloaded once, and its leaf-type squares made in `leaf`
+           where it lacks them whole (leaftype.py); out/trees-*.tiles hold its zoom 4–12 tiles.
+           cov.json: {"shapes": [[ring, …], …]}, each shape's rings in degrees, inside by even–odd
+           (crates/pipeline/src/coverage.rs).
 """
 from __future__ import annotations
 
@@ -415,18 +416,25 @@ UA = "road-elevations/0.1 (personal offline map)"
 
 
 def download(url: str, path: Path) -> None:
-    """`url` into `path` (by a temporary name); an empty file when the server has none (404, or S3's
-    403 for a key that isn't there), as scenic-metrics marks it. Anything else is retried, then fails."""
+    """`url` into `path` (by a temporary name), whole: a body shorter than its Content-Length (a
+    connection cut) is tried again. An empty file when the server has none (404, or S3's 403 for a
+    key that isn't there), as scenic-metrics marks it. Anything else is retried, then fails."""
+    import os
     import shutil
+    import socket
     import urllib.error
     import urllib.request
 
-    tmp = path.with_name(path.name + ".part")
+    tmp = path.with_name(f"{path.name}.{socket.gethostname()}.{os.getpid()}.part")
     last: Exception | None = None
     for attempt in range(6):
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=600) as r, tmp.open("wb") as f:
+                want = int(r.headers.get("Content-Length", "-1"))
                 shutil.copyfileobj(r, f, 16 << 20)
+            got = tmp.stat().st_size
+            if want >= 0 and got != want:
+                raise OSError(f"{got:,} of {want:,} bytes")
             tmp.rename(path)
             return
         except urllib.error.HTTPError as e:
@@ -440,16 +448,23 @@ def download(url: str, path: Path) -> None:
     raise RuntimeError(f"download failed: {url}: {last}")
 
 
-def canopy_square(chm: Path, top: int, left: int) -> bool:
-    """The canopy square's cover and height files in `chm`, fetched when missing; False when Meta
-    has none there."""
+def canopy_square(chm: Path, store: Path, top: int, left: int) -> bool:
+    """The canopy square's cover and height files in `chm`: copied from the NAS's `store`, or
+    downloaded into it first (once); False when Meta has none there."""
     import os
+    import shutil
 
     there = True
     for st in ("cover5m", "p95"):
         p = chm / f"meta_chm_lat={top}.0_lon={left}.0_{st}.tif"
         if not p.exists():
-            download(f"{CHM10_URL}/{p.name}", p)
+            kept = store / p.name
+            if not kept.exists():
+                store.mkdir(parents=True, exist_ok=True)
+                download(f"{CHM10_URL}/{p.name}", kept)
+            tmp = p.with_name(f"{p.name}.{os.getpid()}.part")
+            shutil.copyfile(kept, tmp)
+            tmp.rename(p)
         if p.stat().st_size == 0:
             there = False
         else:
@@ -481,9 +496,21 @@ def load_shapes(path: str) -> list:
     global _SHAPES
     _SHAPES = []
     for rings in json.loads(Path(path).read_text())["shapes"]:
-        rs = [np.asarray(r, np.float64) for r in rings if len(r) >= 3]
+        rs = [densify(np.asarray(r, np.float64)) for r in rings if len(r) >= 3]
         _SHAPES.append([(float(r[:, 0].min()), float(r[:, 1].min()), float(r[:, 0].max()), float(r[:, 1].max()), np.stack(merc(r[:, 0], r[:, 1]), axis=1)) for r in rs])
     return _SHAPES
+
+
+def densify(r: np.ndarray, most: float = 0.05) -> np.ndarray:
+    """A ring (degrees) with points added so no edge is longer than `most` degrees: the coverage's
+    edges are straight in longitude and latitude, and rasterizing in Mercator draws them straight
+    there; short edges make the difference a few metres."""
+    out = [r[:1]]
+    for a, b in zip(r[:-1], r[1:]):
+        k = max(1, int(np.ceil(np.abs(b - a).max() / most)))
+        t = (np.arange(1, k + 1) / k)[:, None]
+        out.append(a + t * (b - a))
+    return np.concatenate(out)
 
 
 def shapes_meeting(w: float, s: float, e: float, n: float) -> list:
@@ -520,7 +547,7 @@ def z3_main(args: dict) -> None:
 
     t0 = time.time()
     qx, qy = (int(v) for v in args["--z3"].split(","))
-    chm, leaf_dir, out = Path(args["--chm"]), Path(args["--leaf"]), Path(args["--out"])
+    chm, store, leaf_dir, out = Path(args["--chm"]), Path(args["--chm-store"]), Path(args["--leaf"]), Path(args["--out"])
     for d in (chm, leaf_dir, out):
         d.mkdir(parents=True, exist_ok=True)
     workers = int(args.get("--workers", "6"))
@@ -543,9 +570,9 @@ def z3_main(args: dict) -> None:
     sqs = []
     for i, (top, left) in enumerate(sorted(want)):
         print(f"progress: {i}/{len(want)} canopy squares", file=sys.stderr, flush=True)
-        if canopy_square(chm, top, left):
+        if canopy_square(chm, store, top, left):
             sqs.append((top, left))
-    leaftype.make(sqs, leaf_dir, out, meets)
+    leaftype.make(sqs, leaf_dir, leaf_dir.parent)
     print(f"trees z3 {qx},{qy}: {len(blocks)} zoom-8 blocks, {len(sqs)} canopy squares ({time.time() - t0:.0f} s)", file=sys.stderr, flush=True)
     meta = '{"source":"Meta/WRI canopy height; Copernicus HRL DLT 2018; NALCMS 2020","encoding":"terrarium","format":"webp"}'
     writers = {v: Writer(out / f"trees-{v}.tiles", meta) for v in VARS}
