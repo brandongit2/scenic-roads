@@ -10,6 +10,8 @@
 //!                                rail hi packs (z9–14) and hidata
 //!   lo [--cache dir] [Q …]       lo packs (z4–8 road and rail tiles) for z3 tiles Q (default: all)
 //!   osm-pass --planet <p> --date <d>  the OSM pass (pieces, sets, basemap, road values); resumable
+//!   patch-ferries [--pass d]     the pass's pieces given the standalone ferry ways its filtered
+//!                                planet lacked (pipeline::osmpass::patch_ferries); run by hand
 //!   unit [U …] [--pass d] [--layers-root r] [--regions dir] [--dem dir] [--cache-dir dir] [--buildings dir]
 //!                                base(U) from the pass's pieces (today's steps on a unit folder):
 //!                                default every unit whose piece meets the coverage
@@ -128,6 +130,11 @@ fn main() -> Result<()> {
                 }
             }
             pipeline::osmpass::run_pass(&mut out, &planet, &date, &scratch, &extract, &planetiler)?
+        }
+        "patch-ferries" => {
+            let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+            let (pieces, ways) = pipeline::osmpass::patch_ferries(&mut out, &date, &scratch)?;
+            eprintln!("patch-ferries: {pieces} pieces of the {date} pass gained {ways} ferry ways");
         }
         "verify" => {
             let n = out.verify(&SSH, NAS_ROOT)?;

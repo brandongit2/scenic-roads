@@ -692,6 +692,80 @@ pub fn newer_planet(root: &Path, have: Option<&str>) -> Result<Option<(PathBuf, 
     Ok(Some((dir.join(&last).join("planet.osm.pbf"), last)))
 }
 
+/// Puts into the pass's pieces the ferry ways its filtered planet lacked. A pass filtered before
+/// `FILTER_A` kept `w/route=ferry` (the 2026-09-28 one) had only the ferry ways that are members of
+/// a route relation, so its pieces lacked the standalone ones (Kobe–Miyazaki, Tanger–Tarifa, …);
+/// its ferries set was made again from the planet, with them. Each piece gets the set's ferry ways
+/// it meets as the cut kept ways (its tile and buffer, the smart strategy: whole, with their nodes)
+/// and lacks, merged in (an object both have, at the one version the planet has, is written once).
+/// A piece that lacks none stays as it is, so only the units whose pieces change are built again,
+/// and a run after it changes nothing. The pieces changed and the ways they gained.
+pub fn patch_ferries(out: &mut Out, date: &str, scratch: &Path) -> Result<(usize, usize)> {
+    let set = out.path(out.get(&set_name(date, "ferries")).context("the pass's ferries set")?);
+    let work = scratch.join("patch-ferries");
+    std::fs::create_dir_all(&work)?;
+    let local_set = work.join("ferries.osm.pbf");
+    std::fs::copy(&set, &local_set)?;
+    let prefix = format!("sources/osm/{date}/pieces/");
+    let pieces: Vec<(Unit, String, String)> = out.manifest.range(prefix.clone()..).take_while(|(l, _)| l.starts_with(&prefix)).filter_map(|(l, c)| Some((Unit::parse(&l[prefix.len()..])?, l.clone(), c.clone()))).collect();
+    let (mut changed, mut gained) = (0, 0);
+    for (k, (u, logical, content)) in pieces.iter().enumerate() {
+        crate::agent::jobs::report(k as u64, pieces.len() as u64, "pieces checked for ferries");
+        let near = work.join("near.osm.pbf");
+        let b = grow(tile_bounds(u.z, u.x, u.y), BUFFER_KM);
+        let d = |v: i32| v as f64 * 1e-7;
+        let mut c = osmium();
+        c.args(["extract", "--no-progress", "--strategy", "smart", "-S", "types=multipolygon", "--overwrite", "-b"]).arg(format!("{},{},{},{}", d(b[0]), d(b[1]), d(b[2]), d(b[3]))).arg(&local_set).arg("-o").arg(&near);
+        quiet(c, "osmium extract (the ferries near a piece)")?;
+        let ids = way_ids(&near, None)?;
+        if ids.is_empty() {
+            continue;
+        }
+        let piece = work.join("piece.osm.pbf");
+        std::fs::copy(out.path(content), &piece)?;
+        let lacks = ids.len() - way_ids(&piece, Some(&ids))?.len();
+        if lacks == 0 {
+            continue;
+        }
+        let merged = work.join(format!("{}.osm.pbf", u.dash()));
+        let mut c = osmium();
+        c.args(["merge", "--no-progress", "--overwrite", "-o"]).arg(&merged).arg(&piece).arg(&near);
+        quiet(c, "osmium merge (a piece and its ferries)")?;
+        out.put_file(logical, "osm.pbf", &merged)?;
+        out.save()?;
+        eprintln!("ferries: {} lacked {lacks} of the {} ferry ways it meets", u.slash(), ids.len());
+        (changed, gained) = (changed + 1, gained + lacks);
+    }
+    std::fs::remove_dir_all(&work).ok();
+    Ok((changed, gained))
+}
+
+/// The ids of the ways in an OSM file, or of those among `among` (osmium getid).
+fn way_ids(file: &Path, among: Option<&std::collections::BTreeSet<i64>>) -> Result<std::collections::BTreeSet<i64>> {
+    let mut c = osmium();
+    match among {
+        None => {
+            c.args(["cat", "--no-progress", "-t", "way", "-f", "opl"]).arg(file);
+        }
+        Some(ids) => {
+            let list = file.with_extension("ids");
+            std::fs::write(&list, ids.iter().map(|i| format!("w{i}\n")).collect::<String>())?;
+            c.args(["getid", "--no-progress", "-f", "opl", "-i"]).arg(&list).arg(file);
+        }
+    }
+    let o = c.stderr(std::process::Stdio::null()).output().context("run osmium")?;
+    // (getid exits 1 when some of the ids aren't there: that's the answer, not a failure.)
+    ensure!(o.status.success() || (among.is_some() && o.status.code() == Some(1)), "osmium on {} failed: {}", file.display(), o.status);
+    Ok(String::from_utf8_lossy(&o.stdout).lines().filter_map(|l| l.strip_prefix('w')?.split(' ').next()?.parse().ok()).collect())
+}
+
+/// Runs a command whose output isn't wanted, failing with its name.
+fn quiet(mut c: Command, what: &str) -> Result<()> {
+    let o = c.output().with_context(|| format!("run {what}"))?;
+    ensure!(o.status.success(), "{what} failed: {}: {}", o.status, String::from_utf8_lossy(&o.stderr).trim());
+    Ok(())
+}
+
 pub fn check_tools(extract_bin: &Path, planetiler: &Path) -> Result<()> {
     if !extract_bin.exists() {
         bail!("no extract binary at {}", extract_bin.display());
@@ -705,6 +779,42 @@ pub fn check_tools(extract_bin: &Path, planetiler: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An OSM file from OPL lines.
+    fn osm(dir: &Path, name: &str, opl: &str) -> PathBuf {
+        let (src, dest) = (dir.join(format!("{name}.opl")), dir.join(format!("{name}.osm.pbf")));
+        std::fs::write(&src, opl).unwrap();
+        let st = osmium().args(["cat", "--no-progress", "--overwrite", "-o"]).arg(&dest).arg(&src).status().unwrap();
+        assert!(st.success());
+        dest
+    }
+
+    #[test]
+    fn pieces_gain_the_ferries_they_lack() {
+        let d = tempfile::tempdir().unwrap();
+        let mut out = Out::open(d.path(), &d.path().join("scratch")).unwrap();
+        // Unit 6/32/21 (lon 0 to 5.6, lat 48.9 to 52.5): a road and a ferry the filter kept (a route
+        // relation's member) in its piece; unit 6/40/20's piece has a road only.
+        let shared = "n1 v1 x1.0 y50.0\nn2 v1 x1.1 y50.0\nn3 v1 x1.2 y50.1\nn4 v1 x1.5 y50.5\n";
+        let piece = osm(d.path(), "piece", &format!("{shared}w10 v1 Thighway=primary Nn1,n2\nw20 v1 Troute=ferry,motor_vehicle=yes Nn2,n3\n"));
+        let other = osm(d.path(), "other", "n9 v1 x45.0 y45.0\nn8 v1 x45.1 y45.0\nw90 v1 Thighway=primary Nn9,n8\n");
+        // The ferries set: that ferry, and a standalone one from the piece's coast far out to sea.
+        let set = osm(d.path(), "set", &format!("{shared}n5 v1 x-3.0 y52.0\nw20 v1 Troute=ferry,motor_vehicle=yes Nn2,n3\nw30 v1 Troute=ferry,motor_vehicle=yes Nn3,n4,n5\n"));
+        out.put_file("sources/osm/2026-09-28/pieces/6-32-21", "osm.pbf", &piece).unwrap();
+        out.put_file("sources/osm/2026-09-28/pieces/6-40-20", "osm.pbf", &other).unwrap();
+        out.put_file("sources/osm/2026-09-28/sets/ferries", "osm.pbf", &set).unwrap();
+        let (before, untouched) = (out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap().to_string(), out.get("sources/osm/2026-09-28/pieces/6-40-20").unwrap().to_string());
+        assert_eq!(patch_ferries(&mut out, "2026-09-28", &d.path().join("scratch")).unwrap(), (1, 1));
+        // The piece gained the standalone ferry, whole (its node at sea too), and kept the rest once.
+        let after = out.path(out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap());
+        assert_ne!(out.get("sources/osm/2026-09-28/pieces/6-32-21").unwrap(), before);
+        assert_eq!(way_ids(&after, None).unwrap().into_iter().collect::<Vec<_>>(), [10, 20, 30]);
+        let opl = String::from_utf8(osmium().args(["cat", "--no-progress", "-f", "opl"]).arg(&after).output().unwrap().stdout).unwrap();
+        assert_eq!(opl.lines().filter(|l| l.starts_with('n')).count(), 5);
+        // A piece with no ferries near it stays as it was; a second run changes nothing.
+        assert_eq!(out.get("sources/osm/2026-09-28/pieces/6-40-20").unwrap(), untouched);
+        assert_eq!(patch_ferries(&mut out, "2026-09-28", &d.path().join("scratch")).unwrap(), (0, 0));
+    }
 
     #[test]
     fn older_passes_retire() {
