@@ -263,6 +263,10 @@ pub struct Done {
     pub lease: u64,
     #[serde(default)]
     pub handoff: Option<Handoff>,
+    /// Its job failed after the targets its hand-off says it did: the lease's others are held
+    /// against the worker (as a failure's).
+    #[serde(default)]
+    pub failed: bool,
     #[serde(default)]
     pub costs: Vec<(String, Cost)>,
     #[serde(default)]
@@ -482,11 +486,13 @@ impl Coordinator {
 /// published one (a step a newer app changed is built again under the keys that say so, once this
 /// Mac runs it; an older app's work would be recorded as current). `ours` empty (tests): any.
 fn app_ok(theirs: Option<&str>, ours: &str) -> bool {
-    let published = |v: &str| v.len() > 14 && v.as_bytes()[8] == b'-' && v[..8].bytes().chain(v[9..13].bytes()).all(|b| b.is_ascii_digit());
+    // (By bytes: a version is a worker's to say, and slicing a string mid-character would panic with
+    // the coordinator's lock held.)
+    let published = |v: &[u8]| v.len() > 14 && v[8] == b'-' && v[13] == b'-' && v[..8].iter().chain(&v[9..13]).all(u8::is_ascii_digit);
     match theirs {
         _ if ours.is_empty() => true,
         Some(t) if t == ours => true,
-        Some(t) => published(t) && published(ours) && t[..13] > ours[..13],
+        Some(t) => published(t.as_bytes()) && published(ours.as_bytes()) && t.as_bytes()[..13] > ours.as_bytes()[..13],
         None => false,
     }
 }
@@ -694,6 +700,12 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                     // Refused (422): the worker gives the lease back as failed, and drops the work
                     // (but for its raw tiles' archives, as above).
                     if let Err(e) = check_handoff(&h, step, targets) {
+                        // (From a worker on a newer app than this Mac's, whose step may save what
+                        // this one's doesn't know of: its lease ends, not held against its targets.)
+                        if s.workers.get(&d.worker).is_some_and(|w| !s.app.is_empty() && w.app.as_deref() != Some(s.app.as_str())) {
+                            s.leases.finish(d.lease, &d.worker, now);
+                            s.save_leases();
+                        }
                         drop(s);
                         raw_again(journal, Some(&h));
                         return Ok((422, serde_json::json!({ "error": format!("{e:#}") })));
@@ -702,10 +714,18 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                     // at a safe point did some), then the journal written without the lock (a whole
                     // file, flushed); put back if that fails.
                     s.leases.finish(d.lease, &d.worker, now);
+                    let lease_targets = targets;
                     let targets: Vec<(String, String)> = h.done.as_ref().map(|d| d.1.clone()).unwrap_or_default();
                     for (t, k) in &targets {
                         s.done.insert((step.clone(), t.clone()), k.clone());
                         s.failed.remove(&(d.worker.clone(), cost_key(step, t)));
+                    }
+                    // (Failed after these: the rest held against the worker, as a failure's.)
+                    if d.failed {
+                        for (t, _) in lease_targets.iter().filter(|t| !targets.contains(t)) {
+                            let e = s.failed.entry((d.worker.clone(), cost_key(step, t))).or_insert((now, 0));
+                            *e = (now, e.1 + 1);
+                        }
                     }
                     drop(s);
                     if let Err(e) = crate::handoff::write(&journal.join(folder(&d.worker)), &h) {
@@ -1265,6 +1285,8 @@ mod tests {
         assert!(!app_ok(Some("20261005-1508-aaaaaaa"), "20261005-1613-d05125b") && !app_ok(None, "20261005-1508-84142d3"));
         assert!(app_ok(Some("development"), "development") && !app_ok(Some("development"), "20261005-1508-84142d3") && !app_ok(Some("20261005-1613-d05125b"), "development"));
         assert!(app_ok(None, ""));
+        // Never a panic, whatever a worker says.
+        assert!(!app_ok(Some("20261005-150é-x"), "20261005-1508-84142d3") && !app_ok(Some("é"), "20261005-1508-84142d3") && !app_ok(Some(""), "x"));
     }
 
     #[test]

@@ -260,12 +260,15 @@ zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. 
   (its extent, so a removed region's data keeps its credit while it's served). `areas` is a list of
   w, s, e, n boxes in degrees, left out for credits that hold everywhere.
 - `coverage`: the regions the catalog's data is built for: those done at publish time as their
-  recipes were then (`--ready`, the agent's plan), and those not done yet as the last catalog had
-  them, if it had them (on the map as they were), in the recipes' order. Each outline entry's
+  recipes were then (`--ready <id>=<outline digest>,…`, the agent's plan: one redrawn since isn't),
+  and those not done yet as the last catalog had
+  them, if it had them (on the map as they were), in the recipes' order; `recorded: true` (a catalog
+  built for no region yet says so: one without it predates recorded coverage). Each outline entry's
   polygons as GeoJSON MultiPolygon coordinates in degrees to 5 decimals, rings closed: `osm:`
   entries from the pass's simplified outlines, the others simplified by size (60 m to 1 km). An
   entry that couldn't be read is recorded with no shape.
-- A catalog made before these were recorded has `"credits": []` and `{"regions": []}`: the server
+- A catalog made before these were recorded has `"credits": []` and `{"regions": []}` without
+  `recorded`: the server
   then gives every credit, and builds the coverage from the recipes.
 
 GC's roots are the newest catalog, every catalog of the last 14 days and the build manifest; an
@@ -473,8 +476,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   - On a helper, in the agent's folder, `outbox/<lease>/`: its leased job's saves (as below),
     `costs.jsonl`, `spec.json` (a task's), `task.json` (`scenic run-task`'s result) and `result.json`
     (`{ok, done: [step, [[target, key], …]] or null (some of the lease's targets when it paused at
-    a safe point), interrupted (stopped, not failed: given back unheld), task, error}`), until the
-    coordinator has them.
+    a safe point, or failed after them), failed (it failed after those: the rest held against it),
+    interrupted (stopped, not failed: given back unheld), task, error}`), until the coordinator has
+    them (`/work/done {…, failed}`).
   - **Pausing** (`pipeline::control`), in each Mac's agent's folder: `pause-request.json` (this Mac's
     ask, `{pause: {mode, by, at} or null (going on), at}`, from its menu, `scenic pause` or the map's
     `/api/build/pause`; taken up and removed by its agent once passed on), `pause.json` (the build's

@@ -201,15 +201,25 @@ pub fn merge_from(root: &Path, scratch: &Path, bases: &[PathBuf]) -> Result<usiz
             last.insert(d.to_path_buf(), n.to_string_lossy().into_owned());
         }
     }
-    out.save_held(&lock).context("merge the hand-offs into the manifest")?;
-    keys.save(root).context("merge the hand-offs into the job keys")?;
+    // (Only raw tiles' archives to name, a merge's again: the records aren't written for nothing.)
+    let records = hs.iter().any(|(_, h)| !h.changes.is_empty() || !h.pending.is_empty() || !h.checked.is_empty() || h.done.is_some());
+    if records {
+        out.save_held(&lock).context("merge the hand-offs into the manifest")?;
+        keys.save(root).context("merge the hand-offs into the job keys")?;
+    }
     // The raw tiles' archives a helper put on the NAS, named in the raw store's index. (The manifest
     // and keys are saved, so a failure here mustn't have every hand-off merged again: they're handed
     // off again on their own, to the last base, for the next merge to name.)
-    if let Err(e) = crate::rawpack::name_handed(&root.join("sources/aws-terrarium"), &raw, &lock) {
-        eprintln!("handoff: a helper's raw tiles' archives not named now ({e:#}); tried again with the next merge");
-        // (Not this merge's error either: its markers must still be written.)
-        if let Some(Err(e)) = bases.last().map(|b| write(&b.join(RAW_AGAIN), &Handoff { raw: raw.clone(), ..Default::default() })) {
+    let again = match crate::rawpack::name_handed(&root.join("sources/aws-terrarium"), &raw, &lock) {
+        Ok(named) => named.again,
+        Err(e) => {
+            eprintln!("handoff: a helper's raw tiles' archives not named now ({e:#}); tried again with the next merge");
+            raw.clone()
+        }
+    };
+    // (Not this merge's error either: its markers must still be written.)
+    if !again.is_empty() {
+        if let Some(Err(e)) = bases.last().map(|b| write(&b.join(RAW_AGAIN), &Handoff { raw: again, ..Default::default() })) {
             eprintln!("handoff: and not handed off again ({e:#}): they go as unnamed ones do");
         }
     }

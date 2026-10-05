@@ -491,6 +491,9 @@ pub struct Rounds<'a> {
 pub struct Plan {
     pub work: Vec<Work>,
     pub ready: Vec<String>,
+    /// A round's slope and tree cover (step, target) its catalog waits for: while another worker
+    /// builds one (a helper's lease), the catalog waits rather than go out without its region.
+    pub publish_waits: Vec<(String, String)>,
 }
 
 /// The plan for the coverage `cov`, the pass of `date`, the build manifest `m` (logical → content)
@@ -530,7 +533,8 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     let slope: Vec<(String, String)> = slope.into_iter().filter(|(t, k)| stale(&done.slope, t, k)).collect();
     let trees: Vec<(String, String)> = crate::treepacks::targets(cov, m).into_iter().filter(|(t, k)| done.trees.get(t) != Some(k)).collect();
     // (What a region lacks before it's published: stale slope counts, built or not yet buildable.)
-    let left: BTreeSet<String> = slope.iter().chain(&trees).map(|t| t.0.clone()).collect();
+    let slope_left: BTreeSet<String> = slope.iter().map(|t| t.0.clone()).collect();
+    let trees_left: BTreeSet<String> = trees.iter().map(|t| t.0.clone()).collect();
     let slope: Vec<(String, String)> = slope.into_iter().filter(|t| !terrain_left.contains(&t.0)).collect();
 
     // The units wait for the heritage sites, the pass's reaches (which units the coverage builds)
@@ -541,7 +545,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         push(&mut work, "terrain", terrain);
         push(&mut work, "slope", slope);
         push(&mut work, "trees", trees);
-        return Plan { work, ready: Vec::new() };
+        return Plan { work, ready: Vec::new(), publish_waits: Vec::new() };
     };
 
     // base(U): the units the coverage builds. Each region's: those it builds itself (a road of theirs
@@ -559,7 +563,10 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     struct Region<'a> {
         id: &'a str,
         stale: Vec<usize>,
+        /// Its slope's areas (the z3 tiles within 20 km of it, as the terrain's and slope's targets
+        /// go) and its tree cover's (those it meets, as treepacks::targets goes).
         areas: BTreeSet<String>,
+        tree_areas: BTreeSet<String>,
         terrain: BTreeSet<String>,
     }
     let regions: Vec<Region> = rounds
@@ -568,11 +575,12 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         .map(|(id, rc)| {
             let stale: Vec<usize> = (0..units.len()).filter(|&i| unit_stale[i] && builds(rc, reach, units[i].0)).collect();
             let areas: BTreeSet<String> = (0..8u32).flat_map(|x| (0..8u32).map(move |y| (x, y))).filter(|&(x, y)| rc.meets_rect(grown_e7(3, x, y, 20.0))).map(|(x, y)| format!("3/{x}/{y}")).collect();
+            let tree_areas: BTreeSet<String> = areas.iter().filter(|a| crate::legacy::Unit::parse(a).is_some_and(|q| rc.meets_rect(crate::hipack::tile_bounds(3, q.x, q.y)))).cloned().collect();
             let terrain = areas.iter().cloned().chain(stale.iter().flat_map(|&i| reads[i].iter().cloned())).filter(|a| terrain_left.contains(a)).collect();
-            Region { id, stale, areas, terrain }
+            Region { id, stale, areas, tree_areas, terrain }
         })
         .collect();
-    let ready: Vec<String> = regions.iter().filter(|r| r.stale.is_empty() && r.terrain.is_empty() && r.areas.iter().all(|a| !left.contains(a))).map(|r| r.id.to_string()).collect();
+    let ready: Vec<String> = regions.iter().filter(|r| r.stale.is_empty() && r.terrain.is_empty() && r.areas.is_disjoint(&slope_left) && r.tree_areas.is_disjoint(&trees_left)).map(|r| r.id.to_string()).collect();
 
     // A region at a time: those the map hasn't at all first, then those it has (redrawn, or their
     // units' keys changed: on the map as they were meanwhile); of each, the one with the fewest units
@@ -603,9 +611,10 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     push(&mut by_region, "unit", rest.into_iter().map(|i| (units[i].0.slash(), units[i].1.clone())).collect());
     // Slope and tree cover in the same order: the areas of the region built first, first.
     let rank = |t: &(String, String)| order.iter().position(|r| r.areas.contains(&t.0)).unwrap_or(usize::MAX);
+    let tree_rank = |t: &(String, String)| order.iter().position(|r| r.tree_areas.contains(&t.0)).unwrap_or(usize::MAX);
     let (mut slope, mut trees) = (slope, trees);
     slope.sort_by_key(rank);
-    trees.sort_by_key(rank);
+    trees.sort_by_key(tree_rank);
 
     // A round: when a region is done that the map hasn't as it is now, at most every
     // PUBLISH_EVERY_S while units or terrain are left, and after the last. First the slope and tree
@@ -615,12 +624,15 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     // catalog. After the last the trains' and the landmarks' chains follow, each with a catalog after
     // it; they don't wait for each other.
     let last = !unit_stale.iter().any(|&s| s) && terrain_left.is_empty();
+    let mut publish_waits = Vec::new();
     let publish: Vec<&Region> = regions.iter().filter(|r| r.stale.is_empty() && r.terrain.is_empty() && rounds.on_map.get(r.id) != Some(&true)).collect();
     let due = last || (!publish.is_empty() && rounds.since_publish.is_none_or(|s| s >= PUBLISH_EVERY_S));
     if due {
         let now = |t: &(String, String)| last || publish.iter().any(|r| r.areas.contains(&t.0));
+        let trees_due = |t: &(String, String)| last || publish.iter().any(|r| r.tree_areas.contains(&t.0));
         let (slope_now, slope): (Vec<_>, Vec<_>) = slope.into_iter().partition(now);
-        let (trees_now, trees): (Vec<_>, Vec<_>) = trees.into_iter().partition(now);
+        let (trees_now, trees): (Vec<_>, Vec<_>) = trees.into_iter().partition(trees_due);
+        publish_waits = slope_now.iter().map(|t| ("slope".to_string(), t.0.clone())).chain(trees_now.iter().map(|t| ("trees".to_string(), t.0.clone()))).collect();
         push(&mut work, "slope", slope_now);
         push(&mut work, "trees", trees_now);
         // (Listed after them, not held back: while one waits out a failure, the others publish.)
@@ -645,7 +657,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         push(&mut work, "slope", slope);
         push(&mut work, "trees", trees);
     }
-    Plan { work, ready }
+    Plan { work, ready, publish_waits }
 }
 
 /// Where a unit comes in a run of units: by the 10° square its tile's centre is in (column, then

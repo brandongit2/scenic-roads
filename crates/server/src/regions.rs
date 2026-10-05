@@ -606,14 +606,15 @@ fn recorded_features(regions: &[DrawnRegion], ix: Option<&OutlineIndex>) -> Vec<
 
 /// The coverage for drawing, as the current catalog recorded it, with the regions it was built for
 /// (`regions`), so the panel can tell which recipes aren't on the map yet (added or redrawn since)
-/// and works away from home. A catalog made before catalogs recorded their coverage has none: then
-/// it's built from the recipes on the NAS, as it was, without `regions`.
+/// and works away from home. A catalog made before catalogs recorded their coverage has none (and
+/// no `recorded` mark: one built for no region yet has it): then it's built from the recipes on the
+/// NAS, as it was, without `regions`.
 pub async fn coverage(State(s): State<S>) -> Response {
     let s2 = s.clone();
     tokio::task::spawn_blocking(move || -> Result<Response> {
         let cat = s2.data.catalog();
         let regions = recorded(&cat);
-        if regions.is_empty() {
+        if regions.is_empty() && cat.coverage.get("recorded").and_then(serde_json::Value::as_bool) != Some(true) {
             return coverage_from_recipes(&s2, cat.n);
         }
         // The areas' fields are a nicety: without the pass's outlines (the NAS away, not mirrored

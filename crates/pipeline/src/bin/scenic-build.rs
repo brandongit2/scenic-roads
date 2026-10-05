@@ -172,7 +172,13 @@ fn main() -> Result<()> {
         // records as built (comma-separated; the agent's plan says which), the others as the last
         // catalog had them (without it: every region as its recipe is now).
         "catalog" => {
-            let ready = opt(&args, "--ready").map(|v| v.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect());
+            // (`<id>=<outline digest>` each, or a bare id: a region built with the outline it has now.)
+            let ready: Option<BTreeMap<String, Option<String>>> = opt(&args, "--ready").map(|v| {
+                v.split(',').filter(|s| !s.is_empty()).map(|e| match e.split_once('=') {
+                    Some((id, d)) => (id.to_string(), Some(d.to_string())),
+                    None => (e.to_string(), None),
+                }).collect()
+            });
             catalog(&mut out, args.iter().any(|a| a == "--held"), ready.as_ref())?
         }
         "unit" => unit_step(&mut out, &args, &scratch)?,
@@ -756,7 +762,7 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
     })
 }
 
-fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeSet<String>>) -> Result<()> {
+fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<String>>>) -> Result<()> {
     let mut layers: BTreeMap<String, LayerOut> = BTreeMap::new();
     let (mut base, mut roads, mut hidata, mut global, mut basemap) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), Vec::new());
     let mut markdata = BTreeMap::new();
@@ -874,7 +880,9 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeSet<String>>) -> Resul
         "global": global,
         "meta": meta,
         "credits": credits,
-        "coverage": {"regions": regions},
+        // (`recorded`: this catalog says which regions it's built for, even none of them yet; one
+        // made before catalogs did has none, and the server draws the recipes for it.)
+        "coverage": {"regions": regions, "recorded": true},
     });
     let catalog: store::catalog::Catalog = serde_json::from_value(cat)?;
     let path = store::catalog::write(&dir, &catalog)?;
@@ -890,7 +898,7 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeSet<String>>) -> Resul
 /// panel shows a recipe it lacks, or has with another outline, as still to come.
 /// A read that fails (the NAS) fails the catalog, to be tried again, rather than record a region
 /// without its outline or leave a region out.
-fn catalog_coverage(out: &Out, outlines: Option<&str>, ready: Option<&BTreeSet<String>>, catalogs: &Path) -> Result<Vec<pipeline::coverage::DrawnRegion>> {
+fn catalog_coverage(out: &Out, outlines: Option<&str>, ready: Option<&BTreeMap<String, Option<String>>>, catalogs: &Path) -> Result<Vec<pipeline::coverage::DrawnRegion>> {
     let dir = out.root().join("inputs/regions");
     std::fs::read_dir(&dir).with_context(|| format!("the regions ({})", dir.display()))?;
     let (recipes, bad) = pipeline::agent::recipes::load(&dir);
@@ -904,16 +912,22 @@ fn catalog_coverage(out: &Out, outlines: Option<&str>, ready: Option<&BTreeSet<S
         None => None,
     };
     let Some(ready) = ready else { return pipeline::coverage::drawn(&recipes, outlines.as_ref(), &out.root().join("inputs/outlines")) };
-    let built: Vec<_> = recipes.iter().filter(|r| ready.contains(&r.id)).cloned().collect();
+    // (Built with the outline its recipe has now: one redrawn since the plan said so isn't.)
+    let is_ready = |r: &pipeline::agent::recipes::Recipe| ready.get(&r.id).is_some_and(|d| d.as_ref().is_none_or(|d| *d == pipeline::agent::recipes::outline_digest(&r.outline)));
+    let built: Vec<_> = recipes.iter().filter(|r| is_ready(r)).cloned().collect();
     let mut drawn: BTreeMap<String, pipeline::coverage::DrawnRegion> = pipeline::coverage::drawn(&built, outlines.as_ref(), &out.root().join("inputs/outlines"))?.into_iter().map(|d| (d.id.clone(), d)).collect();
-    let last = store::catalog::latest(catalogs).with_context(|| format!("the last catalog in {}", catalogs.display()))?;
+    // (The first held catalog keeps the regions as the served one has them.)
+    let mut last = store::catalog::latest(catalogs).with_context(|| format!("the last catalog in {}", catalogs.display()))?;
+    if last.is_none() && catalogs.ends_with("catalog-held") {
+        last = store::catalog::latest(&out.root().join("catalog")).context("the last catalog")?;
+    }
     let had: BTreeMap<String, pipeline::coverage::DrawnRegion> = last
         .and_then(|c| c.coverage.get("regions").and_then(|v| serde_json::from_value::<Vec<pipeline::coverage::DrawnRegion>>(v.clone()).ok()))
         .unwrap_or_default()
         .into_iter()
         .map(|d| (d.id.clone(), d))
         .collect();
-    let kept = recipes.iter().filter(|r| !ready.contains(&r.id) && had.contains_key(&r.id)).count();
+    let kept = recipes.iter().filter(|r| !is_ready(r) && had.contains_key(&r.id)).count();
     eprintln!("catalog: {} regions built as they are now, {kept} as the last catalog had them", drawn.len());
     Ok(recipes.iter().filter_map(|r| drawn.remove(&r.id).or_else(|| had.get(&r.id).cloned())).collect())
 }

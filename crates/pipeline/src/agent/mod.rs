@@ -303,6 +303,10 @@ struct Memory {
     /// When each daily job last succeeded (seconds since the epoch).
     last_ok: BTreeMap<String, u64>,
     recent: Vec<Done>,
+    /// When a catalog last started (seconds since the epoch): the next round of publishing waits an
+    /// hour from it, whether or not it went out (build::PUBLISH_EVERY_S).
+    #[serde(default)]
+    catalog_at: u64,
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -455,8 +459,8 @@ pub struct Agent {
     beaten: Option<Instant>,
     /// A helper's: the bytes its cheap caches held (room::cheap_bytes) and when they were counted.
     cheap: Option<(Instant, u64)>,
-    /// The last catalog's number and its regions' outline entries, by id (`on_map`).
-    last_catalog: std::cell::RefCell<Option<(u64, BTreeMap<String, Vec<String>>)>>,
+    /// The last catalog's folder and number, and its regions' outline entries by id (`on_map`).
+    last_catalog: std::cell::RefCell<Option<((PathBuf, u64), BTreeMap<String, Vec<String>>)>>,
     /// The regions the last plan would publish as built (build::Plan::ready), for the checklist.
     ready: std::cell::RefCell<Vec<String>>,
     /// The build's pause as this agent knows it (crate::control): its coordinator's on the build
@@ -587,7 +591,7 @@ impl Agent {
                         }
                         h.done = serde_json::from_value(r["done"].clone())?;
                         let costs = read_costs(&d.join("costs.jsonl"));
-                        client.done(&crate::coord::Done { lease, handoff: Some(h), costs, ..Default::default() })
+                        client.done(&crate::coord::Done { lease, handoff: Some(h), costs, failed: r["failed"].as_bool() == Some(true), ..Default::default() })
                     }
                     _ => {
                         let why = match &result {
@@ -809,8 +813,10 @@ impl Agent {
             Some(Held::Leased { dir, .. }) => {
                 // What it did: every target, or (paused at a safe point) those it finished, handed
                 // off; else given back, failed or (stopped, not failed) interrupted.
+                // (A failed job's finished targets are handed off too, the rest held against it.)
                 let step = self.running.as_ref().and_then(|r| r.spec.record.as_ref().map(|w| w.step.clone()));
-                let done = step.filter(|_| matches!(outcome, Outcome::Done | Outcome::Paused) && !done.is_empty()).map(|s| (s, done.to_vec()));
+                let done = step.filter(|_| outcome != Outcome::Interrupted && !done.is_empty()).map(|s| (s, done.to_vec()));
+                let failed = outcome == Outcome::Failed && done.is_some();
                 // A task's: what `scenic run-task` wrote (its outputs are with the coordinator already).
                 let task: Option<serde_json::Value> = std::fs::read(dir.join("task.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
                 let ok = match &task {
@@ -818,7 +824,7 @@ impl Agent {
                     None => done.is_some(),
                 };
                 let interrupted = !ok && matches!(outcome, Outcome::Paused | Outcome::Interrupted);
-                let r = serde_json::json!({ "ok": ok, "done": done, "interrupted": interrupted, "task": task.and_then(|t| t.get("task").cloned()), "error": note.chars().take(3000).collect::<String>() });
+                let r = serde_json::json!({ "ok": ok, "done": done, "failed": failed, "interrupted": interrupted, "task": task.and_then(|t| t.get("task").cloned()), "error": note.chars().take(3000).collect::<String>() });
                 if let Err(e) = crate::whole::write(&dir.join("result.json"), r.to_string().as_bytes()) {
                     eprintln!("agent: writing a job's result for the coordinator: {e:#}");
                 }
@@ -1315,6 +1321,11 @@ impl Agent {
                     self.lease = lease.map(Held::Own);
                     self.claims_fresh = Some(Instant::now());
                 }
+                // (A catalog's start: the next round waits an hour from it, whether or not it goes out.)
+                if spec.id.starts_with("catalog") {
+                    self.mem.catalog_at = now_s();
+                    self.save();
+                }
                 let shared = shared_targets(&spec);
                 if let Err(e) = self.start(spec, &c) {
                     // It couldn't even start (a missing program, a full disk): retried later.
@@ -1663,11 +1674,32 @@ impl Agent {
         }
         // The regions the map's catalog has (or the held one's, when catalogs are held for review)
         // and how long ago it went out: what the plan publishes regions by.
-        let (on_map, since_publish) = self.on_map(&root.join(if held { "catalog-held" } else { "catalog" }), &recipes);
+        // (The held ones, once there are any: the first goes by what's served.)
+        let held_dir = root.join("catalog-held");
+        let dir = if held && store::catalog::list(&held_dir).is_ok_and(|ns| !ns.is_empty()) { held_dir } else { root.join("catalog") };
+        let (on_map, since_publish) = self.on_map(&dir, &recipes);
         let planned = build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), build::Rounds { each: &covs.each, on_map: &on_map, since_publish });
         let ready = planned.ready;
         *self.ready.borrow_mut() = ready.clone();
+        // (As the catalog's `--ready`: each with the outline it was built with.)
+        let ready_arg: String = ready.iter().map(|id| match recipes.iter().find(|r| &r.id == id) {
+            Some(r) => format!("{id}={}", recipes::outline_digest(&r.outline)),
+            None => id.clone(),
+        }).collect::<Vec<_>>().join(",");
         let mut plan = planned.work;
+        // A round's catalog waits while another worker builds its regions' slope or tree cover (it
+        // would go out without them, and they'd wait an hour), and while a helper's hand-offs wait
+        // to be merged (its areas counted as built, their files not yet in the manifest).
+        let held_by_others = |step: &str, t: &str| self.coord.as_ref().is_some_and(|c| c.held(step).contains(t)) || claims::others(root, step, &self.me).contains(t);
+        let held_wait = planned.publish_waits.iter().find(|(st, t)| held_by_others(st, t));
+        let unmerged = crate::handoff::waiting_in(&self.o.home.join("coord/journal")).map(|w| w.iter().any(|(_, h)| h.done.is_some())).unwrap_or(false);
+        if let Some((st, t)) = held_wait.filter(|_| plan.iter().any(|w| w.step == "catalog")) {
+            waiting.push(Waiting { step: Some("catalog".into()), what: build::PUBLISH.into(), why: format!("waits for another worker building the {} of {t}", if st == "slope" { "slope" } else { "tree cover" }) });
+            plan.retain(|w| w.step != "catalog");
+        } else if unmerged && plan.iter().any(|w| w.step == "catalog") {
+            waiting.push(Waiting { step: Some("catalog".into()), what: build::PUBLISH.into(), why: "waits for a helper's work to be merged".into() });
+            plan.retain(|w| w.step != "catalog");
+        }
         // A unit's piece's size (content-named files never change: each looked up once).
         let size = |u: &str| {
             let Some(c) = manifest.get(&format!("sources/osm/{date}/pieces/{}", u.replace('/', "-"))) else { return u64::MAX };
@@ -1729,7 +1761,7 @@ impl Agent {
                     waiting.push(Waiting { step: None, what: build::PUBLISH.into(), why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into() });
                     continue;
                 }
-                let mut j = job("catalog-held".into(), "Publishing the new map data, held for review", "catalog", vec!["--held".into(), "--ready".into(), ready.join(",")], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
+                let mut j = job("catalog-held".into(), "Publishing the new map data, held for review", "catalog", vec!["--held".into(), "--ready".into(), ready_arg.clone()], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
                 j.needs = Needs { cpu: false, nas: true, home: false };
                 jobs.push(j);
                 continue;
@@ -1738,7 +1770,7 @@ impl Agent {
             extra.extend(self.step_args(&w.step, date));
             // (The regions a catalog records as built: the plan's.)
             if w.step == "catalog" {
-                extra.extend(["--ready".to_string(), ready.join(",")]);
+                extra.extend(["--ready".to_string(), ready_arg.clone()]);
             }
             let n = w.targets.len();
             // "3 areas", or "8 of 480 areas" for a batch.
@@ -1869,18 +1901,36 @@ impl Agent {
     /// entries); and how long ago it went out (seconds, by its file's time). Read once per catalog;
     /// none (nothing on the map: every region new) when there's none, or it can't be read now.
     fn on_map(&self, dir: &Path, recipes: &[recipes::Recipe]) -> (BTreeMap<String, bool>, Option<u64>) {
-        let Some(n) = store::catalog::list(dir).ok().and_then(|ns| ns.first().copied()) else { return (BTreeMap::new(), None) };
-        let path = dir.join(store::catalog::file_name(n));
-        let Ok(at) = std::fs::metadata(&path).and_then(|m| m.modified()) else { return (BTreeMap::new(), None) };
+        // (The newest catalog that reads: a damaged one is passed over, as the map's server does,
+        // not taken for none.)
         let mut cached = self.last_catalog.borrow_mut();
-        if cached.as_ref().is_none_or(|c| c.0 != n) {
-            let Ok(cat) = store::catalog::read(&path) else { return (BTreeMap::new(), None) };
-            let regions: BTreeMap<String, Vec<String>> = cat.coverage.get("regions").and_then(serde_json::Value::as_array).into_iter().flatten().filter_map(|r| Some((r["id"].as_str()?.to_string(), serde_json::from_value(r["outline"].clone()).ok()?))).collect();
-            *cached = Some((n, regions));
+        let mut at = None;
+        for n in store::catalog::list(dir).unwrap_or_default() {
+            let path = dir.join(store::catalog::file_name(n));
+            let Ok(t) = std::fs::metadata(&path).and_then(|m| m.modified()) else { continue };
+            if cached.as_ref().is_none_or(|c| c.0 != (dir.to_path_buf(), n)) {
+                let Ok(cat) = store::catalog::read(&path) else { continue };
+                let regions: BTreeMap<String, Vec<String>> = cat.coverage.get("regions").and_then(serde_json::Value::as_array).into_iter().flatten().filter_map(|r| Some((r["id"].as_str()?.to_string(), serde_json::from_value(r["outline"].clone()).ok()?))).collect();
+                *cached = Some(((dir.to_path_buf(), n), regions));
+            }
+            at = Some(t);
+            break;
+        }
+        // How long ago the last catalog went out, or one last started (it may have failed): a
+        // time ahead of this Mac's clock (the NAS's) counts as now.
+        let now = std::time::SystemTime::now();
+        let since = |t: std::time::SystemTime| now.duration_since(t).map_or(0, |d| d.as_secs());
+        let started = (self.mem.catalog_at > 0).then(|| now_s().saturating_sub(self.mem.catalog_at));
+        let since_publish = match (at.map(since), started) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        if at.is_none() {
+            return (BTreeMap::new(), since_publish);
         }
         let had = &cached.as_ref().unwrap().1;
         let on_map = had.iter().map(|(id, outline)| (id.clone(), recipes.iter().any(|r| &r.id == id && &r.outline == outline))).collect();
-        (on_map, std::time::SystemTime::now().duration_since(at).ok().map(|d| d.as_secs()))
+        (on_map, since_publish)
     }
 
     /// The build's pause as this agent knows it, brought up to date: this Mac's ask (its menu,
@@ -2056,8 +2106,8 @@ fn step_of(id: &str) -> Option<String> {
 
 /// The checklist as the status shows it. A step with work left that isn't this Mac's job now (`now`,
 /// its step) says why: another Mac is on it, or its job waits (`waiting`: for the home network,
-/// out a failure). Publishing, while a step above has work left, waits for those steps: a catalog
-/// follows each chain that ends, so it's done only once they all are.
+/// out a failure). Publishing, while a step above has work left, goes out as each region is done (at
+/// most hourly) and once they all are: it's done only then.
 fn annotate(list: &mut [build::Step], now: Option<&str>, helpers: &[Status], waiting: &[Waiting]) {
     build::mark_shared(list);
     let busy = |s: &build::Step| now.is_some_and(|n| s.steps.iter().any(|x| x == n));
@@ -2080,7 +2130,7 @@ fn annotate(list: &mut [build::Step], now: Option<&str>, helpers: &[Status], wai
         if before_left && !busy(p) {
             p.left = Some(p.left.unwrap_or(0).max(1));
             // (Its own, a catalog failing, says more.)
-            p.note.get_or_insert_with(|| "after the steps above (a catalog follows each chain as it ends)".into());
+            p.note.get_or_insert_with(|| "as each region is done (at most hourly), and once the steps above are".into());
         }
     }
 }
@@ -2396,7 +2446,7 @@ mod tests {
         assert_eq!(l[1].note.as_deref(), Some("on m1"));
         assert_eq!(l[2].note, None, "this Mac's job now");
         // Publishing waits for the steps above, though its catalog is current.
-        assert!(!l[3].finished() && l[3].note.as_deref().is_some_and(|n| n.starts_with("after the steps above")));
+        assert!(!l[3].finished() && l[3].note.as_deref().is_some_and(|n| n.starts_with("as each region is done")));
         // All above done: done.
         let mut l: Vec<build::Step> = list().into_iter().map(|mut s| {
             s.left = Some(0);

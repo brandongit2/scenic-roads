@@ -1159,7 +1159,12 @@ and, when none fits it, units' last steps.
   has its archives named (journaled on their own, `coord/journal/raw-tiles/`), and so does a merge
   that couldn't name them then. An archive the index neither names nor lists to go, a day old (a
   hand-off that never came), is listed to go; and an index whose file is missing while archives are
-  there is never written (one saved then would name none of them).
+  there is never written (one saved then would name none of them), unless the only archives are
+  those being named (a helper's first). One that can't be read now is named with a later merge; a
+  merge of nothing but those writes no records.
+- **A helper's job that fails** hands off the targets it finished (they're kept), the rest held
+  against it as a failure's; a hand-off refused from a helper on a newer app than the build Mac's
+  (its step may save what the build Mac's doesn't know) isn't held against its targets.
 - **For a helper on an older app** (one release): the build Mac still claims its own jobs' targets
   on the NAS (`state/build/claims/`), leaves out the targets such a helper claims, and merges the
   NAS's hand-off files (`state/build/handoff/<host>/`).
@@ -1187,13 +1192,17 @@ and, when none fits it, units' last steps.
      terrain areas it reads that are stale (its own areas, and those of the z6 tiles within 30 km of
      its units), then its units whose terrain is built (a unit's key reads the terrain near it: one
      built first would be built again), neighbours together; a unit or area two regions share comes
-     with the first. A helper takes each step's from the far end of all of it (the agent offers a
-     step's targets together): the last regions' terrain and units, while the build Mac does the
-     first's. Then slope (each area once its terrain is built) and tree cover (listed after them,
-     for a helper, and for the build Mac when the rest is another's).
+     with the first. Then slope (each area once its terrain is built) and tree cover, after them for
+     the build Mac. A helper takes the earliest shared step with work that fits it (terrain, slope,
+     tree cover, units, …: what later steps wait on first), from the far end of all of that step's
+     (the agent offers a step's targets together): the last regions', while the build Mac does the
+     first's.
    - **A round** when a region is done that the map hasn't as it is now, at most an hour after the
-     last catalog (`PUBLISH_EVERY_S`) while units or terrain are left, and at once after the last: the
-     slope and tree cover of its areas (the z3 tiles within 20 km of it; after the last unit, all
+     last catalog went out or last started (a failing one doesn't make every plan a round; a
+     catalog dated ahead of this Mac's clock counts as now; a damaged newest one is passed over)
+     (`PUBLISH_EVERY_S`) while units or terrain are left, and at once after the last: the
+     slope and tree cover of its areas (slope's the z3 tiles within 20 km of it, tree cover's those it
+     meets, as their targets go; after the last unit, all
      that's left), then a prune of what the coverage no longer builds (§5, Shrinking), the roads'
      chain, and a catalog. The units follow it in the list (a helper's, and the build Mac's while
      the round's work waits out a failure: then the catalog goes out with the regions that are
@@ -1207,12 +1216,16 @@ and, when none fits it, units' last steps.
    - **Landmarks:** pois, peaks, items, heritage, marks, overlays.
 5. **A catalog** once the roads chain is done, in a round: a new one whenever the served files
    change, or the regions it records (their recipes and the outline files they name), or which of
-   them are done. It records as built the regions done (`--ready`: every unit of theirs built as the
-   coverage wants it, and their areas' slope and tree cover), and the others as the last catalog had
-   them, if it had them (on the map as they were); the Regions panel shows the rest as pending, or
-   building with their areas counted. After the last unit, a catalog follows each chain's change.
-   While `inputs/hold-catalog` exists, it goes to `catalog-held/` instead (and the rounds go by the
-   held ones).
+   them are done. It records as built the regions done (`--ready <id>=<outline digest>,…`: every
+   unit of theirs built as the coverage wants it, and their areas' slope and tree cover; one redrawn
+   since the plan said so isn't), and the others as the last catalog had them, if it had them (on
+   the map as they were); the Regions panel shows the rest as pending, or building with their areas
+   counted. It waits while another worker builds a slope or tree cover area of a region it would
+   publish (it would go out without the region, which would then wait an hour), and while a
+   helper's hand-offs wait to be merged (their areas counted as built, their files not yet in the
+   manifest). After the last unit, a catalog follows each chain's change. While
+   `inputs/hold-catalog` exists, it goes to `catalog-held/` instead (and the rounds go by the held
+   ones; the first, by the served one).
 6. **Daily:** backup and GC.
 
 **Planned:**
