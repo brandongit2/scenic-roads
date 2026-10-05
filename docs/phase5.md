@@ -520,7 +520,9 @@ part, layers.py) runs unchanged.
 - **The units** (`UNIT_V` 3) read the slices of the z6 tiles within U + 30 km.
   - `heritage.json` feeds the flags step.
   - areaflags.py rasterises the polygons onto the unit's own grid, chosen by bounding box. Mercator is
-    monotone per axis, so no polygon touching an edge tile is dropped.
+    monotone per axis, so no polygon touching an edge tile is dropped. The `areaflags` program
+    (pipeline::areaflags) writes the same bytes without Python, natively or in WebAssembly; the units
+    still run the script.
   - Their keys name those slices.
 - **Checks:**
   - **Reproduction:** today's heritage.py in the stand-in root, on today's grid and the snapshot,

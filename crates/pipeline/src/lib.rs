@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod areaflags;
 pub mod basepack;
 pub mod buildings;
 pub mod buildtiles;
