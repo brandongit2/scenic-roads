@@ -131,19 +131,31 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   finds the note when it's reloaded). Nothing asks what device it is.
 - **Planned:** cutting a task to the worker (smaller sample ranges for smaller ceilings).
 
-## 7. The web worker (built, but HTTPS)
+## 7. The web worker (built)
 
 - **The page** is served by the coordinator at `/work/`; its address carries the token in its
   fragment (never sent to a server), and `scenic status` prints it. Its main thread asks for tasks
   that fit the memory the tab spares and beats for every lease; each slot (a Web Worker per core,
   less one) runs a task's programs over an in-memory filesystem (`web/work/runtime.js`, over
   browser_wasi_shim) and sends back what they wrote.
-- **HTTPS:** the screen wake lock (and OPFS, below) need a secure context. Plain HTTP on the tailnet
-  works (WireGuard encrypts it), but the device must be kept awake by hand. The coordinator can be
-  reached over HTTPS through `tailscale serve` (the tailnet already has a certificate for the build
-  Mac's name): waiting for the owner's go-ahead, as it changes the Mac's network settings. Once it
-  proxies the coordinator, the page's address (the status bar's, `scenic status`'s) moves to HTTPS by
-  itself; a job's requests can't come through it (they need the agent's own token).
+- **HTTPS:** the screen wake lock, the page as an app and OPFS (below) need a secure context. The
+  coordinator is reached over HTTPS through `tailscale serve` (the owner turned it on, 2026-10-05:
+  the tailnet has a certificate for the build Mac's name), and the page's address (the status
+  bar's, `scenic status`'s) is HTTPS while it proxies the coordinator; a job's requests can't come
+  through it (they need the agent's own token). Plain HTTP on the tailnet still works (WireGuard
+  encrypts it), the device then kept awake by hand.
+- **The page as an app** (a PWA: `manifest.webmanifest`, `sw.js`, `icons/`, served without the
+  token like the page): installable (the browser's own Install, or on an iPhone or iPad Share, Add
+  to Home Screen, which the page says how to), opening full screen straight to work. Its service
+  worker takes the page and its scripts from the build Mac whenever it answers (a newly published
+  app's page at once) and from what it kept when it doesn't, and keeps the programs' WebAssembly by
+  version (their addresses' `?v=`): opened again, the page fetches no program it has, and only each
+  program's newest version is kept. A task's files and the coordinator's requests pass straight
+  through. Its version is the coordinator's hash of the page's files: a newly published page is a
+  new service worker, which takes over, and the page reloads into it once no task is running. An
+  installed app on an iPhone keeps its own storage, apart from Safari's: the page asks once for its
+  address (from the status menu's Copy the Worker Page's Address) and keeps the token. It still runs
+  only while it's open on screen: neither iOS nor Android lets a web app work in the background.
 - **Planned:** inputs and outputs in OPFS, read through a `FileSystemSyncAccessHandle`, so a worker
   holds less in memory and a reload resumes the upload, not the work.
 

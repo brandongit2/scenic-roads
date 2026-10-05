@@ -4,6 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0e1013">
+<!-- An app to install: home screen, full screen (manifest, sw.js: docs/workers.md). -->
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Scenic">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <title>Scenic worker</title>
 <style>
   :root { --bg: #0e1013; --panel: #161a1f; --line: #262c33; --text: #d7dce2; --dim: #8a939c; --ok: #6cc28a; --warn: #e0b45a; --bad: #e0716a; --accent: #7aa7e0; }
@@ -27,12 +36,15 @@
   #log b { color: var(--text); font-weight: 500; } #log .bad { color: var(--bad); }
   .note { color: var(--warn); margin: 0 0 12px; }
   button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 4px 10px; font: inherit; }
+  input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px; font: inherit; width: 100%; margin: 6px 0; }
+  .hint { color: var(--dim); margin: 0 0 12px; }
 </style>
 </head>
 <body>
 <main>
-  <header><h1>Scenic worker</h1><span id="state">starting…</span><span style="flex:1"></span><button id="toggle">Pause</button></header>
+  <header><h1>Scenic worker</h1><span id="state">starting…</span><span style="flex:1"></span><button id="install" hidden>Install</button><button id="toggle">Pause</button></header>
   <p class="note" id="note" hidden></p>
+  <p class="hint" id="hint" hidden></p>
   <div class="grid">
     <div class="card"><div class="k">Memory to spare</div><div class="v" id="mem">–</div></div>
     <div class="card"><div class="k">Slots</div><div class="v" id="slots-n">–</div></div>
@@ -193,10 +205,12 @@ function finish(s, ok, m = {}) {
   setTimeout(fill, 100);
 }
 
-// Asks for work while a slot is idle and memory is free; the coordinator picks what fits.
-let asking = false, lastNone = 0;
+// Asks for work while a slot is idle and memory is free; the coordinator picks what fits. (A new
+// version installed: none asked for; reloaded into it once every slot is idle.)
+let asking = false, lastNone = -Infinity, update = false;
 async function fill() {
-  if (asking || paused || !token) return;
+  if (update && slots.every((s) => !s.lease)) { location.reload(); return; }
+  if (asking || paused || !token || update) return;
   const idle = slots.find((s) => !s.lease);
   const free = ceiling - reserved;
   if (!idle || free < 200 || performance.now() - lastNone < 15000) return;
@@ -252,9 +266,40 @@ if (!window.isSecureContext) {
   $("note").hidden = false;
   $("note").textContent = "Not a secure context: this browser won't keep the screen on for the page, so set the device to stay awake while it works.";
 }
+// No token yet (an app installed on an iPhone keeps its own storage, apart from Safari's): its
+// address pasted once, from the build Mac's status menu.
 if (!token) {
   $("note").hidden = false;
-  $("note").textContent = "No token: open this page's full address (with #k=…), as the build Mac's status shows it.";
+  $("note").innerHTML = `No token yet: paste this page's full address, from the build Mac's status menu (Copy the Worker Page's Address).<input id="paste" placeholder="https://…/work/#k=…" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="use">Use it</button>`;
+  $("use").onclick = () => {
+    const v = $("paste").value.trim();
+    const k = v.includes("#") ? new URLSearchParams(v.slice(v.indexOf("#") + 1)).get("k") : v;
+    if (k) { store.set("token", k); location.replace(location.pathname); }
+  };
+}
+
+// The page as an app (sw.js, manifest.webmanifest): kept for when the build Mac doesn't answer, its
+// programs kept by version. A new version taking over (a newly published app): reloaded into it
+// once no task is running. (A first install takes over too: that's no reason to reload.)
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  const had = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register("sw.js").catch((e) => log(`<span class="bad">couldn't install the page as an app: ${esc(e.message)}</span>`));
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!had || update) return;
+    update = true;
+    log("A new version of the page is ready: reloading once the tasks running finish.");
+    fill();
+  });
+}
+// Installing it: the browser's own prompt where it offers one, else (Safari on an iPhone or iPad)
+// how to.
+let installer = null;
+window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installer = e; $("install").hidden = false; });
+$("install").onclick = async () => { if (!installer) return; installer.prompt(); await installer.userChoice; installer = null; $("install").hidden = true; };
+const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+if (!standalone && window.isSecureContext && /iPhone|iPad|iPod/.test(navigator.userAgent)) {
+  $("hint").hidden = false;
+  $("hint").textContent = "To keep it on your home screen as an app: Share, then Add to Home Screen.";
 }
 
 $("toggle").onclick = () => { paused = !paused; $("toggle").textContent = paused ? "Resume" : "Pause"; $("state").textContent = paused ? "paused (running tasks finish)" : "working"; if (!paused) fill(); };

@@ -652,21 +652,36 @@ mod http {
     use std::net::{IpAddr, SocketAddr};
     use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
-    /// The web worker page (docs/workers.md §7), built in: (path under /work/, type, contents).
-    const PAGE: &[(&str, &str, &str)] = &[
-        ("", "text/html; charset=utf-8", include_str!("../../../../web/work/index.html")),
-        ("index.html", "text/html; charset=utf-8", include_str!("../../../../web/work/index.html")),
-        ("worker.js", "text/javascript", include_str!("../../../../web/work/worker.js")),
-        ("runtime.js", "text/javascript", include_str!("../../../../web/work/runtime.js")),
-        ("vendor/browser_wasi_shim/index.js", "text/javascript", include_str!("../../../../web/work/vendor/browser_wasi_shim/index.js")),
-        ("vendor/browser_wasi_shim/wasi.js", "text/javascript", include_str!("../../../../web/work/vendor/browser_wasi_shim/wasi.js")),
-        ("vendor/browser_wasi_shim/wasi_defs.js", "text/javascript", include_str!("../../../../web/work/vendor/browser_wasi_shim/wasi_defs.js")),
-        ("vendor/browser_wasi_shim/fd.js", "text/javascript", include_str!("../../../../web/work/vendor/browser_wasi_shim/fd.js")),
-        ("vendor/browser_wasi_shim/fs_mem.js", "text/javascript", include_str!("../../../../web/work/vendor/browser_wasi_shim/fs_mem.js")),
-        ("vendor/browser_wasi_shim/fs_opfs.js", "text/javascript", include_str!("../../../../web/work/vendor/browser_wasi_shim/fs_opfs.js")),
-        ("vendor/browser_wasi_shim/debug.js", "text/javascript", include_str!("../../../../web/work/vendor/browser_wasi_shim/debug.js")),
-        ("vendor/browser_wasi_shim/strace.js", "text/javascript", include_str!("../../../../web/work/vendor/browser_wasi_shim/strace.js")),
+    /// The web worker page (docs/workers.md §7), built in: (path under /work/, type, contents). An
+    /// app to install (its manifest, service worker and icons: docs/workers.md, The page as an app).
+    const PAGE: &[(&str, &str, &[u8])] = &[
+        ("", "text/html; charset=utf-8", include_bytes!("../../../../web/work/index.html")),
+        ("index.html", "text/html; charset=utf-8", include_bytes!("../../../../web/work/index.html")),
+        ("worker.js", "text/javascript", include_bytes!("../../../../web/work/worker.js")),
+        ("runtime.js", "text/javascript", include_bytes!("../../../../web/work/runtime.js")),
+        ("sw.js", "text/javascript", include_bytes!("../../../../web/work/sw.js")),
+        ("manifest.webmanifest", "application/manifest+json", include_bytes!("../../../../web/work/manifest.webmanifest")),
+        ("icons/icon-192.png", "image/png", include_bytes!("../../../../web/work/icons/icon-192.png")),
+        ("icons/icon-512.png", "image/png", include_bytes!("../../../../web/work/icons/icon-512.png")),
+        ("icons/icon-maskable-512.png", "image/png", include_bytes!("../../../../web/work/icons/icon-maskable-512.png")),
+        ("icons/apple-touch-icon.png", "image/png", include_bytes!("../../../../web/work/icons/apple-touch-icon.png")),
+        ("vendor/browser_wasi_shim/index.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/index.js")),
+        ("vendor/browser_wasi_shim/wasi.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/wasi.js")),
+        ("vendor/browser_wasi_shim/wasi_defs.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/wasi_defs.js")),
+        ("vendor/browser_wasi_shim/fd.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/fd.js")),
+        ("vendor/browser_wasi_shim/fs_mem.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/fs_mem.js")),
+        ("vendor/browser_wasi_shim/fs_opfs.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/fs_opfs.js")),
+        ("vendor/browser_wasi_shim/debug.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/debug.js")),
+        ("vendor/browser_wasi_shim/strace.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/strace.js")),
     ];
+
+    /// The page's version: its files' hash, in its service worker (sw.js's VERSION), so a new
+    /// app's page is a new service worker, which takes over.
+    pub(super) fn page_version() -> &'static str {
+        static V: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        V.get_or_init(|| store::naming::hash16(&PAGE.iter().flat_map(|(n, _, b)| n.as_bytes().iter().chain(b.iter()).copied()).collect::<Vec<u8>>()))
+    }
+
     /// The largest JSON body taken, and the largest upload.
     const JSON_MAX: usize = 16 << 20;
     const UPLOAD_MAX: u64 = 8 << 30;
@@ -876,6 +891,7 @@ mod http {
 
     async fn page(Url(file): Url<String>) -> Response {
         match PAGE.iter().find(|(n, _, _)| *n == file) {
+            Some(("sw.js", t, body)) => ([(header::CONTENT_TYPE, *t), (header::CACHE_CONTROL, "no-store")], String::from_utf8_lossy(body).replace("__VERSION__", page_version())).into_response(),
             Some((_, t, body)) => ([(header::CONTENT_TYPE, *t), (header::CACHE_CONTROL, "no-store")], *body).into_response(),
             None => error(StatusCode::NOT_FOUND, format!("no {file}")),
         }
@@ -1157,6 +1173,20 @@ mod tests {
         let mut page = String::new();
         s.read_to_string(&mut page).unwrap();
         assert!(page.starts_with("HTTP/1.1 200") && page.contains("Scenic worker"), "{}", &page[..page.len().min(200)]);
+        // The page as an app: its manifest, service worker (its version filled in) and icons, likewise.
+        let get = |path: &str| {
+            let mut s = std::net::TcpStream::connect(&addr).unwrap();
+            s.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+            let mut b = Vec::new();
+            s.read_to_end(&mut b).unwrap();
+            b
+        };
+        let manifest = String::from_utf8(get("/work/manifest.webmanifest")).unwrap();
+        assert!(manifest.starts_with("HTTP/1.1 200") && manifest.contains("application/manifest+json") && manifest.contains("\"start_url\": \"/work/\""));
+        let sw = String::from_utf8(get("/work/sw.js")).unwrap();
+        assert!(sw.starts_with("HTTP/1.1 200") && !sw.contains("__VERSION__") && sw.contains(&format!("const VERSION = \"{}\"", http::page_version())));
+        let icon = get("/work/icons/icon-192.png");
+        assert!(icon.starts_with(b"HTTP/1.1 200") && icon.windows(8).any(|w| w == b"\x89PNG\r\n\x1a\n"));
         // A connection whose headers don't come is closed once their time is up.
         let mut slow = std::net::TcpStream::connect(&addr).unwrap();
         slow.write_all(b"GET /work/ HTTP/1.1\r\nHost").unwrap();
