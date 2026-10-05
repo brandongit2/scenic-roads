@@ -6,8 +6,9 @@
 import type { Agent, CatalogWatch } from '../catalog';
 import { h } from './dom';
 
-/** A heartbeat older than this: the build Mac is asleep, away or off. */
-const STALE_S = 600;
+/** A heartbeat older than this: the build Mac is asleep, away or off (its agent writes one at least
+ * every two minutes). */
+const STALE_S = 360;
 
 const now = () => Date.now() / 1000;
 
@@ -48,6 +49,7 @@ function doing(what: string): string {
 /** The build Mac in a few words, and how its dot shows. */
 function agentState(a: Agent): { text: string; dot: 'run' | 'paused' | 'idle' | 'away' } {
   if (now() - a.beat > STALE_S) return { text: `last seen ${ago(a.beat)}`, dot: 'away' };
+  if (a.pause) return { text: a.job && !a.job.paused ? 'pausing' : 'paused', dot: 'paused' };
   if (a.job?.paused) return { text: `paused: ${a.job.paused.split(':')[0]}`, dot: 'paused' };
   if (a.job) return { text: doing(a.job.what), dot: 'run' };
   if (!a.conditions.nas) return { text: 'can’t reach the NAS', dot: 'paused' };
@@ -125,6 +127,23 @@ export class BuildStatus {
     this.off = [];
   };
 
+  /** The whole build paused (every Mac's job at its next safe point, or `now`: frozen at once) or
+   * going on: an ask to this Mac's agent, through the map's server, which passes it on. */
+  private async ask(mode: 'drain' | 'freeze' | null) {
+    this.asking = mode === null ? 'resume' : 'pause';
+    if (this.pop) this.fill(this.pop);
+    try {
+      const r = await fetch('/api/build/pause', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) });
+      if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    } catch (e) {
+      this.asking = null;
+      alert(`The build couldn't be asked to ${mode === null ? 'go on' : 'pause'}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    void this.watch.poll();
+  }
+  /** An ask sent, until the heartbeat shows it taken up. */
+  private asking: 'pause' | 'resume' | null = null;
+
   /** The details: the build Mac (job, waiting, recent, conditions), then the map data and NAS. */
   private fill(pop: HTMLElement) {
     const c = this.watch.status, a = c?.agent ?? null;
@@ -138,11 +157,27 @@ export class BuildStatus {
         h('div', { class: 'bs-row faint' }, [a.host, a.app, ...(stale ? [] : [`running ${span(now() - a.started)}`])].join(' · ')),
         h('div', { class: 'bs-row' }, [a.conditions.ac ? 'On mains power' : 'On battery', !a.conditions.nas ? 'NAS not reachable' : a.conditions.home === false ? 'NAS through Tailscale (away from home)' : 'NAS reachable', a.conditions.idle_s >= 120 ? `idle ${span(a.conditions.idle_s)}` : 'in use'].join(' · ')),
       );
+      // Pausing the whole build, or letting it go on (pipeline::control).
+      if (this.asking && (this.asking === 'pause') === !!a.pause) this.asking = null;
+      const btn = (label: string, title: string, mode: 'drain' | 'freeze' | null) => h('button', { class: 'bs-btn', type: 'button', title, onclick: () => void this.ask(mode) }, label);
+      if (this.asking) {
+        out.push(h('div', { class: 'bs-row faint' }, this.asking === 'pause' ? 'Pausing… (the build Mac takes it up in seconds)' : 'Resuming…'));
+      } else if (a.pause) {
+        const how = a.pause.mode === 'freeze' ? 'every Mac’s job frozen where it was' : 'every Mac’s job stops at its next safe point';
+        out.push(
+          h('div', { class: 'bs-row warn' }, `Paused from ${a.pause.by}, ${ago(a.pause.at)}: ${how}; nothing new starts`),
+          h('div', { class: 'bs-row' }, btn('Resume building', 'The build picks up where it stopped', null)),
+        );
+      } else {
+        out.push(h('div', { class: 'bs-row' },
+          btn('Pause building', 'Every Mac’s running job stops at its next safe point (an area, a map tile), keeping what it did; nothing new starts until you resume', 'drain'), ' ',
+          btn('Pause now', 'Every Mac’s running job frozen where it is at once; it goes on from there when you resume', 'freeze')));
+      }
       if (a.job) {
         out.push(
           hd('Now', `for ${span(now() - a.job.started)}`),
           h('div', { class: 'bs-row' }, a.job.what),
-          ...(a.job.paused ? [h('div', { class: 'bs-row warn' }, `Paused: ${a.job.paused}`)] : []),
+          ...(a.job.paused ? [h('div', { class: 'bs-row warn' }, `Paused: ${a.job.paused}`)] : a.job.pausing ? [h('div', { class: 'bs-row warn' }, 'Stopping at its next safe point (what it’s on is kept)')] : []),
           ...(a.job.tail.trim() ? [h('pre', { class: 'bs-log' }, a.job.tail.trimEnd())] : []),
         );
       }

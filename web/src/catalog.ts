@@ -10,10 +10,20 @@ export interface AgentJob {
   what: string;
   /** Seconds since the epoch. */
   started: number;
-  /** Why it's paused, when it is. */
+  /** Why it's paused (frozen where it is), when it is. */
   paused: string | null;
+  /** Why it's stopping at its next safe point (the build pausing), while it is. */
+  pausing?: string | null;
   /** Its log's last lines. */
   tail: string;
+}
+
+/** The build's pause (pipeline::control::Pause): every Mac's job at its next safe point ("drain")
+ * or frozen at once ("freeze"), who asked, since when (seconds since the epoch). */
+export interface BuildPause {
+  mode: 'drain' | 'freeze';
+  by: string;
+  at: number;
 }
 
 /** A job the build Mac finished. */
@@ -47,6 +57,8 @@ export interface Agent {
   bad_recipes: [string, string][];
   /** Per region, how many of its areas are built (after the first OpenStreetMap pass). */
   built?: Record<string, { built: number; total: number }>;
+  /** The build's pause, while it's paused (agents from 2026-10-05 on). */
+  pause?: BuildPause | null;
 }
 
 /** A data source's credit (pipeline::rules::Credit): what came from it, the source as its terms

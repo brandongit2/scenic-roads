@@ -6,6 +6,7 @@ pub mod buildtiles;
 pub mod candidates;
 pub mod chain;
 pub mod climbs;
+pub mod control;
 pub mod coord;
 #[cfg(not(target_os = "wasi"))]
 pub mod net;

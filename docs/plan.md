@@ -30,7 +30,8 @@ nothing built depends on how the coverage is divided into regions.
 - `scenic status` shows what the build Mac is doing, and so does the menu bar item on both Macs
   (Scenic.app, `tools/status`). It shows the state as an icon: building, paused, waiting, nothing to
   build, a problem, or out of touch. Its menu holds the job's progress bar with the time left and a
-  checklist of every step to the end, and it sends a notification for every change.
+  checklist of every step to the end, pauses and resumes the whole build, and it sends a
+  notification for every change.
 - The server mounts the NAS itself when it's missing, at home: at start, then from its periodic
   check.
 
@@ -1021,6 +1022,34 @@ are no request files.
   waits, every two minutes while a job runs.
 - **A newly installed app:** the running job finishes under the old one, nothing new starts, and the
   agent exits so the launcher starts the new one.
+- **Pausing** (`pipeline::control`): one pause for the whole build, every Mac's jobs and the worker
+  pages' tasks.
+  - **Asked for** from either Mac's menu bar item (Pause Building; Option: Pause Building Now), the
+    map's build panel (Pause building, Pause now) or `scenic pause [--now]`, and lifted the same
+    ways (Resume, `scenic resume`): an ask in that Mac's agent's folder (`pause-request.json`), which
+    its agent takes up within seconds and passes on to the build Mac's coordinator. A helper that
+    can't reach it holds the ask itself meanwhile, and passes it on once it can.
+  - **Held** by the build Mac's coordinator, on its disk (`coord/pause.json`, so a restart keeps it)
+    and mirrored to the NAS (`state/build/pause.json`); told to every worker in its answers to their
+    asks (an agent: refused, with the pause; a page: nothing now) and beats; each agent keeps what it
+    last heard (`pause.json`), so a helper that can't reach the build Mac stays as it last heard.
+  - **At a safe point** (the default): each running job finishes the target it's on (an area, a map
+    tile, a terrain or slope area, a batch's candidates or peaks), saves it, notes it done
+    (`SCENIC_DONE`) and ends as paused (exit 75; its channel, `SCENIC_CONTROL`, said "drain"). The
+    agent records what it noted done (a helper hands those off: the coordinator takes part of a
+    lease's targets) and starts nothing new; on resume the plan picks up the rest. A job that hasn't
+    reached a safe point in 15 minutes (a terrain area mid-way) is frozen where it is instead, and
+    goes on from there. **Now:** every running job frozen where it is at once (SIGSTOP), going on
+    from there.
+  - **While paused:** no lease lapses (a paused or asleep worker's work isn't given to another);
+    the agents and the coordinator keep running and reporting (the heartbeat says paused, and each
+    job stopping or frozen); a job stopped by the pause, or by sleep, a restart or not starting, is
+    given back, not counted as a failure.
+  - **By itself:** a job without the NAS (or a whole-planet job away from home) is frozen at once,
+    as it can't save; on battery under 30 %, a CPU job stops at its next safe point. Each goes on once
+    its condition holds again.
+  - **Any job's end** (done, paused, failed, stopped) records the targets it noted done, so they're
+    never built again.
 - **Room on the disk:** before a job starts (and before its targets are claimed), when the Mac has
   less free than the job needs (30 GB; a terrain run 55 GB, for its area's raw tiles held twice
   while they're packed onto the NAS, and on a run again the area's archives copied here and merged,
@@ -1052,7 +1081,7 @@ are no request files.
   agent are stopped at start (only when their leader's start time proves them ours, or the leader is
   gone and every member started after the job).
 - **The heartbeat:** the agent writes it locally with each loop (about every 20 s), and to the NAS
-  (`state/status.json`) when it changes or every five minutes; the user's idle seconds don't count as
+  (`state/status.json`) when it changes or every two minutes; the user's idle seconds don't count as
   a change, only whether they're at the Mac. It holds the job, its progress (from the job's `progress:` lines) with the time left, and a checklist
   of every step to the end, each saying what it does ("Choosing and drawing the landmarks"): its
   jobs left by name, in the order they'll run ("Measuring the peaks' prominence and isolation: 178
@@ -1213,7 +1242,9 @@ mid-job. Nothing depends on it being available at a given time.
 - `scenic status`.
 - The app's status bar: the build Mac's state, the NAS, and new data or a new app in.
 - The menu bar item. It asks the local server (`/api/build`): this Mac's agent's status when it runs
-  here, else the NAS's copy.
+  here, else the NAS's copy. Each agent writes its status at least every two minutes; one not heard
+  from for six is shown as out of touch (asleep, off, or stuck), not as it last was. It pauses and
+  resumes the build (Pausing, above), as does the map's build panel.
 - Each says what's waiting and why ("Build Mac last seen yesterday; Kanto waits for it to be plugged
   in at home").
 

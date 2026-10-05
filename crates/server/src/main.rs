@@ -205,7 +205,7 @@ impl AppState {
             let host = h["host"].clone();
             let mut list: Vec<serde_json::Value> = obj.get("helpers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
             list.retain(|x| x["host"] != host);
-            list.push(serde_json::json!({"host": host, "beat": h["beat"], "job": h["job"]}));
+            list.push(serde_json::json!({"host": host, "beat": h["beat"], "job": h["job"], "pause": h["pause"]}));
             obj.insert("helpers".into(), serde_json::Value::Array(list));
         }
         let log = if local {
@@ -213,7 +213,9 @@ impl AppState {
         } else {
             None
         };
-        serde_json::json!({"status": status, "local": local, "now": now, "log": log})
+        // This Mac's ask to pause or go on, while its agent hasn't taken it up (pipeline::control).
+        let asked = pipeline::control::take_request(&self.home.join("agent")).map(|r| serde_json::json!({ "pause": r.pause.is_some(), "at": r.at }));
+        serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked})
     }
 
     /// Whether the details, rail frequencies and roads' English names of this catalog are loaded.
@@ -375,6 +377,7 @@ async fn main() -> Result<()> {
             move |h: HeaderMap, b: axum::body::Bytes| remote::auth(State(r.clone()), h, b)
         }))
         .route("/api/build", get(build_h))
+        .route("/api/build/pause", axum::routing::post(build_pause_h))
         .nest_service(
             "/fonts",
             tower::ServiceBuilder::new()
@@ -640,6 +643,27 @@ fn credits_of(cat: &store::catalog::Catalog) -> serde_json::Value {
 async fn build_h(State(s): State<S>) -> Response {
     let body = tokio::task::spawn_blocking(move || s.build_status()).await.unwrap_or(serde_json::Value::Null);
     ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
+}
+
+/// The whole build paused (`{"mode": "drain"}`: every Mac's job at its next safe point; `"freeze"`:
+/// frozen at once) or going on (`{"mode": null}`), from the map: an ask to this Mac's agent, which
+/// passes it on to the build Mac (pipeline::control).
+async fn build_pause_h(State(s): State<S>, b: axum::body::Bytes) -> Response {
+    use pipeline::control::{Mode, Pause};
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap_or_default();
+    let mode = match v.get("mode") {
+        Some(serde_json::Value::String(m)) if m == "drain" => Some(Mode::Drain),
+        Some(serde_json::Value::String(m)) if m == "freeze" => Some(Mode::Freeze),
+        Some(serde_json::Value::Null) => None,
+        _ => return (StatusCode::BAD_REQUEST, "{\"mode\": \"drain\" | \"freeze\" | null}").into_response(),
+    };
+    let pause = mode.map(|m| Pause::new(m, &format!("the map on {}", pipeline::agent::cond::host_name())));
+    let home = s.home.join("agent");
+    match tokio::task::spawn_blocking(move || pipeline::control::request(&home, pause)).await {
+        Ok(Ok(())) => ([(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "ok": true }))).into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 async fn catalog_h(State(s): State<S>) -> Response {

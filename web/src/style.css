@@ -569,6 +569,8 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 .bs-pop .ok { color: var(--accent); }
 .bs-pop .fail { color: #ff8b8b; }
 .bs-pop .warn { color: #f3c77a; }
+.bs-pop .bs-btn { margin: 4px 0 2px; padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.bs-pop .bs-btn:hover { background: var(--line); }
 .bs-pop .bs-log { margin: 3px 0 2px; padding: 4px 6px; max-height: 98px; overflow: auto; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--line); border-radius: 4px; color: var(--muted); font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* A region's build state (Regions panel). */

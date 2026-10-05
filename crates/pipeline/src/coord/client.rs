@@ -21,14 +21,17 @@ pub struct Client {
 /// What the coordinator answered: its status and its JSON (Null for none).
 pub type Reply = (u16, serde_json::Value);
 
-/// Work refused to this worker as it is (an agent on another app than the build Mac's): why, in
-/// words for its status.
+/// Work refused to this worker as it is (an agent on an older app than the build Mac's, or the build
+/// paused): why, in words for its status, and the build's pause, when that's why.
 #[derive(Debug)]
-pub struct Refused(pub String);
+pub struct Refused {
+    pub why: String,
+    pub pause: Option<crate::control::Pause>,
+}
 
 impl std::fmt::Display for Refused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.why)
     }
 }
 
@@ -63,8 +66,12 @@ impl Client {
         self.contact.lock().unwrap().token.clone()
     }
 
-    fn agent() -> ureq::Agent {
-        ureq::Agent::config_builder().timeout_connect(Some(Duration::from_secs(5))).timeout_global(Some(Duration::from_secs(120))).http_status_as_error(false).build().into()
+    /// The HTTP client for a request to `path`: a file (a task's input or output, `/work/in/`,
+    /// `/work/out/`) has two minutes; anything else 15 s, so a build Mac that doesn't answer (asleep,
+    /// its agent stopped) holds no worker's loop up for long.
+    fn agent(path: &str) -> ureq::Agent {
+        let files = path.starts_with("/work/in/") || path.starts_with("/work/out/");
+        ureq::Agent::config_builder().timeout_connect(Some(Duration::from_secs(5))).timeout_global(Some(Duration::from_secs(if files { 120 } else { 15 }))).http_status_as_error(false).build().into()
     }
 
     /// One request, at each address in turn until one answers; once more after reading the contact
@@ -85,9 +92,9 @@ impl Client {
                 let full = format!("{url}{path}");
                 let auth = format!("Bearer {}", c.token);
                 let r = match (method, body) {
-                    ("GET", _) => Self::agent().get(&full).header("Authorization", &auth).header("X-Worker", &self.worker).call(),
-                    ("PUT", Some(b)) => Self::agent().put(&full).header("Authorization", &auth).header("X-Worker", &self.worker).send(b),
-                    (_, b) => Self::agent().post(&full).header("Authorization", &auth).header("X-Worker", &self.worker).header("Content-Type", "application/json").send(b.unwrap_or(b"{}")),
+                    ("GET", _) => Self::agent(path).get(&full).header("Authorization", &auth).header("X-Worker", &self.worker).call(),
+                    ("PUT", Some(b)) => Self::agent(path).put(&full).header("Authorization", &auth).header("X-Worker", &self.worker).send(b),
+                    (_, b) => Self::agent(path).post(&full).header("Authorization", &auth).header("X-Worker", &self.worker).header("Content-Type", "application/json").send(b.unwrap_or(b"{}")),
                 };
                 match r {
                     Ok(mut resp) => {
@@ -129,7 +136,7 @@ impl Client {
         let a = Ask { worker: self.worker.clone(), ..a.clone() };
         match self.post_json("/work/ask", &serde_json::to_value(&a)?)? {
             (200, v) => Ok(Some(serde_json::from_value(v)?)),
-            (409, v) => Err(Refused(v["error"].as_str().unwrap_or("the build Mac gives this Mac no work as it is").to_string()).into()),
+            (409, v) => Err(Refused { why: v["error"].as_str().unwrap_or("the build Mac gives this Mac no work as it is").to_string(), pause: serde_json::from_value(v["pause"].clone()).ok().flatten() }.into()),
             _ => Ok(None),
         }
     }
@@ -137,8 +144,20 @@ impl Client {
     /// Keeps lease `lease` alive; false when the coordinator no longer holds it for this worker (the
     /// work should stop: it was offered again).
     pub fn beat(&self, lease: u64, progress: Option<&str>) -> Result<bool> {
+        Ok(self.beat_paused(lease, progress)?.0)
+    }
+
+    /// `beat`, and the build's pause, while it's paused (the job pauses with it).
+    pub fn beat_paused(&self, lease: u64, progress: Option<&str>) -> Result<(bool, Option<crate::control::Pause>)> {
         let b = super::Beat { worker: self.worker.clone(), lease, progress: progress.map(str::to_string) };
-        Ok(self.post_json("/work/beat", &serde_json::to_value(&b)?)?.1["ok"].as_bool().unwrap_or(false))
+        let v = self.post_json("/work/beat", &serde_json::to_value(&b)?)?.1;
+        Ok((v["ok"].as_bool().unwrap_or(false), serde_json::from_value(v["pause"].clone()).ok().flatten()))
+    }
+
+    /// Passes on this Mac's ask (crate::control::Request): the build paused, or going on.
+    pub fn set_pause(&self, pause: Option<&crate::control::Pause>) -> Result<()> {
+        self.post_json("/work/pause", &serde_json::json!({ "pause": pause }))?;
+        Ok(())
     }
 
     /// Hands work back: taken; gone (its lease ended: drop the work, it was offered again, and a
@@ -159,7 +178,15 @@ impl Client {
 
     /// Gives lease `lease` back, failed (`oom_mb`: a task out of memory at that peak).
     pub fn fail(&self, lease: u64, error: &str, oom_mb: Option<u64>) -> Result<()> {
-        let f = Fail { worker: self.worker.clone(), lease, error: error.chars().take(4000).collect(), oom_mb };
+        let f = Fail { worker: self.worker.clone(), lease, error: error.chars().take(4000).collect(), oom_mb, interrupted: false };
+        self.post_json("/work/fail", &serde_json::to_value(&f)?)?;
+        Ok(())
+    }
+
+    /// Gives lease `lease` back unfinished, not failed (`why`: the build paused, the Mac slept, its
+    /// agent restarted, it couldn't start here): its targets aren't kept from this worker.
+    pub fn give_back(&self, lease: u64, why: &str) -> Result<()> {
+        let f = Fail { worker: self.worker.clone(), lease, error: why.chars().take(4000).collect(), oom_mb: None, interrupted: true };
         self.post_json("/work/fail", &serde_json::to_value(&f)?)?;
         Ok(())
     }

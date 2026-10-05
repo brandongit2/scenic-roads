@@ -464,13 +464,26 @@ class, id) within a tile. The client sends the id with the clicked point.
     `leases.json` (`{next, leases: [{id, worker, work: {Job: {step, targets: [[target, key], …]}},
     progress}]}`: the jobs' leases), `costs.json` (`{unit: {peak_mb, secs}}`, `"<step> <target>"` for
     another shared step's job, and `"tail <unit>"` for a unit's last steps as a task),
-    `journal/<worker>/` (the hand-offs taken, as below), `tasks/<id>/` (a task's uploads);
+    `journal/<worker>/` (the hand-offs taken, as below; `journal/raw-tiles/`, raw tiles' archives to
+    name on their own), `tasks/<id>/` (a task's uploads), `pause.json` (the build's pause while it's
+    paused: `{mode: "drain" | "freeze", by, at}`, `pipeline::control::Pause`);
     `costs.jsonl` (what a shared step's job took, `SCENIC_COSTS`: a JSON line per target, `{unit,
     peak_mb, secs}`, `unit` the target for a unit, else "<step> <target>"; `peak_mb` the most the
     job's processes held together during that target, sampled).
   - On a helper, in the agent's folder, `outbox/<lease>/`: its leased job's saves (as below),
     `costs.jsonl`, `spec.json` (a task's), `task.json` (`scenic run-task`'s result) and `result.json`
-    (`{ok, done: [step, [[target, key], …]] or null, task, error}`), until the coordinator has them.
+    (`{ok, done: [step, [[target, key], …]] or null (some of the lease's targets when it paused at
+    a safe point), interrupted (stopped, not failed: given back unheld), task, error}`), until the
+    coordinator has them.
+  - **Pausing** (`pipeline::control`), in each Mac's agent's folder: `pause-request.json` (this Mac's
+    ask, `{pause: {mode, by, at} or null (going on), at}`, from its menu, `scenic pause` or the map's
+    `/api/build/pause`; taken up and removed by its agent once passed on), `pause.json` (the build's
+    pause as the agent last knew it), `control` (the running job's channel: `run` or `drain`,
+    `SCENIC_CONTROL`) and `done.txt` (the targets it finished, `<step> <target>` a line,
+    `SCENIC_DONE`). A job that stopped at a safe point exits 75. The coordinator's answers carry the
+    pause: an ask refused (409) `{error, pause}`, a beat `{ok, pause}`; `POST /work/pause {pause}`
+    passes a Mac's ask on; `/work/fail {…, interrupted}` gives a lease back unheld.
+    `state/build/pause.json` on the NAS mirrors the build Mac's.
   - A hand-off (`pipeline::handoff`): JSON `{changes: {logical: content name, or null when removed},
     pending: {content name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] or
     null, raw: [[area, {name, bytes}], …] (a helper's raw tiles' archives, on the NAS, for the build
@@ -483,8 +496,10 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/build/writer` (the build Mac's name: the records' one writer); `state/helpers/<host>.json`
     (a helper's status, as the heartbeat's; the heartbeat lists those fresh within ten minutes as
     `helpers`, and the workers the coordinator heard from in two minutes as `workers`).
-- **State:** `state/status.json` (the agent's heartbeat: conditions, the job, its parts (`parts`,
-  `part`: the one it's on) and its progress, what waits (one about a job: its `step`), the
-  checklist to the end: each step's `done`/`total` or `left`, its jobs left by name (`next`) and
-  why it waits (`note`)); `state/build/{manifest,jobs,pending,summaries}.json`.
+- **State:** `state/status.json` (the agent's heartbeat, written on a change and at least every two
+  minutes: conditions, the job, its parts (`parts`, `part`: the one it's on) and its progress, why
+  it's frozen (`paused`) or stopping at its next safe point (`pausing`), what waits (one about a
+  job: its `step`), the build's `pause` while it's paused, the checklist to the end: each step's
+  `done`/`total` or `left`, its jobs left by name (`next`) and why it waits (`note`));
+  `state/build/{manifest,jobs,pending,summaries,pause}.json`.
 - **The app:** `app/current.json` and `previous.json`: `{version, files, sha256}`.

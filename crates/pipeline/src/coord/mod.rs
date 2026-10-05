@@ -139,6 +139,9 @@ pub struct Shared {
     /// The app this Mac's agent runs: an agent on another builds with other code than the keys it
     /// would record say, so it gets no work ("" in tests: any).
     pub app: String,
+    /// The build's pause (crate::control), while it's paused: no work is given, a worker's beat is
+    /// told (its job pauses too), and no lease lapses. Kept in `pause.json`, so a restart keeps it.
+    pub paused: Option<crate::control::Pause>,
     /// Where the token, leases, costs and journal are kept.
     dir: PathBuf,
 }
@@ -282,6 +285,10 @@ pub struct Fail {
     pub error: String,
     #[serde(default)]
     pub oom_mb: Option<u64>,
+    /// Stopped, not failed (the build paused, the Mac slept, its agent restarted, it couldn't start
+    /// there): its targets aren't kept from the worker.
+    #[serde(default)]
+    pub interrupted: bool,
 }
 
 impl Coordinator {
@@ -304,7 +311,9 @@ impl Coordinator {
             eprintln!("coordinator: {}'s lease ended with the agent before this one", l.what());
         }
         let costs = std::fs::read(dir.join("costs.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, app: app.to_string(), dir: dir.to_path_buf() };
+        // The build's pause, as it was when the agent before this one stopped.
+        let paused: Option<crate::control::Pause> = std::fs::read(dir.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, app: app.to_string(), paused, dir: dir.to_path_buf() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -375,13 +384,13 @@ impl Coordinator {
         self.shared.lock().unwrap().leases.renew(id, &self.me, progress, Instant::now())
     }
 
-    /// Ends this Mac's job's lease; `done`: it recorded its targets (not offered again until the
-    /// plan shows it).
-    pub fn finish(&self, id: u64, done: bool) {
+    /// Ends this Mac's job's lease; `done`: the targets it recorded (not offered again until the plan
+    /// shows them; the rest are free again).
+    pub fn finish(&self, id: u64, done: &[(String, String)]) {
         let mut s = self.shared.lock().unwrap();
         if let Some(l) = s.leases.finish(id, &self.me, Instant::now()) {
-            if let (true, Work::Job { step, targets }) = (done, &l.work) {
-                for (t, k) in targets {
+            if let Work::Job { step, .. } = &l.work {
+                for (t, k) in done {
                     s.done.insert((step.clone(), t.clone()), k.clone());
                 }
             }
@@ -406,6 +415,17 @@ impl Coordinator {
         self.offer(pass, vec![Offer { step: "unit".into(), targets: units, batch: 0 }]);
     }
 
+    /// The build paused (how, by whom), or going on: no work given and no lease lapsing meanwhile,
+    /// and workers told. Kept on disk.
+    pub fn set_pause(&self, pause: Option<crate::control::Pause>) {
+        set_pause(&mut self.shared.lock().unwrap(), pause);
+    }
+
+    /// The build's pause, while it's paused.
+    pub fn pause(&self) -> Option<crate::control::Pause> {
+        self.shared.lock().unwrap().paused.clone()
+    }
+
     /// The targets of `step` held now, by anyone.
     pub fn held(&self, step: &str) -> BTreeSet<String> {
         self.shared.lock().unwrap().leases.held(step, Instant::now())
@@ -414,6 +434,10 @@ impl Coordinator {
     /// Leases past their deadline dropped (their workers went quiet): a task's offered again.
     pub fn expire(&self) -> Vec<Lease> {
         let mut s = self.shared.lock().unwrap();
+        // (None while the build is paused: a paused or asleep worker's work isn't given to another.)
+        if s.paused.is_some() {
+            return Vec::new();
+        }
         let gone = s.leases.expire(Instant::now());
         for l in &gone {
             if let Work::Task { .. } = l.work {
@@ -518,8 +542,9 @@ fn saves(step: &str, target: &str, l: &str) -> bool {
 /// tiles of the NAS's own, whatever job fetched them.)
 #[cfg(not(target_os = "wasi"))]
 fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result<()> {
+    // (Its lease's targets, or some of them: a job paused at a safe point hands off what it did.)
     match &h.done {
-        Some((s, ts)) => anyhow::ensure!(s == step && ts == targets, "its done record isn't its lease's"),
+        Some((s, ts)) => anyhow::ensure!(s == step && !ts.is_empty() && ts.iter().all(|t| targets.contains(t)), "its done record isn't its lease's"),
         None => anyhow::bail!("no done record"),
     }
     anyhow::ensure!(crate::agent::claims::SHARED.contains(&step), "a hand-off of {step} isn't work a worker does");
@@ -541,6 +566,27 @@ fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Resul
         anyhow::ensure!(h.pending.contains_key(c), "{c} isn't one of its uploads");
     }
     Ok(())
+}
+
+/// The build paused (how, by whom) or going on (`Coordinator::set_pause`, `/work/pause`), kept in
+/// `pause.json` so the next agent starts with it.
+fn set_pause(s: &mut Shared, pause: Option<crate::control::Pause>) {
+    if s.paused == pause {
+        return;
+    }
+    eprintln!("coordinator: {}", pause.as_ref().map_or("the build goes on".to_string(), |p| p.why()));
+    let path = s.dir.join("pause.json");
+    let kept = match &pause {
+        Some(p) => serde_json::to_vec(p).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&path, &b)),
+        None => match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        },
+    };
+    if let Err(e) = kept {
+        eprintln!("coordinator: keeping the pause: {e:#} (it holds until this agent stops)");
+    }
+    s.paused = pause;
 }
 
 /// The raw tiles' archives of a hand-off not taken, each well named for its area, journaled on their
@@ -567,6 +613,11 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             let a: Ask = serde_json::from_slice(body)?;
             anyhow::ensure!(!a.worker.is_empty() && a.worker.len() <= 120, "a worker needs a name");
             let mut s = shared.lock().unwrap();
+            // The build paused: nothing (an agent told why, and the pause; a page, nothing now).
+            if let Some(p) = s.paused.clone() {
+                s.seen(&a.worker, format!("waiting: {}", p.why()), None, now);
+                return Ok(if a.kind == "native" { (409, serde_json::json!({ "error": p.why(), "pause": p })) } else { (204, serde_json::Value::Null) });
+            }
             // An agent on an older app than this one's (its updater not yet run) waits for this one's
             // or a newer (this Mac's agent switches between jobs): its work would be built with
             // other code than the keys it records say. (Before it's seen as a worker that does
@@ -615,7 +666,16 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             let mut s = shared.lock().unwrap();
             let alive = s.leases.renew(b.lease, &b.worker, b.progress.clone(), now);
             s.seen(&b.worker, b.progress.unwrap_or_else(|| "working".into()), None, now);
-            Ok((200, serde_json::json!({ "ok": alive })))
+            // (The build paused: its job pauses too, its lease kept meanwhile.)
+            Ok((200, serde_json::json!({ "ok": alive, "pause": s.paused })))
+        }
+        "/work/pause" => {
+            // A Mac's ask (its menu, `scenic pause`, the map), passed on by its agent: the build paused
+            // or going on, for every worker.
+            let b: serde_json::Value = serde_json::from_slice(body)?;
+            let pause: Option<crate::control::Pause> = serde_json::from_value(b["pause"].clone())?;
+            set_pause(&mut shared.lock().unwrap(), pause);
+            Ok((200, ok))
         }
         "/work/done" => {
             let d: Done = serde_json::from_slice(body)?;
@@ -638,17 +698,19 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                         raw_again(journal, Some(&h));
                         return Ok((422, serde_json::json!({ "error": format!("{e:#}") })));
                     }
-                    // Its lease ended and its units kept out of offers now, then the journal written
-                    // without the lock (a whole file, flushed); put back if that fails.
+                    // Its lease ended and its units kept out of offers now (those it did: a job paused
+                    // at a safe point did some), then the journal written without the lock (a whole
+                    // file, flushed); put back if that fails.
                     s.leases.finish(d.lease, &d.worker, now);
-                    for (t, k) in targets {
+                    let targets: Vec<(String, String)> = h.done.as_ref().map(|d| d.1.clone()).unwrap_or_default();
+                    for (t, k) in &targets {
                         s.done.insert((step.clone(), t.clone()), k.clone());
                         s.failed.remove(&(d.worker.clone(), cost_key(step, t)));
                     }
                     drop(s);
                     if let Err(e) = crate::handoff::write(&journal.join(folder(&d.worker)), &h) {
                         let mut s = shared.lock().unwrap();
-                        for (t, _) in targets {
+                        for (t, _) in &targets {
                             s.done.remove(&(step.clone(), t.clone()));
                         }
                         s.save_leases();
@@ -683,9 +745,11 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             let Some(l) = s.leases.finish(f.lease, &f.worker, now) else { return Ok((410, serde_json::json!({ "error": "that lease is gone" }))) };
             match &l.work {
                 Work::Job { step, targets } => {
-                    for (t, _) in targets {
-                        let e = s.failed.entry((f.worker.clone(), cost_key(step, t))).or_insert((now, 0));
-                        *e = (now, e.1 + 1);
+                    if !f.interrupted {
+                        for (t, _) in targets {
+                            let e = s.failed.entry((f.worker.clone(), cost_key(step, t))).or_insert((now, 0));
+                            *e = (now, e.1 + 1);
+                        }
                     }
                     s.save_leases();
                 }
@@ -700,7 +764,9 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                     }
                 }
             }
-            s.workers.get_mut(&f.worker).map(|w| w.failed += 1);
+            if !f.interrupted {
+                s.workers.get_mut(&f.worker).map(|w| w.failed += 1);
+            }
             let why: String = f.error.chars().take(300).collect();
             s.seen(&f.worker, format!("failed {}: {why}", l.what()), None, now);
             eprintln!("coordinator: {} failed {}: {why}", f.worker, l.what());
@@ -712,7 +778,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             let workers: BTreeMap<&String, serde_json::Value> = s.workers.iter().map(|(n, w)| (n, serde_json::json!({ "worker": w, "seen_s": now.duration_since(w.seen).as_secs() }))).collect();
             let tasks: Vec<serde_json::Value> = s.tasks.by_id.values().map(|t| serde_json::json!({ "id": t.id, "kind": t.kind, "mem_mb": t.mem_mb, "state": format!("{:?}", t.state).split([' ', '{']).next().unwrap_or("") })).collect();
             let offered: BTreeMap<&str, usize> = s.offers.iter().map(|o| (o.step.as_str(), o.targets.len())).collect();
-            Ok((200, serde_json::json!({ "pass": s.pass, "offered": offered, "done": s.done.len(), "leases": leases, "workers": workers, "tasks": tasks })))
+            Ok((200, serde_json::json!({ "pass": s.pass, "paused": s.paused, "offered": offered, "done": s.done.len(), "leases": leases, "workers": workers, "tasks": tasks })))
         }
         p if p.starts_with("/task/") && !local => anyhow::bail!("{p} is for this Mac's jobs"),
         "/task/offer" => {
@@ -862,6 +928,7 @@ mod http {
             .route("/work/{*file}", get(page))
             .route("/work/ask", any(json))
             .route("/work/beat", any(json))
+            .route("/work/pause", any(json))
             .route("/work/done", any(json))
             .route("/work/fail", any(json))
             .route("/work/status", any(json))
@@ -1117,6 +1184,48 @@ mod tests {
     }
 
     #[test]
+    fn the_builds_pause_holds_for_every_worker() {
+        use crate::control::{Mode, Pause};
+        let (d, c, w) = start();
+        let units: Vec<(String, String, u64)> = (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
+        c.offer_units("2026-09-28", units.clone());
+        let g = w.ask(&ask(4096)).unwrap().unwrap();
+        // Paused (from a helper's menu, passed on by its agent): no work; an agent's told why and the
+        // pause, a page nothing; a worker's beat hears it; no lease lapses meanwhile.
+        w.set_pause(Some(&Pause::new(Mode::Drain, "the menu bar on m1"))).unwrap();
+        assert_eq!(c.pause().map(|p| p.by), Some("the menu bar on m1".to_string()));
+        let e = w.ask(&ask(4096)).unwrap_err();
+        let r = e.downcast_ref::<client::Refused>().unwrap();
+        assert!(r.why.contains("paused") && r.pause.as_ref().is_some_and(|p| p.mode == Mode::Drain));
+        let page = client::Client::at(w.urls(), c.contact.token.clone(), "ipad");
+        assert!(page.ask(&Ask { kind: "web".into(), can: vec!["tail".into()], ..ask(1024) }).unwrap().is_none());
+        assert!(w.beat_paused(g.lease, None).unwrap().1.is_some());
+        assert!(c.expire().is_empty());
+        // A restart keeps it.
+        let port2 = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        drop(c);
+        let c = Coordinator::start(&d.path().join("coord"), None, port2, "m4", "").unwrap();
+        assert!(c.pause().is_some());
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port2}")], c.contact.token.clone(), "m1");
+        c.offer_units("2026-09-28", units.clone());
+        // Going on: work again. A job paused at a safe point hands off what it did (those done, the
+        // rest offered again); one stopped before any is given back, not held against its targets.
+        c.set_pause(None);
+        assert_eq!(w.beat_paused(g.lease, None).unwrap(), (true, None), "its lease kept through the pause and the restart");
+        let Granted::Job { targets, .. } = &g.work else { panic!() };
+        assert_eq!(targets.len(), 3);
+        let part = handoff(&[("6/1/3", "k3")]);
+        assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(part), ..Default::default() }).unwrap(), client::Handed::Taken);
+        let g = w.ask(&ask(4096)).unwrap().unwrap();
+        let Granted::Job { targets, .. } = &g.work else { panic!() };
+        assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["6/1/2", "6/1/1"]);
+        w.give_back(g.lease, "the build paused before it finished an area").unwrap();
+        let g = w.ask(&ask(4096)).unwrap().unwrap();
+        let Granted::Job { targets, .. } = &g.work else { panic!() };
+        assert_eq!(targets.len(), 2, "given back, not failed: offered to it again at once");
+    }
+
+    #[test]
     fn candidates_are_expected_to_take_what_their_unit_did() {
         let cost = |mb: u64| Cost { peak_mb: mb, secs: 1 };
         let mut costs = BTreeMap::new();
@@ -1141,7 +1250,7 @@ mod tests {
         c.offer_units("2026-09-28", vec![("6/1/1".into(), "k1".into(), 100 << 20)]);
         // One from before agents said (an older helper's ask), or on another: refused, why given.
         let e = w.ask(&ask(4096)).unwrap_err();
-        assert!(e.downcast_ref::<client::Refused>().is_some_and(|r| r.0.contains("an older one") && r.0.contains("5 Oct 15:08 UTC")), "{e:#}");
+        assert!(e.downcast_ref::<client::Refused>().is_some_and(|r| r.why.contains("an older one") && r.why.contains("5 Oct 15:08 UTC") && r.pause.is_none()), "{e:#}");
         let e = w.ask(&Ask { app: Some("20261005-0819-7638722".into()), ..ask(4096) }).unwrap_err();
         assert!(e.to_string().contains("5 Oct 08:19 UTC"), "{e:#}");
         assert!(c.held("unit").is_empty());
@@ -1258,7 +1367,7 @@ mod tests {
         assert!(w.ask(&ask(4096)).unwrap().is_none());
         // A second hand-off for the ended lease: gone.
         assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])), ..Default::default() }).unwrap(), client::Handed::Gone);
-        c.finish(own, true);
+        c.finish(own, &[("6/1/4".to_string(), "k4".to_string())]);
         let mut changed = units.clone();
         changed[0].1 = "k1b".into();
         c.offer_units("2026-09-28", changed);

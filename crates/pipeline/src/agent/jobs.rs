@@ -58,7 +58,10 @@ pub struct Running {
     pub pgid: i32,
     pub started: u64,
     pub log: PathBuf,
+    /// Why it's frozen where it is, while it is.
     pub paused: Option<String>,
+    /// Why it's stopping at its next safe point (crate::control), while it is.
+    pub pausing: Option<String>,
     started_at: Instant,
     /// Its progress when it first reported this kind of progress: the estimate's start (time,
     /// fraction, unit).
@@ -108,7 +111,7 @@ impl Running {
         let started = now_s();
         let rec = Record { id: spec.id.clone(), pgid, started, leader_start: process_start(pgid).unwrap_or(0) };
         std::fs::write(record, serde_json::to_vec(&rec)?)?;
-        Ok(Running { spec, child, caffeinate, pgid, started, log, paused: None, started_at: Instant::now(), progress_base: None, parts: None })
+        Ok(Running { spec, child, caffeinate, pgid, started, log, paused: None, pausing: None, started_at: Instant::now(), progress_base: None, parts: None })
     }
 
     /// Pauses the job's whole process group (`why` goes to the status), and lets the Mac sleep.
@@ -296,6 +299,34 @@ mod tests {
         r.resume();
         r.stop(Duration::from_secs(5));
         assert!(tail(&r.log, 5).contains("hello"));
+    }
+
+    #[test]
+    fn a_job_asked_to_stop_does_at_its_next_safe_point() {
+        // A job that builds a target a quarter of a second, noting each done, and stops at the next
+        // safe point once its channel says so (crate::control's protocol, as scenic-build's steps).
+        let d = tempfile::tempdir().unwrap();
+        let (control, done) = (d.path().join("control"), d.path().join("done.txt"));
+        std::fs::write(&control, b"run").unwrap();
+        let script = r#"for t in 6/1/1 6/1/2 6/1/3 6/1/4 6/1/5 6/1/6 6/1/7 6/1/8; do
+            if grep -q drain "$SCENIC_CONTROL"; then exit 75; fi
+            sleep 0.25; echo "unit $t" >> "$SCENIC_DONE"
+        done"#;
+        let env = [(crate::control::CONTROL_ENV, control.to_str().unwrap()), (crate::control::DONE_ENV, done.to_str().unwrap())];
+        let mut r = Running::start(spec(&["/bin/sh", "-c", script]), 1, &env, d.path().join("log"), &d.path().join("job.json")).unwrap();
+        std::thread::sleep(Duration::from_millis(600));
+        std::fs::write(&control, b"drain").unwrap();
+        let t = Instant::now();
+        let st = loop {
+            if let Some(st) = r.poll().unwrap() {
+                break st;
+            }
+            assert!(t.elapsed() < Duration::from_secs(5), "it stopped at its next safe point");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert_eq!(st.code(), Some(crate::control::PAUSED_EXIT));
+        let finished = crate::control::read_done(&done, "unit");
+        assert!((2..=4).contains(&finished.len()) && finished[0] == "6/1/1", "{finished:?}");
     }
 
     #[test]

@@ -20,8 +20,9 @@ import UserNotifications
 
 let server = URL(string: ProcessInfo.processInfo.environment["SCENIC_STATUS_SERVER"] ?? "http://127.0.0.1:8080")!
 let home = ProcessInfo.processInfo.environment["SCENIC_HOME"].map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/scenic")
-/// Without a heartbeat for this long, the build Mac counts as out of touch (asleep, off, away).
-let outOfTouch = 15 * 60
+/// Without a heartbeat for this long, the build Mac counts as out of touch (asleep, off, away, or
+/// its agent stuck): its agent writes one at least every two minutes.
+let outOfTouch = 6 * 60
 
 // What /api/build answers (the agent's status, crates/pipeline/src/agent/mod.rs Status).
 struct Reply: Decodable {
@@ -46,6 +47,16 @@ struct Status: Decodable {
     let helpers: [Helper]?
     /// Every worker the coordinator heard from lately: helpers and web pages (agents from 2026-10-05 on).
     let workers: [Worker]?
+    /// The build's pause, while it's paused (agents from 2026-10-05 on).
+    let pause: PauseInfo?
+}
+
+/// The build's pause (crates/pipeline/src/control.rs Pause): at the next safe point ("drain") or
+/// at once ("freeze"), who asked, since when.
+struct PauseInfo: Decodable {
+    let mode: String
+    let by: String
+    let at: Int
 }
 
 /// A worker, as the build Mac's coordinator knows it (docs/workers.md).
@@ -63,6 +74,7 @@ struct Helper: Decodable {
     let host: String
     let beat: Int
     let job: Job?
+    let pause: PauseInfo?
 }
 
 /// A step of the build to the end: done of total (total unknown until an earlier step makes it), or
@@ -107,6 +119,8 @@ struct Job: Decodable {
     let what: String
     let started: Int
     let paused: String?
+    /// Why it's stopping at its next safe point (the build pausing), while it is.
+    let pausing: String?
     let tail: String?
     let progress: JobProgress?
     /// Its parts, in order (a job of more than one says them), and the one it's on.
@@ -191,6 +205,11 @@ func classify(_ r: Reply?) -> (Kind, String) {
         if let h = helping.first { return (.building, clip("Building on \(h.host); build Mac out of touch since \(clock(s.beat))")) }
         return (.outOfTouch, "Build Mac out of touch since \(clock(s.beat))")
     }
+    // Paused: stopping (a job finishing what it's on, here or on a helper), else paused.
+    if let p = s.pause {
+        let stopping = (s.job.map { $0.paused == nil } ?? false) || helping.contains { $0.job?.pausing != nil }
+        return (.paused, stopping ? "Pausing: finishing what it's on" : "Paused since \(clock(p.at))")
+    }
     if let j = s.job {
         if j.paused != nil {
             if let h = helping.first { return (.building, clip("Building on \(h.host); the build Mac's job paused")) }
@@ -229,6 +248,10 @@ func grouped(_ v: Double) -> String {
 func lines(_ r: Reply?, _ line: String) -> [Line] {
     var out = [Line(text: line, style: .title)]
     guard let r = r, let s = r.status else { return out }
+    if let p = s.pause {
+        let how = p.mode == "freeze" ? "every Mac's job frozen where it was" : "every Mac's job stops at its next safe point"
+        out.append(Line(text: "From \(p.by), \(clock(p.at)): \(how); nothing new starts until it's resumed", style: .small))
+    }
     if let j = s.job {
         out.append(Line(text: j.what, style: .plain))
         // How far the job says it is, and the time it has left at its pace.
@@ -251,7 +274,7 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
         } else if let b = bar {
             out.append(b)
         }
-        if let p = j.paused { out.append(Line(text: p, style: .small)) }
+        if let p = j.paused { out.append(Line(text: p, style: .small)) } else if j.pausing != nil { out.append(Line(text: "Stopping at its next safe point (what it's on is kept)", style: .small)) }
         out.append(Line(text: "Running \(duration(r.now - j.started)) (since \(clock(j.started)))", style: .small))
         // The log's last lines, without the terminal's colour codes.
         let plain = (j.tail ?? "").replacingOccurrences(of: "\u{1B}\\[[0-9;]*[A-Za-z]", with: "", options: .regularExpression)
@@ -272,7 +295,7 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
             if let e = p.eta_s, j.paused == nil { t += " · about \(duration(e)) left" }
             out.append(Line(text: t, style: .bar, fraction: frac))
         }
-        if let p = j.paused { out.append(Line(text: "\(h.host): \(p)", style: .small)) }
+        if let p = j.paused { out.append(Line(text: "\(h.host): \(p)", style: .small)) } else if j.pausing != nil { out.append(Line(text: "\(h.host): stopping at its next safe point", style: .small)) }
     }
     // Web pages working for the build (the helpers are above).
     for w in (s.workers ?? []) where w.kind == "web" {
@@ -418,6 +441,16 @@ struct Seen {
     var paused: Bool
     var lastEnded: Int
     var outOfTouch: Bool
+    var buildPaused: Bool
+}
+
+/// This Mac's ask to its agent (crates/pipeline/src/control.rs), while it waits to be taken up: to
+/// pause (true) or go on (false).
+let askFile = "pause-request.json"
+func pendingAsk() -> Bool? {
+    guard let d = try? Data(contentsOf: home.appendingPathComponent("agent").appendingPathComponent(askFile)),
+          let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return nil }
+    return !(o["pause"] is NSNull || o["pause"] == nil)
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -492,6 +525,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             m.addItem(it)
         }
         m.addItem(.separator())
+        // The whole build paused (every Mac), or going on: an ask to this Mac's agent, which passes it
+        // on to the build Mac (crates/pipeline/src/control.rs). Option: at once, frozen where it is.
+        if let asked = pendingAsk() {
+            let it = NSMenuItem(title: asked ? "Pausing… (asked; the build Mac takes it up in seconds)" : "Resuming… (asked)", action: nil, keyEquivalent: "")
+            it.isEnabled = false
+            m.addItem(it)
+        } else if reply?.status?.pause != nil {
+            let it = NSMenuItem(title: "Resume Building", action: #selector(resumeBuild), keyEquivalent: "")
+            it.target = self
+            m.addItem(it)
+        } else {
+            let it = NSMenuItem(title: "Pause Building", action: #selector(pauseBuild), keyEquivalent: "")
+            it.target = self
+            it.toolTip = "Every Mac's running job stops at its next safe point (an area, a map tile), keeping what it did; nothing new starts until you resume"
+            m.addItem(it)
+            let now = NSMenuItem(title: "Pause Building Now", action: #selector(pauseBuildNow), keyEquivalent: "")
+            now.target = self
+            now.isAlternate = true
+            now.keyEquivalentModifierMask = [.option]
+            now.toolTip = "Every Mac's running job frozen where it is at once; it goes on from there when you resume"
+            m.addItem(now)
+        }
+        m.addItem(.separator())
         if let log = reply?.log {
             let it = NSMenuItem(title: "Open the Build Log", action: #selector(openLog), keyEquivalent: "")
             it.target = self
@@ -520,6 +576,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return m
     }
 
+    @objc func pauseBuild(_ sender: NSMenuItem) { ask("drain") }
+    @objc func pauseBuildNow(_ sender: NSMenuItem) { ask("freeze") }
+    @objc func resumeBuild(_ sender: NSMenuItem) { ask(nil) }
+
+    /// Asks this Mac's agent to pause the build (`mode`: "drain" or "freeze") or let it go on (nil):
+    /// its ask file (crates/pipeline/src/control.rs Request), written whole, which the agent takes up
+    /// within seconds and passes on to the build Mac.
+    func ask(_ mode: String?) {
+        let now = Int(Date().timeIntervalSince1970)
+        let who = "the menu bar on \(Host.current().localizedName ?? ProcessInfo.processInfo.hostName)"
+        let pause: Any = mode.map { ["mode": $0, "by": who, "at": now] as [String: Any] } ?? NSNull()
+        let dir = home.appendingPathComponent("agent")
+        let (tmp, dst) = (dir.appendingPathComponent("pause-request.json.menu.tmp"), dir.appendingPathComponent(askFile))
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: ["pause": pause, "at": now]).write(to: tmp)
+            guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        } catch {
+            post("Couldn't ask the build to \(mode == nil ? "go on" : "pause")", "\(error.localizedDescription)")
+            return
+        }
+        poll()
+    }
+
     @objc func copyPage(_ sender: NSMenuItem) {
         guard let page = sender.representedObject as? String else { return }
         NSPasteboard.general.clearContents()
@@ -538,10 +618,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func notifyChanges() {
         guard let r = reply, let s = r.status else { return }
-        let now = Seen(job: s.job?.id, paused: s.job?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch)
+        let now = Seen(job: s.job?.id, paused: s.job?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch, buildPaused: s.pause != nil)
         defer { seen = now }
         // The first answer only sets what changes are measured from.
         guard let was = seen else { return }
+        if now.buildPaused != was.buildPaused {
+            post(now.buildPaused ? "Build paused" : "Build going on", s.pause.map { "From \($0.by)" } ?? "Picking up where it stopped")
+        }
         if now.outOfTouch != was.outOfTouch {
             post(now.outOfTouch ? "Build Mac out of touch" : "Build Mac back", now.outOfTouch ? "Not heard from since \(clock(s.beat))" : s.host)
         }

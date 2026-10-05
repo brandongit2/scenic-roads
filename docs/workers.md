@@ -91,6 +91,12 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   memory it spares, its cores and (an agent) its app (`/work/ask`). One that mounts the NAS is given
   a job first (the most work for what it fetches), then a task; a web page, tasks. An agent on an
   older app than the build Mac's gets nothing (409, why in words) until it runs that one or a newer.
+- **Pausing** (`docs/plan.md` §8, Pausing): the coordinator holds the build's pause (`pause.json`)
+  and says it in its answers: an agent's ask is refused (409) with the pause, a page's gets nothing,
+  and a beat carries it, so a running job stops at its next safe point (or freezes, as the pause
+  says); no lease lapses while it holds. A worker's agent passes its Mac's ask on (`/work/pause`). A
+  job paused at a safe point hands off the targets it finished (part of its lease's); one given back
+  unfinished for an interruption (the pause, sleep, a restart) isn't held against its targets.
 - **Leases** (`coord::lease`) are timed on the coordinator's monotonic clock (clocks between devices
   don't matter), ten minutes, renewed by a beat each minute while the work goes on. A paused job
   doesn't beat, so its work may go to another; the build Mac's own jobs hold leases too, and one

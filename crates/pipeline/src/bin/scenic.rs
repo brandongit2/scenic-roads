@@ -6,6 +6,8 @@
 //!   scenic remove <id>                  remove a region (its recipe is kept as .removed)
 //!   scenic agent [--once] [--dry-run] [--home <dir>] [--helper]  the build agent (the build Mac's
 //!                                       login item; --helper: the M1's, the shared steps' jobs)
+//!   scenic pause [--now] | resume       pause the whole build (every Mac's jobs stop at their next
+//!                                       safe point; --now: frozen at once), or let it go on
 //!   scenic gc [--dry-run] [--days 14]   remove replaced files from the NAS (the agent runs it daily)
 //!   scenic backup [--local <dir>]       back up the user's folders (the agent runs it daily)
 //!
@@ -178,6 +180,23 @@ fn main() -> Result<()> {
             pipeline::whole::write(&result, v.to_string().as_bytes())?;
             r.map(|_| ())
         }
+        "pause" | "resume" => {
+            // An ask to this Mac's agent, which passes it on to the build Mac's (crate::control).
+            use pipeline::control::{Mode, Pause};
+            let home = opt(&args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+            let host = pipeline::agent::cond::host_name();
+            let pause = (cmd == "pause").then(|| Pause::new(if flag(&args, "--now") { Mode::Freeze } else { Mode::Drain }, &format!("scenic pause on {host}")));
+            pipeline::control::request(&home, pause)?;
+            println!(
+                "{}",
+                match (cmd.as_str(), flag(&args, "--now")) {
+                    ("pause", false) => "pausing: each Mac's running job stops at its next safe point (within minutes), and nothing new starts until `scenic resume`",
+                    ("pause", true) => "pausing now: each Mac's running job is frozen where it is, until `scenic resume`",
+                    _ => "going on: the build picks up where it stopped",
+                }
+            );
+            Ok(())
+        }
         "gc" => {
             let days: u64 = opt(&args, "--days").map(|d| d.parse()).transpose()?.unwrap_or(14);
             let r = gc::run(&root(&args, true)?, days, flag(&args, "--dry-run"))?;
@@ -191,6 +210,6 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
-        c => bail!("unknown command {c:?}: status, add, remove, agent, gc, backup"),
+        c => bail!("unknown command {c:?}: status, add, remove, agent, pause, resume, gc, backup"),
     }
 }
