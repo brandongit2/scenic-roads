@@ -50,6 +50,29 @@ struct Status: Decodable {
     let workers: [Worker]?
     /// The build's pause, while it's paused (agents from 2026-10-05 on).
     let pause: PauseInfo?
+    /// The regions (their names), and when the build will be done and the map next updated (the
+    /// forecast: crates/pipeline/src/agent/forecast.rs; agents from 2026-10-05 on).
+    let regions: [Recipe]?
+    let forecast: Forecast?
+}
+
+struct Recipe: Decodable {
+    let id: String
+    let name: String
+}
+
+/// The forecast's part the menu shows: when it'll all be done (and the range), and the rounds of
+/// publishing to come, each with the regions it adds.
+struct Forecast: Decodable {
+    let done_at: Int?
+    let range: [Int]?
+    let rounds: [Round]?
+}
+
+struct Round: Decodable {
+    let at: Int
+    let regions: [String]
+    let last: Bool
 }
 
 /// The build's pause (crates/pipeline/src/control.rs Pause): at the next safe point ("drain") or
@@ -185,6 +208,14 @@ func clock(_ t: Int) -> String {
     return f.string(from: Date(timeIntervalSince1970: TimeInterval(t)))
 }
 
+/// A time to come: "16:40" today, "Tue 07:50" within the week, else "8 Oct 07:50".
+func soon(_ t: Int) -> String {
+    let d = Date(timeIntervalSince1970: TimeInterval(t))
+    let f = DateFormatter()
+    f.dateFormat = Calendar.current.isDateInToday(d) ? "HH:mm" : abs(d.timeIntervalSinceNow) < 6 * 86400 ? "EEE HH:mm" : "d MMM HH:mm"
+    return f.string(from: d)
+}
+
 /// Home folders as "~" (the build Mac's paths, as its log shows them).
 func tildes(_ s: String) -> String {
     s.replacingOccurrences(of: "/Users/[^/ ]+/", with: "~/", options: .regularExpression)
@@ -271,6 +302,17 @@ func progressText(_ p: JobProgress, paused: Bool, now: Int) -> String {
 func lines(_ r: Reply?, _ line: String) -> [Line] {
     var out = [Line(text: line, style: .title)]
     guard let r = r, let s = r.status else { return out }
+    // When it'll be done and the map next gets new data (as the worker page and the map say it).
+    if let f = s.forecast, r.now - s.beat <= outOfTouch {
+        var t = f.done_at.map { "Done ≈ \(soon($0))" } ?? "No finish in sight: there's work no machine can do"
+        if let rg = f.range, rg.count == 2, f.done_at != nil { t += " (\(soon(rg[0]))–\(soon(rg[1])))" }
+        out.append(Line(text: t, style: .small))
+        if let next = (f.rounds ?? []).first(where: { !$0.regions.isEmpty }) {
+            let names = Dictionary((s.regions ?? []).map { ($0.id, $0.name) }, uniquingKeysWith: { a, _ in a })
+            let which = next.regions.prefix(3).map { names[$0] ?? $0 }.joined(separator: ", ") + (next.regions.count > 3 ? " and \(next.regions.count - 3) more" : "")
+            out.append(Line(text: "Next map update ≈ \(soon(next.at)): \(which)", style: .small))
+        }
+    }
     if let p = s.pause {
         let how = p.mode == "freeze" ? "every Mac's job frozen where it was" : "every Mac's job stops at its next safe point"
         out.append(Line(text: "From \(p.by), \(clock(p.at)): \(how); nothing new starts until it's resumed", style: .small))

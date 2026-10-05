@@ -59,6 +59,17 @@ export interface Agent {
   built?: Record<string, { built: number; total: number }>;
   /** The build's pause, while it's paused (agents from 2026-10-05 on). */
   pause?: BuildPause | null;
+  /** When the build will be done and the map next updated (pipeline::agent::forecast; agents from
+   * 2026-10-05 on): times in seconds since the epoch. */
+  forecast?: BuildForecast | null;
+}
+
+/** The build's forecast, the part the map shows (the worker page shows the rest). */
+export interface BuildForecast {
+  done_at: number | null;
+  range: [number, number] | null;
+  /** The rounds of publishing to come: when each goes out and the regions it adds. */
+  rounds: { at: number; regions: string[]; last: boolean }[];
 }
 
 /** A data source's credit (pipeline::rules::Credit): what came from it, the source as its terms

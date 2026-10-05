@@ -36,6 +36,16 @@ function when(iso: string): string {
   return d.toLocaleString('en-GB', { day: 'numeric', month: 'short', year, hour: '2-digit', minute: '2-digit' }).replace(',', '');
 }
 
+/** A time to come (seconds since the epoch): "16:40" today, "Tue 07:50" within the week, else
+ * "8 Oct 07:50". */
+function at(t: number): string {
+  const d = new Date(t * 1000);
+  const hm = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === new Date().toDateString()) return hm;
+  if (Math.abs(t - now()) < 6 * 86400) return `${d.toLocaleDateString('en-GB', { weekday: 'short' })} ${hm}`;
+  return `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} ${hm}`;
+}
+
 /** A job in the bar: "building OpenStreetMap pass", "backing up translations…" (without its
  * parenthesis). */
 function doing(what: string): string {
@@ -157,6 +167,18 @@ export class BuildStatus {
         h('div', { class: 'bs-row faint' }, [a.host, a.app, ...(stale ? [] : [`running ${span(now() - a.started)}`])].join(' · ')),
         h('div', { class: 'bs-row' }, [a.conditions.ac ? 'On mains power' : 'On battery', !a.conditions.nas ? 'NAS not reachable' : a.conditions.home === false ? 'NAS through Tailscale (away from home)' : 'NAS reachable', a.conditions.idle_s >= 120 ? `idle ${span(a.conditions.idle_s)}` : 'in use'].join(' · ')),
       );
+      // When it'll be done and the map next gets new data (the forecast, as the worker page and the
+      // menu bar say it).
+      const f = a.forecast;
+      if (f && !stale) {
+        const names = Object.fromEntries(a.regions.map((r) => [r.id, r.name]));
+        const next = f.rounds.find((r) => r.regions.length);
+        const which = next ? next.regions.slice(0, 3).map((id) => names[id] ?? id).join(', ') + (next.regions.length > 3 ? ` and ${next.regions.length - 3} more` : '') : '';
+        out.push(h('div', { class: 'bs-row' }, [
+          f.done_at ? `Done ≈ ${at(f.done_at)}${f.range ? ` (${at(f.range[0])}–${at(f.range[1])})` : ''}` : 'No finish in sight: there’s work no machine can do',
+          ...(next ? [`next map update ≈ ${at(next.at)}: ${which}`] : []),
+        ].join(' · ')));
+      }
       // Pausing the whole build, or letting it go on (pipeline::control).
       if (this.asking && (this.asking === 'pause') === !!a.pause) this.asking = null;
       const btn = (label: string, title: string, mode: 'drain' | 'freeze' | null) => h('button', { class: 'bs-btn', type: 'button', title, onclick: () => void this.ask(mode) }, label);
