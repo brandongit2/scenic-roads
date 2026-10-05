@@ -418,7 +418,7 @@ impl Agent {
         for d in dirs {
             let Some(lease) = d.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<u64>().ok()) else { continue };
             let result: Option<serde_json::Value> = std::fs::read(d.join("result.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-            let sent = (|| -> Result<bool> {
+            let sent = (|| -> Result<crate::coord::client::Handed> {
                 // A task's: its outputs and what it took.
                 if let Some(t) = result.as_ref().filter(|r| r["ok"].as_bool() == Some(true)).map(|r| &r["task"]).filter(|t| t.is_object()) {
                     let d = crate::coord::Done { lease, outputs: serde_json::from_value(t["outputs"].clone())?, removed: serde_json::from_value(t["removed"].clone())?, secs: t["secs"].as_f64().unwrap_or(0.0), peak_mb: t["peak_mb"].as_u64().unwrap_or(0), ..Default::default() };
@@ -446,14 +446,23 @@ impl Agent {
                             Some(r) => r["error"].as_str().unwrap_or("it failed").to_string(),
                             None => "the helper's agent stopped while it ran".to_string(),
                         };
-                        client.fail(lease, &why, None).map(|()| true)
+                        client.fail(lease, &why, None).map(|()| crate::coord::client::Handed::Taken)
                     }
                 }
             })();
             match sent {
-                Ok(taken) => {
-                    if !taken {
-                        eprintln!("agent: the coordinator no longer holds lease {lease}: its work is dropped (it was offered again)");
+                Ok(handed) => {
+                    match handed {
+                        crate::coord::client::Handed::Taken => {}
+                        crate::coord::client::Handed::Gone => eprintln!("agent: the coordinator no longer holds lease {lease}: its work is dropped (it was offered again)"),
+                        crate::coord::client::Handed::Refused(why) => {
+                            // Not what the lease asked for: given back as failed (not offered to
+                            // this Mac again for a while), and dropped.
+                            eprintln!("agent: the coordinator refused lease {lease}'s hand-off ({why}); giving it back as failed");
+                            if let Err(e) = client.fail(lease, &format!("its hand-off was refused: {why}"), None) {
+                                eprintln!("agent: giving lease {lease} back: {e:#} (it lapses)");
+                            }
+                        }
                     }
                     std::fs::remove_dir_all(&d).ok();
                 }

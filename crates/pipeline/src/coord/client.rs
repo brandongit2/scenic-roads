@@ -21,6 +21,14 @@ pub struct Client {
 /// What the coordinator answered: its status and its JSON (Null for none).
 pub type Reply = (u16, serde_json::Value);
 
+/// What became of work handed back (`Client::done`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Handed {
+    Taken,
+    Gone,
+    Refused(String),
+}
+
 impl Client {
     /// The coordinator as the NAS says to reach it; None when there's none (no file), an error when
     /// the file can't be read now (an SMB hiccup: not the same as none).
@@ -117,15 +125,19 @@ impl Client {
         Ok(self.post_json("/work/beat", &serde_json::to_value(&b)?)?.1["ok"].as_bool().unwrap_or(false))
     }
 
-    /// Hands work back; true when taken, false when its lease is gone (drop the work: it was offered
-    /// again, and a late hand-off could undo a newer build).
-    pub fn done(&self, d: &Done) -> Result<bool> {
+    /// Hands work back: taken; gone (its lease ended: drop the work, it was offered again, and a
+    /// late hand-off could undo a newer build); or refused (not what the lease asked for: give the
+    /// lease back as failed, and drop the work).
+    pub fn done(&self, d: &Done) -> Result<Handed> {
         let mut v = serde_json::to_value(d)?;
         v["worker"] = self.worker.clone().into();
-        match self.post_json("/work/done", &v)? {
-            (200, _) => Ok(true),
-            (410, _) => Ok(false),
-            (c, v) => bail!("the coordinator answered {c}: {v}"),
+        let (code, b) = self.request("POST", "/work/done", Some(&serde_json::to_vec(&v)?))?;
+        let why = || serde_json::from_slice::<serde_json::Value>(&b).ok().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or_default();
+        match code {
+            200 => Ok(Handed::Taken),
+            410 => Ok(Handed::Gone),
+            422 => Ok(Handed::Refused(why())),
+            c => bail!("the coordinator answered {c} to /work/done: {}", why()),
         }
     }
 

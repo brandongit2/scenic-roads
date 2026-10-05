@@ -75,16 +75,26 @@ const CAP = (() => {
   return 128;
 })();
 let ceiling = Math.min(CAP, store.get("ceiling", navigator.deviceMemory ? navigator.deviceMemory * 256 : 1024));
-// The tasks the last page held when it died, if it did: together they took more than this browser
-// lets a tab have.
-const died = [].concat(store.get("running", null) || []);
+// Each tab's running tasks, noted with the time (renewed every minute while it lives). A note not
+// renewed for two minutes is a tab that died: together its tasks took more than this browser lets a
+// tab have. (Another tab's live note is left alone.)
+const tab = Math.random().toString(36).slice(2, 10);
+const notes = store.get("running", null);
+const all = notes && !Array.isArray(notes) ? notes : {};
+const died = [];
+for (const [t, n] of Object.entries(all)) {
+  if (Date.now() - (n.at || 0) > 120000) {
+    died.push(...(n.tasks || []));
+    delete all[t];
+  }
+}
+store.set("running", all);
 if (died.length) {
   const total = died.reduce((a, t) => a + (t.mem_mb || 0), 0);
   ceiling = Math.max(256, Math.min(ceiling, Math.floor(total * 0.7)));
   store.set("ceiling", ceiling);
-  log(`<span class="bad">The last page died running ${died.length > 1 ? `${died.length} tasks` : "a task"} of ${total} MB: taking on at most ${ceiling} MB now.</span>`);
+  log(`<span class="bad">A page died running ${died.length > 1 ? `${died.length} tasks` : "a task"} of ${total} MB: taking on at most ${ceiling} MB now.</span>`);
 }
-store.set("running", null);
 let nearMisses = store.get("near", 0);
 
 async function call(path, body) {
@@ -144,11 +154,15 @@ function show() {
   }
 }
 
-// The tasks running now, kept so a page loaded after this one dies can give them back and lower
-// its ceiling.
+// This tab's running tasks, kept (with the time) so a page loaded after this one dies can give them
+// back and lower its ceiling.
 function remember() {
   const r = slots.filter((s) => s.lease).map((s) => ({ lease: s.lease, mem_mb: s.mem }));
-  store.set("running", r.length ? r : null);
+  const notes = store.get("running", null);
+  const all = notes && !Array.isArray(notes) ? notes : {};
+  if (r.length) all[tab] = { at: Date.now(), tasks: r };
+  else delete all[tab];
+  store.set("running", all);
 }
 
 function onSlot(s, m) {
@@ -209,6 +223,7 @@ setInterval(fill, 5000);
 // Heartbeats for every lease, every minute; a lease the coordinator no longer holds is stopped
 // (its task went to another worker, or the job took it back).
 setInterval(async () => {
+  remember();
   for (const s of slots) {
     if (!s.lease) continue;
     try {

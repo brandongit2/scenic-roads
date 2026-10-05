@@ -320,7 +320,7 @@ mod tests {
         let r = run_task(&m1, g.lease, &task, &d.path().join("m1"), &bin).unwrap();
         let done = crate::coord::Done { lease: g.lease, outputs: serde_json::from_value(r["outputs"].clone()).unwrap(), removed: serde_json::from_value(r["removed"].clone()).unwrap(), ..Default::default() };
         assert_eq!(done.removed, ["u/gone.bin"]);
-        assert!(m1.done(&done).unwrap());
+        assert_eq!(m1.done(&done).unwrap(), crate::coord::client::Handed::Taken);
         // The job: a first result is checked; this Mac's run agrees, the worker's outputs match.
         let mut ran = false;
         let mut here = || {

@@ -421,13 +421,7 @@ fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Resul
         None => anyhow::bail!("no done record"),
     }
     anyhow::ensure!(step == "unit", "hand-offs are for units");
-    let mine: BTreeSet<String> = targets
-        .iter()
-        .flat_map(|(t, _)| {
-            let d = t.replace('/', "-");
-            ["base", "global/roads", "global/roaden", "layers/grid-class/hi", "layers/grid-canopy/hi", "layers/grid-cover/hi"].map(|p| format!("{p}/{d}"))
-        })
-        .collect();
+    let mine: BTreeSet<String> = targets.iter().flat_map(|(t, _)| crate::unit::saved_files(&t.replace('/', "-"))).collect();
     for (l, v) in &h.changes {
         anyhow::ensure!(mine.contains(l), "{l} isn't one of its units' files");
         if let Some(c) = v {
@@ -499,19 +493,36 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             match &l.work {
                 Work::Job { step, targets } => {
                     let h = d.handoff.unwrap_or_default();
-                    check_handoff(&h, step, targets)?;
-                    crate::handoff::write(&journal.join(folder(&d.worker)), &h)?;
+                    // Refused (422): the worker gives the lease back as failed, and drops the work.
+                    if let Err(e) = check_handoff(&h, step, targets) {
+                        return Ok((422, serde_json::json!({ "error": format!("{e:#}") })));
+                    }
+                    // Its lease ended and its units kept out of offers now, then the journal written
+                    // without the lock (a whole file, flushed); put back if that fails.
                     s.leases.finish(d.lease, &d.worker, now);
                     for (t, k) in targets {
                         s.done.insert(t.clone(), k.clone());
                         s.failed.remove(&(d.worker.clone(), t.clone()));
                     }
+                    drop(s);
+                    if let Err(e) = crate::handoff::write(&journal.join(folder(&d.worker)), &h) {
+                        let mut s = shared.lock().unwrap();
+                        for (t, _) in targets {
+                            s.done.remove(t);
+                        }
+                        s.save_leases();
+                        return Err(e.context("journal the hand-off"));
+                    }
+                    s = shared.lock().unwrap();
                     s.costs.extend(d.costs.into_iter().filter(|(u, _)| targets.iter().any(|t| &t.0 == u)));
                     s.save_leases();
                     s.save_costs();
                 }
                 Work::Task { .. } => {
-                    let unit = s.tasks.done(d.lease, &d.worker, d.outputs, d.removed, d.secs, d.peak_mb)?;
+                    let unit = match s.tasks.done(d.lease, &d.worker, d.outputs, d.removed, d.secs, d.peak_mb) {
+                        Ok(u) => u,
+                        Err(e) => return Ok((422, serde_json::json!({ "error": format!("{e:#}") }))),
+                    };
                     // What its unit's task takes, for the next time it's offered.
                     if let Some(u) = unit {
                         s.costs.insert(format!("tail {u}"), Cost { peak_mb: d.peak_mb, secs: d.secs as u64 });
@@ -659,8 +670,6 @@ mod http {
     /// The largest JSON body taken, and the largest upload.
     const JSON_MAX: usize = 16 << 20;
     const UPLOAD_MAX: u64 = 8 << 30;
-    /// The longest a request may take, its body's transfer included.
-    const REQUEST_MAX: Duration = Duration::from_secs(30 * 60);
 
     #[derive(Clone)]
     pub struct Ctx {
@@ -735,8 +744,20 @@ mod http {
     /// ("https://<this Mac's tailnet name>/<path>").
     pub fn served_https(port: u16) -> Option<String> {
         let cli = ["/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"].into_iter().find(|p| Path::new(p).exists())?;
-        let o = std::process::Command::new(cli).args(["serve", "status", "--json"]).output().ok()?;
-        https_in(&serde_json::from_slice(&o.stdout).ok()?, port)
+        // (Bounded: a stuck daemon mustn't hold up the agent's loop.)
+        let mut child = std::process::Command::new(cli).args(["serve", "status", "--json"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().ok()?;
+        let t = Instant::now();
+        while child.try_wait().ok()?.is_none() {
+            if t.elapsed() > Duration::from_secs(3) {
+                child.kill().ok();
+                child.wait().ok();
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut child.stdout.take()?, &mut out).ok()?;
+        https_in(&serde_json::from_slice(&out).ok()?, port)
     }
 
     /// `served_https` from what `tailscale serve status --json` says.
@@ -760,6 +781,7 @@ mod http {
         listener.set_nonblocking(true)?;
         let app = Router::new()
             .route("/work", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/work/")]) }))
+            .route("/work/", get(|| page(Url(String::new()))))
             .route("/work/{*file}", get(page))
             .route("/work/ask", any(json))
             .route("/work/beat", any(json))
@@ -771,22 +793,58 @@ mod http {
             .route("/work/prog/{name}", get(prog))
             .route("/task/{*rest}", any(json))
             .layer(axum::middleware::from_fn_with_state(ctx.clone(), gate))
-            .layer(tower_http::timeout::TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, REQUEST_MAX))
+            .layer(tower_http::catch_panic::CatchPanicLayer::new())
             .with_state(ctx);
         let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).thread_name("coordinator").enable_all().build()?;
         std::thread::Builder::new().name("coordinator".into()).spawn(move || {
             rt.block_on(async move {
                 match tokio::net::TcpListener::from_std(listener) {
-                    Ok(l) => {
-                        if let Err(e) = axum::serve(l, app.into_make_service_with_connect_info::<SocketAddr>()).await {
-                            eprintln!("coordinator: stopped answering: {e}");
-                        }
-                    }
+                    Ok(l) => accept(l, app).await,
                     Err(e) => eprintln!("coordinator: its socket: {e}"),
                 }
             });
         })?;
         Ok(urls(port))
+    }
+
+    /// The most connections at once, how long a request's headers may take to arrive (and an idle
+    /// connection to stay open), and a connection's whole life.
+    const CONNECTIONS: usize = 512;
+    const HEADERS_MAX: Duration = Duration::from_secs(20);
+    const CONNECTION_MAX: Duration = Duration::from_secs(3 * 3600);
+
+    /// Takes connections: one from elsewhere, or past the cap, is closed before a byte is read;
+    /// each is kept alive by TCP (a device gone without a word is noticed), its headers bounded in
+    /// time (which closes idle ones too), and its whole life bounded.
+    async fn accept(listener: tokio::net::TcpListener, app: Router) {
+        use tower::ServiceExt;
+        let room = Arc::new(tokio::sync::Semaphore::new(CONNECTIONS));
+        loop {
+            let (stream, peer) = match listener.accept().await {
+                Ok(x) => x,
+                Err(e) => {
+                    eprintln!("coordinator: taking a connection: {e}");
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    continue;
+                }
+            };
+            if !allowed(peer.ip()) {
+                continue;
+            }
+            let Ok(permit) = room.clone().try_acquire_owned() else { continue };
+            let keepalive = socket2::TcpKeepalive::new().with_time(Duration::from_secs(60)).with_interval(Duration::from_secs(15));
+            socket2::SockRef::from(&stream).set_tcp_keepalive(&keepalive).ok();
+            let app = app.clone();
+            tokio::spawn(async move {
+                let svc = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
+                    req.extensions_mut().insert(ConnectInfo(peer));
+                    app.clone().oneshot(req.map(Body::new))
+                });
+                let conn = hyper::server::conn::http1::Builder::new().timer(hyper_util::rt::TokioTimer::new()).header_read_timeout(HEADERS_MAX).serve_connection(hyper_util::rt::TokioIo::new(stream), svc);
+                tokio::time::timeout(CONNECTION_MAX, conn).await.ok();
+                drop(permit);
+            });
+        }
     }
 
     fn error(code: StatusCode, why: impl std::fmt::Display) -> Response {
@@ -823,12 +881,16 @@ mod http {
         }
     }
 
+    /// How long a JSON request's body may take to arrive.
+    const JSON_TIME: Duration = Duration::from_secs(120);
+
     /// A JSON request, answered by `route` off the runtime (it takes the lock and may write a file).
     async fn json(State(c): State<Ctx>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request) -> Response {
         let path = req.uri().path().to_string();
-        let body = match axum::body::to_bytes(req.into_body(), JSON_MAX).await {
-            Ok(b) => b,
-            Err(_) => return error(StatusCode::PAYLOAD_TOO_LARGE, "too big, or cut short"),
+        let body = match tokio::time::timeout(JSON_TIME, axum::body::to_bytes(req.into_body(), JSON_MAX)).await {
+            Ok(Ok(b)) => b,
+            Ok(Err(_)) => return error(StatusCode::PAYLOAD_TOO_LARGE, "too big, or cut short"),
+            Err(_) => return error(StatusCode::REQUEST_TIMEOUT, "its body didn't come"),
         };
         let local = loopback(peer.ip());
         match tokio::task::spawn_blocking(move || route(&path, &body, &c.shared, &c.journal, local)).await {
@@ -898,37 +960,60 @@ mod http {
         }
     }
 
-    /// A task's output, from the worker holding it: streamed aside, then renamed into place.
+    /// How long an upload may go without a byte.
+    const CHUNK_TIME: Duration = Duration::from_secs(120);
+
+    /// A file being uploaded: deleted unless it was renamed into place.
+    struct Part(PathBuf, bool);
+    impl Drop for Part {
+        fn drop(&mut self) {
+            if !self.1 {
+                std::fs::remove_file(&self.0).ok();
+            }
+        }
+    }
+
+    /// A task's output, from the worker holding it: streamed aside (its own temporary name), flushed,
+    /// then renamed into place if the task is still the worker's.
     async fn output(State(c): State<Ctx>, Url((lease, path)): Url<(u64, String)>, h: HeaderMap, body: Body) -> Response {
         if h.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok()).is_some_and(|n| n > UPLOAD_MAX) {
             return error(StatusCode::PAYLOAD_TOO_LARGE, "too big");
         }
-        let dest = c.shared.lock().unwrap().tasks.upload(lease, &worker(&h), &path);
+        let w = worker(&h);
+        let dest = c.shared.lock().unwrap().tasks.upload(lease, &w, &path);
         let Some(dest) = dest else { return error(StatusCode::GONE, "that lease is gone") };
-        let part = dest.with_extension("part");
+        let mut part = Part(PathBuf::from(format!("{}.part", dest.display())), false);
         let r: Result<u64> = async {
             tokio::fs::create_dir_all(dest.parent().unwrap()).await?;
-            let mut f = tokio::fs::File::create(&part).await?;
+            let mut f = tokio::fs::File::create(&part.0).await?;
             let mut stream = body.into_data_stream();
             let mut n = 0u64;
-            while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+            loop {
+                let next = tokio::time::timeout(CHUNK_TIME, futures_util::StreamExt::next(&mut stream)).await.map_err(|_| anyhow::anyhow!("no byte for {} s", CHUNK_TIME.as_secs()))?;
+                let Some(chunk) = next else { break };
                 let chunk = chunk.map_err(|e| anyhow::anyhow!("{e}"))?;
                 n += chunk.len() as u64;
                 anyhow::ensure!(n <= UPLOAD_MAX, "too big");
                 f.write_all(&chunk).await?;
             }
-            f.sync_data().await.ok();
-            tokio::fs::rename(&part, &dest).await?;
+            f.flush().await?;
+            f.sync_data().await?;
             Ok(n)
         }
         .await;
-        match r {
-            Ok(n) => (StatusCode::OK, Json(serde_json::json!({ "size": n }))).into_response(),
-            Err(e) => {
-                tokio::fs::remove_file(&part).await.ok();
-                error(StatusCode::BAD_REQUEST, format!("{e:#}"))
-            }
+        let n = match r {
+            Ok(n) => n,
+            Err(e) => return error(StatusCode::BAD_REQUEST, format!("{e:#}")),
+        };
+        // (Taken back while it came: not put in place.)
+        if c.shared.lock().unwrap().tasks.upload(lease, &w, &path).is_none() {
+            return error(StatusCode::GONE, "that lease is gone");
         }
+        if let Err(e) = tokio::fs::rename(&part.0, &dest).await {
+            return error(StatusCode::INTERNAL_SERVER_ERROR, e);
+        }
+        part.1 = true;
+        (StatusCode::OK, Json(serde_json::json!({ "size": n }))).into_response()
     }
 }
 
@@ -971,8 +1056,8 @@ mod tests {
         // A hand-off naming another unit's files is refused; its own, journaled whole.
         let mut bad = handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")]);
         bad.changes.insert("base/6-9-9".into(), None);
-        assert!(w.done(&Done { lease: g.lease, handoff: Some(bad), ..Default::default() }).is_err());
-        assert!(w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])), costs: vec![("6/1/3".into(), Cost { peak_mb: 2000, secs: 300 })], ..Default::default() }).unwrap());
+        assert!(matches!(w.done(&Done { lease: g.lease, handoff: Some(bad), ..Default::default() }).unwrap(), client::Handed::Refused(_)));
+        assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])), costs: vec![("6/1/3".into(), Cost { peak_mb: 2000, secs: 300 })], ..Default::default() }).unwrap(), client::Handed::Taken);
         let waiting = crate::handoff::waiting_in(&c.journal()).unwrap();
         assert_eq!(waiting.len(), 1);
         assert!(waiting[0].1.done.is_some() && waiting[0].1.changes.contains_key("base/6-1-3"));
@@ -983,7 +1068,7 @@ mod tests {
         c.offer_units("2026-09-28", units.clone());
         assert!(w.ask(&ask(4096)).unwrap().is_none());
         // A second hand-off for the ended lease: gone.
-        assert!(!w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])), ..Default::default() }).unwrap());
+        assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])), ..Default::default() }).unwrap(), client::Handed::Gone);
         c.finish(own, true);
         let mut changed = units.clone();
         changed[0].1 = "k1b".into();
@@ -1040,20 +1125,24 @@ mod tests {
     }
 
     #[test]
-    fn stalled_and_bogus_requests_dont_stop_it() {
-        use std::io::Write;
+    fn stalled_idle_and_bogus_connections_dont_stop_it() {
+        use std::io::{Read, Write};
         let (_d, c, w) = start();
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
-        // Bodies announced and never sent, without a token, then one announcing more than exists.
+        let token = c.contact.token.clone();
         let mut held = Vec::new();
-        for _ in 0..24 {
+        // Headers never finished, connections never used, bodies announced (with the token) and
+        // never sent, and a length past what exists.
+        for i in 0..40 {
             let mut s = std::net::TcpStream::connect(&addr).unwrap();
-            s.write_all(b"POST /work/ask HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 5000\r\n\r\n").unwrap();
+            match i % 4 {
+                0 => s.write_all(b"POST /work/ask HTTP/1.1\r\nHost: x\r\nContent-Ty").unwrap(),
+                1 => {}
+                2 => s.write_all(format!("POST /work/ask HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: 5000\r\n\r\n").as_bytes()).unwrap(),
+                _ => s.write_all(b"POST /work/ask HTTP/1.1\r\nHost: x\r\nContent-Length: 18446744073709551615\r\n\r\n").unwrap(),
+            }
             held.push(s);
         }
-        let mut s = std::net::TcpStream::connect(&addr).unwrap();
-        s.write_all(b"POST /work/ask HTTP/1.1\r\nHost: x\r\nContent-Length: 18446744073709551615\r\n\r\n").unwrap();
-        held.push(s);
         // A worker is still answered, and a job too.
         c.offer_units("p", vec![("6/1/1".into(), "k1".into(), 1 << 20)]);
         assert!(w.ask(&ask(4096)).unwrap().is_some());
@@ -1062,6 +1151,20 @@ mod tests {
         // A job's request with the workers' token: refused.
         let as_job = client::Client::at(w.urls(), c.contact.token.clone(), "job");
         assert!(as_job.post_json("/task/workers", &serde_json::json!({})).is_err());
+        // The page, at the address everything gives, without a token.
+        let mut s = std::net::TcpStream::connect(&addr).unwrap();
+        s.write_all(b"GET /work/ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").unwrap();
+        let mut page = String::new();
+        s.read_to_string(&mut page).unwrap();
+        assert!(page.starts_with("HTTP/1.1 200") && page.contains("Scenic worker"), "{}", &page[..page.len().min(200)]);
+        // A connection whose headers don't come is closed once their time is up.
+        let mut slow = std::net::TcpStream::connect(&addr).unwrap();
+        slow.write_all(b"GET /work/ HTTP/1.1\r\nHost").unwrap();
+        slow.set_read_timeout(Some(Duration::from_secs(40))).unwrap();
+        let mut b = [0u8; 64];
+        let t = Instant::now();
+        let n = slow.read(&mut b).unwrap_or(0);
+        assert!(t.elapsed() >= Duration::from_secs(15) && t.elapsed() < Duration::from_secs(35), "closed after {:?} with {n} bytes", t.elapsed());
         drop(held);
     }
 
@@ -1080,7 +1183,7 @@ mod tests {
         let w2 = client::Client::at(vec![format!("http://127.0.0.1:{port}")], token, "m1");
         assert!(w2.beat(g.lease, None).unwrap(), "the helper's lease lives on");
         assert!(!c2.renew(own, None), "this Mac's own ended with its agent");
-        assert!(w2.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/1", "k1")])), ..Default::default() }).unwrap());
+        assert_eq!(w2.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/1", "k1")])), ..Default::default() }).unwrap(), client::Handed::Taken);
     }
 
     #[test]
@@ -1105,7 +1208,7 @@ mod tests {
         assert_eq!(ipad.get_bytes(&format!("/work/in/{}/u/in.bin", g.lease)).unwrap(), b"input");
         assert!(ipad.get_bytes(&format!("/work/in/{}/u/other.bin", g.lease)).is_err());
         ipad.put_bytes(&format!("/work/out/{}/u/out.bin", g.lease), b"output!").unwrap();
-        assert!(ipad.done(&Done { lease: g.lease, outputs: vec![task::Output { path: "u/out.bin".into(), size: 7 }], secs: 2.0, peak_mb: 300, ..Default::default() }).unwrap());
+        assert_eq!(ipad.done(&Done { lease: g.lease, outputs: vec![task::Output { path: "u/out.bin".into(), size: 7 }], secs: 2.0, peak_mb: 300, ..Default::default() }).unwrap(), client::Handed::Taken);
         let st = job.post_json(&format!("/task/{id}"), &serde_json::json!({})).unwrap().1;
         assert_eq!(st["state"], "done");
         assert_eq!(st["check"], true, "a worker's first results are checked");

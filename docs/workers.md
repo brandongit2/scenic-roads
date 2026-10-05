@@ -157,8 +157,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   page's carries the workers' token (128 random bits, kept on the build Mac and in the contact on
   the NAS); a running job's requests (offering tasks) carry the agent's own token, never published,
   and come from this Mac only; a worker is served only the files of the task it holds, and uploads
-  only into that task's folder; request bodies are capped, every request is bounded in time (a
-  stalled one holds a task of the coordinator's runtime, not a thread); a hand-off may change only
+  only into that task's folder; request bodies are capped; connections are bounded (at most 512 at
+  once, headers within 20 s, so idle ones close too, an upload cut after two minutes without a byte,
+  a connection's life at most three hours, a device gone without a word noticed by TCP keepalive),
+  and a slow one holds a task of the coordinator's runtime, not a thread; a hand-off may change only
   the files a unit job saves for its lease's units, each to a content name of that file; lease ids
   are never given twice, across restarts too.
 - **Planned:** per-device credentials that can be revoked, exchanged for a pairing token.

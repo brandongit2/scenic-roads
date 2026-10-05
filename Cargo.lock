@@ -763,6 +763,8 @@ dependencies = [
  "det",
  "flate2",
  "futures-util",
+ "hyper",
+ "hyper-util",
  "indicatif",
  "libc",
  "memmap2 0.9.11",
@@ -774,11 +776,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "socket2",
  "store",
  "tempfile",
  "tokio",
  "tokio-util",
  "toml",
+ "tower",
  "tower-http",
  "ureq",
  "weezl",
@@ -1394,6 +1398,7 @@ dependencies = [
  "tokio-util",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]

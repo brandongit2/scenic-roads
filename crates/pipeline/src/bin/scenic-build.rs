@@ -1820,7 +1820,8 @@ fn settle_tails(out: &mut Out, date: &str, offload: Option<&pipeline::offload::O
 
 /// A unit's last part, its folder ready: the grids its packs lacked, its scenic results kept for
 /// its next run, its base pack, road values and roads' English saved, its folders removed, and what
-/// it cost noted. `how`: where its tail's last steps ran.
+/// it cost noted. `how`: where its tail's last steps ran. (What it saves is
+/// `pipeline::unit::saved_files`, all a helper's hand-off may change: keep the two together.)
 fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     let Built { u, dir, bdir, rep, carry, piece, t, mut laps, peak, .. } = b;
     use pipeline::unit::owns;

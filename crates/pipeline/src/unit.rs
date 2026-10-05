@@ -593,6 +593,13 @@ pub struct Run {
     pub reads: Vec<String>,
 }
 
+/// The files a unit job saves for a unit (its tile's dash name: `6-31-20`): its base pack, road
+/// values, roads' English and the grids its packs lacked (scenic-build's `commit_unit`). All a
+/// helper's hand-off may change (crate::coord).
+pub fn saved_files(dash: &str) -> [String; 6] {
+    ["base", "global/roads", "global/roaden", "layers/grid-class/hi", "layers/grid-canopy/hi", "layers/grid-cover/hi"].map(|p| format!("{p}/{dash}"))
+}
+
 /// A tail split: the runs that stay here, then those any worker may run (they read only the unit's
 /// own files), the longest such end.
 pub fn split(runs: &[Run]) -> (&[Run], &[Run]) {

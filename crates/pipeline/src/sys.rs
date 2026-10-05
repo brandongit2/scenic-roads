@@ -154,6 +154,23 @@ pub fn wait_with_peak(child: Child) -> io::Result<(ExitStatus, u64)> {
 }
 
 /// A symbolic link `dst` to `src` where there are links; elsewhere a copy.
+/// Raises this process's open-files limit (macOS starts a LaunchAgent at 256) to its hard limit,
+/// at most 10,240: the coordinator holds a socket per connection.
+pub fn raise_open_files() {
+    #[cfg(unix)]
+    // SAFETY: plain getrlimit/setrlimit on this process.
+    unsafe {
+        let mut l: libc::rlimit = std::mem::zeroed();
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut l) == 0 {
+            let want = l.rlim_max.min(10_240);
+            if l.rlim_cur < want {
+                l.rlim_cur = want;
+                libc::setrlimit(libc::RLIMIT_NOFILE, &l);
+            }
+        }
+    }
+}
+
 pub fn symlink(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
     #[cfg(unix)]
     return std::os::unix::fs::symlink(src, dst);
