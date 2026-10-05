@@ -327,8 +327,11 @@ record changes back through the build Mac's coordinator, which journals them for
 like the build Mac's; `tools/app/install.sh --helper` sets it up).
 - **What it builds:** what the build Mac's coordinator gives it (§8, Two Macs): the shared steps'
   jobs that fit the memory it spares (6 GB of its 16: three eighths) and its disk, from the far end of the
-  list, and when none does, units' last steps (tasks, `docs/workers.md`); nothing while it runs
-  another app than the build Mac's. A unit's predicted peak is the most memory one of its steps'
+  list (terrain from the near end), and when none does, units' tails (tasks, `docs/workers.md`);
+  nothing while it runs another app than the build Mac's. While its owner is away (on mains power,
+  not used for a quarter of an hour) it spares five eighths (10 GB) for a job that doesn't fit its
+  usual memory, if the job's targets' last runs say it ends within twenty minutes (twice the build
+  Mac's time where only the build Mac ran it; never one not yet measured). A unit's predicted peak is the most memory one of its steps'
   programs took last time (each unit job notes it; scenic-build's own isn't counted), else about ten
   times its piece, never under 3.7 GB: over the M1's first 205 units, pieces up to 150 MB, 3.7 GB at
   most, no more for the bigger pieces.
@@ -1154,8 +1157,8 @@ are no request files.
   heartbeat: the work left run through in the order the agent runs it. The build Mac takes the first
   it can (the pass's worldwide jobs, then a region at a time: its terrain, then its units; with
   none it can do now, the chains' work), its second job the first of its steps that fits beside it,
-  each helper the far end of the first shared step with work it can do that fits its memory: terrain at
-  once, a unit once its region's terrain is built and the pass's heritage sites, reaches and
+  each helper the far end of the first shared step with work it can do that fits its memory (terrain's
+  near end): terrain at once, a unit once its region's terrain is built and the pass's heritage sites, reaches and
   roadside buildings are made (as the plan's units wait for), slope once its area's terrain is. A
   machine with nothing it can do waits for the next work to end or another machine to be free. A
   round goes out as the plan makes one: a region done that the map hasn't as it is now, at most
@@ -1216,7 +1219,8 @@ and, when none fits it, units' last steps.
   disk has room for (a terrain run 55 GB free, tree cover 30, the others 15, a task 5, and a sixth
   more, counting what its caches can free: not its loose raw tiles, which only its own jobs pack),
   never while a newer app waits to start, and takes the earliest step with a target that fits, from
-  the far end of the plan, a job's worth (units: as many as it asks). A job it still has no room for
+  the far end of the plan (terrain from the near end: the build Mac's next units wait on it), a
+  job's worth (units: as many as it asks). A job it still has no room for
   once its caches are emptied goes back.
 - **The same app:** a helper says which app it runs; on an older one than the build Mac's agent
   (its updater hasn't run yet) it gets nothing (409, why in words: its status shows it), since its
@@ -1293,7 +1297,8 @@ and, when none fits it, units' last steps.
      the build Mac. A helper takes the earliest shared step with work that fits it (terrain, slope,
      tree cover, units, …: what later steps wait on first), from the far end of all of that step's
      (the agent offers a step's targets together): the last regions', while the build Mac does the
-     first's.
+     first's. Terrain it takes from the near end: the next region's, whose units the build Mac
+     builds next.
    - **A round** when a region is done that the map hasn't as it is now, at most an hour after the
      last catalog went out or last started (a failing one doesn't make every plan a round; a
      catalog dated ahead of this Mac's clock counts as now; a damaged newest one is passed over)

@@ -297,6 +297,7 @@ function fitText(w) {
     const bits = [`${n(f.fits)} of ${n(f.offered)} ${stepName(f.step).toLowerCase()} it can take`];
     if (f.held) bits.push(`${n(f.held)} with others`);
     if (f.too_big) bits.push(`${n(f.too_big)} too big for its ${n(Math.round(w.mem_mb / 102.4) / 10)} GB`);
+    if (f.too_long) bits.push(`${n(f.too_long)} too long to start while its owner is away`);
     if (f.kept_from) bits.push(`${n(f.kept_from)} kept from it after failing`);
     return bits.join(", ");
   });

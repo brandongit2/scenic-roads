@@ -245,10 +245,20 @@ fn terrain_peak(z6: usize) -> u64 {
 /// The memory a helper spares its jobs (MB): three eighths of its Mac's (6 GB of the M1's 16, the
 /// owner's choice, 2026-10-05: a terrain area's 5–6 GB fits; its units took 3.7 GB at most over
 /// its first 205).
-fn helper_memory() -> u64 {
+/// The memory a helper spares (MB): three eighths of its Mac's; while its owner is away (`away`),
+/// five eighths.
+fn helper_memory(away: bool) -> u64 {
     let total = std::process::Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"]).output().ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok());
-    total.map_or(6144, |b| (b >> 20) * 3 / 8)
+    total.map_or(6144, |b| (b >> 20) * if away { 5 } else { 3 } / 8)
 }
+
+/// Whether a helper's owner is away (on mains power, not used for a quarter of an hour): it then
+/// spares more of its memory, for a job predicted to end within `AWAY_JOB` (before they're likely
+/// back; one still running when they are ends soon).
+fn helper_away(c: &Conditions) -> bool {
+    c.ac && c.idle_s >= 15 * 60
+}
+const AWAY_JOB: u64 = 20 * 60;
 
 /// The running job's lease.
 #[derive(Clone, Debug)]
@@ -850,7 +860,19 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "Building".into(), why: format!("the disk has too little room ({:.1} GB free needed, with what its caches can free)", (need + room::margin(need)) as f64 / (1u64 << 30) as f64) });
             return Vec::new();
         }
-        let ask = crate::coord::Ask { kind: "native".into(), label: Some(format!("{} (helper)", self.host)), can, mem_mb: helper_memory(), cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32), max: batch_size("unit"), app: Some(self.app.clone()), ..Default::default() };
+        let away = helper_away(c);
+        let ask = crate::coord::Ask {
+            kind: "native".into(),
+            label: Some(format!("{} (helper)", self.host)),
+            can,
+            mem_mb: helper_memory(false),
+            cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32),
+            max: batch_size("unit"),
+            app: Some(self.app.clone()),
+            more_mb: away.then(|| helper_memory(true)),
+            max_secs: away.then_some(AWAY_JOB),
+            ..Default::default()
+        };
         let Some(client) = self.client(root, waiting) else { return Vec::new() };
         let asked = client.ask(&ask);
         let fail = |a: &Self, lease: u64, why: &str| {

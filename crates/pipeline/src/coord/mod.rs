@@ -97,6 +97,14 @@ pub fn cost_key(step: &str, target: &str) -> String {
 /// its piece's bytes); candidates' what they took last time, else the unit's (they read the same
 /// piece, with one of the unit's programs: `size` its bytes too); another step's what it took last
 /// time, else `size`, the estimate it was offered with.
+/// How long `target` of `step` is predicted to take `worker`: its last run's time (twice another
+/// worker's: the helpers run at about half the build Mac's pace); None when it hasn't run the way
+/// the step runs now.
+pub fn job_secs(costs: &BTreeMap<String, Cost>, step: &str, target: &str, worker: &str) -> Option<u64> {
+    let c = costs.get(&cost_key(step, target)).filter(|c| c.v >= cost_version(step))?;
+    Some(if c.worker.as_deref() == Some(worker) { c.secs } else { c.secs * 2 })
+}
+
 pub fn job_peak(costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: u64) -> u64 {
     // (Only what was measured the way the step runs now.)
     match (step, costs.get(&cost_key(step, target)).filter(|c| c.v >= cost_version(step))) {
@@ -204,13 +212,34 @@ impl Shared {
             None => false,
         };
         let n = if o.step == "unit" { a.max.max(1) } else { o.batch.max(1) };
-        o.targets
-            .iter()
-            .rev()
-            .filter(|(t, k, size)| !held.contains(t) && self.done.get(&(o.step.clone(), t.clone())) != Some(k) && !backoff(t) && job_peak(&self.costs, &o.step, t, *size) <= a.mem_mb)
-            .take(n)
-            .map(|(t, k, _)| (t.clone(), k.clone()))
-            .collect()
+        // Terrain from the near end: the build Mac's next units wait on it, so a helper builds the
+        // next region's while the build Mac builds this one's units. The rest from the far end,
+        // away from the build Mac's own (and near each other, for the caches).
+        let open: Vec<&(String, String, u64)> = {
+            let order: Box<dyn Iterator<Item = &(String, String, u64)>> = if o.step == "terrain" { Box::new(o.targets.iter()) } else { Box::new(o.targets.iter().rev()) };
+            order.filter(|(t, k, _)| !held.contains(t) && self.done.get(&(o.step.clone(), t.clone())) != Some(k) && !backoff(t)).collect()
+        };
+        let take = |v: Vec<&(String, String, u64)>| v.into_iter().map(|(t, k, _)| (t.clone(), k.clone())).collect::<Vec<_>>();
+        let fits: Vec<_> = open.iter().copied().filter(|(t, _, size)| job_peak(&self.costs, &o.step, t, *size) <= a.mem_mb).take(n).collect();
+        let (Some(more), Some(max)) = (a.more_mb, a.max_secs) else { return take(fits) };
+        if !fits.is_empty() {
+            return take(fits);
+        }
+        // Its owner away: a job that fits the more it spares then, as long as it ends in time.
+        let mut left = max;
+        take(
+            open.into_iter()
+                .filter(|(t, _, size)| job_peak(&self.costs, &o.step, t, *size) <= more && job_secs(&self.costs, &o.step, t, &a.worker).is_some_and(|s| s <= max))
+                .take_while(|(t, _, _)| match job_secs(&self.costs, &o.step, t, &a.worker) {
+                    Some(s) if s <= left => {
+                        left -= s;
+                        true
+                    }
+                    _ => false,
+                })
+                .take(n)
+                .collect(),
+        )
     }
 
     /// Why a worker gets the shared steps' work it does, or doesn't: for each step it does that's
@@ -223,18 +252,20 @@ impl Shared {
             .filter(|o| a.can.contains(&o.step))
             .map(|o| {
                 let held = self.leases.held(&o.step, now);
-                let (mut h, mut d, mut b, mut big, mut fits) = (0, 0, 0, 0, 0);
+                let (mut h, mut d, mut b, mut big, mut long, mut fits) = (0, 0, 0, 0, 0, 0);
                 for (t, k, size) in &o.targets {
                     let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5)));
                     match () {
                         _ if held.contains(t) => h += 1,
                         _ if self.done.get(&(o.step.clone(), t.clone())) == Some(k) => d += 1,
                         _ if backoff => b += 1,
-                        _ if job_peak(&self.costs, &o.step, t, *size) > a.mem_mb => big += 1,
+                        _ if job_peak(&self.costs, &o.step, t, *size) <= a.mem_mb => fits += 1,
+                        _ if a.more_mb.is_none_or(|m| job_peak(&self.costs, &o.step, t, *size) > m) => big += 1,
+                        _ if !job_secs(&self.costs, &o.step, t, &a.worker).is_some_and(|s| Some(s) <= a.max_secs) => long += 1,
                         _ => fits += 1,
                     }
                 }
-                serde_json::json!({ "step": o.step, "offered": o.targets.len(), "held": h, "done": d, "kept_from": b, "too_big": big, "fits": fits })
+                serde_json::json!({ "step": o.step, "offered": o.targets.len(), "held": h, "done": d, "kept_from": b, "too_big": big, "too_long": long, "fits": fits })
             })
             .collect()
     }
@@ -305,6 +336,12 @@ pub struct Ask {
     /// A page: whether it's in front (an iPhone or iPad stops one that isn't).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible: Option<bool>,
+    /// While its owner is away: the more memory it spares (MB) for a job predicted (from its
+    /// targets' last runs) to end within `max_secs`, before they're likely back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub more_mb: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_secs: Option<u64>,
 }
 
 /// Work granted.
@@ -1721,6 +1758,38 @@ mod tests {
         // A worker that can't do a step gets none of it.
         c.offer("p", vec![o("trees", &[("3/1/1", 1000)], 1)]);
         assert_eq!(next(&["unit"]), "none");
+    }
+
+    #[test]
+    fn terrain_from_the_near_end_and_more_memory_while_the_owner_is_away_for_short_jobs() {
+        let (_d, c, w) = start();
+        let o = |step: &str, ts: &[(&str, u64)], batch: usize| Offer { step: step.into(), targets: ts.iter().map(|(t, m)| (t.to_string(), format!("k {t}"), *m)).collect(), batch };
+        let next = |a: &Ask| match w.ask(a).unwrap().map(|g| g.work) {
+            Some(Granted::Job { step, targets, .. }) => format!("{step} {}", targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" ")),
+            _ => "none".into(),
+        };
+        // Terrain: the plan's first, the build Mac's next units' (not the far end's).
+        c.offer("p", vec![o("terrain", &[("3/1/2", 3000), ("3/2/2", 3000)], 1)]);
+        let can = |steps: &[&str], mem: u64| Ask { can: steps.iter().map(|s| s.to_string()).collect(), ..ask(mem) };
+        assert_eq!(next(&can(&["terrain"], 4096)), "terrain 3/1/2");
+        // Slope's three areas: one needs 5 GB, measured at 10 minutes for this helper; one 8 GB,
+        // an hour; one 5 GB, never run the way slope runs now.
+        c.offer("p", vec![o("slope", &[("3/1/1", 5000), ("3/1/2", 8000), ("3/1/3", 5000)], 3)]);
+        c.add_costs_by(&[(cost_key("slope", "3/1/1"), Cost { peak_mb: 5000, secs: 600, worker: None, v: 2 }), (cost_key("slope", "3/1/2"), Cost { peak_mb: 8000, secs: 3600, worker: None, v: 2 })], "m1");
+        // At its desk: none fits its 4 GB.
+        assert_eq!(next(&can(&["slope"], 4096)), "none");
+        // Away, sparing 10 GB for twenty minutes: the short one alone (the hour-long one, and the
+        // one never measured, wait).
+        let away = Ask { more_mb: Some(10240), max_secs: Some(1200), ..can(&["slope"], 4096) };
+        assert_eq!(next(&away), "slope 3/1/1");
+        assert_eq!(next(&away), "none");
+        let fit = c.shared.lock().unwrap().fit(&away, Instant::now());
+        assert_eq!((fit[0]["too_long"].as_u64(), fit[0]["held"].as_u64()), (Some(2), Some(1)));
+        // What fits its usual memory comes first, whatever its time.
+        c.offer("p", vec![o("pois", &[("6/1/1", 1500)], 12), o("slope", &[("3/2/1", 5000)], 3)]);
+        c.add_costs_by(&[(cost_key("slope", "3/2/1"), Cost { peak_mb: 5000, secs: 60, worker: None, v: 2 })], "m1");
+        let both = Ask { more_mb: Some(10240), max_secs: Some(1200), ..can(&["slope", "pois"], 4096) };
+        assert_eq!(next(&both), "pois 6/1/1");
     }
 
     #[test]
