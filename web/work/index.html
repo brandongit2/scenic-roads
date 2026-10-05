@@ -5,8 +5,9 @@
 <!-- (The same page serves /work/ and /work/watch/: its files are /work/'s.) -->
 <base href="/work/">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
-<meta name="theme-color" content="#0e1013">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f4f6f8" media="(prefers-color-scheme: light)">
 <!-- An app to install: home screen, full screen (manifest, sw.js: docs/workers.md). -->
 <link rel="manifest" href="manifest.webmanifest" id="manifest">
 <link rel="icon" href="icons/icon-192.png">
@@ -18,7 +19,21 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <title>Scenic worker</title>
 <style>
-  :root { --bg: #0e1013; --panel: #161a1f; --line: #262c33; --text: #d7dce2; --dim: #8a939c; --ok: #6cc28a; --warn: #e0b45a; --bad: #e0716a; --accent: #7aa7e0; }
+  /* The device's light or dark appearance: the dark palette, the light one where it's light. */
+  :root {
+    --bg: #0e1013; --panel: #161a1f; --line: #262c33; --text: #d7dce2; --dim: #8a939c; --ok: #6cc28a; --warn: #e0b45a; --bad: #e0716a; --accent: #7aa7e0;
+    --ok-line: #2a5038; --warn-line: #5a4a26; --bad-line: #5a2d2a; --info-line: #2c4566; --primary-bg: #1d2a3a; --primary-fg: #cfe0f5;
+    --spark: #2c4566; --spark-p: #5a4a26; --mark: #e6e6e6; --dimbar: #3f5f86; --tip: #20262d; --shadow: #0008; --rule: #3a434d; --row-line: #1d2228; --new-bg: #1d2a3a; --paused: #5a4a2655;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f4f6f8; --panel: #ffffff; --line: #d8dee5; --text: #1c232b; --dim: #5d6873; --ok: #2c8a51; --warn: #9a6a12; --bad: #c0433a; --accent: #2d6bb4;
+      --ok-line: #b5dbc2; --warn-line: #e6d2a4; --bad-line: #eebfba; --info-line: #b8cee9; --primary-bg: #e2ecf8; --primary-fg: #1d4e89;
+      --spark: #b8cee9; --spark-p: #e6d2a4; --mark: #6a7480; --dimbar: #9db6d5; --tip: #ffffff; --shadow: #0003; --rule: #c8d0d9; --row-line: #e6e9ee; --new-bg: #e2ecf8; --paused: #e6d2a488;
+      color-scheme: light;
+    }
+  }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
   main { max-width: 1400px; margin: 0 auto; padding: 16px; }

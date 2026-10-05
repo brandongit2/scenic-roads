@@ -44,7 +44,7 @@ const STEP = {
   roadunits: ["Road index", "#4fb3c6"], stations: ["Rail stops", "#4fb3c6"], ferries: ["Ferries", "#4fb3c6"], "terrain-root": ["World terrain", "#c98b4a"], "slope-root": ["World slope", "#d9c35a"],
   "rail-feeds": ["Rail timetables", "#8fa2b5"], rail: ["Trains a day", "#8fa2b5"], pois: ["Landmark candidates", "#9b7be0"], peaks: ["Peaks", "#b48ae8"],
   items: ["Wikidata facts", "#c47fb5"], heritage: ["Heritage details", "#c47fb5"], marks: ["Landmarks", "#c47fb5"], overlays: ["Area overlays", "#c47fb5"],
-  catalog: ["Publishing", "#e6e6e6"], "catalog-held": ["Publishing (held)", "#e6e6e6"], round: ["Publishing round", "#e6e6e6"], gc: ["Clean-up", "#8fa2b5"], backup: ["Backup", "#8fa2b5"],
+  catalog: ["Publishing", "var(--mark)"], "catalog-held": ["Publishing (held)", "var(--mark)"], round: ["Publishing round", "var(--mark)"], gc: ["Clean-up", "#8fa2b5"], backup: ["Backup", "#8fa2b5"],
 };
 const stepName = (s) => (STEP[s] || [s])[0];
 const stepColour = (s) => (STEP[s] || [0, "#7b8590"])[1];
@@ -515,7 +515,7 @@ function regionRows(m, rerender) {
     const stack = h("div", "stack");
     if (tot) {
       const seg = (k, c) => { const i = h("i"); Object.assign(i.style, { width: `${(k / tot) * 100}%`, background: c }); return i; };
-      stack.append(seg(r.built.built, "var(--ok)"), seg(r.left.unit || 0, "#2c4566"));
+      stack.append(seg(r.built.built, "var(--ok)"), seg(r.left.unit || 0, "var(--spark)"));
     }
     out.append(h("div", { class: `rg ${!lft && r.on_map === true ? "done" : ""}` },
       h("span", "nm", r.name, " ", chip(state, cls)), h("span", "when", when),
