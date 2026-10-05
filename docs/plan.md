@@ -1012,7 +1012,10 @@ box function and the per-area folders go.
 ## 8. Building
 
 **Regions:** recipes in `inputs/regions/`. The agent works out what they change from job keys; there
-are no request files.
+are no request files. After an edit (a recipe's outline, or an outline file in `inputs/outlines/`)
+the regions' work waits a quarter of an hour for more edits before it starts (what runs carries on;
+a new pass's outlines aren't an edit): three edits in a row on 2026-10-05 built the same regions'
+heritage sites three times and their terrain twice.
 
 **Scheduler.**
 - **The plan:** every step's targets come with their keys (`state/build/jobs.json`). A target is
