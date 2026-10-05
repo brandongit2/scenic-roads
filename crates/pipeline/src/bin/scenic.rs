@@ -109,14 +109,14 @@ fn status(args: &[String]) -> Result<()> {
     // (The build Mac's own record of it is over HTTPS once `tailscale serve` proxies the coordinator.)
     let page = std::fs::read_to_string(app_home().join("agent/coord/page")).ok().map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
     let contact = root.as_ref().and_then(|r| std::fs::read(pipeline::coord::contact_path(r)).ok()).and_then(|b| serde_json::from_slice::<pipeline::coord::Contact>(&b).ok());
-    match (page, contact) {
-        (Some(p), _) => println!("Worker page: {p} (open it on a device on the tailnet)"),
-        (None, Some(c)) => {
-            if let Some(u) = c.urls.first() {
-                println!("Worker page: {u}/work/#k={} (open it on a device on the tailnet)", c.token);
-            }
-        }
-        _ => {}
+    let page = match (page, contact) {
+        (Some(p), _) => Some(p),
+        (None, Some(c)) => c.urls.first().map(|u| format!("{u}/work/#k={}", c.token)),
+        _ => None,
+    };
+    if let Some(p) = page {
+        println!("Worker page: {p} (open it on a device on the tailnet)");
+        println!("Build monitor: {} (the same, watching only)", p.replace("/work/#", "/work/watch/#"));
     }
     // The map on an iPhone or an iPad (docs/plan.md §4, Devices): its address with its key, which this
     // Mac's server writes.

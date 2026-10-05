@@ -2,11 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- (The same page serves /work/ and /work/watch/: its files are /work/'s.) -->
+<base href="/work/">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0e1013">
 <!-- An app to install: home screen, full screen (manifest, sw.js: docs/workers.md). -->
-<link rel="manifest" href="manifest.webmanifest">
+<link rel="manifest" href="manifest.webmanifest" id="manifest">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <meta name="mobile-web-app-capable" content="yes">
@@ -38,13 +40,69 @@
   button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 4px 10px; font: inherit; }
   input { background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 4px 8px; font: inherit; width: 100%; margin: 6px 0; }
   .hint { color: var(--dim); margin: 0 0 12px; }
+  h2 { font-size: 11px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 18px 0 6px; display: flex; justify-content: space-between; align-items: baseline; }
+  h2 span { text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .overall { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+  .big { font-size: 30px; font-weight: 600; letter-spacing: -.02em; }
+  .big small { font-size: 13px; color: var(--dim); font-weight: 400; }
+  .segs { display: flex; gap: 2px; margin-top: 6px; height: 10px; }
+  .segs > i { flex: 1; border-radius: 2px; background: var(--line); position: relative; overflow: hidden; }
+  .segs > i > b { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+  .segs > i.done { background: var(--ok); }
+  .rows { display: flex; flex-direction: column; gap: 6px; }
+  .row { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; }
+  .row .top { display: flex; gap: 8px; align-items: baseline; }
+  .row .top .name { font-weight: 600; }
+  .row .top .tag { color: var(--dim); font-size: 11px; }
+  .row .top .right { margin-left: auto; color: var(--dim); font-size: 11px; white-space: nowrap; }
+  .row .what { margin-top: 2px; }
+  .row .sub { color: var(--dim); font-size: 11.5px; margin-top: 2px; }
+  .row .bar { height: 5px; }
+  .chip { display: inline-block; padding: 0 6px; border-radius: 9px; font-size: 10.5px; border: 1px solid var(--line); color: var(--dim); }
+  .chip.run { color: var(--accent); border-color: #2c4566; } .chip.ok { color: var(--ok); border-color: #2a5038; } .chip.warn { color: var(--warn); border-color: #5a4a26; } .chip.bad { color: var(--bad); border-color: #5a2d2a; }
+  .hbars { display: grid; grid-template-columns: max-content 1fr max-content; gap: 5px 10px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+  .hbars .hb { height: 8px; background: var(--line); border-radius: 3px; overflow: hidden; }
+  .hbars .hb > i { display: block; height: 100%; background: var(--accent); border-radius: 3px; }
+  .hbars .n { color: var(--dim); font-size: 11.5px; text-align: right; white-space: nowrap; }
+  .steps { display: grid; grid-template-columns: 16px 1fr max-content; gap: 3px 8px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+  .steps .mark { color: var(--dim); text-align: center; } .steps .mark.ok { color: var(--ok); } .steps .mark.run { color: var(--accent); }
+  .steps .n { color: var(--dim); font-size: 11.5px; white-space: nowrap; }
+  .steps .note { grid-column: 2 / 4; color: var(--dim); font-size: 11px; margin: -2px 0 2px; }
+  .steps .bar { grid-column: 2 / 4; margin: 0 0 3px; }
+  .regions { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 5px; }
+  .reg { background: var(--panel); border: 1px solid var(--line); border-radius: 5px; padding: 4px 7px; font-size: 11.5px; }
+  .reg .t { display: flex; justify-content: space-between; gap: 6px; } .reg .t span:last-child { color: var(--dim); }
+  .reg.done { border-color: #2a5038; } .reg.done .bar > i { background: var(--ok); }
+  .reg .bar { height: 3px; }
+  .recent { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; font-size: 12px; }
+  .recent > div { display: grid; grid-template-columns: 14px 1fr max-content; gap: 8px; padding: 2px 0; }
+  .recent .ok { color: var(--ok); } .recent .bad { color: var(--bad); } .recent .n { color: var(--dim); white-space: nowrap; }
+  .banner { background: #2a2416; border: 1px solid #5a4a26; color: var(--warn); border-radius: 6px; padding: 7px 10px; margin-bottom: 8px; display: flex; gap: 10px; align-items: center; }
+  .banner span { flex: 1; }
+  .waits { color: var(--dim); font-size: 11.5px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+  .waits div + div { margin-top: 3px; }
+  #device[hidden] { display: none; }
 </style>
 </head>
 <body>
 <main>
-  <header><h1>Scenic worker</h1><span id="state">starting…</span><span style="flex:1"></span><button id="install" hidden>Install</button><button id="toggle">Pause</button></header>
+  <header><h1 id="title">Scenic worker</h1><span id="state">starting…</span><span style="flex:1"></span><button id="install" hidden>Install</button><button id="buildpause" hidden>Pause the build</button></header>
   <p class="note" id="note" hidden></p>
   <p class="hint" id="hint" hidden></p>
+  <!-- The whole build at a glance, every machine's work (/work/swarm). -->
+  <section id="swarm">
+    <div class="banner" id="paused" hidden><span id="paused-t"></span><button id="resume">Resume the build</button></div>
+    <div class="overall"><div class="big" id="pct">–</div><div><div id="overall-t">Reading the build…</div><div class="segs" id="segs"></div></div></div>
+    <div class="grid" id="kpis"></div>
+    <h2>Machines <span id="machines-n"></span></h2><div class="rows" id="machines"></div>
+    <h2>Work left <span id="work-t"></span></h2><div class="hbars" id="work"></div>
+    <h2>Step by step <span id="steps-t"></span></h2><div class="steps" id="steps"></div>
+    <div id="waits-box" hidden><h2>Waiting</h2><div class="waits" id="waits"></div></div>
+    <h2>Regions <span id="regions-t"></span></h2><div class="regions" id="regions"></div>
+    <h2>Finished lately</h2><div class="recent" id="recent"></div>
+  </section>
+  <section id="device">
+  <h2>This device <span><button id="toggle">Pause</button></span></h2>
   <div class="grid">
     <div class="card"><div class="k">Memory to spare</div><div class="v" id="mem">–</div></div>
     <div class="card"><div class="k">Slots</div><div class="v" id="slots-n">–</div></div>
@@ -53,6 +111,7 @@
   </div>
   <div class="slots" id="slots"></div>
   <div id="log"></div>
+  </section>
 </main>
 <script type="module">
 // The web worker page (docs/workers.md §7). This thread hands out work: it asks the coordinator
@@ -60,6 +119,15 @@
 // build's WebAssembly programs), and beats for every lease while its slot works. Nothing here asks
 // what device it is: it learns how much memory a tab may use (§6) and takes on what fits.
 const $ = (id) => document.getElementById(id);
+// /work/watch/: the same page watching only. It shows the build and joins no work: no slots, no
+// asks, nothing of this browser's own tasks touched.
+const WATCH = /\/watch\/?$/.test(location.pathname);
+if (WATCH) {
+  document.title = "Scenic build";
+  $("title").textContent = "Scenic build";
+  $("manifest").href = "watch.webmanifest";
+  $("device").hidden = true;
+}
 const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
 
 // The token comes in the address's fragment (never sent to a server), then stays in this browser.
@@ -97,13 +165,13 @@ const tab = Math.random().toString(36).slice(2, 10);
 const notes = store.get("running", null);
 const all = notes && !Array.isArray(notes) ? notes : {};
 const died = [];
-for (const [t, n] of Object.entries(all)) {
+for (const [t, n] of WATCH ? [] : Object.entries(all)) {
   if (Date.now() - (n.at || 0) > 120000) {
     died.push(...(n.tasks || []));
     delete all[t];
   }
 }
-store.set("running", all);
+if (!WATCH) store.set("running", all);
 if (died.length) {
   const total = died.reduce((a, t) => a + (t.mem_mb || 0), 0);
   ceiling = Math.max(256, Math.min(ceiling, Math.floor(total * 0.7)));
@@ -157,7 +225,7 @@ function makeSlot(i) {
   slots.push(s);
   return s;
 }
-for (let i = 0; i < cores; i++) makeSlot(i);
+for (let i = 0; i < (WATCH ? 0 : cores); i++) makeSlot(i);
 $("slots-n").textContent = `${slots.length}`;
 
 function show() {
@@ -220,7 +288,7 @@ async function fill() {
     location.reload();
     return;
   }
-  if (asking || paused || !token || update) return;
+  if (WATCH || asking || paused || !token || update) return;
   const idle = slots.find((s) => !s.lease);
   const free = ceiling - reserved;
   if (!idle || free < 200 || performance.now() - lastNone < 15000) return;
@@ -306,6 +374,8 @@ if ("serviceWorker" in navigator && window.isSecureContext) {
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (!had) { had = true; return; }
     if (update) return;
+    // (Watching only: nothing running to wait for.)
+    if (WATCH) { location.reload(); return; }
     update = true;
     log("A new version of the page is ready: reloading once the tasks running finish.");
     fill();
@@ -324,10 +394,200 @@ if (!standalone && window.isSecureContext && ios) {
   $("hint").textContent = "To keep it on your home screen as an app: Share, then Add to Home Screen.";
 }
 
-const setPaused = (v) => { paused = v; $("toggle").textContent = paused ? "Resume" : "Pause"; $("state").textContent = paused ? "paused (running tasks finish)" : "working"; if (!paused) fill(); };
+const setPaused = (v) => { paused = v; $("toggle").textContent = paused ? "Resume" : "Pause"; if (!WATCH) $("state").textContent = paused ? "paused (running tasks finish)" : "working"; if (!paused) fill(); };
 $("toggle").onclick = () => setPaused(!paused);
 // (Paused before the reload into a new version: still paused.)
 try { if (sessionStorage.getItem("paused") === "1") setPaused(true); sessionStorage.removeItem("paused"); } catch {}
+
+// ---- The whole build at a glance (both pages): /work/swarm, every 10 s -------------------------
+// The build Mac's heartbeat (its job, the checklist to the end, the regions, its helpers), every
+// worker and lease, and what's left of each shared step with about how long it takes.
+const dur = (s) => {
+  s = Math.max(0, Math.round(s));
+  if (s < 90) return `${s} s`;
+  const m = Math.round(s / 60);
+  if (m < 90) return `${m} min`;
+  const h = s / 3600;
+  return h < 48 ? `${h < 10 ? h.toFixed(1) : Math.round(h)} h` : `${(h / 24).toFixed(1)} days`;
+};
+const n = (v) => Number(v).toLocaleString("en-US");
+const h = (tag, cls, ...kids) => { const e = document.createElement(tag); if (cls) e.className = cls; for (const k of kids) e.append(k instanceof Node ? k : document.createTextNode(String(k))); return e; };
+const bar = (frac, cls = "bar") => { const b = h("div", cls); const i = h("i", ""); i.style.width = `${Math.round(Math.max(0, Math.min(1, frac)) * 100)}%`; b.append(i); return b; };
+const STEP = { terrain: "Terrain", slope: "Slope", trees: "Tree cover", unit: "Areas (roads, elevations, scenery)", pois: "Landmark candidates", peaks: "Peaks" };
+// How much a machine's work counts towards the swarm's pace, against the build Mac's (a guess: the
+// M1 is about half its speed, a page a fraction): for the time left.
+const PACE = { mac: 1, helper: 0.5, web: 0.1 };
+
+function jobLine(j, now) {
+  if (!j) return null;
+  const box = h("div", "");
+  const p = j.progress;
+  const part = j.parts && j.part != null ? j.parts[j.part] : null;
+  box.append(h("div", "what", j.what));
+  if (part) box.append(h("div", "sub", `Part ${j.part + 1} of ${j.parts.length}: ${part}`));
+  if (p && p.total > 0) {
+    box.append(bar(p.done / p.total));
+    const eta = p.eta_s != null && !j.paused ? ` · about ${dur(p.eta_s)} left` : "";
+    box.append(h("div", "sub", `${Math.floor((p.done / p.total) * 100)}% · ${n(Math.round(p.done))} of ${n(Math.round(p.total))} ${p.unit}${eta} · running ${dur(now - j.started)}`));
+  } else {
+    box.append(h("div", "sub", `running ${dur(now - j.started)}`));
+  }
+  if (j.paused) box.append(h("div", "sub", `Frozen: ${j.paused}`));
+  else if (j.pausing) box.append(h("div", "sub", "Stopping at its next safe point (what it's on is kept)"));
+  return box;
+}
+
+function machineRow(name, tag, state, cls, right, body) {
+  const r = h("div", "row");
+  const top = h("div", "top", h("span", "name", name), h("span", "tag", tag), h("span", `chip ${cls}`, state), h("span", "right", right));
+  r.append(top);
+  if (body) r.append(body);
+  return r;
+}
+
+function cond(c) {
+  if (!c) return "";
+  const power = c.ac ? "on mains" : c.battery != null ? `on battery ${c.battery}%` : "on battery";
+  return `${power} · NAS ${c.nas ? (c.home === false ? "through Tailscale" : "reachable") : "not reachable"}`;
+}
+
+function render(sw) {
+  const now = sw.now, a = sw.agent || {};
+  const fresh = (beat) => beat && now - beat < 360;
+  // The pause.
+  $("paused").hidden = !sw.pause;
+  $("buildpause").hidden = !!sw.pause || !token;
+  if (sw.pause) $("paused-t").textContent = `The build is paused (from ${sw.pause.by}, ${dur(now - sw.pause.at)} ago): ${sw.pause.mode === "freeze" ? "every job frozen where it was" : "each job stops at its next safe point"}; nothing new starts.`;
+
+  // Overall: the steps to the end, each a segment.
+  const steps = a.checklist || [];
+  const fin = (st) => st.left != null ? st.left === 0 : st.total != null && st.done >= st.total;
+  const finished = steps.filter(fin).length;
+  const units = steps.find((st) => (st.steps || []).includes("unit"));
+  const pct = units && units.total ? units.done / units.total : 0;
+  $("pct").replaceChildren(units && units.total ? `${Math.floor(pct * 100)}%` : "–", h("small", "", units && units.total ? " of the areas" : ""));
+  const segs = $("segs");
+  segs.replaceChildren(...steps.map((st) => {
+    const i = h("i", fin(st) ? "done" : "");
+    i.title = `${st.what}: ${st.total != null ? `${st.done} of ${st.total}` : st.left != null ? `${st.left} left` : "to come"}`;
+    if (!fin(st) && st.total) { const b = h("b", ""); b.style.width = `${Math.round((st.done / st.total) * 100)}%`; i.append(b); }
+    return i;
+  }));
+
+  // Work left (the shared steps'), and the time it takes at the swarm's pace.
+  const work = sw.work || [];
+  const workS = work.reduce((t, w) => t + w.est_s, 0);
+  const helpers = (a.helpers || []).filter((x) => fresh(x.beat));
+  const pages = (sw.workers || []).filter((w) => w.kind === "web" && w.seen_s < 120);
+  const pace = (fresh(a.beat) ? PACE.mac : 0) + helpers.length * PACE.helper + pages.length * PACE.web;
+  $("overall-t").textContent = steps.length
+    ? `${finished} of ${steps.length} steps done${workS && pace ? ` · about ${dur(workS / pace)} of building left at this pace` : ""}`
+    : "No word from the build Mac yet";
+
+  // The numbers that matter most.
+  const kpi = (k, v, sub) => h("div", "card", h("div", "k", k), h("div", "v", v), ...(sub ? [h("div", "sub", sub)] : []));
+  const step = (id) => steps.find((st) => (st.steps || []).includes(id));
+  const frac = (st) => st && st.total != null ? `${n(st.done)} of ${n(st.total)}` : st && st.left != null ? `${st.left} left` : "–";
+  const built = a.built || {};
+  const regs = Object.entries(built);
+  const regsDone = regs.filter(([, b]) => b.total > 0 && b.built >= b.total).length;
+  const busy = (a.job && fresh(a.beat) ? 1 : 0) + helpers.filter((x) => x.job).length + pages.filter((w) => !/^asked for|^waiting/.test(w.what)).length;
+  $("kpis").replaceChildren(
+    kpi("Areas built", frac(units)),
+    kpi("Regions done", regs.length ? `${regsDone} of ${regs.length}` : "–"),
+    kpi("Terrain", frac(step("terrain"))),
+    kpi("Slope · tree cover", `${frac(step("slope"))} · ${frac(step("trees"))}`),
+    kpi("Map tiles", frac(step("pack"))),
+    kpi("Machines", `${1 + helpers.length + pages.length}`, `${busy} working`),
+  );
+
+  // Every machine: what it's doing, how far, how long left.
+  const rows = [];
+  if (a.host) {
+    const st = !fresh(a.beat) ? ["out of touch", "bad"] : a.job?.paused ? ["frozen", "warn"] : a.job?.pausing ? ["stopping", "warn"] : a.job ? ["building", "run"] : sw.pause ? ["paused", "warn"] : ["idle", ""];
+    const body = jobLine(a.job, now) || h("div", "sub", (a.waiting || [])[0] ? `${a.waiting[0].what}: ${a.waiting[0].why}` : "Nothing to build now");
+    rows.push(machineRow(a.host, "build Mac", st[0], st[1], `${cond(a.conditions)} · seen ${dur(now - a.beat)} ago`, body));
+  }
+  for (const x of a.helpers || []) {
+    const st = !fresh(x.beat) ? ["out of touch", "bad"] : x.job?.paused ? ["frozen", "warn"] : x.job?.pausing ? ["stopping", "warn"] : x.job ? ["building", "run"] : ["idle", ""];
+    const body = jobLine(x.job, now) || h("div", "sub", (x.waiting || [])[0] ? (x.waiting[0].why) : "Nothing for it now");
+    rows.push(machineRow(x.host, "helper", st[0], st[1], `${cond(x.conditions)} · seen ${dur(now - x.beat)} ago`, body));
+  }
+  for (const w of sw.workers || []) {
+    if (w.kind !== "web" || w.seen_s > 600) continue;
+    const st = w.bad ? ["stopped", "bad"] : w.seen_s > 120 ? ["away", ""] : ["joined", "ok"];
+    rows.push(machineRow(w.label, "page", st[0], st[1], `${w.mem_mb ? `${n(w.mem_mb)} MB · ` : ""}${w.done} done · seen ${dur(w.seen_s)} ago`, h("div", "sub", w.what)));
+  }
+  $("machines").replaceChildren(...rows);
+  $("machines-n").textContent = rows.length ? `${rows.length}` : "";
+
+  // Work left: each shared step's targets and the time they take, as bars.
+  const max = Math.max(1, ...work.map((w) => w.est_s));
+  const wb = $("work");
+  wb.replaceChildren(...work.flatMap((w) => [
+    h("div", "", STEP[w.step] || w.step),
+    (() => { const b = h("div", "hb"); const i = h("i", ""); i.style.width = `${Math.max(2, Math.round((w.est_s / max) * 100))}%`; b.append(i); return b; })(),
+    h("div", "n", `${n(w.left)} left · about ${dur(w.est_s)}${w.known < w.left ? ` (${w.known} timed before)` : ""}`),
+  ]));
+  wb.hidden = !work.length;
+  $("work-t").textContent = workS ? `about ${dur(workS)} of work${pace > 1 ? `, ${dur(workS / pace)} across the machines` : ""}` : "none offered to helpers now";
+
+  // The checklist, step by step.
+  const sl = $("steps");
+  sl.replaceChildren();
+  for (const st of steps) {
+    const done = fin(st), now_ = !done && a.job && (st.steps || []).includes(String(a.job.id).split(" ")[0]);
+    sl.append(h("span", `mark ${done ? "ok" : now_ ? "run" : ""}`, done ? "✓" : now_ ? "▸" : "○"), h("span", "", `${st.what}${st.shared ? " ⇄" : ""}`), h("span", "n", st.total != null ? `${n(st.done)} of ${n(st.total)} ${st.unit || ""}` : st.left != null ? (st.left ? `${st.left} left` : "done") : "to come"));
+    if (!done && st.total) sl.append(bar(st.done / st.total));
+    if (!done && st.note) sl.append(h("span", "note", st.note));
+  }
+  $("steps-t").textContent = steps.length ? `${finished} of ${steps.length} done · ⇄ helpers can take part` : "";
+
+  // Waiting: what can't run yet, and why.
+  const waits = a.waiting || [];
+  $("waits-box").hidden = !waits.length;
+  $("waits").replaceChildren(...waits.slice(0, 8).map((w) => h("div", "", `${w.what}: ${w.why}`)));
+
+  // The regions: building first, then waiting, then done; each its areas built.
+  const names = Object.fromEntries((a.regions || []).map((r) => [r.id, r.name]));
+  const rank = (b) => b.built >= b.total ? 2 : b.built > 0 ? 0 : 1;
+  regs.sort(([ia, x], [ib, y]) => rank(x) - rank(y) || (x.total - x.built) - (y.total - y.built) || String(names[ia] || ia).localeCompare(names[ib] || ib));
+  $("regions").replaceChildren(...regs.map(([id, b]) => {
+    const r = h("div", `reg${b.total > 0 && b.built >= b.total ? " done" : ""}`, h("div", "t", h("span", "", names[id] || id), h("span", "", `${b.built}/${b.total}`)));
+    r.append(bar(b.total ? b.built / b.total : 0));
+    r.title = `${names[id] || id}: ${b.built} of ${b.total} areas built`;
+    return r;
+  }));
+  $("regions-t").textContent = regs.length ? `${regsDone} of ${regs.length} done · areas built of each` : "";
+
+  // Finished lately.
+  $("recent").replaceChildren(...(a.recent || []).slice(0, 10).map((d) => h("div", "", h("span", d.ok ? "ok" : "bad", d.ok ? "✓" : "✗"), h("span", "", d.what), h("span", "n", `${dur(d.secs)} · ${dur(now - d.ended)} ago`))));
+  if (WATCH) $("state").textContent = !a.host ? "no word from the build Mac" : fresh(a.beat) ? (sw.pause ? "paused" : a.job ? "building" : "idle") : `build Mac out of touch since ${dur(now - a.beat)} ago`;
+}
+
+async function swarm() {
+  if (!token) return;
+  try {
+    const [code, sw] = await call("/work/swarm", {});
+    if (code === 200 && sw) render(sw);
+  } catch (e) {
+    $("overall-t").textContent = `Can't reach the build Mac (${e.message}): showing what it last said`;
+  }
+}
+setInterval(swarm, 10000);
+document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && swarm());
+// Pausing the whole build from here, or letting it go on (docs/plan.md §8, Pausing).
+async function askBuild(pause) {
+  try {
+    await call("/work/pause", { pause });
+    swarm();
+  } catch (e) {
+    log(`<span class="bad">couldn't ask the build to ${pause ? "pause" : "go on"}: ${esc(e.message)}</span>`);
+  }
+}
+$("buildpause").onclick = () => askBuild({ mode: "drain", by: label, at: Math.floor(Date.now() / 1000) });
+$("resume").onclick = () => askBuild(null);
+swarm();
 show();
 fill();
 </script>

@@ -572,6 +572,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             it.target = self
             it.representedObject = page
             m.addItem(it)
+            // The same page watching only: the build across every machine, joining no work.
+            let watch = NSMenuItem(title: "Copy the Build Monitor's Address", action: #selector(copyPage), keyEquivalent: "")
+            watch.target = self
+            watch.representedObject = page.replacingOccurrences(of: "/work/#", with: "/work/watch/#")
+            m.addItem(watch)
         }
         return m
     }

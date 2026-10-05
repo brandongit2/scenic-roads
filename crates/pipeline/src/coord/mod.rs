@@ -800,6 +800,38 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             let offered: BTreeMap<&str, usize> = s.offers.iter().map(|o| (o.step.as_str(), o.targets.len())).collect();
             Ok((200, serde_json::json!({ "pass": s.pass, "paused": s.paused, "offered": offered, "done": s.done.len(), "leases": leases, "workers": workers, "tasks": tasks })))
         }
+        "/work/swarm" => {
+            // The whole build at a glance, for the worker page: the build Mac's heartbeat (its
+            // agent's status, written each loop beside this folder: its job, the checklist to the
+            // end, the regions, its helpers), the leases and workers, and what's left of each shared
+            // step with about how long it takes (each target's last run, else the step's mean of
+            // those known, else a first guess).
+            let s = shared.lock().unwrap();
+            let agent: serde_json::Value = s.dir.parent().and_then(|h| std::fs::read(h.join("status.json")).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::Value::Null);
+            let leases: Vec<serde_json::Value> = s.leases.all(now).iter().map(|l| serde_json::json!({ "worker": l.worker, "what": l.what(), "for_s": now.duration_since(l.granted).as_secs(), "progress": l.progress })).collect();
+            let workers: Vec<serde_json::Value> = s.workers.iter().map(|(n, w)| serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "bad": w.bad, "app": w.app, "seen_s": now.duration_since(w.seen).as_secs() })).collect();
+            let first_guess = |step: &str| match step {
+                "terrain" => 900,
+                "slope" => 400,
+                "trees" => 600,
+                "unit" => 400,
+                "pois" => 100,
+                "peaks" => 170,
+                _ => 300,
+            };
+            let work: Vec<serde_json::Value> = s
+                .offers
+                .iter()
+                .map(|o| {
+                    let known: Vec<u64> = o.targets.iter().filter_map(|(t, _, _)| s.costs.get(&cost_key(&o.step, t)).map(|c| c.secs)).collect();
+                    let mean = if known.is_empty() { first_guess(&o.step) } else { known.iter().sum::<u64>() / known.len() as u64 };
+                    let est: u64 = o.targets.iter().map(|(t, _, _)| s.costs.get(&cost_key(&o.step, t)).map_or(mean, |c| c.secs)).sum();
+                    serde_json::json!({ "step": o.step, "left": o.targets.len(), "known": known.len(), "est_s": est })
+                })
+                .collect();
+            let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            Ok((200, serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "work": work, "tasks": s.tasks.by_id.len() })))
+        }
         p if p.starts_with("/task/") && !local => anyhow::bail!("{p} is for this Mac's jobs"),
         "/task/offer" => {
             let mut o: task::Offer = serde_json::from_slice(body)?;
@@ -901,6 +933,9 @@ mod http {
         ("vendor/browser_wasi_shim/fs_opfs.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/fs_opfs.js")),
         ("vendor/browser_wasi_shim/debug.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/debug.js")),
         ("vendor/browser_wasi_shim/strace.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/strace.js")),
+        // The same page, watching only: it shows the build and joins no work (its script says so).
+        ("watch/", "text/html; charset=utf-8", include_bytes!("../../../../web/work/index.html")),
+        ("watch.webmanifest", "application/manifest+json", include_bytes!("../../../../web/work/watch.webmanifest")),
     ];
 
     /// The page's version: its files' hash, in its service worker (sw.js's VERSION), so a new
@@ -945,6 +980,7 @@ mod http {
         let app = Router::new()
             .route("/work", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/work/")]) }))
             .route("/work/", get(|| page(Url(String::new()))))
+            .route("/work/watch", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/work/watch/")]) }))
             .route("/work/{*file}", get(page))
             .route("/work/ask", any(json))
             .route("/work/beat", any(json))
@@ -952,6 +988,7 @@ mod http {
             .route("/work/done", any(json))
             .route("/work/fail", any(json))
             .route("/work/status", any(json))
+            .route("/work/swarm", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
             .route("/work/out/{lease}/{*path}", put(output))
             .route("/work/prog/{name}", get(prog))
