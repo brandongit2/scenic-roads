@@ -192,7 +192,8 @@ unattended, because 1Password asks to approve every new session.
 **Writers.** The build Mac's agent writes the build's records (the manifest, its unverified
 uploads, the job keys): one agent per Mac (a lock), and build steps merge their manifest changes
 under this Mac's lock. The M1's helper uploads its units' files (content-named) and hands its
-records off for the build Mac's agent to merge (§8, Two Macs). The exceptions:
+record changes back through the build Mac's coordinator, which journals them for its agent to merge
+(§8, Two Macs). The exceptions:
 - **Region recipes:** any Mac's server writes them. A new recipe is created exclusively (`O_EXCL`), a
   rename is rewritten through a temporary file, and a removal is renamed to `.removed`. `scenic add`
   and `scenic remove` write them too.
@@ -288,16 +289,17 @@ records off for the build Mac's agent to merge (§8, Two Macs). The exceptions:
 
 **The M1 helps (16 GB).** Its agent runs as a helper (`scenic agent --helper`, under the launcher
 like the build Mac's; `tools/app/install.sh --helper` sets it up).
-- **What it builds:** units, nothing else; the lighter ones (pieces up to 400 MB: denser units need
-  more memory), taking them from the far end of the list. Each unit's log line gives the most memory
-  one of its steps' programs took (scenic-build's own isn't counted), against its piece's size, to
-  set that limit by: over its first 205 units, pieces up to 150 MB, 3.7 GB at most, no more for the
-  bigger pieces.
+- **What it builds:** what the build Mac's coordinator gives it (§8, Two Macs): units that fit the
+  memory it spares (a quarter of its 16 GB), from the far end of the list, and when none does, units'
+  last steps (tasks, `docs/workers.md`). A unit's predicted peak is the most memory one of its steps'
+  programs took last time (each unit job notes it; scenic-build's own isn't counted), else about ten
+  times its piece, never under 3.7 GB: over the M1's first 205 units, pieces up to 150 MB, 3.7 GB at
+  most, no more for the bigger pieces.
 - **How:** the build Mac's power rule (mains, or battery down to 30 %); half its cores while its user
   is at it, all but two otherwise; each job started with 15 GB free, from the caches the NAS keeps.
 - **Status:** `state/helpers/<host>.json`. The M1's status bar shows its job from its own status;
-  the build Mac's shows it from that file while the build Mac's agent runs. Claims and hand-offs
-  keep the two apart (§8, Two Macs).
+  the build Mac's shows it from that file while the build Mac's agent runs. Leases keep the two apart
+  (§8, Two Macs).
 
 **App Macs (both laptops).**
 - **The launcher** (`tools/launcher/launcher.c`) is built once and never rebuilt.
@@ -903,7 +905,7 @@ are no request files.
   peaks 12, pack 16, pois 24, the worldwide steps all. So a failure or a new app costs one batch.
 - **Order:** the agent starts the first job that can run, in plan order. It plans when a job could
   start, when one ends, and otherwise every five minutes for the heartbeat (planning reads the
-  manifest, the keys and a dozen NAS folders); the helper's hand-offs are merged each loop while it
+  manifest, the keys and a dozen NAS folders); other workers' hand-offs are merged each loop while it
   waits, every two minutes while a job runs.
 - **A newly installed app:** the running job finishes under the old one, nothing new starts, and the
   agent exits so the launcher starts the new one.
@@ -937,32 +939,33 @@ are no request files.
   a change, only whether they're at the Mac. It holds the job, its progress (from the job's `progress:` lines) with the time left, and a checklist
   of every step to the end.
 
-**Two Macs.** Units are built by whichever Mac's agent claims them first: the build Mac's, and the
-M1's helper (§4). Only units are shared; everything else runs on the build Mac.
-- **Claims:** before a job starts, its targets are claimed on the NAS (`state/build/claims/<step>
-  <target>`, made with create-new, which the share does atomically); a job whose targets another
-  agent holds isn't started, and each agent's plan leaves out what the other holds. A target
-  recorded since the plan read the keys (built meanwhile by the other Mac) isn't started either.
-- **Kept fresh:** every two minutes while the job runs, not while it's paused; dropped when it ends
-  or its agent stops. One not kept fresh for 15 minutes (its Mac asleep, away, or paused) is free
-  again; a time ahead of the reader's clock (the other Mac's runs a little ahead) is fresh. A job
-  whose claim another agent has taken is stopped, unrecorded, its other claims dropped: that agent
-  builds it. An agent drops the claims its Mac's earlier agent left once the NAS answers. Two agents can still
-  both take a stale claim at once (rarely): both build the unit until the one whose claim was taken
-  sees it and stops; the records take each one's hand-off, and the units' content names.
+**Two Macs** (and any other worker: `docs/workers.md`). The build Mac's agent plans; it runs a
+coordinator (`pipeline::coord`, port 8090) from which every other worker asks for work that fits it.
+The M1's agent (`--helper`) plans nothing: it asks for units (it mounts the NAS) and, when none fits
+it, units' last steps.
+- **The contact:** `state/coordinator.json`: the coordinator's addresses (Tailscale's, then the LAN
+  name) and a token (kept on the build Mac) every request carries; taken off the NAS when the agent
+  stops. A worker reads it again when it can't reach the coordinator or its token is refused.
+- **Leases:** work goes out on a lease (ten minutes, on the coordinator's own clock), renewed by a
+  beat each minute while the work goes on, not while it's paused; a lapsed lease's work is offered
+  again. The build Mac's own jobs hold leases too (a lapsed one is taken again if no one took its
+  work), so a target is never built twice at once; each plan leaves out what's leased. Finished units
+  aren't offered again before the plan shows them; a worker's failed unit isn't offered to it for an
+  hour, doubling. The jobs' leases, the token and what units cost are kept on the build Mac's disk:
+  its agent restarting (a new app) is a pause to workers.
 - **One writer of the records:** the build Mac alone writes the manifest, its unverified uploads
-  and the job keys (its agent, and its jobs). A helper's job saves its changes to `state/build/handoff/<host>/`
-  instead (`pipeline::handoff`), and its agent adds a done record there when the job succeeds; the
-  build Mac's agent merges them (a Mac's in the order written: each named after the last) before it
-  plans, under its own lock (not while a paused job holds it), records the last it merged
-  (`<host>.merged`, so one it can't delete isn't merged again), then deletes them; one that can't be
-  parsed is set aside (`.bad`), and its Mac's done records after it in that merge are dropped (their
-  units are built again). Records, a listing or a hand-off that can't be read now stop the merge
-  and the planning for a loop, and nothing is written. Until they're merged, both agents plan with
-  the done records on top of the keys, so neither builds again what the helper built while the
-  build Mac was away; and a helper with its own jobs done since the keys were last written, as it
-  sees them (its view of the NAS can lag a merge that has already deleted the record; keys written
-  after a job are the truth, as they may hold a newer build's key).
+  and the job keys (its agent, and its jobs). A helper's job saves its changes into an outbox folder
+  per lease instead (`SCENIC_HANDOFF`, `pipeline::handoff`); when it ends, its agent sends them, merged
+  in order, with the job's done record and what its units cost, as one hand-off, kept until the
+  coordinator has it (across restarts). The coordinator takes it only for a lease it still holds
+  (else 410: the work was offered again, and a late save could put an older build in the manifest)
+  and only for the lease's units' files, and journals it whole on the build Mac
+  (`coord/journal/<worker>/`); the agent merges the journal before it plans, under its own lock (not
+  while a paused job holds it), all of a hand-off or none, as it merged the NAS's hand-off files.
+  Until they're merged, the agent plans with their done records on top of the keys.
+- **For a helper on an older app** (one release): the build Mac still claims its own jobs' targets
+  on the NAS (`state/build/claims/`), leaves out the targets such a helper claims, and merges the
+  NAS's hand-off files (`state/build/handoff/<host>/`).
 - **Enforced:** the build Mac's agent names its Mac in `state/build/writer` (every five minutes, by
   its name then), and its jobs carry `SCENIC_BUILD_MAC`; any other save on another Mac outside a
   helper's job (a step run there by hand) is refused.
@@ -1158,9 +1161,13 @@ At each phase's end an Opus agent reviews the work against this plan.
    4. Then the hold is released, and the converted legacy data deleted.
 7. **Features,** each on its own: 3D buildings, then PLATEAU; building heights in horizons and the
    viewshed tool; the new terrain repair; sharper terrain from national DEMs. Not started.
-8. **Builds anywhere: under way** (`docs/workers.md`): the coordinator's data plane, then workers on
-   any device that opens a page. Done: the crates build for WebAssembly; one maths library on every
-   target (outputs identical natively at any thread count and under WASI).
+8. **Builds anywhere: under way** (`docs/workers.md`). Done: the crates build for WebAssembly; one
+   maths library on every target (outputs identical natively at any thread count and under WASI);
+   the data plane's SSD copies and prefetch; the coordinator (leases, hand-offs over HTTP, learned
+   memory); a unit's last steps as tasks for any worker, the web worker page and the M1 alike;
+   `elev`, `landcover` and `areaflags` (the Python steps' ports, the same bytes; not yet switched
+   on). Next: HTTPS through `tailscale serve` (the owner's go-ahead), the units' switch to the ports,
+   OPFS, ranged reads, journaled group commits, retiring the claim and hand-off files.
 
 **Gaps:** none known between the code and the design.
 

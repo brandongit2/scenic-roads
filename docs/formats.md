@@ -426,15 +426,28 @@ class, id) within a tile. The client sends the id with the clicked point.
   view results: canopy.keys, canopy.tiles, view.keys, view.tiles, near.i8, roadside.u8,
   samples.metrics.u8, grid.canopy.u8.zst, grid.cover.u8.zst, and basis.json: {v (scache::SCENIC_V),
   basis: [[[x, y], hash16 of the z11 tile's terrain and land cover], …]}).
-- **Two Macs:** `state/build/claims/<step> <target>` (the target's `/` as `-`, e.g. `unit 6-31-20`;
-  the claiming agent, "<host> <pid>"; fresh while its mtime is within 15 minutes);
-  `state/build/handoff/<host>/<ns>-<pid>.json` (a helper's hand-offs, in the order written, each
-  named after the last: JSON `{changes: {logical: content name, or null when removed}, pending:
-  {content name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] or null}`;
-  `pipeline::handoff`), `state/build/handoff/<host>.merged` (the last merged, by name; a `.bad` file
-  is one set aside unparsed); `state/build/writer` (the build Mac's name: the records' one writer);
-  `state/helpers/<host>.json` (a helper's status, as the heartbeat's; the heartbeat lists those
-  fresh within ten minutes as `helpers`).
+- **Two Macs and other workers** (`docs/workers.md`):
+  - `state/coordinator.json`: how to reach the build Mac's coordinator, `{urls: [Tailscale's, then
+    the LAN name's, "http://…:8090"], token}`; there while its agent runs.
+  - On the build Mac, in the agent's folder, `coord/`: `token` (32 hex digits, mode 600),
+    `leases.json` (`{next, leases: [{id, worker, work: {Job: {step, targets: [[target, key], …]}},
+    progress}]}`: the jobs' leases), `costs.json` (`{unit: {peak_mb, secs}}`, and `"tail <unit>"` for
+    a unit's last steps as a task), `journal/<worker>/` (the hand-offs taken, as below), `tasks/<id>/`
+    (a task's uploads); `costs.jsonl` (a unit job's units' costs, `SCENIC_COSTS`: a JSON line each,
+    `{unit, peak_mb, secs}`).
+  - On a helper, in the agent's folder, `outbox/<lease>/`: its leased job's saves (as below),
+    `costs.jsonl`, `spec.json` (a task's), `task.json` (`scenic run-task`'s result) and `result.json`
+    (`{ok, done: [step, [[target, key], …]] or null, task, error}`), until the coordinator has them.
+  - A hand-off (`pipeline::handoff`): JSON `{changes: {logical: content name, or null when removed},
+    pending: {content name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] or
+    null}`, named `<ns>-<pid>.json` in the order written, each after the last; `<folder>.merged`
+    holds the last merged, by name; a `.bad` file is one set aside unparsed.
+  - For a helper on an older app: `state/build/claims/<step> <target>` (the target's `/` as `-`,
+    e.g. `unit 6-31-20`; the claiming agent, "<host> <pid>"; fresh while its mtime is within 15
+    minutes) and `state/build/handoff/<host>/`.
+  - `state/build/writer` (the build Mac's name: the records' one writer); `state/helpers/<host>.json`
+    (a helper's status, as the heartbeat's; the heartbeat lists those fresh within ten minutes as
+    `helpers`, and the workers the coordinator heard from in two minutes as `workers`).
 - **State:** `state/status.json` (the agent's heartbeat: conditions, the job and its progress, what
   waits, the checklist to the end); `state/build/{manifest,jobs,pending,summaries}.json`.
 - **The app:** `app/current.json` and `previous.json`: `{version, files, sha256}`.
