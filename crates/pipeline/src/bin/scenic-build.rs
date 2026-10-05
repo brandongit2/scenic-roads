@@ -1808,10 +1808,18 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         drop(lg);
         clean();
         laps.lap("its folders removed");
-        // The most memory one of its steps' programs took, against its piece's size (a helper builds
-        // only pieces a 16 GB Mac can: docs/plan.md §4).
+        // The most memory one of its steps' programs took, against its piece's size; noted for the
+        // coordinator (`SCENIC_COSTS`), which gives a worker only units that fit its memory.
         let piece_mb = std::fs::metadata(&piece).map(|m| m.len() >> 20).unwrap_or(0);
-        eprintln!("unit {}: base pack of {} ways in {:.0?}; piece {piece_mb} MB, its steps' programs' peak memory {:.1} GB", u.slash(), idx.len(), t.elapsed(), pipeline::unit::take_peak() as f64 / 1e9);
+        let peak = pipeline::unit::take_peak();
+        eprintln!("unit {}: base pack of {} ways in {:.0?}; piece {piece_mb} MB, its steps' programs' peak memory {:.1} GB", u.slash(), idx.len(), t.elapsed(), peak as f64 / 1e9);
+        if let Some(p) = std::env::var_os("SCENIC_COSTS") {
+            let line = serde_json::json!({ "unit": u.slash(), "peak_mb": peak >> 20, "secs": t.elapsed().as_secs() });
+            let r = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
+            if let Err(e) = r {
+                eprintln!("unit {}: noting what it cost: {e}", u.slash());
+            }
+        }
     }
     Ok(())
 }

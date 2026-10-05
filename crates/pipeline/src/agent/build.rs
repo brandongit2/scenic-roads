@@ -76,7 +76,16 @@ impl Keys {
     /// plan with, so neither builds again what the helper built and the build Mac hasn't merged yet.
     /// The hand-offs are listed first: a merge meanwhile has then put them in the keys read after.
     pub fn load_with_handoffs(root: &Path) -> anyhow::Result<Keys> {
-        let hs = crate::handoff::waiting(root)?;
+        Keys::load_with(root, &[crate::handoff::nas_base(root)])
+    }
+
+    /// `load_with_handoffs` for the hand-offs under each of `bases` (the NAS's, the coordinator's
+    /// journal on this Mac).
+    pub fn load_with(root: &Path, bases: &[std::path::PathBuf]) -> anyhow::Result<Keys> {
+        let mut hs = Vec::new();
+        for b in bases {
+            hs.extend(crate::handoff::waiting_in(b)?);
+        }
         let mut k = Keys::load_strict(root)?;
         for (_, h) in hs {
             if let Some((step, targets)) = &h.done {

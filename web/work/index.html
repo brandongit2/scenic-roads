@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Scenic worker</title>
+<style>
+  :root { --bg: #0e1013; --panel: #161a1f; --line: #262c33; --text: #d7dce2; --dim: #8a939c; --ok: #6cc28a; --warn: #e0b45a; --bad: #e0716a; --accent: #7aa7e0; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  main { max-width: 760px; margin: 0 auto; padding: 16px; }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; }
+  #state { color: var(--dim); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+  .k { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .v { font-size: 15px; margin-top: 2px; }
+  .slots { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+  .slot { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  .dot.run { background: var(--accent); } .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  .bar { height: 3px; background: var(--line); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .4s; }
+  #log { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; max-height: 40vh; overflow: auto; font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--dim); white-space: pre-wrap; }
+  #log b { color: var(--text); font-weight: 500; } #log .bad { color: var(--bad); }
+  .note { color: var(--warn); margin: 0 0 12px; }
+  button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 5px; padding: 4px 10px; font: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <header><h1>Scenic worker</h1><span id="state">starting…</span><span style="flex:1"></span><button id="toggle">Pause</button></header>
+  <p class="note" id="note" hidden></p>
+  <div class="grid">
+    <div class="card"><div class="k">Memory to spare</div><div class="v" id="mem">–</div></div>
+    <div class="card"><div class="k">Slots</div><div class="v" id="slots-n">–</div></div>
+    <div class="card"><div class="k">Done here</div><div class="v" id="done">0</div></div>
+    <div class="card"><div class="k">Busy for</div><div class="v" id="busy">0 s</div></div>
+  </div>
+  <div class="slots" id="slots"></div>
+  <div id="log"></div>
+</main>
+<script type="module">
+// The web worker page (docs/workers.md §7). This thread hands out work: it asks the coordinator
+// for tasks that fit the memory this tab can spare, gives each to a slot (a Web Worker running the
+// build's WebAssembly programs), and beats for every lease while its slot works. Nothing here asks
+// what device it is: it learns how much memory a tab may use (§6) and takes on what fits.
+const $ = (id) => document.getElementById(id);
+const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+
+// The token comes in the address's fragment (never sent to a server), then stays in this browser.
+const hash = new URLSearchParams(location.hash.slice(1));
+if (hash.get("k")) { store.set("token", hash.get("k")); history.replaceState(null, "", location.pathname); }
+const token = store.get("token", "");
+const id = store.get("id", null) || (() => { const v = Math.random().toString(36).slice(2, 8); store.set("id", v); return v; })();
+const label = (() => {
+  const ua = navigator.userAgent;
+  const browser = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "browser";
+  const os = /iPad|Macintosh.*Mobile/.test(ua) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(ua)) ? "iPad" : /iPhone/.test(ua) ? "iPhone" : /Android/.test(ua) ? "Android" : /Mac OS X/.test(ua) ? "Mac" : /Windows/.test(ua) ? "Windows" : "Linux";
+  return `${browser} on ${os}`; // (A name to show, nothing more.)
+})();
+const worker = `${label} ${id}`;
+const cores = Math.max(1, (navigator.hardwareConcurrency || 2) - 1);
+
+// How much memory this tab may use (MB): learned. It starts modest (or from what the browser says
+// it has), rises after tasks that came near it succeed, and falls below any task the tab died in.
+const CAP = 3800; // (32-bit WebAssembly can't address more than 4 GB.)
+let ceiling = store.get("ceiling", navigator.deviceMemory ? Math.min(CAP, navigator.deviceMemory * 256) : 1024);
+const running = store.get("running", null);
+if (running) {
+  // The last page died holding a task: the tab used more than this browser allows.
+  ceiling = Math.max(256, Math.min(ceiling, Math.floor(running.mem_mb * 0.7)));
+  store.set("ceiling", ceiling);
+  log(`<span class="bad">The last page died running a task of ${running.mem_mb} MB: taking on at most ${ceiling} MB now.</span>`);
+}
+store.set("running", null);
+let nearMisses = store.get("near", 0);
+
+async function call(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Worker": worker }, body: JSON.stringify(body) });
+  if (r.status === 204) return [204, null];
+  const text = await r.text();
+  if (r.status === 401) throw new Error("the coordinator refused this page's token: open the address with #k=… again");
+  if (!r.ok && r.status !== 410) throw new Error(`${path}: ${r.status} ${text.slice(0, 200)}`);
+  return [r.status, text ? JSON.parse(text) : null];
+}
+if (running) call("/work/fail", { worker, lease: running.lease, error: "the page died running it", oom_mb: running.mem_mb }).catch(() => {});
+
+function log(html) {
+  const el = $("log");
+  const line = document.createElement("div");
+  line.innerHTML = `<b>${new Date().toLocaleTimeString([], { hour12: false })}</b> ${html}`;
+  el.prepend(line);
+  while (el.childNodes.length > 300) el.lastChild.remove();
+}
+const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+
+// Slots: as many as cores, each a Web Worker running one task at a time.
+const slots = [];
+let reserved = 0, done = 0, busyMs = 0, paused = false;
+// (A running WebAssembly program can't be interrupted: a slot whose task is taken back gets a new
+// Web Worker.)
+function spawn(s) {
+  if (s.w) s.w.terminate();
+  s.w = new Worker("worker.js", { type: "module" });
+  s.w.onmessage = (e) => onSlot(s, e.data);
+  s.w.onerror = (e) => { log(`<span class="bad">slot ${s.i + 1}: ${esc(e.message)}</span>`); finish(s, false, { error: e.message }); };
+  s.w.postMessage({ init: { token, worker } });
+}
+function makeSlot(i) {
+  const s = { i, w: null, lease: null, task: null, mem: 0, started: 0, state: "idle", detail: "", frac: 0 };
+  spawn(s);
+  const row = document.createElement("div");
+  row.className = "slot";
+  row.innerHTML = `<span class="dot"></span><div><div class="t">idle</div><div class="bar"><i></i></div></div><span class="m"></span>`;
+  $("slots").append(row);
+  s.row = row;
+  slots.push(s);
+  return s;
+}
+for (let i = 0; i < cores; i++) makeSlot(i);
+$("slots-n").textContent = `${slots.length}`;
+
+function show() {
+  $("mem").textContent = `${Math.max(0, ceiling - reserved)} of ${ceiling} MB`;
+  $("done").textContent = `${done}`;
+  $("busy").textContent = busyMs < 120000 ? `${Math.round(busyMs / 1000)} s` : `${Math.round(busyMs / 60000)} min`;
+  for (const s of slots) {
+    s.row.querySelector(".dot").className = `dot ${s.state === "run" ? "run" : s.state === "bad" ? "bad" : s.state === "ok" ? "ok" : ""}`;
+    s.row.querySelector(".t").textContent = s.detail || "idle";
+    s.row.querySelector(".m").textContent = s.mem ? `${s.mem} MB` : "";
+    s.row.querySelector(".bar > i").style.width = `${Math.round(s.frac * 100)}%`;
+  }
+}
+
+// What tasks have reached when the tab died: kept so the next page can lower its ceiling.
+function remember() {
+  const r = slots.filter((s) => s.lease).map((s) => ({ lease: s.lease, mem_mb: s.mem }));
+  store.set("running", r.length ? { lease: r[0].lease, mem_mb: r.reduce((a, b) => a + b.mem_mb, 0) } : null);
+}
+
+function onSlot(s, m) {
+  if (m.state) { s.detail = m.state; if (m.frac !== undefined) s.frac = m.frac; show(); }
+  if (m.done !== undefined) finish(s, m.ok, m);
+}
+
+function finish(s, ok, m = {}) {
+  if (!s.lease) return;
+  const ms = performance.now() - s.started;
+  busyMs += ms;
+  if (ok) {
+    done++;
+    // A task that came near the ceiling and succeeded: room to spare, perhaps; after three, more.
+    if (m.peak_mb && m.peak_mb > 0.6 * ceiling) {
+      nearMisses++;
+      if (nearMisses >= 3 && ceiling < CAP) { ceiling = Math.min(CAP, Math.round(ceiling * 1.25)); nearMisses = 0; store.set("ceiling", ceiling); log(`Tasks near ${m.peak_mb} MB succeed: taking on up to ${ceiling} MB.`); }
+      store.set("near", nearMisses);
+    }
+    log(`${esc(s.task.unit || s.task.kind)} done in ${(ms / 1000).toFixed(0)} s (${m.peak_mb || "?"} MB at most)`);
+  } else if (m.error) {
+    log(`<span class="bad">${esc(s.task?.unit || "task")} failed: ${esc(m.error)}</span>`);
+  }
+  reserved -= s.mem;
+  Object.assign(s, { lease: null, task: null, mem: 0, state: ok ? "ok" : "bad", detail: ok ? "idle" : `failed: ${m.error || ""}`.slice(0, 120), frac: 0 });
+  remember();
+  show();
+  setTimeout(fill, 100);
+}
+
+// Asks for work while a slot is idle and memory is free; the coordinator picks what fits.
+let asking = false, lastNone = 0;
+async function fill() {
+  if (asking || paused || !token) return;
+  const idle = slots.find((s) => !s.lease);
+  const free = ceiling - reserved;
+  if (!idle || free < 200 || performance.now() - lastNone < 15000) return;
+  asking = true;
+  try {
+    const [code, g] = await call("/work/ask", { worker, kind: "web", label, can: ["tail"], mem_mb: free, cores });
+    if (code === 204 || !g) { lastNone = performance.now(); $("state").textContent = "waiting for work"; return; }
+    Object.assign(idle, { lease: g.lease, task: g.task, mem: g.mem_mb, started: performance.now(), state: "run", detail: `${g.task.unit}: fetching`, frac: 0 });
+    reserved += g.mem_mb;
+    remember();
+    $("state").textContent = "working";
+    idle.w.postMessage({ run: { lease: g.lease, task: g.task, mem_mb: g.mem_mb } });
+    show();
+  } catch (e) {
+    lastNone = performance.now();
+    $("state").textContent = `can't reach the coordinator (${e.message})`;
+  } finally {
+    asking = false;
+    setTimeout(fill, 50);
+  }
+}
+setInterval(fill, 5000);
+
+// Heartbeats for every lease, every minute; a lease the coordinator no longer holds is stopped
+// (its task went to another worker, or the job took it back).
+setInterval(async () => {
+  for (const s of slots) {
+    if (!s.lease) continue;
+    try {
+      const [, r] = await call("/work/beat", { worker, lease: s.lease, progress: s.detail });
+      if (r && r.ok === false && s.lease) {
+        log(`${esc(s.task.unit)}: taken back (another worker or the build Mac has it)`);
+        spawn(s);
+        reserved -= s.mem;
+        Object.assign(s, { lease: null, task: null, mem: 0, state: "idle", detail: "", frac: 0 });
+        remember();
+        show();
+      }
+    } catch {}
+  }
+}, 60000);
+
+// Keeping the screen on (where the browser allows it: a secure context).
+let lock = null;
+async function wake() {
+  if (!("wakeLock" in navigator) || document.visibilityState !== "visible") return;
+  try { lock = await navigator.wakeLock.request("screen"); } catch {}
+}
+document.addEventListener("visibilitychange", wake);
+wake();
+if (!window.isSecureContext) {
+  $("note").hidden = false;
+  $("note").textContent = "Not a secure context: this browser won't keep the screen on for the page, so set the device to stay awake while it works.";
+}
+if (!token) {
+  $("note").hidden = false;
+  $("note").textContent = "No token: open this page's full address (with #k=…), as the build Mac's status shows it.";
+}
+
+$("toggle").onclick = () => { paused = !paused; $("toggle").textContent = paused ? "Resume" : "Pause"; $("state").textContent = paused ? "paused (running tasks finish)" : "working"; if (!paused) fill(); };
+show();
+fill();
+</script>
+</body>
+</html>

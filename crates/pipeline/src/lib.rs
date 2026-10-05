@@ -6,6 +6,7 @@ pub mod buildtiles;
 pub mod candidates;
 pub mod chain;
 pub mod climbs;
+pub mod coord;
 pub mod coverage;
 pub mod elev;
 pub mod handoff;

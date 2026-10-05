@@ -1,0 +1,1 @@
+@bjorn3/browser_wasi_shim 0.4.2 (MIT OR Apache-2.0), dist/ as published: the WASI layer web workers run the build's WebAssembly programs over (docs/workers.md).

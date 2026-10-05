@@ -30,9 +30,30 @@ pub struct Handoff {
     pub done: Option<(String, Vec<(String, String)>)>,
 }
 
-/// Where host `host`'s hand-offs go.
+impl Handoff {
+    /// `later` on top of this one (a job's saves in the order written: a later change wins).
+    pub fn absorb(&mut self, later: Handoff) {
+        self.changes.extend(later.changes);
+        self.pending.extend(later.pending);
+        for c in later.checked {
+            if !self.checked.contains(&c) {
+                self.checked.push(c);
+            }
+        }
+        if later.done.is_some() {
+            self.done = later.done;
+        }
+    }
+}
+
+/// Where hand-offs are written through the NAS, a folder per host.
+pub fn nas_base(root: &Path) -> PathBuf {
+    root.join("state/build/handoff")
+}
+
+/// Where host `host`'s hand-offs go on the NAS.
 pub fn dir(root: &Path, host: &str) -> PathBuf {
-    root.join("state/build/handoff").join(host)
+    nas_base(root).join(host)
 }
 
 /// The last hand-off of host folder `dir` merged (its name), if any; an error when it can't be read
@@ -60,6 +81,26 @@ fn stamp(name: &str) -> Option<u128> {
     name.split('-').next()?.parse().ok()
 }
 
+/// The hand-offs a job wrote into `dir` (a helper's outbox folder: named by time, as `write` names
+/// them), in the order written; None when one is damaged (its saves can't all go back: its units are
+/// built again).
+pub fn written_in(dir: &Path) -> Result<Option<Vec<Handoff>>> {
+    let mut files: Vec<PathBuf> = listing(dir)?.into_iter().filter(|p| p.extension().is_some_and(|x| x == "json") && !crate::whole::is_tmp(p) && p.file_name().is_some_and(|n| stamp(&n.to_string_lossy()).is_some())).collect();
+    files.sort();
+    let mut out = Vec::new();
+    for f in files {
+        let b = std::fs::read(&f).with_context(|| format!("read {}", f.display()))?;
+        match serde_json::from_slice::<Handoff>(&b) {
+            Ok(h) => out.push(h),
+            Err(e) => {
+                eprintln!("handoff: {} can't be parsed ({e})", f.display());
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(out))
+}
+
 /// Writes `h` as the next hand-off in `dir`, named by the time (ns) and the process, so a Mac's sort
 /// in the order they were written: after every one there and the last merged, whatever the clock
 /// says (it may step back).
@@ -78,8 +119,14 @@ pub fn write(dir: &Path, h: &Handoff) -> Result<()> {
 /// One that can't be parsed is set aside; its Mac's done records after it in this look are dropped
 /// (their units are built again), as its job's saves may be lost with it.
 pub fn waiting(root: &Path) -> Result<Vec<(PathBuf, Handoff)>> {
+    waiting_in(&nas_base(root))
+}
+
+/// `waiting` for the host folders under `base`: the NAS's, or the coordinator's journal of
+/// hand-offs received over HTTP (crate::coord), kept on this Mac's disk.
+pub fn waiting_in(base: &Path) -> Result<Vec<(PathBuf, Handoff)>> {
     let mut out = Vec::new();
-    let mut hosts: Vec<PathBuf> = listing(&root.join("state/build/handoff"))?.into_iter().filter(|p| p.is_dir()).collect();
+    let mut hosts: Vec<PathBuf> = listing(base)?.into_iter().filter(|p| p.is_dir()).collect();
     hosts.sort();
     for h in hosts {
         let mut files: Vec<PathBuf> = listing(&h)?.into_iter().filter(|p| p.extension().is_some_and(|x| x == "json") && !crate::whole::is_tmp(p)).collect();
@@ -111,7 +158,16 @@ pub fn waiting(root: &Path) -> Result<Vec<(PathBuf, Handoff)>> {
 /// Mac's agent, under this Mac's build lock: when another holds it (a job saving, or paused while
 /// it held it), none now.
 pub fn merge(root: &Path, scratch: &Path) -> Result<usize> {
-    let hs = waiting(root)?;
+    merge_from(root, scratch, &[nas_base(root)])
+}
+
+/// `merge` of the hand-offs under each of `bases` (the NAS's, the coordinator's journal), all in one
+/// save of the records.
+pub fn merge_from(root: &Path, scratch: &Path, bases: &[PathBuf]) -> Result<usize> {
+    let mut hs = Vec::new();
+    for b in bases {
+        hs.extend(waiting_in(b)?);
+    }
     if hs.is_empty() {
         return Ok(0);
     }

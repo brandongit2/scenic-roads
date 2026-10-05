@@ -68,18 +68,55 @@ pub struct Options {
     pub dry_run: bool,
     /// One loop, then exit (tests, `scenic agent --once`).
     pub once: bool,
-    /// A helper on another Mac (`scenic agent --helper`, docs/plan.md §8, Two Macs): it builds only
-    /// units, the light ones, from the far end of their list, and reports to
-    /// `state/helpers/<host>.json`, never the heartbeat.
+    /// A helper on another Mac (`scenic agent --helper`, docs/plan.md §8, Two Macs): it plans
+    /// nothing, but asks the build Mac's coordinator (crate::coord) for work that fits it, and
+    /// reports to `state/helpers/<host>.json`, never the heartbeat.
     pub helper: bool,
 }
 
-/// The largest piece a helper builds (bytes): denser units need more memory than a 16 GB Mac has.
-/// (Over the M1's first 205 units, pieces up to 150 MB, its steps' programs took 3.7 GB at most,
-/// and no more for the bigger pieces; the densest, past 400 MB, wait for the build Mac.)
-const HELPER_MAX_PIECE: u64 = 400 << 20;
 /// The free space a helper's jobs start with (its Mac has less room than the build Mac).
 const HELPER_RESERVE: u64 = 15 << 30;
+
+/// The memory a helper spares its jobs (MB): a quarter of its Mac's (4 GB of the M1's 16, which its
+/// units fit: over its first 205, its steps' programs took 3.7 GB at most).
+fn helper_memory() -> u64 {
+    let total = std::process::Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"]).output().ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok());
+    total.map_or(4096, |b| (b >> 20) / 4)
+}
+
+/// The running job's lease.
+#[derive(Clone, Debug)]
+enum Held {
+    /// The build Mac's own job's, in its coordinator.
+    Own(u64),
+    /// A helper's job's, from the build Mac's coordinator: the job saves into `dir` (its outbox),
+    /// and the agent hands that back, with the job's record, as one.
+    Leased { lease: u64, dir: PathBuf },
+}
+
+/// A worker as the heartbeat shows it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct WorkerView {
+    pub name: String,
+    pub label: String,
+    pub kind: String,
+    pub what: String,
+    pub mem_mb: u64,
+    pub done: u32,
+    pub failed: u32,
+    pub bad: bool,
+}
+
+/// What a unit job's units cost (`SCENIC_COSTS`: a JSON line per unit).
+fn read_costs(p: &Path) -> Vec<(String, crate::coord::Cost)> {
+    let Ok(s) = std::fs::read_to_string(p) else { return Vec::new() };
+    s.lines()
+        .filter_map(|l| {
+            let v: serde_json::Value = serde_json::from_str(l).ok()?;
+            Some((v["unit"].as_str()?.to_string(), crate::coord::Cost { peak_mb: v["peak_mb"].as_u64()?, secs: v["secs"].as_u64().unwrap_or(0) }))
+        })
+        .collect()
+}
 
 /// The heartbeat (`state/status.json`), what the app's status bar and `scenic status` show.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -106,6 +143,9 @@ pub struct Status {
     /// The build to the end, step by step: the pass's steps, then the regions'.
     #[serde(default)]
     pub checklist: Vec<build::Step>,
+    /// The workers the coordinator heard from in the last two minutes (helpers, web pages).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workers: Vec<WorkerView>,
     /// Helpers on other Macs building now (`state/helpers/<host>.json`, fresh within ten minutes):
     /// their own status, with their job.
     #[serde(default)]
@@ -164,11 +204,6 @@ struct Memory {
     /// When each daily job last succeeded (seconds since the epoch).
     last_ok: BTreeMap<String, u64>,
     recent: Vec<Done>,
-    /// A helper's jobs done lately (when, in seconds since the epoch; their step and targets with
-    /// keys): planned as done until the keys are written after them (Agent::planning_keys), across
-    /// a restart. A day's are kept.
-    #[serde(default)]
-    handed: Vec<(u64, String, Vec<(String, String)>)>,
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -262,8 +297,8 @@ pub struct Agent {
     /// kept fresh.
     me: String,
     claims_fresh: Option<Instant>,
-    /// The OSM pieces' sizes by content name (a helper sizes units by them; content-named files
-    /// never change).
+    /// The OSM pieces' sizes by content name (the coordinator sizes units by them; content-named
+    /// files never change).
     piece_sizes: std::cell::RefCell<std::collections::HashMap<String, u64>>,
     /// Whether this Mac's earlier agent's claims were dropped (once the NAS answers), and when this
     /// Mac was last named the records' writer.
@@ -273,9 +308,17 @@ pub struct Agent {
     /// a job runs nothing new can start, so the plan (the manifest, the keys, a dozen NAS listings)
     /// is made again only every five minutes, for the status, and when the job ends.
     planned: Option<Planned>,
-    /// When the helper's hand-offs were last merged (each loop when idle; every two minutes while a
+    /// When the workers' hand-offs were last merged (each loop when idle; every two minutes while a
     /// job runs).
     merged: Option<Instant>,
+    /// The build Mac's coordinator (crate::coord), and when its contact on the NAS was last checked.
+    coord: Option<crate::coord::Coordinator>,
+    published: Option<Instant>,
+    /// A helper's way to the build Mac's coordinator (made once its contact is on the NAS).
+    client: Option<crate::coord::client::Client>,
+    /// The running job's lease, and when it last beat.
+    lease: Option<Held>,
+    beaten: Option<Instant>,
 }
 
 /// The last plan's view, kept for the heartbeat between plans.
@@ -308,25 +351,230 @@ impl Agent {
             mem.app = app.clone();
         }
         let me = format!("{} {}", cond::host_name(), std::process::id());
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None })
+        // The build Mac's agent coordinates (not a helper's, nor a dry run's).
+        let coord = if !o.helper && lock.is_some() && !o.dry_run && o.root.is_none() {
+            match crate::coord::Coordinator::start(&o.home.join("coord"), Some(o.bin.join("wasm")), crate::coord::PORT, &cond::host_name()) {
+                Ok(c) => {
+                    eprintln!("agent: coordinating at {}", c.contact.urls.join(", "));
+                    Some(c)
+                }
+                Err(e) => {
+                    eprintln!("agent: no coordinator ({e:#}): this Mac builds alone");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, lease: None, beaten: None })
     }
 
-    /// The keys to plan with: on the NAS, with the hand-offs' done records on top, and a helper's own
-    /// jobs done since the keys were last written, as this Mac sees them (`Memory::handed`): those
-    /// records were merged after this Mac's view of `jobs.json`, or not yet. Keys written after one
-    /// are the truth (they may hold a newer build's key), so it no longer counts.
+    /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
+    /// on top (a worker's job built and handed back, not yet merged: not built again).
     fn planning_keys(&self, root: &Path) -> Result<build::Keys> {
-        // (The write time first: keys read after it are at least as new.)
-        let written = std::fs::metadata(root.join("state/build/jobs.json")).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
-        let mut keys = build::Keys::load_with_handoffs(root)?;
-        for (_, step, targets) in self.mem.handed.iter().filter(|(t, _, _)| *t >= written) {
-            keys.record(step, targets);
+        build::Keys::load_with(root, &self.handoff_bases(root))
+    }
+
+    /// Where hand-offs wait to be merged: the coordinator's journal on this Mac, and the NAS's folder
+    /// (a helper on an app from before the coordinator).
+    fn handoff_bases(&self, root: &Path) -> Vec<PathBuf> {
+        vec![crate::handoff::nas_base(root), self.o.home.join("coord/journal")]
+    }
+
+    /// Where a helper's leased jobs save (`<outbox>/<lease>/`), and its agent puts their result, until
+    /// the coordinator has them.
+    fn outbox(&self) -> PathBuf {
+        self.o.home.join("outbox")
+    }
+
+    /// A helper's way to the build Mac's coordinator; None (with why, in `waiting`) when there's none.
+    fn client(&mut self, root: &Path, waiting: &mut Vec<Waiting>) -> Option<&crate::coord::client::Client> {
+        if self.client.is_none() {
+            match crate::coord::client::Client::from_nas(root, &self.host) {
+                Ok(Some(c)) => self.client = Some(c),
+                Ok(None) => waiting.push(Waiting { what: "Building".into(), why: "the build Mac isn't coordinating (its agent isn't running, or is on an older app)".into() }),
+                Err(e) => waiting.push(Waiting { what: "Building".into(), why: format!("{e:#}") }),
+            }
         }
-        Ok(keys)
+        self.client.as_ref()
+    }
+
+    /// Hands a helper's finished jobs back: each leased job's saves (merged into one hand-off, in the
+    /// order written) with its done record and what its units cost, or its failure. A folder stays
+    /// until the coordinator has it (or says its lease is gone: then its work was offered again,
+    /// and it's dropped), across restarts; one left by a job that died with an earlier agent counts
+    /// as failed.
+    fn send_outbox(&mut self, root: &Path, waiting: &mut Vec<Waiting>) {
+        let Ok(rd) = std::fs::read_dir(self.outbox()) else { return };
+        let running = match &self.lease {
+            Some(Held::Leased { dir, .. }) => Some(dir.clone()),
+            _ => None,
+        };
+        let dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir() && Some(p) != running.as_ref()).collect();
+        if dirs.is_empty() {
+            return;
+        }
+        let Some(client) = self.client(root, waiting) else { return };
+        for d in dirs {
+            let Some(lease) = d.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<u64>().ok()) else { continue };
+            let result: Option<serde_json::Value> = std::fs::read(d.join("result.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+            let sent = (|| -> Result<bool> {
+                let saves = match result.as_ref().filter(|r| r["ok"].as_bool() == Some(true)) {
+                    Some(_) => crate::handoff::written_in(&d)?,
+                    None => None,
+                };
+                match (result.as_ref(), saves) {
+                    (Some(r), Some(saves)) => {
+                        let mut h = crate::handoff::Handoff::default();
+                        for x in saves {
+                            h.absorb(x);
+                        }
+                        h.done = serde_json::from_value(r["done"].clone())?;
+                        let costs = read_costs(&d.join("costs.jsonl"));
+                        client.done(&crate::coord::Done { lease, handoff: Some(h), costs, ..Default::default() })
+                    }
+                    _ => {
+                        let why = match &result {
+                            Some(r) if r["ok"].as_bool() == Some(true) => "one of its saves is damaged".to_string(),
+                            Some(r) => r["error"].as_str().unwrap_or("it failed").to_string(),
+                            None => "the helper's agent stopped while it ran".to_string(),
+                        };
+                        client.fail(lease, &why, None).map(|()| true)
+                    }
+                }
+            })();
+            match sent {
+                Ok(taken) => {
+                    if !taken {
+                        eprintln!("agent: the coordinator no longer holds lease {lease}: its work is dropped (it was offered again)");
+                    }
+                    std::fs::remove_dir_all(&d).ok();
+                }
+                Err(e) => {
+                    waiting.push(Waiting { what: "Handing work back".into(), why: format!("{e:#}; trying again") });
+                    break;
+                }
+            }
+        }
+    }
+
+    /// A helper's next job: units the build Mac's coordinator leases it (as many as a batch, none
+    /// needing more memory than it spares), built from the pass it says, saving into the lease's
+    /// outbox folder. Asked only when it could start now.
+    fn helper_job(&mut self, root: &Path, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+        let needs = Needs { ac: true, nas: true, home: false };
+        if let Some(why) = lapsed(&needs, c) {
+            waiting.push(Waiting { what: "Building".into(), why });
+            return Vec::new();
+        }
+        let ask = crate::coord::Ask { kind: "native".into(), label: Some(format!("{} (helper)", self.host)), can: vec!["unit".into()], mem_mb: helper_memory(), cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32), max: batch_size("unit"), ..Default::default() };
+        let Some(client) = self.client(root, waiting) else { return Vec::new() };
+        let asked = client.ask(&ask);
+        let fail = |a: &Self, lease: u64, why: &str| {
+            if let Some(c) = &a.client {
+                c.fail(lease, why, None).ok();
+            }
+        };
+        match asked {
+            Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Job { step, targets, pass }, .. })) if step == "unit" => {
+                let dir = self.outbox().join(lease.to_string());
+                if let Err(e) = std::fs::create_dir_all(&dir) {
+                    waiting.push(Waiting { what: "Building".into(), why: format!("{e}") });
+                    fail(self, lease, &format!("its outbox: {e}"));
+                    return Vec::new();
+                }
+                let s = |p: &Path| p.to_string_lossy().into_owned();
+                let cache = self.o.home.join("cache");
+                let mut cmd = vec!["/usr/bin/env".to_string(), format!("SCENIC_HANDOFF={}", dir.display()), format!("SCENIC_COSTS={}", dir.join("costs.jsonl").display())];
+                cmd.extend([s(&self.o.bin.join("scenic-build")), "unit".into(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch/unit"))]);
+                cmd.extend(targets.iter().map(|t| t.0.clone()));
+                cmd.extend(["--pass".into(), pass, "--dem".into(), s(&self.o.bin.join("dem")), "--cache-dir".into(), s(&cache)]);
+                let n = targets.len();
+                let id = format!("unit {}", targets.first().map(|t| t.0.as_str()).unwrap_or(""));
+                let what = format!("Roads, elevations and scenery ({n} area{} for the build Mac)", if n == 1 { "" } else { "s" });
+                self.lease = Some(Held::Leased { lease, dir });
+                vec![JobSpec { id, what, cmd, needs, restart_after_sleep: true, record: Some(build::Work { step, targets }) }]
+            }
+            Ok(Some(g)) => {
+                fail(self, g.lease, "this helper takes units only");
+                Vec::new()
+            }
+            Ok(None) => {
+                waiting.push(Waiting { what: "Building".into(), why: "the build Mac has nothing for this Mac now".into() });
+                Vec::new()
+            }
+            Err(e) => {
+                waiting.push(Waiting { what: "Building".into(), why: format!("the build Mac can't be reached: {e:#}") });
+                Vec::new()
+            }
+        }
+    }
+
+    /// The running job ended (or stopped): its lease ended with it. This Mac's own: done when it
+    /// recorded its targets, and what its units cost learned; a helper's: its result in its outbox
+    /// folder, to send.
+    fn end_lease(&mut self, ok: bool, note: &str) {
+        let pid = self.running.as_ref().map(|r| r.pgid as u32);
+        match self.lease.take() {
+            Some(Held::Own(id)) => {
+                if let Some(c) = &self.coord {
+                    c.finish(id, ok);
+                    if let Some(p) = pid {
+                        c.close_tasks(p);
+                    }
+                    let costs = self.o.home.join("costs.jsonl");
+                    c.add_costs(&read_costs(&costs));
+                    std::fs::remove_file(costs).ok();
+                }
+            }
+            Some(Held::Leased { dir, .. }) => {
+                let done = self.running.as_ref().and_then(|r| r.spec.record.clone()).filter(|_| ok).map(|w| (w.step, w.targets));
+                let r = serde_json::json!({ "ok": ok, "done": done, "error": note.chars().take(3000).collect::<String>() });
+                if let Err(e) = crate::whole::write(&dir.join("result.json"), r.to_string().as_bytes()) {
+                    eprintln!("agent: writing a job's result for the coordinator: {e:#}");
+                }
+            }
+            None => {}
+        }
+    }
+
+    /// Beats for the running job's lease (each minute it isn't paused); false when it's lost: it
+    /// lapsed and its work went to another worker. (This Mac's own lapses when its job paused past
+    /// it, or this loop was stuck: it's held again when no one took its work meanwhile.)
+    fn beat(&mut self, root: Option<&Path>) -> bool {
+        self.beaten = Some(Instant::now());
+        let progress = self.running.as_ref().and_then(|r| jobs::progress(&r.log)).map(|(d, t, u)| format!("{d:.0}/{t:.0} {u}"));
+        match self.lease.clone() {
+            Some(Held::Own(id)) => {
+                let Some(c) = &self.coord else { return true };
+                if c.renew(id, progress) {
+                    return true;
+                }
+                let work = self.running.as_ref().and_then(|r| r.spec.record.clone());
+                match work.and_then(|w| c.hold(&w.step, &w.targets)) {
+                    Some(id) => {
+                        self.lease = Some(Held::Own(id));
+                        true
+                    }
+                    None => false,
+                }
+            }
+            Some(Held::Leased { lease, .. }) => {
+                let Some(r) = root else { return true };
+                // (The coordinator away: the job goes on, and is handed back once it's there.)
+                !matches!(self.client(r, &mut Vec::new()).map(|c| c.beat(lease, progress.as_deref())), Some(Ok(false)))
+            }
+            None => true,
+        }
     }
 
     /// Drops the running job's claims (crate::agent::claims), as it ends.
     fn release_claims(&mut self, root: Option<&Path>) {
+        // (A helper's leased job holds no claim files.)
+        if self.o.helper {
+            self.claims_fresh = None;
+            return;
+        }
         if let (Some((step, ts)), Some(r)) = (self.running.as_ref().and_then(|j| shared_targets(&j.spec)), root) {
             claims::release(r, &step, &ts, &self.me);
         }
@@ -337,6 +585,10 @@ impl Agent {
     /// while it's paused: a paused job's claims go stale, so the other Mac may take them. False when
     /// another agent holds one of them now (the job is then stopped, unrecorded: that one builds it).
     fn keep_claims(&mut self, root: Option<&Path>) -> bool {
+        // (A helper's leased job holds no claim files: its lease is kept by beats.)
+        if self.o.helper {
+            return true;
+        }
         let (Some(j), Some(r)) = (self.running.as_ref(), root) else { return true };
         let Some((step, ts)) = shared_targets(&j.spec) else { return true };
         if claims::lost(r, &step, &ts, &self.me) {
@@ -407,14 +659,21 @@ impl Agent {
                 std::thread::sleep(Duration::from_secs(1));
             }
         }
-        if let Some(mut r) = self.running.take() {
+        let root = self.o.root.clone().or_else(|| self.root());
+        if let Some(r) = self.running.as_mut() {
             eprintln!("agent: stopping {}", r.spec.id);
             r.stop(Duration::from_secs(30));
+            self.end_lease(false, "the agent stopped");
+            let r = self.running.take().unwrap();
             std::fs::remove_file(self.record_path()).ok();
             // Its claims, free for the other Mac now rather than once stale.
-            if let (Some((step, ts)), Some(root)) = (shared_targets(&r.spec), self.o.root.clone().or_else(|| self.root())) {
-                claims::release(&root, &step, &ts, &self.me);
+            if let (Some((step, ts)), Some(root), false) = (shared_targets(&r.spec), &root, self.o.helper) {
+                claims::release(root, &step, &ts, &self.me);
             }
+        }
+        // The coordinator's contact off the NAS: workers wait for the next agent.
+        if let (Some(c), Some(root)) = (&self.coord, &root) {
+            c.unpublish(root);
         }
         Ok(())
     }
@@ -445,29 +704,22 @@ impl Agent {
             if let Some(st) = r.poll()? {
                 let secs = r.elapsed().as_secs();
                 let ok = st.success();
-                if ok {
-                    if let (Some(w), Some(root)) = (r.spec.record.clone(), root.as_ref()) {
-                        // The build Mac's agent records it; a helper hands its record off.
-                        let rec = if self.o.helper {
-                            // (Planned as done until the keys show it, whatever this Mac's view
-                            // of the NAS says meanwhile: the record handed off, merged and deleted
-                            // at once, and `jobs.json` read here from before the merge.)
-                            self.mem.handed.push((now_s(), w.step.clone(), w.targets.clone()));
-                            crate::handoff::write(&crate::handoff::dir(root, &self.host), &crate::handoff::Handoff { done: Some((w.step.clone(), w.targets.clone())), ..Default::default() })
-                        } else {
-                            build::Keys::load_strict(root).and_then(|mut k| {
-                                k.record(&w.step, &w.targets);
-                                k.save(root)
-                            })
-                        };
-                        if let Err(e) = rec {
-                            eprintln!("agent: recording {}: {e:#}", r.spec.id);
-                        }
+                // The build Mac's agent records it; a helper's goes back to the coordinator (below).
+                let mut recorded = false;
+                if let (true, false, Some(w), Some(root)) = (ok, self.o.helper, r.spec.record.clone(), root.as_ref()) {
+                    let rec = build::Keys::load_strict(root).and_then(|mut k| {
+                        k.record(&w.step, &w.targets);
+                        k.save(root)
+                    });
+                    match rec {
+                        Ok(()) => recorded = true,
+                        Err(e) => eprintln!("agent: recording {}: {e:#}", r.spec.id),
                     }
                 }
                 let note = if ok { String::new() } else { format!("{st}\n{}", jobs::tail(&r.log, 20)) };
                 let (id, what) = (r.spec.id.clone(), r.spec.what.clone());
                 eprintln!("agent: {id} {} after {secs} s", if ok { "finished" } else { "failed" });
+                self.end_lease(ok && (recorded || self.o.helper), &note);
                 self.finished(&id, &what, ok, secs, note);
                 self.release_claims(root.as_deref());
                 self.running = None;
@@ -478,9 +730,20 @@ impl Agent {
                 // from its completion markers once its conditions hold.
                 eprintln!("agent: slept {slept} s; restarting {}", r.spec.id);
                 r.stop(Duration::from_secs(30));
+                self.end_lease(false, "stopped: the Mac slept");
                 self.release_claims(root.as_deref());
                 self.running = None;
                 std::fs::remove_file(self.record_path()).ok();
+            } else if self.running.as_ref().unwrap().paused.is_none() && self.lease.is_some() && self.beaten.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) && !self.beat(root.as_deref()) {
+                // (A paused job doesn't beat: its lease lapses, and its work may go to another.)
+                let r = self.running.as_mut().unwrap();
+                eprintln!("agent: {}'s lease lapsed and its work went to another worker; stopping it", r.spec.id);
+                r.stop(Duration::from_secs(30));
+                self.end_lease(false, "its lease lapsed");
+                self.release_claims(root.as_deref());
+                self.running = None;
+                std::fs::remove_file(self.record_path()).ok();
+                ended = true;
             } else if !self.keep_claims(root.as_deref()) {
                 // Another agent took its claims (they went stale while it was paused, or this Mac
                 // was away): it builds them; this one stops, unrecorded, and drops the rest.
@@ -525,15 +788,33 @@ impl Agent {
             }
         }
 
+        // The coordinator: how to reach it on the NAS (looked at every five minutes: it may have been
+        // deleted, or this Mac's addresses changed), and leases whose workers went quiet dropped.
+        if let (Some(c), Some(r)) = (&self.coord, &root) {
+            if self.published.is_none_or(|t| t.elapsed() >= Duration::from_secs(300)) {
+                match c.publish(r) {
+                    Ok(()) => self.published = Some(Instant::now()),
+                    Err(e) => eprintln!("agent: publishing the coordinator's contact: {e:#}"),
+                }
+            }
+            for l in c.expire() {
+                eprintln!("agent: {}'s lease of {} lapsed (no word for {} min); offered again", l.worker, l.what(), crate::coord::TTL.as_secs() / 60);
+            }
+        }
+        // A helper's finished jobs not yet with the coordinator: sent before anything new.
+        if let (true, Some(r)) = (self.o.helper, root.clone()) {
+            self.send_outbox(&r, &mut waiting);
+        }
+
         // A helper's hand-offs, merged into the build's records before planning (the build Mac
         // alone writes them): each loop when nothing runs, every two minutes while a job does.
         let idle = self.running.is_none();
         let merge_due = idle || ended || self.merged.is_none_or(|t| t.elapsed() >= Duration::from_secs(120));
         if let (Some(r), false, true, true) = (root.as_ref(), self.o.helper, self._lock.is_some() && !self.o.dry_run, merge_due) {
-            match crate::handoff::merge(r, &self.o.home.join("scratch/handoff")) {
+            match crate::handoff::merge_from(r, &self.o.home.join("scratch/handoff"), &self.handoff_bases(r)) {
                 Ok(0) => {}
-                Ok(n) => eprintln!("agent: merged {n} hand-off{} from the helper", if n == 1 { "" } else { "s" }),
-                Err(e) => eprintln!("agent: merging the helper's hand-offs: {e:#}"),
+                Ok(n) => eprintln!("agent: merged {n} hand-off{} from other workers", if n == 1 { "" } else { "s" }),
+                Err(e) => eprintln!("agent: merging other workers' hand-offs: {e:#}"),
             }
             self.merged = Some(Instant::now());
         }
@@ -542,11 +823,21 @@ impl Agent {
         // and otherwise every five minutes for the heartbeat (between, its last view is shown).
         let plan_due = idle || ended || self.planned.as_ref().is_none_or(|p| p.at.elapsed() >= Duration::from_secs(300));
         let plan = match &root {
+            Some(root) if self.o.helper => {
+                // A helper plans nothing: it asks the build Mac for work, once its last is handed back.
+                let unsent = std::fs::read_dir(self.outbox()).map(|mut d| d.next().is_some()).unwrap_or(false);
+                let plan = if idle && !unsent { self.helper_job(root, &c, &mut waiting) } else { Vec::new() };
+                let regions = match &self.planned {
+                    Some(p) if !plan_due => p.regions.clone(),
+                    _ => recipes::load(&root.join("inputs/regions")).0,
+                };
+                self.planned = Some(Planned { at: Instant::now(), waiting: waiting.clone(), regions, bad: Vec::new(), helpers: Vec::new() });
+                plan
+            }
             Some(root) if plan_due => {
                 let plan = self.plan(root, &c, &mut waiting);
                 let (regions, bad) = recipes::load(&root.join("inputs/regions"));
-                let helpers = if self.o.helper { Vec::new() } else { helpers(root) };
-                self.planned = Some(Planned { at: Instant::now(), waiting: waiting.clone(), regions, bad, helpers });
+                self.planned = Some(Planned { at: Instant::now(), waiting: waiting.clone(), regions, bad, helpers: helpers(root) });
                 plan
             }
             Some(_) => {
@@ -603,28 +894,50 @@ impl Agent {
                         Err(e) => eprintln!("agent: making room on the disk: {e:#}"),
                     }
                 }
-                // A job another Mac may also want: its targets claimed first; when another holds
-                // one, none starts (the next loop plans without it).
-                if let (Some((step, ts)), Some(r)) = (shared_targets(&spec), &root) {
+                // A job other workers may also do: its targets held first, by a lease in this Mac's
+                // coordinator (and claim files, for a helper on an app from before it); when another
+                // holds one, none starts (the next loop plans without it). A helper's job came
+                // with its lease.
+                if let (Some((step, ts)), Some(r), false) = (shared_targets(&spec), &root, self.o.helper) {
+                    let targets = spec.record.as_ref().map(|w| w.targets.clone()).unwrap_or_default();
+                    let lease = match &self.coord {
+                        Some(c) => match c.hold(&step, &targets) {
+                            Some(id) => Some(id),
+                            None => {
+                                waiting.push(Waiting { what: what.clone(), why: "another worker took part of it; planning again".into() });
+                                continue;
+                            }
+                        },
+                        None => None,
+                    };
+                    let let_go = |a: &Self| {
+                        if let (Some(c), Some(id)) = (&a.coord, lease) {
+                            c.finish(id, false);
+                        }
+                    };
                     if !claims::claim(r, &step, &ts, &self.me) {
+                        let_go(self);
                         waiting.push(Waiting { what: what.clone(), why: "another Mac took part of it; planning again".into() });
                         continue;
                     }
-                    // Recorded since this loop read the keys (the other Mac built and released it
-                    // meanwhile): not built again.
+                    // Recorded since this loop read the keys (another worker built it meanwhile):
+                    // not built again.
                     let done = self.planning_keys(r).map(|keys| spec.record.as_ref().is_some_and(|w| w.targets.iter().any(|(t, k)| keys.recorded(&w.step, t) == Some(k.as_str()))));
                     if done.unwrap_or(true) {
+                        let_go(self);
                         claims::release(r, &step, &ts, &self.me);
-                        waiting.push(Waiting { what: what.clone(), why: "the other Mac built part of it meanwhile (or the keys can't be read now); planning again".into() });
+                        waiting.push(Waiting { what: what.clone(), why: "another worker built part of it meanwhile (or the keys can't be read now); planning again".into() });
                         continue;
                     }
+                    self.lease = lease.map(Held::Own);
                     self.claims_fresh = Some(Instant::now());
                 }
                 let shared = shared_targets(&spec);
                 if let Err(e) = self.start(spec, &c) {
                     // It couldn't even start (a missing program, a full disk): retried later.
                     eprintln!("agent: can't start {id}: {e:#}");
-                    if let (Some((step, ts)), Some(r)) = (shared, &root) {
+                    self.end_lease(false, &format!("couldn't start: {e:#}"));
+                    if let (Some((step, ts)), Some(r), false) = (shared, &root, self.o.helper) {
                         claims::release(r, &step, &ts, &self.me);
                     }
                     self.finished(&id, &what, false, 0, format!("couldn't start: {e:#}"));
@@ -632,6 +945,10 @@ impl Agent {
                 }
                 break;
             }
+        }
+        // A helper's lease for a job that didn't start (room on the disk, say): given back.
+        if self.running.is_none() && self.lease.is_some() {
+            self.end_lease(false, "it couldn't start on the helper");
         }
 
         // The heartbeat.
@@ -674,6 +991,7 @@ impl Agent {
             built,
             checklist,
             helpers: if self.o.helper || root.is_none() { Vec::new() } else { self.planned.as_ref().map(|p| p.helpers.clone()).unwrap_or_default() },
+            workers: self.coord.as_ref().map(|c| c.workers().into_iter().map(|(name, w)| WorkerView { name, label: w.label, kind: w.kind, what: w.what, mem_mb: w.mem_mb, done: w.done, failed: w.failed, bad: w.bad }).collect()).unwrap_or_default(),
         };
         let body = serde_json::to_vec_pretty(&status)?;
         if self._lock.is_none() {
@@ -714,14 +1032,23 @@ impl Agent {
         let log = self.o.home.join("logs").join(format!("{}.log", spec.id.replace([' ', '/'], "-")));
         eprintln!("agent: starting {} ({threads} threads)", spec.id);
         // The build Mac's jobs save the records (crate::out::Out::save trusts them by this, whatever
-        // this Mac is named now); a helper's hand them off (SCENIC_HANDOFF, in their command).
-        let env: &[(&str, &str)] = if self.o.helper { &[] } else { &[("SCENIC_BUILD_MAC", "1")] };
-        self.running = Some(Running::start(spec, threads, env, log, &self.record_path())?);
+        // this Mac is named now), note what their units cost, and may offer tasks to other workers
+        // through the coordinator; a helper's hand their saves off (SCENIC_HANDOFF, in their command).
+        let mut env: Vec<(String, String)> = Vec::new();
+        if !self.o.helper {
+            env.push(("SCENIC_BUILD_MAC".into(), "1".into()));
+            env.push(("SCENIC_COSTS".into(), self.o.home.join("costs.jsonl").to_string_lossy().into_owned()));
+            if let Some(c) = &self.coord {
+                env.push(("SCENIC_COORD".into(), format!("http://127.0.0.1:{}", crate::coord::PORT)));
+                env.push(("SCENIC_COORD_TOKEN".into(), c.contact.token.clone()));
+            }
+        }
+        let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        self.running = Some(Running::start(spec, threads, &env, log, &self.record_path())?);
         Ok(())
     }
 
     fn finished(&mut self, id: &str, what: &str, ok: bool, secs: u64, note: String) {
-        self.mem.handed.retain(|(t, _, _)| now_s().saturating_sub(*t) < 86_400);
         if ok {
             self.mem.retry.remove(id);
             self.mem.last_ok.insert(id.to_string(), now_s());
@@ -750,10 +1077,6 @@ impl Agent {
 
         // 1. The OSM pass, when the NAS holds a newer planet than the last complete pass.
         let have = crate::osmpass::latest_pass(root);
-        // A helper builds units, nothing else.
-        if self.o.helper {
-            return self.region_work(root, have.as_deref(), waiting);
-        }
         if let Ok(Some((planet, date))) = crate::osmpass::newer_planet(root, have.as_deref()) {
             let what = format!("OpenStreetMap pass (planet of {date})");
             let scratch = self.o.home.join("scratch").join(format!("osm-{date}"));
@@ -856,7 +1179,7 @@ impl Agent {
         // Per pass, worldwide: the sets it lacks in their current filters (a set added or changed
         // since it ran), the hiking routes' ends, AWS's z8 (once), Overture's buildings (once per
         // release), the summits, the labels.
-        if let Some(date) = pass.filter(|_| !self.o.helper) {
+        if let Some(date) = pass {
             let p = vec!["--pass".to_string(), date.to_string()];
             if !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(date, st.0))) {
                 jobs.push(job(format!("pass-sets {date}"), "OpenStreetMap sets the newest pass lacks", "pass-sets", p.clone(), None));
@@ -930,29 +1253,35 @@ impl Agent {
             waiting.push(Waiting { what: "Trains a day".into(), why: "inputs/keys.env can't be read now".into() });
         }
         let mut plan = build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref());
+        // A unit's piece's size (content-named files never change: each looked up once).
+        let size = |u: &str| {
+            let Some(c) = manifest.get(&format!("sources/osm/{date}/pieces/{}", u.replace('/', "-"))) else { return u64::MAX };
+            if let Some(&n) = self.piece_sizes.borrow().get(c) {
+                return n;
+            }
+            let n = std::fs::metadata(root.join(c)).map_or(u64::MAX, |m| m.len());
+            if n != u64::MAX {
+                self.piece_sizes.borrow_mut().insert(c.clone(), n);
+            }
+            n
+        };
         for w in plan.iter_mut().filter(|w| claims::SHARED.contains(&w.step.as_str())) {
-            // What another Mac is building now isn't planned here.
-            let others = claims::others(root, &w.step, &self.me);
+            // What another worker builds now isn't planned here: what it leased from this Mac's
+            // coordinator, or claimed (a helper on an app from before it).
+            let mut others = claims::others(root, &w.step, &self.me);
+            if let Some(c) = &self.coord {
+                others.extend(c.held(&w.step));
+            }
             w.targets.retain(|t| !others.contains(&t.0));
-            // A helper takes units from the far end, and only the light ones.
-            if self.o.helper {
-                w.targets.reverse();
-                let size = |u: &str| {
-                    let Some(c) = manifest.get(&format!("sources/osm/{date}/pieces/{}", u.replace('/', "-"))) else { return u64::MAX };
-                    if let Some(&n) = self.piece_sizes.borrow().get(c) {
-                        return n;
-                    }
-                    let n = std::fs::metadata(root.join(c)).map_or(u64::MAX, |m| m.len());
-                    if n != u64::MAX {
-                        self.piece_sizes.borrow_mut().insert(c.clone(), n);
-                    }
-                    n
-                };
-                w.targets.retain(|t| size(&t.0) <= HELPER_MAX_PIECE);
+            // The rest, offered to the workers that mount the NAS, with their pieces' sizes: each
+            // takes what fits its memory.
+            if let (Some(c), "unit") = (&self.coord, w.step.as_str()) {
+                c.offer_units(date, w.targets.iter().map(|(t, k)| (t.clone(), k.clone(), size(t))).collect());
             }
         }
-        if self.o.helper {
-            plan.retain(|w| claims::SHARED.contains(&w.step.as_str()) && !w.targets.is_empty());
+        // Nothing left to build: nothing to offer either.
+        if let (Some(c), false) = (&self.coord, plan.iter().any(|w| w.step == "unit" && !w.targets.is_empty())) {
+            c.offer_units(date, Vec::new());
         }
         plan.retain(|w| !w.targets.is_empty());
         for (w, total) in batches(plan) {
@@ -1016,10 +1345,6 @@ impl Agent {
             let id = format!("{} {}", w.step, w.targets.first().map(|t| t.0.as_str()).unwrap_or(""));
             let step = w.step.clone();
             let mut j = job(id, &what, &step, extra, Some(w));
-            // A helper's job hands off what it saves (crate::handoff).
-            if self.o.helper {
-                j.cmd.splice(0..0, ["/usr/bin/env".to_string(), format!("SCENIC_HANDOFF={}", crate::handoff::dir(root, &self.host).display())]);
-            }
             // (A catalog and a prune only write a little: no power needed.)
             j.needs = Needs { ac: !matches!(step.as_str(), "catalog" | "prune"), nas: true, home: false };
             jobs.push(j);
@@ -1312,22 +1637,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_helpers_recent_jobs_count_until_the_keys_are_written_after_them() {
+    fn plans_with_the_hand_offs_waiting_on_the_nas_and_in_the_journal() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("root"), d.path().join("home"));
         std::fs::create_dir_all(root.join("state/build")).unwrap();
-        let mut a = agent(&root, &home);
+        let a = agent(&root, &home);
         let mut keys = build::Keys::default();
-        keys.record("unit", &[("6/1/1".to_string(), "new".to_string())]);
+        keys.record("unit", &[("6/1/1".to_string(), "k1".to_string())]);
         keys.save(&root).unwrap();
-        let written = std::fs::metadata(root.join("state/build/jobs.json")).unwrap().modified().unwrap().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
-        // Built before the keys were last written (an older build's key): the keys win.
-        a.mem.handed.push((written - 60, "unit".into(), vec![("6/1/1".into(), "old".into())]));
-        assert_eq!(a.planning_keys(&root).unwrap().recorded("unit", "6/1/1"), Some("new"));
-        // Built after (its record not merged yet, as this Mac sees the keys): it counts.
-        a.mem.handed.push((written + 60, "unit".into(), vec![("6/1/2".into(), "k".into())]));
-        assert_eq!(a.planning_keys(&root).unwrap().recorded("unit", "6/1/2"), Some("k"));
-        assert_eq!(a.planning_keys(&root).unwrap().recorded("unit", "6/1/1"), Some("new"));
+        // An older helper's hand-off on the NAS, and one the coordinator journaled here: both count
+        // as built until merged; then the merge writes them into the keys and deletes them.
+        let done = |u: &str, k: &str| crate::handoff::Handoff { done: Some(("unit".into(), vec![(u.into(), k.into())])), ..Default::default() };
+        crate::handoff::write(&crate::handoff::dir(&root, "old-m1"), &done("6/1/2", "k2")).unwrap();
+        crate::handoff::write(&home.join("coord/journal/m1"), &done("6/1/3", "k3")).unwrap();
+        let k = a.planning_keys(&root).unwrap();
+        assert_eq!((k.recorded("unit", "6/1/1"), k.recorded("unit", "6/1/2"), k.recorded("unit", "6/1/3")), (Some("k1"), Some("k2"), Some("k3")));
+        assert_eq!(crate::handoff::merge_from(&root, &home.join("scratch/handoff"), &a.handoff_bases(&root)).unwrap(), 2);
+        let k = build::Keys::load(&root);
+        assert_eq!((k.recorded("unit", "6/1/2"), k.recorded("unit", "6/1/3")), (Some("k2"), Some("k3")));
+        assert!(crate::handoff::waiting_in(&home.join("coord/journal")).unwrap().is_empty());
     }
 
     fn agent(root: &Path, home: &Path) -> Agent {
