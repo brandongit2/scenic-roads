@@ -2,11 +2,13 @@
 //! is under what the job needs (`RESERVE`, or the OSM pass's own), the local copies of what the NAS
 //! keeps lose files until it has that and a margin (`margin`: a sixth more, none for the OSM pass),
 //! so the next jobs start without deleting again: Meta's canopy squares (`chm10/`, ~2 GB a 10°
-//! square; scenic-metrics marks a square used when it reads it) and AWS's raw terrain tiles
-//! (`aws-terrarium/`, read once per terrain run). They fill again from the NAS (`sources/canopy/`,
-//! `sources/aws-terrarium/`), never from the internet.
-//! - Canopy squares not read in the last hour go first, each by its own use, the least recently used
-//!   first. One listing of the NAS's canopy folder answers for every square's files (hundreds of MB
+//! square; scenic-metrics marks a square used when it reads it), AWS's raw terrain tiles
+//! (`aws-terrarium/`, read once per terrain run), and the copies of the records' files staging
+//! reads (`blobs/`, store::blobs). They fill again from the NAS (`sources/canopy/`,
+//! `sources/aws-terrarium/`, the store), never from the internet.
+//! - Canopy squares and copies of the records' files not read in the last hour go first, each by its
+//!   own use, the least recently used first. A copy of a recorded file goes without asking the NAS
+//!   (the records name only files it has). One listing of the NAS's canopy folder answers for every square's files (hundreds of MB
 //!   each), while each raw tile folder takes a listing of its own for ~14 MB: seconds each when the
 //!   NAS is busy, hours for tens of GB.
 //! - Then raw tiles a folder at a time and the squares read since, together, the least recently
@@ -47,8 +49,9 @@ const LIST_AHEAD: usize = 16;
 const RECENT: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// The caches' folders whose files may be deleted, under the agent's cache, each with the NAS's
-/// store of them, under its `sources/`.
-const CHEAP: [(&str, &str); 2] = [("chm10", "canopy"), ("aws-terrarium", "aws-terrarium")];
+/// store of them, under its `sources/`; and `blobs/`, this Mac's copies of files the records name
+/// (store::blobs), which the NAS has by construction: they go without asking it.
+const CHEAP: [(&str, &str); 3] = [("chm10", "canopy"), ("aws-terrarium", "aws-terrarium"), ("blobs", "")];
 /// Bytes the cheap caches hold (what `make_room` can free).
 pub fn cheap_bytes(cache: &Path) -> u64 {
     let mut files = Vec::new();
@@ -83,7 +86,8 @@ enum Fate {
 
 /// Where local cache file `p` (under `cache/<dir>`) is kept in the NAS's store.
 fn nas_path(cache: &Path, sources: &Path, p: &Path) -> Option<PathBuf> {
-    let (dir, store) = CHEAP.iter().find(|(d, _)| p.starts_with(cache.join(d)))?;
+    // (Copies of the records' files have no NAS folder to list: they go as they are.)
+    let (dir, store) = CHEAP.iter().find(|(d, s)| !s.is_empty() && p.starts_with(cache.join(d)))?;
     Some(sources.join(store).join(p.strip_prefix(cache.join(dir)).ok()?))
 }
 
@@ -114,6 +118,9 @@ fn list(folder: &Path) -> Option<HashMap<OsString, u64>> {
 
 /// What becomes of local cache file `p` (under `cache/<dir>`), its NAS folder listed once.
 fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
+    if p.starts_with(cache.join("blobs")) {
+        return Fate::Go;
+    }
     let Some(dest) = nas_path(cache, sources, p) else { return Fate::Stay };
     let (Some(folder), Some(name)) = (dest.parent(), dest.file_name()) else { return Fate::Stay };
     let Ok(len) = std::fs::metadata(p).map(|m| m.len()) else { return Fate::Stay };
@@ -288,7 +295,7 @@ mod tests {
     /// The bytes under the caches' folders.
     fn used(c: &Path) -> u64 {
         let mut fs = Vec::new();
-        for d in ["chm10", "aws-terrarium"] {
+        for d in ["chm10", "aws-terrarium", "blobs"] {
             walk(&c.join(d), &mut fs);
         }
         fs.iter().map(|f| f.1).sum()
@@ -326,6 +333,22 @@ mod tests {
         make_room_with(c, nas, 1 << 40, 1 << 40, &disk(0)).unwrap();
         assert!(!c.join("chm10/read.tif").exists() && c.join("dem-cache.keys.u64").exists());
         assert!(disk_free(c).unwrap() > 0);
+    }
+
+    #[test]
+    fn copies_of_the_records_files_go_without_asking_the_nas() {
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let nas = &d.path().join("nas");
+        // An idle copy of a recorded pack, and a square read since: no NAS folder to ask exists.
+        file(&c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack"), 1000, 7200);
+        let square = whole(&c.join("chm10/read.tif"), 60);
+        let all = used(c);
+        let disk = move |p: &Path| Ok(all - used(p));
+        assert_eq!(make_room_with(c, nas, 1000, 1000, &disk).unwrap(), 1000);
+        assert!(!c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack").exists() && c.join("chm10/read.tif").exists());
+        assert!(!nas.exists(), "nothing was listed or copied there");
+        assert_eq!(used(c), square);
     }
 
     #[test]

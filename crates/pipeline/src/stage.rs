@@ -3,9 +3,11 @@
 //! `grid.terrain.i16`, `grid.class.u8`, `grid.areas.u8`, and canopy and cover when the catalog has
 //! them), over the unit grown by a margin (viewsheds see 15 km past the unit's buffer ways).
 //!
-//! Read from the packs on the NAS with plain reads (never mmapped), each pack's index once: the
-//! ones this build's manifest names now (`Source::Manifest`, what the unit keys hash), or a
-//! published catalog's (`Source::Catalog`, another root's for a pilot).
+//! Read from the packs with plain reads (never mmapped), each pack's index once: the ones this
+//! build's manifest names now (`Source::Manifest`, what the unit keys hash), through this Mac's
+//! local copies of them when it has a `Blobs` cache (each pack copied once, whole: neighbouring
+//! units share most of theirs, and a pack read tile by tile over SMB took thousands of small reads),
+//! or a published catalog's (`Source::Catalog`, another root's for a pilot).
 //!
 //! Also today's heritage sites (`heritage.json`, for the flags step), clipped from the converted
 //! worldwide file (`Heritage`).
@@ -29,8 +31,9 @@ pub const MARGIN_KM: f64 = 30.0;
 /// Where the global-source layers are read from.
 pub enum Source<'a> {
     /// This build's manifest as it is now: the packs the unit keys hash, including what earlier
-    /// jobs of the same plan wrote (the catalog is published only at its end).
-    Manifest(&'a Out),
+    /// jobs of the same plan wrote (the catalog is published only at its end); read through the
+    /// local copies when there's a cache.
+    Manifest(&'a Out, Option<&'a store::blobs::Blobs>),
     /// A published catalog under a root (another root's, for a pilot built against the real one).
     Catalog(&'a Path, &'a Catalog),
 }
@@ -40,7 +43,7 @@ impl Source<'_> {
     /// by z6 tile.
     fn pack_of(&self, layer: &str, z: u8, x: u32, y: u32) -> Option<String> {
         match self {
-            Source::Manifest(_) => Some(ManifestTiles::logical(layer, z, x, y)),
+            Source::Manifest(..) => Some(ManifestTiles::logical(layer, z, x, y)),
             Source::Catalog(_, cat) => {
                 let l = cat.layers.get(layer)?;
                 match z {
@@ -52,17 +55,42 @@ impl Source<'_> {
         }
     }
 
-    /// The file of a pack or worldwide file, by logical name (None: there's none).
+    /// The file of a pack or worldwide file, by logical name (None: there's none): the local copy
+    /// when there's a cache (the NAS's if copying fails: the read is only slower).
     fn file(&self, logical: &str) -> Option<PathBuf> {
         match self {
-            Source::Manifest(out) => out.get(logical).map(|c| out.path(c)),
+            Source::Manifest(out, None) => out.get(logical).map(|c| out.path(c)),
+            Source::Manifest(out, Some(blobs)) => out.get(logical).map(|c| {
+                blobs.get(out.root(), c).unwrap_or_else(|e| {
+                    eprintln!("stage: {c} not copied here ({e}); read from the NAS");
+                    out.path(c)
+                })
+            }),
             Source::Catalog(root, cat) => cat.files.get(logical).map(|f| root.join(&f.file)),
         }
     }
 
+    /// The content names of the packs `stage` reads for box `b` (manifest sources only): what to
+    /// copy ahead, while the unit before it builds.
+    pub fn pack_contents(&self, b: [f64; 4]) -> Vec<String> {
+        let Source::Manifest(out, _) = self else { return Vec::new() };
+        let mut logical: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for z in 0..=12u8 {
+            for (x, y) in tiles_in(z, b) {
+                logical.extend(self.pack_of("terrain", z, x, y));
+            }
+        }
+        for var in ["class", "canopy", "cover"] {
+            for (x, y) in tiles_in(11, b) {
+                logical.extend(self.pack_of(&format!("grid-{var}"), 11, x, y));
+            }
+        }
+        logical.iter().filter_map(|l| out.get(l).map(str::to_string)).collect()
+    }
+
     fn has_layer(&self, layer: &str) -> bool {
         match self {
-            Source::Manifest(out) => {
+            Source::Manifest(out, _) => {
                 let p = format!("layers/{layer}/");
                 out.manifest.range(p.clone()..).next().is_some_and(|(l, _)| l.starts_with(&p))
             }

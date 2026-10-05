@@ -907,11 +907,13 @@ are no request files.
 - **Room on the disk:** before a job starts (and before its targets are claimed), when the Mac has
   less free than the job needs (60 GB; the OSM pass, its own 80 GB less the pack cache it clears;
   the M1's helper, 15 GB), the local copies of what the NAS keeps (Meta's canopy squares, AWS's raw
-  terrain tiles) lose files until it has a sixth more (the OSM pass: what it needs), so the next
-  jobs start without deleting again.
-  - Canopy squares not read in the last hour go first, each by its own use, the least recently
-    used first: one listing of the NAS's canopy folder answers for every square (hundreds of MB a
-    file), while each raw tile folder takes its own for ~14 MB, seconds each when the NAS is busy.
+  terrain tiles, and the copies of the records' files staging reads: `blobs/`) lose files until it
+  has a sixth more (the OSM pass: what it needs), so the next jobs start without deleting again.
+  - Canopy squares and copies not read in the last hour go first, each by its own use, the least
+    recently used first: one listing of the NAS's canopy folder answers for every square (hundreds
+    of MB a file), and a copy of a recorded file needs no listing at all (the records name only
+    files the NAS has), while each raw tile folder takes its own for ~14 MB, seconds each when the
+    NAS is busy.
     Then raw tiles a folder at a time (the least recently used folder, by its newest tile, first,
     so a folder's tiles go together) and the squares read since, together, least recently used
     first: the squares of the area being built, which the next jobs read again, outlast idle

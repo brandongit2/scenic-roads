@@ -1482,10 +1482,10 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
 }
 
 /// The unit step's global-source layers: the manifest's, or a pilot's published catalog.
-fn layers_source<'a>(out: &'a Out, pilot: &'a Option<(PathBuf, store::catalog::Catalog)>) -> pipeline::stage::Source<'a> {
+fn layers_source<'a>(out: &'a Out, pilot: &'a Option<(PathBuf, store::catalog::Catalog)>, blobs: Option<&'a store::blobs::Blobs>) -> pipeline::stage::Source<'a> {
     match pilot {
         Some((r, c)) => pipeline::stage::Source::Catalog(r, c),
-        None => pipeline::stage::Source::Manifest(out),
+        None => pipeline::stage::Source::Manifest(out, blobs),
     }
 }
 
@@ -1553,7 +1553,8 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     std::fs::remove_dir_all(dir.join("snap")).ok();
     let heritage = |b: [f64; 4], d: &Path| pipeline::heritage::unit_inputs(out, &date, b, d);
     let t = std::time::Instant::now();
-    let rep = build_folder(u, &local, &folder, &cov, &pipeline::stage::Source::Manifest(out), &tools, &heritage, None)?;
+    let blobs = store::blobs::Blobs::new(tools.cache.join("blobs"));
+    let rep = build_folder(u, &local, &folder, &cov, &pipeline::stage::Source::Manifest(out, Some(&blobs)), &tools, &heritage, None)?;
     eprintln!("unit-snap {}: {} of {} ways kept, {} owned, in {:.1?}; snapshots in {}", u.slash(), rep.kept_ways, rep.piece_ways, rep.owned, t.elapsed(), dir.join("snap").display());
     Ok(())
 }
@@ -1631,9 +1632,36 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
     }
     let n = units.len() as u64;
-    for (k, u) in units.into_iter().enumerate() {
+    // This Mac's copies of the packs staging reads (pipeline::stage), kept with the agent's caches.
+    let blobs = store::blobs::Blobs::new(tools.cache.join("blobs"));
+    // The next unit's piece and packs, copied while this one builds (one stream: large sequential
+    // reads, nothing the unit building now waits on).
+    let mut ahead: Option<std::thread::JoinHandle<()>> = None;
+    for (k, &u) in units.iter().enumerate() {
         pipeline::agent::jobs::report(k as u64, n, "areas");
         let t = std::time::Instant::now();
+        if let Some(h) = ahead.take() {
+            h.join().ok();
+        }
+        if let Some(&next) = units.get(k + 1) {
+            let o: &Out = out;
+            let packs = layers_source(o, &pilot, Some(&blobs)).pack_contents(pipeline::stage::tile_box_grown(next.z, next.x, next.y, pipeline::stage::MARGIN_KM));
+            let piece = o.get(&format!("sources/osm/{date}/pieces/{}", next.dash())).map(|c| (o.path(c), scratch.join(format!("piece-{}.osm.pbf", next.dash()))));
+            let (root, blobs) = (o.root().to_path_buf(), blobs.clone());
+            ahead = Some(std::thread::spawn(move || {
+                if let Some((src, dst)) = piece {
+                    let tmp = dst.with_extension("pbf.tmp");
+                    if std::fs::copy(&src, &tmp).is_ok() {
+                        std::fs::rename(&tmp, &dst).ok();
+                    }
+                }
+                for c in packs {
+                    if let Err(e) = blobs.get(&root, &c) {
+                        eprintln!("unit: {c} not copied ahead ({e})");
+                    }
+                }
+            }));
+        }
         let dir = scratch.join("units").join(u.dash());
         let bdir = scratch.join("units").join(format!("{}-buildings", u.dash()));
         let clean = || {
@@ -1648,7 +1676,10 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         };
         let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
         let mut laps = pipeline::unit::Laps::default();
-        std::fs::copy(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
+        // (Copied ahead, while the unit before it built, unless it's the job's first.)
+        if std::fs::metadata(&local_piece).map(|m| m.len()).ok() != std::fs::metadata(&piece).map(|m| m.len()).ok() {
+            std::fs::copy(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
+        }
         laps.lap("piece copied from the NAS");
         // Its scenic results from its last run, kept in the shared cache (pipeline::scache::Carry).
         let carry = pipeline::scache::Carry { dir: tools.scenic_kept(u) };
@@ -1665,7 +1696,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 laps.lap("buildings staged");
                 tools.buildings = Some(bdir.clone());
             }
-            build_folder(u, &local_piece, &dir, &cov, &layers_source(o, &pilot), &tools, &heritage, Some(&carry))?
+            build_folder(u, &local_piece, &dir, &cov, &layers_source(o, &pilot, Some(&blobs)), &tools, &heritage, Some(&carry))?
         };
         laps.skip();
         std::fs::remove_file(&local_piece).ok();
