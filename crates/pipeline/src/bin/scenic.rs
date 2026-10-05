@@ -131,7 +131,16 @@ fn main() -> Result<()> {
         "status" => status(&args),
         "add" => {
             let (Some(id), Some(name)) = (args.get(2), args.get(3)) else { bail!("scenic add <id> \"<name>\" <outline>…") };
-            let outline: Vec<String> = args[4..].iter().filter(|a| !a.starts_with("--")).cloned().collect();
+            // (The outline is what follows the name, but for --root and the folder after it.)
+            let mut outline: Vec<String> = Vec::new();
+            let mut rest = args[4..].iter();
+            while let Some(a) = rest.next() {
+                if a == "--root" {
+                    rest.next();
+                } else if !a.starts_with("--") {
+                    outline.push(a.clone());
+                }
+            }
             let r = recipes::Recipe { id: id.clone(), name: name.clone(), outline };
             recipes::add(&root(&args, true)?.join("inputs/regions"), &r)?;
             println!("added {} ({}); the build Mac builds it when it can (scenic status)", r.name, r.id);
