@@ -427,6 +427,28 @@ impl RawTiles {
         here.iter().find_map(|a| a.get(z, x, y).and_then(|b| whole(b)))
     }
 
+    /// Whether tile (z, x, y) is in its area's archives, by its entry alone (no tile read): the
+    /// prefetch passes those over, as the build reads them itself (and checks them whole, taking
+    /// one that isn't again then).
+    fn in_archive(&self, z: u8, x: u32, y: u32) -> bool {
+        let Some(st) = self.store.as_ref() else { return false };
+        let area = crate::rawpack::area(z, x, y);
+        let cell = self.archives.lock().unwrap().entry(area.clone()).or_default().clone();
+        let mut c = cell.lock().unwrap();
+        if c.is_none() {
+            match self.open_area(st, &area) {
+                Some(o) => *c = Some(o),
+                None => return false,
+            }
+        }
+        let key = roadcore::archive::tile_key(z, x, y);
+        match c.as_ref() {
+            Some(Opened::Here(h)) => h.iter().any(|a| a.get(z, x, y).is_some()),
+            Some(Opened::Ranged { archives, .. }) => archives.iter().any(|(_, e)| e.binary_search_by_key(&key, |e| e.key).is_ok()),
+            None => false,
+        }
+    }
+
     /// Makes folder `d` (once).
     fn make(&self, d: &std::path::Path) -> std::io::Result<()> {
         if self.made.lock().unwrap().contains(d) {
@@ -486,7 +508,7 @@ impl RawTiles {
             .copied()
             .filter(|&(x, y)| {
                 let d = self.dir.join(format!("{z}/{x}"));
-                !d.join(format!("{y}.png")).exists() && !d.join(format!("{y}.none")).exists()
+                !d.join(format!("{y}.png")).exists() && !d.join(format!("{y}.none")).exists() && !self.in_archive(z, x, y)
             })
             .collect();
         done.fetch_add((tiles.len() - todo.len()) as u64, std::sync::atomic::Ordering::Relaxed);
@@ -985,5 +1007,13 @@ mod tests {
         // Another job finds the copy here.
         let again = RawTiles::with_store(&local, &store);
         assert_eq!(again.get(12, 2048, 1365).unwrap(), (Some(png.clone()), false));
+        // A prefetch passes archived tiles over, reading none of them: however often, the area's
+        // archive isn't copied here (as reading its tiles that often would).
+        let fresh = RawTiles::with_store(&d.path().join("fresh"), &store);
+        for _ in 0..=RANGED / 2 {
+            assert_eq!(fresh.prefetch(12, &[(2048, 1365), (2049, 1365)], 2).unwrap(), 0);
+        }
+        assert!(!d.path().join("fresh/12/2048/1365.png").exists() && !d.path().join("fresh/packs").exists());
+        assert_eq!(fresh.get(12, 2048, 1365).unwrap(), (Some(png.clone()), false));
     }
 }
