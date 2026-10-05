@@ -174,7 +174,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     caches, memory, load, whether it's in use, its app and pace (measured, or a guess); its last day
     by the hour. The helpers' statuses are read each loop.
   - **The road to done:** each machine's schedule from now to the end (the forecast's lanes, a step
-    a colour, each round of publishing marked: pointed at, the regions it adds); the map updates
+    a colour, each round of publishing marked: pointed at, the regions it adds; the pages' lane is
+    the build Mac's area runs, whose last steps it hands them as it builds them); the map updates
     (the last, the next with its regions, the rounds to come); the steps (done of all, the work
     left, done when, why one waits); the regions, in the order they reach the map with the rounds
     between (or by name, or by what's left), each with its state, its work left, when it's done and

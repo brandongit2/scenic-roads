@@ -376,6 +376,21 @@ function schedule(m) {
     }
     lanes.append(h("div", { class: "ln", title: nm }, nm), track);
   }
+  // The pages: their work is an area's last steps, which the build Mac hands out as it builds its
+  // areas (a few at a time, one to each worker around): while its own areas run, so then.
+  const own = fc.lanes[m.a.host] || [];
+  if (m.pages.length && own.some((l) => l.step === "unit" && l.until > t0)) {
+    const track = h("div", "track");
+    const who = m.pages.map((p) => p.label).join(", ");
+    for (const l of own.filter((l) => l.step === "unit" && l.until > t0)) {
+      const say = `${who}: the last steps of the build Mac's areas as it builds them (${targets("unit", l.n)}), ${clock(l.from)}–${clock(l.until)}`;
+      const seg = h("i", { onmousemove: (e) => showTip(e, say), onmouseleave: hideTip, onclick: (e) => showTip(e, say) });
+      Object.assign(seg.style, { left: x(l.from), width: `calc(${x(l.until)} - ${x(l.from)})`, background: stepColour("tail") });
+      track.append(seg);
+    }
+    steps.add("tail");
+    lanes.append(h("div", { class: "ln", title: who }, m.pages.length > 1 ? `Pages (${m.pages.length})` : m.pages[0].label), track);
+  }
   // Ticks: every 1, 2, 3, 6, 12 or 24 hours, on the local hour (midnight a day's name).
   const step = [1, 2, 3, 6, 12, 24, 48].find((hh) => span / (hh * 3600) <= 8) || 48;
   const axis = h("div", "axis");
