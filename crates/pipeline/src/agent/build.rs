@@ -311,8 +311,8 @@ pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach
 }
 
 /// The heritage sites and designated areas the units read (crate::heritage), once per pass,
-/// coverage and registers' snapshot.
-pub const HERITAGE_SITES_V: u32 = 1;
+/// coverage and registers' snapshot. (2: an area across the antimeridian sliced by its parts.)
+pub const HERITAGE_SITES_V: u32 = 2;
 
 pub fn heritage_sites_work(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
     let set = m.get(&crate::osmpass::set_name(date, "areas"))?;

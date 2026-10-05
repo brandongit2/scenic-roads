@@ -139,9 +139,54 @@ fn bbox(coords: &serde_json::Value, b: &mut [f64; 4]) {
     }
 }
 
+/// The boxes of a geometry's parts (w, s, e, n): each polygon's, and one across the antimeridian as
+/// its eastern and western halves.
+fn part_boxes(g: &serde_json::Value) -> Vec<[f64; 4]> {
+    let parts: Vec<&serde_json::Value> = match g["type"].as_str() {
+        Some("MultiPolygon") => g["coordinates"].as_array().map(|a| a.iter().collect()).unwrap_or_default(),
+        _ => vec![&g["coordinates"]],
+    };
+    let mut out = Vec::new();
+    for part in parts {
+        let mut b = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+        bbox(part, &mut b);
+        if b[0] > b[2] {
+            continue;
+        }
+        if b[2] - b[0] <= 180.0 {
+            out.push(b);
+            continue;
+        }
+        let mut pts = Vec::new();
+        points(part, &mut pts);
+        for east in [true, false] {
+            let mut h = [f64::MAX, f64::MAX, f64::MIN, f64::MIN];
+            for &(x, y) in pts.iter().filter(|p| (p.0 >= 0.0) == east) {
+                h = [h[0].min(x), h[1].min(y), h[2].max(x), h[3].max(y)];
+            }
+            if h[0] <= h[2] {
+                out.push(h);
+            }
+        }
+    }
+    out
+}
+
+/// Every position of a GeoJSON geometry.
+fn points(coords: &serde_json::Value, out: &mut Vec<(f64, f64)>) {
+    match coords {
+        serde_json::Value::Array(a) if a.len() >= 2 && a[0].is_number() => out.push((a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0))),
+        serde_json::Value::Array(a) => a.iter().for_each(|c| points(c, out)),
+        _ => {}
+    }
+}
+
 /// area-shapes.geojsonseq's polygons by the z6 tiles their bounding boxes meet: each slice's lines
 /// sorted by their content's hash (an unchanged polygon keeps its place when others change; the
-/// rasterising is a union, so order doesn't matter).
+/// rasterising is a union, so order doesn't matter). One across the antimeridian (the Aleutians'
+/// refuges: parts each side) by its parts' boxes: its whole box is the world's width, which put it
+/// in every tile of its latitudes (2026-10-05: Canada's and Britain's slices, and so their units'
+/// keys, changed for Alaska's areas).
 pub fn slice_areas(area_shapes: &str) -> Result<BTreeMap<(u32, u32), Vec<(String, String)>>> {
     let mut out: BTreeMap<(u32, u32), Vec<(String, String)>> = BTreeMap::new();
     for (i, line) in area_shapes.lines().enumerate() {
@@ -155,7 +200,9 @@ pub fn slice_areas(area_shapes: &str) -> Result<BTreeMap<(u32, u32), Vec<(String
             continue;
         }
         let h = store::naming::hash16(line.as_bytes());
-        for t in crate::stage::tiles_in(6, b) {
+        let boxes = if b[2] - b[0] > 180.0 { part_boxes(&v["geometry"]) } else { vec![b] };
+        let tiles: std::collections::BTreeSet<(u32, u32)> = boxes.into_iter().flat_map(|b| crate::stage::tiles_in(6, b)).collect();
+        for t in tiles {
             out.entry(t).or_default().push((h.clone(), line.to_string()));
         }
     }
@@ -308,5 +355,25 @@ mod tests {
         // A box across 0°: the border polygon once, from both tiles' slices.
         let (_, p) = unit_inputs(&out, "d", [-1.0, 50.5, 1.0, 51.8], &u).unwrap();
         assert_eq!(p, 1);
+    }
+
+    #[test]
+    fn a_shape_across_the_antimeridian_is_in_its_parts_tiles_alone() {
+        // An Aleutian refuge: a part each side of 180°, at 52° N; and a park of two parts far apart.
+        let shapes = concat!(
+            r#"{"type":"Feature","geometry":{"type":"MultiPolygon","coordinates":[[[[179.2,51.8],[179.6,51.8],[179.6,52.1],[179.2,51.8]]],[[[-179.6,51.8],[-179.2,51.8],[-179.2,52.1],[-179.6,51.8]]]]},"properties":{"bit":2}}"#,
+            "
+",
+            r#"{"type":"Feature","geometry":{"type":"MultiPolygon","coordinates":[[[[-100.5,52.0],[-100.2,52.0],[-100.2,52.2],[-100.5,52.0]]],[[[-90.5,52.0],[-90.2,52.0],[-90.2,52.2],[-90.5,52.0]]]]},"properties":{"bit":1}}"#,
+            "
+"
+        );
+        let areas = slice_areas(shapes).unwrap();
+        let has = |t: (u32, u32), bit: &str| areas.get(&t).is_some_and(|v| v.iter().any(|(_, l)| l.contains(&format!("\"bit\":{bit}"))));
+        // At 52° N, z6 row 21: the refuge in the tiles at each edge, not the ones between.
+        assert!(has((63, 21), "2") && has((0, 21), "2"));
+        assert!(!(1..63).any(|x| has((x, 21), "2")));
+        // The park as before: every tile its box meets, the ones between its parts too.
+        assert!((14..=15).all(|x| has((x, 21), "1")));
     }
 }

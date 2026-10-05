@@ -379,7 +379,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   or root) and `sources/terrain-z8-v1-max` (each tile's maximum, f32).
 - **Work files** (zstd JSON lines unless said): `work/pois/<u>`, `work/peaks/<u>`,
   `work/summits/<date>`, `work/trailends/<date>`; `work/heritage/<date>/{base/<stem>,
-  pos/6-x-y.json, areas/6-x-y.jsonl, <stem>}`; `work/marks/heritage-dots.json`;
+  pos/6-x-y.json, areas/6-x-y.jsonl, <stem>}` (an area in each z6 tile its box meets, whole; one
+  across the antimeridian, in those its parts' boxes meet); `work/marks/heritage-dots.json`;
   `work/rail/used.json` (railgtfs.py's report: per feed, `id`, `provider`, `url`, `licence`,
   `fetched`, and `status` with, when "ok", `day`, `trips`, `duplicates`, `rail_routes`).
 - **Other sources:** `sources/items/<date>/{facts,views,meta}.json`; `sources/registers/<name>.tar.zst`;
