@@ -125,8 +125,10 @@ _lock = threading.Lock()
 
 
 def _report() -> None:
+    # (Of the months whose sizes are known: one the server didn't size would push past the total.)
     with _lock:
-        done, total, n = sum(v[0] for v in _streamed.values()), sum(v[1] for v in _streamed.values()), len(_streamed)
+        sized = [v for v in _streamed.values() if v[1]]
+        done, total, n = sum(v[0] for v in sized), sum(v[1] for v in sized), len(_streamed)
     if total:
         print(f"progress: {done >> 20}/{total >> 20} MB of the pageview dumps streamed ({n} month{'' if n == 1 else 's'})", file=sys.stderr, flush=True)
 
@@ -188,8 +190,9 @@ def _stream_index(month: str) -> Path:
     t0 = time.time()
     # curl | bzip2 -dc | grep, each one's exit checked: a download cut short (curl's error, bzip2's
     # truncated stream) fails the month instead of keeping what arrived as its index. curl's bytes
-    # reach bzip2 through here, counted (the progress line's: a few MB a second).
-    curl = subprocess.Popen(["curl", "-sSL", "--fail", "-A", UA, DUMP.format(y=y, m=m)], stdout=subprocess.PIPE)
+    # reach bzip2 through here, counted (the progress line's: a few MB a second). A download that
+    # stalls (under 10 kB/s for five minutes) is given up.
+    curl = subprocess.Popen(["curl", "-sSL", "--fail", "--connect-timeout", "30", "--speed-limit", "10000", "--speed-time", "300", "-A", UA, DUMP.format(y=y, m=m)], stdout=subprocess.PIPE)
     bz = subprocess.Popen(["bzip2", "-dc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     grep = subprocess.Popen(["grep", "-E", f"^({langs})\\.wikipedia "], stdin=bz.stdout, stdout=subprocess.PIPE,
                             env={**os.environ, "LC_ALL": "C"}, text=True, encoding="utf-8", errors="replace")
@@ -204,8 +207,11 @@ def _stream_index(month: str) -> Path:
                 with _lock:
                     _streamed[month][0] += len(chunk)
         except BrokenPipeError:
-            pass  # (bzip2 stopped: its exit says why)
+            # (bzip2 stopped, or grep and so bzip2: their exits say why. curl, with no one left to
+            # read it, would wait on its full pipe for good.)
+            curl.kill()
         finally:
+            curl.stdout.close()
             try:
                 bz.stdin.close()
             except BrokenPipeError:

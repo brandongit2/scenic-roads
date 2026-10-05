@@ -970,7 +970,7 @@ are no request files.
   several parts says them as each begins (`parts: <i> [names]` in its log), and the status lists
   them under the job, done, under way and to come, the progress bar under the one under way
   (heritage's five: getting ready, details, outlines, fame, layers; the items' facts, articles and
-  pageviews; summits, marks, route ends, the heritage sites, rail, labels). A long part says how
+  pageviews; summits, marks, route ends, the heritage sites, rail feeds, rail, labels). A long part says how
   far it is: the pageview dumps by the bytes streamed, a part's steps one by one; the jobs'
   Python steps print straight to their logs (unbuffered).
 

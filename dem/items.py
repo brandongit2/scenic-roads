@@ -84,10 +84,12 @@ def append_jsonl(p: Path, rows: list[dict]) -> None:
 
 def part(i: int) -> None:
     """Marks one of the job's parts beginning, for the build's status (scenic-build's items step
-    names them, SCENIC_PARTS: this script's are the facts, the articles, the pageviews)."""
+    names them, SCENIC_PARTS: this script's are the facts, the articles, the pageviews), with its
+    progress line, so the part before's last one isn't shown under it."""
     names = os.environ.get("SCENIC_PARTS")
     if names:
         print(f"parts: {i} {names}", file=sys.stderr, flush=True)
+        print(f"progress: {i}/{len(json.loads(names))} parts ({json.loads(names)[i]})", file=sys.stderr, flush=True)
 
 
 def main() -> None:
@@ -121,10 +123,10 @@ def main() -> None:
     for k in range(0, len(todo), CHUNK):
         # (A line the build agent shows as this job's progress.)
         print(f"progress: {k}/{len(todo)} items' facts fetched from Wikidata", file=sys.stderr, flush=True)
-        part = todo[k:k + CHUNK]
-        got = poidetails.wikidata(part)
+        chunk = todo[k:k + CHUNK]
+        got = poidetails.wikidata(chunk)
         # Items QLever doesn't know (merged, deleted) are remembered as such, not asked again.
-        rows = [{"qid": q, **got.get(q, {"sl": 0, "missing": True})} for q in part]
+        rows = [{"qid": q, **got.get(q, {"sl": 0, "missing": True})} for q in chunk]
         append_jsonl(fpath, rows)
         for r in rows:
             facts[r["qid"]] = {k2: v for k2, v in r.items() if k2 != "qid"}

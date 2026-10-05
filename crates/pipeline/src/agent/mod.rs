@@ -1004,6 +1004,11 @@ impl Agent {
                 }
                 break;
             }
+            // (Why the jobs before it wait: kept with the plan, so the status says so while the job
+            // started runs, not only between jobs.)
+            if let Some(p) = self.planned.as_mut() {
+                p.waiting = waiting.clone();
+            }
         }
         // A helper's lease for a job that didn't start (room on the disk, say): given back.
         if self.running.is_none() && self.lease.is_some() {
@@ -1589,7 +1594,6 @@ fn regions_digest(root: &Path) -> Option<String> {
     Some(store::naming::hash16(parts.join("\n").as_bytes()))
 }
 
-/// Why a job can't run under `c`, if it can't.
 /// A job's step: its id's first word ("unit 6/31/20": "unit").
 fn step_of(id: &str) -> Option<String> {
     id.split(' ').next().filter(|s| !s.is_empty()).map(str::to_string)
@@ -1601,7 +1605,10 @@ fn step_of(id: &str) -> Option<String> {
 /// follows each chain that ends, so it's done only once they all are.
 fn annotate(list: &mut [build::Step], now: Option<&str>, helpers: &[Status], waiting: &[Waiting]) {
     let busy = |s: &build::Step| now.is_some_and(|n| s.steps.iter().any(|x| x == n));
-    let before_left = list.iter().rev().skip(1).any(|s| !s.finished());
+    // (Work known to be left: a line not sized yet, as trains a day before its sources are seeded,
+    // holds nothing up.)
+    let known_left = |s: &build::Step| s.left.is_some_and(|l| l > 0) || s.total.is_some_and(|t| s.done < t);
+    let before_left = list.iter().rev().skip(1).any(known_left);
     for s in list.iter_mut() {
         if s.finished() || busy(s) {
             continue;
@@ -1616,11 +1623,13 @@ fn annotate(list: &mut [build::Step], now: Option<&str>, helpers: &[Status], wai
     if let Some(p) = list.last_mut().filter(|p| p.steps.iter().any(|s| s == "catalog")) {
         if before_left && !busy(p) {
             p.left = Some(p.left.unwrap_or(0).max(1));
-            p.note = Some("after the steps above (a catalog follows each chain as it ends)".into());
+            // (Its own, a catalog failing, says more.)
+            p.note.get_or_insert_with(|| "after the steps above (a catalog follows each chain as it ends)".into());
         }
     }
 }
 
+/// Why a job can't run under `c`, if it can't.
 fn lapsed(n: &Needs, c: &Conditions) -> Option<String> {
     if n.nas && !c.nas {
         return Some("the NAS isn't reachable".into());
@@ -1866,6 +1875,16 @@ mod tests {
         }).collect();
         annotate(&mut l, None, &[], &[]);
         assert!(l.iter().all(|s| s.finished() && s.note.is_none()));
+        // A line not sized yet (trains a day before its sources) holds publishing up no more than a
+        // done one; and publishing's own note (its catalog failing) is kept.
+        l[1].left = None;
+        annotate(&mut l, None, &[], &[]);
+        assert!(l[3].finished() && l[3].note.is_none());
+        let mut l = list();
+        l[3].left = Some(1);
+        let failing = [Waiting { step: Some("catalog".into()), what: String::new(), why: "failed 3 times in a row".into() }];
+        annotate(&mut l, None, &[], &failing);
+        assert_eq!(l[3].note.as_deref(), Some("failed 3 times in a row"));
     }
 
     #[test]

@@ -44,7 +44,6 @@ import re
 import struct
 import sys
 import time
-import zlib
 from multiprocessing import Pool
 from pathlib import Path
 

@@ -463,7 +463,7 @@ class, id) within a tile. The client sends the id with the clicked point.
     (a helper's status, as the heartbeat's; the heartbeat lists those fresh within ten minutes as
     `helpers`, and the workers the coordinator heard from in two minutes as `workers`).
 - **State:** `state/status.json` (the agent's heartbeat: conditions, the job, its parts (`parts`,
-  `part`: the one it's on) and its progress, what waits (each with its job's `step`), the
+  `part`: the one it's on) and its progress, what waits (one about a job: its `step`), the
   checklist to the end: each step's `done`/`total` or `left`, its jobs left by name (`next`) and
   why it waits (`note`)); `state/build/{manifest,jobs,pending,summaries}.json`.
 - **The app:** `app/current.json` and `previous.json`: `{version, files, sha256}`.

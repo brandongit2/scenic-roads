@@ -716,7 +716,12 @@ pub fn packed(store: &Path) -> Result<std::collections::HashMap<String, HashSet<
     for (area, packs) in &index.areas {
         let mut keys = HashSet::new();
         for p in packs {
-            keys.extend(entries_of(&store.join("packs").join(&p.name))?.1.iter().map(|e| e.key));
+            match entries_of(&store.join("packs").join(&p.name)) {
+                Ok((_, e)) => keys.extend(e.iter().map(|e| e.key)),
+                // (Named but gone: its tiles are streamed again, as a packer passes it over.)
+                Err(e) if not_found(&e) => eprintln!("rawpack: {} is named but not on the NAS: its tiles count as not packed", p.name),
+                Err(e) => return Err(e),
+            }
         }
         out.insert(area.clone(), keys);
     }

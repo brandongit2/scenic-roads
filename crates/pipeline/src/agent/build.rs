@@ -933,7 +933,7 @@ pub fn checklist_to_come() -> Vec<Step> {
         (TREES, &["trees"]),
         (UNITS, &["unit"]),
         (TILES, &["pack", "lo"]),
-        (ROADS, &["roadunits", "stations", "ferries", "terrain-root", "slope-root"]),
+        (ROADS, &["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root"]),
         (TRAINS, &["rail-feeds", "rail"]),
         (LANDMARKS, &["pois", "peaks", "items", "heritage", "marks", "overlays"]),
         (PUBLISH, &["catalog", "catalog-held"]),
@@ -947,9 +947,11 @@ pub fn checklist_to_come() -> Vec<Step> {
 /// with their keys as they are now).
 fn remaining(done: &Keys, next: impl Fn(&Keys) -> Option<Work>) -> Vec<Work> {
     let mut d = done.clone();
-    let mut out = Vec::new();
+    let mut out: Vec<Work> = Vec::new();
     while let Some(w) = next(&d) {
-        if out.len() >= 64 {
+        // (A work recording doesn't change (a prune: it reads the manifest alone) is the chain's
+        // last that can be told now.)
+        if out.len() >= 64 || out.last().is_some_and(|l| l.step == w.step && l.targets == w.targets) {
             break;
         }
         d.record(&w.step, &w.targets);
@@ -994,7 +996,7 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     tiles.total = tiles.total.map(|t| t + lo.len());
     out.push(tiles);
     let roads: Vec<Work> = remaining(done, |d| roads_chain(date, m, d, inputs, reach)).into_iter().filter(|w| !matches!(w.step.as_str(), "pack" | "lo")).collect();
-    let mut road_steps = group(ROADS, &["roadunits", "stations", "ferries", "terrain-root", "slope-root"], built.then_some(roads.len()));
+    let mut road_steps = group(ROADS, &["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root"], built.then_some(roads.len()));
     road_steps.next = next_of(&roads);
     out.push(road_steps);
     // (A run of rail-feeds is followed by rail, whose key reads what it writes. Unknown while the
@@ -1209,6 +1211,13 @@ mod tests {
         // West to east by 10° square (the manifest's order would put 10 and 11 between 1 and 2), and
         // 10/20 and 10/21, one square, together.
         assert_eq!(v, vec![u(1, 20), u(2, 20), u(10, 20), u(10, 21), u(11, 20)]);
+    }
+
+    #[test]
+    fn a_chain_whose_next_work_doesnt_change_stops_there() {
+        // (A prune reads the manifest alone: recording it changes nothing.)
+        let prune = Work { step: "prune".into(), targets: vec![("tiles".into(), "k".into())] };
+        assert_eq!(remaining(&Keys::default(), |_| Some(prune.clone())).len(), 1);
     }
 
     #[test]

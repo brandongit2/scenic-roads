@@ -55,6 +55,8 @@ mkdir -p $pyt/dem
 git ls-files dem | while read f; do cp "$f" "$pyt/$f"; done
 steps=(${(f)"$(grep -rhoE '"[a-z_]+\.py"' crates/pipeline/src | tr -d '"' | sed 's/\.py$//' | sort -u)"})
 (cd $pyt/dem && uv run python -c "import importlib, sys; [importlib.import_module(m) for m in sys.argv[1:]]" $steps) || { echo "a Python step doesn't load from the app's dem/"; rm -rf $pyt; exit 1; }
+# (Loading isn't running: a name used before it's bound, say, shows only then. pyflakes reads them.)
+(cd $pyt/dem && uvx --quiet pyflakes ${steps/%/.py}) || { echo "pyflakes finds a mistake in a Python step"; rm -rf $pyt; exit 1; }
 rm -rf $pyt
 dirty=""
 # (The Python steps and the status app are copied from the working tree too.)
