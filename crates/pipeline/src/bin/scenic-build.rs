@@ -309,7 +309,7 @@ fn main() -> Result<()> {
             // stations --pass <date> [--geojson file]: the pass's rail set's stops as the stations' tiles.
             let date = opt(&args, "--pass").context("--pass <date>")?;
             let gj = opt(&args, "--geojson").map(PathBuf::from);
-            stage(0, 1, "the rail stops' tiles");
+            stage(0, 1, "making the rail stops' tiles");
             let (n, tiles) = pipeline::ovconv::stations_job(&mut out, &date, gj.as_deref())?;
             eprintln!("stations: {n} stops in {tiles} tiles");
         }
@@ -317,7 +317,7 @@ fn main() -> Result<()> {
             // ferries --pass <date> [--dem dir]: the pass's ferries set through ferries.py, as blocks.
             let date = opt(&args, "--pass").context("--pass <date>")?;
             let dem = PathBuf::from(opt(&args, "--dem").unwrap_or_else(|| "dem".into()));
-            stage(0, 1, "the ferries (ferries.py) and their blocks");
+            stage(0, 1, "finding the ferries (ferries.py) and their blocks");
             let n = pipeline::ovconv::ferries_job(&mut out, &date, &dem)?;
             eprintln!("ferries: {n} blocks");
         }
@@ -1035,7 +1035,7 @@ fn summits_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
     let t = std::time::Instant::now();
-    let parts = Parts(&["Copying the summits", "Reading them", "Their heights from the worldwide z8 terrain", "Uploading"]);
+    let parts = Parts(&["Copying the summits", "Reading them", "Taking their heights from the worldwide z8 terrain", "Uploading"]);
     parts.start(0);
     let set = local_copy(out, &pipeline::osmpass::set_name(&date, "summits"), &cache)?;
     parts.start(1);
@@ -1175,7 +1175,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let (mut facts, mut views) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
     let is_qid = |q: &str| q.len() > 1 && q.starts_with('Q') && q[1..].bytes().all(|b| b.is_ascii_digit());
     // (items.py marks its three: SCENIC_PARTS names them.)
-    const PARTS: &[&str] = &["The landmark candidates' Wikidata items", "Their facts from Wikidata", "Their Wikipedia articles", "Their pageviews, from four months of Wikipedia's dumps", "Uploading"];
+    const PARTS: &[&str] = &["Gathering the landmark candidates' Wikidata items", "Fetching their facts from Wikidata", "Looking up their Wikipedia articles", "Counting their pageviews in four months of Wikipedia's dumps", "Uploading"];
     let parts = Parts(PARTS);
     parts.start(0);
     for (u, _) in pipeline::agent::build::pois_keys(&cov, &date, &out.manifest) {
@@ -1228,10 +1228,10 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // Its parts; then today's chain, each script in its part.
     let parts = Parts(&[
         "Getting ready: the coverage's protected areas and named places (osmium)",
-        "Details: Wikidata facts, descriptions, the areas' sizes",
-        "Outlines: World Heritage Sites' lines and areas, the filters' numbers",
-        "Fame: Wikipedia pageviews, and what's rare nearby",
-        "Layers for the map, uploaded",
+        "Looking up details: Wikidata facts, descriptions, the areas' sizes",
+        "Tracing the World Heritage Sites' lines and areas; stamping the filters' numbers",
+        "Weighing fame: counting Wikipedia pageviews, finding what's rare nearby",
+        "Writing the map's layers and uploading them",
     ]);
     let chain = [
         (1, "heritagewd.py", vec![]),
@@ -1244,7 +1244,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         (4, "layers.py", vec![]),
     ];
     parts.start(0);
-    stage(0, 5, "the registers' snapshot and the heritage sites");
+    stage(0, 5, "reading the registers' snapshot and the heritage sites");
     let epoch = heritage_epoch(out, &date, &cache)?;
     let seeds = registers_extract(out, "sources/registers/legacy-seeds", &cache)?;
     let root = heritage_root(scratch, &dem, &epoch)?;
@@ -1263,9 +1263,9 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let tiles = cover_tiles(&cov);
     let poly = scratch.join("cover.geojson");
     std::fs::write(&poly, serde_json::to_vec(&tiles_geojson(COVER_Z, &tiles))?)?;
-    stage(1, 5, "protected areas over the coverage (osmium)");
+    stage(1, 5, "clipping the protected areas to the coverage (osmium)");
     areas_over_cover(out, &date, &poly, scratch, &root.join("data/areas/areas.geojsonseq"))?;
-    stage(2, 5, "the pass's named places over the coverage (osmium)");
+    stage(2, 5, "clipping the pass's named places to the coverage (osmium)");
     let named = osmium_clip(&out.path(out.get(&pipeline::osmpass::set_name(&date, "named")).context("the pass's named set")?), &poly, &scratch.join("named-cover.osm.pbf"))?;
     // Today's filter (Makefile: named.osm.pbf; the set also keeps the World Heritage tags).
     let named_today = scratch.join("named.osm.pbf");
@@ -1284,7 +1284,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         "-o",
     ]);
     c.arg(&named_today).arg("--overwrite");
-    stage(3, 5, "today's filter of them (osmium)");
+    stage(3, 5, "filtering them as today's build does (osmium)");
     osmium_run(c, "osmium tags-filter (named)")?;
     std::fs::create_dir_all(epoch.join("osm"))?;
     let mut c = pipeline::osmpass::osmium();
@@ -1293,7 +1293,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::remove_file(&named).ok();
     std::fs::remove_file(&named_today).ok();
     // The kept filtered planet within the cover, once per pass and cover: today's merged extract.
-    stage(4, 5, "the pass's filtered planet over the coverage (osmium, once a pass)");
+    stage(4, 5, "clipping the pass's filtered planet to the coverage (osmium, once a pass)");
     let merged = merged_over_cover(out, &date, &poly, &cache)?;
     pipeline::sys::symlink(&merged, &root.join("data/osm/merged.osm.pbf"))?;
     // Today's park facts, seeding this pass's cache of them.
@@ -1536,7 +1536,7 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
     let t0 = std::time::Instant::now();
     std::fs::create_dir_all(scratch)?;
-    let parts = Parts(&["The registers' snapshot", "Protected areas over the coverage (osmium)", "Locating the registers' sites (heritage.py)", "Slicing them per area", "Uploading"]);
+    let parts = Parts(&["Reading the registers' snapshot", "Clipping the protected areas to the coverage (osmium)", "Locating the registers' sites (heritage.py)", "Slicing them per area", "Uploading"]);
     parts.start(0);
     let epoch = heritage_epoch(out, &date, &cache)?;
     let root = heritage_root(scratch, &dem, &epoch)?;
@@ -2175,7 +2175,7 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     let cov = coverage_of(out, args)?;
     let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
     let catalogue = out.path(out.get(rail::CATALOGUE).context("no rail sources (scenic-build rail-seed)")?);
-    let parts = Parts(&["The countries the coverage is in", "Finding and fetching the feeds (railfeeds.py)", "Uploading"]);
+    let parts = Parts(&["Finding the countries the coverage is in", "Finding and fetching the feeds (railfeeds.py)", "Uploading"]);
     parts.start(0);
     let outlines = pipeline::outlines::Outlines::open(&out.path(out.get(&format!("sources/osm/{date}/outlines")).context("the pass's outlines")?))?;
     let countries = rail::countries(&cov, &outlines)?;
@@ -2249,7 +2249,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let set = out.path(out.get(&pipeline::osmpass::set_name(&date, "rail")).context("the pass has no rail set")?);
     std::fs::create_dir_all(scratch)?;
     // 1. The feeds' stop pairs, once per list of feeds (and the step's version).
-    let parts = Parts(&["The feeds' trains (railgtfs.py)", "Stops beyond the coverage", "The pass's rail over the coverage (osmium)", "Its rail ways (extract)", "Matching the trains onto the tracks (railfreq)"]);
+    let parts = Parts(&["Reading the feeds' trains (railgtfs.py)", "Adding the stops beyond the coverage", "Clipping the pass's rail to the coverage (osmium)", "Extracting its rail ways", "Matching the trains onto the tracks (railfreq)"]);
     parts.start(0);
     let raw = cache.join(format!("pairs-{}.bin", store::naming::hash16(format!("{} {feeds}", pipeline::agent::build::RAIL_V).as_bytes())));
     if !raw.exists() {

@@ -1155,7 +1155,7 @@ impl Agent {
         // 1. The OSM pass, when the NAS holds a newer planet than the last complete pass.
         let have = crate::osmpass::latest_pass(root);
         if let Ok(Some((planet, date))) = crate::osmpass::newer_planet(root, have.as_deref()) {
-            let what = format!("OpenStreetMap pass (planet of {date})");
+            let what = format!("Reading the OpenStreetMap planet of {date}");
             let scratch = self.o.home.join("scratch").join(format!("osm-{date}"));
             let jar = root.join("sources/basemap/planetiler.jar");
             // The pack cache is cleared when the pass starts (it refills from the mirror or the NAS):
@@ -1259,12 +1259,12 @@ impl Agent {
         if let Some(date) = pass {
             let p = vec!["--pass".to_string(), date.to_string()];
             if !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(date, st.0))) {
-                jobs.push(job(format!("pass-sets {date}"), "OpenStreetMap sets the newest pass lacks", "pass-sets", p.clone(), None));
+                jobs.push(job(format!("pass-sets {date}"), "Cutting the OpenStreetMap sets the newest pass lacks", "pass-sets", p.clone(), None));
             }
             if let Some(w) = build::trailends_work(date, &manifest, &keys) {
-                jobs.push(job(format!("trailends {date}"), "Hiking routes' ends for the whole world", "trailends", p.clone(), Some(w)));
+                jobs.push(job(format!("trailends {date}"), "Finding the ends of the world's hiking routes", "trailends", p.clone(), Some(w)));
             }
-            let reach_job = |w: build::Work| job(format!("reach {date}"), "How far each area's roads reach, for the whole world", "reach", p.clone(), Some(w));
+            let reach_job = |w: build::Work| job(format!("reach {date}"), "Working out how far each area's roads reach, worldwide", "reach", p.clone(), Some(w));
             if let Some(w) = build::reach_work(date, &manifest, &keys) {
                 jobs.push(reach_job(w));
             } else if let Err(why) = self.current_reach(root, &manifest, &keys, date) {
@@ -1280,10 +1280,10 @@ impl Agent {
                 }
             }
             if !manifest.contains_key(&crate::terrain_z8::logical()) {
-                jobs.push(job("terrain-z8".into(), "Coarse terrain for the whole world", "terrain-z8", vec!["--raw".into(), s(&self.o.home.join("cache").join("aws-terrarium"))], None));
+                jobs.push(job("terrain-z8".into(), "Building coarse terrain for the whole world", "terrain-z8", vec!["--raw".into(), s(&self.o.home.join("cache").join("aws-terrarium"))], None));
             }
             if !manifest.contains_key(&crate::buildtiles::index_logical()) {
-                jobs.push(job(format!("buildings {}", crate::buildtiles::RELEASE), "Roadside buildings for the whole world (Overture)", "buildings", vec!["--dem".into(), s(&self.o.bin.join("dem"))], None));
+                jobs.push(job(format!("buildings {}", crate::buildtiles::RELEASE), "Collecting the world's roadside buildings (Overture)", "buildings", vec!["--dem".into(), s(&self.o.bin.join("dem"))], None));
             } else if let Ok(rd) = std::fs::read_dir(self.o.home.join("scratch/buildings")) {
                 // Made: the scan's parts (~40 GB) go, even from a run stopped before it removed them.
                 for e in rd.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("parts-")) {
@@ -1291,10 +1291,10 @@ impl Agent {
                 }
             }
             if let Some(w) = build::summits_work(date, &manifest, &keys) {
-                jobs.push(job(format!("summits {date}"), "Summits for the whole world", "summits", [p.clone(), vec!["--cache".into(), s(&self.o.home.join("cache"))]].concat(), Some(w)));
+                jobs.push(job(format!("summits {date}"), "Finding the world's summits", "summits", [p.clone(), vec!["--cache".into(), s(&self.o.home.join("cache"))]].concat(), Some(w)));
             }
             if let Some(w) = build::labels_work(date, &manifest, &keys) {
-                jobs.push(job(format!("labels {date}"), "Place labels for the whole world", "labels", [p.clone(), vec!["--dem".into(), s(&self.o.bin.join("dem"))]].concat(), Some(w)));
+                jobs.push(job(format!("labels {date}"), "Ranking the world's place labels", "labels", [p.clone(), vec!["--dem".into(), s(&self.o.bin.join("dem"))]].concat(), Some(w)));
             }
         }
         if recipes.is_empty() {
@@ -1325,9 +1325,9 @@ impl Agent {
         let cache = self.o.home.join("cache");
         let reach = self.current_reach(root, &manifest, &done, date).ok().flatten();
         if !manifest.contains_key(crate::rail::CATALOGUE) {
-            waiting.push(Waiting { step: None, what: "Trains a day".into(), why: "the rail sources aren't on the NAS yet (scenic-build rail-seed)".into() });
+            waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "the rail sources aren't on the NAS yet (scenic-build rail-seed)".into() });
         } else if inputs.get("keys").map(String::as_str) == Some("?") {
-            waiting.push(Waiting { step: None, what: "Trains a day".into(), why: "inputs/keys.env can't be read now".into() });
+            waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "inputs/keys.env can't be read now".into() });
         }
         let mut plan = build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref());
         // A unit's piece's size (content-named files never change: each looked up once).
@@ -1369,7 +1369,7 @@ impl Agent {
                     waiting.push(Waiting { step: None, what: "Publishing the new map data".into(), why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into() });
                     continue;
                 }
-                let mut j = job("catalog-held".into(), "The new map data, held for review", "catalog", vec!["--held".into()], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
+                let mut j = job("catalog-held".into(), "Publishing the new map data, held for review", "catalog", vec!["--held".into()], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
                 j.needs = Needs { cpu: false, nas: true, home: false };
                 jobs.push(j);
                 continue;
@@ -1420,7 +1420,7 @@ impl Agent {
         let have = crate::osmpass::latest_pass(root);
         // The pass: a newer planet's under way (or waiting), else done.
         let pass_stages = ["filter", "sets", "outlines", "basemap", "cut", "roads"];
-        let mut pass = build::Step { what: "OpenStreetMap pass".into(), steps: vec!["osm-pass".into()], total: Some(pass_stages.len()), unit: "stages".into(), ..Default::default() };
+        let mut pass = build::Step { what: "Reading the newest OpenStreetMap planet".into(), steps: vec!["osm-pass".into()], total: Some(pass_stages.len()), unit: "stages".into(), ..Default::default() };
         match crate::osmpass::newer_planet(root, have.as_deref()) {
             Ok(Some((_, date))) => {
                 let scratch = self.o.home.join("scratch").join(format!("osm-{date}"));
@@ -1431,7 +1431,7 @@ impl Agent {
         out.push(pass);
         let Some(date) = have else {
             // Nothing to size the rest by until a pass is complete: its steps, to come.
-            out.push(build::Step { what: "Worldwide sets, route ends, roads' reach, buildings, summits, labels".into(), steps: ["pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels"].iter().map(|s| s.to_string()).collect(), ..Default::default() });
+            out.push(build::Step { what: "Preparing the worldwide data: sets, route ends, roads' reach, buildings, summits, labels".into(), steps: ["pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels"].iter().map(|s| s.to_string()).collect(), ..Default::default() });
             out.extend(build::checklist_to_come());
             return out;
         };
@@ -1451,7 +1451,7 @@ impl Agent {
         .filter(|&&l| l)
         .count();
         out.push(build::Step {
-            what: "Worldwide sets, route ends, roads' reach, buildings, summits, labels".into(),
+            what: "Preparing the worldwide data: sets, route ends, roads' reach, buildings, summits, labels".into(),
             steps: ["pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels"].iter().map(|s| s.to_string()).collect(),
             left: Some(left),
             ..Default::default()

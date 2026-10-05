@@ -959,8 +959,9 @@ are no request files.
 - **The heartbeat:** the agent writes it locally with each loop (about every 20 s), and to the NAS
   (`state/status.json`) when it changes or every five minutes; the user's idle seconds don't count as
   a change, only whether they're at the Mac. It holds the job, its progress (from the job's `progress:` lines) with the time left, and a checklist
-  of every step to the end: each step's jobs left by name, in the order they'll run ("Peaks'
-  prominence and isolation: 178 areas", then the next), and for one with work left that isn't this
+  of every step to the end, each saying what it does ("Choosing and drawing the landmarks"): its
+  jobs left by name, in the order they'll run ("Measuring the peaks' prominence and isolation: 178
+  areas", then the next), and for one with work left that isn't this
   Mac's job now, why: another Mac is on it, it waits for the home network or out a failure, or (the
   publishing) for the steps above, since a catalog follows each chain as it ends. A job of
   several parts says them as each begins (`parts: <i> [names]` in its log), and the status lists
