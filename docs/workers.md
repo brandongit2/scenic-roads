@@ -147,6 +147,40 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   that fit the memory the tab spares and beats for every lease; each slot (a Web Worker per core,
   less one) runs a task's programs over an in-memory filesystem (`web/work/runtime.js`, over
   browser_wasi_shim) and sends back what they wrote.
+- **The build at a glance** (`web/work/dash.js`, `dash.css`): above its own work, the page shows the
+  whole build; `/work/watch/` shows it alone, watching only (no slots, no asks: it joins no work),
+  installable on its own (`watch.webmanifest`). Five parts, each answering many questions at once:
+  - **The verdict**, pinned while the page scrolls (on a phone, not): going or not and on how many
+    machines, when it'll all be done (and the range), when the map next gets new data and with
+    what; what needs a look (a Mac out of touch, a job that hasn't moved on for a quarter of an
+    hour, on battery, a disk short of room, the NAS away, another app, failures, a page in the
+    background); the pause (Pause, Pause now, Resume).
+  - **The overview:** the share of the work done (each step's targets done at its time a target,
+    against the forecast's work left), how long that is and how much of it was measured; the steps
+    as a strip; the numbers that matter (areas built, regions on the map, as drawn now and as they
+    were, terrain and slope, tree cover, map tiles, the last and next map update, the machines).
+  - **The machines,** a card each (the build Mac, each helper, the pages together): its job, its
+    parts, its progress with its time left, its threads and memory, whether it's stuck; its next
+    jobs (the forecast's); why it waits; for a helper, how the work offered fits it (taken by
+    another, done, kept from it after it failed it, too large for its memory); its power, the NAS's
+    answer, its disk and caches, memory, load, whether it's in use, its app and pace; its last day
+    by the hour.
+  - **The road to done:** each machine's schedule from now to the end (the forecast's lanes, a step
+    a colour, each round of publishing marked: pointed at, the regions it adds); the map updates
+    (the last, the next with its regions, the rounds to come); the steps (done of all, the work
+    left, done when, why one waits); the regions, in the order they reach the map with the rounds
+    between (or by name, or by what's left), each with its state, its work left, when it's done and
+    when it's on the map, found by name.
+  - **The activity:** the last day by the hour (areas an hour, or busy minutes, each machine a
+    colour; paused hours shaded), and what happened, newest first (all, problems, map updates,
+    pauses and conditions), what came since this browser last showed it highlighted and summed.
+  - **The details,** folded: the leases (since their last beat, until they lapse), what's waiting
+    and why, the build Mac's last jobs, recipes that don't read, its job's last lines, the workers.
+  - It reads `/work/swarm` every 10 s (the build Mac's heartbeat with its checklist, forecast and
+    resources, its helpers', every worker with how the work offered fits it, every lease, the tasks
+    by state, the history's last number and the last day by the hour) and `/work/history` (the
+    events after the last it has). A page says, in its asks, whether it's in front, and in its
+    beats how far its task is.
 - **HTTPS:** the screen wake lock, the page as an app and OPFS (below) need a secure context. The
   coordinator is reached over HTTPS through `tailscale serve` (the owner turned it on, 2026-10-05:
   the tailnet has a certificate for the build Mac's name), and the page's address (the status

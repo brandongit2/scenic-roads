@@ -29,8 +29,10 @@ pub struct Lease {
     pub granted: Instant,
     #[serde(skip, default = "Instant::now")]
     deadline: Instant,
-    /// What the worker last said it was doing.
+    /// What the worker last said it was doing, and how far (0–1), when it says.
     pub progress: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frac: Option<f64>,
 }
 
 impl Lease {
@@ -40,6 +42,11 @@ impl Lease {
             Work::Job { targets, .. } => targets,
             Work::Task { .. } => &[],
         }
+    }
+
+    /// How long until it lapses (its worker beating renews it).
+    pub fn left(&self, now: Instant) -> Duration {
+        self.deadline.saturating_duration_since(now)
     }
 
     /// What it's for, in a few words.
@@ -106,7 +113,7 @@ impl Leases {
     pub fn grant(&mut self, worker: &str, work: Work, now: Instant) -> u64 {
         let id = self.next;
         self.next += 1;
-        self.by_id.insert(id, Lease { id, worker: worker.to_string(), work, granted: now, deadline: now + self.ttl, progress: None });
+        self.by_id.insert(id, Lease { id, worker: worker.to_string(), work, granted: now, deadline: now + self.ttl, progress: None, frac: None });
         id
     }
 
@@ -118,11 +125,19 @@ impl Leases {
     /// Renews `worker`'s lease `id`; false when it isn't that worker's live lease (lapsed, finished,
     /// or never granted: the worker should stop that work).
     pub fn renew(&mut self, id: u64, worker: &str, progress: Option<String>, now: Instant) -> bool {
+        self.renew_frac(id, worker, progress, None, now)
+    }
+
+    /// `renew`, with how far the work is (0–1), when the worker says.
+    pub fn renew_frac(&mut self, id: u64, worker: &str, progress: Option<String>, frac: Option<f64>, now: Instant) -> bool {
         match self.by_id.get_mut(&id) {
             Some(l) if l.worker == worker && l.deadline > now => {
                 l.deadline = now + self.ttl;
                 if progress.is_some() {
                     l.progress = progress;
+                }
+                if let Some(f) = frac.filter(|f| f.is_finite()) {
+                    l.frac = Some(f.clamp(0.0, 1.0));
                 }
                 true
             }

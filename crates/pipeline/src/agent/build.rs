@@ -494,6 +494,30 @@ pub struct Plan {
     /// A round's slope and tree cover (step, target) its catalog waits for: while another worker
     /// builds one (a helper's lease), the catalog waits rather than go out without its region.
     pub publish_waits: Vec<(String, String)>,
+    /// Every region's work left, in the order they're built (those with none last), whether or not
+    /// it can start now: what the forecast schedules (crate::agent::forecast).
+    pub regions: Vec<RegionLeft>,
+}
+
+/// A region's work left (`Plan::regions`), as targets.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RegionLeft {
+    pub id: String,
+    /// Whether the map's catalog has it: as its recipe is now (true), as it was (false), or not at
+    /// all (None).
+    pub on_map: Option<bool>,
+    /// Its units not built as the coverage wants them, all of them (a region is done when they
+    /// are), and those it builds itself (the rest come with a region before it), in the order
+    /// they're built.
+    pub units: Vec<String>,
+    pub own_units: Vec<String>,
+    /// The stale terrain areas it reads, and those it builds itself (the rest come with a region
+    /// before it).
+    pub terrain: Vec<String>,
+    pub own_terrain: Vec<String>,
+    /// Its areas whose slope, and whose tree cover, are stale.
+    pub slope: Vec<String>,
+    pub trees: Vec<String>,
 }
 
 /// The plan for the coverage `cov`, the pass of `date`, the build manifest `m` (logical → content)
@@ -545,7 +569,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         push(&mut work, "terrain", terrain);
         push(&mut work, "slope", slope);
         push(&mut work, "trees", trees);
-        return Plan { work, ready: Vec::new(), publish_waits: Vec::new() };
+        return Plan { work, ready: Vec::new(), publish_waits: Vec::new(), regions: Vec::new() };
     };
 
     // base(U): the units the coverage builds. Each region's: those it builds itself (a road of theirs
@@ -604,6 +628,28 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         }
         push(&mut by_region, "unit", mine.into_iter().map(|i| (units[i].0.slash(), units[i].1.clone())).collect());
     }
+    // Every region's work left, buildable now or not, for the forecast: its units (each with the
+    // first region in this order that builds it) and terrain likewise, its slope and tree cover.
+    let mut claimed = vec![false; units.len()];
+    let mut claimed_terrain: BTreeSet<String> = BTreeSet::new();
+    let mut lefts: Vec<RegionLeft> = Vec::new();
+    for r in order.iter().copied().chain(regions.iter().filter(|r| r.stale.is_empty() && r.terrain.is_empty())) {
+        let mut all = r.stale.clone();
+        all.sort_by_key(|&i| spatial_order(units[i].0));
+        let own: Vec<usize> = all.iter().copied().filter(|&i| !std::mem::replace(&mut claimed[i], true)).collect();
+        let own_terrain: Vec<String> = terrain.iter().filter(|(q, _)| r.terrain.contains(q) && claimed_terrain.insert(q.clone())).map(|t| t.0.clone()).collect();
+        lefts.push(RegionLeft {
+            id: r.id.to_string(),
+            on_map: rounds.on_map.get(r.id).copied(),
+            units: all.iter().map(|&i| units[i].0.slash()).collect(),
+            own_units: own.iter().map(|&i| units[i].0.slash()).collect(),
+            terrain: r.terrain.iter().cloned().collect(),
+            own_terrain,
+            slope: r.areas.iter().filter(|a| slope_left.contains(*a)).cloned().collect(),
+            trees: r.tree_areas.iter().filter(|a| trees_left.contains(*a)).cloned().collect(),
+        });
+    }
+
     // (Terrain no region with work left reads, and a unit in no region's own coverage, last.)
     push(&mut by_region, "terrain", terrain.iter().filter(|(q, _)| !listed.contains(q)).cloned().collect());
     let mut rest: Vec<usize> = (0..units.len()).filter(|&i| unit_stale[i] && !taken[i] && buildable(i)).collect();
@@ -657,7 +703,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         push(&mut work, "slope", slope);
         push(&mut work, "trees", trees);
     }
-    Plan { work, ready, publish_waits }
+    Plan { work, ready, publish_waits, regions: lefts }
 }
 
 /// Where a unit comes in a run of units: by the 10° square its tile's centre is in (column, then
@@ -1094,6 +1140,13 @@ fn remaining(done: &Keys, next: impl Fn(&Keys) -> Option<Work>) -> Vec<Work> {
     out
 }
 
+/// The chains' work still to run, as if each step succeeded (`remaining`): the roads' (the map
+/// tiles, the road index, rail stops and ferries, the world-level terrain and slope), the trains'
+/// and the landmarks', for the forecast (crate::agent::forecast).
+pub fn chains_left(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>) -> [Vec<Work>; 3] {
+    [remaining(done, |d| roads_chain(date, m, d, inputs, reach)), remaining(done, |d| rail_chain(cov, date, m, d, inputs)), remaining(done, |d| landmarks_chain(cov, date, m, d))]
+}
+
 /// The regions' build to the end, step by step (the pass's own steps are the agent's): the
 /// heritage sites, terrain, slope, tree cover, the areas, the map tiles, the road index, rail stops
 /// and ferries, trains a day, the landmarks, publishing.
@@ -1118,8 +1171,8 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
         sites.next = vec![label("heritage-sites").into()];
     }
     out.push(sites);
-    out.push(per(TERRAIN, &["terrain"], &terrain, &done.terrain, "parts", true));
-    out.push(per(SLOPE, &["slope"], &slope, &done.slope, "parts", true));
+    out.push(per(TERRAIN, &["terrain"], &terrain, &done.terrain, "areas", true));
+    out.push(per(SLOPE, &["slope"], &slope, &done.slope, "areas", true));
     out.push(per(TREES, &["trees"], &crate::treepacks::targets(cov, m), &done.trees, "tiles", true));
     let pieces = m.keys().any(|l| l.starts_with(&format!("sources/osm/{date}/pieces/")));
     let units: Vec<(String, String)> = unit_keys(cov, date, m, reach, inputs).into_iter().map(|(u, k)| (u.slash(), k)).collect();

@@ -18,6 +18,7 @@ pub mod backup;
 pub mod build;
 pub mod claims;
 pub mod cond;
+pub mod forecast;
 pub mod gc;
 pub mod jobs;
 pub mod recipes;
@@ -238,6 +239,13 @@ pub struct Status {
     /// The build's pause (crate::control), while it's paused, as this agent knows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause: Option<crate::control::Pause>,
+    /// This Mac's memory, load, disk and caches, and the NAS's answer and room (cond::Resources).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<cond::Resources>,
+    /// When each step and region will be done and on the map, and what each machine does next
+    /// (the build Mac's: crate::agent::forecast).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forecast: Option<forecast::Forecast>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -315,6 +323,10 @@ struct Memory {
     /// hour from it, whether or not it went out (build::PUBLISH_EVERY_S).
     #[serde(default)]
     catalog_at: u64,
+    /// About how long a target of each step takes here (seconds, as its jobs went lately): the
+    /// forecast's, for the steps no other worker does.
+    #[serde(default)]
+    step_secs: BTreeMap<String, f64>,
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -355,6 +367,9 @@ pub fn find_root(mount: bool) -> Option<PathBuf> {
 /// The shares with a check still waiting on a hung mount: no second one starts meanwhile.
 static CHECKING: std::sync::Mutex<std::collections::BTreeSet<PathBuf>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
 
+/// How long the NAS took to answer the last check (ms; u64::MAX: it didn't), for the status.
+static ANSWERED_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
+
 /// Whether `root` answers within a few seconds (a stat on a worker thread; a hung share counts as
 /// away, and its thread is left to finish on its own, the only one for that share until it does).
 fn answers(root: &Path) -> bool {
@@ -363,12 +378,15 @@ fn answers(root: &Path) -> bool {
     }
     let (tx, rx) = std::sync::mpsc::channel();
     let p = root.to_path_buf();
+    let t = Instant::now();
     std::thread::spawn(move || {
         let ok = std::fs::metadata(p.join("catalog")).is_ok();
         CHECKING.lock().unwrap().remove(&p);
         let _ = tx.send(ok);
     });
-    rx.recv_timeout(Duration::from_secs(8)).unwrap_or(false)
+    let ok = rx.recv_timeout(Duration::from_secs(8)).unwrap_or(false);
+    ANSWERED_MS.store(if ok { t.elapsed().as_millis() as u64 } else { u64::MAX }, std::sync::atomic::Ordering::Relaxed);
+    ok
 }
 
 /// The agent's lock (one agent per Mac): an exclusive flock on a local file, held while it runs.
@@ -485,6 +503,15 @@ pub struct Agent {
     /// A job an earlier agent left (a crash): its step and the targets it noted done, to record once
     /// the NAS answers.
     orphan_done: Option<(String, Vec<(String, String)>)>,
+    /// The bytes the caches it may drop hold, for the status: counted on a thread of its own every
+    /// ten minutes (a walk of many files), and when.
+    cache_size: std::sync::Arc<std::sync::Mutex<(Option<Instant>, Option<u64>)>>,
+    /// The conditions the last loop saw: a change is noted in the history (crate::coord::history).
+    last_cond: Option<Conditions>,
+    /// The last plan's forecast (crate::agent::forecast), for the status.
+    forecast: std::cell::RefCell<Option<forecast::Forecast>>,
+    /// The running job's time left as the status last worked it out (its pace), for the forecast.
+    job_eta: Option<u64>,
 }
 
 /// The last plan's view, kept for the heartbeat between plans.
@@ -535,7 +562,7 @@ impl Agent {
         // The build's pause as this agent last knew it (a helper that can't reach the build Mac stays
         // as it was).
         let pause: Option<crate::control::Pause> = std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, lease: None, beaten: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, drain_since: None, mirrored: None, pause_pushed: false, orphan_done: None })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, lease: None, beaten: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, drain_since: None, mirrored: None, pause_pushed: false, orphan_done: None, cache_size: Default::default(), last_cond: None, forecast: Default::default(), job_eta: None })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1051,6 +1078,7 @@ impl Agent {
         let root = self.root();
         let (ac, battery) = cond::power();
         let c = Conditions { ac, battery, nas: root.is_some(), home, idle_s: cond::idle_seconds() };
+        self.note_conditions(&c, slept);
         let mut waiting: Vec<Waiting> = Vec::new();
         let mut ended = false;
         // The build's pause: this Mac's ask passed on; the build Mac's coordinator's.
@@ -1088,6 +1116,18 @@ impl Agent {
                 };
                 let (id, what) = (r.spec.id.clone(), r.spec.what.clone());
                 eprintln!("agent: {id} {} after {secs} s", if ok { "finished" } else if paused { "paused at a safe point" } else { "failed" });
+                let how = if ok { String::new() } else if paused { "paused at a safe point".to_string() } else { format!("failed ({st})") };
+                self.note_end(&step, &done, secs, ok, &how);
+                // (What a target of its step takes here, for the forecast.)
+                if ok && of > 0 && !step.is_empty() {
+                    let each = secs as f64 / of as f64;
+                    let e = self.mem.step_secs.entry(step.clone()).or_insert(each);
+                    *e = 0.7 * *e + 0.3 * each;
+                }
+                if ok && step == "catalog" {
+                    let ready = self.ready.borrow().clone();
+                    self.note(crate::coord::history::Event { worker: Some(self.host.clone()), step: Some(step.clone()), targets: ready, ..crate::coord::history::Event::new("catalog") });
+                }
                 let outcome = if ok { Outcome::Done } else if paused { Outcome::Paused } else { Outcome::Failed };
                 // (The coordinator's record of what's done: a helper's whatever it did, this Mac's
                 // once it's in the keys.)
@@ -1439,6 +1479,7 @@ impl Agent {
             let eta_s = (frac > *f0 && r.paused.is_none()).then(|| (t0.elapsed().as_secs_f64() * (1.0 - frac) / (frac - f0)) as u64);
             Some(JobProgress { done, total, unit, eta_s, moved_at: r.moved.map(|m| m.1) })
         });
+        self.job_eta = job_progress.as_ref().and_then(|p| p.eta_s);
         let status = Status {
             host: self.host.clone(),
             pid: std::process::id(),
@@ -1468,6 +1509,8 @@ impl Agent {
             helpers,
             workers: self.coord.as_ref().map(|c| c.workers().into_iter().map(|(name, w)| WorkerView { name, label: w.label, kind: w.kind, what: w.what, mem_mb: w.mem_mb, done: w.done, failed: w.failed, bad: w.bad }).collect()).unwrap_or_default(),
             pause: self.pause.clone(),
+            resources: Some(self.resources(root.as_deref())),
+            forecast: if self.o.helper { None } else { self.forecast.borrow().clone() },
         };
         let body = serde_json::to_vec_pretty(&status)?;
         if self._lock.is_none() {
@@ -1484,7 +1527,8 @@ impl Agent {
             // What's new since the last write, without the time and the user's idle seconds (which
             // change every loop): only whether the user is at the Mac counts.
             let idle_s = if c.user_active() { 0 } else { cond::AWAY_S };
-            let same = serde_json::to_vec(&Status { beat: 0, conditions: Conditions { idle_s, ..c }, ..status.clone() })?;
+            // (Nor this Mac's load, memory and the NAS's answer, which change every loop too.)
+            let same = serde_json::to_vec(&Status { beat: 0, conditions: Conditions { idle_s, ..c }, resources: None, ..status.clone() })?;
             let due = self.last_beat.as_ref().is_none_or(|(b, t)| *b != same || t.elapsed() >= Duration::from_secs(120));
             if due {
                 std::fs::create_dir_all(root.join("state/helpers")).ok();
@@ -1495,6 +1539,23 @@ impl Agent {
             }
         }
         Ok(ended)
+    }
+
+    /// This Mac's resources for the status (cond::Resources); its caches counted again on a thread
+    /// of their own when ten minutes old.
+    fn resources(&self, root: Option<&Path>) -> cond::Resources {
+        let (counted, bytes) = *self.cache_size.lock().unwrap();
+        if counted.is_none_or(|t| t.elapsed() >= Duration::from_secs(600)) {
+            // (Marked counted now: one walk at a time.)
+            self.cache_size.lock().unwrap().0 = Some(Instant::now());
+            let (cache, helper, size) = (self.o.home.join("cache"), self.o.helper, self.cache_size.clone());
+            std::thread::spawn(move || {
+                let b = if helper { room::helper_cheap_bytes(&cache) } else { room::cheap_bytes(&cache) };
+                size.lock().unwrap().1 = Some(b);
+            });
+        }
+        let ms = ANSWERED_MS.load(std::sync::atomic::Ordering::Relaxed);
+        cond::resources(&self.o.home, root, bytes.map(|b| (b as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0), (ms != u64::MAX && root.is_some()).then_some(ms))
     }
 
     fn start(&mut self, spec: JobSpec, c: &Conditions) -> Result<()> {
@@ -1529,8 +1590,50 @@ impl Agent {
         env.push((crate::control::CONTROL_ENV.into(), self.control_path().to_string_lossy().into_owned()));
         env.push((crate::control::DONE_ENV.into(), done.to_string_lossy().into_owned()));
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let (step, targets) = spec.record.as_ref().map_or((None, Vec::new()), |w| (Some(w.step.clone()), w.targets.iter().map(|t| t.0.clone()).collect()));
+        let what = spec.what.clone();
         self.running = Some(Running::start(spec, threads, &env, log, &self.record_path(), Some(&done))?);
+        self.note(crate::coord::history::Event { worker: Some(self.host.clone()), step, targets, note: what, ..crate::coord::history::Event::new("start") });
         Ok(())
+    }
+
+    /// Notes what happened in the build's history (the build Mac's coordinator's: a helper's jobs
+    /// are there by their leases).
+    fn note(&self, e: crate::coord::history::Event) {
+        if let Some(c) = &self.coord {
+            c.note(e);
+        }
+    }
+
+    /// Notes the running job's end: its step, the targets it finished, its time, and how it ended
+    /// (`how`: empty when it succeeded).
+    fn note_end(&self, step: &str, done: &[(String, String)], secs: u64, ok: bool, how: &str) {
+        let step = (!step.is_empty()).then(|| step.to_string());
+        self.note(crate::coord::history::Event { worker: Some(self.host.clone()), step, targets: done.iter().map(|t| t.0.clone()).collect(), secs: Some(secs as f64), ok: Some(ok), note: how.to_string(), ..crate::coord::history::Event::new("end") });
+    }
+
+    /// Notes the build Mac's conditions as they change (mains or battery, the NAS, home or away, a
+    /// sleep), for the history.
+    fn note_conditions(&mut self, c: &Conditions, slept: u64) {
+        let mut said: Vec<String> = Vec::new();
+        if slept > 60 {
+            said.push(format!("slept {} min", slept / 60));
+        }
+        if let Some(was) = self.last_cond {
+            if was.ac != c.ac {
+                said.push(if c.ac { "on mains power".into() } else { format!("on battery{}", c.battery.map(|b| format!(" ({b}%)")).unwrap_or_default()) });
+            }
+            if was.nas != c.nas {
+                said.push(if c.nas { "the NAS answers again".into() } else { "the NAS doesn't answer".into() });
+            }
+            if was.home != c.home {
+                said.push(if c.home { "home".into() } else { "away from home (the NAS through Tailscale)".into() });
+            }
+        }
+        self.last_cond = Some(*c);
+        if !said.is_empty() {
+            self.note(crate::coord::history::Event { worker: Some(self.host.clone()), note: said.join("; "), ..crate::coord::history::Event::new("conditions") });
+        }
     }
 
     fn finished(&mut self, id: &str, what: &str, ok: bool, secs: u64, note: String) {
@@ -1712,6 +1815,8 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "Building the regions".into(), why: "the first OpenStreetMap pass (it makes the outlines regions are drawn from)".into() });
             return jobs;
         };
+        // (The pass's worldwide jobs: the forecast's before the regions'.)
+        let before = jobs.clone();
         let covs = match self.coverage(root, &manifest, date, &recipes) {
             Ok(c) => c,
             Err(why) => {
@@ -1809,6 +1914,27 @@ impl Agent {
         if let Some(c) = &self.coord {
             c.offer(date, offers);
         }
+        // The forecast of the work left (crate::agent::forecast): the build Mac's, for the status.
+        if !self.o.helper {
+            let z6: BTreeMap<String, usize> = build::coverage_tiles(cov).into_iter().map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len())).collect();
+            let peak = |step: &str, t: &str| match step {
+                "unit" | "pois" => crate::coord::unit_peak(&BTreeMap::new(), t, size(t)),
+                "terrain" => terrain_peak(z6.get(t).copied().unwrap_or(64)),
+                s => first_peak(s),
+            };
+            let mut before = before;
+            before.extend(plan.iter().filter(|w| w.step == "heritage-sites").map(|w| job(format!("heritage-sites {date}"), "", "heritage-sites", Vec::new(), Some(w.clone()))));
+            let chains = build::chains_left(cov, date, &manifest, &done, &inputs, reach.as_deref());
+            // (A fault in it costs the status its forecast, never the agent.)
+            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.forecast_now(root, &before, &planned.regions, chains, since_publish, &peak)));
+            match made {
+                Ok(f) => *self.forecast.borrow_mut() = Some(f),
+                Err(_) => {
+                    eprintln!("agent: the forecast failed; the status goes without it");
+                    *self.forecast.borrow_mut() = None;
+                }
+            }
+        }
         plan.retain(|w| !w.targets.is_empty());
         for (w, total) in batches(plan) {
             // Held for review: the catalog goes to catalog-held/ (no server reads it), once.
@@ -1847,6 +1973,89 @@ impl Agent {
             jobs.push(j);
         }
         jobs
+    }
+
+    /// The forecast (crate::agent::forecast) of the work left: `before`, the build Mac's jobs before
+    /// the regions'; `regions`, the plan's; `chains`, the roads', trains' and landmarks' work to come
+    /// (build::chains_left); each target's time and memory as last measured, else its step's mean or
+    /// a first guess (`first_secs`; `peak` for its memory); the helpers at their measured speed.
+    fn forecast_now(&self, root: &Path, before: &[JobSpec], regions: &[build::RegionLeft], chains: [Vec<build::Work>; 3], since_publish: Option<u64>, peak: &dyn Fn(&str, &str) -> u64) -> forecast::Forecast {
+        use forecast::{Cost, Machine};
+        let (costs, leased, events, mem) = match &self.coord {
+            Some(c) => c.for_forecast(),
+            None => Default::default(),
+        };
+        // Each shared step's mean of the targets measured (a unit's are kept by its target alone);
+        // else what its jobs here took a target; else a first guess.
+        let mut sums: BTreeMap<String, (f64, usize)> = BTreeMap::new();
+        for (k, c) in &costs {
+            let step = k.split_once(' ').map_or("unit", |(s, _)| s);
+            let e = sums.entry(step.to_string()).or_default();
+            (e.0, e.1) = (e.0 + c.secs as f64, e.1 + 1);
+        }
+        let per = |step: &str| -> (f64, bool) {
+            match (sums.get(step).filter(|s| s.1 > 0), self.mem.step_secs.get(step)) {
+                (Some(s), _) => (s.0 / s.1 as f64, false),
+                (None, Some(&t)) => (t, false),
+                (None, None) => (first_secs(step), false),
+            }
+        };
+        let cost = |step: &str, t: &str| -> Cost {
+            match costs.get(&crate::coord::cost_key(step, t)) {
+                Some(c) => Cost { secs: c.secs as f64, known: true, peak_mb: c.peak_mb },
+                None => Cost { secs: per(step).0, known: false, peak_mb: peak(step, t) },
+            }
+        };
+        // The build Mac's own steps: what a target took here lately (measured), else a first guess.
+        let mine = |step: &str, n: usize| -> Cost {
+            let (each, known) = self.mem.step_secs.get(step).map_or((first_secs(step), false), |&t| (t, true));
+            Cost { secs: each * n.max(1) as f64, known, peak_mb: 0 }
+        };
+        let step_of = |id: &str| id.split(' ').next().unwrap_or("").to_string();
+        let before: Vec<forecast::Job> = before.iter().map(|j| (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))).collect();
+        // A round: as the last ones took (their chains' jobs and catalog), else the chain's steps'
+        // times; the last round, the roads' chain as it stands now, if more.
+        let [roads, rail, landmarks] = chains;
+        let chain_s = |works: &[build::Work]| -> f64 { works.iter().map(|w| if claims::SHARED.contains(&w.step.as_str()) { w.targets.iter().map(|t| cost(&w.step, &t.0).secs).sum() } else { mine(&w.step, w.targets.len()).secs }).sum() };
+        let round_s = forecast::round_secs(&events).unwrap_or_else(|| ["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "catalog"].iter().map(|s| mine(s, 1).secs).sum::<f64>() + mine("pack", 8).secs + mine("lo", 2).secs);
+        let mut after: Vec<forecast::Job> = Vec::new();
+        for (chain, catalog) in [(&rail, true), (&landmarks, true)] {
+            for w in chain.iter() {
+                if claims::SHARED.contains(&w.step.as_str()) {
+                    after.extend(w.targets.iter().map(|t| (w.step.clone(), t.0.clone(), cost(&w.step, &t.0))));
+                } else {
+                    after.push((w.step.clone(), w.targets.first().map(|t| t.0.clone()).unwrap_or_default(), mine(&w.step, w.targets.len())));
+                }
+            }
+            if catalog && !chain.is_empty() {
+                after.push(("catalog".into(), format!("after {}", chain[0].step), mine("catalog", 1)));
+            }
+        }
+        // The build Mac, then each helper heard from lately at its measured speed (half the build
+        // Mac's until it's measured), each free once its job under way is done.
+        let busy = |r: Option<&Running>, eta: Option<u64>| -> f64 {
+            r.map_or(0.0, |r| eta.map_or_else(|| r.spec.record.as_ref().map_or(600.0, |w| w.targets.iter().map(|t| cost(&w.step, &t.0).secs).sum::<f64>() - r.elapsed().as_secs_f64()).max(60.0), |e| e as f64))
+        };
+        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, helper: false, mem_mb: u64::MAX, busy_s: busy(self.running.as_ref(), self.job_eta) }];
+        let helpers: Vec<Status> = helpers(root);
+        let names: Vec<String> = helpers.iter().map(|h| h.host.clone()).collect();
+        let speeds = forecast::speeds(&events, &self.host, &names, 0.5);
+        for h in &helpers {
+            let eta = h.job.as_ref().map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64).unwrap_or(0.0);
+            machines.push(Machine { name: h.host.clone(), speed: speeds.get(&h.host).copied().unwrap_or(0.5), helper: true, mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144), busy_s: eta });
+        }
+        // What's being built now, and by which.
+        let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();
+        if let Some(w) = self.running.as_ref().and_then(|r| r.spec.record.as_ref()) {
+            running.extend(w.targets.iter().map(|t| ((w.step.clone(), t.0.clone()), 0)));
+        }
+        for (worker, step, targets) in leased {
+            if let Some(m) = machines.iter().position(|m| m.name == worker && m.helper) {
+                running.extend(targets.into_iter().map(|t| ((step.clone(), t), m)));
+            }
+        }
+        let last_round_s = round_s.max(chain_s(&roads));
+        forecast::forecast(&forecast::Input { now: now_s(), before, regions, cost: &cost, round_s, last_round_s, after, since_publish, machines, running })
     }
 
     /// The build to the end (the status's checklist): the OSM pass (its stages, from the markers its
@@ -2127,6 +2336,8 @@ impl Agent {
     fn stopped(&mut self, root: Option<&Path>, why: &str) {
         let done = self.finished_targets(false);
         let step = self.running.as_ref().and_then(|r| r.spec.record.as_ref().map(|w| w.step.clone())).unwrap_or_default();
+        let secs = self.running.as_ref().map_or(0, |r| r.elapsed().as_secs());
+        self.note_end(&step, &done, secs, false, why);
         let recorded = self.record_done(root, &step, &done);
         let handed = if self.o.helper || recorded { done } else { Vec::new() };
         self.end_lease(Outcome::Interrupted, &handed, why);
@@ -2356,6 +2567,40 @@ fn helpers(root: &Path) -> Vec<Status> {
 /// A job's step and targets when both Macs run its step (crate::agent::claims::SHARED).
 fn shared_targets(spec: &JobSpec) -> Option<(String, Vec<String>)> {
     spec.record.as_ref().filter(|w| claims::SHARED.contains(&w.step.as_str())).map(|w| (w.step.clone(), w.targets.iter().map(|t| t.0.clone()).collect()))
+}
+
+/// About how long a target of `step` takes on the build Mac (seconds) until it's been timed there:
+/// the forecast's first guess (crate::agent::forecast), from the jobs' logs of 2026-10.
+fn first_secs(step: &str) -> f64 {
+    match step {
+        "pass-sets" => 5000.0,
+        "trailends" => 15.0,
+        "reach" => 1800.0,
+        "terrain-z8" | "buildings" | "items" => 3600.0,
+        "summits" => 30.0,
+        "labels" => 2200.0,
+        "heritage-sites" => 240.0,
+        "heritage" => 5400.0,
+        "terrain" => 900.0,
+        "slope" => 400.0,
+        "trees" => 600.0,
+        "unit" => 400.0,
+        "prune" => 30.0,
+        "pack" => 35.0,
+        "lo" => 25.0,
+        "roadunits" => 100.0,
+        "stations" => 110.0,
+        "ferries" => 30.0,
+        "terrain-root" | "slope-root" => 10.0,
+        "rail-feeds" => 240.0,
+        "rail" => 540.0,
+        "pois" => 10.0,
+        "peaks" => 15.0,
+        "marks" => 190.0,
+        "overlays" => 50.0,
+        "catalog" => 60.0,
+        _ => 300.0,
+    }
 }
 
 /// Targets per job for the steps whose work is per area (each z3 pack of terrain or slope takes

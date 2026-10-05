@@ -22,6 +22,7 @@
 //! the tailnet only; a running job's requests (`/task/…`) from this Mac only.
 
 pub mod client;
+pub mod history;
 pub mod lease;
 pub mod task;
 
@@ -109,6 +110,12 @@ pub struct Worker {
     pub cores: u32,
     /// The app it runs (an agent's: crate::agent::app_version), when it says.
     pub app: Option<String>,
+    /// A page: whether it was in front when it last asked (an iPhone or iPad stops one that isn't).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
+    /// Its last ask, for why it gets no work (`/work/swarm`).
+    #[serde(skip)]
+    pub ask: Option<Ask>,
     #[serde(skip)]
     pub seen: Instant,
     pub what: String,
@@ -146,6 +153,8 @@ pub struct Shared {
     /// When the pause last changed, as the ask said (unix seconds): an ask older than that (a Mac's
     /// held while it couldn't reach this one) is passed over.
     pub pause_at: u64,
+    /// What happened, the last week's (`history`): the worker page's activity.
+    pub history: history::History,
     /// Where the token, leases, costs and journal are kept.
     dir: PathBuf,
 }
@@ -184,13 +193,44 @@ impl Shared {
             .collect()
     }
 
+    /// Why a worker gets the shared steps' work it does, or doesn't: for each step it does that's
+    /// offered, the targets offered, then those held by another, done, kept from it after it failed
+    /// them, too large for the memory it spares, and those left that it may take (`pick`'s rules,
+    /// counted).
+    fn fit(&self, a: &Ask, now: Instant) -> Vec<serde_json::Value> {
+        self.offers
+            .iter()
+            .filter(|o| a.can.contains(&o.step))
+            .map(|o| {
+                let held = self.leases.held(&o.step, now);
+                let (mut h, mut d, mut b, mut big, mut fits) = (0, 0, 0, 0, 0);
+                for (t, k, size) in &o.targets {
+                    let backoff = self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))).is_some_and(|(at, n)| now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5)));
+                    match () {
+                        _ if held.contains(t) => h += 1,
+                        _ if self.done.get(&(o.step.clone(), t.clone())) == Some(k) => d += 1,
+                        _ if backoff => b += 1,
+                        _ if job_peak(&self.costs, &o.step, t, *size) > a.mem_mb => big += 1,
+                        _ => fits += 1,
+                    }
+                }
+                serde_json::json!({ "step": o.step, "offered": o.targets.len(), "held": h, "done": d, "kept_from": b, "too_big": big, "fits": fits })
+            })
+            .collect()
+    }
+
     /// Marks `worker`'s request (what it said, and itself as `a` describes it).
     fn seen(&mut self, worker: &str, what: String, a: Option<&Ask>, now: Instant) {
-        let w = self.workers.entry(worker.to_string()).or_insert_with(|| Worker { kind: String::new(), label: worker.to_string(), can: Vec::new(), mem_mb: 0, cores: 0, app: None, seen: now, what: String::new(), done: 0, failed: 0, checked: 0, bad: false });
+        if !self.workers.contains_key(worker) {
+            let note = a.and_then(|a| a.label.clone()).unwrap_or_default();
+            self.history.add(history::Event { worker: Some(worker.to_string()), note, ..history::Event::new("worker") });
+        }
+        let w = self.workers.entry(worker.to_string()).or_insert_with(|| Worker { kind: String::new(), label: worker.to_string(), can: Vec::new(), mem_mb: 0, cores: 0, app: None, visible: None, ask: None, seen: now, what: String::new(), done: 0, failed: 0, checked: 0, bad: false });
         w.seen = now;
         w.what = what;
         if let Some(a) = a {
-            (w.kind, w.can, w.mem_mb, w.cores, w.app) = (a.kind.clone(), a.can.clone(), a.mem_mb, a.cores, a.app.clone());
+            (w.kind, w.can, w.mem_mb, w.cores, w.app, w.visible) = (a.kind.clone(), a.can.clone(), a.mem_mb, a.cores, a.app.clone(), a.visible);
+            w.ask = Some(a.clone());
             if let Some(l) = &a.label {
                 w.label = l.chars().take(80).collect();
             }
@@ -230,6 +270,9 @@ pub struct Ask {
     /// The app it runs (an agent's, crate::agent::app_version; a page's is the coordinator's own).
     #[serde(default)]
     pub app: Option<String>,
+    /// A page: whether it's in front (an iPhone or iPad stops one that isn't).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
 }
 
 /// Work granted.
@@ -257,6 +300,9 @@ pub struct Beat {
     pub lease: u64,
     #[serde(default)]
     pub progress: Option<String>,
+    /// How far it is (0–1), when it says (a page's slot).
+    #[serde(default)]
+    pub frac: Option<f64>,
 }
 
 /// Work done: a job's one hand-off (its saves and done record) and what its units cost, or a task's
@@ -330,7 +376,9 @@ impl Coordinator {
                 (p, at)
             }
         };
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, app: app.to_string(), paused, pause_at, dir: dir.to_path_buf() };
+        let mut history = history::History::load(Some(&dir.join("history.jsonl")));
+        history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, app: app.to_string(), paused, pause_at, history, dir: dir.to_path_buf() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -463,6 +511,11 @@ impl Coordinator {
             if let Work::Task { .. } = l.work {
                 s.tasks.lapsed(l.id);
             }
+            let (step, targets) = match &l.work {
+                Work::Job { step, targets } => (Some(step.clone()), targets.iter().map(|t| t.0.clone()).collect()),
+                Work::Task { .. } => (Some("tail".to_string()), Vec::new()),
+            };
+            s.history.add(history::Event { worker: Some(l.worker.clone()), lease: Some(l.id), step, targets, note: l.what(), ..history::Event::new("lapse") });
         }
         if gone.iter().any(|l| matches!(l.work, Work::Job { .. })) {
             s.save_leases();
@@ -489,6 +542,29 @@ impl Coordinator {
         let mut s = self.shared.lock().unwrap();
         s.costs.extend(costs.iter().cloned());
         s.save_costs();
+    }
+
+    /// Notes what happened (`history`): this Mac's jobs started and ended, catalogs, its conditions.
+    pub fn note(&self, e: history::Event) {
+        self.shared.lock().unwrap().history.add(e);
+    }
+
+    /// What the forecast reads (crate::agent::forecast): what each target cost, the jobs leased now
+    /// (worker, step, targets), the history kept, and the memory each worker spares (MB).
+    pub fn for_forecast(&self) -> (BTreeMap<String, Cost>, Vec<(String, String, Vec<String>)>, Vec<history::Event>, BTreeMap<String, u64>) {
+        let s = self.shared.lock().unwrap();
+        let now = Instant::now();
+        let leased = s
+            .leases
+            .all(now)
+            .iter()
+            .filter_map(|l| match &l.work {
+                Work::Job { step, targets } => Some((l.worker.clone(), step.clone(), targets.iter().map(|t| t.0.clone()).collect())),
+                Work::Task { .. } => None,
+            })
+            .collect();
+        let mem = s.workers.iter().map(|(n, w)| (n.clone(), w.mem_mb)).collect();
+        (s.costs.clone(), leased, s.history.since(0, usize::MAX), mem)
     }
 
     /// The workers around now (asked within two minutes), for the heartbeat: (name, worker).
@@ -605,6 +681,11 @@ fn set_pause(s: &mut Shared, pause: Option<crate::control::Pause>, at: u64) {
     s.leases.hold_all(Instant::now());
     if s.paused != pause {
         eprintln!("coordinator: {}", pause.as_ref().map_or("the build goes on".to_string(), |p| p.why()));
+        let e = match &pause {
+            Some(p) => history::Event { note: format!("{} ({})", p.by, if p.mode == crate::control::Mode::Freeze { "at once" } else { "at safe points" }), ..history::Event::new("pause") },
+            None => history::Event::new("resume"),
+        };
+        s.history.add(e);
     }
     let kept = serde_json::to_vec(&serde_json::json!({ "pause": pause, "at": at })).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&s.dir.join("pause.json"), &b));
     if let Err(e) = kept {
@@ -676,6 +757,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                     let lease = s.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
                     s.save_leases();
                     eprintln!("coordinator: {} took {} {}", a.worker, o.step, pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" "));
+                    s.history.add(history::Event { worker: Some(a.worker.clone()), lease: Some(lease), step: Some(o.step.clone()), targets: pick.iter().map(|t| t.0.clone()).collect(), ..history::Event::new("lease") });
                     let g = Grant { lease, ttl_s: TTL.as_secs(), work: Granted::Job { step: o.step.clone(), targets: pick, pass: s.pass.clone() } };
                     return Ok((200, serde_json::to_value(g)?));
                 }
@@ -695,7 +777,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
         "/work/beat" => {
             let b: Beat = serde_json::from_slice(body)?;
             let mut s = shared.lock().unwrap();
-            let alive = s.leases.renew(b.lease, &b.worker, b.progress.clone(), now);
+            let alive = s.leases.renew_frac(b.lease, &b.worker, b.progress.clone(), b.frac, now);
             s.seen(&b.worker, b.progress.unwrap_or_else(|| "working".into()), None, now);
             // (The build paused: its job pauses too, its lease kept meanwhile.)
             Ok((200, serde_json::json!({ "ok": alive, "pause": s.paused })))
@@ -767,6 +849,8 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                     s.costs.extend(d.costs.into_iter().filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0))));
                     s.save_leases();
                     s.save_costs();
+                    let secs = now.duration_since(l.granted).as_secs_f64();
+                    s.history.add(history::Event { worker: Some(d.worker.clone()), lease: Some(d.lease), step: Some(step.clone()), targets: targets.iter().map(|t| t.0.clone()).collect(), secs: Some(secs.round()), ok: Some(!d.failed), ..history::Event::new("done") });
                 }
                 Work::Task { .. } => {
                     let unit = match s.tasks.done(d.lease, &d.worker, d.outputs, d.removed, d.secs, d.peak_mb) {
@@ -774,11 +858,12 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                         Err(e) => return Ok((422, serde_json::json!({ "error": format!("{e:#}") }))),
                     };
                     // What its unit's task takes, for the next time it's offered.
-                    if let Some(u) = unit {
+                    if let Some(u) = &unit {
                         s.costs.insert(format!("tail {u}"), Cost { peak_mb: d.peak_mb, secs: d.secs as u64 });
                         s.save_costs();
                     }
                     s.leases.finish(d.lease, &d.worker, now);
+                    s.history.add(history::Event { worker: Some(d.worker.clone()), lease: Some(d.lease), step: Some("tail".into()), targets: unit.into_iter().collect(), secs: Some(d.secs.round()), ok: Some(true), ..history::Event::new("task") });
                 }
             }
             s.workers.get_mut(&d.worker).map(|w| w.done += 1);
@@ -815,6 +900,12 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                 s.workers.get_mut(&f.worker).map(|w| w.failed += 1);
             }
             let why: String = f.error.chars().take(300).collect();
+            let e = match &l.work {
+                Work::Job { step, targets } => history::Event { step: Some(step.clone()), targets: targets.iter().map(|t| t.0.clone()).collect(), ..history::Event::new("fail") },
+                Work::Task { .. } => history::Event { step: Some("tail".into()), ..history::Event::new("task-fail") },
+            };
+            let note = if f.interrupted { format!("stopped: {why}") } else { why.clone() };
+            s.history.add(history::Event { worker: Some(f.worker.clone()), lease: Some(f.lease), secs: Some(now.duration_since(l.granted).as_secs_f64().round()), ok: Some(false), note, ..e });
             s.seen(&f.worker, format!("failed {}: {why}", l.what()), None, now);
             eprintln!("coordinator: {} failed {}: {why}", f.worker, l.what());
             Ok((200, ok))
@@ -835,8 +926,41 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             // those known, else a first guess).
             let s = shared.lock().unwrap();
             let agent: serde_json::Value = s.dir.parent().and_then(|h| std::fs::read(h.join("status.json")).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::Value::Null);
-            let leases: Vec<serde_json::Value> = s.leases.all(now).iter().map(|l| serde_json::json!({ "worker": l.worker, "what": l.what(), "for_s": now.duration_since(l.granted).as_secs(), "progress": l.progress })).collect();
-            let workers: Vec<serde_json::Value> = s.workers.iter().map(|(n, w)| serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "bad": w.bad, "app": w.app, "seen_s": now.duration_since(w.seen).as_secs() })).collect();
+            // Each lease: whose, what (its step and targets), for how long, what it last said and how
+            // far, since its last beat and until it lapses.
+            let leases: Vec<serde_json::Value> = s
+                .leases
+                .all(now)
+                .iter()
+                .map(|l| {
+                    let (step, n) = match &l.work {
+                        Work::Job { step, targets } => (step.clone(), targets.len()),
+                        Work::Task { .. } => ("tail".to_string(), 1),
+                    };
+                    let left = l.left(now).as_secs();
+                    serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "n": n, "for_s": now.duration_since(l.granted).as_secs(), "progress": l.progress, "frac": l.frac, "beat_s": TTL.as_secs().saturating_sub(left), "lapses_in_s": left })
+                })
+                .collect();
+            // Each worker, and for one that does the shared steps, how the work offered fits it.
+            let workers: Vec<serde_json::Value> = s
+                .workers
+                .iter()
+                .map(|(n, w)| {
+                    let fit = w.ask.as_ref().filter(|a| a.kind == "native").map(|a| s.fit(a, now)).unwrap_or_default();
+                    serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "bad": w.bad, "app": w.app, "visible": w.visible, "can": w.can, "fit": fit, "seen_s": now.duration_since(w.seen).as_secs() })
+                })
+                .collect();
+            // The tasks, by state.
+            let mut tasks: BTreeMap<&str, usize> = BTreeMap::new();
+            for t in s.tasks.by_id.values() {
+                let st = match t.state {
+                    task::State::Offered => "offered",
+                    task::State::Leased { .. } => "leased",
+                    task::State::Done { .. } => "done",
+                    task::State::Failed { .. } => "failed",
+                };
+                *tasks.entry(st).or_default() += 1;
+            }
             let first_guess = |step: &str| match step {
                 "terrain" => 900,
                 "slope" => 400,
@@ -857,7 +981,17 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                 })
                 .collect();
             let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-            Ok((200, serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "work": work, "tasks": s.tasks.by_id.len() })))
+            // The history's last number (the page asks `/work/history` for what's after the one it
+            // has) and the last day by the hour.
+            Ok((200, serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "work": work, "tasks": tasks, "seq": s.history.seq(), "rates": s.history.rates(unix, 24) })))
+        }
+        "/work/history" => {
+            // What happened after event `since` (the oldest first, at most `max`, 500 by default).
+            let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+            let since = b["since"].as_u64().unwrap_or(0);
+            let max = b["max"].as_u64().map_or(500, |m| m.min(5000)) as usize;
+            let s = shared.lock().unwrap();
+            Ok((200, serde_json::json!({ "seq": s.history.seq(), "events": s.history.since(since, max) })))
         }
         p if p.starts_with("/task/") && !local => anyhow::bail!("{p} is for this Mac's jobs"),
         "/task/offer" => {
@@ -946,6 +1080,9 @@ mod http {
         ("index.html", "text/html; charset=utf-8", include_bytes!("../../../../web/work/index.html")),
         ("worker.js", "text/javascript", include_bytes!("../../../../web/work/worker.js")),
         ("runtime.js", "text/javascript", include_bytes!("../../../../web/work/runtime.js")),
+        // The build at a glance, both pages': its script and styles.
+        ("dash.js", "text/javascript", include_bytes!("../../../../web/work/dash.js")),
+        ("dash.css", "text/css; charset=utf-8", include_bytes!("../../../../web/work/dash.css")),
         ("sw.js", "text/javascript", include_bytes!("../../../../web/work/sw.js")),
         ("manifest.webmanifest", "application/manifest+json", include_bytes!("../../../../web/work/manifest.webmanifest")),
         ("icons/icon-192.png", "image/png", include_bytes!("../../../../web/work/icons/icon-192.png")),
@@ -1016,6 +1153,7 @@ mod http {
             .route("/work/fail", any(json))
             .route("/work/status", any(json))
             .route("/work/swarm", any(json))
+            .route("/work/history", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
             .route("/work/out/{lease}/{*path}", put(output))
             .route("/work/prog/{name}", get(prog))

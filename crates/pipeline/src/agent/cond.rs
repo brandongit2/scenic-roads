@@ -101,6 +101,62 @@ pub fn free_bytes(path: &std::path::Path) -> Option<u64> {
     store::sys::disk_free(path).ok()
 }
 
+/// This Mac's resources, for the status (the worker page's machines): its memory and the share of
+/// it free now, its cores and load, its disk's free space and the caches it may drop to make room,
+/// how long the NAS took to answer and the NAS's free space.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct Resources {
+    pub mem_gb: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mem_free_pct: Option<u8>,
+    pub cores: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load1: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_free_gb: Option<f64>,
+    /// Counted every ten minutes (a walk of the caches).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_gb: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nas_free_tb: Option<f64>,
+}
+
+/// This Mac's resources now (`Resources`): its disk's where `home` is, the NAS's at `root`; the
+/// caches' and the NAS's answer as the agent last measured them.
+pub fn resources(home: &std::path::Path, root: Option<&std::path::Path>, cache_gb: Option<f64>, nas_ms: Option<u64>) -> Resources {
+    static MEM: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    let mem_gb = *MEM.get_or_init(|| {
+        let o = Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"]).output().ok();
+        o.and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok()).map_or(0.0, |b| b as f64 / (1u64 << 30) as f64)
+    });
+    // ("System-wide memory free percentage: 63%")
+    let mem_free_pct = Command::new("/usr/bin/memory_pressure").arg("-Q").output().ok().and_then(|o| {
+        let s = String::from_utf8_lossy(&o.stdout).into_owned();
+        s.split("free percentage:").nth(1)?.trim().trim_end_matches('%').trim().parse::<u8>().ok()
+    });
+    #[cfg(unix)]
+    let load1 = {
+        let mut load = [0f64; 3];
+        // SAFETY: getloadavg fills at most the 3 doubles it's given.
+        (unsafe { libc::getloadavg(load.as_mut_ptr(), 3) } >= 1).then_some((load[0] * 100.0).round() / 100.0)
+    };
+    #[cfg(not(unix))]
+    let load1 = None;
+    let gb = |b: u64| (b as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0;
+    Resources {
+        mem_gb: (mem_gb * 10.0).round() / 10.0,
+        mem_free_pct,
+        cores: std::thread::available_parallelism().map_or(0, |n| n.get()),
+        load1,
+        disk_free_gb: free_bytes(home).map(gb),
+        cache_gb,
+        nas_ms,
+        nas_free_tb: root.and_then(free_bytes).map(|b| (b as f64 / (1u64 << 40) as f64 * 100.0).round() / 100.0),
+    }
+}
+
 /// This Mac's name, read once per process (temporary files' names: crate::whole).
 pub fn host() -> &'static str {
     static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();

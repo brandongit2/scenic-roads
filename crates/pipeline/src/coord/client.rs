@@ -149,7 +149,7 @@ impl Client {
 
     /// `beat`, and the build's pause, while it's paused (the job pauses with it).
     pub fn beat_paused(&self, lease: u64, progress: Option<&str>) -> Result<(bool, Option<crate::control::Pause>)> {
-        let b = super::Beat { worker: self.worker.clone(), lease, progress: progress.map(str::to_string) };
+        let b = super::Beat { worker: self.worker.clone(), lease, progress: progress.map(str::to_string), frac: None };
         let v = self.post_json("/work/beat", &serde_json::to_value(&b)?)?.1;
         Ok((v["ok"].as_bool().unwrap_or(false), serde_json::from_value(v["pause"].clone()).ok().flatten()))
     }
