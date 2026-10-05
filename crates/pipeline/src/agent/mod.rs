@@ -219,15 +219,15 @@ fn terrain_reads(id: &str, p: &Path) -> bool {
 }
 
 /// The memory a shared step's job is expected to take (MB) before one has run for its target and
-/// said (`SCENIC_COSTS`): tree cover runs six workers at once, each with its block's canopy, and
-/// slope took up to 6.6 GB an area (2026-10-05), so neither goes to a helper until its own run shows
-/// it fits; peaks, room to spare; a step shared later, 1.5 GB until it's measured. (Units and
-/// candidates are offered by their piece's size, crate::coord::job_peak; terrain by its area's size,
-/// `terrain_peak`.)
+/// said (`SCENIC_COSTS`): tree cover runs six workers at once, each with its block's canopy, so it
+/// doesn't go to a helper until its own run shows it fits; slope holds a z6 tile's tiles at a time
+/// (crate::slope_pack: under a GB, where holding its whole area's took up to 20 GB), 2 GB; peaks,
+/// room to spare; a step shared later, 1.5 GB until it's measured. (Units and candidates are offered
+/// by their piece's size, crate::coord::job_peak; terrain by its area's size, `terrain_peak`.)
 fn first_peak(step: &str) -> u64 {
     match step {
         "trees" => 8000,
-        "slope" => 6600,
+        "slope" => 2000,
         "peaks" => 2500,
         _ => 1500,
     }
@@ -2418,12 +2418,14 @@ impl Agent {
                 self.slots[k].job_eta.map(|e| e as f64).into_iter().chain([left]).fold(60.0, f64::max)
             })
         };
-        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, second: false, mem_mb: u64::MAX, busy_s: busy(0) }];
-        // Its second job: what fits beside the first (a quarter of its memory, say).
+        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, second: false, light: false, mem_mb: u64::MAX, busy_s: busy(0) }];
+        // Its second job: what fits beside the first (a quarter of its memory, say); while the Mac's
+        // in use, as it is now, its network work alone.
         if self.second_allowed() {
             let (speed, measured) = speeds.get(&second).copied().unwrap_or((0.8, false));
             let mem_mb = (cond::resources(&self.o.home, None, None, None).mem_gb * 256.0) as u64;
-            machines.push(Machine { name: second.clone(), speed, measured, helper: false, second: true, mem_mb, busy_s: busy(1) });
+            let light = self.last_cond.is_some_and(|c| c.user_active());
+            machines.push(Machine { name: second.clone(), speed, measured, helper: false, second: true, light, mem_mb, busy_s: busy(1) });
         }
         for h in &helpers {
             let (speed, measured) = speeds.get(&h.host).copied().unwrap_or((0.5, false));
@@ -2432,7 +2434,7 @@ impl Agent {
             let lease_left = leased.iter().filter(|l| l.0 == h.host).map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64).fold(0.0, f64::max);
             let eta = h.job.as_ref().map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64);
             let busy_s = eta.map_or(0.0, |e| e.max(lease_left).max(60.0));
-            machines.push(Machine { name: h.host.clone(), speed, measured, helper: true, second: false, mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144), busy_s });
+            machines.push(Machine { name: h.host.clone(), speed, measured, helper: true, second: false, light: false, mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144), busy_s });
         }
         // What's being built now, and by which.
         let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();

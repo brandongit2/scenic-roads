@@ -153,15 +153,19 @@ pub fn near_coverage(cov: &Coverage, z: u8, x: u32, y: u32, km: f64) -> bool {
 }
 
 /// A layer's tiles as the build manifest has them now (its latest uploads).
-pub struct ManifestTiles<'a> {
-    out: &'a Out,
+pub struct ManifestTiles {
     layer: String,
+    /// The layer's packs as the manifest named them when it was made (logical → file): its own,
+    /// so the job may write packs while it reads (slope_pack::build_q_with).
+    files: HashMap<String, std::path::PathBuf>,
     open: Mutex<HashMap<String, Option<std::sync::Arc<(std::fs::File, u64, store::pack::PackIndex)>>>>,
 }
 
-impl<'a> ManifestTiles<'a> {
-    pub fn new(out: &'a Out, layer: &str) -> Self {
-        ManifestTiles { out, layer: layer.to_string(), open: Mutex::new(HashMap::new()) }
+impl ManifestTiles {
+    pub fn new(out: &Out, layer: &str) -> Self {
+        let prefix = format!("layers/{layer}/");
+        let files = out.manifest.range(prefix.clone()..).take_while(|(l, _)| l.starts_with(&prefix)).map(|(l, c)| (l.clone(), out.path(c))).collect();
+        ManifestTiles { layer: layer.to_string(), files, open: Mutex::new(HashMap::new()) }
     }
 
     pub fn logical(layer: &str, z: u8, x: u32, y: u32) -> String {
@@ -177,9 +181,9 @@ impl<'a> ManifestTiles<'a> {
         let logical = Self::logical(&self.layer, z, x, y);
         let mut open = self.open.lock().unwrap();
         if !open.contains_key(&logical) {
-            let v = match self.out.get(&logical) {
-                Some(c) => {
-                    let f = std::fs::File::open(self.out.path(c))?;
+            let v = match self.files.get(&logical) {
+                Some(p) => {
+                    let f = std::fs::File::open(p)?;
                     let len = f.metadata()?.len();
                     let src = FileSource(&f, len);
                     let idx = store::pack::PackIndex::read_from(&src)?;

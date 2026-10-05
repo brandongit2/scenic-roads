@@ -142,8 +142,15 @@ impl Tasks {
     /// The worker failed it: out of memory at `oom_mb` (offered again to workers sparing more), or
     /// otherwise (not offered to it again; after two workers, failed: the job runs it).
     pub fn fail(&mut self, lease: u64, worker: &str, why: &str, oom_mb: Option<u64>) -> Option<u64> {
+        self.fail_how(lease, worker, why, oom_mb, false)
+    }
+
+    /// `fail`; `interrupted`: given back, not failed (the page reloaded or closed, or killed in the
+    /// background): offered again to any worker, this one too.
+    pub fn fail_how(&mut self, lease: u64, worker: &str, why: &str, oom_mb: Option<u64>, interrupted: bool) -> Option<u64> {
         let t = self.by_lease(lease, worker)?;
         match oom_mb {
+            _ if interrupted => {}
             Some(peak) => t.mem_mb = t.mem_mb.max(peak + peak / 4),
             None => {
                 t.failed_on.insert(worker.to_string());
@@ -246,6 +253,13 @@ mod tests {
         ts.fail(4, "mac2", "boom", None);
         assert!(matches!(ts.by_id[&big].state, State::Failed { .. }));
         assert!(ts.withdraw(big));
+        // Given back (the page reloaded, or killed in the background): offered again, to it too, its
+        // memory as it was.
+        let back = offer(&mut ts, &root, 700, t0);
+        ts.by_id.get_mut(&back).unwrap().state = State::Leased { lease: 6, worker: "ipad".into() };
+        ts.fail_how(6, "ipad", "the page was reloaded or closed", None, true);
+        assert_eq!((ts.pick("ipad", &can, 1000), ts.by_id[&back].mem_mb), (Some(back), 700));
+        ts.by_id.remove(&back);
         // A job's tasks go with it.
         let a = offer(&mut ts, &root, 100, t0);
         ts.by_id.get_mut(&a).unwrap().state = State::Leased { lease: 5, worker: "phone".into() };

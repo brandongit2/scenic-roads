@@ -1118,8 +1118,8 @@ are no request files.
   pageviews; summits, marks, route ends, the heritage sites, rail feeds, rail, labels; the OSM
   pass's ten, from the planet's copy to the roads' walk; a terrain run's three: its area's tiles
   fetched, shaded and written a z6 tile at a time, its zoomed-out terrain written to the NAS, the
-  new raw tiles packed onto the NAS; slope's
-  and the tree cover's two an area, worked out then written; the peaks' and the z8 terrain's, then
+  new raw tiles packed onto the NAS; slope's two an area, worked out (each z6 tile's pack written as
+  it's done) then its zoomed-out pack written; the tree cover's two an area, worked out then written; the peaks' and the z8 terrain's, then
   their raw tiles packed; the map tiles' base packs got here, then the tiles drawn). A long part says
   how far it is: the pageview dumps by the bytes streamed, a part's steps one by one, a terrain run's
   tiles (every level's, counted first, each half done once it's here, from AWS or the NAS, and done
@@ -1203,8 +1203,9 @@ and, when none fits it, units' last steps.
   holding the whole area's until they were written took 32.9 GB for 3/0/2; a measure from that way,
   `v` 0, counts for nothing now:
   `coord::cost_version`), else a first guess per step (tree cover 8 GB: six workers at once, each
-  with its block's canopy; slope 6.6, the most an area took); so neither of those goes to the M1's
-  6 GB until a run shows it fits; peaks 2.5. A helper asks only for the steps its
+  with its block's canopy, so it doesn't go to the M1's 6 GB until a run shows it fits; slope 2,
+  holding a z6 tile's tiles at a time, its measures from when it held its whole area's, `v` 0,
+  counting for nothing now); peaks 2.5. A helper asks only for the steps its
   disk has room for (a terrain run 55 GB free, tree cover 30, the others 15, a task 5, and a sixth
   more, counting what its caches can free: not its loose raw tiles, which only its own jobs pack),
   never while a newer app waits to start, and takes the earliest step with a target that fits, from

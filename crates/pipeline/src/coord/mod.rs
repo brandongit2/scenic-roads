@@ -72,10 +72,11 @@ fn is_zero(v: &u32) -> bool {
 }
 
 /// The way a step runs now, as far as its memory goes: a cost measured another way says nothing of
-/// what a run takes now (terrain 2: written a z6 tile at a time, where it held its whole area).
+/// what a run takes now (terrain 2 and slope 2: each z6 tile's pack written as it's made, where
+/// they held their whole area's).
 pub fn cost_version(step: &str) -> u32 {
     match step {
-        "terrain" => 2,
+        "terrain" | "slope" => 2,
         _ => 0,
     }
 }
@@ -932,7 +933,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                     s.save_leases();
                 }
                 Work::Task { .. } => {
-                    if let (Some(id), Some(peak)) = (s.tasks.fail(f.lease, &f.worker, &f.error, f.oom_mb), f.oom_mb) {
+                    if let (Some(id), Some(peak)) = (s.tasks.fail_how(f.lease, &f.worker, &f.error, f.oom_mb, f.interrupted), f.oom_mb.filter(|_| !f.interrupted)) {
                         // Out of memory at `peak`: it takes more than that, next time too.
                         if let Some(u) = s.tasks.by_id.get(&id).and_then(|t| t.spec["unit"].as_str().map(str::to_string)) {
                             let c = s.costs.entry(format!("tail {u}")).or_default();
@@ -1440,9 +1441,11 @@ mod tests {
         assert_eq!(job_peak(&costs, "terrain", "3/0/2", 2400), 2400);
         costs.insert(cost_key("terrain", "3/0/2"), Cost { peak_mb: 2100, secs: 3000, worker: None, v: cost_version("terrain") });
         assert_eq!(job_peak(&costs, "terrain", "3/0/2", 2400), 2100);
-        // Other steps' measures stand.
-        costs.insert(cost_key("slope", "3/0/2"), Cost { peak_mb: 5000, secs: 300, worker: None, v: 0 });
-        assert_eq!(job_peak(&costs, "slope", "3/0/2", 6600), 5000);
+        // Slope likewise (written a z6 tile at a time too); other steps' measures stand.
+        costs.insert(cost_key("slope", "3/0/2"), Cost { peak_mb: 20_000, secs: 300, worker: None, v: 0 });
+        assert_eq!(job_peak(&costs, "slope", "3/0/2", 2000), 2000);
+        costs.insert(cost_key("peaks", "6/1/1"), Cost { peak_mb: 5000, secs: 300, worker: None, v: 0 });
+        assert_eq!(job_peak(&costs, "peaks", "6/1/1", 2500), 5000);
     }
 
     #[test]

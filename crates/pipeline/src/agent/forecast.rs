@@ -24,8 +24,10 @@ use std::collections::{BTreeMap, BTreeSet};
 /// The shared steps a helper takes, in its order of preference (crate::agent::claims::SHARED).
 const SHARED: [&str; 6] = ["terrain", "slope", "trees", "unit", "pois", "peaks"];
 
-/// The steps the build Mac's second job takes, in its order of preference (crate::agent::SECOND).
+/// The steps the build Mac's second job takes, in its order of preference (crate::agent::SECOND), and
+/// those it takes while the Mac is in use (crate::agent::LIGHT).
 const SECOND: [&str; 10] = ["heritage", "items", "rail-feeds", "rail", "marks", "overlays", "pois", "peaks", "unit", "slope"];
+const LIGHT: [&str; 6] = ["heritage", "items", "rail-feeds", "rail", "marks", "overlays"];
 
 /// A machine the work is shared among.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,8 +38,10 @@ pub struct Machine {
     pub measured: bool,
     /// A helper: the shared steps alone, what fits its memory.
     pub helper: bool,
-    /// The build Mac's second job: its steps alone (`SECOND`), what fits its memory.
+    /// The build Mac's second job: its steps alone (`SECOND`), what fits its memory; while the Mac is
+    /// in use (as it is now), only those that mostly wait on the network (`LIGHT`).
     pub second: bool,
+    pub light: bool,
     pub mem_mb: u64,
     /// Seconds from now until it's free (its job under way's time left).
     pub busy_s: f64,
@@ -365,7 +369,8 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         }
         if mac.second {
             // The first of its steps it can do, in their order (a step's in the plan's).
-            let pick = SECOND.iter().find_map(|s| (0..items.len()).find(|&i| items[i].phase != Phase::Before && items[i].step == *s && items[i].cost.peak_mb <= mac.mem_mb && runnable(&items, i, t)));
+            let steps: &[&str] = if mac.light { &LIGHT } else { &SECOND };
+            let pick = steps.iter().find_map(|s| (0..items.len()).find(|&i| items[i].phase != Phase::Before && items[i].step == *s && items[i].cost.peak_mb <= mac.mem_mb && runnable(&items, i, t)));
             free[m] = match pick {
                 Some(i) => take(&mut items, i, t),
                 None => next_end(&items, &free, m, t),
@@ -628,7 +633,7 @@ mod tests {
     }
 
     fn mac(name: &str, speed: f64, helper: bool) -> Machine {
-        Machine { name: name.into(), speed, measured: true, helper, second: false, mem_mb: 6000, busy_s: 0.0 }
+        Machine { name: name.into(), speed, measured: true, helper, second: false, light: false, mem_mb: 6000, busy_s: 0.0 }
     }
 
     fn cost(step: &str, _t: &str) -> Cost {
@@ -801,6 +806,21 @@ mod tests {
         assert_eq!(f.done_at, Some(1_000_000 + 4200));
         assert_eq!(f.rounds.len(), 1);
         assert_eq!(f.rounds[0].at, 1_000_000 + 2000, "the chains don't hold up the last round");
+    }
+
+    #[test]
+    fn the_second_job_builds_units_only_while_the_mac_isnt_in_use() {
+        let units: Vec<String> = (0..8).map(|i| format!("6/8/{i}")).collect();
+        let refs: Vec<&str> = units.iter().map(String::as_str).collect();
+        let regions = [region("a", &[], &refs, &[])];
+        let second = |light: bool| Machine { second: true, light, mem_mb: 12_000, ..mac("m4 (second job)", 1.0, false) };
+        let took = |light: bool| {
+            let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), second(light)], &cost));
+            f.lanes.get("m4 (second job)").map_or(0, |l| l.iter().filter(|x| x.step == "unit").map(|x| x.n).sum::<usize>())
+        };
+        // Away: half the units; in use: none (it waits for network work).
+        assert_eq!(took(false), 4);
+        assert_eq!(took(true), 0);
     }
 
     #[test]

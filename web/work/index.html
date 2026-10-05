@@ -124,24 +124,30 @@ if (!WATCH && /on iPad$/.test(label) && store.get("startV", 0) < 2) {
   store.set("ceiling", ceiling);
   store.set("startV", 2);
 }
-// Each tab's running tasks, noted with the time (renewed every minute while it lives). A note not
-// renewed for two minutes is a tab that died: together its tasks took more than this browser lets a
-// tab have, and they're given back. Looked for as the page starts and every minute after: a tab iOS
-// killed is reloaded at once, when its note is still fresh. (Another tab's live note is left alone.)
+// Each tab's running tasks, noted with the time (renewed every minute while it lives) and whether
+// it was on screen. A note not renewed for two minutes is a tab that died, and its tasks are given
+// back. One that died on screen took more than this browser lets a tab have: the ceiling comes down.
+// One that died in the background (iOS empties a hidden tab's memory when it wants it, whatever the
+// tab holds) costs nothing. Looked for as the page starts and every minute after: a tab iOS killed
+// is reloaded at once, when its note is still fresh. (Another tab's live note is left alone. A tab
+// reloaded or closed gives its tasks back as it goes, and leaves no note: `pagehide` below.)
 const tab = Math.random().toString(36).slice(2, 10);
 function reap() {
   if (WATCH) return false;
   const notes = store.get("running", null);
   const all = notes && !Array.isArray(notes) ? notes : {};
-  const died = [];
+  const [died, hidden] = [[], []];
   for (const [t, n] of Object.entries(all)) {
     if (t !== tab && Date.now() - (n.at || 0) > 120000) {
-      died.push(...(n.tasks || []));
+      (n.vis === false ? hidden : died).push(...(n.tasks || []));
       delete all[t];
     }
   }
-  if (!died.length) return false;
+  if (!died.length && !hidden.length) return false;
   store.set("running", all);
+  for (const t of hidden) call("/work/fail", { worker, lease: t.lease, error: "the page was closed in the background", interrupted: true }).catch(() => {});
+  if (hidden.length) log(`The page was closed in the background with ${hidden.length > 1 ? `${hidden.length} tasks` : "a task"} under way: given back.`);
+  if (!died.length) return false;
   const total = died.reduce((a, t) => a + (t.mem_mb || 0), 0);
   ceiling = Math.max(256, Math.min(ceiling, Math.floor(total * 0.7)));
   store.set("ceiling", ceiling);
@@ -221,16 +227,35 @@ function show() {
   $("slots-idle").textContent = idle ? `${idle === slots.length ? "Every slot" : `${idle} of ${slots.length} slots`} idle${paused ? " (paused)" : ", waiting for work"}` : "";
 }
 
-// This tab's running tasks, kept (with the time) so a page loaded after this one dies can give them
-// back and lower its ceiling.
+// This tab's running tasks, kept (with the time, and whether it's on screen) so a page loaded after
+// this one dies can give them back, and lower its ceiling if it died on screen.
 function remember() {
   const r = slots.filter((s) => s.lease).map((s) => ({ lease: s.lease, mem_mb: s.mem }));
   const notes = store.get("running", null);
   const all = notes && !Array.isArray(notes) ? notes : {};
-  if (r.length) all[tab] = { at: Date.now(), tasks: r };
+  if (r.length) all[tab] = { at: Date.now(), vis: document.visibilityState === "visible", tasks: r };
   else delete all[tab];
   store.set("running", all);
 }
+// (Noted as it goes behind, before iOS freezes it, and as it comes back.)
+document.addEventListener("visibilitychange", remember);
+// Reloaded or closed (not frozen in the background, nor killed: neither says so): its tasks given
+// back at once, so they go out again without a wait, and not held against this browser; no note
+// left behind to be taken for a death.
+window.addEventListener("pagehide", () => {
+  if (WATCH) return;
+  for (const s of slots) {
+    if (!s.lease) continue;
+    try {
+      fetch("/work/fail", { method: "POST", keepalive: true, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Worker": worker }, body: JSON.stringify({ worker, lease: s.lease, error: "the page was reloaded or closed", interrupted: true }) }).catch(() => {});
+    } catch {}
+  }
+  const notes = store.get("running", null);
+  if (notes && !Array.isArray(notes)) {
+    delete notes[tab];
+    store.set("running", notes);
+  }
+});
 
 function onSlot(s, m) {
   if (m.state) { s.detail = m.state; if (m.frac !== undefined) s.frac = m.frac; show(); }
