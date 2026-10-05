@@ -562,7 +562,10 @@ function eventText(m, e, k = 1) {
 const FILTERS = { all: () => true, problems: (e) => e.ok === false || e.kind === "lapse" || e.kind === "task-fail", publishing: (e) => e.kind === "catalog" || (e.kind === "end" && e.step === "catalog"), pauses: (e) => ["pause", "resume", "conditions", "agent"].includes(e.kind) };
 
 function feed(m, events, seen) {
-  const shown = events.filter(FILTERS[ui.feed] || FILTERS.all).filter((e) => !(e.kind === "start" && ui.feed === "all" && events.some((x) => x.kind === "end" && x.worker === e.worker && x.seq > e.seq)));
+  // (A job's start is shown only while it runs: once it's ended, its end says it all.)
+  const lastEnd = {};
+  for (const e of events) if (e.kind === "end") lastEnd[e.worker] = e.seq;
+  const shown = events.filter(FILTERS[ui.feed] || FILTERS.all).filter((e) => !(e.kind === "start" && (lastEnd[e.worker] ?? -1) > e.seq));
   // Newest first; a run of one worker's tasks together.
   const rows = [];
   for (let i = shown.length - 1; i >= 0; i--) {
