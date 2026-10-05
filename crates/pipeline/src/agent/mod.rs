@@ -199,7 +199,7 @@ fn read_costs(p: &Path) -> Vec<(String, crate::coord::Cost)> {
     s.lines()
         .filter_map(|l| {
             let v: serde_json::Value = serde_json::from_str(l).ok()?;
-            Some((v["unit"].as_str()?.to_string(), crate::coord::Cost { peak_mb: v["peak_mb"].as_u64()?, secs: v["secs"].as_u64().unwrap_or(0) }))
+            Some((v["unit"].as_str()?.to_string(), crate::coord::Cost { peak_mb: v["peak_mb"].as_u64()?, secs: v["secs"].as_u64().unwrap_or(0), worker: None }))
         })
         .collect()
 }
@@ -246,6 +246,15 @@ pub struct Status {
     /// (the build Mac's: crate::agent::forecast).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forecast: Option<forecast::Forecast>,
+    /// The last catalog the plan read: its number and when it went out (seconds since the epoch).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog: Option<CatalogSeen>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CatalogSeen {
+    pub n: u64,
+    pub at: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -468,7 +477,7 @@ pub struct Agent {
     /// Mac was last named the records' writer.
     claims_dropped: bool,
     writer_named: Option<Instant>,
-    /// What the last plan found waiting, the regions it read and the helpers it saw, and when: while
+    /// What the last plan found waiting and the regions it read, and when: while
     /// a job runs nothing new can start, so the plan (the manifest, the keys, a dozen NAS listings)
     /// is made again only every five minutes, for the status, and when the job ends.
     planned: Option<Planned>,
@@ -508,8 +517,10 @@ pub struct Agent {
     cache_size: std::sync::Arc<std::sync::Mutex<(Option<Instant>, Option<u64>)>>,
     /// The conditions the last loop saw: a change is noted in the history (crate::coord::history).
     last_cond: Option<Conditions>,
-    /// The last plan's forecast (crate::agent::forecast), for the status.
+    /// The last plan's forecast (crate::agent::forecast), and the last catalog it read, for the
+    /// status.
     forecast: std::cell::RefCell<Option<forecast::Forecast>>,
+    catalog_seen: std::cell::Cell<Option<CatalogSeen>>,
     /// The running job's time left as the status last worked it out (its pace), for the forecast.
     job_eta: Option<u64>,
 }
@@ -520,7 +531,6 @@ struct Planned {
     waiting: Vec<Waiting>,
     regions: Vec<recipes::Recipe>,
     bad: Vec<(String, String)>,
-    helpers: Vec<Status>,
 }
 
 impl Agent {
@@ -562,7 +572,7 @@ impl Agent {
         // The build's pause as this agent last knew it (a helper that can't reach the build Mac stays
         // as it was).
         let pause: Option<crate::control::Pause> = std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, lease: None, beaten: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, drain_since: None, mirrored: None, pause_pushed: false, orphan_done: None, cache_size: Default::default(), last_cond: None, forecast: Default::default(), job_eta: None })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, lease: None, beaten: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, drain_since: None, mirrored: None, pause_pushed: false, orphan_done: None, cache_size: Default::default(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), job_eta: None })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1279,13 +1289,13 @@ impl Agent {
                     Some(p) if !plan_due => p.regions.clone(),
                     _ => recipes::load(&root.join("inputs/regions")).0,
                 };
-                self.planned = Some(Planned { at: Instant::now(), waiting: waiting.clone(), regions, bad: Vec::new(), helpers: Vec::new() });
+                self.planned = Some(Planned { at: Instant::now(), waiting: waiting.clone(), regions, bad: Vec::new() });
                 plan
             }
             Some(root) if plan_due => {
                 let plan = self.plan(root, &c, &mut waiting);
                 let (regions, bad) = recipes::load(&root.join("inputs/regions"));
-                self.planned = Some(Planned { at: Instant::now(), waiting: waiting.clone(), regions, bad, helpers: helpers(root) });
+                self.planned = Some(Planned { at: Instant::now(), waiting: waiting.clone(), regions, bad });
                 plan
             }
             Some(_) => {
@@ -1446,7 +1456,11 @@ impl Agent {
         }
         let built = self.progress.as_ref().map(|(_, b, _)| b.clone()).unwrap_or_default();
         let mut checklist = self.progress.as_ref().map(|(_, _, c)| c.clone()).unwrap_or_default();
-        let helpers: Vec<Status> = if self.o.helper || root.is_none() { Vec::new() } else { self.planned.as_ref().map(|p| p.helpers.clone()).unwrap_or_default() };
+        // (Read each loop: a helper's status changes between plans.)
+        let helpers: Vec<Status> = match (&root, self.o.helper) {
+            (Some(r), false) => helpers(r),
+            _ => Vec::new(),
+        };
         annotate(&mut checklist, self.running.as_ref().and_then(|r| step_of(&r.spec.id)).as_deref(), &helpers, &waiting);
         // The running job's parts (the last it said), its progress, and from its pace the time it
         // has left.
@@ -1511,6 +1525,7 @@ impl Agent {
             pause: self.pause.clone(),
             resources: Some(self.resources(root.as_deref())),
             forecast: if self.o.helper { None } else { self.forecast.borrow().clone() },
+            catalog: self.catalog_seen.get(),
         };
         let body = serde_json::to_vec_pretty(&status)?;
         if self._lock.is_none() {
@@ -1590,10 +1605,10 @@ impl Agent {
         env.push((crate::control::CONTROL_ENV.into(), self.control_path().to_string_lossy().into_owned()));
         env.push((crate::control::DONE_ENV.into(), done.to_string_lossy().into_owned()));
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-        let (step, targets) = spec.record.as_ref().map_or((None, Vec::new()), |w| (Some(w.step.clone()), w.targets.iter().map(|t| t.0.clone()).collect()));
+        let (step, targets) = spec.record.as_ref().map_or((spec.id.split(' ').next().map(str::to_string), Vec::new()), |w| (Some(w.step.clone()), w.targets.iter().map(|t| t.0.clone()).collect()));
         let what = spec.what.clone();
         self.running = Some(Running::start(spec, threads, &env, log, &self.record_path(), Some(&done))?);
-        self.note(crate::coord::history::Event { worker: Some(self.host.clone()), step, targets, note: what, ..crate::coord::history::Event::new("start") });
+        self.note(crate::coord::history::Event { worker: Some(self.host.clone()), step, targets, what, ..crate::coord::history::Event::new("start") });
         Ok(())
     }
 
@@ -1608,8 +1623,10 @@ impl Agent {
     /// Notes the running job's end: its step, the targets it finished, its time, and how it ended
     /// (`how`: empty when it succeeded).
     fn note_end(&self, step: &str, done: &[(String, String)], secs: u64, ok: bool, how: &str) {
-        let step = (!step.is_empty()).then(|| step.to_string());
-        self.note(crate::coord::history::Event { worker: Some(self.host.clone()), step, targets: done.iter().map(|t| t.0.clone()).collect(), secs: Some(secs as f64), ok: Some(ok), note: how.to_string(), ..crate::coord::history::Event::new("end") });
+        // (A job with no record of its own, the pass's or the daily ones, by its id's first word.)
+        let (id, what) = self.running.as_ref().map_or((String::new(), String::new()), |r| (r.spec.id.clone(), r.spec.what.clone()));
+        let step = if step.is_empty() { id.split(' ').next().unwrap_or("").to_string() } else { step.to_string() };
+        self.note(crate::coord::history::Event { worker: Some(self.host.clone()), step: (!step.is_empty()).then_some(step), targets: done.iter().map(|t| t.0.clone()).collect(), secs: Some(secs as f64), ok: Some(ok), what, note: how.to_string(), ..crate::coord::history::Event::new("end") });
     }
 
     /// Notes the build Mac's conditions as they change (mains or battery, the NAS, home or away, a
@@ -1665,7 +1682,8 @@ impl Agent {
 
         // 1. The OSM pass, when the NAS holds a newer planet than the last complete pass.
         let have = crate::osmpass::latest_pass(root);
-        if let Ok(Some((planet, date))) = crate::osmpass::newer_planet(root, have.as_deref()) {
+        let newer = crate::osmpass::newer_planet(root, have.as_deref()).ok().flatten();
+        if let Some((planet, date)) = newer.clone() {
             let what = format!("Reading the OpenStreetMap planet of {date}");
             let scratch = self.o.home.join("scratch").join(format!("osm-{date}"));
             let jar = root.join("sources/basemap/planetiler.jar");
@@ -1712,7 +1730,7 @@ impl Agent {
         }
 
         // The regions: terrain and slope near the coverage, base(U), pack(T), lo, a catalog.
-        out.extend(self.region_work(root, have.as_deref(), waiting));
+        out.extend(self.region_work(root, have.as_deref(), newer.as_ref().map(|n| n.1.as_str()), waiting));
 
         // Daily: the user's folders backed up, replaced files removed.
         if self.due("backup", Duration::from_secs(86400)) {
@@ -1742,7 +1760,7 @@ impl Agent {
     /// worldwide jobs, each gated by its own inputs, then what `build::plan` finds stale (its
     /// chains), each step's targets in one run of `scenic-build`. The agent runs the first not
     /// waiting out a failure, so one failing job doesn't hold up the others.
-    fn region_work(&self, root: &Path, pass: Option<&str>, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
+    fn region_work(&self, root: &Path, pass: Option<&str>, newer: Option<&str>, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
         let (recipes, _) = recipes::load(&root.join("inputs/regions"));
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
         let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match crate::out::read_record(&root.join("state/build/manifest.json")).and_then(|m| Ok((m, self.planning_keys(root)?))) {
@@ -1914,8 +1932,16 @@ impl Agent {
         if let Some(c) = &self.coord {
             c.offer(date, offers);
         }
-        // The forecast of the work left (crate::agent::forecast): the build Mac's, for the status.
-        if !self.o.helper {
+        // The forecast of the work left (crate::agent::forecast): the build Mac's, for the status (made
+        // again at most each minute: idle, the plan's made each loop).
+        let stale = self.forecast.borrow().as_ref().is_none_or(|f| now_s().saturating_sub(f.at) >= 60);
+        if !self.o.helper && stale {
+            // (What can't be listed now: the regions' work after a new pass, or while the units wait.)
+            let blind = match newer {
+                Some(d) => Some(format!("a new OpenStreetMap pass (the planet of {d}) comes first; the regions' work is known once it's done")),
+                None if planned.regions.is_empty() => Some("the areas wait for the pass's heritage sites, reaches and roadside buildings; what the regions need is known once they're made".to_string()),
+                None => None,
+            };
             let z6: BTreeMap<String, usize> = build::coverage_tiles(cov).into_iter().map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len())).collect();
             let peak = |step: &str, t: &str| match step {
                 "unit" | "pois" => crate::coord::unit_peak(&BTreeMap::new(), t, size(t)),
@@ -1926,7 +1952,7 @@ impl Agent {
             before.extend(plan.iter().filter(|w| w.step == "heritage-sites").map(|w| job(format!("heritage-sites {date}"), "", "heritage-sites", Vec::new(), Some(w.clone()))));
             let chains = build::chains_left(cov, date, &manifest, &done, &inputs, reach.as_deref());
             // (A fault in it costs the status its forecast, never the agent.)
-            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.forecast_now(root, &before, &planned.regions, chains, since_publish, &peak)));
+            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.forecast_now(root, &before, &planned.regions, chains, since_publish, blind, &peak)));
             match made {
                 Ok(f) => *self.forecast.borrow_mut() = Some(f),
                 Err(_) => {
@@ -1977,33 +2003,43 @@ impl Agent {
 
     /// The forecast (crate::agent::forecast) of the work left: `before`, the build Mac's jobs before
     /// the regions'; `regions`, the plan's; `chains`, the roads', trains' and landmarks' work to come
-    /// (build::chains_left); each target's time and memory as last measured, else its step's mean or
-    /// a first guess (`first_secs`; `peak` for its memory); the helpers at their measured speed.
-    fn forecast_now(&self, root: &Path, before: &[JobSpec], regions: &[build::RegionLeft], chains: [Vec<build::Work>; 3], since_publish: Option<u64>, peak: &dyn Fn(&str, &str) -> u64) -> forecast::Forecast {
+    /// (build::chains_left); `blind`, why the work can't all be listed now. Each target's time (at
+    /// the build Mac's pace: a time measured on a helper over its speed) and memory as last measured,
+    /// else its step's mean or a first guess (`first_secs`; `peak` for its memory); the helpers at
+    /// their measured speed; each machine free once its job under way is done.
+    #[allow(clippy::too_many_arguments)]
+    fn forecast_now(&self, root: &Path, before: &[JobSpec], regions: &[build::RegionLeft], chains: [Vec<build::Work>; 3], since_publish: Option<u64>, blind: Option<String>, peak: &dyn Fn(&str, &str) -> u64) -> forecast::Forecast {
         use forecast::{Cost, Machine};
         let (costs, leased, events, mem) = match &self.coord {
             Some(c) => c.for_forecast(),
             None => Default::default(),
         };
+        // The helpers heard from lately, each at its speed against the build Mac's, from the history
+        // (half until it's measured).
+        let helpers: Vec<Status> = helpers(root);
+        let names: Vec<String> = helpers.iter().map(|h| h.host.clone()).collect();
+        let speeds = forecast::speeds(&events, &self.host, &names, 0.5);
+        // (A time measured on a helper, at the build Mac's pace; one measured here or by a page, as it is.)
+        let pace = |worker: Option<&String>| worker.and_then(|w| speeds.get(w)).map_or(1.0, |s| s.0);
         // Each shared step's mean of the targets measured (a unit's are kept by its target alone);
         // else what its jobs here took a target; else a first guess.
         let mut sums: BTreeMap<String, (f64, usize)> = BTreeMap::new();
         for (k, c) in &costs {
             let step = k.split_once(' ').map_or("unit", |(s, _)| s);
             let e = sums.entry(step.to_string()).or_default();
-            (e.0, e.1) = (e.0 + c.secs as f64, e.1 + 1);
+            (e.0, e.1) = (e.0 + c.secs as f64 * pace(c.worker.as_ref()), e.1 + 1);
         }
-        let per = |step: &str| -> (f64, bool) {
+        let per = |step: &str| -> f64 {
             match (sums.get(step).filter(|s| s.1 > 0), self.mem.step_secs.get(step)) {
-                (Some(s), _) => (s.0 / s.1 as f64, false),
-                (None, Some(&t)) => (t, false),
-                (None, None) => (first_secs(step), false),
+                (Some(s), _) => s.0 / s.1 as f64,
+                (None, Some(&t)) => t,
+                (None, None) => first_secs(step),
             }
         };
         let cost = |step: &str, t: &str| -> Cost {
             match costs.get(&crate::coord::cost_key(step, t)) {
-                Some(c) => Cost { secs: c.secs as f64, known: true, peak_mb: c.peak_mb },
-                None => Cost { secs: per(step).0, known: false, peak_mb: peak(step, t) },
+                Some(c) => Cost { secs: c.secs as f64 * pace(c.worker.as_ref()), known: true, peak_mb: c.peak_mb },
+                None => Cost { secs: per(step), known: false, peak_mb: peak(step, t) },
             }
         };
         // The build Mac's own steps: what a target took here lately (measured), else a first guess.
@@ -2012,14 +2048,17 @@ impl Agent {
             Cost { secs: each * n.max(1) as f64, known, peak_mb: 0 }
         };
         let step_of = |id: &str| id.split(' ').next().unwrap_or("").to_string();
-        let before: Vec<forecast::Job> = before.iter().map(|j| (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))).collect();
+        // (Not the one running now: its time left is the build Mac's.)
+        let running_id = self.running.as_ref().map(|r| r.spec.id.clone());
+        let before: Vec<forecast::Job> = before.iter().filter(|j| Some(&j.id) != running_id.as_ref()).map(|j| (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))).collect();
         // A round: as the last ones took (their chains' jobs and catalog), else the chain's steps'
-        // times; the last round, the roads' chain as it stands now, if more.
+        // times; the last round, the roads' chain as it stands now, if more (none when it's done).
         let [roads, rail, landmarks] = chains;
         let chain_s = |works: &[build::Work]| -> f64 { works.iter().map(|w| if claims::SHARED.contains(&w.step.as_str()) { w.targets.iter().map(|t| cost(&w.step, &t.0).secs).sum() } else { mine(&w.step, w.targets.len()).secs }).sum() };
         let round_s = forecast::round_secs(&events).unwrap_or_else(|| ["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "catalog"].iter().map(|s| mine(s, 1).secs).sum::<f64>() + mine("pack", 8).secs + mine("lo", 2).secs);
+        let last_round_s = if roads.is_empty() { 0.0 } else { round_s.max(chain_s(&roads)) };
         let mut after: Vec<forecast::Job> = Vec::new();
-        for (chain, catalog) in [(&rail, true), (&landmarks, true)] {
+        for chain in [&rail, &landmarks] {
             for w in chain.iter() {
                 if claims::SHARED.contains(&w.step.as_str()) {
                     after.extend(w.targets.iter().map(|t| (w.step.clone(), t.0.clone(), cost(&w.step, &t.0))));
@@ -2027,35 +2066,46 @@ impl Agent {
                     after.push((w.step.clone(), w.targets.first().map(|t| t.0.clone()).unwrap_or_default(), mine(&w.step, w.targets.len())));
                 }
             }
-            if catalog && !chain.is_empty() {
+            // (A catalog after each chain.)
+            if !chain.is_empty() {
                 after.push(("catalog".into(), format!("after {}", chain[0].step), mine("catalog", 1)));
             }
         }
-        // The build Mac, then each helper heard from lately at its measured speed (half the build
-        // Mac's until it's measured), each free once its job under way is done.
-        let busy = |r: Option<&Running>, eta: Option<u64>| -> f64 {
-            r.map_or(0.0, |r| eta.map_or_else(|| r.spec.record.as_ref().map_or(600.0, |w| w.targets.iter().map(|t| cost(&w.step, &t.0).secs).sum::<f64>() - r.elapsed().as_secs_f64()).max(60.0), |e| e as f64))
-        };
-        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, helper: false, mem_mb: u64::MAX, busy_s: busy(self.running.as_ref(), self.job_eta) }];
-        let helpers: Vec<Status> = helpers(root);
-        let names: Vec<String> = helpers.iter().map(|h| h.host.clone()).collect();
-        let speeds = forecast::speeds(&events, &self.host, &names, 0.5);
+        // The build Mac's job's time left: its pace says only its part's; its targets not yet done,
+        // as they took last time, less what it spent on the one under way, if longer.
+        let busy_here = self.running.as_ref().map_or(0.0, |r| {
+            let left = r.spec.record.as_ref().map(|w| {
+                let done = crate::control::read_done(&self.done_path(), &w.step);
+                let (mut todo, mut did) = (0.0, 0.0);
+                for (t, _) in &w.targets {
+                    let c = cost(&w.step, t).secs;
+                    if done.contains(t) { did += c } else { todo += c }
+                }
+                todo - (r.elapsed().as_secs_f64() - did).max(0.0)
+            });
+            self.job_eta.map(|e| e as f64).into_iter().chain(left).fold(60.0, f64::max)
+        });
+        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, mem_mb: u64::MAX, busy_s: busy_here }];
         for h in &helpers {
-            let eta = h.job.as_ref().map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64).unwrap_or(0.0);
-            machines.push(Machine { name: h.host.clone(), speed: speeds.get(&h.host).copied().unwrap_or(0.5), helper: true, mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144), busy_s: eta });
+            let (speed, measured) = speeds.get(&h.host).copied().unwrap_or((0.5, false));
+            // (Its lease's targets at its pace, less the time since it took them, if longer than its
+            // part's.)
+            let lease_left = leased.iter().filter(|l| l.0 == h.host).map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64).fold(0.0, f64::max);
+            let eta = h.job.as_ref().map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64);
+            let busy_s = eta.map_or(0.0, |e| e.max(lease_left).max(60.0));
+            machines.push(Machine { name: h.host.clone(), speed, measured, helper: true, mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144), busy_s });
         }
         // What's being built now, and by which.
         let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();
         if let Some(w) = self.running.as_ref().and_then(|r| r.spec.record.as_ref()) {
             running.extend(w.targets.iter().map(|t| ((w.step.clone(), t.0.clone()), 0)));
         }
-        for (worker, step, targets) in leased {
+        for (worker, step, targets, _) in leased {
             if let Some(m) = machines.iter().position(|m| m.name == worker && m.helper) {
                 running.extend(targets.into_iter().map(|t| ((step.clone(), t), m)));
             }
         }
-        let last_round_s = round_s.max(chain_s(&roads));
-        forecast::forecast(&forecast::Input { now: now_s(), before, regions, cost: &cost, round_s, last_round_s, after, since_publish, machines, running })
+        forecast::forecast(&forecast::Input { now: now_s(), before, regions, cost: &cost, round_s, last_round_s, blind, after, since_publish, machines, running })
     }
 
     /// The build to the end (the status's checklist): the OSM pass (its stages, from the markers its
@@ -2180,6 +2230,8 @@ impl Agent {
                 *cached = Some(((dir.to_path_buf(), n), regions));
             }
             at = Some(t);
+            let unix = t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            self.catalog_seen.set(Some(CatalogSeen { n, at: unix }));
             break;
         }
         // How long ago the last catalog went out, or one last started (it may have failed): a

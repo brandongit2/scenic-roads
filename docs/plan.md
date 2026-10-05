@@ -1121,28 +1121,39 @@ are no request files.
 - **The heartbeat's resources:** each Mac's memory and the share free, its cores and load, its disk's
   free space and the caches it may drop (counted every ten minutes on a thread of its own), how
   long the NAS took to answer and the NAS's free space.
-- **The forecast** (`agent::forecast`), made with each plan and in the heartbeat: the work left run
-  through in the order the agent runs it. The build Mac takes the first it can (the pass's
-  worldwide jobs, then a region at a time: its terrain, then its units), each helper the far end of
-  the first shared step with work it can do that fits its memory (a unit once its region's terrain
-  is built, slope once its area's terrain is). A round goes out as the plan makes one: a region done
-  that the map hasn't, at most hourly (its slope and tree cover, then the round's chain, as long as
-  the last rounds took); after the last unit and terrain area, the slope and tree cover left, the
-  last round (the roads' chain as it stands, if longer), the trains' and the landmarks' chains.
-  Each target takes its last run's time (else its step's mean, else what its jobs took here a
-  target, else a first guess), at its machine's measured pace (a helper's: the build Mac's mean
-  time a target over its own, for the shared steps both did, from the history; half until
-  measured), each machine free once its job under way is done. Run three times: as estimated, and
-  for a range, the measured times a little off and the guessed much more. It says when each step,
-  each region and everything will be done, when each region reaches the map, the rounds to come,
-  what each machine does next and its schedule to the end, and how much of the time was measured.
+- **The forecast** (`agent::forecast`), made with each plan (at most each minute) and in the
+  heartbeat: the work left run through in the order the agent runs it. The build Mac takes the first
+  it can (the pass's worldwide jobs, then a region at a time: its terrain, then its units), each
+  helper the far end of the first shared step with work it can do that fits its memory: terrain at
+  once, a unit once its region's terrain is built and the pass's heritage sites, reaches and
+  roadside buildings are made (as the plan's units wait for), slope once its area's terrain is. A
+  machine with nothing it can do waits for the next work to end or another machine to be free. A
+  round goes out as the plan makes one: a region done that the map hasn't as it is now (one on it
+  that's rebuilt goes out again), at most hourly (its slope and tree cover, then the round's chain,
+  as long as the last rounds took); after the last unit and terrain area, the slope and tree cover
+  left, the last round (the roads' chain as it stands, if longer; none when nothing's stale and no
+  region waits to go out), the trains' and the landmarks' chains. Each target takes its last run's
+  time at the build Mac's pace (one measured on a helper, over the helper's speed), else its step's
+  mean, else what its jobs took here a target, else a first guess; each machine at its measured
+  speed (a helper's: the build Mac's mean time a target over its own, for the shared steps both
+  did, from the history; half until measured, said as a guess); each free once its job under way
+  is done (its targets not yet done as they took last time, less what it's spent on the one under
+  way, if longer than its part's pace says; a helper's lease likewise). Run three times: as
+  estimated, and for a range, the measured times a little off and the guessed much more. It says
+  when each step, each region and everything will be done, when each region reaches the map, the
+  rounds to come, what each machine does next (not what it's on) and its schedule to the end, and
+  how much of the time was measured. No finish when nothing's left, when a new pass comes first,
+  or while the units wait for the pass's heritage sites, reaches or buildings (the regions' work
+  can't be listed): why instead.
 - **The history** (`coord::history`): the coordinator keeps what happened, the last week's, on the
   build Mac's disk (`coord/history.jsonl`, a line an event, numbered): each job the build Mac
-  started and ended (what it finished, how long, how it ended), each lease a worker took, handed
+  started and ended (what it does, what it finished, how long, how it ended), each lease a worker took, handed
   back, failed or let lapse, each task done or failed, the catalogs (the regions they added), the
   pauses, the workers first heard from, the agents started and the build Mac's conditions changing
-  (mains or battery, the NAS, home or away, a sleep). Summed by the hour for the worker page, and
-  the forecast's measure of the helpers' pace and of a round's time.
+  (mains or battery, the NAS, home or away, a sleep). Summed by the hour for the worker page (a job
+  whose end went unsaid, its agent stopped, counted to the next agent's start), and the forecast's
+  measure of the helpers' pace and of a round's time. Each cost the coordinator keeps says which
+  worker measured it.
 
 **Two Macs** (and any other worker: `docs/workers.md`). The build Mac's agent plans; it runs a
 coordinator (`pipeline::coord`, port 8090) from which every other worker asks for work that fits it.

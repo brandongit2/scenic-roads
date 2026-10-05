@@ -151,6 +151,7 @@ button:disabled { opacity: .5; }
 /* Details: tables, folded. */
 details.more-box > summary { cursor: pointer; color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; list-style: none; }
 details.more-box > summary::before { content: "▸ "; } details.more-box[open] > summary::before { content: "▾ "; }
+.twrap { overflow-x: auto; }
 table.t { width: 100%; border-collapse: collapse; font-size: 11.5px; margin: 6px 0 10px; }
 table.t th { text-align: left; color: var(--dim); font-weight: 500; padding: 3px 6px; border-bottom: 1px solid var(--line); }
 table.t td { padding: 3px 6px; border-bottom: 1px solid #1d2228; vertical-align: top; }

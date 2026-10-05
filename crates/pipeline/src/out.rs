@@ -120,9 +120,9 @@ impl Out {
         Ok(name)
     }
 
-    /// `put_file`, saying how far it is to `on` about once a second, as (bytes, total): it reads
-    /// the file thrice (its name's hash, its checksum, the copy) and the copy once more on the NAS,
-    /// for a large file most of a step's time.
+    /// `put_file`, saying how far it is to `on` about once a second, as (bytes, total): it reads the
+    /// file four times (its name's hash, twice; its checksum; the copy) and the copy once more on the
+    /// NAS, for a large file most of a step's time.
     pub fn put_file_with(&mut self, logical: &str, ext: &str, local: &Path, on: &(dyn Fn(u64, u64) + Sync)) -> Result<String> {
         let total = 5 * std::fs::metadata(local)?.len();
         let start = store::naming::moved();

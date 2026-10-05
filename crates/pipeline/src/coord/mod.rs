@@ -55,11 +55,13 @@ pub fn contact_path(root: &Path) -> PathBuf {
 }
 
 /// What a job's target cost last time (a unit's, another shared step's, a task's): its peak memory
-/// (MB) and its wall time.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+/// (MB) and its wall time, and the worker it was measured on (None: the build Mac, or not said).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cost {
     pub peak_mb: u64,
     pub secs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker: Option<String>,
 }
 
 /// A unit's predicted peak memory (MB): what it took last time, else about ten times its piece (the
@@ -534,13 +536,13 @@ impl Coordinator {
         }
     }
 
-    /// What this Mac's job's units cost.
+    /// What this Mac's job's units cost (measured here).
     pub fn add_costs(&self, costs: &[(String, Cost)]) {
         if costs.is_empty() {
             return;
         }
         let mut s = self.shared.lock().unwrap();
-        s.costs.extend(costs.iter().cloned());
+        s.costs.extend(costs.iter().cloned().map(|(u, c)| (u, Cost { worker: Some(self.me.clone()), ..c })));
         s.save_costs();
     }
 
@@ -551,15 +553,16 @@ impl Coordinator {
 
     /// What the forecast reads (crate::agent::forecast): what each target cost, the jobs leased now
     /// (worker, step, targets), the history kept, and the memory each worker spares (MB).
-    pub fn for_forecast(&self) -> (BTreeMap<String, Cost>, Vec<(String, String, Vec<String>)>, Vec<history::Event>, BTreeMap<String, u64>) {
+    pub fn for_forecast(&self) -> (BTreeMap<String, Cost>, Vec<(String, String, Vec<String>, u64)>, Vec<history::Event>, BTreeMap<String, u64>) {
         let s = self.shared.lock().unwrap();
         let now = Instant::now();
+        // (Each with how long ago it was granted.)
         let leased = s
             .leases
             .all(now)
             .iter()
             .filter_map(|l| match &l.work {
-                Work::Job { step, targets } => Some((l.worker.clone(), step.clone(), targets.iter().map(|t| t.0.clone()).collect())),
+                Work::Job { step, targets } => Some((l.worker.clone(), step.clone(), targets.iter().map(|t| t.0.clone()).collect(), now.duration_since(l.granted).as_secs())),
                 Work::Task { .. } => None,
             })
             .collect();
@@ -786,9 +789,19 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             // A Mac's ask (its menu, `scenic pause`, the map), passed on by its agent: the build paused
             // or going on, for every worker.
             let b: serde_json::Value = serde_json::from_slice(body)?;
-            let pause: Option<crate::control::Pause> = serde_json::from_value(b["pause"].clone())?;
-            // (When it was asked: an older helper's ask, without, as now.)
-            let at = b["at"].as_u64().unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()));
+            let mut pause: Option<crate::control::Pause> = serde_json::from_value(b["pause"].clone())?;
+            // (When it was asked: an agent says, by its Mac's clock; a page or an older helper doesn't,
+            // and it's now, by this Mac's: a browser's clock isn't to be trusted with the order.)
+            let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let at = match b["at"].as_u64() {
+                Some(at) => at,
+                None => {
+                    if let Some(p) = pause.as_mut() {
+                        p.at = unix;
+                    }
+                    unix
+                }
+            };
             set_pause(&mut shared.lock().unwrap(), pause, at);
             Ok((200, ok))
         }
@@ -846,7 +859,8 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                         return Err(e.context("journal the hand-off"));
                     }
                     s = shared.lock().unwrap();
-                    s.costs.extend(d.costs.into_iter().filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0))));
+                    let by = d.worker.clone();
+                    s.costs.extend(d.costs.into_iter().filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0))).map(|(u, c)| (u, Cost { worker: Some(by.clone()), ..c })));
                     s.save_leases();
                     s.save_costs();
                     let secs = now.duration_since(l.granted).as_secs_f64();
@@ -859,7 +873,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                     };
                     // What its unit's task takes, for the next time it's offered.
                     if let Some(u) = &unit {
-                        s.costs.insert(format!("tail {u}"), Cost { peak_mb: d.peak_mb, secs: d.secs as u64 });
+                        s.costs.insert(format!("tail {u}"), Cost { peak_mb: d.peak_mb, secs: d.secs as u64, worker: Some(d.worker.clone()) });
                         s.save_costs();
                     }
                     s.leases.finish(d.lease, &d.worker, now);
@@ -921,9 +935,8 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
         "/work/swarm" => {
             // The whole build at a glance, for the worker page: the build Mac's heartbeat (its
             // agent's status, written each loop beside this folder: its job, the checklist to the
-            // end, the regions, its helpers), the leases and workers, and what's left of each shared
-            // step with about how long it takes (each target's last run, else the step's mean of
-            // those known, else a first guess).
+            // end, the forecast, the regions, its helpers), the leases, the workers, the tasks and
+            // the history's hours.
             let s = shared.lock().unwrap();
             let agent: serde_json::Value = s.dir.parent().and_then(|h| std::fs::read(h.join("status.json")).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(serde_json::Value::Null);
             // Each lease: whose, what (its step and targets), for how long, what it last said and how
@@ -961,29 +974,10 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                 };
                 *tasks.entry(st).or_default() += 1;
             }
-            let first_guess = |step: &str| match step {
-                "terrain" => 900,
-                "slope" => 400,
-                "trees" => 600,
-                "unit" => 400,
-                "pois" => 100,
-                "peaks" => 170,
-                _ => 300,
-            };
-            let work: Vec<serde_json::Value> = s
-                .offers
-                .iter()
-                .map(|o| {
-                    let known: Vec<u64> = o.targets.iter().filter_map(|(t, _, _)| s.costs.get(&cost_key(&o.step, t)).map(|c| c.secs)).collect();
-                    let mean = if known.is_empty() { first_guess(&o.step) } else { known.iter().sum::<u64>() / known.len() as u64 };
-                    let est: u64 = o.targets.iter().map(|(t, _, _)| s.costs.get(&cost_key(&o.step, t)).map_or(mean, |c| c.secs)).sum();
-                    serde_json::json!({ "step": o.step, "left": o.targets.len(), "known": known.len(), "est_s": est })
-                })
-                .collect();
             let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             // The history's last number (the page asks `/work/history` for what's after the one it
             // has) and the last day by the hour.
-            Ok((200, serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "work": work, "tasks": tasks, "seq": s.history.seq(), "rates": s.history.rates(unix, 24) })))
+            Ok((200, serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "tasks": tasks, "seq": s.history.seq(), "rates": s.history.rates(unix, 24) })))
         }
         "/work/history" => {
             // What happened after event `since` (the oldest first, at most `max`, 500 by default).
@@ -1411,7 +1405,7 @@ mod tests {
         let units: Vec<(String, String, u64)> = (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
         c.offer_units("2026-09-28", units);
         // A worker that spares 4 GB takes two areas (the third too big), hands one back.
-        c.shared.lock().unwrap().costs.insert("6/1/1".into(), Cost { peak_mb: 9000, secs: 60 });
+        c.shared.lock().unwrap().costs.insert("6/1/1".into(), Cost { peak_mb: 9000, secs: 60, worker: None });
         let g = w.ask(&Ask { max: 2, ..ask(4096) }).unwrap().unwrap();
         let Granted::Job { targets, .. } = &g.work else { panic!("a job") };
         let one: Vec<(&str, &str)> = targets.iter().take(1).map(|(t, k)| (t.as_str(), k.as_str())).collect();
@@ -1482,7 +1476,7 @@ mod tests {
 
     #[test]
     fn candidates_are_expected_to_take_what_their_unit_did() {
-        let cost = |mb: u64| Cost { peak_mb: mb, secs: 1 };
+        let cost = |mb: u64| Cost { peak_mb: mb, secs: 1, worker: None };
         let mut costs = BTreeMap::new();
         // Before either ran: as a unit on its piece would (ten times it, at least 3.7 GB).
         assert_eq!(job_peak(&costs, "pois", "6/1/1", 500 << 20), 5000);
@@ -1547,7 +1541,7 @@ mod tests {
         assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "pois 6/1/1");
         assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "none");
         // Terrain once a run said it fits.
-        c.add_costs(&[(cost_key("terrain", "3/1/2"), Cost { peak_mb: 3500, secs: 1 })]);
+        c.add_costs(&[(cost_key("terrain", "3/1/2"), Cost { peak_mb: 3500, secs: 1, worker: None })]);
         assert_eq!(next(&["terrain"]), "terrain 3/1/2");
         // A worker that can't do a step gets none of it.
         c.offer("p", vec![o("trees", &[("3/1/1", 1000)], 1)]);
@@ -1617,7 +1611,7 @@ mod tests {
         assert!(kept[0].0.parent().unwrap().ends_with(crate::handoff::RAW_AGAIN) && kept[0].1.done.is_none() && kept[0].1.changes.is_empty());
         assert_eq!(kept[0].1.raw.iter().map(|r| r.1.name.as_str()).collect::<Vec<_>>(), ["6-1-1.0123456789abcdef.tiles"]);
         std::fs::remove_file(&kept[0].0).unwrap();
-        assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])), costs: vec![("6/1/3".into(), Cost { peak_mb: 2000, secs: 300 })], ..Default::default() }).unwrap(), client::Handed::Taken);
+        assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])), costs: vec![("6/1/3".into(), Cost { peak_mb: 2000, secs: 300, worker: None })], ..Default::default() }).unwrap(), client::Handed::Taken);
         let waiting = crate::handoff::waiting_in(&c.journal()).unwrap();
         assert_eq!(waiting.len(), 1);
         assert!(waiting[0].1.done.is_some() && waiting[0].1.changes.contains_key("base/6-1-3"));

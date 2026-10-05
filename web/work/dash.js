@@ -90,31 +90,15 @@ function model(sw) {
   helpers.forEach((x, i) => macs.push({ name: x.host, role: "helper", status: x, fresh: fresh(x.beat), worker: (sw.workers || []).find((w) => w.name === x.host), colour: MACHINE_COLOURS[(i + 1) % MACHINE_COLOURS.length] }));
   const colourOf = (name) => macs.find((m) => m.name === name)?.colour || (pages.some((p) => p.name === name) ? "#6cc28a" : "#7b8590");
   const tasks = typeof sw.tasks === "object" && sw.tasks ? sw.tasks : { all: sw.tasks || 0 };
-  return { sw, a, now, fresh, fc, regionName, helpers, pages, macs, leasesOf, colourOf, tasks, steps: a.checklist || [] };
+  // (A helper Mac that's stopped reporting (its status ten minutes old): the coordinator's word of
+  // it, when it last asked.)
+  const gone = (sw.workers || []).filter((w) => w.kind === "native" && w.name !== a.host && !helpers.some((x) => x.host === w.name));
+  return { sw, a, now, fresh, fc, regionName, helpers, pages, macs, gone, leasesOf, colourOf, tasks, steps: a.checklist || [] };
 }
 
 // A checklist line's state.
 const finished = (st) => (st.left != null ? st.left === 0 : st.total != null && st.done >= st.total && st.total > 0);
 const stepOf = (id) => String(id || "").split(" ")[0];
-
-// The share of the build's work done: each checklist line's targets done, at its step's time a target
-// (the forecast's, else a first guess), against what's left (the forecast's work).
-const GUESS = { terrain: 900, slope: 400, trees: 600, unit: 400, pack: 35, lo: 25 };
-function shareDone(m) {
-  if (!m.fc) return null;
-  const per = (step) => {
-    const f = m.fc.steps.find((s) => s.step === step);
-    return f && f.left ? f.work_s / f.left : GUESS[step] || 60;
-  };
-  let doneS = 0;
-  for (const st of m.steps) {
-    if (st.total == null || !st.done) continue;
-    const ss = st.steps || [];
-    doneS += st.done * (ss.reduce((t, s) => t + per(s), 0) / Math.max(1, ss.length));
-  }
-  const leftS = m.fc.steps.reduce((t, s) => t + s.work_s, 0);
-  return doneS + leftS > 0 ? doneS / (doneS + leftS) : 1;
-}
 
 // ---- The verdict --------------------------------------------------------------------------------
 function machineState(st, fresh, paused) {
@@ -132,6 +116,7 @@ function alerts(m) {
   const { a, now } = m;
   if (!a.host) return [{ cls: "bad", text: "No word from the build Mac yet", to: "machines" }];
   if (!m.fresh(a.beat)) out.push({ cls: "bad", text: `Build Mac out of touch for ${dur(now - a.beat)}`, to: "machines" });
+  for (const w of m.gone) if (w.seen_s < 86400) out.push({ cls: "warn", text: w.seen_s < 360 ? `${w.name}'s status is old (can it reach the NAS?)` : `${w.name} out of touch for ${dur(w.seen_s)}`, to: "machines" });
   for (const x of m.macs) {
     const st = x.status, r = st.resources || {}, c = st.conditions || {};
     const short = x.role === "build Mac" ? "Build Mac" : x.name;
@@ -165,7 +150,7 @@ function verdictText(m) {
   if (!a.host) return [h("b", null, "No word from the build Mac yet.")];
   if (sw.pause) {
     const stopping = m.macs.filter((x) => x.status.job?.pausing).length;
-    parts.push(h("b", null, "Paused"), ` by ${sw.pause.by}, ${ago(now, sw.pause.at)}`);
+    parts.push(h("b", null, "Paused"), ` by ${sw.pause.by}${sw.pause.at ? `, ${ago(now, sw.pause.at)}` : ""}`);
     parts.push(sw.pause.mode === "freeze" ? " · every job frozen where it was" : stopping ? ` · ${plural(stopping, "job")} finishing what ${stopping === 1 ? "it's" : "they're"} on` : " · nothing running");
   } else if (!m.fresh(a.beat)) {
     parts.push(h("b", null, "Out of touch"), ` · the build Mac last said something ${ago(now, a.beat)} (asleep, off, or its agent stopped)`);
@@ -176,7 +161,7 @@ function verdictText(m) {
   if (fc?.done_at) {
     const r = fc.range;
     parts.push(" · done ≈ ", h("b", null, clock(fc.done_at)), r ? ` (${clock(r[0])}–${clock(r[1])})` : "");
-  } else if (fc && !fc.done_at) parts.push(" · no finish in sight: there's work no machine can do");
+  } else if (fc?.why) parts.push(` · ${fc.why}`);
   const next = fc?.rounds?.find((r) => r.regions.length);
   if (next) {
     const names = next.regions.slice(0, 2).map((id) => m.regionName[id] || id).join(", ");
@@ -188,14 +173,14 @@ function verdictText(m) {
 // ---- The overview -------------------------------------------------------------------------------
 function overview(m) {
   const { a, fc, now, steps } = m;
-  const share = shareDone(m);
+  // (The areas: the bulk of the work, and a share that means the same at any moment.)
   const unitsLine = steps.find((st) => (st.steps || []).includes("unit"));
-  const big = share != null ? `${Math.floor(share * 100)}%` : unitsLine?.total ? `${Math.floor((unitsLine.done / unitsLine.total) * 100)}%` : "–";
+  const big = unitsLine?.total ? `${Math.floor((unitsLine.done / unitsLine.total) * 100)}%` : "–";
   const workLeft = fc ? fc.steps.reduce((t, s) => t + s.work_s, 0) : 0;
   const left = h("div", null,
-    h("div", "big", big, h("small", null, share != null ? " of the work done" : unitsLine?.total ? " of the areas built" : "")),
-    h("div", "small dim", fc ? `${dur(workLeft)} of work left at the build Mac's pace; ${fc.done_at ? `with every machine, done ≈ ${clock(fc.done_at)}, if the Macs keep going (awake, on mains or above 30%, reaching the NAS)` : "no finish in sight"}` : "No forecast yet (the build Mac makes one with each plan)"),
-    fc ? h("div", "small dim", `${Math.round((fc.measured || 0) * 100)}% of that time measured, the rest estimated · forecast ${ago(now, fc.at)}`) : null,
+    h("div", "big", big, h("small", null, unitsLine?.total ? ` of the areas built (${n(unitsLine.done)} of ${n(unitsLine.total)})` : "")),
+    h("div", "small dim", !fc ? "No forecast yet (the build Mac makes one with each plan)" : fc.done_at ? `${dur(workLeft)} of work left at the build Mac's pace; with every machine, done ≈ ${clock(fc.done_at)}, if the Macs keep going (awake, on mains or above 30%, reaching the NAS)` : `No finish to forecast: ${fc.why || "unknown"}`),
+    fc?.done_at ? h("div", "small dim", `${Math.round((fc.measured || 0) * 100)}% of that time measured, the rest estimated · forecast ${ago(now, fc.at)}`) : null,
   );
   // The steps as a strip, the one under way outlined.
   const nowStep = stepOf(a.job?.id);
@@ -215,7 +200,7 @@ function overview(m) {
   const onMap = regs.filter((r) => r.on_map === true && !Object.keys(r.left).length).length;
   const asWas = regs.filter((r) => r.on_map === false || (r.on_map === true && Object.keys(r.left).length)).length;
   const readyNow = regs.filter((r) => !Object.keys(r.left).length && r.on_map !== true).length;
-  const lastCat = (a.recent || []).find((d) => stepOf(d.id) === "catalog" && d.ok);
+  const lastAt = lastUpdate(m);
   const nextRound = fc?.rounds?.[0];
   const busy = m.macs.filter((x) => x.fresh && x.status.job).length;
   const kpis = h("div", "kpis",
@@ -224,7 +209,7 @@ function overview(m) {
     kpi("Terrain · slope", `${frac(line("terrain"))} · ${frac(line("slope"))}`),
     kpi("Tree cover", frac(line("trees"))),
     kpi("Map tiles", frac(line("pack"))),
-    kpi("Map last updated", lastCat ? ago(now, lastCat.ended) : "–", nextRound ? `next ≈ ${clock(nextRound.at)}` : null),
+    kpi("Map last updated", lastAt ? ago(now, lastAt) : "–", nextRound ? `next ≈ ${clock(nextRound.at)}` : null),
     kpi("Machines", `${busy} of ${m.macs.length} Macs working`, m.pages.length ? `and ${plural(m.pages.length, "page")}` : null),
   );
   return h("div", "overview", h("div", "box", left, strip, stepsLine), kpis);
@@ -263,7 +248,7 @@ function jobBlock(j, now) {
 }
 
 function nextBlock(m, name) {
-  const next = (m.fc?.next?.[name] || []).filter((x) => x.from > m.now - 60);
+  const next = (m.fc?.next?.[name] || []).filter((x) => x.until > m.now);
   if (!next.length) return null;
   const say = (x) => `${stepName(x.step)}: ${targets(x.step, x.targets.length)} (${clock(x.from)}–${clock(x.until)})`;
   return h("div", "next", h("b", null, "Next: "), next.slice(0, 3).map(say).join(" · then "));
@@ -280,7 +265,7 @@ function facts(st, x, m) {
   out.push(chip(c.idle_s != null && c.idle_s < 300 ? "in use (half the cores)" : "not in use", "", "While someone uses the Mac, its jobs get half its cores"));
   if (st.app) out.push(chip(`app ${st.app}`, x.role !== "build Mac" && m.a.app && st.app !== m.a.app ? "warn" : ""));
   const sp = m.fc?.speed?.[x.name];
-  if (sp != null && x.role !== "build Mac") out.push(chip(`${Math.round(sp * 100)}% of the build Mac's pace`));
+  if (sp != null && x.role !== "build Mac") out.push(chip(`${Math.round(sp * 100)}% of the build Mac's pace${(m.fc.guessed || []).includes(x.name) ? " (a guess until measured)" : ""}`));
   return h("div", "facts", out);
 }
 
@@ -328,6 +313,15 @@ function machineCard(m, x) {
   const more = [nextBlock(m, x.name), x.role === "helper" ? fitText(x.worker) : null, facts(st, x, m), ...(spark(m, x.name) || [])];
   card.append(...more.filter(Boolean));
   return card;
+}
+
+function goneCard(w) {
+  // (Still asking the coordinator, its own status not written lately: the NAS, likely.)
+  const asking = w.seen_s < 360;
+  return h("div", { class: "mc off", style: { borderLeft: "3px solid #7b8590" } },
+    h("div", "top", h("span", "name", w.name), h("span", "role", "helper"), asking ? chip("no status lately", "warn") : chip("out of touch", "bad"), h("span", "right", `last heard ${dur(w.seen_s)} ago`)),
+    h("div", "sub", `Its last word: ${w.what || "–"}`),
+    h("div", "sub", asking ? "It asks the build Mac for work, but its status on the NAS hasn't been written for ten minutes (can it reach the NAS?)." : "Asleep, off, or its agent stopped; its work goes back to the others once its lease lapses."));
 }
 
 function pagesCard(m) {
@@ -382,13 +376,15 @@ function schedule(m) {
     }
     lanes.append(h("div", { class: "ln", title: nm }, nm), track);
   }
-  // Ticks: every 1, 2, 3, 6, 12 or 24 hours, on the hour.
+  // Ticks: every 1, 2, 3, 6, 12 or 24 hours, on the local hour (midnight a day's name).
   const step = [1, 2, 3, 6, 12, 24, 48].find((hh) => span / (hh * 3600) <= 8) || 48;
   const axis = h("div", "axis");
-  for (let t = Math.ceil(t0 / (step * 3600)) * step * 3600; t < t1; t += step * 3600) {
-    const d = new Date(t * 1000);
-    const label = d.getHours() === 0 || step >= 24 ? `${DAYS[d.getDay()]}` : `${String(d.getHours()).padStart(2, "0")}:00`;
-    axis.append(h("span", { style: { left: x(t) } }, label));
+  const d = new Date(t0 * 1000);
+  d.setMinutes(0, 0, 0);
+  while (d.getTime() / 1000 < t0 || d.getHours() % Math.min(step, 24)) d.setHours(d.getHours() + 1);
+  for (; d.getTime() / 1000 < t1; d.setHours(d.getHours() + step)) {
+    const label = d.getHours() === 0 ? DAYS[d.getDay()] : `${String(d.getHours()).padStart(2, "0")}:00`;
+    axis.append(h("span", { style: { left: x(d.getTime() / 1000) } }, label));
   }
   lanes.append(h("div"), axis);
   // Each round of publishing, a mark across the lanes, the regions it adds when pointed at.
@@ -433,17 +429,25 @@ function stepsTable(m) {
 // its state, what it has left, when it's done and when it's on the map.
 const ui = { order: "map", filter: "", all: false, feed: "all" };
 function regionsList(m, rerender) {
+  // (Typing redraws the rows alone: the box keeps its keyboard.)
+  const host = h("div");
+  const draw = () => host.replaceChildren(...regionRows(m, rerender));
+  const bar = h("div", "regbar",
+    h("input", { placeholder: `Find one of ${(m.fc?.regions || []).length || Object.keys(m.a.built || {}).length} regions…`, value: ui.filter, oninput: (e) => { ui.filter = e.target.value; draw(); }, autocapitalize: "off", spellcheck: "false" }),
+    h("div", "seg", [["map", "To the map"], ["name", "A–Z"], ["left", "Most left"]].map(([k, t]) => h("button", { class: ui.order === k ? "on" : "", onclick: () => { ui.order = k; rerender(); } }, t))));
+  draw();
+  return h("div", null, bar, host);
+}
+
+function regionRows(m, rerender) {
   const fc = m.fc, built = m.a.built || {};
   const regs = (fc?.regions || []).map((r) => ({ ...r, name: m.regionName[r.id] || r.id, built: built[r.id] }));
   if (!regs.length) {
     // (An older build Mac: its areas built alone.)
     const ids = Object.keys(built);
-    if (!ids.length) return h("div", "small dim", "No regions yet.");
-    return h("div", "regs", ids.map((id) => h("div", "rg", h("span", "nm", m.regionName[id] || id), h("span", "when", `${built[id].built}/${built[id].total} areas`))));
+    if (!ids.length) return [h("div", "small dim", "No regions yet.")];
+    return [h("div", "regs", ids.map((id) => h("div", "rg", h("span", "nm", m.regionName[id] || id), h("span", "when", `${built[id].built} of ${built[id].total} areas built`))))];
   }
-  const bar = h("div", "regbar",
-    h("input", { placeholder: `Find one of ${regs.length} regions…`, value: ui.filter, oninput: (e) => { ui.filter = e.target.value; rerender(); }, autocapitalize: "off", spellcheck: "false" }),
-    h("div", "seg", [["map", "To the map"], ["name", "A–Z"], ["left", "Most left"]].map(([k, t]) => h("button", { class: ui.order === k ? "on" : "", onclick: () => { ui.order = k; rerender(); } }, t))));
   const q = ui.filter.trim().toLowerCase();
   const leftOf = (r) => Object.values(r.left).reduce((t, k) => t + k, 0);
   let list = regs.filter((r) => !q || r.name.toLowerCase().includes(q) || r.id.includes(q));
@@ -486,14 +490,20 @@ function regionsList(m, rerender) {
       h("div", "left", tot ? stack : null, [tot ? `${r.built.built} of ${tot} areas built` : "", leftWords ? `left: ${leftWords}` : ""].filter(Boolean).join(" · "))));
   }
   const more = !q && total > list.length ? h("button", { class: "quiet more", onclick: () => { ui.all = true; rerender(); } }, `Show all ${total}`) : null;
-  return h("div", null, bar, out, more);
+  return [out, more].filter(Boolean);
+}
+
+// When the map last got new data: the last catalog the build Mac read (its number and time), else
+// its last catalog job's end.
+function lastUpdate(m) {
+  return m.a.catalog?.at || (m.a.recent || []).find((d) => stepOf(d.id) === "catalog" && d.ok)?.ended || null;
 }
 
 function publishing(m) {
   const { a, fc, now } = m;
-  const lastCat = (a.recent || []).find((d) => stepOf(d.id) === "catalog" && d.ok);
+  const at = lastUpdate(m);
   const lines = [];
-  lines.push(h("div", null, "Last update: ", lastCat ? h("b", null, `${clock(lastCat.ended)} (${ago(now, lastCat.ended)})`) : "none yet"));
+  lines.push(h("div", null, "Last update: ", at ? h("b", null, `${clock(at)} (${ago(now, at)})`) : "none yet", a.catalog ? h("span", "dim", ` · catalog ${a.catalog.n}`) : null));
   const next = fc?.rounds?.[0];
   if (next) lines.push(h("div", null, "Next: ", h("b", null, `≈ ${clock(next.at)}`), next.regions.length ? ` with ${next.regions.slice(0, 4).map((id) => m.regionName[id] || id).join(", ")}${next.regions.length > 4 ? ` and ${next.regions.length - 4} more` : ""}` : ""));
   const waits = (a.waiting || []).filter((w) => w.step === "catalog" || /publish/i.test(w.what));
@@ -541,8 +551,11 @@ function eventText(m, e, k = 1) {
   const t = e.targets || [];
   const what = e.step ? `${stepName(e.step)}${t.length ? ` (${t.length === 1 ? t[0] : targets(e.step, t.length)})` : ""}` : "";
   switch (e.kind) {
-    case "start": return [`${who} began ${e.note || what}`, ""];
-    case "end": return e.ok ? [`${who} finished ${what} in ${dur(e.secs || 0)}`, ""] : [`${who}'s ${what} ${e.note || "stopped"}${t.length ? ` (${t.length} done and kept)` : ""}`, /fail/.test(e.note) ? "bad" : "warn"];
+    case "start": return [`${who} began ${e.what || e.note || what}`, ""];
+    case "end": {
+      const job = e.what ? `${e.what}${t.length > 1 && !/\(/.test(e.what) ? ` (${targets(e.step, t.length)})` : ""}` : what;
+      return e.ok ? [`${who} finished ${job} in ${dur(e.secs || 0)}`, ""] : [`${who}'s ${job} ${e.note || "stopped"}${t.length ? ` (${t.length} done and kept)` : ""}`, /fail/.test(e.note) ? "bad" : "warn"];
+    }
     case "lease": return [`${who} took ${what}`, "dim"];
     case "done": return [`${who} handed back ${what}, ${dur(e.secs || 0)} after taking it`, ""];
     case "fail": return [`${who}'s ${what} ${/^stopped/.test(e.note) ? e.note : `failed: ${e.note}`}`, /^stopped/.test(e.note) ? "warn" : "bad"];
@@ -596,7 +609,7 @@ function sinceLine(m, events, seen) {
   let failures = 0, rounds = [];
   for (const e of fresh) {
     if ((e.kind === "end" || e.kind === "done") && e.step === "unit" && e.ok !== false) areas[e.worker] = (areas[e.worker] || 0) + (e.targets || []).length;
-    if (e.ok === false && !/^stopped|paused/.test(e.note || "")) failures++;
+    if (e.ok === false && !/^stopped|paused|lapsed|the agent stopped|slept|another Mac took/.test(e.note || "")) failures++;
     if (e.kind === "catalog") rounds.push(e);
   }
   const total = Object.values(areas).reduce((t, k) => t + k, 0);
@@ -612,7 +625,8 @@ function sinceLine(m, events, seen) {
 function details(m) {
   const { sw, a, now } = m;
   const box = h("div", "box");
-  const table = (head, rows) => h("table", "t", h("tr", null, head.map((c) => h("th", null, c))), rows.map((r) => h("tr", null, r.map((c) => h("td", null, c)))));
+  // (Each in a box that scrolls sideways on a phone.)
+  const table = (head, rows) => h("div", "twrap", h("table", "t", h("tr", null, head.map((c) => h("th", null, c))), rows.map((r) => h("tr", null, r.map((c) => h("td", null, c))))));
   const leases = sw.leases || [];
   box.append(h("h3", null, "Leases", h("span", null, "who holds what; a worker that stops beating gives its work back")),
     leases.length ? table(["Worker", "Work", "For", "Last beat", "Lapses in", "Says"], leases.map((l) => [l.worker, l.what.length > 60 ? `${l.what.slice(0, 60)}…` : l.what, dur(l.for_s), l.beat_s != null ? `${dur(l.beat_s)} ago` : "–", l.lapses_in_s != null ? dur(l.lapses_in_s) : "–", l.progress || ""])) : h("div", "small dim", "None."));
@@ -645,15 +659,15 @@ function render() {
   const al = alerts(m);
   const pausing = !!last.pause;
   const ctl = h("div", "ctl",
-    pausing ? h("button", { class: "primary", onclick: () => ctx.ask(null) }, "Resume")
-      : [h("button", { onclick: () => ctx.ask({ mode: "drain" }), title: "Every Mac's job stops at its next safe point; nothing new starts" }, "Pause"),
-        h("button", { class: "quiet", onclick: () => confirm("Freeze every Mac's job where it is now? (It goes on from there when resumed.)") && ctx.ask({ mode: "freeze" }), title: "Freeze every job where it is, at once" }, "Pause now")]);
+    pausing ? h("button", { class: "primary", onclick: () => ctx.ask(null) }, "Resume the build")
+      : [h("button", { onclick: () => ctx.ask({ mode: "drain" }), title: "Every Mac's job stops at its next safe point; nothing new starts" }, "Pause the build"),
+        h("button", { class: "quiet", onclick: () => confirm("Freeze every Mac's job where it is now? (It goes on from there when resumed.)") && ctx.ask({ mode: "freeze" }), title: "Freeze every Mac's job where it is, at once" }, "Pause it now")]);
   if (!ctx.token) ctl.replaceChildren();
   const verdict = section("d-verdict", "verdict", null, null,
     h("div", "verdict", h("div", "say", verdictText(m)), ctl),
     h("div", "alerts", al.map((x) => h("span", { class: `alert ${x.cls}`, onclick: () => document.getElementById(x.to)?.scrollIntoView({ behavior: "smooth", block: "start" }) }, x.text))));
   const machines = section("d-machines", "machines", "Machines", `${m.macs.filter((x) => x.fresh).length} Macs${m.pages.length ? `, ${plural(m.pages.length, "page")}` : ""}`,
-    h("div", "machines", m.macs.map((x) => machineCard(m, x)), pagesCard(m)));
+    h("div", "machines", m.macs.map((x) => machineCard(m, x)), m.gone.map(goneCard), pagesCard(m)));
   const road = section("d-road", "road", "Road to done", m.fc?.done_at ? `done ≈ ${clock(m.fc.done_at)}` : "",
     h("div", "road",
       h("div", "box", h("h3", null, "Schedule", h("span", null, "each machine's work from now to the end")), schedule(m)),
@@ -665,15 +679,29 @@ function render() {
       h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Map updates"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),
       sinceLine(m, events, seenSeq), feed(m, events, seenSeq)));
   const scrollY = window.scrollY;
-  const focused = document.activeElement?.tagName === "INPUT" && root.contains(document.activeElement);
-  const pos = focused ? document.activeElement.selectionStart : null;
-  root.replaceChildren(verdict, section("d-overview", "overview", "Overview", null, overview(m)), machines, road, activity, section("d-details", "details", null, null, details(m)));
-  if (focused) { const i = root.querySelector(".regbar input"); if (i) { i.focus(); i.setSelectionRange(pos, pos); } }
+  const feedTop = root.querySelector(".feed")?.scrollTop || 0;
+  const next = [verdict, section("d-overview", "overview", "Overview", null, overview(m)), machines, road, activity, section("d-details", "details", null, null, details(m))];
+  // (A section where the user is typing or has text selected stays as it was until they're done:
+  // a refresh would take their keyboard or selection away.)
+  const sel = window.getSelection();
+  const busy = (el) => el && (el.contains(document.activeElement) && document.activeElement.tagName === "INPUT" || (sel && !sel.isCollapsed && el.contains(sel.anchorNode)));
+  if (root.children.length === next.length) {
+    next.forEach((el, i) => { if (!busy(root.children[i])) root.children[i].replaceWith(el); });
+  } else root.replaceChildren(...next);
+  const feedEl = root.querySelector(".feed");
+  if (feedEl) feedEl.scrollTop = feedTop;
   window.scrollTo(0, scrollY);
   ctx.onState?.(m.sw.pause ? "paused" : !m.a.host ? "no word from the build Mac" : m.fresh(m.a.beat) ? (m.a.job ? "building" : "idle") : "build Mac out of touch");
 }
 
-async function poll() {
+let polling = null;
+function poll() {
+  // (One at a time: two would fetch the same events twice.)
+  polling ??= pollOnce().finally(() => (polling = null));
+  return polling;
+}
+
+async function pollOnce() {
   if (!ctx?.token) return;
   try {
     const [code, sw] = await ctx.call("/work/swarm", {});
@@ -685,7 +713,8 @@ async function poll() {
       if (sw.seq > from) {
         const [c2, hist] = await ctx.call("/work/history", { since: from, max: 1000 }).catch(() => [0, null]);
         if (c2 === 200 && hist?.events) {
-          events = events.concat(hist.events).slice(-2000);
+          const last = events.length ? events[events.length - 1].seq : -1;
+          events = events.concat(hist.events.filter((e) => e.seq > last)).slice(-2000);
         }
       }
       // (What this browser last showed: none on a first visit, then nothing's highlighted.)
@@ -703,7 +732,8 @@ export function dashboard(opts) {
   ctx = opts;
   ctx.ask = async (pause) => {
     try {
-      await ctx.call("/work/pause", { pause: pause && { ...pause, by: ctx.label, at: Math.floor(Date.now() / 1000) }, at: Math.floor(Date.now() / 1000) });
+      // (No time of this browser's: the coordinator's clock orders the asks, and stamps it.)
+      await ctx.call("/work/pause", { pause: pause && { ...pause, by: ctx.label, at: 0 } });
       poll();
     } catch (e) {
       ctx.onError?.(`couldn't ask the build to ${pause ? "pause" : "go on"}: ${e.message}`);

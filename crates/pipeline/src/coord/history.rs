@@ -40,7 +40,10 @@ pub struct Event {
     pub secs: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ok: Option<bool>,
-    /// In words: what it was, why it failed, what changed, who paused.
+    /// What the job does (its description), for a start and an end.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub what: String,
+    /// In words: how it ended, why it failed, what changed, who paused.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub note: String,
 }
@@ -167,6 +170,13 @@ impl History {
             match e.kind.as_str() {
                 "start" => {
                     started.insert(w.clone(), e.t);
+                }
+                // (An agent started: its worker's job ended with the agent before, whenever that was;
+                // it counts to here at most.)
+                "agent" => {
+                    if let Some(t0) = started.remove(&w) {
+                        spans.push((w.clone(), t0, e.t));
+                    }
                 }
                 "end" => {
                     if let Some(t0) = started.remove(&w) {

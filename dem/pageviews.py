@@ -167,7 +167,7 @@ def _copy_whole(src: Path, dst: Path) -> None:
     tmp = dst.with_name(f"{dst.name}.{socket.gethostname().split('.')[0]}.{os.getpid()}.tmp")
     try:
         with open(src, "rb") as a, open(tmp, "wb") as b:
-            shutil.copyfileobj(_Counted(a, (dst.name.split(".", 1)[0], "copied"), os.fstat(a.fileno()).st_size), b, 4 << 20)
+            shutil.copyfileobj(_Counted(a, (dst.name.split(".", 1)[0], "copied")), b, 4 << 20)
             b.flush()
             os.fsync(b.fileno())
         if tmp.stat().st_size != src.stat().st_size:
@@ -179,10 +179,6 @@ def _copy_whole(src: Path, dst: Path) -> None:
 
 def _langs_of(wanted: set[str]) -> set[str]:
     return {a.split("|", 1)[0] for a in wanted}
-
-
-def _needs_stream(month: str, wanted: set[str]) -> bool:
-    return _index(month, _langs_of(wanted)) is None and bool(wanted - _cached(month)[1])
 
 
 def _dump_size(month: str) -> int:
@@ -198,20 +194,46 @@ def _dump_size(month: str) -> int:
 
 # The dumps' bytes streamed so far, and their sizes, by month: the progress line's.
 _streamed: dict[str, list[int]] = {}
-# The months' indexes' bytes (compressed, as kept) copied to or from the NAS and read so far, and
-# their sizes, by month and which: the progress line's too, so it moves while they're worked on.
+# The months' indexes' bytes (compressed, as kept) copied to or from the NAS and read so far, by
+# month and which: the progress line's too, so it moves while they're worked on.
 _indexes: dict[tuple[str, str], list[int]] = {}
+# The bytes the work's expected to move, all told (`_plan`): worked out before the progress line's
+# first, so its total doesn't grow as each month starts (the bar would step back).
+_planned = [0]
 _lock = threading.Lock()
 
 
-class _Counted:
-    """A file read through, its bytes counted in `_indexes` under `key` (as `size` more to read)."""
+def _covers(p: Path, langs: set[str]) -> bool:
+    """Whether the index at `p` counted every language in `langs` (a damaged one doesn't)."""
+    try:
+        return langs <= _langs(p)
+    except (EOFError, zstd.ZstdError, UnicodeDecodeError, OSError):
+        return False
 
-    def __init__(self, f, key: tuple[str, str], size: int):
+
+def _plan(month: str, wanted: set[str]) -> int:
+    """The bytes a month's work is expected to move, as far as can be told before it starts: its
+    index read here (copied from the NAS first when only the NAS has one), else its dump streamed
+    (when its counts from before don't cover what's asked; 5 GB when the server doesn't say)."""
+    langs = _langs_of(wanted)
+    local = OUT / "months" / f"{month}.tsv.zst"
+    nas = STORE / local.name if STORE else None
+    if _size(local) is not None and _covers(local, langs):
+        return _size(local)
+    if nas and _size(nas) is not None and _covers(nas, langs):
+        return 2 * _size(nas)
+    if not wanted - _cached(month)[1]:
+        return 0
+    return _dump_size(month) or 5 << 30
+
+
+class _Counted:
+    """A file read through, its bytes counted in `_indexes` under `key`."""
+
+    def __init__(self, f, key: tuple[str, str]):
         self.f = f
         with _lock:
             self.counts = _indexes.setdefault(key, [0, 0])
-            self.counts[1] += size
 
     def read(self, n: int = -1) -> bytes:
         b = self.f.read(n)
@@ -225,16 +247,13 @@ class _Counted:
 
 
 def _report(final: bool = False) -> None:
-    # (A month the server didn't size counts as the others' average, or 5 GB; and until the end the
-    # bar stops short of full, a month's dump being larger than said.)
+    # (Of the bytes planned (`_plan`): until the end the bar stops short of full, the work moving
+    # more than planned (a dump larger than said, an index copied again).)
     with _lock:
-        sizes = [v[1] for v in _streamed.values() if v[1]]
-        guess = sum(sizes) // len(sizes) if sizes else 5 << 30
-        done, total = sum(v[0] for v in _streamed.values()), sum(v[1] or guess for v in _streamed.values())
-        # (The indexes' bytes too; the months said are those with either.)
-        done += sum(v[0] for v in _indexes.values())
-        total += sum(v[1] for v in _indexes.values())
+        done = sum(v[0] for v in _streamed.values()) + sum(v[0] for v in _indexes.values())
+        # (The months said are those with bytes moved.)
         n = len(set(_streamed) | {m for m, _ in _indexes})
+    total = _planned[0]
     if not total:
         return
     done = total if final else min(done, total * 99 // 100)
@@ -250,19 +269,15 @@ def months_views(months: list[str], wanted: set[str]) -> list[dict[str, int]]:
     with _lock:
         _streamed.clear()
         _indexes.clear()
+    _planned[0] = sum(_plan(m, wanted) for m in months)
     stop = threading.Event()
 
     def report() -> None:
         while not stop.wait(30):
             _report()
 
-    # (Started before the months to stream are found: finding them copies the NAS's indexes here.)
     threading.Thread(target=report, daemon=True).start()
     try:
-        todo = [m for m in months if _needs_stream(m, wanted)]
-        sizes = {m: [0, _dump_size(m)] for m in todo}
-        with _lock:
-            _streamed.update(sizes)
         with ThreadPoolExecutor(2) as ex:
             return list(ex.map(lambda m: month_views(m, wanted), months))
     finally:
@@ -297,7 +312,7 @@ def _look_up(month: str, index: Path, wanted: set[str]) -> dict[str, int]:
     t0 = time.time()
     views: dict[str, int] = {}
     # (Its compressed bytes count on the progress line as they're read: `_indexes`.)
-    with open(index, "rb") as raw, zstd.open(_Counted(raw, (month, "read"), os.fstat(raw.fileno()).st_size), "rt", encoding="utf-8") as f:
+    with open(index, "rb") as raw, zstd.open(_Counted(raw, (month, "read")), "rt", encoding="utf-8") as f:
         for line in f:
             key, _, n = line.rstrip("\n").partition("\t")
             if key in wanted:

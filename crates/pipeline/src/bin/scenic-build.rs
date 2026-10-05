@@ -1408,7 +1408,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::create_dir_all(epoch.join("osm"))?;
     let mut c = pipeline::osmpass::osmium();
     c.arg("export").arg(&named_today).args(["-f", "geojsonseq", "--overwrite", "-o"]).arg(epoch.join("osm/named.geojsonseq"));
-    osmium_run(c, "osmium export (named)")?;
+    osmium_quiet(c, "osmium export (named)")?;
     std::fs::remove_file(&named).ok();
     std::fs::remove_file(&named_today).ok();
     // The kept filtered planet within the cover, once per pass and cover: today's merged extract.
@@ -1485,6 +1485,15 @@ fn osmium_run(mut c: std::process::Command, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// Runs an osmium command that's quick after the one before in its stage (an export of what was
+/// just clipped), failing with its name: its progress not said (a second bar would set the stage's
+/// back).
+fn osmium_quiet(mut c: std::process::Command, what: &str) -> Result<()> {
+    let st = c.status().with_context(|| format!("run {what}"))?;
+    anyhow::ensure!(st.success(), "{what} failed: {st}");
+    Ok(())
+}
+
 /// `src` within the polygon file (whole relations: smart), into `dest`.
 fn osmium_clip(src: &Path, poly: &Path, dest: &Path) -> Result<PathBuf> {
     let mut c = pipeline::osmpass::osmium();
@@ -1499,7 +1508,7 @@ fn areas_over_cover(out: &Out, date: &str, poly: &Path, scratch: &Path, dest: &P
     let clip = osmium_clip(&set, poly, &scratch.join("areas-cover.osm.pbf"))?;
     let mut c = pipeline::osmpass::osmium();
     c.args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "-a", "type,id", "--overwrite", "-o"]).arg(dest).arg(&clip);
-    osmium_run(c, "osmium export (areas)")?;
+    osmium_quiet(c, "osmium export (areas)")?;
     std::fs::remove_file(&clip).ok();
     Ok(())
 }

@@ -457,7 +457,6 @@ pub fn walk_all(units: &mut [UnitLinks]) -> (Vec<(u64, f32)>, Vec<RoadVal>) {
 /// Stage list, in order.
 pub const STAGES: &[&str] = &["copy", "filter", "sets", "outlines", "basemap", "cut", "roads"];
 
-/// Run (or resume) the pass for `date` from `planet` (on the NAS).
 /// The pass's parts, for the status (crate::agent::jobs::part): each says how far it is.
 const PARTS: [&str; 10] = [
     "Copying the planet here from the NAS",
@@ -478,6 +477,7 @@ fn part(i: usize, one: &str) {
     crate::agent::jobs::stage(0, 1, one);
 }
 
+/// Run (or resume) the pass for `date` from `planet` (on the NAS).
 pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extract_bin: &Path, planetiler: &Path) -> Result<()> {
     use crate::agent::jobs::{report, stage};
     std::fs::create_dir_all(scratch)?;
