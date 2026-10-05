@@ -297,8 +297,9 @@ pub fn build_q_with(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn F
         tiles.insert((6, tx, ty));
         sets.push(((tx, ty), tiles));
     }
-    // (Every tile worked out counts, the rest of q's z6 tiles and its z5–z3 too.)
-    let total = sets.iter().map(|s| s.1.len() as u64).sum::<u64>() + 64 - ts.len().min(64) as u64 + 16 + 4 + 1;
+    // (Every tile worked out counts, the rest of q's z6 tiles and its z5–z3 too, and each z6 tile's
+    // pack written: its upload to the NAS takes seconds.)
+    let total = sets.iter().map(|s| s.1.len() as u64 + 1).sum::<u64>() + 64 - ts.len().min(64) as u64 + 16 + 4 + 1;
     let count = Count { done: Default::default(), total, said: std::sync::Mutex::new(std::time::Instant::now()), on };
     on("slope tiles worked out", 0, total);
     // Each z6 tile's hi pack (z9–11) written once it's worked out; its z6–8 tiles kept for the lo
@@ -316,6 +317,7 @@ pub fn build_q_with(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn F
         rep.hi_tiles += hi.len();
         let mut it = hi.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
         crate::layers::write_pack(out, "slope", "slope4-png", false, "hi", (6, *tx, *ty), &mut it)?;
+        count.one();
     }
     // The other z6 tiles of q: their stored slope's quadrant, else their terrain's own slope.
     for x in q.0 * 8..(q.0 + 1) * 8 {
@@ -717,22 +719,26 @@ mod tests {
         let raw = RawTiles::with_store(&local, &d.path().join("store"));
         let terrain = d.path().join("terrain");
         crate::terrain_pack::build_q(&mut Out::open(&terrain, &d.path().join("terrain-scratch")).unwrap(), &raw, q, ts, &cov).unwrap();
-        // Its slope, both ways, each over a copy of the terrain's root.
-        let made = |name: &str, way: &dyn Fn(&mut Out)| {
+        // Its slope, both ways, each over a copy of the terrain's root: the area's first, then one of
+        // its z6 tiles again (as after a change there), the others' slope read as stored (their
+        // z6 tiles' quadrants, and their z7–8 tiles kept in the lo pack).
+        let made = |name: &str, way: &dyn Fn(&mut Out, &[(u32, u32)])| {
             let root = d.path().join(name);
             copy_dir(&terrain, &root);
-            way(&mut Out::open(&root, &d.path().join(format!("{name}-scratch"))).unwrap());
-            let out = Out::open(&root, &d.path().join(format!("{name}-scratch"))).unwrap();
-            out.manifest.into_iter().filter(|(l, _)| l.starts_with("layers/slope/")).collect::<Vec<_>>()
+            let slope = || Out::open(&root, &d.path().join(format!("{name}-scratch"))).unwrap().manifest.into_iter().filter(|(l, _)| l.starts_with("layers/slope/")).collect::<Vec<_>>();
+            way(&mut Out::open(&root, &d.path().join(format!("{name}-scratch"))).unwrap(), ts);
+            let first = slope();
+            way(&mut Out::open(&root, &d.path().join(format!("{name}-scratch"))).unwrap(), &ts[..1]);
+            (first, slope())
         };
-        let now = made("now", &|out| {
+        let now = made("now", &|out, ts| {
             let r = build_q(out, q, ts).unwrap();
             assert!(r.hi_tiles > 0 && r.lo_tiles > 0, "{r:?}");
         });
-        let before = made("before", &|out| {
+        let before = made("before", &|out, ts| {
             whole_area(out, q, ts, &|_, _, _| {}).unwrap();
         });
-        assert_eq!(now.len(), ts.len() + 1, "{now:?}");
-        assert_eq!(now, before, "the same packs, byte for byte (their content names)");
+        assert_eq!(now.0.len(), ts.len() + 1, "{:?}", now.0);
+        assert_eq!(now, before, "the same packs, byte for byte (their content names), first and again");
     }
 }
