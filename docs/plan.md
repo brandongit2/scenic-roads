@@ -1051,8 +1051,10 @@ heritage sites three times and their terrain twice.
   - has its own scratch folder (`scratch-2/`), job record, safe-point channel and costs file, its
     claims its own, and four threads for network work, half the cores for the rest;
   - is a worker of its own in the history and the forecast ("<host> (second job)"), its speed
-    measured as a helper's is (four fifths of the build Mac's until it is). The status has it as
-    `beside`, or why there's none (`beside_why`).
+    measured as a helper's is (four fifths of the build Mac's until it is); the forecast takes a
+    Mac in use now to stay so for half an hour, not to the end (made every minute, its finish
+    otherwise jumped each time the owner came or went). The status has it as `beside`, or why
+    there's none (`beside_why`).
 - **A newly installed app:** the first job finishes under the old one, nothing new starts, and the
   agent exits so the launcher starts the new one; a second job still running stops then (what it
   finished kept) and goes on under the new one.
