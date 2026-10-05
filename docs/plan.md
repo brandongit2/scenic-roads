@@ -1311,7 +1311,11 @@ and, when none fits it, units' last steps.
      that's left), then a prune of what the coverage no longer builds (§5, Shrinking), the roads'
      chain, and a catalog. The units follow it in the list (a helper's, and the build Mac's while
      the round's work waits out a failure: then the catalog goes out with the regions that are
-     done). A round takes 5 to 10 minutes: a tenth more build time at most.
+     done). A round takes 5 to 10 minutes: a tenth more build time at most. A round before the
+     last draws only the map tiles that go out with it: those meeting a region it publishes, and
+     those no unit still to build is near (their 100 km halo); the others, a region's border tiles,
+     would be drawn again in every round as their neighbours' units are built, and wait for the
+     last.
 4. **Three chains:**
    - **Roads**, in every round and after the last unit, its first stale step: a prune of map tiles
      no unit is near, road → units index, pack, lo, stations, ferries, terrain and slope roots.

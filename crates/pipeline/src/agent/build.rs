@@ -689,10 +689,21 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         publish_waits = slope_now.iter().map(|t| ("slope".to_string(), t.0.clone())).chain(trees_now.iter().map(|t| ("trees".to_string(), t.0.clone()))).collect();
         push(&mut work, "slope", slope_now);
         push(&mut work, "trees", trees_now);
+        // A round before the last draws the map tiles that go out with it: those meeting a region
+        // it publishes, and those no unit still to build is near (their 100 km halo: what they
+        // read). The others would be drawn again as those units are built (a region's border
+        // tiles, in every round); the last round draws all.
+        let to_build: Vec<[i32; 4]> = (0..units.len()).filter(|&i| unit_stale[i]).map(|i| reach.get(units[i].0).map(|r| r.owned_extent(units[i].0)).unwrap_or_else(|| crate::reach::near_box(units[i].0))).collect();
+        let each: Vec<&Coverage> = publish.iter().filter_map(|r| rounds.each.iter().find(|(id, _)| id == r.id).map(|(_, c)| c)).collect();
+        let keep = |x: u32, y: u32| {
+            let b = crate::hipack::tile_bounds(6, x, y);
+            let gb = crate::hipack::grow(b, 100.0);
+            last || each.iter().any(|c| c.meets_rect(b)) || !to_build.iter().any(|e| e[0] <= gb[2] && e[2] >= gb[0] && e[1] <= gb[3] && e[3] >= gb[1])
+        };
         // (Listed after them, not held back: while one waits out a failure, the others publish.)
         match prune_units(cov, date, m, &units) {
             Some(w) => work.push(w),
-            None => match roads_chain(date, m, done, inputs, Some(reach)) {
+            None => match roads_chain_drawing(date, m, done, inputs, Some(reach), &keep) {
                 Some(w) => work.push(w),
                 None => work.extend(catalog_work(m, done, inputs, &ready)),
             },
@@ -836,6 +847,11 @@ fn prune_tiles(m: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Option<
 /// The roads' chain after the units: the road → units index, pack(T), lo, rail stops and ferries,
 /// the terrain and slope roots; its first stale step.
 fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Option<Work> {
+    roads_chain_drawing(date, m, done, inputs, reach, &|_, _| true)
+}
+
+/// `roads_chain`, drawing the map tiles (pack(T)) `keep` says, by their z6 tile; the rest wait.
+fn roads_chain_drawing(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>, keep: &dyn Fn(u32, u32) -> bool) -> Option<Work> {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
     // Map tiles no unit's ways reach any more (a region removed) leave the manifest.
     if let Some(w) = prune_tiles(m, reach) {
@@ -854,7 +870,7 @@ fn roads_chain(date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &B
     }
 
     let (packs, lo) = pack_lo_targets(m, reach);
-    let packs: Vec<(String, String)> = packs.into_iter().filter(|(t, k)| stale(&done.pack, t, k)).collect();
+    let packs: Vec<(String, String)> = packs.into_iter().filter(|(t, k)| stale(&done.pack, t, k) && Unit::parse(t).is_some_and(|u| keep(u.x, u.y))).collect();
     if !packs.is_empty() {
         return Some(Work { step: "pack".into(), targets: packs });
     }
@@ -1539,6 +1555,47 @@ mod tests {
         assert_eq!(p.ready, ["a", "b", "c"]);
         assert_eq!(p.work[0].step, "roadunits");
         assert!(!steps(&p).contains(&"unit".to_string()));
+    }
+
+    #[test]
+    fn a_round_before_the_last_leaves_the_map_tiles_units_still_to_build_would_change() {
+        let (c, mut reach, mut m, mut done) = three();
+        // Reykjavik's unit has a long way (a ferry) east into the next z6 tile, which no region it
+        // publishes meets, and where b's eastern unit (6/30/16) is still to build.
+        reach.units.insert("6/28/16".into(), Reach { owned: Some(e7box(-22.0, 64.0, -16.5, 64.16)), long: vec![] });
+        let each = c.by_region();
+        let plan = |m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>| super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), Rounds { each: &each, on_map, since_publish: None });
+        let key = |m: &BTreeMap<String, String>, u: &str| super::unit_keys(&c, "d", m, Some(&reach), &BTreeMap::new()).into_iter().find(|(x, _)| x.slash() == u).unwrap().1;
+        let build = |m: &mut BTreeMap<String, String>, done: &mut Keys, u: &str| {
+            done.record("unit", &[(u.to_string(), key(m, u))]);
+            let d = u.replace('/', "-");
+            m.insert(format!("base/{d}"), format!("base/{d}.6666666666666666.base"));
+            m.insert(format!("global/roads/{d}"), format!("global/roads/{d}.7777777777777777.roads"));
+        };
+        // Through a round's work to its map tiles: what it draws.
+        let drawn = |m: &BTreeMap<String, String>, done: &mut Keys, on_map: &BTreeMap<String, bool>| -> Vec<String> {
+            loop {
+                let p = plan(m, done, on_map);
+                let w = &p.work[0];
+                match w.step.as_str() {
+                    "pack" => return w.targets.iter().map(|t| t.0.clone()).collect(),
+                    "slope" | "trees" | "roadunits" => done.record(&w.step, &w.targets),
+                    s => panic!("{s} before the map tiles"),
+                }
+            }
+        };
+        // (The tiles by where they lie: Reykjavik's is 6/28/17, the ferry's east end in 6/29/17.)
+        build(&mut m, &mut done, "6/28/16");
+        let first = drawn(&m, &mut done, &BTreeMap::new());
+        let all: Vec<String> = pack_lo_targets(&m, Some(&reach)).0.into_iter().map(|t| t.0).collect();
+        let has = |v: &[String], t: &str| v.iter().any(|x| x == t);
+        assert!(has(&first, "6/28/17") && has(&all, "6/29/17") && !has(&first, "6/29/17"), "{first:?} of {all:?}");
+        // The last round draws every tile.
+        for u in ["6/29/16", "6/30/16", "6/31/16"] {
+            build(&mut m, &mut done, u);
+        }
+        let last = drawn(&m, &mut done, &[("a".to_string(), true)].into());
+        assert!(has(&last, "6/29/17"), "{last:?}");
     }
 
     #[test]
