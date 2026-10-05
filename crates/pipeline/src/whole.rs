@@ -166,8 +166,12 @@ pub fn tiff_bytes_whole(b: &[u8]) -> bool {
 
 /// Whether TIFF file `p` is whole (its directories read, not its data).
 pub fn tiff_file_whole(p: &Path) -> bool {
+    std::fs::File::open(p).is_ok_and(|f| tiff_whole(&f))
+}
+
+/// Whether open TIFF file `f` is whole (its directories read, not its data).
+pub fn tiff_whole(f: &std::fs::File) -> bool {
     use store::sys::PosIo;
-    let Ok(f) = std::fs::File::open(p) else { return false };
     let Ok(len) = f.metadata().map(|m| m.len()) else { return false };
     tiff_whole_with(len, &|o, n| {
         if o.checked_add(n as u64)? > len {

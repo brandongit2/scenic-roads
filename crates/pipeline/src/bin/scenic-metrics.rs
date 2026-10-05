@@ -16,7 +16,7 @@
 //!         the next run reuses them (for builds made before the caches existed)
 
 use det::Det;
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use pipeline::count_bar;
 use pipeline::scache::{self, GridChange};
 use pipeline::terr::TerrainCache;
@@ -27,6 +27,8 @@ use roadcore::grid::{GridIndex, CELLS};
 use roadcore::scenic::{sflag, Sample, EYE_M, NEAR_AZ, NEAR_MAX_M, RAIL_EYE_M, SAMPLE_SPACING_M};
 use roadcore::{class, dist_m, flag, merc, Array, Ways, E7};
 use std::collections::{BTreeSet, HashMap};
+use std::fs::File;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI8, AtomicU8, Ordering::Relaxed};
 use std::sync::LazyLock;
@@ -188,65 +190,126 @@ fn prep(dir: &Path) -> Result<()> {
 const CHM10_URL: &str = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_global_v6_float_epsg4326_v3_10deg";
 const C10: usize = 40_000;
 const C10_RES: f64 = 0.00025;
+/// A square's rows read at a time (`SCENIC_CANOPY_BAND` sets another count; any gives the same
+/// bytes). A dense unit's band window, three layers, is ~85 MB (1,024 rows × ~27,000 columns);
+/// reading all the rows its work reaches at the square's full width took 2.2 GB, and the files
+/// themselves 1.1 GB more.
+const BAND_ROWS: usize = 1024;
 
-/// A 10° square's rows `row0..row0 + rows` (those a unit's work there reaches: the files keep a
-/// row per strip, so the rest isn't decoded).
+/// Rows `r0..r1` × columns `c0..c1` of a 10° square (nothing when either is empty).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Window {
+    r0: usize,
+    r1: usize,
+    c0: usize,
+    c1: usize,
+}
+
+impl Window {
+    const NONE: Window = Window { r0: 0, r1: 0, c0: 0, c1: 0 };
+
+    /// The pixels of rows `r` and columns `c` (each lo..=hi, floored: maybe outside the square, or
+    /// not finite) inside rows `rows` and the square's columns.
+    fn clip(r: (f64, f64), c: (f64, f64), rows: (usize, usize)) -> Window {
+        // (A bound that's NaN is no bound: max and min give the other side.)
+        let span = |(lo, hi): (f64, f64), a: usize, b: usize| {
+            let (s, e) = (lo.max(a as f64), (hi + 1.0).min(b as f64));
+            if s < e {
+                (s as usize, e as usize)
+            } else {
+                (0, 0)
+            }
+        };
+        let ((r0, r1), (c0, c1)) = (span(r, rows.0, rows.1), span(c, 0, C10));
+        Window { r0, r1, c0, c1 }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.r0 >= self.r1 || self.c0 >= self.c1
+    }
+
+    /// The smallest window holding both.
+    fn union(self, o: Window) -> Window {
+        match (self.is_empty(), o.is_empty()) {
+            (_, true) => self,
+            (true, false) => o,
+            _ => Window { r0: self.r0.min(o.r0), r1: self.r1.max(o.r1), c0: self.c0.min(o.c0), c1: self.c1.max(o.c1) },
+        }
+    }
+}
+
+/// A band's part of a 10° square: window `win` of its three layers. A lookup finds nothing outside
+/// the square or outside rows `row0..row0 + rows`, those the unit's work there reaches (as when all
+/// of them were read at once); any other lookup the band's work makes is inside its window (Bands).
 struct Chm10 {
     left: f64,
     top: f64,
     row0: usize,
     rows: usize,
+    win: Window,
     median: Vec<u8>, // metres
     p95: Vec<u8>,    // metres
     cover: Vec<u8>,  // share > 5 m, ×255
 }
 
 impl Chm10 {
+    /// A point's index in the band's layers.
     #[inline]
     fn idx(&self, lon: f64, lat: f64) -> Option<usize> {
-        Some(self.row(lat)? * C10 + self.col(lon)?)
+        Some(self.row(lat)? * (self.win.c1 - self.win.c0) + self.col(lon)?)
     }
 
-    /// A longitude's column in the square.
+    /// A longitude's column in the band's window, for one in the square (the window holds every
+    /// column the band's work looks up: Bands).
     #[inline]
     fn col(&self, lon: f64) -> Option<usize> {
         let c = ((lon - self.left) / C10_RES).floor();
-        (c >= 0.0 && c < C10 as f64).then_some(c as usize)
+        (c >= 0.0 && c < C10 as f64).then(|| {
+            let (w, c) = (&self.win, c as usize);
+            assert!(c >= w.c0 && c < w.c1, "canopy: a lookup outside its band's window");
+            c - w.c0
+        })
     }
 
-    /// A latitude's row among those read (from `row0`).
+    /// A latitude's row in the band's window, for one among those read (from `row0`).
     #[inline]
     fn row(&self, lat: f64) -> Option<usize> {
         let r = ((self.top - lat) / C10_RES).floor();
         let (r0, r1) = (self.row0 as f64, (self.row0 + self.rows) as f64);
-        (r >= r0 && r < r1).then(|| r as usize - self.row0)
+        (r >= r0 && r < r1).then(|| {
+            let (w, r) = (&self.win, r as usize);
+            assert!(r >= w.r0 && r < w.r1, "canopy: a lookup outside its band's window");
+            r - w.r0
+        })
     }
 }
 
-/// A canopy file: the local cache's copy (`path`), else the NAS's (`store`, copied here), else
-/// downloaded once, into the NAS's store first. An empty file marks one Meta doesn't have. Each
-/// copy is written whole and checked whole when read (pipeline::whole): one that isn't (cut short)
-/// is deleted and taken from the next source.
-fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path, store: Option<&Path>) -> Result<Option<Vec<u8>>> {
+/// A canopy file, opened: the local cache's copy (`path`), else the NAS's (`store`, copied here),
+/// else downloaded once, into the NAS's store first; None for an empty file, which marks one Meta
+/// doesn't have. Each copy is written whole and checked whole when opened (pipeline::whole: its
+/// directories, not its data): one that isn't (cut short) is deleted and taken from the next source.
+/// The bands then read only the strips they need from it (Tiff), never the whole file.
+fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path, store: Option<&Path>) -> Result<Option<File>> {
     // A kept copy: Some(None) for Meta's "none there", None when it's missing or not whole.
-    let kept = |p: &Path| -> Option<Option<Vec<u8>>> {
-        let b = std::fs::read(p).ok()?;
-        if b.is_empty() {
+    let kept = |p: &Path| -> Option<Option<File>> {
+        let f = File::open(p).ok()?;
+        let len = f.metadata().ok()?.len();
+        if len == 0 {
             return Some(None);
         }
-        if pipeline::whole::tiff_bytes_whole(&b) {
-            return Some(Some(b));
+        if pipeline::whole::tiff_whole(&f) {
+            return Some(Some(f));
         }
-        eprintln!("canopy: {} isn't whole ({} bytes): taken again", p.display(), b.len());
+        eprintln!("canopy: {} isn't whole ({len} bytes): taken again", p.display());
         std::fs::remove_file(p).ok();
         None
     };
-    if let Some(b) = kept(path) {
+    if let Some(f) = kept(path) {
         // Used now: the build agent's room-making deletes the least recently used squares first.
-        if let Ok(f) = std::fs::File::options().append(true).open(path) {
+        if let Ok(f) = File::options().append(true).open(path) {
             f.set_modified(std::time::SystemTime::now()).ok();
         }
-        return Ok(b);
+        return Ok(f);
     }
     // The NAS's copy; else the right to download it there (`<file>.lock`, made with create-new: a
     // unit on one Mac and a trees job on the other may want the same square at once), or the copy
@@ -258,9 +321,16 @@ fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path, store: Option<&Path>)
         }
         let lock = st.with_file_name(format!("{}.lock", st.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
         loop {
-            if let Some(b) = kept(st) {
-                pipeline::whole::write(path, b.as_deref().unwrap_or_default())?;
-                return Ok(b);
+            match kept(st) {
+                Some(None) => {
+                    pipeline::whole::write(path, b"")?;
+                    return Ok(None);
+                }
+                Some(Some(_)) => {
+                    pipeline::whole::copy(st, path)?;
+                    return kept(path).with_context(|| format!("{} isn't whole as copied", path.display()));
+                }
+                None => {}
             }
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
                 Ok(mut f) => {
@@ -286,14 +356,28 @@ fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path, store: Option<&Path>)
     for attempt in 0..6 {
         match agent.get(url).call() {
             Ok(mut r) => {
-                let want: Option<usize> = r.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
-                // (A body cut short, or not a whole TIFF, is tried again, never kept.)
-                if let Ok(b) = r.body_mut().with_config().limit(3_000_000_000).read_to_vec().map_err(|e| e.to_string()).and_then(|b| if want.is_none_or(|n| n == b.len()) && pipeline::whole::tiff_bytes_whole(&b) { Ok(b) } else { Err("cut short".into()) }) {
-                    if let Some(st) = store {
-                        pipeline::whole::write(st, &b)?;
+                let want: Option<u64> = r.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
+                // Into a temporary file beside `path`, not memory (up to 1.2 GB), flushed. (A body cut
+                // short, or not a whole TIFF, is tried again, never kept.)
+                let tmp = pipeline::whole::tmp_name(path);
+                let got = (|| -> Result<Option<File>> {
+                    let mut f = File::options().read(true).write(true).create(true).truncate(true).open(&tmp)?;
+                    let Some(n) = copy_body(&mut r.body_mut().with_config().limit(3_000_000_000).reader(), &mut f)? else { return Ok(None) };
+                    f.sync_all()?;
+                    if want.is_some_and(|w| w != n) || !pipeline::whole::tiff_whole(&f) {
+                        return Ok(None);
                     }
-                    pipeline::whole::write(path, &b)?;
-                    return Ok(Some(b));
+                    if let Some(st) = store {
+                        pipeline::whole::copy(&tmp, st)?;
+                    }
+                    std::fs::rename(&tmp, path)?;
+                    Ok(Some(f))
+                })();
+                if !matches!(got, Ok(Some(_))) {
+                    std::fs::remove_file(&tmp).ok();
+                }
+                if let Some(f) = got.with_context(|| format!("write {}", path.display()))? {
+                    return Ok(Some(f));
                 }
             }
             // Meta has none there (404, or S3's 403): so it says twice, a moment apart, before
@@ -324,52 +408,62 @@ impl Drop for DownloadLock {
     }
 }
 
+/// Copies `r` to `w`: the bytes copied once `r` ends, None when reading fails (a body cut short);
+/// failing to write is an error.
+fn copy_body(r: &mut impl std::io::Read, w: &mut impl std::io::Write) -> Result<Option<u64>> {
+    let mut b = vec![0u8; 1 << 20];
+    let mut n = 0;
+    loop {
+        match r.read(&mut b) {
+            Ok(0) => return Ok(Some(n)),
+            Ok(k) => {
+                w.write_all(&b[..k])?;
+                n += k as u64;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => return Ok(None),
+        }
+    }
+}
+
 /// Minimal little-endian TIFF strip index.
 struct Strips {
     width: usize,
     height: usize,
     rows_per_strip: usize,
     compression: u64,
-    strips: Vec<(usize, usize)>,
+    strips: Vec<(u64, usize)>,
 }
 
-fn parse_tiff(b: &[u8]) -> Result<Strips> {
+/// A TIFF's strip index, read through `at(offset, length)` (each tag's values at once).
+fn parse_tiff(at: &dyn Fn(u64, usize) -> Result<Vec<u8>>) -> Result<Strips> {
     // (Every read checked: a file cut short is an error, not a panic.)
-    let at = |o: usize, n: usize| o.checked_add(n).and_then(|e| b.get(o..e)).context("TIFF cut short");
-    let u16_at = |o: usize| at(o, 2).map(|v| u16::from_le_bytes([v[0], v[1]]));
-    let u32_at = |o: usize| at(o, 4).map(|v| u32::from_le_bytes([v[0], v[1], v[2], v[3]]));
-    let u64_at = |o: usize| at(o, 8).map(|v| u64::from_le_bytes(v.try_into().unwrap()));
-    if at(0, 2)? != b"II" {
+    let le = |b: &[u8]| b.iter().rev().fold(0u64, |v, &x| v << 8 | x as u64);
+    let h = at(0, 8)?;
+    if &h[..2] != b"II" {
         bail!("not little-endian TIFF");
     }
-    let big = match u16_at(2)? {
+    let big = match le(&h[2..4]) {
         42 => false,
         43 => true,
         v => bail!("TIFF version {v}"),
     };
-    let ifd = if big { u64_at(8)? as usize } else { u32_at(4)? as usize };
-    let (count, entry0, esz) = if big { (u64_at(ifd)? as usize, ifd + 8, 20) } else { (u16_at(ifd)? as usize, ifd + 2, 12) };
+    let ifd = if big { le(&at(8, 8)?) } else { le(&h[4..8]) };
+    // Entries: tag, type, count, then the values or their offset (`inline` bytes).
+    let (csz, esz, inline) = if big { (8, 20, 8) } else { (2, 12, 4) };
+    let count = le(&at(ifd, csz)?) as usize;
+    let ents = at(ifd.saturating_add(csz as u64), count.checked_mul(esz).context("TIFF cut short")?)?;
     let mut tags: HashMap<u16, Vec<u64>> = HashMap::new();
-    for i in 0..count {
-        let e = entry0 + i * esz;
-        let (tag, typ) = (u16_at(e)?, u16_at(e + 2)?);
-        let n = if big { u64_at(e + 4)? as usize } else { u32_at(e + 4)? as usize };
-        let sz = match typ {
+    for e in ents.chunks_exact(esz) {
+        let sz = match le(&e[2..4]) {
             3 => 2,
             4 => 4,
             16 => 8,
             _ => continue,
         };
-        let inline = if big { 8 } else { 4 };
-        let base = if n * sz <= inline { e + if big { 12 } else { 8 } } else if big { u64_at(e + 12)? as usize } else { u32_at(e + 8)? as usize };
-        let vals = (0..n)
-            .map(|k| match sz {
-                2 => u16_at(base + k * 2).map(u64::from),
-                4 => u32_at(base + k * 4).map(u64::from),
-                _ => u64_at(base + k * 8),
-            })
-            .collect::<Result<Vec<u64>>>()?;
-        tags.insert(tag, vals);
+        let len = (le(&e[4..esz - inline]) as usize).checked_mul(sz).context("TIFF cut short")?;
+        let vals = if len <= inline { e[esz - inline..][..len].to_vec() } else { at(le(&e[esz - inline..]), len)? };
+        tags.insert(le(&e[..2]) as u16, vals.chunks_exact(sz).map(le).collect());
     }
     let get = |t: u16| tags.get(&t).and_then(|v| v.first().copied()).context(format!("TIFF tag {t}"));
     let offs = tags.get(&273).context("StripOffsets")?;
@@ -379,74 +473,229 @@ fn parse_tiff(b: &[u8]) -> Result<Strips> {
         height: get(257)? as usize,
         rows_per_strip: get(278).unwrap_or(1) as usize,
         compression: get(259)?,
-        strips: offs.iter().zip(lens).map(|(&o, &l)| (o as usize, l as usize)).collect(),
+        strips: offs.iter().zip(lens).map(|(&o, &l)| (o, l as usize)).collect(),
     })
 }
 
-/// Rows `row0..row0 + rows` of a square's file (a 40000² uint16 LZW TIFF), each value through `f`
-/// (no data, 65535: 0). Each strip holding wanted rows is decoded straight into them; a strip that
-/// doesn't decode whole is an error (the file is damaged: canopy takes it again).
-fn decode_u16(b: &[u8], row0: usize, rows: usize, f: impl Fn(u16) -> u8 + Sync) -> Result<Vec<u8>> {
-    let st = parse_tiff(b)?;
-    if st.width != C10 || st.height != C10 || st.compression != 5 {
-        bail!("unexpected TIFF {}×{} compression {}", st.width, st.height, st.compression);
-    }
-    decode_rows(b, &st, row0, rows, f)
+/// A TIFF's strips, read from its file as they're wanted (positionally: never the whole file, up to
+/// 1.2 GB, which in WebAssembly would all be memory).
+struct Tiff {
+    file: File,
+    len: u64,
+    st: Strips,
 }
 
-/// decode_u16's rows, from an LZW TIFF of any width.
-fn decode_rows(b: &[u8], st: &Strips, row0: usize, rows: usize, f: impl Fn(u16) -> u8 + Sync) -> Result<Vec<u8>> {
-    let (w, rps) = (st.width, st.rows_per_strip.max(1));
-    let mut out = vec![0u8; w * rows];
+impl Tiff {
+    fn open(file: File) -> Result<Tiff> {
+        let len = file.metadata()?.len();
+        let st = parse_tiff(&|o, n| read_at(&file, len, o, n))?;
+        Ok(Tiff { file, len, st })
+    }
+
+    /// Window `w`, each value through `f` (decode_rows).
+    fn read(&self, w: Window, f: impl Fn(u16) -> u8 + Sync) -> Result<Vec<u8>> {
+        decode_rows(&|o, n| read_at(&self.file, self.len, o, n), &self.st, w.r0..w.r1, w.c0..w.c1, f)
+    }
+}
+
+/// `n` bytes from `off` of file `f`, `len` bytes long (past its end, an error before anything's
+/// allocated: a damaged directory's count can be anything).
+fn read_at(f: &File, len: u64, off: u64, n: usize) -> Result<Vec<u8>> {
+    use store::sys::PosIo;
+    ensure!(off.checked_add(n as u64).is_some_and(|e| e <= len), "{n} bytes at {off} run past the file's end ({len})");
+    let mut b = vec![0u8; n];
+    f.read_exact_at(&mut b, off)?;
+    Ok(b)
+}
+
+/// Rows `rows` × columns `cols` of an LZW TIFF of any width, its strips read through `read(offset,
+/// length)`, each value through `f` (no data, 65535: 0). Each strip holding wanted rows is decoded
+/// whole, its wanted part straight into place; a strip that doesn't decode whole is an error (the
+/// file is damaged: canopy takes it again).
+fn decode_rows(read: &(dyn Fn(u64, usize) -> Result<Vec<u8>> + Sync), st: &Strips, rows: Range<usize>, cols: Range<usize>, f: impl Fn(u16) -> u8 + Sync) -> Result<Vec<u8>> {
+    let (w, rps, nc) = (st.width, st.rows_per_strip.max(1), cols.len());
+    ensure!(cols.end <= w, "columns {cols:?} of {w}");
+    let mut out = vec![0u8; nc * rows.len()];
+    if out.is_empty() {
+        return Ok(out);
+    }
     // Each strip's wanted rows: (strip, its first wanted row, those rows of `out`).
     let mut parts: Vec<(usize, usize, &mut [u8])> = Vec::new();
     let mut rest: &mut [u8] = &mut out;
-    let mut r = row0;
-    while r < row0 + rows {
+    let mut r = rows.start;
+    while r < rows.end {
         let si = r / rps;
-        let end = ((si + 1) * rps).min(row0 + rows);
-        let (head, tail) = std::mem::take(&mut rest).split_at_mut((end - r) * w);
+        let end = ((si + 1) * rps).min(rows.end);
+        let (head, tail) = std::mem::take(&mut rest).split_at_mut((end - r) * nc);
         parts.push((si, r, head));
         rest = tail;
         r = end;
     }
     parts.into_par_iter().try_for_each(|(si, first, dst)| -> Result<()> {
         let &(off, len) = st.strips.get(si).with_context(|| format!("strip {si} isn't listed"))?;
-        let src = b.get(off..off.saturating_add(len)).with_context(|| format!("strip {si} runs past the file's end"))?;
+        let src = read(off, len).with_context(|| format!("strip {si} runs past the file's end"))?;
         let mut dec = weezl::decode::Decoder::with_tiff_size_switch(weezl::BitOrder::Msb, 8);
-        let raw = dec.decode(src).map_err(|e| anyhow::anyhow!("strip {si}: {e:?}"))?;
+        let raw = dec.decode(&src).map_err(|e| anyhow::anyhow!("strip {si}: {e:?}"))?;
+        // (Its wanted rows whole, all columns: a strip that decodes short is damaged.)
         let skip = (first - si * rps) * w * 2;
-        let vals = raw.get(skip..skip + dst.len() * 2).with_context(|| format!("strip {si} decodes short ({} bytes)", raw.len()))?;
-        for (o, v) in dst.iter_mut().zip(vals.chunks_exact(2)) {
-            let x = u16::from_le_bytes([v[0], v[1]]);
-            *o = if x == 65535 { 0 } else { f(x) };
+        let vals = raw.get(skip..skip + dst.len() / nc * w * 2).with_context(|| format!("strip {si} decodes short ({} bytes)", raw.len()))?;
+        for (o, v) in dst.chunks_exact_mut(nc).zip(vals.chunks_exact(w * 2)) {
+            for (o, v) in o.iter_mut().zip(v[cols.start * 2..cols.end * 2].as_chunks::<2>().0) {
+                let x = u16::from_le_bytes(*v);
+                *o = if x == 65535 { 0 } else { f(x) };
+            }
         }
         Ok(())
     })?;
     Ok(out)
 }
 
-/// One layer of a square: its file (fetch_file) decoded over rows `row0..row0 + rows`
-/// (decode_u16); None when Meta has none there. A file that doesn't decode is damaged: this Mac's
-/// copy is deleted and it's taken again (from the NAS), then the NAS's copy too (from Meta).
-fn canopy_layer(agent: &ureq::Agent, url: &str, path: &Path, store: Option<&Path>, row0: usize, rows: usize, f: fn(u16) -> u8) -> Result<Option<Vec<u8>>> {
-    let mut attempt = 0;
-    loop {
-        let Some(b) = fetch_file(agent, url, path, store)? else { return Ok(None) };
-        match decode_u16(&b, row0, rows, f) {
-            Ok(v) => return Ok(Some(v)),
-            Err(e) if attempt < 2 => {
-                eprintln!("canopy: {}: {e:#}; taken again", path.display());
-                std::fs::remove_file(path).ok();
-                if attempt == 1 {
-                    if let Some(st) = store {
-                        std::fs::remove_file(st).ok();
+/// One layer of a square: its file (fetch_file, a 40000² uint16 LZW TIFF), from which the bands
+/// read their windows. A file that doesn't decode is damaged: this Mac's copy is deleted and it's
+/// taken again (from the NAS), then the NAS's copy too (from Meta).
+struct Layer<'a> {
+    agent: &'a ureq::Agent,
+    url: String,
+    path: PathBuf,
+    store: Option<PathBuf>,
+    f: fn(u16) -> u8,
+    tiff: Tiff,
+    taken: usize,
+}
+
+impl<'a> Layer<'a> {
+    /// The layer's file, opened; None when Meta has none there.
+    fn open(agent: &'a ureq::Agent, url: String, path: PathBuf, store: Option<PathBuf>, f: fn(u16) -> u8) -> Result<Option<Layer<'a>>> {
+        let mut taken = 0;
+        loop {
+            let Some(file) = fetch_file(agent, &url, &path, store.as_deref())? else { return Ok(None) };
+            match canopy_tiff(file) {
+                Ok(tiff) => return Ok(Some(Layer { agent, url, path, store, f, tiff, taken })),
+                Err(e) => damaged(&path, store.as_deref(), &mut taken, e)?,
+            }
+        }
+    }
+
+    /// Window `w` of the layer.
+    fn read(&mut self, w: Window) -> Result<Vec<u8>> {
+        let mut got = self.tiff.read(w, self.f);
+        loop {
+            let e = match got {
+                Ok(v) => return Ok(v),
+                Err(e) => e,
+            };
+            damaged(&self.path, self.store.as_deref(), &mut self.taken, e)?;
+            // (Bands before this one have used the square: found missing now, it can't be passed over.)
+            let file = fetch_file(self.agent, &self.url, &self.path, self.store.as_deref())?.with_context(|| format!("{}: Meta has none there now", self.path.display()))?;
+            got = canopy_tiff(file).and_then(|t| {
+                self.tiff = t;
+                self.tiff.read(w, self.f)
+            });
+        }
+    }
+}
+
+/// A canopy file's strip index: a 40000² uint16 LZW TIFF, else it's damaged.
+fn canopy_tiff(file: File) -> Result<Tiff> {
+    let t = Tiff::open(file)?;
+    let s = &t.st;
+    if s.width != C10 || s.height != C10 || s.compression != 5 {
+        bail!("unexpected TIFF {}×{} compression {}", s.width, s.height, s.compression);
+    }
+    Ok(t)
+}
+
+/// After error `e` reading canopy file `path`: this Mac's copy is deleted so it's taken again, the
+/// second time the NAS's too; the third time, the error.
+fn damaged(path: &Path, store: Option<&Path>, taken: &mut usize, e: anyhow::Error) -> Result<()> {
+    if *taken == 2 {
+        return Err(e.context(format!("{} (taken again twice)", path.display())));
+    }
+    eprintln!("canopy: {}: {e:#}; taken again", path.display());
+    std::fs::remove_file(path).ok();
+    if *taken == 1 {
+        if let Some(st) = store {
+            std::fs::remove_file(st).ok();
+        }
+    }
+    *taken += 1;
+    Ok(())
+}
+
+/// A square's work in bands of rows: each sample to do within reach of the square (in the band
+/// holding its row) and each cell row of a to-do grid tile (in the band holding the first row its
+/// sub-samples read) is done in exactly one band, which reads the window holding every lookup that
+/// work makes inside the square's rows `row0..row1`. So each lookup finds what it found when all
+/// those rows were read at once, and no more than a band's window is ever held.
+struct Bands {
+    /// Each band's window.
+    win: Vec<Window>,
+    /// Each band's samples.
+    samples: Vec<Vec<u32>>,
+    /// Each grid tile's cell rows' bands (u16::MAX: none here).
+    cells: Vec<[u16; 256]>,
+}
+
+/// A grid tile's cell rows' bands, and the window each of those bands reads for it.
+type TileBands = ([u16; 256], Vec<(usize, Window)>);
+
+impl Bands {
+    /// Bands of `size` rows over rows `row0..row1` of the square at `top`, `left`, for the samples
+    /// (within reach: `touches`) and grid tiles to do.
+    #[allow(clippy::too_many_arguments)]
+    fn plan(top: f64, left: f64, (row0, row1): (usize, usize), size: usize, samples: &[Sample], todo_s: &[bool], touches: impl Fn(f64, f64) -> bool, tiles: &[[u32; 2]], todo_t: &[bool]) -> Bands {
+        let px = |v: f64| (v / C10_RES).floor();
+        let n = (row1 - row0).div_ceil(size);
+        let (mut win, mut by_band) = (vec![Window::NONE; n], vec![Vec::new(); n]);
+        // A sample's lookups (near_field) are within NEAR_MAX_M of it: its window is the rows and
+        // columns that spans, a pixel spare each way for rounding.
+        for (si, (s, &t)) in samples.iter().zip(todo_s).enumerate() {
+            let (lon, lat) = (s.lon as f64 * E7, s.lat as f64 * E7);
+            if !t || !touches(lon, lat) {
+                continue;
+            }
+            let (m_lon, m_lat) = m_per_deg(lat);
+            let (dlon, dlat) = (NEAR_MAX_M / m_lon, NEAR_MAX_M / m_lat);
+            let w = Window::clip((px(top - (lat + dlat)) - 1.0, px(top - (lat - dlat)) + 1.0), (px(lon - dlon - left) - 1.0, px(lon + dlon - left) + 1.0), (row0, row1));
+            let k = (px(top - lat).clamp(row0 as f64, (row1 - 1) as f64) as usize - row0) / size;
+            by_band[k].push(si as u32);
+            win[k] = win[k].union(w);
+        }
+        // A grid cell row's sub-samples read two rows (worked out as the grid loop does), across the
+        // tile's columns.
+        let lon_of = |gx: f64| gx / roadcore::grid::WORLD * 360.0 - 180.0;
+        let cells: Vec<TileBands> = tiles
+            .par_iter()
+            .zip(todo_t)
+            .map(|(g, &t)| {
+                let (mut cells, mut wins) = ([u16::MAX; 256], Vec::<(usize, Window)>::new());
+                if !t {
+                    return (cells, wins);
+                }
+                let gx = g[0] as f64 * 256.0;
+                let cols = (px(lon_of(gx + 0.25) - left), px(lon_of(gx + 255.0 + 0.75) - left));
+                for (cy, b) in cells.iter_mut().enumerate() {
+                    let gy = g[1] as f64 * 256.0 + cy as f64;
+                    let row = |oy: f64| px(top - (std::f64::consts::PI * (1.0 - 2.0 * (gy + oy) / roadcore::grid::WORLD)).dsinh().datan().to_degrees());
+                    let (ra, rb) = (row(0.25), row(0.75));
+                    let w = Window::clip((ra.min(rb), ra.max(rb)), cols, (row0, row1));
+                    if w.is_empty() {
+                        continue;
+                    }
+                    let k = (w.r0 - row0) / size;
+                    *b = k as u16;
+                    match wins.last_mut() {
+                        Some((j, v)) if *j == k => *v = v.union(w),
+                        _ => wins.push((k, w)),
                     }
                 }
-            }
-            Err(e) => return Err(e.context(format!("{} (taken again twice)", path.display()))),
+                (cells, wins)
+            })
+            .collect();
+        for &(k, w) in cells.iter().flat_map(|(_, ws)| ws) {
+            win[k] = win[k].union(w);
         }
-        attempt += 1;
+        Bands { win, samples: by_band, cells: cells.into_iter().map(|(c, _)| c).collect() }
     }
 }
 
@@ -464,6 +713,7 @@ fn canopy(dir: &Path) -> Result<()> {
     std::fs::create_dir_all(&cache)?;
     // The NAS's store of them (`sources/canopy/`), where each is downloaded once.
     let store = std::env::var_os("SCENIC_CANOPY_STORE").map(PathBuf::from);
+    let band = std::env::var("SCENIC_CANOPY_BAND").ok().and_then(|v| v.parse().ok()).filter(|&b: &usize| b > 0).unwrap_or(BAND_ROWS);
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(1800)))
         .user_agent("road-elevations/0.1 (personal offline map)")
@@ -485,8 +735,11 @@ fn canopy(dir: &Path) -> Result<()> {
     let cdir = scache::dir(dir);
     let change = GridChange::load(&cdir, "canopy", &grid.tiles);
     let prev = scache::Prev::load(&cdir, "canopy");
-    let old_near = Array::<i8>::open(&dir.join("near.i8")).ok().filter(|a| a.get().len() == prev.len() * NEAR_AZ && !prev.is_empty());
-    let old_road = Array::<u8>::open(&dir.join("roadside.u8")).ok().filter(|a| a.get().len() == prev.len() * 2);
+    // (The last run's outputs: each opened only when it's the size the cache says, and let go once
+    // used, as in WebAssembly an open file is read whole into memory.)
+    let sized = |name: &str, len: usize| std::fs::metadata(dir.join(name)).is_ok_and(|m| m.len() == len as u64);
+    let old_near = (!prev.is_empty() && sized("near.i8", prev.len() * NEAR_AZ)).then(|| Array::<i8>::open(&dir.join("near.i8")).ok()).flatten();
+    let old_road = sized("roadside.u8", prev.len() * 2).then(|| Array::<u8>::open(&dir.join("roadside.u8")).ok()).flatten();
     let near: Vec<AtomicI8> = (0..samples.len() * NEAR_AZ).map(|_| AtomicI8::new(i8::MIN)).collect();
     let roadside: Vec<AtomicU8> = (0..samples.len() * 2).map(|_| AtomicU8::new(0)).collect();
     let todo_s: Vec<bool> = samples
@@ -511,18 +764,20 @@ fn canopy(dir: &Path) -> Result<()> {
             }
         })
         .collect();
+    drop((prev, old_near, old_road));
     let mut canopy_out = vec![0u8; grid.tiles.len() * CELLS];
     let mut cover_out = vec![0u8; grid.tiles.len() * CELLS];
-    // Grid tiles: copied from the last run's layers where the tile was there.
+    // Grid tiles: copied from the last run's layers where the tile was there (read tile by tile).
     let mut todo_t = vec![true; grid.tiles.len()];
-    let old_can = Array::<u8>::open(&dir.join("grid.canopy.u8")).ok().filter(|a| a.get().len() == change.prev_len() * CELLS && change.prev_len() > 0);
-    let old_cov = Array::<u8>::open(&dir.join("grid.cover.u8")).ok().filter(|a| a.get().len() == change.prev_len() * CELLS);
-    if let (Some(oc), Some(ov)) = (&old_can, &old_cov) {
+    let n = change.prev_len() * CELLS;
+    let old = (n > 0 && sized("grid.canopy.u8", n) && sized("grid.cover.u8", n)).then(|| (File::open(dir.join("grid.canopy.u8")), File::open(dir.join("grid.cover.u8"))));
+    if let Some((Ok(oc), Ok(ov))) = old {
+        use store::sys::PosIo;
         let slot = change.prev_slots();
         for (i, t) in grid.tiles.iter().enumerate() {
             if let Some(&j) = slot.get(t) {
-                canopy_out[i * CELLS..(i + 1) * CELLS].copy_from_slice(&oc.get()[j * CELLS..(j + 1) * CELLS]);
-                cover_out[i * CELLS..(i + 1) * CELLS].copy_from_slice(&ov.get()[j * CELLS..(j + 1) * CELLS]);
+                oc.read_exact_at(&mut canopy_out[i * CELLS..(i + 1) * CELLS], (j * CELLS) as u64)?;
+                ov.read_exact_at(&mut cover_out[i * CELLS..(i + 1) * CELLS], (j * CELLS) as u64)?;
                 todo_t[i] = false;
             }
         }
@@ -587,64 +842,72 @@ fn canopy(dir: &Path) -> Result<()> {
         let name = |st: &str| format!("meta_chm_lat={top}.0_lon={left}.0_{st}.tif");
         let height: fn(u16) -> u8 = |v| ((v as u32 + 50) / 100).min(254) as u8;
         let share: fn(u16) -> u8 = |v| ((v as u32).min(1000) * 255 / 1000) as u8;
-        let layers: Vec<Option<Vec<u8>>> = [("median", height), ("p95", height), ("cover5m", share)]
+        let layers: Vec<Option<Layer>> = [("median", height), ("p95", height), ("cover5m", share)]
             .par_iter()
-            .map(|&(st, f)| canopy_layer(&agent, &format!("{CHM10_URL}/{}", name(st)), &cache.join(name(st)), store.as_ref().map(|s| s.join(name(st))).as_deref(), row0, rows, f))
+            .map(|&(st, f)| Layer::open(&agent, format!("{CHM10_URL}/{}", name(st)), cache.join(name(st)), store.as_ref().map(|s| s.join(name(st))), f))
             .collect::<Result<_>>()?;
-        let Ok([Some(median), Some(p95), Some(cover)]) = <[Option<Vec<u8>>; 3]>::try_from(layers) else {
+        let Ok([Some(median), Some(p95), Some(cover)]) = <[Option<Layer>; 3]>::try_from(layers) else {
             pb.println(format!("canopy {top},{left}: no data"));
             pb.inc(1);
             continue;
         };
-        let t = Chm10 { left: left as f64, top: top as f64, row0, rows, median, p95, cover };
-
-        // Grid layers: cells whose centre lies in this tile (4 sub-samples per cell, at a quarter and
-        // three quarters of the cell each way), for tiles to do. A sub-sample's column in the square
-        // depends only on its longitude and its row only on its latitude: each is worked out once
-        // per column and per row of the tile (Chm10::idx in two halves).
-        canopy_out.par_chunks_mut(CELLS).zip(cover_out.par_chunks_mut(CELLS)).zip(grid.tiles.par_iter().zip(&todo_t)).for_each(|((can, cov), (tile, &todo))| {
-            if !todo {
-                return;
+        let mut layers = [median, p95, cover];
+        let bands = Bands::plan(top as f64, left as f64, (row0, row1), band, samples, &todo_s, |lon, lat| touches(top, left, lon, lat), &grid.tiles, &todo_t);
+        for (k, (&w, band_samples)) in bands.win.iter().zip(&bands.samples).enumerate() {
+            if w.is_empty() && band_samples.is_empty() {
+                continue;
             }
-            let cols: Vec<[Option<usize>; 2]> = (0..256usize)
-                .map(|cx| {
-                    let gx = tile[0] as f64 * 256.0 + cx as f64;
-                    [0.25, 0.75].map(|ox| t.col((gx + ox) / roadcore::grid::WORLD * 360.0 - 180.0))
-                })
-                .collect();
-            for cy in 0..256usize {
-                let gy = tile[1] as f64 * 256.0 + cy as f64;
-                let rows = [0.25, 0.75].map(|oy| t.row((std::f64::consts::PI * (1.0 - 2.0 * (gy + oy) / roadcore::grid::WORLD)).dsinh().datan().to_degrees()));
-                for (cx, c) in cols.iter().enumerate() {
-                    let (mut sh, mut sc, mut n) = (0u32, 0u32, 0u32);
-                    for (kx, ky) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                        if let (Some(c), Some(r)) = (c[kx], rows[ky]) {
-                            let i = r * C10 + c;
-                            sh += t.median[i] as u32;
-                            sc += t.cover[i] as u32;
-                            n += 1;
+            let read: Vec<Vec<u8>> = if w.is_empty() { vec![Vec::new(); 3] } else { layers.par_iter_mut().map(|l| l.read(w)).collect::<Result<_>>()? };
+            let Ok([median, p95, cover]) = <[Vec<u8>; 3]>::try_from(read) else { unreachable!() };
+            let t = Chm10 { left: left as f64, top: top as f64, row0, rows, win: w, median, p95, cover };
+            let width = w.c1 - w.c0;
+
+            // Grid layers: cells whose centre lies in this tile (4 sub-samples per cell, at a quarter
+            // and three quarters of the cell each way), for tiles to do: the band's cell rows of
+            // them. A sub-sample's column in the square depends only on its longitude and its row
+            // only on its latitude: each is worked out once per column and per row of the tile
+            // (Chm10::idx in two halves), for tiles with a cell row in the band (whose columns its
+            // window holds). (A tile a task: a band's tiles are a short run of the list, which
+            // rayon's usual split would leave to one or two threads.)
+            canopy_out.par_chunks_mut(CELLS).zip(cover_out.par_chunks_mut(CELLS)).zip(grid.tiles.par_iter().zip(&bands.cells)).with_max_len(1).for_each(|((can, cov), (tile, cells))| {
+                if !cells.iter().any(|&b| b as usize == k) {
+                    return;
+                }
+                let cols: Vec<[Option<usize>; 2]> = (0..256usize)
+                    .map(|cx| {
+                        let gx = tile[0] as f64 * 256.0 + cx as f64;
+                        [0.25, 0.75].map(|ox| t.col((gx + ox) / roadcore::grid::WORLD * 360.0 - 180.0))
+                    })
+                    .collect();
+                for cy in (0..256usize).filter(|&cy| cells[cy] as usize == k) {
+                    let gy = tile[1] as f64 * 256.0 + cy as f64;
+                    let rows = [0.25, 0.75].map(|oy| t.row((std::f64::consts::PI * (1.0 - 2.0 * (gy + oy) / roadcore::grid::WORLD)).dsinh().datan().to_degrees()));
+                    for (cx, c) in cols.iter().enumerate() {
+                        let (mut sh, mut sc, mut n) = (0u32, 0u32, 0u32);
+                        for (kx, ky) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                            if let (Some(c), Some(r)) = (c[kx], rows[ky]) {
+                                let i = r * width + c;
+                                sh += t.median[i] as u32;
+                                sc += t.cover[i] as u32;
+                                n += 1;
+                            }
+                        }
+                        if n > 0 {
+                            can[cy * 256 + cx] = (sh / n) as u8;
+                            cov[cy * 256 + cx] = (sc / n) as u8;
                         }
                     }
-                    if n > 0 {
-                        can[cy * 256 + cx] = (sh / n) as u8;
-                        cov[cy * 256 + cx] = (sc / n) as u8;
-                    }
                 }
-            }
-        });
+            });
 
-        // Near field for samples to do in (or within 300 m of) this tile.
-        samples.par_iter().enumerate().for_each(|(si, s)| {
-            if !todo_s[si] {
-                return;
-            }
-            let (lon, lat) = (s.lon as f64 * E7, s.lat as f64 * E7);
-            if lon < t.left - margin || lon > t.left + 10.0 + margin || lat > t.top + margin || lat < t.top - 10.0 - margin {
-                return;
-            }
-            let owned = lon >= t.left && lon < t.left + 10.0 && lat <= t.top && lat > t.top - 10.0;
-            near_field(s, si, owned, &t, &grid, terr, &near, &roadside);
-        });
+            // Near field for the band's samples to do in (or within 300 m of) this tile.
+            band_samples.par_iter().for_each(|&si| {
+                let s = &samples[si as usize];
+                let (lon, lat) = (s.lon as f64 * E7, s.lat as f64 * E7);
+                let owned = lon >= t.left && lon < t.left + 10.0 && lat <= t.top && lat > t.top - 10.0;
+                near_field(s, si as usize, owned, &t, &grid, terr, &near, &roadside);
+            });
+        }
         pb.inc(1);
     }
     pb.finish_and_clear();
@@ -674,14 +937,19 @@ fn compass<const N: usize>() -> [(f64, f64); N] {
 static NEAR_DIRS: LazyLock<[(f64, f64); NEAR_AZ]> = LazyLock::new(compass);
 static ROADSIDE_DIRS: LazyLock<[(f64, f64); 16]> = LazyLock::new(compass);
 
+/// Metres per degree of longitude and of latitude at latitude `lat`: near_field's steps (and so how
+/// far its lookups reach, Bands).
+fn m_per_deg(lat: f64) -> (f64, f64) {
+    (111_320.0 * lat.to_radians().dcos(), 111_320.0)
+}
+
 /// Near-field horizon per direction (0.5° units; merged by max across tiles) through
 /// terrain + median canopy height to 300 m, plus roadside p95 tree height and forest cover
 /// within 150 m for the owning tile.
 #[allow(clippy::too_many_arguments)]
 fn near_field(s: &Sample, si: usize, owned: bool, t: &Chm10, grid: &GridIndex, terr: &[i16], near: &[AtomicI8], roadside: &[AtomicU8]) {
     let (lon, lat) = (s.lon as f64 * E7, s.lat as f64 * E7);
-    let m_lat = 111_320.0;
-    let m_lon = 111_320.0 * lat.to_radians().dcos();
+    let (m_lon, m_lat) = m_per_deg(lat);
     let (gx, gy) = roadcore::grid::cell_of(lon, lat);
     let cm = roadcore::grid::cell_m(lat);
     let eye = eye_height(s, grid, terr);
@@ -777,27 +1045,114 @@ mod tests {
         b
     }
 
+    /// Reads of `b`, as of a file.
+    fn at(b: &[u8]) -> impl Fn(u64, usize) -> Result<Vec<u8>> + Sync + '_ {
+        move |o, n| b.get(o as usize..).and_then(|b| b.get(..n)).map(<[u8]>::to_vec).context("past the end")
+    }
+
     #[test]
-    fn rows_decoded_straight_into_place() {
+    fn windows_decoded_straight_into_place() {
         let (w, h) = (5, 7);
         let b = tiff(w, h, 3);
         assert!(pipeline::whole::tiff_bytes_whole(&b));
-        let st = parse_tiff(&b).unwrap();
+        let st = parse_tiff(&at(&b)).unwrap();
         let f = |v: u16| (v % 251) as u8;
-        // Windows starting and ending mid-strip, one row, all rows.
-        for (row0, rows) in [(0, 7), (2, 3), (4, 1), (6, 1), (1, 5)] {
-            let got = decode_rows(&b, &st, row0, rows, f).unwrap();
-            let want: Vec<u8> = (row0..row0 + rows).flat_map(|r| (0..w).map(move |c| f((r * 100 + c) as u16))).collect();
-            assert_eq!(got, want, "rows {row0}..{}", row0 + rows);
+        // Windows starting and ending mid-strip, one row, all rows; all columns, or some.
+        for (rows, cols) in [(0..7, 0..5), (2..5, 0..5), (4..5, 1..4), (6..7, 4..5), (1..6, 2..3), (0..7, 0..1)] {
+            let got = decode_rows(&at(&b), &st, rows.clone(), cols.clone(), f).unwrap();
+            let want: Vec<u8> = rows.clone().flat_map(|r| cols.clone().map(move |c| f((r * 100 + c) as u16))).collect();
+            assert_eq!(got, want, "rows {rows:?} columns {cols:?}");
         }
-        // Cut short, or a strip damaged: an error, not a panic or zeros.
-        assert!(parse_tiff(&b[..20]).is_err());
-        assert!(decode_rows(&b[..b.len() - 3], &st, 0, 7, f).is_err());
+        // Cut short, or a strip damaged (even outside the columns read): an error, not a panic or
+        // zeros.
+        assert!(parse_tiff(&at(&b[..20])).is_err());
+        assert!(decode_rows(&at(&b[..b.len() - 3]), &st, 0..7, 0..5, f).is_err());
         let mut bad = b.clone();
         let (off, len) = st.strips[1];
-        bad[off..off + len].fill(0xff);
-        assert!(decode_rows(&bad, &st, 3, 2, f).is_err());
+        bad[off as usize..off as usize + len].fill(0xff);
+        assert!(decode_rows(&at(&bad), &st, 3..5, 0..1, f).is_err());
         // (Rows away from the damaged strip still decode.)
-        assert!(decode_rows(&bad, &st, 0, 3, f).is_ok());
+        assert!(decode_rows(&at(&bad), &st, 0..3, 0..5, f).is_ok());
+        // From a file, positionally.
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().join("t.tif");
+        std::fs::write(&p, &b).unwrap();
+        let t = Tiff::open(File::open(&p).unwrap()).unwrap();
+        assert_eq!(t.read(Window { r0: 2, r1: 6, c0: 1, c1: 4 }, f).unwrap(), decode_rows(&at(&b), &st, 2..6, 1..4, f).unwrap());
+        assert!(canopy_tiff(File::open(&p).unwrap()).is_err(), "not 40000²");
+        // A damaged directory (StripByteCounts, its sixth entry, counting 4 billion): an error.
+        bad = b.clone();
+        bad[10 + 5 * 12 + 4..10 + 5 * 12 + 8].copy_from_slice(&u32::MAX.to_le_bytes());
+        std::fs::write(&p, &bad).unwrap();
+        assert!(Tiff::open(File::open(&p).unwrap()).is_err());
+    }
+
+    #[test]
+    fn windows_clipped_and_joined() {
+        assert_eq!(Window::clip((-3.0, 5.0), (39_998.0, 40_005.0), (2, 100)), Window { r0: 2, r1: 6, c0: 39_998, c1: C10 });
+        assert!(Window::clip((200.0, 300.0), (0.0, 1.0), (2, 100)).is_empty());
+        assert!(Window::clip((5.0, 4.0), (0.0, 1.0), (2, 100)).is_empty());
+        // (A bound that's NaN or infinite is no bound.)
+        assert_eq!(Window::clip((f64::NAN, f64::INFINITY), (f64::NEG_INFINITY, f64::NAN), (2, 100)), Window { r0: 2, r1: 100, c0: 0, c1: C10 });
+        let w = Window { r0: 50, r1: 60, c0: 10, c1: 20 };
+        assert_eq!(Window::NONE.union(w), w);
+        assert_eq!(w.union(Window::NONE), w);
+        assert_eq!(w.union(Window { r0: 2, r1: 6, c0: 30, c1: 40 }), Window { r0: 2, r1: 60, c0: 10, c1: 40 });
+    }
+
+    #[test]
+    fn files_kept_copied_or_downloaded_whole() {
+        let d = tempfile::tempdir().unwrap();
+        let (cache, store) = (d.path().join("cache"), d.path().join("store"));
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::create_dir_all(&store).unwrap();
+        let agent: ureq::Agent = ureq::Agent::config_builder().proxy(None).build().into();
+        let b = tiff(5, 7, 3);
+        let whole = |f: &File| {
+            let len = f.metadata().unwrap().len();
+            read_at(f, len, 0, len as usize).unwrap()
+        };
+        let never = "http://127.0.0.1:9/never";
+        // The NAS's copy, copied here (this one, cut short, deleted first); then the copy here.
+        std::fs::write(store.join("a.tif"), &b).unwrap();
+        std::fs::write(cache.join("a.tif"), &b[..b.len() - 1]).unwrap();
+        for _ in 0..2 {
+            let f = fetch_file(&agent, never, &cache.join("a.tif"), Some(&store.join("a.tif"))).unwrap().unwrap();
+            assert_eq!(whole(&f), b);
+        }
+        // Meta's "none there", from the NAS.
+        std::fs::write(store.join("b.tif"), b"").unwrap();
+        assert!(fetch_file(&agent, never, &cache.join("b.tif"), Some(&store.join("b.tif"))).unwrap().is_none());
+        assert_eq!(std::fs::metadata(cache.join("b.tif")).unwrap().len(), 0);
+        // Downloaded (a body cut short tried again), into the NAS's store and here.
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/c.tif", srv.local_addr().unwrap());
+        let body = b.clone();
+        let server = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for cut in [true, false] {
+                let (mut s, _) = srv.accept().unwrap();
+                let (mut req, mut buf) = (Vec::new(), [0u8; 1024]);
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = s.read(&mut buf).unwrap();
+                    assert!(n > 0);
+                    req.extend_from_slice(&buf[..n]);
+                }
+                s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).unwrap();
+                s.write_all(&body[..if cut { body.len() / 2 } else { body.len() }]).unwrap();
+            }
+        });
+        let f = fetch_file(&agent, &url, &cache.join("c.tif"), Some(&store.join("c.tif"))).unwrap().unwrap();
+        server.join().unwrap();
+        assert_eq!(whole(&f), b);
+        assert_eq!(std::fs::read(cache.join("c.tif")).unwrap(), b);
+        assert_eq!(std::fs::read(store.join("c.tif")).unwrap(), b);
+        // No temporary file left, nor the download's lock.
+        for dir in [&cache, &store] {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                assert!(!pipeline::whole::is_tmp(&p) && p.extension().is_some_and(|x| x == "tif"), "{} left", p.display());
+            }
+        }
     }
 }
