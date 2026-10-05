@@ -303,6 +303,39 @@ impl AgentLock {
     }
 }
 
+/// The coverage of the regions, and each region's own.
+struct Coverages {
+    all: crate::coverage::Coverage,
+    each: Vec<(String, crate::coverage::Coverage)>,
+}
+
+/// What a coverage is made from, as a key: the recipes, the pass's outlines (their content name), and
+/// the outline files (names, sizes and times, the Geofabrik folder's too); None when those can't be
+/// listed now.
+fn coverage_key(recipes: &[recipes::Recipe], outlines: Option<&str>, dir: &Path) -> Option<String> {
+    let mut parts: Vec<String> = recipes.iter().map(|r| format!("{} {}", r.id, r.outline.join(" "))).collect();
+    parts.push(format!("outlines {}", outlines.unwrap_or("-")));
+    for d in [dir.to_path_buf(), dir.join("geofabrik")] {
+        let rd = match std::fs::read_dir(&d) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return None,
+        };
+        let mut files: Vec<String> = Vec::new();
+        for e in rd {
+            let e = e.ok()?;
+            let m = e.metadata().ok()?;
+            if m.is_file() {
+                let t = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+                files.push(format!("{} {} {t}", e.file_name().to_string_lossy(), m.len()));
+            }
+        }
+        files.sort();
+        parts.extend(files);
+    }
+    Some(store::naming::hash16(parts.join("\n").as_bytes()))
+}
+
 pub struct Agent {
     o: Options,
     /// Held unless another agent runs (then this one only plans and reports: a dry run).
@@ -321,6 +354,8 @@ pub struct Agent {
     progress: Option<(Instant, BTreeMap<String, build::RegionState>, Vec<build::Step>)>,
     /// The pass's reaches as last read, by content name (large: read again only when they change).
     reach: std::cell::RefCell<Option<(String, std::rc::Rc<crate::reach::Reaches>)>>,
+    /// The coverage and each region's as last made, with what they were made from (`coverage`).
+    coverage: std::cell::RefCell<Option<(String, std::rc::Rc<Coverages>)>>,
     /// Who this agent is in claims ("<host> <pid>"), and when its running job's claims were last
     /// kept fresh.
     me: String,
@@ -394,7 +429,7 @@ impl Agent {
         } else {
             None
         };
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, lease: None, beaten: None })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, lease: None, beaten: None })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1334,21 +1369,14 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "Building the regions".into(), why: "the first OpenStreetMap pass (it makes the outlines regions are drawn from)".into() });
             return jobs;
         };
-        let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).map(|c| crate::outlines::Outlines::open(&root.join(c))).transpose();
-        let outlines = match outlines {
-            Ok(o) => o,
-            Err(e) => {
-                waiting.push(Waiting { step: None, what: "Building the regions".into(), why: format!("the pass's outlines: {e:#}") });
-                return jobs;
-            }
-        };
-        let cov = match crate::coverage::Coverage::from_recipes(&recipes, outlines.as_ref(), &root.join("inputs/outlines")) {
+        let covs = match self.coverage(root, &manifest, date, &recipes) {
             Ok(c) => c,
-            Err(e) => {
-                waiting.push(Waiting { step: None, what: "Building the regions".into(), why: format!("{e:#}") });
+            Err(why) => {
+                waiting.push(Waiting { step: None, what: "Building the regions".into(), why });
                 return jobs;
             }
         };
+        let cov = &covs.all;
         let done = keys;
         let inputs = input_digests(root);
         let held = root.join("inputs/hold-catalog").exists();
@@ -1489,8 +1517,8 @@ impl Agent {
         if regions.is_empty() {
             return out;
         }
-        let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).and_then(|c| crate::outlines::Outlines::open(&root.join(c)).ok());
-        let Ok(cov) = crate::coverage::Coverage::from_recipes(regions, outlines.as_ref(), &root.join("inputs/outlines")) else { return out };
+        let Ok(covs) = self.coverage(root, &manifest, &date, regions) else { return out };
+        let cov = &covs.all;
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         out.extend(build::checklist(&cov, &date, &manifest, &keys, &input_digests(root), root.join("inputs/hold-catalog").exists(), reach.as_deref()));
         out
@@ -1500,13 +1528,8 @@ impl Agent {
     fn region_progress(&self, root: &Path, regions: &[recipes::Recipe]) -> BTreeMap<String, build::RegionState> {
         let Some(date) = crate::osmpass::latest_pass(root) else { return BTreeMap::new() };
         let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).and_then(|c| crate::outlines::Outlines::open(&root.join(c)).ok());
-        let dir = root.join("inputs/outlines");
-        let Ok(cov) = crate::coverage::Coverage::from_recipes(regions, outlines.as_ref(), &dir) else { return BTreeMap::new() };
-        let each: Vec<(String, crate::coverage::Coverage)> = regions
-            .iter()
-            .filter_map(|r| crate::coverage::Coverage::from_recipes(std::slice::from_ref(r), outlines.as_ref(), &dir).ok().map(|c| (r.id.clone(), c)))
-            .collect();
+        let Ok(covs) = self.coverage(root, &manifest, &date, regions) else { return BTreeMap::new() };
+        let (cov, each) = (&covs.all, &covs.each);
         let keys = build::Keys::load(root);
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         build::region_states(&cov, &each, &date, &manifest, &keys, reach.as_deref(), &input_digests(root))
@@ -1530,6 +1553,27 @@ impl Agent {
         let r = std::rc::Rc::new(r);
         *cached = Some((c.clone(), r.clone()));
         Ok(Some(r))
+    }
+
+    /// The coverage of `recipes`, and each region's, as last made: made again only when the recipes,
+    /// the pass's outlines or the outline files change. (An `osm:` outline is read from the pass's
+    /// file on the NAS, 2.7 GB: made three times a loop, then each region's again, they had the loop
+    /// take a quarter of an hour once the US's states were in, 2026-10-05.)
+    fn coverage(&self, root: &Path, manifest: &BTreeMap<String, String>, date: &str, recipes: &[recipes::Recipe]) -> Result<std::rc::Rc<Coverages>, String> {
+        let dir = root.join("inputs/outlines");
+        let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).cloned();
+        let key = coverage_key(recipes, outlines.as_deref(), &dir);
+        if let Some((k, c)) = self.coverage.borrow().as_ref() {
+            if Some(k) == key.as_ref() {
+                return Ok(c.clone());
+            }
+        }
+        let o = outlines.map(|c| crate::outlines::Outlines::open(&root.join(c))).transpose().map_err(|e| format!("the pass's outlines: {e:#}"))?;
+        let all = crate::coverage::Coverage::from_recipes(recipes, o.as_ref(), &dir).map_err(|e| format!("{e:#}"))?;
+        let c = std::rc::Rc::new(Coverages { each: all.by_region(), all });
+        // (Not kept when the outline files couldn't be listed: made again next time.)
+        *self.coverage.borrow_mut() = key.map(|k| (k, c.clone()));
+        Ok(c)
     }
 
     /// A newer app is installed locally (`../current` points elsewhere than the agent's folder).

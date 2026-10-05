@@ -23,6 +23,7 @@ use std::path::Path;
 const M_PER_E7: f64 = 111_320.0 * 1e-7;
 
 /// One outline of the coverage, indexed for point tests.
+#[derive(Clone)]
 pub struct Shape {
     /// The region and outline entry it came from ("borders: osm:1877178").
     pub source: String,
@@ -33,6 +34,7 @@ pub struct Shape {
     grid: Grid,
 }
 
+#[derive(Clone)]
 struct Grid {
     x0: f64,
     y0: f64,
@@ -299,7 +301,7 @@ impl Grid {
 }
 
 /// The coverage: every region's outlines.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Coverage {
     pub shapes: Vec<Shape>,
 }
@@ -384,6 +386,20 @@ impl Coverage {
             }
         }
         Ok(Coverage { shapes })
+    }
+
+    /// Each region's own coverage (its shapes, as `from_recipes` made them for it: "<id>: <entry>"),
+    /// in the order its first shape comes: no outline read again.
+    pub fn by_region(&self) -> Vec<(String, Coverage)> {
+        let mut out: Vec<(String, Coverage)> = Vec::new();
+        for s in &self.shapes {
+            let id = s.source.split_once(": ").map_or(s.source.as_str(), |(id, _)| id);
+            match out.iter_mut().find(|(r, _)| r == id) {
+                Some((_, c)) => c.shapes.push(s.clone()),
+                None => out.push((id.to_string(), Coverage { shapes: vec![s.clone()] })),
+            }
+        }
+        out
     }
 
     pub fn contains(&self, p: [i32; 2]) -> bool {
@@ -653,6 +669,25 @@ mod tests {
         // Simplified by size: a country's outline by up to a kilometre, a town's by 60 m.
         assert_eq!(draw_tolerance_m(&[vec![e7(0.0, 40.0), e7(30.0, 40.0), e7(30.0, 60.0)]]), 1000.0);
         assert_eq!(draw_tolerance_m(&[vec![e7(0.0, 40.0), e7(0.01, 40.0), e7(0.01, 40.01)]]), 60.0);
+    }
+
+    #[test]
+    fn each_regions_coverage_is_its_own_shapes() {
+        let d = tempfile::tempdir().unwrap();
+        let rs = vec![
+            Recipe { id: "a".into(), name: "A".into(), outline: vec!["place:20,20,10".into(), "place:21,20,10".into()] },
+            Recipe { id: "b".into(), name: "B".into(), outline: vec!["place:40,40,10".into()] },
+        ];
+        let all = Coverage::from_recipes(&rs, None, d.path()).unwrap();
+        let each = all.by_region();
+        assert_eq!(each.iter().map(|(id, c)| (id.as_str(), c.shapes.len())).collect::<Vec<_>>(), [("a", 2), ("b", 1)]);
+        // The same as made from each recipe alone.
+        for (r, (_, c)) in rs.iter().zip(&each) {
+            let alone = Coverage::from_recipes(std::slice::from_ref(r), None, d.path()).unwrap();
+            let b = [190_000_000, 190_000_000, 420_000_000, 420_000_000];
+            assert_eq!(c.fingerprint(b), alone.fingerprint(b));
+            assert_eq!(c.contains([200_000_000, 200_000_000]), alone.contains([200_000_000, 200_000_000]));
+        }
     }
 
     #[test]
