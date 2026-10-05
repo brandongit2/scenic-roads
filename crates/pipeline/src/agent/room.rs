@@ -32,10 +32,10 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// The free space a job starts with, at least, when the caches can make it.
-pub const RESERVE: u64 = 60 << 30;
+pub const RESERVE: u64 = 30 << 30;
 
-/// What's freed past a job's `need` once the disk is short of it: a sixth more (10 GB past the
-/// build Mac's 60), so the jobs after it start without deleting again. (Not for the OSM pass, whose
+/// What's freed past a job's `need` once the disk is short of it: a sixth more (5 GB past the
+/// build Mac's 30), so the jobs after it start without deleting again. (Not for the OSM pass, whose
 /// need is what its conditions admitted it with.)
 pub fn margin(need: u64) -> u64 {
     need / 6
@@ -416,7 +416,7 @@ mod tests {
         assert_eq!(make_room_with(c, nas, 1 << 20, 3 << 20, &disk).unwrap(), 0);
         // Short of 2 MB: freed to 4 MB (three files), not just to 2 MB.
         assert_eq!(make_room_with(c, nas, 2 << 20, 4 << 20, &disk).unwrap(), 3 << 20);
-        assert_eq!(margin(60 << 30), 10 << 30);
+        assert_eq!(margin(30 << 30), 5 << 30);
     }
 }
 
