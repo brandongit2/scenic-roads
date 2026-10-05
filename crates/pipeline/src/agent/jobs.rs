@@ -89,7 +89,10 @@ impl Running {
         if let Some(d) = log.parent() {
             std::fs::create_dir_all(d)?;
         }
-        let out = File::options().create(true).append(true).open(&log).with_context(|| format!("open {}", log.display()))?;
+        let mut out = File::options().create(true).append(true).open(&log).with_context(|| format!("open {}", log.display()))?;
+        // (A job's log keeps its earlier runs': this run's begins here, and only what follows is
+        // its progress, parts and last lines.)
+        std::io::Write::write_all(&mut out, format!("{RUN_START}{} ({}) ===\n", spec.id, now_s()).as_bytes())?;
         let err = out.try_clone()?;
         let (prog, args) = spec.cmd.split_first().context("empty command")?;
         let mut c = Command::new("/usr/sbin/taskpolicy");
@@ -212,7 +215,10 @@ pub fn tail(log: &Path, n: usize) -> String {
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
-/// A log's last 64 KB (logs grow long: only the end is read).
+/// The line each run of a job begins with in its log (`Running::start`).
+const RUN_START: &str = "=== run of ";
+
+/// A log's last 64 KB (logs grow long: only the end is read), from its last run's start on.
 fn end_of(log: &Path) -> String {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut f) = File::open(log) else { return String::new() };
@@ -220,7 +226,11 @@ fn end_of(log: &Path) -> String {
     let _ = f.seek(SeekFrom::Start(len.saturating_sub(64 << 10)));
     let mut b = Vec::new();
     let _ = f.read_to_end(&mut b);
-    String::from_utf8_lossy(&b).into_owned()
+    let s = String::from_utf8_lossy(&b).into_owned();
+    match s.rfind(&format!("\n{RUN_START}")).map(|i| i + 1).or(s.starts_with(RUN_START).then_some(0)) {
+        Some(i) => s[i..].split_once('\n').map_or(String::new(), |(_, rest)| rest.to_string()),
+        None => s,
+    }
 }
 
 /// Says how far a job is, for the agent (`progress`): `progress: <done>/<total> <unit>` on stderr,
@@ -291,6 +301,11 @@ mod tests {
         let line = |i: usize| format!("parts: {i} {}\n", serde_json::to_string(&names).unwrap());
         std::fs::write(&log, format!("{}progress: 0/3 parts (Getting ready)\nosmium: done\n{}some output\n", line(0), line(1))).unwrap();
         assert_eq!(parts(&log), Some((1, names.iter().map(|s| s.to_string()).collect())));
+        // A run after it: none of the earlier run's.
+        let mut f = File::options().append(true).open(&log).unwrap();
+        std::io::Write::write_all(&mut f, format!("{RUN_START}t (1) ===\nstarting\n").as_bytes()).unwrap();
+        assert_eq!((parts(&log), progress(&log), tail(&log, 5).as_str()), (None, None, "starting"));
+        std::fs::write(&log, format!("{}progress: 0/3 parts (Getting ready)\nosmium: done\n{}some output\n", line(0), line(1))).unwrap();
         // Not text to show; and a line out of range is none.
         assert_eq!(tail(&log, 5), "progress: 0/3 parts (Getting ready)\nosmium: done\nsome output");
         std::fs::write(&log, format!("parts: 7 {}\n", serde_json::to_string(&names).unwrap())).unwrap();
