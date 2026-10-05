@@ -16,6 +16,9 @@
 //!   unit [U …] [--pass d] [--layers-root r] [--regions dir] [--dem dir] [--cache-dir dir] [--buildings dir]
 //!                                base(U) from the pass's pieces (today's steps on a unit folder):
 //!                                default every unit whose piece meets the coverage
+//!   unit-snap U --out d --cache c  unit U's folder built from the records into d, nothing
+//!                                written to the NAS, snapshotted around each step's program (for
+//!                                tools/check/same.py)
 //!   roadunits                    the road → units index from every unit's road values
 //!   terrain [T …] [--regions dir] [--pass d] [--raw dir]  terrain packs for z6 tiles T near the
 //!                                coverage (default: all of them): hi z9–12, then their z3 lo packs,
@@ -154,6 +157,7 @@ fn main() -> Result<()> {
         // before it's switched to: inputs/hold-catalog).
         "catalog" => catalog(&mut out, args.iter().any(|a| a == "--held"))?,
         "unit" => unit_step(&mut out, &args, &scratch)?,
+        "unit-snap" => unit_snap(&out, &args)?,
         "pois" => pois_step(&mut out, &args, &scratch)?,
         "roadunits" => roadunits(&mut out)?,
         "terrain" => terrain_step(&mut out, &args)?,
@@ -1485,9 +1489,9 @@ fn layers_source<'a>(out: &'a Out, pilot: &'a Option<(PathBuf, store::catalog::C
     }
 }
 
-fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
-    use pipeline::coverage::Coverage;
-    use pipeline::unit::{build_folder, owns, Tools};
+/// The pass the units build from (`--pass`, else the newest complete one) and the regions'
+/// coverage (`--regions`, else the NAS's recipes), with the regions' count.
+fn pass_and_coverage(out: &Out, args: &[String]) -> Result<(String, pipeline::coverage::Coverage, usize)> {
     let date = match opt(args, "--pass") {
         Some(d) => d,
         None => pipeline::osmpass::latest_pass(out.root()).context("no complete OSM pass on the NAS (--pass)")?,
@@ -1500,7 +1504,63 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     anyhow::ensure!(!recipes.is_empty(), "no regions in {}", regions.display());
     let outlines_file = out.get(&format!("sources/osm/{date}/outlines")).map(|n| out.path(n));
     let outlines = outlines_file.as_deref().map(pipeline::outlines::Outlines::open).transpose()?;
-    let cov = Coverage::from_recipes(&recipes, outlines.as_ref(), &out.root().join("inputs/outlines"))?;
+    let cov = pipeline::coverage::Coverage::from_recipes(&recipes, outlines.as_ref(), &out.root().join("inputs/outlines"))?;
+    Ok((date, cov, recipes.len()))
+}
+
+/// unit-snap U --out <dir> --cache <dir>: unit U's folder built as the unit step builds it, from
+/// the build's records, writing nothing to the NAS: its kept samples go under <dir>/shared (seeded
+/// with its and its neighbours' from the NAS), and the folder is copied before and after each of
+/// its steps' programs into <dir>/snap (pipeline::unit::Tools::snap) for tools/check/same.py.
+/// `--cache` holds the DEM seed (`dem-cache.*`) and the canopy files (`chm10/`), as the agent's
+/// cache does; the step programs are this binary's neighbours.
+fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
+    use pipeline::unit::{build_folder, Tools};
+    let u = positional(args).first().and_then(|s| Unit::parse(s)).context("unit-snap U")?;
+    let dir = PathBuf::from(opt(args, "--out").context("--out <dir>")?);
+    let (date, cov, _) = pass_and_coverage(out, args)?;
+    let reach = pipeline::reach::Reaches::load(out.root(), &out.manifest, &date).map_err(|e| anyhow::anyhow!("the pass's reaches: {e:?}"))?.context("no reaches for the pass")?;
+    let index = pipeline::buildtiles::Index::load(out)?.context("the roadside buildings aren't made")?;
+    let shared = dir.join("shared");
+    let kept = shared.join(pipeline::unit::DEM_UNITS);
+    std::fs::create_dir_all(&kept)?;
+    for e in std::fs::read_dir(out.root().join("cache").join(pipeline::unit::DEM_UNITS))?.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(n) = name.split('.').next().and_then(|s| Unit::parse(&s.replace('-', "/"))) else { continue };
+        if n.x.abs_diff(u.x) <= 1 && n.y.abs_diff(u.y) <= 1 && !kept.join(&name).exists() {
+            std::fs::copy(e.path(), kept.join(&name))?;
+        }
+    }
+    let bdir = dir.join(format!("{}-buildings", u.dash()));
+    let n = pipeline::buildtiles::stage(out.root(), &index, u, reach.get(u), &bdir)?;
+    eprintln!("unit-snap {}: buildings from {n} tiles", u.slash());
+    let tools = Tools {
+        bin: std::env::current_exe()?.parent().context("bin")?.to_path_buf(),
+        dem: PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into())),
+        cache: PathBuf::from(opt(args, "--cache").context("--cache <dir>")?),
+        buildings: Some(bdir),
+        moi_dtm: Some(out.root().join("inputs/moi-dtm")),
+        sources: Some(out.root().join("sources")),
+        shared: Some(shared),
+        spacing_m: 8,
+        snap: Some(dir.join("snap")),
+    };
+    let piece = out.path(out.get(&format!("sources/osm/{date}/pieces/{}", u.dash())).context("no piece")?);
+    let local = dir.join(format!("piece-{}.osm.pbf", u.dash()));
+    std::fs::copy(&piece, &local)?;
+    let folder = dir.join("units").join(u.dash());
+    std::fs::remove_dir_all(&folder).ok();
+    std::fs::remove_dir_all(dir.join("snap")).ok();
+    let heritage = |b: [f64; 4], d: &Path| pipeline::heritage::unit_inputs(out, &date, b, d);
+    let t = std::time::Instant::now();
+    let rep = build_folder(u, &local, &folder, &cov, &pipeline::stage::Source::Manifest(out), &tools, &heritage, None)?;
+    eprintln!("unit-snap {}: {} of {} ways kept, {} owned, in {:.1?}; snapshots in {}", u.slash(), rep.kept_ways, rep.piece_ways, rep.owned, t.elapsed(), dir.join("snap").display());
+    Ok(())
+}
+
+fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    use pipeline::unit::{build_folder, owns, Tools};
+    let (date, cov, regions) = pass_and_coverage(out, args)?;
     // Global-source layers: as this build's manifest has them now (what the unit keys hash: a
     // terrain job of the same plan is published only with its catalog, at the end), or another
     // root's published catalog (a pilot builds against the real one).
@@ -1521,6 +1581,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         sources: Some(out.root().join("sources")),
         shared: Some(out.root().join("cache")),
         spacing_m: 8,
+        snap: None,
     };
     // Today's DEM cache, where the units' elevations start from (once per Mac).
     pipeline::unit::dem_seed(out.root(), &tools.cache)?;
@@ -1561,7 +1622,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             }
         }
     }
-    eprintln!("unit: pass {date}, {} region(s), {} unit(s)", recipes.len(), units.len());
+    eprintln!("unit: pass {date}, {regions} region(s), {} unit(s)", units.len());
     // A unit's folders go once it's built; what an earlier job left (a unit that failed) goes now.
     std::fs::remove_dir_all(scratch.join("units")).ok();
     for e in std::fs::read_dir(scratch).into_iter().flatten().flatten() {
@@ -1586,7 +1647,9 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             continue;
         };
         let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
+        let mut laps = pipeline::unit::Laps::default();
         std::fs::copy(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
+        laps.lap("piece copied from the NAS");
         // Its scenic results from its last run, kept in the shared cache (pipeline::scache::Carry).
         let carry = pipeline::scache::Carry { dir: tools.scenic_kept(u) };
         pipeline::unit::take_peak();
@@ -1599,10 +1662,12 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             if let Some(index) = &buildings {
                 let n = pipeline::buildtiles::stage(o.root(), index, u, reach.as_ref().and_then(|r| r.get(u)), &bdir)?;
                 eprintln!("unit {}: buildings from {n} tiles", u.slash());
+                laps.lap("buildings staged");
                 tools.buildings = Some(bdir.clone());
             }
             build_folder(u, &local_piece, &dir, &cov, &layers_source(o, &pilot), &tools, &heritage, Some(&carry))?
         };
+        laps.skip();
         std::fs::remove_file(&local_piece).ok();
         // Grids its packs lacked (new coverage), made in the folder: the unit's own z6 tile's go up,
         // for later units and packs. (The canopy step made canopy and cover for every tile.)
@@ -1613,10 +1678,12 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             let mut tiles = pipeline::stage::grid_tiles_in(&dir, var, u.x, u.y)?.into_iter();
             layers::write_pack(out, &format!("grid-{var}"), "u8-zstd", false, "hi", (6, u.x, u.y), &mut tiles)?;
         }
+        laps.lap("missing grids written");
         // Its scenic results, for its next run. A cache: not keeping them only costs time later.
         if let Err(e) = carry.save(&dir) {
             eprintln!("unit {}: its scenic results not kept: {e:#}", u.slash());
         }
+        laps.lap("scenic results kept");
         eprintln!("unit {}: {} of {} ways touch the coverage, {} owned; {} heritage sites, {} area polygons", u.slash(), rep.kept_ways, rep.piece_ways, rep.owned, rep.heritage, rep.areas);
         if rep.kept_ways == 0 || rep.owned == 0 {
             // None of its ways in the coverage (any more): a base pack and road values from an
@@ -1638,8 +1705,10 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let idx: Vec<u32> = lg.units().remove(&u).unwrap_or_default().into_iter().filter(|&i| owns(tb, lg.first_vertex(&lg.ways.ways()[i as usize]))).collect();
         let built = format!("pass:{date}");
         let bs = legacy::base_sections(&lg, u, &idx, &built);
+        laps.lap("base pack made");
         let secs: Vec<(&str, &[u8])> = bs.sections.iter().map(|(n, v)| (*n, v.as_slice())).collect();
         put_sect(out, &format!("base/{}", u.dash()), bs.meta, &secs)?;
+        laps.lap("base pack written to the NAS");
         let vals = pass_roads(out, &date, u)?;
         let ways = lg.ways.ways();
         let verts = lg.ways.verts();
@@ -1659,6 +1728,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             })
             .collect();
         put_roads(out, u, &recs)?;
+        laps.lap("road values made and written");
         // The roads' own English (OSM's name:en where it isn't the name), for the server to show
         // with them.
         let en: BTreeMap<String, String> = std::fs::read(dir.join("name-en.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
@@ -1670,8 +1740,10 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             out.remove(&logical);
         }
         out.save()?;
+        laps.lap("records saved");
         drop(lg);
         clean();
+        laps.lap("its folders removed");
         // The most memory one of its steps' programs took, against its piece's size (a helper builds
         // only pieces a 16 GB Mac can: docs/plan.md §4).
         let piece_mb = std::fs::metadata(&piece).map(|m| m.len() >> 20).unwrap_or(0);

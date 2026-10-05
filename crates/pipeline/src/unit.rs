@@ -45,7 +45,7 @@ fn dem_in_box(keys: &[u64], elev: &[f32], srcs: &[u8], b: [i32; 4], out: &mut Ve
 /// points (4 × i32, E7), the versions of `rules::DEM_RULES` it was sampled under (4 × u32), then the
 /// sorted keys (u64), elevations (f32) and sources (u8). The box is in the name too (`box_tag`), so
 /// a unit finds the files near it from one listing of the folder, without opening each.
-const DEM_UNITS: &str = "dem-units";
+pub const DEM_UNITS: &str = "dem-units";
 const DEM_MAGIC: &[u8; 8] = b"RDDEM002";
 const DEM_HEAD: usize = 48;
 
@@ -340,6 +340,11 @@ pub struct Tools {
     pub shared: Option<PathBuf>,
     /// Densification spacing (m).
     pub spacing_m: u32,
+    /// Where to keep a copy of the folder before and after each of the steps' programs, with the
+    /// command that ran it (`<n> <step> before|after` and `….cmd`): `scenic-build unit-snap`, for
+    /// running the steps again elsewhere (natively at other thread counts, as WebAssembly) and
+    /// comparing bytes (tools/check/same.py). Copies are APFS clones: no space until they differ.
+    pub snap: Option<PathBuf>,
 }
 
 impl Tools {
@@ -354,6 +359,28 @@ impl Tools {
     }
 }
 
+/// Times the parts of a unit's build done in-process, logged as its programs' times are: each lap
+/// "  <what>: <time since the last lap>".
+pub struct Laps(std::time::Instant);
+
+impl Default for Laps {
+    fn default() -> Self {
+        Laps(std::time::Instant::now())
+    }
+}
+
+impl Laps {
+    pub fn lap(&mut self, what: &str) {
+        eprintln!("  {what}: {:.0?}", self.0.elapsed());
+        self.0 = std::time::Instant::now();
+    }
+
+    /// Starts the next lap now (after a part timed on its own, such as a step's program).
+    pub fn skip(&mut self) {
+        self.0 = std::time::Instant::now();
+    }
+}
+
 /// The most memory (resident, bytes) one of the steps' programs took since `take_peak` last read it.
 static PEAK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -361,6 +388,43 @@ static PEAK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0)
 /// unit), and starts again.
 pub fn take_peak() -> u64 {
     PEAK.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The folder copied (cloned) to `<snap>/<n> <what> <when>`, with the command in `….cmd` (program,
+/// then `arg` and `env` lines).
+fn snapshot(snap: &Path, n: usize, c: &Command, dir: &Path, what: &str, when: &str) -> Result<()> {
+    let to = snap.join(format!("{n:02} {what} {when}"));
+    std::fs::create_dir_all(snap)?;
+    let st = Command::new("cp").arg("-c").arg("-R").arg(dir).arg(&to).status()?;
+    anyhow::ensure!(st.success(), "clone {} to {}", dir.display(), to.display());
+    let mut cmd = format!("prog {}\n", c.get_program().to_string_lossy());
+    for a in c.get_args() {
+        cmd.push_str(&format!("arg {}\n", a.to_string_lossy()));
+    }
+    for (k, v) in c.get_envs() {
+        cmd.push_str(&format!("env {}={}\n", k.to_string_lossy(), v.map(|v| v.to_string_lossy().into_owned()).unwrap_or_default()));
+    }
+    std::fs::write(snap.join(format!("{n:02} {what} {when}.cmd")), cmd)?;
+    Ok(())
+}
+
+/// A step's program run in `dir` (logged to `log`), its folder snapshotted around it when
+/// `tools.snap` asks.
+fn run_in(c: Command, what: &str, log: &Path, dir: &Path, tools: &Tools) -> Result<()> {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let Some(snap) = &tools.snap else { return run(c, what, log) };
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    snapshot(snap, n, &c, dir, what, "before")?;
+    // (A copy of the command for the snapshot after: `run` takes it.)
+    let mut shown = Command::new(c.get_program());
+    shown.args(c.get_args());
+    for (k, v) in c.get_envs() {
+        if let Some(v) = v {
+            shown.env(k, v);
+        }
+    }
+    run(c, what, log)?;
+    snapshot(snap, n, &shown, dir, what, "after")
 }
 
 fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
@@ -424,10 +488,12 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
     // 1. Every way of the piece, densified.
     let mut c = Command::new(tools.bin.join("extract"));
     c.arg(dir).arg(tools.spacing_m.to_string()).arg(piece);
-    run(c, "extract", &log)?;
+    run_in(c, "extract", &log, dir, tools)?;
+    let mut laps = Laps::default();
     rep.piece_ways = roadcore::Ways::open(dir)?.ways().len();
     // 2. Only what touches the coverage goes on.
     let (kw, kv) = subset(dir, |_, vs| cov.touches(vs))?;
+    laps.lap("subset to the coverage");
     (rep.kept_ways, rep.kept_verts) = (kw, kv);
     if kw == 0 {
         return Ok(rep);
@@ -444,6 +510,7 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
         w.verts().iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])])
     };
     rep.dem_cache = dem_cache_slice(&tools.cache, &tools.dem_units(), slice, &dir.join("dem-cache"))?;
+    laps.lap("DEM cache slice");
     let mut c = Command::new("uv");
     c.current_dir(&tools.dem).args(["run", "python", "sample.py"]).arg(dir).arg("--cache").arg(dir.join("dem-cache"));
     if let Some(m) = &tools.moi_dtm {
@@ -452,32 +519,36 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
     if let Some(s) = &tools.sources {
         c.env("SCENIC_FABDEM_STORE", s.join("fabdem"));
     }
-    run(c, "elevations (sample.py)", &log)?;
+    run_in(c, "elevations (sample.py)", &log, dir, tools)?;
+    laps.skip();
     // Its samples, kept for its later runs and its neighbours' (new ones aren't sampled twice). A
     // cache: not keeping them (the NAS away) only costs sampling them again.
     if let Err(e) = dem_samples_keep(&tools.dem_units(), u, &dir.join("dem-cache")) {
         eprintln!("unit {}: its DEM samples not kept: {e:#}", u.slash());
     }
+    laps.lap("DEM samples kept");
     // 4. The global-source layers the steps read, from the packs.
     let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     rep.staged = crate::stage::stage(src, b, dir)?;
+    laps.lap("layers staged from the packs");
     // The heritage sites around the unit (the flags step's `heritage.json`), and the designated
     // areas rasterised onto its grid (`grid.areas.u8`), from the heritage-sites job's slices.
     (rep.heritage, rep.areas) = heritage(b, dir)?;
+    laps.lap("heritage inputs");
     let mut c = Command::new("uv");
     c.current_dir(&tools.dem).args(["run", "python", "areaflags.py"]).arg(dir).arg(dir.join("area-shapes.geojsonseq"));
-    run(c, "area flags (areaflags.py)", &log)?;
+    run_in(c, "area flags (areaflags.py)", &log, dir, tools)?;
     // Land cover the packs lack (new coverage): ESA WorldCover for those grid tiles only; the
     // rest stays as staged.
     if rep.staged.missing.get("class").copied().unwrap_or(0) > 0 {
         let mut c = Command::new("uv");
         c.current_dir(&tools.dem).args(["run", "python", "landcover.py"]).arg(dir).arg("--only").arg(dir.join("grid.class.missing.u32"));
-        run(c, "land cover (landcover.py)", &log)?;
+        run_in(c, "land cover (landcover.py)", &log, dir, tools)?;
     }
     // 5. Clean-up and grade; road samples; canopy; views; buildings; flags.
     let mut c = Command::new(tools.bin.join("tile"));
     c.arg(dir).arg("elev");
-    run(c, "clean-up and grade (tile elev)", &log)?;
+    run_in(c, "clean-up and grade (tile elev)", &log, dir, tools)?;
     let own = format!("{},{},{},{}", tb[0], tb[1], tb[2], tb[3]);
     for step in ["prep", "canopy", "view"] {
         // The last run's results, as the canopy and view steps' previous run.
@@ -494,16 +565,16 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
         }
         let mut c = Command::new(tools.bin.join("scenic-metrics"));
         c.arg(dir).arg(step).env("SCENIC_OWN", &own).env("SCENIC_CACHE", &tools.cache).env("SCENIC_SCACHE", crate::scache::unit_dir(dir)).envs(tools.sources.as_ref().map(|s| ("SCENIC_CANOPY_STORE", s.join("canopy"))));
-        run(c, &format!("scenic {step}"), &log)?;
+        run_in(c, &format!("scenic {step}"), &log, dir, tools)?;
     }
     if let Some(bd) = &tools.buildings {
         let mut c = Command::new(tools.bin.join("scenic-metrics"));
         c.arg(dir).arg("buildings").arg(bd).env("SCENIC_CACHE", &tools.cache).env("SCENIC_SCACHE", crate::scache::unit_dir(dir)).envs(tools.sources.as_ref().map(|s| ("SCENIC_CANOPY_STORE", s.join("canopy"))));
-        run(c, "scenic buildings", &log)?;
+        run_in(c, "scenic buildings", &log, dir, tools)?;
     }
     let mut c = Command::new(tools.bin.join("scenic-metrics"));
     c.arg(dir).arg("flags").env("SCENIC_CACHE", &tools.cache).env("SCENIC_SCACHE", crate::scache::unit_dir(dir)).envs(tools.sources.as_ref().map(|s| ("SCENIC_CANOPY_STORE", s.join("canopy"))));
-    run(c, "scenic flags", &log)?;
+    run_in(c, "scenic flags", &log, dir, tools)?;
     Ok(rep)
 }
 
