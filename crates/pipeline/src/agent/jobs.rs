@@ -63,6 +63,9 @@ pub struct Running {
     /// Its progress when it first reported this kind of progress: the estimate's start (time,
     /// fraction, unit).
     pub progress_base: Option<(Instant, f64, String)>,
+    /// Its parts and the one it's on, as it last said (`part`): kept while a part's own output
+    /// pushes that line out of the log's end.
+    pub parts: Option<(usize, Vec<String>)>,
 }
 
 /// The job record kept on disk while a job runs, so an agent started after a crash can stop an
@@ -102,7 +105,7 @@ impl Running {
         let started = now_s();
         let rec = Record { id: spec.id.clone(), pgid, started, leader_start: process_start(pgid).unwrap_or(0) };
         std::fs::write(record, serde_json::to_vec(&rec)?)?;
-        Ok(Running { spec, child, caffeinate, pgid, started, log, paused: None, started_at: Instant::now(), progress_base: None })
+        Ok(Running { spec, child, caffeinate, pgid, started, log, paused: None, started_at: Instant::now(), progress_base: None, parts: None })
     }
 
     /// Pauses the job's whole process group (`why` goes to the status), and lets the Mac sleep.
@@ -203,8 +206,9 @@ pub fn stop_orphan(record: &Path) {
 /// The last `n` lines of a log.
 pub fn tail(log: &Path, n: usize) -> String {
     let s = end_of(log);
-    // Progress bars redraw with carriage returns: keep each line's last state.
-    let lines: Vec<&str> = s.lines().map(|l| l.rsplit('\r').next().unwrap_or(l)).filter(|l| !l.trim().is_empty()).collect();
+    // Progress bars redraw with carriage returns: keep each line's last state. (The parts' lines
+    // are the status's list, not text to show.)
+    let lines: Vec<&str> = s.lines().map(|l| l.rsplit('\r').next().unwrap_or(l)).filter(|l| !l.trim().is_empty() && !l.starts_with("parts: ")).collect();
     lines[lines.len().saturating_sub(n)..].join("\n")
 }
 
@@ -223,6 +227,23 @@ fn end_of(log: &Path) -> String {
 /// which goes to the job's log.
 pub fn report(done: u64, total: u64, unit: &str) {
     eprintln!("progress: {}/{total} {unit}", done.min(total));
+}
+
+/// Says which of a job's parts (more than one, in order) it begins, for the agent (`parts`):
+/// `parts: <i> <their names, JSON>` on stderr, the whole list each time, so the status lists them
+/// under the job (done, under way, to come) however long ago it began.
+pub fn part(i: usize, names: &[&str]) {
+    eprintln!("parts: {i} {}", serde_json::to_string(names).unwrap_or_default());
+}
+
+/// A job's parts and the one it's on: its log's last `parts:` line (`part`).
+pub fn parts(log: &Path) -> Option<(usize, Vec<String>)> {
+    end_of(log).lines().rev().find_map(|l| {
+        let (i, names) = l.trim().strip_prefix("parts: ")?.split_once(' ')?;
+        let names: Vec<String> = serde_json::from_str(names).ok()?;
+        let i: usize = i.parse().ok()?;
+        (i < names.len()).then_some((i, names))
+    })
 }
 
 /// How far a job says it is: its log's last `progress: <done>/<total> <unit>` line (build steps
@@ -258,6 +279,22 @@ mod tests {
         r.resume();
         r.stop(Duration::from_secs(5));
         assert!(tail(&r.log, 5).contains("hello"));
+    }
+
+    #[test]
+    fn a_jobs_parts_are_read_from_its_log() {
+        let d = tempfile::tempdir().unwrap();
+        let log = d.path().join("log");
+        assert_eq!(parts(&log), None);
+        // As a step prints them (pipeline::agent::jobs::part), with its output between.
+        let names = ["Getting ready (osmium)", "Details: Wikidata's facts", "Uploading"];
+        let line = |i: usize| format!("parts: {i} {}\n", serde_json::to_string(&names).unwrap());
+        std::fs::write(&log, format!("{}progress: 0/3 parts (Getting ready)\nosmium: done\n{}some output\n", line(0), line(1))).unwrap();
+        assert_eq!(parts(&log), Some((1, names.iter().map(|s| s.to_string()).collect())));
+        // Not text to show; and a line out of range is none.
+        assert_eq!(tail(&log, 5), "progress: 0/3 parts (Getting ready)\nosmium: done\nsome output");
+        std::fs::write(&log, format!("parts: 7 {}\n", serde_json::to_string(&names).unwrap())).unwrap();
+        assert_eq!(parts(&log), None);
     }
 
     #[test]

@@ -459,8 +459,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/build/writer` (the build Mac's name: the records' one writer); `state/helpers/<host>.json`
     (a helper's status, as the heartbeat's; the heartbeat lists those fresh within ten minutes as
     `helpers`, and the workers the coordinator heard from in two minutes as `workers`).
-- **State:** `state/status.json` (the agent's heartbeat: conditions, the job and its progress, what
-  waits (each with its job's `step`), the checklist to the end: each step's `done`/`total` or
-  `left`, its jobs left by name (`next`) and why it waits (`note`));
-  `state/build/{manifest,jobs,pending,summaries}.json`.
+- **State:** `state/status.json` (the agent's heartbeat: conditions, the job, its parts (`parts`,
+  `part`: the one it's on) and its progress, what waits (each with its job's `step`), the
+  checklist to the end: each step's `done`/`total` or `left`, its jobs left by name (`next`) and
+  why it waits (`note`)); `state/build/{manifest,jobs,pending,summaries}.json`.
 - **The app:** `app/current.json` and `previous.json`: `{version, files, sha256}`.

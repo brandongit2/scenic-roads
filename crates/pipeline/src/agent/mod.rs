@@ -161,6 +161,11 @@ pub struct JobView {
     pub paused: Option<String>,
     /// Its log's last lines.
     pub tail: String,
+    /// Its parts (a job of more than one says them, crate::agent::jobs::part), and the one it's on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<usize>,
     /// How far it says it is (its log's last `progress:` line), with an estimate of the time left
     /// from its pace since it started saying so.
     #[serde(default)]
@@ -1020,7 +1025,13 @@ impl Agent {
         let mut checklist = self.progress.as_ref().map(|(_, _, c)| c.clone()).unwrap_or_default();
         let helpers: Vec<Status> = if self.o.helper || root.is_none() { Vec::new() } else { self.planned.as_ref().map(|p| p.helpers.clone()).unwrap_or_default() };
         annotate(&mut checklist, self.running.as_ref().and_then(|r| step_of(&r.spec.id)).as_deref(), &helpers, &waiting);
-        // The running job's progress, and from its pace the time it has left.
+        // The running job's parts (the last it said), its progress, and from its pace the time it
+        // has left.
+        if let Some(r) = self.running.as_mut() {
+            if let Some(p) = jobs::parts(&r.log) {
+                r.parts = Some(p);
+            }
+        }
         let job_progress = self.running.as_mut().and_then(|r| {
             let (done, total, unit) = jobs::progress(&r.log)?;
             let frac = done / total;
@@ -1039,7 +1050,16 @@ impl Agent {
             beat: now_s(),
             started: self.started,
             conditions: c,
-            job: self.running.as_ref().map(|r| JobView { id: r.spec.id.clone(), what: r.spec.what.clone(), started: r.started, paused: r.paused.clone(), tail: jobs::tail(&r.log, 3), progress: job_progress.clone() }),
+            job: self.running.as_ref().map(|r| JobView {
+                id: r.spec.id.clone(),
+                what: r.spec.what.clone(),
+                started: r.started,
+                paused: r.paused.clone(),
+                tail: jobs::tail(&r.log, 3),
+                progress: job_progress.clone(),
+                parts: r.parts.as_ref().map(|p| p.1.clone()).unwrap_or_default(),
+                part: r.parts.as_ref().map(|p| p.0),
+            }),
             waiting,
             recent: self.mem.recent.clone(),
             regions,
@@ -1830,7 +1850,7 @@ mod tests {
     fn the_checklist_says_why_a_step_waits() {
         let step = |what: &str, steps: &[&str], left: usize| build::Step { what: what.into(), steps: steps.iter().map(|s| s.to_string()).collect(), left: Some(left), ..Default::default() };
         let list = || vec![step("Worldwide sets", &["pass-sets", "reach"], 1), step("Roads, elevations and scenery", &["unit"], 3), step("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"], 2), step("Publishing the new map data", &["catalog", "catalog-held"], 0)];
-        let helper = Status { host: "m1".into(), job: Some(JobView { id: "unit 6/1/2".into(), what: String::new(), started: 0, paused: None, tail: String::new(), progress: None }), ..Default::default() };
+        let helper = Status { host: "m1".into(), job: Some(JobView { id: "unit 6/1/2".into(), what: String::new(), started: 0, paused: None, tail: String::new(), progress: None, parts: Vec::new(), part: None }), ..Default::default() };
         let waiting = [Waiting { step: Some("reach".into()), what: "How far…".into(), why: "away from home".into() }];
         let mut l = list();
         annotate(&mut l, Some("heritage"), &[helper], &waiting);

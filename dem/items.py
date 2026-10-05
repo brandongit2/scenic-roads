@@ -79,6 +79,14 @@ def append_jsonl(p: Path, rows: list[dict]) -> None:
         os.fsync(f.fileno())
 
 
+def part(i: int) -> None:
+    """Marks one of the job's parts beginning, for the build's status (scenic-build's items step
+    names them, SCENIC_PARTS: this script's are the facts, the articles, the pageviews)."""
+    names = os.environ.get("SCENIC_PARTS")
+    if names:
+        print(f"parts: {i} {names}", file=sys.stderr, flush=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--qids", required=True)
@@ -105,6 +113,7 @@ def main() -> None:
     fpath = cache / f"facts-{a.epoch}.jsonl"
     facts = {q: {k: v for k, v in r.items() if k != "qid"} for q, r in read_jsonl(fpath).items()}
     todo = [q for q in facts_q if q not in facts]
+    part(1)
     print(f"facts: {len(facts_q)} items, {len(todo)} to fetch", file=sys.stderr, flush=True)
     for k in range(0, len(todo), CHUNK):
         # (A line the build agent shows as this job's progress.)
@@ -122,6 +131,7 @@ def main() -> None:
     wpath = cache / f"wp-{a.epoch}.jsonl"
     wp = read_jsonl(wpath)
     need = [q for q in views_q if q not in wp]
+    part(2)
     print(f"articles: {len(views_q)} items, {len(need)} to look up", file=sys.stderr, flush=True)
     for k in range(0, len(need), CHUNK):
         print(f"progress: {k}/{len(need)} items' Wikipedia articles looked up", file=sys.stderr, flush=True)
@@ -136,6 +146,7 @@ def main() -> None:
     arts_of = {q: [x for x in wp.get(q, {}).get("arts", []) if "|" in x and x.split("|", 1)[0] in pageviews.LANGS] for q in views_q}
     norm = lambda x: x.split("|", 1)[0] + "|" + x.split("|", 1)[1].replace(" ", "_")
     wanted = {norm(x) for arts in arts_of.values() for x in arts}
+    part(3)
     print(f"views: {len(wanted)} articles over {', '.join(months)}", file=sys.stderr, flush=True)
     per_month = pageviews.months_views(months, wanted)
     views = {q: round(sum(pm.get(norm(x), 0) for pm in per_month for x in arts) / len(months), 1) for q, arts in arts_of.items() if arts}

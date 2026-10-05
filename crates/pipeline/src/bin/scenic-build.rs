@@ -77,9 +77,20 @@ const SSH: [&str; 8] = ["ssh", "-o", "ControlMaster=auto", "-o", "ControlPath=~/
 const NAS_ROOT: &str = "/volume1/personal/projects/scenic-roads";
 
 /// Stage `k` (from 0) of a step's `n` starting: its progress line, which the agent's status shows
-/// ("2 of 4 steps (what's being done)").
+/// ("2 of 4 steps (what's being done)"). Within a part (`Parts`), its steps.
 fn stage(k: u64, n: u64, what: &str) {
     pipeline::agent::jobs::report(k, n, &format!("steps ({what})"));
+}
+
+/// A step's parts, in order: each marked as it begins (pipeline::agent::jobs::part: the status lists
+/// them under the job, done, under way and to come), with its progress line ("2 of 4 parts").
+struct Parts(&'static [&'static str]);
+
+impl Parts {
+    fn start(&self, i: usize) {
+        pipeline::agent::jobs::part(i, self.0);
+        pipeline::agent::jobs::report(i as u64, self.0.len() as u64, &format!("parts ({})", self.0[i]));
+    }
 }
 
 fn opt(args: &[String], name: &str) -> Option<String> {
@@ -256,11 +267,12 @@ fn main() -> Result<()> {
             let set = out.path(out.get(&pipeline::osmpass::set_name(&date, "hikes")).context("the pass has no hikes set (pass-sets makes it)")?);
             std::fs::create_dir_all(&scratch)?;
             let local = scratch.join("set-hikes.osm.pbf");
-            stage(0, 3, "copying the hiking routes");
+            let parts = Parts(&["Copying the hiking routes", "Finding their ends", "Uploading"]);
+            parts.start(0);
             std::fs::copy(&set, &local).with_context(|| format!("copy {}", set.display()))?;
-            stage(1, 3, "finding their ends");
+            parts.start(1);
             let ends = pipeline::trailends::ends(&local)?;
-            stage(2, 3, "uploading");
+            parts.start(2);
             let file = scratch.join("trailends.jsonl.zst");
             pipeline::trailends::write(&file, &ends)?;
             out.put_file(&format!("work/trailends/{date}"), "jsonl.zst", &file)?;
@@ -1023,14 +1035,15 @@ fn summits_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
     let t = std::time::Instant::now();
-    stage(0, 4, "copying the summits");
+    let parts = Parts(&["Copying the summits", "Reading them", "Their heights from the worldwide z8 terrain", "Uploading"]);
+    parts.start(0);
     let set = local_copy(out, &pipeline::osmpass::set_name(&date, "summits"), &cache)?;
-    stage(1, 4, "reading them");
+    parts.start(1);
     let mut summits = pipeline::summits::read_set(&set)?;
-    stage(2, 4, "their heights from the worldwide z8 terrain");
+    parts.start(2);
     let z8 = open_z8(out, &cache)?;
     let raised = pipeline::summits::add_z8(&mut summits, &z8)?;
-    stage(3, 4, "uploading");
+    parts.start(3);
     std::fs::create_dir_all(scratch)?;
     let file = scratch.join("summits.jsonl.zst");
     pipeline::summits::write(&file, &summits)?;
@@ -1110,7 +1123,8 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     let facts: HashMap<String, Value> = serde_json::from_value(read_json(facts_file)?)?;
     let views: HashMap<String, f64> = serde_json::from_value(read_json(views_file)?)?;
     let units = pipeline::agent::build::pois_keys(&cov, &date, &out.manifest);
-    stage(0, 3, "reading every area's candidates and peaks");
+    let parts = Parts(&["Reading every area's candidates and peaks", "Ranking the landmarks", "Writing their tiles"]);
+    parts.start(0);
     let mut cands: Vec<(String, pipeline::marksjob::Candidate)> = Vec::new();
     let (mut with_peaks, mut missing_peaks) = (0, 0);
     for (u, _) in &units {
@@ -1137,7 +1151,7 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     cands.sort_by(|a, b| a.0.cmp(&b.0));
     let cands: Vec<pipeline::marksjob::Candidate> = cands.into_iter().map(|c| c.1).collect();
     eprintln!("marks: {} candidates from {} units ({with_peaks} peaks)", cands.len(), units.len());
-    stage(1, 3, "ranking the landmarks");
+    parts.start(1);
     let pts = pipeline::marksjob::poi_points(&cands, &views);
     let summits = pipeline::marksjob::summits_list(&pts);
     let mut all = pts;
@@ -1145,7 +1159,7 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
     let src = pipeline::markconv::heritage_source(out, &date);
     eprintln!("marks: heritage from {src}");
     all.extend(pipeline::markconv::heritage_marks(out, &src)?);
-    stage(2, 3, "writing their tiles");
+    parts.start(2);
     let c = pipeline::markconv::write(out, all, summits)?;
     eprintln!("marks: {} points, {} markdata tiles, {} thinned tiles", c.points, c.tiles, c.thinned);
     Ok(())
@@ -1160,7 +1174,10 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned())).join("items");
     let (mut facts, mut views) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
     let is_qid = |q: &str| q.len() > 1 && q.starts_with('Q') && q[1..].bytes().all(|b| b.is_ascii_digit());
-    stage(0, 3, "the landmark candidates' Wikidata items");
+    // (items.py marks its three: SCENIC_PARTS names them.)
+    const PARTS: &[&str] = &["The landmark candidates' Wikidata items", "Their facts from Wikidata", "Their Wikipedia articles", "Their pageviews, from four months of Wikipedia's dumps", "Uploading"];
+    let parts = Parts(PARTS);
+    parts.start(0);
     for (u, _) in pipeline::agent::build::pois_keys(&cov, &date, &out.manifest) {
         let Some(pc) = out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c)) else { continue };
         for c in pipeline::candidates::read(&pc)? {
@@ -1178,12 +1195,11 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let qfile = scratch.join("qids.json");
     std::fs::write(&qfile, serde_json::to_vec(&serde_json::json!({"facts": facts, "views": views}))?)?;
     let dir = scratch.join("items-out");
-    stage(1, 3, "their facts and pageviews (items.py)");
     let mut c = std::process::Command::new("uv");
-    c.current_dir(&dem).args(["run", "python", "items.py", "--qids"]).arg(&qfile).arg("--epoch").arg(&date).arg("--cache").arg(&cache).arg("--out").arg(&dir);
+    c.current_dir(&dem).env("SCENIC_PARTS", serde_json::to_string(PARTS)?).args(["run", "python", "items.py", "--qids"]).arg(&qfile).arg("--epoch").arg(&date).arg("--cache").arg(&cache).arg("--out").arg(&dir);
     let st = c.status().context("run items.py")?;
     anyhow::ensure!(st.success(), "items.py failed: {st}");
-    stage(2, 3, "uploading");
+    parts.start(4);
     for name in ["facts", "views", "meta"] {
         out.put_file(&format!("sources/items/{date}/{name}"), "json", &dir.join(format!("{name}.json")))?;
     }
@@ -1209,20 +1225,26 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
     let t0 = std::time::Instant::now();
     std::fs::create_dir_all(scratch)?;
-    // Today's chain.
+    // Its parts; then today's chain, each script in its part.
+    let parts = Parts(&[
+        "Getting ready: the coverage's protected areas and named places (osmium)",
+        "Details: Wikidata facts, descriptions, the areas' sizes",
+        "Outlines: World Heritage Sites' lines and areas, the filters' numbers",
+        "Fame: Wikipedia pageviews, and what's rare nearby",
+        "Layers for the map, uploaded",
+    ]);
     let chain = [
-        ("heritagewd.py", vec![]),
-        ("heritagedetails.py", vec![]),
-        ("areadetails.py", vec![]),
-        ("whsshapes.py", vec![]),
-        ("filterprops.py", vec![]),
-        ("pageviews.py", vec!["--epoch", date.as_str()]),
-        ("interest.py", vec![]),
-        ("layers.py", vec![]),
+        (1, "heritagewd.py", vec![]),
+        (1, "heritagedetails.py", vec![]),
+        (1, "areadetails.py", vec![]),
+        (2, "whsshapes.py", vec![]),
+        (2, "filterprops.py", vec![]),
+        (3, "pageviews.py", vec!["--epoch", date.as_str()]),
+        (3, "interest.py", vec![]),
+        (4, "layers.py", vec![]),
     ];
-    // Its phases, each a progress line: five before today's chain, a script each, then uploading.
-    let phases = 5 + chain.len() as u64 + 1;
-    stage(0, phases, "the registers' snapshot and the heritage sites");
+    parts.start(0);
+    stage(0, 5, "the registers' snapshot and the heritage sites");
     let epoch = heritage_epoch(out, &date, &cache)?;
     let seeds = registers_extract(out, "sources/registers/legacy-seeds", &cache)?;
     let root = heritage_root(scratch, &dem, &epoch)?;
@@ -1241,9 +1263,9 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let tiles = cover_tiles(&cov);
     let poly = scratch.join("cover.geojson");
     std::fs::write(&poly, serde_json::to_vec(&tiles_geojson(COVER_Z, &tiles))?)?;
-    stage(1, phases, "protected areas over the coverage (osmium)");
+    stage(1, 5, "protected areas over the coverage (osmium)");
     areas_over_cover(out, &date, &poly, scratch, &root.join("data/areas/areas.geojsonseq"))?;
-    stage(2, phases, "the pass's named places over the coverage (osmium)");
+    stage(2, 5, "the pass's named places over the coverage (osmium)");
     let named = osmium_clip(&out.path(out.get(&pipeline::osmpass::set_name(&date, "named")).context("the pass's named set")?), &poly, &scratch.join("named-cover.osm.pbf"))?;
     // Today's filter (Makefile: named.osm.pbf; the set also keeps the World Heritage tags).
     let named_today = scratch.join("named.osm.pbf");
@@ -1262,7 +1284,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         "-o",
     ]);
     c.arg(&named_today).arg("--overwrite");
-    stage(3, phases, "today's filter of them (osmium)");
+    stage(3, 5, "today's filter of them (osmium)");
     osmium_run(c, "osmium tags-filter (named)")?;
     std::fs::create_dir_all(epoch.join("osm"))?;
     let mut c = pipeline::osmpass::osmium();
@@ -1271,7 +1293,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::remove_file(&named).ok();
     std::fs::remove_file(&named_today).ok();
     // The kept filtered planet within the cover, once per pass and cover: today's merged extract.
-    stage(4, phases, "the pass's filtered planet over the coverage (osmium, once a pass)");
+    stage(4, 5, "the pass's filtered planet over the coverage (osmium, once a pass)");
     let merged = merged_over_cover(out, &date, &poly, &cache)?;
     pipeline::sys::symlink(&merged, &root.join("data/osm/merged.osm.pbf"))?;
     // Today's park facts, seeding this pass's cache of them.
@@ -1293,11 +1315,15 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // Today's names table, for the layers' English names.
     std::fs::create_dir_all(root.join("data/names"))?;
     pipeline::sys::symlink(&seeds.join("names/english.json"), &root.join("data/names/english.json"))?;
-    for (k, (script, sargs)) in chain.iter().enumerate() {
-        stage(5 + k as u64, phases, &format!("today's scripts: {script}"));
+    for (k, (part, script, sargs)) in chain.iter().enumerate() {
+        if k == 0 || chain[k - 1].0 != *part {
+            parts.start(*part);
+        }
+        let mine: Vec<&str> = chain.iter().filter(|c| c.0 == *part).map(|c| c.1).collect();
+        stage(mine.iter().position(|s| s == script).unwrap_or(0) as u64, mine.len() as u64 + (*part == 4) as u64, script);
         heritage_script(&root, &cache, script, sargs)?;
     }
-    stage(phases - 1, phases, "uploading");
+    stage(1, 2, "uploading");
     // Outputs (not the stops & sights' stand-ins, nor the layers made from them), the pass's
     // earlier ones this run didn't make dropped.
     let mut wrote: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -1510,7 +1536,8 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
     let t0 = std::time::Instant::now();
     std::fs::create_dir_all(scratch)?;
-    stage(0, 5, "the registers' snapshot");
+    let parts = Parts(&["The registers' snapshot", "Protected areas over the coverage (osmium)", "Locating the registers' sites (heritage.py)", "Slicing them per area", "Uploading"]);
+    parts.start(0);
     let epoch = heritage_epoch(out, &date, &cache)?;
     let root = heritage_root(scratch, &dem, &epoch)?;
     let b = root.join("data/build");
@@ -1521,16 +1548,16 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     std::fs::write(&poly, serde_json::to_vec(&tiles_geojson(COVER_Z, &tiles))?)?;
     eprintln!("heritage-sites: {} z{COVER_Z} tiles within 20 km of the coverage ({:.0?})", tiles.len(), t0.elapsed());
     // The pass's protected areas and Indigenous lands within them (whole relations: smart).
-    stage(1, 5, "protected areas over the coverage (osmium)");
+    parts.start(1);
     areas_over_cover(out, &date, &poly, scratch, &root.join("data/areas/areas.geojsonseq"))?;
-    stage(2, 5, "locating the registers' sites (heritage.py)");
+    parts.start(2);
     heritage_script(&root, &cache, "heritage.py", &["../data/build", "--tiles", "../data/build/cover.idx", "--zoom", &COVER_Z.to_string(), "--date", &date])?;
-    stage(3, 5, "slicing them per area");
+    parts.start(3);
     // The units' slices, then the whole files.
     let sites = slice_sites(&std::fs::read(b.join("heritage.json"))?)?;
     let areas = slice_areas(&std::fs::read_to_string(b.join("area-shapes.geojsonseq"))?)?;
     let (ns, na) = put_slices(out, &date, &sites, &areas)?;
-    stage(4, 5, "uploading");
+    parts.start(4);
     for (stem, ext) in [("heritage", "json"), ("heritage-areas", "json"), ("special", "json"), ("indigenous", "json"), ("heritage-sources", "json"), ("area-shapes", "geojsonseq")] {
         out.put_file(&base_logical(&date, stem), ext, &b.join(format!("{stem}.{ext}")))?;
     }
@@ -2148,7 +2175,8 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     let cov = coverage_of(out, args)?;
     let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
     let catalogue = out.path(out.get(rail::CATALOGUE).context("no rail sources (scenic-build rail-seed)")?);
-    stage(0, 3, "the countries the coverage is in");
+    let parts = Parts(&["The countries the coverage is in", "Finding and fetching the feeds (railfeeds.py)", "Uploading"]);
+    parts.start(0);
     let outlines = pipeline::outlines::Outlines::open(&out.path(out.get(&format!("sources/osm/{date}/outlines")).context("the pass's outlines")?))?;
     let countries = rail::countries(&cov, &outlines)?;
     eprintln!("rail-feeds: the coverage is in {}", countries.join(", "));
@@ -2163,7 +2191,7 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     // (Its downloads stay in `found` until they're on the NAS: a run cut short keeps them. So does
     // railfeeds.py's record of the servers that haven't answered, until the job completes.)
     let found = scratch.join("found");
-    stage(1, 3, "finding and fetching the feeds (railfeeds.py)");
+    parts.start(1);
     let st = std::process::Command::new("uv")
         .current_dir(&dem)
         .args(["run", "python", "railfeeds.py", "--catalogue"])
@@ -2182,7 +2210,7 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
         .arg(&found)
         .status()
         .context("run railfeeds.py")?;
-    stage(2, 3, "uploading");
+    parts.start(2);
     if found.join("checked.json").exists() {
         out.put_file(rail::CHECKED, "json", &found.join("checked.json"))?;
         out.save()?;
@@ -2221,7 +2249,8 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let set = out.path(out.get(&pipeline::osmpass::set_name(&date, "rail")).context("the pass has no rail set")?);
     std::fs::create_dir_all(scratch)?;
     // 1. The feeds' stop pairs, once per list of feeds (and the step's version).
-    stage(0, 5, "the feeds' trains (railgtfs.py)");
+    let parts = Parts(&["The feeds' trains (railgtfs.py)", "Stops beyond the coverage", "The pass's rail over the coverage (osmium)", "Its rail ways (extract)", "Matching the trains onto the tracks (railfreq)"]);
+    parts.start(0);
     let raw = cache.join(format!("pairs-{}.bin", store::naming::hash16(format!("{} {feeds}", pipeline::agent::build::RAIL_V).as_bytes())));
     if !raw.exists() {
         let (list, pairs, used) = (scratch.join("feeds.json"), scratch.join("pairs-raw.bin"), scratch.join("used.json"));
@@ -2256,7 +2285,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         out.save()?;
     }
     // 2. Stops beyond the coverage.
-    stage(1, 5, "stops beyond the coverage");
+    parts.start(1);
     let (pairs, beyond) = rail::mark_beyond(&std::fs::read(&raw)?, &cov);
     let pairs_file = scratch.join("pairs.bin");
     std::fs::write(&pairs_file, &pairs)?;
@@ -2269,7 +2298,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     }
     eprintln!("rail: {} stop pairs from the feeds, {beyond} with a stop beyond the coverage ({:.0?})", pairs.len() / rail::PAIR, t0.elapsed());
     // 3. The rail ways touching the coverage.
-    stage(2, 5, "the pass's rail over the coverage (osmium)");
+    parts.start(2);
     let local = scratch.join("rail-set.osm.pbf");
     std::fs::copy(&set, &local).with_context(|| format!("copy {}", set.display()))?;
     let poly = scratch.join("cover.geojson");
@@ -2279,7 +2308,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     c.args(["extract", "--strategy", "complete_ways", "--overwrite", "-p"]).arg(&poly).arg(&local).arg("-o").arg(&clip);
     osmium_run(c, "osmium extract (the rail set over the coverage)")?;
     std::fs::remove_file(&local).ok();
-    stage(3, 5, "its rail ways (extract)");
+    parts.start(3);
     let dir = scratch.join("ways");
     std::fs::remove_dir_all(&dir).ok();
     let st = std::process::Command::new(bin.join("extract")).arg(&dir).arg("8").arg(&clip).status().context("run extract")?;
@@ -2288,7 +2317,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let (kept, _) = pipeline::unit::subset(&dir, |_, vs| cov.touches(vs))?;
     eprintln!("rail: {kept} ways touch the coverage ({:.0?})", t0.elapsed());
     // 4. The trains on them.
-    stage(4, 5, "matching the trains onto the tracks (railfreq)");
+    parts.start(4);
     let st = std::process::Command::new(bin.join("railfreq")).arg(&dir).args(&inputs).status().context("run railfreq")?;
     anyhow::ensure!(st.success(), "railfreq failed: {st}");
     let ways = roadcore::Ways::open(&dir)?;
@@ -2315,9 +2344,10 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let work = scratch.join("labels");
     std::fs::create_dir_all(&work)?;
     let local = work.join("labels-set.osm.pbf");
-    stage(0, 3, "copying the labels set");
+    let parts = Parts(&["Copying the labels set", "Ranking the labels (labels.py)", "Cutting them into packs"]);
+    parts.start(0);
     std::fs::copy(out.path(&set), &local).with_context(|| format!("copy {set}"))?;
-    stage(1, 3, "ranking the labels (labels.py)");
+    parts.start(1);
     let tiles = work.join("labels.tiles");
     let dem = PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into()));
     let st = std::process::Command::new("uv")
@@ -2332,7 +2362,7 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         .status()
         .context("run labels.py")?;
     anyhow::ensure!(st.success(), "labels.py failed: {st}");
-    stage(2, 3, "cutting them into packs");
+    parts.start(2);
     let arc = roadcore::archive::Archive::open(&tiles)?;
     let lo = layers::split_archive(out, &arc, "labels", "mvt", true, 14)?;
     eprintln!("labels: root {:?}, {} lo, {} hi packs", lo.root.is_some(), lo.lo.len(), lo.hi.len());

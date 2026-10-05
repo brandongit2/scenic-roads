@@ -962,9 +962,13 @@ are no request files.
   of every step to the end: each step's jobs left by name, in the order they'll run ("Peaks'
   prominence and isolation: 178 areas", then the next), and for one with work left that isn't this
   Mac's job now, why: another Mac is on it, it waits for the home network or out a failure, or (the
-  publishing) for the steps above, since a catalog follows each chain as it ends. A long phase
-  says how far it is: the pageview dumps by the bytes streamed, the heritage chain by its phase;
-  the jobs' Python steps print straight to their logs (unbuffered).
+  publishing) for the steps above, since a catalog follows each chain as it ends. A job of
+  several parts says them as each begins (`parts: <i> [names]` in its log), and the status lists
+  them under the job, done, under way and to come, the progress bar under the one under way
+  (heritage's five: getting ready, details, outlines, fame, layers; the items' facts, articles and
+  pageviews; summits, marks, route ends, the heritage sites, rail, labels). A long part says how
+  far it is: the pageview dumps by the bytes streamed, a part's steps one by one; the jobs'
+  Python steps print straight to their logs (unbuffered).
 
 **Two Macs** (and any other worker: `docs/workers.md`). The build Mac's agent plans; it runs a
 coordinator (`pipeline::coord`, port 8090) from which every other worker asks for work that fits it.

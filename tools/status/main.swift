@@ -107,6 +107,9 @@ struct Job: Decodable {
     let paused: String?
     let tail: String?
     let progress: JobProgress?
+    /// Its parts, in order (a job of more than one says them), and the one it's on.
+    let parts: [String]?
+    let part: Int?
 }
 
 struct Waiting: Decodable {
@@ -227,11 +230,24 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
     if let j = s.job {
         out.append(Line(text: j.what, style: .plain))
         // How far the job says it is, and the time it has left at its pace.
+        var bar: Line? = nil
         if let p = j.progress {
             let frac = p.total > 0 ? p.done / p.total : 0
             var t = "\(Int((frac * 100).rounded(.down)))% · \(grouped(p.done)) of \(grouped(p.total)) \(p.unit)"
             if let e = p.eta_s, j.paused == nil { t += " · about \(duration(e)) left" }
-            out.append(Line(text: t, style: .bar, fraction: frac))
+            bar = Line(text: t, style: .bar, fraction: frac)
+        }
+        // Its parts, done, under way and to come, the bar under the one under way (unless the bar
+        // only counts the parts, which the list shows).
+        if let parts = j.parts, !parts.isEmpty, let cur = j.part {
+            let partsBar = j.progress.map { $0.unit.hasPrefix("parts") } ?? false
+            for (i, p) in parts.enumerated() {
+                let mark = i < cur ? "✓" : i == cur ? "▸" : "○"
+                out.append(Line(text: "  \(mark) \(p)", style: i < cur ? .stepDone : i == cur ? .stepNow : .stepToDo))
+                if i == cur, let b = bar, !partsBar { out.append(b) }
+            }
+        } else if let b = bar {
+            out.append(b)
         }
         if let p = j.paused { out.append(Line(text: p, style: .small)) }
         out.append(Line(text: "Running \(duration(r.now - j.started)) (since \(clock(j.started)))", style: .small))

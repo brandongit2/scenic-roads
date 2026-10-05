@@ -65,6 +65,15 @@ fn status(args: &[String]) -> Result<()> {
     match &st.job {
         Some(j) => {
             println!("Running: {} (since {}){}", j.what, ago(j.started), j.paused.as_ref().map(|p| format!(", paused: {p}")).unwrap_or_default());
+            // Its parts, done, under way and to come.
+            for (i, p) in j.parts.iter().enumerate() {
+                let mark = match j.part {
+                    Some(c) if i < c => "✓",
+                    Some(c) if i == c => "▸",
+                    _ => "○",
+                };
+                println!("  {mark} {p}");
+            }
             for l in j.tail.lines() {
                 println!("    {l}");
             }
