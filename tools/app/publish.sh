@@ -19,6 +19,8 @@ if [[ ${1:-} == --rollback ]]; then
   exit 0
 fi
 export PATH=/opt/homebrew/opt/rustup/bin:$PATH
+# The commit it's built from, read now: one made while it runs would name a version it isn't.
+head=$(git rev-parse --short HEAD)
 cargo build --release -p server -p pipeline 2>&1 | tail -2
 cargo test -q -p store -p names -p pipeline --lib 2>&1 | tail -3
 # The programs' WebAssembly builds, which the coordinator serves to web workers (docs/workers.md).
@@ -55,8 +57,10 @@ steps=(${(f)"$(grep -rhoE '"[a-z_]+\.py"' crates/pipeline/src | tr -d '"' | sed 
 (cd $pyt/dem && uv run python -c "import importlib, sys; [importlib.import_module(m) for m in sys.argv[1:]]" $steps) || { echo "a Python step doesn't load from the app's dem/"; rm -rf $pyt; exit 1; }
 rm -rf $pyt
 dirty=""
-[[ -z $(git status --porcelain -- crates web/src) ]] || dirty=-dirty
-version=$(date -u +%Y%m%d-%H%M)-$(git rev-parse --short HEAD)$dirty
+# (The Python steps and the status app are copied from the working tree too.)
+[[ -z $(git status --porcelain -- crates web/src dem tools/status) ]] || dirty=-dirty
+[[ $(git rev-parse --short HEAD) == $head ]] || { echo "a commit was made while publishing ($head, now $(git rev-parse --short HEAD)): publish again"; exit 1; }
+version=$(date -u +%Y%m%d-%H%M)-$head$dirty
 dest=$NAS/app/$version
 mkdir -p $dest.tmp/web $dest.tmp/fonts
 # The server, and the build agent with the programs its jobs run (the build Mac runs them from here):
