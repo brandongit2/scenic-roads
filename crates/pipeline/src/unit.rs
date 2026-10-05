@@ -478,10 +478,23 @@ pub struct Report {
 pub type HeritageInputs<'a> = &'a dyn Fn([f64; 4], &Path) -> Result<(usize, usize)>;
 
 /// Runs today's steps for unit `u` in `dir` from `piece`, with the coverage and the global-source
-/// layers on the NAS (`src`), and its scenic results from its last run (`carry`). Leaves the build
-/// folder ready for conversion.
+/// layers on the NAS (`src`), and its scenic results from its last run (`carry`): `prepare_folder`,
+/// then its `tail`. Leaves the build folder ready for conversion.
 #[allow(clippy::too_many_arguments)]
 pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &crate::stage::Source, tools: &Tools, heritage: HeritageInputs, carry: Option<&crate::scache::Carry>) -> Result<Report> {
+    let rep = prepare_folder(u, piece, dir, cov, src, tools, heritage, carry)?;
+    if rep.kept_ways > 0 {
+        run_tail(&tail(u, tools.buildings.is_some(), tools.sources.is_some()), dir, tools)?;
+    }
+    Ok(rep)
+}
+
+/// A unit's build up to its tail (docs/workers.md: what needs the NAS, the DEM servers and the
+/// Python): its ways from the piece, those touching the coverage, their elevations, the global-source
+/// layers staged from the packs, the heritage inputs, area flags and land cover; then its scenic
+/// results from its last run restored (`carry`), as the tail's canopy and view steps read them.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &crate::stage::Source, tools: &Tools, heritage: HeritageInputs, carry: Option<&crate::scache::Carry>) -> Result<Report> {
     std::fs::create_dir_all(dir)?;
     let log = dir.join("steps.log");
     let mut rep = Report { unit: u.slash(), ..Default::default() };
@@ -545,37 +558,96 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
         c.current_dir(&tools.dem).args(["run", "python", "landcover.py"]).arg(dir).arg("--only").arg(dir.join("grid.class.missing.u32"));
         run_in(c, "land cover (landcover.py)", &log, dir, tools)?;
     }
-    // 5. Clean-up and grade; road samples; canopy; views; buildings; flags.
-    let mut c = Command::new(tools.bin.join("tile"));
-    c.arg(dir).arg("elev");
-    run_in(c, "clean-up and grade (tile elev)", &log, dir, tools)?;
-    let own = format!("{},{},{},{}", tb[0], tb[1], tb[2], tb[3]);
-    for step in ["prep", "canopy", "view"] {
-        // The last run's results, as the canopy and view steps' previous run.
-        if let (Some(c), "canopy") = (carry, step) {
-            match c.restore(dir) {
-                Ok(Some(n)) => eprintln!("unit {}: {n} samples' scenic results from its last run", u.slash()),
-                Ok(None) => {}
-                // (Without the cache's record the steps start afresh, whatever was copied.)
-                Err(e) => {
-                    eprintln!("unit {}: its last run's scenic results not used: {e:#}", u.slash());
-                    std::fs::remove_dir_all(crate::scache::unit_dir(dir)).ok();
-                }
+    // Its last run's scenic results (pipeline::scache: the canopy and view steps copy what's
+    // unchanged), restored over the staged grids they were made from.
+    if let Some(c) = carry {
+        match c.restore(dir) {
+            Ok(Some(n)) => eprintln!("unit {}: {n} samples' scenic results from its last run", u.slash()),
+            Ok(None) => {}
+            // (Without the cache's record the steps start afresh, whatever was copied.)
+            Err(e) => {
+                eprintln!("unit {}: its last run's scenic results not used: {e:#}", u.slash());
+                std::fs::remove_dir_all(crate::scache::unit_dir(dir)).ok();
             }
         }
-        let mut c = Command::new(tools.bin.join("scenic-metrics"));
-        c.arg(dir).arg(step).env("SCENIC_OWN", &own).env("SCENIC_CACHE", &tools.cache).env("SCENIC_SCACHE", crate::scache::unit_dir(dir)).envs(tools.sources.as_ref().map(|s| ("SCENIC_CANOPY_STORE", s.join("canopy"))));
-        run_in(c, &format!("scenic {step}"), &log, dir, tools)?;
+        laps.lap("scenic results restored");
     }
-    if let Some(bd) = &tools.buildings {
-        let mut c = Command::new(tools.bin.join("scenic-metrics"));
-        c.arg(dir).arg("buildings").arg(bd).env("SCENIC_CACHE", &tools.cache).env("SCENIC_SCACHE", crate::scache::unit_dir(dir)).envs(tools.sources.as_ref().map(|s| ("SCENIC_CANOPY_STORE", s.join("canopy"))));
-        run_in(c, "scenic buildings", &log, dir, tools)?;
-    }
-    let mut c = Command::new(tools.bin.join("scenic-metrics"));
-    c.arg(dir).arg("flags").env("SCENIC_CACHE", &tools.cache).env("SCENIC_SCACHE", crate::scache::unit_dir(dir)).envs(tools.sources.as_ref().map(|s| ("SCENIC_CANOPY_STORE", s.join("canopy"))));
-    run_in(c, "scenic flags", &log, dir, tools)?;
     Ok(rep)
+}
+
+/// One program a task runs (docs/workers.md §3): its name (the build's `bin/<prog>`, or
+/// `<prog>.wasm` in a web worker), its arguments and environment, in which `{dir}` is the unit's
+/// folder, `{cache}` the canopy cache, `{scache}` the folder's scenic cache, `{buildings}` its
+/// roadside buildings and `{store}` the NAS's canopy store (an environment variable whose value
+/// names a place the worker doesn't have is left out).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Run {
+    pub what: String,
+    pub prog: String,
+    pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
+}
+
+/// The tail of unit `u`'s build: its clean-up and grade, then its road samples, canopy, views,
+/// buildings (with `buildings`) and flags. Every program is Rust, and gives the same bytes natively
+/// and as WebAssembly (tools/check/same.py), so any worker can run it.
+pub fn tail(u: Unit, buildings: bool, store: bool) -> Vec<Run> {
+    let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
+    let own = format!("{},{},{},{}", tb[0], tb[1], tb[2], tb[3]);
+    let scenic = |step: &str, with_own: bool| {
+        let mut e = Vec::new();
+        if with_own {
+            e.push(("SCENIC_OWN".to_string(), own.clone()));
+        }
+        e.push(("SCENIC_CACHE".to_string(), "{cache}".to_string()));
+        e.push(("SCENIC_SCACHE".to_string(), "{scache}".to_string()));
+        if store {
+            e.push(("SCENIC_CANOPY_STORE".to_string(), "{store}".to_string()));
+        }
+        let mut args = vec!["{dir}".to_string(), step.to_string()];
+        if step == "buildings" {
+            args.push("{buildings}".into());
+        }
+        Run { what: format!("scenic {step}"), prog: "scenic-metrics".into(), args, env: e }
+    };
+    let mut runs = vec![Run { what: "clean-up and grade (tile elev)".into(), prog: "tile".into(), args: vec!["{dir}".into(), "elev".into()], env: Vec::new() }];
+    for step in ["prep", "canopy", "view"] {
+        runs.push(scenic(step, true));
+    }
+    if buildings {
+        runs.push(scenic("buildings", false));
+    }
+    runs.push(scenic("flags", false));
+    runs
+}
+
+/// Runs a task's programs here, natively, in `dir` (snapshotted around each when `tools.snap`
+/// asks).
+pub fn run_tail(runs: &[Run], dir: &Path, tools: &Tools) -> Result<()> {
+    let log = dir.join("steps.log");
+    let scache = crate::scache::unit_dir(dir);
+    let store = tools.sources.as_ref().map(|s| s.join("canopy"));
+    let fill = |v: &str| -> Option<String> {
+        let put = |s: &str, k: &str, p: Option<&Path>| -> Option<String> { if s.contains(k) { Some(s.replace(k, &p?.to_string_lossy())) } else { Some(s.to_string()) } };
+        let v = put(v, "{dir}", Some(dir))?;
+        let v = put(&v, "{cache}", Some(&tools.cache))?;
+        let v = put(&v, "{scache}", Some(&scache))?;
+        let v = put(&v, "{buildings}", tools.buildings.as_deref())?;
+        put(&v, "{store}", store.as_deref())
+    };
+    for r in runs {
+        let mut c = Command::new(tools.bin.join(&r.prog));
+        for a in &r.args {
+            c.arg(fill(a).with_context(|| format!("{}: no place for {a}", r.what))?);
+        }
+        for (k, v) in &r.env {
+            if let Some(v) = fill(v) {
+                c.env(k, v);
+            }
+        }
+        run_in(c, &r.what, &log, dir, tools)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
