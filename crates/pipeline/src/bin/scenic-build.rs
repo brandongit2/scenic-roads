@@ -1196,7 +1196,7 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::write(&qfile, serde_json::to_vec(&serde_json::json!({"facts": facts, "views": views}))?)?;
     let dir = scratch.join("items-out");
     let mut c = std::process::Command::new("uv");
-    c.current_dir(&dem).env("SCENIC_PARTS", serde_json::to_string(PARTS)?).args(["run", "python", "items.py", "--qids"]).arg(&qfile).arg("--epoch").arg(&date).arg("--cache").arg(&cache).arg("--out").arg(&dir);
+    c.current_dir(&dem).env("SCENIC_PARTS", serde_json::to_string(PARTS)?).env("SCENIC_PAGEVIEWS_STORE", out.root().join("sources/pageviews")).args(["run", "python", "items.py", "--qids"]).arg(&qfile).arg("--epoch").arg(&date).arg("--cache").arg(&cache).arg("--out").arg(&dir);
     let st = c.status().context("run items.py")?;
     anyhow::ensure!(st.success(), "items.py failed: {st}");
     parts.start(4);
@@ -1321,7 +1321,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
         let mine: Vec<&str> = chain.iter().filter(|c| c.0 == *part).map(|c| c.1).collect();
         stage(mine.iter().position(|s| s == script).unwrap_or(0) as u64, mine.len() as u64 + (*part == 4) as u64, script);
-        heritage_script(&root, &cache, script, sargs)?;
+        heritage_script(&root, &cache, out.root(), script, sargs)?;
     }
     stage(1, 2, "uploading");
     // Outputs (not the stops & sights' stand-ins, nor the layers made from them), the pass's
@@ -1513,10 +1513,11 @@ fn heritage_root(scratch: &Path, dem: &Path, epoch: &Path) -> Result<PathBuf> {
 }
 
 /// Runs one of today's scripts in a stand-in root (its venv kept in the cache; the lock file as is).
-fn heritage_script(root: &Path, cache: &Path, script: &str, args: &[&str]) -> Result<()> {
+fn heritage_script(root: &Path, cache: &Path, nas: &Path, script: &str, args: &[&str]) -> Result<()> {
     let t = std::time::Instant::now();
     let mut c = std::process::Command::new("uv");
-    c.current_dir(root.join("dem")).env("UV_PROJECT_ENVIRONMENT", cache.join("heritage-venv")).args(["run", "--frozen", "python", script]).args(args);
+    // (The pageview months' indexes the items job keeps, on the NAS: pageviews.py.)
+    c.current_dir(root.join("dem")).env("UV_PROJECT_ENVIRONMENT", cache.join("heritage-venv")).env("SCENIC_PAGEVIEWS_STORE", nas.join("sources/pageviews")).args(["run", "--frozen", "python", script]).args(args);
     let st = c.status().with_context(|| format!("run {script}"))?;
     anyhow::ensure!(st.success(), "{script} failed: {st}");
     eprintln!("heritage: {script} done ({:.0?})", t.elapsed());
@@ -1551,7 +1552,7 @@ fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result
     parts.start(1);
     areas_over_cover(out, &date, &poly, scratch, &root.join("data/areas/areas.geojsonseq"))?;
     parts.start(2);
-    heritage_script(&root, &cache, "heritage.py", &["../data/build", "--tiles", "../data/build/cover.idx", "--zoom", &COVER_Z.to_string(), "--date", &date])?;
+    heritage_script(&root, &cache, out.root(), "heritage.py", &["../data/build", "--tiles", "../data/build/cover.idx", "--zoom", &COVER_Z.to_string(), "--date", &date])?;
     parts.start(3);
     // The units' slices, then the whole files.
     let sites = slice_sites(&std::fs::read(b.join("heritage.json"))?)?;

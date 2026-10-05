@@ -10,11 +10,14 @@ Basque …) are counted and summed. The item's articles come from data/heritage/
 (heritagewd.py), filled here for POI items not in it.
 
 Views come from Wikimedia's monthly pageview dumps (dumps.wikimedia.org, pageview_complete, user
-agents only): each ~5 GB month is streamed through bzip2 and filtered to our articles, nothing
-stored. The API allows anonymous clients ten requests a minute, too few for ~100,000 articles.
-One month per season is sampled (MONTHS), so summer-heavy places aren't favoured; each month's
-counts are cached in data/pageviews/months/, with the articles they were counted for: articles
-added later (a new region's sites, a new language) stream the month again, for those only.
+agents only). The API allows anonymous clients ten requests a minute, too few for ~100,000
+articles. One month per season is sampled (MONTHS), so summer-heavy places aren't favoured.
+A month is streamed (~5 GB through bzip2) once: every article of the map's languages is counted,
+not just the ones wanted now, into the month's index, kept on the NAS (SCENIC_PAGEVIEWS_STORE:
+sources/pageviews/<month>.tsv.zst, "lang|Title<TAB>views" lines, zstd) and here
+(data/pageviews/months/); any article, of any step, any run, is then looked up there. (Before
+the index: each month's counts for the articles asked, data/pageviews/months/<month>.json with
+<month>.counted.json; still read while they cover what's asked.)
 
 Writes data/pageviews/items.json (per item: average monthly views over the sampled months).
 
@@ -24,11 +27,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import socket
 import subprocess
 import sys
 import threading
 import time
 import urllib.request
+from compression import zstd
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -42,6 +48,8 @@ UA = "road-elevations/0.1 (personal offline map)"
 LANGS = {"en", "fr", "es", "ca", "pt", "zh", "zh-yue", "ja", "cy", "ga", "gd", "gl", "eu", "oc", "br", "co", "ast", "an", "gv"}
 MONTHS = ["2025-11", "2026-02", "2026-05", "2026-08"]
 DUMP = "https://dumps.wikimedia.org/other/pageview_complete/monthly/{y}/{y}-{m}/pageviews-{y}{m}-user.bz2"
+# The NAS's months' indexes (scenic-build sets it); none: here only.
+STORE = Path(os.environ["SCENIC_PAGEVIEWS_STORE"]) if os.environ.get("SCENIC_PAGEVIEWS_STORE") else None
 
 
 def months_before(epoch: str) -> list[str]:
@@ -62,19 +70,42 @@ def months_before(epoch: str) -> list[str]:
     return sorted(out)
 
 
-# The dumps' bytes streamed so far, and their sizes, by month: the progress line's.
-_streamed: dict[str, list[int]] = {}
-_lock = threading.Lock()
-
-
 def _cached(month: str) -> tuple[dict[str, int], set[str]]:
-    """A month's cached views, and the articles they were counted for ({month}.json,
-    {month}.counted.json; a cache from before that list counts as having counted the articles it
-    has views for)."""
+    """A month's views from before its index, and the articles they were counted for
+    ({month}.json, {month}.counted.json; a cache from before that list counts as having counted
+    the articles it has views for)."""
     path = OUT / "months" / f"{month}.json"
     counted_path = OUT / "months" / f"{month}.counted.json"
     got: dict[str, int] = json.loads(path.read_text()) if path.exists() else {}
     return got, set(json.loads(counted_path.read_text())) if counted_path.exists() else set(got)
+
+
+def _index(month: str) -> Path | None:
+    """The month's index here, copied whole from the NAS the first time; None when neither has it."""
+    local = OUT / "months" / f"{month}.tsv.zst"
+    if not local.exists() and STORE and (STORE / local.name).exists():
+        _copy_whole(STORE / local.name, local)
+    return local if local.exists() else None
+
+
+def _copy_whole(src: Path, dst: Path) -> None:
+    """Copies src to dst by a temporary name (this Mac's and process's), flushed, its length checked."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.with_name(f"{dst.name}.{socket.gethostname().split('.')[0]}.{os.getpid()}.tmp")
+    try:
+        with open(src, "rb") as a, open(tmp, "wb") as b:
+            shutil.copyfileobj(a, b, 4 << 20)
+            b.flush()
+            os.fsync(b.fileno())
+        if tmp.stat().st_size != src.stat().st_size:
+            raise OSError(f"{dst}: {tmp.stat().st_size} of {src.stat().st_size} bytes copied")
+        tmp.replace(dst)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _needs_stream(month: str, wanted: set[str]) -> bool:
+    return _index(month) is None and bool(wanted - _cached(month)[1])
 
 
 def _dump_size(month: str) -> int:
@@ -86,6 +117,11 @@ def _dump_size(month: str) -> int:
             return int(r.headers.get("Content-Length") or 0)
     except (OSError, ValueError):
         return 0
+
+
+# The dumps' bytes streamed so far, and their sizes, by month: the progress line's.
+_streamed: dict[str, list[int]] = {}
+_lock = threading.Lock()
 
 
 def _report() -> None:
@@ -100,7 +136,7 @@ def months_views(months: list[str], wanted: set[str]) -> list[dict[str, int]]:
     most dumps.wikimedia.org asks for), with a progress line every half minute: the bytes streamed
     of all the dumps to stream (each one's size asked first), so the build's status shows how far
     it is and when it'll be done, not the step before's last line for half an hour."""
-    todo = [m for m in months if wanted - _cached(m)[1]]
+    todo = [m for m in months if _needs_stream(m, wanted)]
     with _lock:
         _streamed.clear()
         _streamed.update({m: [0, _dump_size(m)] for m in todo})
@@ -120,21 +156,38 @@ def months_views(months: list[str], wanted: set[str]) -> list[dict[str, int]]:
 
 
 def month_views(month: str, wanted: set[str]) -> dict[str, int]:
-    """Views in one month of each wanted article ("lang|Title_with_underscores"), from its dump:
-    the cached counts (_cached), and the month streamed again for articles not counted yet."""
-    path = OUT / "months" / f"{month}.json"
-    counted_path = OUT / "months" / f"{month}.counted.json"
-    got, counted = _cached(month)
-    todo = wanted - counted
-    if not todo:
-        return got
-    print(f"  {month}: counting {len(todo)} articles", file=sys.stderr, flush=True)
-    y, m = month.split("-")
-    langs = "|".join(sorted({a.split("|", 1)[0] for a in todo}))
+    """Views in one month of each wanted article ("lang|Title_with_underscores"): looked up in the
+    month's index; before there's one, the counts from before it when they cover what's asked; else
+    the month is streamed once into its index, every article of the map's languages counted."""
+    index = _index(month)
+    if index is None:
+        got, counted = _cached(month)
+        if not wanted - counted:
+            return {a: v for a, v in got.items() if a in wanted}
+        index = _stream_index(month)
     t0 = time.time()
-    new: dict[str, int] = {}
+    views: dict[str, int] = {}
+    with zstd.open(index, "rt", encoding="utf-8") as f:
+        for line in f:
+            key, _, n = line.rstrip("\n").partition("\t")
+            if key in wanted:
+                # (A page's lines are summed: its access kinds, adjacent or not.)
+                views[key] = views.get(key, 0) + int(n)
+    print(f"  {month}: {len(views)} of {len(wanted)} articles with views, from its index ({time.time() - t0:.0f} s)", file=sys.stderr, flush=True)
+    return views
+
+
+def _stream_index(month: str) -> Path:
+    """Streams a month's dump into its index, here then on the NAS: every article of the map's
+    languages, its views summed over the dump's adjacent lines for it (its access kinds)."""
+    local = OUT / "months" / f"{month}.tsv.zst"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    print(f"  {month}: streaming its dump, every article of the map's languages counted", file=sys.stderr, flush=True)
+    y, m = month.split("-")
+    langs = "|".join(sorted(LANGS))
+    t0 = time.time()
     # curl | bzip2 -dc | grep, each one's exit checked: a download cut short (curl's error, bzip2's
-    # truncated stream) fails the month instead of caching what arrived as counted. curl's bytes
+    # truncated stream) fails the month instead of keeping what arrived as its index. curl's bytes
     # reach bzip2 through here, counted (the progress line's: a few MB a second).
     curl = subprocess.Popen(["curl", "-sSL", "--fail", "-A", UA, DUMP.format(y=y, m=m)], stdout=subprocess.PIPE)
     bz = subprocess.Popen(["bzip2", "-dc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -160,27 +213,43 @@ def month_views(month: str, wanted: set[str]) -> dict[str, int]:
 
     pumper = threading.Thread(target=pump, daemon=True)
     pumper.start()
-    for line in grep.stdout:
-        # wiki title page_id access monthly_total hourly
-        f = line.split(" ", 5)
-        if len(f) < 5:
-            continue
-        key = f"{f[0][:-10]}|{f[1]}"
-        if key in todo:
-            new[key] = new.get(key, 0) + int(f[4])
-    pumper.join()
-    rc = (curl.wait(), bz.wait(), grep.wait())
-    # (grep exits 1 when nothing matched.)
-    if rc[0] != 0 or rc[1] != 0 or rc[2] not in (0, 1):
-        raise RuntimeError(f"{month}: download failed (curl {rc[0]}, bzip2 {rc[1]}, grep {rc[2]})")
-    got.update(new)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    for dst, v in ((path, got), (counted_path, sorted(counted | todo))):
-        tmp = dst.with_suffix(".tmp")
-        tmp.write_text(json.dumps(v, ensure_ascii=False))
-        tmp.replace(dst)
-    print(f"  {month}: {len(new)} of {len(todo)} articles with views ({time.time() - t0:.0f} s)", file=sys.stderr, flush=True)
-    return got
+    tmp = local.with_name(f"{local.name}.{os.getpid()}.tmp")
+    rows = 0
+    try:
+        with zstd.open(tmp, "wt", encoding="utf-8") as out:
+            last, total = None, 0
+            for line in grep.stdout:
+                # wiki title page_id access monthly_total hourly
+                f = line.split(" ", 5)
+                if len(f) < 5:
+                    continue
+                key = f"{f[0][:-10]}|{f[1]}"
+                if key != last:
+                    if last is not None:
+                        out.write(f"{last}\t{total}\n")
+                        rows += 1
+                    last, total = key, 0
+                total += int(f[4])
+            if last is not None:
+                out.write(f"{last}\t{total}\n")
+                rows += 1
+        pumper.join()
+        rc = (curl.wait(), bz.wait(), grep.wait())
+        # (grep exits 1 when nothing matched.)
+        if rc[0] != 0 or rc[1] != 0 or rc[2] not in (0, 1):
+            raise RuntimeError(f"{month}: download failed (curl {rc[0]}, bzip2 {rc[1]}, grep {rc[2]})")
+        with open(tmp, "rb") as f:
+            os.fsync(f.fileno())
+        tmp.replace(local)
+    finally:
+        tmp.unlink(missing_ok=True)
+    if STORE:
+        _copy_whole(local, STORE / local.name)
+    # (The counts from before the index: it has them all now.)
+    for old in (f"{month}.json", f"{month}.counted.json"):
+        (OUT / "months" / old).unlink(missing_ok=True)
+    print(f"  {month}: {rows} articles in its index, {local.stat().st_size >> 20} MB ({time.time() - t0:.0f} s)", file=sys.stderr, flush=True)
+    return local
 
 
 def main() -> None:

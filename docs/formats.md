@@ -394,7 +394,10 @@ class, id) within a tile. The client sends the id with the clicked point.
   `packs/index.json` (`{areas: {area: [{name, bytes}, …]}, gone: {name: unix seconds}}`: each
   area's archives, oldest first, read newest first; `gone`, the archives on the NAS it doesn't
   name, deleted a day after the time beside them), and the loose tiles from before,
-  `sources/aws-terrarium/<z>/<x>/<y>.png` (`<y>.none` for one AWS doesn't have), `sources/fabdem/<tile>_FABDEM_V1-2.tif`
+  `sources/aws-terrarium/<z>/<x>/<y>.png` (`<y>.none` for one AWS doesn't have),
+  `sources/pageviews/<YYYY-MM>.tsv.zst` (a month of Wikipedia's pageviews, every article of the
+  map's languages: `<lang>|<Title_with_underscores>\t<views>` lines, zstd; dem/pageviews.py),
+  `sources/fabdem/<tile>_FABDEM_V1-2.tif`
   (FABDEM's 1° tiles out of Bristol's zips, deflate GeoTIFF; `<tile>.none` for one a zip doesn't
   have);
   `sources/dem-cache/dem-cache.{keys.u64,elev.f32,src.u8}` (today's per-vertex DEM cache, the seed

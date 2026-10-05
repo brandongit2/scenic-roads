@@ -242,7 +242,10 @@ record changes back through the build Mac's coordinator, which journals them for
   system sleep on mains power. It's dropped while the job is paused, so a paused Mac can sleep.
 - **Downloads are kept on the NAS, each made once** (`sources/`): Meta's canopy squares (today's
   build's among them), AWS's raw terrain tiles, FABDEM's 1° tiles, the leaf-type sources, Overture's
-  buildings. A Mac's copy is a cache filled from the NAS.
+  buildings, and Wikipedia's monthly pageviews (`sources/pageviews/<month>.tsv.zst`: a month's
+  dump, ~5 GB, streamed once and every article of the map's languages counted, so the items and
+  heritage jobs, any run, look up any article instead of streaming it again). A Mac's copy is a
+  cache filled from the NAS.
   - **AWS's raw terrain tiles** are kept in the build Mac's cache as they come, then packed onto
     the NAS (`pipeline::rawpack`, `sources/aws-terrarium/packs/`, listed in its `index.json`) in
     archives grouped as the terrain's packs are: z9–12 by z6 tile, z3–8 by z3 tile, z0–2

@@ -13,8 +13,11 @@ under --cache, appended a chunk at a time (a run stopped midway keeps what it fe
   facts-<epoch>.jsonl      QID → poidetails.py's record (sitelinks, descriptions, heights …)
   wp-<epoch>.jsonl         QID → its Wikipedia articles (heritagewd.wikipedias)
   fetched-<epoch>.json     the first and last days anything was fetched for the epoch
-  months/<m>.json, <m>.counted.json   one month's views per article (pageviews.month_views)
-Older epochs' files, and months older than the epoch's, go at the end of a run.
+  months/<m>.tsv.zst       one month's index: every article of the map's languages with its
+                           views, streamed once, kept on the NAS too (pageviews.month_views)
+  months/<m>.json, <m>.counted.json   from before the index: the views of the articles asked
+Older epochs' files, and months older than the epoch's (here: the NAS keeps its indexes), go at
+the end of a run.
 The four months are the last November, February, May and August whose dumps are out by the epoch
 (ended at least 20 days before it), pinned for it.
 
@@ -159,8 +162,8 @@ def main() -> None:
         stem = p.name.split(".", 1)[0]
         if p.is_file() and "-" in stem and stem.split("-", 1)[0] in ("facts", "wp", "fetched") and stem.split("-", 1)[1] < a.epoch:
             p.unlink()
-    for p in (cache / "months").glob("*.json"):
-        if p.name[:7] < months[0]:
+    for p in (cache / "months").iterdir():
+        if p.is_file() and p.name[:7] < months[0]:
             p.unlink()
     print(f"items: {len(facts_q)} facts, {len(views)} items with views", file=sys.stderr)
 
