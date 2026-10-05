@@ -66,8 +66,15 @@ const cores = Math.max(1, (navigator.hardwareConcurrency || 2) - 1);
 
 // How much memory this tab may use (MB): learned. It starts modest (or from what the browser says
 // it has), rises after tasks that came near it succeed, and falls below any task the tab died in.
-const CAP = 3800; // (32-bit WebAssembly can't address more than 4 GB.)
-let ceiling = store.get("ceiling", navigator.deviceMemory ? Math.min(CAP, navigator.deviceMemory * 256) : 1024);
+// (32-bit WebAssembly can't address more than 4 GB; a browser may allow a program less: the most it
+// lets a memory grow to, tried once.)
+const CAP = (() => {
+  for (let mb = 3800; mb >= 256; mb = Math.floor(mb / 2)) {
+    try { new WebAssembly.Memory({ initial: 1, maximum: mb * 16 }); return mb; } catch {}
+  }
+  return 128;
+})();
+let ceiling = Math.min(CAP, store.get("ceiling", navigator.deviceMemory ? navigator.deviceMemory * 256 : 1024));
 const running = store.get("running", null);
 if (running) {
   // The last page died holding a task: the tab used more than this browser allows.

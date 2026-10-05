@@ -1575,7 +1575,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
 }
 
 fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
-    use pipeline::unit::{build_folder, owns, Tools};
+    use pipeline::unit::{prepare_folder, run_tail, Tools};
     let (date, cov, regions) = pass_and_coverage(out, args)?;
     // Global-source layers: as this build's manifest has them now (what the unit keys hash: a
     // terrain job of the same plan is published only with its catalog, at the end), or another
@@ -1652,6 +1652,10 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // The next unit's piece and packs, copied while this one builds (one stream: large sequential
     // reads, nothing the unit building now waits on).
     let mut ahead: Option<std::thread::JoinHandle<()>> = None;
+    // Other workers, through the build Mac's coordinator (the agent's jobs there), and the units
+    // whose tails' last steps are out with them.
+    let offload = pipeline::offload::Offload::from_env(scratch);
+    let mut out_now: std::collections::VecDeque<(Built, pipeline::offload::Offered)> = Default::default();
     for (k, &u) in units.iter().enumerate() {
         pipeline::agent::jobs::report(k as u64, n, "areas");
         let t = std::time::Instant::now();
@@ -1717,7 +1721,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         // Its scenic results from its last run, kept in the shared cache (pipeline::scache::Carry).
         let carry = pipeline::scache::Carry { dir: tools.scenic_kept(u) };
         pipeline::unit::take_peak();
-        let rep = {
+        let (rep, tools) = {
             let o: &Out = out;
             let heritage = |b: [f64; 4], d: &Path| pipeline::heritage::unit_inputs(o, &date, b, d);
             // Its roadside buildings: the folder given by hand, else the release's tiles near its
@@ -1729,96 +1733,187 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                 laps.lap("buildings staged");
                 tools.buildings = Some(bdir.clone());
             }
-            build_folder(u, &local_piece, &dir, &cov, &layers_source(o, &pilot, Some(&blobs)), &tools, &heritage, Some(&carry))?
+            (prepare_folder(u, &local_piece, &dir, &cov, &layers_source(o, &pilot, Some(&blobs)), &tools, &heritage, Some(&carry))?, tools)
         };
-        laps.skip();
         std::fs::remove_file(&local_piece).ok();
-        // Grids its packs lacked (new coverage), made in the folder: the unit's own z6 tile's go up,
-        // for later units and packs. (The canopy step made canopy and cover for every tile.)
-        for var in ["class", "canopy", "cover"] {
-            if rep.staged.missing.get(var).copied().unwrap_or(0) == 0 {
-                continue;
-            }
-            let mut tiles = pipeline::stage::grid_tiles_in(&dir, var, u.x, u.y)?.into_iter();
-            layers::write_pack(out, &format!("grid-{var}"), "u8-zstd", false, "hi", (6, u.x, u.y), &mut tiles)?;
+        // Its tail: the steps that read the caches here; the rest offered to another worker while
+        // this Mac prepares the next unit (when one's around, and fewer than such are out), else
+        // run here too.
+        let runs = pipeline::unit::tail(u, tools.buildings.is_some(), tools.sources.is_some());
+        let (here, anywhere) = pipeline::unit::split(&runs);
+        if rep.kept_ways > 0 {
+            run_tail(here, &dir, &tools)?;
         }
-        laps.lap("missing grids written");
-        // Its scenic results, for its next run. A cache: not keeping them only costs time later.
-        if let Err(e) = carry.save(&dir) {
-            eprintln!("unit {}: its scenic results not kept: {e:#}", u.slash());
-        }
-        laps.lap("scenic results kept");
-        eprintln!("unit {}: {} of {} ways touch the coverage, {} owned; {} heritage sites, {} area polygons", u.slash(), rep.kept_ways, rep.piece_ways, rep.owned, rep.heritage, rep.areas);
-        if rep.kept_ways == 0 || rep.owned == 0 {
-            // None of its ways in the coverage (any more): a base pack and road values from an
-            // earlier coverage go, so the map and the map tiles stop showing them.
-            let gone: Vec<String> = [format!("base/{}", u.dash()), format!("global/roads/{}", u.dash()), format!("global/roaden/{}", u.dash())].into_iter().filter(|l| out.get(l).is_some()).collect();
-            if !gone.is_empty() {
-                for l in &gone {
-                    out.remove(l);
+        laps.skip();
+        let b = Built { u, dir: dir.clone(), bdir: bdir.clone(), rep, tools, carry, piece, t, laps, peak: pipeline::unit::take_peak(), anywhere: anywhere.to_vec() };
+        let offered = match &offload {
+            Some(o) if b.rep.kept_ways > 0 && out_now.len() < o.depth() => match o.offer(u, &b.dir, b.tools.buildings.as_deref(), &b.anywhere) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    eprintln!("unit {}: its last steps not offered ({e:#}); run here", u.slash());
+                    None
                 }
-                out.save()?;
-                eprintln!("unit {}: removed its earlier {}", u.slash(), gone.join(" and "));
+            },
+            _ => None,
+        };
+        match offered {
+            Some(task) => out_now.push_back((b, task)),
+            None => {
+                let mut b = b;
+                if b.rep.kept_ways > 0 {
+                    run_tail(&b.anywhere, &b.dir, &b.tools)?;
+                    b.peak = b.peak.max(pipeline::unit::take_peak());
+                }
+                commit_unit(out, &date, b, "here")?;
             }
-            clean();
+        }
+        // Units whose last steps came back from other workers: committed before the next.
+        settle_tails(out, &date, offload.as_ref(), &mut out_now, false)?;
+    }
+    // The rest: taken back and run here where no one took them, raced here where someone did.
+    settle_tails(out, &date, offload.as_ref(), &mut out_now, true)?;
+    Ok(())
+}
+
+/// A unit prepared (and its tail's first steps run), waiting to be finished and committed.
+struct Built {
+    u: Unit,
+    dir: PathBuf,
+    bdir: PathBuf,
+    rep: pipeline::unit::Report,
+    tools: pipeline::unit::Tools,
+    carry: pipeline::scache::Carry,
+    piece: PathBuf,
+    t: std::time::Instant,
+    laps: pipeline::unit::Laps,
+    peak: u64,
+    /// Its tail's steps any worker may run.
+    anywhere: Vec<pipeline::unit::Run>,
+}
+
+/// Settles the units whose last steps are out with other workers (pipeline::offload), in order,
+/// and commits them: with `wait` false only those a worker finished or failed.
+fn settle_tails(out: &mut Out, date: &str, offload: Option<&pipeline::offload::Offload>, waiting: &mut std::collections::VecDeque<(Built, pipeline::offload::Offered)>, wait: bool) -> Result<()> {
+    let Some(o) = offload else { return Ok(()) };
+    let mut i = 0;
+    while i < waiting.len() {
+        let (b, task) = &mut waiting[i];
+        let (dir, tools, anywhere) = (b.dir.clone(), b.tools.clone(), b.anywhere.clone());
+        let mut here = || pipeline::unit::run_tail(&anywhere, &dir, &tools);
+        match o.settle(task, &b.dir, wait, &mut here)? {
+            None => i += 1,
+            Some(how) => {
+                let (mut b, _) = waiting.remove(i).unwrap();
+                b.peak = b.peak.max(pipeline::unit::take_peak());
+                let how = match how {
+                    pipeline::offload::Settled::Remote(w) => format!("by {w}"),
+                    pipeline::offload::Settled::Here(None) => "here".into(),
+                    pipeline::offload::Settled::Here(Some((w, true))) => format!("here, and by {w} the same"),
+                    pipeline::offload::Settled::Here(Some((w, false))) => format!("here: {w}'s differed, and it gets no more work"),
+                };
+                commit_unit(out, date, b, &how)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A unit's last part, its folder ready: the grids its packs lacked, its scenic results kept for
+/// its next run, its base pack, road values and roads' English saved, its folders removed, and what
+/// it cost noted. `how`: where its tail's last steps ran.
+fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
+    let Built { u, dir, bdir, rep, carry, piece, t, mut laps, peak, .. } = b;
+    use pipeline::unit::owns;
+    laps.skip();
+    let clean = || {
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::remove_dir_all(&bdir).ok();
+    };
+    // Grids its packs lacked (new coverage), made in the folder: the unit's own z6 tile's go up,
+    // for later units and packs. (The canopy step made canopy and cover for every tile.)
+    for var in ["class", "canopy", "cover"] {
+        if rep.staged.missing.get(var).copied().unwrap_or(0) == 0 {
             continue;
         }
-        // The owned ways, in base-pack order, with the pass's road values.
-        let lg = Legacy::open(&dir)?;
-        let tb = tile_bounds(u.z, u.x, u.y);
-        let idx: Vec<u32> = lg.units().remove(&u).unwrap_or_default().into_iter().filter(|&i| owns(tb, lg.first_vertex(&lg.ways.ways()[i as usize]))).collect();
-        let built = format!("pass:{date}");
-        let bs = legacy::base_sections(&lg, u, &idx, &built);
-        laps.lap("base pack made");
-        let secs: Vec<(&str, &[u8])> = bs.sections.iter().map(|(n, v)| (*n, v.as_slice())).collect();
-        put_sect(out, &format!("base/{}", u.dash()), bs.meta, &secs)?;
-        laps.lap("base pack written to the NAS");
-        let vals = pass_roads(out, &date, u)?;
-        let ways = lg.ways.ways();
-        let verts = lg.ways.verts();
-        let recs: Vec<pipeline::legacy::RoadRec> = idx
-            .iter()
-            .map(|&i| {
-                let w = &ways[i as usize];
-                match vals.binary_search_by_key(&(w.id as u64), |v| v.0) {
-                    Ok(k) => vals[k].1,
-                    Err(_) => {
-                        // Not chained (a ferry, a one-vertex way): its own road.
-                        let vs = &verts[Legacy::range(w)];
-                        let len: f64 = vs.windows(2).map(|p| roadcore::dist_m(p[0][0] as f64 * 1e-7, p[0][1] as f64 * 1e-7, p[1][0] as f64 * 1e-7, p[1][1] as f64 * 1e-7)).sum();
-                        pipeline::legacy::RoadRec { road: w.id as u64, len: len as f32, offset: 0.0, dir: 0, _pad: [0; 7] }
-                    }
-                }
-            })
-            .collect();
-        put_roads(out, u, &recs)?;
-        laps.lap("road values made and written");
-        // The roads' own English (OSM's name:en where it isn't the name), for the server to show
-        // with them.
-        let en: BTreeMap<String, String> = std::fs::read(dir.join("name-en.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let mine: BTreeMap<String, String> = idx.iter().filter_map(|&i| en.get(&ways[i as usize].id.to_string()).map(|e| (ways[i as usize].id.to_string(), e.clone()))).collect();
-        let logical = format!("global/roaden/{}", u.dash());
-        if !mine.is_empty() {
-            out.put_bytes(&logical, "json", &serde_json::to_vec(&mine)?)?;
-        } else if out.get(&logical).is_some() {
-            out.remove(&logical);
-        }
-        out.save()?;
-        laps.lap("records saved");
-        drop(lg);
-        clean();
-        laps.lap("its folders removed");
-        // The most memory one of its steps' programs took, against its piece's size; noted for the
-        // coordinator (`SCENIC_COSTS`), which gives a worker only units that fit its memory.
-        let piece_mb = std::fs::metadata(&piece).map(|m| m.len() >> 20).unwrap_or(0);
-        let peak = pipeline::unit::take_peak();
-        eprintln!("unit {}: base pack of {} ways in {:.0?}; piece {piece_mb} MB, its steps' programs' peak memory {:.1} GB", u.slash(), idx.len(), t.elapsed(), peak as f64 / 1e9);
-        if let Some(p) = std::env::var_os("SCENIC_COSTS") {
-            let line = serde_json::json!({ "unit": u.slash(), "peak_mb": peak >> 20, "secs": t.elapsed().as_secs() });
-            let r = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
-            if let Err(e) = r {
-                eprintln!("unit {}: noting what it cost: {e}", u.slash());
+        let mut tiles = pipeline::stage::grid_tiles_in(&dir, var, u.x, u.y)?.into_iter();
+        layers::write_pack(out, &format!("grid-{var}"), "u8-zstd", false, "hi", (6, u.x, u.y), &mut tiles)?;
+    }
+    laps.lap("missing grids written");
+    // Its scenic results, for its next run. A cache: not keeping them only costs time later.
+    if let Err(e) = carry.save(&dir) {
+        eprintln!("unit {}: its scenic results not kept: {e:#}", u.slash());
+    }
+    laps.lap("scenic results kept");
+    eprintln!("unit {}: {} of {} ways touch the coverage, {} owned; {} heritage sites, {} area polygons; its last steps run {how}", u.slash(), rep.kept_ways, rep.piece_ways, rep.owned, rep.heritage, rep.areas);
+    if rep.kept_ways == 0 || rep.owned == 0 {
+        // None of its ways in the coverage (any more): a base pack and road values from an
+        // earlier coverage go, so the map and the map tiles stop showing them.
+        let gone: Vec<String> = [format!("base/{}", u.dash()), format!("global/roads/{}", u.dash()), format!("global/roaden/{}", u.dash())].into_iter().filter(|l| out.get(l).is_some()).collect();
+        if !gone.is_empty() {
+            for l in &gone {
+                out.remove(l);
             }
+            out.save()?;
+            eprintln!("unit {}: removed its earlier {}", u.slash(), gone.join(" and "));
+        }
+        clean();
+        return Ok(());
+    }
+    // The owned ways, in base-pack order, with the pass's road values.
+    let lg = Legacy::open(&dir)?;
+    let tb = tile_bounds(u.z, u.x, u.y);
+    let idx: Vec<u32> = lg.units().remove(&u).unwrap_or_default().into_iter().filter(|&i| owns(tb, lg.first_vertex(&lg.ways.ways()[i as usize]))).collect();
+    let built = format!("pass:{date}");
+    let bs = legacy::base_sections(&lg, u, &idx, &built);
+    laps.lap("base pack made");
+    let secs: Vec<(&str, &[u8])> = bs.sections.iter().map(|(n, v)| (*n, v.as_slice())).collect();
+    put_sect(out, &format!("base/{}", u.dash()), bs.meta, &secs)?;
+    laps.lap("base pack written to the NAS");
+    let vals = pass_roads(out, date, u)?;
+    let ways = lg.ways.ways();
+    let verts = lg.ways.verts();
+    let recs: Vec<pipeline::legacy::RoadRec> = idx
+        .iter()
+        .map(|&i| {
+            let w = &ways[i as usize];
+            match vals.binary_search_by_key(&(w.id as u64), |v| v.0) {
+                Ok(k) => vals[k].1,
+                Err(_) => {
+                    // Not chained (a ferry, a one-vertex way): its own road.
+                    let vs = &verts[Legacy::range(w)];
+                    let len: f64 = vs.windows(2).map(|p| roadcore::dist_m(p[0][0] as f64 * 1e-7, p[0][1] as f64 * 1e-7, p[1][0] as f64 * 1e-7, p[1][1] as f64 * 1e-7)).sum();
+                    pipeline::legacy::RoadRec { road: w.id as u64, len: len as f32, offset: 0.0, dir: 0, _pad: [0; 7] }
+                }
+            }
+        })
+        .collect();
+    put_roads(out, u, &recs)?;
+    laps.lap("road values made and written");
+    // The roads' own English (OSM's name:en where it isn't the name), for the server to show
+    // with them.
+    let en: BTreeMap<String, String> = std::fs::read(dir.join("name-en.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let mine: BTreeMap<String, String> = idx.iter().filter_map(|&i| en.get(&ways[i as usize].id.to_string()).map(|e| (ways[i as usize].id.to_string(), e.clone()))).collect();
+    let logical = format!("global/roaden/{}", u.dash());
+    if !mine.is_empty() {
+        out.put_bytes(&logical, "json", &serde_json::to_vec(&mine)?)?;
+    } else if out.get(&logical).is_some() {
+        out.remove(&logical);
+    }
+    out.save()?;
+    laps.lap("records saved");
+    drop(lg);
+    clean();
+    laps.lap("its folders removed");
+    // The most memory one of its steps' programs took here, against its piece's size; noted for
+    // the coordinator (`SCENIC_COSTS`), which gives a worker only units that fit its memory.
+    let piece_mb = std::fs::metadata(&piece).map(|m| m.len() >> 20).unwrap_or(0);
+    let peak = peak.max(pipeline::unit::take_peak());
+    eprintln!("unit {}: base pack of {} ways in {:.0?}; piece {piece_mb} MB, its steps' programs' peak memory {:.1} GB", u.slash(), idx.len(), t.elapsed(), peak as f64 / 1e9);
+    if let Some(p) = std::env::var_os("SCENIC_COSTS") {
+        let line = serde_json::json!({ "unit": u.slash(), "peak_mb": peak >> 20, "secs": t.elapsed().as_secs() });
+        let r = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
+        if let Err(e) = r {
+            eprintln!("unit {}: noting what it cost: {e}", u.slash());
         }
     }
     Ok(())

@@ -20,6 +20,7 @@ pub mod landcover;
 pub mod layers;
 pub mod legacy;
 pub mod markconv;
+pub mod offload;
 pub mod marksjob;
 pub mod marks;
 pub mod osmpass;

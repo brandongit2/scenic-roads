@@ -116,7 +116,7 @@ export function run(module, args, env, root, maxMb) {
     while (logged > 65536 && log.length > 1) logged -= log.shift().byteLength;
   };
   const fds = [new OpenFile(new File(new Uint8Array(0))), new Out(sink), new Out(sink), new PreopenDirectory("/", root.contents)];
-  const wasi = new WASI(args, Object.entries(env).map(([k, v]) => `${k}=${v}`), fds);
+  const wasi = new WASI(args, Object.entries(env).map(([k, v]) => `${k}=${v}`), fds, { debug: false });
   const imports = { wasi_snapshot_preview1: wasi.wasiImport };
   const wantsMemory = WebAssembly.Module.imports(module).some((i) => i.module === "env" && i.name === "memory" && i.kind === "memory");
   const maximum = Math.max(64, Math.floor(maxMb)) * (1048576 / PAGE);

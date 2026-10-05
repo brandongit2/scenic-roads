@@ -586,6 +586,18 @@ pub struct Run {
     pub prog: String,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
+    /// The files it reads, when that's only the unit's own (`{dir}/<name>`, `{buildings}/<name>`; a
+    /// trailing `*` for any name so begun): it may run on any worker (crate::offload). None: it
+    /// reads the caches here (the canopy files).
+    #[serde(default)]
+    pub reads: Vec<String>,
+}
+
+/// A tail split: the runs that stay here, then those any worker may run (they read only the unit's
+/// own files), the longest such end.
+pub fn split(runs: &[Run]) -> (&[Run], &[Run]) {
+    let i = runs.iter().rposition(|r| r.reads.is_empty()).map_or(0, |i| i + 1);
+    runs.split_at(i)
 }
 
 /// The tail of unit `u`'s build: its clean-up and grade, then its road samples, canopy, views,
@@ -608,9 +620,17 @@ pub fn tail(u: Unit, buildings: bool, store: bool) -> Vec<Run> {
         if step == "buildings" {
             args.push("{buildings}".into());
         }
-        Run { what: format!("scenic {step}"), prog: "scenic-metrics".into(), args, env: e }
+        // What the steps after the canopy read (traced in WebAssembly: tools/check/reads.mjs).
+        let mine = |names: &[&str]| names.iter().map(|n| if n.starts_with('{') { n.to_string() } else { format!("{{dir}}/{n}") }).collect::<Vec<_>>();
+        let reads = match step {
+            "view" => mine(&["grid.idx", "grid.terrain.i16", "grid.canopy.u8", "grid.class.u8", "grid.areas.u8", "samples.bin", "near.i8", "roadside.u8", "pois.json", "heritage.json", "ways.bin", "verts.bin", "scache/view*"]),
+            "buildings" => mine(&["samples.bin", "ways.bin", "verts.bin", "{buildings}/*"]),
+            "flags" => mine(&["grid.idx", "grid.terrain.i16", "grid.areas.u8", "samples.bin", "pois.json", "heritage.json", "ways.bin", "verts.bin"]),
+            _ => Vec::new(),
+        };
+        Run { what: format!("scenic {step}"), prog: "scenic-metrics".into(), args, env: e, reads }
     };
-    let mut runs = vec![Run { what: "clean-up and grade (tile elev)".into(), prog: "tile".into(), args: vec!["{dir}".into(), "elev".into()], env: Vec::new() }];
+    let mut runs = vec![Run { what: "clean-up and grade (tile elev)".into(), prog: "tile".into(), args: vec!["{dir}".into(), "elev".into()], env: Vec::new(), reads: Vec::new() }];
     for step in ["prep", "canopy", "view"] {
         runs.push(scenic(step, true));
     }
@@ -666,6 +686,19 @@ mod tests {
         c.args(["-c", "echo why it failed; exit 3"]);
         let e = run(c, "a step", &log).unwrap_err().to_string();
         assert!(e.contains("a step failed") && log_tail(&log, 1) == "why it failed");
+    }
+
+    #[test]
+    fn the_steps_after_the_canopy_may_run_anywhere() {
+        let u = Unit::parse("6/20/22").unwrap();
+        let runs = tail(u, true, true);
+        let (here, anywhere) = split(&runs);
+        assert_eq!(here.iter().map(|r| r.what.as_str()).collect::<Vec<_>>(), ["clean-up and grade (tile elev)", "scenic prep", "scenic canopy"]);
+        assert_eq!(anywhere.iter().map(|r| r.what.as_str()).collect::<Vec<_>>(), ["scenic view", "scenic buildings", "scenic flags"]);
+        assert!(anywhere.iter().all(|r| r.reads.iter().all(|p| p.starts_with("{dir}/") || p.starts_with("{buildings}/"))));
+        // Without the roadside buildings, flags still follows view.
+        let runs = tail(u, false, false);
+        assert_eq!(split(&runs).1.len(), 2);
     }
 
     #[test]
