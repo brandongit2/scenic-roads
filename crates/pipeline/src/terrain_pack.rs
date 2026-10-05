@@ -221,8 +221,8 @@ impl store::range::RangeRead for FileSource<'_> {
 
 /// AWS's raw tiles, kept so each is downloaded once: in the build Mac's cache as they come, and on
 /// the NAS (`sources/aws-terrarium/<z>/<x>/<y>.png`, `.none` for a tile AWS doesn't have), copied
-/// there in bulk, which fills the cache when it lacks one (room-making copies a tile the NAS lacks
-/// there before it deletes it). Packs are always made from the same immutable source: processing a
+/// there in bulk, which fills the cache when it lacks one (room-making keeps a tile the NAS lacks
+/// until it's there). Packs are always made from the same immutable source: processing a
 /// tile twice isn't idempotent, so stored (processed) tiles are never an input. Each copy is written
 /// straight to its name (crate::whole::write_in_place) and checked whole when read: one that isn't
 /// (cut short) is deleted and taken from the next source, the NAS's copy, else AWS.

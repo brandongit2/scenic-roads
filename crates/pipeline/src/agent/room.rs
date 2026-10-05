@@ -18,10 +18,12 @@
 //! - A file goes once the NAS's folder, listed once (sixteen at a time: a listing mostly waits on
 //!   the NAS; a folder that can't be listed now, or whose listing is cut short, keeps its raw tiles
 //!   here this run, and has each canopy square asked about alone), has it at the same size (asked
-//!   about once more when the listing lacks it). One the NAS lacks, or has at another size
-//!   (downloaded before it kept them, or a copy cut short), is copied there first (whole and
-//!   flushed: crate::whole), and kept here when that fails; one that isn't whole itself (cut short,
-//!   or a temporary file) is deleted without being kept anywhere.
+//!   about once more when the listing lacks it). A canopy square the NAS lacks, or has at another
+//!   size (downloaded before it kept them, or a copy cut short), is copied there first (whole and
+//!   flushed: crate::whole: one large file), and kept here when that fails; a raw tile it lacks
+//!   stays here until it reaches the NAS in bulk (copied a tile at a time, with a flush each, small
+//!   files stall the NAS: ~23 a second, and both Macs' processes wait on it meanwhile). One that
+//!   isn't whole itself (cut short, or a temporary file) is deleted without being kept anywhere.
 //!
 //! It ends early when the agent is asked to stop. Nothing else of the cache is deleted here.
 
@@ -138,6 +140,10 @@ fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
     if crate::whole::is_tmp(p) || !crate::whole::file_whole(p) {
         eprintln!("room: {} isn't whole: deleted, not kept", p.display());
         return Fate::Go;
+    }
+    // (A raw tile the NAS lacks waits here to reach it in bulk.)
+    if p.starts_with(cache.join("aws-terrarium")) {
+        return Fate::Stay;
     }
     Fate::Copy(dest)
 }
@@ -323,15 +329,18 @@ mod tests {
         assert!(c.join("chm10/read.tif").exists() && c.join("chm10/none.tif").exists());
         // What went is on the NAS (copied there first: it wasn't).
         assert!(nas.join("canopy/idle.tif").exists());
-        // Then the tile, before the square read a minute ago.
+        // Then the tile (the NAS has it), before the square read a minute ago.
+        whole(&nas.join("aws-terrarium/12/1/2.png"), 0);
         assert_eq!(make_room_with(c, nas, 850 + idle + png, 850 + idle + png, &disk(850)).unwrap(), png);
-        assert!(!c.join("aws-terrarium/12/1/2.png").exists() && nas.join("aws-terrarium/12/1/2.png").exists());
+        assert!(!c.join("aws-terrarium/12/1/2.png").exists());
         assert!(c.join("chm10/read.tif").exists());
         // Room enough: nothing goes.
         assert_eq!(make_room_with(c, nas, 1000, 1000, &|_| Ok(1 << 20)).unwrap(), 0);
-        // Far short: every cheap file; never the DEM seed.
+        // Far short: every cheap file the NAS has or takes; never the DEM seed, nor a tile it lacks.
+        whole(&c.join("aws-terrarium/12/9/9.png"), 9000);
         make_room_with(c, nas, 1 << 40, 1 << 40, &disk(0)).unwrap();
         assert!(!c.join("chm10/read.tif").exists() && c.join("dem-cache.keys.u64").exists());
+        assert!(c.join("aws-terrarium/12/9/9.png").exists() && !nas.join("aws-terrarium/12/9/9.png").exists(), "a tile the NAS lacks isn't copied there alone");
         assert!(disk_free(c).unwrap() > 0);
     }
 
@@ -378,16 +387,20 @@ mod tests {
         let c = &d.path().join("cache");
         let nas = &d.path().join("nas");
         // Column 1 holds the oldest tile, but was used since; column 2's are all older than that.
-        whole(&c.join("aws-terrarium/12/1/1.png"), 5000);
-        whole(&c.join("aws-terrarium/12/1/2.png"), 100);
-        let a = whole(&c.join("aws-terrarium/12/2/1.png"), 4000);
-        let b = whole(&c.join("aws-terrarium/12/2/2.png"), 3000);
+        // (The NAS has them all.)
+        for (t, age) in [("1/1", 5000), ("1/2", 100), ("2/1", 4000), ("2/2", 3000), ("3/1", 9500), ("3/2", 9000)] {
+            whole(&nas.join(format!("aws-terrarium/12/{t}.png")), 0);
+            if !t.starts_with('3') {
+                whole(&c.join(format!("aws-terrarium/12/{t}.png")), age);
+            }
+        }
+        let (a, b) = (std::fs::metadata(c.join("aws-terrarium/12/2/1.png")).unwrap().len(), std::fs::metadata(c.join("aws-terrarium/12/2/2.png")).unwrap().len());
         let all = used(c);
         let disk = move |p: &Path| Ok(all - used(p));
         // Short of column 2: it goes, column 1 stays.
         assert_eq!(make_room_with(c, nas, a + b, a + b, &disk).unwrap(), a + b);
         assert!(c.join("aws-terrarium/12/1/1.png").exists() && c.join("aws-terrarium/12/1/2.png").exists());
-        assert!(nas.join("aws-terrarium/12/2/1.png").exists() && nas.join("aws-terrarium/12/2/2.png").exists());
+        assert!(!c.join("aws-terrarium/12/2/1.png").exists() && !c.join("aws-terrarium/12/2/2.png").exists());
         // Canopy squares idle an hour go before any tile, each by its own use, not its folder's: of
         // two in chm10/, the one read longer ago goes, before column 3, idle longer still; the
         // other stays.
@@ -480,15 +493,21 @@ mod nas_tests {
         // The NAS has it at the same size: deleted here, the NAS's copy left as it is.
         put(&c.join("aws-terrarium/9/1/2.png"), &png);
         put(&nas.join("aws-terrarium/9/1/2.png"), &vec![7u8; png.len()]);
-        // The NAS has it cut short: its copy replaced with this whole one.
+        // The NAS has it cut short: a canopy square's copy replaced with this whole one; a raw tile
+        // kept here, to reach it in bulk.
+        let tif = crate::whole::testfiles::tiff(false);
+        put(&c.join("chm10/b.tif"), &tif);
+        put(&nas.join("canopy/b.tif"), &tif[..10]);
         put(&c.join("aws-terrarium/9/1/3.png"), &png);
         put(&nas.join("aws-terrarium/9/1/3.png"), &png[..10]);
         make_room_with(&c, &nas, 1 << 40, 1 << 40, &|_| Ok(0)).unwrap();
-        for f in ["aws-terrarium/9/1/1.png", "chm10/a.tif.m4.12.tmp", "aws-terrarium/9/1/2.png", "aws-terrarium/9/1/3.png"] {
+        for f in ["aws-terrarium/9/1/1.png", "chm10/a.tif.m4.12.tmp", "aws-terrarium/9/1/2.png", "chm10/b.tif"] {
             assert!(!c.join(f).exists(), "{f} deleted");
         }
         assert!(!nas.join("aws-terrarium/9/1/1.png").exists() && !nas.join("canopy/a.tif.m4.12.tmp").exists());
         assert_eq!(std::fs::read(nas.join("aws-terrarium/9/1/2.png")).unwrap(), vec![7u8; png.len()]);
-        assert_eq!(std::fs::read(nas.join("aws-terrarium/9/1/3.png")).unwrap(), png);
+        assert_eq!(std::fs::read(nas.join("canopy/b.tif")).unwrap(), tif);
+        assert!(c.join("aws-terrarium/9/1/3.png").exists());
+        assert_eq!(std::fs::read(nas.join("aws-terrarium/9/1/3.png")).unwrap(), png[..10].to_vec());
     }
 }

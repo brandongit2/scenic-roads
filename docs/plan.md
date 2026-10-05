@@ -927,9 +927,10 @@ are no request files.
   - A file goes once the NAS has it at the same size (each NAS folder listed once, sixteen at a
     time; a file the listing lacks asked about once more; a folder whose listing fails or is cut
     short, as a busy NAS's are, keeps its raw tiles that run and has each canopy square asked
-    about alone). One the NAS lacks, or has at another size, is copied there first (whole and
-    flushed), or kept. A file that isn't whole itself (cut short, or temporary) is deleted, not
-    kept.
+    about alone). A canopy square the NAS lacks, or has at another size, is copied there first
+    (whole and flushed), or kept; a raw tile it lacks is kept, to reach it in bulk (a tile at a time
+    with a flush each, small files stall the NAS and every process waiting on it). A file that isn't
+    whole itself (cut short, or temporary) is deleted, not kept.
   - The OSM pass counts those copies as room.
 - **Units run in map order** (by 10° square, then tile), so what one unit fetches serves the next.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours. The orphans of a crashed
