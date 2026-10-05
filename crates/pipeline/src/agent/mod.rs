@@ -77,10 +77,25 @@ pub struct Options {
 /// The free space a helper's jobs start with (its Mac has less room than the build Mac).
 const HELPER_RESERVE: u64 = 15 << 30;
 
-/// What a terrain run needs past the others' room: an area's raw tiles from AWS (up to ~10 GB for a
-/// z3 area of land), held twice while they're packed onto the NAS (loose, then in their archives),
-/// went from 34 GB free to 14 GB on the US's first runs (2026-10-05).
+/// What a terrain run needs past the others' room: its area's raw tiles held twice while they're
+/// packed onto the NAS (loose, then in their archives), and on a run again the area's archives
+/// copied here and merged (12 to 15 GB for a z3 area of land). The US's first runs took the build
+/// Mac from 34 GB free to 14 GB (2026-10-05). The area's own archive copies, which the run reads at
+/// once, are spared (`terrain_reads`).
 const TERRAIN_SPACE: u64 = 25 << 30;
+
+/// Whether `p` is an archive copy a terrain run (`id`: "terrain 3/x/y") reads at once: its z3
+/// area's own (`3-x-y.…`) and its z6 tiles' (`6-X-Y.…` within it), crate::rawpack's areas.
+fn terrain_reads(id: &str, p: &Path) -> bool {
+    let tile = |s: &str| -> Option<(u32, u32, u32)> {
+        let mut v = s.split(['/', '-']).map(|t| t.parse::<u32>().ok());
+        Some((v.next()??, v.next()??, v.next()??))
+    };
+    let Some((3, x, y)) = id.strip_prefix("terrain ").and_then(tile) else { return false };
+    let in_packs = p.parent().and_then(Path::file_name).is_some_and(|d| d == "packs");
+    let area = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.split('.').next()).and_then(tile);
+    in_packs && (matches!(area, Some((3, ax, ay)) if (ax, ay) == (x, y)) || matches!(area, Some((6, ax, ay)) if (ax >> 3, ay >> 3) == (x, y)))
+}
 
 /// The memory a helper spares its jobs (MB): a quarter of its Mac's (4 GB of the M1's 16, which its
 /// units fit: over its first 205, its steps' programs took 3.7 GB at most).
@@ -936,8 +951,9 @@ impl Agent {
                     break;
                 }
                 let (id, what) = (spec.id.clone(), spec.what.clone());
-                // Room on the disk for it, from the caches that are cheap to fill again (the OSM
-                // pass's own need, less the pack cache it clears; a helper's Mac has less room).
+                // Room on the disk for it, from the caches that are cheap to fill again (a terrain
+                // run's more, its area's archive copies spared; the OSM pass's own need, less the
+                // pack cache it clears; a helper's Mac has less room).
                 // Made before its targets are claimed: it can take minutes, and a claim is
                 // refreshed only while a job runs.
                 let cache = self.o.home.join("cache");
@@ -954,7 +970,7 @@ impl Agent {
                 // (The OSM pass without the margin: its need is what its conditions admitted it with.)
                 let margin = if id.starts_with("osm-pass") { 0 } else { room::margin(need) };
                 if let Some(r) = &root {
-                    match room::make_room(&cache, &r.join("sources"), need, margin) {
+                    match room::make_room(&cache, &r.join("sources"), need, margin, &|p| terrain_reads(&id, p)) {
                         Ok(0) => {}
                         Ok(n) => eprintln!("agent: {} GB of cached canopy squares and terrain tiles deleted for {} GB free", n >> 30, (need + margin) >> 30),
                         Err(e) => eprintln!("agent: making room on the disk: {e:#}"),
@@ -1743,6 +1759,18 @@ fn batch_size(step: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_terrain_run_reads_its_own_areas_archives() {
+        let packs = Path::new("/c/aws-terrarium/packs");
+        for (name, ours) in [("3-1-2.0123456789abcdef.tiles", true), ("6-8-16.0123456789abcdef.tiles", true), ("6-15-23.0123456789abcdef.tiles", true), ("6-16-16.0123456789abcdef.tiles", false), ("3-1-3.0123456789abcdef.tiles", false), ("root.0123456789abcdef.tiles", false)] {
+            assert_eq!(terrain_reads("terrain 3/1/2", &packs.join(name)), ours, "{name}");
+        }
+        // Not a terrain run's, or not an archive copy.
+        assert!(!terrain_reads("unit 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles")));
+        assert!(!terrain_reads("terrain-root terrain-root", &packs.join("root.0123456789abcdef.tiles")));
+        assert!(!terrain_reads("terrain 3/1/2", Path::new("/c/aws-terrarium/12/2048/1500.png")));
+    }
 
     #[test]
     fn plans_with_the_hand_offs_waiting_on_the_nas_and_in_the_journal() {

@@ -1,5 +1,6 @@
 //! Room on the build Mac's disk (docs/plan.md §8): before a job starts, when the disk's free space
-//! is under what the job needs (`RESERVE`, or the OSM pass's own), the local copies of what the NAS
+//! is under what the job needs (`RESERVE`; a terrain run more; the OSM pass, its own), the local
+//! copies of what the NAS
 //! keeps lose files until it has that and a margin (`margin`: a sixth more, none for the OSM pass),
 //! so the next jobs start without deleting again: Meta's canopy squares (`chm10/`, ~2 GB a 10°
 //! square; scenic-metrics marks a square used when it reads it), AWS's raw terrain tiles
@@ -28,6 +29,8 @@
 //!   each area, one large write each, none kept here), then go; the copies of its archives here
 //!   (`aws-terrarium/packs/`) go as the copies of the records' files do, each by its own use (a
 //!   job marks one used when it opens it), without asking it.
+//!
+//! - A file the job reads at once (`spare`: a terrain run's own area's archive copies) stays.
 //!
 //! It ends early when the agent is asked to stop. Nothing else of the cache is deleted here.
 
@@ -70,8 +73,8 @@ pub fn cheap_bytes(cache: &Path) -> u64 {
 /// When the disk has less than `need` free, deletes from the caches at `cache` until it has `need`
 /// and `margin` more (or they're empty), each cheap file only once the NAS's `sources` has it; the
 /// bytes deleted.
-pub fn make_room(cache: &Path, sources: &Path, need: u64, margin: u64) -> Result<u64> {
-    make_room_with(cache, sources, need, need + margin, &disk_free)
+pub fn make_room(cache: &Path, sources: &Path, need: u64, margin: u64, spare: &dyn Fn(&Path) -> bool) -> Result<u64> {
+    make_room_with(cache, sources, need, need + margin, &disk_free, spare)
 }
 
 /// The NAS folders' files and their sizes, each folder listed once (a folder not there: none; one
@@ -173,7 +176,7 @@ fn copy_there(p: &Path, dest: &Path, made: &mut HashSet<PathBuf>) -> bool {
 
 /// `make_room` with the disk's free space from `free_space`: nothing when it has `need`, else
 /// deleting until it has `target`.
-fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_space: &dyn Fn(&Path) -> std::io::Result<u64>) -> Result<u64> {
+fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_space: &dyn Fn(&Path) -> std::io::Result<u64>, spare: &dyn Fn(&Path) -> bool) -> Result<u64> {
     let free = free_space(cache)?;
     if free >= need {
         return Ok(0);
@@ -188,8 +191,8 @@ fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_spa
     for (d, _) in CHEAP {
         walk(&cache.join(d), &mut files);
     }
-    // (Empty files are markers, "none there", that free nothing.)
-    files.retain(|f| f.1 > 0);
+    // (Empty files are markers, "none there", that free nothing; what the job reads at once stays.)
+    files.retain(|f| f.1 > 0 && !spare(&f.2));
     // Raw tiles by folder, canopy squares each alone. The squares not read lately first, then the
     // tiles and the squares read since, together: each the least recently used group (by its
     // newest file) first, in each the oldest first.
@@ -294,6 +297,10 @@ pub fn disk_free(path: &Path) -> std::io::Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_room_spared(cache: &Path, sources: &Path, need: u64, target: u64, free_space: &dyn Fn(&Path) -> std::io::Result<u64>) -> Result<u64> {
+        make_room_with(cache, sources, need, target, free_space, &|_| false)
+    }
     use std::cell::Cell;
     use std::time::Duration;
 
@@ -325,6 +332,25 @@ mod tests {
     }
 
     #[test]
+    fn what_the_job_reads_at_once_stays() {
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let nas = &d.path().join("nas");
+        // The job's own area's archive, idle longest, and another area's.
+        let own = whole(&c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles"), 9000);
+        let other = whole(&c.join("aws-terrarium/packs/6-9-9.0000000000000002.tiles"), 7200);
+        let all = used(c);
+        let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
+        let spare = |p: &Path| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("6-1-1."));
+        // Short of one archive: the other area's goes, though the job's own was idle longer.
+        assert_eq!(make_room_with(c, nas, 1000 + own, 1000 + own, &disk(1000), &spare).unwrap(), other);
+        assert!(c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles").exists() && !c.join("aws-terrarium/packs/6-9-9.0000000000000002.tiles").exists());
+        // Far short: still not the job's own.
+        make_room_with(c, nas, 1 << 40, 1 << 40, &disk(0), &spare).unwrap();
+        assert!(c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles").exists());
+    }
+
+    #[test]
     fn idle_copies_go_first_then_those_read_lately() {
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
@@ -341,15 +367,15 @@ mod tests {
         let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
         // Short of the archive and all but a byte of the idle square: both go, the archive (idle
         // longer, and the NAS has it: nothing asked) first; the marker and the DEM seed stay.
-        assert_eq!(make_room_with(c, nas, 850 + arch + idle - 1, 850 + arch + idle - 1, &disk(850)).unwrap(), arch + idle);
+        assert_eq!(make_room_spared(c, nas, 850 + arch + idle - 1, 850 + arch + idle - 1, &disk(850)).unwrap(), arch + idle);
         assert!(!c.join("chm10/idle.tif").exists() && !c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles").exists());
         assert!(c.join("chm10/read.tif").exists() && c.join("chm10/none.tif").exists());
         // What went is on the NAS (the square copied there first: it wasn't).
         assert!(nas.join("canopy/idle.tif").exists());
         // Room enough: nothing goes.
-        assert_eq!(make_room_with(c, nas, 1000, 1000, &|_| Ok(1 << 20)).unwrap(), 0);
+        assert_eq!(make_room_spared(c, nas, 1000, 1000, &|_| Ok(1 << 20)).unwrap(), 0);
         // Far short: every cheap file; never the DEM seed.
-        make_room_with(c, nas, 1 << 40, 1 << 40, &disk(0)).unwrap();
+        make_room_spared(c, nas, 1 << 40, 1 << 40, &disk(0)).unwrap();
         assert!(!c.join("chm10/read.tif").exists() && c.join("dem-cache.keys.u64").exists());
         assert!(disk_free(c).unwrap() > 0);
     }
@@ -367,7 +393,7 @@ mod tests {
         whole(&c.join("aws-terrarium/12/2049/1365.png"), 1);
         let all = used(c);
         let disk = move |p: &Path| Ok(all - used(p));
-        make_room_with(c, nas, a, a, &disk).unwrap();
+        make_room_spared(c, nas, a, a, &disk).unwrap();
         // Packed onto the NAS (an archive for their area, named in the index), gone here.
         let index = crate::rawpack::Index::load(&nas.join("aws-terrarium")).unwrap();
         let name = &index.of("6-32-21")[0].name;
@@ -389,7 +415,7 @@ mod tests {
         let square = whole(&c.join("chm10/read.tif"), 60);
         let all = used(c);
         let disk = move |p: &Path| Ok(all - used(p));
-        assert_eq!(make_room_with(c, nas, 1000, 1000, &disk).unwrap(), 1000);
+        assert_eq!(make_room_spared(c, nas, 1000, 1000, &disk).unwrap(), 1000);
         assert!(!c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack").exists() && c.join("chm10/read.tif").exists());
         assert!(!nas.exists(), "nothing was listed or copied there");
         assert_eq!(used(c), square);
@@ -406,7 +432,7 @@ mod tests {
         // 2 MB short: two files, the free space measured again, and it stops.
         let calls = Cell::new(0);
         let all = used(c);
-        let freed = make_room_with(c, nas, 10 << 20, 10 << 20, &|p| {
+        let freed = make_room_spared(c, nas, 10 << 20, 10 << 20, &|p| {
             calls.set(calls.get() + 1);
             Ok((8 << 20) + all - used(p))
         })
@@ -437,7 +463,7 @@ mod tests {
         let all = used(c);
         let disk = move |p: &Path| Ok(all - used(p));
         // Short of column 2: it goes, column 1 stays.
-        assert_eq!(make_room_with(c, nas, a + b, a + b, &disk).unwrap(), a + b);
+        assert_eq!(make_room_spared(c, nas, a + b, a + b, &disk).unwrap(), a + b);
         assert!(c.join("aws-terrarium/12/1/1.png").exists() && c.join("aws-terrarium/12/1/2.png").exists());
         assert!(!c.join("aws-terrarium/12/2/1.png").exists() && !c.join("aws-terrarium/12/2/2.png").exists());
         // Canopy squares idle an hour go before any tile, each by its own use, not its folder's: of
@@ -449,7 +475,7 @@ mod tests {
         whole(&c.join("chm10/new.tif"), 4000);
         let all = used(c);
         let disk = move |p: &Path| Ok(all - used(p));
-        assert_eq!(make_room_with(c, nas, square, square, &disk).unwrap(), square);
+        assert_eq!(make_room_spared(c, nas, square, square, &disk).unwrap(), square);
         assert!(!c.join("chm10/old.tif").exists() && c.join("chm10/new.tif").exists());
         assert!(c.join("aws-terrarium/12/3/1.png").exists() && c.join("aws-terrarium/12/1/1.png").exists());
     }
@@ -465,9 +491,9 @@ mod tests {
         let all = used(c);
         let disk = move |p: &Path| Ok((1 << 20) + all - used(p));
         // 1 MB free: not short of 1 MB, so nothing goes, though it's under 3 MB.
-        assert_eq!(make_room_with(c, nas, 1 << 20, 3 << 20, &disk).unwrap(), 0);
+        assert_eq!(make_room_spared(c, nas, 1 << 20, 3 << 20, &disk).unwrap(), 0);
         // Short of 2 MB: freed to 4 MB (three files), not just to 2 MB.
-        assert_eq!(make_room_with(c, nas, 2 << 20, 4 << 20, &disk).unwrap(), 3 << 20);
+        assert_eq!(make_room_spared(c, nas, 2 << 20, 4 << 20, &disk).unwrap(), 3 << 20);
         assert_eq!(margin(30 << 30), 5 << 30);
     }
 }
@@ -513,7 +539,7 @@ mod nas_tests {
         // The NAS's store is a file, not a folder: nothing can be copied there.
         let nas = d.path().join("nas");
         std::fs::write(&nas, b"").unwrap();
-        assert_eq!(make_room_with(&c, &nas, 1000, 1000, &|_| Ok(0)).unwrap(), 0);
+        assert_eq!(make_room_with(&c, &nas, 1000, 1000, &|_| Ok(0), &|_| false).unwrap(), 0);
         assert!(c.join("chm10/a.tif").exists());
     }
 
@@ -539,7 +565,7 @@ mod nas_tests {
         put(&nas.join("canopy/b.tif"), &tif[..10]);
         put(&c.join("aws-terrarium/9/1/3.png"), &png);
         put(&nas.join("aws-terrarium/9/1/3.png"), &png[..10]);
-        make_room_with(&c, &nas, 1 << 40, 1 << 40, &|_| Ok(0)).unwrap();
+        make_room_with(&c, &nas, 1 << 40, 1 << 40, &|_| Ok(0), &|_| false).unwrap();
         for f in ["aws-terrarium/9/1/1.png", "chm10/a.tif.m4.12.tmp", "aws-terrarium/9/1/2.png", "chm10/b.tif"] {
             assert!(!c.join(f).exists(), "{f} deleted");
         }
