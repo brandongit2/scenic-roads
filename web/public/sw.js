@@ -4,13 +4,15 @@
 // - the app's scripts and styles (their names hashed), all of them as soon as a page is kept: the
 //   ones it names and the ones those name in turn (the map's workers), so the next start needs
 //   none from the Mac; those the newest page no longer names go. And the fonts and the icons;
-// - the map's data whose address carries its version (`?v=`: it never changes), as the map asks for
-//   it, so what was looked at stays to look at again without the Mac (the newest kept, up to
-//   KEEP files);
+// - the map's data whose address carries its version (`?v=`) and that the Mac says never changes
+//   (`immutable`: a version that's still current), as the map asks for it, so what was looked at
+//   stays to look at again without the Mac (the last KEEP files kept);
 // - the catalog's metadata, from the Mac whenever it answers, else as kept, so the map opens.
 // Everything else (searches, the build's status, the key's exchange, any write) goes straight
 // through. A Mac that doesn't answer within WAIT_MS (asleep, or away) is taken for away for
 // AWAY_MS: what was kept is used at once meanwhile, and what the Mac sends later still replaces it.
+// A refusal (401, 403: the device's key isn't the map's any more) is never hidden behind what was
+// kept: the page then asks for the map's address again.
 const SHELL = "shell";
 const DATA = "data";
 const KEEP = 12000;
@@ -29,7 +31,8 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(req.url);
   if (req.method !== "GET" || url.origin !== self.location.origin) return;
   const p = url.pathname;
-  if (req.mode === "navigate" || p === "/" || p === "/index.html") {
+  // (The app's page alone: another address opened in a tab, its JSON say, isn't kept as the page.)
+  if (p === "/" || p === "/index.html") {
     e.respondWith(fresh(e, req, "/"));
   } else if (p === "/api/meta" || p === "/api/catalog") {
     e.respondWith(fresh(e, req, url.href));
@@ -47,7 +50,7 @@ let awayUntil = 0;
 async function fresh(e, req, key) {
   const cache = await caches.open(SHELL);
   const net = fetch(req).then(async (r) => {
-    if (r.ok) {
+    if (r.ok && (key !== "/" || r.headers.get("content-type")?.startsWith("text/html"))) {
       awayUntil = 0;
       await put(cache, key, r.clone());
       if (key === "/") e.waitUntil(r.clone().text().then((html) => keepNamed(cache, html)).catch(() => {}));
@@ -60,22 +63,26 @@ async function fresh(e, req, key) {
   if (Date.now() < awayUntil) return k;
   const late = new Promise((done) => setTimeout(() => done(null), WAIT_MS));
   const r = await Promise.race([net.catch(() => null), late]);
-  if (r && r.ok) return r;
+  if (r && (r.ok || r.status === 401 || r.status === 403)) return r;
   // (Away, asleep or restarting: tailscale serve answers 502 for a server that's down.)
   awayUntil = Date.now() + AWAY_MS;
   return k;
 }
 
-// What was kept, else the Mac's answer (kept when it's whole and may be).
+// What was kept, else the Mac's answer, kept when it's whole and may be (the map's data: when the
+// Mac says it never changes; a version no longer current is revalidated, not kept under its old
+// address).
 let puts = 0;
 async function kept(req, name) {
   const cache = await caches.open(name);
   const k = await cache.match(req.url);
   if (k) return k;
   const r = await fetch(req);
-  if (r.ok && r.status === 200 && !r.headers.get("cache-control")?.includes("no-store")) {
+  const cc = r.headers.get("cache-control") ?? "";
+  if (r.status === 200 && !cc.includes("no-store") && (name !== DATA || cc.includes("immutable"))) {
     await put(cache, req.url, r.clone());
-    if (name === DATA && ++puts % 500 === 0) trim(cache);
+    // (Trimmed with this worker's first file, and every 500 after: a worker doesn't live long.)
+    if (name === DATA && puts++ % 500 === 0) trim(cache);
   }
   return r;
 }
@@ -120,7 +127,7 @@ async function keepNamed(cache, html) {
       await put(cache, u, r.clone());
     }
     if (u.endsWith(".js") || u.endsWith(".css")) {
-      for (const m of refs(await r.text())) {
+      for (const m of refs(await r.text(), u)) {
         if (!names.has(m)) {
           names.add(m);
           todo.push(m);
@@ -134,8 +141,13 @@ async function keepNamed(cache, html) {
   }
 }
 
-// The app's own files a page or a script names (not their source maps).
-const refs = (text) => [...text.matchAll(/\/assets\/[\w.-]+?\.(?:js|css|wasm|woff2?|png|svg)(?![\w.])/g)].map((m) => m[0]);
+// The app's own files a page or a script names (not their source maps): as /assets/…, assets/…
+// (from the page's folder) or ./… (beside the script naming it, in /assets/).
+const refs = (text, from = "/") =>
+  [...text.matchAll(/(?:^|[^\w./-])((?:\/|\.\/)?(?:assets\/)?[\w.-]+?\.(?:js|css|wasm|woff2?|png|svg))(?![\w.])/g)]
+    .map((m) => m[1])
+    .filter((n) => n.startsWith("/assets/") || n.startsWith("assets/") || (n.startsWith("./") && from.startsWith("/assets/")))
+    .map((n) => (n.startsWith("./") ? `/assets/${n.slice(2)}` : n.startsWith("assets/") ? `/${n}` : n));
 
 // The oldest of the map's data kept go once there are more than KEEP files (a cache keeps them in
 // the order they came).

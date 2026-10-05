@@ -390,8 +390,14 @@ async fn main() -> Result<()> {
         .layer(tower_http::compression::CompressionLayer::new().gzip(true))
         // Versioned URLs (?v=…) never change: cached for good when the version is current.
         .layer(axum::middleware::from_fn_with_state(state.clone(), versioned_caching))
-        // Data from other host names of this machine (the app spreads its downloads over several).
-        .layer(tower_http::cors::CorsLayer::permissive())
+        // Data from other host names of this machine (the app spreads its downloads over several:
+        // roads.localhost …), for this machine's own pages alone (remote::local_origin).
+        .layer(
+            tower_http::cors::CorsLayer::new()
+                .allow_origin(tower_http::cors::AllowOrigin::predicate(|o, _| o.to_str().is_ok_and(remote::local_origin)))
+                .allow_methods(tower_http::cors::Any)
+                .allow_headers(tower_http::cors::Any),
+        )
         // First of all: another device's request needs the map's key (remote.rs).
         .layer(axum::middleware::from_fn_with_state(remote.clone(), remote::gate))
         .with_state(state);

@@ -393,32 +393,46 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
 - Planned: "Keep this view", for trips, once the coverage outgrows the disks.
 
 **Devices: an iPhone, an iPad.** Either Mac's map opens on them, at home or away, over the tailnet.
-- **Who's answered:** the server listens on every address but answers only this Mac, its LAN and
-  the tailnet (`pipeline::net::allowed`); anything else is refused (403).
+- **Who's answered:** the server listens on every IPv4 address (and IPv6's loopback) but answers
+  only this Mac, its LAN and the tailnet (`pipeline::net::allowed`); anything else is refused (403).
+- **A page elsewhere is never the map's,** in a browser on this Mac or on a device:
+  - A request must name the map in its `Host`: an address, localhost or a name under it, or a name
+    only a tailnet or a local network resolves (one label; `.local`, `.home`, `.lan`, `.internal`,
+    `.ts.net`). A public name pointed at this Mac (DNS rebinding) is refused.
+  - A request from a page (`Origin`) must come from the map's own page or from this Mac's.
+  - Cross-origin reads (CORS) are allowed only to this Mac's own pages, whose downloads go to
+    `roads.localhost` and the like.
+  - So no site can read the map's data or change its regions through a browser that reaches it.
 - **The key** (`crates/server/src/remote.rs`): a request that isn't this Mac's own needs the map's
   key (`<home>/remote-key`, made once, 0600), except for the app itself (its page, scripts,
   styles, manifest, service worker and icons). One handed over by a proxy on this Mac (`tailscale
-  serve`: `X-Forwarded-For`, `Forwarded` or `Tailscale-User-Login` set) is another device's.
+  serve`: any of `X-Forwarded-For`, `-Host`, `-Proto`, `X-Real-IP`, `Forwarded` or
+  `Tailscale-User-Login` set) is another device's.
   - The key comes once, in the map's address (`#k=<key>`: a fragment, never sent). The page gives it
     to `POST /api/auth`, which keeps it in an HttpOnly cookie (`scenic_k`), and drops it from the
-    address. A device without the cookie (an app on the home screen has its own storage) is asked
-    for the address once.
+    address. A device without the cookie (an app on the home screen has its own storage), or whose
+    key is refused (a new `remote-key`, the only way to shut devices out), is asked for the address
+    again.
   - The address is `<home>/map-page`, which the server rewrites when it changes: HTTPS where
-    `tailscale serve` proxies the server's port, else the tailnet address. The status menu's Copy
-    the Map's Address and `scenic status` give it.
+    `tailscale serve` proxies the server's port at the root of an HTTPS port of its own (the app asks
+    for `/api/…`, so not under a path: `tailscale serve --bg --https=8443 http://127.0.0.1:8080`),
+    else the tailnet address. The status menu's Copy the Map's Address and `scenic status` give it.
+  - Only a proxy that says it is one (`tailscale serve`'s HTTPS sets `X-Forwarded-For`) keeps a
+    device's requests from passing for this Mac's own. A plain TCP forward on this Mac would let
+    devices in without the key.
   - The map's data stays its owner's alone (the licences): without the key, only the app itself.
 - **An app** (`web/public/manifest.webmanifest`, the icons): Share, then Add to Home Screen, full
-  screen. Its service worker (`web/public/sw.js`) is registered on devices only (the Macs have the
-  data themselves) and only over HTTPS, so with `tailscale serve`. What it keeps for when the Mac
-  is away:
+  screen. Its service worker (`web/public/sw.js`) is registered only over HTTPS (so with `tailscale
+  serve`), and never on this Mac's own address (localhost: the Macs have the data themselves). What
+  it keeps for when the Mac is away:
   - the page, all of its scripts and styles (those it names and those they name: the map's
     workers) and the catalog's metadata, kept as it installs and again with each new page; scripts
     and styles a newer page no longer names go;
-  - the fonts and icons, and the map's versioned data (`?v=`) as it's looked at (the newest 12,000
-    files).
+  - the fonts and icons, and the map's versioned data (`?v=`) that the Mac says never changes
+    (`immutable`: its version still current), as it's looked at (the last 12,000 files kept).
   - The page and the metadata come from the Mac when it answers well within 4 s, else as kept. A
     Mac that doesn't (asleep, away, or restarting: `tailscale serve` answers 502) is taken for away
-    for a minute, so what was kept is used at once.
+    for a minute, so what was kept is used at once. A refusal (401, 403) is never hidden.
 - **Touch** (`web/src/trackpad.ts`, `web/src/ui/touch.ts`): one finger pans; two pinch to zoom, turn
   to rotate and drag up or down to tilt; a double tap zooms in; a long press offers Street View,
   Google Maps and OpenStreetMap there.

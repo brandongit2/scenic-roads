@@ -128,10 +128,19 @@ pub fn set_mode(f: &File, mode: u32) -> io::Result<()> {
 /// Copies `src`'s bytes to `dst` (made, or emptied first) and its permission bits, and nothing else:
 /// what every copy in the build wants. (`std::fs::copy` on macOS also brings the extended
 /// attributes, and the NAS refuses one, `com.apple.provenance`, which macOS puts on whatever an app
-/// writes, when it differs from the folder's: that fails the whole copy.)
+/// writes, when it differs from the folder's: that fails the whole copy.) Within one APFS volume, to
+/// a `dst` not there yet, it's a clone instead (instant, the blocks shared, attributes and all).
 pub fn copy_data(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<u64> {
     use std::io::{Read, Write};
     let src = src.as_ref();
+    // (A file alone, as std::fs::copy: a clone would take a folder whole.)
+    if !std::fs::metadata(src)?.is_file() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{} isn't a file", src.display())));
+    }
+    #[cfg(target_os = "macos")]
+    if let Some(n) = clone(src, dst.as_ref()) {
+        return Ok(n);
+    }
     let mut r = File::open(src)?;
     let mut w = File::create(dst)?;
     // (Big reads and writes: over SMB each is a round trip.)
@@ -151,6 +160,23 @@ pub fn copy_data(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<u64
         set_mode(&w, m).ok();
     }
     Ok(n)
+}
+
+/// An APFS clone of `src` at `dst`, which isn't there yet; None when the volume makes none (another
+/// volume, the NAS, any error), and nothing is left at `dst` then.
+#[cfg(target_os = "macos")]
+fn clone(src: &Path, dst: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    if dst.symlink_metadata().is_ok() {
+        return None;
+    }
+    let (s, d) = (std::ffi::CString::new(src.as_os_str().as_bytes()).ok()?, std::ffi::CString::new(dst.as_os_str().as_bytes()).ok()?);
+    // SAFETY: clonefile with two NUL-terminated paths we own.
+    if unsafe { libc::clonefile(s.as_ptr(), d.as_ptr(), 0) } != 0 {
+        std::fs::remove_file(dst).ok();
+        return None;
+    }
+    std::fs::metadata(dst).ok().map(|m| m.len())
 }
 
 /// Whether an error means the network or the share itself is gone (what a soft mount returns once
@@ -199,7 +225,7 @@ mod tests {
     #[test]
     fn a_copy_is_the_bytes_and_the_mode_alone() {
         let d = tempfile::tempdir().unwrap();
-        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        let (a, b, c) = (d.path().join("a"), d.path().join("b"), d.path().join("c"));
         let bytes: Vec<u8> = (0..3_000_000u32).map(|i| (i * 7) as u8).collect();
         std::fs::write(&a, &bytes).unwrap();
         set_mode(&File::open(&a).unwrap(), 0o640).unwrap();
@@ -211,9 +237,14 @@ mod tests {
             // SAFETY: setxattr with pointers to buffers we own, their lengths given.
             assert_eq!(unsafe { libc::setxattr(p.as_ptr(), n.as_ptr(), b"1".as_ptr().cast(), 1, 0, 0) }, 0);
         }
+        // Onto a file there already: the bytes copied.
         assert_eq!(copy_data(&a, &b).unwrap(), bytes.len() as u64);
         assert_eq!(std::fs::read(&b).unwrap(), bytes);
         assert_eq!(mode(&b), Some(0o640));
+        // A new one: on APFS, a clone; the same bytes either way.
+        assert_eq!(copy_data(&a, &c).unwrap(), bytes.len() as u64);
+        assert_eq!(std::fs::read(&c).unwrap(), bytes);
+        assert_eq!(mode(&c), Some(0o640));
         #[cfg(target_os = "macos")]
         {
             let (p, n) = (std::ffi::CString::new(b.to_str().unwrap()).unwrap(), c"org.scenic.test");

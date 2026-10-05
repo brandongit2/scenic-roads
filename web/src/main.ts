@@ -95,7 +95,7 @@ async function main() {
     // A device that hasn't given the map's key: its address asked for (an app on an iPhone's home
     // screen keeps its own storage, apart from Safari's: once there too).
     if (r.status === 401) {
-      boot.ask(0, 'this device needs the map\'s address once: from the build Mac\'s status menu, Copy the Map\'s Address', 'http://…/#k=…', async (v) => {
+      boot.ask(0, 'this device needs the map\'s address once: from the Mac\'s status menu, Copy the Map\'s Address', 'https://…/#k=…', async (v) => {
         const k = keyIn(v.includes('#') ? v.slice(v.indexOf('#')) : `#k=${v}`);
         if (!k) return;
         await giveKey(k);

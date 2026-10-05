@@ -343,7 +343,9 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
   `/api/ping`, `/api/auth`. `POST /api/auth` `{"key": "<key>"}`: 204 with `Set-Cookie:
   scenic_k=<key>; Path=/; HttpOnly; SameSite=Strict; Max-Age=315360000` (`; Secure` when
   `X-Forwarded-Proto: https`), else 401. A request from anywhere but this Mac, its LAN and the
-  tailnet is 403.
+  tailnet is 403, as is one whose `Host` isn't the map's (a public name: "not this map's address")
+  or whose `Origin` is another page's ("not from the map's page"). CORS answers only this Mac's own
+  origins (localhost, `*.localhost`, a loopback address).
 - Regions (the panel): `/api/regions` (GET, POST), `/api/regions/{id}` (PUT, DELETE),
   `/api/areas?at=`, `/api/areas/search?q=`, `/api/areas/{id}`, `/api/coverage` (the catalog's
   coverage as GeoJSON, one feature per outline entry, with `regions` and `catalog`; built from the
@@ -406,8 +408,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   name, deleted a day after the time beside them), and the loose tiles from before,
   `sources/aws-terrarium/<z>/<x>/<y>.png` (`<y>.none` for one AWS doesn't have),
   `sources/pageviews/<YYYY-MM>.tsv.zst` (a month of Wikipedia's pageviews, every article of the
-  map's languages: a `#langs\t<lang>,<lang>,…` line saying which (an index without it has today's
-  LANGS), then `<lang>|<Title_with_underscores>\t<views>` lines, zstd; a title may have more than
+  map's languages: a `#langs\t<lang>,<lang>,…` line saying which (an index without it has those of
+  2026-10-05, `LANGS_UNSAID`), then `<lang>|<Title_with_underscores>\t<views>` lines, zstd; a title may have more than
   one line, its views summed; dem/pageviews.py),
   `sources/fabdem/<tile>_FABDEM_V1-2.tif`
   (FABDEM's 1° tiles out of Bristol's zips, deflate GeoTIFF; `<tile>.none` for one a zip doesn't

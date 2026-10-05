@@ -1058,6 +1058,10 @@ mod tests {
         assert_eq!(crate::net::https_in(&v, 8090).as_deref(), Some("https://mac.tail1.ts.net/"));
         assert_eq!(crate::net::https_in(&v, 8091), None);
         assert_eq!(crate::net::https_in(&serde_json::json!({}), 8090), None);
+        // The map's own port, beside it; one under a path doesn't serve the pages' /api/….
+        let both = serde_json::json!({ "Web": { "mac.tail1.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:8090" }, "/map": { "Proxy": "http://127.0.0.1:8080" } } }, "mac.tail1.ts.net:8443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:18085" } } } } });
+        assert_eq!(crate::net::https_in(&both, 18085).as_deref(), Some("https://mac.tail1.ts.net:8443/"));
+        assert_eq!(crate::net::https_in(&both, 8080), None);
     }
 
     #[test]

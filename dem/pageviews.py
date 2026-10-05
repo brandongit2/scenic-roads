@@ -47,8 +47,9 @@ W = ROOT / "data" / "heritage" / "wd"
 OUT = ROOT / "data" / "pageviews"
 UA = "road-elevations/0.1 (personal offline map)"
 LANGS = {"en", "fr", "es", "ca", "pt", "zh", "zh-yue", "ja", "cy", "ga", "gd", "gl", "eu", "oc", "br", "co", "ast", "an", "gv"}
-# The languages of the indexes made before they said theirs (the first line, "#langs<TAB>en,fr,…").
-LANGS_UNSAID = frozenset(LANGS)
+# The languages of the indexes made before they said theirs (the first line, "#langs<TAB>en,fr,…"):
+# LANGS as it was then, written out (LANGS may grow; these indexes don't).
+LANGS_UNSAID = frozenset({"en", "fr", "es", "ca", "pt", "zh", "zh-yue", "ja", "cy", "ga", "gd", "gl", "eu", "oc", "br", "co", "ast", "an", "gv"})
 MONTHS = ["2025-11", "2026-02", "2026-05", "2026-08"]
 DUMP = "https://dumps.wikimedia.org/other/pageview_complete/monthly/{y}/{y}-{m}/pageviews-{y}{m}-user.bz2"
 # The NAS's months' indexes (scenic-build sets it); none: here only.
@@ -124,6 +125,9 @@ def _index(month: str, langs: set[str], fresh: bool = False) -> Path | None:
         local.unlink(missing_ok=True)
         return None
     if not langs <= covered:
+        # (The NAS's may count them: another Mac's, made since a language was added.)
+        if not fresh and nas and _size(nas) is not None and _size(nas) != _size(local):
+            return _index(month, langs, fresh=True)
         return None
     # (Only when the NAS has none: one that differs may be the good one, this copy damaged.)
     if nas and _size(nas) is None:

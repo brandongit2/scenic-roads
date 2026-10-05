@@ -94,13 +94,12 @@ pub fn served_https(port: u16) -> Option<String> {
 /// `served_https` from what `tailscale serve status --json` says.
 pub fn https_in(v: &serde_json::Value, port: u16) -> Option<String> {
     for (host, site) in v["Web"].as_object()? {
-        for (path, h) in site["Handlers"].as_object().into_iter().flatten() {
-            let proxy = h["Proxy"].as_str().unwrap_or("");
-            if proxy.ends_with(&format!(":{port}")) || proxy.ends_with(&format!(":{port}/")) {
-                let host = host.strip_suffix(":443").unwrap_or(host);
-                let path = if path.ends_with('/') { path.clone() } else { format!("{path}/") };
-                return Some(format!("https://{host}{path}"));
-            }
+        // (At the root alone: the pages ask for /api/…, /work/…, not under a path a proxy adds.)
+        let Some(h) = site["Handlers"].get("/") else { continue };
+        let proxy = h["Proxy"].as_str().unwrap_or("");
+        if proxy.ends_with(&format!(":{port}")) || proxy.ends_with(&format!(":{port}/")) {
+            let host = host.strip_suffix(":443").unwrap_or(host);
+            return Some(format!("https://{host}/"));
         }
     }
     None

@@ -39,8 +39,10 @@ export class Boot {
     this.items[i].textContent = `${this.steps[i]} — ${msg}`;
     const form = document.createElement('form');
     form.className = 'boot-ask';
-    const input = Object.assign(document.createElement('input'), { type: 'url', placeholder, autocomplete: 'off', spellcheck: false });
+    // (Text, not a URL field: the key alone, or a fragment, is fine too.)
+    const input = Object.assign(document.createElement('input'), { type: 'text', inputMode: 'url', placeholder, autocomplete: 'off', spellcheck: false });
     input.setAttribute('autocapitalize', 'off');
+    input.setAttribute('autocorrect', 'off');
     const go = Object.assign(document.createElement('button'), { type: 'submit', textContent: 'Open the map' });
     form.append(input, go);
     form.onsubmit = (e) => {
