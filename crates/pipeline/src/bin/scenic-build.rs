@@ -168,15 +168,19 @@ fn main() -> Result<()> {
             // raw-pack [--from-tar - [--expect n]] [--cache dir] | --order | --check [--every n]:
             // AWS's raw tiles packed into the NAS's archives (pipeline::rawpack): a tar stream of
             // them on stdin (the NAS's own: tools/nas/raw-pack.sh), the files listed for it `n`,
-            // else the cache's tiles waiting to go. --order: tile paths on stdin, put in their
-            // areas' order on stdout (for the stream). --check: every archive the index names read
+            // else the cache's tiles waiting to go. --order: tile paths on stdin, those the archives
+            // lack put in their areas' order on stdout (for the stream; a run again streams only
+            // what's left). --check: every archive the index names read
             // and matched against its name, and one tile in n of each against the NAS's loose copy.
             let store = out.root().join("sources/aws-terrarium");
             let dir = PathBuf::from(opt(&args, "--cache").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
             if args.iter().any(|a| a == "--order") {
                 let mut paths = String::new();
                 std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut paths)?;
-                print!("{}", pipeline::rawpack::order(&paths));
+                let have = pipeline::rawpack::packed(&store)?;
+                let list = pipeline::rawpack::order(&paths, |a, k| have.get(a).is_some_and(|s| s.contains(&k)));
+                eprintln!("raw-pack: {} of {} files already in the archives", paths.lines().count() - list.lines().count(), paths.lines().count());
+                print!("{list}");
             } else if args.iter().any(|a| a == "--check") {
                 let every = opt(&args, "--every").map(|n| n.parse()).transpose()?.unwrap_or(0);
                 let c = pipeline::rawpack::check(&store, every)?;

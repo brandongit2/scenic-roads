@@ -691,11 +691,36 @@ pub fn pack_tar(input: impl Read, dir: &Path, store: &Path, root: &Path, expect:
 }
 
 /// Paths of tiles (`./<z>/<x>/<y>.png`, a line each), in their areas' order, for a tar stream that
-/// `pack_tar` then packs an area once; lines that aren't tiles, after.
-pub fn order(paths: &str) -> String {
-    let mut v: Vec<(Option<String>, &str)> = paths.lines().filter(|l| !l.is_empty()).map(|l| (parse_tile(l).map(|(z, x, y, _)| area(z, x, y)), l)).collect();
+/// `pack_tar` then packs an area once; lines that aren't tiles, after. Those `have` says are packed
+/// already are left out, so a run again (one stopped partway) streams only what's left.
+pub fn order(paths: &str, have: impl Fn(&str, u64) -> bool) -> String {
+    let mut v: Vec<(Option<String>, &str)> = paths
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| match parse_tile(l) {
+            Some((z, x, y, _)) => {
+                let a = area(z, x, y);
+                (!have(&a, tile_key(z, x, y))).then_some((Some(a), l))
+            }
+            None => Some((None, l)),
+        })
+        .collect();
     v.sort_by(|a, b| (a.0.is_none(), &a.0, a.1).cmp(&(b.0.is_none(), &b.0, b.1)));
     v.into_iter().map(|(_, l)| format!("{l}\n")).collect()
+}
+
+/// The tiles the store's archives hold, by area (their entries read, not the archives).
+pub fn packed(store: &Path) -> Result<std::collections::HashMap<String, HashSet<u64>>> {
+    let index = Index::load(store)?;
+    let mut out = std::collections::HashMap::new();
+    for (area, packs) in &index.areas {
+        let mut keys = HashSet::new();
+        for p in packs {
+            keys.extend(entries_of(&store.join("packs").join(&p.name))?.1.iter().map(|e| e.key));
+        }
+        out.insert(area.clone(), keys);
+    }
+    Ok(out)
 }
 
 /// The regular files of a tar stream (ustar, with GNU long names): (name, bytes).
@@ -1192,7 +1217,20 @@ mod tests {
     #[test]
     fn a_stream_in_area_order() {
         let list = "./12/2049/1365.png\n./notes.txt\n./8/128/85.png\n./12/2048/1365.png\n./2/1/1.png\n";
-        assert_eq!(order(list), "./8/128/85.png\n./12/2048/1365.png\n./12/2049/1365.png\n./2/1/1.png\n./notes.txt\n");
+        assert_eq!(order(list, |_, _| false), "./8/128/85.png\n./12/2048/1365.png\n./12/2049/1365.png\n./2/1/1.png\n./notes.txt\n");
+        // What's packed already is left out.
+        assert_eq!(order(list, |a, k| a == "6-32-21" && k == tile_key(12, 2048, 1365)), "./8/128/85.png\n./12/2049/1365.png\n./2/1/1.png\n./notes.txt\n");
+    }
+
+    #[test]
+    fn a_run_again_streams_only_whats_left() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, dir, root) = nas(d.path());
+        put(&dir, "12/2048/1365.png", &png(), 120);
+        pack_local(&dir, &store, &root, true).unwrap();
+        let have = packed(&store).unwrap();
+        let left = order("./12/2048/1365.png\n./12/2048/1366.png\n", |a, k| have.get(a).is_some_and(|s| s.contains(&k)));
+        assert_eq!(left, "./12/2048/1366.png\n");
     }
 
     #[test]
