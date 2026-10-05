@@ -144,6 +144,17 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
     std::fs::remove_dir_all(dir).ok();
     std::fs::create_dir_all(dir.join("u"))?;
     let inputs: Vec<(String, u64)> = serde_json::from_value(spec["inputs"].clone()).context("the task's inputs")?;
+    let runs: Vec<Run> = serde_json::from_value(spec["runs"].clone()).context("the task's steps")?;
+    // How far it is, for the status: its files fetched, each of its steps (as far as each says),
+    // what they wrote sent back.
+    let steps = runs.len() as u64 + 2;
+    crate::agent::jobs::stage(0, steps, "steps (fetching its files)");
+    let names: Vec<String> = runs.iter().map(|r| r.what.clone()).collect();
+    crate::unit::on_stage(Some(Box::new(move |what, frac, _| {
+        if let Some(i) = names.iter().position(|n| n == what) {
+            crate::agent::jobs::report_f((1 + i) as f64 + frac, steps, &format!("steps ({what})"));
+        }
+    })));
     for (p, n) in &inputs {
         let rel = crate::coord::task::safe(p).with_context(|| format!("a task input outside its folder: {p}"))?;
         let b = client.get_bytes(&format!("/work/in/{lease}/{p}"))?;
@@ -155,12 +166,13 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
     // (What the steps write is told by its time: after this.)
     std::thread::sleep(std::time::Duration::from_millis(20));
     let started = std::time::SystemTime::now();
-    let runs: Vec<Run> = serde_json::from_value(spec["runs"].clone()).context("the task's steps")?;
     let tools = crate::unit::Tools { bin: bin.to_path_buf(), dem: PathBuf::new(), cache: dir.join("cache"), buildings: Some(dir.join("b")), moi_dtm: None, sources: None, shared: None, spacing_m: 8, snap: None };
     crate::unit::take_peak();
     let t = std::time::Instant::now();
     crate::unit::run_tail(&runs, &dir.join("u"), &tools)?;
     let (secs, peak_mb) = (t.elapsed().as_secs_f64(), crate::unit::take_peak() >> 20);
+    crate::unit::on_stage(None);
+    crate::agent::jobs::stage(steps - 1, steps, "steps (sending what they wrote)");
     let had: std::collections::BTreeSet<&str> = inputs.iter().map(|(p, _)| p.as_str()).collect();
     let mut outputs = Vec::new();
     for (rel, f) in files_under(&dir.join("u"), "u")? {
@@ -173,6 +185,7 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
         outputs.push(crate::coord::task::Output { path: rel, size: b.len() as u64 });
     }
     let removed: Vec<&str> = had.iter().filter(|p| p.starts_with("u/") && !dir.join(p).exists()).copied().collect();
+    crate::agent::jobs::report(steps, steps, "steps");
     Ok(serde_json::json!({ "outputs": outputs, "removed": removed, "secs": secs, "peak_mb": peak_mb }))
 }
 

@@ -106,6 +106,8 @@ struct JobProgress: Decodable {
     let total: Double
     let unit: String
     let eta_s: Int?
+    /// When it last moved on (seconds since the epoch; absent from older heartbeats).
+    let moved_at: Int?
 }
 
 struct Conditions: Decodable {
@@ -246,6 +248,25 @@ func grouped(_ v: Double) -> String {
     return f.string(from: NSNumber(value: v)) ?? "\(Int(v))"
 }
 
+/// A job's progress in words: "40% · 2.4 of 6 areas · about 12 min left" (the item under way
+/// counted by how much of it is done; one item alone, its share), and when it hasn't moved on for a
+/// quarter of an hour, since when.
+func progressText(_ p: JobProgress, paused: Bool, now: Int) -> String {
+    let frac = p.total > 0 ? min(1, p.done / p.total) : 0
+    var t = "\(Int((frac * 100).rounded(.down)))%"
+    if p.total == 1 {
+        t += " · \(p.unit)"
+    } else {
+        // (Down, not to the nearest: 2.96 of 6 is 2.9, not 3.)
+        let whole = p.done.rounded(.down) == p.done || p.total > 100
+        let done = whole ? grouped(p.done.rounded(.down)) : String(format: "%.1f", (p.done * 10).rounded(.down) / 10)
+        t += " · \(done) of \(grouped(p.total)) \(p.unit)"
+    }
+    if let e = p.eta_s, !paused { t += " · about \(duration(e)) left" }
+    if let m = p.moved_at, !paused, now - m >= 15 * 60 { t += " · no further for \(duration(now - m))" }
+    return t
+}
+
 /// The menu's lines for an answer, under the state's line.
 func lines(_ r: Reply?, _ line: String) -> [Line] {
     var out = [Line(text: line, style: .title)]
@@ -259,10 +280,7 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
         // How far the job says it is, and the time it has left at its pace.
         var bar: Line? = nil
         if let p = j.progress {
-            let frac = p.total > 0 ? p.done / p.total : 0
-            var t = "\(Int((frac * 100).rounded(.down)))% · \(grouped(p.done)) of \(grouped(p.total)) \(p.unit)"
-            if let e = p.eta_s, j.paused == nil { t += " · about \(duration(e)) left" }
-            bar = Line(text: t, style: .bar, fraction: frac)
+            bar = Line(text: progressText(p, paused: j.paused != nil, now: r.now), style: .bar, fraction: p.total > 0 ? min(1, p.done / p.total) : 0)
         }
         // Its parts, done, under way and to come, the bar under the one under way (unless the bar
         // only counts the parts, which the list shows).
@@ -292,10 +310,7 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
         }
         out.append(Line(text: "\(h.host): \(j.what)", style: .plain))
         if let p = j.progress {
-            let frac = p.total > 0 ? p.done / p.total : 0
-            var t = "\(Int((frac * 100).rounded(.down)))% · \(grouped(p.done)) of \(grouped(p.total)) \(p.unit)"
-            if let e = p.eta_s, j.paused == nil { t += " · about \(duration(e)) left" }
-            out.append(Line(text: t, style: .bar, fraction: frac))
+            out.append(Line(text: progressText(p, paused: j.paused != nil, now: r.now), style: .bar, fraction: p.total > 0 ? min(1, p.done / p.total) : 0))
         }
         if let p = j.paused { out.append(Line(text: "\(h.host): \(p)", style: .small)) } else if j.pausing != nil { out.append(Line(text: "\(h.host): stopping at its next safe point", style: .small)) }
     }

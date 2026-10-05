@@ -1094,13 +1094,29 @@ are no request files.
   several parts says them as each begins (`parts: <i> [names]` in its log), and the status lists
   them under the job, done, under way and to come, the progress bar under the one under way
   (heritage's five: getting ready, details, outlines, fame, layers; the items' facts, articles and
-  pageviews; summits, marks, route ends, the heritage sites, rail feeds, rail, labels; a terrain
-  run's three: its area's tiles fetched and shaded, its terrain written to the NAS, the new raw
-  tiles packed onto the NAS). A long part says how far it is: the pageview dumps by the bytes
-  streamed, a part's steps one by one, a terrain run's tiles (every level's, counted first, each
-  half done once it's here, from AWS or the NAS, and done once shaded), packs, then raw tiles packed
-  and areas merged. A part shows only what it has said itself (none at first), its time left from its
-  own pace; the jobs' Python steps print straight to their logs (unbuffered).
+  pageviews; summits, marks, route ends, the heritage sites, rail feeds, rail, labels; the OSM
+  pass's ten, from the planet's copy to the roads' walk; a terrain run's three: its area's tiles
+  fetched and shaded, its terrain written to the NAS, the new raw tiles packed onto the NAS; slope's
+  and the tree cover's two an area, worked out then written; the peaks' and the z8 terrain's, then
+  their raw tiles packed; the map tiles' base packs got here, then the tiles drawn). A long part says
+  how far it is: the pageview dumps by the bytes streamed, a part's steps one by one, a terrain run's
+  tiles (every level's, counted first, each half done once it's here, from AWS or the NAS, and done
+  once shaded), packs, then raw tiles packed and areas merged; slope by the tiles it works out; the
+  pass's copies and uploads by their megabytes (an upload's reads, copy and read back all counted),
+  its sets one by one, Planetiler by its phases. osmium says how far it is (`--progress`), as the
+  step under way's share; a job's progress may count the item under way by how much of it is done
+  (`progress: 2.4/6 areas`). A unit job's area counts by the stages it's through (its programs'
+  and in-process parts', each weighted by about how long it takes on that Mac, learned as areas
+  finish and kept with the caches: `unit-stages.json`), its elevations by the vertices that have a
+  height, each area whose last steps are out with another worker by the stages before them; a
+  map tile by its ways read, its tiles drawn, then written; a helper's task by its files fetched,
+  its steps, what they wrote sent back. A part shows only what it has said itself (none at first),
+  its time left from its own pace in its unit (a word in brackets after it may change: `steps
+  (clipping…)` and `steps (filtering…)` are both steps), and when its progress last moved on (one
+  stuck shows as such); what it said holds while its output since pushes the line out of the log's
+  last 64 KB. The jobs' Python steps print straight to their logs (unbuffered); the unit's
+  programs' progress lines reach the job's through its own (each program's errors are read as they
+  come, into its unit's log).
 
 **Two Macs** (and any other worker: `docs/workers.md`). The build Mac's agent plans; it runs a
 coordinator (`pipeline::coord`, port 8090) from which every other worker asks for work that fits it.

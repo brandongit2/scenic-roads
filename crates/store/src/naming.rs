@@ -15,6 +15,20 @@ pub const HASH_LEN: usize = 16;
 /// Chunk size for streaming file copies and hashes.
 const CHUNK: usize = 4 << 20;
 
+/// The bytes the streamed hashes and copies here have read and written, all told: a long upload
+/// says how far it is by them (pipeline's `Out::put_file_with`).
+static MOVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The bytes moved so far (`MOVED`).
+pub fn moved() -> u64 {
+    MOVED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Counts `n` bytes moved (`MOVED`): the callers' own streamed reads too (an upload's checksum).
+pub fn count_moved(n: usize) {
+    MOVED.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// BLAKE3 of `bytes`, first 16 hex digits.
 pub fn hash16(bytes: &[u8]) -> String {
     hex16(&blake3::hash(bytes))
@@ -39,6 +53,7 @@ fn hash16_reader(mut r: impl Read) -> io::Result<String> {
             Ok(0) => break,
             Ok(n) => {
                 h.update(&buf[..n]);
+                count_moved(n);
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
             Err(e) => return Err(e),
@@ -174,6 +189,7 @@ fn write_tmp(tmp: &Path, src: Source<'_>) -> io::Result<()> {
                     Err(e) => return Err(e),
                 };
                 out.write_all(&buf[..n])?;
+                count_moved(n);
             }
         }
     }

@@ -79,7 +79,7 @@ const NAS_ROOT: &str = "/volume1/personal/projects/scenic-roads";
 /// Stage `k` (from 0) of a step's `n` starting: its progress line, which the agent's status shows
 /// ("2 of 4 steps (what's being done)"). Within a part (`Parts`), its steps.
 fn stage(k: u64, n: u64, what: &str) {
-    pipeline::agent::jobs::report(k, n, &format!("steps ({what})"));
+    pipeline::agent::jobs::stage(k, n, &format!("steps ({what})"));
 }
 
 /// A step's parts, in order: each marked as it begins (pipeline::agent::jobs::part: the status lists
@@ -89,7 +89,7 @@ struct Parts(&'static [&'static str]);
 impl Parts {
     fn start(&self, i: usize) {
         pipeline::agent::jobs::part(i, self.0);
-        pipeline::agent::jobs::report(i as u64, self.0.len() as u64, &format!("parts ({})", self.0[i]));
+        pipeline::agent::jobs::stage(i as u64, self.0.len() as u64, &format!("parts ({})", self.0[i]));
     }
 }
 
@@ -227,9 +227,12 @@ fn main() -> Result<()> {
             } else {
                 let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
                 let raw = raw_tiles(&out, &raw_dir);
+                let parts = Parts(&["Fetching and repairing the world's z8 terrain", "Packing the new raw tiles onto the NAS"]);
+                parts.start(0);
                 let (n, none) = pipeline::terrain_z8::build(&mut out, &raw)?;
                 eprintln!("terrain-z8: {n} tiles ({none} of open sea)");
-                pack_raw(&out, &raw_dir);
+                parts.start(1);
+                pack_raw_with(&out, &raw_dir, &|what, done, total| pipeline::agent::jobs::report(done, total, what));
             }
         }
         "summits" => summits_step(&mut out, &args, &scratch)?,
@@ -306,12 +309,22 @@ fn main() -> Result<()> {
             let chm = PathBuf::from(opt(&args, "--chm").unwrap_or_else(|| "data/cache/chm10".into()));
             let workers: usize = std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or(8);
             let qs: Vec<Unit> = positional(&args).iter().map(|t| Unit::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))).collect::<Result<_>>()?;
+            // Its parts, for the status (as terrain's): each area's tree cover mapped (trees.py, which
+            // says how far it is), then written.
+            let n = qs.len();
+            let of = |k: usize| if n > 1 { format!(" ({} of {n})", k + 1) } else { String::new() };
+            let mut names: Vec<String> = Vec::new();
+            for k in 0..n {
+                names.push(format!("Mapping the area's tree cover (trees.py){}", of(k)));
+                names.push(format!("Writing the area's tree cover to the NAS{}", of(k)));
+            }
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
             for (k, &q) in qs.iter().enumerate() {
                 pipeline::control::safe_point("trees");
+                pipeline::agent::jobs::part(2 * k, &names);
                 let t = cost_start();
-                pipeline::treepacks::build(&mut out, &cov, q, &dem, &chm, &scratch, workers)?;
+                pipeline::treepacks::build_with(&mut out, &cov, q, &dem, &chm, &scratch, workers, &|| pipeline::agent::jobs::part(2 * k + 1, &names))?;
                 pipeline::control::done("trees", &q.slash());
-                pipeline::agent::jobs::report(k as u64 + 1, qs.len() as u64, "z3 tiles");
                 note_cost("trees", &q.slash(), t);
             }
         }
@@ -516,7 +529,13 @@ fn open_units(out: &Out, cache: &Path, mirror: Option<&Path>) -> Result<Vec<Base
     let needed: BTreeSet<&str> = units.iter().flat_map(|(_, b, r)| [b.as_str(), r.as_str()]).collect();
     prune_cache(cache, &needed)?;
     let mut packs = Vec::with_capacity(units.len());
-    for (u, base, roads) in &units {
+    let mut said = std::time::Instant::now();
+    for (k, (u, base, roads)) in units.iter().enumerate() {
+        // (The first job after a pass copies most of them: minutes.)
+        if k == 0 || said.elapsed() >= std::time::Duration::from_secs(1) {
+            said = std::time::Instant::now();
+            pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas' base packs here");
+        }
         let mut local = Vec::new();
         for name in [base, roads] {
             // (The mirror renames a file into place only once it's copied and checked.)
@@ -536,6 +555,7 @@ fn open_units(out: &Out, cache: &Path, mirror: Option<&Path>) -> Result<Vec<Base
         }
         packs.push(BasePack::open(&local[0], &local[1]).with_context(|| format!("unit {u}"))?);
     }
+    pipeline::agent::jobs::report(units.len() as u64, units.len() as u64, "areas' base packs here");
     Ok(packs)
 }
 
@@ -588,15 +608,21 @@ fn parse_tiles(list: &[String], z: u8) -> Result<Vec<Unit>> {
 // ---- pack(T) --------------------------------------------------------------------------------
 
 fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Result<()> {
+    let parts = Parts(&["Getting the areas' base packs here", "Drawing the map tiles"]);
+    parts.start(0);
     let packs = open_units(out, cache, mirror)?;
     let refs: Vec<&BasePack> = packs.iter().collect();
     let ts: Vec<Unit> = if only.is_empty() { tiles_touched(&packs, 6)?.into_iter().collect() } else { parse_tiles(only, 6)? };
     eprintln!("pack: {} tiles from {} units", ts.len(), packs.len());
+    parts.start(1);
     let t0 = std::time::Instant::now();
+    let n = ts.len() as u64;
+    // (Within a tile: its ways read, then its tiles drawn, then written.)
+    let at = |k: usize, f: f64| pipeline::agent::jobs::report_f(k as f64 + f, n, "map tiles");
     for (k, t) in ts.iter().enumerate() {
         // (A safe point before each tile: with the build pausing, the job ends here.)
         pipeline::control::safe_point("pack");
-        pipeline::agent::jobs::report(k as u64, ts.len() as u64, "map tiles");
+        at(k, 0.0);
         let tb = tile_bounds(t.z, t.x, t.y);
         let halo_b = grow(tb, 100.0);
         let near: Vec<&BasePack> = refs.iter().copied().filter(|bp| meets(bp.extent, halo_b)).collect();
@@ -609,7 +635,9 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
             continue;
         }
         let win = hipack::way_inputs(&near, &in_t)?;
+        at(k, 0.25);
         let (roads, rails) = hipack::tiles(&win, 6, t.x, t.y, 9..=14, false);
+        at(k, 0.6);
         for (layer, enc) in [("roads", &roads), ("rails", &rails)] {
             let mut it = enc.iter().map(|e| {
                 let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
@@ -619,6 +647,7 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
                 drop_entries(out, &[format!("layers/{layer}/hi/{}", t.dash())])?;
             }
         }
+        at(k, 0.75);
         let hd = hipack::hidata(*t, &near, &in_t, &halo)?;
         // The zoomed-out summaries (docs/phase5.md), from the same parts.
         let ls = roadcore::lsum::build(&hd.parts, &hd.psamples, &hd.pch, &hd.here, &hd.railinfo);
@@ -646,6 +675,7 @@ fn pack(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> 
         pipeline::control::done("pack", &t.slash());
         eprintln!("pack {} ({}/{}): {} ways, {} road tiles, {} parts, {} climbs ({:.0?})", t.slash(), k + 1, ts.len(), in_t.len(), roads.len(), hd.parts.len(), hd.climbs.len(), t0.elapsed());
     }
+    pipeline::agent::jobs::report(n, n, "map tiles");
     Ok(())
 }
 
@@ -664,14 +694,19 @@ fn drop_entries(out: &mut Out, logicals: &[String]) -> Result<()> {
 // ---- lo packs -------------------------------------------------------------------------------
 
 fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Result<()> {
+    let parts = Parts(&["Getting the areas' base packs here", "Drawing the zoomed-out tiles"]);
+    parts.start(0);
     let packs = open_units(out, cache, mirror)?;
     let refs: Vec<&BasePack> = packs.iter().collect();
     let qs: Vec<Unit> = if only.is_empty() { tiles_touched(&packs, 3)?.into_iter().collect() } else { parse_tiles(only, 3)? };
     eprintln!("lo: {} tiles from {} units", qs.len(), packs.len());
+    parts.start(1);
     let t0 = std::time::Instant::now();
+    let n = qs.len() as u64;
+    let at = |k: usize, f: f64| pipeline::agent::jobs::report_f(k as f64 + f, n, "zoomed-out tiles");
     for (k, q) in qs.iter().enumerate() {
         pipeline::control::safe_point("lo");
-        pipeline::agent::jobs::report(k as u64, qs.len() as u64, "zoomed-out tiles");
+        at(k, 0.0);
         let qb = tile_bounds(q.z, q.x, q.y);
         let near: Vec<&BasePack> = refs.iter().copied().filter(|bp| meets(bp.extent, qb)).collect();
         let staged = hipack::ways_in(&near, qb)?;
@@ -681,7 +716,9 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Re
             continue;
         }
         let win = hipack::way_inputs(&near, &staged)?;
+        at(k, 0.3);
         let (roads, rails) = hipack::tiles(&win, 3, q.x, q.y, 4..=8, true);
+        at(k, 0.8);
         for (layer, enc) in [("roads", &roads), ("rails", &rails)] {
             let mut it = enc.iter().map(|e| {
                 let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
@@ -695,6 +732,7 @@ fn lo(out: &mut Out, cache: &Path, mirror: Option<&Path>, only: &[String]) -> Re
         pipeline::control::done("lo", &q.slash());
         eprintln!("lo {} ({}/{}): {} ways, {} road tiles ({:.0?})", q.slash(), k + 1, qs.len(), staged.len(), roads.len(), t0.elapsed());
     }
+    pipeline::agent::jobs::report(n, n, "zoomed-out tiles");
     Ok(())
 }
 
@@ -1140,6 +1178,9 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let z8 = open_z8(out, &cache)?;
     std::fs::create_dir_all(scratch)?;
     let units: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
+    // Its parts: the areas' peaks, then the raw tiles AWS gave packed onto the NAS.
+    let parts = Parts(&["Measuring the areas' peaks", "Packing the new raw tiles onto the NAS"]);
+    parts.start(0);
     for (k, &u) in units.iter().enumerate() {
         // (A safe point before each area: the raw tiles fetched wait in the cache for the next job.)
         pipeline::control::safe_point("peaks");
@@ -1173,7 +1214,9 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         eprintln!("peaks {}: {} peaks; z12 tiles {} from the packs, {} from AWS, {} sea ({:.0?})", u.slash(), res.len(), z12.from.0, z12.from.1, z12.from.2, t.elapsed());
         note_cost("peaks", &u.slash(), t);
     }
-    pack_raw(out, &raw_dir);
+    pipeline::agent::jobs::report(units.len() as u64, units.len() as u64, "areas");
+    parts.start(1);
+    pack_raw_with(out, &raw_dir, &|what, done, total| pipeline::agent::jobs::report(done, total, what));
     Ok(())
 }
 
@@ -1405,7 +1448,9 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let mut wrote: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut files: Vec<PathBuf> = std::fs::read_dir(&b)?.flatten().map(|e| e.path()).filter(|p| p.is_file()).collect();
     files.sort();
-    for p in files {
+    let n = files.len().max(1) as f64;
+    for (k, p) in files.into_iter().enumerate() {
+        pipeline::agent::jobs::within(k as f64 / n);
         let name = p.file_name().unwrap().to_string_lossy().into_owned();
         let (stem, ext) = name.split_once('.').unwrap_or((name.as_str(), "bin"));
         if inputs.contains(&name.as_str()) || name.ends_with(".tmp") || name.starts_with('.') || stem.starts_with("layer-pois") || stem == "layer-summits" {
@@ -1431,9 +1476,11 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Runs an osmium command, failing with its name.
+/// Runs an osmium command, failing with its name; how far it is (its `--progress`) is said as the
+/// stage's under way (pipeline::agent::jobs::within).
 fn osmium_run(mut c: std::process::Command, what: &str) -> Result<()> {
-    let st = c.status().with_context(|| format!("run {what}"))?;
+    c.arg("--progress");
+    let st = pipeline::agent::jobs::run_watched(&mut c, pipeline::agent::jobs::within).with_context(|| format!("run {what}"))?;
     anyhow::ensure!(st.success(), "{what} failed: {st}");
     Ok(())
 }
@@ -1736,6 +1783,18 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// The unit job's progress (pipeline::unit::Areas): each area under way by the stages it's
+/// through, said as they finish.
+static AREAS: std::sync::Mutex<Option<pipeline::unit::Areas>> = std::sync::Mutex::new(None);
+
+fn areas(f: impl FnOnce(&mut pipeline::unit::Areas)) {
+    if let Ok(mut a) = AREAS.lock() {
+        if let Some(a) = a.as_mut() {
+            f(a);
+        }
+    }
+}
+
 fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::unit::{prepare_folder, run_tail, Tools};
     let (date, cov, regions) = pass_and_coverage(out, args)?;
@@ -1808,7 +1867,10 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             std::fs::remove_file(e.path()).ok();
         }
     }
-    let n = units.len() as u64;
+    // Its progress: area by area, each by its stages (their times on this Mac learned and kept with
+    // its caches).
+    *AREAS.lock().unwrap() = Some(pipeline::unit::Areas::new(units.len(), Some(tools.cache.join("unit-stages.json"))));
+    pipeline::unit::on_stage(Some(Box::new(|stage, frac, took| areas(|a| a.stage(stage, frac, took)))));
     // This Mac's copies of the packs staging reads (pipeline::stage), kept with the agent's caches.
     let blobs = store::blobs::Blobs::new(tools.cache.join("blobs"));
     // The next unit's piece and packs, copied while this one builds (one stream: large sequential
@@ -1826,7 +1888,10 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             paused = true;
             break;
         }
-        pipeline::agent::jobs::report(k as u64, n, "areas");
+        areas(|a| {
+            a.on(&u.slash());
+            a.say(true);
+        });
         let t = std::time::Instant::now();
         if let Some(h) = ahead.take() {
             h.join().ok();
@@ -1878,6 +1943,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let piece_logical = format!("sources/osm/{date}/pieces/{}", u.dash());
         let Some(piece) = out.get(&piece_logical).map(|n| out.path(n)) else {
             eprintln!("unit {}: no piece (nothing there)", u.slash());
+            areas(|a| a.finished(&u.slash()));
             continue;
         };
         let local_piece = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
@@ -1973,6 +2039,8 @@ fn settle_tails(out: &mut Out, date: &str, offload: Option<&pipeline::offload::O
     let mut i = 0;
     while i < waiting.len() {
         let (b, task) = &mut waiting[i];
+        // (Its last steps run here, when they're taken back: its stages.)
+        areas(|a| a.on(&b.u.slash()));
         let (dir, tools, anywhere) = (b.dir.clone(), b.tools.clone(), b.anywhere.clone());
         let mut here = || pipeline::unit::run_tail(&anywhere, &dir, &tools);
         match o.settle(task, &b.dir, wait, &mut here)? {
@@ -2000,6 +2068,7 @@ fn settle_tails(out: &mut Out, date: &str, offload: Option<&pipeline::offload::O
 fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     let Built { u, dir, bdir, rep, carry, piece, t, mut laps, peak, .. } = b;
     use pipeline::unit::owns;
+    areas(|a| a.on(&u.slash()));
     laps.skip();
     let clean = || {
         std::fs::remove_dir_all(&dir).ok();
@@ -2035,6 +2104,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
         out.save()?;
         clean();
         pipeline::control::done("unit", &u.slash());
+        areas(|a| a.finished(&u.slash()));
         return Ok(());
     }
     // The owned ways, in base-pack order, with the pass's road values.
@@ -2080,6 +2150,7 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
     out.save()?;
     pipeline::control::done("unit", &u.slash());
     laps.lap("records saved");
+    areas(|a| a.finished(&u.slash()));
     drop(lg);
     clean();
     laps.lap("its folders removed");
@@ -2271,12 +2342,27 @@ fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
     let by_q = terrain_targets(&cov, args)?;
     eprintln!("slope: {} z6 tiles in {} z3 packs", by_q.values().map(Vec::len).sum::<usize>(), by_q.len());
-    let n = by_q.len() as u64;
+    // Its parts, for the status (as terrain's): each area's slope worked out, then written. Each
+    // says how far it is.
+    let n = by_q.len();
+    let of = |k: usize| if n > 1 { format!(" ({} of {n})", k + 1) } else { String::new() };
+    let mut names: Vec<String> = Vec::new();
+    for k in 0..n {
+        names.push(format!("Working out the area's slope{}", of(k)));
+        names.push(format!("Writing the area's slope to the NAS{}", of(k)));
+    }
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
     for (k, (q, list)) in by_q.into_iter().enumerate() {
         pipeline::control::safe_point("slope");
-        pipeline::agent::jobs::report(k as u64, n, "parts");
+        pipeline::agent::jobs::part(2 * k, &names);
+        let writing = std::sync::atomic::AtomicBool::new(false);
         let t = cost_start();
-        let r = pipeline::slope_pack::build_q(out, q, &list)?;
+        let r = pipeline::slope_pack::build_q_with(out, q, &list, &|what, done, total| {
+            if what == "packs written" && !writing.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                pipeline::agent::jobs::part(2 * k + 1, &names);
+            }
+            pipeline::agent::jobs::report(done, total, what);
+        })?;
         pipeline::control::done("slope", &format!("3/{}/{}", q.0, q.1));
         eprintln!("slope 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
         note_cost("slope", &format!("3/{}/{}", q.0, q.1), t);

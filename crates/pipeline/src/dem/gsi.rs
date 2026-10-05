@@ -42,8 +42,9 @@ pub fn url(layer: &str, z: u32, x: i64, y: i64) -> String {
 }
 
 /// Layer `layer` at zoom `z` sampled at points `lon`, `lat`: each point's value, NaN where the
-/// layer has none.
-pub fn pass(fetch: &dyn Fetch, layer: &str, z: u32, lon: &[f64], lat: &[f64], pool: Option<&rayon::ThreadPool>) -> Result<Vec<f32>> {
+/// layer has none. `on` hears how many points have been sampled so far, about once a second (a
+/// pass fetches thousands of tiles).
+pub fn pass(fetch: &dyn Fetch, layer: &str, z: u32, lon: &[f64], lat: &[f64], pool: Option<&rayon::ThreadPool>, on: &(dyn Fn(usize) + Sync)) -> Result<Vec<f32>> {
     let n = 1i64 << z;
     // (tile key, point, fx, fy)
     let mut pts: Vec<(i64, u32, f64, f64)> = lon
@@ -64,10 +65,18 @@ pub fn pass(fetch: &dyn Fetch, layer: &str, z: u32, lon: &[f64], lat: &[f64], po
             s = e;
         }
     }
+    let (points, said) = (std::sync::atomic::AtomicUsize::new(0), std::sync::Mutex::new(std::time::Instant::now()));
     let sampled: Vec<Vec<(u32, f32)>> = within(pool, || {
         groups
             .par_iter()
             .map(|g| -> Result<Vec<(u32, f32)>> {
+                let p = points.fetch_add(g.len(), std::sync::atomic::Ordering::Relaxed) + g.len();
+                if let Ok(mut t) = said.try_lock() {
+                    if t.elapsed() >= std::time::Duration::from_secs(1) {
+                        *t = std::time::Instant::now();
+                        on(p);
+                    }
+                }
                 let k = g[0].0;
                 let (tx, ty) = (k.div_euclid(n), k.rem_euclid(n));
                 let u = url(layer, z, tx, ty);

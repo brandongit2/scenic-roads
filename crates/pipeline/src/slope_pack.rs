@@ -202,19 +202,40 @@ fn compose(terrain: &Terrain, z: u8, x: u32, y: u32, kids: &[((u32, u32), Vec<[u
     Some((0..TS * TS).map(|p| if has[p] { val[p].map(|q| q as f32 / 100.0) } else { [direct.as_ref().map_or(0.0, |d| d[p]); 4] }).collect())
 }
 
+/// How far a slope build is (`build_q_with`): its tiles worked out, said at most once a second.
+struct Count<'a> {
+    done: std::sync::atomic::AtomicU64,
+    total: u64,
+    said: std::sync::Mutex<std::time::Instant>,
+    on: &'a (dyn Fn(&str, u64, u64) + Sync),
+}
+
+impl Count<'_> {
+    fn one(&self) {
+        let d = self.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        if let Ok(mut t) = self.said.try_lock() {
+            if t.elapsed() >= std::time::Duration::from_secs(1) || d == self.total {
+                *t = std::time::Instant::now();
+                (self.on)("slope tiles worked out", d.min(self.total), self.total);
+            }
+        }
+    }
+}
+
 /// Builds tile (z, x, y) after its children among `tiles` (depth first); stores z ≤ 11 in `out`.
-fn build(terrain: &Terrain, tiles: &HashSet<(u8, u32, u32)>, z: u8, x: u32, y: u32, out: &std::sync::Mutex<Vec<(u8, u32, u32, Vec<u8>)>>) -> Option<Vec<[u16; 4]>> {
+fn build(terrain: &Terrain, tiles: &HashSet<(u8, u32, u32)>, z: u8, x: u32, y: u32, out: &std::sync::Mutex<Vec<(u8, u32, u32, Vec<u8>)>>, count: &Count) -> Option<Vec<[u16; 4]>> {
     let kids: Vec<((u32, u32), Vec<[u16; 4]>)> = if z < MAXZ {
         (0..4u32)
             .map(|k| (2 * x + (k & 1), 2 * y + (k >> 1)))
             .filter(|&(cx, cy)| tiles.contains(&(z + 1, cx, cy)))
             .collect::<Vec<_>>()
             .into_par_iter()
-            .filter_map(|(cx, cy)| build(terrain, tiles, z + 1, cx, cy, out).map(|q| ((cx, cy), q)))
+            .filter_map(|(cx, cy)| build(terrain, tiles, z + 1, cx, cy, out, count).map(|q| ((cx, cy), q)))
             .collect()
     } else {
         Vec::new()
     };
+    count.one();
     let v = compose(terrain, z, x, y, &kids)?;
     if z < MAXZ {
         let (blob, v) = stored(&v);
@@ -242,6 +263,12 @@ pub struct Report {
 /// The slope of the z6 tiles `ts` (in z3 tile `q`) from the build's terrain packs: each one's hi pack
 /// (z9–11) and `q`'s lo pack (z3–8), the other z6 tiles of `q` taken from the slope lo pack as it is.
 pub fn build_q(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<Report> {
+    build_q_with(out, q, ts, &|_, _, _| {})
+}
+
+/// `build_q`, saying how far it is to `on` as (what, done, total): the slope tiles worked out, then
+/// the packs written.
+pub fn build_q_with(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
     let mut rep = Report::default();
     let terr = ManifestTiles::new(out, "terrain");
     let slope_now = ManifestTiles::new(out, "slope");
@@ -251,6 +278,7 @@ pub fn build_q(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<Report
     // Each z6 tile: the terrain tiles it has (z9–12) and their ancestors down to z6.
     let made = std::sync::Mutex::new(Vec::new());
     let mut z6q: HashMap<(u32, u32), Vec<[u16; 4]>> = HashMap::new();
+    let mut sets: Vec<((u32, u32), HashSet<(u8, u32, u32)>)> = Vec::new();
     for &(tx, ty) in ts {
         let mut tiles: HashSet<(u8, u32, u32)> = HashSet::new();
         for z in 9..=12u8 {
@@ -266,8 +294,15 @@ pub fn build_q(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<Report
             }
         }
         tiles.insert((6, tx, ty));
-        if let Some(qd) = build(&terrain, &tiles, 6, tx, ty, &made) {
-            z6q.insert((tx, ty), qd);
+        sets.push(((tx, ty), tiles));
+    }
+    // (Every tile worked out counts, the rest of q's z6 tiles and its z5–z3 too.)
+    let total = sets.iter().map(|s| s.1.len() as u64).sum::<u64>() + 64 - ts.len().min(64) as u64 + 16 + 4 + 1;
+    let count = Count { done: Default::default(), total, said: std::sync::Mutex::new(std::time::Instant::now()), on };
+    on("slope tiles worked out", 0, total);
+    for ((tx, ty), tiles) in &sets {
+        if let Some(qd) = build(&terrain, tiles, 6, *tx, *ty, &made, &count) {
+            z6q.insert((*tx, *ty), qd);
         }
     }
     // The other z6 tiles of q: their stored slope's quadrant, else their terrain's own slope.
@@ -277,6 +312,7 @@ pub fn build_q(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<Report
             if z6q.contains_key(&(x, y)) {
                 continue;
             }
+            count.one();
             let kept = slope_now.get(6, x, y)?;
             let v = match kept.as_ref().and_then(|b| decode_slope4(b)) {
                 Some(v) => {
@@ -307,6 +343,7 @@ pub fn build_q(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<Report
                     let c = (2 * x + (k & 1), 2 * y + (k >> 1));
                     below.get(&c).map(|q| (c, q.clone()))
                 }).collect();
+                count.one();
                 if let Some(v) = compose(&terrain, z, x, y, &kids) {
                     let (blob, v) = stored(&v);
                     made.push((z, x, y, blob));
@@ -321,11 +358,14 @@ pub fn build_q(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<Report
     // Packs: each z6 tile's z9–11, and q's z3–8 (this run's z6 tiles' z6–8 with the rest of q's).
     made.sort_by_key(|t| (t.0, t.1, t.2));
     made.dedup_by_key(|t| (t.0, t.1, t.2));
-    for &(tx, ty) in ts {
+    let packs = ts.len() as u64 + 1;
+    for (k, &(tx, ty)) in ts.iter().enumerate() {
+        on("packs written", k as u64, packs);
         let mut it = made.iter().filter(|t| t.0 >= 9 && (t.1 >> (t.0 - 6), t.2 >> (t.0 - 6)) == (tx, ty)).map(|t| (t.0, t.1, t.2, t.3.clone(), (TS * TS * 4) as u32));
         rep.hi_tiles += made.iter().filter(|t| t.0 >= 9 && (t.1 >> (t.0 - 6), t.2 >> (t.0 - 6)) == (tx, ty)).count();
         crate::layers::write_pack(out, "slope", "slope4-png", false, "hi", (6, tx, ty), &mut it)?;
     }
+    on("packs written", packs - 1, packs);
     // The lo pack keeps the z7–8 tiles of the other z6 tiles of q as they are.
     let lo_old = ManifestTiles::new(out, "slope");
     let ours: HashSet<(u32, u32)> = ts.iter().copied().collect();
@@ -349,6 +389,7 @@ pub fn build_q(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<Report
     let mut it = lo.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
     crate::layers::write_pack(out, "slope", "slope4-png", false, "lo", (3, q.0, q.1), &mut it)?;
     out.save()?;
+    on("packs written", packs, packs);
     Ok(rep)
 }
 

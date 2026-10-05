@@ -14,6 +14,7 @@ use crate::coverage::Coverage;
 use crate::legacy::Unit;
 use anyhow::{bail, ensure, Context, Result};
 use roadcore::WayRec;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -272,11 +273,16 @@ pub fn dem_seed(root: &Path, cache: &Path) -> Result<()> {
     }
     std::fs::create_dir_all(cache)?;
     let t = std::time::Instant::now();
+    // (Some 9 GB: its progress said, MB by MB.)
+    let total: u64 = there.iter().flatten().sum();
+    let mut before = 0u64;
     // Each file whole before the next (a half-copied one is copied again: its length is wrong).
     for n in names {
         let (from, to) = (src.join(format!("dem-cache.{n}")), cache.join(format!("dem-cache.{n}")));
         let tmp = to.with_extension(format!("{}.tmp", to.extension().unwrap().to_string_lossy()));
-        store::sys::copy_data(&from, &tmp).with_context(|| format!("copy {}", from.display()))?;
+        std::fs::remove_file(&tmp).ok();
+        crate::osmpass::copy_resume_with(&from, &tmp, &mut |d, _| crate::agent::jobs::report((before + d) >> 20, total >> 20, "MB of the DEM cache copied here (once a Mac)")).with_context(|| format!("copy {}", from.display()))?;
+        before += std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
         std::fs::rename(&tmp, &to)?;
     }
     eprintln!("unit: DEM cache copied from the NAS ({:.0?})", t.elapsed());
@@ -359,8 +365,151 @@ impl Tools {
     }
 }
 
+/// Where a unit's build says how far it is (`on_stage`): each stage it finishes (a lap, a program)
+/// with the time it took, and a program's own progress within its stage (its `progress:` lines),
+/// as (stage, fraction of it done, its time when finished).
+pub type StageHook = Box<dyn Fn(&str, f64, Option<std::time::Duration>) + Send + Sync>;
+
+static HOOK: std::sync::RwLock<Option<StageHook>> = std::sync::RwLock::new(None);
+
+/// Has a unit's stages said to `h` from now on (None: to nothing): the unit job's progress
+/// (scenic-build).
+pub fn on_stage(h: Option<StageHook>) {
+    if let Ok(mut w) = HOOK.write() {
+        *w = h;
+    }
+}
+
+/// Says how far a stage is (`on_stage`).
+pub fn stage_said(stage: &str, frac: f64, took: Option<std::time::Duration>) {
+    if let Ok(r) = HOOK.read() {
+        if let Some(h) = r.as_ref() {
+            h(stage, frac, took);
+        }
+    }
+}
+
+/// A unit's stages in the order they run (`Laps::lap`'s and the programs' names), each with about
+/// how long it takes (seconds: the build Mac's, over its areas of 2026-10): how far an area is, by
+/// the stages it's through (`Areas`), until this Mac has timed its own.
+pub const STAGES: [(&str, f64); 25] = [
+    ("piece copied from the NAS", 10.0),
+    ("buildings staged", 1.0),
+    ("extract", 10.0),
+    ("subset to the coverage", 1.0),
+    ("DEM cache slice", 30.0),
+    ("elevations (elev)", 150.0),
+    ("DEM samples kept", 40.0),
+    ("layers staged from the packs", 60.0),
+    ("heritage inputs", 8.0),
+    ("area flags (areaflags)", 5.0),
+    ("land cover (landcover)", 4.0),
+    ("scenic results restored", 20.0),
+    ("clean-up and grade (tile elev)", 1.0),
+    ("scenic prep", 1.0),
+    ("scenic canopy", 25.0),
+    ("scenic view", 12.0),
+    ("scenic buildings", 19.0),
+    ("scenic flags", 1.0),
+    ("missing grids written", 2.0),
+    ("scenic results kept", 8.0),
+    ("base pack made", 1.0),
+    ("base pack written to the NAS", 60.0),
+    ("road values made and written", 20.0),
+    ("records saved", 5.0),
+    ("its folders removed", 1.0),
+];
+
+/// A unit job's progress (scenic-build's unit step), area by area: those finished, and each under
+/// way by how far through its stages it is (`STAGES`), each stage weighted by about how long it
+/// takes here (learned as areas finish, and kept: `file`). Its line says `<areas>/<n> areas`.
+pub struct Areas {
+    n: usize,
+    /// The areas finished (a stage said after, such as its folders' removal, counts for nothing).
+    finished: std::collections::BTreeSet<String>,
+    /// The areas under way (prepared here, or their last steps out with other workers): how far each is.
+    under_way: BTreeMap<String, f64>,
+    /// The area whose stages are said now.
+    current: Option<String>,
+    /// About how long each stage takes here (seconds).
+    secs: BTreeMap<String, f64>,
+    file: Option<PathBuf>,
+    said_at: Option<std::time::Instant>,
+}
+
+impl Areas {
+    /// `n` areas, their stages' times learned in `file` (when there is one).
+    pub fn new(n: usize, file: Option<PathBuf>) -> Areas {
+        let mut secs: BTreeMap<String, f64> = STAGES.iter().map(|(s, t)| (s.to_string(), *t)).collect();
+        if let Some(kept) = file.as_ref().and_then(|f| std::fs::read(f).ok()).and_then(|b| serde_json::from_slice::<BTreeMap<String, f64>>(&b).ok()) {
+            secs.extend(kept.into_iter().filter(|(s, t)| STAGES.iter().any(|x| x.0 == s) && t.is_finite() && *t >= 0.0));
+        }
+        Areas { n, finished: Default::default(), under_way: BTreeMap::new(), current: None, secs, file, said_at: None }
+    }
+
+    /// Stages said from now on are area `u`'s.
+    pub fn on(&mut self, u: &str) {
+        self.current = Some(u.to_string());
+    }
+
+    /// The current area's `stage` is `frac` done (1: finished, in `took`): it counts that far, and
+    /// the time teaches this Mac's weight for the stage.
+    pub fn stage(&mut self, stage: &str, frac: f64, took: Option<std::time::Duration>) {
+        let Some(i) = STAGES.iter().position(|(s, _)| *s == stage) else { return };
+        let Some(u) = self.current.clone() else { return };
+        if self.finished.contains(&u) {
+            return;
+        }
+        if let (Some(t), true) = (took, frac >= 1.0) {
+            let e = self.secs.entry(stage.to_string()).or_insert(t.as_secs_f64());
+            *e = 0.75 * *e + 0.25 * t.as_secs_f64();
+        }
+        let w = |s: &str| self.secs.get(s).copied().unwrap_or(1.0).max(0.1);
+        let total: f64 = STAGES.iter().map(|(s, _)| w(s)).sum();
+        let before: f64 = STAGES[..i].iter().map(|(s, _)| w(s)).sum();
+        // (Never back: a stage said again, or one an area skipped, is no step back.)
+        let f = ((before + frac.clamp(0.0, 1.0) * w(stage)) / total).min(0.999);
+        let e = self.under_way.entry(u).or_insert(0.0);
+        *e = e.max(f);
+        self.say(frac >= 1.0);
+    }
+
+    /// Area `u` is done (built and saved, or nothing to build).
+    pub fn finished(&mut self, u: &str) {
+        self.under_way.remove(u);
+        self.finished.insert(u.to_string());
+        self.say(true);
+        self.keep();
+    }
+
+    /// The areas done, counting each under way by how far it is.
+    pub fn done(&self) -> f64 {
+        (self.finished.len() as f64 + self.under_way.values().sum::<f64>()).min(self.n as f64)
+    }
+
+    /// The progress line (`crate::agent::jobs::report_f`): at once at a stage's end, else at most
+    /// once a second.
+    pub fn say(&mut self, now: bool) {
+        if !now && self.said_at.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1)) {
+            return;
+        }
+        self.said_at = Some(std::time::Instant::now());
+        crate::agent::jobs::report_f(self.done(), self.n as u64, "areas");
+    }
+
+    /// The stages' times learned, kept for this Mac's next job (a cache: not keeping them costs
+    /// nothing but the weights).
+    fn keep(&self) {
+        if let Some(f) = &self.file {
+            if let Ok(b) = serde_json::to_vec(&self.secs) {
+                crate::whole::write(f, &b).ok();
+            }
+        }
+    }
+}
+
 /// Times the parts of a unit's build done in-process, logged as its programs' times are: each lap
-/// "  <what>: <time since the last lap>".
+/// "  <what>: <time since the last lap>" (and said as a stage finished: `on_stage`).
 pub struct Laps(std::time::Instant);
 
 impl Default for Laps {
@@ -371,7 +520,9 @@ impl Default for Laps {
 
 impl Laps {
     pub fn lap(&mut self, what: &str) {
-        eprintln!("  {what}: {:.0?}", self.0.elapsed());
+        let took = self.0.elapsed();
+        eprintln!("  {what}: {took:.0?}");
+        stage_said(what, 1.0, Some(took));
         self.0 = std::time::Instant::now();
     }
 
@@ -430,9 +581,29 @@ fn run_in(c: Command, what: &str, log: &Path, dir: &Path, tools: &Tools) -> Resu
 fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
     let f = std::fs::File::options().create(true).append(true).open(log)?;
     let t = std::time::Instant::now();
-    let child = c.stdout(f.try_clone()?).stderr(f).spawn().with_context(|| format!("start {what}"))?;
+    let mut child = c.stdout(f.try_clone()?).stderr(std::process::Stdio::piped()).spawn().with_context(|| format!("start {what}"))?;
+    // Its errors into its log as they come, and how far it says it is passed on as its stage's
+    // (a bar's redraws only that).
+    let err = child.stderr.take();
+    let name = what.to_string();
+    let read = std::thread::spawn(move || {
+        let mut f = f;
+        if let Some(err) = err {
+            crate::agent::jobs::each_line(err, |l| {
+                let frac = crate::agent::jobs::fraction_of(l);
+                if let Some(x) = frac {
+                    stage_said(&name, x, None);
+                }
+                if frac.is_none() || !l.trim_start().starts_with('[') {
+                    std::io::Write::write_all(&mut f, format!("{l}\n").as_bytes()).ok();
+                }
+            });
+        }
+    });
     // Waited for with what it used: its (and its programs') peak memory.
-    let (st, peak) = crate::sys::wait_with_peak(child).with_context(|| format!("wait for {what}"))?;
+    let waited = crate::sys::wait_with_peak(child).with_context(|| format!("wait for {what}"));
+    read.join().ok();
+    let (st, peak) = waited?;
     PEAK.fetch_max(peak, std::sync::atomic::Ordering::Relaxed);
     if !st.success() {
         // The end of its log into the job's: the unit's folder, its log with it, goes when the next
@@ -441,6 +612,7 @@ fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
         bail!("{what} failed ({st}); see {}", log.display());
     }
     eprintln!("  {what}: {:.0?}", t.elapsed());
+    stage_said(what, 1.0, Some(t.elapsed()));
     Ok(())
 }
 
@@ -680,6 +852,43 @@ pub fn run_tail(runs: &[Run], dir: &Path, tools: &Tools) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_area_counts_by_the_stages_it_is_through() {
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("unit-stages.json");
+        let mut a = Areas::new(4, Some(file.clone()));
+        let total: f64 = STAGES.iter().map(|s| s.1).sum();
+        a.on("6/1/1");
+        a.stage("piece copied from the NAS", 1.0, None);
+        assert!((a.done() - 10.0 / total).abs() < 1e-9);
+        // Halfway through its elevations: the stages before, and half of that one.
+        a.stage("elevations (elev)", 0.5, None);
+        let before: f64 = STAGES[..5].iter().map(|s| s.1).sum();
+        assert!((a.done() - (before + 75.0) / total).abs() < 1e-9);
+        // A stage said again, or an earlier one, is no step back; one it doesn't know, nothing.
+        a.stage("extract", 1.0, None);
+        a.stage("something else", 1.0, None);
+        assert!((a.done() - (before + 75.0) / total).abs() < 1e-9);
+        // Its last steps out with another worker while the next area builds: both count.
+        a.on("6/1/2");
+        a.stage("extract", 1.0, None);
+        let two = a.done();
+        assert!(two > (before + 75.0) / total);
+        a.on("6/1/1");
+        a.finished("6/1/1");
+        // (Its folders removed after: nothing more.)
+        a.stage("its folders removed", 1.0, None);
+        assert!((a.done() - (1.0 + (STAGES[..3].iter().map(|s| s.1).sum::<f64>()) / total)).abs() < 1e-9);
+        // A stage's time teaches its weight, kept for the next job.
+        a.on("6/1/2");
+        a.stage("DEM cache slice", 1.0, Some(std::time::Duration::from_secs(70)));
+        a.finished("6/1/2");
+        let kept: BTreeMap<String, f64> = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        assert_eq!(kept["DEM cache slice"], 0.75 * 30.0 + 0.25 * 70.0);
+        assert_eq!(Areas::new(4, Some(file)).secs["DEM cache slice"], 40.0);
+        assert_eq!(a.done(), 2.0);
+    }
 
     #[test]
     fn a_logs_last_lines() {

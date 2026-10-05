@@ -381,6 +381,14 @@ fn mtime_ns(p: &Path) -> Result<u128> {
     Ok(std::fs::metadata(p)?.modified()?.duration_since(std::time::UNIX_EPOCH)?.as_nanos())
 }
 
+/// How far the sampling is, for the unit job's progress (crate::agent::jobs::report: a line on
+/// stderr): the vertices to sample that have a height.
+fn said(got: usize, of: usize) {
+    if of > 0 {
+        eprintln!("progress: {}/{of} vertices", got.min(of));
+    }
+}
+
 /// Samples the DEMs at the build folder's vertices (`verts.bin`) not in the cache: writes
 /// `elev.f32`, `src.u8`, `dem-stats.json` and the cache for the next run.
 pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
@@ -400,6 +408,9 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
     }
     let miss: Vec<u32> = (0..n as u32).filter(|&i| prog.elev[i as usize].is_nan()).collect();
     println!("{} vertices need DEM sampling", th(miss.len()));
+    // (Those with a height so far, as each source's file or tile is sampled.)
+    let mut got_all = 0usize;
+    said(0, miss.len());
     let lon: Vec<f64> = miss.iter().map(|&i| verts[i as usize][0] as f64 * 1e-7).collect();
     let lat: Vec<f64> = miss.iter().map(|&i| verts[i as usize][1] as f64 * 1e-7).collect();
     // Indexed by position in `miss`; scattered back through it.
@@ -437,6 +448,8 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
         let t = Tiff::open(fetch.open(&url)?.with_context(|| format!("{url}: the server has no such file"))?).with_context(|| url.clone())?;
         let v = sample_raster(&t, 2, &gather(&x, sel), &gather(&y, sel), pool.as_ref()).with_context(|| url.clone())?;
         let got = put(&mut loc_elev, &mut loc_src, sel, &v, DemSource::Hrdem);
+        got_all += got;
+        said(got_all, miss.len());
         println!("  HRDEM {tid}: {}/{} vertices with lidar", th(got), th(sel.len()));
         prog.scatter(&miss, &loc_elev, &loc_src);
         prog.mark(&name)?;
@@ -462,6 +475,8 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
                 put(&mut loc_elev, &mut loc_src, sel, &v, DemSource::Usgs3dep)
             }
         };
+        got_all += got;
+        said(got_all, miss.len());
         if got > 0 {
             println!("  3DEP {tname}: {}/{}", th(got), th(sel.len()));
         }
@@ -478,6 +493,8 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
             let t = Tiff::open(fetch.open(&url)?.with_context(|| format!("{url}: the server has no such file"))?).with_context(|| url.clone())?;
             let v = sample_raster(&t, 0, &gather(&x, &rest), &gather(&y, &rest), pool.as_ref()).with_context(|| url.clone())?;
             let got = put(&mut loc_elev, &mut loc_src, &rest, &v, DemSource::Mrdem);
+            got_all += got;
+            said(got_all, miss.len());
             println!("  MRDEM: {}/{}", th(got), th(rest.len()));
         }
         prog.scatter(&miss, &loc_elev, &loc_src);
@@ -494,13 +511,17 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
                 continue;
             }
             let rest = left(&loc_elev, &jp);
-            let v = gsi::pass(fetch, layer, z, &gather(&lon, &rest), &gather(&lat, &rest), gpool.as_ref())?;
+            // (Its points as they're sampled, as if each had a height: the line after says how many do.)
+            let before = got_all;
+            let v = gsi::pass(fetch, layer, z, &gather(&lon, &rest), &gather(&lat, &rest), gpool.as_ref(), &|k| said(before + k, miss.len()))?;
             let code = match code {
                 5 => DemSource::Gsi5a,
                 6 => DemSource::Gsi5,
                 _ => DemSource::Gsi10,
             };
             let got = put(&mut loc_elev, &mut loc_src, &rest, &v, code);
+            got_all += got;
+            said(got_all, miss.len());
             println!("  GSI {layer}: {}/{}", th(got), th(rest.len()));
             prog.scatter(&miss, &loc_elev, &loc_src);
             prog.mark(&name)?;
@@ -522,6 +543,8 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
             let (px, py): (Vec<f64>, Vec<f64>) = rest.iter().map(|&i| crs.project(lon[i as usize], lat[i as usize])).unzip();
             let v = sample_raster(&t, 0, &px, &py, pool.as_ref()).with_context(|| format!("MOI {file}"))?;
             let got = put(&mut loc_elev, &mut loc_src, &rest, &v, DemSource::Moi);
+            got_all += got;
+            said(got_all, miss.len());
             println!("  MOI {file}: {}/{}", th(got), th(rest.len()));
             prog.scatter(&miss, &loc_elev, &loc_src);
             prog.mark(&name)?;
@@ -567,11 +590,14 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
         };
         // (None: no tile, the open sea.)
         let got = v.map_or(0, |v| put(&mut loc_elev, &mut loc_src, sel, &v, DemSource::Fabdem));
+        got_all += got;
+        said(got_all, miss.len());
         println!("  FABDEM {tname}: {}/{}", th(got), th(sel.len()));
         prog.scatter(&miss, &loc_elev, &loc_src);
         prog.mark(&name)?;
     }
     drop(pool);
+    said(miss.len(), miss.len());
 
     // ---- the outputs, their stats, and the cache for the next run --------------------------------
     let mut counts = [0usize; 256];

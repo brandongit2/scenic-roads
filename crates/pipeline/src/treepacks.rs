@@ -72,6 +72,13 @@ fn coverage_json(cov: &Coverage, q: Unit) -> serde_json::Value {
 /// Makes z3 tile `q`'s tree layers and uploads them, dropping its packs it no longer makes (all of
 /// them when the coverage has left it).
 pub fn build(out: &mut Out, cov: &Coverage, q: Unit, dem: &Path, chm: &Path, scratch: &Path, workers: usize) -> Result<()> {
+    build_with(out, cov, q, dem, chm, scratch, workers, &|| {})
+}
+
+/// `build`, telling `writing` when it begins writing the packs (after trees.py), whose progress it
+/// says as `layers' packs written`.
+#[allow(clippy::too_many_arguments)]
+pub fn build_with(out: &mut Out, cov: &Coverage, q: Unit, dem: &Path, chm: &Path, scratch: &Path, workers: usize, writing: &dyn Fn()) -> Result<()> {
     let dir = scratch.join(format!("trees-{}", q.dash()));
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
@@ -100,9 +107,11 @@ pub fn build(out: &mut Out, cov: &Coverage, q: Unit, dem: &Path, chm: &Path, scr
         .status()
         .context("run trees.py")?;
     anyhow::ensure!(st.success(), "trees.py for {}: {st}", q.slash());
-    for layer in LAYERS {
+    writing();
+    for (i, layer) in LAYERS.iter().enumerate() {
         let arc = roadcore::archive::Archive::open(&dir.join(format!("{layer}.tiles")))?;
-        let made = crate::layers::split_archive(out, &arc, layer, "terrarium-webp", false, 12)?;
+        let n = LAYERS.len() as u64;
+        let made = crate::layers::split_archive_with(out, &arc, layer, "terrarium-webp", false, 12, &|k, t| crate::agent::jobs::report_f(i as f64 + k as f64 / t.max(1) as f64, n, "layers' packs written"))?;
         let gone = drop_layer_packs(out, q, layer, &made)?;
         eprintln!("trees {}: {layer}: {} lo and {} hi packs, {gone} dropped", q.slash(), made.lo.len(), made.hi.len());
     }

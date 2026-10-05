@@ -68,15 +68,16 @@ pub fn missing_sets(out: &Out, date: &str) -> Vec<&'static (&'static str, u32, &
 pub fn make_missing_sets(out: &mut Out, date: &str, src: &Path, scratch: &Path) -> Result<usize> {
     let missing = missing_sets(out, date);
     for (k, (name, _, exprs)) in missing.iter().enumerate() {
-        crate::agent::jobs::report(k as u64, missing.len() as u64, &format!("sets made ({name} now)"));
+        crate::agent::jobs::stage(k as u64, missing.len() as u64, &format!("sets made ({name} now)"));
         let o = scratch.join(format!("set-{name}.osm.pbf"));
         let mut c = osmium();
         c.args(["tags-filter", "--overwrite", "-o"]).arg(&o).arg(src).args(*exprs);
-        run(c, &format!("osmium tags-filter (set {name})"))?;
+        run_osmium(c, &format!("osmium tags-filter (set {name})"))?;
         out.put_file(&set_name(date, name), "osm.pbf", &o)?;
         out.save()?;
         std::fs::remove_file(&o).ok();
     }
+    crate::agent::jobs::report(missing.len() as u64, missing.len() as u64, "sets made");
     Ok(missing.len())
 }
 
@@ -121,6 +122,69 @@ fn run(mut c: Command, what: &str) -> Result<()> {
     let st = c.status().with_context(|| format!("run {what}"))?;
     ensure!(st.success(), "{what} failed: {st}");
     Ok(())
+}
+
+/// Runs an osmium command (`run`), how far it is (its `--progress`) said as the stage's under way
+/// (crate::agent::jobs::within).
+fn run_osmium(mut c: Command, what: &str) -> Result<()> {
+    eprintln!("$ {what}");
+    c.arg("--progress");
+    let st = crate::agent::jobs::run_watched(&mut c, crate::agent::jobs::within).with_context(|| format!("run {what}"))?;
+    ensure!(st.success(), "{what} failed: {st}");
+    Ok(())
+}
+
+/// Runs Planetiler (`run`), how far it is (`planetiler_fraction` of each line of its log, which
+/// goes on to this job's) said as the part's.
+fn run_planetiler(mut c: Command, what: &str) -> Result<()> {
+    eprintln!("$ {what}");
+    let mut child = c.stdout(std::process::Stdio::piped()).spawn().with_context(|| format!("run {what}"))?;
+    let mut far = 0.0f64;
+    if let Some(o) = child.stdout.take() {
+        crate::agent::jobs::each_line(o, |l| {
+            eprintln!("{l}");
+            if let Some(f) = planetiler_fraction(l).filter(|f| *f > far) {
+                far = f;
+                crate::agent::jobs::within(f);
+            }
+        });
+    }
+    let st = child.wait().with_context(|| format!("wait for {what}"))?;
+    ensure!(st.success(), "{what} failed: {st}");
+    Ok(())
+}
+
+/// How far Planetiler is (0–1) by a line of its log: its phases weighted by their times on the
+/// build Mac (2026-09-28's pass: its sources 4.5 min, the first pass over the planet 3, the second
+/// 20, the sort 3, the tiles 15 of 46), the second pass and the tiles each through by the share
+/// they say they're done.
+pub fn planetiler_fraction(line: &str) -> Option<f64> {
+    // (Its log is coloured: the escapes go.)
+    let mut l = String::with_capacity(line.len());
+    let mut esc = false;
+    for c in line.chars() {
+        match (esc, c) {
+            (false, '\u{1b}') => esc = true,
+            (true, c) if c.is_ascii_alphabetic() => esc = false,
+            (true, _) => {}
+            (false, c) => l.push(c),
+        }
+    }
+    let phase = l.split("INF [").nth(1)?.split([']', ':']).next()?;
+    let pct = |of: &str| -> Option<f64> {
+        let inner = l.split(of).nth(1)?.split(']').next()?;
+        inner.split_whitespace().find_map(|w| w.strip_suffix('%')?.parse::<f64>().ok()).map(|p| (p / 100.0).clamp(0.0, 1.0))
+    };
+    let (from, to, within) = match phase {
+        "lake_centerlines" | "water_polygons" | "natural_earth" | "ne_lakes" => (0.0, 0.1, None),
+        "osm_pass1" => (0.1, 0.16, None),
+        "osm_pass2" => (0.16, 0.6, pct("blocks: ")),
+        "boundaries" => (0.6, 0.61, None),
+        "sort" => (0.61, 0.67, None),
+        "archive" => (0.67, 1.0, pct("features: ")),
+        _ => return None,
+    };
+    Some(from + within.unwrap_or(0.0) * (to - from))
 }
 
 /// A stage's completion marker.
@@ -394,7 +458,28 @@ pub fn walk_all(units: &mut [UnitLinks]) -> (Vec<(u64, f32)>, Vec<RoadVal>) {
 pub const STAGES: &[&str] = &["copy", "filter", "sets", "outlines", "basemap", "cut", "roads"];
 
 /// Run (or resume) the pass for `date` from `planet` (on the NAS).
+/// The pass's parts, for the status (crate::agent::jobs::part): each says how far it is.
+const PARTS: [&str; 10] = [
+    "Copying the planet here from the NAS",
+    "Filtering the planet to the build's tags (osmium)",
+    "Uploading the filtered planet to the NAS",
+    "Making the worldwide sets (osmium)",
+    "Assembling the outlines",
+    "Filtering the basemap's input (osmium)",
+    "Drawing the worldwide basemap (Planetiler)",
+    "Cutting the planet into areas",
+    "Reading the areas' road links",
+    "Walking the world's roads and writing their values",
+];
+
+/// Part `i` of the pass begins (`PARTS`), its progress one item's (`one`) until it says its own.
+fn part(i: usize, one: &str) {
+    crate::agent::jobs::part(i, &PARTS);
+    crate::agent::jobs::stage(0, 1, one);
+}
+
 pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extract_bin: &Path, planetiler: &Path) -> Result<()> {
+    use crate::agent::jobs::{report, stage};
     std::fs::create_dir_all(scratch)?;
     let local_planet = scratch.join("planet.osm.pbf");
     let filtered = scratch.join("filtered.osm.pbf");
@@ -404,31 +489,34 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
     let room = crate::agent::cond::free_bytes(scratch).unwrap_or(0);
     let copy_first = done(scratch, "copy").exists() || room > copy_room(planet_len);
     if copy_first && !done(scratch, "copy").exists() && !done(scratch, "filter").exists() {
-        copy_resume(planet, &local_planet)?;
+        part(0, "the planet copied");
+        copy_resume_with(planet, &local_planet, &mut |d, t| report(d >> 20, t >> 20, "MB of the planet copied"))?;
         mark(scratch, "copy")?;
     }
-    let stage = |k: u64, name: &str| crate::agent::jobs::report(k, 6, &format!("stages ({name})"));
     if !done(scratch, "filter").exists() {
-        stage(0, "filtering the planet");
+        part(1, "the planet filtered (osmium)");
         let src = if copy_first { local_planet.clone() } else { planet.to_path_buf() };
         let mut c = osmium();
         c.args(["tags-filter", "--overwrite", "-o"]).arg(&filtered).arg(&src).args(FILTER_A);
-        run(c, "osmium tags-filter (the pipeline's tags)")?;
-        out.put_file(&format!("sources/osm/{date}/filtered"), "osm.pbf", &copy_keep(&filtered, scratch)?)?;
+        run_osmium(c, "osmium tags-filter (the pipeline's tags)")?;
+        part(2, "the filtered planet uploaded");
+        out.put_file_with(&format!("sources/osm/{date}/filtered"), "osm.pbf", &copy_keep(&filtered, scratch)?, &|d, t| report(d >> 20, t >> 20, "MB of the filtered planet moved (read, sent, checked)"))?;
         out.save()?;
         std::fs::remove_file(&local_planet).ok();
         mark(scratch, "filter")?;
     }
     if !done(scratch, "sets").exists() {
-        stage(1, "the worldwide sets");
-        for (name, _, exprs) in SETS {
+        part(3, "sets made");
+        for (k, (name, _, exprs)) in SETS.iter().enumerate() {
+            stage(k as u64, SETS.len() as u64, &format!("sets made ({name} now)"));
             let o = scratch.join(format!("set-{name}.osm.pbf"));
             let mut c = osmium();
             c.args(["tags-filter", "--overwrite", "-o"]).arg(&o).arg(&filtered).args(*exprs);
-            run(c, &format!("osmium tags-filter (set {name})"))?;
+            run_osmium(c, &format!("osmium tags-filter (set {name})"))?;
             // (Kept: the outlines stage below reads its set from here.)
             out.put_file(&set_name(date, name), "osm.pbf", &o)?;
         }
+        report(SETS.len() as u64, SETS.len() as u64, "sets made");
         out.save()?;
         mark(scratch, "sets")?;
     }
@@ -436,13 +524,14 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
     // the same filtered file (the local copy while it's there).
     if !done(scratch, "sets-added").exists() {
         if !missing_sets(out, date).is_empty() {
+            part(3, "sets made");
             let src = if filtered.exists() { filtered.clone() } else { filtered_nas(out, date)? };
             make_missing_sets(out, date, &src, scratch)?;
         }
         mark(scratch, "sets-added")?;
     }
     if !done(scratch, "outlines").exists() {
-        stage(2, "the outlines");
+        part(4, "the outlines assembled");
         // Administrative and ISO 3166 outlines from the outline set (crate::outlines).
         let set = scratch.join("set-outlines.osm.pbf");
         let set = if set.exists() { set } else { out.path(out.get(&set_name(date, "outlines")).context("the outline set")?) };
@@ -457,7 +546,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
     // the local copy while there's room, else from the NAS's.
     let free = |p: &Path| crate::agent::cond::free_bytes(p).unwrap_or(0);
     if !done(scratch, "basemap").exists() {
-        stage(3, "the worldwide basemap");
+        part(5, "the basemap's input filtered (osmium)");
         if filtered.exists() && free(scratch) < BASEMAP_ROOM {
             eprintln!("basemap: {} GB free; reading the filtered planet from the NAS", free(scratch) >> 30);
             std::fs::remove_file(&filtered)?;
@@ -468,9 +557,10 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
             let src = if filtered.exists() { filtered.clone() } else { filtered_nas(out, date)? };
             let mut c = osmium();
             c.args(["tags-filter", "--overwrite", "-o"]).arg(&b).arg(&src).args(FILTER_BASEMAP);
-            run(c, "osmium tags-filter (basemap)")?;
+            run_osmium(c, "osmium tags-filter (basemap)")?;
             mark(scratch, "basemap-input")?;
         }
+        part(6, "the basemap drawn (Planetiler)");
         // Planetiler's room: the local filtered file goes first (the cut reads the NAS's copy then).
         let need = planetiler_room(std::fs::metadata(&b)?.len());
         if free(scratch) < need && filtered.exists() {
@@ -500,7 +590,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         j.arg("--tmpdir=planetiler-tmp");
         j.arg("--osm-path=basemap-input.osm.pbf");
         j.arg("--output=basemap.pmtiles");
-        run(j, "planetiler (basemap)")?;
+        run_planetiler(j, "planetiler (basemap)")?;
         out.put_file(&format!("layers/basemap/world-{date}"), "pmtiles", &pm)?;
         out.save()?;
         std::fs::remove_file(&b).ok();
@@ -527,7 +617,8 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         let total_mb = std::fs::metadata(&src)?.len() >> 20;
         let prefix = format!("sources/osm/{date}/pieces/");
         let mut done_mb: u64 = out.manifest.range(prefix.clone()..).take_while(|(l, _)| l.starts_with(&prefix)).filter_map(|(_, c)| std::fs::metadata(out.path(c)).ok()).map(|m| m.len() >> 20).sum();
-        let cut_report = |mb: u64| crate::agent::jobs::report(mb.min(total_mb.saturating_sub(1)), total_mb, "MB cut into areas (stage 5 of 6)");
+        part(7, "the planet cut into areas");
+        let cut_report = |mb: u64| report(mb.min(total_mb.saturating_sub(1)), total_mb, "MB cut into areas");
         cut_report(done_mb);
         cut_tree(&src, Unit { z: 0, x: 0, y: 0 }, local, &tree, &mut |u, f| {
             let logical = format!("sources/osm/{date}/pieces/{}", u.dash());
@@ -567,8 +658,9 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
         // worldwide walk; values sliced by owner unit.
         let mut all: Vec<(Unit, UnitLinks)> = Vec::new();
         let n = pieces.pieces.len() as u64;
+        part(8, "areas' road links read");
         for (k, (u, _)) in pieces.pieces.iter().enumerate() {
-            crate::agent::jobs::report(k as u64, n, "areas' road links read (stage 6 of 6)");
+            report(k as u64, n, "areas' road links read");
             let unit = Unit::parse(u).context("unit")?;
             let lf = links.join(format!("{}.bin", unit.dash()));
             let ul = match UnitLinks::load(&lf) {
@@ -580,9 +672,12 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
             };
             all.push((unit, ul));
         }
+        report(n, n, "areas' road links read");
         let (units, mut lists): (Vec<Unit>, Vec<UnitLinks>) = all.into_iter().unzip();
+        part(9, "the roads walked");
         let (ways, vals) = walk_all(&mut lists);
-        for (unit, ul) in units.iter().zip(&lists) {
+        for (k, (unit, ul)) in units.iter().zip(&lists).enumerate() {
+            report(k as u64, n, "areas' road values written");
             let mut recs: Vec<u8> = Vec::with_capacity(ul.ways.len() * 32);
             let mut ids: Vec<u64> = ul.ways.iter().map(|w| w.0).collect();
             ids.sort_unstable();
@@ -596,6 +691,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
             }
             out.put_bytes(&format!("sources/osm/{date}/roads/{}", unit.dash()), "bin", &recs)?;
         }
+        report(n, n, "areas' road values written");
         out.save()?;
         mark(scratch, "roads")?;
     }
@@ -796,6 +892,17 @@ pub fn check_tools(extract_bin: &Path, planetiler: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn planetilers_log_says_how_far_it_is() {
+        let l = "\u{1b}[m\u{1b}[0m0:07:29 INF [osm_pass2] -  nodes: \u{1b}[32m[ 228M  11% 9.9M/s ]\u{1b}[0m 31G   ways: [    0   0%    0/s ] blocks: [  28k  10% 1.2k/s ]";
+        assert!((planetiler_fraction(l).unwrap() - (0.16 + 0.1 * 0.44)).abs() < 1e-9);
+        let a = "0:30:43 INF [archive] -  features: \u{1b}[32m[ 3.5M  50% 359k/s ]\u{1b}[0m 71G   tiles: [ 6.6k  668/s ] 42M";
+        assert!((planetiler_fraction(a).unwrap() - (0.67 + 0.5 * 0.33)).abs() < 1e-9);
+        assert_eq!(planetiler_fraction("0:00:34 INF [lake_centerlines] - Starting..."), Some(0.0));
+        assert_eq!(planetiler_fraction("0:04:26 INF [osm_pass1:process] - "), Some(0.1));
+        assert_eq!(planetiler_fraction("some other line"), None);
+    }
 
     /// An OSM file from OPL lines.
     fn osm(dir: &Path, name: &str, opl: &str) -> PathBuf {

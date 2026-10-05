@@ -207,7 +207,17 @@ pub fn group_footprint() -> Option<u64> {
     #[cfg(target_os = "macos")]
     {
         // SAFETY: getpgrp has no failure.
-        let pgid = unsafe { libc::getpgrp() };
+        footprint_of_group(unsafe { libc::getpgrp() })
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+/// The memory process group `pgid` holds now (bytes), as `group_footprint`: a running job's, for
+/// the agent's status.
+pub fn footprint_of_group(pgid: i32) -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
         let mut total = None;
         for pid in group_members(pgid) {
             // SAFETY: rusage_info_v2 is plain old data; proc_pid_rusage fills it, the flavour asked.
@@ -219,7 +229,10 @@ pub fn group_footprint() -> Option<u64> {
         total
     }
     #[cfg(not(target_os = "macos"))]
-    None
+    {
+        let _ = pgid;
+        None
+    }
 }
 
 /// The most `group_footprint` since the last `reset_group_peak`, as a thread samples it four times

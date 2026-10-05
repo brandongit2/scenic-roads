@@ -324,16 +324,21 @@ pub fn write(out: &mut Out, pts: Vec<Point>, summits: Vec<(SummitRec, String)>) 
     // What this write uploads: every markdata tile and marks pack it doesn't is stale and goes
     // from the manifest at the end (a tile or kind that lost its points, a region removed).
     let mut wrote: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for (t, local) in &written {
+    // (How far the writing is, as the stage's under way: the markdata tiles about half, then each
+    // kind's thinned tiles.)
+    let kinds = by_kind.len().max(1) as f64;
+    for (k, (t, local)) in written.iter().enumerate() {
         let l = format!("markdata/6-{}-{}", t.0, t.1);
         out.put_file(&l, "sect", local)?;
         wrote.insert(l);
+        crate::agent::jobs::within(0.5 * (k + 1) as f64 / written.len() as f64);
     }
     eprintln!("marks: {} markdata tiles in {:.1?}", written.len(), t0.elapsed());
 
     // Thinned tiles per kind, z0–5: root (z0–2) and lo per z3 (z3–5).
     let mut thinned = 0;
-    for (&k, idx) in &by_kind {
+    for (n, (&k, idx)) in by_kind.iter().enumerate() {
+        crate::agent::jobs::within(0.5 + 0.5 * n as f64 / kinds);
         let kind = KINDS[k];
         let kp: Vec<KeepPt> = idx.iter().map(|&j| { let p = &all[j].1; KeepPt { lon: p.lon, lat: p.lat, pt: &p.pt, sizes: Vec::new() } }).collect();
         let mut packs: BTreeMap<(&'static str, u8, u32, u32), Vec<(u8, u32, u32, Vec<u8>, u32)>> = BTreeMap::new();

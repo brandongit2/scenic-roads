@@ -55,6 +55,7 @@ fn sha256_file(p: &Path) -> Result<String> {
             break;
         }
         h.update(&buf[..n]);
+        store::naming::count_moved(n);
     }
     Ok(format!("{:x}", h.finalize()))
 }
@@ -117,6 +118,28 @@ impl Out {
         self.manifest.insert(logical.to_string(), name.clone());
         self.changes.insert(logical.to_string(), Some(name.clone()));
         Ok(name)
+    }
+
+    /// `put_file`, saying how far it is to `on` about once a second, as (bytes, total): it reads
+    /// the file thrice (its name's hash, its checksum, the copy) and the copy once more on the NAS,
+    /// for a large file most of a step's time.
+    pub fn put_file_with(&mut self, logical: &str, ext: &str, local: &Path, on: &(dyn Fn(u64, u64) + Sync)) -> Result<String> {
+        let total = 5 * std::fs::metadata(local)?.len();
+        let start = store::naming::moved();
+        let stop = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|s| {
+            let said = s.spawn(|| {
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    on((store::naming::moved() - start).min(total), total);
+                    std::thread::park_timeout(std::time::Duration::from_secs(1));
+                }
+            });
+            let r = self.put_file(logical, ext, local);
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            said.thread().unpark();
+            r
+        })
+        .inspect(|_| on(total, total))
     }
 
     /// Upload bytes under `logical`.

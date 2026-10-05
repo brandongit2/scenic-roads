@@ -36,8 +36,8 @@ pub fn build(out: &mut Out, raw: &RawTiles) -> Result<(usize, usize)> {
             let (x, y) = (i / n, i % n);
             let (b, _) = raw.get(Z, x, y)?;
             let k = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if k % 4096 == 0 {
-                eprintln!("  terrain-z8 {k}/{}", n * n);
+            if k % 256 == 0 {
+                crate::agent::jobs::report(k as u64, (n * n) as u64, "z8 tiles");
             }
             let Some(b) = b else { return Ok((x, y, None)) };
             let (png, _, _) = process(b, Z, x, y, &HashMap::new(), &HashMap::new());

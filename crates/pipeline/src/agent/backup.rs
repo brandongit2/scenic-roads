@@ -120,7 +120,14 @@ pub fn run(root: &Path, local: Option<&Path>, today: &str, keep_days: u64) -> Re
     let prev = latest(&dir).map(|(_, m)| m).unwrap_or_default();
     let mut rep = Report::default();
     let mut now: Manifest = BTreeMap::new();
-    for (rel, p, size, mtime, known) in scan(root, &prev)? {
+    let files = scan(root, &prev)?;
+    let (n, mut said) = (files.len() as u64, std::time::Instant::now());
+    for (k, (rel, p, size, mtime, known)) in files.into_iter().enumerate() {
+        // (How far it is, for the status, at most once a second.)
+        if k == 0 || said.elapsed() >= std::time::Duration::from_secs(1) {
+            said = std::time::Instant::now();
+            crate::agent::jobs::report(k as u64, n, "files backed up");
+        }
         let blob = match known {
             Some(b) if blobs.join(&b).exists() => b,
             _ => {

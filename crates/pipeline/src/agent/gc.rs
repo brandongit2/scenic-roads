@@ -51,7 +51,10 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
     let Some(&latest) = ns.iter().max() else { return Ok(rep) };
     let mut referenced: BTreeSet<String> = BTreeSet::new();
     let mut drop_cats: Vec<PathBuf> = Vec::new();
-    for &n in &ns {
+    // (How far it is, for the status: the catalogs read, then the folders swept.)
+    crate::agent::jobs::stage(0, 2, "steps (reading the catalogs)");
+    for (k, &n) in ns.iter().enumerate() {
+        crate::agent::jobs::within(k as f64 / ns.len() as f64);
         let p = cat_dir.join(store::catalog::file_name(n));
         let mtime = std::fs::metadata(&p).and_then(|m| m.modified()).with_context(|| format!("stat {}", p.display()))?;
         if n != latest && old(mtime) {
@@ -71,7 +74,9 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
     rep.referenced = referenced.len();
     let tops: BTreeSet<String> = referenced.iter().filter_map(|f| f.split('/').next()).filter(|t| !NEVER.contains(t)).map(str::to_string).collect();
 
-    for top in &tops {
+    crate::agent::jobs::stage(1, 2, "steps (sweeping the folders)");
+    for (k, top) in tops.iter().enumerate() {
+        crate::agent::jobs::within(k as f64 / tops.len() as f64);
         let mut stack = vec![root.join(top)];
         while let Some(dir) = stack.pop() {
             let Ok(rd) = std::fs::read_dir(&dir) else { continue };

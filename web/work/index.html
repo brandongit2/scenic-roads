@@ -428,7 +428,10 @@ function jobLine(j, now) {
   if (p && p.total > 0) {
     box.append(bar(p.done / p.total));
     const eta = p.eta_s != null && !j.paused ? ` · about ${dur(p.eta_s)} left` : "";
-    box.append(h("div", "sub", `${Math.floor((p.done / p.total) * 100)}% · ${n(Math.round(p.done))} of ${n(Math.round(p.total))} ${p.unit}${eta} · running ${dur(now - j.started)}`));
+    // (The item under way counted by how much of it is done, rounded down; one item alone, its share.)
+    const amount = p.total === 1 ? p.unit : `${Number.isInteger(p.done) || p.total > 100 ? n(Math.floor(p.done)) : (Math.floor(p.done * 10) / 10).toFixed(1)} of ${n(p.total)} ${p.unit}`;
+    const still = p.moved_at && !j.paused && now - p.moved_at >= 900 ? ` · no further for ${dur(now - p.moved_at)}` : "";
+    box.append(h("div", "sub", `${Math.floor((p.done / p.total) * 100)}% · ${amount}${eta}${still} · running ${dur(now - j.started)}`));
   } else {
     box.append(h("div", "sub", `running ${dur(now - j.started)}`));
   }

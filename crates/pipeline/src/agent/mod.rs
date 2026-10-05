@@ -261,6 +261,11 @@ pub struct JobView {
     /// from its pace since it started saying so.
     #[serde(default)]
     pub progress: Option<JobProgress>,
+    /// The memory it holds now (MB: its processes', summed), and the worker threads it was given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mem_mb: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub threads: Option<usize>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -269,6 +274,9 @@ pub struct JobProgress {
     pub total: f64,
     pub unit: String,
     pub eta_s: Option<u64>,
+    /// When it last moved on (seconds since the epoch): long ago, the job may be stuck.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -867,7 +875,8 @@ impl Agent {
     /// it, or this loop was stuck: it's held again when no one took its work meanwhile.)
     fn beat(&mut self, root: Option<&Path>) -> bool {
         self.beaten = Some(Instant::now());
-        let progress = self.running.as_ref().and_then(|r| jobs::progress(&r.log)).map(|(d, t, u)| format!("{d:.0}/{t:.0} {u}"));
+        // (Its progress as the status last read it: what it said, out of sight or not.)
+        let progress = self.running.as_ref().and_then(|r| r.said.clone().or_else(|| jobs::progress(&r.log).map(|(d, t, u)| (d, t, u, None)))).map(|(d, t, u, _)| format!("{}/{t:.0} {u}", (d * 10.0).floor() / 10.0));
         match self.lease.clone() {
             Some(Held::Own(id)) => {
                 let Some(c) = &self.coord else { return true };
@@ -1407,17 +1416,28 @@ impl Agent {
             }
         }
         let job_progress = self.running.as_mut().and_then(|r| {
-            let (done, total, unit) = jobs::progress(&r.log)?;
+            let part = r.parts.as_ref().map(|p| p.0);
+            // (What it last said holds while its own output since pushes the line out of sight, in
+            // the same part.)
+            match jobs::said(&r.log) {
+                jobs::Said::Progress(d, t, u) => r.said = Some((d, t, u, part)),
+                jobs::Said::NoneYet => r.said = None,
+                jobs::Said::Unknown => r.said = r.said.take().filter(|s| s.3 == part),
+            }
+            let (done, total, unit, _) = r.said.clone()?;
             let frac = done / total;
             // (Its pace measured again from a new unit, a new part, or a step back.)
-            let part = r.parts.as_ref().map(|p| p.0);
-            let fresh = r.progress_base.as_ref().is_none_or(|b| b.2 != unit || b.3 != part || frac < b.1);
+            let key = jobs::unit_key(&unit).to_string();
+            let fresh = r.progress_base.as_ref().is_none_or(|b| b.2 != key || b.3 != part || frac < b.1);
             if fresh {
-                r.progress_base = Some((Instant::now(), frac, unit.clone(), part));
+                r.progress_base = Some((Instant::now(), frac, key, part));
+            }
+            if fresh || r.moved.is_none_or(|m| frac > m.0) {
+                r.moved = Some((frac, now_s()));
             }
             let (t0, f0, _, _) = r.progress_base.as_ref().unwrap();
             let eta_s = (frac > *f0 && r.paused.is_none()).then(|| (t0.elapsed().as_secs_f64() * (1.0 - frac) / (frac - f0)) as u64);
-            Some(JobProgress { done, total, unit, eta_s })
+            Some(JobProgress { done, total, unit, eta_s, moved_at: r.moved.map(|m| m.1) })
         });
         let status = Status {
             host: self.host.clone(),
@@ -1436,6 +1456,8 @@ impl Agent {
                 progress: job_progress.clone(),
                 parts: r.parts.as_ref().map(|p| p.1.clone()).unwrap_or_default(),
                 part: r.parts.as_ref().map(|p| p.0),
+                mem_mb: crate::sys::footprint_of_group(r.pgid).map(|b| b >> 20),
+                threads: Some(r.threads),
             }),
             waiting,
             recent: self.mem.recent.clone(),
@@ -2536,7 +2558,7 @@ mod tests {
     fn the_checklist_says_why_a_step_waits() {
         let step = |what: &str, steps: &[&str], left: usize| build::Step { what: what.into(), steps: steps.iter().map(|s| s.to_string()).collect(), left: Some(left), ..Default::default() };
         let list = || vec![step("Worldwide sets", &["pass-sets", "reach"], 1), step("Roads, elevations and scenery", &["unit"], 3), step("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"], 2), step("Publishing the new map data", &["catalog", "catalog-held"], 0)];
-        let helper = Status { host: "m1".into(), job: Some(JobView { id: "unit 6/1/2".into(), what: String::new(), started: 0, pausing: None, paused: None, tail: String::new(), progress: None, parts: Vec::new(), part: None }), ..Default::default() };
+        let helper = Status { host: "m1".into(), job: Some(JobView { id: "unit 6/1/2".into(), what: String::new(), started: 0, pausing: None, paused: None, tail: String::new(), progress: None, parts: Vec::new(), part: None, mem_mb: None, threads: None }), ..Default::default() };
         let waiting = [Waiting { step: Some("reach".into()), what: "How far…".into(), why: "away from home".into() }];
         let mut l = list();
         annotate(&mut l, Some("heritage"), &[helper], &waiting);

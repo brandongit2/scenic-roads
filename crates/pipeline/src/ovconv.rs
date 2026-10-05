@@ -234,7 +234,9 @@ fn areas_and_parks(
     // ovdata per z3 owner: per details key, records by id; and parks.
     let mut owned: BTreeMap<String, BTreeMap<&'static str, Recs>> = BTreeMap::new();
     let mut areas = 0usize;
-    for a in &AREAS {
+    for (k, a) in AREAS.iter().enumerate() {
+        // (Each layer a stage: its packs' progress within it.)
+        crate::agent::jobs::stage(k as u64, AREAS.len() as u64, &format!("layers made ({})", a.layer));
         let fc: Value = serde_json::from_slice(&src_bytes(out, src, a.file)?)?;
         let feats = fc["features"].as_array().with_context(|| format!("{}: no features", a.file))?;
         let details = match a.details {
@@ -555,12 +557,15 @@ fn write_tiles(out: &mut Out, layer: &str, mvt_layer: &str, feats: &[Feature], w
         return Err(e);
     }
     let mut wrote = Vec::new();
-    for ((scope, rz, rx, ry), mut tiles) in packs {
+    let n = packs.len().max(1) as f64;
+    for (k, ((scope, rz, rx, ry), mut tiles)) in packs.into_iter().enumerate() {
         tiles.sort_by_key(|t| (t.0, t.1, t.2));
         *ntiles += tiles.len();
         if let Some((l, _)) = write_pack(out, layer, "mvt", true, scope, (rz, rx, ry), &mut tiles.into_iter())? {
             wrote.push(l);
         }
+        // (Its packs written, as the stage's under way: crate::agent::jobs::within.)
+        crate::agent::jobs::within((k + 1) as f64 / n);
     }
     Ok(wrote)
 }

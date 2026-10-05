@@ -70,8 +70,14 @@ pub fn write_pack(out: &mut Out, layer: &str, encoding: &str, gzip: bool, scope:
     Ok(Some((logical, (zmin, zmax))))
 }
 
-/// Split a legacy tile archive into packs, keeping zooms up to `max_z`.
+/// Split a legacy tile archive into packs, keeping zooms up to `max_z`, saying how far it is as
+/// `packs written` (crate::agent::jobs::report).
 pub fn split_archive(out: &mut Out, arc: &Archive, layer: &str, encoding: &str, gzip: bool, max_z: u8) -> Result<LayerOut> {
+    split_archive_with(out, arc, layer, encoding, gzip, max_z, &|k, n| crate::agent::jobs::report(k, n, "packs written"))
+}
+
+/// `split_archive`, telling `on` the packs written and how many there are, at most once a second.
+pub fn split_archive_with(out: &mut Out, arc: &Archive, layer: &str, encoding: &str, gzip: bool, max_z: u8, on: &dyn Fn(u64, u64)) -> Result<LayerOut> {
     let mut groups: BTreeMap<(&'static str, u8, u32, u32), Vec<usize>> = BTreeMap::new();
     let entries = arc.entries();
     for (i, e) in entries.iter().enumerate() {
@@ -84,7 +90,13 @@ pub fn split_archive(out: &mut Out, arc: &Archive, layer: &str, encoding: &str, 
     }
     let mut lo = LayerOut::new(encoding);
     let total = groups.len();
+    let mut said: Option<std::time::Instant> = None;
     for (k, ((scope, pz, px, py), idx)) in groups.into_iter().enumerate() {
+        // (Each pack uploaded: labels' 1,600 take twenty minutes.)
+        if said.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(1)) {
+            said = Some(std::time::Instant::now());
+            on(k as u64, total as u64);
+        }
         let mut it = idx.into_iter().map(|i| {
             let e = entries[i];
             let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32);
@@ -100,6 +112,7 @@ pub fn split_archive(out: &mut Out, arc: &Archive, layer: &str, encoding: &str, 
         }
     }
     out.save()?;
+    on(total as u64, total as u64);
     Ok(lo)
 }
 
