@@ -171,11 +171,13 @@ impl History {
                 "start" => {
                     started.insert(w.clone(), e.t);
                 }
-                // (An agent started: its worker's job ended with the agent before, whenever that was;
-                // it counts to here at most.)
+                // (An agent started: its worker's jobs ended with the agent before, whenever that was
+                // (its second job's too: crate::agent::second_worker); they count to here at most.)
                 "agent" => {
-                    if let Some(t0) = started.remove(&w) {
-                        spans.push((w.clone(), t0, e.t));
+                    for k in [w.clone(), crate::agent::second_worker(&w)] {
+                        if let Some(t0) = started.remove(&k) {
+                            spans.push((k, t0, e.t));
+                        }
                     }
                 }
                 "end" => {

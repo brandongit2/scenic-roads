@@ -1017,11 +1017,32 @@ are no request files.
 - **A job** is one step over a batch of stale targets: terrain and trees 1, slope and lo 2, unit 6,
   peaks 12, pack 16, pois 24, the worldwide steps all. So a failure or a new app costs one batch.
 - **Order:** the agent starts the first job that can run, in plan order. It plans when a job could
-  start, when one ends, and otherwise every five minutes for the heartbeat (planning reads the
-  manifest, the keys and a dozen NAS folders); other workers' hand-offs are merged each loop while it
-  waits, every two minutes while a job runs.
-- **A newly installed app:** the running job finishes under the old one, nothing new starts, and the
-  agent exits so the launcher starts the new one.
+  start (its second slot's: each minute), when one ends, and otherwise every five minutes for the
+  heartbeat (planning reads the manifest, the keys and a dozen NAS folders); other workers' hand-offs
+  are merged each loop while it waits, every two minutes while a job runs.
+- **Two jobs at once** (`agent::SECOND`): beside the first job, the build Mac runs a second, the
+  plan's first job of these steps, in this order: the trains' and the landmarks' steps that mostly
+  wait on the internet (the heritage chain, the items' facts, the rail feeds and trains a day, the
+  landmark points and overlays), then the candidates and peaks, then units and slope. A unit spent
+  380 of its 860 s writing to the NAS and reading the caches (6/17/25, 2026-10-05): two at once build
+  more. A second job:
+  - never runs beside a job that runs alone (the OSM pass, the pass's worldwide jobs, GC), nor
+    beside a job of the same step unless it's a shared one (its targets are held apart, as a
+    helper's are), nor a reader of the raw terrain tiles beside another (terrain, peaks, the roots);
+  - while the Mac is in use, only work that mostly waits on the network;
+  - only when the two fit: the first job's memory as predicted (or as it is now, if more) and the
+    second's within three quarters of the Mac's, and the second's free now with 2 GB to spare;
+  - makes no room on the disk (it would delete caches the first reads), and starts only with its
+    need free (10 GB for the network steps, the reserve for the others); while it reads the caches,
+    the first job's start makes none either;
+  - has its own scratch folder (`scratch-2/`), job record, safe-point channel and costs file, its
+    claims its own, and four threads for network work, half the cores for the rest;
+  - is a worker of its own in the history and the forecast ("<host> (second job)"), its speed
+    measured as a helper's is (four fifths of the build Mac's until it is). The status has it as
+    `beside`, or why there's none (`beside_why`).
+- **A newly installed app:** the first job finishes under the old one, nothing new starts, and the
+  agent exits so the launcher starts the new one; a second job still running stops then (what it
+  finished kept) and goes on under the new one.
 - **Pausing** (`pipeline::control`): one pause for the whole build, every Mac's jobs and the worker
   pages' tasks.
   - **Asked for** from either Mac's menu bar item (Pause Building; Option: Pause Building Now), the
@@ -1124,8 +1145,9 @@ are no request files.
   long the NAS took to answer and the NAS's free space.
 - **The forecast** (`agent::forecast`), made with each plan (at most each minute) and in the
   heartbeat: the work left run through in the order the agent runs it. The build Mac takes the first
-  it can (the pass's worldwide jobs, then a region at a time: its terrain, then its units), each
-  helper the far end of the first shared step with work it can do that fits its memory: terrain at
+  it can (the pass's worldwide jobs, then a region at a time: its terrain, then its units; with
+  none it can do now, the chains' work), its second job the first of its steps that fits beside it,
+  each helper the far end of the first shared step with work it can do that fits its memory: terrain at
   once, a unit once its region's terrain is built and the pass's heritage sites, reaches and
   roadside buildings are made (as the plan's units wait for), slope once its area's terrain is. A
   machine with nothing it can do waits for the next work to end or another machine to be free. A
@@ -1134,7 +1156,11 @@ are no request files.
   catalog carries the regions on the map that are rebuilt (a new pass) and done by then, their slope
   and tree cover too (they make no round of their own); after the last unit and terrain area, the
   slope and tree cover left, the last round (the roads' chain as it stands, if longer; none when
-  nothing's stale and no region waits to go out), the trains' and the landmarks' chains. Each
+  nothing's stale and no region waits to go out), then the overlays and a catalog. The trains' and
+  the landmarks' chains run from the start, each step once what it reads is built (the candidates
+  once the pass's hiking-route ends are made, the peaks once every candidate and the terrain are,
+  the items' facts once every candidate is, the heritage chain once the heritage sites are, the
+  landmark points once those four are, trains a day once their feeds are). Each
   target takes its last run's time at the build Mac's pace (one measured on a helper, over that
   helper's speed, asleep or not), else its step's mean, else what its jobs took here a target, else
   a first guess; each machine at its measured speed (a helper's: the build Mac's mean time a target
@@ -1270,13 +1296,23 @@ and, when none fits it, units' last steps.
      chain, and a catalog. The units follow it in the list (a helper's, and the build Mac's while
      the round's work waits out a failure: then the catalog goes out with the regions that are
      done). A round takes 5 to 10 minutes: a tenth more build time at most.
-4. **After the last unit, three chains**, each contributing its first stale step:
-   - **Roads:** a prune of map tiles no unit is near, road → units index, pack, lo, stations,
-     ferries, terrain and slope roots. Stations and ferries drop the packs they no longer make.
-     (Run in every round too.)
-   - **Rail service:** `rail-feeds`, then `rail` (§6, Rail service). Nothing before the rail
-     sources are seeded (`scenic-build rail-seed`), which the status says.
-   - **Landmarks:** pois, peaks, items, heritage, marks, overlays.
+4. **Three chains:**
+   - **Roads**, in every round and after the last unit, its first stale step: a prune of map tiles
+     no unit is near, road → units index, pack, lo, stations, ferries, terrain and slope roots.
+     Stations and ferries drop the packs they no longer make.
+   - **Rail service**, from the start (it reads no unit): `rail-feeds`, then `rail` (§6, Rail
+     service). Nothing before the rail sources are seeded (`scenic-build rail-seed`), which the
+     status says.
+   - **Landmarks**, from the start, each step once what it reads is built
+     (`agent::build::landmarks_work`): the candidates (once the pass's hiking-route ends are made);
+     their peaks once every candidate is, the pass's summits are made and the terrain within 30 km
+     of each is built (a unit's at a time); the items' facts and pageviews once every candidate is;
+     the rest of the heritage chain on the heritage sites alone; the landmark points once those four
+     are; the overlays (they read the built units) after the last unit.
+
+   The trains' and the landmarks' work is listed after the regions' (the build Mac's own job takes
+   it once the regions' work is done or waits): the second job takes it first, a helper the
+   candidates and peaks.
 5. **A catalog** once the roads chain is done, in a round: a new one whenever the served files
    change, or the regions it records (their recipes and the outline files they name), or which of
    them are done. It records as built the regions done (`--ready <id>=<outline digest>,…`: every
@@ -1286,7 +1322,8 @@ and, when none fits it, units' last steps.
    counted. It waits while another worker builds a slope or tree cover area of a region it would
    publish (it would go out without the region, which would then wait an hour), and while a
    helper's hand-offs wait to be merged (their areas counted as built, their files not yet in the
-   manifest). After the last unit, a catalog follows each chain's change. While
+   manifest). What the trains' and the landmarks' chains made goes out with the next round's
+   catalog; after the last unit, a catalog follows any chain's change. While
    `inputs/hold-catalog` exists, it goes to `catalog-held/` instead (and the rounds go by the held
    ones; the first, by the served one).
 6. **Daily:** backup and GC.

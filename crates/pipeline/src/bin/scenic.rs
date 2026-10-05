@@ -82,6 +82,9 @@ fn status(args: &[String]) -> Result<()> {
         }
         None => println!("Running: nothing"),
     }
+    if let Some(j) = &st.beside {
+        println!("Beside it: {} (since {}){}", j.what, ago(j.started), j.paused.as_ref().map(|p| format!(", paused: {p}")).unwrap_or_default());
+    }
     for w in &st.waiting {
         println!("Waiting: {} — {}", w.what, w.why);
     }

@@ -39,6 +39,8 @@ struct Status: Decodable {
     let beat: Int
     let conditions: Conditions
     let job: Job?
+    /// Its second job, beside the first (agents from 2026-10-06 on).
+    let beside: Job?
     let waiting: [Waiting]
     let recent: [Done]
     let built: [String: Built]?
@@ -244,7 +246,7 @@ func classify(_ r: Reply?) -> (Kind, String) {
     }
     // Paused: stopping (a job finishing what it's on, here or on a helper), else paused.
     if let p = s.pause {
-        let stopping = (s.job.map { $0.paused == nil } ?? false) || helping.contains { $0.job?.pausing != nil }
+        let stopping = (s.job.map { $0.paused == nil } ?? false) || (s.beside.map { $0.paused == nil } ?? false) || helping.contains { $0.job?.pausing != nil }
         return (.paused, stopping ? "Pausing: finishing what it's on" : "Paused since \(clock(p.at))")
     }
     if let j = s.job {
@@ -346,6 +348,15 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
             out.append(Line(text: tildes(String(l).trimmingCharacters(in: .whitespaces)), style: .mono))
         }
     }
+    // The build Mac's second job, beside the first.
+    if let j = s.beside {
+        out.append(Line(text: "Beside it: \(j.what)", style: .plain))
+        if let p = j.progress {
+            out.append(Line(text: progressText(p, paused: j.paused != nil, now: r.now), style: .bar, fraction: p.total > 0 ? min(1, p.done / p.total) : 0))
+        }
+        if let p = j.paused { out.append(Line(text: p, style: .small)) } else if j.pausing != nil { out.append(Line(text: "Stopping at its next safe point (what it's on is kept)", style: .small)) }
+        out.append(Line(text: "Running \(duration(r.now - j.started)) (since \(clock(j.started)))", style: .small))
+    }
     // The other Macs helping (units only), each with its job.
     for h in freshHelpers(r) {
         guard let j = h.job else {
@@ -369,7 +380,7 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
     if let app = s.app { out.append(Line(text: "App \(app)", style: .small)) }
     // The build to the end: each step done, under way, or to come.
     if let steps = s.checklist, !steps.isEmpty {
-        let now = s.job.map { String($0.id.split(separator: " ").first ?? "") }
+        let now = [s.job, s.beside].compactMap { $0.map { String($0.id.split(separator: " ").first ?? "") } }
         let finished = steps.filter(\.finished).count
         out.append(Line(text: "", style: .separator))
         let legend = steps.contains { !$0.finished && $0.shared != nil } ? "  ·  ⇄ helpers can take part" : ""
@@ -385,7 +396,7 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
             } else if let l = st.left, l > 0 {
                 count = ": \(l) left"
             }
-            let running = now.map { st.steps.contains($0) } ?? false
+            let running = now.contains { st.steps.contains($0) }
             let mark = st.shared != nil ? "  ⇄" : ""
             out.append(Line(text: "\(running ? "▸" : "○") \(st.what)\(count)\(mark)", style: running ? .stepNow : .stepToDo))
             // (Only some of its jobs: which.)

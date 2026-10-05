@@ -116,8 +116,10 @@ fn dem_file(name: &str) -> Option<(String, Option<[i32; 4]>)> {
 }
 
 /// Moves what units kept in this Mac's own cache (`dem-units/`, `scenic-units/`) to the shared one
-/// (`Tools::shared`), once: both Macs' units read them there.
+/// (`Tools::shared`), once: both Macs' units read them there. Two unit jobs on one Mac may do this
+/// at once (crate::agent, Two jobs at once): what the other moved first is passed over.
 pub fn move_kept_to_shared(cache: &Path, shared: &Path) -> Result<usize> {
+    let gone = |e: &std::io::Error| e.kind() == std::io::ErrorKind::NotFound;
     let mut moved = 0;
     let local = cache.join(DEM_UNITS);
     for e in std::fs::read_dir(&local).into_iter().flatten().flatten() {
@@ -127,8 +129,15 @@ pub fn move_kept_to_shared(cache: &Path, shared: &Path) -> Result<usize> {
         let Some(bb) = dem_head(&m).map(|h| h.1) else { continue };
         drop(m);
         std::fs::create_dir_all(shared.join(DEM_UNITS))?;
-        crate::whole::copy(&p, &shared.join(DEM_UNITS).join(format!("{u}.{}.dem", box_tag(bb))))?;
-        std::fs::remove_file(&p)?;
+        match crate::whole::copy(&p, &shared.join(DEM_UNITS).join(format!("{u}.{}.dem", box_tag(bb)))) {
+            // (Moved by the other meanwhile.)
+            Err(_) if !p.exists() => continue,
+            r => r?,
+        };
+        match std::fs::remove_file(&p) {
+            Err(e) if gone(&e) => continue,
+            r => r?,
+        }
         moved += 1;
     }
     let local = cache.join("scenic-units");
@@ -138,15 +147,32 @@ pub fn move_kept_to_shared(cache: &Path, shared: &Path) -> Result<usize> {
             continue;
         }
         if !to.exists() {
-            let tmp = to.with_extension(format!("{}.tmp", crate::agent::cond::host()));
+            // (Named by this process too: another on this Mac may be copying the same folder.)
+            let tmp = to.with_extension(format!("{}-{}.tmp", crate::agent::cond::host(), std::process::id()));
             std::fs::remove_dir_all(&tmp).ok();
             std::fs::create_dir_all(&tmp)?;
-            for f in std::fs::read_dir(&from)?.flatten() {
+            let files = match std::fs::read_dir(&from) {
+                Ok(rd) => rd,
+                Err(e) if gone(&e) => {
+                    std::fs::remove_dir_all(&tmp).ok();
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            };
+            for f in files.flatten() {
                 crate::whole::copy(&f.path(), &tmp.join(f.file_name()))?;
             }
-            std::fs::rename(&tmp, &to)?;
+            if let Err(e) = std::fs::rename(&tmp, &to) {
+                std::fs::remove_dir_all(&tmp).ok();
+                if !to.exists() {
+                    return Err(e.into());
+                }
+            }
         }
-        std::fs::remove_dir_all(&from)?;
+        match std::fs::remove_dir_all(&from) {
+            Err(e) if gone(&e) => continue,
+            r => r?,
+        }
         moved += 1;
     }
     Ok(moved)

@@ -99,6 +99,8 @@ function model(sw) {
 // A checklist line's state.
 const finished = (st) => (st.left != null ? st.left === 0 : st.total != null && st.done >= st.total && st.total > 0);
 const stepOf = (id) => String(id || "").split(" ")[0];
+// The build Mac's second job as a worker (crate::agent::second_worker): its lane, history and pace.
+const secondOf = (host) => `${host} (second job)`;
 
 // ---- The verdict --------------------------------------------------------------------------------
 function machineState(st, fresh, paused) {
@@ -310,7 +312,15 @@ function machineCard(m, x) {
     card.append(h("div", "job", h("div", "what dim", m.sw.pause ? "Paused with the build" : why.length ? "Waiting" : "Nothing to build now")));
     for (const w of why) card.append(h("div", "sub", x.role === "build Mac" ? `${w.what}: ${w.why}` : w.why));
   }
-  const more = [nextBlock(m, x.name), x.role === "helper" ? fitText(x.worker) : null, facts(st, x, m), ...(spark(m, x.name) || [])];
+  card.append(...[nextBlock(m, x.name)].filter(Boolean));
+  // The build Mac's second job, beside the first: what it runs, else why it has nothing.
+  if (x.role === "build Mac" && (st.beside || st.beside_why)) {
+    card.append(h("div", "beside-h", "Beside it"));
+    if (st.beside) card.append(jobBlock(st.beside, now));
+    else card.append(h("div", "sub", st.beside_why));
+    card.append(...[nextBlock(m, secondOf(x.name))].filter(Boolean));
+  }
+  const more = [x.role === "helper" ? fitText(x.worker) : null, facts(st, x, m), ...(spark(m, x.role === "build Mac" ? [x.name, secondOf(x.name)] : x.name) || [])];
   card.append(...more.filter(Boolean));
   return card;
 }
@@ -361,7 +371,9 @@ function schedule(m) {
   const t1 = Math.max(fc.done_at || 0, ...Object.values(fc.lanes).flat().map((l) => l.until), t0 + 3600);
   const span = t1 - t0;
   const x = (t) => `${(((Math.max(t0, Math.min(t1, t)) - t0) / span) * 100).toFixed(3)}%`;
-  const names = m.macs.map((mm) => mm.name).filter((nm) => fc.lanes[nm]).concat(Object.keys(fc.lanes).filter((nm) => !m.macs.some((mm) => mm.name === nm)));
+  // Each machine's lane, the build Mac's second job's under its own; then any other the forecast has.
+  const ordered = m.macs.flatMap((mm) => [mm.name, secondOf(mm.name)]);
+  const names = ordered.filter((nm) => fc.lanes[nm]).concat(Object.keys(fc.lanes).filter((nm) => !ordered.includes(nm)));
   const lanes = h("div", "lanes");
   const steps = new Set();
   for (const nm of names) {
@@ -377,8 +389,9 @@ function schedule(m) {
     lanes.append(h("div", { class: "ln", title: nm }, nm), track);
   }
   // The pages: their work is an area's last steps, which the build Mac hands out as it builds its
-  // areas (a few at a time, one to each worker around): while its own areas run, so then.
-  const own = fc.lanes[m.a.host] || [];
+  // areas (a few at a time, one to each worker around; its second job's too): while its own areas
+  // run, so then.
+  const own = [...(fc.lanes[m.a.host] || []), ...(fc.lanes[secondOf(m.a.host)] || [])].sort((p, q) => p.from - q.from);
   if (m.pages.length && own.some((l) => l.step === "unit" && l.until > t0)) {
     const track = h("div", "track");
     const who = m.pages.map((p) => p.label).join(", ");

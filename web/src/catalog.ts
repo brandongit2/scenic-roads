@@ -48,6 +48,8 @@ export interface Agent {
   /** `home` false: the NAS through Tailscale (absent from older heartbeats). */
   conditions: { ac: boolean; nas: boolean; home?: boolean; idle_s: number };
   job: AgentJob | null;
+  /** Its second job, beside the first (agents from 2026-10-06 on). */
+  beside?: AgentJob | null;
   /** Work that can't run yet, and why. */
   waiting: { what: string; why: string }[];
   /** The last jobs to finish, newest first. */

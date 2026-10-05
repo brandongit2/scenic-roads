@@ -169,13 +169,15 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   - **The machines,** a card each (the build Mac, each helper, the pages together; a helper that's
     stopped reporting, with when it was last heard from): its job, its parts, its progress with its
     time left, its threads and memory, whether it's stuck; its next jobs (the forecast's); why it
-    waits; for a helper, how the work offered fits it (taken by another, done, kept from it after it
+    waits; the build Mac's second job beside it (docs/plan.md §8, Two jobs at once), or why it has
+    none, with its next jobs; for a helper, how the work offered fits it (taken by another, done, kept from it after it
     failed it, too large for its memory); its power, the NAS's answer (and room), its disk and
     caches, memory, load, whether it's in use, its app and pace (measured, or a guess); its last day
     by the hour. The helpers' statuses are read each loop.
   - **The road to done:** each machine's schedule from now to the end (the forecast's lanes, a step
-    a colour, each round of publishing marked: pointed at, the regions it adds; the pages' lane is
-    the build Mac's area runs, whose last steps it hands them as it builds them); the map updates
+    a colour, each round of publishing marked: pointed at, the regions it adds; the build Mac's
+    second job's lane under its own; the pages' lane is the build Mac's area runs, both jobs',
+    whose last steps it hands them as it builds them); the map updates
     (the last, the next with its regions, the rounds to come); the steps (done of all, the work
     left, done when, why one waits); the regions, in the order they reach the map with the rounds
     between (or by name, or by what's left), each with its state, its work left, when it's done and
@@ -228,6 +230,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   docs/plan.md §8, Two Macs) and tails over HTTP. A job runs the build Mac's own command for its step,
   its saves handed back through the coordinator; a tail runs as `scenic run-task` (its files fetched
   from the coordinator, its steps run natively, the files they wrote sent back).
+- **The build Mac's second job** (docs/plan.md §8, Two jobs at once) is a worker of its own in the
+  history and the forecast ("<host> (second job)"): beside its first job, the network-bound steps
+  first, then the candidates and peaks, then units and slope; its units offer their tails as the
+  first job's do.
 - **Planned:** the build Mac's own work as tasks too.
 
 ## 9. Security

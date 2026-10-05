@@ -3,15 +3,19 @@
 //! each machine does next.
 //!
 //! The work left is run through in the order the agent runs it: the build Mac takes the first it
-//! can (the pass's worldwide jobs, then a region at a time: its terrain, then its units), each
-//! helper the far end of the first shared step with work it can do that fits its memory (slope
-//! once its area's terrain is built, a unit once its region's terrain is). A round of publishing
-//! goes out as the plan makes one: once a region not on the map is done, at most hourly (its slope
-//! and tree cover first, then the round's chain); after the last unit and terrain area, the slope
-//! and tree cover left, the last round, and the trains' and the landmarks' chains. Each target
-//! takes its last run's time (else its step's mean, else a first guess), at the speed measured for
-//! the machine doing it. It's run three times: as estimated, and for a range, the times measured a
-//! little off and those guessed much more.
+//! can (the pass's worldwide jobs, then a region at a time: its terrain, then its units; with none
+//! it can do now, the slope, tree cover and the chains' work), its second job the first of its
+//! steps (crate::agent::SECOND: the trains' and the landmarks' network steps, the candidates and
+//! peaks, then units and slope) that fits beside it, each helper the far end of the first shared
+//! step with work it can do that fits its memory (slope once its area's terrain is built, a unit
+//! once its region's terrain is). The trains' and the landmarks' chains run from the start, each
+//! step once what it reads is built. A round of publishing goes out as the plan makes one: once a
+//! region not on the map is done, at most hourly (its slope and tree cover first, then the round's
+//! chain); after the last unit and terrain area, the slope and tree cover left, the last round,
+//! then the overlays and a catalog with what the chains made since. Each target takes its last
+//! run's time (else its step's mean, else a first guess), at the speed measured for the machine
+//! doing it. It's run three times: as estimated, and for a range, the times measured a little off
+//! and those guessed much more.
 
 use super::build::RegionLeft;
 use serde::{Deserialize, Serialize};
@@ -19,6 +23,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// The shared steps a helper takes, in its order of preference (crate::agent::claims::SHARED).
 const SHARED: [&str; 6] = ["terrain", "slope", "trees", "unit", "pois", "peaks"];
+
+/// The steps the build Mac's second job takes, in its order of preference (crate::agent::SECOND).
+const SECOND: [&str; 10] = ["heritage", "items", "rail-feeds", "rail", "marks", "overlays", "pois", "peaks", "unit", "slope"];
 
 /// A machine the work is shared among.
 #[derive(Clone, Debug, PartialEq)]
@@ -29,6 +36,8 @@ pub struct Machine {
     pub measured: bool,
     /// A helper: the shared steps alone, what fits its memory.
     pub helper: bool,
+    /// The build Mac's second job: its steps alone (`SECOND`), what fits its memory.
+    pub second: bool,
     pub mem_mb: u64,
     /// Seconds from now until it's free (its job under way's time left).
     pub busy_s: f64,
@@ -63,7 +72,11 @@ pub struct Input<'a> {
     /// Why the work left can't all be listed now, when it can't (the units waiting for the pass's
     /// heritage sites, reaches or buildings; a new pass under way): no finish is forecast.
     pub blind: Option<String>,
-    /// After the last round: the trains' and the landmarks' chains, in order.
+    /// The trains' and the landmarks' chains (but the overlays): from the start, each step once what
+    /// it reads is built (`chain_deps`).
+    pub chains: Vec<Job>,
+    /// After the last round: the overlays (they read the built units) and a catalog with what the
+    /// chains made since.
     pub after: Vec<Job>,
     /// Seconds since the last catalog went out (None: none has).
     pub since_publish: Option<u64>,
@@ -157,13 +170,32 @@ pub struct NextFc {
 }
 
 /// When a job runs: before the regions, a region's (terrain, units), late (slope and tree cover:
-/// the build Mac's in rounds and after the last unit), or after the last round.
+/// the build Mac's in rounds and after the last unit), a chain's (the trains' and the landmarks':
+/// from the start, once what it reads is built), or after the last round.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Phase {
     Before,
     Region,
     Late,
+    Chain,
     After,
+}
+
+/// What a chain's step waits for (crate::agent::build::landmarks_work): the candidates for the
+/// pass's hiking-route ends; the peaks for every candidate, the pass's summits and the terrain; the
+/// items' facts for every candidate; the rest of the heritage chain for the heritage sites; the
+/// landmark points for those four; trains a day for their feeds. By step: (the jobs before the
+/// regions', the chains', the terrain's).
+fn chain_deps(step: &str) -> (&'static [&'static str], &'static [&'static str], bool) {
+    match step {
+        "pois" => (&["trailends"], &[], false),
+        "peaks" => (&["summits"], &["pois"], true),
+        "items" => (&[], &["pois"], false),
+        "heritage" => (&["heritage-sites"], &[], false),
+        "marks" => (&[], &["pois", "peaks", "items", "heritage"], false),
+        "rail" => (&[], &["rail-feeds"], false),
+        _ => (&[], &[], false),
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -253,6 +285,19 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
         }
         region_items[k] = mine;
     }
+    // The chains: from the start, each step once what it reads is built.
+    let terrain: Vec<usize> = (0..out.len()).filter(|&i| out[i].step == "terrain").collect();
+    let mut chain: Vec<usize> = Vec::new();
+    for (step, target, cost) in &inp.chains {
+        let (pre, earlier, reads_terrain) = chain_deps(step);
+        let mut deps: Vec<usize> = before.iter().copied().filter(|&i| pre.contains(&out[i].step.as_str())).collect();
+        deps.extend(chain.iter().copied().filter(|&i| earlier.contains(&out[i].step.as_str())));
+        if reads_terrain {
+            deps.extend(&terrain);
+        }
+        let i = add(&mut out, &mut by_target, step, target, *cost, Phase::Chain, deps);
+        chain.push(i);
+    }
     let all: Vec<usize> = (0..out.len()).collect();
     for (step, target, cost) in &inp.after {
         add(&mut out, &mut by_target, step, target, *cost, Phase::After, all.clone());
@@ -318,6 +363,15 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             };
             continue;
         }
+        if mac.second {
+            // The first of its steps it can do, in their order (a step's in the plan's).
+            let pick = SECOND.iter().find_map(|s| (0..items.len()).find(|&i| items[i].phase != Phase::Before && items[i].step == *s && items[i].cost.peak_mb <= mac.mem_mb && runnable(&items, i, t)));
+            free[m] = match pick {
+                Some(i) => take(&mut items, i, t),
+                None => next_end(&items, &free, m, t),
+            };
+            continue;
+        }
         // The build Mac. A round when one's due: a region done that the map hasn't as it is, an hour
         // after the last (its slope and tree cover first; the catalog waits for those a helper builds).
         let regional_left = regionals.iter().any(|&i| !done_by(&items, i, t));
@@ -354,8 +408,9 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             continue;
         }
         if regional_left || items.iter().any(|i| i.phase == Phase::Before && i.by.is_none()) {
-            // The first it can do of the pass's and the regions' (in order).
-            let pick = (0..items.len()).find(|&i| matches!(items[i].phase, Phase::Before | Phase::Region) && runnable(&items, i, t));
+            // The first it can do of the pass's and the regions' (in order); with none it can do now,
+            // the chains' (listed after them).
+            let pick = (0..items.len()).find(|&i| matches!(items[i].phase, Phase::Before | Phase::Region) && runnable(&items, i, t)).or_else(|| (0..items.len()).find(|&i| items[i].phase == Phase::Chain && runnable(&items, i, t)));
             free[m] = match pick {
                 Some(i) => take(&mut items, i, t),
                 None => next_end(&items, &free, m, t),
@@ -363,7 +418,8 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             continue;
         }
         // After the last unit and terrain: the slope and tree cover left, then the last round (once
-        // every region's work is done), then the chains.
+        // every region's work is done: the chains' work while others build what it waits for); then
+        // the chains' work left, the overlays and a catalog.
         if let Some(i) = (0..items.len()).find(|&i| items[i].phase == Phase::Late && runnable(&items, i, t)) {
             free[m] = take(&mut items, i, t);
             continue;
@@ -371,7 +427,10 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         if !final_round_done {
             let late_open = items.iter().any(|i| i.phase == Phase::Late && !(i.by.is_some() && i.end <= t + 1e-9));
             if late_open {
-                free[m] = next_end(&items, &free, m, t);
+                free[m] = match (0..items.len()).find(|&i| items[i].phase == Phase::Chain && runnable(&items, i, t)) {
+                    Some(i) => take(&mut items, i, t),
+                    None => next_end(&items, &free, m, t),
+                };
                 continue;
             }
             // (None when nothing's stale and no region waits to go out.)
@@ -386,7 +445,7 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             free[m] = end;
             continue;
         }
-        let pick = (0..items.len()).find(|&i| items[i].phase == Phase::After && runnable(&items, i, t));
+        let pick = (0..items.len()).find(|&i| matches!(items[i].phase, Phase::Chain | Phase::After) && runnable(&items, i, t));
         free[m] = match pick {
             Some(i) => take(&mut items, i, t),
             None => next_end(&items, &free, m, t),
@@ -569,7 +628,7 @@ mod tests {
     }
 
     fn mac(name: &str, speed: f64, helper: bool) -> Machine {
-        Machine { name: name.into(), speed, measured: true, helper, mem_mb: 6000, busy_s: 0.0 }
+        Machine { name: name.into(), speed, measured: true, helper, second: false, mem_mb: 6000, busy_s: 0.0 }
     }
 
     fn cost(step: &str, _t: &str) -> Cost {
@@ -583,7 +642,7 @@ mod tests {
     }
 
     fn input<'a>(regions: &'a [RegionLeft], machines: Vec<Machine>, c: &'a dyn Fn(&str, &str) -> Cost) -> Input<'a> {
-        Input { now: 1_000_000, before: Vec::new(), regions, cost: c, round_s: 600.0, last_round_s: 600.0, blind: None, after: vec![("marks".into(), "marks".into(), Cost { secs: 300.0, known: true, peak_mb: 0 })], since_publish: None, machines, running: BTreeMap::new() }
+        Input { now: 1_000_000, before: Vec::new(), regions, cost: c, round_s: 600.0, last_round_s: 600.0, blind: None, chains: Vec::new(), after: vec![("marks".into(), "marks".into(), Cost { secs: 300.0, known: true, peak_mb: 0 })], since_publish: None, machines, running: BTreeMap::new() }
     }
 
     #[test]
@@ -706,6 +765,54 @@ mod tests {
         assert_eq!(f.rounds[0].regions, ["b", "a"]);
         assert!(f.rounds[1].last && f.rounds[1].regions == ["c"]);
         assert_eq!(f.regions[0].map_at, Some(1_000_000 + 1200));
+    }
+
+    /// The trains' and the landmarks' chains, as the plan lists them.
+    fn chains() -> Vec<Job> {
+        let c = |secs: f64| Cost { secs, known: true, peak_mb: 1000 };
+        vec![
+            ("rail-feeds".into(), "rail-feeds".into(), c(200.0)),
+            ("rail".into(), "rail".into(), c(500.0)),
+            ("pois".into(), "6/8/8".into(), c(100.0)),
+            ("pois".into(), "6/8/9".into(), c(100.0)),
+            ("items".into(), "items".into(), c(1000.0)),
+            ("heritage".into(), "heritage".into(), c(3000.0)),
+            ("marks".into(), "marks".into(), c(300.0)),
+        ]
+    }
+
+    #[test]
+    fn the_chains_go_on_beside_the_regions_on_the_second_job() {
+        let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &["3/1/1"])];
+        // The build Mac alone: terrain 600, the units 600, the slope 200 and the last round 600;
+        // then the chains, one after another (3,200 s).
+        let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        (inp.chains, inp.after) = (chains(), Vec::new());
+        let alone = forecast(&inp);
+        assert_eq!(alone.done_at, Some(1_000_000 + 2000 + 5200));
+        // With its second job: the heritage chain from the start, beside the regions' work; the
+        // rest after the last round, the landmark points once the heritage chain is done too.
+        let second = Machine { second: true, mem_mb: 12_000, ..mac("m4 (second job)", 1.0, false) };
+        let mut inp = input(&regions, vec![mac("m4", 1.0, false), second], &cost);
+        (inp.chains, inp.after) = (chains(), Vec::new());
+        let f = forecast(&inp);
+        let lane = &f.lanes["m4 (second job)"];
+        assert_eq!((lane[0].step.as_str(), lane[0].from, lane[0].until), ("heritage", 1_000_000, 1_003_000));
+        assert_eq!(f.done_at, Some(1_000_000 + 4200));
+        assert_eq!(f.rounds.len(), 1);
+        assert_eq!(f.rounds[0].at, 1_000_000 + 2000, "the chains don't hold up the last round");
+    }
+
+    #[test]
+    fn a_helper_takes_the_candidates_while_the_units_wait() {
+        let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &["3/1/1"])];
+        let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
+        (inp.chains, inp.after) = (chains(), Vec::new());
+        let f = forecast(&inp);
+        // While the build Mac builds the terrain the units wait for, the helper makes the candidates
+        // (from the far end), 200 s each at its pace.
+        let m1 = &f.lanes["m1"];
+        assert_eq!((m1[0].step.as_str(), m1[0].from, m1[0].until, m1[0].n), ("pois", 1_000_000, 1_000_400, 2));
     }
 
     #[test]

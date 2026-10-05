@@ -61,7 +61,8 @@ function agentState(a: Agent): { text: string; dot: 'run' | 'paused' | 'idle' | 
   if (now() - a.beat > STALE_S) return { text: `last seen ${ago(a.beat)}`, dot: 'away' };
   if (a.pause) return { text: a.job && !a.job.paused ? 'pausing' : 'paused', dot: 'paused' };
   if (a.job?.paused) return { text: `paused: ${a.job.paused.split(':')[0]}`, dot: 'paused' };
-  if (a.job) return { text: doing(a.job.what), dot: 'run' };
+  if (a.job) return { text: `${doing(a.job.what)}${a.beside ? ' + 1 more' : ''}`, dot: 'run' };
+  if (a.beside) return { text: doing(a.beside.what), dot: 'run' };
   if (!a.conditions.nas) return { text: 'can’t reach the NAS', dot: 'paused' };
   return { text: a.waiting.length ? `idle · ${a.waiting.length} waiting` : 'idle', dot: 'idle' };
 }
@@ -96,7 +97,8 @@ export class BuildStatus {
     if (a) {
       const st = agentState(a);
       this.agent.replaceChildren(h('i', { class: `dot ${st.dot}` }), h('span', {}, `Build Mac · ${st.text}`));
-      this.agent.title = a.job ? `${a.job.what}${a.job.paused ? ` (paused: ${a.job.paused})` : ''}` : 'The build Mac: what it does, what waits and why (click)';
+      const said = (j: { what: string; paused?: string | null }) => `${j.what}${j.paused ? ` (paused: ${j.paused})` : ''}`;
+      this.agent.title = a.job || a.beside ? [a.job, a.beside].filter((j) => j).map((j) => said(j!)).join('\nBeside it: ') : 'The build Mac: what it does, what waits and why (click)';
     }
     if (this.pop) this.fill(this.pop);
   }
@@ -205,6 +207,14 @@ export class BuildStatus {
           h('div', { class: 'bs-row' }, a.job.what),
           ...(a.job.paused ? [h('div', { class: 'bs-row warn' }, `Paused: ${a.job.paused}`)] : a.job.pausing ? [h('div', { class: 'bs-row warn' }, 'Stopping at its next safe point (what it’s on is kept)')] : []),
           ...(a.job.tail.trim() ? [h('pre', { class: 'bs-log' }, a.job.tail.trimEnd())] : []),
+        );
+      }
+      if (a.beside) {
+        out.push(
+          hd('Beside it', `for ${span(now() - a.beside.started)}`),
+          h('div', { class: 'bs-row' }, a.beside.what),
+          ...(a.beside.paused ? [h('div', { class: 'bs-row warn' }, `Paused: ${a.beside.paused}`)] : a.beside.pausing ? [h('div', { class: 'bs-row warn' }, 'Stopping at its next safe point (what it’s on is kept)')] : []),
+          ...(a.beside.tail.trim() ? [h('pre', { class: 'bs-log' }, a.beside.tail.trimEnd())] : []),
         );
       }
       if (a.waiting.length) {

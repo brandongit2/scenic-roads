@@ -555,12 +555,27 @@ impl Coordinator {
 
     /// What this Mac's job's units cost (measured here).
     pub fn add_costs(&self, costs: &[(String, Cost)]) {
+        self.add_costs_by(costs, &self.me.clone());
+    }
+
+    /// `add_costs`, measured by `worker` (this Mac's second job: crate::agent::second_worker).
+    pub fn add_costs_by(&self, costs: &[(String, Cost)], worker: &str) {
         if costs.is_empty() {
             return;
         }
         let mut s = self.shared.lock().unwrap();
-        s.costs.extend(costs.iter().cloned().map(|(u, c)| (u, Cost { worker: Some(self.me.clone()), ..c })));
+        s.costs.extend(costs.iter().cloned().map(|(u, c)| (u, Cost { worker: Some(worker.to_string()), ..c })));
         s.save_costs();
+    }
+
+    /// The memory a job of `step` for `target` is expected to take (MB), as `pick` sizes it: as its
+    /// last run measured (the way the step runs now), else by what the plan offered it with (a
+    /// unit's piece, another step's guess); None when it's neither (a step not offered).
+    pub fn peak(&self, step: &str, target: &str) -> Option<u64> {
+        let s = self.shared.lock().unwrap();
+        let measured = s.costs.get(&cost_key(step, target)).filter(|c| c.v >= cost_version(step)).map(|c| c.peak_mb);
+        let offered = s.offers.iter().find(|o| o.step == step).and_then(|o| o.targets.iter().find(|t| t.0 == target)).map(|t| job_peak(&s.costs, step, target, t.2));
+        measured.or(offered)
     }
 
     /// Notes what happened (`history`): this Mac's jobs started and ended, catalogs, its conditions.

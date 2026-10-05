@@ -79,6 +79,86 @@ pub struct Options {
 /// before it's frozen where it is instead: a unit takes up to ~11 min, a map tile ~10.
 const DRAIN_GRACE: Duration = Duration::from_secs(15 * 60);
 
+/// How many jobs the build Mac runs at once (docs/plan.md §8, Two jobs at once): the plan's first it
+/// can run, and a second beside it (`SECOND`). A helper runs one, as the build Mac leases them.
+const SLOTS: usize = 2;
+
+/// The steps the second job takes, in its order of preference: the trains' and the landmarks'
+/// steps that mostly wait on the internet first, then the candidates and peaks (the landmarks wait
+/// for them), then units and slope. A unit spent 380 of its 860 s writing to the NAS and reading
+/// the caches, not computing (6/17/25, 2026-10-05): two at once build more.
+const SECOND: [&str; 10] = ["heritage", "items", "rail-feeds", "rail", "marks", "overlays", "pois", "peaks", "unit", "slope"];
+
+/// Those of them that mostly wait on the network, and run beside the first job while the Mac is in
+/// use too (the others only while it isn't).
+const LIGHT: [&str; 6] = ["heritage", "items", "rail-feeds", "rail", "marks", "overlays"];
+
+/// Steps that run alone, never beside another job: the pass's worldwide jobs (the planet, the
+/// world's buildings, a whole set at a time) and removing replaced files from the NAS.
+const ALONE: [&str; 10] = ["osm-pass", "pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "heritage-sites", "gc"];
+
+/// Steps that read AWS's raw terrain tiles here, which a terrain run packs onto the NAS and
+/// deletes here: never two at once.
+const RAW: [&str; 4] = ["terrain", "terrain-root", "terrain-z8", "peaks"];
+
+/// Whether jobs of steps `a` and `b` can't run at once: either runs alone, both read the raw tiles,
+/// or they're the same step and it isn't a shared one (one job's work: its targets held by nothing
+/// else). A shared step's targets are held apart (crate::coord), and each slot has a scratch
+/// folder of its own.
+fn clash(a: &str, b: &str) -> bool {
+    ALONE.contains(&a) || ALONE.contains(&b) || (RAW.contains(&a) && RAW.contains(&b)) || (a == b && !claims::SHARED.contains(&a))
+}
+
+/// Whether a job of `step` reads the caches `room::make_room` deletes from (canopy squares, raw
+/// tiles, copies of the records' files): while one runs, the other job's start makes no room.
+fn reads_caches(step: &str) -> bool {
+    !LIGHT.contains(&step) && step != "catalog" && step != "prune" && step != "backup"
+}
+
+/// The memory a job of `step` is expected to take beside another (MB) before its own run has said:
+/// the network steps' Python and osmium; the shared steps' first guesses (`first_peak`), a unit's
+/// the most its batches took here (8.4 GB, 2026-10-05).
+fn second_peak(step: &str) -> u64 {
+    match step {
+        "heritage" | "rail" => 6144,
+        "items" => 3072,
+        "rail-feeds" => 1024,
+        "marks" | "overlays" => 4096,
+        "unit" => 8600,
+        "pois" => 2048,
+        s => first_peak(s),
+    }
+}
+
+/// The free space the second job starts with (it makes no room: `reads_caches`): the network steps'
+/// a little, the others' the build Mac's reserve.
+fn second_need(step: &str) -> u64 {
+    if LIGHT.contains(&step) {
+        10 << 30
+    } else {
+        room::RESERVE
+    }
+}
+
+/// The build Mac's second job as a worker (the build's history, the forecast's machines, the worker
+/// page): the Mac's name, marked.
+pub fn second_worker(host: &str) -> String {
+    format!("{host} (second job)")
+}
+
+/// A job slot's running job and what goes with it: its lease (the coordinator's, or a helper's
+/// granted one), when it last beat and its claims were kept fresh, when it was asked to stop at its
+/// next safe point, and its time left as the status last worked it out.
+#[derive(Default)]
+struct Slot {
+    running: Option<Running>,
+    lease: Option<Held>,
+    beaten: Option<Instant>,
+    claims_fresh: Option<Instant>,
+    drain_since: Option<Instant>,
+    job_eta: Option<u64>,
+}
+
 /// How a job's lease ended, for the coordinator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Outcome {
@@ -217,6 +297,12 @@ pub struct Status {
     pub started: u64,
     pub conditions: Conditions,
     pub job: Option<JobView>,
+    /// The build Mac's second job, beside the first (docs/plan.md §8, Two jobs at once), and why
+    /// there's none when its slot is free.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beside: Option<JobView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub beside_why: Option<String>,
     /// Work that can't run yet, and why, in plain words.
     pub waiting: Vec<Waiting>,
     /// The last jobs to finish, newest first.
@@ -455,7 +541,10 @@ pub struct Agent {
     app: String,
     started: u64,
     mem: Memory,
-    running: Option<Running>,
+    /// The jobs running: the first slot's, and on the build Mac a second's beside it (`SLOTS`).
+    slots: [Slot; SLOTS],
+    /// Why the second slot has nothing, when it hasn't, for the status.
+    beside_why: Option<String>,
     sleep: SleepWatch,
     last_mount_try: Option<Instant>,
     /// The heartbeat last written to the NAS (without its time) and when: written again only when it
@@ -467,10 +556,8 @@ pub struct Agent {
     reach: std::cell::RefCell<Option<(String, std::rc::Rc<crate::reach::Reaches>)>>,
     /// The coverage and each region's as last made, with what they were made from (`coverage`).
     coverage: std::cell::RefCell<Option<(String, std::rc::Rc<Coverages>)>>,
-    /// Who this agent is in claims ("<host> <pid>"), and when its running job's claims were last
-    /// kept fresh.
+    /// Who this agent is in claims ("<host> <pid>"; its second job's, `me_of`).
     me: String,
-    claims_fresh: Option<Instant>,
     /// The OSM pieces' sizes by content name (the coordinator sizes units by them; content-named
     /// files never change).
     piece_sizes: std::cell::RefCell<std::collections::HashMap<String, u64>>,
@@ -490,9 +577,6 @@ pub struct Agent {
     published: Option<Instant>,
     /// A helper's way to the build Mac's coordinator (made once its contact is on the NAS).
     client: Option<crate::coord::client::Client>,
-    /// The running job's lease, and when it last beat.
-    lease: Option<Held>,
-    beaten: Option<Instant>,
     /// A helper's: the bytes its cheap caches held (room::cheap_bytes) and when they were counted.
     cheap: Option<(Instant, u64)>,
     /// The last catalog's folder and number, and its regions' outline entries by id (`on_map`).
@@ -504,15 +588,13 @@ pub struct Agent {
     /// (`pause_local`). Kept in `pause.json`.
     pause: Option<crate::control::Pause>,
     pause_local: bool,
-    /// When the running job was asked to stop at its next safe point (`DRAIN_GRACE`).
-    drain_since: Option<Instant>,
     /// The build Mac's pause as last mirrored to the NAS, and whether this agent's own (kept from
     /// before its coordinator was up) has been given to the coordinator.
     mirrored: Option<Option<crate::control::Pause>>,
     pause_pushed: bool,
-    /// A job an earlier agent left (a crash): its step and the targets it noted done, to record once
-    /// the NAS answers.
-    orphan_done: Option<(String, Vec<(String, String)>)>,
+    /// Jobs an earlier agent left (a crash): each one's step and the targets it noted done, to record
+    /// once the NAS answers.
+    orphan_done: Vec<(String, Vec<(String, String)>)>,
     /// The bytes the caches it may drop hold, for the status: counted on a thread of its own every
     /// ten minutes (a walk of many files), and when.
     cache_size: std::sync::Arc<std::sync::Mutex<(Option<Instant>, Option<u64>)>>,
@@ -522,8 +604,6 @@ pub struct Agent {
     /// status.
     forecast: std::cell::RefCell<Option<forecast::Forecast>>,
     catalog_seen: std::cell::Cell<Option<CatalogSeen>>,
-    /// The running job's time left as the status last worked it out (its pace), for the forecast.
-    job_eta: Option<u64>,
 }
 
 /// The last plan's view, kept for the heartbeat between plans.
@@ -573,7 +653,7 @@ impl Agent {
         // The build's pause as this agent last knew it (a helper that can't reach the build Mac stays
         // as it was).
         let pause: Option<crate::control::Pause> = std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, lease: None, beaten: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, drain_since: None, mirrored: None, pause_pushed: false, orphan_done: None, cache_size: Default::default(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), job_eta: None })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -613,7 +693,7 @@ impl Agent {
     /// as failed.
     fn send_outbox(&mut self, root: &Path, waiting: &mut Vec<Waiting>) {
         let Ok(rd) = std::fs::read_dir(self.outbox()) else { return };
-        let running = match &self.lease {
+        let running = match &self.slots[0].lease {
             Some(Held::Leased { dir, .. }) => Some(dir.clone()),
             _ => None,
         };
@@ -801,7 +881,7 @@ impl Agent {
                 let n = targets.len();
                 let id = format!("{step} {}", targets.first().map(|t| t.0.as_str()).unwrap_or(""));
                 let what = format!("{} ({n} area{}, for the build Mac)", build::label(&step), if n == 1 { "" } else { "s" });
-                self.lease = Some(Held::Leased { lease, dir });
+                self.slots[0].lease = Some(Held::Leased { lease, dir });
                 vec![JobSpec { id, what, cmd, needs, restart_after_sleep: true, record: Some(build::Work { step, targets }) }]
             }
             Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Task { id, task, .. }, .. })) => {
@@ -833,7 +913,7 @@ impl Agent {
                     s(&dir.join("task.json")),
                 ];
                 let unit = task["unit"].as_str().unwrap_or("").to_string();
-                self.lease = Some(Held::Leased { lease, dir });
+                self.slots[0].lease = Some(Held::Leased { lease, dir });
                 vec![JobSpec { id: format!("task {id}"), what: format!("Scenery for the build Mac's area {unit}"), cmd, needs: Needs { cpu: true, nas: false, home: false }, restart_after_sleep: false, record: None }]
             }
             Ok(Some(g)) => {
@@ -866,22 +946,22 @@ impl Agent {
         }
     }
 
-    /// The running job ended (or stopped): its lease ended with it. This Mac's own: done when it
+    /// Slot `k`'s job ended (or stopped): its lease ended with it. This Mac's own: done when it
     /// recorded its targets, and what its units cost learned; a helper's: its result in its outbox
     /// folder, to send.
-    fn end_lease(&mut self, outcome: Outcome, done: &[(String, String)], note: &str) {
+    fn end_lease(&mut self, k: usize, outcome: Outcome, done: &[(String, String)], note: &str) {
         // (A job ended: what a helper's caches can free is counted again before it next asks.)
         self.cheap = None;
-        let pid = self.running.as_ref().map(|r| r.pgid as u32);
-        match self.lease.take() {
+        let pid = self.slots[k].running.as_ref().map(|r| r.pgid as u32);
+        match self.slots[k].lease.take() {
             Some(Held::Own(id)) => {
                 if let Some(c) = &self.coord {
                     c.finish(id, done);
                     if let Some(p) = pid {
                         c.close_tasks(p);
                     }
-                    let costs = self.o.home.join("costs.jsonl");
-                    c.add_costs(&read_costs(&costs));
+                    let costs = self.costs_path(k);
+                    c.add_costs_by(&read_costs(&costs), &self.worker_of(k));
                     std::fs::remove_file(costs).ok();
                 }
             }
@@ -889,7 +969,7 @@ impl Agent {
                 // What it did: every target, or (paused at a safe point) those it finished, handed
                 // off; else given back, failed or (stopped, not failed) interrupted.
                 // (A failed job's finished targets are handed off too, the rest held against it.)
-                let step = self.running.as_ref().and_then(|r| r.spec.record.as_ref().map(|w| w.step.clone()));
+                let step = self.slots[k].running.as_ref().and_then(|r| r.spec.record.as_ref().map(|w| w.step.clone()));
                 let done = step.filter(|_| outcome != Outcome::Interrupted && !done.is_empty()).map(|s| (s, done.to_vec()));
                 let failed = outcome == Outcome::Failed && done.is_some();
                 // A task's: what `scenic run-task` wrote (its outputs are with the coordinator already).
@@ -908,23 +988,23 @@ impl Agent {
         }
     }
 
-    /// Beats for the running job's lease (each minute it isn't paused); false when it's lost: it
+    /// Beats for slot `k`'s job's lease (each minute it isn't paused); false when it's lost: it
     /// lapsed and its work went to another worker. (This Mac's own lapses when its job paused past
     /// it, or this loop was stuck: it's held again when no one took its work meanwhile.)
-    fn beat(&mut self, root: Option<&Path>) -> bool {
-        self.beaten = Some(Instant::now());
+    fn beat(&mut self, k: usize, root: Option<&Path>) -> bool {
+        self.slots[k].beaten = Some(Instant::now());
         // (Its progress as the status last read it: what it said, out of sight or not.)
-        let progress = self.running.as_ref().and_then(|r| r.said.clone().or_else(|| jobs::progress(&r.log).map(|(d, t, u)| (d, t, u, None)))).map(|(d, t, u, _)| format!("{}/{t:.0} {u}", (d * 10.0).floor() / 10.0));
-        match self.lease.clone() {
+        let progress = self.slots[k].running.as_ref().and_then(|r| r.said.clone().or_else(|| jobs::progress(&r.log).map(|(d, t, u)| (d, t, u, None)))).map(|(d, t, u, _)| format!("{}/{t:.0} {u}", (d * 10.0).floor() / 10.0));
+        match self.slots[k].lease.clone() {
             Some(Held::Own(id)) => {
                 let Some(c) = &self.coord else { return true };
                 if c.renew(id, progress) {
                     return true;
                 }
-                let work = self.running.as_ref().and_then(|r| r.spec.record.clone());
+                let work = self.slots[k].running.as_ref().and_then(|r| r.spec.record.clone());
                 match work.and_then(|w| c.hold(&w.step, &w.targets)) {
                     Some(id) => {
-                        self.lease = Some(Held::Own(id));
+                        self.slots[k].lease = Some(Held::Own(id));
                         true
                     }
                     None => false,
@@ -953,41 +1033,79 @@ impl Agent {
         }
     }
 
-    /// Drops the running job's claims (crate::agent::claims), as it ends.
-    fn release_claims(&mut self, root: Option<&Path>) {
+    /// Drops slot `k`'s job's claims (crate::agent::claims), as it ends.
+    fn release_claims(&mut self, k: usize, root: Option<&Path>) {
         // (A helper's leased job holds no claim files.)
         if self.o.helper {
-            self.claims_fresh = None;
+            self.slots[k].claims_fresh = None;
             return;
         }
-        if let (Some((step, ts)), Some(r)) = (self.running.as_ref().and_then(|j| shared_targets(&j.spec)), root) {
-            claims::release(r, &step, &ts, &self.me);
+        if let (Some((step, ts)), Some(r)) = (self.slots[k].running.as_ref().and_then(|j| shared_targets(&j.spec)), root) {
+            claims::release(r, &step, &ts, &self.me_of(k));
         }
-        self.claims_fresh = None;
+        self.slots[k].claims_fresh = None;
     }
 
-    /// Keeps the running job's claims fresh (every two minutes: a claim lasts `claims::STALE`), not
+    /// Keeps slot `k`'s job's claims fresh (every two minutes: a claim lasts `claims::STALE`), not
     /// while it's paused: a paused job's claims go stale, so the other Mac may take them. False when
     /// another agent holds one of them now (the job is then stopped, unrecorded: that one builds it).
-    fn keep_claims(&mut self, root: Option<&Path>) -> bool {
+    fn keep_claims(&mut self, k: usize, root: Option<&Path>) -> bool {
         // (A helper's leased job holds no claim files: its lease is kept by beats.)
         if self.o.helper {
             return true;
         }
-        let (Some(j), Some(r)) = (self.running.as_ref(), root) else { return true };
+        let me = self.me_of(k);
+        let paused = self.pause.is_some();
+        let slot = &mut self.slots[k];
+        let (Some(j), Some(r)) = (slot.running.as_ref(), root) else { return true };
         let Some((step, ts)) = shared_targets(&j.spec) else { return true };
-        if claims::lost(r, &step, &ts, &self.me) {
+        if claims::lost(r, &step, &ts, &me) {
             return false;
         }
-        if (j.paused.is_none() || self.pause.is_some()) && self.claims_fresh.is_none_or(|t| t.elapsed() >= Duration::from_secs(120)) {
-            claims::refresh(r, &step, &ts, &self.me);
-            self.claims_fresh = Some(Instant::now());
+        if (j.paused.is_none() || paused) && slot.claims_fresh.is_none_or(|t| t.elapsed() >= Duration::from_secs(120)) {
+            claims::refresh(r, &step, &ts, &me);
+            slot.claims_fresh = Some(Instant::now());
         }
         true
     }
 
-    fn record_path(&self) -> PathBuf {
-        self.o.home.join("job.json")
+    fn record_path(&self, k: usize) -> PathBuf {
+        self.o.home.join(if k == 0 { "job.json" } else { "job-2.json" })
+    }
+
+    /// Where slot `k`'s job notes what its units cost (`SCENIC_COSTS`).
+    fn costs_path(&self, k: usize) -> PathBuf {
+        self.o.home.join(if k == 0 { "costs.jsonl" } else { "costs-2.jsonl" })
+    }
+
+    /// Who slot `k`'s job is in claims: the second's apart from the first's, so neither takes the
+    /// other's as its own.
+    fn me_of(&self, k: usize) -> String {
+        if k == 0 {
+            self.me.clone()
+        } else {
+            format!("{} {}", self.me, k + 1)
+        }
+    }
+
+    /// Slot `k`'s worker in the build's history and the forecast: this Mac, or its second job.
+    fn worker_of(&self, k: usize) -> String {
+        if k == 0 {
+            self.host.clone()
+        } else {
+            second_worker(&self.host)
+        }
+    }
+
+    /// Whether this agent runs a second job: the build Mac's (a helper's are leased one at a time),
+    /// with its coordinator holding a shared step's targets apart, not a dry run.
+    fn second_allowed(&self) -> bool {
+        !self.o.helper && !self.o.dry_run && self._lock.is_some() && self.coord.is_some()
+    }
+
+    /// Whether neither slot runs a job.
+    fn idle(&self) -> bool {
+        self.slots.iter().all(|s| s.running.is_none())
     }
 
     fn save(&self) {
@@ -1024,13 +1142,15 @@ impl Agent {
         // (The handler only stores to an atomic.)
         crate::sys::on_terminate(on_signal);
         if self._lock.is_some() {
-            // (What it finished, recorded once the NAS answers: a helper's goes back with its lease's
-            // outbox, send_outbox.)
-            if let Some((w, file)) = jobs::stop_orphan(&self.record_path()) {
-                let names = crate::control::read_done(&file, &w.step);
-                let done: Vec<(String, String)> = w.targets.into_iter().filter(|(t, _)| names.contains(t)).collect();
-                if !done.is_empty() && !self.o.helper {
-                    self.orphan_done = Some((w.step, done));
+            // (What they finished, recorded once the NAS answers: a helper's goes back with its
+            // lease's outbox, send_outbox.)
+            for k in 0..SLOTS {
+                if let Some((w, file)) = jobs::stop_orphan(&self.record_path(k)) {
+                    let names = crate::control::read_done(&file, &w.step);
+                    let done: Vec<(String, String)> = w.targets.into_iter().filter(|(t, _)| names.contains(t)).collect();
+                    if !done.is_empty() && !self.o.helper {
+                        self.orphan_done.push((w.step, done));
+                    }
                 }
             }
         }
@@ -1039,8 +1159,10 @@ impl Agent {
             if self.o.once || STOP.load(Ordering::SeqCst) {
                 break;
             }
-            // A newer app is in place and nothing runs: exit, and the launcher starts the new one.
-            if self.running.is_none() && self.newer_app() {
+            // A newer app is in place and the first job's slot is free: exit (the second job stops
+            // here, its finished targets kept, and goes on under the new one), and the launcher
+            // starts the new one.
+            if self.slots[0].running.is_none() && self.newer_app() {
                 eprintln!("agent: a newer app is installed; restarting into it");
                 break;
             }
@@ -1053,15 +1175,17 @@ impl Agent {
             }
         }
         let root = self.o.root.clone().or_else(|| self.root());
-        if let Some(r) = self.running.as_mut() {
-            eprintln!("agent: stopping {}", r.spec.id);
-            r.stop(Duration::from_secs(30));
-            self.stopped(root.as_deref(), "the agent stopped");
-            let r = self.running.take().unwrap();
-            std::fs::remove_file(self.record_path()).ok();
-            // Its claims, free for the other Mac now rather than once stale.
-            if let (Some((step, ts)), Some(root), false) = (shared_targets(&r.spec), &root, self.o.helper) {
-                claims::release(root, &step, &ts, &self.me);
+        for k in 0..SLOTS {
+            if let Some(r) = self.slots[k].running.as_mut() {
+                eprintln!("agent: stopping {}", r.spec.id);
+                r.stop(Duration::from_secs(30));
+                self.stopped(k, root.as_deref(), "the agent stopped");
+                let r = self.slots[k].running.take().unwrap();
+                std::fs::remove_file(self.record_path(k)).ok();
+                // Its claims, free for the other Mac now rather than once stale.
+                if let (Some((step, ts)), Some(root), false) = (shared_targets(&r.spec), &root, self.o.helper) {
+                    claims::release(root, &step, &ts, &self.me_of(k));
+                }
             }
         }
         // The coordinator's contact off the NAS: workers wait for the next agent.
@@ -1077,7 +1201,7 @@ impl Agent {
         let home = store::nas::at_home();
         // Back home with the share mounted through Tailscale (mounted while away): unmounted while
         // nothing runs, and mounted again by the LAN name below, at the LAN's speed.
-        if home && self.running.is_none() && self.o.root.is_none() {
+        if home && self.idle() && self.o.root.is_none() {
             if let Some(m) = store::nas::find_mount(store::nas::HOST, store::nas::SHARE).filter(|m| !store::nas::by_lan_name(m)) {
                 eprintln!("agent: home again; remounting the NAS by its LAN name (it was mounted as {})", m.from);
                 if let Err(e) = store::nas::unmount(&m.point, Duration::from_secs(30)) {
@@ -1094,137 +1218,21 @@ impl Agent {
         let mut ended = false;
         // The build's pause: this Mac's ask passed on; the build Mac's coordinator's.
         self.sync_pause(root.as_deref(), &mut waiting);
-        // (A crashed agent's job's finished targets, recorded now the NAS answers.)
-        if let (Some(r), Some((step, done))) = (root.as_deref(), self.orphan_done.as_ref()) {
-            if self.record_done(Some(r), step, done) {
-                eprintln!("agent: recorded {} target{} of {step} an earlier agent's job finished", done.len(), if done.len() == 1 { "" } else { "s" });
-                self.orphan_done = None;
+        // (A crashed agent's jobs' finished targets, recorded now the NAS answers.)
+        if let Some(r) = root.as_deref() {
+            let orphans = std::mem::take(&mut self.orphan_done);
+            for (step, done) in orphans {
+                if self.record_done(Some(r), &step, &done) {
+                    eprintln!("agent: recorded {} target{} of {step} an earlier agent's job finished", done.len(), if done.len() == 1 { "" } else { "s" });
+                } else {
+                    self.orphan_done.push((step, done));
+                }
             }
         }
 
-        // The running job.
-        if let Some(r) = self.running.as_mut() {
-            if let Some(st) = r.poll()? {
-                let secs = r.elapsed().as_secs();
-                let ok = st.success();
-                // Stopped at a safe point, the build pausing (crate::control): not a failure. (Only
-                // when it was asked to: a job's own exit 75 for anything else is a failure.)
-                let paused = st.code() == Some(crate::control::PAUSED_EXIT) && self.drain_since.is_some();
-                let of = r.spec.record.as_ref().map_or(0, |w| w.targets.len());
-                let step = r.spec.record.as_ref().map(|w| w.step.clone()).unwrap_or_default();
-                // The targets it finished: every one when it succeeded, else those it noted done as
-                // each was saved (crate::control::done), whatever stopped it, so they aren't built
-                // again. The build Mac's agent records them; a helper's go back to the coordinator.
-                let done = self.finished_targets(ok);
-                let recorded = self.record_done(root.as_deref(), &step, &done);
-                let r = self.running.as_mut().unwrap();
-                let note = if ok {
-                    String::new()
-                } else if paused {
-                    format!("paused at a safe point, {} of {of} done; the rest goes on when the build does", done.len())
-                } else {
-                    format!("{st}{}\n{}", if done.is_empty() { String::new() } else { format!(" ({} of {of} done and kept)", done.len()) }, jobs::tail(&r.log, 20))
-                };
-                let (id, what) = (r.spec.id.clone(), r.spec.what.clone());
-                eprintln!("agent: {id} {} after {secs} s", if ok { "finished" } else if paused { "paused at a safe point" } else { "failed" });
-                let how = if ok { String::new() } else if paused { "paused at a safe point".to_string() } else { format!("failed ({st})") };
-                self.note_end(&step, &done, secs, ok, &how);
-                // (What a target of its step takes here, for the forecast.)
-                if ok && of > 0 && !step.is_empty() {
-                    let each = secs as f64 / of as f64;
-                    let e = self.mem.step_secs.entry(step.clone()).or_insert(each);
-                    *e = 0.7 * *e + 0.3 * each;
-                }
-                if ok && step == "catalog" {
-                    let ready = self.ready.borrow().clone();
-                    self.note(crate::coord::history::Event { worker: Some(self.host.clone()), step: Some(step.clone()), targets: ready, ..crate::coord::history::Event::new("catalog") });
-                }
-                let outcome = if ok { Outcome::Done } else if paused { Outcome::Paused } else { Outcome::Failed };
-                // (The coordinator's record of what's done: a helper's whatever it did, this Mac's
-                // once it's in the keys.)
-                let handed = if self.o.helper || recorded { done.clone() } else { Vec::new() };
-                self.end_lease(outcome, &handed, &note);
-                self.finished(&id, &what, ok || paused, secs, note);
-                self.drain_since = None;
-                self.release_claims(root.as_deref());
-                self.running = None;
-                std::fs::remove_file(self.record_path()).ok();
-                ended = true;
-            } else if slept > 30 && r.spec.restart_after_sleep && r.spec.needs.nas {
-                // Open SMB handles often don't survive sleep: stop it; the plan below starts it again
-                // from its completion markers once its conditions hold.
-                eprintln!("agent: slept {slept} s; restarting {}", r.spec.id);
-                r.stop(Duration::from_secs(30));
-                self.stopped(root.as_deref(), "stopped: the Mac slept");
-                self.release_claims(root.as_deref());
-                self.running = None;
-                std::fs::remove_file(self.record_path()).ok();
-            } else if (self.running.as_ref().unwrap().paused.is_none() || self.pause.is_some()) && self.lease.is_some() && self.beaten.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) && !self.beat(root.as_deref()) {
-                // (A job paused for its conditions doesn't beat: its lease lapses, and its work may go
-                // to another. One paused by the user does, its lease kept, a helper hearing whether
-                // its build Mac's pause is over.)
-                let r = self.running.as_mut().unwrap();
-                eprintln!("agent: {}'s lease lapsed and its work went to another worker; stopping it", r.spec.id);
-                r.stop(Duration::from_secs(30));
-                self.stopped(root.as_deref(), "its lease lapsed");
-                self.release_claims(root.as_deref());
-                self.running = None;
-                std::fs::remove_file(self.record_path()).ok();
-                ended = true;
-            } else if !self.keep_claims(root.as_deref()) {
-                // Another agent took its claims (they went stale while it was paused, or this Mac
-                // was away): it builds them; this one stops, unrecorded, and drops the rest.
-                let r = self.running.as_mut().unwrap();
-                eprintln!("agent: another Mac took {}'s areas; stopping it", r.spec.id);
-                r.stop(Duration::from_secs(30));
-                self.stopped(root.as_deref(), "another Mac took its areas");
-                self.release_claims(root.as_deref());
-                self.running = None;
-                self.claims_fresh = None;
-                std::fs::remove_file(self.record_path()).ok();
-                ended = true;
-            } else {
-                // Paused, or something it needs gone: at its next safe point (asked through its
-                // channel, frozen after DRAIN_GRACE if it hasn't stopped), or at once (frozen where it
-                // is: it can't save without the NAS); else going on.
-                let control = self.control_path();
-                let r = self.running.as_mut().unwrap();
-                match stop_for(&r.spec.needs, &c, self.pause.as_ref()) {
-                    Some((crate::control::Mode::Freeze, why)) => {
-                        if r.paused.is_none() {
-                            eprintln!("agent: pausing {}: {why}", r.spec.id);
-                        }
-                        r.pause(&why);
-                    }
-                    Some((crate::control::Mode::Drain, why)) => {
-                        let since = *self.drain_since.get_or_insert_with(|| {
-                            eprintln!("agent: {} stops at its next safe point: {why}", r.spec.id);
-                            if let Err(e) = std::fs::write(&control, b"drain") {
-                                eprintln!("agent: asking {} to stop: {e}", r.spec.id);
-                            }
-                            Instant::now()
-                        });
-                        if r.paused.is_none() && since.elapsed() >= DRAIN_GRACE {
-                            eprintln!("agent: {} reached no safe point in {} min; frozen where it is", r.spec.id, DRAIN_GRACE.as_secs() / 60);
-                            r.pause(&format!("{why}; frozen where it is (it reached no safe point in {} min): it goes on from there", DRAIN_GRACE.as_secs() / 60));
-                        } else if r.paused.is_some() && since.elapsed() < DRAIN_GRACE {
-                            // (Frozen for a condition that's back: it goes on to its safe point.)
-                            r.resume();
-                        }
-                        r.pausing = Some(why);
-                    }
-                    None => {
-                        if self.drain_since.take().is_some() {
-                            std::fs::write(&control, b"run").ok();
-                        }
-                        r.pausing = None;
-                        if r.paused.is_some() {
-                            eprintln!("agent: resuming {}", r.spec.id);
-                            r.resume();
-                        }
-                    }
-                }
-            }
+        // The running jobs.
+        for k in 0..SLOTS {
+            ended |= self.tend(k, &c, root.as_deref(), slept)?;
         }
 
         // Once the NAS answers: this Mac's earlier agent's claims dropped (it stopped or crashed: free
@@ -1266,8 +1274,9 @@ impl Agent {
         }
 
         // A helper's hand-offs, merged into the build's records before planning (the build Mac
-        // alone writes them): each loop when nothing runs, every two minutes while a job does.
-        let idle = self.running.is_none();
+        // alone writes them): each loop when the first job's slot is free, every two minutes while
+        // a job runs there.
+        let idle = self.slots[0].running.is_none();
         let merge_due = idle || ended || self.merged.is_none_or(|t| t.elapsed() >= Duration::from_secs(120));
         if let (Some(r), false, true, true) = (root.as_ref(), self.o.helper, self._lock.is_some() && !self.o.dry_run, merge_due) {
             match crate::handoff::merge_from(r, &self.o.home.join("scratch/handoff"), &self.handoff_bases(r)) {
@@ -1278,9 +1287,12 @@ impl Agent {
             self.merged = Some(Instant::now());
         }
 
-        // The plan: start the first job that can run. Made when one could start, when a job ends,
-        // and otherwise every five minutes for the heartbeat (between, its last view is shown).
-        let plan_due = idle || ended || self.planned.as_ref().is_none_or(|p| p.at.elapsed() >= Duration::from_secs(300));
+        // The plan: start the first job that can run. Made when one could start (the first job's
+        // slot free; the second's, each minute), when a job ends, and otherwise every five minutes
+        // for the heartbeat (between, its last view is shown).
+        let second_free = self.second_allowed() && self.slots[1].running.is_none();
+        let every = Duration::from_secs(if second_free { 60 } else { 300 });
+        let plan_due = idle || ended || self.planned.as_ref().is_none_or(|p| p.at.elapsed() >= every);
         let plan = match &root {
             Some(root) if self.o.helper => {
                 // A helper plans nothing: it asks the build Mac for work, once its last is handed back.
@@ -1308,140 +1320,61 @@ impl Agent {
                 Vec::new()
             }
         };
-        // A newer app installed: nothing new starts, so the loop exits between jobs and the launcher
-        // starts the new one (with work queued back to back, it would otherwise never get a turn).
-        let newer = self.running.is_none() && self.newer_app();
-        if newer {
+        // A newer app installed: nothing new starts, so the loop exits once the first job's slot is
+        // free and the launcher starts the new one (with work queued back to back, it would
+        // otherwise never get a turn).
+        let newer = self.newer_app();
+        if newer && idle {
             waiting.push(Waiting { step: None, what: "Building".into(), why: "restarting into the newly installed app".into() });
         }
-        // The build paused: nothing new starts (the running job stops above), and on the build Mac
+        // The build paused: nothing new starts (the running jobs stop above), and on the build Mac
         // its coordinator gives its workers nothing and has their jobs stop too.
         if let Some(p) = &self.pause {
             waiting.push(Waiting { step: None, what: "Building".into(), why: p.why() });
         }
-        if self.running.is_none() && !newer && self.pause.is_none() {
-            for spec in plan {
-                if let Some(why) = lapsed(&spec.needs, &c) {
-                    waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
-                    continue;
-                }
-                // (A helper's job came from the coordinator, which keeps a target it failed from it
-                // for an hour, doubling: no wait of its own on top.)
-                if let Some(&(n, until)) = self.mem.retry.get(&spec.id).filter(|_| !self.o.helper) {
-                    if now_s() < until {
-                        waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why: format!("failed {n} time{} in a row; trying again in {} min", if n == 1 { "" } else { "s" }, (until - now_s()).div_ceil(60)) });
+        if idle && !newer && self.pause.is_none() {
+            // (Not one that can't run beside the second job's: crate::agent::clash.)
+            let beside = self.slots[1].running.as_ref().map(|r| (step_of(&r.spec.id).unwrap_or_default(), r.spec.id.clone()));
+            for spec in &plan {
+                if let Some((b, id)) = &beside {
+                    let s = step_of(&spec.id).unwrap_or_default();
+                    if *id == spec.id || clash(&s, b) {
+                        waiting.push(Waiting { step: Some(s), what: spec.what.clone(), why: format!("waits for the job beside it ({}) to end", build::label(b)) });
                         continue;
                     }
                 }
-                if self.o.dry_run {
-                    waiting.push(Waiting { step: None, what: spec.what.clone(), why: "would start now (dry run)".into() });
+                if self.try_start(0, spec.clone(), &c, root.as_deref(), &mut waiting) {
                     break;
                 }
-                let (id, what) = (spec.id.clone(), spec.what.clone());
-                // Room on the disk for it, from the caches that are cheap to fill again (a terrain
-                // run's more, its area's archive copies spared; the OSM pass's own need, less the
-                // pack cache it clears; a helper's Mac has less room).
-                // Made before its targets are claimed: it can take minutes, and a claim is
-                // refreshed only while a job runs.
-                let cache = self.o.home.join("cache");
-                let need = if self.o.helper {
-                    helper_need(spec.record.as_ref().map_or("tail", |w| w.step.as_str()))
-                } else if id.starts_with("osm-pass") {
-                    PASS_SPACE.saturating_sub(dir_bytes(&cache.join("base"))).max(room::RESERVE)
-                } else if id.starts_with("terrain ") {
-                    room::RESERVE + TERRAIN_SPACE
-                } else {
-                    room::RESERVE
-                };
-                // (Never without the NAS: what goes here must be kept there.)
-                // (The OSM pass without the margin: its need is what its conditions admitted it with.)
-                let margin = if id.starts_with("osm-pass") { 0 } else { room::margin(need) };
-                if let Some(r) = &root {
-                    match room::make_room(&cache, &r.join("sources"), need, margin, &|p| terrain_reads(&id, p)) {
-                        Ok(0) => {}
-                        Ok(n) => {
-                            eprintln!("agent: {} GB of cached canopy squares and terrain tiles deleted for {} GB free", n >> 30, (need + margin) >> 30);
-                            self.cheap = None;
-                        }
-                        Err(e) => eprintln!("agent: making room on the disk: {e:#}"),
-                    }
-                }
-                // A helper's job its disk still has no room for (the caches emptied as far as they
-                // could be): given back, not started on a Mac someone uses.
-                if self.o.helper {
-                    let free = room::disk_free(&self.o.home).unwrap_or(0);
-                    if free < need {
-                        let why = format!("too little room on its disk: {} GB free, {} GB needed", free >> 30, need >> 30);
-                        waiting.push(Waiting { step: None, what: what.clone(), why: why.clone() });
-                        self.end_lease(Outcome::Failed, &[], &why);
-                        continue;
-                    }
-                }
-                // A job other workers may also do: its targets held first, by a lease in this Mac's
-                // coordinator (and claim files, for a helper on an app from before it); when another
-                // holds one, none starts (the next loop plans without it). A helper's job came
-                // with its lease.
-                if let (Some((step, ts)), Some(r), false) = (shared_targets(&spec), &root, self.o.helper) {
-                    let targets = spec.record.as_ref().map(|w| w.targets.clone()).unwrap_or_default();
-                    let lease = match &self.coord {
-                        Some(c) => match c.hold(&step, &targets) {
-                            Some(id) => Some(id),
-                            None => {
-                                waiting.push(Waiting { step: None, what: what.clone(), why: "another worker took part of it; planning again".into() });
-                                continue;
-                            }
-                        },
-                        None => None,
-                    };
-                    let let_go = |a: &Self| {
-                        if let (Some(c), Some(id)) = (&a.coord, lease) {
-                            c.finish(id, &[]);
-                        }
-                    };
-                    if !claims::claim(r, &step, &ts, &self.me) {
-                        let_go(self);
-                        waiting.push(Waiting { step: None, what: what.clone(), why: "another Mac took part of it; planning again".into() });
-                        continue;
-                    }
-                    // Recorded since this loop read the keys (another worker built it meanwhile):
-                    // not built again.
-                    let done = self.planning_keys(r).map(|keys| spec.record.as_ref().is_some_and(|w| w.targets.iter().any(|(t, k)| keys.recorded(&w.step, t) == Some(k.as_str()))));
-                    if done.unwrap_or(true) {
-                        let_go(self);
-                        claims::release(r, &step, &ts, &self.me);
-                        waiting.push(Waiting { step: None, what: what.clone(), why: "another worker built part of it meanwhile (or the keys can't be read now); planning again".into() });
-                        continue;
-                    }
-                    self.lease = lease.map(Held::Own);
-                    self.claims_fresh = Some(Instant::now());
-                }
-                // (A catalog's start: the next round waits an hour from it, whether or not it goes out.)
-                if spec.id.starts_with("catalog") {
-                    self.mem.catalog_at = now_s();
-                    self.save();
-                }
-                let shared = shared_targets(&spec);
-                if let Err(e) = self.start(spec, &c) {
-                    // It couldn't even start (a missing program, a full disk): retried later.
-                    eprintln!("agent: can't start {id}: {e:#}");
-                    self.end_lease(Outcome::Failed, &[], &format!("couldn't start: {e:#}"));
-                    if let (Some((step, ts)), Some(r), false) = (shared, &root, self.o.helper) {
-                        claims::release(r, &step, &ts, &self.me);
-                    }
-                    self.finished(&id, &what, false, 0, format!("couldn't start: {e:#}"));
-                    continue;
-                }
-                break;
             }
             // (Why the jobs before it wait: kept with the plan, so the status says so while the job
             // started runs, not only between jobs.)
             if let Some(p) = self.planned.as_mut() {
                 p.waiting = waiting.clone();
             }
+        } else if plan_due && !self.o.helper && !plan.is_empty() {
+            // (Planned again while the first job runs: why the jobs before the next it would start
+            // wait, as when it started.)
+            self.why_waiting(&plan, &c, &mut waiting);
+            if let Some(p) = self.planned.as_mut() {
+                p.waiting = waiting.clone();
+            }
+        }
+        // The second job, beside the first: the plan's first it may take (`start_second`).
+        if second_free && !plan.is_empty() {
+            if newer {
+                self.beside_why = Some("restarting into the newly installed app".into());
+            } else if let Some(p) = &self.pause {
+                self.beside_why = Some(p.why());
+            } else {
+                self.start_second(&plan, &c, root.as_deref());
+            }
+        } else if self.slots[1].running.is_some() {
+            self.beside_why = None;
         }
         // A helper's lease for a job that didn't start (room on the disk, say): given back.
-        if self.running.is_none() && self.lease.is_some() {
-            self.end_lease(Outcome::Interrupted, &[], "it couldn't start on the helper");
+        if self.slots[0].running.is_none() && self.slots[0].lease.is_some() {
+            self.end_lease(0, Outcome::Interrupted, &[], "it couldn't start on the helper");
         }
 
         // The heartbeat.
@@ -1462,39 +1395,10 @@ impl Agent {
             (Some(r), false) => helpers(r),
             _ => Vec::new(),
         };
-        annotate(&mut checklist, self.running.as_ref().and_then(|r| step_of(&r.spec.id)).as_deref(), &helpers, &waiting);
-        // The running job's parts (the last it said), its progress, and from its pace the time it
-        // has left.
-        if let Some(r) = self.running.as_mut() {
-            if let Some(p) = jobs::parts(&r.log) {
-                r.parts = Some(p);
-            }
-        }
-        let job_progress = self.running.as_mut().and_then(|r| {
-            let part = r.parts.as_ref().map(|p| p.0);
-            // (What it last said holds while its own output since pushes the line out of sight, in
-            // the same part.)
-            match jobs::said(&r.log) {
-                jobs::Said::Progress(d, t, u) => r.said = Some((d, t, u, part)),
-                jobs::Said::NoneYet => r.said = None,
-                jobs::Said::Unknown => r.said = r.said.take().filter(|s| s.3 == part),
-            }
-            let (done, total, unit, _) = r.said.clone()?;
-            let frac = done / total;
-            // (Its pace measured again from a new unit, a new part, or a step back.)
-            let key = jobs::unit_key(&unit).to_string();
-            let fresh = r.progress_base.as_ref().is_none_or(|b| b.2 != key || b.3 != part || frac < b.1);
-            if fresh {
-                r.progress_base = Some((Instant::now(), frac, key, part));
-            }
-            if fresh || r.moved.is_none_or(|m| frac > m.0) {
-                r.moved = Some((frac, now_s()));
-            }
-            let (t0, f0, _, _) = r.progress_base.as_ref().unwrap();
-            let eta_s = (frac > *f0 && r.paused.is_none()).then(|| (t0.elapsed().as_secs_f64() * (1.0 - frac) / (frac - f0)) as u64);
-            Some(JobProgress { done, total, unit, eta_s, moved_at: r.moved.map(|m| m.1) })
-        });
-        self.job_eta = job_progress.as_ref().and_then(|p| p.eta_s);
+        let now_steps: Vec<String> = self.slots.iter().filter_map(|s| s.running.as_ref().and_then(|r| step_of(&r.spec.id))).collect();
+        annotate(&mut checklist, &now_steps, &helpers, &waiting);
+        let job = self.job_view(0);
+        let beside = self.job_view(1);
         let status = Status {
             host: self.host.clone(),
             pid: std::process::id(),
@@ -1502,19 +1406,9 @@ impl Agent {
             beat: now_s(),
             started: self.started,
             conditions: c,
-            job: self.running.as_ref().map(|r| JobView {
-                id: r.spec.id.clone(),
-                what: r.spec.what.clone(),
-                started: r.started,
-                paused: r.paused.clone(),
-                pausing: r.pausing.clone(),
-                tail: jobs::tail(&r.log, 3),
-                progress: job_progress.clone(),
-                parts: r.parts.as_ref().map(|p| p.1.clone()).unwrap_or_default(),
-                part: r.parts.as_ref().map(|p| p.0),
-                mem_mb: crate::sys::footprint_of_group(r.pgid).map(|b| b >> 20),
-                threads: Some(r.threads),
-            }),
+            job,
+            beside,
+            beside_why: if self.second_allowed() && self.slots[1].running.is_none() { self.beside_why.clone() } else { None },
             waiting,
             recent: self.mem.recent.clone(),
             regions,
@@ -1557,6 +1451,405 @@ impl Agent {
         Ok(ended)
     }
 
+    /// Slot `k`'s running job, looked after: ended (recorded, its lease ended, a failure retried with
+    /// a growing delay), restarted after a sleep when it touches the NAS, stopped when its lease
+    /// lapsed or another Mac took its claims, paused or resumed as its conditions and the build's
+    /// pause say. True when it ended.
+    fn tend(&mut self, k: usize, c: &Conditions, root: Option<&Path>, slept: u64) -> Result<bool> {
+        let Some(r) = self.slots[k].running.as_mut() else { return Ok(false) };
+        if let Some(st) = r.poll()? {
+            let secs = r.elapsed().as_secs();
+            let ok = st.success();
+            // Stopped at a safe point, the build pausing (crate::control): not a failure. (Only
+            // when it was asked to: a job's own exit 75 for anything else is a failure.)
+            let paused = st.code() == Some(crate::control::PAUSED_EXIT) && self.slots[k].drain_since.is_some();
+            let of = r.spec.record.as_ref().map_or(0, |w| w.targets.len());
+            let step = r.spec.record.as_ref().map(|w| w.step.clone()).unwrap_or_default();
+            // The targets it finished: every one when it succeeded, else those it noted done as
+            // each was saved (crate::control::done), whatever stopped it, so they aren't built
+            // again. The build Mac's agent records them; a helper's go back to the coordinator.
+            let done = self.finished_targets(k, ok);
+            let recorded = self.record_done(root, &step, &done);
+            let r = self.slots[k].running.as_mut().unwrap();
+            let note = if ok {
+                String::new()
+            } else if paused {
+                format!("paused at a safe point, {} of {of} done; the rest goes on when the build does", done.len())
+            } else {
+                format!("{st}{}\n{}", if done.is_empty() { String::new() } else { format!(" ({} of {of} done and kept)", done.len()) }, jobs::tail(&r.log, 20))
+            };
+            let (id, what) = (r.spec.id.clone(), r.spec.what.clone());
+            eprintln!("agent: {id} {} after {secs} s", if ok { "finished" } else if paused { "paused at a safe point" } else { "failed" });
+            let how = if ok { String::new() } else if paused { "paused at a safe point".to_string() } else { format!("failed ({st})") };
+            self.note_end(k, &step, &done, secs, ok, &how);
+            // (What a target of its step takes here, for the forecast: the first job's alone, the
+            // second's running beside it.)
+            if ok && of > 0 && !step.is_empty() && k == 0 {
+                let each = secs as f64 / of as f64;
+                let e = self.mem.step_secs.entry(step.clone()).or_insert(each);
+                *e = 0.7 * *e + 0.3 * each;
+            }
+            if ok && step == "catalog" {
+                let ready = self.ready.borrow().clone();
+                self.note(crate::coord::history::Event { worker: Some(self.host.clone()), step: Some(step.clone()), targets: ready, ..crate::coord::history::Event::new("catalog") });
+            }
+            let outcome = if ok { Outcome::Done } else if paused { Outcome::Paused } else { Outcome::Failed };
+            // (The coordinator's record of what's done: a helper's whatever it did, this Mac's
+            // once it's in the keys.)
+            let handed = if self.o.helper || recorded { done.clone() } else { Vec::new() };
+            self.end_lease(k, outcome, &handed, &note);
+            self.finished(&id, &what, ok || paused, secs, note);
+            self.slots[k].drain_since = None;
+            self.release_claims(k, root);
+            self.slots[k].running = None;
+            std::fs::remove_file(self.record_path(k)).ok();
+            return Ok(true);
+        }
+        if slept > 30 && r.spec.restart_after_sleep && r.spec.needs.nas {
+            // Open SMB handles often don't survive sleep: stop it; the plan below starts it again
+            // from its completion markers once its conditions hold.
+            eprintln!("agent: slept {slept} s; restarting {}", r.spec.id);
+            r.stop(Duration::from_secs(30));
+            self.stopped(k, root, "stopped: the Mac slept");
+            self.release_claims(k, root);
+            self.slots[k].running = None;
+            std::fs::remove_file(self.record_path(k)).ok();
+            return Ok(false);
+        }
+        let paused_job = self.slots[k].running.as_ref().unwrap().paused.is_some();
+        if (!paused_job || self.pause.is_some()) && self.slots[k].lease.is_some() && self.slots[k].beaten.is_none_or(|t| t.elapsed() >= Duration::from_secs(60)) && !self.beat(k, root) {
+            // (A job paused for its conditions doesn't beat: its lease lapses, and its work may go
+            // to another. One paused by the user does, its lease kept, a helper hearing whether
+            // its build Mac's pause is over.)
+            let r = self.slots[k].running.as_mut().unwrap();
+            eprintln!("agent: {}'s lease lapsed and its work went to another worker; stopping it", r.spec.id);
+            r.stop(Duration::from_secs(30));
+            self.stopped(k, root, "its lease lapsed");
+            self.release_claims(k, root);
+            self.slots[k].running = None;
+            std::fs::remove_file(self.record_path(k)).ok();
+            return Ok(true);
+        }
+        if !self.keep_claims(k, root) {
+            // Another agent took its claims (they went stale while it was paused, or this Mac
+            // was away): it builds them; this one stops, unrecorded, and drops the rest.
+            let r = self.slots[k].running.as_mut().unwrap();
+            eprintln!("agent: another Mac took {}'s areas; stopping it", r.spec.id);
+            r.stop(Duration::from_secs(30));
+            self.stopped(k, root, "another Mac took its areas");
+            self.release_claims(k, root);
+            self.slots[k].running = None;
+            self.slots[k].claims_fresh = None;
+            std::fs::remove_file(self.record_path(k)).ok();
+            return Ok(true);
+        }
+        // Paused, or something it needs gone: at its next safe point (asked through its channel,
+        // frozen after DRAIN_GRACE if it hasn't stopped), or at once (frozen where it is: it can't
+        // save without the NAS); else going on.
+        let control = self.control_path(k);
+        let pause = self.pause.clone();
+        let slot = &mut self.slots[k];
+        let r = slot.running.as_mut().unwrap();
+        match stop_for(&r.spec.needs, c, pause.as_ref()) {
+            Some((crate::control::Mode::Freeze, why)) => {
+                if r.paused.is_none() {
+                    eprintln!("agent: pausing {}: {why}", r.spec.id);
+                }
+                r.pause(&why);
+            }
+            Some((crate::control::Mode::Drain, why)) => {
+                let since = *slot.drain_since.get_or_insert_with(|| {
+                    eprintln!("agent: {} stops at its next safe point: {why}", r.spec.id);
+                    if let Err(e) = std::fs::write(&control, b"drain") {
+                        eprintln!("agent: asking {} to stop: {e}", r.spec.id);
+                    }
+                    Instant::now()
+                });
+                if r.paused.is_none() && since.elapsed() >= DRAIN_GRACE {
+                    eprintln!("agent: {} reached no safe point in {} min; frozen where it is", r.spec.id, DRAIN_GRACE.as_secs() / 60);
+                    r.pause(&format!("{why}; frozen where it is (it reached no safe point in {} min): it goes on from there", DRAIN_GRACE.as_secs() / 60));
+                } else if r.paused.is_some() && since.elapsed() < DRAIN_GRACE {
+                    // (Frozen for a condition that's back: it goes on to its safe point.)
+                    r.resume();
+                }
+                r.pausing = Some(why);
+            }
+            None => {
+                if slot.drain_since.take().is_some() {
+                    std::fs::write(&control, b"run").ok();
+                }
+                r.pausing = None;
+                if r.paused.is_some() {
+                    eprintln!("agent: resuming {}", r.spec.id);
+                    r.resume();
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Starts `spec` in slot `k` when it can start now: its conditions hold, it isn't waiting out a
+    /// failure, there's room on the disk for it, and (a shared step's) its targets are held for it;
+    /// true when it started (a dry run: when it would have). Why not goes in `waiting` (the first
+    /// slot's: the second says its own, `beside_why`).
+    fn try_start(&mut self, k: usize, spec: JobSpec, c: &Conditions, root: Option<&Path>, waiting: &mut Vec<Waiting>) -> bool {
+        let mut said: Vec<Waiting> = Vec::new();
+        let started = self.try_start_said(k, spec, c, root, &mut said);
+        if k == 0 {
+            waiting.extend(said);
+        } else if let Some(w) = said.into_iter().next() {
+            self.beside_why = Some(format!("{}: {}", w.what, w.why));
+        }
+        started
+    }
+
+    /// Why `spec` can't start now for itself: a condition it needs gone, or a failure's wait.
+    fn wait_reason(&self, spec: &JobSpec, c: &Conditions) -> Option<String> {
+        if let Some(why) = lapsed(&spec.needs, c) {
+            return Some(why);
+        }
+        // (A helper's job came from the coordinator, which keeps a target it failed from it for an
+        // hour, doubling: no wait of its own on top.)
+        match self.mem.retry.get(&spec.id).filter(|_| !self.o.helper) {
+            Some(&(n, until)) if now_s() < until => Some(format!("failed {n} time{} in a row; trying again in {} min", if n == 1 { "" } else { "s" }, (until - now_s()).div_ceil(60))),
+            _ => None,
+        }
+    }
+
+    /// While the first job runs, why the plan's jobs before the next its slot would start wait
+    /// (their own reasons, the job beside it), as the start loop says.
+    fn why_waiting(&self, plan: &[JobSpec], c: &Conditions, waiting: &mut Vec<Waiting>) {
+        let running: Vec<&str> = self.slots.iter().filter_map(|s| s.running.as_ref().map(|r| r.spec.id.as_str())).collect();
+        let beside = self.slots[1].running.as_ref().map(|r| step_of(&r.spec.id).unwrap_or_default());
+        for spec in plan.iter().filter(|s| !running.contains(&s.id.as_str())) {
+            let s = step_of(&spec.id).unwrap_or_default();
+            let why = self.wait_reason(spec, c).or_else(|| beside.as_ref().filter(|b| clash(&s, b)).map(|b| format!("waits for the job beside it ({}) to end", build::label(b))));
+            match why {
+                Some(why) => waiting.push(Waiting { step: Some(s), what: spec.what.clone(), why }),
+                None => break,
+            }
+        }
+    }
+
+    fn try_start_said(&mut self, k: usize, spec: JobSpec, c: &Conditions, root: Option<&Path>, waiting: &mut Vec<Waiting>) -> bool {
+        if let Some(why) = self.wait_reason(&spec, c) {
+            waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
+            return false;
+        }
+        if self.o.dry_run {
+            waiting.push(Waiting { step: None, what: spec.what.clone(), why: "would start now (dry run)".into() });
+            return true;
+        }
+        let (id, what) = (spec.id.clone(), spec.what.clone());
+        let step = step_of(&id).unwrap_or_default();
+        // Room on the disk for it, from the caches that are cheap to fill again (a terrain run's
+        // more, its area's archive copies spared; the OSM pass's own need, less the pack cache it
+        // clears; a helper's Mac has less room). Made before its targets are claimed: it can take
+        // minutes, and a claim is refreshed only while a job runs. The second job makes none, nor
+        // the first while the second reads the caches (it would delete what that one reads): each
+        // then starts only with the room there is.
+        let cache = self.o.home.join("cache");
+        let need = if self.o.helper {
+            helper_need(spec.record.as_ref().map_or("tail", |w| w.step.as_str()))
+        } else if k > 0 {
+            second_need(&step)
+        } else if id.starts_with("osm-pass") {
+            PASS_SPACE.saturating_sub(dir_bytes(&cache.join("base"))).max(room::RESERVE)
+        } else if id.starts_with("terrain ") {
+            room::RESERVE + TERRAIN_SPACE
+        } else {
+            room::RESERVE
+        };
+        let other_reads = self.slots.iter().enumerate().any(|(j, s)| j != k && s.running.as_ref().is_some_and(|r| reads_caches(&step_of(&r.spec.id).unwrap_or_default())));
+        if k > 0 || other_reads {
+            let free = room::disk_free(&self.o.home).unwrap_or(0);
+            if !self.o.helper && free < need {
+                let beside = if k > 0 { "beside the first job it makes no room on the disk" } else { "the caches the job beside it reads aren't emptied for it" };
+                waiting.push(Waiting { step: Some(step), what: what.clone(), why: format!("needs {} GB free on the disk ({} GB free; {beside})", need >> 30, free >> 30) });
+                return false;
+            }
+        } else if let Some(r) = root {
+            // (Never without the NAS: what goes here must be kept there.)
+            // (The OSM pass without the margin: its need is what its conditions admitted it with.)
+            let margin = if id.starts_with("osm-pass") { 0 } else { room::margin(need) };
+            match room::make_room(&cache, &r.join("sources"), need, margin, &|p| terrain_reads(&id, p)) {
+                Ok(0) => {}
+                Ok(n) => {
+                    eprintln!("agent: {} GB of cached canopy squares and terrain tiles deleted for {} GB free", n >> 30, (need + margin) >> 30);
+                    self.cheap = None;
+                }
+                Err(e) => eprintln!("agent: making room on the disk: {e:#}"),
+            }
+        }
+        // A helper's job its disk still has no room for (the caches emptied as far as they could
+        // be): given back, not started on a Mac someone uses.
+        if self.o.helper {
+            let free = room::disk_free(&self.o.home).unwrap_or(0);
+            if free < need {
+                let why = format!("too little room on its disk: {} GB free, {} GB needed", free >> 30, need >> 30);
+                waiting.push(Waiting { step: None, what: what.clone(), why: why.clone() });
+                self.end_lease(k, Outcome::Failed, &[], &why);
+                return false;
+            }
+        }
+        // A job other workers may also do: its targets held first, by a lease in this Mac's
+        // coordinator (and claim files, for a helper on an app from before it); when another holds
+        // one, none starts (the next loop plans without it). A helper's job came with its lease.
+        if let (Some((step, ts)), Some(r), false) = (shared_targets(&spec), root, self.o.helper) {
+            let targets = spec.record.as_ref().map(|w| w.targets.clone()).unwrap_or_default();
+            let lease = match &self.coord {
+                Some(c) => match c.hold(&step, &targets) {
+                    Some(id) => Some(id),
+                    None => {
+                        waiting.push(Waiting { step: None, what: what.clone(), why: "another worker took part of it; planning again".into() });
+                        return false;
+                    }
+                },
+                None => None,
+            };
+            let let_go = |a: &Self| {
+                if let (Some(c), Some(id)) = (&a.coord, lease) {
+                    c.finish(id, &[]);
+                }
+            };
+            let me = self.me_of(k);
+            if !claims::claim(r, &step, &ts, &me) {
+                let_go(self);
+                waiting.push(Waiting { step: None, what: what.clone(), why: "another Mac took part of it; planning again".into() });
+                return false;
+            }
+            // Recorded since this loop read the keys (another worker built it meanwhile): not built
+            // again.
+            let done = self.planning_keys(r).map(|keys| spec.record.as_ref().is_some_and(|w| w.targets.iter().any(|(t, k)| keys.recorded(&w.step, t) == Some(k.as_str()))));
+            if done.unwrap_or(true) {
+                let_go(self);
+                claims::release(r, &step, &ts, &me);
+                waiting.push(Waiting { step: None, what: what.clone(), why: "another worker built part of it meanwhile (or the keys can't be read now); planning again".into() });
+                return false;
+            }
+            self.slots[k].lease = lease.map(Held::Own);
+            self.slots[k].claims_fresh = Some(Instant::now());
+        }
+        // (A catalog's start: the next round waits an hour from it, whether or not it goes out.)
+        if spec.id.starts_with("catalog") {
+            self.mem.catalog_at = now_s();
+            self.save();
+        }
+        let shared = shared_targets(&spec);
+        if let Err(e) = self.start(k, spec, c) {
+            // It couldn't even start (a missing program, a full disk): retried later.
+            eprintln!("agent: can't start {id}: {e:#}");
+            self.end_lease(k, Outcome::Failed, &[], &format!("couldn't start: {e:#}"));
+            if let (Some((step, ts)), Some(r), false) = (shared, root, self.o.helper) {
+                claims::release(r, &step, &ts, &self.me_of(k));
+            }
+            self.finished(&id, &what, false, 0, format!("couldn't start: {e:#}"));
+            return false;
+        }
+        true
+    }
+
+    /// The second job (docs/plan.md §8, Two jobs at once), when its slot is free: of the plan's
+    /// jobs, the first by its steps' order (`SECOND`) that can run beside the first job's (`clash`),
+    /// while the Mac is in use only one that mostly waits on the network (`LIGHT`), and that fits
+    /// the memory beside it: the two jobs' within three quarters of the Mac's (the first's as
+    /// predicted, or as it is now if more), and the second's free now with 2 GB to spare. Why none
+    /// starts, in `beside_why`.
+    fn start_second(&mut self, plan: &[JobSpec], c: &Conditions, root: Option<&Path>) {
+        let rank = |s: &JobSpec| step_of(&s.id).and_then(|st| SECOND.iter().position(|x| *x == st));
+        let mut picks: Vec<&JobSpec> = plan.iter().filter(|s| rank(s).is_some()).collect();
+        picks.sort_by_key(|s| rank(s));
+        let first = self.slots[0].running.as_ref().map(|r| (step_of(&r.spec.id).unwrap_or_default(), r.spec.id.clone(), crate::sys::footprint_of_group(r.pgid).map_or(0, |b| b >> 20), self.spec_peak(&r.spec)));
+        if first.as_ref().is_some_and(|f| ALONE.contains(&f.0.as_str())) {
+            self.beside_why = Some(format!("{} runs alone", build::label(&first.unwrap().0)));
+            return;
+        }
+        let res = cond::resources(&self.o.home, None, None, None);
+        let total_mb = (res.mem_gb * 1024.0) as u64;
+        let free_mb = res.mem_free_pct.map_or(0, |p| total_mb * p as u64 / 100);
+        let first_mb = first.as_ref().map_or(0, |f| f.2.max(f.3));
+        let mut why: Option<String> = None;
+        for spec in picks {
+            let step = step_of(&spec.id).unwrap_or_default();
+            if first.as_ref().is_some_and(|f| f.1 == spec.id || clash(&f.0, &step)) {
+                continue;
+            }
+            if c.user_active() && !LIGHT.contains(&step.as_str()) {
+                why.get_or_insert_with(|| "the Mac is in use: beside the first job, only work that mostly waits on the network".into());
+                continue;
+            }
+            let mb = self.spec_peak(spec);
+            if first_mb + mb > total_mb * 3 / 4 || free_mb < mb + 2048 {
+                why.get_or_insert_with(|| format!("{} needs about {:.1} GB, too much beside the first job ({:.1} GB) in this Mac's {:.0} GB ({:.1} GB free)", build::label(&step), mb as f64 / 1024.0, first_mb as f64 / 1024.0, res.mem_gb, free_mb as f64 / 1024.0));
+                continue;
+            }
+            self.beside_why = None;
+            if self.try_start(1, spec.clone(), c, root, &mut Vec::new()) {
+                return;
+            }
+            // (Why it didn't: try_start says, in beside_why; the next may.)
+            why = why.or_else(|| self.beside_why.clone());
+        }
+        self.beside_why = Some(why.unwrap_or_else(|| "none of the work left can run beside the first job now".into()));
+    }
+
+    /// The memory a job of `spec` is expected to take (MB): its targets' largest, as measured or
+    /// offered (crate::coord::Coordinator::peak), else its step's first guess (`second_peak`).
+    fn spec_peak(&self, spec: &JobSpec) -> u64 {
+        let step = step_of(&spec.id).unwrap_or_default();
+        match (&self.coord, spec.record.as_ref()) {
+            (Some(c), Some(w)) => w.targets.iter().map(|(t, _)| c.peak(&w.step, t).unwrap_or_else(|| second_peak(&w.step))).max().unwrap_or(0),
+            _ => second_peak(&step),
+        }
+    }
+
+    /// Slot `k`'s job for the status: its parts (the last it said), its progress, and from its pace
+    /// the time it has left (kept for the forecast).
+    fn job_view(&mut self, k: usize) -> Option<JobView> {
+        let slot = &mut self.slots[k];
+        let r = slot.running.as_mut()?;
+        if let Some(p) = jobs::parts(&r.log) {
+            r.parts = Some(p);
+        }
+        let part = r.parts.as_ref().map(|p| p.0);
+        // (What it last said holds while its own output since pushes the line out of sight, in the
+        // same part.)
+        match jobs::said(&r.log) {
+            jobs::Said::Progress(d, t, u) => r.said = Some((d, t, u, part)),
+            jobs::Said::NoneYet => r.said = None,
+            jobs::Said::Unknown => r.said = r.said.take().filter(|s| s.3 == part),
+        }
+        let progress = r.said.clone().map(|(done, total, unit, _)| {
+            let frac = done / total;
+            // (Its pace measured again from a new unit, a new part, or a step back.)
+            let key = jobs::unit_key(&unit).to_string();
+            let fresh = r.progress_base.as_ref().is_none_or(|b| b.2 != key || b.3 != part || frac < b.1);
+            if fresh {
+                r.progress_base = Some((Instant::now(), frac, key, part));
+            }
+            if fresh || r.moved.is_none_or(|m| frac > m.0) {
+                r.moved = Some((frac, now_s()));
+            }
+            let (t0, f0, _, _) = r.progress_base.as_ref().unwrap();
+            let eta_s = (frac > *f0 && r.paused.is_none()).then(|| (t0.elapsed().as_secs_f64() * (1.0 - frac) / (frac - f0)) as u64);
+            JobProgress { done, total, unit, eta_s, moved_at: r.moved.map(|m| m.1) }
+        });
+        slot.job_eta = progress.as_ref().and_then(|p| p.eta_s);
+        Some(JobView {
+            id: r.spec.id.clone(),
+            what: r.spec.what.clone(),
+            started: r.started,
+            paused: r.paused.clone(),
+            pausing: r.pausing.clone(),
+            tail: jobs::tail(&r.log, 3),
+            progress,
+            parts: r.parts.as_ref().map(|p| p.1.clone()).unwrap_or_default(),
+            part: r.parts.as_ref().map(|p| p.0),
+            mem_mb: crate::sys::footprint_of_group(r.pgid).map(|b| b >> 20),
+            threads: Some(r.threads),
+        })
+    }
+
     /// This Mac's resources for the status (cond::Resources); its caches counted again on a thread
     /// of their own when ten minutes old.
     fn resources(&self, root: Option<&Path>) -> cond::Resources {
@@ -1574,24 +1867,40 @@ impl Agent {
         cond::resources(&self.o.home, root, bytes.map(|b| (b as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0), (ms != u64::MAX && root.is_some()).then_some(ms))
     }
 
-    fn start(&mut self, spec: JobSpec, c: &Conditions) -> Result<()> {
+    fn start(&mut self, k: usize, mut spec: JobSpec, c: &Conditions) -> Result<()> {
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
         // Half the cores while the user is active, all of them when away (a helper, two fewer:
-        // its Mac has less memory, and its user's work comes first).
-        let threads = match (c.user_active(), self.o.helper) {
-            (true, _) => (cores / 2).max(1),
-            (false, true) => cores.saturating_sub(2).max(1),
-            (false, false) => cores,
+        // its Mac has less memory, and its user's work comes first). The second job: four for one
+        // that mostly waits on the network, else half (the two jobs' threads share the cores).
+        let step = step_of(&spec.id).unwrap_or_default();
+        let threads = match (k, c.user_active(), self.o.helper) {
+            (1.., _, _) if LIGHT.contains(&step.as_str()) => 4.min(cores),
+            (1.., _, _) => (cores / 2).max(1),
+            (_, true, _) => (cores / 2).max(1),
+            (_, false, true) => cores.saturating_sub(2).max(1),
+            (_, false, false) => cores,
         };
+        // The second job's scratch folder its own (a step's work in it, wiped by its next run).
+        if k > 0 {
+            let first = self.o.home.join("scratch");
+            let mine = self.o.home.join(format!("scratch-{}", k + 1));
+            if let Some(i) = spec.cmd.iter().position(|a| a == "--scratch") {
+                if let Some(p) = spec.cmd.get_mut(i + 1) {
+                    if let Ok(rest) = Path::new(p.as_str()).strip_prefix(&first) {
+                        *p = mine.join(rest).to_string_lossy().into_owned();
+                    }
+                }
+            }
+        }
         let log = self.o.home.join("logs").join(format!("{}.log", spec.id.replace([' ', '/'], "-")));
-        eprintln!("agent: starting {} ({threads} threads)", spec.id);
+        eprintln!("agent: starting {}{} ({threads} threads)", spec.id, if k > 0 { " beside the first job" } else { "" });
         // The build Mac's jobs save the records (crate::out::Out::save trusts them by this, whatever
         // this Mac is named now), note what their units cost, and may offer tasks to other workers
         // through the coordinator; a helper's hand their saves off (SCENIC_HANDOFF, in their command).
         let mut env: Vec<(String, String)> = Vec::new();
         if !self.o.helper {
             env.push(("SCENIC_BUILD_MAC".into(), "1".into()));
-            env.push(("SCENIC_COSTS".into(), self.o.home.join("costs.jsonl").to_string_lossy().into_owned()));
+            env.push(("SCENIC_COSTS".into(), self.costs_path(k).to_string_lossy().into_owned()));
             if let Some(c) = &self.coord {
                 env.push(("SCENIC_COORD".into(), format!("http://127.0.0.1:{}", crate::coord::PORT)));
                 env.push(("SCENIC_COORD_TOKEN".into(), c.job_token.clone()));
@@ -1599,17 +1908,19 @@ impl Agent {
         }
         // Its channel, to stop at a safe point when the build pauses, and where it notes each target
         // done (crate::control), afresh.
-        std::fs::write(self.control_path(), b"run").with_context(|| format!("write {}", self.control_path().display()))?;
-        let done = self.done_path();
+        let control = self.control_path(k);
+        std::fs::write(&control, b"run").with_context(|| format!("write {}", control.display()))?;
+        let done = self.done_path(k);
         std::fs::remove_file(&done).ok();
-        self.drain_since = None;
-        env.push((crate::control::CONTROL_ENV.into(), self.control_path().to_string_lossy().into_owned()));
+        self.slots[k].drain_since = None;
+        env.push((crate::control::CONTROL_ENV.into(), control.to_string_lossy().into_owned()));
         env.push((crate::control::DONE_ENV.into(), done.to_string_lossy().into_owned()));
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let (step, targets) = spec.record.as_ref().map_or((spec.id.split(' ').next().map(str::to_string), Vec::new()), |w| (Some(w.step.clone()), w.targets.iter().map(|t| t.0.clone()).collect()));
         let what = spec.what.clone();
-        self.running = Some(Running::start(spec, threads, &env, log, &self.record_path(), Some(&done))?);
-        self.note(crate::coord::history::Event { worker: Some(self.host.clone()), step, targets, what, ..crate::coord::history::Event::new("start") });
+        self.slots[k].running = Some(Running::start(spec, threads, &env, log, &self.record_path(k), Some(&done))?);
+        self.slots[k].beaten = None;
+        self.note(crate::coord::history::Event { worker: Some(self.worker_of(k)), step, targets, what, ..crate::coord::history::Event::new("start") });
         Ok(())
     }
 
@@ -1621,13 +1932,13 @@ impl Agent {
         }
     }
 
-    /// Notes the running job's end: its step, the targets it finished, its time, and how it ended
+    /// Notes slot `k`'s job's end: its step, the targets it finished, its time, and how it ended
     /// (`how`: empty when it succeeded).
-    fn note_end(&self, step: &str, done: &[(String, String)], secs: u64, ok: bool, how: &str) {
+    fn note_end(&self, k: usize, step: &str, done: &[(String, String)], secs: u64, ok: bool, how: &str) {
         // (A job with no record of its own, the pass's or the daily ones, by its id's first word.)
-        let (id, what) = self.running.as_ref().map_or((String::new(), String::new()), |r| (r.spec.id.clone(), r.spec.what.clone()));
+        let (id, what) = self.slots[k].running.as_ref().map_or((String::new(), String::new()), |r| (r.spec.id.clone(), r.spec.what.clone()));
         let step = if step.is_empty() { id.split(' ').next().unwrap_or("").to_string() } else { step.to_string() };
-        self.note(crate::coord::history::Event { worker: Some(self.host.clone()), step: (!step.is_empty()).then_some(step), targets: done.iter().map(|t| t.0.clone()).collect(), secs: Some(secs as f64), ok: Some(ok), what, note: how.to_string(), ..crate::coord::history::Event::new("end") });
+        self.note(crate::coord::history::Event { worker: Some(self.worker_of(k)), step: (!step.is_empty()).then_some(step), targets: done.iter().map(|t| t.0.clone()).collect(), secs: Some(secs as f64), ok: Some(ok), what, note: how.to_string(), ..crate::coord::history::Event::new("end") });
     }
 
     /// Notes the build Mac's conditions as they change (mains or battery, the NAS, home or away, a
@@ -2025,8 +2336,13 @@ impl Agent {
         names.extend(costs.values().filter_map(|c| c.worker.clone()));
         names.extend(events.iter().filter(|e| matches!(e.kind.as_str(), "done" | "lease")).filter_map(|e| e.worker.clone()));
         names.remove(&self.host);
+        // (The second job: its units beside the first's, at about four fifths of its pace until
+        // measured.)
+        let second = self.worker_of(1);
+        names.remove(&second);
         let names: Vec<String> = names.into_iter().collect();
-        let speeds = forecast::speeds(&events, &self.host, &names, 0.5);
+        let mut speeds = forecast::speeds(&events, &self.host, &names, 0.5);
+        speeds.extend(forecast::speeds(&events, &self.host, std::slice::from_ref(&second), 0.8));
         // (A time measured on a helper, at the build Mac's pace; one measured here or by a page, as it is.)
         let pace = |worker: Option<&String>| worker.and_then(|w| speeds.get(w)).map_or(1.0, |s| s.0);
         // Each shared step's mean of the targets measured (a unit's are kept by its target alone);
@@ -2057,49 +2373,58 @@ impl Agent {
             Cost { secs: each * n.max(1) as f64, known, peak_mb: 0 }
         };
         let step_of = |id: &str| id.split(' ').next().unwrap_or("").to_string();
-        // (Not the one running now, by its step: its time left is the build Mac's. Each job before the
-        // regions' is a step of its own.)
-        let running_step = self.running.as_ref().map(|r| step_of(&r.spec.id));
-        let before: Vec<forecast::Job> = before.iter().filter(|j| Some(step_of(&j.id)) != running_step).map(|j| (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))).collect();
+        // (Not those running now, by their step: their time left is their slot's. Each job before
+        // the regions' is a step of its own.)
+        let running_steps: Vec<String> = self.slots.iter().filter_map(|s| s.running.as_ref().map(|r| step_of(&r.spec.id))).collect();
+        let before: Vec<forecast::Job> = before.iter().filter(|j| !running_steps.contains(&step_of(&j.id))).map(|j| (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))).collect();
         // A round: as the last ones took (their chains' jobs and catalog), else the chain's steps'
         // times; the last round, the roads' chain as it stands now, if more (none when it's done).
         let [roads, rail, landmarks] = chains;
         let chain_s = |works: &[build::Work]| -> f64 { works.iter().map(|w| if claims::SHARED.contains(&w.step.as_str()) { w.targets.iter().map(|t| cost(&w.step, &t.0).secs).sum() } else { mine(&w.step, w.targets.len()).secs }).sum() };
         let round_s = forecast::round_secs(&events).unwrap_or_else(|| ["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "catalog"].iter().map(|s| mine(s, 1).secs).sum::<f64>() + mine("pack", 8).secs + mine("lo", 2).secs);
         let last_round_s = if roads.is_empty() { 0.0 } else { round_s.max(chain_s(&roads)) };
-        let mut after: Vec<forecast::Job> = Vec::new();
-        for chain in [&rail, &landmarks] {
-            for w in chain.iter() {
-                if claims::SHARED.contains(&w.step.as_str()) {
-                    after.extend(w.targets.iter().map(|t| (w.step.clone(), t.0.clone(), cost(&w.step, &t.0))));
-                } else {
-                    after.push((w.step.clone(), w.targets.first().map(|t| t.0.clone()).unwrap_or_default(), mine(&w.step, w.targets.len())));
-                }
-            }
-            // (A catalog after each chain.)
-            if !chain.is_empty() {
-                after.push(("catalog".into(), format!("after {}", chain[0].step), mine("catalog", 1)));
-            }
-        }
-        // The build Mac's job's time left: its pace says only its part's; its targets not yet done,
-        // as they took last time, less what it spent on the one under way, if longer.
-        let busy_here = self.running.as_ref().map_or(0.0, |r| {
-            let left = match r.spec.record.as_ref() {
-                Some(w) => {
-                    let done = crate::control::read_done(&self.done_path(), &w.step);
-                    let (mut todo, mut did) = (0.0, 0.0);
-                    for (t, _) in &w.targets {
-                        let c = cost(&w.step, t).secs;
-                        if done.contains(t) { did += c } else { todo += c }
-                    }
-                    todo - (r.elapsed().as_secs_f64() - did).max(0.0)
-                }
-                // (One with no record, the pass's or a worldwide one: its step's time here.)
-                None => mine(&step_of(&r.spec.id), 1).secs - r.elapsed().as_secs_f64(),
+        // The trains' and the landmarks' chains from the start (their steps once what they read is
+        // built: forecast::chain_deps), but the overlays (they read the built units) after the last
+        // round; and a catalog after it with what the chains made since.
+        let (mut chain_jobs, mut after): (Vec<forecast::Job>, Vec<forecast::Job>) = (Vec::new(), Vec::new());
+        for w in rail.iter().chain(landmarks.iter()) {
+            let jobs: Vec<forecast::Job> = if claims::SHARED.contains(&w.step.as_str()) {
+                w.targets.iter().map(|t| (w.step.clone(), t.0.clone(), cost(&w.step, &t.0))).collect()
+            } else {
+                vec![(w.step.clone(), w.targets.first().map(|t| t.0.clone()).unwrap_or_default(), mine(&w.step, w.targets.len()))]
             };
-            self.job_eta.map(|e| e as f64).into_iter().chain([left]).fold(60.0, f64::max)
-        });
-        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, mem_mb: u64::MAX, busy_s: busy_here }];
+            if w.step == "overlays" { after.extend(jobs) } else { chain_jobs.extend(jobs) }
+        }
+        if !rail.is_empty() || !landmarks.is_empty() {
+            after.push(("catalog".into(), "after the chains".into(), mine("catalog", 1)));
+        }
+        // Each slot's job's time left: its pace says only its part's; its targets not yet done, as
+        // they took last time, less what it spent on the one under way, if longer.
+        let busy = |k: usize| {
+            self.slots[k].running.as_ref().map_or(0.0, |r| {
+                let left = match r.spec.record.as_ref() {
+                    Some(w) => {
+                        let done = crate::control::read_done(&self.done_path(k), &w.step);
+                        let (mut todo, mut did) = (0.0, 0.0);
+                        for (t, _) in &w.targets {
+                            let c = cost(&w.step, t).secs;
+                            if done.contains(t) { did += c } else { todo += c }
+                        }
+                        todo - (r.elapsed().as_secs_f64() - did).max(0.0)
+                    }
+                    // (One with no record, the pass's or a worldwide one: its step's time here.)
+                    None => mine(&step_of(&r.spec.id), 1).secs - r.elapsed().as_secs_f64(),
+                };
+                self.slots[k].job_eta.map(|e| e as f64).into_iter().chain([left]).fold(60.0, f64::max)
+            })
+        };
+        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, second: false, mem_mb: u64::MAX, busy_s: busy(0) }];
+        // Its second job: what fits beside the first (a quarter of its memory, say).
+        if self.second_allowed() {
+            let (speed, measured) = speeds.get(&second).copied().unwrap_or((0.8, false));
+            let mem_mb = (cond::resources(&self.o.home, None, None, None).mem_gb * 256.0) as u64;
+            machines.push(Machine { name: second.clone(), speed, measured, helper: false, second: true, mem_mb, busy_s: busy(1) });
+        }
         for h in &helpers {
             let (speed, measured) = speeds.get(&h.host).copied().unwrap_or((0.5, false));
             // (Its lease's targets at its pace, less the time since it took them, if longer than its
@@ -2107,19 +2432,22 @@ impl Agent {
             let lease_left = leased.iter().filter(|l| l.0 == h.host).map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64).fold(0.0, f64::max);
             let eta = h.job.as_ref().map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64);
             let busy_s = eta.map_or(0.0, |e| e.max(lease_left).max(60.0));
-            machines.push(Machine { name: h.host.clone(), speed, measured, helper: true, mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144), busy_s });
+            machines.push(Machine { name: h.host.clone(), speed, measured, helper: true, second: false, mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144), busy_s });
         }
         // What's being built now, and by which.
         let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();
-        if let Some(w) = self.running.as_ref().and_then(|r| r.spec.record.as_ref()) {
-            running.extend(w.targets.iter().map(|t| ((w.step.clone(), t.0.clone()), 0)));
+        for k in 0..SLOTS {
+            let Some(m) = machines.iter().position(|m| m.name == self.worker_of(k)) else { continue };
+            if let Some(w) = self.slots[k].running.as_ref().and_then(|r| r.spec.record.as_ref()) {
+                running.extend(w.targets.iter().map(|t| ((w.step.clone(), t.0.clone()), m)));
+            }
         }
         for (worker, step, targets, _) in leased {
             if let Some(m) = machines.iter().position(|m| m.name == worker && m.helper) {
                 running.extend(targets.into_iter().map(|t| ((step.clone(), t), m)));
             }
         }
-        forecast::forecast(&forecast::Input { now: now_s(), before, regions, cost: &cost, round_s, last_round_s, blind, after, since_publish, machines, running })
+        forecast::forecast(&forecast::Input { now: now_s(), before, regions, cost: &cost, round_s, last_round_s, blind, chains: chain_jobs, after, since_publish, machines, running })
     }
 
     /// The build to the end (the status's checklist): the OSM pass (its stages, from the markers its
@@ -2353,28 +2681,28 @@ impl Agent {
         self.pause = p;
     }
 
-    /// The running job's channel (crate::control: "run" or "drain") and the targets it noted done.
-    fn control_path(&self) -> PathBuf {
-        self.o.home.join("control")
+    /// Slot `k`'s job's channel (crate::control: "run" or "drain").
+    fn control_path(&self, k: usize) -> PathBuf {
+        self.o.home.join(if k == 0 { "control" } else { "control-2" })
     }
 
-    /// Where the running job notes the targets it finishes: a helper's leased job's in its lease's
+    /// Where slot `k`'s job notes the targets it finishes: a helper's leased job's in its lease's
     /// outbox folder (kept with its saves, should the agent stop), else in the agent's folder.
-    fn done_path(&self) -> PathBuf {
-        match &self.lease {
+    fn done_path(&self, k: usize) -> PathBuf {
+        match &self.slots[k].lease {
             Some(Held::Leased { dir, .. }) => dir.join("done.txt"),
-            _ => self.o.home.join("done.txt"),
+            _ => self.o.home.join(if k == 0 { "done.txt" } else { "done-2.txt" }),
         }
     }
 
-    /// What the running job finished: every target (`all`: it succeeded), else those it noted done
+    /// What slot `k`'s job finished: every target (`all`: it succeeded), else those it noted done
     /// as each was saved (crate::control::done), whatever stopped it.
-    fn finished_targets(&self, all: bool) -> Vec<(String, String)> {
-        let Some(w) = self.running.as_ref().and_then(|r| r.spec.record.as_ref()) else { return Vec::new() };
+    fn finished_targets(&self, k: usize, all: bool) -> Vec<(String, String)> {
+        let Some(w) = self.slots[k].running.as_ref().and_then(|r| r.spec.record.as_ref()) else { return Vec::new() };
         if all {
             return w.targets.clone();
         }
-        let names = crate::control::read_done(&self.done_path(), &w.step);
+        let names = crate::control::read_done(&self.done_path(k), &w.step);
         w.targets.iter().filter(|(t, _)| names.contains(t)).cloned().collect()
     }
 
@@ -2394,17 +2722,17 @@ impl Agent {
         }
     }
 
-    /// The running job stopped other than by its own end (the Mac slept, its lease lapsed, the agent
+    /// Slot `k`'s job stopped other than by its own end (the Mac slept, its lease lapsed, the agent
     /// stops, another Mac took its claims): what it finished is recorded (or, a helper's, handed
     /// off), and its lease given back, not held against its targets.
-    fn stopped(&mut self, root: Option<&Path>, why: &str) {
-        let done = self.finished_targets(false);
-        let step = self.running.as_ref().and_then(|r| r.spec.record.as_ref().map(|w| w.step.clone())).unwrap_or_default();
-        let secs = self.running.as_ref().map_or(0, |r| r.elapsed().as_secs());
-        self.note_end(&step, &done, secs, false, why);
+    fn stopped(&mut self, k: usize, root: Option<&Path>, why: &str) {
+        let done = self.finished_targets(k, false);
+        let step = self.slots[k].running.as_ref().and_then(|r| r.spec.record.as_ref().map(|w| w.step.clone())).unwrap_or_default();
+        let secs = self.slots[k].running.as_ref().map_or(0, |r| r.elapsed().as_secs());
+        self.note_end(k, &step, &done, secs, false, why);
         let recorded = self.record_done(root, &step, &done);
         let handed = if self.o.helper || recorded { done } else { Vec::new() };
-        self.end_lease(Outcome::Interrupted, &handed, why);
+        self.end_lease(k, Outcome::Interrupted, &handed, why);
     }
 
     /// A newer app is installed locally (`../current` points elsewhere than the agent's folder).
@@ -2503,9 +2831,9 @@ fn step_of(id: &str) -> Option<String> {
 /// its step) says why: another Mac is on it, or its job waits (`waiting`: for the home network,
 /// out a failure). Publishing, while a step above has work left, goes out as each region is done (at
 /// most hourly) and once they all are: it's done only then.
-fn annotate(list: &mut [build::Step], now: Option<&str>, helpers: &[Status], waiting: &[Waiting]) {
+fn annotate(list: &mut [build::Step], now: &[String], helpers: &[Status], waiting: &[Waiting]) {
     build::mark_shared(list);
-    let busy = |s: &build::Step| now.is_some_and(|n| s.steps.iter().any(|x| x == n));
+    let busy = |s: &build::Step| now.iter().any(|n| s.steps.iter().any(|x| x == n));
     // (Work known to be left: a line not sized yet, as trains a day before its sources are seeded,
     // holds nothing up.)
     let known_left = |s: &build::Step| s.left.is_some_and(|l| l > 0) || s.total.is_some_and(|t| s.done < t);
@@ -2773,6 +3101,63 @@ mod tests {
     }
 
     #[test]
+    fn which_jobs_run_beside_each_other() {
+        // Network work beside anything but what runs alone; two of one step only when it's shared
+        // (its targets held apart); the raw tiles' readers one at a time.
+        assert!(!clash("unit", "heritage") && !clash("trees", "items"));
+        assert!(!clash("unit", "unit") && !clash("pois", "pois"));
+        assert!(clash("items", "items") && clash("catalog", "catalog"));
+        assert!(clash("terrain", "peaks") && clash("peaks", "peaks"));
+        assert!(clash("osm-pass", "items") && clash("items", "gc") && clash("heritage-sites", "unit"));
+        // While network work runs beside it, the first job may still empty the caches for room.
+        assert!(!reads_caches("heritage") && reads_caches("unit") && reads_caches("trees"));
+    }
+
+    #[test]
+    fn a_second_job_runs_beside_the_first() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        a.coord = Some(crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap());
+        assert!(a.second_allowed());
+        // (Each a shell waiting, given its scratch folder as the plan's jobs are.)
+        let job = |id: &str| {
+            let step = id.split(' ').next().unwrap();
+            let scratch = home.join("scratch").join(step).to_string_lossy().into_owned();
+            let record = Some(build::Work { step: step.into(), targets: vec![(id.split(' ').nth(1).unwrap().into(), "k".into())] });
+            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into(), "--scratch".into(), scratch], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record }
+        };
+        // Someone at the Mac: beside the map tiles, the heritage chain (network), not a unit.
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        assert!(a.try_start(0, job("pack 6/1/1"), &cond, Some(&root), &mut Vec::new()));
+        let plan = vec![job("unit 6/1/1"), job("pack 6/1/1"), job("heritage heritage")];
+        a.start_second(&plan, &cond, Some(&root));
+        let second = a.slots[1].running.as_ref().map(|r| (r.spec.id.clone(), r.spec.cmd[4].clone()));
+        // Its scratch folder its own.
+        assert_eq!(second, Some(("heritage heritage".to_string(), home.join("scratch-2/heritage").to_string_lossy().into_owned())), "{:?}", a.beside_why);
+        assert!(a.record_path(1).exists() && a.record_path(0).exists());
+        // In the history as the second job.
+        let (_, _, events, _) = a.coord.as_ref().unwrap().for_forecast();
+        assert!(events.iter().any(|e| e.kind == "start" && e.worker == Some(second_worker(&a.host))), "{events:?}");
+        for k in 0..SLOTS {
+            if let Some(r) = a.slots[k].running.as_mut() {
+                r.stop(Duration::from_secs(5));
+            }
+        }
+        // Beside a job that runs alone (the OSM pass), none.
+        a.slots = Default::default();
+        assert!(a.try_start(0, JobSpec { record: None, ..job("osm-pass 2026-09-28") }, &cond, Some(&root), &mut Vec::new()));
+        a.start_second(&plan, &cond, Some(&root));
+        assert!(a.slots[1].running.is_none());
+        assert!(a.beside_why.as_deref().is_some_and(|w| w.contains("alone")), "{:?}", a.beside_why);
+        if let Some(r) = a.slots[0].running.as_mut() {
+            r.stop(Duration::from_secs(5));
+        }
+    }
+
+    #[test]
     fn the_checklist_says_which_steps_helpers_take() {
         let mut steps = build::checklist_to_come();
         build::mark_shared(&mut steps);
@@ -2883,7 +3268,7 @@ mod tests {
         let helper = Status { host: "m1".into(), job: Some(JobView { id: "unit 6/1/2".into(), what: String::new(), started: 0, pausing: None, paused: None, tail: String::new(), progress: None, parts: Vec::new(), part: None, mem_mb: None, threads: None }), ..Default::default() };
         let waiting = [Waiting { step: Some("reach".into()), what: "How far…".into(), why: "away from home".into() }];
         let mut l = list();
-        annotate(&mut l, Some("heritage"), &[helper], &waiting);
+        annotate(&mut l, &["heritage".to_string()], &[helper], &waiting);
         assert_eq!(l[0].note.as_deref(), Some("away from home"));
         assert_eq!(l[1].note.as_deref(), Some("on m1"));
         assert_eq!(l[2].note, None, "this Mac's job now");
@@ -2894,17 +3279,17 @@ mod tests {
             s.left = Some(0);
             s
         }).collect();
-        annotate(&mut l, None, &[], &[]);
+        annotate(&mut l, &[], &[], &[]);
         assert!(l.iter().all(|s| s.finished() && s.note.is_none()));
         // A line not sized yet (trains a day before its sources) holds publishing up no more than a
         // done one; and publishing's own note (its catalog failing) is kept.
         l[1].left = None;
-        annotate(&mut l, None, &[], &[]);
+        annotate(&mut l, &[], &[], &[]);
         assert!(l[3].finished() && l[3].note.is_none());
         let mut l = list();
         l[3].left = Some(1);
         let failing = [Waiting { step: Some("catalog".into()), what: String::new(), why: "failed 3 times in a row".into() }];
-        annotate(&mut l, None, &[], &failing);
+        annotate(&mut l, &[], &[], &failing);
         assert_eq!(l[3].note.as_deref(), Some("failed 3 times in a row"));
     }
 
