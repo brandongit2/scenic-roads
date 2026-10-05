@@ -269,6 +269,22 @@ pub struct Agent {
     /// Mac was last named the records' writer.
     claims_dropped: bool,
     writer_named: Option<Instant>,
+    /// What the last plan found waiting, the regions it read and the helpers it saw, and when: while
+    /// a job runs nothing new can start, so the plan (the manifest, the keys, a dozen NAS listings)
+    /// is made again only every five minutes, for the status, and when the job ends.
+    planned: Option<Planned>,
+    /// When the helper's hand-offs were last merged (each loop when idle; every two minutes while a
+    /// job runs).
+    merged: Option<Instant>,
+}
+
+/// The last plan's view, kept for the heartbeat between plans.
+struct Planned {
+    at: Instant,
+    waiting: Vec<Waiting>,
+    regions: Vec<recipes::Recipe>,
+    bad: Vec<(String, String)>,
+    helpers: Vec<Status>,
 }
 
 impl Agent {
@@ -292,7 +308,7 @@ impl Agent {
             mem.app = app.clone();
         }
         let me = format!("{} {}", cond::host_name(), std::process::id());
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None })
     }
 
     /// The keys to plan with: on the NAS, with the hand-offs' done records on top, and a helper's own
@@ -510,18 +526,33 @@ impl Agent {
         }
 
         // A helper's hand-offs, merged into the build's records before planning (the build Mac
-        // alone writes them).
-        if let (Some(r), false, true) = (root.as_ref(), self.o.helper, self._lock.is_some() && !self.o.dry_run) {
+        // alone writes them): each loop when nothing runs, every two minutes while a job does.
+        let idle = self.running.is_none();
+        let merge_due = idle || ended || self.merged.is_none_or(|t| t.elapsed() >= Duration::from_secs(120));
+        if let (Some(r), false, true, true) = (root.as_ref(), self.o.helper, self._lock.is_some() && !self.o.dry_run, merge_due) {
             match crate::handoff::merge(r, &self.o.home.join("scratch/handoff")) {
                 Ok(0) => {}
                 Ok(n) => eprintln!("agent: merged {n} hand-off{} from the helper", if n == 1 { "" } else { "s" }),
                 Err(e) => eprintln!("agent: merging the helper's hand-offs: {e:#}"),
             }
+            self.merged = Some(Instant::now());
         }
 
-        // The plan: start the first job that can run.
+        // The plan: start the first job that can run. Made when one could start, when a job ends,
+        // and otherwise every five minutes for the heartbeat (between, its last view is shown).
+        let plan_due = idle || ended || self.planned.as_ref().is_none_or(|p| p.at.elapsed() >= Duration::from_secs(300));
         let plan = match &root {
-            Some(root) => self.plan(root, &c, &mut waiting),
+            Some(root) if plan_due => {
+                let plan = self.plan(root, &c, &mut waiting);
+                let (regions, bad) = recipes::load(&root.join("inputs/regions"));
+                let helpers = if self.o.helper { Vec::new() } else { helpers(root) };
+                self.planned = Some(Planned { at: Instant::now(), waiting: waiting.clone(), regions, bad, helpers });
+                plan
+            }
+            Some(_) => {
+                waiting.extend(self.planned.as_ref().map(|p| p.waiting.clone()).unwrap_or_default());
+                Vec::new()
+            }
             None => {
                 waiting.push(Waiting { what: "All building".into(), why: "the NAS isn't reachable (away from home, or it's off)".into() });
                 Vec::new()
@@ -604,7 +635,10 @@ impl Agent {
         }
 
         // The heartbeat.
-        let (regions, bad) = root.as_ref().map(|r| recipes::load(&r.join("inputs/regions"))).unwrap_or_default();
+        let (regions, bad) = match (&root, &self.planned) {
+            (Some(_), Some(p)) => (p.regions.clone(), p.bad.clone()),
+            _ => Default::default(),
+        };
         // (Recomputed after a job ends, or every five minutes: it reads the manifest and outlines.)
         if ended || self.progress.as_ref().is_none_or(|(t, _, _)| t.elapsed() >= Duration::from_secs(300)) {
             if let Some(r) = root.as_ref() {
@@ -639,7 +673,7 @@ impl Agent {
             bad_recipes: bad,
             built,
             checklist,
-            helpers: if self.o.helper { Vec::new() } else { root.as_deref().map(helpers).unwrap_or_default() },
+            helpers: if self.o.helper || root.is_none() { Vec::new() } else { self.planned.as_ref().map(|p| p.helpers.clone()).unwrap_or_default() },
         };
         let body = serde_json::to_vec_pretty(&status)?;
         if self._lock.is_none() {

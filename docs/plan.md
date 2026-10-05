@@ -901,7 +901,10 @@ are no request files.
   stale when its key changed.
 - **A job** is one step over a batch of stale targets: terrain and trees 1, slope and lo 2, unit 6,
   peaks 12, pack 16, pois 24, the worldwide steps all. So a failure or a new app costs one batch.
-- **Order:** the agent starts the first job that can run, in plan order.
+- **Order:** the agent starts the first job that can run, in plan order. It plans when a job could
+  start, when one ends, and otherwise every five minutes for the heartbeat (planning reads the
+  manifest, the keys and a dozen NAS folders); the helper's hand-offs are merged each loop while it
+  waits, every two minutes while a job runs.
 - **A newly installed app:** the running job finishes under the old one, nothing new starts, and the
   agent exits so the launcher starts the new one.
 - **Room on the disk:** before a job starts (and before its targets are claimed), when the Mac has
