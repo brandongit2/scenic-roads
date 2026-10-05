@@ -515,7 +515,7 @@ impl Agent {
                 cmd.extend(["--pass".into(), pass, "--dem".into(), s(&self.o.bin.join("dem")), "--cache-dir".into(), s(&cache)]);
                 let n = targets.len();
                 let id = format!("unit {}", targets.first().map(|t| t.0.as_str()).unwrap_or(""));
-                let what = format!("Roads, elevations and scenery ({n} area{} for the build Mac)", if n == 1 { "" } else { "s" });
+                let what = format!("Building the roads, elevations and scenery of {n} area{} for the build Mac", if n == 1 { "" } else { "s" });
                 self.lease = Some(Held::Leased { lease, dir });
                 vec![JobSpec { id, what, cmd, needs, restart_after_sleep: true, record: Some(build::Work { step, targets }) }]
             }
@@ -1371,7 +1371,7 @@ impl Agent {
             if w.step == "catalog" && held {
                 let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();
                 if done.catalog_held.as_deref() == Some(k.as_str()) {
-                    waiting.push(Waiting { step: None, what: "Publishing the new map data".into(), why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into() });
+                    waiting.push(Waiting { step: None, what: build::PUBLISH.into(), why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into() });
                     continue;
                 }
                 let mut j = job("catalog-held".into(), "Publishing the new map data, held for review", "catalog", vec!["--held".into()], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));

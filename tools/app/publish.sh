@@ -57,12 +57,29 @@ mkdir -p $pyt/dem
 git ls-files dem | while read f; do cp -X "$f" "$pyt/$f"; done
 steps=(${(f)"$(grep -rhoE '"[a-z_]+\.py"' crates/pipeline/src | tr -d '"' | sed 's/\.py$//' | sort -u)"})
 (cd $pyt/dem && uv run python -c "import importlib, sys; [importlib.import_module(m) for m in sys.argv[1:]]" $steps) || { echo "a Python step doesn't load from the app's dem/"; rm -rf $pyt; exit 1; }
-# (Loading isn't running: a name used before it's bound, say, shows only then. pyflakes reads them.)
-(cd $pyt/dem && uvx --quiet pyflakes ${steps/%/.py}) || { echo "pyflakes finds a mistake in a Python step"; rm -rf $pyt; exit 1; }
+# (Loading isn't running: a name used before it's bound, say, shows only then. pyflakes, a version
+# kept, reads them and the modules of dem/ they import.)
+read_too=(${(f)"$(cd $pyt/dem && python3 -c '
+import ast, sys
+from pathlib import Path
+todo, seen = sys.argv[1:], set()
+while todo:
+    m = todo.pop()
+    if m in seen or not Path(m + ".py").exists():
+        continue
+    seen.add(m)
+    for n in ast.walk(ast.parse(Path(m + ".py").read_text())):
+        if isinstance(n, ast.Import):
+            todo += [a.name.split(".")[0] for a in n.names]
+        elif isinstance(n, ast.ImportFrom) and n.module and not n.level:
+            todo.append(n.module.split(".")[0])
+print("\n".join(sorted(seen)))' $steps)"})
+(cd $pyt/dem && uvx --quiet --from 'pyflakes==4.0.2' pyflakes ${read_too/%/.py}) || { echo "pyflakes finds a mistake in a Python step or what it imports"; rm -rf $pyt; exit 1; }
 rm -rf $pyt
 dirty=""
-# (The Python steps and the status app are copied from the working tree too.)
-[[ -z $(git status --porcelain -- crates web/src dem tools/status) ]] || dirty=-dirty
+# (Everything published comes from the working tree: the crates and their lock, the web app and the
+# worker page (built into the coordinator), the Python steps, the status app, the NAS's script.)
+[[ -z $(git status --porcelain -- crates Cargo.toml Cargo.lock web dem tools) ]] || dirty=-dirty
 [[ $(git rev-parse --short HEAD) == $head ]] || { echo "a commit was made while publishing ($head, now $(git rev-parse --short HEAD)): publish again"; exit 1; }
 version=$(date -u +%Y%m%d-%H%M)-$head$dirty
 dest=$NAS/app/$version

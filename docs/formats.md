@@ -406,7 +406,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   name, deleted a day after the time beside them), and the loose tiles from before,
   `sources/aws-terrarium/<z>/<x>/<y>.png` (`<y>.none` for one AWS doesn't have),
   `sources/pageviews/<YYYY-MM>.tsv.zst` (a month of Wikipedia's pageviews, every article of the
-  map's languages: `<lang>|<Title_with_underscores>\t<views>` lines, zstd; dem/pageviews.py),
+  map's languages: a `#langs\t<lang>,<lang>,…` line saying which (an index without it has today's
+  LANGS), then `<lang>|<Title_with_underscores>\t<views>` lines, zstd; a title may have more than
+  one line, its views summed; dem/pageviews.py),
   `sources/fabdem/<tile>_FABDEM_V1-2.tif`
   (FABDEM's 1° tiles out of Bristol's zips, deflate GeoTIFF; `<tile>.none` for one a zip doesn't
   have);

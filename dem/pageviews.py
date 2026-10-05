@@ -14,10 +14,11 @@ agents only). The API allows anonymous clients ten requests a minute, too few fo
 articles. One month per season is sampled (MONTHS), so summer-heavy places aren't favoured.
 A month is streamed (~5 GB through bzip2) once: every article of the map's languages is counted,
 not just the ones wanted now, into the month's index, kept on the NAS (SCENIC_PAGEVIEWS_STORE:
-sources/pageviews/<month>.tsv.zst, "lang|Title<TAB>views" lines, zstd) and here
-(data/pageviews/months/); any article, of any step, any run, is then looked up there. (Before
-the index: each month's counts for the articles asked, data/pageviews/months/<month>.json with
-<month>.counted.json; still read while they cover what's asked.)
+sources/pageviews/<month>.tsv.zst, "lang|Title<TAB>views" lines after a "#langs<TAB>…" line, zstd)
+and here (data/pageviews/months/); any article of those languages, of any step, any run, is then
+looked up there (a language added later streams the month again). (Before the index: each month's
+counts for the articles asked, data/pageviews/months/<month>.json with <month>.counted.json; still
+read while they cover what's asked.)
 
 Writes data/pageviews/items.json (per item: average monthly views over the sampled months).
 
@@ -46,6 +47,8 @@ W = ROOT / "data" / "heritage" / "wd"
 OUT = ROOT / "data" / "pageviews"
 UA = "road-elevations/0.1 (personal offline map)"
 LANGS = {"en", "fr", "es", "ca", "pt", "zh", "zh-yue", "ja", "cy", "ga", "gd", "gl", "eu", "oc", "br", "co", "ast", "an", "gv"}
+# The languages of the indexes made before they said theirs (the first line, "#langs<TAB>en,fr,…").
+LANGS_UNSAID = frozenset(LANGS)
 MONTHS = ["2025-11", "2026-02", "2026-05", "2026-08"]
 DUMP = "https://dumps.wikimedia.org/other/pageview_complete/monthly/{y}/{y}-{m}/pageviews-{y}{m}-user.bz2"
 # The NAS's months' indexes (scenic-build sets it); none: here only.
@@ -80,12 +83,77 @@ def _cached(month: str) -> tuple[dict[str, int], set[str]]:
     return got, set(json.loads(counted_path.read_text())) if counted_path.exists() else set(got)
 
 
-def _index(month: str) -> Path | None:
-    """The month's index here, copied whole from the NAS the first time; None when neither has it."""
+def _size(p: Path) -> int | None:
+    """A file's size; None when it isn't there. (Any other error raises: a NAS that doesn't answer
+    is no reason to stream a month for an hour.)"""
+    try:
+        return p.stat().st_size
+    except (FileNotFoundError, NotADirectoryError):
+        return None
+
+
+def _langs(index: Path) -> frozenset[str]:
+    """The languages an index counted (its first line; one from before that line: LANGS_UNSAID)."""
+    with zstd.open(index, "rt", encoding="utf-8") as f:
+        first = f.readline().rstrip("\n")
+    return frozenset(first.split("\t", 1)[1].split(",")) if first.startswith("#langs\t") else LANGS_UNSAID
+
+
+def _index(month: str, langs: set[str], fresh: bool = False) -> Path | None:
+    """The month's index here, copied whole from the NAS the first time (or again: fresh), and
+    uploaded there if the NAS has none (an upload that failed before); None when neither has one
+    counting every language in `langs`."""
     local = OUT / "months" / f"{month}.tsv.zst"
-    if not local.exists() and STORE and (STORE / local.name).exists():
-        _copy_whole(STORE / local.name, local)
-    return local if local.exists() else None
+    nas = STORE / local.name if STORE else None
+    _sweep(local.parent)
+    if nas:
+        _sweep(nas.parent)
+    if fresh:
+        local.unlink(missing_ok=True)
+    if _size(local) is None and nas and _size(nas) is not None:
+        _copy_whole(nas, local)
+    if _size(local) is None:
+        return None
+    try:
+        covered = _langs(local)
+    except (EOFError, zstd.ZstdError, UnicodeDecodeError) as e:
+        # (The NAS's copied again; that one damaged too, or none: the month streamed again.)
+        print(f"  {month}: its index is damaged ({e})", file=sys.stderr, flush=True)
+        if not fresh and nas and _size(nas) is not None:
+            return _index(month, langs, fresh=True)
+        local.unlink(missing_ok=True)
+        return None
+    if not langs <= covered:
+        return None
+    # (Only when the NAS has none: one that differs may be the good one, this copy damaged.)
+    if nas and _size(nas) is None:
+        try:
+            _copy_whole(local, nas)
+        except OSError as e:
+            print(f"  {month}: its index isn't on the NAS yet ({e}); tried again next time", file=sys.stderr, flush=True)
+    return local
+
+
+def _sweep(d: Path) -> None:
+    """Temporary files of this Mac's copies and streams whose process is gone (killed midway)."""
+    host = socket.gethostname().split(".")[0]
+    try:
+        names = [p.name for p in d.iterdir()]
+    except FileNotFoundError:
+        return
+    for n in names:
+        parts = n.split(".")
+        if not n.endswith(".tmp") or ".tsv.zst." not in n or not parts[-2].isdigit():
+            continue
+        # (<month>.tsv.zst.<host>.<pid>.tmp, the NAS's and copies'; <month>.tsv.zst.<pid>.tmp here.)
+        if len(parts) >= 6 and parts[-3] != host:
+            continue
+        try:
+            os.kill(int(parts[-2]), 0)
+        except ProcessLookupError:
+            (d / n).unlink(missing_ok=True)
+        except PermissionError:
+            pass
 
 
 def _copy_whole(src: Path, dst: Path) -> None:
@@ -104,8 +172,12 @@ def _copy_whole(src: Path, dst: Path) -> None:
         tmp.unlink(missing_ok=True)
 
 
+def _langs_of(wanted: set[str]) -> set[str]:
+    return {a.split("|", 1)[0] for a in wanted}
+
+
 def _needs_stream(month: str, wanted: set[str]) -> bool:
-    return _index(month) is None and bool(wanted - _cached(month)[1])
+    return _index(month, _langs_of(wanted)) is None and bool(wanted - _cached(month)[1])
 
 
 def _dump_size(month: str) -> int:
@@ -124,13 +196,17 @@ _streamed: dict[str, list[int]] = {}
 _lock = threading.Lock()
 
 
-def _report() -> None:
-    # (Of the months whose sizes are known: one the server didn't size would push past the total.)
+def _report(final: bool = False) -> None:
+    # (A month the server didn't size counts as the others' average, or 5 GB; and until the end the
+    # bar stops short of full, a month's dump being larger than said.)
     with _lock:
-        sized = [v for v in _streamed.values() if v[1]]
-        done, total, n = sum(v[0] for v in sized), sum(v[1] for v in sized), len(_streamed)
-    if total:
-        print(f"progress: {done >> 20}/{total >> 20} MB of the pageview dumps streamed ({n} month{'' if n == 1 else 's'})", file=sys.stderr, flush=True)
+        sizes = [v[1] for v in _streamed.values() if v[1]]
+        guess = sum(sizes) // len(sizes) if sizes else 5 << 30
+        done, total, n = sum(v[0] for v in _streamed.values()), sum(v[1] or guess for v in _streamed.values()), len(_streamed)
+    if not total:
+        return
+    done = total if final else min(done, total * 99 // 100)
+    print(f"progress: {done >> 20}/{total >> 20} MB of the pageview dumps streamed ({n} month{'' if n == 1 else 's'})", file=sys.stderr, flush=True)
 
 
 def months_views(months: list[str], wanted: set[str]) -> list[dict[str, int]]:
@@ -154,19 +230,33 @@ def months_views(months: list[str], wanted: set[str]) -> list[dict[str, int]]:
             return list(ex.map(lambda m: month_views(m, wanted), months))
     finally:
         stop.set()
-        _report()
+        _report(final=True)
 
 
 def month_views(month: str, wanted: set[str]) -> dict[str, int]:
     """Views in one month of each wanted article ("lang|Title_with_underscores"): looked up in the
     month's index; before there's one, the counts from before it when they cover what's asked; else
     the month is streamed once into its index, every article of the map's languages counted."""
-    index = _index(month)
+    langs = _langs_of(wanted)
+    index = _index(month, langs)
     if index is None:
         got, counted = _cached(month)
         if not wanted - counted:
             return {a: v for a, v in got.items() if a in wanted}
         index = _stream_index(month)
+    # (A damaged index: the NAS's copied again, then the month streamed again.)
+    for attempt in ("nas", "stream", None):
+        try:
+            return _look_up(month, index, wanted)
+        except (EOFError, zstd.ZstdError, UnicodeDecodeError, ValueError) as e:
+            if attempt is None:
+                raise
+            print(f"  {month}: its index is damaged ({e}); {'copying the NAS’s again' if attempt == 'nas' else 'streaming the month again'}", file=sys.stderr, flush=True)
+            index = (_index(month, langs, fresh=True) if attempt == "nas" else None) or _stream_index(month)
+    raise AssertionError("unreachable")
+
+
+def _look_up(month: str, index: Path, wanted: set[str]) -> dict[str, int]:
     t0 = time.time()
     views: dict[str, int] = {}
     with zstd.open(index, "rt", encoding="utf-8") as f:
@@ -223,11 +313,12 @@ def _stream_index(month: str) -> Path:
     rows = 0
     try:
         with zstd.open(tmp, "wt", encoding="utf-8") as out:
+            out.write(f"#langs\t{','.join(sorted(LANGS))}\n")
             last, total = None, 0
             for line in grep.stdout:
                 # wiki title page_id access monthly_total hourly
                 f = line.split(" ", 5)
-                if len(f) < 5:
+                if len(f) < 5 or not f[4].isdigit():
                     continue
                 key = f"{f[0][:-10]}|{f[1]}"
                 if key != last:
@@ -250,7 +341,11 @@ def _stream_index(month: str) -> Path:
     finally:
         tmp.unlink(missing_ok=True)
     if STORE:
-        _copy_whole(local, STORE / local.name)
+        # (One that fails is tried again the next time the month is looked up: _index.)
+        try:
+            _copy_whole(local, STORE / local.name)
+        except OSError as e:
+            print(f"  {month}: its index isn't on the NAS yet ({e})", file=sys.stderr, flush=True)
     # (The counts from before the index: it has them all now.)
     for old in (f"{month}.json", f"{month}.counted.json"):
         (OUT / "months" / old).unlink(missing_ok=True)

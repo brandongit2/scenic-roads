@@ -164,7 +164,7 @@ def main() -> None:
         stem = p.name.split(".", 1)[0]
         if p.is_file() and "-" in stem and stem.split("-", 1)[0] in ("facts", "wp", "fetched") and stem.split("-", 1)[1] < a.epoch:
             p.unlink()
-    for p in (cache / "months").iterdir():
+    for p in (cache / "months").iterdir() if (cache / "months").is_dir() else ():
         if p.is_file() and p.name[:7] < months[0]:
             p.unlink()
     print(f"items: {len(facts_q)} facts, {len(views)} items with views", file=sys.stderr)

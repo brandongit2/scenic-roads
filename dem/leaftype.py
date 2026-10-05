@@ -26,7 +26,6 @@ that fails part way asks again only for what it lacks.
 """
 from __future__ import annotations
 
-import io
 import json
 import os
 import re

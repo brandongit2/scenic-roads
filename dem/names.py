@@ -493,9 +493,9 @@ def check(batch: str) -> None:
                                     and re.search(rf"\b{re.escape(strip_accents(w))}\b", en)
                                     and strip_accents(w).lower() not in ESTABLISHED]):
             bad.append(f"line {i}: {en!r}: keep the accents in names as written ({', '.join(lost)})")
-        elif latin(n) and (new := [m for m in SAINT_OUT.findall(en)
-                                   if strip_accents(m).lower() not in {strip_accents(x).lower() for x in SAINT_IN.findall(n)}
-                                   and m.lower() not in ESTABLISHED]):
+        elif latin(n) and [m for m in SAINT_OUT.findall(en)
+                           if strip_accents(m).lower() not in {strip_accents(x).lower() for x in SAINT_IN.findall(n)}
+                           and m.lower() not in ESTABLISHED]:
             bad.append(f"line {i}: {en!r}: keep the saint's name as written ({n!r}: Saint-Pierre, not Saint Peter)")
     if len(got) != len(names):
         bad.append(f"{len(got)} output lines for {len(names)} names")

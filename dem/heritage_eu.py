@@ -800,7 +800,7 @@ def spain() -> tuple[list[dict], list[dict]]:
         head_i = next(i for i, r in enumerate(rows) if any("X" == c.strip().upper() for c in r))
         head = [c.strip().upper() for c in rows[head_i]]
         col = lambda *names: next((head.index(n) for n in names if n in head), None)  # noqa: E731
-        ix, iy, iname, icat, idate, irage = col("X"), col("Y"), col("DENOMINACIÓN", "DENOMINACION", "BEN", "NOME"), col("CATEGORIA", "CATEGORÍA"), col("DATA"), col("ID_RAGE")
+        ix, iy, iname, icat, idate = col("X"), col("Y"), col("DENOMINACIÓN", "DENOMINACION", "BEN", "NOME"), col("CATEGORIA", "CATEGORÍA"), col("DATA")
         for r in rows[head_i + 1:]:
             try:
                 x, y = float(r[ix].replace(".", "").replace(",", ".")), float(r[iy].replace(".", "").replace(",", "."))
