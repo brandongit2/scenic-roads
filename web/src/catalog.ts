@@ -68,6 +68,8 @@ export interface Agent {
 export interface BuildForecast {
   done_at: number | null;
   range: [number, number] | null;
+  /** Why there's no finish to forecast (nothing left; a new pass first; the units waiting). */
+  why?: string | null;
   /** The rounds of publishing to come: when each goes out and the regions it adds. */
   rounds: { at: number; regions: string[]; last: boolean }[];
 }

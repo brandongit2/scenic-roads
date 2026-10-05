@@ -325,10 +325,13 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             .filter(|k| !published.contains(k))
             .filter(|&k| region_items[k].iter().filter(|&&i| matches!(items[i].phase, Phase::Region)).all(|&i| done_by(&items, i, t)))
             .collect();
-        if regional_left && !ready.is_empty() && t - last_round >= HOUR {
+        // (Only a region the map hasn't as it is now makes a round due, as the plan's: one on it
+        // that's rebuilt (a new pass) goes out with another's round, or the last.)
+        let due: Vec<usize> = ready.iter().copied().filter(|&k| inp.regions[k].on_map != Some(true)).collect();
+        if regional_left && !due.is_empty() && t - last_round >= HOUR {
             let mut at = t;
             let mut wait = t;
-            for &k in &ready {
+            for &k in &due {
                 for &i in &region_items[k] {
                     if items[i].phase == Phase::Late {
                         if items[i].by.is_none() {
@@ -340,8 +343,12 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
                 }
             }
             let end = at.max(wait) + inp.round_s;
-            published.extend(ready.iter().copied());
-            rounds.push((at.max(wait), end, ready, false));
+            // Its catalog carries those, and the rebuilt ones ready by then whose slope and tree
+            // cover are done too (the catalog records a region built only then).
+            let mut out = due;
+            out.extend(ready.iter().copied().filter(|&k| inp.regions[k].on_map == Some(true) && region_items[k].iter().all(|&i| done_by(&items, i, end))));
+            published.extend(out.iter().copied());
+            rounds.push((at.max(wait), end, out, false));
             last_round = end;
             free[m] = end;
             continue;
@@ -682,6 +689,23 @@ mod tests {
         inp.blind = Some("the areas wait for the pass's reaches".into());
         let f = forecast(&inp);
         assert_eq!((f.done_at, f.why.as_deref()), (None, Some("the areas wait for the pass's reaches")));
+    }
+
+    #[test]
+    fn a_rebuilt_region_goes_out_with_another_round_or_the_last() {
+        // Two regions on the map as they are, rebuilt (a new pass), and one the map hasn't: only the
+        // new one makes a round due; the rebuilt ones ready by then go out with it, the other with the
+        // last round.
+        let d: Vec<String> = (0..20).map(|i| format!("6/9/{i}")).collect();
+        let d: Vec<&str> = d.iter().map(String::as_str).collect();
+        let on = |r: RegionLeft| RegionLeft { on_map: Some(true), ..r };
+        let regions = [on(region("a", &[], &["6/1/1"], &[])), region("b", &[], &["6/2/2"], &[]), on(region("c", &[], &d, &[]))];
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
+        // a (300 s), b (300 s): b's round at 600 carries a too; c after it (6,000 s), in the last.
+        assert_eq!(f.rounds.len(), 2);
+        assert_eq!(f.rounds[0].regions, ["b", "a"]);
+        assert!(f.rounds[1].last && f.rounds[1].regions == ["c"]);
+        assert_eq!(f.regions[0].map_at, Some(1_000_000 + 1200));
     }
 
     #[test]

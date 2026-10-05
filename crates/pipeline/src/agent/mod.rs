@@ -28,7 +28,7 @@ use anyhow::{Context, Result};
 use cond::{Conditions, SleepWatch};
 use jobs::{now_s, JobSpec, Needs, Running};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -155,11 +155,12 @@ fn first_peak(step: &str) -> u64 {
 
 /// The memory a terrain run of an area of `z6` tiles near the coverage is expected to take (MB),
 /// before one has said: it holds a z6 tile's shaded hi tiles at a time (z9–12, up to 5,440, ~270 KB
-/// each until written: crate::terrain_pack::build_q_with), each z6 tile's z9 repairs and quarters
-/// (~20 MB) and the area's zoomed-out tiles (z3–8, 1,365), and half a GB besides: 2.3 to 3.6 GB,
-/// what a helper spares.
+/// each until written: crate::terrain_pack::build_q_with) with its z12 repairs while its z11 is made
+/// (up to 4,096 at 256 KB), each z6 tile's z9 repairs and quarters (~20 MB) and the area's zoomed-out
+/// tiles (z3–8, 1,365), and half a GB besides: 3.3 to 4.6 GB, what a helper spares. (Measured
+/// before it wrote a z6 tile at a time: 32.9 GB for 3/0/2's whole area at once.)
 fn terrain_peak(z6: usize) -> u64 {
-    500 + 5440 * 270 / 1024 + 1365 * 270 / 1024 + z6 as u64 * 20
+    500 + 5440 * 270 / 1024 + 4096 / 4 + 1365 * 270 / 1024 + z6 as u64 * 20
 }
 
 /// The memory a helper spares its jobs (MB): three eighths of its Mac's (6 GB of the M1's 16, the
@@ -1858,6 +1859,8 @@ impl Agent {
         let held_dir = root.join("catalog-held");
         let dir = if held && store::catalog::list(&held_dir).is_ok_and(|ns| !ns.is_empty()) { held_dir } else { root.join("catalog") };
         let (on_map, since_publish) = self.on_map(&dir, &recipes);
+        // (The map's: the served catalog's, held ones aside.)
+        self.catalog_seen.set(served_catalog(&root.join("catalog")));
         let planned = build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), build::Rounds { each: &covs.each, on_map: &on_map, since_publish });
         let ready = planned.ready;
         *self.ready.borrow_mut() = ready.clone();
@@ -2014,10 +2017,15 @@ impl Agent {
             Some(c) => c.for_forecast(),
             None => Default::default(),
         };
-        // The helpers heard from lately, each at its speed against the build Mac's, from the history
-        // (half until it's measured).
+        // Each worker's speed against the build Mac's, from the history (half until it's measured):
+        // every one that measured a cost or did shared work, asleep or not (its costs are put at the
+        // build Mac's pace by it); the helpers heard from lately are the machines.
         let helpers: Vec<Status> = helpers(root);
-        let names: Vec<String> = helpers.iter().map(|h| h.host.clone()).collect();
+        let mut names: BTreeSet<String> = helpers.iter().map(|h| h.host.clone()).collect();
+        names.extend(costs.values().filter_map(|c| c.worker.clone()));
+        names.extend(events.iter().filter(|e| matches!(e.kind.as_str(), "done" | "lease")).filter_map(|e| e.worker.clone()));
+        names.remove(&self.host);
+        let names: Vec<String> = names.into_iter().collect();
         let speeds = forecast::speeds(&events, &self.host, &names, 0.5);
         // (A time measured on a helper, at the build Mac's pace; one measured here or by a page, as it is.)
         let pace = |worker: Option<&String>| worker.and_then(|w| speeds.get(w)).map_or(1.0, |s| s.0);
@@ -2049,9 +2057,10 @@ impl Agent {
             Cost { secs: each * n.max(1) as f64, known, peak_mb: 0 }
         };
         let step_of = |id: &str| id.split(' ').next().unwrap_or("").to_string();
-        // (Not the one running now: its time left is the build Mac's.)
-        let running_id = self.running.as_ref().map(|r| r.spec.id.clone());
-        let before: Vec<forecast::Job> = before.iter().filter(|j| Some(&j.id) != running_id.as_ref()).map(|j| (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))).collect();
+        // (Not the one running now, by its step: its time left is the build Mac's. Each job before the
+        // regions' is a step of its own.)
+        let running_step = self.running.as_ref().map(|r| step_of(&r.spec.id));
+        let before: Vec<forecast::Job> = before.iter().filter(|j| Some(step_of(&j.id)) != running_step).map(|j| (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))).collect();
         // A round: as the last ones took (their chains' jobs and catalog), else the chain's steps'
         // times; the last round, the roads' chain as it stands now, if more (none when it's done).
         let [roads, rail, landmarks] = chains;
@@ -2075,16 +2084,20 @@ impl Agent {
         // The build Mac's job's time left: its pace says only its part's; its targets not yet done,
         // as they took last time, less what it spent on the one under way, if longer.
         let busy_here = self.running.as_ref().map_or(0.0, |r| {
-            let left = r.spec.record.as_ref().map(|w| {
-                let done = crate::control::read_done(&self.done_path(), &w.step);
-                let (mut todo, mut did) = (0.0, 0.0);
-                for (t, _) in &w.targets {
-                    let c = cost(&w.step, t).secs;
-                    if done.contains(t) { did += c } else { todo += c }
+            let left = match r.spec.record.as_ref() {
+                Some(w) => {
+                    let done = crate::control::read_done(&self.done_path(), &w.step);
+                    let (mut todo, mut did) = (0.0, 0.0);
+                    for (t, _) in &w.targets {
+                        let c = cost(&w.step, t).secs;
+                        if done.contains(t) { did += c } else { todo += c }
+                    }
+                    todo - (r.elapsed().as_secs_f64() - did).max(0.0)
                 }
-                todo - (r.elapsed().as_secs_f64() - did).max(0.0)
-            });
-            self.job_eta.map(|e| e as f64).into_iter().chain(left).fold(60.0, f64::max)
+                // (One with no record, the pass's or a worldwide one: its step's time here.)
+                None => mine(&step_of(&r.spec.id), 1).secs - r.elapsed().as_secs_f64(),
+            };
+            self.job_eta.map(|e| e as f64).into_iter().chain([left]).fold(60.0, f64::max)
         });
         let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, mem_mb: u64::MAX, busy_s: busy_here }];
         for h in &helpers {
@@ -2231,8 +2244,6 @@ impl Agent {
                 *cached = Some(((dir.to_path_buf(), n), regions));
             }
             at = Some(t);
-            let unix = t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-            self.catalog_seen.set(Some(CatalogSeen { n, at: unix }));
             break;
         }
         // How long ago the last catalog went out, or one last started (it may have failed): a
@@ -2620,6 +2631,19 @@ fn helpers(root: &Path) -> Vec<Status> {
 /// A job's step and targets when both Macs run its step (crate::agent::claims::SHARED).
 fn shared_targets(spec: &JobSpec) -> Option<(String, Vec<String>)> {
     spec.record.as_ref().filter(|w| claims::SHARED.contains(&w.step.as_str())).map(|w| (w.step.clone(), w.targets.iter().map(|t| t.0.clone()).collect()))
+}
+
+/// The newest catalog in `dir` that reads, its number and when it went out: what the map's server
+/// serves (a damaged one passed over, as it does).
+fn served_catalog(dir: &Path) -> Option<CatalogSeen> {
+    let mut ns = store::catalog::list(dir).ok()?;
+    ns.sort_unstable();
+    ns.into_iter().rev().find_map(|n| {
+        let path = dir.join(store::catalog::file_name(n));
+        let t = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+        store::catalog::read(&path).ok()?;
+        Some(CatalogSeen { n, at: t.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) })
+    })
 }
 
 /// About how long a target of `step` takes on the build Mac (seconds) until it's been timed there:

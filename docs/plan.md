@@ -1129,17 +1129,19 @@ are no request files.
   once, a unit once its region's terrain is built and the pass's heritage sites, reaches and
   roadside buildings are made (as the plan's units wait for), slope once its area's terrain is. A
   machine with nothing it can do waits for the next work to end or another machine to be free. A
-  round goes out as the plan makes one: a region done that the map hasn't as it is now (one on it
-  that's rebuilt goes out again), at most hourly (its slope and tree cover, then the round's chain,
-  as long as the last rounds took); after the last unit and terrain area, the slope and tree cover
-  left, the last round (the roads' chain as it stands, if longer; none when nothing's stale and no
-  region waits to go out), the trains' and the landmarks' chains. Each target takes its last run's
-  time at the build Mac's pace (one measured on a helper, over the helper's speed), else its step's
-  mean, else what its jobs took here a target, else a first guess; each machine at its measured
-  speed (a helper's: the build Mac's mean time a target over its own, for the shared steps both
-  did, from the history; half until measured, said as a guess); each free once its job under way
-  is done (its targets not yet done as they took last time, less what it's spent on the one under
-  way, if longer than its part's pace says; a helper's lease likewise). Run three times: as
+  round goes out as the plan makes one: a region done that the map hasn't as it is now, at most
+  hourly (its slope and tree cover, then the round's chain, as long as the last rounds took); its
+  catalog carries the regions on the map that are rebuilt (a new pass) and done by then, their slope
+  and tree cover too (they make no round of their own); after the last unit and terrain area, the
+  slope and tree cover left, the last round (the roads' chain as it stands, if longer; none when
+  nothing's stale and no region waits to go out), the trains' and the landmarks' chains. Each
+  target takes its last run's time at the build Mac's pace (one measured on a helper, over that
+  helper's speed, asleep or not), else its step's mean, else what its jobs took here a target, else
+  a first guess; each machine at its measured speed (a helper's: the build Mac's mean time a target
+  over its own, for the shared steps both did, from the history; half until measured, said as a
+  guess); each free once its job under way is done (its targets not yet done as they took last
+  time, less what it's spent on the one under way; a job with no record, its step's time here, less
+  what it's spent; if longer than its part's pace says; a helper's lease likewise). Run three times: as
   estimated, and for a range, the measured times a little off and the guessed much more. It says
   when each step, each region and everything will be done, when each region reaches the map, the
   rounds to come, what each machine does next (not what it's on) and its schedule to the end, and
@@ -1171,8 +1173,9 @@ and, when none fits it, units' last steps.
   workers summed, `SCENIC_COSTS`, "<step> <target>"), else candidates' their unit's (they read the
   same piece), else terrain by its area's size (it makes and writes a z6 tile at a time, holding
   that one's shaded hi tiles, up to 5,440 at ~270 KB, each z6 tile's z9 repairs and quarters, and
-  the area's zoomed-out tiles: 2.3 to 3.6 GB, where holding the whole area's until they were
-  written took 32.9 GB for 3/0/2; a measure from that way, `v` 0, counts for nothing now:
+  its z12 repairs while its z11 is made, and the area's zoomed-out tiles: 3.3 to 4.6 GB, where
+  holding the whole area's until they were written took 32.9 GB for 3/0/2; a measure from that way,
+  `v` 0, counts for nothing now:
   `coord::cost_version`), else a first guess per step (tree cover 8 GB: six workers at once, each
   with its block's canopy; slope 6.6, the most an area took); so neither of those goes to the M1's
   6 GB until a run shows it fits; peaks 2.5. A helper asks only for the steps its

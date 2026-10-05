@@ -67,6 +67,8 @@ struct Forecast: Decodable {
     let done_at: Int?
     let range: [Int]?
     let rounds: [Round]?
+    /// Why there's no finish to forecast (nothing left; a new pass first; the units waiting).
+    let why: String?
 }
 
 struct Round: Decodable {
@@ -304,7 +306,7 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
     guard let r = r, let s = r.status else { return out }
     // When it'll be done and the map next gets new data (as the worker page and the map say it).
     if let f = s.forecast, r.now - s.beat <= outOfTouch {
-        var t = f.done_at.map { "Done ≈ \(soon($0))" } ?? "No finish in sight: there's work no machine can do"
+        var t = f.done_at.map { "Done ≈ \(soon($0))" } ?? "No finish to forecast: \(f.why ?? "unknown")"
         if let rg = f.range, rg.count == 2, f.done_at != nil { t += " (\(soon(rg[0]))–\(soon(rg[1])))" }
         out.append(Line(text: t, style: .small))
         if let next = (f.rounds ?? []).first(where: { !$0.regions.isEmpty }) {

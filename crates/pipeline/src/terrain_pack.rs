@@ -73,6 +73,7 @@ pub fn process(
         let (dx, dy) = (k & 1, k >> 1);
         let Some(c) = below.get(&(x * 2 + dx, y * 2 + dy)) else { continue };
         for &i in &c.moved {
+            let i = i as usize;
             let (cx, cy) = ((i % 256) & !1, (i / 256) & !1);
             let m = (c.e[cy * 256 + cx] + c.e[cy * 256 + cx + 1] + c.e[(cy + 1) * 256 + cx] + c.e[(cy + 1) * 256 + cx + 1]) * 0.25;
             e[(dy as usize * 128 + cy / 2) * 256 + dx as usize * 128 + cx / 2] = m;
@@ -99,7 +100,7 @@ pub fn process(
         }
         q
     });
-    let moved: Vec<usize> = e.iter().zip(&before).enumerate().filter(|(_, (a, b))| !((*a - *b).abs() <= 0.5)).map(|(i, _)| i).collect();
+    let moved: Vec<u16> = e.iter().zip(&before).enumerate().filter(|(_, (a, b))| !((*a - *b).abs() <= 0.5)).map(|(i, _)| i as u16).collect();
     if moved.is_empty() {
         return (png, None, quad);
     }
@@ -112,10 +113,11 @@ pub fn process(
 /// The finer levels stay AWS's, so the analysis grid (z11) and what follows from it don't change.
 pub const REBUILD_Z: u8 = 8;
 
-/// A tile changed by process: its elevations and the pixels that moved by more than half a metre.
+/// A tile changed by process: its elevations and the pixels that moved by more than half a metre
+/// (a pixel of 256 × 256 in a u16: a coastal tile has tens of thousands).
 pub struct Repaired {
     pub e: Vec<f32>,
-    pub moved: Vec<usize>,
+    pub moved: Vec<u16>,
 }
 
 

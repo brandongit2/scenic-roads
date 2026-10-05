@@ -609,7 +609,8 @@ function sinceLine(m, events, seen) {
   let failures = 0, rounds = [];
   for (const e of fresh) {
     if ((e.kind === "end" || e.kind === "done") && e.step === "unit" && e.ok !== false) areas[e.worker] = (areas[e.worker] || 0) + (e.targets || []).length;
-    if (e.ok === false && !/^stopped|paused|lapsed|the agent stopped|slept|another Mac took/.test(e.note || "")) failures++;
+    // (Stops aren't failures: the build pausing, the Mac sleeping, a lease lapsing, an agent stopping.)
+    if (e.ok === false && !/^(stopped|paused|its lease lapsed|the agent stopped|another Mac took)/.test(e.note || "")) failures++;
     if (e.kind === "catalog") rounds.push(e);
   }
   const total = Object.values(areas).reduce((t, k) => t + k, 0);
@@ -672,15 +673,17 @@ function render() {
     h("div", "road",
       h("div", "box", h("h3", null, "Schedule", h("span", null, "each machine's work from now to the end")), schedule(m)),
       h("div", "box", h("h3", null, "Map updates"), publishing(m)),
-      h("div", "box", h("h3", null, "Steps", h("span", null, "⇄ helpers may take part")), stepsTable(m)),
-      h("div", "box", h("h3", null, "Regions", h("span", null, m.fc ? "built one at a time: those the map lacks first, then those with the fewest areas left" : "")), regionsList(m, render))));
+      h("div", "box", h("h3", null, "Steps", h("span", null, "⇄ helpers may take part")), stepsTable(m))));
+  // (Their own part: while their search has the keyboard, only it waits to be refreshed.)
+  const regions = section("d-regions", "regions", null, null,
+    h("div", "box", h("h3", null, "Regions", h("span", null, m.fc ? "built one at a time: those the map lacks first, then those with the fewest areas left" : "")), regionsList(m, render)));
   const activity = section("d-activity", "activity", "Activity", "the last day",
     h("div", "box", hours(m),
       h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Map updates"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),
       sinceLine(m, events, seenSeq), feed(m, events, seenSeq)));
   const scrollY = window.scrollY;
   const feedTop = root.querySelector(".feed")?.scrollTop || 0;
-  const next = [verdict, section("d-overview", "overview", "Overview", null, overview(m)), machines, road, activity, section("d-details", "details", null, null, details(m))];
+  const next = [verdict, section("d-overview", "overview", "Overview", null, overview(m)), machines, road, regions, activity, section("d-details", "details", null, null, details(m))];
   // (A section where the user is typing or has text selected stays as it was until they're done:
   // a refresh would take their keyboard or selection away.)
   const sel = window.getSelection();

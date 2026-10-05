@@ -164,7 +164,7 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   - **The overview:** the share of the areas built, the work left and when it'll be done if the
     Macs keep going, how much of that time was measured; the steps as a strip; the numbers that
     matter (areas built, regions on the map, as drawn now and as they were, terrain and slope, tree
-    cover, map tiles, the last map update (the catalog the build Mac read) and the next, the
+    cover, map tiles, the last map update (the catalog served) and the next, the
     machines).
   - **The machines,** a card each (the build Mac, each helper, the pages together; a helper that's
     stopped reporting, with when it was last heard from): its job, its parts, its progress with its

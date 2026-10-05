@@ -1,15 +1,16 @@
 /* The build at a glance (dash.js): both pages' (/work/ and /work/watch/). The page's own tokens
    (index.html's :root) are used throughout. */
 
-#dash { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); grid-template-areas: "verdict" "overview" "machines" "road" "activity" "details"; }
+#dash { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); grid-template-areas: "verdict" "overview" "machines" "road" "regions" "activity" "details"; }
 @media (min-width: 1100px) {
-  #dash { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); grid-template-areas: "verdict verdict" "overview overview" "machines road" "activity road" "details details"; }
+  #dash { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); grid-template-areas: "verdict verdict" "overview overview" "machines road" "activity road" "activity regions" "details details"; align-items: start; }
 }
 #dash > section { min-width: 0; }
 .d-verdict { grid-area: verdict; }
 .d-overview { grid-area: overview; }
 .d-machines { grid-area: machines; }
 .d-road { grid-area: road; }
+.d-regions { grid-area: regions; }
 .d-activity { grid-area: activity; }
 .d-details { grid-area: details; }
 
