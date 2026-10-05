@@ -45,6 +45,7 @@
   h2 { font-size: 11px; font-weight: 600; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; margin: 18px 0 6px; display: flex; justify-content: space-between; align-items: baseline; }
   h2 span { text-transform: none; letter-spacing: 0; font-weight: 400; }
   #device[hidden], .slot[hidden] { display: none; }
+  #cap { margin-top: 4px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: inherit; font-size: 11.5px; }
 </style>
 </head>
 <body>
@@ -57,7 +58,7 @@
   <section id="device">
   <h2>This device <span><button id="toggle">Pause</button></span></h2>
   <div class="grid">
-    <div class="card"><div class="k">Memory to spare</div><div class="v" id="mem">–</div></div>
+    <div class="card"><div class="k">Memory to spare</div><div class="v" id="mem">–</div><select id="cap" title="The most this page takes on at once (lowered by itself if the page dies running tasks)"></select></div>
     <div class="card"><div class="k">Slots</div><div class="v" id="slots-n">–</div></div>
     <div class="card"><div class="k">Done here</div><div class="v" id="done">0</div></div>
     <div class="card"><div class="k">Busy for</div><div class="v" id="busy">0 s</div></div>
@@ -102,37 +103,45 @@ const label = (() => {
 const worker = `${label} ${id}`;
 const cores = Math.max(1, (navigator.hardwareConcurrency || 2) - 1);
 
-// How much memory this tab may use (MB): learned. It starts modest (or from what the browser says
-// it has), rises after tasks that came near it succeed, and falls below any task the tab died in.
-// (32-bit WebAssembly can't address more than 4 GB; a browser may allow a program less: the most it
-// lets a memory grow to, tried once.)
+// How much memory this tab may use (MB): learned, or set here (This device). It starts from what the
+// browser says it has, else 2 GB on an iPad (the owner's choice, 2026-10-05: Safari doesn't say, and
+// iPads have 4 GB or more), else 1 GB; rises after tasks that came near it succeed, and falls below
+// any task the tab died in. (32-bit WebAssembly can't address more than 4 GB; a browser may allow a
+// program less: the most it lets a memory grow to, tried once.)
 const CAP = (() => {
   for (let mb = 3800; mb >= 256; mb = Math.floor(mb / 2)) {
     try { new WebAssembly.Memory({ initial: 1, maximum: mb * 16 }); return mb; } catch {}
   }
   return 128;
 })();
-let ceiling = Math.min(CAP, store.get("ceiling", navigator.deviceMemory ? navigator.deviceMemory * 256 : 1024));
+const START = navigator.deviceMemory ? navigator.deviceMemory * 256 : /on iPad$/.test(label) ? 2048 : 1024;
+let ceiling = Math.min(CAP, store.get("ceiling", START));
 // Each tab's running tasks, noted with the time (renewed every minute while it lives). A note not
 // renewed for two minutes is a tab that died: together its tasks took more than this browser lets a
-// tab have. (Another tab's live note is left alone.)
+// tab have, and they're given back. Looked for as the page starts and every minute after: a tab iOS
+// killed is reloaded at once, when its note is still fresh. (Another tab's live note is left alone.)
 const tab = Math.random().toString(36).slice(2, 10);
-const notes = store.get("running", null);
-const all = notes && !Array.isArray(notes) ? notes : {};
-const died = [];
-for (const [t, n] of WATCH ? [] : Object.entries(all)) {
-  if (Date.now() - (n.at || 0) > 120000) {
-    died.push(...(n.tasks || []));
-    delete all[t];
+function reap() {
+  if (WATCH) return false;
+  const notes = store.get("running", null);
+  const all = notes && !Array.isArray(notes) ? notes : {};
+  const died = [];
+  for (const [t, n] of Object.entries(all)) {
+    if (t !== tab && Date.now() - (n.at || 0) > 120000) {
+      died.push(...(n.tasks || []));
+      delete all[t];
+    }
   }
-}
-if (!WATCH) store.set("running", all);
-if (died.length) {
+  if (!died.length) return false;
+  store.set("running", all);
   const total = died.reduce((a, t) => a + (t.mem_mb || 0), 0);
   ceiling = Math.max(256, Math.min(ceiling, Math.floor(total * 0.7)));
   store.set("ceiling", ceiling);
   log(`<span class="bad">A page died running ${died.length > 1 ? `${died.length} tasks` : "a task"} of ${total} MB: taking on at most ${ceiling} MB now.</span>`);
+  for (const t of died) call("/work/fail", { worker, lease: t.lease, error: "the page died running it", oom_mb: t.mem_mb }).catch(() => {});
+  return true;
 }
+reap();
 let nearMisses = store.get("near", 0);
 
 async function call(path, body) {
@@ -146,7 +155,6 @@ async function call(path, body) {
   if (!r.ok && r.status !== 410) throw new Error(`${path}: ${r.status} ${text.slice(0, 200)}`);
   return [r.status, text ? JSON.parse(text) : null];
 }
-for (const t of died) call("/work/fail", { worker, lease: t.lease, error: "the page died running it", oom_mb: t.mem_mb }).catch(() => {});
 
 function log(html) {
   const el = $("log");
@@ -185,6 +193,11 @@ $("slots-n").textContent = `${slots.length}`;
 
 function show() {
   $("mem").textContent = `${Math.max(0, ceiling - reserved)} of ${ceiling} MB`;
+  // (Its choices: the usual sizes this browser allows, and what it's at now.)
+  const opts = [...new Set([512, 768, 1024, 1536, 2048, 3072, ceiling])].filter((v) => v <= CAP).sort((a, b) => a - b);
+  if ($("cap").options.length !== opts.length || $("cap").value !== String(ceiling)) {
+    $("cap").replaceChildren(...opts.map((v) => { const o = document.createElement("option"); o.value = String(v); o.textContent = `at most ${v >= 1024 ? `${Number((v / 1024).toFixed(1))} GB` : `${v} MB`}`; o.selected = v === ceiling; return o; }));
+  }
   $("done").textContent = `${done}`;
   $("busy").textContent = busyMs < 120000 ? `${Math.round(busyMs / 1000)} s` : `${Math.round(busyMs / 60000)} min`;
   for (const s of slots) {
@@ -275,6 +288,7 @@ setInterval(fill, 5000);
 // (its task went to another worker, or the job took it back).
 setInterval(async () => {
   remember();
+  if (reap()) show();
   for (const s of slots) {
     if (!s.lease) continue;
     try {
@@ -355,6 +369,17 @@ if (!standalone && window.isSecureContext && ios) {
 
 const setPaused = (v) => { paused = v; $("toggle").textContent = paused ? "Resume" : "Pause"; if (!WATCH) $("state").textContent = paused ? "paused (running tasks finish)" : "working"; if (!paused) fill(); };
 $("toggle").onclick = () => setPaused(!paused);
+// Its ceiling, set here (this browser's own: kept, and learned from again, down after a death, up
+// after near misses).
+$("cap").onchange = (e) => {
+  ceiling = Math.min(CAP, Number(e.target.value));
+  nearMisses = 0;
+  store.set("ceiling", ceiling);
+  store.set("near", 0);
+  log(`Taking on at most ${ceiling} MB now (set here).`);
+  show();
+  fill();
+};
 // (Paused before the reload into a new version: still paused.)
 try { if (sessionStorage.getItem("paused") === "1") setPaused(true); sessionStorage.removeItem("paused"); } catch {}
 

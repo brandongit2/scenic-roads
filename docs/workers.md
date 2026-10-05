@@ -134,10 +134,13 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 - **Ceilings, enforced:** the programs are linked to import their memory, and the page gives each a
   `WebAssembly.Memory` capped at its task's budget less the files it holds: an overrun is a failed
   task, reported with the peak it reached, not a tab the OS kills.
-- **The page's ceiling, learned:** it starts from what the browser says it has (or 1 GB), never more
-  than the largest memory the browser will create; after three tasks near it succeed it rises by a
+- **The page's ceiling, learned:** it starts from what the browser says it has, else 2 GB on an iPad
+  (the owner's choice, 2026-10-05: Safari doesn't say, and iPads have 4 GB or more), else 1 GB,
+  never more than the largest memory the browser will create; it can be set on the page (This
+  device, Memory to spare: kept in that browser); after three tasks near it succeed it rises by a
   quarter; a task the tab died in lowers it below that task's (the page notes what it runs, and
-  finds the note when it's reloaded). Nothing asks what device it is.
+  finds the note when it's reloaded, or within a minute after: iOS reloads a tab it killed at once,
+  its note still fresh) and is given back. Each task's own memory is capped at its budget besides.
 - **Planned:** cutting a task to the worker (smaller sample ranges for smaller ceilings).
 
 ## 7. The web worker (built)
