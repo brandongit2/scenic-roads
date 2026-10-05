@@ -15,8 +15,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// What a job needs to run.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Needs {
-    /// Power for CPU work: mains, or the battery above `cond::BATTERY_MIN`.
-    pub ac: bool,
+    /// CPU work: it runs on mains power, or on battery down to `cond::BATTERY_MIN` (30 %), then
+    /// waits for mains (`lapsed`). Light work (a backup, GC) runs on any charge.
+    #[serde(alias = "ac")]
+    pub cpu: bool,
     /// The NAS.
     pub nas: bool,
     /// The home network: the job reads the whole planet (or every piece of it) from the NAS, too

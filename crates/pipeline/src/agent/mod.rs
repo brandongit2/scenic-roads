@@ -478,7 +478,7 @@ impl Agent {
     /// needing more memory than it spares), built from the pass it says, saving into the lease's
     /// outbox folder. Asked only when it could start now.
     fn helper_job(&mut self, root: &Path, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
-        let needs = Needs { ac: true, nas: true, home: false };
+        let needs = Needs { cpu: true, nas: true, home: false };
         if let Some(why) = lapsed(&needs, c) {
             waiting.push(Waiting { what: "Building".into(), why });
             return Vec::new();
@@ -541,7 +541,7 @@ impl Agent {
                 ];
                 let unit = task["unit"].as_str().unwrap_or("").to_string();
                 self.lease = Some(Held::Leased { lease, dir });
-                vec![JobSpec { id: format!("task {id}"), what: format!("Scenery for the build Mac's area {unit}"), cmd, needs: Needs { ac: true, nas: false, home: false }, restart_after_sleep: false, record: None }]
+                vec![JobSpec { id: format!("task {id}"), what: format!("Scenery for the build Mac's area {unit}"), cmd, needs: Needs { cpu: true, nas: false, home: false }, restart_after_sleep: false, record: None }]
             }
             Ok(Some(g)) => {
                 fail(self, g.lease, "this helper can't do that work");
@@ -1167,7 +1167,7 @@ impl Agent {
                         s(&pack_cache),
                     ],
                     // (It reads the whole planet: at home only.)
-                    needs: Needs { ac: true, nas: true, home: true },
+                    needs: Needs { cpu: true, nas: true, home: true },
                     restart_after_sleep: true,
                     record: None,
                 });
@@ -1183,7 +1183,7 @@ impl Agent {
                 id: "backup".into(),
                 what: "Backing up translations, descriptions and inputs".into(),
                 cmd: vec![s(&me), "backup".into(), "--root".into(), s(root), "--local".into(), s(&self.o.home.join("backups"))],
-                needs: Needs { ac: false, nas: true, home: false },
+                needs: Needs { cpu: false, nas: true, home: false },
                 restart_after_sleep: true,
                 record: None,
             });
@@ -1193,7 +1193,7 @@ impl Agent {
                 id: "gc".into(),
                 what: "Removing replaced files from the NAS".into(),
                 cmd: vec![s(&me), "gc".into(), "--root".into(), s(root)],
-                needs: Needs { ac: false, nas: true, home: false },
+                needs: Needs { cpu: false, nas: true, home: false },
                 restart_after_sleep: true,
                 record: None,
             });
@@ -1225,7 +1225,7 @@ impl Agent {
             // The pass's whole-planet reads (its missing sets, the units' reach), and the world's
             // buildings (tens of GB onto the NAS), wait for home.
             let home = matches!(step, "pass-sets" | "reach" | "buildings");
-            JobSpec { id, what: what.into(), cmd, needs: Needs { ac: true, nas: true, home }, restart_after_sleep: true, record }
+            JobSpec { id, what: what.into(), cmd, needs: Needs { cpu: true, nas: true, home }, restart_after_sleep: true, record }
         };
         // Per pass, worldwide: the sets it lacks in their current filters (a set added or changed
         // since it ran), the hiking routes' ends, AWS's z8 (once), Overture's buildings (once per
@@ -1344,7 +1344,7 @@ impl Agent {
                     continue;
                 }
                 let mut j = job("catalog-held".into(), "The new map data, held for review", "catalog", vec!["--held".into()], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
-                j.needs = Needs { ac: false, nas: true, home: false };
+                j.needs = Needs { cpu: false, nas: true, home: false };
                 jobs.push(j);
                 continue;
             }
@@ -1397,7 +1397,7 @@ impl Agent {
             let step = w.step.clone();
             let mut j = job(id, &what, &step, extra, Some(w));
             // (A catalog and a prune only write a little: no power needed.)
-            j.needs = Needs { ac: !matches!(step.as_str(), "catalog" | "prune"), nas: true, home: false };
+            j.needs = Needs { cpu: !matches!(step.as_str(), "catalog" | "prune"), nas: true, home: false };
             jobs.push(j);
         }
         jobs
@@ -1588,7 +1588,7 @@ fn lapsed(n: &Needs, c: &Conditions) -> Option<String> {
         return Some("away from home: it moves the whole planet or world through the NAS, which waits for the home network".into());
     }
     // CPU work: on mains power, or on battery down to BATTERY_MIN.
-    if n.ac && !c.ac && c.battery.is_none_or(|b| b < cond::BATTERY_MIN) {
+    if n.cpu && !c.ac && c.battery.is_none_or(|b| b < cond::BATTERY_MIN) {
         let at = c.battery.map(|b| format!(" at {b}%")).unwrap_or_default();
         return Some(format!("on battery{at}: waiting for mains power (it builds on battery down to {}%)", cond::BATTERY_MIN));
     }
@@ -1807,7 +1807,7 @@ mod tests {
 
     #[test]
     fn conditions_gate_jobs() {
-        let n = Needs { ac: true, nas: true, home: false };
+        let n = Needs { cpu: true, nas: true, home: false };
         let at = |ac: bool, nas: bool, home: bool, battery: Option<u8>| Conditions { ac, nas, home, idle_s: 0, battery };
         assert!(lapsed(&n, &at(true, true, true, None)).is_none());
         assert!(lapsed(&n, &at(false, true, true, None)).unwrap().contains("battery"));
@@ -1818,8 +1818,10 @@ mod tests {
         // Away from home, through Tailscale: on, except the whole-planet reads.
         assert!(lapsed(&n, &at(true, true, false, None)).is_none());
         assert!(lapsed(&Needs { home: true, ..n }, &at(true, true, false, None)).unwrap().contains("away from home"));
-        // An older heartbeat without `home` reads as at home.
+        // An older heartbeat without `home` reads as at home; an older job's `ac` is `cpu`.
         let old: Conditions = serde_json::from_str(r#"{"ac": true, "nas": true, "idle_s": 0}"#).unwrap();
         assert!(old.home);
+        let old: Needs = serde_json::from_str(r#"{"ac": true, "nas": true}"#).unwrap();
+        assert!(old.cpu && old.nas);
     }
 }

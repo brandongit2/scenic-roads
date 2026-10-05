@@ -1033,7 +1033,7 @@ mid-job. Nothing depends on it being available at a given time.
 - **No deadlines.** Until work is done, the map serves the last catalog.
 - **Conditions per step:**
   - Every job needs the NAS: at home, or through Tailscale away from home, except the whole-planet
-    reads, which need home. CPU jobs also need power: mains, or the battery at 30 % or more.
+    reads, which need home. CPU jobs run on mains power, or on battery down to 30 %.
   - When a condition lapses, the agent pauses the job (`SIGSTOP` to its process group) and resumes
     it (`SIGCONT`) when it holds again.
 - **Sleep** suspends every process. Open SMB handles often don't survive it, so a job that touches the
