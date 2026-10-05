@@ -1063,11 +1063,13 @@ impl Agent {
         let job_progress = self.running.as_mut().and_then(|r| {
             let (done, total, unit) = jobs::progress(&r.log)?;
             let frac = done / total;
-            let fresh = r.progress_base.as_ref().is_none_or(|b| b.2 != unit || frac < b.1);
+            // (Its pace measured again from a new unit, a new part, or a step back.)
+            let part = r.parts.as_ref().map(|p| p.0);
+            let fresh = r.progress_base.as_ref().is_none_or(|b| b.2 != unit || b.3 != part || frac < b.1);
             if fresh {
-                r.progress_base = Some((Instant::now(), frac, unit.clone()));
+                r.progress_base = Some((Instant::now(), frac, unit.clone(), part));
             }
-            let (t0, f0, _) = r.progress_base.as_ref().unwrap();
+            let (t0, f0, _, _) = r.progress_base.as_ref().unwrap();
             let eta_s = (frac > *f0 && r.paused.is_none()).then(|| (t0.elapsed().as_secs_f64() * (1.0 - frac) / (frac - f0)) as u64);
             Some(JobProgress { done, total, unit, eta_s })
         });

@@ -1056,9 +1056,10 @@ are no request files.
   pageviews; summits, marks, route ends, the heritage sites, rail feeds, rail, labels; a terrain
   run's three: its area's tiles fetched and shaded, its terrain written to the NAS, the new raw
   tiles packed onto the NAS). A long part says how far it is: the pageview dumps by the bytes
-  streamed, a part's steps one by one, a terrain run's tiles (every level's, counted first), packs,
-  then raw tiles packed and areas merged; the jobs' Python steps print straight to their logs
-  (unbuffered).
+  streamed, a part's steps one by one, a terrain run's tiles (every level's, counted first, each
+  half done once it's here, from AWS or the NAS, and done once shaded), packs, then raw tiles packed
+  and areas merged. A part shows only what it has said itself (none at first), its time left from its
+  own pace; the jobs' Python steps print straight to their logs (unbuffered).
 
 **Two Macs** (and any other worker: `docs/workers.md`). The build Mac's agent plans; it runs a
 coordinator (`pipeline::coord`, port 8090) from which every other worker asks for work that fits it.

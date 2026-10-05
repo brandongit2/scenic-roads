@@ -469,6 +469,11 @@ impl RawTiles {
     /// Fetches the tiles of `tiles` (zoom `z`) not here yet, `threads` at a time: a download mostly
     /// waits on AWS, so far more of them than cores. The number that came from AWS.
     pub fn prefetch(&self, z: u8, tiles: &[(u32, u32)], threads: usize) -> anyhow::Result<usize> {
+        self.prefetch_counted(z, tiles, threads, &std::sync::atomic::AtomicU64::new(0))
+    }
+
+    /// `prefetch`, counting into `done` each tile as it's here (at once for those that were).
+    pub fn prefetch_counted(&self, z: u8, tiles: &[(u32, u32)], threads: usize, done: &std::sync::atomic::AtomicU64) -> anyhow::Result<usize> {
         use rayon::prelude::*;
         let todo: Vec<(u32, u32)> = tiles
             .iter()
@@ -478,6 +483,7 @@ impl RawTiles {
                 !d.join(format!("{y}.png")).exists() && !d.join(format!("{y}.none")).exists()
             })
             .collect();
+        done.fetch_add((tiles.len() - todo.len()) as u64, std::sync::atomic::Ordering::Relaxed);
         if todo.is_empty() {
             return Ok(0);
         }
@@ -485,7 +491,9 @@ impl RawTiles {
         let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build()?;
         pool.install(|| {
             todo.par_iter().try_for_each(|&(x, y)| -> anyhow::Result<()> {
-                if self.get(z, x, y)?.1 {
+                let got = self.get(z, x, y);
+                done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if got?.1 {
                     fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 Ok(())
@@ -579,8 +587,9 @@ pub fn build_q(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], 
     build_q_with(out, raw, q, ts, cov, &|_, _, _| {})
 }
 
-/// `build_q`, saying how far it is (`progress`): the area's tiles fetched and shaded, every level's
-/// ("tiles", every few seconds), then its packs written ("packs").
+/// `build_q`, saying how far it is (`progress`): the area's tiles, every level's, each half done once
+/// it's here (fetched from AWS, or read from the NAS's archives) and done once shaded ("tiles",
+/// every few seconds), then its packs written ("packs").
 pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], cov: &Coverage, progress: crate::rawpack::Progress) -> anyhow::Result<PackReport> {
     let mut rep = PackReport::default();
     // Each level's tiles, z12 → z3: z12 → z9 inside each z6 tile, near the coverage, as fine as the
@@ -605,7 +614,9 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
         levels.push((z, (q.0 * s..(q.0 + 1) * s).flat_map(|x| (q.1 * s..(q.1 + 1) * s).map(move |y| (x, y))).collect()));
     }
     let total: u64 = levels.iter().map(|(_, t)| t.len() as u64).sum();
-    let processed = std::sync::atomic::AtomicU64::new(0);
+    // (Here, and shaded: each tile counts in both.)
+    let (here, processed) = (std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0));
+    let done = || (here.load(std::sync::atomic::Ordering::Relaxed) + processed.load(std::sync::atomic::Ordering::Relaxed)) / 2;
     let fetched = std::sync::atomic::AtomicUsize::new(0);
     let missing = std::sync::atomic::AtomicUsize::new(0);
     let repaired = std::sync::atomic::AtomicUsize::new(0);
@@ -621,7 +632,7 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
     };
     // One level: every tile fetched or reused, then processed with what the level below made.
     let level = |z: u8, tiles: Vec<(u32, u32)>, below: &HashMap<(u32, u32), Repaired>, quads: &HashMap<(u32, u32), Vec<f32>>| -> anyhow::Result<(Vec<(u32, u32, Vec<u8>)>, HashMap<(u32, u32), Repaired>, HashMap<(u32, u32), Vec<f32>>)> {
-        fetched.fetch_add(raw.prefetch(z, &tiles, FETCH_THREADS)?, std::sync::atomic::Ordering::Relaxed);
+        fetched.fetch_add(raw.prefetch_counted(z, &tiles, FETCH_THREADS, &here)?, std::sync::atomic::Ordering::Relaxed);
         let done: Vec<anyhow::Result<Option<(u32, u32, Vec<u8>, Option<Repaired>, Option<Vec<f32>>)>>> = tiles
             .par_iter()
             .map(|&(x, y)| {
@@ -652,17 +663,25 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
     // The levels, each with what the level below made (z8 → z3 fold in the levels above what was
     // made just before them); the tiles done said every few seconds meanwhile.
     let finished = std::sync::atomic::AtomicBool::new(false);
+    // (Set however the levels end, a panic too: the scope waits for the reporter before it goes on.)
+    struct Finished<'a>(&'a std::sync::atomic::AtomicBool);
+    impl Drop for Finished<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
     std::thread::scope(|s| {
         s.spawn(|| {
             let mut said = std::time::Instant::now();
             while !finished.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(200));
                 if said.elapsed() >= Duration::from_secs(5) {
-                    progress("tiles", processed.load(std::sync::atomic::Ordering::Relaxed), total);
+                    progress("tiles", done().min(total), total);
                     said = std::time::Instant::now();
                 }
             }
         });
+        let _finished = Finished(&finished);
         let r = (|| -> anyhow::Result<()> {
             let mut below: HashMap<(u32, u32), Repaired> = HashMap::new();
             let mut quads: HashMap<(u32, u32), Vec<f32>> = HashMap::new();
@@ -679,7 +698,7 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
             }
             Ok(())
         })();
-        finished.store(true, std::sync::atomic::Ordering::Relaxed);
+        drop(_finished);
         r
     })?;
     progress("tiles", total, total);

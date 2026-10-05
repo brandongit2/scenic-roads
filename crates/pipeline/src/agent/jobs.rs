@@ -62,7 +62,7 @@ pub struct Running {
     started_at: Instant,
     /// Its progress when it first reported this kind of progress: the estimate's start (time,
     /// fraction, unit).
-    pub progress_base: Option<(Instant, f64, String)>,
+    pub progress_base: Option<(Instant, f64, String, Option<usize>)>,
     /// Its parts and the one it's on, as it last said (`part`): kept while a part's own output
     /// pushes that line out of the log's end.
     pub parts: Option<(usize, Vec<String>)>,
@@ -260,13 +260,20 @@ pub fn parts(log: &Path) -> Option<(usize, Vec<String>)> {
 /// print them: scenic-build's `progress`).
 pub fn progress(log: &Path) -> Option<(f64, f64, String)> {
     let s = end_of(log);
-    s.lines().rev().map(|l| l.rsplit('\r').next().unwrap_or(l)).find_map(|l| {
-        let rest = l.trim().strip_prefix("progress: ")?;
+    for l in s.lines().rev().map(|l| l.rsplit('\r').next().unwrap_or(l).trim()) {
+        // (One said before the part under way began, or this run, is another's: none yet.)
+        if l.starts_with("parts: ") || l.starts_with("=== run of ") {
+            return None;
+        }
+        let Some(rest) = l.strip_prefix("progress: ") else { continue };
         let (frac, unit) = rest.split_once(' ').unwrap_or((rest, ""));
-        let (d, t) = frac.split_once('/')?;
-        let (d, t) = (d.parse::<f64>().ok()?, t.parse::<f64>().ok()?);
-        (t > 0.0).then(|| (d.min(t), t, unit.trim().to_string()))
-    })
+        let Some((d, t)) = frac.split_once('/') else { continue };
+        let (Ok(d), Ok(t)) = (d.parse::<f64>(), t.parse::<f64>()) else { continue };
+        if t > 0.0 {
+            return Some((d.min(t), t, unit.trim().to_string()));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -310,6 +317,20 @@ mod tests {
         assert_eq!(tail(&log, 5), "progress: 0/3 parts (Getting ready)\nosmium: done\nsome output");
         std::fs::write(&log, format!("parts: 7 {}\n", serde_json::to_string(&names).unwrap())).unwrap();
         assert_eq!(parts(&log), None);
+    }
+
+    #[test]
+    fn a_parts_progress_is_its_own() {
+        let d = tempfile::tempdir().unwrap();
+        let log = d.path().join("log");
+        let names = ["Writing the area's terrain to the NAS", "Packing the new raw tiles onto the NAS"];
+        let line = |i: usize| format!("parts: {i} {}\n", serde_json::to_string(&names).unwrap());
+        // The part before's last word isn't this part's: none yet, then its own.
+        std::fs::write(&log, format!("{}progress: 64/64 packs\n{}walking the cache\n", line(0), line(1))).unwrap();
+        assert_eq!(progress(&log), None);
+        let mut f = File::options().append(true).open(&log).unwrap();
+        std::io::Write::write_all(&mut f, b"progress: 5/10 raw tiles\n").unwrap();
+        assert_eq!(progress(&log), Some((5.0, 10.0, "raw tiles".to_string())));
     }
 
     #[test]

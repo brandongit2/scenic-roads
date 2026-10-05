@@ -609,7 +609,7 @@ pub fn pack_local(dir: &Path, store: &Path, root: &Path, keep: bool) -> Result<u
     pack_local_with(dir, store, root, keep, &|_, _, _| {})
 }
 
-/// `pack_local`, saying how far it is (`progress`): the tiles packed of those waiting ("tiles",
+/// `pack_local`, saying how far it is (`progress`): the tiles packed of those waiting ("raw tiles",
 /// their archives put on the NAS as they go), then the areas whose archives were merged ("areas").
 pub fn pack_local_with(dir: &Path, store: &Path, root: &Path, keep: bool, progress: Progress) -> Result<usize> {
     let mut loose: Vec<(PathBuf, u8, u32, u32, bool)> = Vec::new();
@@ -636,11 +636,11 @@ pub fn pack_local_with(dir: &Path, store: &Path, root: &Path, keep: bool, progre
     p.keep = keep;
     let mut packed = Vec::new();
     let (n, mut said) = (loose.len() as u64, std::time::Instant::now());
-    progress("tiles", 0, n);
+    progress("raw tiles", 0, n);
     for (i, (path, z, x, y, has)) in loose.into_iter().enumerate() {
         // (Every few seconds: a flush puts a GB of archives on the NAS in between.)
         if said.elapsed() >= std::time::Duration::from_secs(5) {
-            progress("tiles", i as u64, n);
+            progress("raw tiles", i as u64, n);
             said = std::time::Instant::now();
         }
         let png = if has {
@@ -659,7 +659,7 @@ pub fn pack_local_with(dir: &Path, store: &Path, root: &Path, keep: bool, progre
     }
     // (The last tiles' archives put on the NAS before they count as packed.)
     p.flush()?;
-    progress("tiles", n, n);
+    progress("raw tiles", n, n);
     let added = p.added;
     let areas = p.finish_with(progress)?;
     for path in &packed {
@@ -977,12 +977,12 @@ mod tests {
         assert_eq!(pack_local_with(&dir, &store, &root, true, &|w, d, t| said.lock().unwrap().push((w.to_string(), d, t))).unwrap(), 3);
         let said = said.into_inner().unwrap();
         // The tiles from none to all, then the two areas' merging, done.
-        assert_eq!(said.first(), Some(&("tiles".to_string(), 0, 3)));
-        assert!(said.contains(&("tiles".to_string(), 3, 3)));
+        assert_eq!(said.first(), Some(&("raw tiles".to_string(), 0, 3)));
+        assert!(said.contains(&("raw tiles".to_string(), 3, 3)));
         assert_eq!(said.last(), Some(&("areas".to_string(), 2, 2)));
         assert!(said.iter().all(|(_, d, t)| d <= t));
         let at = |w: &str| said.iter().position(|s| s.0 == w).unwrap();
-        assert!(at("tiles") < at("areas"));
+        assert!(at("raw tiles") < at("areas"));
     }
 
     #[test]
