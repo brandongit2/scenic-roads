@@ -483,9 +483,27 @@ the region. Each entry is one of these:
   layer without tiles). The next catalog drops them, and GC frees their files. Terrain, slope and
   grid tiles stay, which is harmless; a z3 tile the coverage has left loses its tree cover.
 
-**Today's set:** 34 recipes (`tools/cutover/regions`).
-- 31 are Geofabrik outlines, the legacy builds' own.
-- Gibraltar, Saint-Pierre-et-Miquelon and Singapore are `osm:` relations.
+**Today's set** (since 2026-10-05): 87 recipes in `inputs/regions/`, by political unit. The
+cutover's 34 are in `tools/cutover/regions`.
+- **Canada:** its 13 provinces and territories (Geofabrik outlines).
+- **The US:** every state, DC and Puerto Rico (the other territories later). The seven the cutover
+  had (Connecticut, Maine, Massachusetts, New Hampshire, New York, Rhode Island, Vermont) keep their
+  Geofabrik outlines; the other 45 are `osm:` relations.
+- **The UK and Ireland:** England, Scotland, Wales and Northern Ireland, and Ireland (`osm:`
+  relations, which replaced Geofabrik's Britain and Ireland); the Channel Islands, the Isle of Man
+  (Geofabrik) and Gibraltar (`osm:`).
+- **Spain** (Geofabrik's outline: the mainland, the Balearics, Ceuta and Melilla) and **the Canary
+  Islands** (`osm:`; Spain's outline never had them).
+- **Portugal:** the mainland, the Azores and Madeira (`poly:`). Geofabrik's one ring around all
+  three became an outline around each archipelago inside it, and the mainland is the ring with those
+  as holes (`tools/cutover/split-portugal.py`), so the coverage didn't change.
+- **France:** the mainland and Corsica (Geofabrik), French Guiana and Saint-Pierre-et-Miquelon
+  (`osm:`; the other overseas parts later). **Andorra** and **Monaco** (Geofabrik).
+- **Japan, Taiwan, Hong Kong** (Geofabrik) and **Singapore** (`osm:`).
+- The change built 81 new units (the US, the Canaries, French Guiana) and rebuilt 47:
+  - Canada's along the US border (Alaska's too), which now take in the US side;
+  - Britain's, Ireland's and the Channel Islands', whose outlines changed;
+  - the Azores' and Madeira's.
 
 **By location.** These rules depend on where a thing is. Today each is written into its step, and the
 units' ones (DEM order, densification, road network codes) are versioned by area in
