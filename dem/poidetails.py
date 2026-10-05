@@ -93,7 +93,7 @@ def norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
 
 
-def wikidata(qids: list[str]) -> dict[str, dict]:
+def wikidata(qids: list[str], progress=None) -> dict[str, dict]:
     out: dict[str, dict] = {}
     q_props = {
         "height": "P2048", "elevation": "P2044", "prominence": "P2660", "isolation": "P2659", "discharge": "P2225", "focal": "P2923",
@@ -130,6 +130,9 @@ def wikidata(qids: list[str]) -> dict[str, dict]:
                     rec[n] = round(float(val(b, f"v_{n}")), 2)
             out[qid] = rec
         print(f"  wikidata {min(k + WD_BATCH, len(qids))}/{len(qids)}", file=sys.stderr, flush=True)
+        # (And to `progress`, when given, how many are done: the items job's progress line.)
+        if progress:
+            progress(min(k + WD_BATCH, len(qids)))
     return out
 
 

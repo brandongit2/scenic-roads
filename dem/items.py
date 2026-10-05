@@ -121,10 +121,12 @@ def main() -> None:
     part(1)
     print(f"facts: {len(facts_q)} items, {len(todo)} to fetch", file=sys.stderr, flush=True)
     for k in range(0, len(todo), CHUNK):
-        # (A line the build agent shows as this job's progress.)
+        # (A line the build agent shows as this job's progress; within a chunk, said again after each
+        # of its batches, the last one saying all are fetched.)
         print(f"progress: {k}/{len(todo)} items' facts fetched from Wikidata", file=sys.stderr, flush=True)
         chunk = todo[k:k + CHUNK]
-        got = poidetails.wikidata(chunk)
+        said = lambda n, k=k: print(f"progress: {k + n}/{len(todo)} items' facts fetched from Wikidata", file=sys.stderr, flush=True)
+        got = poidetails.wikidata(chunk, said)
         # Items QLever doesn't know (merged, deleted) are remembered as such, not asked again.
         rows = [{"qid": q, **got.get(q, {"sl": 0, "missing": True})} for q in chunk]
         append_jsonl(fpath, rows)
@@ -140,7 +142,9 @@ def main() -> None:
     print(f"articles: {len(views_q)} items, {len(need)} to look up", file=sys.stderr, flush=True)
     for k in range(0, len(need), CHUNK):
         print(f"progress: {k}/{len(need)} items' Wikipedia articles looked up", file=sys.stderr, flush=True)
-        rows = [{"qid": q, **r} for q, r in heritagewd.wikipedias(need[k:k + CHUNK]).items()]
+        # (Said again after each of the chunk's batches, as the facts' are.)
+        said = lambda n, k=k: print(f"progress: {k + n}/{len(need)} items' Wikipedia articles looked up", file=sys.stderr, flush=True)
+        rows = [{"qid": q, **r} for q, r in heritagewd.wikipedias(need[k:k + CHUNK], said).items()]
         append_jsonl(wpath, rows)
         wp.update((r["qid"], r) for r in rows)
         note_fetch()

@@ -245,8 +245,10 @@ def osm_link(site: dict, rid: str | None, grid: dict, feats: list) -> str | None
     return best
 
 
-def wikipedias(qids: list[str]) -> dict[str, dict]:
-    """Per item: the number of Wikipedia articles (any language) and their language|title list."""
+def wikipedias(qids: list[str], progress=None) -> dict[str, dict]:
+    """Per item: the number of Wikipedia articles (any language) and their language|title list.
+    (`progress`, when given, is told how many are done after each batch: the items job's progress
+    line.)"""
     out: dict[str, dict] = {}
     for k in range(0, len(qids), 1000):
         chunk = qids[k:k + 1000]
@@ -262,6 +264,8 @@ def wikipedias(qids: list[str]) -> dict[str, dict]:
             out[x] = {"n": int(val(b, "n") or 0), "arts": (val(b, "arts") or "").split("\t")} if b else {"n": 0, "arts": []}
         if k // 1000 % 20 == 0:
             print(f"  Wikipedia articles: {k + len(chunk)}/{len(qids)}", file=sys.stderr, flush=True)
+        if progress:
+            progress(k + len(chunk))
     return out
 
 

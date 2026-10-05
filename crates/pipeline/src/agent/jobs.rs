@@ -325,21 +325,32 @@ pub fn fraction_of(line: &str) -> Option<f64> {
 }
 
 /// A program's output read as it comes, a line at a time to `each` (a bar's redraws, after carriage
-/// returns, each a line), until it closes.
-pub fn each_line(from: impl std::io::Read, mut each: impl FnMut(&str)) {
-    use std::io::BufRead;
-    let mut r = std::io::BufReader::new(from);
-    let mut buf = Vec::new();
-    loop {
-        buf.clear();
-        match r.read_until(b'\n', &mut buf) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
+/// returns, each a line, as each comes: osmium redraws its bar without a newline), until it closes.
+pub fn each_line(mut from: impl std::io::Read, mut each: impl FnMut(&str)) {
+    let mut buf = [0u8; 8192];
+    let mut line: Vec<u8> = Vec::new();
+    let mut say = |line: &mut Vec<u8>| {
+        if !line.iter().all(u8::is_ascii_whitespace) {
+            each(&String::from_utf8_lossy(line));
         }
-        for l in String::from_utf8_lossy(&buf).split(['\r', '\n']).filter(|l| !l.trim().is_empty()) {
-            each(l);
+        line.clear();
+    };
+    loop {
+        let k = match from.read(&mut buf) {
+            Ok(0) => break,
+            Ok(k) => k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        };
+        for &b in &buf[..k] {
+            if b == b'\n' || b == b'\r' {
+                say(&mut line);
+            } else {
+                line.push(b);
+            }
         }
     }
+    say(&mut line);
 }
 
 /// Runs `c` with its standard error read here as it comes: each fraction it says (`fraction_of`)
@@ -534,6 +545,20 @@ mod tests {
         let st = run_watched(Command::new("/bin/sh").args(["-c", "echo 'progress: 1/4 x' >&2; echo hi >&2; printf '[=> ] 75%%\r' >&2"]), |f| seen.push(f)).unwrap();
         assert!(st.success());
         assert_eq!(seen, [0.25, 0.75]);
+    }
+
+    #[test]
+    fn a_bar_redrawn_without_a_newline_is_seen_as_it_comes() {
+        // (osmium's: carriage returns alone, the newline only at its end.)
+        let t = Instant::now();
+        let mut first: Option<Duration> = None;
+        run_watched(Command::new("/bin/sh").args(["-c", "printf '[=>  ]  50%% \\r' >&2; sleep 1.5; printf '[===]  100%% \\n' >&2"]), |f| {
+            if f == 0.5 {
+                first = Some(t.elapsed());
+            }
+        })
+        .unwrap();
+        assert!(first.is_some_and(|d| d < Duration::from_millis(1000)), "seen at {first:?}");
     }
 
     #[test]

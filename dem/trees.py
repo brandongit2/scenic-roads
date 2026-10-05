@@ -377,9 +377,16 @@ def main():
     print(f"done in {time.time() - t0:.0f} s")
 
 
-def lower_zooms(tops: dict, want, writers: dict) -> None:
-    """Zoom 7 → 4 from the zoom-8 blocks' values, into `writers`."""
+def lower_zooms(tops: dict, want, writers: dict, said=None) -> None:
+    """Zoom 7 → 4 from the zoom-8 blocks' values, into `writers`. `said`, when given, is told how many
+    of their tiles are made, and of how many (at the start and the end, and at most once a second
+    between)."""
     level = tops
+    # (Their tiles: at each zoom, the parents of the zoom below's.)
+    total = sum(len({(bx >> s, by >> s) for bx, by in tops[want[0]]}) for s in range(1, ZBLOCK - ZMIN + 1))
+    made, at = 0, time.monotonic()
+    if said:
+        said(0, total)
     for z in range(ZBLOCK - 1, ZMIN - 1, -1):
         nxt = {v: {} for v in want}
         parents = {(bx >> 1, by >> 1) for (bx, by) in level[want[0]]}
@@ -405,7 +412,13 @@ def lower_zooms(tops: dict, want, writers: dict) -> None:
                 elif a.max() >= STEP[v] / 2:
                     img = terrarium(a, STEP[v])
                     writers[v].add(z, px, py, img, len(img))
+            made += 1
+            if said and time.monotonic() - at >= 1:
+                at = time.monotonic()
+                said(made, total)
         level = nxt
+    if said:
+        said(total, total)
 
 
 # ---- the build agent's: one z3 tile of the coverage ----------------------------------------
@@ -414,13 +427,20 @@ CHM10_URL = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_glo
 UA = "road-elevations/0.1 (personal offline map)"
 
 
-def download(url: str, path: Path) -> None:
+def progress(done: float, total: int, unit: str) -> None:
+    """A line the build agent shows as this job's progress (crates/pipeline/src/agent/jobs.rs): the
+    item under way counted by how much of it is done, to 3 decimals (down, as the agent's own)."""
+    d = math.floor(min(done, total) * 1000) / 1000
+    print(f"progress: {str(d).removesuffix('.0')}/{total} {unit}", file=sys.stderr, flush=True)
+
+
+def download(url: str, path: Path, said=None) -> None:
     """`url` into `path` (by a temporary name, flushed), whole: a body shorter than its
     Content-Length (a connection cut), or not a whole TIFF, is tried again. An empty file when the
     server has none (404, or S3's 403 for a key that isn't there), so it says twice, a moment apart
-    (it's remembered for good), as scenic-metrics marks it. Anything else is retried, then fails."""
+    (it's remembered for good), as scenic-metrics marks it. Anything else is retried, then fails.
+    `said`, when given, is told how much of it has come (0–1), at most once a second."""
     import os
-    import shutil
     import urllib.error
     import urllib.request
 
@@ -433,7 +453,13 @@ def download(url: str, path: Path) -> None:
         try:
             with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=600) as r, tmp.open("wb") as f:
                 want = int(r.headers.get("Content-Length", "-1"))
-                shutil.copyfileobj(r, f, 16 << 20)
+                n, at = 0, time.monotonic()
+                while b := r.read(16 << 20):
+                    f.write(b)
+                    n += len(b)
+                    if said and want > 0 and time.monotonic() - at >= 1:
+                        at = time.monotonic()
+                        said(n / want)
                 f.flush()
                 os.fsync(f.fileno())
             got = tmp.stat().st_size
@@ -457,10 +483,12 @@ def download(url: str, path: Path) -> None:
     raise RuntimeError(f"download failed: {url}: {last}")
 
 
-def canopy_square(chm: Path, store: Path, top: int, left: int) -> bool:
+def canopy_square(chm: Path, store: Path, top: int, left: int, said=None) -> bool:
     """The canopy square's cover and height files in `chm`: copied from the NAS's `store`, or
     downloaded into it first (once); False when Meta has none there. A copy that isn't whole (cut
-    short) is deleted and taken again from the next source (crates/pipeline/src/whole.rs)."""
+    short) is deleted and taken again from the next source (crates/pipeline/src/whole.rs). `said`,
+    when given, is told how much of the square is done (0–1): each file half of it, a download's
+    share as it comes."""
     import os
 
     import whole
@@ -474,14 +502,16 @@ def canopy_square(chm: Path, store: Path, top: int, left: int) -> bool:
         f.unlink(missing_ok=True)
         return False
 
-    def fetch_once(kept: Path) -> None:
+    def fetch_once(kept: Path, coming=None) -> None:
         """The NAS's copy of `kept`; else the right to download it there (`<file>.lock`, made
         exclusively: a unit on the other Mac may want the same square at once), or the copy the
-        holder downloads, waited for. A lock not touched for 30 minutes is a holder that died."""
+        holder downloads, waited for. A lock not touched for 30 minutes is a holder that died.
+        `coming`, when given, is told how much of this job's download has come (download)."""
         import socket
 
         store.mkdir(parents=True, exist_ok=True)
         lock = kept.with_name(kept.name + ".lock")
+        waiting = False
         while not kept_whole(kept):
             try:
                 fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -493,22 +523,29 @@ def canopy_square(chm: Path, store: Path, top: int, left: int) -> bool:
                         continue
                 except FileNotFoundError:
                     continue
+                # (Said once, for the status: the square's progress stands while the holder's
+                # download, which this job can't measure, goes on.)
+                if not waiting:
+                    print(f"canopy: waiting for another job's download ({lock})", file=sys.stderr, flush=True)
+                    waiting = True
                 time.sleep(20)
                 continue
             os.write(fd, f"{socket.gethostname()} {os.getpid()}".encode())
             os.close(fd)
             try:
-                download(f"{CHM10_URL}/{kept.name}", kept)
+                download(f"{CHM10_URL}/{kept.name}", kept, coming)
             finally:
                 lock.unlink(missing_ok=True)
 
     there = True
-    for st in ("cover5m", "p95"):
+    for j, st in enumerate(("cover5m", "p95")):
         p = chm / f"meta_chm_lat={top}.0_lon={left}.0_{st}.tif"
         if not kept_whole(p):
             kept = store / p.name
-            fetch_once(kept)
+            fetch_once(kept, (lambda f, j=j: said((j + f) / 2)) if said else None)
             whole.copy(kept, p)
+            if said:
+                said((j + 1) / 2)
         if p.stat().st_size == 0:
             there = False
         else:
@@ -614,13 +651,17 @@ def z3_main(args: dict) -> None:
     sqs = []
     for i, (top, left) in enumerate(sorted(want)):
         print(f"progress: {i}/{len(want)} canopy squares", file=sys.stderr, flush=True)
-        if canopy_square(chm, store, top, left):
+        # (And within the square, as its files come.)
+        if canopy_square(chm, store, top, left, lambda f, i=i: progress(i + f, len(want), "canopy squares")):
             sqs.append((top, left))
-    leaftype.make(sqs, leaf_dir, leaf_dir.parent)
+    print(f"progress: {len(want)}/{len(want)} canopy squares", file=sys.stderr, flush=True)
+    leaftype.make(sqs, leaf_dir, leaf_dir.parent, lambda done, total: progress(done, total, "leaf-type squares"))
     print(f"trees z3 {qx},{qy}: {len(blocks)} zoom-8 blocks, {len(sqs)} canopy squares ({time.time() - t0:.0f} s)", file=sys.stderr, flush=True)
     meta = '{"source":"Meta/WRI canopy height; Copernicus HRL DLT 2018; NALCMS 2020","encoding":"terrarium","format":"webp"}'
     writers = {v: Writer(out / f"trees-{v}.tiles", meta) for v in VARS}
     tops: dict[str, dict] = {v: {} for v in VARS}
+    # (Said before the first block is back, so the stage before's last line isn't shown meanwhile.)
+    print(f"progress: 0/{len(blocks)} zoom-8 blocks", file=sys.stderr, flush=True)
     with Pool(workers, initializer=load_shapes, initargs=(args["--coverage"],)) as pool:
         for i, ((bx, by), tiles, t) in enumerate(pool.imap_unordered(z3_block, [(bx, by, str(chm), str(leaf_dir), sqs) for bx, by in blocks])):
             for name, z, x, y, blob, raw in tiles:
@@ -628,7 +669,7 @@ def z3_main(args: dict) -> None:
             for v in VARS:
                 tops[v][(bx, by)] = t[v]
             print(f"progress: {i + 1}/{len(blocks)} zoom-8 blocks", file=sys.stderr, flush=True)
-    lower_zooms(tops, VARS, writers)
+    lower_zooms(tops, VARS, writers, lambda done, total: progress(done, total, "zoom 7–4 tiles"))
     for v, wtr in writers.items():
         print(f"trees-{v}.tiles: {wtr.finish()} tiles", file=sys.stderr)
     print(f"trees z3 {qx},{qy}: done in {time.time() - t0:.0f} s", file=sys.stderr)

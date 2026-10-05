@@ -42,6 +42,7 @@ from __future__ import annotations
 import gzip
 import json
 import math
+import re
 import struct
 import subprocess
 import sys
@@ -294,21 +295,58 @@ def args() -> None:
 OWN_ENGLISH = False
 
 
-def progress(done: int, total: int, unit: str) -> None:
-    """A line the build agent shows as this job's progress (crates/pipeline/src/agent/jobs.rs)."""
-    print(f"progress: {done}/{total} {unit}", file=sys.stderr, flush=True)
+def progress(done: float, total: int, unit: str) -> None:
+    """A line the build agent shows as this job's progress (crates/pipeline/src/agent/jobs.rs): the
+    step under way counted by how much of it is done, to 3 decimals (down, as the agent's own)."""
+    d = math.floor(min(done, total) * 1000) / 1000
+    print(f"progress: {str(d).removesuffix('.0')}/{total} {unit}", file=sys.stderr, flush=True)
+
+
+def run_osmium(args: list[str], said) -> None:
+    """Runs osmium with `args` and --progress: its bar, read as it comes (redrawn after carriage
+    returns), to `said` as a fraction (0–1), at most once a second and never back (a command that
+    reads its input again may start its bar again); its other output passes through. It fails as
+    subprocess.run's check=True does."""
+    cmd = ["osmium", *args, "--progress"]
+    high, at, rest = 0.0, 0.0, b""
+
+    def line(s: bytes) -> None:
+        nonlocal high, at
+        m = re.fullmatch(rb"\s*\[[=> ]*\]\s*(\d+)%\s*", s)
+        if not m:
+            if s.strip():
+                print(s.decode(errors="replace"), file=sys.stderr, flush=True)
+            return
+        high = max(high, int(m[1]) / 100)
+        if high == 1 or time.monotonic() - at >= 1:
+            at = time.monotonic()
+            said(high)
+
+    with subprocess.Popen(cmd, stderr=subprocess.PIPE) as p:
+        try:
+            while b := p.stderr.read1(1 << 16):
+                *whole, rest = re.split(rb"[\r\n]", rest + b)
+                for s in whole:
+                    line(s)
+            line(rest)
+        except BaseException:
+            p.kill()
+            raise
+    if p.returncode:
+        raise subprocess.CalledProcessError(p.returncode, cmd)
 
 
 def main() -> None:
     args()
     t0 = time.time()
     progress(0, 6, "steps (the label points)")
-    subprocess.run(["osmium", "tags-filter", "--overwrite", "-R", str(SRC), *NODE_FILTERS, "-o", str(NODES)], check=True)
+    # (osmium's bars say how far the step is: a third of it each.)
+    run_osmium(["tags-filter", "--overwrite", "-R", str(SRC), *NODE_FILTERS, "-o", str(NODES)], lambda f: progress(f / 3, 6, "steps (the label points)"))
     # Only named areas become labels: the unnamed (most lakes and ponds) go before their nodes are
     # read. Members of a named relation stay (as its references), named or not.
     all_areas = AREAS.with_name(AREAS.name.replace(".osm.pbf", "-all.osm.pbf"))
-    subprocess.run(["osmium", "tags-filter", "--overwrite", str(SRC), *AREA_FILTERS, "-o", str(all_areas)], check=True)
-    subprocess.run(["osmium", "tags-filter", "--overwrite", str(all_areas), "wr/name", "-o", str(AREAS)], check=True)
+    run_osmium(["tags-filter", "--overwrite", str(SRC), *AREA_FILTERS, "-o", str(all_areas)], lambda f: progress((1 + f) / 3, 6, "steps (the label points)"))
+    run_osmium(["tags-filter", "--overwrite", str(all_areas), "wr/name", "-o", str(AREAS)], lambda f: progress((2 + f) / 3, 6, "steps (the label points)"))
     all_areas.unlink(missing_ok=True)
     rows: list[tuple[str, str, str, float, float, float, str | None, float | None, float | None]] = []
     progress(1, 6, "steps (reading the points)")
@@ -383,6 +421,7 @@ def main() -> None:
                          "ms": None if math.isnan(ms[i]) else round(float(ms[i]), 2), "s": round(float(score[i]), 2)}))
         raw = encode(pts)
         w.add(z, x, y, gzip.compress(raw, 6), len(raw))
+    progress(len(tiles), len(tiles), "label tiles written")
     count = w.finish()
     print(f"labels.tiles: {len(rows)} labels in {count} tiles, {OUT.stat().st_size / 1e6:.0f} MB ({time.time() - t0:.0f} s)", file=sys.stderr)
 

@@ -161,12 +161,13 @@ def _sweep(d: Path) -> None:
 
 
 def _copy_whole(src: Path, dst: Path) -> None:
-    """Copies src to dst by a temporary name (this Mac's and process's), flushed, its length checked."""
+    """Copies src to dst by a temporary name (this Mac's and process's), flushed, its length checked.
+    (Its bytes count on the progress line as its month's index's: `_indexes`.)"""
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(f"{dst.name}.{socket.gethostname().split('.')[0]}.{os.getpid()}.tmp")
     try:
         with open(src, "rb") as a, open(tmp, "wb") as b:
-            shutil.copyfileobj(a, b, 4 << 20)
+            shutil.copyfileobj(_Counted(a, (dst.name.split(".", 1)[0], "copied"), os.fstat(a.fileno()).st_size), b, 4 << 20)
             b.flush()
             os.fsync(b.fileno())
         if tmp.stat().st_size != src.stat().st_size:
@@ -197,7 +198,30 @@ def _dump_size(month: str) -> int:
 
 # The dumps' bytes streamed so far, and their sizes, by month: the progress line's.
 _streamed: dict[str, list[int]] = {}
+# The months' indexes' bytes (compressed, as kept) copied to or from the NAS and read so far, and
+# their sizes, by month and which: the progress line's too, so it moves while they're worked on.
+_indexes: dict[tuple[str, str], list[int]] = {}
 _lock = threading.Lock()
+
+
+class _Counted:
+    """A file read through, its bytes counted in `_indexes` under `key` (as `size` more to read)."""
+
+    def __init__(self, f, key: tuple[str, str], size: int):
+        self.f = f
+        with _lock:
+            self.counts = _indexes.setdefault(key, [0, 0])
+            self.counts[1] += size
+
+    def read(self, n: int = -1) -> bytes:
+        b = self.f.read(n)
+        with _lock:
+            self.counts[0] += len(b)
+        return b
+
+    def seekable(self) -> bool:
+        # (Asked by zstd's reader: this is only read straight through.)
+        return False
 
 
 def _report(final: bool = False) -> None:
@@ -206,7 +230,11 @@ def _report(final: bool = False) -> None:
     with _lock:
         sizes = [v[1] for v in _streamed.values() if v[1]]
         guess = sum(sizes) // len(sizes) if sizes else 5 << 30
-        done, total, n = sum(v[0] for v in _streamed.values()), sum(v[1] or guess for v in _streamed.values()), len(_streamed)
+        done, total = sum(v[0] for v in _streamed.values()), sum(v[1] or guess for v in _streamed.values())
+        # (The indexes' bytes too; the months said are those with either.)
+        done += sum(v[0] for v in _indexes.values())
+        total += sum(v[1] for v in _indexes.values())
+        n = len(set(_streamed) | {m for m, _ in _indexes})
     if not total:
         return
     done = total if final else min(done, total * 99 // 100)
@@ -216,20 +244,25 @@ def _report(final: bool = False) -> None:
 def months_views(months: list[str], wanted: set[str]) -> list[dict[str, int]]:
     """Each month's views of the wanted articles (month_views), two months streamed at once (the
     most dumps.wikimedia.org asks for), with a progress line every half minute: the bytes streamed
-    of all the dumps to stream (each one's size asked first), so the build's status shows how far
-    it is and when it'll be done, not the step before's last line for half an hour."""
-    todo = [m for m in months if _needs_stream(m, wanted)]
+    of all the dumps to stream (each one's size asked first), and of the months' indexes as they're
+    copied and read, so the build's status shows how far it is and when it'll be done, not the step
+    before's last line for half an hour."""
     with _lock:
         _streamed.clear()
-        _streamed.update({m: [0, _dump_size(m)] for m in todo})
+        _indexes.clear()
     stop = threading.Event()
 
     def report() -> None:
         while not stop.wait(30):
             _report()
 
+    # (Started before the months to stream are found: finding them copies the NAS's indexes here.)
     threading.Thread(target=report, daemon=True).start()
     try:
+        todo = [m for m in months if _needs_stream(m, wanted)]
+        sizes = {m: [0, _dump_size(m)] for m in todo}
+        with _lock:
+            _streamed.update(sizes)
         with ThreadPoolExecutor(2) as ex:
             return list(ex.map(lambda m: month_views(m, wanted), months))
     finally:
@@ -263,7 +296,8 @@ def month_views(month: str, wanted: set[str]) -> dict[str, int]:
 def _look_up(month: str, index: Path, wanted: set[str]) -> dict[str, int]:
     t0 = time.time()
     views: dict[str, int] = {}
-    with zstd.open(index, "rt", encoding="utf-8") as f:
+    # (Its compressed bytes count on the progress line as they're read: `_indexes`.)
+    with open(index, "rb") as raw, zstd.open(_Counted(raw, (month, "read"), os.fstat(raw.fileno()).st_size), "rt", encoding="utf-8") as f:
         for line in f:
             key, _, n = line.rstrip("\n").partition("\t")
             if key in wanted:

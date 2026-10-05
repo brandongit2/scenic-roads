@@ -551,10 +551,13 @@ def main():
     counts = {}
     sites, harea = [], []
     # UNESCO for every country (heritage_eu.unesco), then the national and regional registers.
-    for label, fn in (*heritage_eu.SOURCES[:1], ("Parks Canada DFHD (federal)", federal),
-                      ("NPS National Register", nrhp), ("Quebec RPCQ", quebec), ("Ontario Heritage Act Register", ontario),
-                      ("Nova Scotia + Halifax", nova_scotia), ("Moncton", new_brunswick_moncton),
-                      ("Canadian Register (NB, PEI, NL, West, North)", crhp), *heritage_eu.SOURCES[1:]):
+    registers = (*heritage_eu.SOURCES[:1], ("Parks Canada DFHD (federal)", federal),
+                 ("NPS National Register", nrhp), ("Quebec RPCQ", quebec), ("Ontario Heritage Act Register", ontario),
+                 ("Nova Scotia + Halifax", nova_scotia), ("Moncton", new_brunswick_moncton),
+                 ("Canadian Register (NB, PEI, NL, West, North)", crhp), *heritage_eu.SOURCES[1:])
+    for i, (label, fn) in enumerate(registers):
+        # (A line the build agent shows as this job's progress, the register under way in brackets.)
+        print(f"progress: {i}/{len(registers)} registers ({label})", file=sys.stderr, flush=True)
         r = fn()
         pts, ars = r if isinstance(r, tuple) else (r, [])
         pts = [f for f in pts if covered(*f["geometry"]["coordinates"])]
@@ -562,6 +565,7 @@ def main():
         print(f"heritage: {label:34s} {len(pts):6d} sites, {len(ars):4d} areas")
         sites += pts
         harea += ars
+    print(f"progress: {len(registers)}/{len(registers)} registers", file=sys.stderr, flush=True)
     for f in sites + harea:
         for k in ("name", "name_en"):
             if k in f["properties"]:
