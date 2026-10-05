@@ -714,10 +714,12 @@ fn canopy(dir: &Path) -> Result<()> {
     let terr = terr_l.data();
     let samples_a = Array::<Sample>::open(&dir.join("samples.bin"))?;
     let samples = samples_a.get();
-    // The canopy files: data/cache/chm10 next to the build, or under SCENIC_CACHE (shared by units).
-    let cache = match std::env::var_os("SCENIC_CACHE") {
-        Some(c) => PathBuf::from(c).join("chm10"),
-        None => dir.parent().unwrap().join("cache/chm10"),
+    // The canopy files: data/cache/chm10 next to the build, or under SCENIC_CACHE (shared by units);
+    // or SCENIC_CHM, the squares read where they lie (the NAS's, for a task's worker with no copies).
+    let cache = match (std::env::var_os("SCENIC_CHM"), std::env::var_os("SCENIC_CACHE")) {
+        (Some(c), _) => PathBuf::from(c),
+        (None, Some(c)) => PathBuf::from(c).join("chm10"),
+        (None, None) => dir.parent().unwrap().join("cache/chm10"),
     };
     std::fs::create_dir_all(&cache)?;
     // The NAS's store of them (`sources/canopy/`), where each is downloaded once.
@@ -730,15 +732,7 @@ fn canopy(dir: &Path) -> Result<()> {
         .into();
 
     // 10° tiles needed: (top latitude, left longitude).
-    let mut need: BTreeSet<(i32, i32)> = BTreeSet::new();
-    for t in &grid.tiles {
-        for (dx, dy) in [(0u32, 0u32), (1, 0), (0, 1), (1, 1)] {
-            let (x, y) = ((t[0] + dx) as f64 * 256.0, (t[1] + dy) as f64 * 256.0);
-            let lon = x / roadcore::grid::WORLD * 360.0 - 180.0;
-            let lat = (std::f64::consts::PI * (1.0 - 2.0 * y / roadcore::grid::WORLD)).dsinh().datan().to_degrees();
-            need.insert(((lat / 10.0).ceil() as i32 * 10, (lon / 10.0).floor() as i32 * 10));
-        }
-    }
+    let mut need: BTreeSet<(i32, i32)> = pipeline::unit::canopy_squares(&grid.tiles);
     // Previous results: samples and grid tiles done in the last run (its outputs are still here),
     // unless new terrain is within reach.
     let cdir = scache::dir(dir);

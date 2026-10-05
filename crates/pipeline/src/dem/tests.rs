@@ -301,6 +301,31 @@ fn every_source_where_it_serves() {
 }
 
 #[test]
+fn a_store_this_worker_cant_write_gives_what_it_has_and_the_rest_is_read_in_place() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new();
+    let store = f.dir.path().join("store");
+    let listed = || {
+        let mut v: Vec<String> = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        v.sort();
+        v
+    };
+    let before = listed();
+    std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let stats = run(&f.config(true), &f.fetch);
+    std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let stats = stats.unwrap();
+    // The same elevations as a run that stores Paris's tile, and nothing written to the store.
+    assert_eq!(listed(), before);
+    let ro = f.outputs();
+    let whole = Fixture::new();
+    let whole_stats = run(&whole.config(true), &whole.fetch).unwrap();
+    assert_eq!((stats.fabdem, stats.missing), (whole_stats.fabdem, whole_stats.missing));
+    assert_eq!(ro.1, whole.outputs().1);
+    assert!(ro.0.iter().zip(&whole.outputs().0).all(|(a, b)| a.to_bits() == b.to_bits()));
+}
+
+#[test]
 fn taiwan_sampled_again_once_the_moi_dtm_is_there() {
     let f = Fixture::new();
     // Without the MOI DTM, Taiwan's points come from FABDEM (or nowhere, beyond its tile).

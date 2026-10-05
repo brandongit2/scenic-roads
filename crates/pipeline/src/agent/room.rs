@@ -303,7 +303,17 @@ fn walk(dir: &Path, out: &mut Vec<(SystemTime, u64, PathBuf)>) {
 
 /// The free space on the disk holding `path` (a local disk).
 pub fn disk_free(path: &Path) -> std::io::Result<u64> {
+    #[cfg(test)]
+    if let Some(f) = TEST_FREE.with(|c| c.get()) {
+        return Ok(f);
+    }
     super::cond::free_bytes(path).ok_or_else(std::io::Error::last_os_error)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's disk, so what it asserts doesn't hang on this Mac's: its free bytes.
+    pub static TEST_FREE: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]

@@ -372,6 +372,9 @@ pub struct Tools {
     /// The NAS's `cache/`, where what a unit keeps for its later runs is shared by both Macs: its DEM
     /// samples (`dem-units/`) and scenic results (`scenic-units/`). None: the local cache.
     pub shared: Option<PathBuf>,
+    /// The canopy squares read where they lie (the NAS's `sources/canopy/`), for a worker that
+    /// keeps no copies of them (a task's); None: this Mac's copies (`cache/chm10/`), from the NAS.
+    pub chm: Option<PathBuf>,
     /// Densification spacing (m).
     pub spacing_m: u32,
     /// Where to keep a copy of the folder before and after each of the steps' programs, with the
@@ -685,14 +688,25 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
     let rep = prepare_folder(u, piece, dir, cov, src, tools, heritage, carry)?;
     if rep.kept_ways > 0 {
         run_tail(&tail(u, tools.buildings.is_some(), tools.sources.is_some()), dir, tools)?;
+        keep_dem_samples(u, dir, tools);
     }
     Ok(rep)
 }
 
-/// A unit's build up to its tail (docs/workers.md: what needs the NAS and the DEM servers): its
-/// ways from the piece, those touching the coverage, their elevations, the global-source layers
-/// staged from the packs, the heritage inputs, area flags and land cover; then its scenic
-/// results from its last run restored (`carry`), as the tail's canopy and view steps read them.
+/// The DEM samples a unit's elevations made (its tail's first step), kept for its later runs and
+/// its neighbours' (new ones aren't sampled twice). A cache: not keeping them (the NAS away) only
+/// costs sampling them again.
+pub fn keep_dem_samples(u: Unit, dir: &Path, tools: &Tools) {
+    if let Err(e) = dem_samples_keep(&tools.dem_units(), u, &dir.join("dem-cache")) {
+        eprintln!("unit {}: its DEM samples not kept: {e:#}", u.slash());
+    }
+}
+
+/// A unit's build up to its tail (docs/workers.md: what needs the NAS): its ways from the piece,
+/// those touching the coverage, the DEM cache's slice over them, the global-source layers staged
+/// from the packs, the heritage inputs, area flags and land cover; then its scenic results from its
+/// last run restored (`carry`), as the tail's canopy and view steps read them. (Its elevations are
+/// the tail's first step: they read the DEM servers' files where they lie, so any worker may.)
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &crate::stage::Source, tools: &Tools, heritage: HeritageInputs, carry: Option<&crate::scache::Carry>) -> Result<Report> {
     std::fs::create_dir_all(dir)?;
@@ -724,22 +738,6 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
     };
     rep.dem_cache = dem_cache_slice(&tools.cache, &tools.dem_units(), slice, &dir.join("dem-cache"))?;
     laps.lap("DEM cache slice");
-    let mut c = Command::new(tools.bin.join("elev"));
-    c.arg(dir).arg("--cache").arg(dir.join("dem-cache"));
-    if let Some(m) = &tools.moi_dtm {
-        c.env("SCENIC_MOI_DTM", m);
-    }
-    if let Some(s) = &tools.sources {
-        c.env("SCENIC_FABDEM_STORE", s.join("fabdem"));
-    }
-    run_in(c, "elevations (elev)", &log, dir, tools)?;
-    laps.skip();
-    // Its samples, kept for its later runs and its neighbours' (new ones aren't sampled twice). A
-    // cache: not keeping them (the NAS away) only costs sampling them again.
-    if let Err(e) = dem_samples_keep(&tools.dem_units(), u, &dir.join("dem-cache")) {
-        eprintln!("unit {}: its DEM samples not kept: {e:#}", u.slash());
-    }
-    laps.lap("DEM samples kept");
     // 4. The global-source layers the steps read, from the packs.
     let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     rep.staged = crate::stage::stage(src, b, dir)?;
@@ -778,17 +776,19 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
 /// One program a task runs (docs/workers.md §3): its name (the build's `bin/<prog>`, or
 /// `<prog>.wasm` in a web worker), its arguments and environment, in which `{dir}` is the unit's
 /// folder, `{cache}` the canopy cache, `{scache}` the folder's scenic cache, `{buildings}` its
-/// roadside buildings and `{store}` the NAS's canopy store (an environment variable whose value
-/// names a place the worker doesn't have is left out).
+/// roadside buildings, `{store}` the NAS's canopy store to download into, and what's read where it
+/// lies: `{sources}` the NAS's sources, `{moi}` its MOI DTM, `{chm}` its canopy squares, `{net}`
+/// the DEM servers' files (crate::offload::places; an environment variable whose value names a
+/// place the worker doesn't have is left out).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Run {
     pub what: String,
     pub prog: String,
     pub args: Vec<String>,
     pub env: Vec<(String, String)>,
-    /// The files it reads, when that's only the unit's own (`{dir}/<name>`, `{buildings}/<name>`; a
-    /// trailing `*` for any name so begun): it may run on any worker (crate::offload). None: it
-    /// reads the caches here (the canopy files).
+    /// The files it reads of the unit's own (`{dir}/<name>`, `{buildings}/<name>`; a trailing `*`
+    /// for any name so begun), earlier steps' outputs too: a task sends those there when it
+    /// starts, so it may run on any worker (crate::offload). None: it stays here (`keep_here`).
     #[serde(default)]
     pub reads: Vec<String>,
 }
@@ -800,17 +800,61 @@ pub fn saved_files(dash: &str) -> [String; 6] {
     ["base", "global/roads", "global/roaden", "layers/grid-class/hi", "layers/grid-canopy/hi", "layers/grid-cover/hi"].map(|p| format!("{p}/{dash}"))
 }
 
-/// A tail split: the runs that stay here, then those any worker may run (they read only the unit's
-/// own files), the longest such end.
+/// A tail split: the runs that stay here, then those any worker may run (what they read of the
+/// unit's folder listed: it's sent them), the longest such end.
 pub fn split(runs: &[Run]) -> (&[Run], &[Run]) {
     let i = runs.iter().rposition(|r| r.reads.is_empty()).map_or(0, |i| i + 1);
     runs.split_at(i)
 }
 
-/// The tail of unit `u`'s build: its clean-up and grade, then its road samples, canopy, views,
-/// buildings (with `buildings`) and flags. Every program is Rust, and gives the same bytes natively
-/// and as WebAssembly (tools/check/same.py), so any worker can run it.
+/// The steps through `what` kept here: neither it nor those before go to another worker.
+pub fn keep_here(runs: &mut [Run], what: &str) {
+    if let Some(i) = runs.iter().position(|r| r.what == what) {
+        for r in &mut runs[..=i] {
+            r.reads.clear();
+        }
+    }
+}
+
+/// The 10° canopy squares the canopy step reads for grid tiles `tiles` (those of each tile's
+/// corners), by (top latitude, left longitude).
+pub fn canopy_squares(tiles: &[[u32; 2]]) -> std::collections::BTreeSet<(i32, i32)> {
+    use det::Det;
+    let mut need = std::collections::BTreeSet::new();
+    for t in tiles {
+        for (dx, dy) in [(0u32, 0u32), (1, 0), (0, 1), (1, 1)] {
+            let (x, y) = ((t[0] + dx) as f64 * 256.0, (t[1] + dy) as f64 * 256.0);
+            let lon = x / roadcore::grid::WORLD * 360.0 - 180.0;
+            let lat = (std::f64::consts::PI * (1.0 - 2.0 * y / roadcore::grid::WORLD)).dsinh().datan().to_degrees();
+            need.insert(((lat / 10.0).ceil() as i32 * 10, (lon / 10.0).floor() as i32 * 10));
+        }
+    }
+    need
+}
+
+/// A canopy square's files, its median, p95 and cover (named by its top and left).
+pub fn canopy_square_files((top, left): (i32, i32)) -> [String; 3] {
+    ["median", "p95", "cover5m"].map(|st| format!("meta_chm_lat={top}.0_lon={left}.0_{st}.tif"))
+}
+
+/// Whether the NAS's store (`<sources>/canopy/`) has every canopy square the canopy step of the
+/// unit in `dir` reads (a file, or Meta's "none there"): a worker reads them where they lie, and
+/// can't download one.
+pub fn canopy_stored(dir: &Path, sources: &Path) -> bool {
+    let Ok(idx) = roadcore::grid::GridIndex::load(dir) else { return false };
+    canopy_squares(&idx.tiles).into_iter().all(|sq| canopy_square_files(sq).iter().all(|n| sources.join("canopy").join(n).exists()))
+}
+
+/// The tail of unit `u`'s build: its elevations, its clean-up and grade, then its road samples,
+/// canopy, views, buildings (with `buildings`) and flags. Every program is Rust, and gives the same
+/// bytes natively and as WebAssembly (tools/check/same.py, tail.mjs), so any worker can run it. The
+/// data the elevations and canopy read is read where it lies: the DEM servers' files and the NAS's
+/// (`{net}`, `{sources}`, `{moi}`, `{chm}`: a browser's through the coordinator, a Mac's as this
+/// Mac reads them).
 pub fn tail(u: Unit, buildings: bool, store: bool) -> Vec<Run> {
+    // What each step reads of the unit's folder, earlier steps' outputs too: a task sends what's
+    // there when it starts (traced in WebAssembly, the outputs compared: tools/check/tail.mjs).
+    let mine = |names: &[&str]| names.iter().map(|n| if n.starts_with('{') { n.to_string() } else { format!("{{dir}}/{n}") }).collect::<Vec<_>>();
     let tb = crate::hipack::tile_bounds(u.z, u.x, u.y);
     let own = format!("{},{},{},{}", tb[0], tb[1], tb[2], tb[3]);
     let scenic = |step: &str, with_own: bool| {
@@ -823,21 +867,35 @@ pub fn tail(u: Unit, buildings: bool, store: bool) -> Vec<Run> {
         if store {
             e.push(("SCENIC_CANOPY_STORE".to_string(), "{store}".to_string()));
         }
+        // (The canopy squares read where they lie: the NAS's, for a worker that has no copies.)
+        if step == "canopy" {
+            e.push(("SCENIC_CHM".to_string(), "{chm}".to_string()));
+        }
         let mut args = vec!["{dir}".to_string(), step.to_string()];
         if step == "buildings" {
             args.push("{buildings}".into());
         }
-        // What the steps after the canopy read (traced in WebAssembly: tools/check/reads.mjs).
-        let mine = |names: &[&str]| names.iter().map(|n| if n.starts_with('{') { n.to_string() } else { format!("{{dir}}/{n}") }).collect::<Vec<_>>();
         let reads = match step {
-            "view" => mine(&["grid.idx", "grid.terrain.i16", "grid.canopy.u8", "grid.class.u8", "grid.areas.u8", "samples.bin", "near.i8", "roadside.u8", "pois.json", "heritage.json", "ways.bin", "verts.bin", "scache/view*"]),
+            "prep" => mine(&["ways.bin", "verts.bin", "final.u16", "terrain.tiles"]),
+            // (Its last run's results, restored: scache::Carry.)
+            "canopy" => mine(&["grid.idx", "grid.terrain.i16", "samples.bin", "scache/canopy*", "scache/changed.tiles", "near.i8", "roadside.u8", "grid.canopy.u8", "grid.cover.u8"]),
+            "view" => mine(&["grid.idx", "grid.terrain.i16", "grid.canopy.u8", "grid.class.u8", "grid.areas.u8", "samples.bin", "near.i8", "roadside.u8", "pois.json", "heritage.json", "ways.bin", "verts.bin", "scache/view*", "scache/changed.tiles", "samples.metrics.u8"]),
             "buildings" => mine(&["samples.bin", "ways.bin", "verts.bin", "{buildings}/*"]),
-            "flags" => mine(&["grid.idx", "grid.terrain.i16", "grid.areas.u8", "samples.bin", "pois.json", "heritage.json", "ways.bin", "verts.bin"]),
+            "flags" => mine(&["grid.idx", "grid.terrain.i16", "grid.areas.u8", "samples.bin", "samples.metrics.u8", "samples.bld.u8", "pois.json", "heritage.json", "ways.bin", "verts.bin"]),
             _ => Vec::new(),
         };
         Run { what: format!("scenic {step}"), prog: "scenic-metrics".into(), args, env: e, reads }
     };
-    let mut runs = vec![Run { what: "clean-up and grade (tile elev)".into(), prog: "tile".into(), args: vec!["{dir}".into(), "elev".into()], env: Vec::new(), reads: Vec::new() }];
+    let env = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+    let elev = Run {
+        what: "elevations (elev)".into(),
+        prog: "elev".into(),
+        args: vec!["{dir}".into(), "--cache".into(), "{dir}/dem-cache".into()],
+        env: env(&[("SCENIC_FABDEM_STORE", "{sources}/fabdem"), ("SCENIC_MOI_DTM", "{moi}"), ("SCENIC_FETCH_MIRROR", "{net}")]),
+        reads: mine(&["verts.bin", "dem-cache/*"]),
+    };
+    let grade = Run { what: "clean-up and grade (tile elev)".into(), prog: "tile".into(), args: vec!["{dir}".into(), "elev".into()], env: Vec::new(), reads: mine(&["ways.bin", "verts.bin", "elev.f32", "strings.txt"]) };
+    let mut runs = vec![elev, grade];
     for step in ["prep", "canopy", "view"] {
         runs.push(scenic(step, true));
     }
@@ -854,13 +912,18 @@ pub fn run_tail(runs: &[Run], dir: &Path, tools: &Tools) -> Result<()> {
     let log = dir.join("steps.log");
     let scache = crate::scache::unit_dir(dir);
     let store = tools.sources.as_ref().map(|s| s.join("canopy"));
+    // (A place this worker hasn't, or that no worker here fills, `{net}`: its variable left out.)
     let fill = |v: &str| -> Option<String> {
         let put = |s: &str, k: &str, p: Option<&Path>| -> Option<String> { if s.contains(k) { Some(s.replace(k, &p?.to_string_lossy())) } else { Some(s.to_string()) } };
         let v = put(v, "{dir}", Some(dir))?;
         let v = put(&v, "{cache}", Some(&tools.cache))?;
         let v = put(&v, "{scache}", Some(&scache))?;
         let v = put(&v, "{buildings}", tools.buildings.as_deref())?;
-        put(&v, "{store}", store.as_deref())
+        let v = put(&v, "{sources}", tools.sources.as_deref())?;
+        let v = put(&v, "{moi}", tools.moi_dtm.as_deref())?;
+        let v = put(&v, "{chm}", tools.chm.as_deref())?;
+        let v = put(&v, "{store}", store.as_deref())?;
+        (!v.contains("{net}")).then_some(v)
     };
     for r in runs {
         let mut c = Command::new(tools.bin.join(&r.prog));
@@ -933,16 +996,46 @@ mod tests {
     }
 
     #[test]
-    fn the_steps_after_the_canopy_may_run_anywhere() {
+    fn a_whole_tail_may_run_anywhere_but_the_canopy_squares_a_worker_cant_have() {
         let u = Unit::parse("6/20/22").unwrap();
-        let runs = tail(u, true, true);
+        let what = |runs: &[Run]| runs.iter().map(|r| r.what.clone()).collect::<Vec<_>>();
+        let mut runs = tail(u, true, true);
         let (here, anywhere) = split(&runs);
-        assert_eq!(here.iter().map(|r| r.what.as_str()).collect::<Vec<_>>(), ["clean-up and grade (tile elev)", "scenic prep", "scenic canopy"]);
-        assert_eq!(anywhere.iter().map(|r| r.what.as_str()).collect::<Vec<_>>(), ["scenic view", "scenic buildings", "scenic flags"]);
+        assert!(here.is_empty());
+        assert_eq!(what(anywhere), ["elevations (elev)", "clean-up and grade (tile elev)", "scenic prep", "scenic canopy", "scenic view", "scenic buildings", "scenic flags"]);
         assert!(anywhere.iter().all(|r| r.reads.iter().all(|p| p.starts_with("{dir}/") || p.starts_with("{buildings}/"))));
+        // A canopy square the NAS's store lacks: the steps through the canopy stay here.
+        keep_here(&mut runs, "scenic canopy");
+        let (here, anywhere) = split(&runs);
+        assert_eq!(what(here), ["elevations (elev)", "clean-up and grade (tile elev)", "scenic prep", "scenic canopy"]);
+        assert_eq!(what(anywhere), ["scenic view", "scenic buildings", "scenic flags"]);
         // Without the roadside buildings, flags still follows view.
         let runs = tail(u, false, false);
-        assert_eq!(split(&runs).1.len(), 2);
+        assert_eq!(split(&runs).1.len(), 6);
+    }
+
+    #[test]
+    fn the_canopy_squares_a_unit_reads_are_known_from_its_grid() {
+        let d = tempfile::tempdir().unwrap();
+        // Two grid tiles (z11) either side of 50°N at 7°E, and one at the antimeridian's west.
+        let z11 = |lon: f64, lat: f64| {
+            let (gx, gy) = roadcore::grid::cell_of(lon, lat);
+            [(gx / 256.0) as u32, (gy / 256.0) as u32]
+        };
+        let tiles = vec![z11(7.0, 50.05), z11(7.0, 49.95), z11(-179.99, 0.5)];
+        assert_eq!(canopy_squares(&tiles).into_iter().collect::<Vec<_>>(), [(10, -180), (60, 0), (50, 0)].into_iter().collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>());
+        roadcore::grid::GridIndex::new(tiles).save(&d.path().join("grid.idx")).unwrap();
+        let sources = d.path().join("sources");
+        std::fs::create_dir_all(sources.join("canopy")).unwrap();
+        assert!(!canopy_stored(d.path(), &sources));
+        for sq in canopy_squares(&roadcore::grid::GridIndex::load(d.path()).unwrap().tiles) {
+            for n in canopy_square_files(sq) {
+                assert!(!canopy_stored(d.path(), &sources));
+                // (A file, or Meta's "none there", empty.)
+                std::fs::write(sources.join("canopy").join(n), b"").unwrap();
+            }
+        }
+        assert!(canopy_stored(d.path(), &sources));
     }
 
     #[test]

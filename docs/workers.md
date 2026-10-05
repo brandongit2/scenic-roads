@@ -35,20 +35,44 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     peaks), for workers that mount the NAS (the M1's agent). A job saves into
     the store's content-named files as before; its record changes come back as one hand-off.
   - **Tasks** (`coord::task`), pure work a running job offers to any worker: programs run over a
-    folder of files, giving files back. A task never needs the NAS: what it reads was staged on the
-    build Mac, which serves it.
-- **Impure work stays at the hub:** fetching outside data (DEM servers, WorldCover, AWS, Meta's
-  canopy), sampling DEMs (whose per-vertex cache is mutable), staging from packs, the scenic
-  carry-over between runs, and every write to the records.
+    folder of files, giving files back. What a task reads of its unit's folder was staged on the
+    build Mac, which serves it; what it reads of the NAS's data and the DEM servers' files it reads
+    where it lies, through the coordinator (§3, Read where they lie), never writing there.
+- **Impure work stays at the hub:** downloading into the NAS's stores (FABDEM tiles, Meta's canopy
+  squares, AWS's terrain), staging from packs, the scenic carry-over between runs, keeping a
+  unit's DEM samples, and every write to the records. (Sampling the DEMs is a task's: the unit's
+  slice of the per-vertex cache goes with it and its samples come back.)
 - **Workers** hold nothing the build depends on: a lost worker costs only its work in hand.
 
 ## 3. Tasks (built for a unit's tail)
 
-- **Where the work splits:** a unit's tail (`unit::tail`) runs its clean-up and grade, prep and
-  canopy steps on the build Mac, by the canopy files (gigabytes per 10° square: fetched there once,
-  §4). View, buildings and flags read only the unit's own files, and each says which (`Run::reads`,
-  traced in WebAssembly by `tools/check/reads.mjs`: 574 of the folder's 1,064 MB for 6/20/22), so
-  any worker may run them (`unit::split`).
+- **Where the work splits:** a unit's tail (`unit::tail`) is a task from its elevations on:
+  elevations, clean-up and grade, prep, canopy, view, buildings and flags. Each step says which of
+  the unit's files it reads (`Run::reads`, earlier steps' outputs too: what's there when the task
+  starts is sent), traced in WebAssembly by `tools/check/tail.mjs`, which runs the task as a
+  browser does and compares every file it writes with the native run's (6/20/22, with its last
+  run's results restored: 57 of the folder's 64 files, 996 MB; all 22 written files the same, and
+  with only the listed files given too). Staging, heritage inputs, area flags (a fifth of a second)
+  and land cover (only where the packs lack it, and before the last run's results are restored,
+  which hash it) stay in the job.
+- **Canopy squares:** the canopy step reads Meta's 10° squares where they lie, in the NAS's store
+  (`sources/canopy/`), and a worker can't download one. While the store lacks one of a unit's
+  squares (`unit::canopy_stored`, by its grid's tiles' corners, as the step picks them), the steps
+  through the canopy run in the job (`unit::keep_here`), which downloads it there; the rest is the
+  task.
+- **Read where they lie** (`/net`): a task's places name what it reads outside its folder:
+  `{sources}` the NAS's `sources/` (FABDEM's store, the canopy squares: `{chm}`), `{moi}` its MOI
+  DTM, `{net}` the DEM servers' files, laid out as `crate::fetch`'s mirror folders are
+  (`<host>/<path>`). A browser reads them through the coordinator (`/work/net/<lease>/nas/<path>`
+  under `sources/` and `inputs/moi-dtm/` only, `…/web/<host>/<path>` for the five DEM and land
+  cover servers only, over HTTPS: `?probe` says what's there, `?list` a folder's entries, a range
+  its bytes; nothing written), a 1 MB block at a time as a program reads them (web/work/runtime.js:
+  synchronous requests, a WASI call can't wait; 64 MB of blocks kept); a server's "none" is its
+  `.none` file. A native worker reads the NAS at its own mount and the servers as the build Mac
+  does. A FABDEM tile the store hasn't yet is read in place inside Bristol's zip (the store isn't
+  written: `dem::fabdem::stored`), the same values the store's copy has.
+- **What comes back:** the files the steps changed; one written back as it was sent isn't sent (a
+  hash of each input; the unit's folder has it).
 - **The unit job** (`pipeline::offload`) clones those files into the task's folder (copy-on-write,
   instant; the roadside buildings' links to the NAS stay links) and offers the task when a worker
   that takes tails is around and fewer than such are out (at most three: each holds a unit's folder
@@ -56,16 +80,17 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   between units.
 - **Nothing waits on a worker:** at the end of the job, a task no one took is taken back and run on
   the build Mac, and one a worker still holds is raced there (the build Mac's result counts; a
-  worker's that comes in too is compared). With no worker around, a unit builds as before.
+  worker's that comes in too is compared: each file it sent with this Mac's, and each this Mac's
+  run changed that it didn't send with the copy it was sent). With no worker around, a unit
+  builds as before.
 - **Source versions:** a task names the programs' build (the job's binary); a web worker fetches
   that build's WebAssembly programs from the coordinator (`/work/prog/<name>.wasm`, shipped in the
   app's `wasm/`). The native and WebAssembly builds of one source give the same bytes (§10).
 - **Determinism rules:** one maths library (`det`, over `libm`) on every target; reductions that
   don't depend on the thread count; no hash-map order in outputs; the real zstd everywhere.
-- **Planned:** more of a unit as tasks, now that its Python steps are Rust (`elev`, `landcover`,
-  `areaflags`; sampling needs the DEM ranges it reads listed ahead, §4); the heavy steps cut into sample ranges
-  so a slow worker's lease is minutes; more kinds of task (map tiles, landmarks, slope, terrain,
-  tree cover).
+- **Planned:** staging from packs as a task's (read where the packs lie); the heavy steps cut into
+  sample ranges so a slow worker's lease is minutes; more kinds of task (map tiles, landmarks,
+  slope, terrain, tree cover).
 
 ## 4. Data: the coordinator's plane
 

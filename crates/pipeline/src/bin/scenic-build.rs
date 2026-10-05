@@ -16,9 +16,10 @@
 //!   unit [U …] [--pass d] [--layers-root r] [--regions dir] [--dem dir] [--cache-dir dir] [--buildings dir]
 //!                                base(U) from the pass's pieces (today's steps on a unit folder):
 //!                                default every unit whose piece meets the coverage
-//!   unit-snap U --out d --cache c  unit U's folder built from the records into d, nothing
+//!   unit-snap U --out d --cache c [--carry]  unit U's folder built from the records into d, nothing
 //!                                written to the NAS, snapshotted around each step's program (for
-//!                                tools/check/same.py)
+//!                                tools/check/same.py and tail.mjs)
+//!   tail-spec U                  unit U's tail as a task gives it a worker (tools/check/tail.mjs)
 //!   roadunits                    the road → units index from every unit's road values
 //!   terrain [T …] [--regions dir] [--pass d] [--raw dir]  terrain packs for z6 tiles T near the
 //!                                coverage (default: all of them): hi z9–12, then their z3 lo packs,
@@ -115,6 +116,14 @@ fn positional(args: &[String]) -> Vec<String> {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let step = args.get(1).cloned().unwrap_or_default();
+    // tail-spec U: unit U's tail as a task gives it a worker (its steps, where its places lie, the
+    // data servers it may read), for tools/check/tail.mjs; nothing read or written.
+    if step == "tail-spec" {
+        let u = positional(&args).first().and_then(|s| Unit::parse(s)).context("tail-spec U")?;
+        let spec = serde_json::json!({ "runs": pipeline::unit::tail(u, true, true), "places": pipeline::offload::places(), "web_hosts": pipeline::coord::WEB_HOSTS });
+        println!("{spec}");
+        return Ok(());
+    }
     let root = PathBuf::from(opt(&args, "--root").context("--root <nas project folder>")?);
     let scratch = PathBuf::from(opt(&args, "--scratch").unwrap_or_else(|| "/tmp/scenic-build".into()));
     let mut out = Out::open(&root, &scratch)?;
@@ -1730,23 +1739,17 @@ fn pass_and_coverage(out: &Out, args: &[String]) -> Result<(String, pipeline::co
 /// median, p95 and cover (scenic-metrics names them by the square's top and left).
 fn canopy_files(b: [f64; 4]) -> Vec<String> {
     let (lefts, tops) = ((b[0] / 10.0).floor() as i32..=(b[2] / 10.0).floor() as i32, (b[1] / 10.0).ceil() as i32..=(b[3] / 10.0).ceil() as i32);
-    let mut names = Vec::new();
-    for top in tops.map(|t| t * 10) {
-        for left in lefts.clone().map(|l| l * 10) {
-            for st in ["median", "p95", "cover5m"] {
-                names.push(format!("meta_chm_lat={top}.0_lon={left}.0_{st}.tif"));
-            }
-        }
-    }
-    names
+    tops.flat_map(|t| lefts.clone().map(move |l| (t * 10, l * 10))).flat_map(pipeline::unit::canopy_square_files).collect()
 }
 
-/// unit-snap U --out <dir> --cache <dir>: unit U's folder built as the unit step builds it, from
-/// the build's records, writing nothing to the NAS: its kept samples go under <dir>/shared (seeded
-/// with its and its neighbours' from the NAS), and the folder is copied before and after each of
-/// its steps' programs into <dir>/snap (pipeline::unit::Tools::snap) for tools/check/same.py.
-/// `--cache` holds the DEM seed (`dem-cache.*`) and the canopy files (`chm10/`), as the agent's
-/// cache does; the step programs are this binary's neighbours.
+/// unit-snap U --out <dir> --cache <dir> [--carry]: unit U's folder built as the unit step builds
+/// it, from the build's records, writing nothing to the NAS: its kept samples go under <dir>/shared
+/// (seeded with its and its neighbours' from the NAS), and the folder is copied before and after
+/// each of its steps' programs into <dir>/snap (pipeline::unit::Tools::snap) for
+/// tools/check/same.py and tail.mjs. `--cache` holds the DEM seed (`dem-cache.*`) and the canopy
+/// files (`chm10/`), as the agent's cache does; the step programs are this binary's neighbours.
+/// `--carry`: its scenic results from its last run restored first (a copy of the NAS's), as a
+/// rebuild's are.
 fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     use pipeline::unit::{build_folder, Tools};
     let u = positional(args).first().and_then(|s| Unit::parse(s)).context("unit-snap U")?;
@@ -1764,6 +1767,15 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
             store::sys::copy_data(e.path(), kept.join(&name))?;
         }
     }
+    let carry = args.iter().any(|a| a == "--carry").then(|| -> Result<pipeline::scache::Carry> {
+        let (from, to) = (out.root().join("cache/scenic-units").join(u.dash()), shared.join("scenic-units").join(u.dash()));
+        std::fs::remove_dir_all(&to).ok();
+        std::fs::create_dir_all(&to)?;
+        for e in std::fs::read_dir(&from).with_context(|| format!("no kept results in {}", from.display()))?.flatten() {
+            store::sys::copy_data(e.path(), to.join(e.file_name()))?;
+        }
+        Ok(pipeline::scache::Carry { dir: to })
+    }).transpose()?;
     let bdir = dir.join(format!("{}-buildings", u.dash()));
     let n = pipeline::buildtiles::stage(out.root(), &index, u, reach.get(u), &bdir)?;
     eprintln!("unit-snap {}: buildings from {n} tiles", u.slash());
@@ -1775,6 +1787,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
         moi_dtm: Some(out.root().join("inputs/moi-dtm")),
         sources: Some(out.root().join("sources")),
         shared: Some(shared),
+        chm: None,
         spacing_m: 8,
         snap: Some(dir.join("snap")),
     };
@@ -1787,7 +1800,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     let heritage = |b: [f64; 4], d: &Path| pipeline::heritage::unit_inputs(out, &date, b, d);
     let t = std::time::Instant::now();
     let blobs = store::blobs::Blobs::new(tools.cache.join("blobs"));
-    let rep = build_folder(u, &local, &folder, &cov, &pipeline::stage::Source::Manifest(out, Some(&blobs)), &tools, &heritage, None)?;
+    let rep = build_folder(u, &local, &folder, &cov, &pipeline::stage::Source::Manifest(out, Some(&blobs)), &tools, &heritage, carry.as_ref())?;
     eprintln!("unit-snap {}: {} of {} ways kept, {} owned, in {:.1?}; snapshots in {}", u.slash(), rep.kept_ways, rep.piece_ways, rep.owned, t.elapsed(), dir.join("snap").display());
     Ok(())
 }
@@ -1826,6 +1839,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         moi_dtm: Some(out.root().join("inputs/moi-dtm")),
         sources: Some(out.root().join("sources")),
         shared: Some(out.root().join("cache")),
+        chm: None,
         spacing_m: 8,
         snap: None,
     };
@@ -1983,10 +1997,14 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             (prepare_folder(u, &local_piece, &dir, &cov, &layers_source(o, &pilot, Some(&blobs)), &tools, &heritage, Some(&carry))?, tools)
         };
         std::fs::remove_file(&local_piece).ok();
-        // Its tail: the steps that read the caches here; the rest offered to another worker while
-        // this Mac prepares the next unit (when one's around, and fewer than such are out), else
-        // run here too.
-        let runs = pipeline::unit::tail(u, tools.buildings.is_some(), tools.sources.is_some());
+        // Its tail: offered to another worker while this Mac prepares the next unit (when one's
+        // around, and fewer than such are out), else run here too. The canopy squares a worker
+        // reads where they lie, and can't download one: while the NAS's store lacks one, the
+        // steps through the canopy stay here (where it's downloaded).
+        let mut runs = pipeline::unit::tail(u, tools.buildings.is_some(), tools.sources.is_some());
+        if !tools.sources.as_deref().is_some_and(|s| pipeline::unit::canopy_stored(&dir, s)) {
+            pipeline::unit::keep_here(&mut runs, "scenic canopy");
+        }
         let (here, anywhere) = pipeline::unit::split(&runs);
         if rep.kept_ways > 0 {
             run_tail(here, &dir, &tools)?;
@@ -2078,10 +2096,15 @@ fn settle_tails(out: &mut Out, date: &str, offload: Option<&pipeline::offload::O
 /// it cost noted. `how`: where its tail's last steps ran. (What it saves is
 /// `pipeline::unit::saved_files`, all a helper's hand-off may change: keep the two together.)
 fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
-    let Built { u, dir, bdir, rep, carry, piece, t, mut laps, peak, .. } = b;
+    let Built { u, dir, bdir, rep, tools, carry, piece, t, mut laps, peak, .. } = b;
     use pipeline::unit::owns;
     areas(|a| a.on(&u.slash()));
     laps.skip();
+    // The DEM samples its elevations made (its last steps' first, here or by a worker), kept.
+    if rep.kept_ways > 0 {
+        pipeline::unit::keep_dem_samples(u, &dir, &tools);
+        laps.lap("DEM samples kept");
+    }
     let clean = || {
         std::fs::remove_dir_all(&dir).ok();
         std::fs::remove_dir_all(&bdir).ok();

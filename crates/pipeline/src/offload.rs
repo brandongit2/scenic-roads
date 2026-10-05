@@ -84,10 +84,7 @@ impl Offload {
         // to work; the coordinator raises it to what the unit's task took last time.
         let mem_mb = (inputs.values().sum::<u64>() >> 20) * 2 + 500;
         let list: Vec<serde_json::Value> = inputs.iter().map(|(p, n)| serde_json::json!([p, n])).collect();
-        let spec = serde_json::json!({
-            "unit": u.slash(), "version": self.version, "runs": runs, "inputs": list,
-            "places": { "{dir}": "/u", "{cache}": "/cache", "{scache}": "/u/scache", "{buildings}": "/b", "{store}": null },
-        });
+        let spec = serde_json::json!({ "unit": u.slash(), "version": self.version, "runs": runs, "inputs": list, "places": places() });
         let offer = crate::coord::task::Offer { owner: self.owner, kind: "tail".into(), spec, root: root.clone(), inputs, mem_mb };
         let (_, v) = self.client.post_json("/task/offer", &serde_json::to_value(&offer)?)?;
         Ok(Offered { id: v["id"].as_u64().context("the coordinator gave no task id")?, root })
@@ -106,8 +103,9 @@ impl Offload {
                 Settled::Remote(worker)
             }
             "done" => {
+                let since = std::time::SystemTime::now();
                 here()?;
-                let same = same(&st, dir)?;
+                let same = same(&st, dir, &t.root, since)?;
                 checked = Some(same);
                 Settled::Here(Some((worker, same)))
             }
@@ -119,11 +117,12 @@ impl Offload {
             _ => {
                 // Taken back if no one has it; raced if someone does.
                 let withdrawn = self.client.post_json(&format!("/task/{}/withdraw", t.id), &serde_json::json!({}))?.1["withdrawn"].as_bool() == Some(true);
+                let since = std::time::SystemTime::now();
                 here()?;
                 let late = if withdrawn { None } else { self.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).ok().map(|r| r.1) };
                 match late.filter(|s| s["state"] == "done") {
                     Some(s) => {
-                        let same = same(&s, dir)?;
+                        let same = same(&s, dir, &t.root, since)?;
                         checked = Some(same);
                         Settled::Here(Some((s["worker"].as_str().unwrap_or("").to_string(), same)))
                     }
@@ -137,10 +136,23 @@ impl Offload {
     }
 }
 
+/// Where a task's places lie for a worker: its files in a browser's in-memory folders, what's read
+/// where it lies under `/net` (the NAS's data and the DEM servers' files, through the coordinator);
+/// a native worker maps `/net/nas/` to its own NAS (run_task).
+pub fn places() -> serde_json::Value {
+    serde_json::json!({
+        "{dir}": "/u", "{cache}": "/cache", "{scache}": "/u/scache", "{buildings}": "/b", "{store}": null,
+        "{sources}": "/net/nas/sources", "{moi}": "/net/nas/inputs/moi-dtm", "{chm}": "/net/nas/sources/canopy", "{net}": "/net/web",
+    })
+}
+
 /// Runs task `lease` here, natively (a worker's agent: the M1's): its files fetched from the
 /// coordinator into `dir`, its steps run over them with the programs in `bin`, and the files they
-/// wrote sent back; what to hand back with its done (outputs, inputs removed, time, peak memory).
-pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Path, bin: &Path) -> Result<serde_json::Value> {
+/// changed sent back; what to hand back with its done (outputs, inputs removed, time, peak memory).
+/// What a page reads through the coordinator (`/net`), it reads where it lies: the NAS's data in
+/// `root`, the DEM servers' files over the network. (Without `root`, a task whose steps read the
+/// NAS fails here.)
+pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Path, bin: &Path, root: Option<&Path>) -> Result<serde_json::Value> {
     std::fs::remove_dir_all(dir).ok();
     std::fs::create_dir_all(dir.join("u"))?;
     let inputs: Vec<(String, u64)> = serde_json::from_value(spec["inputs"].clone()).context("the task's inputs")?;
@@ -155,10 +167,13 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
             crate::agent::jobs::report_f((1 + i) as f64 + frac, steps, &format!("steps ({what})"));
         }
     })));
+    // (Each input's hash: what's written back unchanged isn't sent, the unit's folder has it.)
+    let mut sent = std::collections::HashMap::new();
     for (p, n) in &inputs {
         let rel = crate::coord::task::safe(p).with_context(|| format!("a task input outside its folder: {p}"))?;
         let b = client.get_bytes(&format!("/work/in/{lease}/{p}"))?;
         anyhow::ensure!(b.len() as u64 == *n, "{p}: {} bytes, not {n}", b.len());
+        sent.insert(p.clone(), store::naming::hash16(&b));
         let f = dir.join(rel);
         std::fs::create_dir_all(f.parent().unwrap())?;
         std::fs::write(&f, b)?;
@@ -166,7 +181,17 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
     // (What the steps write is told by its time: after this.)
     std::thread::sleep(std::time::Duration::from_millis(20));
     let started = std::time::SystemTime::now();
-    let tools = crate::unit::Tools { bin: bin.to_path_buf(), dem: PathBuf::new(), cache: dir.join("cache"), buildings: Some(dir.join("b")), moi_dtm: None, sources: None, shared: None, spacing_m: 8, snap: None };
+    // (The NAS's places, here: as the build Mac has them. A worker without the NAS fails only a
+    // task whose steps read it.)
+    let uses = |k: &str| runs.iter().any(|r| r.args.iter().chain(r.env.iter().map(|(_, v)| v)).any(|v| v.contains(k)));
+    let nas = |p: &str| -> Result<Option<PathBuf>> {
+        match (spec["places"][p].as_str().and_then(|v| v.strip_prefix("/net/nas/")), root) {
+            (Some(rel), Some(root)) => Ok(Some(root.join(rel))),
+            (Some(_), None) if uses(p) => anyhow::bail!("the task reads the NAS, which this worker hasn't"),
+            _ => Ok(None),
+        }
+    };
+    let tools = crate::unit::Tools { bin: bin.to_path_buf(), dem: PathBuf::new(), cache: dir.join("cache"), buildings: Some(dir.join("b")), moi_dtm: nas("{moi}")?, sources: nas("{sources}")?, shared: None, chm: nas("{chm}")?, spacing_m: 8, snap: None };
     crate::unit::take_peak();
     let t = std::time::Instant::now();
     crate::unit::run_tail(&runs, &dir.join("u"), &tools)?;
@@ -181,6 +206,9 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
             continue;
         }
         let b = std::fs::read(&f)?;
+        if sent.get(&rel).is_some_and(|h| *h == store::naming::hash16(&b)) {
+            continue;
+        }
         client.put_bytes(&format!("/work/out/{lease}/{rel}"), &b)?;
         outputs.push(crate::coord::task::Output { path: rel, size: b.len() as u64 });
     }
@@ -287,14 +315,27 @@ fn take(st: &serde_json::Value, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Whether a worker's outputs are what this Mac's run left in the unit's folder.
-fn same(st: &serde_json::Value, dir: &Path) -> Result<bool> {
+/// Whether a worker's outputs are what this Mac's run (from `since`) left in the unit's folder:
+/// each it sent is this Mac's, and each file this Mac's run wrote that it didn't send is as the
+/// task sent it (`sent`, the task's inputs: a worker sends only what it changed).
+fn same(st: &serde_json::Value, dir: &Path, sent: &Path, since: std::time::SystemTime) -> Result<bool> {
     let out = PathBuf::from(st["out"].as_str().context("no outputs' folder")?);
+    let mut theirs = std::collections::HashSet::new();
     for o in st["outputs"].as_array().into_iter().flatten() {
         let path = o["path"].as_str().unwrap_or("");
         let Some(mine) = place(dir, path) else { return Ok(false) };
         if std::fs::read(out.join(path)).ok() != std::fs::read(&mine).ok() {
             eprintln!("offload: {path} differs from this Mac's");
+            return Ok(false);
+        }
+        theirs.insert(path.to_string());
+    }
+    for (rel, f) in files_under(dir, "u")? {
+        if rel == "u/steps.log" || theirs.contains(&rel) || std::fs::metadata(&f)?.modified()? < since {
+            continue;
+        }
+        if std::fs::read(&f).ok() != std::fs::read(sent.join(&rel)).ok() {
+            eprintln!("offload: {rel}: this Mac's run changed it, the worker's didn't");
             return Ok(false);
         }
     }
@@ -311,16 +352,18 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let c = crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap();
-        // The unit's folder, and a stand-in step: it writes one file and removes another.
+        // The unit's folder, and a stand-in step: it writes one file, removes another, and writes
+        // a third again as it was.
         let dir = d.path().join("unit");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("in.bin"), b"in").unwrap();
         std::fs::write(dir.join("gone.bin"), b"x").unwrap();
+        std::fs::write(dir.join("kept.bin"), b"as it was").unwrap();
         let bin = d.path().join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join("step"), "#!/bin/sh\ncat \"$1/in.bin\" > \"$1/out.bin\"; echo more >> \"$1/out.bin\"; rm \"$1/gone.bin\"\n").unwrap();
+        std::fs::write(bin.join("step"), "#!/bin/sh\ncat \"$1/in.bin\" > \"$1/out.bin\"; echo more >> \"$1/out.bin\"; rm \"$1/gone.bin\"; cp \"$1/kept.bin\" \"$1/k.tmp\"; mv \"$1/k.tmp\" \"$1/kept.bin\"\n").unwrap();
         std::fs::set_permissions(bin.join("step"), std::fs::Permissions::from_mode(0o755)).unwrap();
-        let runs = vec![Run { what: "a step".into(), prog: "step".into(), args: vec!["{dir}".into()], env: vec![], reads: vec!["{dir}/in.bin".into(), "{dir}/gone.bin".into()] }];
+        let runs = vec![Run { what: "a step".into(), prog: "step".into(), args: vec!["{dir}".into()], env: vec![], reads: vec!["{dir}/in.bin".into(), "{dir}/gone.bin".into(), "{dir}/kept.bin".into()] }];
         let url = format!("http://127.0.0.1:{port}");
         let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.path().join("tasks") };
         let u = Unit::parse("6/1/1").unwrap();
@@ -330,19 +373,22 @@ mod tests {
         let ask = crate::coord::Ask { kind: "native".into(), can: vec!["unit".into(), "tail".into()], mem_mb: 4096, ..Default::default() };
         let g = m1.ask(&ask).unwrap().unwrap();
         let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
-        let r = run_task(&m1, g.lease, &task, &d.path().join("m1"), &bin).unwrap();
+        let r = run_task(&m1, g.lease, &task, &d.path().join("m1"), &bin, None).unwrap();
         let done = crate::coord::Done { lease: g.lease, outputs: serde_json::from_value(r["outputs"].clone()).unwrap(), removed: serde_json::from_value(r["removed"].clone()).unwrap(), ..Default::default() };
         assert_eq!(done.removed, ["u/gone.bin"]);
+        // (What it wrote as it was isn't sent.)
+        assert_eq!(done.outputs.iter().map(|o| o.path.as_str()).collect::<Vec<_>>(), ["u/out.bin"]);
         assert_eq!(m1.done(&done).unwrap(), crate::coord::client::Handed::Taken);
         // The job: a first result is checked; this Mac's run agrees, the worker's outputs match.
         let mut ran = false;
         let mut here = || {
             ran = true;
-            crate::unit::run_tail(&runs, &dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, moi_dtm: None, sources: None, shared: None, spacing_m: 8, snap: None })
+            crate::unit::run_tail(&runs, &dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, moi_dtm: None, sources: None, shared: None, chm: None, spacing_m: 8, snap: None })
         };
         let s = o.settle(&t, &dir, false, &mut here).unwrap().unwrap();
         assert!(ran && matches!(s, Settled::Here(Some((ref w, true))) if w == "m1"));
         assert_eq!(std::fs::read(dir.join("out.bin")).unwrap(), b"inmore\n");
+        assert_eq!(std::fs::read(dir.join("kept.bin")).unwrap(), b"as it was");
         assert!(!dir.join("gone.bin").exists());
         assert!(!t.root.exists(), "the task's folder goes");
     }

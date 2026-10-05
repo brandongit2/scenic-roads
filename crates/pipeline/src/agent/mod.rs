@@ -912,6 +912,9 @@ impl Agent {
                     s(&self.o.home.join("scratch/task")),
                     "--result".into(),
                     s(&dir.join("task.json")),
+                    // (What a page reads through the coordinator, read on the NAS here.)
+                    "--root".into(),
+                    s(root),
                 ];
                 let unit = task["unit"].as_str().unwrap_or("").to_string();
                 self.slots[0].lease = Some(Held::Leased { lease, dir });
@@ -1261,8 +1264,12 @@ impl Agent {
             }
         }
 
-        // The coordinator: how to reach it on the NAS (looked at every five minutes: it may have been
-        // deleted, or this Mac's addresses changed), and leases whose workers went quiet dropped.
+        // The coordinator: where the NAS is (tasks read it where it lies), how to reach it on the NAS
+        // (looked at every five minutes: it may have been deleted, or this Mac's addresses changed),
+        // and leases whose workers went quiet dropped.
+        if let Some(c) = &self.coord {
+            c.set_root(root.as_deref());
+        }
         if let (Some(c), Some(r)) = (&self.coord, &root) {
             if self.published.is_none_or(|t| t.elapsed() >= Duration::from_secs(300)) {
                 match c.publish(r) {
@@ -3160,6 +3167,7 @@ mod tests {
 
     #[test]
     fn a_helper_runs_any_shared_steps_job_the_build_mac_leases() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();

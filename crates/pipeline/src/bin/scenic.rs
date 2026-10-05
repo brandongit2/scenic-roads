@@ -174,7 +174,8 @@ fn main() -> Result<()> {
             let urls: Vec<String> = std::env::var("SCENIC_COORD_URLS").unwrap_or_default().split(',').filter(|u| !u.is_empty()).map(str::to_string).collect();
             let client = pipeline::coord::client::Client::at(urls, std::env::var("SCENIC_COORD_TOKEN").unwrap_or_default(), &std::env::var("SCENIC_WORKER").unwrap_or_default());
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
-            let r = pipeline::offload::run_task(&client, lease, &spec, &dir, &bin);
+            let root = opt(&args, "--root").map(PathBuf::from);
+            let r = pipeline::offload::run_task(&client, lease, &spec, &dir, &bin, root.as_deref());
             std::fs::remove_dir_all(&dir).ok();
             let v = match &r {
                 Ok(t) => serde_json::json!({ "ok": true, "task": t }),

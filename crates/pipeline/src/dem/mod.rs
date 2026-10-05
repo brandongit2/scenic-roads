@@ -569,15 +569,18 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
             continue;
         }
         let (lo, la) = (gather(&lon, sel), gather(&lat, sel));
+        let in_place = |src| -> Result<Vec<f32>> { sample_raster(&Tiff::open(src).with_context(|| format!("FABDEM {tname}"))?, 0, &lo, &la, pool.as_ref()).with_context(|| format!("FABDEM {tname}")) };
         let v = match &cfg.fabdem_store {
             // From the store, where each tile is downloaded once.
             Some(store) => match fabdem::stored(fetch, store, zname, tname, false)? {
                 None => None,
-                Some(p) => match sample_file(&p, &lo, &la, pool.as_ref()) {
+                Some(fabdem::Tile::InPlace(src)) => Some(in_place(src)?),
+                Some(fabdem::Tile::Stored(p)) => match sample_file(&p, &lo, &la, pool.as_ref()) {
                     Ok(v) => Some(v),
                     // The stored copy is damaged: taken again (once).
                     Err(_) => match fabdem::stored(fetch, store, zname, tname, true)? {
-                        Some(p) => Some(sample_file(&p, &lo, &la, pool.as_ref())?),
+                        Some(fabdem::Tile::Stored(p)) => Some(sample_file(&p, &lo, &la, pool.as_ref())?),
+                        Some(fabdem::Tile::InPlace(src)) => Some(in_place(src)?),
                         None => None,
                     },
                 },
@@ -585,7 +588,7 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
             // Read in place inside Bristol's zip.
             None => match fabdem::remote(fetch, zname, tname)? {
                 None => None,
-                Some(src) => Some(sample_raster(&Tiff::open(src).with_context(|| format!("FABDEM {tname}"))?, 0, &lo, &la, pool.as_ref()).with_context(|| format!("FABDEM {tname}"))?),
+                Some(src) => Some(in_place(src)?),
             },
         };
         // (None: no tile, the open sea.)

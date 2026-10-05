@@ -3,7 +3,8 @@
 //! ($SCENIC_FABDEM_STORE, the NAS's `sources/fabdem/`) each tile is downloaded once and kept there
 //! as a compressed GeoTIFF (read back and compared before it takes its name), and a tile the zip
 //! doesn't have (open sea) is remembered as `<tile>.none`. Without one, tiles are read in place
-//! inside the zips, by range.
+//! inside the zips, by range; so are those a store this worker can't write (the NAS's read where it
+//! lies, by a browser's task) doesn't have yet.
 
 use crate::fetch::{zip_member, Fetch};
 use crate::geotiff::{key, write_f32, Tiff};
@@ -54,46 +55,80 @@ pub fn remote(fetch: &dyn Fetch, zname: &str, tname: &str) -> Result<Option<Arc<
     zip_member(z, &member(tname)).with_context(|| format!("{url}: its file list can't be read; the unit is tried again later"))
 }
 
+/// A tile from the store: its stored copy, or (a store this worker can't write) the tile read in
+/// place inside Bristol's zip.
+pub enum Tile {
+    Stored(PathBuf),
+    InPlace(Arc<dyn RangeRead>),
+}
+
+/// Whether `e` says the store can't be written here.
+fn read_only(e: &std::io::Error) -> bool {
+    matches!(e.kind(), std::io::ErrorKind::ReadOnlyFilesystem | std::io::ErrorKind::PermissionDenied)
+}
+
 /// Tile `tname` from the store, copied there from Bristol's zip `zname` the first time; None for a
 /// tile the zip doesn't have, remembered as `<tile>.none`. A stored copy that isn't whole, or
-/// (`again`) won't read, is taken again.
-pub fn stored(fetch: &dyn Fetch, store: &Path, zname: &str, tname: &str, again: bool) -> Result<Option<PathBuf>> {
+/// (`again`) won't read, is taken again. A store this worker can't write gives what it has; for the
+/// rest, the tile read in place (and nothing remembered).
+pub fn stored(fetch: &dyn Fetch, store: &Path, zname: &str, tname: &str, again: bool) -> Result<Option<Tile>> {
     let f = store.join(member(tname));
+    let in_place = || -> Result<Option<Tile>> {
+        println!("FABDEM {tname}: the store can't be written here: read in place");
+        Ok(remote(fetch, zname, tname)?.map(Tile::InPlace))
+    };
     if f.exists() {
         if !again && crate::whole::tiff_file_whole(&f) {
-            return Ok(Some(f));
+            return Ok(Some(Tile::Stored(f)));
         }
         println!("FABDEM {tname}: the stored copy {}: taken again", if again { "won’t read" } else { "isn’t whole" });
-        std::fs::remove_file(&f)?;
+        match std::fs::remove_file(&f) {
+            Err(e) if read_only(&e) => return in_place(),
+            r => r?,
+        }
     } else if store.join(format!("{tname}.none")).exists() {
         return Ok(None);
     }
-    std::fs::create_dir_all(store)?;
+    match std::fs::create_dir_all(store) {
+        Err(e) if read_only(&e) => return in_place(),
+        r => r?,
+    }
     let Some(src) = remote(fetch, zname, tname)? else {
-        std::fs::write(store.join(format!("{tname}.none")), b"")?;
+        match std::fs::write(store.join(format!("{tname}.none")), b"") {
+            Err(e) if read_only(&e) => {}
+            r => r?,
+        }
         return Ok(None);
     };
-    // The member whole, in large reads.
-    let len = src.len()?;
-    let mut bytes = Vec::with_capacity(len as usize);
-    while (bytes.len() as u64) < len {
-        let n = (len - bytes.len() as u64).min(8 << 20) as usize;
-        bytes.extend(src.read_at(bytes.len() as u64, n)?);
-    }
-    let t = Tiff::open(Arc::new(bytes)).with_context(|| format!("FABDEM {tname}"))?;
-    let img = t.level(0)?.clone();
-    let data = t.read_window(0, 0, 0, img.width, img.height)?;
-    let gt = t.transform(0)?;
-    let epsg = t.geo_keys().short(key::GEOGRAPHIC_TYPE).unwrap_or(4326);
-    let out = write_f32(img.width, img.height, &data, 512, gt, epsg, t.nodata())?;
     let host = store::sys::hostname().unwrap_or_else(|| "unknown".into());
     let tmp = store.join(format!("{}.{host}.{}.tmp", member(tname), store::sys::pid()));
+    // (The temporary file first: a store this worker can't write is known before the tile is read.)
+    let mut w = match std::fs::File::create(&tmp) {
+        Err(e) if read_only(&e) => {
+            println!("FABDEM {tname}: the store can't be written here: read in place");
+            return Ok(Some(Tile::InPlace(src)));
+        }
+        r => r?,
+    };
     let r = (|| -> Result<()> {
+        // The member whole, in large reads.
+        let len = src.len()?;
+        let mut bytes = Vec::with_capacity(len as usize);
+        while (bytes.len() as u64) < len {
+            let n = (len - bytes.len() as u64).min(8 << 20) as usize;
+            bytes.extend(src.read_at(bytes.len() as u64, n)?);
+        }
+        let t = Tiff::open(Arc::new(bytes)).with_context(|| format!("FABDEM {tname}"))?;
+        let img = t.level(0)?.clone();
+        let data = t.read_window(0, 0, 0, img.width, img.height)?;
+        let gt = t.transform(0)?;
+        let epsg = t.geo_keys().short(key::GEOGRAPHIC_TYPE).unwrap_or(4326);
+        let out = write_f32(img.width, img.height, &data, 512, gt, epsg, t.nodata())?;
         {
             use std::io::Write;
-            let mut w = std::fs::File::create(&tmp)?;
             w.write_all(&out)?;
             w.sync_all()?;
+            drop(w);
         }
         let back = Tiff::open(Arc::new(PlainFile::open(&tmp)?))?;
         let got = back.read_window(0, 0, 0, img.width, img.height)?;
@@ -111,7 +146,7 @@ pub fn stored(fetch: &dyn Fetch, store: &Path, zname: &str, tname: &str, again: 
         std::fs::remove_file(&tmp).ok();
     }
     r?;
-    Ok(Some(f))
+    Ok(Some(Tile::Stored(f)))
 }
 
 #[cfg(test)]

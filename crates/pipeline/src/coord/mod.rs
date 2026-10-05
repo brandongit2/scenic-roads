@@ -267,7 +267,19 @@ pub struct Coordinator {
     port: u16,
     /// This Mac's name: its own jobs' leases are held under it.
     me: String,
+    /// The NAS's project folder while the agent has it, for tasks' reads where the data lies
+    /// (`/work/net/…/nas/…`).
+    root: Arc<Mutex<Option<PathBuf>>>,
 }
+
+/// The data servers whose files a task may read through the coordinator (`/work/net/…/web/…`): the
+/// elevations' (crate::dem) and land cover's (crate::landcover). Nothing else is fetched for a
+/// worker.
+pub const WEB_HOSTS: [&str; 5] = ["data.bris.ac.uk", "cyberjapandata.gsi.go.jp", "canelevation-dem.s3.ca-central-1.amazonaws.com", "prd-tnm.s3.amazonaws.com", "esa-worldcover.s3.eu-central-1.amazonaws.com"];
+
+/// What of the NAS a task may read through the coordinator (`/work/net/…/nas/…`): the sources the
+/// steps read (canopy squares, FABDEM, the tree cover's rasters, raw terrain), Taiwan's DTM.
+pub const NAS_PATHS: [&str; 2] = ["sources/", "inputs/moi-dtm/"];
 
 /// A request for work.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -403,8 +415,9 @@ impl Coordinator {
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
         let job_token = http::random()?;
-        let urls = http::serve(port, http::Ctx { shared: shared.clone(), token: token.clone(), job_token: job_token.clone(), journal: dir.join("journal"), wasm })?;
-        let c = Coordinator { shared, contact: Contact { urls, token }, job_token, port, me: me.to_string() };
+        let root = Arc::new(Mutex::new(None));
+        let urls = http::serve(port, http::Ctx { shared: shared.clone(), token: token.clone(), job_token: job_token.clone(), journal: dir.join("journal"), wasm, root: root.clone(), remote: Default::default() })?;
+        let c = Coordinator { shared, contact: Contact { urls, token }, job_token, port, me: me.to_string(), root };
         c.write_page();
         Ok(c)
     }
@@ -422,6 +435,11 @@ impl Coordinator {
                 store::sys::set_mode(&f, 0o600).ok();
             }
         }
+    }
+
+    /// The NAS's project folder as the agent has it now (None: away), for tasks' reads.
+    pub fn set_root(&self, root: Option<&Path>) {
+        *self.root.lock().unwrap() = root.map(Path::to_path_buf);
     }
 
     /// Where the hand-offs it took are journaled (a folder per worker), for the agent to merge.
@@ -1155,6 +1173,42 @@ mod http {
         pub job_token: String,
         pub journal: PathBuf,
         pub wasm: Option<PathBuf>,
+        /// The NAS's project folder (Coordinator::set_root), and the data servers' files opened for
+        /// tasks (`net`).
+        pub root: Arc<Mutex<Option<PathBuf>>>,
+        pub remote: Arc<Remote>,
+    }
+
+    /// The data servers' files opened for tasks, kept (the most recent 256), each with the block
+    /// cache crate::fetch keeps for it: a task reads a file a block at a time.
+    #[derive(Default)]
+    pub struct Remote {
+        files: Mutex<std::collections::VecDeque<(String, Option<Arc<dyn store::range::RangeRead>>)>>,
+    }
+
+    impl Remote {
+        /// `url`'s file (None: the server has none), opened once.
+        fn open(&self, url: &str) -> Result<Option<Arc<dyn store::range::RangeRead>>> {
+            if let Some((_, f)) = self.files.lock().unwrap().iter().find(|(u, _)| u == url) {
+                return Ok(f.clone());
+            }
+            use crate::fetch::Fetch;
+            let fetch = crate::fetch::Fetcher::new(None, None, true);
+            // (A small file a server won't read in ranges, a map tile: whole.)
+            let f = match fetch.open(url) {
+                Ok(f) => f,
+                Err(e) => match fetch.get(url) {
+                    Ok(b) => b.map(|b| Arc::new(b) as Arc<dyn store::range::RangeRead>),
+                    Err(_) => return Err(e),
+                },
+            };
+            let mut files = self.files.lock().unwrap();
+            files.push_back((url.to_string(), f.clone()));
+            while files.len() > 256 {
+                files.pop_front();
+            }
+            Ok(f)
+        }
     }
 
     pub use crate::net::{allowed, loopback, random, served_https, urls};
@@ -1182,6 +1236,7 @@ mod http {
             .route("/work/swarm", any(json))
             .route("/work/history", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
+            .route("/work/net/{lease}/{*path}", get(net))
             .route("/work/out/{lease}/{*path}", put(output))
             .route("/work/prog/{name}", get(prog))
             .route("/task/{*rest}", any(json))
@@ -1351,6 +1406,75 @@ mod http {
         match found {
             Some((file, size)) => send_file(&file, "application/octet-stream", Some(size), h.get(header::RANGE).and_then(|v| v.to_str().ok())).await,
             None => error(StatusCode::NOT_FOUND, "not an input of that lease"),
+        }
+    }
+
+    /// What a task reads where it lies (docs/workers.md §3, Read where they lie), for the worker
+    /// holding its lease: `nas/<path>` the build's data on the NAS (under `NAS_PATHS`), `web/<host>/
+    /// <path>` a data server's file (one of `WEB_HOSTS`, over HTTPS). `?probe`: what's there
+    /// ({kind, size}; 404 when nothing is); `?list`: a NAS folder's entries; else its bytes, a range
+    /// at a time.
+    async fn net(State(c): State<Ctx>, Url((lease, path)): Url<(u64, String)>, q: axum::extract::RawQuery, h: HeaderMap) -> Response {
+        if c.shared.lock().unwrap().tasks.by_lease(lease, &worker(&h)).is_none() {
+            return error(StatusCode::GONE, "that lease is gone");
+        }
+        let query = q.0.unwrap_or_default();
+        let range = h.get(header::RANGE).and_then(|v| v.to_str().ok()).map(str::to_string);
+        if let Some(rel) = path.strip_prefix("nas/") {
+            let Some(rel) = task::safe(rel).filter(|r| NAS_PATHS.iter().any(|n| r.to_string_lossy().starts_with(n) || n.trim_end_matches('/') == r.to_string_lossy())) else {
+                return error(StatusCode::FORBIDDEN, "not what a task reads");
+            };
+            let Some(root) = c.root.lock().unwrap().clone() else { return error(StatusCode::SERVICE_UNAVAILABLE, "the NAS isn't here now") };
+            let p = root.join(rel);
+            let meta = match tokio::fs::metadata(&p).await {
+                Ok(m) => m,
+                Err(_) => return error(StatusCode::NOT_FOUND, "nothing there"),
+            };
+            return match query.as_str() {
+                "probe" => Json(if meta.is_dir() { serde_json::json!({ "kind": "dir" }) } else { serde_json::json!({ "kind": "file", "size": meta.len() }) }).into_response(),
+                "list" => {
+                    let mut entries: Vec<(String, &str, u64)> = Vec::new();
+                    if let Ok(rd) = std::fs::read_dir(&p) {
+                        for e in rd.flatten() {
+                            let Ok(m) = e.metadata() else { continue };
+                            entries.push((e.file_name().to_string_lossy().into_owned(), if m.is_dir() { "dir" } else { "file" }, m.len()));
+                        }
+                    }
+                    entries.sort();
+                    Json(serde_json::json!({ "entries": entries })).into_response()
+                }
+                _ => send_file(&p, "application/octet-stream", None, range.as_deref()).await,
+            };
+        }
+        let Some((host, rest)) = path.strip_prefix("web/").and_then(|r| r.split_once('/')) else { return error(StatusCode::NOT_FOUND, "nas/… or web/<host>/…") };
+        if !WEB_HOSTS.contains(&host) {
+            return error(StatusCode::FORBIDDEN, "not a data server a task reads");
+        }
+        let url = format!("https://{host}/{rest}");
+        let remote = c.remote.clone();
+        let read = tokio::task::spawn_blocking(move || -> Result<Response> {
+            let Some(f) = remote.open(&url)? else { return Ok(error(StatusCode::NOT_FOUND, "the server has none")) };
+            let len = f.len().map_err(|e| anyhow::anyhow!("{e}"))?;
+            if query == "probe" {
+                return Ok(Json(serde_json::json!({ "kind": "file", "size": len })).into_response());
+            }
+            let (a, b) = match range.as_deref().and_then(|r| r.strip_prefix("bytes=")).and_then(|r| r.split_once('-')) {
+                Some((a, b)) => (a.parse::<u64>()?, if b.is_empty() { len.saturating_sub(1) } else { b.parse::<u64>()?.min(len.saturating_sub(1)) }),
+                None => (0, len.saturating_sub(1)),
+            };
+            anyhow::ensure!(a <= b && b < len && b - a < 64 << 20, "a range of at most 64 MB in the file");
+            let bytes = f.read_at(a, (b - a + 1) as usize).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let mut resp = (StatusCode::PARTIAL_CONTENT, [(header::CONTENT_TYPE, "application/octet-stream"), (header::CACHE_CONTROL, "no-store")], bytes).into_response();
+            if let Ok(v) = format!("bytes {a}-{b}/{len}").parse() {
+                resp.headers_mut().insert(header::CONTENT_RANGE, v);
+            }
+            Ok(resp)
+        })
+        .await;
+        match read {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => error(StatusCode::BAD_GATEWAY, format!("{e:#}")),
+            Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
         }
     }
 
@@ -1810,6 +1934,65 @@ mod tests {
         assert!(w2.beat(g.lease, None).unwrap(), "the helper's lease lives on");
         assert!(!c2.renew(own, None), "this Mac's own ended with its agent");
         assert_eq!(w2.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/1", "k1")])), ..Default::default() }).unwrap(), client::Handed::Taken);
+    }
+
+    #[test]
+    fn a_task_reads_the_nas_where_it_lies() {
+        let (d, c, w) = start();
+        let (job_root, nas) = (d.path().join("job"), d.path().join("nas"));
+        std::fs::create_dir_all(job_root.join("u")).unwrap();
+        std::fs::write(job_root.join("u/in.bin"), b"input").unwrap();
+        std::fs::create_dir_all(nas.join("sources/canopy")).unwrap();
+        std::fs::create_dir_all(nas.join("state/build")).unwrap();
+        let square: Vec<u8> = (0..3000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(nas.join("sources/canopy/sq.tif"), &square).unwrap();
+        std::fs::write(nas.join("state/build/manifest.json"), b"{}").unwrap();
+        let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
+        let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root: job_root.clone(), inputs: [("u/in.bin".to_string(), 5)].into(), mem_mb: 100 };
+        job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap();
+        let ipad = client::Client::at(w.urls().to_vec(), c.contact.token.clone(), "ipad");
+        let g = ipad.ask(&Ask { worker: "ipad".into(), kind: "web".into(), can: vec!["tail".into()], mem_mb: 1000, cores: 4, ..Default::default() }).unwrap().unwrap();
+        // (A request as the page makes it: its token, who it is, a range.)
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let get = |path: &str, who: &str, range: Option<&str>| -> (u16, Vec<u8>) {
+            use std::io::{Read, Write};
+            let mut s = std::net::TcpStream::connect(&addr).unwrap();
+            let range = range.map(|r| format!("Range: bytes={r}\r\n")).unwrap_or_default();
+            write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {}\r\nX-Worker: {who}\r\n{range}Connection: close\r\n\r\n", c.contact.token).unwrap();
+            let mut b = Vec::new();
+            s.read_to_end(&mut b).unwrap();
+            let end = b.windows(4).position(|x| x == b"\r\n\r\n").unwrap();
+            let head = String::from_utf8_lossy(&b[..end]).to_string();
+            let code: u16 = head.split(' ').nth(1).unwrap().parse().unwrap();
+            let body = b[end + 4..].to_vec();
+            // (Chunked or not: the tests' bodies are small, whole.)
+            let body = if head.to_ascii_lowercase().contains("transfer-encoding: chunked") {
+                let t = String::from_utf8_lossy(&body).to_string();
+                let (n, rest) = t.split_once("\r\n").unwrap();
+                rest.as_bytes()[..usize::from_str_radix(n.trim(), 16).unwrap()].to_vec()
+            } else {
+                body
+            };
+            (code, body)
+        };
+        let base = format!("/work/net/{}", g.lease);
+        // Before the agent says where the NAS is: not there.
+        assert_eq!(get(&format!("{base}/nas/sources/canopy/sq.tif?probe"), "ipad", None).0, 503);
+        c.set_root(Some(&nas));
+        let json = |b: &[u8]| serde_json::from_slice::<serde_json::Value>(b).unwrap();
+        let (code, b) = get(&format!("{base}/nas/sources/canopy/sq.tif?probe"), "ipad", None);
+        assert_eq!((code, json(&b)), (200, serde_json::json!({ "kind": "file", "size": 3000 })));
+        assert_eq!(json(&get(&format!("{base}/nas/sources/canopy?probe"), "ipad", None).1), serde_json::json!({ "kind": "dir" }));
+        assert_eq!(json(&get(&format!("{base}/nas/sources/canopy?list"), "ipad", None).1)["entries"], serde_json::json!([["sq.tif", "file", 3000]]));
+        // A range of it, as a program reads it.
+        let (code, b) = get(&format!("{base}/nas/sources/canopy/sq.tif"), "ipad", Some("1000-1099"));
+        assert_eq!((code, b), (206, square[1000..1100].to_vec()));
+        // Nothing else of the NAS, nothing that isn't there, nothing for another worker, no other server.
+        assert_eq!(get(&format!("{base}/nas/state/build/manifest.json?probe"), "ipad", None).0, 403);
+        assert_eq!(get(&format!("{base}/nas/sources/../state/build/manifest.json"), "ipad", None).0, 403);
+        assert_eq!(get(&format!("{base}/nas/sources/canopy/none.tif?probe"), "ipad", None).0, 404);
+        assert_eq!(get(&format!("{base}/nas/sources/canopy/sq.tif?probe"), "phone", None).0, 410);
+        assert_eq!(get(&format!("{base}/web/example.com/x.tif?probe"), "ipad", None).0, 403);
     }
 
     #[test]
