@@ -147,18 +147,7 @@ impl Out {
             self.checked.clear();
             return Ok(());
         }
-        // The build Mac alone writes the records (docs/plan.md §8, Two Macs): a save from another
-        // Mac (a step run by hand there, not as a helper's job) is refused, rather than let race it.
-        // Its agent's jobs are the build Mac's (SCENIC_BUILD_MAC); one run by hand, by its name.
-        if std::env::var_os("SCENIC_BUILD_MAC").is_none() {
-            let host = crate::agent::cond::host();
-            match std::fs::read_to_string(self.root.join("state/build/writer")) {
-                Ok(w) if w.trim() != host => bail!("{} is the build Mac, which alone writes the build's records; this Mac ({host}) saves only as a helper's job (SCENIC_HANDOFF)", w.trim()),
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e).context("read state/build/writer"),
-            }
-        }
+        check_writer(&self.root)?;
         let lock = BuildLock::take(&self.root)?;
         self.save_held(&lock)
     }
@@ -258,6 +247,23 @@ impl Out {
         }
         self.save()?;
         Ok(ok)
+    }
+}
+
+/// An error unless this Mac writes the build's records (docs/plan.md §8, Two Macs): the build Mac
+/// alone does, so a write from another Mac (a step run by hand there, not as a helper's job) is
+/// refused rather than let race it. Its agent's jobs are the build Mac's (SCENIC_BUILD_MAC); a step
+/// run by hand is, on the Mac `state/build/writer` names (on any, before one is named).
+pub fn check_writer(root: &Path) -> Result<()> {
+    if std::env::var_os("SCENIC_BUILD_MAC").is_some() {
+        return Ok(());
+    }
+    let host = crate::agent::cond::host();
+    match std::fs::read_to_string(root.join("state/build/writer")) {
+        Ok(w) if w.trim() != host => bail!("{} is the build Mac, which alone writes the build's records; this Mac ({host}) saves only as a helper's job (SCENIC_HANDOFF)", w.trim()),
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).context("read state/build/writer"),
     }
 }
 

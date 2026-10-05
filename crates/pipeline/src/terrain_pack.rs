@@ -220,13 +220,14 @@ impl store::range::RangeRead for FileSource<'_> {
 }
 
 /// AWS's raw tiles, kept so each is downloaded once: in the build Mac's cache as they come, then on
-/// the NAS packed, an archive per z6 area (crate::rawpack: packed at the end of the job that fetched
-/// them, or by room-making), each copied here whole the first time one of its tiles is wanted; and
-/// the NAS's loose tiles from before (`sources/aws-terrarium/<z>/<x>/<y>.png`, `.none` for a tile
-/// AWS doesn't have), while they're there. Packs are always made from the same immutable source: processing a
-/// tile twice isn't idempotent, so stored (processed) tiles are never an input. Each copy is written
-/// straight to its name (crate::whole::write_in_place) and checked whole when read: one that isn't
-/// (cut short) is deleted and taken from the next source, the NAS's copy, else AWS.
+/// the NAS packed (crate::rawpack: archives grouped as the terrain is, packed at the end of the job
+/// that fetched them, or by room-making), each archive copied here whole the first time one of its
+/// tiles is wanted; and the NAS's loose tiles from before (`sources/aws-terrarium/<z>/<x>/<y>.png`,
+/// `.none` for a tile AWS doesn't have), while they're there. Packs are always made from the same
+/// immutable source: processing a tile twice isn't idempotent, so stored (processed) tiles are never
+/// an input. Each loose copy is written straight to its name (crate::whole::write_in_place); every
+/// tile is checked whole when read, a loose one or an archive's: one that isn't (cut short) is
+/// passed over (a loose one deleted) and taken from the next source, the NAS's copy, else AWS.
 pub struct RawTiles {
     dir: std::path::PathBuf,
     store: Option<std::path::PathBuf>,
@@ -235,10 +236,12 @@ pub struct RawTiles {
     /// SMB each look or mkdir is a round trip, and those, a tile's few, set a terrain job's pace.
     listed: Mutex<HashMap<(u8, u32), std::sync::Arc<std::collections::HashSet<String>>>>,
     made: Mutex<std::collections::HashSet<std::path::PathBuf>>,
-    /// The store's archives' index (read once), and the areas' archives here, opened as wanted
-    /// (None: the store has none for the area).
-    index: std::sync::OnceLock<Option<crate::rawpack::Index>>,
-    archives: Mutex<HashMap<String, Option<std::sync::Arc<roadcore::archive::Archive>>>>,
+    /// The store's archives' index: read when first wanted (tried again a minute after it can't
+    /// be), and again when an archive it names is gone from the NAS (a job that outlived it).
+    index: Mutex<(Option<std::sync::Arc<crate::rawpack::Index>>, Option<std::time::Instant>)>,
+    /// Each area's archives here, newest first, opened when first wanted: by the area's own lock,
+    /// so copying one from the NAS holds up only the tiles of that area.
+    archives: Mutex<HashMap<String, std::sync::Arc<Mutex<Option<std::sync::Arc<[roadcore::archive::Archive]>>>>>>,
 }
 
 impl RawTiles {
@@ -268,32 +271,79 @@ impl RawTiles {
         Some(c)
     }
 
-    /// A tile from its area's archive: Some(None) when AWS hasn't it, None when the archive (or the
-    /// store) hasn't it. The archive is copied here whole from the NAS the first time.
-    fn archived(&self, z: u8, x: u32, y: u32) -> Option<Option<Vec<u8>>> {
-        let st = self.store.as_ref()?;
-        let area = crate::rawpack::area(z, x, y);
-        let a = {
-            let mut m = self.archives.lock().unwrap();
-            if let Some(a) = m.get(&area) {
-                a.clone()
-            } else {
-                let index = self.index.get_or_init(|| crate::rawpack::Index::load(st).map_err(|e| eprintln!("terrain: the raw tiles' archives: {e:#}")).ok()).as_ref()?;
-                let a = match crate::rawpack::local_archive(&self.dir, st, index, &area) {
-                    Ok(Some(p)) => roadcore::archive::Archive::open(&p).map_err(|e| eprintln!("terrain: {}: {e:#}", p.display())).ok().map(std::sync::Arc::new),
-                    Ok(None) => None,
+    /// The store's archives' index: as read before unless `fresh`; None when it can't be read.
+    fn index(&self, st: &std::path::Path, fresh: bool) -> Option<std::sync::Arc<crate::rawpack::Index>> {
+        let mut s = self.index.lock().unwrap();
+        if let (Some(ix), false) = (&s.0, fresh) {
+            return Some(ix.clone());
+        }
+        if s.1.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
+            return s.0.clone();
+        }
+        match crate::rawpack::Index::load(st) {
+            Ok(ix) => {
+                *s = (Some(std::sync::Arc::new(ix)), None);
+                s.0.clone()
+            }
+            Err(e) => {
+                eprintln!("terrain: the raw tiles' archives: {e:#}");
+                s.1 = Some(std::time::Instant::now());
+                s.0.clone()
+            }
+        }
+    }
+
+    /// An area's archives here, newest first, each copied from the NAS whole the first time (and
+    /// marked used: room-making deletes the least recently used); None when one can't be (not
+    /// remembered: the NAS may answer next time).
+    fn open_area(&self, st: &std::path::Path, area: &str) -> Option<std::sync::Arc<[roadcore::archive::Archive]>> {
+        for fresh in [false, true] {
+            let index = self.index(st, fresh)?;
+            let mut v = Vec::new();
+            for p in index.of(area).iter().rev() {
+                let opened = crate::rawpack::local_copy(&self.dir, st, &p.name).and_then(|l| {
+                    std::fs::File::options().append(true).open(&l).and_then(|f| f.set_modified(std::time::SystemTime::now())).ok();
+                    roadcore::archive::Archive::open(&l)
+                });
+                match opened {
+                    Ok(a) => v.push(a),
+                    // (Gone from the NAS: the index read before is out of date.)
+                    Err(e) if !fresh && crate::rawpack::not_found(&e) => break,
                     Err(e) => {
-                        // (Not remembered: the NAS may answer next time.)
                         eprintln!("terrain: the raw tiles of {area}: {e:#}");
                         return None;
                     }
-                };
-                m.insert(area, a.clone());
-                a
+                }
             }
-        }?;
-        let b = a.get(z, x, y)?;
-        Some(if b.is_empty() { None } else { Some(b.to_vec()) })
+            if v.len() == index.of(area).len() {
+                return Some(v.into());
+            }
+        }
+        None
+    }
+
+    /// A tile from its area's archives: Some(None) when AWS hasn't it, None when they (or the
+    /// store) haven't it whole.
+    fn archived(&self, z: u8, x: u32, y: u32) -> Option<Option<Vec<u8>>> {
+        let st = self.store.as_ref()?;
+        let area = crate::rawpack::area(z, x, y);
+        let cell = self.archives.lock().unwrap().entry(area.clone()).or_default().clone();
+        let list = {
+            let mut c = cell.lock().unwrap();
+            if c.is_none() {
+                *c = Some(self.open_area(st, &area)?);
+            }
+            c.clone()?
+        };
+        for a in list.iter() {
+            match a.get(z, x, y) {
+                Some([]) => return Some(None),
+                Some(b) if crate::whole::png_whole(b) => return Some(Some(b.to_vec())),
+                Some(_) => eprintln!("terrain: {z}/{x}/{y} in an archive of {area} isn't whole: passed over"),
+                None => {}
+            }
+        }
+        None
     }
 
     /// Makes folder `d` (once).
@@ -629,7 +679,7 @@ mod tests {
             std::fs::write(other.join(rel), b).unwrap();
             std::fs::File::options().append(true).open(other.join(rel)).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(120)).unwrap();
         }
-        assert_eq!(crate::rawpack::pack_local(&other, &store, &root).unwrap(), 2);
+        assert_eq!(crate::rawpack::pack_local(&other, &store, &root, true).unwrap(), 2);
         // A fresh cache reads them from their area's archive, copied here whole once: no loose file
         // here or there.
         let local = d.path().join("local");

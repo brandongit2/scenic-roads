@@ -104,6 +104,8 @@ pub struct Archive {
 }
 
 impl Archive {
+    /// The archive at `path`; an error (never a panic later) when it's cut short or garbled: its
+    /// metadata, index and every tile inside it, the index aligned.
     pub fn open(path: &Path) -> Result<Self> {
         let map = crate::mmap(path)?;
         if map.len() < 28 || &map[..8] != MAGIC {
@@ -112,8 +114,16 @@ impl Archive {
         let index_off = u64::from_le_bytes(map[8..16].try_into()?) as usize;
         let count = u64::from_le_bytes(map[16..24].try_into()?) as usize;
         let mlen = u32::from_le_bytes(map[24..28].try_into()?) as usize;
+        let index_end = count.checked_mul(std::mem::size_of::<Entry>()).and_then(|n| n.checked_add(index_off));
+        if 28 + mlen > index_off || index_off % 8 != 0 || index_end.is_none_or(|e| e > map.len()) {
+            bail!("{}: a tile archive cut short or garbled", path.display());
+        }
         let meta_json = String::from_utf8(map[28..28 + mlen].to_vec())?;
-        Ok(Self { map, index_off, count, meta_json })
+        let a = Self { map, index_off, count, meta_json };
+        if a.entries().iter().any(|e| e.offset.checked_add(e.len as u64).is_none_or(|end| e.offset < 28 || end > index_off as u64)) {
+            bail!("{}: a tile archive with a tile outside it", path.display());
+        }
+        Ok(a)
     }
 
     pub fn entries(&self) -> &[Entry] {

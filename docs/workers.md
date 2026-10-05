@@ -76,8 +76,9 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 - **Planned:**
   - **Ranges:** the exact byte ranges a task reads (DEM tiles, canopy strips, pack entries), so only
     those are fetched and sent.
-  - **No listings:** a content-named index per dataset (canopy squares, raw tiles, FABDEM, kept
-    samples), read from one file instead of found by listing or probing.
+  - **No listings:** a content-named index per dataset (canopy squares, FABDEM, kept samples), read
+    from one file instead of found by listing or probing, as the raw terrain tiles' archives are
+    (plan §3, Downloads).
   - **Writes, journaled then committed together:** outputs on the SSD, copied to the NAS whole, and
     applied to the records in groups; `pending.json` on the SSD; small files packed.
   - **Paced by latency:** background reads and writes paced by the latency the NAS shows.

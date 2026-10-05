@@ -24,9 +24,10 @@
 //!   stays here until it reaches the NAS in bulk (copied a tile at a time, with a flush each, small
 //!   files stall the NAS: ~23 a second, and both Macs' processes wait on it meanwhile). One that
 //!   isn't whole itself (cut short, or a temporary file) is deleted without being kept anywhere.
-//! - Raw tiles the NAS lacks are packed onto it first (crate::rawpack: an archive an area, one
-//!   large write each), then go; the copies of its archives here (`aws-terrarium/packs/`) go as the
-//!   copies of the records' files do, each by its own use, without asking it.
+//! - Raw tiles the NAS lacks are packed onto it first (crate::rawpack: an archive of their own for
+//!   each area, one large write each, none kept here), then go; the copies of its archives here
+//!   (`aws-terrarium/packs/`) go as the copies of the records' files do, each by its own use (a
+//!   job marks one used when it opens it), without asking it.
 //!
 //! It ends early when the agent is asked to stop. Nothing else of the cache is deleted here.
 
@@ -179,7 +180,7 @@ fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_spa
     }
     // Raw tiles the NAS lacks, packed onto it first (an archive an area: large writes).
     if let Some(root) = sources.parent() {
-        if let Err(e) = crate::rawpack::pack_local(&cache.join("aws-terrarium"), &sources.join("aws-terrarium"), root) {
+        if let Err(e) = crate::rawpack::pack_local(&cache.join("aws-terrarium"), &sources.join("aws-terrarium"), root, false) {
             eprintln!("room: raw tiles not packed now ({e:#}); they stay");
         }
     }
@@ -369,8 +370,9 @@ mod tests {
         make_room_with(c, nas, a, a, &disk).unwrap();
         // Packed onto the NAS (an archive for their area, named in the index), gone here.
         let index = crate::rawpack::Index::load(&nas.join("aws-terrarium")).unwrap();
-        let name = &index.areas["6-32-21"];
+        let name = &index.of("6-32-21")[0].name;
         assert!(nas.join("aws-terrarium/packs").join(name).exists());
+        assert!(!c.join("aws-terrarium/packs").join(name).exists(), "the disk is short: not kept here");
         assert!(!c.join("aws-terrarium/12/2048/1365.png").exists() && !c.join("aws-terrarium/12/2048/1366.png").exists());
         // The newest waits here: the NAS hasn't it (packed later).
         assert!(c.join("aws-terrarium/12/2049/1365.png").exists());

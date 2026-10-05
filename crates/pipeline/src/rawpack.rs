@@ -1,38 +1,73 @@
-//! AWS's raw terrain tiles on the NAS, packed (docs/plan.md §3, Downloads): an archive per z6 area
-//! (roadcore::archive's RDTILES1: every tile under that z6 tile, zooms 6 and up, and an empty entry
-//! for each one AWS doesn't have), and one more for the tiles above z6 (`low`).
-//! `sources/aws-terrarium/packs/index.json` names each area's archive, content-named
-//! (`<area>.<hash16>.tiles`), so a copy anywhere is right for good. A tile reaches the NAS in its
-//! area's archive, made again with it: one large write, where the NAS takes small files a tile at a
-//! time at ~23 a second and stalls doing it; and what it has is read from one file, not found by
-//! listing its folders.
+//! AWS's raw terrain tiles on the NAS, packed (docs/plan.md §3, Downloads), in archives grouped the
+//! way the terrain's packs are (crate::terrain_pack::build_q), so a job copies the archives of what
+//! it makes and no more: z9–12 by their z6 tile (`6-<x>-<y>`), z3–8 by their z3 tile
+//! (`3-<x>-<y>`), z0–2 together (`root`). Each is roadcore::archive's RDTILES1 (an empty entry for
+//! a tile AWS doesn't have), content-named (`<area>.<hash16>.tiles`) in
+//! `sources/aws-terrarium/packs/`, so a copy anywhere is right for good; `packs/index.json` lists
+//! each area's archives, oldest first.
+//!
+//! New tiles reach the NAS as an archive of their own beside their area's others: one large write
+//! (the NAS takes small files a tile at a time at ~23 a second, and stalls doing it), and nothing
+//! there is written again for them. An area's newest archives are merged into one once together
+//! they're half the size of the one before them: each is then more than twice the size of all
+//! those after it, an area has a few, and a tile is rewritten a few times in all, however it came.
+//!
+//! On the NAS, every archive is named by the index or listed in its `gone`, with when: an archive
+//! is listed before it's put there and taken off once named, and one the index stops naming
+//! (merged) is listed then. A day later, unnamed, it's deleted: so a job that read the index before
+//! stays right, and one cut short putting an archive there leaves nothing behind. Only the build
+//! Mac packs (it alone writes the build's records: crate::out::check_writer), changing the index
+//! under its build lock.
 //!
 //! The build Mac's cache keeps the tiles AWS just gave (`<z>/<x>/<y>.png`, `.none`) until they're
-//! packed, and copies of the archives it reads (`packs/`), each copied whole from the NAS once.
+//! packed, and copies of the archives it reads (`packs/`), each copied whole from the NAS once and
+//! checked against its name.
 
-use anyhow::{bail, Context, Result};
-use roadcore::archive::{tile_key, Archive, Entry, MAGIC};
+use anyhow::{bail, ensure, Context, Result};
+use roadcore::archive::{tile_key, Archive, ArchiveWriter, Entry, MAGIC};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::collections::{BTreeMap, HashSet};
+use std::io::{BufWriter, Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use store::sys::PosIo;
 
 /// The archives' index, under the store.
 pub const INDEX: &str = "packs/index.json";
 
-/// The area a tile is packed in: its z6 tile's (`6-<x>-<y>`), or `low` above z6.
+/// How long an archive stays on the NAS once listed in the index's `gone` (unnamed): a job that
+/// read the index before may still want it.
+const GRACE: u64 = 24 * 3600;
+
+/// What's spooled, and the new archives made from it, before they're put on the NAS and named (two
+/// changes of the index): bounds the disk the NAS's own tiles take here while they're packed.
+const GROUP: u64 = 1 << 30;
+
+const META: &str = r#"{"kind":"aws-terrarium raw tiles"}"#;
+
+/// The area a tile is packed in, as the terrain is: its z6 tile's for z9–12, its z3 tile's for
+/// z3–8, `root` for z0–2.
 pub fn area(z: u8, x: u32, y: u32) -> String {
-    if z < 6 {
-        "low".into()
-    } else {
-        format!("6-{}-{}", x >> (z - 6), y >> (z - 6))
+    match z {
+        9.. => format!("6-{}-{}", x >> (z - 6), y >> (z - 6)),
+        3..=8 => format!("3-{}-{}", x >> (z - 3), y >> (z - 3)),
+        _ => "root".into(),
     }
 }
 
-/// Which archive holds each area's tiles.
+/// An archive the index names: its name and size.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pack {
+    pub name: String,
+    pub bytes: u64,
+}
+
+/// Each area's archives, oldest first; and the archives on the NAS it doesn't name, with when they
+/// were listed (unix seconds): deleted GRACE later.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Index {
-    pub areas: BTreeMap<String, String>,
+    pub areas: BTreeMap<String, Vec<Pack>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub gone: BTreeMap<String, u64>,
 }
 
 impl Index {
@@ -49,224 +84,399 @@ impl Index {
         std::fs::create_dir_all(store.join("packs"))?;
         crate::whole::write(&store.join(INDEX), &serde_json::to_vec_pretty(self)?)
     }
-}
 
-/// An area's archive here (`dir/packs/`), copied whole from the store the first time; None when the
-/// store has none for it.
-pub fn local_archive(dir: &Path, store: &Path, index: &Index, area: &str) -> Result<Option<PathBuf>> {
-    let Some(name) = index.areas.get(area) else { return Ok(None) };
-    let local = dir.join("packs").join(name);
-    if !local.exists() {
-        std::fs::create_dir_all(local.parent().unwrap())?;
-        crate::whole::copy(&store.join("packs").join(name), &local).with_context(|| format!("copy {name} from the NAS"))?;
+    /// An area's archives, oldest first.
+    pub fn of(&self, area: &str) -> &[Pack] {
+        self.areas.get(area).map_or(&[], Vec::as_slice)
     }
-    Ok(Some(local))
+
+    fn names(&self, name: &str) -> bool {
+        self.areas.values().flatten().any(|p| p.name == name)
+    }
 }
 
-/// An area's archive being made: its file, where its next tile goes, and its tiles (key → offset,
-/// length; length 0 for one AWS doesn't have).
-struct Staged {
-    w: BufWriter<std::fs::File>,
-    path: PathBuf,
-    pos: u64,
-    tiles: BTreeMap<u64, (u64, u32)>,
-    /// Tiles its archive didn't have.
-    new: usize,
-    /// The archive it began from (another packer may have made a newer one meanwhile).
-    base: Option<String>,
+/// Archive `name`'s copy here (`dir/packs/`), copied whole from the NAS's `store` the first time and
+/// checked against its name: a copy cut short or changed on the way is never used.
+pub fn local_copy(dir: &Path, store: &Path, name: &str) -> Result<PathBuf> {
+    let local = dir.join("packs").join(name);
+    if local.exists() {
+        return Ok(local);
+    }
+    std::fs::create_dir_all(local.parent().unwrap())?;
+    let part = dir.join("packs").join(own(name, "part"));
+    let r = crate::whole::copy(&store.join("packs").join(name), &part).with_context(|| format!("copy {name} from the NAS")).and_then(|_| {
+        ensure!(named_right(&part, name)?, "{name} on the NAS isn't what its name says");
+        Ok(())
+    });
+    if let Err(e) = r {
+        std::fs::remove_file(&part).ok();
+        return Err(e);
+    }
+    std::fs::rename(&part, &local)?;
+    Ok(local)
 }
 
-/// Makes areas' archives again with new tiles, each with the tiles its archive has already, then
-/// puts them on the NAS and in the index.
+/// Whether the file at `p` holds what archive `name` names (its hash).
+fn named_right(p: &Path, name: &str) -> Result<bool> {
+    let want = name.strip_suffix(".tiles").and_then(|n| n.rsplit('.').next()).unwrap_or("");
+    Ok(store::naming::hash16_file(p)? == want)
+}
+
+/// An archive's entries, read alone (not the whole archive: over SMB, one from the NAS's), and the
+/// file, open.
+fn entries_of(p: &Path) -> Result<(std::fs::File, Vec<Entry>)> {
+    let f = std::fs::File::open(p).with_context(|| format!("open {}", p.display()))?;
+    let mut h = [0u8; 24];
+    f.read_exact_at(&mut h, 0).with_context(|| format!("read {}", p.display()))?;
+    ensure!(&h[..8] == MAGIC, "{}: not a tile archive", p.display());
+    let off = u64::from_le_bytes(h[8..16].try_into()?);
+    let n = u64::from_le_bytes(h[16..24].try_into()?);
+    let size = std::mem::size_of::<Entry>() as u64;
+    let end = n.checked_mul(size).and_then(|b| b.checked_add(off));
+    ensure!(end.is_some_and(|e| e <= f.metadata().map_or(0, |m| m.len())), "{}: its entries run past its end", p.display());
+    let mut b = vec![0u8; (n * size) as usize];
+    f.read_exact_at(&mut b, off).with_context(|| format!("read {}", p.display()))?;
+    Ok((f, b.chunks_exact(size as usize).map(bytemuck::pod_read_unaligned::<Entry>).collect()))
+}
+
+/// Where the run of `list`'s newest archives due merging starts: back from the newest while
+/// together they're at least half the size of the one before. None when none is due.
+fn due(list: &[Pack]) -> Option<usize> {
+    let mut from = list.len().checked_sub(1)?;
+    let mut sum = list[from].bytes;
+    while from > 0 && sum.saturating_mul(2) >= list[from - 1].bytes {
+        from -= 1;
+        sum += list[from].bytes;
+    }
+    (from + 1 < list.len()).then_some(from)
+}
+
+/// Whether `e` is a file not found (an archive gone from the NAS).
+pub fn not_found(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// A name for a file of this process's own, among those of others in a cache (and of other packers
+/// in it).
+fn own(stem: &str, ext: &str) -> String {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!("{stem}.{}-{}.{ext}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
+/// An area's tiles: those its archives have (keys), and the new ones (key → their place in the
+/// spool: offset, length; length 0 for one AWS doesn't have).
+#[derive(Default)]
+struct Area {
+    have: HashSet<u64>,
+    new: BTreeMap<u64, (u64, u32)>,
+}
+
+/// Packs tiles: each area's new ones (those its archives lack) into an archive of their own, put on
+/// the NAS and named in the index, then each area's newest archives merged where due.
 pub struct Packer {
-    /// Where the archives are made (and kept: the local cache's `packs/`).
+    /// The local cache: archives are made in its `packs/`, and stay there when `keep`.
     dir: PathBuf,
     store: PathBuf,
+    root: PathBuf,
+    /// The index as last read.
     index: Index,
-    areas: BTreeMap<String, Staged>,
-    /// Tiles added that the areas' archives didn't have.
+    /// Every new tile's bytes as they come, in one file: each area's archive is written from it at
+    /// the end, its tiles in key order.
+    spool: BufWriter<std::fs::File>,
+    spool_path: PathBuf,
+    pos: u64,
+    areas: BTreeMap<String, Area>,
+    /// The last tile's area, and the areas given new archives.
+    last: Option<String>,
+    touched: std::collections::BTreeSet<String>,
+    /// Tiles added that their areas' archives didn't have.
     pub added: usize,
     /// Whether the archives made stay in `dir/packs` (a job's: read again soon) or go once on the
-    /// NAS (the store's own tiles packed: tens of GB).
+    /// NAS (the NAS's own tiles packed: tens of GB).
     pub keep: bool,
 }
 
 impl Packer {
-    /// Packing into the local cache `dir` (its `packs/`) for the NAS's `store`.
-    pub fn new(dir: &Path, store: &Path) -> Result<Packer> {
+    /// Packing into the local cache `dir` (its `packs/`) for the NAS's `store`, the build's at
+    /// `root`: an error on a Mac that doesn't write its records.
+    pub fn new(dir: &Path, store: &Path, root: &Path) -> Result<Packer> {
+        crate::out::check_writer(root)?;
         let index = Index::load(store)?;
         std::fs::create_dir_all(dir.join("packs"))?;
-        Ok(Packer { dir: dir.to_path_buf(), store: store.to_path_buf(), index, areas: BTreeMap::new(), added: 0, keep: true })
+        let spool_path = dir.join("packs").join(own("packing", "spool"));
+        let f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&spool_path).with_context(|| format!("open {}", spool_path.display()))?;
+        Ok(Packer { dir: dir.to_path_buf(), store: store.to_path_buf(), root: root.to_path_buf(), index, spool: BufWriter::with_capacity(1 << 20, f), spool_path, pos: 0, areas: BTreeMap::new(), last: None, touched: Default::default(), added: 0, keep: true })
     }
 
-    /// Adds a tile (None: AWS doesn't have it); whether it's new to its area's archive.
+    /// Adds a tile (None: AWS doesn't have it); whether it's new to its area's archives. Past an
+    /// area with GROUP spooled, what's spooled goes up first: the disk it takes here stays small,
+    /// and tiles given in area order are packed an area once.
     pub fn add(&mut self, z: u8, x: u32, y: u32, png: Option<&[u8]>) -> Result<bool> {
         let a = area(z, x, y);
+        if self.pos >= GROUP && self.last.as_ref() != Some(&a) {
+            self.flush()?;
+        }
+        self.last = Some(a.clone());
         if !self.areas.contains_key(&a) {
-            let s = self.start(&a)?;
-            self.areas.insert(a.clone(), s);
+            let have = match self.keys(&a) {
+                Ok(h) => h,
+                // (An archive named in the index as read before is gone: that's out of date.)
+                Err(e) if not_found(&e) => {
+                    self.index = Index::load(&self.store)?;
+                    self.keys(&a)?
+                }
+                Err(e) => return Err(e),
+            };
+            self.areas.insert(a.clone(), Area { have, new: BTreeMap::new() });
         }
         let s = self.areas.get_mut(&a).unwrap();
         let key = tile_key(z, x, y);
-        if s.tiles.contains_key(&key) {
+        // (A tile both AWS's and "none", as two files can say: AWS's.)
+        let none_yet = s.new.get(&key).is_some_and(|e| e.1 == 0) && png.is_some();
+        if s.have.contains(&key) || (s.new.contains_key(&key) && !none_yet) {
             return Ok(false);
         }
         let b = png.unwrap_or(&[]);
-        s.w.write_all(b)?;
-        s.tiles.insert(key, (s.pos, b.len() as u32));
-        s.pos += b.len() as u64;
-        s.new += 1;
-        self.added += 1;
+        self.spool.write_all(b)?;
+        s.new.insert(key, (self.pos, b.len() as u32));
+        self.pos += b.len() as u64;
+        if !none_yet {
+            self.added += 1;
+        }
         Ok(true)
     }
 
-    /// An area's archive begun, with the tiles its archive on the NAS has.
-    fn start(&self, area: &str) -> Result<Staged> {
-        // (Tiles as they come, in a file of their own: the archive's written in its order at the end.)
-        let mut s = self.begin(area, self.index.areas.get(area).cloned())?;
-        merge(&mut s, &self.dir, &self.store, &self.index, area)?;
-        Ok(s)
+    /// The tiles `area`'s archives have: from their copies here, else the NAS's (their entries alone).
+    fn keys(&self, area: &str) -> Result<HashSet<u64>> {
+        let mut have = HashSet::new();
+        for p in self.index.of(area) {
+            let local = self.dir.join("packs").join(&p.name);
+            let at = if local.exists() { local } else { self.store.join("packs").join(&p.name) };
+            have.extend(entries_of(&at)?.1.iter().map(|e| e.key));
+        }
+        Ok(have)
     }
 
-    /// Finishes the areas with new tiles. Each archive is written whole, its tiles in key order (the
-    /// same tiles, the same bytes), named by its content and put on the NAS: harmless until the
-    /// index names it, so done without the build's lock. Then, under it (`root`'s), the index is
-    /// read again: an area another packer made anew meanwhile is made again with that archive merged
-    /// in; the index (written whole) names them, and the archives they replace go. The areas packed.
-    pub fn finish(mut self, root: &Path) -> Result<Vec<String>> {
-        let mut ready: Vec<(String, String, Option<String>)> = Vec::new();
-        for (area, s) in std::mem::take(&mut self.areas) {
-            let base = s.base.clone();
-            if let Some(name) = self.put_up(&area, s)? {
-                ready.push((area, name, base));
+    /// Writes each area's new tiles so far into an archive of their own and puts them on the NAS,
+    /// named in the index (GROUP's worth at a time); the spool starts again, empty.
+    pub fn flush(&mut self) -> Result<()> {
+        self.spool.flush()?;
+        let mut pending = Vec::new();
+        for (area, a) in &mut self.areas {
+            if a.new.is_empty() {
+                continue;
+            }
+            let new = std::mem::take(&mut a.new);
+            a.have.extend(new.keys());
+            pending.push((area.clone(), new.into_iter().map(|(k, (o, l))| (k, o, l)).collect::<Vec<_>>()));
+        }
+        let mut group: Vec<(String, Pack)> = Vec::new();
+        for (area, tiles) in pending {
+            let spool = self.spool.get_ref();
+            let pack = self.write(&area, tiles.len(), |i, b| {
+                let (k, o, l) = tiles[i];
+                b.resize(l as usize, 0);
+                spool.read_exact_at(b, o)?;
+                Ok(k)
+            })?;
+            self.touched.insert(area.clone());
+            group.push((area, pack));
+            if group.iter().map(|g| g.1.bytes).sum::<u64>() >= GROUP {
+                self.put_up(std::mem::take(&mut group))?;
             }
         }
-        if ready.is_empty() {
-            return Ok(Vec::new());
+        self.put_up(group)?;
+        self.spool.get_ref().set_len(0)?;
+        self.spool.seek(std::io::SeekFrom::Start(0))?;
+        self.pos = 0;
+        Ok(())
+    }
+
+    /// `flush`, then each area given new archives has its newest merged where due (one that can't
+    /// be now is merged when it next has new tiles). Those areas.
+    pub fn finish(mut self) -> Result<Vec<String>> {
+        self.flush()?;
+        let touched: Vec<String> = std::mem::take(&mut self.touched).into_iter().collect();
+        for area in &touched {
+            if let Err(e) = self.merge_due(area) {
+                eprintln!("rawpack: {area}'s archives not merged now ({e:#})");
+            }
         }
-        let lock = crate::out::BuildLock::take(root)?;
-        let mut index = Index::load(&self.store)?;
-        let (mut done, mut gone, mut made) = (Vec::new(), Vec::new(), Vec::new());
-        for (area, mut name, base) in ready {
-            if index.areas.get(&area) != base.as_ref() {
-                let mut s = self.begin(&area, index.areas.get(&area).cloned())?;
-                merge_file(&mut s, &self.dir.join("packs").join(&name))?;
-                merge(&mut s, &self.dir, &self.store, &index, &area)?;
-                s.new = 1;
-                let ours = name;
-                match self.put_up(&area, s)? {
-                    Some(n) => name = n,
-                    None => continue,
+        Ok(touched)
+    }
+
+    /// An archive of `n` tiles written here, named by its content: `tile(i, b)` puts the i-th's
+    /// bytes (in key order) in `b` and gives its key.
+    fn write(&self, area: &str, n: usize, mut tile: impl FnMut(usize, &mut Vec<u8>) -> Result<u64>) -> Result<Pack> {
+        let part = self.dir.join("packs").join(own(area, "part"));
+        let r = (|| -> Result<()> {
+            let mut w = ArchiveWriter::create(&part, META)?;
+            let mut b = Vec::new();
+            for i in 0..n {
+                let k = tile(i, &mut b)?;
+                w.add((k >> 58) as u8, ((k >> 29) & 0x1fff_ffff) as u32, (k & 0x1fff_ffff) as u32, &b, b.len())?;
+            }
+            w.finish()?;
+            Ok(())
+        })();
+        if let Err(e) = r {
+            std::fs::remove_file(&part).ok();
+            return Err(e);
+        }
+        let name = format!("{area}.{}.tiles", store::naming::hash16_file(&part)?);
+        let bytes = std::fs::metadata(&part)?.len();
+        std::fs::rename(&part, self.dir.join("packs").join(&name))?;
+        Ok(Pack { name, bytes })
+    }
+
+    /// Puts archive `p` (made here) on the NAS, unless it's there whole already.
+    fn put(&self, p: &Pack) -> Result<()> {
+        let nas = self.store.join("packs").join(&p.name);
+        if std::fs::metadata(&nas).map(|m| m.len()).ok() != Some(p.bytes) {
+            std::fs::create_dir_all(nas.parent().unwrap())?;
+            crate::whole::copy(&self.dir.join("packs").join(&p.name), &nas).with_context(|| format!("put {} on the NAS", p.name))?;
+        }
+        Ok(())
+    }
+
+    /// Puts new archives on the NAS and names them in the index: listed in its `gone` first, so one
+    /// cut short there goes later; then each added to its area's archives. The copies here go
+    /// unless kept.
+    fn put_up(&mut self, group: Vec<(String, Pack)>) -> Result<()> {
+        if group.is_empty() {
+            return Ok(());
+        }
+        let now = unix_now();
+        self.commit(|ix| {
+            for (_, p) in &group {
+                if !ix.names(&p.name) {
+                    ix.gone.insert(p.name.clone(), now);
                 }
-                gone.push(ours);
             }
-            made.push(name.clone());
-            if let Some(old) = index.areas.insert(area.clone(), name) {
-                gone.push(old);
+        })?;
+        for (_, p) in &group {
+            self.put(p)?;
+        }
+        self.commit(|ix| {
+            for (area, p) in &group {
+                let l = ix.areas.entry(area.clone()).or_default();
+                if !l.contains(p) {
+                    l.push(p.clone());
+                }
             }
-            done.push(area);
-        }
-        index.save(&self.store)?;
-        drop(lock);
-        // (The archives replaced, here and there: nothing names them now. The ones made stay here
-        // only for a job, which reads them again.)
-        for old in gone {
-            std::fs::remove_file(self.dir.join("packs").join(&old)).ok();
-            std::fs::remove_file(self.store.join("packs").join(&old)).ok();
-        }
+        })?;
         if !self.keep {
-            for n in made {
-                std::fs::remove_file(self.dir.join("packs").join(n)).ok();
+            for (_, p) in &group {
+                std::fs::remove_file(self.dir.join("packs").join(&p.name)).ok();
             }
         }
-        Ok(done)
+        Ok(())
     }
 
-    /// An area's archive begun empty (`base`: the archive in the index it starts from).
-    fn begin(&self, area: &str, base: Option<String>) -> Result<Staged> {
-        let path = self.dir.join("packs").join(format!("{area}.staged"));
-        let f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&path)?;
-        Ok(Staged { w: BufWriter::with_capacity(256 << 10, f), path, pos: 0, tiles: BTreeMap::new(), new: 0, base })
+    /// Merges `area`'s newest archives into one while `due`, each copied here whole first; the
+    /// merged archive is named in their place if they're still there (another packer may have
+    /// merged them first: then it goes, unnamed, and that packer carries on).
+    fn merge_due(&mut self, area: &str) -> Result<()> {
+        while let Some(from) = due(self.index.of(area)) {
+            let run = self.index.of(area)[from..].to_vec();
+            let merged = self.merge(area, &run)?;
+            let now = unix_now();
+            self.commit(|ix| {
+                if !ix.names(&merged.name) {
+                    ix.gone.insert(merged.name.clone(), now);
+                }
+            })?;
+            self.put(&merged)?;
+            let mut named = false;
+            self.commit(|ix| {
+                let l = ix.areas.entry(area.to_string()).or_default();
+                if let Some(i) = l.windows(run.len()).position(|w| w == run.as_slice()) {
+                    l.splice(i..i + run.len(), [merged.clone()]);
+                    for p in &run {
+                        ix.gone.insert(p.name.clone(), now);
+                    }
+                    named = true;
+                }
+            })?;
+            if named {
+                // (One of them may be the merged archive itself: one that held all the others' tiles.)
+                for p in run.iter().filter(|p| p.name != merged.name) {
+                    std::fs::remove_file(self.dir.join("packs").join(&p.name)).ok();
+                }
+            }
+            if !named || !self.keep {
+                std::fs::remove_file(self.dir.join("packs").join(&merged.name)).ok();
+            }
+            if !named {
+                break;
+            }
+        }
+        Ok(())
     }
 
-    /// Writes an area's archive (when it has new tiles) here, named by its content, and puts it on
-    /// the NAS; its name.
-    fn put_up(&self, area: &str, s: Staged) -> Result<Option<String>> {
-        let Staged { w, path: staged, tiles, new, .. } = s;
-        let data = w.into_inner().map_err(|e| e.into_error())?;
-        if new == 0 {
-            std::fs::remove_file(&staged).ok();
-            return Ok(None);
+    /// One archive here of the tiles of `run`'s archives (copied here whole first).
+    fn merge(&self, area: &str, run: &[Pack]) -> Result<Pack> {
+        let archives = run.iter().map(|p| Archive::open(&local_copy(&self.dir, &self.store, &p.name)?)).collect::<Result<Vec<_>>>()?;
+        // (A tile in two: the newer's, the same bytes.)
+        let mut tiles: BTreeMap<u64, (usize, Entry)> = BTreeMap::new();
+        for (i, a) in archives.iter().enumerate() {
+            for e in a.entries() {
+                tiles.insert(e.key, (i, *e));
+            }
         }
-        let path = self.dir.join("packs").join(format!("{area}.part"));
-        let r = write_archive(&data, &tiles, &path);
-        drop(data);
-        std::fs::remove_file(&staged).ok();
-        r?;
-        let name = format!("{area}.{}.tiles", store::naming::hash16_file(&path)?);
-        let local = self.dir.join("packs").join(&name);
-        std::fs::rename(&path, &local)?;
-        let nas = self.store.join("packs").join(&name);
-        std::fs::create_dir_all(nas.parent().unwrap())?;
-        if std::fs::metadata(&nas).map(|m| m.len()).ok() != std::fs::metadata(&local).map(|m| m.len()).ok() {
-            crate::whole::copy(&local, &nas).with_context(|| format!("put {name} on the NAS"))?;
+        let tiles: Vec<(usize, Entry)> = tiles.into_values().collect();
+        self.write(area, tiles.len(), |i, b| {
+            let (a, e) = tiles[i];
+            b.clear();
+            b.extend_from_slice(archives[a].get_entry(&e));
+            Ok(e.key)
+        })
+    }
+
+    /// Changes the index under the build's lock (`root`'s), read again first: another packer may
+    /// have changed it. Archives listed in its `gone` GRACE ago or more, and named by nothing, are
+    /// deleted then (one that can't be stays listed).
+    fn commit(&mut self, f: impl FnOnce(&mut Index)) -> Result<()> {
+        let lock = crate::out::BuildLock::take(&self.root)?;
+        let mut ix = Index::load(&self.store)?;
+        f(&mut ix);
+        let named: HashSet<String> = ix.areas.values().flatten().map(|p| p.name.clone()).collect();
+        let now = unix_now();
+        let mut gone = BTreeMap::new();
+        for (name, at) in std::mem::take(&mut ix.gone) {
+            if named.contains(&name) {
+                continue;
+            }
+            if now < at.saturating_add(GRACE) {
+                gone.insert(name, at);
+                continue;
+            }
+            match std::fs::remove_file(self.store.join("packs").join(&name)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => {
+                    gone.insert(name, at);
+                    continue;
+                }
+            }
+            std::fs::remove_file(self.dir.join("packs").join(&name)).ok();
         }
-        Ok(Some(name))
+        ix.gone = gone;
+        ix.save(&self.store)?;
+        drop(lock);
+        self.index = ix;
+        Ok(())
     }
 }
 
-/// Adds the tiles of the archive at `p` that `s` lacks.
-fn merge_file(s: &mut Staged, p: &Path) -> Result<()> {
-    let a = Archive::open(p)?;
-    for e in a.entries() {
-        if s.tiles.contains_key(&e.key) {
-            continue;
-        }
-        let b = a.get_entry(e);
-        s.w.write_all(b)?;
-        s.tiles.insert(e.key, (s.pos, b.len() as u32));
-        s.pos += b.len() as u64;
+impl Drop for Packer {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.spool_path).ok();
     }
-    Ok(())
-}
-
-/// Adds the tiles of `area`'s archive in `index` that `s` lacks.
-fn merge(s: &mut Staged, dir: &Path, store: &Path, index: &Index, area: &str) -> Result<()> {
-    match local_archive(dir, store, index, area)? {
-        Some(old) => merge_file(s, &old),
-        None => Ok(()),
-    }
-}
-
-/// Writes an archive of `tiles` (key → their offset and length in `data`), in key order, flushed.
-fn write_archive(data: &std::fs::File, tiles: &BTreeMap<u64, (u64, u32)>, path: &Path) -> Result<()> {
-    use store::sys::PosIo;
-    let meta = br#"{"kind":"aws-terrarium raw tiles"}"#;
-    let mut w = BufWriter::with_capacity(4 << 20, std::fs::File::create(path)?);
-    w.write_all(MAGIC)?;
-    w.write_all(&[0u8; 16])?;
-    w.write_all(&(meta.len() as u32).to_le_bytes())?;
-    w.write_all(meta)?;
-    let mut pos = 28 + meta.len() as u64;
-    let mut entries = Vec::with_capacity(tiles.len());
-    let mut b = Vec::new();
-    for (&key, &(offset, len)) in tiles {
-        b.resize(len as usize, 0);
-        data.read_exact_at(&mut b, offset)?;
-        w.write_all(&b)?;
-        entries.push(Entry { key, offset: pos, len, raw_len: len });
-        pos += len as u64;
-    }
-    let pad = (8 - pos % 8) % 8;
-    w.write_all(&vec![0u8; pad as usize])?;
-    let index_off = pos + pad;
-    w.write_all(bytemuck::cast_slice(&entries))?;
-    let mut f = w.into_inner().map_err(|e| e.into_error())?;
-    f.seek(SeekFrom::Start(8))?;
-    f.write_all(&index_off.to_le_bytes())?;
-    f.write_all(&(entries.len() as u64).to_le_bytes())?;
-    f.sync_all()?;
-    Ok(())
 }
 
 /// A tile's place in a cache or store (`<z>/<x>/<y>.png` or `.none`): its zoom, column, row and
@@ -287,9 +497,10 @@ pub fn parse_tile(rel: &str) -> Option<(u8, u32, u32, bool)> {
 }
 
 /// Packs the tiles AWS gave that wait in the local cache `dir` (a minute old at least: a job may
-/// still be writing the newest) into their areas' archives on the NAS's `store`, and deletes them
-/// here once they're there; how many were packed.
-pub fn pack_local(dir: &Path, store: &Path, root: &Path) -> Result<usize> {
+/// still be writing the newest) into archives on the NAS's `store`, and deletes them here once
+/// they're named there; how many were packed. The archives made stay here when `keep` (a job's
+/// tiles, which the next jobs read again), else go (room-making's: the disk is short).
+pub fn pack_local(dir: &Path, store: &Path, root: &Path, keep: bool) -> Result<usize> {
     let mut loose: Vec<(PathBuf, u8, u32, u32, bool)> = Vec::new();
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
     for z in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -310,7 +521,8 @@ pub fn pack_local(dir: &Path, store: &Path, root: &Path) -> Result<usize> {
     if loose.is_empty() {
         return Ok(0);
     }
-    let mut p = Packer::new(dir, store)?;
+    let mut p = Packer::new(dir, store, root)?;
+    p.keep = keep;
     let mut packed = Vec::new();
     for (path, z, x, y, has) in loose {
         let png = if has {
@@ -327,40 +539,68 @@ pub fn pack_local(dir: &Path, store: &Path, root: &Path) -> Result<usize> {
         p.add(z, x, y, png.as_deref())?;
         packed.push(path);
     }
-    let areas = p.finish(root)?;
+    let added = p.added;
+    let areas = p.finish()?;
     for path in &packed {
         std::fs::remove_file(path).ok();
     }
     if !areas.is_empty() {
-        eprintln!("rawpack: {} tiles packed into {} area archive{} on the NAS", packed.len(), areas.len(), if areas.len() == 1 { "" } else { "s" });
+        eprintln!("rawpack: {added} tiles packed onto the NAS ({} area{})", areas.len(), if areas.len() == 1 { "" } else { "s" });
     }
     Ok(packed.len())
 }
 
+/// What `pack_tar` packed: the files in the stream; the tiles in them, those new to their archives,
+/// and those left out (not whole PNGs: taken again from AWS when needed); and the other files.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Packed {
+    pub files: usize,
+    pub tiles: usize,
+    pub added: usize,
+    pub broken: usize,
+    pub other: usize,
+}
+
 /// Packs the tiles of a tar stream (the NAS's own, sent by `tar` over SSH: tools/nas/raw-pack.sh)
-/// into their areas' archives (made in `dir`, gone from it once on the NAS); how many tiles it held,
-/// and how many were new.
-pub fn pack_tar(input: impl Read, dir: &Path, store: &Path, root: &Path) -> Result<(usize, usize)> {
-    let mut p = Packer::new(dir, store)?;
+/// into archives made in `dir` (gone from it once on the NAS). `expect`: the files listed for it,
+/// an error after when it held fewer (those packed are named; a run again packs the rest).
+pub fn pack_tar(input: impl Read, dir: &Path, store: &Path, root: &Path, expect: Option<usize>) -> Result<Packed> {
+    let mut p = Packer::new(dir, store, root)?;
     p.keep = false;
-    let mut n = 0;
+    let mut r = Packed::default();
     for entry in Tar::new(input) {
         let (name, data) = entry?;
-        let Some((z, x, y, has)) = parse_tile(&name) else { continue };
+        r.files += 1;
+        let Some((z, x, y, has)) = parse_tile(&name) else {
+            r.other += 1;
+            continue;
+        };
         if has && !crate::whole::png_whole(&data) {
-            eprintln!("rawpack: {name} on the NAS isn't whole: left out (taken again from AWS when needed)");
+            eprintln!("rawpack: {name} on the NAS isn't whole: left out");
+            r.broken += 1;
             continue;
         }
         p.add(z, x, y, has.then_some(&data[..]))?;
-        n += 1;
-        if n % 20_000 == 0 {
-            eprintln!("rawpack: {n} tiles read");
+        r.tiles += 1;
+        if r.tiles % 20_000 == 0 {
+            eprintln!("rawpack: {} tiles read", r.tiles);
         }
     }
-    let added = p.added;
-    let areas = p.finish(root)?;
-    eprintln!("rawpack: {n} tiles, {added} new to their archives, in {} area archives", areas.len());
-    Ok((n, added))
+    r.added = p.added;
+    let areas = p.finish()?;
+    eprintln!("rawpack: {} tiles, {} new to their archives ({} areas), {} left out, {} other files", r.tiles, r.added, areas.len(), r.broken, r.other);
+    if let Some(n) = expect {
+        ensure!(r.files == n, "the stream held {} of the {n} files listed: those packed are named; run it again for the rest", r.files);
+    }
+    Ok(r)
+}
+
+/// Paths of tiles (`./<z>/<x>/<y>.png`, a line each), in their areas' order, for a tar stream that
+/// `pack_tar` then packs an area once; lines that aren't tiles, after.
+pub fn order(paths: &str) -> String {
+    let mut v: Vec<(Option<String>, &str)> = paths.lines().filter(|l| !l.is_empty()).map(|l| (parse_tile(l).map(|(z, x, y, _)| area(z, x, y)), l)).collect();
+    v.sort_by(|a, b| (a.0.is_none(), &a.0, a.1).cmp(&(b.0.is_none(), &b.0, b.1)));
+    v.into_iter().map(|(_, l)| format!("{l}\n")).collect()
 }
 
 /// The regular files of a tar stream (ustar, with GNU long names): (name, bytes).
@@ -384,21 +624,24 @@ impl<R: Read> Iterator for Tar<R> {
             if self.done {
                 return None;
             }
+            // (The stream ends with a block of zeros: one cut short before it is an error, not the
+            // end, so a pack never takes part of one for the whole.)
             let mut h = [0u8; 512];
             if let Err(e) = self.r.read_exact(&mut h) {
                 self.done = true;
-                return if e.kind() == std::io::ErrorKind::UnexpectedEof { None } else { Some(Err(e.into())) };
+                return Some(Err(anyhow::Error::from(e).context("the tar stream ended before its end")));
             }
             if h.iter().all(|&b| b == 0) {
                 self.done = true;
                 return None;
             }
             let field = |a: usize, b: usize| String::from_utf8_lossy(&h[a..b]).trim_end_matches('\0').to_string();
-            let size = match u64::from_str_radix(field(124, 136).trim(), 8) {
-                Ok(s) => s,
-                Err(_) => {
+            let sum: u64 = h.iter().enumerate().map(|(i, &b)| if (148..156).contains(&i) { 32 } else { b as u64 }).sum();
+            let size = match (u64::from_str_radix(field(124, 136).trim(), 8), u64::from_str_radix(field(148, 156).trim_matches(|c| c == ' ' || c == '\0'), 8)) {
+                (Ok(s), Ok(c)) if c == sum && s <= 1 << 30 => s,
+                _ => {
                     self.done = true;
-                    return Some(Err(anyhow::anyhow!("a tar header with no size")));
+                    return Some(Err(anyhow::anyhow!("a garbled tar header (its size or checksum)")));
                 }
             };
             let mut data = vec![0u8; size as usize];
@@ -419,7 +662,7 @@ impl<R: Read> Iterator for Tar<R> {
                 b'0' | 0 => {
                     let name = self.long.take().unwrap_or_else(|| {
                         let (prefix, name) = (field(345, 500), field(0, 100));
-                        if &h[257..262] == b"ustar" && !prefix.is_empty() { format!("{prefix}/{name}") } else { name }
+                        if &h[257..263] == b"ustar\0" && !prefix.is_empty() { format!("{prefix}/{name}") } else { name }
                     });
                     return Some(Ok((name, data)));
                 }
@@ -432,8 +675,55 @@ impl<R: Read> Iterator for Tar<R> {
     }
 }
 
+/// What `check` found.
+#[derive(Debug, Default)]
+pub struct Checked {
+    pub archives: usize,
+    pub tiles: usize,
+    /// Archives that aren't what their names say, or can't be read.
+    pub bad: Vec<String>,
+    /// Tiles matched against the NAS's loose copies, and those that differ.
+    pub sampled: usize,
+    pub differ: Vec<String>,
+}
+
+/// Checks the NAS's archives: each the index names, read whole and matched against its name; and
+/// one tile in `every` of each, matched against the NAS's loose copy while that's there (0: none).
+pub fn check(store: &Path, every: usize) -> Result<Checked> {
+    let index = Index::load(store)?;
+    let mut c = Checked::default();
+    for p in index.areas.values().flatten() {
+        c.archives += 1;
+        let at = store.join("packs").join(&p.name);
+        match named_right(&at, &p.name).and_then(|ok| Ok((ok, entries_of(&at)?))) {
+            Ok((true, (f, entries))) => {
+                c.tiles += entries.len();
+                for e in entries.iter().step_by(every.max(1)).take(if every == 0 { 0 } else { usize::MAX }) {
+                    let (z, x, y) = ((e.key >> 58) as u8, ((e.key >> 29) & 0x1fff_ffff) as u32, (e.key & 0x1fff_ffff) as u32);
+                    let mut b = vec![0u8; e.len as usize];
+                    f.read_exact_at(&mut b, e.offset)?;
+                    let loose = if b.is_empty() { store.join(format!("{z}/{x}/{y}.none")) } else { store.join(format!("{z}/{x}/{y}.png")) };
+                    match std::fs::read(&loose) {
+                        Ok(l) => {
+                            c.sampled += 1;
+                            if l != b {
+                                c.differ.push(format!("{z}/{x}/{y} in {}", p.name));
+                            }
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(e).with_context(|| format!("read {}", loose.display())),
+                    }
+                }
+            }
+            Ok((false, _)) => c.bad.push(format!("{}: not what its name says", p.name)),
+            Err(e) => c.bad.push(format!("{}: {e:#}", p.name)),
+        }
+    }
+    Ok(c)
+}
+
 /// An error unless `p` is an archive of raw tiles (for checks).
-pub fn check(p: &Path) -> Result<usize> {
+pub fn check_archive(p: &Path) -> Result<usize> {
     let a = Archive::open(p)?;
     if !a.meta_json.contains("raw tiles") {
         bail!("{}: not an archive of raw tiles", p.display());
@@ -449,102 +739,329 @@ mod tests {
         crate::whole::testfiles::png()
     }
 
+    /// A NAS (its store) and a cache, with the build's folder.
+    fn nas(d: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let (root, dir) = (d.join("nas"), d.join("cache"));
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        (root.join("sources/aws-terrarium"), dir, root)
+    }
+
+    /// A tile AWS gave, waiting in a cache for `age` seconds.
+    fn put(dir: &Path, rel: &str, b: &[u8], age: u64) {
+        let p = dir.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, b).unwrap();
+        std::fs::File::options().append(true).open(&p).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(age)).unwrap();
+    }
+
+    fn names(store: &Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(store.join("packs")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".tiles")).collect();
+        v.sort();
+        v
+    }
+
     #[test]
     fn tiles_go_up_packed_by_area_and_come_back() {
         let d = tempfile::tempdir().unwrap();
-        let (root, dir) = (d.path().join("nas"), d.path().join("cache"));
-        let store = root.join("sources/aws-terrarium");
-        std::fs::create_dir_all(&store).unwrap();
-        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let (store, dir, root) = nas(d.path());
         // Tiles AWS gave, waiting here (a minute old), one it hasn't, and one too new to pack.
-        let put = |rel: &str, b: &[u8], age: u64| {
-            let p = dir.join(rel);
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-            std::fs::write(&p, b).unwrap();
-            std::fs::File::options().append(true).open(&p).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(age)).unwrap();
-        };
-        put("12/2048/1365.png", &png(), 120);
-        put("12/2049/1365.none", b"", 120);
-        put("8/128/85.png", &png(), 120);
-        put("3/4/2.png", &png(), 120);
-        put("12/2050/1366.png", &png(), 1);
-        assert_eq!(pack_local(&dir, &store, &root).unwrap(), 4);
+        put(&dir, "12/2048/1365.png", &png(), 120);
+        put(&dir, "12/2049/1365.none", b"", 120);
+        put(&dir, "8/128/85.png", &png(), 120);
+        put(&dir, "2/1/1.png", &png(), 120);
+        put(&dir, "12/2050/1366.png", &png(), 1);
+        assert_eq!(pack_local(&dir, &store, &root, true).unwrap(), 4);
         let index = Index::load(&store).unwrap();
-        // 12/2048/1365 and 8/128/85 are under z6 tile 32/21; 3/4/2 is above z6.
-        assert_eq!(index.areas.keys().collect::<Vec<_>>(), ["6-32-21", "low"]);
-        for name in index.areas.values() {
-            assert!(store.join("packs").join(name).exists() && dir.join("packs").join(name).exists());
+        // 12/2048/1365 is under z6 tile 32/21; 8/128/85 under z3 tile 4/2; 2/1/1 above z3.
+        assert_eq!(index.areas.keys().collect::<Vec<_>>(), ["3-4-2", "6-32-21", "root"]);
+        assert!(index.gone.is_empty(), "named, so off the list");
+        for p in index.areas.values().flatten() {
+            assert!(store.join("packs").join(&p.name).exists() && dir.join("packs").join(&p.name).exists());
+            assert_eq!(std::fs::metadata(store.join("packs").join(&p.name)).unwrap().len(), p.bytes);
         }
         assert!(!dir.join("12/2048/1365.png").exists() && dir.join("12/2050/1366.png").exists(), "packed tiles go; the newest waits");
-        let a = Archive::open(&dir.join("packs").join(&index.areas["6-32-21"])).unwrap();
+        let a = Archive::open(&dir.join("packs").join(&index.of("6-32-21")[0].name)).unwrap();
         assert_eq!(a.get(12, 2048, 1365), Some(&png()[..]));
         assert_eq!(a.get(12, 2049, 1365), Some(&[][..]), "AWS hasn't it: an empty entry");
-        assert_eq!(a.get(8, 128, 85), Some(&png()[..]));
         assert_eq!(a.get(12, 2050, 1366), None);
-        // Later tiles: the area's archive made again with them, the old one gone, the index on.
-        put("12/2050/1366.png", &png(), 120);
-        let first = index.areas["6-32-21"].clone();
-        assert_eq!(pack_local(&dir, &store, &root).unwrap(), 1);
-        let index2 = Index::load(&store).unwrap();
-        assert_ne!(index2.areas["6-32-21"], first);
-        assert_eq!(index2.areas["low"], index.areas["low"]);
-        assert!(!store.join("packs").join(&first).exists());
-        let a = Archive::open(&store.join("packs").join(&index2.areas["6-32-21"])).unwrap();
-        assert_eq!(a.entries().len(), 4);
-        assert_eq!(a.get(12, 2050, 1366), Some(&png()[..]));
-        assert_eq!(check(&store.join("packs").join(&index2.areas["6-32-21"])).unwrap(), 4);
-        // A fresh cache takes an area's archive from the NAS whole.
+        assert_eq!(check_archive(&dir.join("packs").join(&index.of("3-4-2")[0].name)).unwrap(), 1);
+        // A fresh cache takes an archive from the NAS whole, checked against its name.
         let fresh = d.path().join("fresh");
-        let local = local_archive(&fresh, &store, &index2, "6-32-21").unwrap().unwrap();
-        assert_eq!(std::fs::read(&local).unwrap(), std::fs::read(store.join("packs").join(&index2.areas["6-32-21"])).unwrap());
-        assert!(local_archive(&fresh, &store, &index2, "6-1-1").unwrap().is_none());
+        let name = &index.of("6-32-21")[0].name;
+        let local = local_copy(&fresh, &store, name).unwrap();
+        assert_eq!(std::fs::read(&local).unwrap(), std::fs::read(store.join("packs").join(name)).unwrap());
+        // One changed on the NAS is refused, and leaves nothing here.
+        let other = &index.of("root")[0].name;
+        let mut b = std::fs::read(store.join("packs").join(other)).unwrap();
+        *b.last_mut().unwrap() ^= 1;
+        std::fs::write(store.join("packs").join(other), b).unwrap();
+        assert!(local_copy(&fresh, &store, other).is_err());
+        assert_eq!(std::fs::read_dir(fresh.join("packs")).unwrap().count(), 1);
+        // The check finds it too, and matches the rest against the loose tiles they came from.
+        let c = check(&store, 1).unwrap();
+        assert_eq!((c.archives, c.tiles, c.bad.len()), (3, 3, 1));
+    }
+
+    #[test]
+    fn new_tiles_go_up_beside_an_areas_archive_and_merge_when_due() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, dir, root) = nas(d.path());
+        // An area's archive of twenty tiles.
+        for y in 0..20 {
+            put(&dir, &format!("12/2048/{}.png", 1344 + y), &png(), 120);
+        }
+        pack_local(&dir, &store, &root, true).unwrap();
+        let base = Index::load(&store).unwrap().of("6-32-21").to_vec();
+        assert_eq!(base.len(), 1);
+        // One more: an archive of its own beside it; the first isn't written again.
+        put(&dir, "12/2049/1344.png", &png(), 120);
+        pack_local(&dir, &store, &root, true).unwrap();
+        let two = Index::load(&store).unwrap().of("6-32-21").to_vec();
+        assert_eq!((two.len(), &two[0]), (2, &base[0]));
+        assert!(two[1].bytes * 2 < two[0].bytes);
+        // Ten more: together with the one before, half the first's size and more: all merged.
+        for y in 0..10 {
+            put(&dir, &format!("12/2050/{}.png", 1344 + y), &png(), 120);
+        }
+        pack_local(&dir, &store, &root, true).unwrap();
+        let index = Index::load(&store).unwrap();
+        let merged = index.of("6-32-21");
+        assert_eq!(merged.len(), 1);
+        let a = Archive::open(&store.join("packs").join(&merged[0].name)).unwrap();
+        assert_eq!(a.entries().len(), 31);
+        // The merged archives stay on the NAS a day (listed as gone), not here.
+        assert_eq!(index.gone.len(), 3);
+        for p in two.iter() {
+            assert!(index.gone.contains_key(&p.name) && store.join("packs").join(&p.name).exists() && !dir.join("packs").join(&p.name).exists());
+        }
+        assert_eq!(names(&store).len(), 4);
+    }
+
+    #[test]
+    fn archives_listed_as_gone_go_a_day_later() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, dir, root) = nas(d.path());
+        put(&dir, "12/2048/1365.png", &png(), 120);
+        pack_local(&dir, &store, &root, true).unwrap();
+        let named = Index::load(&store).unwrap().of("6-32-21")[0].name.clone();
+        // One listed two days ago, one an hour ago, and the named one listed too (put up again).
+        std::fs::create_dir_all(store.join("packs")).unwrap();
+        for n in ["6-1-1.0000000000000001.tiles", "6-1-1.0000000000000002.tiles"] {
+            std::fs::write(store.join("packs").join(n), b"x").unwrap();
+        }
+        let mut ix = Index::load(&store).unwrap();
+        let now = unix_now();
+        ix.gone.insert("6-1-1.0000000000000001.tiles".into(), now - 2 * 86400);
+        ix.gone.insert("6-1-1.0000000000000002.tiles".into(), now - 3600);
+        ix.gone.insert(named.clone(), now - 2 * 86400);
+        ix.save(&store).unwrap();
+        let mut p = Packer::new(&dir, &store, &root).unwrap();
+        p.commit(|_| {}).unwrap();
+        let ix = Index::load(&store).unwrap();
+        assert_eq!(ix.gone.keys().collect::<Vec<_>>(), ["6-1-1.0000000000000002.tiles"]);
+        assert!(!store.join("packs/6-1-1.0000000000000001.tiles").exists());
+        assert!(store.join("packs").join(&named).exists(), "named: kept");
+    }
+
+    #[test]
+    fn a_merge_another_packer_made_first_is_dropped() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, dir, root) = nas(d.path());
+        // Two archives for an area, due merging: the second put up and named, not yet merged.
+        put(&dir, "12/2048/1365.png", &png(), 120);
+        pack_local(&dir, &store, &root, true).unwrap();
+        let mut p = Packer::new(&dir, &store, &root).unwrap();
+        p.add(12, 2048, 1366, Some(&png())).unwrap();
+        p.flush().unwrap();
+        assert_eq!(p.index.of("6-32-21").len(), 2);
+        // Another packer merges them meanwhile.
+        let mut q = Packer::new(&d.path().join("other"), &store, &root).unwrap();
+        q.merge_due("6-32-21").unwrap();
+        let theirs = Index::load(&store).unwrap().of("6-32-21").to_vec();
+        assert_eq!(theirs.len(), 1);
+        // This one, from the index it read before, merges them too: the same tiles make the same
+        // archive, found named already; nothing is lost, doubled or deleted.
+        p.merge_due("6-32-21").unwrap();
+        let ix = Index::load(&store).unwrap();
+        assert_eq!(ix.of("6-32-21"), &theirs[..]);
+        assert!(!ix.gone.contains_key(&theirs[0].name) && store.join("packs").join(&theirs[0].name).exists());
+        assert_eq!(ix.gone.len(), 2);
+    }
+
+    #[test]
+    fn an_archive_made_again_under_a_name_the_index_has_is_never_deleted() {
+        // A job's tiles (taken from the NAS's loose ones) packed while the NAS's own are: the job's
+        // archive holds a part of the other's, so merging the two makes the other's again, by name.
+        let d = tempfile::tempdir().unwrap();
+        let (store, _, root) = nas(d.path());
+        let mut all = Packer::new(&d.path().join("a"), &store, &root).unwrap();
+        let mut part = Packer::new(&d.path().join("b"), &store, &root).unwrap();
+        for y in 0..4 {
+            all.add(12, 2048, 1344 + y, Some(&png())).unwrap();
+        }
+        part.add(12, 2048, 1344, Some(&png())).unwrap();
+        part.finish().unwrap();
+        let first = Index::load(&store).unwrap().of("6-32-21").to_vec();
+        all.finish().unwrap();
+        let ix = Index::load(&store).unwrap();
+        for p in ix.areas.values().flatten() {
+            assert!(store.join("packs").join(&p.name).exists(), "{} is named and there", p.name);
+        }
+        let l = ix.of("6-32-21");
+        assert_eq!((l.len(), Archive::open(&store.join("packs").join(&l[0].name)).unwrap().entries().len()), (1, 4));
+        assert_eq!(ix.gone.keys().collect::<Vec<_>>(), [&first[0].name]);
+    }
+
+    #[test]
+    fn a_job_that_outlived_its_index_reads_on() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, dir, root) = nas(d.path());
+        put(&dir, "12/2048/1365.png", &png(), 120);
+        pack_local(&dir, &store, &root, true).unwrap();
+        // A packer begun now, and the area's archive merged away (and gone from the NAS, as a day
+        // later) before it reaches the area: it reads the index again.
+        let mut p = Packer::new(&d.path().join("late"), &store, &root).unwrap();
+        put(&dir, "12/2048/1366.png", &png(), 120);
+        pack_local(&dir, &store, &root, true).unwrap();
+        let ix = Index::load(&store).unwrap();
+        for n in ix.gone.keys() {
+            std::fs::remove_file(store.join("packs").join(n)).unwrap();
+        }
+        assert!(!p.add(12, 2048, 1365, Some(&png())).unwrap(), "known, from the index read again");
+        assert!(p.add(12, 2048, 1367, Some(&png())).unwrap());
+        p.finish().unwrap();
+        let l = Index::load(&store).unwrap().of("6-32-21").to_vec();
+        let tiles: usize = l.iter().map(|p| Archive::open(&store.join("packs").join(&p.name)).unwrap().entries().len()).sum();
+        assert_eq!(tiles, 3);
     }
 
     #[test]
     fn a_tar_stream_of_the_nas_tiles_is_packed() {
         let d = tempfile::tempdir().unwrap();
-        let (root, dir) = (d.path().join("nas"), d.path().join("cache"));
-        let store = root.join("sources/aws-terrarium");
-        std::fs::create_dir_all(root.join("state/build")).unwrap();
-        // A tar of a store's loose tiles, as `tar -cf -` makes it (with an odd file among them).
+        let (store, dir, root) = nas(d.path());
+        // A tar of a store's loose tiles, as `tar -cf -` makes it (with an odd file among them, and
+        // one cut short).
         let src = d.path().join("src");
-        for (rel, b) in [("12/2048/1365.png", png()), ("12/2049/1365.none", Vec::new()), ("9/256/170.png", png()), ("notes.txt", b"x".to_vec())] {
+        let half = png()[..png().len() / 2].to_vec();
+        for (rel, b) in [("12/2048/1365.png", png()), ("12/2049/1365.none", Vec::new()), ("9/256/170.png", png()), ("9/256/171.png", half), ("notes.txt", b"x".to_vec())] {
             std::fs::create_dir_all(src.join(rel).parent().unwrap()).unwrap();
             std::fs::write(src.join(rel), b).unwrap();
         }
-        let tar = std::process::Command::new("tar").env("COPYFILE_DISABLE", "1").args(["--no-mac-metadata", "--no-xattrs", "-cf", "-", "-C"]).arg(&src).args(["./12/2048/1365.png", "./12/2049/1365.none", "./9/256/170.png", "./notes.txt"]).output().unwrap();
+        let tar = std::process::Command::new("tar").env("COPYFILE_DISABLE", "1").args(["--no-mac-metadata", "--no-xattrs", "-cf", "-", "-C"]).arg(&src).args(["./12/2048/1365.png", "./12/2049/1365.none", "./9/256/170.png", "./9/256/171.png", "./notes.txt"]).output().unwrap();
         assert!(tar.status.success());
-        let (n, added) = pack_tar(&tar.stdout[..], &dir, &store, &root).unwrap();
-        assert_eq!((n, added), (3, 3));
+        // Cut short (in a header, in a tile): an error, nothing named.
+        for cut in [512 * 3 + 100, 700] {
+            assert!(pack_tar(&tar.stdout[..cut], &dir, &store, &root, None).is_err());
+        }
+        assert!(!store.join(INDEX).exists());
+        // A garbled header: an error too.
+        let mut bad = tar.stdout.clone();
+        bad[0] ^= 1;
+        assert!(pack_tar(&bad[..], &dir, &store, &root, None).is_err());
+        assert_eq!(pack_tar(&tar.stdout[..], &dir, &store, &root, Some(5)).unwrap(), Packed { files: 5, tiles: 3, added: 3, broken: 1, other: 1 });
         let index = Index::load(&store).unwrap();
         assert_eq!(index.areas.keys().collect::<Vec<_>>(), ["6-32-21"]);
-        let a = Archive::open(&store.join("packs").join(&index.areas["6-32-21"])).unwrap();
+        let a = Archive::open(&store.join("packs").join(&index.of("6-32-21")[0].name)).unwrap();
         assert_eq!(a.get(9, 256, 170), Some(&png()[..]));
         assert_eq!(a.get(12, 2049, 1365), Some(&[][..]));
-        // Again: nothing new, the same archive.
-        let (n, added) = pack_tar(&tar.stdout[..], &dir, &store, &root).unwrap();
-        assert_eq!((n, added), (3, 0));
+        assert_eq!(std::fs::read_dir(dir.join("packs")).unwrap().count(), 0, "nothing kept here");
+        // Again: nothing new, the same archive; fewer files than listed: an error.
+        assert_eq!(pack_tar(&tar.stdout[..], &dir, &store, &root, None).unwrap(), Packed { files: 5, tiles: 3, added: 0, broken: 1, other: 1 });
+        assert!(pack_tar(&tar.stdout[..], &dir, &store, &root, Some(6)).is_err());
         assert_eq!(Index::load(&store).unwrap(), index);
+        // The archives match the loose tiles (here, the source folder as the store).
+        std::fs::create_dir_all(src.join("packs")).unwrap();
+        for e in std::fs::read_dir(store.join("packs")).unwrap() {
+            let e = e.unwrap();
+            std::fs::copy(e.path(), src.join("packs").join(e.file_name())).unwrap();
+        }
+        let c = check(&src, 1).unwrap();
+        assert_eq!((c.archives, c.tiles, c.sampled, c.bad.len(), c.differ.len()), (1, 3, 3, 0, 0));
     }
 
     #[test]
     fn two_packers_at_once_keep_each_others_tiles() {
         let d = tempfile::tempdir().unwrap();
-        let root = d.path().join("nas");
-        let store = root.join("sources/aws-terrarium");
-        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let (store, _, root) = nas(d.path());
         // Both begin from the same (empty) index for one area; each adds its own tile.
-        let mut a = Packer::new(&d.path().join("a"), &store).unwrap();
-        let mut b = Packer::new(&d.path().join("b"), &store).unwrap();
+        let mut a = Packer::new(&d.path().join("a"), &store, &root).unwrap();
+        let mut b = Packer::new(&d.path().join("b"), &store, &root).unwrap();
         a.add(12, 2048, 1365, Some(&png())).unwrap();
         b.add(12, 2048, 1366, Some(&png())).unwrap();
-        a.finish(&root).unwrap();
-        b.finish(&root).unwrap();
-        // The second made its archive again with the first's merged in: both tiles there.
+        a.finish().unwrap();
+        b.finish().unwrap();
+        // The second's archive went up beside the first's, and the two merged: both tiles there.
         let index = Index::load(&store).unwrap();
-        let arch = Archive::open(&store.join("packs").join(&index.areas["6-32-21"])).unwrap();
+        let l = index.of("6-32-21");
+        assert_eq!(l.len(), 1);
+        let arch = Archive::open(&store.join("packs").join(&l[0].name)).unwrap();
         assert!(arch.get(12, 2048, 1365).is_some() && arch.get(12, 2048, 1366).is_some());
-        assert_eq!(std::fs::read_dir(store.join("packs")).unwrap().count(), 2, "the area's archive and the index, nothing left over");
+        // On the NAS, each archive is named or listed as gone.
+        for n in names(&store) {
+            assert!(index.names(&n) || index.gone.contains_key(&n), "{n}");
+        }
+    }
+
+    #[test]
+    fn the_newest_archives_merge_while_they_add_up() {
+        let l = |s: &[u64]| s.iter().map(|&b| Pack { name: String::new(), bytes: b }).collect::<Vec<_>>();
+        assert_eq!(due(&l(&[])), None);
+        assert_eq!(due(&l(&[100])), None);
+        assert_eq!(due(&l(&[100, 10])), None);
+        assert_eq!(due(&l(&[100, 10, 10])), Some(1));
+        assert_eq!(due(&l(&[100, 60])), Some(0));
+        assert_eq!(due(&l(&[100, 40, 20])), Some(0));
+        assert_eq!(due(&l(&[100, 30, 10])), None);
+    }
+
+    #[test]
+    fn only_the_build_mac_packs() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, dir, root) = nas(d.path());
+        std::fs::write(root.join("state/build/writer"), "another-mac\n").unwrap();
+        put(&dir, "12/2048/1365.png", &png(), 120);
+        if std::env::var_os("SCENIC_BUILD_MAC").is_none() {
+            assert!(pack_local(&dir, &store, &root, true).is_err());
+            assert!(dir.join("12/2048/1365.png").exists() && !store.exists());
+        }
+    }
+
+    #[test]
+    fn a_stream_in_area_order() {
+        let list = "./12/2049/1365.png\n./notes.txt\n./8/128/85.png\n./12/2048/1365.png\n./2/1/1.png\n";
+        assert_eq!(order(list), "./8/128/85.png\n./12/2048/1365.png\n./12/2049/1365.png\n./2/1/1.png\n./notes.txt\n");
+    }
+
+    #[test]
+    fn a_big_pack_goes_up_as_it_goes() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, dir, root) = nas(d.path());
+        let mut p = Packer::new(&dir, &store, &root).unwrap();
+        p.add(12, 2048, 1365, Some(&png())).unwrap();
+        p.add(12, 2048, 1366, Some(&png())).unwrap();
+        assert!(!store.join(INDEX).exists());
+        // (Past the area with the spool full, as if: what's spooled goes up, the spool starts again.)
+        p.pos = GROUP;
+        p.add(12, 4096, 1365, Some(&png())).unwrap();
+        assert_eq!(Index::load(&store).unwrap().areas.keys().collect::<Vec<_>>(), ["6-32-21"]);
+        assert_eq!(p.pos, png().len() as u64);
+        p.finish().unwrap();
+        assert_eq!(Index::load(&store).unwrap().areas.len(), 2);
+    }
+
+    #[test]
+    fn a_tile_both_aws_and_none_is_aws() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, dir, root) = nas(d.path());
+        let mut p = Packer::new(&dir, &store, &root).unwrap();
+        assert!(p.add(12, 2048, 1365, None).unwrap());
+        assert!(p.add(12, 2048, 1365, Some(&png())).unwrap());
+        assert!(!p.add(12, 2048, 1365, None).unwrap());
+        assert_eq!(p.added, 1);
+        p.finish().unwrap();
+        let ix = Index::load(&store).unwrap();
+        let a = Archive::open(&store.join("packs").join(&ix.of("6-32-21")[0].name)).unwrap();
+        assert_eq!(a.get(12, 2048, 1365), Some(&png()[..]));
     }
 
     #[test]
@@ -554,6 +1071,10 @@ mod tests {
         assert_eq!(parse_tile("8/1/2.png.tmp"), None);
         assert_eq!(parse_tile("@eaDir/8/1/2.png"), None);
         assert_eq!(area(12, 690, 949), "6-10-14");
-        assert_eq!(area(5, 3, 3), "low");
+        assert_eq!(area(9, 5, 7), "6-0-0");
+        assert_eq!(area(8, 128, 85), "3-4-2");
+        assert_eq!(area(3, 4, 2), "3-4-2");
+        assert_eq!(area(5, 3, 3), "3-0-0");
+        assert_eq!(area(2, 1, 1), "root");
     }
 }

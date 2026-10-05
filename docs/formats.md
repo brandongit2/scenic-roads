@@ -289,13 +289,14 @@ agent/                  status.json (the build Mac's; a helper writes helper.jso
                         job.json, agent.lock, logs/, cache/
 agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and aws-terrarium/
                         (copies of the NAS's sources/canopy/; the raw tiles as fetched, until packed
-                        onto the NAS, and aws-terrarium/packs/: copies of its areas' archives), base/.
+                        onto the NAS, and aws-terrarium/packs/: copies of its archives, a job's own
+                        new ones among them, each marked used when a job opens it), base/.
                         When a job starts with too little free, raw tiles waiting are packed onto
-                        the NAS, then chm10/ and aws-terrarium/ lose files: chm10/'s and the
-                        archives' idle an hour first, then the rest least recently used first (loose
-                        raw tiles a folder at a time; empty markers kept; a canopy file the NAS
-                        lacks copied there first, or kept), until the Mac has a sixth more free than
-                        the job needs (the OSM pass: what it needs).
+                        the NAS (not kept here), then chm10/ and aws-terrarium/ lose files: chm10/'s
+                        and the archives' idle an hour first, then the rest least recently used
+                        first (loose raw tiles a folder at a time; empty markers kept; a canopy file
+                        the NAS lacks copied there first, or kept), until the Mac has a sixth more
+                        free than the job needs (the OSM pass: what it needs).
 ```
 
 `~/Library/Preferences/nsmb.conf` gets `[FISHANDCHIPS:PERSONAL]` and
@@ -386,10 +387,13 @@ class, id) within a tile. The client sends the id with the clicked point.
   the downloads kept so each is made once, as the source has them (temporary names end
   `.<host>.<pid>.tmp`): `sources/canopy/meta_chm_lat=<top>.0_lon=<left>.0_{median,p95,cover5m}.tif` (Meta's canopy
   squares; an empty file for one Meta doesn't have), `sources/aws-terrarium/packs/<area>.<hash16>.tiles`
-  (AWS's raw terrain tiles, an RDTILES1 archive (roadcore::archive) per z6 area, `6-<x>-<y>`, of every
-  tile under it from zoom 6 down, the PNG as AWS sent it, an empty entry for one AWS doesn't have;
-  `low` for zooms 0–5; tiles in key order; meta `{"kind":"aws-terrarium raw tiles"}`) with
-  `packs/index.json` (`{areas: {area: archive}}`), and the loose tiles from before,
+  (AWS's raw terrain tiles in RDTILES1 archives (roadcore::archive), grouped as the terrain's packs
+  are: an area is a z6 tile, `6-<x>-<y>`, for zooms 9–12, a z3 tile, `3-<x>-<y>`, for zooms 3–8,
+  and `root` for zooms 0–2; the PNG as AWS sent it, an empty entry for one AWS doesn't have; tiles
+  in key order; meta `{"kind":"aws-terrarium raw tiles"}`; named by the BLAKE3 of the file) with
+  `packs/index.json` (`{areas: {area: [{name, bytes}, …]}, gone: {name: unix seconds}}`: each
+  area's archives, oldest first, read newest first; `gone`, the archives on the NAS it doesn't
+  name, deleted a day after the time beside them), and the loose tiles from before,
   `sources/aws-terrarium/<z>/<x>/<y>.png` (`<y>.none` for one AWS doesn't have), `sources/fabdem/<tile>_FABDEM_V1-2.tif`
   (FABDEM's 1° tiles out of Bristol's zips, deflate GeoTIFF; `<tile>.none` for one a zip doesn't
   have);

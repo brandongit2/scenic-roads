@@ -244,14 +244,23 @@ record changes back through the build Mac's coordinator, which journals them for
   build's among them), AWS's raw terrain tiles, FABDEM's 1° tiles, the leaf-type sources, Overture's
   buildings. A Mac's copy is a cache filled from the NAS.
   - **AWS's raw terrain tiles** are kept in the build Mac's cache as they come, then packed onto
-    the NAS: an archive per z6 area (`pipeline::rawpack`, `sources/aws-terrarium/packs/`, named in
-    its `index.json`), made again with the new tiles at the end of the job that fetched them, or by
-    room-making before it deletes them: one large write an area, where a tile at a time, the NAS's
-    small-file writes run at ~23 a second and stall it. A tile is read from its area's archive,
-    copied to the Mac whole once. The NAS's loose tiles from before (`<z>/<x>/<y>.png`, copied in
-    bulk by `tools/nas/raw-tiles.sh`) are read while they're there, and packed by
-    `tools/nas/raw-pack.sh` (one tar stream over SSH from the NAS itself); none is fetched twice,
-    only a lost disk before the packing would.
+    the NAS (`pipeline::rawpack`, `sources/aws-terrarium/packs/`, listed in its `index.json`) in
+    archives grouped as the terrain's packs are: z9–12 by z6 tile, z3–8 by z3 tile, z0–2
+    together, so a job copies the archives of what it makes and no more. A job's new tiles go up
+    at its end (or by room-making, before it deletes them) as an archive of their own beside their
+    area's others, one large write, where a tile at a time the NAS's small-file writes run at ~23
+    a second and stall it; nothing there is written again for them. An area's newest archives are
+    merged into one once together they're half the size of the one before them, so an area has a
+    few and a tile is rewritten a few times in all. On the NAS every archive is named by the index
+    or listed in its `gone`, with when: listed before it's put there (taken off once named) and
+    when the index stops naming it, and deleted a day later, so a job that read the index before
+    stays right and one cut short leaves nothing behind. Only the build Mac packs, changing the
+    index under its build lock. A tile is read from its area's archives, each copied to the Mac
+    whole once and checked against its name; an archive gone from the NAS has the index read
+    again. The NAS's loose tiles from before (`<z>/<x>/<y>.png`, copied in bulk by
+    `tools/nas/raw-tiles.sh`) are read while they're there, and packed by `tools/nas/raw-pack.sh`
+    (the NAS's own tar over SSH, the tiles in their areas' order, so an area is packed once with a
+    GB or two of the Mac's disk); none is fetched twice, only a lost disk before the packing would.
   - **Whole:** each copy is written by a temporary name (the Mac's and the process's), flushed, and
     its length checked before the rename (raw terrain tiles excepted: written straight to their
     names), and checked whole when read (`pipeline::whole`,
@@ -932,9 +941,11 @@ are no request files.
     time; a file the listing lacks asked about once more; a folder whose listing fails or is cut
     short, as a busy NAS's are, keeps its raw tiles that run and has each canopy square asked
     about alone). A canopy square the NAS lacks, or has at another size, is copied there first
-    (whole and flushed), or kept; a raw tile it lacks is kept, to reach it in bulk (a tile at a time
-    with a flush each, small files stall the NAS and every process waiting on it). A file that isn't
-    whole itself (cut short, or temporary) is deleted, not kept.
+    (whole and flushed), or kept; raw tiles it lacks are packed onto it first (an archive an area,
+    none kept here), or kept (a tile at a time with a flush each, small files stall the NAS and
+    every process waiting on it). The copies of its archives go each by its own use (a job marks
+    one used when it opens it). A file that isn't whole itself (cut short, or temporary) is
+    deleted, not kept.
   - The OSM pass counts those copies as room.
 - **Units run in map order** (by 10° square, then tile), so what one unit fetches serves the next.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours. The orphans of a crashed

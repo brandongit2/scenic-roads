@@ -165,16 +165,32 @@ fn main() -> Result<()> {
         "roadunits" => roadunits(&mut out)?,
         "terrain" => terrain_step(&mut out, &args)?,
         "raw-pack" => {
-            // raw-pack [--from-tar -] [--cache dir]: AWS's raw tiles packed into the NAS's archives
-            // (pipeline::rawpack): a tar stream of them on stdin (the NAS's own: tools/nas/raw-pack.sh),
-            // else the cache's tiles waiting to go.
+            // raw-pack [--from-tar - [--expect n]] [--cache dir] | --order | --check [--every n]:
+            // AWS's raw tiles packed into the NAS's archives (pipeline::rawpack): a tar stream of
+            // them on stdin (the NAS's own: tools/nas/raw-pack.sh), the files listed for it `n`,
+            // else the cache's tiles waiting to go. --order: tile paths on stdin, put in their
+            // areas' order on stdout (for the stream). --check: every archive the index names read
+            // and matched against its name, and one tile in n of each against the NAS's loose copy.
             let store = out.root().join("sources/aws-terrarium");
             let dir = PathBuf::from(opt(&args, "--cache").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
-            if opt(&args, "--from-tar").as_deref() == Some("-") {
-                let (n, added) = pipeline::rawpack::pack_tar(std::io::stdin().lock(), &dir, &store, out.root())?;
-                eprintln!("raw-pack: {n} tiles in the stream, {added} new to their archives");
+            if args.iter().any(|a| a == "--order") {
+                let mut paths = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut paths)?;
+                print!("{}", pipeline::rawpack::order(&paths));
+            } else if args.iter().any(|a| a == "--check") {
+                let every = opt(&args, "--every").map(|n| n.parse()).transpose()?.unwrap_or(0);
+                let c = pipeline::rawpack::check(&store, every)?;
+                eprintln!("raw-pack: {} archives of {} tiles; {} bad; {} tiles matched against the loose ones, {} differ", c.archives, c.tiles, c.bad.len(), c.sampled, c.differ.len());
+                for b in c.bad.iter().chain(&c.differ) {
+                    eprintln!("  {b}");
+                }
+                anyhow::ensure!(c.bad.is_empty() && c.differ.is_empty(), "the archives aren't right");
+            } else if opt(&args, "--from-tar").as_deref() == Some("-") {
+                let expect = opt(&args, "--expect").map(|n| n.parse()).transpose()?;
+                let r = pipeline::rawpack::pack_tar(std::io::stdin().lock(), &dir, &store, out.root(), expect)?;
+                eprintln!("raw-pack: {} files in the stream, {} tiles, {} new to their archives", r.files, r.tiles, r.added);
             } else {
-                let n = pipeline::rawpack::pack_local(&dir, &store, out.root())?;
+                let n = pipeline::rawpack::pack_local(&dir, &store, out.root(), true)?;
                 eprintln!("raw-pack: {n} tiles from {} packed", dir.display());
             }
         }
@@ -869,19 +885,18 @@ fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
         .collect()
 }
 
-/// AWS's raw terrain tiles: the local cache `dir`, where each is downloaded once, filled from the
-/// NAS's store (`sources/aws-terrarium/`, copied there in bulk: tools/nas/raw-tiles.sh) when it
-/// lacks one.
-/// The raw tiles a job fetched, packed onto the NAS (pipeline::rawpack): one large write an area,
-/// not a file a tile. Not packed now (the NAS away), they wait in the cache for the next job or
-/// room-making.
+/// The raw tiles a job fetched, packed onto the NAS (pipeline::rawpack): an archive of their own an
+/// area, not a file a tile; kept here too, for the next jobs. Not packed now (the NAS away), they
+/// wait in the cache for the next job or room-making.
 fn pack_raw(out: &Out, dir: &Path) {
-    match pipeline::rawpack::pack_local(dir, &out.root().join("sources/aws-terrarium"), out.root()) {
+    match pipeline::rawpack::pack_local(dir, &out.root().join("sources/aws-terrarium"), out.root(), true) {
         Ok(_) => {}
         Err(e) => eprintln!("raw tiles: not packed now ({e:#}); they wait in the cache"),
     }
 }
 
+/// AWS's raw terrain tiles: the local cache `dir`, where each is downloaded once, filled from the
+/// NAS's archives (`sources/aws-terrarium/packs/`) when it lacks one.
 fn raw_tiles(out: &Out, dir: &Path) -> pipeline::terrain_pack::RawTiles {
     pipeline::terrain_pack::RawTiles::with_store(dir, &out.root().join("sources/aws-terrarium"))
 }
