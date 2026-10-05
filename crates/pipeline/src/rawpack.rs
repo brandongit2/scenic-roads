@@ -43,6 +43,9 @@ const GRACE: u64 = 24 * 3600;
 /// changes of the index): bounds the disk the NAS's own tiles take here while they're packed.
 const GROUP: u64 = 1 << 30;
 
+/// How far a long step is, for the status: `(what, done, total)` ("tiles", "areas" …).
+pub type Progress<'a> = &'a (dyn Fn(&str, u64, u64) + Sync);
+
 const META: &str = r#"{"kind":"aws-terrarium raw tiles"}"#;
 
 /// The area a tile is packed in, as the terrain is: its z6 tile's for z9–12, its z3 tile's for
@@ -345,14 +348,22 @@ impl Packer {
 
     /// `flush`, then each area given new archives has its newest merged where due (one that can't
     /// be now is merged when it next has new tiles). Those areas.
-    pub fn finish(mut self) -> Result<Vec<String>> {
+    pub fn finish(self) -> Result<Vec<String>> {
+        self.finish_with(&|_, _, _| {})
+    }
+
+    /// `finish`, saying how far it is: `progress("areas", done, total)` as each area given new
+    /// archives has had its merging done.
+    pub fn finish_with(mut self, progress: Progress) -> Result<Vec<String>> {
         self.flush()?;
         let touched: Vec<String> = std::mem::take(&mut self.touched).into_iter().collect();
-        for area in &touched {
+        for (i, area) in touched.iter().enumerate() {
+            progress("areas", i as u64, touched.len() as u64);
             if let Err(e) = self.merge_due(area) {
                 eprintln!("rawpack: {area}'s archives not merged now ({e:#})");
             }
         }
+        progress("areas", touched.len() as u64, touched.len() as u64);
         if !touched.is_empty() {
             self.sweep();
         }
@@ -595,6 +606,12 @@ pub fn parse_tile(rel: &str) -> Option<(u8, u32, u32, bool)> {
 /// they're named there; how many were packed. The archives made stay here when `keep` (a job's
 /// tiles, which the next jobs read again), else go (room-making's: the disk is short).
 pub fn pack_local(dir: &Path, store: &Path, root: &Path, keep: bool) -> Result<usize> {
+    pack_local_with(dir, store, root, keep, &|_, _, _| {})
+}
+
+/// `pack_local`, saying how far it is (`progress`): the tiles packed of those waiting ("tiles",
+/// their archives put on the NAS as they go), then the areas whose archives were merged ("areas").
+pub fn pack_local_with(dir: &Path, store: &Path, root: &Path, keep: bool, progress: Progress) -> Result<usize> {
     let mut loose: Vec<(PathBuf, u8, u32, u32, bool)> = Vec::new();
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
     for z in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -618,7 +635,14 @@ pub fn pack_local(dir: &Path, store: &Path, root: &Path, keep: bool) -> Result<u
     let mut p = Packer::new(dir, store, root)?;
     p.keep = keep;
     let mut packed = Vec::new();
-    for (path, z, x, y, has) in loose {
+    let (n, mut said) = (loose.len() as u64, std::time::Instant::now());
+    progress("tiles", 0, n);
+    for (i, (path, z, x, y, has)) in loose.into_iter().enumerate() {
+        // (Every few seconds: a flush puts a GB of archives on the NAS in between.)
+        if said.elapsed() >= std::time::Duration::from_secs(5) {
+            progress("tiles", i as u64, n);
+            said = std::time::Instant::now();
+        }
         let png = if has {
             let b = std::fs::read(&path)?;
             if !crate::whole::png_whole(&b) {
@@ -633,8 +657,11 @@ pub fn pack_local(dir: &Path, store: &Path, root: &Path, keep: bool) -> Result<u
         p.add(z, x, y, png.as_deref())?;
         packed.push(path);
     }
+    // (The last tiles' archives put on the NAS before they count as packed.)
+    p.flush()?;
+    progress("tiles", n, n);
     let added = p.added;
-    let areas = p.finish()?;
+    let areas = p.finish_with(progress)?;
     for path in &packed {
         std::fs::remove_file(path).ok();
     }
@@ -937,6 +964,25 @@ mod tests {
         // The check finds it too, and matches the rest against the loose tiles they came from.
         let c = check(&store, 1).unwrap();
         assert_eq!((c.archives, c.tiles, c.bad.len()), (3, 3, 1));
+    }
+
+    #[test]
+    fn packing_says_how_far_it_is() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, dir, root) = nas(d.path());
+        put(&dir, "12/2048/1365.png", &png(), 120);
+        put(&dir, "12/2049/1365.none", b"", 120);
+        put(&dir, "8/128/85.png", &png(), 120);
+        let said = std::sync::Mutex::new(Vec::new());
+        assert_eq!(pack_local_with(&dir, &store, &root, true, &|w, d, t| said.lock().unwrap().push((w.to_string(), d, t))).unwrap(), 3);
+        let said = said.into_inner().unwrap();
+        // The tiles from none to all, then the two areas' merging, done.
+        assert_eq!(said.first(), Some(&("tiles".to_string(), 0, 3)));
+        assert!(said.contains(&("tiles".to_string(), 3, 3)));
+        assert_eq!(said.last(), Some(&("areas".to_string(), 2, 2)));
+        assert!(said.iter().all(|(_, d, t)| d <= t));
+        let at = |w: &str| said.iter().position(|s| s.0 == w).unwrap();
+        assert!(at("tiles") < at("areas"));
     }
 
     #[test]

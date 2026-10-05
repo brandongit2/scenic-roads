@@ -905,7 +905,13 @@ fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
 /// area, not a file a tile; kept here too, for the next jobs. Not packed now (the NAS away), they
 /// wait in the cache for the next job or room-making.
 fn pack_raw(out: &Out, dir: &Path) {
-    match pipeline::rawpack::pack_local(dir, &out.root().join("sources/aws-terrarium"), out.root(), true) {
+    pack_raw_with(out, dir, &|_, _, _| {})
+}
+
+/// `pack_raw`, saying how far it is (`progress` lines for the status: the tiles packed, then the
+/// areas whose archives were merged).
+fn pack_raw_with(out: &Out, dir: &Path, progress: pipeline::rawpack::Progress) {
+    match pipeline::rawpack::pack_local_with(dir, &out.root().join("sources/aws-terrarium"), out.root(), true, progress) {
         Ok(_) => {}
         Err(e) => eprintln!("raw tiles: not packed now ({e:#}); they wait in the cache"),
     }
@@ -2140,14 +2146,32 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
     // AWS's raw tiles: this Mac's cache, filled from the NAS's store.
     let raw_dir = PathBuf::from(opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
     let raw = raw_tiles(out, &raw_dir);
-    let n = by_q.len() as u64;
+    // Its parts, for the status (agent::jobs::part): each area's tiles fetched and shaded, then its
+    // terrain written; then the raw tiles AWS gave packed onto the NAS. Each says how far it is.
+    let n = by_q.len();
+    let of = |k: usize| if n > 1 { format!(" ({} of {n})", k + 1) } else { String::new() };
+    let mut names: Vec<String> = Vec::new();
+    for k in 0..n {
+        names.push(format!("Fetching and shading the area's terrain tiles{}", of(k)));
+        names.push(format!("Writing the area's terrain to the NAS{}", of(k)));
+    }
+    names.push("Packing the new raw tiles onto the NAS".into());
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let say = |what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what);
     for (k, (q, list)) in by_q.into_iter().enumerate() {
-        pipeline::agent::jobs::report(k as u64, n, "parts");
+        pipeline::agent::jobs::part(2 * k, &names);
+        let writing = std::sync::atomic::AtomicBool::new(false);
         let t = std::time::Instant::now();
-        let r = pipeline::terrain_pack::build_q(out, &raw, q, &list, &cov)?;
+        let r = pipeline::terrain_pack::build_q_with(out, &raw, q, &list, &cov, &|what, done, total| {
+            if what == "packs" && !writing.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                pipeline::agent::jobs::part(2 * k + 1, &names);
+            }
+            say(what, done, total);
+        })?;
         eprintln!("terrain 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
     }
-    pack_raw(out, &raw_dir);
+    pipeline::agent::jobs::part(names.len() - 1, &names);
+    pack_raw_with(out, &raw_dir, &say);
     Ok(())
 }
 

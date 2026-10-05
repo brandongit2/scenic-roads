@@ -576,7 +576,36 @@ pub struct PackReport {
 /// (z9–12, or coarser at high latitudes), then `q`'s lo pack (z3–8) with them folded in. Always
 /// from AWS's raw tiles (`raw`, cached locally), so the same coverage gives the same bytes.
 pub fn build_q(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], cov: &Coverage) -> anyhow::Result<PackReport> {
+    build_q_with(out, raw, q, ts, cov, &|_, _, _| {})
+}
+
+/// `build_q`, saying how far it is (`progress`): the area's tiles fetched and shaded, every level's
+/// ("tiles", every few seconds), then its packs written ("packs").
+pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], cov: &Coverage, progress: crate::rawpack::Progress) -> anyhow::Result<PackReport> {
     let mut rep = PackReport::default();
+    // Each level's tiles, z12 → z3: z12 → z9 inside each z6 tile, near the coverage, as fine as the
+    // latitude allows; z8 → z3 the whole of q.
+    let mut levels: Vec<(u8, Vec<(u32, u32)>)> = Vec::new();
+    for z in (9..=12u8).rev() {
+        let mut tiles = Vec::new();
+        for &(tx, ty) in ts {
+            let s = 1u32 << (z - 6);
+            for x in tx * s..(tx + 1) * s {
+                for y in ty * s..(ty + 1) * s {
+                    if z <= max_zoom_at(tile_lat(z, y)) && near_coverage(cov, z, x, y, 20.0) {
+                        tiles.push((x, y));
+                    }
+                }
+            }
+        }
+        levels.push((z, tiles));
+    }
+    for z in (3..=8u8).rev() {
+        let s = 1u32 << (z - 3);
+        levels.push((z, (q.0 * s..(q.0 + 1) * s).flat_map(|x| (q.1 * s..(q.1 + 1) * s).map(move |y| (x, y))).collect()));
+    }
+    let total: u64 = levels.iter().map(|(_, t)| t.len() as u64).sum();
+    let processed = std::sync::atomic::AtomicU64::new(0);
     let fetched = std::sync::atomic::AtomicUsize::new(0);
     let missing = std::sync::atomic::AtomicUsize::new(0);
     let repaired = std::sync::atomic::AtomicUsize::new(0);
@@ -596,7 +625,9 @@ pub fn build_q(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], 
         let done: Vec<anyhow::Result<Option<(u32, u32, Vec<u8>, Option<Repaired>, Option<Vec<f32>>)>>> = tiles
             .par_iter()
             .map(|&(x, y)| {
-                let Some(b) = get(z, x, y)? else { return Ok(None) };
+                let got = get(z, x, y);
+                processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(b) = got? else { return Ok(None) };
                 let (b, r, q) = process(b, z, x, y, below, quads);
                 Ok(Some((x, y, b, r, q)))
             })
@@ -616,42 +647,49 @@ pub fn build_q(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], 
         }
         Ok((outs, nb, nq))
     };
-    let mut below: HashMap<(u32, u32), Repaired> = HashMap::new();
-    let mut quads: HashMap<(u32, u32), Vec<f32>> = HashMap::new();
     let mut hi: HashMap<(u32, u32), Vec<(u8, u32, u32, Vec<u8>)>> = HashMap::new();
-    // z12 → z9 inside each z6 tile, near the coverage, as fine as the latitude allows.
-    for z in (9..=12u8).rev() {
-        let mut tiles = Vec::new();
-        for &(tx, ty) in ts {
-            let s = 1u32 << (z - 6);
-            for x in tx * s..(tx + 1) * s {
-                for y in ty * s..(ty + 1) * s {
-                    if z <= max_zoom_at(tile_lat(z, y)) && near_coverage(cov, z, x, y, 20.0) {
-                        tiles.push((x, y));
-                    }
+    let mut lo: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
+    // The levels, each with what the level below made (z8 → z3 fold in the levels above what was
+    // made just before them); the tiles done said every few seconds meanwhile.
+    let finished = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let mut said = std::time::Instant::now();
+            while !finished.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(200));
+                if said.elapsed() >= Duration::from_secs(5) {
+                    progress("tiles", processed.load(std::sync::atomic::Ordering::Relaxed), total);
+                    said = std::time::Instant::now();
                 }
             }
-        }
-        let (outs, nb, nq) = level(z, tiles, &below, &quads)?;
-        for (x, y, b) in outs {
-            hi.entry((x >> (z - 6), y >> (z - 6))).or_default().push((z, x, y, b));
-        }
-        (below, quads) = (nb, nq);
-    }
-    // z8 → z3: the whole of q, the levels above what was just made folded in.
-    let mut lo: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
-    for z in (3..=8u8).rev() {
-        let s = 1u32 << (z - 3);
-        let tiles: Vec<(u32, u32)> = (q.0 * s..(q.0 + 1) * s).flat_map(|x| (q.1 * s..(q.1 + 1) * s).map(move |y| (x, y))).collect();
-        let (outs, nb, nq) = level(z, tiles, &below, &quads)?;
-        lo.extend(outs.into_iter().map(|(x, y, b)| (z, x, y, b)));
-        (below, quads) = (nb, nq);
-    }
+        });
+        let r = (|| -> anyhow::Result<()> {
+            let mut below: HashMap<(u32, u32), Repaired> = HashMap::new();
+            let mut quads: HashMap<(u32, u32), Vec<f32>> = HashMap::new();
+            for (z, tiles) in levels {
+                let (outs, nb, nq) = level(z, tiles, &below, &quads)?;
+                for (x, y, b) in outs {
+                    if z >= 9 {
+                        hi.entry((x >> (z - 6), y >> (z - 6))).or_default().push((z, x, y, b));
+                    } else {
+                        lo.push((z, x, y, b));
+                    }
+                }
+                (below, quads) = (nb, nq);
+            }
+            Ok(())
+        })();
+        finished.store(true, std::sync::atomic::Ordering::Relaxed);
+        r
+    })?;
+    progress("tiles", total, total);
     rep.fetched = fetched.into_inner();
     rep.missing = missing.into_inner();
     rep.repaired = repaired.into_inner();
     // Upload: each z6 tile's hi pack, then q's lo pack.
-    for &(tx, ty) in ts {
+    let packs = ts.len() as u64 + 1;
+    for (i, &(tx, ty)) in ts.iter().enumerate() {
+        progress("packs", i as u64, packs);
         let mut tiles = hi.remove(&(tx, ty)).unwrap_or_default();
         tiles.sort_by_key(|t| (t.0, t.1, t.2));
         rep.hi_tiles += tiles.len();
@@ -661,6 +699,7 @@ pub fn build_q(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], 
         });
         crate::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, tx, ty), &mut it)?;
     }
+    progress("packs", ts.len() as u64, packs);
     lo.sort_by_key(|t| (t.0, t.1, t.2));
     rep.lo_tiles = lo.len();
     let mut it = lo.into_iter().map(|(z, x, y, b)| {
@@ -669,6 +708,7 @@ pub fn build_q(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], 
     });
     crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut it)?;
     out.save()?;
+    progress("packs", packs, packs);
     Ok(rep)
 }
 
@@ -725,6 +765,32 @@ pub fn build_root(out: &mut Out, raw: &RawTiles) -> anyhow::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_build_says_how_far_it_is() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, scratch, local) = (d.path().join("root"), d.path().join("scratch"), d.path().join("local"));
+        // Every tile of 3/1/1 from z8 to z3 known to be missing (no AWS here), and no z6 tiles.
+        for z in 3..=8u8 {
+            let s = 1u32 << (z - 3);
+            for x in s..2 * s {
+                std::fs::create_dir_all(local.join(format!("{z}/{x}"))).unwrap();
+                for y in s..2 * s {
+                    std::fs::write(local.join(format!("{z}/{x}/{y}.none")), b"").unwrap();
+                }
+            }
+        }
+        let raw = RawTiles::with_store(&local, &d.path().join("store"));
+        let cov = Coverage::from_recipes(&[], None, d.path()).unwrap();
+        let mut out = Out::open(&root, &scratch).unwrap();
+        let said = Mutex::new(Vec::new());
+        build_q_with(&mut out, &raw, (1, 1), &[], &cov, &|w, d, t| said.lock().unwrap().push((w.to_string(), d, t))).unwrap();
+        let said = said.into_inner().unwrap();
+        // Every level's tiles (1 + 4 + … + 1024), then the one pack (lo), done; never past a total.
+        assert!(said.contains(&("tiles".to_string(), 1365, 1365)));
+        assert_eq!(said.last(), Some(&("packs".to_string(), 1, 1)));
+        assert!(said.iter().all(|(_, d, t)| d <= t));
+    }
 
     #[test]
     fn raw_tiles_from_the_store() {

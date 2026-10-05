@@ -1053,9 +1053,12 @@ are no request files.
   several parts says them as each begins (`parts: <i> [names]` in its log), and the status lists
   them under the job, done, under way and to come, the progress bar under the one under way
   (heritage's five: getting ready, details, outlines, fame, layers; the items' facts, articles and
-  pageviews; summits, marks, route ends, the heritage sites, rail feeds, rail, labels). A long part says how
-  far it is: the pageview dumps by the bytes streamed, a part's steps one by one; the jobs'
-  Python steps print straight to their logs (unbuffered).
+  pageviews; summits, marks, route ends, the heritage sites, rail feeds, rail, labels; a terrain
+  run's three: its area's tiles fetched and shaded, its terrain written to the NAS, the new raw
+  tiles packed onto the NAS). A long part says how far it is: the pageview dumps by the bytes
+  streamed, a part's steps one by one, a terrain run's tiles (every level's, counted first), packs,
+  then raw tiles packed and areas merged; the jobs' Python steps print straight to their logs
+  (unbuffered).
 
 **Two Macs** (and any other worker: `docs/workers.md`). The build Mac's agent plans; it runs a
 coordinator (`pipeline::coord`, port 8090) from which every other worker asks for work that fits it.
