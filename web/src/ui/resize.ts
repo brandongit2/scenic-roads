@@ -3,6 +3,7 @@
 // and are remembered. Double-click a handle for the default.
 import type { Map as MLMap } from 'maplibre-gl';
 import * as prefs from '../prefs';
+import { onDouble } from './touch';
 
 interface Side {
   key: 'left' | 'right';
@@ -63,7 +64,7 @@ export function installPanelResize(map: MLMap) {
     };
     handle.addEventListener('pointerup', end);
     handle.addEventListener('pointercancel', end);
-    handle.addEventListener('dblclick', () => {
+    onDouble(handle, () => {
       delete saved[s.key];
       prefs.save('ui.panels', saved);
       apply(s, null);
@@ -113,7 +114,7 @@ export function installListsResize(panel: HTMLElement) {
   };
   grip.addEventListener('pointerup', end);
   grip.addEventListener('pointercancel', end);
-  grip.addEventListener('dblclick', () => {
+  onDouble(grip, () => {
     prefs.save('ui.listsH', null);
     root.style.removeProperty('--lists-h');
   });

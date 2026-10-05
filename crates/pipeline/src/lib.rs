@@ -7,6 +7,8 @@ pub mod candidates;
 pub mod chain;
 pub mod climbs;
 pub mod coord;
+#[cfg(not(target_os = "wasi"))]
+pub mod net;
 pub mod coverage;
 pub mod dem;
 pub mod elev;

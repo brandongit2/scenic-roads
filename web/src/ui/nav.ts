@@ -18,14 +18,14 @@ export class NavControls {
     const tilt = (d: number) => cam.orbitBy(0, Math.max(0, Math.min(map.getMaxPitch(), map.getPitch() + d)) - map.getPitch());
     root.append(
       h('div', { class: 'grp' },
-        h('button', { title: 'Tilt up (⌥ + two-finger drag ↕, right-drag, Ctrl-drag)', onclick: () => tilt(15) }, '⤒'),
+        h('button', { class: 'step', title: 'Tilt up (⌥ + two-finger drag ↕, right-drag, Ctrl-drag)', onclick: () => tilt(15) }, '⤒'),
         this.pitchOut,
-        h('button', { title: 'Tilt down', onclick: () => tilt(-15) }, '⤓'),
+        h('button', { class: 'step', title: 'Tilt down', onclick: () => tilt(-15) }, '⤓'),
       ),
       h('div', { class: 'grp' },
-        h('button', { title: 'Rotate left (⌥ + two-finger drag ↔)', onclick: () => cam.orbitBy(-22.5, 0) }, '⟲'),
+        h('button', { class: 'step', title: 'Rotate left (⌥ + two-finger drag ↔)', onclick: () => cam.orbitBy(-22.5, 0) }, '⟲'),
         this.compass,
-        h('button', { title: 'Rotate right', onclick: () => cam.orbitBy(22.5, 0) }, '⟳'),
+        h('button', { class: 'step', title: 'Rotate right', onclick: () => cam.orbitBy(22.5, 0) }, '⟳'),
       ),
       h('div', { class: 'grp' },
         h('button', { title: 'Zoom in', onclick: () => cam.zoomBy(1) }, '+'),

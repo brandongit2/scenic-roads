@@ -6,6 +6,7 @@ import type { Dist } from '../roads/stats';
 import type { ThresholdDir } from '../state';
 import { h, niceStep, setupCanvas } from './dom';
 import { RampSelect, type RampItem } from './rampselect';
+import { onDouble } from './touch';
 
 /** The unit-free and in-units settings of one colour scale. */
 export interface ScaleValue {
@@ -192,9 +193,9 @@ export class ScaleControls {
     this.span = h('input', { type: 'range', min: 0.1, max: 1, step: 0.05, title: 'How far up the scale the fade reaches (double-click: default)' });
     this.spanOut = h('output');
     this.fade.addEventListener('input', () => o.set({ lowFade: Number(this.fade.value) }));
-    this.fade.addEventListener('dblclick', () => o.set({ lowFade: o.fadeDefault }));
+    onDouble(this.fade, () => o.set({ lowFade: o.fadeDefault }));
     this.span.addEventListener('input', () => o.set({ lowSpan: Number(this.span.value) }));
-    this.span.addEventListener('dblclick', () => o.set({ lowSpan: o.spanDefault }));
+    onDouble(this.span, () => o.set({ lowSpan: o.spanDefault }));
     this.fadeRow = h('div', { class: 'fade' },
       h('span', { class: 'muted' }, 'Fade low end'), this.fade, this.fadeOut,
       h('span', { class: 'muted' }, 'Fade span'), this.span, this.spanOut,

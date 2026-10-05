@@ -11,6 +11,10 @@ import { anchorAt, centrePoint, dolly, ownPan, orbit, panTo, setLocationAt, type
  *   ⌘ Cmd + two-finger drag    → zoom        (vertical)
  *   ⌥ Option + two-finger drag → x rotates, y tilts
  *   right-drag / Ctrl-drag     → rotate + tilt
+ * And on a touch screen: one finger pans (as a left-drag); two pinch to zoom, turn to rotate and
+ * drag up or down to tilt (MapLibre's own, the pan let go of when the second finger lands); a
+ * double tap zooms in there; a long press calls `onLongPress` (main.ts: a menu of links there); a
+ * tap's click waits out the double tap's time (`single`).
  * A mouse wheel zooms with short, snappy easing. Zoom, rotation and tilt keep the 3D point
  * under the cursor fixed on screen (see camera3d.ts).
  */
@@ -30,9 +34,13 @@ export interface CameraControls {
   zoomBy(dz: number, px?: number, py?: number): void;
   /** Animated rotate / tilt about the ground at the view centre. */
   orbitBy(dBearing: number, dPitch: number): void;
+  /** A click's action (the map's click handler): at once for a mouse's; for a finger's tap once
+   * the double tap's time has passed with no finger down again, so that a double tap only zooms
+   * and a tap followed at once by a pan or a pinch does nothing else. */
+  single(f: () => void): void;
 }
 
-export function installTrackpad(map: MLMap): CameraControls {
+export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, py: number) => void } = {}): CameraControls {
   map.scrollZoom.disable();
   map.doubleClickZoom.disable(); // replaced by the cursor-anchored zoom below
   map.dragRotate.disable(); // replaced by the cursor-anchored orbit below
@@ -279,11 +287,48 @@ export function installTrackpad(map: MLMap): CameraControls {
   el.addEventListener('pointercancel', end, true);
   el.addEventListener('contextmenu', (e) => e.preventDefault());
 
+  // Fingers down now (a touch screen's): a second one ends the one-finger pan, its pinch MapLibre's.
+  const touches = new Set<number>();
+  // A long press: a finger still for LONG_MS (moving under 8 px) is a press, not a pan.
+  const LONG_MS = 550;
+  let press: { id: number; timer: number } | null = null;
+  const unpress = () => {
+    if (press) clearTimeout(press.timer);
+    press = null;
+  };
+  // A tap's place and time, for a double tap; and when a double tap last zoomed (the double click
+  // a browser may send for it as well isn't another zoom).
+  let lastTap: { t: number; x: number; y: number } | null = null;
+  let tapZoomed = -Infinity;
+  // For `single`: when a finger's tap last ended, and the fingers down so far.
+  const DOUBLE_MS = 300;
+  let tapUp = -Infinity;
+  let downs = 0;
+  const letGo = () => {
+    if (!hold) return;
+    if (hold.moved && el.hasPointerCapture(hold.id)) el.releasePointerCapture(hold.id);
+    el.classList.remove('grabbing');
+    hold = null;
+  };
+
   // Left-drag: the ground under the pointer at the start stays under the pointer (MapLibre's own
   // grab where the ground is close to the pivot plane). Clicks still reach MapLibre: nothing here
   // stops the mouse events.
   let hold: { id: number; a: Anchor; own: boolean; moved: boolean; x0: number; y0: number } | null = null;
   el.addEventListener('pointerdown', (e: PointerEvent) => {
+    if (e.pointerType === 'touch') {
+      downs++;
+      // (A gesture's first finger: any left from one before, whose end wasn't seen, are gone.)
+      if (e.isPrimary) touches.clear();
+      touches.add(e.pointerId);
+      if (touches.size > 1) {
+        // (Two fingers: MapLibre's pinch, turn and tilt alone.)
+        unpress();
+        lastTap = null;
+        letGo();
+        return;
+      }
+    }
     if (e.button !== 0 || e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) return;
     const rect = el.getBoundingClientRect();
     const a = anchorAt(map, e.clientX - rect.left, e.clientY - rect.top);
@@ -291,11 +336,27 @@ export function installTrackpad(map: MLMap): CameraControls {
     hold = { id: e.pointerId, a, own: a.ground && ownPan(map, a), moved: false, x0: e.clientX, y0: e.clientY };
     zLeft = 0;
     stopInertia();
+    if (e.pointerType === 'touch' && opts.onLongPress) {
+      unpress();
+      const px = e.clientX - rect.left, py = e.clientY - rect.top;
+      press = {
+        id: e.pointerId,
+        timer: window.setTimeout(() => {
+          press = null;
+          // (Not a pan, and not a tap: the click it would end in is dropped, as a drag's.)
+          dragged = true;
+          letGo();
+          opts.onLongPress?.(px, py);
+        }, LONG_MS),
+      };
+    }
   });
   el.addEventListener('pointermove', (e: PointerEvent) => {
     if (!hold || e.pointerId !== hold.id) return;
     if (!hold.moved) {
-      if (Math.hypot(e.clientX - hold.x0, e.clientY - hold.y0) < 3) return; // still a click
+      const d = Math.hypot(e.clientX - hold.x0, e.clientY - hold.y0);
+      if (d < (e.pointerType === 'touch' ? 8 : 3)) return; // still a click (a finger wavers more)
+      unpress();
       hold.moved = true;
       dragged = true;
       try {
@@ -310,10 +371,25 @@ export function installTrackpad(map: MLMap): CameraControls {
     if (!hold.own || !panTo(map, hold.a, x, y)) setLocationAt(map, hold.a.ll, x, y);
   });
   const release = (e: PointerEvent) => {
+    touches.delete(e.pointerId);
+    if (press?.id === e.pointerId) unpress();
     if (!hold || e.pointerId !== hold.id) return;
-    if (hold.moved && el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
-    el.classList.remove('grabbing');
-    hold = null;
+    // A finger's tap, the second within DOUBLE_MS and 30 px of the first: zoom in there (its
+    // click dropped, as a drag's).
+    if (e.type === 'pointerup' && e.pointerType === 'touch' && !hold.moved && !dragged) {
+      const rect = el.getBoundingClientRect();
+      const x = e.clientX - rect.left, y = e.clientY - rect.top, now = performance.now();
+      if (lastTap && now - lastTap.t < DOUBLE_MS && Math.hypot(x - lastTap.x, y - lastTap.y) < 30) {
+        lastTap = null;
+        tapZoomed = now;
+        dragged = true;
+        smoothZoom(x, y, 1);
+      } else {
+        lastTap = { t: now, x, y };
+        tapUp = now;
+      }
+    }
+    letGo();
   };
   el.addEventListener('pointerup', release);
   el.addEventListener('pointercancel', release);
@@ -345,6 +421,7 @@ export function installTrackpad(map: MLMap): CameraControls {
 
   // Double-click zooms in about the point (Shift: out).
   el.addEventListener('dblclick', (e: MouseEvent) => {
+    if (performance.now() - tapZoomed < 600) return;
     const rect = el.getBoundingClientRect();
     smoothZoom(e.clientX - rect.left, e.clientY - rect.top, e.shiftKey ? -1 : 1);
   });
@@ -354,6 +431,12 @@ export function installTrackpad(map: MLMap): CameraControls {
     zoomBy(dz, px, py) {
       const c = centrePoint(map);
       smoothZoom(px ?? c.x, py ?? c.y, dz);
+    },
+    single(f) {
+      // (A click comes straight after the pointerup that ends its tap.)
+      if (performance.now() - tapUp > 150) return f();
+      const d = downs;
+      window.setTimeout(() => downs === d && f(), DOUBLE_MS);
     },
     orbitBy(dBearing, dPitch) {
       cancelAnimationFrame(orbRaf);

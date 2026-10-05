@@ -227,6 +227,11 @@ input.switch:indeterminate::after { transform: translateX(5.5px); }
 .dark-pop .maplibregl-popup-content { background: var(--card-solid); color: var(--text); border: 1px solid var(--line-strong); border-radius: 8px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); font-size: 11.5px; }
 .dark-pop .maplibregl-popup-tip { border-top-color: var(--card-solid) !important; border-bottom-color: var(--card-solid) !important; }
 .dark-pop .maplibregl-popup-close-button { color: var(--muted); font-size: 16px; padding: 0 6px; }
+/* Over the controls and the lists (a phone's sheet too), what was just tapped: its close button
+   never under them; under the menus, the panel and the toasts. */
+.maplibregl-popup { z-index: 5; }
+/* Moved inside a narrow map, off its point: no tip pointing elsewhere (popupfit.ts). */
+.pop-shifted .maplibregl-popup-tip { visibility: hidden; }
 /* Capped to the room in the map (popupfit.ts); the rest scrolls. */
 .dark-pop .pop-scroll { overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .pop .ttl { font-weight: 600; font-size: 13px; color: #fff; padding-right: 14px; line-height: 1.3; }
@@ -407,11 +412,6 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #toast { position: absolute; left: calc(var(--left-w) + (100% - var(--left-w) - var(--side-w)) / 2); top: 14px; transform: translateX(-50%) translateY(-8px); background: var(--card-solid); border: 1px solid var(--line-strong); padding: 6px 12px; border-radius: 8px; opacity: 0; transition: all 0.2s ease; z-index: 6; pointer-events: none; }
 #toast.show { opacity: 1; transform: translateX(-50%); }
 
-@media (max-width: 760px) {
-  :root { --side-w: 250px; }
-  #sidebar { grid-template-rows: 1fr; }
-  #stats { display: none; }
-}
 
 /* ramp select ------------------------------------------------------------------ */
 .ramp-pick { grid-column: 2 / 4; display: flex; gap: 4px; min-width: 0; }
@@ -577,3 +577,127 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 .rg-state.on { color: var(--warn, #e0a03a); }
 .rg-state.wait { color: var(--faint, #8b919a); }
 
+
+/* Phones and tablets (docs/plan.md §4, Devices) ------------------------------------------------ */
+/* Every touch reaches the app: one finger pans (trackpad.ts), two pinch, turn and tilt (MapLibre);
+   the page itself neither pans, zooms nor bounces under them. */
+html, body { overscroll-behavior: none; }
+.maplibregl-canvas-container, .maplibregl-canvas-container .maplibregl-canvas { touch-action: none !important; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+button, select, input, label, .tab, .pill { touch-action: manipulation; }
+#colour { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+
+/* The settings folded away (body.panel-off: a narrow window always, else folded with its button):
+   the map takes their room, and they come back over it from the button at the top left (a scrim
+   behind, a tap on it closes them). ui/touch.ts. */
+#menu { display: none; position: absolute; z-index: 6; top: calc(10px + env(safe-area-inset-top)); left: calc(10px + env(safe-area-inset-left)); width: 40px; height: 40px; padding: 0;
+  flex-direction: column; align-items: center; justify-content: center; gap: 4px; border: 1px solid var(--line-strong); border-radius: 11px; background: var(--card);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
+#menu i { display: block; width: 17px; height: 2px; border-radius: 1px; background: var(--text); }
+#scrim { position: absolute; inset: 0; z-index: 7; background: rgba(0, 0, 0, 0.45); }
+#scrim[hidden] { display: none; }
+#colour .fold { flex: none; width: 26px; height: 26px; margin: -4px -4px 0 0; padding: 0; border: 0; border-radius: 6px; background: none; color: var(--faint); font-size: 16px; line-height: 1; }
+#colour .fold:hover { color: var(--text); background: var(--hover); }
+#colour .title { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 8px; }
+#colour .title > :not(.fold) { grid-column: 1; }
+#colour .title .fold { grid-column: 2; grid-row: 1 / span 2; }
+body.panel-off { --left-w: 0px; }
+body.panel-off #menu { display: flex; }
+body.panel-off .resizer.left { display: none; }
+body.panel-off #colour { width: min(86vw, 380px); transform: translateX(-100%); visibility: hidden; z-index: 8; transition: transform 0.22s ease, visibility 0s linear 0.22s;
+  padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom) env(safe-area-inset-left); box-shadow: 10px 0 30px rgba(0, 0, 0, 0.45); }
+body.panel-off.panel-open #colour { transform: none; visibility: visible; transition: transform 0.22s ease; }
+body.panel-off #viewshed { left: calc(60px + env(safe-area-inset-left)); }
+
+/* A phone, either way up (narrow, or short: ui/touch.ts folds the settings there too): the lists a
+   sheet along the bottom over the map (its height dragged from the handle at its top; a tab tapped
+   again folds it to its tabs), the bar under it, the controls clear of the notch and the home
+   indicator, and the camera's steps left to two fingers (the compass and the tilt still reset). */
+@media (max-width: 700px), (max-height: 500px) {
+  #nav button.step { display: none; }
+  #nav .grp { padding-top: 2px; }
+  :root { --strip-h: calc(64px + env(safe-area-inset-bottom)); --lists-h: 32vh; }
+  #stats.lists { left: 0; right: 0; width: auto; bottom: var(--strip-h); border-radius: 16px 16px 0 0; border-width: 1px 0 0; padding: 18px 14px 8px;
+    max-height: calc(100dvh - var(--strip-h) - 64px - env(safe-area-inset-top)); box-shadow: 0 -8px 26px rgba(0, 0, 0, 0.35); }
+  #stats .lists-grip { left: 0; right: 0; top: 0; height: 22px; }
+  #stats .lists-grip::after { left: calc(50% - 18px); right: auto; width: 36px; top: 7px; height: 4px; border-radius: 2px; background: var(--muted); opacity: 0.55; }
+  #stats.lists.folded .lists-grip { display: block; }
+  #stats .tabs { overflow-x: auto; scrollbar-width: none; gap: 16px; justify-content: flex-start; }
+  #stats .tabs::-webkit-scrollbar { display: none; }
+  #strip { left: 0; padding: 6px max(12px, env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+  #strip .coord { display: none; }
+  #strip .r2 { gap: 10px; }
+  #nav { top: calc(10px + env(safe-area-inset-top)); right: calc(10px + env(safe-area-inset-right)); }
+  #viewshed { right: calc(64px + env(safe-area-inset-right)); width: auto; top: calc(10px + env(safe-area-inset-top)); }
+  #profile { left: 0; right: 0; bottom: var(--strip-h); border-radius: 16px 16px 0 0; z-index: 4; }
+  #toast { left: 50%; top: calc(14px + env(safe-area-inset-top)); max-width: calc(100vw - 130px); text-align: center; }
+  .maplibregl-popup { max-width: min(340px, calc(100vw - 24px)) !important; }
+  .boot-box { width: min(300px, calc(100vw - 40px)); }
+  dialog.credits { max-width: calc(100vw - 20px); }
+  .bs-pop { max-width: calc(100vw - 16px); }
+}
+
+/* A phone on its side: the lists a card down the right instead (the map keeps its height), the
+   controls beside it; folded, its tabs alone at the top. */
+@media (max-height: 500px) and (orientation: landscape) {
+  :root { --lists-w: min(360px, 44vw); }
+  #stats.lists { left: auto; right: calc(8px + env(safe-area-inset-right)); width: var(--lists-w); top: calc(8px + env(safe-area-inset-top)); bottom: calc(var(--strip-h) + 8px);
+    height: auto; max-height: none; border-radius: 14px; border-width: 1px; padding: 10px 12px 8px; }
+  #stats.lists.folded { bottom: auto; }
+  #stats .lists-grip { display: none !important; }
+  #nav { right: calc(var(--lists-w) + 18px + env(safe-area-inset-right)); }
+  #viewshed { right: calc(var(--lists-w) + 74px + env(safe-area-inset-right)); }
+  #profile { right: calc(var(--lists-w) + 16px); border-radius: 14px 14px 0 0; }
+}
+
+/* The bar's second line on a narrower map: what doesn't fit gives way (the zoom first), not overlap. */
+#strip .r2, #strip .right { overflow: hidden; }
+@media (max-width: 1100px) { #strip .zoom { display: none; } }
+
+/* A finger, not a pointer: what's tapped is large enough to tap, and nothing waits on a hover. */
+@media (pointer: coarse) {
+  :root { font-size: 13px; --side-w: 340px; }
+  #stats .tabs { overflow-x: auto; scrollbar-width: none; gap: 14px; justify-content: flex-start; }
+  #stats .tabs::-webkit-scrollbar { display: none; }
+  #menu { width: 46px; height: 46px; }
+  #nav { gap: 8px; padding: 6px; }
+  #nav button { width: 42px; height: 40px; font-size: 18px; }
+  #nav button.pitch { height: 24px; font-size: 11px; }
+  .seg button { padding: 9px 6px; }
+  .seg.small button { padding: 7px 6px; }
+  .pill { padding: 6px 12px; font-size: 12px; }
+  .tab { padding: 7px 0; font-size: 11.5px; }
+  input[type='range'] { height: 30px; }
+  .wgrid input[type='range'] { height: 28px; }
+  input[type='checkbox'] { width: 20px; height: 20px; }
+  input.switch { width: 42px; height: 26px; }
+  input.switch::after { width: 22px; height: 22px; }
+  input.switch:checked::after { transform: translateX(16px); }
+  input.switch:indeterminate::after { transform: translateX(8px); }
+  select, .scenic-sel, .ramp-btn { min-height: 34px; }
+  #layers .sec { padding: 12px 0 8px; }
+  #layers .sec-t { font-size: 13px; }
+  #layers label.tog { grid-template-columns: 22px 1fr auto; padding: 9px 6px; }
+  #layers .row, #layers .fade, #layers .wgrid { padding: 5px 0; row-gap: 8px; }
+  #layers .levels .lv { padding: 7px 0; }
+  #layers .rg, #layers .cand { padding: 8px 6px; }
+  #layers .rg-act { opacity: 1; width: 30px; height: 30px; font-size: 15px; }
+  .climb { padding: 11px 6px; }
+  #stats dd a, #stats dt { padding: 3px 0; }
+  .resizer { width: 22px; }
+  .resizer.left { left: calc(var(--left-w) - 11px); }
+  .resizer::after { opacity: 0.22; }
+  #stats .lists-grip { height: 26px; top: -10px; }
+  #stats .lists-grip::after { left: calc(50% - 18px); right: auto; width: 36px; top: 11px; height: 4px; border-radius: 2px; background: var(--muted); opacity: 0.55; }
+  #colour .fold { width: 36px; height: 36px; font-size: 20px; }
+  .dark-pop .maplibregl-popup-close-button { font-size: 22px; padding: 4px 10px; }
+  .ramp-item { padding: 9px 7px; }
+}
+
+/* A long press on the map (main.ts): Street View, Google Maps and OpenStreetMap there. */
+.press-menu { position: absolute; z-index: 9; min-width: 200px; padding: 4px; background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); }
+.press-menu .pm-hd { padding: 6px 10px 4px; color: var(--faint); font-size: 10.5px; }
+.press-menu button { display: block; width: 100%; padding: 11px 10px; border: 0; border-radius: 7px; background: none; color: var(--text); text-align: left; font-size: 14px; }
+.press-menu button:active, .press-menu button:hover { background: var(--hover); }
+.boot-ask { display: grid; gap: 8px; margin: 0 0 14px; }
+.boot-ask input { width: 100%; padding: 9px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--card-solid); color: var(--text); font-size: 16px; }
+.boot-ask button { padding: 9px 10px; border: 0; border-radius: 8px; background: var(--accent); color: #0b0e13; font-weight: 600; font-size: 14px; }

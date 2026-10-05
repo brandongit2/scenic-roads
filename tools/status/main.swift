@@ -495,6 +495,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let map = NSMenuItem(title: "Open the Map", action: #selector(openMap), keyEquivalent: "")
         map.target = self
         m.addItem(map)
+        // The map's address for an iPhone or an iPad, with its key (this Mac's server writes it,
+        // private to this user): pasted there (Universal Clipboard), the map opens on the device.
+        if let page = try? String(contentsOf: home.appendingPathComponent("map-page"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !page.isEmpty {
+            let it = NSMenuItem(title: "Copy the Map's Address", action: #selector(copyPage), keyEquivalent: "")
+            it.target = self
+            it.representedObject = page
+            m.addItem(it)
+        }
         // The worker page's address, with its token (the build Mac's agent writes it, private to this
         // user): pasted on another device (Universal Clipboard), its browser joins the build.
         if let page = try? String(contentsOf: home.appendingPathComponent("agent/coord/page"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !page.isEmpty {

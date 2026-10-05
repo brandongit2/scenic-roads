@@ -284,6 +284,9 @@ idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trai
 catalog/<n>.json.zst    the last catalogs read
 translations/  descriptions/   local copies of the NAS folders, compiled by the server
 regions.json            the last regions read; regions-queue/: region edits waiting for the NAS
+remote-key              the map's key for other devices (32 hex digits, made once, 0600: docs/plan.md
+                        §4, Devices); map-page: the address to open on one, `<base>/#k=<key>` (0600,
+                        rewritten when it changes: HTTPS where tailscale serve proxies the server)
 agent/                  status.json (the build Mac's; a helper writes helper.json, which that Mac's
                         server shows), state.json,
                         job.json, agent.lock, logs/, cache/
@@ -334,6 +337,13 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
   catalog that has none), `online`, `nas`, `held`, `app`, `agent`, `names` (translation versions),
   `v`, `marks`. The map's meta is `/api/meta`.
 - `/api/names`; `/api/build` (the agent's status: this Mac's when it runs here, else the NAS's copy).
+- Other devices (docs/plan.md §4, Devices): every request but this Mac's own needs the map's key, in
+  the `scenic_k` cookie or `Authorization: Bearer <key>` (else 401, JSON `{"error"}`), but for the
+  app itself: `/`, `/index.html`, `/manifest.webmanifest`, `/sw.js`, `/assets/*`, `/icons/*`,
+  `/api/ping`, `/api/auth`. `POST /api/auth` `{"key": "<key>"}`: 204 with `Set-Cookie:
+  scenic_k=<key>; Path=/; HttpOnly; SameSite=Strict; Max-Age=315360000` (`; Secure` when
+  `X-Forwarded-Proto: https`), else 401. A request from anywhere but this Mac, its LAN and the
+  tailnet is 403.
 - Regions (the panel): `/api/regions` (GET, POST), `/api/regions/{id}` (PUT, DELETE),
   `/api/areas?at=`, `/api/areas/search?q=`, `/api/areas/{id}`, `/api/coverage` (the catalog's
   coverage as GeoJSON, one feature per outline entry, with `regions` and `catalog`; built from the

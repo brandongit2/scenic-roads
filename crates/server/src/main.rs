@@ -20,6 +20,7 @@ mod markview;
 mod pages;
 mod query;
 mod regions;
+mod remote;
 mod terrain;
 mod tiles;
 mod updater;
@@ -315,6 +316,19 @@ async fn main() -> Result<()> {
 
     tokio::spawn(warm(state.clone()));
     regions::spawn_flusher(state.clone());
+    // Other devices (remote.rs): the key, and the address to open there, kept current (tailscale
+    // serve may start proxying the server any time).
+    let remote = Arc::new(remote::Remote::new(&home)?);
+    {
+        let r = remote.clone();
+        tokio::spawn(async move {
+            loop {
+                let r2 = r.clone();
+                tokio::task::spawn_blocking(move || r2.write_page(port)).await.ok();
+                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+            }
+        });
+    }
 
     let app = Router::new()
         .route("/tiles/roads/{z}/{x}/{y}", get(tiles::road_tile))
@@ -356,6 +370,10 @@ async fn main() -> Result<()> {
         .route("/api/areas/{id}", get(regions::one))
         .route("/api/coverage", get(regions::coverage))
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
+        .route("/api/auth", axum::routing::post({
+            let r = remote.clone();
+            move |h: HeaderMap, b: axum::body::Bytes| remote::auth(State(r.clone()), h, b)
+        }))
         .route("/api/build", get(build_h))
         .nest_service(
             "/fonts",
@@ -374,16 +392,20 @@ async fn main() -> Result<()> {
         .layer(axum::middleware::from_fn_with_state(state.clone(), versioned_caching))
         // Data from other host names of this machine (the app spreads its downloads over several).
         .layer(tower_http::cors::CorsLayer::permissive())
+        // First of all: another device's request needs the map's key (remote.rs).
+        .layer(axum::middleware::from_fn_with_state(remote.clone(), remote::gate))
         .with_state(state);
 
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    eprintln!("listening on http://{addr}");
+    // This Mac, and devices on its LAN and the tailnet (the gate answers them alone).
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    eprintln!("listening on http://{addr} (devices: the map's address with its key, <home>/map-page)");
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    let svc = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
     if let Ok(l6) = tokio::net::TcpListener::bind(std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port))).await {
-        let app6 = app.clone();
-        tokio::spawn(async move { axum::serve(l6, app6).await });
+        let svc6 = svc.clone();
+        tokio::spawn(async move { axum::serve(l6, svc6).await });
     }
-    axum::serve(listener, app).await?;
+    axum::serve(listener, svc).await?;
     Ok(())
 }
 

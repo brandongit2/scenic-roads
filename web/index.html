@@ -2,13 +2,26 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- (maximum-scale: iOS zooms into a field focused otherwise; pinching the page isn't wanted
+         over a map that pinches itself. viewport-fit: under the notch, the controls clear of it.) -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0b0e13" />
+    <!-- An app to install on an iPhone or iPad (manifest, sw.js: docs/plan.md §4, Devices). -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Scenic Roads" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>Scenic Roads</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0e13'/%3E%3Cpath d='M4 24 L11 14 L16 19 L22 8 L28 24' fill='none' stroke='%2335b779' stroke-width='3' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E" />
   </head>
   <body>
     <div id="map"></div>
+    <!-- The settings, on a phone or a tablet: shown over the map from here (main.ts, style.css). -->
+    <button id="menu" type="button" aria-label="Settings" aria-controls="colour" aria-expanded="false"><i></i><i></i><i></i></button>
+    <div id="scrim" hidden></div>
 
     <section id="colour" class="panel"></section>
     <nav id="nav" class="card" aria-label="View controls"></nav>

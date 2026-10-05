@@ -116,6 +116,11 @@ fn status(args: &[String]) -> Result<()> {
         }
         _ => {}
     }
+    // The map on an iPhone or an iPad (docs/plan.md §4, Devices): its address with its key, which this
+    // Mac's server writes.
+    if let Some(m) = std::fs::read_to_string(app_home().join("map-page")).ok().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
+        println!("Map on a device: {m} (open it once on an iPhone or an iPad on the tailnet)");
+    }
     Ok(())
 }
 

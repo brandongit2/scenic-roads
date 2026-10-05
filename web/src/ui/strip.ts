@@ -17,6 +17,7 @@ import type { HoverInfo } from '../roads/layer';
 import type { WayInfo } from '../api';
 import { COMPONENTS, FLAG_LABELS, components, scoreOf } from '../scenic';
 import { cap, fmt, h } from './dom';
+import { coarse } from './touch';
 
 const VALUE_FONT = '600 10px -apple-system, system-ui, sans-serif';
 let measureCtx: CanvasRenderingContext2D | null = null;
@@ -97,8 +98,9 @@ export class Strip {
   railWeights: () => number[] = () => [];
 
   constructor(root: HTMLElement, private map: MLMap, private weights: () => number[]) {
-    const idle = h('span', { class: 'hint' },
-      'Two-finger drag pans, pinch zooms, ⌥ + two-finger drag or right-drag tilts & rotates around the cursor · G: Street View, M: Google Maps, O: OpenStreetMap at the cursor');
+    const idle = h('span', { class: 'hint' }, coarse()
+      ? 'Tap a road, a line or a place for its details · two fingers: pinch zooms, turn rotates, drag up or down tilts · double tap zooms in · long press: Street View, Google Maps, OpenStreetMap there'
+      : 'Two-finger drag pans, pinch zooms, ⌥ + two-finger drag or right-drag tilts & rotates around the cursor · G: Street View, M: Google Maps, O: OpenStreetMap at the cursor');
     const cell = (label: string, title: string) => {
       const b = h('b');
       return { el: h('div', { class: 'cell', title }, h('span', { class: 'lbl' }, label), b), b };

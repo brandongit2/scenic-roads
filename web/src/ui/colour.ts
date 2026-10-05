@@ -91,7 +91,7 @@ export class ColourCard {
       this.presetBar.el,
       this.weights.el,
       h('div', { class: 'faint note' },
-        'Negative weights penalise. Views, vistas and water already account for trees (canopy heights block sight lines). Double-click a slider to zero it.'),
+        'Negative weights penalise. Views, vistas and water already account for trees (canopy heights block sight lines). Double-click (on a touch screen, double-tap) a slider to zero it.'),
     );
 
     root.append(h('div', { class: 'title' }, h('h1', {}, 'Scenic roads'), h('p', { class: 'sub', html: subtitle })));

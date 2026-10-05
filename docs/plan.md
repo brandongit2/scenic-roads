@@ -390,6 +390,47 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   first. Files of the last two catalogs never go.
 - Planned: "Keep this view", for trips, once the coverage outgrows the disks.
 
+**Devices: an iPhone, an iPad.** Either Mac's map opens on them, at home or away, over the tailnet.
+- **Who's answered:** the server listens on every address but answers only this Mac, its LAN and
+  the tailnet (`pipeline::net::allowed`); anything else is refused (403).
+- **The key** (`crates/server/src/remote.rs`): a request that isn't this Mac's own needs the map's
+  key (`<home>/remote-key`, made once, 0600), except for the app itself (its page, scripts,
+  styles, manifest, service worker and icons). One handed over by a proxy on this Mac (`tailscale
+  serve`: `X-Forwarded-For`, `Forwarded` or `Tailscale-User-Login` set) is another device's.
+  - The key comes once, in the map's address (`#k=<key>`: a fragment, never sent). The page gives it
+    to `POST /api/auth`, which keeps it in an HttpOnly cookie (`scenic_k`), and drops it from the
+    address. A device without the cookie (an app on the home screen has its own storage) is asked
+    for the address once.
+  - The address is `<home>/map-page`, which the server rewrites when it changes: HTTPS where
+    `tailscale serve` proxies the server's port, else the tailnet address. The status menu's Copy
+    the Map's Address and `scenic status` give it.
+  - The map's data stays its owner's alone (the licences): without the key, only the app itself.
+- **An app** (`web/public/manifest.webmanifest`, the icons): Share, then Add to Home Screen, full
+  screen. Its service worker (`web/public/sw.js`) is registered on devices only (the Macs have the
+  data themselves) and only over HTTPS, so with `tailscale serve`. What it keeps for when the Mac
+  is away:
+  - the page, all of its scripts and styles (those it names and those they name: the map's
+    workers) and the catalog's metadata, kept as it installs and again with each new page; scripts
+    and styles a newer page no longer names go;
+  - the fonts and icons, and the map's versioned data (`?v=`) as it's looked at (the newest 12,000
+    files).
+  - The page and the metadata come from the Mac when it answers well within 4 s, else as kept. A
+    Mac that doesn't (asleep, away, or restarting: `tailscale serve` answers 502) is taken for away
+    for a minute, so what was kept is used at once.
+- **Touch** (`web/src/trackpad.ts`, `web/src/ui/touch.ts`): one finger pans; two pinch to zoom, turn
+  to rotate and drag up or down to tilt; a double tap zooms in; a long press offers Street View,
+  Google Maps and OpenStreetMap there.
+  - A tap's action waits out the double tap's 300 ms, so a double tap only zooms. Another finger
+    down meanwhile cancels it.
+  - Popups stay inside the screen (one too wide for either side of its point is moved inside, its
+    tip hidden) and above the controls and lists.
+- **A phone's layout** (a narrow or a short window, either way up): the settings fold into a panel
+  that the button at the top left opens. The lists become a sheet along the bottom (on its side, a
+  card at the right): its handle drags its height, and a tab tapped again folds it to its tabs. The
+  bar sits clear of the home indicator. The camera's step buttons go, but the compass and the tilt still reset.
+  - On a tablet the panel stays docked, folded by its ‹ (remembered).
+  - Touch screens get bigger controls and the touch hints.
+
 ## 5. Coverage and regions
 
 **Recipe** (`inputs/regions/<id>.toml`): an `id`, a `name`, and an `outline`, a list whose union is

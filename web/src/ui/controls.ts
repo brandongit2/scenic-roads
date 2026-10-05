@@ -4,6 +4,7 @@
 import type { Dist } from '../roads/stats';
 import { axisPos, axisValue, type Axis } from '../stopfilters';
 import { h, setupCanvas } from './dom';
+import { onDouble } from './touch';
 
 export interface SliderOpts {
   label: string;
@@ -37,7 +38,7 @@ export class Slider {
     this.input = h('input', { type: 'range', min: o.min, max: o.max, step: o.step, title: `${o.title ?? o.label}${o.reset !== undefined ? ' (double-click: default)' : ''}` });
     this.out = h('output');
     this.input.addEventListener('input', () => o.set(from(Number(this.input.value))));
-    if (o.reset !== undefined) this.input.addEventListener('dblclick', () => o.set(o.reset!));
+    if (o.reset !== undefined) onDouble(this.input, () => o.set(o.reset!));
     this.el = h('div', { class: `row ${o.cls ?? ''}`.trim(), title: o.title }, h('span', { class: 'muted' }, o.label), this.input, this.out);
   }
 
@@ -68,7 +69,7 @@ export class WeightGrid {
       };
       const inp = h('input', { type: 'range', min: -1.5, max: 2, step: 0.1, title: c.help });
       inp.addEventListener('input', () => put(Number(inp.value)));
-      inp.addEventListener('dblclick', () => put(0));
+      onDouble(inp, () => put(0));
       const out = h('output');
       this.ins.push(inp);
       this.outs.push(out);

@@ -649,7 +649,7 @@ mod http {
     use axum::response::{IntoResponse, Response};
     use axum::routing::{any, get, put};
     use axum::{Json, Router};
-    use std::net::{IpAddr, SocketAddr};
+    use std::net::SocketAddr;
     use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
     /// The web worker page (docs/workers.md §7), built in: (path under /work/, type, contents). An
@@ -696,98 +696,11 @@ mod http {
         pub wasm: Option<PathBuf>,
     }
 
-    /// 128 random bits as hex.
-    pub fn random() -> Result<String> {
-        use std::io::Read;
-        let mut b = [0u8; 16];
-        std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).context("read /dev/urandom")?;
-        Ok(b.iter().map(|x| format!("{x:02x}")).collect())
-    }
+    pub use crate::net::{allowed, loopback, random, served_https, urls};
 
     /// The workers' token: made once and kept, so workers keep theirs across restarts.
     pub fn token(dir: &Path) -> Result<String> {
-        let p = dir.join("token");
-        if let Ok(t) = std::fs::read_to_string(&p) {
-            if t.trim().len() == 32 {
-                return Ok(t.trim().to_string());
-            }
-        }
-        let t = random()?;
-        crate::whole::write(&p, t.as_bytes())?;
-        if let Ok(f) = std::fs::File::open(&p) {
-            store::sys::set_mode(&f, 0o600).ok();
-        }
-        Ok(t)
-    }
-
-    /// Whether `ip` may ask: this Mac, its LAN, the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48).
-    fn allowed(ip: IpAddr) -> bool {
-        match ip {
-            IpAddr::V4(v) => v.is_loopback() || v.is_private() || v.is_link_local() || (v.octets()[0] == 100 && (64..128).contains(&v.octets()[1])),
-            IpAddr::V6(v) => match v.to_ipv4_mapped() {
-                Some(v4) => allowed(IpAddr::V4(v4)),
-                None => v.is_loopback() || (v.segments()[0] & 0xfe00) == 0xfc00 || (v.segments()[0] & 0xffc0) == 0xfe80,
-            },
-        }
-    }
-
-    fn loopback(ip: IpAddr) -> bool {
-        match ip {
-            IpAddr::V4(v) => v.is_loopback(),
-            IpAddr::V6(v) => v.is_loopback() || v.to_ipv4_mapped().is_some_and(|v| v.is_loopback()),
-        }
-    }
-
-    /// This Mac's addresses for workers: its Tailscale address (100.64.0.0/10), then its LAN name.
-    fn urls(port: u16) -> Vec<String> {
-        let mut out = Vec::new();
-        if let Ok(o) = std::process::Command::new("/sbin/ifconfig").output() {
-            for w in String::from_utf8_lossy(&o.stdout).split_whitespace().collect::<Vec<_>>().windows(2) {
-                let ["inet", a] = w else { continue };
-                let Ok(ip) = a.parse::<std::net::Ipv4Addr>() else { continue };
-                let url = format!("http://{ip}:{port}");
-                if ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]) && !out.contains(&url) {
-                    out.push(url);
-                }
-            }
-        }
-        out.push(format!("http://{}.local:{port}", crate::agent::cond::host_name()));
-        out
-    }
-
-    /// The coordinator's address over HTTPS, when `tailscale serve` proxies `port`
-    /// ("https://<this Mac's tailnet name>/<path>").
-    pub fn served_https(port: u16) -> Option<String> {
-        let cli = ["/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"].into_iter().find(|p| Path::new(p).exists())?;
-        // (Bounded: a stuck daemon mustn't hold up the agent's loop.)
-        let mut child = std::process::Command::new(cli).args(["serve", "status", "--json"]).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().ok()?;
-        let t = Instant::now();
-        while child.try_wait().ok()?.is_none() {
-            if t.elapsed() > Duration::from_secs(3) {
-                child.kill().ok();
-                child.wait().ok();
-                return None;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let mut out = Vec::new();
-        std::io::Read::read_to_end(&mut child.stdout.take()?, &mut out).ok()?;
-        https_in(&serde_json::from_slice(&out).ok()?, port)
-    }
-
-    /// `served_https` from what `tailscale serve status --json` says.
-    pub fn https_in(v: &serde_json::Value, port: u16) -> Option<String> {
-        for (host, site) in v["Web"].as_object()? {
-            for (path, h) in site["Handlers"].as_object().into_iter().flatten() {
-                let proxy = h["Proxy"].as_str().unwrap_or("");
-                if proxy.ends_with(&format!(":{port}")) || proxy.ends_with(&format!(":{port}/")) {
-                    let host = host.strip_suffix(":443").unwrap_or(host);
-                    let path = if path.ends_with('/') { path.clone() } else { format!("{path}/") };
-                    return Some(format!("https://{host}{path}"));
-                }
-            }
-        }
-        None
+        crate::net::kept_token(&dir.join("token"))
     }
 
     /// Listens on `port`, on a runtime of its own; this Mac's addresses for workers.
@@ -1135,9 +1048,9 @@ mod tests {
     #[test]
     fn the_page_is_over_https_where_tailscale_serves_it() {
         let v = serde_json::json!({ "TCP": { "443": { "HTTPS": true } }, "Web": { "mac.tail1.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:8090" } } } } });
-        assert_eq!(http::https_in(&v, 8090).as_deref(), Some("https://mac.tail1.ts.net/"));
-        assert_eq!(http::https_in(&v, 8091), None);
-        assert_eq!(http::https_in(&serde_json::json!({}), 8090), None);
+        assert_eq!(crate::net::https_in(&v, 8090).as_deref(), Some("https://mac.tail1.ts.net/"));
+        assert_eq!(crate::net::https_in(&v, 8091), None);
+        assert_eq!(crate::net::https_in(&serde_json::json!({}), 8090), None);
     }
 
     #[test]

@@ -61,6 +61,7 @@ import { SightsPane, type Sight } from './ui/sights';
 import { LinesPane, RidesPane } from './ui/rides';
 import { Strip } from './ui/strip';
 import { ViewshedTool } from './ui/viewshed';
+import { installPanel } from './ui/touch';
 
 // Debug: ?bgrender keeps the map rendering in a hidden/background tab (timer-driven frames),
 // for automated checks. No effect otherwise.
@@ -71,12 +72,37 @@ if (new URLSearchParams(location.search).has('bgrender')) {
 
 const boot = new Boot(['Loading dataset metadata', 'Starting map engine', 'Loading basemap style', 'Loading road tiles in view']);
 
+/** The map's key in an address (`#k=<32 hex>`, among the view's own fragment), if it has one. */
+const keyIn = (address: string): string | null => address.match(/(?:#|&)k=([0-9a-f]{32})(?=&|$)/)?.[1] ?? null;
+
+/** On another device (an iPhone, an iPad): the map's key, from its address (`#k=…`, never sent to
+ * a server) once, given to the server, which keeps it in a cookie every request then carries
+ * (crates/server/src/remote.rs); the address bar keeps the view alone. */
+async function giveKey(key = keyIn(location.hash)) {
+  if (!key) return;
+  const rest = location.hash.slice(1).split('&').filter((p) => p && !p.startsWith('k=')).join('&');
+  history.replaceState(null, '', location.pathname + location.search + (rest ? `#${rest}` : ''));
+  await fetch('/api/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) }).catch(() => undefined);
+}
+
 async function main() {
   boot.at(0);
   let meta: Meta;
   try {
+    await giveKey();
     // The data hosts are probed while the metadata loads (hosts.ts).
     const [r] = await Promise.all([fetch('/api/meta'), initHosts()]);
+    // A device that hasn't given the map's key: its address asked for (an app on an iPhone's home
+    // screen keeps its own storage, apart from Safari's: once there too).
+    if (r.status === 401) {
+      boot.ask(0, 'this device needs the map\'s address once: from the build Mac\'s status menu, Copy the Map\'s Address', 'http://…/#k=…', async (v) => {
+        const k = keyIn(v.includes('#') ? v.slice(v.indexOf('#')) : `#k=${v}`);
+        if (!k) return;
+        await giveKey(k);
+        location.reload();
+      });
+      return;
+    }
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     meta = await r.json();
     setVersions(meta.versions);
@@ -117,6 +143,8 @@ async function main() {
     // The camera does not ride up and down with the terrain under the view centre.
     centerClampedToGround: false,
   });
+  // Debug: ?checks hands the map to automated checks (window.__map: its camera, after gestures).
+  if (new URLSearchParams(location.search).has('checks')) (window as unknown as { __map: maplibregl.Map }).__map = map;
   // Tiles the NAS couldn't answer are asked for again (retry.ts).
   const tileRetry = new TileRetry(map);
   unlinkCameraFromTerrain(map);
@@ -137,7 +165,10 @@ async function main() {
     // 3D terrain is on by default: start with a gentle tilt so it shows.
     if (store.s.terrain.on) map.jumpTo({ pitch: 40 });
   }
-  const cameraControls = installTrackpad(map);
+  // (A long press's menu needs the links, defined further on.)
+  let onLongPress = (_px: number, _py: number) => {};
+  const cameraControls = installTrackpad(map, { onLongPress: (px, py) => onLongPress(px, py) });
+  installPanel(map);
   installPanelResize(map);
   // The view has settled: no camera change for SETTLE_MS. The trackpad camera moves by jumpTo, so
   // MapLibre fires movestart / moveend around every wheel event (60–120 a second in a gesture):
@@ -1514,7 +1545,9 @@ async function main() {
   };
 
   // ---- clicks ----------------------------------------------------------------------
-  map.on('click', (e) => {
+  // (A finger's tap once it's not the first of a double tap: trackpad.ts, single.)
+  map.on('click', (e) => cameraControls.single(() => click(e)));
+  const click = (e: maplibregl.MapMouseEvent) => {
     if (viewshed.active) {
       viewshed.run([e.lngLat.lng, e.lngLat.lat]);
       return;
@@ -1541,7 +1574,7 @@ async function main() {
       return;
     }
     overlays.click(e.point, AREA_LAYERS);
-  });
+  };
   layers.onViewshed = () => (viewshed.active ? viewshed.cancel() : viewshed.start());
   layers.trees.onPreview = (palette) => applyTrees(map, palette ? { ...store.s.trees, palette } : store.s.trees);
   viewshed.onActive = (on) => layers.setViewshedActive(on);
@@ -1644,6 +1677,40 @@ async function main() {
     } else window.open(url(t.osm), '_blank', 'noopener');
     toast(`Opening OpenStreetMap ${t.what}`);
   };
+  // A long press on the map (a touch screen's G, M and O): a menu of them for the place pressed.
+  let pressMenu: HTMLElement | null = null;
+  const closePress = () => {
+    pressMenu?.remove();
+    pressMenu = null;
+  };
+  onLongPress = (px, py) => {
+    closePress();
+    const ll = map.unproject([px, py]);
+    const t: LinkTarget = { lngLat: [ll.lng, ll.lat], streetView: true, what: 'here' };
+    const box = map.getContainer();
+    const menu = document.createElement('div');
+    menu.className = 'press-menu';
+    menu.append(Object.assign(document.createElement('div'), { className: 'pm-hd', textContent: `${ll.lat.toFixed(5)}, ${ll.lng.toFixed(5)}` }));
+    for (const [k, label] of [['g', 'Street View here'], ['m', 'Google Maps here'], ['o', 'OpenStreetMap here']] as const) {
+      const b = Object.assign(document.createElement('button'), { type: 'button', textContent: label });
+      b.onclick = () => {
+        closePress();
+        openLink(k, t);
+      };
+      menu.append(b);
+    }
+    box.append(menu);
+    // (Inside the map, beside the finger, not under it.)
+    const w = menu.offsetWidth, hgt = menu.offsetHeight;
+    menu.style.left = `${Math.max(8, Math.min(px + 12, box.clientWidth - w - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(py - hgt - 12 < 8 ? py + 12 : py - hgt - 12, box.clientHeight - hgt - 8))}px`;
+    pressMenu = menu;
+  };
+  document.addEventListener('pointerdown', (e) => {
+    if (pressMenu && !pressMenu.contains(e.target as Node)) closePress();
+  }, true);
+  map.on('movestart', closePress);
+
   window.addEventListener('keydown', (e) => {
     const k = e.key.toLowerCase();
     const SITES: Record<string, string> = { g: 'Street View', m: 'Google Maps', o: 'OpenStreetMap' };
@@ -1960,6 +2027,16 @@ async function main() {
     }
     // Never block the UI for long on a slow first view; overlays start within 2 s either way.
     setTimeout(finishBoot, 12000);
+    // On another device (an iPhone, an iPad), the app kept for when the Mac can't be reached, and
+    // the map looked at with it (public/sw.js). Not on the Macs: they have the data themselves.
+    const local = /^(localhost|127\.0\.0\.1|\[::1\])$|\.localhost$/.test(location.hostname);
+    // (Checked for a new one whenever the app comes back to the front: an installed app may stay
+    // open for days.)
+    if (!local && window.isSecureContext && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').then((reg) => {
+        document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && reg.update().catch(() => undefined));
+      }, () => undefined);
+    }
     setTimeout(releaseOverlays, 2000);
   };
   if ((map as unknown as { style?: { _loaded?: boolean } }).style?._loaded) attach();
