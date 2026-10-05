@@ -227,7 +227,7 @@ pub fn stage(root: &Path, index: &Index, u: Unit, reach: Option<&Reach>, dir: &P
         if !index.tiles.contains_key(&t.slash()) {
             continue;
         }
-        std::os::unix::fs::symlink(tile_path(root, t), dir.join(format!("{}.f32", t.dash())))?;
+        crate::sys::symlink(&tile_path(root, t), &dir.join(format!("{}.f32", t.dash())))?;
         n += 1;
     }
     Ok(n)

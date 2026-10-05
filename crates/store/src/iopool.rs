@@ -17,7 +17,7 @@
 
 use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::FileExt;
+use crate::sys::PosIo;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering::SeqCst};
@@ -655,7 +655,7 @@ fn probe_ok(dir: &Path) -> bool {
     if fs::metadata(dir).is_err() {
         return false;
     }
-    let unique = dir.join(format!(".scenic-probe-{}-{}", std::process::id(), N.fetch_add(1, SeqCst)));
+    let unique = dir.join(format!(".scenic-probe-{}-{}", crate::sys::pid(), N.fetch_add(1, SeqCst)));
     match fs::symlink_metadata(unique) {
         Ok(_) => true,
         Err(e) => matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory),
@@ -664,21 +664,7 @@ fn probe_ok(dir: &Path) -> bool {
 
 /// Errors that mean the share itself is unreachable (what a soft mount returns once it gives up).
 fn is_disconnect(e: &io::Error) -> bool {
-    matches!(
-        e.raw_os_error(),
-        Some(
-            libc::ETIMEDOUT
-                | libc::ENOTCONN
-                | libc::ENETDOWN
-                | libc::ENETUNREACH
-                | libc::ENETRESET
-                | libc::ECONNABORTED
-                | libc::ECONNRESET
-                | libc::EHOSTDOWN
-                | libc::EHOSTUNREACH
-                | libc::ESHUTDOWN
-        )
-    )
+    crate::sys::is_disconnect(e)
 }
 
 #[cfg(test)]

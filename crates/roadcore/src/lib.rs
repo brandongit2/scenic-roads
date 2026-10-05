@@ -24,7 +24,25 @@ pub mod tile;
 
 use anyhow::{bail, Context, Result};
 use bytemuck::{Pod, Zeroable};
-use memmap2::Mmap;
+#[cfg(not(target_os = "wasi"))]
+pub use memmap2::Mmap;
+
+/// A file's bytes where nothing can be memory-mapped (WASI, the WebAssembly programs workers run:
+/// docs/workers.md): read whole, into 8-byte-aligned memory so typed views cast as they do from a
+/// mapping.
+#[cfg(target_os = "wasi")]
+pub struct Mmap {
+    words: Vec<u64>,
+    len: usize,
+}
+
+#[cfg(target_os = "wasi")]
+impl std::ops::Deref for Mmap {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        &bytemuck::cast_slice(&self.words)[..self.len]
+    }
+}
 use std::fs::File;
 use std::path::Path;
 
@@ -220,7 +238,16 @@ pub fn commit_if_changed(dir: &Path, names: &[&str]) -> Result<()> {
 
 pub fn mmap(path: &Path) -> Result<Mmap> {
     let f = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    #[cfg(target_os = "wasi")]
+    {
+        use std::io::Read;
+        let len = usize::try_from(f.metadata()?.len())?;
+        let mut words = vec![0u64; len.div_ceil(8)];
+        (&f).read_exact(&mut bytemuck::cast_slice_mut(&mut words)[..len]).with_context(|| format!("read {}", path.display()))?;
+        Ok(Mmap { words, len })
+    }
     // SAFETY: build outputs are written once and never modified while mapped.
+    #[cfg(not(target_os = "wasi"))]
     Ok(unsafe { Mmap::map(&f)? })
 }
 

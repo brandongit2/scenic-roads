@@ -364,26 +364,12 @@ pub fn take_peak() -> u64 {
 }
 
 fn run(mut c: Command, what: &str, log: &Path) -> Result<()> {
-    use std::os::unix::process::ExitStatusExt;
     let f = std::fs::File::options().create(true).append(true).open(log)?;
     let t = std::time::Instant::now();
     let child = c.stdout(f.try_clone()?).stderr(f).spawn().with_context(|| format!("start {what}"))?;
-    // Waited for here, not by `Child::wait`, for what it used: its (and its programs') peak memory.
-    let pid = child.id() as libc::pid_t;
-    let (mut status, mut ru): (libc::c_int, libc::rusage) = (0, unsafe { std::mem::zeroed() });
-    loop {
-        // SAFETY: wait4 on our own child, into values we own.
-        if unsafe { libc::wait4(pid, &mut status, 0, &mut ru) } == pid {
-            break;
-        }
-        let e = std::io::Error::last_os_error();
-        if e.kind() != std::io::ErrorKind::Interrupted {
-            return Err(e).with_context(|| format!("wait for {what}"));
-        }
-    }
-    // (Bytes on macOS.)
-    PEAK.fetch_max(ru.ru_maxrss as u64, std::sync::atomic::Ordering::Relaxed);
-    let st = std::process::ExitStatus::from_raw(status);
+    // Waited for with what it used: its (and its programs') peak memory.
+    let (st, peak) = crate::sys::wait_with_peak(child).with_context(|| format!("wait for {what}"))?;
+    PEAK.fetch_max(peak, std::sync::atomic::Ordering::Relaxed);
     if !st.success() {
         // The end of its log into the job's: the unit's folder, its log with it, goes when the next
         // job starts.

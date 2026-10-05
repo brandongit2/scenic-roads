@@ -276,26 +276,16 @@ impl BuildLock {
 
     /// Waits until the lock is ours.
     pub fn take(root: &Path) -> Result<BuildLock> {
-        use std::os::fd::AsRawFd;
         let f = Self::file(root)?;
-        // SAFETY: flock on a descriptor we own; it blocks until the lock is ours.
-        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(std::io::Error::last_os_error()).context("lock the build manifest");
-        }
+        crate::sys::lock(&f, true).context("lock the build manifest")?;
         Ok(BuildLock(f))
     }
 
     /// The lock when it's free now; None when another holds it (a paused job may, for hours).
     pub fn try_take(root: &Path) -> Result<Option<BuildLock>> {
-        use std::os::fd::AsRawFd;
         let f = Self::file(root)?;
-        // SAFETY: flock on a descriptor we own; it doesn't block.
-        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            let e = std::io::Error::last_os_error();
-            if e.raw_os_error() == Some(libc::EWOULDBLOCK) {
-                return Ok(None);
-            }
-            return Err(e).context("lock the build manifest");
+        if !crate::sys::lock(&f, false).context("lock the build manifest")? {
+            return Ok(None);
         }
         Ok(Some(BuildLock(f)))
     }

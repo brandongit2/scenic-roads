@@ -7,7 +7,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
-use std::os::unix::process::CommandExt;
+use crate::sys::Signal;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -75,28 +75,7 @@ struct Record {
     leader_start: u64,
 }
 
-/// A process's start time (seconds since the epoch), when it exists.
-fn process_start(pid: i32) -> Option<u64> {
-    // SAFETY: proc_bsdinfo is plain old data; proc_pidinfo fills at most `size` bytes of it.
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
-    let n = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size) };
-    (n == size).then_some(info.pbi_start_tvsec)
-}
-
-/// The processes of a process group.
-fn group_members(pgid: i32) -> Vec<i32> {
-    const PROC_PGRP_ONLY: u32 = 2;
-    let mut buf = vec![0i32; 1024];
-    // SAFETY: the buffer holds `len` pids and its size in bytes is passed.
-    let n = unsafe { libc::proc_listpids(PROC_PGRP_ONLY, pgid as u32, buf.as_mut_ptr().cast(), (buf.len() * 4) as libc::c_int) };
-    if n <= 0 {
-        return Vec::new();
-    }
-    buf.truncate(n as usize / 4);
-    buf.retain(|&p| p > 0);
-    buf
-}
+use crate::sys::{group_members, process_start};
 
 impl Running {
     /// Starts `spec` with `threads` worker threads (RAYON_NUM_THREADS) and `env`, its output
@@ -112,7 +91,7 @@ impl Running {
         c.args(["-c", "utility"]).arg(prog).args(args);
         c.env("RAYON_NUM_THREADS", threads.to_string()).envs(env.iter().copied()).stdin(Stdio::null()).stdout(out).stderr(err);
         // Its own process group, so pausing and stopping reach every process it starts.
-        c.process_group(0);
+        crate::sys::own_group(&mut c);
         let child = c.spawn().with_context(|| format!("start {}", spec.id))?;
         let pgid = child.id() as i32;
         let caffeinate = keep_awake(child.id());
@@ -125,8 +104,7 @@ impl Running {
     /// Pauses the job's whole process group (`why` goes to the status), and lets the Mac sleep.
     pub fn pause(&mut self, why: &str) {
         if self.paused.is_none() {
-            // SAFETY: plain syscall on our own child's group.
-            unsafe { libc::killpg(self.pgid, libc::SIGSTOP) };
+            crate::sys::signal_group(self.pgid, Signal::Stop);
             if let Some(mut c) = self.caffeinate.take() {
                 let _ = c.kill();
                 let _ = c.wait();
@@ -137,8 +115,7 @@ impl Running {
 
     pub fn resume(&mut self) {
         if self.paused.take().is_some() {
-            // SAFETY: as above.
-            unsafe { libc::killpg(self.pgid, libc::SIGCONT) };
+            crate::sys::signal_group(self.pgid, Signal::Cont);
             self.caffeinate = keep_awake(self.child.id());
         }
     }
@@ -184,11 +161,8 @@ impl Drop for Running {
 /// Stops every process of a group: SIGTERM, then SIGKILL after `grace` if any is left. `reap`
 /// collects our own exited child, so it doesn't linger in the group as a zombie.
 fn stop_group(pgid: i32, grace: Duration, mut reap: impl FnMut()) {
-    // SAFETY: signals to a process group we started.
-    unsafe {
-        libc::killpg(pgid, libc::SIGCONT);
-        libc::killpg(pgid, libc::SIGTERM);
-    }
+    crate::sys::signal_group(pgid, Signal::Cont);
+    crate::sys::signal_group(pgid, Signal::Term);
     let t = Instant::now();
     while t.elapsed() < grace {
         reap();
@@ -197,8 +171,7 @@ fn stop_group(pgid: i32, grace: Duration, mut reap: impl FnMut()) {
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    // SAFETY: as above.
-    unsafe { libc::killpg(pgid, libc::SIGKILL) };
+    crate::sys::signal_group(pgid, Signal::Kill);
     reap();
 }
 
@@ -306,13 +279,11 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         let pgid = r.pgid;
-        // SAFETY: probe only.
-        assert_eq!(unsafe { libc::killpg(pgid, 0) }, 0, "the sleep is still in the group");
+        assert!(crate::sys::signal_group(pgid, Signal::Probe), "the sleep is still in the group");
         let t = Instant::now();
         stop_orphan(&rec);
         assert!(t.elapsed() < Duration::from_secs(10), "stopped by SIGTERM, not after the grace");
-        // SAFETY: probe only.
-        assert_ne!(unsafe { libc::killpg(pgid, 0) }, 0);
+        assert!(!crate::sys::signal_group(pgid, Signal::Probe));
         assert!(!rec.exists());
     }
 }

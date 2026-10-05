@@ -173,7 +173,7 @@ struct Memory {
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
-extern "C" fn on_signal(_: libc::c_int) {
+extern "C" fn on_signal(_: i32) {
     STOP.store(true, Ordering::SeqCst);
 }
 
@@ -231,11 +231,9 @@ pub struct AgentLock(#[allow(dead_code)] std::fs::File);
 impl AgentLock {
     /// None when another agent holds it.
     pub fn try_take(home: &Path) -> Result<Option<AgentLock>> {
-        use std::os::fd::AsRawFd;
         std::fs::create_dir_all(home)?;
         let f = std::fs::File::options().create(true).truncate(false).write(true).open(home.join("agent.lock"))?;
-        // SAFETY: flock on a descriptor we own.
-        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        if !crate::sys::lock(&f, false)? {
             return Ok(None);
         }
         Ok(Some(AgentLock(f)))
@@ -370,11 +368,8 @@ impl Agent {
 
     /// Runs until stopped (SIGTERM, SIGINT), or for one loop with `once`.
     pub fn run(&mut self) -> Result<()> {
-        // SAFETY: the handler only stores to an atomic.
-        unsafe {
-            libc::signal(libc::SIGTERM, on_signal as *const () as libc::sighandler_t);
-            libc::signal(libc::SIGINT, on_signal as *const () as libc::sighandler_t);
-        }
+        // (The handler only stores to an atomic.)
+        crate::sys::on_terminate(on_signal);
         if self._lock.is_some() {
             jobs::stop_orphan(&self.record_path());
         }
@@ -1212,7 +1207,7 @@ fn write_replace(p: &Path, bytes: &[u8]) -> Result<()> {
     loop {
         match std::fs::rename(&tmp, p) {
             Ok(()) => return Ok(()),
-            Err(e) if e.raw_os_error() == Some(libc::EBUSY) && tries < 8 => {
+            Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy && tries < 8 => {
                 tries += 1;
                 std::thread::sleep(Duration::from_millis(250));
             }

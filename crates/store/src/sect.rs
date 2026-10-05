@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
-use std::os::unix::fs::FileExt;
+use crate::sys::PosIo;
 use std::path::Path;
 use xxhash_rust::xxh3::Xxh3Default;
 

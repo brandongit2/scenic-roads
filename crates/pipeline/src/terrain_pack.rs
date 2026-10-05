@@ -170,7 +170,7 @@ impl<'a> ManifestTiles<'a> {
     }
 
     pub fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
-        use std::os::unix::fs::FileExt;
+        use store::sys::PosIo;
         let logical = Self::logical(&self.layer, z, x, y);
         let entry = {
             let mut open = self.open.lock().unwrap();
@@ -204,7 +204,7 @@ impl store::range::RangeRead for FileSource<'_> {
         Ok(self.1)
     }
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, store::iopool::IoError> {
-        use std::os::unix::fs::FileExt;
+        use store::sys::PosIo;
         let mut b = vec![0u8; len];
         self.0.read_exact_at(&mut b, off).map_err(store::iopool::IoError::Io)?;
         Ok(b)

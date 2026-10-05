@@ -11,6 +11,7 @@ pub mod pack;
 pub mod pmtiles;
 pub mod range;
 pub mod sect;
+pub mod sys;
 
 pub use iopool::{IoError, IoPool};
 pub use range::{MmapFile, PooledFile, RangeRead};

@@ -15,7 +15,7 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Write};
-use std::os::unix::fs::FileExt;
+use crate::sys::PosIo;
 use std::path::Path;
 
 pub use roadcore::archive::tile_key;

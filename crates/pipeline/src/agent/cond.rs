@@ -98,16 +98,7 @@ impl SleepWatch {
 
 /// Free bytes on the volume holding `path`.
 pub fn free_bytes(path: &std::path::Path) -> Option<u64> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-    let c = CString::new(path.as_os_str().as_bytes()).ok()?;
-    // SAFETY: `statfs` is plain old data; all zeroes is a valid value, and the path is NUL-terminated.
-    let mut s: libc::statfs = unsafe { std::mem::zeroed() };
-    // SAFETY: as above; `s` outlives the call.
-    if unsafe { libc::statfs(c.as_ptr(), &mut s) } != 0 {
-        return None;
-    }
-    Some(s.f_bavail as u64 * s.f_bsize as u64)
+    store::sys::disk_free(path).ok()
 }
 
 /// This Mac's name, read once per process (temporary files' names: crate::whole).

@@ -9,7 +9,7 @@
 //! Global cell coordinates are `tile * 256 + pixel` at zoom 11.
 
 use anyhow::{bail, Result};
-use memmap2::Mmap;
+use crate::Mmap;
 use std::path::Path;
 
 pub const Z: u8 = 11;

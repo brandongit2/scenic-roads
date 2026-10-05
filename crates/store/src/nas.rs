@@ -235,7 +235,6 @@ pub fn ensure_nsmb_conf(host: &str, share: &str) -> Result<bool> {
 
 /// `ensure_nsmb_conf` for the home folder `home`.
 pub fn ensure_nsmb_conf_in(home: &Path, host: &str, share: &str) -> Result<bool> {
-    use std::os::unix::fs::PermissionsExt;
     let mut path = home.join("Library/Preferences/nsmb.conf");
     // A symlinked file (dotfiles kept elsewhere) is edited where it lives, keeping the link.
     if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
@@ -243,7 +242,7 @@ pub fn ensure_nsmb_conf_in(home: &Path, host: &str, share: &str) -> Result<bool>
     }
     let section = format!("{}:{}", host.to_uppercase(), share.to_uppercase());
     let (old, mode) = match fs::read_to_string(&path) {
-        Ok(s) => (s, fs::metadata(&path).ok().map(|m| m.permissions().mode() & 0o7777)),
+        Ok(s) => (s, crate::sys::mode(&path)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => (String::new(), None),
         Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
     };

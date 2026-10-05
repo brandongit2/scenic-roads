@@ -206,16 +206,9 @@ fn no_cache(f: &File) {
 /// two Macs building the same unit) never share one. GC sweeps those abandoned.
 pub(crate) fn tmp_path(path: &Path) -> PathBuf {
     static HOST: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    let host = HOST.get_or_init(|| {
-        let mut b = [0u8; 256];
-        // SAFETY: gethostname writes at most `b.len()` bytes into the buffer we own.
-        let ok = unsafe { libc::gethostname(b.as_mut_ptr().cast(), b.len()) } == 0;
-        let n = b.iter().position(|&c| c == 0).unwrap_or(b.len());
-        let h = if ok { String::from_utf8_lossy(&b[..n]).replace(['.', '/'], "-") } else { String::new() };
-        if h.is_empty() { "host".into() } else { h }
-    });
+    let host = HOST.get_or_init(|| crate::sys::hostname().map(|h| h.replace(['.', '/'], "-")).unwrap_or_else(|| "host".into()));
     let mut s = OsString::from(path.as_os_str());
-    s.push(format!(".{host}-{}.tmp", std::process::id()));
+    s.push(format!(".{host}-{}.tmp", crate::sys::pid()));
     PathBuf::from(s)
 }
 
@@ -268,19 +261,18 @@ impl Drop for TmpFile {
 /// The temporary name is unique to the call (`<path>.<pid>-<n>.tmp`), so concurrent writers of
 /// the same file can't mix their bytes: the last rename wins whole.
 pub(crate) fn replace_file(path: &Path, bytes: &[u8], mode: Option<u32>) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(0);
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
     let mut name = OsString::from(path.as_os_str());
-    name.push(format!(".{}-{}.tmp", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    name.push(format!(".{}-{}.tmp", crate::sys::pid(), N.fetch_add(1, Ordering::Relaxed)));
     let tmp = TmpFile(PathBuf::from(name));
     let mut f = File::create(&tmp.0)?;
     f.write_all(bytes)?;
     if let Some(mode) = mode {
-        f.set_permissions(fs::Permissions::from_mode(mode))?;
+        crate::sys::set_mode(&f, mode)?;
     }
     f.sync_all()?;
     fs::rename(&tmp.0, path)?;

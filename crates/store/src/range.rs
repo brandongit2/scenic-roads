@@ -166,7 +166,7 @@ impl RangeRead for PlainFile {
     }
 
     fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
-        use std::os::unix::fs::FileExt;
+        use crate::sys::PosIo;
         check_range(self.len, off, len)?;
         let mut b = vec![0u8; len];
         self.file.read_exact_at(&mut b, off).map_err(IoError::Io)?;

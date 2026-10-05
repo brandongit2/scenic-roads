@@ -10,7 +10,7 @@
 
 use anyhow::{bail, Result};
 use bytemuck::{Pod, Zeroable};
-use memmap2::Mmap;
+use crate::Mmap;
 use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::Path;

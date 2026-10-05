@@ -590,28 +590,7 @@ fn scan(dir: &Path, prefix: &str, out: &mut HashMap<String, u64>) -> io::Result<
 
 /// Free bytes on the (local) filesystem holding `path`, for an unprivileged user.
 fn disk_free(path: &Path) -> io::Result<u64> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-    let c = CString::new(path.as_os_str().as_bytes())?;
-    #[cfg(target_os = "macos")]
-    {
-        // SAFETY: `statfs` is plain old data; the path is NUL-terminated. This is the local disk
-        // (statfs is avoided only for NAS paths, where it can hang).
-        let mut st: libc::statfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::statfs(c.as_ptr(), &mut st) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(st.f_bavail.saturating_mul(u64::from(st.f_bsize)))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        // SAFETY: as above, with statvfs.
-        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
-        if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok((st.f_bavail as u64).saturating_mul(st.f_frsize as u64))
-    }
+    crate::sys::disk_free(path)
 }
 
 #[cfg(test)]

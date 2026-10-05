@@ -1201,13 +1201,13 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::remove_file(&named_today).ok();
     // The kept filtered planet within the cover, once per pass and cover: today's merged extract.
     let merged = merged_over_cover(out, &date, &poly, &cache)?;
-    std::os::unix::fs::symlink(&merged, root.join("data/osm/merged.osm.pbf"))?;
+    pipeline::sys::symlink(&merged, &root.join("data/osm/merged.osm.pbf"))?;
     // Today's park facts, seeding this pass's cache of them.
     let facts = epoch.join("areas-wikidata.json");
     if !facts.exists() {
         std::fs::copy(seeds.join("areas/wikidata.json"), &facts)?;
     }
-    std::os::unix::fs::symlink(&facts, root.join("data/areas/wikidata.json"))?;
+    pipeline::sys::symlink(&facts, &root.join("data/areas/wikidata.json"))?;
     // The pageview months: the items job's cache (the same files), today's months seeding it.
     let pv = cache.join("items");
     std::fs::create_dir_all(pv.join("months"))?;
@@ -1217,10 +1217,10 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             std::fs::copy(e.path(), &dest)?;
         }
     }
-    std::os::unix::fs::symlink(&pv, root.join("data/pageviews"))?;
+    pipeline::sys::symlink(&pv, &root.join("data/pageviews"))?;
     // Today's names table, for the layers' English names.
     std::fs::create_dir_all(root.join("data/names"))?;
-    std::os::unix::fs::symlink(seeds.join("names/english.json"), root.join("data/names/english.json"))?;
+    pipeline::sys::symlink(&seeds.join("names/english.json"), &root.join("data/names/english.json"))?;
     // Today's chain.
     let chain = [
         ("heritagewd.py", vec![]),
@@ -1420,7 +1420,7 @@ fn heritage_root(scratch: &Path, dem: &Path, epoch: &Path) -> Result<PathBuf> {
             std::fs::copy(e.path(), root.join("dem").join(&n))?;
         }
     }
-    std::os::unix::fs::symlink(epoch, root.join("data/heritage"))?;
+    pipeline::sys::symlink(&epoch, &root.join("data/heritage"))?;
     Ok(root)
 }
 

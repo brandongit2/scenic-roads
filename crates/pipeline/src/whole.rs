@@ -166,7 +166,7 @@ pub fn tiff_bytes_whole(b: &[u8]) -> bool {
 
 /// Whether TIFF file `p` is whole (its directories read, not its data).
 pub fn tiff_file_whole(p: &Path) -> bool {
-    use std::os::unix::fs::FileExt;
+    use store::sys::PosIo;
     let Ok(f) = std::fs::File::open(p) else { return false };
     let Ok(len) = f.metadata().map(|m| m.len()) else { return false };
     tiff_whole_with(len, &|o, n| {
