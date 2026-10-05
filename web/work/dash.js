@@ -194,7 +194,7 @@ function overview(m) {
   const workLeft = fc ? fc.steps.reduce((t, s) => t + s.work_s, 0) : 0;
   const left = h("div", null,
     h("div", "big", big, h("small", null, share != null ? " of the work done" : unitsLine?.total ? " of the areas built" : "")),
-    h("div", "small dim", fc ? `${dur(workLeft)} of work left at the build Mac's pace; ${fc.done_at ? `with every machine, done ≈ ${clock(fc.done_at)}` : "no finish in sight"}` : "No forecast yet (the build Mac makes one with each plan)"),
+    h("div", "small dim", fc ? `${dur(workLeft)} of work left at the build Mac's pace; ${fc.done_at ? `with every machine, done ≈ ${clock(fc.done_at)}, if the Macs keep going (awake, on mains or above 30%, reaching the NAS)` : "no finish in sight"}` : "No forecast yet (the build Mac makes one with each plan)"),
     fc ? h("div", "small dim", `${Math.round((fc.measured || 0) * 100)}% of that time measured, the rest estimated · forecast ${ago(now, fc.at)}`) : null,
   );
   // The steps as a strip, the one under way outlined.
@@ -273,7 +273,7 @@ function facts(st, x, m) {
   const c = st.conditions || {}, r = st.resources || {};
   const out = [];
   out.push(c.ac === false ? chip(`battery ${c.battery ?? "?"}%`, c.battery != null && c.battery < 40 ? "warn" : "") : chip(c.battery != null ? `mains · ${c.battery}%` : "mains"));
-  out.push(c.nas === false ? chip("NAS unreachable", "bad") : chip(`NAS${r.nas_ms != null ? ` ${r.nas_ms} ms` : ""}${c.home === false ? " via Tailscale" : ""}`, c.home === false ? "warn" : ""));
+  out.push(c.nas === false ? chip("NAS unreachable", "bad") : chip(`NAS${r.nas_ms != null ? ` ${r.nas_ms} ms` : ""}${c.home === false ? " via Tailscale" : ""}${r.nas_free_tb != null && x.role === "build Mac" ? ` · ${r.nas_free_tb} TB free` : ""}`, c.home === false ? "warn" : "", "How long the NAS took to answer, and its free space"));
   if (r.disk_free_gb != null) out.push(chip(`${r.disk_free_gb} GB free${r.cache_gb != null ? ` (+${r.cache_gb} GB cache)` : ""}`, r.disk_free_gb < 10 ? "bad" : r.disk_free_gb < 20 ? "warn" : "", "Free on its disk; the caches the agent may drop to make room"));
   if (r.mem_gb) out.push(chip(`${r.mem_gb} GB memory${r.mem_free_pct != null ? `, ${r.mem_free_pct}% free` : ""}`, r.mem_free_pct != null && r.mem_free_pct < 10 ? "warn" : ""));
   if (r.load1 != null) out.push(chip(`load ${r.load1} on ${r.cores} cores`));
@@ -284,17 +284,19 @@ function facts(st, x, m) {
   return h("div", "facts", out);
 }
 
-// The last day by the hour: how busy it was (a bar an hour), paused hours shaded.
+// The last day by the hour: how busy it was (a bar an hour; several, the pages, together, up to the
+// hour), paused hours shaded.
 function spark(m, name) {
   const rows = m.sw.rates?.rows;
   if (!rows?.length) return null;
+  const names = Array.isArray(name) ? name : [name];
   const bars = rows.map((r) => {
-    const busy = r.busy_s?.[name] || 0;
+    const busy = Math.min(3600, names.reduce((t, nm) => t + (r.busy_s?.[nm] || 0), 0));
     const i = h("i", { class: r.paused_s > 1800 ? "p" : "", title: `${clock(r.t)}: busy ${Math.round(busy / 60)} min${r.paused_s ? `, paused ${Math.round(r.paused_s / 60)} min` : ""}` });
     i.style.height = `${Math.round((busy / 3600) * 100)}%`;
     return i;
   });
-  const today = rows.reduce((t, r) => { for (const [s, k] of Object.entries(r.done?.[name] || {})) t[s] = (t[s] || 0) + k; return t; }, {});
+  const today = rows.reduce((t, r) => { for (const nm of names) for (const [s, k] of Object.entries(r.done?.[nm] || {})) t[s] = (t[s] || 0) + k; return t; }, {});
   const said = Object.entries(today).sort((x, y) => y[1] - x[1]).map(([s, k]) => did(s, k)).join(", ");
   return [h("div", "spark", bars), h("div", "sub", `Last 24 h: ${said || "nothing finished"}`)];
 }
@@ -337,12 +339,12 @@ function pagesCard(m) {
     const st = p.bad ? chip("stopped", "bad") : p.seen_s > 120 ? chip("away", "") : leases.length ? chip(`${leases.length} running`, "run") : chip("waiting", "");
     const left = h("div", null, h("div", null, p.label, " ", st, p.visible === false ? chip("in the background", "warn") : null),
       h("div", "sub", leases.length ? leases.map((l) => `${l.progress || "task"}${l.frac != null ? ` (${Math.round(l.frac * 100)}%)` : ""}`).join(" · ") : p.what));
-    const right = h("div", "sub", `${n(p.done)} done${p.failed ? ` · ${p.failed} failed` : ""}${p.mem_mb ? ` · ${n(p.mem_mb)} MB` : ""} · ${ago(0, -p.seen_s).replace(" ago", "")} ago`);
+    const right = h("div", "sub", `${n(p.done)} done${p.checked ? ` (${n(p.checked)} checked against the build Mac's)` : ""}${p.failed ? ` · ${p.failed} failed` : ""}${p.mem_mb ? ` · ${n(p.mem_mb)} MB` : ""} · ${dur(p.seen_s)} ago`);
     card.append(h("div", "pg", left, right));
   }
   const t = m.tasks;
   if (t.offered != null) card.append(h("div", "sub", `Tasks now: ${t.offered || 0} offered, ${t.leased || 0} running, ${t.done || 0} done, ${t.failed || 0} failed${!t.offered && !t.leased ? " — the build Mac offers them only while it builds areas, a few at a time" : ""}`));
-  for (const e of spark(m, m.pages[0].name) || []) card.append(e);
+  for (const e of spark(m, m.pages.map((p) => p.name)) || []) card.append(e);
   return card;
 }
 
@@ -505,7 +507,7 @@ function publishing(m) {
 function hours(m) {
   const rows = m.sw.rates?.rows;
   if (!rows?.length) return h("div", "small dim", "No history yet (the coordinator keeps it from this version on).");
-  const who = [...new Set(rows.flatMap((r) => Object.keys(ui.feed === "busy" ? r.busy_s || {} : r.done || {})))];
+  const who = [...new Set(rows.flatMap((r) => Object.keys(ui.metric === "busy" ? r.busy_s || {} : r.done || {})))];
   const val = (r, w) => (ui.metric === "busy" ? (r.busy_s?.[w] || 0) / 60 : r.done?.[w]?.unit || 0);
   const max = Math.max(1, ...rows.map((r) => who.reduce((t, w) => t + val(r, w), 0)));
   const chart = h("div", "hours", rows.map((r) => {
@@ -619,7 +621,7 @@ function details(m) {
   if (a.job?.tail) box.append(h("h3", null, "The build Mac's job's last lines"), h("pre", { class: "small dim", style: { whiteSpace: "pre-wrap", margin: 0 } }, a.job.tail));
   const workers = (sw.workers || []).filter((w) => w.seen_s < 3600);
   if (workers.length) box.append(h("h3", null, "Workers heard from"), table(["Name", "Kind", "Doing", "Spares", "Done", "Failed", "Seen"], workers.map((w) => [w.label || w.name, w.kind, (w.what || "").slice(0, 80), w.mem_mb ? `${n(w.mem_mb)} MB` : "", n(w.done), n(w.failed), `${dur(w.seen_s)} ago`])));
-  box.append(h("div", "fresh", `Updated ${clock(now)} · the build Mac's heartbeat ${a.beat ? ago(now, a.beat) : "–"}${m.fc ? ` · forecast ${ago(now, m.fc.at)}` : ""} · history #${sw.seq ?? "–"}`));
+  box.append(h("div", "fresh", `Updated ${clock(now)} · the build Mac's heartbeat ${a.beat ? ago(now, a.beat) : "–"}${a.started ? `, its agent running since ${clock(a.started)} (app ${a.app})` : ""}${m.fc ? ` · forecast ${ago(now, m.fc.at)}` : ""} · history #${sw.seq ?? "–"}`));
   return h("details", { class: "more-box", open: ui.detailsOpen || null, ontoggle: (e) => (ui.detailsOpen = e.target.open) }, h("summary", null, "Details"), box);
 }
 
@@ -654,7 +656,7 @@ function render() {
       h("div", "box", h("h3", null, "Schedule", h("span", null, "each machine's work from now to the end")), schedule(m)),
       h("div", "box", h("h3", null, "Map updates"), publishing(m)),
       h("div", "box", h("h3", null, "Steps", h("span", null, "⇄ helpers may take part")), stepsTable(m)),
-      h("div", "box", h("h3", null, "Regions", h("span", null, m.fc ? "in the order they reach the map" : "")), regionsList(m, render))));
+      h("div", "box", h("h3", null, "Regions", h("span", null, m.fc ? "built one at a time: those the map lacks first, then those with the fewest areas left" : "")), regionsList(m, render))));
   const activity = section("d-activity", "activity", "Activity", "the last day",
     h("div", "box", hours(m),
       h("div", "feedbar", h("div", "seg", [["all", "All"], ["problems", "Problems"], ["publishing", "Map updates"], ["pauses", "Pauses & conditions"]].map(([k, t]) => h("button", { class: ui.feed === k ? "on" : "", onclick: () => { ui.feed = k; render(); } }, t)))),

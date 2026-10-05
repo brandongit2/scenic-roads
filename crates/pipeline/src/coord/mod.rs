@@ -947,7 +947,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                 .iter()
                 .map(|(n, w)| {
                     let fit = w.ask.as_ref().filter(|a| a.kind == "native").map(|a| s.fit(a, now)).unwrap_or_default();
-                    serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "bad": w.bad, "app": w.app, "visible": w.visible, "can": w.can, "fit": fit, "seen_s": now.duration_since(w.seen).as_secs() })
+                    serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "checked": w.checked, "bad": w.bad, "app": w.app, "visible": w.visible, "can": w.can, "fit": fit, "seen_s": now.duration_since(w.seen).as_secs() })
                 })
                 .collect();
             // The tasks, by state.
@@ -1403,6 +1403,36 @@ mod tests {
     fn handoff(units: &[(&str, &str)]) -> Handoff {
         let changes = units.iter().map(|(u, _)| (format!("base/{}", u.replace('/', "-")), Some(format!("base/{}.0000000000000003.base", u.replace('/', "-"))))).collect();
         Handoff { changes, done: Some(("unit".into(), units.iter().map(|(u, k)| (u.to_string(), k.to_string())).collect())), ..Default::default() }
+    }
+
+    #[test]
+    fn the_history_and_the_swarm_say_what_happened_and_why() {
+        let (_d, c, w) = start();
+        let units: Vec<(String, String, u64)> = (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
+        c.offer_units("2026-09-28", units);
+        // A worker that spares 4 GB takes two areas (the third too big), hands one back.
+        c.shared.lock().unwrap().costs.insert("6/1/1".into(), Cost { peak_mb: 9000, secs: 60 });
+        let g = w.ask(&Ask { max: 2, ..ask(4096) }).unwrap().unwrap();
+        let Granted::Job { targets, .. } = &g.work else { panic!("a job") };
+        let one: Vec<(&str, &str)> = targets.iter().take(1).map(|(t, k)| (t.as_str(), k.as_str())).collect();
+        w.done(&Done { worker: "m1".into(), lease: g.lease, handoff: Some(handoff(&one)), ..Default::default() }).unwrap();
+        c.note(history::Event { worker: Some("m4".into()), targets: vec!["ohio".into()], ..history::Event::new("catalog") });
+        // What happened, in order, after a number.
+        let (code, h) = w.post_json("/work/history", &serde_json::json!({ "since": 0 })).unwrap();
+        assert_eq!(code, 200);
+        let kinds: Vec<&str> = h["events"].as_array().unwrap().iter().map(|e| e["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, ["agent", "worker", "lease", "done", "catalog"]);
+        let last = h["seq"].as_u64().unwrap();
+        assert!(w.post_json("/work/history", &serde_json::json!({ "since": last })).unwrap().1["events"].as_array().unwrap().is_empty());
+        // The swarm: the history's number and the hours; the worker's fit (the area it holds, the one
+        // too big for it); the tasks by state.
+        let (_, sw) = w.post_json("/work/swarm", &serde_json::json!({})).unwrap();
+        assert_eq!(sw["seq"].as_u64(), Some(last));
+        assert_eq!(sw["rates"]["rows"].as_array().unwrap().len(), 24);
+        let m1 = sw["workers"].as_array().unwrap().iter().find(|x| x["name"] == "m1").unwrap();
+        let fit = &m1["fit"][0];
+        assert_eq!((fit["offered"].as_u64(), fit["done"].as_u64(), fit["too_big"].as_u64(), fit["fits"].as_u64()), (Some(3), Some(1), Some(1), Some(1)));
+        assert!(sw["tasks"].is_object() && sw["leases"].as_array().unwrap().is_empty());
     }
 
     #[test]
