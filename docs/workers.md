@@ -140,19 +140,22 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   death lowered it), else 1 GB,
   never more than the largest memory the browser will create; it can be set on the page (This
   device, Memory to spare: kept in that browser); after three tasks near it succeed it rises by a
-  quarter; a task the tab died in on screen lowers it below that task's (the page notes what it
-  runs and whether it's on screen, and finds the note when it's reloaded, or within a minute after:
-  iOS reloads a tab it killed at once, its note still fresh) and is given back. A tab killed while
-  it was in the background (iOS empties a hidden tab's memory when it wants it, whatever the tab
-  holds) gives its tasks back and lowers nothing. Each task's own memory is capped at its budget
-  besides.
+  quarter; a task the tab died in on screen lowers it below that task's (each tab notes what it
+  runs and whether it's on screen, under a key of its own, and the page finds the note when it's
+  reloaded, or within a minute after: iOS reloads a tab it killed at once, its note still fresh)
+  and is given back. On an iPhone, iPad or Android, a tab killed while it was in the background
+  (they empty a hidden tab's memory when they want it, whatever the tab holds) gives its tasks back
+  and lowers nothing; elsewhere a browser does that only to a tab holding too much, so there it
+  lowers the ceiling as on screen. Each task's own memory is capped at its budget besides.
 - **Leaving the page, and coming back:** behind another app or with the screen off, iOS freezes
   the page and its tasks where they are; back within the lease's ten minutes, they go on where they
   were (the next heartbeat renews the lease), else the lease has lapsed, the task's gone to another
   worker or the build Mac, and the page drops it ("taken back") and asks for more. Reloaded or
   closed, the page gives its tasks back as it goes (`pagehide`: offered again at once, to it too,
-  not held against it). The build Mac never waits on a page: a tail it needs is run there if a
-  worker still holds it.
+  not held against it) and marks its note gone, so the next page gives them back again should those
+  not have got through; brought back from the browser's back-forward cache, its slots start
+  afresh. The worker page shows a task given back as such, not as a failure. The build Mac never
+  waits on a page: a tail it needs is run there if a worker still holds it.
 - **Planned:** cutting a task to the worker (smaller sample ranges for smaller ceilings).
 
 ## 7. The web worker (built)

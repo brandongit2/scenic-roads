@@ -124,27 +124,44 @@ if (!WATCH && /on iPad$/.test(label) && store.get("startV", 0) < 2) {
   store.set("ceiling", ceiling);
   store.set("startV", 2);
 }
-// Each tab's running tasks, noted with the time (renewed every minute while it lives) and whether
-// it was on screen. A note not renewed for two minutes is a tab that died, and its tasks are given
-// back. One that died on screen took more than this browser lets a tab have: the ceiling comes down.
-// One that died in the background (iOS empties a hidden tab's memory when it wants it, whatever the
-// tab holds) costs nothing. Looked for as the page starts and every minute after: a tab iOS killed
-// is reloaded at once, when its note is still fresh. (Another tab's live note is left alone. A tab
-// reloaded or closed gives its tasks back as it goes, and leaves no note: `pagehide` below.)
+// Each tab's running tasks, noted under a key of its own (`running:<tab>`: tabs never rewrite each
+// other's) with the time (renewed every minute while it lives) and whether it was on screen. A note
+// not renewed for two minutes is a tab that died, and its tasks are given back. One that died on
+// screen took more than this browser lets a tab have: the ceiling comes down. On an iPhone, iPad or
+// Android one that died in the background costs nothing (they empty a hidden tab's memory when they
+// want it, whatever the tab holds); elsewhere a browser only does that to a tab holding too much,
+// so there it counts as on screen. Looked for as the page starts and every minute after: a tab iOS
+// killed is reloaded at once, when its note is still fresh. (Another tab's live note is left alone.
+// A tab reloaded or closed gives its tasks back as it goes, and marks its note gone, so the next
+// page gives them back again, should those not have got through: `pagehide` below.)
 const tab = Math.random().toString(36).slice(2, 10);
+const NOTE = "running:";
+const mobile = /on (iPad|iPhone|Android)$/.test(label);
+function notes() {
+  const out = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(NOTE)) out.push([k.slice(NOTE.length), JSON.parse(localStorage.getItem(k))]);
+    }
+    // (The notes as an earlier page kept them, all in one.)
+    const old = store.get("running", null);
+    if (old && !Array.isArray(old)) out.push(...Object.entries(old).map(([t, n]) => [t, n]));
+  } catch {}
+  return out;
+}
 function reap() {
   if (WATCH) return false;
-  const notes = store.get("running", null);
-  const all = notes && !Array.isArray(notes) ? notes : {};
-  const [died, hidden] = [[], []];
-  for (const [t, n] of Object.entries(all)) {
-    if (t !== tab && Date.now() - (n.at || 0) > 120000) {
-      (n.vis === false ? hidden : died).push(...(n.tasks || []));
-      delete all[t];
-    }
+  const [died, hidden, gone] = [[], [], []];
+  for (const [t, n] of notes()) {
+    if (t === tab || !n || (!n.gone && Date.now() - (n.at || 0) <= 120000)) continue;
+    try { localStorage.removeItem(NOTE + t); } catch {}
+    (n.gone ? gone : n.vis === false && mobile ? hidden : died).push(...(n.tasks || []));
   }
-  if (!died.length && !hidden.length) return false;
-  store.set("running", all);
+  try { localStorage.removeItem("running"); } catch {}
+  if (!died.length && !hidden.length && !gone.length) return false;
+  // (Given back again, or for the first time: a lease already given back is gone, and that's all.)
+  for (const t of gone) call("/work/fail", { worker, lease: t.lease, error: "the page was reloaded or closed", interrupted: true }).catch(() => {});
   for (const t of hidden) call("/work/fail", { worker, lease: t.lease, error: "the page was closed in the background", interrupted: true }).catch(() => {});
   if (hidden.length) log(`The page was closed in the background with ${hidden.length > 1 ? `${hidden.length} tasks` : "a task"} under way: given back.`);
   if (!died.length) return false;
@@ -228,33 +245,52 @@ function show() {
 }
 
 // This tab's running tasks, kept (with the time, and whether it's on screen) so a page loaded after
-// this one dies can give them back, and lower its ceiling if it died on screen.
+// this one dies can give them back, and lower its ceiling if it died on screen. (Not once it's
+// leaving: its note then says so, `pagehide`.)
+let leaving = false;
+const leased = () => slots.filter((s) => s.lease).map((s) => ({ lease: s.lease, mem_mb: s.mem }));
 function remember() {
-  const r = slots.filter((s) => s.lease).map((s) => ({ lease: s.lease, mem_mb: s.mem }));
-  const notes = store.get("running", null);
-  const all = notes && !Array.isArray(notes) ? notes : {};
-  if (r.length) all[tab] = { at: Date.now(), vis: document.visibilityState === "visible", tasks: r };
-  else delete all[tab];
-  store.set("running", all);
+  if (WATCH || leaving) return;
+  const r = leased();
+  try {
+    if (r.length) localStorage.setItem(NOTE + tab, JSON.stringify({ at: Date.now(), vis: document.visibilityState === "visible", tasks: r }));
+    else localStorage.removeItem(NOTE + tab);
+  } catch {}
 }
 // (Noted as it goes behind, before iOS freezes it, and as it comes back.)
 document.addEventListener("visibilitychange", remember);
 // Reloaded or closed (not frozen in the background, nor killed: neither says so): its tasks given
-// back at once, so they go out again without a wait, and not held against this browser; no note
-// left behind to be taken for a death.
+// back at once, so they go out again without a wait, and not held against this browser; its note
+// marked gone, so the next page gives them back again in case these didn't get through (the
+// network away, the coordinator restarting).
 window.addEventListener("pagehide", () => {
   if (WATCH) return;
-  for (const s of slots) {
-    if (!s.lease) continue;
+  const r = leased();
+  for (const t of r) {
     try {
-      fetch("/work/fail", { method: "POST", keepalive: true, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Worker": worker }, body: JSON.stringify({ worker, lease: s.lease, error: "the page was reloaded or closed", interrupted: true }) }).catch(() => {});
+      fetch("/work/fail", { method: "POST", keepalive: true, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Worker": worker }, body: JSON.stringify({ worker, lease: t.lease, error: "the page was reloaded or closed", interrupted: true }) }).catch(() => {});
     } catch {}
   }
-  const notes = store.get("running", null);
-  if (notes && !Array.isArray(notes)) {
-    delete notes[tab];
-    store.set("running", notes);
+  try {
+    if (r.length) localStorage.setItem(NOTE + tab, JSON.stringify({ at: Date.now(), vis: false, gone: true, tasks: r }));
+    else localStorage.removeItem(NOTE + tab);
+  } catch {}
+  leaving = true;
+});
+// Back from the browser's back-forward cache (its leases given back as it went): its slots cleared
+// and their programs stopped, as when a task's taken back; then it asks again.
+window.addEventListener("pageshow", (e) => {
+  if (!e.persisted || WATCH) return;
+  leaving = false;
+  for (const s of slots) {
+    if (!s.lease) continue;
+    spawn(s);
+    reserved -= s.mem;
+    Object.assign(s, { lease: null, task: null, mem: 0, state: "idle", detail: "", frac: 0 });
   }
+  try { localStorage.removeItem(NOTE + tab); } catch {}
+  show();
+  fill();
 });
 
 function onSlot(s, m) {
@@ -325,9 +361,11 @@ setInterval(async () => {
   if (reap()) show();
   for (const s of slots) {
     if (!s.lease) continue;
+    // (The answer for this lease: by the time it comes, the slot may have finished and taken another.)
+    const lease = s.lease;
     try {
-      const [, r] = await call("/work/beat", { worker, lease: s.lease, progress: s.detail, frac: s.frac });
-      if (r && r.ok === false && s.lease) {
+      const [, r] = await call("/work/beat", { worker, lease, progress: s.detail, frac: s.frac });
+      if (r && r.ok === false && s.lease === lease) {
         log(`${esc(s.task.unit)}: taken back (another worker or the build Mac has it)`);
         spawn(s);
         reserved -= s.mem;

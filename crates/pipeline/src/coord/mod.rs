@@ -1376,7 +1376,9 @@ mod http {
         let w = worker(&h);
         let dest = c.shared.lock().unwrap().tasks.upload(lease, &w, &path);
         let Some(dest) = dest else { return error(StatusCode::GONE, "that lease is gone") };
-        let mut part = Part(PathBuf::from(format!("{}.part", dest.display())), false);
+        // (Named by its lease too: a stale upload of the same file, still streaming for the lease
+        // before, never shares or removes it.)
+        let mut part = Part(PathBuf::from(format!("{}.{lease}.part", dest.display())), false);
         let r: Result<u64> = async {
             tokio::fs::create_dir_all(dest.parent().unwrap()).await?;
             let mut f = tokio::fs::File::create(&part.0).await?;
