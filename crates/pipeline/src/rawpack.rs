@@ -124,7 +124,7 @@ fn named_right(p: &Path, name: &str) -> Result<bool> {
 
 /// An archive's entries, read alone (not the whole archive: over SMB, one from the NAS's), and the
 /// file, open.
-fn entries_of(p: &Path) -> Result<(std::fs::File, Vec<Entry>)> {
+pub fn entries_of(p: &Path) -> Result<(std::fs::File, Vec<Entry>)> {
     let f = std::fs::File::open(p).with_context(|| format!("open {}", p.display()))?;
     let mut h = [0u8; 24];
     f.read_exact_at(&mut h, 0).with_context(|| format!("read {}", p.display()))?;

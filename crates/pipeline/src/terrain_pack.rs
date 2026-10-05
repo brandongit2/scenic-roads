@@ -219,10 +219,22 @@ impl store::range::RangeRead for FileSource<'_> {
     }
 }
 
+/// An area's raw tile archives as read (RawTiles): its first tiles straight from the NAS's (each
+/// archive's entries read once, then a ranged read a tile), so a job wanting a tile or two of an
+/// area doesn't copy hundreds of MB; past RANGED of them, copied here whole and opened (one large
+/// read each, then local, as a terrain job reads thousands).
+enum Opened {
+    Ranged { archives: Vec<(std::fs::File, Vec<roadcore::archive::Entry>)>, reads: usize },
+    Here(std::sync::Arc<[roadcore::archive::Archive]>),
+}
+
+/// The tiles of an area read straight from the NAS's archives before they're copied here whole.
+const RANGED: usize = 16;
+
 /// AWS's raw tiles, kept so each is downloaded once: in the build Mac's cache as they come, then on
 /// the NAS packed (crate::rawpack: archives grouped as the terrain is, packed at the end of the job
-/// that fetched them, or by room-making), each archive copied here whole the first time one of its
-/// tiles is wanted; and the NAS's loose tiles from before (`sources/aws-terrarium/<z>/<x>/<y>.png`,
+/// that fetched them, or by room-making), read from there (`Opened`: a few tiles of an area by
+/// range, else its archives copied here whole); and the NAS's loose tiles from before (`sources/aws-terrarium/<z>/<x>/<y>.png`,
 /// `.none` for a tile AWS doesn't have), while they're there. Packs are always made from the same
 /// immutable source: processing a tile twice isn't idempotent, so stored (processed) tiles are never
 /// an input. Each loose copy is written straight to its name (crate::whole::write_in_place); every
@@ -239,9 +251,9 @@ pub struct RawTiles {
     /// The store's archives' index: read when first wanted (tried again a minute after it can't
     /// be), and again when an archive it names is gone from the NAS (a job that outlived it).
     index: Mutex<(Option<std::sync::Arc<crate::rawpack::Index>>, Option<std::time::Instant>)>,
-    /// Each area's archives here, newest first, opened when first wanted: by the area's own lock,
-    /// so copying one from the NAS holds up only the tiles of that area.
-    archives: Mutex<HashMap<String, std::sync::Arc<Mutex<Option<std::sync::Arc<[roadcore::archive::Archive]>>>>>>,
+    /// Each area's archives, newest first, opened when first wanted: by the area's own lock, so
+    /// reading one from the NAS holds up only the tiles of that area.
+    archives: Mutex<HashMap<String, std::sync::Arc<Mutex<Option<Opened>>>>>,
 }
 
 impl RawTiles {
@@ -293,20 +305,24 @@ impl RawTiles {
         }
     }
 
-    /// An area's archives here, newest first, each copied from the NAS whole the first time (and
-    /// marked used: room-making deletes the least recently used); None when one can't be (not
-    /// remembered: the NAS may answer next time).
-    fn open_area(&self, st: &std::path::Path, area: &str) -> Option<std::sync::Arc<[roadcore::archive::Archive]>> {
+    /// An area's archives, newest first: here when each has its copy here, else to be read by range
+    /// (each one's entries read now, from its copy here or the NAS's). None when one can't be (not
+    /// remembered: the NAS may answer next time). An archive the index names that's gone from the
+    /// NAS (a job that outlived the index it read) has the index read again.
+    fn open_area(&self, st: &std::path::Path, area: &str) -> Option<Opened> {
         for fresh in [false, true] {
             let index = self.index(st, fresh)?;
+            let packs = index.of(area);
+            if packs.iter().all(|p| self.dir.join("packs").join(&p.name).exists()) {
+                if let Some(here) = self.copy_area(st, packs) {
+                    return Some(Opened::Here(here));
+                }
+            }
             let mut v = Vec::new();
-            for p in index.of(area).iter().rev() {
-                let opened = crate::rawpack::local_copy(&self.dir, st, &p.name).and_then(|l| {
-                    std::fs::File::options().append(true).open(&l).and_then(|f| f.set_modified(std::time::SystemTime::now())).ok();
-                    roadcore::archive::Archive::open(&l)
-                });
-                match opened {
-                    Ok(a) => v.push(a),
+            for p in packs.iter().rev() {
+                let local = self.dir.join("packs").join(&p.name);
+                match crate::rawpack::entries_of(&if local.exists() { local } else { st.join("packs").join(&p.name) }) {
+                    Ok(e) => v.push(e),
                     // (Gone from the NAS: the index read before is out of date.)
                     Err(e) if !fresh && crate::rawpack::not_found(&e) => break,
                     Err(e) => {
@@ -315,11 +331,32 @@ impl RawTiles {
                     }
                 }
             }
-            if v.len() == index.of(area).len() {
-                return Some(v.into());
+            if v.len() == packs.len() {
+                return Some(Opened::Ranged { archives: v, reads: 0 });
             }
         }
         None
+    }
+
+    /// Archives `packs`' copies here, newest first, each copied from the NAS whole the first time
+    /// (checked against its name) and marked used (room-making deletes the least recently used);
+    /// None when one can't be.
+    fn copy_area(&self, st: &std::path::Path, packs: &[crate::rawpack::Pack]) -> Option<std::sync::Arc<[roadcore::archive::Archive]>> {
+        let mut v = Vec::new();
+        for p in packs.iter().rev() {
+            let opened = crate::rawpack::local_copy(&self.dir, st, &p.name).and_then(|l| {
+                std::fs::File::options().append(true).open(&l).and_then(|f| f.set_modified(std::time::SystemTime::now())).ok();
+                roadcore::archive::Archive::open(&l)
+            });
+            match opened {
+                Ok(a) => v.push(a),
+                Err(e) => {
+                    eprintln!("terrain: raw tile archive {}: {e:#}", p.name);
+                    return None;
+                }
+            }
+        }
+        Some(v.into())
     }
 
     /// A tile from its area's archives: Some(None) when AWS hasn't it, None when they (or the
@@ -328,22 +365,49 @@ impl RawTiles {
         let st = self.store.as_ref()?;
         let area = crate::rawpack::area(z, x, y);
         let cell = self.archives.lock().unwrap().entry(area.clone()).or_default().clone();
-        let list = {
+        let key = roadcore::archive::tile_key(z, x, y);
+        let whole = |b: &[u8]| -> Option<Option<Vec<u8>>> {
+            if b.is_empty() {
+                Some(None)
+            } else if crate::whole::png_whole(b) {
+                Some(Some(b.to_vec()))
+            } else {
+                eprintln!("terrain: {z}/{x}/{y} in an archive of {area} isn't whole: passed over");
+                None
+            }
+        };
+        let here = {
             let mut c = cell.lock().unwrap();
             if c.is_none() {
                 *c = Some(self.open_area(st, &area)?);
             }
-            c.clone()?
-        };
-        for a in list.iter() {
-            match a.get(z, x, y) {
-                Some([]) => return Some(None),
-                Some(b) if crate::whole::png_whole(b) => return Some(Some(b.to_vec())),
-                Some(_) => eprintln!("terrain: {z}/{x}/{y} in an archive of {area} isn't whole: passed over"),
-                None => {}
+            // (Read a few times: copied here whole, if it can be; read by range meanwhile.)
+            if matches!(&*c, Some(Opened::Ranged { reads, .. }) if *reads >= RANGED) {
+                let index = self.index(st, false)?;
+                if let Some(h) = self.copy_area(st, index.of(&area)) {
+                    *c = Some(Opened::Here(h));
+                }
             }
-        }
-        None
+            match c.as_mut()? {
+                Opened::Here(h) => h.clone(),
+                Opened::Ranged { archives, reads } => {
+                    *reads += 1;
+                    for (f, entries) in archives.iter() {
+                        let Ok(i) = entries.binary_search_by_key(&key, |e| e.key) else { continue };
+                        let mut b = vec![0u8; entries[i].len as usize];
+                        if let Err(e) = store::sys::PosIo::read_exact_at(f, &mut b, entries[i].offset) {
+                            eprintln!("terrain: {z}/{x}/{y} from an archive of {area}: {e}");
+                            return None;
+                        }
+                        if let Some(t) = whole(&b) {
+                            return Some(t);
+                        }
+                    }
+                    return None;
+                }
+            }
+        };
+        here.iter().find_map(|a| a.get(z, x, y).and_then(|b| whole(b)))
     }
 
     /// Makes folder `d` (once).
@@ -680,12 +744,22 @@ mod tests {
             std::fs::File::options().append(true).open(other.join(rel)).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(120)).unwrap();
         }
         assert_eq!(crate::rawpack::pack_local(&other, &store, &root, true).unwrap(), 2);
-        // A fresh cache reads them from their area's archive, copied here whole once: no loose file
-        // here or there.
+        // A fresh cache reads them from their area's archive on the NAS, a tile at a time (no loose
+        // file here or there, no copy of the archive yet)...
         let local = d.path().join("local");
         let raw = RawTiles::with_store(&local, &store);
         assert_eq!(raw.get(12, 2048, 1365).unwrap(), (Some(png.clone()), false));
         assert_eq!(raw.get(12, 2049, 1365).unwrap(), (None, false), "AWS hasn't it");
-        assert!(!local.join("12/2048/1365.png").exists() && std::fs::read_dir(local.join("packs")).unwrap().count() == 1);
+        let copies = || std::fs::read_dir(local.join("packs")).map_or(0, |d| d.count());
+        assert!(!local.join("12/2048/1365.png").exists() && copies() == 0);
+        // ...and copies it here whole once it's read more.
+        for _ in 0..RANGED {
+            assert_eq!(raw.get(12, 2048, 1365).unwrap(), (Some(png.clone()), false));
+        }
+        assert_eq!(copies(), 1);
+        assert_eq!(raw.get(12, 2049, 1365).unwrap(), (None, false));
+        // Another job finds the copy here.
+        let again = RawTiles::with_store(&local, &store);
+        assert_eq!(again.get(12, 2048, 1365).unwrap(), (Some(png.clone()), false));
     }
 }

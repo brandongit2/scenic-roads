@@ -255,9 +255,10 @@ record changes back through the build Mac's coordinator, which journals them for
     or listed in its `gone`, with when: listed before it's put there (taken off once named) and
     when the index stops naming it, and deleted a day later, so a job that read the index before
     stays right and one cut short leaves nothing behind. Only the build Mac packs, changing the
-    index under its build lock. A tile is read from its area's archives, each copied to the Mac
-    whole once and checked against its name; an archive gone from the NAS has the index read
-    again. The NAS's loose tiles from before (`<z>/<x>/<y>.png`, copied in bulk by
+    index under its build lock. A tile is read from its area's archives: an area's first 16 by
+    range from the NAS's (a job that wants a tile or two of an area, as peaks do, copies nothing),
+    then each copied to the Mac whole once and checked against its name (a terrain job reads
+    thousands); an archive gone from the NAS has the index read again. The NAS's loose tiles from before (`<z>/<x>/<y>.png`, copied in bulk by
     `tools/nas/raw-tiles.sh`) are read while they're there, and packed by `tools/nas/raw-pack.sh`
     (the NAS's own tar over SSH, the tiles in their areas' order, so an area is packed once with a
     GB or two of the Mac's disk); none is fetched twice, only a lost disk before the packing would.

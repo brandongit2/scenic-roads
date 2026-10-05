@@ -75,7 +75,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   the caches (plan §8, Room on the disk).
 - **Planned:**
   - **Ranges:** the exact byte ranges a task reads (DEM tiles, canopy strips, pack entries), so only
-    those are fetched and sent.
+    those are fetched and sent, as a job reads a few raw terrain tiles of an area from the NAS's
+    archives (plan §3, Downloads).
   - **No listings:** a content-named index per dataset (canopy squares, FABDEM, kept samples), read
     from one file instead of found by listing or probing, as the raw terrain tiles' archives are
     (plan §3, Downloads).
