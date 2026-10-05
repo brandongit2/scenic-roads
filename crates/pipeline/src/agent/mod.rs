@@ -101,18 +101,17 @@ const ALONE: [&str; 10] = ["osm-pass", "pass-sets", "trailends", "reach", "terra
 /// deletes here: never two at once.
 const RAW: [&str; 4] = ["terrain", "terrain-root", "terrain-z8", "peaks"];
 
-/// Whether jobs of steps `a` and `b` can't run at once: either runs alone, both read the raw tiles,
-/// or they're the same step and it isn't a shared one (one job's work: its targets held by nothing
-/// else). A shared step's targets are held apart (crate::coord), and each slot has a scratch
-/// folder of its own.
-fn clash(a: &str, b: &str) -> bool {
-    ALONE.contains(&a) || ALONE.contains(&b) || (RAW.contains(&a) && RAW.contains(&b)) || (a == b && !claims::SHARED.contains(&a))
-}
+/// Steps that ask Wikidata and Wikipedia a great deal from this Mac's address, each pacing itself
+/// as if it were alone (heritagedetails: under ten a minute): never two at once.
+const WIKI: [&str; 2] = ["items", "heritage"];
 
-/// Whether a job of `step` reads the caches `room::make_room` deletes from (canopy squares, raw
-/// tiles, copies of the records' files): while one runs, the other job's start makes no room.
-fn reads_caches(step: &str) -> bool {
-    !LIGHT.contains(&step) && step != "catalog" && step != "prune" && step != "backup"
+/// Whether jobs of steps `a` and `b` can't run at once: either runs alone, both read the raw tiles,
+/// both ask Wikidata, or they're the same step and it isn't a shared one (one job's work: its
+/// targets held by nothing else). A shared step's targets are held apart (crate::coord), and each
+/// slot has a scratch folder of its own.
+fn clash(a: &str, b: &str) -> bool {
+    let both = |set: &[&str]| set.contains(&a) && set.contains(&b);
+    ALONE.contains(&a) || ALONE.contains(&b) || both(&RAW) || both(&WIKI) || (a == b && !claims::SHARED.contains(&a))
 }
 
 /// The memory a job of `step` is expected to take beside another (MB) before its own run has said:
@@ -545,6 +544,8 @@ pub struct Agent {
     slots: [Slot; SLOTS],
     /// Why the second slot has nothing, when it hasn't, for the status.
     beside_why: Option<String>,
+    /// The disk's free bytes as a test sets them (`disk_free`).
+    free_set: Option<u64>,
     sleep: SleepWatch,
     last_mount_try: Option<Instant>,
     /// The heartbeat last written to the NAS (without its time) and when: written again only when it
@@ -653,7 +654,7 @@ impl Agent {
         // The build's pause as this agent last knew it (a helper that can't reach the build Mac stays
         // as it was).
         let pause: Option<crate::control::Pause> = std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default() })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1103,6 +1104,11 @@ impl Agent {
         !self.o.helper && !self.o.dry_run && self._lock.is_some() && self.coord.is_some()
     }
 
+    /// The free space on this Mac's disk (where the agent's folder is).
+    fn disk_free(&self) -> u64 {
+        self.free_set.unwrap_or_else(|| room::disk_free(&self.o.home).unwrap_or(0))
+    }
+
     /// Whether neither slot runs a job.
     fn idle(&self) -> bool {
         self.slots.iter().all(|s| s.running.is_none())
@@ -1291,7 +1297,9 @@ impl Agent {
         // slot free; the second's, each minute), when a job ends, and otherwise every five minutes
         // for the heartbeat (between, its last view is shown).
         let second_free = self.second_allowed() && self.slots[1].running.is_none();
-        let every = Duration::from_secs(if second_free { 60 } else { 300 });
+        // (Not while the first runs alone: nothing would start beside it.)
+        let alone = self.slots[0].running.as_ref().is_some_and(|r| ALONE.contains(&step_of(&r.spec.id).unwrap_or_default().as_str()));
+        let every = Duration::from_secs(if second_free && !alone { 60 } else { 300 });
         let plan_due = idle || ended || self.planned.as_ref().is_none_or(|p| p.at.elapsed() >= every);
         let plan = match &root {
             Some(root) if self.o.helper => {
@@ -1333,20 +1341,7 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "Building".into(), why: p.why() });
         }
         if idle && !newer && self.pause.is_none() {
-            // (Not one that can't run beside the second job's: crate::agent::clash.)
-            let beside = self.slots[1].running.as_ref().map(|r| (step_of(&r.spec.id).unwrap_or_default(), r.spec.id.clone()));
-            for spec in &plan {
-                if let Some((b, id)) = &beside {
-                    let s = step_of(&spec.id).unwrap_or_default();
-                    if *id == spec.id || clash(&s, b) {
-                        waiting.push(Waiting { step: Some(s), what: spec.what.clone(), why: format!("waits for the job beside it ({}) to end", build::label(b)) });
-                        continue;
-                    }
-                }
-                if self.try_start(0, spec.clone(), &c, root.as_deref(), &mut waiting) {
-                    break;
-                }
-            }
+            self.start_first(&plan, &c, root.as_deref(), &mut waiting);
             // (Why the jobs before it wait: kept with the plan, so the status says so while the job
             // started runs, not only between jobs.)
             if let Some(p) = self.planned.as_mut() {
@@ -1369,6 +1364,8 @@ impl Agent {
             } else {
                 self.start_second(&plan, &c, root.as_deref());
             }
+        } else if second_free && plan_due && root.is_some() {
+            self.beside_why = Some("nothing to build now".into());
         } else if self.slots[1].running.is_some() {
             self.beside_why = None;
         }
@@ -1482,9 +1479,9 @@ impl Agent {
             eprintln!("agent: {id} {} after {secs} s", if ok { "finished" } else if paused { "paused at a safe point" } else { "failed" });
             let how = if ok { String::new() } else if paused { "paused at a safe point".to_string() } else { format!("failed ({st})") };
             self.note_end(k, &step, &done, secs, ok, &how);
-            // (What a target of its step takes here, for the forecast: the first job's alone, the
-            // second's running beside it.)
-            if ok && of > 0 && !step.is_empty() && k == 0 {
+            // (What a target of its step takes here, for the forecast: the first job's, and the
+            // second's network work, whose time the job beside it doesn't change.)
+            if ok && of > 0 && !step.is_empty() && (k == 0 || LIGHT.contains(&step.as_str())) {
                 let each = secs as f64 / of as f64;
                 let e = self.mem.step_secs.entry(step.clone()).or_insert(each);
                 *e = 0.7 * *e + 0.3 * each;
@@ -1603,6 +1600,30 @@ impl Agent {
         started
     }
 
+    /// The first job, when its slot is free: the plan's first that can start, not the second job's
+    /// own, nor network work left to it (`left_to_second`); one that waits for a reason of its own
+    /// passed over, one that waits for the job beside it (`waits_for_second`) waited for, not passed
+    /// over. Why the jobs before it wait, in `waiting`.
+    fn start_first(&mut self, plan: &[JobSpec], c: &Conditions, root: Option<&Path>, waiting: &mut Vec<Waiting>) {
+        let beside = self.slots[1].running.as_ref().map(|r| r.spec.id.clone());
+        for spec in plan {
+            if beside.as_deref() == Some(spec.id.as_str()) || self.left_to_second(spec, plan, c) {
+                continue;
+            }
+            if let Some(why) = self.wait_reason(spec, c) {
+                waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
+                continue;
+            }
+            if let Some(why) = self.waits_for_second(spec) {
+                waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
+                break;
+            }
+            if self.try_start(0, spec.clone(), c, root, waiting) {
+                break;
+            }
+        }
+    }
+
     /// Why `spec` can't start now for itself: a condition it needs gone, or a failure's wait.
     fn wait_reason(&self, spec: &JobSpec, c: &Conditions) -> Option<String> {
         if let Some(why) = lapsed(&spec.needs, c) {
@@ -1620,14 +1641,67 @@ impl Agent {
     /// (their own reasons, the job beside it), as the start loop says.
     fn why_waiting(&self, plan: &[JobSpec], c: &Conditions, waiting: &mut Vec<Waiting>) {
         let running: Vec<&str> = self.slots.iter().filter_map(|s| s.running.as_ref().map(|r| r.spec.id.as_str())).collect();
-        let beside = self.slots[1].running.as_ref().map(|r| step_of(&r.spec.id).unwrap_or_default());
-        for spec in plan.iter().filter(|s| !running.contains(&s.id.as_str())) {
-            let s = step_of(&spec.id).unwrap_or_default();
-            let why = self.wait_reason(spec, c).or_else(|| beside.as_ref().filter(|b| clash(&s, b)).map(|b| format!("waits for the job beside it ({}) to end", build::label(b))));
-            match why {
-                Some(why) => waiting.push(Waiting { step: Some(s), what: spec.what.clone(), why }),
+        for spec in plan.iter().filter(|s| !running.contains(&s.id.as_str()) && !self.left_to_second(s, plan, c)) {
+            match self.wait_reason(spec, c).or_else(|| self.waits_for_second(spec)) {
+                Some(why) => waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why }),
                 None => break,
             }
+        }
+    }
+
+    /// Whether the first slot leaves `spec`, network work (`LIGHT`), to the second job: while a
+    /// second may run and the plan has other work the first can do (an hour of it would hold the
+    /// first slot while the regions' terrain and units wait).
+    fn left_to_second(&self, spec: &JobSpec, plan: &[JobSpec], c: &Conditions) -> bool {
+        let light = |s: &JobSpec| LIGHT.contains(&step_of(&s.id).unwrap_or_default().as_str());
+        self.second_allowed() && light(spec) && plan.iter().any(|p| !light(p) && self.wait_reason(p, c).is_none())
+    }
+
+    /// The job the first slot would start next: the plan's first that isn't running, left to the
+    /// second job, or waiting for a reason of its own.
+    fn head<'a>(&self, plan: &'a [JobSpec], c: &Conditions) -> Option<&'a JobSpec> {
+        let running: Vec<&str> = self.slots.iter().filter_map(|s| s.running.as_ref().map(|r| r.spec.id.as_str())).collect();
+        plan.iter().find(|s| !running.contains(&s.id.as_str()) && !self.left_to_second(s, plan, c) && self.wait_reason(s, c).is_none())
+    }
+
+    /// Why `spec` can't start in the first slot beside the second job's, when it can't: they don't
+    /// run together (`clash`); it needs room made on the disk, which isn't while a second job runs
+    /// (it may read what's deleted, and room-making holds the loop for minutes); or the two wouldn't
+    /// fit three quarters of the memory. The first slot then waits for it rather than start later
+    /// work, and the second starts nothing new meanwhile (`start_second`): neither starves it.
+    fn waits_for_second(&self, spec: &JobSpec) -> Option<String> {
+        let r = self.slots[1].running.as_ref()?;
+        let (s, b) = (step_of(&spec.id).unwrap_or_default(), step_of(&r.spec.id).unwrap_or_default());
+        let beside = build::label(&b);
+        if clash(&s, &b) {
+            return Some(format!("waits for the job beside it ({beside}) to end: they don't run together"));
+        }
+        let (need, free) = (self.need_of(0, spec), self.disk_free());
+        if free < need {
+            return Some(format!("needs {} GB free on the disk ({} GB free): room is made once the job beside it ({beside}) ends", need >> 30, free >> 30));
+        }
+        let res = cond::resources(&self.o.home, None, None, None);
+        let total = (res.mem_gb * 1024.0) as u64;
+        let theirs = crate::sys::footprint_of_group(r.pgid).map_or(0, |b| b >> 20).max(self.spec_peak(&r.spec));
+        let mine = self.spec_peak(spec);
+        (mine + theirs > total * 3 / 4).then(|| format!("needs about {:.1} GB of memory: waits for the job beside it ({beside}, {:.1} GB) to end, in this Mac's {:.0} GB", mine as f64 / 1024.0, theirs as f64 / 1024.0, res.mem_gb))
+    }
+
+    /// The free space a job of `spec` starts with in slot `k`: a helper's its step's; the second
+    /// job's its own (`second_need`); the first's the reserve, a terrain run's more, the OSM pass's
+    /// its own less the pack cache it clears.
+    fn need_of(&self, k: usize, spec: &JobSpec) -> u64 {
+        let step = step_of(&spec.id).unwrap_or_default();
+        if self.o.helper {
+            helper_need(spec.record.as_ref().map_or("tail", |w| w.step.as_str()))
+        } else if k > 0 {
+            second_need(&step)
+        } else if spec.id.starts_with("osm-pass") {
+            PASS_SPACE.saturating_sub(dir_bytes(&self.o.home.join("cache").join("base"))).max(room::RESERVE)
+        } else if spec.id.starts_with("terrain ") {
+            room::RESERVE + TERRAIN_SPACE
+        } else {
+            room::RESERVE
         }
     }
 
@@ -1645,27 +1719,16 @@ impl Agent {
         // Room on the disk for it, from the caches that are cheap to fill again (a terrain run's
         // more, its area's archive copies spared; the OSM pass's own need, less the pack cache it
         // clears; a helper's Mac has less room). Made before its targets are claimed: it can take
-        // minutes, and a claim is refreshed only while a job runs. The second job makes none, nor
-        // the first while the second reads the caches (it would delete what that one reads): each
-        // then starts only with the room there is.
+        // minutes, and a claim is refreshed only while a job runs. Made only while no other job
+        // runs here (one may read what's deleted, and the loop that looks after it waits
+        // meanwhile): beside one, a job starts only with the room there is.
         let cache = self.o.home.join("cache");
-        let need = if self.o.helper {
-            helper_need(spec.record.as_ref().map_or("tail", |w| w.step.as_str()))
-        } else if k > 0 {
-            second_need(&step)
-        } else if id.starts_with("osm-pass") {
-            PASS_SPACE.saturating_sub(dir_bytes(&cache.join("base"))).max(room::RESERVE)
-        } else if id.starts_with("terrain ") {
-            room::RESERVE + TERRAIN_SPACE
-        } else {
-            room::RESERVE
-        };
-        let other_reads = self.slots.iter().enumerate().any(|(j, s)| j != k && s.running.as_ref().is_some_and(|r| reads_caches(&step_of(&r.spec.id).unwrap_or_default())));
-        if k > 0 || other_reads {
-            let free = room::disk_free(&self.o.home).unwrap_or(0);
+        let need = self.need_of(k, &spec);
+        let other = self.slots.iter().enumerate().any(|(j, s)| j != k && s.running.is_some());
+        if k > 0 || other {
+            let free = self.disk_free();
             if !self.o.helper && free < need {
-                let beside = if k > 0 { "beside the first job it makes no room on the disk" } else { "the caches the job beside it reads aren't emptied for it" };
-                waiting.push(Waiting { step: Some(step), what: what.clone(), why: format!("needs {} GB free on the disk ({} GB free; {beside})", need >> 30, free >> 30) });
+                waiting.push(Waiting { step: Some(step), what: what.clone(), why: format!("needs {} GB free on the disk ({} GB free; no room is made beside another job)", need >> 30, free >> 30) });
                 return false;
             }
         } else if let Some(r) = root {
@@ -1764,6 +1827,19 @@ impl Agent {
             self.beside_why = Some(format!("{} runs alone", build::label(&first.unwrap().0)));
             return;
         }
+        // What the first slot starts next: one that runs alone, or needs room made on the disk
+        // (made only while one job runs), isn't held up by a job started here now.
+        if let Some(h) = self.head(plan, c) {
+            let hs = step_of(&h.id).unwrap_or_default();
+            if ALONE.contains(&hs.as_str()) {
+                self.beside_why = Some(format!("{} runs alone, next: nothing starts beside the first job until it has", build::label(&hs)));
+                return;
+            }
+            if self.disk_free() < self.need_of(0, h) {
+                self.beside_why = Some(format!("{} needs room made on the disk next, which waits for one job alone: nothing starts beside the first job until it has", build::label(&hs)));
+                return;
+            }
+        }
         let res = cond::resources(&self.o.home, None, None, None);
         let total_mb = (res.mem_gb * 1024.0) as u64;
         let free_mb = res.mem_free_pct.map_or(0, |p| total_mb * p as u64 / 100);
@@ -1797,8 +1873,10 @@ impl Agent {
     /// offered (crate::coord::Coordinator::peak), else its step's first guess (`second_peak`).
     fn spec_peak(&self, spec: &JobSpec) -> u64 {
         let step = step_of(&spec.id).unwrap_or_default();
+        // (A unit's measure is its programs' most, one at a time: its job holds a GB besides.)
+        let own = if step == "unit" { 1024 } else { 0 };
         match (&self.coord, spec.record.as_ref()) {
-            (Some(c), Some(w)) => w.targets.iter().map(|(t, _)| c.peak(&w.step, t).unwrap_or_else(|| second_peak(&w.step))).max().unwrap_or(0),
+            (Some(c), Some(w)) => own + w.targets.iter().map(|(t, _)| c.peak(&w.step, t).unwrap_or_else(|| second_peak(&w.step))).max().unwrap_or(0),
             _ => second_peak(&step),
         }
     }
@@ -2188,7 +2266,9 @@ impl Agent {
         let held_wait = planned.publish_waits.iter().find(|(st, t)| held_by_others(st, t));
         let unmerged = crate::handoff::waiting_in(&self.o.home.join("coord/journal")).map(|w| w.iter().any(|(_, h)| h.done.is_some())).unwrap_or(false);
         if let Some((st, t)) = held_wait.filter(|_| plan.iter().any(|w| w.step == "catalog")) {
-            waiting.push(Waiting { step: Some("catalog".into()), what: build::PUBLISH.into(), why: format!("waits for another worker building the {} of {t}", if st == "slope" { "slope" } else { "tree cover" }) });
+            let mine = self.slots.iter().filter_map(|s| s.running.as_ref()).any(|r| r.spec.record.as_ref().is_some_and(|w| w.step == *st && w.targets.iter().any(|x| x.0 == *t)));
+            let who = if mine { "this Mac's job" } else { "another worker" };
+            waiting.push(Waiting { step: Some("catalog".into()), what: build::PUBLISH.into(), why: format!("waits for {who} building the {} of {t}", if st == "slope" { "slope" } else { "tree cover" }) });
             plan.retain(|w| w.step != "catalog");
         } else if unmerged && plan.iter().any(|w| w.step == "catalog") {
             waiting.push(Waiting { step: Some("catalog".into()), what: build::PUBLISH.into(), why: "waits for a helper's work to be merged".into() });
@@ -2400,7 +2480,7 @@ impl Agent {
         }
         // Each slot's job's time left: its pace says only its part's; its targets not yet done, as
         // they took last time, less what it spent on the one under way, if longer.
-        let busy = |k: usize| {
+        let busy = |k: usize, speed: f64| {
             self.slots[k].running.as_ref().map_or(0.0, |r| {
                 let left = match r.spec.record.as_ref() {
                     Some(w) => {
@@ -2415,17 +2495,18 @@ impl Agent {
                     // (One with no record, the pass's or a worldwide one: its step's time here.)
                     None => mine(&step_of(&r.spec.id), 1).secs - r.elapsed().as_secs_f64(),
                 };
-                self.slots[k].job_eta.map(|e| e as f64).into_iter().chain([left]).fold(60.0, f64::max)
+                // (At its own pace.)
+                self.slots[k].job_eta.map(|e| e as f64).into_iter().chain([left / speed.max(0.1)]).fold(60.0, f64::max)
             })
         };
-        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, second: false, light: false, mem_mb: u64::MAX, busy_s: busy(0) }];
+        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, second: false, light: false, mem_mb: u64::MAX, busy_s: busy(0, 1.0) }];
         // Its second job: what fits beside the first (a quarter of its memory, say); while the Mac's
         // in use, as it is now, its network work alone.
         if self.second_allowed() {
             let (speed, measured) = speeds.get(&second).copied().unwrap_or((0.8, false));
             let mem_mb = (cond::resources(&self.o.home, None, None, None).mem_gb * 256.0) as u64;
             let light = self.last_cond.is_some_and(|c| c.user_active());
-            machines.push(Machine { name: second.clone(), speed, measured, helper: false, second: true, light, mem_mb, busy_s: busy(1) });
+            machines.push(Machine { name: second.clone(), speed, measured, helper: false, second: true, light, mem_mb, busy_s: busy(1, speed) });
         }
         for h in &helpers {
             let (speed, measured) = speeds.get(&h.host).copied().unwrap_or((0.5, false));
@@ -3111,8 +3192,8 @@ mod tests {
         assert!(clash("items", "items") && clash("catalog", "catalog"));
         assert!(clash("terrain", "peaks") && clash("peaks", "peaks"));
         assert!(clash("osm-pass", "items") && clash("items", "gc") && clash("heritage-sites", "unit"));
-        // While network work runs beside it, the first job may still empty the caches for room.
-        assert!(!reads_caches("heritage") && reads_caches("unit") && reads_caches("trees"));
+        // Two asking Wikidata, each paced as if alone: not at once.
+        assert!(clash("items", "heritage") && !clash("items", "rail-feeds"));
     }
 
     #[test]
@@ -3123,6 +3204,7 @@ mod tests {
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
         a.coord = Some(crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap());
+        a.free_set = Some(40 << 30);
         assert!(a.second_allowed());
         // (Each a shell waiting, given its scratch folder as the plan's jobs are.)
         let job = |id: &str| {
@@ -3157,6 +3239,57 @@ mod tests {
         if let Some(r) = a.slots[0].running.as_mut() {
             r.stop(Duration::from_secs(5));
         }
+    }
+
+    #[test]
+    fn the_first_job_isnt_starved_by_the_second() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        a.coord = Some(crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap());
+        a.free_set = Some(40 << 30);
+        let job = |id: &str| {
+            let step = id.split(' ').next().unwrap();
+            let scratch = home.join("scratch").join(step).to_string_lossy().into_owned();
+            let record = Some(build::Work { step: step.into(), targets: vec![(id.split(' ').nth(1).unwrap().into(), "k".into())] });
+            JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into(), "--scratch".into(), scratch], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record }
+        };
+        let stop = |a: &mut Agent| {
+            for s in a.slots.iter_mut() {
+                if let Some(r) = s.running.as_mut() {
+                    r.stop(Duration::from_secs(5));
+                }
+            }
+            a.slots = Default::default();
+        };
+        let in_use = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        // The heritage chain beside: the first takes the map tiles, leaving the items' facts, listed
+        // first, to the second (they'd hold the first slot an hour).
+        assert!(a.try_start(1, job("heritage heritage"), &in_use, Some(&root), &mut Vec::new()));
+        a.start_first(&[job("items items"), job("pack 6/1/1")], &in_use, Some(&root), &mut Vec::new());
+        assert_eq!(a.slots[0].running.as_ref().map(|r| r.spec.id.as_str()), Some("pack 6/1/1"));
+        stop(&mut a);
+        // A job that runs alone next: waited for, not passed over for the map tiles after it.
+        assert!(a.try_start(1, job("heritage heritage"), &in_use, Some(&root), &mut Vec::new()));
+        let mut w = Vec::new();
+        a.start_first(&[job("gc gc"), job("pack 6/1/2")], &in_use, Some(&root), &mut w);
+        assert!(a.slots[0].running.is_none());
+        assert!(w.iter().any(|x| x.what == "gc gc" && x.why.contains("don't run together")), "{w:?}");
+        // Nor one that needs room made on the disk (made only with no job beside).
+        a.free_set = Some(20 << 30);
+        let mut w = Vec::new();
+        a.start_first(&[job("pack 6/1/3")], &in_use, Some(&root), &mut w);
+        assert!(a.slots[0].running.is_none() && w.iter().any(|x| x.why.contains("room is made once")), "{w:?}");
+        a.free_set = Some(40 << 30);
+        stop(&mut a);
+        // And the second starts nothing beside the first while one that runs alone comes next.
+        assert!(a.try_start(0, job("pack 6/1/1"), &in_use, Some(&root), &mut Vec::new()));
+        a.start_second(&[job("gc gc"), job("heritage heritage")], &in_use, Some(&root));
+        assert!(a.slots[1].running.is_none());
+        assert!(a.beside_why.as_deref().is_some_and(|w| w.contains("runs alone, next")), "{:?}", a.beside_why);
+        stop(&mut a);
     }
 
     #[test]

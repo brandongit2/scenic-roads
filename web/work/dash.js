@@ -105,10 +105,11 @@ const secondOf = (host) => `${host} (second job)`;
 // ---- The verdict --------------------------------------------------------------------------------
 function machineState(st, fresh, paused) {
   if (!fresh) return ["out of touch", "bad"];
-  const j = st.job;
-  if (j?.paused) return ["frozen", "warn"];
-  if (j?.pausing) return ["stopping", "warn"];
-  if (j) return ["building", "run"];
+  // (The build Mac's jobs, its second's beside its first: building while either is.)
+  const jobs = [st.job, st.beside].filter(Boolean);
+  if (jobs.some((j) => !j.paused && !j.pausing)) return ["building", "run"];
+  if (jobs.some((j) => j.pausing)) return ["stopping", "warn"];
+  if (jobs.some((j) => j.paused)) return ["frozen", "warn"];
   if (paused) return ["paused", "warn"];
   return ["idle", ""];
 }
@@ -123,8 +124,10 @@ function alerts(m) {
     const st = x.status, r = st.resources || {}, c = st.conditions || {};
     const short = x.role === "build Mac" ? "Build Mac" : x.name;
     if (x.role !== "build Mac" && !x.fresh) out.push({ cls: "warn", text: `${short} out of touch for ${dur(now - st.beat)}`, to: "machines" });
-    const p = st.job?.progress;
-    if (p?.moved_at && !st.job.paused && now - p.moved_at >= STUCK_S) out.push({ cls: "warn", text: `${short}'s job hasn't moved on for ${dur(now - p.moved_at)}`, to: "machines" });
+    for (const [j, which] of [[st.job, "job"], [st.beside, "second job"]]) {
+      const p = j?.progress;
+      if (p?.moved_at && !j.paused && now - p.moved_at >= STUCK_S) out.push({ cls: "warn", text: `${short}'s ${which} hasn't moved on for ${dur(now - p.moved_at)}`, to: "machines" });
+    }
     if (c.ac === false) out.push({ cls: c.battery != null && c.battery < 40 ? "warn" : "info", text: `${short} on battery${c.battery != null ? ` (${c.battery}%; work stops at 30%)` : ""}`, to: "machines" });
     if (c.nas === false) out.push({ cls: "bad", text: `${short} can't reach the NAS`, to: "machines" });
     else if (c.home === false) out.push({ cls: "info", text: `${short} reaches the NAS through Tailscale (slowly)`, to: "machines" });

@@ -249,8 +249,9 @@ func classify(_ r: Reply?) -> (Kind, String) {
         let stopping = (s.job.map { $0.paused == nil } ?? false) || (s.beside.map { $0.paused == nil } ?? false) || helping.contains { $0.job?.pausing != nil }
         return (.paused, stopping ? "Pausing: finishing what it's on" : "Paused since \(clock(p.at))")
     }
-    if let j = s.job {
-        if j.paused != nil {
+    // (The build Mac's jobs: its second's beside its first.)
+    if let j = s.job ?? s.beside {
+        if j.paused != nil && (s.beside.map { $0.paused != nil } ?? true) {
             if let h = helping.first { return (.building, clip("Building on \(h.host); the build Mac's job paused")) }
             return (.paused, "Paused")
         }

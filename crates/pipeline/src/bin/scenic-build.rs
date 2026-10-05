@@ -1918,12 +1918,15 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             };
             let (root, blobs) = (o.root().to_path_buf(), blobs.clone());
             ahead = Some(std::thread::spawn(move || {
+                // (Under this process's own temporary name, renamed whole: another job on this Mac
+                // may be copying the same file.)
                 let copy = |src: &Path, dst: &Path| {
                     if dst.exists() || !src.exists() {
                         return;
                     }
-                    let tmp = dst.with_extension("ahead.tmp");
-                    if dst.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && store::sys::copy_data(src, &tmp).is_ok() {
+                    let tmp = pipeline::whole::tmp_name(dst);
+                    let whole = || std::fs::metadata(src).ok().map(|m| m.len()) == std::fs::metadata(&tmp).ok().map(|m| m.len());
+                    if dst.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && store::sys::copy_data(src, &tmp).is_ok() && whole() {
                         std::fs::rename(&tmp, dst).ok();
                     } else {
                         std::fs::remove_file(&tmp).ok();

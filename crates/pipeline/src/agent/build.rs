@@ -1022,25 +1022,27 @@ fn landmarks_chain(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, don
 }
 
 /// The landmarks' work that can run now (docs/plan.md §8, Order), each step once what it reads is
-/// built, none waiting for the units but the overlays (they read the built units: after the last,
-/// `last`): the candidates (once the pass's hiking-route ends exist); their peaks once every
-/// candidate is, the pass's summits exist and the terrain they read is built (`terrain_left`: one
-/// built before would be built again), each unit's as its own is; the items' facts and pageviews
-/// once every candidate is; the rest of the heritage chain on the heritage sites alone; the
-/// landmark points once those four are; then the overlays. They don't wait for each other
-/// otherwise: the heritage chain (an hour and more of network) runs beside the candidates.
+/// built as it will stay (a worldwide job of the pass that's stale, about to make it again, counts
+/// as not built: what read it would be built twice), none waiting for the units but the overlays
+/// (they read the built units: after the last, `last`): the candidates (once the pass's
+/// hiking-route ends are made); their peaks once every candidate is, the pass's summits are made
+/// and the terrain they read is built (`terrain_left`), each unit's as its own is; the items' facts
+/// and pageviews once every candidate is; the rest of the heritage chain once the heritage sites
+/// are; the landmark points once those four are (on the pass's heritage, never today's meanwhile);
+/// then the overlays. They don't wait for each other otherwise: the heritage chain (an hour and
+/// more of network) runs beside the candidates.
 fn landmarks_work(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, terrain_left: &BTreeSet<String>, last: bool) -> Vec<Work> {
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
     let mut out = Vec::new();
     let units: Vec<(Unit, String)> = pois_keys(cov, date, m);
-    let ends = m.contains_key(&format!("work/trailends/{date}"));
+    let ends = m.contains_key(&format!("work/trailends/{date}")) && trailends_work(date, m, done).is_none();
     let stale_pois: Vec<(String, String)> = if ends { units.iter().filter(|(u, k)| stale(&done.pois, &u.slash(), k)).map(|(u, k)| (u.slash(), k.clone())).collect() } else { Vec::new() };
     let pois_built = ends && stale_pois.is_empty();
     if !stale_pois.is_empty() {
         out.push(Work { step: "pois".into(), targets: stale_pois });
     }
     let mut peaks_built = false;
-    if pois_built && m.contains_key(&format!("work/summits/{date}")) {
+    if pois_built && m.contains_key(&format!("work/summits/{date}")) && summits_work(date, m, done).is_none() {
         let stale_peaks: Vec<(Unit, String)> = peaks_keys(cov, date, m).into_iter().filter(|(u, k)| stale(&done.peaks, &u.slash(), k)).collect();
         peaks_built = stale_peaks.is_empty();
         let ready: Vec<(String, String)> = stale_peaks.into_iter().filter(|(u, _)| peaks_terrain(*u).is_disjoint(terrain_left)).map(|(u, k)| (u.slash(), k)).collect();
@@ -1057,8 +1059,11 @@ fn landmarks_work(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done
             out.push(Work { step: "items".into(), targets: vec![("items".into(), k)] });
         }
     }
-    // (No heritage sites for the pass: the marks take today's.)
+    // (Not before the heritage sites are made as the coverage wants them; with none for the pass
+    // and none to make, the marks take today's.)
+    let sites_due = heritage_sites_work(cov, date, m, done).is_some();
     let heritage_built = match heritage_key(cov, date, m) {
+        _ if sites_due => false,
         Some(k) if done.lo.get("heritage") != Some(&k) => {
             out.push(Work { step: "heritage".into(), targets: vec![("heritage".into(), k)] });
             false
@@ -2011,6 +2016,34 @@ mod tests {
         assert_eq!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())), vec!["items"]);
         m.insert("work/summits/d".into(), "work/summits/d.aaaaaaaaaaaaaaaa.bin".into());
         assert_eq!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())), vec!["peaks", "items"]);
+    }
+
+    #[test]
+    fn the_chains_wait_for_the_passs_jobs_they_read_to_be_made_again() {
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
+        unit_inputs(&mut m, "d");
+        let mut done = Keys::default();
+        let steps = |w: &[Work]| w.iter().map(|x| x.step.clone()).collect::<Vec<_>>();
+        let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+        heritage_done(&mut m, &mut done, "d", &w[0]);
+        assert!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())).contains(&"heritage".to_string()));
+        // The registers' snapshot changed: the heritage sites are made again first, the rest of the
+        // chain (an hour and a half on them) only after.
+        m.insert("sources/registers/legacy".into(), "sources/registers/legacy.ffffffffffffffff.tar.zst".into());
+        let w = plan(&c, "d", &m, &done, &BTreeMap::new());
+        assert_eq!(w[0].step, "heritage-sites");
+        assert!(!steps(&w).contains(&"heritage".to_string()), "{:?}", steps(&w));
+        heritage_done(&mut m, &mut done, "d", &w[0]);
+        // Likewise the candidates and the hiking routes' ends: a new hikes set, the ends made again
+        // first.
+        m.insert("work/trailends/d".into(), "work/trailends/d.8888888888888888.json".into());
+        m.insert(crate::osmpass::set_name("d", "hikes"), "sources/osm/d/sets/hikes.1111111111111111.osm.pbf".into());
+        assert!(!steps(&plan(&c, "d", &m, &done, &BTreeMap::new())).contains(&"pois".to_string()));
+        let ends = trailends_work("d", &m, &done).unwrap();
+        done.record(&ends.step, &ends.targets);
+        assert!(steps(&plan(&c, "d", &m, &done, &BTreeMap::new())).contains(&"pois".to_string()));
     }
 
     #[test]

@@ -305,7 +305,9 @@ pub fn dem_seed(root: &Path, cache: &Path) -> Result<()> {
     // Each file whole before the next (a half-copied one is copied again: its length is wrong).
     for n in names {
         let (from, to) = (src.join(format!("dem-cache.{n}")), cache.join(format!("dem-cache.{n}")));
-        let tmp = to.with_extension(format!("{}.tmp", to.extension().unwrap().to_string_lossy()));
+        // (This process's own temporary name: two unit jobs on a Mac without the seed copy it at
+        // once, each whole.)
+        let tmp = crate::whole::tmp_name(&to);
         std::fs::remove_file(&tmp).ok();
         crate::osmpass::copy_resume_with(&from, &tmp, &mut |d, _| crate::agent::jobs::report((before + d) >> 20, total >> 20, "MB of the DEM cache copied here (once a Mac)")).with_context(|| format!("copy {}", from.display()))?;
         before += std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);

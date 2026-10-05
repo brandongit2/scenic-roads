@@ -1028,13 +1028,20 @@ are no request files.
   more. A second job:
   - never runs beside a job that runs alone (the OSM pass, the pass's worldwide jobs, GC), nor
     beside a job of the same step unless it's a shared one (its targets are held apart, as a
-    helper's are), nor a reader of the raw terrain tiles beside another (terrain, peaks, the roots);
+    helper's are), nor a reader of the raw terrain tiles beside another (terrain, peaks, the roots),
+    nor the items' facts beside the heritage chain (both ask Wikidata, each paced as if alone);
   - while the Mac is in use, only work that mostly waits on the network;
   - only when the two fit: the first job's memory as predicted (or as it is now, if more) and the
     second's within three quarters of the Mac's, and the second's free now with 2 GB to spare;
-  - makes no room on the disk (it would delete caches the first reads), and starts only with its
-    need free (10 GB for the network steps, the reserve for the others); while it reads the caches,
-    the first job's start makes none either;
+  - starts only with its need free (10 GB for the network steps, the reserve for the others): room
+    on the disk is made only while no other job runs (a job beside may read what's deleted, and the
+    loop that looks after it waits meanwhile);
+  - the network work is the second's: the first job leaves it to it while there's other work for
+    the first (an hour of it would hold the first slot while the regions' terrain and units wait);
+  - doesn't starve the first: when the first's next job can't start beside the second's (it runs
+    alone, it needs room made, or the two wouldn't fit the memory), the first waits for it rather
+    than start later work, and the second starts nothing new meanwhile, nor while one that runs
+    alone or needs room made is the first's next;
   - has its own scratch folder (`scratch-2/`), job record, safe-point channel and costs file, its
     claims its own, and four threads for network work, half the cores for the rest;
   - is a worker of its own in the history and the forecast ("<host> (second job)"), its speed

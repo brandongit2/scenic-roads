@@ -24,10 +24,9 @@ use std::collections::{BTreeMap, BTreeSet};
 /// The shared steps a helper takes, in its order of preference (crate::agent::claims::SHARED).
 const SHARED: [&str; 6] = ["terrain", "slope", "trees", "unit", "pois", "peaks"];
 
-/// The steps the build Mac's second job takes, in its order of preference (crate::agent::SECOND), and
-/// those it takes while the Mac is in use (crate::agent::LIGHT).
-const SECOND: [&str; 10] = ["heritage", "items", "rail-feeds", "rail", "marks", "overlays", "pois", "peaks", "unit", "slope"];
-const LIGHT: [&str; 6] = ["heritage", "items", "rail-feeds", "rail", "marks", "overlays"];
+// The steps the build Mac's second job takes, in its order of preference, and those it takes while
+// the Mac is in use: the agent's.
+use super::{LIGHT, SECOND};
 
 /// A machine the work is shared among.
 #[derive(Clone, Debug, PartialEq)]
@@ -302,9 +301,11 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
         let i = add(&mut out, &mut by_target, step, target, *cost, Phase::Chain, deps);
         chain.push(i);
     }
-    let all: Vec<usize> = (0..out.len()).collect();
+    // (Each after all before it: the catalog after the overlays.)
+    let mut all: Vec<usize> = (0..out.len()).collect();
     for (step, target, cost) in &inp.after {
-        add(&mut out, &mut by_target, step, target, *cost, Phase::After, all.clone());
+        let i = add(&mut out, &mut by_target, step, target, *cost, Phase::After, all.clone());
+        all.push(i);
     }
     (out, region_items)
 }

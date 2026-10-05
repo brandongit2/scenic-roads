@@ -59,7 +59,7 @@ function doing(what: string): string {
 /** The build Mac in a few words, and how its dot shows. */
 function agentState(a: Agent): { text: string; dot: 'run' | 'paused' | 'idle' | 'away' } {
   if (now() - a.beat > STALE_S) return { text: `last seen ${ago(a.beat)}`, dot: 'away' };
-  if (a.pause) return { text: a.job && !a.job.paused ? 'pausing' : 'paused', dot: 'paused' };
+  if (a.pause) return { text: [a.job, a.beside].some((j) => j && !j.paused) ? 'pausing' : 'paused', dot: 'paused' };
   if (a.job?.paused) return { text: `paused: ${a.job.paused.split(':')[0]}`, dot: 'paused' };
   if (a.job) return { text: `${doing(a.job.what)}${a.beside ? ' + 1 more' : ''}`, dot: 'run' };
   if (a.beside) return { text: doing(a.beside.what), dot: 'run' };
