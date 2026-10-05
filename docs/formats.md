@@ -464,7 +464,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     another shared step's job, and `"tail <unit>"` for a unit's last steps as a task),
     `journal/<worker>/` (the hand-offs taken, as below), `tasks/<id>/` (a task's uploads);
     `costs.jsonl` (what a shared step's job took, `SCENIC_COSTS`: a JSON line per target, `{unit,
-    peak_mb, secs}`, `unit` the target for a unit, else "<step> <target>").
+    peak_mb, secs}`, `unit` the target for a unit, else "<step> <target>"; `peak_mb` the most the
+    job's processes held together during that target, sampled).
   - On a helper, in the agent's folder, `outbox/<lease>/`: its leased job's saves (as below),
     `costs.jsonl`, `spec.json` (a task's), `task.json` (`scenic run-task`'s result) and `result.json`
     (`{ok, done: [step, [[target, key], …]] or null, task, error}`), until the coordinator has them.

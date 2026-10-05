@@ -5,7 +5,7 @@
 //!                                       poly:<file in inputs/outlines>, place:<lon>,<lat>,<km>
 //!   scenic remove <id>                  remove a region (its recipe is kept as .removed)
 //!   scenic agent [--once] [--dry-run] [--home <dir>] [--helper]  the build agent (the build Mac's
-//!                                       login item; --helper: the M1's, units only)
+//!                                       login item; --helper: the M1's, the shared steps' jobs)
 //!   scenic gc [--dry-run] [--days 14]   remove replaced files from the NAS (the agent runs it daily)
 //!   scenic backup [--local <dir>]       back up the user's folders (the agent runs it daily)
 //!

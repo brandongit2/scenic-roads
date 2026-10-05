@@ -263,12 +263,16 @@ record changes back through the build Mac's coordinator, which journals them for
     a second and stall it; nothing there is written again for them. An area's archives are kept
     each more than twice the size of all those after it (from the first that isn't, they're merged
     into one), so an area has a dozen at most and a tile is rewritten a dozen times at most. On the
-    NAS every archive is named by the index or listed in its `gone`, with when: listed before it's
-    put there (taken off once named, and named only once it's there whole) and when the index
-    stops naming it, and deleted a day later, so a job that read the index before stays right and
-    one cut short leaves nothing behind (its temporary file swept a day later too); one the index
-    names that's gone from the NAS is passed over and taken out of it. Only the build Mac packs,
-    changing the index under its build lock. A tile is read from its area's archives: an area's
+    NAS the build Mac's archives are named by the index or listed in its `gone`, with when: listed
+    before it's put there (taken off once named, and named only once it's there whole) and when the
+    index stops naming it, and deleted a day later, so a job that read the index before stays right
+    and one cut short leaves nothing behind (its temporary file swept a day later too); one the
+    index names that's gone from the NAS is passed over and taken out of it. Only the build Mac
+    changes the index, under its build lock. A helper's jobs pack too (every loose tile in its
+    cache, whichever job fetched it): they put their archives there unlisted and hand them off, and
+    the build Mac names them as it merges the hand-off; one still unnamed a day later (its hand-off
+    never came) is listed to go then. (Never while the index names nothing: an index read as none
+    would list every archive.) A tile is read from its area's archives: an area's
     first 16 by range from the NAS's (a job that wants a tile or two of an area, as peaks do,
     copies nothing), then each copied to the Mac whole once, three at a time, and checked against
     its name (a terrain job reads thousands; an area whose copy fails is read by range for the
@@ -318,14 +322,17 @@ record changes back through the build Mac's coordinator, which journals them for
 
 **The M1 helps (16 GB).** Its agent runs as a helper (`scenic agent --helper`, under the launcher
 like the build Mac's; `tools/app/install.sh --helper` sets it up).
-- **What it builds:** what the build Mac's coordinator gives it (§8, Two Macs): units that fit the
-  memory it spares (a quarter of its 16 GB), from the far end of the list, and when none does, units'
-  last steps (tasks, `docs/workers.md`). A unit's predicted peak is the most memory one of its steps'
+- **What it builds:** what the build Mac's coordinator gives it (§8, Two Macs): the shared steps'
+  jobs that fit the memory it spares (a quarter of its 16 GB) and its disk, from the far end of the
+  list, and when none does, units' last steps (tasks, `docs/workers.md`); nothing while it runs
+  another app than the build Mac's. A unit's predicted peak is the most memory one of its steps'
   programs took last time (each unit job notes it; scenic-build's own isn't counted), else about ten
   times its piece, never under 3.7 GB: over the M1's first 205 units, pieces up to 150 MB, 3.7 GB at
   most, no more for the bigger pieces.
 - **How:** the build Mac's power rule (mains, or battery down to 30 %); half its cores while its user
-  is at it, all but two otherwise; each job started with 15 GB free, from the caches the NAS keeps.
+  is at it, all but two otherwise; each job started with its step's room free (a terrain run 55 GB,
+  tree cover 30, the others 15), from the caches the NAS keeps, and only a step it can make that for
+  is asked for.
 - **Status:** `state/helpers/<host>.json`. The M1's status bar shows its job from its own status;
   the build Mac's shows it from that file while the build Mac's agent runs. Leases keep the two apart
   (§8, Two Macs).
@@ -1016,7 +1023,7 @@ are no request files.
   less free than the job needs (30 GB; a terrain run 55 GB, for its area's raw tiles held twice
   while they're packed onto the NAS, and on a run again the area's archives copied here and merged,
   those copies spared; the OSM pass, its own 80 GB less the pack cache it clears; the M1's helper,
-  15 GB), the local copies of what the NAS keeps (Meta's canopy squares, AWS's raw
+  15 GB, but a terrain run's and tree cover's as here), the local copies of what the NAS keeps (Meta's canopy squares, AWS's raw
   terrain tiles, and the copies of the records' files staging reads: `blobs/`) lose files until it
   has a sixth more (the OSM pass: what it needs), so the next jobs start without deleting again.
   - Canopy squares and copies not read in the last hour go first, each by its own use, the least
@@ -1071,11 +1078,19 @@ and, when none fits it, units' last steps.
   indexing, trains, Wikidata and pageviews, heritage, publishing. The status marks each step a helper
   may take (⇄; the landmarks', its candidates and peaks).
 - **What fits a helper:** each target is offered with the memory its job is expected to take: a
-  unit's from its piece; another's what its last run took (the job notes its peak, `SCENIC_COSTS`,
-  "<step> <target>"), else a first guess per step (terrain 6 GB: it holds its area's shaded tiles, 5.2
-  GB for 74,509, so an area goes to the M1's 4 GB only once a run shows it fits; trees 3.5, slope 3,
-  peaks 2.5, candidates 1.5). A helper takes the earliest step with a target that fits, from the far
-  end of the plan, a job's worth (units: as many as it asks).
+  unit's from its piece; another's what its last run took (the job notes, per target, the most its
+  processes held together, sampled four times a second from the start of that target: a pool's
+  workers summed, `SCENIC_COSTS`, "<step> <target>"), else candidates' their unit's (they read the
+  same piece), else a first guess per step (terrain 6 GB: it holds its area's shaded tiles, 5.2 GB
+  for 74,509; tree cover 8: six workers at once, each with its block's canopy; so neither goes to the
+  M1's 4 GB until a run shows it fits; slope 3, peaks 2.5). A helper asks only for the steps its
+  disk has room for (a terrain run 55 GB free, tree cover 30, the others 15, counting the caches it
+  may empty), and takes the earliest step with a target that fits, from the far end of the plan, a
+  job's worth (units: as many as it asks).
+- **The same app:** a helper says which app it runs; on another than the build Mac's agent (its
+  updater hasn't run yet, or the build Mac's agent is finishing a job on the last one) it gets
+  nothing (409, why in words: its status shows it), since it would build with other code than the
+  keys it records say.
 - **The contact:** `state/coordinator.json`: the coordinator's addresses (Tailscale's, then the LAN
   name) and a token (kept on the build Mac) every request carries; taken off the NAS when the agent
   stops. A worker reads it again when it can't reach the coordinator or its token is refused.

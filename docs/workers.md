@@ -86,9 +86,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 
 ## 5. Control: leases and trust (built)
 
-- **Asking:** a worker sends its name, kind, the work it does (`unit`, `tail`), the memory it spares
-  and its cores (`/work/ask`). One that mounts the NAS is given a unit first (the most work for
-  what it fetches), then a task; a web page, tasks.
+- **Asking:** a worker sends its name, kind, the work it does (the shared steps' jobs, `tail`), the
+  memory it spares, its cores and (an agent) its app (`/work/ask`). One that mounts the NAS is given
+  a job first (the most work for what it fetches), then a task; a web page, tasks. An agent on
+  another app than the build Mac's gets nothing (409, why in words) until both run the same.
 - **Leases** (`coord::lease`) are timed on the coordinator's monotonic clock (clocks between devices
   don't matter), ten minutes, renewed by a beat each minute while the work goes on. A paused job
   doesn't beat, so its work may go to another; the build Mac's own jobs hold leases too, and one

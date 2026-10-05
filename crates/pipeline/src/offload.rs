@@ -297,7 +297,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let c = crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4").unwrap();
+        let c = crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap();
         // The unit's folder, and a stand-in step: it writes one file and removes another.
         let dir = d.path().join("unit");
         std::fs::create_dir_all(&dir).unwrap();

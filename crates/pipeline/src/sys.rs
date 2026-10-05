@@ -153,7 +153,6 @@ pub fn wait_with_peak(child: Child) -> io::Result<(ExitStatus, u64)> {
     }
 }
 
-/// A symbolic link `dst` to `src` where there are links; elsewhere a copy.
 /// Raises this process's open-files limit (macOS starts a LaunchAgent at 256) to its hard limit,
 /// at most 10,240: the coordinator holds a socket per connection.
 pub fn raise_open_files() {
@@ -171,6 +170,7 @@ pub fn raise_open_files() {
     }
 }
 
+/// A symbolic link `dst` to `src` where there are links; elsewhere a copy.
 pub fn symlink(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
     #[cfg(unix)]
     return std::os::unix::fs::symlink(src, dst);
@@ -180,6 +180,8 @@ pub fn symlink(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
 
 /// The most memory this process and its finished children have held at once (bytes): getrusage's
 /// maximum resident sizes, the larger (macOS gives them in bytes); 0 where there's no such call.
+/// (A child's own, not theirs together: programs running at once, a pool's workers, are summed by
+/// `group_peak` alone.)
 pub fn peak_rss() -> u64 {
     #[cfg(unix)]
     {
@@ -196,4 +198,84 @@ pub fn peak_rss() -> u64 {
     }
     #[cfg(not(unix))]
     0
+}
+
+/// The memory this process's group holds now (bytes): a job's (the agent starts each in a group of
+/// its own: scenic-build and every program it runs, a pool's workers too), its processes' physical
+/// footprints (each one's memory as Activity Monitor shows it) summed; None where it can't be read.
+pub fn group_footprint() -> Option<u64> {
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: getpgrp has no failure.
+        let pgid = unsafe { libc::getpgrp() };
+        let mut total = None;
+        for pid in group_members(pgid) {
+            // SAFETY: rusage_info_v2 is plain old data; proc_pid_rusage fills it, the flavour asked.
+            let mut ri: libc::rusage_info_v2 = unsafe { std::mem::zeroed() };
+            if unsafe { libc::proc_pid_rusage(pid, libc::RUSAGE_INFO_V2, (&mut ri as *mut libc::rusage_info_v2).cast()) } == 0 {
+                total = Some(total.unwrap_or(0) + ri.ri_phys_footprint);
+            }
+        }
+        total
+    }
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
+/// The most `group_footprint` since the last `reset_group_peak`, as a thread samples it four times
+/// a second (started by the first reset).
+static GROUP_PEAK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SAMPLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Starts the job's peak memory again (a target's start: `group_peak` is then that target's).
+pub fn reset_group_peak() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let sampled = *SAMPLED.get_or_init(|| {
+        group_footprint().is_some()
+            && std::thread::Builder::new()
+                .name("group-peak".into())
+                .spawn(|| loop {
+                    if let Some(v) = group_footprint() {
+                        GROUP_PEAK.fetch_max(v, Relaxed);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                })
+                .is_ok()
+    });
+    if sampled {
+        GROUP_PEAK.store(group_footprint().unwrap_or(0), Relaxed);
+    }
+}
+
+/// The most memory the job's processes held together since `reset_group_peak` (bytes): sampled, so
+/// a program shorter than a quarter of a second may go unseen; `peak_rss` where the group can't be
+/// sampled (or before the first reset).
+pub fn group_peak() -> u64 {
+    use std::sync::atomic::Ordering::Relaxed;
+    if SAMPLED.get() != Some(&true) {
+        return peak_rss();
+    }
+    let now = group_footprint().unwrap_or(0);
+    GROUP_PEAK.fetch_max(now, Relaxed).max(now)
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_groups_memory_is_its_processes_together() {
+        // This test's process group: the test binary (and whatever else the runner started in it).
+        let me = group_footprint().unwrap();
+        assert!(me > 1 << 20, "{me}");
+        // A child holding 200 MB of its own (written, so it's resident) counts while it runs.
+        let mut c = Command::new("/usr/bin/python3").args(["-c", "import time; b = bytearray(200 << 20); b[::4096] = b'x' * len(b[::4096]); print(1, flush=True); time.sleep(3)"]).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(c.stdout.as_mut().unwrap()), &mut line).unwrap();
+        reset_group_peak();
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        let with = group_peak();
+        c.wait().unwrap();
+        assert!(with >= me + (190 << 20), "{with} vs {me}");
+    }
 }

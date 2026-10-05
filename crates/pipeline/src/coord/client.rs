@@ -21,6 +21,19 @@ pub struct Client {
 /// What the coordinator answered: its status and its JSON (Null for none).
 pub type Reply = (u16, serde_json::Value);
 
+/// Work refused to this worker as it is (an agent on another app than the build Mac's): why, in
+/// words for its status.
+#[derive(Debug)]
+pub struct Refused(pub String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
 /// What became of work handed back (`Client::done`).
 #[derive(Debug, PartialEq, Eq)]
 pub enum Handed {
@@ -103,17 +116,20 @@ impl Client {
     pub fn post_json(&self, path: &str, body: &serde_json::Value) -> Result<Reply> {
         let (code, b) = self.request("POST", path, Some(&serde_json::to_vec(body)?))?;
         let v = if b.is_empty() { serde_json::Value::Null } else { serde_json::from_slice(&b).with_context(|| format!("the coordinator's answer to {path}"))? };
-        if code >= 400 && code != 410 && code != 404 {
+        // (404, 409 and 410 say something to the caller: no such thing; refused as it is; gone.)
+        if code >= 400 && ![404, 409, 410].contains(&code) {
             bail!("the coordinator answered {code} to {path}: {}", v["error"].as_str().unwrap_or(""));
         }
         Ok((code, v))
     }
 
-    /// Work that fits this worker; None when there's none now.
+    /// Work that fits this worker; None when there's none now; an error, `Refused`, when none goes to
+    /// it as it is.
     pub fn ask(&self, a: &Ask) -> Result<Option<Grant>> {
         let a = Ask { worker: self.worker.clone(), ..a.clone() };
         match self.post_json("/work/ask", &serde_json::to_value(&a)?)? {
             (200, v) => Ok(Some(serde_json::from_value(v)?)),
+            (409, v) => Err(Refused(v["error"].as_str().unwrap_or("the build Mac gives this Mac no work as it is").to_string()).into()),
             _ => Ok(None),
         }
     }

@@ -12,13 +12,17 @@
 //! all those after it (archives from the first that isn't are merged into one), so an area has a
 //! dozen at most, and a tile is rewritten a dozen times at most, however it came.
 //!
-//! On the NAS, every archive is named by the index or listed in its `gone`, with when: an archive
-//! is listed before it's put there and taken off once named (named only once it's there whole), and
-//! one the index stops naming (merged) is listed then. A day later, unnamed, it's deleted: so a job
-//! that read the index before stays right, and one cut short putting an archive there leaves
-//! nothing behind (its temporary file is swept a day later too). An archive the index names that's
-//! gone from the NAS is passed over and taken out of it. Only the build Mac packs (it alone writes
-//! the build's records: crate::out::check_writer), changing the index under its build lock.
+//! On the NAS, the build Mac's archives are named by the index or listed in its `gone`, with when:
+//! an archive is listed before it's put there and taken off once named (named only once it's there
+//! whole), and one the index stops naming (merged) is listed then. A day later, unnamed, it's
+//! deleted: so a job that read the index before stays right, and one cut short putting an archive
+//! there leaves nothing behind (its temporary file is swept a day later too). An archive the index
+//! names that's gone from the NAS is passed over and taken out of it. The build Mac alone changes
+//! the index (it alone writes the build's records: crate::out::check_writer), under its build lock.
+//! A helper's jobs pack too, every loose tile in its cache (`SCENIC_HANDOFF`): they put their
+//! archives on the NAS unlisted and hand them off; the build Mac names them as it merges the
+//! hand-off (`name_handed`). One a day old that's still neither named nor listed (its hand-off
+//! never came) is listed to go then, so it's deleted a day after that.
 //!
 //! The build Mac's cache keeps the tiles AWS just gave (`<z>/<x>/<y>.png`, `.none`) until they're
 //! packed, and copies of the archives it reads (`packs/`), each copied whole from the NAS once and
@@ -599,7 +603,9 @@ impl Packer {
         }
         // An archive on the NAS the index neither names nor lists to go, a day old: a helper's whose
         // hand-off never came (its lease lapsed). Listed to go (GRACE later), as a replaced one.
-        if let Ok(rd) = std::fs::read_dir(self.store.join("packs")) {
+        // (Never when the index names nothing: read as none when its file was missing, every
+        // archive would go.)
+        if let (false, Ok(rd)) = (named.is_empty(), std::fs::read_dir(self.store.join("packs"))) {
             let old = std::time::SystemTime::now() - std::time::Duration::from_secs(GRACE);
             for e in rd.flatten() {
                 let n = e.file_name().to_string_lossy().into_owned();
@@ -639,6 +645,19 @@ pub fn name_handed(store: &Path, handed: &[(String, Pack)], _held: &crate::out::
     }
     ix.save(store)?;
     Ok(n)
+}
+
+/// Whether `a` is an area as `area` names one: `root`, or a z3 or z6 tile's `z-x-y`.
+pub fn is_area(a: &str) -> bool {
+    if a == "root" {
+        return true;
+    }
+    let v: Vec<&str> = a.split('-').collect();
+    let n = |s: &str| s.parse::<u32>().ok().filter(|n| n.to_string() == s);
+    match (v.as_slice(), v.first().and_then(|z| n(z))) {
+        ([_, x, y], Some(z @ (3 | 6))) => n(x).zip(n(y)).is_some_and(|(x, y)| x < 1 << z && y < 1 << z),
+        _ => false,
+    }
 }
 
 /// Whether `name` is an archive of `area` as packing names one: `<area>.<16 hex>.tiles`.

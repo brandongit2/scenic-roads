@@ -74,8 +74,28 @@ pub struct Options {
     pub helper: bool,
 }
 
-/// The free space a helper's jobs start with (its Mac has less room than the build Mac).
+/// The free space a helper's jobs start with (its Mac has less room than the build Mac), but for
+/// the steps that need more (`helper_need`).
 const HELPER_RESERVE: u64 = 15 << 30;
+
+/// The free space a helper's job of `step` needs: a terrain run's as on the build Mac (its area's
+/// archives copied here and merged); tree cover's the build Mac's reserve (it copies every canopy
+/// square its tile's coverage touches here first, ~2 GB each: tens of GB for a large tile); the
+/// others' `HELPER_RESERVE`.
+fn helper_need(step: &str) -> u64 {
+    match step {
+        "terrain" => room::RESERVE + TERRAIN_SPACE,
+        "trees" => room::RESERVE,
+        _ => HELPER_RESERVE,
+    }
+}
+
+/// The shared steps a helper asks for: those whose need (and its margin) its disk has free, or can,
+/// from the caches it may empty (`room`: `free` the disk's free bytes, `cheap` the caches' that
+/// `make_room` can delete). A Mac someone uses never fills up for a job.
+fn helper_steps(free: u64, cheap: u64) -> Vec<String> {
+    claims::SHARED.iter().filter(|s| free.saturating_add(cheap) >= helper_need(s) + room::margin(helper_need(s))).map(|s| s.to_string()).collect()
+}
 
 /// What a terrain run needs past the others' room: its area's raw tiles held twice while they're
 /// packed onto the NAS (loose, then in their archives), and on a run again the area's archives
@@ -98,12 +118,14 @@ fn terrain_reads(id: &str, p: &Path) -> bool {
 }
 
 /// The memory a shared step's job is expected to take (MB) before one has run for its target and
-/// said (`SCENIC_COSTS`): terrain's holds its area's shaded tiles (5.2 GB for 74,509 of them, 2026-10-05),
-/// so none goes to a helper until its own run shows it fits; the rest, room to spare.
+/// said (`SCENIC_COSTS`): terrain's holds its area's shaded tiles (5.2 GB for 74,509 of them,
+/// 2026-10-05), and tree cover runs six workers at once, each with its block's canopy, so neither
+/// goes to a helper until its own run shows it fits; the rest, room to spare. (Candidates are
+/// offered by their piece's size, as units are: crate::coord::job_peak.)
 fn first_peak(step: &str) -> u64 {
     match step {
         "terrain" => 6000,
-        "trees" => 3500,
+        "trees" => 8000,
         "slope" => 3000,
         "peaks" => 2500,
         _ => 1500,
@@ -395,6 +417,8 @@ pub struct Agent {
     /// The running job's lease, and when it last beat.
     lease: Option<Held>,
     beaten: Option<Instant>,
+    /// A helper's: the bytes its cheap caches held (room::cheap_bytes) and when they were counted.
+    cheap: Option<(Instant, u64)>,
 }
 
 /// The last plan's view, kept for the heartbeat between plans.
@@ -429,7 +453,7 @@ impl Agent {
         let me = format!("{} {}", cond::host_name(), std::process::id());
         // The build Mac's agent coordinates (not a helper's, nor a dry run's).
         let coord = if !o.helper && lock.is_some() && !o.dry_run && o.root.is_none() {
-            match crate::coord::Coordinator::start(&o.home.join("coord"), Some(o.bin.join("wasm")), crate::coord::PORT, &cond::host_name()) {
+            match crate::coord::Coordinator::start(&o.home.join("coord"), Some(o.bin.join("wasm")), crate::coord::PORT, &cond::host_name(), &app) {
                 Ok(c) => {
                     eprintln!("agent: coordinating at {}", c.contact.urls.join(", "));
                     Some(c)
@@ -442,7 +466,7 @@ impl Agent {
         } else {
             None
         };
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, lease: None, beaten: None })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, lease: None, beaten: None, cheap: None })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -586,8 +610,23 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "Building".into(), why });
             return Vec::new();
         }
-        let can: Vec<String> = claims::SHARED.iter().map(|s| s.to_string()).chain(["tail".to_string()]).collect();
-        let ask = crate::coord::Ask { kind: "native".into(), label: Some(format!("{} (helper)", self.host)), can, mem_mb: helper_memory(), cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32), max: batch_size("unit"), ..Default::default() };
+        // The steps its disk has room for (the caches' size counted at most every ten minutes:
+        // a walk of thousands of tiles).
+        let cache = self.o.home.join("cache");
+        let cheap = match self.cheap {
+            Some((at, n)) if at.elapsed() < Duration::from_secs(600) => n,
+            _ => {
+                let n = room::cheap_bytes(&cache);
+                self.cheap = Some((Instant::now(), n));
+                n
+            }
+        };
+        let steps = helper_steps(room::disk_free(&self.o.home).unwrap_or(0), cheap);
+        if steps.is_empty() {
+            waiting.push(Waiting { step: None, what: "Building".into(), why: format!("the disk has too little room ({} GB free needed)", (HELPER_RESERVE + room::margin(HELPER_RESERVE)) >> 30) });
+        }
+        let can: Vec<String> = steps.into_iter().chain(["tail".to_string()]).collect();
+        let ask = crate::coord::Ask { kind: "native".into(), label: Some(format!("{} (helper)", self.host)), can, mem_mb: helper_memory(), cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32), max: batch_size("unit"), app: Some(self.app.clone()), ..Default::default() };
         let Some(client) = self.client(root, waiting) else { return Vec::new() };
         let asked = client.ask(&ask);
         let fail = |a: &Self, lease: u64, why: &str| {
@@ -656,7 +695,11 @@ impl Agent {
                 Vec::new()
             }
             Err(e) => {
-                waiting.push(Waiting { step: None, what: "Building".into(), why: format!("the build Mac can't be reached: {e:#}") });
+                let why = match e.downcast_ref::<crate::coord::client::Refused>() {
+                    Some(r) => r.0.clone(),
+                    None => format!("the build Mac can't be reached: {e:#}"),
+                };
+                waiting.push(Waiting { step: None, what: "Building".into(), why });
                 Vec::new()
             }
         }
@@ -1034,7 +1077,7 @@ impl Agent {
                 // refreshed only while a job runs.
                 let cache = self.o.home.join("cache");
                 let need = if self.o.helper {
-                    HELPER_RESERVE
+                    helper_need(spec.record.as_ref().map_or("", |w| w.step.as_str()))
                 } else if id.starts_with("osm-pass") {
                     PASS_SPACE.saturating_sub(dir_bytes(&cache.join("base"))).max(room::RESERVE)
                 } else if id.starts_with("terrain ") {
@@ -1452,7 +1495,7 @@ impl Agent {
             // The rest, offered to the workers that mount the NAS: units with their pieces' sizes,
             // the others with the memory their jobs are expected to take (until one's run says);
             // each worker takes what fits its memory.
-            let guess = |t: &str| if w.step == "unit" { size(t) } else { first_peak(&w.step) };
+            let guess = |t: &str| if w.step == "unit" || w.step == "pois" { size(t) } else { first_peak(&w.step) };
             offers.push(crate::coord::Offer { step: w.step.clone(), targets: w.targets.iter().map(|(t, k)| (t.clone(), k.clone(), guess(t))).collect(), batch: batch_size(&w.step) });
         }
         // (A step with nothing left: none of it offered.)
@@ -1871,13 +1914,23 @@ mod tests {
     }
 
     #[test]
+    fn a_helper_asks_only_for_what_its_disk_has_room_for() {
+        let gb = |n: u64| n << 30;
+        // 20 GB free and 10 of caches it may empty: the 15 GB steps (and their margin), not tree
+        // cover's 30 nor a terrain run's 55.
+        assert_eq!(helper_steps(gb(20), gb(10)), ["slope", "unit", "pois", "peaks"]);
+        assert_eq!(helper_steps(gb(70), 0), claims::SHARED.to_vec());
+        assert!(helper_steps(gb(10), gb(5)).is_empty());
+    }
+
+    #[test]
     fn a_helper_runs_any_shared_steps_job_the_build_mac_leases() {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         // The build Mac's coordinator offers slope, which this helper fits.
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let c = crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4").unwrap();
+        let c = crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap();
         c.offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
         let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: true }).unwrap();
         a.client = Some(crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1"));

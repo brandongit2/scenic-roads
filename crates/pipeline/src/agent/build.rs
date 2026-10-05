@@ -928,7 +928,6 @@ pub const TRAINS: &str = "Counting trains a day";
 pub const LANDMARKS: &str = "Choosing and drawing the landmarks";
 pub const PUBLISH: &str = "Publishing the new map data";
 
-/// The regions' steps (build::checklist's lines), for before there's a pass to size them by.
 /// Marks each step whose jobs a helper may do: all of them, or which.
 pub fn mark_shared(steps: &mut [Step]) {
     fn noun(s: &str) -> &str {
@@ -949,6 +948,7 @@ pub fn mark_shared(steps: &mut [Step]) {
     }
 }
 
+/// The regions' steps (build::checklist's lines), for before there's a pass to size them by.
 pub fn checklist_to_come() -> Vec<Step> {
     [
         (SITES, &["heritage-sites"][..]),

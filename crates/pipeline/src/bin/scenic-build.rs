@@ -296,7 +296,7 @@ fn main() -> Result<()> {
             let workers: usize = std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or(8);
             let qs: Vec<Unit> = positional(&args).iter().map(|t| Unit::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))).collect::<Result<_>>()?;
             for (k, &q) in qs.iter().enumerate() {
-                let t = std::time::Instant::now();
+                let t = cost_start();
                 pipeline::treepacks::build(&mut out, &cov, q, &dem, &chm, &scratch, workers)?;
                 pipeline::agent::jobs::report(k as u64 + 1, qs.len() as u64, "z3 tiles");
                 note_cost("trees", &q.slash(), t);
@@ -903,21 +903,28 @@ fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
         .collect()
 }
 
-/// The raw tiles a job fetched, packed onto the NAS (pipeline::rawpack): an archive of their own an
-/// area, not a file a tile; kept here too, for the next jobs. Not packed now (the NAS away), they
-/// wait in the cache for the next job or room-making.
-/// What a job of `step` took for `target`: its peak memory so far (this process's and its finished
-/// programs') and its time, noted for the coordinator (`SCENIC_COSTS`), which gives a helper only
+/// A target's start, for `note_cost`: its time, and the job's peak memory started again.
+fn cost_start() -> std::time::Instant {
+    pipeline::sys::reset_group_peak();
+    std::time::Instant::now()
+}
+
+/// What a job of `step` took for `target` (since its `cost_start`): the most memory the job's
+/// processes held together meanwhile (sampled: a pool's workers summed, an earlier target's peak
+/// not counted) and its time, noted for the coordinator (`SCENIC_COSTS`), which gives a helper only
 /// work that fits its memory (crate::coord::job_peak).
 fn note_cost(step: &str, target: &str, t0: std::time::Instant) {
     let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
-    let line = serde_json::json!({ "unit": pipeline::coord::cost_key(step, target), "peak_mb": pipeline::sys::peak_rss() >> 20, "secs": t0.elapsed().as_secs() });
+    let line = serde_json::json!({ "unit": pipeline::coord::cost_key(step, target), "peak_mb": pipeline::sys::group_peak() >> 20, "secs": t0.elapsed().as_secs() });
     let r = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
     if let Err(e) = r {
         eprintln!("{step} {target}: noting what it cost: {e}");
     }
 }
 
+/// The raw tiles a job fetched, packed onto the NAS (pipeline::rawpack): an archive of their own an
+/// area, not a file a tile; kept here too, for the next jobs. Not packed now (the NAS away), they
+/// wait in the cache for the next job or room-making.
 fn pack_raw(out: &Out, dir: &Path) {
     pack_raw_with(out, dir, &|_, _, _| {})
 }
@@ -983,7 +990,7 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let units: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
     for (k, &u) in units.iter().enumerate() {
         pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas");
-        let t = std::time::Instant::now();
+        let t = cost_start();
         let Some(piece) = out.get(&format!("sources/osm/{date}/pieces/{}", u.dash())).map(|n| out.path(n)) else {
             eprintln!("pois {}: no piece", u.slash());
             continue;
@@ -1091,7 +1098,7 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let units: Vec<Unit> = positional(args).iter().filter_map(|s| Unit::parse(s)).collect();
     for (k, &u) in units.iter().enumerate() {
         pipeline::agent::jobs::report(k as u64, units.len() as u64, "areas");
-        let t = std::time::Instant::now();
+        let t = cost_start();
         let pois = out.get(&format!("work/pois/{}", u.dash())).map(|c| out.path(c)).with_context(|| format!("no candidates for {} (the pois step)", u.slash()))?;
         let peaks: Vec<unit::UnitPeak> = pipeline::candidates::read(&pois)?
             .into_iter()
@@ -2177,7 +2184,7 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
     for (k, (q, list)) in by_q.into_iter().enumerate() {
         pipeline::agent::jobs::part(2 * k, &names);
         let writing = std::sync::atomic::AtomicBool::new(false);
-        let t = std::time::Instant::now();
+        let t = cost_start();
         let r = pipeline::terrain_pack::build_q_with(out, &raw, q, &list, &cov, &|what, done, total| {
             if what == "packs" && !writing.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 pipeline::agent::jobs::part(2 * k + 1, &names);
@@ -2199,7 +2206,7 @@ fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
     let n = by_q.len() as u64;
     for (k, (q, list)) in by_q.into_iter().enumerate() {
         pipeline::agent::jobs::report(k as u64, n, "parts");
-        let t = std::time::Instant::now();
+        let t = cost_start();
         let r = pipeline::slope_pack::build_q(out, q, &list)?;
         eprintln!("slope 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
         note_cost("slope", &format!("3/{}/{}", q.0, q.1), t);

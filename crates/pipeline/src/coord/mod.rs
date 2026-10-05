@@ -72,13 +72,15 @@ pub fn cost_key(step: &str, target: &str) -> String {
 }
 
 /// The memory a job of `step` for `target` is predicted to take (MB): a unit's by `unit_peak` (`size`
-/// its piece's bytes); another step's what it took last time, else `size`, the estimate it was
-/// offered with.
+/// its piece's bytes); candidates' what they took last time, else the unit's (they read the same
+/// piece, with one of the unit's programs: `size` its bytes too); another step's what it took last
+/// time, else `size`, the estimate it was offered with.
 pub fn job_peak(costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: u64) -> u64 {
-    if step == "unit" {
-        unit_peak(costs, target, size)
-    } else {
-        costs.get(&cost_key(step, target)).map(|c| c.peak_mb).unwrap_or(size)
+    match (step, costs.get(&cost_key(step, target))) {
+        ("unit", _) => unit_peak(costs, target, size),
+        (_, Some(c)) => c.peak_mb,
+        ("pois", None) => unit_peak(costs, target, size),
+        (_, None) => size,
     }
 }
 
@@ -97,10 +99,13 @@ pub struct Worker {
     /// "native" (an agent) or "web" (a page).
     pub kind: String,
     pub label: String,
-    /// The work it does ("unit", "tail"), the memory it spares (MB) and its cores.
+    /// The work it does (the shared steps it builds: crate::agent::claims::SHARED; "tail": tasks),
+    /// the memory it spares (MB) and its cores.
     pub can: Vec<String>,
     pub mem_mb: u64,
     pub cores: u32,
+    /// The app it runs (an agent's: crate::agent::app_version), when it says.
+    pub app: Option<String>,
     #[serde(skip)]
     pub seen: Instant,
     pub what: String,
@@ -129,6 +134,9 @@ pub struct Shared {
     pub tasks: task::Tasks,
     pub workers: BTreeMap<String, Worker>,
     pub costs: BTreeMap<String, Cost>,
+    /// The app this Mac's agent runs: an agent on another builds with other code than the keys it
+    /// would record say, so it gets no work ("" in tests: any).
+    pub app: String,
     /// Where the token, leases, costs and journal are kept.
     dir: PathBuf,
 }
@@ -169,11 +177,11 @@ impl Shared {
 
     /// Marks `worker`'s request (what it said, and itself as `a` describes it).
     fn seen(&mut self, worker: &str, what: String, a: Option<&Ask>, now: Instant) {
-        let w = self.workers.entry(worker.to_string()).or_insert_with(|| Worker { kind: String::new(), label: worker.to_string(), can: Vec::new(), mem_mb: 0, cores: 0, seen: now, what: String::new(), done: 0, failed: 0, checked: 0, bad: false });
+        let w = self.workers.entry(worker.to_string()).or_insert_with(|| Worker { kind: String::new(), label: worker.to_string(), can: Vec::new(), mem_mb: 0, cores: 0, app: None, seen: now, what: String::new(), done: 0, failed: 0, checked: 0, bad: false });
         w.seen = now;
         w.what = what;
         if let Some(a) = a {
-            (w.kind, w.can, w.mem_mb, w.cores) = (a.kind.clone(), a.can.clone(), a.mem_mb, a.cores);
+            (w.kind, w.can, w.mem_mb, w.cores, w.app) = (a.kind.clone(), a.can.clone(), a.mem_mb, a.cores, a.app.clone());
             if let Some(l) = &a.label {
                 w.label = l.chars().take(80).collect();
             }
@@ -200,7 +208,8 @@ pub struct Ask {
     pub kind: String,
     #[serde(default)]
     pub label: Option<String>,
-    /// The kinds of work it does: "unit" (a job; it mounts the NAS), "tail" (a task).
+    /// The kinds of work it does: a shared step's jobs (crate::agent::claims::SHARED: it mounts
+    /// the NAS), "tail" (a task).
     pub can: Vec<String>,
     /// The memory it spares now (MB).
     pub mem_mb: u64,
@@ -209,6 +218,9 @@ pub struct Ask {
     /// At most this many targets in a job.
     #[serde(default)]
     pub max: usize,
+    /// The app it runs (an agent's, crate::agent::app_version; a page's is the coordinator's own).
+    #[serde(default)]
+    pub app: Option<String>,
 }
 
 /// Work granted.
@@ -272,14 +284,15 @@ pub struct Fail {
 
 impl Coordinator {
     /// Starts answering on `port` (not in WebAssembly, where nothing listens), keeping its state in
-    /// `dir`; `wasm`: the folder of the programs' WebAssembly builds a page fetches.
+    /// `dir`; `wasm`: the folder of the programs' WebAssembly builds a page fetches; `app`: the app
+    /// this Mac's agent runs, the one an agent asking for work must run too.
     #[cfg(target_os = "wasi")]
-    pub fn start(_dir: &Path, _wasm: Option<PathBuf>, _port: u16, _me: &str) -> Result<Coordinator> {
+    pub fn start(_dir: &Path, _wasm: Option<PathBuf>, _port: u16, _me: &str, _app: &str) -> Result<Coordinator> {
         anyhow::bail!("no coordinator in WebAssembly")
     }
 
     #[cfg(not(target_os = "wasi"))]
-    pub fn start(dir: &Path, wasm: Option<PathBuf>, port: u16, me: &str) -> Result<Coordinator> {
+    pub fn start(dir: &Path, wasm: Option<PathBuf>, port: u16, me: &str, app: &str) -> Result<Coordinator> {
         std::fs::create_dir_all(dir.join("journal"))?;
         let token = http::token(dir)?;
         let now = Instant::now();
@@ -289,7 +302,7 @@ impl Coordinator {
             eprintln!("coordinator: {}'s lease ended with the agent before this one", l.what());
         }
         let costs = std::fs::read(dir.join("costs.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, dir: dir.to_path_buf() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, app: app.to_string(), dir: dir.to_path_buf() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -439,6 +452,20 @@ impl Coordinator {
     }
 }
 
+/// An app version (`20261005-1508-84142d3`: its UTC publish time, then its commit) in words: "5 Oct
+/// 15:08 UTC"; as it is when it isn't one.
+fn app_when(v: &str) -> String {
+    let p: Vec<&str> = v.split('-').collect();
+    let month = |m: &str| ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].get(m.parse::<usize>().ok()?.checked_sub(1)?).copied();
+    match p.as_slice() {
+        [d, t, _] if d.len() == 8 && t.len() == 4 && d.bytes().chain(t.bytes()).all(|b| b.is_ascii_digit()) => match month(&d[4..6]) {
+            Some(m) => format!("{} {m} {}:{} UTC", d[6..8].trim_start_matches('0'), &t[..2], &t[2..]),
+            None => v.to_string(),
+        },
+        _ => v.to_string(),
+    }
+}
+
 /// A worker's name as a folder name.
 pub fn folder(w: &str) -> String {
     w.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
@@ -468,23 +495,12 @@ fn saves(step: &str, target: &str, l: &str) -> bool {
     }
 }
 
-/// Whether raw tiles' archive area `area` ("3-x-y", "6-x-y", crate::rawpack) is one a job of `step`
-/// for `target` fetches tiles of: a terrain area's own z3 and z6 areas; a unit's peaks', the z6
-/// areas within two of its own and their z3 ones.
-fn fetches(step: &str, target: &str, area: &str) -> bool {
-    let (Some(t), Some(a)) = (crate::legacy::Unit::parse(target), crate::legacy::Unit::parse(&area.replacen('-', "/", 2))) else { return false };
-    let near = |z: u8, r: i64| a.z == z && (a.x as i64 - (t.x >> (t.z - z)) as i64).abs() <= r && (a.y as i64 - (t.y >> (t.z - z)) as i64).abs() <= r;
-    match (step, t.z) {
-        ("terrain", 3) => a.z == 3 && (a.x, a.y) == (t.x, t.y) || a.z == 6 && (a.x >> 3, a.y >> 3) == (t.x, t.y),
-        ("peaks", 6) => near(6, 2) || near(3, 1),
-        _ => false,
-    }
-}
-
 /// A job's hand-off, when it's its lease's: its done record is the lease's, every change is to one
 /// of the files its step saves for one of the lease's targets (`saves`), each a content name of
 /// that file, every upload it says it checked is one of its own, and each raw tiles' archive it put
-/// on the NAS is of an area its targets fetch, named by its content.
+/// on the NAS is named as packing names one for its area. (Of any area: a job packs every loose
+/// tile in the helper's cache, an earlier job's left there too, a job stopped before it packed:
+/// tiles of the NAS's own, whatever job fetched them.)
 #[cfg(not(target_os = "wasi"))]
 fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result<()> {
     match &h.done {
@@ -493,7 +509,7 @@ fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Resul
     }
     anyhow::ensure!(crate::agent::claims::SHARED.contains(&step), "a hand-off of {step} isn't work a worker does");
     for (area, p) in &h.raw {
-        anyhow::ensure!(targets.iter().any(|(t, _)| fetches(step, t, area)), "raw tiles of {area} aren't its targets'");
+        anyhow::ensure!(crate::rawpack::is_area(area), "{area} isn't an area of raw tiles");
         anyhow::ensure!(crate::rawpack::named_for(&p.name, area), "{} isn't an archive of {area}", p.name);
     }
     for (l, v) in &h.changes {
@@ -525,6 +541,14 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             s.seen(&a.worker, format!("asked for {}", a.can.join(" or ")), Some(&a), now);
             if s.workers[&a.worker].bad {
                 return Ok((204, serde_json::Value::Null));
+            }
+            // An agent on another app than this one's (its updater not yet run, or this Mac's
+            // agent still on the last: it switches between jobs) waits for the same.
+            if a.kind == "native" && !s.app.is_empty() && a.app.as_deref() != Some(s.app.as_str()) {
+                let theirs = a.app.as_deref().map_or("an older one".to_string(), app_when);
+                let why = format!("on the app of {theirs}, the build Mac on {}'s: it builds once it runs the same", app_when(&s.app));
+                s.seen(&a.worker, why.clone(), None, now);
+                return Ok((409, serde_json::json!({ "error": why })));
             }
             // The work only it can do first: a worker that mounts the NAS does a job of the plan (the
             // most work for what it fetches), the earliest step it can (what later steps wait on),
@@ -1040,7 +1064,7 @@ mod tests {
     fn start() -> (tempfile::TempDir, Coordinator, client::Client) {
         let d = tempfile::tempdir().unwrap();
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let c = Coordinator::start(&d.path().join("coord"), None, port, "m4").unwrap();
+        let c = Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap();
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
         (d, c, w)
     }
@@ -1052,6 +1076,42 @@ mod tests {
     fn handoff(units: &[(&str, &str)]) -> Handoff {
         let changes = units.iter().map(|(u, _)| (format!("base/{}", u.replace('/', "-")), Some(format!("base/{}.0000000000000003.base", u.replace('/', "-"))))).collect();
         Handoff { changes, done: Some(("unit".into(), units.iter().map(|(u, k)| (u.to_string(), k.to_string())).collect())), ..Default::default() }
+    }
+
+    #[test]
+    fn candidates_are_expected_to_take_what_their_unit_did() {
+        let cost = |mb: u64| Cost { peak_mb: mb, secs: 1 };
+        let mut costs = BTreeMap::new();
+        // Before either ran: as a unit on its piece would (ten times it, at least 3.7 GB).
+        assert_eq!(job_peak(&costs, "pois", "6/1/1", 500 << 20), 5000);
+        assert_eq!(job_peak(&costs, "pois", "6/1/1", 100 << 20), 3700);
+        // The unit's run, then its own.
+        costs.insert("6/1/1".to_string(), cost(4200));
+        assert_eq!(job_peak(&costs, "pois", "6/1/1", 100 << 20), 4200);
+        costs.insert("pois 6/1/1".to_string(), cost(1200));
+        assert_eq!(job_peak(&costs, "pois", "6/1/1", 100 << 20), 1200);
+        // Another step: its own, else its offer's guess.
+        assert_eq!(job_peak(&costs, "slope", "3/2/2", 3000), 3000);
+    }
+
+    #[test]
+    fn an_agent_on_another_app_gets_no_work() {
+        let d = tempfile::tempdir().unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let c = Coordinator::start(&d.path().join("coord"), None, port, "m4", "20261005-1508-84142d3").unwrap();
+        let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
+        c.offer_units("2026-09-28", vec![("6/1/1".into(), "k1".into(), 100 << 20)]);
+        // One from before agents said (an older helper's ask), or on another: refused, why given.
+        let e = w.ask(&ask(4096)).unwrap_err();
+        assert!(e.downcast_ref::<client::Refused>().is_some_and(|r| r.0.contains("an older one") && r.0.contains("5 Oct 15:08 UTC")), "{e:#}");
+        let e = w.ask(&Ask { app: Some("20261005-0819-7638722".into()), ..ask(4096) }).unwrap_err();
+        assert!(e.to_string().contains("5 Oct 08:19 UTC"), "{e:#}");
+        assert!(c.held("unit").is_empty());
+        // On the same: the unit.
+        let g = w.ask(&Ask { app: Some("20261005-1508-84142d3".into()), ..ask(4096) }).unwrap().unwrap();
+        assert!(matches!(g.work, Granted::Job { ref step, .. } if step == "unit"));
+        // A page (its code is this coordinator's) never says.
+        assert_eq!(app_when("development"), "development");
     }
 
     #[test]
@@ -1102,11 +1162,15 @@ mod tests {
         // Raw tiles' archives: its own areas, named by their content.
         let terrain = |raw: &[(&str, &str)]| check_handoff(&h("terrain", "3/2/2", &["layers/terrain/lo/3-2-2"], raw), "terrain", &ts("3/2/2"));
         assert!(terrain(&[("6-20-21", "6-20-21.0123456789abcdef.tiles"), ("3-2-2", "3-2-2.0123456789abcdef.tiles")]).is_ok());
-        assert!(terrain(&[("6-30-21", "6-30-21.0123456789abcdef.tiles")]).is_err());
+        // Another area's (an earlier job's tiles, packed with this one's) too, and the root's.
+        assert!(terrain(&[("6-30-21", "6-30-21.0123456789abcdef.tiles"), ("root", "root.0123456789abcdef.tiles")]).is_ok());
+        assert!(terrain(&[("6-64-21", "6-64-21.0123456789abcdef.tiles")]).is_err());
+        assert!(terrain(&[("5-20-21", "5-20-21.0123456789abcdef.tiles")]).is_err());
+        assert!(terrain(&[("6-020-21", "6-020-21.0123456789abcdef.tiles")]).is_err());
         assert!(terrain(&[("6-20-21", "6-20-22.0123456789abcdef.tiles")]).is_err());
         assert!(terrain(&[("6-20-21", "../6-20-21.0123456789abcdef.tiles")]).is_err());
         let peaks = |a: &str| check_handoff(&h("peaks", "6/20/21", &["work/peaks/6-20-21"], &[(a, &format!("{a}.0123456789abcdef.tiles"))]), "peaks", &ts("6/20/21"));
-        assert!(peaks("6-21-22").is_ok() && peaks("3-2-2").is_ok() && peaks("6-25-21").is_err());
+        assert!(peaks("6-21-22").is_ok() && peaks("3-2-2").is_ok() && peaks("6-25-21").is_ok() && peaks("../6-25-21").is_err());
         // A step no worker does.
         assert!(check_handoff(&h("catalog", "catalog", &[], &[]), "catalog", &ts("catalog")).is_err());
     }
@@ -1272,7 +1336,7 @@ mod tests {
         drop(c);
         // (A new port: the old listener's threads live on in this process.)
         let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let c2 = Coordinator::start(&d.path().join("coord"), None, port, "m4").unwrap();
+        let c2 = Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap();
         assert_eq!(c2.contact.token, token);
         let w2 = client::Client::at(vec![format!("http://127.0.0.1:{port}")], token, "m1");
         assert!(w2.beat(g.lease, None).unwrap(), "the helper's lease lives on");
