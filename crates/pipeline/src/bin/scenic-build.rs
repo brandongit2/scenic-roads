@@ -1508,6 +1508,21 @@ fn pass_and_coverage(out: &Out, args: &[String]) -> Result<(String, pipeline::co
     Ok((date, cov, recipes.len()))
 }
 
+/// The canopy files the canopy step reads for box `b` (w, s, e, n, degrees): each 10° square's
+/// median, p95 and cover (scenic-metrics names them by the square's top and left).
+fn canopy_files(b: [f64; 4]) -> Vec<String> {
+    let (lefts, tops) = ((b[0] / 10.0).floor() as i32..=(b[2] / 10.0).floor() as i32, (b[1] / 10.0).ceil() as i32..=(b[3] / 10.0).ceil() as i32);
+    let mut names = Vec::new();
+    for top in tops.map(|t| t * 10) {
+        for left in lefts.clone().map(|l| l * 10) {
+            for st in ["median", "p95", "cover5m"] {
+                names.push(format!("meta_chm_lat={top}.0_lon={left}.0_{st}.tif"));
+            }
+        }
+    }
+    names
+}
+
 /// unit-snap U --out <dir> --cache <dir>: unit U's folder built as the unit step builds it, from
 /// the build's records, writing nothing to the NAS: its kept samples go under <dir>/shared (seeded
 /// with its and its neighbours' from the NAS), and the folder is copied before and after each of
@@ -1645,20 +1660,38 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         }
         if let Some(&next) = units.get(k + 1) {
             let o: &Out = out;
-            let packs = layers_source(o, &pilot, Some(&blobs)).pack_contents(pipeline::stage::tile_box_grown(next.z, next.x, next.y, pipeline::stage::MARGIN_KM));
+            let b = pipeline::stage::tile_box_grown(next.z, next.x, next.y, pipeline::stage::MARGIN_KM);
+            let packs = layers_source(o, &pilot, Some(&blobs)).pack_contents(b);
             let piece = o.get(&format!("sources/osm/{date}/pieces/{}", next.dash())).map(|c| (o.path(c), scratch.join(format!("piece-{}.osm.pbf", next.dash()))));
+            // Its canopy squares' files, from the NAS's store into the cache the canopy step reads
+            // (scenic-metrics: it takes what's there whole, else copies it itself).
+            let squares: Vec<(PathBuf, PathBuf)> = match &tools.sources {
+                Some(s) => canopy_files(b).into_iter().map(|n| (s.join("canopy").join(&n), tools.cache.join("chm10").join(&n))).collect(),
+                None => Vec::new(),
+            };
             let (root, blobs) = (o.root().to_path_buf(), blobs.clone());
             ahead = Some(std::thread::spawn(move || {
-                if let Some((src, dst)) = piece {
-                    let tmp = dst.with_extension("pbf.tmp");
-                    if std::fs::copy(&src, &tmp).is_ok() {
-                        std::fs::rename(&tmp, &dst).ok();
+                let copy = |src: &Path, dst: &Path| {
+                    if dst.exists() || !src.exists() {
+                        return;
                     }
+                    let tmp = dst.with_extension("ahead.tmp");
+                    if dst.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::copy(src, &tmp).is_ok() {
+                        std::fs::rename(&tmp, dst).ok();
+                    } else {
+                        std::fs::remove_file(&tmp).ok();
+                    }
+                };
+                if let Some((src, dst)) = &piece {
+                    copy(src, dst);
                 }
                 for c in packs {
                     if let Err(e) = blobs.get(&root, &c) {
                         eprintln!("unit: {c} not copied ahead ({e})");
                     }
+                }
+                for (src, dst) in &squares {
+                    copy(src, dst);
                 }
             }));
         }
@@ -2151,3 +2184,19 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     Ok(())
 }
 
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_boxs_canopy_files() {
+        // Unit 6/20/22 grown by 30 km (New Brunswick): one 10° square, its three files.
+        let b = pipeline::stage::tile_box_grown(6, 20, 22, pipeline::stage::MARGIN_KM);
+        assert_eq!(super::canopy_files(b), ["median", "p95", "cover5m"].map(|s| format!("meta_chm_lat=50.0_lon=-70.0_{s}.tif")));
+        // A box across 50° N and 0° E: four squares.
+        let names = super::canopy_files([-0.5, 49.5, 0.5, 50.5]);
+        assert_eq!(names.len(), 12);
+        for (top, left) in [(50, -10), (60, -10), (50, 0), (60, 0)] {
+            assert!(names.contains(&format!("meta_chm_lat={top}.0_lon={left}.0_p95.tif")), "{top} {left}: {names:?}");
+        }
+    }
+}
