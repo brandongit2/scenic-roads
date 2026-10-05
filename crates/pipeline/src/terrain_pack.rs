@@ -170,31 +170,38 @@ impl<'a> ManifestTiles<'a> {
         }
     }
 
+    /// The open pack holding tile (z, x, y), if the manifest has it.
+    fn pack(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<std::sync::Arc<(std::fs::File, u64, store::pack::PackIndex)>>> {
+        let logical = Self::logical(&self.layer, z, x, y);
+        let mut open = self.open.lock().unwrap();
+        if !open.contains_key(&logical) {
+            let v = match self.out.get(&logical) {
+                Some(c) => {
+                    let f = std::fs::File::open(self.out.path(c))?;
+                    let len = f.metadata()?.len();
+                    let src = FileSource(&f, len);
+                    let idx = store::pack::PackIndex::read_from(&src)?;
+                    Some(std::sync::Arc::new((f, len, idx)))
+                }
+                None => None,
+            };
+            open.insert(logical.clone(), v);
+        }
+        Ok(open.get(&logical).cloned().flatten())
+    }
+
     pub fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
         use store::sys::PosIo;
-        let logical = Self::logical(&self.layer, z, x, y);
-        let entry = {
-            let mut open = self.open.lock().unwrap();
-            if !open.contains_key(&logical) {
-                let v = match self.out.get(&logical) {
-                    Some(c) => {
-                        let f = std::fs::File::open(self.out.path(c))?;
-                        let len = f.metadata()?.len();
-                        let src = FileSource(&f, len);
-                        let idx = store::pack::PackIndex::read_from(&src)?;
-                        Some(std::sync::Arc::new((f, len, idx)))
-                    }
-                    None => None,
-                };
-                open.insert(logical.clone(), v);
-            }
-            open.get(&logical).cloned().flatten()
-        };
-        let Some(e) = entry else { return Ok(None) };
+        let Some(e) = self.pack(z, x, y)? else { return Ok(None) };
         let Some(ent) = e.2.find(z, x, y) else { return Ok(None) };
         let mut b = vec![0u8; ent.len as usize];
         e.0.read_exact_at(&mut b, ent.offset)?;
         Ok(Some(b))
+    }
+
+    /// Whether the layer has tile (z, x, y), from its pack's index alone.
+    pub fn has(&self, z: u8, x: u32, y: u32) -> anyhow::Result<bool> {
+        Ok(self.pack(z, x, y)?.is_some_and(|e| e.2.find(z, x, y).is_some()))
     }
 }
 

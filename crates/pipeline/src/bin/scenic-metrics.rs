@@ -29,6 +29,7 @@ use roadcore::{class, dist_m, flag, merc, Array, Ways, E7};
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI8, AtomicU8, Ordering::Relaxed};
+use std::sync::LazyLock;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -203,10 +204,22 @@ struct Chm10 {
 impl Chm10 {
     #[inline]
     fn idx(&self, lon: f64, lat: f64) -> Option<usize> {
+        Some(self.row(lat)? * C10 + self.col(lon)?)
+    }
+
+    /// A longitude's column in the square.
+    #[inline]
+    fn col(&self, lon: f64) -> Option<usize> {
         let c = ((lon - self.left) / C10_RES).floor();
+        (c >= 0.0 && c < C10 as f64).then_some(c as usize)
+    }
+
+    /// A latitude's row among those read (from `row0`).
+    #[inline]
+    fn row(&self, lat: f64) -> Option<usize> {
         let r = ((self.top - lat) / C10_RES).floor();
         let (r0, r1) = (self.row0 as f64, (self.row0 + self.rows) as f64);
-        (c >= 0.0 && r >= r0 && c < C10 as f64 && r < r1).then(|| (r as usize - self.row0) * C10 + c as usize)
+        (r >= r0 && r < r1).then(|| r as usize - self.row0)
     }
 }
 
@@ -585,19 +598,28 @@ fn canopy(dir: &Path) -> Result<()> {
         };
         let t = Chm10 { left: left as f64, top: top as f64, row0, rows, median, p95, cover };
 
-        // Grid layers: cells whose centre lies in this tile (4 sub-samples per cell), for tiles to do.
+        // Grid layers: cells whose centre lies in this tile (4 sub-samples per cell, at a quarter and
+        // three quarters of the cell each way), for tiles to do. A sub-sample's column in the square
+        // depends only on its longitude and its row only on its latitude: each is worked out once
+        // per column and per row of the tile (Chm10::idx in two halves).
         canopy_out.par_chunks_mut(CELLS).zip(cover_out.par_chunks_mut(CELLS)).zip(grid.tiles.par_iter().zip(&todo_t)).for_each(|((can, cov), (tile, &todo))| {
             if !todo {
                 return;
             }
+            let cols: Vec<[Option<usize>; 2]> = (0..256usize)
+                .map(|cx| {
+                    let gx = tile[0] as f64 * 256.0 + cx as f64;
+                    [0.25, 0.75].map(|ox| t.col((gx + ox) / roadcore::grid::WORLD * 360.0 - 180.0))
+                })
+                .collect();
             for cy in 0..256usize {
-                for cx in 0..256usize {
-                    let (gx, gy) = (tile[0] as f64 * 256.0 + cx as f64, tile[1] as f64 * 256.0 + cy as f64);
+                let gy = tile[1] as f64 * 256.0 + cy as f64;
+                let rows = [0.25, 0.75].map(|oy| t.row((std::f64::consts::PI * (1.0 - 2.0 * (gy + oy) / roadcore::grid::WORLD)).dsinh().datan().to_degrees()));
+                for (cx, c) in cols.iter().enumerate() {
                     let (mut sh, mut sc, mut n) = (0u32, 0u32, 0u32);
-                    for (ox, oy) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
-                        let lon = (gx + ox) / roadcore::grid::WORLD * 360.0 - 180.0;
-                        let lat = (std::f64::consts::PI * (1.0 - 2.0 * (gy + oy) / roadcore::grid::WORLD)).dsinh().datan().to_degrees();
-                        if let Some(i) = t.idx(lon, lat) {
+                    for (kx, ky) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                        if let (Some(c), Some(r)) = (c[kx], rows[ky]) {
+                            let i = r * C10 + c;
                             sh += t.median[i] as u32;
                             sc += t.cover[i] as u32;
                             n += 1;
@@ -640,6 +662,18 @@ fn canopy(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// `N` directions round the compass from north: each one's (east, north) unit step.
+fn compass<const N: usize>() -> [(f64, f64); N] {
+    std::array::from_fn(|a| {
+        let th = a as f64 * std::f64::consts::TAU / N as f64;
+        (th.dsin(), th.dcos())
+    })
+}
+
+/// The near field's directions, and the roadside's.
+static NEAR_DIRS: LazyLock<[(f64, f64); NEAR_AZ]> = LazyLock::new(compass);
+static ROADSIDE_DIRS: LazyLock<[(f64, f64); 16]> = LazyLock::new(compass);
+
 /// Near-field horizon per direction (0.5° units; merged by max across tiles) through
 /// terrain + median canopy height to 300 m, plus roadside p95 tree height and forest cover
 /// within 150 m for the owning tile.
@@ -652,9 +686,7 @@ fn near_field(s: &Sample, si: usize, owned: bool, t: &Chm10, grid: &GridIndex, t
     let cm = roadcore::grid::cell_m(lat);
     let eye = eye_height(s, grid, terr);
     let tunnel = s.flags & sflag::TUNNEL != 0;
-    for a in 0..NEAR_AZ {
-        let th = a as f64 * std::f64::consts::TAU / NEAR_AZ as f64;
-        let (sx, sy) = (th.dsin(), th.dcos()); // east, north
+    for (a, &(sx, sy)) in NEAR_DIRS.iter().enumerate() {
         let mut best = f64::MIN;
         let mut d = 8.0;
         while d <= NEAR_MAX_M {
@@ -676,9 +708,7 @@ fn near_field(s: &Sample, si: usize, owned: bool, t: &Chm10, grid: &GridIndex, t
     }
     if owned {
         let (mut sum, mut n, mut cov, mut m) = (0f32, 0f32, 0f32, 0f32);
-        for a in 0..16 {
-            let th = a as f64 * std::f64::consts::TAU / 16.0;
-            let (sx, sy) = (th.dsin(), th.dcos());
+        for &(sx, sy) in ROADSIDE_DIRS.iter() {
             for d in [10.0, 20.0, 30.0] {
                 if let Some(i) = t.idx(lon + sx * d / m_lon, lat + sy * d / m_lat) {
                     sum += t.p95[i] as f32;

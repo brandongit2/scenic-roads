@@ -331,18 +331,24 @@ pub fn tile_with_fallback_by(get: &dyn Fn(u8, u32, u32) -> Option<Vec<u8>>, z: u
         let (pz, px, py) = (z - dz, x >> dz, y >> dz);
         let Some(b) = get(pz, px, py) else { continue };
         let p = decode_terrain_png(&b).ok()?;
-        let n = 1u32 << dz;
-        let (ox, oy) = ((x - (px << dz)) as f64 * 256.0 / n as f64, (y - (py << dz)) as f64 * 256.0 / n as f64);
-        let s = 1.0 / n as f64;
-        let mut out = vec![0f32; 256 * 256];
-        for j in 0..256 {
-            for i in 0..256 {
-                out[j * 256 + i] = bilinear(&p, 256, ox + (i as f64 + 0.5) * s - 0.5, oy + (j as f64 + 0.5) * s - 0.5);
-            }
-        }
-        return Some(out);
+        return Some(upsampled(&p, dz, x, y));
     }
     None
+}
+
+/// Tile (z, x, y) from its ancestor `dz` levels up (`p`, decoded): bilinear at its pixel centres.
+pub fn upsampled(p: &[f32], dz: u8, x: u32, y: u32) -> Vec<f32> {
+    let (px, py) = (x >> dz, y >> dz);
+    let n = 1u32 << dz;
+    let (ox, oy) = ((x - (px << dz)) as f64 * 256.0 / n as f64, (y - (py << dz)) as f64 * 256.0 / n as f64);
+    let s = 1.0 / n as f64;
+    let mut out = vec![0f32; 256 * 256];
+    for j in 0..256 {
+        for i in 0..256 {
+            out[j * 256 + i] = bilinear(p, 256, ox + (i as f64 + 0.5) * s - 0.5, oy + (j as f64 + 0.5) * s - 0.5);
+        }
+    }
+    out
 }
 
 /// Bilinear sample of a square `w`-wide grid at pixel-centre coordinates (clamped).
