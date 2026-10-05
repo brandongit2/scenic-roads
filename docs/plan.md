@@ -1013,8 +1013,9 @@ are no request files.
 - **A newly installed app:** the running job finishes under the old one, nothing new starts, and the
   agent exits so the launcher starts the new one.
 - **Room on the disk:** before a job starts (and before its targets are claimed), when the Mac has
-  less free than the job needs (30 GB; the OSM pass, its own 80 GB less the pack cache it clears;
-  the M1's helper, 15 GB), the local copies of what the NAS keeps (Meta's canopy squares, AWS's raw
+  less free than the job needs (30 GB; a terrain run 55 GB, for an area's raw tiles held twice
+  while they're packed onto the NAS; the OSM pass, its own 80 GB less the pack cache it clears; the
+  M1's helper, 15 GB), the local copies of what the NAS keeps (Meta's canopy squares, AWS's raw
   terrain tiles, and the copies of the records' files staging reads: `blobs/`) lose files until it
   has a sixth more (the OSM pass: what it needs), so the next jobs start without deleting again.
   - Canopy squares and copies not read in the last hour go first, each by its own use, the least

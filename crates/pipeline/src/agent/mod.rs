@@ -77,6 +77,11 @@ pub struct Options {
 /// The free space a helper's jobs start with (its Mac has less room than the build Mac).
 const HELPER_RESERVE: u64 = 15 << 30;
 
+/// What a terrain run needs past the others' room: an area's raw tiles from AWS (up to ~10 GB for a
+/// z3 area of land), held twice while they're packed onto the NAS (loose, then in their archives),
+/// went from 34 GB free to 14 GB on the US's first runs (2026-10-05).
+const TERRAIN_SPACE: u64 = 25 << 30;
+
 /// The memory a helper spares its jobs (MB): a quarter of its Mac's (4 GB of the M1's 16, which its
 /// units fit: over its first 205, its steps' programs took 3.7 GB at most).
 fn helper_memory() -> u64 {
@@ -940,6 +945,8 @@ impl Agent {
                     HELPER_RESERVE
                 } else if id.starts_with("osm-pass") {
                     PASS_SPACE.saturating_sub(dir_bytes(&cache.join("base"))).max(room::RESERVE)
+                } else if id.starts_with("terrain ") {
+                    room::RESERVE + TERRAIN_SPACE
                 } else {
                     room::RESERVE
                 };
