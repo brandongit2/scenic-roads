@@ -296,8 +296,10 @@ fn main() -> Result<()> {
             let workers: usize = std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or(8);
             let qs: Vec<Unit> = positional(&args).iter().map(|t| Unit::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))).collect::<Result<_>>()?;
             for (k, &q) in qs.iter().enumerate() {
+                let t = std::time::Instant::now();
                 pipeline::treepacks::build(&mut out, &cov, q, &dem, &chm, &scratch, workers)?;
                 pipeline::agent::jobs::report(k as u64 + 1, qs.len() as u64, "z3 tiles");
+                note_cost("trees", &q.slash(), t);
             }
         }
         "prune" => prune_step(&mut out, &args)?,
@@ -904,6 +906,18 @@ fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
 /// The raw tiles a job fetched, packed onto the NAS (pipeline::rawpack): an archive of their own an
 /// area, not a file a tile; kept here too, for the next jobs. Not packed now (the NAS away), they
 /// wait in the cache for the next job or room-making.
+/// What a job of `step` took for `target`: its peak memory so far (this process's and its finished
+/// programs') and its time, noted for the coordinator (`SCENIC_COSTS`), which gives a helper only
+/// work that fits its memory (crate::coord::job_peak).
+fn note_cost(step: &str, target: &str, t0: std::time::Instant) {
+    let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
+    let line = serde_json::json!({ "unit": pipeline::coord::cost_key(step, target), "peak_mb": pipeline::sys::peak_rss() >> 20, "secs": t0.elapsed().as_secs() });
+    let r = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
+    if let Err(e) = r {
+        eprintln!("{step} {target}: noting what it cost: {e}");
+    }
+}
+
 fn pack_raw(out: &Out, dir: &Path) {
     pack_raw_with(out, dir, &|_, _, _| {})
 }
@@ -990,6 +1004,7 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         std::fs::remove_file(&local).ok();
         std::fs::remove_file(&file).ok();
         eprintln!("pois {}: {} candidates ({:.0?})", u.slash(), cands.len(), t.elapsed());
+        note_cost("pois", &u.slash(), t);
     }
     Ok(())
 }
@@ -1102,6 +1117,7 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         out.save()?;
         std::fs::remove_file(&file).ok();
         eprintln!("peaks {}: {} peaks; z12 tiles {} from the packs, {} from AWS, {} sea ({:.0?})", u.slash(), res.len(), z12.from.0, z12.from.1, z12.from.2, t.elapsed());
+        note_cost("peaks", &u.slash(), t);
     }
     pack_raw(out, &raw_dir);
     Ok(())
@@ -2169,6 +2185,7 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
             say(what, done, total);
         })?;
         eprintln!("terrain 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
+        note_cost("terrain", &format!("3/{}/{}", q.0, q.1), t);
     }
     pipeline::agent::jobs::part(names.len() - 1, &names);
     pack_raw_with(out, &raw_dir, &say);
@@ -2185,6 +2202,7 @@ fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
         let t = std::time::Instant::now();
         let r = pipeline::slope_pack::build_q(out, q, &list)?;
         eprintln!("slope 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
+        note_cost("slope", &format!("3/{}/{}", q.0, q.1), t);
     }
     Ok(())
 }

@@ -77,6 +77,8 @@ struct Step: Decodable {
     let unit: String?
     let next: [String]?
     let note: String?
+    /// Which of its jobs a helper may do: "all", or the parts by name.
+    let shared: String?
 
     var finished: Bool {
         if let l = left { return l == 0 }
@@ -286,7 +288,8 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
         let now = s.job.map { String($0.id.split(separator: " ").first ?? "") }
         let finished = steps.filter(\.finished).count
         out.append(Line(text: "", style: .separator))
-        out.append(Line(text: "To the end: \(finished) of \(steps.count) steps done", style: .header))
+        let legend = steps.contains { !$0.finished && $0.shared != nil } ? "  ·  ⇄ helpers can take part" : ""
+        out.append(Line(text: "To the end: \(finished) of \(steps.count) steps done\(legend)", style: .header))
         for st in steps {
             if st.finished {
                 out.append(Line(text: "✓ \(st.what)", style: .stepDone))
@@ -299,7 +302,10 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
                 count = ": \(l) left"
             }
             let running = now.map { st.steps.contains($0) } ?? false
-            out.append(Line(text: "\(running ? "▸" : "○") \(st.what)\(count)", style: running ? .stepNow : .stepToDo))
+            let mark = st.shared != nil ? "  ⇄" : ""
+            out.append(Line(text: "\(running ? "▸" : "○") \(st.what)\(count)\(mark)", style: running ? .stepNow : .stepToDo))
+            // (Only some of its jobs: which.)
+            if let sh = st.shared, sh != "all" { out.append(Line(text: "      ⇄ helpers can take its \(sh)", style: .small)) }
             // Which Mac is on it or why it waits; then its jobs left, in order, by name.
             if let n = st.note { out.append(Line(text: "      \(n)", style: .small)) }
             let next = st.next ?? []

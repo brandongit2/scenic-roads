@@ -169,7 +169,9 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 
 ## 8. Native workers (built)
 
-- **The M1** asks for units and tails over HTTP; a tail runs as `scenic run-task` (its files fetched
+- **The M1** asks for the shared steps' jobs (terrain, slope, tree cover, units, candidates, peaks:
+  docs/plan.md §8, Two Macs) and tails over HTTP. A job runs the build Mac's own command for its step,
+  its saves handed back through the coordinator; a tail runs as `scenic run-task` (its files fetched
   from the coordinator, its steps run natively, the files they wrote sent back).
 - **Planned:** the build Mac's own work as tasks too.
 

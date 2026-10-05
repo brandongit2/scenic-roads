@@ -1063,8 +1063,19 @@ are no request files.
 
 **Two Macs** (and any other worker: `docs/workers.md`). The build Mac's agent plans; it runs a
 coordinator (`pipeline::coord`, port 8090) from which every other worker asks for work that fits it.
-The M1's agent (`--helper`) plans nothing: it asks for units (it mounts the NAS) and, when none fits
-it, units' last steps.
+The M1's agent (`--helper`) plans nothing: it asks for the shared steps' jobs (it mounts the NAS)
+and, when none fits it, units' last steps.
+- **Shared steps** (`agent::claims::SHARED`, in this order of preference: what later steps wait on
+  first): terrain, slope and tree cover (an area, a z3 tile, a job), units, and the landmarks'
+  candidates and peaks. The rest stays the build Mac's: the pass, the worldwide sets, map tiles,
+  indexing, trains, Wikidata and pageviews, heritage, publishing. The status marks each step a helper
+  may take (⇄; the landmarks', its candidates and peaks).
+- **What fits a helper:** each target is offered with the memory its job is expected to take: a
+  unit's from its piece; another's what its last run took (the job notes its peak, `SCENIC_COSTS`,
+  "<step> <target>"), else a first guess per step (terrain 6 GB: it holds its area's shaded tiles, 5.2
+  GB for 74,509, so an area goes to the M1's 4 GB only once a run shows it fits; trees 3.5, slope 3,
+  peaks 2.5, candidates 1.5). A helper takes the earliest step with a target that fits, from the far
+  end of the plan, a job's worth (units: as many as it asks).
 - **The contact:** `state/coordinator.json`: the coordinator's addresses (Tailscale's, then the LAN
   name) and a token (kept on the build Mac) every request carries; taken off the NAS when the agent
   stops. A worker reads it again when it can't reach the coordinator or its token is refused.
@@ -1081,10 +1092,18 @@ it, units' last steps.
   in order, with the job's done record and what its units cost, as one hand-off, kept until the
   coordinator has it (across restarts). The coordinator takes it only for a lease it still holds
   (else 410: the work was offered again, and a late save could put an older build in the manifest)
-  and only for the lease's units' files, and journals it whole on the build Mac
+  and only for the files its step saves for the lease's targets (a unit's base pack, road values,
+  English and grids; candidates' and peaks' own; an area's lo pack and its z6 tiles' hi packs of
+  terrain, slope or the tree layers), and journals it whole on the build Mac
   (`coord/journal/<worker>/`); the agent merges the journal before it plans, under its own lock (not
   while a paused job holds it), all of a hand-off or none, as it merged the NAS's hand-off files.
   Until they're merged, the agent plans with their done records on top of the keys.
+- **Raw terrain tiles a helper fetches** (terrain, peaks): it packs them into archives and puts them
+  on the NAS itself (content-named, written whole: as a unit's packs), keeping none, and hands the
+  build Mac only their names (`Handoff::raw`, of the areas its targets fetch); merging the hand-off,
+  the build Mac names them in the raw store's index, which it alone writes, and merges an area's
+  archives when it next packs there. An archive the index neither names nor lists to go, a day old
+  (a hand-off that never came), is listed to go.
 - **For a helper on an older app** (one release): the build Mac still claims its own jobs' targets
   on the NAS (`state/build/claims/`), leaves out the targets such a helper claims, and merges the
   NAS's hand-off files (`state/build/handoff/<host>/`).

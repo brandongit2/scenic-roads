@@ -859,6 +859,10 @@ pub struct Step {
     /// for the home network or out a failure, for the steps above).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Which of its jobs a helper may do (crate::agent::claims::SHARED, `mark_shared`): "all", or
+    /// the parts by name ("candidates and peaks"); none, the build Mac's alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shared: Option<String>,
 }
 
 impl Step {
@@ -925,6 +929,26 @@ pub const LANDMARKS: &str = "Choosing and drawing the landmarks";
 pub const PUBLISH: &str = "Publishing the new map data";
 
 /// The regions' steps (build::checklist's lines), for before there's a pass to size them by.
+/// Marks each step whose jobs a helper may do: all of them, or which.
+pub fn mark_shared(steps: &mut [Step]) {
+    fn noun(s: &str) -> &str {
+        match s {
+            "pois" => "candidates",
+            "unit" => "areas",
+            "trees" => "tree cover",
+            other => other,
+        }
+    }
+    for st in steps {
+        let shared: Vec<&str> = st.steps.iter().map(String::as_str).filter(|s| super::claims::SHARED.contains(s)).collect();
+        st.shared = match shared.len() {
+            0 => None,
+            n if n == st.steps.len() => Some("all".into()),
+            _ => Some(shared.iter().map(|s| noun(s)).collect::<Vec<_>>().join(" and ")),
+        };
+    }
+}
+
 pub fn checklist_to_come() -> Vec<Step> {
     [
         (SITES, &["heritage-sites"][..]),

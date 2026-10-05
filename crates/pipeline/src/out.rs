@@ -140,7 +140,7 @@ impl Out {
             if self.changes.is_empty() && self.pending.is_empty() && self.checked.is_empty() {
                 return Ok(());
             }
-            let h = crate::handoff::Handoff { changes: self.changes.clone(), pending: self.pending.clone(), checked: self.checked.iter().cloned().collect(), done: None };
+            let h = crate::handoff::Handoff { changes: self.changes.clone(), pending: self.pending.clone(), checked: self.checked.iter().cloned().collect(), done: None, raw: Vec::new() };
             crate::handoff::write(dir, &h)?;
             self.changes.clear();
             self.pending.clear();

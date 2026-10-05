@@ -97,6 +97,19 @@ fn terrain_reads(id: &str, p: &Path) -> bool {
     in_packs && (matches!(area, Some((3, ax, ay)) if (ax, ay) == (x, y)) || matches!(area, Some((6, ax, ay)) if (ax >> 3, ay >> 3) == (x, y)))
 }
 
+/// The memory a shared step's job is expected to take (MB) before one has run for its target and
+/// said (`SCENIC_COSTS`): terrain's holds its area's shaded tiles (5.2 GB for 74,509 of them, 2026-10-05),
+/// so none goes to a helper until its own run shows it fits; the rest, room to spare.
+fn first_peak(step: &str) -> u64 {
+    match step {
+        "terrain" => 6000,
+        "trees" => 3500,
+        "slope" => 3000,
+        "peaks" => 2500,
+        _ => 1500,
+    }
+}
+
 /// The memory a helper spares its jobs (MB): a quarter of its Mac's (4 GB of the M1's 16, which its
 /// units fit: over its first 205, its steps' programs took 3.7 GB at most).
 fn helper_memory() -> u64 {
@@ -537,16 +550,44 @@ impl Agent {
         }
     }
 
-    /// A helper's next job: units the build Mac's coordinator leases it (as many as a batch, none
-    /// needing more memory than it spares), built from the pass it says, saving into the lease's
-    /// outbox folder. Asked only when it could start now.
+    /// What a job of `step` is given after its targets (the pass's `date`, where this Mac's caches
+    /// and programs are): the build Mac's own jobs' and a helper's alike.
+    fn step_args(&self, step: &str, date: &str) -> Vec<String> {
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let cache = self.o.home.join("cache");
+        let dem = || s(&self.o.bin.join("dem"));
+        match step {
+            "terrain" | "terrain-root" => vec!["--raw".into(), s(&cache.join("aws-terrarium"))],
+            "pois" | "marks" | "stations" | "overlays" => vec!["--pass".into(), date.to_string()],
+            "ferries" | "rail-feeds" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem()],
+            "items" | "heritage-sites" | "heritage" | "rail" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache".into(), s(&cache)],
+            "peaks" => vec!["--pass".into(), date.to_string(), "--raw".into(), s(&cache.join("aws-terrarium")), "--cache".into(), s(&cache), "--coarse-threads".into(), "6".into()],
+            "unit" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache-dir".into(), s(&cache)],
+            "trees" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--chm".into(), s(&cache.join("chm10"))],
+            // The server's mirror on this Mac (the agent's home is inside the app's) has the same
+            // files: used instead of a second copy where it has them.
+            "pack" | "lo" => {
+                let mut v = vec!["--cache".into(), s(&cache.join("base"))];
+                if let Some(app) = self.o.home.parent() {
+                    v.extend(["--mirror".into(), s(&app.join("mirror"))]);
+                }
+                v
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// A helper's next job: work of the plan the build Mac's coordinator leases it (a job's worth of
+    /// a shared step's targets, none needing more memory than it spares), built from the pass it
+    /// says, saving into the lease's outbox folder. Asked only when it could start now.
     fn helper_job(&mut self, root: &Path, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
         let needs = Needs { cpu: true, nas: true, home: false };
         if let Some(why) = lapsed(&needs, c) {
             waiting.push(Waiting { step: None, what: "Building".into(), why });
             return Vec::new();
         }
-        let ask = crate::coord::Ask { kind: "native".into(), label: Some(format!("{} (helper)", self.host)), can: vec!["unit".into(), "tail".into()], mem_mb: helper_memory(), cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32), max: batch_size("unit"), ..Default::default() };
+        let can: Vec<String> = claims::SHARED.iter().map(|s| s.to_string()).chain(["tail".to_string()]).collect();
+        let ask = crate::coord::Ask { kind: "native".into(), label: Some(format!("{} (helper)", self.host)), can, mem_mb: helper_memory(), cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32), max: batch_size("unit"), ..Default::default() };
         let Some(client) = self.client(root, waiting) else { return Vec::new() };
         let asked = client.ask(&ask);
         let fail = |a: &Self, lease: u64, why: &str| {
@@ -555,7 +596,7 @@ impl Agent {
             }
         };
         match asked {
-            Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Job { step, targets, pass }, .. })) if step == "unit" => {
+            Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Job { step, targets, pass }, .. })) if claims::SHARED.contains(&step.as_str()) => {
                 let dir = self.outbox().join(lease.to_string());
                 if let Err(e) = std::fs::create_dir_all(&dir) {
                     waiting.push(Waiting { step: None, what: "Building".into(), why: format!("{e}") });
@@ -563,14 +604,14 @@ impl Agent {
                     return Vec::new();
                 }
                 let s = |p: &Path| p.to_string_lossy().into_owned();
-                let cache = self.o.home.join("cache");
+                // The build Mac's own command for it, its saves handed off (SCENIC_HANDOFF).
                 let mut cmd = vec!["/usr/bin/env".to_string(), format!("SCENIC_HANDOFF={}", dir.display()), format!("SCENIC_COSTS={}", dir.join("costs.jsonl").display())];
-                cmd.extend([s(&self.o.bin.join("scenic-build")), "unit".into(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch/unit"))]);
+                cmd.extend([s(&self.o.bin.join("scenic-build")), step.clone(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join(&step))]);
                 cmd.extend(targets.iter().map(|t| t.0.clone()));
-                cmd.extend(["--pass".into(), pass, "--dem".into(), s(&self.o.bin.join("dem")), "--cache-dir".into(), s(&cache)]);
+                cmd.extend(self.step_args(&step, &pass));
                 let n = targets.len();
-                let id = format!("unit {}", targets.first().map(|t| t.0.as_str()).unwrap_or(""));
-                let what = format!("Building the roads, elevations and scenery of {n} area{} for the build Mac", if n == 1 { "" } else { "s" });
+                let id = format!("{step} {}", targets.first().map(|t| t.0.as_str()).unwrap_or(""));
+                let what = format!("{} ({n} area{}, for the build Mac)", build::label(&step), if n == 1 { "" } else { "s" });
                 self.lease = Some(Held::Leased { lease, dir });
                 vec![JobSpec { id, what, cmd, needs, restart_after_sleep: true, record: Some(build::Work { step, targets }) }]
             }
@@ -1380,7 +1421,6 @@ impl Agent {
         let done = keys;
         let inputs = input_digests(root);
         let held = root.join("inputs/hold-catalog").exists();
-        let cache = self.o.home.join("cache");
         let reach = self.current_reach(root, &manifest, &done, date).ok().flatten();
         if !manifest.contains_key(crate::rail::CATALOGUE) {
             waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "the rail sources aren't on the NAS yet (scenic-build rail-seed)".into() });
@@ -1400,6 +1440,7 @@ impl Agent {
             }
             n
         };
+        let mut offers: Vec<crate::coord::Offer> = Vec::new();
         for w in plan.iter_mut().filter(|w| claims::SHARED.contains(&w.step.as_str())) {
             // What another worker builds now isn't planned here: what it leased from this Mac's
             // coordinator, or claimed (a helper on an app from before it).
@@ -1408,15 +1449,16 @@ impl Agent {
                 others.extend(c.held(&w.step));
             }
             w.targets.retain(|t| !others.contains(&t.0));
-            // The rest, offered to the workers that mount the NAS, with their pieces' sizes: each
-            // takes what fits its memory.
-            if let (Some(c), "unit") = (&self.coord, w.step.as_str()) {
-                c.offer_units(date, w.targets.iter().map(|(t, k)| (t.clone(), k.clone(), size(t))).collect());
-            }
+            // The rest, offered to the workers that mount the NAS: units with their pieces' sizes,
+            // the others with the memory their jobs are expected to take (until one's run says);
+            // each worker takes what fits its memory.
+            let guess = |t: &str| if w.step == "unit" { size(t) } else { first_peak(&w.step) };
+            offers.push(crate::coord::Offer { step: w.step.clone(), targets: w.targets.iter().map(|(t, k)| (t.clone(), k.clone(), guess(t))).collect(), batch: batch_size(&w.step) });
         }
-        // Nothing left to build: nothing to offer either.
-        if let (Some(c), false) = (&self.coord, plan.iter().any(|w| w.step == "unit" && !w.targets.is_empty())) {
-            c.offer_units(date, Vec::new());
+        // (A step with nothing left: none of it offered.)
+        offers.sort_by_key(|o| claims::SHARED.iter().position(|s| *s == o.step));
+        if let Some(c) = &self.coord {
+            c.offer(date, offers);
         }
         plan.retain(|w| !w.targets.is_empty());
         for (w, total) in batches(plan) {
@@ -1433,24 +1475,7 @@ impl Agent {
                 continue;
             }
             let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail") && !t.ends_with("-root")).collect();
-            match w.step.as_str() {
-                "terrain" | "terrain-root" => extra.extend(["--raw".into(), s(&cache.join("aws-terrarium"))]),
-                "pois" | "marks" | "stations" | "overlays" => extra.extend(["--pass".into(), date.to_string()]),
-                "ferries" | "rail-feeds" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem"))]),
-                "items" | "heritage-sites" | "heritage" | "rail" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache".into(), s(&cache)]),
-                "peaks" => extra.extend(["--pass".into(), date.to_string(), "--raw".into(), s(&cache.join("aws-terrarium")), "--cache".into(), s(&cache), "--coarse-threads".into(), "6".into()]),
-                "unit" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--cache-dir".into(), s(&cache)]),
-                "trees" => extra.extend(["--pass".into(), date.to_string(), "--dem".into(), s(&self.o.bin.join("dem")), "--chm".into(), s(&cache.join("chm10"))]),
-                // The server's mirror on this Mac (the agent's home is inside the app's) has the
-                // same files: used instead of a second copy where it has them.
-                "pack" | "lo" => {
-                    extra.extend(["--cache".into(), s(&cache.join("base"))]);
-                    if let Some(app) = self.o.home.parent() {
-                        extra.extend(["--mirror".into(), s(&app.join("mirror"))]);
-                    }
-                }
-                _ => {}
-            }
+            extra.extend(self.step_args(&w.step, date));
             let n = w.targets.len();
             // "3 areas", or "8 of 480 areas" for a batch.
             let areas = if n == total { format!("{n} area{}", if n == 1 { "" } else { "s" }) } else { format!("{n} of {total} areas") };
@@ -1673,6 +1698,7 @@ fn step_of(id: &str) -> Option<String> {
 /// out a failure). Publishing, while a step above has work left, waits for those steps: a catalog
 /// follows each chain that ends, so it's done only once they all are.
 fn annotate(list: &mut [build::Step], now: Option<&str>, helpers: &[Status], waiting: &[Waiting]) {
+    build::mark_shared(list);
     let busy = |s: &build::Step| now.is_some_and(|n| s.steps.iter().any(|x| x == n));
     // (Work known to be left: a line not sized yet, as trains a day before its sources are seeded,
     // holds nothing up.)
@@ -1842,6 +1868,43 @@ mod tests {
 
     fn agent(root: &Path, home: &Path) -> Agent {
         Agent::new(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/nonexistent/bin"), dry_run: true, once: true, helper: false }).unwrap()
+    }
+
+    #[test]
+    fn a_helper_runs_any_shared_steps_job_the_build_mac_leases() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        // The build Mac's coordinator offers slope, which this helper fits.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let c = crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4").unwrap();
+        c.offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
+        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: true }).unwrap();
+        a.client = Some(crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1"));
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        let mut w = Vec::new();
+        let jobs = a.helper_job(&root, &cond, &mut w);
+        assert_eq!(jobs.len(), 1, "{w:?}");
+        let j = &jobs[0];
+        // The build Mac's own command for slope, its saves handed off to its lease's outbox.
+        assert_eq!(j.id, "slope 3/2/2");
+        assert!(j.cmd[1].starts_with("SCENIC_HANDOFF=") && j.cmd[2].starts_with("SCENIC_COSTS="));
+        assert_eq!(&j.cmd[3..6], ["/app/scenic-build", "slope", "--root"]);
+        assert!(j.cmd.contains(&"3/2/2".to_string()));
+        assert_eq!(j.record.as_ref().map(|r| r.step.as_str()), Some("slope"));
+        assert!(j.what.contains("for the build Mac"), "{}", j.what);
+    }
+
+    #[test]
+    fn the_checklist_says_which_steps_helpers_take() {
+        let mut steps = build::checklist_to_come();
+        build::mark_shared(&mut steps);
+        let shared = |what: &str| steps.iter().find(|s| s.what == what).and_then(|s| s.shared.clone());
+        assert_eq!(shared(build::TERRAIN).as_deref(), Some("all"));
+        assert_eq!(shared(build::UNITS).as_deref(), Some("all"));
+        assert_eq!(shared(build::LANDMARKS).as_deref(), Some("candidates and peaks"));
+        assert_eq!(shared(build::TILES), None);
+        assert_eq!(shared(build::PUBLISH), None);
     }
 
     #[test]

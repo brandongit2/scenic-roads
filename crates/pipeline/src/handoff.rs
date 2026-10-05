@@ -28,6 +28,11 @@ pub struct Handoff {
     /// A job done: its step, and its targets with their keys (build::Keys::record).
     #[serde(default)]
     pub done: Option<(String, Vec<(String, String)>)>,
+    /// AWS's raw terrain tiles the job fetched, packed into archives it put on the NAS (terrain,
+    /// peaks: crate::rawpack, a helper's own way): (area, archive) for the build Mac to name in the
+    /// raw store's index, which it alone writes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub raw: Vec<(String, crate::rawpack::Pack)>,
 }
 
 impl Handoff {
@@ -42,6 +47,11 @@ impl Handoff {
         }
         if later.done.is_some() {
             self.done = later.done;
+        }
+        for r in later.raw {
+            if !self.raw.contains(&r) {
+                self.raw.push(r);
+            }
         }
     }
 }
@@ -176,17 +186,21 @@ pub fn merge_from(root: &Path, scratch: &Path, bases: &[PathBuf]) -> Result<usiz
     let mut out = crate::out::Out::open(root, scratch)?;
     let mut keys = crate::agent::build::Keys::load_strict(root)?;
     let mut last: BTreeMap<PathBuf, String> = BTreeMap::new();
+    let mut raw: Vec<(String, crate::rawpack::Pack)> = Vec::new();
     for (p, h) in &hs {
         out.absorb(h);
         if let Some((step, targets)) = &h.done {
             keys.record(step, targets);
         }
+        raw.extend(h.raw.iter().cloned());
         if let (Some(d), Some(n)) = (p.parent(), p.file_name()) {
             last.insert(d.to_path_buf(), n.to_string_lossy().into_owned());
         }
     }
     out.save_held(&lock).context("merge the hand-offs into the manifest")?;
     keys.save(root).context("merge the hand-offs into the job keys")?;
+    // (The raw tiles' archives a helper put on the NAS, named in the raw store's index.)
+    crate::rawpack::name_handed(&root.join("sources/aws-terrarium"), &raw, &lock).context("name a helper's raw tiles' archives")?;
     for (d, n) in &last {
         crate::whole::write(&d.with_extension("merged"), n.as_bytes())?;
     }

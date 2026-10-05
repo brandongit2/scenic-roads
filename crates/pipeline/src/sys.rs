@@ -177,3 +177,23 @@ pub fn symlink(src: &std::path::Path, dst: &std::path::Path) -> io::Result<()> {
     #[cfg(not(unix))]
     std::fs::copy(src, dst).map(|_| ())
 }
+
+/// The most memory this process and its finished children have held at once (bytes): getrusage's
+/// maximum resident sizes, the larger (macOS gives them in bytes); 0 where there's no such call.
+pub fn peak_rss() -> u64 {
+    #[cfg(unix)]
+    {
+        let max = |who: libc::c_int| -> u64 {
+            // SAFETY: getrusage fills the struct we own.
+            let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+            if unsafe { libc::getrusage(who, &mut u) } != 0 {
+                return 0;
+            }
+            let v = u.ru_maxrss.max(0) as u64;
+            if cfg!(target_os = "macos") { v } else { v * 1024 }
+        };
+        max(libc::RUSAGE_SELF).max(max(libc::RUSAGE_CHILDREN))
+    }
+    #[cfg(not(unix))]
+    0
+}

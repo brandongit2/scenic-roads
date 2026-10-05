@@ -239,18 +239,30 @@ pub struct Packer {
     /// Whether the archives made stay in `dir/packs` (a job's: read again soon) or go once on the
     /// NAS (the NAS's own tiles packed: tens of GB).
     pub keep: bool,
+    /// A helper's job's outbox (`SCENIC_HANDOFF`): its archives go onto the NAS, and the build Mac,
+    /// which alone writes the index, names them from its hand-off (`handed`, crate::handoff). None:
+    /// the build Mac's own packing, the index changed here.
+    handoff: Option<PathBuf>,
+    handed: Vec<(String, Pack)>,
 }
 
 impl Packer {
     /// Packing into the local cache `dir` (its `packs/`) for the NAS's `store`, the build's at
     /// `root`: an error on a Mac that doesn't write its records.
     pub fn new(dir: &Path, store: &Path, root: &Path) -> Result<Packer> {
-        crate::out::check_writer(root)?;
+        Packer::open(dir, store, root, std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from))
+    }
+
+    /// `new`, a helper's job's (its outbox `handoff`) or the build Mac's (None).
+    fn open(dir: &Path, store: &Path, root: &Path, handoff: Option<PathBuf>) -> Result<Packer> {
+        if handoff.is_none() {
+            crate::out::check_writer(root)?;
+        }
         let index = Index::load(store)?;
         std::fs::create_dir_all(dir.join("packs"))?;
         let spool_path = dir.join("packs").join(own("packing", "spool"));
         let f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(&spool_path).with_context(|| format!("open {}", spool_path.display()))?;
-        Ok(Packer { dir: dir.to_path_buf(), store: store.to_path_buf(), root: root.to_path_buf(), index, spool: BufWriter::with_capacity(1 << 20, f), spool_path, pos: 0, areas: BTreeMap::new(), last: None, touched: Default::default(), missing: Vec::new(), added: 0, keep: true })
+        Ok(Packer { dir: dir.to_path_buf(), store: store.to_path_buf(), root: root.to_path_buf(), index, spool: BufWriter::with_capacity(1 << 20, f), spool_path, pos: 0, areas: BTreeMap::new(), last: None, touched: Default::default(), missing: Vec::new(), added: 0, keep: true, handoff, handed: Vec::new() })
     }
 
     /// Adds a tile (None: AWS doesn't have it); whether it's new to its area's archives. Past an
@@ -357,6 +369,15 @@ impl Packer {
     pub fn finish_with(mut self, progress: Progress) -> Result<Vec<String>> {
         self.flush()?;
         let touched: Vec<String> = std::mem::take(&mut self.touched).into_iter().collect();
+        // A helper's: its archives handed off for the build Mac to name (and merge, when it packs
+        // those areas next).
+        if let Some(dir) = self.handoff.clone() {
+            if !self.handed.is_empty() {
+                crate::handoff::write(&dir, &crate::handoff::Handoff { raw: std::mem::take(&mut self.handed), ..Default::default() })?;
+            }
+            progress("areas", touched.len() as u64, touched.len() as u64);
+            return Ok(touched);
+        }
         for (i, area) in touched.iter().enumerate() {
             progress("areas", i as u64, touched.len() as u64);
             if let Err(e) = self.merge_due(area) {
@@ -424,6 +445,17 @@ impl Packer {
     /// unless kept.
     fn put_up(&mut self, group: Vec<(String, Pack)>) -> Result<()> {
         if group.is_empty() {
+            return Ok(());
+        }
+        // A helper's: on the NAS whole, then handed off (`finish`); the index isn't its to change.
+        if self.handoff.is_some() {
+            for (area, p) in group {
+                self.put(&p)?;
+                if !self.keep {
+                    std::fs::remove_file(self.dir.join("packs").join(&p.name)).ok();
+                }
+                self.handed.push((area, p));
+            }
             return Ok(());
         }
         let now = unix_now();
@@ -565,12 +597,53 @@ impl Packer {
             }
             std::fs::remove_file(self.dir.join("packs").join(&name)).ok();
         }
+        // An archive on the NAS the index neither names nor lists to go, a day old: a helper's whose
+        // hand-off never came (its lease lapsed). Listed to go (GRACE later), as a replaced one.
+        if let Ok(rd) = std::fs::read_dir(self.store.join("packs")) {
+            let old = std::time::SystemTime::now() - std::time::Duration::from_secs(GRACE);
+            for e in rd.flatten() {
+                let n = e.file_name().to_string_lossy().into_owned();
+                if n.ends_with(".tiles") && !named.contains(&n) && !gone.contains_key(&n) && e.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < old) {
+                    gone.insert(n, now);
+                }
+            }
+        }
         ix.gone = gone;
         ix.save(&self.store)?;
         drop(lock);
         self.index = ix;
         Ok(())
     }
+}
+
+/// The archives a helper's jobs put on the NAS (crate::handoff::Handoff::raw), named in `store`'s
+/// index, each that's there whole (one that isn't goes as an unnamed one does); how many were new
+/// to it. The caller holds the build lock (merging the hand-offs).
+pub fn name_handed(store: &Path, handed: &[(String, Pack)], _held: &crate::out::BuildLock) -> Result<usize> {
+    if handed.is_empty() {
+        return Ok(0);
+    }
+    let mut ix = Index::load(store)?;
+    let mut n = 0;
+    for (area, p) in handed {
+        if !there(store, p) {
+            eprintln!("rawpack: {} was handed over, but isn't on the NAS whole: not named", p.name);
+            continue;
+        }
+        ix.gone.remove(&p.name);
+        let l = ix.areas.entry(area.clone()).or_default();
+        if !l.contains(p) {
+            l.push(p.clone());
+            n += 1;
+        }
+    }
+    ix.save(store)?;
+    Ok(n)
+}
+
+/// Whether `name` is an archive of `area` as packing names one: `<area>.<16 hex>.tiles`.
+pub fn named_for(name: &str, area: &str) -> bool {
+    name.strip_prefix(area).and_then(|r| r.strip_prefix('.')).and_then(|r| r.strip_suffix(".tiles")).is_some_and(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
 }
 
 /// Whether archive `p` is on the NAS whole (its size).
@@ -612,6 +685,11 @@ pub fn pack_local(dir: &Path, store: &Path, root: &Path, keep: bool) -> Result<u
 /// `pack_local`, saying how far it is (`progress`): the tiles packed of those waiting ("raw tiles",
 /// their archives put on the NAS as they go), then the areas whose archives were merged ("areas").
 pub fn pack_local_with(dir: &Path, store: &Path, root: &Path, keep: bool, progress: Progress) -> Result<usize> {
+    pack_local_to(dir, store, root, keep, std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from), progress)
+}
+
+/// `pack_local_with`, for a helper's job's outbox `handoff` or (None) the build Mac.
+fn pack_local_to(dir: &Path, store: &Path, root: &Path, keep: bool, handoff: Option<PathBuf>, progress: Progress) -> Result<usize> {
     let mut loose: Vec<(PathBuf, u8, u32, u32, bool)> = Vec::new();
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
     for z in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -632,8 +710,9 @@ pub fn pack_local_with(dir: &Path, store: &Path, root: &Path, keep: bool, progre
     if loose.is_empty() {
         return Ok(0);
     }
-    let mut p = Packer::new(dir, store, root)?;
-    p.keep = keep;
+    let mut p = Packer::open(dir, store, root, handoff)?;
+    // (A helper keeps none: the M1's disk is small, and the NAS has them.)
+    p.keep = keep && p.handoff.is_none();
     let mut packed = Vec::new();
     let (n, mut said) = (loose.len() as u64, std::time::Instant::now());
     progress("raw tiles", 0, n);
@@ -964,6 +1043,63 @@ mod tests {
         // The check finds it too, and matches the rest against the loose tiles they came from.
         let c = check(&store, 1).unwrap();
         assert_eq!((c.archives, c.tiles, c.bad.len()), (3, 3, 1));
+    }
+
+    #[test]
+    fn a_helpers_archives_go_up_and_are_named_from_its_hand_off() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, dir, root) = nas(d.path());
+        let outbox = d.path().join("outbox");
+        std::fs::create_dir_all(&outbox).unwrap();
+        // The NAS's store names one area's archive already; a helper fetched more of it, and another.
+        put(&dir, "12/2048/1365.png", &png(), 120);
+        pack_local(&dir, &store, &root, true).unwrap();
+        let before = Index::load(&store).unwrap();
+        put(&dir, "12/2048/1366.png", &png(), 120);
+        put(&dir, "12/2049/1365.png", &png(), 120);
+        put(&dir, "8/128/85.png", &png(), 120);
+        assert_eq!(pack_local_to(&dir, &store, &root, true, Some(outbox.clone()), &|_, _, _| {}).unwrap(), 3);
+        // Its archives are on the NAS, none kept here, the index as it was, the loose tiles gone.
+        assert_eq!(Index::load(&store).unwrap(), before);
+        assert!(!dir.join("12/2048/1366.png").exists());
+        let handed: Vec<crate::handoff::Handoff> = crate::handoff::written_in(&outbox).unwrap().unwrap();
+        let raw: Vec<(String, Pack)> = handed.into_iter().flat_map(|h| h.raw).collect();
+        assert_eq!(raw.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), ["3-4-2", "6-32-21"]);
+        for (area, p) in &raw {
+            assert!(there(&store, p) && named_for(&p.name, area), "{}", p.name);
+            assert!(!dir.join("packs").join(&p.name).exists());
+        }
+        // The build Mac names them; a missing one isn't.
+        let lock = crate::out::BuildLock::take(&root).unwrap();
+        let ghost = ("6-1-1".to_string(), Pack { name: "6-1-1.0123456789abcdef.tiles".into(), bytes: 9 });
+        assert_eq!(name_handed(&store, &[raw.clone(), vec![ghost]].concat(), &lock).unwrap(), 2);
+        drop(lock);
+        let ix = Index::load(&store).unwrap();
+        assert_eq!(ix.of("6-32-21").len(), 2);
+        assert!(ix.of("6-1-1").is_empty());
+        let a = Archive::open(&store.join("packs").join(&ix.of("6-32-21")[1].name)).unwrap();
+        assert_eq!((a.get(12, 2048, 1366), a.get(12, 2049, 1365), a.get(12, 2048, 1365)), (Some(&png()[..]), Some(&png()[..]), None));
+        assert!(!named_for("6-32-21.0123456789ABCDEF.tiles", "6-32-21") && !named_for("6-32-2.0123456789abcdef.tiles", "6-32-21"));
+    }
+
+    #[test]
+    fn an_archive_no_one_names_goes_a_day_later() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, dir, root) = nas(d.path());
+        put(&dir, "12/2048/1365.png", &png(), 120);
+        pack_local(&dir, &store, &root, true).unwrap();
+        // A helper's archive whose hand-off never came: a day old, and a fresh one.
+        let (stale, fresh) = (store.join("packs/6-1-1.0123456789abcdef.tiles"), store.join("packs/6-1-2.0123456789abcdef.tiles"));
+        std::fs::write(&stale, b"x").unwrap();
+        std::fs::write(&fresh, b"y").unwrap();
+        std::fs::File::options().append(true).open(&stale).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(GRACE + 60)).unwrap();
+        // The next packing lists the old one to go, not the new one, nor the named.
+        put(&dir, "12/2050/1366.png", &png(), 120);
+        pack_local(&dir, &store, &root, true).unwrap();
+        let ix = Index::load(&store).unwrap();
+        assert!(ix.gone.contains_key("6-1-1.0123456789abcdef.tiles"));
+        assert!(!ix.gone.contains_key("6-1-2.0123456789abcdef.tiles"));
+        assert!(ix.of("6-32-21").iter().all(|p| !ix.gone.contains_key(&p.name)));
     }
 
     #[test]

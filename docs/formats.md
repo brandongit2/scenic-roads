@@ -460,16 +460,19 @@ class, id) within a tile. The client sends the id with the clicked point.
     worker page's address with the token, mode 600, for the status bar's "Copy the Worker Page's
     Address"),
     `leases.json` (`{next, leases: [{id, worker, work: {Job: {step, targets: [[target, key], …]}},
-    progress}]}`: the jobs' leases), `costs.json` (`{unit: {peak_mb, secs}}`, and `"tail <unit>"` for
-    a unit's last steps as a task), `journal/<worker>/` (the hand-offs taken, as below), `tasks/<id>/`
-    (a task's uploads); `costs.jsonl` (a unit job's units' costs, `SCENIC_COSTS`: a JSON line each,
-    `{unit, peak_mb, secs}`).
+    progress}]}`: the jobs' leases), `costs.json` (`{unit: {peak_mb, secs}}`, `"<step> <target>"` for
+    another shared step's job, and `"tail <unit>"` for a unit's last steps as a task),
+    `journal/<worker>/` (the hand-offs taken, as below), `tasks/<id>/` (a task's uploads);
+    `costs.jsonl` (what a shared step's job took, `SCENIC_COSTS`: a JSON line per target, `{unit,
+    peak_mb, secs}`, `unit` the target for a unit, else "<step> <target>").
   - On a helper, in the agent's folder, `outbox/<lease>/`: its leased job's saves (as below),
     `costs.jsonl`, `spec.json` (a task's), `task.json` (`scenic run-task`'s result) and `result.json`
     (`{ok, done: [step, [[target, key], …]] or null, task, error}`), until the coordinator has them.
   - A hand-off (`pipeline::handoff`): JSON `{changes: {logical: content name, or null when removed},
     pending: {content name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] or
-    null}`, named `<ns>-<pid>.json` in the order written, each after the last; `<folder>.merged`
+    null, raw: [[area, {name, bytes}], …] (a helper's raw tiles' archives, on the NAS, for the build
+    Mac to name; left out when none)}`, named `<ns>-<pid>.json` in the order written, each after the
+    last; `<folder>.merged`
     holds the last merged, by name; a `.bad` file is one set aside unparsed.
   - For a helper on an older app: `state/build/claims/<step> <target>` (the target's `/` as `-`,
     e.g. `unit 6-31-20`; the claiming agent, "<host> <pid>"; fresh while its mtime is within 15

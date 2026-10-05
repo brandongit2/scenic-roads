@@ -3,7 +3,8 @@
 //! which it alone writes; a worker only asks for work that fits it, does it, and hands it back.
 //!
 //! Two kinds of work, by what a worker can reach (§2):
-//! - **Jobs** of the plan (units), for workers that mount the NAS (the M1's agent, `--helper`). A
+//! - **Jobs** of the plan (crate::agent::claims::SHARED: units, terrain, slope, tree cover,
+//!   landmark candidates and peaks), for workers that mount the NAS (the M1's agent, `--helper`). A
 //!   worker's job saves through the coordinator: its hand-off (its manifest changes and done record,
 //!   one per job) is journaled on this Mac's disk, written whole, then merged into the records by the
 //!   agent (crate::handoff::merge_from), all of it or none.
@@ -64,6 +65,32 @@ pub fn unit_peak(costs: &BTreeMap<String, Cost>, unit: &str, piece: u64) -> u64 
     costs.get(unit).map(|c| c.peak_mb).unwrap_or_else(|| (piece >> 20).saturating_mul(10).max(3700))
 }
 
+/// What a job of `step` for `target` costs is kept under: a unit's by its target alone (as before
+/// other steps were offered), another step's as "<step> <target>".
+pub fn cost_key(step: &str, target: &str) -> String {
+    if step == "unit" { target.to_string() } else { format!("{step} {target}") }
+}
+
+/// The memory a job of `step` for `target` is predicted to take (MB): a unit's by `unit_peak` (`size`
+/// its piece's bytes); another step's what it took last time, else `size`, the estimate it was
+/// offered with.
+pub fn job_peak(costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: u64) -> u64 {
+    if step == "unit" {
+        unit_peak(costs, target, size)
+    } else {
+        costs.get(&cost_key(step, target)).map(|c| c.peak_mb).unwrap_or(size)
+    }
+}
+
+/// A step's work offered to the workers that mount the NAS: its targets in plan order (target, key,
+/// size: a unit's piece bytes, another step's predicted peak memory in MB) and how many go in a job.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Offer {
+    pub step: String,
+    pub targets: Vec<(String, String, u64)>,
+    pub batch: usize,
+}
+
 /// A worker, as its requests describe it.
 #[derive(Clone, Debug, Serialize)]
 pub struct Worker {
@@ -89,15 +116,15 @@ pub struct Worker {
 #[derive(Debug)]
 pub struct Shared {
     pub leases: Leases,
-    /// The pass and the plan's units a worker that mounts the NAS may build, in plan order: (target,
-    /// key, piece bytes). A worker's come from the far end; this Mac's own jobs take the near end.
+    /// The pass, and the plan's work a worker that mounts the NAS may do, a step at a time in plan
+    /// order. A worker's come from the far end; this Mac's own jobs take the near end.
     pub pass: String,
-    pub units: Vec<(String, String, u64)>,
-    /// Units done (journaled, or recorded by this Mac's job) under a key the plan hasn't shown yet:
-    /// not offered again meanwhile.
-    pub done: BTreeMap<String, String>,
-    /// A worker's failures: (worker, target) → (the last, how many): not offered to it again for an
-    /// hour, doubling each time.
+    pub offers: Vec<Offer>,
+    /// Work done (journaled, or recorded by this Mac's job), (step, target) → key, under a key the
+    /// plan hasn't shown yet: not offered again meanwhile.
+    pub done: BTreeMap<(String, String), String>,
+    /// A worker's failures: (worker, cost_key(step, target)) → (the last, how many): not offered to
+    /// it again for an hour, doubling each time.
     pub failed: BTreeMap<(String, String), (Instant, u32)>,
     pub tasks: task::Tasks,
     pub workers: BTreeMap<String, Worker>,
@@ -121,19 +148,21 @@ impl Shared {
         }
     }
 
-    /// The units `a`'s worker may build now, at most `a.max`, from the far end of the plan: none
-    /// held, done, failed by it lately, or needing more memory than it spares.
-    fn pick_units(&self, a: &Ask, now: Instant) -> Vec<(String, String)> {
-        let held = self.leases.held("unit", now);
-        let backoff = |t: &str| match self.failed.get(&(a.worker.clone(), t.to_string())) {
+    /// The targets of offer `o` that `a`'s worker may do now, as many as a job of it takes (units: as
+    /// many as the worker asks), from the far end of the plan: none held, done, failed by it lately,
+    /// or needing more memory than it spares.
+    fn pick(&self, o: &Offer, a: &Ask, now: Instant) -> Vec<(String, String)> {
+        let held = self.leases.held(&o.step, now);
+        let backoff = |t: &str| match self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))) {
             Some((at, n)) => now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5)),
             None => false,
         };
-        self.units
+        let n = if o.step == "unit" { a.max.max(1) } else { o.batch.max(1) };
+        o.targets
             .iter()
             .rev()
-            .filter(|(t, k, size)| !held.contains(t) && self.done.get(t) != Some(k) && !backoff(t) && unit_peak(&self.costs, t, *size) <= a.mem_mb)
-            .take(a.max.max(1))
+            .filter(|(t, k, size)| !held.contains(t) && self.done.get(&(o.step.clone(), t.clone())) != Some(k) && !backoff(t) && job_peak(&self.costs, &o.step, t, *size) <= a.mem_mb)
+            .take(n)
             .map(|(t, k, _)| (t.clone(), k.clone()))
             .collect()
     }
@@ -260,7 +289,7 @@ impl Coordinator {
             eprintln!("coordinator: {}'s lease ended with the agent before this one", l.what());
         }
         let costs = std::fs::read(dir.join("costs.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let shared = Shared { leases, pass: String::new(), units: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, dir: dir.to_path_buf() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, dir: dir.to_path_buf() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -336,25 +365,30 @@ impl Coordinator {
     pub fn finish(&self, id: u64, done: bool) {
         let mut s = self.shared.lock().unwrap();
         if let Some(l) = s.leases.finish(id, &self.me, Instant::now()) {
-            if done {
-                for (t, k) in l.targets() {
-                    s.done.insert(t.clone(), k.clone());
+            if let (true, Work::Job { step, targets }) = (done, &l.work) {
+                for (t, k) in targets {
+                    s.done.insert((step.clone(), t.clone()), k.clone());
                 }
             }
             s.save_leases();
         }
     }
 
-    /// The plan's units for workers that mount the NAS (target, key, piece bytes), and their pass.
-    /// The plan's keys include what's journaled, so a unit done under the key the plan has now is
-    /// no longer kept out by hand.
-    pub fn offer_units(&self, pass: &str, units: Vec<(String, String, u64)>) {
+    /// The plan's work for workers that mount the NAS, every shared step's (a step not offered: none
+    /// of it), and their pass. The plan's keys include what's journaled, so work done under the key
+    /// the plan has now is no longer kept out by hand.
+    pub fn offer(&self, pass: &str, offers: Vec<Offer>) {
         let mut s = self.shared.lock().unwrap();
-        let planned: BTreeMap<&String, &String> = units.iter().map(|(t, k, _)| (t, k)).collect();
+        let planned: BTreeMap<(&str, &str), &str> = offers.iter().flat_map(|o| o.targets.iter().map(move |(t, k, _)| ((o.step.as_str(), t.as_str()), k.as_str()))).collect();
         let done = std::mem::take(&mut s.done);
-        s.done = done.into_iter().filter(|(t, k)| planned.get(t) == Some(&k)).collect();
+        s.done = done.into_iter().filter(|((st, t), k)| planned.get(&(st.as_str(), t.as_str())) == Some(&k.as_str())).collect();
         s.pass = pass.to_string();
-        s.units = units;
+        s.offers = offers.into_iter().filter(|o| !o.targets.is_empty()).collect();
+    }
+
+    /// `offer` with units alone (target, key, piece bytes).
+    pub fn offer_units(&self, pass: &str, units: Vec<(String, String, u64)>) {
+        self.offer(pass, vec![Offer { step: "unit".into(), targets: units, batch: 0 }]);
     }
 
     /// The targets of `step` held now, by anyone.
@@ -410,20 +444,60 @@ pub fn folder(w: &str) -> String {
     w.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
 
+/// Whether `l` is a file a job of `step` saves for `target`: a unit's base pack, road values, roads'
+/// English and the grids its packs lacked; candidates' and peaks' own files; an area's (a z3
+/// tile's) lo pack and its z6 tiles' hi packs of terrain, slope or the tree layers.
+fn saves(step: &str, target: &str, l: &str) -> bool {
+    let dash = target.replace('/', "-");
+    match step {
+        "unit" => crate::unit::saved_files(&dash).iter().any(|f| f == l),
+        "pois" | "peaks" => l == format!("work/{step}/{dash}"),
+        "terrain" | "slope" | "trees" => {
+            let Some(q) = crate::legacy::Unit::parse(target).filter(|u| u.z == 3) else { return false };
+            let layers: &[&str] = match step {
+                "terrain" => &["terrain"],
+                "slope" => &["slope"],
+                _ => &crate::treepacks::LAYERS,
+            };
+            layers.iter().any(|layer| {
+                l == format!("layers/{layer}/lo/{dash}")
+                    || l.strip_prefix(&format!("layers/{layer}/hi/6-")).and_then(|r| r.split_once('-')).and_then(|(x, y)| Some((x.parse::<u32>().ok()?, y.parse::<u32>().ok()?))).is_some_and(|(x, y)| (x >> 3, y >> 3) == (q.x, q.y))
+            })
+        }
+        _ => false,
+    }
+}
+
+/// Whether raw tiles' archive area `area` ("3-x-y", "6-x-y", crate::rawpack) is one a job of `step`
+/// for `target` fetches tiles of: a terrain area's own z3 and z6 areas; a unit's peaks', the z6
+/// areas within two of its own and their z3 ones.
+fn fetches(step: &str, target: &str, area: &str) -> bool {
+    let (Some(t), Some(a)) = (crate::legacy::Unit::parse(target), crate::legacy::Unit::parse(&area.replacen('-', "/", 2))) else { return false };
+    let near = |z: u8, r: i64| a.z == z && (a.x as i64 - (t.x >> (t.z - z)) as i64).abs() <= r && (a.y as i64 - (t.y >> (t.z - z)) as i64).abs() <= r;
+    match (step, t.z) {
+        ("terrain", 3) => a.z == 3 && (a.x, a.y) == (t.x, t.y) || a.z == 6 && (a.x >> 3, a.y >> 3) == (t.x, t.y),
+        ("peaks", 6) => near(6, 2) || near(3, 1),
+        _ => false,
+    }
+}
+
 /// A job's hand-off, when it's its lease's: its done record is the lease's, every change is to one
-/// of the files a unit job saves for one of the lease's units (its base pack, road values, roads'
-/// English, and the grids its packs lacked), each a content name of that file, and every upload it
-/// says it checked is one of its own.
+/// of the files its step saves for one of the lease's targets (`saves`), each a content name of
+/// that file, every upload it says it checked is one of its own, and each raw tiles' archive it put
+/// on the NAS is of an area its targets fetch, named by its content.
 #[cfg(not(target_os = "wasi"))]
 fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result<()> {
     match &h.done {
         Some((s, ts)) => anyhow::ensure!(s == step && ts == targets, "its done record isn't its lease's"),
         None => anyhow::bail!("no done record"),
     }
-    anyhow::ensure!(step == "unit", "hand-offs are for units");
-    let mine: BTreeSet<String> = targets.iter().flat_map(|(t, _)| crate::unit::saved_files(&t.replace('/', "-"))).collect();
+    anyhow::ensure!(crate::agent::claims::SHARED.contains(&step), "a hand-off of {step} isn't work a worker does");
+    for (area, p) in &h.raw {
+        anyhow::ensure!(targets.iter().any(|(t, _)| fetches(step, t, area)), "raw tiles of {area} aren't its targets'");
+        anyhow::ensure!(crate::rawpack::named_for(&p.name, area), "{} isn't an archive of {area}", p.name);
+    }
     for (l, v) in &h.changes {
-        anyhow::ensure!(mine.contains(l), "{l} isn't one of its units' files");
+        anyhow::ensure!(targets.iter().any(|(t, _)| saves(step, t, l)), "{l} isn't one of its targets' files");
         if let Some(c) = v {
             anyhow::ensure!(store::naming::parse_content_name(c).is_some_and(|n| n.logical == l), "{c} isn't a content name of {l}");
         }
@@ -452,15 +526,20 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             if s.workers[&a.worker].bad {
                 return Ok((204, serde_json::Value::Null));
             }
-            // The work only it can do first: a worker that mounts the NAS builds a unit (the most
-            // work for what it fetches), then a task; any other, a task.
-            if a.can.iter().any(|c| c == "unit") && !s.pass.is_empty() {
-                let pick = s.pick_units(&a, now);
-                if !pick.is_empty() {
-                    let lease = s.leases.grant(&a.worker, Work::Job { step: "unit".into(), targets: pick.clone() }, now);
+            // The work only it can do first: a worker that mounts the NAS does a job of the plan (the
+            // most work for what it fetches), the earliest step it can (what later steps wait on),
+            // then a task; any other, a task.
+            if !s.pass.is_empty() {
+                let offers = s.offers.clone();
+                for o in offers.iter().filter(|o| a.can.contains(&o.step)) {
+                    let pick = s.pick(o, &a, now);
+                    if pick.is_empty() {
+                        continue;
+                    }
+                    let lease = s.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
                     s.save_leases();
-                    eprintln!("coordinator: {} took unit {}", a.worker, pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" "));
-                    let g = Grant { lease, ttl_s: TTL.as_secs(), work: Granted::Job { step: "unit".into(), targets: pick, pass: s.pass.clone() } };
+                    eprintln!("coordinator: {} took {} {}", a.worker, o.step, pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" "));
+                    let g = Grant { lease, ttl_s: TTL.as_secs(), work: Granted::Job { step: o.step.clone(), targets: pick, pass: s.pass.clone() } };
                     return Ok((200, serde_json::to_value(g)?));
                 }
             }
@@ -501,20 +580,20 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                     // without the lock (a whole file, flushed); put back if that fails.
                     s.leases.finish(d.lease, &d.worker, now);
                     for (t, k) in targets {
-                        s.done.insert(t.clone(), k.clone());
-                        s.failed.remove(&(d.worker.clone(), t.clone()));
+                        s.done.insert((step.clone(), t.clone()), k.clone());
+                        s.failed.remove(&(d.worker.clone(), cost_key(step, t)));
                     }
                     drop(s);
                     if let Err(e) = crate::handoff::write(&journal.join(folder(&d.worker)), &h) {
                         let mut s = shared.lock().unwrap();
                         for (t, _) in targets {
-                            s.done.remove(t);
+                            s.done.remove(&(step.clone(), t.clone()));
                         }
                         s.save_leases();
                         return Err(e.context("journal the hand-off"));
                     }
                     s = shared.lock().unwrap();
-                    s.costs.extend(d.costs.into_iter().filter(|(u, _)| targets.iter().any(|t| &t.0 == u)));
+                    s.costs.extend(d.costs.into_iter().filter(|(u, _)| targets.iter().any(|t| *u == cost_key(step, &t.0))));
                     s.save_leases();
                     s.save_costs();
                 }
@@ -541,9 +620,9 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             let mut s = shared.lock().unwrap();
             let Some(l) = s.leases.finish(f.lease, &f.worker, now) else { return Ok((410, serde_json::json!({ "error": "that lease is gone" }))) };
             match &l.work {
-                Work::Job { targets, .. } => {
+                Work::Job { step, targets } => {
                     for (t, _) in targets {
-                        let e = s.failed.entry((f.worker.clone(), t.clone())).or_insert((now, 0));
+                        let e = s.failed.entry((f.worker.clone(), cost_key(step, t))).or_insert((now, 0));
                         *e = (now, e.1 + 1);
                     }
                     s.save_leases();
@@ -570,7 +649,8 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             let leases: Vec<serde_json::Value> = s.leases.all(now).iter().map(|l| serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "for_s": now.duration_since(l.granted).as_secs(), "progress": l.progress })).collect();
             let workers: BTreeMap<&String, serde_json::Value> = s.workers.iter().map(|(n, w)| (n, serde_json::json!({ "worker": w, "seen_s": now.duration_since(w.seen).as_secs() }))).collect();
             let tasks: Vec<serde_json::Value> = s.tasks.by_id.values().map(|t| serde_json::json!({ "id": t.id, "kind": t.kind, "mem_mb": t.mem_mb, "state": format!("{:?}", t.state).split([' ', '{']).next().unwrap_or("") })).collect();
-            Ok((200, serde_json::json!({ "pass": s.pass, "units": s.units.len(), "done": s.done.len(), "leases": leases, "workers": workers, "tasks": tasks })))
+            let offered: BTreeMap<&str, usize> = s.offers.iter().map(|o| (o.step.as_str(), o.targets.len())).collect();
+            Ok((200, serde_json::json!({ "pass": s.pass, "offered": offered, "done": s.done.len(), "leases": leases, "workers": workers, "tasks": tasks })))
         }
         p if p.starts_with("/task/") && !local => anyhow::bail!("{p} is for this Mac's jobs"),
         "/task/offer" => {
@@ -972,6 +1052,63 @@ mod tests {
     fn handoff(units: &[(&str, &str)]) -> Handoff {
         let changes = units.iter().map(|(u, _)| (format!("base/{}", u.replace('/', "-")), Some(format!("base/{}.0000000000000003.base", u.replace('/', "-"))))).collect();
         Handoff { changes, done: Some(("unit".into(), units.iter().map(|(u, k)| (u.to_string(), k.to_string())).collect())), ..Default::default() }
+    }
+
+    #[test]
+    fn a_helper_takes_the_earliest_shared_step_that_fits_it() {
+        let (_d, c, w) = start();
+        let o = |step: &str, ts: &[(&str, u64)], batch: usize| Offer { step: step.into(), targets: ts.iter().map(|(t, m)| (t.to_string(), format!("k {t}"), *m)).collect(), batch };
+        // Terrain needing more than it spares, slope's fitting, units, and candidates of the same tile
+        // as a unit (the steps don't mix).
+        c.offer("p", vec![o("terrain", &[("3/1/2", 6000)], 1), o("slope", &[("3/2/2", 3000), ("3/2/3", 3000), ("3/1/3", 3000)], 2), o("unit", &[("6/1/1", 1 << 20)], 0), o("pois", &[("6/1/1", 1500)], 12)]);
+        let can = |steps: &[&str]| Ask { can: steps.iter().map(|s| s.to_string()).collect(), ..ask(4096) };
+        let g = w.ask(&can(&["terrain", "slope", "unit", "pois"])).unwrap().unwrap();
+        let Granted::Job { step, targets, pass } = g.work else { panic!() };
+        // Slope's, from the far end, as many as a job of it takes.
+        assert_eq!((step.as_str(), pass.as_str()), ("slope", "p"));
+        assert_eq!(targets.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["3/1/3", "3/2/3"]);
+        // The rest of slope's next, then the unit, then the candidates of the same tile.
+        let next = |c: &[&str]| match w.ask(&can(c)).unwrap().map(|g| g.work) {
+            Some(Granted::Job { step, targets, .. }) => format!("{step} {}", targets[0].0),
+            _ => "none".into(),
+        };
+        assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "slope 3/2/2");
+        assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "unit 6/1/1");
+        assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "pois 6/1/1");
+        assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "none");
+        // Terrain once a run said it fits.
+        c.add_costs(&[(cost_key("terrain", "3/1/2"), Cost { peak_mb: 3500, secs: 1 })]);
+        assert_eq!(next(&["terrain"]), "terrain 3/1/2");
+        // A worker that can't do a step gets none of it.
+        c.offer("p", vec![o("trees", &[("3/1/1", 1000)], 1)]);
+        assert_eq!(next(&["unit"]), "none");
+    }
+
+    #[test]
+    fn a_hand_off_may_touch_only_its_steps_files() {
+        let ts = |t: &str| vec![(t.to_string(), "k".to_string())];
+        let h = |step: &str, t: &str, files: &[&str], raw: &[(&str, &str)]| {
+            let changes = files.iter().map(|l| (l.to_string(), Some(format!("{l}.0000000000000003.pack")))).collect();
+            let raw = raw.iter().map(|(a, n)| (a.to_string(), crate::rawpack::Pack { name: n.to_string(), bytes: 1 })).collect();
+            Handoff { changes, done: Some((step.into(), ts(t))), raw, ..Default::default() }
+        };
+        // An area's lo pack and its z6 tiles' hi packs; not another area's.
+        assert!(check_handoff(&h("slope", "3/2/2", &["layers/slope/lo/3-2-2", "layers/slope/hi/6-16-16", "layers/slope/hi/6-23-23"], &[]), "slope", &ts("3/2/2")).is_ok());
+        assert!(check_handoff(&h("slope", "3/2/2", &["layers/slope/hi/6-24-16"], &[]), "slope", &ts("3/2/2")).is_err());
+        assert!(check_handoff(&h("slope", "3/2/2", &["layers/terrain/hi/6-16-16"], &[]), "slope", &ts("3/2/2")).is_err());
+        assert!(check_handoff(&h("trees", "3/2/2", &["layers/trees-leaf/hi/6-17-17", "layers/trees-cover/lo/3-2-2"], &[]), "trees", &ts("3/2/2")).is_ok());
+        assert!(check_handoff(&h("pois", "6/1/3", &["work/pois/6-1-3"], &[]), "pois", &ts("6/1/3")).is_ok());
+        assert!(check_handoff(&h("pois", "6/1/3", &["work/peaks/6-1-3"], &[]), "pois", &ts("6/1/3")).is_err());
+        // Raw tiles' archives: its own areas, named by their content.
+        let terrain = |raw: &[(&str, &str)]| check_handoff(&h("terrain", "3/2/2", &["layers/terrain/lo/3-2-2"], raw), "terrain", &ts("3/2/2"));
+        assert!(terrain(&[("6-20-21", "6-20-21.0123456789abcdef.tiles"), ("3-2-2", "3-2-2.0123456789abcdef.tiles")]).is_ok());
+        assert!(terrain(&[("6-30-21", "6-30-21.0123456789abcdef.tiles")]).is_err());
+        assert!(terrain(&[("6-20-21", "6-20-22.0123456789abcdef.tiles")]).is_err());
+        assert!(terrain(&[("6-20-21", "../6-20-21.0123456789abcdef.tiles")]).is_err());
+        let peaks = |a: &str| check_handoff(&h("peaks", "6/20/21", &["work/peaks/6-20-21"], &[(a, &format!("{a}.0123456789abcdef.tiles"))]), "peaks", &ts("6/20/21"));
+        assert!(peaks("6-21-22").is_ok() && peaks("3-2-2").is_ok() && peaks("6-25-21").is_err());
+        // A step no worker does.
+        assert!(check_handoff(&h("catalog", "catalog", &[], &[]), "catalog", &ts("catalog")).is_err());
     }
 
     #[test]
