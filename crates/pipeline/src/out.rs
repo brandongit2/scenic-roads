@@ -302,7 +302,13 @@ mod tests {
         let slashed = PathBuf::from(format!("{}/", d.path().display()));
         assert!(BuildLock::try_take(&slashed).unwrap().is_none());
         drop(held);
-        assert!(BuildLock::try_take(&slashed).unwrap().is_some());
+        // (A process another test is starting can hold a copy of the descriptor, and with it the
+        // lock, between its fork and its exec: a few milliseconds.)
+        let t = std::time::Instant::now();
+        while BuildLock::try_take(&slashed).unwrap().is_none() {
+            assert!(t.elapsed() < std::time::Duration::from_secs(5), "the lock wasn't free after it was dropped");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 
     #[test]
