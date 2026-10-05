@@ -81,8 +81,10 @@ impl Offload {
             }
         }
         // Its memory: its files twice (a worker holds them, and a program reads them in), and room
-        // to work; the coordinator raises it to what the unit's task took last time.
-        let mem_mb = (inputs.values().sum::<u64>() >> 20) * 2 + 500;
+        // to work: what the steps write meanwhile, and a step's own (6/20/22's whole tail: 996 MB
+        // of files, 565 MB written, the view step 1 GB). The coordinator raises it to what the
+        // unit's task took last time.
+        let mem_mb = (inputs.values().sum::<u64>() >> 20) * 2 + 1000;
         let list: Vec<serde_json::Value> = inputs.iter().map(|(p, n)| serde_json::json!([p, n])).collect();
         let spec = serde_json::json!({ "unit": u.slash(), "version": self.version, "runs": runs, "inputs": list, "places": places() });
         let offer = crate::coord::task::Offer { owner: self.owner, kind: "tail".into(), spec, root: root.clone(), inputs, mem_mb };
@@ -191,7 +193,7 @@ pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Pat
             _ => Ok(None),
         }
     };
-    let tools = crate::unit::Tools { bin: bin.to_path_buf(), dem: PathBuf::new(), cache: dir.join("cache"), buildings: Some(dir.join("b")), moi_dtm: nas("{moi}")?, sources: nas("{sources}")?, shared: None, chm: nas("{chm}")?, spacing_m: 8, snap: None };
+    let tools = crate::unit::Tools { bin: bin.to_path_buf(), dem: PathBuf::new(), cache: dir.join("cache"), buildings: Some(dir.join("b")), moi_dtm: nas("{moi}")?, sources: nas("{sources}")?, shared: None, chm: nas("{chm}")?, stores_read_only: true, spacing_m: 8, snap: None };
     crate::unit::take_peak();
     let t = std::time::Instant::now();
     crate::unit::run_tail(&runs, &dir.join("u"), &tools)?;
@@ -315,6 +317,23 @@ fn take(st: &serde_json::Value, dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// File `path`'s bytes as compared, what says how long a run took aside: the elevations' stats
+/// (`dem-stats.json`'s `seconds`).
+fn timeless(path: &str, b: Vec<u8>) -> Vec<u8> {
+    if !path.ends_with("dem-stats.json") {
+        return b;
+    }
+    match serde_json::from_slice::<serde_json::Value>(&b) {
+        Ok(mut v) => {
+            if let Some(o) = v.as_object_mut() {
+                o.remove("seconds");
+            }
+            serde_json::to_vec(&v).unwrap_or(b)
+        }
+        Err(_) => b,
+    }
+}
+
 /// Whether a worker's outputs are what this Mac's run (from `since`) left in the unit's folder:
 /// each it sent is this Mac's, and each file this Mac's run wrote that it didn't send is as the
 /// task sent it (`sent`, the task's inputs: a worker sends only what it changed).
@@ -324,7 +343,8 @@ fn same(st: &serde_json::Value, dir: &Path, sent: &Path, since: std::time::Syste
     for o in st["outputs"].as_array().into_iter().flatten() {
         let path = o["path"].as_str().unwrap_or("");
         let Some(mine) = place(dir, path) else { return Ok(false) };
-        if std::fs::read(out.join(path)).ok() != std::fs::read(&mine).ok() {
+        let read = |p: &Path| std::fs::read(p).ok().map(|b| timeless(path, b));
+        if read(&out.join(path)) != read(&mine) {
             eprintln!("offload: {path} differs from this Mac's");
             return Ok(false);
         }
@@ -383,7 +403,7 @@ mod tests {
         let mut ran = false;
         let mut here = || {
             ran = true;
-            crate::unit::run_tail(&runs, &dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, moi_dtm: None, sources: None, shared: None, chm: None, spacing_m: 8, snap: None })
+            crate::unit::run_tail(&runs, &dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, moi_dtm: None, sources: None, shared: None, chm: None, stores_read_only: false, spacing_m: 8, snap: None })
         };
         let s = o.settle(&t, &dir, false, &mut here).unwrap().unwrap();
         assert!(ran && matches!(s, Settled::Here(Some((ref w, true))) if w == "m1"));

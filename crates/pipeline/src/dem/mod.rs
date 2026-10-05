@@ -113,11 +113,24 @@ pub fn usgs_groups(lon: &[f64], lat: &[f64], idx: &[u32]) -> Vec<(String, Vec<u3
     out
 }
 
-/// The MOI DTM's GeoTIFFs in `dir` (`*.tif`, by name).
-pub fn moi_files(dir: &Path) -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "tif")).collect();
+/// The MOI DTM's GeoTIFFs in `dir` (`*.tif`, by name): none when there's no such folder, an error
+/// when it can't be listed now (a NAS that doesn't answer isn't a NAS without the DTM: Taiwan's
+/// points would come from FABDEM instead, without a word).
+pub fn moi_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("list {}", dir.display())),
+    };
+    let mut v = Vec::new();
+    for e in rd {
+        let p = e.with_context(|| format!("list {}", dir.display()))?.path();
+        if p.extension().is_some_and(|x| x == "tif") {
+            v.push(p);
+        }
+    }
     v.sort();
-    v
+    Ok(v)
 }
 
 /// How a raster's coordinates follow from WGS 84 longitude and latitude.
@@ -180,6 +193,9 @@ pub struct Config {
     pub moi_dtm: Vec<PathBuf>,
     /// FABDEM's store, where each tile is downloaded once (None: read in place at Bristol).
     pub fabdem_store: Option<PathBuf>,
+    /// The store only read (a task's worker: docs/workers.md §2): a tile it hasn't, or hasn't
+    /// whole, is read in place, and nothing there is written or removed.
+    pub fabdem_read_only: bool,
 }
 
 /// dem-stats.json: vertices by source.
@@ -572,13 +588,13 @@ pub fn run(cfg: &Config, fetch: &dyn Fetch) -> Result<Stats> {
         let in_place = |src| -> Result<Vec<f32>> { sample_raster(&Tiff::open(src).with_context(|| format!("FABDEM {tname}"))?, 0, &lo, &la, pool.as_ref()).with_context(|| format!("FABDEM {tname}")) };
         let v = match &cfg.fabdem_store {
             // From the store, where each tile is downloaded once.
-            Some(store) => match fabdem::stored(fetch, store, zname, tname, false)? {
+            Some(store) => match fabdem::stored(fetch, store, zname, tname, false, cfg.fabdem_read_only)? {
                 None => None,
                 Some(fabdem::Tile::InPlace(src)) => Some(in_place(src)?),
                 Some(fabdem::Tile::Stored(p)) => match sample_file(&p, &lo, &la, pool.as_ref()) {
                     Ok(v) => Some(v),
                     // The stored copy is damaged: taken again (once).
-                    Err(_) => match fabdem::stored(fetch, store, zname, tname, true)? {
+                    Err(_) => match fabdem::stored(fetch, store, zname, tname, true, cfg.fabdem_read_only)? {
                         Some(fabdem::Tile::Stored(p)) => Some(sample_file(&p, &lo, &la, pool.as_ref())?),
                         Some(fabdem::Tile::InPlace(src)) => Some(in_place(src)?),
                         None => None,

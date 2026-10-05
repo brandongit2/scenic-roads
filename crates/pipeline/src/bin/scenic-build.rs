@@ -1788,6 +1788,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
         sources: Some(out.root().join("sources")),
         shared: Some(shared),
         chm: None,
+        stores_read_only: false,
         spacing_m: 8,
         snap: Some(dir.join("snap")),
     };
@@ -1840,6 +1841,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         sources: Some(out.root().join("sources")),
         shared: Some(out.root().join("cache")),
         chm: None,
+        stores_read_only: false,
         spacing_m: 8,
         snap: None,
     };

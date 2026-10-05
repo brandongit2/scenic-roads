@@ -171,6 +171,13 @@ impl Fetcher {
         }
     }
 
+    /// A fetcher reading the network alone over HTTPS, following no redirect: the coordinator's,
+    /// for tasks' reads of the data servers it allows (none of them redirects).
+    #[cfg(not(target_os = "wasi"))]
+    pub fn strict() -> Fetcher {
+        Fetcher { mirror: None, net: Some((net::Net::strict(), None)) }
+    }
+
     /// From SCENIC_FETCH_MIRROR, SCENIC_FETCH_RECORD and SCENIC_FETCH_OFFLINE.
     pub fn from_env() -> Fetcher {
         let dir = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
@@ -514,18 +521,24 @@ mod net {
 
     impl Net {
         pub fn new() -> Net {
-            Net {
-                agent: ureq::Agent::config_builder()
-                    .timeout_global(Some(Duration::from_secs(90)))
-                    .timeout_connect(Some(Duration::from_secs(30)))
-                    .user_agent(USER_AGENT)
-                    .accept_encoding("identity")
-                    .http_status_as_error(false)
-                    .max_idle_connections(256)
-                    .max_idle_connections_per_host(64)
-                    .build()
-                    .into(),
-            }
+            Net { agent: Self::config().build().into() }
+        }
+
+        /// HTTPS only, and no redirect followed (one comes back as an answer, which isn't a file:
+        /// an error).
+        pub fn strict() -> Net {
+            Net { agent: Self::config().https_only(true).max_redirects(0).build().into() }
+        }
+
+        fn config() -> ureq::config::ConfigBuilder<ureq::typestate::AgentScope> {
+            ureq::Agent::config_builder()
+                .timeout_global(Some(Duration::from_secs(90)))
+                .timeout_connect(Some(Duration::from_secs(30)))
+                .user_agent(USER_AGENT)
+                .accept_encoding("identity")
+                .http_status_as_error(false)
+                .max_idle_connections(256)
+                .max_idle_connections_per_host(64)
         }
 
         /// `url`'s file: from the mirror's part of it (`local`) where that has the bytes, else

@@ -63,39 +63,46 @@ pub enum Tile {
 }
 
 /// Whether `e` says the store can't be written here.
-fn read_only(e: &std::io::Error) -> bool {
+fn unwritable(e: &std::io::Error) -> bool {
     matches!(e.kind(), std::io::ErrorKind::ReadOnlyFilesystem | std::io::ErrorKind::PermissionDenied)
 }
 
 /// Tile `tname` from the store, copied there from Bristol's zip `zname` the first time; None for a
 /// tile the zip doesn't have, remembered as `<tile>.none`. A stored copy that isn't whole, or
-/// (`again`) won't read, is taken again. A store this worker can't write gives what it has; for the
-/// rest, the tile read in place (and nothing remembered).
-pub fn stored(fetch: &dyn Fetch, store: &Path, zname: &str, tname: &str, again: bool) -> Result<Option<Tile>> {
+/// (`again`) won't read, is taken again. A store this worker can't write, or only reads
+/// (`read_only`: a task's worker), gives what it has whole; for the rest, the tile read in place
+/// (and nothing written or removed there).
+pub fn stored(fetch: &dyn Fetch, store: &Path, zname: &str, tname: &str, again: bool, read_only: bool) -> Result<Option<Tile>> {
     let f = store.join(member(tname));
     let in_place = || -> Result<Option<Tile>> {
-        println!("FABDEM {tname}: the store can't be written here: read in place");
+        println!("FABDEM {tname}: the store {}: read in place", if read_only { "is only read here" } else { "can't be written here" });
         Ok(remote(fetch, zname, tname)?.map(Tile::InPlace))
     };
     if f.exists() {
         if !again && crate::whole::tiff_file_whole(&f) {
             return Ok(Some(Tile::Stored(f)));
         }
+        if read_only {
+            return in_place();
+        }
         println!("FABDEM {tname}: the stored copy {}: taken again", if again { "won’t read" } else { "isn’t whole" });
         match std::fs::remove_file(&f) {
-            Err(e) if read_only(&e) => return in_place(),
+            Err(e) if unwritable(&e) => return in_place(),
             r => r?,
         }
     } else if store.join(format!("{tname}.none")).exists() {
         return Ok(None);
     }
+    if read_only {
+        return in_place();
+    }
     match std::fs::create_dir_all(store) {
-        Err(e) if read_only(&e) => return in_place(),
+        Err(e) if unwritable(&e) => return in_place(),
         r => r?,
     }
     let Some(src) = remote(fetch, zname, tname)? else {
         match std::fs::write(store.join(format!("{tname}.none")), b"") {
-            Err(e) if read_only(&e) => {}
+            Err(e) if unwritable(&e) => {}
             r => r?,
         }
         return Ok(None);
@@ -104,7 +111,7 @@ pub fn stored(fetch: &dyn Fetch, store: &Path, zname: &str, tname: &str, again: 
     let tmp = store.join(format!("{}.{host}.{}.tmp", member(tname), store::sys::pid()));
     // (The temporary file first: a store this worker can't write is known before the tile is read.)
     let mut w = match std::fs::File::create(&tmp) {
-        Err(e) if read_only(&e) => {
+        Err(e) if unwritable(&e) => {
             println!("FABDEM {tname}: the store can't be written here: read in place");
             return Ok(Some(Tile::InPlace(src)));
         }

@@ -1216,8 +1216,10 @@ mod http {
         pub remote: Arc<Remote>,
     }
 
-    /// The data servers' files opened for tasks, kept (the most recent 256), each with the block
-    /// cache crate::fetch keeps for it: a task reads a file a block at a time.
+    /// The data servers' files opened for tasks, kept (the most recent `REMOTE_FILES`), each with
+    /// the block cache crate::fetch keeps for it (16 MB at most): a task reads a file a block at a
+    /// time. Fetched over HTTPS only, following no redirect: a task names only the servers
+    /// `WEB_HOSTS` allows, and a redirect would take the fetch elsewhere.
     #[derive(Default)]
     pub struct Remote {
         files: Mutex<std::collections::VecDeque<(String, Option<Arc<dyn store::range::RangeRead>>)>>,
@@ -1230,7 +1232,7 @@ mod http {
                 return Ok(f.clone());
             }
             use crate::fetch::Fetch;
-            let fetch = crate::fetch::Fetcher::new(None, None, true);
+            let fetch = crate::fetch::Fetcher::strict();
             // (A small file a server won't read in ranges, a map tile: whole.)
             let f = match fetch.open(url) {
                 Ok(f) => f,
@@ -1241,12 +1243,17 @@ mod http {
             };
             let mut files = self.files.lock().unwrap();
             files.push_back((url.to_string(), f.clone()));
-            while files.len() > 256 {
+            while files.len() > REMOTE_FILES {
                 files.pop_front();
             }
             Ok(f)
         }
     }
+
+    /// The data servers' files kept open for tasks (`Remote`): a few hundred MB of blocks at most.
+    const REMOTE_FILES: usize = 24;
+    /// The most of a file one request reads (a page reads 1 MB blocks).
+    const RANGE_MAX: u64 = 8 << 20;
 
     pub use crate::net::{allowed, loopback, random, served_https, urls};
 
@@ -1463,9 +1470,12 @@ mod http {
             };
             let Some(root) = c.root.lock().unwrap().clone() else { return error(StatusCode::SERVICE_UNAVAILABLE, "the NAS isn't here now") };
             let p = root.join(rel);
+            // (Not there, or the NAS not answering: a task fails rather than take the second for
+            // the first, as Taiwan's elevations would, from FABDEM.)
             let meta = match tokio::fs::metadata(&p).await {
                 Ok(m) => m,
-                Err(_) => return error(StatusCode::NOT_FOUND, "nothing there"),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return error(StatusCode::NOT_FOUND, "nothing there"),
+                Err(e) => return error(StatusCode::SERVICE_UNAVAILABLE, format!("the NAS didn't answer: {e}")),
             };
             return match query.as_str() {
                 "probe" => Json(if meta.is_dir() { serde_json::json!({ "kind": "dir" }) } else { serde_json::json!({ "kind": "file", "size": meta.len() }) }).into_response(),
@@ -1499,7 +1509,7 @@ mod http {
                 Some((a, b)) => (a.parse::<u64>()?, if b.is_empty() { len.saturating_sub(1) } else { b.parse::<u64>()?.min(len.saturating_sub(1)) }),
                 None => (0, len.saturating_sub(1)),
             };
-            anyhow::ensure!(a <= b && b < len && b - a < 64 << 20, "a range of at most 64 MB in the file");
+            anyhow::ensure!(a <= b && b < len && b - a < RANGE_MAX, "a range of at most {} MB in the file", RANGE_MAX >> 20);
             let bytes = f.read_at(a, (b - a + 1) as usize).map_err(|e| anyhow::anyhow!("{e}"))?;
             let mut resp = (StatusCode::PARTIAL_CONTENT, [(header::CONTENT_TYPE, "application/octet-stream"), (header::CACHE_CONTROL, "no-store")], bytes).into_response();
             if let Ok(v) = format!("bytes {a}-{b}/{len}").parse() {

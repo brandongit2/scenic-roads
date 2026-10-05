@@ -289,7 +289,17 @@ impl Chm10 {
 /// doesn't have. Each copy is written whole and checked whole when opened (pipeline::whole: its
 /// directories, not its data): one that isn't (cut short) is deleted and taken from the next source.
 /// The bands then read only the strips they need from it (Tiff), never the whole file.
-fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path, store: Option<&Path>) -> Result<Option<File>> {
+/// `read_only`: the files read where they lie (a task's worker, the NAS's store): what's there
+/// whole, else an error; nothing downloaded, written, touched or removed there.
+fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path, store: Option<&Path>, read_only: bool) -> Result<Option<File>> {
+    if read_only {
+        let f = File::open(path).with_context(|| format!("{} isn't there to read", path.display()))?;
+        if f.metadata()?.len() == 0 {
+            return Ok(None);
+        }
+        ensure!(pipeline::whole::tiff_whole(&f), "{} isn't whole", path.display());
+        return Ok(Some(f));
+    }
     // A kept copy: Some(None) for Meta's "none there", None when it's missing or not whole.
     let kept = |p: &Path| -> Option<Option<File>> {
         let f = File::open(p).ok()?;
@@ -558,6 +568,8 @@ struct Layer<'a> {
     url: String,
     path: PathBuf,
     store: Option<PathBuf>,
+    /// Read where it lies, never taken again (fetch_file's `read_only`).
+    read_only: bool,
     f: fn(u16) -> u8,
     tiff: Tiff,
     taken: usize,
@@ -565,13 +577,13 @@ struct Layer<'a> {
 
 impl<'a> Layer<'a> {
     /// The layer's file, opened; None when Meta has none there.
-    fn open(agent: &'a ureq::Agent, url: String, path: PathBuf, store: Option<PathBuf>, f: fn(u16) -> u8) -> Result<Option<Layer<'a>>> {
+    fn open(agent: &'a ureq::Agent, url: String, path: PathBuf, store: Option<PathBuf>, read_only: bool, f: fn(u16) -> u8) -> Result<Option<Layer<'a>>> {
         let mut taken = 0;
         loop {
-            let Some(file) = fetch_file(agent, &url, &path, store.as_deref())? else { return Ok(None) };
+            let Some(file) = fetch_file(agent, &url, &path, store.as_deref(), read_only)? else { return Ok(None) };
             match canopy_tiff(file) {
-                Ok(tiff) => return Ok(Some(Layer { agent, url, path, store, f, tiff, taken })),
-                Err(e) => damaged(&path, store.as_deref(), &mut taken, e)?,
+                Ok(tiff) => return Ok(Some(Layer { agent, url, path, store, read_only, f, tiff, taken })),
+                Err(e) => damaged(&path, store.as_deref(), read_only, &mut taken, e)?,
             }
         }
     }
@@ -584,9 +596,9 @@ impl<'a> Layer<'a> {
                 Ok(v) => return Ok(v),
                 Err(e) => e,
             };
-            damaged(&self.path, self.store.as_deref(), &mut self.taken, e)?;
+            damaged(&self.path, self.store.as_deref(), self.read_only, &mut self.taken, e)?;
             // (Bands before this one have used the square: found missing now, it can't be passed over.)
-            let file = fetch_file(self.agent, &self.url, &self.path, self.store.as_deref())?.with_context(|| format!("{}: Meta has none there now", self.path.display()))?;
+            let file = fetch_file(self.agent, &self.url, &self.path, self.store.as_deref(), self.read_only)?.with_context(|| format!("{}: Meta has none there now", self.path.display()))?;
             got = canopy_tiff(file).and_then(|t| {
                 self.tiff = t;
                 self.tiff.read(w, self.f)
@@ -606,8 +618,12 @@ fn canopy_tiff(file: File) -> Result<Tiff> {
 }
 
 /// After error `e` reading canopy file `path`: this Mac's copy is deleted so it's taken again, the
-/// second time the NAS's too; the third time, the error.
-fn damaged(path: &Path, store: Option<&Path>, taken: &mut usize, e: anyhow::Error) -> Result<()> {
+/// second time the NAS's too; the third time, the error. One read where it lies (`read_only`): the
+/// error at once (it's the NAS's copy, which the build Mac takes again if it's damaged).
+fn damaged(path: &Path, store: Option<&Path>, read_only: bool, taken: &mut usize, e: anyhow::Error) -> Result<()> {
+    if read_only {
+        return Err(e.context(format!("{} (read where it lies)", path.display())));
+    }
     if *taken == 2 {
         return Err(e.context(format!("{} (taken again twice)", path.display())));
     }
@@ -722,8 +738,10 @@ fn canopy(dir: &Path) -> Result<()> {
         (None, None) => dir.parent().unwrap().join("cache/chm10"),
     };
     std::fs::create_dir_all(&cache)?;
-    // The NAS's store of them (`sources/canopy/`), where each is downloaded once.
-    let store = std::env::var_os("SCENIC_CANOPY_STORE").map(PathBuf::from);
+    // The NAS's store of them (`sources/canopy/`), where each is downloaded once. Read where they
+    // lie (SCENIC_CHM: a task's worker), or told the stores are only read: nothing written there.
+    let read_only = std::env::var_os("SCENIC_CHM").is_some() || std::env::var("SCENIC_STORES_READ_ONLY").is_ok_and(|v| !v.is_empty() && v != "0");
+    let store = std::env::var_os("SCENIC_CANOPY_STORE").map(PathBuf::from).filter(|_| !read_only);
     let band = std::env::var("SCENIC_CANOPY_BAND").ok().and_then(|v| v.parse().ok()).filter(|&b: &usize| b > 0).unwrap_or(BAND_ROWS);
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(1800)))
@@ -847,7 +865,7 @@ fn canopy(dir: &Path) -> Result<()> {
         let share: fn(u16) -> u8 = |v| ((v as u32).min(1000) * 255 / 1000) as u8;
         let layers: Vec<Option<Layer>> = [("median", height), ("p95", height), ("cover5m", share)]
             .par_iter()
-            .map(|&(st, f)| Layer::open(&agent, format!("{CHM10_URL}/{}", name(st)), cache.join(name(st)), store.as_ref().map(|s| s.join(name(st))), f))
+            .map(|&(st, f)| Layer::open(&agent, format!("{CHM10_URL}/{}", name(st)), cache.join(name(st)), store.as_ref().map(|s| s.join(name(st))), read_only, f))
             .collect::<Result<_>>()?;
         let Ok([Some(median), Some(p95), Some(cover)]) = <[Option<Layer>; 3]>::try_from(layers) else {
             pb.println(format!("canopy {top},{left}: no data"));
@@ -1142,12 +1160,12 @@ mod tests {
         std::fs::write(store.join("a.tif"), &b).unwrap();
         std::fs::write(cache.join("a.tif"), &b[..b.len() - 1]).unwrap();
         for _ in 0..2 {
-            let f = fetch_file(&agent, never, &cache.join("a.tif"), Some(&store.join("a.tif"))).unwrap().unwrap();
+            let f = fetch_file(&agent, never, &cache.join("a.tif"), Some(&store.join("a.tif")), false).unwrap().unwrap();
             assert_eq!(whole(&f), b);
         }
         // Meta's "none there", from the NAS.
         std::fs::write(store.join("b.tif"), b"").unwrap();
-        assert!(fetch_file(&agent, never, &cache.join("b.tif"), Some(&store.join("b.tif"))).unwrap().is_none());
+        assert!(fetch_file(&agent, never, &cache.join("b.tif"), Some(&store.join("b.tif")), false).unwrap().is_none());
         assert_eq!(std::fs::metadata(cache.join("b.tif")).unwrap().len(), 0);
         // Downloaded (a body cut short tried again), into the NAS's store and here.
         let srv = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -1167,7 +1185,7 @@ mod tests {
                 s.write_all(&body[..if cut { body.len() / 2 } else { body.len() }]).unwrap();
             }
         });
-        let f = fetch_file(&agent, &url, &cache.join("c.tif"), Some(&store.join("c.tif"))).unwrap().unwrap();
+        let f = fetch_file(&agent, &url, &cache.join("c.tif"), Some(&store.join("c.tif")), false).unwrap().unwrap();
         server.join().unwrap();
         assert_eq!(whole(&f), b);
         assert_eq!(std::fs::read(cache.join("c.tif")).unwrap(), b);
@@ -1179,5 +1197,20 @@ mod tests {
                 assert!(!pipeline::whole::is_tmp(&p) && p.extension().is_some_and(|x| x == "tif"), "{} left", p.display());
             }
         }
+        // Read where they lie (a task's worker): what's whole, Meta's "none there"; one cut short,
+        // or missing, an error, with nothing removed, written or downloaded.
+        let mtime = |p: &Path| std::fs::metadata(p).unwrap().modified().unwrap();
+        let (a, at) = (store.join("a.tif"), mtime(&store.join("a.tif")));
+        assert_eq!(whole(&fetch_file(&agent, never, &a, None, true).unwrap().unwrap()), b);
+        assert!(fetch_file(&agent, never, &store.join("b.tif"), None, true).unwrap().is_none());
+        std::fs::write(store.join("d.tif"), &b[..b.len() - 1]).unwrap();
+        assert!(fetch_file(&agent, never, &store.join("d.tif"), None, true).is_err());
+        assert!(store.join("d.tif").exists(), "a copy cut short is left to the build Mac");
+        assert!(fetch_file(&agent, &url, &store.join("e.tif"), None, true).is_err());
+        assert!(!store.join("e.tif").exists());
+        assert_eq!(mtime(&a), at, "not touched");
+        let mut taken = 0;
+        assert!(damaged(&a, None, true, &mut taken, anyhow::anyhow!("bad strip")).is_err());
+        assert!(a.exists() && taken == 0);
     }
 }

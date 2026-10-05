@@ -919,8 +919,9 @@ impl Agent {
                 vec![JobSpec { id, what, cmd, needs, restart_after_sleep: true, record: Some(build::Work { step, targets }) }]
             }
             Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Task { id, task, .. }, .. })) => {
-                // A task (a unit's last steps for the build Mac's job), run here by `scenic run-task`
-                // over its files fetched from the coordinator; it needs no NAS.
+                // A task (a unit's tail for the build Mac's job), run here by `scenic run-task` over
+                // its files fetched from the coordinator, reading the NAS's data where it lies
+                // (only reading it: crate::unit::Tools::stores_read_only).
                 let dir = self.outbox().join(lease.to_string());
                 let spec = dir.join("spec.json");
                 if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&spec, task.to_string())) {
@@ -951,7 +952,7 @@ impl Agent {
                 ];
                 let unit = task["unit"].as_str().unwrap_or("").to_string();
                 self.slots[0].lease = Some(Held::Leased { lease, dir });
-                vec![JobSpec { id: format!("task {id}"), what: format!("Scenery for the build Mac's area {unit}"), cmd, needs: Needs { cpu: true, nas: false, home: false }, restart_after_sleep: false, record: None }]
+                vec![JobSpec { id: format!("task {id}"), what: format!("Scenery for the build Mac's area {unit}"), cmd, needs: Needs { cpu: true, nas: true, home: false }, restart_after_sleep: false, record: None }]
             }
             Ok(Some(g)) => {
                 fail(self, g.lease, "this helper can't do that work");

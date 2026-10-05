@@ -68,11 +68,20 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   cover servers only, over HTTPS: `?probe` says what's there, `?list` a folder's entries, a range
   its bytes; nothing written), a 1 MB block at a time as a program reads them (web/work/runtime.js:
   synchronous requests, a WASI call can't wait; 64 MB of blocks kept); a server's "none" is its
-  `.none` file. A native worker reads the NAS at its own mount and the servers as the build Mac
-  does. A FABDEM tile the store hasn't yet is read in place inside Bristol's zip (the store isn't
-  written: `dem::fabdem::stored`), the same values the store's copy has.
+  `.none` file. The coordinator fetches the servers' files over HTTPS only, following no redirect
+  (none of the five redirects), keeps a couple of dozen open, and serves 8 MB at most a request; a
+  NAS file it can't read now is a 503, never "not there" (a task fails rather than take FABDEM for
+  Taiwan's missing MOI DTM, as an unlistable folder would otherwise have it). A native worker reads
+  the NAS at its own mount and the servers as the build Mac does, and, like a browser, only reads
+  the NAS's stores (`Tools::stores_read_only`, `SCENIC_STORES_READ_ONLY`): a FABDEM tile the store
+  hasn't whole is read in place inside Bristol's zip (`dem::fabdem::stored`, the same values the
+  store's copy has), a canopy square is read as it is (one not whole fails the task; nothing there
+  is downloaded, touched or removed: the build Mac keeps the store).
 - **What comes back:** the files the steps changed; one written back as it was sent isn't sent (a
-  hash of each input; the unit's folder has it).
+  hash of each input; the unit's folder has it). Checks compare them whole, what says how long a
+  run took aside (`dem-stats.json`'s `seconds`).
+- **Memory:** a tail's task is predicted to take its files twice and a gigabyte more (what its
+  steps write meanwhile, and a step's own: 6/20/22's view took 1 GB), until a run of it says.
 - **The unit job** (`pipeline::offload`) clones those files into the task's folder (copy-on-write,
   instant; the roadside buildings' links to the NAS stay links) and offers the task when a worker
   that takes tails is around and fewer than such are out (at most three: each holds a unit's folder

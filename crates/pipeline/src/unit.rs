@@ -375,6 +375,10 @@ pub struct Tools {
     /// The canopy squares read where they lie (the NAS's `sources/canopy/`), for a worker that
     /// keeps no copies of them (a task's); None: this Mac's copies (`cache/chm10/`), from the NAS.
     pub chm: Option<PathBuf>,
+    /// The NAS's stores (`sources/`) only read: a task's worker reads them where they lie, and
+    /// neither downloads into them nor removes from them (docs/workers.md §2); its programs are
+    /// told so (`SCENIC_STORES_READ_ONLY`).
+    pub stores_read_only: bool,
     /// Densification spacing (m).
     pub spacing_m: u32,
     /// Where to keep a copy of the folder before and after each of the steps' programs, with the
@@ -911,7 +915,7 @@ pub fn tail(u: Unit, buildings: bool, store: bool) -> Vec<Run> {
 pub fn run_tail(runs: &[Run], dir: &Path, tools: &Tools) -> Result<()> {
     let log = dir.join("steps.log");
     let scache = crate::scache::unit_dir(dir);
-    let store = tools.sources.as_ref().map(|s| s.join("canopy"));
+    let store = tools.sources.as_ref().filter(|_| !tools.stores_read_only).map(|s| s.join("canopy"));
     // (A place this worker hasn't, or that no worker here fills, `{net}`: its variable left out.)
     let fill = |v: &str| -> Option<String> {
         let put = |s: &str, k: &str, p: Option<&Path>| -> Option<String> { if s.contains(k) { Some(s.replace(k, &p?.to_string_lossy())) } else { Some(s.to_string()) } };
@@ -934,6 +938,9 @@ pub fn run_tail(runs: &[Run], dir: &Path, tools: &Tools) -> Result<()> {
             if let Some(v) = fill(v) {
                 c.env(k, v);
             }
+        }
+        if tools.stores_read_only {
+            c.env("SCENIC_STORES_READ_ONLY", "1");
         }
         run_in(c, &r.what, &log, dir, tools)?;
     }

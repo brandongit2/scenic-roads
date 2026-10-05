@@ -230,7 +230,7 @@ impl Fixture {
     }
 
     fn config(&self, moi: bool) -> Config {
-        Config { build: self.build(), workers: 4, cache: self.dir.path().join("cache"), no_cache: false, moi_dtm: if moi { vec![self.moi.clone()] } else { Vec::new() }, fabdem_store: Some(self.dir.path().join("store")) }
+        Config { build: self.build(), workers: 4, cache: self.dir.path().join("cache"), no_cache: false, moi_dtm: if moi { vec![self.moi.clone()] } else { Vec::new() }, fabdem_store: Some(self.dir.path().join("store")), fabdem_read_only: false }
     }
 
     fn outputs(&self) -> (Vec<f32>, Vec<u8>) {
@@ -323,6 +323,38 @@ fn a_store_this_worker_cant_write_gives_what_it_has_and_the_rest_is_read_in_plac
     assert_eq!((stats.fabdem, stats.missing), (whole_stats.fabdem, whole_stats.missing));
     assert_eq!(ro.1, whole.outputs().1);
     assert!(ro.0.iter().zip(&whole.outputs().0).all(|(a, b)| a.to_bits() == b.to_bits()));
+}
+
+#[test]
+fn a_store_only_read_is_neither_written_nor_pruned() {
+    let f = Fixture::new();
+    let store = f.dir.path().join("store");
+    // A stored copy cut short: a writer would take it again; a reader reads the tile in place.
+    std::fs::write(store.join("N48E002_FABDEM_V1-2.tif"), b"II*\0short").unwrap();
+    let listed = || {
+        let mut v: Vec<(String, u64)> = std::fs::read_dir(&store).unwrap().map(|e| e.unwrap()).map(|e| (e.file_name().to_string_lossy().into_owned(), e.metadata().unwrap().len())).collect();
+        v.sort();
+        v
+    };
+    let before = listed();
+    let stats = run(&Config { fabdem_read_only: true, ..f.config(true) }, &f.fetch).unwrap();
+    assert_eq!(listed(), before, "nothing written or removed");
+    let whole = Fixture::new();
+    let whole_stats = run(&whole.config(true), &whole.fetch).unwrap();
+    assert_eq!((stats.fabdem, stats.missing), (whole_stats.fabdem, whole_stats.missing));
+    assert_eq!(f.outputs().1, whole.outputs().1);
+    assert!(f.outputs().0.iter().zip(&whole.outputs().0).all(|(a, b)| a.to_bits() == b.to_bits()));
+}
+
+#[test]
+fn the_moi_dtm_missing_is_none_and_unlistable_is_an_error() {
+    let d = tempfile::tempdir().unwrap();
+    assert!(moi_files(&d.path().join("none")).unwrap().is_empty());
+    std::fs::write(d.path().join("a.tif"), b"x").unwrap();
+    std::fs::write(d.path().join("b.txt"), b"x").unwrap();
+    assert_eq!(moi_files(d.path()).unwrap(), [d.path().join("a.tif")]);
+    // (A file where the folder should be: it can't be listed.)
+    assert!(moi_files(&d.path().join("a.tif")).is_err());
 }
 
 #[test]
