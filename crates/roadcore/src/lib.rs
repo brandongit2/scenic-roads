@@ -12,6 +12,7 @@
 //!   roads.tiles  tile archive, see `archive`
 //!   climbs.bin   `climb::ClimbRec` records; climbs.geom: [i32; 2] polylines they index into
 
+use det::Det;
 pub mod archive;
 pub mod climb;
 pub mod elev;
@@ -301,7 +302,7 @@ pub const EARTH_R: f64 = 6_371_008.8;
 #[inline]
 pub fn dist_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
     let k = std::f64::consts::PI / 180.0;
-    let x = (lon2 - lon1) * k * ((lat1 + lat2) * 0.5 * k).cos();
+    let x = (lon2 - lon1) * k * ((lat1 + lat2) * 0.5 * k).dcos();
     let y = (lat2 - lat1) * k;
     (x * x + y * y).sqrt() * EARTH_R
 }
@@ -310,7 +311,7 @@ pub fn dist_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
 #[inline]
 pub fn merc(lon: f64, lat: f64) -> (f64, f64) {
     let x = (lon + 180.0) / 360.0;
-    let s = (lat.to_radians()).sin().clamp(-0.9999, 0.9999);
-    let y = 0.5 - ((1.0 + s) / (1.0 - s)).ln() / (4.0 * std::f64::consts::PI);
+    let s = (lat.to_radians()).dsin().clamp(-0.9999, 0.9999);
+    let y = 0.5 - ((1.0 + s) / (1.0 - s)).dln() / (4.0 * std::f64::consts::PI);
     (x, y)
 }

@@ -6,6 +6,7 @@
 //! of one area, gathered from base packs): both describe each way with a `WayIn` and choose which
 //! tiles to keep.
 
+use det::Det;
 use crate::count_bar;
 use flate2::{write::GzEncoder, Compression};
 use rayon::prelude::*;
@@ -25,7 +26,7 @@ pub fn extent_log2(z: u8) -> u8 {
 
 /// Elevation tolerance (m) for simplification at zoom z: 1 m at z14, doubling every 2 zooms out.
 fn elev_tol(z: u8) -> f64 {
-    2f64.powf((14.0 - z as f64) / 2.0).max(1.0)
+    2f64.dpowf((14.0 - z as f64) / 2.0).max(1.0)
 }
 
 pub fn cumdist(v: &[[i32; 2]]) -> Vec<f64> {
@@ -406,7 +407,7 @@ pub fn encode_zoom(z: u8, maxz: u8, pieces: &[(u64, TileLine)], progress: Option
                 let gm = l.grade.iter().map(|&v| v as f64).sum::<f64>() / n;
                 let w = (l.true_len_dm.max(1)) as f64;
                 let hm = l.drape.iter().map(|&v| v as f64).sum::<f64>() / n;
-                let lbin = (l.road_m.max(1) as f64).log10() as u8;
+                let lbin = (l.road_m.max(1) as f64).dlog10() as u8;
                 let d = dots.entry((cell, l.style, l.flags, lbin)).or_insert(Dot {
                     len: 0.0,
                     e: 0.0,

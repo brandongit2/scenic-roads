@@ -10,6 +10,7 @@
 //! Also today's heritage sites (`heritage.json`, for the flags step), clipped from the converted
 //! worldwide file (`Heritage`).
 
+use det::Det;
 use crate::out::Out;
 use crate::terrain_pack::ManifestTiles;
 use anyhow::{Context, Result};
@@ -108,10 +109,14 @@ impl<'a> LayerReader<'a> {
 /// The tiles at `z` meeting the box (w, s, e, n in degrees).
 pub fn tiles_in(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
     let n = 1u32 << z;
-    let x = |lon: f64| (((lon + 180.0) / 360.0 * n as f64).floor().max(0.0) as u32).min(n - 1);
+    // (A billionth of a tile up before the floor: a box edge on a tile boundary, from
+    // tile_box_grown's round trip through degrees, can come back a hair below it and would take in
+    // the tile before.)
+    let tile = |t: f64| ((t * n as f64 + 1e-9).floor().max(0.0) as u32).min(n - 1);
+    let x = |lon: f64| tile((lon + 180.0) / 360.0);
     let y = |lat: f64| {
         let r = lat.clamp(-85.05, 85.05).to_radians();
-        (((1.0 - (r.tan() + 1.0 / r.cos()).ln() / std::f64::consts::PI) / 2.0 * n as f64).floor().max(0.0) as u32).min(n - 1)
+        tile((1.0 - (r.dtan() + 1.0 / r.dcos()).dln() / std::f64::consts::PI) / 2.0)
     };
     let (x0, x1, y0, y1) = (x(b[0]), x(b[2]), y(b[3]), y(b[1]));
     (x0..=x1).flat_map(|tx| (y0..=y1).map(move |ty| (tx, ty))).collect()
@@ -121,10 +126,10 @@ pub fn tiles_in(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
 pub fn tile_box_grown(z: u8, x: u32, y: u32, km: f64) -> [f64; 4] {
     let n = (1u64 << z) as f64;
     let lon = |t: f64| t / n * 360.0 - 180.0;
-    let lat = |t: f64| (std::f64::consts::PI * (1.0 - 2.0 * t / n)).sinh().atan().to_degrees();
+    let lat = |t: f64| (std::f64::consts::PI * (1.0 - 2.0 * t / n)).dsinh().datan().to_degrees();
     let (w, e, s, nn) = (lon(x as f64), lon(x as f64 + 1.0), lat(y as f64 + 1.0), lat(y as f64));
     let dy = km / 110.574;
-    let dx = km / (111.320 * nn.abs().max(s.abs()).min(85.0).to_radians().cos());
+    let dx = km / (111.320 * nn.abs().max(s.abs()).min(85.0).to_radians().dcos());
     [w - dx, (s - dy).max(-85.05), e + dx, (nn + dy).min(85.05)]
 }
 

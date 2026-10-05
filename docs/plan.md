@@ -1024,9 +1024,12 @@ mid-job. Nothing depends on it being available at a given time.
 - Each says what's waiting and why ("Build Mac last seen yesterday; Kanto waits for it to be plugged
   in at home").
 
-**Determinism:** the same inputs give the same bytes: sorted outputs, no hash-map order, fixed
-reductions. Checked by hand so far (terrain, slope, units, candidates, trains a day); planned: a
-"build twice, compare hashes" test per step.
+**Determinism:** the same inputs give the same bytes, on any machine and in WebAssembly: sorted
+outputs, no hash-map order, reductions that don't depend on the thread count, and every
+transcendental function from one implementation (the `det` crate, over `libm`: the platforms' own
+differ in the last bit). Checked by hand so far (terrain, slope, units, candidates, trains a day;
+a dense unit's Rust steps natively on 1 and 14 threads and as WebAssembly, docs/workers.md);
+planned: a "build twice, compare hashes" test per step.
 
 **Validation:**
 - **Built:** every upload is read back and checked against its hash, and a catalog fails on a

@@ -14,6 +14,7 @@
 //! | `srings`, `spoints` | the same, simplified for drawing (Douglas–Peucker; 1 km for countries, 250 m for levels 3–4, 60 m finer) |
 //! | `strings` | names, `\n`-separated; index 0 is "" |
 
+use det::Det;
 use anyhow::{ensure, Context, Result};
 use bytemuck::{Pod, Zeroable};
 use rayon::prelude::*;
@@ -140,7 +141,7 @@ fn ring_area_m2(r: &[[i32; 2]]) -> f64 {
         return 0.0;
     }
     let lat0 = r.iter().map(|p| p[1] as f64).sum::<f64>() / r.len() as f64 * 1e-7;
-    let kx = 111_320.0 * lat0.to_radians().cos() * 1e-7;
+    let kx = 111_320.0 * lat0.to_radians().dcos() * 1e-7;
     let ky = 110_574.0 * 1e-7;
     let mut s = 0.0;
     for i in 0..r.len() {
@@ -157,7 +158,7 @@ pub fn simplify(r: &[[i32; 2]], tol_m: f64) -> Vec<[i32; 2]> {
         return r.to_vec();
     }
     let lat0 = r[0][1] as f64 * 1e-7;
-    let kx = 111_320.0 * lat0.to_radians().cos() * 1e-7;
+    let kx = 111_320.0 * lat0.to_radians().dcos() * 1e-7;
     let ky = 110_574.0 * 1e-7;
     let xy: Vec<(f64, f64)> = r.iter().map(|p| (p[0] as f64 * kx, p[1] as f64 * ky)).collect();
     let mut keep = vec![false; r.len()];
@@ -512,7 +513,7 @@ mod tests {
         let n = 1000;
         let ring: Vec<[i32; 2]> = (0..=n).map(|i| {
             let t = i as f64 / n as f64 * std::f64::consts::TAU;
-            [(t.cos() * 1e6) as i32, (t.sin() * 1e6) as i32]
+            [(t.dcos() * 1e6) as i32, (t.dsin() * 1e6) as i32]
         }).collect();
         let s = simplify(&ring, 100.0);
         assert!(s.len() > 8 && s.len() < 200, "{}", s.len());

@@ -8,6 +8,7 @@
 //!
 //! Every floating-point operation is in the script's order, so results are bit for bit numpy's.
 
+use det::Det;
 use std::collections::HashMap;
 
 /// Isolation within this on the plane, farther by great circle.
@@ -23,7 +24,7 @@ pub fn py_round(x: f64, n: usize) -> f64 {
 /// The zoom at which `ia_km` spans one pixel: 78.27 km a pixel at zoom 0 on 512 px tiles (rounded
 /// to 2 decimals as the script does).
 pub fn min_zoom(lat: f64, ia_km: f64) -> f64 {
-    py_round((78.2715 * lat.to_radians().cos() / ia_km.max(0.01)).log2(), 2)
+    py_round((78.2715 * lat.to_radians().dcos() / ia_km.max(0.01)).dlog2(), 2)
 }
 
 /// A uniform grid of points by cell, for nearest-neighbour searches in growing rings.
@@ -112,7 +113,7 @@ pub fn isolation(lon: &[f64], lat: &[f64], score: &[f64]) -> Vec<f64> {
     let mut order: Vec<u32> = (0..n as u32).collect();
     order.sort_by(|&a, &b| (-score[a as usize]).partial_cmp(&(-score[b as usize])).unwrap_or(std::cmp::Ordering::Equal).then(a.cmp(&b)));
     // The plane: x scaled by each point's own latitude.
-    let xy: Vec<[f64; 2]> = (0..n).map(|i| [lon[i] * 111.32 * lat[i].to_radians().cos(), lat[i] * 110.57]).collect();
+    let xy: Vec<[f64; 2]> = (0..n).map(|i| [lon[i] * 111.32 * lat[i].to_radians().dcos(), lat[i] * 110.57]).collect();
     let planar = |i: usize, j: u32| -> f64 {
         let (a, b) = (xy[i], xy[j as usize]);
         let (dx, dy) = (a[0] - b[0], a[1] - b[1]);
@@ -136,7 +137,7 @@ pub fn isolation(lon: &[f64], lat: &[f64], score: &[f64]) -> Vec<f64> {
     let u: Vec<[f64; 3]> = (0..n)
         .map(|i| {
             let (la, lo) = (lat[i].to_radians(), lon[i].to_radians());
-            [la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin()]
+            [la.dcos() * lo.dcos(), la.dcos() * lo.dsin(), la.dsin()]
         })
         .collect();
     let chord = |i: usize, j: u32| -> f64 {
@@ -144,7 +145,7 @@ pub fn isolation(lon: &[f64], lat: &[f64], score: &[f64]) -> Vec<f64> {
         let (dx, dy, dz) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
         (dx * dx + dy * dy + dz * dz).sqrt()
     };
-    let km = |c: f64| 6371.0 * 2.0 * (c / 2.0).min(1.0).asin();
+    let km = |c: f64| 6371.0 * 2.0 * (c / 2.0).min(1.0).dasin();
     let mut rank = vec![0u32; n];
     for (r, &i) in order.iter().enumerate() {
         rank[i as usize] = r as u32;
@@ -193,8 +194,8 @@ pub fn view_item(description_en: &str) -> bool {
 /// and the pageviews when there are any (interest.py `fame`).
 pub fn fame(pv: Option<f64>, sitelinks: u64) -> (f64, Option<f64>) {
     match pv {
-        Some(pv) if pv != 0.0 => ((1.0 + pv).log10(), Some(pv)),
-        _ => (if sitelinks != 0 { 0.3 * (1.0 + sitelinks as f64).log10() } else { 0.0 }, None),
+        Some(pv) if pv != 0.0 => ((1.0 + pv).dlog10(), Some(pv)),
+        _ => (if sitelinks != 0 { 0.3 * (1.0 + sitelinks as f64).dlog10() } else { 0.0 }, None),
     }
 }
 
@@ -272,14 +273,14 @@ mod tests {
                 if others.is_empty() {
                     return IA_BEST;
                 }
-                let p = |k: usize| [lon[k] * 111.32 * lat[k].to_radians().cos(), lat[k] * 110.57];
+                let p = |k: usize| [lon[k] * 111.32 * lat[k].to_radians().dcos(), lat[k] * 110.57];
                 let d = others.iter().map(|&j| { let (a, b) = (p(i), p(j)); let (dx, dy) = (a[0] - b[0], a[1] - b[1]); (dx * dx + dy * dy).sqrt() }).fold(f64::INFINITY, f64::min);
                 if d <= NEAR_KM {
                     return d;
                 }
-                let v = |k: usize| { let (la, lo) = (lat[k].to_radians(), lon[k].to_radians()); [la.cos() * lo.cos(), la.cos() * lo.sin(), la.sin()] };
+                let v = |k: usize| { let (la, lo) = (lat[k].to_radians(), lon[k].to_radians()); [la.dcos() * lo.dcos(), la.dcos() * lo.dsin(), la.dsin()] };
                 let c = others.iter().map(|&j| { let (a, b) = (v(i), v(j)); let (dx, dy, dz) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]); (dx * dx + dy * dy + dz * dz).sqrt() }).fold(f64::INFINITY, f64::min);
-                6371.0 * 2.0 * (c / 2.0).min(1.0).asin()
+                6371.0 * 2.0 * (c / 2.0).min(1.0).dasin()
             })
             .collect()
     }
@@ -310,8 +311,8 @@ mod tests {
     #[test]
     fn min_zoom_as_the_script() {
         // min_zoom(51.5, 0.6): round(log2(78.2715 · cos(51.5°) / 0.6), 2).
-        assert_eq!(min_zoom(51.5, 0.6), py_round((78.2715 * 51.5f64.to_radians().cos() / 0.6).log2(), 2));
-        assert_eq!(min_zoom(0.0, 0.0), py_round((78.2715f64 / 0.01).log2(), 2));
+        assert_eq!(min_zoom(51.5, 0.6), py_round((78.2715 * 51.5f64.to_radians().dcos() / 0.6).dlog2(), 2));
+        assert_eq!(min_zoom(0.0, 0.0), py_round((78.2715f64 / 0.01).dlog2(), 2));
     }
 }
 

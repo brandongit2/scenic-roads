@@ -10,6 +10,7 @@
 //! street of joined houses scores near 1, a farm by the road a little, open country 0. Sheds (under
 //! 15 m²) are ignored; rail and ferries get 0.
 
+use det::Det;
 use crate::count_bar;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
@@ -50,7 +51,7 @@ impl Index {
             let before = boxes.len();
             boxes.par_extend(a.get().par_iter().filter(|b| {
                 let lat = ((b[1] + b[3]) * 0.5) as f64;
-                let w = (b[2] - b[0]) as f64 * 111_320.0 * lat.to_radians().cos();
+                let w = (b[2] - b[0]) as f64 * 111_320.0 * lat.to_radians().dcos();
                 let h = (b[3] - b[1]) as f64 * 110_540.0;
                 if w * h < MIN_AREA_M2 || w > 1500.0 || h > 1500.0 {
                     return false;
@@ -93,7 +94,7 @@ const REACH_M: f64 = HALF_M + ZERO_M + 5.0;
 /// The cells (x0, x1, y0, y1) within `REACH_M` of a sample at (lon, lat): where its buildings are
 /// looked up.
 fn reach_cells(lon: f64, lat: f64) -> (i64, i64, i64, i64) {
-    let (kx, ky) = (111_320.0 * lat.to_radians().cos(), 110_540.0);
+    let (kx, ky) = (111_320.0 * lat.to_radians().dcos(), 110_540.0);
     (
         ((lon - REACH_M / kx) / CELL).floor() as i64,
         ((lon + REACH_M / kx) / CELL).floor() as i64,
@@ -175,7 +176,7 @@ pub fn run(dir: &Path, bdir: &Path) -> Result<()> {
                         return 0u8;
                     }
                     let (plon, plat) = (s.lon as f64 * E7, s.lat as f64 * E7);
-                    let kx = 111_320.0 * plat.to_radians().cos();
+                    let kx = 111_320.0 * plat.to_radians().dcos();
                     let ky = 110_540.0;
                     // Candidate buildings within reach of the stretch, in metres around the sample.
                     let reach = REACH_M;
@@ -298,7 +299,7 @@ mod tests {
         // (several cells away). It's in the sample's lookup cells, so kept.
         let d = tempfile::tempdir().unwrap();
         let (lon, lat) = (10.0, 60.0);
-        let m = 111_320.0 * f64::to_radians(lat).cos();
+        let m = 111_320.0 * f64::to_radians(lat).dcos();
         let b = [(lon + 40.0 / m) as f32, (lat - 0.0002) as f32, (lon + 1240.0 / m) as f32, (lat + 0.0002) as f32];
         std::fs::write(d.path().join("a.f32"), bytemuck::cast_slice::<[f32; 4], u8>(&[b])).unwrap();
         let (x0, x1, y0, y1) = reach_cells(lon, lat);

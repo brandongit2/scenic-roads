@@ -15,6 +15,7 @@
 //! seed-cache  fill the canopy and view caches (data/cache/scenic) from this build's outputs, so
 //!         the next run reuses them (for builds made before the caches existed)
 
+use det::Det;
 use anyhow::{bail, Context, Result};
 use pipeline::count_bar;
 use pipeline::scache::{self, GridChange};
@@ -462,7 +463,7 @@ fn canopy(dir: &Path) -> Result<()> {
         for (dx, dy) in [(0u32, 0u32), (1, 0), (0, 1), (1, 1)] {
             let (x, y) = ((t[0] + dx) as f64 * 256.0, (t[1] + dy) as f64 * 256.0);
             let lon = x / roadcore::grid::WORLD * 360.0 - 180.0;
-            let lat = (std::f64::consts::PI * (1.0 - 2.0 * y / roadcore::grid::WORLD)).sinh().atan().to_degrees();
+            let lat = (std::f64::consts::PI * (1.0 - 2.0 * y / roadcore::grid::WORLD)).dsinh().datan().to_degrees();
             need.insert(((lat / 10.0).ceil() as i32 * 10, (lon / 10.0).floor() as i32 * 10));
         }
     }
@@ -528,7 +529,7 @@ fn canopy(dir: &Path) -> Result<()> {
                 }
                 let lon = (g[0] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD * 360.0 - 180.0;
                 let y = (g[1] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD;
-                let lat = (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees();
+                let lat = (std::f64::consts::PI * (1.0 - 2.0 * y)).dsinh().datan().to_degrees();
                 touches(top, left, lon, lat) || (lon - (left as f64 + 5.0)).abs() < 6.0 && (lat - (top as f64 - 5.0)).abs() < 6.0
             })
     });
@@ -556,7 +557,7 @@ fn canopy(dir: &Path) -> Result<()> {
             if !t {
                 continue;
             }
-            let lat_of = |y: f64| (std::f64::consts::PI * (1.0 - 2.0 * y * 256.0 / roadcore::grid::WORLD)).sinh().atan().to_degrees();
+            let lat_of = |y: f64| (std::f64::consts::PI * (1.0 - 2.0 * y * 256.0 / roadcore::grid::WORLD)).dsinh().datan().to_degrees();
             let lon_of = |x: f64| x * 256.0 / roadcore::grid::WORLD * 360.0 - 180.0;
             let (w, e, n, so) = (lon_of(g[0] as f64), lon_of(g[0] as f64 + 1.0), lat_of(g[1] as f64), lat_of(g[1] as f64 + 1.0));
             if e >= left as f64 && w <= left as f64 + 10.0 && so <= top as f64 && n >= top as f64 - 10.0 {
@@ -595,7 +596,7 @@ fn canopy(dir: &Path) -> Result<()> {
                     let (mut sh, mut sc, mut n) = (0u32, 0u32, 0u32);
                     for (ox, oy) in [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] {
                         let lon = (gx + ox) / roadcore::grid::WORLD * 360.0 - 180.0;
-                        let lat = (std::f64::consts::PI * (1.0 - 2.0 * (gy + oy) / roadcore::grid::WORLD)).sinh().atan().to_degrees();
+                        let lat = (std::f64::consts::PI * (1.0 - 2.0 * (gy + oy) / roadcore::grid::WORLD)).dsinh().datan().to_degrees();
                         if let Some(i) = t.idx(lon, lat) {
                             sh += t.median[i] as u32;
                             sc += t.cover[i] as u32;
@@ -646,14 +647,14 @@ fn canopy(dir: &Path) -> Result<()> {
 fn near_field(s: &Sample, si: usize, owned: bool, t: &Chm10, grid: &GridIndex, terr: &[i16], near: &[AtomicI8], roadside: &[AtomicU8]) {
     let (lon, lat) = (s.lon as f64 * E7, s.lat as f64 * E7);
     let m_lat = 111_320.0;
-    let m_lon = 111_320.0 * lat.to_radians().cos();
+    let m_lon = 111_320.0 * lat.to_radians().dcos();
     let (gx, gy) = roadcore::grid::cell_of(lon, lat);
     let cm = roadcore::grid::cell_m(lat);
     let eye = eye_height(s, grid, terr);
     let tunnel = s.flags & sflag::TUNNEL != 0;
     for a in 0..NEAR_AZ {
         let th = a as f64 * std::f64::consts::TAU / NEAR_AZ as f64;
-        let (sx, sy) = (th.sin(), th.cos()); // east, north
+        let (sx, sy) = (th.dsin(), th.dcos()); // east, north
         let mut best = f64::MIN;
         let mut d = 8.0;
         while d <= NEAR_MAX_M {
@@ -669,7 +670,7 @@ fn near_field(s: &Sample, si: usize, owned: bool, t: &Chm10, grid: &GridIndex, t
             best = best.max(10.0);
         }
         if best > f64::MIN {
-            let v = (best.atan().to_degrees() * 2.0).round().clamp(-127.0, 127.0) as i8;
+            let v = (best.datan().to_degrees() * 2.0).round().clamp(-127.0, 127.0) as i8;
             near[si * NEAR_AZ + a].fetch_max(v, Relaxed);
         }
     }
@@ -677,7 +678,7 @@ fn near_field(s: &Sample, si: usize, owned: bool, t: &Chm10, grid: &GridIndex, t
         let (mut sum, mut n, mut cov, mut m) = (0f32, 0f32, 0f32, 0f32);
         for a in 0..16 {
             let th = a as f64 * std::f64::consts::TAU / 16.0;
-            let (sx, sy) = (th.sin(), th.cos());
+            let (sx, sy) = (th.dsin(), th.dcos());
             for d in [10.0, 20.0, 30.0] {
                 if let Some(i) = t.idx(lon + sx * d / m_lon, lat + sy * d / m_lat) {
                     sum += t.p95[i] as f32;

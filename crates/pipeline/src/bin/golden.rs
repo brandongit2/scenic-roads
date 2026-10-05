@@ -13,6 +13,7 @@
 //!
 //! Prints a summary and exits non-zero when anything that must match doesn't.
 
+use det::Det;
 use anyhow::{Context, Result};
 use pipeline::legacy::Legacy;
 use serde_json::Value;
@@ -183,7 +184,7 @@ fn main() -> Result<()> {
     let lon2x = |lon: f64, z: u8| ((lon + 180.0) / 360.0 * (1u64 << z) as f64).floor() as u32;
     let lat2y = |lat: f64, z: u8| {
         let r = lat.to_radians();
-        ((1.0 - (r.tan() + 1.0 / r.cos()).ln() / std::f64::consts::PI) / 2.0 * (1u64 << z) as f64).floor() as u32
+        ((1.0 - (r.dtan() + 1.0 / r.dcos()).dln() / std::f64::consts::PI) / 2.0 * (1u64 << z) as f64).floor() as u32
     };
     let mut tiles: Vec<(u8, u32, u32)> = Vec::new();
     for z in 4u8..=14 {

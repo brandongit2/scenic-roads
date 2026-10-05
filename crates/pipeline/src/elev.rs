@@ -13,6 +13,7 @@
 //!    interpolated linearly, so decks and tunnel floors are straight.
 //! 5. |grade| over ±25 m, again continuing across junctions (using final elevations).
 
+use det::Det;
 use crate::count_bar;
 use rayon::prelude::*;
 use roadcore::{class, dist_m, flag, WayRec, E7};
@@ -39,9 +40,9 @@ fn d(v: &[[i32; 2]], a: usize, b: usize) -> f64 {
 
 pub(crate) fn heading(v: &[[i32; 2]], a: usize, b: usize) -> f64 {
     let lat = v[a][1] as f64 * E7;
-    let dx = (v[b][0] - v[a][0]) as f64 * lat.to_radians().cos();
+    let dx = (v[b][0] - v[a][0]) as f64 * lat.to_radians().dcos();
     let dy = (v[b][1] - v[a][1]) as f64;
-    dy.atan2(dx)
+    dy.datan2(dx)
 }
 
 pub(crate) fn turn(a: f64, b: f64) -> f64 {
@@ -292,7 +293,7 @@ fn gaussian_core(xd: &[f64], xv: &[f32], off: usize, n: usize, sigma: f64) -> Ve
             let dr = if j + 1 < m { xd[j + 1] - xd[j] } else { 0.0 };
             let span = ((dl + dr) * 0.5).max(0.5);
             let x = (xd[j] - xd[i]) / sigma;
-            let w = (-0.5 * x * x).exp() * span;
+            let w = (-0.5 * x * x).dexp() * span;
             s += w * xv[j] as f64;
             ws += w;
         }

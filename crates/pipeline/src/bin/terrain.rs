@@ -17,6 +17,7 @@
 //!   grid.idx            z11 tiles within ~14 km of a road (shared by all analysis layers)
 //!   grid.terrain.i16    their elevations in metres
 
+use det::Det;
 use anyhow::Result;
 use pipeline::count_bar;
 use pipeline::terrain_pack::{fetch, process, tile_lat, Repaired};
@@ -220,7 +221,7 @@ fn scan(dir: &Path) -> Result<()> {
                 if !((a - b).abs() <= 50.0) {
                     let (px, py) = ((i % 256) as f64 + 0.5, (i / 256) as f64 + 0.5);
                     let lon = (x as f64 + px / 256.0) / n2 * 360.0 - 180.0;
-                    let lat = (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + py / 256.0) / n2)).sinh().atan().to_degrees();
+                    let lat = (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + py / 256.0) / n2)).dsinh().datan().to_degrees();
                     out.push_str(&format!("{z},{lon:.5},{lat:.5},{a:.0},{b:.0}\n"));
                 }
             }
@@ -238,7 +239,7 @@ fn scan(dir: &Path) -> Result<()> {
             let n2 = (1u64 << z) as f64;
             let (px, py) = ((at % 256) as f64 + 0.5, (at / 256) as f64 + 0.5);
             let lon = (x as f64 + px / 256.0) / n2 * 360.0 - 180.0;
-            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + py / 256.0) / n2)).sinh().atan().to_degrees();
+            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + py / 256.0) / n2)).dsinh().datan().to_degrees();
             eprintln!("  {z}/{x}/{y}: {fl} filled, {cl} clamped, largest change {big:.0} m at {lon:.5}, {lat:.5}");
         }
     }

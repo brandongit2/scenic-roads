@@ -8,6 +8,7 @@
 //! release's bbox columns, its files in parallel, into local parts by tile, which are then merged
 //! per tile onto the NAS. A unit reads the tiles near its roads (`tiles_for`, `stage`).
 
+use det::Det;
 use crate::legacy::Unit;
 use crate::out::Out;
 use crate::reach::Reach;
@@ -103,7 +104,7 @@ fn row_edges() -> &'static [i32] {
     static EDGES: std::sync::OnceLock<Vec<i32>> = std::sync::OnceLock::new();
     EDGES.get_or_init(|| {
         let n = (1u32 << ZOOM) as f64;
-        (0..=1u32 << ZOOM).map(|y| ((std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n)).sinh().atan().to_degrees() * 1e7).round() as i32).collect()
+        (0..=1u32 << ZOOM).map(|y| ((std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n)).dsinh().datan().to_degrees() * 1e7).round() as i32).collect()
     })
 }
 

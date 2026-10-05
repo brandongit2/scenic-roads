@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/roadcore", "crates/pipeline", "crates/server", "crates/store", "crates/names"]
+members = ["crates/det", "crates/roadcore", "crates/pipeline", "crates/server", "crates/store", "crates/names"]
 
 [workspace.dependencies]
 anyhow = "1"

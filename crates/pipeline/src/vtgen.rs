@@ -3,6 +3,7 @@
 //! tile by tile from the parent tile's cut geometry down to the deepest zoom; a zoom keeps the
 //! vertices important at its tolerance. Extent 4096, a buffer of 64 units around each tile.
 
+use det::Det;
 use names::mvt::{Feature as MvtFeature, Layer, Tile, Value};
 use std::collections::HashMap;
 
@@ -58,9 +59,9 @@ struct TF {
 }
 
 fn merc(lon: f64, lat: f64) -> (f64, f64) {
-    let s = (lat.clamp(-85.051_128_78, 85.051_128_78)).to_radians().sin();
+    let s = (lat.clamp(-85.051_128_78, 85.051_128_78)).to_radians().dsin();
     let x = lon / 360.0 + 0.5;
-    let y = 0.5 - 0.25 * ((1.0 + s) / (1.0 - s)).ln() / std::f64::consts::PI;
+    let y = 0.5 - 0.25 * ((1.0 + s) / (1.0 - s)).dln() / std::f64::consts::PI;
     (x, y.clamp(0.0, 1.0))
 }
 

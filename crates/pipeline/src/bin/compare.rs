@@ -20,6 +20,7 @@
 //! Nothing is judged here: roads' lengths and climbs change by design under the new chaining, and
 //! newer OSM data moves the counts. The report is read before the hold is released.
 
+use det::Det;
 use anyhow::{bail, ensure, Context, Result};
 use pipeline::basepack::{BasePack, Sect};
 use pipeline::legacy::Unit;
@@ -48,12 +49,12 @@ fn len_bin(m: f64) -> usize {
     if m <= 10.0 {
         return 0;
     }
-    (((m / 10.0).log2() * 4.0) as usize).min(LEN_BINS - 1)
+    (((m / 10.0).dlog2() * 4.0) as usize).min(LEN_BINS - 1)
 }
 
 /// The lower edge of length bin `b`, metres.
 fn len_edge(b: usize) -> f64 {
-    10.0 * 2f64.powf(b as f64 / 4.0)
+    10.0 * 2f64.dpowf(b as f64 / 4.0)
 }
 
 /// One build of the map: its files by logical name.

@@ -19,6 +19,7 @@
 //! which lets the DEM stage sample every raster cell a road crosses. Outside North America and
 //! Japan the elevation sources are 20–30 m, so there the spacing is at least `COARSE_SPACING_M`.
 
+use det::Det;
 use anyhow::{Context, Result};
 use osmpbf::{Element, ElementReader};
 use pipeline::{bytes_bar, morton, ProgressRead};
@@ -139,8 +140,8 @@ fn line_m(nodes: &[[i32; 2]]) -> u32 {
     let mut km = 0f64;
     for w in nodes.windows(2) {
         let (x0, y0, x1, y1) = (w[0][0] as f64 * E7, w[0][1] as f64 * E7, w[1][0] as f64 * E7, w[1][1] as f64 * E7);
-        let kx = 111.32 * ((y0 + y1) / 2.0).to_radians().cos();
-        km += ((x1 - x0) * kx).hypot((y1 - y0) * 110.57);
+        let kx = 111.32 * ((y0 + y1) / 2.0).to_radians().dcos();
+        km += ((x1 - x0) * kx).dhypot((y1 - y0) * 110.57);
     }
     (km * 1000.0).round_ties_even() as u32
 }
@@ -150,7 +151,7 @@ fn line_m(nodes: &[[i32; 2]]) -> u32 {
 /// one cell, as the cells are wider than the searches).
 fn lon_cells(lat_e7: i32, r_m: f64, cell_e7: i64) -> i64 {
     let lat = (lat_e7 as f64 * E7).abs() + 0.01;
-    let r_deg = r_m / (111_000.0 * lat.min(85.0).to_radians().cos());
+    let r_deg = r_m / (111_000.0 * lat.min(85.0).to_radians().dcos());
     ((r_deg / (cell_e7 as f64 * E7)).ceil() as i64).max(1)
 }
 

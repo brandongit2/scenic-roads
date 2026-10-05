@@ -299,6 +299,7 @@ impl Carry {
 
 #[cfg(test)]
 mod tests {
+    use det::Det;
     use super::*;
 
     /// A unit's folder after a run: `tiles` in grid.idx, terrain `elev` for every cell.
@@ -346,7 +347,7 @@ mod tests {
         // A sample at the changed tile's centre is near something new; one at the other's isn't.
         let centre = |t: [u32; 2]| {
             let lon = (t[0] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD * 360.0 - 180.0;
-            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (t[1] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD)).sinh().atan().to_degrees();
+            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (t[1] as f64 + 0.5) * 256.0 / roadcore::grid::WORLD)).dsinh().datan().to_degrees();
             (lon, lat)
         };
         assert!(ch.near(centre(tiles[1]).0, centre(tiles[1]).1, 1) && !ch.near(centre(tiles[0]).0, centre(tiles[0]).1, 1));

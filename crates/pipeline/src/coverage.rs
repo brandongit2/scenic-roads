@@ -11,6 +11,7 @@
 //! A catalog records the coverage it was built for, simplified for drawing ([`DrawnRegion`]), so
 //! the map draws it from the catalog rather than from the recipes.
 
+use det::Det;
 use crate::outlines::{inside, simplify, Outlines};
 use crate::agent::recipes::{parse_outline, Outline, Recipe};
 use anyhow::{bail, Context, Result};
@@ -56,7 +57,7 @@ impl Shape {
         }
         // The buffer in E7 units: latitude at the box's widest point.
         let lat = (bb[1].unsigned_abs().max(bb[3].unsigned_abs()) as f64 * 1e-7).min(85.0);
-        let bx = (buffer_m / (M_PER_E7 * lat.to_radians().cos())).ceil() as i32;
+        let bx = (buffer_m / (M_PER_E7 * lat.to_radians().dcos())).ceil() as i32;
         let by = (buffer_m / M_PER_E7).ceil() as i32;
         let bbox = [bb[0].saturating_sub(bx), bb[1].saturating_sub(by), bb[2].saturating_add(bx), bb[3].saturating_add(by)];
         let grid = Grid::build(&rings, bbox, bx.max(by) as f64);
@@ -104,7 +105,7 @@ impl Shape {
             return false;
         }
         let (g, c) = (&self.grid, self.cell(p));
-        let kx = M_PER_E7 * (p[1] as f64 * 1e-7).to_radians().cos();
+        let kx = M_PER_E7 * (p[1] as f64 * 1e-7).to_radians().dcos();
         let lim = self.buffer_m * self.buffer_m;
         g.edges[c].iter().any(|&(r, i)| {
             let ring = &self.rings[r as usize];
@@ -130,7 +131,7 @@ impl Shape {
     /// The box w, s, e, n (E7) grown by the buffer, at its latitude furthest from the equator.
     fn grown(&self, r: [i32; 4]) -> [i64; 4] {
         let lat = (r[1].unsigned_abs().max(r[3].unsigned_abs()) as f64 * 1e-7).min(85.0);
-        let (bx, by) = if self.buffer_m > 0.0 { ((self.buffer_m / (M_PER_E7 * lat.to_radians().cos())).ceil() as i64, (self.buffer_m / M_PER_E7).ceil() as i64) } else { (0, 0) };
+        let (bx, by) = if self.buffer_m > 0.0 { ((self.buffer_m / (M_PER_E7 * lat.to_radians().dcos())).ceil() as i64, (self.buffer_m / M_PER_E7).ceil() as i64) } else { (0, 0) };
         [r[0] as i64 - bx, r[1] as i64 - by, r[2] as i64 + bx, r[3] as i64 + by]
     }
 
@@ -336,11 +337,11 @@ pub fn read_poly(text: &str) -> Result<Vec<Vec<[i32; 2]>>> {
 /// A circle as a 64-gon.
 fn circle(lon: f64, lat: f64, km: f64) -> Vec<[i32; 2]> {
     let dy = km * 1000.0 / 110_574.0;
-    let dx = km * 1000.0 / (111_320.0 * lat.to_radians().cos().max(0.01));
+    let dx = km * 1000.0 / (111_320.0 * lat.to_radians().dcos().max(0.01));
     (0..64)
         .map(|i| {
             let t = i as f64 / 64.0 * std::f64::consts::TAU;
-            [((lon + dx * t.cos()) * 1e7).round() as i32, ((lat + dy * t.sin()).clamp(-89.9, 89.9) * 1e7).round() as i32]
+            [((lon + dx * t.dcos()) * 1e7).round() as i32, ((lat + dy * t.dsin()).clamp(-89.9, 89.9) * 1e7).round() as i32]
         })
         .collect()
 }
@@ -516,7 +517,7 @@ fn draw_tolerance_m(rings: &[Vec<[i32; 2]>]) -> f64 {
         return 60.0;
     }
     let lat = ((bb[1] as f64 + bb[3] as f64) / 2.0 * 1e-7).to_radians();
-    let w = (bb[2] as f64 - bb[0] as f64) * M_PER_E7 * lat.cos();
+    let w = (bb[2] as f64 - bb[0] as f64) * M_PER_E7 * lat.dcos();
     let h = (bb[3] as f64 - bb[1] as f64) * M_PER_E7;
     (w.max(h) / 2000.0).clamp(60.0, 1000.0)
 }
@@ -552,7 +553,7 @@ mod tests {
             .map(|i| {
                 let t = i as f64 / 40.0 * std::f64::consts::TAU;
                 let r = if i % 2 == 0 { 1.0 } else { 0.6 };
-                e7(-2.0 + r * t.cos(), 55.0 + r * t.sin() * 0.6)
+                e7(-2.0 + r * t.dcos(), 55.0 + r * t.dsin() * 0.6)
             })
             .collect();
         let hole = vec![e7(-2.1, 54.95), e7(-1.9, 54.95), e7(-1.9, 55.05), e7(-2.1, 55.05)];

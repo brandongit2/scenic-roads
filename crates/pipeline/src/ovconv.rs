@@ -15,6 +15,7 @@
 //!   it, its ways' lines' records; each way with its whole length (`km`) and an id, so the app
 //!   merges blocks by id and measures what's in view on the geometry it has.
 
+use det::Det;
 use crate::hipack::{grow, meets, tile_bounds};
 use crate::layers::{pack_of, write_pack};
 use crate::legacy::Unit;
@@ -343,8 +344,8 @@ const FERRY_NEAR_KM: f64 = 30.0;
 fn length_km(c: &[[f64; 2]]) -> f64 {
     c.windows(2)
         .map(|w| {
-            let k = (((w[0][1] + w[1][1]) / 2.0).to_radians()).cos();
-            ((w[1][0] - w[0][0]) * k).hypot(w[1][1] - w[0][1]) * 111.195
+            let k = (((w[0][1] + w[1][1]) / 2.0).to_radians()).dcos();
+            ((w[1][0] - w[0][0]) * k).dhypot(w[1][1] - w[0][1]) * 111.195
         })
         .sum()
 }
@@ -354,7 +355,7 @@ fn simplify_m(c: &[[f64; 2]], tol_m: f64) -> Vec<[f64; 2]> {
     if c.len() <= 2 || tol_m <= 0.0 {
         return c.to_vec();
     }
-    let k = (c.iter().map(|p| p[1]).sum::<f64>() / c.len() as f64).to_radians().cos() * 111_195.0;
+    let k = (c.iter().map(|p| p[1]).sum::<f64>() / c.len() as f64).to_radians().dcos() * 111_195.0;
     let xy: Vec<(f64, f64)> = c.iter().map(|p| (p[0] * k, p[1] * 111_195.0)).collect();
     let mut keep = vec![false; c.len()];
     keep[0] = true;
@@ -370,7 +371,7 @@ fn simplify_m(c: &[[f64; 2]], tol_m: f64) -> Vec<[f64; 2]> {
         let (mut best, mut at) = (-1.0, a);
         for (i, &(px, py)) in xy.iter().enumerate().take(b).skip(a + 1) {
             let t = if l2 > 0.0 { (((px - ax) * dx + (py - ay) * dy) / l2).clamp(0.0, 1.0) } else { 0.0 };
-            let d = (px - ax - t * dx).hypot(py - ay - t * dy);
+            let d = (px - ax - t * dx).dhypot(py - ay - t * dy);
             if d > best {
                 (best, at) = (d, i);
             }

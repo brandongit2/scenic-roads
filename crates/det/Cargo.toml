@@ -1,0 +1,8 @@
+[package]
+name = "det"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic maths: the transcendental functions from one implementation on every target, so a build gives the same bytes on a Mac and in WebAssembly"
+
+[dependencies]
+libm = "0.2"

@@ -3,6 +3,7 @@
 //! rail tiles z4–8). Each reads the base packs of every unit whose geometry reaches the area (plus a
 //! 100 km halo for climbs), never anything per region.
 
+use det::Det;
 use crate::basepack::BasePack;
 use crate::climbs;
 use crate::legacy::Unit;
@@ -20,7 +21,7 @@ pub type Bounds = [i32; 4];
 pub fn tile_bounds(z: u8, x: u32, y: u32) -> Bounds {
     let n = (1u64 << z) as f64;
     let lon = |x: f64| x / n * 360.0 - 180.0;
-    let lat = |y: f64| (std::f64::consts::PI * (1.0 - 2.0 * y / n)).sinh().atan().to_degrees();
+    let lat = |y: f64| (std::f64::consts::PI * (1.0 - 2.0 * y / n)).dsinh().datan().to_degrees();
     let e7 = |d: f64| (d / E7).round() as i32;
     [e7(lon(x as f64)), e7(lat(y as f64 + 1.0)), e7(lon(x as f64 + 1.0)), e7(lat(y as f64))]
 }
@@ -29,7 +30,7 @@ pub fn tile_bounds(z: u8, x: u32, y: u32) -> Bounds {
 pub fn grow(b: Bounds, km: f64) -> Bounds {
     let dlat = km / 111.32;
     let lat_max = (b[1].unsigned_abs().max(b[3].unsigned_abs()) as f64 * E7 + dlat).min(89.0);
-    let dlon = (dlat / lat_max.to_radians().cos()).min(180.0);
+    let dlon = (dlat / lat_max.to_radians().dcos()).min(180.0);
     let e7 = |d: f64| (d / E7).round() as i64;
     let c = |v: i64| v.clamp(-1_800_000_000, 1_800_000_000) as i32;
     [c(b[0] as i64 - e7(dlon)), c(b[1] as i64 - e7(dlat)).max(-850_000_000), c(b[2] as i64 + e7(dlon)), c(b[3] as i64 + e7(dlat)).min(850_000_000)]

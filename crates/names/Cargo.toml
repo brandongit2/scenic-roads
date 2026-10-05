@@ -5,6 +5,7 @@ edition = "2021"
 description = "Display names for the map (main and sub per name, from the translations folder) and the vector-tile rewriting that attaches them"
 
 [dependencies]
+det = { path = "../det" }
 anyhow.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -4,6 +4,7 @@
 //! level covers it, the slope of its own level's terrain. Today's `slope` step does the same over a
 //! region's archive; this makes one z3 pack's z6 tiles at a time from the build's terrain packs.
 
+use det::Det;
 use crate::out::Out;
 use crate::terrain_pack::ManifestTiles;
 use anyhow::Result;
@@ -50,8 +51,8 @@ pub fn slope_tile(terrain: &(dyn Fn(u8, u32, u32) -> Option<Vec<u8>> + Sync), z:
     let mut out = vec![0f32; TS * TS];
     for j in 0..256i32 {
         let yy = (y as f64 + (j as f64 + 0.5) / 256.0) / n as f64;
-        let lat = (std::f64::consts::PI * (1.0 - 2.0 * yy)).sinh().atan();
-        let d = (world * lat.cos() / (256.0 * n as f64)) as f32;
+        let lat = (std::f64::consts::PI * (1.0 - 2.0 * yy)).dsinh().datan();
+        let d = (world * lat.dcos() / (256.0 * n as f64)) as f32;
         for i in 0..256i32 {
             let (a, b, c) = (at(i - 1, j - 1), at(i, j - 1), at(i + 1, j - 1));
             let (dd, f) = (at(i - 1, j), at(i + 1, j));

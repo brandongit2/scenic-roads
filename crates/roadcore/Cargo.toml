@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+det = { path = "../det" }
 anyhow.workspace = true
 memmap2.workspace = true
 bytemuck.workspace = true

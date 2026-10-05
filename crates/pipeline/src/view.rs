@@ -9,6 +9,7 @@
 //! and roadside values are the same and no analysis-grid tile within the far field's reach (2
 //! tiles, more above ~67° where they're narrower) is new.
 
+use det::Det;
 use crate::count_bar;
 use anyhow::Result;
 use rayon::prelude::*;
@@ -131,7 +132,7 @@ pub fn run(dir: &Path) -> Result<()> {
                 // New grid tiles within the far field's 15 km: 2 z11 tiles, more where they're
                 // narrower (above ~67°).
                 let lat = s.lat as f64 * E7;
-                let ring = ((FAR_MAX_M / (TILE_M_EQUATOR * lat.to_radians().cos().max(0.01))).ceil() as i64).max(2);
+                let ring = ((FAR_MAX_M / (TILE_M_EQUATOR * lat.to_radians().dcos().max(0.01))).ceil() as i64).max(2);
                 if !change.near(s.lon as f64 * E7, lat, ring) {
                     if let Some(r) = prev.row(keys[i]) {
                         reused.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -299,7 +300,7 @@ fn sample_metrics(g: &Grids, s: &Sample, near: &[i8], roadside: &[u8]) -> [u8; c
     let mut blocked = 0;
     for a in 0..NEAR_AZ {
         let th = a as f64 * dth;
-        let (ux, uy) = (th.sin(), -th.cos());
+        let (ux, uy) = (th.dsin(), -th.dcos());
         // Landscape sweep (terrain only), 25 m – 3 km.
         let mut d = 25.0;
         while d <= 3000.0 {
@@ -339,7 +340,7 @@ fn sample_metrics(g: &Grids, s: &Sample, near: &[i8], roadside: &[u8]) -> [u8; c
         if tunnel {
             continue;
         }
-        let mut smax = if na == i8::MIN { f64::MIN } else { (na as f64 * 0.5).to_radians().tan() };
+        let mut smax = if na == i8::MIN { f64::MIN } else { (na as f64 * 0.5).to_radians().dtan() };
         let mut far = 0f64;
         let mut d = NEAR_MAX_M;
         while d <= FAR_MAX_M {
@@ -397,7 +398,7 @@ fn vertex_channels(w: &roadcore::WayRec, v: &[[i32; 2]], ss: &[Sample], cs: &[[u
     for j in 1..n {
         let (x0, y0, x1, y1) = (v[j - 1][0] as f64 * E7, v[j - 1][1] as f64 * E7, v[j][0] as f64 * E7, v[j][1] as f64 * E7);
         d[j] = d[j - 1] + dist_m(x0, y0, x1, y1);
-        head[j] = (y1 - y0).atan2((x1 - x0) * y0.to_radians().cos()).to_degrees();
+        head[j] = (y1 - y0).datan2((x1 - x0) * y0.to_radians().dcos()).to_degrees();
     }
     // Turning per vertex, then windowed sum (±250 m) → degrees per km.
     let mut turn = vec![0f64; n];

@@ -6,6 +6,7 @@
 //! coarse levels come from coarser sources and lose peaks). Today's `terrain` step runs this over a
 //! region's archive; `scenic-build terrain` runs it per z6 pack.
 
+use det::Det;
 use roadcore::grid::{decode_terrain_png, encode_terrain_png, repair_terrain};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -121,7 +122,7 @@ pub struct Repaired {
 /// Latitude of a tile's centre.
 pub fn tile_lat(z: u8, ty: u32) -> f64 {
     let y = (ty as f64 + 0.5) / (1u64 << z) as f64;
-    (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees()
+    (std::f64::consts::PI * (1.0 - 2.0 * y)).dsinh().datan().to_degrees()
 }
 
 

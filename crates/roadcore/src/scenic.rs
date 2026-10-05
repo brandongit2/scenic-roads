@@ -10,6 +10,7 @@
 //!   vterrain.i16       drape height per vertex (metres) for 3D rendering: the terrain surface
 //!                      (under bridges too: decks are drawn at max(this, elevation)); tunnels: elevation
 
+use det::Det;
 use bytemuck::{Pod, Zeroable};
 
 pub const SAMPLE_SPACING_M: f64 = 100.0;
@@ -142,17 +143,17 @@ pub fn grade(eye0: f32, off0: f32, eye1: f32, off1: f32) -> f32 {
 /// The trains-a-day component (`FREQ`), and whether it's known.
 pub fn freq_component(f: f32) -> (f32, bool) {
     if f > 0.0 {
-        ((f.max(1.0).log10() / 2.0).clamp(0.0, 1.0), true)
+        ((f.max(1.0).dlog10() / 2.0).clamp(0.0, 1.0), true)
     } else {
         (0.0, false)
     }
 }
 
 pub fn area_u8(km2: f64) -> u8 {
-    let v = (1.0 + km2 / 0.05).ln() / (1.0 + 700.0f64 / 0.05).ln();
+    let v = (1.0 + km2 / 0.05).dln() / (1.0 + 700.0f64 / 0.05).dln();
     (v * 255.0).round().clamp(0.0, 255.0) as u8
 }
 
 pub fn u8_area(v: u8) -> f64 {
-    ((v as f64 / 255.0) * (1.0 + 700.0 / 0.05f64).ln()).exp_m1() * 0.05
+    ((v as f64 / 255.0) * (1.0 + 700.0 / 0.05f64).dln()).dexp_m1() * 0.05
 }

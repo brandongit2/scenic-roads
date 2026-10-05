@@ -6,6 +6,7 @@
 //! (`work/heritage/<d>/areas/6-x-y`, those whose bounding box meets the tile, each line keyed by
 //! its content so an unchanged polygon keeps its place).
 
+use det::Det;
 use crate::coverage::Coverage;
 use crate::out::Out;
 use anyhow::{Context, Result};
@@ -76,7 +77,7 @@ pub fn tiles_geojson(z: u8, tiles: &[(u32, u32)]) -> serde_json::Value {
     done.sort_unstable();
     let n = (1u64 << z) as f64;
     let lon = |t: u32| t as f64 / n * 360.0 - 180.0;
-    let lat = |t: u32| (std::f64::consts::PI * (1.0 - 2.0 * t as f64 / n)).sinh().atan().to_degrees();
+    let lat = |t: u32| (std::f64::consts::PI * (1.0 - 2.0 * t as f64 / n)).dsinh().datan().to_degrees();
     let polys: Vec<serde_json::Value> = done
         .iter()
         .map(|r| {
@@ -254,7 +255,7 @@ mod tests {
         // Every tile's centre inside exactly one rectangle; none outside the tiles.
         let n = 4096.0;
         let lon = |t: f64| t / n * 360.0 - 180.0;
-        let lat = |t: f64| (std::f64::consts::PI * (1.0 - 2.0 * t / n)).sinh().atan().to_degrees();
+        let lat = |t: f64| (std::f64::consts::PI * (1.0 - 2.0 * t / n)).dsinh().datan().to_degrees();
         let count = |x: f64, y: f64| {
             polys
                 .iter()

@@ -3,6 +3,7 @@
 //! rule of the zoomed-out (thinned) tiles. Shared by the build (`convert-legacy-marks`, later the
 //! `marks` job) and the server, which answers the In view statistics from markdata.
 
+use det::Det;
 use anyhow::{bail, ensure, Context, Result};
 use bytemuck::{Pod, Zeroable};
 use std::collections::{BTreeMap, HashMap};
@@ -412,9 +413,9 @@ pub fn assign_ids(src: &[IdSource]) -> Result<Vec<u64>> {
 
 /// Web Mercator in 0–1 (as the app's dot layout: clamped just inside).
 pub fn merc(lon: f64, lat: f64) -> (f64, f64) {
-    let s = (lat * std::f64::consts::PI / 180.0).sin();
+    let s = (lat * std::f64::consts::PI / 180.0).dsin();
     let x = ((lon + 180.0) / 360.0).clamp(0.0, 1.0 - 1e-9);
-    let y = (0.5 - ((1.0 + s) / (1.0 - s)).ln() / (4.0 * std::f64::consts::PI)).clamp(0.0, 1.0 - 1e-9);
+    let y = (0.5 - ((1.0 + s) / (1.0 - s)).dln() / (4.0 * std::f64::consts::PI)).clamp(0.0, 1.0 - 1e-9);
     (x, y)
 }
 

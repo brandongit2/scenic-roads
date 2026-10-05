@@ -17,6 +17,7 @@
 //! id; a cycle from its lowest way id, in that way's direction. Each way gets its road's id (the
 //! road's lowest way id), the road's length, and its offset and direction along it.
 
+use det::Det;
 use rayon::prelude::*;
 use roadcore::{dist_m, E7};
 
@@ -65,9 +66,9 @@ pub struct RoadVal {
 /// Heading from vertex a to vertex b (as `elev::heading`).
 pub fn heading(a: [i32; 2], b: [i32; 2]) -> f32 {
     let lat = a[1] as f64 * E7;
-    let dx = (b[0] - a[0]) as f64 * lat.to_radians().cos();
+    let dx = (b[0] - a[0]) as f64 * lat.to_radians().dcos();
     let dy = (b[1] - a[1]) as f64;
-    dy.atan2(dx) as f32
+    dy.datan2(dx) as f32
 }
 
 /// The chaining's view of a polyline: its ends, the headings leaving them, and its length.
@@ -344,7 +345,7 @@ mod tests {
     /// A way along points given in metres east/north of 45° N 0° E.
     fn way(id: u64, pts: &[(f64, f64)], name: u32, refs: (u32, u16), class: u8, oneway: bool) -> Link {
         let m = 1e7 / 111_320.0;
-        let v: Vec<[i32; 2]> = pts.iter().map(|&(x, y)| [(x * m / (45f64).to_radians().cos()).round() as i32, (450_000_000.0 + y * m).round() as i32]).collect();
+        let v: Vec<[i32; 2]> = pts.iter().map(|&(x, y)| [(x * m / (45f64).to_radians().dcos()).round() as i32, (450_000_000.0 + y * m).round() as i32]).collect();
         let (ends, heading, len) = shape(&v);
         Link { id, kind: KIND_ROAD, class, oneway, name, refs_at: refs.0, refs_len: refs.1, ends, heading, len }
     }

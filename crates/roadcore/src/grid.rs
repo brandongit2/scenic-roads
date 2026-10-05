@@ -8,6 +8,7 @@
 //!
 //! Global cell coordinates are `tile * 256 + pixel` at zoom 11.
 
+use det::Det;
 use anyhow::{bail, Result};
 use crate::Mmap;
 use std::path::Path;
@@ -132,7 +133,7 @@ pub fn cell_of(lon: f64, lat: f64) -> (f64, f64) {
 /// Metres per z11 cell at a latitude.
 #[inline]
 pub fn cell_m(lat: f64) -> f64 {
-    40_075_016.686 * lat.to_radians().cos() / WORLD
+    40_075_016.686 * lat.to_radians().dcos() / WORLD
 }
 
 /// Decode a Terrarium-encoded RGB(A) buffer into metres.
@@ -230,7 +231,7 @@ pub fn repair_terrain(t: &mut [f32], z: u8, lat: f64) -> (usize, usize) {
             }
         }
     }
-    let px_m = 40_075_016.7 * lat.to_radians().cos() / ((1u64 << z) as f64 * w as f64);
+    let px_m = 40_075_016.7 * lat.to_radians().dcos() / ((1u64 << z) as f64 * w as f64);
     let mut clamped = 0;
     // Spikes over flatter ground (the ring: pixels two to three out).
     let rise = (0.5 * px_m).max(100.0) as f32;

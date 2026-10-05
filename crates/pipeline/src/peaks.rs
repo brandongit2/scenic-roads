@@ -28,6 +28,7 @@
 //! (lower bound), c ([lon, lat] of the col), ce (col m), iso (km), il (lower bound), hi ([lon, lat]
 //! of the nearest higher ground)}.
 
+use det::Det;
 pub mod unit;
 
 use rayon::prelude::*;
@@ -88,7 +89,7 @@ impl Overlay {
 
 /// Clamp single-pixel spikes and pits (interior pixels) to their neighbours.
 pub(crate) fn despike(t: &mut [f32], z: u8, lat: f64) {
-    let px_m = 40_075_016.7 * lat.to_radians().cos() / ((1u64 << z) as f64 * TS as f64);
+    let px_m = 40_075_016.7 * lat.to_radians().dcos() / ((1u64 << z) as f64 * TS as f64);
     let thr = (1.2 * px_m).max(150.0) as f32;
     let src = t.to_vec();
     let w = TS as usize;
@@ -113,7 +114,7 @@ pub(crate) fn despike(t: &mut [f32], z: u8, lat: f64) {
 /// Latitude of a tile's centre.
 pub(crate) fn tile_lat(z: u8, ty: u32) -> f64 {
     let y = (ty as f64 + 0.5) / (1u64 << z) as f64;
-    (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees()
+    (std::f64::consts::PI * (1.0 - 2.0 * y)).dsinh().datan().to_degrees()
 }
 
 /// Pixel grid at one zoom: global pixel coordinates, tiles decoded on demand (with ancestors
@@ -169,7 +170,7 @@ impl<'a> Dem<'a> {
     fn lonlat(&self, gx: i64, gy: i64) -> [f64; 2] {
         let w = (1i64 << self.z) as f64 * TS as f64;
         let (x, y) = ((gx as f64 + 0.5) / w, (gy as f64 + 0.5) / w);
-        let lat = (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees();
+        let lat = (std::f64::consts::PI * (1.0 - 2.0 * y)).dsinh().datan().to_degrees();
         [x * 360.0 - 180.0, lat]
     }
 }

@@ -9,6 +9,7 @@
 //! order; a stop takes the largest spacing of the lines calling there and that line's service
 //! group. Read from the OSM pass's `rail` set, worldwide.
 
+use det::Det;
 use anyhow::{Context, Result};
 use osmpbf::{Element, ElementReader};
 use std::collections::{HashMap, HashSet};
@@ -61,8 +62,8 @@ pub fn group(t: &HashMap<String, String>) -> Option<u8> {
 /// Great-circle distance (m), as stations.py's.
 pub fn dist(a: (f64, f64), b: (f64, f64)) -> f64 {
     let (la1, la2) = (a.1.to_radians(), b.1.to_radians());
-    let h = ((la2 - la1) / 2.0).sin().powi(2) + la1.cos() * la2.cos() * ((b.0 - a.0).to_radians() / 2.0).sin().powi(2);
-    12_742_000.0 * h.sqrt().min(1.0).asin()
+    let h = ((la2 - la1) / 2.0).dsin().powi(2) + la1.dcos() * la2.dcos() * ((b.0 - a.0).to_radians() / 2.0).dsin().powi(2);
+    12_742_000.0 * h.sqrt().min(1.0).dasin()
 }
 
 /// A name for merging: lowercase, without words like "station" and punctuation.
@@ -119,7 +120,7 @@ pub struct Stop {
 impl Stop {
     /// The zoom from which its spacing spans one pixel (512 px tiles).
     pub fn mz(&self) -> f64 {
-        (40_075_016.7 * self.lat.to_radians().cos() / (512.0 * self.spacing)).log2()
+        (40_075_016.7 * self.lat.to_radians().dcos() / (512.0 * self.spacing)).dlog2()
     }
 }
 

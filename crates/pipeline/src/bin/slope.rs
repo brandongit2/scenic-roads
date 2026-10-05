@@ -26,6 +26,7 @@
 //! Built depth first (build), so memory stays at a few hundred megabytes: level by level, every
 //! tile's quarters waited for the level above (some 28 GB at z11, swapped out until the disk filled).
 
+use det::Det;
 use anyhow::Result;
 use pipeline::count_bar;
 use rayon::prelude::*;
@@ -72,8 +73,8 @@ fn slope_tile(arc: &Archive, z: u8, x: u32, y: u32) -> Option<Vec<f32>> {
     let mut out = vec![0f32; TS * TS];
     for j in 0..256i32 {
         let yy = (y as f64 + (j as f64 + 0.5) / 256.0) / n as f64;
-        let lat = (std::f64::consts::PI * (1.0 - 2.0 * yy)).sinh().atan();
-        let d = (world * lat.cos() / (256.0 * n as f64)) as f32;
+        let lat = (std::f64::consts::PI * (1.0 - 2.0 * yy)).dsinh().datan();
+        let d = (world * lat.dcos() / (256.0 * n as f64)) as f32;
         for i in 0..256i32 {
             let (a, b, c) = (at(i - 1, j - 1), at(i, j - 1), at(i + 1, j - 1));
             let (dd, f) = (at(i - 1, j), at(i + 1, j));

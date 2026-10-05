@@ -14,6 +14,7 @@
 //!   great-circle lower bound, x wrapping at the antimeridian; nothing higher within 5,000 km is a
 //!   lower bound of 5,000 km.
 
+use det::Det;
 use super::{despike, round5, tile_lat, Out, Overlay, COARSE_MAX, FINE_MAX, ISO_FINE_KM, TS};
 use crate::summits::Summit;
 use crate::terrain_z8::Z8;
@@ -38,15 +39,15 @@ pub fn gc_m(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> f64 {
     let k = std::f64::consts::PI / 180.0;
     let (p1, p2) = (lat1 * k, lat2 * k);
     let (dp, dl) = (p2 - p1, (lon2 - lon1) * k);
-    let a = (dp / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dl / 2.0).sin().powi(2);
-    2.0 * EARTH_R * a.sqrt().min(1.0).asin()
+    let a = (dp / 2.0).dsin().powi(2) + p1.dcos() * p2.dcos() * (dl / 2.0).dsin().powi(2);
+    2.0 * EARTH_R * a.sqrt().min(1.0).dasin()
 }
 
 /// The great-circle distance (m) from (lon, lat) to the nearest point of tile z/x/y.
 pub fn tile_lower_bound_m(lon: f64, lat: f64, z: u8, tx: u32, ty: u32) -> f64 {
     let n = (1u64 << z) as f64;
     let (lon0, lon1) = (tx as f64 / n * 360.0 - 180.0, (tx + 1) as f64 / n * 360.0 - 180.0);
-    let lat_of = |t: f64| (std::f64::consts::PI * (1.0 - 2.0 * t / n)).sinh().atan().to_degrees();
+    let lat_of = |t: f64| (std::f64::consts::PI * (1.0 - 2.0 * t / n)).dsinh().datan().to_degrees();
     let (lat_n, lat_s) = (lat_of(ty as f64), lat_of(ty as f64 + 1.0));
     // Longitude offset from the tile's west edge, wrapped into [0, 360).
     let off = (lon - lon0).rem_euclid(360.0);
@@ -63,8 +64,8 @@ pub fn tile_lower_bound_m(lon: f64, lat: f64, z: u8, tx: u32, ty: u32) -> f64 {
     // The meridians: the foot of the perpendicular, clamped to the edge.
     let k = std::f64::consts::PI / 180.0;
     for me in [lon0, lon1] {
-        let (a, b) = ((lat * k).sin(), (lat * k).cos() * ((lon - me) * k).cos());
-        let f = a.atan2(b).clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2) / k;
+        let (a, b) = ((lat * k).dsin(), (lat * k).dcos() * ((lon - me) * k).dcos());
+        let f = a.datan2(b).clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2) / k;
         best = best.min(gc_m(lon, lat, me, f.clamp(lat_s, lat_n)));
     }
     best
@@ -155,7 +156,7 @@ pub fn tiles_wanted(points: &[(f64, f64)], km: f64) -> BTreeSet<(u32, u32)> {
     let mut want = BTreeSet::new();
     for &(lon, lat) in points {
         let dlat = km / 110.0 + 0.01;
-        let dlon = km / (111.0 * (lat.abs() + dlat).min(85.0).to_radians().cos()) + 0.01;
+        let dlon = km / (111.0 * (lat.abs() + dlat).min(85.0).to_radians().dcos()) + 0.01;
         let t = |lon: f64, lat: f64| {
             let (x, y) = merc(lon, lat.clamp(-85.05, 85.05));
             ((x * n as f64).floor() as i64, (y * n as f64).floor().clamp(0.0, (n - 1) as f64) as i64)
@@ -307,7 +308,7 @@ impl<'a> UDem<'a> {
 fn lonlat_at(w: i64, gx: i64, gy: i64) -> [f64; 2] {
     let wf = w as f64;
     let (x, y) = ((gx.rem_euclid(w) as f64 + 0.5) / wf, (gy as f64 + 0.5) / wf);
-    let lat = (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees();
+    let lat = (std::f64::consts::PI * (1.0 - 2.0 * y)).dsinh().datan().to_degrees();
     [x * 360.0 - 180.0, lat]
 }
 
@@ -460,7 +461,7 @@ pub fn run(peaks: &[UnitPeak], summits: &[Summit], base8: &Z8Base, z12: &UnitZ12
     let within = |lon: i32, lat: i32, km: f64| -> Vec<u32> {
         let (la, lo) = (lat as f64 * 1e-7, lon as f64 * 1e-7);
         let dlat = km / 110.0 + 0.01;
-        let dlon = km / (111.0 * (la.abs() + dlat).min(89.0).to_radians().cos()) + 0.01;
+        let dlon = km / (111.0 * (la.abs() + dlat).min(89.0).to_radians().dcos()) + 0.01;
         let c = |v: f64| (v * 10.0).floor() as i32;
         let mut out = Vec::new();
         for cx in c(lo - dlon)..=c(lo + dlon) {
@@ -726,7 +727,7 @@ mod tests {
         assert!(tile_lower_bound_m(8.0, 46.0, 8, 133, 90) > 0.0);
         // A tile due north: the distance to its southern edge along the meridian.
         let n = (1u64 << 8) as f64;
-        let lat_s = (std::f64::consts::PI * (1.0 - 2.0 * 90.0 / n)).sinh().atan().to_degrees();
+        let lat_s = (std::f64::consts::PI * (1.0 - 2.0 * 90.0 / n)).dsinh().datan().to_degrees();
         let lb = tile_lower_bound_m(8.0, 40.0, 8, 133, 89);
         assert!((lb - gc_m(8.0, 40.0, 8.0, lat_s)).abs() < 1.0, "{lb}");
         // Across the antimeridian: the tile just east of 180° from a point at 179.9° E is close.
@@ -741,7 +742,7 @@ mod tests {
                         for j in 0..=8 {
                             let x = (tx as f64 + i as f64 / 8.0) / n;
                             let y = (ty as f64 + j as f64 / 8.0) / n;
-                            let plat = (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees();
+                            let plat = (std::f64::consts::PI * (1.0 - 2.0 * y)).dsinh().datan().to_degrees();
                             let d = gc_m(lon, lat, x * 360.0 - 180.0, plat);
                             assert!(lb <= d + 1e-6, "{lon},{lat} tile {tx}/{ty}: bound {lb} > {d}");
                         }
