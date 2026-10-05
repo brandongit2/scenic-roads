@@ -174,6 +174,9 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 - **End to end (2026-10-04):** the coordinator offered 6/20/22's view, buildings and flags to the
   page in the app's browser, which ran them in 16 s at 1,603 MB; the build Mac's own run of them gave
   the same bytes.
+- **The canopy step in bands (2026-10-05):** it reads only the strips and columns each band of 1,024
+  rows needs: 3.4 GB → 0.55 GB natively and 3.5 → 0.55 GB in WebAssembly on 6/20/22, the same bytes
+  (bands down to 5 rows, across 10° boundaries).
 
 ## 11. Steps
 
@@ -182,8 +185,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
    group commits, dataset indexes, latency pacing *planned.*
 3. **The M1 through HTTP leases.** *Done;* claims and NAS hand-off files kept one release for a
    helper on an older app, then retired.
-4. **Units fan out:** a unit's last steps to any worker. *Done;* sample ranges, chunked canopy,
-   ranged reads *planned.*
+4. **Units fan out:** a unit's last steps to any worker; the canopy step in bands. *Done;* sample
+   ranges, ranged reads *planned.*
 5. **Browsers:** the page, imported-memory ceilings, ramped verification. *Done;* HTTPS through
    Tailscale and OPFS *planned.*
 6. **The Python steps in Rust:** *done* (the same bytes; the units run them); then more kinds of
