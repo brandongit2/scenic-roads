@@ -152,9 +152,13 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 ## 9. Security
 
 - **Built:** the coordinator answers this Mac, its LAN and the tailnet only; every request but the
-  page's carries the token (128 random bits, kept on the build Mac and in the contact on the NAS); a
-  running job's requests come from this Mac only; a worker is served only the files of the task it
-  holds, and uploads only into that task's folder; request bodies are capped.
+  page's carries the workers' token (128 random bits, kept on the build Mac and in the contact on
+  the NAS); a running job's requests (offering tasks) carry the agent's own token, never published,
+  and come from this Mac only; a worker is served only the files of the task it holds, and uploads
+  only into that task's folder; request bodies are capped, every request is bounded in time (a
+  stalled one holds a task of the coordinator's runtime, not a thread); a hand-off may change only
+  the files a unit job saves for its lease's units, each to a content name of that file; lease ids
+  are never given twice, across restarts too.
 - **Planned:** per-device credentials that can be revoked, exchanged for a pairing token.
 - Licensed data on the owner's own devices isn't redistribution (plan §3, sources' terms).
 

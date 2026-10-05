@@ -44,6 +44,18 @@ struct Status: Decodable {
     let checklist: [Step]?
     /// Other Macs helping, building units (agents from 2026-10-04 on).
     let helpers: [Helper]?
+    /// Every worker the coordinator heard from lately: helpers and web pages (agents from 2026-10-05 on).
+    let workers: [Worker]?
+}
+
+/// A worker, as the build Mac's coordinator knows it (docs/workers.md).
+struct Worker: Decodable {
+    let name: String
+    let label: String
+    let kind: String
+    let what: String
+    let done: Int
+    let bad: Bool
 }
 
 /// A helper on another Mac, as the main agent last read its status.
@@ -240,6 +252,11 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
             out.append(Line(text: t, style: .bar, fraction: frac))
         }
         if let p = j.paused { out.append(Line(text: "\(h.host): \(p)", style: .small)) }
+    }
+    // Web pages working for the build (the helpers are above).
+    for w in (s.workers ?? []) where w.kind == "web" {
+        let done = w.done > 0 ? " · \(w.done) done" : ""
+        out.append(Line(text: w.bad ? "\(w.label): stopped (a result differed)" : "\(w.label): \(clip(w.what, 60))\(done)", style: .small))
     }
     let power = s.conditions.ac ? "Mains power" : "Battery\(s.conditions.battery.map { " \($0)%" } ?? "")"
     out.append(Line(text: "\(power) · NAS \(!s.conditions.nas ? "not reachable" : s.conditions.home == false ? "through Tailscale" : "reachable")", style: .small))
@@ -452,7 +469,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let map = NSMenuItem(title: "Open the Map", action: #selector(openMap), keyEquivalent: "")
         map.target = self
         m.addItem(map)
+        // The worker page's address, with its token (the build Mac's agent writes it, private to this
+        // user): pasted on another device (Universal Clipboard), its browser joins the build.
+        if let page = try? String(contentsOf: home.appendingPathComponent("agent/coord/page"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !page.isEmpty {
+            let it = NSMenuItem(title: "Copy the Worker Page's Address", action: #selector(copyPage), keyEquivalent: "")
+            it.target = self
+            it.representedObject = page
+            m.addItem(it)
+        }
         return m
+    }
+
+    @objc func copyPage(_ sender: NSMenuItem) {
+        guard let page = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(page, forType: .string)
     }
 
     @objc func openLog(_ sender: NSMenuItem) {

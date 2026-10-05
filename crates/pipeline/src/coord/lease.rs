@@ -71,11 +71,13 @@ impl Leases {
     }
 
     /// The leases saved at `path` (none when there's no file), each live for a whole `ttl` from
-    /// `now`: their workers beat again once they reach this process.
+    /// `now`: their workers beat again once they reach this process. Ids go on from the last given,
+    /// and never from below the time in milliseconds, so none is given twice even if the file is lost.
     pub fn load(path: &Path, ttl: Duration, now: Instant) -> Leases {
         let mut l = Leases::new(ttl);
+        l.next = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64);
         if let Some(s) = std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<Saved>(&b).ok()) {
-            l.next = s.next.max(1);
+            l.next = l.next.max(s.next);
             for mut x in s.leases {
                 (x.granted, x.deadline) = (now, now + ttl);
                 l.by_id.insert(x.id, x);

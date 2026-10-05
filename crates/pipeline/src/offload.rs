@@ -261,7 +261,10 @@ fn take(st: &serde_json::Value, dir: &Path) -> Result<()> {
         let path = o["path"].as_str().unwrap_or("");
         let dst = place(dir, path).with_context(|| format!("a worker wrote {path}, outside the unit's folder"))?;
         std::fs::create_dir_all(dst.parent().unwrap())?;
-        std::fs::rename(out.join(path), &dst).with_context(|| format!("take {path}"))?;
+        // (The coordinator's folder is on the same disk as the job's: a rename; else a copy.)
+        if std::fs::rename(out.join(path), &dst).is_err() {
+            std::fs::copy(out.join(path), &dst).with_context(|| format!("take {path}"))?;
+        }
     }
     for r in st["removed"].as_array().into_iter().flatten() {
         if let Some(p) = r.as_str().and_then(|p| place(dir, p)) {
@@ -306,7 +309,7 @@ mod tests {
         std::fs::set_permissions(bin.join("step"), std::fs::Permissions::from_mode(0o755)).unwrap();
         let runs = vec![Run { what: "a step".into(), prog: "step".into(), args: vec!["{dir}".into()], env: vec![], reads: vec!["{dir}/in.bin".into(), "{dir}/gone.bin".into()] }];
         let url = format!("http://127.0.0.1:{port}");
-        let o = Offload { client: Client::at(vec![url.clone()], c.contact.token.clone(), "job"), owner: 1, version: "v".into(), dir: d.path().join("tasks") };
+        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.path().join("tasks") };
         let u = Unit::parse("6/1/1").unwrap();
         let t = o.offer(u, &dir, None, &runs).unwrap();
         // The M1: asks, runs it natively, hands it back.

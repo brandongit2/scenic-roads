@@ -75,12 +75,14 @@ const CAP = (() => {
   return 128;
 })();
 let ceiling = Math.min(CAP, store.get("ceiling", navigator.deviceMemory ? navigator.deviceMemory * 256 : 1024));
-const running = store.get("running", null);
-if (running) {
-  // The last page died holding a task: the tab used more than this browser allows.
-  ceiling = Math.max(256, Math.min(ceiling, Math.floor(running.mem_mb * 0.7)));
+// The tasks the last page held when it died, if it did: together they took more than this browser
+// lets a tab have.
+const died = [].concat(store.get("running", null) || []);
+if (died.length) {
+  const total = died.reduce((a, t) => a + (t.mem_mb || 0), 0);
+  ceiling = Math.max(256, Math.min(ceiling, Math.floor(total * 0.7)));
   store.set("ceiling", ceiling);
-  log(`<span class="bad">The last page died running a task of ${running.mem_mb} MB: taking on at most ${ceiling} MB now.</span>`);
+  log(`<span class="bad">The last page died running ${died.length > 1 ? `${died.length} tasks` : "a task"} of ${total} MB: taking on at most ${ceiling} MB now.</span>`);
 }
 store.set("running", null);
 let nearMisses = store.get("near", 0);
@@ -93,7 +95,7 @@ async function call(path, body) {
   if (!r.ok && r.status !== 410) throw new Error(`${path}: ${r.status} ${text.slice(0, 200)}`);
   return [r.status, text ? JSON.parse(text) : null];
 }
-if (running) call("/work/fail", { worker, lease: running.lease, error: "the page died running it", oom_mb: running.mem_mb }).catch(() => {});
+for (const t of died) call("/work/fail", { worker, lease: t.lease, error: "the page died running it", oom_mb: t.mem_mb }).catch(() => {});
 
 function log(html) {
   const el = $("log");
@@ -142,10 +144,11 @@ function show() {
   }
 }
 
-// What tasks have reached when the tab died: kept so the next page can lower its ceiling.
+// The tasks running now, kept so a page loaded after this one dies can give them back and lower
+// its ceiling.
 function remember() {
   const r = slots.filter((s) => s.lease).map((s) => ({ lease: s.lease, mem_mb: s.mem }));
-  store.set("running", r.length ? { lease: r[0].lease, mem_mb: r.reduce((a, b) => a + b.mem_mb, 0) } : null);
+  store.set("running", r.length ? r : null);
 }
 
 function onSlot(s, m) {

@@ -424,7 +424,8 @@ impl Agent {
                     let d = crate::coord::Done { lease, outputs: serde_json::from_value(t["outputs"].clone())?, removed: serde_json::from_value(t["removed"].clone())?, secs: t["secs"].as_f64().unwrap_or(0.0), peak_mb: t["peak_mb"].as_u64().unwrap_or(0), ..Default::default() };
                     return client.done(&d);
                 }
-                let saves = match result.as_ref().filter(|r| r["ok"].as_bool() == Some(true)) {
+                // (A unit job's has its done record; one without, a task's cut short, went wrong.)
+                let saves = match result.as_ref().filter(|r| r["ok"].as_bool() == Some(true) && !r["done"].is_null()) {
                     Some(_) => crate::handoff::written_in(&d)?,
                     None => None,
                 };
@@ -440,6 +441,7 @@ impl Agent {
                     }
                     _ => {
                         let why = match &result {
+                            Some(r) if r["ok"].as_bool() == Some(true) && r["done"].is_null() => "it ended without a result".to_string(),
                             Some(r) if r["ok"].as_bool() == Some(true) => "one of its saves is damaged".to_string(),
                             Some(r) => r["error"].as_str().unwrap_or("it failed").to_string(),
                             None => "the helper's agent stopped while it ran".to_string(),
@@ -1080,7 +1082,7 @@ impl Agent {
             env.push(("SCENIC_COSTS".into(), self.o.home.join("costs.jsonl").to_string_lossy().into_owned()));
             if let Some(c) = &self.coord {
                 env.push(("SCENIC_COORD".into(), format!("http://127.0.0.1:{}", crate::coord::PORT)));
-                env.push(("SCENIC_COORD_TOKEN".into(), c.contact.token.clone()));
+                env.push(("SCENIC_COORD_TOKEN".into(), c.job_token.clone()));
             }
         }
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();

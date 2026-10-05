@@ -155,6 +155,8 @@ impl Shared {
 pub struct Coordinator {
     pub shared: Arc<Mutex<Shared>>,
     pub contact: Contact,
+    /// What this agent's jobs carry to offer tasks (`/task/…`), never published.
+    pub job_token: String,
     /// This Mac's name: its own jobs' leases are held under it.
     me: String,
 }
@@ -259,8 +261,20 @@ impl Coordinator {
         let shared = Shared { leases, pass: String::new(), units: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, dir: dir.to_path_buf() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
-        let urls = http::serve(port, http::Ctx { shared: shared.clone(), token: token.clone(), journal: dir.join("journal"), wasm })?;
-        Ok(Coordinator { shared, contact: Contact { urls, token }, me: me.to_string() })
+        // This agent's jobs' own token (they offer tasks): never published, and gone with them.
+        let job_token = http::random()?;
+        let urls = http::serve(port, http::Ctx { shared: shared.clone(), token: token.clone(), job_token: job_token.clone(), journal: dir.join("journal"), wasm })?;
+        // The worker page's address, with its token, for this Mac's status bar (tools/status): private
+        // to this user, like the token.
+        if let Some(u) = urls.first() {
+            let page = dir.join("page");
+            if crate::whole::write(&page, format!("{u}/work/#k={token}\n").as_bytes()).is_ok() {
+                if let Ok(f) = std::fs::File::open(&page) {
+                    store::sys::set_mode(&f, 0o600).ok();
+                }
+            }
+        }
+        Ok(Coordinator { shared, contact: Contact { urls, token }, job_token, me: me.to_string() })
     }
 
     /// Where the hand-offs it took are journaled (a folder per worker), for the agent to merge.
@@ -384,21 +398,36 @@ pub fn folder(w: &str) -> String {
     w.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
 
-/// A job's hand-off, when it's its lease's: its done record is the lease's, and every file it saves
-/// is one of the lease's units' (each unit's names end with its tile: `base/6-31-20`,
-/// `layers/grid-canopy/hi/6-31-20`).
+/// A job's hand-off, when it's its lease's: its done record is the lease's, every change is to one
+/// of the files a unit job saves for one of the lease's units (its base pack, road values, roads'
+/// English, and the grids its packs lacked), each a content name of that file, and every upload it
+/// says it checked is one of its own.
 #[cfg(not(target_os = "wasi"))]
 fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Result<()> {
     match &h.done {
         Some((s, ts)) => anyhow::ensure!(s == step && ts == targets, "its done record isn't its lease's"),
         None => anyhow::bail!("no done record"),
     }
-    let tails: Vec<String> = targets.iter().map(|t| format!("/{}", t.0.replace('/', "-"))).collect();
-    for l in h.changes.keys() {
-        anyhow::ensure!(tails.iter().any(|t| l.ends_with(t.as_str())), "{l} isn't one of its units' files");
+    anyhow::ensure!(step == "unit", "hand-offs are for units");
+    let mine: BTreeSet<String> = targets
+        .iter()
+        .flat_map(|(t, _)| {
+            let d = t.replace('/', "-");
+            ["base", "global/roads", "global/roaden", "layers/grid-class/hi", "layers/grid-canopy/hi", "layers/grid-cover/hi"].map(|p| format!("{p}/{d}"))
+        })
+        .collect();
+    for (l, v) in &h.changes {
+        anyhow::ensure!(mine.contains(l), "{l} isn't one of its units' files");
+        if let Some(c) = v {
+            anyhow::ensure!(store::naming::parse_content_name(c).is_some_and(|n| n.logical == l), "{c} isn't a content name of {l}");
+        }
     }
+    let saved: BTreeSet<&String> = h.changes.values().flatten().collect();
     for c in h.pending.keys() {
-        anyhow::ensure!(h.changes.keys().any(|l| c.starts_with(&format!("{l}."))), "{c} isn't one of its saves");
+        anyhow::ensure!(saved.contains(c), "{c} isn't one of its saves");
+    }
+    for c in &h.checked {
+        anyhow::ensure!(h.pending.contains_key(c), "{c} isn't one of its uploads");
     }
     Ok(())
 }
@@ -431,6 +460,8 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             }
             if let Some(id) = s.tasks.pick(&a.worker, &a.can, a.mem_mb) {
                 let lease = s.leases.grant(&a.worker, Work::Task { id }, now);
+                // (Its id taken for good: kept, so no lease after a restart has it.)
+                s.save_leases();
                 let t = s.tasks.by_id.get_mut(&id).unwrap();
                 t.state = task::State::Leased { lease, worker: a.worker.clone() };
                 let g = Grant { lease, ttl_s: TTL.as_secs(), work: Granted::Task { id, task: t.spec.clone(), mem_mb: t.mem_mb } };
@@ -582,15 +613,21 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
     }
 }
 
-/// The HTTP side (not in WebAssembly).
+/// The HTTP side (not in WebAssembly): axum, on a runtime of its own. Every request is bounded in
+/// time and size, a slow or stalled one holds a task (not a thread), and files stream both ways.
 #[cfg(not(target_os = "wasi"))]
 mod http {
     use super::*;
     use anyhow::Context;
-    use std::io::{Read, Seek, SeekFrom};
-    use std::net::IpAddr;
-
-    type Resp = tiny_http::Response<Box<dyn Read + Send>>;
+    use axum::body::Body;
+    use axum::extract::{ConnectInfo, Path as Url, Request, State};
+    use axum::http::{header, HeaderMap, Method, StatusCode};
+    use axum::middleware::Next;
+    use axum::response::{IntoResponse, Response};
+    use axum::routing::{any, get, put};
+    use axum::{Json, Router};
+    use std::net::{IpAddr, SocketAddr};
+    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
     /// The web worker page (docs/workers.md §7), built in: (path under /work/, type, contents).
     const PAGE: &[(&str, &str, &str)] = &[
@@ -608,17 +645,30 @@ mod http {
         ("vendor/browser_wasi_shim/strace.js", "text/javascript", include_str!("../../../../web/work/vendor/browser_wasi_shim/strace.js")),
     ];
     /// The largest JSON body taken, and the largest upload.
-    const JSON_MAX: u64 = 16 << 20;
+    const JSON_MAX: usize = 16 << 20;
     const UPLOAD_MAX: u64 = 8 << 30;
+    /// The longest a request may take, its body's transfer included.
+    const REQUEST_MAX: Duration = Duration::from_secs(30 * 60);
 
+    #[derive(Clone)]
     pub struct Ctx {
         pub shared: Arc<Mutex<Shared>>,
+        /// What workers carry, and what this agent's jobs carry.
         pub token: String,
+        pub job_token: String,
         pub journal: PathBuf,
         pub wasm: Option<PathBuf>,
     }
 
-    /// The token: made once (128 random bits) and kept, so workers keep theirs across restarts.
+    /// 128 random bits as hex.
+    pub fn random() -> Result<String> {
+        use std::io::Read;
+        let mut b = [0u8; 16];
+        std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).context("read /dev/urandom")?;
+        Ok(b.iter().map(|x| format!("{x:02x}")).collect())
+    }
+
+    /// The workers' token: made once and kept, so workers keep theirs across restarts.
     pub fn token(dir: &Path) -> Result<String> {
         let p = dir.join("token");
         if let Ok(t) = std::fs::read_to_string(&p) {
@@ -626,9 +676,7 @@ mod http {
                 return Ok(t.trim().to_string());
             }
         }
-        let mut b = [0u8; 16];
-        std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut b)).context("read /dev/urandom")?;
-        let t: String = b.iter().map(|x| format!("{x:02x}")).collect();
+        let t = random()?;
         crate::whole::write(&p, t.as_bytes())?;
         if let Ok(f) = std::fs::File::open(&p) {
             store::sys::set_mode(&f, 0o600).ok();
@@ -644,6 +692,13 @@ mod http {
                 Some(v4) => allowed(IpAddr::V4(v4)),
                 None => v.is_loopback() || (v.segments()[0] & 0xfe00) == 0xfc00 || (v.segments()[0] & 0xffc0) == 0xfe80,
             },
+        }
+    }
+
+    fn loopback(ip: IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(v) => v.is_loopback(),
+            IpAddr::V6(v) => v.is_loopback() || v.to_ipv4_mapped().is_some_and(|v| v.is_loopback()),
         }
     }
 
@@ -664,129 +719,180 @@ mod http {
         out
     }
 
-    /// Listens on `port` with eight threads; this Mac's addresses for workers.
+    /// Listens on `port`, on a runtime of its own; this Mac's addresses for workers.
     pub fn serve(port: u16, ctx: Ctx) -> Result<Vec<String>> {
-        let server = Arc::new(tiny_http::Server::http(("0.0.0.0", port)).map_err(|e| anyhow::anyhow!("listen on port {port}: {e}"))?);
-        let ctx = Arc::new(ctx);
-        for _ in 0..8 {
-            let (server, ctx) = (server.clone(), ctx.clone());
-            std::thread::Builder::new().name("coordinator".into()).spawn(move || {
-                while let Ok(mut req) = server.recv() {
-                    let resp = handle(&mut req, &ctx).unwrap_or_else(|e| reply(400, "application/json", serde_json::json!({ "error": format!("{e:#}") }).to_string().into_bytes()));
-                    req.respond(resp).ok();
+        let listener = std::net::TcpListener::bind(("0.0.0.0", port)).with_context(|| format!("listen on port {port}"))?;
+        listener.set_nonblocking(true)?;
+        let app = Router::new()
+            .route("/work", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/work/")]) }))
+            .route("/work/{*file}", get(page))
+            .route("/work/ask", any(json))
+            .route("/work/beat", any(json))
+            .route("/work/done", any(json))
+            .route("/work/fail", any(json))
+            .route("/work/status", any(json))
+            .route("/work/in/{lease}/{*path}", get(input))
+            .route("/work/out/{lease}/{*path}", put(output))
+            .route("/work/prog/{name}", get(prog))
+            .route("/task/{*rest}", any(json))
+            .layer(axum::middleware::from_fn_with_state(ctx.clone(), gate))
+            .layer(tower_http::timeout::TimeoutLayer::with_status_code(StatusCode::REQUEST_TIMEOUT, REQUEST_MAX))
+            .with_state(ctx);
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(4).thread_name("coordinator").enable_all().build()?;
+        std::thread::Builder::new().name("coordinator".into()).spawn(move || {
+            rt.block_on(async move {
+                match tokio::net::TcpListener::from_std(listener) {
+                    Ok(l) => {
+                        if let Err(e) = axum::serve(l, app.into_make_service_with_connect_info::<SocketAddr>()).await {
+                            eprintln!("coordinator: stopped answering: {e}");
+                        }
+                    }
+                    Err(e) => eprintln!("coordinator: its socket: {e}"),
                 }
-            })?;
-        }
+            });
+        })?;
         Ok(urls(port))
     }
 
-    fn header(k: &str, v: &str) -> tiny_http::Header {
-        tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap()
+    fn error(code: StatusCode, why: impl std::fmt::Display) -> Response {
+        (code, [(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "error": why.to_string() }))).into_response()
     }
 
-    fn reply(code: u16, ctype: &str, data: Vec<u8>) -> Resp {
-        let n = data.len();
-        tiny_http::Response::new(tiny_http::StatusCode(code), vec![header("Content-Type", ctype), header("Cache-Control", "no-store")], Box::new(std::io::Cursor::new(data)), Some(n), None)
+    /// Who may ask what: this Mac, its LAN and the tailnet only; the page without a token, workers'
+    /// requests with theirs, a job's (`/task/…`) with its own and from this Mac only.
+    async fn gate(State(c): State<Ctx>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request, next: Next) -> Response {
+        let ip = peer.ip();
+        if !allowed(ip) {
+            return error(StatusCode::FORBIDDEN, "not from here");
+        }
+        let path = req.uri().path();
+        let is_page = req.method() == Method::GET && (path == "/work" || path.strip_prefix("/work/").is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p)));
+        if is_page {
+            return next.run(req).await;
+        }
+        let job = path.starts_with("/task/");
+        let want = format!("Bearer {}", if job { &c.job_token } else { &c.token });
+        if req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) != Some(want.as_str()) {
+            return error(StatusCode::UNAUTHORIZED, "no or wrong token");
+        }
+        if job && !loopback(ip) {
+            return error(StatusCode::FORBIDDEN, "a job's request comes from this Mac");
+        }
+        next.run(req).await
     }
 
-    fn get_header<'a>(req: &'a tiny_http::Request, name: &'static str) -> Option<&'a str> {
-        req.headers().iter().find(|h| h.field.equiv(name)).map(|h| h.value.as_str())
-    }
-
-    fn handle(req: &mut tiny_http::Request, ctx: &Ctx) -> Result<Resp> {
-        let ip = req.remote_addr().map(|a| a.ip());
-        if !ip.is_some_and(allowed) {
-            return Ok(reply(403, "text/plain", b"not from here".to_vec()));
-        }
-        let local = ip.is_some_and(|ip| ip.is_loopback() || matches!(ip, IpAddr::V6(v) if v.to_ipv4_mapped().is_some_and(|v| v.is_loopback())));
-        let url = req.url().to_string();
-        let path = url.split(['?', '#']).next().unwrap_or("").to_string();
-        let method = req.method().clone();
-        // The page itself needs no token (it reads it from its address's fragment).
-        if method == tiny_http::Method::Get {
-            if let Some((_, t, body)) = path.strip_prefix("/work/").and_then(|p| PAGE.iter().find(|(n, _, _)| *n == p)) {
-                return Ok(reply(200, t, body.as_bytes().to_vec()));
-            }
-            if path == "/work" {
-                let mut r = reply(302, "text/plain", Vec::new());
-                r.add_header(header("Location", "/work/"));
-                return Ok(r);
-            }
-        }
-        let authed = get_header(req, "Authorization") == Some(format!("Bearer {}", ctx.token).as_str());
-        if !authed {
-            return Ok(reply(401, "application/json", br#"{"error":"no or wrong token"}"#.to_vec()));
-        }
-        let worker = get_header(req, "X-Worker").unwrap_or("").to_string();
-        match (&method, path.as_str()) {
-            (tiny_http::Method::Get, p) if p.starts_with("/work/prog/") => {
-                // A program's WebAssembly build.
-                let name = &p["/work/prog/".len()..];
-                let ok = name.strip_suffix(".wasm").is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase() || c == '-'));
-                let file = ctx.wasm.as_ref().filter(|_| ok).map(|d| d.join(name)).and_then(|p| std::fs::File::open(p).ok());
-                match file {
-                    Some(f) => Ok(file_reply(f, "application/wasm", None)?),
-                    None => Ok(reply(404, "text/plain", format!("no {name}").into_bytes())),
-                }
-            }
-            (tiny_http::Method::Get, p) if p.starts_with("/work/in/") => {
-                // A task's input, to the worker holding it.
-                let (lease, rel) = lease_path(&p["/work/in/".len()..])?;
-                let found = ctx.shared.lock().unwrap().tasks.input(lease, &worker, rel);
-                let Some((file, size)) = found else { return Ok(reply(404, "text/plain", b"not an input of that lease".to_vec())) };
-                let f = std::fs::File::open(&file).with_context(|| format!("open {}", file.display()))?;
-                anyhow::ensure!(f.metadata()?.len() == size, "{rel} changed since it was offered");
-                Ok(file_reply(f, "application/octet-stream", get_header(req, "Range"))?)
-            }
-            (tiny_http::Method::Put, p) if p.starts_with("/work/out/") => {
-                // A task's output, from the worker holding it: written aside, then renamed into place.
-                let (lease, rel) = lease_path(&p["/work/out/".len()..])?;
-                let dest = ctx.shared.lock().unwrap().tasks.upload(lease, &worker, rel);
-                let Some(dest) = dest else { return Ok(reply(410, "application/json", br#"{"error":"that lease is gone"}"#.to_vec())) };
-                std::fs::create_dir_all(dest.parent().unwrap())?;
-                let part = dest.with_extension("part");
-                let mut f = std::fs::File::create(&part)?;
-                let n = std::io::copy(&mut req.as_reader().take(UPLOAD_MAX + 1), &mut f)?;
-                anyhow::ensure!(n <= UPLOAD_MAX, "too big");
-                f.sync_data().ok();
-                std::fs::rename(&part, &dest)?;
-                Ok(reply(200, "application/json", serde_json::json!({ "size": n }).to_string().into_bytes()))
-            }
-            (tiny_http::Method::Post, p) | (tiny_http::Method::Get, p) => {
-                let mut body = Vec::new();
-                req.as_reader().take(JSON_MAX + 1).read_to_end(&mut body)?;
-                anyhow::ensure!(body.len() as u64 <= JSON_MAX, "too big");
-                let (code, v) = route(p, &body, &ctx.shared, &ctx.journal, local)?;
-                let data = if code == 204 { Vec::new() } else { v.to_string().into_bytes() };
-                Ok(reply(code, "application/json", data))
-            }
-            _ => Ok(reply(405, "text/plain", Vec::new())),
+    async fn page(Url(file): Url<String>) -> Response {
+        match PAGE.iter().find(|(n, _, _)| *n == file) {
+            Some((_, t, body)) => ([(header::CONTENT_TYPE, *t), (header::CACHE_CONTROL, "no-store")], *body).into_response(),
+            None => error(StatusCode::NOT_FOUND, format!("no {file}")),
         }
     }
 
-    /// "<lease>/<path>" split.
-    fn lease_path(s: &str) -> Result<(u64, &str)> {
-        let (l, rel) = s.split_once('/').context("<lease>/<path>")?;
-        Ok((l.parse()?, rel))
+    /// A JSON request, answered by `route` off the runtime (it takes the lock and may write a file).
+    async fn json(State(c): State<Ctx>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request) -> Response {
+        let path = req.uri().path().to_string();
+        let body = match axum::body::to_bytes(req.into_body(), JSON_MAX).await {
+            Ok(b) => b,
+            Err(_) => return error(StatusCode::PAYLOAD_TOO_LARGE, "too big, or cut short"),
+        };
+        let local = loopback(peer.ip());
+        match tokio::task::spawn_blocking(move || route(&path, &body, &c.shared, &c.journal, local)).await {
+            Ok(Ok((204, _))) => (StatusCode::NO_CONTENT, [(header::CACHE_CONTROL, "no-store")]).into_response(),
+            Ok(Ok((code, v))) => (StatusCode::from_u16(code).unwrap_or(StatusCode::OK), [(header::CACHE_CONTROL, "no-store")], Json(v)).into_response(),
+            Ok(Err(e)) => error(StatusCode::BAD_REQUEST, format!("{e:#}")),
+            Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        }
     }
 
-    /// A file, whole or the one range asked for (`bytes=a-b`).
-    fn file_reply(mut f: std::fs::File, ctype: &str, range: Option<&str>) -> Result<Resp> {
-        let size = f.metadata()?.len();
+    fn worker(h: &HeaderMap) -> String {
+        h.get("x-worker").and_then(|v| v.to_str().ok()).unwrap_or("").to_string()
+    }
+
+    /// A file streamed: whole, or the one range asked for (`bytes=a-b`).
+    async fn send_file(path: &Path, ctype: &'static str, size: Option<u64>, range: Option<&str>) -> Response {
+        let mut f = match tokio::fs::File::open(path).await {
+            Ok(f) => f,
+            Err(e) => return error(StatusCode::NOT_FOUND, e),
+        };
+        let len = match f.metadata().await {
+            Ok(m) => m.len(),
+            Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e),
+        };
+        if size.is_some_and(|n| n != len) {
+            return error(StatusCode::CONFLICT, "it changed since it was offered");
+        }
         let r = range.and_then(|r| r.strip_prefix("bytes=")).and_then(|r| r.split_once('-')).and_then(|(a, b)| {
             let a: u64 = a.parse().ok()?;
-            let b: u64 = if b.is_empty() { size.checked_sub(1)? } else { b.parse::<u64>().ok()?.min(size.checked_sub(1)?) };
+            let last = len.checked_sub(1)?;
+            let b: u64 = if b.is_empty() { last } else { b.parse::<u64>().ok()?.min(last) };
             (a <= b).then_some((a, b))
         });
-        let mut headers = vec![header("Content-Type", ctype), header("Accept-Ranges", "bytes"), header("Cache-Control", "no-store")];
-        match r {
-            Some((a, b)) => {
-                f.seek(SeekFrom::Start(a))?;
-                let n = b - a + 1;
-                headers.push(header("Content-Range", &format!("bytes {a}-{b}/{size}")));
-                Ok(tiny_http::Response::new(tiny_http::StatusCode(206), headers, Box::new(f.take(n)), Some(n as usize), None))
+        let (code, start, n) = match r {
+            Some((a, b)) => (StatusCode::PARTIAL_CONTENT, a, b - a + 1),
+            None => (StatusCode::OK, 0, len),
+        };
+        if start > 0 && f.seek(std::io::SeekFrom::Start(start)).await.is_err() {
+            return error(StatusCode::INTERNAL_SERVER_ERROR, "seek");
+        }
+        let body = Body::from_stream(tokio_util::io::ReaderStream::with_capacity(tokio::io::AsyncReadExt::take(f, n), 1 << 20));
+        let mut resp = (code, [(header::CONTENT_TYPE, ctype), (header::CACHE_CONTROL, "no-store"), (header::ACCEPT_RANGES, "bytes")], body).into_response();
+        resp.headers_mut().insert(header::CONTENT_LENGTH, n.into());
+        if code == StatusCode::PARTIAL_CONTENT {
+            if let Ok(v) = format!("bytes {start}-{}/{len}", start + n - 1).parse() {
+                resp.headers_mut().insert(header::CONTENT_RANGE, v);
             }
-            None => Ok(tiny_http::Response::new(tiny_http::StatusCode(200), headers, Box::new(f), Some(size as usize), None)),
+        }
+        resp
+    }
+
+    /// A program's WebAssembly build.
+    async fn prog(State(c): State<Ctx>, Url(name): Url<String>) -> Response {
+        let ok = name.strip_suffix(".wasm").is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_lowercase() || c == '-'));
+        match c.wasm.as_ref().filter(|_| ok) {
+            Some(d) => send_file(&d.join(&name), "application/wasm", None, None).await,
+            None => error(StatusCode::NOT_FOUND, format!("no {name}")),
+        }
+    }
+
+    /// A task's input, to the worker holding it.
+    async fn input(State(c): State<Ctx>, Url((lease, path)): Url<(u64, String)>, h: HeaderMap) -> Response {
+        let found = c.shared.lock().unwrap().tasks.input(lease, &worker(&h), &path);
+        match found {
+            Some((file, size)) => send_file(&file, "application/octet-stream", Some(size), h.get(header::RANGE).and_then(|v| v.to_str().ok())).await,
+            None => error(StatusCode::NOT_FOUND, "not an input of that lease"),
+        }
+    }
+
+    /// A task's output, from the worker holding it: streamed aside, then renamed into place.
+    async fn output(State(c): State<Ctx>, Url((lease, path)): Url<(u64, String)>, h: HeaderMap, body: Body) -> Response {
+        if h.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok()).is_some_and(|n| n > UPLOAD_MAX) {
+            return error(StatusCode::PAYLOAD_TOO_LARGE, "too big");
+        }
+        let dest = c.shared.lock().unwrap().tasks.upload(lease, &worker(&h), &path);
+        let Some(dest) = dest else { return error(StatusCode::GONE, "that lease is gone") };
+        let part = dest.with_extension("part");
+        let r: Result<u64> = async {
+            tokio::fs::create_dir_all(dest.parent().unwrap()).await?;
+            let mut f = tokio::fs::File::create(&part).await?;
+            let mut stream = body.into_data_stream();
+            let mut n = 0u64;
+            while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+                let chunk = chunk.map_err(|e| anyhow::anyhow!("{e}"))?;
+                n += chunk.len() as u64;
+                anyhow::ensure!(n <= UPLOAD_MAX, "too big");
+                f.write_all(&chunk).await?;
+            }
+            f.sync_data().await.ok();
+            tokio::fs::rename(&part, &dest).await?;
+            Ok(n)
+        }
+        .await;
+        match r {
+            Ok(n) => (StatusCode::OK, Json(serde_json::json!({ "size": n }))).into_response(),
+            Err(e) => {
+                tokio::fs::remove_file(&part).await.ok();
+                error(StatusCode::BAD_REQUEST, format!("{e:#}"))
+            }
         }
     }
 }
@@ -862,6 +968,61 @@ mod tests {
     }
 
     #[test]
+    fn a_hand_off_may_touch_only_its_units_files() {
+        let ts = vec![("6/1/3".to_string(), "k3".to_string())];
+        let ok = handoff(&[("6/1/3", "k3")]);
+        assert!(check_handoff(&ok, "unit", &ts).is_ok());
+        let with = |l: &str, v: Option<&str>| {
+            let mut h = ok.clone();
+            h.changes.insert(l.into(), v.map(str::to_string));
+            check_handoff(&h, "unit", &ts)
+        };
+        assert!(with("global/roads/6-1-3", Some("global/roads/6-1-3.0000000000000004.roads")).is_ok());
+        assert!(with("layers/grid-canopy/hi/6-1-3", None).is_ok());
+        // Another step's file of the same tile, another unit's, a value that isn't its content name.
+        assert!(with("sources/osm/2026-09-28/pieces/6-1-3", None).is_err());
+        assert!(with("work/pois/6-1-3", None).is_err());
+        assert!(with("global/roads/6-1-3", Some("../../../../etc/passwd")).is_err());
+        assert!(with("global/roads/6-1-3", Some("base/6-1-3.0000000000000003.base")).is_err());
+        // An upload it says it checked must be one of its own.
+        let mut h = ok.clone();
+        h.checked.push("base/6-9-9.0000000000000009.base".into());
+        assert!(check_handoff(&h, "unit", &ts).is_err());
+        let mut h = ok.clone();
+        h.pending.insert("base/6-1-3.0000000000000003.base".into(), "ab".into());
+        h.checked.push("base/6-1-3.0000000000000003.base".into());
+        assert!(check_handoff(&h, "unit", &ts).is_ok());
+        // Not its lease's record.
+        assert!(check_handoff(&ok, "unit", &[("6/1/4".to_string(), "k4".to_string())]).is_err());
+    }
+
+    #[test]
+    fn stalled_and_bogus_requests_dont_stop_it() {
+        use std::io::Write;
+        let (_d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        // Bodies announced and never sent, without a token, then one announcing more than exists.
+        let mut held = Vec::new();
+        for _ in 0..24 {
+            let mut s = std::net::TcpStream::connect(&addr).unwrap();
+            s.write_all(b"POST /work/ask HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 5000\r\n\r\n").unwrap();
+            held.push(s);
+        }
+        let mut s = std::net::TcpStream::connect(&addr).unwrap();
+        s.write_all(b"POST /work/ask HTTP/1.1\r\nHost: x\r\nContent-Length: 18446744073709551615\r\n\r\n").unwrap();
+        held.push(s);
+        // A worker is still answered, and a job too.
+        c.offer_units("p", vec![("6/1/1".into(), "k1".into(), 1 << 20)]);
+        assert!(w.ask(&ask(4096)).unwrap().is_some());
+        let job = client::Client::at(w.urls(), c.job_token.clone(), "job");
+        assert_eq!(job.post_json("/task/workers", &serde_json::json!({ "kind": "tail" })).unwrap().0, 200);
+        // A job's request with the workers' token: refused.
+        let as_job = client::Client::at(w.urls(), c.contact.token.clone(), "job");
+        assert!(as_job.post_json("/task/workers", &serde_json::json!({})).is_err());
+        drop(held);
+    }
+
+    #[test]
     fn leases_and_the_token_outlive_a_restart() {
         let (d, c, w) = start();
         c.offer_units("p", vec![("6/1/1".into(), "k1".into(), 1 << 20), ("6/1/2".into(), "k2".into(), 1 << 20)]);
@@ -886,7 +1047,7 @@ mod tests {
         std::fs::create_dir_all(root.join("u")).unwrap();
         std::fs::write(root.join("u/in.bin"), b"input").unwrap();
         // The job's side, from this Mac.
-        let job = client::Client::at(w.urls().to_vec(), c.contact.token.clone(), "job");
+        let job = client::Client::at(w.urls().to_vec(), c.job_token.clone(), "job");
         let offer = task::Offer { owner: 42, kind: "tail".into(), spec: serde_json::json!({ "unit": "6/1/1" }), root: root.clone(), inputs: [("u/in.bin".to_string(), 5)].into(), mem_mb: 800 };
         let id = job.post_json("/task/offer", &serde_json::to_value(&offer).unwrap()).unwrap().1["id"].as_u64().unwrap();
         // A worker that spares too little gets nothing; one that spares enough, the task.
