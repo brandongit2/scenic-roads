@@ -222,9 +222,10 @@ impl store::range::RangeRead for FileSource<'_> {
 /// An area's raw tile archives as read (RawTiles): its first tiles straight from the NAS's (each
 /// archive's entries read once, then a ranged read a tile), so a job wanting a tile or two of an
 /// area doesn't copy hundreds of MB; past RANGED of them, copied here whole and opened (one large
-/// read each, then local, as a terrain job reads thousands).
+/// read each, then local, as a terrain job reads thousands). One whose copy failed is read by range
+/// for the rest of the job (`stay`), not copied again for each tile.
 enum Opened {
-    Ranged { archives: Vec<(std::fs::File, Vec<roadcore::archive::Entry>)>, reads: usize },
+    Ranged { archives: Vec<(std::fs::File, Vec<roadcore::archive::Entry>)>, reads: usize, stay: bool },
     Here(std::sync::Arc<[roadcore::archive::Archive]>),
 }
 
@@ -283,7 +284,8 @@ impl RawTiles {
         Some(c)
     }
 
-    /// The store's archives' index: as read before unless `fresh`; None when it can't be read.
+    /// The store's archives' index: as read before unless `fresh`; None when it can't be read (three
+    /// tries a moment apart, then none for a minute: each try waits on the NAS).
     fn index(&self, st: &std::path::Path, fresh: bool) -> Option<std::sync::Arc<crate::rawpack::Index>> {
         let mut s = self.index.lock().unwrap();
         if let (Some(ix), false) = (&s.0, fresh) {
@@ -292,17 +294,18 @@ impl RawTiles {
         if s.1.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
             return s.0.clone();
         }
-        match crate::rawpack::Index::load(st) {
-            Ok(ix) => {
-                *s = (Some(std::sync::Arc::new(ix)), None);
-                s.0.clone()
-            }
-            Err(e) => {
-                eprintln!("terrain: the raw tiles' archives: {e:#}");
-                s.1 = Some(std::time::Instant::now());
-                s.0.clone()
+        for attempt in 0..3 {
+            match crate::rawpack::Index::load(st) {
+                Ok(ix) => {
+                    *s = (Some(std::sync::Arc::new(ix)), None);
+                    return s.0.clone();
+                }
+                Err(e) if attempt == 2 => eprintln!("terrain: the raw tiles' archives: {e:#}"),
+                Err(_) => std::thread::sleep(Duration::from_millis(500)),
             }
         }
+        s.1 = Some(std::time::Instant::now());
+        s.0.clone()
     }
 
     /// An area's archives, newest first: here when each has its copy here, else to be read by range
@@ -321,7 +324,13 @@ impl RawTiles {
             let mut v = Vec::new();
             for p in packs.iter().rev() {
                 let local = self.dir.join("packs").join(&p.name);
-                match crate::rawpack::entries_of(&if local.exists() { local } else { st.join("packs").join(&p.name) }) {
+                let at = if local.exists() {
+                    touch(&local);
+                    local
+                } else {
+                    st.join("packs").join(&p.name)
+                };
+                match crate::rawpack::entries_of(&at) {
                     Ok(e) => v.push(e),
                     // (Gone from the NAS: the index read before is out of date.)
                     Err(e) if !fresh && crate::rawpack::not_found(&e) => break,
@@ -332,7 +341,7 @@ impl RawTiles {
                 }
             }
             if v.len() == packs.len() {
-                return Some(Opened::Ranged { archives: v, reads: 0 });
+                return Some(Opened::Ranged { archives: v, reads: 0, stay: false });
             }
         }
         None
@@ -345,7 +354,7 @@ impl RawTiles {
         let mut v = Vec::new();
         for p in packs.iter().rev() {
             let opened = crate::rawpack::local_copy(&self.dir, st, &p.name).and_then(|l| {
-                std::fs::File::options().append(true).open(&l).and_then(|f| f.set_modified(std::time::SystemTime::now())).ok();
+                touch(&l);
                 roadcore::archive::Archive::open(&l)
             });
             match opened {
@@ -381,16 +390,18 @@ impl RawTiles {
             if c.is_none() {
                 *c = Some(self.open_area(st, &area)?);
             }
-            // (Read a few times: copied here whole, if it can be; read by range meanwhile.)
-            if matches!(&*c, Some(Opened::Ranged { reads, .. }) if *reads >= RANGED) {
-                let index = self.index(st, false)?;
-                if let Some(h) = self.copy_area(st, index.of(&area)) {
-                    *c = Some(Opened::Here(h));
+            // (Read a few times: copied here whole, if it can be; else read by range from now on.)
+            if let Some(Opened::Ranged { reads, stay: stay @ false, .. }) = c.as_mut() {
+                if *reads >= RANGED {
+                    match self.index(st, false).and_then(|index| self.copy_area(st, index.of(&area))) {
+                        Some(h) => *c = Some(Opened::Here(h)),
+                        None => *stay = true,
+                    }
                 }
             }
             match c.as_mut()? {
                 Opened::Here(h) => h.clone(),
-                Opened::Ranged { archives, reads } => {
+                Opened::Ranged { archives, reads, .. } => {
                     *reads += 1;
                     for (f, entries) in archives.iter() {
                         let Ok(i) = entries.binary_search_by_key(&key, |e| e.key) else { continue };
@@ -506,6 +517,11 @@ impl RawTiles {
             }
         }
     }
+}
+
+/// Marks a copy of an archive used (room-making deletes the least recently used first).
+fn touch(p: &std::path::Path) {
+    std::fs::File::options().append(true).open(p).and_then(|f| f.set_modified(std::time::SystemTime::now())).ok();
 }
 
 /// A kept tile's bytes when it's there and whole; one that isn't whole is deleted.
