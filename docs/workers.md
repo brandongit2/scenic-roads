@@ -138,8 +138,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   browser_wasi_shim) and sends back what they wrote.
 - **HTTPS:** the screen wake lock (and OPFS, below) need a secure context. Plain HTTP on the tailnet
   works (WireGuard encrypts it), but the device must be kept awake by hand. The coordinator can be
-  reached over HTTPS through `tailscale serve` (a certificate for the build Mac's tailnet name):
-  waiting for the owner's go-ahead, as it changes the Mac's network settings.
+  reached over HTTPS through `tailscale serve` (the tailnet already has a certificate for the build
+  Mac's name): waiting for the owner's go-ahead, as it changes the Mac's network settings. Once it
+  proxies the coordinator, the page's address (the status bar's, `scenic status`'s) moves to HTTPS by
+  itself; a job's requests can't come through it (they need the agent's own token).
 - **Planned:** inputs and outputs in OPFS, read through a `FileSystemSyncAccessHandle`, so a worker
   holds less in memory and a reload resumes the upload, not the work.
 

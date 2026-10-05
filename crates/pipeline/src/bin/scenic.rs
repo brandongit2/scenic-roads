@@ -95,11 +95,17 @@ fn status(args: &[String]) -> Result<()> {
     for w in &st.workers {
         println!("Worker: {} — {}{}{}", w.label, w.what, if w.done > 0 { format!(", {} done", w.done) } else { String::new() }, if w.bad { ", stopped: a result differed" } else { "" });
     }
+    // (The build Mac's own record of it is over HTTPS once `tailscale serve` proxies the coordinator.)
+    let page = std::fs::read_to_string(app_home().join("agent/coord/page")).ok().map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
     let contact = root.as_ref().and_then(|r| std::fs::read(pipeline::coord::contact_path(r)).ok()).and_then(|b| serde_json::from_slice::<pipeline::coord::Contact>(&b).ok());
-    if let Some(c) = contact {
-        if let Some(u) = c.urls.first() {
-            println!("Worker page: {u}/work/#k={} (open it on a device on the tailnet)", c.token);
+    match (page, contact) {
+        (Some(p), _) => println!("Worker page: {p} (open it on a device on the tailnet)"),
+        (None, Some(c)) => {
+            if let Some(u) = c.urls.first() {
+                println!("Worker page: {u}/work/#k={} (open it on a device on the tailnet)", c.token);
+            }
         }
+        _ => {}
     }
     Ok(())
 }

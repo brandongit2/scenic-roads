@@ -157,6 +157,8 @@ pub struct Coordinator {
     pub contact: Contact,
     /// What this agent's jobs carry to offer tasks (`/task/…`), never published.
     pub job_token: String,
+    #[cfg_attr(target_os = "wasi", allow(dead_code))]
+    port: u16,
     /// This Mac's name: its own jobs' leases are held under it.
     me: String,
 }
@@ -264,17 +266,24 @@ impl Coordinator {
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
         let job_token = http::random()?;
         let urls = http::serve(port, http::Ctx { shared: shared.clone(), token: token.clone(), job_token: job_token.clone(), journal: dir.join("journal"), wasm })?;
-        // The worker page's address, with its token, for this Mac's status bar (tools/status): private
-        // to this user, like the token.
-        if let Some(u) = urls.first() {
-            let page = dir.join("page");
-            if crate::whole::write(&page, format!("{u}/work/#k={token}\n").as_bytes()).is_ok() {
-                if let Ok(f) = std::fs::File::open(&page) {
-                    store::sys::set_mode(&f, 0o600).ok();
-                }
+        let c = Coordinator { shared, contact: Contact { urls, token }, job_token, port, me: me.to_string() };
+        c.write_page();
+        Ok(c)
+    }
+
+    /// Writes the worker page's address, with its token, for this Mac's status bar (tools/status):
+    /// over HTTPS when `tailscale serve` proxies the coordinator (a secure context, where the page
+    /// may keep the screen on), else its first address; private to this user, like the token.
+    #[cfg(not(target_os = "wasi"))]
+    fn write_page(&self) {
+        let Some(base) = http::served_https(self.port).or_else(|| self.contact.urls.first().map(|u| format!("{u}/"))) else { return };
+        let page = self.shared.lock().unwrap().dir.join("page");
+        let text = format!("{base}work/#k={}\n", self.contact.token);
+        if std::fs::read_to_string(&page).ok().as_deref() != Some(text.as_str()) && crate::whole::write(&page, text.as_bytes()).is_ok() {
+            if let Ok(f) = std::fs::File::open(&page) {
+                store::sys::set_mode(&f, 0o600).ok();
             }
         }
-        Ok(Coordinator { shared, contact: Contact { urls, token }, job_token, me: me.to_string() })
     }
 
     /// Where the hand-offs it took are journaled (a folder per worker), for the agent to merge.
@@ -282,8 +291,11 @@ impl Coordinator {
         self.shared.lock().unwrap().dir.join("journal")
     }
 
-    /// Publishes how to reach it on the NAS, when what's there differs (written whole).
+    /// Publishes how to reach it on the NAS, when what's there differs (written whole), and the
+    /// worker page's address here (it moves to HTTPS once `tailscale serve` proxies the coordinator).
     pub fn publish(&self, root: &Path) -> Result<()> {
+        #[cfg(not(target_os = "wasi"))]
+        self.write_page();
         let there = std::fs::read(contact_path(root)).ok().and_then(|b| serde_json::from_slice::<Contact>(&b).ok());
         if there.as_ref() != Some(&self.contact) {
             crate::whole::write(&contact_path(root), &serde_json::to_vec_pretty(&self.contact)?)?;
@@ -719,6 +731,29 @@ mod http {
         out
     }
 
+    /// The coordinator's address over HTTPS, when `tailscale serve` proxies `port`
+    /// ("https://<this Mac's tailnet name>/<path>").
+    pub fn served_https(port: u16) -> Option<String> {
+        let cli = ["/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"].into_iter().find(|p| Path::new(p).exists())?;
+        let o = std::process::Command::new(cli).args(["serve", "status", "--json"]).output().ok()?;
+        https_in(&serde_json::from_slice(&o.stdout).ok()?, port)
+    }
+
+    /// `served_https` from what `tailscale serve status --json` says.
+    pub fn https_in(v: &serde_json::Value, port: u16) -> Option<String> {
+        for (host, site) in v["Web"].as_object()? {
+            for (path, h) in site["Handlers"].as_object().into_iter().flatten() {
+                let proxy = h["Proxy"].as_str().unwrap_or("");
+                if proxy.ends_with(&format!(":{port}")) || proxy.ends_with(&format!(":{port}/")) {
+                    let host = host.strip_suffix(":443").unwrap_or(host);
+                    let path = if path.ends_with('/') { path.clone() } else { format!("{path}/") };
+                    return Some(format!("https://{host}{path}"));
+                }
+            }
+        }
+        None
+    }
+
     /// Listens on `port`, on a runtime of its own; this Mac's addresses for workers.
     pub fn serve(port: u16, ctx: Ctx) -> Result<Vec<String>> {
         let listener = std::net::TcpListener::bind(("0.0.0.0", port)).with_context(|| format!("listen on port {port}"))?;
@@ -994,6 +1029,14 @@ mod tests {
         assert!(check_handoff(&h, "unit", &ts).is_ok());
         // Not its lease's record.
         assert!(check_handoff(&ok, "unit", &[("6/1/4".to_string(), "k4".to_string())]).is_err());
+    }
+
+    #[test]
+    fn the_page_is_over_https_where_tailscale_serves_it() {
+        let v = serde_json::json!({ "TCP": { "443": { "HTTPS": true } }, "Web": { "mac.tail1.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:8090" } } } } });
+        assert_eq!(http::https_in(&v, 8090).as_deref(), Some("https://mac.tail1.ts.net/"));
+        assert_eq!(http::https_in(&v, 8091), None);
+        assert_eq!(http::https_in(&serde_json::json!({}), 8090), None);
     }
 
     #[test]
