@@ -632,6 +632,10 @@ struct Bands {
     win: Vec<Window>,
     /// Each band's samples.
     samples: Vec<Vec<u32>>,
+    /// The samples to do near the square none of whose lookups land in its rows read and its
+    /// columns (just outside it, within the margin it's read with, beyond their reach): in no band,
+    /// their lookups all find nothing here (a tunnel's horizon is still theirs to set).
+    outside: Vec<u32>,
     /// Each grid tile's cell rows' bands (u16::MAX: none here).
     cells: Vec<[u16; 256]>,
 }
@@ -646,7 +650,7 @@ impl Bands {
     fn plan(top: f64, left: f64, (row0, row1): (usize, usize), size: usize, samples: &[Sample], todo_s: &[bool], touches: impl Fn(f64, f64) -> bool, tiles: &[[u32; 2]], todo_t: &[bool]) -> Bands {
         let px = |v: f64| (v / C10_RES).floor();
         let n = (row1 - row0).div_ceil(size);
-        let (mut win, mut by_band) = (vec![Window::NONE; n], vec![Vec::new(); n]);
+        let (mut win, mut by_band, mut outside) = (vec![Window::NONE; n], vec![Vec::new(); n], Vec::new());
         // A sample's lookups (near_field) are within NEAR_MAX_M of it: its window is the rows and
         // columns that spans, a pixel spare each way for rounding.
         for (si, (s, &t)) in samples.iter().zip(todo_s).enumerate() {
@@ -657,6 +661,11 @@ impl Bands {
             let (m_lon, m_lat) = m_per_deg(lat);
             let (dlon, dlat) = (NEAR_MAX_M / m_lon, NEAR_MAX_M / m_lat);
             let w = Window::clip((px(top - (lat + dlat)) - 1.0, px(top - (lat - dlat)) + 1.0), (px(lon - dlon - left) - 1.0, px(lon + dlon - left) + 1.0), (row0, row1));
+            // (None of its lookups here: its band's window wouldn't hold them.)
+            if w.is_empty() {
+                outside.push(si as u32);
+                continue;
+            }
             let k = (px(top - lat).clamp(row0 as f64, (row1 - 1) as f64) as usize - row0) / size;
             by_band[k].push(si as u32);
             win[k] = win[k].union(w);
@@ -695,7 +704,7 @@ impl Bands {
         for &(k, w) in cells.iter().flat_map(|(_, ws)| ws) {
             win[k] = win[k].union(w);
         }
-        Bands { win, samples: by_band, cells: cells.into_iter().map(|(c, _)| c).collect() }
+        Bands { win, samples: by_band, outside, cells: cells.into_iter().map(|(c, _)| c).collect() }
     }
 }
 
@@ -908,6 +917,10 @@ fn canopy(dir: &Path) -> Result<()> {
                 near_field(s, si as usize, owned, &t, &grid, terr, &near, &roadside);
             });
         }
+        // The samples just outside it: near_field over nothing read (every lookup finds nothing, as
+        // it did when the whole square was read; a tunnel's horizon set all the same).
+        let none = Chm10 { left: left as f64, top: top as f64, row0, rows: 0, win: Window::NONE, median: Vec::new(), p95: Vec::new(), cover: Vec::new() };
+        bands.outside.par_iter().for_each(|&si| near_field(&samples[si as usize], si as usize, false, &none, &grid, terr, &near, &roadside));
         pb.inc(1);
     }
     pb.finish_and_clear();
@@ -1085,6 +1098,24 @@ mod tests {
         bad[10 + 5 * 12 + 4..10 + 5 * 12 + 8].copy_from_slice(&u32::MAX.to_le_bytes());
         std::fs::write(&p, &bad).unwrap();
         assert!(Tiff::open(File::open(&p).unwrap()).is_err());
+    }
+
+    #[test]
+    fn a_sample_just_outside_the_square_is_in_no_band() {
+        // A square at 50° N, 90° W: a sample inside it, and one 0.005° west of it (within the margin
+        // the square's read with, beyond its 300 m reach): that one in no band, its lookups none.
+        let at = |lon: f64, lat: f64| Sample { way: 0, dist: 0.0, lon: (lon / E7).round() as i32, lat: (lat / E7).round() as i32, eye: 0.0, flags: 0, _pad: [0; 3] };
+        let samples = [at(-89.5, 45.0), at(-90.005, 45.0)];
+        let (top, left) = (50.0, -90.0);
+        let px = |lat: f64| ((top - lat) / C10_RES).floor() as usize;
+        let rows = (px(45.01), px(44.99));
+        let b = Bands::plan(top, left, rows, 64, &samples, &[true, true], |_, _| true, &[], &[]);
+        assert_eq!(b.outside, [1]);
+        assert_eq!(b.samples.iter().flatten().copied().collect::<Vec<_>>(), [0]);
+        // An empty window: every lookup finds nothing, and none fails.
+        let none = Chm10 { left, top, row0: rows.0, rows: 0, win: Window::NONE, median: Vec::new(), p95: Vec::new(), cover: Vec::new() };
+        assert_eq!(none.idx(-89.999, 45.0), None);
+        assert_eq!(none.idx(-90.001, 45.0), None);
     }
 
     #[test]
