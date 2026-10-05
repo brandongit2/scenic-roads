@@ -259,10 +259,12 @@ zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. 
   the coverage, 20 km around it (how far heritage sites and terrain reach) or a built unit's ways
   (its extent, so a removed region's data keeps its credit while it's served). `areas` is a list of
   w, s, e, n boxes in degrees, left out for credits that hold everywhere.
-- `coverage`: the regions as their recipes were at publish time (the agent publishes once all of
-  them are built), each outline entry's polygons as GeoJSON MultiPolygon coordinates in degrees to
-  5 decimals, rings closed: `osm:` entries from the pass's simplified outlines, the others simplified
-  by size (60 m to 1 km). An entry that couldn't be read is recorded with no shape.
+- `coverage`: the regions the catalog's data is built for: those done at publish time as their
+  recipes were then (`--ready`, the agent's plan), and those not done yet as the last catalog had
+  them, if it had them (on the map as they were), in the recipes' order. Each outline entry's
+  polygons as GeoJSON MultiPolygon coordinates in degrees to 5 decimals, rings closed: `osm:`
+  entries from the pass's simplified outlines, the others simplified by size (60 m to 1 km). An
+  entry that couldn't be read is recorded with no shape.
 - A catalog made before these were recorded has `"credits": []` and `{"regions": []}`: the server
   then gives every credit, and builds the coverage from the recipes.
 

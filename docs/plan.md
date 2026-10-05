@@ -101,8 +101,9 @@ the NAS does itself. The jobs (§8 has their order and keys):
    - place labels;
    - once ever, the worldwide z8 terrain for peaks.
 3. **Heritage sites and designated areas:** one job over the coverage plus 20 km.
-4. **Global-source layers, per z3 pack near the coverage:** terrain, then slope, then tree cover.
-5. **Per unit**, for every unit meeting the coverage: base(U), the ways U owns (a way belongs to the
+4. **Global-source layers, per z3 pack near the coverage:** terrain, then slope, then tree cover
+   (terrain first; slope and tree cover as the regions in their area are published: §8, Order).
+5. **Per unit**, for every unit meeting the coverage, a region at a time: base(U), the ways U owns (a way belongs to the
    unit of its first node) that touch the coverage, with per-vertex elevations, grade and scenic
    channels. Each value is computed once.
 6. **Then three chains**, which don't wait for each other:
@@ -113,7 +114,7 @@ the NAS does itself. The jobs (§8 has their order and keys):
      - lo packs per z3 tile;
      - rail stops and ferries;
      - the root tiles;
-     - then a catalog.
+     - then a catalog, as each region is done (at most hourly) and after the last.
    - **Rail service** (§6): the timetables of the rail feeds where the coverage is, each fetched
      once; then trains a day on the coverage's rail ways.
    - **Landmarks** (`docs/phase5.md`):
@@ -490,27 +491,27 @@ the region. Each entry is one of these:
   layer without tiles). The next catalog drops them, and GC frees their files. Terrain, slope and
   grid tiles stay, which is harmless; a z3 tile the coverage has left loses its tree cover.
 
-**Today's set** (since 2026-10-05): 87 recipes in `inputs/regions/`, by political unit. The
-cutover's 34 are in `tools/cutover/regions`.
-- **Canada:** its 13 provinces and territories (Geofabrik outlines).
-- **The US:** every state, DC and Puerto Rico (the other territories later). The seven the cutover
-  had (Connecticut, Maine, Massachusetts, New Hampshire, New York, Rhode Island, Vermont) keep their
-  Geofabrik outlines; the other 45 are `osm:` relations.
-- **The UK and Ireland:** England, Scotland, Wales and Northern Ireland, and Ireland (`osm:`
-  relations, which replaced Geofabrik's Britain and Ireland); the Channel Islands, the Isle of Man
-  (Geofabrik) and Gibraltar (`osm:`).
-- **Spain** (Geofabrik's outline: the mainland, the Balearics, Ceuta and Melilla) and **the Canary
-  Islands** (`osm:`; Spain's outline never had them).
-- **Portugal:** the mainland, the Azores and Madeira (`poly:`). Geofabrik's one ring around all
-  three became an outline around each archipelago inside it, and the mainland is the ring with those
-  as holes (`tools/cutover/split-portugal.py`), so the coverage didn't change.
-- **France:** the mainland and Corsica (Geofabrik), French Guiana and Saint-Pierre-et-Miquelon
-  (`osm:`; the other overseas parts later). **Andorra** and **Monaco** (Geofabrik).
-- **Japan, Taiwan, Hong Kong** (Geofabrik) and **Singapore** (`osm:`).
-- The change built 81 new units (the US, the Canaries, French Guiana) and rebuilt 47:
-  - Canada's along the US border (Alaska's too), which now take in the US side;
-  - Britain's, Ireland's and the Channel Islands', whose outlines changed;
-  - the Azores' and Madeira's.
+**Today's set** (since 2026-10-05): 88 recipes in `inputs/regions/`, by political unit, every one
+of them OpenStreetMap boundaries (`osm:` relations from the pass's outline set). The cutover's 34
+are in `tools/cutover/regions`.
+- **Canada:** its 13 provinces and territories.
+- **The US:** every state, DC and Puerto Rico (the other territories later).
+- **The UK and Ireland:** England, Scotland, Wales and Northern Ireland, and Ireland (which replaced
+  Geofabrik's Britain and Ireland); Guernsey (the bailiwick: Alderney, Sark and Herm too), Jersey,
+  the Isle of Man and Gibraltar.
+- **Spain:** its autonomous communities but the Canaries, with Ceuta and Melilla (18 relations), and
+  **the Canary Islands**.
+- **Portugal:** the mainland (its 18 districts: no relation is the mainland alone), the Azores and
+  Madeira.
+- **France:** metropolitan France (the mainland and Corsica: one relation), French Guiana and
+  Saint-Pierre-et-Miquelon (the other overseas parts later). **Andorra** and **Monaco**.
+- **Japan** (the Senkakus are in no outline, so they dropped out), **Taiwan** (Kinmen, Matsu,
+  Penghu, and Pratas and Taiping too, inside its relation), **Hong Kong** and **Singapore**.
+- The first change (the US, the UK's countries, Portugal's three) built 81 new units and rebuilt 47.
+  The second, every outline from Geofabrik's (generous buffers into the sea and across borders) to
+  OSM's boundaries, and the Channel Islands split, changed the keys of 276 of the 284 units, and the
+  terrain of 16 of the 18 areas: nearly every unit has a border or a coast in its reach. The regions
+  on the map stay as they were until theirs are rebuilt, after the regions the map lacks.
 
 **By location.** These rules depend on where a thing is. Today each is written into its step, and the
 units' ones (DEM order, densification, road network codes) are versioned by area in
@@ -1138,23 +1139,38 @@ and, when none fits it, units' last steps.
    - roadside buildings (once per Overture release; the units wait for them);
    - summits;
    - labels.
-3. **The regions' build:**
-   - heritage-sites (first, one job: the units wait for it, and for the terrain, so the M1's helper
-     builds units while the build Mac runs slope and tree cover; not waited for by the rest);
-   - terrain, then slope (nothing after them in the regions' plan runs while terrain is stale);
-   - tree cover, for the z3 tiles whose coverage changed (listed before the rest, not waited for:
-     a failing trees job doesn't hold up the units);
-   - every stale unit;
-   - a prune of what the coverage no longer builds (§5, Shrinking).
-4. **Three chains**, each contributing its first stale step:
+3. **The regions' build,** a region at a time, each published as it's done (`agent::build::plan`):
+   - heritage-sites (first, one job; not waited for by the rest);
+   - terrain, every area of it (nothing after it in the regions' plan runs while it's stale: a
+     unit's key reads the terrain near it, so a unit built first would be built again);
+   - the units, a region at a time: the regions the map hasn't at all first (not in its catalog),
+     then those it has (redrawn, or their units' keys changed: on the map as they were meanwhile);
+     of each, the one with the fewest units left first, so regions are done as soon as they can be;
+     a region's units neighbours together; a unit two regions share comes with the first. Then
+     slope and tree cover (listed after the units, for a helper, and for the build Mac when the
+     units are another's).
+   - **A round** when a region is done that the map hasn't as it is now, at most an hour after the
+     last catalog (`PUBLISH_EVERY_S`) while units are left, and at once after the last unit: the
+     slope and tree cover of its areas (the z3 tiles within 20 km of it; after the last unit, all
+     that's left), then a prune of what the coverage no longer builds (§5, Shrinking), the roads'
+     chain, and a catalog. The units follow it in the list (a helper's, and the build Mac's while
+     the round's work waits out a failure: then the catalog goes out with the regions that are
+     done). A round takes 5 to 10 minutes: a tenth more build time at most.
+4. **After the last unit, three chains**, each contributing its first stale step:
    - **Roads:** a prune of map tiles no unit is near, road → units index, pack, lo, stations,
      ferries, terrain and slope roots. Stations and ferries drop the packs they no longer make.
+     (Run in every round too.)
    - **Rail service:** `rail-feeds`, then `rail` (§6, Rail service). Nothing before the rail
      sources are seeded (`scenic-build rail-seed`), which the status says.
    - **Landmarks:** pois, peaks, items, heritage, marks, overlays.
-5. **A catalog** once the roads chain is done: a new one whenever the served files change, or the
-   regions it records (their recipes and the outline files they name) do. While
-   `inputs/hold-catalog` exists, it goes to `catalog-held/` instead.
+5. **A catalog** once the roads chain is done, in a round: a new one whenever the served files
+   change, or the regions it records (their recipes and the outline files they name), or which of
+   them are done. It records as built the regions done (`--ready`: every unit of theirs built as the
+   coverage wants it, and their areas' slope and tree cover), and the others as the last catalog had
+   them, if it had them (on the map as they were); the Regions panel shows the rest as pending, or
+   building with their areas counted. After the last unit, a catalog follows each chain's change.
+   While `inputs/hold-catalog` exists, it goes to `catalog-held/` instead (and the rounds go by the
+   held ones).
 6. **Daily:** backup and GC.
 
 **Planned:**

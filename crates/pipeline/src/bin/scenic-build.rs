@@ -167,9 +167,14 @@ fn main() -> Result<()> {
             let n = out.verify(&SSH, NAS_ROOT)?;
             eprintln!("verified {n} uploads");
         }
-        // catalog [--held]: held, it goes to catalog-held/, which no server reads (a build to compare
-        // before it's switched to: inputs/hold-catalog).
-        "catalog" => catalog(&mut out, args.iter().any(|a| a == "--held"))?,
+        // catalog [--held] [--ready <ids>]: held, it goes to catalog-held/, which no server reads (a
+        // build to compare before it's switched to: inputs/hold-catalog); `--ready`, the regions it
+        // records as built (comma-separated; the agent's plan says which), the others as the last
+        // catalog had them (without it: every region as its recipe is now).
+        "catalog" => {
+            let ready = opt(&args, "--ready").map(|v| v.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect());
+            catalog(&mut out, args.iter().any(|a| a == "--held"), ready.as_ref())?
+        }
         "unit" => unit_step(&mut out, &args, &scratch)?,
         "unit-snap" => unit_snap(&out, &args)?,
         "pois" => pois_step(&mut out, &args, &scratch)?,
@@ -742,7 +747,7 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
     })
 }
 
-fn catalog(out: &mut Out, held: bool) -> Result<()> {
+fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeSet<String>>) -> Result<()> {
     let mut layers: BTreeMap<String, LayerOut> = BTreeMap::new();
     let (mut base, mut roads, mut hidata, mut global, mut basemap) = (BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), BTreeMap::new(), Vec::new());
     let mut markdata = BTreeMap::new();
@@ -815,7 +820,8 @@ fn catalog(out: &mut Out, held: bool) -> Result<()> {
     let units: Vec<String> = base.keys().cloned().collect();
     // The coverage it's built for, drawn from the outlines it lists, and the credits of the sources
     // its data comes from: where the coverage is, and where the units' ways are.
-    let regions = catalog_coverage(out, global.get("outlines").map(String::as_str))?;
+    let dir = out.root().join(if held { "catalog-held" } else { "catalog" });
+    let regions = catalog_coverage(out, global.get("outlines").map(String::as_str), ready, &dir)?;
     let credits = pipeline::rules::catalog_credits(&regions, &unit_extents(out, &base));
     eprintln!("catalog: {} regions, {} of {} credits", regions.len(), credits.len(), pipeline::rules::CREDITS.len());
     // Only what the map reads: build sources (the planet's pieces, sets and road values) stay out,
@@ -839,7 +845,6 @@ fn catalog(out: &mut Out, held: bool) -> Result<()> {
         let size = std::fs::metadata(out.path(n)).with_context(|| format!("{l}: {n} is missing on the NAS"))?.len();
         files.insert(l.clone(), serde_json::json!({"file": n, "size": size, "fmt": 1}));
     }
-    let dir = out.root().join(if held { "catalog-held" } else { "catalog" });
     std::fs::create_dir_all(&dir)?;
     let n = store::catalog::next_n(&dir)?;
     let cat = serde_json::json!({
@@ -868,13 +873,15 @@ fn catalog(out: &mut Out, held: bool) -> Result<()> {
     Ok(())
 }
 
-/// The coverage a catalog records: the regions as their recipes are now, each outline entry
-/// simplified for drawing (pipeline::coverage::drawn), `osm:` ones from `outlines` (the catalog's
-/// own). The agent publishes once every region's units are built, so the regions are those the
-/// catalog's data is built for; the Regions panel shows recipes it lacks as still to come.
+/// The coverage a catalog records: the regions built as their recipes are now (`ready`; without it
+/// every recipe), each outline entry simplified for drawing (pipeline::coverage::drawn), `osm:`
+/// ones from `outlines` (the catalog's own); and a region not built yet as the last catalog in
+/// `catalogs` had it, if it had it (on the map as it was: its old outline, its units not yet rebuilt),
+/// in the recipes' order. So the regions are those the catalog's data is built for; the Regions
+/// panel shows a recipe it lacks, or has with another outline, as still to come.
 /// A read that fails (the NAS) fails the catalog, to be tried again, rather than record a region
 /// without its outline or leave a region out.
-fn catalog_coverage(out: &Out, outlines: Option<&str>) -> Result<Vec<pipeline::coverage::DrawnRegion>> {
+fn catalog_coverage(out: &Out, outlines: Option<&str>, ready: Option<&BTreeSet<String>>, catalogs: &Path) -> Result<Vec<pipeline::coverage::DrawnRegion>> {
     let dir = out.root().join("inputs/regions");
     std::fs::read_dir(&dir).with_context(|| format!("the regions ({})", dir.display()))?;
     let (recipes, bad) = pipeline::agent::recipes::load(&dir);
@@ -887,7 +894,19 @@ fn catalog_coverage(out: &Out, outlines: Option<&str>) -> Result<Vec<pipeline::c
         Some(c) => Some(pipeline::outlines::Outlines::open(&out.path(c)).context("the pass's outlines")?),
         None => None,
     };
-    pipeline::coverage::drawn(&recipes, outlines.as_ref(), &out.root().join("inputs/outlines"))
+    let Some(ready) = ready else { return pipeline::coverage::drawn(&recipes, outlines.as_ref(), &out.root().join("inputs/outlines")) };
+    let built: Vec<_> = recipes.iter().filter(|r| ready.contains(&r.id)).cloned().collect();
+    let mut drawn: BTreeMap<String, pipeline::coverage::DrawnRegion> = pipeline::coverage::drawn(&built, outlines.as_ref(), &out.root().join("inputs/outlines"))?.into_iter().map(|d| (d.id.clone(), d)).collect();
+    let last = store::catalog::latest(catalogs).with_context(|| format!("the last catalog in {}", catalogs.display()))?;
+    let had: BTreeMap<String, pipeline::coverage::DrawnRegion> = last
+        .and_then(|c| c.coverage.get("regions").and_then(|v| serde_json::from_value::<Vec<pipeline::coverage::DrawnRegion>>(v.clone()).ok()))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| (d.id.clone(), d))
+        .collect();
+    let kept = recipes.iter().filter(|r| !ready.contains(&r.id) && had.contains_key(&r.id)).count();
+    eprintln!("catalog: {} regions built as they are now, {kept} as the last catalog had them", drawn.len());
+    Ok(recipes.iter().filter_map(|r| drawn.remove(&r.id).or_else(|| had.get(&r.id).cloned())).collect())
 }
 
 /// Where each built unit's ways are (E7): its summary's extent, as units_meta left the summaries in

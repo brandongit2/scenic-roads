@@ -419,6 +419,10 @@ pub struct Agent {
     beaten: Option<Instant>,
     /// A helper's: the bytes its cheap caches held (room::cheap_bytes) and when they were counted.
     cheap: Option<(Instant, u64)>,
+    /// The last catalog's number and its regions' outline entries, by id (`on_map`).
+    last_catalog: std::cell::RefCell<Option<(u64, BTreeMap<String, Vec<String>>)>>,
+    /// The regions the last plan would publish as built (build::Plan::ready), for the checklist.
+    ready: std::cell::RefCell<Vec<String>>,
 }
 
 /// The last plan's view, kept for the heartbeat between plans.
@@ -466,7 +470,7 @@ impl Agent {
         } else {
             None
         };
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, lease: None, beaten: None, cheap: None })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, running: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), _lock: lock, o, me, claims_fresh: None, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, lease: None, beaten: None, cheap: None, last_catalog: Default::default(), ready: Default::default() })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1470,7 +1474,13 @@ impl Agent {
         } else if inputs.get("keys").map(String::as_str) == Some("?") {
             waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "inputs/keys.env can't be read now".into() });
         }
-        let mut plan = build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref());
+        // The regions the map's catalog has (or the held one's, when catalogs are held for review)
+        // and how long ago it went out: what the plan publishes regions by.
+        let (on_map, since_publish) = self.on_map(&root.join(if held { "catalog-held" } else { "catalog" }), &recipes);
+        let planned = build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), build::Rounds { each: &covs.each, on_map: &on_map, since_publish });
+        let ready = planned.ready;
+        *self.ready.borrow_mut() = ready.clone();
+        let mut plan = planned.work;
         // A unit's piece's size (content-named files never change: each looked up once).
         let size = |u: &str| {
             let Some(c) = manifest.get(&format!("sources/osm/{date}/pieces/{}", u.replace('/', "-"))) else { return u64::MAX };
@@ -1512,13 +1522,17 @@ impl Agent {
                     waiting.push(Waiting { step: None, what: build::PUBLISH.into(), why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into() });
                     continue;
                 }
-                let mut j = job("catalog-held".into(), "Publishing the new map data, held for review", "catalog", vec!["--held".into()], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
+                let mut j = job("catalog-held".into(), "Publishing the new map data, held for review", "catalog", vec!["--held".into(), "--ready".into(), ready.join(",")], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
                 j.needs = Needs { cpu: false, nas: true, home: false };
                 jobs.push(j);
                 continue;
             }
             let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail") && !t.ends_with("-root")).collect();
             extra.extend(self.step_args(&w.step, date));
+            // (The regions a catalog records as built: the plan's.)
+            if w.step == "catalog" {
+                extra.extend(["--ready".to_string(), ready.join(",")]);
+            }
             let n = w.targets.len();
             // "3 areas", or "8 of 480 areas" for a batch.
             let areas = if n == total { format!("{n} area{}", if n == 1 { "" } else { "s" }) } else { format!("{n} of {total} areas") };
@@ -1588,7 +1602,7 @@ impl Agent {
         let Ok(covs) = self.coverage(root, &manifest, &date, regions) else { return out };
         let cov = &covs.all;
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
-        out.extend(build::checklist(&cov, &date, &manifest, &keys, &input_digests(root), root.join("inputs/hold-catalog").exists(), reach.as_deref()));
+        out.extend(build::checklist(&cov, &date, &manifest, &keys, &input_digests(root), root.join("inputs/hold-catalog").exists(), reach.as_deref(), &self.ready.borrow()));
         out
     }
 
@@ -1642,6 +1656,24 @@ impl Agent {
         // (Not kept when the outline files couldn't be listed: made again next time.)
         *self.coverage.borrow_mut() = key.map(|k| (k, c.clone()));
         Ok(c)
+    }
+
+    /// The regions the last catalog in `dir` has, by id: whether as its recipe is now (same outline
+    /// entries); and how long ago it went out (seconds, by its file's time). Read once per catalog;
+    /// none (nothing on the map: every region new) when there's none, or it can't be read now.
+    fn on_map(&self, dir: &Path, recipes: &[recipes::Recipe]) -> (BTreeMap<String, bool>, Option<u64>) {
+        let Some(n) = store::catalog::list(dir).ok().and_then(|ns| ns.first().copied()) else { return (BTreeMap::new(), None) };
+        let path = dir.join(store::catalog::file_name(n));
+        let Ok(at) = std::fs::metadata(&path).and_then(|m| m.modified()) else { return (BTreeMap::new(), None) };
+        let mut cached = self.last_catalog.borrow_mut();
+        if cached.as_ref().is_none_or(|c| c.0 != n) {
+            let Ok(cat) = store::catalog::read(&path) else { return (BTreeMap::new(), None) };
+            let regions: BTreeMap<String, Vec<String>> = cat.coverage.get("regions").and_then(serde_json::Value::as_array).into_iter().flatten().filter_map(|r| Some((r["id"].as_str()?.to_string(), serde_json::from_value(r["outline"].clone()).ok()?))).collect();
+            *cached = Some((n, regions));
+        }
+        let had = &cached.as_ref().unwrap().1;
+        let on_map = had.iter().map(|(id, outline)| (id.clone(), recipes.iter().any(|r| &r.id == id && &r.outline == outline))).collect();
+        (on_map, std::time::SystemTime::now().duration_since(at).ok().map(|d| d.as_secs()))
     }
 
     /// A newer app is installed locally (`../current` points elsewhere than the agent's folder).

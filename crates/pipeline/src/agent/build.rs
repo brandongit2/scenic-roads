@@ -1,7 +1,7 @@
 //! What the build Mac builds for the regions (docs/plan.md §6, Job keys; §8, Order): per z3 pack,
 //! the terrain and then the slope of its z6 tiles near the coverage; base(U) for every unit whose
-//! piece meets the coverage; pack(T) for the z6 tiles near changed units, the lo packs above them;
-//! then a catalog.
+//! piece meets the coverage, a region at a time; pack(T) for the z6 tiles near changed units, the
+//! lo packs above them; then a catalog, as each region is done (`plan`).
 //!
 //! Each job's key is a hash of what it reads: its step's version, the coverage near it, and the
 //! content names (from the build manifest) of its inputs. A job whose key matches the one recorded
@@ -448,10 +448,6 @@ pub fn region_states(cov: &Coverage, regions: &[(String, Coverage)], date: &str,
         .collect()
 }
 
-/// The work there is, in order, for the coverage `cov`, the pass of `date`, the build manifest
-/// `m` (logical → content) and what was done (`done`).
-/// `inputs`: digests of what jobs read from `inputs/` (not in the manifest), by name:
-/// "ferries-freq" (the ferry timetables).
 /// Terrain's and slope's targets (their z3 packs near the coverage), each with its key, done or not.
 pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>) -> (Vec<(String, String)>, Vec<(String, String)>) {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
@@ -469,79 +465,169 @@ pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>) -> (V
     (terrain, slope)
 }
 
-pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>) -> Vec<Work> {
+/// How long after a catalog the next goes out while the units are still being built (docs/plan.md
+/// §8, Order): a round (the slope and tree cover of the regions it publishes, the map tiles near
+/// what changed, the road index, rail stops, a catalog) takes 5 to 10 minutes, a tenth of this.
+/// After the last unit, at once.
+pub const PUBLISH_EVERY_S: u64 = 3600;
+
+/// What the plan builds the regions by, one at a time, and publishes them by, as they're done:
+/// each region's own coverage, as the recipes list them (crate::coverage::Coverage::by_region); the
+/// regions the map's catalog has; and how long ago it went out.
+#[derive(Clone, Copy)]
+pub struct Rounds<'a> {
+    pub each: &'a [(String, Coverage)],
+    /// The last catalog's regions by id: whether it has the region as its recipe is now (false: an
+    /// older outline, the region on the map as it was).
+    pub on_map: &'a BTreeMap<String, bool>,
+    /// Seconds since the last catalog went out; None when none has.
+    pub since_publish: Option<u64>,
+}
+
+/// The work there is, in order, and the regions a catalog made now records as built (`ready`: every
+/// unit of theirs built as the coverage wants it, and their areas' slope and tree cover; the
+/// catalog keeps the others as the last one had them).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Plan {
+    pub work: Vec<Work>,
+    pub ready: Vec<String>,
+}
+
+/// The plan for the coverage `cov`, the pass of `date`, the build manifest `m` (logical → content)
+/// and what was done (`done`). `inputs`: digests of what jobs read from `inputs/` (not in the
+/// manifest), by name: "ferries-freq" (the ferry timetables), "regions" (the recipes). The agent runs
+/// the first work not waiting out a failure. The order (docs/plan.md §8, Order):
+/// - the heritage sites the units read, then the terrain, every area of it (a unit's key reads the
+///   terrain near it: one built before would be built again);
+/// - the units, a region at a time (the regions the map hasn't at all first, the one with the
+///   fewest units left first), the slope and tree cover after them;
+/// - a round as a region is done, at most every PUBLISH_EVERY_S: its areas' slope and tree cover,
+///   the map tiles, the road index, rail stops and ferries, and a catalog with the regions done;
+/// - after the last unit, the same for everything, then the trains and the landmarks, a catalog
+///   after each.
+pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>, rounds: Rounds) -> Plan {
     let mut work = Vec::new();
     let stale = |map: &BTreeMap<String, String>, t: &str, k: &str| map.get(t).map(String::as_str) != Some(k);
+    let push = |work: &mut Vec<Work>, step: &str, targets: Vec<(String, String)>| {
+        if !targets.is_empty() {
+            work.push(Work { step: step.into(), targets });
+        }
+    };
 
     // The heritage sites and designated areas the units read: first, once per pass and coverage (one
-    // job, so the M1's helper builds units as soon as the terrain is there, while the build Mac runs
-    // slope and tree cover). Not waited for: terrain still runs while it waits out a failure.
+    // job, so a helper's units wait only for the terrain). Not waited for: terrain still runs while
+    // it waits out a failure.
     let sites = heritage_sites_work(cov, date, m, done);
     let sites_pending = sites.is_some();
     work.extend(sites);
 
-    // Terrain, then slope, per z3 pack.
+    // Terrain, every area of it, per z3 pack.
     let (terrain, slope) = terrain_slope_targets(cov, m);
     let terrain: Vec<(String, String)> = terrain.into_iter().filter(|(t, k)| stale(&done.terrain, t, k)).collect();
+    if !terrain.is_empty() {
+        push(&mut work, "terrain", terrain);
+        return Plan { work, ready: Vec::new() };
+    }
+    // Slope (its key changes when the terrain does) and the tree cover layers, per z3 tile: what a
+    // region needs before it's published.
     let slope: Vec<(String, String)> = slope.into_iter().filter(|(t, k)| stale(&done.slope, t, k)).collect();
-    let had_terrain = !terrain.is_empty();
-    if had_terrain {
-        work.push(Work { step: "terrain".into(), targets: terrain });
-    }
-    // Slope waits for the terrain it reads (its key changes when terrain does).
-    if !had_terrain && !slope.is_empty() {
-        work.push(Work { step: "slope".into(), targets: slope });
-    }
-    if had_terrain {
-        return work;
-    }
-    // The tree cover layers per z3 tile, before the build Mac's units (a helper's run meanwhile: a
-    // canopy square both want is downloaded once, under a lock in the store). (Listed, not waited
-    // for: units still run while a trees job waits out a failure.)
-    work.extend(trees_work(cov, m, done));
+    let trees: Vec<(String, String)> = crate::treepacks::targets(cov, m).into_iter().filter(|(t, k)| done.trees.get(t) != Some(k)).collect();
 
-    // The units wait for the heritage sites.
-    if sites_pending || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources")) {
-        return work;
-    }
+    // The units wait for the heritage sites, the pass's reaches (which units the coverage builds)
+    // and the release's roadside buildings (a worldwide job, once): slope and tree cover meanwhile.
+    let waiting = sites_pending || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources")) || !m.contains_key(&crate::buildtiles::index_logical());
+    let Some(reach) = reach.filter(|_| !waiting) else {
+        push(&mut work, "slope", slope);
+        push(&mut work, "trees", trees);
+        return Plan { work, ready: Vec::new() };
+    };
 
-    // base(U): the units the coverage builds, once the pass's reaches say which.
-    if reach.is_none() {
-        return work;
+    // base(U): the units the coverage builds. Each region's: those it builds itself (a road of theirs
+    // may touch its outline), the ones of them not built as the coverage now wants, and its areas
+    // (the z3 tiles its slope and tree cover are in).
+    let units = unit_keys(cov, date, m, Some(reach), inputs);
+    let unit_stale: Vec<bool> = units.iter().map(|(u, k)| stale(&done.unit, &u.slash(), k)).collect();
+    struct Region<'a> {
+        id: &'a str,
+        stale: Vec<usize>,
+        areas: BTreeSet<String>,
     }
-    // The roadside buildings the units read: the release's tiles (a worldwide job, once).
-    if !m.contains_key(&crate::buildtiles::index_logical()) {
-        return work;
+    let regions: Vec<Region> = rounds
+        .each
+        .iter()
+        .map(|(id, rc)| {
+            let stale = (0..units.len()).filter(|&i| unit_stale[i] && builds(rc, reach, units[i].0)).collect();
+            let areas = (0..8u32).flat_map(|x| (0..8u32).map(move |y| (x, y))).filter(|&(x, y)| rc.meets_rect(grown_e7(3, x, y, 20.0))).map(|(x, y)| format!("3/{x}/{y}")).collect();
+            Region { id, stale, areas }
+        })
+        .collect();
+    let left: BTreeSet<&str> = slope.iter().chain(&trees).map(|t| t.0.as_str()).collect();
+    let ready: Vec<String> = regions.iter().filter(|r| r.stale.is_empty() && r.areas.iter().all(|a| !left.contains(a.as_str()))).map(|r| r.id.to_string()).collect();
+
+    // The units a region at a time: those the map hasn't at all first, then those it has (redrawn,
+    // or their units' keys changed: on the map as they were meanwhile); of each, the one with the
+    // fewest left first, so regions are done (and published) as soon as they can be. A region's
+    // units neighbours together (`spatial_order`), so the downloads and caches one fills serve the
+    // next; a unit two regions share comes with the first.
+    let mut order: Vec<&Region> = regions.iter().filter(|r| !r.stale.is_empty()).collect();
+    order.sort_by_key(|r| (rounds.on_map.contains_key(r.id), r.stale.len(), r.stale.iter().map(|&i| spatial_order(units[i].0)).min(), r.id));
+    let mut taken = vec![false; units.len()];
+    let mut unit_work: Vec<(String, String)> = Vec::new();
+    let all_stale: Vec<usize> = (0..units.len()).filter(|&i| unit_stale[i]).collect();
+    // (A unit in no region's own coverage, but the whole's, last: none should be.)
+    for mine in order.iter().map(|r| r.stale.clone()).chain([all_stale]) {
+        let mut mine: Vec<usize> = mine.into_iter().filter(|&i| !taken[i]).collect();
+        mine.sort_by_key(|&i| spatial_order(units[i].0));
+        for i in mine {
+            taken[i] = true;
+            unit_work.push((units[i].0.slash(), units[i].1.clone()));
+        }
     }
-    let units = unit_keys(cov, date, m, reach, inputs);
-    let mut stale_units: Vec<(Unit, String)> = units.iter().filter(|(u, k)| stale(&done.unit, &u.slash(), k)).cloned().collect();
-    // Neighbours together (by the 10° canopy square they're in, then by tile), so the downloads and
-    // caches one unit fills serve the next (the manifest's order, "6-1…", "6-10…", "6-2…", jumps
-    // about the globe).
-    stale_units.sort_by_key(|(u, _)| spatial_order(*u));
-    let stale_units: Vec<(String, String)> = stale_units.into_iter().map(|(u, k)| (u.slash(), k)).collect();
-    if !stale_units.is_empty() {
-        work.push(Work { step: "unit".into(), targets: stale_units });
-        return work;
+    // Slope and tree cover in the same order: the areas of the region built first, first.
+    let rank = |t: &(String, String)| order.iter().position(|r| r.areas.contains(&t.0)).unwrap_or(usize::MAX);
+    let (mut slope, mut trees) = (slope, trees);
+    slope.sort_by_key(rank);
+    trees.sort_by_key(rank);
+
+    // A round: when a region is done that the map hasn't as it is now, at most every
+    // PUBLISH_EVERY_S while units are left, and after the last unit. First the slope and tree cover
+    // its regions' areas lack (after the last unit, all that's left), then what isn't the units'
+    // own and goes out with them: what the coverage no longer builds pruned, the roads' chain (the
+    // map tiles, the road index, rail stops and ferries, the world-level terrain and slope) and a
+    // catalog. After the last unit the trains' and the landmarks' chains follow, each with a
+    // catalog after it; they don't wait for each other.
+    let last = unit_work.is_empty();
+    let publish: Vec<&Region> = regions.iter().filter(|r| r.stale.is_empty() && rounds.on_map.get(r.id) != Some(&true)).collect();
+    let due = last || (!publish.is_empty() && rounds.since_publish.is_none_or(|s| s >= PUBLISH_EVERY_S));
+    if due {
+        let now = |t: &(String, String)| last || publish.iter().any(|r| r.areas.contains(&t.0));
+        let (slope_now, slope): (Vec<_>, Vec<_>) = slope.into_iter().partition(now);
+        let (trees_now, trees): (Vec<_>, Vec<_>) = trees.into_iter().partition(now);
+        push(&mut work, "slope", slope_now);
+        push(&mut work, "trees", trees_now);
+        // (Listed after them, not held back: while one waits out a failure, the others publish.)
+        match prune_units(cov, date, m, &units) {
+            Some(w) => work.push(w),
+            None => match roads_chain(date, m, done, inputs, Some(reach)) {
+                Some(w) => work.push(w),
+                None => work.extend(catalog_work(m, done, inputs, &ready)),
+            },
+        }
+        if last {
+            work.extend(rail_chain(cov, date, m, done, inputs));
+            work.extend(landmarks_chain(cov, date, m, done));
+        }
+        // The units after the round: a helper's, and this Mac's while the round's work is another's
+        // or waits out a failure.
+        push(&mut work, "unit", unit_work);
+        push(&mut work, "slope", slope);
+        push(&mut work, "trees", trees);
+    } else {
+        push(&mut work, "unit", unit_work);
+        push(&mut work, "slope", slope);
+        push(&mut work, "trees", trees);
     }
-    // What the coverage no longer builds leaves the manifest (and so the next catalog).
-    if let Some(w) = prune_units(cov, date, m, &units) {
-        work.push(w);
-        return work;
-    }
-    // After the units, three chains that don't wait for each other: the roads', then a catalog
-    // once it's done (new roads with the landmarks and trains a day as they were; another catalog
-    // follows each of the others), then the rail service's, then the landmarks'. The agent runs
-    // the first of these not waiting out a failure, so a landmark or rail feed job failing
-    // (Wikidata, a pageview dump or an operator's server down) doesn't hold up the roads, nor the
-    // roads the others.
-    match roads_chain(date, m, done, inputs, reach) {
-        Some(w) => work.push(w),
-        None => work.extend(catalog_work(m, done, inputs)),
-    }
-    work.extend(rail_chain(cov, date, m, done, inputs));
-    work.extend(landmarks_chain(cov, date, m, done));
-    work
+    Plan { work, ready }
 }
 
 /// Where a unit comes in a run of units: by the 10° square its tile's centre is in (column, then
@@ -550,12 +636,6 @@ fn spatial_order(u: Unit) -> (i32, i32, u32, u32) {
     let b = crate::hipack::tile_bounds(u.z, u.x, u.y);
     let (lon, lat) = ((b[0] as f64 + b[2] as f64) / 2.0 * 1e-7, (b[1] as f64 + b[3] as f64) / 2.0 * 1e-7);
     ((lon / 10.0).floor() as i32, -(lat / 10.0).floor() as i32, u.x, u.y)
-}
-
-/// The tree cover layers of the z3 tiles whose coverage changed (crate::treepacks).
-fn trees_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
-    let stale: Vec<(String, String)> = crate::treepacks::targets(cov, m).into_iter().filter(|(t, k)| done.trees.get(t) != Some(k)).collect();
-    (!stale.is_empty()).then(|| Work { step: "trees".into(), targets: stale })
 }
 
 /// The rail service's chain (crate::rail), its first stale step (`rail_next`).
@@ -988,7 +1068,8 @@ fn remaining(done: &Keys, next: impl Fn(&Keys) -> Option<Work>) -> Vec<Work> {
 /// heritage sites, terrain, slope, tree cover, the areas, the map tiles, the road index, rail stops
 /// and ferries, trains a day, the landmarks, publishing.
 /// `held`: the catalog is held for review (inputs/hold-catalog): publishing is its held copy.
-pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, held: bool, reach: Option<&Reaches>) -> Vec<Step> {
+/// `ready`: the regions a catalog would record as built now (`Plan::ready`).
+pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, held: bool, reach: Option<&Reaches>, ready: &[String]) -> Vec<Step> {
     let count = |all: &[(String, String)], map: &BTreeMap<String, String>| all.iter().filter(|(t, k)| map.get(t) == Some(k)).count();
     let per = |what: &str, steps: &[&str], all: &[(String, String)], map: &BTreeMap<String, String>, unit: &str, known: bool| Step {
         what: what.into(),
@@ -1037,7 +1118,7 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     let mut marks = group(LANDMARKS, &["pois", "peaks", "items", "heritage", "marks", "overlays"], pieces.then_some(landmarks.len()));
     marks.next = next_of(&landmarks);
     out.push(marks);
-    let key = catalog_key(m, inputs);
+    let key = catalog_key(m, inputs, ready);
     let publish_left = if held { done.catalog_held.as_deref() != Some(key.as_str()) } else { done.catalog.as_deref() != Some(key.as_str()) } as usize;
     // (Its one job is the line itself: no `next`.)
     out.push(group(PUBLISH, &["catalog", "catalog-held"], built.then_some(publish_left)));
@@ -1045,19 +1126,20 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
 }
 
 /// A catalog when what it would list or record has changed since the last one (not while the
-/// regions can't be read: `inputs` "regions" "?").
-fn catalog_work(m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
+/// regions can't be read: `inputs` "regions" "?"). `ready`: the regions it records as built
+/// (`Plan::ready`).
+fn catalog_work(m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, ready: &[String]) -> Option<Work> {
     if inputs.get("regions").map(String::as_str) == Some("?") {
         return None;
     }
-    let k = catalog_key(m, inputs);
+    let k = catalog_key(m, inputs, ready);
     (done.catalog.as_deref() != Some(k.as_str())).then(|| Work { step: "catalog".into(), targets: vec![("catalog".into(), k)] })
 }
 
-/// What a catalog would list and record, hashed: the served files' logical and content names, and
-/// the regions (`inputs` "regions": their recipes and outline files), so a region renamed, or drawn
-/// inside another, gets a catalog that records it.
-fn catalog_key(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, String>) -> String {
+/// What a catalog would list and record, hashed: the served files' logical and content names, the
+/// regions (`inputs` "regions": their recipes and outline files), so a region renamed, or drawn
+/// inside another, gets a catalog that records it, and which of them it records as built (`ready`).
+pub fn catalog_key(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, String>, ready: &[String]) -> String {
     let mut served: Vec<String> = m
         .iter()
         .filter(|(l, _)| {
@@ -1066,6 +1148,7 @@ fn catalog_key(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, String>) 
         .map(|(l, c)| format!("{l}={c}"))
         .collect();
     served.push(format!("regions {}", inputs.get("regions").map(String::as_str).unwrap_or("-")));
+    served.push(format!("ready {}", ready.join(",")));
     let refs: Vec<&str> = served.iter().map(String::as_str).collect();
     h(&refs)
 }
@@ -1088,15 +1171,20 @@ mod tests {
         r
     }
 
-    // The planner with the tests' reaches.
+    // The planner with the tests' reaches, nothing on the map yet: its work.
     fn plan(c: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Vec<Work> {
-        super::plan(c, date, m, done, inputs, Some(&reach()))
+        plan_with(c, date, m, done, inputs, &BTreeMap::new(), None).work
+    }
+    fn plan_with(c: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, on_map: &BTreeMap<String, bool>, since_publish: Option<u64>) -> Plan {
+        let each = c.by_region();
+        super::plan(c, date, m, done, inputs, Some(&reach()), Rounds { each: &each, on_map, since_publish })
     }
     fn unit_keys(c: &Coverage, date: &str, m: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
         super::unit_keys(c, date, m, Some(&reach()), &BTreeMap::new())
     }
     fn checklist(c: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, held: bool) -> Vec<Step> {
-        super::checklist(c, date, m, done, inputs, held, Some(&reach()))
+        let ready = plan_with(c, date, m, done, inputs, &BTreeMap::new(), None).ready;
+        super::checklist(c, date, m, done, inputs, held, Some(&reach()), &ready)
     }
 
     fn cov() -> Coverage {
@@ -1164,6 +1252,103 @@ mod tests {
         m.insert("layers/terrain/hi/6-28-16".into(), "layers/terrain/hi/6-28-16.3333333333333333.pack".into());
         let w = plan(&c, "2026-09-28", &m, &done, &BTreeMap::new());
         assert_eq!(w[0].step, "slope");
+    }
+
+    /// Three regions in Iceland, all in z3 tile 3/3/2: a (Reykjavik: unit 6/28/16), b (Akureyri and
+    /// Egilsstaðir: 6/29/16 and 6/30/16) and c (Vík: 6/31/16); their pieces and reaches, the units'
+    /// inputs, and the heritage sites and the terrain done.
+    fn three() -> (Coverage, Reaches, BTreeMap<String, String>, Keys) {
+        let d = tempfile::tempdir().unwrap();
+        let r = |id: &str, places: &[&str]| Recipe { id: id.into(), name: id.to_uppercase(), outline: places.iter().map(|p| format!("place:{p},20")).collect() };
+        let c = Coverage::from_recipes(&[r("a", &["-21.9,64.13"]), r("b", &["-18.1,65.68", "-14.4,65.26"]), r("c", &["-19.0,63.42"])], None, d.path()).unwrap();
+        let mut reach = Reaches { fmt: 1, date: "d".into(), ..Default::default() };
+        for (u, b) in [("6/28/16", e7box(-22.0, 64.0, -21.7, 64.16)), ("6/29/16", e7box(-18.3, 65.6, -17.9, 65.8)), ("6/30/16", e7box(-14.6, 65.2, -14.2, 65.35)), ("6/31/16", e7box(-19.2, 63.35, -18.8, 63.5))] {
+            reach.units.insert(u.into(), Reach { owned: Some(b), long: vec![] });
+        }
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        for u in ["6-28-16", "6-29-16", "6-30-16", "6-31-16"] {
+            m.insert(format!("sources/osm/d/pieces/{u}"), format!("sources/osm/d/pieces/{u}.4444444444444444.osm.pbf"));
+        }
+        unit_inputs(&mut m, "d");
+        let mut done = Keys::default();
+        loop {
+            let w = super::plan(&c, "d", &m, &done, &BTreeMap::new(), Some(&reach), Rounds { each: &c.by_region(), on_map: &BTreeMap::new(), since_publish: None }).work;
+            match w[0].step.as_str() {
+                "heritage-sites" => heritage_done(&mut m, &mut done, "d", &w[0]),
+                "terrain" => {
+                    done.record("terrain", &w[0].targets);
+                    m.insert("layers/terrain/lo/3-3-2".into(), "layers/terrain/lo/3-3-2.1111111111111111.pack".into());
+                }
+                _ => break,
+            }
+        }
+        (c, reach, m, done)
+    }
+
+    #[test]
+    fn regions_are_built_one_at_a_time_those_the_map_lacks_first() {
+        let (c, reach, m, done) = three();
+        let each = c.by_region();
+        let plan = |on_map: &BTreeMap<String, bool>| super::plan(&c, "d", &m, &done, &BTreeMap::new(), Some(&reach), Rounds { each: &each, on_map, since_publish: None });
+        let units = |p: &Plan| p.work.iter().find(|w| w.step == "unit").map(|w| w.targets.iter().map(|t| t.0.clone()).collect::<Vec<_>>()).unwrap_or_default();
+        // Nothing on the map: the regions with the fewest units left first (a and c, one each: by
+        // place), then b's two together; their slope and tree cover after them.
+        let p = plan(&BTreeMap::new());
+        assert_eq!(p.work.iter().map(|w| w.step.as_str()).collect::<Vec<_>>(), ["unit", "slope", "trees"]);
+        assert_eq!(units(&p), ["6/28/16", "6/31/16", "6/29/16", "6/30/16"]);
+        assert!(p.ready.is_empty());
+        // a and c on the map already (as they are, or redrawn): b first, though it has more left.
+        let on: BTreeMap<String, bool> = [("a".to_string(), true), ("c".to_string(), false)].into();
+        assert_eq!(units(&plan(&on)), ["6/29/16", "6/30/16", "6/28/16", "6/31/16"]);
+    }
+
+    #[test]
+    fn a_region_done_is_published_in_a_round_at_most_hourly() {
+        let (c, reach, mut m, mut done) = three();
+        let each = c.by_region();
+        let plan = |m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>, since: Option<u64>| super::plan(&c, "d", m, done, &BTreeMap::new(), Some(&reach), Rounds { each: &each, on_map, since_publish: since });
+        let steps = |p: &Plan| p.work.iter().map(|w| w.step.clone()).collect::<Vec<_>>();
+        let key = |m: &BTreeMap<String, String>, u: &str| super::unit_keys(&c, "d", m, Some(&reach), &BTreeMap::new()).into_iter().find(|(x, _)| x.slash() == u).unwrap().1;
+        let build = |m: &mut BTreeMap<String, String>, done: &mut Keys, u: &str| {
+            done.record("unit", &[(u.to_string(), key(m, u))]);
+            let d = u.replace('/', "-");
+            m.insert(format!("base/{d}"), format!("base/{d}.6666666666666666.base"));
+            m.insert(format!("global/roads/{d}"), format!("global/roads/{d}.7777777777777777.roads"));
+        };
+        // Reykjavik's unit built: a is done, the map lacks it, nothing published yet: a round. Its
+        // area's slope and tree cover first, then the map tiles, then a catalog; the units after.
+        build(&mut m, &mut done, "6/28/16");
+        let p = plan(&m, &done, &BTreeMap::new(), None);
+        assert_eq!(steps(&p), ["slope", "trees", "roadunits", "unit"]);
+        assert!(p.ready.is_empty(), "its area's slope and tree cover aren't made yet");
+        done.record("slope", &p.work[0].targets);
+        done.record("trees", &p.work[1].targets);
+        let mut p = plan(&m, &done, &BTreeMap::new(), None);
+        assert_eq!(p.ready, ["a"]);
+        while p.work[0].step != "catalog" {
+            assert!(["roadunits", "pack", "lo", "stations", "terrain-root"].contains(&p.work[0].step.as_str()), "{:?}", steps(&p));
+            done.record(&p.work[0].step, &p.work[0].targets);
+            p = plan(&m, &done, &BTreeMap::new(), None);
+        }
+        assert_eq!(steps(&p), ["catalog", "unit"]);
+        done.record("catalog", &p.work[0].targets);
+        // Published: the units again, and no round while none is done that the map lacks.
+        let on: BTreeMap<String, bool> = [("a".to_string(), true)].into();
+        assert_eq!(steps(&plan(&m, &done, &on, Some(60))), ["unit"]);
+        // c done ten minutes later: it waits for the hour; then a round, with a and c.
+        build(&mut m, &mut done, "6/31/16");
+        assert_eq!(steps(&plan(&m, &done, &on, Some(600))), ["unit"]);
+        let p = plan(&m, &done, &on, Some(PUBLISH_EVERY_S));
+        assert_eq!(p.ready, ["a", "c"]);
+        assert_eq!(p.work[0].step, "roadunits");
+        assert_eq!(p.work.last().unwrap().step, "unit");
+        // The last unit: a round at once, whatever the hour, with every region.
+        build(&mut m, &mut done, "6/29/16");
+        build(&mut m, &mut done, "6/30/16");
+        let p = plan(&m, &done, &on, Some(60));
+        assert_eq!(p.ready, ["a", "b", "c"]);
+        assert_eq!(p.work[0].step, "roadunits");
+        assert!(!steps(&p).contains(&"unit".to_string()));
     }
 
     #[test]
@@ -1267,7 +1452,7 @@ mod tests {
         assert_eq!(line(&l, TILES).total, None, "no areas built: the tiles aren't known yet");
         assert_eq!(line(&l, SITES).left, Some(1));
         // Terrain, slope, the heritage sites and the area done.
-        for step in ["heritage-sites", "terrain", "slope", "trees", "unit"] {
+        for step in ["heritage-sites", "terrain", "unit", "slope", "trees"] {
             let w = plan(&c, "d", &m, &done, &BTreeMap::new());
             assert_eq!(w[0].step, step);
             if step == "heritage-sites" {
@@ -1291,7 +1476,7 @@ mod tests {
         assert!(roads.next.iter().all(|n| !n.is_empty() && n != label("catalog")), "{:?}", roads.next);
         assert_eq!(line(&l, PUBLISH).left, Some(1));
         // Held for review: publishing is the held catalog.
-        let k = catalog_key(&m, &BTreeMap::new());
+        let k = catalog_key(&m, &BTreeMap::new(), &["r".to_string()]);
         done.catalog_held = Some(k);
         assert!(line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), true), PUBLISH).finished());
         assert!(!line(&checklist(&c, "d", &m, &done, &BTreeMap::new(), false), PUBLISH).finished());
@@ -1371,7 +1556,7 @@ mod tests {
         unit_inputs(&mut m, "d");
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         m.insert("sources/osm/d/pieces/6-40-20".into(), "sources/osm/d/pieces/6-40-20.5555555555555555.osm.pbf".into());
-        for step in ["heritage-sites", "terrain", "slope", "trees", "unit"] {
+        for step in ["heritage-sites", "terrain", "unit", "slope", "trees"] {
             let w = plan(&c, "d", &m, &done, &BTreeMap::new());
             assert_eq!(w[0].step, step);
             if step == "heritage-sites" {
@@ -1505,11 +1690,11 @@ mod tests {
         unit_inputs(&mut m, "d");
         m.insert(crate::rail::CATALOGUE.into(), "sources/rail/catalogue.1111111111111111.csv".into());
         m.insert(crate::osmpass::set_name("d", "rail"), "sources/osm/d/sets/rail.2222222222222222.osm.pbf".into());
-        // Not before the units.
-        for step in ["heritage-sites", "terrain", "slope", "trees", "unit"] {
+        // Not before the units (after the last, listed after the regions' slope and tree cover).
+        for step in ["heritage-sites", "terrain", "unit", "slope", "trees"] {
             let w = plan(&c, "d", &m, &done, &BTreeMap::new());
             assert_eq!(w[0].step, step);
-            assert!(!w.iter().any(|x| x.step.starts_with("rail")), "{:?}", steps(&w));
+            assert_eq!(w.iter().any(|x| x.step.starts_with("rail")), matches!(step, "slope" | "trees"), "{:?}", steps(&w));
             if step == "heritage-sites" {
                 heritage_done(&mut m, &mut done, "d", &w[0]);
             } else {
@@ -1574,7 +1759,7 @@ mod tests {
         // Terrain, slope, the heritage sites and the unit done.
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         unit_inputs(&mut m, "d");
-        for step in ["heritage-sites", "terrain", "slope", "trees", "unit"] {
+        for step in ["heritage-sites", "terrain", "unit", "slope", "trees"] {
             let w = plan(&c, "d", &m, &done, &BTreeMap::new());
             assert_eq!(w[0].step, step);
             if step == "heritage-sites" {
