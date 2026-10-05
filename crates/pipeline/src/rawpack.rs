@@ -88,6 +88,24 @@ impl Index {
         }
     }
 
+    /// The index to change and save (`Packer::commit`, `name_handed`): `load`, but an error when its
+    /// file is missing while the store holds archives (lost, or moved aside): one saved now would
+    /// name none of them, and the sweep would then delete them all. Nothing is changed until it's
+    /// back.
+    fn load_to_change(store: &Path) -> Result<Index> {
+        if let Err(e) = std::fs::metadata(store.join(INDEX)) {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                let archives = match std::fs::read_dir(store.join("packs")) {
+                    Ok(rd) => rd.flatten().any(|e| e.file_name().to_string_lossy().ends_with(".tiles")),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(e) => return Err(e).with_context(|| format!("list {}", store.join("packs").display())),
+                };
+                ensure!(!archives, "{} is missing, but its archives are there: put it back (nothing is changed until then)", store.join(INDEX).display());
+            }
+        }
+        Index::load(store)
+    }
+
     pub fn save(&self, store: &Path) -> Result<()> {
         std::fs::create_dir_all(store.join("packs"))?;
         crate::whole::write(&store.join(INDEX), &serde_json::to_vec_pretty(self)?)
@@ -569,7 +587,7 @@ impl Packer {
     fn commit(&mut self, f: impl FnOnce(&mut Index)) -> Result<()> {
         let missing = std::mem::take(&mut self.missing);
         let lock = crate::out::BuildLock::take(&self.root)?;
-        let mut ix = Index::load(&self.store)?;
+        let mut ix = Index::load_to_change(&self.store)?;
         f(&mut ix);
         // (Archives found missing, still so.)
         for (area, name) in missing {
@@ -602,9 +620,9 @@ impl Packer {
             std::fs::remove_file(self.dir.join("packs").join(&name)).ok();
         }
         // An archive on the NAS the index neither names nor lists to go, a day old: a helper's whose
-        // hand-off never came (its lease lapsed). Listed to go (GRACE later), as a replaced one.
-        // (Never when the index names nothing: read as none when its file was missing, every
-        // archive would go.)
+        // hand-off never came. Listed to go (GRACE later), as a replaced one. (Never from an index
+        // that was missing: `load_to_change` refuses one while there are archives; nor while the
+        // index names nothing, besides.)
         if let (false, Ok(rd)) = (named.is_empty(), std::fs::read_dir(self.store.join("packs"))) {
             let old = std::time::SystemTime::now() - std::time::Duration::from_secs(GRACE);
             for e in rd.flatten() {
@@ -629,12 +647,25 @@ pub fn name_handed(store: &Path, handed: &[(String, Pack)], _held: &crate::out::
     if handed.is_empty() {
         return Ok(0);
     }
-    let mut ix = Index::load(store)?;
+    let mut ix = Index::load_to_change(store)?;
     let mut n = 0;
     for (area, p) in handed {
         if !there(store, p) {
             eprintln!("rawpack: {} was handed over, but isn't on the NAS whole: not named", p.name);
             continue;
+        }
+        // (Its tiles its area's, all of them: one misfiled, or not an archive, would stop every job
+        // that reads the area. Its entries alone are read.)
+        match entries_of(&store.join("packs").join(&p.name)) {
+            Ok((_, es)) if es.iter().all(|e| area_of_key(e.key) == *area) => {}
+            Ok(_) => {
+                eprintln!("rawpack: {} was handed over for {area}, but has tiles of other areas: not named", p.name);
+                continue;
+            }
+            Err(e) => {
+                eprintln!("rawpack: {} was handed over, but can't be read ({e:#}): not named", p.name);
+                continue;
+            }
         }
         ix.gone.remove(&p.name);
         let l = ix.areas.entry(area.clone()).or_default();
@@ -645,6 +676,12 @@ pub fn name_handed(store: &Path, handed: &[(String, Pack)], _held: &crate::out::
     }
     ix.save(store)?;
     Ok(n)
+}
+
+/// The area of the tile an archive's key is (roadcore::archive::tile_key).
+fn area_of_key(key: u64) -> String {
+    let m = (1u64 << 29) - 1;
+    area((key >> 58) as u8, ((key >> 29) & m) as u32, (key & m) as u32)
 }
 
 /// Whether `a` is an area as `area` names one: `root`, or a z3 or z6 tile's `z-x-y`.
@@ -1099,6 +1136,51 @@ mod tests {
         let a = Archive::open(&store.join("packs").join(&ix.of("6-32-21")[1].name)).unwrap();
         assert_eq!((a.get(12, 2048, 1366), a.get(12, 2049, 1365), a.get(12, 2048, 1365)), (Some(&png()[..]), Some(&png()[..]), None));
         assert!(!named_for("6-32-21.0123456789ABCDEF.tiles", "6-32-21") && !named_for("6-32-2.0123456789abcdef.tiles", "6-32-21"));
+    }
+
+    #[test]
+    fn a_lost_index_changes_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, dir, root) = nas(d.path());
+        put(&dir, "12/2048/1365.png", &png(), 120);
+        pack_local(&dir, &store, &root, true).unwrap();
+        let named = Index::load(&store).unwrap().of("6-32-21")[0].name.clone();
+        // Its file gone (moved aside, say), the archives there: nothing packed, named or swept.
+        std::fs::rename(store.join(INDEX), d.path().join("index.json.aside")).unwrap();
+        put(&dir, "12/2050/1365.png", &png(), 120);
+        assert!(pack_local(&dir, &store, &root, true).unwrap_err().to_string().contains("is missing, but its archives are there"));
+        let lock = crate::out::BuildLock::take(&root).unwrap();
+        assert!(name_handed(&store, &[("6-32-21".into(), Pack { name: named.clone(), bytes: 1 })], &lock).is_err());
+        drop(lock);
+        assert!(!store.join(INDEX).exists() && store.join("packs").join(&named).exists());
+        // Put back: packing goes on (the area's archives merged as they grow).
+        std::fs::rename(d.path().join("index.json.aside"), store.join(INDEX)).unwrap();
+        assert_eq!(pack_local(&dir, &store, &root, true).unwrap(), 1);
+        let ix = Index::load(&store).unwrap();
+        assert!(ix.of("6-32-21").iter().any(|p| p.name == named) || ix.gone.contains_key(&named));
+    }
+
+    #[test]
+    fn a_handed_archive_of_another_areas_tiles_isnt_named() {
+        let d = tempfile::tempdir().unwrap();
+        let (store, dir, root) = nas(d.path());
+        let outbox = d.path().join("outbox");
+        std::fs::create_dir_all(&outbox).unwrap();
+        // (The build Mac's store has its index: one missing while there are archives isn't written.)
+        put(&dir, "8/128/85.png", &png(), 120);
+        pack_local(&dir, &store, &root, true).unwrap();
+        put(&dir, "12/2048/1365.png", &png(), 120);
+        pack_local_to(&dir, &store, &root, true, Some(outbox.clone()), &|_, _, _| {}).unwrap();
+        let raw: Vec<(String, Pack)> = crate::handoff::written_in(&outbox).unwrap().unwrap().into_iter().flat_map(|h| h.raw).collect();
+        // The same archive said to be another area's (renamed to match): not named; as its own, named.
+        let (area, p) = raw[0].clone();
+        let other = Pack { name: p.name.replacen(&area, "6-33-21", 1), bytes: p.bytes };
+        std::fs::copy(store.join("packs").join(&p.name), store.join("packs").join(&other.name)).unwrap();
+        let lock = crate::out::BuildLock::take(&root).unwrap();
+        assert_eq!(name_handed(&store, &[("6-33-21".into(), other)], &lock).unwrap(), 0);
+        assert_eq!(name_handed(&store, &[(area.clone(), p)], &lock).unwrap(), 1);
+        drop(lock);
+        assert!(Index::load(&store).unwrap().of("6-33-21").is_empty());
     }
 
     #[test]

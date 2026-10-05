@@ -61,6 +61,10 @@ pub fn nas_base(root: &Path) -> PathBuf {
     root.join("state/build/handoff")
 }
 
+/// The folder, under a base, of raw tiles' archives to name (`Handoff::raw` alone): a merge's that
+/// couldn't be named then, and those of a hand-off the coordinator didn't take (crate::coord).
+pub const RAW_AGAIN: &str = "raw-tiles";
+
 /// Where host `host`'s hand-offs go on the NAS.
 pub fn dir(root: &Path, host: &str) -> PathBuf {
     nas_base(root).join(host)
@@ -199,11 +203,15 @@ pub fn merge_from(root: &Path, scratch: &Path, bases: &[PathBuf]) -> Result<usiz
     }
     out.save_held(&lock).context("merge the hand-offs into the manifest")?;
     keys.save(root).context("merge the hand-offs into the job keys")?;
-    // The raw tiles' archives a helper put on the NAS, named in the raw store's index. (Best
-    // effort: the manifest and keys are saved, so a failure here mustn't have every hand-off merged
-    // again; an archive not named goes as an unnamed one does, its tiles fetched again some day.)
+    // The raw tiles' archives a helper put on the NAS, named in the raw store's index. (The manifest
+    // and keys are saved, so a failure here mustn't have every hand-off merged again: they're handed
+    // off again on their own, to the last base, for the next merge to name.)
     if let Err(e) = crate::rawpack::name_handed(&root.join("sources/aws-terrarium"), &raw, &lock) {
-        eprintln!("handoff: a helper's raw tiles' archives not named ({e:#}); they go as unnamed ones do");
+        eprintln!("handoff: a helper's raw tiles' archives not named now ({e:#}); tried again with the next merge");
+        // (Not this merge's error either: its markers must still be written.)
+        if let Some(Err(e)) = bases.last().map(|b| write(&b.join(RAW_AGAIN), &Handoff { raw: raw.clone(), ..Default::default() })) {
+            eprintln!("handoff: and not handed off again ({e:#}): they go as unnamed ones do");
+        }
     }
     for (d, n) in &last {
         crate::whole::write(&d.with_extension("merged"), n.as_bytes())?;

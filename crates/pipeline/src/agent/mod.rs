@@ -80,21 +80,24 @@ const HELPER_RESERVE: u64 = 15 << 30;
 
 /// The free space a helper's job of `step` needs: a terrain run's as on the build Mac (its area's
 /// archives copied here and merged); tree cover's the build Mac's reserve (it copies every canopy
-/// square its tile's coverage touches here first, ~2 GB each: tens of GB for a large tile); the
-/// others' `HELPER_RESERVE`.
+/// square its tile's coverage touches here first, ~2 GB each: tens of GB for a large tile); a
+/// task's ("tail": a unit's last steps, its files fetched from the coordinator) 5 GB; the others'
+/// `HELPER_RESERVE`.
 fn helper_need(step: &str) -> u64 {
     match step {
         "terrain" => room::RESERVE + TERRAIN_SPACE,
         "trees" => room::RESERVE,
+        "tail" => 5 << 30,
         _ => HELPER_RESERVE,
     }
 }
 
-/// The shared steps a helper asks for: those whose need (and its margin) its disk has free, or can,
-/// from the caches it may empty (`room`: `free` the disk's free bytes, `cheap` the caches' that
-/// `make_room` can delete). A Mac someone uses never fills up for a job.
+/// The work a helper asks for (the shared steps, and "tail" for tasks): what its disk has free for
+/// (a step's need and its margin), or can have, from the caches it may empty (`free` the disk's free
+/// bytes, `cheap` what `make_room` can delete there: room::helper_cheap_bytes). A job granted that
+/// still can't have its room once the caches are emptied is given back (`run_once`).
 fn helper_steps(free: u64, cheap: u64) -> Vec<String> {
-    claims::SHARED.iter().filter(|s| free.saturating_add(cheap) >= helper_need(s) + room::margin(helper_need(s))).map(|s| s.to_string()).collect()
+    claims::SHARED.iter().copied().chain(["tail"]).filter(|s| free.saturating_add(cheap) >= helper_need(s) + room::margin(helper_need(s))).map(str::to_string).collect()
 }
 
 /// What a terrain run needs past the others' room: its area's raw tiles held twice while they're
@@ -120,8 +123,9 @@ fn terrain_reads(id: &str, p: &Path) -> bool {
 /// The memory a shared step's job is expected to take (MB) before one has run for its target and
 /// said (`SCENIC_COSTS`): terrain's holds its area's shaded tiles (5.2 GB for 74,509 of them,
 /// 2026-10-05), and tree cover runs six workers at once, each with its block's canopy, so neither
-/// goes to a helper until its own run shows it fits; the rest, room to spare. (Candidates are
-/// offered by their piece's size, as units are: crate::coord::job_peak.)
+/// goes to a helper until its own run shows it fits; slope and peaks, room to spare; a step shared
+/// later, 1.5 GB until it's measured. (Units and candidates are offered by their piece's size:
+/// crate::coord::job_peak.)
 fn first_peak(step: &str) -> u64 {
     match step {
         "terrain" => 6000,
@@ -614,22 +618,29 @@ impl Agent {
             waiting.push(Waiting { step: None, what: "Building".into(), why });
             return Vec::new();
         }
-        // The steps its disk has room for (the caches' size counted at most every ten minutes:
-        // a walk of thousands of tiles).
+        // Not while a newer app waits to start: nothing would start, and the lease would go back
+        // as failed (its targets kept from this Mac for an hour).
+        if self.newer_app() {
+            waiting.push(Waiting { step: None, what: "Building".into(), why: "restarting into the newly installed app".into() });
+            return Vec::new();
+        }
+        // The work its disk has room for (what its caches can free counted at most every ten
+        // minutes, a walk of thousands of files, and again after a job or room-making).
         let cache = self.o.home.join("cache");
         let cheap = match self.cheap {
             Some((at, n)) if at.elapsed() < Duration::from_secs(600) => n,
             _ => {
-                let n = room::cheap_bytes(&cache);
+                let n = room::helper_cheap_bytes(&cache);
                 self.cheap = Some((Instant::now(), n));
                 n
             }
         };
-        let steps = helper_steps(room::disk_free(&self.o.home).unwrap_or(0), cheap);
-        if steps.is_empty() {
-            waiting.push(Waiting { step: None, what: "Building".into(), why: format!("the disk has too little room ({} GB free needed)", (HELPER_RESERVE + room::margin(HELPER_RESERVE)) >> 30) });
+        let can = helper_steps(room::disk_free(&self.o.home).unwrap_or(0), cheap);
+        if can.is_empty() {
+            let need = helper_need("tail");
+            waiting.push(Waiting { step: None, what: "Building".into(), why: format!("the disk has too little room ({:.1} GB free needed, with what its caches can free)", (need + room::margin(need)) as f64 / (1u64 << 30) as f64) });
+            return Vec::new();
         }
-        let can: Vec<String> = steps.into_iter().chain(["tail".to_string()]).collect();
         let ask = crate::coord::Ask { kind: "native".into(), label: Some(format!("{} (helper)", self.host)), can, mem_mb: helper_memory(), cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32), max: batch_size("unit"), app: Some(self.app.clone()), ..Default::default() };
         let Some(client) = self.client(root, waiting) else { return Vec::new() };
         let asked = client.ask(&ask);
@@ -713,6 +724,8 @@ impl Agent {
     /// recorded its targets, and what its units cost learned; a helper's: its result in its outbox
     /// folder, to send.
     fn end_lease(&mut self, ok: bool, note: &str) {
+        // (A job ended: what a helper's caches can free is counted again before it next asks.)
+        self.cheap = None;
         let pid = self.running.as_ref().map(|r| r.pgid as u32);
         match self.lease.take() {
             Some(Held::Own(id)) => {
@@ -1063,7 +1076,9 @@ impl Agent {
                     waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
                     continue;
                 }
-                if let Some(&(n, until)) = self.mem.retry.get(&spec.id) {
+                // (A helper's job came from the coordinator, which keeps a target it failed from it
+                // for an hour, doubling: no wait of its own on top.)
+                if let Some(&(n, until)) = self.mem.retry.get(&spec.id).filter(|_| !self.o.helper) {
                     if now_s() < until {
                         waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why: format!("failed {n} time{} in a row; trying again in {} min", if n == 1 { "" } else { "s" }, (until - now_s()).div_ceil(60)) });
                         continue;
@@ -1081,7 +1096,7 @@ impl Agent {
                 // refreshed only while a job runs.
                 let cache = self.o.home.join("cache");
                 let need = if self.o.helper {
-                    helper_need(spec.record.as_ref().map_or("", |w| w.step.as_str()))
+                    helper_need(spec.record.as_ref().map_or("tail", |w| w.step.as_str()))
                 } else if id.starts_with("osm-pass") {
                     PASS_SPACE.saturating_sub(dir_bytes(&cache.join("base"))).max(room::RESERVE)
                 } else if id.starts_with("terrain ") {
@@ -1095,8 +1110,22 @@ impl Agent {
                 if let Some(r) = &root {
                     match room::make_room(&cache, &r.join("sources"), need, margin, &|p| terrain_reads(&id, p)) {
                         Ok(0) => {}
-                        Ok(n) => eprintln!("agent: {} GB of cached canopy squares and terrain tiles deleted for {} GB free", n >> 30, (need + margin) >> 30),
+                        Ok(n) => {
+                            eprintln!("agent: {} GB of cached canopy squares and terrain tiles deleted for {} GB free", n >> 30, (need + margin) >> 30);
+                            self.cheap = None;
+                        }
                         Err(e) => eprintln!("agent: making room on the disk: {e:#}"),
+                    }
+                }
+                // A helper's job its disk still has no room for (the caches emptied as far as they
+                // could be): given back, not started on a Mac someone uses.
+                if self.o.helper {
+                    let free = room::disk_free(&self.o.home).unwrap_or(0);
+                    if free < need {
+                        let why = format!("too little room on its disk: {} GB free, {} GB needed", free >> 30, need >> 30);
+                        waiting.push(Waiting { step: None, what: what.clone(), why: why.clone() });
+                        self.end_lease(false, &why);
+                        continue;
                     }
                 }
                 // A job other workers may also do: its targets held first, by a lease in this Mac's
@@ -1948,11 +1977,12 @@ mod tests {
     #[test]
     fn a_helper_asks_only_for_what_its_disk_has_room_for() {
         let gb = |n: u64| n << 30;
-        // 20 GB free and 10 of caches it may empty: the 15 GB steps (and their margin), not tree
-        // cover's 30 nor a terrain run's 55.
-        assert_eq!(helper_steps(gb(20), gb(10)), ["slope", "unit", "pois", "peaks"]);
-        assert_eq!(helper_steps(gb(70), 0), claims::SHARED.to_vec());
-        assert!(helper_steps(gb(10), gb(5)).is_empty());
+        // 20 GB free and 10 of caches it may empty: the 15 GB steps (and their margin) and tasks, not
+        // tree cover's 30 nor a terrain run's 55.
+        assert_eq!(helper_steps(gb(20), gb(10)), ["slope", "unit", "pois", "peaks", "tail"]);
+        assert_eq!(helper_steps(gb(70), 0), [claims::SHARED.to_vec(), vec!["tail"]].concat());
+        assert_eq!(helper_steps(gb(10), gb(5)), ["tail"]);
+        assert!(helper_steps(gb(3), gb(2)).is_empty());
     }
 
     #[test]

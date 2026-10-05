@@ -31,7 +31,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   before), the one writer of the records (as before), the data plane (§4) and the broker of work
   (§5), on port 8090.
 - **Two kinds of work,** by what a worker can reach:
-  - **Jobs** of the plan (units), for workers that mount the NAS (the M1's agent). A job saves into
+  - **Jobs** of the plan (the shared steps': terrain, slope, tree cover, units, candidates and
+    peaks), for workers that mount the NAS (the M1's agent). A job saves into
     the store's content-named files as before; its record changes come back as one hand-off.
   - **Tasks** (`coord::task`), pure work a running job offers to any worker: programs run over a
     folder of files, giving files back. A task never needs the NAS: what it reads was staged on the
@@ -88,8 +89,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 
 - **Asking:** a worker sends its name, kind, the work it does (the shared steps' jobs, `tail`), the
   memory it spares, its cores and (an agent) its app (`/work/ask`). One that mounts the NAS is given
-  a job first (the most work for what it fetches), then a task; a web page, tasks. An agent on
-  another app than the build Mac's gets nothing (409, why in words) until both run the same.
+  a job first (the most work for what it fetches), then a task; a web page, tasks. An agent on an
+  older app than the build Mac's gets nothing (409, why in words) until it runs that one or a newer.
 - **Leases** (`coord::lease`) are timed on the coordinator's monotonic clock (clocks between devices
   don't matter), ten minutes, renewed by a beat each minute while the work goes on. A paused job
   doesn't beat, so its work may go to another; the build Mac's own jobs hold leases too, and one

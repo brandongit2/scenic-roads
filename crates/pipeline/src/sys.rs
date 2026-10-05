@@ -223,27 +223,35 @@ pub fn group_footprint() -> Option<u64> {
 }
 
 /// The most `group_footprint` since the last `reset_group_peak`, as a thread samples it four times
-/// a second (started by the first reset).
-static GROUP_PEAK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// a second (started by the first reset), under the lock; a sample taken before a reset is dropped
+/// (`GROUP_EPOCH`), so an earlier target's peak isn't counted in the next.
+static GROUP_PEAK: std::sync::Mutex<(u64, u64)> = std::sync::Mutex::new((0, 0));
 static SAMPLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// Starts the job's peak memory again (a target's start: `group_peak` is then that target's).
 pub fn reset_group_peak() {
-    use std::sync::atomic::Ordering::Relaxed;
     let sampled = *SAMPLED.get_or_init(|| {
         group_footprint().is_some()
             && std::thread::Builder::new()
                 .name("group-peak".into())
                 .spawn(|| loop {
+                    let epoch = GROUP_PEAK.lock().map_or(0, |g| g.0);
                     if let Some(v) = group_footprint() {
-                        GROUP_PEAK.fetch_max(v, Relaxed);
+                        if let Ok(mut g) = GROUP_PEAK.lock() {
+                            if g.0 == epoch {
+                                g.1 = g.1.max(v);
+                            }
+                        }
                     }
                     std::thread::sleep(std::time::Duration::from_millis(250));
                 })
                 .is_ok()
     });
     if sampled {
-        GROUP_PEAK.store(group_footprint().unwrap_or(0), Relaxed);
+        let now = group_footprint().unwrap_or(0);
+        if let Ok(mut g) = GROUP_PEAK.lock() {
+            *g = (g.0 + 1, now);
+        }
     }
 }
 
@@ -251,12 +259,11 @@ pub fn reset_group_peak() {
 /// a program shorter than a quarter of a second may go unseen; `peak_rss` where the group can't be
 /// sampled (or before the first reset).
 pub fn group_peak() -> u64 {
-    use std::sync::atomic::Ordering::Relaxed;
     if SAMPLED.get() != Some(&true) {
         return peak_rss();
     }
     let now = group_footprint().unwrap_or(0);
-    GROUP_PEAK.fetch_max(now, Relaxed).max(now)
+    GROUP_PEAK.lock().map_or(now, |g| g.1.max(now))
 }
 
 #[cfg(all(test, target_os = "macos"))]

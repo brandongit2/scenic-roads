@@ -61,10 +61,22 @@ const RECENT: std::time::Duration = std::time::Duration::from_secs(3600);
 /// store of them, under its `sources/`; and `blobs/`, this Mac's copies of files the records name
 /// (store::blobs), which the NAS has by construction: they go without asking it.
 const CHEAP: [(&str, &str); 3] = [("chm10", "canopy"), ("aws-terrarium", "aws-terrarium"), ("blobs", "")];
-/// Bytes the cheap caches hold (what `make_room` can free).
+/// Bytes the cheap caches hold (what `make_room` can free on the build Mac: a helper's, `helper_cheap_bytes`).
 pub fn cheap_bytes(cache: &Path) -> u64 {
     let mut files = Vec::new();
     for (d, _) in CHEAP {
+        walk(&cache.join(d), &mut files);
+    }
+    files.iter().map(|f| f.1).sum()
+}
+
+/// What `make_room` can free on a helper: the cheap caches but the loose raw tiles (`aws-terrarium/
+/// <z>/…`), which it keeps until a job of its own packs them onto the NAS (it can't: only a job
+/// handing off packs; the NAS lacks them). The copies of the NAS's archives (`aws-terrarium/packs/`)
+/// count.
+pub fn helper_cheap_bytes(cache: &Path) -> u64 {
+    let mut files = Vec::new();
+    for d in ["chm10", "blobs", "aws-terrarium/packs"] {
         walk(&cache.join(d), &mut files);
     }
     files.iter().map(|f| f.1).sum()

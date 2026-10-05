@@ -52,7 +52,8 @@ pub fn contact_path(root: &Path) -> PathBuf {
     root.join("state/coordinator.json")
 }
 
-/// What a unit cost to build last time: its programs' peak memory and its wall time.
+/// What a job's target cost last time (a unit's, another shared step's, a task's): its peak memory
+/// (MB) and its wall time.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cost {
     pub peak_mb: u64,
@@ -85,7 +86,8 @@ pub fn job_peak(costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: 
 }
 
 /// A step's work offered to the workers that mount the NAS: its targets in plan order (target, key,
-/// size: a unit's piece bytes, another step's predicted peak memory in MB) and how many go in a job.
+/// size: a unit's or candidates' piece bytes, another step's predicted peak memory in MB) and how
+/// many go in a job.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Offer {
     pub step: String,
@@ -452,6 +454,19 @@ impl Coordinator {
     }
 }
 
+/// Whether an agent on app `theirs` may build for a coordinator on `ours`: the same, or a newer
+/// published one (a step a newer app changed is built again under the keys that say so, once this
+/// Mac runs it; an older app's work would be recorded as current). `ours` empty (tests): any.
+fn app_ok(theirs: Option<&str>, ours: &str) -> bool {
+    let published = |v: &str| v.len() > 14 && v.as_bytes()[8] == b'-' && v[..8].bytes().chain(v[9..13].bytes()).all(|b| b.is_ascii_digit());
+    match theirs {
+        _ if ours.is_empty() => true,
+        Some(t) if t == ours => true,
+        Some(t) => published(t) && published(ours) && t[..13] > ours[..13],
+        None => false,
+    }
+}
+
 /// An app version (`20261005-1508-84142d3`: its UTC publish time, then its commit) in words: "5 Oct
 /// 15:08 UTC"; as it is when it isn't one.
 fn app_when(v: &str) -> String {
@@ -528,6 +543,20 @@ fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Resul
     Ok(())
 }
 
+/// The raw tiles' archives of a hand-off not taken, each well named for its area, journaled on their
+/// own (crate::handoff::RAW_AGAIN) for the next merge to name: they're on the NAS, and unnamed they'd
+/// go two days later, their tiles fetched again.
+#[cfg(not(target_os = "wasi"))]
+fn raw_again(journal: &Path, h: Option<&Handoff>) {
+    let raw: Vec<(String, crate::rawpack::Pack)> = h.into_iter().flat_map(|h| h.raw.iter()).filter(|(a, p)| crate::rawpack::is_area(a) && crate::rawpack::named_for(&p.name, a)).cloned().collect();
+    if raw.is_empty() {
+        return;
+    }
+    if let Err(e) = crate::handoff::write(&journal.join(crate::handoff::RAW_AGAIN), &Handoff { raw, ..Default::default() }) {
+        eprintln!("coordinator: a hand-off's raw tiles' archives not kept for naming ({e:#}): they go as unnamed ones do");
+    }
+}
+
 /// What a request asks of the shared state (JSON in, JSON out): (status, body).
 #[cfg(not(target_os = "wasi"))]
 fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local: bool) -> Result<(u16, serde_json::Value)> {
@@ -538,17 +567,19 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             let a: Ask = serde_json::from_slice(body)?;
             anyhow::ensure!(!a.worker.is_empty() && a.worker.len() <= 120, "a worker needs a name");
             let mut s = shared.lock().unwrap();
+            // An agent on an older app than this one's (its updater not yet run) waits for this one's
+            // or a newer (this Mac's agent switches between jobs): its work would be built with
+            // other code than the keys it records say. (Before it's seen as a worker that does
+            // tasks: a unit job's tails would wait for it.)
+            if a.kind == "native" && !app_ok(a.app.as_deref(), &s.app) {
+                let theirs = a.app.as_deref().map_or("an older one".to_string(), app_when);
+                let why = format!("on the app of {theirs}, the build Mac on {}'s: it builds once it runs that one or a newer", app_when(&s.app));
+                s.seen(&a.worker, why.clone(), None, now);
+                return Ok((409, serde_json::json!({ "error": why })));
+            }
             s.seen(&a.worker, format!("asked for {}", a.can.join(" or ")), Some(&a), now);
             if s.workers[&a.worker].bad {
                 return Ok((204, serde_json::Value::Null));
-            }
-            // An agent on another app than this one's (its updater not yet run, or this Mac's
-            // agent still on the last: it switches between jobs) waits for the same.
-            if a.kind == "native" && !s.app.is_empty() && a.app.as_deref() != Some(s.app.as_str()) {
-                let theirs = a.app.as_deref().map_or("an older one".to_string(), app_when);
-                let why = format!("on the app of {theirs}, the build Mac on {}'s: it builds once it runs the same", app_when(&s.app));
-                s.seen(&a.worker, why.clone(), None, now);
-                return Ok((409, serde_json::json!({ "error": why })));
             }
             // The work only it can do first: a worker that mounts the NAS does a job of the plan (the
             // most work for what it fetches), the earliest step it can (what later steps wait on),
@@ -590,14 +621,21 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             let d: Done = serde_json::from_slice(body)?;
             let mut s = shared.lock().unwrap();
             let Some(l) = s.leases.get(d.lease, &d.worker, now).cloned() else {
-                // Its work was offered again (or done by another): this one's hand-off is dropped.
+                // Its work was offered again (or done by another): this one's hand-off is dropped,
+                // but for the raw tiles' archives it put on the NAS (the NAS's own tiles, whatever
+                // became of the lease: their names kept, `raw_again`).
+                drop(s);
+                raw_again(journal, d.handoff.as_ref());
                 return Ok((410, serde_json::json!({ "error": "that lease is gone" })));
             };
             match &l.work {
                 Work::Job { step, targets } => {
                     let h = d.handoff.unwrap_or_default();
-                    // Refused (422): the worker gives the lease back as failed, and drops the work.
+                    // Refused (422): the worker gives the lease back as failed, and drops the work
+                    // (but for its raw tiles' archives, as above).
                     if let Err(e) = check_handoff(&h, step, targets) {
+                        drop(s);
+                        raw_again(journal, Some(&h));
                         return Ok((422, serde_json::json!({ "error": format!("{e:#}") })));
                     }
                     // Its lease ended and its units kept out of offers now, then the journal written
@@ -1112,6 +1150,12 @@ mod tests {
         assert!(matches!(g.work, Granted::Job { ref step, .. } if step == "unit"));
         // A page (its code is this coordinator's) never says.
         assert_eq!(app_when("development"), "development");
+        // A newer one builds (the build Mac's agent finishing a job on the last); development ones
+        // only with their like.
+        assert!(app_ok(Some("20261005-1613-d05125b"), "20261005-1508-84142d3"));
+        assert!(!app_ok(Some("20261005-1508-aaaaaaa"), "20261005-1613-d05125b") && !app_ok(None, "20261005-1508-84142d3"));
+        assert!(app_ok(Some("development"), "development") && !app_ok(Some("development"), "20261005-1508-84142d3") && !app_ok(Some("20261005-1613-d05125b"), "development"));
+        assert!(app_ok(None, ""));
     }
 
     #[test]
@@ -1191,9 +1235,17 @@ mod tests {
         assert!(w.ask(&ask(4096)).unwrap().is_none(), "held: nothing left");
         assert!(w.beat(g.lease, Some("1/2 areas")).unwrap());
         // A hand-off naming another unit's files is refused; its own, journaled whole.
+        // (Its raw tiles' archives, on the NAS whatever became of it, kept for naming: the well
+        // named alone.)
         let mut bad = handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")]);
         bad.changes.insert("base/6-9-9".into(), None);
+        bad.raw = vec![("6-1-1".into(), crate::rawpack::Pack { name: "6-1-1.0123456789abcdef.tiles".into(), bytes: 9 }), ("6-1-1".into(), crate::rawpack::Pack { name: "../x.tiles".into(), bytes: 9 })];
         assert!(matches!(w.done(&Done { lease: g.lease, handoff: Some(bad), ..Default::default() }).unwrap(), client::Handed::Refused(_)));
+        let kept = crate::handoff::waiting_in(&c.journal()).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].0.parent().unwrap().ends_with(crate::handoff::RAW_AGAIN) && kept[0].1.done.is_none() && kept[0].1.changes.is_empty());
+        assert_eq!(kept[0].1.raw.iter().map(|r| r.1.name.as_str()).collect::<Vec<_>>(), ["6-1-1.0123456789abcdef.tiles"]);
+        std::fs::remove_file(&kept[0].0).unwrap();
         assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])), costs: vec![("6/1/3".into(), Cost { peak_mb: 2000, secs: 300 })], ..Default::default() }).unwrap(), client::Handed::Taken);
         let waiting = crate::handoff::waiting_in(&c.journal()).unwrap();
         assert_eq!(waiting.len(), 1);

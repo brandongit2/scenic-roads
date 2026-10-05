@@ -198,7 +198,7 @@ program wrote, copied into the backups).
 
 **Writers.** The build Mac's agent writes the build's records (the manifest, its unverified
 uploads, the job keys): one agent per Mac (a lock), and build steps merge their manifest changes
-under this Mac's lock. The M1's helper uploads its units' files (content-named) and hands its
+under this Mac's lock. The M1's helper uploads its jobs' files (content-named) and hands its
 record changes back through the build Mac's coordinator, which journals them for its agent to merge
 (§8, Two Macs). The exceptions:
 - **Region recipes:** any Mac's server writes them. A new recipe is created exclusively (`O_EXCL`), a
@@ -332,8 +332,8 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   most, no more for the bigger pieces.
 - **How:** the build Mac's power rule (mains, or battery down to 30 %); half its cores while its user
   is at it, all but two otherwise; each job started with its step's room free (a terrain run 55 GB,
-  tree cover 30, the others 15), from the caches the NAS keeps, and only a step it can make that for
-  is asked for.
+  tree cover 30, the others 15, a task 5), from the caches the NAS keeps; only work it can make that
+  for is asked for, and a job it can't is given back.
 - **Status:** `state/helpers/<host>.json`. The M1's status bar shows its job from its own status;
   the build Mac's shows it from that file while the build Mac's agent runs. Leases keep the two apart
   (§8, Two Macs).
@@ -1085,13 +1085,16 @@ and, when none fits it, units' last steps.
   same piece), else a first guess per step (terrain 6 GB: it holds its area's shaded tiles, 5.2 GB
   for 74,509; tree cover 8: six workers at once, each with its block's canopy; so neither goes to the
   M1's 4 GB until a run shows it fits; slope 3, peaks 2.5). A helper asks only for the steps its
-  disk has room for (a terrain run 55 GB free, tree cover 30, the others 15, counting the caches it
-  may empty), and takes the earliest step with a target that fits, from the far end of the plan, a
-  job's worth (units: as many as it asks).
-- **The same app:** a helper says which app it runs; on another than the build Mac's agent (its
-  updater hasn't run yet, or the build Mac's agent is finishing a job on the last one) it gets
-  nothing (409, why in words: its status shows it), since it would build with other code than the
-  keys it records say.
+  disk has room for (a terrain run 55 GB free, tree cover 30, the others 15, a task 5, and a sixth
+  more, counting what its caches can free: not its loose raw tiles, which only its own jobs pack),
+  never while a newer app waits to start, and takes the earliest step with a target that fits, from
+  the far end of the plan, a job's worth (units: as many as it asks). A job it still has no room for
+  once its caches are emptied goes back.
+- **The same app:** a helper says which app it runs; on an older one than the build Mac's agent
+  (its updater hasn't run yet) it gets nothing (409, why in words: its status shows it), since its
+  work would be recorded under keys newer code made; on a newer one (the build Mac's agent finishing
+  a job on the last) it builds, since a step the newer app changed is built again once the build
+  Mac's keys say so.
 - **The contact:** `state/coordinator.json`: the coordinator's addresses (Tailscale's, then the LAN
   name) and a token (kept on the build Mac) every request carries; taken off the NAS when the agent
   stops. A worker reads it again when it can't reach the coordinator or its token is refused.
@@ -1116,10 +1119,14 @@ and, when none fits it, units' last steps.
   Until they're merged, the agent plans with their done records on top of the keys.
 - **Raw terrain tiles a helper fetches** (terrain, peaks): it packs them into archives and puts them
   on the NAS itself (content-named, written whole: as a unit's packs), keeping none, and hands the
-  build Mac only their names (`Handoff::raw`, of the areas its targets fetch); merging the hand-off,
-  the build Mac names them in the raw store's index, which it alone writes, and merges an area's
-  archives when it next packs there. An archive the index neither names nor lists to go, a day old
-  (a hand-off that never came), is listed to go.
+  build Mac only their names (`Handoff::raw`: every loose tile in its cache, an earlier stopped job's
+  too, each archive named for its area); merging the hand-off, the build Mac names them in the raw
+  store's index, which it alone writes, each whose tiles are all its area's, and merges an area's
+  archives when it next packs there. A hand-off it doesn't take (its lease gone, or refused) still
+  has its archives named (journaled on their own, `coord/journal/raw-tiles/`), and so does a merge
+  that couldn't name them then. An archive the index neither names nor lists to go, a day old (a
+  hand-off that never came), is listed to go; and an index whose file is missing while archives are
+  there is never written (one saved then would name none of them).
 - **For a helper on an older app** (one release): the build Mac still claims its own jobs' targets
   on the NAS (`state/build/claims/`), leaves out the targets such a helper claims, and merges the
   NAS's hand-off files (`state/build/handoff/<host>/`).
@@ -1336,7 +1343,7 @@ At each phase's end an Opus agent reviews the work against this plan.
 8. **Builds anywhere: under way** (`docs/workers.md`). Done: the crates build for WebAssembly; one
    maths library on every target (outputs identical natively at any thread count and under WASI);
    the data plane's SSD copies and prefetch; the coordinator (leases, hand-offs over HTTP, learned
-   memory); a unit's last steps as tasks for any worker, the web worker page and the M1 alike; the
+   memory, the shared steps' jobs for the M1); a unit's last steps as tasks for any worker, the web worker page and the M1 alike; the
    units' Python steps in Rust (`elev`, `landcover`, `areaflags`: the same bytes). Next: HTTPS through
    `tailscale serve` (the owner's go-ahead), OPFS, ranged reads, journaled group commits, retiring the
    claim and hand-off files.
