@@ -24,6 +24,9 @@
 //!   stays here until it reaches the NAS in bulk (copied a tile at a time, with a flush each, small
 //!   files stall the NAS: ~23 a second, and both Macs' processes wait on it meanwhile). One that
 //!   isn't whole itself (cut short, or a temporary file) is deleted without being kept anywhere.
+//! - Raw tiles the NAS lacks are packed onto it first (crate::rawpack: an archive an area, one
+//!   large write each), then go; the copies of its archives here (`aws-terrarium/packs/`) go as the
+//!   copies of the records' files do, each by its own use, without asking it.
 //!
 //! It ends early when the agent is asked to stop. Nothing else of the cache is deleted here.
 
@@ -88,7 +91,11 @@ enum Fate {
 
 /// Where local cache file `p` (under `cache/<dir>`) is kept in the NAS's store.
 fn nas_path(cache: &Path, sources: &Path, p: &Path) -> Option<PathBuf> {
-    // (Copies of the records' files have no NAS folder to list: they go as they are.)
+    // (Copies of the records' files, and of the raw tiles' archives, have no NAS folder to list:
+    // they go as they are.)
+    if p.starts_with(cache.join("aws-terrarium/packs")) {
+        return None;
+    }
     let (dir, store) = CHEAP.iter().find(|(d, s)| !s.is_empty() && p.starts_with(cache.join(d)))?;
     Some(sources.join(store).join(p.strip_prefix(cache.join(dir)).ok()?))
 }
@@ -120,7 +127,8 @@ fn list(folder: &Path) -> Option<HashMap<OsString, u64>> {
 
 /// What becomes of local cache file `p` (under `cache/<dir>`), its NAS folder listed once.
 fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
-    if p.starts_with(cache.join("blobs")) {
+    // (Copies of files the NAS has by construction: the records', and the raw tiles' archives.)
+    if p.starts_with(cache.join("blobs")) || p.starts_with(cache.join("aws-terrarium/packs")) {
         return Fate::Go;
     }
     let Some(dest) = nas_path(cache, sources, p) else { return Fate::Stay };
@@ -169,6 +177,12 @@ fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_spa
     if free >= need {
         return Ok(0);
     }
+    // Raw tiles the NAS lacks, packed onto it first (an archive an area: large writes).
+    if let Some(root) = sources.parent() {
+        if let Err(e) = crate::rawpack::pack_local(&cache.join("aws-terrarium"), &sources.join("aws-terrarium"), root) {
+            eprintln!("room: raw tiles not packed now ({e:#}); they stay");
+        }
+    }
     let mut files: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
     for (d, _) in CHEAP {
         walk(&cache.join(d), &mut files);
@@ -179,10 +193,12 @@ fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_spa
     // tiles and the squares read since, together: each the least recently used group (by its
     // newest file) first, in each the oldest first.
     let tiles = cache.join("aws-terrarium");
+    let packs = tiles.join("packs");
     let lately = SystemTime::now().checked_sub(RECENT).unwrap_or(SystemTime::UNIX_EPOCH);
     let mut groups: BTreeMap<PathBuf, Vec<(SystemTime, u64, PathBuf)>> = BTreeMap::new();
     for f in files {
-        let key = if f.2.starts_with(&tiles) { f.2.parent().map(Path::to_path_buf).unwrap_or_default() } else { f.2.clone() };
+        // (An area's archive, each by its own use, as a canopy square.)
+        let key = if f.2.starts_with(&tiles) && !f.2.starts_with(&packs) { f.2.parent().map(Path::to_path_buf).unwrap_or_default() } else { f.2.clone() };
         groups.entry(key).or_default().push(f);
     }
     let mut groups: Vec<Vec<(SystemTime, u64, PathBuf)>> = groups.into_values().collect();
@@ -191,7 +207,7 @@ fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_spa
     }
     groups.sort_by_key(|g| {
         let newest = g.last().map(|f| f.0);
-        let idle_square = !g.first().is_some_and(|f| f.2.starts_with(&tiles)) && newest.is_some_and(|t| t < lately);
+        let idle_square = !g.first().is_some_and(|f| f.2.starts_with(&tiles) && !f.2.starts_with(&packs)) && newest.is_some_and(|t| t < lately);
         (!idle_square, newest)
     });
     let mut room = Room { cache, free_space, target, short: target.saturating_sub(free), since: 0, freed: 0 };
@@ -308,40 +324,57 @@ mod tests {
     }
 
     #[test]
-    fn idle_canopy_squares_go_first_then_tiles_and_squares_read_lately() {
+    fn idle_copies_go_first_then_those_read_lately() {
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
         let nas = &d.path().join("nas");
-        // A tile idle longest, a canopy square idle two hours, another read a minute ago.
-        let png = whole(&c.join("aws-terrarium/12/1/2.png"), 9000);
+        // An area's archive idle longest, a canopy square idle two hours, another read a minute ago.
+        let arch = whole(&c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles"), 9000);
         let idle = whole(&c.join("chm10/idle.tif"), 7200);
         file(&c.join("chm10/none.tif"), 0, 8000);
         let read = whole(&c.join("chm10/read.tif"), 60);
         file(&c.join("dem-cache.keys.u64"), 100, 9000);
-        assert_eq!(cheap_bytes(c), png + idle + read);
+        assert_eq!(cheap_bytes(c), arch + idle + read);
         // A disk with 850 free plus what's deleted.
         let all = used(c);
         let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
-        // Short of all but a byte of the idle square: it goes before the tile, idle longer; the
-        // marker and the DEM seed stay.
-        assert_eq!(make_room_with(c, nas, 850 + idle - 1, 850 + idle - 1, &disk(850)).unwrap(), idle);
-        assert!(!c.join("chm10/idle.tif").exists() && c.join("aws-terrarium/12/1/2.png").exists());
+        // Short of the archive and all but a byte of the idle square: both go, the archive (idle
+        // longer, and the NAS has it: nothing asked) first; the marker and the DEM seed stay.
+        assert_eq!(make_room_with(c, nas, 850 + arch + idle - 1, 850 + arch + idle - 1, &disk(850)).unwrap(), arch + idle);
+        assert!(!c.join("chm10/idle.tif").exists() && !c.join("aws-terrarium/packs/6-1-1.0000000000000001.tiles").exists());
         assert!(c.join("chm10/read.tif").exists() && c.join("chm10/none.tif").exists());
-        // What went is on the NAS (copied there first: it wasn't).
+        // What went is on the NAS (the square copied there first: it wasn't).
         assert!(nas.join("canopy/idle.tif").exists());
-        // Then the tile (the NAS has it), before the square read a minute ago.
-        whole(&nas.join("aws-terrarium/12/1/2.png"), 0);
-        assert_eq!(make_room_with(c, nas, 850 + idle + png, 850 + idle + png, &disk(850)).unwrap(), png);
-        assert!(!c.join("aws-terrarium/12/1/2.png").exists());
-        assert!(c.join("chm10/read.tif").exists());
         // Room enough: nothing goes.
         assert_eq!(make_room_with(c, nas, 1000, 1000, &|_| Ok(1 << 20)).unwrap(), 0);
-        // Far short: every cheap file the NAS has or takes; never the DEM seed, nor a tile it lacks.
-        whole(&c.join("aws-terrarium/12/9/9.png"), 9000);
+        // Far short: every cheap file; never the DEM seed.
         make_room_with(c, nas, 1 << 40, 1 << 40, &disk(0)).unwrap();
         assert!(!c.join("chm10/read.tif").exists() && c.join("dem-cache.keys.u64").exists());
-        assert!(c.join("aws-terrarium/12/9/9.png").exists() && !nas.join("aws-terrarium/12/9/9.png").exists(), "a tile the NAS lacks isn't copied there alone");
         assert!(disk_free(c).unwrap() > 0);
+    }
+
+    #[test]
+    fn raw_tiles_are_packed_onto_the_nas_before_they_go() {
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let root = &d.path().join("nas");
+        let nas = &root.join("sources");
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        // Tiles AWS gave, the NAS without them; one too new to pack.
+        let a = whole(&c.join("aws-terrarium/12/2048/1365.png"), 9000);
+        whole(&c.join("aws-terrarium/12/2048/1366.png"), 9000);
+        whole(&c.join("aws-terrarium/12/2049/1365.png"), 1);
+        let all = used(c);
+        let disk = move |p: &Path| Ok(all - used(p));
+        make_room_with(c, nas, a, a, &disk).unwrap();
+        // Packed onto the NAS (an archive for their area, named in the index), gone here.
+        let index = crate::rawpack::Index::load(&nas.join("aws-terrarium")).unwrap();
+        let name = &index.areas["6-32-21"];
+        assert!(nas.join("aws-terrarium/packs").join(name).exists());
+        assert!(!c.join("aws-terrarium/12/2048/1365.png").exists() && !c.join("aws-terrarium/12/2048/1366.png").exists());
+        // The newest waits here: the NAS hasn't it (packed later).
+        assert!(c.join("aws-terrarium/12/2049/1365.png").exists());
+        assert!(!nas.join("aws-terrarium/12/2049/1365.png").exists(), "never copied alone");
     }
 
     #[test]
@@ -386,6 +419,10 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
         let nas = &d.path().join("nas");
+        // (The NAS takes no archive here: tiles it lacks stay, and those it has loose follow the
+        // rules for loose files.)
+        std::fs::create_dir_all(nas.join("aws-terrarium")).unwrap();
+        std::fs::write(nas.join("aws-terrarium/packs"), b"").unwrap();
         // Column 1 holds the oldest tile, but was used since; column 2's are all older than that.
         // (The NAS has them all.)
         for (t, age) in [("1/1", 5000), ("1/2", 100), ("2/1", 4000), ("2/2", 3000), ("3/1", 9500), ("3/2", 9000)] {

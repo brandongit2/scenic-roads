@@ -243,11 +243,15 @@ record changes back through the build Mac's coordinator, which journals them for
 - **Downloads are kept on the NAS, each made once** (`sources/`): Meta's canopy squares (today's
   build's among them), AWS's raw terrain tiles, FABDEM's 1° tiles, the leaf-type sources, Overture's
   buildings. A Mac's copy is a cache filled from the NAS.
-  - **AWS's raw terrain tiles** are kept in the build Mac's cache as they come, and copied to the
-    NAS's store in bulk (`tools/nas/raw-tiles.sh`, by hand: one tar stream over SSH, unpacked on the
-    NAS; a tile at a time, the NAS's small-file writes set a terrain job's pace at 25 a second
-    against 119). Room-making copies one the NAS lacks there before deleting it, so none is fetched
-    twice; only a lost disk before the copy would.
+  - **AWS's raw terrain tiles** are kept in the build Mac's cache as they come, then packed onto
+    the NAS: an archive per z6 area (`pipeline::rawpack`, `sources/aws-terrarium/packs/`, named in
+    its `index.json`), made again with the new tiles at the end of the job that fetched them, or by
+    room-making before it deletes them: one large write an area, where a tile at a time, the NAS's
+    small-file writes run at ~23 a second and stall it. A tile is read from its area's archive,
+    copied to the Mac whole once. The NAS's loose tiles from before (`<z>/<x>/<y>.png`, copied in
+    bulk by `tools/nas/raw-tiles.sh`) are read while they're there, and packed by
+    `tools/nas/raw-pack.sh` (one tar stream over SSH from the NAS itself); none is fetched twice,
+    only a lost disk before the packing would.
   - **Whole:** each copy is written by a temporary name (the Mac's and the process's), flushed, and
     its length checked before the rename (raw terrain tiles excepted: written straight to their
     names), and checked whole when read (`pipeline::whole`,
@@ -495,7 +499,7 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     exist, since AWS's coarse levels come from coarser sources.
   - **The root (z0–2):** from the lo packs.
   - **Source:** always AWS's raw tiles, each downloaded once (64 at a time) into the build Mac's
-    cache and copied to the NAS in bulk (`sources/aws-terrarium/`: §3 Downloads), which fills the
+    cache and packed onto the NAS (`sources/aws-terrarium/packs/`: §3 Downloads), which fills the
     cache when it lacks one; repaired by `repair_terrain`.
     Processing a processed tile isn't idempotent, so stored tiles are never inputs.
   - **Below zero:** values are clamped to 0. Planned: a sea mask from the pass's water polygons, so

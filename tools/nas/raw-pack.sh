@@ -1,0 +1,20 @@
+#!/bin/zsh
+# Pack the NAS's loose raw terrain tiles into its archives (pipeline::rawpack: one an area, named in
+# sources/aws-terrarium/packs/index.json): the NAS's own tar sends them in one stream over SSH, and
+# the build Mac packs them, putting each area's archive on the NAS whole (a large file each, where a
+# tile at a time over SMB the NAS takes ~23 a second). Re-running adds only what the archives lack
+# ("0 new" says they hold every loose tile). The loose tiles stay: deleting them, hundreds of
+# thousands of files with Synology's metadata beside each, is the owner's to do. Needs SSH to the NAS
+# (the 1Password agent unlocked).
+#
+#   tools/nas/raw-pack.sh [scenic-build]
+set -euo pipefail
+NAS=brandontsang@fishandchips.local
+STORE=/volume1/personal/projects/scenic-roads/sources/aws-terrarium
+ROOT=/Volumes/personal/projects/scenic-roads
+BUILD=${1:-"$HOME/Library/Application Support/scenic/app/current/scenic-build"}
+work=$(mktemp -d)
+trap 'rm -rf $work' EXIT
+# (Synology's @eaDir folders, and the archives themselves, passed over.)
+ssh -o BatchMode=yes $NAS "cd $STORE && find . -name @eaDir -prune -o -name packs -prune -o -type f \( -name '*.png' -o -name '*.none' \) -print | tar -cf - -T -" \
+  | "$BUILD" raw-pack --root "$ROOT" --scratch "$work" --cache "$work/aws-terrarium" --from-tar -

@@ -25,6 +25,7 @@ pub mod marksjob;
 pub mod marks;
 pub mod osmpass;
 pub mod outlines;
+pub mod rawpack;
 pub mod peaks;
 pub mod rail;
 pub mod reach;

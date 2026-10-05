@@ -125,7 +125,11 @@ impl Archive {
         let key = tile_key(z, x, y);
         let idx = self.entries();
         let i = idx.binary_search_by_key(&key, |e| e.key).ok()?;
-        let e = idx[i];
-        Some(&self.map[e.offset as usize..e.offset as usize + e.len as usize])
+        Some(self.get_entry(&idx[i]))
+    }
+
+    /// An entry's bytes.
+    pub fn get_entry(&self, e: &Entry) -> &[u8] {
+        &self.map[e.offset as usize..e.offset as usize + e.len as usize]
     }
 }

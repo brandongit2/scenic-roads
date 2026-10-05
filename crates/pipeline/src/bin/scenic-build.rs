@@ -26,6 +26,9 @@
 //!   slope [T …] [--regions dir]  slope packs (z3–11) of z6 tiles T from the terrain packs
 //!                                (default: every z6 tile near the coverage)
 //!   terrain-root, slope-root     their z0–2 root packs, from the lo packs' z3 tiles
+//!   raw-pack [--from-tar -] [--cache dir]  AWS's raw tiles packed into the NAS's archives
+//!                                (pipeline::rawpack): a tar of them on stdin (tools/nas/raw-pack.sh),
+//!                                else those waiting in the cache
 //!   prune <target …>             drops from the manifest what the coverage no longer builds:
 //!                                "unit U" (its base pack, road values, English), "pois U" (its
 //!                                candidates, peaks), "pack T" (hidata, road and rail hi packs),
@@ -161,6 +164,20 @@ fn main() -> Result<()> {
         "pois" => pois_step(&mut out, &args, &scratch)?,
         "roadunits" => roadunits(&mut out)?,
         "terrain" => terrain_step(&mut out, &args)?,
+        "raw-pack" => {
+            // raw-pack [--from-tar -] [--cache dir]: AWS's raw tiles packed into the NAS's archives
+            // (pipeline::rawpack): a tar stream of them on stdin (the NAS's own: tools/nas/raw-pack.sh),
+            // else the cache's tiles waiting to go.
+            let store = out.root().join("sources/aws-terrarium");
+            let dir = PathBuf::from(opt(&args, "--cache").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
+            if opt(&args, "--from-tar").as_deref() == Some("-") {
+                let (n, added) = pipeline::rawpack::pack_tar(std::io::stdin().lock(), &dir, &store, out.root())?;
+                eprintln!("raw-pack: {n} tiles in the stream, {added} new to their archives");
+            } else {
+                let n = pipeline::rawpack::pack_local(&dir, &store, out.root())?;
+                eprintln!("raw-pack: {n} tiles from {} packed", dir.display());
+            }
+        }
         "terrain-z8" => {
             // terrain-z8 [--raw dir]: AWS's z8 worldwide, repaired (pipeline::terrain_z8), once.
             if out.get(&pipeline::terrain_z8::logical()).is_some() {
@@ -170,6 +187,7 @@ fn main() -> Result<()> {
                 let raw = raw_tiles(&out, &raw_dir);
                 let (n, none) = pipeline::terrain_z8::build(&mut out, &raw)?;
                 eprintln!("terrain-z8: {n} tiles ({none} of open sea)");
+                pack_raw(&out, &raw_dir);
             }
         }
         "summits" => summits_step(&mut out, &args, &scratch)?,
@@ -293,6 +311,7 @@ fn main() -> Result<()> {
             let raw = raw_tiles(&out, &raw_dir);
             let n = pipeline::terrain_pack::build_root(&mut out, &raw)?;
             eprintln!("terrain root: {n} tiles");
+            pack_raw(&out, &raw_dir);
         }
         "slope-root" => {
             let n = pipeline::slope_pack::build_root(&mut out)?;
@@ -853,6 +872,16 @@ fn unit_extents(out: &Out, base: &BTreeMap<String, String>) -> Vec<[i32; 4]> {
 /// AWS's raw terrain tiles: the local cache `dir`, where each is downloaded once, filled from the
 /// NAS's store (`sources/aws-terrarium/`, copied there in bulk: tools/nas/raw-tiles.sh) when it
 /// lacks one.
+/// The raw tiles a job fetched, packed onto the NAS (pipeline::rawpack): one large write an area,
+/// not a file a tile. Not packed now (the NAS away), they wait in the cache for the next job or
+/// room-making.
+fn pack_raw(out: &Out, dir: &Path) {
+    match pipeline::rawpack::pack_local(dir, &out.root().join("sources/aws-terrarium"), out.root()) {
+        Ok(_) => {}
+        Err(e) => eprintln!("raw tiles: not packed now ({e:#}); they wait in the cache"),
+    }
+}
+
 fn raw_tiles(out: &Out, dir: &Path) -> pipeline::terrain_pack::RawTiles {
     pipeline::terrain_pack::RawTiles::with_store(dir, &out.root().join("sources/aws-terrarium"))
 }
@@ -999,7 +1028,8 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::peaks::unit;
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
-    let raw = raw_tiles(out, &PathBuf::from(opt(args, "--raw").unwrap_or_else(|| cache.join("aws-terrarium").to_string_lossy().into_owned())));
+    let raw_dir = PathBuf::from(opt(args, "--raw").unwrap_or_else(|| cache.join("aws-terrarium").to_string_lossy().into_owned()));
+    let raw = raw_tiles(out, &raw_dir);
     let coarse_threads: usize = opt(args, "--coarse-threads").map(|s| s.parse()).transpose()?.unwrap_or(4);
     let summits = pipeline::summits::read(&local_copy(out, &format!("work/summits/{date}"), &cache)?)?;
     let base8 = unit::Z8Base::new(&summits);
@@ -1035,6 +1065,7 @@ fn peaks_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         std::fs::remove_file(&file).ok();
         eprintln!("peaks {}: {} peaks; z12 tiles {} from the packs, {} from AWS, {} sea ({:.0?})", u.slash(), res.len(), z12.from.0, z12.from.1, z12.from.2, t.elapsed());
     }
+    pack_raw(out, &raw_dir);
     Ok(())
 }
 
@@ -2061,6 +2092,7 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
         let r = pipeline::terrain_pack::build_q(out, &raw, q, &list, &cov)?;
         eprintln!("terrain 3/{}/{}: {r:?} ({:.0?})", q.0, q.1, t.elapsed());
     }
+    pack_raw(out, &raw_dir);
     Ok(())
 }
 

@@ -219,10 +219,11 @@ impl store::range::RangeRead for FileSource<'_> {
     }
 }
 
-/// AWS's raw tiles, kept so each is downloaded once: in the build Mac's cache as they come, and on
-/// the NAS (`sources/aws-terrarium/<z>/<x>/<y>.png`, `.none` for a tile AWS doesn't have), copied
-/// there in bulk, which fills the cache when it lacks one (room-making keeps a tile the NAS lacks
-/// until it's there). Packs are always made from the same immutable source: processing a
+/// AWS's raw tiles, kept so each is downloaded once: in the build Mac's cache as they come, then on
+/// the NAS packed, an archive per z6 area (crate::rawpack: packed at the end of the job that fetched
+/// them, or by room-making), each copied here whole the first time one of its tiles is wanted; and
+/// the NAS's loose tiles from before (`sources/aws-terrarium/<z>/<x>/<y>.png`, `.none` for a tile
+/// AWS doesn't have), while they're there. Packs are always made from the same immutable source: processing a
 /// tile twice isn't idempotent, so stored (processed) tiles are never an input. Each copy is written
 /// straight to its name (crate::whole::write_in_place) and checked whole when read: one that isn't
 /// (cut short) is deleted and taken from the next source, the NAS's copy, else AWS.
@@ -234,17 +235,21 @@ pub struct RawTiles {
     /// SMB each look or mkdir is a round trip, and those, a tile's few, set a terrain job's pace.
     listed: Mutex<HashMap<(u8, u32), std::sync::Arc<std::collections::HashSet<String>>>>,
     made: Mutex<std::collections::HashSet<std::path::PathBuf>>,
+    /// The store's archives' index (read once), and the areas' archives here, opened as wanted
+    /// (None: the store has none for the area).
+    index: std::sync::OnceLock<Option<crate::rawpack::Index>>,
+    archives: Mutex<HashMap<String, Option<std::sync::Arc<roadcore::archive::Archive>>>>,
 }
 
 impl RawTiles {
     /// A local cache alone (no NAS store).
     pub fn new(dir: &std::path::Path) -> Self {
-        RawTiles { dir: dir.to_path_buf(), store: None, agent: agent(), listed: Default::default(), made: Default::default() }
+        RawTiles { dir: dir.to_path_buf(), store: None, agent: agent(), listed: Default::default(), made: Default::default(), index: Default::default(), archives: Default::default() }
     }
 
     /// The local cache `dir`, filled from the NAS's `store` where it has a tile.
     pub fn with_store(dir: &std::path::Path, store: &std::path::Path) -> Self {
-        RawTiles { dir: dir.to_path_buf(), store: Some(store.to_path_buf()), agent: agent(), listed: Default::default(), made: Default::default() }
+        RawTiles { dir: dir.to_path_buf(), store: Some(store.to_path_buf()), agent: agent(), listed: Default::default(), made: Default::default(), index: Default::default(), archives: Default::default() }
     }
 
     /// The names in the store's column `z/x`, listed once (none when it isn't there); None when it
@@ -261,6 +266,34 @@ impl RawTiles {
         let c = std::sync::Arc::new(names);
         self.listed.lock().unwrap().insert((z, x), c.clone());
         Some(c)
+    }
+
+    /// A tile from its area's archive: Some(None) when AWS hasn't it, None when the archive (or the
+    /// store) hasn't it. The archive is copied here whole from the NAS the first time.
+    fn archived(&self, z: u8, x: u32, y: u32) -> Option<Option<Vec<u8>>> {
+        let st = self.store.as_ref()?;
+        let area = crate::rawpack::area(z, x, y);
+        let a = {
+            let mut m = self.archives.lock().unwrap();
+            if let Some(a) = m.get(&area) {
+                a.clone()
+            } else {
+                let index = self.index.get_or_init(|| crate::rawpack::Index::load(st).map_err(|e| eprintln!("terrain: the raw tiles' archives: {e:#}")).ok()).as_ref()?;
+                let a = match crate::rawpack::local_archive(&self.dir, st, index, &area) {
+                    Ok(Some(p)) => roadcore::archive::Archive::open(&p).map_err(|e| eprintln!("terrain: {}: {e:#}", p.display())).ok().map(std::sync::Arc::new),
+                    Ok(None) => None,
+                    Err(e) => {
+                        // (Not remembered: the NAS may answer next time.)
+                        eprintln!("terrain: the raw tiles of {area}: {e:#}");
+                        return None;
+                    }
+                };
+                m.insert(area, a.clone());
+                a
+            }
+        }?;
+        let b = a.get(z, x, y)?;
+        Some(if b.is_empty() { None } else { Some(b.to_vec()) })
     }
 
     /// Makes folder `d` (once).
@@ -283,6 +316,10 @@ impl RawTiles {
         let none = d.join(format!("{y}.none"));
         if none.exists() {
             return Ok((None, false));
+        }
+        // In its area's archive.
+        if let Some(b) = self.archived(z, x, y) {
+            return Ok((b, false));
         }
         self.make(&d)?;
         // On the NAS (its column listed once): copied here.
@@ -576,5 +613,29 @@ mod tests {
         assert_eq!(raw.get(9, 5, 8).unwrap(), (None, false));
         assert!(local.join("9/5/8.none").exists());
         assert!(read_whole(&store.join("9/5/9.png")).is_none() && !store.join("9/5/9.png").exists());
+    }
+
+    #[test]
+    fn raw_tiles_from_their_areas_archive() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        let store = root.join("sources/aws-terrarium");
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let png = crate::whole::testfiles::png();
+        // Tiles packed onto the NAS from another cache (a minute old: packable).
+        let other = d.path().join("other");
+        for (rel, b) in [("12/2048/1365.png", &png[..]), ("12/2049/1365.none", &[][..])] {
+            std::fs::create_dir_all(other.join(rel).parent().unwrap()).unwrap();
+            std::fs::write(other.join(rel), b).unwrap();
+            std::fs::File::options().append(true).open(other.join(rel)).unwrap().set_modified(std::time::SystemTime::now() - Duration::from_secs(120)).unwrap();
+        }
+        assert_eq!(crate::rawpack::pack_local(&other, &store, &root).unwrap(), 2);
+        // A fresh cache reads them from their area's archive, copied here whole once: no loose file
+        // here or there.
+        let local = d.path().join("local");
+        let raw = RawTiles::with_store(&local, &store);
+        assert_eq!(raw.get(12, 2048, 1365).unwrap(), (Some(png.clone()), false));
+        assert_eq!(raw.get(12, 2049, 1365).unwrap(), (None, false), "AWS hasn't it");
+        assert!(!local.join("12/2048/1365.png").exists() && std::fs::read_dir(local.join("packs")).unwrap().count() == 1);
     }
 }
