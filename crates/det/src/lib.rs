@@ -21,6 +21,7 @@ pub trait Det: Sized + Copy {
     fn dcosh(self) -> Self;
     fn dtanh(self) -> Self;
     fn dasinh(self) -> Self;
+    fn datanh(self) -> Self;
     fn dexp(self) -> Self;
     fn dexp2(self) -> Self;
     fn dexp_m1(self) -> Self;
@@ -34,7 +35,7 @@ pub trait Det: Sized + Copy {
 }
 
 macro_rules! det {
-    ($t:ty, $sin:ident, $cos:ident, $tan:ident, $asin:ident, $acos:ident, $atan:ident, $atan2:ident, $sinh:ident, $cosh:ident, $tanh:ident, $asinh:ident, $exp:ident, $exp2:ident, $expm1:ident, $log:ident, $log1p:ident, $log2:ident, $log10:ident, $pow:ident, $hypot:ident, $cbrt:ident) => {
+    ($t:ty, $sin:ident, $cos:ident, $tan:ident, $asin:ident, $acos:ident, $atan:ident, $atan2:ident, $sinh:ident, $cosh:ident, $tanh:ident, $asinh:ident, $atanh:ident, $exp:ident, $exp2:ident, $expm1:ident, $log:ident, $log1p:ident, $log2:ident, $log10:ident, $pow:ident, $hypot:ident, $cbrt:ident) => {
         impl Det for $t {
             fn dsin(self) -> $t { libm::$sin(self) }
             fn dcos(self) -> $t { libm::$cos(self) }
@@ -47,6 +48,7 @@ macro_rules! det {
             fn dcosh(self) -> $t { libm::$cosh(self) }
             fn dtanh(self) -> $t { libm::$tanh(self) }
             fn dasinh(self) -> $t { libm::$asinh(self) }
+            fn datanh(self) -> $t { libm::$atanh(self) }
             fn dexp(self) -> $t { libm::$exp(self) }
             fn dexp2(self) -> $t { libm::$exp2(self) }
             fn dexp_m1(self) -> $t { libm::$expm1(self) }
@@ -61,8 +63,8 @@ macro_rules! det {
     };
 }
 
-det!(f64, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, asinh, exp, exp2, expm1, log, log1p, log2, log10, pow, hypot, cbrt);
-det!(f32, sinf, cosf, tanf, asinf, acosf, atanf, atan2f, sinhf, coshf, tanhf, asinhf, expf, exp2f, expm1f, logf, log1pf, log2f, log10f, powf, hypotf, cbrtf);
+det!(f64, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, asinh, atanh, exp, exp2, expm1, log, log1p, log2, log10, pow, hypot, cbrt);
+det!(f32, sinf, cosf, tanf, asinf, acosf, atanf, atan2f, sinhf, coshf, tanhf, asinhf, atanhf, expf, exp2f, expm1f, logf, log1pf, log2f, log10f, powf, hypotf, cbrtf);
 
 #[cfg(test)]
 mod tests {
@@ -72,7 +74,8 @@ mod tests {
     fn close_to_the_platforms() {
         // Within a few ulp of the platform's own (which this replaces for its last bits).
         for x in [0.1f64, 0.7, 1.3, 2.9, 45.0f64.to_radians(), 1e-8, 123.456] {
-            for (a, b) in [(x.dsin(), x.sin()), (x.dcos(), x.cos()), (x.dln(), x.ln()), (x.datan(), x.atan()), (x.dsinh(), x.sinh()), (x.dexp(), x.exp())] {
+            let t = x / (1.0 + x);
+            for (a, b) in [(x.dsin(), x.sin()), (x.dcos(), x.cos()), (x.dln(), x.ln()), (x.datan(), x.atan()), (x.dsinh(), x.sinh()), (x.dexp(), x.exp()), (t.datanh(), t.atanh())] {
                 assert!((a - b).abs() <= 4.0 * f64::EPSILON * b.abs().max(1.0), "{x}: {a} vs {b}");
             }
         }

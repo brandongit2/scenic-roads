@@ -221,6 +221,33 @@ impl<T: RangeRead + ?Sized> RangeRead for Box<T> {
     }
 }
 
+/// The bytes `off..off + len` of another source, as a source of their own (a member stored in a
+/// zip, read in place).
+pub struct Slice<R> {
+    inner: R,
+    off: u64,
+    len: u64,
+}
+
+impl<R: RangeRead> Slice<R> {
+    /// An error unless the window lies within `inner`.
+    pub fn new(inner: R, off: u64, len: u64) -> Result<Self, IoError> {
+        check_range(inner.len()?, off, usize::try_from(len).unwrap_or(usize::MAX))?;
+        Ok(Self { inner, off, len })
+    }
+}
+
+impl<R: RangeRead> RangeRead for Slice<R> {
+    fn len(&self) -> Result<u64, IoError> {
+        Ok(self.len)
+    }
+
+    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
+        check_range(self.len, off, len)?;
+        self.inner.read_at(self.off + off, len)
+    }
+}
+
 impl<T: Mapped + ?Sized> Mapped for &T {
     fn bytes(&self) -> &[u8] {
         (**self).bytes()
@@ -271,6 +298,13 @@ mod tests {
         pool.mark_offline("test");
         assert!(matches!(shared.read_at(0, 1), Err(IoError::Offline)));
         assert!(matches!(PooledFile::open(&pool, &p), Err(IoError::Offline)));
+    }
+
+    #[test]
+    fn slices() {
+        let s = Slice::new(b"xx0123456789yy".to_vec(), 2, 10).unwrap();
+        check(&s);
+        assert!(Slice::new(b"0123".to_vec(), 2, 3).is_err(), "past the end");
     }
 
     #[test]
