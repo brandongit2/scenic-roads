@@ -146,16 +146,24 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   encrypts it), the device then kept awake by hand.
 - **The page as an app** (a PWA: `manifest.webmanifest`, `sw.js`, `icons/`, served without the
   token like the page): installable (the browser's own Install, or on an iPhone or iPad Share, Add
-  to Home Screen, which the page says how to), opening full screen straight to work. Its service
-  worker takes the page and its scripts from the build Mac whenever it answers (a newly published
-  app's page at once) and from what it kept when it doesn't, and keeps the programs' WebAssembly by
-  version (their addresses' `?v=`): opened again, the page fetches no program it has, and only each
-  program's newest version is kept. A task's files and the coordinator's requests pass straight
-  through. Its version is the coordinator's hash of the page's files: a newly published page is a
-  new service worker, which takes over, and the page reloads into it once no task is running. An
-  installed app on an iPhone keeps its own storage, apart from Safari's: the page asks once for its
-  address (from the status menu's Copy the Worker Page's Address) and keeps the token. It still runs
-  only while it's open on screen: neither iOS nor Android lets a web app work in the background.
+  to Home Screen, which the page says how to, an iPad's too), opening full screen straight to work.
+  - Its service worker keeps the page's files (the coordinator's list, in it) as it installs. It
+    takes them from the build Mac when it answers well within 4 s (a newly published app's page at
+    once), else from what it kept. A Mac that doesn't (asleep, away, or its agent restarting:
+    `tailscale serve` answers 502) is taken for away for a minute.
+  - It keeps the programs' WebAssembly by version (their addresses' `?v=`): opened again, the page
+    fetches no program it has, and only each program's newest version is kept. Nothing else is
+    touched (a task's files, every request to the coordinator), and a cache write that fails (the
+    storage full) never fails the answer.
+  - Its version is the coordinator's hash of the page's files: a newly published page is a new
+    service worker, which takes over, and the page reloads into it once no task is running (paused,
+    it stays paused). The page asks for one whenever it comes back to the front and every half hour.
+  - An installed app on an iPhone keeps its own storage, apart from Safari's: the page asks for its
+    address (from the status menu's Copy the Worker Page's Address) and keeps the token, and asks
+    again if the coordinator refuses it. Only an address with its `#k=` (or the 32 hex digits
+    alone) is taken.
+  - It still runs only while it's open on screen: neither iOS nor Android lets a web app work in
+    the background.
 - **Planned:** inputs and outputs in OPFS, read through a `FileSystemSyncAccessHandle`, so a worker
   holds less in memory and a reload resumes the upload, not the work.
 

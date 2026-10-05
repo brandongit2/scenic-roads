@@ -63,8 +63,11 @@ const $ = (id) => document.getElementById(id);
 const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
 
 // The token comes in the address's fragment (never sent to a server), then stays in this browser.
-const hash = new URLSearchParams(location.hash.slice(1));
-if (hash.get("k")) { store.set("token", hash.get("k")); history.replaceState(null, "", location.pathname); }
+// (A token is 32 hex digits: anything else, an address that lost its fragment, isn't one.)
+const tokenIn = (v) => /^[0-9a-f]{32}$/.test(v) ? v : (/[#&]k=([0-9a-f]{32})(?:&|$)/.exec(v) || [])[1] || null;
+const hashToken = tokenIn(location.hash);
+if (location.hash.includes("k=")) history.replaceState(null, "", location.pathname);
+if (hashToken) store.set("token", hashToken);
 const token = store.get("token", "");
 const id = store.get("id", null) || (() => { const v = Math.random().toString(36).slice(2, 8); store.set("id", v); return v; })();
 const label = (() => {
@@ -113,7 +116,10 @@ async function call(path, body) {
   const r = await fetch(path, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Worker": worker }, body: JSON.stringify(body) });
   if (r.status === 204) return [204, null];
   const text = await r.text();
-  if (r.status === 401) throw new Error("the coordinator refused this page's token: open the address with #k=… again");
+  if (r.status === 401) {
+    askToken("The coordinator refused this page's token (the build Mac's made a new one?): paste the page's address again");
+    throw new Error("the coordinator refused this page's token");
+  }
   if (!r.ok && r.status !== 410) throw new Error(`${path}: ${r.status} ${text.slice(0, 200)}`);
   return [r.status, text ? JSON.parse(text) : null];
 }
@@ -209,7 +215,11 @@ function finish(s, ok, m = {}) {
 // version installed: none asked for; reloaded into it once every slot is idle.)
 let asking = false, lastNone = -Infinity, update = false;
 async function fill() {
-  if (update && slots.every((s) => !s.lease)) { location.reload(); return; }
+  if (update && slots.every((s) => !s.lease)) {
+    try { sessionStorage.setItem("paused", paused ? "1" : ""); } catch {}
+    location.reload();
+    return;
+  }
   if (asking || paused || !token || update) return;
   const idle = slots.find((s) => !s.lease);
   const free = ceiling - reserved;
@@ -266,26 +276,36 @@ if (!window.isSecureContext) {
   $("note").hidden = false;
   $("note").textContent = "Not a secure context: this browser won't keep the screen on for the page, so set the device to stay awake while it works.";
 }
-// No token yet (an app installed on an iPhone keeps its own storage, apart from Safari's): its
-// address pasted once, from the build Mac's status menu.
-if (!token) {
+// No token yet (an app installed on an iPhone keeps its own storage, apart from Safari's), or the
+// coordinator refused it: its address pasted, from the build Mac's status menu.
+function askToken(why) {
+  if ($("paste")) return;
   $("note").hidden = false;
-  $("note").innerHTML = `No token yet: paste this page's full address, from the build Mac's status menu (Copy the Worker Page's Address).<input id="paste" placeholder="https://…/work/#k=…" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="use">Use it</button>`;
+  $("note").innerHTML = `${esc(why)}, from the build Mac's status menu (Copy the Worker Page's Address).<input id="paste" placeholder="https://…/work/#k=…" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="use">Use it</button>`;
   $("use").onclick = () => {
-    const v = $("paste").value.trim();
-    const k = v.includes("#") ? new URLSearchParams(v.slice(v.indexOf("#") + 1)).get("k") : v;
-    if (k) { store.set("token", k); location.replace(location.pathname); }
+    const k = tokenIn($("paste").value.trim());
+    if (!k) { $("paste").value = ""; $("paste").placeholder = "not the page's address with its #k=…: copy it again"; return; }
+    store.set("token", k);
+    location.replace(location.pathname);
   };
 }
+if (!token) askToken("No token yet: paste this page's full address");
 
 // The page as an app (sw.js, manifest.webmanifest): kept for when the build Mac doesn't answer, its
 // programs kept by version. A new version taking over (a newly published app): reloaded into it
 // once no task is running. (A first install takes over too: that's no reason to reload.)
 if ("serviceWorker" in navigator && window.isSecureContext) {
-  const had = !!navigator.serviceWorker.controller;
-  navigator.serviceWorker.register("sw.js").catch((e) => log(`<span class="bad">couldn't install the page as an app: ${esc(e.message)}</span>`));
+  let had = !!navigator.serviceWorker.controller;
+  // (Asked about whenever the page comes back to the front, and every half hour: an installed app
+  // stays open for days.)
+  navigator.serviceWorker.register("sw.js").then((reg) => {
+    const check = () => reg.update().catch(() => {});
+    document.addEventListener("visibilitychange", () => document.visibilityState === "visible" && check());
+    setInterval(check, 30 * 60000);
+  }, (e) => log(`<span class="bad">couldn't install the page as an app: ${esc(e.message)}</span>`));
   navigator.serviceWorker.addEventListener("controllerchange", () => {
-    if (!had || update) return;
+    if (!had) { had = true; return; }
+    if (update) return;
     update = true;
     log("A new version of the page is ready: reloading once the tasks running finish.");
     fill();
@@ -297,12 +317,17 @@ let installer = null;
 window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); installer = e; $("install").hidden = false; });
 $("install").onclick = async () => { if (!installer) return; installer.prompt(); await installer.userChoice; installer = null; $("install").hidden = true; };
 const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
-if (!standalone && window.isSecureContext && /iPhone|iPad|iPod/.test(navigator.userAgent)) {
+// (An iPad says it's a Mac: one with a touch screen.)
+const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Macintosh/.test(navigator.userAgent));
+if (!standalone && window.isSecureContext && ios) {
   $("hint").hidden = false;
   $("hint").textContent = "To keep it on your home screen as an app: Share, then Add to Home Screen.";
 }
 
-$("toggle").onclick = () => { paused = !paused; $("toggle").textContent = paused ? "Resume" : "Pause"; $("state").textContent = paused ? "paused (running tasks finish)" : "working"; if (!paused) fill(); };
+const setPaused = (v) => { paused = v; $("toggle").textContent = paused ? "Resume" : "Pause"; $("state").textContent = paused ? "paused (running tasks finish)" : "working"; if (!paused) fill(); };
+$("toggle").onclick = () => setPaused(!paused);
+// (Paused before the reload into a new version: still paused.)
+try { if (sessionStorage.getItem("paused") === "1") setPaused(true); sessionStorage.removeItem("paused"); } catch {}
 show();
 fill();
 </script>

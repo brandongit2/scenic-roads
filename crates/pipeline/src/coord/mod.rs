@@ -682,6 +682,13 @@ mod http {
         V.get_or_init(|| store::naming::hash16(&PAGE.iter().flat_map(|(n, _, b)| n.as_bytes().iter().chain(b.iter()).copied()).collect::<Vec<u8>>()))
     }
 
+    /// The page's files' addresses for its service worker (sw.js's PAGE, kept as it installs): all
+    /// but the worker itself.
+    pub(super) fn page_list() -> String {
+        let v: Vec<String> = PAGE.iter().filter(|(n, _, _)| *n != "sw.js").map(|(n, _, _)| format!("/work/{n}")).collect();
+        serde_json::to_string(&v).unwrap_or_else(|_| "[]".into())
+    }
+
     /// The largest JSON body taken, and the largest upload.
     const JSON_MAX: usize = 16 << 20;
     const UPLOAD_MAX: u64 = 8 << 30;
@@ -804,7 +811,7 @@ mod http {
 
     async fn page(Url(file): Url<String>) -> Response {
         match PAGE.iter().find(|(n, _, _)| *n == file) {
-            Some(("sw.js", t, body)) => ([(header::CONTENT_TYPE, *t), (header::CACHE_CONTROL, "no-store")], String::from_utf8_lossy(body).replace("__VERSION__", page_version())).into_response(),
+            Some(("sw.js", t, body)) => ([(header::CONTENT_TYPE, *t), (header::CACHE_CONTROL, "no-store")], String::from_utf8_lossy(body).replace("__VERSION__", page_version()).replace("__PAGE__", &page_list())).into_response(),
             Some((_, t, body)) => ([(header::CONTENT_TYPE, *t), (header::CACHE_CONTROL, "no-store")], *body).into_response(),
             None => error(StatusCode::NOT_FOUND, format!("no {file}")),
         }
@@ -1098,6 +1105,9 @@ mod tests {
         assert!(manifest.starts_with("HTTP/1.1 200") && manifest.contains("application/manifest+json") && manifest.contains("\"start_url\": \"/work/\""));
         let sw = String::from_utf8(get("/work/sw.js")).unwrap();
         assert!(sw.starts_with("HTTP/1.1 200") && !sw.contains("__VERSION__") && sw.contains(&format!("const VERSION = \"{}\"", http::page_version())));
+        // (Its list of the page's files, to keep as it installs: the page's own address among them,
+        // not the worker's.)
+        assert!(!sw.contains("__PAGE__") && sw.contains(r#"const PAGE = ["/work/","/work/index.html","/work/worker.js""#) && !sw.contains(r#""/work/sw.js""#));
         let icon = get("/work/icons/icon-192.png");
         assert!(icon.starts_with(b"HTTP/1.1 200") && icon.windows(8).any(|w| w == b"\x89PNG\r\n\x1a\n"));
         // A connection whose headers don't come is closed once their time is up.
