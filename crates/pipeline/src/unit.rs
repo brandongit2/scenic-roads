@@ -1,5 +1,5 @@
 //! base(U) (docs/plan.md §6): one unit's base pack, from its OSM piece, by today's steps run on a
-//! unit-sized build folder (`extract`, `dem/sample.py`, `tile … elev`, `scenic-metrics`), then the
+//! unit-sized build folder (`extract`, `elev`, `areaflags`, `tile … elev`, `scenic-metrics`), then the
 //! same conversion as today's data (`legacy::base_sections`) for the ways the unit owns (first
 //! vertex inside it) that touch the coverage, with the pass's worldwide road values.
 //!
@@ -56,7 +56,7 @@ fn current_dem_versions() -> [u32; 4] {
     crate::rules::DEM_RULES.map(crate::rules::version)
 }
 
-/// Keeps a unit's DEM samples (the `dem-cache.*` sample.py left in `from`: its vertices, cached or
+/// Keeps a unit's DEM samples (the `dem-cache.*` elev left in `from`: its vertices, cached or
 /// sampled anew) for later runs of it and of its neighbours. Returns how many.
 pub fn dem_samples_keep(dir: &Path, u: Unit, from: &Path) -> Result<usize> {
     let read = |n: &str| std::fs::read(from.join(format!("dem-cache.{n}")));
@@ -165,7 +165,7 @@ fn dem_head(m: &[u8]) -> Option<(usize, [i32; 4], [u32; 4])> {
 
 /// The entries of sorted DEM cache arrays inside `b` still valid: those whose DEM rules (by their
 /// source and place, `rules::dem_rules_of`) have the versions they were sampled under (`made`) now;
-/// the rest are left out, so sample.py samples them again under the changed rule.
+/// the rest are left out, so elev samples them again under the changed rule.
 fn dem_valid_in_box(keys: &[u64], elev: &[f32], srcs: &[u8], b: [i32; 4], made: [u32; 4], out: &mut Vec<(u64, f32, u8)>) {
     let now = current_dem_versions();
     if made == now {
@@ -181,9 +181,9 @@ fn dem_valid_in_box(keys: &[u64], elev: &[f32], srcs: &[u8], b: [i32; 4], made: 
 }
 
 /// Copies the DEM cache entries inside `b` (w, s, e, n, E7) into `dst` (`dem-cache.*` files, for
-/// sample.py): the seed's (`cache`'s `dem-cache.*`, today's cache), then every unit's kept samples
+/// elev): the seed's (`cache`'s `dem-cache.*`, today's cache), then every unit's kept samples
 /// in `units` whose box meets `b` (`dem_samples_keep`), which win over the seed's (they're newer); entries
-/// sampled under a DEM rule's earlier version are left out. With none, nothing is written (sample.py
+/// sampled under a DEM rule's earlier version are left out. With none, nothing is written (elev
 /// samples every vertex). The files near `b` are found by the boxes in their names (one listing);
 /// a unit's newest file counts, and one that isn't whole is passed over (it's only a cache).
 pub fn dem_cache_slice(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &Path) -> Result<usize> {
@@ -329,7 +329,7 @@ pub struct Tools {
     /// Overture building boxes: a folder of `.f32` files (the unit's tiles staged by
     /// `buildtiles::stage`), when there are any.
     pub buildings: Option<PathBuf>,
-    /// Taiwan's MOI DTM GeoTIFFs (the NAS's `inputs/moi-dtm/`), for sample.py.
+    /// Taiwan's MOI DTM GeoTIFFs (the NAS's `inputs/moi-dtm/`), for elev.
     pub moi_dtm: Option<PathBuf>,
     /// The NAS's `sources/`, where downloads are kept, each downloaded once: Meta's canopy squares
     /// (`canopy/`) and FABDEM's tiles (`fabdem/`); the local caches fill from it. None: local
@@ -489,9 +489,9 @@ pub fn build_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &cra
     Ok(rep)
 }
 
-/// A unit's build up to its tail (docs/workers.md: what needs the NAS, the DEM servers and the
-/// Python): its ways from the piece, those touching the coverage, their elevations, the global-source
-/// layers staged from the packs, the heritage inputs, area flags and land cover; then its scenic
+/// A unit's build up to its tail (docs/workers.md: what needs the NAS and the DEM servers): its
+/// ways from the piece, those touching the coverage, their elevations, the global-source layers
+/// staged from the packs, the heritage inputs, area flags and land cover; then its scenic
 /// results from its last run restored (`carry`), as the tail's canopy and view steps read them.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &crate::stage::Source, tools: &Tools, heritage: HeritageInputs, carry: Option<&crate::scache::Carry>) -> Result<Report> {
@@ -524,15 +524,15 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
     };
     rep.dem_cache = dem_cache_slice(&tools.cache, &tools.dem_units(), slice, &dir.join("dem-cache"))?;
     laps.lap("DEM cache slice");
-    let mut c = Command::new("uv");
-    c.current_dir(&tools.dem).args(["run", "python", "sample.py"]).arg(dir).arg("--cache").arg(dir.join("dem-cache"));
+    let mut c = Command::new(tools.bin.join("elev"));
+    c.arg(dir).arg("--cache").arg(dir.join("dem-cache"));
     if let Some(m) = &tools.moi_dtm {
         c.env("SCENIC_MOI_DTM", m);
     }
     if let Some(s) = &tools.sources {
         c.env("SCENIC_FABDEM_STORE", s.join("fabdem"));
     }
-    run_in(c, "elevations (sample.py)", &log, dir, tools)?;
+    run_in(c, "elevations (elev)", &log, dir, tools)?;
     laps.skip();
     // Its samples, kept for its later runs and its neighbours' (new ones aren't sampled twice). A
     // cache: not keeping them (the NAS away) only costs sampling them again.
@@ -548,15 +548,15 @@ pub fn prepare_folder(u: Unit, piece: &Path, dir: &Path, cov: &Coverage, src: &c
     // areas rasterised onto its grid (`grid.areas.u8`), from the heritage-sites job's slices.
     (rep.heritage, rep.areas) = heritage(b, dir)?;
     laps.lap("heritage inputs");
-    let mut c = Command::new("uv");
-    c.current_dir(&tools.dem).args(["run", "python", "areaflags.py"]).arg(dir).arg(dir.join("area-shapes.geojsonseq"));
-    run_in(c, "area flags (areaflags.py)", &log, dir, tools)?;
+    let mut c = Command::new(tools.bin.join("areaflags"));
+    c.arg(dir).arg(dir.join("area-shapes.geojsonseq"));
+    run_in(c, "area flags (areaflags)", &log, dir, tools)?;
     // Land cover the packs lack (new coverage): ESA WorldCover for those grid tiles only; the
     // rest stays as staged.
     if rep.staged.missing.get("class").copied().unwrap_or(0) > 0 {
-        let mut c = Command::new("uv");
-        c.current_dir(&tools.dem).args(["run", "python", "landcover.py"]).arg(dir).arg("--only").arg(dir.join("grid.class.missing.u32"));
-        run_in(c, "land cover (landcover.py)", &log, dir, tools)?;
+        let mut c = Command::new(tools.bin.join("landcover"));
+        c.arg(dir).arg("--only").arg(dir.join("grid.class.missing.u32"));
+        run_in(c, "land cover (landcover)", &log, dir, tools)?;
     }
     // Its last run's scenic results (pipeline::scache: the canopy and view steps copy what's
     // unchanged), restored over the staged grids they were made from.
@@ -761,7 +761,7 @@ mod tests {
         assert_eq!(n, 3);
         let got: Vec<u64> = bytemuck::pod_collect_to_vec(&std::fs::read(d.path().join("s/dem-cache.keys.u64")).unwrap());
         assert_eq!(got, vec![k(0, 0), k(3, 3), k(5, -1)]);
-        // No cache: an empty slice, and no files (sample.py can't map an empty one).
+        // No cache: an empty slice, and no files (elev can't map an empty one).
         assert_eq!(dem_cache_slice(&d.path().join("none"), &d.path().join("none").join(DEM_UNITS), [0, 0, 1, 1], &d.path().join("t")).unwrap(), 0);
         assert!(!d.path().join("t/dem-cache.keys.u64").exists());
         // A unit's kept samples: in the slices of boxes meeting them, over the seed's.

@@ -49,8 +49,8 @@ $(DATA)/trees/poly/.done: regions.json dem/regionpolys.py
 
 # Binaries are order-only prerequisites of the data steps: editing code doesn't rebuild data
 # (delete an output to redo its step).
-target/release/extract target/release/tile target/release/server target/release/terrain target/release/scenic-metrics target/release/slope target/release/railfreq target/release/peaks: $(RUST_SRC)
-	cargo build --release && touch target/release/{extract,tile,server,terrain,scenic,slope,railfreq,peaks}
+target/release/extract target/release/tile target/release/server target/release/terrain target/release/scenic-metrics target/release/slope target/release/railfreq target/release/peaks target/release/elev target/release/areaflags target/release/landcover: $(RUST_SRC)
+	cargo build --release && touch target/release/{extract,tile,server,terrain,scenic,slope,railfreq,peaks,elev,areaflags,landcover}
 
 # 1. car-accessible roads + ferries, densified
 $(BUILD)/ways.bin: $(OSM)/merged.osm.pbf | target/release/extract

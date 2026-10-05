@@ -408,8 +408,8 @@ units' ones (DEM order, densification, road network codes) are versioned by area
 `pipeline::rules`: a unit's key names the versions of the rules where its ways go, so a changed
 rule (its version bumped) reruns only the units it applies to. The plan is modules declared per ISO
 3166-1 country or 3166-2 subdivision, with defaults:
-- DEM order (`dem/sample.py`; Taiwan's MOI DTM from `inputs/moi-dtm/` when it's there, which
-  reruns Taiwan's units) and densification spacing (8 m in North America and Japan, 15 m
+- DEM order (`pipeline::dem`, the `elev` program; Taiwan's MOI DTM from `inputs/moi-dtm/` when it's
+  there, which reruns Taiwan's units) and densification spacing (8 m in North America and Japan, 15 m
   elsewhere: `extract`);
 - heritage registers (the snapshot, `dem/heritage.py`);
 - timetables:
@@ -506,7 +506,7 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
 - **Worldwide z8 terrain** (`sources/terrain-z8-v1`, once, not served): every z8 tile, repaired, with
   each tile's maximum. Peaks read it, so their prominence and isolation don't depend on coverage.
 - **Grids (z11):** land cover, canopy and cover, for analysis only (not served).
-  - Each unit's job makes the grid tiles its packs lack: `landcover.py --only`, and the scenic canopy
+  - Each unit's job makes the grid tiles its packs lack: `landcover --only`, and the scenic canopy
     step.
   - It uploads them as its own z6 tile's `grid-*` hi packs. They aren't in the units' keys: a grid
     read from its pack or made afresh is the same (from fixed datasets: WorldCover, Meta's canopy
@@ -557,12 +557,13 @@ The server builds missing deeper terrain and slope tiles from their ancestors.
 The unit job runs today's steps on a unit-sized folder, wiped at each run:
 1. **extract:** on U's piece, U's ways that touch the coverage, by today's rules. Rail tracks without
    a route relation are kept by type.
-2. **Elevations:** `sample.py`, DEMs by location, on U's slice of the per-vertex DEM cache (the seed,
-   and the units' kept samples, which win); FABDEM's tiles from the NAS (`sources/fabdem/`, each
+2. **Elevations:** `elev` (`pipeline::dem`: `dem/sample.py`'s port, the same bytes but where a
+   source needs a projection, within 3.1e-5 m), DEMs by location, on U's slice of the per-vertex DEM
+   cache (the seed, and the units' kept samples, which win); FABDEM's tiles from the NAS (`sources/fabdem/`, each
    copied there from Bristol's zips once). U's samples are kept afterwards for its later runs and
    its neighbours'.
 3. **Heritage:** the sites and designated areas of the heritage-sites job's slices within U + 30 km.
-   `areaflags.py` rasterises the areas onto U's grid.
+   `areaflags` rasterises the areas onto U's grid.
 4. **Terrain and grids:** terrain z11 and the grids, staged from the packs (as the build manifest has
    them when the unit runs, which is what its key names). Missing grid tiles are made.
 5. **`tile elev`:** clean-up and grade, with junction context from the piece.
@@ -1164,10 +1165,10 @@ At each phase's end an Opus agent reviews the work against this plan.
 8. **Builds anywhere: under way** (`docs/workers.md`). Done: the crates build for WebAssembly; one
    maths library on every target (outputs identical natively at any thread count and under WASI);
    the data plane's SSD copies and prefetch; the coordinator (leases, hand-offs over HTTP, learned
-   memory); a unit's last steps as tasks for any worker, the web worker page and the M1 alike;
-   `elev`, `landcover` and `areaflags` (the Python steps' ports, the same bytes; not yet switched
-   on). Next: HTTPS through `tailscale serve` (the owner's go-ahead), the units' switch to the ports,
-   OPFS, ranged reads, journaled group commits, retiring the claim and hand-off files.
+   memory); a unit's last steps as tasks for any worker, the web worker page and the M1 alike; the
+   units' Python steps in Rust (`elev`, `landcover`, `areaflags`: the same bytes). Next: HTTPS through
+   `tailscale serve` (the owner's go-ahead), OPFS, ranged reads, journaled group commits, retiring the
+   claim and hand-off files.
 
 **Gaps:** none known between the code and the design.
 

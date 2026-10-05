@@ -308,10 +308,10 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
    | Step | What it does |
    |---|---|
    | `extract` | Roads and passenger rail, access rules, densification (8 m in North America and Japan, 15 m elsewhere), scenic routes, route-network codes and line colours; each rail track's primary route relation (the service that names it, which the Rail lines and Rides lists open on OSM). |
-   | `sample.py` | DEM sampling by location, from a per-vertex cache of today's samples. |
+   | `elev` | DEM sampling by location, from a per-vertex cache of today's samples (`dem/sample.py`'s port). |
    | `tile … elev` | Elevation clean-up and grade (`final.u16`: decimetres + 5,000, so −500 to 6,053.5 m), which the scenic samples need. |
-   | `areaflags.py` | The designated areas rasterised onto the area's grid. |
-   | `landcover.py` | WorldCover classes for the grid tiles the packs lack. |
+   | `areaflags` | The designated areas rasterised onto the area's grid (`dem/areaflags.py`'s port). |
+   | `landcover` | WorldCover classes for the grid tiles the packs lack (`dem/landcover.py`'s port). |
    | `scenic prep` | 100 m samples and drape heights. |
    | `scenic canopy` | Near-field horizons from Meta's 10° canopy files. |
    | `scenic view` | 32-ray far-field viewsheds (roads and rail). |
@@ -333,7 +333,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
 - **The agent** reruns only what changes reach: the job keys say what each output was made from.
 - **Region-specific code**, for a new country (when a rule the units use changes, bump its version in `crates/pipeline/src/rules.rs`, so only the areas it applies to are rebuilt):
   - road route networks: `network_code` in `extract.rs`, colours in `web/src/mapschemes.ts`;
-  - the elevation source: `dem/sample.py`, with densification in `extract.rs`;
+  - the elevation source: `crates/pipeline/src/dem/` (the `elev` program), with densification in `extract.rs`;
   - heritage registers: the snapshot; `dem/heritage_eu.py`, kinds in `dem/heritagetiers.py`;
   - names' areas: `crates/names/src/area.rs`, until names go by language;
   - rail feeds: the catalogue's come by country, from the coverage; national operators' own, and those behind a key (in `inputs/keys.env` on the NAS), are listed in `dem/railfeeds.py` with their countries, as are the catalogue's feeds filed under another country and which of several copies of one timetable is read;

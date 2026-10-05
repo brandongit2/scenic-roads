@@ -61,9 +61,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   app's `wasm/`). The native and WebAssembly builds of one source give the same bytes (§10).
 - **Determinism rules:** one maths library (`det`, over `libm`) on every target; reductions that
   don't depend on the thread count; no hash-map order in outputs; the real zstd everywhere.
-- **Planned:** more of a unit as tasks once the Python steps' ports are switched on (`elev`,
-  `landcover`, `areaflags`: built, the same bytes as the scripts, the units still run the scripts;
-  sampling needs the DEM ranges it reads listed ahead, §4); the heavy steps cut into sample ranges
+- **Planned:** more of a unit as tasks, now that its Python steps are Rust (`elev`, `landcover`,
+  `areaflags`; sampling needs the DEM ranges it reads listed ahead, §4); the heavy steps cut into sample ranges
   so a slow worker's lease is minutes; more kinds of task (map tiles, landmarks, slope, terrain,
   tree cover).
 
@@ -183,5 +182,5 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
    ranged reads *planned.*
 5. **Browsers:** the page, imported-memory ceilings, ramped verification. *Done;* HTTPS through
    Tailscale and OPFS *planned.*
-6. **The Python steps in Rust:** *built* (same bytes), the units' switch to them *planned;* then more
-   kinds of task, and the build Mac's own work as tasks.
+6. **The Python steps in Rust:** *done* (the same bytes; the units run them); then more kinds of
+   task, and the build Mac's own work as tasks.
