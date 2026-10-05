@@ -589,31 +589,36 @@ pub fn build_q(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], 
 
 /// `build_q`, saying how far it is (`progress`): the area's tiles, every level's, each half done once
 /// it's here (fetched from AWS, or read from the NAS's archives) and done once shaded ("tiles",
-/// every few seconds), then its packs written ("packs").
+/// every few seconds; each z6 tile's hi pack written as its tiles are done), then its lo pack
+/// written ("packs").
+///
+/// A z6 tile at a time: its levels z12 → z9 made, then its hi pack written, so only its tiles are
+/// held (an area's were all held until they were written: 33 GB for the largest, more than a
+/// helper spares); its z9 tiles' repairs and quarters kept for q's z8. A tile's making reads only
+/// its own raw tile and its children's (`process`): the same bytes in any order.
 pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], cov: &Coverage, progress: crate::rawpack::Progress) -> anyhow::Result<PackReport> {
     let mut rep = PackReport::default();
-    // Each level's tiles, z12 → z3: z12 → z9 inside each z6 tile, near the coverage, as fine as the
-    // latitude allows; z8 → z3 the whole of q.
-    let mut levels: Vec<(u8, Vec<(u32, u32)>)> = Vec::new();
-    for z in (9..=12u8).rev() {
-        let mut tiles = Vec::new();
-        for &(tx, ty) in ts {
-            let s = 1u32 << (z - 6);
-            for x in tx * s..(tx + 1) * s {
-                for y in ty * s..(ty + 1) * s {
-                    if z <= max_zoom_at(tile_lat(z, y)) && near_coverage(cov, z, x, y, 20.0) {
-                        tiles.push((x, y));
-                    }
-                }
-            }
-        }
-        levels.push((z, tiles));
-    }
-    for z in (3..=8u8).rev() {
-        let s = 1u32 << (z - 3);
-        levels.push((z, (q.0 * s..(q.0 + 1) * s).flat_map(|x| (q.1 * s..(q.1 + 1) * s).map(move |y| (x, y))).collect()));
-    }
-    let total: u64 = levels.iter().map(|(_, t)| t.len() as u64).sum();
+    // Each z6 tile's levels' tiles, z12 → z9, near the coverage, as fine as the latitude allows; then
+    // q's, z8 → z3, the whole of it.
+    let own = |tx: u32, ty: u32| -> Vec<(u8, Vec<(u32, u32)>)> {
+        (9..=12u8)
+            .rev()
+            .map(|z| {
+                let s = 1u32 << (z - 6);
+                let tiles = (tx * s..(tx + 1) * s).flat_map(|x| (ty * s..(ty + 1) * s).map(move |y| (x, y))).filter(|&(x, y)| z <= max_zoom_at(tile_lat(z, y)) && near_coverage(cov, z, x, y, 20.0)).collect();
+                (z, tiles)
+            })
+            .collect()
+    };
+    let mine: Vec<Vec<(u8, Vec<(u32, u32)>)>> = ts.iter().map(|&(tx, ty)| own(tx, ty)).collect();
+    let upper: Vec<(u8, Vec<(u32, u32)>)> = (3..=8u8)
+        .rev()
+        .map(|z| {
+            let s = 1u32 << (z - 3);
+            (z, (q.0 * s..(q.0 + 1) * s).flat_map(|x| (q.1 * s..(q.1 + 1) * s).map(move |y| (x, y))).collect())
+        })
+        .collect();
+    let total: u64 = mine.iter().flatten().chain(&upper).map(|(_, t)| t.len() as u64).sum();
     // (Here, and shaded: each tile counts in both.)
     let (here, processed) = (std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0));
     let done = || (here.load(std::sync::atomic::Ordering::Relaxed) + processed.load(std::sync::atomic::Ordering::Relaxed)) / 2;
@@ -658,10 +663,9 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
         }
         Ok((outs, nb, nq))
     };
-    let mut hi: HashMap<(u32, u32), Vec<(u8, u32, u32, Vec<u8>)>> = HashMap::new();
     let mut lo: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
-    // The levels, each with what the level below made (z8 → z3 fold in the levels above what was
-    // made just before them); the tiles done said every few seconds meanwhile.
+    // The z6 tiles, each written as it's done, then q's levels (z8 → z3 fold in the levels above
+    // what was made just before them); the tiles done said every few seconds meanwhile.
     let finished = std::sync::atomic::AtomicBool::new(false);
     // (Set however the levels end, a panic too: the scope waits for the reporter before it goes on.)
     struct Finished<'a>(&'a std::sync::atomic::AtomicBool);
@@ -683,17 +687,30 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
         });
         let _finished = Finished(&finished);
         let r = (|| -> anyhow::Result<()> {
-            let mut below: HashMap<(u32, u32), Repaired> = HashMap::new();
-            let mut quads: HashMap<(u32, u32), Vec<f32>> = HashMap::new();
-            for (z, tiles) in levels {
-                let (outs, nb, nq) = level(z, tiles, &below, &quads)?;
-                for (x, y, b) in outs {
-                    if z >= 9 {
-                        hi.entry((x >> (z - 6), y >> (z - 6))).or_default().push((z, x, y, b));
-                    } else {
-                        lo.push((z, x, y, b));
-                    }
+            let (mut below9, mut quads9): (HashMap<(u32, u32), Repaired>, HashMap<(u32, u32), Vec<f32>>) = (HashMap::new(), HashMap::new());
+            for (&(tx, ty), levels) in ts.iter().zip(mine) {
+                let (mut below, mut quads) = (HashMap::new(), HashMap::new());
+                let mut hi: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
+                for (z, tiles) in levels {
+                    let (outs, nb, nq) = level(z, tiles, &below, &quads)?;
+                    hi.extend(outs.into_iter().map(|(x, y, b)| (z, x, y, b)));
+                    (below, quads) = (nb, nq);
                 }
+                // (Its z9 tiles': what q's z8 reads.)
+                below9.extend(below);
+                quads9.extend(quads);
+                hi.sort_by_key(|t| (t.0, t.1, t.2));
+                rep.hi_tiles += hi.len();
+                let mut it = hi.into_iter().map(|(z, x, y, b)| {
+                    let n = b.len() as u32;
+                    (z, x, y, b, n)
+                });
+                crate::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, tx, ty), &mut it)?;
+            }
+            let (mut below, mut quads) = (below9, quads9);
+            for (z, tiles) in upper {
+                let (outs, nb, nq) = level(z, tiles, &below, &quads)?;
+                lo.extend(outs.into_iter().map(|(x, y, b)| (z, x, y, b)));
                 (below, quads) = (nb, nq);
             }
             Ok(())
@@ -705,20 +722,8 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
     rep.fetched = fetched.into_inner();
     rep.missing = missing.into_inner();
     rep.repaired = repaired.into_inner();
-    // Upload: each z6 tile's hi pack, then q's lo pack.
-    let packs = ts.len() as u64 + 1;
-    for (i, &(tx, ty)) in ts.iter().enumerate() {
-        progress("packs", i as u64, packs);
-        let mut tiles = hi.remove(&(tx, ty)).unwrap_or_default();
-        tiles.sort_by_key(|t| (t.0, t.1, t.2));
-        rep.hi_tiles += tiles.len();
-        let mut it = tiles.into_iter().map(|(z, x, y, b)| {
-            let n = b.len() as u32;
-            (z, x, y, b, n)
-        });
-        crate::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, tx, ty), &mut it)?;
-    }
-    progress("packs", ts.len() as u64, packs);
+    // Then q's lo pack.
+    progress("packs", 0, 1);
     lo.sort_by_key(|t| (t.0, t.1, t.2));
     rep.lo_tiles = lo.len();
     let mut it = lo.into_iter().map(|(z, x, y, b)| {
@@ -727,7 +732,7 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
     });
     crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut it)?;
     out.save()?;
-    progress("packs", packs, packs);
+    progress("packs", 1, 1);
     Ok(rep)
 }
 
@@ -809,6 +814,118 @@ mod tests {
         assert!(said.contains(&("tiles".to_string(), 1365, 1365)));
         assert_eq!(said.last(), Some(&("packs".to_string(), 1, 1)));
         assert!(said.iter().all(|(_, d, t)| d <= t));
+    }
+
+    /// The area's terrain made as it was before it was written a z6 tile at a time: every level at
+    /// once, every tile held until the packs are written (the reference for the test below).
+    fn whole_area(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], cov: &Coverage) {
+        let mut levels: Vec<(u8, Vec<(u32, u32)>)> = Vec::new();
+        for z in (9..=12u8).rev() {
+            let s = 1u32 << (z - 6);
+            let tiles = ts.iter().flat_map(|&(tx, ty)| (tx * s..(tx + 1) * s).flat_map(move |x| (ty * s..(ty + 1) * s).map(move |y| (x, y)))).filter(|&(x, y)| z <= max_zoom_at(tile_lat(z, y)) && near_coverage(cov, z, x, y, 20.0)).collect();
+            levels.push((z, tiles));
+        }
+        for z in (3..=8u8).rev() {
+            let s = 1u32 << (z - 3);
+            levels.push((z, (q.0 * s..(q.0 + 1) * s).flat_map(|x| (q.1 * s..(q.1 + 1) * s).map(move |y| (x, y))).collect()));
+        }
+        let (mut hi, mut lo): (HashMap<(u32, u32), Vec<(u8, u32, u32, Vec<u8>)>>, Vec<(u8, u32, u32, Vec<u8>)>) = (HashMap::new(), Vec::new());
+        let (mut below, mut quads) = (HashMap::new(), HashMap::new());
+        for (z, tiles) in levels {
+            let (mut nb, mut nq) = (HashMap::new(), HashMap::new());
+            for (x, y) in tiles {
+                let Some(b) = raw.get(z, x, y).unwrap().0 else { continue };
+                let (b, r, qd) = process(b, z, x, y, &below, &quads);
+                if let Some(r) = r {
+                    nb.insert((x, y), r);
+                }
+                if let Some(qd) = qd {
+                    nq.insert((x, y), qd);
+                }
+                if z >= 9 {
+                    hi.entry((x >> (z - 6), y >> (z - 6))).or_default().push((z, x, y, b));
+                } else {
+                    lo.push((z, x, y, b));
+                }
+            }
+            (below, quads) = (nb, nq);
+        }
+        let pack = |mut v: Vec<(u8, u32, u32, Vec<u8>)>| {
+            v.sort_by_key(|t| (t.0, t.1, t.2));
+            v.into_iter().map(|(z, x, y, b)| {
+                let n = b.len() as u32;
+                (z, x, y, b, n)
+            })
+        };
+        for &(tx, ty) in ts {
+            crate::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, tx, ty), &mut pack(hi.remove(&(tx, ty)).unwrap_or_default())).unwrap();
+        }
+        crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut pack(lo)).unwrap();
+        out.save().unwrap();
+    }
+
+    #[test]
+    fn a_z6_tile_at_a_time_makes_what_the_whole_area_did() {
+        let d = tempfile::tempdir().unwrap();
+        let local = d.path().join("local");
+        // A small coverage in the far north (z11 the finest there: fewer tiles) on two z6 tiles'
+        // edge, and its area's z6 tiles near it.
+        let cov = Coverage::from_recipes(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:11.25,70.5,2".into()] }], None, d.path()).unwrap();
+        let by_q = crate::agent::build::coverage_tiles(&cov);
+        let (&q, ts) = by_q.iter().next().unwrap();
+        assert!(ts.len() >= 2, "{ts:?}");
+        // Raw tiles: smooth slopes, every third with a spike (a repair, whose pixels the level above
+        // takes in), every seventh missing (the open sea); every level's, z12 to z3.
+        let mut want: Vec<(u8, u32, u32)> = Vec::new();
+        for z in 9..=12u8 {
+            let s = 1u32 << (z - 6);
+            for &(tx, ty) in ts {
+                for x in tx * s..(tx + 1) * s {
+                    for y in ty * s..(ty + 1) * s {
+                        if near_coverage(&cov, z, x, y, 20.0) {
+                            want.push((z, x, y));
+                        }
+                    }
+                }
+            }
+        }
+        for z in 3..=8u8 {
+            let s = 1u32 << (z - 3);
+            for x in q.0 * s..(q.0 + 1) * s {
+                for y in q.1 * s..(q.1 + 1) * s {
+                    want.push((z, x, y));
+                }
+            }
+        }
+        // (Of the zoomed-out levels, the tiles over those z6 tiles alone: the others missing.)
+        let over = |z: u8, x: u32, y: u32| z >= 9 || ts.iter().any(|&(tx, ty)| if z >= 6 { (x >> (z - 6), y >> (z - 6)) == (tx, ty) } else { (tx >> (6 - z), ty >> (6 - z)) == (x, y) });
+        for &(z, x, y) in &want {
+            std::fs::create_dir_all(local.join(format!("{z}/{x}"))).unwrap();
+            let k = z as u32 + x + y;
+            if k % 7 == 0 || !over(z, x, y) {
+                std::fs::write(local.join(format!("{z}/{x}/{y}.none")), b"").unwrap();
+                continue;
+            }
+            let mut e: Vec<f32> = (0..256 * 256).map(|i| 400.0 + (i % 256) as f32 * 0.7 + (i / 256) as f32 * 0.4 + (k % 11) as f32 * 30.0).collect();
+            if k % 3 == 0 {
+                e[128 * 256 + 128] += 900.0;
+                e[64 * 256 + 200] -= 700.0;
+            }
+            std::fs::write(local.join(format!("{z}/{x}/{y}.png")), encode_terrain_png(&e, 256, 256).unwrap()).unwrap();
+        }
+        let raw = RawTiles::with_store(&local, &d.path().join("store"));
+        let made = |root: &str, way: &dyn Fn(&mut Out)| {
+            let mut out = Out::open(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
+            way(&mut out);
+            let out = Out::open(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
+            out.manifest.into_iter().filter(|(l, _)| l.starts_with("layers/terrain/")).collect::<Vec<_>>()
+        };
+        let now = made("now", &|out| {
+            build_q(out, &raw, q, ts, &cov).unwrap();
+        });
+        let before = made("before", &|out| whole_area(out, &raw, q, ts, &cov));
+        assert_eq!(now.len(), ts.len() + 1);
+        assert_eq!(now, before, "the same packs, byte for byte (their content names)");
     }
 
     #[test]

@@ -55,13 +55,29 @@ pub fn contact_path(root: &Path) -> PathBuf {
 }
 
 /// What a job's target cost last time (a unit's, another shared step's, a task's): its peak memory
-/// (MB) and its wall time, and the worker it was measured on (None: the build Mac, or not said).
+/// (MB) and its wall time, the worker it was measured on (None: the build Mac, or not said), and
+/// the way its step was run then (`cost_version`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cost {
     pub peak_mb: u64,
     pub secs: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub v: u32,
+}
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
+}
+
+/// The way a step runs now, as far as its memory goes: a cost measured another way says nothing of
+/// what a run takes now (terrain 2: written a z6 tile at a time, where it held its whole area).
+pub fn cost_version(step: &str) -> u32 {
+    match step {
+        "terrain" => 2,
+        _ => 0,
+    }
 }
 
 /// A unit's predicted peak memory (MB): what it took last time, else about ten times its piece (the
@@ -81,7 +97,8 @@ pub fn cost_key(step: &str, target: &str) -> String {
 /// piece, with one of the unit's programs: `size` its bytes too); another step's what it took last
 /// time, else `size`, the estimate it was offered with.
 pub fn job_peak(costs: &BTreeMap<String, Cost>, step: &str, target: &str, size: u64) -> u64 {
-    match (step, costs.get(&cost_key(step, target))) {
+    // (Only what was measured the way the step runs now.)
+    match (step, costs.get(&cost_key(step, target)).filter(|c| c.v >= cost_version(step))) {
         ("unit", _) => unit_peak(costs, target, size),
         (_, Some(c)) => c.peak_mb,
         ("pois", None) => unit_peak(costs, target, size),
@@ -873,7 +890,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                     };
                     // What its unit's task takes, for the next time it's offered.
                     if let Some(u) = &unit {
-                        s.costs.insert(format!("tail {u}"), Cost { peak_mb: d.peak_mb, secs: d.secs as u64, worker: Some(d.worker.clone()) });
+                        s.costs.insert(format!("tail {u}"), Cost { peak_mb: d.peak_mb, secs: d.secs as u64, worker: Some(d.worker.clone()), v: 0 });
                         s.save_costs();
                     }
                     s.leases.finish(d.lease, &d.worker, now);
@@ -1400,12 +1417,26 @@ mod tests {
     }
 
     #[test]
+    fn a_cost_measured_another_way_says_nothing_of_memory() {
+        // Terrain measured holding its whole area (before it wrote a z6 tile at a time): its
+        // estimate instead; measured since: what it took.
+        let mut costs = BTreeMap::new();
+        costs.insert(cost_key("terrain", "3/0/2"), Cost { peak_mb: 32_900, secs: 3000, worker: None, v: 0 });
+        assert_eq!(job_peak(&costs, "terrain", "3/0/2", 2400), 2400);
+        costs.insert(cost_key("terrain", "3/0/2"), Cost { peak_mb: 2100, secs: 3000, worker: None, v: cost_version("terrain") });
+        assert_eq!(job_peak(&costs, "terrain", "3/0/2", 2400), 2100);
+        // Other steps' measures stand.
+        costs.insert(cost_key("slope", "3/0/2"), Cost { peak_mb: 5000, secs: 300, worker: None, v: 0 });
+        assert_eq!(job_peak(&costs, "slope", "3/0/2", 6600), 5000);
+    }
+
+    #[test]
     fn the_history_and_the_swarm_say_what_happened_and_why() {
         let (_d, c, w) = start();
         let units: Vec<(String, String, u64)> = (1..=3).map(|i| (format!("6/1/{i}"), format!("k{i}"), 100 << 20)).collect();
         c.offer_units("2026-09-28", units);
         // A worker that spares 4 GB takes two areas (the third too big), hands one back.
-        c.shared.lock().unwrap().costs.insert("6/1/1".into(), Cost { peak_mb: 9000, secs: 60, worker: None });
+        c.shared.lock().unwrap().costs.insert("6/1/1".into(), Cost { peak_mb: 9000, secs: 60, worker: None, v: 0 });
         let g = w.ask(&Ask { max: 2, ..ask(4096) }).unwrap().unwrap();
         let Granted::Job { targets, .. } = &g.work else { panic!("a job") };
         let one: Vec<(&str, &str)> = targets.iter().take(1).map(|(t, k)| (t.as_str(), k.as_str())).collect();
@@ -1476,7 +1507,7 @@ mod tests {
 
     #[test]
     fn candidates_are_expected_to_take_what_their_unit_did() {
-        let cost = |mb: u64| Cost { peak_mb: mb, secs: 1, worker: None };
+        let cost = |mb: u64| Cost { peak_mb: mb, secs: 1, worker: None, v: 2 };
         let mut costs = BTreeMap::new();
         // Before either ran: as a unit on its piece would (ten times it, at least 3.7 GB).
         assert_eq!(job_peak(&costs, "pois", "6/1/1", 500 << 20), 5000);
@@ -1541,7 +1572,7 @@ mod tests {
         assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "pois 6/1/1");
         assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "none");
         // Terrain once a run said it fits.
-        c.add_costs(&[(cost_key("terrain", "3/1/2"), Cost { peak_mb: 3500, secs: 1, worker: None })]);
+        c.add_costs(&[(cost_key("terrain", "3/1/2"), Cost { peak_mb: 3500, secs: 1, worker: None, v: 2 })]);
         assert_eq!(next(&["terrain"]), "terrain 3/1/2");
         // A worker that can't do a step gets none of it.
         c.offer("p", vec![o("trees", &[("3/1/1", 1000)], 1)]);
@@ -1611,7 +1642,7 @@ mod tests {
         assert!(kept[0].0.parent().unwrap().ends_with(crate::handoff::RAW_AGAIN) && kept[0].1.done.is_none() && kept[0].1.changes.is_empty());
         assert_eq!(kept[0].1.raw.iter().map(|r| r.1.name.as_str()).collect::<Vec<_>>(), ["6-1-1.0123456789abcdef.tiles"]);
         std::fs::remove_file(&kept[0].0).unwrap();
-        assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])), costs: vec![("6/1/3".into(), Cost { peak_mb: 2000, secs: 300, worker: None })], ..Default::default() }).unwrap(), client::Handed::Taken);
+        assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/3", "k3"), ("6/1/1", "k1")])), costs: vec![("6/1/3".into(), Cost { peak_mb: 2000, secs: 300, worker: None, v: 0 })], ..Default::default() }).unwrap(), client::Handed::Taken);
         let waiting = crate::handoff::waiting_in(&c.journal()).unwrap();
         assert_eq!(waiting.len(), 1);
         assert!(waiting[0].1.done.is_some() && waiting[0].1.changes.contains_key("base/6-1-3"));

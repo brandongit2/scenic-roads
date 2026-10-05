@@ -154,12 +154,12 @@ fn first_peak(step: &str) -> u64 {
 }
 
 /// The memory a terrain run of an area of `z6` tiles near the coverage is expected to take (MB),
-/// before one has said: it holds each shaded hi tile (z9–12, up to 5,440 a z6 tile) as 256 × 256
-/// RGBA until it writes the area (~270 KB each, measured: 32.9 GB for 3/0/2's 116,735, 6.2 GB for
-/// 3/4/2's 21,378), so every z6 tile as if wholly covered, and half a GB besides. Only a small area
-/// fits a helper before its run has been measured.
+/// before one has said: it holds a z6 tile's shaded hi tiles at a time (z9–12, up to 5,440, ~270 KB
+/// each until written: crate::terrain_pack::build_q_with), each z6 tile's z9 repairs and quarters
+/// (~20 MB) and the area's zoomed-out tiles (z3–8, 1,365), and half a GB besides: 2.3 to 3.6 GB,
+/// what a helper spares.
 fn terrain_peak(z6: usize) -> u64 {
-    500 + z6 as u64 * 5440 * 270 / 1024
+    500 + 5440 * 270 / 1024 + 1365 * 270 / 1024 + z6 as u64 * 20
 }
 
 /// The memory a helper spares its jobs (MB): three eighths of its Mac's (6 GB of the M1's 16, the
@@ -199,7 +199,7 @@ fn read_costs(p: &Path) -> Vec<(String, crate::coord::Cost)> {
     s.lines()
         .filter_map(|l| {
             let v: serde_json::Value = serde_json::from_str(l).ok()?;
-            Some((v["unit"].as_str()?.to_string(), crate::coord::Cost { peak_mb: v["peak_mb"].as_u64()?, secs: v["secs"].as_u64().unwrap_or(0), worker: None }))
+            Some((v["unit"].as_str()?.to_string(), crate::coord::Cost { peak_mb: v["peak_mb"].as_u64()?, secs: v["secs"].as_u64().unwrap_or(0), worker: None, v: v["v"].as_u64().unwrap_or(0) as u32 }))
         })
         .collect()
 }
@@ -2038,7 +2038,8 @@ impl Agent {
         };
         let cost = |step: &str, t: &str| -> Cost {
             match costs.get(&crate::coord::cost_key(step, t)) {
-                Some(c) => Cost { secs: c.secs as f64 * pace(c.worker.as_ref()), known: true, peak_mb: c.peak_mb },
+                // (Its memory only when measured the way the step runs now: crate::coord::cost_version.)
+                Some(c) => Cost { secs: c.secs as f64 * pace(c.worker.as_ref()), known: true, peak_mb: if c.v >= crate::coord::cost_version(step) { c.peak_mb } else { peak(step, t) } },
                 None => Cost { secs: per(step), known: false, peak_mb: peak(step, t) },
             }
         };

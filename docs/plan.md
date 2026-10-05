@@ -1096,7 +1096,8 @@ are no request files.
   (heritage's five: getting ready, details, outlines, fame, layers; the items' facts, articles and
   pageviews; summits, marks, route ends, the heritage sites, rail feeds, rail, labels; the OSM
   pass's ten, from the planet's copy to the roads' walk; a terrain run's three: its area's tiles
-  fetched and shaded, its terrain written to the NAS, the new raw tiles packed onto the NAS; slope's
+  fetched, shaded and written a z6 tile at a time, its zoomed-out terrain written to the NAS, the
+  new raw tiles packed onto the NAS; slope's
   and the tree cover's two an area, worked out then written; the peaks' and the z8 terrain's, then
   their raw tiles packed; the map tiles' base packs got here, then the tiles drawn). A long part says
   how far it is: the pageview dumps by the bytes streamed, a part's steps one by one, a terrain run's
@@ -1168,12 +1169,13 @@ and, when none fits it, units' last steps.
   unit's from its piece; another's what its last run took (the job notes, per target, the most its
   processes held together, sampled four times a second from the start of that target: a pool's
   workers summed, `SCENIC_COSTS`, "<step> <target>"), else candidates' their unit's (they read the
-  same piece), else terrain by its area's size (it holds each shaded hi tile uncompressed until it
-  writes the area, ~270 KB each: 32.9 GB for 3/0/2's 116,735, 6.2 GB for 3/4/2's 21,378; so every
-  z6 tile near the coverage counted as wholly covered, 5,440 hi tiles), else a first guess per step
-  (tree cover 8 GB: six workers at once, each with its block's canopy; slope 6.6, the most an area
-  took); so none of those goes to the M1's 6 GB until a run shows it fits, but a small terrain area;
-  peaks 2.5. A helper asks only for the steps its
+  same piece), else terrain by its area's size (it makes and writes a z6 tile at a time, holding
+  that one's shaded hi tiles, up to 5,440 at ~270 KB, each z6 tile's z9 repairs and quarters, and
+  the area's zoomed-out tiles: 2.3 to 3.6 GB, where holding the whole area's until they were
+  written took 32.9 GB for 3/0/2; a measure from that way, `v` 0, counts for nothing now:
+  `coord::cost_version`), else a first guess per step (tree cover 8 GB: six workers at once, each
+  with its block's canopy; slope 6.6, the most an area took); so neither of those goes to the M1's
+  6 GB until a run shows it fits; peaks 2.5. A helper asks only for the steps its
   disk has room for (a terrain run 55 GB free, tree cover 30, the others 15, a task 5, and a sixth
   more, counting what its caches can free: not its loose raw tiles, which only its own jobs pack),
   never while a newer app waits to start, and takes the earliest step with a target that fits, from

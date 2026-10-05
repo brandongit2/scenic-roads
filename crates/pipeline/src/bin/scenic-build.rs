@@ -995,7 +995,7 @@ fn cost_start() -> std::time::Instant {
 /// work that fits its memory (crate::coord::job_peak).
 fn note_cost(step: &str, target: &str, t0: std::time::Instant) {
     let Some(p) = std::env::var_os("SCENIC_COSTS") else { return };
-    let line = serde_json::json!({ "unit": pipeline::coord::cost_key(step, target), "peak_mb": pipeline::sys::group_peak() >> 20, "secs": t0.elapsed().as_secs() });
+    let line = serde_json::json!({ "unit": pipeline::coord::cost_key(step, target), "peak_mb": pipeline::sys::group_peak() >> 20, "secs": t0.elapsed().as_secs(), "v": pipeline::coord::cost_version(step) });
     let r = std::fs::OpenOptions::new().create(true).append(true).open(&p).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes()));
     if let Err(e) = r {
         eprintln!("{step} {target}: noting what it cost: {e}");
@@ -2318,8 +2318,8 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
     let of = |k: usize| if n > 1 { format!(" ({} of {n})", k + 1) } else { String::new() };
     let mut names: Vec<String> = Vec::new();
     for k in 0..n {
-        names.push(format!("Fetching and shading the area's terrain tiles{}", of(k)));
-        names.push(format!("Writing the area's terrain to the NAS{}", of(k)));
+        names.push(format!("Fetching, shading and writing the area's terrain tiles{}", of(k)));
+        names.push(format!("Writing the area's zoomed-out terrain to the NAS{}", of(k)));
     }
     names.push("Packing the new raw tiles onto the NAS".into());
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
