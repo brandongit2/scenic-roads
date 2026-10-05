@@ -417,15 +417,8 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             if s.workers[&a.worker].bad {
                 return Ok((204, serde_json::Value::Null));
             }
-            // A task first (a running job waits on it), then a job of the plan.
-            if let Some(id) = s.tasks.pick(&a.worker, &a.can, a.mem_mb) {
-                let lease = s.leases.grant(&a.worker, Work::Task { id }, now);
-                let t = s.tasks.by_id.get_mut(&id).unwrap();
-                t.state = task::State::Leased { lease, worker: a.worker.clone() };
-                let g = Grant { lease, ttl_s: TTL.as_secs(), work: Granted::Task { id, task: t.spec.clone(), mem_mb: t.mem_mb } };
-                eprintln!("coordinator: {} took task {id} ({})", a.worker, t.kind);
-                return Ok((200, serde_json::to_value(g)?));
-            }
+            // The work only it can do first: a worker that mounts the NAS builds a unit (the most
+            // work for what it fetches), then a task; any other, a task.
             if a.can.iter().any(|c| c == "unit") && !s.pass.is_empty() {
                 let pick = s.pick_units(&a, now);
                 if !pick.is_empty() {
@@ -435,6 +428,14 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
                     let g = Grant { lease, ttl_s: TTL.as_secs(), work: Granted::Job { step: "unit".into(), targets: pick, pass: s.pass.clone() } };
                     return Ok((200, serde_json::to_value(g)?));
                 }
+            }
+            if let Some(id) = s.tasks.pick(&a.worker, &a.can, a.mem_mb) {
+                let lease = s.leases.grant(&a.worker, Work::Task { id }, now);
+                let t = s.tasks.by_id.get_mut(&id).unwrap();
+                t.state = task::State::Leased { lease, worker: a.worker.clone() };
+                let g = Grant { lease, ttl_s: TTL.as_secs(), work: Granted::Task { id, task: t.spec.clone(), mem_mb: t.mem_mb } };
+                eprintln!("coordinator: {} took task {id} ({})", a.worker, t.kind);
+                return Ok((200, serde_json::to_value(g)?));
             }
             Ok((204, serde_json::Value::Null))
         }

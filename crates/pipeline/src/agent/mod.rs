@@ -419,6 +419,11 @@ impl Agent {
             let Some(lease) = d.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<u64>().ok()) else { continue };
             let result: Option<serde_json::Value> = std::fs::read(d.join("result.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
             let sent = (|| -> Result<bool> {
+                // A task's: its outputs and what it took.
+                if let Some(t) = result.as_ref().filter(|r| r["ok"].as_bool() == Some(true)).map(|r| &r["task"]).filter(|t| t.is_object()) {
+                    let d = crate::coord::Done { lease, outputs: serde_json::from_value(t["outputs"].clone())?, removed: serde_json::from_value(t["removed"].clone())?, secs: t["secs"].as_f64().unwrap_or(0.0), peak_mb: t["peak_mb"].as_u64().unwrap_or(0), ..Default::default() };
+                    return client.done(&d);
+                }
                 let saves = match result.as_ref().filter(|r| r["ok"].as_bool() == Some(true)) {
                     Some(_) => crate::handoff::written_in(&d)?,
                     None => None,
@@ -467,7 +472,7 @@ impl Agent {
             waiting.push(Waiting { what: "Building".into(), why });
             return Vec::new();
         }
-        let ask = crate::coord::Ask { kind: "native".into(), label: Some(format!("{} (helper)", self.host)), can: vec!["unit".into()], mem_mb: helper_memory(), cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32), max: batch_size("unit"), ..Default::default() };
+        let ask = crate::coord::Ask { kind: "native".into(), label: Some(format!("{} (helper)", self.host)), can: vec!["unit".into(), "tail".into()], mem_mb: helper_memory(), cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32), max: batch_size("unit"), ..Default::default() };
         let Some(client) = self.client(root, waiting) else { return Vec::new() };
         let asked = client.ask(&ask);
         let fail = |a: &Self, lease: u64, why: &str| {
@@ -495,8 +500,40 @@ impl Agent {
                 self.lease = Some(Held::Leased { lease, dir });
                 vec![JobSpec { id, what, cmd, needs, restart_after_sleep: true, record: Some(build::Work { step, targets }) }]
             }
+            Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Task { id, task, .. }, .. })) => {
+                // A task (a unit's last steps for the build Mac's job), run here by `scenic run-task`
+                // over its files fetched from the coordinator; it needs no NAS.
+                let dir = self.outbox().join(lease.to_string());
+                let spec = dir.join("spec.json");
+                if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&spec, task.to_string())) {
+                    waiting.push(Waiting { what: "Building".into(), why: format!("{e}") });
+                    fail(self, lease, &format!("its outbox: {e}"));
+                    return Vec::new();
+                }
+                let s = |p: &Path| p.to_string_lossy().into_owned();
+                let contact = self.client.as_ref().map(|c| (c.urls().join(","), c.token())).unwrap_or_default();
+                let cmd = vec![
+                    "/usr/bin/env".to_string(),
+                    format!("SCENIC_COORD_URLS={}", contact.0),
+                    format!("SCENIC_COORD_TOKEN={}", contact.1),
+                    format!("SCENIC_WORKER={}", self.host),
+                    s(&self.o.bin.join("scenic")),
+                    "run-task".into(),
+                    "--spec".into(),
+                    s(&spec),
+                    "--lease".into(),
+                    lease.to_string(),
+                    "--dir".into(),
+                    s(&self.o.home.join("scratch/task")),
+                    "--result".into(),
+                    s(&dir.join("task.json")),
+                ];
+                let unit = task["unit"].as_str().unwrap_or("").to_string();
+                self.lease = Some(Held::Leased { lease, dir });
+                vec![JobSpec { id: format!("task {id}"), what: format!("Scenery for the build Mac's area {unit}"), cmd, needs: Needs { ac: true, nas: false, home: false }, restart_after_sleep: false, record: None }]
+            }
             Ok(Some(g)) => {
-                fail(self, g.lease, "this helper takes units only");
+                fail(self, g.lease, "this helper can't do that work");
                 Vec::new()
             }
             Ok(None) => {
@@ -529,7 +566,10 @@ impl Agent {
             }
             Some(Held::Leased { dir, .. }) => {
                 let done = self.running.as_ref().and_then(|r| r.spec.record.clone()).filter(|_| ok).map(|w| (w.step, w.targets));
-                let r = serde_json::json!({ "ok": ok, "done": done, "error": note.chars().take(3000).collect::<String>() });
+                // A task's: what `scenic run-task` wrote (its outputs are with the coordinator already).
+                let task: Option<serde_json::Value> = std::fs::read(dir.join("task.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+                let ok = ok && task.as_ref().is_none_or(|t| t["ok"] == true);
+                let r = serde_json::json!({ "ok": ok, "done": done, "task": task.and_then(|t| t.get("task").cloned()), "error": note.chars().take(3000).collect::<String>() });
                 if let Err(e) = crate::whole::write(&dir.join("result.json"), r.to_string().as_bytes()) {
                     eprintln!("agent: writing a job's result for the coordinator: {e:#}");
                 }

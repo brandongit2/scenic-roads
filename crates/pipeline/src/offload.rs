@@ -137,6 +137,59 @@ impl Offload {
     }
 }
 
+/// Runs task `lease` here, natively (a worker's agent: the M1's): its files fetched from the
+/// coordinator into `dir`, its steps run over them with the programs in `bin`, and the files they
+/// wrote sent back; what to hand back with its done (outputs, inputs removed, time, peak memory).
+pub fn run_task(client: &Client, lease: u64, spec: &serde_json::Value, dir: &Path, bin: &Path) -> Result<serde_json::Value> {
+    std::fs::remove_dir_all(dir).ok();
+    std::fs::create_dir_all(dir.join("u"))?;
+    let inputs: Vec<(String, u64)> = serde_json::from_value(spec["inputs"].clone()).context("the task's inputs")?;
+    for (p, n) in &inputs {
+        let rel = crate::coord::task::safe(p).with_context(|| format!("a task input outside its folder: {p}"))?;
+        let b = client.get_bytes(&format!("/work/in/{lease}/{p}"))?;
+        anyhow::ensure!(b.len() as u64 == *n, "{p}: {} bytes, not {n}", b.len());
+        let f = dir.join(rel);
+        std::fs::create_dir_all(f.parent().unwrap())?;
+        std::fs::write(&f, b)?;
+    }
+    // (What the steps write is told by its time: after this.)
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let started = std::time::SystemTime::now();
+    let runs: Vec<Run> = serde_json::from_value(spec["runs"].clone()).context("the task's steps")?;
+    let tools = crate::unit::Tools { bin: bin.to_path_buf(), dem: PathBuf::new(), cache: dir.join("cache"), buildings: Some(dir.join("b")), moi_dtm: None, sources: None, shared: None, spacing_m: 8, snap: None };
+    crate::unit::take_peak();
+    let t = std::time::Instant::now();
+    crate::unit::run_tail(&runs, &dir.join("u"), &tools)?;
+    let (secs, peak_mb) = (t.elapsed().as_secs_f64(), crate::unit::take_peak() >> 20);
+    let had: std::collections::BTreeSet<&str> = inputs.iter().map(|(p, _)| p.as_str()).collect();
+    let mut outputs = Vec::new();
+    for (rel, f) in files_under(&dir.join("u"), "u")? {
+        let written = std::fs::metadata(&f)?.modified()? >= started || !had.contains(rel.as_str());
+        if !written || rel == "u/steps.log" {
+            continue;
+        }
+        let b = std::fs::read(&f)?;
+        client.put_bytes(&format!("/work/out/{lease}/{rel}"), &b)?;
+        outputs.push(crate::coord::task::Output { path: rel, size: b.len() as u64 });
+    }
+    let removed: Vec<&str> = had.iter().filter(|p| p.starts_with("u/") && !dir.join(p).exists()).copied().collect();
+    Ok(serde_json::json!({ "outputs": outputs, "removed": removed, "secs": secs, "peak_mb": peak_mb }))
+}
+
+/// Every file under `dir`: (`prefix/<path>`, the file).
+fn files_under(dir: &Path, prefix: &str) -> Result<Vec<(String, PathBuf)>> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let (name, p) = (e.file_name().to_string_lossy().into_owned(), e.path());
+        if e.file_type()?.is_dir() {
+            out.extend(files_under(&p, &format!("{prefix}/{name}"))?);
+        } else {
+            out.push((format!("{prefix}/{name}"), p));
+        }
+    }
+    Ok(out)
+}
+
 /// The files pattern `pat` names (`{dir}/<name>`, `{buildings}/<name>`; a trailing `*` matches any
 /// name with that start in that folder): (their path in a task's folder, the file here).
 fn matching(pat: &str, dir: &Path, bdir: Option<&Path>) -> Result<Vec<(String, PathBuf)>> {
@@ -235,6 +288,48 @@ fn same(st: &serde_json::Value, dir: &Path) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_native_worker_runs_a_task_and_the_job_takes_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let c = crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4").unwrap();
+        // The unit's folder, and a stand-in step: it writes one file and removes another.
+        let dir = d.path().join("unit");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("in.bin"), b"in").unwrap();
+        std::fs::write(dir.join("gone.bin"), b"x").unwrap();
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("step"), "#!/bin/sh\ncat \"$1/in.bin\" > \"$1/out.bin\"; echo more >> \"$1/out.bin\"; rm \"$1/gone.bin\"\n").unwrap();
+        std::fs::set_permissions(bin.join("step"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runs = vec![Run { what: "a step".into(), prog: "step".into(), args: vec!["{dir}".into()], env: vec![], reads: vec!["{dir}/in.bin".into(), "{dir}/gone.bin".into()] }];
+        let url = format!("http://127.0.0.1:{port}");
+        let o = Offload { client: Client::at(vec![url.clone()], c.contact.token.clone(), "job"), owner: 1, version: "v".into(), dir: d.path().join("tasks") };
+        let u = Unit::parse("6/1/1").unwrap();
+        let t = o.offer(u, &dir, None, &runs).unwrap();
+        // The M1: asks, runs it natively, hands it back.
+        let m1 = Client::at(vec![url], c.contact.token.clone(), "m1");
+        let ask = crate::coord::Ask { kind: "native".into(), can: vec!["unit".into(), "tail".into()], mem_mb: 4096, ..Default::default() };
+        let g = m1.ask(&ask).unwrap().unwrap();
+        let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
+        let r = run_task(&m1, g.lease, &task, &d.path().join("m1"), &bin).unwrap();
+        let done = crate::coord::Done { lease: g.lease, outputs: serde_json::from_value(r["outputs"].clone()).unwrap(), removed: serde_json::from_value(r["removed"].clone()).unwrap(), ..Default::default() };
+        assert_eq!(done.removed, ["u/gone.bin"]);
+        assert!(m1.done(&done).unwrap());
+        // The job: a first result is checked; this Mac's run agrees, the worker's outputs match.
+        let mut ran = false;
+        let mut here = || {
+            ran = true;
+            crate::unit::run_tail(&runs, &dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, moi_dtm: None, sources: None, shared: None, spacing_m: 8, snap: None })
+        };
+        let s = o.settle(&t, &dir, false, &mut here).unwrap().unwrap();
+        assert!(ran && matches!(s, Settled::Here(Some((ref w, true))) if w == "m1"));
+        assert_eq!(std::fs::read(dir.join("out.bin")).unwrap(), b"inmore\n");
+        assert!(!dir.join("gone.bin").exists());
+        assert!(!t.root.exists(), "the task's folder goes");
+    }
 
     #[test]
     fn a_tasks_files_are_what_its_steps_read() {

@@ -38,6 +38,10 @@ impl Client {
         self.contact.lock().unwrap().urls.clone()
     }
 
+    pub fn token(&self) -> String {
+        self.contact.lock().unwrap().token.clone()
+    }
+
     fn agent() -> ureq::Agent {
         ureq::Agent::config_builder().timeout_connect(Some(Duration::from_secs(5))).timeout_global(Some(Duration::from_secs(120))).http_status_as_error(false).build().into()
     }

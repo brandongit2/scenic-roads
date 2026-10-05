@@ -223,7 +223,14 @@ mod tests {
         let held = crate::out::BuildLock::take(&root).unwrap();
         assert_eq!(merge(&root, &scratch).unwrap(), 0);
         drop(held);
-        assert_eq!(merge(&root, &scratch).unwrap(), 3);
+        // (A sibling test's child may hold the lock a moment, between its fork and its exec.)
+        let t0 = std::time::Instant::now();
+        let mut merged = merge(&root, &scratch).unwrap();
+        while merged == 0 && t0.elapsed() < std::time::Duration::from_secs(5) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            merged = merge(&root, &scratch).unwrap();
+        }
+        assert_eq!(merged, 3);
         let m: BTreeMap<String, String> = serde_json::from_slice(&std::fs::read(root.join("state/build/manifest.json")).unwrap()).unwrap();
         assert_eq!(m.get("base/6-1-1").map(String::as_str), Some("base/6-1-1.4444444444444444.base"), "the later save wins");
         assert!(!m.contains_key("base/6-1-2"));

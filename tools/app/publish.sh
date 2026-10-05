@@ -21,6 +21,8 @@ fi
 export PATH=/opt/homebrew/opt/rustup/bin:$PATH
 cargo build --release -p server -p pipeline 2>&1 | tail -2
 cargo test -q -p store -p names -p pipeline --lib 2>&1 | tail -3
+# The programs' WebAssembly builds, which the coordinator serves to web workers (docs/workers.md).
+zsh tools/app/wasm.sh >/dev/null || { echo "WebAssembly build failed"; exit 1; }
 # Built into its own folder: web/dist may be what a development server is serving.
 (cd web && npx tsc --noEmit && npx vite build --outDir dist-publish --emptyOutDir >/dev/null) || { echo "web build failed"; exit 1; }
 fonts=data/fonts
@@ -61,6 +63,8 @@ mkdir -p $dest.tmp/web $dest.tmp/fonts
 # the pipeline's binaries, and the Python steps (dem/, run with uv) with their lock file.
 cp target/release/server target/release/scenic target/release/scenic-build target/release/extract \
    target/release/tile target/release/scenic-metrics target/release/railfreq $dest.tmp/
+mkdir -p $dest.tmp/wasm
+cp target/wasm32-wasip1/release/{extract,tile,scenic-metrics,areaflags,elev,landcover}.wasm $dest.tmp/wasm/
 mkdir -p $dest.tmp/dem
 git ls-files dem | while read f; do cp "$f" "$dest.tmp/$f"; done
 # The menu bar item (tools/status): an app bundle, built and signed ad hoc on this Mac (codesign

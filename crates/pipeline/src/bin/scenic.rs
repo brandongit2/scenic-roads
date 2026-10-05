@@ -91,6 +91,16 @@ fn status(args: &[String]) -> Result<()> {
             println!("Map data: catalog {} of {}, {} units", cat.n, cat.created, cat.units.len());
         }
     }
+    // Other workers, and where a device's browser joins in (docs/workers.md §7).
+    for w in &st.workers {
+        println!("Worker: {} — {}{}{}", w.label, w.what, if w.done > 0 { format!(", {} done", w.done) } else { String::new() }, if w.bad { ", stopped: a result differed" } else { "" });
+    }
+    let contact = root.as_ref().and_then(|r| std::fs::read(pipeline::coord::contact_path(r)).ok()).and_then(|b| serde_json::from_slice::<pipeline::coord::Contact>(&b).ok());
+    if let Some(c) = contact {
+        if let Some(u) = c.urls.first() {
+            println!("Worker page: {u}/work/#k={} (open it on a device on the tailnet)", c.token);
+        }
+    }
     Ok(())
 }
 
@@ -119,6 +129,24 @@ fn main() -> Result<()> {
             let o = Options { root: opt(&args, "--root").map(PathBuf::from), home, bin, dry_run: flag(&args, "--dry-run"), once: flag(&args, "--once"), helper: flag(&args, "--helper") };
             eprintln!("agent: started (app {}, root {})", o.bin.display(), o.root.as_ref().map(|r| r.display().to_string()).unwrap_or_else(|| "the NAS share".into()));
             agent::Agent::new(o)?.run()
+        }
+        "run-task" => {
+            // A task the helper's agent leased (pipeline::offload::run_task), run here; its result
+            // written for the agent to hand back.
+            let spec: serde_json::Value = serde_json::from_slice(&std::fs::read(opt(&args, "--spec").context("--spec <file>")?)?)?;
+            let lease: u64 = opt(&args, "--lease").context("--lease <id>")?.parse()?;
+            let (dir, result) = (PathBuf::from(opt(&args, "--dir").context("--dir <folder>")?), PathBuf::from(opt(&args, "--result").context("--result <file>")?));
+            let urls: Vec<String> = std::env::var("SCENIC_COORD_URLS").unwrap_or_default().split(',').filter(|u| !u.is_empty()).map(str::to_string).collect();
+            let client = pipeline::coord::client::Client::at(urls, std::env::var("SCENIC_COORD_TOKEN").unwrap_or_default(), &std::env::var("SCENIC_WORKER").unwrap_or_default());
+            let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
+            let r = pipeline::offload::run_task(&client, lease, &spec, &dir, &bin);
+            std::fs::remove_dir_all(&dir).ok();
+            let v = match &r {
+                Ok(t) => serde_json::json!({ "ok": true, "task": t }),
+                Err(e) => serde_json::json!({ "ok": false, "error": format!("{e:#}") }),
+            };
+            pipeline::whole::write(&result, v.to_string().as_bytes())?;
+            r.map(|_| ())
         }
         "gc" => {
             let days: u64 = opt(&args, "--days").map(|d| d.parse()).transpose()?.unwrap_or(14);
