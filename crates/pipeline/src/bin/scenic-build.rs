@@ -1205,6 +1205,20 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let cache = PathBuf::from(opt(args, "--cache").unwrap_or_else(|| scratch.join("cache").to_string_lossy().into_owned()));
     let t0 = std::time::Instant::now();
     std::fs::create_dir_all(scratch)?;
+    // Today's chain.
+    let chain = [
+        ("heritagewd.py", vec![]),
+        ("heritagedetails.py", vec![]),
+        ("areadetails.py", vec![]),
+        ("whsshapes.py", vec![]),
+        ("filterprops.py", vec![]),
+        ("pageviews.py", vec!["--epoch", date.as_str()]),
+        ("interest.py", vec![]),
+        ("layers.py", vec![]),
+    ];
+    // Its phases, each a progress line: five before today's chain, a script each, then uploading.
+    let phases = 5 + chain.len() as u64 + 1;
+    stage(0, phases, "the registers' snapshot and the heritage sites");
     let epoch = heritage_epoch(out, &date, &cache)?;
     let seeds = registers_extract(out, "sources/registers/legacy-seeds", &cache)?;
     let root = heritage_root(scratch, &dem, &epoch)?;
@@ -1223,7 +1237,9 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let tiles = cover_tiles(&cov);
     let poly = scratch.join("cover.geojson");
     std::fs::write(&poly, serde_json::to_vec(&tiles_geojson(COVER_Z, &tiles))?)?;
+    stage(1, phases, "protected areas over the coverage (osmium)");
     areas_over_cover(out, &date, &poly, scratch, &root.join("data/areas/areas.geojsonseq"))?;
+    stage(2, phases, "the pass's named places over the coverage (osmium)");
     let named = osmium_clip(&out.path(out.get(&pipeline::osmpass::set_name(&date, "named")).context("the pass's named set")?), &poly, &scratch.join("named-cover.osm.pbf"))?;
     // Today's filter (Makefile: named.osm.pbf; the set also keeps the World Heritage tags).
     let named_today = scratch.join("named.osm.pbf");
@@ -1242,6 +1258,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         "-o",
     ]);
     c.arg(&named_today).arg("--overwrite");
+    stage(3, phases, "today's filter of them (osmium)");
     osmium_run(c, "osmium tags-filter (named)")?;
     std::fs::create_dir_all(epoch.join("osm"))?;
     let mut c = pipeline::osmpass::osmium();
@@ -1250,6 +1267,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     std::fs::remove_file(&named).ok();
     std::fs::remove_file(&named_today).ok();
     // The kept filtered planet within the cover, once per pass and cover: today's merged extract.
+    stage(4, phases, "the pass's filtered planet over the coverage (osmium, once a pass)");
     let merged = merged_over_cover(out, &date, &poly, &cache)?;
     pipeline::sys::symlink(&merged, &root.join("data/osm/merged.osm.pbf"))?;
     // Today's park facts, seeding this pass's cache of them.
@@ -1271,21 +1289,11 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // Today's names table, for the layers' English names.
     std::fs::create_dir_all(root.join("data/names"))?;
     pipeline::sys::symlink(&seeds.join("names/english.json"), &root.join("data/names/english.json"))?;
-    // Today's chain.
-    let chain = [
-        ("heritagewd.py", vec![]),
-        ("heritagedetails.py", vec![]),
-        ("areadetails.py", vec![]),
-        ("whsshapes.py", vec![]),
-        ("filterprops.py", vec![]),
-        ("pageviews.py", vec!["--epoch", date.as_str()]),
-        ("interest.py", vec![]),
-        ("layers.py", vec![]),
-    ];
     for (k, (script, sargs)) in chain.iter().enumerate() {
-        pipeline::agent::jobs::report(k as u64, chain.len() as u64, &format!("scripts ({script})"));
+        stage(5 + k as u64, phases, &format!("today's scripts: {script}"));
         heritage_script(&root, &cache, script, sargs)?;
     }
+    stage(phases - 1, phases, "uploading");
     // Outputs (not the stops & sights' stand-ins, nor the layers made from them), the pass's
     // earlier ones this run didn't make dropped.
     let mut wrote: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();

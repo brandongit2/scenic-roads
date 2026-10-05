@@ -66,7 +66,8 @@ struct Helper: Decodable {
 }
 
 /// A step of the build to the end: done of total (total unknown until an earlier step makes it), or
-/// for a group of single jobs how many are left.
+/// for a group of single jobs how many are left; its jobs left by name (`next`, the first the one
+/// under way), and why it waits or which Mac is on it (`note`).
 struct Step: Decodable {
     let what: String
     let steps: [String]
@@ -74,6 +75,8 @@ struct Step: Decodable {
     let total: Int?
     let left: Int?
     let unit: String?
+    let next: [String]?
+    let note: String?
 
     var finished: Bool {
         if let l = left { return l == 0 }
@@ -269,19 +272,26 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
         out.append(Line(text: "", style: .separator))
         out.append(Line(text: "To the end: \(finished) of \(steps.count) steps done", style: .header))
         for st in steps {
-            var count = ""
-            if let t = st.total, let d = st.done, !st.finished {
-                count = ": \(grouped(Double(d))) of \(grouped(Double(t))) \(st.unit ?? "")"
-            } else if let l = st.left, l > 0 {
-                count = l == 1 ? ": 1 job left" : ": \(l) jobs left"
-            }
             if st.finished {
                 out.append(Line(text: "✓ \(st.what)", style: .stepDone))
-            } else if let n = now, st.steps.contains(n) {
-                out.append(Line(text: "▸ \(st.what)\(count)", style: .stepNow))
-            } else {
-                out.append(Line(text: "○ \(st.what)\(count)", style: .stepToDo))
+                continue
             }
+            var count = ""
+            if let t = st.total, let d = st.done {
+                count = ": \(grouped(Double(d))) of \(grouped(Double(t))) \(st.unit ?? "")"
+            } else if let l = st.left, l > 0 {
+                count = ": \(l) left"
+            }
+            let running = now.map { st.steps.contains($0) } ?? false
+            out.append(Line(text: "\(running ? "▸" : "○") \(st.what)\(count)", style: running ? .stepNow : .stepToDo))
+            // Which Mac is on it or why it waits; then its jobs left, in order, by name.
+            if let n = st.note { out.append(Line(text: "      \(n)", style: .small)) }
+            let next = st.next ?? []
+            for (i, j) in next.prefix(4).enumerated() {
+                let when = i > 0 ? "then" : running ? "now" : "next"
+                out.append(Line(text: "      \(when): \(j)", style: .small))
+            }
+            if next.count > 4 { out.append(Line(text: "      and \(next.count - 4) more", style: .small)) }
         }
     }
     if !s.waiting.isEmpty {

@@ -851,12 +851,64 @@ pub struct Step {
     pub left: Option<usize>,
     #[serde(default)]
     pub unit: String,
+    /// The jobs still to do, by name, in the order they'll run (a step's areas counted together:
+    /// "Peaks' prominence and isolation: 178 areas"); the first is the one under way, if any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub next: Vec<String>,
+    /// While it has work left and isn't this Mac's job now: why (another Mac is on it, it waits
+    /// for the home network or out a failure, for the steps above).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl Step {
     pub fn finished(&self) -> bool {
         self.left == Some(0) || self.total.is_some_and(|t| self.done >= t && self.left.is_none())
     }
+}
+
+/// A step's name, as its jobs are titled (the agent adds a job's areas: "Map tiles (3 areas)").
+pub fn label(step: &str) -> &'static str {
+    match step {
+        "terrain" => "Terrain for the regions",
+        "slope" => "Slope for the regions",
+        "trees" => "Tree cover",
+        "unit" => "Roads, elevations and scenery",
+        "pack" => "Map tiles",
+        "lo" => "Zoomed-out map tiles",
+        "pois" => "Landmark candidates",
+        "peaks" => "Peaks' prominence and isolation",
+        "items" => "Wikidata facts and Wikipedia pageviews for the landmarks",
+        "heritage-sites" => "Heritage sites and designated areas for the regions",
+        "heritage" => "Heritage sites' details, fame and outlines",
+        "marks" => "Landmarks for the map",
+        "overlays" => "Area overlays for the map",
+        "roadunits" => "Which areas each road crosses",
+        "stations" => "Rail stops near the regions",
+        "ferries" => "Ferries for the whole world",
+        "rail-feeds" => "Rail timetables for the regions",
+        "rail" => "Trains a day on the regions' rail",
+        "terrain-root" | "slope-root" => "World-level terrain and slope",
+        "prune" => "Removing what the regions no longer cover",
+        _ => "Publishing the new map data",
+    }
+}
+
+/// The jobs `works` would run, by name, a step's runs together, its areas counted.
+fn next_of(works: &[Work]) -> Vec<String> {
+    let mut runs: Vec<(&str, usize)> = Vec::new();
+    for w in works {
+        match runs.last_mut() {
+            Some((s, n)) if *s == w.step => *n += w.targets.len(),
+            _ => runs.push((&w.step, w.targets.len())),
+        }
+    }
+    runs.into_iter()
+        .map(|(s, n)| match s {
+            "pois" | "peaks" | "terrain" | "slope" | "unit" | "pack" if n > 1 => format!("{}: {n} areas", label(s)),
+            _ => label(s).to_string(),
+        })
+        .collect()
 }
 
 /// The regions' steps (build::checklist's lines), for before there's a pass to size them by.
@@ -904,14 +956,18 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
         steps: steps.iter().map(|s| s.to_string()).collect(),
         done: count(all, map),
         total: known.then_some(all.len()),
-        left: None,
         unit: unit.into(),
+        ..Default::default()
     };
     let group = |what: &str, steps: &[&str], left: Option<usize>| Step { what: what.into(), steps: steps.iter().map(|s| s.to_string()).collect(), left, ..Default::default() };
     let mut out = Vec::new();
     let (terrain, slope) = terrain_slope_targets(cov, m);
     let sites_left = heritage_sites_work(cov, date, m, done).is_some() || !m.contains_key(&crate::heritage::base_logical(date, "heritage-sources"));
-    out.push(group("Heritage sites and designated areas", &["heritage-sites"], Some(sites_left as usize)));
+    let mut sites = group("Heritage sites and designated areas", &["heritage-sites"], Some(sites_left as usize));
+    if sites_left {
+        sites.next = vec![label("heritage-sites").into()];
+    }
+    out.push(sites);
     out.push(per("Terrain", &["terrain"], &terrain, &done.terrain, "parts", true));
     out.push(per("Slope", &["slope"], &slope, &done.slope, "parts", true));
     out.push(per("Tree cover", &["trees"], &crate::treepacks::targets(cov, m), &done.trees, "tiles", true));
@@ -924,18 +980,27 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     tiles.done += count(&lo, &done.lo);
     tiles.total = tiles.total.map(|t| t + lo.len());
     out.push(tiles);
-    let roads_left = remaining(done, |d| roads_chain(date, m, d, inputs, reach)).iter().filter(|w| !matches!(w.step.as_str(), "pack" | "lo")).count();
-    out.push(group("Road index, rail stops, ferries, world terrain", &["roadunits", "stations", "ferries", "terrain-root", "slope-root"], built.then_some(roads_left)));
+    let roads: Vec<Work> = remaining(done, |d| roads_chain(date, m, d, inputs, reach)).into_iter().filter(|w| !matches!(w.step.as_str(), "pack" | "lo")).collect();
+    let mut road_steps = group("Road index, rail stops, ferries, world terrain", &["roadunits", "stations", "ferries", "terrain-root", "slope-root"], built.then_some(roads.len()));
+    road_steps.next = next_of(&roads);
+    out.push(road_steps);
     // (A run of rail-feeds is followed by rail, whose key reads what it writes. Unknown while the
     // chain can't go on: before the rail sources are seeded, while inputs/keys.env can't be read,
     // without the feeds' list or the pass's rail set.)
-    let rail_left = rail_next(cov, date, m, done, inputs).map(|w| w.map_or(0, |w| if w.step == "rail-feeds" { 2 } else { 1 }));
-    out.push(group("Trains a day", &["rail-feeds", "rail"], rail_left));
+    let rail = rail_next(cov, date, m, done, inputs);
+    let mut trains = group("Trains a day", &["rail-feeds", "rail"], rail.as_ref().map(|w| w.as_ref().map_or(0, |w| if w.step == "rail-feeds" { 2 } else { 1 })));
+    if let Some(Some(w)) = &rail {
+        trains.next = if w.step == "rail-feeds" { vec![label("rail-feeds").into(), label("rail").into()] } else { vec![label("rail").into()] };
+    }
+    out.push(trains);
     let landmarks = remaining(done, |d| landmarks_chain(cov, date, m, d));
-    let lm_left: usize = landmarks.iter().map(|w| if matches!(w.step.as_str(), "pois" | "peaks") { w.targets.len() } else { 1 }).sum();
-    out.push(group("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"], pieces.then_some(lm_left)));
+    // (Steps left, each named in `next` with its areas: not a peaks batch counted as 12 jobs.)
+    let mut marks = group("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"], pieces.then_some(landmarks.len()));
+    marks.next = next_of(&landmarks);
+    out.push(marks);
     let key = catalog_key(m, inputs);
     let publish_left = if held { done.catalog_held.as_deref() != Some(key.as_str()) } else { done.catalog.as_deref() != Some(key.as_str()) } as usize;
+    // (Its one job is the line itself: no `next`.)
     out.push(group("Publishing the new map data", &["catalog", "catalog-held"], built.then_some(publish_left)));
     out
 }
@@ -1134,6 +1199,13 @@ mod tests {
     }
 
     #[test]
+    fn a_steps_runs_are_named_together_with_their_areas() {
+        let w = |step: &str, n: usize| Work { step: step.into(), targets: (0..n).map(|i| (format!("6/{i}/1"), "k".into())).collect() };
+        assert_eq!(next_of(&[w("peaks", 12), w("peaks", 166), w("items", 1), w("heritage", 1)]), ["Peaks' prominence and isolation: 178 areas", label("items"), label("heritage")]);
+        assert_eq!(next_of(&[w("pois", 1), w("marks", 1)]), [label("pois"), label("marks")]);
+    }
+
+    #[test]
     fn checklist_counts_to_the_end() {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
@@ -1167,6 +1239,10 @@ mod tests {
         let tiles = line(&l, "Map tiles");
         assert!(tiles.total.is_some_and(|t| t > 1) && tiles.done == 0 && !tiles.finished());
         assert!(line(&l, "Road index").left.is_some_and(|n| n >= 1));
+        // Each group's jobs left, by name, in their order.
+        let roads = line(&l, "Road index");
+        assert_eq!(Some(roads.next.len()), roads.left, "{:?}", roads.next);
+        assert!(roads.next.iter().all(|n| !n.is_empty() && n != label("catalog")), "{:?}", roads.next);
         assert_eq!(line(&l, "Publishing").left, Some(1));
         // Held for review: publishing is the held catalog.
         let k = catalog_key(&m, &BTreeMap::new());

@@ -26,7 +26,9 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -60,15 +62,69 @@ def months_before(epoch: str) -> list[str]:
     return sorted(out)
 
 
-def month_views(month: str, wanted: set[str]) -> dict[str, int]:
-    """Views in one month of each wanted article ("lang|Title_with_underscores"), from its dump:
-    the cached counts, and the month streamed again for articles not counted yet ({month}.json
-    holds the views, {month}.counted.json the articles counted; a cache from before that list
-    counts as having counted the articles it has views for)."""
+# The dumps' bytes streamed so far, and their sizes, by month: the progress line's.
+_streamed: dict[str, list[int]] = {}
+_lock = threading.Lock()
+
+
+def _cached(month: str) -> tuple[dict[str, int], set[str]]:
+    """A month's cached views, and the articles they were counted for ({month}.json,
+    {month}.counted.json; a cache from before that list counts as having counted the articles it
+    has views for)."""
     path = OUT / "months" / f"{month}.json"
     counted_path = OUT / "months" / f"{month}.counted.json"
     got: dict[str, int] = json.loads(path.read_text()) if path.exists() else {}
-    counted = set(json.loads(counted_path.read_text())) if counted_path.exists() else set(got)
+    return got, set(json.loads(counted_path.read_text())) if counted_path.exists() else set(got)
+
+
+def _dump_size(month: str) -> int:
+    """A month's dump's size in bytes, as dumps.wikimedia.org says (0 when it doesn't say)."""
+    y, m = month.split("-")
+    try:
+        req = urllib.request.Request(DUMP.format(y=y, m=m), method="HEAD", headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return int(r.headers.get("Content-Length") or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _report() -> None:
+    with _lock:
+        done, total, n = sum(v[0] for v in _streamed.values()), sum(v[1] for v in _streamed.values()), len(_streamed)
+    if total:
+        print(f"progress: {done >> 20}/{total >> 20} MB of the pageview dumps streamed ({n} month{'' if n == 1 else 's'})", file=sys.stderr, flush=True)
+
+
+def months_views(months: list[str], wanted: set[str]) -> list[dict[str, int]]:
+    """Each month's views of the wanted articles (month_views), two months streamed at once (the
+    most dumps.wikimedia.org asks for), with a progress line every half minute: the bytes streamed
+    of all the dumps to stream (each one's size asked first), so the build's status shows how far
+    it is and when it'll be done, not the step before's last line for half an hour."""
+    todo = [m for m in months if wanted - _cached(m)[1]]
+    with _lock:
+        _streamed.clear()
+        _streamed.update({m: [0, _dump_size(m)] for m in todo})
+    stop = threading.Event()
+
+    def report() -> None:
+        while not stop.wait(30):
+            _report()
+
+    threading.Thread(target=report, daemon=True).start()
+    try:
+        with ThreadPoolExecutor(2) as ex:
+            return list(ex.map(lambda m: month_views(m, wanted), months))
+    finally:
+        stop.set()
+        _report()
+
+
+def month_views(month: str, wanted: set[str]) -> dict[str, int]:
+    """Views in one month of each wanted article ("lang|Title_with_underscores"), from its dump:
+    the cached counts (_cached), and the month streamed again for articles not counted yet."""
+    path = OUT / "months" / f"{month}.json"
+    counted_path = OUT / "months" / f"{month}.counted.json"
+    got, counted = _cached(month)
     todo = wanted - counted
     if not todo:
         return got
@@ -78,13 +134,32 @@ def month_views(month: str, wanted: set[str]) -> dict[str, int]:
     t0 = time.time()
     new: dict[str, int] = {}
     # curl | bzip2 -dc | grep, each one's exit checked: a download cut short (curl's error, bzip2's
-    # truncated stream) fails the month instead of caching what arrived as counted.
+    # truncated stream) fails the month instead of caching what arrived as counted. curl's bytes
+    # reach bzip2 through here, counted (the progress line's: a few MB a second).
     curl = subprocess.Popen(["curl", "-sSL", "--fail", "-A", UA, DUMP.format(y=y, m=m)], stdout=subprocess.PIPE)
-    bz = subprocess.Popen(["bzip2", "-dc"], stdin=curl.stdout, stdout=subprocess.PIPE)
-    curl.stdout.close()
+    bz = subprocess.Popen(["bzip2", "-dc"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     grep = subprocess.Popen(["grep", "-E", f"^({langs})\\.wikipedia "], stdin=bz.stdout, stdout=subprocess.PIPE,
                             env={**os.environ, "LC_ALL": "C"}, text=True, encoding="utf-8", errors="replace")
     bz.stdout.close()
+    with _lock:
+        _streamed.setdefault(month, [0, 0])
+
+    def pump() -> None:
+        try:
+            while chunk := curl.stdout.read1(1 << 20):
+                bz.stdin.write(chunk)
+                with _lock:
+                    _streamed[month][0] += len(chunk)
+        except BrokenPipeError:
+            pass  # (bzip2 stopped: its exit says why)
+        finally:
+            try:
+                bz.stdin.close()
+            except BrokenPipeError:
+                pass
+
+    pumper = threading.Thread(target=pump, daemon=True)
+    pumper.start()
     for line in grep.stdout:
         # wiki title page_id access monthly_total hourly
         f = line.split(" ", 5)
@@ -93,6 +168,7 @@ def month_views(month: str, wanted: set[str]) -> dict[str, int]:
         key = f"{f[0][:-10]}|{f[1]}"
         if key in todo:
             new[key] = new.get(key, 0) + int(f[4])
+    pumper.join()
     rc = (curl.wait(), bz.wait(), grep.wait())
     # (grep exits 1 when nothing matched.)
     if rc[0] != 0 or rc[1] != 0 or rc[2] not in (0, 1):
@@ -143,8 +219,7 @@ def main() -> None:
 
     wanted = {a.split("|", 1)[0] + "|" + a.split("|", 1)[1].replace(" ", "_") for arts in arts_of.values() for a in arts}
     print(f"{len(wanted)} articles; months {', '.join(MONTHS)}", file=sys.stderr, flush=True)
-    with ThreadPoolExecutor(2) as ex:  # dumps.wikimedia.org asks for at most two or three connections
-        per_month = list(ex.map(lambda m: month_views(m, wanted), MONTHS))
+    per_month = months_views(MONTHS, wanted)
     views = {a: sum(pm.get(a, 0) for pm in per_month) for a in wanted}
     months = len(MONTHS)
     per_item = {q: round(sum(views.get(a.split("|", 1)[0] + "|" + a.split("|", 1)[1].replace(" ", "_"), 0) for a in arts) / months, 1)

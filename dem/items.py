@@ -31,7 +31,6 @@ import datetime
 import json
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import heritagewd
@@ -138,8 +137,7 @@ def main() -> None:
     norm = lambda x: x.split("|", 1)[0] + "|" + x.split("|", 1)[1].replace(" ", "_")
     wanted = {norm(x) for arts in arts_of.values() for x in arts}
     print(f"views: {len(wanted)} articles over {', '.join(months)}", file=sys.stderr, flush=True)
-    with ThreadPoolExecutor(2) as ex:  # dumps.wikimedia.org asks for at most two or three connections
-        per_month = list(ex.map(lambda m: pageviews.month_views(m, wanted), months))
+    per_month = pageviews.months_views(months, wanted)
     views = {q: round(sum(pm.get(norm(x), 0) for pm in per_month for x in arts) / len(months), 1) for q, arts in arts_of.items() if arts}
 
     write_json(out / "facts.json", {q: facts[q] for q in facts_q if not facts[q].get("missing")})

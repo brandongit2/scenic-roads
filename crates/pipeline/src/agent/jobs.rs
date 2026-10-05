@@ -91,7 +91,9 @@ impl Running {
         let (prog, args) = spec.cmd.split_first().context("empty command")?;
         let mut c = Command::new("/usr/sbin/taskpolicy");
         c.args(["-c", "utility"]).arg(prog).args(args);
-        c.env("RAYON_NUM_THREADS", threads.to_string()).envs(env.iter().copied()).stdin(Stdio::null()).stdout(out).stderr(err);
+        // (The Python steps' output reaches the log, and so the status, as they print it: piped, it
+        // would wait in their buffers, for minutes.)
+        c.env("RAYON_NUM_THREADS", threads.to_string()).env("PYTHONUNBUFFERED", "1").envs(env.iter().copied()).stdin(Stdio::null()).stdout(out).stderr(err);
         // Its own process group, so pausing and stopping reach every process it starts.
         crate::sys::own_group(&mut c);
         let child = c.spawn().with_context(|| format!("start {}", spec.id))?;

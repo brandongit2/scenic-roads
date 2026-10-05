@@ -179,6 +179,9 @@ pub struct JobProgress {
 pub struct Waiting {
     pub what: String,
     pub why: String,
+    /// The step of the job it's about (the checklist's notes say why its step waits).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -392,8 +395,8 @@ impl Agent {
         if self.client.is_none() {
             match crate::coord::client::Client::from_nas(root, &self.host) {
                 Ok(Some(c)) => self.client = Some(c),
-                Ok(None) => waiting.push(Waiting { what: "Building".into(), why: "the build Mac isn't coordinating (its agent isn't running, or is on an older app)".into() }),
-                Err(e) => waiting.push(Waiting { what: "Building".into(), why: format!("{e:#}") }),
+                Ok(None) => waiting.push(Waiting { step: None, what: "Building".into(), why: "the build Mac isn't coordinating (its agent isn't running, or is on an older app)".into() }),
+                Err(e) => waiting.push(Waiting { step: None, what: "Building".into(), why: format!("{e:#}") }),
             }
         }
         self.client.as_ref()
@@ -467,7 +470,7 @@ impl Agent {
                     std::fs::remove_dir_all(&d).ok();
                 }
                 Err(e) => {
-                    waiting.push(Waiting { what: "Handing work back".into(), why: format!("{e:#}; trying again") });
+                    waiting.push(Waiting { step: None, what: "Handing work back".into(), why: format!("{e:#}; trying again") });
                     break;
                 }
             }
@@ -480,7 +483,7 @@ impl Agent {
     fn helper_job(&mut self, root: &Path, c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
         let needs = Needs { cpu: true, nas: true, home: false };
         if let Some(why) = lapsed(&needs, c) {
-            waiting.push(Waiting { what: "Building".into(), why });
+            waiting.push(Waiting { step: None, what: "Building".into(), why });
             return Vec::new();
         }
         let ask = crate::coord::Ask { kind: "native".into(), label: Some(format!("{} (helper)", self.host)), can: vec!["unit".into(), "tail".into()], mem_mb: helper_memory(), cores: std::thread::available_parallelism().map_or(4, |n| n.get() as u32), max: batch_size("unit"), ..Default::default() };
@@ -495,7 +498,7 @@ impl Agent {
             Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Job { step, targets, pass }, .. })) if step == "unit" => {
                 let dir = self.outbox().join(lease.to_string());
                 if let Err(e) = std::fs::create_dir_all(&dir) {
-                    waiting.push(Waiting { what: "Building".into(), why: format!("{e}") });
+                    waiting.push(Waiting { step: None, what: "Building".into(), why: format!("{e}") });
                     fail(self, lease, &format!("its outbox: {e}"));
                     return Vec::new();
                 }
@@ -517,7 +520,7 @@ impl Agent {
                 let dir = self.outbox().join(lease.to_string());
                 let spec = dir.join("spec.json");
                 if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&spec, task.to_string())) {
-                    waiting.push(Waiting { what: "Building".into(), why: format!("{e}") });
+                    waiting.push(Waiting { step: None, what: "Building".into(), why: format!("{e}") });
                     fail(self, lease, &format!("its outbox: {e}"));
                     return Vec::new();
                 }
@@ -548,11 +551,11 @@ impl Agent {
                 Vec::new()
             }
             Ok(None) => {
-                waiting.push(Waiting { what: "Building".into(), why: "the build Mac has nothing for this Mac now".into() });
+                waiting.push(Waiting { step: None, what: "Building".into(), why: "the build Mac has nothing for this Mac now".into() });
                 Vec::new()
             }
             Err(e) => {
-                waiting.push(Waiting { what: "Building".into(), why: format!("the build Mac can't be reached: {e:#}") });
+                waiting.push(Waiting { step: None, what: "Building".into(), why: format!("the build Mac can't be reached: {e:#}") });
                 Vec::new()
             }
         }
@@ -896,7 +899,7 @@ impl Agent {
                 Vec::new()
             }
             None => {
-                waiting.push(Waiting { what: "All building".into(), why: "the NAS isn't reachable (away from home, or it's off)".into() });
+                waiting.push(Waiting { step: None, what: "All building".into(), why: "the NAS isn't reachable (away from home, or it's off)".into() });
                 Vec::new()
             }
         };
@@ -904,22 +907,22 @@ impl Agent {
         // starts the new one (with work queued back to back, it would otherwise never get a turn).
         let newer = self.running.is_none() && self.newer_app();
         if newer {
-            waiting.push(Waiting { what: "Building".into(), why: "restarting into the newly installed app".into() });
+            waiting.push(Waiting { step: None, what: "Building".into(), why: "restarting into the newly installed app".into() });
         }
         if self.running.is_none() && !newer {
             for spec in plan {
                 if let Some(why) = lapsed(&spec.needs, &c) {
-                    waiting.push(Waiting { what: spec.what.clone(), why });
+                    waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
                     continue;
                 }
                 if let Some(&(n, until)) = self.mem.retry.get(&spec.id) {
                     if now_s() < until {
-                        waiting.push(Waiting { what: spec.what.clone(), why: format!("failed {n} time{} in a row; trying again in {} min", if n == 1 { "" } else { "s" }, (until - now_s()).div_ceil(60)) });
+                        waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why: format!("failed {n} time{} in a row; trying again in {} min", if n == 1 { "" } else { "s" }, (until - now_s()).div_ceil(60)) });
                         continue;
                     }
                 }
                 if self.o.dry_run {
-                    waiting.push(Waiting { what: spec.what.clone(), why: "would start now (dry run)".into() });
+                    waiting.push(Waiting { step: None, what: spec.what.clone(), why: "would start now (dry run)".into() });
                     break;
                 }
                 let (id, what) = (spec.id.clone(), spec.what.clone());
@@ -955,7 +958,7 @@ impl Agent {
                         Some(c) => match c.hold(&step, &targets) {
                             Some(id) => Some(id),
                             None => {
-                                waiting.push(Waiting { what: what.clone(), why: "another worker took part of it; planning again".into() });
+                                waiting.push(Waiting { step: None, what: what.clone(), why: "another worker took part of it; planning again".into() });
                                 continue;
                             }
                         },
@@ -968,7 +971,7 @@ impl Agent {
                     };
                     if !claims::claim(r, &step, &ts, &self.me) {
                         let_go(self);
-                        waiting.push(Waiting { what: what.clone(), why: "another Mac took part of it; planning again".into() });
+                        waiting.push(Waiting { step: None, what: what.clone(), why: "another Mac took part of it; planning again".into() });
                         continue;
                     }
                     // Recorded since this loop read the keys (another worker built it meanwhile):
@@ -977,7 +980,7 @@ impl Agent {
                     if done.unwrap_or(true) {
                         let_go(self);
                         claims::release(r, &step, &ts, &self.me);
-                        waiting.push(Waiting { what: what.clone(), why: "another worker built part of it meanwhile (or the keys can't be read now); planning again".into() });
+                        waiting.push(Waiting { step: None, what: what.clone(), why: "another worker built part of it meanwhile (or the keys can't be read now); planning again".into() });
                         continue;
                     }
                     self.lease = lease.map(Held::Own);
@@ -1014,7 +1017,9 @@ impl Agent {
             }
         }
         let built = self.progress.as_ref().map(|(_, b, _)| b.clone()).unwrap_or_default();
-        let checklist = self.progress.as_ref().map(|(_, _, c)| c.clone()).unwrap_or_default();
+        let mut checklist = self.progress.as_ref().map(|(_, _, c)| c.clone()).unwrap_or_default();
+        let helpers: Vec<Status> = if self.o.helper || root.is_none() { Vec::new() } else { self.planned.as_ref().map(|p| p.helpers.clone()).unwrap_or_default() };
+        annotate(&mut checklist, self.running.as_ref().and_then(|r| step_of(&r.spec.id)).as_deref(), &helpers, &waiting);
         // The running job's progress, and from its pace the time it has left.
         let job_progress = self.running.as_mut().and_then(|r| {
             let (done, total, unit) = jobs::progress(&r.log)?;
@@ -1041,7 +1046,7 @@ impl Agent {
             bad_recipes: bad,
             built,
             checklist,
-            helpers: if self.o.helper || root.is_none() { Vec::new() } else { self.planned.as_ref().map(|p| p.helpers.clone()).unwrap_or_default() },
+            helpers,
             workers: self.coord.as_ref().map(|c| c.workers().into_iter().map(|(name, w)| WorkerView { name, label: w.label, kind: w.kind, what: w.what, mem_mb: w.mem_mb, done: w.done, failed: w.failed, bad: w.bad }).collect()).unwrap_or_default(),
         };
         let body = serde_json::to_vec_pretty(&status)?;
@@ -1054,7 +1059,8 @@ impl Agent {
         // and its helpers'), here and on the NAS.
         let (local, shared) = if self.o.helper { ("helper.json".to_string(), format!("state/helpers/{}.json", self.host)) } else { ("status.json".to_string(), "state/status.json".to_string()) };
         write_replace(&self.o.home.join(&local), &body).ok();
-        if let Some(root) = &root {
+        // (Not a dry run's, in a home of its own: the NAS's is the real agent's.)
+        if let (Some(root), false) = (&root, self.o.dry_run) {
             // What's new since the last write, without the time and the user's idle seconds (which
             // change every loop): only whether the user is at the Mac counts.
             let idle_s = if c.user_active() { 0 } else { cond::AWAY_S };
@@ -1141,9 +1147,9 @@ impl Agent {
             }
             let started = scratch.exists();
             if !jar.exists() {
-                waiting.push(Waiting { what, why: "sources/basemap/planetiler.jar is missing on the NAS".into() });
+                waiting.push(Waiting { step: Some("osm-pass".into()), what, why: "sources/basemap/planetiler.jar is missing on the NAS".into() });
             } else if !started && free < PASS_SPACE {
-                waiting.push(Waiting { what, why: format!("needs {} GB free on this Mac ({} GB free)", PASS_SPACE >> 30, free >> 30) });
+                waiting.push(Waiting { step: Some("osm-pass".into()), what, why: format!("needs {} GB free on this Mac ({} GB free)", PASS_SPACE >> 30, free >> 30) });
             } else {
                 out.push(JobSpec {
                     id: format!("osm-pass {date}"),
@@ -1211,7 +1217,7 @@ impl Agent {
         let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match crate::out::read_record(&root.join("state/build/manifest.json")).and_then(|m| Ok((m, self.planning_keys(root)?))) {
             Ok(r) => r,
             Err(e) => {
-                waiting.push(Waiting { what: "Building".into(), why: format!("the build's records can't be read now: {e:#}") });
+                waiting.push(Waiting { step: None, what: "Building".into(), why: format!("the build's records can't be read now: {e:#}") });
                 return Vec::new();
             }
         };
@@ -1245,12 +1251,12 @@ impl Agent {
                 match why {
                     // Made, but it doesn't decode: made again.
                     crate::reach::LoadError::Bad(e) => {
-                        waiting.push(Waiting { what: "Building the areas".into(), why: format!("the pass's reaches don't read ({e}); making them again") });
+                        waiting.push(Waiting { step: None, what: "Building the areas".into(), why: format!("the pass's reaches don't read ({e}); making them again") });
                         if let Some(k) = build::reach_key(date, &manifest) {
                             jobs.push(reach_job(build::Work { step: "reach".into(), targets: vec![("reach".into(), k)] }));
                         }
                     }
-                    crate::reach::LoadError::Io(e) => waiting.push(Waiting { what: "Building the areas".into(), why: format!("the pass's reaches can't be read now: {e}") }),
+                    crate::reach::LoadError::Io(e) => waiting.push(Waiting { step: None, what: "Building the areas".into(), why: format!("the pass's reaches can't be read now: {e}") }),
                 }
             }
             if !manifest.contains_key(&crate::terrain_z8::logical()) {
@@ -1275,21 +1281,21 @@ impl Agent {
             return jobs;
         }
         let Some(date) = pass else {
-            waiting.push(Waiting { what: "Building the regions".into(), why: "the first OpenStreetMap pass (it makes the outlines regions are drawn from)".into() });
+            waiting.push(Waiting { step: None, what: "Building the regions".into(), why: "the first OpenStreetMap pass (it makes the outlines regions are drawn from)".into() });
             return jobs;
         };
         let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).map(|c| crate::outlines::Outlines::open(&root.join(c))).transpose();
         let outlines = match outlines {
             Ok(o) => o,
             Err(e) => {
-                waiting.push(Waiting { what: "Building the regions".into(), why: format!("the pass's outlines: {e:#}") });
+                waiting.push(Waiting { step: None, what: "Building the regions".into(), why: format!("the pass's outlines: {e:#}") });
                 return jobs;
             }
         };
         let cov = match crate::coverage::Coverage::from_recipes(&recipes, outlines.as_ref(), &root.join("inputs/outlines")) {
             Ok(c) => c,
             Err(e) => {
-                waiting.push(Waiting { what: "Building the regions".into(), why: format!("{e:#}") });
+                waiting.push(Waiting { step: None, what: "Building the regions".into(), why: format!("{e:#}") });
                 return jobs;
             }
         };
@@ -1299,9 +1305,9 @@ impl Agent {
         let cache = self.o.home.join("cache");
         let reach = self.current_reach(root, &manifest, &done, date).ok().flatten();
         if !manifest.contains_key(crate::rail::CATALOGUE) {
-            waiting.push(Waiting { what: "Trains a day".into(), why: "the rail sources aren't on the NAS yet (scenic-build rail-seed)".into() });
+            waiting.push(Waiting { step: None, what: "Trains a day".into(), why: "the rail sources aren't on the NAS yet (scenic-build rail-seed)".into() });
         } else if inputs.get("keys").map(String::as_str) == Some("?") {
-            waiting.push(Waiting { what: "Trains a day".into(), why: "inputs/keys.env can't be read now".into() });
+            waiting.push(Waiting { step: None, what: "Trains a day".into(), why: "inputs/keys.env can't be read now".into() });
         }
         let mut plan = build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref());
         // A unit's piece's size (content-named files never change: each looked up once).
@@ -1340,7 +1346,7 @@ impl Agent {
             if w.step == "catalog" && held {
                 let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();
                 if done.catalog_held.as_deref() == Some(k.as_str()) {
-                    waiting.push(Waiting { what: "Publishing the new map data".into(), why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into() });
+                    waiting.push(Waiting { step: None, what: "Publishing the new map data".into(), why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into() });
                     continue;
                 }
                 let mut j = job("catalog-held".into(), "The new map data, held for review", "catalog", vec!["--held".into()], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
@@ -1370,28 +1376,12 @@ impl Agent {
             let n = w.targets.len();
             // "3 areas", or "8 of 480 areas" for a batch.
             let areas = if n == total { format!("{n} area{}", if n == 1 { "" } else { "s" }) } else { format!("{n} of {total} areas") };
+            // (The checklist names the steps alike: build::label.)
+            let base = build::label(&w.step);
             let what = match w.step.as_str() {
-                "terrain" => format!("Terrain for the regions ({areas})"),
-                "slope" => format!("Slope for the regions ({areas})"),
-                "unit" => format!("Roads, elevations and scenery ({areas})"),
-                "pois" => format!("Landmark candidates ({areas})"),
-                "peaks" => format!("Peaks' prominence and isolation ({areas})"),
-                "items" => "Wikidata facts and Wikipedia pageviews for the landmarks".to_string(),
-                "heritage-sites" => "Heritage sites and designated areas for the regions".to_string(),
-                "heritage" => "Heritage sites' details, fame and outlines".to_string(),
-                "overlays" => "Area overlays for the map".to_string(),
-                "marks" => "Landmarks for the map".to_string(),
-                "roadunits" => "Which areas each road crosses".to_string(),
-                "stations" => "Rail stops near the regions".to_string(),
-                "ferries" => "Ferries for the whole world".to_string(),
-                "rail-feeds" => "Rail timetables for the regions".to_string(),
-                "rail" => "Trains a day on the regions' rail".to_string(),
-                "pack" => format!("Map tiles ({areas})"),
-                "trees" => format!("Tree cover ({})", areas.replace("area", "large tile")),
-                "lo" => "Zoomed-out map tiles".to_string(),
-                "terrain-root" | "slope-root" => "World-level terrain and slope".to_string(),
-                "prune" => "Removing what the regions no longer cover".to_string(),
-                _ => "Publishing the new map data".to_string(),
+                "terrain" | "slope" | "unit" | "pois" | "peaks" | "pack" => format!("{base} ({areas})"),
+                "trees" => format!("{base} ({})", areas.replace("area", "large tile")),
+                _ => base.to_string(),
             };
             let id = format!("{} {}", w.step, w.targets.first().map(|t| t.0.as_str()).unwrap_or(""));
             let step = w.step.clone();
@@ -1580,6 +1570,37 @@ fn regions_digest(root: &Path) -> Option<String> {
 }
 
 /// Why a job can't run under `c`, if it can't.
+/// A job's step: its id's first word ("unit 6/31/20": "unit").
+fn step_of(id: &str) -> Option<String> {
+    id.split(' ').next().filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+/// The checklist as the status shows it. A step with work left that isn't this Mac's job now (`now`,
+/// its step) says why: another Mac is on it, or its job waits (`waiting`: for the home network,
+/// out a failure). Publishing, while a step above has work left, waits for those steps: a catalog
+/// follows each chain that ends, so it's done only once they all are.
+fn annotate(list: &mut [build::Step], now: Option<&str>, helpers: &[Status], waiting: &[Waiting]) {
+    let busy = |s: &build::Step| now.is_some_and(|n| s.steps.iter().any(|x| x == n));
+    let before_left = list.iter().rev().skip(1).any(|s| !s.finished());
+    for s in list.iter_mut() {
+        if s.finished() || busy(s) {
+            continue;
+        }
+        let ours = |step: &Option<String>| step.as_ref().is_some_and(|st| s.steps.contains(st));
+        if let Some(h) = helpers.iter().find(|h| ours(&h.job.as_ref().and_then(|j| step_of(&j.id)))) {
+            s.note = Some(format!("on {}", h.host));
+        } else if let Some(w) = waiting.iter().find(|w| ours(&w.step)) {
+            s.note = Some(w.why.clone());
+        }
+    }
+    if let Some(p) = list.last_mut().filter(|p| p.steps.iter().any(|s| s == "catalog")) {
+        if before_left && !busy(p) {
+            p.left = Some(p.left.unwrap_or(0).max(1));
+            p.note = Some("after the steps above (a catalog follows each chain as it ends)".into());
+        }
+    }
+}
+
 fn lapsed(n: &Needs, c: &Conditions) -> Option<String> {
     if n.nas && !c.nas {
         return Some("the NAS isn't reachable".into());
@@ -1803,6 +1824,28 @@ mod tests {
         let names = key_names(&p).unwrap();
         assert_eq!(names, "LTA_ACCOUNT_KEY,TDX_CLIENT_ID", "the keys with values, by name");
         assert!(!names.contains("s3cr3t") && !names.contains("abc"));
+    }
+
+    #[test]
+    fn the_checklist_says_why_a_step_waits() {
+        let step = |what: &str, steps: &[&str], left: usize| build::Step { what: what.into(), steps: steps.iter().map(|s| s.to_string()).collect(), left: Some(left), ..Default::default() };
+        let list = || vec![step("Worldwide sets", &["pass-sets", "reach"], 1), step("Roads, elevations and scenery", &["unit"], 3), step("Landmarks", &["pois", "peaks", "items", "heritage", "marks", "overlays"], 2), step("Publishing the new map data", &["catalog", "catalog-held"], 0)];
+        let helper = Status { host: "m1".into(), job: Some(JobView { id: "unit 6/1/2".into(), what: String::new(), started: 0, paused: None, tail: String::new(), progress: None }), ..Default::default() };
+        let waiting = [Waiting { step: Some("reach".into()), what: "How far…".into(), why: "away from home".into() }];
+        let mut l = list();
+        annotate(&mut l, Some("heritage"), &[helper], &waiting);
+        assert_eq!(l[0].note.as_deref(), Some("away from home"));
+        assert_eq!(l[1].note.as_deref(), Some("on m1"));
+        assert_eq!(l[2].note, None, "this Mac's job now");
+        // Publishing waits for the steps above, though its catalog is current.
+        assert!(!l[3].finished() && l[3].note.as_deref().is_some_and(|n| n.starts_with("after the steps above")));
+        // All above done: done.
+        let mut l: Vec<build::Step> = list().into_iter().map(|mut s| {
+            s.left = Some(0);
+            s
+        }).collect();
+        annotate(&mut l, None, &[], &[]);
+        assert!(l.iter().all(|s| s.finished() && s.note.is_none()));
     }
 
     #[test]
