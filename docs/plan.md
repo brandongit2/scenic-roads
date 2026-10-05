@@ -102,7 +102,8 @@ the NAS does itself. The jobs (§8 has their order and keys):
    - once ever, the worldwide z8 terrain for peaks.
 3. **Heritage sites and designated areas:** one job over the coverage plus 20 km.
 4. **Global-source layers, per z3 pack near the coverage:** terrain, then slope, then tree cover
-   (terrain first; slope and tree cover as the regions in their area are published: §8, Order).
+   (terrain with the first region that reads it; slope and tree cover as the regions in their area
+   are published: §8, Order).
 5. **Per unit**, for every unit meeting the coverage, a region at a time: base(U), the ways U owns (a way belongs to the
    unit of its first node) that touch the coverage, with per-vertex elevations, grade and scenic
    channels. Each value is computed once.
@@ -324,7 +325,7 @@ record changes back through the build Mac's coordinator, which journals them for
 **The M1 helps (16 GB).** Its agent runs as a helper (`scenic agent --helper`, under the launcher
 like the build Mac's; `tools/app/install.sh --helper` sets it up).
 - **What it builds:** what the build Mac's coordinator gives it (§8, Two Macs): the shared steps'
-  jobs that fit the memory it spares (a quarter of its 16 GB) and its disk, from the far end of the
+  jobs that fit the memory it spares (6 GB of its 16: three eighths) and its disk, from the far end of the
   list, and when none does, units' last steps (tasks, `docs/workers.md`); nothing while it runs
   another app than the build Mac's. A unit's predicted peak is the most memory one of its steps'
   programs took last time (each unit job notes it; scenic-build's own isn't counted), else about ten
@@ -1082,9 +1083,12 @@ and, when none fits it, units' last steps.
   unit's from its piece; another's what its last run took (the job notes, per target, the most its
   processes held together, sampled four times a second from the start of that target: a pool's
   workers summed, `SCENIC_COSTS`, "<step> <target>"), else candidates' their unit's (they read the
-  same piece), else a first guess per step (terrain 6 GB: it holds its area's shaded tiles, 5.2 GB
-  for 74,509; tree cover 8: six workers at once, each with its block's canopy; so neither goes to the
-  M1's 4 GB until a run shows it fits; slope 3, peaks 2.5). A helper asks only for the steps its
+  same piece), else terrain by its area's size (it holds each shaded hi tile uncompressed until it
+  writes the area, ~270 KB each: 32.9 GB for 3/0/2's 116,735, 6.2 GB for 3/4/2's 21,378; so every
+  z6 tile near the coverage counted as wholly covered, 5,440 hi tiles), else a first guess per step
+  (tree cover 8 GB: six workers at once, each with its block's canopy; slope 6.6, the most an area
+  took); so none of those goes to the M1's 6 GB until a run shows it fits, but a small terrain area;
+  peaks 2.5. A helper asks only for the steps its
   disk has room for (a terrain run 55 GB free, tree cover 30, the others 15, a task 5, and a sixth
   more, counting what its caches can free: not its loose raw tiles, which only its own jobs pack),
   never while a newer app waits to start, and takes the earliest step with a target that fits, from
@@ -1148,16 +1152,18 @@ and, when none fits it, units' last steps.
    - labels.
 3. **The regions' build,** a region at a time, each published as it's done (`agent::build::plan`):
    - heritage-sites (first, one job; not waited for by the rest);
-   - terrain, every area of it (nothing after it in the regions' plan runs while it's stale: a
-     unit's key reads the terrain near it, so a unit built first would be built again);
-   - the units, a region at a time: the regions the map hasn't at all first (not in its catalog),
-     then those it has (redrawn, or their units' keys changed: on the map as they were meanwhile);
-     of each, the one with the fewest units left first, so regions are done as soon as they can be;
-     a region's units neighbours together; a unit two regions share comes with the first. Then
-     slope and tree cover (listed after the units, for a helper, and for the build Mac when the
-     units are another's).
+   - a region at a time: the regions the map hasn't at all first (not in its catalog), then those it
+     has (redrawn, or their units' keys changed: on the map as they were meanwhile); of each, the one
+     with the fewest units left first, so regions are done as soon as they can be. For each, the
+     terrain areas it reads that are stale (its own areas, and those of the z6 tiles within 30 km of
+     its units), then its units whose terrain is built (a unit's key reads the terrain near it: one
+     built first would be built again), neighbours together; a unit or area two regions share comes
+     with the first. A helper takes each step's from the far end of all of it (the agent offers a
+     step's targets together): the last regions' terrain and units, while the build Mac does the
+     first's. Then slope (each area once its terrain is built) and tree cover (listed after them,
+     for a helper, and for the build Mac when the rest is another's).
    - **A round** when a region is done that the map hasn't as it is now, at most an hour after the
-     last catalog (`PUBLISH_EVERY_S`) while units are left, and at once after the last unit: the
+     last catalog (`PUBLISH_EVERY_S`) while units or terrain are left, and at once after the last: the
      slope and tree cover of its areas (the z3 tiles within 20 km of it; after the last unit, all
      that's left), then a prune of what the coverage no longer builds (§5, Shrinking), the roads'
      chain, and a catalog. The units follow it in the list (a helper's, and the build Mac's while

@@ -121,26 +121,35 @@ fn terrain_reads(id: &str, p: &Path) -> bool {
 }
 
 /// The memory a shared step's job is expected to take (MB) before one has run for its target and
-/// said (`SCENIC_COSTS`): terrain's holds its area's shaded tiles (5.2 GB for 74,509 of them,
-/// 2026-10-05), and tree cover runs six workers at once, each with its block's canopy, so neither
-/// goes to a helper until its own run shows it fits; slope and peaks, room to spare; a step shared
-/// later, 1.5 GB until it's measured. (Units and candidates are offered by their piece's size:
-/// crate::coord::job_peak.)
+/// said (`SCENIC_COSTS`): tree cover runs six workers at once, each with its block's canopy, and
+/// slope took up to 6.6 GB an area (2026-10-05), so neither goes to a helper until its own run shows
+/// it fits; peaks, room to spare; a step shared later, 1.5 GB until it's measured. (Units and
+/// candidates are offered by their piece's size, crate::coord::job_peak; terrain by its area's size,
+/// `terrain_peak`.)
 fn first_peak(step: &str) -> u64 {
     match step {
-        "terrain" => 6000,
         "trees" => 8000,
-        "slope" => 3000,
+        "slope" => 6600,
         "peaks" => 2500,
         _ => 1500,
     }
 }
 
-/// The memory a helper spares its jobs (MB): a quarter of its Mac's (4 GB of the M1's 16, which its
-/// units fit: over its first 205, its steps' programs took 3.7 GB at most).
+/// The memory a terrain run of an area of `z6` tiles near the coverage is expected to take (MB),
+/// before one has said: it holds each shaded hi tile (z9–12, up to 5,440 a z6 tile) as 256 × 256
+/// RGBA until it writes the area (~270 KB each, measured: 32.9 GB for 3/0/2's 116,735, 6.2 GB for
+/// 3/4/2's 21,378), so every z6 tile as if wholly covered, and half a GB besides. Only a small area
+/// fits a helper before its run has been measured.
+fn terrain_peak(z6: usize) -> u64 {
+    500 + z6 as u64 * 5440 * 270 / 1024
+}
+
+/// The memory a helper spares its jobs (MB): three eighths of its Mac's (6 GB of the M1's 16, the
+/// owner's choice, 2026-10-05: a terrain area's 5–6 GB fits; its units took 3.7 GB at most over
+/// its first 205).
 fn helper_memory() -> u64 {
     let total = std::process::Command::new("/usr/sbin/sysctl").args(["-n", "hw.memsize"]).output().ok().and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok());
-    total.map_or(4096, |b| (b >> 20) / 4)
+    total.map_or(6144, |b| (b >> 20) * 3 / 8)
 }
 
 /// The running job's lease.
@@ -1523,6 +1532,13 @@ impl Agent {
             n
         };
         let mut offers: Vec<crate::coord::Offer> = Vec::new();
+        // (A terrain area's z6 tiles near the coverage, for its run's expected memory: only when
+        // there's terrain to offer.)
+        let z6: BTreeMap<String, usize> = if plan.iter().any(|w| w.step == "terrain") {
+            build::coverage_tiles(cov).into_iter().map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len())).collect()
+        } else {
+            BTreeMap::new()
+        };
         for w in plan.iter_mut().filter(|w| claims::SHARED.contains(&w.step.as_str())) {
             // What another worker builds now isn't planned here: what it leased from this Mac's
             // coordinator, or claimed (a helper on an app from before it).
@@ -1534,10 +1550,23 @@ impl Agent {
             // The rest, offered to the workers that mount the NAS: units with their pieces' sizes,
             // the others with the memory their jobs are expected to take (until one's run says);
             // each worker takes what fits its memory.
-            let guess = |t: &str| if w.step == "unit" || w.step == "pois" { size(t) } else { first_peak(&w.step) };
+            let guess = |t: &str| match w.step.as_str() {
+                "unit" | "pois" => size(t),
+                "terrain" => terrain_peak(z6.get(t).copied().unwrap_or(64)),
+                s => first_peak(s),
+            };
             offers.push(crate::coord::Offer { step: w.step.clone(), targets: w.targets.iter().map(|(t, k)| (t.clone(), k.clone(), guess(t))).collect(), batch: batch_size(&w.step) });
         }
-        // (A step with nothing left: none of it offered.)
+        // A step's targets offered together, in plan order (the plan lists a step's work by region:
+        // a helper takes from the far end of all of it). (A step with nothing left: none offered.)
+        let mut merged: Vec<crate::coord::Offer> = Vec::new();
+        for o in offers {
+            match merged.iter_mut().find(|m| m.step == o.step) {
+                Some(m) => m.targets.extend(o.targets),
+                None => merged.push(o),
+            }
+        }
+        let mut offers = merged;
         offers.sort_by_key(|o| claims::SHARED.iter().position(|s| *s == o.step));
         if let Some(c) = &self.coord {
             c.offer(date, offers);
