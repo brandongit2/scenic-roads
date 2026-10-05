@@ -276,7 +276,7 @@ pub fn dem_seed(root: &Path, cache: &Path) -> Result<()> {
     for n in names {
         let (from, to) = (src.join(format!("dem-cache.{n}")), cache.join(format!("dem-cache.{n}")));
         let tmp = to.with_extension(format!("{}.tmp", to.extension().unwrap().to_string_lossy()));
-        std::fs::copy(&from, &tmp).with_context(|| format!("copy {}", from.display()))?;
+        store::sys::copy_data(&from, &tmp).with_context(|| format!("copy {}", from.display()))?;
         std::fs::rename(&tmp, &to)?;
     }
     eprintln!("unit: DEM cache copied from the NAS ({:.0?})", t.elapsed());
@@ -743,7 +743,7 @@ mod tests {
         // box; its scenic results too.
         let local = d.path().join("local");
         std::fs::create_dir_all(local.join(DEM_UNITS)).unwrap();
-        std::fs::copy(units.join(format!("6-1-2.{}.dem", box_tag([5, 5, 6, 6]))), local.join(DEM_UNITS).join("6-9-9.dem")).unwrap();
+        store::sys::copy_data(units.join(format!("6-1-2.{}.dem", box_tag([5, 5, 6, 6]))), local.join(DEM_UNITS).join("6-9-9.dem")).unwrap();
         std::fs::create_dir_all(local.join("scenic-units/6-9-9")).unwrap();
         std::fs::write(local.join("scenic-units/6-9-9/basis.json"), b"{}").unwrap();
         assert_eq!(move_kept_to_shared(&local, &d.path().join("shared")).unwrap(), 2);

@@ -361,7 +361,7 @@ pub struct SeedReport {
 /// A copy of `p` in scratch (`put_file` consumes its input).
 fn copy_local(out: &Out, p: &Path) -> Result<PathBuf> {
     let dest = out.scratch_file(&format!("rail-{}", p.file_name().context("file name")?.to_string_lossy()));
-    std::fs::copy(p, &dest).with_context(|| format!("copy {}", p.display()))?;
+    store::sys::copy_data(p, &dest).with_context(|| format!("copy {}", p.display()))?;
     Ok(dest)
 }
 

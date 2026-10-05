@@ -422,7 +422,7 @@ pub fn ferries_job(out: &mut Out, date: &str, dem: &std::path::Path) -> Result<u
     let mut n_freq = 0;
     for e in std::fs::read_dir(&freq).with_context(|| format!("{} (the timetables)", freq.display()))?.flatten() {
         if e.path().extension().is_some_and(|x| x == "json") {
-            std::fs::copy(e.path(), work.join("freq").join(e.file_name()))?;
+            store::sys::copy_data(e.path(), work.join("freq").join(e.file_name()))?;
             n_freq += 1;
         }
     }

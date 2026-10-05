@@ -125,6 +125,34 @@ pub fn set_mode(f: &File, mode: u32) -> io::Result<()> {
     }
 }
 
+/// Copies `src`'s bytes to `dst` (made, or emptied first) and its permission bits, and nothing else:
+/// what every copy in the build wants. (`std::fs::copy` on macOS also brings the extended
+/// attributes, and the NAS refuses one, `com.apple.provenance`, which macOS puts on whatever an app
+/// writes, when it differs from the folder's: that fails the whole copy.)
+pub fn copy_data(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> io::Result<u64> {
+    use std::io::{Read, Write};
+    let src = src.as_ref();
+    let mut r = File::open(src)?;
+    let mut w = File::create(dst)?;
+    // (Big reads and writes: over SMB each is a round trip.)
+    let mut buf = vec![0u8; 1 << 20];
+    let mut n = 0u64;
+    loop {
+        let k = match r.read(&mut buf) {
+            Ok(0) => break,
+            Ok(k) => k,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        w.write_all(&buf[..k])?;
+        n += k as u64;
+    }
+    if let Some(m) = mode(src) {
+        set_mode(&w, m).ok();
+    }
+    Ok(n)
+}
+
 /// Whether an error means the network or the share itself is gone (what a soft mount returns once
 /// it gives up), as opposed to a problem with one file.
 pub fn is_disconnect(e: &io::Error) -> bool {
@@ -166,5 +194,31 @@ mod tests {
         assert_eq!(&b, b"2ab5");
         assert!(disk_free(d.path()).unwrap() > 0);
         assert!(hostname().is_some());
+    }
+
+    #[test]
+    fn a_copy_is_the_bytes_and_the_mode_alone() {
+        let d = tempfile::tempdir().unwrap();
+        let (a, b) = (d.path().join("a"), d.path().join("b"));
+        let bytes: Vec<u8> = (0..3_000_000u32).map(|i| (i * 7) as u8).collect();
+        std::fs::write(&a, &bytes).unwrap();
+        set_mode(&File::open(&a).unwrap(), 0o640).unwrap();
+        std::fs::write(&b, b"longer than nothing, and replaced").unwrap();
+        #[cfg(target_os = "macos")]
+        {
+            // An attribute on the source doesn't come along.
+            let (p, n) = (std::ffi::CString::new(a.to_str().unwrap()).unwrap(), c"org.scenic.test");
+            // SAFETY: setxattr with pointers to buffers we own, their lengths given.
+            assert_eq!(unsafe { libc::setxattr(p.as_ptr(), n.as_ptr(), b"1".as_ptr().cast(), 1, 0, 0) }, 0);
+        }
+        assert_eq!(copy_data(&a, &b).unwrap(), bytes.len() as u64);
+        assert_eq!(std::fs::read(&b).unwrap(), bytes);
+        assert_eq!(mode(&b), Some(0o640));
+        #[cfg(target_os = "macos")]
+        {
+            let (p, n) = (std::ffi::CString::new(b.to_str().unwrap()).unwrap(), c"org.scenic.test");
+            // SAFETY: getxattr asking only for the size (no buffer).
+            assert_eq!(unsafe { libc::getxattr(p.as_ptr(), n.as_ptr(), std::ptr::null_mut(), 0, 0, 0) }, -1);
+        }
     }
 }

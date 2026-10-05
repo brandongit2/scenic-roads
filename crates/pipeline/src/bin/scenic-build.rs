@@ -269,7 +269,7 @@ fn main() -> Result<()> {
             let local = scratch.join("set-hikes.osm.pbf");
             let parts = Parts(&["Copying the hiking routes", "Finding their ends", "Uploading"]);
             parts.start(0);
-            std::fs::copy(&set, &local).with_context(|| format!("copy {}", set.display()))?;
+            store::sys::copy_data(&set, &local).with_context(|| format!("copy {}", set.display()))?;
             parts.start(1);
             let ends = pipeline::trailends::ends(&local)?;
             parts.start(2);
@@ -355,7 +355,7 @@ fn main() -> Result<()> {
             let (Some(l), Some(ext), Some(f)) = (p.first(), p.get(1), p.get(2)) else { bail!("put <logical> <ext> <file>") };
             let tmp = scratch.join(format!("put-{}", std::path::Path::new(f).file_name().unwrap().to_string_lossy()));
             std::fs::create_dir_all(&scratch)?;
-            std::fs::copy(f, &tmp)?;
+            store::sys::copy_data(f, &tmp)?;
             let name = out.put_file(l, ext, &tmp)?;
             eprintln!("{l} -> {name}");
         }
@@ -478,7 +478,7 @@ fn convert_legacy(out: &mut Out, dir: &Path, skip_layers: bool, only: &[Unit]) -
 /// Copy a file into scratch (`put_file` consumes its input).
 fn copy_to_scratch(out: &Out, p: &Path) -> Result<PathBuf> {
     let dest = out.scratch_file(&format!("copy-{}", p.file_name().unwrap().to_string_lossy()));
-    std::fs::copy(p, &dest).with_context(|| format!("copy {}", p.display()))?;
+    store::sys::copy_data(p, &dest).with_context(|| format!("copy {}", p.display()))?;
     Ok(dest)
 }
 
@@ -513,7 +513,7 @@ fn open_units(out: &Out, cache: &Path, mirror: Option<&Path>) -> Result<Vec<Base
             if !p.exists() {
                 std::fs::create_dir_all(p.parent().unwrap())?;
                 let tmp = p.with_extension("tmp");
-                std::fs::copy(out.path(name), &tmp).with_context(|| format!("copy {name} from the NAS"))?;
+                store::sys::copy_data(out.path(name), &tmp).with_context(|| format!("copy {name} from the NAS"))?;
                 anyhow::ensure!(store::naming::hash16_file(&tmp)? == name.rsplit('.').nth(1).unwrap_or(""), "{name}: hash mismatch after copy");
                 std::fs::rename(&tmp, &p)?;
             }
@@ -969,7 +969,7 @@ fn pois_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             continue;
         };
         let local = scratch.join(format!("piece-{}.osm.pbf", u.dash()));
-        std::fs::copy(&piece, &local).with_context(|| format!("copy {}", piece.display()))?;
+        store::sys::copy_data(&piece, &local).with_context(|| format!("copy {}", piece.display()))?;
         let dir = scratch.join(format!("pois-{}", u.dash()));
         let mut c = std::process::Command::new(&extract);
         c.arg(&dir).arg("8").arg("--candidates").arg("--trailends").arg(&trailends).arg(&local);
@@ -1002,7 +1002,7 @@ fn local_copy(out: &Out, logical: &str, cache: &Path) -> Result<PathBuf> {
     }
     std::fs::create_dir_all(&dir)?;
     let tmp = dir.join(format!("{name}.tmp"));
-    std::fs::copy(&src, &tmp).with_context(|| format!("copy {}", src.display()))?;
+    store::sys::copy_data(&src, &tmp).with_context(|| format!("copy {}", src.display()))?;
     std::fs::rename(&tmp, &local)?;
     for e in std::fs::read_dir(&dir)?.flatten() {
         if e.file_name().to_string_lossy() != name {
@@ -1252,7 +1252,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // The heritage-sites job's outputs, as heritage.py left them.
     for stem in ["heritage", "heritage-areas", "special", "indigenous", "heritage-sources"] {
         let c = out.get(&base_logical(&date, stem)).with_context(|| format!("no {stem} for the pass of {date} (the heritage-sites step)"))?;
-        std::fs::copy(out.path(c), b.join(format!("{stem}.json")))?;
+        store::sys::copy_data(out.path(c), b.join(format!("{stem}.json")))?;
     }
     // No stops & sights.
     std::fs::write(b.join("pois.json"), br#"{"type":"FeatureCollection","features":[]}"#)?;
@@ -1299,7 +1299,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // Today's park facts, seeding this pass's cache of them.
     let facts = epoch.join("areas-wikidata.json");
     if !facts.exists() {
-        std::fs::copy(seeds.join("areas/wikidata.json"), &facts)?;
+        store::sys::copy_data(seeds.join("areas/wikidata.json"), &facts)?;
     }
     pipeline::sys::symlink(&facts, &root.join("data/areas/wikidata.json"))?;
     // The pageview months: the items job's cache (the same files), today's months seeding it.
@@ -1308,7 +1308,7 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     for e in std::fs::read_dir(seeds.join("pageviews/months"))?.flatten() {
         let dest = pv.join("months").join(e.file_name());
         if !dest.exists() {
-            std::fs::copy(e.path(), &dest)?;
+            store::sys::copy_data(e.path(), &dest)?;
         }
     }
     pipeline::sys::symlink(&pv, &root.join("data/pageviews"))?;
@@ -1505,7 +1505,7 @@ fn heritage_root(scratch: &Path, dem: &Path, epoch: &Path) -> Result<PathBuf> {
     for e in std::fs::read_dir(dem)?.flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
         if e.path().is_file() && (n.ends_with(".py") || n == "pyproject.toml" || n == "uv.lock" || n == ".python-version") {
-            std::fs::copy(e.path(), root.join("dem").join(&n))?;
+            store::sys::copy_data(e.path(), root.join("dem").join(&n))?;
         }
     }
     pipeline::sys::symlink(&epoch, &root.join("data/heritage"))?;
@@ -1629,7 +1629,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
         let name = e.file_name().to_string_lossy().into_owned();
         let Some(n) = name.split('.').next().and_then(|s| Unit::parse(&s.replace('-', "/"))) else { continue };
         if n.x.abs_diff(u.x) <= 1 && n.y.abs_diff(u.y) <= 1 && !kept.join(&name).exists() {
-            std::fs::copy(e.path(), kept.join(&name))?;
+            store::sys::copy_data(e.path(), kept.join(&name))?;
         }
     }
     let bdir = dir.join(format!("{}-buildings", u.dash()));
@@ -1648,7 +1648,7 @@ fn unit_snap(out: &Out, args: &[String]) -> Result<()> {
     };
     let piece = out.path(out.get(&format!("sources/osm/{date}/pieces/{}", u.dash())).context("no piece")?);
     let local = dir.join(format!("piece-{}.osm.pbf", u.dash()));
-    std::fs::copy(&piece, &local)?;
+    store::sys::copy_data(&piece, &local)?;
     let folder = dir.join("units").join(u.dash());
     std::fs::remove_dir_all(&folder).ok();
     std::fs::remove_dir_all(dir.join("snap")).ok();
@@ -1766,7 +1766,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
                         return;
                     }
                     let tmp = dst.with_extension("ahead.tmp");
-                    if dst.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::copy(src, &tmp).is_ok() {
+                    if dst.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && store::sys::copy_data(src, &tmp).is_ok() {
                         std::fs::rename(&tmp, dst).ok();
                     } else {
                         std::fs::remove_file(&tmp).ok();
@@ -1801,7 +1801,7 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         let mut laps = pipeline::unit::Laps::default();
         // (Copied ahead, while the unit before it built, unless it's the job's first.)
         if std::fs::metadata(&local_piece).map(|m| m.len()).ok() != std::fs::metadata(&piece).map(|m| m.len()).ok() {
-            std::fs::copy(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
+            store::sys::copy_data(&piece, &local_piece).with_context(|| format!("copy {}", piece.display()))?;
         }
         laps.lap("piece copied from the NAS");
         // Its scenic results from its last run, kept in the shared cache (pipeline::scache::Carry).
@@ -2050,7 +2050,7 @@ fn reach_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         pipeline::agent::jobs::report(k as u64, n, "areas");
         let unit = Unit::parse(u).with_context(|| format!("unit {u}"))?;
         let src = out.path(out.get(l).with_context(|| format!("{l} isn't in the manifest"))?);
-        std::fs::copy(&src, &local).with_context(|| format!("copy {}", src.display()))?;
+        store::sys::copy_data(&src, &local).with_context(|| format!("copy {}", src.display()))?;
         let t = std::time::Instant::now();
         if let Some(r) = of_piece(&local, unit).with_context(|| format!("piece {u}"))? {
             if !only.is_empty() {
@@ -2185,7 +2185,7 @@ fn rail_feeds_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     let (cover, checked, cache) = (scratch.join("coverage.geojson"), scratch.join("checked-in.json"), scratch.join("cache.json"));
     std::fs::write(&cover, serde_json::to_vec(&rail::coverage_geojson(&cov))?)?;
     match out.get(rail::CHECKED) {
-        Some(c) => std::fs::copy(out.path(c), &checked).map(|_| ())?,
+        Some(c) => store::sys::copy_data(out.path(c), &checked).map(|_| ())?,
         None => std::fs::write(&checked, b"[]")?,
     }
     std::fs::write(&cache, serde_json::to_vec(&rail::cache_index(out, &rail::read_fetched(out)?))?)?;
@@ -2278,7 +2278,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         // the pairs.)
         if std::fs::rename(&pairs, &raw).is_err() {
             let tmp = raw.with_extension("bin.tmp");
-            std::fs::copy(&pairs, &tmp)?;
+            store::sys::copy_data(&pairs, &tmp)?;
             std::fs::rename(&tmp, &raw)?;
             std::fs::remove_file(&pairs).ok();
         }
@@ -2301,7 +2301,7 @@ fn rail_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     // 3. The rail ways touching the coverage.
     parts.start(2);
     let local = scratch.join("rail-set.osm.pbf");
-    std::fs::copy(&set, &local).with_context(|| format!("copy {}", set.display()))?;
+    store::sys::copy_data(&set, &local).with_context(|| format!("copy {}", set.display()))?;
     let poly = scratch.join("cover.geojson");
     std::fs::write(&poly, serde_json::to_vec(&pipeline::heritage::tiles_geojson(pipeline::heritage::COVER_Z, &pipeline::heritage::cover_tiles(&cov)))?)?;
     let clip = scratch.join("rail-cover.osm.pbf");
@@ -2347,7 +2347,7 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let local = work.join("labels-set.osm.pbf");
     let parts = Parts(&["Copying the labels set", "Ranking the labels (labels.py)", "Cutting them into packs"]);
     parts.start(0);
-    std::fs::copy(out.path(&set), &local).with_context(|| format!("copy {set}"))?;
+    store::sys::copy_data(out.path(&set), &local).with_context(|| format!("copy {set}"))?;
     parts.start(1);
     let tiles = work.join("labels.tiles");
     let dem = PathBuf::from(opt(args, "--dem").unwrap_or_else(|| "dem".into()));

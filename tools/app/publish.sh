@@ -9,11 +9,13 @@
 set -euo pipefail
 cd ${0:A:h}/../..
 NAS=/Volumes/personal/projects/scenic-roads
+# (Every copy leaves the extended attributes behind, cp -X: the NAS refuses macOS's provenance one
+# when it differs from the folder's, failing the copy.)
 [[ -d $NAS ]] || { echo "the NAS isn't mounted at /Volumes/personal"; exit 2; }
 if [[ ${1:-} == --rollback ]]; then
   [[ -f $NAS/app/previous.json ]] || { echo "no previous version to roll back to"; exit 1; }
-  cp $NAS/app/current.json $NAS/app/current.json.tmp.old
-  cp $NAS/app/previous.json $NAS/app/current.json.tmp && mv $NAS/app/current.json.tmp $NAS/app/current.json
+  cp -X $NAS/app/current.json $NAS/app/current.json.tmp.old
+  cp -X $NAS/app/previous.json $NAS/app/current.json.tmp && mv $NAS/app/current.json.tmp $NAS/app/current.json
   mv $NAS/app/current.json.tmp.old $NAS/app/previous.json
   echo "rolled back to $(python3 -c "import json;print(json.load(open('$NAS/app/current.json'))['version'])")"
   exit 0
@@ -52,7 +54,7 @@ kill $pid; wait $pid 2>/dev/null || true
 # repository around it: each must import there (one read the repository's regions.json once).
 pyt=$(mktemp -d)
 mkdir -p $pyt/dem
-git ls-files dem | while read f; do cp "$f" "$pyt/$f"; done
+git ls-files dem | while read f; do cp -X "$f" "$pyt/$f"; done
 steps=(${(f)"$(grep -rhoE '"[a-z_]+\.py"' crates/pipeline/src | tr -d '"' | sed 's/\.py$//' | sort -u)"})
 (cd $pyt/dem && uv run python -c "import importlib, sys; [importlib.import_module(m) for m in sys.argv[1:]]" $steps) || { echo "a Python step doesn't load from the app's dem/"; rm -rf $pyt; exit 1; }
 # (Loading isn't running: a name used before it's bound, say, shows only then. pyflakes reads them.)
@@ -67,20 +69,20 @@ dest=$NAS/app/$version
 mkdir -p $dest.tmp/web $dest.tmp/fonts
 # The server, and the build agent with the programs its jobs run (the build Mac runs them from here):
 # the pipeline's binaries, and the Python steps (dem/, run with uv) with their lock file.
-cp target/release/server target/release/scenic target/release/scenic-build target/release/extract \
+cp -X target/release/server target/release/scenic target/release/scenic-build target/release/extract \
    target/release/tile target/release/scenic-metrics target/release/elev target/release/areaflags \
    target/release/landcover target/release/railfreq $dest.tmp/
 mkdir -p $dest.tmp/wasm
-cp target/wasm32-wasip1/release/{extract,tile,scenic-metrics,areaflags,elev,landcover}.wasm $dest.tmp/wasm/
+cp -X target/wasm32-wasip1/release/{extract,tile,scenic-metrics,areaflags,elev,landcover}.wasm $dest.tmp/wasm/
 mkdir -p $dest.tmp/dem
-git ls-files dem | while read f; do cp "$f" "$dest.tmp/$f"; done
+git ls-files dem | while read f; do cp -X "$f" "$dest.tmp/$f"; done
 # The menu bar item (tools/status): an app bundle, built and signed ad hoc on this Mac (codesign
 # refuses a bundle on the NAS, whose SMB share adds Finder info), then copied without extended
 # attributes (none to keep as AppleDouble files).
 sb=$(mktemp -d)/Scenic.app
 mkdir -p "$sb/Contents/MacOS"
 swiftc -O -swift-version 5 -o "$sb/Contents/MacOS/scenic-status" tools/status/main.swift
-cp tools/status/Info.plist "$sb/Contents/Info.plist"
+cp -X tools/status/Info.plist "$sb/Contents/Info.plist"
 xattr -cr "$sb"
 codesign -s - --force "$sb"
 cp -RX "$sb" "$dest.tmp/"
@@ -93,7 +95,7 @@ import hashlib, json, sys
 files = [l.strip() for l in sys.stdin if l.strip()]
 sha = {f: hashlib.sha256(open(f, 'rb').read()).hexdigest() for f in files}
 print(json.dumps({'version': sys.argv[1], 'files': files, 'sha256': sha}))" "$version")
-[[ -f $NAS/app/current.json ]] && cp $NAS/app/current.json $NAS/app/previous.json
+[[ -f $NAS/app/current.json ]] && cp -X $NAS/app/current.json $NAS/app/previous.json
 print -r -- "$manifest" > $NAS/app/current.json.tmp
 mv $NAS/app/current.json.tmp $NAS/app/current.json
 echo "published $version"
@@ -101,7 +103,7 @@ echo "published $version"
 # differs.
 if ! cmp -s tools/nas/fetch-planet.sh $NAS/nas/fetch-planet.sh; then
   mkdir -p $NAS/nas
-  cp tools/nas/fetch-planet.sh $NAS/nas/fetch-planet.sh.tmp && chmod 755 $NAS/nas/fetch-planet.sh.tmp
+  cp -X tools/nas/fetch-planet.sh $NAS/nas/fetch-planet.sh.tmp && chmod 755 $NAS/nas/fetch-planet.sh.tmp
   mv $NAS/nas/fetch-planet.sh.tmp $NAS/nas/fetch-planet.sh
   echo "updated nas/fetch-planet.sh"
 fi

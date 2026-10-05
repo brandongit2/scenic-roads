@@ -49,7 +49,7 @@ impl Blobs {
         fs::create_dir_all(parent)?;
         let tmp = crate::naming::tmp_path(&local);
         let copied = (|| -> io::Result<()> {
-            let n = fs::copy(&src, &tmp)?;
+            let n = crate::sys::copy_data(&src, &tmp)?;
             let want = fs::metadata(&src)?.len();
             if n != want {
                 return Err(io::Error::other(format!("{}: copied {n} of {want} bytes", src.display())));

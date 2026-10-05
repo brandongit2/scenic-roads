@@ -1112,7 +1112,7 @@ mod tests {
         std::fs::create_dir_all(src.join("packs")).unwrap();
         for e in std::fs::read_dir(store.join("packs")).unwrap() {
             let e = e.unwrap();
-            std::fs::copy(e.path(), src.join("packs").join(e.file_name())).unwrap();
+            store::sys::copy_data(e.path(), src.join("packs").join(e.file_name())).unwrap();
         }
         let c = check(&src, 1).unwrap();
         assert_eq!((c.archives, c.tiles, c.sampled, c.bad.len(), c.differ.len()), (1, 3, 3, 0, 0));

@@ -249,10 +249,10 @@ impl Carry {
         let basis = grid_basis(build)?;
         std::fs::create_dir_all(&tmp)?;
         for f in KEPT_OUTPUTS {
-            std::fs::copy(build.join(f), tmp.join(f)).with_context(|| format!("keep {f}"))?;
+            store::sys::copy_data(build.join(f), tmp.join(f)).with_context(|| format!("keep {f}"))?;
         }
         for f in KEPT_CACHE {
-            std::fs::copy(cache.join(f), tmp.join(f)).with_context(|| format!("keep {f}"))?;
+            store::sys::copy_data(cache.join(f), tmp.join(f)).with_context(|| format!("keep {f}"))?;
         }
         for f in KEPT_GRIDS {
             let raw = std::fs::read(build.join(f))?;
@@ -280,10 +280,10 @@ impl Carry {
         let cache = unit_dir(build);
         std::fs::create_dir_all(&cache)?;
         for f in KEPT_OUTPUTS {
-            std::fs::copy(self.dir.join(f), build.join(f)).with_context(|| format!("restore {f}"))?;
+            store::sys::copy_data(self.dir.join(f), build.join(f)).with_context(|| format!("restore {f}"))?;
         }
         for f in KEPT_CACHE {
-            std::fs::copy(self.dir.join(f), cache.join(f)).with_context(|| format!("restore {f}"))?;
+            store::sys::copy_data(self.dir.join(f), cache.join(f)).with_context(|| format!("restore {f}"))?;
         }
         for f in KEPT_GRIDS {
             let z = std::fs::read(self.dir.join(format!("{f}.zst")))?;

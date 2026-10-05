@@ -671,7 +671,7 @@ fn copy_keep(p: &Path, scratch: &Path) -> Result<PathBuf> {
     // A clone on APFS: instant, no extra space.
     let st = Command::new("cp").arg("-c").arg(p).arg(&d).status()?;
     if !st.success() {
-        std::fs::copy(p, &d)?;
+        store::sys::copy_data(p, &d)?;
     }
     Ok(d)
 }
@@ -709,7 +709,7 @@ pub fn patch_ferries(out: &mut Out, date: &str, scratch: &Path, only: &dyn Fn(Un
     let work = scratch.join("patch-ferries");
     std::fs::create_dir_all(&work)?;
     let local_set = work.join("ferries.osm.pbf");
-    std::fs::copy(&set, &local_set)?;
+    store::sys::copy_data(&set, &local_set)?;
     let prefix = format!("sources/osm/{date}/pieces/");
     let pieces: Vec<(Unit, String, String)> = out
         .manifest
@@ -737,7 +737,7 @@ pub fn patch_ferries(out: &mut Out, date: &str, scratch: &Path, only: &dyn Fn(Un
             continue;
         }
         let piece = work.join("piece.osm.pbf");
-        std::fs::copy(out.path(content), &piece)?;
+        store::sys::copy_data(out.path(content), &piece)?;
         let merged = work.join(format!("{}.osm.pbf", u.dash()));
         let mut c = osmium();
         c.args(["merge", "--no-progress", "--overwrite", "--output-header", "sorting=Type_then_ID", "-o"]).arg(&merged).arg(&piece).arg(&near);

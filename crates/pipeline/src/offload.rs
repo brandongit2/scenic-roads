@@ -245,7 +245,7 @@ fn clone(src: &Path, dst: &Path) -> Result<()> {
             return Ok(());
         }
     }
-    std::fs::copy(src, dst).with_context(|| format!("copy {} to {}", src.display(), dst.display()))?;
+    store::sys::copy_data(src, dst).with_context(|| format!("copy {} to {}", src.display(), dst.display()))?;
     Ok(())
 }
 
@@ -263,7 +263,7 @@ fn take(st: &serde_json::Value, dir: &Path) -> Result<()> {
         std::fs::create_dir_all(dst.parent().unwrap())?;
         // (The coordinator's folder is on the same disk as the job's: a rename; else a copy.)
         if std::fs::rename(out.join(path), &dst).is_err() {
-            std::fs::copy(out.join(path), &dst).with_context(|| format!("take {path}"))?;
+            store::sys::copy_data(out.join(path), &dst).with_context(|| format!("take {path}"))?;
         }
     }
     for r in st["removed"].as_array().into_iter().flatten() {

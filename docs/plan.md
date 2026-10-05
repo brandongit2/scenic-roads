@@ -175,6 +175,12 @@ nas/           fetch-planet.sh, which the NAS runs itself (from tools/nas/; publ
 **Deletions go through SMB.** They're permanent on this share. The build Mac can't use SSH
 unattended, because 1Password asks to approve every new session.
 
+**Copies carry the bytes and permissions, nothing else** (`store::sys::copy_data`; `cp -X` in
+the scripts). macOS puts a provenance attribute (`com.apple.provenance`) on whatever an app writes,
+and the share refuses a copy's attempt to set one that differs from its folder's. That makes
+`std::fs::copy` or a plain `cp` fail with "Permission denied" (seen 2026-10-05: a file another
+program wrote, copied into the backups).
+
 **Packs, never one file per tile.** SMB manages about 80 random reads per second per file.
 - **Our layers** (roads, rails, terrain, slope, trees, labels, overlays, marks, stations, ferries)
   use packs.

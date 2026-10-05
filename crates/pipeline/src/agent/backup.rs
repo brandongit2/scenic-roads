@@ -99,7 +99,7 @@ fn copy_atomic(src: &Path, dst: &Path) -> Result<u64> {
         std::fs::create_dir_all(d)?;
     }
     let tmp = dst.with_extension("tmp");
-    let n = std::fs::copy(src, &tmp).with_context(|| format!("copy {} to {}", src.display(), tmp.display()))?;
+    let n = store::sys::copy_data(src, &tmp).with_context(|| format!("copy {} to {}", src.display(), tmp.display()))?;
     std::fs::rename(&tmp, dst)?;
     Ok(n)
 }
@@ -127,7 +127,7 @@ pub fn run(root: &Path, local: Option<&Path>, today: &str, keep_days: u64) -> Re
                 // Copy first, then name the copy by its own hash: a file changing meanwhile can't end
                 // up under another content's name.
                 let tmp = blobs.join(format!(".incoming-{}.tmp", std::process::id()));
-                let n = std::fs::copy(&p, &tmp).with_context(|| format!("copy {}", p.display()))?;
+                let n = store::sys::copy_data(&p, &tmp).with_context(|| format!("copy {}", p.display()))?;
                 let h = store::naming::hash16_file(&tmp)?;
                 let dst = blobs.join(&h);
                 if dst.exists() {
