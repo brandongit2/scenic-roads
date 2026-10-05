@@ -104,18 +104,26 @@ const worker = `${label} ${id}`;
 const cores = Math.max(1, (navigator.hardwareConcurrency || 2) - 1);
 
 // How much memory this tab may use (MB): learned, or set here (This device). It starts from what the
-// browser says it has, else 2 GB on an iPad (the owner's choice, 2026-10-05: Safari doesn't say, and
-// iPads have 4 GB or more), else 1 GB; rises after tasks that came near it succeed, and falls below
-// any task the tab died in. (32-bit WebAssembly can't address more than 4 GB; a browser may allow a
-// program less: the most it lets a memory grow to, tried once.)
+// browser says it has, else 3 GB on an iPad (the owner's choice, 2026-10-05, for their 8 GB iPad
+// Pro: Safari doesn't say, and gives a tab 4 GB or more there), else 1 GB; rises after tasks that
+// came near it succeed, and falls below any task the tab died in. (32-bit WebAssembly can't address
+// more than 4 GB; a browser may allow a program less: the most it lets a memory grow to, tried
+// once.)
 const CAP = (() => {
   for (let mb = 3800; mb >= 256; mb = Math.floor(mb / 2)) {
     try { new WebAssembly.Memory({ initial: 1, maximum: mb * 16 }); return mb; } catch {}
   }
   return 128;
 })();
-const START = navigator.deviceMemory ? navigator.deviceMemory * 256 : /on iPad$/.test(label) ? 2048 : 1024;
+const START = navigator.deviceMemory ? navigator.deviceMemory * 256 : /on iPad$/.test(label) ? 3072 : 1024;
 let ceiling = Math.min(CAP, store.get("ceiling", START));
+// (An iPad's page that had learned less, from a start of 1 GB, takes the new start up once; one a
+// death lowered keeps what it learned.)
+if (!WATCH && /on iPad$/.test(label) && store.get("startV", 0) < 2) {
+  if (!store.get("lowered", false)) ceiling = Math.min(CAP, Math.max(ceiling, START));
+  store.set("ceiling", ceiling);
+  store.set("startV", 2);
+}
 // Each tab's running tasks, noted with the time (renewed every minute while it lives). A note not
 // renewed for two minutes is a tab that died: together its tasks took more than this browser lets a
 // tab have, and they're given back. Looked for as the page starts and every minute after: a tab iOS
@@ -137,6 +145,7 @@ function reap() {
   const total = died.reduce((a, t) => a + (t.mem_mb || 0), 0);
   ceiling = Math.max(256, Math.min(ceiling, Math.floor(total * 0.7)));
   store.set("ceiling", ceiling);
+  store.set("lowered", true);
   log(`<span class="bad">A page died running ${died.length > 1 ? `${died.length} tasks` : "a task"} of ${total} MB: taking on at most ${ceiling} MB now.</span>`);
   for (const t of died) call("/work/fail", { worker, lease: t.lease, error: "the page died running it", oom_mb: t.mem_mb }).catch(() => {});
   return true;
