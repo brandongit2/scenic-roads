@@ -1153,6 +1153,9 @@ At each phase's end an Opus agent reviews the work against this plan.
    4. Then the hold is released, and the converted legacy data deleted.
 7. **Features,** each on its own: 3D buildings, then PLATEAU; building heights in horizons and the
    viewshed tool; the new terrain repair; sharper terrain from national DEMs. Not started.
+8. **Builds anywhere: under way** (`docs/workers.md`): the coordinator's data plane, then workers on
+   any device that opens a page. Done: the crates build for WebAssembly; one maths library on every
+   target (outputs identical natively at any thread count and under WASI).
 
 **Gaps:** none known between the code and the design.
 
