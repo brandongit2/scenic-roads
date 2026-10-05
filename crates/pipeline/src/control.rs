@@ -80,6 +80,11 @@ pub fn take_request(home: &Path) -> Option<Request> {
     r
 }
 
+/// The ask waiting in `home`, if any, read only (one that doesn't parse: none, left for the agent).
+pub fn peek_request(home: &Path) -> Option<Request> {
+    serde_json::from_slice(&std::fs::read(home.join(REQUEST)).ok()?).ok()
+}
+
 /// The ask passed on: it goes, unless a newer one came meanwhile.
 pub fn clear_request(home: &Path, r: &Request) {
     if take_request(home).as_ref() == Some(r) {

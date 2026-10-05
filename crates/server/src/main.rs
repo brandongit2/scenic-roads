@@ -205,7 +205,7 @@ impl AppState {
             let host = h["host"].clone();
             let mut list: Vec<serde_json::Value> = obj.get("helpers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
             list.retain(|x| x["host"] != host);
-            list.push(serde_json::json!({"host": host, "beat": h["beat"], "job": h["job"], "pause": h["pause"]}));
+            list.push(serde_json::json!({"host": host, "beat": h["beat"], "job": h["job"], "pause": h["pause"], "here": true}));
             obj.insert("helpers".into(), serde_json::Value::Array(list));
         }
         let log = if local {
@@ -214,7 +214,7 @@ impl AppState {
             None
         };
         // This Mac's ask to pause or go on, while its agent hasn't taken it up (pipeline::control).
-        let asked = pipeline::control::take_request(&self.home.join("agent")).map(|r| serde_json::json!({ "pause": r.pause.is_some(), "at": r.at }));
+        let asked = pipeline::control::peek_request(&self.home.join("agent")).map(|r| serde_json::json!({ "pause": r.pause.is_some(), "at": r.at }));
         serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked})
     }
 

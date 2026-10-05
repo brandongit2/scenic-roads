@@ -1,7 +1,8 @@
 //! The coordinator's leases (docs/workers.md §5): which worker does which work. Timed on this
 //! process's monotonic clock (another machine's clock never matters), renewed by heartbeats while
-//! the work goes on (a paused job doesn't beat), and lapsing when a worker goes quiet: its work is
-//! offered again. A job's leases are saved on this Mac's disk, so the agent restarting (a new app)
+//! the work goes on (a job paused for its conditions doesn't beat), and lapsing when a worker goes
+//! quiet: its work is offered again. While the build is paused every lease is held (`hold_all`),
+//! beats or not, and each has a whole TTL again when it goes on. A job's leases are saved on this Mac's disk, so the agent restarting (a new app)
 //! costs no worker its work; a task's die with the job that offered it.
 
 use serde::{Deserialize, Serialize};
@@ -149,6 +150,14 @@ impl Leases {
         ids.into_iter().filter_map(|id| self.by_id.remove(&id)).collect()
     }
 
+    /// Every lease held for a whole `ttl` from `now`, beats or not: while the build is paused (no work
+    /// goes to another meanwhile), and once more as it goes on.
+    pub fn hold_all(&mut self, now: Instant) {
+        for l in self.by_id.values_mut() {
+            l.deadline = l.deadline.max(now + self.ttl);
+        }
+    }
+
     /// Every lease past its deadline, removed: their work is offered again.
     pub fn expire(&mut self, now: Instant) -> Vec<Lease> {
         self.drop_where(|l| l.deadline <= now)
@@ -163,6 +172,22 @@ impl Leases {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn held_leases_outlast_their_beats() {
+        // While the build is paused every lease is held, beats or not: none lapses, whatever time
+        // passes between holds; one not held lapses as before.
+        let now = Instant::now();
+        let mut l = Leases::new(Duration::from_millis(60));
+        let a = l.grant("m1", Work::Job { step: "unit".into(), targets: vec![("6/1/1".into(), "k".into())] }, now);
+        for i in 1..=4 {
+            l.hold_all(now + Duration::from_millis(50 * i));
+        }
+        let later = now + Duration::from_millis(220);
+        assert!(l.get(a, "m1", later).is_some() && l.expire(later).is_empty());
+        assert!(l.renew(a, "m1", None, later));
+        assert_eq!(l.expire(later + Duration::from_millis(100)).len(), 1);
+    }
 
     fn job(ts: &[(&str, &str)]) -> Work {
         Work::Job { step: "unit".into(), targets: ts.iter().map(|(t, k)| (t.to_string(), k.to_string())).collect() }

@@ -160,8 +160,12 @@ export class BuildStatus {
       // Pausing the whole build, or letting it go on (pipeline::control).
       if (this.asking && (this.asking === 'pause') === !!a.pause) this.asking = null;
       const btn = (label: string, title: string, mode: 'drain' | 'freeze' | null) => h('button', { class: 'bs-btn', type: 'button', title, onclick: () => void this.ask(mode) }, label);
+      // (The opposite of what was asked stays there: an ask is never stuck.)
       if (this.asking) {
-        out.push(h('div', { class: 'bs-row faint' }, this.asking === 'pause' ? 'Pausing… (the build Mac takes it up in seconds)' : 'Resuming…'));
+        out.push(
+          h('div', { class: 'bs-row faint' }, this.asking === 'pause' ? 'Pausing… (the build Mac takes it up within seconds)' : 'Resuming…'),
+          h('div', { class: 'bs-row' }, this.asking === 'pause' ? btn('Resume building', 'The build picks up where it stopped', null) : btn('Pause building', 'Every Mac’s running job stops at its next safe point, keeping what it did', 'drain')),
+        );
       } else if (a.pause) {
         const how = a.pause.mode === 'freeze' ? 'every Mac’s job frozen where it was' : 'every Mac’s job stops at its next safe point';
         out.push(

@@ -2029,9 +2029,10 @@ fn commit_unit(out: &mut Out, date: &str, b: Built, how: &str) -> Result<()> {
             for l in &gone {
                 out.remove(l);
             }
-            out.save()?;
             eprintln!("unit {}: removed its earlier {}", u.slash(), gone.join(" and "));
         }
+        // (Saved before it's noted done: its grids above too.)
+        out.save()?;
         clean();
         pipeline::control::done("unit", &u.slash());
         return Ok(());

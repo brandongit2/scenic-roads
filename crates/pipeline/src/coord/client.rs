@@ -154,9 +154,10 @@ impl Client {
         Ok((v["ok"].as_bool().unwrap_or(false), serde_json::from_value(v["pause"].clone()).ok().flatten()))
     }
 
-    /// Passes on this Mac's ask (crate::control::Request): the build paused, or going on.
-    pub fn set_pause(&self, pause: Option<&crate::control::Pause>) -> Result<()> {
-        self.post_json("/work/pause", &serde_json::json!({ "pause": pause }))?;
+    /// Passes on this Mac's ask (crate::control::Request): the build paused, or going on, as asked
+    /// at `at` (unix seconds: an ask older than the build's last change is passed over).
+    pub fn set_pause(&self, pause: Option<&crate::control::Pause>, at: u64) -> Result<()> {
+        self.post_json("/work/pause", &serde_json::json!({ "pause": pause, "at": at }))?;
         Ok(())
     }
 

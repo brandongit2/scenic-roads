@@ -1027,10 +1027,13 @@ are no request files.
   - **Asked for** from either Mac's menu bar item (Pause Building; Option: Pause Building Now), the
     map's build panel (Pause building, Pause now) or `scenic pause [--now]`, and lifted the same
     ways (Resume, `scenic resume`): an ask in that Mac's agent's folder (`pause-request.json`), which
-    its agent takes up within seconds and passes on to the build Mac's coordinator. A helper that
-    can't reach it holds the ask itself meanwhile, and passes it on once it can.
-  - **Held** by the build Mac's coordinator, on its disk (`coord/pause.json`, so a restart keeps it)
-    and mirrored to the NAS (`state/build/pause.json`); told to every worker in its answers to their
+    its agent takes up within seconds and passes on to the build Mac's coordinator, with when it was
+    asked: an ask older than the build's last change (a helper's, held while it couldn't reach the
+    build Mac) is passed over. A helper that can't reach it holds the ask itself meanwhile, and
+    passes it on once it can. The opposite ask is always there (a menu never sticks on "Pausing…").
+  - **Held** by the build Mac's coordinator, on its disk (`coord/pause.json`, `{pause, at}`, so a
+    restart keeps it; one the agent knew from before its coordinator was up is given to it) and
+    mirrored to the NAS (`state/build/pause.json`); told to every worker in its answers to their
     asks (an agent: refused, with the pause; a page: nothing now) and beats; each agent keeps what it
     last heard (`pause.json`), so a helper that can't reach the build Mac stays as it last heard.
   - **At a safe point** (the default): each running job finishes the target it's on (an area, a map
@@ -1132,8 +1135,10 @@ and, when none fits it, units' last steps.
   name) and a token (kept on the build Mac) every request carries; taken off the NAS when the agent
   stops. A worker reads it again when it can't reach the coordinator or its token is refused.
 - **Leases:** work goes out on a lease (ten minutes, on the coordinator's own clock), renewed by a
-  beat each minute while the work goes on, not while it's paused; a lapsed lease's work is offered
-  again. The build Mac's own jobs hold leases too (a lapsed one is taken again if no one took its
+  beat each minute while the work goes on, not while it's paused for its conditions (a helper beats
+  through its client without the NAS too); a lapsed lease's work is offered again. While the build
+  is paused, every lease is held, beats or not, and each has a whole ten minutes again as it goes
+  on. The build Mac's own jobs hold leases too (a lapsed one is taken again if no one took its
   work), so a target is never built twice at once; each plan leaves out what's leased. Finished units
   aren't offered again before the plan shows them; a worker's failed unit isn't offered to it for an
   hour, doubling. The jobs' leases, the token and what units cost are kept on the build Mac's disk:
@@ -1239,11 +1244,14 @@ mid-job. Nothing depends on it being available at a given time.
 - **Conditions per step:**
   - Every job needs the NAS: at home, or through Tailscale away from home, except the whole-planet
     reads, which need home. CPU jobs run on mains power, or on battery down to 30 %.
-  - When a condition lapses, the agent pauses the job (`SIGSTOP` to its process group) and resumes
-    it (`SIGCONT`) when it holds again.
+  - When the NAS goes (or home, for a whole-planet job), the agent freezes the job (`SIGSTOP` to its
+    process group) and lets it go on (`SIGCONT`) when it's back; on battery under 30 %, a CPU job
+    stops at its next safe point instead (Pausing, above).
 - **Sleep** suspends every process. Open SMB handles often don't survive it, so a job that touches the
   NAS is restarted after wake.
-- **Kills** lose the current batch: keys are recorded only when a whole batch succeeds.
+- **Kills** lose only the target under way: every job notes each target done as it's saved, and
+  the agent records those whatever ends the job (a failure, sleep, a lapsed lease, its own stop, or
+  after a crash, from the job's record).
   - A batch takes minutes to tens of minutes.
   - The OSM pass is a chain of stages with completion markers; its filter and basemap stages take
     an hour or more each.

@@ -81,14 +81,21 @@ struct Record {
     started: u64,
     #[serde(default)]
     leader_start: u64,
+    /// Its step's targets and keys, and where it notes those it finished (crate::control::done):
+    /// what an agent started after a crash records of it.
+    #[serde(default)]
+    work: Option<super::build::Work>,
+    #[serde(default)]
+    done_file: Option<PathBuf>,
 }
 
 use crate::sys::{group_members, process_start};
 
 impl Running {
     /// Starts `spec` with `threads` worker threads (RAYON_NUM_THREADS) and `env`, its output
-    /// appended to `log`, and records it in `record`.
-    pub fn start(spec: JobSpec, threads: usize, env: &[(&str, &str)], log: PathBuf, record: &Path) -> Result<Running> {
+    /// appended to `log`, and records it in `record` (with `done_file`, where it notes the targets
+    /// it finishes).
+    pub fn start(spec: JobSpec, threads: usize, env: &[(&str, &str)], log: PathBuf, record: &Path, done_file: Option<&Path>) -> Result<Running> {
         if let Some(d) = log.parent() {
             std::fs::create_dir_all(d)?;
         }
@@ -109,7 +116,7 @@ impl Running {
         let pgid = child.id() as i32;
         let caffeinate = keep_awake(child.id());
         let started = now_s();
-        let rec = Record { id: spec.id.clone(), pgid, started, leader_start: process_start(pgid).unwrap_or(0) };
+        let rec = Record { id: spec.id.clone(), pgid, started, leader_start: process_start(pgid).unwrap_or(0), work: spec.record.clone(), done_file: done_file.map(Path::to_path_buf) };
         std::fs::write(record, serde_json::to_vec(&rec)?)?;
         Ok(Running { spec, child, caffeinate, pgid, started, log, paused: None, pausing: None, started_at: Instant::now(), progress_base: None, parts: None })
     }
@@ -189,10 +196,13 @@ fn stop_group(pgid: i32, grace: Duration, mut reap: impl FnMut()) {
 }
 
 /// Stops a job left running by an agent that ended without stopping it (a crash, a kill), from its
-/// record; removes the record.
-pub fn stop_orphan(record: &Path) {
-    let Ok(b) = std::fs::read(record) else { return };
+/// record; removes the record. Its step's targets and keys and where it noted those it finished,
+/// for the agent to record (crate::control::done), when it said.
+pub fn stop_orphan(record: &Path) -> Option<(super::build::Work, PathBuf)> {
+    let Ok(b) = std::fs::read(record) else { return None };
+    let mut found = None;
     if let Ok(r) = serde_json::from_slice::<Record>(&b) {
+        found = r.work.clone().zip(r.done_file.clone());
         let members = if r.pgid > 1 { group_members(r.pgid) } else { Vec::new() };
         // Ours when the leader is the process we started; or, the leader gone, when every member
         // started after the job did (a group id isn't reused while any member lives).
@@ -207,6 +217,7 @@ pub fn stop_orphan(record: &Path) {
         }
     }
     std::fs::remove_file(record).ok();
+    found
 }
 
 /// The last `n` lines of a log.
@@ -291,7 +302,7 @@ mod tests {
     fn runs_pauses_and_stops() {
         let d = tempfile::tempdir().unwrap();
         let rec = d.path().join("job.json");
-        let mut r = Running::start(spec(&["/bin/sh", "-c", "echo hello; sleep 30"]), 2, &[], d.path().join("log"), &rec).unwrap();
+        let mut r = Running::start(spec(&["/bin/sh", "-c", "echo hello; sleep 30"]), 2, &[], d.path().join("log"), &rec, None).unwrap();
         assert!(rec.exists());
         std::thread::sleep(Duration::from_millis(300));
         r.pause("test");
@@ -313,7 +324,7 @@ mod tests {
             sleep 0.25; echo "unit $t" >> "$SCENIC_DONE"
         done"#;
         let env = [(crate::control::CONTROL_ENV, control.to_str().unwrap()), (crate::control::DONE_ENV, done.to_str().unwrap())];
-        let mut r = Running::start(spec(&["/bin/sh", "-c", script]), 1, &env, d.path().join("log"), &d.path().join("job.json")).unwrap();
+        let mut r = Running::start(spec(&["/bin/sh", "-c", script]), 1, &env, d.path().join("log"), &d.path().join("job.json"), Some(&done)).unwrap();
         std::thread::sleep(Duration::from_millis(600));
         std::fs::write(&control, b"drain").unwrap();
         let t = Instant::now();
@@ -367,7 +378,7 @@ mod tests {
     #[test]
     fn exit_status() {
         let d = tempfile::tempdir().unwrap();
-        let mut r = Running::start(spec(&["/bin/sh", "-c", "exit 3"]), 1, &[], d.path().join("log"), &d.path().join("job.json")).unwrap();
+        let mut r = Running::start(spec(&["/bin/sh", "-c", "exit 3"]), 1, &[], d.path().join("log"), &d.path().join("job.json"), None).unwrap();
         let st = loop {
             if let Some(s) = r.poll().unwrap() {
                 break s;
@@ -382,7 +393,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let rec = d.path().join("job.json");
         // The shell leaves a sleep behind in its group and exits: an orphan, as after a crash.
-        let mut r = Running::start(spec(&["/bin/sh", "-c", "/bin/sleep 60 & echo started"]), 1, &[], d.path().join("log"), &rec).unwrap();
+        let mut r = Running::start(spec(&["/bin/sh", "-c", "/bin/sleep 60 & echo started"]), 1, &[], d.path().join("log"), &rec, None).unwrap();
         while r.poll().unwrap().is_none() {
             std::thread::sleep(Duration::from_millis(50));
         }

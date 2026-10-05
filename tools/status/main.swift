@@ -16,6 +16,7 @@
 
 import AppKit
 import CoreServices
+import SystemConfiguration
 import UserNotifications
 
 let server = URL(string: ProcessInfo.processInfo.environment["SCENIC_STATUS_SERVER"] ?? "http://127.0.0.1:8080")!
@@ -69,12 +70,13 @@ struct Worker: Decodable {
     let bad: Bool
 }
 
-/// A helper on another Mac, as the main agent last read its status.
+/// A helper on another Mac, as the main agent last read its status (`here`: this Mac's own, fresh).
 struct Helper: Decodable {
     let host: String
     let beat: Int
     let job: Job?
     let pause: PauseInfo?
+    let here: Bool?
 }
 
 /// A step of the build to the end: done of total (total unknown until an earlier step makes it), or
@@ -527,11 +529,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(.separator())
         // The whole build paused (every Mac), or going on: an ask to this Mac's agent, which passes it
         // on to the build Mac (crates/pipeline/src/control.rs). Option: at once, frozen where it is.
-        if let asked = pendingAsk() {
-            let it = NSMenuItem(title: asked ? "Pausing… (asked; the build Mac takes it up in seconds)" : "Resuming… (asked)", action: nil, keyEquivalent: "")
+        // (Paused as this Mac knows it: the build Mac's, or, a helper's own, its own.)
+        let ownHelper = reply?.status?.helpers?.first { $0.here == true }
+        let pausedHere = reply?.status?.pause != nil || ownHelper?.pause != nil
+        let asked = pendingAsk()
+        if let a = asked {
+            let it = NSMenuItem(title: a ? "Pausing… (asked; the build Mac takes it up within seconds)" : "Resuming… (asked)", action: nil, keyEquivalent: "")
             it.isEnabled = false
             m.addItem(it)
-        } else if reply?.status?.pause != nil {
+        }
+        // (The opposite of what was asked, or of the state, is always there: an ask is never stuck.)
+        if asked == true || (asked == nil && pausedHere) {
             let it = NSMenuItem(title: "Resume Building", action: #selector(resumeBuild), keyEquivalent: "")
             it.target = self
             m.addItem(it)
@@ -590,7 +598,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// within seconds and passes on to the build Mac.
     func ask(_ mode: String?) {
         let now = Int(Date().timeIntervalSince1970)
-        let who = "the menu bar on \(Host.current().localizedName ?? ProcessInfo.processInfo.hostName)"
+        // (The Mac's name from its settings: no network lookup to wait on.)
+        let name = SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"
+        let who = "the menu bar on \(name)"
         let pause: Any = mode.map { ["mode": $0, "by": who, "at": now] as [String: Any] } ?? NSNull()
         let dir = home.appendingPathComponent("agent")
         let (tmp, dst) = (dir.appendingPathComponent("pause-request.json.menu.tmp"), dir.appendingPathComponent(askFile))

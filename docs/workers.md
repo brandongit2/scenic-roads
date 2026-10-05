@@ -98,10 +98,11 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   job paused at a safe point hands off the targets it finished (part of its lease's); one given back
   unfinished for an interruption (the pause, sleep, a restart) isn't held against its targets.
 - **Leases** (`coord::lease`) are timed on the coordinator's monotonic clock (clocks between devices
-  don't matter), ten minutes, renewed by a beat each minute while the work goes on. A paused job
-  doesn't beat, so its work may go to another; the build Mac's own jobs hold leases too, and one
-  that lapsed is taken again when no one took its work meanwhile. A lapsed lease's work is offered
-  again.
+  don't matter), ten minutes, renewed by a beat each minute while the work goes on. A job paused
+  for its conditions doesn't beat, so its work may go to another; while the build is paused, every
+  lease is held, beats or not, and each has a whole ten minutes again when it goes on. The build
+  Mac's own jobs hold leases too, and one that lapsed is taken again when no one took its work
+  meanwhile. A lapsed lease's work is offered again.
 - **Handing back:** a job's saves (merged in order), done record and what its units cost go back as
   one hand-off, kept in an outbox folder per lease on the worker until taken (across restarts),
   journaled whole on the build Mac and merged with the records all at once. A hand-off for a lease

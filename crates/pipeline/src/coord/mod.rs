@@ -11,7 +11,8 @@
 //! - **Tasks** (`task`): pure work a running job offers, for any worker, a web page's included.
 //!
 //! Leases (`lease`) say who does what; this Mac's own jobs hold them too, so a job is never done
-//! twice and a worker that goes quiet (or pauses: it doesn't beat) gives its work back. A hand-off
+//! twice and a worker that goes quiet (or pauses for its conditions: it doesn't beat) gives its work
+//! back; while the build is paused, every lease is held. A hand-off
 //! for a lease that's gone is refused (410): its work was offered again, and a late save could put
 //! an older build in the manifest. The token, the jobs' leases and what each unit cost are kept on
 //! this Mac's disk, so the agent restarting (a new app) is a pause to every worker, nothing more.
@@ -142,6 +143,9 @@ pub struct Shared {
     /// The build's pause (crate::control), while it's paused: no work is given, a worker's beat is
     /// told (its job pauses too), and no lease lapses. Kept in `pause.json`, so a restart keeps it.
     pub paused: Option<crate::control::Pause>,
+    /// When the pause last changed, as the ask said (unix seconds): an ask older than that (a Mac's
+    /// held while it couldn't reach this one) is passed over.
+    pub pause_at: u64,
     /// Where the token, leases, costs and journal are kept.
     dir: PathBuf,
 }
@@ -315,9 +319,18 @@ impl Coordinator {
             eprintln!("coordinator: {}'s lease ended with the agent before this one", l.what());
         }
         let costs = std::fs::read(dir.join("costs.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        // The build's pause, as it was when the agent before this one stopped.
-        let paused: Option<crate::control::Pause> = std::fs::read(dir.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, app: app.to_string(), paused, dir: dir.to_path_buf() };
+        // The build's pause, as it was when the agent before this one stopped (`{pause, at}`; an older
+        // agent's, the pause alone).
+        let kept: serde_json::Value = std::fs::read(dir.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let (paused, pause_at): (Option<crate::control::Pause>, u64) = match kept.get("at") {
+            Some(at) if kept.get("pause").is_some() => (serde_json::from_value(kept["pause"].clone()).ok().flatten(), at.as_u64().unwrap_or(0)),
+            _ => {
+                let p: Option<crate::control::Pause> = serde_json::from_value(kept).ok();
+                let at = p.as_ref().map_or(0, |p| p.at);
+                (p, at)
+            }
+        };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, app: app.to_string(), paused, pause_at, dir: dir.to_path_buf() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -419,10 +432,11 @@ impl Coordinator {
         self.offer(pass, vec![Offer { step: "unit".into(), targets: units, batch: 0 }]);
     }
 
-    /// The build paused (how, by whom), or going on: no work given and no lease lapsing meanwhile,
-    /// and workers told. Kept on disk.
-    pub fn set_pause(&self, pause: Option<crate::control::Pause>) {
-        set_pause(&mut self.shared.lock().unwrap(), pause);
+    /// The build paused (how, by whom), or going on, as asked at `at` (unix seconds; an ask older
+    /// than the last change is passed over): no work given and no lease lapsing meanwhile, and
+    /// workers told. Kept on disk.
+    pub fn set_pause(&self, pause: Option<crate::control::Pause>, at: u64) {
+        set_pause(&mut self.shared.lock().unwrap(), pause, at);
     }
 
     /// The build's pause, while it's paused.
@@ -438,8 +452,10 @@ impl Coordinator {
     /// Leases past their deadline dropped (their workers went quiet): a task's offered again.
     pub fn expire(&self) -> Vec<Lease> {
         let mut s = self.shared.lock().unwrap();
-        // (None while the build is paused: a paused or asleep worker's work isn't given to another.)
+        // (None while the build is paused: every lease held, a paused or asleep worker's work not
+        // given to another.)
         if s.paused.is_some() {
+            s.leases.hold_all(Instant::now());
             return Vec::new();
         }
         let gone = s.leases.expire(Instant::now());
@@ -519,7 +535,7 @@ pub fn folder(w: &str) -> String {
 /// Whether `l` is a file a job of `step` saves for `target`: a unit's base pack, road values, roads'
 /// English and the grids its packs lacked; candidates' and peaks' own files; an area's (a z3
 /// tile's) lo pack and its z6 tiles' hi packs of terrain, slope or the tree layers.
-fn saves(step: &str, target: &str, l: &str) -> bool {
+pub fn saves(step: &str, target: &str, l: &str) -> bool {
     let dash = target.replace('/', "-");
     match step {
         "unit" => crate::unit::saved_files(&dash).iter().any(|f| f == l),
@@ -558,8 +574,10 @@ fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Resul
         anyhow::ensure!(crate::rawpack::is_area(area), "{area} isn't an area of raw tiles");
         anyhow::ensure!(crate::rawpack::named_for(&p.name, area), "{} isn't an archive of {area}", p.name);
     }
+    // (Of the targets it says it did: one it didn't finish may have saved part of its files.)
+    let did: Vec<&(String, String)> = h.done.as_ref().map(|d| d.1.iter().collect()).unwrap_or_default();
     for (l, v) in &h.changes {
-        anyhow::ensure!(targets.iter().any(|(t, _)| saves(step, t, l)), "{l} isn't one of its targets' files");
+        anyhow::ensure!(did.iter().any(|(t, _)| saves(step, t, l)), "{l} isn't one of the files of the targets it did");
         if let Some(c) = v {
             anyhow::ensure!(store::naming::parse_content_name(c).is_some_and(|n| n.logical == l), "{c} isn't a content name of {l}");
         }
@@ -576,19 +594,19 @@ fn check_handoff(h: &Handoff, step: &str, targets: &[(String, String)]) -> Resul
 
 /// The build paused (how, by whom) or going on (`Coordinator::set_pause`, `/work/pause`), kept in
 /// `pause.json` so the next agent starts with it.
-fn set_pause(s: &mut Shared, pause: Option<crate::control::Pause>) {
-    if s.paused == pause {
+fn set_pause(s: &mut Shared, pause: Option<crate::control::Pause>, at: u64) {
+    if at < s.pause_at {
+        eprintln!("coordinator: an ask to {} from before the last change passed over", if pause.is_some() { "pause" } else { "go on" });
         return;
     }
-    eprintln!("coordinator: {}", pause.as_ref().map_or("the build goes on".to_string(), |p| p.why()));
-    let path = s.dir.join("pause.json");
-    let kept = match &pause {
-        Some(p) => serde_json::to_vec(p).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&path, &b)),
-        None => match std::fs::remove_file(&path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
-            _ => Ok(()),
-        },
-    };
+    s.pause_at = at;
+    // (Every lease held a whole TTL again, as the build pauses or goes on: none lapses for the time it
+    // was paused.)
+    s.leases.hold_all(Instant::now());
+    if s.paused != pause {
+        eprintln!("coordinator: {}", pause.as_ref().map_or("the build goes on".to_string(), |p| p.why()));
+    }
+    let kept = serde_json::to_vec(&serde_json::json!({ "pause": pause, "at": at })).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&s.dir.join("pause.json"), &b));
     if let Err(e) = kept {
         eprintln!("coordinator: keeping the pause: {e:#} (it holds until this agent stops)");
     }
@@ -613,6 +631,13 @@ fn raw_again(journal: &Path, h: Option<&Handoff>) {
 #[cfg(not(target_os = "wasi"))]
 fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local: bool) -> Result<(u16, serde_json::Value)> {
     let now = Instant::now();
+    // (While the build is paused, every lease is held, whatever went quiet meanwhile.)
+    {
+        let mut s = shared.lock().unwrap();
+        if s.paused.is_some() {
+            s.leases.hold_all(now);
+        }
+    }
     let ok = serde_json::json!({ "ok": true });
     match path {
         "/work/ask" => {
@@ -680,7 +705,9 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             // or going on, for every worker.
             let b: serde_json::Value = serde_json::from_slice(body)?;
             let pause: Option<crate::control::Pause> = serde_json::from_value(b["pause"].clone())?;
-            set_pause(&mut shared.lock().unwrap(), pause);
+            // (When it was asked: an older helper's ask, without, as now.)
+            let at = b["at"].as_u64().unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()));
+            set_pause(&mut shared.lock().unwrap(), pause, at);
             Ok((200, ok))
         }
         "/work/done" => {
@@ -1249,7 +1276,10 @@ mod tests {
         let g = w.ask(&ask(4096)).unwrap().unwrap();
         // Paused (from a helper's menu, passed on by its agent): no work; an agent's told why and the
         // pause, a page nothing; a worker's beat hears it; no lease lapses meanwhile.
-        w.set_pause(Some(&Pause::new(Mode::Drain, "the menu bar on m1"))).unwrap();
+        let p = Pause::new(Mode::Drain, "the menu bar on m1");
+        w.set_pause(Some(&p), p.at).unwrap();
+        // (An ask from before it, held by a Mac that couldn't reach this one: passed over.)
+        w.set_pause(None, p.at - 60).unwrap();
         assert_eq!(c.pause().map(|p| p.by), Some("the menu bar on m1".to_string()));
         let e = w.ask(&ask(4096)).unwrap_err();
         let r = e.downcast_ref::<client::Refused>().unwrap();
@@ -1267,7 +1297,7 @@ mod tests {
         c.offer_units("2026-09-28", units.clone());
         // Going on: work again. A job paused at a safe point hands off what it did (those done, the
         // rest offered again); one stopped before any is given back, not held against its targets.
-        c.set_pause(None);
+        c.set_pause(None, p.at + 1);
         assert_eq!(w.beat_paused(g.lease, None).unwrap(), (true, None), "its lease kept through the pause and the restart");
         let Granted::Job { targets, .. } = &g.work else { panic!() };
         assert_eq!(targets.len(), 3);
@@ -1366,6 +1396,11 @@ mod tests {
         };
         // An area's lo pack and its z6 tiles' hi packs; not another area's.
         assert!(check_handoff(&h("slope", "3/2/2", &["layers/slope/lo/3-2-2", "layers/slope/hi/6-16-16", "layers/slope/hi/6-23-23"], &[]), "slope", &ts("3/2/2")).is_ok());
+        // Part of a lease's targets (a job paused at a safe point, or stopped): those it did, and
+        // only their files.
+        let two = vec![("3/2/2".to_string(), "k".to_string()), ("3/3/2".to_string(), "k".to_string())];
+        assert!(check_handoff(&h("slope", "3/2/2", &["layers/slope/lo/3-2-2"], &[]), "slope", &two).is_ok());
+        assert!(check_handoff(&h("slope", "3/2/2", &["layers/slope/lo/3-2-2", "layers/slope/lo/3-3-2"], &[]), "slope", &two).is_err(), "a file of a target it didn't do");
         assert!(check_handoff(&h("slope", "3/2/2", &["layers/slope/hi/6-24-16"], &[]), "slope", &ts("3/2/2")).is_err());
         assert!(check_handoff(&h("slope", "3/2/2", &["layers/terrain/hi/6-16-16"], &[]), "slope", &ts("3/2/2")).is_err());
         assert!(check_handoff(&h("trees", "3/2/2", &["layers/trees-leaf/hi/6-17-17", "layers/trees-cover/lo/3-2-2"], &[]), "trees", &ts("3/2/2")).is_ok());

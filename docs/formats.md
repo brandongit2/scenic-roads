@@ -468,8 +468,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     progress}]}`: the jobs' leases), `costs.json` (`{unit: {peak_mb, secs}}`, `"<step> <target>"` for
     another shared step's job, and `"tail <unit>"` for a unit's last steps as a task),
     `journal/<worker>/` (the hand-offs taken, as below; `journal/raw-tiles/`, raw tiles' archives to
-    name on their own), `tasks/<id>/` (a task's uploads), `pause.json` (the build's pause while it's
-    paused: `{mode: "drain" | "freeze", by, at}`, `pipeline::control::Pause`);
+    name on their own), `tasks/<id>/` (a task's uploads), `pause.json` (the build's pause:
+    `{pause: {mode: "drain" | "freeze", by, at} or null, at}`, `pipeline::control::Pause`, `at` when
+    it last changed);
     `costs.jsonl` (what a shared step's job took, `SCENIC_COSTS`: a JSON line per target, `{unit,
     peak_mb, secs}`, `unit` the target for a unit, else "<step> <target>"; `peak_mb` the most the
     job's processes held together during that target, sampled).
@@ -485,8 +486,9 @@ class, id) within a tile. The client sends the id with the clicked point.
     pause as the agent last knew it), `control` (the running job's channel: `run` or `drain`,
     `SCENIC_CONTROL`) and `done.txt` (the targets it finished, `<step> <target>` a line,
     `SCENIC_DONE`). A job that stopped at a safe point exits 75. The coordinator's answers carry the
-    pause: an ask refused (409) `{error, pause}`, a beat `{ok, pause}`; `POST /work/pause {pause}`
-    passes a Mac's ask on; `/work/fail {…, interrupted}` gives a lease back unheld.
+    pause: an ask refused (409) `{error, pause}`, a beat `{ok, pause}`; `POST /work/pause {pause, at}`
+    passes a Mac's ask on (one older than the last change is passed over); a helper's leased job
+    keeps `work.json` (its step and targets) and `done.txt` in its outbox folder; `/work/fail {…, interrupted}` gives a lease back unheld.
     `state/build/pause.json` on the NAS mirrors the build Mac's.
   - A hand-off (`pipeline::handoff`): JSON `{changes: {logical: content name, or null when removed},
     pending: {content name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] or
