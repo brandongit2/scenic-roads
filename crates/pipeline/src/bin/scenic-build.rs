@@ -38,6 +38,8 @@
 //!                                Overture's release, in z8 tiles, onto the NAS with their index
 //!   trees <Q …> [--pass d] [--dem dir] [--chm dir]  the tree cover layers of z3 tiles Q
 //!                                (pipeline::treepacks), clipped to the coverage
+//!   trees-coverage <Q> --out <file> [--pass d]  the coverage the trees program reads for z3 tile
+//!                                Q (its cov.json), to run it by hand; nothing written to the NAS
 //!   reach [--pass d] [U …]       every unit's reach (pipeline::reach): the boxes of its piece's
 //!                                roads, rail and ferries, owned and all (units named: printed,
 //!                                nothing written)
