@@ -165,7 +165,7 @@ sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, 
                (Overture's building boxes for the world, in z8 tiles, and their index), trees/
                (leaf/: the leaf-type squares; NALCMS's GeoTIFF), canopy/ (Meta's canopy squares),
                aws-terrarium/ (AWS's raw terrain tiles), fabdem/ (FABDEM's 1° tiles), rail/ (the
-               rail feeds: the catalogue, their zips, the MTR's lines; §6), terrain-z8-v1, legacy/
+               rail feeds: the catalogue, their zips, the MTR's lines; §6), terrain-z8-v2, legacy/
                (today's map's build inputs, until the cutover)
 base/          base packs, one per unit
 hidata/        per z6 tile: the ways-here index, query parts, climbs, rail lines, zoomed-out summaries
@@ -775,14 +775,28 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   - **The root (z0–2):** from the lo packs.
   - **Source:** always AWS's raw tiles, each downloaded once (64 at a time) into the build Mac's
     cache and packed onto the NAS (`sources/aws-terrarium/packs/`: §3 Downloads), which fills the
-    cache when it lacks one; repaired by `repair_terrain`.
-    Processing a processed tile isn't idempotent, so stored tiles are never inputs.
-  - **Below zero:** values are clamped to 0. Planned: a sea mask from the pass's water polygons, so
-    that polders and depressions keep their depth.
+    cache when it lacks one.
+  - **Repair** (`roadcore::grid::repair_terrain`, README "Terrain repair"): one pass that takes what
+    is broken or undefined and nothing else. Voids are filled; a tower or a pit is a blob of the
+    tile's component tree, taken whole and weighed against the ground it meets: broken when it
+    stands out more than 100 m, steeper over its footprint than terrain can be and towering over the
+    ground around it; small walled spikes on flat ground or beside a blob taken (ringing) go too.
+    Each stage judges the tile with what was found filled in, until one finds nothing (eight at
+    most), so its own output has nothing left to repair (`terrain --scan` checks it: §10, phase 7).
+    It reads AWS's values, bathymetry and all, so stored tiles (at sea level) are never inputs.
+  - **AWS's Arctic tiles** (z10 and z11 north of about 60°) have their sea surface 9 to 20 m up (on
+    the ellipsoid), blocks of cloud over the sea, and voids its coarse layer fills at sea level (a
+    flat 1 m, or the sea floor): Hans Island's top is such a hole, down to 1 m and −181 m inside a
+    rim 10–51 m high, across two z10 tiles, and the coarse levels show the island as a flat 1 m. The
+    repair takes the blocks and the holes that stand out more than 100 m as broken blobs; Hans
+    Island's hole, at most 51 m below its rim, stays. Planned: a DEM for the Arctic without them
+    (§10, phase 7).
+  - **Below zero:** values are clamped to 0, after the repair. Planned: a sea mask from the pass's
+    water polygons, so that polders and depressions keep their depth.
   - Deterministic: reruns give identical packs.
 - **Slope:** z11 and coarser are stored, from transient z12 Horn slope. The server makes z12 on
   demand with the same encoder and an LRU (56 % of the full archive).
-- **Worldwide z8 terrain** (`sources/terrain-z8-v1`, once, not served): every z8 tile, repaired, with
+- **Worldwide z8 terrain** (`sources/terrain-z8-v2`, once, not served): every z8 tile, repaired, with
   each tile's maximum. Peaks read it, so their prominence and isolation don't depend on coverage.
 - **Grids (z11):** land cover, canopy and cover, for analysis only (not served).
   - Each unit's job makes the grid tiles its packs lack: `landcover --only`, and the scenic canopy
@@ -2175,21 +2189,22 @@ At each phase's end an Opus agent reviews the work against this plan.
       and the whole layer files the map fetches by name (`/api/layer/…`: ferries, stations,
       overlays) where the overlays job has no copy of its own (`global/heritage/`).
 7. **Features,** each on its own.
-   - Built: the first terrain repair (`roadcore::grid::repair_terrain`, one pass in the terrain job:
-     voids filled, towers and spikes flattened, summits and ridges kept, with tests; §6). It judges
-     a pixel against a ring around it and its neighbours, so inside a cluster of bad pixels a pass
-     clears only the outer layer: wider clusters' inner parts stay on the map.
-   - Planned: the new terrain repair, one pass that clears whole clusters (a reference surface at
-     two scales, each flagged pixel grown into its blob, blobs and voids filled from the clean
-     ground around them, a cap on a blob's size), so that repairing its own output changes nothing;
-     terrain still made from AWS's tiles and the code alone.
+   - Built: the terrain repair (`roadcore::grid::repair_terrain`, in the terrain job and the
+     worldwide z8: §6, README "Terrain repair"). One pass that takes broken towers and pits whole,
+     as blobs of the tile's component tree judged against the ground they meet, fills them and the
+     voids from the clean ground around them, and leaves real relief; repairing its own output
+     changes nothing. Terrain is still made from AWS's tiles and the code alone.
+   - Planned: the repair's check over the whole coverage before the packs are made with it
+     (`terrain --scan`: its output repaired again unchanged; the sharpest summits and OSM's summits
+     with a height unchanged; what the first repair left that it takes).
    - Under way: 3D buildings (`docs/buildings3d.md`: its sources on the NAS; B1 done, the steps
      built and piloted by hand on six z6 tiles, the layer and the map's side built, measured on the
      iPad; B2, the agent running them for every tile as a fourth chain, the mirror's group, the
      iPad's budget and the credits, published 2026-10-08, the tiles building; B3's sharing with
      pages and the map's polish built, not yet published), then PLATEAU.
    - Planned: building heights in horizons and the viewshed tool; sharper terrain from national
-     DEMs.
+     DEMs, and for the Arctic a DEM without AWS's voids filled at sea level (Hans Island's top: §6,
+     Terrain).
 8. **Builds anywhere: under way** (`docs/workers.md`). Done: the crates build for WebAssembly; one
    maths library on every target (outputs identical natively at any thread count and under WASI);
    the data plane's SSD copies and prefetch; the coordinator (leases, hand-offs over HTTP, learned
@@ -2388,8 +2403,18 @@ At each phase's end an Opus agent reviews the work against this plan.
   against 60 MB/s on the LAN.
 - **The cut is a depth-first quad tree,** four outputs per run. osmium's id sets need about 4 GB per
   output.
-- **Terrain and slope per z3 pack, always from AWS's raw tiles.** Repairing a repaired tile isn't
-  idempotent.
+- **Terrain and slope per z3 pack, always from AWS's raw tiles.** The repair reads AWS's own
+  values, bathymetry and all (stored tiles are at sea level), and the same raw tiles give the same
+  bytes.
+- **The terrain repair weighs blobs, not pixels** (2026-10-06). The first repair judged each pixel
+  against a ring two to three pixels out, so a cluster's inner pixels hid behind its outer ones and
+  a pass took only the outer layer (on 1 October a third pass still changed 304 tiles, by up to
+  2,466 m). Repeating it until nothing changed was turned down as crude. Each tower or pit is now a
+  component of the tile's level sets, taken whole whatever its size and judged against the ground
+  it meets; a stage after the first only judges what the first revealed (a lesser tower that stood
+  on a greater one's flank, a lobe of its ringing) on the tile with what was found filled in. What's
+  broken is judged by steepness and by context (it towers over flat ground), so a summit AWS drew
+  too sharp, among rough ground, stays.
 - **base(U) runs today's steps on a unit-sized folder,** staged from the build manifest. The pilot
   matched today's data.
 - **Landmarks, stations and ferries have jobs of their own,** and pack(T) writes no landmark tiles

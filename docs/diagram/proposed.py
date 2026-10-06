@@ -128,7 +128,7 @@ def build(check=False):
     n_slope = d.card('terr', 'd2', cy + 34, 'slope', 'Rust', ['Horn at z12, kept to z11;', 'each pixel 4 quarter means'],
                      [(['layers/slope/'], 'packs · PNG')], scope='pack', shared=True)
     n_z8 = d.card('terr', 'd2', n_slope.b + 22, 'z8 terrain', 'Rust', ['every z8 tile, repaired,', 'for peaks (not served)'],
-                  [(['sources/terrain-z8-v1'], 'one pack')], scope='global')
+                  [(['sources/terrain-z8-v2'], 'one pack')], scope='global')
     p_t = d.pill('terr', cy + 12, ['/tiles/terrain'], note='the pack for the tile')
     b_terr = d.layer('terr', 0, '3D terrain · hill-shading', ['elevation tint'], cy=p_t.my)
     b_cont = d.layer('terr', b_terr.b + 8, 'Contour lines', ['traced from terrain tiles'], computed=True)
