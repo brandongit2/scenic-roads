@@ -1,7 +1,7 @@
 // 3D buildings (docs/buildings3d.md §4): every building of the coverage extruded to its height on
 // the 3D terrain by MapLibre's fill-extrusion, from the z12–14 tiles of /tiles/buildings (layer `b`:
 // h top and m base in dm, s where the height comes from, f floors, c kind, k 1 a part / 2 an outline
-// with parts; crates/pipeline/src/bld). MapLibre stands each building on the terrain at its
+// with parts, o 1 a copy for the flat footprints; crates/pipeline/src/bld). MapLibre stands each building on the terrain at its
 // centroid, a base of 0 sunk 10 m so it doesn't float on a slope.
 //
 // A source and three layers: `buildings` (fill-extrusion: the parts, and the buildings without
@@ -88,14 +88,17 @@ export function heightLegend(): [number, string][] {
 const metres = (prop: 'h' | 'm', k: number): ExpressionSpecification => ['*', ['/', ['coalesce', ['get', prop], 0], 10], k];
 
 /** The extruded layer's filter: parts and buildings without parts (an outline with parts is drawn
- * by them), and only the skyline when asked. */
-function extrudedFilter(skyline: boolean): FilterSpecification {
+ * by them), not the copies (`o`: a building reaching into a tile next to its own is copied there,
+ * whole, for the flat footprints, which are cut at their tile's edge), and only the skyline when
+ * asked. The pick layer's takes the copies too: a building is found from the tile it reaches into. */
+function extrudedFilter(skyline: boolean, copies = false): FilterSpecification {
   const f: unknown[] = ['all', ['!=', ['coalesce', ['get', 'k'], 0], 2]];
+  if (!copies) f.push(['!', ['has', 'o']]);
   if (skyline) f.push(['>=', ['get', 'h'], SKYLINE_DM]);
   return f as FilterSpecification;
 }
 
-/** The flat layer's filter: footprints (buildings and outlines, not parts). */
+/** The flat layer's filter: footprints (buildings and outlines, not parts; copies too). */
 function flatFilter(skyline: boolean): FilterSpecification {
   const f: unknown[] = ['all', ['!=', ['coalesce', ['get', 'k'], 0], 1]];
   if (skyline) f.push(['>=', ['get', 'h'], SKYLINE_DM]);
@@ -114,7 +117,7 @@ export function addBuildings(map: MLMap, before: string, flatBefore: string) {
     paint: { 'fill-color': PLAIN, 'fill-opacity': 0.55, 'fill-outline-color': 'rgba(20,24,30,0.6)' },
   }, flatBefore);
   map.addLayer({
-    id: PICK, type: 'fill', source: SOURCE, 'source-layer': 'b', minzoom: 12, filter: extrudedFilter(false),
+    id: PICK, type: 'fill', source: SOURCE, 'source-layer': 'b', minzoom: 12, filter: extrudedFilter(false, true),
     paint: { 'fill-color': '#000000', 'fill-opacity': 0 },
   }, flatBefore);
   map.addLayer({
@@ -147,7 +150,7 @@ export function applyBuildings(map: MLMap, b: BuildingState, exaggeration: numbe
   map.setPaintProperty(LAYER, 'fill-extrusion-height', metres('h', k));
   map.setPaintProperty(LAYER, 'fill-extrusion-base', metres('m', k));
   map.setFilter(LAYER, extrudedFilter(b.skyline));
-  map.setFilter(PICK, extrudedFilter(b.skyline));
+  map.setFilter(PICK, extrudedFilter(b.skyline, true));
   map.setFilter(FLAT, flatFilter(b.skyline));
   // Lit from the hill-shading's light, low, so the roofs are a little brighter than the walls.
   map.setLight({ anchor: 'map', position: [1.5, ((light % 360) + 360) % 360, 40], intensity: 0.35, color: '#ffffff' });

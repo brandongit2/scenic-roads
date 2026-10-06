@@ -8,7 +8,10 @@
 //!   the first outline holding it, else the first buffer reaching it), else its first vertex's
 //!   with one (`Shape::country`; the coverage's fits where it's unknown).
 //! - **The neighbours' rule** reads every building of the area's blocks and of the blocks within
-//!   310 m around it, from T's file and its 8 neighbours', in the coverage or not.
+//!   620 m around it, from T's file and its 8 neighbours', in the coverage or not.
+//! - **Copies:** a building reaching into tiles of the area other than its own is copied into
+//!   them (`tiles`: for the flat footprints), from the area itself or from 310 m around it; the
+//!   latter filled here as their own area fills them (their 300 m all read).
 //! - **Zooms:** z14 every building and part; z13 those 20 m tall or more, or with a footprint of
 //!   2,000 m² or more; z12 those 40 m tall or more.
 //! - Pure: the pack is a function of the work files' bytes and the coverage over T (its shapes and
@@ -26,8 +29,12 @@ use det::Det;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
 
-/// How far beyond an area the neighbours' rule reads, ground metres.
-const MARGIN_M: f64 = 310.0;
+/// How far beyond an area a building is copied into the area's tiles from (its centroid), ground
+/// metres: one reaching further into them isn't copied (its flat footprint cut at the edge).
+const COPY_M: f64 = 310.0;
+/// How far beyond an area its blocks are read, ground metres: the buildings within [`COPY_M`] are
+/// filled as their own area fills them, the neighbours' rule reading 300 m around each.
+const MARGIN_M: f64 = COPY_M + fill::FAR_M + 10.0;
 
 /// What a run made.
 #[derive(Clone, Debug, Default, serde::Serialize)]
@@ -42,6 +49,8 @@ pub struct Summary {
     pub tiles: [u64; 3],
     pub bytes: [u64; 3],
     pub features: [u64; 3],
+    /// The copies made for the flat footprints (in `features` too).
+    pub copies: u64,
     /// The heaviest tiles (z/x/y, gzip'd bytes, features), heaviest first; the fullest likewise.
     pub heaviest: Vec<(String, u32, u32)>,
     pub fullest: Vec<(String, u32, u32)>,
@@ -105,15 +114,11 @@ fn area_blocks(files: &[Option<WorkFile>], t: Unit, a: (u32, u32)) -> (Vec<(usiz
     }).map(|e| (4, *e)).collect());
     let n_own = own.len();
     let mut out = own;
-    // The area's box grown by the margin, in world units (at its latitude furthest from the equator).
-    let b = tile_box_deg(8, a.0, a.1);
-    let cos = b[1].abs().max(b[3].abs()).min(85.0).to_radians().dcos();
-    let g = MARGIN_M / (EQ * cos);
-    let (w0, w1) = (a.0 as f64 / 256.0 - g, (a.0 + 1) as f64 / 256.0 + g);
-    let (h0, h1) = (a.1 as f64 / 256.0 - g, (a.1 + 1) as f64 / 256.0 + g);
+    // The area's box grown by the margin, in world units.
+    let g = grown_area(a, MARGIN_M);
     let c = |v: f64| (v * 16384.0).floor().clamp(0.0, 16383.0) as u32;
-    for y in c(h0)..=c(h1) {
-        for x in c(w0)..=c(w1) {
+    for y in c(g[1])..=c(g[3]) {
+        for x in c(g[0])..=c(g[2]) {
             if (x >> 6, y >> 6) == a {
                 continue;
             }
@@ -161,13 +166,36 @@ pub fn tiles_of(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, add: &mut A
         crate::agent::jobs::report(k as u64, areas.len() as u64, "z8 areas done");
         let (list, n_own) = area_blocks(files, t, a);
         let blocks: Vec<Block> = list.par_iter().map(|(fi, e)| files[*fi].as_ref().unwrap().block(e)).collect::<Result<_>>()?;
-        // The own records' shapes (None: not touching the coverage).
-        let shapes: Vec<Vec<Option<usize>>> = blocks[..n_own]
+        // The records filled here: the area's own, and those within COPY_M around it (copied into
+        // its tiles where they reach them).
+        let reach = grown_area(a, COPY_M);
+        let filled_here: Vec<Vec<bool>> = blocks
             .par_iter()
-            .zip(&list[..n_own])
-            .map(|(b, (_, e))| match cov.box_shape(box14(e.key)) {
-                Some(s) => vec![Some(s); b.len()],
-                None => (0..b.len()).map(|i| shape_of(cov, b, i)).collect(),
+            .enumerate()
+            .map(|(bi, b)| {
+                (0..b.len())
+                    .map(|i| {
+                        bi < n_own || {
+                            let (wx, wy) = world7(b.cen[i]);
+                            wx >= reach[0] && wx <= reach[2] && wy >= reach[1] && wy <= reach[3]
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+        // Their shapes (None: not touching the coverage, or not filled here).
+        let shapes: Vec<Vec<Option<usize>>> = blocks
+            .par_iter()
+            .zip(&list)
+            .zip(&filled_here)
+            .map(|((b, (_, e)), here)| {
+                if !here.iter().any(|&h| h) {
+                    return vec![None; b.len()];
+                }
+                match cov.box_shape(box14(e.key)) {
+                    Some(s) => here.iter().map(|&h| h.then_some(s)).collect(),
+                    None => (0..b.len()).map(|i| if here[i] { shape_of(cov, b, i) } else { None }).collect(),
+                }
             })
             .collect();
         // Rules 0–2 for every building read.
@@ -188,7 +216,7 @@ pub fn tiles_of(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, add: &mut A
                         if taken && !is_est {
                             Some((h, src::MEASURED))
                         } else if (1..=fill::F_MAX).contains(&f) {
-                            let s = if bi < n_own { shapes[bi][i] } else { shape_of(cov, b, i) };
+                            let s = if filled_here[bi][i] { shapes[bi][i] } else { shape_of(cov, b, i) };
                             Some((fill::floors_dm(f, fill::storey(country(cov, s))), src::FLOORS))
                         } else if taken {
                             Some((h, src::MICROSOFT))
@@ -210,10 +238,11 @@ pub fn tiles_of(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, add: &mut A
         }
         let bb = tile_box_deg(8, a.0, a.1);
         let near = Near::new(pts, (bb[1].abs().max(bb[3].abs()) + 0.05).min(85.0).to_radians().dcos());
-        // The own records filled.
-        let filled: Vec<Vec<Option<Filled>>> = blocks[..n_own]
+        // The records filled here, filled (a record within COPY_M of the area has every building
+        // within 300 m of it read: the same as its own area makes it).
+        let filled: Vec<Vec<Option<Filled>>> = blocks
             .par_iter()
-            .zip(&list[..n_own])
+            .zip(&list)
             .enumerate()
             .map(|(bi, (b, (fi, _)))| {
                 let cd = codes[*fi].as_ref().unwrap();
@@ -245,23 +274,30 @@ pub fn tiles_of(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, add: &mut A
                     .collect()
             })
             .collect();
-        // The area's tiles.
+        // The area's tiles: its own records, in the tiles of their centroids; and the copies, for
+        // the flat footprints, of every building filled here into the area's tiles it reaches.
         let mut by_tile: BTreeMap<(u8, u32, u32), Vec<Feat>> = BTreeMap::new();
-        for (bi, (b, (_, e))) in blocks[..n_own].iter().zip(&list[..n_own]).enumerate() {
+        for (bi, (b, (_, e))) in blocks.iter().zip(&list).enumerate() {
             let (_, x, y) = key_zxy(e.key);
             for (i, fl) in filled[bi].iter().enumerate() {
+                let own = bi < n_own;
                 let Some(fl) = fl else {
-                    sum.outside += 1;
+                    if own {
+                        sum.outside += 1;
+                    }
                     continue;
                 };
-                if fl.k == 1 {
-                    sum.parts += 1;
-                } else {
-                    sum.buildings += 1;
-                    sum.by_src[fl.s as usize] += 1;
+                if own {
+                    if fl.k == 1 {
+                        sum.parts += 1;
+                    } else {
+                        sum.buildings += 1;
+                        sum.by_src[fl.s as usize] += 1;
+                    }
                 }
-                let feat = || Feat {
-                    polys: b.polygons(i).map(|p| p.collect()).collect(),
+                let polys: Vec<Vec<&[[i32; 2]]>> = b.polygons(i).map(|p| p.collect()).collect();
+                let feat = |copy: bool| Feat {
+                    polys: polys.clone(),
                     cen: b.cen[i],
                     order: (e.key, i as u32),
                     h: fl.h,
@@ -270,13 +306,30 @@ pub fn tiles_of(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, add: &mut A
                     f: fl.f,
                     c: fl.c,
                     k: fl.k,
+                    copy,
                 };
-                by_tile.entry((14, x, y)).or_default().push(feat());
-                if fl.h >= 200 || b.area[i] >= 2000.0 {
-                    by_tile.entry((13, x >> 1, y >> 1)).or_default().push(feat());
-                }
-                if fl.h >= 400 {
-                    by_tile.entry((12, x >> 2, y >> 2)).or_default().push(feat());
+                for z in [14u8, 13, 12] {
+                    let drawn = match z {
+                        14 => true,
+                        13 => fl.h >= 200 || b.area[i] >= 2000.0,
+                        _ => fl.h >= 400,
+                    };
+                    if !drawn {
+                        continue;
+                    }
+                    let tile = (x >> (14 - z), y >> (14 - z));
+                    if own {
+                        by_tile.entry((z, tile.0, tile.1)).or_default().push(feat(false));
+                    }
+                    if fl.k == 1 {
+                        continue; // (parts aren't drawn flat)
+                    }
+                    for (tx, ty) in tiles::reached(&polys, z, tile) {
+                        if (tx >> (z - 8), ty >> (z - 8)) == a {
+                            by_tile.entry((z, tx, ty)).or_default().push(feat(true));
+                            sum.copies += 1;
+                        }
+                    }
                 }
             }
         }
@@ -291,6 +344,15 @@ pub fn tiles_of(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, add: &mut A
     }
     crate::agent::jobs::report(areas.len() as u64, areas.len() as u64, "z8 areas done");
     Ok(sum)
+}
+
+/// Area `a`'s box (a z8 tile) grown by `m` ground metres (at its latitude furthest from the
+/// equator), in world units: w, n, e, s (y grows southward).
+fn grown_area(a: (u32, u32), m: f64) -> [f64; 4] {
+    let b = tile_box_deg(8, a.0, a.1);
+    let cos = b[1].abs().max(b[3].abs()).min(85.0).to_radians().dcos();
+    let g = m / (EQ * cos);
+    [a.0 as f64 / 256.0 - g, a.1 as f64 / 256.0 - g, (a.0 + 1) as f64 / 256.0 + g, (a.1 + 1) as f64 / 256.0 + g]
 }
 
 /// T and its 8 neighbours' work files ((dy + 1) × 3 + dx + 1), from the build's records.
@@ -418,6 +480,8 @@ mod tests {
         assert!(hs.contains(&(120, 3)), "{hs:?}");
         assert!(hs.contains(&(70, 5)), "{hs:?}");
         assert!(hs.contains(&(fill::floors_dm(6, fill::storey("FR")) as u64, 1)));
+        // Two houses (k 3 and 8) reach past their tile's east edge (lon 2.35107): copied.
+        assert_eq!(sum.copies, 2);
         // The same bytes on one thread.
         let pool = rayon::ThreadPoolBuilder::new().num_threads(1).build().unwrap();
         let mut again: Vec<(u8, u32, u32, Vec<u8>, u32)> = Vec::new();
@@ -427,5 +491,57 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(again, got);
+    }
+
+    /// A tile's features: (h, s, o) each.
+    fn props(gz: &[u8]) -> Vec<(u64, u64, u64)> {
+        let t = names::mvt::Tile::decode(&names::mvt::gunzip_if_gzip(gz).unwrap()).unwrap();
+        let l = &t.layers[0];
+        l.features
+            .iter()
+            .map(|f| {
+                let get = |k: &str| f.tags.chunks(2).find(|kv| l.keys[kv[0] as usize] == k).map_or(0, |kv| match l.values[kv[1] as usize] { names::mvt::Value::Uint(v) => v, _ => 0 });
+                (get("h"), get("s"), get("o"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn copies_for_the_flat_footprints() {
+        // In 6/32/22, a building across the line between z14 tiles 8297 and 8298 (lon 2.3291…),
+        // filled by the neighbours' rule (ten measured houses around it), and one across a z8
+        // area's edge (lon 2.8125, between areas 129 and 130): each in its centroid's tile, and a
+        // copy in the other, the same but for o.
+        let t = Unit { z: 6, x: 32, y: 22 };
+        let d = tempfile::tempdir().unwrap();
+        let line = crate::bld::tile_box_deg(14, 8298, 5634)[0];
+        let lat = 48.86;
+        let mut bs = vec![B { id: 1, rings: vec![square(line - 0.0001, lat, 0.0003)], ..Default::default() }];
+        for k in 0..10 {
+            bs.push(B { id: 10 + k, rings: vec![square(line + 0.0008 + 0.0003 * (k % 5) as f64, lat + 0.0003 * (k / 5) as f64, 0.0002)], height: 12.0, ..Default::default() });
+        }
+        let edge = crate::bld::tile_box_deg(8, 130, 88)[0];
+        bs.push(B { id: 2, rings: vec![square(edge - 0.0001, lat, 0.0003)], height: 30.0, ..Default::default() });
+        let mut files: Vec<Option<WorkFile>> = (0..9).map(|_| None).collect();
+        files[4] = Some(work(d.path(), t, &bs));
+        let c = cov("place:2.5,48.86,40", "FR");
+        let mut got: BTreeMap<(u8, u32, u32), Vec<(u64, u64, u64)>> = BTreeMap::new();
+        let sum = tiles_of(&files, &c, t, &mut |z, x, y, gz, _| {
+            got.insert((z, x, y), props(gz));
+            Ok(())
+        })
+        .unwrap();
+        // A copy of each at z14, and of the 30 m one at z13 (the other isn't drawn there).
+        assert_eq!(sum.copies, 3, "{got:?}");
+        let (x0, y0) = crate::bld::tile_of(crate::bld::world(line + 0.00005, lat + 0.00015), 14);
+        let own = &got[&(14, x0, y0)];
+        let copy = &got[&(14, x0 - 1, y0)];
+        assert!(own.contains(&(120, 3, 0)), "{own:?}");
+        assert_eq!(copy, &vec![(120, 3, 1)]);
+        let (x1, y1) = crate::bld::tile_of(crate::bld::world(edge + 0.00005, lat + 0.00015), 14);
+        assert_eq!(got[&(14, x1, y1)], vec![(300, 0, 0)]);
+        assert_eq!(got[&(14, x1 - 1, y1)], vec![(300, 0, 1)], "copied across the areas' edge");
+        assert_eq!(got[&(13, x1 / 2, y1 / 2)], vec![(300, 0, 0)]);
+        assert_eq!(got[&(13, x1 / 2 - 1, y1 / 2)], vec![(300, 0, 1)]);
     }
 }

@@ -361,9 +361,11 @@ next pinned release (§5.2).
   every number that ends up in a file is computed in Rust. Reads ~60 GB over all tiles, once per
   release.
 - **`bldtiles T`**, per z6 tile meeting the coverage, a z8 area at a time (`pipeline::bld::job`):
-  the buildings of T that touch the coverage, heights filled (§2.3, `pipeline::bld::fill`; the
-  neighbours' rule reads the buildings within 310 m beyond the area, T's or its neighbours', by
-  their z14 blocks), the z12–14 tiles encoded (§3.4, `pipeline::bld::tiles`), the hi pack written.
+  the buildings of T that touch the coverage, heights filled (§2.3, `pipeline::bld::fill`; it reads
+  the buildings within 620 m beyond the area, T's or its neighbours', by their z14 blocks), the
+  z12–14 tiles encoded (§3.4, `pipeline::bld::tiles`), the hi pack written. A building within 310 m
+  beyond the area that reaches into its tiles is filled there too, the same as its own area fills
+  it (every building within 300 m of it read), for its copies (§3.4).
   Pure: its output is a function of its inputs' bytes. A z6 tile with no building in the coverage
   loses its pack.
 
@@ -373,8 +375,10 @@ don't change, and no unit's key reads them.
 ### 3.2 Keys and versions
 
 In `agent::build`, beside the others (B2):
-- `BLDPREP_V = 1`, `BUILDINGS_V = 1` (the fill's rules, fits and defaults, and the tiles, are in
-  `BUILDINGS_V`): defined in `pipeline::bld` (B1), as `TREES_V` is in `pipeline::treepacks`.
+- `BLDPREP_V = 2`, `BUILDINGS_V = 2` (the fill's rules, fits and defaults, and the tiles, are in
+  `BUILDINGS_V`; both 2 since B1's review: an outline whose parts are all underground is no longer
+  flagged as having parts; rule 3's bound, the copies, the walls): defined in `pipeline::bld` (B1),
+  as `TREES_V` is in `pipeline::treepacks`.
 - `Keys` gains `bldprep` and `buildings`, maps by z6 tile as `unit` and `pack` are; `Keys::map`,
   `recorded` and `record` take them, and a prune forgets them ("bldprep 6/x/y", "buildings 6/x/y").
 - **`bldprep T`'s key:** `bldprep {BLDPREP_V}`, the release, and for each downloaded file with a row
@@ -441,15 +445,29 @@ manifest; a work file, not served; docs/formats.md has the bytes). Meta `{"fmt":
 
 **Tiles** (MVT 2.1, gzip'd, extent 4096, layer `b`):
 - One feature a building or part: its polygon(s), outer rings and holes, **whole, in the tile
-  holding its centroid** (not clipped: a building is in one tile, its coordinates may run past the
-  extent). MapLibre's extrusion then has one centroid a building, so no step at a tile edge on a
-  slope, and nothing is drawn twice.
+  holding its centroid** (not clipped: its coordinates may run past the extent). MapLibre's
+  extrusion then has one centroid a building, so no step at a tile edge on a slope, and nothing is
+  drawn twice; the map keeps the z14 tiles whole above z14 (§4.1).
+- **Copies for the flat footprints:** a building reaching into other tiles of its zoom is copied,
+  whole, into each (`o` 1), from up to 310 m beyond a z8 area's edge. A fill is cut at its tile's
+  edge, so the flat footprints of a building past its tile were cut on the tile line; the
+  extruded layer leaves the copies out, the flat and pick layers take them. B1's pilot: 1.1–1.6 %
+  more features, 1.6–2.3 % more bytes.
+- **No edge parallel to an axis beyond the extent:** MapLibre's extrusion takes such an edge for a
+  clipped tile's cut and draws no wall on it (`isBoundaryEdge`), and in whole buildings they're
+  walls: 0.12–1 % of buildings lost one in B1's first packs. Such an edge gets points between its
+  ends, every other one a unit further out: at MapLibre's subdivision lines (every 2,048 units on
+  the globe, where it cuts edges and rounds the cuts) and midway; a unit-long one a point a unit
+  out; a slanted edge out there a point at each line, where rounding would have made a piece
+  parallel. Its ends stay. Left in B1's rebuilt packs: none on the flat map, 5–8 features in a
+  sampled million on the globe (a cut's rounding elsewhere).
 - Quantized to the tile's grid (z14: 0.6 m at the equator); repeated points dropped, rings that
   collapse dropped; at z12–13, simplified to one grid unit.
 - Properties: `h` the top (dm), `m` the base (dm; parts; left out when 0), `s` the height's source
   (0–5, §2.3), `f` floors (when `s` is 1), `c` the kind (0 unknown, 1 residential, 2 outbuilding,
   3 commercial, 4 industrial, 5 religious, 6 civic, 7 agricultural, 8 transport, 9 other), `k` (1 a
-  part, 2 an outline with parts: drawn by the flat layer only). No feature ids, no names (B1).
+  part, 2 an outline with parts: drawn by the flat layer only), `o` (1 a copy). No feature ids, no
+  names (B1).
 - In a tile, features sorted by their centroid's Morton code, then id.
 - Encoded by `pipeline::bld` over `names::mvt`, not `vtgen`, which clips features at the tile's
   edges and simplifies at 3 units (1.8 m at z14: a house's corners). gzip level 6 (flate2).
@@ -487,7 +505,7 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
   first guesses, which B1's runs bear out: 1 GB + 120 B a building for `bldprep`, 0.5 GB + 150 B a
   building of its largest z8 area for `bldtiles`.
 - **Pages** (`docs/workers.md`): a `bldtiles` job offers its z8 areas as tasks, as a unit job offers
-  its tail. A task's files: the z8 area's blocks and the blocks within 300 m around it (cut from the
+  its tail. A task's files: the z8 area's blocks and the blocks within 620 m around it (cut from the
   work files on the Mac that runs the job), and the program `bldtile` (Rust, built for wasm32-wasi
   with the others, `/work/prog/bldtile.wasm`). It writes the area's z12–14 tiles (an RDTILES archive);
   the job assembles the pack. The densest z8 area (Tokyo's) is ~1–1.5 GB in memory, within the
@@ -533,11 +551,11 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
 
 **A source and four layers** (`web/src/buildings.ts`): the vector source `bld` (z12–14,
 `/tiles/buildings/…?v=`), the layer `buildings` (fill-extrusion: height `h / 10` × the scale, base
-`m / 10`, colour by the mode, vertical gradient on; parts and buildings without parts),
-`buildings-flat` (fill: buildings and outlines, not parts) for the flat mode, `buildings-pick`
-(fill at opacity 0, which MapLibre doesn't draw: the footprints the hover queries) and
-`buildings-hover` (a GeoJSON source's fill-extrusion: the hovered building, 1 m larger and taller,
-amber).
+`m / 10`, colour by the mode, vertical gradient on; parts and buildings without parts, not the
+copies), `buildings-flat` (fill: buildings and outlines, not parts; the copies too, so a footprint
+past its tile is drawn whole) for the flat mode, `buildings-pick` (fill at opacity 0, which MapLibre
+doesn't draw: the footprints the hover queries, copies too) and `buildings-hover` (a GeoJSON
+source's fill-extrusion: the hovered building, 1 m larger and taller, amber).
 
 ### 4.2 Where in the style
 
