@@ -266,16 +266,21 @@ impl Data {
         if let Some(m) = self.maps.lock().unwrap().get(content) {
             return Ok(Src::Local(m));
         }
-        if let Some(p) = self.mirror.as_ref().and_then(|m| m.local(content)) {
+        if let Some((mi, p)) = self.mirror.as_ref().and_then(|mi| Some((mi, mi.local(content)?))) {
             match std::fs::File::open(&p) {
                 Ok(f) => {
                     // SAFETY: mirrored files are content-named and never modified; eviction
                     // unlinks them (and `forget_evicted` drops the maps).
                     let m = Arc::new(unsafe { Mmap::map(&f)? });
-                    // Not kept when the mirror let the file go meanwhile (after `forget_evicted`):
-                    // the map would hold its room.
-                    if self.mirror.as_ref().is_some_and(|mi| mi.has(content)) {
+                    // Kept only while the mirror has the file: a map kept after it let the file go
+                    // would hold its room. An eviction drops the file from the mirror's list, then
+                    // what's cached of it (`forget_evicted`): asked again once cached, the list
+                    // has dropped it, or the cache's drop is still to come.
+                    if mi.has(content) {
                         self.maps.lock().unwrap().put(content.to_string(), m.clone());
+                        if !mi.has(content) {
+                            self.maps.lock().unwrap().retain(|c, _| c != content);
+                        }
                     }
                     return Ok(Src::Local(m));
                 }

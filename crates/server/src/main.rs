@@ -309,17 +309,10 @@ extern "C" fn on_stop(sig: libc::c_int) {
 }
 
 /// On SIGTERM, SIGINT or SIGHUP (the launcher passes them on: a stop, or a restart), writes the
-/// mirror's use times out, then exits, as the updater does before it exits for a new app.
+/// mirror's use times out, then exits, as the updater does before it exits for a new app. The
+/// handlers only note the signal for the thread that acts on it: without that thread they'd
+/// swallow it, so they're set only once it runs (else the signals keep their default action).
 fn exit_on_signals(data: Arc<data::Data>) {
-    for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
-        // SAFETY: a handler that only stores to an atomic, which is async-signal-safe.
-        unsafe {
-            let mut sa: libc::sigaction = std::mem::zeroed();
-            sa.sa_sigaction = on_stop as extern "C" fn(libc::c_int) as libc::sighandler_t;
-            libc::sigemptyset(&mut sa.sa_mask);
-            libc::sigaction(sig, &sa, std::ptr::null_mut());
-        }
-    }
     let watch = std::thread::Builder::new().name("signals".into()).spawn(move || loop {
         let sig = STOP.load(std::sync::atomic::Ordering::SeqCst);
         if sig != 0 {
@@ -334,7 +327,17 @@ fn exit_on_signals(data: Arc<data::Data>) {
         std::thread::sleep(std::time::Duration::from_millis(200));
     });
     if let Err(e) = watch {
-        eprintln!("signals: {e}");
+        eprintln!("signals: {e}: a stop won't write the mirror's use times out");
+        return;
+    }
+    for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+        // SAFETY: a handler that only stores to an atomic, which is async-signal-safe.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = on_stop as extern "C" fn(libc::c_int) as libc::sighandler_t;
+            libc::sigemptyset(&mut sa.sa_mask);
+            libc::sigaction(sig, &sa, std::ptr::null_mut());
+        }
     }
 }
 
