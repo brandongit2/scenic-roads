@@ -1,10 +1,10 @@
 # Scenic Roads
 
-An interactive dark-theme map of every car-accessible public road, and every passenger rail line, in the regions it's built for. Today's 34:
-- **Canada:** every province and territory;
-- **Saint-Pierre-et-Miquelon;**
-- **the northeastern US:** New York, Vermont, New Hampshire, Maine, Massachusetts, Connecticut, Rhode Island;
-- **Western Europe:** France, Monaco, Andorra, Spain, Portugal, Gibraltar, Great Britain, Ireland, the Isle of Man and the Channel Islands;
+An interactive dark-theme map of every car-accessible public road, and every passenger rail line, in the regions it's built for. Today's 88, each drawn from OpenStreetMap's boundaries:
+- **Canada:** every province and territory (13);
+- **the United States:** every state, the District of Columbia and Puerto Rico (52);
+- **Western Europe:** metropolitan France (with Corsica), Monaco, Andorra, Spain (with Ceuta and Melilla), the Canary Islands, mainland Portugal, the Azores, Madeira, Gibraltar, England, Scotland, Wales, Northern Ireland, Ireland, the Isle of Man, Guernsey and Jersey (17);
+- **France overseas:** Saint-Pierre-et-Miquelon and French Guiana;
 - **East Asia:** Japan, Taiwan, Hong Kong and Singapore.
 
 It is built for finding scenic drives and rides:
@@ -15,10 +15,10 @@ It is built for finding scenic drives and rides:
 
 **Using it.** The map runs on each Mac at http://localhost:8080: the published app (`tools/app/install.sh`), kept running by a launcher. Its data lives on the NAS.
 - The build Mac's agent (`scenic agent`) builds it from a worldwide OpenStreetMap download into packs listed by a catalog ("How it's built", below). Each Mac's server serves it and copies it locally as it can.
-- Regions are added and removed in Settings → Regions, or with `scenic add` and `scenic remove`. `scenic status`, the status bar and the menu bar item show what the build Mac is doing.
+- Regions are added and removed in Settings → Regions, or with `scenic add` and `scenic remove`. `scenic status`, the status bar, the menu bar item and the build page (the build Mac's `/work/`: the menu bar's Copy the Build Page's Address) show what the build Mac is doing; the menu bar item, the map's build panel, the build page and `scenic pause` / `scenic resume` pause and resume the whole build.
 - Translations and descriptions go in the NAS's `translations/` and `descriptions/` folders, and show within a minute or two, with nothing rebuilt.
 
-Roads are drawn as vectors by a custom WebGL2 layer. The design, its status and its gaps: `docs/plan.md`; the files: `docs/formats.md`; landmarks by view: `docs/phase5.md`.
+Roads are drawn as vectors by a custom WebGL2 layer. The design, its status and its gaps: `docs/plan.md`; the files: `docs/formats.md`; landmarks by view: `docs/phase5.md`; the build's workers: `docs/workers.md`; planned, any Mac leading the build: `docs/pool.md`, and 3D buildings: `docs/buildings3d.md`.
 
 ## Finding scenic drives
 
@@ -181,7 +181,7 @@ Roads are drawn as vectors by a custom WebGL2 layer. The design, its status and 
 | Road & rail elevation, North America | NRCan **HRDEM** lidar (8 m overview) → USGS **3DEP** 10 m → NRCan **MRDEM** 30 m | OGL–Canada / public domain |
 | Road & rail elevation, Japan | GSI elevation tiles (地理院タイル 標高タイル, Geospatial Information Authority of Japan), per pixel in GSI's order: DEM1A / DEM5A airborne lidar, DEM5B / 5C photogrammetry, DEM10B; read at z15 (~4 m pixels) and z14 | GSI terms of use (Public Data License 1.0): "Created by editing GSI Tiles (elevation tiles (Fundamental Geospatial Data Digital Elevation Model))" |
 | Road & rail elevation, Taiwan | MOI 20 m DTM (內政部 2025年版全臺灣20公尺網格數值地形模型DTM資料: main island, Penghu, Kinmen; no Matsu). Hosted on tgos.tw, which answers 403 outside Taiwan, so it hasn't been downloaded and FABDEM serves. GeoTIFFs put in the NAS's `inputs/moi-dtm/` are used from then on: Taiwan's areas rebuild, sampling again what FABDEM gave | Open Government Data License 1.0 (attribution) |
-| Road & rail elevation, Europe, Hong Kong, Singapore | **FABDEM** v1-2 30 m (University of Bristol / Fathom; Hawker et al. 2022), Copernicus DEM with forests and buildings removed; each 1° tile copied once out of Bristol's zips onto the NAS (`sources/fabdem/`), then read from there | CC BY-NC-SA 4.0 (non-commercial; attribution text in © Credits) |
+| Road & rail elevation, Europe, French Guiana, Hong Kong, Singapore, and wherever the national DEMs above have none | **FABDEM** v1-2 30 m (University of Bristol / Fathom; Hawker et al. 2022), Copernicus DEM with forests and buildings removed; each 1° tile copied once out of Bristol's zips onto the NAS (`sources/fabdem/`), then read from there | CC BY-NC-SA 4.0 (non-commercial; attribution text in © Credits) |
 | 3D terrain, hill-shading, contours, analysis grid | Terrain Tiles (Terrarium) on AWS Open Data, repaired (see Terrain repair) | Mapzen / various open sources |
 | Tree canopy height & cover | Meta & WRI global canopy height (1 m, 10° aggregates: median, p95, cover > 5 m) | CC BY 4.0 |
 | Forest leaf type, Europe | Copernicus HRL Dominant Leaf Type 2018, 10 m (EEA image service; no Azores or Madeira data) | Copernicus free and open data policy |
@@ -228,7 +228,7 @@ Roads are drawn as vectors by a custom WebGL2 layer. The design, its status and 
 - **Applied when serving.** The server attaches a name's display, a main label and an optional sub line, to every tile and record it serves.
 - **The source:** translation tables in the NAS's `translations/` folder, which the server copies and compiles. A drop shows within a minute or two, with nothing rebuilt.
 - **The order:** the translation line for the name in its area's table, else the thing's own English as the sub line. A thing's own English is OSM's `name:en` (in Japan its romanised `name:ja-Latn`), or a heritage site's English (UNESCO's, or its English Wikipedia article's title).
-- **The tables:** nine areas (Japan, Taiwan, Hong Kong, Singapore, France, Iberia, the Azores and Madeira, North America, Britain and Ireland), each with a places table and a roads table. A name's area comes from where its thing is (`crates/names/src/area.rs`).
+- **The tables:** nine areas (Japan, Taiwan, Hong Kong, Singapore, France, Iberia, the Azores and Madeira, North America, Britain and Ireland), each with a places table and a roads table. A name's area comes from where its thing is (`crates/names/src/area.rs`). The areas reach as far as the coverage the tables were made for (Canada and the northeastern US, Britain and Ireland, France, Spain and Portugal with the Azores and Madeira, and East Asia's four); elsewhere (the rest of the US, the Canary Islands, French Guiana) a name shows its own English alone.
 - **Where the translations come from:** the translation work (`place-translations`): rules for the names' words, romanisation (Hepburn in Japan, Hanyu Pinyin in Taiwan, the Hong Kong government's), and Claude Haiku for the rest.
 - **Roads:** their own English is OSM's `name:en` where it isn't their name: each built unit's (`global/roaden/<u>`), and today's converted table (`global/legacy/road-en`).
 - **What changes next:** names are going to be read by language instead of by area, with to-do lists of what still lacks English (`docs/plan.md` §7).
@@ -285,7 +285,7 @@ On a stretch of sea used by several lines, lines to different ports add up (rout
 
 ## How it's built
 
-The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the map into the NAS, one job at a time, from a worldwide OpenStreetMap download twice a year. `docs/plan.md` has the design, the order and the job keys.
+The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the map into the NAS from a worldwide OpenStreetMap download twice a year, a region at a time (those the map lacks first, the fewest areas left first), two jobs at once: the plan's first, and beside it the trains' and the landmarks' steps that mostly wait on the network, else candidates, peaks, areas or slope. Other machines help through its coordinator (Machines, below). `docs/plan.md` has the design, the order and the job keys.
 
 1. **The OSM pass:**
    - the planet, filtered with `osmium`;
@@ -301,14 +301,14 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
      - Each channel is 255 × √(slope ÷ 400 %), so the gentle slopes most ground has get finer steps.
      - The rounding is carried from one channel to the next, so their mean keeps an eighth of a step.
      - The server makes z12 on demand.
-   - **Tree cover** (before the build Mac's areas; the M1's run meanwhile): cover, canopy height and leaf type, zoom 4–12, clipped to the coverage (the `trees` program, `pipeline::treepacks`), from Meta's canopy squares and the leaf-type squares (`dem/leaftype.py`, made whole where a square is missing or wasn't made whole).
+   - **Tree cover** (a region's before it's published): cover, canopy height and leaf type, zoom 4–12, clipped to the coverage (the `trees` program, `pipeline::treepacks`), from Meta's canopy squares and the leaf-type squares (`dem/leaftype.py`, made whole where a square is missing or wasn't made whole).
 4. **Roadside buildings** for the whole world, once per Overture release (2026-09-23.1): every building's box, from the release's bbox columns, in z8 tiles (`pipeline::buildtiles`, `dem/buildings.py --world`).
 5. **Each z6 area** runs these steps on its piece:
 
    | Step | What it does |
    |---|---|
    | `extract` | Roads and passenger rail, access rules, densification (8 m in North America and Japan, 15 m elsewhere), scenic routes, route-network codes and line colours; each rail track's primary route relation (the service that names it, which the Rail lines and Rides lists open on OSM). |
-   | `elev` | DEM sampling by location, from a per-vertex cache of today's samples (`dem/sample.py`'s port). |
+   | `elev` | DEM sampling by location, from a per-vertex cache of today's samples and of what each area sampled on its last run (`cache/dem-units/` on the NAS) (`dem/sample.py`'s port). |
    | `tile … elev` | Elevation clean-up and grade (`final.u16`: decimetres + 5,000, so −500 to 6,053.5 m), which the scenic samples need. |
    | `areaflags` | The designated areas rasterised onto the area's grid (`dem/areaflags.py`'s port). |
    | `landcover` | WorldCover classes for the grid tiles the packs lack (`dem/landcover.py`'s port). |
@@ -318,7 +318,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
    | `scenic buildings` | Roadside buildings per sample (the release's z8 tiles within 1 km of the area's tile + 20 km and of its own long roads). |
    | `scenic flags` | Designation flags and per-vertex channels. |
 
-   An area's canopy and view results are kept on the build Mac between its runs, so a rerun redoes only the samples that are new or near terrain and grids that changed.
+   An area's canopy and view results are kept on the NAS between its runs (`cache/scenic-units/`, which either Mac's runs read), so a rerun redoes only the samples that are new or near terrain and grids that changed. An area's last steps, from its elevations on, can run as a task on another worker (Machines, below).
 6. **Roads:**
    - tiles and query data per z6 tile, from the areas whose roads come within 100 km: road and rail tiles (RT v7, 13 scenic channels a point, per-line attributes), climbs, drives' and rides' parts, and zoomed-out summaries;
    - zoomed-out road tiles per z3;
@@ -326,7 +326,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
    - ferries.
 7. **Trains a day:** the timetables of the rail feeds where the coverage is, each fetched once into the NAS's `sources/rail/` (`rail-feeds`), then their trains matched onto the coverage's rail ways (`rail`; Passenger rail, above, has how).
 8. **Landmarks:** candidates and peaks per area, Wikidata facts and pageviews, then the points (`marks`).
-9. **A catalog** of every file the map reads. Each Mac's server switches to it in place.
+9. **A catalog** of every file the map reads, published in rounds: a round begins when a region is done, an hour after the last round began, and once more after the last region; it makes the slope and tree cover its regions lack, the map tiles near what changed, the road index and rail stops, then the catalog, with whatever the trains' and the landmarks' chains have made by then. Each Mac's server switches to it in place.
 
 **Regions** are recipes on the NAS, `inputs/regions/<id>.toml`.
 - **A recipe** has an `id`, a `name`, and outline entries: `osm:<relation>`, `geofabrik:<id>`, `poly:<file>`, `place:<lon>,<lat>,<km>`.
@@ -340,10 +340,13 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
   - the credits: `crates/pipeline/src/rules.rs` (`CREDITS`, each source with its areas).
 
 **Machines:**
-- **The NAS** holds the map's data, and every download the build makes, each made once (`sources/`: Meta's canopy squares, today's build's among them, AWS's raw terrain tiles, FABDEM's tiles, the leaf-type sources, Overture's buildings). AWS's raw terrain tiles are kept on the build Mac as they come and reach the NAS packed, in archives grouped as the terrain is, a job's new tiles in one of their own beside their area's others (`pipeline::rawpack`), never a file a tile. Each copy is checked whole when read; one that isn't (cut short) is taken again. What's fetched again is new data (a planet, Wikidata facts and pageviews, timetables, an Overture release), or windows of the datasets read by window (the national DEMs, MRDEM, ESA WorldCover) where nothing kept covers them yet.
+- **The NAS** holds the map's data, and every download the build makes, each made once (`sources/`: Meta's canopy squares, today's build's among them, AWS's raw terrain tiles, FABDEM's tiles, the leaf-type sources, Overture's buildings, Wikipedia's monthly pageviews, the rail feeds). AWS's raw terrain tiles are kept on the build Mac as they come and reach the NAS packed, in archives grouped as the terrain is, a job's new tiles in one of their own beside their area's others (`pipeline::rawpack`), never a file a tile. Each copy is checked whole when read; one that isn't (cut short) is taken again. What's fetched again is new data (a planet, Wikidata facts and pageviews, timetables, an Overture release), or windows of the datasets read by window (the national DEMs, MRDEM, ESA WorldCover) where nothing kept covers them yet.
 - **Each Mac's server** copies what the catalog lists, within a reserve of free space: 50 GB, or 150 GB on the build Mac.
 - **The build Mac** (48 GB) keeps the raw terrain tiles it fetches (until they're packed onto the NAS), local copies of the NAS's canopy squares and tile archives, and the elevations, and needs 80 GB free to start an OSM pass.
-- **The M1** (16 GB) helps when it's open: its agent builds the lighter areas beside the build Mac's (`tools/app/install.sh --helper`), handing its results to the build Mac's agent, which alone writes the build's records.
+- **The build Mac's coordinator** (in its agent, port 8090: `docs/workers.md`) lends work out on leases of ten minutes, renewed each minute while the work goes on; a lapsed lease's work is offered again. What a worker hands back is merged by the build Mac's agent, which alone writes the build's records.
+- **The M1** (16 GB) helps when it's open (`tools/app/install.sh --helper`): its agent takes the jobs that fit the memory it spares (6 GB) of terrain, slope, tree cover, areas and the landmarks' candidates and peaks (the steps the status marks ⇄), else an area's last steps; its jobs put their files on the NAS themselves and hand their record changes back.
+- **Any device** can help from the build page once the build Mac's owner accepts it there (a notification, or `scenic devices`): it takes an area's last steps as WebAssembly, the same bytes as the build Mac's (a worker's first three results are checked against the build Mac's own run, then one in eight). The page shows the whole build to anyone on the LAN or the tailnet.
+- **Planned:** any Mac leading the build, handed over from any Mac (`docs/pool.md`; its core is built, not yet wired into the agent).
 - **Publishing the app** (`tools/app/publish.sh`) needs Rust and Node.
 - **The agent** needs [uv](https://docs.astral.sh/uv/), `osmium-tool` and Java 21+ (Homebrew's openjdk@21), and Planetiler's jar on the NAS.
 
