@@ -115,7 +115,10 @@ async function main() {
 
   // A link (URL hash) wins; otherwise restore the last session from localStorage.
   const store = new Store(location.hash.length > 1 ? fromHash(location.hash) : fromSaved(prefs.load('state', null)));
-  history.replaceState(null, '', toHash(store.s)); // the address bar holds the restored state
+  /** Whether the catalog has the 3D buildings: their settings section, the B key and `bd=` in
+   * links only then (a catalog can gain them while the map is open: newCatalog). */
+  let hasBuildings = !!meta.layers?.buildings;
+  history.replaceState(null, '', toHash(store.s, hasBuildings)); // the address bar holds the restored state
   boot.at(1);
   maplibregl.setWorkerUrl(mlWorkerUrl);
   // MapLibre parses every tile and overlay file on a single worker by default (outside Safari):
@@ -616,6 +619,7 @@ async function main() {
   layersRoot.id = 'layers';
   document.getElementById('colour')!.append(layersRoot);
   const layers = new LayersCard(layersRoot, store, { roads: colour.el, rail: railCard.el, ferry: ferryCard.el, stops: stopsCard.el });
+  layers.showBuildings(hasBuildings);
   wireTintPreview();
   const statsEl = document.getElementById('stats')!;
   const statsCard = new StatsCard(statsEl);
@@ -1776,8 +1780,8 @@ async function main() {
       search.focus();
       return;
     }
-    // B: the 3D buildings on and off.
-    if (k === 'b' && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target)) {
+    // B: the 3D buildings on and off (when the catalog has them).
+    if (k === 'b' && hasBuildings && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target)) {
       e.preventDefault();
       const on = !store.s.buildings.on;
       store.set({ buildings: { ...store.s.buildings, on } });
@@ -1828,7 +1832,7 @@ async function main() {
   let hashTimer = 0;
   const writeHash = () => {
     clearTimeout(hashTimer);
-    hashTimer = window.setTimeout(() => history.replaceState(null, '', toHash(store.s)), 150);
+    hashTimer = window.setTimeout(() => history.replaceState(null, '', toHash(store.s, hasBuildings)), 150);
     prefs.saveSoon('state', () => ({ ...store.s, selected: null }));
   };
   let styleReady = false;
@@ -1965,7 +1969,7 @@ async function main() {
   layers.onReset = () => {
     prefs.clearAll();
     store.set({ ...structuredClone(defaults), view: store.s.view });
-    history.replaceState(null, '', toHash(store.s));
+    history.replaceState(null, '', toHash(store.s, hasBuildings));
     prefs.save('state', { ...store.s, selected: null });
     location.reload();
   };
@@ -2008,7 +2012,12 @@ async function main() {
     // labels come from our tiles (the style is made for one or the other).
     roads.setSource(version('roads.tiles'), m.bounds);
     rails.setSource(version('rails.tiles'), m.bounds);
-    // The buildings, once a catalog has them.
+    // The buildings, once a catalog has them: the layers, their settings, the B key and `bd=`.
+    if (m.layers?.buildings && !hasBuildings) {
+      hasBuildings = true;
+      layers.showBuildings(true);
+      writeHash();
+    }
     if (m.layers?.buildings && styleReady && !map.getSource('bld')) {
       addBuildings(map, 'water-name-line', 'boundary-county');
       applyBuildingsNow(store.s);

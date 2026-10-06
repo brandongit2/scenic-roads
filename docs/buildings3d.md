@@ -77,7 +77,9 @@ from.
 **The toggle:** Settings → Buildings, a section after Trees with its switch in the header, on by
 default. In it: 3D or flat (footprints only, also what a map without 3D terrain shows); colour
 mode; opacity; height scale (1–3×, or with the terrain's exaggeration); detail (all, or the skyline:
-40 m or more). In the link with the other settings (`bd=`); **B** toggles the layer.
+40 m or more). In the link with the other settings (`bd=`); **B** toggles the layer. All three only
+with a catalog that has the layer: until then the section is hidden, B does nothing and links
+leave `bd=` out (a catalog that gains the layer while the map is open shows them then).
 
 **Hover:** the bottom bar's row 1 gives the building's height, where it comes from ("measured",
 "from 6 floors", "estimated by Microsoft", "estimated from neighbours", "estimated, GHSL",

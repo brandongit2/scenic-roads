@@ -686,7 +686,9 @@ const ob = (k: OverlayKey) => OVERLAYS.findIndex((o) => o[0] === k);
 const FREQ_WEIGHT_ADDED = 0.3;
 const HM: HillshadeMethod[] = ['standard', 'basic', 'combined', 'igor', 'multidirectional'];
 
-export function toHash(s: AppState): string {
+/** The state as a link (the address bar's hash). `buildings`: whether the catalog has the 3D
+ * buildings; without them their settings stay out of links. */
+export function toHash(s: AppState, buildings: boolean): string {
   const p = new URLSearchParams();
   if (s.view) {
     const v = s.view;
@@ -737,7 +739,7 @@ export function toHash(s: AppState): string {
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
   if (tc(s.trees) !== tc(defaults.trees)) p.set('tc', tc(s.trees));
   const bd = (b: BuildingState) => [b.on ? 1 : 0, b.flat ? 1 : 0, b.colour, +b.opacity.toFixed(2), +b.scale.toFixed(2), b.skyline ? 1 : 0].join(',');
-  if (bd(s.buildings) !== bd(defaults.buildings)) p.set('bd', bd(s.buildings));
+  if (buildings && bd(s.buildings) !== bd(defaults.buildings)) p.set('bd', bd(s.buildings));
   if (!(s.surface.paved && s.surface.unpaved)) p.set('sf', `${s.surface.paved ? 'p' : ''}${s.surface.unpaved ? 'u' : ''}`);
   if (!(s.toll.free && s.toll.toll)) p.set('tl', `${s.toll.free ? 'f' : ''}${s.toll.toll ? 't' : ''}`);
   const lw = (l: LineWeights) => [l.global, ...LINE_KINDS.map(([k]) => l[k])].map((v) => +v.toFixed(2)).join(',');

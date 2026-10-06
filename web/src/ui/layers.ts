@@ -57,6 +57,8 @@ export class LayersCard {
   readonly trees: TreeSection;
   /** 3D buildings controls. */
   readonly buildings: BuildingSection;
+  /** Their section: hidden until the catalog has the layer (showBuildings). */
+  private buildingsSection: HTMLElement;
   private railSection: Node[];
   private rail!: HTMLInputElement;
   private railBoxes: HTMLInputElement[] = [];
@@ -654,7 +656,7 @@ export class LayersCard {
         tog(this.t.sky, 'Sky & distance fog', '', 'tog', 'Visible when the map is tilted'),
       ),
       this.section('trees', 'Trees', this.trees.on, ...this.trees.nodes),
-      this.section('buildings', 'Buildings', this.buildings.on, ...this.buildings.nodes),
+      (this.buildingsSection = this.section('buildings', 'Buildings', this.buildings.on, ...this.buildings.nodes)),
       this.section('map', 'Map', null,
         tog(this.globe, 'Globe', '', 'tog', 'Globe projection; flattens to Web Mercator as you zoom in'),
         tog(this.other.water, 'Water'),
@@ -678,7 +680,13 @@ export class LayersCard {
       this.resetRow(),
       h('div', { class: 'faint note' }, 'Tunnels faded · bridges cased · zoomed out, brightness = road density'),
     );
+    this.showBuildings(false);
     this.sync(store.s);
+  }
+
+  /** The Buildings section shown, or not: only once the catalog has the layer. */
+  showBuildings(on: boolean) {
+    this.buildingsSection.hidden = !on;
   }
 
   /** A collapsible section; `toggle`: its layer's switch, in the header. */
