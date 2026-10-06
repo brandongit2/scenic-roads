@@ -188,7 +188,9 @@ nas/           fetch-planet.sh, which the NAS runs itself (from tools/nas/; publ
   (the regions' outlines, simplified) and the credits of the sources its data comes from.
 - **The build manifest** (`state/build/manifest.json`) lists everything built: sources, work and
   outputs.
-- **Job keys** (`state/build/jobs.json`) say what each output was made from.
+- **Job keys** (`state/build/jobs.json`) say what each output was made from;
+  `state/build/jobs.pre-rekey.json` keeps them as they were before the first re-keying (§8, A new
+  key scheme).
 
 **Deletions go through SMB.** They're permanent on this share. The build Mac can't use SSH
 unattended, because 1Password asks to approve every new session.
@@ -996,7 +998,15 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   samples' ground), the z12 tile or the finest staged tile above it, down to z4. A tile staged but
   missing counts as such, so one appearing changes the key. A change elsewhere within the 30 km
   (the far side of a neighbouring z6 tile, a coast none of its ways reach) rebuilds nothing; one in
-  a z5 tile under a long ferry of its does. Not the grids' packs (Global-source layers, Grids);
+  a z5 tile under a long ferry of its does. Not the grids' packs (Global-source layers, Grids). A
+  unit whose terrain can't be worked out (a terrain pack's index unreadable: the file missing or
+  damaged on the NAS) has no key: it isn't built, nor counted as built, the status says so ("the
+  terrain's indexes can't be read now for N of them", with the pack and why), and the read is tried
+  again each time the agent plans. A pack that stays unreadable holds those units, and their
+  regions' publishing, until it's made again: move the damaged file aside on the NAS (a
+  content-named file is never written over), then run its area's terrain on the build Mac
+  (`scenic-build terrain 3/x/y --root <the NAS project folder>`), which writes it again under its
+  name;
 - **pack(T):** the base packs and road values it reads (above), those within its 100 km halo; and,
   after a dot, those of its owners alone (the units whose owned extent meets the tile itself: its
   ways-here index points into their base packs), so a round tells a tile whose owners changed from
@@ -1197,25 +1207,36 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   of what's never been rewritten since); otherwise its record goes and it's built again. Any other
   record stays as it is: stale under the old scheme, it's stale under the new. Safe because a
   target's outputs are a function of the inputs its new key names (Determinism), and those are
-  what they were when it was built. The build Mac's agent re-keys after merging hand-offs, under
-  the build lock as the merge takes it, and writes `state/build/jobs.json` whole only when that
-  changed anything; the plan and the status re-key the keys they read in memory, so a dry run, or
-  a loop that couldn't take the lock, plans as the records will be. A second pass finds nothing (a
+  what they were when it was built. The build Mac's agent re-keys after merging hand-offs: it
+  reads what that takes first (the indexes, the coverage, the reaches, the files' times) and works
+  the re-keying out, and only when that changes the records does it take the build lock, as the
+  merge takes it (a job saving holds it), re-key the records as they are then and write
+  `state/build/jobs.json` whole. Before its first such write it keeps them as they were, in
+  `state/build/jobs.pre-rekey.json` (written once, never over one there: the way back to an older
+  app, README). The plan and the status re-key the keys they read in memory, so a dry run, or a
+  loop that couldn't take the lock, plans as the records will be. A second pass finds nothing (a
   new key is never an old one), and a record of an older app's job merged later is re-keyed then.
   `scenic-build rekey-check` says what it would do, reading only. The old scheme's keys
   (`agent::rekey::v1`) are kept for those late records.
   - **The units' terrain** (§6, Job keys: they named the terrain hi packs within 30 km): their
-    z9–12 tiles are pinned by the hi packs the old keys named; z8–z6 tiles by the hi pack of a z6
-    tile near the coverage in an area whose terrain is current (a z8 tile is made from its raw tile
-    and its z9 children alone), or, where a z6 tile has no hi pack, by the raw tiles alone. Not z5
-    and z4 tiles (made from z6 tiles the old keys mostly didn't name: the far reaches of long ways)
-    nor z8–z6 tiles of a stale hi pack's z6 tile (gap 3, §10): a unit reading those is built again,
-    unless it has no outputs (the terrain doesn't decide which ways it keeps). Those of a z6 tile
-    without a hi pack are pinned only if the unit was built after its area's first lo pack the
-    build made (the converted legacy ones differ), which `rekey-check` shows from file times. On
-    2026-10-06 it found 261 of the 284 units re-keyed (20 of them without outputs) and 23 to build
-    again (12 reading z5–z4 tiles, 13 a stale hi pack's; two both), and each of the 108 with
-    outputs reading an area's zoomed-out terrain built over an hour after the build first made it.
+    z9–12 tiles are pinned by the hi packs the old keys named, and z8–z6 tiles by the hi pack of a
+    z6 tile near the coverage in an area whose terrain is current (a z8 tile is made from its raw
+    tile and its z9 children alone). Not z5 and z4 tiles (made from z6 tiles the old keys mostly
+    didn't name: the far reaches of long ways), nor z8–z6 tiles of a stale hi pack's z6 tile
+    (gap 4, §10): the coverage left the z6 tile, or the hi pack is over an hour older than its
+    area's lo pack by the files' times (a run writes its pieces' hi packs, then its lo pack, so an
+    older one was left by an earlier run: the last made no hi tiles for the piece, and its z8–z6
+    from the raw tiles alone). A unit reading those is built again, unless it has no outputs (the
+    terrain doesn't decide which ways it keeps); one whose packs' times can't be read now waits
+    for the next pass. The z8–z6 tiles of a z6 tile without a hi pack are pinned unchecked, on an
+    assumption: that the unit was built after its area's first lo pack the build made (the
+    converted legacy ones differ). `rekey-check` shows the times it rests on: on 2026-10-06 each of
+    the 108 units with outputs reading an area's zoomed-out terrain was built over an hour after
+    the build first made it; and the review compared each re-keyed unit's zoomed-out tiles with
+    those of the lo pack it was built from (by its run's start in the agents' logs): none of
+    12,054 differed. On 2026-10-06 `rekey-check` found 261 of the 284 units re-keyed (20 of them
+    without outputs) and 23 to build again (12 reading z5–z4 tiles, 13 a stale hi pack's; two
+    both).
 - **A job** is one step over a batch of stale targets: terrain and trees 1, slope and lo 2, unit 6,
   peaks 12, pack 16, pois 24, the worldwide steps all. So a failure or a new app costs one batch.
 - **Order:** the agent starts the first job that can run, in plan order. It plans when a job could
@@ -1836,10 +1857,6 @@ At each phase's end an Opus agent reviews the work against this plan.
    Python step shares: the published copy isn't left as published (the updater checks a version's
    files only as it copies them), and each version makes its own (~380 MB, kept with its version).
    Fix: one environment per lock file beside the app, made as an app is installed.
-3. **Stale terrain hi packs** (§5, Shrinking): a z6 tile the coverage has left keeps its hi pack
-   (98 of the 496 on 2026-10-06), while its area's runs make its z8–z6 from the raw tiles alone,
-   so the units near it stage hi tiles beside zoomed-out ones made otherwise (their keys see any
-   change there).
 
 3. **Kept areas offline** (§4, Mirror, per Mac): a whole road (`/api/road`) leaving a kept area
    reads the base packs of every unit it crosses, and fails away from the NAS when one of them
@@ -1847,6 +1864,13 @@ At each phase's end an Opus agent reviews the work against this plan.
    doesn't meet it, has no way info there away from the NAS. Fix: give a road leaving the area as
    far as it's here (marked as cut), and keep the owners of the ways the area's hi data list (their
    `here` records say).
+
+4. **Stale terrain hi packs** (§5, Shrinking): a z6 tile the coverage has left keeps its hi pack
+   (98 of the 496 on 2026-10-06), and so does a piece whose area's run made no hi tiles for it
+   (`terrain_pack::build_q_with` writes none and keeps the earlier pack; 6/21/18 on 2026-10-06),
+   while the area's runs make those z6 tiles' z8–z6 from the raw tiles alone: the map serves, and
+   the units near them stage, hi tiles from an earlier run above zoomed-out ones made otherwise
+   (the units' keys see any change there).
 
 ## 11. Risks and checks
 

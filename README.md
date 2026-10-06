@@ -332,6 +332,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
 **Regions** are recipes on the NAS, `inputs/regions/<id>.toml`.
 - **A recipe** has an `id`, a `name`, and outline entries: `osm:<relation>`, `geofabrik:<id>`, `poly:<file>`, `place:<lon>,<lat>,<km>`.
 - **The agent** reruns only what changes reach: the job keys say what each output was made from.
+- **A new key scheme** (the units' keys, 2026-10-06: `docs/plan.md` §8) re-keys the records instead of building again what would come out the same; the first re-keying keeps the records as they were in `state/build/jobs.pre-rekey.json` on the NAS. To go back to an app from before it: pause the build (`scenic pause`), so nothing starts meanwhile; roll the app back (`tools/app/publish.sh --rollback`: each Mac installs it within five minutes, its agent restarting into it); once the build Mac's agent runs the older app, copy that file over `state/build/jobs.json`, and resume (`scenic resume`). The areas built since the switch are checked by their old keys, and built again where those changed.
 - **Region-specific code**, for a new country (when a rule the units use changes, bump its version in `crates/pipeline/src/rules.rs`, so only the areas it applies to are rebuilt):
   - road route networks: `network_code` in `extract.rs`, colours in `web/src/mapschemes.ts`;
   - the elevation source: `crates/pipeline/src/dem/` (the `elev` program), with densification in `extract.rs`;
