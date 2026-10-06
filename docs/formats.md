@@ -240,6 +240,56 @@ Properties: `k` (0 an island of the sea, 1 a lake, 2 an island of a lake or rive
 (the area in Web Mercator m², round(8 log2): the area is 2^(q/8)) and in z12 tiles `o` (1: the
 basemap still lacks it at z13). In a tile, polygons then points, each bigger first.
 
+## 3D buildings (pipeline::bld; docs/buildings3d.md §3.4)
+
+**Normalized buildings** (`work/bld/6-<x>-<y>.<h>.sect`, RDSECT v1, content-named, in the build
+manifest; a work file, not served): every building and building part of the pinned Overture
+release whose centroid is in the z6 tile, underground ones left out, made by `bldprep`. Meta:
+`{"fmt": 1, "tile": "6/x/y", "release", "buildings", "parts", "srcs", "classes", "subtypes",
+"roofs", "ghsl": "R2023A", "read"}`: the counts; the strings the records' codes index (code 0
+none, code k the list's k-th; each list sorted: Overture's height source datasets, classes,
+subtypes and roof shapes); `read`, what bldprep.py read (`files`: [name, ETag, [row groups]],
+`ghsl`: the GHSL tiles, `rows`).
+
+| Section | Record | Notes |
+|---|---|---|
+| `index` | `(u64 z14 tile key, u64 offset, u32 len, u32 count)` | a block per z14 tile holding a centroid, sorted by key |
+| `blocks` | zstd blocks (level 9) | each a z14 tile's records, sorted by Overture id (a UUID as a number), column by column, below |
+
+A block, little-endian: `u32` records, polygons, rings and vertices; then the columns: centroid
+(`[i32; 2]` E7, area-weighted as GEOS has it, from the WKB's doubles), footprint area (`f32` m²:
+degrees² × a degree's metres² (6,371,008.8 m sphere) × cos(lat)), polygons per record (`u32`),
+rings per polygon (`u32`, the first the exterior), vertices per ring (`u32`), the vertices
+(`[i32; 2]` E7, each ring's first absolute, the rest as deltas; a ring's closing point left
+out), `h` and `m` (`u16` dm: Overture's `height` and `min_height` as given, 0 none), `f` and `mf`
+(`u8`: `num_floors` and `min_floor`, 0 none, 255 for 255 or more), class, subtype and roof shape
+(`u8` codes), flags (`u8`: 1 a part, 2 a building whose parts were read: `has_parts`, and a part
+naming it read, parts being read 0.02° around the tile), the height's dataset (`u8` into `srcs`:
+the source whose property is `/properties/height`, else the footprint's), GHSL's ANBH at the
+centroid (`u16` dm, 0 none) and the OSM id where OSM gave the footprint (`u64`: 1 << 62 a way,
+2 << 62 a relation, or'ed with the id; 0 none).
+
+**bldprep.py's stream** (stdout to `scenic-build bldprep`, not a file): `BLDP1\n`, then frames, each
+`u8 kind, u32 header length, header JSON` (with `cols`: [[name, bytes], …]) and the columns' bytes
+in that order: GHSL windows (3), each row group's buildings (1) and parts (2), the end (9).
+dem/bldprep.py's docstring has the columns.
+
+**Tiles** `layers/buildings/hi/6-<x>-<y>` (RDPACK v1, encoding `mvt`, blobs gzip'd at level 6,
+z12–14; no lo or root packs), made by `bldtiles` from the tile's and its 8 neighbours' normalized
+files and the coverage: MVT 2.1, extent 4096, one layer `b`, a feature per building or part that
+touches the coverage (its centroid or a vertex in it, with the 1 km buffer), whole in the tile of
+its centroid (not clipped); quantized to the tile's grid, at z12–13 simplified to one unit first;
+repeated points dropped, rings of fewer than 3 points or no area dropped (an exterior with its
+holes); exteriors positive, holes negative. z14 every building and part, z13 those 20 m or more or
+of 2,000 m² or more, z12 those 40 m or more. Properties (uint): `h` the top (dm), `m` the base (dm;
+parts; left out when 0), `s` where the height comes from (0 measured, 1 floors, 2 Microsoft's
+estimate, 3 neighbours, 4 GHSL, 5 size and kind), `f` floors (when `s` is 1), `c` the kind (0
+unknown, 1 residential, 2 outbuilding, 3 commercial, 4 industrial, 5 religious, 6 civic, education
+or medical, 7 agricultural, 8 transportation, 9 other), `k` (1 a part, 2 a building drawn by its
+parts: the flat layer's only; left out when 0); keys in that order in every tile, values in order
+of first use. No feature ids, no names. Features sorted by their centroid's Morton code in the
+tile (12 bits an axis), then id.
+
 ## Catalog (`catalog/<n>.json.zst`)
 
 zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. Readers list
@@ -365,7 +415,8 @@ agent/pack-idx/         <hash16>.idx: the indexes of the terrain packs the build
 
 ## Server API (changes)
 
-- Tiles: `/tiles/{roads,rails,terrain,slope,labels,smallwater,base}/{z}/{x}/{y}`, `/tiles/trees/{var}/{z}/{x}/{y}`.
+- Tiles: `/tiles/{roads,rails,terrain,slope,labels,smallwater,base,buildings}/{z}/{x}/{y}`, `/tiles/trees/{var}/{z}/{x}/{y}`
+  (`buildings`: the 3D buildings' MVT as stored, versioned `buildings.tiles` in `/api/meta`).
   `/api/meta` says `smallWater` when the catalog has the small islands and lakes.
   Strong `ETag`: the stored blob's hash, plus the translations versions for named tiles;
   `/tiles/base`'s is a hash of the catalog's basemap archives' content names and the tile's z/x/y, plus

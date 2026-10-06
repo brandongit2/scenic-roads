@@ -819,10 +819,13 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     blocks: tree cover as tasks (docs/workers.md) is planned.
 - **Area overlays:** see `docs/phase5.md`. The `overlays` job runs after marks, because it needs the
   World Heritage dots' ids. Until its first run, today's converted packs serve.
-- **3D buildings (phase 7, planned):** `docs/buildings3d.md`. Every building in the coverage, from
+- **3D buildings (phase 7, under way):** `docs/buildings3d.md`. Every building in the coverage, from
   the Overture release the roadside buildings read: its height measured or from its floors, else
-  estimated from its neighbours, GHSL or its size and kind; tiles z12–14 per z6 tile. National
-  heights (PLATEAU, BD TOPO) later.
+  estimated from Microsoft's figure, its neighbours, GHSL or its size and kind; tiles z12–14 per z6
+  tile. Built (B1): the steps `bldprep` and `bldtiles` (`pipeline::bld`, dem/bldprep.py), run by
+  hand; the catalog's layer `buildings`, the server's `/tiles/buildings`, the map's layer and its
+  settings. Not built (B2): the agent running them, the mirror's group, credits; nothing published.
+  National heights (PLATEAU, BD TOPO) later.
 
 The server builds missing deeper terrain and slope tiles from their ancestors.
 
@@ -1988,9 +1991,11 @@ At each phase's end an Opus agent reviews the work against this plan.
      two scales, each flagged pixel grown into its blob, blobs and voids filled from the clean
      ground around them, a cap on a blob's size), so that repairing its own output changes nothing;
      terrain still made from AWS's tiles and the code alone.
-   - Planned: 3D buildings (`docs/buildings3d.md`: designed, its sources on the NAS, its steps not
-     built), then PLATEAU; building heights in horizons and the viewshed tool; sharper terrain from
-     national DEMs.
+   - Under way: 3D buildings (`docs/buildings3d.md`: its sources on the NAS; B1 done, the steps
+     built and piloted by hand on six z6 tiles, the layer and the map's side built; B2, the agent
+     running them for every tile, next), then PLATEAU.
+   - Planned: building heights in horizons and the viewshed tool; sharper terrain from national
+     DEMs.
 8. **Builds anywhere: under way** (`docs/workers.md`). Done: the crates build for WebAssembly; one
    maths library on every target (outputs identical natively at any thread count and under WASI);
    the data plane's SSD copies and prefetch; the coordinator (leases, hand-offs over HTTP, learned

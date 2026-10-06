@@ -1,10 +1,13 @@
 # 3D buildings
 
-**Plan; phase B0 done** (2026-10-06: the sources downloaded and measured; nothing of B1–B4 built).
-The first of plan.md §10's phase 7 features ("3D buildings, then PLATEAU"); plan.md §6 (Global-source
-layers) points here. Companions: `docs/plan.md` (the pipeline, keys, order), `docs/formats.md`
-(files), `docs/workers.md` and `docs/pool.md` (sharing the work). Its sources are on the NAS (§2.6);
-`dem/bldmeasure.py` measured them (§2.2–2.5).
+**Phases B0 and B1 done** (2026-10-06): the sources downloaded and measured (B0); the steps, the
+layer and the map built and piloted by hand on six z6 tiles (B1, §5.1), the iPad's measurements to
+come (§4.6's checklist). Nothing of B2–B4 built: the agent doesn't run the steps, nothing is
+published. The first of plan.md §10's phase 7 features ("3D buildings, then PLATEAU"); plan.md §6
+(Global-source layers) points here. Companions: `docs/plan.md` (the pipeline, keys, order),
+`docs/formats.md` (files), `docs/workers.md` and `docs/pool.md` (sharing the work). Its sources are
+on the NAS (§2.6); `dem/bldmeasure.py` measured them (§2.2–2.5); `dem/bldprep.py` and
+`pipeline::bld` build them (§3).
 
 **The idea in one line:** every building in the coverage, extruded to its height on the 3D terrain,
 from the same pinned Overture release the roadside buildings read, the missing heights estimated
@@ -38,8 +41,9 @@ as roads do.
 - The tiles' sizes (B0, §2.5), against ~300 KB a tile: the thresholds keep z12 and z13 under it (the
   fullest z12 tile 10,339 buildings, 176 KB at most; z13 17,842, 284 KB at most). z14 holds every
   building, and about 15 of its 2.2 million tiles are over 300 KB, at most 490 KB: old towns drawn on
-  Spain's cadastral parcels and three of Tokyo's wards. B1 decides whether to simplify them (~18 %
-  off) after the iPad's measurements (§4.6).
+  Spain's cadastral parcels and three of Tokyo's wards. They stay as they are until the iPad is
+  measured (§4.6): simplified to a grid unit, they would lose ~18 %. B1's pilot built them: Barcelona's
+  14/8292/6115 is 484 KB (25,483 buildings), the heaviest of Tokyo's 313 KB.
 
 **Beside the terrain.**
 - A building stands on the 3D terrain at its centroid's height (MapLibre samples the terrain there),
@@ -66,17 +70,22 @@ layers: a building in front of them hides them, as it should.
 
 **The look:** a muted blue-grey made for the dark map, lit from the hill-shading's light direction
 (Settings → Terrain), the walls darker toward the ground (MapLibre's vertical gradient), so the
-coloured roads and the landmarks stay what the eye goes to. Colour modes (§4.4): plain; by height,
-with the shared colour-map picker and scale; by where the height comes from.
+coloured roads and the landmarks stay what the eye goes to. Colour modes (§4.4): plain; by height
+(B1: a fixed ramp; with the shared colour-map picker and scale in B3); by where the height comes
+from.
 
 **The toggle:** Settings → Buildings, a section after Trees with its switch in the header, on by
-default. In it: 3D or flat (footprints only, also what a 2D view shows); colour mode; opacity; height
-scale; detail (skyline only, or all). In the link with the other settings; **B** toggles the layer.
+default. In it: 3D or flat (footprints only, also what a map without 3D terrain shows); colour
+mode; opacity; height scale (1–3×, or with the terrain's exaggeration); detail (all, or the skyline:
+40 m or more). In the link with the other settings (`bd=`); **B** toggles the layer.
 
-**Hover:** with nothing else under the cursor, the bottom bar's row 1 gives the building's height
-and floors, where the height comes from ("measured", "from 6 floors", "estimated by Microsoft",
-"estimated from neighbours", "estimated, GHSL", "estimated from its size") and its kind. Markers,
-roads, rail and areas win over buildings. No popup in the first phases.
+**Hover:** the bottom bar's row 1 gives the building's height, where it comes from ("measured",
+"from 6 floors", "estimated by Microsoft", "estimated from neighbours", "estimated, GHSL",
+"estimated from its size"), its base when it has one and its kind; the hovered building is lit
+amber. Markers win over buildings; a road or rail line wins unless a building hides it (the lines
+are picked within a few pixels of the cursor, hidden or not); the areas a building is in show as
+chips beside it (an old town is often a heritage area, which would otherwise hide every building
+in it). No popup in the first phases.
 
 **The iPad** (8 GB iPad Pro, Safari): §4.6 has the budget and the fallbacks.
 
@@ -273,9 +282,10 @@ change every unit's key (every unit rebuilt), so they're decided on their own. T
 | downloads (§2.6) | 61.8 GB: Overture 60.5 GB (103 files), GHSL 1.28 GB (91 tiles) |
 | buildings in the coverage | 339 M and 2.8 M parts (B0: centroids in the coverage + 1 km) |
 | z6 tiles meeting the coverage | 380; 290 hold a building's centroid, 25 over 5 M: the densest 6/56/25 (Tokyo to Osaka, 30.3 M), 6/32/22 (Paris and central France, 15.3 M), 6/18/24 (New York to Washington, 14.6 M), 6/32/23 (southern France and Catalonia, 12.6 M), 6/32/21 (northern France and England east of Greenwich, 11.3 M), 6/31/21 (southern England and Wales, 10.5 M), 6/55/25 (western Japan, 10.3 M), 6/17/25 (the Carolinas, 10.2 M), … |
-| normalized buildings (`work/bld/`) | ~40 B a building, zstd'd: ~14 GB (an estimate: B0 didn't write them) |
+| normalized buildings (`work/bld/`) | 38–50 B a building, zstd'd (B1's pilot: Kantō 1.15 GB for 30.3 M, Paris 0.67 GB for 15.3 M): ~14 GB in all |
 | tiles, encoded in B0 | 178 tiles encoded as §3.4 has them (gzip level 6), the fullest and heaviest by the estimate and a sample: 17.7 B a building at z14 (the median; 10.4–27.9), 35.7 at z13, 20.0 at z12. The fullest z14 tile holds 26,462 buildings (Kyoto, 14/14369/6488: 278 KB); 15 of the 30 heaviest by the estimate are over 300 KB (the rest of the tiles under ~290 KB), at most 490 KB (Valencia, 14/8174/6234: 24,183 buildings), all in old towns drawn on Spain's cadastral parcels (Barcelona's six, Valencia's, Granada's, Málaga's, Córdoba's, Santander's, the Garraf's) or in Tokyo's wards (three, 303–310 KB). Simplified to a grid unit (0.6 m), as z12–13 are, they lose ~18 % (490 → 400 KB); keeping only `h` and `k`, ~2 %. The fullest z13 tile: 17,842 (Valencia: 279 KB; Barcelona's 284 KB); z12: 10,339 (Manhattan: 148 KB; Singapore's 10,204, 176 KB) |
 | tiles, estimated | each building's command bytes (§3.4's quantizing, in the scan), calibrated by the encoded tiles: 5.69 GB at z14 (2.23 M tiles: median 21 buildings, p99 2,436), 0.13 GB at z13 (194 k tiles, 3.5 M buildings), 4 MB at z12 (4,679 tiles, 208 k): 5.8 GB; the largest hi pack 6/56/25 0.47 GB |
+| tiles, built (B1's pilot) | 6/56/25 (Kantō): 30.3 M buildings and parts, 24,956 tiles, a 0.41 GB pack (13 B a building at z14); 6/32/22 (Paris): 15.3 M, 71,238 tiles, 0.26 GB; 6/18/24 (New York): 14.6 M, 47,503 tiles, 0.27 GB; 6/32/23 (Barcelona): 12.6 M, 50,688 tiles, 0.22 GB; 6/19/23 (Vermont and Boston): 6.1 M, 35,516 tiles, 0.12 GB. 13–19 B a building at z14, as B0 estimated |
 | an app Mac's mirror | +6 GB |
 
 ### 2.6 Downloads (done 2026-10-06, for the 88 regions: 194 files, 61.8 GB)
@@ -316,32 +326,41 @@ next pinned release (§5.2).
 |---|---|---|---|---|
 | `bld-fetch` | the release | S3, JRC, the coverage | `sources/overture/<release>/`, `sources/ghsl/R2023A/` | the network slot; by hand until B2 |
 | `bldprep` | a z6 tile T | Overture's row groups meeting T, the GHSL tiles meeting T | `work/bld/6-x-y` | any Mac with the NAS |
-| `buildings` | a z6 tile T | `work/bld/` of T and its 8 neighbours, the coverage over T | `layers/buildings/hi/6-x-y` | any Mac; its z8 areas as tasks for pages |
+| `bldtiles` | a z6 tile T | `work/bld/` of T and its 8 neighbours, the coverage over T | `layers/buildings/hi/6-x-y` | any Mac; its z8 areas as tasks for pages |
+
+(`bldtiles` is the design's `buildings T`: `buildings` is already the roadside buildings' step,
+`pipeline::buildtiles`, in scenic-build and the agent.) Built in B1, run by hand:
+`scenic-build bldprep <6/x/y …> [--dem dir]` and `scenic-build bldtiles <6/x/y …> [--pass d]
+[--regions dir]`; the agent's part is B2's.
 
 - **`bld-fetch`** is `dem/bldfetch.py` (§2.6). From B2 the agent runs it as a network job (the
   second slot's first kind, with the heritage chain and the rail feeds) when its key changes: the
   release, `coverage_all` and the release's footers. It skips what's there, so a run is cheap.
 - **`bldprep T`**, per z6 tile meeting the coverage (1 km buffer): `dem/bldprep.py` reads the row
-  groups meeting T from the downloaded files (pyarrow, a row group at a time), keeps the buildings
-  and parts whose centroid is in T, decodes their WKB (shapely), reads the GHSL cells under T
-  (rasterio, out of the zips), and spools columns to local files; Rust (`scenic-build bldprep`,
-  `pipeline::bld`) converts to E7, computes each centroid and area, samples GHSL at the centroid,
-  sorts, and writes the normalized file (§3.4). Python only decodes; every number that ends up in a
-  file is computed in Rust (one rounding rule, `det`). Reads ~60 GB over all tiles, once per
+  groups meeting T from the downloaded files (pyarrow, four at a time), their rows whose box meets
+  T (parts: T grown by 0.02°, so an outline finds its parts), and the GHSL windows under T
+  (rasterio, out of the zips), and writes their columns to stdout, the geometry as Overture's WKB;
+  Rust (`scenic-build bldprep`, `pipeline::bld::prep`) reads the stream as it comes, parses the WKB,
+  computes each centroid (area-weighted, as GEOS) and area in f64, rounds to E7, keeps the
+  buildings and parts whose centroid is in T (underground ones left out), samples GHSL at the
+  centroid, sorts by (z14 tile, id) and writes the normalized file (§3.4). Python only decodes;
+  every number that ends up in a file is computed in Rust. Reads ~60 GB over all tiles, once per
   release.
-- **`buildings T`**, per z6 tile meeting the coverage: the buildings of T that touch the coverage,
-  heights filled (§2.3; the neighbours' rule reads the buildings within 300 m beyond T's edges from
-  the neighbours' files, by their z14 blocks), the z12–14 tiles encoded (§3.4), the hi pack written.
-  Pure: its output is a function of its inputs' bytes. A z6 tile the coverage has left loses its
-  pack, as tree cover does (`treepacks::targets`' "none" key).
+- **`bldtiles T`**, per z6 tile meeting the coverage, a z8 area at a time (`pipeline::bld::job`):
+  the buildings of T that touch the coverage, heights filled (§2.3, `pipeline::bld::fill`; the
+  neighbours' rule reads the buildings within 310 m beyond the area, T's or its neighbours', by
+  their z14 blocks), the z12–14 tiles encoded (§3.4, `pipeline::bld::tiles`), the hi pack written.
+  Pure: its output is a function of its inputs' bytes. A z6 tile with no building in the coverage
+  loses its pack.
 
 Both are new `scenic-build` steps and agent steps; the units, the roads' chain and the landmarks
 don't change, and no unit's key reads them.
 
 ### 3.2 Keys and versions
 
-In `agent::build`, beside the others:
-- `BLDPREP_V = 1`, `BUILDINGS_V = 1` (the fill's rules are in `BUILDINGS_V`).
+In `agent::build`, beside the others (B2):
+- `BLDPREP_V = 1`, `BUILDINGS_V = 1` (the fill's rules, fits and defaults, and the tiles, are in
+  `BUILDINGS_V`): defined in `pipeline::bld` (B1), as `TREES_V` is in `pipeline::treepacks`.
 - `Keys` gains `bldprep` and `buildings`, maps by z6 tile as `unit` and `pack` are; `Keys::map`,
   `recorded` and `record` take them, and a prune forgets them ("bldprep 6/x/y", "buildings 6/x/y").
 - **`bldprep T`'s key:** `bldprep {BLDPREP_V}`, the release, and for each downloaded file with a row
@@ -349,8 +368,12 @@ In `agent::build`, beside the others:
   `buildings.json`, which the agent reads as it reads `inputs/`: a digest in `plan`'s `inputs`),
   and the GHSL tiles meeting T by name and size. A file fetched later (the coverage grew) changes the
   key of the tiles it meets; an unchanged result keeps its content name, so nothing after it reruns.
-- **`buildings T`'s key:** `buildings {BUILDINGS_V}`, the content names of `work/bld/` for T and its
-  8 neighbours ("-" for none), and `Coverage::fingerprint` of T's box grown by 1 km.
+- **`bldtiles T`'s key:** `bldtiles {BUILDINGS_V}`, the content names of `work/bld/` for T and its
+  8 neighbours ("-" for none), `Coverage::fingerprint` of T's box grown by 1 km, and the countries
+  of the coverage's shapes meeting that box (`Shape::country`): the fill's fits go by a building's
+  country, that of the first shape holding its centroid (else a vertex), from the pass's outline of
+  an `osm:` region (`Outlines::country_code`: its own ISO 3166-1 code, a territory's from its
+  subdivision code, else the country it lies in); the coverage's fits where none is known.
 - **`bld-fetch`'s key:** the release, `coverage_all`, the footers' digest; kept with the lo keys under
   its own name, as `rail-feeds` is.
 - The pinned release is `buildtiles::RELEASE` for both the roadside and the 3D buildings: a new one
@@ -360,7 +383,7 @@ In `agent::build`, beside the others:
 
 - **A fourth chain**, beside the roads', the trains' and the landmarks': it reads no unit and no
   terrain (the map puts buildings on its terrain), so it runs from the start, each step once what it
-  reads is built: `bldprep T` once T's files are on the NAS; `buildings T` once T and its neighbours
+  reads is built: `bldprep T` once T's files are on the NAS; `bldtiles T` once T and its neighbours
   are prepared. Its work is listed after the landmarks' in `plan` (the build Mac's first job takes it
   when the regions' work is done or waits), its tiles in the regions' order (the region with the
   fewest units left first, then `spatial_order`), so the buildings of the region being built come
@@ -374,23 +397,25 @@ In `agent::build`, beside the others:
 - **Batches:** about fifteen minutes of work a job, by the tiles' building counts (the densest tile
   alone).
 - **Status:** the checklist gets "Raising the 3D buildings"; `label("bldprep")` "Reading the regions'
-  buildings", `label("buildings")` "Raising the 3D buildings"; parts and progress lines as the other
+  buildings", `label("bldtiles")` "Raising the 3D buildings"; parts and progress lines as the other
   steps' (row groups read; z8 areas done; packs written).
 
 ### 3.4 Formats
 
 **Normalized buildings** (`work/bld/6-<x>-<y>.<h>.sect`, RDSECT v1, content-named, in the
-manifest; a work file, not served). Meta `{"fmt": 1, "tile": "6/x/y", "release", "buildings",
-"parts", "srcs": [dataset names], "ghsl": "R2023A"}`.
+manifest; a work file, not served; docs/formats.md has the bytes). Meta `{"fmt": 1, "tile":
+"6/x/y", "release", "buildings", "parts", "srcs", "classes", "subtypes", "roofs", "ghsl": "R2023A",
+"read"}`: the strings the codes index (each list sorted), and what bldprep.py read.
 - `index`: `(u64 z14 tile key, u64 offset, u32 len, u32 count)` per block, sorted by key.
-- `blocks`: a zstd block per z14 tile (the tile of the centroid), as markdata's props are: the
-  tile's records sorted by id, column by column:
-  - centroid (i32 E7 × 2), footprint area (m², f32), ring and vertex counts, vertices (i32 E7,
-    each ring's first absolute, the rest as deltas);
-  - height and base (u16 decimetres, 0 none), floors and base floor (u8, 0 none), Overture's class
-    and subtype as codes (u8 each), roof shape (u8), flags (u8: part, has parts), the height's source
-    dataset (u8, into `srcs`), GHSL's value at the centroid (u16 dm, 0 none), and the OSM id where OSM
-    gave the footprint (u64, type in the top bits; 0 none).
+- `blocks`: a zstd block (level 9) per z14 tile (the tile of the centroid): the tile's records
+  sorted by id (Overture's UUID as a number), column by column:
+  - centroid (i32 E7 × 2), footprint area (m², f32), polygon, ring and vertex counts (rings per
+    polygon: a MultiPolygon's exteriors), vertices (i32 E7, each ring's first absolute, the rest as
+    deltas; the closing point left out);
+  - height and base (u16 decimetres, 0 none), floors and base floor (u8, 0 none), Overture's class,
+    subtype and roof shape as codes (u8 each), flags (u8: a part; a building whose parts were read),
+    the height's source dataset (u8, into `srcs`), GHSL's value at the centroid (u16 dm, 0 none),
+    and the OSM id where OSM gave the footprint (u64, type in the top bits; 0 none).
 - Reading a neighbour's edge is a few blocks; a page's task is a slice of blocks (§3.6).
 
 **Tiles** (MVT 2.1, gzip'd, extent 4096, layer `b`):
@@ -406,7 +431,7 @@ manifest; a work file, not served). Meta `{"fmt": 1, "tile": "6/x/y", "release",
   part, 2 an outline with parts: drawn by the flat layer only). No feature ids, no names (B1).
 - In a tile, features sorted by their centroid's Morton code, then id.
 - Encoded by `pipeline::bld` over `names::mvt`, not `vtgen`, which clips features at the tile's
-  edges and simplifies at 3 units (1.8 m at z14: a house's corners).
+  edges and simplifies at 3 units (1.8 m at z14: a house's corners). gzip level 6 (flate2).
 
 **Packs:** `layers/buildings/hi/6-x-y` (RDPACK v1, encoding `mvt`, blobs gzip'd): z12–14 of the z6
 tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mvt`, zooms 12–14
@@ -416,7 +441,8 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
 
 - `/tiles/buildings/{z}/{x}/{y}`: the pack's tile as stored (`tiles::plain`, gzip, ETag the blob's
   hash, `?v=` the layer's version: `buildings.tiles` in `/api/meta`'s versions), 204 where there's
-  none. No names attached (B1).
+  none. No names attached. Built in B1, with the catalog's layer `buildings` (encoding `mvt`, zooms
+  12–14); the app reads the tiles from a host of their own (`buildings.localhost` on this Mac).
 - **Mirror:** a copy group of its own after the hi packs (`store::mirror::groups`), so a Mac's
   mirror has the roads and terrain first; the M1's budget may leave buildings out, which the server
   then reads from the NAS.
@@ -433,11 +459,13 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
 
 - **Helper Macs** (today's M1; any member in `docs/pool.md`): both steps are shared steps
   (`agent::claims::SHARED`), offered from the far end as terrain and units are. `bldprep` needs the
-  NAS (it reads up to ~3 GB of row groups a tile) and up to ~3 GB of memory for the densest tile;
-  `buildings` holds a z8 area at a time (~1–1.5 GB for the densest, Tokyo's). Each target's memory
-  is learned (`SCENIC_COSTS`); first guesses: 1 GB + 120 B a building for `bldprep`, 0.5 GB + 150 B
-  a building of its largest z8 area for `buildings`.
-- **Pages** (`docs/workers.md`): a `buildings` job offers its z8 areas as tasks, as a unit job offers
+  NAS (it reads up to ~3 GB of row groups a tile) and, in B1's pilot, 4.6 GB of memory at most for
+  the densest tile (Kantō; 1.3–2.9 GB for the others); `bldtiles` holds a z8 area at a time (3.6 GB
+  at most for Kantō's run, 1.0–1.8 GB for the others). Each target's memory is learned
+  (`SCENIC_COSTS`: both steps note their targets' costs, `bldprep 6/x/y` and `bldtiles 6/x/y`);
+  first guesses, which B1's runs bear out: 1 GB + 120 B a building for `bldprep`, 0.5 GB + 150 B a
+  building of its largest z8 area for `bldtiles`.
+- **Pages** (`docs/workers.md`): a `bldtiles` job offers its z8 areas as tasks, as a unit job offers
   its tail. A task's files: the z8 area's blocks and the blocks within 300 m around it (cut from the
   work files on the Mac that runs the job), and the program `bldtile` (Rust, built for wasm32-wasi
   with the others, `/work/prog/bldtile.wasm`). It writes the area's z12–14 tiles (an RDTILES archive);
@@ -446,7 +474,7 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
   worker). Nothing waits on a page: an area no page took runs on the job's Mac, one a page holds is
   raced there, results are compared (the ramped verification).
 - **The pool's steps table** (`docs/pool.md` §6): `bldprep` {memory learned, disk 15 GB, the NAS,
-  power}, `buildings` {memory learned, disk 15 GB, power}; neither needs home (`bldprep`'s reads are
+  power}, `bldtiles` {memory learned, disk 15 GB, power}; neither needs home (`bldprep`'s reads are
   per tile, not the planet's).
 - `bldprep` isn't a task: it reads 60 GB of parquet from the NAS, which pages can't reach and the
   coordinator shouldn't relay.
@@ -462,6 +490,10 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
   (zlib-rs) at a fixed level, zstd at a fixed level;
 - checked as the others were: a dense tile built natively on 1 and 14 threads and as WebAssembly,
   same bytes; the planned "build twice, compare hashes" covers both steps.
+- **Checked in B1:** Paris (6/32/22) built twice on the build Mac, on 12 threads and on one, gave
+  the same work file and the same pack byte for byte (content names `6-32-22.f07556cc02cd5298` and
+  `6-32-22.8db81a60e19ca8d9`); the unit tests build a tile on one thread and on several and compare.
+  WebAssembly waits for `bldtile` (B3).
 
 ## 4. The map
 
@@ -469,22 +501,31 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
 
 **MapLibre's fill-extrusion** (6.11.2), not a layer of our own, in the first phases:
 - it handles the globe (its vertex shader projects to the sphere) and the 3D terrain (the centroid's
-  elevation, the base sunk 10 m: `get_elevation(a_centroid)` in its shader), tiles and their cache,
-  picking (`queryRenderedFeatures` in 3D) and data-driven paint;
-- a building costs ~1 KB on the GPU (side quads and roof triangles, 16-byte vertices, the paint
-  arrays) and a little less in the worker;
+  elevation, a base of 0 sunk 10 m: `get_elevation(a_centroid)` in its shader, as 6.11.2 has it),
+  tiles and their cache (z14 tiles over-zoomed by re-parsing them for each z15–19 tile) and
+  data-driven paint;
+- not picking: its `queryRenderedFeatures` projects extrusions from sea level with the flat map's
+  matrix, ignoring the terrain, and finds nothing on the globe (§4.5);
+- on the GPU, ~27 bytes a vertex in B1's views (12-byte vertices, 4-byte centroids, the height and
+  base 8 bytes, the triangles' indices): Shinjuku's 0.9 M vertices took 24 MB (§4.6);
 - an opacity under 1 draws twice (depth, then colour), so roads behind show faintly; at 1, once.
 
-**A source and two layers** (`web/src/buildings.ts`): the vector source `bld` (z12–14,
+**A source and four layers** (`web/src/buildings.ts`): the vector source `bld` (z12–14,
 `/tiles/buildings/…?v=`), the layer `buildings` (fill-extrusion: height `h / 10` × the scale, base
-`m / 10`, colour by the mode, vertical gradient on) and `buildings-flat` (fill), for the flat mode.
+`m / 10`, colour by the mode, vertical gradient on; parts and buildings without parts),
+`buildings-flat` (fill: buildings and outlines, not parts) for the flat mode, `buildings-pick`
+(fill at opacity 0, which MapLibre doesn't draw: the footprints the hover queries) and
+`buildings-hover` (a GeoJSON source's fill-extrusion: the hovered building, 1 m larger and taller,
+amber).
 
 ### 4.2 Where in the style
 
-- After the rail layer, before the first symbol layer: `map.addLayer(buildings, 'water-name-line')`
-  after `rails` (main.ts). With the other 3D layers: between the draped layers it would split the
+- After the rail layer, before the first symbol layer: `addBuildings(map, 'water-name-line', …)`
+  after `rails` (main.ts), when the catalog has the layer (`/api/meta`'s `layers`), or once a new
+  catalog brings it. With the other 3D layers: between the draped layers it would split the
   terrain's drape in two (the contours' comment in main.ts).
-- `buildings-flat` among the draped layers, after the water and parks, before the boundaries.
+- `buildings-flat` and `buildings-pick` among the draped layers, after the water and parks, before
+  the boundaries (`boundary-county`).
 - Occlusion, as it follows from MapLibre's passes: the extrusions test and write depth (LEQUAL) in the
   translucent pass, against the terrain's depth. The road and rail layers (custom, 3D) test against
   that depth with their tolerance (1.5 % of the distance, at least 75 m × exaggeration), write none,
@@ -510,20 +551,33 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
 
 ### 4.4 Styling
 
-- **Plain** (default): one blue-grey, lighter roofs, lit by `map.setLight` from the hill-shading's
-  azimuth, intensity low.
-- **By height:** the shared colour scale (Auto / Lock / Full, the colour-map picker, the low-end
-  fade) over the buildings in view, as the terrain tint's.
-- **By where the height comes from:** measured, floors, Microsoft's estimate, neighbours, GHSL,
-  size, so the fill can be judged on the map.
+- **Plain** (default): one blue-grey (#566173; on screen #31363f–#4f5967 as lit), lighter roofs,
+  lit by `map.setLight` from the hill-shading's azimuth, intensity 0.35. (The first, #8d9aad, drew
+  the eye from the roads.)
+- **By height:** B1 has a fixed ramp (viridis, by the square root of the height, 0–150 m), with its
+  legend. B3: the shared colour scale (Auto / Lock / Full, the colour-map picker, the low-end fade)
+  over the buildings in view, as the terrain tint's.
+- **By where the height comes from:** measured (green), floors (blue), Microsoft's estimate
+  (violet), neighbours (amber), GHSL (red-orange), size (grey), so the fill can be judged on the map
+  (B1).
 - B3: buildings holding a heritage site's point tinted by its tier (the heritage overlay's colours),
   for the landmarks' sake.
 
 ### 4.5 Interaction
 
-- Hover: `queryRenderedFeatures` on `buildings` at the pointer, only when no marker, road, rail line
-  or area answers there, at most once a frame; the hovered footprint outlined (its geometry from the
-  query, drawn in a small GeoJSON layer). The bottom bar's slots as in §1.
+- Hover (B1), at most once a frame: the building the cursor's view ray meets first. MapLibre's
+  query of extrusions ignores the terrain and finds nothing on the globe, so the app picks itself
+  (`buildingAt`): candidates are the footprints (`buildings-pick`) under the ray's ground track, a
+  thin box on the screen from the cursor down to where the ray is at the tallest top (700 m × the
+  scale, under the camera); each is tested against the ray between its roof and its base as
+  MapLibre draws it (on the terrain at its polygon's centroid, a base of 0 sunk 10 m), the ray
+  from camera3d (`rayAt`, globe or flat, the same as MapLibre's unprojection at the ground), and
+  the one met highest wins. Checked on Shinjuku's towers: the building picked covers the pixel (6
+  of 7 test points; the seventh at a footprint's edge). A road or rail line under the cursor gives
+  way when the ray to its point meets a building above it. The hovered building is drawn again in a
+  small GeoJSON layer, 1 m larger and taller, amber; a tower's other parts and nearer buildings hide
+  it where they're in front (B3: an outline drawn over the buildings). The bottom bar's slots as in
+  §1.
 - Click: none in B1–B2. Later: **O** opens the OSM way where OSM gave the footprint (its id from the
   work file), served by `/api/building?at=` if wanted.
 - The In view summary may add the tallest building in view (from the loaded tiles): B3, optional.
@@ -538,12 +592,62 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
   Shinjuku at zoom 16, tilted 60°: up to ~10 z14 tiles of 9,000–20,000 buildings near (Shinjuku's
   own 9,111; the wards west of it ~20,000: §2.5), coarser tiles beyond: ~120 k buildings, ~120 MB on
   the GPU, ~2 M triangles.
-- **Measured in B1** on the iPad (Safari's Web Inspector: memory and frame timeline) at Shinjuku
-  (z16, 60°), Manhattan (z15, 70°), Paris (z15), Hong Kong's Mid-Levels on its slope, Monaco, a
-  Vermont village and a Japanese mountain town; and Barcelona's old town, whose z14 tiles are the
-  heaviest (§2.5). Their z14 tiles, by B0: Shinjuku 9,111 buildings, 141 KB; Midtown Manhattan 4,435,
-  101 KB; Paris (Châtelet) 4,752, 132 KB; the Mid-Levels 3,208, 72 KB; Monaco 2,170, 44 KB;
-  Woodstock, Vermont 630, 13 KB; Takayama 5,855, 76 KB.
+- **To measure on the iPad** at Shinjuku (z16, 60°), Manhattan (z15, 70°), Paris (z15), Hong Kong's
+  Mid-Levels on its slope, Monaco, a Vermont village and a Japanese mountain town; and Barcelona's
+  old town, whose z14 tiles are the heaviest (§2.5). Their z14 tiles, by B0: Shinjuku 9,111
+  buildings, 141 KB; Midtown Manhattan 4,435, 101 KB; Paris (Châtelet) 4,752, 132 KB; the
+  Mid-Levels 3,208, 72 KB; Monaco 2,170, 44 KB; Woodstock, Vermont 630, 13 KB; Takayama 5,855, 76 KB.
+  B1's pilot tiles hold Shinjuku, Manhattan, Paris, Barcelona and Woodstock (§5.1); the others wait
+  for B2's build.
+- **Measured in B1 on the M1** (a 16-inch MacBook Pro, M1 Pro with a 16-core GPU, 120 Hz; Chrome
+  152's engine in the Claude app's browser pane,
+  1200 × 736 CSS px at 2×; the buildings' GPU buffers summed over the tiles in view, and their draw
+  calls timed with `EXT_disjoint_timer_query_webgl2`, opacity 0.85; framed from the ground):
+
+  | View | tiles | vertices | triangles | GPU memory | GPU time a frame (median / p90) |
+  |---|---|---|---|---|---|
+  | Shinjuku, z16, 60° | 17 | 0.90 M | 0.47 M | 24.4 MB | 3.2 / 3.9 ms |
+  | Tokyo, Shinjuku to the horizon, z13.9, 70° | 13 | 2.52 M | 1.34 M | 68.5 MB | 5.2 / 5.6 ms |
+  | Midtown Manhattan, z15, 70° | 20 | 0.82 M | 0.46 M | 22.5 MB | 3.7 / 4.3 ms |
+  | Paris (Châtelet), z15, 60° | 16 | 1.38 M | 0.80 M | 38.0 MB | 2.4 / 3.0 ms |
+  | Barcelona's old town, z16, 60° | 15 | 2.07 M | 1.17 M | 56.7 MB | 3.2 / 4.3 ms |
+  | Woodstock, Vermont, z14.5, 60° | 8 | 0.05 M | 0.03 M | 1.3 MB | 1.7 / 2.3 ms |
+
+  Opacity 1 (one pass) saved little here (Shinjuku 2.9 against 3.0 ms); "skyline only" took
+  Shinjuku's buffers from 28.5 MB to 1.5 MB. The whole map's frame took 5–6 ms of GPU at Shinjuku
+  with or without the buildings within the noise; the frame rate swung between ~50 and ~120 with
+  or without them (the pane's pacing, other work on the Mac). Well within the iPad's budget on the
+  M1; the iPad's own numbers decide.
+- **The iPad checklist** (the owner's):
+  1. Serve the pilot: a server from this branch with `--root` a folder laid out like the NAS's
+     whose newest catalog has the pilot's `buildings` layer (B1 made one: catalog 14 with the
+     pilot's six packs added, the rest of the folder linked to the NAS read only), a scratch
+     `--home`, listening on every address (no `--listen`) so the iPad reaches it; the address with
+     its key is in `<home>/map-page`.
+  2. On the iPad, open that address in Safari; on the Mac, Safari → Develop → the iPad → the
+     map's page (Web Inspector).
+  3. At each view (the hash after the address): `#map=16/35.69/139.70/20/60` (Shinjuku),
+     `#map=15/40.758/-73.985/30/70` (Midtown), `#map=15/48.858/2.347/20/60` (Châtelet),
+     `#map=16/41.383/2.1765/30/60` (Barcelona's old town), `#map=15.5/43.624/-72.519/20/60`
+     (Woodstock: if the view starts inside a hill, zoom out and back in, the hills being 3× tall).
+     Wait for the tiles (the bottom bar's loading line), then:
+     - **Timelines** → record about 10 s while orbiting slowly with two fingers → Frames: the frame
+       rate and the frame times; the Rendering and JavaScript lanes;
+     - **Graphics** (or **Memory**): the page's memory and its canvas share;
+     - **Console**: the buildings' GPU buffers in view, as B1 summed them:
+       ```
+       (() => { const z = (a) => (a ? a.length * a.bytesPerElement : 0); let v = 0, b = 0;
+         for (const t of __app.map.style.tileManagers.bld._inViewTiles.getAllTiles()) {
+           const k = t.buckets?.buildings; if (!k) continue; v += k.layoutVertexArray.length;
+           b += z(k.layoutVertexArray) + z(k.centroidVertexArray) + z(k.indexArray);
+           for (const c of Object.values(k.programConfigurations.programConfigurations))
+             for (const d of Object.values(c.binders)) b += z(d.paintVertexArray); }
+         return { vertices: v, mb: +(b / 1e6).toFixed(1) }; })()
+       ```
+  4. Each view with Buildings on, then off (B on a keyboard, or the switch), then opacity 100 %
+     (the iPad's default already: a touch screen's is 100 %), then Skyline.
+  5. Over budget (300 MB of buildings, 8 ms a frame) anywhere: the fallbacks below, and
+     Barcelona's old-town tiles simplified (~18 % off).
 - **If over budget**, on touch devices: opacity 1 (one pass, the default there anyway), z14 tiles only
   from zoom 15 ("skyline" between 13 and 15), a smaller tile cache for `bld`.
 
@@ -565,13 +669,14 @@ artefacts call for it (B4):
 | Phase | What | Effort |
 |---|---|---|
 | **B0 Data** (done 2026-10-06) | The downloads (§2.6). `dem/bldmeasure.py` over the files: heights, floors and their sources by country (§2.2); the storey heights fitted, and the fill's order, fits and defaults set from a held-out tenth (§2.3); the tiles' counts and sizes at z12–14, the fullest and heaviest encoded (§2.5); this document's numbers updated. On the build Mac: 13 minutes to read 44.6 GB of row groups from the NAS, 4 to fill and count, 5 to encode. | 1 day |
-| **B1 Pilot** | `dem/bldprep.py`, `pipeline::bld` (prep, fill, tiles), `scenic-build bldprep` and `buildings`, run by hand on 6/56/25 (Kantō), 6/32/22 (Paris), 6/18/24 (New York) and a rural tile; formats.md entries; the catalog layer, the server's route; `web/src/buildings.ts` with the settings section, the toggle and hover; the iPad measured (§4.6). | 6 days |
+| **B1 Pilot** (done 2026-10-06, but the iPad) | `dem/bldprep.py`, `pipeline::bld` (prep, fill, tiles, job), `scenic-build bldprep` and `bldtiles`, run by hand on the build Mac into a scratch root (the NAS's sources read only) on 6/56/25 (Kantō), 6/32/22 (Paris), 6/18/24 (New York), 6/32/23 (Barcelona), 6/19/23 (Vermont, with Boston) and 6/3/28 (Oahu); formats.md entries; the catalog layer, the server's route; `web/src/buildings.ts` with the settings section, the toggle and hover; checked on this Mac in a test server (§4.6). `bldprep`: 88–153 s a tile (Kantō: 30.3 M rows read in 130 s, 4.6 GB at most; one thread: Paris in 71 s); `bldtiles`: 9–23 s a tile (Kantō 22 s, 3.6 GB at most). The iPad's measurements are the owner's (§4.6's checklist). | 6 days |
 | **B2 In the build** | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job; the mirror's group, the service worker's budget, credits; every tile built and published. plan.md (§6, §8, §9, §10), workers.md, formats.md and the README updated. | 4 days |
 | **B3 Sharing and polish** | `bldtile` tasks for pages (WebAssembly, byte-identical); bridges and elevated rail over buildings; walls on the terrain under each corner; fog on the extrusions; the camera's clearance; colour by height, by source, heritage tint. | 5 days |
 | **B4 Each on its own measurement** | A custom layer (§4.7); measured heights from BD TOPO (France) and PLATEAU (Japan's cities); building heights in the horizons and the viewshed tool (every unit rebuilt). | 2–3 weeks |
 
-B1–B3: about 15 days of work, the build's own time aside: `bldprep` reads 60 GB from the NAS (an
-hour or two over the tiles), `buildings` ~20 minutes of CPU over all tiles natively.
+B1–B3: about 15 days of work, the build's own time aside: `bldprep` reads 60 GB from the NAS (B1:
+about 45 minutes over the 339 M buildings at the pilot's pace), `bldtiles` ~6 minutes over all
+tiles natively at the pilot's pace (its own CPU; the coverage read once a run).
 
 ### 5.2 Risks
 
@@ -595,9 +700,16 @@ hour or two over the tiles), `buildings` ~20 minutes of CPU over all tiles nativ
   groups or a z8 area locally; the downloads went straight to the NAS.
 - **Overture's schema** changes between releases (columns renamed or retyped): `bldprep` checks the
   columns it reads and fails with their names.
-- **Overlapping footprints** left by conflation z-fight: B1 counts them; if they show, `bldprep`
-  drops the one from the lower-ranked source (OSM first, as Overture ranks them) where two overlap
-  by nine-tenths of the smaller.
+- **Overlapping footprints** left by conflation z-fight: none showed in B1's views; B1 didn't count
+  them (B2's build can). If they show, `bldprep` drops the one from the lower-ranked source (OSM
+  first, as Overture ranks them) where two overlap by nine-tenths of the smaller.
+- **A MultiPolygon's polygon wholly beyond one edge of its tile** (a building in pieces straddling a
+  z14 edge) isn't drawn: MapLibre's extrusion skips a polygon outside its tile, a clipped tile's
+  buffer copy as it assumes. Rare (the pieces of one building); B2 could put each polygon in the
+  tile of its own centroid.
+- **The pilot's edges:** a tile's neighbours' rule reads its 8 neighbours' files; in the pilot only
+  Paris and Barcelona had one (each other), so the other tiles' edges had fewer neighbours than the
+  build will give them.
 - **Python's part in a deterministic step:** the scan only decodes, Rust computes (§3.7); the
   double-build check covers it.
 
@@ -626,7 +738,7 @@ None blocks the work; each has a default below.
    share of the line.
 6. **Tiles z12–14,** each building whole in the tile of its centroid (one centroid, no seams, no
    duplicates); z12 and z13 only the tall and large.
-7. **Two steps per z6 tile:** `bldprep` (impure: the NAS's parquet) and `buildings` (pure: tasks for
+7. **Two steps per z6 tile:** `bldprep` (impure: the NAS's parquet) and `bldtiles` (pure: tasks for
    pages), so the fill and the tiles can change without reading the parquet again.
 8. **A chain of its own** that holds no region and no round; tiles in the regions' order.
 9. **MapLibre's fill-extrusion** first, after the road and rail layers; a custom layer only if the
