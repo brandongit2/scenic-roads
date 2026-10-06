@@ -310,6 +310,11 @@ def month_views(month: str, wanted: set[str]) -> dict[str, int]:
 
 def _look_up(month: str, index: Path, wanted: set[str]) -> dict[str, int]:
     t0 = time.time()
+    # (Marked used: the build agent's room-making lets the least recently used copies go first.)
+    try:
+        os.utime(index)
+    except OSError:
+        pass
     views: dict[str, int] = {}
     # (Its compressed bytes count on the progress line as they're read: `_indexes`.)
     with open(index, "rb") as raw, zstd.open(_Counted(raw, (month, "read")), "rt", encoding="utf-8") as f:

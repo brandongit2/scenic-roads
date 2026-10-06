@@ -7,14 +7,16 @@
 //! keeps lose files until it has that and a margin (`margin`: a sixth more, none for the OSM pass),
 //! so the next jobs start without deleting again: Meta's canopy squares (`chm10/`, ~2 GB a 10°
 //! square; scenic-metrics marks a square used when it reads it), AWS's raw terrain tiles
-//! (`aws-terrarium/`, read once per terrain run), and the copies of the records' files staging
-//! reads (`blobs/`, store::blobs). They fill again from the NAS (`sources/canopy/`,
-//! `sources/aws-terrarium/`, the store), never from the internet.
-//! - Canopy squares and copies of the records' files not read in the last hour go first, each by its
-//!   own use, the least recently used first. A copy of a recorded file goes without asking the NAS
-//!   (the records name only files it has). One listing of the NAS's canopy folder answers for every square's files (hundreds of MB
-//!   each), while each raw tile folder takes a listing of its own for ~14 MB: seconds each when the
-//!   NAS is busy, hours for tens of GB.
+//! (`aws-terrarium/`, read once per terrain run), the copies of the records' files staging
+//! reads (`blobs/`, store::blobs), and the pageview months' indexes (`items/months/`, ~600 MB each,
+//! read once per items or heritage run: dem/pageviews.py's copies, which it marks used as it reads
+//! them). They fill again from the NAS (`sources/canopy/`, `sources/aws-terrarium/`, the store,
+//! `sources/pageviews/`), never from the internet.
+//! - Canopy squares, copies of the records' files and pageview months not read in the last hour go
+//!   first, each by its own use, the least recently used first. A copy of a recorded file goes
+//!   without asking the NAS (the records name only files it has). One listing of the NAS's canopy
+//!   folder answers for every square's files (hundreds of MB each), while each raw tile folder
+//!   takes a listing of its own for ~14 MB: seconds each when the NAS is busy, hours for tens of GB.
 //! - Then raw tiles a folder at a time and the squares read since, together, the least recently
 //!   used first (a folder by its newest tile, and in it the oldest first, so a folder's tiles go
 //!   together): the squares of the area being built, which the next jobs read again, outlast idle
@@ -32,8 +34,12 @@
 //!   each area, one large write each, none kept here), then go; the copies of its archives here
 //!   (`aws-terrarium/packs/`) go as the copies of the records' files do, each by its own use (a
 //!   job marks one used when it opens it), without asking it.
+//! - A pageview month's index goes once the NAS has it at its size; one it lacks stays (pageviews.py
+//!   puts it there when it next reads it), as do the counts from before the indexes: none is copied
+//!   there from here.
 //!
-//! - A file the job reads at once (`spare`: a terrain run's own area's archive copies) stays.
+//! - A file the job reads at once (`spare`: a terrain run's own area's archive copies; the pageview
+//!   months, for an items or heritage job, or beside one) stays.
 //!
 //! After the build (`trim`): once the build has nothing left to build (the build Mac's forecast:
 //! no work, no round under way) and no job runs here, the agent empties those caches by the same
@@ -88,7 +94,10 @@ const RECENT: std::time::Duration = std::time::Duration::from_secs(3600);
 /// The caches' folders whose files may be deleted, under the agent's cache, each with the NAS's
 /// store of them, under its `sources/`; and `blobs/`, this Mac's copies of files the records name
 /// (store::blobs), which the NAS has by construction: they go without asking it.
-const CHEAP: [(&str, &str); 3] = [("chm10", "canopy"), ("aws-terrarium", "aws-terrarium"), ("blobs", "")];
+const CHEAP: [(&str, &str); 4] = [("chm10", "canopy"), ("aws-terrarium", "aws-terrarium"), ("blobs", ""), (MONTHS, "pageviews")];
+
+/// The pageview months' indexes here (dem/pageviews.py's copies of the NAS's `sources/pageviews/`).
+pub const MONTHS: &str = "items/months";
 /// Bytes the cheap caches hold (what `make_room` can free on the build Mac: a helper's, `helper_cheap_bytes`).
 pub fn cheap_bytes(cache: &Path) -> u64 {
     let mut files = Vec::new();
@@ -517,6 +526,12 @@ fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
         return Fate::Go;
     }
     let Some(dest) = nas_path(cache, sources, p) else { return Fate::Stay };
+    // (Of the pageview months, only an index may go: the counts from before them, and a stream's
+    // temporary file, stay.)
+    let month = p.starts_with(cache.join(MONTHS));
+    if month && !p.to_string_lossy().ends_with(".tsv.zst") {
+        return Fate::Stay;
+    }
     let (Some(folder), Some(name)) = (dest.parent(), dest.file_name()) else { return Fate::Stay };
     let Ok(len) = std::fs::metadata(p).map(|m| m.len()) else { return Fate::Stay };
     let there = || std::fs::metadata(&dest).is_ok_and(|m| m.is_file() && m.len() == len);
@@ -529,6 +544,10 @@ fn fate(cache: &Path, sources: &Path, p: &Path, listed: &mut Listed) -> Fate {
     // busy NAS's, without an error).
     if names.get(name) == Some(&len) || there() {
         return Fate::Go;
+    }
+    // (An index the NAS lacks: pageviews.py puts it there when it next reads it.)
+    if month {
+        return Fate::Stay;
     }
     if crate::whole::is_tmp(p) || !crate::whole::file_whole(p) {
         eprintln!("room: {} isn't whole: deleted, not kept", p.display());
@@ -832,6 +851,48 @@ mod tests {
     }
 
     #[test]
+    fn a_pageview_months_index_goes_once_the_nas_has_it() {
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let nas = &d.path().join("nas/sources");
+        // Two indexes the NAS has (one at another size), one it lacks, the counts from before the
+        // indexes, a stream's temporary file, and the items job's answers beside them.
+        let months = c.join(MONTHS);
+        for (m, len) in [("2025-11", 1000), ("2026-02", 900), ("2026-05", 800)] {
+            file(&months.join(format!("{m}.tsv.zst")), len, 7200);
+        }
+        file(&nas.join("pageviews/2025-11.tsv.zst"), 1000, 0);
+        file(&nas.join("pageviews/2026-02.tsv.zst"), 10, 0);
+        for f in ["2026-08.json", "2026-08.counted.json", "2026-08.tsv.zst.123.tmp"] {
+            file(&months.join(f), 100, 7200);
+        }
+        file(&c.join("items/facts-2026-09-28.jsonl"), 100, 7200);
+        let all = used_with(c, &["items"]);
+        let disk = move |p: &Path| Ok(all - used_with(p, &["items"]));
+        assert_eq!(make_room_spared(c, nas, 1 << 40, 1 << 40, &disk).unwrap(), 1000);
+        assert!(!months.join("2025-11.tsv.zst").exists());
+        for f in ["2026-02.tsv.zst", "2026-05.tsv.zst", "2026-08.json", "2026-08.counted.json", "2026-08.tsv.zst.123.tmp"] {
+            assert!(months.join(f).exists(), "{f} stays");
+        }
+        assert!(c.join("items/facts-2026-09-28.jsonl").exists());
+        assert!(!nas.join("pageviews/2026-05.tsv.zst").exists(), "never copied there from here");
+        // Spared (an items or heritage job reads them): none goes.
+        file(&nas.join("pageviews/2026-02.tsv.zst"), 900, 0);
+        let spare = |p: &Path| p.starts_with(c.join(MONTHS));
+        assert_eq!(make_room_with(c, nas, 1 << 40, 1 << 40, &disk, &spare).unwrap(), 0);
+        assert!(months.join("2026-02.tsv.zst").exists());
+    }
+
+    /// The bytes under the caches' folders and `more` of the cache's.
+    fn used_with(c: &Path, more: &[&str]) -> u64 {
+        let mut fs = Vec::new();
+        for d in more {
+            walk(&c.join(d), &mut fs);
+        }
+        used(c) + fs.iter().map(|f| f.1).sum::<u64>()
+    }
+
+    #[test]
     fn it_stops_once_the_disk_has_room() {
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
@@ -971,9 +1032,10 @@ mod tests {
             file(&c.join(format!("dem-cache.{n}")), len, 60);
             file(&nas.join(format!("dem-cache/dem-cache.{n}")), len, 60);
         }
-        // What stays: what would come back from the internet, what frees next to nothing, the
-        // agent's own timings, what units kept that isn't on the NAS yet; and everything outside
-        // the caches (the agent's state, logs, work and outbox, the map's mirror).
+        // What stays: what would come back from the internet, a pageview month the NAS lacks (said
+        // as kept: pageviews.py puts it there when it next reads it), what frees next to nothing,
+        // the agent's own timings, what units kept that isn't on the NAS yet; and everything
+        // outside the caches (the agent's state, logs, work and outbox, the map's mirror).
         let kept = ["items/facts-2026-09-28.jsonl", "items/months/2026-05.tsv.zst", "heritage-2026-09-28-0123456789ab/.done", "heritage-venv/bin/python", "registers-0123456789ab/.done", "rail/pairs-0123456789abcdef.bin", "unit-stages.json", "dem-units/6-1-1.dem", "scenic-units/6-1-1/canopy.keys"];
         for f in kept {
             file(&c.join(f), 100, 60);
@@ -984,7 +1046,7 @@ mod tests {
         }
         let f = clear(c, nas).unwrap();
         assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 200), ("blobs".to_string(), 1000), ("canopy".to_string(), square), ("copies".to_string(), 200), ("dem".to_string(), 130), ("heritage".to_string(), 100)]));
-        assert_eq!(f.left, 0);
+        assert_eq!(f.left, 100, "the month the NAS lacks");
         assert!(nas.join("canopy/a.tif").exists(), "the square the NAS lacked copied there first");
         for e in std::fs::read_dir(c).unwrap().flatten() {
             let n = e.file_name().to_string_lossy().into_owned();
@@ -1013,7 +1075,7 @@ mod tests {
         file(&c.join("dem-cache.keys.u64.m1.123.tmp"), 30, 60);
         std::fs::write(nas.join("dem-cache/dem-cache.src.u8"), b"x").unwrap();
         let f = clear(c, nas).unwrap();
-        assert_eq!((f.bytes(), f.left), (30, 130));
+        assert_eq!((f.bytes(), f.left), (30, 130 + 100));
         assert!(c.join("dem-cache.keys.u64").exists() && !c.join("dem-cache.keys.u64.m1.123.tmp").exists());
     }
 

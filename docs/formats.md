@@ -313,21 +313,24 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
                         answers for the pass, facts-, wp- and fetched-<date>, as the NAS keeps them
                         too, with kept-<date>.json: {archive, files: {name: hash16}}, the NAS's
                         archive they last matched and their hashes then; months/: copies of the
-                        NAS's pageview indexes), rail/ (the trains' stop pairs), registers-<id>/
-                        (the registers' archives, extracted), heritage-<date>-<id>/ (the pass's
+                        NAS's pageview indexes, marked used when read), rail/ (the trains' stop
+                        pairs), registers-<id>/ (the registers' archives, extracted),
+                        heritage-<date>-<id>/ (the pass's
                         copy of the snapshot, which the heritage scripts add their answers to; its
                         .kept.json as items/'s) and heritage-venv/ (the heritage scripts' Python
                         environment), unit-stages.json (the unit stages' times here).
                         When a job starts with too little free, raw tiles waiting are packed onto
-                        the NAS (not kept here), then chm10/, aws-terrarium/ and blobs/ lose files:
-                        chm10/'s, the archives' and blobs/' idle an hour first, then the rest least
-                        recently used first (loose raw tiles a folder at a time; empty markers kept;
-                        a canopy file the NAS lacks copied there first, or kept), until the Mac has
-                        a sixth more free than the job needs (the OSM pass: what it needs). Once the
-                        build is done, the agent trims the same three by the same rules (the build
-                        Mac keeps chm10/); on the owner's ask, it clears them, base/, the seed (while
-                        the NAS has it whole), sources-*/, work-*/ and heritage-merged-* (docs/plan.md
-                        §4 and §8, agent::room). Never through a link, nor in the NAS's folder.
+                        the NAS (not kept here), then chm10/, aws-terrarium/, blobs/ and
+                        items/months/ lose files: chm10/'s, the archives', blobs/' and the months'
+                        idle an hour first, then the rest least recently used first (loose raw
+                        tiles a folder at a time; empty markers kept; a canopy file the NAS lacks
+                        copied there first, or kept; a month the NAS lacks kept; the months kept
+                        while an items or heritage job reads them), until the Mac has a sixth more
+                        free than the job needs (the OSM pass: what it needs). Once the build is
+                        done, the agent trims the same four by the same rules (the build Mac keeps
+                        chm10/); on the owner's ask, it clears them, base/, the seed (while the NAS
+                        has it whole), sources-*/, work-*/ and heritage-merged-* (docs/plan.md §4
+                        and §8, agent::room). Never through a link, nor in the NAS's folder.
 ```
 
 `~/Library/Preferences/nsmb.conf` gets `[FISHANDCHIPS:PERSONAL]` and

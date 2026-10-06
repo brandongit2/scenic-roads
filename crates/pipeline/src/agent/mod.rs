@@ -1909,7 +1909,11 @@ impl Agent {
             // (Never without the NAS: what goes here must be kept there.)
             // (The OSM pass without the margin: its need is what its conditions admitted it with.)
             let margin = if id.starts_with("osm-pass") { 0 } else { room::margin(need) };
-            match room::make_room(&cache, &r.join("sources"), need, margin, &|p| terrain_reads(&id, p)) {
+            // (The pageview months stay for an items or heritage job, this one or one beside: they
+            // read them.)
+            let months = std::iter::once(&step).chain(&others).any(|s| s == "items" || s == "heritage");
+            let pageviews = cache.join(room::MONTHS);
+            match room::make_room(&cache, &r.join("sources"), need, margin, &|p| terrain_reads(&id, p) || (months && p.starts_with(&pageviews))) {
                 Ok(0) => {}
                 Ok(n) => {
                     eprintln!("agent: {} GB of cached canopy squares and terrain tiles deleted for {} GB free", n >> 30, (need + margin) >> 30);

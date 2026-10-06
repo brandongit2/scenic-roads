@@ -327,7 +327,10 @@ record changes back through the build Mac's coordinator, which journals them for
     - AWS's raw terrain tiles (`aws-terrarium/`): as fetched, until packed onto the NAS (packed
       there before they go; a helper's stay until a job of its own packs them), and copies of its
       archives (`packs/`), filled from the NAS's archives;
-    - copies of the records' files staging reads (`blobs/`), filled from the store.
+    - copies of the records' files staging reads (`blobs/`), filled from the store;
+    - copies of the pageview months' indexes (`items/months/`), filled from `sources/pageviews/`
+      (one the NAS lacks stays, for pageviews.py to put there); none goes while an items or
+      heritage job reads them.
   - **Cleared too** (by the owner's ask alone):
     - the pack cache (`base/`): base packs for pack(T) and lo not in its mirror, pruned every run
       and cleared when an OSM pass starts; the next round copies them again (66 GB on the build Mac,
@@ -348,9 +351,9 @@ record changes back through the build Mac's coordinator, which journals them for
       that pass and coverage.
   - Nothing is deleted through a link, nor anything in the NAS's project folder (§8, Room on the
     disk).
-  - **Kept:** the Wikidata and Wikipedia answers the items and heritage jobs keep (`items/`, with
-    the pageview months' indexes, and the pass's copy of the registers' snapshot, which the heritage
-    scripts add theirs to: `heritage-<date>-<id>/`), which the NAS keeps too (Downloads, above); the
+  - **Kept:** the Wikidata and Wikipedia answers the items and heritage jobs keep (`items/`, but
+    its pageview months, and the pass's copy of the registers' snapshot, which the heritage scripts
+    add theirs to: `heritage-<date>-<id>/`), which the NAS keeps too (Downloads, above); the
     heritage scripts' Python environment (`heritage-venv/`, from PyPI); the registers' snapshot,
     extracted (`registers-<id>/`: the pass's copy is an APFS clone of it, so deleting it would free
     next to nothing); the trains' stop pairs (`rail/`, under a MB); the unit stages' timings
@@ -1187,8 +1190,10 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   while they're packed onto the NAS, and on a run again the area's archives copied here and merged,
   those copies spared; the OSM pass, its own 80 GB less the pack cache it clears; the M1's helper,
   15 GB, but a terrain run's and tree cover's as here), the local copies of what the NAS keeps (Meta's canopy squares, AWS's raw
-  terrain tiles, and the copies of the records' files staging reads: `blobs/`) lose files until it
-  has a sixth more (the OSM pass: what it needs), so the next jobs start without deleting again.
+  terrain tiles, the copies of the records' files staging reads, `blobs/`, and of the pageview
+  months' indexes, `items/months/`, but while an items or heritage job, this one or one beside,
+  reads them) lose files until it has a sixth more (the OSM pass: what it needs), so the next jobs
+  start without deleting again.
   - Canopy squares and copies not read in the last hour go first, each by its own use, the least
     recently used first: one listing of the NAS's canopy folder answers for every square (hundreds
     of MB a file), and a copy of a recorded file needs no listing at all (the records name only
@@ -1202,9 +1207,11 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     time; a file the listing lacks asked about once more; a folder whose listing fails or is cut
     short, as a busy NAS's are, keeps its raw tiles that run and has each canopy square asked
     about alone). A canopy square the NAS lacks, or has at another size, is copied there first
-    (whole and flushed), or kept; raw tiles it lacks are packed onto it first (an archive an area,
-    none kept here), or kept (a tile at a time with a flush each, small files stall the NAS and
-    every process waiting on it). The copies of its archives go each by its own use (a job marks
+    (whole and flushed), or kept; a pageview month it lacks stays (pageviews.py puts it there when
+    it next reads it), as do the counts from before the indexes; raw tiles it lacks are packed
+    onto it first (an archive an area, none kept here), or kept (a tile at a time with a flush
+    each, small files stall the NAS and every process waiting on it). The copies of its archives go
+    each by its own use (a job marks
     one used when it opens it). A file that isn't whole itself (cut short, or temporary) is
     deleted, not kept.
   - The OSM pass counts those copies as room.
