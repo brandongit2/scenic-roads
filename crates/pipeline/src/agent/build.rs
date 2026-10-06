@@ -560,6 +560,9 @@ pub struct Plan {
     /// The round under way has nothing left to do (nothing it publishes is new: its catalog would
     /// be the last's): it's over.
     pub ends: bool,
+    /// The round under way's chain to its end, as if each step succeeded (its map tiles, road index,
+    /// rail stops, ferries, the world-level terrain and slope, its catalog): for the forecast.
+    pub round_left: Vec<Work>,
 }
 
 /// A region's work left (`Plan::regions`), as targets.
@@ -768,6 +771,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     let trees_waits = |t: &(String, String)| to_publish.iter().filter(waiting).any(|r| r.tree_areas.contains(&t.0));
     let mut publish_waits = Vec::new();
     let mut ends = false;
+    let mut round_left = Vec::new();
     if let Some(rd) = rounds.current {
         let last = rd.last;
         // (A region of it no longer done, its recipe edited since, waits for another.)
@@ -808,6 +812,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
             },
         }
         ends = work.len() == before;
+        round_left = remaining(done, |d| roads_chain_drawing(date, &m_then, d, inputs, Some(reach), &keep).or_else(|| catalog_work(&m_then, d, inputs, &ready)));
         // The regions done meanwhile: their slope and tree cover; then the regions' terrain and
         // units: a helper's, and this Mac's while the round's work is another's or waits out a
         // failure.
@@ -829,7 +834,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     push(&mut work, "slope", slope);
     push(&mut work, "trees", trees);
     work.extend(chains(last_now));
-    Plan { work, ready, publish_waits, regions: lefts, begins: None, ends }
+    Plan { work, ready, publish_waits, regions: lefts, begins: None, ends, round_left }
 }
 
 /// Where a unit comes in a run of units: by the 10° square its tile's centre is in (column, then
@@ -1734,9 +1739,13 @@ mod tests {
         r.began = 1;
         assert_eq!(r.regions, ["a"]);
         assert!(r.units.contains_key("base/6-28-16") && !r.last);
-        // Its work is already the round's; planned again with it under way, the same.
+        // Its work is already the round's; planned again with it under way, the same. (Its chain to
+        // the end, for the forecast: the road index to the catalog.)
         assert_eq!(plan(&m, &done, &BTreeMap::new(), None, Some(&r)).work, p.work);
         assert!(plan(&m, &done, &BTreeMap::new(), None, Some(&r)).begins.is_none());
+        let left: Vec<&str> = p.round_left.iter().map(|w| w.step.as_str()).collect();
+        assert_eq!((left.first().copied(), left.last().copied()), (Some("roadunits"), Some("catalog")), "{left:?}");
+        assert!(left.contains(&"pack"), "{left:?}");
         // c done meanwhile: it isn't in the round (its catalog records a alone), nor are its roads
         // in the round's road index, map tiles and catalog: the round goes on as it began.
         build(&mut m, &mut done, "6/31/16");

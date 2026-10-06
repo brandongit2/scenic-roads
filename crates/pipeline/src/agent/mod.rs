@@ -2392,8 +2392,10 @@ impl Agent {
                 planned.work.retain(|w| !build::AS_OF_STEPS.contains(&w.step.as_str()) && w.step != "prune");
             }
         }
-        // (The round under way's own work left, for the forecast: its chain.)
-        let round_left: Vec<build::Work> = planned.work.iter().filter(|w| build::AS_OF_STEPS.contains(&w.step.as_str()) || w.step == "prune").cloned().collect();
+        // (The round under way's chain left, and when it began, for the forecast: one begun now,
+        // now.)
+        let round_left = std::mem::take(&mut planned.round_left);
+        let since_last = self.round.borrow().as_ref().map(|r| now_s().saturating_sub(r.began)).or(since_last);
         let ready = planned.ready;
         *self.ready.borrow_mut() = ready.clone();
         // (As the catalog's `--ready`: each with the outline it was built with.)
