@@ -282,7 +282,8 @@ passes' sources (plan §3). A held catalog is written to `catalog-held/` instead
 bin/scenic-launcher     the launcher (never rebuilt)
 run/<name>              what the launcher runs, one argument per line: server, agent (build Mac), status
 app/<version>/          server, scenic, scenic-build, extract, tile, scenic-metrics, dem/, Scenic.app,
-                        web/, fonts/   (app/current → the one in use)
+                        web/, fonts/   (app/current → the one in use); dem/.venv: the Python steps'
+                        environment, which uv makes from dem/uv.lock the first time a step runs here
 mirror/<content name>   local copies, by the same names as on the NAS (.partial/: in progress;
                         .uses: when each file was last used)
 idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trailer)

@@ -1566,7 +1566,9 @@ everything is rebuilt.
 
 **App publishing:** `tools/app/publish.sh`, run by hand on this Mac with the NAS mounted. It:
 1. builds the server and pipeline;
-2. runs the crates' tests, the type check and the web build;
+2. runs the crates' tests, the type check and the web build, and checks every Python step the agent
+   runs loads from a copy of the app's `dem/` (in an environment made from its lock file for the
+   check, then thrown away) and passes pyflakes;
 3. smoke-tests a server on a spare port against the NAS's catalog;
 4. writes `app/<version>/` and `app/current.json` with every file's SHA-256;
 5. copies `tools/nas/fetch-planet.sh` to the NAS's `nas/` when it differs.
@@ -1580,7 +1582,10 @@ everything is rebuilt.
 - `extract`, `tile` and `scenic-metrics` are today's steps, which units run (the rail job runs
   `extract` and `railfreq`, the tree cover job `trees`);
 - the app also carries `dem/` (the Python steps), Scenic.app (the menu bar item), `web/` and
-  `fonts/`.
+  `fonts/`. The Python steps run in `dem/.venv` beside them, which uv makes from the app's lock file
+  (`uv.lock`) the first time a step runs on a Mac (from uv's own cache of the packages, else PyPI),
+  the heritage chain's in its stand-in root too: nothing of it is on the NAS. (The agent finds uv,
+  and Homebrew's osmium, zstd and Java 21, on the PATH `tools/app/install.sh` gives it.)
 
 ## 9. Sizes
 
@@ -1820,3 +1825,5 @@ At each phase's end an Opus agent reviews the work against this plan.
   writes as it starts and ends. They were on the build Mac alone, so another Mac leading the build
   (docs/pool.md) or a lost disk would have asked again (the 2026-09-28 pass's 59,000 items took
   about 37 minutes of queries), and the owner wants nothing fetched twice without a good reason.
+  The heritage scripts run in the app's Python environment, as the other steps do: theirs was the
+  only one kept in the cache.
