@@ -228,7 +228,7 @@ mod tests {
     use super::super::nas::Mem;
     use super::*;
 
-    pub fn entry(term: u64, n: u64, at: u64) -> Entry {
+    fn entry(term: u64, n: u64, at: u64) -> Entry {
         let h = Handoff { changes: [("base/6-1-1".to_string(), Some("base/6-1-1.1111111111111111.base".to_string()))].into(), done: Some(("unit".into(), vec![("6/1/1".into(), "k1".into())])), ..Default::default() };
         Entry { member: "m-000000000000000a".into(), lease: LeaseId { term, n }, step: "unit".into(), handoff: h, at }
     }
