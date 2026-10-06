@@ -597,6 +597,11 @@ pub struct Weighing {
     pub spike: bool,
     pub spike_wall: f32,
     pub spike_flat: f32,
+    /// The same, its width taken as its inradius (the steps from its innermost pixel to the ground
+    /// around: a line's half width) rather than twice its area over its perimeter.
+    pub spike_in: bool,
+    pub spike_in_wall: f32,
+    pub spike_in_flat: f32,
 }
 
 pub fn weigh_top(t: &[f32], p: u32, z: u8, lat: f64) -> Weighing {
@@ -623,7 +628,7 @@ pub fn weigh_top(t: &[f32], p: u32, z: u8, lat: f64) -> Weighing {
     queued[p as usize] = true;
     let (mut members, mut perim, mut sides) = (Vec::<u32>::new(), 0u32, 0u8);
     let (mut best_steep, mut steep_at) = (0f64, 0usize);
-    let mut spike_at = None;
+    let (mut spike_at, mut spike_in_at) = (None, None);
     let mut out = Weighing::default();
     while let Some(H(v, q)) = heap.pop() {
         if v > top || !v.is_finite() || members.len() as u32 > BLOB_MAX {
@@ -643,6 +648,9 @@ pub fn weigh_top(t: &[f32], p: u32, z: u8, lat: f64) -> Weighing {
                 let thin = (2.0 * a / perim.max(1) as f64 + 0.5) * px;
                 if spike_at.is_none() && members.len() as u32 <= SPIKE_MAX && rise > thin {
                     spike_at = Some(members.len());
+                }
+                if spike_in_at.is_none() && members.len() as u32 <= SPIKE_MAX && rise > inradius(&members) as f64 * px {
+                    spike_in_at = Some(members.len());
                 }
             }
         }
@@ -681,10 +689,7 @@ pub fn weigh_top(t: &[f32], p: u32, z: u8, lat: f64) -> Weighing {
     if steep_at > 0 {
         out.steep_flat = flat_of(&members[..steep_at], 0);
     }
-    if let Some(n) = spike_at {
-        out.spike = true;
-        let pix = &members[..n];
-        out.spike_flat = flat_of(pix, 1);
+    let wall_of = |pix: &[u32]| {
         let mut steps = Vec::new();
         for &q in pix {
             let (x, y) = ((q % TS as u32) as i32, (q / TS as u32) as i32);
@@ -698,9 +703,51 @@ pub fn weigh_top(t: &[f32], p: u32, z: u8, lat: f64) -> Weighing {
             }
         }
         steps.sort_by(|a, b| a.total_cmp(b));
-        out.spike_wall = steps.get(steps.len() * 3 / 4).copied().unwrap_or(0.0) as f32;
+        steps.get(steps.len() * 3 / 4).copied().unwrap_or(0.0) as f32
+    };
+    if let Some(n) = spike_at {
+        out.spike = true;
+        out.spike_flat = flat_of(&members[..n], 1);
+        out.spike_wall = wall_of(&members[..n]);
+    }
+    if let Some(n) = spike_in_at {
+        out.spike_in = true;
+        out.spike_in_flat = flat_of(&members[..n], 2);
+        out.spike_in_wall = wall_of(&members[..n]);
     }
     out
+}
+
+/// A small blob's inradius: the most steps (8-connected) from one of its pixels to one outside it.
+fn inradius(pix: &[u32]) -> u32 {
+    let inside = |q: u32| pix.contains(&q);
+    let mut dist: Vec<u32> = vec![u32::MAX; pix.len()];
+    // (Pixels next to the outside are one step from it; the rest one more than their nearest.)
+    let mut changed = true;
+    for (i, &q) in pix.iter().enumerate() {
+        let (x, y) = ((q % TS as u32) as i32, (q / TS as u32) as i32);
+        let edge = [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)].iter().any(|&(dx, dy)| {
+            let (xx, yy) = (x + dx, y + dy);
+            xx < 0 || yy < 0 || xx >= TS as i32 || yy >= TS as i32 || !inside((yy * TS as i32 + xx) as u32)
+        });
+        if edge {
+            dist[i] = 1;
+        }
+    }
+    while changed {
+        changed = false;
+        for i in 0..pix.len() {
+            let (x, y) = ((pix[i] % TS as u32) as i32, (pix[i] / TS as u32) as i32);
+            for (j, &q) in pix.iter().enumerate() {
+                let (qx, qy) = ((q % TS as u32) as i32, (q / TS as u32) as i32);
+                if (qx - x).abs() <= 1 && (qy - y).abs() <= 1 && dist[j] != u32::MAX && dist[j] + 1 < dist[i] {
+                    dist[i] = dist[j] + 1;
+                    changed = true;
+                }
+            }
+        }
+    }
+    dist.into_iter().filter(|&d| d != u32::MAX).max().unwrap_or(1)
 }
 
 /// The ground around a blob (`pixels`, stamped `b` in `stamp`) as the map shows it (`sign` × `v`,

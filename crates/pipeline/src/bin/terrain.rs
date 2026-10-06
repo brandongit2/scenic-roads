@@ -219,9 +219,9 @@ fn scan() -> Result<()> {
         outd: outd.clone(),
         sums: Mutex::new(BTreeMap::new()),
     };
-    writeln!(sc.tiles.lock().unwrap(), "z\tx\ty\tlon\tlat\tv1_px\tv1_max\tv1b_px\tv1b_max\tv1c_px\tv1c_max\tvoids\tblobs\tv2_px\tv2_max\tv2b_any\tv2b_voids\tv2b_blobs\tv2b_px\tv2b_max\tdiff_px\tdiff_max\tstages\tunseen")?;
+    writeln!(sc.tiles.lock().unwrap(), "z\tx\ty\tlon\tlat\tv1_px\tv1_max\tv1b_px\tv1b_max\tv1c_px\tv1c_max\tvoids\tblobs\tv2_px\tv2_max\tv2b_any\tv2b_voids\tv2b_blobs\tv2b_px\tv2b_max\tdiff_px\tdiff_max\tstages\tunseen\tleft1\tleft1_max\tleft2\tleft2_max")?;
     writeln!(sc.changes.lock().unwrap(), "which,z,x,y,px,py,lon,lat,before,after")?;
-    writeln!(sc.peaks.lock().unwrap(), "z\tx\ty\tid\tele\traw\tv2\tratio\tarea\trise\tlevel\tsteep\tsteep_flat\tspike\tspike_wall\tspike_flat")?;
+    writeln!(sc.peaks.lock().unwrap(), "z\tx\ty\tid\tele\traw\tv2\tratio\tarea\trise\tlevel\tsteep\tsteep_flat\tspike\tspike_wall\tspike_flat\tspike_in\tspike_in_wall\tspike_in_flat")?;
     writeln!(sc.blobs.lock().unwrap(), "z\tx\ty\tpx\tpy\tlon\tlat\tpit\tpixels\trise\tlevel\treach\tedge\tpx_m\tislope\twall\tring_iqr\ttop\tkind\trough\tground")?;
     writeln!(sc.holes.lock().unwrap(), "z\tx\ty\tlon\tlat\tarea\tfloor_min\tfloor_med\tfloor_max\tones\tneg\trim_min\trim_med\trim_max\twall_med")?;
     let store = root.join("sources/aws-terrarium");
@@ -369,6 +369,10 @@ fn scan() -> Result<()> {
     txt += &format!("all: {} | {} ({} px, max {:.0} m), {} ({} px, max {:.0} m), {} ({} px, max {:.0} m) | {} ({} voids, {} blobs, {} px, max {:.0} m), {} ({} px, max {:.2} m) | {} (max {:.0} m)\n",
         s.tiles, s.v1.0, s.v1.1, s.v1.2, s.v1b.0, s.v1b.1, s.v1b.2, s.v1c.0, s.v1c.1, s.v1c.2, s.v2.0, s.voids, s.blobs, s.v2.1, s.v2.2, s.v2b.0, s.v2b.1, s.v2b.2, s.diff.0, s.diff.2);
     txt += &format!("tiles by the new repair's stages (0: nothing to weigh, 1..8): {:?}\n", s.stages);
+    txt += "towers left over low ground (> 100 m above a 7 x 7 median of 30 m or less), per zoom: tiles, pixels, most (first repair | new):\n";
+    for (z, s) in &sums {
+        txt += &format!("  z{z}: {} {} {:.0} | {} {} {:.0}\n", s.left1.0, s.left1.1, s.left1.2, s.left2.0, s.left2.1, s.left2.2);
+    }
     txt += &format!("({:.0?})\n", t0.elapsed());
     eprint!("{txt}");
     std::fs::write(outd.join("summary.txt"), txt)?;
@@ -412,6 +416,9 @@ struct Sum {
     diff: Count,
     /// Tiles by the stages the new repair took (index: stages, 1 to 8).
     stages: [u64; 9],
+    /// Towers left over low ground (`towers_left`), after each repair.
+    left1: Count,
+    left2: Count,
 }
 
 impl Sum {
@@ -428,6 +435,8 @@ impl Sum {
         for (a, b) in self.stages.iter_mut().zip(&o.stages) {
             *a += b;
         }
+        self.left1.sum(&o.left1);
+        self.left2.sum(&o.left2);
     }
 }
 
@@ -543,6 +552,7 @@ impl Scan {
         let any = again.iter().zip(&o2).filter(|(a, b)| a.to_bits() != b.to_bits()).count() as u32;
         let m2b = moved(&o2, &again);
         let diff = moved(&o1, &o2);
+        let (left1, left2) = (towers_left(&o1), towers_left(&o2));
         sum.v1.add(m1.0, m1.1);
         sum.v1b.add(m1b.0, m1b.1);
         sum.v1c.add(m1c.0, m1c.1);
@@ -552,15 +562,17 @@ impl Scan {
         sum.v2b.add(any.max(m2b.0), m2b.1);
         sum.diff.add(diff.0, diff.1);
         sum.stages[rep2.stages.min(8)] += 1;
+        sum.left1.add(left1.0, left1.1);
+        sum.left2.add(left2.0, left2.1);
         self.sums.lock().unwrap().entry(z).or_default().add(&sum);
         let n2 = (1u64 << z) as f64;
         let lonlat = |i: usize| {
             let (px, py) = ((i % 256) as f64 + 0.5, (i / 256) as f64 + 0.5);
             ((x as f64 + px / 256.0) / n2 * 360.0 - 180.0, (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + py / 256.0) / n2)).dsinh().datan().to_degrees())
         };
-        if m1.0 + m1b.0 + m1c.0 + m2.0 + any + diff.0 > 0 || rep2.voids > 0 {
+        if m1.0 + m1b.0 + m1c.0 + m2.0 + any + diff.0 + left1.0 + left2.0 > 0 || rep2.voids > 0 {
             let (lon, lat) = lonlat(128 * 256 + 128);
-            writeln!(self.tiles.lock().unwrap(), "{z}\t{x}\t{y}\t{lon:.5}\t{lat:.5}\t{}\t{:.0}\t{}\t{:.0}\t{}\t{:.0}\t{}\t{}\t{}\t{:.0}\t{any}\t{}\t{}\t{}\t{:.2}\t{}\t{:.0}\t{}\t{}", m1.0, m1.1, m1b.0, m1b.1, m1c.0, m1c.1, rep2.voids, rep2.blobs, m2.0, m2.1, rb.voids, rb.blobs, m2b.0, m2b.1, diff.0, diff.1, rep2.stages, rep2.unseen).ok();
+            writeln!(self.tiles.lock().unwrap(), "{z}\t{x}\t{y}\t{lon:.5}\t{lat:.5}\t{}\t{:.0}\t{}\t{:.0}\t{}\t{:.0}\t{}\t{}\t{}\t{:.0}\t{any}\t{}\t{}\t{}\t{:.2}\t{}\t{:.0}\t{}\t{}\t{}\t{:.0}\t{}\t{:.0}", m1.0, m1.1, m1b.0, m1b.1, m1c.0, m1c.1, rep2.voids, rep2.blobs, m2.0, m2.1, rb.voids, rb.blobs, m2b.0, m2b.1, diff.0, diff.1, rep2.stages, rep2.unseen, left1.0, left1.1, left2.0, left2.1).ok();
         }
         self.blob_rows(&b2v, &found.into_inner(), z, x, y);
         self.peak_rows(&b2v, &a2v, z, x, y);
@@ -693,7 +705,7 @@ impl Scan {
             }
             let (ratio, area, rise, level) = summit_ratio(e, best.1, px);
             let wt = weigh_top(e, best.1 as u32, z, tile_lat(z, y));
-            rows += &format!("{z}\t{x}\t{y}\t{id}\t{ele:.0}\t{:.0}\t{:.0}\t{ratio:.3}\t{area}\t{rise:.0}\t{level:.0}\t{:.3}\t{:.1}\t{}\t{:.2}\t{:.1}\n", best.0, after[best.1], wt.steep, wt.steep_flat, wt.spike as u8, wt.spike_wall, wt.spike_flat);
+            rows += &format!("{z}\t{x}\t{y}\t{id}\t{ele:.0}\t{:.0}\t{:.0}\t{ratio:.3}\t{area}\t{rise:.0}\t{level:.0}\t{:.3}\t{:.1}\t{}\t{:.2}\t{:.1}\t{}\t{:.2}\t{:.1}\n", best.0, after[best.1], wt.steep, wt.steep_flat, wt.spike as u8, wt.spike_wall, wt.spike_flat, wt.spike_in as u8, wt.spike_in_wall, wt.spike_in_flat);
         }
         if !rows.is_empty() {
             self.peaks.lock().unwrap().write_all(rows.as_bytes()).ok();
@@ -769,6 +781,38 @@ impl Scan {
             self.holes.lock().unwrap().write_all(rows.as_bytes()).ok();
         }
     }
+}
+
+/// Towers left over low ground in a tile as the map shows it: pixels more than 100 m above the
+/// median of the 7 × 7 pixels around them where that median is 30 m or less (water, lowland), a
+/// check apart from the repair's own rules: how many, and the most one stands out.
+fn towers_left(e: &[f32]) -> (u32, f32) {
+    let (mut n, mut big) = (0u32, 0f32);
+    let mut win = Vec::with_capacity(49);
+    for y in 0..256i32 {
+        for x in 0..256i32 {
+            let v = e[(y * 256 + x) as usize].max(0.0);
+            if v < 100.0 {
+                continue;
+            }
+            win.clear();
+            for dy in -3..=3 {
+                for dx in -3..=3 {
+                    let (xx, yy) = (x + dx, y + dy);
+                    if xx >= 0 && yy >= 0 && xx < 256 && yy < 256 {
+                        win.push(e[(yy * 256 + xx) as usize].max(0.0));
+                    }
+                }
+            }
+            let k = win.len() / 2;
+            let m = *win.select_nth_unstable_by(k, |a, b| a.total_cmp(b)).1;
+            if m <= 30.0 && v - m > 100.0 {
+                n += 1;
+                big = big.max(v - m);
+            }
+        }
+    }
+    (n, big)
 }
 
 /// OSM's summits with a height (the pass's `work/summits`), by z6 tile; none when there are none.
