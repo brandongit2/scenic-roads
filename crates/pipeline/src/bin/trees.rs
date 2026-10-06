@@ -1,11 +1,17 @@
 //! The tree cover layers' tiles (`pipeline::trees`): dem/trees.py's `--z3` run, its command line,
-//! outputs and progress lines; and the same work a block at a time, for workers.
+//! outputs and progress lines; a z6 tile's run and a z3 tile's assembly from them, as the build makes
+//! the layers; and the same work a block at a time, for workers.
 //!
 //! usage: trees --z3 x,y --coverage cov.json --chm dir --chm-store dir --leaf dir --out dir
 //!              [--workers n] [--dem dir]
 //!            z3 tile x,y: its canopy squares made ready in `chm` (from the NAS's `chm-store`), its
 //!            leaf-type squares in `leaf` (made by `dem`'s leaftype.py where missing: the current
 //!            folder unless said), out/trees-{cover,height,leaf}.tiles holding its zoom 4–12 tiles
+//!        trees --z6 x,y (the same options)
+//!            z6 tile x,y alone: out/trees-*.tiles holding its zoom 9–12 tiles, and out/trees-mid.sect
+//!            its mid (its blocks' zoom-8 tiles and values)
+//!        trees --assemble-lo --out dir [--workers n] <mid>…
+//!            a z3 tile's zoom 8–4 from its z6 tiles' mids: out/trees-*.tiles
 //!        trees --block 8/x/y --coverage cov.json --chm dir|url --leaf dir|url --out dir [--record dir]
 //!            one zoom-8 block: out/trees-*.tiles holding its zoom 8–12 tiles and out/trees-tops.bin
 //!            its zoom-8 values; its squares read from a folder, or URLs (a prefix: through the
@@ -22,23 +28,27 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 const USAGE: &str = "usage: trees --z3 x,y --coverage cov.json --chm dir --chm-store dir --leaf dir --out dir [--workers n] [--dem dir]
+       trees --z6 x,y --coverage cov.json --chm dir --chm-store dir --leaf dir --out dir [--workers n] [--dem dir]
+       trees --assemble-lo --out dir [--workers n] <mid>…
        trees --block 8/x/y --coverage cov.json --chm dir|url --leaf dir|url --out dir [--record dir]
        trees --assemble --out dir <block out dir>…";
 
 fn main() -> Result<()> {
     let mut opts: BTreeMap<String, String> = BTreeMap::new();
-    let mut assemble = false;
+    let (mut assemble, mut assemble_lo) = (false, false);
     let mut rest: Vec<PathBuf> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         if a == "--assemble" {
             assemble = true;
+        } else if a == "--assemble-lo" {
+            assemble_lo = true;
         } else if let Some(f) = a.strip_prefix("--") {
             let (k, v) = match f.split_once('=') {
                 Some((k, v)) => (k.to_string(), v.to_string()),
                 None => (f.to_string(), args.next().with_context(|| format!("--{f} needs a value\n{USAGE}"))?),
             };
-            if !["z3", "block", "coverage", "chm", "chm-store", "leaf", "out", "workers", "dem", "record"].contains(&k.as_str()) {
+            if !["z3", "z6", "block", "coverage", "chm", "chm-store", "leaf", "out", "workers", "dem", "record"].contains(&k.as_str()) {
                 bail!("unknown option --{k}\n{USAGE}");
             }
             opts.insert(k, v);
@@ -55,12 +65,13 @@ fn main() -> Result<()> {
     let pool = pool.build().ok();
     let within = |f: &(dyn Fn() -> Result<()> + Sync)| pipeline::dem::sample::within(pool.as_ref(), f);
     let out = PathBuf::from(get("out")?);
-    if assemble {
+    if assemble || assemble_lo {
         if rest.is_empty() {
-            bail!("no blocks to assemble\n{USAGE}");
+            bail!("nothing to assemble\n{USAGE}");
         }
         return within(&|| {
-            let n = trees::assemble(&rest, &out, &|done, total| pipeline::agent::jobs::report(done, total, "zoom 7–4 tiles"))?;
+            let said = |done, total| pipeline::agent::jobs::report(done, total, "zoom 7–4 tiles");
+            let n = if assemble_lo { trees::assemble_lo(&rest, &out, &said)? } else { trees::assemble(&rest, &out, &said)? };
             for (l, n) in trees::LAYERS.iter().zip(n) {
                 eprintln!("trees-{l}.tiles: {n} tiles");
             }
@@ -70,11 +81,11 @@ fn main() -> Result<()> {
     if !rest.is_empty() {
         bail!("unexpected {}\n{USAGE}", rest[0].display());
     }
-    if let Some(q) = opts.get("z3") {
-        let (x, y) = q.split_once(',').with_context(|| format!("--z3 x,y, not {q}"))?;
-        let a = trees::Z3 {
-            qx: x.parse().context("--z3")?,
-            qy: y.parse().context("--z3")?,
+    for (z, k) in [(3u8, "z3"), (6, "z6")] {
+        let Some(t) = opts.get(k) else { continue };
+        let (x, y) = t.split_once(',').with_context(|| format!("--{k} x,y, not {t}"))?;
+        let a = trees::Run {
+            tile: (z, x.parse().with_context(|| format!("--{k}"))?, y.parse().with_context(|| format!("--{k}"))?),
             coverage: PathBuf::from(get("coverage")?),
             chm: PathBuf::from(get("chm")?),
             chm_store: PathBuf::from(get("chm-store")?),
@@ -82,7 +93,7 @@ fn main() -> Result<()> {
             out,
             dem: opts.get("dem").map_or_else(|| PathBuf::from("."), PathBuf::from),
         };
-        return within(&|| trees::z3(&a).map(|_| ()));
+        return within(&|| (if z == 3 { trees::z3(&a) } else { trees::z6(&a) }).map(|_| ()));
     }
     let b = get("block")?;
     let u = pipeline::legacy::Unit::parse(b).filter(|u| u.z == trees::ZBLOCK).with_context(|| format!("--block 8/x/y, not {b}"))?;

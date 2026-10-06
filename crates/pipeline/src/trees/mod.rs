@@ -17,6 +17,10 @@
 //! which `assemble` makes the z3 tile's archives. `z3` does both, its blocks on rayon's threads (in
 //! WebAssembly one after another), and the archives are the same bytes either way, and as
 //! `assemble` writes them.
+//!
+//! The build makes the layers a z6 tile at a time (a piece, `z6`: its blocks' zoom 9–12 tiles, and
+//! its mid, `MID`, their zoom-8 tiles and values), then each z3 tile's zoom 8 to 4 from its pieces'
+//! mids (`assemble_lo`): together the same tiles, byte for byte, as `z3` makes.
 
 pub mod mask;
 pub mod pyramid;
@@ -525,13 +529,13 @@ fn in_order<T: Send>(n: usize, f: impl Fn(usize) -> Result<T> + Sync, done: impl
     })
 }
 
-/// The blocks of z3 tile (`qx`, `qy`) the coverage meets (a ring's box meets theirs), in trees.py's
-/// order.
-pub fn z3_blocks(shapes: &mask::Shapes, qx: u32, qy: u32) -> Vec<(u32, u32)> {
-    let k = 1u32 << (ZBLOCK - 3);
+/// The blocks of tile (`z`, `x`, `y`) (zoom 3 or 6) the coverage meets (a ring's box meets theirs),
+/// in trees.py's order: by column, then row.
+pub fn blocks_of(shapes: &mask::Shapes, z: u8, x: u32, y: u32) -> Vec<(u32, u32)> {
+    let k = 1u32 << (ZBLOCK - z);
     let mut out = Vec::new();
-    for bx in qx * k..(qx + 1) * k {
-        for by in qy * k..(qy + 1) * k {
+    for bx in x * k..(x + 1) * k {
+        for by in y * k..(y + 1) * k {
             if shapes.meets(tile_bounds(ZBLOCK, bx, by)) {
                 out.push((bx, by));
             }
@@ -540,10 +544,16 @@ pub fn z3_blocks(shapes: &mask::Shapes, qx: u32, qy: u32) -> Vec<(u32, u32)> {
     out
 }
 
-/// trees.py's `--z3` arguments.
-pub struct Z3 {
-    pub qx: u32,
-    pub qy: u32,
+/// The blocks of z3 tile (`qx`, `qy`) the coverage meets, in trees.py's order (`blocks_of`).
+pub fn z3_blocks(shapes: &mask::Shapes, qx: u32, qy: u32) -> Vec<(u32, u32)> {
+    blocks_of(shapes, 3, qx, qy)
+}
+
+/// A run's arguments: trees.py's `--z3` (a z3 tile: its zoom 4–12 tiles, `z3`), or the same for a z6
+/// tile (`--z6`: its zoom 9–12 tiles and its mid, `z6`).
+pub struct Run {
+    /// The tile: zoom (3 or 6), column, row.
+    pub tile: (u8, u32, u32),
     pub coverage: PathBuf,
     /// The canopy squares' cache (the units read it too), filled from `chm_store` (the NAS's).
     pub chm: PathBuf,
@@ -554,17 +564,22 @@ pub struct Z3 {
     pub dem: PathBuf,
 }
 
-/// trees.py's `--z3` run: z3 tile (`qx`, `qy`)'s blocks the coverage meets, their canopy squares
-/// fetched where missing and their leaf-type squares made, then every block (on rayon's threads)
-/// and zoom 7 to 4, into `out`'s three archives; the same progress lines.
-pub fn z3(a: &Z3) -> Result<[usize; 3]> {
+/// A run begun (`begin`): the coverage's shapes, the blocks they meet, and the canopy squares there.
+type Begun = (mask::Shapes, Vec<(u32, u32)>, Vec<(i32, i32)>);
+
+/// A run begun: its tile's blocks the coverage meets, their canopy squares fetched where missing
+/// and their leaf-type squares made; the coverage's shapes, the blocks and the canopy squares
+/// there, with trees.py's line.
+fn begin(a: &Run) -> Result<Begun> {
     let t0 = std::time::Instant::now();
     for d in [&a.chm, &a.leaf, &a.out] {
         std::fs::create_dir_all(d).with_context(|| d.display().to_string())?;
     }
     let text = std::fs::read_to_string(&a.coverage).with_context(|| a.coverage.display().to_string())?;
     let shapes = mask::Shapes::parse(&text).with_context(|| a.coverage.display().to_string())?;
-    let blocks = z3_blocks(&shapes, a.qx, a.qy);
+    let (z, x, y) = a.tile;
+    ensure!(z == 3 || z == 6, "a run is of a z3 or a z6 tile, not zoom {z}");
+    let blocks = blocks_of(&shapes, z, x, y);
     // The canopy squares they touch, fetched when missing, and their leaf types.
     let mut want: Vec<(i32, i32)> = blocks.iter().flat_map(|&(bx, by)| squares_of(tile_bounds(ZBLOCK, bx, by))).collect();
     want.sort_unstable();
@@ -580,36 +595,185 @@ pub fn z3(a: &Z3) -> Result<[usize; 3]> {
     }
     crate::agent::jobs::report(want.len() as u64, want.len() as u64, "canopy squares");
     squares::leaf_types(&sqs, &a.leaf, &a.dem)?;
-    eprintln!("trees z3 {},{}: {} zoom-8 blocks, {} canopy squares ({:.0} s)", a.qx, a.qy, blocks.len(), sqs.len(), t0.elapsed().as_secs_f64());
+    eprintln!("trees z{z} {x},{y}: {} zoom-8 blocks, {} canopy squares ({:.0} s)", blocks.len(), sqs.len(), t0.elapsed().as_secs_f64());
+    Ok((shapes, blocks, sqs))
+}
+
+/// Every one of `blocks` (on rayon's threads), its squares in `a`'s folders (`sqs` there), given to
+/// `sink` in order as it's made, how many are made said.
+fn each_block(a: &Run, shapes: &mask::Shapes, blocks: &[(u32, u32)], sqs: Vec<(i32, i32)>, mut sink: impl FnMut((u32, u32), BlockOut) -> Result<()>) -> Result<()> {
     let fetch = crate::fetch::MapFetch::default();
-    let inp = Inputs { chm: Source::Dir(a.chm.clone()), leaf: Source::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs.clone()) };
-    let mut w = Writers::create(&a.out)?;
-    let mut tops: BTreeMap<(u32, u32), Vec<u8>> = BTreeMap::new();
+    let inp = Inputs { chm: Source::Dir(a.chm.clone()), leaf: Source::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs) };
     // (Said before the first block is back, so the stage before's last line isn't shown meanwhile.)
     crate::agent::jobs::report(0, blocks.len() as u64, "zoom-8 blocks");
     let finished = std::sync::atomic::AtomicUsize::new(0);
     in_order(
         blocks.len(),
-        |i| block(&shapes, &inp, blocks[i].0, blocks[i].1),
+        |i| block(shapes, &inp, blocks[i].0, blocks[i].1),
         |_| {
             let k = finished.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
             crate::agent::jobs::report(k as u64, blocks.len() as u64, "zoom-8 blocks");
         },
-        |i, b| {
-            for t in &b.tiles {
-                w.add(t)?;
-            }
-            tops.insert(blocks[i], b.tops.to_bytes()?);
-            Ok(())
-        },
-    )?;
-    for t in pyramid::lower(&tops, &|done, total| crate::agent::jobs::report(done, total, "zoom 7–4 tiles"))? {
-        w.add(&t)?;
-    }
-    let n = w.finish()?;
+        |i, b| sink(blocks[i], b),
+    )
+}
+
+/// Each archive's tile count, said; the run's last line.
+fn end(a: &Run, n: [usize; 3], t0: std::time::Instant) -> [usize; 3] {
     for (l, n) in LAYERS.iter().zip(n) {
         eprintln!("trees-{l}.tiles: {n} tiles");
     }
-    eprintln!("trees z3 {},{}: done in {:.0} s", a.qx, a.qy, t0.elapsed().as_secs_f64());
-    Ok(n)
+    let (z, x, y) = a.tile;
+    eprintln!("trees z{z} {x},{y}: done in {:.0} s", t0.elapsed().as_secs_f64());
+    n
+}
+
+/// trees.py's `--z3` run: z3 tile `a.tile`'s blocks the coverage meets, their canopy squares
+/// fetched where missing and their leaf-type squares made, then every block (on rayon's threads)
+/// and zoom 7 to 4, into `out`'s three archives; the same progress lines.
+pub fn z3(a: &Run) -> Result<[usize; 3]> {
+    ensure!(a.tile.0 == 3, "a z3 run of a zoom-{} tile", a.tile.0);
+    let t0 = std::time::Instant::now();
+    let (shapes, blocks, sqs) = begin(a)?;
+    let mut w = Writers::create(&a.out)?;
+    let mut tops: BTreeMap<(u32, u32), Vec<u8>> = BTreeMap::new();
+    each_block(a, &shapes, &blocks, sqs, |at, b| {
+        for t in &b.tiles {
+            w.add(t)?;
+        }
+        tops.insert(at, b.tops.to_bytes()?);
+        Ok(())
+    })?;
+    for t in pyramid::lower(&tops, &|done, total| crate::agent::jobs::report(done, total, "zoom 7–4 tiles"))? {
+        w.add(&t)?;
+    }
+    Ok(end(a, w.finish()?, t0))
+}
+
+/// A z6 tile's run (docs/plan.md §6, Trees: a piece): z6 tile `a.tile`'s blocks the coverage meets,
+/// as `z3` runs them, its zoom 9–12 tiles into `out`'s three archives (its hi packs' tiles), and
+/// its blocks' zoom-8 tiles and values into its mid, `out/MID` (`write_mid`), from which its z3
+/// tile's assembly (`assemble_lo`) makes zoom 8 to 4. A z3 run's tiles are its z6 tiles' runs' and
+/// their assembly's, the same bytes.
+pub fn z6(a: &Run) -> Result<[usize; 3]> {
+    ensure!(a.tile.0 == 6, "a z6 run of a zoom-{} tile", a.tile.0);
+    let t0 = std::time::Instant::now();
+    let (shapes, blocks, sqs) = begin(a)?;
+    let mut w = Writers::create(&a.out)?;
+    let mut mid: MidBlocks = BTreeMap::new();
+    each_block(a, &shapes, &blocks, sqs, |at, b| {
+        let (z8, hi): (Vec<Tile>, Vec<Tile>) = b.tiles.into_iter().partition(|t| t.z == ZBLOCK);
+        for t in &hi {
+            w.add(t)?;
+        }
+        mid.insert(at, (z8, b.tops.to_bytes()?));
+        Ok(())
+    })?;
+    write_mid(&a.out.join(MID), (a.tile.1, a.tile.2), &mid)?;
+    Ok(end(a, w.finish()?, t0))
+}
+
+/// A z6 tile's mid beside its archives (`z6`).
+pub const MID: &str = "trees-mid.sect";
+/// The mid's format.
+const MID_FMT: u64 = 1;
+
+/// A mid's blocks (`write_mid`): each block's zoom-8 tiles and its zoom-8 values (`Tops::to_bytes`).
+pub type MidBlocks = BTreeMap<(u32, u32), (Vec<Tile>, Vec<u8>)>;
+
+/// A z6 tile's mid, as `z6` writes it (`write_mid`): its tile, its blocks' zoom-8 tiles of the three
+/// layers, and each block's zoom-8 values (`Tops::to_bytes`).
+#[derive(Debug, PartialEq)]
+pub struct Mid {
+    pub tile: (u32, u32),
+    pub z8: Vec<Tile>,
+    pub tops: BTreeMap<(u32, u32), Vec<u8>>,
+}
+
+/// Writes z6 tile `tile`'s mid to `path`: what its z3 tile's assembly takes of it (`assemble_lo`),
+/// its blocks' zoom-8 tiles and their zoom-8 values (which the tiles can't give back: rounded to
+/// whole steps). A sectioned file (store::sect), meta `{"fmt": 1, "step": "trees", "tile":
+/// "6/x/y", "v": TREES_V}`; per block (`blocks`: its zoom-8 tiles and values), by column then row,
+/// a section `<layer>-8-<x>-<y>` for each layer whose zoom-8 tile it made, then `tops-8-<x>-<y>`.
+pub fn write_mid(path: &Path, tile: (u32, u32), blocks: &MidBlocks) -> Result<()> {
+    let meta = serde_json::json!({ "fmt": MID_FMT, "step": "trees", "tile": format!("6/{}/{}", tile.0, tile.1), "v": crate::treepacks::TREES_V });
+    let tmp = path.with_extension("sect.tmp");
+    let mut w = store::sect::SectWriter::create(&tmp, meta)?;
+    for (&(x, y), (z8, tops)) in blocks {
+        ensure!((x >> (ZBLOCK - 6), y >> (ZBLOCK - 6)) == tile, "block 8/{x}/{y} isn't in z6 tile 6/{}/{}", tile.0, tile.1);
+        let mut z8: Vec<&Tile> = z8.iter().collect();
+        z8.sort_by_key(|t| t.layer);
+        for t in z8 {
+            ensure!((t.z, t.x, t.y) == (ZBLOCK, x, y), "a zoom-8 tile of block 8/{x}/{y} that's {}/{}/{}", t.z, t.x, t.y);
+            w.add(&format!("{}-8-{x}-{y}", LAYERS[t.layer as usize]), &t.webp)?;
+        }
+        ensure!(Tops::block_of(tops)? == (x, y), "block 8/{x}/{y}'s zoom-8 values are another block's");
+        w.add(&format!("tops-8-{x}-{y}"), tops)?;
+    }
+    w.finish()?;
+    std::fs::rename(&tmp, path).with_context(|| path.display().to_string())
+}
+
+/// A mid's file (`write_mid`), read and checked: its format and step version (a mid made for another
+/// version of the layers isn't one to assemble), every section whole.
+pub fn read_mid(path: &Path) -> Result<Mid> {
+    let what = || path.display().to_string();
+    let r = store::sect::SectReader::open(PlainFile::open(path).with_context(what)?).with_context(what)?;
+    let m = r.meta();
+    ensure!(m["fmt"].as_u64() == Some(MID_FMT) && m["step"] == "trees", "{}: not a tree cover mid", what());
+    ensure!(m["v"].as_u64() == Some(crate::treepacks::TREES_V as u64), "{}: a mid of tree cover version {}, not {}", what(), m["v"], crate::treepacks::TREES_V);
+    let tile = m["tile"].as_str().and_then(crate::legacy::Unit::parse).filter(|u| u.z == 6).with_context(|| format!("{}: no z6 tile", what()))?;
+    let mut out = Mid { tile: (tile.x, tile.y), z8: Vec::new(), tops: BTreeMap::new() };
+    for s in r.sections() {
+        let parts: Vec<&str> = s.name.split('-').collect();
+        let (kind, x, y) = match parts.as_slice() {
+            [kind, "8", x, y] => (*kind, x.parse::<u32>().ok(), y.parse::<u32>().ok()),
+            _ => bail!("{}: a section {:?}", what(), s.name),
+        };
+        let (Some(x), Some(y)) = (x, y) else { bail!("{}: a section {:?}", what(), s.name) };
+        ensure!((x >> (ZBLOCK - 6), y >> (ZBLOCK - 6)) == out.tile, "{}: block 8/{x}/{y} isn't in its tile", what());
+        let bytes = r.read(&s.name).with_context(what)?;
+        if kind == "tops" {
+            ensure!(Tops::block_of(&bytes)? == (x, y), "{}: {}'s values are another block's", what(), s.name);
+            out.tops.insert((x, y), bytes);
+        } else {
+            let layer = LAYERS.iter().position(|l| *l == kind).with_context(|| format!("{}: a section {:?}", what(), s.name))?;
+            out.z8.push(Tile { layer: layer as u8, z: ZBLOCK, x, y, webp: bytes });
+        }
+    }
+    Ok(out)
+}
+
+/// A z3 tile's assembly (docs/plan.md §6, Trees): its zoom 8 to 4 in `out`'s three archives (its lo
+/// packs' tiles), from its z6 tiles' mids (`z6`, `MID`): their blocks' zoom-8 tiles as they made
+/// them, and zoom 7 to 4 from every block's values (`said` told how many of those are made, of how
+/// many), as `z3` makes them. The mids must be of one z3 tile, each z6 tile once. Each archive's
+/// tile count.
+pub fn assemble_lo(mids: &[PathBuf], out: &Path, said: &(dyn Fn(u64, u64) + Sync)) -> Result<[usize; 3]> {
+    std::fs::create_dir_all(out)?;
+    let mut z8: Vec<Tile> = Vec::new();
+    let mut tops: BTreeMap<(u32, u32), Vec<u8>> = BTreeMap::new();
+    let mut tiles: BTreeMap<(u32, u32), PathBuf> = BTreeMap::new();
+    for p in mids {
+        let m = read_mid(p)?;
+        if let Some(other) = tiles.insert(m.tile, p.clone()) {
+            bail!("z6 tile 6/{}/{}'s mid given twice ({} and {})", m.tile.0, m.tile.1, other.display(), p.display());
+        }
+        let q = |t: (u32, u32)| (t.0 >> 3, t.1 >> 3);
+        if let Some((first, _)) = tiles.first_key_value() {
+            ensure!(q(*first) == q(m.tile), "mids of z3 tiles 3/{}/{} and 3/{}/{}", q(*first).0, q(*first).1, q(m.tile).0, q(m.tile).1);
+        }
+        z8.extend(m.z8);
+        tops.extend(m.tops);
+    }
+    // (By block and layer, whatever order the mids came in.)
+    z8.sort_by_key(|t| (t.x, t.y, t.layer));
+    let mut w = Writers::create(out)?;
+    for t in &z8 {
+        w.add(t)?;
+    }
+    for t in pyramid::lower(&tops, said)? {
+        w.add(&t)?;
+    }
+    w.finish()
 }

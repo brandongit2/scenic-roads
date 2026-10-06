@@ -316,7 +316,7 @@ fn the_z3_run_and_its_blocks_alike() {
     const COV: &str = r#"{"shapes": [[[[5.66, 48.2], [7.2, 48.2], [7.2, 48.91], [5.66, 48.91]]]]}"#;
     std::fs::write(o.path().join("cov.json"), COV).unwrap();
     let run = |threads: usize, out: &str| {
-        let a = Z3 { qx: 4, qy: 2, coverage: o.path().join("cov.json"), chm: d.path().into(), chm_store: o.path().join("store"), leaf: d.path().into(), out: o.path().join(out), dem: o.path().into() };
+        let a = Run { tile: (3, 4, 2), coverage: o.path().join("cov.json"), chm: d.path().into(), chm_store: o.path().join("store"), leaf: d.path().into(), out: o.path().join(out), dem: o.path().into() };
         rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap().install(|| z3(&a)).unwrap()
     };
     let n1 = run(1, "one");
@@ -344,6 +344,76 @@ fn the_z3_run_and_its_blocks_alike() {
         assert_eq!(one, std::fs::read(o.path().join("four").join(&f)).unwrap(), "{l}: 1 thread and 4 alike");
         assert_eq!(one, std::fs::read(o.path().join("asm").join(&f)).unwrap(), "{l}: the blocks assembled alike");
     }
+}
+
+/// An archive's tiles: (z, x, y) → bytes.
+fn tiles_of(p: &Path) -> BTreeMap<(u8, u32, u32), Vec<u8>> {
+    let a = Archive::open(p).unwrap();
+    a.entries().iter().map(|e| (((e.key >> 58) as u8, ((e.key >> 29) & ((1 << 29) - 1)) as u32, (e.key & ((1 << 29) - 1)) as u32), a.get_entry(e).to_vec())).collect()
+}
+
+#[test]
+fn a_z3_tiles_pieces_and_their_assembly_make_its_tiles() {
+    let d = squares_dir();
+    let o = tempfile::tempdir().unwrap();
+    // Over blocks 8/131–134, rows 87 and 88: z6 tiles 6/32/21, 6/32/22, 6/33/21 and 6/33/22 of z3
+    // tile 3/4/2, the squares' data in each.
+    const COV: &str = r#"{"shapes": [[[[5.5, 48.85], [9.5, 48.85], [9.5, 48.95], [5.5, 48.95]]]]}"#;
+    std::fs::write(o.path().join("cov.json"), COV).unwrap();
+    let run = |tile: (u8, u32, u32), out: &str| Run { tile, coverage: o.path().join("cov.json"), chm: d.path().into(), chm_store: o.path().join("store"), leaf: d.path().into(), out: o.path().join(out), dem: o.path().into() };
+    let pool = |n: usize| rayon::ThreadPoolBuilder::new().num_threads(n).build().unwrap();
+    let n3 = pool(4).install(|| z3(&run((3, 4, 2), "z3"))).unwrap();
+    let shapes = Shapes::parse(COV).unwrap();
+    let mut pieces: Vec<(u32, u32)> = z3_blocks(&shapes, 4, 2).iter().map(|&(x, y)| (x >> 2, y >> 2)).collect();
+    pieces.sort_unstable();
+    pieces.dedup();
+    assert_eq!(pieces, [(32, 21), (32, 22), (33, 21), (33, 22)]);
+    assert_eq!(blocks_of(&shapes, 6, 33, 22), [(132, 88), (133, 88), (134, 88)], "a z6 tile's blocks, as the z3 tile's");
+    let mut mids = Vec::new();
+    for &(x, y) in &pieces {
+        let out = format!("z6-{x}-{y}");
+        pool(4).install(|| z6(&run((6, x, y), &out))).unwrap();
+        mids.push(o.path().join(&out).join(MID));
+    }
+    let n = assemble_lo(&mids, &o.path().join("lo"), &|_, _| {}).unwrap();
+    for (i, l) in LAYERS.iter().enumerate() {
+        let f = format!("trees-{l}.tiles");
+        let whole = tiles_of(&o.path().join("z3").join(&f));
+        assert_eq!(whole.len(), n3[i]);
+        let mut parts = tiles_of(&o.path().join("lo").join(&f));
+        assert_eq!(parts.len(), n[i]);
+        assert!(parts.keys().all(|k| (4..=8).contains(&k.0)), "{l}: the assembly's zoom 8 to 4");
+        for &(x, y) in &pieces {
+            let p = tiles_of(&o.path().join(format!("z6-{x}-{y}")).join(&f));
+            assert!(!p.is_empty() || i == 2, "{l}: tiles in 6/{x}/{y}");
+            assert!(p.keys().all(|k| (9..=12).contains(&k.0) && (k.1 >> (k.0 - 6), k.2 >> (k.0 - 6)) == (x, y)), "{l}: 6/{x}/{y}'s own zoom 9 to 12");
+            parts.extend(p);
+        }
+        assert_eq!(parts, whole, "{l}: the pieces and their assembly, tile for tile");
+    }
+    // A mid read back: its tile, every block's values, its blocks' zoom-8 tiles.
+    let m = read_mid(&mids[3]).unwrap();
+    assert_eq!((m.tile, m.tops.keys().copied().collect::<Vec<_>>()), ((33, 22), vec![(132, 88), (133, 88), (134, 88)]));
+    assert!(m.z8.iter().all(|t| t.z == 8) && m.z8.iter().any(|t| (t.x, t.y) == (132, 88)));
+    // The same on one thread: the same mid, byte for byte.
+    pool(1).install(|| z6(&run((6, 33, 22), "again"))).unwrap();
+    assert_eq!(std::fs::read(o.path().join("again").join(MID)).unwrap(), std::fs::read(&mids[3]).unwrap());
+    // Assembled again in another order: the same archives.
+    let rev: Vec<PathBuf> = mids.iter().rev().cloned().collect();
+    assemble_lo(&rev, &o.path().join("lo2"), &|_, _| {}).unwrap();
+    for l in LAYERS {
+        let f = format!("trees-{l}.tiles");
+        assert_eq!(std::fs::read(o.path().join("lo2").join(&f)).unwrap(), std::fs::read(o.path().join("lo").join(&f)).unwrap());
+    }
+    // Not a tile twice, nor another z3 tile's.
+    assert!(assemble_lo(&[mids[0].clone(), mids[0].clone()], &o.path().join("x"), &|_, _| {}).is_err());
+    let far = o.path().join("far.sect");
+    write_mid(&far, (40, 22), &BTreeMap::new()).unwrap();
+    assert_eq!(read_mid(&far).unwrap(), Mid { tile: (40, 22), z8: Vec::new(), tops: BTreeMap::new() });
+    assert!(assemble_lo(&[mids[0].clone(), far], &o.path().join("x"), &|_, _| {}).is_err());
+    // A block's values in another tile's mid: refused as written.
+    let tops = m.tops[&(132, 88)].clone();
+    assert!(write_mid(&o.path().join("bad.sect"), (32, 22), &[((132, 88), (Vec::new(), tops))].into()).is_err());
 }
 
 #[test]
