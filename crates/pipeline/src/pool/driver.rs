@@ -134,9 +134,11 @@ pub const STOOD_DOWN_S: u64 = 120;
 pub const AUTO_RANK_S: u64 = 30;
 /// An entry a lead's reads find not whole (short, or not there) over this long awake is refused
 /// (s): no stale read lasts so long, and its file won't be whole (cut short on the share, or
-/// removed). Only reads that answer count: one that fails, the share not answering, starts the
-/// time again.
+/// removed). So is one whose reads fail while the share answers the step's others (a file the
+/// share errors on); a read that fails when none answered (the share away) starts the time again.
 pub const UNREADABLE_S: u64 = 3600;
+/// How long an entry waits to be read whole before its lead says so, once (s).
+const WAIT_SAID_S: u64 = 600;
 
 /// What the driver needs of the world: the NAS's operations, and this Mac's clocks.
 pub trait Io: Nas {
@@ -340,9 +342,11 @@ struct Lead {
     /// Entries told or listed not read whole yet (not readable yet, or past the step's time for
     /// reading): read again from the next step on.
     waiting: BTreeSet<String>,
-    /// Of those, the ones its reads found not whole, since when (awake clock; a read that failed
-    /// starts it again).
-    unreadable: BTreeMap<String, u64>,
+    /// Of those, the ones its reads found not whole, or failed on while the share answered, since
+    /// when (awake clock; a read that failed, the share away, starts it again), and whether they
+    /// failed last; and those it said wait long (`WAIT_SAID_S`).
+    unreadable: BTreeMap<String, (u64, bool)>,
+    said: BTreeSet<String>,
     /// When it asked for the listing of every day it merged last (its take-up's, or a later one):
     /// None before its take-up's is merged.
     listed_at: Option<u64>,
@@ -553,7 +557,8 @@ impl Driver {
                 Ask::TakeOver { force, downgrade } => takeover = Some((force, downgrade)),
             }
         }
-        if let Err(e) = self.learn(io, passed) {
+        let learnt = self.learn(io, passed);
+        if let Err(e) = &learnt {
             out.events.push(Event::Failed { what: "learn the current term", why: format!("{e:#}") });
         }
         if self.taking.as_ref().is_some_and(|r| r.term != self.cur.term) {
@@ -576,7 +581,7 @@ impl Driver {
         }
         self.restarted = false;
         if self.lead.is_some() {
-            self.lead_step(io, &mut out, tells, hand_asks, heard.listed, heard.settled, check, busy);
+            self.lead_step(io, &mut out, tells, hand_asks, heard.listed, heard.settled, check, busy, learnt.is_ok());
         } else if let Some(t) = self.cur.lead.as_ref().filter(|t| t.member != self.me.id) {
             out.send.extend(hand_asks.into_iter().map(|to| (t.member.clone(), Msg::HandTo(to))));
         }
@@ -742,7 +747,7 @@ impl Driver {
                 // merged too, so a sweep's step is caught up. Not after a sleep: what was written
                 // meanwhile, told to it and lost, a listing finds.)
                 if let Some(n) = self.lead.as_mut() {
-                    (n.told, n.waiting, n.unreadable, n.refused) = (l.told, l.waiting, l.unreadable, l.refused);
+                    (n.told, n.waiting, n.unreadable, n.said, n.refused) = (l.told, l.waiting, l.unreadable, l.said, l.refused);
                     if l.listed_at.is_some() && !slept {
                         n.listed_at = l.listed_at;
                         (self.due, self.asked) = (due, asked);
@@ -841,7 +846,7 @@ impl Driver {
         out.fresh = true;
         out.events.push(Event::TookUp { term: t.term, how: t.how.clone(), handed });
         let horizon = r.horizon.clone();
-        self.lead = Some(Lead { term: t.clone(), records: r, hand: Handover::Leading, told: BTreeMap::new(), waiting: BTreeSet::new(), unreadable: BTreeMap::new(), listed_at: None, dirty: false, refused: Vec::new() });
+        self.lead = Some(Lead { term: t.clone(), records: r, hand: Handover::Leading, told: BTreeMap::new(), waiting: BTreeSet::new(), unreadable: BTreeMap::new(), said: BTreeSet::new(), listed_at: None, dirty: false, refused: Vec::new() });
         // A take-up lists the journal: every day not forgotten.
         self.due = Some((Some(horizon).filter(|h| !h.is_empty()), true));
         self.asked = None;
@@ -858,7 +863,7 @@ impl Driver {
     /// The lead's step: merge what members told it and what a listing found (and what's waiting to
     /// be read whole), save, acknowledge, note the refusals; hand over.
     #[allow(clippy::too_many_arguments)]
-    fn lead_step(&mut self, io: &dyn Io, out: &mut Out, tells: Vec<(String, Vec<String>)>, asks: Vec<String>, listed: Option<Listed>, settled: Option<serde_json::Value>, check: Check, busy: u64) {
+    fn lead_step(&mut self, io: &dyn Io, out: &mut Out, tells: Vec<(String, Vec<String>)>, asks: Vec<String>, listed: Option<Listed>, settled: Option<serde_json::Value>, check: Check, busy: u64, learnt: bool) {
         let me = self.me.id.clone();
         // An ask, checked (§6.3): as `hand_to` answers the controls.
         let ask = asks.last().cloned().and_then(|to| match self.hand_to(io, &to) {
@@ -912,17 +917,36 @@ impl Driver {
         l.waiting.extend(m.waiting.iter().chain(&m.unread).chain(&m.failed).cloned());
         l.waiting.retain(|k| !l.records.handles(k) && !m.forgotten.contains(k));
         // What its reads find not whole over `UNREADABLE_S` never will be: refused, as a damaged
-        // entry is (its work done again). A read that failed says nothing, and starts the time
-        // again; one the step's time left unread keeps it, and isn't refused unread.
+        // entry is (its work done again). So what its reads fail on while the share answers the
+        // step's others (its learning of the term, or reads of other entries): a file the share
+        // errors on. A read that failed when none answered (the share away) says nothing, and
+        // starts the time again; one the step's time left unread keeps it, and isn't refused
+        // unread.
+        let answered = learnt || !(m.applied.is_empty() && m.overtaken.is_empty() && m.refused.is_empty() && m.forgotten.is_empty() && m.waiting.is_empty());
         let awake = io.awake();
         for k in &m.failed {
-            l.unreadable.remove(k);
+            if answered {
+                l.unreadable.entry(k.clone()).or_insert((awake, true)).1 = true;
+            } else {
+                l.unreadable.remove(k);
+            }
         }
         for k in &m.waiting {
-            l.unreadable.entry(k.clone()).or_insert(awake);
+            l.unreadable.entry(k.clone()).or_insert((awake, false)).1 = false;
         }
         l.unreadable.retain(|k, _| l.waiting.contains(k));
-        let never: Vec<String> = m.waiting.iter().filter(|k| l.unreadable.get(*k).is_some_and(|&at| awake.saturating_sub(at) >= UNREADABLE_S)).cloned().collect();
+        let read: Vec<String> = m.waiting.iter().chain(m.failed.iter().filter(|_| answered)).cloned().collect();
+        // (One waiting long: said, once, naming it.)
+        for k in &read {
+            if let Some(&(at, failing)) = l.unreadable.get(k).filter(|&&(at, _)| awake.saturating_sub(at) >= WAIT_SAID_S) {
+                if l.said.insert(k.clone()) {
+                    let how = if failing { "its reads failing, the share answering others" } else { "short, or not there" };
+                    out.events.push(Event::Waits { what: "read an entry whole", why: format!("{k}: {how}, for {} minutes", awake.saturating_sub(at) / 60) });
+                }
+            }
+        }
+        l.said.retain(|k| l.waiting.contains(k));
+        let never: Vec<String> = read.into_iter().filter(|k| l.unreadable.get(k).is_some_and(|&(at, _)| awake.saturating_sub(at) >= UNREADABLE_S)).collect();
         if !never.is_empty() {
             let why = format!("not read whole in {} minutes", UNREADABLE_S / 60);
             for k in &never {
@@ -1303,9 +1327,9 @@ mod tests {
     const B: &str = "m-000000000000000b";
     const C: &str = "m-000000000000000c";
 
-    /// One Mac's view of the shared NAS, with its own clocks; while `down`, its reads of paths
-    /// holding `fail` (of every path, when None) fail: the share doesn't answer them; and its whole
-    /// writes of paths holding `wfail` fail.
+    /// One Mac's view of the shared NAS, with its own clocks; while `down`, its reads, stats and
+    /// listings of paths holding `fail` (of every path, when None) fail: the share doesn't answer
+    /// them; and its whole writes of paths holding `wfail` fail.
     struct Mac<'a> {
         mem: &'a Mem,
         wall: Cell<u64>,
@@ -1344,9 +1368,15 @@ mod tests {
             self.mem.read(path)
         }
         fn exists(&self, path: &str) -> Result<bool> {
+            if self.down.get() && self.fail.borrow().as_deref().is_none_or(|f| path.contains(f)) {
+                anyhow::bail!("stat {path}: the share doesn't answer");
+            }
             self.mem.exists(path)
         }
         fn list(&self, dir: &str) -> Result<Vec<String>> {
+            if self.down.get() && self.fail.borrow().as_deref().is_none_or(|f| dir.contains(f)) {
+                anyhow::bail!("list {dir}: the share doesn't answer");
+            }
             self.mem.list(dir)
         }
         fn remove(&self, path: &str) -> Result<()> {
@@ -1887,9 +1917,44 @@ mod tests {
     }
 
     #[test]
+    fn rr2_a_read_that_always_fails_for_one_entry_is_refused_after_an_hour() {
+        // One entry's reads fail every time (a file the share errors on: EIO, EACCES), the share
+        // answering every other read. (Re-review 2, L1: each failed read started its hour again,
+        // so it was never refused: never caught up, no handover settled, and nothing said why.)
+        // Said at ten minutes, refused at sixty, caught up after.
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let list = step(&mut a, &ia, able()).list.unwrap();
+        ia.pass(20);
+        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: vec![] }), ..able() }).caught_up);
+        let key = journal::write(&mem, &entry(C, 1, 3, "6-1-1")).unwrap();
+        *ia.fail.borrow_mut() = Some(key.clone());
+        ia.down.set(true);
+        ia.pass(20);
+        step(&mut a, &ia, Heard { msgs: vec![(C.into(), Msg::Tell(vec![key.clone()]))], ..able() });
+        let (mut said, mut caught) = (None, None);
+        for i in 1..=200 {
+            ia.pass(20);
+            let o = step(&mut a, &ia, able());
+            if o.events.iter().any(|e| matches!(e, Event::Waits { what: "read an entry whole", why } if why.contains(&key))) {
+                said.get_or_insert(i);
+            }
+            if o.caught_up {
+                caught.get_or_insert(i);
+            }
+        }
+        assert!(said.is_some_and(|i| (30..=31).contains(&i)), "said at ten minutes: step {said:?}");
+        assert!(caught.is_some_and(|i| (180..=181).contains(&i)), "caught up at sixty: step {caught:?}");
+        let why = Records::load(&mem, 1).unwrap().unwrap().rejected.get(&key).cloned();
+        assert!(why.is_some_and(|w| w.contains("not read whole")), "refused");
+    }
+
+    #[test]
     fn rr_the_hour_rule_and_a_share_that_doesnt_answer() {
-        // B tells A of an entry; A's reads of it fail for two hours (the share doesn't answer
-        // them): not refused; then read whole, applied. (The re-review's.)
+        // B tells A of an entry; the share answers none of A's reads for two hours (away): not
+        // refused; then read whole, applied. (The re-review's.)
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
@@ -1898,7 +1963,6 @@ mod tests {
         ia.pass(20);
         assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: vec![] }), ..able() }).caught_up);
         let key = journal::write(&mem, &entry(B, 1, 3, "6-1-1")).unwrap();
-        *ia.fail.borrow_mut() = Some(key.clone());
         ia.down.set(true);
         ia.pass(20);
         step(&mut a, &ia, Heard { msgs: vec![(B.into(), Msg::Tell(vec![key.clone()]))], ..able() });
@@ -1915,10 +1979,10 @@ mod tests {
 
     #[test]
     fn rr_the_hour_rule_counts_an_outage_after_a_first_read_not_whole() {
-        // The entry reads not whole once (not there yet as A reads it), then the share doesn't
-        // answer A's reads of it for 70 minutes. (Re-review F1: refused at minute 60, on time
-        // alone, though it was whole on the share all along: an hour's reads that answer count,
-        // and a read that fails starts the hour again.)
+        // The entry reads not whole once (not there yet as A reads it), then the share answers none
+        // of A's reads for 70 minutes (away). (Re-review F1: refused at minute 60, on time alone,
+        // though it was whole on the share all along: an hour's reads that answer count, and a read
+        // that fails, none answering, starts the hour again.)
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
@@ -1931,7 +1995,6 @@ mod tests {
         ia.pass(20);
         step(&mut a, &ia, Heard { msgs: vec![(B.into(), Msg::Tell(vec![key.clone()]))], ..able() });
         journal::write(&mem, &e).unwrap();
-        *ia.fail.borrow_mut() = Some(key.clone());
         ia.down.set(true);
         for _ in 0..70 {
             ia.pass(60);
