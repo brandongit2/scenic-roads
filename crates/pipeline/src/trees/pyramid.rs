@@ -148,11 +148,12 @@ fn terrarium(v: impl Fn(usize) -> f32, step: f32) -> Vec<u8> {
 }
 
 /// The tiles of a band of rows at zoom `z` (256 rows, its tile row `ty`, from column `x0`):
-/// cover and height where some pixel shows (rounds to a step), leaf type where some is forest.
+/// cover and height where some pixel shows (rounds to a step), leaf type where some is forest. (One
+/// after another, on the block's own thread: the blocks go side by side, `super::in_order`.)
 fn tiles(r: &Rows, z: u8, x0: u32, ty: u32) -> Vec<Tile> {
     let n = r.width / TS;
     let jobs: Vec<(usize, u8)> = (0..n).flat_map(|tx| (0..3u8).map(move |l| (tx, l))).collect();
-    jobs.par_iter()
+    jobs.iter()
         .filter_map(|&(tx, layer)| {
             let at = |i: usize| (i / TS) * r.width + tx * TS + i % TS;
             let webp = match layer {
@@ -175,10 +176,10 @@ fn tiles(r: &Rows, z: u8, x0: u32, ty: u32) -> Vec<Tile> {
         .collect()
 }
 
-/// The zoom-12 tiles of a band: leaf type straight from its classes.
+/// The zoom-12 tiles of a band: leaf type straight from its classes (one after another, as `tiles`).
 fn tiles12(cover: &[f32], height: &[f32], class: &[u8], x0: u32, ty: u32) -> Vec<Tile> {
     let jobs: Vec<(usize, u8)> = (0..BS / TS).flat_map(|tx| (0..3u8).map(move |l| (tx, l))).collect();
-    jobs.par_iter()
+    jobs.iter()
         .filter_map(|&(tx, layer)| {
             let at = |i: usize| (i / TS) * BS + tx * TS + i % TS;
             let webp = match layer {

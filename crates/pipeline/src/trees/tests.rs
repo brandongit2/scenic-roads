@@ -275,7 +275,7 @@ fn a_block_from_its_squares() {
     let d = squares_dir();
     let shapes = Shapes::parse(COVERAGE).unwrap();
     let fetch = crate::fetch::MapFetch::default();
-    let inp = Inputs { chm: Source::Dir(d.path().into()), leaf: Source::Dir(d.path().into()), fetch: &fetch, record: None };
+    let inp = Inputs { chm: Source::Dir(d.path().into()), leaf: Source::Dir(d.path().into()), fetch: &fetch, record: None, there: None };
     let out = block(&shapes, &inp, 132, 88).unwrap();
     // Tiles only where there's something: zoom 12's first two down the west (the squares' data
     // reach the second; the coverage ends within the first column) and those above them.
@@ -323,7 +323,7 @@ fn the_z3_run_and_its_blocks_alike() {
     let blocks = z3_blocks(&shapes, 4, 2);
     assert_eq!(blocks, [(132, 88), (133, 88)]);
     let fetch = crate::fetch::MapFetch::default();
-    let inp = Inputs { chm: Source::Dir(d.path().into()), leaf: Source::Dir(d.path().into()), fetch: &fetch, record: None };
+    let inp = Inputs { chm: Source::Dir(d.path().into()), leaf: Source::Dir(d.path().into()), fetch: &fetch, record: None, there: None };
     let dirs: Vec<PathBuf> = blocks
         .iter()
         .rev()
@@ -377,6 +377,48 @@ fn results_in_order_on_any_threads() {
 }
 
 #[test]
+fn items_with_parallel_work_of_their_own_never_hang_it() {
+    // (The pool's threads once waited in `in_order` for room, and an item's parallel work waiting on
+    // such a thread never ended: many items, more than its window, each with parallel work (the
+    // first slow), and a pool thread busy as it starts, as z3's blocks. Within a minute, or it hung.)
+    use rayon::prelude::*;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(14).build().unwrap();
+        for _ in 0..3 {
+            let got = pool.install(|| {
+                rayon::spawn(|| std::thread::sleep(std::time::Duration::from_millis(100)));
+                let mut sum = 0u64;
+                in_order(
+                    300,
+                    |i| {
+                        let pause = std::time::Duration::from_micros(if i == 0 { 3000 } else { 150 });
+                        Ok((0..64u64)
+                            .into_par_iter()
+                            .map(|x| {
+                                std::thread::sleep(pause);
+                                x * i as u64
+                            })
+                            .sum::<u64>())
+                    },
+                    |_| {},
+                    |_, v| {
+                        sum += v;
+                        Ok(())
+                    },
+                )
+                .map(|_| sum)
+            });
+            tx.send(got.map_err(|e| e.to_string())).ok();
+        }
+    });
+    for _ in 0..3 {
+        let got = rx.recv_timeout(std::time::Duration::from_secs(60)).expect("in_order hung");
+        assert_eq!(got.unwrap(), (0..300u64).map(|i| (0..64u64).map(|x| x * i).sum::<u64>()).sum::<u64>());
+    }
+}
+
+#[test]
 fn reads_recorded_and_read_back() {
     // A block run on its squares, recording what it reads; then run again from just that, through
     // the fetch layer's mirror: the same tiles.
@@ -384,12 +426,12 @@ fn reads_recorded_and_read_back() {
     let shapes = Shapes::parse(COVERAGE).unwrap();
     let m = tempfile::tempdir().unwrap();
     let none = crate::fetch::MapFetch::default();
-    let inp = Inputs { chm: Source::Dir(d.path().into()), leaf: Source::Dir(d.path().into()), fetch: &none, record: Some(m.path().into()) };
+    let inp = Inputs { chm: Source::Dir(d.path().into()), leaf: Source::Dir(d.path().into()), fetch: &none, record: Some(m.path().into()), there: None };
     let a = block(&shapes, &inp, 132, 88).unwrap();
     assert!(a.kept > 0 && a.kept < 8 << 20, "{} bytes kept", a.kept);
     let fetch = crate::fetch::Fetcher::new(Some(m.path().into()), None, false);
     let url = format!("file://{}", std::path::absolute(d.path()).unwrap().display());
-    let inp = Inputs { chm: Source::parse(&url), leaf: Source::parse(&url), fetch: &fetch, record: None };
+    let inp = Inputs { chm: Source::parse(&url), leaf: Source::parse(&url), fetch: &fetch, record: None, there: None };
     let b = block(&shapes, &inp, 132, 88).unwrap();
     assert_eq!(a.tiles, b.tiles);
     assert_eq!(a.tops, b.tops);

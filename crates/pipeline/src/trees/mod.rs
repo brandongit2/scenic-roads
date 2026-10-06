@@ -142,6 +142,10 @@ pub struct Inputs<'a> {
     pub leaf: Source,
     pub fetch: &'a dyn Fetch,
     pub record: Option<PathBuf>,
+    /// The canopy squares found there before the blocks began (a z3 run's), (top, left): one of them
+    /// not there when a block opens it fails the block (trees.py's did), never a block without its
+    /// trees. None: what's there is all there is.
+    pub there: Option<Vec<(i32, i32)>>,
 }
 
 /// The files a block opened, for `Inputs::keep`: each one's URL and its reads (None: not there).
@@ -272,8 +276,13 @@ fn sources(inp: &Inputs, bx: u32, by: u32, lon: &[f64], lat: &[f64], opened: &mu
     let mut squares = Vec::new();
     for (top, left) in sorted(squares_of(tile_bounds(ZBLOCK, bx, by))) {
         let (cn, hn) = (chm_name(top, left, "cover5m"), chm_name(top, left, "p95"));
-        let (Some(c), Some(h)) = (inp.open(&inp.chm, &cn, opened)?, inp.open(&inp.chm, &hn, opened)?) else { continue };
+        let expected = inp.there.as_ref().is_some_and(|t| t.contains(&(top, left)));
+        let (Some(c), Some(h)) = (inp.open(&inp.chm, &cn, opened)?, inp.open(&inp.chm, &hn, opened)?) else {
+            anyhow::ensure!(!expected, "canopy square {cn} is gone since this run found it");
+            continue;
+        };
         if c.len()? == 0 || h.len()? == 0 {
+            anyhow::ensure!(!expected, "canopy square {cn} is empty since this run found it whole");
             continue;
         }
         let at = indices(top, left, CHM_RES, lon, lat);
@@ -413,9 +422,11 @@ pub fn assemble(blocks: &[PathBuf], out: &Path, said: &(dyn Fn(u64, u64) + Sync)
     w.finish()
 }
 
-/// Runs `f` on each of `n` items on rayon's threads (in WebAssembly, or on one thread, in turn),
-/// giving `sink` their results in order, `done` told of each as it finishes: at most `2 ×` threads
-/// are held at once. An item that panics on a thread fails the run as one that errs.
+/// Runs `f` on each of `n` items on as many threads as rayon's pool has (in WebAssembly, or with one,
+/// in turn), giving `sink` their results in order, `done` told of each as it finishes: at most `2 ×`
+/// threads are held at once. An item that panics on a thread fails the run as one that errs. (On
+/// threads of its own, never the pool's: one of the pool's waiting here for room could be one an
+/// item's own parallel work was waiting on, and the run would hang.)
 fn in_order<T: Send>(n: usize, f: impl Fn(usize) -> Result<T> + Sync, done: impl Fn(usize) + Sync, mut sink: impl FnMut(usize, T) -> Result<()>) -> Result<()> {
     let threads = rayon::current_num_threads();
     if threads <= 1 {
@@ -436,9 +447,9 @@ fn in_order<T: Send>(n: usize, f: impl Fn(usize) -> Result<T> + Sync, done: impl
     let window = 2 * threads;
     let st = Mutex::new(State { next: 0, written: 0, ready: BTreeMap::new(), stop: false });
     let cv = Condvar::new();
-    rayon::in_place_scope(|s| {
+    std::thread::scope(|s| {
         for _ in 0..threads {
-            s.spawn(|_| loop {
+            s.spawn(|| loop {
                 let i = {
                     let mut g = st.lock().unwrap();
                     loop {
@@ -557,7 +568,7 @@ pub fn z3(a: &Z3) -> Result<[usize; 3]> {
     squares::leaf_types(&sqs, &a.leaf, &a.dem)?;
     eprintln!("trees z3 {},{}: {} zoom-8 blocks, {} canopy squares ({:.0} s)", a.qx, a.qy, blocks.len(), sqs.len(), t0.elapsed().as_secs_f64());
     let fetch = crate::fetch::MapFetch::default();
-    let inp = Inputs { chm: Source::Dir(a.chm.clone()), leaf: Source::Dir(a.leaf.clone()), fetch: &fetch, record: None };
+    let inp = Inputs { chm: Source::Dir(a.chm.clone()), leaf: Source::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs.clone()) };
     let mut w = Writers::create(&a.out)?;
     let mut tops: BTreeMap<(u32, u32), Vec<u8>> = BTreeMap::new();
     // (Said before the first block is back, so the stage before's last line isn't shown meanwhile.)

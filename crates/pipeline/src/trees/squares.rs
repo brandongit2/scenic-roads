@@ -68,15 +68,17 @@ fn fetch_once(store: &Path, kept: &Path, coming: &dyn Fn(f64)) -> Result<()> {
                 r?;
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                let age = std::fs::metadata(&lock).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
-                match age {
-                    None => continue,
-                    Some(a) if a > std::time::Duration::from_secs(1800) => {
-                        eprintln!("canopy: taking over {}", lock.display());
-                        std::fs::remove_file(&lock).ok();
-                        continue;
-                    }
-                    Some(_) => {}
+                // (Gone meanwhile: tried again at once. Made by a Mac whose clock is ahead of this
+                // one's, or not to be read now: new, waited for.)
+                let age = match std::fs::metadata(&lock).and_then(|m| m.modified()) {
+                    Ok(t) => t.elapsed().unwrap_or_default(),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(_) => std::time::Duration::ZERO,
+                };
+                if age > std::time::Duration::from_secs(1800) {
+                    eprintln!("canopy: taking over {}", lock.display());
+                    std::fs::remove_file(&lock).ok();
+                    continue;
                 }
                 // (Said once, for the status: the square's progress stands while the holder's
                 // download, which this job can't measure, goes on.)
@@ -94,14 +96,15 @@ fn fetch_once(store: &Path, kept: &Path, coming: &dyn Fn(f64)) -> Result<()> {
 
 /// `url` into `path` (by a temporary name, flushed), whole: a body shorter than its Content-Length,
 /// or not a whole TIFF, is tried again. An empty file when Meta has none (404, or S3's 403 for a key
-/// that isn't there), so it says twice, a moment apart. Anything else is tried six times, then
-/// fails. `coming` is told how much has come (0–1), at most once a second.
+/// that isn't there), so it says twice, a moment apart. Anything else (writing the file on the NAS
+/// too) is tried six times, then fails. `coming` is told how much has come (0–1), at most once a
+/// second.
 #[cfg(not(target_os = "wasi"))]
 fn download(url: &str, path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
     use std::io::{Read, Write};
-    // (As the units' canopy step: a square is up to 2 GB.)
+    // (A square is up to 2 GB: two hours for it, so it comes at 0.3 MB/s too.)
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(1800)))
+        .timeout_global(Some(std::time::Duration::from_secs(7200)))
         .timeout_connect(Some(std::time::Duration::from_secs(60)))
         .user_agent(crate::fetch::USER_AGENT)
         .http_status_as_error(false)
@@ -121,7 +124,9 @@ fn download(url: &str, path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
                 403 | 404 => {
                     missing += 1;
                     if missing == 2 {
-                        std::fs::write(path, b"").with_context(|| path.display().to_string())?;
+                        if let Err(e) = std::fs::write(path, b"") {
+                            return Ok(Some(format!("{}: {e}", path.display())));
+                        }
                         return Ok(None);
                     }
                     return Ok(Some(format!("status {}", r.status().as_u16())));
@@ -129,7 +134,12 @@ fn download(url: &str, path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
                 c => return Ok(Some(format!("status {c}"))),
             }
             let want: Option<u64> = r.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
-            let mut f = std::fs::File::create(&tmp).with_context(|| tmp.display().to_string())?;
+            // (The NAS not taking it now: tried again, as a download cut short.)
+            let on_nas = |e: std::io::Error| -> Result<Option<String>> { Ok(Some(format!("{}: {e}", tmp.display()))) };
+            let mut f = match std::fs::File::create(&tmp) {
+                Ok(f) => f,
+                Err(e) => return on_nas(e),
+            };
             let mut body = r.body_mut().with_config().limit(u64::MAX).reader();
             let mut b = vec![0u8; 16 << 20];
             let (mut n, mut at) = (0u64, std::time::Instant::now());
@@ -140,7 +150,9 @@ fn download(url: &str, path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(e) => return Ok(Some(e.to_string())),
                 };
-                f.write_all(&b[..k]).with_context(|| tmp.display().to_string())?;
+                if let Err(e) = f.write_all(&b[..k]) {
+                    return on_nas(e);
+                }
                 n += k as u64;
                 if let Some(w) = want.filter(|&w| w > 0) {
                     if at.elapsed() >= std::time::Duration::from_secs(1) {
@@ -149,7 +161,9 @@ fn download(url: &str, path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
                     }
                 }
             }
-            f.sync_all()?;
+            if let Err(e) = f.sync_all() {
+                return on_nas(e);
+            }
             drop(f);
             if want.is_some_and(|w| w != n) {
                 return Ok(Some(format!("{n} of {} bytes", want.unwrap_or(0))));
@@ -157,7 +171,9 @@ fn download(url: &str, path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
             if !crate::whole::tiff_file_whole(&tmp) {
                 return Ok(Some("not a whole TIFF".into()));
             }
-            std::fs::rename(&tmp, path).with_context(|| path.display().to_string())?;
+            if let Err(e) = std::fs::rename(&tmp, path) {
+                return on_nas(e);
+            }
             Ok(None)
         })();
         match got {

@@ -16,7 +16,8 @@ use det::Det;
 
 /// An opaque RGB image (`w` × `h`, 3 bytes a pixel, row by row) as a lossless WebP file.
 pub fn encode_rgb(rgb: &[u8], w: u32, h: u32) -> Vec<u8> {
-    assert!((1..=16384).contains(&w) && (1..=16384).contains(&h) && rgb.len() == w as usize * h as usize * 3);
+    // (16383 a side at most: libwebp's limit, and Safari's decoder fails on more.)
+    assert!((1..=16383).contains(&w) && (1..=16383).contains(&h) && rgb.len() == w as usize * h as usize * 3);
     let px: Vec<u32> = rgb.as_chunks::<3>().0.iter().map(|p| 0xff00_0000 | (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32).collect();
     let mut b = Bits::default();
     b.put(0x2f, 8);

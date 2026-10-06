@@ -89,7 +89,7 @@ fn main() -> Result<()> {
     let cov = PathBuf::from(get("coverage")?);
     let shapes = Shapes::parse(&std::fs::read_to_string(&cov).with_context(|| cov.display().to_string())?)?;
     let fetch = Fetcher::from_env();
-    let inp = Inputs { chm: Source::parse(get("chm")?), leaf: Source::parse(get("leaf")?), fetch: &fetch, record: opts.get("record").map(PathBuf::from) };
+    let inp = Inputs { chm: Source::parse(get("chm")?), leaf: Source::parse(get("leaf")?), fetch: &fetch, record: opts.get("record").map(PathBuf::from), there: None };
     let t0 = std::time::Instant::now();
     within(&|| {
         let r = trees::block_files(&shapes, &inp, u.x, u.y, &out)?;

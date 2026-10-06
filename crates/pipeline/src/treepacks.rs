@@ -13,9 +13,9 @@ use crate::out::Out;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// Bumped when how the layers are made changes (every z3 tile is made again). 3: by the `trees`
-/// program, trees.py's pixels in other WebP bytes (trees.py, switched to, makes the same pixels).
-pub const TREES_V: u32 = 3;
+/// Bumped when the layers' pixels change (every z3 tile is made again). (The `trees` program, which
+/// took trees.py's place, makes the same pixels in other WebP bytes: the packs as good as they were.)
+pub const TREES_V: u32 = 2;
 pub const LAYERS: [&str; 3] = ["trees-cover", "trees-height", "trees-leaf"];
 
 /// The leaf-type squares on the NAS (`lat<top>_lon<left>.tif`).
