@@ -351,11 +351,17 @@ One table, crate::agent::build::STEPS, has a row per step with:
 
 | Column | Meaning |
 | --- | --- |
-| needs | memory (predicted per target from its last run, crate::coord::Cost), a **floor** whatever the measurement (the OSM pass runs Planetiler with 24 GB of heap: 32 GB Macs only), disk (the OSM pass 80 GB, a terrain run 55, tree cover 30, others 15), home (whole-planet reads), power |
+| needs | memory (predicted per target from its last run, crate::coord::Cost), a **floor** whatever the measurement (the OSM pass runs Planetiler with 24 GB of heap: 32 GB Macs only), disk (the OSM pass 80 GB, a terrain run 55, others 15), home (whole-planet reads), power |
 | write-set | the names it may add, change or remove, as patterns by target and pass date (§7.3) |
 | moves | whether a job of it can run anywhere (most), or resumes on the Mac holding its progress |
 | alone / beside | what may run with it on one Mac (today's SECOND, LIGHT, ALONE, RAW and WIKI sets) and across the pool (one Wikidata step at a time: one address at home) |
 | batch | how much a job takes (about fifteen minutes) |
+
+Tree cover's rows (plan.md §6, Trees): `trees`, a piece per z6 tile (it may add, change or remove
+that tile's hi packs of the three tree layers and its mid, `work/trees-mid/6-x-y`; a lease of the
+scheme before pieces, a z3 tile's whole run, its lo pack and its z6 tiles' hi packs, for one
+release), any member, four a job; `trees-lo`, an assembly per z3 tile (its lo packs of the three),
+seconds, kept to one Mac as the build Mac keeps it now.
 
 - **Order and locality.** A slot gets the first work in plan order that fits it, as a contiguous run
   of targets (a slot walks a region in spatial order, as one Mac does now, so what one unit fetches

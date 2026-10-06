@@ -114,9 +114,10 @@ the NAS does itself. The jobs (§8 has their order and keys):
    - place labels;
    - once ever, the worldwide z8 terrain for peaks.
 3. **Heritage sites and designated areas:** one job over the coverage plus 20 km.
-4. **Global-source layers, per z3 pack near the coverage:** terrain, then slope, then tree cover
-   (terrain with the first region that reads it; slope and tree cover as the regions in their area
-   are published: §8, Order).
+4. **Global-source layers near the coverage:** terrain, then slope, per z3 pack; tree cover per z6
+   tile the coverage meets, then each z3 tile's zoomed-out tree cover assembled from them (terrain
+   with the first region that reads it; slope and tree cover as the regions in their area are
+   published: §8, Order).
 5. **Per unit**, for every unit meeting the coverage, a region at a time: base(U), the ways U owns (a way belongs to the
    unit of its first node) that touch the coverage, with per-vertex elevations, grade and scenic
    channels. Each value is computed once.
@@ -169,7 +170,7 @@ ovdata/        per z3 tile: area and park details
 global/        worldwide files: road values per unit (roads/), road → units, rail frequencies,
                landmark totals, heritage/, legacy/ (today's converted files)
 layers/<layer>/  root, lo and hi packs; basemap/world-<date>.<hash>.pmtiles
-work/          build intermediates (not served)
+work/          build intermediates (not served; trees-mid/: tree cover's mids, §6)
 cache/         what units keep for their later runs, shared by both Macs: dem-units/, scenic-units/
 catalog/       <n>.json.zst: every file the map reads, by content name
 catalog-held/  a catalog kept back for review (while inputs/hold-catalog exists)
@@ -411,8 +412,8 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   most, no more for the bigger pieces.
 - **How:** the build Mac's power rule (mains, or battery down to 30 %); half its cores while its user
   is at it, all but two otherwise; each job started with its step's room free (a terrain run 55 GB,
-  tree cover 30, the others 15, a task 5), from the caches the NAS keeps; only work it can make that
-  for is asked for, and a job it can't is given back.
+  the others 15, a task 5), from the caches the NAS keeps; only work it can make that for is asked
+  for, and a job it can't is given back.
 - **Status:** `state/helpers/<host>.json`. The M1's status bar shows its job from its own status;
   the build Mac's shows it from that file while the build Mac's agent runs. Leases keep the two apart
   (§8, Two Macs).
@@ -636,13 +637,14 @@ the region. Each entry is one of these:
   - A job is keyed on the coverage inside the box it reads (`Coverage::fingerprint`: which edges
     cross the box, and whether a corner is inside), so changing an outline reruns only what its
     changed part reaches: the units (their tile + 20 km, and whether each long way touches the
-    coverage), the terrain packs, the tree cover per z3 tile, the landmark candidates and the
+    coverage), the terrain packs, the tree cover per z6 tile, the landmark candidates and the
     heritage-sites job.
 - **Shrinking:** what only the removed part built leaves the manifest once the units are built (a
   prune): the outputs of units no longer built, their candidates and peaks, and map tiles no unit's
   ways reach any more; pack and lo also drop what a tile no longer has (a tile without ways, a
   layer without tiles). The next catalog drops them, and GC frees their files. Terrain, slope and
-  grid tiles stay, which is harmless; a z3 tile the coverage has left loses its tree cover.
+  grid tiles stay, which is harmless; a z6 tile the coverage has left loses its tree cover (its hi
+  packs and mid), and a z3 tile its zoomed-out tree cover.
 
 **Today's set** (since 2026-10-05): 88 recipes in `inputs/regions/`, by political unit, every one
 of them OpenStreetMap boundaries (`osm:` relations from the pass's outline set). The cutover's 34
@@ -774,20 +776,32 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   - It uploads them as its own z6 tile's `grid-*` hi packs. They aren't in the units' keys: a grid
     read from its pack or made afresh is the same (from fixed datasets: WorldCover, Meta's canopy
     squares), and a unit writing its tile's would otherwise make it and its neighbours stale.
-- **Trees** (cover, height, leaf type), zoom 4–12, per z3 tile the coverage meets, clipped to it
-  (`pipeline::treepacks`, which runs the `trees` program, `pipeline::trees`), made for a region
-  before it's published (§8, Order: once it's done, or earlier while the units wait for the pass's
-  worldwide jobs; a helper takes its jobs too): from Meta's canopy squares (kept on the NAS,
+- **Trees** (cover, height, leaf type), zoom 4–12, clipped to the coverage (`pipeline::treepacks`,
+  which runs the `trees` program, `pipeline::trees`), made for a region before it's published (§8,
+  Order: once it's done, or earlier while the units wait for the pass's worldwide jobs) in two
+  steps:
+  - **trees**, a piece per z6 tile the coverage meets (`trees --z6`; a helper takes them too): its
+    blocks' zoom 9–12 tiles, its hi packs, and its mid (`work/trees-mid/6-x-y`, a sectioned file:
+    its blocks' zoom-8 tiles and zoom-8 values, which the tiles can't give back, rounded to whole
+    steps; never served). A z6 tile the coverage has left drops its hi packs and mid.
+  - **trees-lo**, an assembly per z3 tile with a piece (`trees --assemble-lo`, the build Mac's, in
+    seconds): its zoom 8–4 from its pieces' mids, its lo packs. One with lo packs and no piece drops
+    them.
+
+  Together they make the same packs, byte for byte, as a z3 tile's whole run (`trees --z3`, which
+  `scenic-build trees 3/x/y` runs by hand), from Meta's canopy squares (kept on the NAS,
   `sources/canopy/`, and copied into the agent's cache, where the units read them too; a square
   both want is downloaded once, under a `<file>.lock` in the store, the other waiting for it)
   and the leaf-type squares on the NAS (`sources/trees/leaf/`), each made whole once by
   `dem/leaftype.py` (the EEA's every chunk, a chunk without EEA data costing one small request;
-  NALCMS's GeoTIFF kept beside them) and tagged complete. A z3 tile's run makes all its packs and
-  drops those it no longer has (`TREES_V`); until its first run, today's converted packs serve.
+  NALCMS's GeoTIFF kept beside them) and tagged complete (`TREES_V`).
   - The program is `dem/trees.py --z3` in Rust: the same tiles, to the pixel, in another lossless
     WebP encoder's bytes (`pipeline::webp`: about 1 % smaller than libwebp's on real tiles).
     `tools/check/trees-same.py` compares the two (2026-10-05: ten blocks of every kind, and the
-    whole of 3/4/2 and 3/7/3, every tile the same); `SCENIC_TREES_PY=1` has the job run trees.py.
+    whole of 3/4/2 and 3/7/3, every tile the same); `SCENIC_TREES_PY=1` has a z3 tile's whole run
+    use trees.py. trees.py made all the build's tree packs (2026-10-05, before the program took its
+    place): the pieces make them again, the same pixels in the program's bytes (§8, A new key
+    scheme).
   - A block runs on its own too (`trees --block`: a zoom-8 block's tiles and its zoom-8 values,
     the same bytes natively, on any thread count, and in WebAssembly, its squares read from a
     folder or through `pipeline::fetch`), and `trees --assemble` makes a z3 tile's archives from
@@ -987,6 +1001,11 @@ in a chain of their own (§8):
 A job's key is its step version plus what it reads, mostly by content name. The ones that cascade:
 - **terrain (per z3 pack):** the z6 tiles to build, and the coverage inside its z3 tile + 20 km;
 - **slope:** its terrain pack;
+- **trees (a tree cover piece, per z6 tile):** the coverage inside the tile ("none" once it has left
+  a tile with tree packs or a mid: its run drops them);
+- **trees-lo (an assembly, per z3 tile):** its pieces' mids by content ("-" for a piece without
+  one: it can't be assembled until each has), so a piece made again to the same bytes changes
+  nothing above it ("none" for a z3 tile with lo packs and no piece);
 - **heritage-sites:** the pass, its areas set, the registers snapshot, the coverage;
 - **unit:** its piece, the pass's road values, the coverage as its ways meet it (inside its tile +
   20 km, and whether each long way touches it), the versions of the location rules where its ways
@@ -1237,8 +1256,26 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     12,054 differed. On 2026-10-06 `rekey-check` found 261 of the 284 units re-keyed (20 of them
     without outputs) and 23 to build again (12 reading z5–z4 tiles, 13 a stale hi pack's; two
     both).
-- **A job** is one step over a batch of stale targets: terrain and trees 1, slope and lo 2, unit 6,
-  peaks 12, pack 16, pois 24, the worldwide steps all. So a failure or a new app costs one batch.
+  - **Tree cover** (§6, Trees: a z3 tile's whole run, keyed on the coverage inside it, became a
+    piece per z6 tile and an assembly per z3 tile): a z3 tile current under the old key pins its
+    pieces' inputs (the coverage inside a z6 tile follows from the coverage inside its z3 tile: the
+    edges crossing the box, and whether a point is inside), and when the trees program made its
+    packs, its pieces and assembly make them again byte for byte: they're recorded under their keys
+    (the assembly's naming no mids yet, "-"), and the pieces' mids are made in idle time, expected
+    the same (Order). Packs trees.py made (written before the program took its place, 2026-10-06
+    07:11 UTC, by their files' times: `rekey::TREES_PROGRAM_SINCE`) are the same pixels in other
+    bytes, so nothing pins the pieces' bytes: the z3 tile's record goes, and its pieces and
+    assembly are made again. Every z3 record goes: a stale one is made again as pieces either way,
+    and one of "none" has nothing left to build. `scenic-build p5-check trees` says what it would
+    do, reading only: on 2026-10-06 all 18 z3 tiles were current and trees.py's, so none is
+    re-keyed and the switch makes the 380 pieces and 18 assemblies again (2.3 h by trees.py's last
+    runs, less with the program: a z3 tile's run of it took 5 to 24 s on the build Mac for 3/7/2,
+    3/7/3, 3/4/2 and 3/3/2, the canopy squares local), 14.6 GB of packs uploaded again, then one
+    catalog. The same four areas' pieces and assemblies made the program's z3 runs' packs byte for
+    byte (and every one of their 129,455 tiles has trees.py's pixels).
+- **A job** is one step over a batch of stale targets: terrain 1, slope and lo 2, tree cover's
+  pieces and assemblies 4, unit 6, peaks 12, pack 16, pois 24, the worldwide steps all. So a failure
+  or a new app costs one batch.
 - **Order:** the agent starts the first job that can run, in plan order. It plans when a job could
   start (its second slot's: each minute), when one ends, and otherwise every five minutes for the
   heartbeat (planning reads the manifest, the keys, a dozen NAS folders and the terrain packs'
@@ -1314,7 +1351,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   less free than the job needs (30 GB; a terrain run 55 GB, for its area's raw tiles held twice
   while they're packed onto the NAS, and on a run again the area's archives copied here and merged,
   those copies spared; the OSM pass, its own 80 GB less the pack cache it clears; the M1's helper,
-  15 GB, but a terrain run's and tree cover's as here), the local copies of what the NAS keeps (Meta's canopy squares, AWS's raw
+  15 GB, but a terrain run's as here), the local copies of what the NAS keeps (Meta's canopy squares, AWS's raw
   terrain tiles, the copies of the records' files staging reads, `blobs/`, and of the pageview
   months' indexes, `items/months/`, but while an items or heritage job, this one or one beside,
   reads them) lose files until it has a sixth more (the OSM pass: what it needs), so the next jobs
@@ -1398,7 +1435,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   pass's ten, from the planet's copy to the roads' walk; a terrain run's three: its area's tiles
   fetched, shaded and written a z6 tile at a time, its zoomed-out terrain written to the NAS, the
   new raw tiles packed onto the NAS; slope's two an area, worked out (each z6 tile's pack written as
-  it's done) then its zoomed-out pack written; the tree cover's two an area, worked out then written; the peaks' and the z8 terrain's, then
+  it's done) then its zoomed-out pack written; a tree cover piece's two, worked out then written; the peaks' and the z8 terrain's, then
   their raw tiles packed; the map tiles' base packs got here, then the tiles drawn). A long part says
   how far it is: the pageview dumps by the bytes streamed, a part's steps one by one, a terrain run's
   tiles (every level's, counted first, each half done once it's here, from AWS or the NAS, and done
@@ -1440,7 +1477,8 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   (they make no round of their own); after the last unit and terrain area, the
   slope and tree cover left, the last round (the roads' chain as it stands, less what the round
   under way still does, if longer; none when nothing's stale and no region waits to go out), then
-  the overlays and a catalog. The trains' and
+  the overlays and a catalog, then the tree cover mids made in idle time. A z3 tile's tree cover
+  assembly waits for its pieces, the build Mac's alone. The trains' and
   the landmarks' chains run from the start, each step once what it reads is built (the candidates
   once the pass's hiking-route ends are made, the peaks once every candidate and the terrain are,
   the items' facts once every candidate is, the heritage chain once the heritage sites are, the
@@ -1478,10 +1516,11 @@ coordinator (`pipeline::coord`, port 8090) from which every other worker asks fo
 The M1's agent (`--helper`) plans nothing: it asks for the shared steps' jobs (it mounts the NAS)
 and, when none fits it, units' last steps.
 - **Shared steps** (`agent::claims::SHARED`, in this order of preference: what later steps wait on
-  first): terrain, slope and tree cover (an area, a z3 tile, a job), units, and the landmarks'
-  candidates and peaks. The rest stays the build Mac's: the pass, the worldwide sets, map tiles,
-  indexing, trains, Wikidata and pageviews, heritage, publishing. The status marks each step a helper
-  may take (⇄; the landmarks', its candidates and peaks).
+  first): terrain and slope (an area a job), tree cover's pieces (four z6 tiles a job), units, and
+  the landmarks' candidates and peaks. The rest stays the build Mac's: the pass, the worldwide sets,
+  tree cover's assemblies, map tiles, indexing, trains, Wikidata and pageviews, heritage,
+  publishing. The status marks each step a helper may take (⇄; the landmarks', its candidates and
+  peaks; tree cover's, its tiles).
 - **What fits a helper:** each target is offered with the memory its job is expected to take: a
   unit's from its piece; another's what its last run took (the job notes, per target, the most its
   processes held together, sampled four times a second from the start of that target: a pool's
@@ -1491,12 +1530,14 @@ and, when none fits it, units' last steps.
   its z12 repairs while its z11 is made, and the area's zoomed-out tiles: 3.3 to 4.6 GB, where
   holding the whole area's until they were written took 32.9 GB for 3/0/2; a measure from that way,
   `v` 0, counts for nothing now:
-  `coord::cost_version`), else a first guess per step (tree cover 2.5 GB: its program held 1.05 GB
-  on 14 threads for 3/2/2's 792 blocks, its measures from trees.py's workers, `v` 0, 12 to 36 GB,
-  counting for nothing now; slope 2, holding a z6 tile's tiles at a time, its measures from when it
-  held its whole area's, `v` 0, counting for nothing now); peaks 2.5. A helper asks only for the steps its
-  disk has room for (a terrain run 55 GB free, tree cover 30, the others 15, a task 5, and a sixth
-  more, counting what its caches can free: not its loose raw tiles, which only its own jobs pack),
+  `coord::cost_version`), else a first guess per step (a tree cover piece 1 GB: the program held
+  1.05 GB on 14 threads for a z3 tile's 792 blocks, a piece has 16 at most; its measures from a z3
+  tile's whole run, `v` 1, and from trees.py's workers, `v` 0, 12 to 36 GB, counting for nothing
+  now; slope 2, holding a z6 tile's tiles at a time, its measures from when it held its whole
+  area's, `v` 0, counting for nothing now); peaks 2.5. A helper asks only for the steps its disk
+  has room for (a terrain run 55 GB free, the others 15: a tree cover piece copies the one to four
+  canopy squares its blocks touch; a task 5, and a sixth more, counting what its caches can free:
+  not its loose raw tiles, which only its own jobs pack),
   never while a newer app waits to start, and takes the earliest step with a target that fits, from
   the far end of the plan (terrain from the near end: the build Mac's next units wait on it), a
   job's worth (units: as many as it asks). A job it still has no room for
@@ -1525,8 +1566,9 @@ and, when none fits it, units' last steps.
   coordinator has it (across restarts). The coordinator takes it only for a lease it still holds
   (else 410: the work was offered again, and a late save could put an older build in the manifest)
   and only for the files its step saves for the lease's targets (a unit's base pack, road values,
-  English and grids; candidates' and peaks' own; an area's lo pack and its z6 tiles' hi packs of
-  terrain, slope or the tree layers), and journals it whole on the build Mac
+  English and grids; candidates' and peaks' own; a tree cover piece's hi packs and mid; an area's
+  lo pack and its z6 tiles' hi packs of terrain or slope, or of the tree layers for a z3 tile's
+  whole run, a lease of the scheme before pieces), and journals it whole on the build Mac
   (`coord/journal/<worker>/`); the agent merges the journal before it plans, under its own lock (not
   while a paused job holds it), all of a hand-off or none, as it merged the NAS's hand-off files.
   Until they're merged, the agent plans with their done records on top of the keys.
@@ -1572,12 +1614,13 @@ and, when none fits it, units' last steps.
      terrain areas it reads that are stale (its own areas, and those of the z6 tiles within 30 km of
      its units), then its units whose terrain is built (a unit's key reads the terrain near it: one
      built first would be built again), neighbours together; a unit or area two regions share comes
-     with the first. Then slope (each area once its terrain is built) and tree cover, after them for
-     the build Mac. A helper takes the earliest shared step with work that fits it (terrain, slope,
-     tree cover, units, …: what later steps wait on first), from the far end of all of that step's
-     (the agent offers a step's targets together): the last regions', while the build Mac does the
-     first's. Terrain it takes from the near end: the next region's, whose units the build Mac
-     builds next.
+     with the first. Then slope (each area once its terrain is built) and tree cover (its pieces,
+     then each z3 tile's assembly once every piece of it has its mid: a piece current but without
+     one comes with them, made again as it is), after them for the build Mac. A helper takes the
+     earliest shared step with work that fits it (terrain, slope, tree cover's pieces, units, …:
+     what later steps wait on first), from the far end of all of that step's (the agent offers a
+     step's targets together): the last regions', while the build Mac does the first's. Terrain it
+     takes from the near end: the next region's, whose units the build Mac builds next.
    - **A round** when a region is done that the map hasn't as it is now, an hour after the last
      round began (`PUBLISH_EVERY_S`; before the agent kept rounds, after the last catalog went out
      or last started) while units or terrain are left, and at once after the last unit and terrain
@@ -1592,9 +1635,9 @@ and, when none fits it, units' last steps.
      every helper's work done is merged (the units it counts as built are in its copy), and not
      while an edit is held; only the agent that runs the build's jobs keeps it (a dry run beside it
      plans with its own). Its work: the slope and tree cover of its regions' areas (slope's the z3 tiles
-     within 20 km of it, tree cover's those it meets, as their targets go; after the last unit, all
-     that's left), then a prune of what the coverage no longer builds (§5, Shrinking), the roads'
-     chain, and a catalog. A region done waits for its round with its slope and tree cover made: the
+     within 20 km of it, tree cover's those it meets: their pieces and assemblies; after the last
+     unit, all that's left), then a prune of what the coverage no longer builds (§5, Shrinking), the
+     roads' chain, and a catalog. A region done waits for its round with its slope and tree cover made: the
      build Mac makes them as it's done, before more of the regions' work, so the round only draws.
      The units follow the round in the list (a helper's, and the build Mac's while the round's work
      waits out a failure). A round before the last draws only the map tiles that go out with it:
@@ -1620,16 +1663,20 @@ and, when none fits it, units' last steps.
 
    The trains' and the landmarks' work is listed after the regions' (the build Mac's own job takes
    it once the regions' work is done or waits): the second job takes it first, a helper the
-   candidates and peaks.
+   candidates and peaks. Last of all, in idle time: the mids of tree cover pieces current without
+   one (those a key scheme's switch recorded: §8, A new key scheme), each made again as it is and
+   expected the same (`scenic-build trees --expect-same`: a pack coming out other than the manifest
+   has it fails the job, nothing uploaded); a helper takes them from the far end too.
 5. **A catalog** once the roads chain is done, in a round: a new one whenever the served files
    change, or the regions it records (their recipes and the outline files they name), or which of
    them are done. It lists the units as they were when the round began. It records as built the
    regions done (`--ready <id>=<outline digest>,…`: every unit of theirs built as the coverage wants
-   it, and their areas' slope and tree cover; one redrawn since the plan said so isn't; of those,
+   it, and their areas' slope and tree cover: its pieces and their z3 tiles' assemblies; one redrawn
+   since the plan said so isn't; of those,
    the round's own and those on the map as they are), and the others as the last catalog had them,
    if it had them (on the map as they were); the Regions panel shows the rest as pending, or building with their areas
-   counted. It waits while another worker builds a slope or tree cover area of a region it would
-   publish (it would go out without the region, which would then wait an hour), and while a
+   counted. It waits while another worker builds a slope area or a tree cover piece of a region it
+   would publish (it would go out without the region, which would then wait an hour), and while a
    helper's hand-offs wait to be merged (their areas counted as built, their files not yet in the
    manifest). What the trains' and the landmarks' chains made goes out with the next round's
    catalog; after the last unit, a catalog follows any chain's change. While
@@ -1772,7 +1819,7 @@ At each phase's end an Opus agent reviews the work against this plan.
 3. **The OSM pass and global-source layers: mostly done.**
    - **Built:**
      - the pass (filter, sets, outlines, the worldwide basemap, the cut, road values);
-     - terrain, slope and tree cover per z3 pack;
+     - terrain and slope per z3 pack, tree cover per z6 tile and its z3 tiles' assemblies;
      - the worldwide z8 terrain;
      - the world's roadside buildings, once per Overture release;
      - grids inside the units.
@@ -1971,3 +2018,11 @@ At each phase's end an Opus agent reviews the work against this plan.
 - **A change of key scheme re-keys the records** (§8, A new key scheme): a change of keys
   mustn't build again what would come out the same, and the units' alone would have rebuilt all
   284 (some seven hours of the build Mac).
+- **Tree cover a z6 tile at a time, each z3 tile's zoomed-out tree cover assembled from mids**
+  (§6, Trees; 2026-10-06). A z3 tile's whole run took up to half an hour and 30 GB of canopy squares
+  on a helper's disk, and a change anywhere in it made it all again; a piece copies its z6 tile's
+  one to four squares and takes about a minute, and a change makes its pieces and its z3 tile's
+  assembly (seconds) again. Its switch makes the whole tree cover again once, with the program:
+  trees.py had made every pack, in bytes the pieces don't reproduce (§8, A new key scheme). Byte
+  identity is the build's rule, so its packs are made again rather than taken as the same by their
+  pixels.
