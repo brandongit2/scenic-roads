@@ -180,8 +180,9 @@ pub fn steepest(l: f64) -> f64 {
 /// mountain's top) stay whatever their shape.
 pub const BLOB_MAX: u32 = 4096;
 /// The most stages the repair takes (repair_terrain_blobs: each judges the tile with what was found
-/// before filled in).
-const BLOB_STAGES: usize = 8;
+/// before filled in). The coverage's tiles take 15 at most (a cluster of spikes on an artifact,
+/// one lobe a stage); almost all one or three.
+const BLOB_STAGES: usize = 32;
 /// The most pixels a spike may have (BlobKind::Spike): an islet larger than that stays.
 pub const SPIKE_MAX: u32 = 16;
 /// How many times the roughness of the ground around it (the middle half's spread, from two pixels
@@ -194,6 +195,12 @@ pub const ROUGH: f64 = 20.0;
 /// The same for a spike (BlobKind::Spike), small and walled: 10, against the plane through the
 /// ground around it (a spike on a smooth slope is on flat ground).
 pub const ROUGH_SPIKE: f64 = 10.0;
+/// How many times steeper than terrain can be (`steepest`) a blob that stands more than BLOB_RISE
+/// out is broken whatever the ground around it: no summit AWS draws comes near (the sharpest in
+/// the coverage, a 3,534 m peak of the St. Elias, is 3.1 times; of OSM's summits with a height
+/// where AWS has them within 150 m, 1.3 at most), while the blocks where AWS's sources meet
+/// among glaciers are 6 to 20 (one of 4,900 m on the St. Elias's ice at 2,300 m: 9).
+pub const STEEP_ANYWAY: f64 = 6.0;
 
 /// (Tests: a pixel whose blobs' weighing is printed.)
 #[cfg(test)]
@@ -266,8 +273,9 @@ pub struct Blob {
 ///   One that stands out more than BLOB_RISE as the map shows it is broken (BlobKind) when it's
 ///   steeper over its footprint, as the map shows it, than terrain can be (`steepest`, taken where
 ///   it does most, the flanks of a smooth bump with it) and towers over the ground around it
-///   (ROUGH: a summit AWS drew too sharp, among rough ground, stays), or when it's a pit down to
-///   sea level in raised ground (AWS's filler); a small one steeper than 45° over its width is a
+///   (ROUGH: a summit AWS drew too sharp, among rough ground, stays) or is far steeper than any
+///   summit AWS draws (STEEP_ANYWAY), or when it's a pit down to sea level in raised ground (AWS's
+///   filler); a small one steeper than 45° over its width is a
 ///   spike when two of three hold: walled, on flat ground, beside a blob taken (an island's top or
 ///   a plug as steep is on flat ground alone); one under the sea is filled there. A summit or a
 ///   ridge widens as it goes down, a cliff is the edge of something larger, and an island, a sea
@@ -275,9 +283,11 @@ pub struct Blob {
 /// The tile is taken as AWS has it, before bathymetry goes to sea level: a pit in a lake reads as
 /// deep as AWS made it (−655 m in Shumarinai's, 274 m up, where a tower of 2,740 m rings).
 /// It's judged in stages, each on AWS's tile with what was found before filled in (the smoothest
-/// surface through the ground around it: `fill_from_around`), until one finds nothing: so a lesser
-/// tower that stood on a greater one's flank, or a lobe of its ringing, is judged on the ground
-/// beneath it, and the tile returned is one it has found nothing in. Deterministic.
+/// surface through the ground around it: `fill_from_around`), until one finds nothing, and then
+/// once more as it will be stored (at sea level and over: a pit on land whose deepest part is below
+/// zero shows as a hole to sea level): so a lesser tower that stood on a greater one's flank, or a
+/// lobe of its ringing, is judged on the ground beneath it, and the tile returned is one it finds
+/// nothing in as stored. Deterministic.
 pub fn repair_terrain(t: &mut [f32], z: u8, lat: f64) -> Repair {
     repair_terrain_blobs(t, z, lat).0
 }
@@ -306,17 +316,23 @@ pub fn repair_terrain_blobs(t: &mut [f32], z: u8, lat: f64) -> (Repair, Vec<Blob
         // ends at a stage that finds nothing, so the tile returned is one it found nothing in.
         let mut under = vec![false; t.len()];
         let mut ringing = vec![false; t.len()];
+        // (Whether the stage judges the tile as it's stored, at sea level and over: once a stage
+        // finds nothing in AWS's values, one does, and the repair ends when that one finds nothing
+        // too, so the tile returned is one nothing is found in as stored.)
+        let mut stored = false;
         for stage in 1..=BLOB_STAGES {
             rep.stages = stage;
             let n0 = blobs.len();
             let before = hole.clone();
-            let neg: Vec<f32> = t.iter().map(|&v| -v).collect();
+            let base: Vec<f32> = if stored { t.iter().map(|&v| v.max(0.0)).collect() } else { t.to_vec() };
+            let neg: Vec<f32> = base.iter().map(|&v| -v).collect();
             // (Towers are judged knowing the pits of a resampling's ringing that the stage before
-            // found, and this stage's pits are found for the next.)
+            // found, and this stage's pits are found for the next; as stored, there are none.)
             let mut rung = vec![false; t.len()];
-            for (pit, v) in [(false, &*t), (true, &neg[..])] {
+            let mut known = if stored { vec![false; t.len()] } else { ringing.clone() };
+            for (pit, v) in [(false, &base[..]), (true, &neg[..])] {
                 let n = blobs.len();
-                broken_blobs(v, if pit { -1.0 } else { 1.0 }, &before, px, &mut hole, &mut under, if pit { &mut rung } else { &mut ringing }, &mut blobs);
+                broken_blobs(v, if pit { -1.0 } else { 1.0 }, &before, px, &mut hole, &mut under, if pit { &mut rung } else { &mut known }, &mut blobs);
                 for b in &mut blobs[n..] {
                     b.pit = pit;
                     b.stage = stage as u8;
@@ -325,11 +341,21 @@ pub fn repair_terrain_blobs(t: &mut [f32], z: u8, lat: f64) -> (Repair, Vec<Blob
                     }
                 }
             }
-            // (It ends at a stage that found nothing, its towers judged knowing the ringing's pits.)
-            let same = rung == ringing;
-            ringing = rung;
-            if blobs.len() == n0 && same {
-                break;
+            // (It ends at a stage as stored that found nothing, after one in AWS's values that found
+            // nothing, its towers judged knowing the ringing's pits.)
+            let found = blobs.len() > n0;
+            if stored {
+                if !found {
+                    break;
+                }
+                stored = false;
+            } else {
+                let same = rung == ringing;
+                ringing = rung;
+                if !found && same {
+                    stored = true;
+                    continue;
+                }
             }
             t.copy_from_slice(&aws);
             fill_from_around(t, &hole);
@@ -545,7 +571,7 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
     let mut pixels: Vec<u32> = Vec::new();
     // (A chain whose broken blob was taken is done with: its other candidates aren't weighed.)
     let mut taken_top = NONE;
-    for (b, &(t0, (kind, _, at, rise, level, reach, edge))) in found.iter().enumerate() {
+    for (b, &(t0, (kind, excess, at, rise, level, reach, edge))) in found.iter().enumerate() {
         if t0 == taken_top {
             continue;
         }
@@ -593,7 +619,9 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
         if traced {
             eprintln!("  {kind:?} top {},{} px {} rise {rise:.0} level {level:.0} reach {reach:.0} | out_of {out_of:.0} median {median:.0} rough {rough:.1} flat {flat} at_sea {at_sea}", t0 % 256, t0 / 256, pixels.len());
         }
-        if kind == BlobKind::Broken && !(flat || at_sea) {
+        // (Far steeper than any summit AWS draws, it's broken whatever its ground.)
+        let wild = kind == BlobKind::Broken && excess > (STEEP_ANYWAY - 1.0) * steepest(reach as f64) * reach as f64;
+        if kind == BlobKind::Broken && !(flat || at_sea || wild) {
             continue;
         }
         if kind == BlobKind::Spike {
@@ -1078,10 +1106,12 @@ mod repair_tests {
     /// The repair, then the repair of its own output, which must change nothing.
     fn repaired(t: &mut [f32], z: u8, lat: f64) -> Repair {
         let r = repair_terrain(t, z, lat);
-        let once = t.to_vec();
-        let again = repair_terrain(t, z, lat);
+        // Repaired again as stored (at sea level and over), it changes nothing.
+        let mut stored: Vec<f32> = t.iter().map(|v| v.max(0.0)).collect();
+        let once = stored.clone();
+        let again = repair_terrain(&mut stored, z, lat);
         assert!(!again.changed() && again.blobs == 0, "a second pass found more: {again:?} ({r:?} first)");
-        assert_eq!(t, &once[..]);
+        assert_eq!(stored, once);
         r
     }
 
@@ -1574,6 +1604,87 @@ mod repair_tests {
         }
     }
 
+    /// 10/281/385 from pixel 5,223 (40.58 N, 81.03 W): a pit in Ohio's hills, 290–430 m up, down
+    /// to −393 m, its part below zero its own pit.
+    const OHIO_Z10: [[i16; 15]; 15] = [
+        [329, 349, 355, 351, 345, 342, 323, 308, 314, 316, 294, 299, 311, 320, 324],
+        [333, 355, 360, 347, 333, 329, 316, 309, 319, 316, 294, 298, 310, 325, 336],
+        [340, 359, 362, 352, 337, 325, 315, 309, 307, 293, 294, 296, 307, 330, 347],
+        [343, 354, 355, 355, 346, 331, 334, 328, 292, 261, 294, 296, 310, 339, 356],
+        [339, 342, 339, 344, 341, 338, 389, 399, 303, 241, 294, 302, 321, 350, 365],
+        [327, 325, 320, 325, 339, 357, 386, 369, 286, 252, 299, 313, 337, 360, 370],
+        [313, 311, 311, 312, 360, 397, 249, 110, 191, 294, 307, 327, 352, 362, 366],
+        [301, 302, 308, 306, 386, 430, 52, -231, 293, 300, 333, 343, 354, 354, 354],
+        [291, 295, 306, 301, 389, 428, -57, -393, 293, 299, 332, 335, 349, 340, 345],
+        [285, 290, 300, 295, 362, 386, -24, -293, 294, 297, 317, 317, 333, 324, 337],
+        [282, 286, 292, 290, 322, 329, 105, -31, 295, 296, 303, 301, 315, 312, 328],
+        [282, 285, 287, 286, 286, 282, 253, 246, 295, 295, 296, 296, 302, 305, 317],
+        [289, 291, 289, 287, 273, 268, 340, 389, 294, 295, 294, 296, 294, 299, 305],
+        [303, 305, 299, 292, 283, 284, 334, 356, 296, 295, 295, 295, 295, 295, 294],
+        [321, 325, 313, 299, 299, 308, 302, 280, 301, 299, 297, 298, 297, 296, 294],
+    ];
+
+    /// 12/448/1166 from pixel 66,108 (60.3 N, 140.6 W): in the St. Elias, where two of AWS's
+    /// sources meet 1,000 m apart, bands of the higher across the lower, and between them a block of
+    /// four pixels 1,030 m above the ground around, its walls on 19 m pixels.
+    const ST_ELIAS_STEPS_Z12: [[i16; 15]; 15] = [
+        [2459, 2460, 3412, 3433, 3455, 3475, 3492, 3506, 3517, 3525, 3532, 2508, 2522, 2540, 2559],
+        [2461, 2463, 3426, 3450, 3473, 3494, 3512, 3528, 3539, 3549, 3556, 2510, 2524, 2541, 2560],
+        [2464, 2466, 2468, 2470, 2473, 3512, 3531, 3549, 3563, 3575, 3586, 3594, 3598, 2540, 2558],
+        [2467, 2468, 2470, 2473, 2476, 3523, 3543, 3562, 3580, 3596, 3610, 3620, 3626, 2539, 2556],
+        [2469, 2471, 2473, 2475, 2478, 2482, 2485, 2487, 2491, 3608, 3624, 2512, 2523, 2537, 2552],
+        [2472, 2473, 2475, 2478, 2481, 2485, 2489, 2492, 2496, 3612, 3630, 2514, 2523, 2535, 2548],
+        [2474, 2475, 2477, 2480, 2485, 3504, 3529, 2498, 2502, 3614, 3633, 3644, 3648, 2533, 2544],
+        [2477, 2478, 2481, 2484, 2490, 3496, 3522, 2505, 2508, 3617, 3638, 3650, 3653, 2533, 2541],
+        [2481, 2482, 2485, 2490, 2496, 2502, 2507, 2511, 2514, 3623, 3646, 3658, 3662, 3660, 2540],
+        [2485, 2488, 2491, 2496, 2502, 2508, 2512, 2516, 2519, 3628, 3650, 3663, 3668, 3669, 2540],
+        [2491, 2494, 2498, 2503, 2508, 2513, 2516, 2520, 2523, 2525, 3647, 3660, 3667, 3671, 2542],
+        [2497, 2500, 2504, 2509, 2513, 2517, 2519, 2522, 2526, 2529, 3632, 3645, 3655, 3663, 2546],
+        [2503, 2507, 2510, 2514, 2517, 2519, 2521, 2524, 2528, 2532, 3608, 3622, 3635, 3647, 2550],
+        [2509, 2512, 2515, 2518, 2520, 2522, 2523, 2526, 2530, 2535, 3586, 3601, 3615, 3629, 2554],
+        [2515, 2518, 2520, 2522, 2524, 2524, 2526, 2529, 2533, 2538, 3575, 3588, 3602, 3614, 2558],
+    ];
+
+    #[test]
+    fn judges_the_tile_as_stored_and_takes_what_is_far_too_steep() {
+        // Ohio: the pit is filled from the hills (its part below zero, at sea level as stored, is no
+        // hole either: the repair judges the tile as stored before it ends).
+        let mut t = aws(&OHIO_Z10, 300.0);
+        repaired(&mut t, 10, 40.58);
+        for j in 6..=10 {
+            for i in 6..=7 {
+                let now = at(&t, i, j);
+                assert!(now >= 240.0, "{} at {i},{j}: {now}", OHIO_Z10[j][i]);
+            }
+        }
+        // The St. Elias: the block of four goes, 50 times steeper than terrain allows, though its
+        // ground is AWS's steps; the steps themselves stay (cliffs: the edges of something larger).
+        let mut e = aws(&ST_ELIAS_STEPS_Z12, 2500.0);
+        repaired(&mut e, 12, 60.3);
+        for (j, row) in ST_ELIAS_STEPS_Z12.iter().enumerate() {
+            for (i, &v) in row.iter().enumerate() {
+                let now = at(&e, i, j);
+                if (6..=7).contains(&j) && (5..=6).contains(&i) {
+                    assert!(now < 2700.0, "{v} at {i},{j}: {now}");
+                }
+            }
+        }
+        // Among rough mountains, where a summit drawn too sharp stays, a block of 5 × 5 pixels
+        // 1,500 m tall (8 times steeper than terrain allows, too large for a spike) goes all the
+        // same.
+        let rough = |x: f32, y: f32| 2100.0 + 250.0 * (x * 0.16).sin() * (y * 0.13).cos() + 100.0 * (x * 0.5 + y * 0.3).sin();
+        let mut h = tile(rough);
+        let base = h.clone();
+        let block = || (118..123).flat_map(|y| (118..123).map(move |x| (x, y)));
+        for (x, y) in block() {
+            h[y * TS + x] += 1500.0;
+        }
+        repaired(&mut h, 12, 60.3);
+        for (x, y) in block() {
+            assert!(h[y * TS + x] < base[y * TS + x] + 300.0, "{x},{y}: {}", h[y * TS + x]);
+        }
+    }
+
     #[test]
     fn keeps_a_summit_drawn_too_sharp_among_rough_ground() {
         // As AWS has a 3,534 m peak of the St. Elias (12/447/1143): a cone of 1,200 m, ten pixels
@@ -1681,11 +1792,19 @@ mod repair_debug {
             let b = std::fs::read(e.path()).unwrap();
             let lat = (std::f64::consts::PI * (1.0 - 2.0 * (k[2] as f64 + 0.5) / (1u64 << k[0]) as f64)).sinh().atan().to_degrees();
             let mut t: Vec<f32> = bytemuck::cast_slice(&b).to_vec();
-            repair_terrain(&mut t, k[0] as u8, lat);
+            let r = repair_terrain(&mut t, k[0] as u8, lat);
             for v in t.iter_mut() {
                 *v = v.max(0.0);
             }
             std::fs::write(format!("{}/{stem}.v2.f32", a[1]), bytemuck::cast_slice(&t)).unwrap();
+            // (Its stages, and what a second pass on it as stored changes.)
+            let mut again = t.clone();
+            let r2 = repair_terrain(&mut again, k[0] as u8, lat);
+            let moved = t.iter().zip(&again).filter(|(a, b)| (a.max(0.0) - b.max(0.0)).abs() > 0.5).count();
+            let most = t.iter().zip(&again).map(|(a, b)| (a.max(0.0) - b.max(0.0)).abs()).fold(0f32, f32::max);
+            if r.stages >= 12 || moved > 0 {
+                eprintln!("{stem}: {} stages, again {} px (most {most:.0} m, {} blobs)", r.stages, moved, r2.blobs);
+            }
         }
     }
 
@@ -1703,7 +1822,8 @@ mod repair_debug {
         for b in &blobs {
             eprintln!("  stage {} {:?}{} top {},{} px {} rise {:.0} level {:.0} reach {:.0} ground {:.0} rough {:.1}", b.stage, b.kind, if b.pit { " pit" } else { "" }, b.top % 256, b.top / 256, b.pixels, b.rise, b.level, b.reach, b.ground, b.rough);
         }
-        let mut again = t.clone();
+        // (Again on the tile as stored: at sea level and over.)
+        let mut again: Vec<f32> = t.iter().map(|v| v.max(0.0)).collect();
         let (r2, b2) = repair_terrain_blobs(&mut again, z, lat);
         eprintln!("again: {r2:?}");
         for b in &b2 {
