@@ -53,12 +53,13 @@
 //! `ClearRequest`), once the build is done and no job runs here: those caches, the canopy squares
 //! too, and the others a later job fills again from the NAS or makes again from what's there
 //! (`kind`): the pack cache, the DEM seed (only while the NAS has it whole), the local copies of the
-//! NAS's files and the heritage jobs' clip of the planet. Kept: what would come back from the
-//! internet (the Wikidata and Wikipedia answers the items and heritage jobs keep, the heritage
-//! scripts' Python), what frees next to nothing (the registers' snapshot, which the pass's heritage
-//! folder is an APFS clone of; the trains' stop pairs, under a MB), the agent's own timings
-//! (`unit-stages.json`) and what units kept that isn't on the NAS yet (`dem-units/`,
-//! `scenic-units/`).
+//! NAS's files and the heritage jobs' clip of the planet. Kept: the Wikidata and Wikipedia answers
+//! the items and heritage jobs keep (crate::answers: the NAS has them too, but they free little, the
+//! items' 13 MB and the heritage copy's own ~0.4 GB, which is whole or nothing), the heritage
+//! scripts' old Python environment (`heritage-venv/`: their next run removes it), what frees next to
+//! nothing (the registers' snapshot, which the pass's heritage folder is an APFS clone of; the
+//! trains' stop pairs, under a MB), the agent's own timings (`unit-stages.json`) and what units kept
+//! that isn't on the NAS yet (`dem-units/`, `scenic-units/`).
 //!
 //! Nothing goes through a link: a folder or file of the cache that's a link, at any depth (`walk`;
 //! crate::rawpack's packer passes them over too), or a folder in the NAS's project folder by its
@@ -98,13 +99,32 @@ const CHEAP: [(&str, &str); 4] = [("chm10", "canopy"), ("aws-terrarium", "aws-te
 
 /// The pageview months' indexes here (dem/pageviews.py's copies of the NAS's `sources/pageviews/`).
 pub const MONTHS: &str = "items/months";
-/// Bytes the cheap caches hold (what `make_room` can free on the build Mac: a helper's, `helper_cheap_bytes`).
-pub fn cheap_bytes(cache: &Path) -> u64 {
+
+/// Bytes the cheap caches hold (what `make_room` can free on the build Mac: a helper's,
+/// `helper_cheap_bytes`): of the pageview months, the indexes the NAS's `sources` has at their size
+/// (`months_bytes`), none without it.
+pub fn cheap_bytes(cache: &Path, sources: Option<&Path>) -> u64 {
     let mut files = Vec::new();
-    for (d, _) in CHEAP {
+    for (d, _) in CHEAP.iter().filter(|(d, _)| *d != MONTHS) {
         walk_cheap(cache, d, None, &mut files);
     }
-    files.iter().map(|f| f.1).sum()
+    files.iter().map(|f| f.1).sum::<u64>() + sources.map_or(0, |s| months_bytes(cache, s))
+}
+
+/// Whether `p`, a file of the cheap caches, is one they may lose: of the pageview months, an index
+/// only (the counts from before them, and a stream's temporary file, stay: `fate`).
+fn cheap_file(cache: &Path, p: &Path) -> bool {
+    !p.starts_with(cache.join(MONTHS)) || p.to_string_lossy().ends_with(".tsv.zst")
+}
+
+/// The bytes of the pageview months' indexes here that the NAS's `sources` has at their size: what
+/// room-making, a trim or a clear can free of them (one it lacks stays, for pageviews.py to put
+/// there). Nothing in the NAS's project folder (`ours`).
+fn months_bytes(cache: &Path, sources: &Path) -> u64 {
+    let mut files = Vec::new();
+    walk_cheap(cache, MONTHS, sources.parent(), &mut files);
+    let there = |p: &Path, len: u64| p.file_name().is_some_and(|n| std::fs::metadata(sources.join("pageviews").join(n)).is_ok_and(|m| m.is_file() && m.len() == len));
+    files.iter().filter(|f| cheap_file(cache, &f.2) && there(&f.2, f.1)).map(|f| f.1).sum()
 }
 
 /// What `make_room` can free on a helper: the cheap caches but the loose raw tiles (`aws-terrarium/
@@ -155,6 +175,8 @@ fn kind(name: &str) -> Option<&'static str> {
         "chm10" => "canopy",
         "aws-terrarium" => "terrain",
         "blobs" => "blobs",
+        // (Of it, the pageview months' copies: the items job's answers beside them stay.)
+        "items" => "months",
         // (pack(T)'s and lo's base packs, copied from the NAS where the mirror lacks them.)
         "base" => "base",
         _ if name.starts_with("dem-cache.") => "dem",
@@ -167,7 +189,7 @@ fn kind(name: &str) -> Option<&'static str> {
 
 /// Whether cache `kind` is one of the cheap ones, which room-making and a trim empty too.
 fn cheap(kind: &str) -> bool {
-    matches!(kind, "canopy" | "terrain" | "blobs")
+    matches!(kind, "canopy" | "terrain" | "blobs" | "months")
 }
 
 /// A cache (`kind`) in words.
@@ -176,6 +198,7 @@ pub fn words(kind: &str) -> &str {
         "canopy" => "canopy squares",
         "terrain" => "raw terrain tiles",
         "blobs" => "copies of the records' files",
+        "months" => "pageview months",
         "base" => "base packs",
         "dem" => "the DEM seed",
         "copies" => "copies of the NAS's files",
@@ -207,7 +230,8 @@ pub struct Freed {
     #[serde(default)]
     pub freed: BTreeMap<String, u64>,
     /// What stays of what it went through: files the NAS hasn't (a helper's loose raw tiles, which
-    /// only its own jobs pack; a canopy square it couldn't take now; the DEM seed, for a clear).
+    /// only its own jobs pack; a canopy square it couldn't take now; a pageview month's index, which
+    /// pageviews.py puts there when it next reads it; the DEM seed, for a clear).
     #[serde(default)]
     pub left: u64,
     /// Why it wasn't done, when it wasn't (a clear asked for while a job ran here, or while the
@@ -287,6 +311,7 @@ pub fn gone(clear: &BTreeMap<String, u64>, mb_s: f64) -> Vec<Gone> {
                 "canopy" => format!("copied back from the NAS as the areas that read them are built ({} in all)", time(b)),
                 "terrain" => format!("copied back from the NAS's archives as terrain and peaks read them ({} in all)", time(b)),
                 "blobs" => format!("copied back from the NAS as the areas are built again ({} in all)", time(b)),
+                "months" => format!("copied back from the NAS when the items and heritage jobs next run ({})", time(b)),
                 "base" => format!("copied back by the next round's map tiles, from the mirror where it has them, else the NAS ({})", time(b)),
                 "dem" => format!("copied back from the NAS by the next unit job ({})", time(b)),
                 "copies" => format!("copied back from the NAS when the summits and peaks next run ({})", time(b)),
@@ -405,9 +430,10 @@ pub struct Sizes {
 }
 
 /// What this Mac's caches hold, for the status: what room-making can free (`cheap_bytes`; a
-/// helper's, `helper_cheap_bytes`, its loose raw tiles left out), and what a clear would, by cache
-/// (those, and the others: the DEM seed counted, as the NAS has it, whichever Mac copied it from
-/// there). Nothing through a link, nor in the NAS's project folder `root` (`ours`).
+/// helper's, `helper_cheap_bytes`, its loose raw tiles left out; the pageview months the NAS has, only
+/// when `root` is given), and what a clear would, by cache (those, and the others: the DEM seed
+/// counted, as the NAS has it, whichever Mac copied it from there). Nothing through a link, nor in
+/// the NAS's project folder `root` (`ours`).
 pub fn sizes(cache: &Path, helper: bool, root: Option<&Path>) -> Sizes {
     let mut clear: BTreeMap<String, u64> = BTreeMap::new();
     let tiles = if helper { "aws-terrarium/packs" } else { "aws-terrarium" };
@@ -415,6 +441,10 @@ pub fn sizes(cache: &Path, helper: bool, root: Option<&Path>) -> Sizes {
         let mut files = Vec::new();
         walk_cheap(cache, d, root, &mut files);
         clear.insert(k.to_string(), files.iter().map(|f| f.1).sum());
+    }
+    // (The pageview months the NAS has at their size, when the NAS can be asked: the others stay.)
+    if let Some(r) = root {
+        clear.insert("months".to_string(), months_bytes(cache, &r.join("sources")));
     }
     let cheap_now = clear.values().sum();
     for e in std::fs::read_dir(cache).into_iter().flatten().flatten() {
@@ -426,14 +456,15 @@ pub fn sizes(cache: &Path, helper: bool, root: Option<&Path>) -> Sizes {
     Sizes { cheap: cheap_now, clear }
 }
 
-/// The bytes the cheap caches at `cache` hold in files (not empty markers) `spare` doesn't keep (of
-/// this Mac's own: not in the NAS's project folder `root`).
+/// The bytes the cheap caches at `cache` hold in files (not empty markers) `spare` doesn't keep and
+/// they may lose (`cheap_file`: of the pageview months, the indexes), of this Mac's own (not in the
+/// NAS's project folder `root`).
 fn cheap_left(cache: &Path, root: Option<&Path>, spare: &dyn Fn(&Path) -> bool) -> u64 {
     let mut files = Vec::new();
     for (d, _) in CHEAP {
         walk_cheap(cache, d, root, &mut files);
     }
-    files.iter().filter(|f| !spare(&f.2)).map(|f| f.1).sum()
+    files.iter().filter(|f| !spare(&f.2) && cheap_file(cache, &f.2)).map(|f| f.1).sum()
 }
 
 /// The bytes of the loose raw tiles in `tiles` (`<z>/<x>/<y>.png`: not the archives' copies).
@@ -790,7 +821,7 @@ mod tests {
         file(&c.join("chm10/none.tif"), 0, 8000);
         let read = whole(&c.join("chm10/read.tif"), 60);
         file(&c.join("dem-cache.keys.u64"), 100, 9000);
-        assert_eq!(cheap_bytes(c), arch + idle + read);
+        assert_eq!(cheap_bytes(c, None), arch + idle + read);
         // A disk with 850 free plus what's deleted.
         let all = used(c);
         let disk = |base: u64| move |p: &Path| Ok(base + all - used(p));
@@ -851,6 +882,25 @@ mod tests {
     }
 
     #[test]
+    fn what_can_go_counts_only_the_months_the_nas_has() {
+        // (The review's case, 2026-10-06.) An index the NAS lacks and the counts from before the
+        // indexes stay: not counted as room (the OSM pass's admission adds it to the free space).
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let nas = &d.path().join("nas/sources");
+        let months = c.join(MONTHS);
+        file(&months.join("2026-05.tsv.zst"), 1000, 7200);
+        file(&months.join("2026-08.json"), 300, 7200);
+        file(&months.join("2026-08.counted.json"), 200, 7200);
+        assert_eq!(cheap_bytes(c, Some(nas)), 0);
+        assert_eq!(make_room_spared(c, nas, 1 << 40, 1 << 40, &|_| Ok(0)).unwrap(), 0, "none of it freed");
+        // The NAS has it now: counted, and freed.
+        file(&nas.join("pageviews/2026-05.tsv.zst"), 1000, 0);
+        assert_eq!(cheap_bytes(c, Some(nas)), 1000);
+        assert_eq!(make_room_spared(c, nas, 1 << 40, 1 << 40, &|_| Ok(0)).unwrap(), 1000);
+    }
+
+    #[test]
     fn a_pageview_months_index_goes_once_the_nas_has_it() {
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
@@ -867,6 +917,10 @@ mod tests {
             file(&months.join(f), 100, 7200);
         }
         file(&c.join("items/facts-2026-09-28.jsonl"), 100, 7200);
+        // What room-making can free of them: the index the NAS has at its size, not the counts from
+        // before the indexes nor one it lacks (the review's case, 2026-10-06: the OSM pass counts it
+        // as room); none without the NAS to ask.
+        assert_eq!((cheap_bytes(c, Some(nas)), cheap_bytes(c, None)), (1000, 0));
         let all = used_with(c, &["items"]);
         let disk = move |p: &Path| Ok(all - used_with(p, &["items"]));
         assert_eq!(make_room_spared(c, nas, 1 << 40, 1 << 40, &disk).unwrap(), 1000);
@@ -881,6 +935,11 @@ mod tests {
         let spare = |p: &Path| p.starts_with(c.join(MONTHS));
         assert_eq!(make_room_with(c, nas, 1 << 40, 1 << 40, &disk, &spare).unwrap(), 0);
         assert!(months.join("2026-02.tsv.zst").exists());
+        // A trim: the one the NAS has now goes; the one it lacks stays, said as kept (the counts
+        // from before the indexes stay unsaid: nothing would take them).
+        let t = trim(c, nas, &|_| false).unwrap();
+        assert_eq!((t.freed, t.left), (BTreeMap::from([("months".to_string(), 900)]), 800));
+        assert!(months.join("2026-05.tsv.zst").exists() && months.join("2026-08.json").exists());
     }
 
     /// The bytes under the caches' folders and `more` of the cache's.
@@ -1014,6 +1073,35 @@ mod tests {
     }
 
     #[test]
+    fn a_clear_names_the_pageview_months_it_frees() {
+        // (The review's case, 2026-10-06.) The months the NAS has: in what a clear would free (the
+        // owner's confirmation), freed as themselves by a clear and by the build Mac's trim; one it
+        // lacks stays, said as kept; the counts from before the indexes neither.
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("app/agent/cache");
+        let nas = &d.path().join("nas/sources");
+        std::fs::create_dir_all(d.path().join("nas/state/build")).unwrap();
+        file(&c.join(MONTHS).join("2026-05.tsv.zst"), 600, 7200);
+        file(&nas.join("pageviews/2026-05.tsv.zst"), 600, 0);
+        file(&c.join(MONTHS).join("2026-08.tsv.zst"), 50, 7200);
+        file(&c.join(MONTHS).join("2026-08.json"), 30, 7200);
+        let said = sizes(c, false, nas.parent());
+        assert_eq!((said.clear.get("months"), said.cheap), (Some(&600), 600));
+        assert_eq!(sizes(c, false, None).clear.get("months"), None, "not without the NAS to ask");
+        let g = gone(&said.clear, 60.0);
+        assert_eq!((g[0].what.as_str(), g[0].back.starts_with("copied back from the NAS when the items and heritage jobs next run")), ("pageview months", true));
+        let f = clear(c, nas).unwrap();
+        assert!(!c.join(MONTHS).join("2026-05.tsv.zst").exists());
+        assert_eq!((f.freed.clone(), f.left), (BTreeMap::from([("months".to_string(), 600)]), 50));
+        assert!(f.say().contains("pageview months 0 MB"), "{}", f.say());
+        // The build Mac's trim (the canopy squares spared) takes them too.
+        file(&c.join(MONTHS).join("2026-05.tsv.zst"), 600, 7200);
+        let t = trim(c, nas, &|p| p.starts_with(c.join("chm10"))).unwrap();
+        assert_eq!((t.freed.get("months"), t.left), (Some(&600), 50));
+        assert!(c.join(MONTHS).join("2026-08.tsv.zst").exists() && c.join(MONTHS).join("2026-08.json").exists());
+    }
+
+    #[test]
     fn a_clear_empties_what_the_nas_fills_again_and_nothing_else() {
         let d = tempfile::tempdir().unwrap();
         let home = &d.path().join("app/agent");
@@ -1032,11 +1120,12 @@ mod tests {
             file(&c.join(format!("dem-cache.{n}")), len, 60);
             file(&nas.join(format!("dem-cache/dem-cache.{n}")), len, 60);
         }
-        // What stays: what would come back from the internet, a pageview month the NAS lacks (said
-        // as kept: pageviews.py puts it there when it next reads it), what frees next to nothing,
-        // the agent's own timings, what units kept that isn't on the NAS yet; and everything
-        // outside the caches (the agent's state, logs, work and outbox, the map's mirror).
-        let kept = ["items/facts-2026-09-28.jsonl", "items/months/2026-05.tsv.zst", "heritage-2026-09-28-0123456789ab/.done", "heritage-venv/bin/python", "registers-0123456789ab/.done", "rail/pairs-0123456789abcdef.bin", "unit-stages.json", "dem-units/6-1-1.dem", "scenic-units/6-1-1/canopy.keys"];
+        // What stays: the answers the NAS keeps too (they free little), a pageview month the NAS
+        // lacks (said as kept: pageviews.py puts it there when it next reads it), what frees next to
+        // nothing, the agent's own timings, what units kept that isn't on the NAS yet; and
+        // everything outside the caches (the agent's state, logs, work and outbox, the map's
+        // mirror).
+        let kept = ["items/facts-2026-09-28.jsonl", "items/months/2026-05.tsv.zst", "heritage-2026-09-28-0123456789ab/.done", "registers-0123456789ab/.done", "rail/pairs-0123456789abcdef.bin", "unit-stages.json", "dem-units/6-1-1.dem", "scenic-units/6-1-1/canopy.keys"];
         for f in kept {
             file(&c.join(f), 100, 60);
         }
@@ -1122,7 +1211,7 @@ mod tests {
         let f = trim(c, &nas, &|_| false).unwrap();
         let g = clear(c, &nas).unwrap();
         assert!(nas.join("canopy/a.tif").exists(), "the NAS's copy deleted through the link");
-        assert_eq!((f.bytes(), f.left, g.bytes(), cheap_bytes(c)), (0, 0, 0, 0));
+        assert_eq!((f.bytes(), f.left, g.bytes(), cheap_bytes(c, Some(&nas))), (0, 0, 0, 0));
         assert_eq!((sizes(c, false, Some(root.as_path())), sizes(c, true, Some(root.as_path()))), (Sizes::default(), Sizes::default()));
     }
 

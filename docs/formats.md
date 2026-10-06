@@ -315,10 +315,10 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
                         archive they last matched and their hashes then; months/: copies of the
                         NAS's pageview indexes, marked used when read), rail/ (the trains' stop
                         pairs), registers-<id>/ (the registers' archives, extracted),
-                        heritage-<date>-<id>/ (the pass's
-                        copy of the snapshot, which the heritage scripts add their answers to; its
-                        .kept.json as items/'s) and heritage-venv/ (the heritage scripts' Python
-                        environment), unit-stages.json (the unit stages' times here).
+                        heritage-<date>-<id>/ (the pass's copy of the snapshot, which the heritage
+                        scripts add their answers to; its .kept.json as items/'s), heritage-venv/
+                        (the heritage scripts' old Python environment: their next run removes it)
+                        and unit-stages.json (the unit stages' times here).
                         When a job starts with too little free, raw tiles waiting are packed onto
                         the NAS (not kept here), then chm10/, aws-terrarium/, blobs/ and
                         items/months/ lose files: chm10/'s, the archives', blobs/' and the months'
@@ -557,6 +557,6 @@ class, id) within a tile. The client sends the id with the clicked point.
   `why_not`, why they can't be cleared now; `trimmed`, `cleared` and `declined`, the last trim
   after the build, the last clear done and the last ask declined, each `{at, asked (a clear's
   ask's at), by, freed: {cache: bytes}, left, why_not}`, the caches named canopy, terrain, blobs,
-  base, dem, copies and heritage));
+  months (the pageview months' indexes), base, dem, copies and heritage));
   `state/build/{manifest,jobs,pending,summaries,pause}.json`.
 - **The app:** `app/current.json` and `previous.json`: `{version, files, sha256}`.

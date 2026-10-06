@@ -353,8 +353,10 @@ record changes back through the build Mac's coordinator, which journals them for
     disk).
   - **Kept:** the Wikidata and Wikipedia answers the items and heritage jobs keep (`items/`, but
     its pageview months, and the pass's copy of the registers' snapshot, which the heritage scripts
-    add theirs to: `heritage-<date>-<id>/`), which the NAS keeps too (Downloads, above); the
-    heritage scripts' Python environment (`heritage-venv/`, from PyPI); the registers' snapshot,
+    add theirs to: `heritage-<date>-<id>/`), which the NAS keeps too (Downloads, above) but which
+    free little (the items' 13 MB, the copy's own ~0.4 GB); the heritage scripts' old Python
+    environment (`heritage-venv/`, which their next run removes: they run in the app's); the
+    registers' snapshot,
     extracted (`registers-<id>/`: the pass's copy is an APFS clone of it, so deleting it would free
     next to nothing); the trains' stop pairs (`rail/`, under a MB); the unit stages' timings
     (`unit-stages.json`); and what a unit kept that isn't on the NAS yet (`dem-units/`,

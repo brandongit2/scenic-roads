@@ -919,7 +919,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let alert = NSAlert()
         alert.messageText = "Clear this Mac's build caches (\(gb(c.clearable ?? 0)))?"
         let each = (c.each ?? []).map { "• \($0.what) \(gb($0.bytes)): \($0.back)" }.joined(separator: "\n")
-        alert.informativeText = "\(each)\n\nKept: what would come back from the internet (the Wikidata and Wikipedia answers, the heritage scripts' Python), and the map's offline copy."
+        alert.informativeText = "\(each)\n\nKept: the Wikidata and Wikipedia answers (the NAS has them too; they free little), a pageview month the NAS lacks, and the map's offline copy."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Clear")
         alert.addButton(withTitle: "Cancel")

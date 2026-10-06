@@ -1916,7 +1916,7 @@ impl Agent {
             match room::make_room(&cache, &r.join("sources"), need, margin, &|p| terrain_reads(&id, p) || (months && p.starts_with(&pageviews))) {
                 Ok(0) => {}
                 Ok(n) => {
-                    eprintln!("agent: {} GB of cached canopy squares and terrain tiles deleted for {} GB free", n >> 30, (need + margin) >> 30);
+                    eprintln!("agent: {} GB of the cheap caches deleted (canopy squares, raw terrain tiles, copies of the records' files, pageview months) for {} GB free", n >> 30, (need + margin) >> 30);
                     self.cheap = None;
                 }
                 Err(e) => eprintln!("agent: making room on the disk: {e:#}"),
@@ -2511,7 +2511,7 @@ impl Agent {
             let pack_cache = self.o.home.join("cache").join("base");
             let mut free = cond::free_bytes(&self.o.home).unwrap_or(0) + dir_bytes(&pack_cache);
             if free < PASS_SPACE {
-                free += room::cheap_bytes(&self.o.home.join("cache"));
+                free += room::cheap_bytes(&self.o.home.join("cache"), Some(&root.join("sources")));
             }
             let started = scratch.exists();
             if !jar.exists() {

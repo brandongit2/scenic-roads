@@ -197,7 +197,7 @@ fn clean(args: &[String]) -> Result<()> {
     for g in &caches.each {
         println!("  {} {}: {}", g.what, agent::room::size(g.bytes), g.back);
     }
-    println!("Kept: what would come back from the internet (the Wikidata and Wikipedia answers, the heritage scripts' Python), and the map's offline copy.");
+    println!("Kept: the Wikidata and Wikipedia answers (the NAS has them too; they free little), a pageview month the NAS lacks, and the map's offline copy.");
     if !flag(args, "--yes") {
         use std::io::Write;
         print!("Clear them? [y/N] ");
