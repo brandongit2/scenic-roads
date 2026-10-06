@@ -82,15 +82,16 @@ fn is_zero(v: &u32) -> bool {
     *v == 0
 }
 
-/// The way a step runs now, as far as its memory goes: a cost measured another way says nothing of
-/// what a run takes now (terrain 2 and slope 2: each z6 tile's pack written as it's made, where
-/// they held their whole area's; tree cover 1: the trees program, a band of a block's rows at a
-/// time on each thread, where trees.py's workers each held a block's every zoom-12 value, 12 to
-/// 36 GB together).
+/// The way a step runs now, as far as its memory and time go: a cost measured another way says
+/// nothing of what a run takes now (terrain 2 and slope 2: each z6 tile's pack written as it's made,
+/// where they held their whole area's; tree cover 2: a z6 tile a run (a piece), where 1 was a z3
+/// tile's whole run with the trees program, a band of a block's rows at a time on each thread, and
+/// before that trees.py's workers each held a block's every zoom-12 value, 12 to 36 GB together;
+/// its assemblies 1).
 pub fn cost_version(step: &str) -> u32 {
     match step {
-        "terrain" | "slope" => 2,
-        "trees" => 1,
+        "terrain" | "slope" | "trees" => 2,
+        "trees-lo" => 1,
         _ => 0,
     }
 }
@@ -732,15 +733,20 @@ pub fn folder(w: &str) -> String {
 }
 
 /// Whether `l` is a file a job of `step` saves for `target`: a unit's base pack, road values, roads'
-/// English and the grids its packs lacked; candidates' and peaks' own files; an area's (a z3
-/// tile's) lo pack and its z6 tiles' hi packs of terrain, slope or the tree layers.
+/// English and the grids its packs lacked; candidates' and peaks' own files; a tree cover piece's (a
+/// z6 tile's) hi packs of the tree layers and its mid, an assembly's (a z3 tile's) lo packs of them;
+/// an area's (a z3 tile's) lo pack and its z6 tiles' hi packs of terrain, slope, or the tree layers
+/// (a z3 tile's whole run: a lease of the scheme before pieces).
 pub fn saves(step: &str, target: &str, l: &str) -> bool {
     let dash = target.replace('/', "-");
+    let tile = crate::legacy::Unit::parse(target);
     match step {
         "unit" => crate::unit::saved_files(&dash).iter().any(|f| f == l),
         "pois" | "peaks" => l == format!("work/{step}/{dash}"),
+        "trees" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| l == crate::treepacks::mid_logical(t.x, t.y) || crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/hi/{dash}"))),
+        "trees-lo" => tile.is_some_and(|u| u.z == 3) && crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/lo/{dash}")),
         "terrain" | "slope" | "trees" => {
-            let Some(q) = crate::legacy::Unit::parse(target).filter(|u| u.z == 3) else { return false };
+            let Some(q) = tile.filter(|u| u.z == 3) else { return false };
             let layers: &[&str] = match step {
                 "terrain" => &["terrain"],
                 "slope" => &["slope"],
@@ -2108,6 +2114,13 @@ mod tests {
         assert!(check_handoff(&h("slope", "3/2/2", &["layers/slope/hi/6-24-16"], &[]), "slope", &ts("3/2/2")).is_err());
         assert!(check_handoff(&h("slope", "3/2/2", &["layers/terrain/hi/6-16-16"], &[]), "slope", &ts("3/2/2")).is_err());
         assert!(check_handoff(&h("trees", "3/2/2", &["layers/trees-leaf/hi/6-17-17", "layers/trees-cover/lo/3-2-2"], &[]), "trees", &ts("3/2/2")).is_ok());
+        // A tree cover piece: its own hi packs and its mid, never its z3 tile's lo pack or another
+        // piece's; an assembly isn't a helper's.
+        assert!(check_handoff(&h("trees", "6/17/17", &["layers/trees-leaf/hi/6-17-17", "layers/trees-cover/hi/6-17-17", "work/trees-mid/6-17-17"], &[]), "trees", &ts("6/17/17")).is_ok());
+        assert!(check_handoff(&h("trees", "6/17/17", &["layers/trees-cover/lo/3-2-2"], &[]), "trees", &ts("6/17/17")).is_err());
+        assert!(check_handoff(&h("trees", "6/17/17", &["work/trees-mid/6-17-18"], &[]), "trees", &ts("6/17/17")).is_err());
+        assert!(check_handoff(&h("trees-lo", "3/2/2", &["layers/trees-cover/lo/3-2-2"], &[]), "trees-lo", &ts("3/2/2")).is_err());
+        assert!(saves("trees-lo", "3/2/2", "layers/trees-leaf/lo/3-2-2") && !saves("trees-lo", "3/2/2", "layers/trees-leaf/hi/6-16-16"));
         assert!(check_handoff(&h("pois", "6/1/3", &["work/pois/6-1-3"], &[]), "pois", &ts("6/1/3")).is_ok());
         assert!(check_handoff(&h("pois", "6/1/3", &["work/peaks/6-1-3"], &[]), "pois", &ts("6/1/3")).is_err());
         // Raw tiles' archives: its own areas, named by their content.

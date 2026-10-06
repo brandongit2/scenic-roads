@@ -688,7 +688,7 @@ mod tests {
 
     fn region(id: &str, terrain: &[&str], units: &[&str], slope: &[&str]) -> RegionLeft {
         let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-        RegionLeft { id: id.into(), on_map: None, units: v(units), own_units: v(units), terrain: v(terrain), own_terrain: v(terrain), slope: v(slope), trees: Vec::new() }
+        RegionLeft { id: id.into(), on_map: None, units: v(units), own_units: v(units), terrain: v(terrain), own_terrain: v(terrain), slope: v(slope), trees: Vec::new(), trees_lo: Vec::new() }
     }
 
     fn mac(name: &str, speed: f64, helper: bool) -> Machine {

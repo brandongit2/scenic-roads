@@ -4436,6 +4436,7 @@ mod tests {
         assert_eq!(shared(build::TERRAIN).as_deref(), Some("all"));
         assert_eq!(shared(build::UNITS).as_deref(), Some("all"));
         assert_eq!(shared(build::LANDMARKS).as_deref(), Some("candidates and peaks"));
+        assert_eq!(shared(build::TREES).as_deref(), Some("tiles"), "the pieces, not the assemblies");
         assert_eq!(shared(build::TILES), None);
         assert_eq!(shared(build::PUBLISH), None);
     }
