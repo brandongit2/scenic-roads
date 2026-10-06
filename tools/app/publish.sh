@@ -24,7 +24,9 @@ export PATH=/opt/homebrew/opt/rustup/bin:$PATH
 # The commit it's built from, read now: one made while it runs would name a version it isn't.
 head=$(git rev-parse --short HEAD)
 cargo build --release -p server -p pipeline 2>&1 | tail -2
-cargo test -q -p store -p names -p pipeline --lib 2>&1 | tail -3
+# (The summaries, and the names of any tests that failed: cargo lists them, indented, before its
+# summary.)
+cargo test -q -p store -p names -p pipeline --lib 2>&1 | grep -E '^test result|^    [a-z_][a-z0-9_]*(::[a-z0-9_]+)+$'
 # The programs' WebAssembly builds, which the coordinator serves to web workers (docs/workers.md).
 zsh tools/app/wasm.sh >/dev/null || { echo "WebAssembly build failed"; exit 1; }
 # Built into its own folder: web/dist may be what a development server is serving.
