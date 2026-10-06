@@ -1,12 +1,14 @@
 //! The map's server: tiles, layers and the APIs over the catalog's data (docs/plan.md §4).
 //!
 //! usage: server [--port 8080] [--web web/dist] [--fonts data/fonts] [--home <dir>] [--root <dir>]
-//!               [--no-mirror | --mirror] [--reserve-gb 50]
+//!               [--no-mirror | --mirror] [--reserve-gb 50] [--listen <IPv4 address>]
 //!
 //! Data comes from the NAS project folder (found and mounted by itself), read from this Mac's mirror
 //! when it's there. `--root` serves a local folder laid out like the project folder instead
 //! (development, tests), without a mirror unless `--mirror` (then copied into `--home`'s as from
 //! the NAS). `--reserve-gb`: the free space the mirror leaves on the disk, in GB (10⁹ bytes).
+//! `--listen`: the one address to answer on (a test server's 127.0.0.1), else every IPv4 address
+//! and IPv6's loopback.
 //! Nothing is loaded at start: the catalog says where everything is, and files are opened on
 //! first use.
 
@@ -457,13 +459,16 @@ async fn main() -> Result<()> {
         .with_state(state);
 
     // This Mac, and devices on its LAN and the tailnet (the gate answers them alone).
-    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+    let listen: Option<std::net::Ipv4Addr> = arg("--listen").map(|a| a.parse()).transpose()?;
+    let addr = std::net::SocketAddr::from((listen.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED), port));
     eprintln!("listening on http://{addr} (devices: the map's address with its key, <home>/map-page)");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let svc = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
-    if let Ok(l6) = tokio::net::TcpListener::bind(std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port))).await {
-        let svc6 = svc.clone();
-        tokio::spawn(async move { axum::serve(l6, svc6).await });
+    if listen.is_none() {
+        if let Ok(l6) = tokio::net::TcpListener::bind(std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port))).await {
+            let svc6 = svc.clone();
+            tokio::spawn(async move { axum::serve(l6, svc6).await });
+        }
     }
     axum::serve(listener, svc).await?;
     Ok(())
