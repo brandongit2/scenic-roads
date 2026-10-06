@@ -221,8 +221,17 @@ impl Mine {
 
     /// Writes the entries not written yet: those that couldn't be, with why (kept, to try again).
     pub fn write(&mut self, nas: &dyn Nas) -> Vec<(String, anyhow::Error)> {
+        self.write_while(nas, &|| true)
+    }
+
+    /// `write`, while `more()` says so (asked before each): the rest are kept, to write later.
+    pub fn write_while(&mut self, nas: &dyn Nas, more: &dyn Fn() -> bool) -> Vec<(String, anyhow::Error)> {
         let mut failed = Vec::new();
         for (k, e) in std::mem::take(&mut self.unwritten) {
+            if !more() {
+                self.unwritten.insert(k, e);
+                continue;
+            }
             match write(nas, &e) {
                 Ok(_) => self.wrote(&k),
                 Err(err) => {

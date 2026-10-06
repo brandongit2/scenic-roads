@@ -9,13 +9,15 @@
 //! and calls `Driver::step` once per loop of its own, about every 20 s, from one thread. A step:
 //!
 //! - **does its NAS operations through `Io`** (crate::pool::nas::Nas, and two clocks): a few
-//!   reads, a stat, the records' save (about 3 MB), a term made now and then; never a listing,
-//!   never a sleep, no thread of its own. What's slow (a listing of the journal, 3 to 33 s a folder
-//!   on the share under load) it asks for in its output (`Out::list`), for the agent to do off the
-//!   loop and hand back in a later step (`Heard::listed`);
+//!   reads and stats, the records' save (about 3 MB), a term made now and then, and its jobs'
+//!   entries written and entries merged for `BUSY_S` at most (the rest in the next steps); a
+//!   listing of the terms only at its first step (when the lead's hint doesn't name the current
+//!   term); never a listing of the journal, never a sleep, no thread of its own. What's slow (a listing of the
+//!   journal, 3 to 33 s a folder on the share under load) it asks for in its output (`Out::list`),
+//!   for the agent to make off the loop and hand back in a later step (`Heard::listed`);
 //! - **reads the clocks itself**, where a decision needs the time, after what it compares it with
 //!   (a heartbeat read, then the clock): the agent passes no time in. The awake clock tells it
-//!   what the wall clock can't: that the Mac slept between two steps, rather than worked;
+//!   what the wall clock can't: that the Mac slept, rather than worked;
 //! - **takes what was heard since the last step** (`Heard`): the members' messages to it, its
 //!   owner's asks (its menu, `scenic lead`, the pages, as its member's API takes them), the
 //!   hand-offs of its jobs that ended, the listing it asked for, what settling a handover wrote,
@@ -27,31 +29,35 @@
 //!   keep the build's state), settle a handover (`settle`: stop granting, cancel its duties in
 //!   flight, write the coordinator's state and hand it back in `Heard::settled`), or sweep
 //!   (`fresh`: re-asserted this step, as GC needs: ask with `Heard::reassert`); a listing to
-//!   make; and what happened (`Event`s: terms taken up, stepped down from, handed over; errors),
-//!   for the history and the log;
+//!   make; and what happened (`Event`s: terms taken up, stepped down from, handed
+//!   over; errors), for the history and the log;
 //! - **never fails**: an error stops only the duty that met it (said in an `Event::Failed`), and
-//!   the step goes on: a lead that can't re-assert stands down rather than stop the loop (the review's H2).
+//!   the step goes on: a lead that can't re-assert stands down rather than stop the loop.
 //!
 //! What the driver does itself, through `Io`, is what decides safety: making terms
 //! (crate::pool::term), taking them up and saving its term's records (crate::pool::records),
 //! writing its jobs' entries and merging others' (crate::pool::journal), the handover's transitions
 //! (crate::pool::handover). What it leaves to the agent can't break §4's invariants: granting and
 //! the coordinator, the merge's checks (`Check`, passed to every step), the duties, the heartbeat's
-//! other fields, the messages' transport, persisting `Saved` (its state between processes: its
-//! entries not yet acknowledged, kept whole until written) after every step that changed it.
+//! other fields, the messages' transport, and persisting `Saved` (its state between processes,
+//! naming its member: its entries not yet acknowledged, kept whole until written) after every step
+//! that changed it. A `Saved` that's lost, or another member's (a copy of the agent's folder),
+//! counts for nothing: the driver then re-asserts a term naming it that it finds at its start
+//! rather than take it up again (it may have led it, its leases granted), and the state it saves
+//! says so, for the processes after it.
 //!
-//! # Re-asserting
+//! # Re-asserting, and standing down
 //!
 //! A lead's view can be old without its knowing (§6.6). It re-asserts (makes the next term naming
-//! itself, a create-new no stale read can fool) before acting again when, since its last step, it
-//! slept or its wall clock moved more than `GAP_S` beyond its awake clock, or its last step took
-//! over `GAP_S` (it slept, or the NAS stalled, midway: a step does no slow work, so nothing else
-//! makes one long); after a restart; and when the agent asks (`Heard::reassert`, before a GC
-//! sweep). Time spent listing the journal, or waiting between loops, isn't a gap: a take-up over a
-//! slow share no longer makes its next loop re-assert and take up again, for ever (the review's
-//! H1). A lead whose re-assertion the app rule refuses (it restarted into an older app or a
-//! development build) stands down, and says so in its heartbeat (`Beat::stood_down`), so another
-//! member can take over without forcing it; it takes its term up again once its app is new enough.
+//! itself, a create-new no stale read can fool) before acting again when, since its last step or
+//! within its last one, it slept or its wall clock moved more than `GAP_S` beyond its awake clock;
+//! when its last step ran over `STALL_S` (the NAS stalled: a share under load slows every
+//! operation, so a step's length short of that says nothing); after a restart; and when the agent
+//! asks (`Heard::reassert`, before a GC sweep). Time spent listing the journal, or waiting between
+//! loops, isn't a gap. A lead whose re-assertion the app rule refuses (it restarted into an older
+//! app or a development build) stands down, and says so in its heartbeat (`Beat::stood_down`), so
+//! another member can take over without forcing it; it takes its term up again once its app is new
+//! enough.
 
 use super::beat::Beat;
 use super::handover::{self, Do, Handover, Seen};
@@ -61,10 +67,16 @@ use super::records::{self, Check, Records};
 use super::term::{self, Current, Made, Term};
 use super::Member;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-/// More than this unaccounted for, or in one step, and a lead re-asserts before it acts (s).
+/// More than this unaccounted for, between steps or within one, and a lead re-asserts before it
+/// acts (s).
 pub const GAP_S: u64 = 60;
+/// A step running longer than this, awake: the NAS stalled, and its lead re-asserts (s).
+pub const STALL_S: u64 = 300;
+/// The time a step spends writing its jobs' entries, and reading entries to merge, before it leaves
+/// the rest to the next steps (on a share under load each takes seconds) (s).
+pub const BUSY_S: u64 = 60;
 /// How often a lead lists the journal's last days for entries no member told it of (their member
 /// gone, or told a lead that was no longer current, and gone since) (s).
 pub const SWEEP_S: u64 = 600;
@@ -107,8 +119,9 @@ pub enum Ask {
     /// an app new enough; another member passes it on to the lead.
     HandTo(String),
     /// Take the lead over (§6.5): when the lead is out of touch or stood down; `force`, also with
-    /// the lead in touch and past a term that can't be read; `downgrade`, also on an older app than
-    /// the current term's (crate::pool::term::forced).
+    /// the lead in touch, past a term that can't be read, and over this Mac's own handover still
+    /// waiting for its target; `downgrade`, also on an older app than the current term's
+    /// (crate::pool::term::forced).
     TakeOver { force: bool, downgrade: bool },
 }
 
@@ -128,7 +141,7 @@ pub struct Heard {
     /// stopped granting and cancelled its duties in flight; handed over with the records.
     pub settled: Option<serde_json::Value>,
     /// Whether this Mac can lead now if offered the lead (its disk, home and power; the app rule is
-    /// the driver's).
+    /// the driver's). The agent sets it.
     pub able: bool,
     /// Re-assert before the agent does what only a fresh lead may (a GC sweep): `Out::fresh` says
     /// it did.
@@ -178,7 +191,8 @@ pub enum Event {
     TookUp { term: u64, how: String, handed: Option<serde_json::Value> },
     /// No longer leads term `term`: why.
     SteppedDown { term: u64, why: String },
-    /// Its handover of term `term` to `to`: offered, settling, passed, over, or taken back.
+    /// Its handover of term `term` to `to`: offered, settling, passed, over, taken back, given up,
+    /// or dropped (the take-back refused by the app rule, or the owner's takeover in its place).
     Handover { term: u64, to: String, what: &'static str },
     /// Journal entries merged: applied, passed over (an older lease's), refused; and whether they
     /// came from a listing.
@@ -193,6 +207,9 @@ pub enum Event {
 /// folder, and starts the next process's driver from it).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Saved {
+    /// The member it's of: another's (a copy of the agent's folder) counts for nothing.
+    #[serde(default)]
+    pub member: String,
     /// Its journal entries: kept whole until written, then until each lead acknowledges them.
     pub mine: Mine,
     /// The highest term it knew of (its view never goes back, a stale read at its start
@@ -220,6 +237,9 @@ struct Lead {
     hand: Handover,
     /// The entries members told it of and it hasn't acknowledged, by who told it.
     told: BTreeMap<String, String>,
+    /// Entries told or listed not read whole yet (not readable yet, or past the step's time for
+    /// reading): read again from the next step on.
+    waiting: BTreeSet<String>,
     /// Changes not saved yet.
     dirty: bool,
     /// Entries refused: their refusals to note once that's saved.
@@ -243,6 +263,8 @@ pub struct Driver {
     me: Member,
     cur: Current,
     saved: Saved,
+    /// Its saved state is its own: what it led before is known.
+    known: bool,
     lead: Option<Lead>,
     passing: Option<Passing>,
     /// A take-up of a term naming it, tried and not done: its records as tried (numbered on).
@@ -261,8 +283,9 @@ pub struct Driver {
     handed_by: BTreeMap<u64, String>,
     /// It just started (a restart): a term it led and names it is re-asserted.
     restarted: bool,
-    /// It learnt the current term from the NAS (its first step).
-    learnt: bool,
+    /// The current term it learnt from the NAS at its first step (none before), not counting a
+    /// term 1 its own first step made.
+    first: Option<u64>,
 }
 
 /// Whether the clocks went `was` → `now` (wall, awake) with more than `GAP_S` unaccounted for: the
@@ -274,10 +297,13 @@ fn gap(was: (u64, u64), now: (u64, u64)) -> bool {
 }
 
 impl Driver {
-    /// The driver of member `me` (its app the process's), from what it saved last.
+    /// The driver of member `me` (its app the process's), from what it saved last: nothing of it
+    /// when it's another member's, or names none (lost, or never saved).
     pub fn new(me: Member, saved: Saved) -> Driver {
+        let known = saved.member == me.id;
+        let saved = if known { saved } else { Saved { member: me.id.clone(), ..Default::default() } };
         let passing = saved.passing.clone().map(|(own, passed, hand)| Passing { own, passed, hand, records: None });
-        Driver { me, cur: Current::default(), saved, lead: None, passing, taking: None, spare: None, must: None, clocks: None, due: None, asked: None, swept: 0, handed_by: BTreeMap::new(), restarted: true, learnt: false }
+        Driver { me, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, clocks: None, due: None, asked: None, swept: 0, handed_by: BTreeMap::new(), restarted: true, first: None }
     }
 
     /// What to keep for the next process (after every step that changed it).
@@ -319,7 +345,8 @@ impl Driver {
                 out.events.push(Event::Failed { what: "keep an entry", why: format!("{err:#}") });
             }
         }
-        for (k, err) in self.saved.mine.write(io) {
+        let busy = start.1 + BUSY_S;
+        for (k, err) in self.saved.mine.write_while(io, &|| io.awake() < busy) {
             out.events.push(Event::Failed { what: "write an entry", why: format!("{k}: {err:#}") });
         }
         self.finish(io, &mut out);
@@ -372,7 +399,7 @@ impl Driver {
         }
         self.restarted = false;
         if self.lead.is_some() {
-            self.lead_step(io, &mut out, tells, hand_asks, heard.listed, heard.settled, check);
+            self.lead_step(io, &mut out, tells, hand_asks, heard.listed, heard.settled, check, busy);
         } else if let Some(t) = self.cur.lead.as_ref().filter(|t| t.member != self.me.id) {
             out.send.extend(hand_asks.into_iter().map(|to| (t.member.clone(), Msg::HandTo(to))));
         }
@@ -391,9 +418,9 @@ impl Driver {
         }
         self.listings(io, &mut out);
         out.beat = self.beat(io, heard.able);
-        // A step that took over a minute (asleep or the NAS stalled midway): its view may be old.
+        // A step that slept midway, or ran past a stall: its view may be old.
         let end = (io.now(), io.awake());
-        if self.lead.is_some() && self.must.is_none() && end.0.abs_diff(start.0) > GAP_S {
+        if self.lead.is_some() && self.must.is_none() && (gap(start, end) || end.1.saturating_sub(start.1) > STALL_S) {
             self.must = Some("re-asserted after a long step");
         }
         self.clocks = Some(end);
@@ -414,13 +441,21 @@ impl Driver {
     /// and from a lead's message handing it one.
     fn learn(&mut self, io: &dyn Io, passed: Option<Term>) -> anyhow::Result<()> {
         if self.cur.term == 0 {
-            term::bootstrap(io, &self.me, io.now(), false)?;
-            if !self.learnt {
+            // (Term 1 made by this call: its `since` this call's.)
+            let now = io.now();
+            let made = term::bootstrap(io, &self.me, now, false)?.is_some_and(|t| t.member == self.me.id && t.since == now);
+            if self.first.is_none() {
                 self.cur = term::current(io)?;
                 if self.cur.term < self.saved.term {
                     self.cur = Current { term: self.saved.term, lead: term::read(io, self.saved.term)? };
                 }
-                self.learnt = true;
+                let first = if made { 0 } else { self.cur.term };
+                self.first = Some(first);
+                // (Its past unknown, it may have led any term there is: it takes none of them up
+                // again, its saved state saying so from now on, a restart's too.)
+                if !self.known {
+                    self.saved.led = self.saved.led.max(first);
+                }
             }
         }
         if self.cur.term > 0 && self.cur.lead.is_none() {
@@ -518,8 +553,10 @@ impl Driver {
 
     /// A member whose current term names it: takes it up (handed to it, its own claim, or the
     /// owner's takeover on this Mac); or, a term it led and doesn't lead now (restarted, or stood
-    /// down), re-asserts it. Not on an app older than the term's (restarted into an older app or a
-    /// development build): it stands down, and says so, until its app is new enough.
+    /// down), re-asserts it. One it found at its start with its past unknown (its saved state lost,
+    /// or another member's) counts as one it led: it may have, its leases granted. Not on an app
+    /// older than the term's (restarted into an older app or a development build): it stands down,
+    /// and says so, until its app is new enough.
     fn own_term(&mut self, io: &dyn Io, out: &mut Out) {
         // (A term its create made and couldn't fill: finished first, then taken up.)
         if self.saved.unfinished.is_some() {
@@ -537,7 +574,11 @@ impl Driver {
             self.take_up(io, out, &t);
             return;
         }
-        let how = if self.restarted { "restarted: re-asserted" } else { "re-asserted: its app new enough" };
+        let how = match () {
+            _ if !self.known => "re-asserted: its saved state lost",
+            _ if self.restarted => "restarted: re-asserted",
+            _ => "re-asserted: its app new enough",
+        };
         match Term::after(&self.cur, &self.me, how, io.now()).and_then(|n| Ok((term::make(io, &n)?, n))) {
             Ok((made, n)) => {
                 if !self.made(io, out, n, made) {
@@ -579,9 +620,9 @@ impl Driver {
         self.must = None;
         out.fresh = true;
         out.events.push(Event::TookUp { term: t.term, how: t.how.clone(), handed });
-        self.lead = Some(Lead { term: t.clone(), records: r, hand: Handover::Leading, told: BTreeMap::new(), dirty: false, refused: Vec::new() });
+        let horizon = r.horizon.clone();
+        self.lead = Some(Lead { term: t.clone(), records: r, hand: Handover::Leading, told: BTreeMap::new(), waiting: BTreeSet::new(), dirty: false, refused: Vec::new() });
         // A take-up lists the journal: every day not forgotten.
-        let horizon = self.lead.as_ref().map(|l| l.records.horizon.clone()).unwrap_or_default();
         self.due = Some(Listing { since: Some(horizon).filter(|h| !h.is_empty()) });
         self.asked = None;
         // The Mac that handed it over: told it leads.
@@ -594,10 +635,10 @@ impl Driver {
         self.handed_by.retain(|e, _| *e > t.term);
     }
 
-    /// The lead's step: merge what members told it and what a listing found, save, acknowledge,
-    /// note the refusals; hand over.
+    /// The lead's step: merge what members told it and what a listing found (and what's waiting to
+    /// be read whole), save, acknowledge, note the refusals; hand over.
     #[allow(clippy::too_many_arguments)]
-    fn lead_step(&mut self, io: &dyn Io, out: &mut Out, tells: Vec<(String, Vec<String>)>, asks: Vec<String>, listed: Option<Vec<String>>, settled: Option<serde_json::Value>, check: Check) {
+    fn lead_step(&mut self, io: &dyn Io, out: &mut Out, tells: Vec<(String, Vec<String>)>, asks: Vec<String>, listed: Option<Vec<String>>, settled: Option<serde_json::Value>, check: Check, busy: u64) {
         let me = self.me.id.clone();
         let own: Vec<String> = self.saved.mine.to_tell(self.cur.term);
         let l = self.lead.as_mut().expect("leading");
@@ -610,7 +651,7 @@ impl Driver {
         for k in own {
             l.told.insert(k, me.clone());
         }
-        let mut keys: Vec<String> = l.told.keys().filter(|k| !l.records.handles(k)).cloned().collect();
+        let mut keys: Vec<String> = l.told.keys().chain(&l.waiting).filter(|k| !l.records.handles(k)).cloned().collect();
         let from_listing = listed.is_some();
         if let Some(listed) = listed {
             self.asked = None;
@@ -621,12 +662,18 @@ impl Driver {
             l.records.handed = Some(c);
             l.dirty = true;
         }
-        let m = records::merge(io, &mut l.records, &keys, check);
+        // (Oldest lease first, while the step's time for it lasts: the rest wait for the next.)
+        records::by_lease(&mut keys);
+        keys.dedup();
+        let m = records::merge_while(io, &mut l.records, &keys, check, &|| io.awake() < busy);
         if !m.applied.is_empty() || !m.refused.is_empty() || !m.overtaken.is_empty() {
             l.dirty = true;
             l.refused.extend(m.refused.iter().cloned());
             out.events.push(Event::Merged { applied: m.applied.clone(), overtaken: m.overtaken.len(), refused: m.refused.len(), listed: from_listing });
         }
+        // What isn't read whole yet is read again next step; what's handled or forgotten, done.
+        l.waiting.extend(m.waiting.iter().chain(&m.unread).cloned());
+        l.waiting.retain(|k| !l.records.handles(k) && !m.forgotten.contains(k));
         if l.dirty {
             match l.records.save(io) {
                 Ok(()) => {
@@ -664,7 +711,7 @@ impl Driver {
                 }
             }
         }
-        let settled = (!l.dirty && m.waiting.is_empty() && l.records.handed.is_some()).then_some(l.records.seq);
+        let settled = (!l.dirty && m.waiting.is_empty() && m.unread.is_empty() && l.records.handed.is_some()).then_some(l.records.seq);
         // An ask, checked (§6.3): a live member, on an app the next term may have, not this Mac.
         let ask = match asks.last() {
             Some(to) if *to != me && l.hand == Handover::Leading => match Beat::read(io, to) {
@@ -739,7 +786,9 @@ impl Driver {
         }
     }
 
-    /// A handover passed on: over once the target is known to lead, taken back after two minutes.
+    /// A handover passed on: over once the target is known to lead, taken back after two minutes;
+    /// dropped when the app rule refuses the take-back (this Mac restarted into an older app), the
+    /// term left to its target, or to a takeover.
     fn passing_step(&mut self, io: &dyn Io, out: &mut Out, told: bool) {
         let Some(mut p) = self.passing.take() else { return };
         let Handover::Passed { to, .. } = p.hand.clone() else {
@@ -770,18 +819,23 @@ impl Driver {
                     }
                 },
                 Err(e) => {
+                    out.events.push(Event::Handover { term: p.own.term, to, what: "dropped" });
                     out.events.push(Event::Failed { what: "take the lead back", why: format!("{e:#}") });
-                    self.passing = Some(p);
+                    self.spare = p.records.take();
                 }
             },
             _ => self.passing = Some(p),
         }
     }
 
-    /// The owner's "Take it": when the lead is out of touch or stood down, or forced.
+    /// The owner's "Take it": when the lead is out of touch or stood down, or forced (over this
+    /// Mac's own handover still waiting for its target too).
     fn take_over(&mut self, io: &dyn Io, out: &mut Out, force: bool, downgrade: bool) {
-        if self.lead.is_some() || self.passing.is_some() || self.saved.unfinished.is_some() {
-            return out.events.push(Event::Waits { what: "take over", why: "this Mac leads, or hands over".into() });
+        if self.lead.is_some() || self.saved.unfinished.is_some() {
+            return out.events.push(Event::Waits { what: "take over", why: "this Mac leads, or has a term to finish".into() });
+        }
+        if self.passing.is_some() && !force {
+            return out.events.push(Event::Waits { what: "take over", why: "this Mac hands over: only forced".into() });
         }
         // (A term that can't be read whole yet has a lead not known to be gone: by force only. Its
         // own term, which it stood down from: only the owner's downgrade makes it lead it again.)
@@ -796,13 +850,18 @@ impl Driver {
         if !gone && !force {
             return out.events.push(Event::Waits { what: "take over", why: "the lead is in touch: only forced".into() });
         }
+        if let Some(p) = self.passing.take() {
+            out.events.push(Event::Handover { term: p.own.term, to: p.passed.member.clone(), what: "dropped" });
+            self.spare = p.records;
+        }
         let how = format!("taken over by {}", self.me.host);
         let now = io.now();
         if self.cur.term == 0 {
             match term::bootstrap(io, &self.me, now, true) {
                 Ok(Some(t)) => {
+                    // (Taken up when this call made it: one there already is the steps' to learn.)
                     self.cur = Current { term: t.term, lead: Some(t.clone()) };
-                    if t.member == self.me.id {
+                    if t.member == self.me.id && t.since == now && t.term > self.saved.led {
                         self.take_up(io, out, &t);
                     }
                 }
@@ -862,5 +921,352 @@ impl Driver {
         }
         let stood_down = self.saved.stood_down.filter(|&e| e == self.cur.term && self.lead.is_none());
         Beat { member: self.me.id.clone(), host: self.me.host.clone(), app: self.me.app.clone(), beat: io.now(), leads, handing_to, ready_for, stood_down, addresses: Vec::new() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The driver, scripted on the in-memory NAS: Macs with their own clocks, stepping in turn.
+    use super::super::journal::LeaseId;
+    use super::super::nas::{Created, Mem};
+    use super::*;
+    use crate::handoff::Handoff;
+    use anyhow::Result;
+    use std::cell::Cell;
+
+    const T0: u64 = 1_791_300_000;
+    const V1: &str = "20261005-2202-61eb22c";
+    const V2: &str = "20261006-0900-1a2b3c4";
+    const A: &str = "m-000000000000000a";
+    const B: &str = "m-000000000000000b";
+    const C: &str = "m-000000000000000c";
+
+    /// One Mac's view of the shared NAS, with its own clocks.
+    struct Mac<'a> {
+        mem: &'a Mem,
+        wall: Cell<u64>,
+        awake: Cell<u64>,
+    }
+
+    impl<'a> Mac<'a> {
+        fn new(mem: &'a Mem) -> Mac<'a> {
+            Mac { mem, wall: Cell::new(T0), awake: Cell::new(1_000) }
+        }
+
+        /// Time passes, awake.
+        fn pass(&self, s: u64) {
+            self.wall.set(self.wall.get() + s);
+            self.awake.set(self.awake.get() + s);
+        }
+    }
+
+    impl Nas for Mac<'_> {
+        fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
+            self.mem.create_new(path, bytes)
+        }
+        fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
+            self.mem.write_whole(path, bytes)
+        }
+        fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            self.mem.read(path)
+        }
+        fn exists(&self, path: &str) -> Result<bool> {
+            self.mem.exists(path)
+        }
+        fn list(&self, dir: &str) -> Result<Vec<String>> {
+            self.mem.list(dir)
+        }
+        fn remove(&self, path: &str) -> Result<()> {
+            self.mem.remove(path)
+        }
+    }
+
+    impl Io for Mac<'_> {
+        fn now(&self) -> u64 {
+            self.wall.get()
+        }
+        fn awake(&self) -> u64 {
+            self.awake.get()
+        }
+    }
+
+    fn any(_: &Entry, _: &Records) -> std::result::Result<(), String> {
+        Ok(())
+    }
+
+    fn member(id: &str, host: &str, app: &str) -> Member {
+        Member { id: id.into(), host: host.into(), app: app.into() }
+    }
+
+    /// A step, its heartbeat written as the agent will.
+    fn step(d: &mut Driver, io: &Mac, heard: Heard) -> Out {
+        let out = d.step(io, heard, &any);
+        let mut b = out.beat.clone();
+        b.beat = io.now();
+        b.write(io).unwrap();
+        out
+    }
+
+    fn able() -> Heard {
+        Heard { able: true, ..Default::default() }
+    }
+
+    fn asks(a: Ask) -> Heard {
+        Heard { asks: vec![a], ..able() }
+    }
+
+    fn setup(mem: &Mem) {
+        mem.write_whole("state/build/writer", b"Mac-mini\n").unwrap();
+        mem.write_whole("state/build/manifest.json", b"{}").unwrap();
+    }
+
+    fn entry(member: &str, term: u64, n: u64, t: &str) -> Entry {
+        let h = Handoff { changes: [(format!("base/{t}"), Some(format!("base/{t}.k{n}.base")))].into(), done: Some(("unit".into(), vec![(t.into(), format!("k{n}"))])), ..Default::default() };
+        Entry { member: member.into(), lease: LeaseId { term, n }, step: "unit".into(), handoff: h, at: T0 + n }
+    }
+
+    /// A hands over to B; B answers, A settles and passes: term 2 names B.
+    fn hand_over(a: &mut Driver, ia: &Mac, b: &mut Driver, ib: &Mac) {
+        ia.pass(5);
+        let o = step(a, ia, asks(Ask::HandTo(B.into())));
+        assert!(o.events.iter().any(|e| matches!(e, Event::Handover { what: "offered", .. })), "{:?}", o.events);
+        ib.pass(5);
+        step(b, ib, able());
+        ia.pass(5);
+        assert!(step(a, ia, able()).settle);
+        ia.pass(5);
+        let o = step(a, ia, Heard { settled: Some(serde_json::json!({"leases": []})), ..able() });
+        assert!(o.events.iter().any(|e| matches!(e, Event::Handover { what: "passed", .. })), "{:?}", o.events);
+        assert_eq!(o.leads, None);
+    }
+
+    #[test]
+    fn a_lead_restarted_into_a_development_build_stands_down() {
+        // Another member takes over unforced; the owner's downgrade gives the development build the
+        // lead again. (Review 2's first scenario.)
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::new(member(A, "Mac-mini", V2), Saved::default());
+        let mut b = Driver::new(member(B, "MacBook-Air", V2), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        step(&mut b, &ib, able());
+        ia.pass(20);
+        ib.pass(20);
+        let mut a = Driver::new(member(A, "Mac-mini", "development"), a.saved());
+        let o = step(&mut a, &ia, able());
+        assert_eq!((o.leads, o.beat.stood_down), (None, Some(1)), "{:?}", o.events);
+        ib.pass(20);
+        assert_eq!(step(&mut b, &ib, asks(Ask::TakeOver { force: false, downgrade: false })).leads, Some(2));
+        ia.pass(20);
+        let o = step(&mut a, &ia, asks(Ask::TakeOver { force: true, downgrade: true }));
+        assert_eq!(o.leads, Some(3), "{:?}", o.events);
+    }
+
+    /// A hands over to B, on a newer app; B never steps again: A takes back, restarted or not.
+    fn handover_to_newer(restart: bool) -> Out {
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::new(member(B, "MacBook-Air", V2), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        step(&mut b, &ib, able());
+        hand_over(&mut a, &ia, &mut b, &ib);
+        let mut a = if restart { Driver::new(member(A, "Mac-mini", V1), a.saved()) } else { a };
+        let mut last = Out::default();
+        for _ in 0..10 {
+            ia.pass(20);
+            last = step(&mut a, &ia, able());
+            if last.leads.is_some() {
+                break;
+            }
+        }
+        last
+    }
+
+    #[test]
+    fn a_handover_to_a_newer_app_not_taken_up_is_taken_back() {
+        // (Review 2's second and third scenarios.)
+        assert_eq!(handover_to_newer(false).leads, Some(3));
+        assert_eq!(handover_to_newer(true).leads, Some(3));
+    }
+
+    #[test]
+    fn the_owners_forced_downgrade_replaces_a_handover_waiting_for_its_target() {
+        // A hands over to B, B's lid closes, and A restarts into a development build: the app rule
+        // refuses its take-back. (Review N1: it was refused every step, and the owner's forced
+        // downgrade with it, "this Mac leads, or hands over"; no lead until B came back.)
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::new(member(B, "MacBook-Air", V1), Saved::default());
+        step(&mut a, &ia, able());
+        step(&mut b, &ib, able());
+        hand_over(&mut a, &ia, &mut b, &ib);
+        let mut a = Driver::new(member(A, "Mac-mini", "development"), a.saved());
+        // Asked at once: the owner's force drops the handover waiting.
+        ia.pass(5);
+        step(&mut a, &ia, able());
+        let mut forced = Driver::new(member(A, "Mac-mini", "development"), a.saved());
+        let o = step(&mut forced, &ia, asks(Ask::TakeOver { force: true, downgrade: true }));
+        assert!(o.events.iter().any(|e| matches!(e, Event::Handover { what: "dropped", .. })), "{:?}", o.events);
+        assert_eq!(o.leads, Some(3), "{:?}", o.events);
+        // Or left to wait: the take-back, refused, drops it, and the owner's downgrade follows.
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::new(member(B, "MacBook-Air", V1), Saved::default());
+        step(&mut a, &ia, able());
+        step(&mut b, &ib, able());
+        hand_over(&mut a, &ia, &mut b, &ib);
+        let mut a = Driver::new(member(A, "Mac-mini", "development"), a.saved());
+        let mut dropped = false;
+        for _ in 0..8 {
+            ia.pass(30);
+            dropped |= step(&mut a, &ia, able()).events.iter().any(|e| matches!(e, Event::Handover { what: "dropped", .. }));
+        }
+        assert!(dropped);
+        ia.pass(30);
+        assert_eq!(step(&mut a, &ia, asks(Ask::TakeOver { force: true, downgrade: true })).leads, Some(3));
+    }
+
+    #[test]
+    fn a_lead_whose_saved_state_is_lost_re_asserts() {
+        // (Review N4: it took its own term up again, and a lease `<term>-<n>` it had granted could
+        // be granted twice.)
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        ia.pass(20);
+        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let o = step(&mut a, &ia, able());
+        assert_eq!(o.leads, Some(2), "{:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::Made { how, .. } if how.contains("saved state lost"))));
+        // With its saved state: a restart re-asserts too, saying so.
+        ia.pass(20);
+        let mut a = Driver::new(member(A, "Mac-mini", V1), a.saved());
+        assert!(step(&mut a, &ia, able()).events.iter().any(|e| matches!(e, Event::Made { term: 3, how } if how.starts_with("restarted"))));
+        // Lost again, onto a development build: it stands down; restarted onto its app, with the
+        // state that process saved, it still doesn't take term 3 up again.
+        ia.pass(20);
+        let mut a = Driver::new(member(A, "Mac-mini", "development"), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).beat.stood_down, Some(3));
+        ia.pass(20);
+        let mut a = Driver::new(member(A, "Mac-mini", V1), a.saved());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(4));
+    }
+
+    #[test]
+    fn another_members_saved_state_counts_for_nothing() {
+        // A's folder copied to C's Mac, A's saved state with it. (Review N5: C took A's entries as
+        // its own, and told the lead of them.)
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ic) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        step(&mut a, &ia, Heard { entries: vec![entry(A, 1, 1, "6-1-1")], ..able() });
+        assert_eq!(a.saved().member, A);
+        let mut c = Driver::new(member(C, "Mac-mini-2", V1), a.saved());
+        let o = step(&mut c, &ic, able());
+        assert!(c.mine().to_tell(1).is_empty() && o.send.is_empty(), "{:?}", o.send);
+        assert_eq!(c.saved().member, C);
+    }
+
+    #[test]
+    fn a_listed_entry_not_readable_yet_is_kept_and_read_again() {
+        // A listing names an entry its next read doesn't see yet (a stale read): it lands a moment
+        // later, and no member will tell of it. (Review N6: dropped, until the next listing.)
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        step(&mut a, &ia, able()).list.expect("its take-up's listing");
+        let e = entry(C, 1, 9, "6-1-1");
+        let key = e.key().unwrap();
+        ia.pass(20);
+        step(&mut a, &ia, Heard { listed: Some(vec![key.clone()]), ..able() });
+        journal::write(&mem, &e).unwrap();
+        ia.pass(20);
+        let o = step(&mut a, &ia, able());
+        assert!(Records::load(&mem, 1).unwrap().unwrap().handles(&key), "{:?}", o.events);
+    }
+
+    #[test]
+    fn a_note_of_a_stale_leads_refusal_holds_no_lead() {
+        // (Review 2's last scenario: the current lead's own check decides.)
+        let mem = Mem::default();
+        setup(&mem);
+        let x = journal::write(&mem, &entry(C, 1, 7, "6-1-1")).unwrap();
+        journal::note_refusal(&mem, &x, "a stale lead's why").unwrap();
+        let mut r = Records { term: 2, ..Default::default() };
+        assert_eq!(records::merge(&mem, &mut r, std::slice::from_ref(&x), &any).applied, std::slice::from_ref(&x));
+        assert!(journal::list(&mem, None).unwrap().contains(&x));
+    }
+
+    #[test]
+    fn a_long_step_is_a_sleep_or_a_stall_not_slow_operations() {
+        // A step slowed by the share (every operation seconds long) doesn't make its lead
+        // re-assert; one it slept through, or that stalled five minutes, does. (Review N3.)
+        let mem = Mem::default();
+        setup(&mem);
+        struct Slow<'a>(Mac<'a>, Cell<u64>);
+        impl Nas for Slow<'_> {
+            fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
+                self.0.pass(self.1.get());
+                self.0.create_new(path, bytes)
+            }
+            fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
+                self.0.pass(self.1.get());
+                self.0.write_whole(path, bytes)
+            }
+            fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+                self.0.pass(self.1.get());
+                self.0.read(path)
+            }
+            fn exists(&self, path: &str) -> Result<bool> {
+                self.0.pass(self.1.get());
+                self.0.exists(path)
+            }
+            fn list(&self, dir: &str) -> Result<Vec<String>> {
+                self.0.list(dir)
+            }
+            fn remove(&self, path: &str) -> Result<()> {
+                self.0.remove(path)
+            }
+        }
+        impl Io for Slow<'_> {
+            fn now(&self) -> u64 {
+                self.0.now()
+            }
+            fn awake(&self) -> u64 {
+                self.0.awake()
+            }
+        }
+        let io = Slow(Mac::new(&mem), Cell::new(0));
+        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let leads = |d: &mut Driver, h: Heard| {
+            let o = d.step(&io, h, &any);
+            (o.leads, o.events)
+        };
+        assert_eq!(leads(&mut a, able()).0, Some(1));
+        io.1.set(15);
+        for _ in 0..3 {
+            io.0.pass(20);
+            let (l, ev) = leads(&mut a, Heard { entries: vec![entry(A, 1, io.0.now() % 1000, "6-1-1")], ..able() });
+            assert_eq!(l, Some(1), "{ev:?}");
+        }
+        // A stall: one operation of six minutes.
+        io.1.set(0);
+        io.0.pass(20);
+        let stall = Slow(Mac { mem: &mem, wall: Cell::new(io.0.now()), awake: Cell::new(io.0.awake()) }, Cell::new(360));
+        a.step(&stall, able(), &any);
+        stall.1.set(0);
+        stall.0.pass(20);
+        assert!(a.step(&stall, able(), &any).events.iter().any(|e| matches!(e, Event::Made { how, .. } if how == "re-asserted after a long step")));
     }
 }

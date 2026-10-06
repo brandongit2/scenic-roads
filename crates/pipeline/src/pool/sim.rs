@@ -87,13 +87,18 @@ const P_SWEEP: f64 = 0.01;
 /// lead" in the views, takes it over (s); and how long the run's end must have seen no new term.
 const NO_LEAD_S: u64 = 300;
 const QUIET_S: u64 = 600;
+/// At most how long a run goes on past its end while its last term's lead still merges what the
+/// faults left (s): a share taking seconds an operation, a lead's minute of reads a loop merges a
+/// dozen entries, and hours of faults with no lead leave hundreds.
+const MERGING_S: u64 = 7200;
 
 /// What a run is.
 #[derive(Clone, Copy, Debug)]
 struct Cfg {
     /// The faults stop this long into the run (s); every Mac then stays awake.
     faults: u64,
-    /// The run ends this long into it.
+    /// The run ends this long into it, or goes on (`World::goes_on`) while its last term's lead
+    /// still merges what the faults left.
     end: u64,
     /// The longest a Mac keeps what it read, stat'ed or listed (s).
     stale: u64,
@@ -111,12 +116,17 @@ struct Cfg {
     downgrade: bool,
     /// Creates whose bytes don't land, and answers lost.
     cuts: bool,
+    /// Every create, read, stat and whole write taking this long (s), lo..=hi, its Mac waiting on
+    /// it, awake: the share under load; (0, 0): no time.
+    op_s: (u64, u64),
+    /// Now and then a restart without the state its driver saved (lost, or a copy's).
+    lose: bool,
 }
 
 impl Cfg {
     /// The pool's, none of the knobs on.
     fn pool() -> Cfg {
-        Cfg { faults: 2400, end: 3900, stale: 30, draft: false, list_s: (0, 0), leave: false, old_days: 0, skew: 0, downgrade: false, cuts: false }
+        Cfg { faults: 2400, end: 3900, stale: 30, draft: false, list_s: (0, 0), leave: false, old_days: 0, skew: 0, downgrade: false, cuts: false, op_s: (0, 0), lose: false }
     }
 
     /// The default mix: the knobs, drawn from the seed.
@@ -138,6 +148,10 @@ impl Cfg {
         }
         c.downgrade = r.chance(0.25);
         c.cuts = r.chance(0.5);
+        if r.chance(0.2) {
+            c.op_s = (1, 4);
+        }
+        c.lose = r.chance(0.25);
         c
     }
 }
@@ -219,6 +233,15 @@ enum Kind {
     Either,
 }
 
+/// Whether records name entry `k` as what it is: taken, refused, or either.
+fn names(r: &Records, k: &str, kind: Kind) -> bool {
+    match kind {
+        Kind::Taken => r.reflected.contains(k),
+        Kind::Refused => r.rejected.contains_key(k),
+        Kind::Either => r.handles(k),
+    }
+}
+
 /// The simulated world: the NAS's files, the Macs, the schedule, and what's checked.
 struct World {
     cfg: Cfg,
@@ -237,6 +260,10 @@ struct World {
     turn: usize,
     done: bool,
     drained: bool,
+    /// When the run ends, gone on past its config's end while the lead merges; and how many
+    /// entries the last term's records lacked when it last went on.
+    end: u64,
+    behind: Option<usize>,
     /// The terms made, by their maker, and when; the term each Mac led.
     made: BTreeMap<u64, (usize, u64)>,
     leaders: BTreeMap<u64, usize>,
@@ -356,7 +383,7 @@ impl World {
         }
         let n = macs.len();
         let looks = cfg.faults + 180;
-        let mut w = World { cfg, t: 0, rng, files, open: BTreeMap::new(), tmps: BTreeMap::new(), writes: BTreeMap::new(), caches: (0..n).map(|_| Cache::default()).collect(), macs, midway: false, turn: 0, done: false, drained: false, made: BTreeMap::new(), leaders: BTreeMap::new(), landed: BTreeMap::new(), written, writers: BTreeMap::new(), acked: BTreeSet::new(), settles: BTreeMap::new(), looks, leases: BTreeMap::new(), wrong: Vec::new(), counts: BTreeMap::new(), trace: tracing.then(Vec::new) };
+        let mut w = World { cfg, t: 0, rng, files, open: BTreeMap::new(), tmps: BTreeMap::new(), writes: BTreeMap::new(), caches: (0..n).map(|_| Cache::default()).collect(), macs, midway: false, turn: 0, done: false, drained: false, end: cfg.end, behind: None, made: BTreeMap::new(), leaders: BTreeMap::new(), landed: BTreeMap::new(), written, writers: BTreeMap::new(), acked: BTreeSet::new(), settles: BTreeMap::new(), looks, leases: BTreeMap::new(), wrong: Vec::new(), counts: BTreeMap::new(), trace: tracing.then(Vec::new) };
         if cfg.old_days > 0 {
             w.count("old journal days");
         }
@@ -430,9 +457,29 @@ impl World {
             }
             self.note(|| "the faults stop: every Mac awake from now".into());
         }
-        if self.t >= self.cfg.end {
+        if self.t >= self.end && !self.goes_on() {
             self.done = true;
         }
+    }
+
+    /// At the run's end: whether it goes on ten minutes more, its last term's lead still merging
+    /// what the faults left: that term's records lack entries, fewer than when it last went on
+    /// (the first time, any), and it has gone on less than `MERGING_S`. (A share taking seconds an
+    /// operation merges hours of entries slowly, at a minute of reads a loop. The checks at the
+    /// end are the same, the terms' too: none may be made after the config's end's last ten
+    /// minutes.)
+    fn goes_on(&mut self) -> bool {
+        let Some(&h) = self.made.keys().next_back() else { return false };
+        let Some(r) = self.files.get(&records::path(h)).and_then(|b| serde_json::from_slice::<Records>(b).ok()) else { return false };
+        let lack = self.written.iter().filter(|&(k, &kind)| !names(&r, k, kind)).count();
+        if self.cfg.draft || lack == 0 || self.behind.is_some_and(|b| lack >= b) || self.t >= self.cfg.end + MERGING_S {
+            return false;
+        }
+        self.behind = Some(lack);
+        self.end = self.t + QUIET_S;
+        self.count("ten minutes more, the lead merging");
+        self.note(|| format!("the run goes on: term {h}'s records lack {lack} entries"));
+        true
     }
 
     fn faults(&mut self, me: usize) {
@@ -565,6 +612,15 @@ impl World {
             *held = (*held).max(until);
         }
         v
+    }
+
+    /// An operation's time on a share under load: its Mac waits on it, awake.
+    fn slow(&mut self, me: usize) {
+        if self.cfg.op_s.1 > 0 {
+            let d = self.rng.range(self.cfg.op_s.0, self.cfg.op_s.1);
+            self.macs[me].busy_until = self.t + d;
+            *self.counts.entry("operation seconds").or_default() += d;
+        }
     }
 
     fn list(&mut self, me: usize, dir: &str) -> Vec<String> {
@@ -710,6 +766,9 @@ impl World {
             if t.how.contains(term::DOWNGRADE) {
                 self.count("forced downgrades");
             }
+            if t.how.contains("saved state lost") {
+                self.count("re-assertions with a saved state lost");
+            }
             if back && e.checked_sub(1).and_then(|p| term_at(self, p)).is_some_and(|p| !term::app_at_least(&t.app, &p.app)) {
                 self.count("take-backs from a newer app");
             }
@@ -830,8 +889,9 @@ impl World {
         }
     }
 
-    /// The checks at the end of a run: one Mac leads the last term, made before the run's last
-    /// ten minutes, and its records name every entry ever written.
+    /// The checks at the end of a run: one Mac leads the last term, made before its config's end's
+    /// last ten minutes (a run gone on while the lead merges makes none), and its records name
+    /// every entry ever written.
     fn finish(&mut self) {
         let Some((&h, &(_, at))) = self.made.iter().next_back() else { return self.wrong("no term was made".into()) };
         if self.cfg.draft {
@@ -839,7 +899,7 @@ impl World {
             return self.lost(&r, "the shared records");
         }
         if at + QUIET_S > self.cfg.end {
-            self.wrong(format!("term {h} was made at {at} s, in the run's last ten minutes: the terms don't settle"));
+            self.wrong(format!("term {h} was made at {at} s, in the run's last ten minutes (of {} s) or after: the terms don't settle", self.cfg.end));
         }
         let Some(named) = self.files.get(&term::path(h)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.member) else {
             return self.wrong(format!("term {h}'s file isn't whole at the end"));
@@ -863,16 +923,7 @@ impl World {
         if let Err(why) = consistent(r) {
             self.wrong(format!("{whose} aren't consistent: {why}"));
         }
-        let lost: Vec<String> = self
-            .written
-            .iter()
-            .filter(|(k, kind)| match kind {
-                Kind::Taken => !r.reflected.contains(*k),
-                Kind::Refused => !r.rejected.contains_key(*k),
-                Kind::Either => !r.handles(k),
-            })
-            .map(|(k, _)| k.clone())
-            .collect();
+        let lost: Vec<String> = self.written.iter().filter(|&(k, &kind)| !names(r, k, kind)).map(|(k, _)| k.clone()).collect();
         for k in lost {
             let gone = self.writers.get(&k).is_some_and(|&g| self.macs.get(g).is_some_and(|m| m.gone));
             self.wrong(format!("entry {k}{} is lost: {whose} don't name it", if gone { " (of a Mac gone for good)" } else { "" }));
@@ -1024,7 +1075,10 @@ impl Sim {
 
 impl Nas for Sim {
     fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
-        if !self.op(|w, me| w.create(me, path))? {
+        if !self.op(|w, me| {
+            w.slow(me);
+            w.create(me, path)
+        })? {
             return Ok(Created::There);
         }
         let (cut, lost) = self.op(|w, me| {
@@ -1047,7 +1101,10 @@ impl Nas for Sim {
 
     fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let tmp = format!("{path}.mac{}.tmp", self.me);
-        self.op(|w, _| w.write_tmp(&tmp, bytes))?;
+        self.op(|w, me| {
+            w.slow(me);
+            w.write_tmp(&tmp, bytes)
+        })?;
         self.rename(&tmp, path)?;
         if self.op(|w, _| w.cfg.cuts && w.rng.chance(P_LOST))? {
             self.count("lost answers");
@@ -1057,11 +1114,17 @@ impl Nas for Sim {
     }
 
     fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        self.op(|w, me| w.read(me, path))
+        self.op(|w, me| {
+            w.slow(me);
+            w.read(me, path)
+        })
     }
 
     fn exists(&self, path: &str) -> Result<bool> {
-        self.op(|w, me| w.fetch(me, path).is_some())
+        self.op(|w, me| {
+            w.slow(me);
+            w.fetch(me, path).is_some()
+        })
     }
 
     fn list(&self, dir: &str) -> Result<Vec<String>> {
@@ -1132,7 +1195,18 @@ impl Mac {
         let app = self.sim.app()?;
         if app != self.me.app {
             self.me.app = app;
-            let saved: driver::Saved = serde_json::from_slice(&serde_json::to_vec(&self.driver.saved())?)?;
+            let mut saved: driver::Saved = serde_json::from_slice(&serde_json::to_vec(&self.driver.saved())?)?;
+            if self.sim.op(|w, me| {
+                let lost = w.cfg.lose && w.rng.chance(0.3);
+                if lost {
+                    // (Its memory and its saved state both gone: what it believed starts again.)
+                    w.macs[me].view = 0;
+                    w.count("saved states lost");
+                }
+                lost
+            })? {
+                saved = driver::Saved::default();
+            }
             self.driver = Driver::new(self.me.clone(), saved);
             (self.listed, self.coord, self.settled, self.gave) = (None, (0, 0), None, false);
             self.sim.count("restarts");
@@ -1448,7 +1522,7 @@ fn check_all(seeds: Range<u64>, cfg: impl Fn(u64) -> Cfg + Sync) -> Counts {
 
 /// Each kind of change of lead and fault, and what the knobs bring, that the default runs must see
 /// at least three times (a simulator that never got there would pass too).
-const KINDS: [&str; 24] = [
+const KINDS: [&str; 26] = [
     "handed over",
     "taken back",
     "taken over",
@@ -1467,12 +1541,14 @@ const KINDS: [&str; 24] = [
     "stood down",
     "forced downgrades",
     "take-backs from a newer app",
-    "the owner takes over a term with no lead",
     "coordinator states handed over",
     "entries found by a listing",
     "entries passed over for a later lease's",
     "entries another lead refused, taken",
     "acknowledged entries merged again by a later lead",
+    "operation seconds",
+    "saved states lost",
+    "re-assertions with a saved state lost",
 ];
 
 #[test]
@@ -1488,12 +1564,41 @@ fn the_pool_keeps_its_invariants_through_thousands_of_schedules() {
 #[ignore]
 fn the_pool_keeps_its_invariants_through_a_long_run() {
     // POOL_SIM_SEEDS schedules (100,000 by default) from POOL_SIM_FROM (1,000,000) of
-    // POOL_SIM_MINUTES' faults each (240), the knobs mixed as by default.
+    // POOL_SIM_MINUTES' faults each (240), the knobs mixed as by default. (A run goes on past its
+    // end while its last lead still merges what the faults left: `World::goes_on`.)
     let var = |v: &str, or: u64| std::env::var(v).ok().and_then(|s| s.parse().ok()).unwrap_or(or);
     let (from, n, faults) = (var("POOL_SIM_FROM", 1_000_000), var("POOL_SIM_SEEDS", 100_000), var("POOL_SIM_MINUTES", 240) * 60);
     let started = std::time::Instant::now();
     let counts = check_all(from..from + n, |seed| Cfg { faults, end: faults + 1500, ..Cfg::mixed(seed) });
     eprintln!("{n} schedules of {} minutes' faults in {:.0} s\n{counts:#?}", faults / 60, started.elapsed().as_secs_f64());
+}
+
+#[test]
+fn a_run_goes_on_only_while_its_lead_merges() {
+    // (The long run's: hours of faults with no lead leave hundreds of entries, and on a share
+    // taking seconds an operation the lead that takes over merges a dozen a loop, past the run's
+    // end. The run goes on while its records lack fewer entries each ten minutes; a lead that
+    // merges none is wrong at the end, as before.)
+    let mut w = World::new(0, 4, Cfg::pool(), false);
+    let (k1, k2) = ("2026-10-06/1-1".to_string(), "2026-10-06/1-2".to_string());
+    w.made.insert(1, (0, 0));
+    w.written.insert(k1.clone(), Kind::Taken);
+    w.written.insert(k2.clone(), Kind::Taken);
+    let mut r = Records { term: 1, seq: 1, ..Default::default() };
+    let save = |w: &mut World, r: &Records| w.files.insert(records::path(1), serde_json::to_vec(r).unwrap());
+    save(&mut w, &r);
+    w.t = w.cfg.end;
+    assert!(w.goes_on(), "two entries lacking: ten minutes more");
+    assert!(!w.goes_on(), "none merged since: the run ends");
+    r.reflected.insert(k1);
+    save(&mut w, &r);
+    assert!(w.goes_on(), "one merged since: ten minutes more");
+    (w.t, w.behind) = (w.cfg.end + MERGING_S, Some(2));
+    assert!(!w.goes_on(), "gone on two hours: the run ends");
+    (w.t, w.behind) = (w.cfg.end, None);
+    r.reflected.insert(k2);
+    save(&mut w, &r);
+    assert!(!w.goes_on(), "every entry named: the run ends");
 }
 
 #[test]
@@ -1560,7 +1665,7 @@ fn the_knobs_one_at_a_time() {
     // POOL_SIM_SEEDS schedules (1,000) with each knob alone, and how many went wrong.
     let n = std::env::var("POOL_SIM_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(1000);
     let p = Cfg::pool();
-    let knobs: [(&str, Cfg); 12] = [
+    let knobs: [(&str, Cfg); 14] = [
         ("none", p),
         ("listings of 3 to 33 s", Cfg { list_s: (3, 33), ..p }),
         ("a week of journal days", Cfg { old_days: 7, ..p }),
@@ -1573,6 +1678,8 @@ fn the_knobs_one_at_a_time() {
         ("skew 1200 s", Cfg { skew: 1200, ..p }),
         ("downgrades", Cfg { downgrade: true, ..p }),
         ("cuts and lost answers", Cfg { cuts: true, ..p }),
+        ("slow operations", Cfg { op_s: (1, 4), ..p }),
+        ("saved states lost", Cfg { lose: true, ..p }),
     ];
     for (name, cfg) in knobs {
         let (bad, c) = run_all(0..n, |_| cfg);
@@ -1597,8 +1704,8 @@ fn every_seed_runs_the_same_every_time() {
 #[ignore]
 fn a_seeds_events() {
     // POOL_SIM_SEED's events, its knobs as by default, or as POOL_SIM_KNOBS lists them (none:
-    // "plain"; "draft", "list", "old", "leave", "downgrade", "cuts", "skew=<s>", "stale=<s>"), to
-    // look into one.
+    // "plain"; "draft", "list", "old", "leave", "downgrade", "cuts", "slow", "lose", "skew=<s>",
+    // "stale=<s>"), its faults POOL_SIM_MINUTES long (40), to look into one.
     let seed = std::env::var("POOL_SIM_SEED").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
     let cfg = match std::env::var("POOL_SIM_KNOBS") {
         Ok(knobs) => knobs.split(',').fold(Cfg::pool(), |c, k| match k.split_once('=') {
@@ -1611,10 +1718,17 @@ fn a_seeds_events() {
                 "leave" => Cfg { leave: true, ..c },
                 "downgrade" => Cfg { downgrade: true, ..c },
                 "cuts" => Cfg { cuts: true, ..c },
+                "slow" => Cfg { op_s: (1, 4), ..c },
+                "lose" => Cfg { lose: true, ..c },
                 _ => c,
             },
         }),
         Err(_) => Cfg::mixed(seed),
+    };
+    // (POOL_SIM_MINUTES: the faults' length, as the long run's.)
+    let cfg = match std::env::var("POOL_SIM_MINUTES").ok().and_then(|s| s.parse::<u64>().ok()) {
+        Some(m) => Cfg { faults: m * 60, end: m * 60 + 1500, ..cfg },
+        None => cfg,
     };
     let r = run(seed, cfg, true);
     eprintln!("{cfg:?}\n{}\n\n{}\n\n{:#?}", r.trace.join("\n"), r.wrong.join("\n"), r.counts);

@@ -236,6 +236,8 @@ pub struct Merged {
     pub forgotten: Vec<String>,
     /// Not readable whole now (being written, not seen yet, or a read that failed): to merge later.
     pub waiting: Vec<String>,
+    /// Not read: the reading stopped (`merge_while`); to merge later.
+    pub unread: Vec<String>,
 }
 
 /// Merges the journal entries `keys` the records don't name yet: each read, checked and applied,
@@ -244,11 +246,23 @@ pub struct Merged {
 /// the refusals (crate::pool::journal::note_refusal) and acknowledges what the saved records name,
 /// and the forgotten.
 pub fn merge(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check) -> Merged {
+    merge_while(nas, r, keys, check, &|| true)
+}
+
+/// `merge`, reading entries only while `more()` says so (asked before each read): on a share under
+/// load a read takes seconds, and a backlog of thousands must not hold one loop for an hour. The
+/// keys not read are left in `Merged::unread`, to merge later; give the oldest leases first, as
+/// `by_lease` orders them, so the order of what's applied holds across merges too.
+pub fn merge_while(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check, more: &dyn Fn() -> bool) -> Merged {
     let mut out = Merged::default();
     let mut read: BTreeMap<(LeaseId, String), Entry> = BTreeMap::new();
     let mut seen = BTreeSet::new();
     for k in keys {
         if r.handles(k) || !seen.insert(k.as_str()) {
+            continue;
+        }
+        if !out.unread.is_empty() || !more() {
+            out.unread.push(k.clone());
             continue;
         }
         match journal::read(nas, k) {
@@ -279,6 +293,12 @@ pub fn merge(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check) -> M
         }
     }
     out
+}
+
+/// Journal keys in the order of their leases (`<day>/<term>-<n>`: by term, then number, then key):
+/// the order a merge applies them in.
+pub fn by_lease(keys: &mut [String]) {
+    keys.sort_by_cached_key(|k| (k.rsplit('/').next().and_then(|l| l.parse::<LeaseId>().ok()), k.clone()));
 }
 
 /// The records term `t` starts from (§6.2): the newest snapshot a read finds, walking down from
@@ -501,6 +521,24 @@ mod tests {
         assert_eq!(r.last["unit"]["6-1-1"], LeaseId { term: 3, n: 12 });
         // Kept in the snapshot, for the next lead.
         assert_eq!(serde_json::from_slice::<Records>(&serde_json::to_vec(&r).unwrap()).unwrap(), r);
+    }
+
+    #[test]
+    fn a_merge_reads_while_its_budget_lasts_and_leaves_the_rest() {
+        // (Review 2: a lead taking up from an old snapshot read every entry since in one loop, on a
+        // share under load an hour of reads.)
+        let nas = Mem::default();
+        let mut r = Records { term: 3, ..Default::default() };
+        let mut keys: Vec<String> = [(3, 9, "6-1-1"), (2, 4, "6-1-2"), (3, 1, "6-1-3")].iter().map(|&(t, n, u)| journal::write(&nas, &built(t, n, u, "k")).unwrap()).collect();
+        by_lease(&mut keys);
+        assert_eq!(keys, ["2026-10-06/2-4", "2026-10-06/3-1", "2026-10-06/3-9"]);
+        let reads = Cell::new(0);
+        let m = merge_while(&nas, &mut r, &keys, &any, &|| {
+            reads.set(reads.get() + 1);
+            reads.get() <= 2
+        });
+        assert_eq!((m.applied, m.unread.clone()), (keys[..2].to_vec(), keys[2..].to_vec()));
+        assert_eq!(merge(&nas, &mut r, &m.unread, &any).applied, keys[2..]);
     }
 
     #[test]
