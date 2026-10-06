@@ -414,7 +414,7 @@ pub fn assemble(blocks: &[PathBuf], out: &Path, said: &(dyn Fn(u64, u64) + Sync)
 
 /// Runs `f` on each of `n` items on rayon's threads (in WebAssembly, or on one thread, in turn),
 /// giving `sink` their results in order, `done` told of each as it finishes: at most `2 ×` threads
-/// are held at once.
+/// are held at once. An item that panics on a thread fails the run as one that errs.
 fn in_order<T: Send>(n: usize, f: impl Fn(usize) -> Result<T> + Sync, done: impl Fn(usize) + Sync, mut sink: impl FnMut(usize, T) -> Result<()>) -> Result<()> {
     let threads = rayon::current_num_threads();
     if threads <= 1 {
@@ -451,7 +451,11 @@ fn in_order<T: Send>(n: usize, f: impl Fn(usize) -> Result<T> + Sync, done: impl
                         g = cv.wait(g).unwrap();
                     }
                 };
-                let r = f(i);
+                // (A panic as an error: the loop below would wait for its result for ever.)
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(i))).unwrap_or_else(|p| {
+                    let why = p.downcast_ref::<String>().map(String::as_str).or_else(|| p.downcast_ref::<&str>().copied()).unwrap_or("a panic");
+                    Err(anyhow::anyhow!("item {i} panicked: {why}"))
+                });
                 if r.is_ok() {
                     done(i);
                 }
@@ -459,6 +463,15 @@ fn in_order<T: Send>(n: usize, f: impl Fn(usize) -> Result<T> + Sync, done: impl
                 cv.notify_all();
             });
         }
+        // However the loop ends (a panic in `sink` too), the threads stop: the scope waits for them.
+        struct Stop<'a, U>(&'a Mutex<State<U>>, &'a Condvar);
+        impl<U> Drop for Stop<'_, U> {
+            fn drop(&mut self) {
+                self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).stop = true;
+                self.1.notify_all();
+            }
+        }
+        let _stop = Stop(&st, &cv);
         let mut out = Ok(());
         for i in 0..n {
             let r = {

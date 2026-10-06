@@ -365,6 +365,14 @@ fn results_in_order_on_any_threads() {
         assert_eq!(got, (0..50).map(|i| (i, i * i)).collect::<Vec<_>>(), "{threads} threads");
         let failed = pool.install(|| in_order(50, |i| if i == 17 { anyhow::bail!("block {i}") } else { Ok(i) }, |_| {}, |_, _| Ok(())));
         assert!(failed.is_err_and(|e| e.to_string() == "block 17"));
+        if threads > 1 {
+            // A block that panics on a thread fails the run, rather than leave it waiting; as does
+            // a panic where the results are written.
+            let panicked = pool.install(|| in_order(50, |i| if i == 23 { panic!("block {i}") } else { Ok(i) }, |_| {}, |_, _| Ok(())));
+            assert!(panicked.is_err_and(|e| e.to_string() == "item 23 panicked: block 23"));
+            let sunk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pool.install(|| in_order(50, Ok, |_| {}, |i, _| if i == 5 { panic!("written") } else { Ok(()) }))));
+            assert!(sunk.is_err());
+        }
     }
 }
 
