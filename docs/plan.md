@@ -1704,8 +1704,14 @@ At each phase's end an Opus agent reviews the work against this plan.
       and the whole layer files the map fetches by name (`/api/layer/…`: ferries, stations,
       overlays) where the overlays job has no copy of its own (`global/heritage/`).
 7. **Features,** each on its own.
-   - Built: the terrain repair (`roadcore::grid::repair_terrain`, in the terrain job: voids
-     filled, towers and spikes flattened, summits and ridges kept, with tests; §6).
+   - Built: the first terrain repair (`roadcore::grid::repair_terrain`, one pass in the terrain job:
+     voids filled, towers and spikes flattened, summits and ridges kept, with tests; §6). It judges
+     a pixel against a ring around it and its neighbours, so inside a cluster of bad pixels a pass
+     clears only the outer layer: wider clusters' inner parts stay on the map.
+   - Planned: the new terrain repair, one pass that clears whole clusters (a reference surface at
+     two scales, each flagged pixel grown into its blob, blobs and voids filled from the clean
+     ground around them, a cap on a blob's size), so that repairing its own output changes nothing;
+     terrain still made from AWS's tiles and the code alone.
    - Planned: 3D buildings (`docs/buildings3d.md`: designed, its sources on the NAS, its steps not
      built), then PLATEAU; building heights in horizons and the viewshed tool; sharper terrain from
      national DEMs.
