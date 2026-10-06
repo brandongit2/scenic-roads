@@ -778,9 +778,10 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     cache when it lacks one.
   - **Repair** (`roadcore::grid::repair_terrain`, README "Terrain repair"): one pass that takes what
     is broken or undefined and nothing else. Voids are filled; a tower or a pit is a blob of the
-    tile's component tree, taken whole and weighed against the ground it meets: broken when it
-    stands out more than 100 m, steeper over its footprint than terrain can be and towering over the
-    ground around it; small walled spikes on flat ground or beside a blob taken (ringing) go too.
+    tile's component tree, taken whole and weighed against the ground it meets, as the map shows
+    it: broken when it stands out more than 100 m, steeper over its footprint than terrain can be
+    and towering over the ground around it; small spikes go too when two of three hold: walled, on
+    flat or smoothly sloping ground, beside a blob taken (an artifact's ringing).
     Each stage judges the tile with what was found filled in, until one finds nothing (eight at
     most), so its own output has nothing left to repair (`terrain --scan` checks it: §10, phase 7).
     It reads AWS's values, bathymetry and all, so stored tiles (at sea level) are never inputs.
