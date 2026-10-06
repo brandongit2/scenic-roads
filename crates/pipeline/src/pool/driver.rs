@@ -6,13 +6,15 @@
 //! # The contract
 //!
 //! **One process per member.** The agent takes its member's lock (crate::pool::MemberLock: a flock
-//! named by the member id in the app's folder, so a second process of the member, a second agent or
-//! one started from a copy of the agent's folder, can't take it) and makes its one `Driver` with
-//! it (`Driver::new`, from the state it saved last: `saved`). A process without the lock steps no
-//! driver (it runs dry, as a second agent on one folder does). Every step checks the lock first
-//! (its file removed is taken again if it's free); a process another took it from stops for good
-//! (`Out::stop`: it writes no heartbeat, sends nothing, and steps no more). Two processes of one
-//! member would lead one term twice, and number leases `<term>-<n>` twice.
+//! named by the member id, in the folder it passes, the app's: so a second process of the member, a
+//! second agent or one started from a copy of the agent's folder, can't take it) and makes its one
+//! `Driver` with it (`Driver::new`, from the state it saved last: `saved`). A process without the
+//! lock steps no driver (it runs dry, as a second agent on one folder does). Every step checks the
+//! lock first: its file removed is taken again if it's free; a check that can't tell (the folder
+//! unreadable a moment) holds that step's duties, and is tried again next step; a process another
+//! holds it from stops for good (`Out::stop`: the agent saves that step's `Saved`, which keeps the
+//! hand-offs handed to it, writes no heartbeat, sends nothing, steps no more, and leaves the pool).
+//! Two processes of one member would lead one term twice, and number leases `<term>-<n>` twice.
 //!
 //! The agent calls `Driver::step` once per loop of its own, about every 20 s, from one thread. A
 //! step:
@@ -93,6 +95,7 @@ use super::{Member, MemberLock};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 /// More than this unaccounted for, between steps or within one, and a lead re-asserts before it
 /// acts (s).
@@ -242,9 +245,11 @@ pub struct Out {
     /// Leading: when it asked for the listing of every day its records reflect (this Mac's clock;
     /// within `RELIST_S` while `caught_up`): caught up, every entry written before it is merged.
     pub listed_at: Option<u64>,
-    /// This process isn't the member's only one (another took its lock: `MemberLock::check`), and
-    /// why: the agent stops the pool. It writes no heartbeat (this step's is empty), sends nothing,
-    /// and steps no more; a term it led is left to a takeover.
+    /// This process isn't the member's only one (another process holds its lock: `MemberLock::check`),
+    /// and why. The agent saves this step's `Saved` (the hand-offs handed to the step are kept in
+    /// it, for this folder's next process to write), writes no heartbeat (this step's is empty),
+    /// sends nothing, steps no more, and leaves the pool. A term it led is the other process's (the
+    /// same member) to re-assert.
     pub stop: Option<String>,
     /// A listing of the journal to make, handed back in `Heard::listed`.
     pub list: Option<Listing>,
@@ -463,16 +468,29 @@ impl Driver {
     /// One step (see the module's doc: the contract).
     pub fn step(&mut self, io: &dyn Io, heard: Heard, check: Check) -> Out {
         let mut out = Out::default();
-        // One process per member: its lock still held, or it stops, writing nothing more.
-        if let Some(Err(e)) = self.lock.as_mut().filter(|_| self.stopped.is_none()).map(MemberLock::check) {
-            let why = format!("{e:#}");
-            if let Some(l) = self.lead.take() {
-                out.events.push(Event::SteppedDown { term: l.term.term, why: format!("this process lost its member's lock: {why}") });
+        // One process per member: its lock still held, or it stops, writing nothing more (another
+        // process holds it). A check that can't tell holds this step's duties, and is tried again.
+        let mut unsure = None;
+        match self.lock.as_mut().filter(|_| self.stopped.is_none()).map(MemberLock::check) {
+            Some(Ok(false)) => {
+                let why = format!("another process holds {}", self.lock.as_ref().map_or(Path::new(""), MemberLock::path).display());
+                if let Some(l) = self.lead.take() {
+                    out.events.push(Event::SteppedDown { term: l.term.term, why: format!("this process isn't the member's only one: {why}") });
+                }
+                self.passing = None;
+                self.stopped = Some(why);
             }
-            self.passing = None;
-            self.stopped = Some(why);
+            Some(Err(e)) => unsure = Some(format!("{e:#}")),
+            _ => {}
         }
         if let Some(why) = &self.stopped {
+            // (Its jobs' hand-offs kept, in the state the agent saves: this folder's next process
+            // writes them.)
+            for e in heard.entries {
+                if let Err(err) = self.saved.mine.add(e) {
+                    out.events.push(Event::Failed { what: "keep an entry", why: format!("{err:#}") });
+                }
+            }
             out.stop = Some(why.clone());
             out.term = self.cur.term;
             return out;
@@ -583,6 +601,11 @@ impl Driver {
             out.listed_at = l.listed_at;
         } else {
             out.fresh = false;
+        }
+        // (Its lock not known held this step: no duties, catalog or sweep until it's checked again.)
+        if let Some(why) = unsure {
+            out.events.push(Event::Failed { what: "check the member's lock", why });
+            (out.duties, out.caught_up, out.fresh) = (false, false, false);
         }
         out
     }
@@ -1673,6 +1696,32 @@ mod tests {
     }
 
     #[test]
+    fn a_lock_check_that_fails_holds_the_steps_duties_and_checks_again() {
+        // The lock's folder unreadable a moment (a stat that fails), no other process holding the
+        // lock: this step does no duties, and the next, the folder readable again, does. (Re-review
+        // 2, M1: it stopped for good, its term left to the owner.)
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default(), MemberLock::take(dir.path(), A).unwrap().unwrap());
+        let list = step(&mut a, &ia, able()).list.unwrap();
+        ia.pass(20);
+        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: vec![] }), ..able() }).duties);
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+        ia.pass(20);
+        let o = step(&mut a, &ia, able());
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(o.stop.is_none() && o.leads == Some(1) && !o.duties && !o.caught_up, "{o:?}");
+        assert!(o.events.iter().any(|e| matches!(e, Event::Failed { what: "check the member's lock", .. })), "{:?}", o.events);
+        ia.pass(20);
+        let o = step(&mut a, &ia, able());
+        assert!(o.stop.is_none() && o.leads == Some(1) && o.duties && o.caught_up, "{o:?}");
+        assert!(MemberLock::take(dir.path(), A).unwrap().is_none(), "still this process's");
+    }
+
+    #[test]
     fn a_driver_another_process_took_the_lock_from_stops() {
         // Its lock's file removed: taken again while no other process holds it; once a second
         // process of the member has it, this one stops, leading nothing and writing nothing more.
@@ -1692,9 +1741,11 @@ mod tests {
         let second = MemberLock::take(dir.path(), A).unwrap().expect("a second process");
         ia.pass(20);
         let before = mem.0.borrow().clone();
-        let o = a.step(&ia, able(), &any);
+        let e = entry(A, 1, 9, "6-1-1");
+        let o = a.step(&ia, Heard { entries: vec![e.clone()], ..able() }, &any);
         assert!(o.stop.is_some() && o.leads.is_none() && o.send.is_empty(), "{o:?}");
         assert!(o.events.iter().any(|e| matches!(e, Event::SteppedDown { term: 1, .. })), "{:?}", o.events);
+        assert!(a.saved().mine.unwritten().any(|k| *k == e.key().unwrap()), "the hand-off handed to it kept, for the agent to save");
         ia.pass(20);
         assert!(a.step(&ia, able(), &any).stop.is_some(), "for good");
         assert_eq!(*mem.0.borrow(), before, "nothing written");

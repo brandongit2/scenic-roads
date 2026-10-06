@@ -147,12 +147,13 @@ impl MemberLock {
         Ok(lock_file(&path)?.map(|file| MemberLock { file, path }))
     }
 
-    /// That this process still holds it: its path still names the file it holds. One removed or
-    /// replaced (by hand, or a cleanup) is taken again when no other process holds it now; an
-    /// error when one does: this process isn't the member's only one, and stops.
-    pub fn check(&mut self) -> Result<()> {
+    /// Whether this process still holds it: true when its path still names the file it holds, or
+    /// one removed or replaced (by hand, or a cleanup) was taken again, no other process holding
+    /// it; false when another process holds it (this one isn't the member's only one, and stops);
+    /// an error when it can't tell (its folder unreadable a moment: checked again).
+    pub fn check(&mut self) -> Result<bool> {
         match std::fs::metadata(&self.path) {
-            Ok(m) if same_file(&m, &self.file.metadata().with_context(|| format!("stat {}", self.path.display()))?) => return Ok(()),
+            Ok(m) if same_file(&m, &self.file.metadata().with_context(|| format!("stat {}", self.path.display()))?) => return Ok(true),
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e).with_context(|| format!("stat {}", self.path.display())),
@@ -160,10 +161,15 @@ impl MemberLock {
         match lock_file(&self.path)? {
             Some(file) => {
                 self.file = file;
-                Ok(())
+                Ok(true)
             }
-            None => anyhow::bail!("{} was replaced, and another process holds it: another process is this member", self.path.display()),
+            None => Ok(false),
         }
+    }
+
+    /// Its file.
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 }
 
@@ -252,13 +258,13 @@ mod tests {
         let id = new_id();
         let path = dir.path().join(format!("pool-{id}.lock"));
         let mut held = MemberLock::take(dir.path(), &id).unwrap().expect("free");
-        held.check().unwrap();
+        assert!(held.check().unwrap());
         std::fs::remove_file(&path).unwrap();
-        held.check().expect("no other process: taken again");
+        assert!(held.check().unwrap(), "no other process: taken again");
         assert!(MemberLock::take(dir.path(), &id).unwrap().is_none(), "held again");
         std::fs::remove_file(&path).unwrap();
         let second = MemberLock::take(dir.path(), &id).unwrap().expect("a second process takes the new file");
-        assert!(held.check().is_err(), "another process is the member: this one stops");
+        assert!(!held.check().unwrap(), "another process is the member: this one stops");
         drop(second);
     }
 
