@@ -48,6 +48,18 @@ pub fn allowed(ip: IpAddr) -> bool {
     }
 }
 
+/// Whether `ip` is on the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48): what it sends goes through
+/// WireGuard, sealed.
+pub fn tailnet(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v) => v.octets()[0] == 100 && (64..128).contains(&v.octets()[1]),
+        IpAddr::V6(v) => match v.to_ipv4_mapped() {
+            Some(v4) => tailnet(IpAddr::V4(v4)),
+            None => v.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+        },
+    }
+}
+
 /// Whether `ip` is this Mac's own (loopback).
 pub fn loopback(ip: IpAddr) -> bool {
     match ip {
@@ -67,13 +79,13 @@ pub fn own(peer: IpAddr, h: &HeaderMap) -> bool {
 }
 
 /// Where a request came from: its address; handed over by a proxy on this Mac, the address the
-/// proxy took it from (X-Forwarded-For's last, the one the proxy added: a device may send some of
-/// its own before it), else "a proxy on this Mac".
+/// proxy took it from (X-Forwarded-For's last entry, the one the proxy added: a device may send
+/// some of its own before it), else "a proxy on this Mac" (none, or not an address).
 pub fn source(peer: IpAddr, h: &HeaderMap) -> String {
     if !loopback(peer) || own(peer, h) {
         return peer.to_string();
     }
-    let proxy_said = h.get_all("x-forwarded-for").iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(',')).filter_map(|a| a.trim().parse::<IpAddr>().ok()).last();
+    let proxy_said = h.get_all("x-forwarded-for").iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(',')).next_back().and_then(|a| a.trim().parse::<IpAddr>().ok());
     proxy_said.map_or_else(|| "a proxy on this Mac".to_string(), |ip| ip.to_string())
 }
 
@@ -208,6 +220,11 @@ mod tests {
         assert!(!own("127.0.0.1".parse().unwrap(), &x));
         assert_eq!(source("127.0.0.1".parse().unwrap(), &x), "a proxy on this Mac");
         assert!(same("abc", "abc") && !same("abc", "abd") && !same("abc", "ab"));
+        // (The proxy's own entry, strictly: one that isn't an address is no address.)
+        let mut p = HeaderMap::new();
+        p.insert("x-forwarded-for", HeaderValue::from_static("10.9.9.9, 100.64.0.9:5555"));
+        assert_eq!(source("127.0.0.1".parse().unwrap(), &p), "a proxy on this Mac");
+        assert!(tailnet("100.101.1.2".parse().unwrap()) && tailnet("fd7a:115c:a1e0::5".parse().unwrap()) && !tailnet("192.168.1.20".parse().unwrap()) && !tailnet("127.0.0.1".parse().unwrap()));
     }
 
     #[test]

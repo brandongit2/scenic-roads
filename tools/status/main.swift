@@ -560,6 +560,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// coordinator doesn't answer); and the asks told (by name: an ask's is never made again).
     var devices: Devices?
     var told: Set<String> = []
+    /// Whether the notifications of asks no longer waiting, from before this process, were taken
+    /// away (once, with the first answer).
+    var tidied = false
     var seen: Seen?
     var polling = false
     /// Whether notifications are posted (not printed, as --replay's are).
@@ -581,7 +584,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // (A device's ask to help comes with its answers: accepted or declined from the notification.)
         let center = UNUserNotificationCenter.current()
         center.delegate = self
-        let accept = UNNotificationAction(identifier: "accept", title: "Accept", options: [])
+        // (Accepting from a notification asks for the Mac unlocked: its key goes to a device.)
+        let accept = UNNotificationAction(identifier: "accept", title: "Accept", options: [.authenticationRequired])
         let decline = UNNotificationAction(identifier: "decline", title: "Decline", options: [.destructive])
         center.setNotificationCategories([UNNotificationCategory(identifier: "ask", actions: [accept, decline], intentIdentifiers: [], options: [])])
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
@@ -746,7 +750,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
             DispatchQueue.main.async {
                 if status != 200 {
-                    self.post("Couldn't \(verb) the device", status == 404 ? "Its ask is gone (answered, lapsed or cancelled)" : err?.localizedDescription ?? "The coordinator answered \(status)")
+                    let why = switch status {
+                    case 404: "Its ask is gone (answered, lapsed or cancelled)"
+                    case 409: "A device of its page's id helps already: forget that one first (Devices Helping)"
+                    default: err?.localizedDescription ?? "The coordinator answered \(status)"
+                    }
+                    self.post("Couldn't \(verb) the device", why)
                 }
                 self.poll()
             }
@@ -850,6 +859,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// lapsed, cancelled), its notification taken away.
     func tellAsks() {
         guard let d = devices else { return }
+        if !tidied && sinkIsCenter {
+            tidied = true
+            let waiting = Set(d.asking.map { "ask-\($0.ask)" })
+            let center = UNUserNotificationCenter.current()
+            center.getDeliveredNotifications { ns in
+                let stale = ns.map(\.request.identifier).filter { $0.hasPrefix("ask-") && !waiting.contains($0) }
+                if !stale.isEmpty { center.removeDeliveredNotifications(withIdentifiers: stale) }
+            }
+        }
         for a in d.asking where !told.contains(a.ask) {
             told.insert(a.ask)
             ask(a)

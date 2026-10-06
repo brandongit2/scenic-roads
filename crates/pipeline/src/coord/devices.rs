@@ -7,9 +7,11 @@
 //! Kept in the coordinator's `devices.json`: the secrets' hashes, never the secrets.
 //!
 //! An ask never takes another's place: one with another secret is another ask, whatever page it
-//! says it is, and an answer is for one ask alone. Asks are few: past ASKS_MAX waiting, FROM_ONE
-//! from an address, or HOURLY an address made in the last hour, the next is refused, never one
-//! waiting dropped for it.
+//! says it is, and an answer is for one ask alone. A page's id is one accepted device's at most (it
+//! names the device's worker: `name`), so an ask with an accepted device's id and another secret
+//! is refused, as is accepting one. Asks are few: past ASKS_MAX waiting, FROM_ONE from an address,
+//! or HOURLY an address made in the last hour, the next is refused, never one waiting dropped for
+//! it.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -118,6 +120,17 @@ pub enum Joined {
     Stands { state: State, code: String, new: bool },
     /// Refused: too many asks waiting, or made lately (why, for its page).
     TooMany(&'static str),
+    /// Refused: an accepted device has the page's id (the page takes another and asks again).
+    Taken,
+}
+
+/// Why an answer answered nothing.
+#[derive(Debug, PartialEq)]
+pub enum Unanswered {
+    /// No ask waits with that code (and name): answered, lapsed or withdrawn.
+    NoAsk,
+    /// Accepting it would make two devices of one page's id: one of them is to be forgotten first.
+    Taken,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -206,6 +219,9 @@ impl Devices {
         if let Some(d) = self.list.iter().find(|d| d.id == a.id && d.hash == h) {
             return Ok(Joined::Stands { state: d.state(), code: if d.waiting() { d.code.clone() } else { String::new() }, new: false });
         }
+        if self.list.iter().any(|d| d.accepted > 0 && d.id == a.id) {
+            return Ok(Joined::Taken);
+        }
         let waiting: Vec<&Device> = self.list.iter().filter(|d| d.waiting()).collect();
         if self.recent.iter().filter(|r| r.0 == a.from).count() >= HOURLY {
             return Ok(Joined::TooMany("this address asked too often lately: try again in an hour"));
@@ -248,17 +264,21 @@ impl Devices {
     }
 
     /// The owner's answer to the ask waiting with `code` (and named `ask`, when the answer names
-    /// it: a notification's, for that ask alone): the ask answered, when there was one. Nothing
-    /// else changes: an accepted device stays until it's forgotten.
-    pub fn answer(&mut self, ask: Option<&str>, code: &str, accept: bool, now: u64) -> Option<Device> {
+    /// it: a notification's, for that ask alone): the ask answered. Nothing else changes: an
+    /// accepted device stays until it's forgotten.
+    pub fn answer(&mut self, ask: Option<&str>, code: &str, accept: bool, now: u64) -> Result<Device, Unanswered> {
         self.tidy(now);
-        let d = self.list.iter_mut().find(|d| d.waiting() && d.code == code && ask.is_none_or(|a| d.ask == a))?;
+        let i = self.list.iter().position(|d| d.waiting() && d.code == code && ask.is_none_or(|a| d.ask == a)).ok_or(Unanswered::NoAsk)?;
+        if accept && self.list.iter().any(|d| d.accepted > 0 && d.id == self.list[i].id) {
+            return Err(Unanswered::Taken);
+        }
+        let d = &mut self.list[i];
         if accept {
             d.accepted = now;
         } else {
             d.declined = now;
         }
-        Some(d.clone())
+        Ok(d.clone())
     }
 
     /// Forgets the accepted devices named `which` (an ask's name, or a page's id): their secrets no
@@ -285,10 +305,10 @@ impl Devices {
     }
 }
 
-/// Whether worker name `worker` is accepted device `id`'s: its page's id, after what it is (the
-/// page names itself "<label> <id>").
-pub fn names(worker: &str, id: &str) -> bool {
-    worker.strip_suffix(id).is_some_and(|w| w.ends_with(' '))
+/// An accepted device's worker name: what it is and its page's id, as its page names itself; the
+/// coordinator gives it to everything the device asks (a device works as itself, under one name).
+pub fn name(label: &str, id: &str) -> String {
+    format!("{label} {id}")
 }
 
 #[cfg(test)]
@@ -324,15 +344,15 @@ mod tests {
         assert_eq!(d.state("abc123", S2, 1001).0, State::None);
         assert_eq!(d.state("abc123", S1, 1001), (State::Asking, c.clone()));
         // An answer for another code, or naming another ask, answers nothing.
-        assert!(d.answer(None, "0008", true, 1010).is_none());
-        assert!(d.answer(Some("000000000000beef"), &c, true, 1010).is_none());
-        assert_eq!(d.answer(Some("000000000000feed"), &c, true, 1010).map(|x| x.label), Some("Safari on iPad".to_string()));
+        assert_eq!(d.answer(None, "0008", true, 1010), Err(Unanswered::NoAsk));
+        assert_eq!(d.answer(Some("000000000000beef"), &c, true, 1010), Err(Unanswered::NoAsk));
+        assert_eq!(d.answer(Some("000000000000feed"), &c, true, 1010).map(|x| x.label), Ok("Safari on iPad".to_string()));
         assert_eq!(d.state("abc123", S1, 1011).0, State::Accepted);
         assert_eq!(d.knows(S1).map(|x| x.id.as_str()), Some("abc123"));
         assert!(d.knows(S2).is_none());
         assert!(d.view(1011).asking.is_empty() && d.view(1011).accepted.len() == 1);
         // (Nothing to answer twice.)
-        assert!(d.answer(None, &c, false, 1012).is_none());
+        assert_eq!(d.answer(None, &c, false, 1012), Err(Unanswered::NoAsk));
         // Forgotten, by its page's id: its secret no longer works.
         assert_eq!(d.forget("abc123").len(), 1);
         assert!(d.knows(S1).is_none());
@@ -349,21 +369,24 @@ mod tests {
         // Both wait, the first as it was: another secret with its page's id is another ask.
         assert_eq!(d.view(2).asking.len(), 2);
         assert_eq!(d.state("ipad01", S1, 2), (State::Asking, c1.clone()));
-        // Accepting one leaves the other, and an accepted device stays when another of its page's
-        // id is accepted.
+        // Accepting one leaves the other waiting, which can't be accepted now: one device a page's id.
         d.answer(None, &c1, true, 3).unwrap();
-        d.answer(None, &c2, true, 4).unwrap();
-        assert!(d.knows(S1).is_some() && d.knows(S2).is_some());
-        // An ask with an accepted device's id and another secret is another ask, the device kept.
-        let c3 = code(d.ask(&asked("ipad01", S3, "192.168.1.66"), 5, (9 << 64) | 3).unwrap());
-        d.answer(None, &c3, false, 6).unwrap();
-        assert!(d.knows(S1).is_some() && d.knows(S2).is_some() && d.knows(S3).is_none());
-        assert_eq!(d.state("ipad01", S3, 7).0, State::Declined);
-        assert_eq!(d.state("ipad01", S3, 6 + DECLINED_S).0, State::None);
-        // Forgotten by an ask's name: that device alone.
-        let name = d.view(7).accepted[0].ask.clone();
+        assert_eq!(d.answer(None, &c2, true, 4), Err(Unanswered::Taken));
+        assert_eq!(d.state("ipad01", S2, 4), (State::Asking, c2.clone()));
+        assert!(d.knows(S1).is_some() && d.knows(S2).is_none());
+        // An ask with an accepted device's id and another secret: refused, the device kept.
+        assert_eq!(d.ask(&asked("ipad01", S3, "192.168.1.66"), 5, 3).unwrap(), Joined::Taken);
+        d.answer(None, &c2, false, 6).unwrap();
+        assert_eq!(d.state("ipad01", S2, 7).0, State::Declined);
+        assert_eq!(d.state("ipad01", S2, 6 + DECLINED_S).0, State::None);
+        // Forgotten by an ask's name: that device alone; then its id is free again.
+        let c4 = code(d.ask(&asked("mac01", S3, "10.0.0.2"), 8, 4).unwrap());
+        d.answer(None, &c4, true, 9).unwrap();
+        let name = d.view(10).accepted.iter().find(|a| a.id == "ipad01").unwrap().ask.clone();
         assert_eq!(d.forget(&name).len(), 1);
-        assert!(d.knows(S1).is_none() && d.knows(S2).is_some());
+        assert!(d.knows(S1).is_none() && d.knows(S3).is_some());
+        let s4 = "b".repeat(32);
+        assert!(matches!(d.ask(&asked("ipad01", &s4, "100.64.0.7"), 11, 5).unwrap(), Joined::Stands { new: true, .. }));
     }
 
     #[test]
@@ -371,7 +394,7 @@ mod tests {
         let mut d = Devices::default();
         let c = code(d.ask(&asked("p1", S1, "192.168.1.9"), 0, 1).unwrap());
         assert!(!d.cancel("p1", S2) && d.cancel("p1", S1));
-        assert!(d.answer(None, &c, true, 1).is_none());
+        assert_eq!(d.answer(None, &c, true, 1), Err(Unanswered::NoAsk));
         // From one address: FROM_ONE waiting at most.
         for i in 0..FROM_ONE {
             code(d.ask(&asked(&format!("q{i}"), S1, "192.168.1.9"), 10, i as u128).unwrap());
@@ -403,8 +426,8 @@ mod tests {
             assert!(d.ask(&Asked { id, label, secret, from: "" }, 5, 2).is_err(), "{label:?}");
         }
         assert!(d.list.is_empty());
-        // A worker's name is a device's when it ends with its page's id, after a space.
-        assert!(names("Safari on iPad abc123", "abc123") && !names("Safari on iPadabc123", "abc123") && !names("Safari on iPad abc1234", "abc123") && !names("m4", "m4"));
+        // A device's worker name: what it is, then its page's id.
+        assert_eq!(name("Safari on iPad", "abc123"), "Safari on iPad abc123");
     }
 
     #[test]
@@ -413,7 +436,7 @@ mod tests {
         let p = dir.path().join("devices.json");
         let mut d = Devices::default();
         let c = code(d.ask(&asked("abc", S1, ""), 1, 1).unwrap());
-        d.answer(None, &c, true, 2);
+        d.answer(None, &c, true, 2).unwrap();
         d.save(&p, true).unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(!text.contains(S1) && text.contains(&hash(S1)));
