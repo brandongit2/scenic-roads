@@ -423,7 +423,9 @@ seconds, kept to one Mac as the build Mac keeps it now.
   takes up its term, and the last two days every ten minutes, for entries no member will tell it of
   (their member gone, having told only a lead no longer current). Otherwise it reads only the
   entries members tell it of, by key (§6.2: acknowledgements are per term). An entry listed or told
-  of that can't be read whole yet (a stale read) is kept and read again every loop. A loop reads
+  of that can't be read whole yet (a stale read) is kept and read again every loop; one its reads
+  find not whole for an hour (cut short on the share, or removed) is refused, as a damaged one is,
+  its work done again (a read the share doesn't answer doesn't count). A loop reads
   entries to merge for a minute at most, the oldest leases first, and leaves the rest to the next
   (on a share under load a read takes seconds, and a lead taking up from an old snapshot may have
   thousands to read); a member writes its jobs' entries so too.

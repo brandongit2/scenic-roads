@@ -108,6 +108,10 @@ pub const LISTING_S: u64 = 900;
 pub const STOOD_DOWN_S: u64 = 120;
 /// The wait between the members that can take over a lead that stood down, by rank (s).
 pub const AUTO_RANK_S: u64 = 30;
+/// An entry a lead reads and finds not whole (short, or not there) over this long awake is refused
+/// (s): no stale read lasts so long, and its file won't be whole (cut short on the share, or
+/// removed). A read that fails, its share not answering, doesn't count.
+pub const UNREADABLE_S: u64 = 3600;
 
 /// What the driver needs of the world: the NAS's operations, and this Mac's clocks.
 pub trait Io: Nas {
@@ -215,8 +219,9 @@ pub struct Out {
     pub fresh: bool,
     /// Leading, its records reflect the journal: the listing its take-up asked for is merged and
     /// saved, and every entry it was told of or listed is read (on a share under load a loop
-    /// leaves some to the next). A catalog waits for it (and `duties`); GC too (and `fresh`): an
-    /// entry not merged yet may hold uploads the records don't name.
+    /// leaves some to the next; one never read whole is refused after `UNREADABLE_S`). A catalog
+    /// waits for it (and `duties`); GC too (and `fresh`): an entry not merged yet may hold uploads
+    /// the records don't name.
     pub caught_up: bool,
     /// A listing of the journal to make, handed back in `Heard::listed`.
     pub list: Option<Listing>,
@@ -296,6 +301,8 @@ struct Lead {
     /// Entries told or listed not read whole yet (not readable yet, or past the step's time for
     /// reading): read again from the next step on.
     waiting: BTreeSet<String>,
+    /// Of those, the ones read and found not whole, since when (awake clock).
+    unreadable: BTreeMap<String, u64>,
     /// The listing its take-up asked for is merged.
     listed: bool,
     /// Changes not saved yet.
@@ -704,7 +711,7 @@ impl Driver {
         out.fresh = true;
         out.events.push(Event::TookUp { term: t.term, how: t.how.clone(), handed });
         let horizon = r.horizon.clone();
-        self.lead = Some(Lead { term: t.clone(), records: r, hand: Handover::Leading, told: BTreeMap::new(), waiting: BTreeSet::new(), listed: false, dirty: false, refused: Vec::new() });
+        self.lead = Some(Lead { term: t.clone(), records: r, hand: Handover::Leading, told: BTreeMap::new(), waiting: BTreeSet::new(), unreadable: BTreeMap::new(), listed: false, dirty: false, refused: Vec::new() });
         // A take-up lists the journal: every day not forgotten.
         self.due = Some((Some(horizon).filter(|h| !h.is_empty()), true));
         self.asked = None;
@@ -771,6 +778,25 @@ impl Driver {
         // What isn't read whole yet is read again next step; what's handled or forgotten, done.
         l.waiting.extend(m.waiting.iter().chain(&m.unread).cloned());
         l.waiting.retain(|k| !l.records.handles(k) && !m.forgotten.contains(k));
+        // What's read and found not whole for `UNREADABLE_S` never will be: refused, as a damaged
+        // entry is (its work done again).
+        let awake = io.awake();
+        for k in &m.waiting {
+            l.unreadable.entry(k.clone()).or_insert(awake);
+        }
+        l.unreadable.retain(|k, _| l.waiting.contains(k));
+        let never: Vec<String> = l.unreadable.iter().filter(|&(_, &at)| awake.saturating_sub(at) >= UNREADABLE_S).map(|(k, _)| k.clone()).collect();
+        if !never.is_empty() {
+            let why = format!("not read whole in {} minutes", UNREADABLE_S / 60);
+            for k in &never {
+                l.records.refuse(k, &why);
+                l.waiting.remove(k);
+                l.unreadable.remove(k);
+                l.refused.push((k.clone(), why.clone()));
+            }
+            l.dirty = true;
+            out.events.push(Event::Merged { applied: Vec::new(), overtaken: 0, refused: never.len(), listed: false });
+        }
         if l.dirty {
             match l.records.save(io) {
                 Ok(()) => {
@@ -1426,6 +1452,35 @@ mod tests {
         ia.pass(20);
         let o = step(&mut a, &ia, able());
         assert!(Records::load(&mem, 1).unwrap().unwrap().handles(&key) && o.caught_up, "{:?}", o.events);
+    }
+
+    #[test]
+    fn an_entry_never_read_whole_is_refused_after_an_hour() {
+        // B tells the lead of an entry whose file the share cut short for good (a NAS that lost a
+        // renamed file's last bytes). Read again every step, it kept the lead from being caught up
+        // for ever: no catalog, no sweep.
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let list = step(&mut a, &ia, able()).list.expect("its take-up's listing");
+        ia.pass(20);
+        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }).caught_up);
+        let key = entry(B, 1, 3, "6-1-1").key().unwrap();
+        mem.write_whole(&journal::path(&key), b"{\"member\":").unwrap();
+        ia.pass(20);
+        assert!(!step(&mut a, &ia, Heard { msgs: vec![(B.into(), Msg::Tell(vec![key.clone()]))], ..able() }).caught_up, "told of it, not whole");
+        for _ in 0..11 {
+            ia.pass(300);
+            assert!(!step(&mut a, &ia, able()).caught_up, "55 minutes: read again");
+        }
+        ia.pass(300);
+        let o = step(&mut a, &ia, able());
+        assert!(o.caught_up, "{:?}", o.events);
+        let why = Records::load(&mem, 1).unwrap().unwrap().rejected.get(&key).cloned();
+        assert!(why.as_deref().is_some_and(|w| w.contains("not read whole")), "{why:?}");
+        assert_eq!(journal::refusal(&mem, &key).unwrap(), why, "noted for the owner");
+        assert!(o.send.iter().any(|(to, m)| to == B && matches!(m, Msg::Ack { keys, .. } if keys.contains(&key))), "{:?}", o.send);
     }
 
     #[test]

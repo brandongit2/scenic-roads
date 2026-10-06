@@ -234,9 +234,9 @@ pub struct Merged {
     pub refused: Vec<(String, String)>,
     /// Of days the records have forgotten, and not in the journal: merged long ago, to acknowledge.
     pub forgotten: Vec<String>,
-    /// Not readable whole now (being written, not seen yet, or a read that failed): to merge later.
+    /// Read and not whole (being written, not seen yet, cut short, or removed): to merge later.
     pub waiting: Vec<String>,
-    /// Not read: the reading stopped (`merge_while`); to merge later.
+    /// Not read: the reading stopped (`merge_while`), or the read failed; to merge later.
     pub unread: Vec<String>,
 }
 
@@ -257,11 +257,13 @@ pub fn merge_while(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check
     let mut out = Merged::default();
     let mut read: BTreeMap<(LeaseId, String), Entry> = BTreeMap::new();
     let mut seen = BTreeSet::new();
+    let mut stopped = false;
     for k in keys {
         if r.handles(k) || !seen.insert(k.as_str()) {
             continue;
         }
-        if !out.unread.is_empty() || !more() {
+        stopped = stopped || !more();
+        if stopped {
             out.unread.push(k.clone());
             continue;
         }
@@ -274,7 +276,8 @@ pub fn merge_while(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check
                 out.refused.push((k.clone(), why));
             }
             Ok(journal::Read::Missing) if r.forgot(k) => out.forgotten.push(k.clone()),
-            Ok(journal::Read::Short | journal::Read::Missing) | Err(_) => out.waiting.push(k.clone()),
+            Ok(journal::Read::Short | journal::Read::Missing) => out.waiting.push(k.clone()),
+            Err(_) => out.unread.push(k.clone()),
         }
     }
     for ((_, k), e) in read {
@@ -539,6 +542,44 @@ mod tests {
         });
         assert_eq!((m.applied, m.unread.clone()), (keys[..2].to_vec(), keys[2..].to_vec()));
         assert_eq!(merge(&nas, &mut r, &m.unread, &any).applied, keys[2..]);
+    }
+
+    #[test]
+    fn a_read_that_fails_leaves_its_entry_unread_and_the_rest_read() {
+        // (A share that doesn't answer says nothing of an entry: a lead refuses one only once its
+        // reads answer that it isn't whole, for an hour: driver::UNREADABLE_S.)
+        struct Failing(Mem, String);
+        impl Nas for Failing {
+            fn create_new(&self, p: &str, bytes: &[u8]) -> Result<Created> {
+                self.0.create_new(p, bytes)
+            }
+            fn write_whole(&self, p: &str, bytes: &[u8]) -> Result<()> {
+                self.0.write_whole(p, bytes)
+            }
+            fn read(&self, p: &str) -> Result<Option<Vec<u8>>> {
+                if p == self.1 {
+                    bail!("read {p}: the share didn't answer");
+                }
+                self.0.read(p)
+            }
+            fn exists(&self, p: &str) -> Result<bool> {
+                self.0.exists(p)
+            }
+            fn list(&self, dir: &str) -> Result<Vec<String>> {
+                self.0.list(dir)
+            }
+            fn remove(&self, p: &str) -> Result<()> {
+                self.0.remove(p)
+            }
+        }
+        let mem = Mem::default();
+        let keys: Vec<String> = [(3, 1, "6-1-1"), (3, 2, "6-1-2")].iter().map(|&(t, n, u)| journal::write(&mem, &built(t, n, u, "k")).unwrap()).collect();
+        let short = "2026-10-06/3-3".to_string();
+        mem.write_whole(&journal::path(&short), b"{\"member\":").unwrap();
+        let nas = Failing(mem, journal::path(&keys[0]));
+        let mut r = Records { term: 3, ..Default::default() };
+        let m = merge(&nas, &mut r, &[keys.clone(), vec![short.clone()]].concat(), &any);
+        assert_eq!((m.unread, m.applied, m.waiting), (vec![keys[0].clone()], vec![keys[1].clone()], vec![short]));
     }
 
     #[test]
