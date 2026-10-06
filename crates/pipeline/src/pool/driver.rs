@@ -57,12 +57,16 @@
 //! (crate::pool::handover). What it leaves to the agent can't break §4's invariants: granting and
 //! the coordinator, the merge's checks (`Check`, passed to every step), the duties, the heartbeat's
 //! other fields, the messages' transport, and persisting `Saved` (its state between processes,
-//! naming its member: its entries not yet acknowledged, kept whole until written) after every step
-//! that changed it. **A job's hand-off is kept until a `Saved` from a step it was handed to is on
-//! the agent's disk**: before that, a crash loses it. A `Saved` that's lost, or another member's
-//! (a copy of the agent's folder), counts for nothing: the driver then re-asserts a term naming it
-//! that it finds at its start rather than take it up again (it may have led it, its leases
-//! granted), and the state it saves says so, for the processes after it.
+//! naming its member: its entries, kept whole until written, then until a horizon passes their day)
+//! after every step that changed it, **before acting on that step's `Out`** (a take-up's grants,
+//! its messages): a crash between would restart from a state that doesn't know the term it took
+//! up. **A job's hand-off is kept until a `Saved` from a step it was handed to is on the agent's
+//! disk**: before that, a crash loses it. A `Saved` that's lost, or another member's (this Mac's
+//! member file lost, a new id made; or a copy of another Mac's folder), counts for nothing but its
+//! jobs' hand-offs not written yet: the driver then re-asserts a term naming it that it finds at its
+//! start rather than take it up again (it may have led it, its leases granted), and the state it
+//! saves says so, for the processes after it. So does an older state of its own (a backup
+//! restored) for a term it made that the state doesn't record (`Saved::made`).
 //!
 //! The controls (the menu, the pages, `scenic lead`) ask the driver what the step would decide:
 //! whether a takeover from this Mac needs the owner's force or downgrade, and why (`takeover`);
@@ -295,6 +299,11 @@ pub struct Saved {
     #[serde(default)]
     pub term: u64,
     pub led: u64,
+    /// The highest term it made naming itself (a re-assertion, a takeover, a take-back, term 1):
+    /// one naming it that's newer, not a handover's, was made by a process whose state this isn't
+    /// (a backup restored), and is re-asserted, not taken up again.
+    #[serde(default)]
+    pub made: u64,
     /// A term its create made and couldn't fill, to finish.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unfinished: Option<Term>,
@@ -445,7 +454,8 @@ impl Driver {
         Driver { me, lock: None, stopped: None, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: None, asks: 0, swept: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None, first_unread: None }
     }
 
-    /// What to keep for the next process (after every step that changed it).
+    /// What to keep for the next process: saved after every step that changed it, before that
+    /// step's `Out` is acted on.
     pub fn saved(&self) -> Saved {
         let mut s = self.saved.clone();
         s.passing = self.passing.as_ref().map(|p| (p.own.clone(), p.passed.clone(), p.hand.clone()));
@@ -620,6 +630,9 @@ impl Driver {
             // (Term 1 made by this call: its `since` this call's.)
             let now = io.now();
             let made = term::bootstrap(io, &self.me, now, false)?.is_some_and(|t| t.member == self.me.id && t.since == now);
+            if made {
+                self.saved.made = self.saved.made.max(1);
+            }
             if self.first.is_none() {
                 self.cur = term::current(io)?;
                 if self.cur.term < self.saved.term {
@@ -681,6 +694,7 @@ impl Driver {
                 self.cur = Current { term: t.term, lead: Some(t.clone()) };
                 self.saved.term = self.saved.term.max(t.term);
                 if t.member == self.me.id {
+                    self.saved.made = self.saved.made.max(t.term);
                     self.take_up(io, out, &t);
                 } else {
                     out.send.push((t.member.clone(), Msg::Passed(t)));
@@ -691,6 +705,9 @@ impl Driver {
                 out.events.push(Event::Waits { what: "finish the term it made", why: format!("{e:#}") });
                 self.cur = Current { term: t.term, lead: Some(t.clone()) };
                 self.saved.term = self.saved.term.max(t.term);
+                if t.member == self.me.id {
+                    self.saved.made = self.saved.made.max(t.term);
+                }
                 self.saved.unfinished = Some(t);
                 true
             }
@@ -757,12 +774,16 @@ impl Driver {
             }
             return;
         }
-        if t.term > self.saved.led {
+        // (Newer than it led: taken up, but for one it made that its state doesn't record, an older
+        // state of its own restored, which it may have led.)
+        let unrecorded = t.seq.is_none() && t.term > self.saved.made;
+        if t.term > self.saved.led && !unrecorded {
             self.take_up(io, out, &t);
             return;
         }
         let how = match () {
             _ if !self.known => "re-asserted: its saved state lost",
+            _ if unrecorded => "re-asserted: its saved state older than the term",
             _ if self.restarted => "restarted: re-asserted",
             _ => "re-asserted: its app new enough",
         };
@@ -1071,6 +1092,7 @@ impl Driver {
                     // (Taken up when this call made it: one there already is the steps' to learn.)
                     self.cur = Current { term: t.term, lead: Some(t.clone()) };
                     if t.member == self.me.id && t.since == now && t.term > self.saved.led {
+                        self.saved.made = self.saved.made.max(t.term);
                         self.take_up(io, out, &t);
                     }
                 }
@@ -2133,6 +2155,29 @@ mod tests {
         });
         assert_eq!(led, Some(30), "after ten minutes, not before");
         assert_eq!(Records::load(&mem, 1).unwrap().map(|r| r.seq), Some(2), "from today's files, saved whole");
+    }
+
+    #[test]
+    fn a_saved_state_restored_from_a_backup_re_asserts_a_term_it_made() {
+        // A leads term 1, then re-asserts term 2 and leads it (granting leases 2-1, 2-2, …). Its
+        // agent's folder is then restored from a backup taken while it led term 1 (Time Machine):
+        // the saved state is A's own, older than the process that made term 2. (Re-review 2, M3:
+        // the new process took term 2 up again, as new, and could grant 2-1 twice.) It re-asserts.
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        let backup = a.saved();
+        assert_eq!((backup.led, backup.made), (1, 1));
+        ia.pass(20);
+        assert_eq!(step(&mut a, &ia, Heard { reassert: true, ..able() }).leads, Some(2));
+        ia.pass(20);
+        let mut restored = Driver::unlocked(member(A, "Mac-mini", V1), backup);
+        let o = step(&mut restored, &ia, able());
+        assert_eq!(o.leads, Some(3), "{:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::Made { term: 3, how } if how.contains("older than the term"))), "{:?}", o.events);
+        assert!(!o.events.iter().any(|e| matches!(e, Event::TookUp { term: 2, .. })), "{:?}", o.events);
     }
 
     #[test]
