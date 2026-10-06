@@ -20,7 +20,7 @@
 //! none is lost (invariant 3).
 
 use super::journal::{self, Entry};
-use super::nas::Nas;
+use super::nas::{short, Nas};
 use super::term::Term;
 use crate::agent::build::Keys;
 use crate::rawpack::Pack;
@@ -65,11 +65,6 @@ pub struct Records {
 /// The path of term `term`'s snapshot.
 pub fn path(term: u64) -> String {
     format!("state/build/term/{term}/records.json")
-}
-
-/// Whether `b` is a file made and not whole yet: empty, or JSON cut short.
-fn short(b: &[u8]) -> bool {
-    b.is_empty() || serde_json::from_slice::<serde_json::Value>(b).err().is_some_and(|e| e.is_eof())
 }
 
 /// JSON file `p` parsed, or the default when there's none.
@@ -144,6 +139,14 @@ impl Records {
     pub fn refuse(&mut self, key: &str, why: &str) {
         self.rejected.insert(key.to_string(), why.to_string());
     }
+
+    /// Forgets the journal entries of the days before `day` (YYYY-MM-DD), once GC has removed those
+    /// days from the journal (§7.3: every snapshot since names their entries) and members have
+    /// forgotten them (crate::pool::journal::Mine::forget_before): none is listed or told again.
+    pub fn forget_before(&mut self, day: &str) {
+        self.reflected.retain(|k| k.as_str() >= day);
+        self.rejected.retain(|k, _| k.as_str() >= day);
+    }
 }
 
 /// Makes term 1's first snapshot from today's three files, unless it has one: before term 1 is
@@ -161,6 +164,7 @@ pub fn first(nas: &dyn Nas) -> Result<()> {
 /// What a merge did, by journal key.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Merged {
+    /// Applied to the records.
     pub applied: Vec<String>,
     /// Refused, with why: to set aside once the records naming them are saved.
     pub refused: Vec<(String, String)>,
@@ -361,6 +365,10 @@ mod tests {
         assert!(!r.manifest.contains_key("base/6-1-3") && r.handles(&bad.key()) && r.pending.len() == 2);
         // Told again: nothing more.
         assert_eq!(merge(&nas, &mut r, &keys, &check), Merged::default());
+        // The days GC removed, forgotten.
+        r.refuse("2026-10-05/2-1", "no such step");
+        r.forget_before("2026-10-06");
+        assert!(!r.handles("2026-10-05/2-1") && r.handles(&a.key()) && r.handles(&bad.key()));
     }
 
     #[test]

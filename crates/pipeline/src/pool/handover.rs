@@ -1,7 +1,8 @@
 //! Handing the lead over (docs/pool.md §6.4), as pure transitions the agent drives: what its loop
-//! saw goes in (an ask, the target's heartbeat, its clock, whether it has settled), and what to do
-//! comes out (settle, make the next term naming the target, take the lead back), with what its
-//! heartbeat says meanwhile (`handing_to`). Times are the lead's own wall clock (§6.7).
+//! saw goes in (an ask, the target's heartbeat, its clock, the current term, whether it has
+//! settled), and what to do comes out (settle, make the next term naming the target, take the lead
+//! back, step down), with what its heartbeat says meanwhile (`handing_to`). Times are the lead's
+//! own wall clock (§6.7).
 //!
 //! The lead, A, of term E:
 //! - **Leading**: an ask to hand to B makes it **Offered**;
@@ -50,6 +51,9 @@ pub enum Handover {
 pub struct Seen<'a> {
     /// This Mac's clock (unix seconds).
     pub now: u64,
+    /// The highest term this Mac knows exists (a later one than its own, or than its pass: another
+    /// Mac made it).
+    pub current: u64,
     /// An ask to hand the lead to this member (its id) that came this loop, checked by the caller
     /// (§6.3: a live member, its app new enough, not this Mac).
     pub ask: Option<&'a str>,
@@ -74,8 +78,11 @@ pub enum Do {
     /// `to` didn't lead in time: make term E+2 naming this Mac (crate::pool::term::claim) and take
     /// it up; another's made first, nothing.
     TakeBack { to: String },
-    /// Over: `to` leads.
+    /// Over: `to` leads, or a later term than the pass was made.
     Done,
+    /// A later term than this lead's exists, not its own pass: stop granting, planning, merging and
+    /// the duties, write nothing more, and carry on as a member (§6.6).
+    StepDown,
 }
 
 /// Whether more than `s` seconds lie between `since` and `now`, either way (a clock set back as far
@@ -89,6 +96,12 @@ impl Handover {
     pub fn step(&mut self, term: u64, seen: &Seen) -> Do {
         let now = seen.now;
         let target = |to: &str| seen.target.filter(|b| b.member == to);
+        match self {
+            Handover::Passed { .. } if seen.current > term + 1 => return Do::Done,
+            Handover::Passed { .. } => {}
+            _ if seen.current > term => return Do::StepDown,
+            _ => {}
+        }
         match std::mem::take(self) {
             Handover::Leading => {
                 if let Some(to) = seen.ask {
@@ -249,6 +262,17 @@ mod tests {
         let mut busy = Handover::Offered { to: B.into(), since: 100 };
         busy.step(7, &Seen { now: 101, ask: Some("m-000000000000000c"), ..Default::default() });
         assert_eq!(busy, Handover::Offered { to: B.into(), since: 100 });
+    }
+
+    #[test]
+    fn a_later_term_ends_a_lead_or_a_handover() {
+        // Another Mac's term after this lead's: it steps down, whatever it was doing.
+        let mut h = Handover::Offered { to: B.into(), since: 100 };
+        assert_eq!(h.step(7, &Seen { now: 110, current: 8, ..Default::default() }), Do::StepDown);
+        // Its own pass is term 8; a term after that is another's: nothing to take back.
+        let mut p = Handover::Passed { to: B.into(), at: 100 };
+        assert_eq!(p.step(7, &Seen { now: 110, current: 8, ..Default::default() }), Do::Nothing);
+        assert_eq!(p.step(7, &Seen { now: 400, current: 9, ..Default::default() }), Do::Done);
     }
 
     #[test]

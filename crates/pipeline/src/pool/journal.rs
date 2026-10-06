@@ -13,7 +13,7 @@
 //! listed the journal stale, or a lead that acknowledged it while a later term began without its
 //! knowing, only delays it (invariant 3).
 
-use super::nas::Nas;
+use super::nas::{short, Nas};
 use crate::handoff::Handoff;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,9 @@ pub const REJECTED: &str = "state/journal/rejected";
 /// two leads ever give the same one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LeaseId {
+    /// The term it was granted in.
     pub term: u64,
+    /// Its number in that term.
     pub n: u64,
 }
 
@@ -100,11 +102,6 @@ pub fn path(key: &str) -> String {
 fn is_day(name: &str) -> bool {
     let b = name.as_bytes();
     b.len() == 10 && b[4] == b'-' && b[7] == b'-' && b.iter().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
-}
-
-/// Whether `b` is a file made and not whole yet: empty, or JSON cut short.
-fn short(b: &[u8]) -> bool {
-    b.is_empty() || serde_json::from_slice::<serde_json::Value>(b).err().is_some_and(|e| e.is_eof())
 }
 
 /// Writes `e` to the journal (create-new, whole); its key. An earlier try that left it short is

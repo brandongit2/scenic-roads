@@ -4,10 +4,10 @@
 //!
 //! - `nas`: the operations the protocol makes on the NAS, with what the SMB share guarantees and
 //!   what it doesn't (§3);
-//! - `term`: the terms, each lead's turn, a file made once with create-new (§6.1), the app rule,
-//!   and term 1 made from today's `state/build/writer`;
-//! - `records`: the build's records in one snapshot per term (§6.2), the merge of journal entries
-//!   into them, and taking up a term;
+//! - `term`: the terms, each lead's turn, a file made once with create-new (§6.1); the app rule;
+//!   term 1, made by the Mac today's `state/build/writer` names; the owner's forced takeover;
+//! - `records`: the build's records in one snapshot per term (§6.2), term 1's first made from
+//!   today's three files; the merge of journal entries into them, and taking up a term;
 //! - `journal`: the jobs' hand-offs, written by their members straight to the NAS as a log the lead
 //!   merges (§7.3), and what a member keeps telling the lead until it's acknowledged;
 //! - `handover`: handing the lead to another Mac, as pure transitions (§6.4), and the gaps after
@@ -47,12 +47,15 @@ use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
 
-/// A member as the pool names it (§5): its id, made once; its host name, only a label (renaming a
-/// Mac, or macOS adding "-2" after a clash, changes nothing); the app it runs (§6.1, the app rule).
+/// A member as the pool names it (§5).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Member {
+    /// Its id, made once (`member_id`), named in everything it writes.
     pub id: String,
+    /// Its host name: only a label (renaming a Mac, or macOS adding "-2" after a clash, changes
+    /// nothing).
     pub host: String,
+    /// The app it runs (§6.1, the app rule).
     pub app: String,
 }
 

@@ -50,6 +50,7 @@ pub struct HandingTo {
     pub term: u64,
     /// Since when it's at this stage (the lead's clock).
     pub since: u64,
+    /// Where it stands: offered, settling, or passed.
     pub stage: Stage,
 }
 

@@ -50,6 +50,7 @@ pub struct Share {
 }
 
 impl Share {
+    /// The share at `root`, the NAS project folder.
     pub fn new(root: &Path) -> Share {
         Share { root: root.to_path_buf() }
     }
@@ -162,6 +163,12 @@ impl Nas for Share {
             Err(e) => Err(e).with_context(|| format!("remove {}", p.display())),
         }
     }
+}
+
+/// Whether bytes read of a file made with create-new aren't all there: empty, or JSON cut short (its
+/// maker between its create and its bytes, or stopped there).
+pub fn short(b: &[u8]) -> bool {
+    b.is_empty() || serde_json::from_slice::<serde_json::Value>(b).err().is_some_and(|e| e.is_eof())
 }
 
 /// A NAS in memory without faults, for the modules' tests (the simulator has its own, with them).

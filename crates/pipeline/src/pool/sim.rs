@@ -1030,7 +1030,10 @@ impl Mac {
             _ => None,
         };
         let e = l.term.term;
-        let step = l.hand.step(e, &Seen { now, ask: ask.as_deref(), target: target.as_ref(), settled });
+        let step = l.hand.step(e, &Seen { now, current: self.cur.term, ask: ask.as_deref(), target: target.as_ref(), settled });
+        if step == Do::StepDown {
+            return self.step_down("a later term exists");
+        }
         if let Do::Pass { to, seq } = step {
             let b = target.filter(|b| b.member == to);
             let t = b.ok_or_else(|| anyhow::anyhow!("{to}'s heartbeat isn't readable")).and_then(|b| Term::after(&self.cur, &b.member(), &format!("handed over by {}", self.me.host), now));
@@ -1066,12 +1069,9 @@ impl Mac {
     /// A handover passed on: over once the target leads, taken back after two minutes.
     fn passing_loop(&mut self, now: u64) -> Result<()> {
         let Some(mut p) = self.passing.take() else { return Ok(()) };
-        if self.cur.term > p.term + 1 {
-            return Ok(());
-        }
         let Handover::Passed { to, .. } = p.hand.clone() else { return Ok(()) };
         let target = Beat::read(&self.sim, &to)?;
-        match p.hand.step(p.term, &Seen { now, target: target.as_ref(), ..Default::default() }) {
+        match p.hand.step(p.term, &Seen { now, current: self.cur.term, target: target.as_ref(), ..Default::default() }) {
             Do::Done => self.sim.note(|| format!("mac{} sees {to} lead term {}", self.k, p.term + 1)),
             Do::TakeBack { to } if self.cur.term == p.term + 1 => match term::claim(&self.sim, &self.cur, &self.me, &format!("taken back: {to} didn't take up"), now) {
                 Ok(Some(t)) => {
@@ -1350,9 +1350,11 @@ fn the_pool_keeps_its_invariants_through_thousands_of_schedules() {
 #[test]
 #[ignore]
 fn the_pool_keeps_its_invariants_through_a_long_run() {
-    // POOL_SIM_SEEDS seeds (100,000 by default) of four hours' faults each.
-    let n = std::env::var("POOL_SIM_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(100_000);
-    let counts = check_all(1_000_000..1_000_000 + n, Cfg { faults: 4 * 3600, end: 4 * 3600 + 1200, ..Cfg::pool() });
+    // POOL_SIM_SEEDS schedules (100,000 by default) from POOL_SIM_FROM (1,000,000) of
+    // POOL_SIM_MINUTES' faults each (240).
+    let var = |v: &str, or: u64| std::env::var(v).ok().and_then(|s| s.parse().ok()).unwrap_or(or);
+    let (from, n, faults) = (var("POOL_SIM_FROM", 1_000_000), var("POOL_SIM_SEEDS", 100_000), var("POOL_SIM_MINUTES", 240) * 60);
+    let counts = check_all(from..from + n, Cfg { faults, end: faults + 1200, ..Cfg::pool() });
     eprintln!("{counts:#?}");
 }
 
