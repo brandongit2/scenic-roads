@@ -185,9 +185,9 @@ fn prep(dir: &Path) -> Result<()> {
 // from their 1.2 m canopy height map: per cell the median and 95th-percentile tree height
 // and the share of 1 m pixels taller than 5 m. (The 1.2 m tiles themselves total ~550 GB
 // for this region.) Median height is used for occlusion, so scattered trees in a field
-// don't wall off a view; p95 gives roadside tree height.
+// don't wall off a view; p95 gives roadside tree height. (Where Meta keeps them, and the equator
+// row's other spelling: pipeline::trees::chm_urls.)
 
-const CHM10_URL: &str = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_global_v6_float_epsg4326_v3_10deg";
 const C10: usize = 40_000;
 const C10_RES: f64 = 0.00025;
 /// A square's rows read at a time (`SCENIC_CANOPY_BAND` sets another count; any gives the same
@@ -290,8 +290,9 @@ impl Chm10 {
 /// directories, not its data): one that isn't (cut short) is deleted and taken from the next source.
 /// The bands then read only the strips they need from it (Tiff), never the whole file.
 /// `read_only`: the files read where they lie (a task's worker, the NAS's store): what's there
-/// whole, else an error; nothing downloaded, written, touched or removed there.
-fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path, store: Option<&Path>, read_only: bool) -> Result<Option<File>> {
+/// whole, else an error; nothing downloaded, written, touched or removed there. `urls`: the file's
+/// spellings at Meta's (pipeline::trees::chm_urls), asked in turn.
+fn fetch_file(agent: &ureq::Agent, urls: &[String], path: &Path, store: Option<&Path>, read_only: bool) -> Result<Option<File>> {
     if read_only {
         let f = File::open(path).with_context(|| format!("{} isn't there to read", path.display()))?;
         if f.metadata()?.len() == 0 {
@@ -364,7 +365,7 @@ fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path, store: Option<&Path>,
     }
     let mut missing = 0;
     for attempt in 0..6 {
-        match agent.get(url).call() {
+        match meta_get(agent, urls) {
             Ok(mut r) => {
                 let want: Option<u64> = r.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
                 // Into a temporary file beside `path`, not memory (up to 1.2 GB), flushed. (A body cut
@@ -406,7 +407,20 @@ fn fetch_file(agent: &ureq::Agent, url: &str, path: &Path, store: Option<&Path>,
         }
         std::thread::sleep(std::time::Duration::from_millis(if missing > 0 { 5000 } else { 1000 << attempt }));
     }
-    bail!("download failed: {url}")
+    bail!("download failed: {}", urls.join(" or "))
+}
+
+/// A canopy file at Meta's under the first of its spellings (`urls`, pipeline::trees::chm_urls)
+/// that answers; a 404 or 403 (S3's for a key that isn't there) only when every spelling says so.
+fn meta_get(agent: &ureq::Agent, urls: &[String]) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    let mut none = None;
+    for url in urls {
+        match agent.get(url).call() {
+            Err(ureq::Error::StatusCode(c @ (404 | 403))) => none = Some(c),
+            r => return r,
+        }
+    }
+    Err(ureq::Error::StatusCode(none.unwrap_or(404)))
 }
 
 /// The right to download one canopy file into the NAS's store (fetch_file), given up when dropped.
@@ -565,7 +579,8 @@ fn decode_rows(read: &(dyn Fn(u64, usize) -> Result<Vec<u8>> + Sync), st: &Strip
 /// taken again (from the NAS), then the NAS's copy too (from Meta).
 struct Layer<'a> {
     agent: &'a ureq::Agent,
-    url: String,
+    /// Its spellings at Meta's (pipeline::trees::chm_urls).
+    urls: Vec<String>,
     path: PathBuf,
     store: Option<PathBuf>,
     /// Read where it lies, never taken again (fetch_file's `read_only`).
@@ -577,12 +592,12 @@ struct Layer<'a> {
 
 impl<'a> Layer<'a> {
     /// The layer's file, opened; None when Meta has none there.
-    fn open(agent: &'a ureq::Agent, url: String, path: PathBuf, store: Option<PathBuf>, read_only: bool, f: fn(u16) -> u8) -> Result<Option<Layer<'a>>> {
+    fn open(agent: &'a ureq::Agent, urls: Vec<String>, path: PathBuf, store: Option<PathBuf>, read_only: bool, f: fn(u16) -> u8) -> Result<Option<Layer<'a>>> {
         let mut taken = 0;
         loop {
-            let Some(file) = fetch_file(agent, &url, &path, store.as_deref(), read_only)? else { return Ok(None) };
+            let Some(file) = fetch_file(agent, &urls, &path, store.as_deref(), read_only)? else { return Ok(None) };
             match canopy_tiff(file) {
-                Ok(tiff) => return Ok(Some(Layer { agent, url, path, store, read_only, f, tiff, taken })),
+                Ok(tiff) => return Ok(Some(Layer { agent, urls, path, store, read_only, f, tiff, taken })),
                 Err(e) => damaged(&path, store.as_deref(), read_only, &mut taken, e)?,
             }
         }
@@ -598,7 +613,7 @@ impl<'a> Layer<'a> {
             };
             damaged(&self.path, self.store.as_deref(), self.read_only, &mut self.taken, e)?;
             // (Bands before this one have used the square: found missing now, it can't be passed over.)
-            let file = fetch_file(self.agent, &self.url, &self.path, self.store.as_deref(), self.read_only)?.with_context(|| format!("{}: Meta has none there now", self.path.display()))?;
+            let file = fetch_file(self.agent, &self.urls, &self.path, self.store.as_deref(), self.read_only)?.with_context(|| format!("{}: Meta has none there now", self.path.display()))?;
             got = canopy_tiff(file).and_then(|t| {
                 self.tiff = t;
                 self.tiff.read(w, self.f)
@@ -860,12 +875,12 @@ fn canopy(dir: &Path) -> Result<()> {
             continue;
         }
         let rows = row1 - row0;
-        let name = |st: &str| format!("meta_chm_lat={top}.0_lon={left}.0_{st}.tif");
+        let name = |st: &str| pipeline::trees::chm_name(top, left, st);
         let height: fn(u16) -> u8 = |v| ((v as u32 + 50) / 100).min(254) as u8;
         let share: fn(u16) -> u8 = |v| ((v as u32).min(1000) * 255 / 1000) as u8;
         let layers: Vec<Option<Layer>> = [("median", height), ("p95", height), ("cover5m", share)]
             .par_iter()
-            .map(|&(st, f)| Layer::open(&agent, format!("{CHM10_URL}/{}", name(st)), cache.join(name(st)), store.as_ref().map(|s| s.join(name(st))), read_only, f))
+            .map(|&(st, f)| Layer::open(&agent, pipeline::trees::chm_urls(&name(st)), cache.join(name(st)), store.as_ref().map(|s| s.join(name(st))), read_only, f))
             .collect::<Result<_>>()?;
         let Ok([Some(median), Some(p95), Some(cover)]) = <[Option<Layer>; 3]>::try_from(layers) else {
             pb.println(format!("canopy {top},{left}: no data"));
@@ -1155,7 +1170,7 @@ mod tests {
             let len = f.metadata().unwrap().len();
             read_at(f, len, 0, len as usize).unwrap()
         };
-        let never = "http://127.0.0.1:9/never";
+        let never: &[String] = &["http://127.0.0.1:9/never".to_string()];
         // The NAS's copy, copied here (this one, cut short, deleted first); then the copy here.
         std::fs::write(store.join("a.tif"), &b).unwrap();
         std::fs::write(cache.join("a.tif"), &b[..b.len() - 1]).unwrap();
@@ -1185,7 +1200,7 @@ mod tests {
                 s.write_all(&body[..if cut { body.len() / 2 } else { body.len() }]).unwrap();
             }
         });
-        let f = fetch_file(&agent, &url, &cache.join("c.tif"), Some(&store.join("c.tif")), false).unwrap().unwrap();
+        let f = fetch_file(&agent, std::slice::from_ref(&url), &cache.join("c.tif"), Some(&store.join("c.tif")), false).unwrap().unwrap();
         server.join().unwrap();
         assert_eq!(whole(&f), b);
         assert_eq!(std::fs::read(cache.join("c.tif")).unwrap(), b);
@@ -1206,11 +1221,46 @@ mod tests {
         std::fs::write(store.join("d.tif"), &b[..b.len() - 1]).unwrap();
         assert!(fetch_file(&agent, never, &store.join("d.tif"), None, true).is_err());
         assert!(store.join("d.tif").exists(), "a copy cut short is left to the build Mac");
-        assert!(fetch_file(&agent, &url, &store.join("e.tif"), None, true).is_err());
+        assert!(fetch_file(&agent, std::slice::from_ref(&url), &store.join("e.tif"), None, true).is_err());
         assert!(!store.join("e.tif").exists());
         assert_eq!(mtime(&a), at, "not touched");
         let mut taken = 0;
         assert!(damaged(&a, None, true, &mut taken, anyhow::anyhow!("bad strip")).is_err());
         assert!(a.exists() && taken == 0);
+    }
+
+    #[test]
+    fn a_file_asked_for_under_each_of_its_spellings() {
+        // (Meta's equator row: our name, then `lat=-0.0`: pipeline::trees::chm_urls.) The first
+        // isn't there (404), the second is: downloaded from it, into the store and here.
+        let d = tempfile::tempdir().unwrap();
+        let (path, store) = (d.path().join("f.tif"), d.path().join("store-f.tif"));
+        let agent: ureq::Agent = ureq::Agent::config_builder().proxy(None).build().into();
+        let b = tiff(5, 7, 3);
+        let srv = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = srv.local_addr().unwrap();
+        let urls = [format!("http://{at}/lat=0.0.tif"), format!("http://{at}/lat=-0.0.tif")];
+        let body = b.clone();
+        let server = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for _ in 0..2 {
+                let (mut s, _) = srv.accept().unwrap();
+                let (mut req, mut buf) = (Vec::new(), [0u8; 1024]);
+                while !req.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = s.read(&mut buf).unwrap();
+                    assert!(n > 0);
+                    req.extend_from_slice(&buf[..n]);
+                }
+                if req.starts_with(b"GET /lat=0.0.tif ") {
+                    s.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                } else {
+                    s.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).unwrap();
+                    s.write_all(&body).unwrap();
+                }
+            }
+        });
+        assert!(fetch_file(&agent, &urls, &path, Some(&store), false).unwrap().is_some());
+        server.join().unwrap();
+        assert_eq!((std::fs::read(&path).unwrap(), std::fs::read(&store).unwrap()), (b.clone(), b));
     }
 }

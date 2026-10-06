@@ -9,7 +9,7 @@
 //!   by dem/leaftype.py (`--make`), which fetches the EEA's chunks or reprojects NALCMS, and says
 //!   how far it is; with none to make, nothing is run.
 
-use super::{chm_name, leaf_name, CHM10_URL};
+use super::{chm_name, chm_urls, leaf_name};
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
@@ -63,7 +63,7 @@ fn fetch_once(store: &Path, kept: &Path, coming: &dyn Fn(f64)) -> Result<()> {
                 f.write_all(format!("{} {}", crate::agent::cond::host(), std::process::id()).as_bytes()).ok();
                 drop(f);
                 let name = kept.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                let r = download(&format!("{CHM10_URL}/{name}"), kept, coming);
+                let r = download(&chm_urls(&name), kept, coming);
                 std::fs::remove_file(&lock).ok();
                 r?;
             }
@@ -94,13 +94,14 @@ fn fetch_once(store: &Path, kept: &Path, coming: &dyn Fn(f64)) -> Result<()> {
     Ok(())
 }
 
-/// `url` into `path` (by a temporary name, flushed), whole: a body shorter than its Content-Length,
-/// or not a whole TIFF, is tried again. An empty file when Meta has none (404, or S3's 403 for a key
-/// that isn't there), so it says twice, a moment apart. Anything else (writing the file on the NAS
+/// The file at `urls` (its spellings at Meta's, `chm_urls`: each asked in turn) into `path` (by a
+/// temporary name, flushed), whole: a body shorter than its Content-Length, or not a whole TIFF, is
+/// tried again. An empty file when Meta has none (404, or S3's 403 for a key that isn't there, under
+/// every spelling), so it says twice, a moment apart. Anything else (writing the file on the NAS
 /// too) is tried six times, then fails. `coming` is told how much has come (0–1), at most once a
 /// second.
 #[cfg(not(target_os = "wasi"))]
-fn download(url: &str, path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
+fn download(urls: &[String], path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
     use std::io::{Read, Write};
     // (A square is up to 2 GB: two hours for it, so it comes at 0.3 MB/s too.)
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -115,22 +116,30 @@ fn download(url: &str, path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
     let mut last = String::new();
     for attempt in 0..6u32 {
         let got = (|| -> Result<Option<String>> {
-            let mut r = match agent.get(url).call() {
-                Ok(r) => r,
-                Err(e) => return Ok(Some(e.to_string())),
+            // (The first spelling Meta has; none there only when each says so.)
+            let mut found = None;
+            for url in urls {
+                match agent.get(url).call() {
+                    Ok(r) if matches!(r.status().as_u16(), 403 | 404) => {}
+                    Ok(r) => {
+                        found = Some(r);
+                        break;
+                    }
+                    Err(e) => return Ok(Some(e.to_string())),
+                }
+            }
+            let Some(mut r) = found else {
+                missing += 1;
+                if missing == 2 {
+                    if let Err(e) = std::fs::write(path, b"") {
+                        return Ok(Some(format!("{}: {e}", path.display())));
+                    }
+                    return Ok(None);
+                }
+                return Ok(Some("status 404".into()));
             };
             match r.status().as_u16() {
                 200 => {}
-                403 | 404 => {
-                    missing += 1;
-                    if missing == 2 {
-                        if let Err(e) = std::fs::write(path, b"") {
-                            return Ok(Some(format!("{}: {e}", path.display())));
-                        }
-                        return Ok(None);
-                    }
-                    return Ok(Some(format!("status {}", r.status().as_u16())));
-                }
                 c => return Ok(Some(format!("status {c}"))),
             }
             let want: Option<u64> = r.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok());
@@ -187,12 +196,12 @@ fn download(url: &str, path: &Path, coming: &dyn Fn(f64)) -> Result<()> {
         std::fs::remove_file(&tmp).ok();
         std::thread::sleep(std::time::Duration::from_secs(if missing > 0 { 5 } else { 1 << attempt }));
     }
-    bail!("download failed: {url}: {last}")
+    bail!("download failed: {}: {last}", urls.join(" or "))
 }
 
 #[cfg(target_os = "wasi")]
-fn download(url: &str, _path: &Path, _coming: &dyn Fn(f64)) -> Result<()> {
-    bail!("{url}: not in the cache, and there's no network here")
+fn download(urls: &[String], _path: &Path, _coming: &dyn Fn(f64)) -> Result<()> {
+    bail!("{}: not in the cache, and there's no network here", urls.join(" or "))
 }
 
 /// The leaf-type sources' boxes (west, south, east, north): a square outside both has none.

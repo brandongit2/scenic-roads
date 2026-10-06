@@ -1872,6 +1872,16 @@ At each phase's end an Opus agent reviews the work against this plan.
    the units near them stage, hi tiles from an earlier run above zoomed-out ones made otherwise
    (the units' keys see any change there).
 
+5. **Meta's canopy squares on the equator row, kept as "none"** (§6, Global-source layers): Meta
+   names most of that row's files `lat=-0.0`, which the canopy downloads ask for since 2026-10-06
+   (`trees::chm_urls`), but before, under `lat=0.0` alone, two squares were found missing and kept
+   as empty files, Meta's "none", which is remembered for good: `sources/canopy/` holds
+   `meta_chm_lat=0.0_lon=100.0_{cover5m,p95,median}.tif` and `…_lon=-60.0_…` (Singapore's and
+   French Guiana's units asked, their grids reaching past the equator; each Mac's canopy cache has
+   copies). Their roads are 130 km and more north of it, beyond what any road's values read of
+   the canopy, so no road's values differ. Fix: remove the six files, on the NAS and in both Macs'
+   caches, before any region reaches south of the equator.
+
 ## 11. Risks and checks
 
 - **NAS throughput:**

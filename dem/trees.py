@@ -434,24 +434,45 @@ def progress(done: float, total: int, unit: str) -> None:
     print(f"progress: {str(d).removesuffix('.0')}/{total} {unit}", file=sys.stderr, flush=True)
 
 
-def download(url: str, path: Path, said=None) -> None:
-    """`url` into `path` (by a temporary name, flushed), whole: a body shorter than its
-    Content-Length (a connection cut), or not a whole TIFF, is tried again. An empty file when the
-    server has none (404, or S3's 403 for a key that isn't there), so it says twice, a moment apart
-    (it's remembered for good), as scenic-metrics marks it. Anything else is retried, then fails.
-    `said`, when given, is told how much of it has come (0–1), at most once a second."""
+def chm_urls(name: str) -> list[str]:
+    """Where Meta keeps a canopy square's file (kept here as `name`): its URL, and in the equator's
+    row (top 0) its other spelling after it. Meta names most of that row's files `lat=-0.0` (the
+    kinds of one square split between the two spellings at lon −100 and 0), so a file is asked for
+    under one name, then the other: none there only when both say so (pipeline::trees::chm_urls)."""
+    urls = [f"{CHM10_URL}/{name}"]
+    if name.startswith("meta_chm_lat=0.0_"):
+        urls.append(f"{CHM10_URL}/meta_chm_lat=-0.0_{name.removeprefix('meta_chm_lat=0.0_')}")
+    return urls
+
+
+def download(urls: list[str], path: Path, said=None) -> None:
+    """The file at `urls` (its spellings, `chm_urls`: each asked in turn) into `path` (by a
+    temporary name, flushed), whole: a body shorter than its Content-Length (a connection cut), or
+    not a whole TIFF, is tried again. An empty file when the server has none (404, or S3's 403 for a
+    key that isn't there, under every spelling), so it says twice, a moment apart (it's remembered
+    for good), as scenic-metrics marks it. Anything else is retried, then fails. `said`, when given,
+    is told how much of it has come (0–1), at most once a second."""
     import os
     import urllib.error
     import urllib.request
 
     import whole
 
+    def first(urls: list[str]):
+        # The first spelling the server has; its 403 or 404 only when it's the last.
+        for k, u in enumerate(urls):
+            try:
+                return urllib.request.urlopen(urllib.request.Request(u, headers={"User-Agent": UA}), timeout=600)
+            except urllib.error.HTTPError as e:
+                if e.code not in (403, 404) or k == len(urls) - 1:
+                    raise
+
     tmp = whole.tmp_name(path)
     last: Exception | None = None
     missing = 0
     for attempt in range(6):
         try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=600) as r, tmp.open("wb") as f:
+            with first(urls) as r, tmp.open("wb") as f:
                 want = int(r.headers.get("Content-Length", "-1"))
                 n, at = 0, time.monotonic()
                 while b := r.read(16 << 20):
@@ -480,7 +501,7 @@ def download(url: str, path: Path, said=None) -> None:
             last = e
         tmp.unlink(missing_ok=True)
         time.sleep(5 if missing else 2 ** attempt)
-    raise RuntimeError(f"download failed: {url}: {last}")
+    raise RuntimeError(f"download failed: {' or '.join(urls)}: {last}")
 
 
 def canopy_square(chm: Path, store: Path, top: int, left: int, said=None) -> bool:
@@ -533,7 +554,7 @@ def canopy_square(chm: Path, store: Path, top: int, left: int, said=None) -> boo
             os.write(fd, f"{socket.gethostname()} {os.getpid()}".encode())
             os.close(fd)
             try:
-                download(f"{CHM10_URL}/{kept.name}", kept, coming)
+                download(chm_urls(kept.name), kept, coming)
             finally:
                 lock.unlink(missing_ok=True)
 

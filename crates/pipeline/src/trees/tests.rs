@@ -156,6 +156,10 @@ fn geometry_as_trees_py() {
     assert_eq!(squares_of(tile_bounds(8, 130, 86)), [(60, 0), (50, 0)]);
     assert_eq!(squares_of([-0.5, 9.5, 0.5, 10.5]), [(20, -10), (20, 0), (10, -10), (10, 0)]);
     assert_eq!((chm_name(50, -10, "p95"), leaf_name(50, -10)), ("meta_chm_lat=50.0_lon=-10.0_p95.tif".to_string(), "lat50_lon-10.tif".to_string()));
+    // Meta's names: the file's own, and in the equator's row its `lat=-0.0` spelling after it.
+    assert_eq!(chm_urls(&chm_name(10, 30, "p95")), [format!("{CHM10_URL}/meta_chm_lat=10.0_lon=30.0_p95.tif")]);
+    assert_eq!(chm_urls(&chm_name(0, 30, "cover5m")), [format!("{CHM10_URL}/meta_chm_lat=0.0_lon=30.0_cover5m.tif"), format!("{CHM10_URL}/meta_chm_lat=-0.0_lon=30.0_cover5m.tif")]);
+    assert_eq!(chm_urls(&chm_name(-10, 30, "p95")).len(), 1);
     // A square's pixel for a latitude and longitude, none outside it.
     let p = indices(50, 0, CHM_RES, &[-0.0001, 0.0, 9.99999, 10.0], &[49.9999, 40.0001, 40.0, 50.0]);
     assert_eq!(p.n, 40000);

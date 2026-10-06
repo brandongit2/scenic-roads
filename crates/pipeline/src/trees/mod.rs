@@ -104,6 +104,20 @@ pub fn chm_name(top: i32, left: i32, kind: &str) -> String {
     format!("meta_chm_lat={top}.0_lon={left}.0_{kind}.tif")
 }
 
+/// Where Meta keeps a canopy square's file (named as `chm_name` names it, which is how it's kept
+/// here): its URL, and in the equator's row (top 0) its other spelling after it. Meta names most of
+/// that row's files `lat=-0.0` (25 of its 29 squares; at lon −100, 0, 70 and 90 some or all of a
+/// square's files are `lat=0.0`, the kinds of one square split between the two at −100 and 0), so a
+/// file is asked for under one name, then the other: none there only when both say so. (An empty
+/// file kept from before, Meta's "none" under the one name, still says none: docs/plan.md §10.)
+pub fn chm_urls(name: &str) -> Vec<String> {
+    let mut urls = vec![format!("{CHM10_URL}/{name}")];
+    if let Some(rest) = name.strip_prefix("meta_chm_lat=0.0_") {
+        urls.push(format!("{CHM10_URL}/meta_chm_lat=-0.0_{rest}"));
+    }
+    urls
+}
+
 /// A leaf-type square's file.
 pub fn leaf_name(top: i32, left: i32) -> String {
     format!("lat{top}_lon{left}.tif")
