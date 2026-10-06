@@ -36,8 +36,13 @@
 //!                                "lo Q" (road and rail lo packs)
 //!   buildings [--dem dir] [--workers n]  the world's roadside buildings (pipeline::buildtiles):
 //!                                Overture's release, in z8 tiles, onto the NAS with their index
-//!   trees <Q …> [--pass d] [--dem dir] [--chm dir]  the tree cover layers of z3 tiles Q
-//!                                (pipeline::treepacks), clipped to the coverage
+//!   trees <T …> [--pass d] [--dem dir] [--chm dir] [--expect-same T,…]  the tree cover layers
+//!                                (pipeline::treepacks), clipped to the coverage: of z6 tiles T (a
+//!                                piece: its hi packs and its mid; --expect-same, those made again
+//!                                as the manifest has them, else it fails, uploading nothing), or a
+//!                                z3 tile's whole (by hand, and a lease of the old scheme)
+//!   trees-lo <Q …> [--pass d]    z3 tiles Q's zoomed-out tree cover (lo packs) from their pieces'
+//!                                mids
 //!   trees-coverage <Q> --out <file> [--pass d]  the coverage the trees program reads for z3 tile
 //!                                Q (its cov.json), to run it by hand; nothing written to the NAS
 //!   reach [--pass d] [U …]       every unit's reach (pipeline::reach): the boxes of its piece's
@@ -322,30 +327,59 @@ fn main() -> Result<()> {
             pipeline::buildtiles::build(&mut out, &dem, &scratch, workers)?;
         }
         "trees" => {
-            // trees <z3 tile …> [--pass d] [--dem dir] [--chm dir]: the tree cover layers there.
+            // trees <tile …> [--pass d] [--dem dir] [--chm dir] [--expect-same T,…]: the tree cover
+            // of z6 tiles (pieces: their hi packs and mids; pipeline::treepacks::build_piece), or a
+            // z3 tile's whole (by hand, and a lease of the old scheme: treepacks::build_with).
+            // `--expect-same`: those z6 tiles made again as they are (their mids backfilled), each
+            // pack as the manifest has it, else the job fails, uploading nothing for it.
             let cov = coverage_of(&out, &args)?;
             let dem = std::fs::canonicalize(opt(&args, "--dem").unwrap_or_else(|| "dem".into()))?;
             let chm = PathBuf::from(opt(&args, "--chm").unwrap_or_else(|| "data/cache/chm10".into()));
             let workers: usize = std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or(8);
-            let qs: Vec<Unit> = positional(&args).iter().map(|t| Unit::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))).collect::<Result<_>>()?;
-            // Its parts, for the status (as terrain's): each area's tree cover mapped (the trees
+            let ts: Vec<Unit> = positional(&args).iter().map(|t| Unit::parse(t).filter(|u| u.z == 3 || u.z == 6).with_context(|| format!("not a z3 or z6 tile: {t}"))).collect::<Result<_>>()?;
+            let same: BTreeSet<String> = opt(&args, "--expect-same").map(|v| v.split(',').filter(|t| !t.is_empty()).map(String::from).collect()).unwrap_or_default();
+            let named: BTreeSet<String> = ts.iter().filter(|u| u.z == 6).map(|u| u.slash()).collect();
+            anyhow::ensure!(same.is_subset(&named), "--expect-same names z6 tiles not given: {:?}", same.difference(&named).collect::<Vec<_>>());
+            // Its parts, for the status (as terrain's): each tile's tree cover mapped (the trees
             // program, which says how far it is), then written.
-            let n = qs.len();
+            let n = ts.len();
             let of = |k: usize| if n > 1 { format!(" ({} of {n})", k + 1) } else { String::new() };
             let mut names: Vec<String> = Vec::new();
-            for k in 0..n {
-                names.push(format!("Mapping the area's tree cover{}", of(k)));
-                names.push(format!("Writing the area's tree cover to the NAS{}", of(k)));
+            for (k, u) in ts.iter().enumerate() {
+                let what = if u.z == 3 { "the area's".to_string() } else { format!("{}'s", u.slash()) };
+                names.push(format!("Mapping {what} tree cover{}", of(k)));
+                names.push(format!("Writing {what} tree cover to the NAS{}", of(k)));
             }
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
-            for (k, &q) in qs.iter().enumerate() {
+            for (k, &u) in ts.iter().enumerate() {
                 pipeline::control::safe_point("trees");
                 pipeline::agent::jobs::part(2 * k, &names);
                 let t = cost_start();
-                pipeline::treepacks::build_with(&mut out, &cov, q, &dem, &chm, &scratch, workers, &|| pipeline::agent::jobs::part(2 * k + 1, &names))?;
-                pipeline::control::done("trees", &q.slash());
-                note_cost("trees", &q.slash(), t);
+                let writing = || pipeline::agent::jobs::part(2 * k + 1, &names);
+                if u.z == 3 {
+                    pipeline::treepacks::build_with(&mut out, &cov, u, &dem, &chm, &scratch, workers, &writing)?;
+                } else {
+                    pipeline::treepacks::build_piece(&mut out, &cov, u, &dem, &chm, &scratch, workers, same.contains(&u.slash()), &writing)?;
+                }
+                pipeline::control::done("trees", &u.slash());
+                note_cost("trees", &u.slash(), t);
             }
+        }
+        "trees-lo" => {
+            // trees-lo <z3 tile …> [--pass d]: each z3 tile's zoomed-out tree cover (its lo packs)
+            // assembled from its pieces' mids (pipeline::treepacks::build_lo).
+            let cov = coverage_of(&out, &args)?;
+            let workers: usize = std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or(8);
+            let qs: Vec<Unit> = positional(&args).iter().map(|t| Unit::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))).collect::<Result<_>>()?;
+            for (k, &q) in qs.iter().enumerate() {
+                pipeline::control::safe_point("trees-lo");
+                pipeline::agent::jobs::report(k as u64, qs.len() as u64, "areas");
+                let t = cost_start();
+                pipeline::treepacks::build_lo(&mut out, &cov, q, &scratch, workers)?;
+                pipeline::control::done("trees-lo", &q.slash());
+                note_cost("trees-lo", &q.slash(), t);
+            }
+            pipeline::agent::jobs::report(qs.len() as u64, qs.len() as u64, "areas");
         }
         "trees-coverage" => {
             // trees-coverage <z3 tile> --out <file> [--pass d]: the coverage the trees program reads
