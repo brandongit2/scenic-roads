@@ -1309,7 +1309,8 @@ fn marks_step(out: &mut Out, args: &[String]) -> Result<()> {
 /// candidates' Wikidata items (dem/items.py, per pass epoch), as sources/items/<date>/{facts,views}.
 /// What items.py fetched is kept on the NAS too (pipeline::answers:
 /// sources/items/<date>/answers.tar.zst), made one with its cache here as it starts, and sent there
-/// as it ends, finished or not.
+/// as it ends, finished or not, or at the next start when it was stopped (the agent's SIGTERM ends
+/// it at once).
 fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
     let cov = coverage_of(out, args)?;
@@ -1345,11 +1346,11 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     let mut c = std::process::Command::new("uv");
     c.current_dir(&dem).env("SCENIC_PARTS", serde_json::to_string(PARTS)?).env("SCENIC_PAGEVIEWS_STORE", out.root().join("sources/pageviews")).args(["run", "python", "items.py", "--qids"]).arg(&qfile).arg("--epoch").arg(&date).arg("--cache").arg(&cache).arg("--out").arg(&dir);
     let st = c.status().context("run items.py")?;
-    // What it fetched, on the NAS whether or not it finished (else at the next run's start).
+    // What it fetched, on the NAS whether or not it finished (stopped, at the next start).
     match kept.keep(&answers(), &scratch.join("answers")) {
         Ok(true) => eprintln!("items: the pass's answers sent to the NAS"),
         Ok(false) => {}
-        Err(e) => eprintln!("items: the pass's answers not sent to the NAS now ({e:#}); the next run sends them"),
+        Err(e) => eprintln!("items: the pass's answers not sent to the NAS now ({e:#}); the next start sends them"),
     }
     anyhow::ensure!(st.success(), "items.py failed: {st}");
     parts.start(4);
@@ -1370,7 +1371,8 @@ fn items_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 /// facts and pageview months seed the caches (`sources/registers/legacy-seeds`); the pageview months
 /// are the items job's cache, the epoch's months; the layers' English names use today's names table.
 /// No stops & sights (the marks job's). Its outputs go to `work/heritage/<date>/<file>`. What the
-/// chain fetched goes to the NAS as it ends, finished or not (`Epoch`).
+/// chain fetched goes to the NAS as it ends, finished or not, or at the next start when it was
+/// stopped (`Epoch`).
 fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::heritage::{base_logical, cover_tiles, tiles_geojson, COVER_Z};
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
@@ -1400,8 +1402,9 @@ fn heritage_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     parts.start(0);
     stage(0, 5, "reading the registers' snapshot and the heritage sites");
     let epoch = heritage_epoch(out, &date, &cache, scratch)?;
-    // As it ends, however it ends: the named places' export gone (made again each run, 3 GB), and
-    // what the chain fetched kept on the NAS.
+    // As it ends, finished or failed (stopped by a signal, it doesn't run: the next start sends what
+    // it fetched): the named places' export gone (made again each run, 3 GB), and what the chain
+    // fetched kept on the NAS.
     let _end = OnEnd(|| {
         std::fs::remove_file(epoch.dir.join("osm/named.geojsonseq")).ok();
         epoch.keep(scratch);
@@ -1614,18 +1617,19 @@ struct Epoch {
 }
 
 impl Epoch {
-    /// What the chain fetched sent to the NAS (as a step ends, finished or not; else the next run
-    /// sends it).
+    /// What the chain fetched sent to the NAS (as a step ends, finished or not; a step stopped by a
+    /// signal doesn't run this, and the next start sends it).
     fn keep(&self, scratch: &Path) {
         match self.kept.keep(&pipeline::answers::heritage_files(&self.dir, &self.snap), &scratch.join("answers")) {
             Ok(true) => eprintln!("heritage: the pass's answers sent to the NAS"),
             Ok(false) => {}
-            Err(e) => eprintln!("heritage: the pass's answers not sent to the NAS now ({e:#}); the next run sends them"),
+            Err(e) => eprintln!("heritage: the pass's answers not sent to the NAS now ({e:#}); the next start sends them"),
         }
     }
 }
 
-/// Runs its function when dropped: as a step ends, however it ends.
+/// Runs its function when dropped: as a step ends, finished or failed (not when a signal stops
+/// it: scenic-build has no handler).
 struct OnEnd<F: FnMut()>(F);
 
 impl<F: FnMut()> Drop for OnEnd<F> {
@@ -1664,7 +1668,7 @@ fn heritage_epoch(out: &Out, date: &str, cache: &Path, scratch: &Path) -> Result
             std::fs::remove_dir_all(e.path()).ok();
         }
     }
-    let e = Epoch { kept: pipeline::answers::heritage(out.root(), &epoch, date, &id), dir: epoch, snap };
+    let e = Epoch { kept: pipeline::answers::heritage(out.root(), &epoch, &snap, date, &id), dir: epoch, snap };
     eprintln!("heritage: the pass's answers {}", e.kept.sync(&pipeline::answers::heritage_files(&e.dir, &e.snap), &scratch.join("answers"))?.words());
     Ok(e)
 }
@@ -1739,7 +1743,8 @@ fn heritage_script(root: &Path, dem: &Path, nas: &Path, script: &str, args: &[&s
 /// tiles within 20 km of the coverage, on the registers' snapshot and the pass's protected areas
 /// (its `areas` set within those tiles, as today's areas.geojsonseq). Its outputs go to
 /// `work/heritage/<date>/base/<file>`, and per z6 tile the sites' positions and the area polygons.
-/// What heritage.py fetched goes to the NAS as it ends, finished or not (`Epoch`).
+/// What heritage.py fetched goes to the NAS as it ends, finished or not, or at the next start when
+/// it was stopped (`Epoch`).
 fn heritage_sites_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::heritage::{base_logical, cover_tiles, put_slices, slice_areas, slice_sites, tiles_bytes, tiles_geojson, COVER_Z};
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;

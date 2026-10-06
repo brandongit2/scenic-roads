@@ -299,10 +299,21 @@ record changes back through the build Mac's coordinator, which journals them for
     has otherwise, but those the chain makes again each run). A step adds to them in its Mac's
     cache as it fetches, and keeps them on the NAS as one archive a pass
     (`sources/items/<date>/answers.tar.zst`, `heritage-<id>.tar.zst`), written whole as the step
-    starts when the NAS hasn't what the Mac has, and as it ends, finished or not, when it fetched
-    more: ~10 MB for the 2026-09-28 pass. A Mac without them, or whose are older than the NAS's
-    (another Mac ran the step since), takes the NAS's; the first run seeds the NAS from the Mac's.
-    A new pass asks again (the items' everything, the heritage chain what the snapshot lacks).
+    starts when the NAS hasn't what the Mac has, and as it ends, finished or not, when it changed
+    them (a step stopped, as the agent stops one, sends them at its next start): ~10 MB for the
+    2026-09-28 pass. Which counts as a step starts: the Mac's while the NAS's archive is the one
+    they last matched (a mark beside them says which), so what it fetched since goes up, and a
+    file deleted there by hand (cut short, or facts to ask for again) stays deleted, the archive
+    sent without it; the NAS's set when it isn't that one (another Mac ran the step since, or the
+    Mac has none yet), made one with the Mac's: what only one side changed since, that side's; a
+    file both changed, merged when it's answers kept by key (JSON lines by their item, a cache's
+    JSON entries, the days fetched), else the NAS's set taken whole. As a step ends, the same,
+    but never over another writer's archive (the heritage-sites and heritage jobs share one; once
+    the lead can move, another Mac may run a step meanwhile): merged where it can be, else left,
+    for the next start to take. An archive that doesn't read whole is moved aside
+    (`<archive>.bad-<unix seconds>`), not written over. The build Mac's agent, as it starts,
+    sends the pass's answers its cache has where the NAS lacks their archive. A new pass asks
+    again (the items' everything, the heritage chain what the snapshot lacks).
   - **Whole:** each copy is written by a temporary name (the Mac's and the process's), flushed, and
     its length checked before the rename (raw terrain tiles excepted: written straight to their
     names), and checked whole when read (`pipeline::whole`,
@@ -1593,8 +1604,9 @@ everything is rebuilt.
 - the app also carries `dem/` (the Python steps), Scenic.app (the menu bar item), `web/` and
   `fonts/`. The Python steps run in `dem/.venv` beside them, which uv makes from the app's lock file
   (`uv.lock`) the first time a step runs on a Mac (from uv's own cache of the packages, else PyPI),
-  the heritage chain's in its stand-in root too: nothing of it is on the NAS. (The agent finds uv,
-  and Homebrew's osmium, zstd and Java 21, on the PATH `tools/app/install.sh` gives it.)
+  the heritage chain's in its stand-in root too: nothing of it is on the NAS (where it's made is a
+  gap: §10). (The agent finds uv, and Homebrew's osmium, zstd and Java 21, on the PATH
+  `tools/app/install.sh` gives it.)
 
 ## 9. Sizes
 
@@ -1757,6 +1769,11 @@ At each phase's end an Opus agent reviews the work against this plan.
        (records.rs:81, `Records::load`);
      - L7, a gone Mac's entries it never told a lead of wait for the next take-up, the only listing
        of the journal (records.rs:274).
+2. **The Python steps' environment is made inside the app's version folder**
+   (`app/<version>/dem/.venv`, by uv at a Mac's first Python step: §8, Programs), which every
+   Python step shares: the published copy isn't left as published (the updater checks a version's
+   files only as it copies them), and each version makes its own (~380 MB, kept with its version).
+   Fix: one environment per lock file beside the app, made as an app is installed.
 
 ## 11. Risks and checks
 
@@ -1834,5 +1851,9 @@ At each phase's end an Opus agent reviews the work against this plan.
   writes as it starts and ends. They were on the build Mac alone, so another Mac leading the build
   (docs/pool.md) or a lost disk would have asked again (the 2026-09-28 pass's 59,000 items took
   about 37 minutes of queries), and the owner wants nothing fetched twice without a good reason.
-  The heritage scripts run in the app's Python environment, as the other steps do: theirs was the
-  only one kept in the cache.
+  After its review: a file deleted by hand stays deleted (one cut short would otherwise come back
+  from the NAS, the job failing again), a step's end never writes over another writer's archive
+  (merged by key where it can be: once the lead moves, two Macs' runs can overlap), and the build
+  Mac's agent sends what the NAS lacks as it starts (the next run may be the next pass's, months
+  away). The heritage scripts run in the app's Python environment, as the other steps do: theirs
+  was the only one kept in the cache.

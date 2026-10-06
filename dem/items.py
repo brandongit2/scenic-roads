@@ -19,8 +19,9 @@ under --cache, appended a chunk at a time (a run stopped midway keeps what it fe
 The first three are kept on the NAS too (sources/items/<epoch>/answers.tar.zst, with
 kept-<epoch>.json here saying which of its archives they last matched: scenic-build's items step,
 pipeline::answers), so a run on another Mac, or here after the cache is lost, asks only about items
-not seen yet. Older epochs' files, and months older than the epoch's (here: the NAS keeps its
-indexes), go at the end of a run.
+not seen yet. To ask Wikidata again, delete facts-<epoch>.jsonl (or wp-) here: the deletion goes to
+the NAS with the next run, which asks about every item again. Older epochs' files, and months older
+than the epoch's (here: the NAS keeps its indexes), go at the end of a run.
 The four months are the last November, February, May and August whose dumps are out by the epoch
 (ended at least 20 days before it), pinned for it.
 

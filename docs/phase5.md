@@ -455,9 +455,11 @@ lies near it.
     pageview month is cached only when curl, bzip2 and grep all finished cleanly.
   - **The answers are kept on the NAS too** (`sources/items/<d>/answers.tar.zst`,
     pipeline::answers): the run makes them one with the Mac's as it starts (the Mac's sent when the
-    NAS hasn't them; the NAS's taken when the Mac hasn't them, or has an older set than another
-    Mac's run left there) and sends what it fetched as it ends, finished or not. So the build's
-    lead moving to another Mac, or a lost cache, asks only about items not seen yet.
+    NAS hasn't them, or has the set they last matched: a fact file deleted by hand, to ask again,
+    stays deleted; the NAS's set when it isn't that one, merged with the Mac's: plan §4,
+    Downloads) and sends what it fetched as it ends, finished or not, or at its next start when it
+    was stopped. So the build's lead moving to another Mac, or a lost cache, asks only about items
+    not seen yet.
   - **Output:** `sources/items/<d>/{facts,views,meta}`. meta holds the months, and the first and last
     days anything was fetched (QLever's index is whatever it serves those days).
   - **Requests:** User-Agent "road-elevations/0.1 (personal offline map)" (no contact address:
@@ -515,8 +517,9 @@ part, layers.py) runs unchanged.
   - What the scripts fetched for the pass (the files of its copy the snapshot lacks or has
     otherwise, but those the chain makes again each run) is kept on the NAS too, as the items
     job's answers are (`sources/items/<d>/heritage-<id>.tar.zst`): taken over a fresh copy of the
-    snapshot on a Mac without it, sent as each heritage job ends, finished or not. The heritage
-    job's export of the pass's named places (3 GB) goes as it ends: each run makes it again.
+    snapshot on a Mac without it, sent as each heritage job ends, finished or not, or at its next
+    start when it was stopped. The heritage job's export of the pass's named places (3 GB) goes as
+    it ends (finished or failed): each run makes it again.
 - **`heritage-sites`** runs after slope, before the units.
   - **The cover:** the z12 tiles within 20 km of the coverage (exact, `Coverage::meets_rect`). It
     replaces today's analysis grid (z11) through heritage.py's `--tiles`.

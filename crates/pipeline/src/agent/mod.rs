@@ -115,6 +115,10 @@ const RAW: [&str; 4] = ["terrain", "terrain-root", "terrain-z8", "peaks"];
 /// as if it were alone (heritagedetails: under ten a minute): never two at once.
 const WIKI: [&str; 2] = ["items", "heritage"];
 
+/// Steps that keep the pass's Wikidata and Wikipedia answers here and on the NAS (crate::answers):
+/// none starts while the agent sends them as it starts (`Agent::seed_answers`).
+const ANSWERED: [&str; 3] = ["items", "heritage-sites", "heritage"];
+
 /// Whether jobs of steps `a` and `b` can't run at once: either runs alone, both read the raw tiles,
 /// both ask Wikidata, or they're the same step and it isn't a shared one (one job's work: its
 /// targets held by nothing else). A shared step's targets are held apart (crate::coord), and each
@@ -681,6 +685,10 @@ pub struct Agent {
     /// A trim or a clear under way, and when one last failed (it's tried again ten minutes later).
     caches_task: Option<CachesTask>,
     trim_failed: Option<Instant>,
+    /// The build Mac's: the pass's answers this Mac has sent to the NAS as the agent starts
+    /// (crate::answers::seed), on a thread of its own; and whether it was started (once an agent).
+    answers_seed: Option<std::thread::JoinHandle<Result<Vec<String>>>>,
+    answers_seeded: bool,
     /// The build Mac's: the helpers' last trim, clear or declined ask noted in the history (its
     /// time), and what their last trim kept, by host.
     helper_caches: BTreeMap<String, (u64, u64)>,
@@ -768,7 +776,7 @@ impl Agent {
         let pause: Option<crate::control::Pause> = std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round) })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round) })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1388,6 +1396,8 @@ impl Agent {
         for k in 0..SLOTS {
             ended |= self.tend(k, &c, root.as_deref(), slept)?;
         }
+        // The pass's answers on the NAS, once this agent starts (the build Mac's).
+        self.seed_answers(root.as_deref());
 
         // Once the NAS answers: this Mac's earlier agent's claims dropped (it stopped or crashed: free
         // for the other Mac), and every five minutes the build Mac named the records' one writer,
@@ -1881,6 +1891,11 @@ impl Agent {
             waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
             return false;
         }
+        // (Nor an items or heritage job while the answers they keep go to the NAS: `seed_answers`.)
+        if self.answers_seed.as_ref().is_some_and(|t| !t.is_finished()) && step_of(&spec.id).is_some_and(|s| ANSWERED.contains(&s.as_str())) {
+            waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why: "the pass's Wikidata and Wikipedia answers here are going to the NAS (seconds)".into() });
+            return false;
+        }
         if self.o.dry_run {
             waiting.push(Waiting { step: None, what: spec.what.clone(), why: "would start now (dry run)".into() });
             return true;
@@ -2166,6 +2181,37 @@ impl Agent {
             }
         }
         self.caches_busy().or(why)
+    }
+
+    /// The build Mac's, once an agent, when no job runs here: the pass's answers its cache has, sent
+    /// to the NAS where it hasn't their archive (crate::answers::seed: a cache from before the NAS
+    /// kept them, or one a stopped job left, needn't wait for the steps' next run, perhaps the next
+    /// pass's), on a thread of its own (a slow NAS doesn't hold the loop; no items or heritage job
+    /// starts meanwhile). Done: what it did logged; failed: the steps' next start sends them.
+    fn seed_answers(&mut self, root: Option<&Path>) {
+        if let Some(t) = self.answers_seed.take_if(|t| t.is_finished()) {
+            match t.join() {
+                Ok(Ok(said)) => said.iter().for_each(|s| eprintln!("agent: {s}")),
+                Ok(Err(e)) => eprintln!("agent: the pass's answers not sent to the NAS now ({e:#}); the items and heritage jobs' next start sends them"),
+                Err(_) => eprintln!("agent: sending the pass's answers to the NAS failed midway"),
+            }
+        }
+        self.orphans.retain(jobs::Group::is_the_jobs);
+        let busy = self.slots.iter().any(|s| s.running.is_some()) || !self.orphans.is_empty();
+        let Some(root) = root.filter(|_| !self.answers_seeded && !busy && !self.o.helper && self._lock.is_some() && !self.o.dry_run) else { return };
+        self.answers_seeded = true;
+        let (root, cache, scratch) = (root.to_path_buf(), self.o.home.join("cache"), self.o.home.join("scratch/answers"));
+        match std::thread::Builder::new().name("answers".into()).spawn(move || crate::answers::seed(&root, &cache, &scratch)) {
+            Ok(t) => self.answers_seed = Some(t),
+            Err(e) => eprintln!("agent: the pass's answers not sent to the NAS now (its thread didn't start: {e})"),
+        }
+        // (One loop at a time, `--once`: waited for.)
+        if self.o.once {
+            while self.answers_seed.as_ref().is_some_and(|t| !t.is_finished()) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            self.seed_answers(None);
+        }
     }
 
     /// Starts a trim or a clear (`ask`) on a thread of its own; one that can't start is a failure.
@@ -3923,6 +3969,53 @@ mod tests {
         a.forecast.borrow_mut().as_mut().unwrap().at -= 3600;
         assert!(a.tend_caches(Some(&root), true).is_some_and(|w| w.contains("forecast is 60 min old")));
         assert!(copy(3).exists());
+    }
+
+    #[test]
+    fn the_build_mac_sends_the_passs_answers_to_the_nas_once_as_it_starts() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        put(&root.join("sources/osm/2026-09-28/pass.0000000000000001.json"), b"{}");
+        let archive = root.join("sources/items/2026-09-28/answers.tar.zst");
+        for m in ["m1", "m4"] {
+            put(&d.path().join(m).join("cache/items/facts-2026-09-28.jsonl"), b"{\"qid\":\"Q1\"}\n");
+        }
+        // A helper's: never (the steps that keep them are the build Mac's).
+        let mut helper = running_agent(&root, &d.path().join("m1"), true);
+        helper.seed_answers(Some(&root));
+        assert!(!archive.exists());
+        // The build Mac's: not while a job runs here, nor without the NAS; then once.
+        let mut a = running_agent(&root, &d.path().join("m4"), false);
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        assert!(a.try_start(0, waiting_job("pack 6/1/1"), &cond, Some(&root), &mut Vec::new()));
+        a.seed_answers(Some(&root));
+        assert!(!archive.exists());
+        a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
+        a.slots[0].running = None;
+        a.seed_answers(None);
+        assert!(!archive.exists());
+        a.seed_answers(Some(&root));
+        assert!(archive.is_file());
+        std::fs::remove_file(&archive).unwrap();
+        a.seed_answers(Some(&root));
+        assert!(!archive.exists(), "once an agent");
+        // While it runs, no items or heritage job starts here; others do.
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        a.answers_seed = Some(std::thread::spawn(move || wait.recv().map(|()| Vec::new()).map_err(anyhow::Error::from)));
+        let mut w = Vec::new();
+        assert!(!a.try_start(0, waiting_job("items items"), &cond, Some(&root), &mut w));
+        assert!(w.iter().any(|x| x.why.contains("answers here are going to the NAS")), "{w:?}");
+        assert!(a.try_start(0, waiting_job("pack 6/1/2"), &cond, Some(&root), &mut Vec::new()));
+        a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
+        a.slots[0].running = None;
+        go.send(()).unwrap();
+        while a.answers_seed.as_ref().is_some_and(|t| !t.is_finished()) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(a.try_start(0, waiting_job("items items"), &cond, Some(&root), &mut Vec::new()));
+        a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
     }
 
     #[test]

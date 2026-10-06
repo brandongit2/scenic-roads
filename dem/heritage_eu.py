@@ -2,7 +2,10 @@
 
 Each source function returns (points, areas) as GeoJSON features in heritage.py's format:
 level 1 World Heritage · 2 national, highest grade · 3 national, other grades · 4 regional ·
-5 local. Downloads are cached under data/heritage/<country>/ (delete a file to refresh it).
+5 local. Downloads are cached under data/heritage/<country>/: to fetch one again, delete it there
+(the build agent's: the pass's copy of the registers' snapshot, cache/heritage-<date>-<id>/ in its
+folder; the heritage job that reads it next fetches it, and it goes to the NAS with the pass's
+answers, pipeline::answers; a new pass starts again from the snapshot's).
 
   World Heritage: UNESCO World Heritage List, data.unesco.org dataset whc001 (CC BY-SA 4.0)
   France:  Ministère de la Culture, base Mérimée (POP): monuments historiques classés (2) and

@@ -97,7 +97,10 @@ def get(url: str, params: dict | None = None, accept: str | None = None) -> byte
 
 
 def sparql(q: str, cache: str) -> list[dict]:
-    """Run a Wikidata query, caching the CSV (delete data/heritage/wd-*.csv to refresh)."""
+    """Run a Wikidata query, caching the CSV in data/heritage/ (to ask again, delete the wd-*.csv:
+    the build agent's is the pass's copy of the registers' snapshot, cache/heritage-<date>-<id>/ in
+    its folder; the next heritage-sites run asks, and the answer goes to the NAS with the pass's,
+    pipeline::answers)."""
     path = H / cache
     if path.exists():
         b = path.read_bytes()

@@ -416,7 +416,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   `fetched`, and `status` with, when "ok", `day`, `trips`, `duplicates`, `rail_routes`).
 - **Other sources:** `sources/items/<date>/{facts,views,meta}.json`; the answers Wikidata and
   Wikipedia gave for the pass (pipeline::answers; not content-named, rewritten whole as a step
-  starts and ends, tar then zstd): `sources/items/<date>/answers.tar.zst`, the items job's cache
+  starts and ends, tar then zstd with its checksum; one that doesn't read whole moved aside as
+  `<name>.bad-<unix seconds>`): `sources/items/<date>/answers.tar.zst`, the items job's cache
   files as dem/items.py keeps them (`facts-<date>.jsonl`, a JSON line per item asked:
   `{qid, …poidetails.py's record}`, or `{qid, sl: 0, missing: true}` for one QLever doesn't know;
   `wp-<date>.jsonl`, `{qid, n (its Wikipedia articles), arts: ["<lang>|<title>", …]}`;
