@@ -486,8 +486,8 @@ impl World {
             self.wrong(format!("mac{me} removed {path}"));
         }
         if let Some(key) = entry_of(path) {
-            if !self.cfg.draft && !self.files.contains_key(&format!("{}/{key}.json", journal::REJECTED)) {
-                self.wrong(format!("mac{me} removed entry {key} without setting it aside"));
+            if !self.cfg.draft {
+                self.wrong(format!("mac{me} removed entry {key}"));
             }
         }
         self.files.remove(path);
@@ -999,7 +999,7 @@ impl Mac {
                 Ok(()) => {
                     l.dirty = false;
                     for (k, why) in std::mem::take(&mut l.refused) {
-                        journal::set_aside(&sim, &k, &why)?;
+                        journal::note_refusal(&sim, &k, &why)?;
                     }
                 }
                 Err(e) => {

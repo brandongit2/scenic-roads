@@ -110,9 +110,10 @@ impl Records {
         self.reflected.contains(key) || self.rejected.contains_key(key)
     }
 
-    /// Applies journal entry `e` as crate::handoff's merge did: its manifest changes, its uploads
-    /// pending and checked, its done record in the keys, its raw archives to name; and names it.
-    pub fn apply(&mut self, e: &Entry) {
+    /// Applies journal entry `e`, under key `key`, as crate::handoff's merge did: its manifest
+    /// changes, its uploads pending and checked, its done record in the keys, its raw archives to
+    /// name; and names it.
+    pub fn apply(&mut self, key: &str, e: &Entry) {
         let h = &e.handoff;
         for (k, v) in &h.changes {
             match v {
@@ -132,7 +133,7 @@ impl Records {
                 self.raw.push(r.clone());
             }
         }
-        self.reflected.insert(e.key());
+        self.reflected.insert(key.to_string());
     }
 
     /// Names journal entry `key` refused, with why.
@@ -166,16 +167,16 @@ pub fn first(nas: &dyn Nas) -> Result<()> {
 pub struct Merged {
     /// Applied to the records.
     pub applied: Vec<String>,
-    /// Refused, with why: to set aside once the records naming them are saved.
+    /// Refused, with why: their refusals to note once the records naming them are saved.
     pub refused: Vec<(String, String)>,
     /// Not readable whole now (being written, not seen yet, or a read that failed): to merge later.
     pub waiting: Vec<String>,
 }
 
 /// Merges the journal entries `keys` the records don't name yet: each read, checked and applied,
-/// or refused, in (term, lease) order. Nothing is written: the caller saves the records, then sets
-/// the refused aside (crate::pool::journal::set_aside) and acknowledges what the saved records
-/// name.
+/// or refused, in (term, lease) order: this lead's check decides, whatever another lead's refusal
+/// (crate::pool::journal::refusal). Nothing is written: the caller saves the records, then notes
+/// the refusals (crate::pool::journal::note_refusal) and acknowledges what the saved records name.
 pub fn merge(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check) -> Merged {
     let mut out = Merged::default();
     let mut read: BTreeMap<(journal::LeaseId, String), Entry> = BTreeMap::new();
@@ -192,17 +193,13 @@ pub fn merge(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check) -> M
                 r.refuse(k, &why);
                 out.refused.push((k.clone(), why));
             }
-            Ok(journal::Read::SetAside(why)) => {
-                r.refuse(k, &why);
-                out.refused.push((k.clone(), why));
-            }
             Ok(journal::Read::Short | journal::Read::Missing) | Err(_) => out.waiting.push(k.clone()),
         }
     }
     for ((_, k), e) in read {
         match check(&e, r) {
             Ok(()) => {
-                r.apply(&e);
+                r.apply(&k, &e);
                 out.applied.push(k);
             }
             Err(why) => {
@@ -219,14 +216,15 @@ pub fn merge(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check) -> M
 pub struct TakenUp {
     /// The term's records, saved as its first snapshot.
     pub records: Records,
-    /// The journal entries replayed into them, refused (and set aside), or not readable whole yet.
+    /// The journal entries replayed into them, refused (their refusals noted), or not readable
+    /// whole yet.
     pub merged: Merged,
 }
 
 /// Takes up term `t` (§6.2): the records of the newest term before it with a snapshot (`own`, for
 /// the term they're of: a lead re-asserting or taking back has its own and needn't read them), with
 /// every journal entry they don't name replayed in (term, lease) order, `check`ed first; saved as
-/// `t`'s first snapshot, and the refused entries set aside. `since` leaves the journal's earlier
+/// `t`'s first snapshot, and the refusals noted. `since` leaves the journal's earlier
 /// days unlisted (an entry there the records lack comes back when its member tells the new lead
 /// again). A handover's term (`t.seq`) starts from the snapshot it names: an error until a read
 /// gives that one (a stale read gives an older), to try again shortly. A snapshot of `t` itself (an
@@ -275,8 +273,8 @@ pub fn take_up(nas: &dyn Nas, t: &Term, own: Option<Records>, since: Option<&str
     let merged = merge(nas, &mut r, &keys, check);
     r.save(nas).with_context(|| format!("save term {}'s records", t.term))?;
     for (k, why) in &merged.refused {
-        // (Named refused in the records saved: one not set aside now is passed over.)
-        journal::set_aside(nas, k, why).ok();
+        // (Named refused in the records saved: a note not made now is only the owner's loss.)
+        journal::note_refusal(nas, k, why).ok();
     }
     Ok(TakenUp { records: r, merged })
 }
@@ -318,7 +316,8 @@ mod tests {
         assert_eq!((r.term, r.seq, r.manifest.len(), r.keys.unit.len(), r.pending.len()), (1, 1, 1, 1, 0));
         assert_eq!(r, Records { seq: 1, ..Records::today(&nas).unwrap() });
         assert_eq!(Records::load(&nas, 2).unwrap(), None);
-        r.apply(&built(1, 1, "6-1-2", "k1"));
+        let e = built(1, 1, "6-1-2", "k1");
+        r.apply(&e.key().unwrap(), &e);
         r.save(&nas).unwrap();
         assert_eq!(Records::load(&nas, 1).unwrap(), Some(r.clone()), "its snapshot");
         // Made once: a second Mac's try leaves it.
@@ -357,18 +356,18 @@ mod tests {
         told.push(short.clone());
         told.push(keys[0].clone());
         let m = merge(&nas, &mut r, &told, &check);
-        assert_eq!(m.applied, [b.key(), a.key()]);
-        assert_eq!(m.refused, [(bad.key(), "writes outside its step's names".to_string())]);
+        assert_eq!(m.applied, [b.key().unwrap(), a.key().unwrap()]);
+        assert_eq!(m.refused, [(bad.key().unwrap(), "writes outside its step's names".to_string())]);
         assert_eq!(m.waiting, [short]);
         assert_eq!(r.keys.unit.get("6-1-1").map(String::as_str), Some("k9"));
         assert_eq!(r.manifest.get("base/6-1-1").map(String::as_str), Some("base/6-1-1.k9.base"));
-        assert!(!r.manifest.contains_key("base/6-1-3") && r.handles(&bad.key()) && r.pending.len() == 2);
+        assert!(!r.manifest.contains_key("base/6-1-3") && r.handles(&bad.key().unwrap()) && r.pending.len() == 2);
         // Told again: nothing more.
         assert_eq!(merge(&nas, &mut r, &keys, &check), Merged::default());
         // The days GC removed, forgotten.
         r.refuse("2026-10-05/2-1", "no such step");
         r.forget_before("2026-10-06");
-        assert!(!r.handles("2026-10-05/2-1") && r.handles(&a.key()) && r.handles(&bad.key()));
+        assert!(!r.handles("2026-10-05/2-1") && r.handles(&a.key().unwrap()) && r.handles(&bad.key().unwrap()));
     }
 
     #[test]
@@ -389,9 +388,9 @@ mod tests {
         let b = Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "20261005-2202-61eb22c".into() };
         let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1.clone()) }, &b, "taken over", DAY + 60).unwrap().unwrap();
         let up2 = take_up(&nas, &t2, None, None, &any).unwrap();
-        assert_eq!(up2.merged.applied, [e2.key()]);
+        assert_eq!(up2.merged.applied, [e2.key().unwrap()]);
         assert_eq!((up2.records.term, up2.records.seq), (2, 1));
-        assert!(up2.records.handles(&e1.key()) && up2.records.handles(&e2.key()));
+        assert!(up2.records.handles(&e1.key().unwrap()) && up2.records.handles(&e2.key().unwrap()));
         assert_eq!(Records::load(&nas, 2).unwrap(), Some(up2.records.clone()));
         // Term 3 made, its lead gone before saving anything: term 4 starts from term 2's.
         let t3 = term::claim(&nas, &Current { term: 2, lead: Some(t2.clone()) }, &a, "taken over", DAY + 120).unwrap().unwrap();
@@ -431,7 +430,8 @@ mod tests {
         assert!(up.records.handles(&k) && up.merged.applied.is_empty());
         // A lead re-asserting starts from its own records, unread.
         let mut own = up.records.clone();
-        own.apply(&built(2, 4, "6-1-4", "k4"));
+        let e4 = built(2, 4, "6-1-4", "k4");
+        own.apply(&e4.key().unwrap(), &e4);
         let t3 = term::claim(&nas, &Current { term: 2, lead: Some(t2) }, &b, "re-asserted after a gap", DAY + 900).unwrap().unwrap();
         let up3 = take_up(&nas, &t3, Some(own), None, &any).unwrap();
         assert_eq!(up3.records.keys.unit.get("6-1-4").map(String::as_str), Some("k4"));
@@ -463,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_entry_is_set_aside_once_its_refusal_is_saved() {
+    fn a_refused_entrys_why_is_noted_once_its_refusal_is_saved() {
         let nas = Mem::default();
         let a = lead("development");
         let t1 = term::bootstrap(&nas, &a, DAY, false).unwrap().unwrap();
@@ -472,10 +472,37 @@ mod tests {
         let check = |e: &Entry, _: &Records| if e.step == "bogus" { Err("no such step".to_string()) } else { Ok(()) };
         let up = take_up(&nas, &t1, None, None, &check).unwrap();
         assert_eq!(up.records.rejected.get(&k).map(String::as_str), Some("no such step"));
-        assert!(journal::list(&nas, None).unwrap().is_empty());
-        // Told again by its member, to a lead whose records lack it: refused again, as set aside.
+        assert_eq!(journal::refusal(&nas, &k).unwrap().as_deref(), Some("no such step"));
+        // Told again by its member, to a lead whose records lack it: checked again, refused again.
         let mut r = Records { term: 2, ..Default::default() };
         let m = merge(&nas, &mut r, std::slice::from_ref(&k), &check);
         assert_eq!(m.refused, [(k, "no such step".to_string())]);
+    }
+
+    #[test]
+    fn a_stale_leads_refusal_is_checked_again_by_the_current_lead() {
+        // A stale lead's check refuses an entry (say, it leased its targets again after the lease
+        // lapsed, or its app's write-sets are older). (Review M1: it set the entry aside, out of
+        // its day, and the current lead, whose check would take it, refused it unread.)
+        let nas = Mem::default();
+        let (a, b) = (lead("development"), Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "development".into() });
+        let t1 = term::bootstrap(&nas, &a, DAY, false).unwrap().unwrap();
+        let mut r1 = take_up(&nas, &t1, None, None, &any).unwrap().records;
+        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &b, "taken over by MacBook-Air", DAY + 700).unwrap().unwrap();
+        let mut r2 = take_up(&nas, &t2, None, None, &any).unwrap().records;
+        let x = journal::write(&nas, &built(1, 5, "6-1-1", "k5")).unwrap();
+        let stale = |_: &Entry, _: &Records| Err::<(), String>("6-1-1 leased again since".into());
+        let m = merge(&nas, &mut r1, std::slice::from_ref(&x), &stale);
+        r1.save(&nas).unwrap();
+        for (k, why) in &m.refused {
+            journal::note_refusal(&nas, k, why).unwrap();
+        }
+        // Told of it by its member, or (its member gone) listing it: its own check decides.
+        assert_eq!(journal::list(&nas, None).unwrap(), std::slice::from_ref(&x));
+        let m2 = merge(&nas, &mut r2.clone(), std::slice::from_ref(&x), &any);
+        assert_eq!(m2.applied, std::slice::from_ref(&x), "{m2:?}");
+        let m3 = merge(&nas, &mut r2, &journal::list(&nas, None).unwrap(), &any);
+        assert_eq!(m3.applied, std::slice::from_ref(&x), "{m3:?}");
+        assert_eq!(r2.keys.unit.get("6-1-1").map(String::as_str), Some("k5"));
     }
 }
