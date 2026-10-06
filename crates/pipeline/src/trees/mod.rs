@@ -194,28 +194,35 @@ struct Layer {
     cols: Vec<Option<u32>>,
 }
 
-/// A 10° square's source pixels for a block's rows and columns (trees.py's `sample`): `n` pixels a
-/// side of `res` degrees from (`left`, `top`); None outside it.
-fn indices(top: i32, left: i32, res: f64, lon: &[f64], lat: &[f64]) -> (Vec<Option<u32>>, Vec<Option<u32>>) {
+/// A 10° square's source pixels for a block's rows and columns: `n` a side.
+struct Pixels {
+    n: u32,
+    rows: Vec<Option<u32>>,
+    cols: Vec<Option<u32>>,
+}
+
+/// A 10° square's pixels of `res` degrees from (`left`, `top`) that a block's rows and columns
+/// fall in (trees.py's `sample`); None outside it.
+fn indices(top: i32, left: i32, res: f64, lon: &[f64], lat: &[f64]) -> Pixels {
     let n = (10.0 / res).round();
     let at = |v: f64| {
         let i = v.floor();
         (i >= 0.0 && i < n).then_some(i as u32)
     };
-    (lat.iter().map(|&l| at((top as f64 - l) / res)).collect(), lon.iter().map(|&l| at((l - left as f64) / res)).collect())
+    Pixels { n: n as u32, rows: lat.iter().map(|&l| at((top as f64 - l) / res)).collect(), cols: lon.iter().map(|&l| at((l - left as f64) / res)).collect() }
 }
 
 impl Layer {
-    fn new(src: Arc<dyn RangeRead>, cache: usize, top: i32, left: i32, res: f64, lon: &[f64], lat: &[f64], what: &str) -> Result<Option<Layer>> {
-        let (rows, cols) = indices(top, left, res, lon, lat);
-        if rows.iter().all(Option::is_none) || cols.iter().all(Option::is_none) {
+    /// The square's layer in `src` at pixels `at`; None when the block doesn't meet the square.
+    fn new(src: Arc<dyn RangeRead>, cache: usize, at: &Pixels, what: &str) -> Result<Option<Layer>> {
+        if at.rows.iter().all(Option::is_none) || at.cols.iter().all(Option::is_none) {
             return Ok(None);
         }
         let tiff = crate::geotiff::Tiff::open(src).with_context(|| what.to_string())?.with_cache(cache);
         let img = tiff.level(0)?;
-        let n = (10.0 / res).round() as u32;
+        let n = at.n;
         ensure!(img.width == n && img.height == n, "{what}: {}x{} pixels, not {n}x{n}", img.width, img.height);
-        Ok(Some(Layer { tiff, rows, cols }))
+        Ok(Some(Layer { tiff, rows: at.rows.clone(), cols: at.cols.clone() }))
     }
 
     /// Block rows `r0..r0 + out.len() / BS` from this square, into `out` (BS a row) where it's still
@@ -234,7 +241,7 @@ impl Layer {
                 }
             }
         }
-        for (i, row) in out.chunks_exact_mut(BS).enumerate() {
+        for (i, row) in out.as_chunks_mut::<BS>().0.iter_mut().enumerate() {
             let Some(r) = self.rows[r0 + i] else { continue };
             let (by, y) = (r as usize / bh, r as usize % bh);
             for &(bx, j0, j1) in &runs {
@@ -268,10 +275,11 @@ fn sources(inp: &Inputs, bx: u32, by: u32, lon: &[f64], lat: &[f64], opened: &mu
         if c.len()? == 0 || h.len()? == 0 {
             continue;
         }
-        let (Some(c), Some(h)) = (Layer::new(c, CHM_CACHE, top, left, CHM_RES, lon, lat, &cn)?, Layer::new(h, CHM_CACHE, top, left, CHM_RES, lon, lat, &hn)?) else { continue };
+        let at = indices(top, left, CHM_RES, lon, lat);
+        let (Some(c), Some(h)) = (Layer::new(c, CHM_CACHE, &at, &cn)?, Layer::new(h, CHM_CACHE, &at, &hn)?) else { continue };
         let ln = leaf_name(top, left);
         let l = match inp.open(&inp.leaf, &ln, opened)? {
-            Some(f) => Layer::new(f, LEAF_CACHE, top, left, LEAF_RES, lon, lat, &ln)?,
+            Some(f) => Layer::new(f, LEAF_CACHE, &indices(top, left, LEAF_RES, lon, lat), &ln)?,
             None => None,
         };
         squares.push((c, h, l));

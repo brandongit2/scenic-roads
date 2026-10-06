@@ -8,6 +8,7 @@
 //!   (costed by a first pass's codes).
 //! - **Huffman codes:** a group of five per region of 32 × 32 pixels (an entropy image), regions
 //!   merged into groups while that saves bits; code lengths at most 15.
+//!
 //! It writes what decoders check (libwebp's, image-webp's): complete codes, a two-symbol simple code
 //! in ascending order.
 
@@ -16,7 +17,7 @@ use det::Det;
 /// An opaque RGB image (`w` × `h`, 3 bytes a pixel, row by row) as a lossless WebP file.
 pub fn encode_rgb(rgb: &[u8], w: u32, h: u32) -> Vec<u8> {
     assert!((1..=16384).contains(&w) && (1..=16384).contains(&h) && rgb.len() == w as usize * h as usize * 3);
-    let px: Vec<u32> = rgb.chunks_exact(3).map(|p| 0xff00_0000 | (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32).collect();
+    let px: Vec<u32> = rgb.as_chunks::<3>().0.iter().map(|p| 0xff00_0000 | (p[0] as u32) << 16 | (p[1] as u32) << 8 | p[2] as u32).collect();
     let mut b = Bits::default();
     b.put(0x2f, 8);
     b.put(w - 1, 14);
@@ -750,7 +751,7 @@ mod tests {
         let mut out = vec![0u8; d.output_buffer_size().unwrap()];
         d.read_image(&mut out).unwrap();
         let (w, h) = d.dimensions();
-        let rgb = if d.has_alpha() { out.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect() } else { out };
+        let rgb = if d.has_alpha() { out.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect() } else { out };
         (w, h, rgb)
     }
 
@@ -782,7 +783,7 @@ mod tests {
                     }
                 }
                 let webp = encode_rgb(&rgb, w, h);
-                assert!(webp.len() % 2 == 0 && &webp[..4] == b"RIFF" && &webp[8..16] == b"WEBPVP8L");
+                assert!(webp.len().is_multiple_of(2) && &webp[..4] == b"RIFF" && &webp[8..16] == b"WEBPVP8L");
                 assert_eq!(decode(&webp), (w, h, rgb), "{w}x{h}, kind {kind}");
             }
         }

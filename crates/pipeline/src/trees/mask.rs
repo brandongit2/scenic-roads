@@ -165,7 +165,7 @@ fn fill(s: &mut Scratch, bits: &mut [u64]) {
         let (a, b) = (pts[if i == 0 { n - 1 } else { i - 1 }][1], pts[i][1]);
         let lo = a.min(b).floor().max(miny as f64);
         let hi = a.max(b).ceil().min(maxy as f64);
-        if !(lo <= hi) {
+        if lo > hi {
             continue;
         }
         for y in lo as i32..=hi as i32 {
@@ -221,14 +221,14 @@ fn fill(s: &mut Scratch, bits: &mut [u64]) {
         }
         s.ints.sort_unstable();
         s.ints2.sort_unstable();
-        for w in s.ints.chunks_exact(2) {
+        for w in s.ints.as_chunks::<2>().0 {
             if w[0] <= maxx && w[1] > 0 {
                 burn(y, w[0], w[1] - 1);
             }
         }
         // A horizontal edge's run, unless a span starts where it does.
         let mut i = 0;
-        for w in s.ints2.chunks_exact(2) {
+        for w in s.ints2.as_chunks::<2>().0 {
             if w[0] <= maxx && w[1] > 0 {
                 while i + 1 < s.ints.len() && s.ints[i] < w[0] {
                     i += 2;

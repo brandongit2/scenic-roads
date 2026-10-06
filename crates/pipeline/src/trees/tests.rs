@@ -134,7 +134,7 @@ fn decode(webp: &[u8]) -> Vec<u8> {
     let mut out = vec![0u8; d.output_buffer_size().unwrap()];
     d.read_image(&mut out).unwrap();
     if d.has_alpha() {
-        out.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect()
+        out.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect()
     } else {
         out
     }
@@ -157,9 +157,10 @@ fn geometry_as_trees_py() {
     assert_eq!(squares_of([-0.5, 9.5, 0.5, 10.5]), [(20, -10), (20, 0), (10, -10), (10, 0)]);
     assert_eq!((chm_name(50, -10, "p95"), leaf_name(50, -10)), ("meta_chm_lat=50.0_lon=-10.0_p95.tif".to_string(), "lat50_lon-10.tif".to_string()));
     // A square's pixel for a latitude and longitude, none outside it.
-    let (rows, cols) = indices(50, 0, CHM_RES, &[-0.0001, 0.0, 9.99999, 10.0], &[49.9999, 40.0001, 40.0, 50.0]);
-    assert_eq!(rows, [Some(0), Some(39999), None, Some(0)]);
-    assert_eq!(cols, [None, Some(0), Some(39999), None]);
+    let p = indices(50, 0, CHM_RES, &[-0.0001, 0.0, 9.99999, 10.0], &[49.9999, 40.0001, 40.0, 50.0]);
+    assert_eq!(p.n, 40000);
+    assert_eq!(p.rows, [Some(0), Some(39999), None, Some(0)]);
+    assert_eq!(p.cols, [None, Some(0), Some(39999), None]);
     assert_eq!(merc(5.625, 48.92)[0], 626172.1357121639);
     assert!((merc(5.625, 48.92)[1] - 6261297.953407845).abs() < 1e-8);
 }

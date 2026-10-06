@@ -139,8 +139,8 @@ fn class12(v: u8) -> u8 {
 /// numpy computes it) as lossless WebP.
 fn terrarium(v: impl Fn(usize) -> f32, step: f32) -> Vec<u8> {
     let mut rgb = vec![0u8; TS * TS * 3];
-    for (i, p) in rgb.chunks_exact_mut(3).enumerate() {
-        let e = ((v(i) / step).round_ties_even() * step).max(0.0).min(30000.0) as i32 + 32768;
+    for (i, p) in rgb.as_chunks_mut::<3>().0.iter_mut().enumerate() {
+        let e = ((v(i) / step).round_ties_even() * step).clamp(0.0, 30000.0) as i32 + 32768;
         p[0] = (e >> 8) as u8;
         p[1] = (e & 255) as u8;
     }
@@ -342,11 +342,11 @@ impl Tops {
         let n = TS * TS;
         let raw = zstd::bulk::decompress(&b[16..], n * 18)?;
         ensure!(raw.len() == n * 18, "zoom-8 values cut short");
-        let f = |k: usize| raw[k * n * 4..(k + 1) * n * 4].chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect::<Vec<f32>>();
+        let f = |k: usize| raw[k * n * 4..(k + 1) * n * 4].as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect::<Vec<f32>>();
         let mut leaf: [Vec<u32>; 5] = Default::default();
         for (k, l) in leaf.iter_mut().enumerate() {
             let at = 8 * n + k * n * 2;
-            *l = raw[at..at + n * 2].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]) as u32).collect();
+            *l = raw[at..at + n * 2].as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c) as u32).collect();
         }
         Ok(Tops { x, y, rows: Rows { width: TS, cover: f(0), height: f(1), leaf } })
     }
