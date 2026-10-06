@@ -632,6 +632,9 @@ pub struct Agent {
     progress: Option<(Instant, BTreeMap<String, build::RegionState>, Vec<build::Step>)>,
     /// The pass's reaches as last read, by content name (large: read again only when they change).
     reach: std::cell::RefCell<Option<(String, std::rc::Rc<crate::reach::Reaches>)>>,
+    /// The terrain packs' indexes, which the units' keys read (`tiles`, kept in `pack-idx/`): those
+    /// the manifest names, each read once.
+    tiles: std::cell::RefCell<tiles::TerrainTiles>,
     /// The coverage and each region's as last made, with what they were made from (`coverage`).
     coverage: std::cell::RefCell<Option<(String, std::rc::Rc<Coverages>)>>,
     /// The recipes' and outline files' key as last seen, and when it changed while this agent ran
@@ -777,7 +780,8 @@ impl Agent {
         let pause: Option<crate::control::Pause> = std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round) })
+        let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round) })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -2733,8 +2737,14 @@ impl Agent {
         let since_last = self.round.borrow().as_ref().map(|r| now_s().saturating_sub(r.began)).or(since_publish);
         let mut planned = {
             let kept = self.round.borrow();
-            build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), build::Rounds { each: &covs.each, on_map: &on_map, since_last, current: kept.as_ref().filter(|r| !r.over), held })
+            let tiles = self.terrain_tiles(root, &manifest);
+            build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), &tiles, build::Rounds { each: &covs.each, on_map: &on_map, since_last, current: kept.as_ref().filter(|r| !r.over), held })
         };
+        // Units whose terrain can't be worked out now (a pack's index unread): they wait for it.
+        if !planned.unknown.is_empty() {
+            let why = self.tiles.borrow().unread().next().map(|(c, e)| format!(": {c}, {e}")).unwrap_or_default();
+            waiting.push(Waiting { step: Some("unit".into()), what: "Building the areas".into(), why: format!("the terrain's indexes can't be read now for {} of them{why}", planned.unknown.len()) });
+        }
         let edit_hold = edit_held(self.edited_at.get());
         // (Hand-offs of work done not yet merged: counted as built, their files not yet in the
         // manifest.)
@@ -3112,7 +3122,8 @@ impl Agent {
         let Ok(covs) = self.coverage(root, &manifest, &date, regions, false) else { return out };
         let cov = &covs.all;
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
-        out.extend(build::checklist(&cov, &date, &manifest, &keys, &input_digests(root), root.join("inputs/hold-catalog").exists(), reach.as_deref(), &self.ready.borrow()));
+        let tiles = self.terrain_tiles(root, &manifest);
+        out.extend(build::checklist(&cov, &date, &manifest, &keys, &input_digests(root), root.join("inputs/hold-catalog").exists(), reach.as_deref(), &self.ready.borrow(), &tiles));
         out
     }
 
@@ -3124,7 +3135,19 @@ impl Agent {
         let (cov, each) = (&covs.all, &covs.each);
         let keys = build::Keys::load(root);
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
-        build::region_states(&cov, &each, &date, &manifest, &keys, reach.as_deref(), &input_digests(root))
+        let tiles = self.terrain_tiles(root, &manifest);
+        build::region_states(&cov, &each, &date, &manifest, &keys, reach.as_deref(), &input_digests(root), &tiles)
+    }
+
+    /// The terrain packs' indexes `manifest` names, those not yet held read (from `pack-idx/`, else
+    /// the NAS: half a minute for the whole build's, once).
+    fn terrain_tiles(&self, root: &Path, manifest: &BTreeMap<String, String>) -> std::cell::Ref<'_, tiles::TerrainTiles> {
+        let t = std::time::Instant::now();
+        let n = self.tiles.borrow_mut().load(root, manifest);
+        if n > 0 {
+            eprintln!("agent: read the indexes of {n} terrain pack{} in {:.1} s", if n == 1 { "" } else { "s" }, t.elapsed().as_secs_f64());
+        }
+        self.tiles.borrow()
     }
 
     /// The pass's reaches (crate::reach), once they're made for the current version (Ok(None)
