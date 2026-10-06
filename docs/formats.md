@@ -302,10 +302,10 @@ agent/                  status.json (the build Mac's; a helper writes helper.jso
                         server shows), state.json, round.json (the last round of publishing:
                         {began, regions, last, units: {logical: content name}, over},
                         agent::build::Round; the jobs of the one under way read its units,
-                        SCENIC_UNITS_AS_OF=<path>#<began>), job.json, agent.lock, logs/, cache/;
-                        clear-request.json (the owner's ask to clear this Mac's build caches, from
-                        its menu or `scenic clean`: {by, at}, agent::room::ClearRequest; renamed
-                        clear-request.json.taken as the agent takes it up, removed once it's
+                        SCENIC_UNITS_AS_OF=<path>#<began>), job.json, agent.lock, logs/, cache/,
+                        pack-idx/; clear-request.json (the owner's ask to clear this Mac's build
+                        caches, from its menu or `scenic clean`: {by, at}, agent::room::ClearRequest;
+                        renamed clear-request.json.taken as the agent takes it up, removed once it's
                         answered in the agent's status)
 agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and aws-terrarium/
                         (copies of the NAS's sources/canopy/; the raw tiles as fetched, until packed
@@ -336,6 +336,11 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
                         chm10/); on the owner's ask, it clears them, base/, the seed (while the NAS
                         has it whole), sources-*/, work-*/ and heritage-merged-* (docs/plan.md §4
                         and §8, agent::room). Never through a link, nor in the NAS's folder.
+agent/pack-idx/         <hash16>.idx: the indexes of the terrain packs the build manifest names
+                        (RDPKIDX1, as idx/), by each pack's content name, which the units' keys read
+                        (agent::tiles): each read once from its pack on the NAS, and never stale.
+                        Outside cache/, so no room-making, trim or clear empties it; one whose pack
+                        the manifest no longer names goes once untouched for a fortnight.
 ```
 
 `~/Library/Preferences/nsmb.conf` gets `[FISHANDCHIPS:PERSONAL]` and

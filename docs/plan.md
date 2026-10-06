@@ -988,8 +988,15 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **heritage-sites:** the pass, its areas set, the registers snapshot, the coverage;
 - **unit:** its piece, the pass's road values, the coverage as its ways meet it (inside its tile +
   20 km, and whether each long way touches it), the versions of the location rules where its ways
-  go, the terrain and grid hi packs within 30 km, its heritage slices, the roadside buildings'
-  index, and Taiwan's MOI DTM files where its ways meet Taiwan;
+  go, its heritage slices, the roadside buildings' index, Taiwan's MOI DTM files where its ways meet
+  Taiwan, and the terrain tiles it reads, by their contents (`agent::build::unit_terrain`: each
+  tile's XXH3 from its pack's index, no tile read): of what it stages (terrain z0–12 over its tile
+  + 30 km), every z11 tile (its grid: canopy, views, flags) and, at the points of the ways it owns
+  (its owned box, and along its long ways' segments: `prep`'s drape at every vertex and its
+  samples' ground), the z12 tile or the finest staged tile above it, down to z4. A tile staged but
+  missing counts as such, so one appearing changes the key. A change elsewhere within the 30 km
+  (the far side of a neighbouring z6 tile, a coast none of its ways reach) rebuilds nothing; one in
+  a z5 tile under a long ferry of its does. Not the grids' packs (Global-source layers, Grids);
 - **pack(T):** the base packs and road values it reads (above), those within its 100 km halo; and,
   after a dot, those of its owners alone (the units whose owned extent meets the tile itself: its
   ways-here index points into their base packs), so a round tells a tile whose owners changed from
@@ -1183,12 +1190,42 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
 **Scheduler.**
 - **The plan:** every step's targets come with their keys (`state/build/jobs.json`). A target is
   stale when its key changed.
+- **A new key scheme** (`agent::rekey`): when a step's keys change what they name, its targets'
+  records are re-keyed rather than built again. One whose recorded key is what the old scheme
+  computes now (it's current) is recorded under its new key when every input the new key names is
+  pinned by the old key's (the same input, a function of what it named, of immutable sources, or
+  of what's never been rewritten since); otherwise its record goes and it's built again. Any other
+  record stays as it is: stale under the old scheme, it's stale under the new. Safe because a
+  target's outputs are a function of the inputs its new key names (Determinism), and those are
+  what they were when it was built. The build Mac's agent re-keys after merging hand-offs, under
+  the build lock as the merge takes it, and writes `state/build/jobs.json` whole only when that
+  changed anything; the plan and the status re-key the keys they read in memory, so a dry run, or
+  a loop that couldn't take the lock, plans as the records will be. A second pass finds nothing (a
+  new key is never an old one), and a record of an older app's job merged later is re-keyed then.
+  `scenic-build rekey-check` says what it would do, reading only. The old scheme's keys
+  (`agent::rekey::v1`) are kept for those late records.
+  - **The units' terrain** (§6, Job keys: they named the terrain hi packs within 30 km): their
+    z9–12 tiles are pinned by the hi packs the old keys named; z8–z6 tiles by the hi pack of a z6
+    tile near the coverage in an area whose terrain is current (a z8 tile is made from its raw tile
+    and its z9 children alone), or, where a z6 tile has no hi pack, by the raw tiles alone. Not z5
+    and z4 tiles (made from z6 tiles the old keys mostly didn't name: the far reaches of long ways)
+    nor z8–z6 tiles of a stale hi pack's z6 tile (gap 3, §10): a unit reading those is built again,
+    unless it has no outputs (the terrain doesn't decide which ways it keeps). Those of a z6 tile
+    without a hi pack are pinned only if the unit was built after its area's first lo pack the
+    build made (the converted legacy ones differ), which `rekey-check` shows from file times. On
+    2026-10-06 it found 261 of the 284 units re-keyed (20 of them without outputs) and 23 to build
+    again (12 reading z5–z4 tiles, 13 a stale hi pack's; two both), and each of the 108 with
+    outputs reading an area's zoomed-out terrain built over an hour after the build first made it.
 - **A job** is one step over a batch of stale targets: terrain and trees 1, slope and lo 2, unit 6,
   peaks 12, pack 16, pois 24, the worldwide steps all. So a failure or a new app costs one batch.
 - **Order:** the agent starts the first job that can run, in plan order. It plans when a job could
   start (its second slot's: each minute), when one ends, and otherwise every five minutes for the
-  heartbeat (planning reads the manifest, the keys and a dozen NAS folders); other workers' hand-offs
-  are merged each loop while it waits, every two minutes while a job runs.
+  heartbeat (planning reads the manifest, the keys, a dozen NAS folders and the terrain packs'
+  indexes, which the units' keys read: each read once by its pack's content name, two range reads,
+  and kept in the agent's `pack-idx/`, so after the first plan only a terrain job's new packs;
+  13–64 s for the build's 529 on 2026-10-06, and a unit's terrain worked out again only when a pack
+  it reads or its reach changes); other workers' hand-offs are merged each loop while it waits, every
+  two minutes while a job runs.
 - **Two jobs at once** (`agent::SECOND`): beside the first job, the build Mac runs a second, the
   plan's first job of these steps, in this order: the trains' and the landmarks' steps that mostly
   wait on the internet (the heritage chain, the items' facts, the rail feeds and trains a day, the
@@ -1799,6 +1836,10 @@ At each phase's end an Opus agent reviews the work against this plan.
    Python step shares: the published copy isn't left as published (the updater checks a version's
    files only as it copies them), and each version makes its own (~380 MB, kept with its version).
    Fix: one environment per lock file beside the app, made as an app is installed.
+3. **Stale terrain hi packs** (§5, Shrinking): a z6 tile the coverage has left keeps its hi pack
+   (98 of the 496 on 2026-10-06), while its area's runs make its z8–z6 from the raw tiles alone,
+   so the units near it stage hi tiles beside zoomed-out ones made otherwise (their keys see any
+   change there).
 
 3. **Kept areas offline** (§4, Mirror, per Mac): a whole road (`/api/road`) leaving a kept area
    reads the base packs of every unit it crosses, and fails away from the NAS when one of them
@@ -1889,3 +1930,10 @@ At each phase's end an Opus agent reviews the work against this plan.
   Mac's agent sends what the NAS lacks as it starts (the next run may be the next pass's, months
   away). The heritage scripts run in the app's Python environment, as the other steps do: theirs
   was the only one kept in the cache.
+- **A unit's key names the terrain tiles it reads, by their contents** (§6, Job keys; 2026-10-06),
+  not the terrain hi packs within 30 km. A terrain run that changed part of a z6 tile rebuilt every
+  unit within 30 km of it, while the hi packs' names couldn't see the zoomed-out tiles a long way
+  reads, nor a stale hi pack's z6 tile made again from the raw tiles alone.
+- **A change of key scheme re-keys the records** (§8, A new key scheme): a change of keys
+  mustn't build again what would come out the same, and the units' alone would have rebuilt all
+  284 (some seven hours of the build Mac).
