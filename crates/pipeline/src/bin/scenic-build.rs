@@ -36,6 +36,12 @@
 //!                                "lo Q" (road and rail lo packs)
 //!   buildings [--dem dir] [--workers n]  the world's roadside buildings (pipeline::buildtiles):
 //!                                Overture's release, in z8 tiles, onto the NAS with their index
+//!   bldprep <T …> [--dem dir]    the 3D buildings' normalized files of z6 tiles T (pipeline::bld::prep:
+//!                                dem/bldprep.py reads the downloaded Overture row groups and the
+//!                                GHSL windows under T), as work/bld/6-x-y
+//!   bldtiles <T …> [--pass d] [--regions dir]  the 3D buildings' tiles of z6 tiles T
+//!                                (pipeline::bld::job): the buildings touching the coverage, their
+//!                                heights filled, z12–14, as the hi pack layers/buildings/hi/6-x-y
 //!   trees <T …> [--pass d] [--dem dir] [--chm dir] [--expect-same T,…]  the tree cover layers
 //!                                (pipeline::treepacks), clipped to the coverage: of z6 tiles T (a
 //!                                piece: its hi packs and its mid; --expect-same, those made again
@@ -343,6 +349,8 @@ fn main() -> Result<()> {
             let workers = opt(&args, "--workers").map(|w| w.parse()).transpose()?.unwrap_or((threads * 2).clamp(4, 32));
             pipeline::buildtiles::build(&mut out, &dem, &scratch, workers)?;
         }
+        "bldprep" => bldprep_step(&mut out, &args)?,
+        "bldtiles" => bldtiles_step(&mut out, &args)?,
         "trees" => {
             // trees <tile …> [--pass d] [--dem dir] [--chm dir] [--expect-same T,…]: the tree cover
             // of z6 tiles (pieces: their hi packs and mids; pipeline::treepacks::build_piece), or a
@@ -876,6 +884,8 @@ fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
         l if l.starts_with("ov-") || l == "stations" => (0, pipeline::ovconv::MAXZ),
         // Blocks at zooms 0, 3 and 6 (the app picks one by the view's zoom).
         "ferries" => (0, 6),
+        // The 3D buildings: z12–14 hi packs (pipeline::bld).
+        "buildings" => (pipeline::bld::MINZOOM, pipeline::bld::MAXZOOM),
         _ => return None,
     })
 }
@@ -906,7 +916,7 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
                     l if l.starts_with("trees-") => "terrarium-webp",
                     l if l.starts_with("grid-") => "u8-zstd",
                     l if l.starts_with("marks-") => "rdmt",
-                    l if l.starts_with("ov-") || l == "stations" => "mvt",
+                    l if l.starts_with("ov-") || l == "stations" || l == "buildings" => "mvt",
                     "ferries" => "geojson-gz",
                     _ => "unknown",
                 };
@@ -2715,6 +2725,52 @@ fn coverage_of(out: &Out, args: &[String]) -> Result<pipeline::coverage::Coverag
         .map(|p| pipeline::outlines::Outlines::open(&p))
         .transpose()?;
     pipeline::coverage::Coverage::from_recipes(&recipes, outlines.as_ref(), &out.root().join("inputs/outlines"))
+}
+
+/// The z6 tiles named (`6/x/y`), at least one.
+fn z6_tiles(args: &[String], step: &str) -> Result<Vec<Unit>> {
+    let ts: Vec<Unit> = positional(args).iter().map(|t| Unit::parse(t).filter(|u| u.z == 6 && u.x < 64 && u.y < 64).with_context(|| format!("not a z6 tile: {t}"))).collect::<Result<_>>()?;
+    anyhow::ensure!(!ts.is_empty(), "{step} <6/x/y …>");
+    Ok(ts)
+}
+
+/// bldprep <T …> [--dem dir]: the 3D buildings' normalized files of z6 tiles T (docs/buildings3d.md
+/// §3.1), from the downloaded Overture files and GHSL tiles (`sources/overture/<release>/`,
+/// `sources/ghsl/R2023A/`) through dem/bldprep.py.
+fn bldprep_step(out: &mut Out, args: &[String]) -> Result<()> {
+    let ts = z6_tiles(args, "bldprep")?;
+    let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
+    let names: Vec<String> = ts.iter().map(|t| format!("Reading the buildings of {}", t.slash())).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    for (k, &t) in ts.iter().enumerate() {
+        pipeline::control::safe_point("bldprep");
+        pipeline::agent::jobs::part(k, &names);
+        let c = cost_start();
+        let st = pipeline::bld::prep::run(out, t, &dem, pipeline::buildtiles::RELEASE)?;
+        eprintln!("bldprep {}: {}", t.slash(), serde_json::to_string(&st)?);
+        pipeline::control::done("bldprep", &t.slash());
+        note_cost("bldprep", &t.slash(), c);
+    }
+    Ok(())
+}
+
+/// bldtiles <T …> [--pass d] [--regions dir]: the 3D buildings' tiles of z6 tiles T (docs/buildings3d.md
+/// §3.1): those touching the coverage, heights filled, as T's hi pack.
+fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
+    let ts = z6_tiles(args, "bldtiles")?;
+    let cov = coverage_of(out, args)?;
+    let names: Vec<String> = ts.iter().map(|t| format!("Raising the 3D buildings of {}", t.slash())).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    for (k, &t) in ts.iter().enumerate() {
+        pipeline::control::safe_point("bldtiles");
+        pipeline::agent::jobs::part(k, &names);
+        let c = cost_start();
+        let sum = pipeline::bld::job::build(out, &cov, t)?;
+        eprintln!("bldtiles {}: {}", t.slash(), serde_json::to_string(&sum)?);
+        pipeline::control::done("bldtiles", &t.slash());
+        note_cost("bldtiles", &t.slash(), c);
+    }
+    Ok(())
 }
 
 /// The z6 tiles a terrain or slope run makes, by z3 pack: those near the coverage (as the agent's
