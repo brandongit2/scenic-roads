@@ -64,6 +64,10 @@
 //!   put <logical> <ext> <file>   upload a file under a logical name
 //!   verify                       check every unverified upload on the NAS (SHA-256 over SSH)
 //!   catalog                      publish a catalog of the build manifest
+//!   rekey-check [--pass d]       what re-keying the records for the units' new keys
+//!                                (pipeline::agent::rekey) would do now: the units re-keyed, and
+//!                                those left to build again, each with why; and the times that show
+//!                                its one assumption holds. Reads only: writes nothing, keeps no index
 //!
 //! `--cache` is where base packs are kept locally (copied from the NAS when missing).
 
@@ -127,6 +131,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
     let root = PathBuf::from(opt(&args, "--root").context("--root <nas project folder>")?);
+    // (Before the scratch folder: it writes nothing.)
+    if step == "rekey-check" {
+        return rekey_check(&root, &args);
+    }
     let scratch = PathBuf::from(opt(&args, "--scratch").unwrap_or_else(|| "/tmp/scenic-build".into()));
     let mut out = Out::open(&root, &scratch)?;
     let t0 = std::time::Instant::now();
@@ -1047,7 +1055,11 @@ fn raw_tiles(out: &Out, dir: &Path) -> pipeline::terrain_pack::RawTiles {
 
 /// UTC now as RFC 3339 (no chrono dependency).
 fn chrono_now() -> String {
-    let s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+    utc(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64)
+}
+
+/// Seconds since the epoch as RFC 3339 UTC (`2026-10-05T03:55:11Z`).
+fn utc(s: i64) -> String {
     let (days, rem) = (s.div_euclid(86400), s.rem_euclid(86400));
     // Civil from days (Howard Hinnant's algorithm).
     let z = days + 719_468;
@@ -1061,6 +1073,170 @@ fn chrono_now() -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem / 60 % 60, rem % 60)
+}
+
+/// RFC 3339 UTC as `utc` writes it (a catalog's `created`), as seconds since the epoch.
+fn epoch_of(t: &str) -> Option<i64> {
+    let b = t.as_bytes();
+    if b.len() != 20 || b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' || b[19] != b'Z' {
+        return None;
+    }
+    let n = |r: std::ops::Range<usize>| t.get(r)?.parse::<i64>().ok();
+    let (y, m, d, hh, mm, ss) = (n(0..4)?, n(5..7)?, n(8..10)?, n(11..13)?, n(14..16)?, n(17..19)?);
+    // Days from civil (Howard Hinnant's algorithm).
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * ((m + 9) % 12) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some((era * 146_097 + doe - 719_468) * 86400 + hh * 3600 + mm * 60 + ss)
+}
+
+// ---- rekey-check -------------------------------------------------------------------------------
+
+/// `rekey-check`: what re-keying the records for the units' new keys (pipeline::agent::rekey) would
+/// do now, read from the NAS with nothing written (no scratch folder, no index kept): the units
+/// re-keyed, and those left to build again, each with why. And the times that show its one
+/// assumption: a unit re-keyed that reads an area's zoomed-out terrain (z8–z4) was built after the
+/// build first made that area's (before, it may have staged the converted legacy tiles, which its
+/// old key couldn't tell from the build's; docs/plan.md §8, A new key scheme): its base pack written
+/// over an hour after that area's first lo pack after the conversion's (the first catalog's), by
+/// that file's time or, if earlier, the catalog's that first listed it.
+fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
+    use pipeline::agent::{build, rekey, tiles::TerrainTiles};
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(root)).context("no complete OSM pass")?;
+    let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
+    let keys = build::Keys::load_strict(root)?;
+    let (recipes, bad) = pipeline::agent::recipes::load(&root.join("inputs/regions"));
+    anyhow::ensure!(bad.is_empty(), "regions that can't be read now (the agent re-keys nothing meanwhile): {bad:?}");
+    let outlines = m.get(&format!("sources/osm/{date}/outlines")).map(|c| pipeline::outlines::Outlines::open(&root.join(c))).transpose()?;
+    let cov = pipeline::coverage::Coverage::from_recipes(&recipes, outlines.as_ref(), &root.join("inputs/outlines"))?;
+    if build::reach_work(&date, &m, &keys).is_some() {
+        println!("(the pass's reaches are to be made again: the agent re-keys nothing until they are)");
+    }
+    let reach = match pipeline::reach::Reaches::load(root, &m, &date) {
+        Ok(Some(r)) => r,
+        Ok(None) => bail!("the pass {date} has no reaches"),
+        Err(e) => bail!("the pass's reaches: {e:?}"),
+    };
+    let digests = pipeline::agent::input_digests(root);
+    let t0 = std::time::Instant::now();
+    let mut tiles = TerrainTiles::new(None);
+    let n = tiles.load(root, &m);
+    println!("pass {date}, {} regions; the terrain packs' indexes: {n} read in {:.1} s, {} not", recipes.len(), t0.elapsed().as_secs_f64(), tiles.unread().count());
+    for (c, why) in tiles.unread() {
+        println!("  {c}: {why}");
+    }
+    let t1 = std::time::Instant::now();
+    let old = rekey::v1::unit_keys(&cov, &date, &m, Some(&reach), &digests);
+    let t_old = t1.elapsed().as_secs_f64();
+    let new: BTreeMap<String, Option<String>> = build::unit_keys(&cov, &date, &m, Some(&reach), &digests, &tiles).into_iter().map(|(u, k)| (u.slash(), k)).collect();
+    let t_new = t1.elapsed().as_secs_f64() - t_old;
+    let mut after = keys.clone();
+    let r = rekey::rekey(&mut after, &cov, &date, &m, Some(&reach), &digests, &tiles);
+    println!("(the old keys took {t_old:.1} s, the new {t_new:.1} s, the re-keying {:.1} s)", t1.elapsed().as_secs_f64() - t_old - t_new);
+    // (Again on what it made: nothing to do, as each plan's re-keying finds once it's done.)
+    let t2 = std::time::Instant::now();
+    let mut twice = after.clone();
+    let again = rekey::rekey(&mut twice, &cov, &date, &m, Some(&reach), &digests, &tiles);
+    println!("a second pass: {} (in {:.1} s)", if again.changed() || twice != after { "it changed the records again" } else { "nothing to do" }, t2.elapsed().as_secs_f64());
+    let rec = |u: Unit| keys.unit.get(&u.slash());
+    let new_of = |u: Unit| new.get(&u.slash()).and_then(Option::as_ref);
+    let current: Vec<Unit> = old.iter().filter(|(u, k)| rec(*u) == Some(k)).map(|(u, _)| *u).collect();
+    let already = old.iter().filter(|(u, _)| rec(*u).is_some() && rec(*u) == new_of(*u)).count();
+    let stale = old.iter().filter(|(u, k)| rec(*u).is_some_and(|x| x != k && Some(x) != new_of(*u))).count();
+    let never = old.iter().filter(|(u, _)| rec(*u).is_none()).count();
+    let built: BTreeSet<String> = old.iter().map(|(u, _)| u.slash()).collect();
+    let words = |v: &[String]| if v.is_empty() { String::new() } else { format!(": {}", v.join(", ")) };
+    println!("units (worked out in {:.1} s): {} recorded, {} the coverage builds", t1.elapsed().as_secs_f64(), keys.unit.len(), old.len());
+    println!("  current under the old keys: {}", current.len());
+    println!("    re-keyed: {} ({} of them without outputs{})", r.moved.len(), r.empty.len(), words(&r.empty));
+    println!("    left to build again: {}", r.left.len());
+    println!("    unknown now (an index unread): {}", r.unknown.len());
+    println!("  under the new keys already: {already}");
+    println!("  stale under the old keys (built again either way): {stale}");
+    println!("  never built: {never}");
+    println!("  recorded, but not built by the coverage now (pruned in time): {}", keys.unit.keys().filter(|u| !built.contains(*u)).count());
+    let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+    for (_, why) in &r.left {
+        for w in why {
+            *kinds.entry(w.split(':').next().unwrap_or_default().to_string()).or_default() += 1;
+        }
+    }
+    println!("left to build again ({} units), by why:", r.left.len());
+    for (k, n) in &kinds {
+        println!("  {k}: {n}");
+    }
+    for (u, why) in &r.left {
+        println!("  {u}  {}", why.join("; "));
+    }
+    for (u, why) in &r.unknown {
+        println!("  {u}  unknown now: {why}");
+    }
+
+    // The build's first zoomed-out terrain of each area it makes terrain for.
+    let targets: BTreeSet<String> = build::coverage_tiles(&cov).keys().map(|q| format!("3/{}/{}", q.0, q.1)).collect();
+    let pieces: BTreeSet<String> = build::coverage_tiles(&cov).into_values().flatten().map(|(x, y)| format!("layers/terrain/hi/6-{x}-{y}")).collect();
+    let hi: Vec<&String> = m.keys().filter(|l| l.starts_with("layers/terrain/hi/")).collect();
+    println!("terrain hi packs: {}, {} of them stale (their z6 tile no longer near the coverage)", hi.len(), hi.iter().filter(|l| !pieces.contains(**l)).count());
+    // (The served catalogs and those held for review, as they were made.)
+    let mut cats: Vec<(i64, String, store::catalog::Catalog)> = Vec::new();
+    for dir in ["catalog", "catalog-held"] {
+        for n in store::catalog::list(&root.join(dir))? {
+            match store::catalog::read(&root.join(dir).join(store::catalog::file_name(n))) {
+                Ok(c) => cats.push((epoch_of(&c.created).unwrap_or(i64::MAX), format!("{dir} {n}"), c)),
+                Err(e) => println!("  ({dir}/{n} not read: {e:#})"),
+            }
+        }
+    }
+    cats.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+    let first = store::catalog::list(&root.join("catalog"))?.into_iter().min().map(|n| store::catalog::read(&root.join("catalog").join(store::catalog::file_name(n)))).transpose()?.context("no catalog")?;
+    let lo_of = |c: &store::catalog::Catalog, q: &str| -> Option<String> { Some(c.files.get(c.layers.get("terrain")?.lo.get(q)?)?.file.clone()) };
+    let mtime = |content: &str| std::fs::metadata(root.join(content)).and_then(|md| md.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64);
+    let mut first_new: BTreeMap<String, (i64, String)> = BTreeMap::new();
+    for (at, name, c) in &cats {
+        for q in c.layers.get("terrain").map(|l| l.lo.keys().cloned().collect::<Vec<_>>()).unwrap_or_default() {
+            let Some(content) = lo_of(c, &q).filter(|x| lo_of(&first, &q).as_ref() != Some(x)) else { continue };
+            let t = mtime(&content).map_or(*at, |f| f.min(*at));
+            if first_new.get(&q).is_none_or(|(x, _)| t < *x) {
+                first_new.insert(q, (t, name.clone()));
+            }
+        }
+    }
+    println!("the build's first zoomed-out terrain of each area it makes terrain for (after catalog {}'s, the conversion's), written:", first.n);
+    for q in &targets {
+        match first_new.get(q) {
+            Some((t, name)) => println!("  {q}  {} (first listed by {name})", utc(*t)),
+            None => println!("  {q}  none yet"),
+        }
+    }
+    let (mut reading, mut shown, mut moved) = (0, 0, 0);
+    let mut not: Vec<String> = Vec::new();
+    for &u in &current {
+        let (Some(base), Some(ru)) = (m.get(&format!("base/{}", u.dash())), reach.get(u)) else { continue };
+        let Ok(read) = build::unit_terrain_tiles(u, ru, &m, &tiles) else { continue };
+        let areas: BTreeSet<String> = read.iter().filter(|t| (4..=8).contains(&t.0)).map(|&(z, x, y, _)| format!("3/{}/{}", x >> (z - 3), y >> (z - 3))).filter(|q| targets.contains(q)).collect();
+        if areas.is_empty() {
+            continue;
+        }
+        reading += 1;
+        let is_moved = r.moved.contains(&u.slash());
+        moved += is_moved as usize;
+        let at = mtime(base);
+        if at.is_some_and(|b| areas.iter().all(|q| first_new.get(q).is_some_and(|(t, _)| b - 3600 > *t))) {
+            shown += 1;
+        } else {
+            let each: Vec<String> = areas.iter().map(|q| format!("{q} {}", first_new.get(q).map_or("none".to_string(), |(t, _)| utc(*t)))).collect();
+            not.push(format!("  {} ({}), built {}; first of {}", u.slash(), if is_moved { "re-keyed" } else { "left to build" }, at.map_or("?".to_string(), utc), each.join(", ")));
+        }
+    }
+    println!("units current under the old keys, with outputs, that read zoomed-out terrain (z8–z4) of those areas: {reading} ({moved} of them re-keyed)");
+    println!("  built over an hour after the build first made each such area's: {shown}");
+    println!("  not shown so: {}", not.len());
+    for l in &not {
+        println!("{l}");
+    }
+    Ok(())
 }
 
 // ---- base(U) from the pass ------------------------------------------------------------------
@@ -2699,6 +2875,15 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn catalog_times_both_ways() {
+        for t in ["2026-10-05T03:55:11Z", "2024-02-29T23:59:59Z", "1970-01-01T00:00:00Z", "2000-03-01T12:00:00Z"] {
+            assert_eq!(super::utc(super::epoch_of(t).unwrap()), t);
+        }
+        assert_eq!(super::epoch_of("1970-01-02T00:00:01Z"), Some(86401));
+        assert_eq!(super::epoch_of("2026-10-05 03:55:11"), None);
+    }
+
     #[test]
     fn a_boxs_canopy_files() {
         // Unit 6/20/22 grown by 30 km (New Brunswick): one 10° square, its three files.

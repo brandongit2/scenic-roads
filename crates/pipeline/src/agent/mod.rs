@@ -3446,7 +3446,7 @@ impl Agent {
 /// What jobs read from inputs/ beside the manifest, by digest: the ferry timetables
 /// ("ferries-freq", by content), Taiwan's MOI DTM ("moi-dtm", by names, sizes and times: large
 /// files, put there by hand), and which keys inputs/keys.env holds ("keys", `key_names`).
-fn input_digests(root: &Path) -> BTreeMap<String, String> {
+pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
     let mut inputs: BTreeMap<String, String> = BTreeMap::new();
     if let Ok(rd) = std::fs::read_dir(root.join("inputs/ferries/freq")) {
         let mut files: Vec<(String, Vec<u8>)> = rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).ok()?))).collect();
