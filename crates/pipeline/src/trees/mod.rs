@@ -11,11 +11,12 @@
 //! - **Tiles:** Terrarium-encoded lossless WebP (`crate::webp`): trees.py's pixels, not its bytes
 //!   (another encoder).
 //!
-//! A block is a task of its own (`block`): what it reads comes from a `Source` (a folder, or URLs
-//! read through `crate::fetch`, whose mirror can hold just the byte ranges the block reads); it
-//! gives its zoom 8–12 tiles and its zoom-8 values, from which `assemble` makes the z3 tile's
-//! archives. `z3` does both, its blocks on rayon's threads (in WebAssembly one after another), and
-//! the archives are the same bytes either way, and as `assemble` writes them.
+//! A block runs on its own (`block`, so a worker can be given one: tasks of it are planned): what it
+//! reads comes from a `Source` (a folder, or URLs read through `crate::fetch`, whose mirror can hold
+//! just the byte ranges the block reads); it gives its zoom 8–12 tiles and its zoom-8 values, from
+//! which `assemble` makes the z3 tile's archives. `z3` does both, its blocks on rayon's threads (in
+//! WebAssembly one after another), and the archives are the same bytes either way, and as
+//! `assemble` writes them.
 
 pub mod mask;
 pub mod pyramid;
