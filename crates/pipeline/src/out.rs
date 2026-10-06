@@ -39,16 +39,20 @@ pub struct Out {
     as_of: Option<BTreeMap<String, String>>,
 }
 
-/// The manifest entries a unit's job writes (a prune of a unit drops them).
+/// A unit's outputs that map tiles, the road index and rail stops read: its base pack, road values
+/// and roads' English (a prune of a unit drops them; its job also writes analysis grids, which
+/// nothing a round makes reads).
 pub const UNIT_OUTPUTS: [&str; 3] = ["base/", "global/roads/", "global/roaden/"];
 
-/// Names the file of a round under way (agent::build::Round, in the agent's folder): a round's jobs
-/// (its map tiles, road index, rail stops and catalog) read the units as they were when it began
-/// (`units_as_of`), so what's built meanwhile changes nothing the round makes; it waits for the next.
+/// Names the file of a round under way and when it began, `<path>#<began>` (agent::build::Round, in
+/// the agent's folder): a round's jobs (its map tiles, road index, rail stops and catalog) read the
+/// units as they were when it began (`units_as_of`), so what's built meanwhile changes nothing the
+/// round makes; it waits for the next.
 pub const UNITS_AS_OF_ENV: &str = "SCENIC_UNITS_AS_OF";
 
 /// `m` with its units' outputs (`UNIT_OUTPUTS`) as `then` had them: those built since left out,
-/// those rebuilt since as they were, those dropped since (a prune) still out.
+/// those rebuilt since as they were, those dropped since (a prune, or a rebuild that left a unit no
+/// ways) still out.
 pub fn units_as_of(m: &BTreeMap<String, String>, then: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     m.iter()
         .filter_map(|(l, c)| match UNIT_OUTPUTS.iter().any(|p| l.starts_with(p)) {
@@ -58,15 +62,22 @@ pub fn units_as_of(m: &BTreeMap<String, String>, then: &BTreeMap<String, String>
         .collect()
 }
 
-/// The units of a round's file (`UNITS_AS_OF_ENV`): an error when it can't be read, so a round's job
-/// fails rather than make its part from the units as they are now.
-fn read_as_of(p: &Path) -> Result<BTreeMap<String, String>> {
+/// The units of a round's file (`UNITS_AS_OF_ENV`: `<path>#<began>`): an error when it can't be
+/// read, or it's another round's, or the round's over, so a round's job fails rather than make its
+/// part from other units than the round's.
+fn read_as_of(spec: &str) -> Result<BTreeMap<String, String>> {
     #[derive(serde::Deserialize)]
     struct Round {
+        began: u64,
         units: BTreeMap<String, String>,
+        #[serde(default)]
+        over: bool,
     }
-    let b = std::fs::read(p).with_context(|| format!("read the round's units, {}", p.display()))?;
-    Ok(serde_json::from_slice::<Round>(&b).with_context(|| format!("parse {}", p.display()))?.units)
+    let (p, began) = spec.rsplit_once('#').and_then(|(p, b)| Some((p, b.parse::<u64>().ok()?))).with_context(|| format!("{UNITS_AS_OF_ENV}={spec:?}: not <path>#<began>"))?;
+    let b = std::fs::read(p).with_context(|| format!("read the round's units, {p}"))?;
+    let r: Round = serde_json::from_slice(&b).with_context(|| format!("parse {p}"))?;
+    anyhow::ensure!(r.began == began && !r.over, "{p} is no longer the round this job is for (it began at {began}; the file's began at {}{})", r.began, if r.over { ", and is over" } else { "" });
+    Ok(r.units)
 }
 
 /// A JSON record (the manifest, the unverified uploads): empty when there's none yet, an error when
@@ -97,11 +108,11 @@ fn sha256_file(p: &Path) -> Result<String> {
 impl Out {
     /// `root`: the NAS project folder (or a local folder standing in for it); `scratch`: local space.
     pub fn open(root: &Path, scratch: &Path) -> Result<Self> {
-        Self::open_as_of(root, scratch, std::env::var_os(UNITS_AS_OF_ENV).as_deref().map(Path::new))
+        Self::open_as_of(root, scratch, std::env::var(UNITS_AS_OF_ENV).ok().as_deref())
     }
 
-    /// `open`, a round's job's (`as_of`: the round's file, `UNITS_AS_OF_ENV`).
-    pub fn open_as_of(root: &Path, scratch: &Path, as_of: Option<&Path>) -> Result<Self> {
+    /// `open`, a round's job's (`as_of`: its round's file and when it began, `UNITS_AS_OF_ENV`).
+    pub fn open_as_of(root: &Path, scratch: &Path, as_of: Option<&str>) -> Result<Self> {
         std::fs::create_dir_all(scratch)?;
         let manifest_path = root.join("state/build/manifest.json");
         let as_of = as_of.map(read_as_of).transpose()?;
@@ -467,7 +478,8 @@ mod tests {
         std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&now).unwrap()).unwrap();
         let round = d.path().join("round.json");
         std::fs::write(&round, serde_json::to_vec(&serde_json::json!({ "began": 1, "regions": ["a"], "last": false, "units": then })).unwrap()).unwrap();
-        let mut out = Out::open_as_of(&root, &d.path().join("s"), Some(&round)).unwrap();
+        let spec = format!("{}#1", round.display());
+        let mut out = Out::open_as_of(&root, &d.path().join("s"), Some(&spec)).unwrap();
         assert_eq!(out.manifest, seen);
         out.changes.insert("hidata/6-1-1".into(), Some("hidata/6-1-1.6666666666666666.hidata".into()));
         out.save().unwrap();
@@ -476,8 +488,12 @@ mod tests {
         let mut want = now.clone();
         want.insert("hidata/6-1-1".into(), "hidata/6-1-1.6666666666666666.hidata".into());
         assert_eq!(on_disk, want);
-        // Its file unreadable: the job fails rather than read the units as they are now.
-        assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&d.path().join("none.json"))).is_err());
+        // Its file unreadable, another round's, or the round over: the job fails rather than read
+        // other units than its round's.
+        assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&format!("{}#1", d.path().join("none.json").display()))).is_err());
+        assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&format!("{}#2", round.display()))).is_err());
+        std::fs::write(&round, serde_json::to_vec(&serde_json::json!({ "began": 1, "regions": ["a"], "last": false, "units": {}, "over": true })).unwrap()).unwrap();
+        assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&spec)).is_err());
     }
 
     #[test]

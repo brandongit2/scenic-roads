@@ -2066,8 +2066,8 @@ impl Agent {
             }
             // A round's step that reads the units: as they were when the round began.
             let step = spec.record.as_ref().map(|w| w.step.as_str()).unwrap_or("");
-            if build::AS_OF_STEPS.contains(&step) && self.round.borrow().as_ref().is_some_and(|r| !r.over) {
-                env.push((crate::out::UNITS_AS_OF_ENV.into(), self.o.home.join(ROUND_FILE).to_string_lossy().into_owned()));
+            if let Some(r) = self.round.borrow().as_ref().filter(|r| !r.over && build::AS_OF_STEPS.contains(&step)) {
+                env.push((crate::out::UNITS_AS_OF_ENV.into(), format!("{}#{}", self.o.home.join(ROUND_FILE).display(), r.began)));
             }
         }
         // Its channel, to stop at a safe point when the build pauses, and where it notes each target
@@ -2149,25 +2149,35 @@ impl Agent {
         self.mem.last_ok.get(id).is_none_or(|&t| now_s().saturating_sub(t) >= every.as_secs())
     }
 
+    /// Whether this agent keeps the build's rounds (and its history): the one that runs its jobs,
+    /// not a dry run beside it (planning only: its rounds are its own, in memory).
+    fn keeps_rounds(&self) -> bool {
+        self._lock.is_some() && !self.o.dry_run
+    }
+
     /// A round begun (build::Plan::begins, its `began` set): written to its file, which its jobs read,
     /// before any of them starts.
     fn keep_round(&self, r: build::Round) -> Result<()> {
-        crate::whole::write(&self.o.home.join(ROUND_FILE), &serde_json::to_vec(&r)?)?;
+        if self.keeps_rounds() {
+            crate::whole::write(&self.o.home.join(ROUND_FILE), &serde_json::to_vec(&r)?)?;
+            self.note(crate::coord::history::Event { targets: r.regions.clone(), note: if r.last { "the last".into() } else { String::new() }, ..crate::coord::history::Event::new("round") });
+        }
         eprintln!("agent: a round begins, publishing {} region(s){}", r.regions.len(), if r.last { " (the last)" } else { "" });
-        self.note(crate::coord::history::Event { targets: r.regions.clone(), note: if r.last { "the last".into() } else { String::new() }, ..crate::coord::history::Event::new("round") });
         *self.round.borrow_mut() = Some(r);
         Ok(())
     }
 
-    /// The round under way is over (its catalog out, or nothing left it would publish): kept without
-    /// its units, for when it began.
+    /// The round under way is over (its catalog made, or nothing left it would publish): kept
+    /// without its units, for when it began.
     fn end_round(&self) {
         let mut kept = self.round.borrow_mut();
         let Some(r) = kept.as_mut().filter(|r| !r.over) else { return };
         r.over = true;
         r.units.clear();
-        if let Err(e) = serde_json::to_vec(&*r).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&self.o.home.join(ROUND_FILE), &b)) {
-            eprintln!("agent: noting the round over: {e:#}");
+        if self.keeps_rounds() {
+            if let Err(e) = serde_json::to_vec(&*r).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&self.o.home.join(ROUND_FILE), &b)) {
+                eprintln!("agent: noting the round over: {e:#}");
+            }
         }
         eprintln!("agent: the round that began {} min ago is over", now_s().saturating_sub(r.began) / 60);
     }
@@ -2366,7 +2376,7 @@ impl Agent {
         let since_last = self.round.borrow().as_ref().map(|r| now_s().saturating_sub(r.began)).or(since_publish);
         let mut planned = {
             let kept = self.round.borrow();
-            build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), build::Rounds { each: &covs.each, on_map: &on_map, since_last, current: kept.as_ref().filter(|r| !r.over) })
+            build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), build::Rounds { each: &covs.each, on_map: &on_map, since_last, current: kept.as_ref().filter(|r| !r.over), held })
         };
         let edit_hold = edit_held(self.edited_at.get());
         // (Hand-offs of work done not yet merged: counted as built, their files not yet in the
@@ -2964,7 +2974,13 @@ impl Agent {
             k.record(step, done);
             k.save(root)
         }) {
-            Ok(()) => true,
+            Ok(()) => {
+                // (Its catalog made, a round is over: what changed meanwhile goes out with the next.)
+                if matches!(step, "catalog" | "catalog-held") {
+                    self.end_round();
+                }
+                true
+            }
             Err(e) => {
                 eprintln!("agent: recording {} of {step}: {e:#}", done.len());
                 false
@@ -3457,6 +3473,30 @@ mod tests {
         assert!(a.slots[1].running.is_none());
         assert!(a.beside_why.as_deref().is_some_and(|w| w.contains("runs alone, next")), "{:?}", a.beside_why);
         stop(&mut a);
+    }
+
+    #[test]
+    fn a_rounds_catalog_made_ends_it_and_a_dry_run_keeps_its_rounds_to_itself() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        let r = build::Round { began: 100, regions: vec!["a".into()], last: false, units: [("base/6-1-1".to_string(), "base/6-1-1.1111111111111111.base".to_string())].into(), over: false };
+        a.keep_round(r.clone()).unwrap();
+        let file = || -> build::Round { serde_json::from_slice(&std::fs::read(home.join(ROUND_FILE)).unwrap()).unwrap() };
+        assert_eq!(file(), r);
+        // Another step's keys recorded: still under way. Its catalog's: over, kept without its
+        // units (whatever changed meanwhile goes out with the next).
+        assert!(a.record_done(Some(&root), "pack", &[("6/1/1".into(), "k".into())]));
+        assert!(!file().over);
+        assert!(a.record_done(Some(&root), "catalog", &[("catalog".into(), "k".into())]));
+        let f = file();
+        assert!(f.over && f.units.is_empty() && f.began == 100);
+        // A dry run beside it (a second agent on this Mac, planning only): its rounds its own, never
+        // the file the real one's jobs read.
+        let dry = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
+        dry.keep_round(build::Round { began: 200, ..r }).unwrap();
+        assert_eq!(file().began, 100);
     }
 
     #[test]

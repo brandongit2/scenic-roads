@@ -836,7 +836,8 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **pack(T):** the base packs and road values it reads (above), those within its 100 km halo; and,
   after a dot, those of its owners alone (the units whose owned extent meets the tile itself: its
   ways-here index points into their base packs), so a round tells a tile whose owners changed from
-  one whose halo did (a key from before has no owners' part: it counts by its halo's);
+  one whose halo did (a key from before has no owners' part: a tile current by its halo stays, one
+  stale is taken as its owners changed);
 - **lo:** the base packs and road values of the units whose owned extent meets its z3 tile (lo has
   its own version: a change in the tiling it shares with pack bumps both);
 - **rail-feeds:** what decides which feeds there are: the catalogue, the coverage, the pass's
@@ -1316,12 +1317,16 @@ and, when none fits it, units' last steps.
      round began (`PUBLISH_EVERY_S`; before the agent kept rounds, after the last catalog went out
      or last started) while units or terrain are left, and at once after the last unit and terrain
      area. What it publishes is fixed as it begins (`agent::build::Round`, kept in the agent's
-     folder, `round.json`, until its catalog is out): its regions, those done then, and the units as
-     they were then, which its map tiles, road index, rail stops and catalog are made from (its
-     jobs read them through `SCENIC_UNITS_AS_OF`). A region done or a unit built meanwhile waits for
-     the next, so a round ends: it can't grow as the units go on being built. It begins once every
-     helper's work done is merged (the units it counts as built are in its copy), and not while an
-     edit is held. Its work: the slope and tree cover of its regions' areas (slope's the z3 tiles
+     folder, `round.json`): its regions, those done then, and the units as they were then, which
+     its map tiles, road index, rail stops and catalog are made from (its jobs read them through
+     `SCENIC_UNITS_AS_OF`, with when it began: a job of another round's fails). A region done or a
+     unit built meanwhile waits for the next, and so does a region of it built again meanwhile (its
+     outline redrawn). It's over once its catalog (or held catalog) is made, whatever changed in
+     the meantime (that goes out with the next): it can't grow as the units go on being built, nor
+     wait for work that keeps failing (its catalog goes out without that region). It begins once
+     every helper's work done is merged (the units it counts as built are in its copy), and not
+     while an edit is held; only the agent that runs the build's jobs keeps it (a dry run beside it
+     plans with its own). Its work: the slope and tree cover of its regions' areas (slope's the z3 tiles
      within 20 km of it, tree cover's those it meets, as their targets go; after the last unit, all
      that's left), then a prune of what the coverage no longer builds (§5, Shrinking), the roads'
      chain, and a catalog. A region done waits for its round with its slope and tree cover made: the
@@ -1332,7 +1337,8 @@ and, when none fits it, units' last steps.
      halo), and those whose owners changed (Job keys, pack(T): their base packs go out as they are,
      which the tile must index); the others, a region's border tiles, would be drawn again in every
      round as their neighbours' units are built, and wait for a later one, or the last. A round
-     with nothing to publish that isn't out already (after the last) is none.
+     with nothing to publish that isn't out already (after the last; with catalogs held, weighed
+     against the last held one) is none.
 4. **Three chains:**
    - **Roads**, in every round and after the last unit, its first stale step: a prune of map tiles
      no unit is near, road → units index, pack, lo, stations, ferries, terrain and slope roots.
