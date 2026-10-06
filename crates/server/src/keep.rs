@@ -412,9 +412,12 @@ fn once(s: &crate::AppState, m: &Mirror) -> bool {
     }
     match (s.data.nas_root(), s.data.pool()) {
         (Some(root), Some(pool)) if pool.is_online() => {
-            // Paused while the build Mac runs a job: its uploads have the NAS first.
+            // The copies pause while the build Mac runs a job: its uploads have the NAS first. Room
+            // first waits only on the build Mac itself, while its own agent runs a job (its pack
+            // and lo jobs read this mirror's base packs); and both, for a new plan.
             let pause = || changed() || s.data.agent_busy();
-            match m.sync(&cat, &plan.keep, &root, &pool, &pause) {
+            let room_waits = || changed() || s.data.job_here();
+            match m.sync_with(&cat, &plan.keep, &root, &pool, &pause, &room_waits) {
                 Ok(st) => {
                     if st.copied > 0 || st.evicted > 0 || st.short > 0 {
                         eprintln!("mirror: {st:?}");

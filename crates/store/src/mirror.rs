@@ -22,8 +22,9 @@
 //! files in that order, the shortest run from the front that covers the deficit goes, less the
 //! biggest of them it can spare, so a round doesn't go far past the deficit; the free space is
 //! measured again as each goes. Nothing is copied while the disk is under the reserve, nor does
-//! anything go while the build Mac runs a job (its jobs read this mirror), unless the disk is below
-//! half the reserve.
+//! anything go while the caller says to wait (`sync_with`: on the build Mac, while its own agent
+//! runs a job, whose pack and lo jobs read this mirror's base packs), unless the disk is below half
+//! the reserve.
 //!
 //! **Copy order**, one file at a time in large sequential reads through the I/O pool: the
 //! essentials, then the kept files, then the rest; within each, small worldwide files, root and lo
@@ -675,10 +676,27 @@ impl Mirror {
     /// Copies what `cat` references and isn't here yet from `nas_root`, through `pool`, until done,
     /// `pause()` says stop, or the NAS goes offline: room first (the reserve before any copy), then
     /// the essentials, the files in `keep` (content names: a Mac's kept areas'), and the rest
-    /// (module doc). Nothing goes while `pause()` says stop at the start (the build Mac runs a job,
-    /// and its jobs read this mirror), unless the disk is below half the reserve. Run it on a
-    /// background thread; it never holds the mirror's lock while it waits on the NAS.
+    /// (module doc). `pause()` holds room first back too, as on the build Mac (`sync_with`). Run it
+    /// on a background thread; it never holds the mirror's lock while it waits on the NAS.
     pub fn sync(&self, cat: &Catalog, keep: &HashSet<String>, nas_root: &Path, pool: &IoPool, pause: &dyn Fn() -> bool) -> Result<SyncStats> {
+        self.sync_with(cat, keep, nas_root, pool, pause, pause)
+    }
+
+    /// `sync`, with room first held back by `room_waits()` rather than `pause()`: while it says wait
+    /// at the start, nothing goes and nothing is copied, unless the disk is below half the reserve;
+    /// once it says so later, the sync stops as for `pause()`. For the build Mac's server: its own
+    /// agent's jobs (its pack and lo jobs read this mirror's base packs). Another Mac's room
+    /// doesn't wait for the build Mac's jobs, only its copies do (`pause()`: the build's uploads
+    /// have the NAS first).
+    pub fn sync_with(
+        &self,
+        cat: &Catalog,
+        keep: &HashSet<String>,
+        nas_root: &Path,
+        pool: &IoPool,
+        pause: &dyn Fn() -> bool,
+        room_waits: &dyn Fn() -> bool,
+    ) -> Result<SyncStats> {
         let mut stats = SyncStats::default();
         let recent = self.recent(cat)?;
         self.drop_mismatched(cat);
@@ -687,7 +705,7 @@ impl Mirror {
         if !evicts {
             eprintln!("mirror: {} is a link, or on another disk than {}: nothing is let go", self.root.join("mirror").display(), self.root.display());
         }
-        if pause() && self.free()? >= self.reserve / 2 {
+        if room_waits() && self.free()? >= self.reserve / 2 {
             stats.end = SyncEnd::Paused;
             let (plan, let_go) = self.plan(cat, &ctx);
             return self.finish(cat, &recent, stats, plan.len() as u32 + let_go);
@@ -709,7 +727,7 @@ impl Mirror {
         let mut waiting = false;
         let mut pool_of = Pool::default();
         for w in &plan {
-            if pause() {
+            if pause() || room_waits() {
                 stats.end = SyncEnd::Paused;
                 break;
             }
@@ -1680,8 +1698,8 @@ mod tests {
         let m = mirror_on(home.path(), &cap, reserve);
         let cat = two_areas(&nas, 1, 0, 1);
         m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
-        // 50 kB short of the reserve, the build Mac at work (its jobs read this mirror): nothing
-        // goes.
+        // 50 kB short of the reserve, the build Mac at work, on the build Mac (its jobs read this
+        // mirror): nothing goes.
         cap.store(used(&home.path().join("mirror")) + reserve - 50_000, SeqCst);
         let s = m.sync(&cat, &none(), nas.root(), &nas.pool, &|| true).unwrap();
         assert_eq!((s.evicted, s.end), (0, SyncEnd::Paused));
@@ -1690,6 +1708,29 @@ mod tests {
         cap.store(used(&home.path().join("mirror")) + reserve - 150_000, SeqCst);
         let s = m.sync(&cat, &none(), nas.root(), &nas.pool, &|| true).unwrap();
         assert_eq!((s.evicted, s.evicted_bytes, s.short, s.copied), (2, 160_000, 0, 0));
+    }
+
+    #[test]
+    fn on_another_mac_room_first_doesnt_wait_for_the_build_macs_job() {
+        let nas = nas();
+        let home = tempfile::tempdir().unwrap();
+        let reserve = 200_000;
+        let cap = Arc::new(AtomicU64::new(1 << 40));
+        let m = mirror_on(home.path(), &cap, reserve);
+        let cat1 = two_areas(&nas, 1, 0, 1);
+        m.sync(&cat1, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        // A new catalog (B's base pack changed), the disk 50 kB short of the reserve, the build Mac
+        // at work. On the build Mac (its own jobs read this mirror): nothing goes.
+        let cat2 = two_areas(&nas, 2, 0, 99);
+        cap.store(used(&home.path().join("mirror")) + reserve - 50_000, SeqCst);
+        let s = m.sync_with(&cat2, &none(), nas.root(), &nas.pool, &|| true, &|| true).unwrap();
+        assert_eq!((s.evicted, s.copied, s.end), (0, 0, SyncEnd::Paused));
+        // On another Mac: room first all the same (the old base pack, 80 kB), and the copies wait
+        // for the build Mac.
+        let s = m.sync_with(&cat2, &none(), nas.root(), &nas.pool, &|| true, &|| false).unwrap();
+        assert_eq!((s.evicted, s.evicted_bytes, s.short), (1, 80_000, 0));
+        assert_eq!((s.copied, s.end, s.pending), (0, SyncEnd::Paused, 1));
+        assert!(!m.has(cat1.content("base/6-33-21").unwrap()));
     }
 
     #[test]
