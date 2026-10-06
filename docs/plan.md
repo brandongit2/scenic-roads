@@ -27,6 +27,9 @@ nothing built depends on how the coverage is divided into regions.
 - A launcher (`tools/launcher`, a LaunchAgent) keeps the server running on both Macs. An idle server
   loads nothing, so it costs almost nothing.
 - The user opens `http://localhost:8080`.
+- Zoomed out, nothing small leaves the map: every road is drawn at every zoom, and every island and
+  lake too, a faint dot of its true size where the basemap is too coarse to draw it (§6, Small
+  islands and lakes).
 - `scenic status` shows what the build Mac is doing, and so does the menu bar item on both Macs
   (Scenic.app, `tools/status`). It shows the state as an icon: building, paused, waiting, nothing to
   build, a problem, or out of touch. Its menu holds the job's progress bar with the time left and a
@@ -100,7 +103,7 @@ the NAS does itself. The jobs (§8 has their order and keys):
 1. **The OSM pass**, when the NAS holds a newer planet. It makes:
    - the filtered planet;
    - the worldwide sets (rail, ferries, designated areas, places, outlines, labels, summits, hiking
-     routes, heritage-named objects);
+     routes, heritage-named objects, water);
    - the administrative and ISO 3166 outlines;
    - the worldwide basemap;
    - pieces: filtered OSM per unit, with a 10 km buffer and ways kept whole;
@@ -112,6 +115,7 @@ the NAS does itself. The jobs (§8 has their order and keys):
    - each unit's reach: where the roads, rail and ferries of its piece go (§5);
    - summits;
    - place labels;
+   - the small islands and lakes the basemap leaves out zoomed out;
    - once ever, the worldwide z8 terrain for peaks.
 3. **Heritage sites and designated areas:** one job over the coverage plus 20 km.
 4. **Global-source layers near the coverage:** terrain, then slope, per z3 pack; tree cover per z6
@@ -203,8 +207,8 @@ and the share refuses a copy's attempt to set one that differs from its folder's
 program wrote, copied into the backups).
 
 **Packs, never one file per tile.** SMB manages about 80 random reads per second per file.
-- **Our layers** (roads, rails, terrain, slope, trees, labels, overlays, marks, stations, ferries)
-  use packs.
+- **Our layers** (roads, rails, terrain, slope, trees, labels, small islands and lakes, overlays,
+  marks, stations, ferries) use packs.
   - A pack is a header and meta, then the blobs (identical blobs are stored once), then an index of
     (tile key, offset, length, raw length, 64-bit content hash) sorted by key.
   - **Root pack:** z0–2. **Lo packs:** z3–8, one per z3 tile (roads and rail z4–8). **Hi packs:**
@@ -815,6 +819,63 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
 
 The server builds missing deeper terrain and slope tiles from their ancestors.
 
+### Small islands and lakes (per pass, worldwide)
+
+Zoomed out, the basemap leaves small polygons out, so small islands vanished from the sea and from
+lakes, and small lakes from the land. The `smallwater` job (`pipeline::smallwater`) keeps them on
+the map as the roads are kept: what's too small to draw is drawn as a dot of its true size.
+- **The basemap's rule** (Planetiler's OpenMapTiles profile): a polygon is left out at a zoom where
+  its outline's area, in 256-px tile pixels, is under a minimum; an outer ring and each hole alike,
+  measured before any clipping or simplification. The sea's islands (the water polygons' holes) go
+  under 1 px² at z6–13; lakes, the other inland water and their islands under 4 px² below z12 and
+  1 px² at z12–13; everything under 1/256 px² at z14. Below z6 the basemap draws Natural Earth's
+  water alone. A CSS pixel at map zoom z is half a 256-px pixel of zoom z's tiles, so an island up
+  to 2 CSS px across (4 at the next zoom's edge) and a lake up to 4 (8) were missing.
+- **Measured** on the basemap's tiles over six places (2026-10-06, against their z13 tiles, the
+  Azores' z12: Maine's coast, the Thousand Islands, the lakes north of Mont-Laurier, the Seto
+  Inland Sea, Argyll, the Azores): 93–99 % of what the rule keeps was there, 0–3 % of what it
+  drops. At z9 Maine's coast had 464 of its 2,178 islands and 378 of its 3,269 lakes; at z6, 49
+  and 15; at z5 and under, the 12 islands and none of the lakes Natural Earth has. The Thousand
+  Islands had 41 of 1,662 at z9 and none below z5; the Seto Inland Sea 59 of its 11,261 ponds and
+  lakes at z9.
+- **Reads** the pass's `water` set: what the basemap draws as water (natural=water, the reservoir,
+  basin and salt pond land uses, docks, water=river … wastewater; not bays, tunnels or covered
+  water) and the coastline, through `osmium export` (areas assembled, the coastline's ways kept as
+  lines). A water area's polygons are lakes (not water along a line: a river's, a canal's, a
+  stream's) and their holes islands; the coastline's ways, joined end to end into closed rings,
+  are the sea's islands (land on the left: the rings that go round anticlockwise). Left out: rings
+  across the antimeridian, coastline chains that don't close (a continent's, or broken), islands
+  of over 4 px² at z0 (which every zoom has), and anything under 1 m².
+- **Which zooms lack each:** z6–13 by the same rule, on the ring's area in Web Mercator; z0–5 by
+  asking the basemap's own tiles whether its water is there at a point inside it (a lake is there
+  when the point is in water, an island when it isn't, and an island of a lake the basemap lacks
+  is missing with it; under 1 km², missing).
+- **Tiles** (z0–12, `layers/smallwater`, packs as our other layers, served at `/tiles/smallwater`;
+  docs/formats.md): at each zoom, what the basemap lacks there. Under 1 px², a point: those of one
+  1-px cell and kind summed at the biggest one's place (their area-weighted centre drifted to the
+  cell's middle where they crowd, and a lake district drew a lattice), in cells twice, four or
+  more times as wide where a 16-px block would hold more than 64 points: a tile at most 16,384,
+  and a crowded block summed beside a sparse one, not a tile beside a tile (whose edge showed).
+  The app draws a circle a point, facing the screen (4 vertices; lying on the globe, MapLibre
+  makes it 16): the densest views measured (1,200 × 800 CSS px: Hudson Bay at z3, Labrador at
+  z4, Finland at z5, the lakes north of Mont-Laurier at z6) drew 63,000–70,000, under 280,000
+  vertices, about 12 MB with their attributes, an eighth of the roads' 100 MB at z6 over Maine.
+  From 1 px² (lakes and their islands at 1–4 px², z6–11; whatever Natural Earth lacks below z6),
+  its outline, simplified as the basemap's. z12's tiles serve z13 overzoomed, marking what the
+  basemap still lacks there.
+- **Drawn** (`web/src/basemap.ts`): a point as a dot of its true area, never under 1.25 CSS px
+  across, its opacity its true diameter over that (at least 0.15), as a road under a pixel wide is
+  drawn a pixel wide at its width's share; summed cells by their summed area, so a lake district
+  reads by how much of it is water. Islands are land-coloured, lakes have the lakes' colour, and
+  where the coastal shading draws a shore (the sea's; lakes' and rivers' too with Lakes & rivers)
+  its shoreline goes round them (their shores aren't in the water it's measured from). Outlines
+  are drawn as the basemap draws water, with the dots' colours. In a tile, bigger first, so what
+  lies inside something (a pond on an island in a lake) is drawn over it.
+  The dots hand over to the basemap's polygons at the zoom its tiles have them: a dot is round, so
+  an elongated one changes shape there (4.5 px across at most). Under the Water switch (Settings →
+  Map); the dots aren't draped on the terrain, so they're drawn after every layer that is (one
+  between them would split the draping in two).
+
 ### Worldwide road values (in the OSM pass)
 
 **One chaining** serves whole roads, strokes, drives, hover, profiles and rides.
@@ -914,6 +975,7 @@ one pinned release (2026-09-23.1), before any unit runs:
 - **Road → units index** (`global/roadunits`): for whole-road hover.
 - **Labels** (per pass, worldwide): places, states, seas, lakes and parks from the pass's labels set
   (`dem/labels.py`, with each thing's own English).
+- **Small islands and lakes** (per pass, worldwide): above.
 - **Rail stops:** from the rail set, for the built units' tiles + 20 km.
 - **Ferries:** worldwide, from the ferries set and `inputs/ferries/freq`.
 - **Rail service:** trains a day on the coverage's rail ways (below).
@@ -1043,7 +1105,8 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   writes (the feeds' list, its checks and zips), so it doesn't run again for its own sake; it waits
   while `inputs/keys.env` can't be read;
 - **rail:** the feeds' list (each feed's zip by content name, and the day it counts from), the MTR's
-  pairs, the pass's rail set and the coverage.
+  pairs, the pass's rail set and the coverage;
+- **smallwater:** its version, the pass's water set and its basemap, by content name.
 
 The landmark jobs, stations, ferries and overlays: `docs/phase5.md`.
 
@@ -1359,10 +1422,11 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   - **Any job's end** (done, paused, failed, stopped) records the targets it noted done, so they're
     never built again.
 - **Room on the disk:** before a job starts (and before its targets are claimed), when the Mac has
-  less free than the job needs (30 GB; a terrain run 55 GB, for its area's raw tiles held twice
-  while they're packed onto the NAS, and on a run again the area's archives copied here and merged,
-  those copies spared; the OSM pass, its own 80 GB less the pack cache it clears; the M1's helper,
-  15 GB, but a terrain run's as here), the local copies of what the NAS keeps (Meta's canopy squares, AWS's raw
+  less free than the job needs (30 GB; the small islands and lakes' 45 GB, for the water set and
+  osmium's index of its nodes, 21 GB together; a terrain run 55 GB, for its area's raw tiles held
+  twice while they're packed onto the NAS, and on a run again the area's archives copied here and
+  merged, those copies spared; the OSM pass, its own 80 GB less the pack cache it clears; the M1's
+  helper, 15 GB, but a terrain run's as here), the local copies of what the NAS keeps (Meta's canopy squares, AWS's raw
   terrain tiles, the copies of the records' files staging reads, `blobs/`, and of the pageview
   months' indexes, `items/months/`, but while an items or heritage job, this one or one beside,
   reads them) lose files until it has a sixth more (the OSM pass: what it needs), so the next jobs
@@ -1618,7 +1682,8 @@ and, when none fits it, units' last steps.
    - `terrain-z8` (once);
    - roadside buildings (once per Overture release; the units wait for them);
    - summits;
-   - labels.
+   - labels;
+   - the small islands and lakes.
 3. **The regions' build,** a region at a time, each published as it's done (`agent::build::plan`):
    - heritage-sites (first, one job; not waited for by the rest);
    - a region at a time: the regions the map hasn't at all first (not in its catalog), then those it
@@ -1793,6 +1858,7 @@ everything is rebuilt.
 | outlines | 2.7 GB |
 | OSM pieces (all land) | ~58 GB (measured as the cut finished) |
 | basemap (worldwide) | 28.6 GB (its input 16.3 GB; Planetiler needs ~6× its input while it runs; 46 min) |
+| small islands and lakes (worldwide; measured 2026-10-06 on the build Mac, not yet run by the agent) | 26.4 million (23.1 M lakes, 2.5 M islands of lakes and rivers, 0.8 M of the sea): 844 MB of tiles (929,477, z0–12) in 1,467 packs; its water set 6.5 GB (890 M nodes, 29 M ways, 0.97 M relations), cut from the filtered planet in 65 min over the NAS; the job 9.4 min with the set here and osmium's node index in memory (14 GB), before the packs' uploads |
 | today's 34 regions, converted | base packs 26.4 GB (181 units), hidata 5.8 GB, layers 80.3 GB (including both basemaps), markdata 0.1 GB, global 1.6 GB |
 | today's build inputs (`sources/legacy`) | 105.4 GB, until the cutover |
 | NAS | 8.5 TB free of 35 TB |
@@ -1836,8 +1902,10 @@ At each phase's end an Opus agent reviews the work against this plan.
      - terrain and slope per z3 pack, tree cover per z6 tile and its z3 tiles' assemblies;
      - the worldwide z8 terrain;
      - the world's roadside buildings, once per Overture release;
-     - grids inside the units.
-   - The 2026-09-28 planet's pass is complete, with its worldwide jobs.
+     - grids inside the units;
+     - the small islands and lakes the basemap leaves out zoomed out (per pass).
+   - The 2026-09-28 planet's pass is complete, with its worldwide jobs but the small islands and
+     lakes': the agent cuts their water set and runs their job once an app with them is published.
    - **Not built:** the sea mask.
 4. **Per-unit pipeline and rankings: mostly done.**
    - **Built:**
@@ -1861,7 +1929,8 @@ At each phase's end an Opus agent reviews the work against this plan.
      - zoomed-out queries;
      - the Regions panel (add, rename, remove; regions and the view kept on each Mac);
      - the status bar;
-     - catalog switching.
+     - catalog switching;
+     - the small islands and lakes zoomed out (their dots and outlines).
    - **Not built:** drawing, splitting and merging regions.
 6. **Cutover: mostly done.**
    1. Done: today's 34 regions, as 34 recipes (`tools/cutover/regions`), built from the 2026-09-28
@@ -1942,6 +2011,12 @@ At each phase's end an Opus agent reviews the work against this plan.
    copies). Their roads are 130 km and more north of it, beyond what any road's values read of
    the canopy, so no road's values differ. Fix: remove the six files, on the NAS and in both Macs'
    caches, before any region reaches south of the equator.
+
+6. **The small islands and lakes' sea** (§6): its islands come from the pass's coastline, the
+   basemap's sea from the water polygons pinned in `sources/basemap/` (2026-09-27), which a newer
+   pass doesn't fetch again. An island mapped since then is a dot only up to the zoom the basemap
+   would draw it from, and one no longer mapped keeps its hole there but loses its dot below it.
+   Fix: fetch the water polygons with each planet (the basemap's sea would follow it too).
 
 ## 11. Risks and checks
 
@@ -2040,3 +2115,8 @@ At each phase's end an Opus agent reviews the work against this plan.
   trees.py had made every pack, in bytes the pieces don't reproduce (§8, A new key scheme). Byte
   identity is the build's rule, so its packs are made again rather than taken as the same by their
   pixels.
+- **Small islands and lakes as a layer of dots, not a basemap that keeps them** (2026-10-06, §6):
+  Planetiler's minimum for lakes is its profile's own (4 px² below z12, not a setting), below z6
+  the basemap is Natural Earth's whatever the settings, and a polygon under a pixel draws nothing
+  anyway; dots of their true size, summed where they crowd, keep every one at every zoom for
+  points a few bytes each, and hand over to the basemap where its tiles have them.

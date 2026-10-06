@@ -113,7 +113,11 @@ pub const REKEY_COPY: &str = "state/build/jobs.pre-rekey.json";
 
 /// Steps that run alone, never beside another job: the pass's worldwide jobs (the planet, the
 /// world's buildings, a whole set at a time) and removing replaced files from the NAS.
-const ALONE: [&str; 10] = ["osm-pass", "pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "heritage-sites", "gc"];
+const ALONE: [&str; 11] = ["osm-pass", "pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "smallwater", "heritage-sites", "gc"];
+
+/// The pass's worldwide jobs, as the checklist says them.
+const WORLDWIDE: &str = "Preparing the worldwide data: sets, route ends, roads' reach, buildings, summits, labels, small islands and lakes";
+const WORLDWIDE_STEPS: [&str; 8] = ["pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "smallwater"];
 
 /// Steps that read AWS's raw terrain tiles here, which a terrain run packs onto the NAS and
 /// deletes here: never two at once.
@@ -224,6 +228,11 @@ fn helper_steps(free: u64, cheap: u64) -> Vec<String> {
 /// Mac from 34 GB free to 14 GB (2026-10-05). The area's own archive copies, which the run reads at
 /// once, are spared (`terrain_reads`).
 const TERRAIN_SPACE: u64 = 25 << 30;
+
+/// What the small islands and lakes' job needs past the others' room: the pass's water set copied
+/// here (6.5 GB) and osmium's index of its nodes' places (16 bytes a node: 890 million, 14 GB, on
+/// 2026-09-28's planet), with the tiles it draws.
+const SMALLWATER_SPACE: u64 = 15 << 30;
 
 /// Whether `p` is an archive copy a terrain run (`id`: "terrain 3/x/y") reads at once: its z3
 /// area's own (`3-x-y.…`) and its z6 tiles' (`6-X-Y.…` within it), crate::rawpack's areas.
@@ -1913,6 +1922,8 @@ impl Agent {
             PASS_SPACE.saturating_sub(dir_bytes(&self.o.home.join("cache").join("base"))).max(room::RESERVE)
         } else if spec.id.starts_with("terrain ") {
             room::RESERVE + TERRAIN_SPACE
+        } else if spec.id.starts_with("smallwater ") {
+            room::RESERVE + SMALLWATER_SPACE
         } else {
             room::RESERVE
         }
@@ -2688,7 +2699,7 @@ impl Agent {
         };
         // Per pass, worldwide: the sets it lacks in their current filters (a set added or changed
         // since it ran), the hiking routes' ends, AWS's z8 (once), Overture's buildings (once per
-        // release), the summits, the labels.
+        // release), the summits, the labels, the small islands and lakes.
         if let Some(date) = pass {
             let p = vec!["--pass".to_string(), date.to_string()];
             if !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(date, st.0))) {
@@ -2728,6 +2739,9 @@ impl Agent {
             }
             if let Some(w) = build::labels_work(date, &manifest, &keys) {
                 jobs.push(job(format!("labels {date}"), "Ranking the world's place labels", "labels", [p.clone(), vec!["--dem".into(), s(&self.o.bin.join("dem"))]].concat(), Some(w)));
+            }
+            if let Some(w) = build::smallwater_work(date, &manifest, &keys) {
+                jobs.push(job(format!("smallwater {date}"), "Finding the world's small islands and lakes", "smallwater", p.clone(), Some(w)));
             }
         }
         if recipes.is_empty() {
@@ -3140,7 +3154,7 @@ impl Agent {
         out.push(pass);
         let Some(date) = have else {
             // Nothing to size the rest by until a pass is complete: its steps, to come.
-            out.push(build::Step { what: "Preparing the worldwide data: sets, route ends, roads' reach, buildings, summits, labels".into(), steps: ["pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels"].iter().map(|s| s.to_string()).collect(), ..Default::default() });
+            out.push(build::Step { what: WORLDWIDE.into(), steps: WORLDWIDE_STEPS.iter().map(|s| s.to_string()).collect(), ..Default::default() });
             out.extend(build::checklist_to_come());
             return out;
         };
@@ -3155,13 +3169,14 @@ impl Agent {
             !manifest.contains_key(&crate::buildtiles::index_logical()),
             build::summits_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&format!("work/summits/{date}")),
             build::labels_work(&date, &manifest, &keys).is_some(),
+            build::smallwater_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&crate::osmpass::set_name(&date, "water")),
         ]
         .iter()
         .filter(|&&l| l)
         .count();
         out.push(build::Step {
-            what: "Preparing the worldwide data: sets, route ends, roads' reach, buildings, summits, labels".into(),
-            steps: ["pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels"].iter().map(|s| s.to_string()).collect(),
+            what: WORLDWIDE.into(),
+            steps: WORLDWIDE_STEPS.iter().map(|s| s.to_string()).collect(),
             left: Some(left),
             ..Default::default()
         });
@@ -3784,6 +3799,7 @@ fn first_secs(step: &str) -> f64 {
         "terrain-z8" | "buildings" | "items" => 3600.0,
         "summits" => 30.0,
         "labels" => 2200.0,
+        "smallwater" => 2000.0,
         "heritage-sites" => 240.0,
         "heritage" => 5400.0,
         "terrain" => 900.0,

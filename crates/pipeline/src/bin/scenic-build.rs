@@ -50,6 +50,13 @@
 //!                                nothing written)
 //!   labels [--pass d] [--dem dir]  the labels by importance, worldwide, from the pass's labels set
 //!                                (dem/labels.py), as the labels layer's packs
+//!   smallwater [--pass d] [--set f] [--basemap f] [--node-index i]  the small islands and lakes
+//!                                the basemap leaves out zoomed out (pipeline::smallwater),
+//!                                worldwide, from the pass's water set, as the smallwater layer's
+//!                                packs (`--set`, `--basemap`: local files instead of the
+//!                                manifest's; `--node-index`: osmium's index of node places, by
+//!                                default a sparse file in the scratch folder, `sparse_mem_array`
+//!                                to keep it in memory: to try it by hand)
 //!   convert-legacy-marks         today's stops & sights (global/legacy) as markdata per z6 tile
 //!                                and thinned tiles per kind (docs/phase5.md)
 //!   convert-legacy-overlays      today's area overlays as vector tiles (ov-*), their details and
@@ -285,6 +292,7 @@ fn main() -> Result<()> {
         "registers-import" => registers_import(&mut out, &args, &scratch)?,
         "slope" => slope_step(&mut out, &args)?,
         "labels" => labels_step(&mut out, &args, &scratch)?,
+        "smallwater" => smallwater_step(&mut out, &args, &scratch)?,
         "pass-sets" => {
             // pass-sets [--pass <date>]: the sets the pass lacks in their current filters
             // (osmpass::SETS versions), from its kept filtered planet: copied here first when
@@ -855,7 +863,7 @@ fn units_meta(out: &Out, base: &BTreeMap<String, String>) -> Result<serde_json::
 fn layer_zooms(layer: &str) -> Option<(u8, u8)> {
     Some(match layer {
         "roads" | "rails" => (4, 14),
-        "terrain" | "labels" => (0, 12),
+        "terrain" | "labels" | "smallwater" => (0, 12),
         // Stored to z11; the server makes z12 on demand.
         "slope" => (0, 11),
         l if l.starts_with("trees-") => (4, 12),
@@ -892,7 +900,7 @@ fn catalog(out: &mut Out, held: bool, ready: Option<&BTreeMap<String, Option<Str
                     "roads" | "rails" => "rt7",
                     "terrain" => "terrarium-png",
                     "slope" => "slope4-png",
-                    "labels" => "mvt",
+                    "labels" | "smallwater" => "mvt",
                     l if l.starts_with("trees-") => "terrarium-webp",
                     l if l.starts_with("grid-") => "u8-zstd",
                     l if l.starts_with("marks-") => "rdmt",
@@ -3021,6 +3029,119 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     Ok(())
 }
 
+
+/// The small islands and lakes the basemap leaves out zoomed out (pipeline::smallwater), worldwide:
+/// the pass's water set exported by osmium (its areas assembled, the coastline's ways as lines),
+/// which zooms the basemap lacks each at (its own Natural Earth tiles asked for z0–5), drawn into
+/// the smallwater layer's packs.
+fn smallwater_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    use pipeline::smallwater as sw;
+    use std::io::Read;
+    let date = match opt(args, "--pass") {
+        Some(d) => d,
+        None => pipeline::osmpass::latest_pass(out.root()).context("no complete OSM pass")?,
+    };
+    let work = scratch.join("smallwater");
+    std::fs::create_dir_all(&work)?;
+    let parts = Parts(&["Copying the water set", "Reading its islands and lakes", "Asking the basemap which it has", "Drawing the tiles", "Cutting them into packs"]);
+    parts.start(0);
+    let set = match opt(args, "--set") {
+        Some(f) => PathBuf::from(f),
+        None => {
+            let set = out.get(&pipeline::osmpass::set_name(&date, "water")).context("the pass has no water set (pass-sets makes it)")?.to_string();
+            let local = work.join("water-set.osm.pbf");
+            store::sys::copy_data(out.path(&set), &local).with_context(|| format!("copy {set}"))?;
+            local
+        }
+    };
+    parts.start(1);
+    // Areas: what the basemap draws as water; closed coastline ways stay lines, to be joined with
+    // the open ones. Only the tags that say which is which.
+    let cfg = work.join("export.json");
+    let areas: Vec<&str> = sw::AREA_TAGS.to_vec();
+    std::fs::write(&cfg, serde_json::to_vec(&serde_json::json!({
+        "attributes": {"type": false, "id": false},
+        "linear_tags": ["natural=coastline"],
+        "area_tags": areas,
+        "include_tags": ["natural", "water", "waterway", "landuse", "tunnel", "covered"],
+    }))?)?;
+    // Node locations in a sparse index on disk (16 bytes a node): osmium's default can switch to a
+    // dense array as big as the highest node id (about 100 GB for the planet's).
+    let idx = work.join("nodes.idx");
+    std::fs::remove_file(&idx).ok();
+    let index = opt(args, "--node-index").unwrap_or_else(|| format!("sparse_file_array,{}", idx.display()));
+    let mut child = pipeline::osmpass::osmium()
+        .args(["export", "-f", "geojsonseq", "--geometry-types=linestring,polygon", "--overwrite", "-o", "-"])
+        .arg("-c")
+        .arg(&cfg)
+        .arg(format!("--index-type={index}"))
+        .arg(&set)
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .context("run osmium export")?;
+    // How far: the export's bytes, against about 3.5 times the set's (measured on Maine's piece).
+    struct Counting<R>(R, std::sync::Arc<std::sync::atomic::AtomicU64>);
+    impl<R: Read> Read for Counting<R> {
+        fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.0.read(b)?;
+            self.1.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+            Ok(n)
+        }
+    }
+    let got = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let expect_mb = (std::fs::metadata(&set)?.len() * 7 / 2) >> 20;
+    let stdout = child.stdout.take().context("osmium's output")?;
+    let read = sw::read_export(std::io::BufReader::with_capacity(4 << 20, Counting(stdout, got.clone())), &|_| {
+        let mb = got.load(std::sync::atomic::Ordering::Relaxed) >> 20;
+        pipeline::agent::jobs::report(mb.min(expect_mb.saturating_sub(1)), expect_mb, "MB of the set's shapes read");
+    });
+    let st = child.wait().context("osmium export")?;
+    std::fs::remove_file(&idx).ok();
+    let (mut feats, counts) = read?;
+    anyhow::ensure!(st.success(), "osmium export of {} failed: {st}", set.display());
+    eprintln!("smallwater: {}", serde_json::to_string(&counts)?);
+    parts.start(2);
+    sw::rule_absent(&mut feats);
+    let basemap = match opt(args, "--basemap") {
+        Some(f) => PathBuf::from(f),
+        None => out.path(out.get(&format!("layers/basemap/world-{date}")).context("the pass has no basemap")?),
+    };
+    let pm = store::pmtiles::PmTiles::open(Box::new(store::range::PlainFile::open(&basemap).with_context(|| format!("open {}", basemap.display()))?))?;
+    sw::ne_absent(&mut feats, &sw::Basemap(&pm))?;
+    parts.start(3);
+    let tiles = work.join("smallwater.tiles");
+    let mut w = roadcore::archive::ArchiveWriter::create(&tiles, "{}")?;
+    // Per zoom: tiles, their bytes (gzip'd), the largest.
+    let by_zoom = std::cell::RefCell::new([(0u64, 0u64, 0u64); sw::MAXZ as usize + 1]);
+    sw::tiles(&feats, &mut |z, x, y, mvt| {
+        let gz = names::mvt::gzip(&mvt)?;
+        let s = &mut by_zoom.borrow_mut()[z as usize];
+        (s.0, s.1, s.2) = (s.0 + 1, s.1 + gz.len() as u64, s.2.max(gz.len() as u64));
+        w.add(z, x, y, &gz, mvt.len())
+    }, &|z, points, outlines| {
+        let s = by_zoom.borrow()[z as usize];
+        eprintln!("smallwater: z{z}: {} tiles, {points} points, {outlines} outlines, {:.1} MB (largest {:.0} KB)", s.0, s.1 as f64 / 1e6, s.2 as f64 / 1e3);
+        pipeline::agent::jobs::report(u64::from(z) + 1, u64::from(sw::MAXZ) + 1, "zooms drawn");
+    })?;
+    w.finish()?;
+    let (n, bytes) = by_zoom.borrow().iter().fold((0, 0), |(n, b), s| (n + s.0, b + s.1));
+    eprintln!("smallwater: {} features, {n} tiles, {:.1} MB", feats.len(), bytes as f64 / 1e6);
+    drop(feats);
+    parts.start(4);
+    let arc = roadcore::archive::Archive::open(&tiles)?;
+    let lo = layers::split_archive(out, &arc, sw::LAYER, "mvt", true, sw::MAXZ)?;
+    eprintln!("smallwater: root {:?}, {} lo, {} hi packs", lo.root.is_some(), lo.lo.len(), lo.hi.len());
+    // Packs of an earlier smallwater layer that this one doesn't have go from the manifest.
+    let keep: BTreeSet<String> = lo.root.iter().chain(lo.lo.values()).chain(lo.hi.values()).cloned().collect();
+    let prefix = format!("layers/{}/", sw::LAYER);
+    let gone: Vec<String> = out.manifest.keys().filter(|k| k.starts_with(&prefix) && !keep.contains(*k)).cloned().collect();
+    for k in gone {
+        out.remove(&k);
+    }
+    out.save()?;
+    std::fs::remove_dir_all(&work).ok();
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,5 +1,5 @@
-// The map's own loading for the status line (tasks.ts): per kind of data (basemap, terrain, slope,
-// trees, each overlay), the tiles in view that have arrived out of those wanted, from MapLibre's
+// The map's own loading for the status line (tasks.ts): per kind of data (basemap, its small islands
+// and lakes, terrain, slope, trees, each overlay), the tiles in view that have arrived out of those wanted, from MapLibre's
 // tile managers; an overlay file still being tiled in MapLibre's worker shows as processing.
 // MapLibre keeps these in its internals (style.tileManagers), read defensively: none of it is
 // public API, and a change there only empties this list.
@@ -19,6 +19,7 @@ interface ManagerLike {
 
 function labelOf(id: string): string | null {
   if (id === 'base') return 'Basemap';
+  if (id === 'smallwater') return 'Small islands & lakes';
   if (id === 'dem' || id === 'dem-hs') return 'Terrain';
   if (id === 'slope') return 'Slope';
   if (id === 'contours') return 'Contours';

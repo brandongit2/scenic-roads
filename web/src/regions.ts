@@ -194,7 +194,9 @@ export class RegionLayers {
     const map = this.map;
     if (this.ready) return true;
     if (!(map as unknown as { style?: { _loaded?: boolean } }).style?._loaded) return false;
-    const before = ['contours-3d', 'roads'].find((id) => map.getLayer(id));
+    // (Under the small islands and lakes' dots too: they aren't draped, and one between draped
+    // layers would split the draping in two.)
+    const before = ['small-water', 'contours-3d', 'roads'].find((id) => map.getLayer(id));
     const width = (w: number): ExpressionSpecification => ['interpolate', ['linear'], ['zoom'], 3, w * 0.8, 10, w * 1.2, 15, w * 1.8];
     const hidden = { visibility: 'none' as const };
     for (const src of ['coverage', 'region-draft', 'region-hover']) map.addSource(src, { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });

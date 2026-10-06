@@ -223,6 +223,22 @@ heritage-sources}`.
   5 km at zoom 0, 300 m at 3), the terminals within 30 km (from zoom 3), the records of its ways'
   lines.
 
+## Small islands and lakes (`layers/smallwater/{root,lo,hi}`; pipeline::smallwater)
+
+What the basemap leaves out zoomed out (docs/plan.md §6), made per pass from its `water` set and
+basemap. Packs as the other layers', encoding `mvt` (gzip'd vector tiles, extent 4096, z0–12; the
+app overzooms z12 to z13), one layer `w`. Each tile holds, of every island and lake the basemap
+lacks at its zoom:
+- under 1 px² of a 256-px tile: a point, its outline's area-weighted centre; the points of one
+  1-px cell (16 units) and kind are one, with their summed area, at the biggest one's place, and
+  where a 16-px block (256 units) would hold more than 64 they're summed in cells of 2, 4 … px
+  instead (so a tile holds at most 16,384);
+- from 1 px²: a polygon, its outline (exterior clockwise, simplified by 0.1 px).
+
+Properties: `k` (0 an island of the sea, 1 a lake, 2 an island of a lake or river), on points `q`
+(the area in Web Mercator m², round(8 log2): the area is 2^(q/8)) and in z12 tiles `o` (1: the
+basemap still lacks it at z13). In a tile, polygons then points, each bigger first.
+
 ## Catalog (`catalog/<n>.json.zst`)
 
 zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. Readers list
@@ -348,7 +364,8 @@ agent/pack-idx/         <hash16>.idx: the indexes of the terrain packs the build
 
 ## Server API (changes)
 
-- Tiles: `/tiles/{roads,rails,terrain,slope,labels,base}/{z}/{x}/{y}`, `/tiles/trees/{var}/{z}/{x}/{y}`.
+- Tiles: `/tiles/{roads,rails,terrain,slope,labels,smallwater,base}/{z}/{x}/{y}`, `/tiles/trees/{var}/{z}/{x}/{y}`.
+  `/api/meta` says `smallWater` when the catalog has the small islands and lakes.
   Strong `ETag`: the stored blob's hash, plus the translations versions for named tiles;
   `/tiles/base`'s is a hash of the catalog's basemap archives' content names and the tile's z/x/y, plus
   the names version (a 304 reads no archive); terrain
