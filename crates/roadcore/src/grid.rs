@@ -226,8 +226,9 @@ pub enum BlobKind {
     Broken,
     /// A small blob, not cut by the tile's edge, steeper than 45° over its width (its inradius)
     /// and two of: walled so on a quarter of its edge at least, on flat ground (or a smooth slope),
-    /// beside a blob taken or a void: a spike over water or lowland, or a lobe of an artifact's
-    /// ringing (a resampling's overshoot beside an edge of AWS's source).
+    /// beside a blob taken, a void or a pit of a ringing under the sea: a spike over water or
+    /// lowland, or a lobe of an artifact's ringing (a resampling's overshoot beside an edge of
+    /// AWS's source, a tower beside a pit).
     Spike,
     /// Broken, but under the sea: the map shows sea level there either way.
     Unseen,
@@ -304,14 +305,18 @@ pub fn repair_terrain_blobs(t: &mut [f32], z: u8, lat: f64) -> (Repair, Vec<Blob
         // to a greater by its flank, a lobe of its ringing), is judged on the ground beneath. It
         // ends at a stage that finds nothing, so the tile returned is one it found nothing in.
         let mut under = vec![false; t.len()];
+        let mut ringing = vec![false; t.len()];
         for stage in 1..=BLOB_STAGES {
             rep.stages = stage;
             let n0 = blobs.len();
             let before = hole.clone();
             let neg: Vec<f32> = t.iter().map(|&v| -v).collect();
+            // (Towers are judged knowing the pits of a resampling's ringing that the stage before
+            // found, and this stage's pits are found for the next.)
+            let mut rung = vec![false; t.len()];
             for (pit, v) in [(false, &*t), (true, &neg[..])] {
                 let n = blobs.len();
-                broken_blobs(v, if pit { -1.0 } else { 1.0 }, &before, px, &mut hole, &mut under, &mut blobs);
+                broken_blobs(v, if pit { -1.0 } else { 1.0 }, &before, px, &mut hole, &mut under, if pit { &mut rung } else { &mut ringing }, &mut blobs);
                 for b in &mut blobs[n..] {
                     b.pit = pit;
                     b.stage = stage as u8;
@@ -320,7 +325,10 @@ pub fn repair_terrain_blobs(t: &mut [f32], z: u8, lat: f64) -> (Repair, Vec<Blob
                     }
                 }
             }
-            if blobs.len() == n0 {
+            // (It ends at a stage that found nothing, its towers judged knowing the ringing's pits.)
+            let same = rung == ringing;
+            ringing = rung;
+            if blobs.len() == n0 && same {
                 break;
             }
             t.copy_from_slice(&aws);
@@ -346,7 +354,7 @@ pub fn repair_terrain_blobs(t: &mut [f32], z: u8, lat: f64) -> (Repair, Vec<Blob
 /// joins a component, that component stood above the pixel's level until then, and is weighed
 /// (repair_terrain). Where two meet, the one with the higher top goes on and the other's chain
 /// ends: each component is weighed once, for its top.
-fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], under: &mut [bool], blobs: &mut Vec<Blob>) {
+fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], under: &mut [bool], ringing: &mut [bool], blobs: &mut Vec<Blob>) {
     const NONE: u32 = u32::MAX;
     let w = TS as i32;
     let mut order: Vec<u32> = (0..v.len() as u32).collect();
@@ -379,6 +387,10 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
     type Best = (BlobKind, f64, u32, f32, f32, f32, bool);
     let mut best: Vec<[Option<Best>; 3]> = vec![[None; 3]; v.len()];
     let mut comp: Vec<u32> = Vec::with_capacity(SPIKE_MAX as usize + 1);
+    // (Pits that are a ringing's other half, small and steep and more than BLOB_RISE deep below
+    // the ground they meet, as AWS has them: their tops and ranks, and whether a chain has one.)
+    let mut rings: Vec<(u32, u32)> = Vec::new();
+    let mut ringed = vec![false; v.len()];
     let mut found: Vec<(u32, Best)> = Vec::new();
     fn find(parent: &mut [u32], mut a: u32) -> u32 {
         let mut r = a;
@@ -442,7 +454,9 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
             if seen > BLOB_RISE && seen > allowed && slot[0].is_none_or(|b| seen - allowed > b.1) {
                 slot[0] = Some((BlobKind::Broken, seen - allowed, k, rise as f32, level as f32, l as f32, edge));
             }
-            if seen > BLOB_RISE && a <= SPIKE_MAX && !edge && slot[1].is_none() {
+            // (A ringing's pit is under the sea, where nothing else makes one so steep and deep.)
+            let ring = sign < 0.0 && s.max(sl) <= 0.0 && !ringed[r as usize];
+            if (seen > BLOB_RISE || ring) && a <= SPIKE_MAX && !edge && (slot[1].is_none() || ring) {
                 // (A spike's width: its inradius, the steps from its innermost pixel to the ground.)
                 comp.clear();
                 comp.push(top[r as usize]);
@@ -461,8 +475,12 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
                     i += 1;
                 }
                 let width = inradius(&comp) as f64 * px;
-                if seen > width {
+                if seen > BLOB_RISE && seen > width && slot[1].is_none() {
                     slot[1] = Some((BlobKind::Spike, seen - width, k, rise as f32, level as f32, width as f32, edge));
+                }
+                if ring && rise > width {
+                    rings.push((top[r as usize], k));
+                    ringed[r as usize] = true;
                 }
             }
             let excess = rise - allowed;
@@ -500,6 +518,24 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
         if parent[p as usize] == p {
             for b in best[p as usize].into_iter().flatten() {
                 found.push((top[p as usize], b));
+            }
+        }
+    }
+    // The ringing's pits: their pixels as they stood (towers beside them are judged so).
+    for &(t0, at) in &rings {
+        let mut st = vec![t0];
+        ringing[t0 as usize] = true;
+        while let Some(p) = st.pop() {
+            let (x, y) = ((p % TS as u32) as i32, (p / TS as u32) as i32);
+            for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+                let (xx, yy) = (x + dx, y + dy);
+                if xx >= 0 && yy >= 0 && xx < w && yy < w {
+                    let q = (yy * w + xx) as usize;
+                    if !ringing[q] && rank[q] < at {
+                        ringing[q] = true;
+                        st.push(q as u32);
+                    }
+                }
             }
         }
     }
@@ -563,7 +599,8 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
         if kind == BlobKind::Spike {
             // Two of: walled steeper than 45° (a quarter of the steps down its edge, at least: an
             // islet comes out of the sea more gently all round), on flat ground, beside a blob
-            // taken or a void.
+            // taken, a void, or a pit of a ringing under the sea (small, steeper than 45° over its
+            // width and more than BLOB_RISE below the sea floor it meets: nothing else makes one).
             let (mut steps, mut beside) = (Vec::new(), false);
             for &p in &pixels {
                 let (x, y) = ((p % TS as u32) as i32, (p / TS as u32) as i32);
@@ -576,7 +613,7 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
                     if stamp[q] == b {
                         continue;
                     }
-                    beside |= out[q];
+                    beside |= out[q] || ringing[q];
                     let d = if dx != 0 && dy != 0 { std::f64::consts::SQRT_2 } else { 1.0 };
                     steps.push(sign as f64 * (shown(p as usize) - shown(q)) / (d * px));
                 }
@@ -1472,6 +1509,45 @@ mod repair_tests {
         [1696, 1699, 1702, 1705, 1712, 1716, 1709, 1701, 1696, 1693, 1690, 1684, 1680, 1676, 1672],
         [1696, 1698, 1701, 1706, 1714, 1719, 1712, 1703, 1698, 1692, 1687, 1683, 1680, 1677, 1674],
     ];
+
+    /// 10/902/399 from pixel 138,104 (36.77 N, 137.30 E): Toyama's shore at z10 as the terrain job
+    /// makes it (its pixels over repaired z11 ones made again from them), a band of towers to 164 m
+    /// along the shore beside a pit of 200 m below the bay's floor.
+    const TOYAMA_SHORE_Z10: [[i16; 15]; 15] = [
+        [-79, -82, -83, -83, -81, -79, -75, -72, -67, -63, -59, -56, -52, -49, -46],
+        [-76, -79, -80, -79, -77, -74, -71, -66, -62, -57, -53, -49, -46, -42, -39],
+        [-72, -75, -76, -75, -73, -70, -66, -61, -56, -52, -47, -43, -40, -36, -34],
+        [-67, -70, -71, -70, -68, -65, -60, -56, -51, -46, -42, -38, -34, -31, -28],
+        [-61, -63, -64, -63, -61, -58, -54, -50, -45, -40, -36, -32, -29, -26, -24],
+        [-53, -55, 1, 3, 2, -51, 0, 3, 3, 1, 1, 2, -25, -22, -20],
+        [-44, -29, 5, 3, -103, -200, 0, 0, 0, 14, 133, 108, 21, -24, -14],
+        [-35, 93, 8, 1, 45, 113, 160, 164, 2, 1, 1, 1, 2, 0, 0],
+        [-11, 1, 2, 11, 33, 0, 113, 116, 78, -2, -54, 0, -3, 0, 0],
+        [5, 2, 1, 0, -8, -8, -10, -11, -10, 0, 7, 0, 0, 0, 0],
+        [3, -3, 8, -2, -3, -8, -11, -12, 0, 0, 8, 5, 0, 0, 0],
+        [0, 1, -5, 1, 4, 3, 1, 0, 0, 0, 2, 1, 0, 0, 0],
+        [1, -2, -2, 1, 1, 2, 1, 0, 0, 0, 0, 1, 1, 0, 0],
+        [2, 3, 3, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 2],
+        [2, 3, 3, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 2],
+    ];
+
+    #[test]
+    fn takes_towers_beside_a_ringing_pit_under_the_sea() {
+        // Toyama's shore: the band (walled 0.92, on flat ground) goes, as it stands beside the
+        // pit its ringing dug in the bay; the shore as it was.
+        let mut t = aws(&TOYAMA_SHORE_Z10, -40.0);
+        repaired(&mut t, 10, 36.77);
+        for (j, row) in TOYAMA_SHORE_Z10.iter().enumerate() {
+            for (i, &v) in row.iter().enumerate() {
+                let now = at(&t, i, j).max(0.0);
+                if (7..=8).contains(&j) && (4..=8).contains(&i) {
+                    assert!(now <= 60.0, "{v} at {i},{j}: {now}");
+                } else if (0..100).contains(&v) {
+                    assert_eq!(now, v as f32, "the shore at {i},{j}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn takes_lobes_beside_a_blob_taken_and_keeps_steep_islands_and_plugs() {
