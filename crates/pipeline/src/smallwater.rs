@@ -15,9 +15,9 @@
 //! This step reads every island and lake: the lakes, rivers and other water areas from the pass's
 //! `water` set, their holes as islands, and the sea's islands as the holes of the basemap's own
 //! water polygons (`sources/basemap/water-polygons-split-3857.zip`); it works out the zooms the
-//! basemap lacks each at (z6–13 by the same rule, z0–5 by asking the basemap's own tiles whether
-//! its water is there), and tiles them, zooms 0–12, one MVT layer `w`: at each zoom, what the
-//! basemap lacks there,
+//! basemap lacks each at (z6–13 by the same rule, checked against the basemap's tiles each run;
+//! z0–5 by asking its tiles whether its water is there), and tiles them, zooms 0–12, one MVT layer
+//! `w`: at each zoom, what the basemap lacks there,
 //! - under 1 px² (at z12, all: what the basemap lacks there is under 1 px², or a hair over and
 //!   simplified under): a point, the app's dot, sized by its true area and faded with it (web/src/
 //!   basemap.ts); the points of one 1-px cell and kind are one, with their summed area, at the
@@ -186,6 +186,12 @@ pub fn px2(area_m2: f64, z: u8) -> f64 {
     area_m2 / (px * px)
 }
 
+/// The Planetiler whose rule this is (`min_px2`, `rule_absent`, `planetiler_dp`: read from its
+/// source and sampled against its tiles). The pass stops on another one's jar
+/// (pipeline::osmpass::check_planetiler) until the rule is checked against it, and the step checks
+/// the rule against the basemap's tiles each time it runs (`check_rule`).
+pub const PLANETILER_VERSION: &str = "0.10.2";
+
 /// The basemap's minimum at zoom `z` (6–14), px² of its ring once simplified: the sea's islands 1,
 /// the rest 4 below z12 and 1 at z12–13; 1/256 at z14. (Below z6: Natural Earth.)
 pub fn min_px2(kind: u8, sea: bool, z: u8) -> f64 {
@@ -296,6 +302,7 @@ pub fn inside_point(outer: &[[f64; 2]], holes: &[&[[f64; 2]]]) -> [f64; 2] {
 }
 
 /// Whether point `p` is inside the rings (even–odd).
+#[cfg(test)]
 fn inside_rings(rings: &[Vec<[f64; 2]>], p: [f64; 2]) -> bool {
     let mut inside = false;
     for r in rings {
@@ -307,6 +314,57 @@ fn inside_rings(rings: &[Vec<[f64; 2]>], p: [f64; 2]) -> bool {
         }
     }
     inside
+}
+
+/// A tile's water polygons (each its rings), their edges filed in rows across the tile, for many
+/// points to be asked whether they're in water: in some polygon, even–odd over its rings.
+pub struct WaterIndex {
+    y0: f64,
+    row_h: f64,
+    rows: Vec<Vec<(u32, [f64; 4])>>,
+}
+
+impl WaterIndex {
+    const ROWS: usize = 256;
+
+    /// `polys` (world units) for a tile spanning `y0`–`y1`.
+    pub fn new(polys: &[Rings], y0: f64, y1: f64) -> WaterIndex {
+        let row_h = (y1 - y0) / Self::ROWS as f64;
+        let row = |y: f64| (((y - y0) / row_h).floor().max(0.0) as usize).min(Self::ROWS - 1);
+        let mut rows = vec![Vec::new(); Self::ROWS];
+        for (k, rings) in polys.iter().enumerate() {
+            for r in rings {
+                for i in 0..r.len() {
+                    let (a, b) = (r[i], r[(i + 1) % r.len()]);
+                    if a[1] == b[1] {
+                        continue;
+                    }
+                    for row in &mut rows[row(a[1].min(b[1]))..=row(a[1].max(b[1]))] {
+                        row.push((k as u32, [a[0], a[1], b[0], b[1]]));
+                    }
+                }
+            }
+        }
+        WaterIndex { y0, row_h, rows }
+    }
+
+    /// Whether `p` (in the tile) is in water.
+    pub fn contains(&self, p: [f64; 2]) -> bool {
+        let row = (((p[1] - self.y0) / self.row_h).floor().max(0.0) as usize).min(Self::ROWS - 1);
+        // The polygons crossed an odd number of times.
+        let mut odd: Vec<u32> = Vec::new();
+        for &(k, [ax, ay, bx, by]) in &self.rows[row] {
+            if (ay > p[1]) != (by > p[1]) && p[0] < ax + (p[1] - ay) * (bx - ax) / (by - ay) {
+                match odd.iter().position(|&o| o == k) {
+                    Some(i) => {
+                        odd.swap_remove(i);
+                    }
+                    None => odd.push(k),
+                }
+            }
+        }
+        !odd.is_empty()
+    }
 }
 
 /// A closed ring (its last point its first) simplified as Planetiler 0.10.2 simplifies before its
@@ -737,25 +795,130 @@ fn decode_rings(g: &[u32]) -> Vec<Vec<(f64, f64)>> {
     out
 }
 
+/// Whether `f` is asked of Natural Earth at z0–5: an island whatever its size (its coarse shores
+/// put many small islands on its land, where a dot would be land on land), a lake or river from
+/// `NE_MIN_M2` (smaller, it has none: missing).
+fn ne_asked(f: &Feat) -> bool {
+    f.kind == ISLAND || f.area >= NE_MIN_M2
+}
+
 /// Sets each feature's zooms 0–5 absent by asking the basemap (Natural Earth's water there): a lake
-/// or river is there when its inside point is in water, an island when it isn't. Features under
-/// `NE_MIN_M2` are missing at all six.
+/// or river is there when its inside point is in water, an island when it isn't. A lake or river
+/// under `NE_MIN_M2` is missing at all six (`ne_asked`).
 pub fn ne_absent(feats: &mut [Feat], water: &(dyn Water + Sync)) -> Result<()> {
     for z in 0..=5u8 {
         let n = f64::from(1u32 << z);
         let tile_of = |p: [f64; 2]| (((p[0] * n) as u32).min((1 << z) - 1), ((p[1] * n) as u32).min((1 << z) - 1));
-        let mut tiles: Vec<(u32, u32)> = feats.iter().filter(|f| f.area >= NE_MIN_M2).map(|f| tile_of(f.inside)).collect();
+        let mut tiles: Vec<(u32, u32)> = feats.iter().filter(|f| ne_asked(f)).map(|f| tile_of(f.inside)).collect();
         tiles.sort_unstable();
         tiles.dedup();
-        let decoded: HashMap<(u32, u32), Vec<Rings>> = tiles.par_iter().map(|&(x, y)| Ok(((x, y), water.water(z, x, y)?))).collect::<Result<_>>()?;
+        let index: HashMap<(u32, u32), WaterIndex> = tiles
+            .par_iter()
+            .map(|&(x, y)| Ok(((x, y), WaterIndex::new(&water.water(z, x, y)?, f64::from(y) / n, f64::from(y + 1) / n))))
+            .collect::<Result<_>>()?;
         feats.par_iter_mut().for_each(|f| {
-            let in_water = f.area >= NE_MIN_M2 && decoded.get(&tile_of(f.inside)).is_some_and(|ws| ws.iter().any(|rings| inside_rings(rings, f.inside)));
-            if f.area < NE_MIN_M2 || (f.kind == ISLAND) == in_water {
+            let missing = !ne_asked(f) || (f.kind == ISLAND) == index.get(&tile_of(f.inside)).is_some_and(|w| w.contains(f.inside));
+            if missing {
                 f.absent |= 1 << z;
             }
         });
     }
     Ok(())
+}
+
+/// The least share of the rule's calls the basemap's tiles may disagree with before the step
+/// fails (`check_rule`): 99.5 % of lakes and 99.7 % of sea islands agreed on 2026-10-06.
+pub const RULE_AGREES: f64 = 0.98;
+/// The calls checked of each kind (lakes, sea islands), and the fewest that can fail the step.
+pub const RULE_SAMPLE: usize = 2000;
+const RULE_FEWEST: usize = 500;
+
+/// How many of the rule's calls were checked against the basemap's tiles, and how many agreed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize)]
+pub struct Agreement {
+    pub checked: usize,
+    pub agreed: usize,
+}
+
+impl Agreement {
+    pub fn share(&self) -> f64 {
+        if self.checked == 0 {
+            1.0
+        } else {
+            self.agreed as f64 / self.checked as f64
+        }
+    }
+
+    /// Whether the rule holds: it agreed with `RULE_AGREES` of the tiles, or too few were checked
+    /// to say (a small set's).
+    pub fn holds(&self) -> bool {
+        self.checked < RULE_FEWEST || self.share() >= RULE_AGREES
+    }
+}
+
+/// Checks the rule (`rule_absent`) against the basemap's own tiles, so a basemap drawn otherwise
+/// (another Planetiler, another profile) fails the step rather than leaving islands out or doubling
+/// them: about `RULE_SAMPLE` lakes and as many sea islands, each at a zoom 6–11 where its area is
+/// within a factor of four of the minimum (where simplifying decides), spread evenly over them in
+/// the order read, each asked of the tile there at its inside point (a lake is there when it's in
+/// water, an island when it isn't). Returns the lakes' agreement and the sea islands'.
+pub fn check_rule(feats: &[Feat], water: &(dyn Water + Sync)) -> Result<[Agreement; 2]> {
+    let near = |f: &Feat, z: u8| {
+        let (raw, min) = (px2(f.area, z), min_px2(f.kind, f.sea, z));
+        raw >= min / 4.0 && raw < 4.0 * min
+    };
+    let class = |f: &Feat| match (f.kind, f.sea) {
+        (LAKE, _) => Some(0),
+        (ISLAND, true) => Some(1),
+        _ => None,
+    };
+    let mut total = [0usize; 2];
+    for f in feats {
+        if let Some(c) = class(f) {
+            total[c] += (6..=11u8).filter(|&z| near(f, z)).count();
+        }
+    }
+    let step = total.map(|t| t.div_ceil(RULE_SAMPLE).max(1));
+    let mut seen = [0usize; 2];
+    // The calls (a feature and its kind's class) by the tile asked, z/x/y.
+    type Calls = Vec<(usize, usize)>;
+    let mut by_tile: std::collections::BTreeMap<(u8, u32, u32), Calls> = std::collections::BTreeMap::new();
+    for (i, f) in feats.iter().enumerate() {
+        let Some(c) = class(f) else { continue };
+        for z in (6..=11u8).filter(|&z| near(f, z)) {
+            seen[c] += 1;
+            if (seen[c] - 1) % step[c] != 0 {
+                continue;
+            }
+            let n = f64::from(1u32 << z);
+            let t = |v: f64| ((v * n) as u32).min((1 << z) - 1);
+            by_tile.entry((z, t(f.inside[0]), t(f.inside[1]))).or_default().push((i, c));
+        }
+    }
+    let tiles: Vec<((u8, u32, u32), Calls)> = by_tile.into_iter().collect();
+    let each: Vec<[Agreement; 2]> = tiles
+        .par_iter()
+        .map(|&((z, x, y), ref calls)| {
+            let n = f64::from(1u32 << z);
+            let w = WaterIndex::new(&water.water(z, x, y)?, f64::from(y) / n, f64::from(y + 1) / n);
+            let mut a = [Agreement::default(); 2];
+            for &(i, c) in calls {
+                let f = &feats[i];
+                let there = w.contains(f.inside) == (f.kind == LAKE);
+                a[c].checked += 1;
+                a[c].agreed += usize::from((f.absent & (1 << z) == 0) == there);
+            }
+            Ok(a)
+        })
+        .collect::<Result<_>>()?;
+    let mut sum = [Agreement::default(); 2];
+    for a in each {
+        for c in 0..2 {
+            sum[c].checked += a[c].checked;
+            sum[c].agreed += a[c].agreed;
+        }
+    }
+    Ok(sum)
 }
 
 /// Whether the tiles draw `f` at zoom `z` (0–13): when the basemap lacks it there, or the lake it's
@@ -1049,7 +1212,9 @@ mod tests {
     #[test]
     fn simplifies_as_planetiler_does() {
         // A wobbly ring and what Planetiler 0.10.2's Douglas–Peucker keeps of it at three
-        // tolerances (its port in Python, checked against the basemap's tiles: scratch u1.py).
+        // tolerances: com.onthegomap.planetiler.geo.DouglasPeuckerSimplifier's
+        // transformCoordinates, in the jar pinned in sources/basemap/ (`planetiler_dp` follows it
+        // line for line; these from a port of it whose areas matched the basemap's tiles).
         let r: Vec<[f64; 2]> = vec![
             [0.9789, 0.0], [0.9193, 0.2699], [0.8565, 0.5504], [0.6213, 0.717], [0.4172, 0.9135], [0.14, 0.9739], [-0.1348, 0.9373], [-0.4158, 0.9104],
             [-0.6185, 0.7138], [-0.8346, 0.5363], [-0.91, 0.2672], [-0.9509, 0.0], [-0.9508, -0.2792], [-0.8742, -0.5618], [-0.6253, -0.7216], [-0.4016, -0.8794],
@@ -1211,9 +1376,59 @@ mod tests {
             feat_at(ISLAND, [0.5, 0.5], 1e5, NONE, true),      // small: missing
             feat_at(RIVER, [0.5, 0.5], big, NONE, false),      // in the water: there
         ];
+        // Small: a lake missing unasked, though in the water; an island asked, there on land.
+        fs.push(feat_at(LAKE, [0.5, 0.5], 1e5, NONE, false));
+        fs.push(feat_at(ISLAND, [0.2, 0.2], 1e5, NONE, true));
         ne_absent(&mut fs, &Sea).unwrap();
         let low: Vec<u16> = fs.iter().map(|f| f.absent & 0x3f).collect();
-        assert_eq!(low, [0, 0x3f, 0x3f, 0, 0x3f, 0]);
+        assert_eq!(low, [0, 0x3f, 0x3f, 0, 0x3f, 0, 0x3f, 0]);
+    }
+
+    #[test]
+    fn the_water_index_answers_as_the_rings_do() {
+        // Two polygons, one with a hole, overlapping a third: in water where any one holds it.
+        let a = vec![square([0.3, 0.3], 0.3), square([0.3, 0.3], 0.1)];
+        let b = vec![vec![[0.5, 0.1], [0.9, 0.2], [0.7, 0.9], [0.45, 0.6]]];
+        let c = vec![square([0.35, 0.35], 0.1)];
+        let polys = vec![a, b, c];
+        let w = WaterIndex::new(&polys, 0.0, 1.0);
+        let mut s = 12345u64;
+        let mut rnd = || {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (s >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..20_000 {
+            let p = [rnd(), rnd()];
+            assert_eq!(w.contains(p), polys.iter().any(|rs| inside_rings(rs, p)), "{p:?}");
+        }
+    }
+
+    /// Water: the same polygons at every tile.
+    struct Lakes(Vec<Rings>);
+    impl Water for Lakes {
+        fn water(&self, _z: u8, _x: u32, _y: u32) -> Result<Vec<Rings>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[test]
+    fn the_rule_is_checked_against_the_tiles() {
+        // 3,000 lakes 2 px² at z9 (absent there by the rule), half of them in the tiles' water.
+        let mut fs: Vec<Feat> = (0..3000).map(|i| sq_feat(LAKE, [0.2 + 0.0001 * f64::from(i), 0.6], 2.0, 9, NONE, false)).collect();
+        let water = Lakes(vec![vec![vec![[0.0, 0.0], [0.35, 0.0], [0.35, 1.0], [0.0, 1.0]]]]);
+        let [lakes, islands] = check_rule(&fs, &water).unwrap();
+        // Each is within 4× of the minimum at z9 and z10 (2 and 8 px²): a call each, 2,000 of 6,000
+        // checked, half agreeing.
+        assert_eq!((lakes.checked, islands.checked), (2000, 0));
+        assert!((lakes.share() - 0.5).abs() < 0.02, "{lakes:?}");
+        assert!(!lakes.holds() && islands.holds());
+        // In the tiles' water where the rule keeps them, out where it doesn't: all agree.
+        for f in fs.iter_mut() {
+            f.absent = if f.inside[0] < 0.35 { 0 } else { 0x3fff };
+        }
+        let [lakes, _] = check_rule(&fs, &water).unwrap();
+        assert_eq!(lakes.agreed, lakes.checked);
+        assert!(lakes.holds());
     }
 
     #[test]

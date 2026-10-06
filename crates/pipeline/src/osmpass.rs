@@ -549,6 +549,7 @@ pub fn run_pass(out: &mut Out, planet: &Path, date: &str, scratch: &Path, extrac
     // the local copy while there's room, else from the NAS's.
     let free = |p: &Path| crate::agent::cond::free_bytes(p).unwrap_or(0);
     if !done(scratch, "basemap").exists() {
+        check_planetiler(planetiler)?;
         part(5, "the basemap's input filtered (osmium)");
         if filtered.exists() && free(scratch) < BASEMAP_ROOM {
             eprintln!("basemap: {} GB free; reading the filtered planet from the NAS", free(scratch) >> 30);
@@ -882,6 +883,24 @@ fn quiet(mut c: Command, what: &str) -> Result<()> {
     Ok(())
 }
 
+/// The `version=` of a Planetiler jar's `buildinfo.properties`.
+fn buildinfo_version(props: &str) -> Option<&str> {
+    props.lines().find_map(|l| l.trim().strip_prefix("version=")).map(str::trim)
+}
+
+/// Stops on a Planetiler jar other than the one the small islands and lakes' rule is read from
+/// (pipeline::smallwater::PLANETILER_VERSION: its own `buildinfo.properties` says which it is), so
+/// a new one's basemap isn't drawn until the rule is checked against it and pinned again.
+pub fn check_planetiler(jar: &Path) -> Result<()> {
+    let o = Command::new("/usr/bin/unzip").arg("-p").arg(jar).arg("buildinfo.properties").output().with_context(|| format!("read {}", jar.display()))?;
+    ensure!(o.status.success(), "no buildinfo.properties in {}", jar.display());
+    let props = String::from_utf8_lossy(&o.stdout);
+    let v = buildinfo_version(&props).with_context(|| format!("no version in {}'s buildinfo.properties", jar.display()))?;
+    let pinned = crate::smallwater::PLANETILER_VERSION;
+    ensure!(v == pinned, "{} is Planetiler {v}, but the small islands and lakes' rule is Planetiler {pinned}'s (pipeline::smallwater, docs/plan.md §6): check the rule against {v}'s source and tiles, then pin it", jar.display());
+    Ok(())
+}
+
 pub fn check_tools(extract_bin: &Path, planetiler: &Path) -> Result<()> {
     if !extract_bin.exists() {
         bail!("no extract binary at {}", extract_bin.display());
@@ -895,6 +914,14 @@ pub fn check_tools(extract_bin: &Path, planetiler: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn planetilers_version_is_read_from_its_buildinfo() {
+        let props = "githash=0e5588c4a6e8c29a270a33afe8df62027d889604\ntimestamp=1774708536815\nversion=0.10.2\n";
+        assert_eq!(buildinfo_version(props), Some("0.10.2"));
+        assert_eq!(buildinfo_version(props), Some(crate::smallwater::PLANETILER_VERSION));
+        assert_eq!(buildinfo_version("githash=x\n"), None);
+    }
 
     #[test]
     fn planetilers_log_says_how_far_it_is() {

@@ -298,13 +298,14 @@ fn main() -> Result<()> {
             // pass-sets [--pass <date>]: the sets the pass lacks in their current filters
             // (osmpass::SETS versions), from its kept filtered planet: copied here first when
             // there's room, since osmium reads it two or three times a set (from the NAS over
-            // Wi-Fi that took hours a set).
+            // Wi-Fi that took hours a set; over the LAN, 65 min for the water set).
             let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
             let nas = out.path(out.get(&format!("sources/osm/{date}/filtered")).context("the pass's filtered planet")?);
             std::fs::create_dir_all(&scratch)?;
             let local = scratch.join("filtered.osm.pbf");
             let size = std::fs::metadata(&nas)?.len();
-            let room = pipeline::agent::cond::free_bytes(&scratch).unwrap_or(0) + std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0) > size + (20 << 30);
+            // (Room for the copy, the sets made from it, and the agent's reserve left free.)
+            let room = pipeline::agent::cond::free_bytes(&scratch).unwrap_or(0) + std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0) > size + (20 << 30) + pipeline::agent::room::RESERVE;
             let src = if room && !pipeline::osmpass::missing_sets(&out, &date).is_empty() {
                 pipeline::osmpass::copy_resume_with(&nas, &local, &mut |d, t| pipeline::agent::jobs::report(d >> 20, t >> 20, "MB of the filtered planet copied here (then the sets)"))?;
                 local.clone()
@@ -3153,6 +3154,13 @@ fn smallwater_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     };
     let pm = store::pmtiles::PmTiles::open(Box::new(store::range::PlainFile::open(&basemap).with_context(|| format!("open {}", basemap.display()))?))?;
     sw::ne_absent(&mut feats, &sw::Basemap(&pm))?;
+    // The rule against the basemap's own tiles: one drawn otherwise fails the job here.
+    let [lakes, islands] = sw::check_rule(&feats, &sw::Basemap(&pm))?;
+    let said = |a: sw::Agreement| format!("{:.1} % of {}", 100.0 * a.share(), a.checked);
+    eprintln!("smallwater: the basemap's tiles agree with its rule (Planetiler {}) for {} lakes near its minimum, {} sea islands", sw::PLANETILER_VERSION, said(lakes), said(islands));
+    for (what, a) in [("lakes", lakes), ("sea islands", islands)] {
+        anyhow::ensure!(a.holds(), "the basemap's tiles agree with the small islands and lakes' rule (Planetiler {}'s, pipeline::smallwater) for only {} of its {what} near the minimum (at least {:.0} % expected): it's drawn by another rule now; check the rule against it", sw::PLANETILER_VERSION, said(a), 100.0 * sw::RULE_AGREES);
+    }
     parts.start(4);
     let tiles = work.join("smallwater.tiles");
     let mut w = roadcore::archive::ArchiveWriter::create(&tiles, "{}")?;
