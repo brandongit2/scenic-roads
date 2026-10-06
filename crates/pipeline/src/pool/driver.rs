@@ -508,7 +508,7 @@ impl Driver {
                 }
             }
             out.stop = Some(why.clone());
-            out.term = self.cur.term;
+            out.term = self.cur.term.max(self.saved.term);
             return out;
         }
         let start = (io.now(), io.awake());
@@ -608,7 +608,10 @@ impl Driver {
             self.slept |= gap(start, end);
         }
         self.clocks = Some(end);
-        out.term = self.cur.term;
+        // (Its view as the state it saves keeps it: a `learn` cut short by the share, its view
+        // moved on, doesn't leave the state behind it, for a restart to go back to.)
+        self.saved.term = self.saved.term.max(self.cur.term);
+        out.term = self.saved.term;
         if let Some(l) = &self.lead {
             out.leads = Some(l.term.term);
             out.duties = l.hand.grants() && self.must.is_none();
@@ -904,9 +907,14 @@ impl Driver {
             l.records.handed = Some(c);
             l.dirty = true;
         }
-        // (Oldest lease first, while the step's time for it lasts: the rest wait for the next.)
+        // (While the step's time for it lasts, the rest waiting for the next: the entries not read
+        // before first, then those read and not whole yet, each the oldest lease first. Read
+        // first, entries that won't be whole, read again every step on a share under load, took
+        // all the time and left the others waiting.)
         records::by_lease(&mut keys);
         keys.dedup();
+        let (fresh, again): (Vec<String>, Vec<String>) = keys.into_iter().partition(|k| !l.waiting.contains(k));
+        let keys: Vec<String> = fresh.into_iter().chain(again).collect();
         let m = records::merge_while(io, &mut l.records, &keys, check, &|| io.awake() < busy);
         if !m.applied.is_empty() || !m.refused.is_empty() || !m.overtaken.is_empty() {
             l.dirty = true;
@@ -2218,6 +2226,27 @@ mod tests {
         });
         assert_eq!(led, Some(30), "after ten minutes, not before");
         assert_eq!(Records::load(&mem, 1).unwrap().map(|r| r.seq), Some(2), "from today's files, saved whole");
+    }
+
+    #[test]
+    fn a_view_the_share_cut_short_is_kept_in_the_saved_state() {
+        // A learns of term 2, then the share doesn't answer its look at term 3: its step says term
+        // 2, and the state it saves keeps it. (Re-review 2's failing reads, in the simulator: the
+        // state kept the term before, and a restart went back to it.)
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        for e in [2, 3] {
+            let t = Term { term: e, member: B.into(), host: "MacBook-Air".into(), app: V1.into(), since: T0 + e, how: "taken over by MacBook-Air".into(), from: e - 1, seq: None };
+            mem.create_new(&term::path(e), &serde_json::to_vec_pretty(&t).unwrap()).unwrap();
+        }
+        *ia.fail.borrow_mut() = Some("terms/3".into());
+        ia.down.set(true);
+        ia.pass(20);
+        let o = step(&mut a, &ia, able());
+        assert_eq!((o.term, a.saved().term), (2, 2), "{:?}", o.events);
     }
 
     #[test]
