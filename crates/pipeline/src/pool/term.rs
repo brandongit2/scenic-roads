@@ -17,6 +17,8 @@ pub const DIR: &str = "state/build/terms";
 pub const HINT: &str = "state/build/lead.json";
 /// Today's naming of the build Mac (by host name): term 1's lead (§12, phase 1).
 pub const WRITER: &str = "state/build/writer";
+/// What a forced term's `how` says when the term before it couldn't be read whole (`force`).
+pub const UNREAD: &str = "forced past";
 
 /// A term's file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,7 +110,9 @@ pub fn current(nas: &dyn Nas) -> Result<Current> {
 
 /// Makes term `t` with create-new: true when this Mac's create made it (or an earlier try of the
 /// same file did), false when another Mac's did. Term 1 only once its records are made
-/// (crate::pool::records::first).
+/// (crate::pool::records::first). (An earlier try that made the file and failed before its bytes
+/// landed can't be told from another Mac's still being written: it reads as another's, and the
+/// term has no lead until the owner's `force`.)
 pub fn make(nas: &dyn Nas, t: &Term) -> Result<bool> {
     ensure!(t.term >= 1 && t.from + 1 == t.term, "term {} can't follow term {}", t.term, t.from);
     ensure!(t.term > 1 || nas.exists(&super::records::path(1))?, "term 1's records aren't made yet");
@@ -147,9 +151,6 @@ pub fn force(nas: &dyn Nas, cur: &Current, me: &Member, how: &str, now: u64) -> 
     let t = Term { term: cur.term + 1, member: me.id.clone(), host: me.host.clone(), app: me.app.clone(), since: now, how: format!("{how} ({}: term {} unreadable)", UNREAD, cur.term), from: cur.term, seq: None };
     Ok(make(nas, &t)?.then_some(t))
 }
-
-/// What a forced term's `how` says when the term before it couldn't be read whole.
-pub const UNREAD: &str = "forced past";
 
 /// Term 1 (§12, phase 1), once the pool is switched on: made by the Mac `state/build/writer` names
 /// (today's build Mac, by host name), naming itself, or by any Mac when none is named or the owner

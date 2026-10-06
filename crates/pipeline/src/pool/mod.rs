@@ -18,12 +18,13 @@
 //!
 //! Every file the protocol writes is one of three kinds (§2, principle 3): a member's own (its
 //! heartbeat, its journal entries), one made once with create-new and never changed (terms,
-//! journal entries), or one term's (its records). So a Mac that slept through a change and writes
-//! late writes where no one reads: nothing needs refusing (invariant 5).
+//! journal entries), or one term's (its records); the lead's hint aside, which nothing takes for
+//! the truth. So a Mac that slept through a change and writes late writes where no one reads:
+//! nothing needs refusing (invariant 5).
 //!
-//! What the agent and the coordinator do with it (asks over HTTP, granting jobs, validating write
-//! sets, staying awake, the history) is theirs: this module decides nothing they can get wrong
-//! without it showing in its tests.
+//! What the agent and the coordinator do around it (asks over HTTP, granting jobs, the write-set
+//! checks they pass to the merge, staying awake, the history) stays theirs; the simulator plays
+//! that part as the design has it (`sim::Mac`).
 
 pub mod beat;
 pub mod handover;
