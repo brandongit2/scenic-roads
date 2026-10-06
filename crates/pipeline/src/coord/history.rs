@@ -24,8 +24,9 @@ pub struct Event {
     pub t: u64,
     /// What: "start" and "end" (a build Mac's job), "lease", "done", "fail" and "lapse" (a worker's
     /// job), "task" and "task-fail", "round" (a round of publishing began: its regions) and
-    /// "catalog", "pause" and "resume", "worker" (first heard from), "agent" (one started),
-    /// "conditions" (the build Mac's changed).
+    /// "catalog", "pause" and "resume", "worker" (first heard from), "device" (a device asked to
+    /// help, was accepted, declined or forgotten), "agent" (one started), "conditions" (the build
+    /// Mac's changed).
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,

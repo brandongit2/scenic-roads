@@ -600,6 +600,7 @@ function eventText(m, e, k = 1) {
     case "pause": return [`The build was paused by ${e.note}`, "warn"];
     case "resume": return ["The build went on", "ok"];
     case "worker": return [`${who}${e.note && e.note !== who ? ` (${e.note})` : ""} joined`, "run"];
+    case "device": return [`${who} ${e.note}`, /^asks/.test(e.note || "") ? "warn" : /^accepted|is a helper/.test(e.note || "") ? "ok" : ""];
     case "agent": return [`${who}'s agent started (${e.note})`, "run"];
     case "conditions": return [`${who}: ${e.note}`, /doesn't answer|battery|away/.test(e.note) ? "warn" : ""];
     default: return [`${e.kind} ${who} ${what}`, ""];
@@ -698,7 +699,7 @@ function render() {
       : [h("button", { onclick: () => ctx.ask({ mode: "drain" }), title: "Every Mac's job stops at its next safe point; nothing new starts" }, "Pause the build"),
         h("button", { class: "quiet", onclick: () => confirm("Freeze every Mac's job where it is now? (It goes on from there when resumed.)") && ctx.ask({ mode: "freeze" }), title: "Freeze every Mac's job where it is, at once" }, "Pause it now")]);
   // (Pausing needs the key: without it here yet, a button that asks for it.)
-  if (!ctx.hasKey()) ctl.replaceChildren(h("button", { class: "quiet", onclick: () => ctx.needKey(render), title: "Pausing the build needs the key for helping" }, pausing ? "Resume the build…" : "Pause the build…"));
+  if (!ctx.hasKey()) ctl.replaceChildren(h("button", { class: "quiet", onclick: () => ctx.needKey(render), title: "Pausing the build needs this device accepted on the build Mac: tapping asks it" }, pausing ? "Resume the build…" : "Pause the build…"));
   const verdict = section("d-verdict", "verdict", null, null,
     h("div", "verdict", h("div", "say", verdictText(m)), ctl),
     h("div", "alerts", al.map((x) => h("span", { class: `alert ${x.cls}`, onclick: () => document.getElementById(x.to)?.scrollIntoView({ behavior: "smooth", block: "start" }) }, x.text))));

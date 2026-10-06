@@ -200,16 +200,21 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 - **The page** is served by the coordinator at `/work/` (the menu bar's Copy the Build Page's
   Address, `scenic status`'s "Build page"): the build at a glance for anyone it answers (this Mac,
   its LAN, the tailnet), with no key; the coordinator answers its reads (`/work/swarm`,
-  `/work/history`: nothing of a key's) without one. A device helps only when its owner asks there
-  ("Help with this tab", kept by that browser: never by default, though a device that helped before
-  the page asked, one that had learned its memory ceiling, keeps helping); the first time, the page
-  asks for the key for helping (the menu bar's Copy the Key for Helping, `scenic status`'s "Key for
-  helping"; an older address's `#k=` fragment, never sent to a server, works too), which it keeps,
-  and which pausing the build needs as well. "Stop helping" gives back what it has under way at
-  once. (The old watching-only address, `/work/watch/`, leads to `/work/`.) While it helps, its main
-  thread asks for tasks that fit the memory the tab spares and beats for every lease; each slot (a
-  Web Worker per core, less one) runs a task's programs over an in-memory filesystem
-  (`web/work/runtime.js`, over browser_wasi_shim) and sends back what they wrote.
+  `/work/history`) without one. A device helps only when its owner asks there ("Help with this
+  tab", kept by that browser: never by default, though a device that helped before the page asked,
+  one that had learned its memory ceiling, keeps helping). The first time, the page asks the build
+  Mac (`/work/join`, `pipeline::coord::devices`) with a secret it makes and alone keeps, and shows
+  the ask's code; the build Mac's menu bar shows the ask with the same code, and a notification with
+  Accept and Decline (or `scenic devices accept <id>`). Accepted, the secret is that device's key
+  for helping and pausing the build, until the owner forgets it there (Devices Helping); the page
+  waits for the answer, through a reload too. There's no key to copy: a page from before devices
+  asked, with the build's own key from its address, asks with that once and is accepted at once.
+  "Stop helping" gives back what it has under way at once. (The old watching-only address,
+  `/work/watch/`, leads to `/work/`.) While it helps, its main thread asks for tasks that fit the
+  memory the tab spares and beats for every lease; each slot (a Web Worker per core, less one) runs
+  a task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim) and
+  sends back what they wrote. (The Macs' own agents still reach the coordinator with the build's key
+  from the NAS, `state/coordinator.json`.)
 - **The build at a glance** (`web/work/dash.js`, `dash.css`): above its own work, if it helps, the
   page shows the whole build, in the device's light or dark appearance. Five parts, each answering
   many questions at once:
@@ -274,8 +279,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     service worker, which takes over, and the page reloads into it once no task is running (paused,
     it stays paused). The page asks for one whenever it comes back to the front and every half hour.
   - An installed app on an iPhone keeps its own storage, apart from Safari's: when it's to help (or
-    pause the build), the page asks for the key there too, keeps it, and asks again if the
-    coordinator refuses it. Only the 32 hex digits (or an address with its `#k=`) are taken.
+    pause the build), the page asks the build Mac there too, and keeps its own key once accepted;
+    forgotten on the build Mac, it stops helping and may ask again.
   - It still runs only while it's open on screen: neither iOS nor Android lets a web app work in
     the background.
 - **Planned:** inputs and outputs in OPFS, read through a `FileSystemSyncAccessHandle`, so a worker

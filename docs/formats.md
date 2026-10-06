@@ -463,9 +463,12 @@ class, id) within a tile. The client sends the id with the clicked point.
 - **Two Macs and other workers** (`docs/workers.md`):
   - `state/coordinator.json`: how to reach the build Mac's coordinator, `{urls: [Tailscale's, then
     the LAN name's, "http://…:8090"], token}`; there while its agent runs.
-  - On the build Mac, in the agent's folder, `coord/`: `token` (32 hex digits, mode 600), `page` (the
-    build page's address with the token in its fragment, mode 600: the status bar copies the address
-    alone, "Copy the Build Page's Address", and the token, "Copy the Key for Helping"),
+  - On the build Mac, in the agent's folder, `coord/`: `token` (the build's own key, 32 hex digits,
+    mode 600: the Macs' agents and this Mac's menu bar and `scenic devices` use it), `page` (the build
+    page's address: the status bar's "Copy the Build Page's Address"), `devices.json` (`{list: [{id,
+    label, hash, from, asked, accepted, declined}]}`, mode 600: the devices that asked to help through
+    the page, `pipeline::coord::devices`, each secret's SHA-256 only; an accepted one's secret is its
+    key, declined ones kept ten minutes, unanswered asks a day, eight at most),
     `leases.json` (`{next, leases: [{id, worker, work: {Job: {step, targets: [[target, key], …]}},
     progress}]}`: the jobs' leases), `costs.json` (`{unit: {peak_mb, secs}}`, `"<step> <target>"` for
     another shared step's job, and `"tail <unit>"` for a unit's last steps as a task),

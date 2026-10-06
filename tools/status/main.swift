@@ -56,6 +56,22 @@ struct Status: Decodable {
     /// forecast: crates/pipeline/src/agent/forecast.rs; agents from 2026-10-05 on).
     let regions: [Recipe]?
     let forecast: Forecast?
+    /// The devices asking to help through the build page, and those accepted (the build Mac's).
+    let devices: Devices?
+}
+
+/// A device asking to help, or one accepted (crates/pipeline/src/coord/devices.rs): its page's id,
+/// what it is, the code its page shows, where it asked from.
+struct Device: Decodable {
+    let id: String
+    let label: String
+    let code: String
+    let from: String
+}
+
+struct Devices: Decodable {
+    let asking: [Device]
+    let accepted: [Device]
 }
 
 struct Recipe: Decodable {
@@ -508,13 +524,15 @@ final class LineView: NSView {
     }
 }
 
-/// What notifications compare: the job, whether it's paused, the last finished job, out of touch.
+/// What notifications compare: the job, whether it's paused, the last finished job, out of touch,
+/// the devices asking to help.
 struct Seen {
     var job: String?
     var paused: Bool
     var lastEnded: Int
     var outOfTouch: Bool
     var buildPaused: Bool
+    var asking: [String] = []
 }
 
 /// This Mac's ask to its agent (crates/pipeline/src/control.rs), while it waits to be taken up: to
@@ -526,11 +544,13 @@ func pendingAsk() -> Bool? {
     return !(o["pause"] is NSNull || o["pause"] == nil)
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     lazy var item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     var reply: Reply?
     var seen: Seen?
     var polling = false
+    /// Whether notifications are posted (not printed, as --replay's are).
+    var sinkIsCenter = true
     /// Where notifications go: posted, or printed (--replay).
     var sink: (String, String) -> Void = { title, body in
         let c = UNMutableNotificationContent()
@@ -545,7 +565,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // executable inside it directly.
         LSRegisterURL(Bundle.main.bundleURL as CFURL, true)
         _ = launchedFrom
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // (A device's ask to help comes with its answers: accepted or declined from the notification.)
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        let accept = UNNotificationAction(identifier: "accept", title: "Accept", options: [])
+        let decline = UNNotificationAction(identifier: "decline", title: "Decline", options: [.destructive])
+        center.setNotificationCategories([UNNotificationCategory(identifier: "ask", actions: [accept, decline], intentIdentifiers: [], options: [])])
+        center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
         show()
         poll()
         Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.poll() }
@@ -626,6 +652,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             now.toolTip = "Every Mac's running job frozen where it is at once; it goes on from there when you resume"
             m.addItem(now)
         }
+        // Devices asking to help through the build page: accepted or declined here (their page
+        // shows the same code), and those helping, to forget.
+        if let d = reply?.status?.devices, !(d.asking.isEmpty && d.accepted.isEmpty) {
+            m.addItem(.separator())
+            for a in d.asking {
+                let head = NSMenuItem(title: "\(a.label) asks to help (code \(a.code))", action: nil, keyEquivalent: "")
+                head.isEnabled = false
+                m.addItem(head)
+                for (verb, title) in [("accept", "Accept \(a.label)"), ("decline", "Decline")] {
+                    let it = NSMenuItem(title: title, action: #selector(answer), keyEquivalent: "")
+                    it.target = self
+                    it.indentationLevel = 1
+                    it.representedObject = [verb, a.id]
+                    m.addItem(it)
+                }
+            }
+            if !d.accepted.isEmpty {
+                let sub = NSMenu()
+                for a in d.accepted {
+                    let it = NSMenuItem(title: "Forget \(a.label)", action: #selector(answer), keyEquivalent: "")
+                    it.target = self
+                    it.representedObject = ["forget", a.id]
+                    it.toolTip = "Its page no longer helps; it may ask again"
+                    sub.addItem(it)
+                }
+                let it = NSMenuItem(title: "Devices Helping (\(d.accepted.count))", action: nil, keyEquivalent: "")
+                it.submenu = sub
+                m.addItem(it)
+            }
+        }
         m.addItem(.separator())
         if let log = reply?.log {
             let it = NSMenuItem(title: "Open the Build Log", action: #selector(openLog), keyEquivalent: "")
@@ -644,23 +700,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             it.representedObject = page
             m.addItem(it)
         }
-        // The build's page (its dashboard: no key needed to see it) and, apart, the key a device's
-        // page asks for when it starts helping (the build Mac's agent writes them, private to this
-        // user): pasted on another device (Universal Clipboard).
+        // The build's page (its dashboard; a device that's to help asks this Mac from there), which the
+        // build Mac's agent writes: pasted on another device (Universal Clipboard).
         if let page = try? String(contentsOf: home.appendingPathComponent("agent/coord/page"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !page.isEmpty {
-            let parts = page.components(separatedBy: "#k=")
             let it = NSMenuItem(title: "Copy the Build Page's Address", action: #selector(copyPage), keyEquivalent: "")
             it.target = self
-            it.representedObject = parts[0]
+            it.representedObject = page.components(separatedBy: "#k=")[0]
             m.addItem(it)
-            if parts.count == 2 {
-                let key = NSMenuItem(title: "Copy the Key for Helping", action: #selector(copyPage), keyEquivalent: "")
-                key.target = self
-                key.representedObject = parts[1]
-                m.addItem(key)
-            }
         }
         return m
+    }
+
+    @objc func answer(_ sender: NSMenuItem) {
+        guard let a = sender.representedObject as? [String], a.count == 2 else { return }
+        device(a[0], a[1])
+    }
+
+    /// A device's ask accepted or declined, or a device forgotten: this Mac's coordinator told, with
+    /// the build's key (the agent keeps it, private to this user).
+    func device(_ verb: String, _ id: String) {
+        guard let token = try? String(contentsOf: home.appendingPathComponent("agent/coord/token"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
+              let url = URL(string: "http://127.0.0.1:8090/work/devices/\(verb)") else {
+            post("Couldn't answer the device", "This Mac's coordinator isn't running here")
+            return
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 10
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["id": id])
+        URLSession.shared.dataTask(with: req) { _, resp, err in
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            DispatchQueue.main.async {
+                if code != 200 {
+                    self.post("Couldn't \(verb) the device", code == 404 ? "Its ask is gone (answered, or lapsed)" : err?.localizedDescription ?? "The coordinator answered \(code)")
+                }
+                self.poll()
+            }
+        }.resume()
+    }
+
+    // A notification's answer: an ask accepted or declined from it.
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler done: @escaping () -> Void) {
+        if let id = response.notification.request.content.userInfo["device"] as? String, ["accept", "decline"].contains(response.actionIdentifier) {
+            device(response.actionIdentifier, id)
+        }
+        done()
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
+        done([.banner, .sound])
     }
 
     @objc func pauseBuild(_ sender: NSMenuItem) { ask("drain") }
@@ -707,10 +797,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func notifyChanges() {
         guard let r = reply, let s = r.status else { return }
-        let now = Seen(job: s.job?.id, paused: s.job?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch, buildPaused: s.pause != nil)
+        let asking = s.devices?.asking ?? []
+        let now = Seen(job: s.job?.id, paused: s.job?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch, buildPaused: s.pause != nil, asking: asking.map(\.id))
         defer { seen = now }
-        // The first answer only sets what changes are measured from.
-        guard let was = seen else { return }
+        // The first answer only sets what changes are measured from (but an ask waiting is told).
+        guard let was = seen else {
+            for a in asking { ask(a) }
+            return
+        }
+        for a in asking where !was.asking.contains(a.id) { ask(a) }
         if now.buildPaused != was.buildPaused {
             post(now.buildPaused ? "Build paused" : "Build going on", s.pause.map { "From \($0.by)" } ?? "Picking up where it stopped")
         }
@@ -740,6 +835,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func post(_ title: String, _ body: String) {
         sink(title, body)
+    }
+
+    /// A device asks to help: told, with its answers (Accept, Decline) on the notification.
+    func ask(_ a: Device) {
+        guard sinkIsCenter else {
+            sink("\(a.label) asks to help with the build", "Code \(a.code), from \(a.from)")
+            return
+        }
+        let c = UNMutableNotificationContent()
+        c.title = "\(a.label) asks to help with the build"
+        c.body = "Its page shows code \(a.code) (from \(a.from)). Accept it to let it take the build's tasks."
+        c.categoryIdentifier = "ask"
+        c.userInfo = ["device": a.id]
+        c.threadIdentifier = "devices"
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ask-\(a.id)", content: c, trigger: nil))
     }
 }
 
@@ -820,6 +930,7 @@ if args.contains("--print") {
     // The notifications a sequence of answers would send.
     let d = AppDelegate()
     d.sink = { title, body in print("notify: \(title) — \(body)") }
+    d.sinkIsCenter = false
     for f in args[(i + 1)...] {
         d.reply = try? JSONDecoder().decode(Reply.self, from: Data(contentsOf: URL(fileURLWithPath: f)))
         print("\(f): \(classify(d.reply).1)")

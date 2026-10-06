@@ -8,6 +8,9 @@
 //!                                       login item; --helper: the M1's, the shared steps' jobs)
 //!   scenic pause [--now] | resume       pause the whole build (every Mac's jobs stop at their next
 //!                                       safe point; --now: frozen at once), or let it go on
+//!   scenic devices [accept|decline|forget <id>]  on the build Mac: the devices asking to help
+//!                                       through the build page, and those helping; an ask answered,
+//!                                       a device forgotten (its page no longer helps)
 //!   scenic gc [--dry-run] [--days 14]   remove replaced files from the NAS (the agent runs it daily)
 //!   scenic backup [--local <dir>]       back up the user's folders (the agent runs it daily)
 //!
@@ -114,16 +117,21 @@ fn status(args: &[String]) -> Result<()> {
     let contact = root.as_ref().and_then(|r| std::fs::read(pipeline::coord::contact_path(r)).ok()).and_then(|b| serde_json::from_slice::<pipeline::coord::Contact>(&b).ok());
     let page = match (page, contact) {
         (Some(p), _) => Some(p),
-        (None, Some(c)) => c.urls.first().map(|u| format!("{u}/work/#k={}", c.token)),
+        (None, Some(c)) => c.urls.first().map(|u| format!("{u}/work/")),
         _ => None,
     };
-    // The build's page (its dashboard, without a key), and the key a device's page asks for when it
-    // starts helping.
+    // The build's page (its dashboard; a device that's to help asks the build Mac from there).
     if let Some(p) = page {
-        let (url, key) = p.split_once("#k=").map_or((p.as_str(), None), |(u, k)| (u, Some(k)));
-        println!("Build page: {url} (open it on a device on the tailnet)");
-        if let Some(k) = key {
-            println!("Key for helping: {k} (a device's page asks for it once, when it starts helping)");
+        // (An address from before devices asked carried a key: not shown.)
+        println!("Build page: {} (open it on a device on the tailnet)", p.split("#k=").next().unwrap_or(&p));
+    }
+    // Devices asking to help, answered on the build Mac (its menu bar, or `scenic devices`).
+    if let Some(d) = &st.devices {
+        for a in &d.asking {
+            println!("Asking to help: {} (code {}, from {}): `scenic devices accept {}` or `decline {}`", a.label, a.code, a.from, a.id, a.id);
+        }
+        if !d.accepted.is_empty() {
+            println!("Devices helping: {}", d.accepted.iter().map(|a| a.label.as_str()).collect::<Vec<_>>().join(", "));
         }
     }
     // The map on an iPhone or an iPad (docs/plan.md §4, Devices): its address with its key, which this
@@ -132,6 +140,36 @@ fn status(args: &[String]) -> Result<()> {
         println!("Map on a device: {m} (open it once on an iPhone or an iPad on the tailnet)");
     }
     Ok(())
+}
+
+/// The devices asking to help through the build page and those helping, from this Mac's
+/// coordinator (the build Mac's: crate::coord::devices); an ask accepted or declined, a device
+/// forgotten.
+fn devices(args: &[String]) -> Result<()> {
+    let token = std::fs::read_to_string(app_home().join("agent/coord/token")).context("this Mac's coordinator's key (agent/coord/token): devices are answered on the build Mac")?;
+    let c = pipeline::coord::client::Client::at(vec![format!("http://127.0.0.1:{}", pipeline::coord::PORT)], token.trim().to_string(), "scenic devices");
+    match (args.get(2).map(String::as_str), args.get(3)) {
+        (Some(verb @ ("accept" | "decline" | "forget")), Some(id)) => {
+            let r = c.post_json(&format!("/work/devices/{verb}"), &serde_json::json!({ "id": id }))?;
+            anyhow::ensure!(r.0 == 200, "{}", r.1["error"].as_str().unwrap_or("no such ask or device"));
+            println!("{}", match verb { "accept" => "accepted: its page starts helping within seconds", "decline" => "declined", _ => "forgotten: its page no longer helps" });
+            Ok(())
+        }
+        (None, _) => {
+            let v: pipeline::coord::devices::View = serde_json::from_value(c.post_json("/work/devices", &serde_json::json!({}))?.1)?;
+            if v.asking.is_empty() && v.accepted.is_empty() {
+                println!("No device asks to help, and none helps through the build page.");
+            }
+            for a in &v.asking {
+                println!("asking   {}  {} (code {}, from {})", a.id, a.label, a.code, a.from);
+            }
+            for a in &v.accepted {
+                println!("helping  {}  {}", a.id, a.label);
+            }
+            Ok(())
+        }
+        _ => bail!("scenic devices [accept|decline|forget <id>]"),
+    }
 }
 
 fn main() -> Result<()> {
@@ -206,6 +244,7 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
+        "devices" => devices(&args),
         "gc" => {
             let days: u64 = opt(&args, "--days").map(|d| d.parse()).transpose()?.unwrap_or(14);
             let r = gc::run(&root(&args, true)?, days, flag(&args, "--dry-run"))?;

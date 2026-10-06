@@ -22,6 +22,7 @@
 //! the tailnet only; a running job's requests (`/task/…`) from this Mac only.
 
 pub mod client;
+pub mod devices;
 pub mod history;
 pub mod lease;
 pub mod task;
@@ -183,6 +184,8 @@ pub struct Shared {
     pub pause_at: u64,
     /// What happened, the last week's (`history`): the worker page's activity.
     pub history: history::History,
+    /// The devices that asked to help through the build page, and those accepted (`devices`).
+    pub devices: devices::Devices,
     /// Where the token, leases, costs and journal are kept.
     dir: PathBuf,
 }
@@ -192,6 +195,12 @@ impl Shared {
     fn save_leases(&self) {
         if let Err(e) = self.leases.save(&self.dir.join("leases.json")) {
             eprintln!("coordinator: saving the leases: {e:#}");
+        }
+    }
+
+    fn save_devices(&self) {
+        if let Err(e) = self.devices.save(&self.dir.join("devices.json")) {
+            eprintln!("coordinator: saving the devices: {e:#}");
         }
     }
 
@@ -448,7 +457,8 @@ impl Coordinator {
         };
         let mut history = history::History::load(Some(&dir.join("history.jsonl")));
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, app: app.to_string(), paused, pause_at, history, dir: dir.to_path_buf() };
+        let devices = devices::Devices::load(&dir.join("devices.json"));
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, app: app.to_string(), paused, pause_at, history, devices, dir: dir.to_path_buf() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -460,14 +470,14 @@ impl Coordinator {
         Ok(c)
     }
 
-    /// Writes the worker page's address, with its token, for this Mac's status bar (tools/status):
-    /// over HTTPS when `tailscale serve` proxies the coordinator (a secure context, where the page
-    /// may keep the screen on), else its first address; private to this user, like the token.
+    /// Writes the build page's address for this Mac's status bar (tools/status): over HTTPS when
+    /// `tailscale serve` proxies the coordinator (a secure context, where the page may keep the
+    /// screen on), else its first address. (No key in it: a device that's to help asks this Mac.)
     #[cfg(not(target_os = "wasi"))]
     fn write_page(&self) {
         let Some(base) = http::served_https(self.port).or_else(|| self.contact.urls.first().map(|u| format!("{u}/"))) else { return };
         let page = self.shared.lock().unwrap().dir.join("page");
-        let text = format!("{base}work/#k={}\n", self.contact.token);
+        let text = format!("{base}work/\n");
         if std::fs::read_to_string(&page).ok().as_deref() != Some(text.as_str()) && crate::whole::write(&page, text.as_bytes()).is_ok() {
             if let Ok(f) = std::fs::File::open(&page) {
                 store::sys::set_mode(&f, 0o600).ok();
@@ -495,6 +505,11 @@ impl Coordinator {
             crate::whole::write(&contact_path(root), &serde_json::to_vec_pretty(&self.contact)?)?;
         }
         Ok(())
+    }
+
+    /// The devices asking to help and those accepted, for the build Mac's status (its menu bar).
+    pub fn devices(&self) -> devices::View {
+        self.shared.lock().unwrap().devices.view(unix_now())
     }
 
     /// Takes it off the NAS (the agent stopping), when it's this one's.
@@ -802,7 +817,22 @@ fn raw_again(journal: &Path, h: Option<&Handoff>) {
 
 /// What a request asks of the shared state (JSON in, JSON out): (status, body).
 #[cfg(not(target_os = "wasi"))]
-fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local: bool) -> Result<(u16, serde_json::Value)> {
+/// Seconds since the epoch.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// Who's asking a JSON request: this Mac (`local`), with the build's own key (`owner`: an agent, a
+/// job, or a page from before devices asked), and from where.
+#[derive(Clone, Debug, Default)]
+struct Caller {
+    local: bool,
+    owner: bool,
+    from: String,
+}
+
+fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller: &Caller) -> Result<(u16, serde_json::Value)> {
+    let local = caller.local;
     let now = Instant::now();
     // (While the build is paused, every lease is held, whatever went quiet meanwhile.)
     {
@@ -813,6 +843,46 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
     }
     let ok = serde_json::json!({ "ok": true });
     match path {
+        // A page asking to help, with the secret it made (no key: an owner's answer gives it one);
+        // where its ask stands, and its code (shown on the build Mac with it).
+        "/work/join" | "/work/join/state" => {
+            let b: serde_json::Value = serde_json::from_slice(body)?;
+            let (id, secret) = (b["id"].as_str().unwrap_or(""), b["secret"].as_str().unwrap_or(""));
+            let mut s = shared.lock().unwrap();
+            let now = unix_now();
+            if path == "/work/join/state" {
+                let st = s.devices.state(id, secret, now);
+                return Ok((200, serde_json::json!({ "state": st.name() })));
+            }
+            let label = b["label"].as_str().unwrap_or("");
+            let had = s.devices.state(id, secret, now);
+            let (st, code) = s.devices.ask(id, label, secret, &caller.from, caller.owner, now)?;
+            s.save_devices();
+            if st != had {
+                let note = if st == devices::State::Accepted { "is a helper (it had the build's old key)" } else { "asks to help with the build" };
+                s.history.add(history::Event { worker: Some(label.to_string()), note: format!("{note} (code {code})"), ..history::Event::new("device") });
+            }
+            Ok((200, serde_json::json!({ "state": st.name(), "code": code })))
+        }
+        // The owner's, on this Mac: the asks and the devices; an ask answered, a device forgotten.
+        p if p.starts_with("/work/devices") && !local => anyhow::bail!("{p} is for this Mac's owner"),
+        "/work/devices" => Ok((200, serde_json::to_value(shared.lock().unwrap().devices.view(unix_now()))?)),
+        "/work/devices/accept" | "/work/devices/decline" | "/work/devices/forget" => {
+            let b: serde_json::Value = serde_json::from_slice(body)?;
+            let id = b["id"].as_str().unwrap_or("");
+            let mut s = shared.lock().unwrap();
+            let (label, note) = match path {
+                "/work/devices/forget" => (s.devices.forget(id), "forgotten: it no longer helps"),
+                p => {
+                    let accept = p.ends_with("accept");
+                    (s.devices.answer(id, accept, unix_now()), if accept { "accepted: it may help" } else { "declined" })
+                }
+            };
+            let Some(label) = label else { return Ok((404, serde_json::json!({ "error": "no such ask or device" }))) };
+            s.save_devices();
+            s.history.add(history::Event { worker: Some(label), note: note.into(), ..history::Event::new("device") });
+            Ok((200, ok))
+        }
         "/work/ask" => {
             let a: Ask = serde_json::from_slice(body)?;
             anyhow::ensure!(!a.worker.is_empty() && a.worker.len() <= 120, "a worker needs a name");
@@ -1285,6 +1355,12 @@ mod http {
             .route("/work/status", any(json))
             .route("/work/swarm", any(json))
             .route("/work/history", any(json))
+            .route("/work/join", any(json))
+            .route("/work/join/state", any(json))
+            .route("/work/devices", any(json))
+            .route("/work/devices/accept", any(json))
+            .route("/work/devices/decline", any(json))
+            .route("/work/devices/forget", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
             .route("/work/net/{lease}/{*path}", get(net))
             .route("/work/out/{lease}/{*path}", put(output))
@@ -1349,10 +1425,16 @@ mod http {
         (code, [(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "error": why.to_string() }))).into_response()
     }
 
-    /// Who may ask what: this Mac, its LAN and the tailnet only; the page, and what its dashboard
-    /// reads (the build at a glance and its history: nothing of a key's), without a token; workers'
-    /// requests (helping, pausing) with theirs; a job's (`/task/…`) with its own and from this Mac
-    /// only.
+    /// A request's bearer credential.
+    fn bearer(h: &HeaderMap) -> Option<&str> {
+        h.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "))
+    }
+
+    /// Who may ask what: this Mac, its LAN and the tailnet only; the page, what its dashboard reads
+    /// (the build at a glance and its history), and a page's ask to help, without a key; helping
+    /// and pausing with the build's own key (the Macs' agents) or an accepted device's (crate::coord
+    /// ::devices); the asks and devices with the build's key, from this Mac only (its owner's menu
+    /// bar, `scenic devices`); a job's (`/task/…`) with its own, from this Mac.
     async fn gate(State(c): State<Ctx>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request, next: Next) -> Response {
         let ip = peer.ip();
         if !allowed(ip) {
@@ -1360,17 +1442,23 @@ mod http {
         }
         let path = req.uri().path();
         let is_page = req.method() == Method::GET && (matches!(path, "/work" | "/work/watch" | "/work/watch/") || path.strip_prefix("/work/").is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p)));
-        let is_view = req.method() == Method::POST && matches!(path, "/work/swarm" | "/work/history");
+        let is_view = req.method() == Method::POST && matches!(path, "/work/swarm" | "/work/history" | "/work/join" | "/work/join/state");
         if is_page || is_view {
             return next.run(req).await;
         }
+        let key = bearer(req.headers());
         let job = path.starts_with("/task/");
-        let want = format!("Bearer {}", if job { &c.job_token } else { &c.token });
-        if req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) != Some(want.as_str()) {
-            return error(StatusCode::UNAUTHORIZED, "no or wrong token");
+        let owners = path.starts_with("/work/devices");
+        let ok = if job {
+            key == Some(c.job_token.as_str())
+        } else {
+            key == Some(c.token.as_str()) || (!owners && key.is_some_and(|k| c.shared.lock().unwrap().devices.knows(k)))
+        };
+        if !ok {
+            return error(StatusCode::UNAUTHORIZED, "not a helper's: ask the build Mac to let this device help");
         }
-        if job && !loopback(ip) {
-            return error(StatusCode::FORBIDDEN, "a job's request comes from this Mac");
+        if (job || owners) && !loopback(ip) {
+            return error(StatusCode::FORBIDDEN, "that comes from the build Mac itself");
         }
         next.run(req).await
     }
@@ -1389,13 +1477,14 @@ mod http {
     /// A JSON request, answered by `route` off the runtime (it takes the lock and may write a file).
     async fn json(State(c): State<Ctx>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request) -> Response {
         let path = req.uri().path().to_string();
+        let owner = bearer(req.headers()) == Some(c.token.as_str());
         let body = match tokio::time::timeout(JSON_TIME, axum::body::to_bytes(req.into_body(), JSON_MAX)).await {
             Ok(Ok(b)) => b,
             Ok(Err(_)) => return error(StatusCode::PAYLOAD_TOO_LARGE, "too big, or cut short"),
             Err(_) => return error(StatusCode::REQUEST_TIMEOUT, "its body didn't come"),
         };
-        let local = loopback(peer.ip());
-        match tokio::task::spawn_blocking(move || route(&path, &body, &c.shared, &c.journal, local)).await {
+        let caller = Caller { local: loopback(peer.ip()), owner, from: peer.ip().to_string() };
+        match tokio::task::spawn_blocking(move || route(&path, &body, &c.shared, &c.journal, &caller)).await {
             Ok(Ok((204, _))) => (StatusCode::NO_CONTENT, [(header::CACHE_CONTROL, "no-store")]).into_response(),
             Ok(Ok((code, v))) => (StatusCode::from_u16(code).unwrap_or(StatusCode::OK), [(header::CACHE_CONTROL, "no-store")], Json(v)).into_response(),
             Ok(Err(e)) => error(StatusCode::BAD_REQUEST, format!("{e:#}")),
@@ -2068,6 +2157,60 @@ mod tests {
         assert_eq!(ask("POST", "/work/pause", Some(&c.contact.token)).0, 200);
         // (A wrong key is no key.)
         assert_eq!(ask("POST", "/work/pause", Some("0123456789abcdef0123456789abcdef")).0, 401);
+    }
+
+    #[test]
+    fn a_device_asks_to_help_and_helps_once_the_owner_accepts_it_here() {
+        let (_d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        // A JSON request as a page makes it: the answer's status and body.
+        let post = |path: &str, key: Option<&str>, body: serde_json::Value| -> (u16, serde_json::Value) {
+            use std::io::{Read, Write};
+            let mut s = std::net::TcpStream::connect(&addr).unwrap();
+            let auth = key.map(|k| format!("Authorization: Bearer {k}\r\n")).unwrap_or_default();
+            let b = body.to_string();
+            write!(s, "POST {path} HTTP/1.1\r\nHost: x\r\n{auth}X-Worker: a page\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}", b.len()).unwrap();
+            let mut r = Vec::new();
+            s.read_to_end(&mut r).unwrap();
+            let text = String::from_utf8_lossy(&r).to_string();
+            let code = text.split(' ').nth(1).unwrap().parse().unwrap();
+            let json = text.split("\r\n\r\n").nth(1).and_then(|b| serde_json::from_str(b.trim()).ok()).unwrap_or_default();
+            (code, json)
+        };
+        let secret = "00112233445566778899aabbccddeeff";
+        let me = serde_json::json!({ "id": "ipad01", "label": "Safari on iPad", "secret": secret });
+        // Asked, with no key: its code, which the build Mac shows with the ask.
+        let (code, a) = post("/work/join", None, me.clone());
+        assert_eq!((code, a["state"].as_str()), (200, Some("asking")));
+        let shown = a["code"].as_str().unwrap().to_string();
+        // Not yet a helper.
+        assert_eq!(post("/work/pause", Some(secret), serde_json::json!({})).0, 401);
+        // The owner's, here, with the build's key (the menu bar, `scenic devices`): not a device's.
+        let (code, v) = post("/work/devices", Some(&c.contact.token), serde_json::json!({}));
+        assert_eq!((code, v["asking"][0]["code"].as_str()), (200, Some(shown.as_str())));
+        assert_eq!(post("/work/devices", Some(secret), serde_json::json!({})).0, 401);
+        assert_eq!(post("/work/devices", None, serde_json::json!({})).0, 401);
+        assert_eq!(post("/work/devices/accept", Some(&c.contact.token), serde_json::json!({ "id": "ipad01" })).0, 200);
+        // Its page learns so, and its secret is its key.
+        assert_eq!(post("/work/join/state", None, me.clone()).1["state"], "accepted");
+        assert_eq!(post("/work/join/state", None, serde_json::json!({ "id": "ipad01", "secret": "ffffffffffffffffffffffffffffffff" })).1["state"], "none");
+        assert_eq!(post("/work/pause", Some(secret), serde_json::json!({ "pause": null, "at": 1 })).0, 200);
+        assert_eq!(post("/work/ask", Some(secret), serde_json::json!({ "worker": "Safari on iPad ipad01", "kind": "web", "can": ["tail"], "mem_mb": 1000, "cores": 4 })).0 / 100, 2);
+        // A page with the build's old key: a helper at once, with its own secret from then on.
+        let old = serde_json::json!({ "id": "phone1", "label": "Safari on iPhone", "secret": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
+        assert_eq!(post("/work/join", Some(&c.contact.token), old).1["state"], "accepted");
+        assert_eq!(post("/work/pause", Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), serde_json::json!({ "pause": null, "at": 2 })).0, 200);
+        // Forgotten: no longer.
+        assert_eq!(post("/work/devices/forget", Some(&c.contact.token), serde_json::json!({ "id": "ipad01" })).0, 200);
+        assert_eq!(post("/work/pause", Some(secret), serde_json::json!({})).0, 401);
+        assert_eq!(c.devices().accepted.len(), 1);
+        // Declined: its page learns so.
+        post("/work/join", None, serde_json::json!({ "id": "mac01", "label": "Chrome on Mac", "secret": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }));
+        assert_eq!(post("/work/devices/decline", Some(&c.contact.token), serde_json::json!({ "id": "mac01" })).0, 200);
+        assert_eq!(post("/work/join/state", None, serde_json::json!({ "id": "mac01", "secret": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" })).1["state"], "declined");
+        // (The history says so.)
+        let kinds: Vec<String> = c.shared.lock().unwrap().history.since(0, 100).iter().filter(|e| e.kind == "device").map(|e| e.note.clone()).collect();
+        assert!(kinds.iter().any(|n| n.starts_with("asks to help")) && kinds.iter().any(|n| n.starts_with("accepted")) && kinds.iter().any(|n| n.starts_with("forgotten")), "{kinds:?}");
     }
 
     #[test]
