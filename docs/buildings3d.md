@@ -1,10 +1,9 @@
 # 3D buildings
 
 **Plan, not built** (2026-10-05). The first of plan.md §10's phase 7 features ("3D buildings, then
-PLATEAU"). It replaces plan.md §6's one-line placeholder ("Overture plus official data, giving
-z13–14 within the coverage"). Companions: `docs/plan.md` (the pipeline, keys, order),
-`docs/formats.md` (files), `docs/workers.md` and `docs/pool.md` (sharing the work). Its sources are
-on the NAS already, or on their way (§2.6).
+PLATEAU"); plan.md §6 (Global-source layers) points here. Companions: `docs/plan.md` (the pipeline,
+keys, order), `docs/formats.md` (files), `docs/workers.md` and `docs/pool.md` (sharing the work).
+Its sources are on the NAS (§2.6).
 
 **The idea in one line:** every building in the coverage, extruded to its height on the 3D terrain,
 from the same pinned Overture release the roadside buildings read, the missing heights estimated
@@ -186,7 +185,7 @@ change every unit's key (every unit rebuilt), so they're decided on their own. T
 | tiles, estimated | ~7 GB at z14, ~8 GB with z12–13; the largest hi pack (6/56/25) ~0.5 GB |
 | an app Mac's mirror | +8 GB |
 
-### 2.6 Downloads (started 2026-10-05)
+### 2.6 Downloads (done 2026-10-06, for the 88 regions: 194 files, 61.8 GB)
 
 `dem/bldfetch.py` fetches both sources onto the NAS, whole files as the sources have them:
 - Overture's files with a row group meeting the coverage grown by 20 km (both types), into

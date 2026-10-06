@@ -237,10 +237,12 @@ record changes back through the build Mac's coordinator, which journals them for
 **Build Mac (M4, 48 GB).**
 - **The agent:** `scenic agent` runs under the launcher, as a LaunchAgent with `ProcessType
   Interactive`. Without it, launchd throttles the agent.
-- **One job at a time.** Each job is a child process group at utility priority (`taskpolicy -c
-  utility`; `-b` would confine it to the efficiency cores, ~17× slower).
-  - Rust steps take half the cores when the user is active as the job starts, and all of them when
-    idle (`RAYON_NUM_THREADS`).
+- **Two jobs at once at most:** the plan's first, and a second beside it when the two fit (§8, Two
+  jobs at once). Each job is a child process group at utility priority (`taskpolicy -c utility`;
+  `-b` would confine it to the efficiency cores, ~17× slower).
+  - The first job's Rust steps take half the cores when the user is active as the job starts, and
+    all of them when idle (`RAYON_NUM_THREADS`); the second's, four threads for a step that mostly
+    waits on the network, else half the cores.
   - osmium, Planetiler and the Python steps take what they take.
 - **Power:** CPU jobs run on mains power or on battery down to 30 % charge, then pause until the Mac
   is plugged in. Every job also needs the NAS.
@@ -686,8 +688,9 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     read from its pack or made afresh is the same (from fixed datasets: WorldCover, Meta's canopy
     squares), and a unit writing its tile's would otherwise make it and its neighbours stale.
 - **Trees** (cover, height, leaf type), zoom 4–12, per z3 tile the coverage meets, clipped to it
-  (`pipeline::treepacks`, which runs the `trees` program, `pipeline::trees`), before the build
-  Mac's units (the helper's run meanwhile): from Meta's canopy squares (kept on the NAS,
+  (`pipeline::treepacks`, which runs the `trees` program, `pipeline::trees`), made for a region
+  before it's published (§8, Order: once it's done, or earlier while the units wait for the pass's
+  worldwide jobs; a helper takes its jobs too): from Meta's canopy squares (kept on the NAS,
   `sources/canopy/`, and copied into the agent's cache, where the units read them too; a square
   both want is downloaded once, under a `<file>.lock` in the store, the other waiting for it)
   and the leaf-type squares on the NAS (`sources/trees/leaf/`), each made whole once by
@@ -704,7 +707,10 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     blocks: tree cover as tasks (docs/workers.md) is planned.
 - **Area overlays:** see `docs/phase5.md`. The `overlays` job runs after marks, because it needs the
   World Heritage dots' ids. Until its first run, today's converted packs serve.
-- **Buildings (phase 7):** Overture plus official data, giving z13–14 within the coverage.
+- **3D buildings (phase 7, planned):** `docs/buildings3d.md`. Every building in the coverage, from
+  the Overture release the roadside buildings read: its height measured or from its floors, else
+  estimated from its neighbours, GHSL or its size and kind; tiles z12–14 per z6 tile. National
+  heights (PLATEAU, BD TOPO) later.
 
 The server builds missing deeper terrain and slope tiles from their ancestors.
 
@@ -1643,17 +1649,25 @@ At each phase's end an Opus agent reviews the work against this plan.
      - the status bar;
      - catalog switching.
    - **Not built:** drawing, splitting and merging regions; "Keep this view".
-6. **Cutover: under way.**
-   1. Today's 34 recipes are installed, with `inputs/hold-catalog`.
-   2. The agent builds them after the pass: heritage sites, terrain, slope and tree cover (the M1's
-      helper building units meanwhile), the units, the three chains (the heritage chain included).
-   3. The held catalog is compared with today's map: counts and distributions (lengths, drives and
-      climbs change under the new chaining), heritage points and overlays, screenshots and
-      performance. `compare` reports the counts and distributions (units as they're built too:
-      `--new build`).
-   4. Then the hold is released, and the converted legacy data deleted.
-7. **Features,** each on its own: 3D buildings, then PLATEAU; building heights in horizons and the
-   viewshed tool; the new terrain repair; sharper terrain from national DEMs. Not started.
+6. **Cutover: mostly done.**
+   1. Done: today's 34 regions, as 34 recipes (`tools/cutover/regions`), built from the 2026-09-28
+      pass into a held catalog and compared with today's map by `compare` (its report,
+      `inputs/hold-catalog.compare-2026-10-04.md`: the same 181 units, their counts and
+      distributions within 0.2 %); the hold released on 2026-10-04
+      (`inputs/hold-catalog.released-2026-10-04`), so the map serves the pass's build.
+   2. Done: the regions as 88 recipes by political unit (§5), every one built (284 units) and
+      published (catalog 14, 2026-10-06).
+   3. Left: deleting the converted legacy data, once nothing the map reads comes from it. The
+      served catalog lists 38 of its files (`global/legacy/`), which the server reads: the popups'
+      details (`details-*`), roads' English (`road-en`, under the units' own `global/roaden/<u>`),
+      and the whole layer files the map fetches by name (`/api/layer/…`: ferries, stations,
+      overlays) where the overlays job has no copy of its own (`global/heritage/`).
+7. **Features,** each on its own.
+   - Built: the terrain repair (`roadcore::grid::repair_terrain`, in the terrain job: voids
+     filled, towers and spikes flattened, summits and ridges kept, with tests; §6).
+   - Planned: 3D buildings (`docs/buildings3d.md`: designed, its sources on the NAS, its steps not
+     built), then PLATEAU; building heights in horizons and the viewshed tool; sharper terrain from
+     national DEMs.
 8. **Builds anywhere: under way** (`docs/workers.md`). Done: the crates build for WebAssembly; one
    maths library on every target (outputs identical natively at any thread count and under WASI);
    the data plane's SSD copies and prefetch; the coordinator (leases, hand-offs over HTTP, learned
