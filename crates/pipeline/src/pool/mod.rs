@@ -127,11 +127,12 @@ fn parse_uuid(ioreg: &str) -> Option<String> {
 }
 
 /// This process's hold on its member (crate::pool::driver's contract: one process per member): an
-/// exclusive flock on `pool-<id>.lock` in the app's folder (`~/Library/Application Support/scenic`:
-/// above every copy of the agent's folder on this Mac, and not the temporary folder, which macOS
-/// empties of files three days old), held while the process runs, so a second process of the
-/// member (a second agent, or one started from a copy of the agent's folder) can't take it. The
-/// driver checks it at every step (`check`). Let go when dropped.
+/// exclusive flock on `pool-<id>.lock` in the folder it's given: the app's, which the agent passes
+/// (`~/Library/Application Support/scenic`: above every copy of the agent's folder on this Mac, and
+/// not the temporary folder, which macOS empties of files three days old), held while the process
+/// runs, so a second process of the member (a second agent, or one started from a copy of the
+/// agent's folder) can't take it. The driver checks it at every step (`check`). Let go when
+/// dropped.
 #[derive(Debug)]
 pub struct MemberLock {
     file: std::fs::File,

@@ -1,13 +1,12 @@
 # The pool: any Mac can lead the build
 
 Status: **phase 1's core built** (`crate::pool`, its driver and phase 2's transitions with it: §12),
-not wired into the agent, so nothing runs it yet; the rest is planned (design of 2026-10-05,
-revised after an architect's review the same day). It replaces the fixed "build Mac" and its
-"helpers" (plan.md §8, workers.md §8) with a pool of peer Macs, any number of them, one of which
-leads the build at a time, and makes the browsers' pages workers of the same standing, by one model
-of work. The lead can be handed to another Mac from any Mac's menu, the worker page, the map's
-build panel or `scenic lead`, and taken by another Mac when it's gone. Nothing about a Mac's role is
-fixed at install.
+not wired into the agent, so nothing runs it yet; the rest is planned. It replaces the fixed "build
+Mac" and its "helpers" (plan.md §8, workers.md §8) with a pool of peer Macs, any number of them, one
+of which leads the build at a time, and makes the browsers' pages workers of the same standing, by
+one model of work. The lead can be handed to another Mac from any Mac's menu, the worker page, the
+map's build panel or `scenic lead`, and taken by another Mac when it's gone. Nothing about a Mac's
+role is fixed at install.
 
 ## 1. What changes, and why
 
@@ -58,8 +57,9 @@ a lead that vanishes loses no work.
    live as long as the job, whoever leads; a page takes them from that member directly.
 8. **Any number of Macs, any number of pages.** Nothing counts Macs or names "the other one".
 
-Principle 2 as the build stands (on a Mac, in `~/Library/Application Support/scenic/`: its agent's
-folder, `agent/`, and the app's, `app/`; plan.md §3–4 and formats.md say more). Of the last
+Principle 2 as the build stands (on a Mac, in the app's folder, `~/Library/Application
+Support/scenic/`: its agent's folder, `agent/`, and the app's versions, `app/`; plan.md §3–4 and
+formats.md say more). Of the last
 three rows, a job's progress is work in progress, as the principle allows; the coordinator's and
 the lead's own state are on the build Mac's disk alone, the coordinator's until phase 1 (§12) puts
 it on the NAS. The rest a new lead has from the NAS, or makes again.
@@ -125,18 +125,21 @@ them, and the simulator (§13) checks them:
   another Mac, Migration Assistant's, makes a new id there), and named in everything it writes; its
   host name is a label (renaming a Mac, or macOS adding "-2" after a clash, changes nothing). One
   process of a member runs the pool at a time: it holds the member's lock (crate::pool::MemberLock,
-  `pool-<id>.lock` in the app's folder, `~/Library/Application Support/scenic`: above every copy of
-  its home on the Mac, and not the temporary folder, which macOS empties of files three days old),
-  and a second can't take it. Its driver checks the lock every loop: a lock file removed is taken
-  again while no other process holds it, and a process another took it from stops. A Mac whose
-  member file is lost makes a new id, and keeps of its saved state only its jobs' hand-offs not
-  written yet. It:
+  `pool-<id>.lock` in the folder the agent gives it: the app's folder, above every copy of its home
+  on the Mac, and not the temporary folder, which macOS empties of files three days old; the
+  integration's to pass, planned), and a second can't take it. Its driver checks the lock every
+  loop: a lock file removed is taken again while no other process holds it; a check that can't
+  tell (the folder unreadable a moment) holds that loop's duties; a process another holds it from
+  stops for good, saving its state (the hand-offs handed to that loop in it) and leaving the pool.
+  A Mac whose member file is lost makes a new id, and keeps of its saved state only its jobs'
+  hand-offs not written yet. It:
   - writes its heartbeat, `state/pool/members/<id>.json` (§10);
   - runs job slots (§7) that ask the lead for jobs, run them and hand their results to the journal;
   - brokers its own jobs' tasks (§8), and runs tasks itself in a slot when it has room;
   - answers the pool's API (§9): its own tasks, its status, the worker page;
   - passes its menu's, `scenic`'s and the map's asks (pause, lead) to the lead over HTTP;
-  - takes the lead when it's handed it, or when the owner has it take over (§6).
+  - takes the lead when it's handed it, when the owner has it take over, or by itself when the
+    lead stood down (§6).
 - **The lead** is the member the current term names. On top of being a member, it:
   - plans (crate::agent::build) and grants jobs to every member's slots (the coordinator);
   - merges the journal into the records, the only writer of its term's records (manifest, keys,
@@ -169,8 +172,8 @@ A term is a file made once with create-new and never changed: `state/build/terms
   hint the lead writes after taking up its term (for old apps, and to save a listing), never the
   truth.
 - **Making term E+1** is how every change of lead happens: a handover (§6.4), a take-back, a
-  takeover (§6.5), a re-assertion (§6.6). Exactly one Mac's create succeeds; the others see the file
-  and stand down. No lock is needed (`lead.lock` and the records' lock of the first draft are gone).
+  takeover (§6.5), a re-assertion (§6.6). Exactly one Mac's create succeeds; the others see the
+  file: a lead steps down, a member waits. No lock is needed.
 - **A handover's term names a snapshot:** `seq`, the number of the records snapshot its old lead
   saved last, as it settled (§6.2, §6.4). The new lead takes up from that one or a later one of the
   same term, never from an older one a stale read gives. Other terms have no `seq`.
@@ -212,11 +215,15 @@ A term is a file made once with create-new and never changed: `state/build/terms
   can't be.
 - **Term 1 starts from today's layout** (`state/build/manifest.json`, `jobs.json`, `pending.json`),
   so nothing moves at migration (§12): its first snapshot is made from those files
-  (`records::first`, with create-new) before term 1 itself is (`term::bootstrap`), and term 1's
-  lead writes them after each of its saves, for old readers. The pool reads them only to make that
-  first snapshot, and to take term 1 up from it when it can't be read (its maker stopped midway, or
-  its bytes landed out of order, a hole mid-file): nothing has written them since (a lead's saves
-  are whole, and replace it).
+  (`records::first`, with create-new; its maker's create cut short is written whole, as a term's
+  is) before term 1 itself is (`term::bootstrap`), and term 1's lead writes them after each of its
+  saves, for old readers. The pool reads them only to make that first snapshot, and to take term 1
+  up from them when the snapshot can't be read whole (its maker stopped midway, or its bytes landed
+  out of order, a hole mid-file): only once it has stayed so ten minutes awake (`STALE_S`), the
+  take-up tried again meanwhile, as a handover's is. A stale read of the snapshot, or of today's
+  three files (written one after another after each of term 1's saves), could pair a manifest of
+  one version with keys of another; by then none is stale, and none of term 1's saves landed, so
+  nothing has written them since.
 - **Taking up term E+1** (`records::start`, crate::pool::driver): the new lead starts from the
   newest snapshot a read finds (about 3 MB), walking down the terms: E+1's own when an earlier try's
   landed, then E's, then E-1's, and so on (a term whose lead saved none has none). A lead
@@ -226,11 +233,12 @@ A term is a file made once with create-new and never changed: `state/build/terms
   shortly). The new lead saves them as `term/<E+1>/records.json` and leads; its members tell it of
   their entries, and it lists the journal off its loop and replays every entry its records don't
   name, in (term, lease) order (§7.3). Its records reflect the journal once that listing is merged
-  and saved, and every entry it was told of or listed is read (`caught_up`, with when the listing
-  began, `listed_at`): a catalog, and GC, wait for that (an entry not merged yet may hold uploads
-  the records don't name). It lists every day again daily, and is caught up only by such a listing
-  under a day old, and not while it owes a re-assertion: an entry written late into a day older
-  than the sweeps reach, by a member gone before telling of it, waits a day at most.
+  and saved, every entry it was told of or listed is read, and it owes no re-assertion
+  (`caught_up`, with when it asked for the listing, `listed_at`): a catalog, and GC, wait for that
+  (an entry not merged yet may hold uploads the records don't name). It lists every day again
+  daily, an hour before the last listing is a day old, and is caught up only by such a listing
+  asked for under a day ago: an entry written late into a day older than the sweeps reach, by a
+  member gone before telling of it, waits a day at most.
 - **Acknowledgements are per term** (`journal::Mine`). An entry term E's lead acknowledged can be
   missing from term E+1's records: the take-up listed the journal stale, or term E's lead, not yet
   knowing of term E+1, merged it after that take-up. So each loop a member tells the lead of the
@@ -245,9 +253,8 @@ A term is a file made once with create-new and never changed: `state/build/terms
   inputs.
 - **What a stale lead does** after a later term exists: its renames land in `term/<E>/`, which no
   one reads once a later term has records of its own; its journal reads and duties stop at its next
-  check (§6.6). The lost-update path of the first draft (a late rename of a manifest over the new
-  lead's, healed from a journal that had already dropped the entry) can't happen: there's no shared
-  file to rename over.
+  check (§6.6). A stale lead's late rename can't land over the new lead's records: there's no
+  shared file to rename over, each term having its own.
 - **The coordinator's state** is per term too: `state/coord/term/<E>/{leases,costs,failed,trust,
   pause}.json`, copied at take-up (§7.5). A handover's new lead loads it as the old lead wrote it
   last, from the snapshot its term names (§6.4).
@@ -258,7 +265,8 @@ Any member asks the lead over HTTP (§9): `POST /pool/lead {to, by, how}`. Its m
 To ▸", "Make This Mac Lead"), `scenic lead`, the map's build panel and the worker page all send one,
 through their own member. A member that can't reach the lead can't hand anything over; it can only
 take over (§6.5). An ask naming a Mac that isn't a live member (heartbeat beat within ten minutes,
-NAS reachable, app new enough) is refused, saying why.
+app new enough: `Driver::hand_to`; the NAS reachable, planned, the heartbeat saying nothing of it
+yet) is refused, saying why.
 
 ### 6.4 Handing over (the lead is there): a state machine
 
@@ -275,6 +283,8 @@ what the lead's step saw, driven by crate::pool::driver.
 | **Passed** | A makes `terms/<E+1>.json` naming B, with `seq`: the number of the snapshot it saved settling (§6.1), and tells B of it. A is now a member; its own member API sends lead asks on to B | B takes up within 2 min (B tells A it leads, or A reads it in B's heartbeat, or E+1 has a snapshot): **Leading** (B, E+1); else **Taken back** |
 | **Taken back** | A makes `terms/<E+2>.json` naming itself ("B didn't take up"), the app rule checked against term E (§6.1) | **Leading** (A, E+2) |
 
+- **The agent's parts are planned** (§12): settling's (stopping grants, answering asks, cancelling
+  the duties in flight, writing the coordinator's state); the transitions themselves are built.
 - **Nothing running stops,** on any Mac: leases keep their ids (`<term>-<n>`, unique by
   construction) and deadlines (wall-clock times) in the state B loads, as A wrote it last (it's in
   the snapshot the term's `seq` names: crate::pool::records::Records::handed), so every job, A's
@@ -290,12 +300,12 @@ what the lead's step saw, driven by crate::pool::driver.
 ### 6.5 Taking over (the lead is gone)
 
 When the lead is out of touch (its heartbeat's own beat more than ten minutes old by the reader's
-clock, or it says it can't reach the NAS), or its heartbeat says it stood down from its term
-(§6.6), the owner may have another member take the lead: "Take Over the Build…" on its menu, which
-says since when the lead's been gone and asks to confirm, the worker page's "Take it", or `scenic
-lead take`. The member makes `terms/<E+1>.json` naming itself and takes up as in §6.2. `--force`
-does it without the out-of-touch check (the owner knows the lead is off), and past a term that
-can't be read whole (§6.1); `--downgrade` on an app older than the term's (§6.1), the lead that
+clock; or, planned, it says it can't reach the NAS), or its heartbeat says it stood down from its
+term (§6.6), the owner may have another member take the lead: "Take Over the Build…" on its menu,
+which says since when the lead's been gone and asks to confirm, the worker page's "Take it", or
+`scenic lead take`. The member makes `terms/<E+1>.json` naming itself and takes up as in §6.2.
+`--force` does it without the out-of-touch check (the owner knows the lead is off), and past a term
+that can't be read whole (§6.1); `--downgrade` on an app older than the term's (§6.1), the lead that
 stood down included.
 
 What the old lead had in flight: its jobs' hand-offs are in the journal and get replayed; leases
@@ -310,8 +320,9 @@ power, every member's menu offers "Hand the build to <Mac>" in one click (automa
 turns it on).
 
 **A lead that stood down is taken over automatically** (§6.6): awake, it has declared it won't lead.
-A member that has seen its heartbeat stood down for two minutes takes over by itself, if the app
-rule lets it (crate::pool::driver: `STOOD_DOWN_S`): the members that can, the newest app first and
+A member that can lead now (`Heard::able`: its disk, home and power) and has seen its heartbeat
+stood down for two minutes takes over by itself, if the app rule lets it (crate::pool::driver:
+`STOOD_DOWN_S`): the members that can, the newest app first and
 then the lowest member id, try 30 s apart, and the next term's create-new decides between them. Its
 `how` says so ("taken over by MacBook-Air: Mac-mini stood down"). When no member's app can lead the
 term, it waits for the owner (an update, or `--downgrade`).
@@ -321,45 +332,49 @@ term, it waits for the owner (an update, or `--downgrade`).
 A lead's view can be old without its knowing: it slept, its clock was set, or the NAS didn't answer
 for a while. So the lead **re-asserts** before it acts again (crate::pool::driver): it makes
 `terms/<E+1>.json` naming itself, a create-new no stale read can fool, and takes it up from its own
-records (one copy of its snapshot, about 3 MB). It does when, since its last loop or within it,
-its wall clock moved more than a minute beyond its awake clock (Rust's `Instant`, which doesn't
-count sleep: it slept, or its clock was set); when its last loop ran over five minutes awake (the
-NAS stalled: on a share under load every operation can take seconds, so a loop's length short of
-that says nothing); after a restart; and before every GC sweep. Time spent waiting between loops, or
-listing the journal (done off the loop), isn't a gap. It keeps what it knew of the journal (no
-other lead came between), its refusals not noted yet with it, so the loop that re-asserts before a
-sweep is caught up (§6.2); after a
-sleep, the messages members sent it meanwhile lost, it lists the journal again. A member whose
-saved state is lost (or is another's: a copy of the agent's folder) re-asserts a term naming it
-that it finds at its start, rather than take it up again: it may have led it, its leases granted.
-If the term it makes already exists, someone took over: it **steps down** at once.
+records (one copy of its snapshot, about 3 MB). It does when, since its last loop or within it, its
+wall clock and its awake clock moved more than a minute apart (the awake clock, Rust's `Instant`,
+doesn't count sleep: it slept, or its clock was set, either way); when its last loop ran over five
+minutes awake (the NAS stalled: on a share under load every operation can take seconds, so a loop's
+length short of that says nothing); after a restart; and before every GC sweep. Time spent waiting
+between loops, or listing the journal (done off the loop), isn't a gap. It keeps what it knew of the
+journal (no other lead came between), its refusals not noted yet with it, so the loop that
+re-asserts before a sweep is caught up (§6.2); after a sleep, the messages members sent it meanwhile
+lost, it lists the journal again. A member whose saved state is lost, or another's (this Mac's
+member file lost and a new id made; or a copy of another Mac's folder), re-asserts a term naming it
+that it finds at its start, rather than take it up again: it may have led it, its leases granted. So
+does one whose saved state is older than a term it made (a backup restored: `Saved::made`, the
+newest term it made, doesn't name it). If the term it makes already exists, someone took over: it
+**steps down** at once.
 
 A lead restarted into an older app or a development build can't re-assert (the app rule): it
 **stands down**, and its heartbeat says so (`stood_down`: its term, which no one then leads), so
-another member takes over, by itself after two minutes, or at the owner's ask unforced (§6.5); it
-takes its term up again once its app is new enough. A member named by a term made on a newer app
+another member takes over, by itself after two minutes, or at the owner's ask unforced (§6.5);
+once its app is new enough it re-asserts its term. A member named by a term made on a newer app
 than it now runs does the same. A lead handing over that restarts into an older app can't take the
 lead back when its target doesn't take up (the app rule): it drops the handover, and the term waits
 for its target or a takeover; the owner's forced takeover drops a handover waiting too.
 
 Every loop it also checks `<E+1>.json`. Stepping down: it stops granting, planning, merging and its
 duties, writes nothing more, and goes on as a member: its slots carry on (a lease the new lead knows
-is renewed; one that lapsed is stopped, its done targets handed off). The history and its menu say so
-("No longer leading: MacBook-Pro-de-Brandon took over at 14:12 while this Mac was asleep").
+is renewed; one that lapsed is stopped, its done targets handed off). The history and its menu
+will say so, planned (§12): "No longer leading: MacBook-Pro-de-Brandon took over at 14:12 while
+this Mac was asleep".
 
 A write already past its last check when the Mac froze lands in its own term's files (§6.2), which
 nobody reads: invariant 5.
 
 ### 6.7 Clocks and wakefulness
 
-- **No NAS clock.** The first draft's "touch a file, read its mtime" measured the reader's own clock
-  (a client sets the mtime it writes). Whether a member is out of touch compares its heartbeat's own
+- **No NAS clock.** A file's mtime isn't one: a client sets the mtime it writes. Whether a member
+  is out of touch compares its heartbeat's own
   `beat` time with the reader's clock, as helpers are read now; a member whose beat is over 60 s
   ahead is shown as "clock wrong". The Macs keep time by NTP to well under a second.
 - **Nothing persisted as an `Instant`:** lease deadlines, failures' waits and workers' last-seen
   times are wall-clock times on the NAS, so they mean the same on the next lead.
-- **The lead stays awake** while it leads with leases out on mains power (an idle-sleep assertion,
-  as jobs hold now), so no member stalls behind a lead that dozed off with no job of its own.
+- **The lead stays awake** (planned, §12) while it leads with leases out on mains power (an
+  idle-sleep assertion, as jobs hold now), so no member stalls behind a lead that dozed off with no
+  job of its own.
 
 ## 7. The work: slots on every member
 
@@ -375,7 +390,8 @@ nobody reads: invariant 5.
 
 ### 7.2 Placement: the steps table
 
-One table, crate::agent::build::STEPS, has a row per step with:
+One table, the steps table (planned, phase 4: crate::agent::build has `AS_OF_STEPS` alone today),
+has a row per step with:
 
 | Column | Meaning |
 | --- | --- |
@@ -410,38 +426,43 @@ seconds, kept to one Mac as the build Mac keeps it now.
 - **A job's hand-off goes straight to the NAS** (crate::pool::journal): the member keeps it whole in
   its own folder until it's written (`journal::Mine`), writes `state/journal/<day>/<term>-<n>.json`
   itself, whole, by a temporary name (its own file: its lease's; a reader sees all of it or none),
-  then tells the lead. `<term>-<n>` is the job's lease (the term it was granted in, and its number
-  there), `<day>` the UTC day of the hand-off, by its member's clock (`YYYY-MM-DD`), fixed by its
-  first try (one written after midnight keeps its key); the entry's key, `<day>/<term>-<n>`, is what
-  records name it by. That removes the outbox and its retry loop and the HTTP body limit; a takeover
-  finds every result on the NAS; GC sees them all.
-- **The lead validates at merge time:** every change in the step's write-set (STEPS), every content
-  name matching its logical name, the lease's targets and keys (the merge is given the check:
-  `records::Check`). A refused entry is named in the records with why; once they're saved its why
-  is noted beside the journal, `state/journal/rejected/<key>.why` (`journal::note_refusal`), for the
-  owner. The entry stays in its day: a refusal may be a lead's that's no longer current (its check
-  depends on its state), and a lead whose records don't name the entry checks it itself, told of
-  it or listing it.
+  then tells the lead; one there already that says the same counts as written (an app of another
+  version may order its fields otherwise). `<term>-<n>` is the job's lease (the term it was granted
+  in, and its number there), `<day>` the UTC day of the hand-off, by its member's clock
+  (`YYYY-MM-DD`), fixed by its first try (one written after midnight keeps its key); the entry's
+  key, `<day>/<term>-<n>`, is what records name it by. That removes the outbox and its retry loop
+  and the HTTP body limit; a takeover finds every result on the NAS; GC sees them all.
+- **The lead validates at merge time:** every change in the step's write-set (the steps table's,
+  planned), every content name matching its logical name, the lease's targets and keys (the merge is
+  given the check: `records::Check`). A refused entry is named in the records with why; once they're
+  saved its why is noted beside the journal, `state/journal/rejected/<key>.why`
+  (`journal::note_refusal`), for the owner. The entry stays in its day: a refusal may be a lead's
+  that's no longer current (its check depends on its state), and a lead whose records don't name the
+  entry checks it itself, told of it or listing it.
 - **Lease order holds across merges:** an entry of an older lease for targets a newer lease's entry
   set already (a member back from sleep telling of it late) is named and changes nothing.
 - **The journal is a log, not a queue:** nothing is removed on the merge path; a records snapshot
-  names the entries it reflects; GC removes day folders older than a week once every snapshot since
-  names their entries, and the records then forget those days' keys (`forget_before`), keeping the
-  day they forget before: an entry of such a day told again, and not in the journal, is
-  acknowledged (it was merged before GC removed it). Members forget what a lead acknowledged
-  before that day, which the lead's answers carry.
+  names the entries it reflects; GC (not built: plan §10) removes day folders older than a week once
+  every snapshot since names their entries, and the records then forget those days' keys
+  (`forget_before`), keeping the day they forget before: an entry of such a day told again, and not
+  in the journal, is acknowledged (it was merged before GC removed it). Members forget what a lead
+  acknowledged before that day, which the lead's answers carry.
 - **The lead lists the journal off its loop** (3 to 33 s a folder): every day not forgotten after it
   takes up its term and then daily, and the last two days every ten minutes, for entries no member
-  will tell it of (their member gone, having told only a lead no longer current). Otherwise it
-  reads only the entries members tell it of, by key (§6.2: acknowledgements are per term). An entry
-  listed or told of that can't be read whole yet (a stale read) is kept and read again every loop;
-  one its reads find not whole for an hour (cut short on the share, or removed) is refused, as a
-  damaged one is, its work done again (a read the share doesn't answer says nothing, and starts
-  the hour again). A loop reads entries to merge for a minute at most, the oldest leases first, and
-  leaves the rest to the next (on a share under load a read takes seconds, and a lead taking up
-  from an old snapshot may have thousands to read); a member writes its jobs' entries so too. A
-  lead with entries left to read settles no handover (§6.4): the handover is given up, to ask for
-  again once they're read.
+  will tell it of (their member gone, having told only a lead no longer current); one listing at a
+  time, none asked for while one is out, however long it takes (the agent hands every one back,
+  making a failed one again). Otherwise it reads only the entries members tell it of, by key (§6.2:
+  acknowledgements are per term). An entry listed or told of that can't be read whole yet (a stale
+  read) is kept and read again every loop; one its reads find not whole for an hour awake (cut short
+  on the share, or removed) is refused, as a damaged one is, its work done again; so is one whose
+  reads fail for an hour while the share answers the loop's other reads (a file the share errors
+  on). A read that fails while none answer (the share away) says nothing, and starts the hour again.
+  One waiting ten minutes is said, once, naming it and why. A loop reads entries to merge for a
+  minute at most, the entries not read before first, then those waiting, each the oldest lease
+  first, and leaves the rest to the next (on a share under load a read takes seconds, and a lead
+  taking up from an old snapshot may have thousands to read); a member writes its jobs' entries so
+  too. A lead with entries left to read settles no handover (§6.4): the handover is given up, to ask
+  for again once they're read.
 - **Steps with open-ended writes** declare them too: the OSM pass (with `retire_older`'s removals in
   older passes), prune (which forgets keys), the chains, `verify`, patch-ferries. Hand-run steps
   (`scenic-build` from a shell) ask the lead for an ad-hoc lease and hand off the same way.
@@ -456,9 +477,10 @@ seconds, kept to one Mac as the build Mac keeps it now.
   complete when `sources/osm/<date>/pass` is in the records, not when a `pass.*.json` file exists;
   the catalog's `--ready` comes from the merged records, and a catalog runs only when nothing waits
   to be merged.
-- **A job resuming its own work** sees its earlier attempts: in hand-off mode `Out::open` lays this
-  Mac's unmerged hand-offs for the same step over the snapshot (as `Keys::load_with` does for done
-  records), so a pass restarted after sleep finds its earlier stages.
+- **A job resuming its own work** (planned, phase 4) sees its earlier attempts: in hand-off mode
+  `Out::open` lays this Mac's unmerged hand-offs for the same step over the snapshot (as
+  `Keys::load_with` does for done records), so a pass restarted after sleep finds its earlier
+  stages.
 
 ### 7.5 The coordinator across terms
 
@@ -576,48 +598,54 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
      `state/build/writer` names, its records first; a create whose bytes didn't land finished by its
      maker; the app rule, the take-back checked against the term handed over; the owner's forced
      takeover, and downgrade); records per term (`records`: term 1's first snapshot from today's
-     layout, which its saves keep writing; the merge, in lease order across merges; taking up,
-     numbered on across tries; the forget horizon; readers' fallback to a term before); the journal
-     as a log, written whole by members directly (`journal`: entries by lease id `<term>-<n>`, kept
-     whole until written; refusals noted beside it; what a member tells each lead); the NAS's
-     operations (`nas`: create-new, saying when its bytes didn't land, and whole writes by
-     crate::whole); the heartbeat's fields (`beat`); phase 2's transitions (`handover`: the state
-     machine with take-back, an answer to its own offer); the member's lock (`MemberLock`: one
-     process per member, in the app's folder, checked every step); and **the driver** (`driver`): what a member is and does, one step per
-     loop of the agent's, through an I/O trait (the NAS's operations and two clocks), the code the
-     agent will run and the simulator runs. A step learns the current term; takes up a term naming
-     it; leads (merges what members tell it and what a listing finds, saves, acknowledges, notes
-     refusals); re-asserts after a gap; stands down when the app rule refuses it; hands over and
-     takes back; takes over when the owner asks, and by itself a lead that stood down; writes its
-     jobs' entries and tells the lead of them. It asks the agent for what's slow (a listing of the
-     journal, off its loop) and what's the agent's (settling: the coordinator's state), and says
-     what the agent may do now (grant jobs and plan; settle; publish and sweep once its records are
-     caught up, by a listing under a day old, a sweep only when fresh), and that it must stop (its
-     lock taken by another process); it answers the controls (whom the lead can be handed to, what
-     a takeover needs). Its contract is the module's doc. Nothing runs it yet.
+     layout, which its saves keep writing, its maker's create cut short written whole, and a take-up
+     that can't read it whole waiting ten minutes before today's files; the merge, in lease order
+     across merges; taking up, numbered on across tries; the forget horizon; readers' fallback to a
+     term before); the journal as a log, written whole by members directly (`journal`: entries by
+     lease id `<term>-<n>`, kept whole until written, one there already that says the same counting
+     as written; refusals noted beside it; what a member tells each lead); the NAS's operations
+     (`nas`: create-new, saying when its bytes didn't land, and whole writes by crate::whole); the
+     heartbeat's fields (`beat`); phase 2's transitions (`handover`: the state machine with
+     take-back, an answer to its own offer); the member's lock (`MemberLock`: one process per
+     member, in the folder it's given, checked every step); and **the driver** (`driver`): what a
+     member is and does, one step per loop of the agent's, through an I/O trait (the NAS's
+     operations and two clocks), the code the agent will run and the simulator runs. A step learns
+     the current term; takes up a term naming it; leads (merges what members tell it and what a
+     listing finds, saves, acknowledges, notes refusals); re-asserts after a gap, a stall, a
+     restart, or a saved state that doesn't know a term it made; stands down when the app rule
+     refuses it; hands over and takes back; takes over when the owner asks, and by itself a lead
+     that stood down; writes its jobs' entries and tells the lead of them. It asks the agent for
+     what's slow (a listing of the journal, off its loop, one at a time) and what's the agent's
+     (settling: the coordinator's state), and says what the agent may do now (grant jobs and plan;
+     settle; publish and sweep once its records are caught up, by a listing asked for under a day
+     ago, a sweep only when fresh), and when it must stop (another process holds its lock); it
+     answers the controls (whom the lead can be handed to, what a takeover needs). Its contract is
+     the module's doc. Nothing runs it yet.
    - **The integration: planned.** The agent's loop calling the driver each loop, made with the
-     member's lock (and stopping the pool when the driver says another process took it): its
-     messages over the pool's API (§9), the listings it asks for on a thread of
-     their own, settling (cancelling the duties in flight, writing the coordinator's state) and
-     loading the state handed over, its saved state in the agent's folder after every step (a job's
-     hand-off kept until one holding it is on disk), its heartbeat's fields in the agent's
-     heartbeat, the members it knows, the merge's checks; jobs handing off to the journal through
-     it; the coordinator's state per term, leases saved on grant and finish, wall-clock times, lease
-     ids `<term>-<n>`; history per writer; `writer`, `check_writer` and `SCENIC_BUILD_MAC` gone.
-     **Seeding and draining** when it's switched on: the M4's workers' token and its devices
-     (`devices.json`: the accepted devices' hashes) copied to `state/coord/` (open pages keep
-     working); the M4's local `coord/journal/` and the M1's outbox merged;
+     member's lock in the app's folder (and, when the driver says another process holds it, saving
+     that step's state and leaving the pool): its messages over the pool's API (§9), the listings it
+     asks for on a thread of their own, every one handed back, a failed one made again; settling
+     (cancelling the duties in flight, writing the coordinator's state) and loading the state handed
+     over; its saved state in the agent's folder after every step that changed it, before acting on
+     the step's output (a job's hand-off kept until one holding it is on disk); its heartbeat's
+     fields in the agent's heartbeat, the members it knows, the merge's checks; jobs handing off to
+     the journal through it; the coordinator's state per term, leases saved on grant and finish,
+     wall-clock times, lease ids `<term>-<n>`; history per writer; `writer`, `check_writer` and
+     `SCENIC_BUILD_MAC` gone. **Seeding and draining** when it's switched on: the M4's workers'
+     token and its devices (`devices.json`: the accepted devices' hashes) copied to `state/coord/`
+     (open pages keep working); the M4's local `coord/journal/` and the M1's outbox merged;
      `state/build/handoff/<host>/` still merged until empty.
-2. **Handing over and taking over.** The driver does them (§6.4 to §6.6: phase 1's core); the
-   agent's part: the owner's asks reaching it (phase 3's controls), staying awake, the lead's own
-   jobs moved out of its process into its slots (so nothing pins the lead).
-3. **Controls.** The menu bar, the worker page, the map's panel, `scenic lead` and `status`, the
-   history's terms, the proactive offer.
-4. **Every job hands off, placement and pages.** The STEPS table with floors and write-sets, every
-   step offered to every member's slots, contiguous runs, the alone reservation, sticky resuming,
-   the resume overlay and records-only planning; tasks brokered by every member, "where is work",
-   pages direct with CORS; claims retired; the forecast for equal machines; the docs (plan.md §8,
-   workers.md, formats.md) rewritten around the pool; `install.sh` without `--agent`/`--helper`.
+2. **Handing over and taking over.** The driver does them (§6.4 to §6.6: phase 1's core, built);
+   the agent's part, planned: the owner's asks reaching it (phase 3's controls), staying awake, the
+   lead's own jobs moved out of its process into its slots (so nothing pins the lead).
+3. **Controls: planned.** The menu bar, the worker page, the map's panel, `scenic lead` and
+   `status`, the history's terms, the proactive offer.
+4. **Every job hands off, placement and pages: planned.** The steps table with floors and
+   write-sets, every step offered to every member's slots, contiguous runs, the alone reservation,
+   sticky resuming, the resume overlay and records-only planning; tasks brokered by every member,
+   "where is work", pages direct with CORS; claims retired; the forecast for equal machines; the
+   docs (plan.md §8, workers.md, formats.md) rewritten around the pool; `install.sh` without
+   `--agent`/`--helper`.
 
 Phases 1–2 are the ones that can lose work if they're wrong; each is tested as §13 says before it's
 switched on.
@@ -629,64 +657,79 @@ switched on.
   a message; a look at a clock takes no time) and run the pool's driver, the code the agent will
   run, the agent's part around it played as the design has it (`sim::Mac`: its jobs' hand-offs; its
   coordinator's state, granted while the driver lets it and written when it settles; the listings
-  the driver asks for, made off its step; its heartbeat, stamped as it's written; a job reading the
-  records). The share's model: create-new atomic, its bytes landing a step later (the file empty
-  meanwhile, for as long as its Mac sleeps in between), or never (the share gone between: its
-  maker's to finish); a whole write's rename a step after its temporary file, landing when its Mac
-  wakes, over whatever was written meanwhile; in some runs an entry another Mac renamed into place
-  not there to a Mac's reads for up to ten minutes (directory caching), and now and then an entry
-  landing cut short for good; a rename over a file another Mac has open (a read holds it up to 8 s)
-  failing busy, the write after four tries; a create or a whole write that did its work answering an
-  error (its answer lost); each Mac's reads, stats and listings kept up to 30 s (60 to 300 s in some
-  runs), its own writes seen at once; a listing taking 3 to 33 s a folder in some runs, its Mac
-  waiting on it; messages reaching only a Mac that's awake, the others dropped; clocks up to a
-  second off (up to 20 minutes in some runs), and each Mac's awake clock stopping while it sleeps;
-  in some runs every create, read, stat and whole write taking 1 to 4 s (the share under load), the
-  Mac waiting on it, awake. The schedule: sleeps after any step, mid-loop (5 s to 40 minutes, more
-  often right after a temporary file or a create), the owner's asks (hand the lead over; take it
-  over, forced at times with the lead alive, and by the owner's downgrade), newer apps (a restart:
-  the Mac's memory gone but what its driver saved, and at times that too), development builds and
+  the driver asks for, made off its step, one that failed made again; its heartbeat, stamped as it's
+  written; a job reading the records; a re-assertion asked now and then, as before a sweep; the Mac
+  able to lead nine loops in ten). The share's model: create-new atomic, its maker holding the file
+  open until its bytes land a step later (the file empty meanwhile, for as long as its Mac sleeps in
+  between), or never (the share gone between: its maker's to finish); a whole write's rename a step
+  after its temporary file, landing when its Mac wakes, over whatever was written meanwhile; in some
+  runs an entry another Mac renamed into place not there to a Mac's reads for up to ten minutes
+  (directory caching), now and then an entry landing cut short for good, and now and then one whose
+  every read errors for good; in some runs the share answering none of a Mac's reads, stats and
+  listings for one to ten minutes, its writes landing; a rename over a file another Mac has open (a
+  read holds it up to 8 s) failing busy, the write after four tries; a create or a whole write that
+  did its work answering an error (its answer lost); each Mac's reads, stats and listings kept up to
+  30 s (60 to 300 s in some runs), its own writes seen at once; a listing taking 3 to 33 s a folder
+  in some runs, its Mac waiting on it; messages reaching only a Mac that's awake, the others
+  dropped; clocks up to a second off (up to 20 minutes in some runs), and each Mac's awake clock
+  stopping while it sleeps; in some runs every create, read, stat and whole write taking 1 to 4 s
+  (the share under load), and now and then one the share stalls on for 5 to 10 minutes, the Mac
+  waiting on it, awake. The schedule: sleeps after any step, mid-loop (5 s to 40 minutes, more often
+  right after a temporary file or a create), the owner's asks (hand the lead over; take it over,
+  forced at times with the lead alive, and by the owner's downgrade), newer apps (a restart: the
+  Mac's memory gone but what its driver saved, and at times that too), development builds and
   rollbacks, a member leaving for good (now and then the lead itself), a handover now and then split
   (its target asleep or gone before taking up, its old lead restarted into a development build or
   asked to take over, forced), a week of the journal's earlier days that term 1's records lack, and
-  jobs' entries, some of them refused, some by the leads of odd terms only (a check that depends on
-  the lead's state). Each run draws these knobs from its seed.
+  jobs' entries (units built, some prunes), some of them refused, some by the leads of odd terms
+  only (a check that depends on the lead's state). Each run draws these knobs from its seed.
 - **What it checks,** at every step that could break one of §4's invariants: terms made in order,
-  never written over (but by their maker finishing them), by the app rule (but a take-back's and the
-  owner's downgrade); a term led by the Mac it names, and by no other; no Mac's term going back,
-  across its restarts too; a term's records written by its lead alone, self-consistent (as members
-  read them too), never going back in `seq` or in the entries they name; an entry acknowledged only
-  once a saved snapshot names it, and never removed; a heartbeat's beat its Mac's clock as it's
-  written; a handover's new lead taking up with the coordinator's state its old lead settled with; a
-  lead saying it's caught up only by a listing of every day under a day old, begun after it last
-  woke and, but for a re-assertion that kept what it knew, after its term began, its snapshot naming
-  every entry written before it; an entry refused as never read whole only if it never was, as its
-  lead's reads could see; a handover passed over, taken back or dropped within fifteen minutes
-  awake, and dropped by a forced takeover its own query says suffices; an automatic takeover only of
-  a lead whose heartbeat said it stood down from the term, two minutes before at least. Then, the
-  faults over and every Mac awake for 25 minutes, the owner taking over a term the views would show
-  with no lead that no member takes by itself (its lead gone for good, or stood down where no
-  member's app can lead the term, or the term unreadable): the last term's lead leads it, alone, no
-  term was made in those 25 minutes' last ten or after, and its records name every entry ever
-  written, a Mac's gone for good included. While they lack entries, fewer each time, the run goes on
-  ten minutes at a time, up to two hours: on a share taking seconds an operation a lead merges about
-  a dozen entries a loop, and hours of faults with no lead leave hundreds. The tests run 2,000
-  seeds, each kind of change of lead and of fault, and what each knob brings, among them at least
-  three times (a lead caught up on a step it re-asserted for a sweep, and the owner's takeover,
-  too); entries cut short in four-hour runs, refused after an hour (200 schedules); slow listings
-  with a week of the journal, development builds and rollbacks, and a Mac leaving, alone (300 to
-  1,000 seeds each); a long run, left out by default, of 100,000 schedules of four hours' faults;
-  and the first draft's scheme (one shared records file, the journal emptied as it's merged) on the
-  same model, which finds its lost update. The driver's own tests decide what the simulator can't:
-  whom a member lets try first, that a lead asleep or gone isn't taken over by itself, nor one whose
-  stand-down is an earlier term's, a step's minute of reads, the hour over a share that doesn't
-  answer, a listing a day old.
-- **What it doesn't model:** torn or holed reads (a file reads whole, empty or as an older version:
-  the modules' tests read holes); I/O errors other than a busy rename, a create cut short and lost
-  answers (reads the share doesn't answer are the driver's tests'); a member's file lost, a new id
-  made (the driver's tests); `remove` failing busy; GC (removing the journal's old days, forgetting
-  them: the forget horizon is the modules' tests'); the coordinator (leases are numbered in order
-  per term, granted by no one, and the lead's check depends on its term alone).
+  never written over (but by their maker finishing them), a created file unchanged between its
+  create and its bytes, no term or records file ever removed; terms by the app rule (a take-back's
+  checked against the term handed over; not the owner's downgrade, nor a term forced past one that
+  can't be read, whose maker checked it against the newest term it could read); a term led by the
+  Mac it names, and by no other, no Mac leading a term twice nor an older term after it; no Mac's
+  term going back, across its restarts too (but one that lost its saved state); a term's records
+  written by its lead alone, self-consistent (as members read them too), never going back in `seq`
+  or in the entries they name; an entry acknowledged only once a saved snapshot names it, and never
+  removed; a heartbeat's beat its Mac's clock as it's written; a handover's new lead taking up with
+  the coordinator's state its old lead settled with; a lead saying it's caught up only by a listing
+  of every day asked for under a day before, after it last woke and, but for a re-assertion that
+  kept what it knew, after its term began, its snapshot naming every entry written before it; an
+  entry refused as never read whole only if it never was, as its lead's reads could see; a handover
+  passed is over, taken back or dropped within fifteen minutes awake, and dropped by a forced
+  takeover its own query says suffices; an automatic takeover only of a lead whose heartbeat said it
+  stood down from the term, two minutes before at least. Then, the faults over and every Mac awake
+  for 25 minutes, the owner taking over a term the views would show with no lead that no member
+  takes by itself (its lead gone for good, or stood down where no member's app can lead the term, or
+  the term unreadable): the last term's lead leads it, alone, caught up, no term was made in those
+  25 minutes' last ten or after, and its records name every entry ever written, a Mac's gone for
+  good included. While they lack entries, fewer each time, or its lead isn't caught up yet (an entry
+  never whole waits its hour), the run goes on ten minutes at a time, up to two hours: on a share
+  taking seconds an operation a lead merges about a dozen entries a loop, and hours of faults with
+  no lead leave hundreds. The tests run 2,000 seeds, each kind of change of lead and of fault, and
+  what each knob brings, among them at least three times (a lead caught up on a step it re-asserted
+  for a sweep, and the owner's takeover, too); entries cut short in four-hour runs, refused after an
+  hour (200 schedules); runs of the faults' 40 minutes and a day after, a lead listing every day
+  again daily (50); slow listings with a week of the journal, development builds and rollbacks with
+  a Mac leaving, and a Mac leaving, alone (300 to 1,000 seeds each); the schedule that found term
+  1's first snapshot paired with today's files of two versions (seed 3090226); left out by default,
+  a long run of 100,000 schedules of four hours' faults, each knob alone over 1,000 seeds, and 400
+  seeds run twice, the same; and the first draft's scheme (one shared records file, the journal
+  emptied as it's merged) on the same model, which finds its lost update. The driver's own tests
+  decide what the simulator can't: whom a member lets try first, that a lead asleep or gone isn't
+  taken over by itself, nor one whose stand-down is an earlier term's, a step's minute of reads, the
+  hour over a share that doesn't answer, a listing a day old, a listing slower than any timeout, a
+  saved state restored from a backup, the member's lock.
+- **What it doesn't model:** torn or holed reads (a file reads whole, empty or as an older version,
+  and an entry cut short for good: the modules' tests read holes); I/O errors other than a busy
+  rename, a create cut short, lost answers and failed reads; `remove` failing busy; the member's
+  lock and `Out::stop` (its drivers have no lock: the driver's tests); a wall clock set while awake
+  (a Mac's skew is fixed); a listing that takes hours, its journal grown (the driver's tests); a
+  member's file lost, a new id made, and a restart from an older saved state of its own (the
+  driver's tests); refusal notes (no check reads them); GC (removing the journal's old days,
+  forgetting them: the forget horizon is the modules' tests'); the coordinator (leases are numbered
+  in order per term, granted by no one, and the lead's check depends on its term alone).
 - **Two agents on one Mac** (planned): overrides for the member id, port and root, so two agents run
   against a scratch folder (today the coordinator starts only without a root, and both would bind
   8090 and share a host name). Sleep is SIGSTOP and SIGCONT of an agent's process group, with fault

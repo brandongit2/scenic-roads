@@ -208,16 +208,16 @@ impl Records {
     }
 }
 
-/// Makes term 1's first snapshot from today's three files, unless it has one: before term 1 is
-/// made (crate::pool::term::bootstrap), so every Mac that learns of term 1 reads its snapshot whole.
+/// Makes term 1's first snapshot from today's three files, unless it has one: before term 1 is made
+/// (crate::pool::term::bootstrap), so every Mac that learns of term 1 reads its snapshot whole.
 /// Made with create-new: of two Macs making it, the first's stays. This call's create whose bytes
 /// didn't land is written whole, as `term::finish` does a term's, before term 1 is made. One there
 /// already that doesn't read whole (an earlier try's, its answer lost or its maker stopped; or
 /// another Mac's, its bytes not landed yet, or a stale read) is left as it is: written whole now, a
-/// stale read could land it over a snapshot term 1's lead saved since; `start` takes term 1 up
-/// from today's files once it has stayed unreadable longer than any stale read. (This call's
-/// finish landing late, its Mac asleep between its temporary file and its rename, could land over
-/// a snapshot a lead the owner forced meanwhile saved: plan §10.)
+/// stale read could land it over a snapshot term 1's lead saved since; `start` takes term 1 up from
+/// today's files once it has stayed unreadable longer than any stale read. (This call's finish
+/// landing late, its Mac asleep between its temporary file and its rename, could land over a
+/// snapshot a lead the owner forced meanwhile saved: plan §10.)
 pub fn first(nas: &dyn Nas) -> Result<()> {
     if nas.exists(&path(1))? {
         return Ok(());

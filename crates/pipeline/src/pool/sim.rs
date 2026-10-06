@@ -920,8 +920,9 @@ impl World {
                 return self.wrong(format!("term {e}'s file names term {} and {}", t.term, t.member));
             }
             // The app rule: against the term before; a take-back's, against the term it handed
-            // over; forced past a term that can't be read, against an older (`term::force`); and
-            // not on the owner's downgrade.
+            // over. Not on the owner's downgrade; nor on a term forced past one that can't be
+            // read, whose maker checked it against the newest term it could read (`term::forced`),
+            // which the world doesn't know.
             let back = t.how.starts_with(term::BACK);
             let against = if back { e.checked_sub(2).and_then(|p| term_at(self, p)) } else { e.checked_sub(1).and_then(|p| term_at(self, p)) };
             if let Some(p) = against.filter(|p| !term::app_at_least(&t.app, &p.app) && !t.how.contains(term::UNREAD) && !t.how.contains(term::DOWNGRADE)) {
@@ -2048,8 +2049,8 @@ fn every_seed_runs_the_same_every_time() {
 fn a_seeds_events() {
     // POOL_SIM_SEED's events, its knobs as by default, or as POOL_SIM_KNOBS lists them (none:
     // "plain"; "draft", "list", "old", "leave", "downgrade", "cuts", "slow", "lose", "truncs",
-    // "fails", "stalls", "skew=<s>", "stale=<s>", "lag=<s>"), its faults POOL_SIM_MINUTES long (40),
-    // to look into one.
+    // "fails", "stalls", "skew=<s>", "stale=<s>", "lag=<s>"), its faults POOL_SIM_MINUTES long
+    // (40), to look into one.
     let seed = std::env::var("POOL_SIM_SEED").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
     let cfg = match std::env::var("POOL_SIM_KNOBS") {
         Ok(knobs) => knobs.split(',').fold(Cfg::pool(), |c, k| match k.split_once('=') {

@@ -2004,8 +2004,14 @@ At each phase's end an Opus agent reviews the work against this plan.
 1. **The pool's core** (`crate::pool`, `crates/pipeline/src/pool/`; `docs/pool.md` §12) is built,
    its driver included, and not wired into the agent: the integration (pool.md §12, phase 1) is to
    do. What the core leaves open, by design:
-   - a create whose answer was lost before its bytes landed can't be told from another Mac's still
-     being written: its term has no lead until the owner forces past it (`term::make`);
+   - create-new between two Macs is unchecked on the real share (pool.md §3, ◻), and invariant 1
+     (one lead a term) rests on it;
+   - a create whose answer was lost before its bytes landed, or whose maker stopped for good between
+     its create and its bytes, can't be told from another Mac's still being written: its term has
+     no lead until the owner forces past it (`term::make`);
+   - term 1's first snapshot's maker, its create cut short, writes it whole before it makes term 1;
+     asleep between that write's temporary file and its rename, it could land the write late, over
+     a snapshot a lead the owner forced meanwhile saved (`records::first`);
    - an older lease's entry for targets of which some were set by a newer lease's is passed over
      whole: its other targets are built again (`Records::apply`; an entry's manifest changes aren't
      by target);
@@ -2014,7 +2020,13 @@ At each phase's end an Opus agent reviews the work against this plan.
      most (`RELIST_S`);
    - a handover's new lead must read its old lead's last snapshot within two minutes: how long the
      share keeps reads stale is unchecked (pool.md §3), and longer staleness has handovers taken
-     back (nothing lost);
+     back (nothing lost). The hour rule rests on it too (an entry read not whole for an hour
+     awake is refused: `UNREADABLE_S`), and so does term 1's take-up from today's files (once its
+     first snapshot has stayed unreadable ten minutes: `STALE_S`);
+   - with reads lagging minutes, a lead settles few handovers: it settles none while entries wait
+     to be read (pool.md §7.3), kept so until the share's lag is measured;
+   - a refusal's note whose write fails isn't tried again: only the owner's loss, the records naming
+     the refusal (`journal::note_refusal`);
    - GC (removing the journal's old days, forgetting them) isn't built: the forget horizon is
      checked by the modules' tests alone. It must respect `caught_up`'s bound too: caught up, the
      records reflect what a listing under a day old found (`Out::listed_at`), and an entry written
@@ -2023,8 +2035,9 @@ At each phase's end an Opus agent reviews the work against this plan.
      removes an upload, or keep uploads longer than an entry can wait unwritten, and a day more;
    - a records snapshot, saved whole after each merge, holds the lease that last set each target
      (one per step and target, as the job keys are: about as large as the keys again) and every
-     entry's key back to the forget horizon: it grows with the build's targets and its week of
-     jobs, unmeasured at the build's size yet.
+     entry's key since the pool began: until GC is built nothing moves the forget horizon, so the
+     records, each member's `Mine` and each of its tells keep every key. It grows with the build's
+     targets and jobs, unmeasured at the build's size yet.
 2. **The Python steps' environment is made inside the app's version folder**
    (`app/<version>/dem/.venv`, by uv at a Mac's first Python step: §8, Programs), which every
    Python step shares: the published copy isn't left as published (the updater checks a version's

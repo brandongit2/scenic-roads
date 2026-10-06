@@ -22,9 +22,10 @@
 //! - **does its NAS operations through `Io`** (crate::pool::nas::Nas, and two clocks): a few
 //!   reads and stats, the records' save (about 3 MB), a term made now and then, and its jobs'
 //!   entries written and entries merged for `BUSY_S` at most (the rest in the next steps); a
-//!   listing of the terms only at its first step (when the lead's hint doesn't name the current
-//!   term); never a listing of the journal, never a sleep, no thread of its own. What's slow (a listing of the
-//!   journal, 3 to 33 s a folder on the share under load) it asks for in its output (`Out::list`),
+//!   listing of the terms only at its first step (when the lead's hint names no term that's
+//!   there); never a listing of the journal, never a sleep, no thread of its own. What's slow (a
+//!   listing of the journal, 3 to 33 s a folder on the share under load) it asks for in its output
+//!   (`Out::list`),
 //!   for the agent to make off the loop and hand back, with the ask's number, in a later step
 //!   (`Heard::listed`): every listing asked for, however long it takes, one that fails made again
 //!   (it asks for no other while one is out);
@@ -41,15 +42,18 @@
 //!   heartbeat, to write with the rest of it, stamped as it's written; the term it leads, if it
 //!   leads, and what it may do as that now: grant jobs and plan (`duties`); settle a handover
 //!   (`settle`: stop granting, cancel its duties in flight, write the coordinator's state and hand
-//!   it back in `Heard::settled`); publish a catalog or sweep (GC) only once its records reflect
-//!   the journal (`caught_up`: a listing of every day under a day old merged and saved, its
-//!   take-up's or a daily one, `listed_at` saying when it began; nothing it was told of waiting; a
-//!   re-assertion keeping it), and sweep only on a step that re-asserted (`fresh`: asked with
-//!   `Heard::reassert`; it says no later term was made before, not that its records are whole);
+//!   it back in `Heard::settled`); publish a catalog only while it may do its duties and its
+//!   records reflect the journal (`duties` and `caught_up`: a listing of every day merged and
+//!   saved, its take-up's or a daily one, asked for under a day ago, `listed_at` saying when;
+//!   nothing told or listed waiting to be read; no re-assertion owed; a re-assertion keeping it),
+//!   and sweep (GC) only once its records reflect the journal, on a step that re-asserted (`fresh`:
+//!   asked with `Heard::reassert`; it says no later term was made before, not that its records are
+//!   whole);
 //!   a listing to make; and what happened (`Event`s: terms taken up, stepped down from, handed
 //!   over; errors), for the history and the log;
 //! - **never fails**: an error stops only the duty that met it (said in an `Event::Failed`), and
-//!   the step goes on: a lead that can't re-assert stands down rather than stop the loop.
+//!   the step goes on: a lead whose re-assertion fails keeps leading, its duties held, and tries
+//!   again next step; one the app rule refuses stands down.
 //!
 //! What the driver does itself, through `Io`, is what decides safety: making terms
 //! (crate::pool::term), taking them up and saving its term's records (crate::pool::records),
@@ -59,13 +63,13 @@
 //! other fields, the messages' transport, and persisting `Saved` (its state between processes,
 //! naming its member: its entries, kept whole until written, then until a horizon passes their day)
 //! after every step that changed it, **before acting on that step's `Out`** (a take-up's grants,
-//! its messages): a crash between would restart from a state that doesn't know the term it took
-//! up. **A job's hand-off is kept until a `Saved` from a step it was handed to is on the agent's
+//! its messages): a crash between would restart from a state that doesn't know the term it took up.
+//! **A job's hand-off is kept until a `Saved` from a step it was handed to is on the agent's
 //! disk**: before that, a crash loses it. A `Saved` that's lost, or another member's (this Mac's
 //! member file lost, a new id made; or a copy of another Mac's folder), counts for nothing but its
-//! jobs' hand-offs not written yet: the driver then re-asserts a term naming it that it finds at its
-//! start rather than take it up again (it may have led it, its leases granted), and the state it
-//! saves says so, for the processes after it. So does an older state of its own (a backup
+//! jobs' hand-offs not written yet: the driver then re-asserts a term naming it that it finds at
+//! its start rather than take it up again (it may have led it, its leases granted), and the state
+//! it saves says so, for the processes after it. So does an older state of its own (a backup
 //! restored) for a term it made that the state doesn't record (`Saved::made`).
 //!
 //! The controls (the menu, the pages, `scenic lead`) ask the driver what the step would decide:
@@ -76,16 +80,18 @@
 //!
 //! A lead's view can be old without its knowing (§6.6). It re-asserts (makes the next term naming
 //! itself, a create-new no stale read can fool) before acting again when, since its last step or
-//! within its last one, it slept or its wall clock moved more than `GAP_S` beyond its awake clock;
+//! within its last one, its wall clock and its awake clock moved more than `GAP_S` apart (it slept,
+//! or its wall clock was set, either way);
 //! when its last step ran over `STALL_S` (the NAS stalled: a share under load slows every
 //! operation, so a step's length short of that says nothing); after a restart; and when the agent
 //! asks (`Heard::reassert`, before a GC sweep). Time spent listing the journal, or waiting between
 //! loops, isn't a gap. A re-assertion keeps what the lead knew of the journal (no other lead came
 //! between), so a sweep's step is caught up; after a sleep, its members' messages meanwhile lost,
-//! it lists the journal again. A lead whose re-assertion the app rule refuses (it restarted into an older
-//! app or a development build) stands down, and says so in its heartbeat (`Beat::stood_down`); it
-//! takes its term up again once its app is new enough. A member that has seen the lead's
-//! heartbeat stood down for `STOOD_DOWN_S` takes over by itself, if the app rule lets it: the
+//! it lists the journal again. A lead whose re-assertion the app rule refuses (it restarted into
+//! an older app or a development build) stands down, and says so in its heartbeat
+//! (`Beat::stood_down`); once its app is new enough it re-asserts its term ("re-asserted: its app
+//! new enough"). A member that can lead (`Heard::able`) and has seen the lead's heartbeat stood
+//! down for `STOOD_DOWN_S` takes over by itself, if the app rule lets it: the
 //! members that can, newest app first, then lowest member id, try `AUTO_RANK_S` apart, and the
 //! next term's create-new decides between them (a lead gone or asleep is taken over only at the
 //! owner's ask: it may come back).
@@ -244,20 +250,22 @@ pub struct Out {
     /// Leading, it re-asserted (or took its term up) this step: no later term was made before. Not
     /// that its records are whole (`caught_up`).
     pub fresh: bool,
-    /// Leading, its records reflect the journal: the listing its take-up asked for is merged and
-    /// saved, and every entry it was told of or listed is read (on a share under load a loop
-    /// leaves some to the next; one never read whole is refused after `UNREADABLE_S`). A
-    /// re-assertion keeps it, but after a sleep. A catalog waits for it (and `duties`); GC too
-    /// (and `fresh`): an entry not merged yet may hold uploads the records don't name.
+    /// Leading, its records reflect the journal: a listing of every day (its take-up's, or the
+    /// daily one) asked for less than `RELIST_S` ago is merged and saved, every entry told or
+    /// listed is read (on a share under load a loop leaves some to the next; one never read whole
+    /// is refused after `UNREADABLE_S`), and no re-assertion is owed. A re-assertion keeps it, but
+    /// after a sleep. A catalog waits for it (and `duties`); GC too (and `fresh`): an entry not
+    /// merged yet may hold uploads the records don't name.
     pub caught_up: bool,
     /// Leading: when it asked for the listing of every day its records reflect (this Mac's clock;
-    /// within `RELIST_S` while `caught_up`): caught up, every entry written before it is merged.
+    /// within `RELIST_S` while `caught_up`): caught up, every entry the listing found, written
+    /// before it as far as a read may be stale, is merged.
     pub listed_at: Option<u64>,
-    /// This process isn't the member's only one (another process holds its lock: `MemberLock::check`),
-    /// and why. The agent saves this step's `Saved` (the hand-offs handed to the step are kept in
-    /// it, for this folder's next process to write), writes no heartbeat (this step's is empty),
-    /// sends nothing, steps no more, and leaves the pool. A term it led is the other process's (the
-    /// same member) to re-assert.
+    /// This process isn't the member's only one (another process holds its lock:
+    /// `MemberLock::check`), and why. The agent saves this step's `Saved` (the hand-offs handed to
+    /// the step are kept in it, for this folder's next process to write), writes no heartbeat (this
+    /// step's is empty), sends nothing, steps no more, and leaves the pool. A term it led is the
+    /// other process's (the same member) to re-assert.
     pub stop: Option<String>,
     /// A listing of the journal to make, handed back in `Heard::listed`.
     pub list: Option<Listing>,
@@ -287,14 +295,18 @@ pub enum Event {
     Failed { what: &'static str, why: String },
 }
 
-/// What a member keeps between processes (the agent saves it after every step, in its own
-/// folder, and starts the next process's driver from it).
+/// What a member keeps between processes: the agent saves it in its own folder after every step
+/// that changed it, before acting on that step's `Out`, and starts the next process's driver from
+/// it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Saved {
-    /// The member it's of: another's (a copy of the agent's folder) counts for nothing.
+    /// The member it's of: another's (this Mac's member file lost and a new id made; or a copy of
+    /// another Mac's folder, its id made again there) counts for nothing but its hand-offs not
+    /// written yet.
     #[serde(default)]
     pub member: String,
-    /// Its journal entries: kept whole until written, then until each lead acknowledges them.
+    /// Its journal entries: kept whole until written, then (their keys, with the term whose lead
+    /// acknowledged each) until a horizon passes their day.
     pub mine: Mine,
     /// The highest term it knew of (its view never goes back, a stale read at its start
     /// notwithstanding), and the highest it led.
@@ -324,8 +336,8 @@ pub struct Takeover {
     /// It can't take over now, and why (this Mac leads, or has a term to finish, or the term names
     /// it and it takes it up itself).
     pub refused: Option<String>,
-    /// It needs the owner's force, and why (the lead is in touch; the term can't be read whole;
-    /// this Mac's own handover waits for its target).
+    /// It needs the owner's force, and why (the lead is in touch, or its heartbeat can't be read;
+    /// the term can't be read whole; this Mac's own handover waits for its target).
     pub force: Option<String>,
     /// It needs the owner's downgrade too, and why (this Mac's app is older than the term's).
     pub downgrade: Option<String>,
@@ -622,7 +634,8 @@ impl Driver {
         } else {
             out.fresh = false;
         }
-        // (Its lock not known held this step: no duties, catalog or sweep until it's checked again.)
+        // (Its lock not known held this step: no duties, catalog or sweep until it's checked
+        // again.)
         if let Some(why) = unsure {
             out.events.push(Event::Failed { what: "check the member's lock", why });
             (out.duties, out.caught_up, out.fresh) = (false, false, false);
@@ -972,8 +985,9 @@ impl Driver {
                 Err(err) => out.events.push(Event::Failed { what: "save the records", why: format!("term {e}: {err:#}") }),
             }
         }
-        // Refusals its saved records name (this step's, or an earlier one's, a re-assertion's take-up
-        // saving them): noted for the owner. (A note not made now is only the owner's loss.)
+        // Refusals its saved records name (this step's, or an earlier one's, a re-assertion's
+        // take-up saving them): noted for the owner. (A note not made now is only the owner's
+        // loss.)
         if !l.dirty {
             for (k, why) in std::mem::take(&mut l.refused) {
                 if let Err(err) = journal::note_refusal(io, &k, &why) {
@@ -2136,8 +2150,8 @@ mod tests {
         // owner has B take over, its reads stale: term 1's snapshot as it was cut (empty),
         // `jobs.json` as it was before the last save, `manifest.json` as it is now. Falling back to
         // today's files at once paired a manifest of one version with keys of another (invariant
-        // 4). Term 1's maker now writes its snapshot whole before term 1 is made, and a take-up that
-        // can't read it whole tries again, until its reads aren't stale.
+        // 4). Term 1's maker now writes its snapshot whole before term 1 is made, and a take-up
+        // that can't read it whole tries again, until its reads aren't stale.
         struct Stale<'a>(&'a Mem, Vec<(String, Vec<u8>)>);
         impl Nas for Stale<'_> {
             fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
