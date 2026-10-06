@@ -420,7 +420,7 @@ mod tests {
         let b = Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "20261005-2202-61eb22c".into() };
         let mut t2 = Term::after(&Current { term: 1, lead: Some(t1) }, &b, "handed over by Mac-mini", DAY + 60).unwrap();
         t2.seq = Some(r2.seq);
-        assert!(term::make(&nas, &t2).unwrap());
+        assert!(matches!(term::make(&nas, &t2).unwrap(), term::Made::Ours));
         let fresh = nas.read(&path(1)).unwrap().unwrap();
         nas.write_whole(&path(1), &old).unwrap();
         assert!(take_up(&nas, &t2, None, None, &any).is_err());

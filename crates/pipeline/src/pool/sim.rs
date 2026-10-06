@@ -28,7 +28,7 @@
 use super::beat::Beat;
 use super::handover::{self, Do, Handover, Seen};
 use super::journal::{self, Entry, LeaseId, Mine};
-use super::nas::Nas;
+use super::nas::{Created, Nas};
 use super::records::{self, Records};
 use super::term::{self, Current, Term};
 use super::Member;
@@ -731,12 +731,12 @@ impl Sim {
 }
 
 impl Nas for Sim {
-    fn create_new(&self, path: &str, bytes: &[u8]) -> Result<bool> {
+    fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
         let made = self.op(|w, me| w.create(me, path))?;
         if made {
             self.op(|w, me| w.fill(me, path, bytes))?;
         }
-        Ok(made)
+        Ok(if made { Created::Made } else { Created::There })
     }
 
     fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
@@ -1047,15 +1047,15 @@ impl Mac {
             };
             t.seq = Some(seq);
             match term::make(&sim, &t) {
-                Ok(true) => {
+                Ok(term::Made::Ours) => {
                     let at = sim.now()?;
                     let mut l = self.lead.take().expect("leading");
                     l.hand.passed(at);
                     sim.leads(None)?;
                     self.passing = Some(Passing { term: e, hand: l.hand, records: l.records });
                 }
-                Ok(false) => self.step_down("another made the next term first")?,
-                Err(err) => {
+                Ok(term::Made::Theirs) => self.step_down("another made the next term first")?,
+                Ok(term::Made::Unfinished(err)) | Err(err) => {
                     if sim.over() {
                         return Err(err);
                     }

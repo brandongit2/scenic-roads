@@ -6,25 +6,32 @@
 use anyhow::{ensure, Context, Result};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-/// How many times a rename over a file another Mac has open is tried (EBUSY on this share).
-const BUSY_TRIES: u32 = 8;
-/// The wait between those tries.
-const BUSY_WAIT: Duration = Duration::from_millis(250);
+/// What a create-new did.
+#[derive(Debug)]
+pub enum Created {
+    /// This call made the file, and its bytes landed.
+    Made,
+    /// Something had that name: nothing was done.
+    There,
+    /// This call made the file, but its bytes didn't all land (the share went away between the
+    /// two): the file is this Mac's, empty or short, for it to finish with a whole write (no other
+    /// Mac's create of that name can succeed), or to leave; why.
+    Unwritten(anyhow::Error),
+}
 
 /// The operations the pool's protocol makes on the NAS.
 pub trait Nas {
-    /// Makes `path` holding `bytes` unless something has that name: true when this call made it,
-    /// false when it was there. The create is atomic on the server (of two Macs' creates of one
-    /// name, one wins); the bytes follow it, so another Mac may read the file empty or short
-    /// meanwhile, and for good if this one stopped between the two (an error then, and the file
-    /// left as it is).
-    fn create_new(&self, path: &str, bytes: &[u8]) -> Result<bool>;
+    /// Makes `path` holding `bytes` unless something has that name. The create is atomic on the
+    /// server (of two Macs' creates of one name, one wins); the bytes follow it, so another Mac
+    /// may read the file empty or short meanwhile, and for good if this one stopped between the
+    /// two. An error when it can't be said whether the file was made (its answer lost).
+    fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created>;
 
-    /// Writes `path` whole: a temporary name, renamed over it, the rename tried again while another
-    /// Mac has the file open. The rename may land long after the call began (this Mac asleep in
-    /// between), over whatever was written there meanwhile.
+    /// Writes `path` whole: a temporary name, renamed over it, the rename tried again for a few
+    /// seconds while another Mac has the file open (crate::whole::rename_over). The rename may land
+    /// long after the call began (this Mac asleep in between), over whatever was written there
+    /// meanwhile; and it may have landed when the call says it failed (its answer lost).
     fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()>;
 
     /// The bytes of `path`; None when there's no such file. Possibly an older version than another
@@ -73,53 +80,31 @@ impl Share {
 }
 
 impl Nas for Share {
-    fn create_new(&self, path: &str, bytes: &[u8]) -> Result<bool> {
+    fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
         let p = self.at(path);
         Share::parent_made(&p)?;
         let mut f = match std::fs::OpenOptions::new().write(true).create_new(true).open(&p) {
             Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(Created::There),
             Err(e) => return Err(e).with_context(|| format!("create {}", p.display())),
         };
-        (|| -> Result<()> {
+        let r = (|| -> Result<()> {
             f.write_all(bytes)?;
             f.sync_all()?;
             let n = f.metadata()?.len();
             ensure!(n == bytes.len() as u64, "{n} of {} bytes written", bytes.len());
             Ok(())
-        })()
-        .with_context(|| format!("write {} (made, and left short)", p.display()))?;
-        Ok(true)
+        })();
+        Ok(match r {
+            Ok(()) => Created::Made,
+            Err(e) => Created::Unwritten(e.context(format!("write {} (made, and left short)", p.display()))),
+        })
     }
 
     fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
         let p = self.at(path);
         Share::parent_made(&p)?;
-        let tmp = crate::whole::tmp_name(&p);
-        let r = (|| -> Result<()> {
-            let mut f = std::fs::File::create(&tmp)?;
-            f.write_all(bytes)?;
-            f.sync_all()?;
-            drop(f);
-            let n = std::fs::metadata(&tmp)?.len();
-            ensure!(n == bytes.len() as u64, "{n} of {} bytes written", bytes.len());
-            // (The temporary file is written once; only the rename is tried again.)
-            let mut tries = 1;
-            loop {
-                match std::fs::rename(&tmp, &p) {
-                    Ok(()) => return Ok(()),
-                    Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy && tries < BUSY_TRIES => {
-                        tries += 1;
-                        std::thread::sleep(BUSY_WAIT);
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-            }
-        })();
-        if r.is_err() {
-            std::fs::remove_file(&tmp).ok();
-        }
-        r.with_context(|| format!("write {}", p.display()))
+        crate::whole::write(&p, bytes)
     }
 
     fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
@@ -178,13 +163,13 @@ pub struct Mem(pub std::cell::RefCell<std::collections::BTreeMap<String, Vec<u8>
 
 #[cfg(test)]
 impl Nas for Mem {
-    fn create_new(&self, path: &str, bytes: &[u8]) -> Result<bool> {
+    fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
         let mut m = self.0.borrow_mut();
         if m.contains_key(path) {
-            return Ok(false);
+            return Ok(Created::There);
         }
         m.insert(path.to_string(), bytes.to_vec());
-        Ok(true)
+        Ok(Created::Made)
     }
 
     fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
@@ -220,8 +205,8 @@ mod tests {
     fn the_share_makes_once_writes_whole_and_lists_without_temporary_files() {
         let d = tempfile::tempdir().unwrap();
         let s = Share::new(d.path());
-        assert!(s.create_new("state/build/terms/1.json", b"one").unwrap());
-        assert!(!s.create_new("state/build/terms/1.json", b"two").unwrap(), "made once");
+        assert!(matches!(s.create_new("state/build/terms/1.json", b"one").unwrap(), Created::Made));
+        assert!(matches!(s.create_new("state/build/terms/1.json", b"two").unwrap(), Created::There), "made once");
         assert_eq!(s.read("state/build/terms/1.json").unwrap().as_deref(), Some(&b"one"[..]));
         s.write_whole("state/pool/members/m-1.json", b"a").unwrap();
         s.write_whole("state/pool/members/m-1.json", b"bb").unwrap();

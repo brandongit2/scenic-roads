@@ -13,7 +13,7 @@
 //! listed the journal stale, or a lead that acknowledged it while a later term began without its
 //! knowing, only delays it (invariant 3).
 
-use super::nas::{short, Nas};
+use super::nas::{short, Created, Nas};
 use crate::handoff::Handoff;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -111,7 +111,7 @@ pub fn write(nas: &dyn Nas, e: &Entry) -> Result<String> {
     let key = e.key();
     let p = path(&key);
     let b = serde_json::to_vec(e)?;
-    if nas.create_new(&p, &b)? {
+    if let Created::Made = nas.create_new(&p, &b)? {
         return Ok(key);
     }
     match nas.read(&p)? {
