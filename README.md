@@ -152,7 +152,7 @@ Roads are drawn as vectors by a custom WebGL2 layer. The design, its status and 
 - **Tree cover** (Settings → Trees): tree cover (share of the ground under trees over 5 m), canopy height (95th percentile, where cover is at least 5 %) or forest leaf type (broadleaf, conifer, mixed), draped on the terrain under the hill-shading, about 25 m per pixel over all our regions (roadless interiors included, neighbours outside the region outlines left out).
   - cover and height: a shaded ramp (palettes, low-end cutoff) or a flat forest mask above a threshold; opacity.
   - leaf type: Copernicus HRL Dominant Leaf Type 2018 in Europe (broadleaf / coniferous; some Mediterranean broadleaf is evergreen), NALCMS 2020 in North America (needleleaf, broadleaf deciduous, mixed); none in East Asia.
-  - tiles (`dem/trees.py`): zoom 4–12, Terrarium-encoded lossless WebP (cover in 2 % steps, height in 2 m steps), coloured on the GPU with MapLibre color-relief like the slope tint; coarser zooms average (leaf type: each class's share is averaged and a pixel shows the commonest leaf type where forest is at least half of it; a cascaded majority vote made farmland with scattered woods look forested when zoomed out).
+  - tiles (the `trees` program, `pipeline::trees`, a port of `dem/trees.py` giving the same pixels): zoom 4–12, Terrarium-encoded lossless WebP (cover in 2 % steps, height in 2 m steps), coloured on the GPU with MapLibre color-relief like the slope tint; coarser zooms average (leaf type: each class's share is averaged and a pixel shows the commonest leaf type where forest is at least half of it; a cascaded majority vote made farmland with scattered woods look forested when zoomed out).
 
 **Settings persist.** Every map setting, plus UI choices such as tabs, drive and ride lengths, the rail-line sort, the Sights kind, viewshed options, profile overlay and collapsed sections, is saved in localStorage and restored when you open the app without a link. A link's URL hash takes precedence.
 
@@ -301,7 +301,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
      - Each channel is 255 × √(slope ÷ 400 %), so the gentle slopes most ground has get finer steps.
      - The rounding is carried from one channel to the next, so their mean keeps an eighth of a step.
      - The server makes z12 on demand.
-   - **Tree cover** (before the build Mac's areas; the M1's run meanwhile): cover, canopy height and leaf type, zoom 4–12, clipped to the coverage (`dem/trees.py`, `pipeline::treepacks`), from Meta's canopy squares and the leaf-type squares (`dem/leaftype.py`, made whole where a square is missing or wasn't made whole).
+   - **Tree cover** (before the build Mac's areas; the M1's run meanwhile): cover, canopy height and leaf type, zoom 4–12, clipped to the coverage (the `trees` program, `pipeline::treepacks`), from Meta's canopy squares and the leaf-type squares (`dem/leaftype.py`, made whole where a square is missing or wasn't made whole).
 4. **Roadside buildings** for the whole world, once per Overture release (2026-09-23.1): every building's box, from the release's bbox columns, in z8 tiles (`pipeline::buildtiles`, `dem/buildings.py --world`).
 5. **Each z6 area** runs these steps on its piece:
 

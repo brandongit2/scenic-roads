@@ -436,7 +436,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
         ...dem, encoding: 'custom' as const, redFactor: 256, greenFactor: 1, blueFactor: 1 / 256, baseShift: SLOPE4_SHIFT,
         tiles: [tiles.slope], attribution: '',
       },
-      // Tree cover layer (dem/trees.py): values Terrarium-encoded as if they were elevation.
+      // Tree cover layer (crates/pipeline/src/trees): values Terrarium-encoded as if they were elevation.
       ...Object.fromEntries((['cover', 'height', 'leaf'] as const).map((v) => [`trees-${v}`, {
         ...dem, minzoom: 4, tiles: [tiles[`trees-${v}`]], attribution: '',
       }])),

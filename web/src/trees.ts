@@ -1,7 +1,7 @@
 // Tree cover layer: tree cover (share of ground under trees over 5 m), canopy height and forest leaf
-// type, from Terrarium-encoded tiles (dem/trees.py) coloured on the GPU by MapLibre color-relief.
-// Two styles for cover and height: a shaded ramp (with a low-end cutoff) or a flat forest mask
-// above a threshold; leaf type is categorical.
+// type, from Terrarium-encoded tiles (crates/pipeline/src/trees) coloured on the GPU by MapLibre
+// color-relief. Two styles for cover and height: a shaded ramp (with a low-end cutoff) or a flat
+// forest mask above a threshold; leaf type is categorical.
 
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
 import { PALETTE_ITEMS, baseKey, isRev, paletteRgb } from './palettes';
