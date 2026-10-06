@@ -8,7 +8,7 @@
 
 use super::nas::Nas;
 use super::Member;
-use anyhow::{ensure, Context, Result};
+use anyhow::{bail, ensure, Context, Result};
 use serde::{Deserialize, Serialize};
 
 /// The folder of the terms.
@@ -44,12 +44,12 @@ pub struct Term {
 impl Term {
     /// The term after `cur`, led by `lead`, made `how` at `now` (unix seconds): refused by the app
     /// rule when `lead`'s app is older than the current term's (job keys include the steps'
-    /// versions: a lead on an older app would take what a newer one built as stale).
+    /// versions: a lead on an older app would take what a newer one built as stale), and while the
+    /// current term can't be read whole (its app isn't known: wait, or `force`).
     pub fn after(cur: &Current, lead: &Member, how: &str, now: u64) -> Result<Term> {
         ensure!(cur.term >= 1, "term 1 is made by `bootstrap`, its records first");
-        if let Some(c) = &cur.lead {
-            ensure!(app_at_least(&lead.app, &c.app), "{} runs app {}, older than term {}'s {}: update it first", lead.host, lead.app, c.term, c.app);
-        }
+        let Some(c) = &cur.lead else { bail!("term {} can't be read whole yet: its lead and app aren't known", cur.term) };
+        ensure!(app_at_least(&lead.app, &c.app), "{} runs app {}, older than term {}'s {}: update it first", lead.host, lead.app, c.term, c.app);
         Ok(Term { term: cur.term + 1, member: lead.id.clone(), host: lead.host.clone(), app: lead.app.clone(), since: now, how: how.to_string(), from: cur.term, seq: None })
     }
 
@@ -125,6 +125,31 @@ pub fn claim(nas: &dyn Nas, cur: &Current, me: &Member, how: &str, now: u64) -> 
     let t = Term::after(cur, me, how, now)?;
     Ok(make(nas, &t)?.then_some(t))
 }
+
+/// The owner's forced takeover (§6.5, `scenic lead take --force`): `claim`, and also past a current
+/// term that can't be read whole (its maker stopped between its create and its bytes, and may never
+/// write them: no one leads it), the app rule then checked against the newest term that can be read,
+/// and the term's `how` saying so.
+pub fn force(nas: &dyn Nas, cur: &Current, me: &Member, how: &str, now: u64) -> Result<Option<Term>> {
+    if cur.lead.is_some() || cur.term == 0 {
+        return claim(nas, cur, me, how, now);
+    }
+    let mut known = None;
+    for e in (1..cur.term).rev() {
+        if let Some(t) = read(nas, e)? {
+            known = Some(t);
+            break;
+        }
+    }
+    if let Some(k) = &known {
+        ensure!(app_at_least(&me.app, &k.app), "{} runs app {}, older than term {}'s {}: update it first", me.host, me.app, k.term, k.app);
+    }
+    let t = Term { term: cur.term + 1, member: me.id.clone(), host: me.host.clone(), app: me.app.clone(), since: now, how: format!("{how} ({}: term {} unreadable)", UNREAD, cur.term), from: cur.term, seq: None };
+    Ok(make(nas, &t)?.then_some(t))
+}
+
+/// What a forced term's `how` says when the term before it couldn't be read whole.
+pub const UNREAD: &str = "forced past";
 
 /// Term 1 (§12, phase 1), once the pool is switched on: made by the Mac `state/build/writer` names
 /// (today's build Mac, by host name), naming itself, or by any Mac when none is named or the owner
@@ -231,18 +256,38 @@ mod tests {
 
     #[test]
     fn the_app_rule_refuses_an_older_app() {
-        let cur = Current { term: 4, lead: Some(Term::after(&Current { term: 3, lead: None }, &member("m-000000000000000a", "20261005-2202-61eb22c"), "", 0).unwrap()) };
+        let a = member("m-000000000000000a", "20261005-2202-61eb22c");
+        let cur = Current { term: 4, lead: Some(Term { term: 4, member: a.id, host: a.host, app: a.app, since: 0, how: "handed over".into(), from: 3, seq: None }) };
         assert!(Term::after(&cur, &member("m-000000000000000b", "20261004-0910-1a2b3c4"), "handed over", 1).is_err());
         let t = Term::after(&cur, &member("m-000000000000000b", "20261012-0910-1a2b3c4"), "handed over", 1).unwrap();
         assert_eq!((t.term, t.from, t.member.as_str()), (5, 4, "m-000000000000000b"));
-        // Its lead unknown: nothing to compare with.
-        assert!(Term::after(&Current { term: 4, lead: None }, &member("m-000000000000000b", "development"), "taken over", 1).is_ok());
+        // Its lead unknown (its file being made): not until it's known, or by force.
+        assert!(Term::after(&Current { term: 4, lead: None }, &member("m-000000000000000b", "development"), "taken over", 1).is_err());
         assert!(app_at_least("20261005-2202-61eb22c", "20261005-2202-0000000"), "the same minute");
         assert!(app_at_least("20261005-2203-61eb22c", "20261005-2202-61eb22c"));
         assert!(!app_at_least("20261005-2201-61eb22c", "20261005-2202-61eb22c"));
         assert!(app_at_least("development", "development") && app_at_least("20261005-2202-61eb22c", "development"));
         assert!(!app_at_least("development", "20261005-2202-61eb22c") && !app_at_least("", "20261005-2202-61eb22c"));
         assert!(!app_at_least("2026100é-2202-61eb22c", "20261005-2202-61eb22c"), "not a version");
+    }
+
+    #[test]
+    fn a_forced_takeover_passes_a_term_that_cant_be_read_but_not_the_app_rule() {
+        let nas = Mem::default();
+        let (a, b) = (member("m-000000000000000a", "20261005-2202-61eb22c"), member("m-000000000000000b", "20261005-2202-61eb22c"));
+        bootstrap(&nas, &a, 100, false).unwrap().unwrap();
+        // Term 2 made, its maker stopped before its bytes: no one leads it.
+        nas.create_new(&path(2), b"").unwrap();
+        let cur = current(&nas).unwrap();
+        assert_eq!(cur, Current { term: 2, lead: None });
+        assert!(claim(&nas, &cur, &b, "taken over by MacBook-Air", 200).is_err(), "unforced, it waits");
+        let old = member("m-000000000000000b", "20261004-0000-61eb22c");
+        assert!(force(&nas, &cur, &old, "taken over by MacBook-Air", 200).is_err(), "older than term 1's app");
+        let t = force(&nas, &cur, &b, "taken over by MacBook-Air", 200).unwrap().unwrap();
+        assert_eq!((t.term, t.from, t.how.as_str()), (3, 2, "taken over by MacBook-Air (forced past: term 2 unreadable)"));
+        // A term that can be read: as `claim`.
+        let t4 = force(&nas, &current(&nas).unwrap(), &a, "taken over by Mac-mini", 300).unwrap().unwrap();
+        assert_eq!((t4.term, t4.how.as_str()), (4, "taken over by Mac-mini"));
     }
 
     #[test]

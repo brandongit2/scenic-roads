@@ -403,7 +403,7 @@ mod tests {
         let mut r = take_up(&nas, &t1, None, None, &any).unwrap().records;
         let e = built(1, 1, "6-1-1", "k1");
         let k = journal::write(&nas, &e).unwrap();
-        merge(&nas, &mut r, &[k.clone()], &any);
+        merge(&nas, &mut r, std::slice::from_ref(&k), &any);
         r.save(&nas).unwrap();
         let old = nas.read(&path(1)).unwrap().unwrap();
         let mut r2 = r.clone();
@@ -430,6 +430,31 @@ mod tests {
     }
 
     #[test]
+    fn an_entry_a_stale_lead_acknowledged_reaches_the_next_lead_by_its_member() {
+        // Term 2 taken over and taken up (the journal listed); then an entry is written, and term
+        // 1's lead, not knowing of term 2 yet, merges it, saves and acknowledges it. Term 2's
+        // records lack it, and no take-up will list the journal again: its member tells term 2's
+        // lead of it, as of every entry term 2's lead hasn't acknowledged.
+        let nas = Mem::default();
+        let (a, b) = (lead("development"), Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "development".into() });
+        let t1 = term::bootstrap(&nas, &a, DAY, false).unwrap().unwrap();
+        let mut r1 = take_up(&nas, &t1, None, None, &any).unwrap().records;
+        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &b, "taken over by MacBook-Air", DAY + 700).unwrap().unwrap();
+        let mut r2 = take_up(&nas, &t2, None, None, &any).unwrap().records;
+        let mut mine = journal::Mine::default();
+        let x = journal::write(&nas, &built(1, 9, "6-1-1", "k9")).unwrap();
+        mine.wrote(&x);
+        merge(&nas, &mut r1, std::slice::from_ref(&x), &any);
+        r1.save(&nas).unwrap();
+        mine.acked(&x, 1);
+        assert!(!r2.handles(&x));
+        // Told once only, it would be lost; told to the lead of the term its member knows now:
+        assert_eq!(mine.to_tell(2), std::slice::from_ref(&x));
+        assert_eq!(merge(&nas, &mut r2, &mine.to_tell(2), &any).applied, std::slice::from_ref(&x));
+        assert_eq!(r2.keys.unit.get("6-1-1").map(String::as_str), Some("k9"));
+    }
+
+    #[test]
     fn a_refused_entry_is_set_aside_once_its_refusal_is_saved() {
         let nas = Mem::default();
         let a = lead("development");
@@ -442,7 +467,7 @@ mod tests {
         assert!(journal::list(&nas, None).unwrap().is_empty());
         // Told again by its member, to a lead whose records lack it: refused again, as set aside.
         let mut r = Records { term: 2, ..Default::default() };
-        let m = merge(&nas, &mut r, &[k.clone()], &check);
+        let m = merge(&nas, &mut r, std::slice::from_ref(&k), &check);
         assert_eq!(m.refused, [(k, "no such step".to_string())]);
     }
 }

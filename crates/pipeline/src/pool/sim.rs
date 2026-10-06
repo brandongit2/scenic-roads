@@ -6,7 +6,7 @@
 //! later (a Mac asleep in between leaves it empty meanwhile); a whole write is its temporary file,
 //! then its rename a step later (a Mac asleep in between renames when it wakes, over whatever
 //! others wrote meanwhile); a rename over a file another Mac has open fails busy, and the write
-//! fails after a few tries; each Mac keeps what it read, stat'ed and listed for up to `STALE`
+//! fails after a few tries; each Mac keeps what it read, stat'ed and listed for up to `Cfg::stale`
 //! seconds, so it may read an older version, miss a new file, or list a folder as it was; its own
 //! writes it sees at once.
 //!
@@ -39,8 +39,6 @@ use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 
-/// The longest a Mac keeps what it read, stat'ed or listed (s).
-const STALE: u64 = 30;
 /// The longest a read keeps its file open (s): a rename over it meanwhile fails busy.
 const OPEN: u64 = 8;
 /// How many times the model's whole write tries its rename.
@@ -54,8 +52,11 @@ const TARGETS: [&str; 5] = ["6-1-0", "6-1-1", "6-1-2", "6-1-3", "6-1-4"];
 /// The shared records file of the first draft.
 const DRAFT: &str = "state/build/records.json";
 
-/// Per step of a Mac while the faults last: that it falls asleep right there.
+/// Per step of a Mac while the faults last: that it falls asleep right there; and right after it
+/// wrote a temporary file or made a file with create-new, the moments a sleep does the most (a
+/// rename landing late, a file empty meanwhile).
 const P_SLEEP: f64 = 0.004;
+const P_SLEEP_MIDWAY: f64 = 0.05;
 /// Per step: that the owner asks a Mac's menu to hand the lead to a Mac, asks a Mac to take over,
 /// or installs a newer app on a Mac.
 const P_ASK: f64 = 0.006;
@@ -75,13 +76,15 @@ struct Cfg {
     faults: u64,
     /// The run ends this long into it.
     end: u64,
+    /// The longest a Mac keeps what it read, stat'ed or listed (s).
+    stale: u64,
     /// The first draft's scheme instead of the pool's.
     draft: bool,
 }
 
 impl Cfg {
     fn pool() -> Cfg {
-        Cfg { faults: 2400, end: 3300, draft: false }
+        Cfg { faults: 2400, end: 3300, stale: 30, draft: false }
     }
 }
 
@@ -161,6 +164,8 @@ struct World {
     writes: BTreeMap<String, (usize, u64)>,
     caches: Vec<Cache>,
     macs: Vec<MacW>,
+    /// The step just made was a temporary file's write or a create.
+    midway: bool,
     turn: usize,
     done: bool,
     drained: bool,
@@ -251,7 +256,7 @@ impl World {
         files.insert("state/build/manifest.json".to_string(), serde_json::to_vec(&BTreeMap::from([(logical(TARGETS[0]), content(TARGETS[0], "k0"))])).unwrap());
         files.insert("state/build/jobs.json".to_string(), format!("{{\"unit\": {{\"{}\": \"k0\"}}}}", TARGETS[0]).into_bytes());
         let n = macs.len();
-        let mut w = World { cfg, t: 0, rng, files, open: BTreeMap::new(), tmps: BTreeMap::new(), writes: BTreeMap::new(), caches: (0..n).map(|_| Cache::default()).collect(), macs, turn: 0, done: false, drained: false, made: BTreeMap::new(), leaders: BTreeMap::new(), landed: BTreeMap::new(), written: BTreeMap::new(), acked: BTreeSet::new(), wrong: Vec::new(), counts: BTreeMap::new(), trace: tracing.then(Vec::new) };
+        let mut w = World { cfg, t: 0, rng, files, open: BTreeMap::new(), tmps: BTreeMap::new(), writes: BTreeMap::new(), caches: (0..n).map(|_| Cache::default()).collect(), macs, midway: false, turn: 0, done: false, drained: false, made: BTreeMap::new(), leaders: BTreeMap::new(), landed: BTreeMap::new(), written: BTreeMap::new(), acked: BTreeSet::new(), wrong: Vec::new(), counts: BTreeMap::new(), trace: tracing.then(Vec::new) };
         w.pick(0);
         w
     }
@@ -318,7 +323,8 @@ impl World {
     }
 
     fn faults(&mut self, me: usize) {
-        if self.rng.chance(P_SLEEP) {
+        let p = if std::mem::take(&mut self.midway) { P_SLEEP_MIDWAY } else { P_SLEEP };
+        if self.rng.chance(p) {
             let d = match self.rng.below(10) {
                 0..=5 => self.rng.range(5, 90),
                 6..=8 => self.rng.range(90, 900),
@@ -372,7 +378,7 @@ impl World {
     // The NAS.
 
     fn see(&mut self, me: usize, path: &str, v: Option<Vec<u8>>) {
-        let until = self.t + STALE;
+        let until = self.t + self.cfg.stale;
         self.caches[me].files.insert(path.to_string(), (v, until));
         if let Some((dir, _)) = path.rsplit_once('/') {
             self.caches[me].dirs.remove(dir);
@@ -386,7 +392,7 @@ impl World {
             }
         }
         let v = self.files.get(path).cloned();
-        let until = self.t + self.rng.below(STALE + 1);
+        let until = self.t + self.rng.below(self.cfg.stale + 1);
         self.caches[me].files.insert(path.to_string(), (v.clone(), until));
         v
     }
@@ -410,7 +416,7 @@ impl World {
         let prefix = format!("{dir}/");
         let names: BTreeSet<&str> = self.files.keys().filter_map(|k| k.strip_prefix(&prefix)).filter_map(|r| r.split('/').next()).filter(|n| !n.ends_with(".tmp")).collect();
         let v: Vec<String> = names.into_iter().map(str::to_string).collect();
-        let until = self.t + self.rng.below(STALE + 1);
+        let until = self.t + self.rng.below(self.cfg.stale + 1);
         self.caches[me].dirs.insert(dir.to_string(), (v.clone(), until));
         v
     }
@@ -423,6 +429,7 @@ impl World {
         self.files.insert(path.to_string(), Vec::new());
         self.writes.insert(path.to_string(), (me, self.t));
         self.open.entry(path.to_string()).or_default().insert(me, u64::MAX);
+        self.midway = true;
         self.see(me, path, Some(Vec::new()));
         if let Some(e) = term_of(path) {
             let want = self.made.keys().max().map_or(1, |m| m + 1);
@@ -451,6 +458,7 @@ impl World {
     fn write_tmp(&mut self, tmp: &str, b: &[u8]) {
         self.files.insert(tmp.to_string(), b.to_vec());
         self.tmps.insert(tmp.to_string(), self.t);
+        self.midway = true;
     }
 
     fn rename(&mut self, me: usize, tmp: &str, path: &str) -> bool {
@@ -497,7 +505,8 @@ impl World {
             if t.term != e || !self.macs.iter().any(|m| m.id == t.member) {
                 return self.wrong(format!("term {e}'s file names term {} and {}", t.term, t.member));
             }
-            if let Some(p) = prev.filter(|p| !term::app_at_least(&t.app, &p.app)) {
+            // (The owner's force past a term its maker couldn't read is checked against an older.)
+            if let Some(p) = prev.filter(|p| !term::app_at_least(&t.app, &p.app) && !t.how.contains(term::UNREAD)) {
                 self.wrong(format!("term {e} has app {}, older than term {}'s {}", t.app, p.term, p.app));
             }
             let kind = ["handed over", "taken back", "taken over", "re-asserted", "restarted", "the build Mac"].into_iter().find(|k| t.how.starts_with(k)).unwrap_or("other");
@@ -1087,15 +1096,17 @@ impl Mac {
         if self.lead.is_some() || self.passing.is_some() {
             return Ok(());
         }
+        // (A term that can't be read whole yet has a lead not known to be gone: by force only.)
         let gone = match &self.cur.lead {
             Some(t) if t.member == self.me.id => false,
             Some(t) => Beat::read(&self.sim, &t.member)?.is_none_or(|b| b.out_of_touch(now)),
-            None => true,
+            None => self.cur.term == 0,
         };
         if !gone && !force {
             return Ok(());
         }
-        let made = if self.cur.term == 0 { term::bootstrap(&self.sim, &self.me, now, true).map(|t| t.filter(|t| t.member == self.me.id)) } else { term::claim(&self.sim, &self.cur, &self.me, &format!("taken over by {}", self.me.host), now) };
+        let how = format!("taken over by {}", self.me.host);
+        let made = if self.cur.term == 0 { term::bootstrap(&self.sim, &self.me, now, true).map(|t| t.filter(|t| t.member == self.me.id)) } else { term::force(&self.sim, &self.cur, &self.me, &how, now) };
         match made {
             Ok(Some(t)) => {
                 self.cur = Current { term: t.term, lead: Some(t.clone()) };
@@ -1328,7 +1339,7 @@ fn check_all(seeds: Range<u64>, cfg: Cfg) -> Counts {
 
 #[test]
 fn the_pool_keeps_its_invariants_through_thousands_of_schedules() {
-    let counts = check_all(0..1500, Cfg::pool());
+    let counts = check_all(0..2000, Cfg::pool());
     eprintln!("{counts:#?}");
     // (A simulator that never got there would pass too.)
     for what in ["handed over", "taken back", "taken over", "re-asserted", "restarted", "sleeps", "busy renames", "late renames over another's write", "take-ups tried again", "saves tried again"] {
@@ -1341,16 +1352,17 @@ fn the_pool_keeps_its_invariants_through_thousands_of_schedules() {
 fn the_pool_keeps_its_invariants_through_a_long_run() {
     // POOL_SIM_SEEDS seeds (100,000 by default) of four hours' faults each.
     let n = std::env::var("POOL_SIM_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(100_000);
-    let counts = check_all(1_000_000..1_000_000 + n, Cfg { faults: 4 * 3600, end: 4 * 3600 + 1200, draft: false });
+    let counts = check_all(1_000_000..1_000_000 + n, Cfg { faults: 4 * 3600, end: 4 * 3600 + 1200, ..Cfg::pool() });
     eprintln!("{counts:#?}");
 }
 
 #[test]
 fn the_first_drafts_shared_records_lose_an_update_under_a_delayed_rename() {
-    let cfg = Cfg { draft: true, ..Cfg::pool() };
-    let (bad, _) = run_all(0..300, cfg);
+    // (Every read fresh: what's lost is the renames'.)
+    let cfg = Cfg { draft: true, stale: 0, ..Cfg::pool() };
+    let (bad, _) = run_all(0..500, cfg);
     let Some(&(seed, _)) = bad.iter().find(|(_, wrong)| wrong.iter().any(|w| w.contains("is lost"))) else {
-        panic!("the first draft's scheme lost nothing in 300 schedules: the simulator doesn't find its lost update")
+        panic!("the first draft's scheme lost nothing in 500 schedules: the simulator doesn't find its lost update")
     };
     // Seen as it happens: a lead's rename of the shared records, written before it slept, lands
     // over the next lead's, whose merged entries are off the journal by then.
@@ -1372,9 +1384,11 @@ fn a_seed_runs_the_same_every_time() {
 #[test]
 #[ignore]
 fn a_seeds_events() {
-    // POOL_SIM_SEED's events (POOL_SIM_DRAFT=1: the first draft's), to look into one.
-    let seed = std::env::var("POOL_SIM_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let cfg = Cfg { draft: std::env::var_os("POOL_SIM_DRAFT").is_some(), ..Cfg::pool() };
+    // POOL_SIM_SEED's events (POOL_SIM_DRAFT=1: the first draft's; POOL_SIM_STALE: the longest a
+    // read is kept), to look into one.
+    let var = |v: &str| std::env::var(v).ok().and_then(|s| s.parse::<u64>().ok());
+    let cfg = Cfg { draft: std::env::var_os("POOL_SIM_DRAFT").is_some(), stale: var("POOL_SIM_STALE").unwrap_or(30), ..Cfg::pool() };
+    let seed = var("POOL_SIM_SEED").unwrap_or(0);
     let r = run(seed, cfg, true);
     eprintln!("{}\n\n{}\n\n{:#?}", r.trace.join("\n"), r.wrong.join("\n"), r.counts);
 }
