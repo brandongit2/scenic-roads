@@ -3,54 +3,79 @@
 //! are, faked where it's too small to draw.
 //!
 //! The basemap (Planetiler's OpenMapTiles profile, docs/plan.md §6 step 6) leaves a polygon out at a
-//! zoom where its outline's area, measured in 256-px tile pixels, is under a minimum: an outer ring
-//! and each hole alike, before any clipping or simplification. The sea's islands (the water
-//! polygons' holes) go under 1 px² (z6–13); lakes and the other inland water, and their islands,
-//! under 4 px² below z12 and 1 px² at z12–13; at z14, under 1/256 px². Below z6 the basemap has
-//! Natural Earth's water alone. Measured on its tiles (2026-10-06, six places): 93–99 % of what the
-//! rule keeps is there, against 0–3 % of what it drops.
+//! zoom where its outline's area, in 256-px tile pixels, is under a minimum: an outer ring and each
+//! hole alike, measured after Planetiler's Douglas–Peucker simplification at that zoom (0.1 px) and
+//! before any clipping. The sea's islands (the pinned water polygons' holes) go under 1 px² (z6–13);
+//! lakes and the other inland water, and their islands, under 4 px² below z12 and 1 px² at z12–13;
+//! at z14, under 1/256 px². Below z6 the basemap has Natural Earth's water alone. Sampled on its
+//! tiles (2026-10-06, z6–11): the rule so measured predicts 99.7 % of 91,537 sea islands near the
+//! minimum (five z6 tiles) and 99.5 % of 159,208 lakes (north of Mont-Laurier), the area before
+//! simplification 98.1 % and 99.1 %.
 //!
-//! This step reads every island and lake from the pass's `water` set (the basemap's water areas,
-//! their holes as islands, and the coastline's closed rings as the sea's islands), works out the
-//! zooms the basemap lacks each at (z6–13 by the same rule, z0–5 by asking the basemap's own tiles
-//! whether its water is there), and tiles them, zooms 0–12, one MVT layer `w`: at each zoom, what
-//! the basemap lacks there,
-//! - under 1 px²: a point, the app's dot, sized by its true area and faded with it (web/src/
+//! This step reads every island and lake: the lakes, rivers and other water areas from the pass's
+//! `water` set, their holes as islands, and the sea's islands as the holes of the basemap's own
+//! water polygons (`sources/basemap/water-polygons-split-3857.zip`); it works out the zooms the
+//! basemap lacks each at (z6–13 by the same rule, z0–5 by asking the basemap's own tiles whether
+//! its water is there), and tiles them, zooms 0–12, one MVT layer `w`: at each zoom, what the
+//! basemap lacks there,
+//! - under 1 px² (at z12, all: what the basemap lacks there is under 1 px², or a hair over and
+//!   simplified under): a point, the app's dot, sized by its true area and faded with it (web/src/
 //!   basemap.ts); the points of one 1-px cell and kind are one, with their summed area, at the
 //!   biggest's place, in cells twice or four times as wide where a 16-px block would hold more
 //!   than `BLOCK_POINTS`;
-//! - from 1 px² (lakes and their islands under 4 px² at z6–11; anything Natural Earth lacks below
-//!   z6): its outline, simplified as the basemap's are, drawn as the basemap would draw it.
+//! - from 1 px² to z11 (lakes and their islands under 4 px² at z6–11; anything Natural Earth lacks
+//!   below z6): its outline, simplified as the basemap's are, drawn as the basemap would draw it.
+//!
+//! An island of a lake is drawn wherever its lake is (whose dot or outline would cover it). Water
+//! along a line (a river's, a canal's) is no lake, so it has no dot of its own: it's read as the
+//! parent of its islands, which are drawn only at the zooms the basemap draws it (else they'd be
+//! land on bare land: a braided river's).
 //!
 //! Properties: `k` (0 an island of the sea, 1 a lake, 2 an island of a lake or river), on points
-//! `q` (the area, Web Mercator m², as round(8 log2)),
-//! and in z12 tiles `o` (1: still absent at z13, where the app overzooms z12). In a tile, bigger
-//! first, so what lies inside something (a pond on an island in a lake) is drawn over it.
+//! `q` (the area, Web Mercator m², as round(8 log2)), and in z12 tiles `o` (1: still absent at z13,
+//! where the app overzooms z12). In a tile, bigger first, so what lies inside something (a pond on
+//! an island in a lake) is drawn over it.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use det::Det;
 use names::mvt::{Feature as MvtFeature, Layer, Tile, Value};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::f64::consts::PI;
-use std::io::BufRead;
+use std::io::{BufRead, Read};
 
 /// The layer (`layers/smallwater/…`, served at `/tiles/smallwater`).
 pub const LAYER: &str = "smallwater";
 /// What the basemap draws as water, as osmium's area tags (the export's `area_tags`): OpenMapTiles'
 /// water polygons (natural=water, the reservoir, basin and salt pond land uses, docks, and
-/// water=river … wastewater; bays aren't drawn). `water_kind` tells them apart.
+/// water=river … wastewater; not bays, which it reads but doesn't draw, nor swimming pools and
+/// springs, which it maps but the basemap's input leaves out). `water_kind` tells them apart.
 pub const AREA_TAGS: &[&str] = &[
-    "natural=water", "landuse=reservoir", "landuse=basin", "landuse=salt_pond", "waterway=dock", "water=river", "water=stream", "water=canal",
-    "water=ditch", "water=drain", "water=pond", "water=basin", "water=wastewater",
+    "natural=water",
+    "landuse=reservoir",
+    "landuse=basin",
+    "landuse=salt_pond",
+    "waterway=dock",
+    "water=river",
+    "water=stream",
+    "water=canal",
+    "water=ditch",
+    "water=drain",
+    "water=pond",
+    "water=basin",
+    "water=wastewater",
 ];
-/// The pass's `water` set's filter (pipeline::osmpass::SETS): those areas, and the coastline.
-pub const SET_FILTER: &[&str] = &[
-    "wr/natural=water", "wr/landuse=reservoir,basin,salt_pond", "wr/waterway=dock", "wr/water=river,stream,canal,ditch,drain,pond,basin,wastewater", "w/natural=coastline",
-];
-/// The kinds: an island (of the sea, or one of a lake or river: `Feat::sea` says which), a lake.
+/// The pass's `water` set's filter (pipeline::osmpass::SETS): those areas.
+pub const SET_FILTER: &[&str] = &["wr/natural=water", "wr/landuse=reservoir,basin,salt_pond", "wr/waterway=dock", "wr/water=river,stream,canal,ditch,drain,pond,basin,wastewater"];
+/// The basemap's sea: Planetiler's water polygons, pinned beside its jar (docs/plan.md §6 step 6),
+/// and the shapefile in it.
+pub const WATER_POLYGONS: &str = "sources/basemap/water-polygons-split-3857.zip";
+pub const WATER_POLYGONS_SHP: &str = "water-polygons-split-3857/water_polygons.shp";
+/// The kinds: an island (of the sea, or one of a lake or river: `Feat::sea` says which), a lake,
+/// and water along a line (a river's, a canal's: never drawn, the parent of its islands).
 pub const ISLAND: u8 = 0;
 pub const LAKE: u8 = 1;
+pub const RIVER: u8 = 2;
 /// The tiles' `k`: an island of the sea, a lake, an island of a lake or a river (the coastal
 /// shading draws the sea's shores, and lakes' and rivers' only when asked to).
 pub const K_SEA_ISLAND: u64 = 0;
@@ -67,6 +92,9 @@ fn tile_kind(f: &Feat) -> u8 {
 }
 /// The deepest tiles (the app overzooms them to z13; from z14 the basemap has everything).
 pub const MAXZ: u8 = 12;
+/// The deepest zoom with outlines: deeper, everything the basemap lacks is under 1 px², or within a
+/// hair of it (its outline simplified under the minimum), and a point.
+const OUTLINE_MAXZ: u8 = 11;
 /// The tiles' one layer.
 pub const MVT_LAYER: &str = "w";
 const EXTENT: u32 = 4096;
@@ -74,12 +102,10 @@ const EXTENT: u32 = 4096;
 pub const WORLD_M: f64 = 40_075_016.685_578_49;
 /// What the basemap's Natural Earth zooms (0–5) may have: smaller is taken as missing there.
 const NE_MIN_M2: f64 = 1e6;
-/// Bigger islands than this (Web Mercator m², 4 px² at z0) are continents' and large islands'
-/// coasts, which every zoom has.
-const MAX_ISLAND_M2: f64 = 4.0 * (WORLD_M / 256.0) * (WORLD_M / 256.0);
 /// Smaller than this (m²) is a mapping slip, not an island or a pond.
 const MIN_M2: f64 = 1.0;
-/// Outlines are simplified as the basemap's (Planetiler's default tolerance, 256-px tile pixels).
+/// The basemap's simplification (Planetiler's default tolerance below its deepest zoom, 256-px tile
+/// pixels), which its outlines here follow too.
 const TOLERANCE_PX: f64 = 0.1;
 /// The most points a block of 16 × 16 px holds (a tile has 256): where more of its cells of 1 px
 /// have some (a lake district zoomed out), they're summed in cells twice as wide, then four times,
@@ -88,21 +114,56 @@ const TOLERANCE_PX: f64 = 0.1;
 /// tile summed whole beside one that wasn't showed its edge.)
 pub const BLOCK_POINTS: usize = 64;
 
-/// One island or lake.
+/// osmium's index of the water set's node places (a sparse array, 16 bytes a node): about 2.2
+/// times the set's bytes (2026-09-28's planet, with its coastline then: 890 million nodes, 14 GB,
+/// in 6.5 GB).
+pub fn index_bytes(set_len: u64) -> u64 {
+    set_len / 5 * 11
+}
+
+/// The memory the step needs with osmium's index in it: the index, and the step's own (its
+/// features and a zoom's tiles, with osmium's buffers: 8.4 GB at most for the 6.5 GB set) at about
+/// one and a half times the set's bytes and a GB (the sea's islands, the basemap's tiles read).
+pub fn mem_bytes(set_len: u64) -> u64 {
+    index_bytes(set_len) + set_len / 2 * 3 + (1 << 30)
+}
+
+/// Whether osmium's index goes in memory, with `free` bytes of it free: when `mem_bytes` fits. Else
+/// on disk: slower, by how much the first worldwide run on disk will tell.
+pub fn index_in_memory(set_len: u64, free: u64) -> bool {
+    mem_bytes(set_len) <= free
+}
+
+/// The disk an index on disk leaves free at least, or the step fails (the agent made room for it
+/// when it planned the job without the memory for it: `disk_bytes`).
+pub const DISK_SPARE: u64 = 10 << 30;
+
+/// The disk the step holds at most (past what it leaves free: room::RESERVE in the agent): the set
+/// copied here, with osmium's index while it's read unless that's in memory (`index_in_memory`), and
+/// a GB besides; later, the set gone, the tiles (844 MB worldwide) and a pack at a time.
+pub fn disk_bytes(set_len: u64, index_in_memory: bool) -> u64 {
+    set_len + if index_in_memory { 0 } else { index_bytes(set_len) } + (1 << 30)
+}
+
+/// The export's bytes per byte of the set (GeoJSON of its areas: 3.6 over five regions,
+/// 2026-10-06), for the progress.
+pub const EXPORT_PER_SET: f64 = 3.6;
+
+/// One island, lake or river.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Feat {
     pub kind: u8,
-    /// Its outline's area, Web Mercator m² (a lake's outer ring, its islands not taken off, as the
-    /// basemap's rule measures it).
+    /// Its outline's area, Web Mercator m² (a lake's outer ring, its islands not taken off), before
+    /// any simplification.
     pub area: f64,
     /// Its outline's area-weighted centre, world units (Web Mercator, 0–1, y down).
     pub c: [f64; 2],
     /// A point inside it (a lake's off its islands), for asking the basemap whether it's there.
     pub inside: [f64; 2],
-    /// The lake it's an island of (an index into the features; `NONE` for the sea's islands, those
-    /// of rivers, and lakes).
+    /// The lake or river it's an island of (an index into the features; `NONE` for the sea's
+    /// islands, lakes and rivers).
     pub parent: u32,
-    /// One of the sea's islands (from the coastline).
+    /// One of the sea's islands (a hole of the water polygons).
     pub sea: bool,
     /// Bit z: the basemap lacks it at zoom z (0–13).
     pub absent: u16,
@@ -125,16 +186,39 @@ pub fn px2(area_m2: f64, z: u8) -> f64 {
     area_m2 / (px * px)
 }
 
-/// Whether the basemap's rule draws it at zoom `z` (6–14): the sea's islands from 1 px², the rest
-/// from 4 px² below z12, 1 px² at z12–13 and 1/256 px² at z14. (Below z6: Natural Earth.)
-pub fn rule_keeps(kind: u8, sea: bool, area_m2: f64, z: u8) -> bool {
-    let a = px2(area_m2, z);
+/// The basemap's minimum at zoom `z` (6–14), px² of its ring once simplified: the sea's islands 1,
+/// the rest 4 below z12 and 1 at z12–13; 1/256 at z14. (Below z6: Natural Earth.)
+pub fn min_px2(kind: u8, sea: bool, z: u8) -> f64 {
     match z {
-        14.. => a >= 1.0 / 256.0,
-        12..=13 => a >= 1.0,
-        _ if sea && kind == ISLAND => a >= 1.0,
-        _ => a >= 4.0,
+        14.. => 1.0 / 256.0,
+        12..=13 => 1.0,
+        _ if sea && kind == ISLAND => 1.0,
+        _ => 4.0,
     }
+}
+
+/// The zooms 6–13 the basemap lacks a ring at (bit z), by its rule: its area once simplified as
+/// Planetiler simplifies at that zoom (`planetiler_dp`), worked out where the area before it is
+/// within a factor of four of the minimum (simplifying a small ring took 1–9 % off its area in the
+/// sample: far from it, the area before decides). `ring` closed, `area_m2` its area.
+pub fn rule_absent(kind: u8, sea: bool, ring: &[[f64; 2]], area_m2: f64) -> u16 {
+    let mut absent = 0u16;
+    for z in 6..=13u8 {
+        let min = min_px2(kind, sea, z);
+        let raw = px2(area_m2, z);
+        let kept = if raw >= 4.0 * min {
+            true
+        } else if raw < min / 4.0 {
+            false
+        } else {
+            let simple = planetiler_dp(ring, tolerance(z));
+            px2(ring_moments(&simple).0.abs() * WORLD_M * WORLD_M, z) >= min
+        };
+        if !kept {
+            absent |= 1 << z;
+        }
+    }
+    absent
 }
 
 /// The first zoom at which it's 1 px² or more (0–14; 15: never).
@@ -225,7 +309,66 @@ fn inside_rings(rings: &[Vec<[f64; 2]>], p: [f64; 2]) -> bool {
     inside
 }
 
-/// Douglas–Peucker on a closed ring (world units), keeping its first point and at least four.
+/// A closed ring (its last point its first) simplified as Planetiler 0.10.2 simplifies before its
+/// area test (geo/DouglasPeuckerSimplifier): Douglas–Peucker with its first and last points kept
+/// and, for a ring, two more forced (the farthest from the first, then the farthest within the
+/// first half), so it keeps at least four; a ring of four points or fewer as it is. In world units
+/// with the tolerance over 2^z: the same comparisons as Planetiler's in tile units (scaling by a
+/// power of two is exact).
+pub fn planetiler_dp(c: &[[f64; 2]], tol: f64) -> Vec<[f64; 2]> {
+    if c.len() <= 4 {
+        return c.to_vec();
+    }
+    let sq = tol * tol.abs();
+    let sq_seg = |p: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+        let (mut x, mut y, dx, dy) = (a[0], a[1], b[0] - a[0], b[1] - a[1]);
+        if dx != 0.0 || dy != 0.0 {
+            let t = ((p[0] - x) * dx + (p[1] - y) * dy) / (dx * dx + dy * dy);
+            if t > 1.0 {
+                (x, y) = (b[0], b[1]);
+            } else if t > 0.0 {
+                x += dx * t;
+                y += dy * t;
+            }
+        }
+        (p[0] - x) * (p[0] - x) + (p[1] - y) * (p[1] - y)
+    };
+    // Its recursion as a stack, in its order: a segment's first half, its point, its second half.
+    enum Step {
+        Seg(usize, usize, i32),
+        Keep(usize),
+    }
+    let mut out = vec![c[0]];
+    let mut stack = vec![Step::Seg(0, c.len() - 1, 2)];
+    while let Some(s) = stack.pop() {
+        match s {
+            Step::Keep(i) => out.push(c[i]),
+            Step::Seg(first, last, forced) => {
+                let force = forced > 0;
+                let (mut max, mut index) = (if force { -1.0 } else { sq }, None);
+                for (i, p) in c.iter().enumerate().take(last).skip(first + 1) {
+                    let d = sq_seg(*p, c[first], c[last]);
+                    if d > max {
+                        (max, index) = (d, Some(i));
+                    }
+                }
+                let Some(index) = index else { continue };
+                if last - index > 1 {
+                    stack.push(Step::Seg(index, last, forced - 2));
+                }
+                stack.push(Step::Keep(index));
+                if index - first > 1 {
+                    stack.push(Step::Seg(first, index, forced - 1));
+                }
+            }
+        }
+    }
+    out.push(c[c.len() - 1]);
+    out
+}
+
+/// Douglas–Peucker on a closed ring (world units), keeping its first point and at least four: the
+/// outlines' (drawn, not measured).
 pub fn simplify_ring(r: &[[f64; 2]], tol: f64) -> Vec<[f64; 2]> {
     // (Without a closing point.)
     let r = if r.len() > 1 && r.first() == r.last() { &r[..r.len() - 1] } else { r };
@@ -288,14 +431,27 @@ fn tolerance(z: u8) -> f64 {
     TOLERANCE_PX / (256.0 * f64::from(1u32 << z))
 }
 
-// ---- reading the set ---------------------------------------------------------------------------
+/// A ring closed: its first point repeated at its end if it isn't.
+fn closed(r: &[[f64; 2]]) -> std::borrow::Cow<'_, [[f64; 2]]> {
+    if r.len() > 1 && r.first() != r.last() {
+        let mut v = r.to_vec();
+        v.push(r[0]);
+        std::borrow::Cow::Owned(v)
+    } else {
+        std::borrow::Cow::Borrowed(r)
+    }
+}
+
+// ---- reading -----------------------------------------------------------------------------------
 
 /// What the basemap draws as water (OpenMapTiles' water polygons: natural=water, the reservoir,
 /// basin and salt pond land uses, docks, and water=river … wastewater), and of that, what isn't
-/// a lake: water along a line (a river's, a canal's), whose islands still count.
-fn water_kind(p: &serde_json::Map<String, serde_json::Value>) -> Option<bool> {
+/// a lake: water along a line (a river's, a canal's), whose islands still count. Not water in a
+/// tunnel or culvert (a tunnel tag but no, 0 or false, as OpenMapTiles reads it), which the map
+/// hides where the basemap marks it, nor covered water (covered=yes), which OpenMapTiles leaves out.
+fn water_kind(p: &serde_json::Map<String, serde_json::Value>) -> Option<u8> {
     let tag = |k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or("");
-    if !matches!(tag("tunnel"), "" | "no") || tag("covered") == "yes" {
+    if !matches!(tag("tunnel"), "" | "no" | "0" | "false") || tag("covered") == "yes" {
         return None;
     }
     let water = tag("water");
@@ -306,15 +462,12 @@ fn water_kind(p: &serde_json::Map<String, serde_json::Value>) -> Option<bool> {
     if !drawn {
         return None;
     }
-    Some(!matches!(water, "river" | "stream" | "canal" | "ditch" | "drain" | "rapids" | "lock" | "fish_pass"))
+    Some(if matches!(water, "river" | "stream" | "canal" | "ditch" | "drain" | "rapids" | "lock" | "fish_pass") { RIVER } else { LAKE })
 }
 
-/// One exported feature: a coastline way (its points), or a water area's polygons (each its outer
-/// ring then its holes) and whether it's a lake.
-enum Parsed {
-    Coast(Vec<[f64; 2]>),
-    Water(bool, Vec<Vec<Vec<[f64; 2]>>>),
-}
+/// One exported water area: its kind (`LAKE` or `RIVER`) and its polygons (each its outer ring
+/// then its holes).
+type Parsed = (u8, Vec<Rings>);
 
 fn parse_line(line: &str) -> Option<Parsed> {
     let line = line.trim_matches(|c: char| c == '\u{1e}' || c.is_whitespace());
@@ -326,19 +479,20 @@ fn parse_line(line: &str) -> Option<Parsed> {
     let g = f.get("geometry")?;
     let pt = |v: &serde_json::Value| -> Option<[f64; 2]> { Some(world(v.get(0)?.as_f64()?, v.get(1)?.as_f64()?)) };
     let ring = |r: &serde_json::Value| -> Option<Vec<[f64; 2]>> { r.as_array()?.iter().map(pt).collect() };
-    let poly = |v: &serde_json::Value| -> Option<Vec<Vec<[f64; 2]>>> { v.as_array()?.iter().map(ring).collect() };
+    let poly = |v: &serde_json::Value| -> Option<Rings> { v.as_array()?.iter().map(ring).collect() };
     let coords = g.get("coordinates")?;
     match g.get("type")?.as_str()? {
-        "LineString" if p.get("natural").and_then(|v| v.as_str()) == Some("coastline") => Some(Parsed::Coast(ring(coords)?)),
-        "Polygon" => Some(Parsed::Water(water_kind(p)?, vec![poly(coords)?])),
-        "MultiPolygon" => Some(Parsed::Water(water_kind(p)?, coords.as_array()?.iter().map(poly).collect::<Option<_>>()?)),
+        "Polygon" => Some((water_kind(p)?, vec![poly(coords)?])),
+        "MultiPolygon" => Some((water_kind(p)?, coords.as_array()?.iter().map(poly).collect::<Option<_>>()?)),
         _ => None,
     }
 }
 
-/// A feature from a ring (`holes` for a lake's interior point), when it's big enough to count.
+/// A feature from a ring (`holes` for a lake's interior point), when it's big enough to count, with
+/// the zooms 6–13 the basemap's rule leaves it out at.
 fn feat(kind: u8, outer: &[[f64; 2]], holes: &[&[[f64; 2]]], parent: u32, sea: bool) -> Option<Feat> {
-    let (a, c) = ring_moments(outer);
+    let outer = closed(outer);
+    let (a, c) = ring_moments(&outer);
     let area = a.abs() * WORLD_M * WORLD_M;
     if !(MIN_M2..).contains(&area) || !area.is_finite() {
         return None;
@@ -348,29 +502,29 @@ fn feat(kind: u8, outer: &[[f64; 2]], holes: &[&[[f64; 2]]], parent: u32, sea: b
     if x1 - x0 > 0.5 {
         return None;
     }
-    // Its outline, for the zooms it may be drawn whole at: those from 1 px² where the basemap lacks
-    // it (lakes and their islands below z12, anything below z6), simplified for the finest.
-    let z1 = first_px_zoom(area);
-    let finest = if sea { (z1 <= 5).then_some(5) } else { (z1 <= 11).then_some(z1.clamp(5, 11)) };
-    let ring = finest.map(|z| simplify_ring(outer, tolerance(z))).unwrap_or_default();
-    Some(Feat { kind, area, c, inside: inside_point(outer, holes), parent, sea, absent: 0, ring })
+    let absent = rule_absent(kind, sea, &outer, area);
+    // Its outline, for the zooms it may be drawn whole at (from 1 px², where the basemap lacks it,
+    // to z11: `OUTLINE_MAXZ`), simplified for the finest: the deepest such of z6–11, else z5 (the
+    // Natural Earth zooms may lack anything). Rivers are never drawn.
+    let finest = match kind {
+        RIVER => None,
+        _ => (6..=OUTLINE_MAXZ).rev().find(|&z| absent & (1 << z) != 0 && px2(area, z) >= 1.0).or((first_px_zoom(area) <= 5).then_some(5)),
+    };
+    let ring = finest.map(|z| simplify_ring(&outer, tolerance(z))).unwrap_or_default();
+    Some(Feat { kind, area, c, inside: inside_point(&outer, holes), parent, sea, absent, ring })
 }
 
-/// The features of one water area: each polygon a lake (when it's one), its holes islands.
-fn water_feats(lake: bool, polys: &[Vec<Vec<[f64; 2]>>], out: &mut Vec<Feat>) {
+/// The features of one water area: each polygon a lake or a river, its holes islands of it.
+fn water_feats(kind: u8, polys: &[Rings], out: &mut Vec<Feat>) {
     for poly in polys {
         let Some((outer, holes)) = poly.split_first() else { continue };
         let hs: Vec<&[[f64; 2]]> = holes.iter().map(Vec::as_slice).collect();
-        let parent = if lake {
-            match feat(LAKE, outer, &hs, NONE, false) {
-                Some(f) => {
-                    out.push(f);
-                    (out.len() - 1) as u32
-                }
-                None => NONE,
+        let parent = match feat(kind, outer, &hs, NONE, false) {
+            Some(f) => {
+                out.push(f);
+                (out.len() - 1) as u32
             }
-        } else {
-            NONE
+            None => NONE,
         };
         for h in holes {
             if let Some(f) = feat(ISLAND, h, &[], parent, false) {
@@ -380,28 +534,28 @@ fn water_feats(lake: bool, polys: &[Vec<Vec<[f64; 2]>>], out: &mut Vec<Feat>) {
     }
 }
 
-/// What reading the set found.
+/// What reading found.
 #[derive(Debug, Default, Clone, serde::Serialize)]
-pub struct Read {
+pub struct Counts {
     /// Exported features read.
     pub lines: u64,
     pub lakes: u64,
+    /// Water along a line (rivers, canals …): their islands' parents, never drawn.
+    pub rivers: u64,
     /// Islands in lakes and rivers.
     pub inland_islands: u64,
-    /// Coastline ways, and the islands their closed rings make.
-    pub coast_ways: u64,
+    /// The sea's islands: the water polygons' holes.
     pub sea_islands: u64,
-    /// Coastline ways left over in chains that don't close (broken coastlines, or a continent's).
-    pub open_chain_ways: u64,
+    /// The water polygons read.
+    pub water_polygons: u64,
 }
 
-/// Reads `osmium export`'s GeoJSON sequence of the `water` set: the lakes and their islands (in
-/// the order read, each lake before its islands, with its index as their `parent`), then the
-/// sea's islands, from the coastline's ways joined into rings. `said` hears the lines read so far.
-pub fn read_export(r: impl BufRead, said: &dyn Fn(u64)) -> Result<(Vec<Feat>, Read)> {
+/// Reads `osmium export`'s GeoJSON sequence of the `water` set: the lakes and rivers and their
+/// islands, in the order read, each lake or river before its islands, with its index as their
+/// `parent`. `said` hears the lines read so far.
+pub fn read_export(r: impl BufRead, said: &dyn Fn(u64)) -> Result<(Vec<Feat>, Counts)> {
     let mut feats: Vec<Feat> = Vec::new();
-    let mut coast: Vec<Vec<[f64; 2]>> = Vec::new();
-    let mut st = Read::default();
+    let mut st = Counts::default();
     let mut lines = r.lines();
     let mut batch: Vec<String> = Vec::with_capacity(16384);
     loop {
@@ -413,119 +567,106 @@ pub fn read_export(r: impl BufRead, said: &dyn Fn(u64)) -> Result<(Vec<Feat>, Re
             break;
         }
         st.lines += batch.len() as u64;
-        let parsed: Vec<Option<Parsed>> = batch.par_iter().map(|l| parse_line(l)).collect();
-        // Each batch's lakes and islands made in parallel, their parents then made global.
-        let made: Vec<Vec<Feat>> = parsed
+        // Each batch's features made in parallel, their parents then made global.
+        let made: Vec<Vec<Feat>> = batch
             .par_iter()
-            .map(|p| match p {
-                Some(Parsed::Water(lake, polys)) => {
-                    let mut v = Vec::new();
-                    water_feats(*lake, polys, &mut v);
-                    v
+            .map(|l| {
+                let mut v = Vec::new();
+                if let Some((kind, polys)) = parse_line(l) {
+                    water_feats(kind, &polys, &mut v);
                 }
-                _ => Vec::new(),
+                v
             })
             .collect();
-        for (p, fs) in parsed.into_iter().zip(made) {
-            if let Some(Parsed::Coast(pts)) = p {
-                coast.push(pts);
-                continue;
-            }
+        for fs in made {
             let base = feats.len() as u32;
             for mut f in fs {
                 if f.parent != NONE {
                     f.parent += base;
                 }
-                if f.kind == LAKE {
-                    st.lakes += 1;
-                } else {
-                    st.inland_islands += 1;
+                match f.kind {
+                    LAKE => st.lakes += 1,
+                    RIVER => st.rivers += 1,
+                    _ => st.inland_islands += 1,
                 }
                 feats.push(f);
             }
         }
         said(st.lines);
     }
-    st.coast_ways = coast.len() as u64;
-    let (rings, open) = join_coast(coast);
-    st.open_chain_ways = open as u64;
-    let islands: Vec<Feat> = rings
-        .par_iter()
-        .filter_map(|r| {
-            // Land on the left of the coastline: an island goes round anticlockwise on the map
-            // (negative here, y down). The other way round is water held in by the coastline.
-            let (a, _) = ring_moments(r);
-            if a >= 0.0 || -a * WORLD_M * WORLD_M > MAX_ISLAND_M2 {
-                return None;
-            }
-            feat(ISLAND, r, &[], NONE, true)
-        })
-        .collect();
-    st.sea_islands = islands.len() as u64;
-    feats.extend(islands);
     Ok((feats, st))
 }
 
-/// The coastline's ways joined end to end into closed rings (each closed way is one), in the order
-/// read; and how many ways were left in chains that don't close.
-pub fn join_coast(ways: Vec<Vec<[f64; 2]>>) -> (Vec<Vec<[f64; 2]>>, usize) {
-    let key = |p: [f64; 2]| (p[0].to_bits(), p[1].to_bits());
-    let mut by_start: HashMap<(u64, u64), usize> = HashMap::new();
-    for (i, w) in ways.iter().enumerate() {
-        if w.len() >= 2 && w.first() != w.last() {
-            by_start.entry(key(w[0])).or_insert(i);
-        }
+/// Reads the water polygons' shapefile (`WATER_POLYGONS_SHP`, EPSG:3857, as a stream: its records
+/// in order) for the sea's islands: every hole of every polygon (its rings anticlockwise, y up),
+/// each a feature. Returns them and how many polygons there were. (An island across the split
+/// polygons' grid is a notch in two of them, no hole: the basemap merges them back into one hole,
+/// kept whatever its size while it survives simplification.)
+pub fn read_water_polygons(mut r: impl Read) -> Result<(Vec<Feat>, u64)> {
+    let mut head = [0u8; 100];
+    r.read_exact(&mut head).context("the shapefile's header")?;
+    let word = |o: usize| i32::from_be_bytes([head[o], head[o + 1], head[o + 2], head[o + 3]]);
+    if word(0) != 9994 {
+        bail!("not a shapefile");
     }
-    let mut used = vec![false; ways.len()];
-    let mut rings = Vec::new();
-    let mut open = 0;
-    for i in 0..ways.len() {
-        if used[i] || ways[i].len() < 2 {
+    // Its records to its length (the header's, in 16-bit words): none cut short.
+    let mut left = (u64::try_from(word(24)).context("the shapefile's length")? * 2).checked_sub(100).context("the shapefile's length")?;
+    let mut feats = Vec::new();
+    let mut polygons = 0u64;
+    let mut batch: Vec<Vec<u8>> = Vec::with_capacity(256);
+    while left > 0 {
+        batch.clear();
+        while batch.len() < 256 && left > 0 {
+            let mut rh = [0u8; 8];
+            r.read_exact(&mut rh).context("a record's header")?;
+            let len = usize::try_from(i32::from_be_bytes([rh[4], rh[5], rh[6], rh[7]])).context("a record's length")? * 2;
+            let mut body = vec![0u8; len];
+            r.read_exact(&mut body).context("a record cut short")?;
+            left = left.checked_sub(8 + len as u64).context("a record past the shapefile's length")?;
+            batch.push(body);
+        }
+        polygons += batch.len() as u64;
+        let made: Vec<Vec<Feat>> = batch.par_iter().map(|b| shp_holes(b).iter().filter_map(|h| feat(ISLAND, h, &[], NONE, true)).collect()).collect();
+        feats.extend(made.into_iter().flatten());
+    }
+    Ok((feats, polygons))
+}
+
+/// A shapefile polygon record's holes (its anticlockwise rings), in world units.
+fn shp_holes(b: &[u8]) -> Vec<Vec<[f64; 2]>> {
+    let i32_at = |o: usize| b.get(o..o + 4).map(|s| i32::from_le_bytes(s.try_into().unwrap()));
+    let f64_at = |o: usize| f64::from_le_bytes(b[o..o + 8].try_into().unwrap());
+    // (Shape type 5: a polygon; 0, a null shape.)
+    if i32_at(0) != Some(5) {
+        return Vec::new();
+    }
+    let (Some(nparts), Some(npts)) = (i32_at(36), i32_at(40)) else { return Vec::new() };
+    let (nparts, npts) = (nparts.max(0) as usize, npts.max(0) as usize);
+    let pts_at = 44 + 4 * nparts;
+    if b.len() < pts_at + 16 * npts {
+        return Vec::new();
+    }
+    let parts: Vec<usize> = (0..nparts).map(|k| i32_at(44 + 4 * k).unwrap_or(0).max(0) as usize).collect();
+    let mut holes = Vec::new();
+    for k in 0..nparts {
+        let (s, e) = (parts[k], if k + 1 < nparts { parts[k + 1] } else { npts });
+        if e <= s + 2 || e > npts {
             continue;
         }
-        used[i] = true;
-        if ways[i].first() == ways[i].last() {
-            rings.push(ways[i].clone());
-            continue;
-        }
-        let start = ways[i][0];
-        let mut ring = ways[i].clone();
-        let mut members = 1;
-        let closed = loop {
-            let end = *ring.last().unwrap();
-            if end == start {
-                break true;
-            }
-            match by_start.get(&key(end)) {
-                Some(&j) if !used[j] => {
-                    used[j] = true;
-                    members += 1;
-                    ring.extend_from_slice(&ways[j][1..]);
-                }
-                _ => break false,
-            }
-        };
-        if closed {
-            rings.push(ring);
-        } else {
-            open += members;
+        let pts: Vec<[f64; 2]> = (s..e).map(|i| [f64_at(pts_at + 16 * i), f64_at(pts_at + 16 * i + 8)]).collect();
+        // Anticlockwise (y up): a hole.
+        let a2: f64 = (0..pts.len()).map(|i| {
+            let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+            p[0] * q[1] - q[0] * p[1]
+        }).sum();
+        if a2 > 0.0 {
+            holes.push(pts.iter().map(|p| [p[0] / WORLD_M + 0.5, 0.5 - p[1] / WORLD_M]).collect());
         }
     }
-    (rings, open)
+    holes
 }
 
 // ---- which zooms lack each ----------------------------------------------------------------------
-
-/// Sets each feature's zooms 6–13 absent by the basemap's rule.
-pub fn rule_absent(feats: &mut [Feat]) {
-    feats.par_iter_mut().for_each(|f| {
-        for z in 6..=13u8 {
-            if !rule_keeps(f.kind, f.sea, f.area, z) {
-                f.absent |= 1 << z;
-            }
-        }
-    });
-}
 
 /// The basemap's water at zooms 0–5, a tile's at a time: its water features' rings, world units.
 pub trait Water {
@@ -597,8 +738,8 @@ fn decode_rings(g: &[u32]) -> Vec<Vec<(f64, f64)>> {
 }
 
 /// Sets each feature's zooms 0–5 absent by asking the basemap (Natural Earth's water there): a lake
-/// is there when its inside point is in water, an island when it isn't (and an island of a lake the
-/// basemap lacks is missing with it). Features under `NE_MIN_M2` are missing at all six.
+/// or river is there when its inside point is in water, an island when it isn't. Features under
+/// `NE_MIN_M2` are missing at all six.
 pub fn ne_absent(feats: &mut [Feat], water: &(dyn Water + Sync)) -> Result<()> {
     for z in 0..=5u8 {
         let n = f64::from(1u32 << z);
@@ -607,26 +748,28 @@ pub fn ne_absent(feats: &mut [Feat], water: &(dyn Water + Sync)) -> Result<()> {
         tiles.sort_unstable();
         tiles.dedup();
         let decoded: HashMap<(u32, u32), Vec<Rings>> = tiles.par_iter().map(|&(x, y)| Ok(((x, y), water.water(z, x, y)?))).collect::<Result<_>>()?;
-        let in_water: Vec<bool> = feats
-            .par_iter()
-            .map(|f| f.area >= NE_MIN_M2 && decoded.get(&tile_of(f.inside)).is_some_and(|ws| ws.iter().any(|rings| inside_rings(rings, f.inside))))
-            .collect();
-        // Lakes come before their islands, so a lake's bit is set before its islands read it.
-        for i in 0..feats.len() {
-            let f = &feats[i];
-            let missing = if f.area < NE_MIN_M2 {
-                true
-            } else if f.kind == LAKE {
-                !in_water[i]
-            } else {
-                in_water[i] || (f.parent != NONE && feats[f.parent as usize].absent & (1 << z) != 0)
-            };
-            if missing {
-                feats[i].absent |= 1 << z;
+        feats.par_iter_mut().for_each(|f| {
+            let in_water = f.area >= NE_MIN_M2 && decoded.get(&tile_of(f.inside)).is_some_and(|ws| ws.iter().any(|rings| inside_rings(rings, f.inside)));
+            if f.area < NE_MIN_M2 || (f.kind == ISLAND) == in_water {
+                f.absent |= 1 << z;
             }
-        }
+        });
     }
     Ok(())
+}
+
+/// Whether the tiles draw `f` at zoom `z` (0–13): when the basemap lacks it there, or the lake it's
+/// an island of (whose outline or dot would cover it); never a river, nor an island of a river the
+/// basemap lacks there (it would be land on bare land: a braided river's).
+pub fn drawn(feats: &[Feat], f: &Feat, z: u8) -> bool {
+    let bit = 1u16 << z;
+    if f.kind == RIVER {
+        return false;
+    }
+    match feats.get(f.parent as usize) {
+        Some(p) if p.absent & bit != 0 => p.kind == LAKE,
+        _ => f.absent & bit != 0,
+    }
 }
 
 // ---- tiles -------------------------------------------------------------------------------------
@@ -768,16 +911,18 @@ pub fn tiles(feats: &[Feat], emit: &mut dyn FnMut(u8, u32, u32, Vec<u8>) -> Resu
         let n = f64::from(1u32 << z);
         let cells = n * 256.0;
         let mut by_tile: std::collections::BTreeMap<(u32, u32), TileFeats> = std::collections::BTreeMap::new();
-        // Points: the features under 1 px² the basemap lacks, summed per 1-px cell and kind.
-        // (At the deepest zoom, those still absent at z13 apart: the app overzooms to it.)
+        // What's drawn whole: of 1 px² or more, with an outline for this zoom.
+        let whole = |f: &Feat| z <= OUTLINE_MAXZ && px2(f.area, z) >= 1.0 && !f.ring.is_empty();
+        // Points: the rest drawn, summed per 1-px cell and kind. (At the deepest zoom, those still
+        // drawn at z13 apart: the app overzooms to it.)
         let with_o = z == MAXZ;
         let mut pts: Vec<(u64, u8, bool, u32)> = feats
             .par_iter()
             .enumerate()
-            .filter(|(_, f)| f.absent & (1 << z) != 0 && px2(f.area, z) < 1.0)
+            .filter(|(_, f)| drawn(feats, f, z) && !whole(f))
             .map(|(i, f)| {
                 let (cx, cy) = (((f.c[0] * cells) as u64).min(cells as u64 - 1), ((f.c[1] * cells) as u64).min(cells as u64 - 1));
-                ((cx << 32) | cy, tile_kind(f), with_o && f.absent & (1 << 13) != 0, i as u32)
+                ((cx << 32) | cy, tile_kind(f), with_o && drawn(feats, f, 13), i as u32)
             })
             .collect();
         pts.par_sort_unstable();
@@ -803,11 +948,11 @@ pub fn tiles(feats: &[Feat], emit: &mut dyn FnMut(u8, u32, u32, Vec<u8>) -> Resu
         }
         // Where a block of a tile would hold too many, its points summed in wider cells.
         by_tile.par_iter_mut().for_each(|(_, t)| thin(&mut t.points));
-        // Outlines: those of 1 px² or more the basemap lacks, in every tile their box meets.
+        // Outlines, in every tile their box meets.
         let polys: Vec<(usize, Vec<(u32, u32)>)> = feats
             .par_iter()
             .enumerate()
-            .filter(|(_, f)| f.absent & (1 << z) != 0 && px2(f.area, z) >= 1.0 && !f.ring.is_empty())
+            .filter(|(_, f)| drawn(feats, f, z) && whole(f))
             .map(|(i, f)| {
                 let (mut x0, mut y0, mut x1, mut y1) = (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
                 for p in &f.ring {
@@ -851,22 +996,71 @@ mod tests {
         px.sqrt() / (256.0 * f64::from(1u32 << z))
     }
 
+    /// Area (m²) `px` 256-px pixels² at zoom `z`.
+    fn m2(px: f64, z: u8) -> f64 {
+        px * (WORLD_M / (256.0 * f64::from(1u32 << z))).powi(2)
+    }
+
+    /// A square feature `px` pixels² at zoom `z`, as read.
+    fn sq_feat(kind: u8, c: [f64; 2], px: f64, z: u8, parent: u32, sea: bool) -> Feat {
+        feat(kind, &square(c, side_px(px, z)), &[], parent, sea).unwrap()
+    }
+
     #[test]
     fn the_basemaps_rule() {
-        let a = |px: f64, z: u8| px * (WORLD_M / (256.0 * f64::from(1u32 << z))).powi(2);
-        // The sea's islands from 1 px² at z6–13.
-        assert!(rule_keeps(ISLAND, true, a(1.0, 6), 6));
-        assert!(!rule_keeps(ISLAND, true, a(0.99, 6), 6));
-        assert!(!rule_keeps(ISLAND, true, a(0.99, 13), 13));
-        // Lakes and their islands from 4 px² below z12, 1 px² at z12–13.
-        assert!(rule_keeps(LAKE, false, a(4.0, 11), 11));
-        assert!(!rule_keeps(LAKE, false, a(3.9, 11), 11));
-        assert!(!rule_keeps(ISLAND, false, a(3.9, 9), 9));
-        assert!(rule_keeps(LAKE, false, a(1.0, 12), 12));
-        assert!(!rule_keeps(LAKE, false, a(0.9, 13), 13));
-        // z14: from 1/256 px².
-        assert!(rule_keeps(LAKE, false, a(0.004, 14), 14));
-        assert!((px2(a(2.5, 7), 7) - 2.5).abs() < 1e-9);
+        let absent = |kind: u8, sea: bool, px: f64, z: u8| {
+            let r = closed(&square([0.4, 0.3], side_px(px, z))).into_owned();
+            rule_absent(kind, sea, &r, m2(px, z)) & (1 << z) != 0
+        };
+        // The sea's islands from 1 px² at z6–13 (a square loses nothing to simplifying).
+        assert!(!absent(ISLAND, true, 1.01, 6));
+        assert!(absent(ISLAND, true, 0.99, 6));
+        assert!(absent(ISLAND, true, 0.99, 13));
+        // Lakes, rivers and their islands from 4 px² below z12, 1 px² at z12–13.
+        assert!(!absent(LAKE, false, 4.01, 11));
+        assert!(absent(LAKE, false, 3.99, 11));
+        assert!(absent(RIVER, false, 3.99, 7));
+        assert!(absent(ISLAND, false, 3.99, 9));
+        assert!(!absent(LAKE, false, 1.01, 12));
+        assert!(absent(LAKE, false, 0.99, 13));
+        assert_eq!(min_px2(LAKE, false, 14), 1.0 / 256.0);
+        assert!((px2(m2(2.5, 7), 7) - 2.5).abs() < 1e-9);
+        // Measured once simplified: a square of 0.98 px² at z6 with a bump along a side, 0.09 px
+        // high, is 1.02 px² as mapped, and 0.98 once the bump (under 0.1 px) is simplified off.
+        let (s, u, x0, y0) = (side_px(0.98, 6), 1.0 / (256.0 * 64.0), 0.4, 0.3);
+        let bumped = vec![[x0, y0], [x0, y0 + s], [x0 + s, y0 + s], [x0 + s + 0.09 * u, y0 + 0.5 * s], [x0 + s, y0], [x0, y0]];
+        let raw = ring_moments(&bumped).0.abs() * WORLD_M * WORLD_M;
+        assert!(px2(raw, 6) > 1.02 && px2(raw, 6) < 1.03, "{}", px2(raw, 6));
+        assert_eq!(planetiler_dp(&bumped, tolerance(6)).len(), 5);
+        assert!(rule_absent(ISLAND, true, &bumped, raw) & (1 << 6) != 0);
+        assert!(rule_absent(ISLAND, true, &bumped, raw) & (1 << 7) == 0);
+    }
+
+    #[test]
+    fn the_index_goes_in_memory_when_it_fits() {
+        let gb = 1u64 << 30;
+        // The planet's set (~6 GB): its index 13.2 GB, and with the step's own, 23.2 GB.
+        assert!(index_in_memory(6 * gb, 24 * gb));
+        assert!(!index_in_memory(6 * gb, 20 * gb));
+        assert_eq!(disk_bytes(6 * gb, true), 7 * gb);
+        assert!(disk_bytes(6 * gb, false) > 20 * gb);
+    }
+
+    #[test]
+    fn simplifies_as_planetiler_does() {
+        // A wobbly ring and what Planetiler 0.10.2's Douglas–Peucker keeps of it at three
+        // tolerances (its port in Python, checked against the basemap's tiles: scratch u1.py).
+        let r: Vec<[f64; 2]> = vec![
+            [0.9789, 0.0], [0.9193, 0.2699], [0.8565, 0.5504], [0.6213, 0.717], [0.4172, 0.9135], [0.14, 0.9739], [-0.1348, 0.9373], [-0.4158, 0.9104],
+            [-0.6185, 0.7138], [-0.8346, 0.5363], [-0.91, 0.2672], [-0.9509, 0.0], [-0.9508, -0.2792], [-0.8742, -0.5618], [-0.6253, -0.7216], [-0.4016, -0.8794],
+            [-0.1445, -1.005], [0.15, -1.043], [0.4193, -0.918], [0.6467, -0.7464], [0.8893, -0.5715], [0.9073, -0.2664], [0.9789, 0.0],
+        ];
+        for (tol, kept) in [(0.05, vec![0, 2, 4, 5, 7, 9, 12, 13, 16, 17, 20, 22]), (0.2, vec![0, 4, 7, 9, 12, 17, 20, 22]), (2.0, vec![0, 7, 12, 22])] {
+            let want: Vec<[f64; 2]> = kept.iter().map(|&i| r[i]).collect();
+            assert_eq!(planetiler_dp(&r, tol), want, "{tol}");
+        }
+        // Four points or fewer: as they are.
+        assert_eq!(planetiler_dp(&r[..4], 2.0), r[..4].to_vec());
     }
 
     #[test]
@@ -886,24 +1080,6 @@ mod tests {
         assert!(inside_rings(&[lake, island], p), "{p:?}");
     }
 
-    #[test]
-    fn coastline_ways_join_into_rings() {
-        let a = [0.1, 0.1];
-        let b = [0.1, 0.2];
-        let c = [0.2, 0.2];
-        let d = [0.2, 0.1];
-        let ways = vec![
-            vec![c, d, a],                          // the ring's second half…
-            vec![[0.5, 0.5], [0.5, 0.6], [0.6, 0.6], [0.5, 0.5]], // a closed way
-            vec![a, b, c],                          // …and its first
-            vec![[0.8, 0.8], [0.8, 0.9]],           // a chain that never closes
-        ];
-        let (rings, open) = join_coast(ways);
-        assert_eq!(rings.len(), 2);
-        assert_eq!(rings[0], vec![c, d, a, b, c]);
-        assert_eq!(open, 1);
-    }
-
     fn line(geom: &str, props: &str) -> String {
         format!("\u{1e}{{\"type\":\"Feature\",\"geometry\":{geom},\"properties\":{props}}}\n")
     }
@@ -919,30 +1095,97 @@ mod tests {
     }
 
     #[test]
-    fn reads_lakes_their_islands_and_the_seas() {
+    fn reads_lakes_rivers_and_their_islands() {
         let mut s = String::new();
-        // A lake with an island; a river with one (the river no lake); a tunnel's water (nothing).
-        s += &line(&format!("{{\"type\":\"MultiPolygon\",\"coordinates\":[[{},{}]]}}", ll((10.0, 50.0), 0.01, true), ll((10.0, 50.0), 0.002, false)), "{\"natural\":\"water\"}");
-        s += &line(&format!("{{\"type\":\"MultiPolygon\",\"coordinates\":[[{},{}]]}}", ll((11.0, 50.0), 0.01, true), ll((11.0, 50.0), 0.003, false)), "{\"natural\":\"water\",\"water\":\"river\"}");
-        s += &line(&format!("{{\"type\":\"MultiPolygon\",\"coordinates\":[[{}]]}}", ll((12.0, 50.0), 0.01, true)), "{\"natural\":\"water\",\"tunnel\":\"culvert\"}");
-        // A bay isn't drawn: nothing.
-        s += &line(&format!("{{\"type\":\"MultiPolygon\",\"coordinates\":[[{}]]}}", ll((13.0, 50.0), 0.01, true)), "{\"natural\":\"bay\"}");
-        // The coastline: an island (land on its left: anticlockwise), and water held in (clockwise).
-        s += &line(&format!("{{\"type\":\"LineString\",\"coordinates\":{}}}", ll((-5.0, 56.0), 0.005, true)), "{\"natural\":\"coastline\"}");
-        s += &line(&format!("{{\"type\":\"LineString\",\"coordinates\":{}}}", ll((-6.0, 56.0), 0.005, false)), "{\"natural\":\"coastline\"}");
+        let mp = |rings: &[String]| format!("{{\"type\":\"MultiPolygon\",\"coordinates\":[[{}]]}}", rings.join(","));
+        // A lake with an island; a river with one; a culvert's water and a covered reservoir
+        // (nothing); a bay (nothing: the basemap doesn't draw it); a pond not in a tunnel.
+        s += &line(&mp(&[ll((10.0, 50.0), 0.01, true), ll((10.0, 50.0), 0.002, false)]), "{\"natural\":\"water\"}");
+        s += &line(&mp(&[ll((11.0, 50.0), 0.01, true), ll((11.0, 50.0), 0.003, false)]), "{\"natural\":\"water\",\"water\":\"river\"}");
+        s += &line(&mp(&[ll((12.0, 50.0), 0.01, true)]), "{\"natural\":\"water\",\"tunnel\":\"culvert\"}");
+        s += &line(&mp(&[ll((12.5, 50.0), 0.01, true)]), "{\"landuse\":\"reservoir\",\"covered\":\"yes\"}");
+        s += &line(&mp(&[ll((13.0, 50.0), 0.01, true)]), "{\"natural\":\"bay\"}");
+        s += &line(&mp(&[ll((14.0, 50.0), 0.01, true)]), "{\"water\":\"pond\",\"tunnel\":\"no\"}");
         let (fs, st) = read_export(std::io::Cursor::new(s), &|_| {}).unwrap();
-        assert_eq!((st.lines, st.lakes, st.inland_islands, st.coast_ways, st.sea_islands), (6, 1, 2, 2, 1));
-        assert_eq!(fs.len(), 4);
+        assert_eq!((st.lines, st.lakes, st.rivers, st.inland_islands), (6, 2, 1, 2));
+        assert_eq!(fs.len(), 5);
         assert_eq!((fs[0].kind, fs[0].parent, fs[0].sea), (LAKE, NONE, false));
         assert_eq!((fs[1].kind, fs[1].parent), (ISLAND, 0));
-        assert_eq!((fs[2].kind, fs[2].parent), (ISLAND, NONE));
-        assert_eq!((fs[3].kind, fs[3].sea), (ISLAND, true));
+        assert_eq!((fs[2].kind, fs[2].parent, fs[2].ring.len()), (RIVER, NONE, 0));
+        assert_eq!((fs[3].kind, fs[3].parent, fs[3].sea), (ISLAND, 2, false));
+        assert_eq!(fs[4].kind, LAKE);
         // Areas in Web Mercator m²: a 0.02° square at 50° is 2.2 km a side there, 3.5 on the map.
         let w = WORLD_M * 0.02 / 360.0;
-        assert!((fs[0].area / (w * w * (1.0 / 50f64.to_radians().cos()))).abs() > 0.9);
+        assert!((fs[0].area / (w * w / 50f64.to_radians().cos())) > 0.9);
         let c = world(10.0, 50.0);
         assert!((fs[0].c[0] - c[0]).abs() < 1e-9 && (fs[0].c[1] - c[1]).abs() < 1e-6);
         assert!(!inside_rings(&[square(fs[1].c, 1e-9)], fs[0].inside));
+    }
+
+    /// A shapefile (EPSG:3857) of polygon records, each its rings: the header, then the records.
+    fn shapefile(records: &[Vec<Vec<[f64; 2]>>]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for (k, rings) in records.iter().enumerate() {
+            let mut rec = Vec::new();
+            if rings.is_empty() {
+                rec.extend(0i32.to_le_bytes());
+            } else {
+                let n: usize = rings.iter().map(Vec::len).sum();
+                rec.extend(5i32.to_le_bytes());
+                rec.extend([0u8; 32]);
+                rec.extend((rings.len() as i32).to_le_bytes());
+                rec.extend((n as i32).to_le_bytes());
+                let mut at = 0;
+                for r in rings {
+                    rec.extend((at as i32).to_le_bytes());
+                    at += r.len();
+                }
+                for p in rings.iter().flatten() {
+                    rec.extend(p[0].to_le_bytes());
+                    rec.extend(p[1].to_le_bytes());
+                }
+            }
+            body.extend((k as i32 + 1).to_be_bytes());
+            body.extend(((rec.len() / 2) as i32).to_be_bytes());
+            body.extend(rec);
+        }
+        let mut head = vec![0u8; 100];
+        head[0..4].copy_from_slice(&9994i32.to_be_bytes());
+        head[24..28].copy_from_slice((((100 + body.len()) / 2) as i32).to_be_bytes().as_slice());
+        head.extend(body);
+        head
+    }
+
+    #[test]
+    fn the_seas_islands_are_the_water_polygons_holes() {
+        // A cell of sea 100 km square (clockwise, y up) with two islands (anticlockwise): 1 km and
+        // 10 m square; a null record; a cell without any.
+        let sq = |c: (f64, f64), h: f64, cw: bool| {
+            let mut r = vec![[c.0 - h, c.1 - h], [c.0 + h, c.1 - h], [c.0 + h, c.1 + h], [c.0 - h, c.1 + h]];
+            if cw {
+                r.reverse();
+            }
+            r.push(r[0]);
+            r
+        };
+        let shp = shapefile(&[
+            vec![sq((1e6, 5e6), 5e4, true), sq((1e6, 5e6), 500.0, false), sq((1.02e6, 5.01e6), 5.0, false)],
+            vec![],
+            vec![sq((2e6, 5e6), 5e4, true)],
+        ]);
+        let (fs, n) = read_water_polygons(std::io::Cursor::new(shp)).unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(fs.len(), 2);
+        assert!(fs.iter().all(|f| f.kind == ISLAND && f.sea && f.parent == NONE));
+        assert!((fs[0].area - 1e6).abs() < 1.0, "{}", fs[0].area);
+        assert!((fs[0].c[0] - (1e6 / WORLD_M + 0.5)).abs() < 1e-12 && (fs[0].c[1] - (0.5 - 5e6 / WORLD_M)).abs() < 1e-12);
+        // 1 km² is 0.67 px² at z7 (1.22 km a side), 2.7 at z8: absent at z6–7, there from z8.
+        assert_eq!(fs[0].absent & 0x3fc0, 0b11 << 6);
+        assert!((fs[1].area - 100.0).abs() < 1e-3);
+        assert!(read_water_polygons(std::io::Cursor::new(vec![0u8; 100])).is_err());
+        // Cut short: an error, not fewer islands.
+        let shp = shapefile(&[vec![sq((1e6, 5e6), 5e4, true), sq((1e6, 5e6), 500.0, false)]]);
+        assert!(read_water_polygons(std::io::Cursor::new(&shp[..shp.len() - 8])).is_err());
     }
 
     /// Water: tiles at zoom z all hold one square of sea around (0.5, 0.5).
@@ -964,13 +1207,13 @@ mod tests {
             feat_at(LAKE, [0.5, 0.5], big, NONE, false),       // in the water: there
             feat_at(ISLAND, [0.5, 0.5], big / 4.0, 0, false),  // its island, in water: missing
             feat_at(LAKE, [0.2, 0.2], big, NONE, false),       // on land: missing
-            feat_at(ISLAND, [0.2, 0.2], big / 4.0, 2, false),  // on land, but its lake's missing
             feat_at(ISLAND, [0.2, 0.2], big / 4.0, NONE, true), // on land: there
             feat_at(ISLAND, [0.5, 0.5], 1e5, NONE, true),      // small: missing
+            feat_at(RIVER, [0.5, 0.5], big, NONE, false),      // in the water: there
         ];
         ne_absent(&mut fs, &Sea).unwrap();
         let low: Vec<u16> = fs.iter().map(|f| f.absent & 0x3f).collect();
-        assert_eq!(low, [0, 0x3f, 0x3f, 0x3f, 0, 0x3f]);
+        assert_eq!(low, [0, 0x3f, 0x3f, 0, 0x3f, 0]);
     }
 
     #[test]
@@ -1003,26 +1246,18 @@ mod tests {
         assert_eq!(pts.iter().filter(|p| p.2 >= 256).count(), 3);
     }
 
-    #[test]
-    fn tiles_hold_what_the_basemap_lacks() {
-        // Two tiny islands in one cell at z0 are one point there, with both areas; a lake 2 px² at
-        // z9 is an outline at z9, a point at z8, and nothing from z10 (the basemap has it).
-        let z9 = |px: f64| px * (WORLD_M / (256.0 * 512.0)).powi(2);
-        let c = [0.3, 0.3];
-        let mut lake = feat_at(LAKE, [0.6, 0.6], z9(2.0), NONE, false);
-        lake.ring = square([0.6, 0.6], side_px(2.0, 9));
-        let mut fs = vec![lake, feat_at(ISLAND, c, 100.0, NONE, true), feat_at(ISLAND, [c[0] + 1e-9, c[1]], 300.0, NONE, true), feat_at(ISLAND, c, 50.0, 0, false)];
-        rule_absent(&mut fs);
-        for f in fs.iter_mut() {
-            f.absent |= 0x3f;
-        }
+    /// A zoom's features, decoded: each its geometry type and properties.
+    type Decoded = Vec<(u32, Vec<(String, u64)>)>;
+
+    /// The tiles of `fs`, decoded, a zoom at a time.
+    fn tiled(fs: &[Feat]) -> impl Fn(u8) -> Decoded {
         let mut got: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
-        tiles(&fs, &mut |z, x, y, b| {
+        tiles(fs, &mut |z, x, y, b| {
             got.push((z, x, y, b));
             Ok(())
         }, &|_, _, _| {})
         .unwrap();
-        let feats_at = |z: u8| -> Vec<(u32, Vec<(String, u64)>)> {
+        move |z: u8| {
             got.iter()
                 .filter(|t| t.0 == z)
                 .flat_map(|t| {
@@ -1036,17 +1271,63 @@ mod tests {
                         .collect::<Vec<_>>()
                 })
                 .collect()
-        };
-        let z0 = feats_at(0);
+        }
+    }
+
+    #[test]
+    fn tiles_hold_what_the_basemap_lacks() {
+        // Two tiny islands in one cell at z0 are one point there, with both areas; a lake 2 px² at
+        // z9 is an outline at z9, a point at z8, and nothing from z10 (the basemap has it).
+        let c = [0.3, 0.3];
+        let mut fs = vec![
+            sq_feat(LAKE, [0.6, 0.6], 2.0, 9, NONE, false),
+            feat(ISLAND, &square(c, 10.0 / WORLD_M), &[], NONE, true).unwrap(),
+            feat(ISLAND, &square([c[0] + 1e-9, c[1]], 300f64.sqrt() / WORLD_M), &[], NONE, true).unwrap(),
+            feat(ISLAND, &square([0.6, 0.6], 50f64.sqrt() / WORLD_M), &[], 0, false).unwrap(),
+        ];
+        for f in fs.iter_mut() {
+            f.absent |= 0x3f;
+        }
+        let at = tiled(&fs);
+        let z0 = at(0);
         // The lake, the sea's two islands as one, the lake's island apart (k 2).
         assert_eq!(z0.len(), 3, "{z0:?}");
         assert!(z0.contains(&(1, vec![("k".into(), 2), ("q".into(), u64::from(q_of(50.0)))])), "{z0:?}");
         assert!(z0.contains(&(1, vec![("k".into(), 0), ("q".into(), u64::from(q_of(400.0)))])), "{z0:?}");
-        assert_eq!(feats_at(8).iter().filter(|f| f.0 == 1 && f.1[0].1 == 1).count(), 1);
-        assert_eq!(feats_at(9).iter().filter(|f| f.0 == 3).count(), 1);
-        assert_eq!(feats_at(10).iter().filter(|f| f.1[0].1 == 1).count(), 0);
+        assert_eq!(at(8).iter().filter(|f| f.0 == 1 && f.1[0].1 == 1).count(), 1);
+        assert_eq!(at(9).iter().filter(|f| f.0 == 3).count(), 1);
+        assert_eq!(at(10).iter().filter(|f| f.1[0].1 == 1).count(), 0);
         // The islands, under 1 px² at z12 and z13 alike, are still absent when overzoomed.
-        let z12 = feats_at(12);
+        let z12 = at(12);
         assert!(!z12.is_empty() && z12.iter().all(|f| f.1.contains(&("o".into(), 1))), "{z12:?}");
+    }
+
+    #[test]
+    fn a_rivers_islands_go_with_it() {
+        // A river 10 px² at z9 (absent to z8) with an island 0.5 px² at z9 (absent to z10): the
+        // island is drawn only where the river is there, z9 (a point) and z10 (its outline, 2 px²).
+        // A lake's island is drawn with its lake, though the basemap has the island.
+        let mut fs = vec![sq_feat(RIVER, [0.6, 0.6], 10.0, 9, NONE, false), sq_feat(ISLAND, [0.6, 0.6], 0.5, 9, 0, false)];
+        fs.push(sq_feat(LAKE, [0.2, 0.2], 3.0, 9, NONE, false));
+        let mut held = sq_feat(ISLAND, [0.2, 0.2], 5.0, 10, 2, false);
+        held.absent = 0;
+        fs.push(held);
+        for f in fs.iter_mut() {
+            f.absent |= 0x3f;
+        }
+        assert_eq!(fs[0].absent & 0x3fc0, 0b111 << 6);
+        assert_eq!(fs[1].absent & 0x3fc0, 0b11111 << 6);
+        let at = tiled(&fs);
+        let kinds = |z: u8| -> Vec<(u32, u64)> {
+            let mut v: Vec<(u32, u64)> = at(z).into_iter().map(|f| (f.0, f.1[0].1)).collect();
+            v.sort();
+            v
+        };
+        // z8: the lake (0.75 px²: a point) and its island; no river, nor its island. z9: the
+        // river's island (a point), the lake and its island (outlines: 3 and 1.25 px²).
+        assert_eq!(kinds(8), vec![(1, 1), (1, 2)]);
+        assert_eq!(kinds(9), vec![(1, 2), (3, 1), (3, 2)]);
+        assert_eq!(kinds(10), vec![(3, 2)]);
+        assert_eq!(kinds(11), vec![]);
     }
 }

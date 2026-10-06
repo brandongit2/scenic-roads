@@ -123,6 +123,13 @@ pub struct Resources {
     pub nas_free_tb: Option<f64>,
 }
 
+impl Resources {
+    /// The memory free now, bytes (memory_pressure's share of it; none when it can't say).
+    pub fn mem_free(&self) -> Option<u64> {
+        self.mem_free_pct.map(|p| (self.mem_gb * f64::from(p) / 100.0 * (1u64 << 30) as f64) as u64)
+    }
+}
+
 /// This Mac's resources now (`Resources`): its disk's where `home` is, the NAS's at `root`; the
 /// caches' and the NAS's answer as the agent last measured them.
 pub fn resources(home: &std::path::Path, root: Option<&std::path::Path>, cache_gb: Option<f64>, nas_ms: Option<u64>) -> Resources {

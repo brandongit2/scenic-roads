@@ -50,13 +50,14 @@
 //!                                nothing written)
 //!   labels [--pass d] [--dem dir]  the labels by importance, worldwide, from the pass's labels set
 //!                                (dem/labels.py), as the labels layer's packs
-//!   smallwater [--pass d] [--set f] [--basemap f] [--node-index i]  the small islands and lakes
-//!                                the basemap leaves out zoomed out (pipeline::smallwater),
-//!                                worldwide, from the pass's water set, as the smallwater layer's
-//!                                packs (`--set`, `--basemap`: local files instead of the
-//!                                manifest's; `--node-index`: osmium's index of node places, by
-//!                                default a sparse file in the scratch folder, `sparse_mem_array`
-//!                                to keep it in memory: to try it by hand)
+//!   smallwater [--pass d] [--set f] [--basemap f] [--water-polygons f] [--node-index i]  the
+//!                                small islands and lakes the basemap leaves out zoomed out
+//!                                (pipeline::smallwater), worldwide, from the pass's water set and
+//!                                the basemap's water polygons, as the smallwater layer's packs
+//!                                (`--set`, `--basemap`, `--water-polygons`: local files instead of
+//!                                the manifest's and the pinned zip; `--node-index`: osmium's index
+//!                                of node places, by default `sparse_mem_array` when there's the
+//!                                memory for it, else `sparse_file_array` in the scratch folder)
 //!   convert-legacy-marks         today's stops & sights (global/legacy) as markdata per z6 tile
 //!                                and thinned tiles per kind (docs/phase5.md)
 //!   convert-legacy-overlays      today's area overlays as vector tiles (ov-*), their details and
@@ -3030,10 +3031,27 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
 }
 
 
+/// A step's work folder, removed when the step ends, however it ends: what's left in it is worth
+/// nothing to a later run, and it can be large.
+struct WorkDir(PathBuf);
+
+impl WorkDir {
+    fn new(p: PathBuf) -> Result<WorkDir> {
+        std::fs::create_dir_all(&p)?;
+        Ok(WorkDir(p))
+    }
+}
+
+impl Drop for WorkDir {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).ok();
+    }
+}
+
 /// The small islands and lakes the basemap leaves out zoomed out (pipeline::smallwater), worldwide:
-/// the pass's water set exported by osmium (its areas assembled, the coastline's ways as lines),
-/// which zooms the basemap lacks each at (its own Natural Earth tiles asked for z0–5), drawn into
-/// the smallwater layer's packs.
+/// the pass's water set exported by osmium (its areas assembled) and the sea's islands from the
+/// basemap's pinned water polygons, which zooms the basemap lacks each at (its own Natural Earth
+/// tiles asked for z0–5), drawn into the smallwater layer's packs.
 fn smallwater_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
     use pipeline::smallwater as sw;
     use std::io::Read;
@@ -3041,9 +3059,9 @@ fn smallwater_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
         Some(d) => d,
         None => pipeline::osmpass::latest_pass(out.root()).context("no complete OSM pass")?,
     };
-    let work = scratch.join("smallwater");
-    std::fs::create_dir_all(&work)?;
-    let parts = Parts(&["Copying the water set", "Reading its islands and lakes", "Asking the basemap which it has", "Drawing the tiles", "Cutting them into packs"]);
+    let work = WorkDir::new(scratch.join("smallwater"))?;
+    let work = work.0.as_path();
+    let parts = Parts(&["Copying the water set", "Reading its lakes, rivers and islands", "Reading the sea's islands", "Asking the basemap which it has", "Drawing the tiles", "Cutting them into packs"]);
     parts.start(0);
     let set = match opt(args, "--set") {
         Some(f) => PathBuf::from(f),
@@ -3054,24 +3072,37 @@ fn smallwater_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
             local
         }
     };
+    let set_len = std::fs::metadata(&set)?.len();
     parts.start(1);
-    // Areas: what the basemap draws as water; closed coastline ways stay lines, to be joined with
-    // the open ones. Only the tags that say which is which.
+    // Areas: what the basemap draws as water, with only the tags that say which is which.
     let cfg = work.join("export.json");
-    let areas: Vec<&str> = sw::AREA_TAGS.to_vec();
     std::fs::write(&cfg, serde_json::to_vec(&serde_json::json!({
         "attributes": {"type": false, "id": false},
-        "linear_tags": ["natural=coastline"],
-        "area_tags": areas,
+        "area_tags": sw::AREA_TAGS,
         "include_tags": ["natural", "water", "waterway", "landuse", "tunnel", "covered"],
     }))?)?;
-    // Node locations in a sparse index on disk (16 bytes a node): osmium's default can switch to a
-    // dense array as big as the highest node id (about 100 GB for the planet's).
+    // Node places: osmium's sparse index (16 bytes a node; its default can switch to a dense array as
+    // big as the highest node id, ~100 GB for the planet's), in memory when this Mac has it to
+    // spare, else on disk (sw::index_in_memory), slower.
     let idx = work.join("nodes.idx");
-    std::fs::remove_file(&idx).ok();
-    let index = opt(args, "--node-index").unwrap_or_else(|| format!("sparse_file_array,{}", idx.display()));
+    let index = match opt(args, "--node-index") {
+        Some(i) => i,
+        None => {
+            let mem = pipeline::agent::cond::resources(work, None, None, None).mem_free();
+            let disk = pipeline::agent::cond::free_bytes(work).unwrap_or(0);
+            let gb = |b: u64| b as f64 / f64::from(1u32 << 30);
+            if mem.is_some_and(|m| sw::index_in_memory(set_len, m)) {
+                "sparse_mem_array".to_string()
+            } else if disk >= sw::index_bytes(set_len) + sw::DISK_SPARE {
+                eprintln!("smallwater: {:.1} GB of memory free, short of the {:.1} GB osmium's index and the step's own need: the index goes on disk", gb(mem.unwrap_or(0)), gb(sw::mem_bytes(set_len)));
+                format!("sparse_file_array,{}", idx.display())
+            } else {
+                bail!("osmium's index of the water set's nodes needs ~{:.0} GB, with the step's own {:.0} GB in memory ({:.1} GB free), or {:.0} GB of disk past {:.0} GB ({:.1} GB free)", gb(sw::index_bytes(set_len)), gb(sw::mem_bytes(set_len)), gb(mem.unwrap_or(0)), gb(sw::index_bytes(set_len)), gb(sw::DISK_SPARE), gb(disk));
+            }
+        }
+    };
     let mut child = pipeline::osmpass::osmium()
-        .args(["export", "-f", "geojsonseq", "--geometry-types=linestring,polygon", "--overwrite", "-o", "-"])
+        .args(["export", "-f", "geojsonseq", "--geometry-types=polygon", "--overwrite", "-o", "-"])
         .arg("-c")
         .arg(&cfg)
         .arg(format!("--index-type={index}"))
@@ -3079,7 +3110,7 @@ fn smallwater_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
         .stdout(std::process::Stdio::piped())
         .spawn()
         .context("run osmium export")?;
-    // How far: the export's bytes, against about 3.5 times the set's (measured on Maine's piece).
+    // How far: the export's bytes, against about `EXPORT_PER_SET` times the set's.
     struct Counting<R>(R, std::sync::Arc<std::sync::atomic::AtomicU64>);
     impl<R: Read> Read for Counting<R> {
         fn read(&mut self, b: &mut [u8]) -> std::io::Result<usize> {
@@ -3089,7 +3120,7 @@ fn smallwater_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
         }
     }
     let got = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let expect_mb = (std::fs::metadata(&set)?.len() * 7 / 2) >> 20;
+    let expect_mb = ((set_len as f64 * sw::EXPORT_PER_SET) as u64) >> 20;
     let stdout = child.stdout.take().context("osmium's output")?;
     let read = sw::read_export(std::io::BufReader::with_capacity(4 << 20, Counting(stdout, got.clone())), &|_| {
         let mb = got.load(std::sync::atomic::Ordering::Relaxed) >> 20;
@@ -3097,18 +3128,32 @@ fn smallwater_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     });
     let st = child.wait().context("osmium export")?;
     std::fs::remove_file(&idx).ok();
-    let (mut feats, counts) = read?;
+    let (mut feats, mut counts) = read?;
     anyhow::ensure!(st.success(), "osmium export of {} failed: {st}", set.display());
-    eprintln!("smallwater: {}", serde_json::to_string(&counts)?);
+    eprintln!("smallwater: {} MB of shapes from a set of {} MB ({index})", got.load(std::sync::atomic::Ordering::Relaxed) >> 20, set_len >> 20);
+    if opt(args, "--set").is_none() {
+        std::fs::remove_file(&set).ok();
+    }
     parts.start(2);
-    sw::rule_absent(&mut feats);
+    // The sea's islands: the holes of the water polygons the basemap's sea is drawn from.
+    let zip = opt(args, "--water-polygons").map_or_else(|| out.root().join(sw::WATER_POLYGONS), PathBuf::from);
+    let mut unzip = std::process::Command::new("/usr/bin/unzip").arg("-p").arg(&zip).arg(sw::WATER_POLYGONS_SHP).stdout(std::process::Stdio::piped()).spawn().context("run unzip")?;
+    let shp = unzip.stdout.take().context("unzip's output")?;
+    let sea = sw::read_water_polygons(std::io::BufReader::with_capacity(4 << 20, shp));
+    let st = unzip.wait().context("unzip")?;
+    let (sea, polygons) = sea.with_context(|| format!("read {}", zip.display()))?;
+    anyhow::ensure!(st.success(), "unzip of {} failed: {st}", zip.display());
+    (counts.sea_islands, counts.water_polygons) = (sea.len() as u64, polygons);
+    feats.extend(sea);
+    eprintln!("smallwater: {}", serde_json::to_string(&counts)?);
+    parts.start(3);
     let basemap = match opt(args, "--basemap") {
         Some(f) => PathBuf::from(f),
         None => out.path(out.get(&format!("layers/basemap/world-{date}")).context("the pass has no basemap")?),
     };
     let pm = store::pmtiles::PmTiles::open(Box::new(store::range::PlainFile::open(&basemap).with_context(|| format!("open {}", basemap.display()))?))?;
     sw::ne_absent(&mut feats, &sw::Basemap(&pm))?;
-    parts.start(3);
+    parts.start(4);
     let tiles = work.join("smallwater.tiles");
     let mut w = roadcore::archive::ArchiveWriter::create(&tiles, "{}")?;
     // Per zoom: tiles, their bytes (gzip'd), the largest.
@@ -3127,7 +3172,7 @@ fn smallwater_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
     let (n, bytes) = by_zoom.borrow().iter().fold((0, 0), |(n, b), s| (n + s.0, b + s.1));
     eprintln!("smallwater: {} features, {n} tiles, {:.1} MB", feats.len(), bytes as f64 / 1e6);
     drop(feats);
-    parts.start(4);
+    parts.start(5);
     let arc = roadcore::archive::Archive::open(&tiles)?;
     let lo = layers::split_archive(out, &arc, sw::LAYER, "mvt", true, sw::MAXZ)?;
     eprintln!("smallwater: root {:?}, {} lo, {} hi packs", lo.root.is_some(), lo.lo.len(), lo.hi.len());
@@ -3139,7 +3184,6 @@ fn smallwater_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()>
         out.remove(&k);
     }
     out.save()?;
-    std::fs::remove_dir_all(&work).ok();
     Ok(())
 }
 
