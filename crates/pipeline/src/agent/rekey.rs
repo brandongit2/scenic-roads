@@ -45,6 +45,13 @@
 //! other bytes: not pinned, the z3 tile's record goes and its pieces are made again. Every z3
 //! record goes: a stale one is built again as pieces either way, and one of "none" (the coverage
 //! gone from it) has nothing left to build.
+//!
+//! A z3 record merged after the switch (a lease granted before it, handed off since; or an older
+//! app's, rolled back to and forward again) comes with its whole run's packs, written over those of
+//! the z3 tile's pieces and assembly made since. Current and the program's, it's re-keyed as above,
+//! but for a piece recorded since under another key, or with a mid and no record: its mid isn't of
+//! this coverage, so its record goes and it's made again. Otherwise it goes with the records of the
+//! z3 tile's pieces and assembly, which are all made again.
 
 use super::build::{self, Keys};
 use super::tiles::{TerrainTiles, Tile};
@@ -138,7 +145,9 @@ pub struct Rekeyed {
     /// Tree cover's z3 tiles current under the old scheme, recorded as their pieces and assembly.
     pub trees_moved: Vec<String>,
     /// Those whose records went, each with why: their packs trees.py's, stale under the old scheme
-    /// (each built again as pieces), or "none" (nothing left to build).
+    /// (each built again as pieces), or "none" (nothing left to build); with them the records of
+    /// their pieces and assembly made since the switch (a late record's whole run wrote over their
+    /// packs).
     pub trees_dropped: Vec<(String, String)>,
     /// Those whose packs' times can't be read now: kept as they are, for the next pass.
     pub trees_unknown: Vec<(String, String)>,
@@ -289,8 +298,11 @@ pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, S
 /// Re-keys tree cover's records of a z3 tile's whole run ("3/x/y", `v1::trees_targets`) as its
 /// pieces and assembly (crate::treepacks::targets), into `out`: one current under the old scheme
 /// whose packs the trees program made is recorded as its pieces (each the coverage meets) and its
-/// assembly, under their keys now; every other z3 record goes (stale, trees.py's packs, or "none"),
-/// but one whose packs' times can't be read now, kept for the next pass.
+/// assembly, under their keys now (a piece recorded since under another key, or with a mid and no
+/// record, made again: its mid isn't of this coverage); every other z3 record goes (stale,
+/// trees.py's packs, or "none"), and with it the records of the z3 tile's pieces and assembly (its
+/// whole run, merged after the switch, wrote over their packs); one whose packs' times can't be
+/// read now is kept for the next pass.
 fn rekey_trees(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, times: &dyn Times, out: &mut Rekeyed) {
     let z3: Vec<(String, String)> = keys.trees.iter().filter(|(t, _)| Unit::parse(t).is_some_and(|u| u.z == 3)).map(|(t, k)| (t.clone(), k.clone())).collect();
     if z3.is_empty() {
@@ -298,6 +310,7 @@ fn rekey_trees(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, ti
     }
     let old: BTreeMap<String, String> = v1::trees_targets(cov, m).into_iter().collect();
     let tt = crate::treepacks::targets(cov, m);
+    let has_mid = |t: &str| Unit::parse(t).is_some_and(|p| m.contains_key(&crate::treepacks::mid_logical(p.x, p.y)));
     for (q, k) in z3 {
         let Some(u) = Unit::parse(&q) else { continue };
         let why = match old.get(&q) {
@@ -310,7 +323,15 @@ fn rekey_trees(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, ti
                 Some(false) => "its packs are trees.py's (made before the trees program, 2026-10-06 07:11 UTC): the same pixels in other bytes than the program's pieces make; made again as pieces",
                 Some(true) => {
                     for (t, kt, _) in tt.pieces_of(&q) {
-                        keys.trees.insert(t.clone(), kt.clone());
+                        match keys.trees.get(t) {
+                            Some(r) if r == kt => {}
+                            None if !has_mid(t) => {
+                                keys.trees.insert(t.clone(), kt.clone());
+                            }
+                            _ => {
+                                keys.trees.remove(t);
+                            }
+                        }
                     }
                     if let Some((_, kl, _)) = tt.lo.iter().find(|l| l.0 == q) {
                         keys.trees_lo.insert(q.clone(), kl.clone());
@@ -323,7 +344,16 @@ fn rekey_trees(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, ti
             _ => "stale under the old scheme: made again as pieces either way",
         };
         keys.trees.remove(&q);
-        out.trees_dropped.push((q, why.into()));
+        let since: Vec<String> = keys.trees.keys().filter(|t| crate::treepacks::area_of(t).as_deref() == Some(q.as_str())).cloned().collect();
+        for t in &since {
+            keys.trees.remove(t);
+        }
+        let lo = keys.trees_lo.remove(&q).is_some();
+        let why = match (since.len(), lo) {
+            (0, false) => why.to_string(),
+            (n, lo) => format!("{why}; with the records of its {n} pieces{} made since the switch, its whole run written over their packs: made again", if lo { " and its assembly" } else { "" }),
+        };
+        out.trees_dropped.push((q, why));
     }
 }
 
@@ -370,7 +400,7 @@ fn unpinned(u: Unit, read: &[Tile], m: &BTreeMap<String, String>, pieces: &BTree
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::build::tests::{e7box, heritage_chain_done, heritage_done, tiles_for, unit_inputs};
+    use crate::agent::build::tests::{did, e7box, heritage_chain_done, heritage_done, tiles_for, unit_inputs};
     use crate::agent::build::{Rounds, Work};
     use crate::agent::recipes::Recipe;
     use crate::reach::{LongWay, Reach};
@@ -634,6 +664,46 @@ mod tests {
         let mut gone = only(&none);
         let r = rekey(&mut gone, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
         assert!(r.trees_dropped[0].1.contains("nothing left to build") && gone.trees.is_empty(), "{r:?}");
+    }
+
+    #[test]
+    fn a_late_whole_runs_record_goes_with_those_of_the_pieces_and_assembly_made_since() {
+        let (c, reach, mut m, mut done) = iceland(&|_| {});
+        let tiles = tiles_for(&m);
+        // Since the switch: 3/3/2's pieces made (their mids in the manifest), then its assembly; and
+        // a piece of another z3 tile.
+        let pieces: Vec<(String, String)> = crate::treepacks::targets(&c, &m).pieces.iter().map(|p| (p.0.clone(), p.1.clone())).collect();
+        did(&mut m, &mut done, &Work { step: "trees".into(), targets: pieces });
+        let tt = crate::treepacks::targets(&c, &m);
+        did(&mut m, &mut done, &Work { step: "trees-lo".into(), targets: tt.lo.iter().map(|l| (l.0.clone(), l.1.clone())).collect() });
+        done.trees.insert("6/33/22".into(), "1111111111111111".into());
+        let made = done.clone();
+        assert_eq!(build::tree_work(&tt, &m, &done), build::TreeWork::default());
+        let pieces_of = |k: &Keys| build::tree_work(&tt, &m, k).pieces.into_iter().map(|p| p.0).collect::<Vec<_>>();
+        // A late hand-off of 3/3/2's whole run (its lease granted before the switch), for a coverage
+        // there since changed: stale under the old scheme. Its record goes, and with it those of the
+        // pieces and assembly made since (it wrote over their packs), which are made again; the other
+        // z3 tile's piece stays.
+        done.record("trees", &[("3/3/2".to_string(), "0000000000000000".to_string())]);
+        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        assert!(r.trees_dropped.len() == 1 && r.trees_dropped[0].1.contains("its 3 pieces and its assembly"), "{r:?}");
+        assert_eq!((done.trees.keys().map(String::as_str).collect::<Vec<_>>(), done.trees_lo.len()), (vec!["6/33/22"], 0));
+        assert_eq!((pieces_of(&done), build::tree_work(&tt, &m, &done).stale_lo.len()), (vec!["6/28/16".to_string(), "6/28/17".into(), "6/29/16".into()], 1));
+        // Again: nothing to do.
+        let before = done.clone();
+        assert!(!rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).changed() && done == before);
+        // One current under the old scheme, the program's: re-keyed over what was made since, but a
+        // piece recorded since under another key (the coverage there otherwise then), or with a mid
+        // and no record, is made again: its mid isn't of this coverage.
+        let mut late = made.clone();
+        late.trees.insert("6/28/17".into(), "2222222222222222".into());
+        late.trees.remove("6/29/16");
+        late.record("trees", &v1::trees_targets(&c, &m));
+        let r = rekey(&mut late, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        assert_eq!(r.trees_moved, ["3/3/2"]);
+        assert_eq!(late.trees.keys().collect::<Vec<_>>(), ["6/28/16", "6/33/22"]);
+        assert_eq!((late.trees.get("6/28/16"), late.trees_lo.get("3/3/2")), (made.trees.get("6/28/16"), made.trees_lo.get("3/3/2")));
+        assert_eq!(pieces_of(&late), ["6/28/17", "6/29/16"]);
     }
 
     #[test]

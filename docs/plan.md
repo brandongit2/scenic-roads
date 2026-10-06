@@ -1266,7 +1266,12 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     07:11 UTC, by their files' times: `rekey::TREES_PROGRAM_SINCE`) are the same pixels in other
     bytes, so nothing pins the pieces' bytes: the z3 tile's record goes, and its pieces and
     assembly are made again. Every z3 record goes: a stale one is made again as pieces either way,
-    and one of "none" has nothing left to build. `scenic-build p5-check trees` says what it would
+    and one of "none" has nothing left to build. A z3 record merged after the switch (a lease
+    granted before it, or an older app's, rolled back to: README) comes with its whole run's packs,
+    written over those of the z3 tile's pieces and assembly made since. Current and the program's,
+    it's re-keyed as above, but for a piece recorded since under another key, or with a mid and no
+    record (its mid isn't of this coverage: made again); otherwise it goes with the records of the
+    z3 tile's pieces and assembly, all made again. `scenic-build p5-check trees` says what it would
     do, reading only: on 2026-10-06 all 18 z3 tiles were current and trees.py's, so none is
     re-keyed and the switch makes the 380 pieces and 18 assemblies again (2.3 h by trees.py's last
     runs, less with the program: a z3 tile's run of it took 5 to 24 s on the build Mac for 3/7/2,
