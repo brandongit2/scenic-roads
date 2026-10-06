@@ -229,6 +229,9 @@ pub async fn base_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>
     if archives.is_empty() {
         return StatusCode::NO_CONTENT.into_response();
     }
+    for c in &archives {
+        s.data.used(c);
+    }
     let nv = s.names.version_for_tile(z, x, y, 1.0);
     let h = base_hash(&archives, z, x, y);
     let etag = format!("\"{h:016x}-{nv:x}\"");
@@ -297,6 +300,15 @@ impl Basemap {
         }
         *self.open.lock().unwrap() = Some((key, out.clone()));
         Ok(out)
+    }
+
+    /// Lets go of the archives opened when one of them is among `names` (content names the mirror
+    /// has just evicted): its map would hold the disk's room.
+    pub fn forget(&self, names: &[String]) {
+        let mut open = self.open.lock().unwrap();
+        if open.as_ref().is_some_and(|((contents, _), _)| contents.iter().any(|c| names.contains(c))) {
+            *open = None;
+        }
     }
 
     /// The tile from each of the archives `contents` that has it, as stored.

@@ -222,6 +222,14 @@ impl AppState {
         serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked})
     }
 
+    /// Lets go of everything mapped from files the mirror has just evicted (`names`, content
+    /// names), so the disk gets their room back.
+    fn forget_evicted(&self, names: &[String]) {
+        self.data.forget_evicted(names);
+        self.basemap.forget(names);
+        self.areas.forget(names);
+    }
+
     /// Whether the details, rail frequencies and roads' English names of this catalog are loaded.
     fn loaded(&self) -> bool {
         let g = self.generation();
@@ -322,6 +330,15 @@ async fn main() -> Result<()> {
         tokens: Mutex::new(None),
     });
 
+    // What the mirror evicts to make room is let go of at once (its maps would hold the room).
+    if let Some(m) = &state.data.mirror {
+        let s = Arc::downgrade(&state);
+        m.on_evict(move |names| {
+            if let Some(s) = s.upgrade() {
+                s.forget_evicted(names);
+            }
+        });
+    }
     tokio::spawn(warm(state.clone()));
     regions::spawn_flusher(state.clone());
     // Other devices (remote.rs): the key, and the address to open there, kept current (tailscale

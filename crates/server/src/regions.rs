@@ -161,6 +161,15 @@ impl Areas {
         *g = opened.clone();
         Ok(opened)
     }
+
+    /// Lets go of the outlines when the mirror has just evicted their file (`names`): its map would
+    /// hold the disk's room. Opened again, from the NAS, when next asked for.
+    pub fn forget(&self, names: &[String]) {
+        let mut g = self.cur.lock().unwrap();
+        if g.as_ref().is_some_and(|cur| names.contains(&cur.content)) {
+            *g = None;
+        }
+    }
 }
 
 fn err(code: StatusCode, msg: impl std::fmt::Display) -> Response {

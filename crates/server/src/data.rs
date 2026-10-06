@@ -248,6 +248,15 @@ impl Data {
         self.catalog().files.get(logical).map(|f| f.file.clone())
     }
 
+    /// Notes a use of a file the map reads, here or on the NAS: the mirror copies the most
+    /// recently used first, and lets the least recently used go first when it needs room. (Not
+    /// for reads the server makes on its own: indexes cached for offline, the place search's.)
+    pub fn used(&self, content: &str) {
+        if let Some(m) = &self.mirror {
+            m.touch(content);
+        }
+    }
+
     /// A content-named file: mapped from the mirror, else on the NAS.
     fn src(&self, content: &str) -> Result<Src> {
         if let Some(m) = self.maps.lock().unwrap().get(content) {
@@ -255,11 +264,9 @@ impl Data {
         }
         if let Some(p) = self.mirror.as_ref().and_then(|m| m.local(content)) {
             let f = std::fs::File::open(&p).with_context(|| format!("open {}", p.display()))?;
-            // SAFETY: mirrored files are content-named and never modified; eviction unlinks them.
+            // SAFETY: mirrored files are content-named and never modified; eviction unlinks them
+            // (and `forget_evicted` drops the maps).
             let m = Arc::new(unsafe { Mmap::map(&f)? });
-            if let Some(mi) = &self.mirror {
-                mi.touch(content);
-            }
             self.maps.lock().unwrap().put(content.to_string(), m.clone());
             return Ok(Src::Local(m));
         }
@@ -277,6 +284,7 @@ impl Data {
     /// A sectioned file by logical name.
     pub fn sect(&self, logical: &str) -> Result<Option<Arc<SectView>>> {
         let Some(content) = self.content(logical) else { return Ok(None) };
+        self.used(&content);
         if let Some(s) = self.sects.lock().unwrap().get(&content) {
             return Ok(Some(s));
         }
@@ -292,6 +300,8 @@ impl Data {
         let cat = self.catalog();
         let (Some(b), Some(r)) = (cat.base.get(unit), cat.roads.get(unit)) else { return Ok(None) };
         let (Some(bc), Some(rc)) = (self.content(b), self.content(r)) else { return Ok(None) };
+        self.used(&bc);
+        self.used(&rc);
         let key = format!("{bc}|{rc}");
         if let Some(v) = self.bases.lock().unwrap().get(&key) {
             return Ok(Some(v));
@@ -307,6 +317,7 @@ impl Data {
         let cat = self.catalog();
         let Some(l) = cat.hidata.get(tile) else { return Ok(None) };
         let Some(content) = self.content(l) else { return Ok(None) };
+        self.used(&content);
         if let Some(v) = self.his.lock().unwrap().get(&content) {
             return Ok(Some(v));
         }
@@ -320,6 +331,7 @@ impl Data {
         let cat = self.catalog();
         let Some(l) = cat.markdata.get(tile) else { return Ok(None) };
         let Some(content) = self.content(l) else { return Ok(None) };
+        self.used(&content);
         if let Some(v) = self.marks.lock().unwrap().get(&content) {
             return Ok(Some(v));
         }
@@ -333,6 +345,7 @@ impl Data {
         let cat = self.catalog();
         let Some(l) = cat.ovdata.get(tile) else { return Ok(None) };
         let Some(content) = self.content(l) else { return Ok(None) };
+        self.used(&content);
         if let Some(v) = self.ovs.lock().unwrap().get(&content) {
             return Ok(Some(v));
         }
@@ -344,6 +357,7 @@ impl Data {
     /// The road → units index.
     pub fn roadunits(&self) -> Result<Option<Arc<RoadUnits>>> {
         let Some(content) = self.content("global/roadunits") else { return Ok(None) };
+        self.used(&content);
         if let Some((c, r)) = self.roadunits.lock().unwrap().as_ref() {
             if *c == content {
                 return Ok(Some(r.clone()));
@@ -358,6 +372,7 @@ impl Data {
     /// A whole small file by logical name (global/…), cached.
     pub fn global(&self, logical: &str) -> Result<Option<Arc<Vec<u8>>>> {
         let Some(content) = self.content(logical) else { return Ok(None) };
+        self.used(&content);
         if let Some(b) = self.globals.lock().unwrap().get(&content) {
             return Ok(Some(b));
         }
@@ -405,6 +420,7 @@ impl Data {
     pub fn tile(&self, layer: &str, z: u8, x: u32, y: u32) -> Result<Option<(Blob, u64)>> {
         let Some(logical) = self.pack_of(layer, z, x, y) else { return Ok(None) };
         let Some(content) = self.content(&logical) else { return Ok(None) };
+        self.used(&content);
         let idx = self.index(&content)?;
         let Some(e) = idx.find(z, x, y) else { return Ok(None) };
         let blob = match self.src(&content)? {
@@ -419,6 +435,8 @@ impl Data {
     pub fn tile_hash(&self, layer: &str, z: u8, x: u32, y: u32) -> Result<Option<u64>> {
         let Some(logical) = self.pack_of(layer, z, x, y) else { return Ok(None) };
         let Some(content) = self.content(&logical) else { return Ok(None) };
+        // (A 304 is a use too: the area is in view.)
+        self.used(&content);
         Ok(self.index(&content)?.find(z, x, y).map(|e| e.hash))
     }
 
@@ -574,6 +592,25 @@ impl Data {
         self.mirror_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Drops what's mapped of files the mirror has just evicted (`names`, content names), and the
+    /// views over them, so the disk gets their room back; whatever needs them again reads them
+    /// from the NAS.
+    pub fn forget_evicted(&self, names: &[String]) {
+        let gone: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
+        self.maps.lock().unwrap().retain(|c, _| !gone.contains(c));
+        self.sects.lock().unwrap().retain(|c, _| !gone.contains(c));
+        self.bases.lock().unwrap().retain(|k, _| !k.split('|').any(|c| gone.contains(c)));
+        self.his.lock().unwrap().retain(|c, _| !gone.contains(c));
+        self.marks.lock().unwrap().retain(|c, _| !gone.contains(c));
+        self.ovs.lock().unwrap().retain(|c, _| !gone.contains(c));
+        let mut ru = self.roadunits.lock().unwrap();
+        if ru.as_ref().is_some_and(|(c, _)| gone.contains(c.as_str())) {
+            *ru = None;
+        }
+        drop(ru);
+        self.mirror_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Start the background work: the NAS mount, new catalogs, the mirror.
     pub fn spawn_background(self: &Arc<Self>) {
         let d = self.clone();
@@ -600,25 +637,40 @@ impl Data {
             std::thread::Builder::new()
                 .name("mirror".into())
                 .spawn(move || loop {
-                    if let (Some(root), Some(pool)) = (d.nas_root(), d.pool()) {
-                        if pool.is_online() {
-                            let cat = d.catalog();
-                            // Paused while the build Mac runs a job: its uploads have the NAS first.
-                            let pause = || d.agent_busy();
-                            match m.sync(&cat, &root, &pool, &pause) {
-                                Ok(s) => {
-                                    if s.copied > 0 {
-                                        eprintln!("mirror: {s:?}");
-                                        d.forget_remote();
+                    let cat = d.catalog();
+                    let keep = std::collections::HashSet::new();
+                    // (Nothing known of the map yet: no file is the catalog's, so none may go.)
+                    if cat.n > 0 {
+                        match (d.nas_root(), d.pool()) {
+                            (Some(root), Some(pool)) if pool.is_online() => {
+                                // Paused while the build Mac runs a job: its uploads have the NAS first.
+                                let pause = || d.agent_busy();
+                                match m.sync(&cat, &keep, &root, &pool, &pause) {
+                                    Ok(s) => {
+                                        if s.copied > 0 || s.evicted > 0 || s.short > 0 {
+                                            eprintln!("mirror: {s:?}");
+                                        }
+                                        if s.copied > 0 {
+                                            d.forget_remote();
+                                        }
                                     }
+                                    Err(e) => eprintln!("mirror: {e:#}"),
                                 }
+                                // Every pack's index on this Mac too, for offline starts.
+                                if !d.agent_busy() {
+                                    d.keep_indexes(&cat);
+                                }
+                            }
+                            // Away from home: the reserve all the same.
+                            _ => match m.keep_reserve(&cat, &keep) {
+                                Ok(s) if s.evicted > 0 || s.short > 0 => eprintln!("mirror (away): {s:?}"),
+                                Ok(_) => {}
                                 Err(e) => eprintln!("mirror: {e:#}"),
-                            }
-                            // Every pack's index on this Mac too, for offline starts.
-                            if !d.agent_busy() {
-                                d.keep_indexes(&cat);
-                            }
+                            },
                         }
+                    }
+                    if let Err(e) = m.flush() {
+                        eprintln!("mirror: {e:#}");
                     }
                     std::thread::sleep(Duration::from_secs(60));
                 })
