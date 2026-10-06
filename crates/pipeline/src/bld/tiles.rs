@@ -222,7 +222,7 @@ pub fn unclip(r: &[[i64; 2]]) -> Vec<[i64; 2]> {
             out.push(p);
             continue;
         }
-        if at.len() % 2 == 0 {
+        if at.len().is_multiple_of(2) {
             // One more, midway in the longest gap (between lines: no line crossed).
             let mut stops = vec![s];
             stops.extend(&at);

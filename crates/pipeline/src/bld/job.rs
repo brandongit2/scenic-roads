@@ -493,8 +493,11 @@ mod tests {
         assert_eq!(again, got);
     }
 
+    /// A tile's features' (h, s, o).
+    type Props = Vec<(u64, u64, u64)>;
+
     /// A tile's features: (h, s, o) each.
-    fn props(gz: &[u8]) -> Vec<(u64, u64, u64)> {
+    fn props(gz: &[u8]) -> Props {
         let t = names::mvt::Tile::decode(&names::mvt::gunzip_if_gzip(gz).unwrap()).unwrap();
         let l = &t.layers[0];
         l.features
@@ -525,7 +528,7 @@ mod tests {
         let mut files: Vec<Option<WorkFile>> = (0..9).map(|_| None).collect();
         files[4] = Some(work(d.path(), t, &bs));
         let c = cov("place:2.5,48.86,40", "FR");
-        let mut got: BTreeMap<(u8, u32, u32), Vec<(u64, u64, u64)>> = BTreeMap::new();
+        let mut got: BTreeMap<(u8, u32, u32), Props> = BTreeMap::new();
         let sum = tiles_of(&files, &c, t, &mut |z, x, y, gz, _| {
             got.insert((z, x, y), props(gz));
             Ok(())
