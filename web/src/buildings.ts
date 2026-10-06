@@ -41,6 +41,8 @@ export const HOVER = 'buildings-hover';
 export const PICK = 'buildings-pick';
 /** The skyline (the z12 tiles' threshold), dm. */
 export const SKYLINE_DM = 400;
+/** The tallest a building can be (the pipeline's bound on heights taken), dm. */
+const TALLEST_DM = 7000;
 
 /** Where a height comes from (`s`, docs/buildings3d.md §2.3): the hover's words and the source
  * colouring's colours. */
@@ -239,14 +241,48 @@ function firstCrossing(rings: Ring[], a: [number, number], b: [number, number]):
   return best;
 }
 
-/** The boxes along a screen segment a–b, each about `step` px of it, `pad` px around. */
-function boxesAlong(a: { x: number; y: number }, b: { x: number; y: number }, step: number, pad: number): [[number, number], [number, number]][] {
-  const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / step));
-  const out: [[number, number], [number, number]][] = [];
-  for (let j = 0; j < n; j++) {
-    const x0 = a.x + ((b.x - a.x) * j) / n, y0 = a.y + ((b.y - a.y) * j) / n;
-    const x1 = a.x + ((b.x - a.x) * (j + 1)) / n, y1 = a.y + ((b.y - a.y) * (j + 1)) / n;
-    out.push([[Math.min(x0, x1) - pad, Math.min(y0, y1) - pad], [Math.max(x0, x1) + pad, Math.max(y0, y1) + pad]]);
+/** A query box on the screen and the least height (dm) a footprint in it needs to reach the ray. */
+type TrackBox = { box: [[number, number], [number, number]]; minDm: number };
+
+/** The ray's ground track on the screen in boxes, each with the height a building in it must reach
+ * to meet the ray there: points every 1/48 of the height from the ground `g0` to `top` (the ray at
+ * that height, on the ground below it), cut where they leave the screen, grouped into boxes ~24 px
+ * across and at most 160 px long (a query's own cost, its corners found on the terrain, is most of
+ * it), 3 px around. A box's height is the ray's at its near end, less the ground there and some. */
+function trackBoxes(map: MLMap, p: { x: number; y: number }, ray: Ray, g0: number, top: number, k: number, slack: number): TrackBox[] {
+  const W = map.getCanvas().clientWidth, H = map.getCanvas().clientHeight;
+  const pts: { x: number; y: number; a: number; g: number }[] = [{ x: p.x, y: p.y, a: g0, g: g0 }];
+  for (let i = 1; i <= 48; i++) {
+    const a = g0 + ((top - g0) * i) / 48;
+    const ll = ray.at(p.x, p.y, a);
+    if (!ll) break;
+    const s = map.project([ll.lng, ll.lat]);
+    if (!Number.isFinite(s.x) || !Number.isFinite(s.y)) break;
+    const last = pts[pts.length - 1];
+    if (s.x < 0 || s.x > W || s.y < 0 || s.y > H) {
+      // (Off the screen: the track to the screen's edge.)
+      const c = clipTo(last, s, W, H);
+      if (Math.hypot(c.x - last.x, c.y - last.y) > 0.5) pts.push({ ...c, a, g: map.queryTerrainElevation(ll) ?? last.g });
+      break;
+    }
+    pts.push({ x: s.x, y: s.y, a, g: map.queryTerrainElevation(ll) ?? last.g });
+  }
+  const out: TrackBox[] = [];
+  let j = 0;
+  while (j < pts.length - 1) {
+    let m = j + 1;
+    const span = (to: number) => {
+      const xs = pts.slice(j, to + 1).map((q) => q.x), ys = pts.slice(j, to + 1).map((q) => q.y);
+      const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
+      return Math.min(w, h) <= 24 && Math.max(w, h) <= 160;
+    };
+    while (m + 1 < pts.length && span(m + 1)) m++;
+    const seg = pts.slice(j, m + 1);
+    const xs = seg.map((q) => q.x), ys = seg.map((q) => q.y);
+    const g = Math.max(...seg.map((q) => q.g));
+    const minDm = Math.floor(((pts[j].a - g - slack) / k) * 10);
+    out.push({ box: [[Math.min(...xs) - 3, Math.min(...ys) - 3], [Math.max(...xs) + 3, Math.max(...ys) + 3]], minDm });
+    j = m;
   }
   return out;
 }
@@ -263,13 +299,21 @@ function clipTo(p: { x: number; y: number }, q: { x: number; y: number }, w: num
   return { x: p.x + dx * t, y: p.y + dy * t };
 }
 
+/** A feature's key for telling queries' answers apart: its tile and its place in the tile's data
+ * (MapLibre's fields; else its geometry). */
+function featureKey(f: MapGeoJSONFeature): string {
+  const g = f as unknown as { _x?: number; _y?: number; _z?: number; _vectorTileFeature?: { _geometry?: number } };
+  const at = g._vectorTileFeature?._geometry;
+  return at !== undefined && g._z !== undefined ? `${g._z}/${g._x}/${g._y}/${at}` : JSON.stringify(f.geometry);
+}
+
 /** The building the cursor's view ray meets first, if any (in the flat mode, the footprint under
  * it). Candidates: the footprints under the ray's ground track, from the point it meets the ground
  * back toward the camera as far as the tallest building could reach: on the screen, from the
  * cursor toward the point under the ray at that height (toward the camera's nadir, below the
- * screen's middle), in short boxes along it; each tested against the ray between its roof and its
- * base, as MapLibre draws it (on the terrain at its centroid, a base of 0 sunk 10 m). The one met
- * highest wins. */
+ * screen's middle), in boxes along it, each taking only footprints tall enough to reach the ray
+ * there (`trackBoxes`); each tested against the ray between its roof and its base, as MapLibre
+ * draws it (on the terrain at its centroid, a base of 0 sunk 10 m). The one met highest wins. */
 export function buildingAt(map: MLMap, p: { x: number; y: number }, b: BuildingState, exaggeration: number, ray: Ray): { f: MapGeoJSONFeature; alt: number } | null {
   if (!b.on || !map.getLayer(PICK)) return null;
   if (map.getLayoutProperty(FLAT, 'visibility') === 'visible') {
@@ -283,20 +327,19 @@ export function buildingAt(map: MLMap, p: { x: number; y: number }, b: BuildingS
   const ground = ray.at(p.x, p.y, cap(0));
   if (!ground) return null;
   const g0 = map.queryTerrainElevation(ground) ?? 0;
-  // Where the ray is at the tallest top (700 m), on the ground: the track's far end on the screen
-  // (not projectable: straight down the screen, toward the nadir's side).
-  const far = ray.at(p.x, p.y, cap(g0 + 700 * k));
-  const W = map.getCanvas().clientWidth, H = map.getCanvas().clientHeight;
-  const fp = far ? map.project([far.lng, far.lat]) : null;
-  const q = fp && Number.isFinite(fp.x) && Number.isFinite(fp.y) ? fp : { x: p.x, y: H };
-  const cands = boxesAlong(p, clipTo(p, q, W, H), 48, 3).flatMap((box) => map.queryRenderedFeatures(box, { layers: [PICK] }));
+  // The track from the cursor to where the ray is at the tallest top (700 m), each box's footprints
+  // those tall enough to reach the ray over it (the terrain and its slopes allowed for).
+  const slack = 20 * Math.max(1, exaggeration);
+  const cands = trackBoxes(map, p, ray, g0, cap(g0 + (TALLEST_DM / 10) * k), k, slack).flatMap(({ box, minDm }) =>
+    minDm > TALLEST_DM ? [] : map.queryRenderedFeatures(box, { layers: [PICK], ...(minDm > 0 ? { filter: ['>=', ['get', 'h'], minDm] as FilterSpecification } : {}) }),
+  );
   let best: MapGeoJSONFeature | null = null, bestAlt = -Infinity;
   const seen = new Set<string>();
   for (const f of cands) {
-    if (f.geometry.type !== 'Polygon' && f.geometry.type !== 'MultiPolygon') continue;
-    const key = JSON.stringify(f.geometry.coordinates).slice(0, 200);
+    const key = featureKey(f);
     if (seen.has(key)) continue;
     seen.add(key);
+    if (f.geometry.type !== 'Polygon' && f.geometry.type !== 'MultiPolygon') continue;
     const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
     const pr = f.properties as Record<string, number>;
     const top0 = ((pr.h ?? 0) / 10) * k, base0 = ((pr.m ?? 0) / 10) * k;

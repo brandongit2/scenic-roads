@@ -617,17 +617,28 @@ source's fill-extrusion: the hovered building, 1 m larger and taller, amber).
 
 - Hover (B1), at most once a frame: the building the cursor's view ray meets first. MapLibre's
   query of extrusions ignores the terrain and finds nothing on the globe, so the app picks itself
-  (`buildingAt`): candidates are the footprints (`buildings-pick`) under the ray's ground track, a
-  thin box on the screen from the cursor down to where the ray is at the tallest top (700 m × the
-  scale, under the camera); each is tested against the ray between its roof and its base as
-  MapLibre draws it (on the terrain at its polygon's centroid, a base of 0 sunk 10 m), the ray
-  from camera3d (`rayAt`, globe or flat, the same as MapLibre's unprojection at the ground), and
-  the one met highest wins. Checked on Shinjuku's towers: the building picked covers the pixel (6
-  of 7 test points; the seventh at a footprint's edge). A road or rail line under the cursor gives
-  way when the ray to its point meets a building above it. The hovered building is drawn again in a
-  small GeoJSON layer, 1 m larger and taller, amber; a tower's other parts and nearer buildings hide
-  it where they're in front (B3: an outline drawn over the buildings). The bottom bar's slots as in
-  §1.
+  (`buildingAt`). The candidates are the footprints (`buildings-pick`, copies included) under the
+  ray's ground track, from where it meets the ground back toward the camera as far as the tallest
+  top (700 m × the scale, under the camera): on the screen, from the cursor toward the point under
+  the ray at that height (the camera's nadir, below the screen's middle), in boxes along it about
+  24 px across, each taking only the footprints tall enough to reach the ray over it (its height
+  there, less the ground and some for slopes: `trackBoxes`; a query's own cost, its corners found
+  on the terrain, is most of a box's). Each is tested against the ray between its roof and its base
+  as MapLibre draws it (on the terrain at its polygon's centroid, a base of 0 sunk 10 m), the ray
+  from camera3d (`rayAt`, globe or flat, the same as MapLibre's unprojection at the ground), and the
+  one met highest wins. Checked against the same ray test over every footprint in view, on 8 × 8
+  points a view: Tokyo at z13.9, 70° and Shinjuku at z14.5, 60° all 64 the same; Shinjuku at z16,
+  60° and Midtown at z15, 70° 62 (the other points: footprints the reference meets below the
+  terrain at the cursor, which hides them, or that its query of the whole screen misses near the
+  horizon); B1's first box, straight down the screen from the cursor, missed 3 of 12 at Shinjuku.
+  It costs (the M1, `buildingAt` alone) 0.8 ms in the median at Shinjuku, z16, 60° (p90 3.9 ms),
+  1.5 at Midtown, z15, 70° (9.7), 2.5 at Tokyo, z13.9, 70° (6.2, at most 13), the longer tracks over
+  tall towers the slowest; the hover's whole work a frame (the bottom bar, the highlight) 4.5–5.6
+  ms in the median: within a 60 Hz frame, a large share of a 120 Hz one while the cursor moves. A
+  road or rail line under the cursor gives way when the ray to its point meets a building above it
+  (a second call). The hovered building is drawn again in a small GeoJSON layer, 1 m larger and
+  taller, amber; a tower's other parts and nearer buildings hide it where they're in front (B3: an
+  outline drawn over the buildings). The bottom bar's slots as in §1.
 - Click: none in B1–B2. Later: **O** opens the OSM way where OSM gave the footprint (its id from the
   work file), served by `/api/building?at=` if wanted.
 - The In view summary may add the tallest building in view (from the loaded tiles): B3, optional.
