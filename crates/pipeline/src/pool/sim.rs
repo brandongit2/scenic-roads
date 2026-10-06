@@ -1965,6 +1965,18 @@ fn an_entry_never_whole_is_refused_after_an_hour() {
 }
 
 #[test]
+fn whole_entries_behind_many_not_whole_on_a_slow_share() {
+    // Seed 1003691 of the four-hour runs (1051658 alike): a share taking seconds an operation, its
+    // reads lagging minutes, entries cut short for good or erroring; the lead had some thirty
+    // entries its reads had found not whole, and time each step to read twenty. Read in the order
+    // of their leases, the whole ones of the latest leases weren't reached until those before them
+    // were refused, an hour on: it merged none for ten minutes, and the run ended with them lacking.
+    let cfg = Cfg { faults: 14_400, end: 15_900, cuts: true, op_s: (1, 4), lag: 524, truncs: true, fails: true, ..Cfg::pool() };
+    let r = run(1_003_691, cfg, false);
+    assert!(r.wrong.is_empty(), "{:?}", r.wrong.iter().take(3).collect::<Vec<_>>());
+}
+
+#[test]
 fn a_mac_gone_for_good_loses_none_of_its_entries() {
     // A member leaves for good partway: what it never told a lead of, or told a lead no longer
     // current, is found by the lead's listings. (Review L7: only by the next take-up's.)

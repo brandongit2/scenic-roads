@@ -359,6 +359,8 @@ struct Lead {
     /// failed last; and those it said wait long (`WAIT_SAID_S`).
     unreadable: BTreeMap<String, (u64, bool)>,
     said: BTreeSet<String>,
+    /// Where the next step's reads of those start: they're read in turn.
+    turn: usize,
     /// When it asked for the listing of every day it merged last (its take-up's, or a later one):
     /// None before its take-up's is merged.
     listed_at: Option<u64>,
@@ -736,8 +738,8 @@ impl Driver {
         }
     }
 
-    /// Re-asserts: makes the next term naming itself and takes it up from its own records; another's
-    /// made first, it steps down; the app rule refusing it, it stands down.
+    /// Re-asserts: makes the next term naming itself and takes it up from its own records;
+    /// another's made first, it steps down; the app rule refusing it, it stands down.
     fn reassert(&mut self, io: &dyn Io, out: &mut Out, how: &'static str) {
         let t = match Term::after(&self.cur, &self.me, how, io.now()) {
             Ok(t) => t,
@@ -862,7 +864,7 @@ impl Driver {
         out.fresh = true;
         out.events.push(Event::TookUp { term: t.term, how: t.how.clone(), handed });
         let horizon = r.horizon.clone();
-        self.lead = Some(Lead { term: t.clone(), records: r, hand: Handover::Leading, told: BTreeMap::new(), waiting: BTreeSet::new(), unreadable: BTreeMap::new(), said: BTreeSet::new(), listed_at: None, dirty: false, refused: Vec::new() });
+        self.lead = Some(Lead { term: t.clone(), records: r, hand: Handover::Leading, told: BTreeMap::new(), waiting: BTreeSet::new(), unreadable: BTreeMap::new(), said: BTreeSet::new(), turn: 0, listed_at: None, dirty: false, refused: Vec::new() });
         // A take-up lists the journal: every day not forgotten.
         self.due = Some((Some(horizon).filter(|h| !h.is_empty()), true));
         self.asked = None;
@@ -920,15 +922,23 @@ impl Driver {
             l.records.handed = Some(c);
             l.dirty = true;
         }
-        // (While the step's time for it lasts, the rest waiting for the next: the entries not read
-        // whole or failed on before first, a step's leftovers among them, then those, each the
-        // oldest lease first. Read first, entries that won't be whole, read again every step on a
-        // share under load, took all the time and left the others waiting.)
+        // Read while the step's time for it lasts, the rest left to the next step: first those no
+        // read has found not whole or failed on (a step's leftovers among them), the oldest lease
+        // first; then the others in turn, from where the last step's reads of them stopped, so each
+        // is read again every few steps however many wait. (Read first, entries that won't be whole
+        // took all the time on a share under load and left the others waiting; read in one order,
+        // the last of them waited behind the first until those were refused, an hour on.)
         records::by_lease(&mut keys);
         keys.dedup();
-        let (fresh, again): (Vec<String>, Vec<String>) = keys.into_iter().partition(|k| !l.unreadable.contains_key(k));
+        let (fresh, mut again): (Vec<String>, Vec<String>) = keys.into_iter().partition(|k| !l.unreadable.contains_key(k));
+        if !again.is_empty() {
+            let at = l.turn % again.len();
+            again.rotate_left(at);
+        }
+        let n = again.len();
         let keys: Vec<String> = fresh.into_iter().chain(again).collect();
         let m = records::merge_while(io, &mut l.records, &keys, check, &|| io.awake() < busy);
+        l.turn = l.turn.wrapping_add(n - m.unread.iter().filter(|k| l.unreadable.contains_key(*k)).count().min(n));
         if !m.applied.is_empty() || !m.refused.is_empty() || !m.overtaken.is_empty() {
             l.dirty = true;
             l.refused.extend(m.refused.iter().cloned());
@@ -1936,6 +1946,44 @@ mod tests {
             a.step(&io, able(), &any);
         }
         assert_eq!(merged(&mem), 20);
+    }
+
+    #[test]
+    fn entries_found_not_whole_are_read_in_turn() {
+        // Forty entries B told the lead of, cut short, on a share taking five seconds an operation:
+        // a step reads a few of them. Once the last by lease is whole, a step reads it within a
+        // few: those found not whole are read in turn. (Read each step from the first, it waited
+        // until the others were refused, an hour on: seed 1003691 of the four-hour runs.)
+        let mem = Mem::default();
+        setup(&mem);
+        let io = Slow(Mac::new(&mem), Cell::new(0));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let list = a.step(&io, able(), &any).list.unwrap();
+        io.0.pass(20);
+        a.step(&io, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }, &any);
+        let entries: Vec<Entry> = (1..=40).map(|n| entry(B, 1, n, "6-1-1")).collect();
+        let keys: Vec<String> = entries.iter().map(|e| e.key().unwrap()).collect();
+        for k in &keys {
+            mem.write_whole(&journal::path(k), b"{\"member\":").unwrap();
+        }
+        io.1.set(5);
+        io.0.pass(20);
+        a.step(&io, Heard { msgs: vec![(B.into(), Msg::Tell(keys.clone()))], ..able() }, &any);
+        for _ in 0..10 {
+            io.0.pass(20);
+            a.step(&io, able(), &any);
+        }
+        // Each read and found not whole by now; the last made whole.
+        journal::write(&mem, &entries[39]).unwrap();
+        let mut steps = 0;
+        while !Records::load(&mem, 1).unwrap().unwrap().handles(&keys[39]) {
+            steps += 1;
+            assert!(steps <= 8, "not merged in eight steps");
+            io.0.pass(20);
+            a.step(&io, able(), &any);
+        }
+        let r = Records::load(&mem, 1).unwrap().unwrap();
+        assert!(keys[..39].iter().all(|k| !r.handles(k)), "the others still waiting");
     }
 
     #[test]

@@ -458,11 +458,12 @@ seconds, kept to one Mac as the build Mac keeps it now.
   reads fail for an hour while the share answers the loop's other reads (a file the share errors
   on). A read that fails while none answer (the share away) says nothing, and starts the hour again.
   One waiting ten minutes is said, once, naming it and why. A loop reads entries to merge for a
-  minute at most, the entries not read before first, then those waiting, each the oldest lease
-  first, and leaves the rest to the next (on a share under load a read takes seconds, and a lead
-  taking up from an old snapshot may have thousands to read); a member writes its jobs' entries so
-  too. A lead with entries left to read settles no handover (§6.4): the handover is given up, to ask
-  for again once they're read.
+  minute at most (on a share under load a read takes seconds, and a lead taking up from an old
+  snapshot may have thousands to read), first those no read has found not whole or failed on, the
+  oldest lease first, then the others in turn from where the last loop's reads of them stopped, and
+  leaves the rest to the next; a member writes its jobs' entries for a minute at most too. A lead
+  with entries left to read settles no handover (§6.4): the handover is given up, to ask for again
+  once they're read.
 - **Steps with open-ended writes** declare them too: the OSM pass (with `retire_older`'s removals in
   older passes), prune (which forgets keys), the chains, `verify`, patch-ferries. Hand-run steps
   (`scenic-build` from a shell) ask the lead for an ad-hoc lease and hand off the same way.
@@ -713,9 +714,10 @@ switched on.
   hour (200 schedules); runs of the faults' 40 minutes and a day after, a lead listing every day
   again daily (50); slow listings with a week of the journal, development builds and rollbacks with
   a Mac leaving, and a Mac leaving, alone (300 to 1,000 seeds each); the schedule that found term
-  1's first snapshot paired with today's files of two versions (seed 3090226); left out by default,
-  a long run of 100,000 schedules of four hours' faults, each knob alone over 1,000 seeds, and 400
-  seeds run twice, the same; and the first draft's scheme (one shared records file, the journal
+  1's first snapshot paired with today's files of two versions (seed 3090226), and the one that
+  found whole entries waiting an hour behind others not whole (1003691); left out by default, a long
+  run of 100,000 schedules of four hours' faults, each knob alone over 1,000 seeds, and 400 seeds
+  run twice, the same; and the first draft's scheme (one shared records file, the journal
   emptied as it's merged) on the same model, which finds its lost update. The driver's own tests
   decide what the simulator can't: whom a member lets try first, that a lead asleep or gone isn't
   taken over by itself, nor one whose stand-down is an earlier term's, a step's minute of reads, the
