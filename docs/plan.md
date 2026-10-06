@@ -794,7 +794,7 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   both want is downloaded once, under a `<file>.lock` in the store, the other waiting for it)
   and the leaf-type squares on the NAS (`sources/trees/leaf/`), each made whole once by
   `dem/leaftype.py` (the EEA's every chunk, a chunk without EEA data costing one small request;
-  NALCMS's GeoTIFF kept beside them) and tagged complete (`TREES_V`).
+  NALCMS's GeoTIFF kept beside them) and tagged complete.
   - The program is `dem/trees.py --z3` in Rust: the same tiles, to the pixel, in another lossless
     WebP encoder's bytes (`pipeline::webp`: about 1 % smaller than libwebp's on real tiles).
     `tools/check/trees-same.py` compares the two (2026-10-05: ten blocks of every kind, and the
@@ -1002,10 +1002,14 @@ A job's key is its step version plus what it reads, mostly by content name. The 
 - **terrain (per z3 pack):** the z6 tiles to build, and the coverage inside its z3 tile + 20 km;
 - **slope:** its terrain pack;
 - **trees (a tree cover piece, per z6 tile):** the coverage inside the tile ("none" once it has left
-  a tile with tree packs or a mid: its run drops them);
+  a tile with tree packs or a mid: its run drops them). Its version, `TREES_V`, changes with any
+  change to the bytes a piece writes, its hi packs' or its mid's, pixels or not: a piece made again
+  as it is, its mid backfilled, must come out as its key made it (§8, Order), and one that never
+  could would hold its z3 tile's assembly back;
 - **trees-lo (an assembly, per z3 tile):** its pieces' mids by content ("-" for a piece without
   one: it can't be assembled until each has), so a piece made again to the same bytes changes
-  nothing above it ("none" for a z3 tile with lo packs and no piece);
+  nothing above it ("none" for a z3 tile with lo packs and no piece); its version, `TREES_LO_V`,
+  changes likewise with the bytes of its lo packs;
 - **heritage-sites:** the pass, its areas set, the registers snapshot, the coverage;
 - **unit:** its piece, the pass's road values, the coverage as its ways meet it (inside its tile +
   20 km, and whether each long way touches it), the versions of the location rules where its ways
@@ -1675,7 +1679,8 @@ and, when none fits it, units' last steps.
    candidates and peaks. Last of all, in idle time: the mids of tree cover pieces current without
    one (those a key scheme's switch recorded: §8, A new key scheme), each made again as it is and
    expected the same (`scenic-build trees --expect-same`: a pack coming out other than the manifest
-   has it fails the job, nothing uploaded); a helper takes them from the far end too.
+   has it fails the job, nothing uploaded; so a change to a piece's bytes alone bumps `TREES_V`:
+   §6, Job keys); a helper takes them from the far end too.
 5. **A catalog** once the roads chain is done, in a round: a new one whenever the served files
    change, or the regions it records (their recipes and the outline files they name), or which of
    them are done. It lists the units as they were when the round began. It records as built the

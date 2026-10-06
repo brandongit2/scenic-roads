@@ -23,11 +23,15 @@ use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// Bumped when the layers' pixels change (every piece and assembly is made again). (The `trees`
-/// program, which took trees.py's place, makes the same pixels in other WebP bytes: the packs as good
-/// as they were.)
+/// The pieces' version, in their keys and their mids: bumped on any change to the bytes a piece
+/// writes, its hi packs' or its mid's, pixels or not (every piece and assembly is made again). A
+/// piece made again as it is (`build_piece`'s `expect_same`: its mid backfilled) expects the bytes
+/// its key made, and one that could never match would hold its z3 tile's assembly back for good.
+/// (trees.py's packs, the same pixels in other bytes than the `trees` program's, are made again at
+/// the switch to pieces, by their files' times: agent::rekey::TREES_PROGRAM_SINCE.)
 pub const TREES_V: u32 = 2;
-/// The assembly's own version (its key: crate::treepacks::targets).
+/// The assemblies' own version (their keys: `targets`), bumped likewise on any change to the bytes
+/// of the lo packs an assembly makes from the same mids.
 pub const TREES_LO_V: u32 = 1;
 pub const LAYERS: [&str; 3] = ["trees-cover", "trees-height", "trees-leaf"];
 
