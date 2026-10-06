@@ -1467,7 +1467,15 @@ impl Agent {
             // Then the records re-keyed where a key scheme changed (agent::rekey; once done, and a
             // merged record of an older app's job translated, it finds nothing).
             match self.rekey_records(r) {
-                Ok(Some(k)) if k.changed() => eprintln!("agent: re-keyed the units' records: {} moved to their new keys ({} without outputs), {} to build again", k.moved.len(), k.empty.len(), k.left.len()),
+                Ok(Some(k)) if k.changed() => eprintln!(
+                    "agent: re-keyed the records: units {} moved to their new keys ({} without outputs), {} to build again; tree cover's z3 tiles {} recorded as their pieces and assemblies, {} dropped ({})",
+                    k.moved.len(),
+                    k.empty.len(),
+                    k.left.len(),
+                    k.trees_moved.len(),
+                    k.trees_dropped.len(),
+                    k.trees_dropped.iter().map(|(q, why)| format!("{q}: {why}")).collect::<Vec<_>>().join("; ")
+                ),
                 Ok(_) => {}
                 Err(e) => eprintln!("agent: re-keying the records: {e:#}"),
             }
@@ -2754,7 +2762,7 @@ impl Agent {
             // (The records as re-keyed: what they are once the loop has re-keyed them, as a dry run,
             // or a loop that couldn't take the build lock, plans too.)
             let times = rekey::FileTimes::new(root);
-            rekey::rekey(&mut done, cov, date, &manifest, reach.as_deref(), &inputs, &tiles, &|x, y| times.hi_older(&manifest, x, y));
+            rekey::rekey(&mut done, cov, date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
             build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), &tiles, build::Rounds { each: &covs.each, on_map: &on_map, since_last, current: kept.as_ref().filter(|r| !r.over), held })
         };
         // Units whose terrain can't be worked out now (a pack's index unread): they wait for it.
@@ -3144,7 +3152,7 @@ impl Agent {
         // (As re-keyed: agent::rekey.)
         let mut keys = keys;
         let times = rekey::FileTimes::new(root);
-        rekey::rekey(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles, &|x, y| times.hi_older(&manifest, x, y));
+        rekey::rekey(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
         out.extend(build::checklist(cov, &date, &manifest, &keys, &inputs, root.join("inputs/hold-catalog").exists(), reach.as_deref(), &self.ready.borrow(), &tiles));
         out
     }
@@ -3161,7 +3169,7 @@ impl Agent {
         let inputs = input_digests(root);
         // (As re-keyed: agent::rekey.)
         let times = rekey::FileTimes::new(root);
-        rekey::rekey(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles, &|x, y| times.hi_older(&manifest, x, y));
+        rekey::rekey(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
         build::region_states(cov, each, &date, &manifest, &keys, reach.as_deref(), &inputs, &tiles)
     }
 
@@ -3172,8 +3180,9 @@ impl Agent {
     /// records is the build lock taken, as a merge takes it (a job saving holds it), and the
     /// records, read again under it, re-keyed and written. Before the first such write, a copy of
     /// them as they were (`REKEY_COPY`, never written over: what an older app goes back to). None
-    /// when there's nothing to re-key by now (no pass, regions or reaches; a recipe that can't be
-    /// read now, which would leave the coverage short), or the lock is held.
+    /// when there's nothing to re-key by now (no pass or regions; a recipe that can't be read now,
+    /// which would leave the coverage short), or the lock is held. (Without the pass's reaches, the
+    /// units wait for them.)
     fn rekey_records(&self, root: &Path) -> Result<Option<rekey::Rekeyed>> {
         let Some(date) = crate::osmpass::latest_pass(root) else { return Ok(None) };
         let (recipes, unread) = recipes::load(&root.join("inputs/regions"));
@@ -3184,9 +3193,9 @@ impl Agent {
         let times = rekey::FileTimes::new(root);
         let rekeyed = |manifest: &BTreeMap<String, String>, keys: &mut build::Keys| -> Result<Option<rekey::Rekeyed>> {
             let covs = self.coverage(root, manifest, &date, &recipes, false).map_err(anyhow::Error::msg)?;
-            let Some(reach) = self.current_reach(root, manifest, keys, &date).ok().flatten() else { return Ok(None) };
+            let reach = self.current_reach(root, manifest, keys, &date).ok().flatten();
             let tiles = self.terrain_tiles(root, manifest);
-            Ok(Some(rekey::rekey(keys, &covs.all, &date, manifest, Some(&reach), &inputs, &tiles, &|x, y| times.hi_older(manifest, x, y))))
+            Ok(Some(rekey::rekey(keys, &covs.all, &date, manifest, reach.as_deref(), &inputs, &tiles, &times)))
         };
         let ahead: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json"))?;
         let r = rekeyed(&ahead, &mut build::Keys::load_strict(root)?)?;
@@ -4349,11 +4358,17 @@ mod tests {
         w.finish().unwrap();
         m.insert("layers/terrain/lo/3-3-2".into(), lo.into());
         m.insert("base/6-28-17".into(), "base/6-28-17.6666666666666666.base".into());
+        // Tree cover's z3 tile, its whole run's packs written now (by the trees program).
+        for (l, c) in [("layers/trees-cover/lo/3-3-2", "layers/trees-cover/lo/3-3-2.7777777777777777.pack"), ("layers/trees-cover/hi/6-28-17", "layers/trees-cover/hi/6-28-17.8888888888888888.pack")] {
+            put(&root.join(c), b"pack");
+            m.insert(l.into(), c.into());
+        }
         put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
         let mut keys = build::Keys::default();
         keys.lo.insert("reach".into(), build::reach_key(date, &m).unwrap());
         keys.record("heritage-sites", &build::heritage_sites_work(&cov, date, &m, &keys).unwrap().targets);
         keys.record("terrain", &build::terrain_slope_targets(&cov, &m).0);
+        keys.record("trees", &rekey::v1::trees_targets(&cov, &m));
         let old = rekey::v1::unit_keys(&cov, date, &m, Some(&reaches), &input_digests(root)).pop().unwrap();
         assert_eq!(old.0.slash(), "6/28/17");
         keys.record("unit", &[("6/28/17".into(), old.1.clone())]);
@@ -4409,9 +4424,12 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(50));
             }
         };
-        // Then once, the records as they were kept beside them first.
+        // Then once, the records as they were kept beside them first: the unit's, and tree cover's
+        // z3 tile as its pieces and assembly.
         rekeyed(&mut a);
         let k = build::Keys::load(&root).unit["6/28/17"].clone();
+        let keys = build::Keys::load(&root);
+        assert!(!keys.trees.contains_key("3/3/2") && keys.trees.contains_key("6/28/17") && keys.trees_lo.contains_key("3/3/2"), "{:?} {:?}", keys.trees, keys.trees_lo);
         assert_eq!(std::fs::read(root.join(REKEY_COPY)).unwrap(), before);
         let (after, at) = (std::fs::read(&jobs).unwrap(), std::fs::metadata(&jobs).unwrap().modified().unwrap());
         a.step().unwrap();

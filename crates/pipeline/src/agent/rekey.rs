@@ -32,6 +32,19 @@
 //! key couldn't see; such a pack is older than its area's lo pack by the files' times
 //! (`FileTimes::hi_older`). A unit without outputs (none of its ways in the coverage) is re-keyed
 //! whatever it reads: the terrain doesn't decide which ways it keeps.
+//!
+//! Tree cover (2026-10-06): a z3 tile's whole run ("3/x/y", `v1::trees_targets`, keyed on the
+//! coverage in the z3 tile) became a piece per z6 tile (keyed on the coverage in it) and an
+//! assembly per z3 tile (keyed on its pieces' mids: crate::treepacks::targets). A z3 tile current
+//! under the old scheme pins its pieces' inputs (the coverage in a z6 tile is a function of the
+//! coverage in its z3 tile: Coverage::fingerprint), and its packs are what the pieces and assembly
+//! make from them, byte for byte, when the trees program made them: its pieces and assembly are
+//! recorded under their keys, without mids (none exist: "-" in the assembly's key), which are made
+//! in idle time, expected the same (agent::build::TreeWork::backfill). Packs trees.py made (before
+//! the program took its place, `TREES_PROGRAM_SINCE`, by their files' times) have the same pixels in
+//! other bytes: not pinned, the z3 tile's record goes and its pieces are made again. Every z3
+//! record goes: a stale one is built again as pieces either way, and one of "none" (the coverage
+//! gone from it) has nothing left to build.
 
 use super::build::{self, Keys};
 use super::tiles::{TerrainTiles, Tile};
@@ -42,13 +55,39 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
-/// The key schemes before 2026-10-06.
+/// The key schemes before 2026-10-06: the units', and tree cover's before its pieces.
 pub mod v1 {
     use super::super::build::{h, UNIT_V};
     use crate::coverage::Coverage;
     use crate::legacy::Unit;
     use crate::reach::{Reach, Reaches};
+    use crate::treepacks::{LAYERS, TREES_V};
     use std::collections::BTreeMap;
+
+    /// Tree cover's targets as they were, a z3 tile's whole run: each z3 tile the coverage meets,
+    /// keyed on the step's version and the coverage there; and each z3 tile with tree packs (`m`,
+    /// the build manifest) the coverage no longer meets, "none", whose run dropped them.
+    pub fn trees_targets(cov: &Coverage, m: &BTreeMap<String, String>) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for x in 0..8 {
+            for y in 0..8 {
+                let b = crate::hipack::tile_bounds(3, x, y);
+                let t = format!("3/{x}/{y}");
+                let had = || LAYERS.iter().any(|l| m.contains_key(&format!("layers/{l}/lo/3-{x}-{y}")) || m.range(format!("layers/{l}/hi/6-")..).take_while(|(k, _)| k.starts_with(&format!("layers/{l}/hi/6-"))).any(|(k, _)| Unit::parse(&k[format!("layers/{l}/hi/").len()..]).is_some_and(|u| (u.x >> 3, u.y >> 3) == (x, y))));
+                if cov.meets_rect(b) {
+                    out.push((t.clone(), store::naming::hash16(format!("trees {TREES_V}|{t}|{}", cov.fingerprint(b)).as_bytes())));
+                } else if had() {
+                    out.push((t.clone(), trees_none(&t)));
+                }
+            }
+        }
+        out
+    }
+
+    /// A z3 tile's "none" key under the old scheme (the coverage gone from it).
+    pub fn trees_none(t: &str) -> String {
+        store::naming::hash16(format!("trees {TREES_V}|{t}|none").as_bytes())
+    }
 
     /// The units the coverage builds, each with its key as it was (`unit_key`).
     pub fn unit_keys(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: Option<&Reaches>, digests: &BTreeMap<String, String>) -> Vec<(Unit, String)> {
@@ -83,7 +122,7 @@ pub mod v1 {
     }
 }
 
-/// What `rekey` did to the units' records (each by "6/x/y").
+/// What `rekey` did to the units' records (each by "6/x/y") and tree cover's (by z3 tile, "3/x/y").
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rekeyed {
     /// Current under the old scheme, recorded under the new one now.
@@ -96,12 +135,43 @@ pub struct Rekeyed {
     /// Current under the old scheme, but what they read can't be told now (a terrain pack's index
     /// unread): kept as they are, for the next pass.
     pub unknown: Vec<(String, String)>,
+    /// Tree cover's z3 tiles current under the old scheme, recorded as their pieces and assembly.
+    pub trees_moved: Vec<String>,
+    /// Those whose records went, each with why: their packs trees.py's, stale under the old scheme
+    /// (each built again as pieces), or "none" (nothing left to build).
+    pub trees_dropped: Vec<(String, String)>,
+    /// Those whose packs' times can't be read now: kept as they are, for the next pass.
+    pub trees_unknown: Vec<(String, String)>,
 }
 
 impl Rekeyed {
     /// Whether it changed the records.
     pub fn changed(&self) -> bool {
-        !self.moved.is_empty() || !self.left.is_empty()
+        !self.moved.is_empty() || !self.left.is_empty() || !self.trees_moved.is_empty() || !self.trees_dropped.is_empty()
+    }
+}
+
+/// When the trees program took trees.py's place in the published app (20261006-0711-5e3c69a,
+/// 2026-10-06 07:11 UTC): tree packs written before are trees.py's, the same pixels in other WebP
+/// bytes than the program's pieces make.
+pub const TREES_PROGRAM_SINCE: i64 = 1_791_270_660;
+
+/// What the re-keying reads of the NAS beyond the records and the manifest: its files' times
+/// (`FileTimes`).
+pub trait Times {
+    /// Whether z6 tile (x, y)'s terrain hi pack was left by an earlier run (`FileTimes::hi_older`).
+    fn hi_older(&self, m: &BTreeMap<String, String>, x: u32, y: u32) -> Option<bool>;
+    /// Whether z3 tile (x, y)'s tree packs were made by the trees program
+    /// (`FileTimes::trees_by_program`).
+    fn trees_by_program(&self, m: &BTreeMap<String, String>, x: u32, y: u32) -> Option<bool>;
+}
+
+impl Times for FileTimes<'_> {
+    fn hi_older(&self, m: &BTreeMap<String, String>, x: u32, y: u32) -> Option<bool> {
+        FileTimes::hi_older(self, m, x, y)
+    }
+    fn trees_by_program(&self, m: &BTreeMap<String, String>, x: u32, y: u32) -> Option<bool> {
+        FileTimes::trees_by_program(self, m, x, y)
     }
 }
 
@@ -139,15 +209,34 @@ impl<'a> FileTimes<'a> {
         let (Some(hi), Some(lo)) = (m.get(&format!("layers/terrain/hi/6-{x}-{y}")), m.get(&format!("layers/terrain/lo/3-{}-{}", x >> 3, y >> 3))) else { return Some(false) };
         Some(self.time(lo)? - self.time(hi)? > SAME_RUN_S)
     }
+
+    /// Whether z3 tile (x, y)'s tree packs, as `m` names them, were made by the trees program: its
+    /// whole run's, all written together, by the time of its lo pack (its first layer's that has
+    /// one, else its first hi pack) against `TREES_PROGRAM_SINCE`. With none, true: none to differ.
+    /// None when the file's time can't be read now.
+    pub fn trees_by_program(&self, m: &BTreeMap<String, String>, x: u32, y: u32) -> Option<bool> {
+        let lo = crate::treepacks::LAYERS.iter().find_map(|l| m.get(&format!("layers/{l}/lo/3-{x}-{y}")));
+        let hi = || {
+            crate::treepacks::LAYERS.iter().find_map(|l| {
+                let prefix = format!("layers/{l}/hi/");
+                m.range(prefix.clone()..).take_while(|(k, _)| k.starts_with(&prefix)).find(|(k, _)| Unit::parse(&k[prefix.len()..]).is_some_and(|u| (u.x >> 3, u.y >> 3) == (x, y))).map(|(_, c)| c)
+            })
+        };
+        let Some(c) = lo.or_else(hi) else { return Some(true) };
+        Some(self.time(c)? >= TREES_PROGRAM_SINCE)
+    }
 }
 
-/// Re-keys the units' records in `keys` from the old scheme (`v1::unit_keys`) to the new
-/// (`build::unit_keys`), for the coverage `cov`, the pass `date`, the manifest `m`, the reaches,
-/// `digests` (agent::input_digests) and the terrain packs' indexes. `older`: whether a z6 tile's hi
-/// pack was left by an earlier run (`FileTimes::hi_older`; None: can't be told now).
+/// Re-keys the records in `keys`, for the coverage `cov`, the pass `date`, the manifest `m`, the
+/// reaches, `digests` (agent::input_digests) and the terrain packs' indexes: tree cover's from a z3
+/// tile's whole run to pieces and assemblies (`rekey_trees`), and the units' from the old scheme
+/// (`v1::unit_keys`) to the new (`build::unit_keys`). `times`: the NAS's files' times (`FileTimes`;
+/// None where they can't be told now).
 #[allow(clippy::too_many_arguments)]
-pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: Option<&Reaches>, digests: &BTreeMap<String, String>, tiles: &TerrainTiles, older: &dyn Fn(u32, u32) -> Option<bool>) -> Rekeyed {
+pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: Option<&Reaches>, digests: &BTreeMap<String, String>, tiles: &TerrainTiles, times: &dyn Times) -> Rekeyed {
     let mut out = Rekeyed::default();
+    rekey_trees(keys, cov, m, times, &mut out);
+    let older = |x: u32, y: u32| times.hi_older(m, x, y);
     let Some(reach) = reach else { return out };
     // (The units recorded, not all the pass's: whether the coverage builds a unit is a test of its
     // ways, seconds for all a pass's reaches.)
@@ -176,7 +265,7 @@ pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, S
             }
         };
         let outputs = crate::out::UNIT_OUTPUTS.iter().any(|p| m.contains_key(&format!("{p}{}", u.dash())));
-        let why = match if outputs { unpinned(u, &read, m, &pieces, &terrain_now, older) } else { Ok(Vec::new()) } {
+        let why = match if outputs { unpinned(u, &read, m, &pieces, &terrain_now, &older) } else { Ok(Vec::new()) } {
             Ok(why) => why,
             Err(e) => {
                 out.unknown.push((t, e));
@@ -195,6 +284,47 @@ pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, S
         }
     }
     out
+}
+
+/// Re-keys tree cover's records of a z3 tile's whole run ("3/x/y", `v1::trees_targets`) as its
+/// pieces and assembly (crate::treepacks::targets), into `out`: one current under the old scheme
+/// whose packs the trees program made is recorded as its pieces (each the coverage meets) and its
+/// assembly, under their keys now; every other z3 record goes (stale, trees.py's packs, or "none"),
+/// but one whose packs' times can't be read now, kept for the next pass.
+fn rekey_trees(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, times: &dyn Times, out: &mut Rekeyed) {
+    let z3: Vec<(String, String)> = keys.trees.iter().filter(|(t, _)| Unit::parse(t).is_some_and(|u| u.z == 3)).map(|(t, k)| (t.clone(), k.clone())).collect();
+    if z3.is_empty() {
+        return;
+    }
+    let old: BTreeMap<String, String> = v1::trees_targets(cov, m).into_iter().collect();
+    let tt = crate::treepacks::targets(cov, m);
+    for (q, k) in z3 {
+        let Some(u) = Unit::parse(&q) else { continue };
+        let why = match old.get(&q) {
+            Some(now) if *now == k && *now == v1::trees_none(&q) => "current, the coverage gone from it: nothing left to build",
+            Some(now) if *now == k => match times.trees_by_program(m, u.x, u.y) {
+                None => {
+                    out.trees_unknown.push((q, "its tree packs' times can't be read now".into()));
+                    continue;
+                }
+                Some(false) => "its packs are trees.py's (made before the trees program, 2026-10-06 07:11 UTC): the same pixels in other bytes than the program's pieces make; made again as pieces",
+                Some(true) => {
+                    for (t, kt, _) in tt.pieces_of(&q) {
+                        keys.trees.insert(t.clone(), kt.clone());
+                    }
+                    if let Some((_, kl, _)) = tt.lo.iter().find(|l| l.0 == q) {
+                        keys.trees_lo.insert(q.clone(), kl.clone());
+                    }
+                    keys.trees.remove(&q);
+                    out.trees_moved.push(q);
+                    continue;
+                }
+            },
+            _ => "stale under the old scheme: made again as pieces either way",
+        };
+        keys.trees.remove(&q);
+        out.trees_dropped.push((q, why.into()));
+    }
 }
 
 /// Why the tiles `read` that unit `u`'s new key names aren't all pinned by its old key: a line a
@@ -245,8 +375,23 @@ mod tests {
     use crate::agent::recipes::Recipe;
     use crate::reach::{LongWay, Reach};
 
-    /// No hi pack older than its area's lo pack.
-    const NONE_OLDER: fn(u32, u32) -> Option<bool> = |_, _| Some(false);
+    /// The files' times as a test has them: whether a z6 tile's terrain hi pack is older than its
+    /// area's lo pack, whether a z3 tile's tree packs are the trees program's.
+    struct Stub<F, G>(F, G);
+
+    impl<F: Fn(u32, u32) -> Option<bool>, G: Fn(u32, u32) -> Option<bool>> Times for Stub<F, G> {
+        fn hi_older(&self, _: &BTreeMap<String, String>, x: u32, y: u32) -> Option<bool> {
+            (self.0)(x, y)
+        }
+        fn trees_by_program(&self, _: &BTreeMap<String, String>, x: u32, y: u32) -> Option<bool> {
+            (self.1)(x, y)
+        }
+    }
+
+    type At = fn(u32, u32) -> Option<bool>;
+
+    /// No hi pack older than its area's lo pack; every z3 tile's tree packs the program's.
+    const NONE_OLDER: Stub<At, At> = Stub(|_, _| Some(false), |_, _| Some(true));
 
     /// Iceland: regions a (Reykjavik, unit 6/28/17) and b (Akureyri and Egilsstaðir: 6/28/16,
     /// 6/29/16), all in area 3/3/2; the heritage sites and the terrain done (its lo pack, and the hi
@@ -384,13 +529,13 @@ mod tests {
         let mut tiles = tiles_for(&m);
         tiles.hold("layers/terrain/hi/6-28-16.2222222222222222.pack", []);
         let akureyri = |x: u32, y: u32| Some((x, y) == (28, 16));
-        let r = rekey(&mut done.clone(), &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &akureyri);
+        let r = rekey(&mut done.clone(), &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &Stub(akureyri, NONE_OLDER.1));
         assert_eq!(r.left.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(), ["6/28/16"]);
         assert!(r.left[0].1[0].starts_with("z8–z6 tiles of a z6 tile whose hi pack is stale (an earlier run left it"), "{:?}", r.left);
         // Its files' times not readable now: left as it is, for the next pass.
         let unknown = |x: u32, y: u32| if (x, y) == (28, 16) { None } else { Some(false) };
         let mut kept = done.clone();
-        let r = rekey(&mut kept, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &unknown);
+        let r = rekey(&mut kept, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &Stub(unknown, NONE_OLDER.1));
         assert_eq!(r.unknown.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(), ["6/28/16"]);
         assert_eq!(kept.unit.get("6/28/16"), done.unit.get("6/28/16"));
     }
@@ -414,6 +559,102 @@ mod tests {
         assert_eq!((t.hi_older(&m, 28, 16), t.hi_older(&m, 29, 16)), (Some(false), Some(true)));
         // One not on the NAS: can't be told; none named: not older.
         assert_eq!((t.hi_older(&m, 30, 16), t.hi_older(&m, 31, 16)), (None, Some(false)));
+    }
+
+    #[test]
+    fn tree_covers_old_targets_were_the_z3_tiles_the_coverage_meets() {
+        let d = tempfile::tempdir().unwrap();
+        let cov = |o: &str| Coverage::from_recipes(&[Recipe { id: "r".into(), name: "R".into(), outline: vec![o.into()] }], None, d.path()).unwrap();
+        // Reykjavik's 20 km circle: in z3 tile 3/3/2 only.
+        let c = cov("place:-21.9,64.13,20");
+        let m = BTreeMap::new();
+        let t = v1::trees_targets(&c, &m);
+        assert_eq!(t.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), vec!["3/3/2"]);
+        // The coverage there is the key: a bigger circle, another key.
+        assert_ne!(v1::trees_targets(&cov("place:-21.9,64.13,25"), &m)[0].1, t[0].1);
+        assert_eq!(v1::trees_targets(&cov("place:-21.9,64.13,20"), &m)[0].1, t[0].1);
+        // Tree packs where the coverage no longer is (a hi pack of z3 tile 3/4/2): "none".
+        let m: BTreeMap<String, String> = [("layers/trees-cover/hi/6-33-23".to_string(), "x".to_string())].into();
+        let t = v1::trees_targets(&c, &m);
+        assert_eq!(t.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), vec!["3/3/2", "3/4/2"]);
+        assert_eq!(t[1].1, v1::trees_none("3/4/2"));
+    }
+
+    #[test]
+    fn tree_cover_current_under_the_old_scheme_is_re_keyed_as_its_pieces_once() {
+        let (c, reach, mut m, mut done) = iceland(&|_| {});
+        let tiles = tiles_for(&m);
+        // Iceland's z3 tile's whole run recorded under the old scheme, its packs in the manifest.
+        m.insert("layers/trees-cover/lo/3-3-2".into(), "layers/trees-cover/lo/3-3-2.5555555555555555.pack".into());
+        m.insert("layers/trees-cover/hi/6-28-16".into(), "layers/trees-cover/hi/6-28-16.5555555555555555.pack".into());
+        let old = v1::trees_targets(&c, &m);
+        assert_eq!(old.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["3/3/2"]);
+        done.record("trees", &old);
+        // As recorded: every piece and the assembly made again.
+        let tt = crate::treepacks::targets(&c, &m);
+        assert_eq!(build::tree_work(&tt, &m, &done).pieces.len(), 3);
+        // Its packs the trees program's: each piece the coverage meets and the assembly recorded
+        // under their keys now, its z3 record gone; nothing stale, the pieces' mids made in idle
+        // time.
+        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        assert_eq!((r.trees_moved.clone(), r.trees_dropped.len(), r.trees_unknown.len()), (vec!["3/3/2".to_string()], 0, 0));
+        assert!(r.changed() && !done.trees.contains_key("3/3/2"));
+        assert_eq!(done.trees.keys().collect::<Vec<_>>(), ["6/28/16", "6/28/17", "6/29/16"]);
+        let w = build::tree_work(&tt, &m, &done);
+        assert!(w.pieces.is_empty() && w.lo.is_empty() && w.stale_pieces.is_empty() && w.stale_lo.is_empty(), "{w:?}");
+        assert_eq!(w.backfill.len(), 3);
+        // Again: nothing to do, nothing changed.
+        let before = done.clone();
+        let again = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        assert!(!again.changed() && done == before);
+        // A late record under the old scheme (a lease of an older app's, merged since): re-keyed.
+        done.record("trees", &old);
+        assert_eq!(rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).trees_moved, ["3/3/2"]);
+        assert_eq!(done, before);
+        // Its packs trees.py's: its record goes, the pieces and assembly made again.
+        let only = |k: &[(String, String)]| {
+            let mut keys = Keys::default();
+            keys.record("trees", k);
+            keys
+        };
+        let mut py = only(&old);
+        let r = rekey(&mut py, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &Stub(NONE_OLDER.0, |_, _| Some(false)));
+        assert!(r.trees_dropped.len() == 1 && r.trees_dropped[0].1.contains("trees.py") && py.trees.is_empty() && py.trees_lo.is_empty(), "{r:?}");
+        // Their times not readable now: kept, for the next pass.
+        let mut unknown = only(&old);
+        let r = rekey(&mut unknown, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &Stub(NONE_OLDER.0, |_, _| None));
+        assert!(r.trees_unknown.len() == 1 && !r.changed() && unknown == only(&old), "{r:?}");
+        // Stale under the old scheme: its record goes (its pieces made again either way).
+        let mut stale = only(&[("3/3/2".to_string(), "0000000000000000".to_string())]);
+        let r = rekey(&mut stale, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        assert!(r.trees_dropped[0].1.starts_with("stale") && stale.trees.is_empty(), "{r:?}");
+        // "none", current (the coverage gone, the packs not yet dropped): nothing left to build.
+        let none = [("3/4/2".to_string(), v1::trees_none("3/4/2"))];
+        m.insert("layers/trees-cover/hi/6-33-23".into(), "x".into());
+        let mut gone = only(&none);
+        let r = rekey(&mut gone, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
+        assert!(r.trees_dropped[0].1.contains("nothing left to build") && gone.trees.is_empty(), "{r:?}");
+    }
+
+    #[test]
+    fn tree_packs_made_by_the_trees_program_by_the_files_times() {
+        let d = tempfile::tempdir().unwrap();
+        let since = std::time::UNIX_EPOCH + std::time::Duration::from_secs(TREES_PROGRAM_SINCE as u64);
+        let m: BTreeMap<String, String> = [("layers/trees-cover/lo/3-3-2", "a"), ("layers/trees-height/lo/3-4-2", "b"), ("layers/trees-leaf/hi/6-56-25", "c"), ("layers/trees-cover/lo/3-1-2", "missing")].into_iter().map(|(l, n)| (l.to_string(), format!("{l}.{n}.pack"))).collect();
+        let at = |l: &str, t: std::time::SystemTime| {
+            let p = d.path().join(&m[l]);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::File::create(&p).unwrap().set_modified(t).unwrap();
+        };
+        // 3/3/2's an hour before the program, 3/4/2's (its height layer's lo pack) a minute after,
+        // 3/7/3's by its hi pack.
+        at("layers/trees-cover/lo/3-3-2", since - std::time::Duration::from_secs(3600));
+        at("layers/trees-height/lo/3-4-2", since + std::time::Duration::from_secs(60));
+        at("layers/trees-leaf/hi/6-56-25", since + std::time::Duration::from_secs(60));
+        let t = FileTimes::new(d.path());
+        assert_eq!((t.trees_by_program(&m, 3, 2), t.trees_by_program(&m, 4, 2), t.trees_by_program(&m, 7, 3)), (Some(false), Some(true), Some(true)));
+        // None at all: none to differ. One not on the NAS: can't be told.
+        assert_eq!((t.trees_by_program(&m, 0, 0), t.trees_by_program(&m, 1, 2)), (Some(true), None));
     }
 
     #[test]

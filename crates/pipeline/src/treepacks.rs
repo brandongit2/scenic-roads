@@ -13,7 +13,8 @@
 //!   its pieces' mids; a z3 tile with lo packs and no piece drops them.
 //!
 //! Together the same packs, byte for byte, as a z3 tile's whole run (`build`: by hand, and for a
-//! lease of the old scheme; with SCENIC_TREES_PY=1 trees.py itself, to compare the two).
+//! lease of the scheme before, agent::rekey::v1::trees_targets; with SCENIC_TREES_PY=1 trees.py
+//! itself, to compare the two).
 
 use crate::coverage::Coverage;
 use crate::legacy::Unit;
@@ -116,27 +117,6 @@ pub fn targets(cov: &Coverage, m: &BTreeMap<String, String>) -> Targets {
             key(&[&head[0], &head[1], &head[2], "none"])
         };
         out.lo.push((q, k, !areas.contains(&(qx, qy))));
-    }
-    out
-}
-
-/// The z3 tiles the coverage meets, each with its key: the step's version and the coverage there;
-/// and the z3 tiles with tree packs (`m`, the build manifest) the coverage no longer meets, whose
-/// run drops them. (A z3 tile's whole run, `build`: how the build made them before the pieces and
-/// assemblies.)
-pub fn area_targets(cov: &Coverage, m: &BTreeMap<String, String>) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for x in 0..8 {
-        for y in 0..8 {
-            let b = crate::hipack::tile_bounds(3, x, y);
-            let t = format!("3/{x}/{y}");
-            let had = || LAYERS.iter().any(|l| m.contains_key(&format!("layers/{l}/lo/3-{x}-{y}")) || m.range(format!("layers/{l}/hi/6-")..).take_while(|(k, _)| k.starts_with(&format!("layers/{l}/hi/6-"))).any(|(k, _)| Unit::parse(&k[format!("layers/{l}/hi/").len()..]).is_some_and(|u| (u.x >> 3, u.y >> 3) == (x, y))));
-            if cov.meets_rect(b) {
-                out.push((t.clone(), store::naming::hash16(format!("trees {TREES_V}|{t}|{}", cov.fingerprint(b)).as_bytes())));
-            } else if had() {
-                out.push((t.clone(), store::naming::hash16(format!("trees {TREES_V}|{t}|none").as_bytes())));
-            }
-        }
     }
     out
 }
@@ -469,22 +449,6 @@ mod tests {
     fn cov(outline: &str) -> Coverage {
         let d = tempfile::tempdir().unwrap();
         Coverage::from_recipes(&[Recipe { id: "r".into(), name: "R".into(), outline: vec![outline.into()] }], None, d.path()).unwrap()
-    }
-
-    #[test]
-    fn the_z3_tiles_the_coverage_meets() {
-        // Reykjavik's 20 km circle: in z3 tile 3/3/2 only.
-        let c = cov("place:-21.9,64.13,20");
-        let m = std::collections::BTreeMap::new();
-        let t = area_targets(&c, &m);
-        assert_eq!(t.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), vec!["3/3/2"]);
-        // The coverage there is the key: a bigger circle, another key.
-        assert_ne!(area_targets(&cov("place:-21.9,64.13,25"), &m)[0].1, t[0].1);
-        assert_eq!(area_targets(&cov("place:-21.9,64.13,20"), &m)[0].1, t[0].1);
-        // Tree packs where the coverage no longer is (a hi pack of z3 tile 3/4/2): its run drops them.
-        let m: std::collections::BTreeMap<String, String> = [("layers/trees-cover/hi/6-33-23".to_string(), "x".to_string())].into();
-        let t = area_targets(&c, &m);
-        assert_eq!(t.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), vec!["3/3/2", "3/4/2"]);
     }
 
     #[test]

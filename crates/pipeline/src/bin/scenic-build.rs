@@ -73,6 +73,10 @@
 //!                                (pipeline::agent::rekey) would do now: the units re-keyed, and
 //!                                those left to build again, each with why; and the times that show
 //!                                its one assumption holds. Reads only: writes nothing, keeps no index
+//!   p5-check trees [--pass d] [--costs f]  what switching tree cover to pieces and assemblies
+//!                                (pipeline::agent::rekey) would do now: each z3 tile re-keyed, or
+//!                                made again as pieces and why, the work left and its time by the
+//!                                last runs (`f`: the coordinator's costs.json). Reads only
 //!
 //! `--cache` is where base packs are kept locally (copied from the NAS when missing).
 
@@ -139,6 +143,9 @@ fn main() -> Result<()> {
     // (Before the scratch folder: it writes nothing.)
     if step == "rekey-check" {
         return rekey_check(&root, &args);
+    }
+    if step == "p5-check" {
+        return p5_check(&root, &args);
     }
     let scratch = PathBuf::from(opt(&args, "--scratch").unwrap_or_else(|| "/tmp/scenic-build".into()));
     let mut out = Out::open(&root, &scratch)?;
@@ -1169,12 +1176,12 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
     let times = rekey::FileTimes::new(root);
     let older = |x: u32, y: u32| times.hi_older(&m, x, y);
     let mut after = keys.clone();
-    let r = rekey::rekey(&mut after, &cov, &date, &m, Some(&reach), &digests, &tiles, &older);
+    let r = rekey::rekey(&mut after, &cov, &date, &m, Some(&reach), &digests, &tiles, &times);
     println!("(the old keys took {t_old:.1} s, the new {t_new:.1} s, the re-keying {:.1} s)", t1.elapsed().as_secs_f64() - t_old - t_new);
     // (Again on what it made: nothing to do, as each plan's re-keying finds once it's done.)
     let t2 = std::time::Instant::now();
     let mut twice = after.clone();
-    let again = rekey::rekey(&mut twice, &cov, &date, &m, Some(&reach), &digests, &tiles, &older);
+    let again = rekey::rekey(&mut twice, &cov, &date, &m, Some(&reach), &digests, &tiles, &times);
     println!("a second pass: {} (in {:.1} s)", if again.changed() || twice != after { "it changed the records again" } else { "nothing to do" }, t2.elapsed().as_secs_f64());
     let rec = |u: Unit| keys.unit.get(&u.slash());
     let new_of = |u: Unit| new.get(&u.slash()).and_then(Option::as_ref);
@@ -1276,6 +1283,108 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
     for l in &not {
         println!("{l}");
     }
+    Ok(())
+}
+
+// ---- p5-check ----------------------------------------------------------------------------------
+
+/// `p5-check trees`: what switching tree cover from a z3 tile's whole run to pieces and assemblies
+/// (pipeline::agent::rekey's trees rules) does now, read from the NAS with nothing written (no
+/// scratch folder): each z3 tile's record, current or stale under the old scheme, whose packs made
+/// it (the trees program, or trees.py before it, by their files' times), and so re-keyed (its
+/// pieces and assembly recorded, their mids made in idle time, expected the same) or made again as
+/// pieces; then the work the plan has (agent::build::tree_work), and its time by the z3 tiles' last
+/// runs (`--costs`: the coordinator's costs.json; a helper's at the build Mac's pace, twice its
+/// speed) and the packs made again (their size now).
+fn p5_check(root: &Path, args: &[String]) -> Result<()> {
+    use pipeline::agent::{build, rekey, tiles::TerrainTiles};
+    anyhow::ensure!(positional(args).first().map(String::as_str) == Some("trees"), "p5-check trees (terrain and slope come later)");
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(root)).context("no complete OSM pass")?;
+    let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
+    let keys = build::Keys::load_strict(root)?;
+    let (recipes, bad) = pipeline::agent::recipes::load(&root.join("inputs/regions"));
+    anyhow::ensure!(bad.is_empty(), "regions that can't be read now (the agent re-keys nothing meanwhile): {bad:?}");
+    let outlines = m.get(&format!("sources/osm/{date}/outlines")).map(|c| pipeline::outlines::Outlines::open(&root.join(c))).transpose()?;
+    let cov = pipeline::coverage::Coverage::from_recipes(&recipes, outlines.as_ref(), &root.join("inputs/outlines"))?;
+    let costs: BTreeMap<String, pipeline::coord::Cost> = match opt(args, "--costs") {
+        Some(p) => pipeline::out::read_record(Path::new(&p))?,
+        None => BTreeMap::new(),
+    };
+    let me = pipeline::agent::cond::host();
+    // (A z3 tile's last run, at the build Mac's pace.)
+    let last_run = |q: &str| costs.get(&pipeline::coord::cost_key("trees", q)).map(|c| if c.worker.as_deref().is_none_or(|w| w == me) { c.secs as f64 } else { c.secs as f64 / 2.0 });
+    let t0 = std::time::Instant::now();
+    let times = rekey::FileTimes::new(root);
+    let z3: Vec<(String, String)> = keys.trees.iter().filter(|(t, _)| Unit::parse(t).is_some_and(|u| u.z == 3)).map(|(t, k)| (t.clone(), k.clone())).collect();
+    println!("pass {date}, {} regions; tree cover's records: {} z3 tiles' whole runs (the old scheme), {} pieces, {} assemblies", recipes.len(), z3.len(), keys.trees.len() - z3.len(), keys.trees_lo.len());
+    // The re-keying, its tree cover rules alone (no reaches: the units' are rekey-check's).
+    let mut after = keys.clone();
+    let r = rekey::rekey(&mut after, &cov, &date, &m, None, &BTreeMap::new(), &TerrainTiles::new(None), &times);
+    let mut twice = after.clone();
+    let again = rekey::rekey(&mut twice, &cov, &date, &m, None, &BTreeMap::new(), &TerrainTiles::new(None), &times);
+    println!("re-keyed: {} z3 tiles as their pieces and assemblies; dropped: {}; unknown now: {}; a second pass: {} ({:.1} s)", r.trees_moved.len(), r.trees_dropped.len(), r.trees_unknown.len(), if again.changed() || twice != after { "it changed the records again" } else { "nothing to do" }, t0.elapsed().as_secs_f64());
+    // Each z3 tile recorded: what it was, whose its packs are, what the switch does.
+    let old: BTreeMap<String, String> = rekey::v1::trees_targets(&cov, &m).into_iter().collect();
+    let tt = pipeline::treepacks::targets(&cov, &m);
+    let mtime = |c: &str| std::fs::metadata(root.join(c)).and_then(|md| md.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64);
+    let size = |c: &str| std::fs::metadata(root.join(c)).map(|md| md.len()).unwrap_or(0);
+    let packs_of = |q: Unit| -> Vec<&String> {
+        m.iter().filter(|(l, _)| pipeline::treepacks::LAYERS.iter().any(|layer| l.starts_with(&format!("layers/{layer}/"))) && (l.ends_with(&format!("/lo/{}", q.dash())) || l.rsplit('/').next().and_then(Unit::parse).is_some_and(|u| u.z == 6 && (u.x >> 3, u.y >> 3) == (q.x, q.y)))).map(|(_, c)| c).collect()
+    };
+    let (mut rebuild, mut backfill_s, mut bytes, mut unknown_s) = (0.0f64, 0.0f64, 0u64, 0usize);
+    for (q, k) in &z3 {
+        let Some(u) = Unit::parse(q) else { continue };
+        let state = match old.get(q) {
+            Some(now) if now == k && *now == rekey::v1::trees_none(q) => "current, \"none\"",
+            Some(now) if now == k => "current",
+            Some(_) => "stale",
+            None => "no longer a target",
+        };
+        let packs = packs_of(u);
+        let lo = pipeline::treepacks::LAYERS.iter().find_map(|l| m.get(&format!("layers/{l}/lo/{}", u.dash())));
+        let made = lo.and_then(|c| mtime(c.as_str())).map_or("?".to_string(), utc);
+        let by = match times.trees_by_program(&m, u.x, u.y) {
+            Some(true) => "the trees program",
+            Some(false) => "trees.py",
+            None => "? (its times unread)",
+        };
+        let n = tt.pieces_of(q).count();
+        let mb = packs.iter().map(|c| size(c.as_str())).sum::<u64>();
+        let run = last_run(q.as_str());
+        let what = if r.trees_moved.contains(q) {
+            backfill_s += run.unwrap_or(0.0);
+            "re-keyed: its pieces and assembly recorded, their mids made in idle time".to_string()
+        } else if let Some((_, why)) = r.trees_dropped.iter().find(|(t, _)| t == q) {
+            if !why.contains("nothing left") {
+                rebuild += run.unwrap_or(0.0);
+                unknown_s += run.is_none() as usize;
+                bytes += mb;
+            }
+            format!("dropped: {why}")
+        } else {
+            "kept for the next pass".to_string()
+        };
+        println!("  {q}: {state} under the old scheme; packs by {by} (lo pack written {made}); {n} pieces, {} packs, {:.0} MB; last run {}: {what}", packs.len(), mb as f64 / 1e6, run.map_or("unknown".to_string(), |s| format!("{s:.0} s")));
+    }
+    // The work the plan has after the switch.
+    let w = build::tree_work(&tt, &m, &after);
+    let areas: BTreeSet<String> = w.pieces.iter().filter_map(|(t, _)| pipeline::treepacks::area_of(t)).collect();
+    println!(
+        "after the switch, tree cover's work: {} pieces to make, in {} z3 tiles ({} of them current, their mids for an assembly), {} assemblies runnable now of {} stale, {} mids to backfill in idle time (expected the same)",
+        w.pieces.len(),
+        areas.len(),
+        w.pieces.iter().filter(|(t, k)| after.trees.get(t) == Some(k)).count(),
+        w.lo.len(),
+        w.stale_lo.len(),
+        w.backfill.len()
+    );
+    println!(
+        "its time by the z3 tiles' last runs (at the build Mac's pace): made again {:.1} h{}, the packs uploaded again {:.2} GB; the mids backfilled {:.1} h; the assemblies seconds each",
+        rebuild / 3600.0,
+        if unknown_s > 0 { format!(" ({unknown_s} z3 tiles' runs unknown)") } else { String::new() },
+        bytes as f64 / 1e9,
+        backfill_s / 3600.0
+    );
     Ok(())
 }
 
