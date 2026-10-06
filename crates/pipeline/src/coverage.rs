@@ -78,7 +78,7 @@ impl Shape {
     }
 
     /// Whether `p` (E7) is inside the rings (even–odd), the buffer aside.
-    fn inside(&self, p: [i32; 2]) -> bool {
+    pub fn inside(&self, p: [i32; 2]) -> bool {
         if p[0] < self.bbox[0] || p[0] > self.bbox[2] || p[1] < self.bbox[1] || p[1] > self.bbox[3] {
             return false;
         }
@@ -100,13 +100,12 @@ impl Shape {
 
     /// Whether `p` (E7) is inside, or within the buffer of the boundary.
     pub fn contains(&self, p: [i32; 2]) -> bool {
-        if p[0] < self.bbox[0] || p[0] > self.bbox[2] || p[1] < self.bbox[1] || p[1] > self.bbox[3] {
-            return false;
-        }
-        if self.inside(p) {
-            return true;
-        }
-        if self.buffer_m <= 0.0 {
+        self.inside(p) || self.near_edge(p)
+    }
+
+    /// Whether `p` (E7) is within the buffer of the boundary.
+    fn near_edge(&self, p: [i32; 2]) -> bool {
+        if self.buffer_m <= 0.0 || p[0] < self.bbox[0] || p[0] > self.bbox[2] || p[1] < self.bbox[1] || p[1] > self.bbox[3] {
             return false;
         }
         let (g, c) = (&self.grid, self.cell(p));
@@ -131,6 +130,16 @@ impl Shape {
         }
         // No edge meets it: the box is all inside or all outside.
         self.contains([((r[0] as i64 + r[2] as i64) / 2) as i32, ((r[1] as i64 + r[3] as i64) / 2) as i32])
+    }
+
+    /// Whether the box w, s, e, n (E7, edges included) meets the rings themselves (the buffer
+    /// aside): an edge meets it, else its centre is inside.
+    pub fn meets_rect_inside(&self, r: [i32; 4]) -> bool {
+        if r[0] > self.bbox[2] || r[2] < self.bbox[0] || r[1] > self.bbox[3] || r[3] < self.bbox[1] {
+            return false;
+        }
+        self.edges_meeting([r[0] as i64, r[1] as i64, r[2] as i64, r[3] as i64], &mut |_, _, _| true)
+            || self.inside([((r[0] as i64 + r[2] as i64) / 2) as i32, ((r[1] as i64 + r[3] as i64) / 2) as i32])
     }
 
     /// Whether every point of the box w, s, e, n (E7) is inside the rings (the buffer aside): no
@@ -420,24 +429,45 @@ impl Coverage {
         self.shapes.iter().any(|s| s.contains(p))
     }
 
-    /// The first shape (in the recipes' order) containing `p`, with its buffer.
+    /// The shape a point is of: the first (in the recipes' order) whose outline holds it, else the
+    /// first whose buffer reaches it. A town at a border is its own region's, not a neighbour's
+    /// whose 1 km buffer reaches over (Monaco isn't France's, Windsor isn't Michigan's); where
+    /// outlines overlap, the first's.
     pub fn shape_at(&self, p: [i32; 2]) -> Option<usize> {
-        self.shapes.iter().position(|s| s.contains(p))
+        let mut buffered = None;
+        for (i, s) in self.shapes.iter().enumerate() {
+            if s.inside(p) {
+                return Some(i);
+            }
+            if buffered.is_none() && s.near_edge(p) {
+                buffered = Some(i);
+            }
+        }
+        buffered
     }
 
     /// The shape `shape_at` gives every point of the box w, s, e, n (E7), when it's one: a shape
-    /// covering the whole box (`Shape::covers_rect`) that no shape before it meets. None otherwise
-    /// (the points then each asked).
+    /// whose outline covers the whole box (`Shape::covers_rect`) when no outline before it meets
+    /// the box. None otherwise (the points then each asked).
     pub fn box_shape(&self, b: [i32; 4]) -> Option<usize> {
         for (i, s) in self.shapes.iter().enumerate() {
             if s.covers_rect(b) {
                 return Some(i);
             }
-            if s.meets_rect(b) {
+            if s.meets_rect_inside(b) {
                 return None;
             }
         }
         None
+    }
+
+    /// The shapes meeting the box w, s, e, n (E7) in the recipes' order, each as its fingerprint
+    /// there (`Shape::fingerprint`) and its country: what decides a point's shape (`shape_at`, by
+    /// the order) and its country, where `fingerprint` (sorted, by geometry alone) misses a change
+    /// of order. The 3D buildings' tiles are keyed by it (docs/buildings3d.md §3.2).
+    pub fn shapes_key(&self, b: [i32; 4]) -> String {
+        let v: Vec<String> = self.shapes.iter().filter_map(|s| s.fingerprint(b).map(|f| format!("{f}:{}", s.country))).collect();
+        v.join(",")
     }
 
     /// Whether any shape's (buffered) box meets the box w, s, e, n (E7): a quick filter.
@@ -820,6 +850,13 @@ mod tests {
         assert_eq!(c.shape_at(e7(0.95, 50.5)), Some(0), "in both: the first");
         assert_eq!(c.shape_at(e7(1.5, 50.5)), Some(1));
         assert_eq!(c.shape_at(e7(3.0, 50.5)), None);
+        // Within the first's buffer but inside the second: the second's (its outline before any
+        // buffer); within the first's buffer only: the first's.
+        assert_eq!(c.shape_at(e7(1.005, 50.5)), Some(1));
+        assert_eq!(c.shape_at(e7(0.5, 51.005)), Some(0));
+        assert_eq!(c.shape_at(e7(0.5, 51.02)), None);
+        // A box there likewise: in the second's outline, the first's buffer no matter.
+        assert_eq!(c.box_shape(b(1.002, 50.4, 1.008, 50.6)), Some(1));
         // A box wholly inside the first, far from its edges: every point of it the first's.
         assert!(c.shapes[0].covers_rect(b(0.4, 50.4, 0.6, 50.6)));
         assert_eq!(c.box_shape(b(0.4, 50.4, 0.6, 50.6)), Some(0));
@@ -829,5 +866,26 @@ mod tests {
         assert_eq!(c.box_shape(b(0.95, 50.4, 1.5, 50.6)), None);
         assert_eq!(c.box_shape(b(1.3, 50.4, 1.6, 50.6)), Some(1));
         assert_eq!(c.box_shape(b(3.0, 50.4, 3.2, 50.6)), None);
+        // Every point of a box box_shape answers for has that shape.
+        for (w, e) in [(0.4, 0.6), (1.002, 1.008), (1.3, 1.6)] {
+            let s = c.box_shape(b(w, 50.4, e, 50.6)).unwrap();
+            for k in 0..=10 {
+                let x = w + (e - w) * k as f64 / 10.0;
+                assert_eq!(c.shape_at(e7(x, 50.4 + 0.02 * k as f64)), Some(s), "{x}");
+            }
+        }
+        // The key of a box: its shapes in order, with their countries; the order matters.
+        let mut c2 = c.clone();
+        c2.shapes.swap(0, 1);
+        let near = b(0.95, 50.4, 1.0, 50.6);
+        assert_ne!(c.shapes_key(near), c2.shapes_key(near));
+        assert_eq!(c.fingerprint(near), c2.fingerprint(near), "fingerprint misses the order");
+        c2.shapes[0].country = "FR".into();
+        assert_ne!(c2.shapes_key(near), {
+            let mut c3 = c2.clone();
+            c3.shapes[0].country = "MC".into();
+            c3.shapes_key(near)
+        });
+        assert_eq!(c.shapes_key(b(3.0, 50.4, 3.2, 50.6)), "");
     }
 }

@@ -371,11 +371,18 @@ In `agent::build`, beside the others (B2):
   and the GHSL tiles meeting T by name and size. A file fetched later (the coverage grew) changes the
   key of the tiles it meets; an unchanged result keeps its content name, so nothing after it reruns.
 - **`bldtiles T`'s key:** `bldtiles {BUILDINGS_V}`, the content names of `work/bld/` for T and its
-  8 neighbours ("-" for none), `Coverage::fingerprint` of T's box grown by 1 km, and the countries
-  of the coverage's shapes meeting that box (`Shape::country`): the fill's fits go by a building's
-  country, that of the first shape holding its centroid (else a vertex), from the pass's outline of
-  an `osm:` region (`Outlines::country_code`: its own ISO 3166-1 code, a territory's from its
-  subdivision code, else the country it lies in); the coverage's fits where none is known.
+  8 neighbours ("-" for none), and `Coverage::shapes_key` of T's box grown by 1 km (B1): the
+  coverage's shapes meeting the box in the recipes' order, each as its fingerprint there with its
+  country (`Shape::country`). Not `Coverage::fingerprint`, which sorts and dedups by geometry: a
+  building's shape is the first whose outline holds its centroid, else the first whose buffer does
+  (else a vertex's, likewise), so the order decides where outlines or buffers overlap, and a
+  region renamed (the recipes go in id order) can change a building's country with no geometry
+  changed. The fill's fits go by that country, from the pass's outline of an `osm:` region
+  (`Outlines::country_code`: its own ISO 3166-1 code, a territory's from its subdivision code where
+  ISO 3166-2 lists it by its own (US-PR, CN-HK, FR-GF, FR-PM), else the country it lies in; always
+  two letters); the coverage's fits where none is known. B1's probe of the 88 regions' 122 outlines
+  gave B0's country for each, and for 44 points at borders and in enclaves and territories
+  (Monaco, Gibraltar, Llívia, Windsor, Derby Line, Tui, Ceuta, the Canaries, Hong Kong).
 - **`bld-fetch`'s key:** the release, `coverage_all`, the footers' digest; kept with the lo keys under
   its own name, as `rail-feeds` is.
 - The pinned release is `buildtiles::RELEASE` for both the roadside and the 3D buildings: a new one

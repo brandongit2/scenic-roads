@@ -4,9 +4,9 @@
 //!
 //! - **Which:** a building or part touches the coverage when its centroid or one of its vertices
 //!   is inside it (with the 1 km buffer of `osm:` outlines), as a way does (plan.md §5). Its
-//!   country, which the fill's fits go by, is that of the first of the coverage's shapes holding
-//!   its centroid, else one of its vertices (`Shape::country`; the coverage's fits where it's
-//!   unknown).
+//!   country, which the fill's fits go by, is that of its centroid's shape (`Coverage::shape_at`:
+//!   the first outline holding it, else the first buffer reaching it), else its first vertex's
+//!   with one (`Shape::country`; the coverage's fits where it's unknown).
 //! - **The neighbours' rule** reads every building of the area's blocks and of the blocks within
 //!   310 m around it, from T's file and its 8 neighbours', in the coverage or not.
 //! - **Zooms:** z14 every building and part; z13 those 20 m tall or more, or with a footprint of
@@ -79,13 +79,10 @@ impl<'a> Codes<'a> {
     }
 }
 
-/// A record's place among the coverage's shapes: the first holding its centroid, else one of its
-/// vertices.
+/// A record's place among the coverage's shapes: its centroid's (`Coverage::shape_at`: the first
+/// outline holding it, else the first buffer), else that of the first of its vertices with one.
 fn shape_of(cov: &Coverage, b: &Block, i: usize) -> Option<usize> {
-    cov.shape_at(b.cen[i]).or_else(|| {
-        let v = b.verts_of(i);
-        cov.shapes.iter().position(|s| v.iter().any(|&p| s.contains(p)))
-    })
+    cov.shape_at(b.cen[i]).or_else(|| b.verts_of(i).iter().find_map(|&p| cov.shape_at(p)))
 }
 
 /// The country of shape `s` ("" none).

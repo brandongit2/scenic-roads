@@ -460,22 +460,15 @@ impl Outlines {
     }
 
     /// The ISO 3166-1 code of the country or territory an outline is or lies in: its own when it
-    /// has one (`ISO3166-1`; with an `ISO3166-2` too, a territory's subdivision code ends in it:
-    /// "US-PR", "CN-HK", "FR-GF", "FR-PM"), else the country it lies in, else its subdivision code's
-    /// country part; "" when none is known.
+    /// has one ([`territory_code`]), else that of the country it lies in, else its subdivision
+    /// code's country part; "" when none is known. Every code given is two capital letters.
     pub fn country_code(&self, o: &OutlineRec) -> String {
         let iso = self.string(o.iso);
-        if o.flags & flag::ISO1 != 0 {
-            let own = if o.flags & flag::ISO2 != 0 { iso.split_once('-').map_or("", |(_, t)| t) } else { iso };
-            if own.len() == 2 && own.bytes().all(|b| b.is_ascii_uppercase()) {
-                return own.to_string();
-            }
-        }
-        let c = self.string(o.country);
-        if !c.is_empty() {
-            return c.to_string();
-        }
-        iso.split('-').next().filter(|p| p.len() == 2).unwrap_or("").to_string()
+        let own = if o.flags & flag::ISO1 != 0 { territory_code(iso) } else { None };
+        own.or_else(|| territory_code(self.string(o.country)))
+            .or_else(|| iso.split('-').next().filter(|p| two_letters(p)))
+            .unwrap_or("")
+            .to_string()
     }
 
     /// The ISO 3166-1 and 3166-2 codes at `p` ("" where none).
@@ -483,6 +476,27 @@ impl Outlines {
         let c = self.containing(p)?;
         let pick = |f: u8| c.iter().find(|o| o.flags & f != 0).map(|o| self.string(o.iso).to_string()).unwrap_or_default();
         Ok((pick(flag::ISO1), pick(flag::ISO2)))
+    }
+}
+
+/// Countries whose ISO 3166-2 lists their territories by the territories' own ISO 3166-1 codes:
+/// CN-HK, CN-MO, CN-TW; FR-GF, FR-GP, FR-MQ, FR-NC, FR-PF, FR-PM, FR-RE, FR-YT…; NL-AW, NL-CW,
+/// NL-SX; US-AS, US-GU, US-MP, US-PR, US-VI.
+const OWN_CODED: [&str; 4] = ["CN", "FR", "NL", "US"];
+
+fn two_letters(s: &str) -> bool {
+    s.len() == 2 && s.bytes().all(|b| b.is_ascii_uppercase())
+}
+
+/// A country's or territory's ISO 3166-1 code from the `iso` of its outline (one tagged
+/// `ISO3166-1`): that code; or, when the outline has a subdivision code too (which `iso` then
+/// holds), the code's end where it's a territory's own ("US-PR": PR), else its start ("ES-CN": ES,
+/// not China). None when that isn't two capital letters.
+fn territory_code(iso: &str) -> Option<&str> {
+    match iso.split_once('-') {
+        None => two_letters(iso).then_some(iso),
+        Some((c, t)) if OWN_CODED.contains(&c) && two_letters(t) => Some(t),
+        Some((c, _)) => two_letters(c).then_some(c),
     }
 }
 
@@ -517,6 +531,33 @@ mod tests {
         let o = Outlines::open(&out).unwrap();
         assert_eq!(o.country_code(o.by_id(9).unwrap()), "PR");
         assert_eq!(o.country_code(o.by_id(11).unwrap()), "");
+        // The codes as read: a territory's own, a subdivision code's country, never a non-code.
+        assert_eq!(territory_code("US-PR"), Some("PR"));
+        assert_eq!(territory_code("FR-GF"), Some("GF"));
+        assert_eq!(territory_code("ES-CN"), Some("ES"), "the Canaries: Spain's, not China's");
+        assert_eq!(territory_code("FR-2A"), Some("FR"));
+        assert_eq!(territory_code("JP"), Some("JP"));
+        assert_eq!(territory_code(""), None);
+        assert_eq!(territory_code("Japan"), None);
+        assert_eq!(territory_code("jp"), None);
+    }
+
+    #[test]
+    fn country_codes_in_a_territory() {
+        // A town (no codes) in Puerto Rico (both codes): Puerto Rico's, not "US-PR"; a region
+        // with both codes where the subdivision code isn't the territory's own: its country.
+        let d = tempfile::tempdir().unwrap();
+        let geo = d.path().join("o.geojsonseq");
+        let pr = SQUARE_WITH_HOLE.replace("\"@id\":7", "\"@id\":9").replace("\"admin_level\":\"4\"", "\"admin_level\":\"2\"").replace("\"ISO3166-2\":\"XX-SQ\"", "\"ISO3166-1\":\"PR\",\"ISO3166-2\":\"US-PR\"");
+        let town = SQUARE_WITH_HOLE.replace("\"@id\":7", "\"@id\":12").replace("\"admin_level\":\"4\"", "\"admin_level\":\"8\"").replace(",\"ISO3166-2\":\"XX-SQ\"", "").replace("[[0,0],[1,0],[1,1],[0,1],[0,0]],[[0.4,0.4],[0.6,0.4],[0.6,0.6],[0.4,0.6],[0.4,0.4]]", "[[0.1,0.1],[0.2,0.1],[0.2,0.2],[0.1,0.2],[0.1,0.1]]");
+        let canaries = SQUARE_WITH_HOLE.replace("\"@id\":7", "\"@id\":13").replace("\"ISO3166-2\":\"XX-SQ\"", "\"ISO3166-1\":\"IC\",\"ISO3166-2\":\"ES-CN\"").replace("[[0,0],[1,0],[1,1],[0,1],[0,0]],[[0.4,0.4],[0.6,0.4],[0.6,0.6],[0.4,0.6],[0.4,0.4]]", "[[20,20],[21,20],[21,21],[20,21],[20,20]]");
+        std::fs::write(&geo, format!("\u{1e}{pr}\n\u{1e}{town}\n\u{1e}{canaries}\n")).unwrap();
+        let out = d.path().join("outlines.sect");
+        assemble_geojsonseq(&geo, &out).unwrap();
+        let o = Outlines::open(&out).unwrap();
+        assert_eq!(o.string(o.by_id(12).unwrap().country), "US-PR");
+        assert_eq!(o.country_code(o.by_id(12).unwrap()), "PR");
+        assert_eq!(o.country_code(o.by_id(13).unwrap()), "ES");
     }
 
     #[test]
