@@ -224,9 +224,10 @@ impl Repair {
 pub enum BlobKind {
     /// Steeper over its footprint than terrain can be, and towering over the ground around it.
     Broken,
-    /// A small blob steeper than 45° over its width and walled so on a quarter of its edge at
-    /// least, on flat ground or beside a blob taken or a void: a spike over water or lowland, or a
-    /// lobe of an artifact's ringing (a resampling's overshoot beside an edge of AWS's source).
+    /// A small blob, not cut by the tile's edge, steeper than 45° over its width (its inradius)
+    /// and two of: walled so on a quarter of its edge at least, on flat ground (or a smooth slope),
+    /// beside a blob taken or a void: a spike over water or lowland, or a lobe of an artifact's
+    /// ringing (a resampling's overshoot beside an edge of AWS's source).
     Spike,
     /// Broken, but under the sea: the map shows sea level there either way.
     Unseen,
@@ -262,13 +263,14 @@ pub struct Blob {
 ///   connected, around a peak; below it, around a pit), so a cluster is judged whole, against the
 ///   level at which it meets the rest, whatever its size, and can't hide behind its own pixels.
 ///   One that stands out more than BLOB_RISE as the map shows it is broken (BlobKind) when it's
-///   steeper over its footprint than terrain can be (`steepest`, taken where it does most, the
-///   flanks of a smooth bump with it) and towers over the ground around it (ROUGH: a summit AWS
-///   drew too sharp, among rough ground, stays), or when it's a pit down to sea level in raised
-///   ground (AWS's filler); a small walled one is a spike when it's on flat ground or beside a blob
-///   taken; one under the sea is filled there. A summit or a ridge widens as it goes down, a cliff
-///   is the edge of something larger, and an island, a sea stack or a mesa larger than BLOB_MAX
-///   pixels stays whatever it is.
+///   steeper over its footprint, as the map shows it, than terrain can be (`steepest`, taken where
+///   it does most, the flanks of a smooth bump with it) and towers over the ground around it
+///   (ROUGH: a summit AWS drew too sharp, among rough ground, stays), or when it's a pit down to
+///   sea level in raised ground (AWS's filler); a small one steeper than 45° over its width is a
+///   spike when two of three hold: walled, on flat ground, beside a blob taken (an island's top or
+///   a plug as steep is on flat ground alone); one under the sea is filled there. A summit or a
+///   ridge widens as it goes down, a cliff is the edge of something larger, and an island, a sea
+///   stack or a mesa larger than BLOB_MAX pixels stays whatever it is.
 /// The tile is taken as AWS has it, before bathymetry goes to sea level: a pit in a lake reads as
 /// deep as AWS made it (−655 m in Shumarinai's, 274 m up, where a tower of 2,740 m rings).
 /// It's judged in stages, each on AWS's tile with what was found before filled in (the smoothest
