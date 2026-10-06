@@ -1264,7 +1264,9 @@ async function main() {
     const p = roads.progress();
     if (!bootDone) {
       boot.sub(3, p.wanted ? p.loaded / p.wanted : 0, `${p.loaded}/${p.wanted}`);
-      if (p.wanted > 0 && p.loaded >= p.wanted) finishBoot();
+      // On a timer, out of MapLibre's render pass (this runs in the road layer's prerender): the
+      // pass sets up its draped textures (3D terrain) first, and threw on overlays released in it.
+      if (p.wanted > 0 && p.loaded >= p.wanted) setTimeout(finishBoot, 0);
     }
   };
   map.on('move', () => {
