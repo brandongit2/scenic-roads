@@ -3855,12 +3855,20 @@ mod tests {
         let done = |u: &str, k: &str| crate::handoff::Handoff { done: Some(("unit".into(), vec![(u.into(), k.into())])), ..Default::default() };
         crate::handoff::write(&crate::handoff::dir(&root, "old-m1"), &done("6/1/2", "k2")).unwrap();
         crate::handoff::write(&home.join("coord/journal/m1"), &done("6/1/3", "k3")).unwrap();
+        // The files they save count too (a tree cover piece's mid: build::tree_work), but one a
+        // later hand-off removes.
+        let save = |l: &str, c: Option<&str>| crate::handoff::Handoff { changes: [(l.to_string(), c.map(str::to_string))].into(), ..Default::default() };
+        crate::handoff::write(&home.join("coord/journal/m1"), &save("work/trees-mid/6-28-16", Some("work/trees-mid/6-28-16.1111111111111111.sect"))).unwrap();
+        crate::handoff::write(&home.join("coord/journal/m1"), &save("layers/trees-cover/hi/6-28-17", Some("layers/trees-cover/hi/6-28-17.2222222222222222.pack"))).unwrap();
+        crate::handoff::write(&home.join("coord/journal/m1"), &save("layers/trees-cover/hi/6-28-17", None)).unwrap();
         let k = a.planning_keys(&root).unwrap();
         assert_eq!((k.recorded("unit", "6/1/1"), k.recorded("unit", "6/1/2"), k.recorded("unit", "6/1/3")), (Some("k1"), Some("k2"), Some("k3")));
-        assert_eq!(crate::handoff::merge_from(&root, &home.join("scratch/handoff"), &a.handoff_bases(&root)).unwrap(), 2);
+        assert_eq!(k.handed.iter().collect::<Vec<_>>(), ["work/trees-mid/6-28-16"]);
+        assert_eq!(crate::handoff::merge_from(&root, &home.join("scratch/handoff"), &a.handoff_bases(&root)).unwrap(), 5);
         let k = build::Keys::load(&root);
         assert_eq!((k.recorded("unit", "6/1/2"), k.recorded("unit", "6/1/3")), (Some("k2"), Some("k3")));
         assert!(crate::handoff::waiting_in(&home.join("coord/journal")).unwrap().is_empty());
+        assert!(k.handed.is_empty() && a.planning_keys(&root).unwrap().handed.is_empty(), "merged: in the manifest, never in the keys saved");
     }
 
     fn agent(root: &Path, home: &Path) -> Agent {

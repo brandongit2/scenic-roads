@@ -1576,7 +1576,9 @@ and, when none fits it, units' last steps.
   whole run, a lease of the scheme before pieces), and journals it whole on the build Mac
   (`coord/journal/<worker>/`); the agent merges the journal before it plans, under its own lock (not
   while a paused job holds it), all of a hand-off or none, as it merged the NAS's hand-off files.
-  Until they're merged, the agent plans with their done records on top of the keys.
+  Until they're merged, the agent plans with their done records on top of the keys, and a tree
+  cover piece's mid one saves counts as made: the piece isn't made again for it, and its z3 tile's
+  assembly waits for the merge.
 - **Raw terrain tiles a helper fetches** (terrain, peaks): it packs them into archives and puts them
   on the NAS itself (content-named, written whole: as a unit's packs), keeping none, and hands the
   build Mac only their names (`Handoff::raw`: every loose tile in its cache, an earlier stopped job's

@@ -94,6 +94,10 @@ pub struct Keys {
     /// catalog-held/, not served).
     #[serde(default)]
     pub catalog_held: Option<String>,
+    /// For planning (`load_with`; never saved): the files the hand-offs waiting to be merged save,
+    /// by logical name. A tree cover piece's mid there counts as made (`tree_work`).
+    #[serde(skip)]
+    pub handed: BTreeSet<String>,
 }
 
 impl Keys {
@@ -116,7 +120,7 @@ impl Keys {
     }
 
     /// `load_with_handoffs` for the hand-offs under each of `bases` (the NAS's, the coordinator's
-    /// journal on this Mac).
+    /// journal on this Mac), and the files they save (`handed`).
     pub fn load_with(root: &Path, bases: &[std::path::PathBuf]) -> anyhow::Result<Keys> {
         let mut hs = Vec::new();
         for b in bases {
@@ -124,6 +128,13 @@ impl Keys {
         }
         let mut k = Keys::load_strict(root)?;
         for (_, h) in hs {
+            for (l, c) in &h.changes {
+                if c.is_some() {
+                    k.handed.insert(l.clone());
+                } else {
+                    k.handed.remove(l);
+                }
+            }
             if let Some((step, targets)) = &h.done {
                 k.record(step, targets);
             }
@@ -694,8 +705,9 @@ pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>) -> (V
 /// assembly per z3 tile from its pieces' mids).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TreeWork {
-    /// The pieces to make: those stale, and those current without a mid (made again as they are,
-    /// expected the same) in an area whose assembly will run: it's stale, or a piece of it is.
+    /// The pieces to make: those stale, and those current without a mid (in the manifest, or in a
+    /// hand-off waiting to be merged: made again as they are, expected the same) in an area whose
+    /// assembly will run: it's stale, or a piece of it is.
     pub pieces: Vec<(String, String)>,
     /// The assemblies that can run: stale, every piece of theirs current with its mid (one of
     /// "none", whenever).
@@ -709,17 +721,20 @@ pub struct TreeWork {
     pub stale_lo: BTreeSet<String>,
 }
 
-/// Tree cover's work (`TreeWork`) for its targets `tt`, the manifest `m` and what was done.
+/// Tree cover's work (`TreeWork`) for its targets `tt`, the manifest `m` and what was done (with
+/// the hand-offs waiting to be merged: a piece current by one of them has its mid there, not in
+/// `m`, until it's merged: not made again for it, while its assembly waits for it).
 pub fn tree_work(tt: &crate::treepacks::Targets, m: &BTreeMap<String, String>, done: &Keys) -> TreeWork {
     use crate::treepacks::{area_of, mid_logical};
     let current = |t: &str, k: &str| done.trees.get(t).map(String::as_str) == Some(k);
     let has_mid = |t: &str| Unit::parse(t).is_some_and(|u| m.contains_key(&mid_logical(u.x, u.y)));
+    let mid_handed = |t: &str| Unit::parse(t).is_some_and(|u| done.handed.contains(&mid_logical(u.x, u.y)));
     let stale_pieces: BTreeSet<String> = tt.pieces.iter().filter(|(t, k, _)| !current(t, k)).map(|p| p.0.clone()).collect();
     let stale_lo: BTreeSet<String> = tt.lo.iter().filter(|(q, k, _)| done.trees_lo.get(q) != Some(k)).map(|l| l.0.clone()).collect();
     let changing: BTreeSet<String> = stale_lo.iter().cloned().chain(stale_pieces.iter().filter_map(|t| area_of(t))).collect();
     let mut w = TreeWork::default();
     for (t, k, none) in &tt.pieces {
-        let needs_mid = !none && current(t, k) && !has_mid(t);
+        let needs_mid = !none && current(t, k) && !has_mid(t) && !mid_handed(t);
         if !current(t, k) || (needs_mid && area_of(t).is_some_and(|q| changing.contains(&q))) {
             w.pieces.push((t.clone(), k.clone()));
         } else if needs_mid {
@@ -2600,6 +2615,11 @@ pub(crate) mod tests {
         let w = tree_work(&tt, &m, &done);
         assert!(w.pieces.is_empty() && w.lo.is_empty() && w.stale_pieces.is_empty() && w.stale_lo.is_empty());
         assert_eq!(ts(&w.backfill), ["6/28/16", "6/28/17", "6/29/16"]);
+        // One's mid in a hand-off waiting to be merged (the keys planned with have its record on
+        // top, Keys::load_with): not made again for it.
+        let mut handed = done.clone();
+        handed.handed.insert(crate::treepacks::mid_logical(28, 16));
+        assert_eq!(ts(&tree_work(&tt, &m, &handed).backfill), ["6/28/17", "6/29/16"]);
         let p = plan(&m, &done);
         assert_eq!(p.work.last(), Some(&Work { step: "trees".into(), targets: w.backfill.clone() }));
         assert_eq!(p.backfill, w.backfill);
@@ -2611,6 +2631,12 @@ pub(crate) mod tests {
         let w = tree_work(&tt, &m, &done);
         assert_eq!((ts(&w.pieces), w.lo.len(), w.backfill.len()), (vec!["6/28/17".to_string(), "6/29/16".into()], 0, 0), "not assembled until each piece has its mid");
         assert!(w.stale_pieces.is_empty() && w.stale_lo.contains("3/3/2"));
+        // Their mids handed off, not yet merged: neither made again, and the assembly waits for them
+        // to be merged.
+        let mut handed = done.clone();
+        handed.handed.extend([crate::treepacks::mid_logical(28, 17), crate::treepacks::mid_logical(29, 16)]);
+        let wh = tree_work(&tt, &m, &handed);
+        assert!(wh.pieces.is_empty() && wh.backfill.is_empty() && wh.lo.is_empty() && wh.stale_lo.contains("3/3/2"), "{wh:?}");
         did(&mut m, &mut done, &Work { step: "trees".into(), targets: w.pieces.clone() });
         let w = tree_work(&crate::treepacks::targets(&c, &m), &m, &done);
         assert_eq!((w.pieces.len(), ts(&w.lo)), (0, vec!["3/3/2".to_string()]));
