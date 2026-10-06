@@ -38,8 +38,9 @@
 //!   (`settle`: stop granting, cancel its duties in flight, write the coordinator's state and hand
 //!   it back in `Heard::settled`); publish a catalog or sweep (GC) only once its records reflect
 //!   the journal (`caught_up`: the listing its take-up asked for merged and saved, nothing it was
-//!   told of waiting), and sweep only on a step that re-asserted (`fresh`: asked with
-//!   `Heard::reassert`; it says no later term was made before, not that its records are whole);
+//!   told of waiting, a re-assertion keeping it), and sweep only on a step that re-asserted
+//!   (`fresh`: asked with `Heard::reassert`; it says no later term was made before, not that its
+//!   records are whole);
 //!   a listing to make; and what happened (`Event`s: terms taken up, stepped down from, handed
 //!   over; errors), for the history and the log;
 //! - **never fails**: an error stops only the duty that met it (said in an `Event::Failed`), and
@@ -70,7 +71,9 @@
 //! when its last step ran over `STALL_S` (the NAS stalled: a share under load slows every
 //! operation, so a step's length short of that says nothing); after a restart; and when the agent
 //! asks (`Heard::reassert`, before a GC sweep). Time spent listing the journal, or waiting between
-//! loops, isn't a gap. A lead whose re-assertion the app rule refuses (it restarted into an older
+//! loops, isn't a gap. A re-assertion keeps what the lead knew of the journal (no other lead came
+//! between), so a sweep's step is caught up; after a sleep, its members' messages meanwhile lost,
+//! it lists the journal again. A lead whose re-assertion the app rule refuses (it restarted into an older
 //! app or a development build) stands down, and says so in its heartbeat (`Beat::stood_down`); it
 //! takes its term up again once its app is new enough. A member that has seen the lead's
 //! heartbeat stood down for `STOOD_DOWN_S` takes over by itself, if the app rule lets it: the
@@ -219,9 +222,9 @@ pub struct Out {
     pub fresh: bool,
     /// Leading, its records reflect the journal: the listing its take-up asked for is merged and
     /// saved, and every entry it was told of or listed is read (on a share under load a loop
-    /// leaves some to the next; one never read whole is refused after `UNREADABLE_S`). A catalog
-    /// waits for it (and `duties`); GC too (and `fresh`): an entry not merged yet may hold uploads
-    /// the records don't name.
+    /// leaves some to the next; one never read whole is refused after `UNREADABLE_S`). A
+    /// re-assertion keeps it, but after a sleep. A catalog waits for it (and `duties`); GC too
+    /// (and `fresh`): an entry not merged yet may hold uploads the records don't name.
     pub caught_up: bool,
     /// A listing of the journal to make, handed back in `Heard::listed`.
     pub list: Option<Listing>,
@@ -345,8 +348,10 @@ pub struct Driver {
     taking: Option<Records>,
     /// Its records of a term it led, for a later term naming it to start from.
     spare: Option<Records>,
-    /// It must re-assert before acting as lead, and why.
+    /// It must re-assert before acting as lead, and why; and, leading, it slept since it last did
+    /// (its members' messages lost meanwhile).
     must: Option<&'static str>,
+    slept: bool,
     /// Its clocks (wall, awake) at its last step's end.
     clocks: Option<(u64, u64)>,
     /// The listing due next (a take-up's: every day), the one asked for and not back, the asks'
@@ -391,7 +396,7 @@ impl Driver {
         let known = saved.member == me.id;
         let saved = if known { saved } else { Saved { member: me.id.clone(), ..Default::default() } };
         let passing = saved.passing.clone().map(|(own, passed, hand)| Passing { own, passed, hand, records: None });
-        Driver { me, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, clocks: None, due: None, asked: None, asks: 0, swept: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None }
+        Driver { me, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: None, asks: 0, swept: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None }
     }
 
     /// What to keep for the next process (after every step that changed it).
@@ -423,6 +428,7 @@ impl Driver {
         if self.lead.is_some() {
             if self.clocks.is_some_and(|was| gap(was, start)) {
                 self.must = Some("re-asserted after a gap");
+                self.slept = true;
             } else if heard.reassert && self.must.is_none() {
                 self.must = Some("re-asserted before a sweep");
             }
@@ -511,6 +517,7 @@ impl Driver {
         let end = (io.now(), io.awake());
         if self.lead.is_some() && self.must.is_none() && (gap(start, end) || end.1.saturating_sub(start.1) > STALL_S) {
             self.must = Some("re-asserted after a long step");
+            self.slept |= gap(start, end);
         }
         self.clocks = Some(end);
         out.term = self.cur.term;
@@ -633,7 +640,18 @@ impl Driver {
                 }
                 self.must = None;
                 self.spare = Some(l.records);
+                let (slept, due, asked) = (std::mem::take(&mut self.slept), self.due.clone(), self.asked);
                 self.made(io, out, t, made);
+                // (No other lead between: what it knew of the journal holds, its take-up's listing
+                // merged too, so a sweep's step is caught up. Not after a sleep: what was written
+                // meanwhile, told to it and lost, a listing finds.)
+                if let Some(n) = self.lead.as_mut() {
+                    (n.told, n.waiting, n.unreadable) = (l.told, l.waiting, l.unreadable);
+                    if l.listed && !slept {
+                        n.listed = true;
+                        (self.due, self.asked) = (due, asked);
+                    }
+                }
                 out.fresh = self.lead.is_some();
             }
             // (Still leading, its duties held until it can.)
@@ -705,6 +723,7 @@ impl Driver {
         }
         self.taking = None;
         self.spare = None;
+        self.slept = false;
         self.saved.led = t.term;
         self.saved.stood_down = None;
         self.must = None;
@@ -1481,6 +1500,34 @@ mod tests {
         assert!(why.as_deref().is_some_and(|w| w.contains("not read whole")), "{why:?}");
         assert_eq!(journal::refusal(&mem, &key).unwrap(), why, "noted for the owner");
         assert!(o.send.iter().any(|(to, m)| to == B && matches!(m, Msg::Ack { keys, .. } if keys.contains(&key))), "{:?}", o.send);
+    }
+
+    #[test]
+    fn a_re_assertion_keeps_what_its_lead_knew_of_the_journal() {
+        // Before a sweep the agent asks the lead to re-assert: a sweep needs both `fresh` and
+        // `caught_up`, and a re-assertion's take-up started its knowledge again, so the two never
+        // met. After a sleep, what members told it meanwhile was lost: it lists the journal again.
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let list = step(&mut a, &ia, able()).list.expect("its take-up's listing");
+        ia.pass(20);
+        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }).caught_up);
+        ia.pass(20);
+        let o = step(&mut a, &ia, Heard { reassert: true, ..able() });
+        assert_eq!(o.leads, Some(2), "{:?}", o.events);
+        assert!(o.fresh && o.caught_up, "a sweep's step: {:?}", o.events);
+        assert!(o.list.as_ref().is_none_or(|l| l.since.is_some()), "no listing of every day: {:?}", o.list);
+        // Asleep an hour: re-asserted, not caught up until its new listing is merged.
+        ia.wall.set(ia.wall.get() + 3600);
+        let o = step(&mut a, &ia, able());
+        assert_eq!(o.leads, Some(3), "{:?}", o.events);
+        assert!(!o.caught_up);
+        let list = o.list.expect("a listing of every day");
+        assert_eq!(list.since, None);
+        ia.pass(20);
+        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }).caught_up);
     }
 
     #[test]

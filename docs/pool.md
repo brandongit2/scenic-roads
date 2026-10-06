@@ -318,10 +318,12 @@ its wall clock moved more than a minute beyond its awake clock (Rust's `Instant`
 count sleep: it slept, or its clock was set); when its last loop ran over five minutes awake (the
 NAS stalled: on a share under load every operation can take seconds, so a loop's length short of
 that says nothing); after a restart; and before every GC sweep. Time spent waiting between loops, or
-listing the journal (done off the loop), isn't a gap. A member whose saved state is lost (or is
-another's: a copy of the agent's folder) re-asserts a term naming it that it finds at its start,
-rather than take it up again: it may have led it, its leases granted. If the term it makes already
-exists, someone took over: it **steps down** at once.
+listing the journal (done off the loop), isn't a gap. It keeps what it knew of the journal (no
+other lead came between), so the loop that re-asserts before a sweep is caught up (§6.2); after a
+sleep, the messages members sent it meanwhile lost, it lists the journal again. A member whose
+saved state is lost (or is another's: a copy of the agent's folder) re-asserts a term naming it
+that it finds at its start, rather than take it up again: it may have led it, its leases granted.
+If the term it makes already exists, someone took over: it **steps down** at once.
 
 A lead restarted into an older app or a development build can't re-assert (the app rule): it
 **stands down**, and its heartbeat says so (`stood_down`: its term, which no one then leads), so
@@ -647,12 +649,12 @@ switched on.
   every entry ever written, a Mac's gone for good included. While they lack entries, fewer each
   time, the run goes on ten minutes at a time, up to two hours: on a share taking seconds an
   operation a lead merges about a dozen entries a loop, and hours of faults with no lead leave
-  hundreds. The tests run 2,000 seeds, each kind of
-  change of lead and of fault, and what each knob brings, among them at least three times; slow
-  listings with a week of the journal, development builds and rollbacks, and a Mac leaving, alone
-  (300 to 1,000 seeds each); a long run, left out by default, of 100,000 schedules of four hours'
-  faults; and the first draft's scheme (one shared records file, the journal emptied as it's
-  merged) on the same model, which finds its lost update.
+  hundreds. The tests run 2,000 seeds, each kind of change of lead and of fault, and what each knob
+  brings, among them at least three times (a lead caught up on a step it re-asserted for a sweep
+  too); slow listings with a week of the journal, development builds and rollbacks, and a Mac
+  leaving, alone (300 to 1,000 seeds each); a long run, left out by default, of 100,000 schedules of
+  four hours' faults; and the first draft's scheme (one shared records file, the journal emptied as
+  it's merged) on the same model, which finds its lost update.
 - **What it doesn't model:** torn or holed reads (a file reads whole, empty or as an older version:
   the modules' tests read holes); I/O errors other than a busy rename, a create cut short and lost
   answers; `remove` failing busy; GC (removing the journal's old days, forgetting them: the forget

@@ -1269,12 +1269,13 @@ impl Mac {
             self.gave = true;
         }
         heard.reassert = faulting && self.leads.is_some() && self.rng.chance(P_SWEEP);
+        let sweep = heard.reassert;
         let out = self.driver.step(&self.sim, heard, &check);
-        self.after(out, faulting)
+        self.after(out, faulting, sweep)
     }
 
-    /// What its driver's step came to, done.
-    fn after(&mut self, out: Out, faulting: bool) -> Result<()> {
+    /// What its driver's step came to, done (`sweep`: the step was asked to re-assert, for one).
+    fn after(&mut self, out: Out, faulting: bool, sweep: bool) -> Result<()> {
         self.term = out.term;
         self.sim.view(out.term)?;
         for ev in &out.events {
@@ -1286,6 +1287,10 @@ impl Mac {
         }
         if let (Some(e), true) = (out.leads, out.caught_up) {
             self.sim.op(|w, me| w.caught_up(me, e))?;
+        }
+        // (A sweep needs both: its step re-asserted, and its records reflect the journal.)
+        if sweep && out.fresh && out.caught_up {
+            self.sim.count("sweeps a lead could make");
         }
         // Its coordinator: grants while its lead may; settling, writes its state once.
         if out.leads.is_some() && out.duties && faulting && self.rng.chance(P_GRANT) {
@@ -1564,7 +1569,7 @@ fn check_all(seeds: Range<u64>, cfg: impl Fn(u64) -> Cfg + Sync) -> Counts {
 
 /// Each kind of change of lead and fault, and what the knobs bring, that the default runs must see
 /// at least three times (a simulator that never got there would pass too).
-const KINDS: [&str; 28] = [
+const KINDS: [&str; 29] = [
     "handed over",
     "taken back",
     "taken over",
@@ -1593,6 +1598,7 @@ const KINDS: [&str; 28] = [
     "saved states lost",
     "re-assertions with a saved state lost",
     "leads caught up",
+    "sweeps a lead could make",
 ];
 
 #[test]
