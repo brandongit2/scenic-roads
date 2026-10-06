@@ -127,21 +127,63 @@ fn parse_uuid(ioreg: &str) -> Option<String> {
 }
 
 /// This process's hold on its member (crate::pool::driver's contract: one process per member): an
-/// exclusive flock on a file named by the member id in this user's temporary folder, held while
-/// the process runs, so a second process of the member (a second agent, or one started from a copy
-/// of the agent's folder) can't take it. Let go when dropped.
-pub struct MemberLock(#[allow(dead_code)] std::fs::File);
+/// exclusive flock on `pool-<id>.lock` in the app's folder (`~/Library/Application Support/scenic`:
+/// above every copy of the agent's folder on this Mac, and not the temporary folder, which macOS
+/// empties of files three days old), held while the process runs, so a second process of the
+/// member (a second agent, or one started from a copy of the agent's folder) can't take it. The
+/// driver checks it at every step (`check`). Let go when dropped.
+#[derive(Debug)]
+pub struct MemberLock {
+    file: std::fs::File,
+    path: std::path::PathBuf,
+}
 
 impl MemberLock {
-    /// Member `id`'s lock; None when another process holds it.
-    pub fn take(id: &str) -> Result<Option<MemberLock>> {
+    /// Member `id`'s lock, in folder `dir` (the app's); None when another process holds it.
+    pub fn take(dir: &Path, id: &str) -> Result<Option<MemberLock>> {
         anyhow::ensure!(is_member_id(id), "{id:?} isn't a member id");
-        let p = std::env::temp_dir().join(format!("scenic-pool-{id}.lock"));
-        let f = std::fs::File::options().create(true).truncate(false).write(true).open(&p).with_context(|| format!("open {}", p.display()))?;
-        if !crate::sys::lock(&f, false).with_context(|| format!("lock {}", p.display()))? {
-            return Ok(None);
+        std::fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
+        let path = dir.join(format!("pool-{id}.lock"));
+        Ok(lock_file(&path)?.map(|file| MemberLock { file, path }))
+    }
+
+    /// That this process still holds it: its path still names the file it holds. One removed or
+    /// replaced (by hand, or a cleanup) is taken again when no other process holds it now; an
+    /// error when one does: this process isn't the member's only one, and stops.
+    pub fn check(&mut self) -> Result<()> {
+        match std::fs::metadata(&self.path) {
+            Ok(m) if same_file(&m, &self.file.metadata().with_context(|| format!("stat {}", self.path.display()))?) => return Ok(()),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("stat {}", self.path.display())),
         }
-        Ok(Some(MemberLock(f)))
+        match lock_file(&self.path)? {
+            Some(file) => {
+                self.file = file;
+                Ok(())
+            }
+            None => anyhow::bail!("{} was replaced, and another process holds it: another process is this member", self.path.display()),
+        }
+    }
+}
+
+/// The file at `path`, made if it isn't there, locked; None when another process holds its lock.
+fn lock_file(path: &Path) -> Result<Option<std::fs::File>> {
+    let f = std::fs::File::options().create(true).truncate(false).write(true).open(path).with_context(|| format!("open {}", path.display()))?;
+    Ok(crate::sys::lock(&f, false).with_context(|| format!("lock {}", path.display()))?.then_some(f))
+}
+
+/// Whether two files' metadata are of one file (its device and inode).
+fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        (a.dev(), a.ino()) == (b.dev(), b.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (a, b);
+        true
     }
 }
 
@@ -192,13 +234,32 @@ mod tests {
     #[test]
     fn a_member_is_one_process() {
         // (Review N7: nothing kept a second process of a member from stepping a driver.)
+        let dir = tempfile::tempdir().unwrap();
         let id = new_id();
-        let held = MemberLock::take(&id).unwrap().expect("free");
-        assert!(MemberLock::take(&id).unwrap().is_none(), "held by another");
-        assert!(MemberLock::take(&new_id()).unwrap().is_some(), "another member's is its own");
+        let held = MemberLock::take(dir.path(), &id).unwrap().expect("free");
+        assert!(MemberLock::take(dir.path(), &id).unwrap().is_none(), "held by another");
+        assert!(MemberLock::take(dir.path(), &new_id()).unwrap().is_some(), "another member's is its own");
         drop(held);
-        assert!(MemberLock::take(&id).unwrap().is_some(), "let go");
-        assert!(MemberLock::take("Mac-mini").is_err());
+        assert!(MemberLock::take(dir.path(), &id).unwrap().is_some(), "let go");
+        assert!(MemberLock::take(dir.path(), "Mac-mini").is_err());
+    }
+
+    #[test]
+    fn a_member_lock_whose_file_is_removed_is_taken_again_or_stops_its_process() {
+        // macOS empties the temporary folder of files three days old, and the agent holds its lock
+        // for longer: removed, a second process could take a lock of its own. (Re-review F2.)
+        let dir = tempfile::tempdir().unwrap();
+        let id = new_id();
+        let path = dir.path().join(format!("pool-{id}.lock"));
+        let mut held = MemberLock::take(dir.path(), &id).unwrap().expect("free");
+        held.check().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        held.check().expect("no other process: taken again");
+        assert!(MemberLock::take(dir.path(), &id).unwrap().is_none(), "held again");
+        std::fs::remove_file(&path).unwrap();
+        let second = MemberLock::take(dir.path(), &id).unwrap().expect("a second process takes the new file");
+        assert!(held.check().is_err(), "another process is the member: this one stops");
+        drop(second);
     }
 
     #[test]

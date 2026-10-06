@@ -1206,7 +1206,7 @@ impl Mac {
     fn new(sim: Sim, k: usize, n: usize, seed: u64) -> Mac {
         let me = Member { id: id(k), host: format!("mac{k}"), app: app(0) };
         let rng = Rng(seed ^ (k as u64 + 1).wrapping_mul(0xA076_1D64_78BD_642F));
-        let driver = Driver::new(me.clone(), driver::Saved::default());
+        let driver = Driver::unlocked(me.clone(), driver::Saved::default());
         Mac { sim, k, rng, me, driver, jobs: 0, term: 0, leads: None, listed: None, n, coord: (0, 0), settled: None, gave: false }
     }
 
@@ -1242,7 +1242,7 @@ impl Mac {
             })? {
                 saved = driver::Saved::default();
             }
-            self.driver = Driver::new(self.me.clone(), saved);
+            self.driver = Driver::unlocked(self.me.clone(), saved);
             (self.listed, self.coord, self.settled, self.gave) = (None, (0, 0), None, false);
             self.sim.count("restarts");
             if self.leads.take().is_some() {

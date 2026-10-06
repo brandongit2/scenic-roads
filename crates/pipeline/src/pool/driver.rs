@@ -6,11 +6,13 @@
 //! # The contract
 //!
 //! **One process per member.** The agent takes its member's lock (crate::pool::MemberLock: a flock
-//! named by the member id, so a second process of the member, a second agent or one started from a
-//! copy of the agent's folder, can't take it) before it makes a driver, and makes one `Driver` per
-//! process (`Driver::new`, from the state it saved last: `saved`). A process without the lock
-//! steps no driver (it runs dry, as a second agent on one folder does). Two processes of one member
-//! would lead one term twice, and number leases `<term>-<n>` twice.
+//! named by the member id in the app's folder, so a second process of the member, a second agent or
+//! one started from a copy of the agent's folder, can't take it) and makes its one `Driver` with
+//! it (`Driver::new`, from the state it saved last: `saved`). A process without the lock steps no
+//! driver (it runs dry, as a second agent on one folder does). Every step checks the lock first
+//! (its file removed is taken again if it's free); a process another took it from stops for good
+//! (`Out::stop`: it writes no heartbeat, sends nothing, and steps no more). Two processes of one
+//! member would lead one term twice, and number leases `<term>-<n>` twice.
 //!
 //! The agent calls `Driver::step` once per loop of its own, about every 20 s, from one thread. A
 //! step:
@@ -87,7 +89,7 @@ use super::journal::{self, Entry, Mine};
 use super::nas::Nas;
 use super::records::{self, Check, Records};
 use super::term::{self, Current, Made, Term};
-use super::Member;
+use super::{Member, MemberLock};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -227,6 +229,10 @@ pub struct Out {
     /// re-assertion keeps it, but after a sleep. A catalog waits for it (and `duties`); GC too
     /// (and `fresh`): an entry not merged yet may hold uploads the records don't name.
     pub caught_up: bool,
+    /// This process isn't the member's only one (another took its lock: `MemberLock::check`), and
+    /// why: the agent stops the pool. It writes no heartbeat (this step's is empty), sends nothing,
+    /// and steps no more; a term it led is left to a takeover.
+    pub stop: Option<String>,
     /// A listing of the journal to make, handed back in `Heard::listed`.
     pub list: Option<Listing>,
     /// What happened.
@@ -340,6 +346,9 @@ struct Asked {
 #[derive(Debug)]
 pub struct Driver {
     me: Member,
+    /// Its member's lock (none in the simulator), and why it stopped: another process took it.
+    lock: Option<MemberLock>,
+    stopped: Option<String>,
     cur: Current,
     saved: Saved,
     /// Its saved state is its own: what it led before is known.
@@ -392,13 +401,23 @@ fn first_to_try(a: &Member, b: &Member) -> Ordering {
 }
 
 impl Driver {
-    /// The driver of member `me` (its app the process's), from what it saved last: nothing of it
-    /// when it's another member's, or names none (lost, or never saved).
-    pub fn new(me: Member, saved: Saved) -> Driver {
+    /// The driver of member `me` (its app the process's), holding its lock, from what it saved
+    /// last: nothing of it when it's another member's, or names none (lost, or never saved).
+    pub fn new(me: Member, saved: Saved, lock: MemberLock) -> Driver {
+        Driver { lock: Some(lock), ..Driver::without(me, saved) }
+    }
+
+    /// `new` without the lock: the simulator's members and the tests', in one process.
+    #[cfg(test)]
+    pub fn unlocked(me: Member, saved: Saved) -> Driver {
+        Driver::without(me, saved)
+    }
+
+    fn without(me: Member, saved: Saved) -> Driver {
         let known = saved.member == me.id;
         let saved = if known { saved } else { Saved { member: me.id.clone(), ..Default::default() } };
         let passing = saved.passing.clone().map(|(own, passed, hand)| Passing { own, passed, hand, records: None });
-        Driver { me, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: None, asks: 0, swept: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None }
+        Driver { me, lock: None, stopped: None, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: None, asks: 0, swept: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None }
     }
 
     /// What to keep for the next process (after every step that changed it).
@@ -426,6 +445,20 @@ impl Driver {
     /// One step (see the module's doc: the contract).
     pub fn step(&mut self, io: &dyn Io, heard: Heard, check: Check) -> Out {
         let mut out = Out::default();
+        // One process per member: its lock still held, or it stops, writing nothing more.
+        if let Some(Err(e)) = self.lock.as_mut().filter(|_| self.stopped.is_none()).map(MemberLock::check) {
+            let why = format!("{e:#}");
+            if let Some(l) = self.lead.take() {
+                out.events.push(Event::SteppedDown { term: l.term.term, why: format!("this process lost its member's lock: {why}") });
+            }
+            self.passing = None;
+            self.stopped = Some(why);
+        }
+        if let Some(why) = &self.stopped {
+            out.stop = Some(why.clone());
+            out.term = self.cur.term;
+            return out;
+        }
         let start = (io.now(), io.awake());
         if self.lead.is_some() {
             if self.clocks.is_some_and(|was| gap(was, start)) {
@@ -1297,13 +1330,13 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        let mut a = Driver::new(member(A, "Mac-mini", V2), Saved::default());
-        let mut b = Driver::new(member(B, "MacBook-Air", V2), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
         assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
         step(&mut b, &ib, able());
         ia.pass(20);
         ib.pass(20);
-        let mut a = Driver::new(member(A, "Mac-mini", "development"), a.saved());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", "development"), a.saved());
         let o = step(&mut a, &ia, able());
         assert_eq!((o.leads, o.beat.stood_down), (None, Some(1)), "{:?}", o.events);
         assert!(a.takeover(&ia).downgrade.is_some_and(|w| w.contains("older than term 1's")));
@@ -1321,12 +1354,12 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
-        let mut b = Driver::new(member(B, "MacBook-Air", V2), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
         assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
         step(&mut b, &ib, able());
         hand_over(&mut a, &ia, &mut b, &ib);
-        let mut a = if restart { Driver::new(member(A, "Mac-mini", V1), a.saved()) } else { a };
+        let mut a = if restart { Driver::unlocked(member(A, "Mac-mini", V1), a.saved()) } else { a };
         let mut last = Out::default();
         for _ in 0..10 {
             ia.pass(20);
@@ -1353,19 +1386,19 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
-        let mut b = Driver::new(member(B, "MacBook-Air", V1), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
         step(&mut a, &ia, able());
         step(&mut b, &ib, able());
         hand_over(&mut a, &ia, &mut b, &ib);
-        let mut a = Driver::new(member(A, "Mac-mini", "development"), a.saved());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", "development"), a.saved());
         // Asked at once (between its steps, as the controls ask): the owner's force drops the
         // handover waiting.
         ia.pass(5);
         step(&mut a, &ia, able());
         let needs = a.takeover(&ia);
         assert!(needs.force.as_ref().is_some_and(|w| w.contains("handover")) && needs.downgrade.is_some(), "{needs:?}");
-        let mut forced = Driver::new(member(A, "Mac-mini", "development"), a.saved());
+        let mut forced = Driver::unlocked(member(A, "Mac-mini", "development"), a.saved());
         let o = step(&mut forced, &ia, asks(Ask::TakeOver { force: true, downgrade: true }));
         assert!(o.events.iter().any(|e| matches!(e, Event::Handover { what: "dropped", .. })), "{:?}", o.events);
         assert_eq!(o.leads, Some(3), "{:?}", o.events);
@@ -1373,12 +1406,12 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
-        let mut b = Driver::new(member(B, "MacBook-Air", V1), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
         step(&mut a, &ia, able());
         step(&mut b, &ib, able());
         hand_over(&mut a, &ia, &mut b, &ib);
-        let mut a = Driver::new(member(A, "Mac-mini", "development"), a.saved());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", "development"), a.saved());
         let mut dropped = false;
         for _ in 0..8 {
             ia.pass(30);
@@ -1397,8 +1430,8 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
-        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
-        let mut b = Driver::new(member(B, "MacBook-Air", V1), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
         step(&mut a, &ia, able());
         step(&mut b, &ib, able());
         let x = journal::write(&mem, &entry(C, 1, 7, "6-1-1")).unwrap();
@@ -1428,24 +1461,24 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
-        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
         ia.pass(20);
-        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         let o = step(&mut a, &ia, able());
         assert_eq!(o.leads, Some(2), "{:?}", o.events);
         assert!(o.events.iter().any(|e| matches!(e, Event::Made { how, .. } if how.contains("saved state lost"))));
         // With its saved state: a restart re-asserts too, saying so.
         ia.pass(20);
-        let mut a = Driver::new(member(A, "Mac-mini", V1), a.saved());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), a.saved());
         assert!(step(&mut a, &ia, able()).events.iter().any(|e| matches!(e, Event::Made { term: 3, how } if how.starts_with("restarted"))));
         // Lost again, onto a development build: it stands down; restarted onto its app, with the
         // state that process saved, it still doesn't take term 3 up again.
         ia.pass(20);
-        let mut a = Driver::new(member(A, "Mac-mini", "development"), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", "development"), Saved::default());
         assert_eq!(step(&mut a, &ia, able()).beat.stood_down, Some(3));
         ia.pass(20);
-        let mut a = Driver::new(member(A, "Mac-mini", V1), a.saved());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), a.saved());
         assert_eq!(step(&mut a, &ia, able()).leads, Some(4));
     }
 
@@ -1456,10 +1489,10 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let (ia, ic) = (Mac::new(&mem), Mac::new(&mem));
-        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         step(&mut a, &ia, Heard { entries: vec![entry(A, 1, 1, "6-1-1")], ..able() });
         assert_eq!(a.saved().member, A);
-        let mut c = Driver::new(member(C, "Mac-mini-2", V1), a.saved());
+        let mut c = Driver::unlocked(member(C, "Mac-mini-2", V1), a.saved());
         let o = step(&mut c, &ic, able());
         assert!(c.mine().to_tell(1).is_empty() && o.send.is_empty(), "{:?}", o.send);
         assert_eq!(c.saved().member, C);
@@ -1472,7 +1505,7 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
-        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         let list = step(&mut a, &ia, able()).list.expect("its take-up's listing");
         let e = entry(C, 1, 9, "6-1-1");
         let key = e.key().unwrap();
@@ -1493,7 +1526,7 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
-        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         let list = step(&mut a, &ia, able()).list.expect("its take-up's listing");
         ia.pass(20);
         assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }).caught_up);
@@ -1515,13 +1548,42 @@ mod tests {
     }
 
     #[test]
+    fn a_driver_another_process_took_the_lock_from_stops() {
+        // Its lock's file removed: taken again while no other process holds it; once a second
+        // process of the member has it, this one stops, leading nothing and writing nothing more.
+        // (Re-review F2.)
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(format!("pool-{A}.lock"));
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default(), MemberLock::take(dir.path(), A).unwrap().unwrap());
+        let o = step(&mut a, &ia, able());
+        assert_eq!((o.leads, o.stop), (Some(1), None));
+        std::fs::remove_file(&path).unwrap();
+        ia.pass(20);
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1), "taken again: no other process");
+        std::fs::remove_file(&path).unwrap();
+        let second = MemberLock::take(dir.path(), A).unwrap().expect("a second process");
+        ia.pass(20);
+        let before = mem.0.borrow().clone();
+        let o = a.step(&ia, able(), &any);
+        assert!(o.stop.is_some() && o.leads.is_none() && o.send.is_empty(), "{o:?}");
+        assert!(o.events.iter().any(|e| matches!(e, Event::SteppedDown { term: 1, .. })), "{:?}", o.events);
+        ia.pass(20);
+        assert!(a.step(&ia, able(), &any).stop.is_some(), "for good");
+        assert_eq!(*mem.0.borrow(), before, "nothing written");
+        drop(second);
+    }
+
+    #[test]
     fn rr_the_hour_rule_and_a_share_that_doesnt_answer() {
         // B tells A of an entry; A's reads of it fail for two hours (the share doesn't answer
         // them): not refused; then read whole, applied. (The re-review's.)
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
-        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         let list = step(&mut a, &ia, able()).list.unwrap();
         ia.pass(20);
         assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: vec![] }), ..able() }).caught_up);
@@ -1550,7 +1612,7 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
-        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         let list = step(&mut a, &ia, able()).list.unwrap();
         ia.pass(20);
         step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: vec![] }), ..able() });
@@ -1580,7 +1642,7 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let ia = Mac::new(&mem);
-        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         let list = step(&mut a, &ia, able()).list.expect("its take-up's listing");
         ia.pass(20);
         assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }).caught_up);
@@ -1620,13 +1682,13 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib, ic) = (Mac::new(&mem), Mac::new(&mem), Mac::new(&mem));
-        let mut a = Driver::new(member(A, "Mac-mini", V2), Saved::default());
-        let mut b = Driver::new(member(B, "MacBook-Air", V1), Saved::default());
-        let mut c = Driver::new(member(C, "iMac", V2), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        let mut c = Driver::unlocked(member(C, "iMac", V2), Saved::default());
         step(&mut a, &ia, able());
         step(&mut b, &ib, able());
         step(&mut c, &ic, able());
-        let mut a = Driver::new(member(A, "Mac-mini", "development"), a.saved());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", "development"), a.saved());
         ia.pass(20);
         assert_eq!(step(&mut a, &ia, able()).beat.stood_down, Some(1));
         let mut took = None;
@@ -1660,9 +1722,9 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let (ia, ib, ic) = (Mac::new(&mem), Mac::new(&mem), Mac::new(&mem));
-        let mut a = Driver::new(member(A, "Mac-mini", V2), Saved::default());
-        let mut b = Driver::new(member(B, "MacBook-Air", V2), Saved::default());
-        let mut c = Driver::new(member(C, "iMac", V1), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V2), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V2), Saved::default());
+        let mut c = Driver::unlocked(member(C, "iMac", V1), Saved::default());
         step(&mut a, &ia, able());
         step(&mut b, &ib, able());
         step(&mut c, &ic, able());
@@ -1725,7 +1787,7 @@ mod tests {
             }
         }
         let io = Slow(Mac::new(&mem), Cell::new(0));
-        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         let leads = |d: &mut Driver, h: Heard| {
             let o = d.step(&io, h, &any);
             (o.leads, o.events)
