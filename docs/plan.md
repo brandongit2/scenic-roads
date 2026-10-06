@@ -2015,7 +2015,11 @@ At each phase's end an Opus agent reviews the work against this plan.
      share keeps reads stale is unchecked (pool.md §3), and longer staleness has handovers taken
      back (nothing lost);
    - GC (removing the journal's old days, forgetting them) isn't built: the forget horizon is
-     checked by the modules' tests alone.
+     checked by the modules' tests alone;
+   - a records snapshot, saved whole after each merge, holds the lease that last set each target
+     (one per step and target, as the job keys are: about as large as the keys again) and every
+     entry's key back to the forget horizon: it grows with the build's targets and its week of
+     jobs, unmeasured at the build's size yet.
 2. **The Python steps' environment is made inside the app's version folder**
    (`app/<version>/dem/.venv`, by uv at a Mac's first Python step: §8, Programs), which every
    Python step shares: the published copy isn't left as published (the updater checks a version's
