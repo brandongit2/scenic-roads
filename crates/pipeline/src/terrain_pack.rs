@@ -1,7 +1,8 @@
 //! Terrain tiles (docs/plan.md §6, global-source layers): AWS's Terrarium tiles, repaired.
 //!
-//! Levels are made finest first: each tile is repaired (bathymetry to sea level, voids and spikes,
-//! `roadcore::grid::repair_terrain`), the pixels above a repaired one are made again from it, and
+//! Levels are made finest first: each tile is repaired (voids, towers and pits:
+//! `roadcore::grid::repair_terrain`; then bathymetry to sea level), the pixels above a repaired one
+//! are made again from it, and
 //! from `REBUILD_Z` down every quarter whose child exists is made again from that child (AWS's
 //! coarse levels come from coarser sources and lose peaks). Today's `terrain` step runs this over a
 //! region's archive; `scenic-build terrain` runs it per z6 pack.
@@ -47,13 +48,14 @@ pub fn fetch(agent: &ureq::Agent, z: u8, x: u32, y: u32) -> Option<Vec<u8>> {
 }
 
 
-/// A tile's elevations repaired (bathymetry to sea level, repair_terrain, then the pixels above the
-/// repaired ones below made again from them: `below`, the four children's repairs). From REBUILD_Z
-/// down, each quarter whose child tile exists is made again whole from it (`quads`: the children's
-/// 2×2 means): AWS's coarse levels come from coarser sources, and lost peaks (Fuji's summit pixel:
-/// 3,106 m at z6, 2,368 m at z5, 2,134 m at z4; from z9, 3,378, 2,715 and 2,337 m). Returns the PNG
-/// to store (the original bytes when nothing changes), its elevations and the pixels that moved if
-/// it changed, and from REBUILD_Z + 1 down its 2×2 means for the level above.
+/// A tile's elevations repaired (the pixels above the repaired ones below made again from them:
+/// `below`, the four children's repairs; repair_terrain, on AWS's values, bathymetry and all, so a
+/// pit reads as deep as AWS made it; then bathymetry to sea level). From REBUILD_Z down, each
+/// quarter whose child tile exists is made again whole from it (`quads`: the children's 2×2 means):
+/// AWS's coarse levels come from coarser sources, and lost peaks (Fuji's summit pixel: 3,106 m at
+/// z6, 2,368 m at z5, 2,134 m at z4; from z9, 3,378, 2,715 and 2,337 m). Returns the PNG to store
+/// (the original bytes when nothing changes), its elevations and the pixels that moved if it
+/// changed, and from REBUILD_Z + 1 down its 2×2 means for the level above.
 pub fn process(
     png: Vec<u8>,
     z: u8,
@@ -62,13 +64,23 @@ pub fn process(
     below: &HashMap<(u32, u32), Repaired>,
     quads: &HashMap<(u32, u32), Vec<f32>>,
 ) -> (Vec<u8>, Option<Repaired>, Option<Vec<f32>>) {
+    process_with(png, z, x, y, below, quads, &|e, z, lat| {
+        repair_terrain(e, z, lat);
+    })
+}
+
+/// `process` with another repair in its place (the scan's comparisons: `terrain --scan`).
+pub fn process_with(
+    png: Vec<u8>,
+    z: u8,
+    x: u32,
+    y: u32,
+    below: &HashMap<(u32, u32), Repaired>,
+    quads: &HashMap<(u32, u32), Vec<f32>>,
+    repair: &dyn Fn(&mut [f32], u8, f64),
+) -> (Vec<u8>, Option<Repaired>, Option<Vec<f32>>) {
     let Ok(mut e) = decode_terrain_png(&png) else { return (png, None, None) };
     let before = e.clone();
-    for v in e.iter_mut() {
-        if *v < 0.0 {
-            *v = 0.0;
-        }
-    }
     for k in 0..4u32 {
         let (dx, dy) = (k & 1, k >> 1);
         let Some(c) = below.get(&(x * 2 + dx, y * 2 + dy)) else { continue };
@@ -89,7 +101,12 @@ pub fn process(
             }
         }
     }
-    repair_terrain(&mut e, z, tile_lat(z, y));
+    repair(&mut e, z, tile_lat(z, y));
+    for v in e.iter_mut() {
+        if *v < 0.0 {
+            *v = 0.0;
+        }
+    }
     let quad = (z >= 1 && z <= REBUILD_Z + 1).then(|| {
         let mut q = vec![0f32; 128 * 128];
         for j in 0..128 {
