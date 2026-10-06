@@ -1,8 +1,10 @@
 // 3D buildings (docs/buildings3d.md §4): every building of the coverage extruded to its height on
 // the 3D terrain by MapLibre's fill-extrusion, from the z12–14 tiles of /tiles/buildings (layer `b`:
 // h top and m base in dm, s where the height comes from, f floors, c kind, k 1 a part / 2 an outline
-// with parts, o 1 a copy for the flat footprints; crates/pipeline/src/bld). MapLibre stands each building on the terrain at its
-// centroid, a base of 0 sunk 10 m so it doesn't float on a slope.
+// with parts, o 1 a copy for the flat footprints; crates/pipeline/src/bld). A building is whole in
+// its centroid's tile, and the z14 tiles stay whole at every zoom above (keepWhole). MapLibre
+// stands each building on the terrain at its centroid, a base of 0 sunk 10 m so it doesn't float
+// on a slope.
 //
 // A source and three layers: `buildings` (fill-extrusion: the parts, and the buildings without
 // parts), `buildings-flat` (fill, draped: footprints, the flat mode and 2D maps) and
@@ -105,12 +107,50 @@ function flatFilter(skyline: boolean): FilterSpecification {
   return f as FilterSpecification;
 }
 
+/** The buildings' tiles kept out of view, at most: about a view's worth of z14 tiles. MapLibre's
+ * own is five zooms' worth of the tiles in view (~60), which, with one whole z14 tile for every
+ * zoom above, only keeps places panned away from: after panning around Tokyo it held 437 MB of
+ * buffers against 63 MB in view; 8 hold 54 (docs/buildings3d.md §4.6). Further tiles come back
+ * from the browser's cache. */
+const CACHE_TILES = 8;
+
+/**
+ * The z14 tiles whole at every zoom above 14, one tile for all of them. MapLibre slices a vector
+ * source's deepest tiles into z15–16 pieces above (its `zoomLevelsToOverscale`), each clipped at
+ * its edges and standing on the terrain at its own centroid: roofs stepped on slopes where a
+ * building crosses a slice's edge, its overhang past the z14 tile cut off, a hovered building lit in
+ * part; and parses each again for every zoom. For this source only: slicing stays for the others
+ * (the map-wide option made their re-parsed copies cost more than the buildings saved). Also its
+ * cache bounded ([`CACHE_TILES`]).
+ */
+function keepWhole(map: MLMap) {
+  type TM = { update: (tr: unknown, terrain?: unknown) => void; map?: { _zoomLevelsToOverscale?: number }; _maxTileCacheSize?: number | null };
+  const src = map.getSource(SOURCE) as unknown as { reparseOverscaled?: boolean } | undefined;
+  const tm = (map as unknown as { style?: { tileManagers?: Record<string, TM> } }).style?.tileManagers?.[SOURCE];
+  if (!src || !tm || typeof tm.update !== 'function') return;
+  // (Not parsed again for each zoom: an extrusion doesn't change with it.)
+  src.reparseOverscaled = false;
+  tm._maxTileCacheSize = CACHE_TILES;
+  const update = tm.update;
+  tm.update = function (this: TM, tr: unknown, terrain?: unknown) {
+    const m = this.map;
+    const z = m?._zoomLevelsToOverscale;
+    if (m) m._zoomLevelsToOverscale = undefined;
+    try {
+      update.call(this, tr, terrain);
+    } finally {
+      if (m) m._zoomLevelsToOverscale = z;
+    }
+  };
+}
+
 /** Adds the source and layers (when the catalog has buildings): the extrusions after the road and
  * rail layers (`before`: the first symbol layer), the footprints among the draped layers
  * (`flatBefore`: the first boundary layer). */
 export function addBuildings(map: MLMap, before: string, flatBefore: string) {
   if (map.getSource(SOURCE)) return;
   map.addSource(SOURCE, { type: 'vector', tiles: [buildingTiles()], minzoom: 12, maxzoom: 14 });
+  keepWhole(map);
   map.addLayer({
     id: FLAT, type: 'fill', source: SOURCE, 'source-layer': 'b', minzoom: 12, filter: flatFilter(false),
     layout: { visibility: 'none' },
@@ -199,11 +239,37 @@ function firstCrossing(rings: Ring[], a: [number, number], b: [number, number]):
   return best;
 }
 
+/** The boxes along a screen segment a–b, each about `step` px of it, `pad` px around. */
+function boxesAlong(a: { x: number; y: number }, b: { x: number; y: number }, step: number, pad: number): [[number, number], [number, number]][] {
+  const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / step));
+  const out: [[number, number], [number, number]][] = [];
+  for (let j = 0; j < n; j++) {
+    const x0 = a.x + ((b.x - a.x) * j) / n, y0 = a.y + ((b.y - a.y) * j) / n;
+    const x1 = a.x + ((b.x - a.x) * (j + 1)) / n, y1 = a.y + ((b.y - a.y) * (j + 1)) / n;
+    out.push([[Math.min(x0, x1) - pad, Math.min(y0, y1) - pad], [Math.max(x0, x1) + pad, Math.max(y0, y1) + pad]]);
+  }
+  return out;
+}
+
+/** Segment p–q cut at the box 0–w × 0–h (p inside it): q, or where the segment leaves the box. */
+function clipTo(p: { x: number; y: number }, q: { x: number; y: number }, w: number, h: number): { x: number; y: number } {
+  let t = 1;
+  const dx = q.x - p.x, dy = q.y - p.y;
+  if (dx > 0) t = Math.min(t, (w - p.x) / dx);
+  if (dx < 0) t = Math.min(t, -p.x / dx);
+  if (dy > 0) t = Math.min(t, (h - p.y) / dy);
+  if (dy < 0) t = Math.min(t, -p.y / dy);
+  t = Math.max(0, t);
+  return { x: p.x + dx * t, y: p.y + dy * t };
+}
+
 /** The building the cursor's view ray meets first, if any (in the flat mode, the footprint under
  * it). Candidates: the footprints under the ray's ground track, from the point it meets the ground
- * back toward the camera as far as the tallest building could reach (a thin box on the screen,
- * down from the cursor); each tested against the ray between its roof and its base, as MapLibre
- * draws it (on the terrain at its centroid, a base of 0 sunk 10 m). The one met highest wins. */
+ * back toward the camera as far as the tallest building could reach: on the screen, from the
+ * cursor toward the point under the ray at that height (toward the camera's nadir, below the
+ * screen's middle), in short boxes along it; each tested against the ray between its roof and its
+ * base, as MapLibre draws it (on the terrain at its centroid, a base of 0 sunk 10 m). The one met
+ * highest wins. */
 export function buildingAt(map: MLMap, p: { x: number; y: number }, b: BuildingState, exaggeration: number, ray: Ray): { f: MapGeoJSONFeature; alt: number } | null {
   if (!b.on || !map.getLayer(PICK)) return null;
   if (map.getLayoutProperty(FLAT, 'visibility') === 'visible') {
@@ -217,12 +283,13 @@ export function buildingAt(map: MLMap, p: { x: number; y: number }, b: BuildingS
   const ground = ray.at(p.x, p.y, cap(0));
   if (!ground) return null;
   const g0 = map.queryTerrainElevation(ground) ?? 0;
-  // Where the ray is at the tallest top (700 m), on the ground: the box's bottom on the screen.
+  // Where the ray is at the tallest top (700 m), on the ground: the track's far end on the screen
+  // (not projectable: straight down the screen, toward the nadir's side).
   const far = ray.at(p.x, p.y, cap(g0 + 700 * k));
-  const H = map.getCanvas().clientHeight;
-  const yFar = far ? map.project([far.lng, far.lat]).y : H;
-  const bottom = Math.min(H, yFar >= p.y ? yFar : H);
-  const cands = map.queryRenderedFeatures([[p.x - 2, p.y - 2], [p.x + 2, bottom + 2]], { layers: [PICK] });
+  const W = map.getCanvas().clientWidth, H = map.getCanvas().clientHeight;
+  const fp = far ? map.project([far.lng, far.lat]) : null;
+  const q = fp && Number.isFinite(fp.x) && Number.isFinite(fp.y) ? fp : { x: p.x, y: H };
+  const cands = boxesAlong(p, clipTo(p, q, W, H), 48, 3).flatMap((box) => map.queryRenderedFeatures(box, { layers: [PICK] }));
   let best: MapGeoJSONFeature | null = null, bestAlt = -Infinity;
   const seen = new Set<string>();
   for (const f of cands) {

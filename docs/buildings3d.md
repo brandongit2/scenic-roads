@@ -31,7 +31,8 @@ it, with its 1 km buffer), whether or not a road is near; not the world. 339 mil
 and 2.8 million building parts in today's 88 regions (§2.5). Where the coverage ends, buildings end,
 as roads do.
 
-**At which zooms.** Tiles at z12, z13 and z14; MapLibre overzooms z14 to the map's 19.5.
+**At which zooms.** Tiles at z12, z13 and z14; above z14 the map draws the z14 tiles, whole, up to
+its 19.5 (§4.1).
 - z14: every building.
 - z13: buildings 20 m tall or more, or with a footprint of 2,000 m² or more.
 - z12: buildings 40 m tall or more: the skyline.
@@ -541,8 +542,18 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
 **MapLibre's fill-extrusion** (6.11.2), not a layer of our own, in the first phases:
 - it handles the globe (its vertex shader projects to the sphere) and the 3D terrain (the centroid's
   elevation, a base of 0 sunk 10 m: `get_elevation(a_centroid)` in its shader, as 6.11.2 has it),
-  tiles and their cache (z14 tiles over-zoomed by re-parsing them for each z15–19 tile) and
-  data-driven paint;
+  tiles and their cache, and data-driven paint;
+- **the z14 tiles whole above z14** (`keepWhole` in `buildings.ts`, for this source only): MapLibre
+  6 slices a vector source's deepest tiles into z15–16 pieces up to the map's maximum zoom less
+  `zoomLevelsToOverscale` (4: z15.5 here), each clipped 128 units beyond its edges and standing on
+  the terrain at its own centroid: a building across a slice's edge drew as pieces, its roof
+  stepped on a slope, its overhang past the z14 tile cut off (~0.1 % of buildings reach more than
+  32 z14 units past it), the hover's highlight on one piece. Raising the option map-wide keeps
+  them whole too, but every vector source then parses its deepest tiles again for each zoom above
+  and caches each copy: zooming from 16 to 19 at Kyoto, the buildings' tiles grew from 84 to
+  147 MB and the other sources' from 23 to 77 MB. For the buildings alone, with one z14 tile for
+  every zoom above (`reparseOverscaled` off: an extrusion doesn't change with the zoom), it costs
+  about what slicing did (§4.6);
 - not picking: its `queryRenderedFeatures` projects extrusions from sea level with the flat map's
   matrix, ignoring the terrain, and finds nothing on the globe (§4.5);
 - on the GPU, ~27 bytes a vertex in B1's views (12-byte vertices, 4-byte centroids, the height and
