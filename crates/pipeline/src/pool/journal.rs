@@ -117,9 +117,11 @@ pub fn write(nas: &dyn Nas, e: &Entry) -> Result<String> {
     let key = e.key().with_context(|| format!("lease {}'s entry: its time {} isn't a day", e.lease, e.at))?;
     let p = path(&key);
     let b = serde_json::to_vec(e)?;
-    match nas.read(&p)? {
-        Some(got) if got == b => return Ok(key),
-        Some(got) if serde_json::from_slice::<Entry>(&got).is_ok() => bail!("{p} holds another entry of lease {}", e.lease),
+    match nas.read(&p)?.map(|got| serde_json::from_slice::<Entry>(&got)) {
+        // (The same entry, whatever its bytes: an earlier write's whose answer was lost, or one an
+        // app of another version wrote, its fields in another order or some left to their defaults.)
+        Some(Ok(got)) if serde_json::to_value(&got)? == serde_json::to_value(e)? => return Ok(key),
+        Some(Ok(_)) => bail!("{p} holds another entry of lease {}", e.lease),
         _ => {}
     }
     nas.write_whole(&p, &b)?;
@@ -316,6 +318,11 @@ mod tests {
         assert!(matches!(read(&nas, &key).unwrap(), Read::Entry(x) if x.lease == e.lease));
         // Written again (its first call's answer lost): the same.
         assert_eq!(write(&nas, &e).unwrap(), key);
+        // The same entry in other bytes (another app's): the same, left as it is. (Re-review 2, L2.)
+        let pretty = serde_json::to_vec_pretty(&e).unwrap();
+        nas.write_whole(&path(&key), &pretty).unwrap();
+        assert_eq!(write(&nas, &e).unwrap(), key);
+        assert_eq!(nas.read(&path(&key)).unwrap().unwrap(), pretty, "not written again");
         // Another under the same lease: an error.
         let mut other = e.clone();
         other.step = "pois".into();
