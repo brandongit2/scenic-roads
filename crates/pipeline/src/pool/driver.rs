@@ -111,9 +111,10 @@ pub const LISTING_S: u64 = 900;
 pub const STOOD_DOWN_S: u64 = 120;
 /// The wait between the members that can take over a lead that stood down, by rank (s).
 pub const AUTO_RANK_S: u64 = 30;
-/// An entry a lead reads and finds not whole (short, or not there) over this long awake is refused
+/// An entry a lead's reads find not whole (short, or not there) over this long awake is refused
 /// (s): no stale read lasts so long, and its file won't be whole (cut short on the share, or
-/// removed). A read that fails, its share not answering, doesn't count.
+/// removed). Only reads that answer count: one that fails, the share not answering, starts the
+/// time again.
 pub const UNREADABLE_S: u64 = 3600;
 
 /// What the driver needs of the world: the NAS's operations, and this Mac's clocks.
@@ -304,7 +305,8 @@ struct Lead {
     /// Entries told or listed not read whole yet (not readable yet, or past the step's time for
     /// reading): read again from the next step on.
     waiting: BTreeSet<String>,
-    /// Of those, the ones read and found not whole, since when (awake clock).
+    /// Of those, the ones its reads found not whole, since when (awake clock; a read that failed
+    /// starts it again).
     unreadable: BTreeMap<String, u64>,
     /// The listing its take-up asked for is merged.
     listed: bool,
@@ -795,16 +797,20 @@ impl Driver {
             out.events.push(Event::Merged { applied: m.applied.clone(), overtaken: m.overtaken.len(), refused: m.refused.len(), listed: from_listing });
         }
         // What isn't read whole yet is read again next step; what's handled or forgotten, done.
-        l.waiting.extend(m.waiting.iter().chain(&m.unread).cloned());
+        l.waiting.extend(m.waiting.iter().chain(&m.unread).chain(&m.failed).cloned());
         l.waiting.retain(|k| !l.records.handles(k) && !m.forgotten.contains(k));
-        // What's read and found not whole for `UNREADABLE_S` never will be: refused, as a damaged
-        // entry is (its work done again).
+        // What its reads find not whole over `UNREADABLE_S` never will be: refused, as a damaged
+        // entry is (its work done again). A read that failed says nothing, and starts the time
+        // again; one the step's time left unread keeps it, and isn't refused unread.
         let awake = io.awake();
+        for k in &m.failed {
+            l.unreadable.remove(k);
+        }
         for k in &m.waiting {
             l.unreadable.entry(k.clone()).or_insert(awake);
         }
         l.unreadable.retain(|k, _| l.waiting.contains(k));
-        let never: Vec<String> = l.unreadable.iter().filter(|&(_, &at)| awake.saturating_sub(at) >= UNREADABLE_S).map(|(k, _)| k.clone()).collect();
+        let never: Vec<String> = m.waiting.iter().filter(|k| l.unreadable.get(*k).is_some_and(|&at| awake.saturating_sub(at) >= UNREADABLE_S)).cloned().collect();
         if !never.is_empty() {
             let why = format!("not read whole in {} minutes", UNREADABLE_S / 60);
             for k in &never {
@@ -853,7 +859,7 @@ impl Driver {
                 }
             }
         }
-        let settled = (!l.dirty && m.waiting.is_empty() && m.unread.is_empty() && l.records.handed.is_some()).then_some(l.records.seq);
+        let settled = (!l.dirty && m.waiting.is_empty() && m.unread.is_empty() && m.failed.is_empty() && l.records.handed.is_some()).then_some(l.records.seq);
         let target = match &l.hand {
             Handover::Offered { to, .. } | Handover::Settling { to, .. } => Beat::read(io, to).ok().flatten(),
             _ => None,
@@ -1179,16 +1185,19 @@ mod tests {
     const B: &str = "m-000000000000000b";
     const C: &str = "m-000000000000000c";
 
-    /// One Mac's view of the shared NAS, with its own clocks.
+    /// One Mac's view of the shared NAS, with its own clocks; while `down`, its reads of paths
+    /// holding `fail` (of every path, when None) fail: the share doesn't answer them.
     struct Mac<'a> {
         mem: &'a Mem,
         wall: Cell<u64>,
         awake: Cell<u64>,
+        down: Cell<bool>,
+        fail: std::cell::RefCell<Option<String>>,
     }
 
     impl<'a> Mac<'a> {
         fn new(mem: &'a Mem) -> Mac<'a> {
-            Mac { mem, wall: Cell::new(T0), awake: Cell::new(1_000) }
+            Mac { mem, wall: Cell::new(T0), awake: Cell::new(1_000), down: Cell::new(false), fail: Default::default() }
         }
 
         /// Time passes, awake.
@@ -1206,6 +1215,9 @@ mod tests {
             self.mem.write_whole(path, bytes)
         }
         fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            if self.down.get() && self.fail.borrow().as_deref().is_none_or(|f| path.contains(f)) {
+                anyhow::bail!("read {path}: the share doesn't answer");
+            }
             self.mem.read(path)
         }
         fn exists(&self, path: &str) -> Result<bool> {
@@ -1503,6 +1515,64 @@ mod tests {
     }
 
     #[test]
+    fn rr_the_hour_rule_and_a_share_that_doesnt_answer() {
+        // B tells A of an entry; A's reads of it fail for two hours (the share doesn't answer
+        // them): not refused; then read whole, applied. (The re-review's.)
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let list = step(&mut a, &ia, able()).list.unwrap();
+        ia.pass(20);
+        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: vec![] }), ..able() }).caught_up);
+        let key = journal::write(&mem, &entry(B, 1, 3, "6-1-1")).unwrap();
+        *ia.fail.borrow_mut() = Some(key.clone());
+        ia.down.set(true);
+        ia.pass(20);
+        step(&mut a, &ia, Heard { msgs: vec![(B.into(), Msg::Tell(vec![key.clone()]))], ..able() });
+        for _ in 0..24 {
+            ia.pass(300);
+            assert!(!step(&mut a, &ia, able()).caught_up);
+        }
+        ia.down.set(false);
+        ia.pass(20);
+        assert!(step(&mut a, &ia, able()).caught_up);
+        let r = Records::load(&mem, 1).unwrap().unwrap();
+        assert!(r.reflected.contains(&key), "applied, not refused: {:?}", r.rejected);
+    }
+
+    #[test]
+    fn rr_the_hour_rule_counts_an_outage_after_a_first_read_not_whole() {
+        // The entry reads not whole once (not there yet as A reads it), then the share doesn't
+        // answer A's reads of it for 70 minutes. (Re-review F1: refused at minute 60, on time
+        // alone, though it was whole on the share all along: an hour's reads that answer count,
+        // and a read that fails starts the hour again.)
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::new(member(A, "Mac-mini", V1), Saved::default());
+        let list = step(&mut a, &ia, able()).list.unwrap();
+        ia.pass(20);
+        step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: vec![] }), ..able() });
+        let e = entry(B, 1, 3, "6-1-1");
+        let key = e.key().unwrap();
+        ia.pass(20);
+        step(&mut a, &ia, Heard { msgs: vec![(B.into(), Msg::Tell(vec![key.clone()]))], ..able() });
+        journal::write(&mem, &e).unwrap();
+        *ia.fail.borrow_mut() = Some(key.clone());
+        ia.down.set(true);
+        for _ in 0..70 {
+            ia.pass(60);
+            step(&mut a, &ia, able());
+            assert!(!Records::load(&mem, 1).unwrap().unwrap().rejected.contains_key(&key), "refused while every read of it failed");
+        }
+        ia.down.set(false);
+        ia.pass(60);
+        assert!(step(&mut a, &ia, able()).caught_up);
+        assert!(Records::load(&mem, 1).unwrap().unwrap().reflected.contains(&key), "applied once the share answers");
+    }
+
+    #[test]
     fn a_re_assertion_keeps_what_its_lead_knew_of_the_journal() {
         // Before a sweep the agent asks the lead to re-assert: a sweep needs both `fresh` and
         // `caught_up`, and a re-assertion's take-up started its knowledge again, so the two never
@@ -1670,7 +1740,7 @@ mod tests {
         // A stall: one operation of six minutes.
         io.1.set(0);
         io.0.pass(20);
-        let stall = Slow(Mac { mem: &mem, wall: Cell::new(io.0.now()), awake: Cell::new(io.0.awake()) }, Cell::new(360));
+        let stall = Slow(Mac { wall: Cell::new(io.0.now()), awake: Cell::new(io.0.awake()), ..Mac::new(&mem) }, Cell::new(360));
         a.step(&stall, able(), &any);
         stall.1.set(0);
         stall.0.pass(20);

@@ -236,8 +236,11 @@ pub struct Merged {
     pub forgotten: Vec<String>,
     /// Read and not whole (being written, not seen yet, cut short, or removed): to merge later.
     pub waiting: Vec<String>,
-    /// Not read: the reading stopped (`merge_while`), or the read failed; to merge later.
+    /// Not read: the reading stopped (`merge_while`); to merge later.
     pub unread: Vec<String>,
+    /// Not read: the read failed (the share didn't answer), which says nothing of the entry; to
+    /// merge later.
+    pub failed: Vec<String>,
 }
 
 /// Merges the journal entries `keys` the records don't name yet: each read, checked and applied,
@@ -277,7 +280,7 @@ pub fn merge_while(nas: &dyn Nas, r: &mut Records, keys: &[String], check: Check
             }
             Ok(journal::Read::Missing) if r.forgot(k) => out.forgotten.push(k.clone()),
             Ok(journal::Read::Short | journal::Read::Missing) => out.waiting.push(k.clone()),
-            Err(_) => out.unread.push(k.clone()),
+            Err(_) => out.failed.push(k.clone()),
         }
     }
     for ((_, k), e) in read {
@@ -545,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn a_read_that_fails_leaves_its_entry_unread_and_the_rest_read() {
+    fn a_read_that_fails_is_told_from_one_not_whole_and_the_rest_read() {
         // (A share that doesn't answer says nothing of an entry: a lead refuses one only once its
         // reads answer that it isn't whole, for an hour: driver::UNREADABLE_S.)
         struct Failing(Mem, String);
@@ -579,7 +582,7 @@ mod tests {
         let nas = Failing(mem, journal::path(&keys[0]));
         let mut r = Records { term: 3, ..Default::default() };
         let m = merge(&nas, &mut r, &[keys.clone(), vec![short.clone()]].concat(), &any);
-        assert_eq!((m.unread, m.applied, m.waiting), (vec![keys[0].clone()], vec![keys[1].clone()], vec![short]));
+        assert_eq!((m.failed, m.unread, m.applied, m.waiting), (vec![keys[0].clone()], vec![], vec![keys[1].clone()], vec![short]));
     }
 
     #[test]
