@@ -2625,11 +2625,14 @@ impl Agent {
         let running_steps: Vec<String> = self.slots.iter().filter_map(|s| s.running.as_ref().map(|r| step_of(&r.spec.id))).collect();
         let before: Vec<forecast::Job> = before.iter().filter(|j| !running_steps.contains(&step_of(&j.id))).map(|j| (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))).collect();
         // A round: as the last ones took (their chains' jobs and catalog), else the chain's steps'
-        // times; the last round, the roads' chain as it stands now, if more (none when it's done).
+        // times; the last round, the roads' chain as it stands now, if more (none when it's done),
+        // less what the round under way still does (the roads' chain counts its work too, which
+        // goes out with it).
         let [roads, rail, landmarks] = chains;
         let chain_s = |works: &[build::Work]| -> f64 { works.iter().map(|w| if claims::SHARED.contains(&w.step.as_str()) { w.targets.iter().map(|t| cost(&w.step, &t.0).secs).sum() } else { mine(&w.step, w.targets.len()).secs }).sum() };
         let round_s = forecast::round_secs(&events).unwrap_or_else(|| ["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "catalog"].iter().map(|s| mine(s, 1).secs).sum::<f64>() + mine("pack", 8).secs + mine("lo", 2).secs);
-        let last_round_s = if roads.is_empty() { 0.0 } else { round_s.max(chain_s(&roads)) };
+        let ahead = under_way.as_ref().map_or(0.0, |u| chain_s(&u.2));
+        let last_round_s = if roads.is_empty() { 0.0 } else { round_s.max(chain_s(&roads) - ahead) };
         // The trains' and the landmarks' chains from the start (their steps once what they read is
         // built: forecast::chain_deps), but the overlays (they read the built units) after the last
         // round; and a catalog after it with what the chains made since.

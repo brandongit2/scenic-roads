@@ -1186,8 +1186,9 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   while it waits, then the round's chain, as long as the last rounds took); its catalog carries the
   regions on the map that are rebuilt (a new pass) and done by then, their slope and tree cover too
   (they make no round of their own); after the last unit and terrain area, the
-  slope and tree cover left, the last round (the roads' chain as it stands, if longer; none when
-  nothing's stale and no region waits to go out), then the overlays and a catalog. The trains' and
+  slope and tree cover left, the last round (the roads' chain as it stands, less what the round
+  under way still does, if longer; none when nothing's stale and no region waits to go out), then
+  the overlays and a catalog. The trains' and
   the landmarks' chains run from the start, each step once what it reads is built (the candidates
   once the pass's hiking-route ends are made, the peaks once every candidate and the terrain are,
   the items' facts once every candidate is, the heritage chain once the heritage sites are, the
