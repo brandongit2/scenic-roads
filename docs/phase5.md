@@ -449,9 +449,15 @@ lies near it.
     - Everything is fetched again at each pass. Between passes, only QIDs it hasn't seen, so a run
       started by new coverage doesn't move fame elsewhere.
     - Each item's Wikipedia articles are listed again at each pass too, so new articles count. New
-      articles between passes are batched, since each run streams the four dumps again (~20 GB).
+      articles between passes are batched, since each run reads the four months' indexes again
+      (2.3 GB, copies of the NAS's: plan §4, Downloads).
   - **Caches** are appended 5,000 items at a time, so a run stopped midway keeps what it fetched. A
     pageview month is cached only when curl, bzip2 and grep all finished cleanly.
+  - **The answers are kept on the NAS too** (`sources/items/<d>/answers.tar.zst`,
+    pipeline::answers): the run makes them one with the Mac's as it starts (the Mac's sent when the
+    NAS hasn't them; the NAS's taken when the Mac hasn't them, or has an older set than another
+    Mac's run left there) and sends what it fetched as it ends, finished or not. So the build's
+    lead moving to another Mac, or a lost cache, asks only about items not seen yet.
   - **Output:** `sources/items/<d>/{facts,views,meta}`. meta holds the months, and the first and last
     days anything was fetched (QLever's index is whatever it serves those days).
   - **Requests:** User-Agent "road-elevations/0.1 (personal offline map)" (no contact address:
@@ -506,6 +512,11 @@ part, layers.py) runs unchanged.
     Mac's copy has an older federal.json, with 1,346 Parks Canada sites against 1,347.)
   - The jobs extract it once per archive and clone it per pass (APFS). So a pass's runs share the
     caches the scripts add, and a new pass or snapshot starts from the snapshot again.
+  - What the scripts fetched for the pass (the files of its copy the snapshot lacks or has
+    otherwise, but those the chain makes again each run) is kept on the NAS too, as the items
+    job's answers are (`sources/items/<d>/heritage-<id>.tar.zst`): taken over a fresh copy of the
+    snapshot on a Mac without it, sent as each heritage job ends, finished or not. The heritage
+    job's export of the pass's named places (3 GB) goes as it ends: each run makes it again.
 - **`heritage-sites`** runs after slope, before the units.
   - **The cover:** the z12 tiles within 20 km of the coverage (exact, `Coverage::meets_rect`). It
     replaces today's analysis grid (z11) through heritage.py's `--tiles`.

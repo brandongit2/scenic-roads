@@ -142,8 +142,11 @@ inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), ferries/freq/ (
                (Taiwan's DTM, put there by hand), keys.env (API keys, KEY=value lines: the rail
                feeds'), hold-catalog
 sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, reach, pass), basemap/
-               (Planetiler's jar and data), registers/ (the registers snapshot), items/<date>/,
-               dem-cache/ (today's per-vertex DEM cache, the units' seed), buildings/<release>/
+               (Planetiler's jar and data), registers/ (the registers snapshot), items/<date>/
+               (the pass's items' facts and pageviews, and the answers Wikidata and Wikipedia gave
+               the items job and the heritage chain: §4), pageviews/ (Wikipedia's monthly
+               pageviews), dem-cache/ (today's per-vertex DEM cache, the units' seed),
+               buildings/<release>/
                (Overture's building boxes for the world, in z8 tiles, and their index), trees/
                (leaf/: the leaf-type squares; NALCMS's GeoTIFF), canopy/ (Meta's canopy squares),
                aws-terrarium/ (AWS's raw terrain tiles), fabdem/ (FABDEM's 1° tiles), rail/ (the
@@ -218,8 +221,8 @@ record changes back through the build Mac's coordinator, which journals them for
   days go too, except the newest, and stray `.tmp` files go after 2 days.
 - It sweeps the folders catalogs index, and retired passes' sources (`sources/osm/<date>/` and
   `sources/items/<date>/` of passes older than the newest complete one): their content-named files
-  by the same rule, the planet download 14 days after the newer pass completed, then the empty
-  folders.
+  by the same rule, their other files (the planet download, the pass's answers) 14 days after the
+  newer pass completed, then the empty folders.
 - Never swept: the newest pass, a planet waiting for its pass, the rest of `sources/` (registers,
   the basemap's data, the DEM seed, the rail sources with the files they replaced, today's legacy
   inputs), translations, descriptions, inputs, state, app and nas.
@@ -288,6 +291,18 @@ record changes back through the build Mac's coordinator, which journals them for
     `tools/nas/raw-tiles.sh`) are read while they're there, and packed by `tools/nas/raw-pack.sh`
     (the NAS's own tar over SSH, the tiles in their areas' order, so an area is packed once with a
     GB or two of the Mac's disk); none is fetched twice, only a lost disk before the packing would.
+  - **The Wikidata and Wikipedia answers** the items job and the heritage chain got for a pass
+    (`pipeline::answers`): the items' facts and articles (dem/items.py's caches), and the heritage
+    scripts' (heritagewd.py's answers by register ID, its items' articles and English short
+    descriptions, areadetails.py's park facts, heritage.py's labels, a register a script
+    downloaded: the files of the pass's copy of the registers' snapshot that the snapshot lacks or
+    has otherwise, but those the chain makes again each run). A step adds to them in its Mac's
+    cache as it fetches, and keeps them on the NAS as one archive a pass
+    (`sources/items/<date>/answers.tar.zst`, `heritage-<id>.tar.zst`), written whole as the step
+    starts when the NAS hasn't what the Mac has, and as it ends, finished or not, when it fetched
+    more: ~10 MB for the 2026-09-28 pass. A Mac without them, or whose are older than the NAS's
+    (another Mac ran the step since), takes the NAS's; the first run seeds the NAS from the Mac's.
+    A new pass asks again (the items' everything, the heritage chain what the snapshot lacks).
   - **Whole:** each copy is written by a temporary name (the Mac's and the process's), flushed, and
     its length checked before the rename (raw terrain tiles excepted: written straight to their
     names), and checked whole when read (`pipeline::whole`,
@@ -335,7 +350,7 @@ record changes back through the build Mac's coordinator, which journals them for
     disk).
   - **Kept:** the Wikidata and Wikipedia answers the items and heritage jobs keep (`items/`, with
     the pageview months' indexes, and the pass's copy of the registers' snapshot, which the heritage
-    scripts add theirs to: `heritage-<date>-<id>/`), which would come back from the internet; the
+    scripts add theirs to: `heritage-<date>-<id>/`), which the NAS keeps too (Downloads, above); the
     heritage scripts' Python environment (`heritage-venv/`, from PyPI); the registers' snapshot,
     extracted (`registers-<id>/`: the pass's copy is an APFS clone of it, so deleting it would free
     next to nothing); the trains' stop pairs (`rail/`, under a MB); the unit stages' timings
@@ -1768,7 +1783,7 @@ At each phase's end an Opus agent reviews the work against this plan.
   - what isn't built marked planned;
   - the gaps listed in §10.
 
-**Implementation decisions since v6 (2026-10-02 to 04), now in the sections above:**
+**Implementation decisions since v6 (2026-10-02 to 06), now in the sections above:**
 - **No SSH from the build Mac:** 1Password asks for every new session. So GC deletes over SMB,
   uploads are checked by reading them back, and the planet fetch runs from DSM.
 - **Units are z6 tiles only;** the split waits for a unit that needs it.
@@ -1800,3 +1815,8 @@ At each phase's end an Opus agent reviews the work against this plan.
 - **The menu bar item,** with progress to the end (asked for 2026-10-03).
 - **The cutover keeps today's 34 regions as 34 recipes,** with Gibraltar as an `osm:` relation.
   Keeping the legacy outlines makes the comparison like for like.
+- **What the internet answered is kept on the NAS** (§4, Downloads): the items job's and the
+  heritage chain's Wikidata and Wikipedia answers, a pass's at a time, as an archive each step
+  writes as it starts and ends. They were on the build Mac alone, so another Mac leading the build
+  (docs/pool.md) or a lost disk would have asked again (the 2026-09-28 pass's 59,000 items took
+  about 37 minutes of queries), and the owner wants nothing fetched twice without a good reason.

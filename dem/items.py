@@ -16,8 +16,11 @@ under --cache, appended a chunk at a time (a run stopped midway keeps what it fe
   months/<m>.tsv.zst       one month's index: every article of the map's languages with its
                            views, streamed once, kept on the NAS too (pageviews.month_views)
   months/<m>.json, <m>.counted.json   from before the index: the views of the articles asked
-Older epochs' files, and months older than the epoch's (here: the NAS keeps its indexes), go at
-the end of a run.
+The first three are kept on the NAS too (sources/items/<epoch>/answers.tar.zst, with
+kept-<epoch>.json here saying which of its archives they last matched: scenic-build's items step,
+pipeline::answers), so a run on another Mac, or here after the cache is lost, asks only about items
+not seen yet. Older epochs' files, and months older than the epoch's (here: the NAS keeps its
+indexes), go at the end of a run.
 The four months are the last November, February, May and August whose dumps are out by the epoch
 (ended at least 20 days before it), pinned for it.
 
@@ -166,7 +169,7 @@ def main() -> None:
     # Older epochs' caches go, and months before this epoch's (later epochs' months are later).
     for p in cache.iterdir():
         stem = p.name.split(".", 1)[0]
-        if p.is_file() and "-" in stem and stem.split("-", 1)[0] in ("facts", "wp", "fetched") and stem.split("-", 1)[1] < a.epoch:
+        if p.is_file() and "-" in stem and stem.split("-", 1)[0] in ("facts", "wp", "fetched", "kept") and stem.split("-", 1)[1] < a.epoch:
             p.unlink()
     for p in (cache / "months").iterdir() if (cache / "months").is_dir() else ():
         if p.is_file() and p.name[:7] < months[0]:

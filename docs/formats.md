@@ -308,10 +308,15 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
                         of the records' files staging reads), base/ (the pack cache), sources-*/
                         and work-*/ (scenic-build's local copies of NAS files by their logical
                         names: the z8 terrain, the summits), heritage-merged-<date>-<cover>.osm.pbf
-                        (the pass's filtered planet clipped to the cover); items/, rail/,
-                        registers-<id>/, heritage-<date>-<id>/ and heritage-venv/ (the landmark,
-                        trains' and heritage jobs' own), unit-stages.json (the unit stages' times
-                        here).
+                        (the pass's filtered planet clipped to the cover); items/ (the items job's
+                        answers for the pass, facts-, wp- and fetched-<date>, as the NAS keeps them
+                        too, with kept-<date>.json: {archive, files: {name: hash16}}, the NAS's
+                        archive they last matched and their hashes then; months/: copies of the
+                        NAS's pageview indexes), rail/ (the trains' stop pairs), registers-<id>/
+                        (the registers' archives, extracted), heritage-<date>-<id>/ (the pass's
+                        copy of the snapshot, which the heritage scripts add their answers to; its
+                        .kept.json as items/'s) and heritage-venv/ (the heritage scripts' Python
+                        environment), unit-stages.json (the unit stages' times here).
                         When a job starts with too little free, raw tiles waiting are packed onto
                         the NAS (not kept here), then chm10/, aws-terrarium/ and blobs/ lose files:
                         chm10/'s, the archives' and blobs/' idle an hour first, then the rest least
@@ -405,7 +410,20 @@ class, id) within a tile. The client sends the id with the clicked point.
   across the antimeridian, in those its parts' boxes meet); `work/marks/heritage-dots.json`;
   `work/rail/used.json` (railgtfs.py's report: per feed, `id`, `provider`, `url`, `licence`,
   `fetched`, and `status` with, when "ok", `day`, `trips`, `duplicates`, `rail_routes`).
-- **Other sources:** `sources/items/<date>/{facts,views,meta}.json`; `sources/registers/<name>.tar.zst`;
+- **Other sources:** `sources/items/<date>/{facts,views,meta}.json`; the answers Wikidata and
+  Wikipedia gave for the pass (pipeline::answers; not content-named, rewritten whole as a step
+  starts and ends, tar then zstd): `sources/items/<date>/answers.tar.zst`, the items job's cache
+  files as dem/items.py keeps them (`facts-<date>.jsonl`, a JSON line per item asked:
+  `{qid, …poidetails.py's record}`, or `{qid, sl: 0, missing: true}` for one QLever doesn't know;
+  `wp-<date>.jsonl`, `{qid, n (its Wikipedia articles), arts: ["<lang>|<title>", …]}`;
+  `fetched-<date>.json`, `{first, last}`: the days anything was fetched), and
+  `sources/items/<date>/heritage-<id>.tar.zst`, the heritage chain's: the files of the pass's copy
+  of the registers' snapshot `registers-<id>` (the first 12 hex digits of the hash16 of the
+  snapshot's content name) that the snapshot lacks or has at another size or time, by their paths
+  in it (heritagewd.py's `wd/ids.jsonl`, `wd/wp.jsonl`, `wd/enwiki-shortdesc.json`;
+  areadetails.py's `areas-wikidata.json`; heritage.py's `special-wd-labels.json`; a register a
+  script downloaded), but what the chain makes again each run (`osm/`, whsshapes.py's OSM extracts
+  in `whs/`, `wd/items.jsonl`); `sources/registers/<name>.tar.zst`;
   `sources/buildings/<release>/8/<x>-<y>.f32` (the release's dot a dash, as in `2026-09-23-1`; not
   content-named: raw little-endian f32 `[xmin, ymin, xmax, ymax]` in degrees, per Overture building
   whose box's centre is in the z8 tile, sorted, bit-identical boxes once; no file for a tile
