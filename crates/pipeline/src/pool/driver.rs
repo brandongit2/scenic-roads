@@ -921,12 +921,12 @@ impl Driver {
             l.dirty = true;
         }
         // (While the step's time for it lasts, the rest waiting for the next: the entries not read
-        // before first, then those read and not whole yet, each the oldest lease first. Read
-        // first, entries that won't be whole, read again every step on a share under load, took
-        // all the time and left the others waiting.)
+        // whole or failed on before first, a step's leftovers among them, then those, each the
+        // oldest lease first. Read first, entries that won't be whole, read again every step on a
+        // share under load, took all the time and left the others waiting.)
         records::by_lease(&mut keys);
         keys.dedup();
-        let (fresh, again): (Vec<String>, Vec<String>) = keys.into_iter().partition(|k| !l.waiting.contains(k));
+        let (fresh, again): (Vec<String>, Vec<String>) = keys.into_iter().partition(|k| !l.unreadable.contains_key(k));
         let keys: Vec<String> = fresh.into_iter().chain(again).collect();
         let m = records::merge_while(io, &mut l.records, &keys, check, &|| io.awake() < busy);
         if !m.applied.is_empty() || !m.refused.is_empty() || !m.overtaken.is_empty() {
