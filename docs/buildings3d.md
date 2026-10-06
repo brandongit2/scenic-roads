@@ -198,9 +198,8 @@ the fits and the defaults are B0's, from the hold-out below:
    footprint is between half and twice its own, when there are at least 5; else, for a footprint
    of 60 m² or more, of any footprint within 300 m, when there are at least 8. (B1: the 300 m
    stage takes any footprint's height, so a kiosk, a stair housing or a pole stood as tall as its
-   area's median, a 2.5 m² footprint 22 m tall in Paris; smaller footprints go on to rules 4–5,
-   the bound rule 4 uses for small footprints. B0's hold-out can't see it: tiny structures are
-   rarely measured.)
+   area's median, a 2.5 m² footprint 22 m tall in Paris; smaller footprints go on to rules 4–5.
+   The bound scored below.)
 4. **GHSL, in high-rise cores:** the ANBH value of the 3″ cell holding the footprint's centroid, when
    it is 20 m or more; a footprint under 60 m² takes at most 4 m. Sampled on 2026-10-05: Midtown
    Manhattan 31.5 m, Lower Manhattan 35.2, downtown Toronto 42.8; Brooklyn's row houses (18.0), Back
@@ -275,13 +274,34 @@ Spain's 40 %. Japan's cities get measured heights from PLATEAU in B4, France's f
 fill's version is in the buildings step's key (§3.2), so a change rebuilds every tile and nothing
 else.
 
-These are B0's counts, before rule 3's 60 m² bound (B1). In the pilot's tiles the bound moved 4–31 %
-of the buildings from rule 3 to rule 5: Paris's z6 tile 59 → 28 % by the neighbours and 23 → 53 %
-by size, Barcelona's 55 → 25 % and 20 → 50 %, New York's 22 → 12 % and 4 → 14 %, Vermont's 22 →
-12 % and 3 → 14 %, Kantō's 14 → 10 % and 73 → 77 %. They are sheds, garages, annexes and kiosks,
-which the size rule puts at its sheds' height under 30 m² (3–5 m) and its houses' above (6–8 m in
-most countries), where the 300 m median gave them the area's, its towers' in a city. B0's hold-out could score the
-two rules on footprints under 60 m² before B2 builds every tile.
+These are B0's counts, before rule 3's 60 m² bound (B1).
+
+**Rule 3's bound, scored (B1),** as B0 scored the rules: on the pilot's five tiles (§5.1; 78 M
+buildings), a tenth of the measured heights held out (636 k: a hash of the centroid, hidden from
+the neighbours' rule, a held-out building with floors keeping their height) and each estimated as
+if unmeasured (`bld::job`'s `holdout`, run by hand). Where stage 1 fails and stage 2 answers, stage
+2 is off by 2.2–2.7 m in the median under 30 m² (p90 5.2–6.7 m, 6–12 % by more than two storeys),
+rules 4–5 by 0.3–0.5 m (p90 2.1–4.3 m, 4–8 %); from 30 to 100 m², stage 2's median is 0.1–0.3 m
+nearer and its tail farther (p90 4.0–7.0 m against 3.7–5.3 m); above, the two are alike. Every
+held-out building by its class, the whole chain (median / p90 of the error, the share off by more
+than two of its country's storeys):
+
+| Footprint | held out | no bound | 30 m² | 60 m² (kept) |
+|---|---|---|---|---|
+| under 30 m² | 88.8 k | 0.5 / 3.2 m, 2.56 % | 0.4 / 2.5 m, 2.21 % | 0.4 / 2.5 m, 2.21 % |
+| 30–60 m² | 115.9 k | 0.9 / 3.5 m, 2.45 % | 0.9 / 3.5 m, 2.45 % | 0.9 / 3.5 m, 2.35 % |
+| 60–150 m² | 303.7 k | 0.8 / 3.0 m, 1.87 % | the same | the same |
+| 150 m² and more | 127.8 k | 1.3 / 5.7 m, 9.39 % | the same | the same |
+
+60 m² gives the small footprints' lowest errors and leaves the larger classes as they were; 100 m²
+gains nothing more (60–150 m²: 1.86 against 1.87 %). The buildings each bound moves from rule 3 to
+rules 4–5, of the five tiles' 78 M: 30 m² 8.4 M (10.7 %), 60 m² 11.6 M (14.8 %), 100 m² 13.5 M
+(17.3 %), 98–99 % of them to the size rule. By tile, 60 m² took Paris's z6 tile from 59 % by the
+neighbours and 23 % by size to 28 % and 53 %, Barcelona's from 55 % and 20 % to 25 % and 50 %, New
+York's from 22 % and 4 % to 12 % and 14 %, Vermont's from 22 % and 3 % to 12 % and 14 %, Kantō's
+from 14 % and 73 % to 10 % and 77 %: sheds, garages, annexes and kiosks, which the size rule puts
+at its sheds' height under 30 m² (3–5 m) and its houses' above (6–8 m in most countries), where the
+300 m median gave them the area's, its towers' in a city.
 
 ### 2.4 Heights and the roadside factor
 

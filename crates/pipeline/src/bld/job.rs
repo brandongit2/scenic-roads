@@ -548,3 +548,7 @@ mod tests {
         assert_eq!(got[&(13, x1 / 2 - 1, y1 / 2)], vec![(300, 0, 1)]);
     }
 }
+
+#[cfg(test)]
+#[path = "job_holdout.rs"]
+mod holdout;

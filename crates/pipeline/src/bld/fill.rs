@@ -221,10 +221,20 @@ impl Near {
     /// with footprint `area`: the median height (dm) and the stage that gave it (1: 150 m and like
     /// footprints, 2: 300 m, for a footprint of [`FAR_AREA_M2`] or more), if any. `a`, `b`: scratch.
     pub fn height(&self, x: f64, y: f64, cos: f64, area: f32, a: &mut Vec<u16>, b: &mut Vec<u16>) -> Option<(u16, u8)> {
+        match self.stages(x, y, cos, area, a, b) {
+            (Some(h), _) => Some((h, 1)),
+            (None, Some(h)) if area >= FAR_AREA_M2 => Some((h, 2)),
+            _ => None,
+        }
+    }
+
+    /// Rule 3's two stages for a building, each's median height (dm) where it has enough
+    /// buildings: (150 m and like footprints, 300 m), whatever the footprint's size.
+    pub fn stages(&self, x: f64, y: f64, cos: f64, area: f32, a: &mut Vec<u16>, b: &mut Vec<u16>) -> (Option<u16>, Option<u16>) {
         a.clear();
         b.clear();
         if self.pts.is_empty() {
-            return None;
+            return (None, None);
         }
         let cx = ((x - self.x0) / self.cell).floor() as i64;
         let cy = ((y - self.y0) / self.cell).floor() as i64;
@@ -254,13 +264,9 @@ impl Near {
             let k = (v.len() - 1) / 2;
             *v.select_nth_unstable(k).1
         };
-        if a.len() >= NEAR_MIN {
-            Some((median(a), 1))
-        } else if b.len() >= FAR_MIN && area >= FAR_AREA_M2 {
-            Some((median(b), 2))
-        } else {
-            None
-        }
+        let s1 = (a.len() >= NEAR_MIN).then(|| median(a));
+        let s2 = (b.len() >= FAR_MIN).then(|| median(b));
+        (s1, s2)
     }
 }
 
