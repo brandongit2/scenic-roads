@@ -5,8 +5,9 @@
 //! 1. floors: `num_floors` (1–200) × the country's storey height + its roof allowance ([`storey`]);
 //! 2. Microsoft's estimate: Overture's `height` from Microsoft ML Buildings, 2–700 m;
 //! 3. neighbours: the median of the heights (by rules 0–2) of the buildings within 150 m whose
-//!    footprint is between half and twice its own, when there are at least 5; else of any footprint
-//!    within 300 m, when there are at least 8 ([`Near`]);
+//!    footprint is between half and twice its own, when there are at least 5; else, for a footprint
+//!    of 60 m² or more, of any footprint within 300 m, when there are at least 8 ([`Near`]): a
+//!    smaller one goes on to rules 4–5 (the area's median made kiosks and poles towers);
 //! 4. GHSL in high-rise cores: the 3″ cell's average height at the centroid when it's 20 m or more,
 //!    at most 4 m for a footprint under 60 m²;
 //! 5. size and kind: the measured median of its class in its country (where B0 measured 200 of
@@ -35,6 +36,11 @@ pub const NEAR_M: f64 = 150.0;
 pub const FAR_M: f64 = 300.0;
 pub const NEAR_MIN: usize = 5;
 pub const FAR_MIN: usize = 8;
+/// Rule 3's 300 m stage takes footprints of this or more (m²): it takes any footprint's height, so
+/// a smaller one (a kiosk, a stair housing, a pole: rarely measured, rarely like its neighbours)
+/// would stand as tall as the area's median, a 2.5 m² needle 22 m tall in Paris. The same bound as
+/// rule 4's small footprints.
+pub const FAR_AREA_M2: f32 = GHSL_SMALL_M2;
 
 /// `s`: where the height comes from.
 pub mod src {
@@ -213,7 +219,7 @@ impl Near {
 
     /// Rule 3 for a building at Web Mercator metres (x, y), where a ground metre is `cos` of one,
     /// with footprint `area`: the median height (dm) and the stage that gave it (1: 150 m and like
-    /// footprints, 2: 300 m), if any. `a`, `b`: scratch.
+    /// footprints, 2: 300 m, for a footprint of [`FAR_AREA_M2`] or more), if any. `a`, `b`: scratch.
     pub fn height(&self, x: f64, y: f64, cos: f64, area: f32, a: &mut Vec<u16>, b: &mut Vec<u16>) -> Option<(u16, u8)> {
         a.clear();
         b.clear();
@@ -250,7 +256,7 @@ impl Near {
         };
         if a.len() >= NEAR_MIN {
             Some((median(a), 1))
-        } else if b.len() >= FAR_MIN {
+        } else if b.len() >= FAR_MIN && area >= FAR_AREA_M2 {
             Some((median(b), 2))
         } else {
             None
@@ -309,6 +315,8 @@ mod tests {
         assert_eq!(n.height(225.0, 0.0, 1.0, 100.0, &mut a, &mut b), Some((140, 1)));
         // Footprints too unlike: the 300 m stage (x 0–450 within 300 m of 225: ten points).
         assert_eq!(n.height(225.0, 0.0, 1.0, 1000.0, &mut a, &mut b), Some((140, 2)));
+        // But not for a small footprint (none like it near): left to rules 4–5.
+        assert_eq!(n.height(225.0, 0.0, 1.0, 20.0, &mut a, &mut b), None);
         // At 60° a Mercator metre is half a ground metre: x 0–450 lie within 150 m of 225.
         let n = Near::new((0..10).map(|i| Point { x: i as f64 * 50.0, y: 0.0, area: 100.0, h: 100 + 10 * i as u16 }).collect(), 0.5);
         assert_eq!(n.height(225.0, 0.0, 0.5, 100.0, &mut a, &mut b), Some((140, 1)));

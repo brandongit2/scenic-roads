@@ -194,8 +194,12 @@ the fits and the defaults are B0's, from the hold-out below:
 2. **Microsoft's estimate:** Overture's `height` from Microsoft ML Buildings, 2–700 m. After floors,
    which it puts at 1.2 m each (§2.2); 2.4 M buildings have both.
 3. **Neighbours:** the median of the heights (by rules 0–2) of the buildings within 150 m whose
-   footprint is between half and twice its own, when there are at least 5; else of any footprint
-   within 300 m, when there are at least 8.
+   footprint is between half and twice its own, when there are at least 5; else, for a footprint
+   of 60 m² or more, of any footprint within 300 m, when there are at least 8. (B1: the 300 m
+   stage takes any footprint's height, so a kiosk, a stair housing or a pole stood as tall as its
+   area's median, a 2.5 m² footprint 22 m tall in Paris; smaller footprints go on to rules 4–5,
+   the bound rule 4 uses for small footprints. B0's hold-out can't see it: tiny structures are
+   rarely measured.)
 4. **GHSL, in high-rise cores:** the ANBH value of the 3″ cell holding the footprint's centroid, when
    it is 20 m or more; a footprint under 60 m² takes at most 4 m. Sampled on 2026-10-05: Midtown
    Manhattan 31.5 m, Lower Manhattan 35.2, downtown Toronto 42.8; Brooklyn's row houses (18.0), Back
@@ -269,6 +273,14 @@ Estimated (rules 2–5): 88 % of the coverage's buildings; Japan's 91 %, France'
 Spain's 40 %. Japan's cities get measured heights from PLATEAU in B4, France's from BD TOPO. The
 fill's version is in the buildings step's key (§3.2), so a change rebuilds every tile and nothing
 else.
+
+These are B0's counts, before rule 3's 60 m² bound (B1). In the pilot's tiles the bound moved 4–31 %
+of the buildings from rule 3 to rule 5: Paris's z6 tile 59 → 28 % by the neighbours and 23 → 53 %
+by size, Barcelona's 55 → 25 % and 20 → 50 %, New York's 22 → 12 % and 4 → 14 %, Vermont's 22 →
+12 % and 3 → 14 %, Kantō's 14 → 10 % and 73 → 77 %. They are sheds, garages, annexes and kiosks,
+which the size rule puts at its sheds' height under 30 m² (3–5 m) and its houses' above (6–8 m in
+most countries), where the 300 m median gave them the area's, its towers' in a city. B0's hold-out could score the
+two rules on footprints under 60 m² before B2 builds every tile.
 
 ### 2.4 Heights and the roadside factor
 

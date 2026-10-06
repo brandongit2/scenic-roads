@@ -30,7 +30,7 @@ use det::Det;
 pub const BLDPREP_V: u32 = 2;
 /// Bumped when the fill (its rules, fits and defaults: [`fill`]) or the tiles change (every
 /// `bldtiles` target runs again, nothing else).
-pub const BUILDINGS_V: u32 = 1;
+pub const BUILDINGS_V: u32 = 2;
 /// The served layer (`/tiles/buildings/…`, the catalog's `buildings`).
 pub const LAYER: &str = "buildings";
 /// The zooms the tiles are made at.
