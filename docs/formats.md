@@ -389,9 +389,12 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
   evicted, evicted_bytes, skipped, skipped_kept, pending, short, end} or null, regions: {id: {name,
   bytes, here, kept, state}}, views: [{id, name, outline, at, bytes, here, state}]}`, a kept area's
   `state` one of kept, copying, room, away, paused, missing (a kept region the catalog doesn't
-  have); `PUT /api/keep/regions/{id}` `{keep}`; `POST /api/keep/views` `{outline, name?}` (named
-  after the place search's most important place in it unless named) → `{id, name}`; `PUT
-  /api/keep/views/{id}` `{name}`; `DELETE /api/keep/views/{id}`. Refusals are 400 `{error}`.
+  have); `PUT /api/keep/regions/{id}` `{keep}`; `POST /api/keep/views/size` `{outline}` →
+  `{bytes, here (of them), need (all that would be kept with it), hold (what this Mac can hold: its
+  free space and mirror, less the reserve), fits}`; `POST /api/keep/views` `{outline, name?}` (named
+  after the place search's most important place in it unless named; refused when it doesn't fit)
+  → `{id, name}`; `PUT /api/keep/views/{id}` `{name}`; `DELETE /api/keep/views/{id}`. Refusals
+  are 400 `{error}`, the reason in words.
 - Regions (the panel): `/api/regions` (GET, POST), `/api/regions/{id}` (PUT, DELETE),
   `/api/areas?at=`, `/api/areas/search?q=`, `/api/areas/{id}`, `/api/coverage` (the catalog's
   coverage as GeoJSON, one feature per outline entry, with `regions` and `catalog`; built from the

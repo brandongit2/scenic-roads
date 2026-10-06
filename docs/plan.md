@@ -50,9 +50,12 @@ nothing built depends on how the coverage is divided into regions.
     ("136 MB; 52 MB here"), and a Keep on this Mac switch: a kept region's files are copied first
     and never let go of, for trips away from the NAS. **Keep this view** keeps the ground on screen
     the same way, named after the place search's most important place in it (renamed with ✎, let
-    go with ×). Each kept area says its state (kept, copying N %, waiting for room, paused while
-    the build Mac works, away), and the Mac its own: the map's files here, the free space and the
-    reserve, how much more room the kept areas need, the copy under way.
+    go with ×); it first says what the view takes and what this Mac can hold, and one this Mac
+    can't hold isn't kept. Each kept area says its state (kept, copying N %, waiting for room,
+    paused while the build Mac works, away), and the Mac its own: the map's files here, the free
+    space and the reserve, how much more room the kept areas need, the copy under way. Nothing kept
+    goes by itself: when the disk is nearly full, the panel says so, naming what's kept and its
+    size.
 - **From a terminal:** `scenic add` and `scenic remove` do the same, straight to the NAS.
 - **Planned:**
   - drawing and redrawing outlines (dragging points; saved as a `.poly`);
@@ -499,9 +502,15 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
 - **Room first.** The disk keeps a reserve free (50 GB; 150 GB on the build Mac: the server's
   `--reserve-gb`, in GB of 10⁹ bytes). When it's under the reserve, at home or away, files go until
   it's back: those the current catalog doesn't list (an older catalog's) first, least recently used
-  first; then the current catalog's, least recently used first (among those never used, the last
-  groups of the copy order first); never the essentials nor a kept area's. Nothing is copied while
-  the disk is under the reserve. What the server mapped of a file let go is dropped at once.
+  first; then the current catalog's, least recently used first, the basemap last (it's drawn at
+  every zoom); never the essentials nor a kept area's. A file never used counts as used when it was
+  copied (its modification time, for the files copied before uses were noted as now). Of the files
+  in that order, the shortest run from the front that covers the deficit goes, less the biggest of
+  them the run can spare, so a round doesn't go far past it; the free space is measured again as
+  each goes, and what the server mapped of it is dropped at once. Nothing is copied while the disk
+  is under the reserve. Nothing goes while the build Mac runs a job (a pack job reads this mirror's
+  base packs), unless the disk is below half the reserve; nor when `mirror/` is a link or on another
+  disk than the app's folder (deleting there might not free this disk).
 - **The essentials,** which every Mac keeps whatever its room: the build's worldwide files
   (`global/`: rail frequencies, the road → units index, landmark totals, heritage summaries,
   today's converted layer files and details, roads' English names), every layer's root and lo
@@ -510,22 +519,30 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   regions), nor the basemap (28.6 GB, kept while any area is).
 - **Kept areas** (the Regions panel, §1): the regions and views a Mac keeps for offline use, in
   its own home (`keep.json`, never the NAS). An area's files: every layer's hi pack, and the base
-  pack and road values, of each z6 tile within 2 km of it (outlines are simplified), and the hi
-  data of the z6 tiles within 50 km (what the lists of a view inside it read around it); with the
-  essentials and the basemap's archives, that's what the map reads there, so a kept area works
-  fully offline (but §10, Gaps). A region's are worked out from the catalog's recorded coverage.
+  pack and road values, of each z6 tile within 2 km of it (outlines are simplified); the terrain's
+  and the grids' hi packs within 25 km (the viewshed's reach, so one from inside the area works);
+  and the hi data of the z6 tiles within 50 km (what the lists of a view inside it read around
+  it). With the essentials and the basemap's archives, that's what the map reads there, so a kept
+  area works fully offline (but §10, Gaps). A region's are worked out from the catalog's recorded
+  coverage. A view isn't kept when all that would be kept with it is more than this Mac can hold
+  (its free space and mirror, less the reserve).
 - **Copy order:** the essentials, then the kept areas' files, then the rest; within each, small
   worldwide files, root and lo packs and the basemap, hidata, road values and the small per-tile
   records, base packs, hi packs, and the rest. The most recently used go first within each group: a
   use is a read the map makes (a tile, a 304 too, a section, a base pack, the basemap), from the
-  mirror or the NAS, not the reads the server makes on its own.
+  mirror or the NAS, not the reads the server makes on its own (indexes cached for offline, the
+  place search's). The use times are written out every minute, during a copy too, and before the
+  server exits (for a new app, or on a signal).
 - **Budget:** the free space less the reserve. An essential or kept file that doesn't fit takes the
-  room of the files that may go, in room first's order; when that isn't enough, the panel says how
-  much more room the kept areas need. Any other file takes only the room of files the current
-  catalog doesn't list, so the mirror never trades one of the catalog's files for another; it's
-  copied only while a twentieth of the reserve stays free above it, and one let go for room only
-  once it's been used again (so the disk's comings and goings around the reserve don't have the same
-  files copied and let go over and over).
+  room of the files that may go, in room first's order, but only when that makes enough room for
+  it; when it doesn't, nothing goes for it, no other file is copied that round (it would take that
+  room back), and the panel says how much more room the kept areas need. Any other file takes only
+  the room of files the current catalog doesn't list, and, once it's been used, of the current
+  catalog's never used (the basemap aside): so the mirror comes round to what's used, without ever
+  trading a used file for another. Such a file is copied only while a twentieth of the reserve stays
+  free above it, and one let go for room only once it's been used again (so the disk's comings and
+  goings around the reserve don't have the same files copied and let go over and over); none goes
+  in the round that copied it.
 - The state, for the panel (`/api/keep`): each region's size and how much of it is here, each kept
   area's state, the free space, the reserve, how much more room the kept areas need, the copy under
   way, the last round.
