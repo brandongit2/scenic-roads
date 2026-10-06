@@ -65,7 +65,8 @@ pub struct AppState {
     pub areas: regions::Areas,
     /// The user's descriptions, laid over popup details.
     pub descriptions: Arc<descriptions::Descriptions>,
-    /// The map's places, for its search (made when first searched, per catalog).
+    /// The map's places, for its search (made when first searched, again when the labels or the
+    /// translations change).
     pub places: Arc<places::Index>,
     /// The current version tokens of the app's URLs, per (catalog generation, translations version).
     tokens: Mutex<Option<((u64, u64), Arc<std::collections::HashSet<String>>)>>,
@@ -517,19 +518,28 @@ async fn warm(s: S) {
     }
 }
 
+/// Whether a request is the map in use. An open page's polls of the catalog aren't (a tab left open
+/// would hold an update off), nor the menu bar item's of the build's status (every five seconds),
+/// nor the place search's while its places are made (`poll=1`: places.rs).
+fn is_use(uri: &axum::http::Uri) -> bool {
+    match uri.path() {
+        "/api/catalog" | "/api/ping" | "/api/build" => false,
+        "/api/places" => !uri.query().is_some_and(|q| q.split('&').any(|kv| kv == "poll=1")),
+        _ => true,
+    }
+}
+
 /// A URL's version token (`v=` in its query).
 fn version_token(query: Option<&str>) -> Option<String> {
     query?.split('&').find_map(|kv| kv.strip_prefix("v=")).map(|v| v.replace("%2D", "-"))
 }
 
-/// Records the request (for the updater and "in use"; not the catalog's polls), and caches responses to versioned URLs
-/// for good, but only when their version is the current one: an answer fetched under an old
-/// version during a catalog or translations switch may hold the new data, and mustn't be pinned
-/// to the old URL for a year.
+/// Records the request (for the updater and "in use", polls aside: `is_use`), and caches responses
+/// to versioned URLs for good, but only when their version is the current one: an answer fetched
+/// under an old version during a catalog or translations switch may hold the new data, and
+/// mustn't be pinned to the old URL for a year.
 async fn versioned_caching(State(s): State<S>, req: axum::extract::Request, next: axum::middleware::Next) -> Response {
-    // (An open page's polls of the catalog aren't use: a tab left open would hold an update off;
-    // nor the menu bar item's of the build's status, every five seconds.)
-    if !matches!(req.uri().path(), "/api/catalog" | "/api/ping" | "/api/build") {
+    if is_use(req.uri()) {
         updater::touch();
     }
     let v = version_token(req.uri().query());
@@ -818,6 +828,16 @@ impl Region {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polls_arent_use() {
+        let use_ = |u: &str| is_use(&u.parse().unwrap());
+        assert!(use_("/tiles/roads/8/1/2?v=abc") && use_("/api/places?q=banff&near=1,2"));
+        assert!(!use_("/api/catalog") && !use_("/api/build"));
+        // The search box asking again while the places are made.
+        assert!(!use_("/api/places?q=banff&near=1,2&n=8&poll=1"));
+        assert!(use_("/api/places?q=poll%3D1"));
+    }
 
     #[test]
     fn credits_of_older_catalogs_too() {

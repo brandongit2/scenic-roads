@@ -422,10 +422,58 @@ impl Data {
         Ok(self.index(&content)?.find(z, x, y).map(|e| e.hash))
     }
 
-    /// The tiles at zoom `z` in pack `logical` (none when the catalog hasn't it).
-    pub fn pack_tiles(&self, logical: &str, z: u8) -> Result<Vec<(u32, u32)>> {
-        let Some(content) = self.content(logical) else { return Ok(Vec::new()) };
-        Ok(self.index(&content)?.entries.iter().map(|e| e.zxy()).filter(|t| t.0 == z).map(|t| (t.1, t.2)).collect())
+    /// Each tile at zoom `z` of the pack named `content` (a content name, so of whichever catalog
+    /// named it): its x, y and bytes as stored, in the order they're stored. Read a MB or so at a
+    /// time, several tiles a read, from this Mac's mirror, else the NAS: not through a map, as a
+    /// tile served is (a whole layer read so would stay in the server's memory as long as its maps
+    /// are kept), nor whole (a big block, which macOS's allocator keeps once freed). Fails when the
+    /// pack can't be read, after the tiles before.
+    pub fn pack_tiles(&self, content: &str, z: u8, mut each: impl FnMut(u32, u32, &[u8])) -> Result<()> {
+        use std::os::unix::fs::FileExt;
+        let idx = self.index(content)?;
+        // (Sorted by key: a zoom's tiles are together.)
+        let first = idx.entries.partition_point(|e| e.key >> 58 < u64::from(z));
+        let mut es: Vec<store::pack::Entry> = idx.entries[first..].iter().take_while(|e| e.key >> 58 == u64::from(z)).copied().collect();
+        es.sort_by_key(|e| e.offset);
+        fn end(e: &store::pack::Entry) -> u64 {
+            e.offset + u64::from(e.len)
+        }
+        enum From {
+            Mirror(std::fs::File),
+            Src(Src),
+        }
+        let from = match self.mirror.as_ref().and_then(|m| m.local(content).map(|p| (m, p))) {
+            Some((m, p)) => {
+                m.touch(content);
+                From::Mirror(std::fs::File::open(&p).with_context(|| format!("open {}", p.display()))?)
+            }
+            None => From::Src(self.src(content)?),
+        };
+        let mut buf = Vec::new();
+        let mut i = 0;
+        while i < es.len() {
+            let lo = es[i].offset;
+            let n = es[i..].iter().take_while(|e| end(e) - lo <= 1 << 20).count().max(1);
+            let hi = es[i..i + n].iter().map(end).max().unwrap_or(lo);
+            let b: &[u8] = match &from {
+                From::Mirror(f) => {
+                    buf.resize((hi - lo) as usize, 0);
+                    f.read_exact_at(&mut buf, lo).with_context(|| format!("read {content}"))?;
+                    &buf
+                }
+                From::Src(Src::Local(m)) => m.get(lo as usize..hi as usize).ok_or_else(|| anyhow!("{content}: its index points past its end"))?,
+                From::Src(Src::Remote(r)) => {
+                    buf = r.read_at(lo, (hi - lo) as usize).with_context(|| format!("read {content}"))?;
+                    &buf
+                }
+            };
+            for e in &es[i..i + n] {
+                let (_, x, y) = e.zxy();
+                each(x, y, &b[(e.offset - lo) as usize..(end(e) - lo) as usize]);
+            }
+            i += n;
+        }
+        Ok(())
     }
 
     /// A version token for a layer's URLs: changes whenever any of its packs does.

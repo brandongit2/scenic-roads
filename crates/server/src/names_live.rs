@@ -88,14 +88,13 @@ impl NamesState {
 
     /// A version over every reading area (for files that span them all).
     pub fn version_all(&self) -> u64 {
-        let g = self.names.read().unwrap();
-        let Some(nm) = g.as_ref() else { return 0 };
-        let mut h: u64 = 0xcbf29ce484222325;
-        for a in names::area::AREAS {
-            h ^= nm.version(a);
-            h = h.wrapping_mul(0x100000001b3);
-        }
-        h
+        version_all(self.names.read().unwrap().as_ref())
+    }
+
+    /// The tables as they are now, for work that reads many names (a copy: cheap, the tables are
+    /// shared, and nothing waits on it); None before they've loaded.
+    pub fn snapshot(&self) -> Option<names::display::Names> {
+        self.names.read().unwrap().clone()
     }
 
     /// A gzip'd vector tile with main/sub attached (the original when nothing changed or it can't be
@@ -162,7 +161,7 @@ impl NamesState {
 
     /// Reads new and changed translation files into a copy of the tables (they share their
     /// unchanged parts), then swaps it in: requests never wait for the files.
-    fn reload(&self) {
+    pub(crate) fn reload(&self) {
         let t = std::time::Instant::now();
         let cur = self.names.read().unwrap().clone();
         let res = match cur {
@@ -189,4 +188,15 @@ impl NamesState {
     fn sync(&self, data: &Data) -> anyhow::Result<bool> {
         crate::livefolder::sync(data, "translations", &self.dir)
     }
+}
+
+/// A version over every reading area of the tables (0 before they've loaded).
+pub fn version_all(tables: Option<&names::display::Names>) -> u64 {
+    let Some(nm) = tables else { return 0 };
+    let mut h: u64 = 0xcbf29ce484222325;
+    for a in names::area::AREAS {
+        h ^= nm.version(a);
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
 }
