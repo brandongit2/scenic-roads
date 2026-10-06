@@ -91,6 +91,11 @@ pub async fn smallwater_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32,
     plain(s, "smallwater".into(), z, x, y, q, headers, "application/x-protobuf", true).await
 }
 
+/// The 3D buildings (pipeline::bld): gzip'd MVT, layer `b`, served as stored (no names).
+pub async fn building_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
+    plain(s, "buildings".into(), z, x, y, q, headers, "application/x-protobuf", true).await
+}
+
 pub async fn tree_tile(State(s): State<S>, Path((var, z, x, y)): Path<(String, u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
     if !["cover", "height", "leaf"].contains(&var.as_str()) {
         return StatusCode::NOT_FOUND.into_response();

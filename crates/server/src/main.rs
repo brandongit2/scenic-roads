@@ -452,6 +452,7 @@ async fn main() -> Result<()> {
         .route("/api/overlays/detail/{layer}/{id}", get(ovdata::detail))
         .route("/tiles/base/{z}/{x}/{y}", get(tiles::base_tile))
         .route("/tiles/trees/{var}/{z}/{x}/{y}", get(tiles::tree_tile))
+        .route("/tiles/buildings/{z}/{x}/{y}", get(tiles::building_tile))
         .route("/tiles/terrain/{z}/{x}/{y}", get(terrain::terrain_tile))
         .route("/tiles/slope/{z}/{x}/{y}", get(terrain::slope_tile))
         .route("/api/railfreq", get(rail_freq_h))
@@ -695,7 +696,7 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         }
     }
     // Tile archives by their old names.
-    for (old, layer) in [("roads.tiles", "roads"), ("rails.tiles", "rails"), ("terrain.tiles", "terrain"), ("slope.tiles", "slope"), ("labels.tiles", "labels"), ("trees-cover.tiles", "trees-cover"), ("trees-height.tiles", "trees-height"), ("trees-leaf.tiles", "trees-leaf")] {
+    for (old, layer) in [("roads.tiles", "roads"), ("rails.tiles", "rails"), ("terrain.tiles", "terrain"), ("slope.tiles", "slope"), ("labels.tiles", "labels"), ("trees-cover.tiles", "trees-cover"), ("trees-height.tiles", "trees-height"), ("trees-leaf.tiles", "trees-leaf"), ("buildings.tiles", "buildings")] {
         if cat.layers.contains_key(layer) {
             let v = s.data.layer_version(layer);
             versions.insert(old.into(), if layer == "labels" { named(v) } else { serde_json::Value::from(v) });
