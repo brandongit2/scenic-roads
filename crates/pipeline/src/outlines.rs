@@ -459,6 +459,25 @@ impl Outlines {
         Ok(v)
     }
 
+    /// The ISO 3166-1 code of the country or territory an outline is or lies in: its own when it
+    /// has one (`ISO3166-1`; with an `ISO3166-2` too, a territory's subdivision code ends in it:
+    /// "US-PR", "CN-HK", "FR-GF", "FR-PM"), else the country it lies in, else its subdivision code's
+    /// country part; "" when none is known.
+    pub fn country_code(&self, o: &OutlineRec) -> String {
+        let iso = self.string(o.iso);
+        if o.flags & flag::ISO1 != 0 {
+            let own = if o.flags & flag::ISO2 != 0 { iso.split_once('-').map_or("", |(_, t)| t) } else { iso };
+            if own.len() == 2 && own.bytes().all(|b| b.is_ascii_uppercase()) {
+                return own.to_string();
+            }
+        }
+        let c = self.string(o.country);
+        if !c.is_empty() {
+            return c.to_string();
+        }
+        iso.split('-').next().filter(|p| p.len() == 2).unwrap_or("").to_string()
+    }
+
     /// The ISO 3166-1 and 3166-2 codes at `p` ("" where none).
     pub fn iso_at(&self, p: [i32; 2]) -> Result<(String, String)> {
         let c = self.containing(p)?;
@@ -485,6 +504,22 @@ mod tests {
     }
 
     #[test]
+    fn country_codes() {
+        // A territory with its own ISO 3166-1 code and a subdivision's (Puerto Rico's), and an
+        // outline with neither in no country.
+        let d = tempfile::tempdir().unwrap();
+        let geo = d.path().join("o.geojsonseq");
+        let pr = SQUARE_WITH_HOLE.replace("\"@id\":7", "\"@id\":9").replace("\"ISO3166-2\":\"XX-SQ\"", "\"ISO3166-1\":\"PR\",\"ISO3166-2\":\"US-PR\"");
+        let none = SQUARE_WITH_HOLE.replace("\"@id\":7", "\"@id\":11").replace(",\"ISO3166-2\":\"XX-SQ\"", "").replace("[[0,0],[1,0],[1,1],[0,1],[0,0]],[[0.4,0.4],[0.6,0.4],[0.6,0.6],[0.4,0.6],[0.4,0.4]]", "[[10,10],[11,10],[11,11],[10,11],[10,10]]");
+        std::fs::write(&geo, format!("\u{1e}{pr}\n\u{1e}{none}\n")).unwrap();
+        let out = d.path().join("outlines.sect");
+        assemble_geojsonseq(&geo, &out).unwrap();
+        let o = Outlines::open(&out).unwrap();
+        assert_eq!(o.country_code(o.by_id(9).unwrap()), "PR");
+        assert_eq!(o.country_code(o.by_id(11).unwrap()), "");
+    }
+
+    #[test]
     fn round_trip_and_lookup() {
         let d = tempfile::tempdir().unwrap();
         let geo = d.path().join("o.geojsonseq");
@@ -499,6 +534,9 @@ mod tests {
         // In the hole: only the country.
         assert_eq!(o.containing(e7(0.5, 0.5)).unwrap().iter().map(|r| r.id).collect::<Vec<_>>(), vec![3]);
         assert_eq!(o.iso_at(e7(0.2, 0.2)).unwrap(), ("XX".to_string(), "XX-SQ".to_string()));
+        // Countries: a subdivision's is the country it lies in; a country's its own.
+        assert_eq!(o.country_code(o.by_id(7).unwrap()), "XX");
+        assert_eq!(o.country_code(o.by_id(3).unwrap()), "XX");
         assert_eq!(o.string(o.by_id(7).unwrap().name_en), "Square");
         assert_eq!(o.simple_polygons(o.by_id(7).unwrap()).unwrap().iter().map(Vec::len).collect::<Vec<_>>(), vec![2], "the hole nests in its polygon");
         assert_eq!(o.string(o.by_id(7).unwrap().country), "XX", "inside the country");
