@@ -25,17 +25,22 @@
 //!   `rekey-check` shows the times).
 //!
 //! Not pinned: z5 and z4 tiles (each made from z6 tiles the old key mostly didn't name: the far
-//! reaches of a long way), and z8–z6 tiles of a z6 tile whose hi pack is stale (the coverage left
-//! it: its area's runs since make those from the raw tiles alone, which the old key couldn't see) or
-//! whose area's terrain is to be made again. A unit without outputs (none of its ways in the
-//! coverage) is re-keyed whatever it reads: the terrain doesn't decide which ways it keeps.
+//! reaches of a long way), and z8–z6 tiles of a z6 tile whose hi pack is stale or whose area's
+//! terrain is to be made again. A hi pack is stale when the coverage left its z6 tile, or when an
+//! earlier run left it: a run that makes no hi tiles for a piece keeps its earlier pack
+//! (terrain_pack::build_q_with), and makes the piece's z8–z6 from the raw tiles alone, which the old
+//! key couldn't see; such a pack is older than its area's lo pack by the files' times
+//! (`FileTimes::hi_older`). A unit without outputs (none of its ways in the coverage) is re-keyed
+//! whatever it reads: the terrain doesn't decide which ways it keeps.
 
 use super::build::{self, Keys};
 use super::tiles::{TerrainTiles, Tile};
 use crate::coverage::Coverage;
 use crate::legacy::Unit;
 use crate::reach::Reaches;
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::Path;
 
 /// The key schemes before 2026-10-06.
 pub mod v1 {
@@ -100,10 +105,48 @@ impl Rekeyed {
     }
 }
 
+/// How much earlier than its area's lo pack a run can write a piece's hi pack: a run writes (or
+/// touches: the same bytes) each piece's hi pack as it's done, then the area's lo pack; the largest
+/// area's took 14 minutes on 2026-10-06, and a hi pack an earlier run left was 90 minutes older or
+/// more.
+pub const SAME_RUN_S: i64 = 3600;
+
+/// The NAS's files' times, each read once.
+pub struct FileTimes<'a> {
+    root: &'a Path,
+    seen: RefCell<HashMap<String, Option<i64>>>,
+}
+
+impl<'a> FileTimes<'a> {
+    pub fn new(root: &'a Path) -> FileTimes<'a> {
+        FileTimes { root, seen: RefCell::default() }
+    }
+
+    /// A file's time (seconds since the epoch), by content name; None when it can't be read now.
+    fn time(&self, content: &str) -> Option<i64> {
+        if let Some(&t) = self.seen.borrow().get(content) {
+            return t;
+        }
+        let t = std::fs::metadata(self.root.join(content)).and_then(|md| md.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64);
+        self.seen.borrow_mut().insert(content.to_string(), t);
+        t
+    }
+
+    /// Whether z6 tile (x, y)'s terrain hi pack, as `m` names it, was written over `SAME_RUN_S`
+    /// before its area's lo pack: an earlier run left it. Not when either isn't named; None when
+    /// a file's time can't be read now.
+    pub fn hi_older(&self, m: &BTreeMap<String, String>, x: u32, y: u32) -> Option<bool> {
+        let (Some(hi), Some(lo)) = (m.get(&format!("layers/terrain/hi/6-{x}-{y}")), m.get(&format!("layers/terrain/lo/3-{}-{}", x >> 3, y >> 3))) else { return Some(false) };
+        Some(self.time(lo)? - self.time(hi)? > SAME_RUN_S)
+    }
+}
+
 /// Re-keys the units' records in `keys` from the old scheme (`v1::unit_keys`) to the new
 /// (`build::unit_keys`), for the coverage `cov`, the pass `date`, the manifest `m`, the reaches,
-/// `digests` (agent::input_digests) and the terrain packs' indexes.
-pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: Option<&Reaches>, digests: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Rekeyed {
+/// `digests` (agent::input_digests) and the terrain packs' indexes. `older`: whether a z6 tile's hi
+/// pack was left by an earlier run (`FileTimes::hi_older`; None: can't be told now).
+#[allow(clippy::too_many_arguments)]
+pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: Option<&Reaches>, digests: &BTreeMap<String, String>, tiles: &TerrainTiles, older: &dyn Fn(u32, u32) -> Option<bool>) -> Rekeyed {
     let mut out = Rekeyed::default();
     let Some(reach) = reach else { return out };
     // (The units recorded, not all the pass's: whether the coverage builds a unit is a test of its
@@ -133,7 +176,13 @@ pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, S
             }
         };
         let outputs = crate::out::UNIT_OUTPUTS.iter().any(|p| m.contains_key(&format!("{p}{}", u.dash())));
-        let why = if outputs { unpinned(u, &read, m, &pieces, &terrain_now) } else { Vec::new() };
+        let why = match if outputs { unpinned(u, &read, m, &pieces, &terrain_now, older) } else { Ok(Vec::new()) } {
+            Ok(why) => why,
+            Err(e) => {
+                out.unknown.push((t, e));
+                continue;
+            }
+        };
         if why.is_empty() {
             keys.unit.insert(t.clone(), build::unit_key(cov, date, m, u, piece, r, digests, &build::terrain_digest(&read)));
             if !outputs {
@@ -149,9 +198,10 @@ pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, S
 }
 
 /// Why the tiles `read` that unit `u`'s new key names aren't all pinned by its old key: a line a
-/// kind of tile that isn't, with how many and the first; none when they all are. `pieces`: the z6
-/// tiles near the coverage; `terrain_now`: the areas whose terrain is current.
-fn unpinned(u: Unit, read: &[Tile], m: &BTreeMap<String, String>, pieces: &BTreeSet<(u32, u32)>, terrain_now: &BTreeSet<String>) -> Vec<String> {
+/// kind of tile that isn't, with how many and the first; none when they all are; an error when
+/// that can't be told now. `pieces`: the z6 tiles near the coverage; `terrain_now`: the areas whose
+/// terrain is current; `older`: as `rekey`'s.
+fn unpinned(u: Unit, read: &[Tile], m: &BTreeMap<String, String>, pieces: &BTreeSet<(u32, u32)>, terrain_now: &BTreeSet<String>, older: &dyn Fn(u32, u32) -> Option<bool>) -> Result<Vec<String>, String> {
     let b = crate::stage::tile_box_grown(u.z, u.x, u.y, crate::stage::MARGIN_KM);
     // The z6 tiles whose hi packs its old key named.
     let [x0, x1, y0, y1] = crate::stage::tile_range(6, b);
@@ -170,7 +220,11 @@ fn unpinned(u: Unit, read: &[Tile], m: &BTreeMap<String, String>, pieces: &BTree
                 } else if !terrain_now.contains(&format!("3/{}/{}", x6 >> 3, y6 >> 3)) {
                     Some("z8–z6 tiles of an area whose terrain is to be made again")
                 } else {
-                    None
+                    match older(x6, y6) {
+                        Some(true) => Some("z8–z6 tiles of a z6 tile whose hi pack is stale (an earlier run left it: older than its area's lo pack)"),
+                        Some(false) => None,
+                        None => return Err(format!("the times of 6/{x6}/{y6}'s terrain packs can't be read now")),
+                    }
                 }
             } else {
                 None
@@ -180,7 +234,7 @@ fn unpinned(u: Unit, read: &[Tile], m: &BTreeMap<String, String>, pieces: &BTree
             kinds.entry(k).or_insert((0, (z, x, y))).0 += 1;
         }
     }
-    kinds.into_iter().map(|(k, (n, (z, x, y)))| format!("{k}: {n}, {z}/{x}/{y} first")).collect()
+    Ok(kinds.into_iter().map(|(k, (n, (z, x, y)))| format!("{k}: {n}, {z}/{x}/{y} first")).collect())
 }
 
 #[cfg(test)]
@@ -190,6 +244,9 @@ mod tests {
     use crate::agent::build::{Rounds, Work};
     use crate::agent::recipes::Recipe;
     use crate::reach::{LongWay, Reach};
+
+    /// No hi pack older than its area's lo pack.
+    const NONE_OLDER: fn(u32, u32) -> Option<bool> = |_, _| Some(false);
 
     /// Iceland: regions a (Reykjavik, unit 6/28/17) and b (Akureyri and Egilsstaðir: 6/28/16,
     /// 6/29/16), all in area 3/3/2; the heritage sites and the terrain done (its lo pack, and the hi
@@ -247,25 +304,25 @@ mod tests {
         let tiles = tiles_for(&m);
         // Under the new keys as recorded: every unit would be built again.
         assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)).len(), 3);
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles);
+        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
         assert_eq!((r.moved.len(), r.left.len(), r.unknown.len(), r.empty.len()), (3, 0, 0, 0), "{r:?}");
         assert!(r.changed());
         assert!(units(&plan(&c, &reach, &m, &done, &tiles)).is_empty());
         // Again: nothing to do, nothing changed.
         let before = done.clone();
-        let again = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles);
+        let again = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
         assert_eq!(again, Rekeyed::default());
         assert!(!again.changed() && done == before);
         // A late record under the old key (a job an older app ran, merged since): re-keyed.
         let old = v1::unit_keys(&c, "d", &m, Some(&reach), &BTreeMap::new()).into_iter().find(|(u, _)| u.slash() == "6/28/16").unwrap().1;
         done.record("unit", &[("6/28/16".into(), old)]);
         assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)), ["6/28/16"]);
-        assert_eq!(rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles).moved, ["6/28/16"]);
+        assert_eq!(rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).moved, ["6/28/16"]);
         assert!(units(&plan(&c, &reach, &m, &done, &tiles)).is_empty());
         // One stale under the old keys (its key isn't the old scheme's now): left as it is, built.
         done.record("unit", &[("6/29/16".into(), "0000000000000000".into())]);
         let before = done.clone();
-        assert!(!rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles).changed());
+        assert!(!rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER).changed());
         assert_eq!(done, before);
         assert_eq!(units(&plan(&c, &reach, &m, &done, &tiles)), ["6/29/16"]);
     }
@@ -277,7 +334,7 @@ mod tests {
         // (no piece: the coverage is far) holding none of the tiles there, so it reads z8–z6 tiles.
         let road = |r: &mut Reaches| r.units.get_mut("6/28/17").unwrap().long = vec![LongWay { owned: true, ferry: false, verts: vec![[-218_000_000, 641_000_000], [-100_000_000, 641_000_000]] }];
         let (c, reach, m, mut done) = iceland(&road);
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles_for(&m));
+        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles_for(&m), &NONE_OLDER);
         assert_eq!(r.left.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(), ["6/28/17"]);
         assert!(r.left[0].1.len() == 1 && r.left[0].1[0].starts_with("zoomed-out tiles (z5–z4)"), "{:?}", r.left);
         assert!(!done.unit.contains_key("6/28/17"));
@@ -286,7 +343,7 @@ mod tests {
         // Without outputs (none of its ways kept), whatever it reads: re-keyed.
         let (c, reach, mut m, mut done) = iceland(&road);
         m.remove("base/6-28-17");
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles_for(&m));
+        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles_for(&m), &NONE_OLDER);
         assert_eq!((r.moved.len(), r.empty.clone(), r.left.len()), (3, vec!["6/28/17".to_string()], 0));
         // The stale hi pack.
         let into = |r: &mut Reaches| r.units.get_mut("6/28/17").unwrap().owned = Some(e7box(-22.6, 61.5, -21.7, 64.16));
@@ -298,7 +355,7 @@ mod tests {
         // (Its old key names the stale hi pack: recorded so, as it was built.)
         let old = v1::unit_keys(&c, "d", &m, Some(&reach), &BTreeMap::new()).into_iter().find(|(u, _)| u.slash() == "6/28/17").unwrap().1;
         done.record("unit", &[("6/28/17".into(), old)]);
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles);
+        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
         assert_eq!(r.left.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(), ["6/28/17"]);
         assert!(r.left[0].1[0].starts_with("z8–z6 tiles of a z6 tile whose hi pack is stale"), "{:?}", r.left);
     }
@@ -311,18 +368,59 @@ mod tests {
         tiles.hold("layers/terrain/hi/6-28-16.2222222222222222.pack", []);
         let mut stale = done.clone();
         stale.terrain.insert("3/3/2".into(), "0000000000000000".into());
-        let r = rekey(&mut stale, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles);
+        let r = rekey(&mut stale, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
         assert!(r.left.iter().any(|(u, why)| u == "6/28/16" && why[0].starts_with("z8–z6 tiles of an area whose terrain is to be made again")), "{r:?}");
         // Its terrain current: pinned by the hi pack.
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles);
+        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &NONE_OLDER);
         assert!(r.left.is_empty() && r.moved.len() == 3, "{r:?}");
+    }
+
+    #[test]
+    fn a_piece_whose_hi_pack_an_earlier_run_left_doesnt_pin_its_zoomed_out_tiles() {
+        // Akureyri's piece, its terrain current, its hi pack without the tiles under its owned box
+        // (it reads z8–z6 there), and older than its area's lo pack: its area's last run made no hi
+        // tiles for it, and its z8–z6 from the raw tiles alone.
+        let (c, reach, m, done) = iceland(&|_| {});
+        let mut tiles = tiles_for(&m);
+        tiles.hold("layers/terrain/hi/6-28-16.2222222222222222.pack", []);
+        let akureyri = |x: u32, y: u32| Some((x, y) == (28, 16));
+        let r = rekey(&mut done.clone(), &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &akureyri);
+        assert_eq!(r.left.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(), ["6/28/16"]);
+        assert!(r.left[0].1[0].starts_with("z8–z6 tiles of a z6 tile whose hi pack is stale (an earlier run left it"), "{:?}", r.left);
+        // Its files' times not readable now: left as it is, for the next pass.
+        let unknown = |x: u32, y: u32| if (x, y) == (28, 16) { None } else { Some(false) };
+        let mut kept = done.clone();
+        let r = rekey(&mut kept, &c, "d", &m, Some(&reach), &BTreeMap::new(), &tiles, &unknown);
+        assert_eq!(r.unknown.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(), ["6/28/16"]);
+        assert_eq!(kept.unit.get("6/28/16"), done.unit.get("6/28/16"));
+    }
+
+    #[test]
+    fn a_hi_pack_older_than_its_areas_lo_pack_by_the_files_times() {
+        let d = tempfile::tempdir().unwrap();
+        let m: BTreeMap<String, String> = [("layers/terrain/hi/6-28-16", "a"), ("layers/terrain/hi/6-29-16", "b"), ("layers/terrain/lo/3-3-2", "c"), ("layers/terrain/hi/6-30-16", "missing")].into_iter().map(|(l, n)| (l.to_string(), format!("{l}.{n}.pack"))).collect();
+        let at = |l: &str, secs_ago: u64| {
+            let p = d.path().join(&m[l]);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            let f = std::fs::File::create(&p).unwrap();
+            f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(secs_ago)).unwrap();
+        };
+        // The lo pack written last; 6/28/16's hi pack 20 minutes before it (the same run), 6/29/16's
+        // three hours before (an earlier run's).
+        at("layers/terrain/lo/3-3-2", 0);
+        at("layers/terrain/hi/6-28-16", 20 * 60);
+        at("layers/terrain/hi/6-29-16", 3 * 3600);
+        let t = FileTimes::new(d.path());
+        assert_eq!((t.hi_older(&m, 28, 16), t.hi_older(&m, 29, 16)), (Some(false), Some(true)));
+        // One not on the NAS: can't be told; none named: not older.
+        assert_eq!((t.hi_older(&m, 30, 16), t.hi_older(&m, 31, 16)), (None, Some(false)));
     }
 
     #[test]
     fn a_unit_whose_terrain_cant_be_read_now_keeps_its_record() {
         let (c, reach, m, mut done) = iceland(&|_| {});
         let before = done.clone();
-        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &TerrainTiles::new(None));
+        let r = rekey(&mut done, &c, "d", &m, Some(&reach), &BTreeMap::new(), &TerrainTiles::new(None), &NONE_OLDER);
         assert_eq!(r.unknown.len(), 3);
         assert!(!r.changed() && done == before);
     }

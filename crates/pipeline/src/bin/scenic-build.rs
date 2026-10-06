@@ -1132,13 +1132,15 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
     let t_old = t1.elapsed().as_secs_f64();
     let new: BTreeMap<String, Option<String>> = build::unit_keys(&cov, &date, &m, Some(&reach), &digests, &tiles).into_iter().map(|(u, k)| (u.slash(), k)).collect();
     let t_new = t1.elapsed().as_secs_f64() - t_old;
+    let times = rekey::FileTimes::new(root);
+    let older = |x: u32, y: u32| times.hi_older(&m, x, y);
     let mut after = keys.clone();
-    let r = rekey::rekey(&mut after, &cov, &date, &m, Some(&reach), &digests, &tiles);
+    let r = rekey::rekey(&mut after, &cov, &date, &m, Some(&reach), &digests, &tiles, &older);
     println!("(the old keys took {t_old:.1} s, the new {t_new:.1} s, the re-keying {:.1} s)", t1.elapsed().as_secs_f64() - t_old - t_new);
     // (Again on what it made: nothing to do, as each plan's re-keying finds once it's done.)
     let t2 = std::time::Instant::now();
     let mut twice = after.clone();
-    let again = rekey::rekey(&mut twice, &cov, &date, &m, Some(&reach), &digests, &tiles);
+    let again = rekey::rekey(&mut twice, &cov, &date, &m, Some(&reach), &digests, &tiles, &older);
     println!("a second pass: {} (in {:.1} s)", if again.changed() || twice != after { "it changed the records again" } else { "nothing to do" }, t2.elapsed().as_secs_f64());
     let rec = |u: Unit| keys.unit.get(&u.slash());
     let new_of = |u: Unit| new.get(&u.slash()).and_then(Option::as_ref);
@@ -1176,9 +1178,13 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
 
     // The build's first zoomed-out terrain of each area it makes terrain for.
     let targets: BTreeSet<String> = build::coverage_tiles(&cov).keys().map(|q| format!("3/{}/{}", q.0, q.1)).collect();
-    let pieces: BTreeSet<String> = build::coverage_tiles(&cov).into_values().flatten().map(|(x, y)| format!("layers/terrain/hi/6-{x}-{y}")).collect();
-    let hi: Vec<&String> = m.keys().filter(|l| l.starts_with("layers/terrain/hi/")).collect();
-    println!("terrain hi packs: {}, {} of them stale (their z6 tile no longer near the coverage)", hi.len(), hi.iter().filter(|l| !pieces.contains(**l)).count());
+    // The stale terrain hi packs: their z6 tile no longer near the coverage, or left by an earlier
+    // run (older than the area's lo pack: its last run made no hi tiles for the piece).
+    let pieces: BTreeSet<(u32, u32)> = build::coverage_tiles(&cov).into_values().flatten().collect();
+    let hi: Vec<(u32, u32)> = m.keys().filter_map(|l| l.strip_prefix("layers/terrain/hi/")).filter_map(Unit::parse).map(|t| (t.x, t.y)).collect();
+    let left: Vec<String> = hi.iter().filter(|t| pieces.contains(*t) && older(t.0, t.1) != Some(false)).map(|t| format!("6/{}/{}{}", t.0, t.1, if older(t.0, t.1).is_none() { " (its files' times unread)" } else { "" })).collect();
+    let gone = hi.iter().filter(|t| !pieces.contains(*t)).count();
+    println!("terrain hi packs: {}, {} of them stale: {gone} of z6 tiles the coverage left, {} an earlier run left (older than their area's lo pack){}", hi.len(), gone + left.len(), left.len(), words(&left));
     // (The served catalogs and those held for review, as they were made.)
     let mut cats: Vec<(i64, String, store::catalog::Catalog)> = Vec::new();
     for dir in ["catalog", "catalog-held"] {
