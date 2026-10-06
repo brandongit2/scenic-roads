@@ -107,7 +107,8 @@ const ROUND_FILE: &str = "round.json";
 
 /// The build's records as they were before the first re-keying that changed them (agent::rekey;
 /// the units' keys, 2026-10-06), on the NAS beside them: written once, never over one there, for
-/// going back to an older app (README, How it's built).
+/// going back to an app from before the units' keys (README, How it's built; one from before tree
+/// cover's pieces needs no copy: it drops the assemblies' records and makes the tree cover again).
 pub const REKEY_COPY: &str = "state/build/jobs.pre-rekey.json";
 
 /// Steps that run alone, never beside another job: the pass's worldwide jobs (the planet, the

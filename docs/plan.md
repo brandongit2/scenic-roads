@@ -1231,10 +1231,12 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   the re-keying out, and only when that changes the records does it take the build lock, as the
   merge takes it (a job saving holds it), re-key the records as they are then and write
   `state/build/jobs.json` whole. Before its first such write it keeps them as they were, in
-  `state/build/jobs.pre-rekey.json` (written once, never over one there: the way back to an older
-  app, README). The plan and the status re-key the keys they read in memory, so a dry run, or a
-  loop that couldn't take the lock, plans as the records will be. A second pass finds nothing (a
-  new key is never an old one), and a record of an older app's job merged later is re-keyed then.
+  `state/build/jobs.pre-rekey.json` (written once, never over one there: the way back to an app
+  from before the units' keys, README; one from before tree cover's pieces needs no copy: it drops
+  the assemblies' records and makes the tree cover again by z3 tiles). The plan and the status
+  re-key the keys they read in memory, so a dry run, or a loop that couldn't take the lock, plans
+  as the records will be. A second pass finds nothing (a new key is never an old one), and a
+  record of an older app's job merged later is re-keyed then (tree cover's as below).
   `scenic-build rekey-check` says what it would do, reading only. The old scheme's keys
   (`agent::rekey::v1`) are kept for those late records.
   - **The units' terrain** (§6, Job keys: they named the terrain hi packs within 30 km): their
