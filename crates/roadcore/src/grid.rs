@@ -191,7 +191,8 @@ pub const SPIKE_MAX: u32 = 16;
 /// 81° cone, 1,204 m tall), and stays. A pit down to sea level in raised ground needs no such
 /// margin: it's AWS's filler where its source had none.
 pub const ROUGH: f64 = 20.0;
-/// The same for a spike (BlobKind::Spike), small and walled: 10.
+/// The same for a spike (BlobKind::Spike), small and walled: 10, against the plane through the
+/// ground around it (a spike on a smooth slope is on flat ground).
 pub const ROUGH_SPIKE: f64 = 10.0;
 
 /// (Tests: a pixel whose blobs' weighing is printed.)
@@ -356,8 +357,6 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
     let mut area = vec![0u32; v.len()];
     let mut top = vec![0u32; v.len()];
     let mut sides = vec![0u8; v.len()];
-    // (Each component's perimeter: its pixels' sides facing other pixels of the tile.)
-    let mut perim = vec![0u32; v.len()];
     // (Pixels beside a void or a blob already found, and the components that have one.)
     let near_px: Vec<bool> = (0..v.len())
         .map(|i| {
@@ -377,6 +376,7 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
     // and how it was weighed then.
     type Best = (BlobKind, f64, u32, f32, f32, f32, bool);
     let mut best: Vec<[Option<Best>; 3]> = vec![[None; 3]; v.len()];
+    let mut comp: Vec<u32> = Vec::with_capacity(SPIKE_MAX as usize + 1);
     let mut found: Vec<(u32, Best)> = Vec::new();
     fn find(parent: &mut [u32], mut a: u32) -> u32 {
         let mut r = a;
@@ -398,14 +398,6 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
         let k = k as u32;
         let level = v[p as usize] as f64;
         let (x, y) = ((p % TS as u32) as i32, (p / TS as u32) as i32);
-        let (mut sides4, mut joined4) = (0u32, 0u32);
-        for (dx, dy) in [(0, -1), (-1, 0), (1, 0), (0, 1)] {
-            let (xx, yy) = (x + dx, y + dy);
-            if xx >= 0 && yy >= 0 && xx < w && yy < w {
-                sides4 += 1;
-                joined4 += (rank[(yy * w + xx) as usize] < k) as u32;
-            }
-        }
         let mut roots = [NONE; 8];
         let mut nr = 0;
         for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
@@ -440,17 +432,38 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
             let seen = (s.max(0.0) - sl.max(0.0)).abs();
             let a_eff = (a as f64) * (1u32 << sides[r as usize].count_ones()) as f64;
             let l = ((a_eff / std::f64::consts::PI).sqrt() + 0.5) * px;
-            let excess = rise - steepest(l) * l;
-            // (A spike's width: twice its area over its perimeter, a line's own width.)
-            let thin = (2.0 * a as f64 / perim[r as usize].max(1) as f64 + 0.5) * px;
+            let allowed = steepest(l) * l;
             let edge = sides[r as usize] != 0;
             let slot = &mut best[r as usize];
-            if seen > BLOB_RISE && excess > 0.0 && slot[0].is_none_or(|b| excess > b.1) {
-                slot[0] = Some((BlobKind::Broken, excess, k, rise as f32, level as f32, l as f32, edge));
+            // (Steepness as the map shows it: what's below sea level, the sea floor or a pit's
+            // depth below zero, makes nothing steeper on the map.)
+            if seen > BLOB_RISE && seen > allowed && slot[0].is_none_or(|b| seen - allowed > b.1) {
+                slot[0] = Some((BlobKind::Broken, seen - allowed, k, rise as f32, level as f32, l as f32, edge));
             }
-            if seen > BLOB_RISE && a <= SPIKE_MAX && rise > thin && slot[1].is_none() {
-                slot[1] = Some((BlobKind::Spike, rise - thin, k, rise as f32, level as f32, thin as f32, edge));
+            if seen > BLOB_RISE && a <= SPIKE_MAX && !edge && slot[1].is_none() {
+                // (A spike's width: its inradius, the steps from its innermost pixel to the ground.)
+                comp.clear();
+                comp.push(top[r as usize]);
+                let mut i = 0;
+                while i < comp.len() {
+                    let (cx, cy) = ((comp[i] % TS as u32) as i32, (comp[i] / TS as u32) as i32);
+                    for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+                        let (xx, yy) = (cx + dx, cy + dy);
+                        if xx >= 0 && yy >= 0 && xx < w && yy < w {
+                            let q = (yy * w + xx) as u32;
+                            if rank[q as usize] < k && !comp.contains(&q) {
+                                comp.push(q);
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+                let width = inradius(&comp) as f64 * px;
+                if seen > width {
+                    slot[1] = Some((BlobKind::Spike, seen - width, k, rise as f32, level as f32, width as f32, edge));
+                }
             }
+            let excess = rise - allowed;
             if s.max(sl) <= 0.0 && excess > 0.0 && slot[2].is_none_or(|b| excess > b.1) {
                 slot[2] = Some((BlobKind::Unseen, excess, k, rise as f32, level as f32, l as f32, edge));
             }
@@ -460,7 +473,6 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
             top[p as usize] = p;
             sides[p as usize] = side(p);
             near[p as usize] = near_px[p as usize];
-            perim[p as usize] = sides4;
             continue;
         }
         let roots = &roots[..nr];
@@ -476,13 +488,11 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
             area[dom as usize] += area[r as usize];
             sides[dom as usize] |= sides[r as usize];
             near[dom as usize] |= near[r as usize];
-            perim[dom as usize] += perim[r as usize];
         }
         parent[p as usize] = dom;
         area[dom as usize] += 1;
         sides[dom as usize] |= side(p);
         near[dom as usize] |= near_px[p as usize];
-        perim[dom as usize] = perim[dom as usize] + sides4 - 2 * joined4;
     }
     for &p in &order {
         if parent[p as usize] == p {
@@ -523,9 +533,15 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
         // As the map shows it (bathymetry at sea level): how far it stands out of the median of the
         // ground around it, against that ground's roughness (on flat ground when ROUGH times).
         let shown = |i: usize| (sign * v[i]).max(0.0) as f64;
-        let (median, rough) = ground(v, sign, &pixels, out, held, &mut stamp, b);
+        let g = ground(v, sign, &pixels, out, held, &mut stamp, b, t0);
+        let (median, rough) = (g.median, g.rough);
         let out_of = sign as f64 * (shown(t0 as usize) - median as f64);
-        let flat = out_of > if kind == BlobKind::Spike { ROUGH_SPIKE } else { ROUGH } * rough as f64;
+        // (A spike's ground may slope: it's flat when the spike stands out of the plane through it.)
+        let flat = if kind == BlobKind::Spike {
+            sign as f64 * (shown(t0 as usize) - g.plane as f64) > ROUGH_SPIKE * g.plane_rough as f64
+        } else {
+            out_of > ROUGH * rough as f64
+        };
         let at_sea = sign < 0.0 && -v[t0 as usize] <= 1.0;
         #[cfg(test)]
         let traced = pixels.contains(&TRACE.load(std::sync::atomic::Ordering::Relaxed));
@@ -569,6 +585,8 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
             if traced {
                 eprintln!("    wall {wall:.2} beside {beside}");
             }
+            // (Steep over its width alone, a spike may be an island's top, Minami-Iwo-jima's at
+            // z8 (0.64), or a plug, Shiprock's at z10 (0.88): the wall tells them apart.)
             if !(wall >= 1.0 && (flat || beside)) {
                 continue;
             }
@@ -604,15 +622,11 @@ pub struct Weighing {
     pub steep: f32,
     pub steep_flat: f32,
     /// Where it first qualified as a spike, if it did: its wall (the upper quartile of the steps
-    /// down its edge, m per m: 1 is 45°) and how it stood out of the ground (ROUGH_SPIKE: flat).
+    /// down its edge, m per m: 1 is 45°) and how it stood out of the plane through the ground
+    /// around it against that ground's spread about the plane (ROUGH_SPIKE: flat).
     pub spike: bool,
     pub spike_wall: f32,
     pub spike_flat: f32,
-    /// The same, its width taken as its inradius (the steps from its innermost pixel to the ground
-    /// around: a line's half width) rather than twice its area over its perimeter.
-    pub spike_in: bool,
-    pub spike_in_wall: f32,
-    pub spike_in_flat: f32,
 }
 
 pub fn weigh_top(t: &[f32], p: u32, z: u8, lat: f64) -> Weighing {
@@ -637,9 +651,9 @@ pub fn weigh_top(t: &[f32], p: u32, z: u8, lat: f64) -> Weighing {
     let mut heap = std::collections::BinaryHeap::new();
     heap.push(H(top, p));
     queued[p as usize] = true;
-    let (mut members, mut perim, mut sides) = (Vec::<u32>::new(), 0u32, 0u8);
+    let (mut members, mut sides) = (Vec::<u32>::new(), 0u8);
     let (mut best_steep, mut steep_at) = (0f64, 0usize);
-    let (mut spike_at, mut spike_in_at) = (None, None);
+    let mut spike_at = None;
     let mut out = Weighing::default();
     while let Some(H(v, q)) = heap.pop() {
         if v > top || !v.is_finite() || members.len() as u32 > BLOB_MAX {
@@ -647,34 +661,20 @@ pub fn weigh_top(t: &[f32], p: u32, z: u8, lat: f64) -> Weighing {
         }
         if !members.is_empty() {
             let a = members.len() as f64;
-            let rise = (top - v) as f64;
             let seen = (top.max(0.0) - v.max(0.0)) as f64;
             let a_eff = a * (1u32 << sides.count_ones()) as f64;
             let l = ((a_eff / std::f64::consts::PI).sqrt() + 0.5) * px;
             if seen > BLOB_RISE {
-                let r = rise / (steepest(l) * l);
+                let r = seen / (steepest(l) * l);
                 if r > best_steep {
                     (best_steep, steep_at) = (r, members.len());
                 }
-                let thin = (2.0 * a / perim.max(1) as f64 + 0.5) * px;
-                if spike_at.is_none() && members.len() as u32 <= SPIKE_MAX && rise > thin {
+                if spike_at.is_none() && members.len() as u32 <= SPIKE_MAX && seen > inradius(&members) as f64 * px {
                     spike_at = Some(members.len());
-                }
-                if spike_in_at.is_none() && members.len() as u32 <= SPIKE_MAX && rise > inradius(&members) as f64 * px {
-                    spike_in_at = Some(members.len());
                 }
             }
         }
         let (x, y) = ((q % TS as u32) as i32, (q / TS as u32) as i32);
-        let (mut sides4, mut joined4) = (0u32, 0u32);
-        for (dx, dy) in [(0, -1), (-1, 0), (1, 0), (0, 1)] {
-            let (xx, yy) = (x + dx, y + dy);
-            if xx >= 0 && yy >= 0 && xx < w && yy < w {
-                sides4 += 1;
-                joined4 += inside[(yy * w + xx) as usize] as u32;
-            }
-        }
-        perim = perim + sides4 - 2 * joined4;
         sides |= (x == 0) as u8 | ((x == w - 1) as u8) << 1 | ((y == 0) as u8) << 2 | ((y == w - 1) as u8) << 3;
         inside[q as usize] = true;
         members.push(q);
@@ -689,16 +689,20 @@ pub fn weigh_top(t: &[f32], p: u32, z: u8, lat: f64) -> Weighing {
     let none = vec![false; t.len()];
     let mut stamp = vec![u32::MAX; t.len()];
     let shown = |i: usize| t[i].max(0.0) as f64;
-    let mut flat_of = |pix: &[u32], b: u32| {
+    let mut flat_of = |pix: &[u32], b: u32, plane: bool| {
         for &q in pix {
             stamp[q as usize] = b;
         }
-        let (median, rough) = ground(t, 1.0, pix, &none, &none, &mut stamp, b);
-        ((shown(p as usize) - median as f64) / (rough as f64).max(0.01)) as f32
+        let g = ground(t, 1.0, pix, &none, &none, &mut stamp, b, p);
+        if plane {
+            ((shown(p as usize) - g.plane as f64) / (g.plane_rough as f64).max(0.01)) as f32
+        } else {
+            ((shown(p as usize) - g.median as f64) / (g.rough as f64).max(0.01)) as f32
+        }
     };
     out.steep = best_steep as f32;
     if steep_at > 0 {
-        out.steep_flat = flat_of(&members[..steep_at], 0);
+        out.steep_flat = flat_of(&members[..steep_at], 0, false);
     }
     let wall_of = |pix: &[u32]| {
         let mut steps = Vec::new();
@@ -718,13 +722,8 @@ pub fn weigh_top(t: &[f32], p: u32, z: u8, lat: f64) -> Weighing {
     };
     if let Some(n) = spike_at {
         out.spike = true;
-        out.spike_flat = flat_of(&members[..n], 1);
+        out.spike_flat = flat_of(&members[..n], 1, true);
         out.spike_wall = wall_of(&members[..n]);
-    }
-    if let Some(n) = spike_in_at {
-        out.spike_in = true;
-        out.spike_in_flat = flat_of(&members[..n], 2);
-        out.spike_in_wall = wall_of(&members[..n]);
     }
     out
 }
@@ -765,14 +764,25 @@ fn inradius(pix: &[u32]) -> u32 {
 /// bathymetry at sea level), from two pixels out to twice its radius (at least four), but what was
 /// taken in this stage (`out` and not `held`): its median, and its roughness, the spread of its
 /// middle half. (0, 0) when there's none.
-fn ground(v: &[f32], sign: f32, pixels: &[u32], out: &[bool], held: &[bool], stamp: &mut [u32], b: u32) -> (f32, f32) {
+/// The ground around a blob as the map shows it (`ground`): its median and roughness (the middle
+/// half's spread), and the plane through it (least squares) at the blob's top, with the spread of
+/// the middle half of its pixels about that plane (a smooth slope strays little from it).
+#[derive(Clone, Copy, Debug, Default)]
+struct Ground {
+    median: f32,
+    rough: f32,
+    plane: f32,
+    plane_rough: f32,
+}
+
+fn ground(v: &[f32], sign: f32, pixels: &[u32], out: &[bool], held: &[bool], stamp: &mut [u32], b: u32, top: u32) -> Ground {
     let w = TS as i32;
     let reach = ((2.0 * (pixels.len() as f64 / std::f64::consts::PI).sqrt()).ceil() as usize).max(4);
     // (Rings outward, one Chebyshev step at a time; their pixels stamped so as not to be counted
     // twice: with `b | 1 << 31`, apart from the blob's own.)
     let ring_mark = b | 1 << 31;
     let mut front: Vec<u32> = pixels.to_vec();
-    let mut vals: Vec<f32> = Vec::new();
+    let (mut vals, mut at): (Vec<f32>, Vec<u32>) = (Vec::new(), Vec::new());
     for d in 1..=reach {
         let mut next = Vec::new();
         for &p in &front {
@@ -788,6 +798,7 @@ fn ground(v: &[f32], sign: f32, pixels: &[u32], out: &[bool], held: &[bool], sta
                     next.push(q as u32);
                     if d >= 2 && (held[q] || !out[q]) && v[q].is_finite() {
                         vals.push((sign * v[q]).max(0.0));
+                        at.push(q as u32);
                     }
                 }
             }
@@ -795,13 +806,44 @@ fn ground(v: &[f32], sign: f32, pixels: &[u32], out: &[bool], held: &[bool], sta
         front = next;
     }
     if vals.is_empty() {
-        return (0.0, 0.0);
+        return Ground::default();
     }
+    // The plane z = c0 + c1·dx + c2·dy (dx, dy from the top), by the normal equations.
+    let (tx, ty) = ((top % TS as u32) as f64, (top / TS as u32) as f64);
+    let mut m = [[0f64; 3]; 3];
+    let mut r = [0f64; 3];
+    for (&q, &z) in at.iter().zip(&vals) {
+        let f = [1.0, (q % TS as u32) as f64 - tx, (q / TS as u32) as f64 - ty];
+        for i in 0..3 {
+            for j in 0..3 {
+                m[i][j] += f[i] * f[j];
+            }
+            r[i] += f[i] * z as f64;
+        }
+    }
+    let det = |m: &[[f64; 3]; 3]| m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0]);
+    let d = det(&m);
+    let c = if d.abs() > 1e-9 {
+        let mut c = [0f64; 3];
+        for (k, ck) in c.iter_mut().enumerate() {
+            let mut mk = m;
+            for i in 0..3 {
+                mk[i][k] = r[i];
+            }
+            *ck = det(&mk) / d;
+        }
+        c
+    } else {
+        [r[0] / m[0][0].max(1.0), 0.0, 0.0]
+    };
+    let mut res: Vec<f32> = at.iter().zip(&vals).map(|(&q, &z)| (z as f64 - c[0] - c[1] * ((q % TS as u32) as f64 - tx) - c[2] * ((q / TS as u32) as f64 - ty)) as f32).collect();
     let n = vals.len();
     let q1 = *vals.select_nth_unstable_by(n / 4, |a, b| a.total_cmp(b)).1;
     let median = *vals.select_nth_unstable_by(n / 2, |a, b| a.total_cmp(b)).1;
     let q3 = *vals.select_nth_unstable_by(n * 3 / 4, |a, b| a.total_cmp(b)).1;
-    (median, q3 - q1)
+    let r1 = *res.select_nth_unstable_by(n / 4, |a, b| a.total_cmp(b)).1;
+    let r3 = *res.select_nth_unstable_by(n * 3 / 4, |a, b| a.total_cmp(b)).1;
+    Ground { median, rough: q3 - q1, plane: c[0] as f32, plane_rough: r3 - r1 }
 }
 
 /// Fills the pixels of `hole` from the others (a 256 × 256 tile with some of them): the smoothest

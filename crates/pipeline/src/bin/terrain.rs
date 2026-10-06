@@ -187,6 +187,11 @@ fn main() -> Result<()> {
 /// writes only under `--out`:
 ///   tiles.tsv    every tile something changed in: what each repair moved, and its second pass
 ///   changes.csv  every pixel either repair moved by more than 50 m (lon, lat, before, after)
+///   blobs.tsv    the new repair's blobs, as it weighed them (its second pass's, rise negated)
+///   peaks.tsv    OSM's summits with a height (the pass's `work/summits`): each one's pixel before
+///                and after the new repair, and how close its rules came to taking it
+///   holes.tsv    areas at or below 1 m inside raised ground in the raw tiles (Hans Island's kind)
+///   lefts.tsv    towers left over low ground by either repair (`towers_left`)
 ///   views/       `z-x-y.{raw,v1,v2}.f32` for the tiles listed in `--views` (256 × 256, metres)
 ///   summary.txt  the counts per zoom
 /// `--world-z8` does the same for the worldwide z8 (terrain_z8: each tile alone).
@@ -212,6 +217,7 @@ fn scan() -> Result<()> {
         tiles: Mutex::new(std::io::BufWriter::new(std::fs::File::create(outd.join("tiles.tsv"))?)),
         changes: Mutex::new(std::io::BufWriter::new(std::fs::File::create(outd.join("changes.csv"))?)),
         holes: Mutex::new(std::io::BufWriter::new(std::fs::File::create(outd.join("holes.tsv"))?)),
+        lefts: Mutex::new(std::io::BufWriter::new(std::fs::File::create(outd.join("lefts.tsv"))?)),
         blobs: Mutex::new(std::io::BufWriter::new(std::fs::File::create(outd.join("blobs.tsv"))?)),
         peaks: Mutex::new(std::io::BufWriter::new(std::fs::File::create(outd.join("peaks.tsv"))?)),
         summits: summits_by_z6(&root),
@@ -221,9 +227,10 @@ fn scan() -> Result<()> {
     };
     writeln!(sc.tiles.lock().unwrap(), "z\tx\ty\tlon\tlat\tv1_px\tv1_max\tv1b_px\tv1b_max\tv1c_px\tv1c_max\tvoids\tblobs\tv2_px\tv2_max\tv2b_any\tv2b_voids\tv2b_blobs\tv2b_px\tv2b_max\tdiff_px\tdiff_max\tstages\tunseen\tleft1\tleft1_max\tleft2\tleft2_max")?;
     writeln!(sc.changes.lock().unwrap(), "which,z,x,y,px,py,lon,lat,before,after")?;
-    writeln!(sc.peaks.lock().unwrap(), "z\tx\ty\tid\tele\traw\tv2\tratio\tarea\trise\tlevel\tsteep\tsteep_flat\tspike\tspike_wall\tspike_flat\tspike_in\tspike_in_wall\tspike_in_flat")?;
+    writeln!(sc.peaks.lock().unwrap(), "z\tx\ty\tid\tele\traw\tv2\tratio\tarea\trise\tlevel\tsteep\tsteep_flat\tspike\tspike_wall\tspike_flat")?;
     writeln!(sc.blobs.lock().unwrap(), "z\tx\ty\tpx\tpy\tlon\tlat\tpit\tpixels\trise\tlevel\treach\tedge\tpx_m\tislope\twall\tring_iqr\ttop\tkind\trough\tground\tstage")?;
     writeln!(sc.holes.lock().unwrap(), "z\tx\ty\tlon\tlat\tarea\tfloor_min\tfloor_med\tfloor_max\tones\tneg\trim_min\trim_med\trim_max\twall_med")?;
+    writeln!(sc.lefts.lock().unwrap(), "which\tz\tx\ty\tpx\tpy\tlon\tlat\tv\tground\tupper")?;
     let store = root.join("sources/aws-terrarium");
     let t0 = std::time::Instant::now();
     if let Some(f) = opt("--tiles") {
@@ -369,7 +376,7 @@ fn scan() -> Result<()> {
     txt += &format!("all: {} | {} ({} px, max {:.0} m), {} ({} px, max {:.0} m), {} ({} px, max {:.0} m) | {} ({} voids, {} blobs, {} px, max {:.0} m), {} ({} px, max {:.2} m) | {} (max {:.0} m)\n",
         s.tiles, s.v1.0, s.v1.1, s.v1.2, s.v1b.0, s.v1b.1, s.v1b.2, s.v1c.0, s.v1c.1, s.v1c.2, s.v2.0, s.voids, s.blobs, s.v2.1, s.v2.2, s.v2b.0, s.v2b.1, s.v2b.2, s.diff.0, s.diff.2);
     txt += &format!("tiles by the new repair's stages (0: nothing to weigh, 1..8): {:?}\n", s.stages);
-    txt += "towers left over low ground (> 100 m above a 7 x 7 median of 30 m or less), per zoom: tiles, pixels, most (first repair | new):\n";
+    txt += "lone towers left over low ground (> 100 m above a 7 x 7 median of 30 m or less, 3 or fewer of the 49 in their upper half), per zoom: tiles, towers, most above the median (first repair | new):\n";
     for (z, s) in &sums {
         txt += &format!("  z{z}: {} {} {:.0} | {} {} {:.0}\n", s.left1.0, s.left1.1, s.left1.2, s.left2.0, s.left2.1, s.left2.2);
     }
@@ -444,6 +451,7 @@ struct Scan {
     tiles: Mutex<std::io::BufWriter<std::fs::File>>,
     changes: Mutex<std::io::BufWriter<std::fs::File>>,
     holes: Mutex<std::io::BufWriter<std::fs::File>>,
+    lefts: Mutex<std::io::BufWriter<std::fs::File>>,
     blobs: Mutex<std::io::BufWriter<std::fs::File>>,
     peaks: Mutex<std::io::BufWriter<std::fs::File>>,
     /// OSM's summits with a height, by z6 tile: (lon, lat, ele, id).
@@ -552,7 +560,25 @@ impl Scan {
         let any = again.iter().zip(&o2).filter(|(a, b)| a.to_bits() != b.to_bits()).count() as u32;
         let m2b = moved(&o2, &again);
         let diff = moved(&o1, &o2);
-        let (left1, left2) = (towers_left(&o1), towers_left(&o2));
+        let n2 = (1u64 << z) as f64;
+        let lonlat = |i: usize| {
+            let (px, py) = ((i % 256) as f64 + 0.5, (i / 256) as f64 + 0.5);
+            ((x as f64 + px / 256.0) / n2 * 360.0 - 180.0, (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + py / 256.0) / n2)).dsinh().datan().to_degrees())
+        };
+        // (Lone towers left: three or fewer of the 49 pixels around in their upper half.)
+        let (l1, l2) = (towers_left(&o1), towers_left(&o2));
+        let lone = |l: &[(u32, f32, f32, u32)]| l.iter().filter(|t| t.3 <= 3).fold((0u32, 0f32), |(n, big), t| (n + 1, big.max(t.1 - t.2)));
+        let (left1, left2) = (lone(&l1), lone(&l2));
+        if !l1.is_empty() || !l2.is_empty() {
+            let mut rows = String::new();
+            for (which, l) in [("v1", &l1), ("v2", &l2)] {
+                for &(i, v, m, upper) in l.iter() {
+                    let (lon, lat) = lonlat(i as usize);
+                    rows += &format!("{which}\t{z}\t{x}\t{y}\t{}\t{}\t{lon:.5}\t{lat:.5}\t{v:.0}\t{m:.0}\t{upper}\n", i % 256, i / 256);
+                }
+            }
+            self.lefts.lock().unwrap().write_all(rows.as_bytes()).ok();
+        }
         sum.v1.add(m1.0, m1.1);
         sum.v1b.add(m1b.0, m1b.1);
         sum.v1c.add(m1c.0, m1c.1);
@@ -565,11 +591,6 @@ impl Scan {
         sum.left1.add(left1.0, left1.1);
         sum.left2.add(left2.0, left2.1);
         self.sums.lock().unwrap().entry(z).or_default().add(&sum);
-        let n2 = (1u64 << z) as f64;
-        let lonlat = |i: usize| {
-            let (px, py) = ((i % 256) as f64 + 0.5, (i / 256) as f64 + 0.5);
-            ((x as f64 + px / 256.0) / n2 * 360.0 - 180.0, (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + py / 256.0) / n2)).dsinh().datan().to_degrees())
-        };
         if m1.0 + m1b.0 + m1c.0 + m2.0 + any + diff.0 + left1.0 + left2.0 > 0 || rep2.voids > 0 {
             let (lon, lat) = lonlat(128 * 256 + 128);
             writeln!(self.tiles.lock().unwrap(), "{z}\t{x}\t{y}\t{lon:.5}\t{lat:.5}\t{}\t{:.0}\t{}\t{:.0}\t{}\t{:.0}\t{}\t{}\t{}\t{:.0}\t{any}\t{}\t{}\t{}\t{:.2}\t{}\t{:.0}\t{}\t{}\t{}\t{:.0}\t{}\t{:.0}", m1.0, m1.1, m1b.0, m1b.1, m1c.0, m1c.1, rep2.voids, rep2.blobs, m2.0, m2.1, rb.voids, rb.blobs, m2b.0, m2b.1, diff.0, diff.1, rep2.stages, rep2.unseen, left1.0, left1.1, left2.0, left2.1).ok();
@@ -601,6 +622,7 @@ impl Scan {
         self.tiles.lock().unwrap().flush()?;
         self.changes.lock().unwrap().flush()?;
         self.holes.lock().unwrap().flush()?;
+        self.lefts.lock().unwrap().flush()?;
         self.blobs.lock().unwrap().flush()?;
         self.peaks.lock().unwrap().flush()?;
         Ok(())
@@ -705,7 +727,7 @@ impl Scan {
             }
             let (ratio, area, rise, level) = summit_ratio(e, best.1, px);
             let wt = weigh_top(e, best.1 as u32, z, tile_lat(z, y));
-            rows += &format!("{z}\t{x}\t{y}\t{id}\t{ele:.0}\t{:.0}\t{:.0}\t{ratio:.3}\t{area}\t{rise:.0}\t{level:.0}\t{:.3}\t{:.1}\t{}\t{:.2}\t{:.1}\t{}\t{:.2}\t{:.1}\n", best.0, after[best.1], wt.steep, wt.steep_flat, wt.spike as u8, wt.spike_wall, wt.spike_flat, wt.spike_in as u8, wt.spike_in_wall, wt.spike_in_flat);
+            rows += &format!("{z}\t{x}\t{y}\t{id}\t{ele:.0}\t{:.0}\t{:.0}\t{ratio:.3}\t{area}\t{rise:.0}\t{level:.0}\t{:.3}\t{:.1}\t{}\t{:.2}\t{:.1}\n", best.0, after[best.1], wt.steep, wt.steep_flat, wt.spike as u8, wt.spike_wall, wt.spike_flat);
         }
         if !rows.is_empty() {
             self.peaks.lock().unwrap().write_all(rows.as_bytes()).ok();
@@ -783,36 +805,45 @@ impl Scan {
     }
 }
 
-/// Towers left over low ground in a tile as the map shows it: pixels more than 100 m above the
-/// median of the 7 × 7 pixels around them where that median is 30 m or less (water, lowland), a
-/// check apart from the repair's own rules: how many, and the most one stands out.
-fn towers_left(e: &[f32]) -> (u32, f32) {
-    let (mut n, mut big) = (0u32, 0f32);
+/// Towers left over low ground in a tile as the map shows it, a check apart from the repair's own
+/// rules: pixels higher than their eight neighbours and more than 100 m above the median of the
+/// 7 × 7 pixels around them where that median is 30 m or less (water, lowland), each with how many
+/// of those 49 pixels are in its upper half (a lone tower has a few; a coastal hill, many).
+fn towers_left(e: &[f32]) -> Vec<(u32, f32, f32, u32)> {
+    let mut out = Vec::new();
     let mut win = Vec::with_capacity(49);
+    let at = |x: i32, y: i32| e[(y * 256 + x) as usize].max(0.0);
     for y in 0..256i32 {
         for x in 0..256i32 {
-            let v = e[(y * 256 + x) as usize].max(0.0);
+            let v = at(x, y);
             if v < 100.0 {
                 continue;
             }
+            let mut top = true;
             win.clear();
             for dy in -3..=3 {
                 for dx in -3..=3 {
                     let (xx, yy) = (x + dx, y + dy);
                     if xx >= 0 && yy >= 0 && xx < 256 && yy < 256 {
-                        win.push(e[(yy * 256 + xx) as usize].max(0.0));
+                        let w = at(xx, yy);
+                        win.push(w);
+                        top &= (dx, dy) == (0, 0) || dx.abs() > 1 || dy.abs() > 1 || w < v;
                     }
                 }
+            }
+            if !top {
+                continue;
             }
             let k = win.len() / 2;
             let m = *win.select_nth_unstable_by(k, |a, b| a.total_cmp(b)).1;
             if m <= 30.0 && v - m > 100.0 {
-                n += 1;
-                big = big.max(v - m);
+                let half = m + (v - m) / 2.0;
+                let upper = win.iter().filter(|&&w| w >= half).count() as u32;
+                out.push(((y * 256 + x) as u32, v, m, upper));
             }
         }
     }
-    (n, big)
+    out
 }
 
 /// OSM's summits with a height (the pass's `work/summits`), by z6 tile; none when there are none.
@@ -836,8 +867,9 @@ fn summits_by_z6(root: &Path) -> HashMap<(u32, u32), Vec<(f64, f64, f32, String)
 
 /// How close the new repair comes to taking the top at `p` (its pixels joined highest first, as
 /// the repair's tree does, until one higher than it: there its chain ends): the most, over the
-/// levels below it, of its rise over what the repair allows (steepest(l) × l, from the area as the
-/// repair counts it), with the area, rise and level there. Only rises above BLOB_RISE count.
+/// levels below it, of its rise as the map shows it over what the repair allows (steepest(l) × l,
+/// from the area as the repair counts it), with the area, rise and level there. Only rises above
+/// BLOB_RISE count.
 fn summit_ratio(e: &[f32], p: usize, px: f64) -> (f64, u32, f32, f32) {
     #[derive(PartialEq)]
     struct H(f32, usize);
@@ -864,7 +896,8 @@ fn summit_ratio(e: &[f32], p: usize, px: f64) -> (f64, u32, f32, f32) {
             break;
         }
         if area > 0 {
-            let rise = (top - v) as f64;
+            // (As the map shows it, as the repair weighs it.)
+            let rise = (top.max(0.0) - v.max(0.0)) as f64;
             if rise > BLOB_RISE {
                 let a = area as f64 * (1u32 << (sides.count_ones())) as f64;
                 let l = ((a / std::f64::consts::PI).sqrt() + 0.5) * px;
