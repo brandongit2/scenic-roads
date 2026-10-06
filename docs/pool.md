@@ -450,8 +450,10 @@ seconds, kept to one Mac as the build Mac keeps it now.
 - **The lead lists the journal off its loop** (3 to 33 s a folder): every day not forgotten after it
   takes up its term and then daily, and the last two days every ten minutes, for entries no member
   will tell it of (their member gone, having told only a lead no longer current); one listing at a
-  time, none asked for while one is out, however long it takes (the agent hands every one back,
-  making a failed one again). Otherwise it reads only the entries members tell it of, by key (§6.2:
+  time, none asked for while its last is out, however long it takes (the agent hands every one back,
+  making a failed one again). One out two hours with none back meanwhile (the agent lost it, or it's
+  that slow) is said, and the next asked for all the same: whichever comes back counts, the newest
+  ask's time kept. Otherwise it reads only the entries members tell it of, by key (§6.2:
   acknowledgements are per term). An entry listed or told of that can't be read whole yet (a stale
   read) is kept and read again every loop; one its reads find not whole for an hour awake (cut short
   on the share, or removed) is refused, as a damaged one is, its work done again; so is one whose
@@ -671,19 +673,20 @@ switched on.
   read holds it up to 8 s) failing busy, the write after four tries; a create or a whole write that
   did its work answering an error (its answer lost); each Mac's reads, stats and listings kept up to
   30 s (60 to 300 s in some runs), its own writes seen at once; a listing taking 3 to 33 s a folder
-  in some runs, its Mac waiting on it; messages reaching only a Mac that's awake, the others
-  dropped; clocks up to a second off (up to 20 minutes in some runs), and each Mac's awake clock
-  stopping while it sleeps; in some runs every create, read, stat and whole write taking 1 to 4 s
-  (the share under load), and now and then one the share stalls on for 5 to 10 minutes, the Mac
-  waiting on it, awake. The schedule: sleeps after any step, mid-loop (5 s to 40 minutes, more often
-  right after a temporary file or a create), the owner's asks (hand the lead over; take it over,
-  forced at times with the lead alive, and by the owner's downgrade), newer apps (a restart: the
-  Mac's memory gone but what its driver saved, and at times that too), development builds and
-  rollbacks, a member leaving for good (now and then the lead itself), a handover now and then split
-  (its target asleep or gone before taking up, its old lead restarted into a development build or
-  asked to take over, forced), a week of the journal's earlier days that term 1's records lack, and
-  jobs' entries (units built, some prunes), some of them refused, some by the leads of odd terms
-  only (a check that depends on the lead's state). Each run draws these knobs from its seed.
+  in some runs, its Mac waiting on it, and in some runs now and then one its agent loses, never
+  handed back; messages reaching only a Mac that's awake, the others dropped; clocks up to a second
+  off (up to 20 minutes in some runs), and each Mac's awake clock stopping while it sleeps; in some
+  runs every create, read, stat and whole write taking 1 to 4 s (the share under load), and now and
+  then one the share stalls on for 5 to 10 minutes, the Mac waiting on it, awake. The schedule:
+  sleeps after any step, mid-loop (5 s to 40 minutes, more often right after a temporary file or a
+  create), the owner's asks (hand the lead over; take it over, forced at times with the lead alive,
+  and by the owner's downgrade), newer apps (a restart: the Mac's memory gone but what its driver
+  saved, and at times that too), development builds and rollbacks, a member leaving for good (now
+  and then the lead itself), a handover now and then split (its target asleep or gone before taking
+  up, its old lead restarted into a development build or asked to take over, forced), a week of the
+  journal's earlier days that term 1's records lack, and jobs' entries (units built, some prunes),
+  some of them refused, some by the leads of odd terms only (a check that depends on the lead's
+  state). Each run draws these knobs from its seed.
 - **What it checks,** at every step that could break one of §4's invariants: terms made in order,
   never written over (but by their maker finishing them), a created file unchanged between its
   create and its bytes, no term or records file ever removed; terms by the app rule (a take-back's
@@ -706,23 +709,23 @@ switched on.
   the term unreadable): the last term's lead leads it, alone, caught up, no term was made in those
   25 minutes' last ten or after, and its records name every entry ever written, a Mac's gone for
   good included. While they lack entries, fewer each time, or its lead isn't caught up yet (an entry
-  never whole waits its hour), the run goes on ten minutes at a time, up to two hours: on a share
-  taking seconds an operation a lead merges about a dozen entries a loop, and hours of faults with
-  no lead leave hundreds. The tests run 2,000 seeds, each kind of change of lead and of fault, and
-  what each knob brings, among them at least three times (a lead caught up on a step it re-asserted
-  for a sweep, and the owner's takeover, too); entries cut short in four-hour runs, refused after an
-  hour (200 schedules); runs of the faults' 40 minutes and a day after, a lead listing every day
-  again daily (50); slow listings with a week of the journal, development builds and rollbacks with
-  a Mac leaving, and a Mac leaving, alone (300 to 1,000 seeds each); the schedule that found term
-  1's first snapshot paired with today's files of two versions (seed 3090226), and the one that
-  found whole entries waiting an hour behind others not whole (1003691); left out by default, a long
-  run of 100,000 schedules of four hours' faults, each knob alone over 1,000 seeds, and 400 seeds
-  run twice, the same; and the first draft's scheme (one shared records file, the journal
-  emptied as it's merged) on the same model, which finds its lost update. The driver's own tests
-  decide what the simulator can't: whom a member lets try first, that a lead asleep or gone isn't
-  taken over by itself, nor one whose stand-down is an earlier term's, a step's minute of reads, the
-  hour over a share that doesn't answer, a listing a day old, a listing slower than any timeout, a
-  saved state restored from a backup, the member's lock.
+  never whole waits its hour, a listing its agent lost two), the run goes on ten minutes at a time,
+  up to two hours: on a share taking seconds an operation a lead merges about a dozen entries a
+  loop, and hours of faults with no lead leave hundreds. The tests run 2,000 seeds, each kind of
+  change of lead and of fault, and what each knob brings, among them at least three times (a lead
+  caught up on a step it re-asserted for a sweep, and the owner's takeover, too); entries cut short
+  in four-hour runs, refused after an hour (200 schedules); runs of the faults' 40 minutes and a day
+  after, a lead listing every day again daily (50); slow listings with a week of the journal,
+  development builds and rollbacks with a Mac leaving, and a Mac leaving, alone (300 to 1,000 seeds
+  each); the schedule that found term 1's first snapshot paired with today's files of two versions
+  (seed 3090226), and the one that found whole entries waiting an hour behind others not whole
+  (1003691); left out by default, a long run of 100,000 schedules of four hours' faults, each knob
+  alone over 1,000 seeds, and 400 seeds run twice, the same; and the first draft's scheme (one
+  shared records file, the journal emptied as it's merged) on the same model, which finds its lost
+  update. The driver's own tests decide what the simulator can't: whom a member lets try first, that
+  a lead asleep or gone isn't taken over by itself, nor one whose stand-down is an earlier term's, a
+  step's minute of reads, the hour over a share that doesn't answer, a listing a day old, a listing
+  slower than any timeout, a saved state restored from a backup, the member's lock.
 - **What it doesn't model:** torn or holed reads (a file reads whole, empty or as an older version,
   and an entry cut short for good: the modules' tests read holes); I/O errors other than a busy
   rename, a create cut short, lost answers and failed reads; `remove` failing busy; the member's

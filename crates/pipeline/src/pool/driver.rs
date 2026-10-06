@@ -25,10 +25,10 @@
 //!   listing of the terms only at its first step (when the lead's hint names no term that's
 //!   there); never a listing of the journal, never a sleep, no thread of its own. What's slow (a
 //!   listing of the journal, 3 to 33 s a folder on the share under load) it asks for in its output
-//!   (`Out::list`),
-//!   for the agent to make off the loop and hand back, with the ask's number, in a later step
-//!   (`Heard::listed`): every listing asked for, however long it takes, one that fails made again
-//!   (it asks for no other while one is out);
+//!   (`Out::list`), for the agent to make off the loop and hand back, with the ask's number, in a
+//!   later step (`Heard::listed`): every listing asked for, however long it takes, one that fails
+//!   made again. It asks for no other while its last is out; one out `OVERDUE_S` with none handed
+//!   back meanwhile (lost, or that slow) it says, and asks again, and whichever comes back counts;
 //! - **reads the clocks itself**, where a decision needs the time, after what it compares it with
 //!   (a heartbeat read, then the clock): the agent passes no time in. The awake clock tells it
 //!   what the wall clock can't: that the Mac slept, rather than worked;
@@ -134,6 +134,9 @@ pub const RELIST_S: u64 = 86_400;
 /// How long before its listing of every day is a day old a lead asks for the next (s): time to make
 /// it, on a share under load.
 pub const AHEAD_S: u64 = 3600;
+/// A lead's last listing asked for, out this long with none handed back meanwhile (the agent lost
+/// it, or it's that slow), is overdue: said, and the next asked for, the first kept (s).
+pub const OVERDUE_S: u64 = 7200;
 /// How long a member sees the lead's heartbeat stood down before it takes over by itself (s).
 pub const STOOD_DOWN_S: u64 = 120;
 /// The wait between the members that can take over a lead that stood down, by rank (s).
@@ -196,8 +199,9 @@ pub struct Heard {
     /// The hand-offs of its jobs that ended: kept whole (in `Saved`) until written to the journal;
     /// the agent may drop one once a `Saved` from this step is on its disk.
     pub entries: Vec<Entry>,
-    /// The listing of the journal it asked for (`Out::list`), done since, with the ask's number;
-    /// none when the listing failed (asked for again later).
+    /// A listing of the journal it asked for (`Out::list`), done since, with the ask's number. The
+    /// agent makes every listing asked for, however long it takes (one that fails made again), and
+    /// hands each back once: any of a lead's asks still out counts when it's back.
     pub listed: Option<Listed>,
     /// Settling a handover (`Out::settle`): the coordinator's state as the agent wrote it once it
     /// stopped granting and cancelled its duties in flight; handed over with the records.
@@ -257,9 +261,9 @@ pub struct Out {
     /// after a sleep. A catalog waits for it (and `duties`); GC too (and `fresh`): an entry not
     /// merged yet may hold uploads the records don't name.
     pub caught_up: bool,
-    /// Leading: when it asked for the listing of every day its records reflect (this Mac's clock;
-    /// within `RELIST_S` while `caught_up`): caught up, every entry the listing found, written
-    /// before it as far as a read may be stale, is merged.
+    /// Leading: when it asked for the newest listing of every day its records reflect (this Mac's
+    /// clock; within `RELIST_S` while `caught_up`): caught up, every entry the listing found,
+    /// written before it as far as a read may be stale, is merged.
     pub listed_at: Option<u64>,
     /// This process isn't the member's only one (another process holds its lock:
     /// `MemberLock::check`), and why. The agent saves this step's `Saved` (the hand-offs handed to
@@ -361,8 +365,8 @@ struct Lead {
     said: BTreeSet<String>,
     /// Where the next step's reads of those start: they're read in turn.
     turn: usize,
-    /// When it asked for the listing of every day it merged last (its take-up's, or a later one):
-    /// None before its take-up's is merged.
+    /// When it asked for the newest listing of every day it merged (its take-up's, or a later one):
+    /// None before one is merged.
     listed_at: Option<u64>,
     /// Changes not saved yet.
     dirty: bool,
@@ -381,10 +385,10 @@ struct Passing {
     records: Option<Records>,
 }
 
-/// A listing asked for and not handed back yet.
+/// A listing asked for and not handed back yet (by its number, in `Driver::asked`).
 #[derive(Clone, Copy, Debug)]
 struct Asked {
-    n: u64,
+    /// When (this Mac's clock).
     at: u64,
     /// Of every day not forgotten (a take-up's, or the daily one), not the last days' (a sweep's).
     full: bool,
@@ -413,12 +417,14 @@ pub struct Driver {
     slept: bool,
     /// Its clocks (wall, awake) at its last step's end.
     clocks: Option<(u64, u64)>,
-    /// The listing due next (a take-up's: every day), the one asked for and not back, the asks'
-    /// number, and when it last asked.
+    /// The listing due next (a take-up's: every day); those asked for and not back, by number (any
+    /// counts when it's back; a day old, forgotten); the asks' number; when it last asked, and when
+    /// a listing last came back (this Mac's clock).
     due: Option<(Option<String>, bool)>,
-    asked: Option<Asked>,
+    asked: BTreeMap<u64, Asked>,
     asks: u64,
     swept: u64,
+    back: u64,
     /// The member that handed it a term, by term: told when it leads it.
     handed_by: BTreeMap<u64, String>,
     /// It just started (a restart): a term it led and names it is re-asserted.
@@ -469,7 +475,7 @@ impl Driver {
         let known = saved.member == me.id;
         let saved = if known { saved } else { Saved { member: me.id.clone(), mine: saved.mine.unwritten_only(), ..Default::default() } };
         let passing = saved.passing.clone().map(|(own, passed, hand)| Passing { own, passed, hand, records: None });
-        Driver { me, lock: None, stopped: None, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: None, asks: 0, swept: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None, first_unread: None }
+        Driver { me, lock: None, stopped: None, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: BTreeMap::new(), asks: 0, swept: 0, back: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None, first_unread: None }
     }
 
     /// What to keep for the next process: saved after every step that changed it, before that
@@ -759,7 +765,7 @@ impl Driver {
                 }
                 self.must = None;
                 self.spare = Some(l.records);
-                let (slept, due, asked) = (std::mem::take(&mut self.slept), self.due.clone(), self.asked);
+                let (slept, due, asked) = (std::mem::take(&mut self.slept), self.due.clone(), self.asked.clone());
                 self.made(io, out, t, made);
                 // (No other lead between: what it knew of the journal holds, its take-up's listing
                 // merged too, so a sweep's step is caught up. Not after a sleep: what was written
@@ -867,7 +873,7 @@ impl Driver {
         self.lead = Some(Lead { term: t.clone(), records: r, hand: Handover::Leading, told: BTreeMap::new(), waiting: BTreeSet::new(), unreadable: BTreeMap::new(), said: BTreeSet::new(), turn: 0, listed_at: None, dirty: false, refused: Vec::new() });
         // A take-up lists the journal: every day not forgotten.
         self.due = Some((Some(horizon).filter(|h| !h.is_empty()), true));
-        self.asked = None;
+        self.asked.clear();
         // The Mac that handed it over: told it leads.
         if t.seq.is_some() {
             let by = self.handed_by.remove(&t.term).or_else(|| term::read(io, t.from).ok().flatten().map(|f| f.member));
@@ -892,7 +898,7 @@ impl Driver {
             }
         });
         let own: Vec<String> = self.saved.mine.to_tell(self.cur.term);
-        let asked = self.asked;
+        let now = io.now();
         let l = self.lead.as_mut().expect("leading");
         let e = l.term.term;
         for (from, keys) in tells {
@@ -906,13 +912,13 @@ impl Driver {
         let mut keys: Vec<String> = l.told.keys().chain(&l.waiting).filter(|k| !l.records.handles(k)).cloned().collect();
         let from_listing = listed.is_some();
         if let Some(listed) = listed {
-            // (A listing of every day, its take-up's or the daily one: once merged and saved, the
-            // records reflect the journal as it was when it was asked for. An older ask's keys, a
-            // take-up past, are merged as any.)
-            if let Some(a) = asked.filter(|a| a.n == listed.n) {
-                self.asked = None;
+            // (A listing of every day, its take-up's or a daily one: once merged and saved, the
+            // records reflect the journal as it was when it was asked for; any of its asks still
+            // out, the newest's time kept. Keys asked for before its take-up are merged as any.)
+            self.back = now;
+            if let Some(a) = self.asked.remove(&listed.n) {
                 if a.full {
-                    l.listed_at = Some(a.at);
+                    l.listed_at = Some(l.listed_at.map_or(a.at, |at| at.max(a.at)));
                 }
             }
             keys.extend(listed.keys.into_iter().filter(|k| !l.records.handles(k)));
@@ -1293,19 +1299,25 @@ impl Driver {
         Ok(())
     }
 
-    /// The listings it asks for, one at a time, none while one is out (the agent hands every one
-    /// back, however long it takes: one asked again would come back under a number no longer
-    /// asked for, and not count): of every day, a take-up's, then daily (`RELIST_S`); and of the
-    /// last days every `SWEEP_S`.
+    /// The listings it asks for: of every day, a take-up's, then daily (`RELIST_S`); and of the
+    /// last days every `SWEEP_S`. One at a time, none while its last is out (the agent hands every
+    /// one back, however long it takes); its last out `OVERDUE_S` with none back meanwhile (lost,
+    /// or that slow) is said, and the next asked for all the same. Whichever comes back counts:
+    /// each ask is kept until it's a day old, its listing too old by then to count.
     fn listings(&mut self, io: &dyn Io, out: &mut Out) {
         let Some(l) = &self.lead else {
             self.due = None;
             return;
         };
-        if self.asked.is_some() {
-            return;
-        }
         let now = io.now();
+        self.asked.retain(|_, a| now.saturating_sub(a.at) < RELIST_S);
+        if let Some(a) = self.asked.get(&self.asks) {
+            let quiet = now.saturating_sub(a.at.max(self.back));
+            if quiet < OVERDUE_S {
+                return;
+            }
+            out.events.push(Event::Waits { what: "have a listing back", why: format!("listing {} of the journal, asked for {} minutes ago, none back for {} minutes: asked for again", self.asks, now.saturating_sub(a.at) / 60, quiet / 60) });
+        }
         if self.due.is_none() && l.listed_at.is_none_or(|at| now.saturating_sub(at) + AHEAD_S >= RELIST_S) {
             self.due = Some((Some(l.records.horizon.clone()).filter(|h| !h.is_empty()), true));
         }
@@ -1315,7 +1327,7 @@ impl Driver {
         }
         if let Some((since, full)) = self.due.take() {
             self.asks += 1;
-            self.asked = Some(Asked { n: self.asks, at: now, full });
+            self.asked.insert(self.asks, Asked { at: now, full });
             self.swept = now;
             out.list = Some(Listing { n: self.asks, since });
         }
@@ -2189,6 +2201,39 @@ mod tests {
         assert!(first.is_some_and(|i| i <= 62), "caught up once its take-up's listing is back: step {first:?}");
         assert!(last, "two days on, its daily listings back");
         assert_eq!(most, 1, "one listing out at a time");
+    }
+
+    #[test]
+    fn a_listing_lost_is_asked_for_again_once_overdue() {
+        // A lead that never sleeps (the build Mac, on power) whose agent loses its take-up's
+        // listing, never handing it back. (Re-review 3: it was never caught up again, so no
+        // catalog and no GC, and nothing said why.) Nothing else is asked for while it's out; two
+        // hours on with none back, it's said and asked for again; once that one's back it's caught
+        // up, and the first, back late after all, counts for no more.
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let lost = step(&mut a, &ia, able()).list.unwrap();
+        let (mut again, mut said) = (None, 0);
+        while again.is_none() {
+            assert!(ia.now() < T0 + OVERDUE_S + 60, "not asked for again");
+            ia.pass(20);
+            let o = step(&mut a, &ia, able());
+            assert!(!o.caught_up);
+            said += o.events.iter().filter(|e| matches!(e, Event::Waits { what: "have a listing back", .. })).count();
+            again = o.list;
+        }
+        let again = again.unwrap();
+        assert!(ia.now() >= T0 + OVERDUE_S && again.since.is_none() && again.n > lost.n, "every day, two hours on: {again:?}");
+        assert_eq!(said, 1, "said once");
+        ia.pass(20);
+        let o = step(&mut a, &ia, Heard { listed: Some(Listed { n: again.n, keys: Vec::new() }), ..able() });
+        assert!(o.caught_up, "{:?}", o.events);
+        let at = o.listed_at;
+        ia.pass(20);
+        let o = step(&mut a, &ia, Heard { listed: Some(Listed { n: lost.n, keys: Vec::new() }), ..able() });
+        assert!(o.caught_up && o.listed_at == at, "{:?}", o.listed_at);
     }
 
     #[test]

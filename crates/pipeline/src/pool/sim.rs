@@ -84,6 +84,8 @@ const P_AWAY: f64 = 0.001;
 /// With `Cfg::stalls`: per operation while the faults last, that the share stalls on it (5 to 10
 /// minutes, its Mac waiting, awake).
 const P_STALL: f64 = 0.0001;
+/// With `Cfg::lost_lists`: per listing asked for while the faults last, that its agent loses it.
+const P_LOSE_LIST: f64 = 0.1;
 /// Per handover passed while the faults last: that its target falls asleep before taking up, and
 /// its old lead restarts into a development build (with `Cfg::downgrade`) or is asked by the owner
 /// to take over, forced (review N1's paths: a take-back the app rule refuses, and a forced
@@ -150,12 +152,15 @@ struct Cfg {
     fails: bool,
     /// Now and then an operation the share stalls on for minutes: its step past `STALL_S`.
     stalls: bool,
+    /// Now and then a listing its agent loses (its listing's thread gone), never handed back: its
+    /// lead asks again once it's overdue (`driver::OVERDUE_S`).
+    lost_lists: bool,
 }
 
 impl Cfg {
     /// The pool's, none of the knobs on.
     fn pool() -> Cfg {
-        Cfg { faults: 2400, end: 3900, stale: 30, draft: false, list_s: (0, 0), leave: false, old_days: 0, skew: 0, downgrade: false, cuts: false, op_s: (0, 0), lose: false, lag: 0, truncs: false, fails: false, stalls: false }
+        Cfg { faults: 2400, end: 3900, stale: 30, draft: false, list_s: (0, 0), leave: false, old_days: 0, skew: 0, downgrade: false, cuts: false, op_s: (0, 0), lose: false, lag: 0, truncs: false, fails: false, stalls: false, lost_lists: false }
     }
 
     /// The default mix: the knobs, drawn from the seed.
@@ -187,6 +192,7 @@ impl Cfg {
         c.truncs = r.chance(0.15);
         c.fails = r.chance(0.2);
         c.stalls = r.chance(0.15);
+        c.lost_lists = r.chance(0.15);
         c
     }
 }
@@ -528,20 +534,20 @@ impl World {
 
     /// At the run's end: whether it goes on ten minutes more, its last term's lead still merging
     /// what the faults left (that term's records lack entries, fewer than when it last went on,
-    /// the first time any), or, every entry named, not caught up yet (an entry never whole is
-    /// refused only after an hour of its reads); for `MERGING_S` at most. (A share taking seconds
-    /// an operation merges hours of entries slowly, at a minute of reads a loop. The checks at the
-    /// end are the same, the terms' too: none may be made after the config's end's last ten
-    /// minutes.)
+    /// the first time any), or not caught up yet (an entry never whole is refused only after an
+    /// hour of its reads; a listing its agent lost is asked for again two hours on); for
+    /// `MERGING_S` at most. (A share taking seconds an operation merges hours of entries slowly, at
+    /// a minute of reads a loop. The checks at the end are the same, the terms' too: none may be
+    /// made after the config's end's last ten minutes.)
     fn goes_on(&mut self) -> bool {
         let Some(&h) = self.made.keys().next_back() else { return false };
         let Some(r) = self.files.get(&records::path(h)).and_then(|b| serde_json::from_slice::<Records>(b).ok()) else { return false };
         let lack = self.written.iter().filter(|&(k, &kind)| !names(&r, k, kind)).count();
-        // (Or, every entry named, its lead not caught up yet: an entry never whole, refused only
-        // after an hour of its lead's reads.)
+        // (Or its lead not caught up yet: an entry never whole, refused only after an hour of its
+        // lead's reads; a listing its agent lost, asked for again two hours on.)
         let behind = self.macs.iter().any(|m| m.leads == Some(h) && !m.gone && !m.caught);
         let merging = lack > 0 && self.behind.is_none_or(|b| lack < b);
-        if self.cfg.draft || !(merging || (lack == 0 && behind)) || self.t >= self.cfg.end + MERGING_S {
+        if self.cfg.draft || !(merging || behind) || self.t >= self.cfg.end + MERGING_S {
             return false;
         }
         self.behind = Some(lack);
@@ -1400,10 +1406,10 @@ struct Mac {
     term: u64,
     /// The term it leads, as the world was told.
     leads: Option<u64>,
-    /// The listing its driver asked for, made after its step, for its next; one not made yet (it
-    /// failed: made again after the next step).
+    /// A listing its driver asked for, made after its step, for its next; those not made yet, the
+    /// oldest first (one that failed made again after the next step).
     listed: Option<Listed>,
-    listing: Option<driver::Listing>,
+    listings: std::collections::VecDeque<driver::Listing>,
     /// The Macs in the run (their ids: the pool's members).
     n: usize,
     /// Its coordinator's state (what a handover hands on): the term it's of, and the jobs granted.
@@ -1420,7 +1426,7 @@ impl Mac {
         let me = Member { id: id(k), host: format!("mac{k}"), app: app(0) };
         let rng = Rng(seed ^ (k as u64 + 1).wrapping_mul(0xA076_1D64_78BD_642F));
         let driver = Driver::unlocked(me.clone(), driver::Saved::default());
-        Mac { sim, k, rng, me, driver, jobs: 0, term: 0, leads: None, listed: None, listing: None, n, coord: (0, 0), settled: None, gave: false, passing: None }
+        Mac { sim, k, rng, me, driver, jobs: 0, term: 0, leads: None, listed: None, listings: Default::default(), n, coord: (0, 0), settled: None, gave: false, passing: None }
     }
 
     fn run(mut self) {
@@ -1456,7 +1462,8 @@ impl Mac {
                 saved = driver::Saved::default();
             }
             self.driver = Driver::unlocked(self.me.clone(), saved);
-            (self.listed, self.listing, self.coord, self.settled, self.gave) = (None, None, (0, 0), None, false);
+            (self.listed, self.coord, self.settled, self.gave) = (None, (0, 0), None, false);
+            self.listings.clear();
             self.sim.count("restarts");
             if self.leads.take().is_some() {
                 self.sim.leads(None)?;
@@ -1567,19 +1574,26 @@ impl Mac {
                 }
             }
         }
-        // The listing its driver asked for, off its step: one that fails made again after the
-        // next (the driver asks for no other while one is out).
+        // The listings its driver asked for, off its step, one a loop: one that fails made again
+        // after the next. (Now and then, with `Cfg::lost_lists`, one its agent loses: never
+        // handed back, its driver asks again once it's overdue.)
         if let Some(l) = out.list {
             self.sim.count("listings");
             if out.listed_at.is_some() && l.since.is_none() {
                 self.sim.count("listings of every day again");
             }
-            self.listing = Some(l);
+            let mut loses = false;
+            self.sim.quiet(|w| loses = w.cfg.lost_lists);
+            if loses && faulting && self.rng.chance(P_LOSE_LIST) {
+                self.sim.count("listings lost");
+            } else {
+                self.listings.push_back(l);
+            }
         }
-        if let Some(l) = self.listing.take() {
+        if let Some(l) = self.listings.pop_front() {
             match journal::list(&self.sim, l.since.as_deref()) {
                 Ok(keys) => self.listed = Some(Listed { n: l.n, keys }),
-                Err(_) => self.listing = Some(l),
+                Err(_) => self.listings.push_front(l),
             }
         }
         self.sim.idle()
@@ -1598,6 +1612,7 @@ impl Mac {
             }
             Event::Merged { applied, overtaken, listed, .. } => self.sim.quiet(|w| w.merged(applied, *overtaken, *listed)),
             Event::Waits { what: "take up", .. } => self.sim.count("take-ups tried again"),
+            Event::Waits { what: "have a listing back", .. } => self.sim.count("listings overdue, asked for again"),
             Event::Failed { what: "save the records", .. } => self.sim.count("saves tried again"),
             Event::SteppedDown { why, .. } if why.starts_with("can't re-assert") => self.sim.count("stood down"),
             Event::Handover { to, what: "passed", .. } => self.sim.op(|w, me| w.split(me, to))?,
@@ -1822,7 +1837,7 @@ fn check_all(seeds: Range<u64>, cfg: impl Fn(u64) -> Cfg + Sync) -> Counts {
 
 /// Each kind of change of lead and fault, and what the knobs bring, that the default runs must see
 /// at least three times (a simulator that never got there would pass too).
-const KINDS: [&str; 38] = [
+const KINDS: [&str; 40] = [
     "handed over",
     "taken back",
     "taken over",
@@ -1861,6 +1876,8 @@ const KINDS: [&str; 38] = [
     "reads of an erroring entry",
     "shares away from a Mac",
     "operations stalled",
+    "listings lost",
+    "listings overdue, asked for again",
 ];
 
 #[test]
@@ -2017,7 +2034,7 @@ fn the_knobs_one_at_a_time() {
     // POOL_SIM_SEEDS schedules (1,000) with each knob alone, and how many went wrong.
     let n = std::env::var("POOL_SIM_SEEDS").ok().and_then(|s| s.parse().ok()).unwrap_or(1000);
     let p = Cfg::pool();
-    let knobs: [(&str, Cfg); 18] = [
+    let knobs: [(&str, Cfg); 19] = [
         ("none", p),
         ("listings of 3 to 33 s", Cfg { list_s: (3, 33), ..p }),
         ("a week of journal days", Cfg { old_days: 7, ..p }),
@@ -2036,6 +2053,7 @@ fn the_knobs_one_at_a_time() {
         ("entries cut short", Cfg { truncs: true, ..p }),
         ("reads failing", Cfg { fails: true, ..p }),
         ("operations stalled", Cfg { stalls: true, ..p }),
+        ("listings lost", Cfg { lost_lists: true, ..p }),
     ];
     for (name, cfg) in knobs {
         let (bad, c) = run_all(0..n, |_| cfg);
@@ -2061,8 +2079,8 @@ fn every_seed_runs_the_same_every_time() {
 fn a_seeds_events() {
     // POOL_SIM_SEED's events, its knobs as by default, or as POOL_SIM_KNOBS lists them (none:
     // "plain"; "draft", "list", "old", "leave", "downgrade", "cuts", "slow", "lose", "truncs",
-    // "fails", "stalls", "skew=<s>", "stale=<s>", "lag=<s>"), its faults POOL_SIM_MINUTES long
-    // (40), to look into one.
+    // "fails", "stalls", "lost", "skew=<s>", "stale=<s>", "lag=<s>"), its faults POOL_SIM_MINUTES
+    // long (40), to look into one.
     let seed = std::env::var("POOL_SIM_SEED").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
     let cfg = match std::env::var("POOL_SIM_KNOBS") {
         Ok(knobs) => knobs.split(',').fold(Cfg::pool(), |c, k| match k.split_once('=') {
@@ -2081,6 +2099,7 @@ fn a_seeds_events() {
                 "truncs" => Cfg { truncs: true, ..c },
                 "fails" => Cfg { fails: true, ..c },
                 "stalls" => Cfg { stalls: true, ..c },
+                "lost" => Cfg { lost_lists: true, ..c },
                 _ => c,
             },
         }),
