@@ -22,7 +22,7 @@ export const displayOf = (p: Record<string, unknown> | null | undefined, key = '
 const norm = (s: string) => s.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 
 /** Whether two names are the same but for accents, case, punctuation or spacing. */
-const sameName = (a: string, b: string) => norm(a) === norm(b);
+export const sameName = (a: string, b: string) => norm(a) === norm(b);
 
 /** A rail line's display name without a route's direction or service codes ("Highland Sleeper"
  * of "Highland Sleeper: Inverness => London"), from its track's info; a sub line the cut leaves

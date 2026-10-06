@@ -17,6 +17,10 @@
   --side-w: 300px;
   --lists-h: 46vh;
   --strip-h: 64px;
+  /* The view controls' card's width, and the place search's height (the search sits left of the
+     one; the viewshed's card under the other when they'd meet). */
+  --nav-w: 42px;
+  --search-h: 32px;
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Segoe UI', system-ui, sans-serif;
   font-size: 12px;
   color: var(--text);
@@ -213,11 +217,12 @@ input.switch:indeterminate::after { transform: translateX(5.5px); }
 #nav button.pitch { height: 18px; font-size: 9.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
 #nav .needle { display: block; width: 10px; height: 18px; background: linear-gradient(#ff6b5b 0 50%, #cfd6e0 50% 100%); clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); transition: transform 0.05s linear; }
 /* Place search (ui/search.ts): top right, left of the view controls (--nav-w: their card's width);
-   wider while it's open or holds words. Each place: its name and what it is, then its English and
-   how far it is from the middle of the view. */
-#search { --nav-w: 42px; top: 12px; right: calc(20px + var(--nav-w)); width: 210px; padding: 0; transition: width 0.15s ease; z-index: 4; }
+   wider while it's open or holds words. Each place: its name as the map shows it and what it is,
+   then the line under it (the place's own names muted after, where they're other) and how far it
+   is from the middle of the view. The list scrolls under a finger. */
+#search { top: 12px; right: calc(20px + var(--nav-w)); width: 210px; padding: 0; transition: width 0.15s ease; z-index: 4; }
 #search.open, #search.typed { width: 300px; }
-#search .row { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 5px 0 11px; }
+#search .row { display: flex; align-items: center; gap: 7px; height: var(--search-h); padding: 0 5px 0 11px; }
 #search input { flex: 1; min-width: 0; height: 100%; border: 0; padding: 0; background: none; outline: none; font-size: 12.5px; }
 #search input::placeholder { color: var(--faint); }
 #search input::-webkit-search-cancel-button, #search input::-webkit-search-decoration { -webkit-appearance: none; display: none; }
@@ -226,18 +231,22 @@ input.switch:indeterminate::after { transform: translateX(5.5px); }
 #search .x { flex: none; display: none; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 5px; padding: 0; background: none; color: var(--faint); font-size: 10px; }
 #search.typed .x { display: grid; }
 #search .x:hover { color: var(--text); background: var(--hover); }
-#search .hits { border-top: 1px solid var(--line); padding: 4px; max-height: min(60vh, 420px); overflow-y: auto; }
+#search .hits { border-top: 1px solid var(--line); padding: 4px; max-height: min(60vh, 420px); overflow-y: auto; overscroll-behavior: contain; }
 #search .hit { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; padding: 5px 7px; border-radius: 6px; cursor: pointer; }
 #search .hit.on { background: var(--hover); }
 #search .hit b { font-weight: 600; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#search .hit :is(.what, .en, .far) { font-size: 11px; white-space: nowrap; }
+#search .hit :is(.what, .sub, .far) { font-size: 11px; white-space: nowrap; }
 #search .hit .what { color: var(--muted); text-align: right; }
-#search .hit .en { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+#search .hit .sub { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+#search .hit .other { color: var(--faint); }
 #search .hit .far { color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
 #search .state { padding: 7px 8px; color: var(--muted); }
+#search .state:empty { display: none; }
 
 /* viewshed ------------------------------------------------------------------- */
-#viewshed { top: 12px; left: calc(var(--left-w) + 12px); width: 236px; }
+/* At the top, or under the place search when the map's too narrow for both side by side: the card
+   (236 px), 8 apart, the search open (300) and the controls (20 and --nav-w from the right). */
+#viewshed { --vs-left: calc(var(--left-w) + 12px); top: calc(12px + clamp(0px, (var(--vs-left) + 564px + var(--nav-w) - 100vw) * 1000, var(--search-h) + 8px)); left: var(--vs-left); width: 236px; }
 #viewshed .vs-ctl { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
 #viewshed select { background: var(--card-solid); border: 1px solid var(--line-strong); border-radius: 5px; padding: 1px 3px; font-size: 11px; min-width: 0; }
 #viewshed .kv { display: flex; justify-content: space-between; padding: 1px 0; }
@@ -631,7 +640,7 @@ body.panel-off .resizer.left { display: none; }
 body.panel-off #colour { width: min(86vw, 380px); transform: translateX(-100%); visibility: hidden; z-index: 8; transition: transform 0.22s ease, visibility 0s linear 0.22s;
   padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom) env(safe-area-inset-left); box-shadow: 10px 0 30px rgba(0, 0, 0, 0.45); }
 body.panel-off.panel-open #colour { transform: none; visibility: visible; transition: transform 0.22s ease; }
-body.panel-off #viewshed { left: calc(60px + env(safe-area-inset-left)); }
+body.panel-off #viewshed { --vs-left: calc(60px + env(safe-area-inset-left)); }
 
 /* A phone, either way up (narrow, or short: ui/touch.ts folds the settings there too): the lists a
    sheet along the bottom over the map (its height dragged from the handle at its top; a tab tapped
@@ -656,9 +665,10 @@ body.panel-off #viewshed { left: calc(60px + env(safe-area-inset-left)); }
   #search { top: calc(10px + env(safe-area-inset-top)); right: calc(18px + var(--nav-w) + env(safe-area-inset-right));
     width: min(190px, calc(100vw - var(--nav-w) - 84px - env(safe-area-inset-left) - env(safe-area-inset-right))); }
   #search.open, #search.typed { width: calc(100vw - var(--nav-w) - 84px - env(safe-area-inset-left) - env(safe-area-inset-right)); }
-  #viewshed { right: calc(64px + env(safe-area-inset-right)); width: auto; top: calc(56px + env(safe-area-inset-top)); }
+  #viewshed { right: calc(64px + env(safe-area-inset-right)); width: auto; top: calc(18px + var(--search-h) + env(safe-area-inset-top)); }
   #profile { left: 0; right: 0; bottom: var(--strip-h); border-radius: 16px 16px 0 0; z-index: 4; }
-  #toast { left: 50%; top: calc(14px + env(safe-area-inset-top)); max-width: calc(100vw - 130px); text-align: center; }
+  /* (Under the search.) */
+  #toast { left: 50%; top: calc(18px + var(--search-h) + env(safe-area-inset-top)); max-width: calc(100vw - 130px); text-align: center; }
   .maplibregl-popup { max-width: min(340px, calc(100vw - 24px)) !important; }
   .boot-box { width: min(300px, calc(100vw - 40px)); }
   dialog.credits { max-width: calc(100vw - 20px); }
@@ -674,8 +684,9 @@ body.panel-off #viewshed { left: calc(60px + env(safe-area-inset-left)); }
   #stats.lists.folded { bottom: auto; }
   #stats .lists-grip { display: none !important; }
   #nav { right: calc(var(--lists-w) + 18px + env(safe-area-inset-right)); }
-  #search { right: calc(var(--lists-w) + 26px + var(--nav-w) + env(safe-area-inset-right)); }
-  #search.open, #search.typed { width: min(300px, calc(100vw - var(--lists-w) - var(--nav-w) - 92px)); }
+  #search { right: calc(var(--lists-w) + 26px + var(--nav-w) + env(safe-area-inset-right));
+    width: min(190px, calc(100vw - var(--lists-w) - var(--nav-w) - 92px - env(safe-area-inset-left) - env(safe-area-inset-right))); }
+  #search.open, #search.typed { width: min(300px, calc(100vw - var(--lists-w) - var(--nav-w) - 92px - env(safe-area-inset-left) - env(safe-area-inset-right))); }
   #viewshed { right: calc(var(--lists-w) + 74px + env(safe-area-inset-right)); }
   #profile { right: calc(var(--lists-w) + 16px); border-radius: 14px 14px 0 0; }
 }
@@ -686,15 +697,13 @@ body.panel-off #viewshed { left: calc(60px + env(safe-area-inset-left)); }
 
 /* A finger, not a pointer: what's tapped is large enough to tap, and nothing waits on a hover. */
 @media (pointer: coarse) {
-  :root { font-size: 13px; --side-w: 340px; }
+  :root { font-size: 13px; --side-w: 340px; --nav-w: 56px; --search-h: 40px; }
   #stats .tabs { overflow-x: auto; scrollbar-width: none; gap: 14px; justify-content: flex-start; }
   #stats .tabs::-webkit-scrollbar { display: none; }
   #menu { width: 46px; height: 46px; }
   #nav { gap: 8px; padding: 6px; }
   #nav button { width: 42px; height: 40px; font-size: 18px; }
   #nav button.pitch { height: 24px; font-size: 11px; }
-  #search { --nav-w: 56px; }
-  #search .row { height: 40px; }
   #search input { font-size: 16px; }
   #search .x { width: 30px; height: 30px; font-size: 12px; }
   #search .hit { padding: 8px; }

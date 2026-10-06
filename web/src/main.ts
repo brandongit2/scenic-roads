@@ -782,11 +782,11 @@ async function main() {
     marks.cursor = ll ? point(ll, 'cursor', label) : null;
     setMarks();
   };
-  // A place found: the map goes there, at the zoom that shows it, and marks it (named in English
-  // when it has that), until the search is cleared.
+  // A place found: the map goes there, at the zoom that shows it, and marks it (named by the line
+  // under its label when it has one, its English mostly), until the search's words go.
   search.onGo = (p) => {
     const ll = new maplibregl.LngLat(p.lon, p.lat);
-    marks.place = point([p.lon, p.lat], 'place', p.en || p.name);
+    marks.place = point([p.lon, p.lat], 'place', p.sub || p.main);
     setMarks();
     map.flyTo({ ...cam3d.frame(map, ll, map.queryTerrainElevation(ll) ?? 0, p.zoom), duration: 1500 });
   };
@@ -1742,8 +1742,8 @@ async function main() {
       openLink(k, t);
       return;
     }
-    // /: the place search.
-    if (e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target)) {
+    // /: the place search (when it's there: not with the HUD off).
+    if (e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target) && search.visible) {
       e.preventDefault();
       search.focus();
       return;
