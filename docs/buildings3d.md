@@ -1,15 +1,16 @@
 # 3D buildings
 
-**Plan, not built** (2026-10-05). The first of plan.md §10's phase 7 features ("3D buildings, then
-PLATEAU"); plan.md §6 (Global-source layers) points here. Companions: `docs/plan.md` (the pipeline,
-keys, order), `docs/formats.md` (files), `docs/workers.md` and `docs/pool.md` (sharing the work).
-Its sources are on the NAS (§2.6).
+**Plan; phase B0 done** (2026-10-06: the sources downloaded and measured; nothing of B1–B4 built).
+The first of plan.md §10's phase 7 features ("3D buildings, then PLATEAU"); plan.md §6 (Global-source
+layers) points here. Companions: `docs/plan.md` (the pipeline, keys, order), `docs/formats.md`
+(files), `docs/workers.md` and `docs/pool.md` (sharing the work). Its sources are on the NAS (§2.6);
+`dem/bldmeasure.py` measured them (§2.2–2.5).
 
 **The idea in one line:** every building in the coverage, extruded to its height on the 3D terrain,
 from the same pinned Overture release the roadside buildings read, the missing heights estimated
-from the neighbours, then GHSL's 100 m building heights, then the footprint's size and kind; built
-per z6 tile in a chain of its own beside the regions', shared with helper Macs and pages, and drawn
-by MapLibre's fill-extrusion.
+from floors and the neighbours, then from GHSL's 100 m heights in high-rise cores, then from the
+footprint's size and kind; built per z6 tile in a chain of its own beside the regions', shared with
+helper Macs and pages, and drawn by MapLibre's fill-extrusion.
 
 ## 1. What the map shows
 
@@ -18,13 +19,14 @@ by MapLibre's fill-extrusion.
   setbacks) are drawn between their own base and top, and the outline they belong to (`has_parts`)
   isn't extruded (its parts are its shape), as OSM's Simple 3D Buildings has it; an outline none of
   whose parts are in the files is drawn as a building.
-- Flat roofs. Roof shapes are known for 0.6 % of the coverage's buildings and roof colours for
+- Flat roofs. Roof shapes are known for 0.7 % of the coverage's buildings and roof colours for
   0.1 % (§2.2): neither is drawn in the first phases. Pitched roofs are a later option (§4.7).
 - Underground buildings (`is_underground`) are left out.
 
 **Where:** every building that touches the coverage, as a way does (plan.md §5: any vertex inside
-it, with its 1 km buffer), whether or not a road is near; not the world. About 340 million
-buildings in today's 88 regions (§2.5). Where the coverage ends, buildings end, as roads do.
+it, with its 1 km buffer), whether or not a road is near; not the world. 339 million buildings
+and 2.8 million building parts in today's 88 regions (§2.5). Where the coverage ends, buildings end,
+as roads do.
 
 **At which zooms.** Tiles at z12, z13 and z14; MapLibre overzooms z14 to the map's 19.5.
 - z14: every building.
@@ -32,8 +34,12 @@ buildings in today's 88 regions (§2.5). Where the coverage ends, buildings end,
 - z12: buildings 40 m tall or more: the skyline.
 - So the layer shows the towers from zoom 12, the large buildings from 13 and every building from 14.
   A tilted view takes coarser tiles toward the horizon (MapLibre's cover), so every building near the
-  camera, only the tall ones farther out, and none beyond the z12 tiles. The thresholds are set in
-  phase B1 by the tiles' sizes (at most ~300 KB a tile).
+  camera, only the tall ones farther out, and none beyond the z12 tiles.
+- The tiles' sizes (B0, §2.5), against ~300 KB a tile: the thresholds keep z12 and z13 under it (the
+  fullest z12 tile 10,339 buildings, 176 KB at most; z13 17,842, 284 KB at most). z14 holds every
+  building, and about 15 of its 2.2 million tiles are over 300 KB, at most 490 KB: old towns drawn on
+  Spain's cadastral parcels and three of Tokyo's wards. B1 decides whether to simplify them (~18 %
+  off) after the iPad's measurements (§4.6).
 
 **Beside the terrain.**
 - A building stands on the 3D terrain at its centroid's height (MapLibre samples the terrain there),
@@ -68,9 +74,9 @@ default. In it: 3D or flat (footprints only, also what a 2D view shows); colour 
 scale; detail (skyline only, or all). In the link with the other settings; **B** toggles the layer.
 
 **Hover:** with nothing else under the cursor, the bottom bar's row 1 gives the building's height
-and floors, where the height comes from ("measured", "from 6 floors", "estimated from neighbours",
-"estimated, GHSL", "estimated from its size") and its kind. Markers, roads, rail and areas win over
-buildings. No popup in the first phases.
+and floors, where the height comes from ("measured", "from 6 floors", "estimated by Microsoft",
+"estimated from neighbours", "estimated, GHSL", "estimated from its size") and its kind. Markers,
+roads, rail and areas win over buildings. No popup in the first phases.
 
 **The iPad** (8 GB iPad Pro, Safari): §4.6 has the budget and the fallbacks.
 
@@ -80,22 +86,22 @@ buildings. No popup in the first phases.
 
 | Source | Gives | Here | Licence | Use |
 |---|---|---|---|---|
-| **Overture Maps buildings**, release 2026-09-23.1 | 2.53 billion footprints worldwide (OSM, Microsoft, Esri, Google, IGN España, others, conflated), `height`, `num_floors`, `min_height`, `min_floor`, roof shape and colour where known; 4.49 million building parts | ~340 M buildings in the coverage; height or floors for ~46 % (§2.2) | ODbL 1.0 for the theme; each row's sources and their licences in its `sources` column | **Yes**: every footprint and attribute |
-| OpenStreetMap `height`, `building:levels`, `roof:*` | The tags | Already inside Overture: OSM gave 58 % of the sample's footprints, and their tags became `height` / `num_floors` | ODbL | Through Overture. Read directly it would need every building in the pass's filter (~600 M ways, a new set) for a month's freshness and nothing else |
-| Microsoft Global ML Building Footprints, with heights | ML footprints and height estimates | Already inside Overture: "Microsoft ML Buildings" is the height source of 3–51 % of the buildings in the samples (Paris 3 %, Toronto 36 %, rural England 51 %) | ODbL | Through Overture |
-| USGS 3DEP lidar heights | Measured heights | Already inside Overture ("USGS Lidar": 47 % of Manhattan's sample, 73 % of Chicago's) | Public domain | Through Overture |
+| **Overture Maps buildings**, release 2026-09-23.1 | 2.53 billion footprints worldwide (OSM, Microsoft, Esri, Google, IGN España, others, conflated), `height`, `num_floors`, `min_height`, `min_floor`, roof shape and colour where known; 4.49 million building parts | 339 M buildings in the coverage: a height for 43.7 % (Microsoft's estimates for 37.1 %), floors for 6.1 %, either for 48.0 % (§2.2) | ODbL 1.0 for the theme; each row's sources and their licences in its `sources` column | **Yes**: every footprint and attribute |
+| OpenStreetMap `height`, `building:levels`, `roof:*` | The tags | Already inside Overture: OSM gave 59 % of the coverage's footprints, and its tags became `height` / `num_floors` (all of Japan's heights) | ODbL | Through Overture. Read directly it would need every building in the pass's filter (~600 M ways, a new set) for a month's freshness and nothing else |
+| Microsoft Global ML Building Footprints, with heights | ML footprints and height estimates | Already inside Overture: "Microsoft ML Buildings" gave 33 % of the coverage's footprints and 85 % of its heights (99 % of France's, the UK's, Canada's and Ireland's, 84 % of the US's), estimates that grow ~1.2 m a floor (§2.2) | ODbL | Through Overture |
+| USGS 3DEP lidar heights | Measured heights | Already inside Overture ("USGS Lidar": 4 % of the coverage's heights, all in the US) | Public domain | Through Overture |
 | Google Open Buildings 2.5D Temporal | Building presence and height rasters, 4 m, 2016–2023 | Africa, South and Southeast Asia, Latin America and the Caribbean: of the coverage, only Singapore, Puerto Rico and French Guiana | CC BY 4.0, via Earth Engine (an account) | No. Overture already merges Google's v3 footprints there |
-| **GHSL GHS-BUILT-H R2023A, ANBH** (EC JRC) | The average height of the buildings in each 3″ cell (~90 m), epoch 2018, worldwide | Every built-up cell | CC BY 4.0 (© European Union) | **Yes**: the fill (§2.3), 1.28 GB |
+| **GHSL GHS-BUILT-H R2023A, ANBH** (EC JRC) | The average height of the buildings in each 3″ cell (~90 m), epoch 2018, worldwide | Every built-up cell | CC BY 4.0 (© European Union) | **Yes**: the fill in high-rise cores (§2.3), 1.28 GB |
 | France: IGN BD TOPO (bâti) | Measured `HAUTEUR` and floors for every building | France | Licence Ouverte 2.0 | Later (B4): would replace France's estimates |
 | Japan: MLIT PLATEAU | LoD1/LoD2 city models of ~250 cities, measured heights | Japan's cities | CC BY 4.0 compatible | Later (B4), as plan.md §10 already plans |
 | Great Britain | No open building heights (Ordnance Survey's aren't open; the Environment Agency's lidar would be a project of its own) | — | — | No |
 
 **Decision:** Overture alone for footprints and attributes, the same pinned release as the roadside
 buildings (`pipeline::buildtiles::RELEASE`, 2026-09-23.1), so the roadside factor and the drawn
-buildings agree; GHSL for the fill. National measured heights later, country by country, where they
-replace estimates.
+buildings agree; GHSL for the fill in high-rise cores. National measured heights later, country by
+country, where they replace estimates.
 
-### 2.2 Overture, measured (2026-10-05)
+### 2.2 Overture, measured (2026-10-05; every building in the coverage in B0, 2026-10-06)
 
 - **The release:** 515 files on S3: 512 of buildings (276.9 GB, 2,533,842,612 buildings in 82,688 row
   groups of ~34,000) and 3 of building parts (0.62 GB, 4,486,107 parts). Every row group's footer
@@ -107,30 +113,54 @@ replace estimates.
 - **It expires:** S3 says `x-amz-expiration: expiry-date="Wed, 25 Nov 2026"`, `rule-id="release
   data 60 day retention"`. Overture keeps about two months of releases (2026-08-19.0,
   2026-09-23.0 and 2026-09-23.1 listed today). Pinning a release means keeping its files.
-- **Heights in a random sample** of 160 of the coverage's row groups (3.4 M buildings):
+- **The coverage's buildings** (B0, `dem/bldmeasure.py`: every building and part whose centroid is in
+  the coverage grown by 1 km, out of the 350 M rows of the 16,651 row groups meeting it): 339,188,665
+  buildings and 2,840,099 parts (all OSM's; 1.9 M of them Spain's); 1,704 underground buildings left
+  out. A `height` counts when it is 2–700 m: 4.5 M are under 2 m, nearly all Microsoft's, and count
+  as none.
 
-  | | `height` | `num_floors` | either | roof shape | roof colour |
-  |---|---|---|---|---|---|
-  | North America | 66.5 % | 1.9 % | 67.0 % | 0.2 % | 0.0 % |
-  | Western Europe | 20.5 % | 14.3 % | 33.0 % | 1.5 % | 0.1 % |
-  | East Asia | 7.0 % | 2.6 % | 7.8 % | 0.1 % | 0.0 % |
-  | all | 41.3 % | 5.9 % | 45.7 % | 0.6 % | 0.1 % |
+  | | buildings | `height` | of them Microsoft's | `num_floors` | either | neither |
+  |---|---|---|---|---|---|---|
+  | US | 156.1 M | 72.2 % | 84 % | 2.0 % | 72.5 % | 27.5 % |
+  | France | 54.5 M | 18.5 % | 99 % | 1.1 % | 19.4 % | 80.6 % |
+  | Japan | 54.2 M | 7.8 % | — | 5.1 % | 8.9 % | 91.1 % |
+  | UK | 25.9 M | 44.8 % | 99 % | 7.0 % | 50.3 % | 49.7 % |
+  | Spain | 19.2 M | 9.4 % | 93 % | 60.2 % | 64.7 % | 35.3 % |
+  | Canada | 14.3 M | 48.7 % | 99 % | 2.4 % | 49.8 % | 50.2 % |
+  | Portugal | 6.3 M | 2.3 % | 89 % | 1.9 % | 4.1 % | 95.9 % |
+  | Ireland | 3.8 M | 12.6 % | 99 % | 8.5 % | 20.3 % | 79.7 % |
+  | Puerto Rico | 2.2 M | 9.4 % | — | 0.4 % | 9.5 % | 90.5 % |
+  | Taiwan | 2.0 M | 0.5 % | — | 3.8 % | 3.9 % | 96.1 % |
+  | Singapore | 0.24 M | 1.2 % | — | 13.9 % | 14.4 % | 85.6 % |
+  | Hong Kong | 0.21 M | 0.9 % | — | 26.9 % | 27.1 % | 72.9 % |
+  | the other 8 | 0.27 M | 1.9 % | | 3.0 % | 4.6 % | 95.4 % |
+  | all | 339.2 M | 43.7 % | 85 % | 6.1 % | 48.0 % | 52.0 % |
 
-  By place (the row group holding each point): Manhattan 98 %, Chicago 92 %, Los Angeles 99 %,
-  rural Kansas 47 %, rural Vermont 78 %, Toronto 48 %, Montréal 31 %, Vancouver 64 %, rural Québec
-  35 %, Paris 67 % (floors, from OSM), rural France 17 %, London 49 %, rural England 72 %, Dublin
-  36 %, Madrid 34 %, rural Spain 80 % (floors, from IGN España), Lisbon 19 %, Tokyo 33 %, Osaka
-  72 %, rural Japan 0.2 %, Taipei 20 %, Hong Kong 33 %, Singapore 24 %, San Juan 75 %, Honolulu 83 %.
-- **Footprints' sources** in the sample: OSM 58 %, Microsoft ML Buildings 34 %, IGN España 3.1 %,
-  Esri Community Maps 2.4 % (CC BY 4.0 with OSM waivers), `doi:10.5281/zenodo.8174931` 1.7 % (East
-  Asia), Google Open Buildings 1.3 %, City of Vancouver. 86–91 % of the buildings without a height
-  have no class either.
-- **Height per floor**, where a building has both (medians): East Asia 3.6 m (1 floor 4.7 m, 2
-  floors 3.65, 3–4 floors 3.2); North America 3.5 (2 floors 2.9, 3–4 floors 3.0); Western Europe
-  2.7 (2 floors 2.3). Measured heights in Europe and North America often stop at the eaves or come
-  from ML estimates: the storey height is fitted per country (§2.3).
-- **Measured heights' medians:** North America 4.5 m (p99 11.7), Western Europe 4.4 m (p99 16.4),
-  East Asia 6.9 m (p99 26).
+  Roof shapes 0.7 %, roof colours 0.1 %. By place (a height or floors, of the buildings within 2 km
+  of a city's centre or 15 km of a rural point, `PLACES` in the script): Manhattan 98.5 %, Chicago
+  79.5 %, Los Angeles 97.7 %, rural Kansas 54.6 %, rural Vermont 84.9 %, Toronto 51.0 %, Montréal
+  23.8 %, Vancouver 82.3 %, rural Québec 50.2 %, Paris 66.7 % (floors, from OSM), rural France
+  23.5 %, London 49.3 %, rural England 62.6 %, Dublin 32.3 %, Madrid 26.2 %, rural Spain 87.8 %
+  (floors, from IGN España), Lisbon 23.0 %, Tokyo 10.8 %, Osaka 70.1 %, rural Japan 0.5 %, Taipei
+  31.2 %, Hong Kong 45.2 %, Singapore 49.8 %, San Juan 46.1 %, Honolulu 53.7 %.
+- **Where they come from:** footprints from OSM 59 %, Microsoft ML Buildings 33 %, IGN España 4 %,
+  Esri Community Maps 3 % (CC BY 4.0 with OSM waivers), `doi:10.5281/zenodo.8174931` (70 % of
+  Taiwan's, 43 % of Hong Kong's, 6 % of Japan's), Google Open Buildings (Puerto Rico, Singapore,
+  French Guiana), City of Vancouver. Heights from Microsoft ML Buildings 85 %, OSM 9 % (all of
+  Japan's, Taiwan's, Hong Kong's, Singapore's and Puerto Rico's), USGS lidar 4 % and Esri 2 % (both
+  the US's). Floors from OSM (10.2 M), IGN España (9.8 M, Spain's) and Esri (0.8 M, the US's).
+- **Microsoft's heights are estimates, and flat.** Where a building has both, its height grows
+  1.2 m a floor when Microsoft's (least absolute deviations: 1.21 m × floors + 2.7 m; 1.5 m a floor
+  at 10 floors or more), 3.0 m when OSM's (+ 1.4 m), 2.9 m when USGS lidar's (+ 2.3 m), and 3.2–3.5 m
+  a floor above 3 floors when Esri's. They hardly reach 20 m: 0.05 % of Microsoft's heights do, 0.87 %
+  of the others (the UK's 99th percentile: 9.3 m from Microsoft, 40 m from OSM). So §2.3 ranks them
+  after floors and calls them estimates; "measured" in this document means the others (22.5 M).
+- **Height per floor, measured** (medians of height ÷ floors, Microsoft's left out): 1 floor 4.3 m,
+  2 floors 3.7, 3–4 floors 3.25, 5–9 floors 3.24, 10 or more 3.33; Japan 4.8, 3.8, 3.23, 3.3, 3.25;
+  the US 4.3, 3.35, 3.43, 3.63, 3.62. Spain's OSM heights are exactly 3.0 m a floor (derived from
+  `building:levels`). The fits per country are in §2.3.
+- **Heights' medians:** measured 5.8 m (p99 19 m): the US 5.5 (17.5), Japan 7.1 (24.1), France 7.0
+  (52), the UK 7.6 (40), Taiwan 12 (130), Hong Kong 41.5 (252); Microsoft's 4.3 m (p99 9.7).
 - **How this repo reads it now:** `dem/buildings.py --world` streams the release's bbox columns
   (~32 GB of its 277) into z8 tiles of boxes (`sources/buildings/2026-09-23-1/`, 11,834 tiles),
   which the units read for the roadside-buildings factor (`pipeline::buildings`). Heights, footprints
@@ -139,32 +169,95 @@ replace estimates.
 ### 2.3 Filling the missing heights
 
 Each building's height (its top above the ground) is the first of these that it has, and it
-records which (`s`, 0–4), for the hover and the "where the height comes from" colouring:
+records which (`s`, 0–5), for the hover and the "where the height comes from" colouring. The order,
+the fits and the defaults are B0's, from the hold-out below:
 
-0. **Measured:** Overture's `height` (lidar, OSM's `height`, Microsoft's or Esri's estimate), taken
-   when it is 2–700 m. A building part's base: `min_height`.
-1. **Floors:** `num_floors` × the country's storey height + a roof allowance; a part's base from
-   `min_floor` likewise. Fitted in B0 per country from the buildings that have both; until then
-   3.0 m a floor + 1.0 m.
-2. **Neighbours:** the median of the heights (by rule 0 or 1) of the buildings within 150 m whose
+0. **Measured:** Overture's `height` from lidar (USGS), OSM's `height`, Esri Community Maps or a city
+   (Vancouver), taken when it is 2–700 m. A building part's base: `min_height`.
+1. **Floors:** `num_floors` × the country's storey height + a roof allowance, fitted by least
+   absolute deviations on the measured buildings that have both (§2.2): the US 3.10 m a floor
+   + 0.90 m, Japan 2.82 + 1.87, the UK 3.21 + 1.59, France 2.95 + 1.60, Spain 3.00 + 0, Canada
+   3.47 + 1.59, Portugal 3.00 + 1.00, Ireland 2.50 + 2.50, Puerto Rico 2.92 + 0.37, Taiwan
+   3.32 − 0.96, Singapore 3.62 + 1.54, Hong Kong 3.32 − 1.32; elsewhere the coverage's 3.03 + 1.27.
+   A part's base from `min_floor` likewise.
+2. **Microsoft's estimate:** Overture's `height` from Microsoft ML Buildings, 2–700 m. After floors,
+   which it puts at 1.2 m each (§2.2); 2.4 M buildings have both.
+3. **Neighbours:** the median of the heights (by rules 0–2) of the buildings within 150 m whose
    footprint is between half and twice its own, when there are at least 5; else of any footprint
-   within 300 m, when there are at least 8. Streets and blocks are uniform, and cities have heights
-   for a fifth to a half of their buildings (§2.2).
-3. **GHSL:** the ANBH value of the 3″ cell holding the footprint's centroid, when the cell has
-   buildings. A footprint under 60 m² takes at most 4 m (garages, sheds). Sampled on 2026-10-05:
-   Midtown Manhattan 31.5 m, Lower Manhattan 35.2, Brooklyn's row houses 18.0 (high), Back Bay 17.3,
-   downtown Toronto 42.8, the Plateau in Montréal 12.7, Montpelier 15.0; a cell of scattered farms is
-   0 (no buildings found), which falls through to the defaults.
-4. **Size and kind:** sheds, garages, carports and huts, or under 30 m²: 3 m; houses and residential
-   kinds, or under 250 m²: 6.5 m; 250–2,000 m²: 9 m; larger: 10 m; churches and cathedrals: 15 m.
+   within 300 m, when there are at least 8.
+4. **GHSL, in high-rise cores:** the ANBH value of the 3″ cell holding the footprint's centroid, when
+   it is 20 m or more; a footprint under 60 m² takes at most 4 m. Sampled on 2026-10-05: Midtown
+   Manhattan 31.5 m, Lower Manhattan 35.2, downtown Toronto 42.8; Brooklyn's row houses (18.0), Back
+   Bay (17.3), the Plateau in Montréal (12.7) and Montpelier (15.0) fall through to rule 5.
+5. **Size and kind:** the measured median height of its class, in its country where 200 of the
+   class are measured, else in the coverage: churches and cathedrals 8.8 m; sheds, garages, carports
+   and huts, or under 30 m²: 3.3 m; houses and residential kinds, or under 250 m²: 6.0 m;
+   250–2,000 m²: 6.4 m; larger: 9.1 m (the coverage's; the US's 3.3, 5.5, 6.2 and 8.9 m, Japan's
+   3.2, 7.5, 9.0 and 14.8 m, France's 5.0, 7.0, 10.0 and 12.0 m and its churches 13.0 m).
 
-**Checked, not guessed (B0):** a tenth of each country's measured buildings (by a hash of their id)
-are held out and filled by rules 1–4 as if unmeasured; each rule's median absolute error and bias
-per country are reported, and the order, radii, counts and defaults are set from them. The fill's
-version is in the buildings step's key (§3.2), so a change rebuilds every tile and nothing else.
+**Checked, not guessed (B0):** a tenth of the buildings with a height (by a hash of their id:
+14.8 M, 2.25 M of them measured) were held out, filled by each rule as if unmeasured (the
+neighbours' rule without the held-out heights) and scored against their measured height: the median
+/ 90th percentile of |estimate − measured| in metres, and the share of them a rule answers.
 
-Estimated: 92 % of East Asia's buildings, two thirds of Western Europe's, a third of North
-America's (§2.2). Japan's cities get measured heights from PLATEAU in B4.
+| | held out | 1 floors | 3 neighbours | GHSL, any cell | size, the first defaults | 5 size, fitted | 4–5 | 1–5, the first order | 1–5 |
+|---|---|---|---|---|---|---|---|---|---|
+| US | 1.76 M | 0.9 / 3.0 (9 %) | 0.6 / 2.7 (99 %) | 2.4 / 5.8 | 2.0 / 4.1 | 1.5 / 4.3 | 1.5 / 4.4 | 0.6 / 2.9 | 0.6 / 2.8 |
+| Japan | 421 k | 0.9 / 3.1 (50 %) | 0.9 / 3.5 (100 %) | 2.8 / 9.0 | 1.4 / 3.8 | 1.0 / 4.2 | 1.1 / 4.7 | 0.9 / 3.4 | 0.9 / 3.4 |
+| France | 14 k | 1.6 / 4.5 (12 %) | 1.1 / 6.1 (96 %) | 3.1 / 10.5 | 2.0 / 11.0 | 2.0 / 10.0 | 2.0 / 10.0 | 1.5 / 6.0 | 1.5 / 6.0 |
+| UK | 8 k | 1.8 / 3.2 (61 %) | 0.1 / 3.5 (97 %) | 3.2 / 6.0 | 1.5 / 4.5 | 1.2 / 4.3 | 1.2 / 4.3 | 1.0 / 3.4 | 1.0 / 3.4 |
+| Canada | 9 k | 1.1 / 2.6 (40 %) | 0.6 / 2.9 (99 %) | 2.2 / 6.5 | 2.0 / 3.7 | 1.8 / 3.8 | 1.8 / 3.9 | 0.9 / 2.9 | 0.9 / 2.9 |
+| Puerto Rico | 20 k | 0.7 / 3.1 (2 %) | 0.5 / 2.7 (100 %) | 4.2 / 7.4 | 3.1 / 4.5 | 0.7 / 2.9 | 0.7 / 2.9 | 0.5 / 2.7 | 0.5 / 2.7 |
+| Taiwan | 1 k | 0.6 / 5.7 (75 %) | 3.0 / 13.7 (96 %) | 5.4 / 23.0 | 5.5 / 31.0 | 5.0 / 26.4 | 6.0 / 23.1 | 0.6 / 8.0 | 0.6 / 8.3 |
+| all | 2.25 M | 0.9 / 3.0 (18 %) | 0.6 / 3.0 (99 %) | 2.5 / 6.4 | 1.9 / 4.1 | 1.5 / 4.3 | 1.5 / 4.5 | 0.7 / 3.0 | 0.7 / 2.9 |
+
+The first order (the plan before B0) was measured, floors, neighbours, GHSL in any cell with
+buildings, then size and kind at 3, 6.5, 9, 10 and 15 m, Microsoft's estimates counted as measured;
+scored here with B0's floors. Spain's measured heights are OSM's floors × 3 m, so its floors fit them
+exactly (left out above). Every country and rule, by the true height, and against Microsoft's
+estimates too: `dem/bldmeasure.py`'s report phase. What set the rules:
+- **Floors and neighbours** are the good rules: 0.6–0.9 m in the median. Floors come first although
+  the neighbours' median is lower: they alone keep tall buildings tall (of the held-out buildings
+  20 m or more, they put 60 % at 20 m or more; the neighbours 24 %).
+- **GHSL is worse than the size rule** nearly everywhere (2.5 against 1.5–1.9 m; Japan 2.8 against
+  1.0–1.4), but of the two only GHSL knows tall buildings: of the held-out buildings 20 m or more it
+  puts 30 % at 20 m or more, the size rule 1 %. GHSL only in its 20 m cells keeps the 30 % at the
+  size rule's accuracy (rules 4–5: 1.5 / 4.5 m, where GHSL in any cell then size was 2.5 / 6.4;
+  Japan 1.1 / 4.7 against 2.8 / 9.0). A GHSL factor fitted per country (0.47–1.30) did less (1.8 /
+  5.4 m).
+- **The size rule's first defaults** were high for the many small buildings (+2.0 m under 6 m) and
+  the churches; the fitted ones have no bias (1.5 / 4.3 m against 1.9 / 4.1).
+- **The neighbours' rule stays as planned:** its 150 m stage answers 91 % of the hold-out at 0.6 /
+  2.7 m, the 300 m fallback 7 % at 1.6 / 5.7 m (GHSL, scaled per country, on the same buildings:
+  2.4 m); without the footprints' condition the 150 m stage is 0.9 / 3.5 m.
+- **Tall buildings come out low**, whatever the rule: the held-out buildings 20–40 m tall by 12 m in
+  the median, those of 40 m or more by 22 m (by 35 m where floors aren't known). The z12–13 skyline
+  is the measured and the floors-known towers, and GHSL's high-rise cores (§2.5).
+- **The hold-out flatters the neighbours:** a measured building's neighbours are measured more often
+  than an unmeasured one's. Rule 3 answers 99 % of the held-out buildings but 52 % of the buildings
+  with no height or floors; the size rule fills a quarter of the coverage.
+- Scored against Microsoft's estimates as well (14.8 M held out, as the plan first had it), the
+  chain is 0.65 / 2.4 m, the first order 0.63 / 2.2: Microsoft's flat estimates agree with flat
+  guesses, which is why they aren't the yardstick.
+
+Every building in the coverage, by the rule that gives its height:
+
+| | 0 measured | 1 floors | 2 Microsoft's | 3 neighbours | 4 GHSL | 5 size |
+|---|---|---|---|---|---|---|
+| US | 11.3 % | 1.0 % | 60.3 % | 19.5 % | 0.0 % | 8.0 % |
+| France | 0.3 % | 1.1 % | 18.0 % | 59.8 % | 0.0 % | 20.8 % |
+| Japan | 7.8 % | 1.2 % | — | 11.0 % | 1.3 % | 78.8 % |
+| UK | 0.3 % | 6.8 % | 43.1 % | 44.0 % | 0.0 % | 5.7 % |
+| Spain | 0.7 % | 59.6 % | 4.4 % | 24.2 % | 0.0 % | 11.0 % |
+| Canada | 0.6 % | 2.1 % | 47.1 % | 28.0 % | 0.0 % | 22.2 % |
+| Portugal | 0.2 % | 1.9 % | 2.0 % | 8.0 % | 0.0 % | 87.8 % |
+| Taiwan | 0.5 % | 3.4 % | — | 10.6 % | 3.0 % | 82.5 % |
+| all | 6.6 % | 5.0 % | 36.4 % | 26.9 % | 0.2 % | 25.0 % |
+
+Estimated (rules 2–5): 88 % of the coverage's buildings; Japan's 91 %, France's 99 %, the UK's 93 %,
+Spain's 40 %. Japan's cities get measured heights from PLATEAU in B4, France's from BD TOPO. The
+fill's version is in the buildings step's key (§3.2), so a change rebuilds every tile and nothing
+else.
 
 ### 2.4 Heights and the roadside factor
 
@@ -178,12 +271,12 @@ change every unit's key (every unit rebuilt), so they're decided on their own. T
 | | |
 |---|---|
 | downloads (§2.6) | 61.8 GB: Overture 60.5 GB (103 files), GHSL 1.28 GB (91 tiles) |
-| buildings in the coverage | ~340 M (344 M in the row groups meeting the coverage + 1 km) |
-| z6 tiles meeting the coverage | 380. By the row groups' centres (so roughly, and counting some buildings just outside the coverage), 27 tiles hold over 5 M: the densest 6/56/25 (Tokyo to Osaka, ~30 M), 6/32/22 (Paris and northern France, 15 M), 6/18/24 (New York to Washington, 15 M), then ~10 M each: 6/32/23 (southern France), 6/31/21 (southern England), 6/17/23 (Toronto to Detroit), 6/55/25 (western Japan), … |
-| normalized buildings (`work/bld/`) | ~40 B a building, zstd'd: ~14 GB |
-| tiles, measured on samples | z14, gzip'd, with `h` and `s`: Tokyo 14.9 B a building, rural Japan 10.7, rural Vermont 16.9, Manhattan 18.7, London 21.8, Paris 25.9 (12.6 vertices a building) |
-| tiles, estimated | ~7 GB at z14, ~8 GB with z12–13; the largest hi pack (6/56/25) ~0.5 GB |
-| an app Mac's mirror | +8 GB |
+| buildings in the coverage | 339 M and 2.8 M parts (B0: centroids in the coverage + 1 km) |
+| z6 tiles meeting the coverage | 380; 290 hold a building's centroid, 25 over 5 M: the densest 6/56/25 (Tokyo to Osaka, 30.3 M), 6/32/22 (Paris and central France, 15.3 M), 6/18/24 (New York to Washington, 14.6 M), 6/32/23 (southern France and Catalonia, 12.6 M), 6/32/21 (northern France and England east of Greenwich, 11.3 M), 6/31/21 (southern England and Wales, 10.5 M), 6/55/25 (western Japan, 10.3 M), 6/17/25 (the Carolinas, 10.2 M), … |
+| normalized buildings (`work/bld/`) | ~40 B a building, zstd'd: ~14 GB (an estimate: B0 didn't write them) |
+| tiles, encoded in B0 | 178 tiles encoded as §3.4 has them (gzip level 6), the fullest and heaviest by the estimate and a sample: 17.7 B a building at z14 (the median; 10.4–27.9), 35.7 at z13, 20.0 at z12. The fullest z14 tile holds 26,462 buildings (Kyoto, 14/14369/6488: 278 KB); 15 of the 30 heaviest by the estimate are over 300 KB (the rest of the tiles under ~290 KB), at most 490 KB (Valencia, 14/8174/6234: 24,183 buildings), all in old towns drawn on Spain's cadastral parcels (Barcelona's six, Valencia's, Granada's, Málaga's, Córdoba's, Santander's, the Garraf's) or in Tokyo's wards (three, 303–310 KB). Simplified to a grid unit (0.6 m), as z12–13 are, they lose ~18 % (490 → 400 KB); keeping only `h` and `k`, ~2 %. The fullest z13 tile: 17,842 (Valencia: 279 KB; Barcelona's 284 KB); z12: 10,339 (Manhattan: 148 KB; Singapore's 10,204, 176 KB) |
+| tiles, estimated | each building's command bytes (§3.4's quantizing, in the scan), calibrated by the encoded tiles: 5.69 GB at z14 (2.23 M tiles: median 21 buildings, p99 2,436), 0.13 GB at z13 (194 k tiles, 3.5 M buildings), 4 MB at z12 (4,679 tiles, 208 k): 5.8 GB; the largest hi pack 6/56/25 0.47 GB |
+| an app Mac's mirror | +6 GB |
 
 ### 2.6 Downloads (done 2026-10-06, for the 88 regions: 194 files, 61.8 GB)
 
@@ -200,9 +293,10 @@ temporary name, resumed after an interruption (a range request; for S3 only whil
 same), checked (an Overture file's ETag, the MD5 of its 64 MiB parts; a GHSL zip's CRC-32s) and
 renamed into place; a file in place at its listed size is skipped. Two transfers at once, at most
 3 MB/s in all: the line gave ~2–4 MB/s from S3 on 2026-10-05, and the build needs some of it. The
-log is the NAS's `state/logs/bldfetch.log` (a line a file, a progress line a minute). At 2–2.6
-MB/s, 6.5–8.5 hours. After anything stops it (a restart, the NAS away too long), the same command,
-from the repo, goes on from where it was:
+log is the NAS's `state/logs/bldfetch.log` (a line a file, a progress line a minute). The first run
+fetched all 194 files (61.8 GB) in 6 h 48 min, from 18:54 on 2026-10-05 to 01:42. After anything
+stops it (a restart, the NAS away too long), the same command, from the repo, goes on from where it
+was:
 
 ```
 nohup caffeinate -s uv run --project dem python dem/bldfetch.py \
@@ -307,7 +401,7 @@ manifest; a work file, not served). Meta `{"fmt": 1, "tile": "6/x/y", "release",
 - Quantized to the tile's grid (z14: 0.6 m at the equator); repeated points dropped, rings that
   collapse dropped; at z12–13, simplified to one grid unit.
 - Properties: `h` the top (dm), `m` the base (dm; parts; left out when 0), `s` the height's source
-  (0–4, §2.3), `f` floors (when `s` is 1), `c` the kind (0 unknown, 1 residential, 2 outbuilding,
+  (0–5, §2.3), `f` floors (when `s` is 1), `c` the kind (0 unknown, 1 residential, 2 outbuilding,
   3 commercial, 4 industrial, 5 religious, 6 civic, 7 agricultural, 8 transport, 9 other), `k` (1 a
   part, 2 an outline with parts: drawn by the flat layer only). No feature ids, no names (B1).
 - In a tile, features sorted by their centroid's Morton code, then id.
@@ -420,8 +514,8 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
   azimuth, intensity low.
 - **By height:** the shared colour scale (Auto / Lock / Full, the colour-map picker, the low-end
   fade) over the buildings in view, as the terrain tint's.
-- **By where the height comes from:** measured, floors, neighbours, GHSL, size, so the fill can be
-  judged on the map.
+- **By where the height comes from:** measured, floors, Microsoft's estimate, neighbours, GHSL,
+  size, so the fill can be judged on the map.
 - B3: buildings holding a heritage site's point tinted by its tier (the heritage overlay's colours),
   for the landmarks' sake.
 
@@ -441,11 +535,15 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
   builds the buckets, so filtered buildings cost no GPU memory).
 - **The iPad's budget** (8 GB iPad Pro; Safari gives a tab ~4 GB, the map's roads, terrain and
   basemap take a share): buildings ≤ 300 MB in the densest view, ≤ 8 ms of GPU a frame. Estimate:
-  Shinjuku at zoom 16, tilted 60°: up to ~10 z14 tiles of ~11,500 buildings near, coarser tiles
-  beyond: ~120 k buildings, ~120 MB on the GPU, ~2 M triangles.
+  Shinjuku at zoom 16, tilted 60°: up to ~10 z14 tiles of 9,000–20,000 buildings near (Shinjuku's
+  own 9,111; the wards west of it ~20,000: §2.5), coarser tiles beyond: ~120 k buildings, ~120 MB on
+  the GPU, ~2 M triangles.
 - **Measured in B1** on the iPad (Safari's Web Inspector: memory and frame timeline) at Shinjuku
   (z16, 60°), Manhattan (z15, 70°), Paris (z15), Hong Kong's Mid-Levels on its slope, Monaco, a
-  Vermont village and a Japanese mountain town.
+  Vermont village and a Japanese mountain town; and Barcelona's old town, whose z14 tiles are the
+  heaviest (§2.5). Their z14 tiles, by B0: Shinjuku 9,111 buildings, 141 KB; Midtown Manhattan 4,435,
+  101 KB; Paris (Châtelet) 4,752, 132 KB; the Mid-Levels 3,208, 72 KB; Monaco 2,170, 44 KB;
+  Woodstock, Vermont 630, 13 KB; Takayama 5,855, 76 KB.
 - **If over budget**, on touch devices: opacity 1 (one pass, the default there anyway), z14 tiles only
   from zoom 15 ("skyline" between 13 and 15), a smaller tile cache for `bld`.
 
@@ -466,13 +564,13 @@ artefacts call for it (B4):
 
 | Phase | What | Effort |
 |---|---|---|
-| **B0 Data** | The downloads (under way, §2.6). A measurement script over the files: heights and floors by country, storey heights fitted, the fill's hold-out errors per rule and country (§2.3), tile sizes at z12–14 for the densest tiles; this document's numbers updated. | 1 day |
+| **B0 Data** (done 2026-10-06) | The downloads (§2.6). `dem/bldmeasure.py` over the files: heights, floors and their sources by country (§2.2); the storey heights fitted, and the fill's order, fits and defaults set from a held-out tenth (§2.3); the tiles' counts and sizes at z12–14, the fullest and heaviest encoded (§2.5); this document's numbers updated. On the build Mac: 13 minutes to read 44.6 GB of row groups from the NAS, 4 to fill and count, 5 to encode. | 1 day |
 | **B1 Pilot** | `dem/bldprep.py`, `pipeline::bld` (prep, fill, tiles), `scenic-build bldprep` and `buildings`, run by hand on 6/56/25 (Kantō), 6/32/22 (Paris), 6/18/24 (New York) and a rural tile; formats.md entries; the catalog layer, the server's route; `web/src/buildings.ts` with the settings section, the toggle and hover; the iPad measured (§4.6). | 6 days |
 | **B2 In the build** | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job; the mirror's group, the service worker's budget, credits; every tile built and published. plan.md (§6, §8, §9, §10), workers.md, formats.md and the README updated. | 4 days |
 | **B3 Sharing and polish** | `bldtile` tasks for pages (WebAssembly, byte-identical); bridges and elevated rail over buildings; walls on the terrain under each corner; fog on the extrusions; the camera's clearance; colour by height, by source, heritage tint. | 5 days |
 | **B4 Each on its own measurement** | A custom layer (§4.7); measured heights from BD TOPO (France) and PLATEAU (Japan's cities); building heights in the horizons and the viewshed tool (every unit rebuilt). | 2–3 weeks |
 
-B0–B3: about 16 days of work, the build's own time aside: `bldprep` reads 60 GB from the NAS (an
+B1–B3: about 15 days of work, the build's own time aside: `bldprep` reads 60 GB from the NAS (an
 hour or two over the tiles), `buildings` ~20 minutes of CPU over all tiles natively.
 
 ### 5.2 Risks
@@ -482,8 +580,11 @@ hour or two over the tiles), `buildings` ~20 minutes of CPU over all tiles nativ
   Overture release", in the status); pinning one (~6-monthly, plan.md §8 Planned) fetches 62 GB again
   (~7 hours on this line), rebuilds every unit (the roadside index) and every buildings tile. The old
   release's files are deleted by hand afterwards (GC never sweeps `sources/`).
-- **Estimated heights:** about half the buildings, 92 % in East Asia. Mitigated by the measured rules
-  first, the hold-out checks, the "where the height comes from" colouring, and national data later.
+- **Estimated heights:** 88 % of the buildings (Microsoft's estimates 36 %; Japan's 91 %, France's
+  99 %), and tall unmeasured buildings come out 12–35 m low (§2.3): the skyline is thin where
+  heights aren't measured (central Tokyo: 11 % have a height or floors). Mitigated by the measured
+  rules first, the hold-out checks, the "where the height comes from" colouring, and national data
+  later.
 - **Occlusion artefacts** with MapLibre's extrusions: viaducts and elevated rail painted over (B3);
   places where the terrain mesh lies above a road, so a building behind the road shows over it (the
   roads' 75 m × exaggeration tolerance exists for that mesh error).
@@ -512,10 +613,12 @@ None blocks the work; each has a default below.
 
 1. **Overture alone** for footprints and attributes, the release the roadside buildings use
    (2026-09-23.1), pinned once for both; OSM, Microsoft and USGS heights through it.
-2. **GHSL ANBH** (CC BY 4.0, 1.28 GB) for the fill; Google's 2.5D (an account, little overlap) not
-   used; national data later, where it replaces estimates.
-3. **The fill's order:** measured, floors, neighbours, GHSL, size and kind, each building saying which;
-   thresholds set by hold-out errors, not by hand.
+2. **GHSL ANBH** (CC BY 4.0, 1.28 GB) for the fill, in its cells of 20 m or more (B0: elsewhere the
+   size rule is nearer); Google's 2.5D (an account, little overlap) not used; national data later,
+   where it replaces estimates.
+3. **The fill's order:** measured, floors, Microsoft's estimates, neighbours, GHSL in high-rise cores,
+   size and kind, each building saying which; the fits, defaults and order set by B0's held-out tenth
+   (§2.3), not by hand.
 4. **The coverage**, as roads: a building touching it is built; not roadside only, not the world.
 5. **Downloads:** the coverage's Overture files whole (60.5 GB of 277) rather than row groups (44.8 GB):
    the source's own bytes, checkable against its ETags, resumable, and a later region needs only
