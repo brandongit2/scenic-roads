@@ -141,7 +141,7 @@ const LEVELS: Record<number, string> = { 2: 'country', 3: 'region', 4: 'state/pr
 /** What kind of area it is, by its admin level (its name varies by country: a level 6 is a county
  * in England, a département in France). */
 export const levelName = (a: Pick<Area, 'level' | 'country' | 'iso'>): string =>
-  a.country ? 'country' : LEVELS[a.level] ?? (a.iso.includes('-') ? 'subdivision' : 'area');
+  a.country ? 'country' : LEVELS[a.level] ?? ((a.iso ?? '').includes('-') ? 'subdivision' : 'area');
 
 /** An area's name to show: English when it has one. */
 export const areaName = (a: Pick<Area, 'name' | 'en'>): string => a.en || a.name;
@@ -149,10 +149,11 @@ export const areaName = (a: Pick<Area, 'name' | 'en'>): string => a.en || a.name
 export const km2 = (v: number) => (v < 1 ? '<1 km²' : `${fmt.n(v)} km²`);
 
 /** An outline entry in words: "Northumberland (county)", "Kanto (Geofabrik)", "40 km around …".
- * `area`: an osm: entry's area, when known. */
+ * `area`: an osm: entry's area, when known (the coverage's features have none when the server
+ * can't read the pass's outlines: away from the NAS, not on this Mac). */
 export function entryLabel(entry: string, area?: Pick<Area, 'name' | 'en' | 'level' | 'country' | 'iso'>): string {
   const [kind, v = ''] = entry.split(/:(.*)/s);
-  if (kind === 'osm') return area ? `${areaName(area)} (${levelName(area)})` : `OSM relation ${v}`;
+  if (kind === 'osm') return area && typeof area.level === 'number' ? `${areaName(area)} (${levelName(area)})` : `OSM relation ${v}`;
   if (kind === 'geofabrik') {
     const last = v.split('/').pop() ?? v;
     return `${last.split('-').map(cap).join(' ')} (Geofabrik)`;

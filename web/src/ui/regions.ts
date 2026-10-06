@@ -4,6 +4,9 @@
 // change when it can (the status bar shows it). Renaming rebuilds nothing.
 // The coverage drawn is the one the map's catalog was built for; a recipe it doesn't have (added
 // or redrawn since, or waiting on this Mac to go to the NAS) is listed as pending.
+// On this Mac (docs/plan.md §4, "Mirror, per Mac"): each region's size and how much of it is here,
+// kept for offline use or not, the views kept, and the mirror's state (keep.ts).
+import { dropView, keepRegion, keepStatus, keepView, renameView, size, stateText, pct, type KeepStatus, type KeptView, type RegionKeep } from '../keep';
 import * as prefs from '../prefs';
 import {
   QUEUED, RegionLayers, RegionsError, addRegion, areaName, areaOutline, areasAt, editRegion, entryLabel, getCoverage, km2, levelName, listRegions, removeRegion, searchAreas, slug, validId,
@@ -54,6 +57,8 @@ export class RegionsPanel {
   onFit: (bbox: Bbox) => void = () => {};
   onPicking: (on: boolean) => void = () => {};
   onChanged: () => void = () => {};
+  /** Set by the app: the ground in view, [lon, lat] points (Keep this view). */
+  viewOutline: () => [number, number][] = () => [];
 
   private covBox = h('input', { type: 'checkbox' });
   private covCount = h('span', { class: 'km' });
@@ -70,6 +75,22 @@ export class RegionsPanel {
   private nameIn = h('input', { type: 'text', spellcheck: false, autocomplete: 'off' });
   private saveBtn = h('button', { class: 'pill on', type: 'button' }, 'Add region');
   private msg = h('div', { class: 'rg-msg' });
+  // On this Mac: the mirror's state, Keep this view, the kept views.
+  private keepSum = h('div', { class: 'kp-sum' });
+  private keepBtn = h('button', { class: 'pill', type: 'button', title: 'Keep the area in view on this Mac, for when it’s away from the NAS: its files are copied first and never let go of' }, 'Keep this view');
+  private keepViews = h('div', { class: 'rg-list kp-views' });
+  private keepMsg = h('div', { class: 'rg-msg' });
+  /** The mirror's state, as last asked (null: not yet), or why it couldn't be. */
+  private keep: KeepStatus | null = null;
+  private keepErr = '';
+  private keepTok = 0;
+  private keepTimer = 0;
+  /** What each region row shows of it, updated in place as the state comes (a row isn't drawn
+   * again: a hover or a rename in it stays). */
+  private keepEls = new Map<string, { sw: HTMLInputElement; size: HTMLElement }>();
+  /** The kept views listed (their ids and names), and their size lines. */
+  private viewsKey = '';
+  private viewEls = new Map<string, HTMLElement>();
 
   private regions: Region[] = [];
   private bad: [string, string][] = [];
@@ -126,10 +147,16 @@ export class RegionsPanel {
       h('div', { class: 'pills' }, this.saveBtn, h('button', { class: 'pill', type: 'button', onclick: () => this.clearDraft() }, 'Clear')),
     );
     this.draftBox.hidden = true;
+    this.keepBtn.addEventListener('click', () => void this.keepThisView());
     this.nodes = [
       h('label', { class: 'tog', title: 'Every region’s outline on the map: the map is built within them' }, this.covBox, h('span', {}, 'Coverage on the map'), this.covCount),
       this.list,
       this.note,
+      h('div', { class: 'subhd', title: 'This Mac’s copy of the map, for when it’s away from the NAS' }, 'On this Mac'),
+      this.keepSum,
+      h('div', { class: 'kp-act' }, this.keepBtn),
+      this.keepViews,
+      this.keepMsg,
       h('div', { class: 'subhd' }, 'Add a region'),
       h('div', { class: 'rg-search' }, this.search, this.pickBtn),
       this.hint,
@@ -161,10 +188,13 @@ export class RegionsPanel {
     if (open) {
       if (performance.now() - this.loadedAt > FRESH_MS) void this.refresh();
       this.showDraft();
+      void this.pollKeep();
     } else {
       this.setPicking(false);
       this.layers.setHover(null);
       this.layers.setDraft([]);
+      clearTimeout(this.keepTimer);
+      this.keepTok++;
     }
   }
 
@@ -237,6 +267,7 @@ export class RegionsPanel {
       this.hoverRegion = null;
       this.layers.setHover(null);
     }
+    this.keepEls.clear();
     const n = this.regions.length;
     this.covCount.textContent = n ? `${n} region${n === 1 ? '' : 's'}` : '';
     this.list.replaceChildren(
@@ -278,13 +309,19 @@ export class RegionsPanel {
         const b = bboxOf(fs);
         if (b) this.onFit(b);
       });
+      const sw = h('input', { type: 'checkbox', class: 'switch rg-keep', title: 'Keep on this Mac, for when it’s away from the NAS: its files are copied first and never let go of' });
+      sw.addEventListener('change', () => void this.setKept(r, sw));
+      const sz = h('span', { class: 'rg-size' });
+      this.keepEls.set(r.id, { sw, size: sz });
       row.replaceChildren(
         h('div', { class: 'rg1' }, name, h('span', { class: 'rg-id faint' }, r.id),
           ...(state ? [h('span', { class: `rg-state ${state.cls}`, title: state.title }, state.text)] : []),
           h('button', { class: 'rg-act', type: 'button', title: 'Rename', onclick: () => this.rename(r, row, show) }, '✎'),
-          h('button', { class: 'rg-act', type: 'button', title: 'Remove…', onclick: () => this.askRemove(r, row, show) }, '×')),
-        h('div', { class: 'rg2', title: summary }, summary),
+          h('button', { class: 'rg-act', type: 'button', title: 'Remove…', onclick: () => this.askRemove(r, row, show) }, '×'),
+          sw),
+        h('div', { class: 'rg2' }, h('span', { class: 'rg2s', title: summary }, summary), sz),
       );
+      this.showKept(r.id);
     };
     show();
     row.addEventListener('mouseenter', () => {
@@ -353,6 +390,225 @@ export class RegionsPanel {
   private say(text: string, warn = false) {
     this.msg.textContent = text;
     this.msg.classList.toggle('warn', warn);
+  }
+
+  // ---- on this Mac ------------------------------------------------------------------
+
+  /** The mirror's state again, then every 2 s while something kept is being copied, else every
+   * 10 s, while the section is open. */
+  private async pollKeep() {
+    clearTimeout(this.keepTimer);
+    const tok = ++this.keepTok;
+    try {
+      this.keep = await keepStatus();
+      this.keepErr = '';
+    } catch (e) {
+      if (tok !== this.keepTok) return;
+      this.keepErr = says(e);
+    }
+    if (tok !== this.keepTok) return;
+    this.renderKeep();
+    // Often while something kept is coming (a copy under way, or kept files missing with the NAS
+    // there, the build Mac idle and the room for them).
+    const k = this.keep, kept = k?.kept;
+    const coming = !!k?.copying || (!!kept && kept.areas > 0 && kept.here < kept.bytes && k!.online && !k!.busy && kept.more === 0);
+    if (this.open) this.keepTimer = window.setTimeout(() => void this.pollKeep(), coming ? 2000 : 10_000);
+  }
+
+  /** A region's size, and how much of it is here or its state when kept; its switch. */
+  private showKept(id: string) {
+    const els = this.keepEls.get(id);
+    if (!els) return;
+    const k = this.keep;
+    const rk: RegionKeep | undefined = k?.regions[id];
+    els.sw.hidden = !k?.mirror;
+    if (!els.sw.disabled) els.sw.checked = !!rk?.kept;
+    let text = '', cls = 'rg-size';
+    if (!k || !k.mirror) text = '';
+    else if (!rk) text = 'not built yet';
+    else if (rk.kept && rk.state === 'missing') text = 'kept once it’s built';
+    else if (rk.kept) {
+      text = `${size(rk.bytes)}; ${stateText(rk, rk.state)}`;
+      cls += rk.state === 'kept' ? ' ok' : rk.state === 'room' ? ' warn' : ' on';
+    } else text = rk.here >= rk.bytes && rk.bytes > 0 ? `${size(rk.bytes)}; all here` : `${size(rk.bytes)}; ${size(rk.here)} here`;
+    els.size.className = cls;
+    els.size.textContent = text;
+    els.size.title = rk ? `Its files: ${size(rk.bytes)}, of which ${size(rk.here)} on this Mac (besides the basemap and the files every Mac keeps)` : '';
+  }
+
+  /** The block's lines: this Mac's copy of the map, what's kept, what's going on; the views. */
+  private renderKeep() {
+    const k = this.keep;
+    for (const id of this.keepEls.keys()) this.showKept(id);
+    if (!k) {
+      this.keepSum.replaceChildren(this.keepErr ? h('div', { class: 'kp-line warn' }, this.keepErr) : h('div', { class: 'kp-line faint' }, h('span', { class: 'spin' }), ' Asking the map server…'));
+      this.keepBtn.hidden = true;
+      return;
+    }
+    this.keepBtn.hidden = !k.mirror;
+    if (!k.mirror) {
+      this.keepSum.replaceChildren(h('div', { class: 'kp-line faint' }, 'This server keeps no copy of the map (it runs without a mirror)'));
+      this.renderViews([]);
+      return;
+    }
+    const lines: HTMLElement[] = [];
+    const cat = k.catalog ?? { bytes: 0, here: 0 };
+    lines.push(h('div', { class: 'kp-line', title: 'The map’s files on this Mac, the disk’s free space, and the free space the mirror leaves (it lets files go to keep it)' },
+      'This Mac: ', h('b', {}, size(cat.here)), ` of the map here (of ${size(cat.bytes)}) · `, h('b', {}, size(k.free ?? 0)), ` free · reserve ${size(k.reserve ?? 0)}`));
+    const kept = k.kept;
+    if (kept && kept.areas > 0) {
+      const all = kept.here >= kept.bytes;
+      const doing = all ? 'all here' : kept.more > 0 ? `waiting for room · ${pct(kept)} %` : !k.online ? `${pct(kept)} % here · away from the NAS` : k.busy ? `${pct(kept)} % here · paused while the build Mac works` : `copying ${pct(kept)} %`;
+      lines.push(h('div', { class: 'kp-line', title: 'Kept areas, with the basemap and the files every Mac keeps: copied first, never let go of' },
+        `Kept · ${kept.areas} area${kept.areas === 1 ? '' : 's'} · ${size(kept.bytes)} · `, h('span', { class: all ? 'ok' : kept.more > 0 ? 'warn' : 'on' }, doing)));
+      if (!all) {
+        const bar = h('div', { class: 'kp-bar' }, h('i', {}));
+        (bar.firstChild as HTMLElement).style.width = `${(100 * kept.here) / Math.max(1, kept.bytes)}%`;
+        lines.push(bar);
+      }
+    }
+    // Room: what the kept areas still lack, else how far the disk is under the reserve with
+    // everything that may go gone (what's kept stays).
+    const lacking = !!kept && kept.areas > 0 && kept.here < kept.bytes && kept.more > 0;
+    const short = k.last?.short ?? 0;
+    if (lacking) lines.push(h('div', { class: 'kp-line warn' }, `Kept areas need ${size(kept!.more)} more room: free some space on this Mac, or keep less.`));
+    else if (short > 0) lines.push(h('div', { class: 'kp-line warn' }, `The disk is ${size(short)} short of the reserve with every file that may go gone${kept && kept.areas > 0 ? ' (what’s kept stays)' : ''}: nothing more is copied.`));
+    // What's going on, unless the Kept line says it.
+    const keptSays = !!kept && kept.areas > 0 && kept.here < kept.bytes;
+    if (k.copying) {
+      const c = k.copying;
+      lines.push(h('div', { class: 'kp-line faint', title: c.file }, `Copying ${c.file.replace(/^layers\//, '')} · ${size(c.have)} of ${size(c.bytes)}`));
+    } else if (!keptSays && !k.online) lines.push(h('div', { class: 'kp-line faint' }, 'Away from the NAS: the map shows what this Mac has.'));
+    else if (!keptSays && k.busy) lines.push(h('div', { class: 'kp-line faint' }, 'Copying waits while the build Mac runs a job.'));
+    const every = k.essentials, bm = k.basemap;
+    if (every && bm) lines.push(h('div', { class: 'kp-line faint', title: 'The worldwide files, the zoomed-out packs (zooms 0–8), the landmark points and the area details: kept on every Mac, whatever its room' },
+      `Every Mac keeps ${size(every.bytes)} the map needs anywhere; a kept area adds the basemap (${size(bm.bytes)}).`));
+    // Kept regions there's no recipe for any more (removed since): let go of from here.
+    if (this.loadedAt > -Infinity) {
+      for (const [id, rk] of Object.entries(k.regions)) {
+        if (!rk.kept || this.regions.some((r) => r.id === id)) continue;
+        lines.push(h('div', { class: 'kp-line warn' }, `“${rk.name}” is kept, but isn’t a region any more `,
+          h('button', { class: 'pill', type: 'button', title: 'Keep it no more', onclick: () => void keepRegion(id, false).then(() => this.pollKeep(), (e) => this.sayKeep(says(e), true)) }, 'Let go')));
+      }
+    }
+    this.keepSum.replaceChildren(...lines);
+    this.renderViews(k.views);
+  }
+
+  /** The kept views: listed again when they change, else their lines updated in place. */
+  private renderViews(views: KeptView[]) {
+    const key = JSON.stringify(views.map((v) => [v.id, v.name]));
+    if (key !== this.viewsKey) {
+      this.viewsKey = key;
+      this.viewEls.clear();
+      this.keepViews.replaceChildren(...views.map((v) => this.viewRow(v)));
+    }
+    for (const v of views) {
+      const el = this.viewEls.get(v.id);
+      if (!el) continue;
+      el.textContent = `${size(v.bytes)}; ${stateText(v, v.state)}`;
+      el.className = `rg-size ${v.state === 'kept' ? 'ok' : v.state === 'room' ? 'warn' : 'on'}`;
+    }
+  }
+
+  private viewRow(v: KeptView): HTMLElement {
+    const row = h('div', { class: 'rg' });
+    const ring = v.outline;
+    const box = (): Bbox => [Math.min(...ring.map((p) => p[0])), Math.min(...ring.map((p) => p[1])), Math.max(...ring.map((p) => p[0])), Math.max(...ring.map((p) => p[1]))];
+    const feature: GeoJSON.Feature = { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[...ring, ring[0]]] } };
+    const show = () => {
+      const name = h('span', { class: 'rg-name', title: `${v.name}: show it` }, v.name);
+      name.addEventListener('click', () => this.onFit(box()));
+      const sz = h('span', { class: 'rg-size' });
+      this.viewEls.set(v.id, sz);
+      row.replaceChildren(
+        h('div', { class: 'rg1' }, name, h('span', { class: 'rg-id faint' }, 'view'),
+          h('button', { class: 'rg-act', type: 'button', title: 'Rename', onclick: () => this.renameKept(v, row, show) }, '✎'),
+          h('button', { class: 'rg-act', type: 'button', title: 'Keep it no more', onclick: () => void this.dropKept(v) }, '×')),
+        h('div', { class: 'rg2' }, h('span', { class: 'rg2s faint' }, `kept ${new Date(v.at * 1000).toLocaleDateString('en-CA', { month: 'short', day: 'numeric' })}`), sz),
+      );
+      sz.textContent = `${size(v.bytes)}; ${stateText(v, v.state)}`;
+    };
+    show();
+    row.addEventListener('mouseenter', () => this.layers.setHover([feature]));
+    row.addEventListener('mouseleave', () => this.layers.setHover(null));
+    return row;
+  }
+
+  private sayKeep(text: string, warn = false) {
+    this.keepMsg.textContent = text;
+    this.keepMsg.classList.toggle('warn', warn);
+  }
+
+  private async setKept(r: Region, sw: HTMLInputElement) {
+    const on = sw.checked;
+    sw.disabled = true;
+    try {
+      await keepRegion(r.id, on);
+      this.sayKeep(on ? `Keeping “${r.name}” on this Mac: its files come first, and stay.` : `“${r.name}” isn’t kept any more: its files may go when the mirror needs room.`);
+    } catch (e) {
+      sw.checked = !on;
+      this.sayKeep(says(e), true);
+    } finally {
+      sw.disabled = false;
+    }
+    void this.pollKeep();
+  }
+
+  private async keepThisView() {
+    const outline = this.viewOutline();
+    if (outline.length < 3) return this.sayKeep('No ground in view to keep', true);
+    this.keepBtn.disabled = true;
+    this.keepBtn.textContent = 'Keeping…';
+    try {
+      const v = await keepView(outline);
+      this.sayKeep(`Keeping “${v.name}” on this Mac (✎ renames it).`);
+    } catch (e) {
+      this.sayKeep(says(e), true);
+    } finally {
+      this.keepBtn.disabled = false;
+      this.keepBtn.textContent = 'Keep this view';
+    }
+    void this.pollKeep();
+  }
+
+  private renameKept(v: KeptView, row: HTMLElement, back: () => void) {
+    const input = h('input', { type: 'text', class: 'rg-in', value: v.name, spellcheck: false });
+    const save = async () => {
+      const name = input.value.trim();
+      if (!name || name === v.name) return back();
+      try {
+        await renameView(v.id, name);
+        this.sayKeep(`Renamed “${v.name}” to “${name}”`);
+      } catch (e) {
+        this.sayKeep(says(e), true);
+        back();
+      }
+      void this.pollKeep();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') void save();
+      else if (e.key === 'Escape') {
+        e.stopPropagation();
+        back();
+      }
+    });
+    row.replaceChildren(h('div', { class: 'rg1' }, input,
+      h('button', { class: 'rg-act on', type: 'button', title: 'Save', onclick: () => void save() }, '✓'),
+      h('button', { class: 'rg-act on', type: 'button', title: 'Cancel', onclick: back }, '×')));
+    input.focus();
+    input.select();
+  }
+
+  private async dropKept(v: KeptView) {
+    try {
+      await dropView(v.id);
+      this.layers.setHover(null);
+      this.sayKeep(`“${v.name}” isn’t kept any more: its files may go when the mirror needs room.`);
+    } catch (e) {
+      this.sayKeep(says(e), true);
+    }
+    void this.pollKeep();
   }
 
   // ---- finding areas ----------------------------------------------------------------

@@ -536,7 +536,25 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #layers .rg-act { flex: none; width: 16px; height: 16px; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--faint); font-size: 12px; line-height: 16px; opacity: 0; }
 #layers .rg:hover .rg-act, #layers .rg-act.on, #layers .rg-act:focus-visible { opacity: 1; }
 #layers .rg-act:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
-#layers .rg2 { margin-top: 1px; color: var(--faint); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#layers .rg2 { display: flex; gap: 8px; margin-top: 1px; color: var(--faint); font-size: 10.5px; }
+#layers .rg2s { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* On this Mac (ui/regions.ts, keep.ts): each region's size and whether it's kept, the mirror's
+   state, the kept views. */
+#layers .rg-size { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+#layers :is(.rg-size, .kp-line) .ok, #layers .rg-size.ok { color: var(--accent); }
+#layers :is(.rg-size, .kp-line) .on, #layers .rg-size.on { color: var(--text); }
+#layers :is(.rg-size, .kp-line) .warn, #layers :is(.rg-size, .kp-line).warn { color: #f3c77a; }
+#layers .rg1 .rg-keep { margin-left: 2px; }
+#layers .rg1 .rg-keep[hidden] { display: none; }
+#layers .kp-sum { display: grid; gap: 2px; }
+#layers .kp-line { font-size: 10.5px; line-height: 1.45; color: var(--muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+#layers .kp-line b { color: var(--text); font-weight: 500; }
+#layers .kp-line .spin { vertical-align: -1px; }
+#layers .kp-bar { height: 3px; margin: 2px 0 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
+#layers .kp-bar i { display: block; height: 100%; background: var(--accent); transition: width 0.4s ease; }
+#layers .kp-act { display: flex; gap: 6px; margin: 6px 0 2px; }
+#layers .kp-act .pill:disabled { opacity: 0.6; }
+#layers .kp-views:empty { display: none; }
 #layers .rg-ask { display: grid; gap: 6px; padding: 2px 0; font-size: 11px; line-height: 1.45; }
 #layers .rg-ask .pills .pill, #layers .rg-draft .pills .pill { flex: 1; padding: 3px 8px; }
 #layers .rg-bad { color: #f3c77a; font-size: 10.5px; line-height: 1.4; padding: 2px 0; overflow-wrap: anywhere; }
