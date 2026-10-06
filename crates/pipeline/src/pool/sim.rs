@@ -946,8 +946,9 @@ impl Mac {
 
     /// Takes up term `t`, which names this Mac.
     fn take_up(&mut self, t: Term) -> Result<()> {
-        let own = self.spare.take();
-        match records::take_up(&self.sim, &t, own.clone(), None, &check) {
+        let mut own = self.spare.take();
+        let listed = journal::list(&self.sim, None);
+        match listed.and_then(|keys| records::take_up(&self.sim, &t, &mut own, &keys, &check)) {
             Ok(up) => {
                 if !up.merged.applied.is_empty() {
                     self.sim.count("take-ups replaying the journal");
@@ -990,7 +991,7 @@ impl Mac {
                 *w.counts.entry("acknowledged entries merged again by a later lead").or_default() += again;
             });
         }
-        if !m.applied.is_empty() || !m.refused.is_empty() {
+        if !m.applied.is_empty() || !m.refused.is_empty() || !m.overtaken.is_empty() {
             l.dirty = true;
             l.refused.extend(m.refused.iter().cloned());
         }
@@ -1237,12 +1238,12 @@ impl Mac {
             };
             let keys = journal::list(&self.sim, None)?;
             let m = records::merge(&self.sim, &mut r, &keys, &check);
-            if !m.applied.is_empty() || !m.refused.is_empty() {
+            if !m.applied.is_empty() || !m.refused.is_empty() || !m.overtaken.is_empty() {
                 // Check the term, then write: two steps, and the write's rename may land late.
                 if term::next(&self.sim, e)? {
                     self.step_down("a later term exists")?;
                 } else if self.sim.write_whole(DRAFT, &serde_json::to_vec(&r)?).is_ok() {
-                    for k in m.applied.iter().chain(m.refused.iter().map(|(k, _)| k)) {
+                    for k in m.applied.iter().chain(&m.overtaken).chain(m.refused.iter().map(|(k, _)| k)) {
                         self.sim.remove(&journal::path(k))?;
                     }
                 }
