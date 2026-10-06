@@ -499,9 +499,9 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
 
 - **Helper Macs** (today's M1; any member in `docs/pool.md`): both steps are shared steps
   (`agent::claims::SHARED`), offered from the far end as terrain and units are. `bldprep` needs the
-  NAS (it reads up to ~3 GB of row groups a tile) and, in B1's pilot, 4.6 GB of memory at most for
-  the densest tile (Kantō; 1.3–2.9 GB for the others); `bldtiles` holds a z8 area at a time (3.6 GB
-  at most for Kantō's run, 1.0–1.8 GB for the others). Each target's memory is learned
+  NAS (it reads up to ~3 GB of row groups a tile) and, in B1's pilot, 5.1 GB of memory at most for
+  the densest tile (Kantō; 1.2–2.8 GB for the others); `bldtiles` holds a z8 area at a time (3.2 GB
+  at most for Kantō's run, 0.6–1.5 GB for the others). Each target's memory is learned
   (`SCENIC_COSTS`: both steps note their targets' costs, `bldprep 6/x/y` and `bldtiles 6/x/y`);
   first guesses, which B1's runs bear out: 1 GB + 120 B a building for `bldprep`, 0.5 GB + 150 B a
   building of its largest z8 area for `bldtiles`.
@@ -532,8 +532,9 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
   same bytes; the planned "build twice, compare hashes" covers both steps.
 - **Checked in B1:** Paris (6/32/22) built twice on the build Mac, on 12 threads and on one, gave
   the same work file and the same pack byte for byte (content names `6-32-22.f07556cc02cd5298` and
-  `6-32-22.8db81a60e19ca8d9`); the unit tests build a tile on one thread and on several and compare.
-  WebAssembly waits for `bldtile` (B3).
+  `6-32-22.4a4fb482a84227db`, the pack as rebuilt after the review: its copies' fills included);
+  the unit tests build a tile on one thread and on several and compare. WebAssembly waits for
+  `bldtile` (B3).
 
 ## 4. The map
 
@@ -649,10 +650,17 @@ source's fill-extrusion: the hovered building, 1 m larger and taller, amber).
   tilted view takes them toward the horizon. "Skyline only" filters `h` (MapLibre filters before it
   builds the buckets, so filtered buildings cost no GPU memory).
 - **The iPad's budget** (8 GB iPad Pro; Safari gives a tab ~4 GB, the map's roads, terrain and
-  basemap take a share): buildings ≤ 300 MB in the densest view, ≤ 8 ms of GPU a frame. Estimate:
-  Shinjuku at zoom 16, tilted 60°: up to ~10 z14 tiles of 9,000–20,000 buildings near (Shinjuku's
-  own 9,111; the wards west of it ~20,000: §2.5), coarser tiles beyond: ~120 k buildings, ~120 MB on
-  the GPU, ~2 M triangles.
+  basemap take a share): buildings ≤ 300 MB in the densest view, ≤ 8 ms of GPU a frame. What counts
+  is everything the source holds: its buffers (vertices, indices, paint) for the tiles in view
+  **and in its cache**, each twice (on the GPU, and MapLibre's copy in the page, which it keeps),
+  plus its raw tiles and their feature index. B1 first counted the buffers in view alone, which
+  the cache then outweighed: MapLibre's own (five zooms' worth of tiles in view, ~60) held 344 MB
+  of buffers after panning around Tokyo at z13.9, 70°, against 53 MB in view, ~850 MB resident in
+  all. With whole z14 tiles at every zoom (§4.1) a cache of 8 tiles is enough: after the same
+  panning, 63 MB in view and 54 MB cached, ~250 MB resident. Estimate before B1: Shinjuku at zoom
+  16, tilted 60°: up to ~10 z14 tiles of 9,000–20,000 buildings near (Shinjuku's own 9,111; the
+  wards west of it ~20,000: §2.5), coarser tiles beyond: ~120 k buildings, ~120 MB on the GPU,
+  ~2 M triangles.
 - **To measure on the iPad** at Shinjuku (z16, 60°), Manhattan (z15, 70°), Paris (z15), Hong Kong's
   Mid-Levels on its slope, Monaco, a Vermont village and a Japanese mountain town; and Barcelona's
   old town, whose z14 tiles are the heaviest (§2.5). Their z14 tiles, by B0: Shinjuku 9,111
@@ -660,25 +668,39 @@ source's fill-extrusion: the hovered building, 1 m larger and taller, amber).
   Mid-Levels 3,208, 72 KB; Monaco 2,170, 44 KB; Woodstock, Vermont 630, 13 KB; Takayama 5,855, 76 KB.
   B1's pilot tiles hold Shinjuku, Manhattan, Paris, Barcelona and Woodstock (§5.1); the others wait
   for B2's build.
-- **Measured in B1 on the M1** (a 16-inch MacBook Pro, M1 Pro with a 16-core GPU, 120 Hz; Chrome
-  152's engine in the Claude app's browser pane,
-  1200 × 736 CSS px at 2×; the buildings' GPU buffers summed over the tiles in view, and their draw
-  calls timed with `EXT_disjoint_timer_query_webgl2`, opacity 0.85; framed from the ground):
+- **Measured in B1 on the M1** (a 16-inch MacBook Pro, M1 Pro with a 16-core GPU; Chrome 152's
+  engine in the Claude app's browser pane, 1200 × 736 CSS px at 2×; the pilot's packs as rebuilt
+  after the review, whole z14 tiles, a cache of 8; the source's buffers summed over the tiles in
+  view (each held twice: on the GPU and in the page), its raw tiles and feature index, and the
+  extrusions' draw calls timed with `EXT_disjoint_timer_query_webgl2`, frames drawn one after
+  another (the pane's tab hidden), opacity 0.85; framed from the ground, each view fresh):
 
-  | View | tiles | vertices | triangles | GPU memory | GPU time a frame (median / p90) |
+  | View | tiles | vertices | buffers | raw tiles and index | GPU time a frame (median / p90) |
   |---|---|---|---|---|---|
-  | Shinjuku, z16, 60° | 17 | 0.90 M | 0.47 M | 24.4 MB | 3.2 / 3.9 ms |
-  | Tokyo, Shinjuku to the horizon, z13.9, 70° | 13 | 2.52 M | 1.34 M | 68.5 MB | 5.2 / 5.6 ms |
-  | Midtown Manhattan, z15, 70° | 20 | 0.82 M | 0.46 M | 22.5 MB | 3.7 / 4.3 ms |
-  | Paris (Châtelet), z15, 60° | 16 | 1.38 M | 0.80 M | 38.0 MB | 2.4 / 3.0 ms |
-  | Barcelona's old town, z16, 60° | 15 | 2.07 M | 1.17 M | 56.7 MB | 3.2 / 4.3 ms |
-  | Woodstock, Vermont, z14.5, 60° | 8 | 0.05 M | 0.03 M | 1.3 MB | 1.7 / 2.3 ms |
+  | Shinjuku, z16, 60° | 7 | 1.43 M | 30.8 MB | 5.3 MB | 3.0 / 4.6 ms |
+  | Tokyo, Shinjuku to the horizon, z13.9, 70° | 10 | 2.91 M | 62.9 MB | 10.0 MB | 6.0 / 6.9 ms |
+  | … after panning around it | 10 + 8 cached | 2.91 M | 62.9 + 53.5 MB | 18.6 MB | 5.9 / 7.1 ms |
+  | Midtown Manhattan, z15, 70° | 9 | 1.02 M | 22.4 MB | 2.7 MB | 4.1 / 5.3 ms |
+  | Paris (Châtelet), z15, 60° | 10 | 2.03 M | 45.1 MB | 4.1 MB | 2.8 / 3.8 ms |
+  | Barcelona's old town, z16, 60° | 6 | 2.44 M | 53.6 MB | 6.8 MB | 3.2 / 5.1 ms |
+  | Woodstock, Vermont, z14.5, 60° | 17 | 0.08 M | 1.7 MB | 0.2 MB | 1.7 / 3.3 ms |
 
-  Opacity 1 (one pass) saved little here (Shinjuku 2.9 against 3.0 ms); "skyline only" took
-  Shinjuku's buffers from 28.5 MB to 1.5 MB. The whole map's frame took 5–6 ms of GPU at Shinjuku
-  with or without the buildings within the noise; the frame rate swung between ~50 and ~120 with
-  or without them (the pane's pacing, other work on the Mac). Well within the iPad's budget on the
-  M1; the iPad's own numbers decide.
+  So the densest view after panning holds ~250 MB (2 × 116 MB of buffers, 19 MB of tiles and
+  index), within the budget on the M1's count; the iPad's own numbers decide. Whole z14 tiles
+  against MapLibre's slicing (§4.1) with its cache, zooming in from 16 to 19 at 60°: about the
+  same memory, and GPU time within ~0.5 ms either way (whole tiles draw buildings beyond the view
+  at z17–19, slicing more tiles):
+
+  | Zooming in, 60° | buffers at z19, sliced (in view + cached) | whole | GPU median z16 / z17 / z19, sliced | whole |
+  |---|---|---|---|---|
+  | Shinjuku | 3.9 + 21.7 MB | 23.2 + 7.6 MB | 2.9 / 2.6 / 1.7 ms | 3.1 / 2.5 / 1.6 ms |
+  | Kyoto (the fullest z14 tile) | 17.9 + 39.3 MB | 24.9 + 27.7 MB | 3.7 / 1.7 / 1.7 ms | 4.3 / 1.6 / 2.2 ms |
+  | Paris (Châtelet) | 10.6 + 33.0 MB | 19.7 + 24.1 MB | 2.4 / 1.9 / 1.5 ms | 2.7 / 1.4 / 1.4 ms |
+  | Barcelona's old town | 10.4 + 39.5 MB | 22.1 + 32.1 MB | 3.4 / 3.4 / 1.5 ms | 3.3 / 3.8 / 1.6 ms |
+
+  B1's first measurements, before the review: opacity 1 (one pass) saved little (Shinjuku 2.9
+  against 3.0 ms); "skyline only" took Shinjuku's buffers from 28.5 MB to 1.5 MB; the whole map's
+  frame took 5–6 ms of GPU at Shinjuku with or without the buildings within the noise.
 - **The iPad checklist** (the owner's):
   1. Serve the pilot: a server from this branch with `--root` a folder laid out like the NAS's
      whose newest catalog has the pilot's `buildings` layer (B1 made one: catalog 14 with the
@@ -695,22 +717,34 @@ source's fill-extrusion: the hovered building, 1 m larger and taller, amber).
      - **Timelines** → record about 10 s while orbiting slowly with two fingers → Frames: the frame
        rate and the frame times; the Rendering and JavaScript lanes;
      - **Graphics** (or **Memory**): the page's memory and its canvas share;
-     - **Console**: the buildings' GPU buffers in view, as B1 summed them:
+     - **Console**: the buildings' buffers in view and in the cache (all of the source's
+       layers: the extrusions, the pick layer's footprints), and its raw tiles; resident is about
+       twice the buffers (the GPU's and MapLibre's copy) plus the raw tiles and their index
+       (about twice the raw):
        ```
-       (() => { const z = (a) => (a ? a.length * a.bytesPerElement : 0); let v = 0, b = 0;
-         for (const t of __app.map.style.tileManagers.bld._inViewTiles.getAllTiles()) {
-           const k = t.buckets?.buildings; if (!k) continue; v += k.layoutVertexArray.length;
-           b += z(k.layoutVertexArray) + z(k.centroidVertexArray) + z(k.indexArray);
-           for (const c of Object.values(k.programConfigurations.programConfigurations))
-             for (const d of Object.values(c.binders)) b += z(d.paintVertexArray); }
-         return { vertices: v, mb: +(b / 1e6).toFixed(1) }; })()
+       (() => { const tm = __app.map.style.tileManagers.bld;
+         const z = (a) => (a && a.bytesPerElement ? a.length * a.bytesPerElement : 0);
+         const sum = (ts) => { let b = 0, r = 0, v = 0; for (const t of ts) {
+           r += t.latestRawTileData?.byteLength ?? 0;
+           for (const k of Object.values(t.buckets ?? {})) {
+             if (k.centroidVertexArray) v += k.layoutVertexArray.length;
+             b += z(k.layoutVertexArray) + z(k.centroidVertexArray) + z(k.indexArray) + z(k.indexArray2);
+             for (const c of Object.values(k.programConfigurations?.programConfigurations ?? {}))
+               for (const d of Object.values(c.binders)) b += z(d.paintVertexArray); } }
+           return { tiles: ts.length, vertices: v, buffersMB: +(b / 1e6).toFixed(1), rawMB: +(r / 1e6).toFixed(1) }; };
+         return { inView: sum(tm._inViewTiles.getAllTiles()),
+           cached: sum(Object.values(tm._outOfViewCache.data).flat().map((e) => e.value)) }; })()
        ```
   4. Each view with Buildings on, then off (B on a keyboard, or the switch), then opacity 100 %
-     (the iPad's default already: a touch screen's is 100 %), then Skyline.
+     (the iPad's default already: a touch screen's is 100 %), then Skyline; and once after panning
+     around Shinjuku for a while (the cache full).
   5. Over budget (300 MB of buildings, 8 ms a frame) anywhere: the fallbacks below, and
      Barcelona's old-town tiles simplified (~18 % off).
 - **If over budget**, on touch devices: opacity 1 (one pass, the default there anyway), z14 tiles only
-  from zoom 15 ("skyline" between 13 and 15), a smaller tile cache for `bld`.
+  from zoom 15 ("skyline" between 13 and 15), a smaller cache still (4 tiles held 30 MB of buffers
+  after the Tokyo panning), and, if it comes to it, MapLibre's copy of the buffers dropped once
+  they're on the GPU (a patch, as `vite.config.ts` patches its shaders; what reads them after the
+  upload to be checked first).
 
 ### 4.7 Later: a layer of our own
 
@@ -730,7 +764,7 @@ artefacts call for it (B4):
 | Phase | What | Effort |
 |---|---|---|
 | **B0 Data** (done 2026-10-06) | The downloads (§2.6). `dem/bldmeasure.py` over the files: heights, floors and their sources by country (§2.2); the storey heights fitted, and the fill's order, fits and defaults set from a held-out tenth (§2.3); the tiles' counts and sizes at z12–14, the fullest and heaviest encoded (§2.5); this document's numbers updated. On the build Mac: 13 minutes to read 44.6 GB of row groups from the NAS, 4 to fill and count, 5 to encode. | 1 day |
-| **B1 Pilot** (done 2026-10-06, but the iPad) | `dem/bldprep.py`, `pipeline::bld` (prep, fill, tiles, job), `scenic-build bldprep` and `bldtiles`, run by hand on the build Mac into a scratch root (the NAS's sources read only) on 6/56/25 (Kantō), 6/32/22 (Paris), 6/18/24 (New York), 6/32/23 (Barcelona), 6/19/23 (Vermont, with Boston) and 6/3/28 (Oahu); formats.md entries; the catalog layer, the server's route; `web/src/buildings.ts` with the settings section, the toggle and hover; checked on this Mac in a test server (§4.6). `bldprep`: 88–153 s a tile (Kantō: 30.3 M rows read in 130 s, 4.6 GB at most; one thread: Paris in 71 s); `bldtiles`: 9–23 s a tile (Kantō 22 s, 3.6 GB at most). The iPad's measurements are the owner's (§4.6's checklist). | 6 days |
+| **B1 Pilot** (done 2026-10-06, but the iPad) | `dem/bldprep.py`, `pipeline::bld` (prep, fill, tiles, job), `scenic-build bldprep` and `bldtiles`, run by hand on the build Mac into a scratch root (the NAS's sources read only) on 6/56/25 (Kantō), 6/32/22 (Paris), 6/18/24 (New York), 6/32/23 (Barcelona), 6/19/23 (Vermont, with Boston) and 6/3/28 (Oahu); formats.md entries; the catalog layer, the server's route; `web/src/buildings.ts` with the settings section, the toggle and hover; checked on this Mac in a test server (§4.6). `bldprep`: 88–153 s a tile on the first run (Kantō: 30.3 M rows read in 130 s; one thread: Paris in 71 s), 29–68 s on the run after the review (5.1 GB at most, Kantō's); `bldtiles`: 14–43 s a tile after the review (Kantō 35 s, 3.2 GB at most; New York's 43 s, with the copies' margin; 9–29 s before). The review's fixes: §2.3 (rule 3's bound), §3.2 (countries, keys), §3.4 (copies, walls), §4.1 (whole tiles), §4.5 (the hover), §4.6 (the cache, memory counted whole). The iPad's measurements are the owner's (§4.6's checklist). | 6 days |
 | **B2 In the build** | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job; the mirror's group, the service worker's budget, credits; every tile built and published. plan.md (§6, §8, §9, §10), workers.md, formats.md and the README updated. | 4 days |
 | **B3 Sharing and polish** | `bldtile` tasks for pages (WebAssembly, byte-identical); bridges and elevated rail over buildings; walls on the terrain under each corner; fog on the extrusions; the camera's clearance; colour by height, by source, heritage tint. | 5 days |
 | **B4 Each on its own measurement** | A custom layer (§4.7); measured heights from BD TOPO (France) and PLATEAU (Japan's cities); building heights in the horizons and the viewshed tool (every unit rebuilt). | 2–3 weeks |
@@ -765,10 +799,15 @@ tiles natively at the pilot's pace (its own CPU; the coverage read once a run).
 - **Overlapping footprints** left by conflation z-fight: none showed in B1's views; B1 didn't count
   them (B2's build can). If they show, `bldprep` drops the one from the lower-ranked source (OSM
   first, as Overture ranks them) where two overlap by nine-tenths of the smaller.
-- **A MultiPolygon's polygon wholly beyond one edge of its tile** (a building in pieces straddling a
-  z14 edge) isn't drawn: MapLibre's extrusion skips a polygon outside its tile, a clipped tile's
-  buffer copy as it assumes. Rare (the pieces of one building); B2 could put each polygon in the
-  tile of its own centroid.
+- **A MultiPolygon's polygon, or a hole, wholly beyond one edge of its tile** (a building in pieces
+  straddling a z14 edge; a courtyard past it) isn't drawn, or the hole has no walls: MapLibre's
+  extrusion skips a ring outside its tile, a clipped tile's buffer copy as it assumes. Rare (in the
+  reviewer's sample of a tenth of the pilot's tiles, 0–3 polygons and 2–12 holes a pack); B2 could
+  put each polygon in the tile of its own centroid.
+- **Copies reach 310 m:** a building whose centroid is further than that beyond a z8 area's edge
+  isn't copied into the area's tiles, so its flat footprint is cut there (an airport terminal).
+- **The antimeridian:** a tile's neighbours aren't wrapped across it, so a building within 620 m
+  of it doesn't see the other side's (the Aleutians' few; B1 left it).
 - **The pilot's edges:** a tile's neighbours' rule reads its 8 neighbours' files; in the pilot only
   Paris and Barcelona had one (each other), so the other tiles' edges had fewer neighbours than the
   build will give them.
@@ -799,7 +838,9 @@ None blocks the work; each has a default below.
    whole files more; GHSL's tiles meeting the coverage. Two transfers, 3 MB/s, so the build keeps its
    share of the line.
 6. **Tiles z12–14,** each building whole in the tile of its centroid (one centroid, no seams, no
-   duplicates); z12 and z13 only the tall and large.
+   building drawn twice: its copies in the tiles it reaches are for the flat footprints, which the
+   extrusions leave out), and the z14 tiles whole at every zoom above; z12 and z13 only the tall
+   and large.
 7. **Two steps per z6 tile:** `bldprep` (impure: the NAS's parquet) and `bldtiles` (pure: tasks for
    pages), so the fill and the tiles can change without reading the parquet again.
 8. **A chain of its own** that holds no region and no round; tiles in the regions' order.
