@@ -8,7 +8,10 @@
 //!    resumed, restarted after sleep when it touches the NAS;
 //! 3. otherwise the first runnable job of the plan: the OSM pass when the NAS holds a newer planet,
 //!    then backups and cleanup once a day (later phases add layers, units and packs);
-//! 4. the heartbeat: `state/status.json` on the NAS, and a copy in the agent's local folder.
+//! 4. this Mac's caches (`room`): the owner's ask to clear them taken up (cleared between jobs once
+//!    the build is done, else declined, why said), else, with no job running, a trim once the build
+//!    is done; either on a thread of its own, the loop beating meanwhile and no job starting here;
+//! 5. the heartbeat: `state/status.json` on the NAS, and a copy in the agent's local folder.
 //!
 //! Nothing depends on the build Mac being available: until work is done, the map serves the last
 //! catalog. A job is a child process (see `jobs`) that resumes from its own completion markers, so
@@ -351,6 +354,10 @@ pub struct Status {
     /// The last catalog the plan read: its number and when it went out (seconds since the epoch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<CatalogSeen>,
+    /// This Mac's build caches (room::Caches): what a clear would free, why they can't be cleared
+    /// now, and the last trim after the build and the last clear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caches: Option<room::Caches>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -438,6 +445,18 @@ struct Memory {
     /// forecast's, for the steps no other worker does.
     #[serde(default)]
     step_secs: BTreeMap<String, f64>,
+    /// When a job last ended here (seconds since the epoch; not a daily one, which reads no cache),
+    /// and this Mac's caches' last trim after the build and last clear (room::Freed): a trim again
+    /// only once a job has run here since.
+    #[serde(default)]
+    worked_at: u64,
+    #[serde(default)]
+    trimmed: Option<room::Freed>,
+    #[serde(default)]
+    cleared: Option<room::Freed>,
+    /// The last ask to clear them not done, and why (the last done one kept apart).
+    #[serde(default)]
+    declined: Option<room::Freed>,
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -650,9 +669,21 @@ pub struct Agent {
     /// Jobs an earlier agent left (a crash): each one's step and the targets it noted done, to record
     /// once the NAS answers.
     orphan_done: Vec<(String, Vec<(String, String)>)>,
-    /// The bytes the caches it may drop hold, for the status: counted on a thread of its own every
-    /// ten minutes (a walk of many files), and when.
-    cache_size: std::sync::Arc<std::sync::Mutex<(Option<Instant>, Option<u64>)>>,
+    /// The bytes the caches hold, for the status: what room-making can free and what a clear would
+    /// (room::sizes), counted on a thread of its own every ten minutes (a walk of many files), and
+    /// again after a trim or a clear; and when.
+    cache_size: std::sync::Arc<std::sync::Mutex<CacheCount>>,
+    /// A helper's view of the build: the build Mac's heartbeat as last read, at most each minute.
+    heard: Option<Heard>,
+    /// A trim or a clear under way, and when one last failed (it's tried again ten minutes later).
+    caches_task: Option<CachesTask>,
+    trim_failed: Option<Instant>,
+    /// The build Mac's: the helpers' last trim, clear or declined ask noted in the history (its
+    /// time), and what their last trim kept, by host.
+    helper_caches: BTreeMap<String, (u64, u64)>,
+    /// Jobs an earlier agent left that couldn't be shown stopped (jobs::Orphan): their process groups
+    /// and ids, running work until they're gone.
+    orphans: Vec<(i32, String)>,
     /// The conditions the last loop saw: a change is noted in the history (crate::coord::history).
     last_cond: Option<Conditions>,
     /// The last plan's forecast (crate::agent::forecast), and the last catalog it read, for the
@@ -662,6 +693,27 @@ pub struct Agent {
     /// The last round of publishing (build::Round, its folder's `round.json`): the one under way,
     /// which its jobs read the units of, or the last one over, for when it began.
     round: std::cell::RefCell<Option<build::Round>>,
+}
+
+/// The caches' sizes as last counted (room::sizes: what room-making can free, what a clear would),
+/// and when that count began.
+type CacheCount = (Option<Instant>, Option<room::Sizes>);
+
+/// A trim or a clear under way on a thread of its own (`Agent::caches_task`).
+struct CachesTask {
+    /// The clear's ask (None: a trim), and when it began.
+    ask: Option<room::ClearRequest>,
+    began: Instant,
+    thread: std::thread::JoinHandle<Result<room::Freed>>,
+}
+
+/// The build Mac's heartbeat as a helper last read it (`Agent::heard`).
+struct Heard {
+    /// When it was read, and when the build Mac beat (None: it couldn't be read).
+    read: Instant,
+    beat: Option<u64>,
+    /// Why the build isn't done (`work_left`; None: it is).
+    left: Option<String>,
 }
 
 /// The last plan's view, kept for the heartbeat between plans.
@@ -713,7 +765,7 @@ impl Agent {
         let pause: Option<crate::control::Pause> = std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round) })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round) })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1226,7 +1278,9 @@ impl Agent {
             // (What they finished, recorded once the NAS answers: a helper's goes back with its
             // lease's outbox, send_outbox.)
             for k in 0..SLOTS {
-                if let Some((w, file)) = jobs::stop_orphan(&self.record_path(k)) {
+                let orphan = jobs::stop_orphan(&self.record_path(k));
+                self.orphans.extend(orphan.left);
+                if let Some((w, file)) = orphan.done {
                     let names = crate::control::read_done(&file, &w.step);
                     let done: Vec<(String, String)> = w.targets.into_iter().filter(|(t, _)| names.contains(t)).collect();
                     if !done.is_empty() && !self.o.helper {
@@ -1254,6 +1308,12 @@ impl Agent {
                 }
                 std::thread::sleep(Duration::from_secs(1));
             }
+        }
+        // A trim or a clear under way: ended at its next file (also when a newer app takes over) and
+        // waited for; the next agent does it again, or takes the ask up again.
+        if let Some(t) = self.caches_task.take() {
+            STOP.store(true, Ordering::SeqCst);
+            self.caches_done(t, None);
         }
         let root = self.o.root.clone().or_else(|| self.root());
         for k in 0..SLOTS {
@@ -1384,7 +1444,8 @@ impl Agent {
             Some(root) if self.o.helper => {
                 // A helper plans nothing: it asks the build Mac for work, once its last is handed back.
                 let unsent = std::fs::read_dir(self.outbox()).map(|mut d| d.next().is_some()).unwrap_or(false);
-                let plan = if idle && !unsent { self.helper_job(root, &c, &mut waiting) } else { Vec::new() };
+                // (Not while a trim or a clear runs here: `caches_busy`.)
+                let plan = if idle && !unsent && self.caches_task.is_none() { self.helper_job(root, &c, &mut waiting) } else { Vec::new() };
                 let regions = match &self.planned {
                     Some(p) if !plan_due => p.regions.clone(),
                     _ => recipes::load(&root.join("inputs/regions")).0,
@@ -1419,7 +1480,12 @@ impl Agent {
         if let Some(p) = &self.pause {
             waiting.push(Waiting { step: None, what: "Building".into(), why: p.why() });
         }
-        if idle && !newer && self.pause.is_none() {
+        // A trim or a clear of this Mac's caches under way: nothing starts here until it's done.
+        let caches_busy = self.caches_busy();
+        if let Some(why) = caches_busy.clone() {
+            waiting.push(Waiting { step: None, what: "Building".into(), why });
+        }
+        if idle && !newer && self.pause.is_none() && caches_busy.is_none() {
             self.start_first(&plan, &c, root.as_deref(), &mut waiting);
             // (Why the jobs before it wait: kept with the plan, so the status says so while the job
             // started runs, not only between jobs.)
@@ -1440,6 +1506,8 @@ impl Agent {
                 self.beside_why = Some("restarting into the newly installed app".into());
             } else if let Some(p) = &self.pause {
                 self.beside_why = Some(p.why());
+            } else if caches_busy.is_some() {
+                self.beside_why = caches_busy;
             } else {
                 self.start_second(&plan, &c, root.as_deref());
             }
@@ -1452,6 +1520,9 @@ impl Agent {
         if self.slots[0].running.is_none() && self.slots[0].lease.is_some() {
             self.end_lease(0, Outcome::Interrupted, &[], "it couldn't start on the helper");
         }
+        // This Mac's caches, between jobs: the owner's ask to clear them, else a trim once the build
+        // is done (room::clear, room::trim).
+        let caches_why = self.tend_caches(root.as_deref(), c.home);
 
         // The heartbeat.
         let (regions, bad) = match (&root, &self.planned) {
@@ -1471,6 +1542,7 @@ impl Agent {
             (Some(r), false) => helpers(r),
             _ => Vec::new(),
         };
+        self.note_helpers_caches(&helpers);
         let now_steps: Vec<String> = self.slots.iter().filter_map(|s| s.running.as_ref().and_then(|r| step_of(&r.spec.id))).collect();
         annotate(&mut checklist, &now_steps, &helpers, &waiting);
         let job = self.job_view(0);
@@ -1497,6 +1569,7 @@ impl Agent {
             resources: Some(self.resources(root.as_deref())),
             forecast: if self.o.helper { None } else { self.forecast.borrow().clone() },
             catalog: self.catalog_seen.get(),
+            caches: Some(self.caches_view(caches_why, c.home)),
         };
         let body = serde_json::to_vec_pretty(&status)?;
         if self._lock.is_none() {
@@ -1790,6 +1863,11 @@ impl Agent {
             waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
             return false;
         }
+        // (Never while a trim or a clear of this Mac's caches runs: it deletes what jobs read.)
+        if let Some(why) = self.caches_busy() {
+            waiting.push(Waiting { step: step_of(&spec.id), what: spec.what.clone(), why });
+            return false;
+        }
         if self.o.dry_run {
             waiting.push(Waiting { step: None, what: spec.what.clone(), why: "would start now (dry run)".into() });
             return true;
@@ -2014,18 +2092,227 @@ impl Agent {
     /// This Mac's resources for the status (cond::Resources); its caches counted again on a thread
     /// of their own when ten minutes old.
     fn resources(&self, root: Option<&Path>) -> cond::Resources {
-        let (counted, bytes) = *self.cache_size.lock().unwrap();
+        let (counted, bytes) = self.cache_size.lock().unwrap().clone();
         if counted.is_none_or(|t| t.elapsed() >= Duration::from_secs(600)) {
             // (Marked counted now: one walk at a time.)
-            self.cache_size.lock().unwrap().0 = Some(Instant::now());
-            let (cache, helper, size) = (self.o.home.join("cache"), self.o.helper, self.cache_size.clone());
+            let now = Instant::now();
+            self.cache_size.lock().unwrap().0 = Some(now);
+            let (cache, helper, size, nas) = (self.o.home.join("cache"), self.o.helper, self.cache_size.clone(), root.map(Path::to_path_buf));
             std::thread::spawn(move || {
-                let b = if helper { room::helper_cheap_bytes(&cache) } else { room::cheap_bytes(&cache) };
-                size.lock().unwrap().1 = Some(b);
+                let n = room::sizes(&cache, helper, nas.as_deref());
+                // (Not over a count made since, a trim's or a clear's.)
+                let mut s = size.lock().unwrap();
+                if s.0 == Some(now) {
+                    s.1 = Some(n);
+                }
             });
         }
         let ms = ANSWERED_MS.load(std::sync::atomic::Ordering::Relaxed);
-        cond::resources(&self.o.home, root, bytes.map(|b| (b as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0), (ms != u64::MAX && root.is_some()).then_some(ms))
+        cond::resources(&self.o.home, root, bytes.map(|b| (b.cheap as f64 / (1u64 << 30) as f64 * 10.0).round() / 10.0), (ms != u64::MAX && root.is_some()).then_some(ms))
+    }
+
+    /// This Mac's caches between jobs (room::trim, room::clear), each on a thread of its own while the
+    /// loop goes on beating (no job starts here meanwhile: `caches_busy`): the owner's ask to clear
+    /// them taken up (cleared once the build is done and no job runs here, else declined, why said),
+    /// else, at home (through Tailscale, a trim would take hours), a trim once the build is done,
+    /// once per finished state (again only after a job has run here since). Why they can't be
+    /// cleared now (None: they can), for the status.
+    fn tend_caches(&mut self, root: Option<&Path>, home: bool) -> Option<String> {
+        // One under way: its result once it's done.
+        if let Some(t) = self.caches_task.take() {
+            if !t.thread.is_finished() {
+                self.caches_task = Some(t);
+                return self.caches_busy();
+            }
+            self.caches_done(t, root);
+        }
+        let why = self.caches_why_not(root);
+        // (Not a dry run's, in another agent's folder: the real agent's to do.)
+        if self._lock.is_none() || self.o.dry_run {
+            return why;
+        }
+        let (cache, sources) = (self.o.home.join("cache"), root.map(|r| r.join("sources")));
+        if let Some(ask) = room::take_clear(&self.o.home) {
+            match (&why, sources) {
+                (None, Some(s)) => self.caches_start(Some(ask), root, move || room::clear(&cache, &s)),
+                _ => self.caches_record(room::Freed { why_not: why.clone(), ..Default::default() }, Some(ask), root),
+            }
+        } else if let Some(s) = sources.filter(|_| why.is_none() && home && self.trim_due() && self.trim_failed.is_none_or(|t| t.elapsed() >= Duration::from_secs(600))) {
+            // (The build Mac keeps its canopy squares: every pass's areas read them again.)
+            let (squares, helper) = (cache.join("chm10"), self.o.helper);
+            self.caches_start(None, root, move || room::trim(&cache, &s, &|p| !helper && p.starts_with(&squares)));
+        }
+        // (One loop at a time, `--once`: waited for, so its heartbeat says what it did.)
+        if self.o.once {
+            if let Some(t) = self.caches_task.take() {
+                self.caches_done(t, root);
+            }
+        }
+        self.caches_busy().or(why)
+    }
+
+    /// Starts a trim or a clear (`ask`) on a thread of its own; one that can't start is a failure.
+    fn caches_start(&mut self, ask: Option<room::ClearRequest>, root: Option<&Path>, work: impl FnOnce() -> Result<room::Freed> + Send + 'static) {
+        match std::thread::Builder::new().name("caches".into()).spawn(work) {
+            Ok(thread) => self.caches_task = Some(CachesTask { ask, began: Instant::now(), thread }),
+            Err(e) => self.caches_failed(anyhow::anyhow!("its thread didn't start: {e}"), ask, root),
+        }
+    }
+
+    /// Why nothing starts here now, while a trim or a clear of this Mac's caches runs.
+    fn caches_busy(&self) -> Option<String> {
+        let t = self.caches_task.as_ref()?;
+        Some(format!("this Mac's caches are being {} ({} min so far): nothing starts here until that's done", if t.ask.is_some() { "cleared" } else { "trimmed" }, t.began.elapsed().as_secs() / 60))
+    }
+
+    /// A trim or a clear done (waited for, when it isn't yet), its result recorded (the caches
+    /// counted again with the NAS at `root`). Asked to stop midway: nothing kept, the trim done
+    /// again by the next agent, the ask left for it.
+    fn caches_done(&mut self, t: CachesTask, root: Option<&Path>) {
+        let r = t.thread.join().unwrap_or_else(|_| Err(anyhow::anyhow!("it failed midway")));
+        if stopping() {
+            return;
+        }
+        match r {
+            Ok(f) => self.caches_record(f, t.ask, root),
+            Err(e) => self.caches_failed(e, t.ask, root),
+        }
+    }
+
+    /// A trim or a clear that failed: a clear's ask answered with why; a trim tried again in ten
+    /// minutes.
+    fn caches_failed(&mut self, e: anyhow::Error, ask: Option<room::ClearRequest>, root: Option<&Path>) {
+        match ask {
+            Some(ask) => self.caches_record(room::Freed { why_not: Some(format!("{e:#}")), ..Default::default() }, Some(ask), root),
+            None => {
+                eprintln!("agent: trimming the caches: {e:#}; trying again in ten minutes");
+                self.trim_failed = Some(Instant::now());
+            }
+        }
+    }
+
+    /// What a trim (`ask` None) or a clear did, or why a clear wasn't done: logged, kept for the
+    /// status (a clear declined apart from the last one done), noted in the history (a trim only
+    /// when it freed something or what it keeps changed), a clear's ask answered.
+    fn caches_record(&mut self, mut f: room::Freed, ask: Option<room::ClearRequest>, root: Option<&Path>) {
+        f.at = now_s();
+        if let Some(a) = &ask {
+            (f.asked, f.by) = (Some(a.at), Some(a.by.clone()));
+        }
+        let e = caches_event(&self.host, ask.is_none(), &f);
+        eprintln!("agent: {}", e.note);
+        if ask.is_some() || f.bytes() > 0 || f.left != self.mem.trimmed.as_ref().map_or(0, |t| t.left) {
+            self.note(e);
+        }
+        let done = f.why_not.is_none();
+        match (&ask, done) {
+            (None, _) => self.mem.trimmed = Some(f),
+            (Some(_), true) => self.mem.cleared = Some(f),
+            (Some(_), false) => self.mem.declined = Some(f),
+        }
+        self.save();
+        if ask.is_some() {
+            room::clear_answered(&self.o.home);
+        }
+        if done {
+            self.count_caches(root);
+        }
+    }
+
+    /// This Mac's caches for the status (room::Caches), `why` they can't be cleared now: what a clear
+    /// would free, as last counted, each cache with about how long it takes to come back at the
+    /// NAS's speed here (measured: 60 MB/s on the LAN, 12 through Tailscale, plan §12).
+    fn caches_view(&self, why: Option<String>, home: bool) -> room::Caches {
+        let sizes = self.cache_size.lock().unwrap().1.clone();
+        room::Caches {
+            clearable: sizes.as_ref().map(|s| s.clear.values().sum()),
+            each: sizes.map(|s| room::gone(&s.clear, if home { 60.0 } else { 12.0 })).unwrap_or_default(),
+            why_not: why,
+            trimmed: self.mem.trimmed.clone(),
+            cleared: self.mem.cleared.clone(),
+            declined: self.mem.declined.clone(),
+        }
+    }
+
+    /// Why this Mac's caches can't be trimmed or cleared now, if they can't: a job runs here (it may
+    /// read what would go), or one an earlier agent left (`orphans`), the NAS isn't reachable (what
+    /// goes must be kept there), or the build has work left (`work_left`: by the build Mac's
+    /// forecast, its own; a helper's, the one in the build Mac's heartbeat on the NAS, read at most
+    /// each minute, with no job of the build Mac's running, nor beside it).
+    fn caches_why_not(&mut self, root: Option<&Path>) -> Option<String> {
+        if let Some(r) = self.slots.iter().find_map(|s| s.running.as_ref()) {
+            return Some(format!("a job runs here ({})", r.spec.what));
+        }
+        self.orphans.retain(|(g, _)| !crate::sys::group_members(*g).is_empty());
+        if let Some((_, id)) = self.orphans.first() {
+            return Some(format!("a job an earlier agent left still runs here ({id})"));
+        }
+        let Some(root) = root else { return Some("the NAS isn't reachable".into()) };
+        let since = self.mem.worked_at;
+        if !self.o.helper {
+            return work_left(self.forecast.borrow().as_ref(), since);
+        }
+        if self.heard.as_ref().is_none_or(|h| h.read.elapsed() >= Duration::from_secs(60)) {
+            let st: Option<Status> = std::fs::read(root.join("state/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
+            let left = st.as_ref().map(|s| match s.job.as_ref().or(s.beside.as_ref()) {
+                Some(j) => Some(format!("the build Mac runs a job ({})", j.what)),
+                None => work_left(s.forecast.as_ref(), since),
+            });
+            self.heard = Some(Heard { read: Instant::now(), beat: st.map(|s| s.beat), left: left.flatten() });
+        }
+        match self.heard.as_ref().map(|h| (h.beat, &h.left)) {
+            Some((Some(beat), _)) if now_s().saturating_sub(beat) > 600 => Some(format!("the build Mac hasn't been heard from for {} min", now_s().saturating_sub(beat) / 60)),
+            Some((Some(_), left)) => left.clone(),
+            _ => Some("the build Mac's status can't be read now".into()),
+        }
+    }
+
+    /// Whether this Mac's caches are due a trim: never trimmed nor cleared, or a job has run here
+    /// since the last.
+    fn trim_due(&self) -> bool {
+        let last = [&self.mem.trimmed, &self.mem.cleared].into_iter().flatten().map(|f| f.at).max();
+        last.is_none_or(|t| self.mem.worked_at > t)
+    }
+
+    /// A job of `id` ran here: this Mac's caches may hold more, to trim once the build is done
+    /// again (not after the daily ones: they read no cache); the build Mac's heartbeat read again.
+    fn worked(&mut self, id: &str) {
+        if !matches!(step_of(id).as_deref(), Some("backup" | "gc")) {
+            self.mem.worked_at = now_s();
+            self.heard = None;
+        }
+    }
+
+    /// Counts this Mac's caches again now (after a trim or a clear; the NAS at `root`), for the
+    /// status, and what a helper's can free before it next asks for work.
+    fn count_caches(&mut self, root: Option<&Path>) {
+        let n = room::sizes(&self.o.home.join("cache"), self.o.helper, root);
+        *self.cache_size.lock().unwrap() = (Some(Instant::now()), Some(n));
+        self.cheap = None;
+    }
+
+    /// The build Mac's: the helpers' trims, clears and declined asks noted in the history as their
+    /// statuses show them, each once (those from before this agent started were noted by the one
+    /// before); a trim only when it freed something or what it keeps changed.
+    fn note_helpers_caches(&mut self, helpers: &[Status]) {
+        if self.coord.is_none() {
+            return;
+        }
+        for h in helpers {
+            let Some(c) = &h.caches else { continue };
+            let (seen, mut kept) = *self.helper_caches.entry(h.host.clone()).or_insert((self.started, 0));
+            let mut new: Vec<(bool, &room::Freed)> = [(true, &c.trimmed), (false, &c.cleared), (false, &c.declined)].into_iter().filter_map(|(t, f)| Some((t, f.as_ref().filter(|f| f.at > seen)?))).collect();
+            new.sort_by_key(|n| n.1.at);
+            for (trimmed, f) in new {
+                if !trimmed || f.bytes() > 0 || f.left != kept {
+                    self.note(caches_event(&h.host, trimmed, f));
+                }
+                if trimmed {
+                    kept = f.left;
+                }
+                self.helper_caches.insert(h.host.clone(), (f.at, kept));
+            }
+        }
     }
 
     fn start(&mut self, k: usize, mut spec: JobSpec, c: &Conditions) -> Result<()> {
@@ -2132,6 +2419,10 @@ impl Agent {
     }
 
     fn finished(&mut self, id: &str, what: &str, ok: bool, secs: u64, note: String) {
+        // (One that ran: not one that couldn't start.)
+        if secs > 0 {
+            self.worked(id);
+        }
         if ok {
             self.mem.retry.remove(id);
             self.mem.last_ok.insert(id.to_string(), now_s());
@@ -2620,10 +2911,9 @@ impl Agent {
             Cost { secs: each * n.max(1) as f64, known, peak_mb: 0 }
         };
         let step_of = |id: &str| id.split(' ').next().unwrap_or("").to_string();
-        // (Not those running now, by their step: their time left is their slot's. Each job before
-        // the regions' is a step of its own.)
-        let running_steps: Vec<String> = self.slots.iter().filter_map(|s| s.running.as_ref().map(|r| step_of(&r.spec.id))).collect();
-        let before: Vec<forecast::Job> = before.iter().filter(|j| !running_steps.contains(&step_of(&j.id))).map(|j| (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))).collect();
+        // (Each job before the regions' is a step of its own; one running now is its slot's
+        // running item below, its time left its slot's.)
+        let before: Vec<forecast::Job> = before.iter().map(|j| (step_of(&j.id), j.id.clone(), mine(&step_of(&j.id), j.record.as_ref().map_or(1, |w| w.targets.len())))).collect();
         // A round: as the last ones took (their chains' jobs and catalog), else the chain's steps'
         // times; the last round, the roads' chain as it stands now, if more (none when it's done),
         // less what the round under way still does (the roads' chain counts its work too, which
@@ -2691,7 +2981,11 @@ impl Agent {
         let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();
         for k in 0..SLOTS {
             let Some(m) = machines.iter().position(|m| m.name == self.worker_of(k)) else { continue };
-            if let Some(w) = self.slots[k].running.as_ref().and_then(|r| r.spec.record.as_ref()) {
+            let Some(r) = self.slots[k].running.as_ref() else { continue };
+            if let Some(b) = before.iter().find(|b| b.0 == step_of(&r.spec.id)) {
+                running.insert((b.0.clone(), b.1.clone()), m);
+            }
+            if let Some(w) = r.spec.record.as_ref() {
                 running.extend(w.targets.iter().map(|t| ((w.step.clone(), t.0.clone()), m)));
             }
         }
@@ -3000,6 +3294,10 @@ impl Agent {
         let done = self.finished_targets(k, false);
         let step = self.slots[k].running.as_ref().and_then(|r| r.spec.record.as_ref().map(|w| w.step.clone())).unwrap_or_default();
         let secs = self.slots[k].running.as_ref().map_or(0, |r| r.elapsed().as_secs());
+        if let Some(id) = self.slots[k].running.as_ref().map(|r| r.spec.id.clone()) {
+            self.worked(&id);
+            self.save();
+        }
         self.note_end(k, &step, &done, secs, false, why);
         let recorded = self.record_done(root, &step, &done);
         let handed = if self.o.helper || recorded { done } else { Vec::new() };
@@ -3091,6 +3389,31 @@ fn regions_digest(root: &Path) -> Option<String> {
     }
     parts.sort();
     Some(store::naming::hash16(parts.join("\n").as_bytes()))
+}
+
+/// Why the build isn't done, by its forecast (None: nothing left to build, no round under way, no
+/// machine busy). One more than ten minutes old (the plan can't be made now), or made before the
+/// last job here ended (`since`: a "done" from before it, as a job that starts and ends between two
+/// forecasts leaves), doesn't say.
+fn work_left(f: Option<&forecast::Forecast>, since: u64) -> Option<String> {
+    match f {
+        Some(f) if now_s().saturating_sub(f.at) > 600 => Some(format!("the build's forecast is {} min old", now_s().saturating_sub(f.at) / 60)),
+        Some(f) if !f.nothing_left() => Some(f.why.as_ref().map_or_else(|| "the build has work left".to_string(), |w| format!("the build has work left: {w}"))),
+        Some(f) if f.at < since => Some("the build's forecast is from before the last job here ended".into()),
+        Some(_) => None,
+        None => Some("the build has no forecast yet".into()),
+    }
+}
+
+/// A trim's (`trimmed`) or a clear's event in the history, as `worker` did it, in words.
+fn caches_event(worker: &str, trimmed: bool, f: &room::Freed) -> crate::coord::history::Event {
+    let asked = f.by.as_ref().map(|b| format!(", as {b} asked")).unwrap_or_default();
+    let note = match &f.why_not {
+        Some(why) => format!("didn't clear its build caches{asked}: {why}"),
+        None if trimmed => format!("trimmed its caches after the build: {}", f.say()),
+        None => format!("cleared its build caches{asked}: {}", f.say()),
+    };
+    crate::coord::history::Event { worker: Some(worker.to_string()), note, ..crate::coord::history::Event::new("caches") }
 }
 
 /// A job's step: its id's first word ("unit 6/31/20": "unit").
@@ -3502,6 +3825,247 @@ mod tests {
         let dry = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
         dry.keep_round(build::Round { began: 200, ..r }).unwrap();
         assert_eq!(file().began, 100);
+    }
+
+    /// An agent that runs jobs (no dry run), the NAS at `root`: the build Mac's, or a helper's.
+    fn running_agent(root: &Path, home: &Path, helper: bool) -> Agent {
+        Agent::new(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper }).unwrap()
+    }
+
+    /// A forecast made now: the build done (nothing left to build), or not.
+    fn forecast_now(done: bool) -> forecast::Forecast {
+        forecast::Forecast { at: now_s(), done_at: (!done).then(|| now_s() + 3600), why: done.then(|| forecast::NOTHING_LEFT.to_string()), ..Default::default() }
+    }
+
+    /// A job that waits half a minute, needing nothing.
+    fn waiting_job(id: &str) -> JobSpec {
+        JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record: None }
+    }
+
+    fn put(p: &Path, b: &[u8]) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, b).unwrap();
+    }
+
+    #[test]
+    fn the_build_mac_trims_once_the_build_is_done_and_again_after_work() {
+        // (The disk roomy: starting a job deletes nothing.)
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let c = home.join("cache");
+        let copy = |n: u8| c.join(format!("blobs/layers/terrain/hi/6-1-{n}.000000000000000{n}.pack"));
+        put(&c.join("chm10/a.tif"), &crate::whole::testfiles::tiff(false));
+        put(&copy(1), &[1; 1000]);
+        let mut a = running_agent(&root, &home, false);
+        // Work left: nothing goes.
+        *a.forecast.borrow_mut() = Some(forecast_now(false));
+        assert!(a.tend_caches(Some(&root), true).is_some_and(|w| w.starts_with("the build has work left")));
+        assert!(copy(1).exists() && a.mem.trimmed.is_none());
+        // Done, but away from home (through Tailscale, a trim would take hours): not yet.
+        *a.forecast.borrow_mut() = Some(forecast_now(true));
+        assert_eq!(a.tend_caches(Some(&root), false), None);
+        assert!(copy(1).exists() && a.mem.trimmed.is_none());
+        // Home: the copies go, the canopy squares stay; said in the status's memory, once.
+        assert_eq!(a.tend_caches(Some(&root), true), None);
+        assert!(!copy(1).exists() && c.join("chm10/a.tif").exists());
+        assert_eq!(a.mem.trimmed.as_ref().map(|f| (f.bytes(), f.left)), Some((1000, 0)));
+        assert_eq!(a.cache_size.lock().unwrap().1.as_ref().map(|n| n.cheap), Some(crate::whole::testfiles::tiff(false).len() as u64), "counted again");
+        put(&copy(2), &[1; 1000]);
+        a.tend_caches(Some(&root), true);
+        assert!(copy(2).exists(), "once per finished state");
+        // A daily job since: still not; a job of the build's: again, by a forecast made since it
+        // ended (one made before, a "done" from then, says nothing).
+        a.mem.trimmed.as_mut().unwrap().at -= 10;
+        a.worked("gc");
+        a.tend_caches(Some(&root), true);
+        assert!(copy(2).exists());
+        a.forecast.borrow_mut().as_mut().unwrap().at -= 5;
+        a.worked("unit 6/1/1");
+        assert_eq!(a.tend_caches(Some(&root), true).as_deref(), Some("the build's forecast is from before the last job here ended"));
+        assert!(copy(2).exists());
+        *a.forecast.borrow_mut() = Some(forecast_now(true));
+        a.tend_caches(Some(&root), true);
+        assert!(!copy(2).exists());
+        // Never while a job runs here.
+        put(&copy(3), &[1; 1000]);
+        a.mem.trimmed.as_mut().unwrap().at -= 10;
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        assert!(a.try_start(0, waiting_job("pack 6/1/1"), &cond, Some(&root), &mut Vec::new()));
+        assert_eq!(a.tend_caches(Some(&root), true).as_deref(), Some("a job runs here (pack 6/1/1)"));
+        assert!(copy(3).exists());
+        a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
+        a.slots[0].running = None;
+        // Nor without the NAS (what goes must be kept there).
+        a.worked("pack 6/1/1");
+        *a.forecast.borrow_mut() = Some(forecast_now(true));
+        assert_eq!(a.tend_caches(None, true).as_deref(), Some("the NAS isn't reachable"));
+        assert!(copy(3).exists());
+        // A forecast the plan hasn't made again for a while says nothing.
+        a.forecast.borrow_mut().as_mut().unwrap().at -= 3600;
+        assert!(a.tend_caches(Some(&root), true).is_some_and(|w| w.contains("forecast is 60 min old")));
+        assert!(copy(3).exists());
+    }
+
+    #[test]
+    fn a_trim_runs_on_a_thread_of_its_own_and_nothing_starts_meanwhile() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        // (Not one loop at a time: the trim isn't waited for.)
+        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: false, helper: false }).unwrap();
+        *a.forecast.borrow_mut() = Some(forecast_now(true));
+        // A trim under way (one that waits to be let go): the loop isn't held, no job starts.
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        a.caches_task = Some(CachesTask { ask: None, began: Instant::now(), thread: std::thread::spawn(move || wait.recv().map(|()| room::Freed { freed: BTreeMap::from([("blobs".to_string(), 1000)]), ..Default::default() }).map_err(anyhow::Error::from)) });
+        assert!(a.tend_caches(Some(&root), true).is_some_and(|w| w.starts_with("this Mac's caches are being trimmed")));
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        let mut w = Vec::new();
+        assert!(!a.try_start(0, waiting_job("pack 6/1/1"), &cond, Some(&root), &mut w));
+        assert!(w.iter().any(|x| x.why.contains("nothing starts here until that's done")), "{w:?}");
+        // Done: what it freed kept, and jobs start again.
+        go.send(()).unwrap();
+        while a.caches_task.as_ref().is_some_and(|t| !t.thread.is_finished()) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(a.tend_caches(Some(&root), true), None);
+        assert_eq!(a.mem.trimmed.as_ref().map(|f| f.bytes()), Some(1000));
+        assert!(a.caches_task.is_none());
+        assert!(a.try_start(0, waiting_job("pack 6/1/1"), &cond, Some(&root), &mut Vec::new()));
+        a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_job_an_earlier_agent_left_holds_the_caches_until_its_gone() {
+        use std::os::unix::process::CommandExt;
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let mut a = running_agent(&root, &home, false);
+        *a.forecast.borrow_mut() = Some(forecast_now(true));
+        // (A process group of its own, as a job's.)
+        let mut left = std::process::Command::new("/bin/sh").args(["-c", "sleep 30"]).process_group(0).spawn().unwrap();
+        a.orphans.push((left.id() as i32, "unit 6/1/1".into()));
+        assert_eq!(a.tend_caches(Some(&root), true).as_deref(), Some("a job an earlier agent left still runs here (unit 6/1/1)"));
+        left.kill().unwrap();
+        left.wait().unwrap();
+        assert_eq!(a.tend_caches(Some(&root), true), None);
+        assert!(a.orphans.is_empty());
+    }
+
+    #[test]
+    fn a_helper_trims_once_the_build_macs_heartbeat_says_the_build_is_done() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::write(root.join("state/build/writer"), "the-build-mac").unwrap();
+        let c = home.join("cache");
+        let tif = crate::whole::testfiles::tiff(false);
+        put(&c.join("chm10/a.tif"), &tif);
+        put(&root.join("sources/canopy/a.tif"), &tif);
+        put(&c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack"), &[1; 1000]);
+        let mut a = running_agent(&root, &home, true);
+        let beat = |at: u64, done: bool, job: Option<&str>| {
+            let job = job.map(|id| JobView { id: id.into(), what: format!("Ranking the world's place labels ({id})"), started: at, paused: None, pausing: None, tail: String::new(), parts: Vec::new(), part: None, progress: None, mem_mb: None, threads: None });
+            let st = Status { host: "the-build-mac".into(), beat: at, job, forecast: Some(forecast::Forecast { at, ..forecast_now(done) }), ..Default::default() };
+            std::fs::write(root.join("state/status.json"), serde_json::to_vec(&st).unwrap()).unwrap();
+        };
+        // No word from the build Mac: nothing goes.
+        assert_eq!(a.tend_caches(Some(&root), true).as_deref(), Some("the build Mac's status can't be read now"));
+        // Its heartbeat an hour old, the build with work left, or a job of the build Mac's running
+        // (its forecast "done" all the same, as an older agent's said with a lone worldwide job):
+        // still nothing.
+        beat(now_s() - 3600, true, None);
+        a.heard = None;
+        assert_eq!(a.tend_caches(Some(&root), true).as_deref(), Some("the build Mac hasn't been heard from for 60 min"));
+        beat(now_s(), false, None);
+        a.heard = None;
+        assert!(a.tend_caches(Some(&root), true).is_some_and(|w| w.starts_with("the build has work left")));
+        beat(now_s(), true, Some("labels 2026-09-28"));
+        a.heard = None;
+        assert!(a.tend_caches(Some(&root), true).is_some_and(|w| w.starts_with("the build Mac runs a job (Ranking")));
+        assert!(c.join("chm10/a.tif").exists());
+        // Fresh, and the build done: every cheap cache goes, the canopy squares too.
+        beat(now_s(), true, None);
+        a.heard = None;
+        assert_eq!(a.tend_caches(Some(&root), true), None);
+        assert!(!c.join("chm10/a.tif").exists() && !c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack").exists());
+        assert_eq!(a.mem.trimmed.as_ref().map(|f| (f.bytes(), f.left)), Some((tif.len() as u64 + 1000, 0)));
+        // (Its own status says so: the build Mac notes it in the history from there.)
+        assert!(a.mem.trimmed.as_ref().is_some_and(|f| f.why_not.is_none() && f.at >= a.started));
+    }
+
+    #[test]
+    fn a_clear_ask_is_taken_up_between_jobs_and_reported() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let c = home.join("cache");
+        let tif = crate::whole::testfiles::tiff(false);
+        put(&c.join("chm10/a.tif"), &tif);
+        put(&c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack"), &[1; 1000]);
+        put(&c.join("base/base/6-1-1.0000000000000001.base"), &[1; 500]);
+        put(&c.join("unit-stages.json"), b"{}");
+        let mut a = running_agent(&root, &home, false);
+        *a.forecast.borrow_mut() = Some(forecast_now(true));
+        // (Trimmed already: only the ask frees anything here.)
+        a.mem.trimmed = Some(room::Freed { at: now_s(), ..Default::default() });
+        let asked = |home: &Path| home.join(room::CLEAR_REQUEST).exists() || home.join(room::CLEAR_TAKEN).exists();
+        // Asked while a job runs here: not cleared, and why said; the ask taken up all the same.
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        assert!(a.try_start(0, waiting_job("backup"), &cond, Some(&root), &mut Vec::new()));
+        let r = room::request_clear(&home, "scenic clean on m4").unwrap();
+        a.tend_caches(Some(&root), true);
+        let f = a.mem.declined.clone().unwrap();
+        assert_eq!((f.asked, f.bytes(), f.why_not.as_deref()), (Some(r.at), 0, Some("a job runs here (backup)")));
+        assert!(!asked(&home) && c.join("chm10/a.tif").exists() && a.mem.cleared.is_none());
+        a.slots[0].running.as_mut().unwrap().stop(Duration::from_secs(5));
+        a.slots[0].running = None;
+        // Between jobs, the build done: cleared, the canopy squares too, and what it freed said.
+        let r = room::request_clear(&home, "the menu bar on m4").unwrap();
+        assert_eq!(a.tend_caches(Some(&root), true), None);
+        let f = a.mem.cleared.clone().unwrap();
+        assert_eq!((f.asked, f.by.as_deref(), f.why_not.as_deref()), (Some(r.at), Some("the menu bar on m4"), None));
+        assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 500), ("blobs".to_string(), 1000), ("canopy".to_string(), tif.len() as u64)]));
+        assert!(!c.join("chm10/a.tif").exists() && root.join("sources/canopy/a.tif").exists() && c.join("unit-stages.json").exists());
+        assert!(!asked(&home));
+        assert_eq!(a.cache_size.lock().unwrap().1, Some(room::Sizes::default()), "counted again: nothing left to clear");
+        // Declined later (no NAS): said apart, the last clear done kept.
+        room::request_clear(&home, "scenic clean on m4").unwrap();
+        a.tend_caches(None, true);
+        assert_eq!(a.mem.declined.as_ref().and_then(|f| f.why_not.as_deref()), Some("the NAS isn't reachable"));
+        assert_eq!(a.mem.cleared.as_ref().map(|f| f.asked), Some(Some(r.at)));
+        // A dry run beside it (another agent runs the jobs) takes up no ask.
+        room::request_clear(&home, "scenic clean on m4").unwrap();
+        let mut dry = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: true, once: true, helper: false }).unwrap();
+        *dry.forecast.borrow_mut() = Some(forecast_now(true));
+        dry.tend_caches(Some(&root), true);
+        assert!(home.join(room::CLEAR_REQUEST).exists());
+    }
+
+    #[test]
+    fn the_build_mac_notes_a_helpers_trims_in_the_history_once() {
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(&root).unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let mut a = running_agent(&root, &home, false);
+        a.coord = Some(crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap());
+        let helper = |at: u64, bytes: u64, left: u64| Status { host: "m1".into(), caches: Some(room::Caches { trimmed: Some(room::Freed { at, freed: BTreeMap::from([("canopy".to_string(), bytes)]), left, ..Default::default() }), ..Default::default() }), ..Default::default() };
+        // One from before this agent started (the one before noted it), then a new one, twice; one
+        // that freed nothing, keeping nothing new (none); one that freed nothing but keeps more.
+        a.note_helpers_caches(&[helper(a.started - 60, 3 << 30, 0)]);
+        a.note_helpers_caches(&[helper(a.started + 5, 3 << 30, 0)]);
+        a.note_helpers_caches(&[helper(a.started + 5, 3 << 30, 0)]);
+        a.note_helpers_caches(&[helper(a.started + 9, 0, 0)]);
+        a.note_helpers_caches(&[helper(a.started + 12, 0, 2 << 30)]);
+        a.note_helpers_caches(&[helper(a.started + 15, 0, 2 << 30)]);
+        let (_, _, events, _) = a.coord.as_ref().unwrap().for_forecast();
+        let noted: Vec<(Option<&str>, &str)> = events.iter().filter(|e| e.kind == "caches").map(|e| (e.worker.as_deref(), e.note.as_str())).collect();
+        assert_eq!(noted, [(Some("m1"), "trimmed its caches after the build: 3.0 GB freed (canopy squares 3.0 GB)"), (Some("m1"), "trimmed its caches after the build: 0 MB freed; 2.0 GB kept (the NAS hasn't it yet)")]);
     }
 
     #[test]

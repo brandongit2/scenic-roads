@@ -606,6 +606,8 @@ function eventText(m, e, k = 1) {
     case "device": return [`${who} ${e.note}`, /^accepted/.test(e.note || "") ? "ok" : ""];
     case "agent": return [`${who}'s agent started (${e.note})`, "run"];
     case "conditions": return [`${who}: ${e.note}`, /doesn't answer|battery|away/.test(e.note) ? "warn" : ""];
+    // (A Mac's build caches trimmed after the build, or cleared on its owner's ask: what was freed.)
+    case "caches": return [`${who} ${e.note}`, /^didn't/.test(e.note || "") ? "warn" : ""];
     default: return [`${e.kind} ${who} ${what}`, ""];
   }
 }

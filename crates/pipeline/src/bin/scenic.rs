@@ -8,6 +8,10 @@
 //!                                       login item; --helper: the M1's, the shared steps' jobs)
 //!   scenic pause [--now] | resume       pause the whole build (every Mac's jobs stop at their next
 //!                                       safe point; --now: frozen at once), or let it go on
+//!   scenic clean [--yes]                clear this Mac's build caches (what later jobs copy back
+//!                                       from the NAS or make again) once the build is done and no
+//!                                       job runs here, after a y/N (--yes: none): its agent does it,
+//!                                       and says what it freed
 //!   scenic devices [accept|decline <code> | forget <id>]  on the build Mac: the devices asking to
 //!                                       help through the build page, and those helping; an ask
 //!                                       answered by the code its page shows, a device forgotten by
@@ -104,6 +108,12 @@ fn status(args: &[String]) -> Result<()> {
     for (f, e) in &st.bad_recipes {
         println!("  {f} isn't a valid region: {e}");
     }
+    // Each Mac's build caches (agent::room): what a clear would free, the last trim and clear.
+    for (host, c) in std::iter::once((&st.host, &st.caches)).chain(st.helpers.iter().map(|h| (&h.host, &h.caches))) {
+        if let Some(c) = c {
+            println!("Caches on {host}: {}", caches_line(c));
+        }
+    }
     if let Some(r) = &root {
         if let Ok(Some(cat)) = store::catalog::latest(&r.join("catalog")) {
             println!("Map data: catalog {} of {}, {} units", cat.n, cat.created, cat.units.len());
@@ -142,6 +152,81 @@ fn status(args: &[String]) -> Result<()> {
         println!("Map on a device: {m} (open it once on an iPhone or an iPad on the tailnet)");
     }
     Ok(())
+}
+
+/// A Mac's build caches in a line: what a clear would free (`scenic clean` there) or why not now,
+/// and the last trim after the build and the last clear.
+fn caches_line(c: &agent::room::Caches) -> String {
+    let mut s = c.clearable.map_or_else(|| "not counted yet".to_string(), |n| format!("{} to clear", agent::room::size(n)));
+    s += &match &c.why_not {
+        Some(w) => format!(" (not now: {w})"),
+        None => " (`scenic clean` there)".to_string(),
+    };
+    if let Some(f) = &c.trimmed {
+        s += &format!("; trimmed after the build {}: {}", ago(f.at), f.say());
+    }
+    if let Some(f) = &c.cleared {
+        s += &format!("; cleared {}: {}", ago(f.at), f.say());
+    }
+    if let Some(f) = c.declined.as_ref().filter(|d| c.cleared.as_ref().is_none_or(|c| d.at > c.at)) {
+        s += &format!("; not cleared {}: {}", ago(f.at), f.why_not.as_deref().unwrap_or(""));
+    }
+    s
+}
+
+/// This Mac's own agent's status, as it writes it in its folder `home`: the build Mac's
+/// `status.json` or a helper's `helper.json`, whichever is fresher.
+fn own_status(home: &Path) -> Option<agent::Status> {
+    ["status.json", "helper.json"].iter().filter_map(|f| serde_json::from_slice::<agent::Status>(&std::fs::read(home.join(f)).ok()?).ok()).max_by_key(|s| s.beat)
+}
+
+/// `scenic clean`: an ask to this Mac's agent to clear its build caches (agent::room::clear), and
+/// what it says it freed, once it has.
+fn clean(args: &[String]) -> Result<()> {
+    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+    let st = own_status(&home).context("this Mac's agent has no status: is it installed here?")?;
+    // (Not written while it makes room for a job, minutes at most.)
+    anyhow::ensure!(now_s().saturating_sub(st.beat) < 6 * 60, "this Mac's agent hasn't written its status since {}: is it running?", ago(st.beat));
+    let caches = st.caches.as_ref().context("this Mac's agent runs an older app, which doesn't clear its caches on an ask")?;
+    if let Some(why) = &caches.why_not {
+        bail!("not now: {why}");
+    }
+    // What goes and how it comes back, and a y/N: a clear is a hundred GB on the build Mac.
+    let n = caches.clearable.unwrap_or(0);
+    println!("This Mac's build caches, {} in all:", agent::room::size(n));
+    for g in &caches.each {
+        println!("  {} {}: {}", g.what, agent::room::size(g.bytes), g.back);
+    }
+    println!("Kept: what would come back from the internet (the Wikidata and Wikipedia answers, the heritage scripts' Python), and the map's offline copy.");
+    if !flag(args, "--yes") {
+        use std::io::Write;
+        print!("Clear them? [y/N] ");
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+            println!("not cleared");
+            return Ok(());
+        }
+    }
+    let r = agent::room::request_clear(&home, &format!("scenic clean on {}", agent::cond::host_name()))?;
+    println!("asked this Mac's agent to clear them; waiting for it…");
+    let t = std::time::Instant::now();
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let answered = own_status(&home).and_then(|s| s.caches).and_then(|c| [c.cleared, c.declined].into_iter().flatten().find(|f| f.asked == Some(r.at)));
+        match answered {
+            Some(f) => {
+                if let Some(why) = f.why_not {
+                    bail!("not cleared: {why}");
+                }
+                println!("{}", f.say());
+                return Ok(());
+            }
+            None if t.elapsed() > std::time::Duration::from_secs(3 * 3600) => bail!("no word from the agent in three hours; it has the ask still (`scenic status` says when it's done)"),
+            None => {}
+        }
+    }
 }
 
 /// This Mac's coordinator, as its owner reaches it: here, with the build's key its agent keeps
@@ -260,6 +345,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         "devices" => devices(&args),
+        "clean" => clean(&args),
         "gc" => {
             let days: u64 = opt(&args, "--days").map(|d| d.parse()).transpose()?.unwrap_or(14);
             let r = gc::run(&root(&args, true)?, days, flag(&args, "--dry-run"))?;
@@ -273,6 +359,6 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
-        c => bail!("unknown command {c:?}: status, add, remove, agent, pause, resume, gc, backup"),
+        c => bail!("unknown command {c:?}: status, add, remove, agent, pause, resume, devices, clean, gc, backup"),
     }
 }

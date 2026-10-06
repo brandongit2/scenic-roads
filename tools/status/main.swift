@@ -4,7 +4,10 @@
 // (`/api/build`), which answers with this Mac's own agent's status when the agent runs here and
 // with the heartbeat the agent copies to the NAS otherwise. On the build Mac it also asks its
 // coordinator for the devices asking to help through the build page (`/work/devices`, with the
-// build's key its agent keeps: the owner's alone to see and answer, here).
+// build's key its agent keeps: the owner's alone to see and answer, here). This Mac's own agent's
+// status, read from its file, says what its build caches hold, whether they can be cleared now,
+// and the last trim and clear (crates/pipeline/src/agent/room.rs): Clear the Build's Caches asks
+// that agent to clear them.
 //
 // The launcher runs it (`scenic-launcher status`, from ~/Library/LaunchAgents/local.scenic.status.plist)
 // from the installed app; it quits when a newer app is installed, and the launcher starts that one.
@@ -13,7 +16,9 @@
 //   scenic-status --print                   the icon and menu for the status now, as text
 //   scenic-status --replay a.json b.json …  the notifications a sequence of answers would send (each
 //                                           file /api/build's answer, with what /work/devices
-//                                           answered beside it as "devices")
+//                                           answered beside it as "devices", this Mac's agent's
+//                                           own status as "own", and "clear_asked" while an ask
+//                                           to clear its caches waits), and the caches' item
 //   scenic-status --render menu.png          the menu's lines drawn as they lay out (dark), for checking
 //   scenic-status --wait-replaced           waits, without a window, until a newer app is installed
 // SCENIC_STATUS_SERVER overrides the server (http://127.0.0.1:8080), SCENIC_HOME the app folder.
@@ -80,9 +85,51 @@ struct Devices: Decodable {
     let accepted: [Device]
 }
 
-/// A --replay file's devices, beside its answer.
+/// A --replay file's devices, this Mac's agent's own status and whether an ask to clear its caches
+/// waits, beside its answer.
 struct Replay: Decodable {
     let devices: Devices?
+    let own: Own?
+    let clear_asked: Bool?
+}
+
+/// This Mac's own agent's status, as it writes it in its folder (the build Mac's `status.json`, a
+/// helper's `helper.json`), for its build caches.
+struct Own: Decodable {
+    let host: String
+    let beat: Int
+    let caches: Caches?
+}
+
+/// This Mac's build caches (crates/pipeline/src/agent/room.rs Caches): what a clear would free
+/// (bytes, and cache by cache with how each comes back), why they can't be cleared now (none: they
+/// can), and the last trim after the build, the last clear done and the last ask declined.
+struct Caches: Decodable {
+    let clearable: Int?
+    let each: [Gone]?
+    let why_not: String?
+    let trimmed: Freed?
+    let cleared: Freed?
+    let declined: Freed?
+}
+
+/// A cache a clear would empty (room.rs Gone): its name in words, its bytes, how it comes back.
+struct Gone: Decodable {
+    let what: String
+    let bytes: Int
+    let back: String
+}
+
+/// What a trim or a clear did (room.rs Freed): when, the bytes freed by cache, what stays, and for
+/// a clear asked for when it couldn't be, why not.
+struct Freed: Decodable {
+    let at: Int
+    let by: String?
+    let freed: [String: Int]?
+    let left: Int?
+    let why_not: String?
+
+    var bytes: Int { (freed ?? [:]).values.reduce(0, +) }
 }
 
 struct Recipe: Decodable {
@@ -330,8 +377,9 @@ func progressText(_ p: JobProgress, paused: Bool, now: Int) -> String {
     return t
 }
 
-/// The menu's lines for an answer, under the state's line.
-func lines(_ r: Reply?, _ line: String) -> [Line] {
+/// The menu's lines for an answer, under the state's line (and this Mac's caches, from its agent's
+/// own status).
+func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     var out = [Line(text: line, style: .title)]
     guard let r = r, let s = r.status else { return out }
     // When it'll be done and the map next gets new data (as the worker page and the map say it).
@@ -406,6 +454,13 @@ func lines(_ r: Reply?, _ line: String) -> [Line] {
     out.append(Line(text: "\(power) · NAS \(!s.conditions.nas ? "not reachable" : s.conditions.home == false ? "through Tailscale" : "reachable")", style: .small))
     out.append(Line(text: "\(s.host) · \(r.local ? "this Mac" : "via the NAS") · heard from \(duration(r.now - s.beat)) ago", style: .small))
     if let app = s.app { out.append(Line(text: "App \(app)", style: .small)) }
+    // This Mac's build caches: what a clear would free, and the last trim after the build and clear.
+    if let c = own?.caches {
+        var t = "Build caches here: \(c.clearable.map(gb) ?? "not counted yet")"
+        if let f = c.trimmed, f.why_not == nil { t += " · trimmed \(clock(f.at)), \(gb(f.bytes)) freed" }
+        if let f = c.cleared, f.why_not == nil { t += " · cleared \(clock(f.at)), \(gb(f.bytes)) freed" }
+        out.append(Line(text: t, style: .small))
+    }
     // The build to the end: each step done, under way, or to come.
     if let steps = s.checklist, !steps.isEmpty {
         let now = [s.job, s.beside].compactMap { $0.map { String($0.id.split(separator: " ").first ?? "") } }
@@ -553,6 +608,47 @@ func pendingAsk() -> Bool? {
     return !(o["pause"] is NSNull || o["pause"] == nil)
 }
 
+/// This Mac's own agent's status (`Own`): the build Mac's or a helper's file, the fresher.
+func ownStatus() -> Own? {
+    let dir = home.appendingPathComponent("agent")
+    return ["status.json", "helper.json"].compactMap { (try? Data(contentsOf: dir.appendingPathComponent($0))).flatMap { try? JSONDecoder().decode(Own.self, from: $0) } }.max { $0.beat < $1.beat }
+}
+
+/// This Mac's ask to its agent to clear its build caches (room.rs ClearRequest), while it waits or
+/// is under way (taken up: renamed aside until it's answered).
+let clearFile = "clear-request.json"
+func clearAsked() -> Bool {
+    [clearFile, "\(clearFile).taken"].contains { FileManager.default.fileExists(atPath: home.appendingPathComponent("agent").appendingPathComponent($0).path) }
+}
+
+/// "51.2 GB", or under a GB, "350 MB" (number and unit never split across lines).
+func gb(_ b: Int) -> String {
+    b >= 1 << 30 ? String(format: "%.1f\u{00A0}GB", Double(b) / Double(1 << 30)) : "\(b >> 20)\u{00A0}MB"
+}
+
+/// What a trim or a clear freed, by cache, the most first: "canopy squares 45.0 GB, raw terrain
+/// tiles 24.1 GB", and what stays.
+func freedText(_ f: Freed) -> String {
+    let words = ["canopy": "canopy squares", "terrain": "raw terrain tiles", "blobs": "copies of the records' files", "base": "base packs", "dem": "the DEM seed", "copies": "copies of the NAS's files", "heritage": "the heritage jobs' planet clip"]
+    var t = (f.freed ?? [:]).filter { $0.value > 0 }.sorted { $0.value > $1.value }.map { "\(words[$0.key] ?? $0.key) \(gb($0.value))" }.joined(separator: ", ")
+    if t.isEmpty { t = "nothing" }
+    if let l = f.left, l > 0 { t += "; \(gb(l)) kept (the NAS hasn't it yet)" }
+    return t
+}
+
+/// The menu's item for this Mac's build caches (none without an agent here): Clear the Build's
+/// Caches with what it would free, enabled once the build is done and no job runs here (why not, in
+/// its tooltip); while an ask waits, that it's clearing.
+func cachesItem(_ own: Own?, now: Int, asked: Bool) -> (title: String, enabled: Bool, tip: String)? {
+    guard let own = own, let c = own.caches else { return nil }
+    if asked { return ("Clearing the Build's Caches… (asked; this Mac's agent does it between jobs)", false, "") }
+    let title = "Clear the Build's Caches" + (c.clearable.map { " (\(gb($0)))" } ?? "")
+    if now - own.beat > outOfTouch { return (title, false, "This Mac's agent hasn't written its status since \(clock(own.beat)): is it running?") }
+    if let why = c.why_not { return (title, false, "Not now: \(why)") }
+    if let n = c.clearable, n < 50 << 20 { return (title, false, "They hold nothing now") }
+    return (title, true, "Deletes this Mac's copies of what the NAS keeps (canopy squares, raw terrain tiles, base packs, the DEM seed …): later jobs copy back from the NAS, or make again, what they need. The map's offline copy stays.")
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     lazy var item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     var reply: Reply?
@@ -564,6 +660,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// away (once, with the first answer).
     var tidied = false
     var seen: Seen?
+    /// This Mac's agent's own status (its caches), read with each answer, and its last trim's and
+    /// clear's times as last told.
+    var own: Own?
+    var seenCaches: (trimmed: Int, cleared: Int, declined: Int)?
     var polling = false
     /// Whether notifications are posted (not printed, as --replay's are).
     var sinkIsCenter = true
@@ -607,6 +707,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 DispatchQueue.main.async {
                     self.polling = false
                     self.reply = r
+                    self.own = ownStatus()
                     // (The build Mac's alone; kept as they were while its coordinator doesn't answer.)
                     self.devices = r?.local == true ? d ?? self.devices : nil
                     self.notifyChanges()
@@ -633,7 +734,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func menu(_ kind: Kind, _ line: String) -> NSMenu {
         let m = NSMenu()
         m.autoenablesItems = false
-        for l in lines(reply, line) {
+        for l in lines(reply, line, own: own) {
             if l.style == .separator {
                 m.addItem(.separator())
                 continue
@@ -673,6 +774,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             now.keyEquivalentModifierMask = [.option]
             now.toolTip = "Every Mac's running job frozen where it is at once; it goes on from there when you resume"
             m.addItem(now)
+        }
+        // This Mac's build caches, cleared on an ask to its agent (crates/pipeline/src/agent/
+        // room.rs), which does it between jobs once the build is done, and says what it freed.
+        if let c = cachesItem(own, now: Int(Date().timeIntervalSince1970), asked: clearAsked()) {
+            let it = NSMenuItem(title: c.title, action: c.enabled ? #selector(clearCaches) : nil, keyEquivalent: "")
+            it.target = self
+            it.isEnabled = c.enabled
+            if !c.tip.isEmpty { it.toolTip = c.tip }
+            m.addItem(it)
         }
         // Devices asking to help through the build page: accepted or declined here, by the code their
         // page shows; and those helping, to forget.
@@ -801,6 +911,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         poll()
     }
 
+    /// Asks this Mac's agent to clear its build caches, once its owner says so (what goes, and how
+    /// each comes back): its ask file (room.rs ClearRequest), written whole, which the agent takes
+    /// up within seconds; signed with the name the agent goes by (its Mac's local host name).
+    @objc func clearCaches(_ sender: NSMenuItem) {
+        guard let c = own?.caches else { return }
+        let alert = NSAlert()
+        alert.messageText = "Clear this Mac's build caches (\(gb(c.clearable ?? 0)))?"
+        let each = (c.each ?? []).map { "• \($0.what) \(gb($0.bytes)): \($0.back)" }.joined(separator: "\n")
+        alert.informativeText = "\(each)\n\nKept: what would come back from the internet (the Wikidata and Wikipedia answers, the heritage scripts' Python), and the map's offline copy."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Clear")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate()
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = SCDynamicStoreCopyLocalHostName(nil) as String? ?? "this Mac"
+        let dir = home.appendingPathComponent("agent")
+        let (tmp, dst) = (dir.appendingPathComponent("\(clearFile).menu.tmp"), dir.appendingPathComponent(clearFile))
+        do {
+            try JSONSerialization.data(withJSONObject: ["by": "the menu bar on \(name)", "at": Int(Date().timeIntervalSince1970)] as [String: Any]).write(to: tmp)
+            guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        } catch {
+            post("Couldn't ask to clear the build's caches", "\(error.localizedDescription)")
+            return
+        }
+        poll()
+    }
+
     @objc func copyPage(_ sender: NSMenuItem) {
         guard let page = sender.representedObject as? String else { return }
         NSPasteboard.general.clearContents()
@@ -819,6 +956,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func notifyChanges() {
         tellAsks()
+        tellCaches()
         guard let r = reply, let s = r.status else { return }
         let now = Seen(job: s.job?.id, paused: s.job?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch, buildPaused: s.pause != nil)
         defer { seen = now }
@@ -853,6 +991,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func post(_ title: String, _ body: String) {
         sink(title, body)
+    }
+
+    /// This Mac's caches trimmed after the build, cleared, or not cleared and why, each told once
+    /// (the first look at its agent's status only sets where they're told from).
+    func tellCaches() {
+        guard let c = own?.caches else { return }
+        let now = (trimmed: c.trimmed?.at ?? 0, cleared: c.cleared?.at ?? 0, declined: c.declined?.at ?? 0)
+        defer { seenCaches = now }
+        guard let was = seenCaches else { return }
+        if let f = c.cleared, f.at != was.cleared {
+            post("Freed \(gb(f.bytes))", "This Mac's build caches: \(freedText(f)). Later jobs copy back from the NAS what they need.")
+        }
+        if let f = c.declined, f.at != was.declined {
+            post("Build caches not cleared", f.why_not ?? "")
+        }
+        // (Not one with nothing to do, the caches empty already.)
+        if let f = c.trimmed, f.at != was.trimmed, f.bytes >= 50 << 20 {
+            post("Build caches trimmed", "Freed \(gb(f.bytes)) on this Mac now that the build is done: \(freedText(f))")
+        }
     }
 
     /// The asks to help, each told once, with its answers; an ask no longer waiting (answered,
@@ -953,9 +1110,13 @@ if args.contains("--print") {
     done.wait()
     let (kind, line) = classify(r)
     print("icon: \(kind.symbol)")
-    for l in lines(r, line) {
+    let own = ownStatus()
+    for l in lines(r, line, own: own) {
         let bar = l.style == .bar ? "[" + String(repeating: "█", count: Int(l.fraction * 20)) + String(repeating: "░", count: 20 - Int(l.fraction * 20)) + "] " : ""
         print(l.style == .separator ? "────" : (l.style == .title ? "" : "  ") + bar + l.text)
+    }
+    if let c = cachesItem(own, now: Int(Date().timeIntervalSince1970), asked: clearAsked()) {
+        print("item: \(c.title)\(c.enabled || c.tip.isEmpty ? "" : " (disabled: \(c.tip))")")
     }
 } else if let i = args.firstIndex(of: "--render"), i + 1 < args.count {
     // The menu's information lines as views, stacked as the menu stacks them, drawn into a PNG.
@@ -970,7 +1131,7 @@ if args.contains("--print") {
     let d = AppDelegate()
     d.reply = r
     let (kind, line) = classify(r)
-    let views: [NSView] = lines(r, line).map { l in
+    let views: [NSView] = lines(r, line, own: ownStatus()).map { l in
         l.style == .separator ? NSView(frame: NSRect(x: 0, y: 0, width: LineView.width, height: 11)) : l.style == .bar ? BarView(l.text, fraction: l.fraction) : LineView(l.text, font: fontFor(l.style).0, color: fontFor(l.style).1, wrapAnywhere: l.style == .mono)
     } + (r?.log != nil ? ["Open the Build Log"] : []).map { LineView($0, font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false) }
         + [LineView("Open the Map", font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false)]
@@ -1006,8 +1167,14 @@ if args.contains("--print") {
     for f in args[(i + 1)...] {
         let data = (try? Data(contentsOf: URL(fileURLWithPath: f))) ?? Data()
         d.reply = try? JSONDecoder().decode(Reply.self, from: data)
-        d.devices = (try? JSONDecoder().decode(Replay.self, from: data))?.devices
+        let beside = try? JSONDecoder().decode(Replay.self, from: data)
+        (d.devices, d.own) = (beside?.devices, beside?.own)
         print("\(f): \(classify(d.reply).1)")
+        if let c = cachesItem(d.own, now: d.reply?.now ?? Int(Date().timeIntervalSince1970), asked: beside?.clear_asked ?? false) {
+            print("  item: \(c.title)\(c.enabled || c.tip.isEmpty ? "" : " (disabled: \(c.tip))")")
+            // (What its confirmation lists.)
+            for g in (c.enabled ? d.own?.caches?.each : nil) ?? [] { print("    \(g.what) \(gb(g.bytes)): \(g.back)") }
+        }
         d.notifyChanges()
     }
 } else {

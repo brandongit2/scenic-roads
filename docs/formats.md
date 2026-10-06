@@ -296,17 +296,32 @@ agent/                  status.json (the build Mac's; a helper writes helper.jso
                         server shows), state.json, round.json (the last round of publishing:
                         {began, regions, last, units: {logical: content name}, over},
                         agent::build::Round; the jobs of the one under way read its units,
-                        SCENIC_UNITS_AS_OF=<path>#<began>), job.json, agent.lock, logs/, cache/
+                        SCENIC_UNITS_AS_OF=<path>#<began>), job.json, agent.lock, logs/, cache/;
+                        clear-request.json (the owner's ask to clear this Mac's build caches, from
+                        its menu or `scenic clean`: {by, at}, agent::room::ClearRequest; renamed
+                        clear-request.json.taken as the agent takes it up, removed once it's
+                        answered in the agent's status)
 agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and aws-terrarium/
                         (copies of the NAS's sources/canopy/; the raw tiles as fetched, until packed
                         onto the NAS, and aws-terrarium/packs/: copies of its archives, a job's own
-                        new ones among them, each marked used when a job opens it), base/.
+                        new ones among them, each marked used when a job opens it), blobs/ (copies
+                        of the records' files staging reads), base/ (the pack cache), sources-*/
+                        and work-*/ (scenic-build's local copies of NAS files by their logical
+                        names: the z8 terrain, the summits), heritage-merged-<date>-<cover>.osm.pbf
+                        (the pass's filtered planet clipped to the cover); items/, rail/,
+                        registers-<id>/, heritage-<date>-<id>/ and heritage-venv/ (the landmark,
+                        trains' and heritage jobs' own), unit-stages.json (the unit stages' times
+                        here).
                         When a job starts with too little free, raw tiles waiting are packed onto
-                        the NAS (not kept here), then chm10/ and aws-terrarium/ lose files: chm10/'s
-                        and the archives' idle an hour first, then the rest least recently used
-                        first (loose raw tiles a folder at a time; empty markers kept; a canopy file
-                        the NAS lacks copied there first, or kept), until the Mac has a sixth more
-                        free than the job needs (the OSM pass: what it needs).
+                        the NAS (not kept here), then chm10/, aws-terrarium/ and blobs/ lose files:
+                        chm10/'s, the archives' and blobs/' idle an hour first, then the rest least
+                        recently used first (loose raw tiles a folder at a time; empty markers kept;
+                        a canopy file the NAS lacks copied there first, or kept), until the Mac has
+                        a sixth more free than the job needs (the OSM pass: what it needs). Once the
+                        build is done, the agent trims the same three by the same rules (the build
+                        Mac keeps chm10/); on the owner's ask, it clears them, base/, the seed (while
+                        the NAS has it whole), sources-*/, work-*/ and heritage-merged-* (docs/plan.md
+                        §4 and §8, agent::room). Never through a link, nor in the NAS's folder.
 ```
 
 `~/Library/Preferences/nsmb.conf` gets `[FISHANDCHIPS:PERSONAL]` and
@@ -514,6 +529,12 @@ class, id) within a tile. The client sends the id with the clicked point.
   minutes: conditions, the job, its parts (`parts`, `part`: the one it's on) and its progress, why
   it's frozen (`paused`) or stopping at its next safe point (`pausing`), what waits (one about a
   job: its `step`), the build's `pause` while it's paused, the checklist to the end: each step's
-  `done`/`total` or `left`, its jobs left by name (`next`) and why it waits (`note`));
+  `done`/`total` or `left`, its jobs left by name (`next`) and why it waits (`note`), and the Mac's
+  build caches (`caches`, agent::room::Caches: `clearable`, the bytes a clear would free, and
+  `each`, cache by cache, `[{cache, what, bytes, back}]`, how each comes back with about how long;
+  `why_not`, why they can't be cleared now; `trimmed`, `cleared` and `declined`, the last trim
+  after the build, the last clear done and the last ask declined, each `{at, asked (a clear's
+  ask's at), by, freed: {cache: bytes}, left, why_not}`, the caches named canopy, terrain, blobs,
+  base, dem, copies and heritage));
   `state/build/{manifest,jobs,pending,summaries,pause}.json`.
 - **The app:** `app/current.json` and `previous.json`: `{version, files, sha256}`.

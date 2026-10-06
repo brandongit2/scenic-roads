@@ -30,8 +30,9 @@ nothing built depends on how the coverage is divided into regions.
 - `scenic status` shows what the build Mac is doing, and so does the menu bar item on both Macs
   (Scenic.app, `tools/status`). It shows the state as an icon: building, paused, waiting, nothing to
   build, a problem, or out of touch. Its menu holds the job's progress bar with the time left and a
-  checklist of every step to the end, pauses and resumes the whole build, and it sends a
-  notification for every change.
+  checklist of every step to the end, pauses and resumes the whole build, and clears that Mac's
+  build caches once the build is done (`scenic clean` too); it sends a notification for every
+  change.
 - The server mounts the NAS itself when it's missing, at home: at start, then from its periodic
   check.
 
@@ -69,6 +70,7 @@ nothing built depends on how the coverage is divided into regions.
   OpenStreetMap pass and the other jobs that move the whole planet or world through the NAS wait
   for home.
 - Mirroring to each Mac.
+- Emptying each Mac's build caches once the build is done (§8, Room on the disk).
 - **Installing a newly published app:** each Mac's server picks it up and restarts into it when the
   map is idle.
 - Backups.
@@ -296,21 +298,47 @@ record changes back through the build Mac's coordinator, which journals them for
     Overture release), or a window of a dataset read in small windows where nothing kept covers it
     yet: the national DEMs (USGS, HRDEM, MRDEM, GSI, the MOI DTM) at points not sampled before
     (each point's height is kept once sampled), ESA WorldCover for grid tiles the packs lack.
-- **Caches** (`~/Library/Application Support/scenic/agent/cache`):
-  - AWS's raw terrain tiles and canopy 10° files, filled from the NAS: emptied when a job starts
-    with too little free, the canopy files idle an hour first, then least recently used first
-    (§8);
-  - the per-vertex DEM cache: today's, copied once from `sources/dem-cache/` (the seed), and each
-    unit's samples from its last run (on the NAS, `cache/dem-units/`, which both Macs' units read,
-    named by their box so a unit finds those near it from one listing, with the DEM rules' versions
-    they were sampled under), so a vertex is sampled from the DEM servers once, and again only when
-    the rule for its source changes (`pipeline::rules`). A tile a server doesn't answer for (a
-    timeout, a 5xx) fails the job, to be tried again, rather than falling back to a coarser source
-    for good;
-  - Wikidata and pageview caches;
-  - the registers snapshot, extracted;
-  - the pack cache: base packs for pack(T) not in its mirror, pruned every run and cleared when an
-    OSM pass starts.
+- **Caches** (`~/Library/Application Support/scenic/agent/cache`, on each Mac that runs an agent).
+  Those a trim or a clear empties (§8, Room on the disk) are copies of what the NAS keeps, or made
+  from it: each fills again from the NAS (or is made again from what's there) when a later job
+  needs it, never from the internet.
+  - **The cheap ones**, emptied when a job starts with too little free (the canopy files idle an
+    hour first, then least recently used first), trimmed once the build is done, and cleared:
+    - Meta's canopy 10° squares (`chm10/`), filled from `sources/canopy/` (one the NAS lacks is
+      copied there before it goes); the build Mac's trim keeps them: every pass's areas read them
+      again, and they never change;
+    - AWS's raw terrain tiles (`aws-terrarium/`): as fetched, until packed onto the NAS (packed
+      there before they go; a helper's stay until a job of its own packs them), and copies of its
+      archives (`packs/`), filled from the NAS's archives;
+    - copies of the records' files staging reads (`blobs/`), filled from the store.
+  - **Cleared too** (by the owner's ask alone):
+    - the pack cache (`base/`): base packs for pack(T) and lo not in its mirror, pruned every run
+      and cleared when an OSM pass starts; the next round copies them again (66 GB on the build Mac,
+      2026-10-06), from the mirror where it has them, else the NAS;
+    - the per-vertex DEM cache's seed: today's cache, copied once from `sources/dem-cache/` (9 GB),
+      cleared only while the NAS has it whole, and copied again by the next unit job. Each unit's
+      samples from its last run are on the NAS (`cache/dem-units/`, which both Macs' units read,
+      named by their box so a unit finds those near it from one listing, with the DEM rules'
+      versions they were sampled under), so a vertex is sampled from the DEM servers once, and
+      again only when the rule for its source changes (`pipeline::rules`). A tile a server doesn't
+      answer for (a timeout, a 5xx) fails the job, to be tried again, rather than falling back to a
+      coarser source for good;
+    - local copies of the NAS's files the summits and peaks jobs read (the z8 terrain, the
+      summits: `sources-*/`, `work-*/`), copied again when they next run;
+    - the heritage jobs' clip of the pass's filtered planet to the coverage
+      (`heritage-merged-<date>-<cover>.osm.pbf`, 22 GB on the build Mac, 2026-10-06), made again
+      from the NAS's filtered planet (an hour or so of osmium) when the heritage chain next runs for
+      that pass and coverage.
+  - Nothing is deleted through a link, nor anything in the NAS's project folder (§8, Room on the
+    disk).
+  - **Kept:** the Wikidata and Wikipedia answers the items and heritage jobs keep (`items/`, with
+    the pageview months' indexes, and the pass's copy of the registers' snapshot, which the heritage
+    scripts add theirs to: `heritage-<date>-<id>/`), which would come back from the internet; the
+    heritage scripts' Python environment (`heritage-venv/`, from PyPI); the registers' snapshot,
+    extracted (`registers-<id>/`: the pass's copy is an APFS clone of it, so deleting it would free
+    next to nothing); the trains' stop pairs (`rail/`, under a MB); the unit stages' timings
+    (`unit-stages.json`); and what a unit kept that isn't on the NAS yet (`dem-units/`,
+    `scenic-units/`).
 - **Its own map** is served from its mirror, which keeps a 150 GB reserve so builds have room.
 - **An OSM pass** starts with 80 GB free (the pack cache counting as free). It copies the planet to
   the SSD first when there's room for the planet, a filtered file of up to 75 % of it, and 10 GB;
@@ -1159,6 +1187,42 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     one used when it opens it). A file that isn't whole itself (cut short, or temporary) is
     deleted, not kept.
   - The OSM pass counts those copies as room.
+  - **After the build** (`room::trim`): once the build has nothing left to build and no job runs
+    on the Mac (nor one an earlier agent left that couldn't be shown stopped), its agent, at home
+    (through Tailscale it would take hours), empties those copies by the same rules, once, and
+    again only after a job (not a daily one) has run there since: a helper all of them, the build
+    Mac all but the canopy squares, which every pass's areas read again and which never change.
+    "Nothing left to build" is the build Mac's forecast's (no work, no round under way, no machine
+    busy), made within ten minutes and after the last job on the Mac ended; a helper reads it in
+    the build Mac's heartbeat, which must have beaten within ten minutes and show no job of the
+    build Mac's running, nor one beside it. Not down to the reserve: room-making makes that much
+    room before each job, so the build ends with about that free (36 GB, with 39 GB of archive
+    copies and copies of the records' files, once it was done on 2026-10-06), and a trim to it
+    would free little or nothing, while that Mac's mirror copies nothing until 150 GB are free.
+    It's logged, in the agent's status (`caches.trimmed`: when, what it freed by cache, what
+    stayed) and, when it freed anything or what it keeps changed, in the history (a helper's, as
+    the build Mac reads it in its status).
+  - **On the owner's ask** (`room::clear`): Clear the Build's Caches in a Mac's menu bar item, or
+    `scenic clean` there, after a confirmation that names what goes, cache by cache, and how each
+    comes back (copied from the NAS at the measured 60 MB/s, 12 through Tailscale: the base packs
+    in about 20 min; the heritage clip, an hour of osmium), writes an ask in that Mac's agent's
+    folder (`clear-request.json`, as a pause is asked for, signed with the Mac's name as its
+    agent goes by), which the agent takes up within seconds, renaming it aside as it does (an ask
+    written meanwhile waits its turn): between jobs, once the build is done, it empties every
+    cache a later job fills again from the NAS or makes again from it (§4, Caches), the canopy
+    squares too, by the same rules, and says what it freed (`caches.cleared`); else it says why
+    not (`caches.declined`, the last clear done kept apart); the ask goes either way. The menu
+    shows the item with what it would free (`caches.clearable`, and cache by cache,
+    `caches.each`), disabled with why while the build has work, a job runs there, its agent
+    hasn't written its status for six minutes, or they hold nothing; "Clearing…" while the ask
+    waits or is under way; and "Freed N GB" once it's done. `scenic clean` waits for the same
+    answer.
+  - A trim or a clear runs on a thread of the agent's own: its loop goes on beating, and no job
+    starts on the Mac until it's done.
+  - Nothing goes through a link: a cache folder that's a link, or one in the NAS's project folder
+    by its real path, is left as it is (and not counted), so the NAS's own files never go.
+  - Room-making, a trim and a clear each end early when the agent is asked to stop (the trim runs
+    again under the next agent, and the ask stays for it).
 - **Units run in map order** (by 10° square, then tile), so what one unit fetches serves the next.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours. The orphans of a crashed
   agent are stopped at start (only when their leader's start time proves them ours, or the leader is
@@ -1201,7 +1265,9 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
 
 - **The heartbeat's resources:** each Mac's memory and the share free, its cores and load, its disk's
   free space and the caches it may drop (counted every ten minutes on a thread of its own), how
-  long the NAS took to answer and the NAS's free space.
+  long the NAS took to answer and the NAS's free space. Beside them, its build caches (`caches`):
+  what a clear would free (counted with them, and again after a trim or a clear), why they can't
+  be cleared now, and the last trim and clear (Room on the disk).
 - **The forecast** (`agent::forecast`), made with each plan (at most each minute) and in the
   heartbeat: the work left run through in the order the agent runs it. The build Mac takes the first
   it can (the pass's worldwide jobs, then a region at a time: its terrain, then its units; with
@@ -1233,19 +1299,23 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   estimated, and for a range, the measured times a little off and the guessed much more. It says
   when each step, each region and everything will be done, when each region reaches the map, the
   rounds to come, what each machine does next (not what it's on) and its schedule to the end, and
-  how much of the time was measured. No finish when nothing's left, when a new pass comes first,
-  or while the units wait for the pass's heritage sites, reaches or buildings (the regions' work
-  can't be listed): why instead.
+  how much of the time was measured. A job under way is work left: its machine is busy until it's
+  done, and one of the pass's worldwide jobs is on its schedule as it runs. No finish when nothing's
+  left (no work, no round under way, no machine busy), when a new pass comes first, or while the
+  units wait for the pass's heritage sites, reaches or buildings (the regions' work can't be
+  listed): why instead.
 - **The history** (`coord::history`): the coordinator keeps what happened, the last week's (50,000
   events at most), on the build Mac's disk (`coord/history.jsonl`, a line an event, numbered): each job the build Mac
   started and ended (what it does, what it finished, how long, how it ended), each lease a worker took, handed
   back, failed or let lapse, each task done or failed, the rounds begun (their regions), the
   catalogs (the regions they added), the
-  pauses, the workers first heard from, the agents started and the build Mac's conditions changing
-  (mains or battery, the NAS, home or away, a sleep). Summed by the hour for the worker page (a job
-  whose end went unsaid, its agent stopped, counted to the next agent's start), and the forecast's
-  measure of the helpers' pace and of a round's time. Each cost the coordinator keeps says which
-  worker measured it.
+  pauses, the workers first heard from, the agents started, the build Mac's conditions changing
+  (mains or battery, the NAS, home or away, a sleep), and each Mac's build caches trimmed or
+  cleared, or an ask to clear them declined (what was freed, or why not; a helper's as the build
+  Mac reads it in its status). Summed by the hour for the worker page (a job whose end went
+  unsaid, its agent stopped, counted to the next agent's start), and the forecast's measure of the
+  helpers' pace and of a round's time. Each cost the coordinator keeps says which worker measured
+  it.
 
 **Two Macs** (and any other worker: `docs/workers.md`). The build Mac's agent plans; it runs a
 coordinator (`pipeline::coord`, port 8090) from which every other worker asks for work that fits it.
@@ -1438,12 +1508,16 @@ mid-job. Nothing depends on it being available at a given time.
 - **Caches are disposable:** they refill from the NAS and the original sources.
 
 **Status.**
-- `scenic status`.
+- `scenic status` (each Mac's build caches too); `scenic clean` clears this Mac's (Room on the
+  disk, above).
 - The app's status bar: the build Mac's state, the NAS, and new data or a new app in.
 - The menu bar item. It asks the local server (`/api/build`): this Mac's agent's status when it runs
   here, else the NAS's copy. Each agent writes its status at least every two minutes; one not heard
   from for six is shown as out of touch (asleep, off, or stuck), not as it last was. It pauses and
-  resumes the build (Pausing, above), as does the map's build panel.
+  resumes the build (Pausing, above), as does the map's build panel. From this Mac's agent's own
+  status, read in its folder (the build Mac's `status.json`, a helper's `helper.json`), it shows
+  what that Mac's build caches hold and their last trim and clear, and offers Clear the Build's
+  Caches, after a confirmation (Room on the disk, above).
 - Each says what's waiting and why ("Build Mac last seen yesterday; Kanto waits for it to be plugged
   in at home").
 

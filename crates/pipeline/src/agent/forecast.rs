@@ -95,6 +95,10 @@ pub struct Input<'a> {
     pub running: BTreeMap<(String, String), usize>,
 }
 
+/// The forecast's `why` when the build is done: no work left, no round under way and no machine
+/// busy (each Mac's agent then trims its caches: crate::agent::room::trim).
+pub const NOTHING_LEFT: &str = "nothing left to build";
+
 /// The forecast (`forecast`).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Forecast {
@@ -122,6 +126,13 @@ pub struct Forecast {
     /// Each machine's work to the end, a step's run together (`Lane`): the schedule.
     #[serde(default)]
     pub lanes: BTreeMap<String, Vec<Lane>>,
+}
+
+impl Forecast {
+    /// Whether the build is done: nothing left to build, no round under way, no machine busy.
+    pub fn nothing_left(&self) -> bool {
+        self.why.as_deref() == Some(NOTHING_LEFT)
+    }
 }
 
 /// A run of a machine's work of one step (or a round of publishing, "round"): from and until when
@@ -511,15 +522,18 @@ pub fn forecast(inp: &Input) -> Forecast {
     let expected = run(inp, &|c| c.secs);
     let soon = run(inp, &|c| c.secs * if c.known { 0.95 } else { 0.75 });
     let late = run(inp, &|c| c.secs * if c.known { 1.15 } else { 1.6 });
+    // (Done once every machine is free too: a job under way that's no item, a daily one's, ends then.)
     let end_of = |s: &Sim| -> Option<f64> {
-        s.done.then(|| s.items.iter().map(|i| i.end).chain(s.rounds.iter().map(|r| r.1)).fold(0.0, f64::max))
+        s.done.then(|| s.items.iter().map(|i| i.end).chain(s.rounds.iter().map(|r| r.1)).chain(inp.machines.iter().map(|m| m.busy_s)).fold(0.0, f64::max))
     };
     let at = |secs: f64| (now + secs).round() as u64;
     let mut f = Forecast { at: inp.now, ..Default::default() };
-    let nothing = expected.items.is_empty() && expected.rounds.is_empty();
+    // (Never while a machine is busy: a job under way is work left, items or not.)
+    let busy = inp.machines.iter().any(|m| m.busy_s > 0.0) || !inp.running.is_empty();
+    let nothing = expected.items.is_empty() && expected.rounds.is_empty() && !busy;
     f.why = match (&inp.blind, nothing, expected.done) {
         (Some(b), _, _) => Some(b.clone()),
-        (None, true, _) => Some("nothing left to build".into()),
+        (None, true, _) => Some(NOTHING_LEFT.into()),
         (None, false, false) => Some("there's work no machine can do (none that fits it is around)".into()),
         _ => None,
     };
@@ -693,6 +707,42 @@ mod tests {
 
     fn input<'a>(regions: &'a [RegionLeft], machines: Vec<Machine>, c: &'a dyn Fn(&str, &str) -> Cost) -> Input<'a> {
         Input { now: 1_000_000, before: Vec::new(), regions, cost: c, round_s: 600.0, last_round_s: 600.0, blind: None, chains: Vec::new(), after: vec![("marks".into(), "marks".into(), Cost { secs: 300.0, known: true, peak_mb: 0 })], since_last: None, under_way: None, machines, running: BTreeMap::new() }
+    }
+
+    #[test]
+    fn a_worldwide_job_running_alone_is_work_left() {
+        // (The review's case.) The build Mac runs the pass's labels, an hour left; every region
+        // built and on the map, no chain work.
+        let regions = [RegionLeft { id: "a".into(), on_map: Some(true), ..Default::default() }];
+        let busy = |inp: &mut Input| {
+            inp.machines[0].busy_s = 3600.0;
+            (inp.after, inp.last_round_s) = (Vec::new(), 0.0);
+        };
+        // Out of the jobs before the regions' (as the agent used to leave a running step): not
+        // done, but when the Mac is free.
+        let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
+        busy(&mut inp);
+        inp.running.insert(("labels".into(), "labels".into()), 0);
+        let f = forecast(&inp);
+        assert!(!f.nothing_left(), "{:?}", f.why);
+        assert_eq!(f.done_at, Some(1_000_000 + 3600));
+        // As the agent has it now, a running item of its own: on the schedule, and its step's.
+        let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
+        busy(&mut inp);
+        inp.before = vec![("labels".into(), "labels 2026-09-28".into(), Cost { secs: 2200.0, known: true, peak_mb: 0 })];
+        inp.running.insert(("labels".into(), "labels 2026-09-28".into()), 0);
+        let f = forecast(&inp);
+        assert_eq!((f.why.as_deref(), f.done_at), (None, Some(1_000_000 + 3600)));
+        assert_eq!(f.lanes["m4"].iter().map(|l| (l.step.as_str(), l.until - 1_000_000)).collect::<Vec<_>>(), [("labels", 3600)]);
+        assert_eq!(f.steps.iter().map(|s| (s.step.as_str(), s.left)).collect::<Vec<_>>(), [("labels", 1)]);
+        // A daily job (no item): not done until it ends either.
+        let mut inp = input(&regions, vec![mac("m4", 1.0, false)], &cost);
+        busy(&mut inp);
+        let f = forecast(&inp);
+        assert_eq!((f.why.as_deref(), f.done_at), (None, Some(1_000_000 + 3600)));
+        // Free: nothing left.
+        inp.machines[0].busy_s = 0.0;
+        assert!(forecast(&inp).nothing_left());
     }
 
     #[test]
