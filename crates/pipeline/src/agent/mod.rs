@@ -29,6 +29,7 @@ pub mod gc;
 pub mod jobs;
 pub mod recipes;
 pub mod room;
+pub mod tiles;
 
 use anyhow::{Context, Result};
 use cond::{Conditions, SleepWatch};

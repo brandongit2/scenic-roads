@@ -136,6 +136,12 @@ impl<'a> LayerReader<'a> {
 
 /// The tiles at `z` meeting the box (w, s, e, n in degrees).
 pub fn tiles_in(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
+    let [x0, x1, y0, y1] = tile_range(z, b);
+    (x0..=x1).flat_map(|tx| (y0..=y1).map(move |ty| (tx, ty))).collect()
+}
+
+/// `tiles_in` as ranges: [x0, x1, y0, y1], both ends in.
+pub fn tile_range(z: u8, b: [f64; 4]) -> [u32; 4] {
     let n = 1u32 << z;
     // (A billionth of a tile up before the floor: a box edge on a tile boundary, from
     // tile_box_grown's round trip through degrees, can come back a hair below it and would take in
@@ -146,8 +152,7 @@ pub fn tiles_in(z: u8, b: [f64; 4]) -> Vec<(u32, u32)> {
         let r = lat.clamp(-85.05, 85.05).to_radians();
         tile((1.0 - (r.dtan() + 1.0 / r.dcos()).dln() / std::f64::consts::PI) / 2.0)
     };
-    let (x0, x1, y0, y1) = (x(b[0]), x(b[2]), y(b[3]), y(b[1]));
-    (x0..=x1).flat_map(|tx| (y0..=y1).map(move |ty| (tx, ty))).collect()
+    [x(b[0]), x(b[2]), y(b[3]), y(b[1])]
 }
 
 /// A z/x/y tile's box (degrees) grown by `km`.
