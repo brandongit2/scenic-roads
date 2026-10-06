@@ -14,14 +14,16 @@
 //! ```
 //!
 //! **Room first.** The disk keeps a reserve of free space. When it's short of it, files go until
-//! it's back, in this order: those the current catalog doesn't list (an older catalog's), least
-//! recently used first; then the current catalog's, least recently used first, the basemap last
-//! (it's drawn at every zoom); never the essentials (`essentials`), nor the files the caller keeps
-//! (a Mac's kept areas'). A file never used counts as used when it was copied. Of the files in that
-//! order, the shortest run from the front that covers the deficit goes, less the biggest of them it
-//! can spare, so a round doesn't go far past the deficit; the free space is measured again as each
-//! goes. Nothing is copied while the disk is under the reserve, nor does anything go while the build
-//! Mac runs a job (its jobs read this mirror), unless the disk is below half the reserve.
+//! it's back, in this order: those the current catalog doesn't list (an older catalog's); then the
+//! current catalog's, the basemap last (it's drawn at every zoom); never the essentials
+//! (`essentials`), nor the files the caller keeps (a Mac's kept areas'). Within each, the files
+//! never used go first, the first copied first, then the used ones, least recently used first (a
+//! file copied after its last use, as a new catalog's are, is a used one all the same). Of the
+//! files in that order, the shortest run from the front that covers the deficit goes, less the
+//! biggest of them it can spare, so a round doesn't go far past the deficit; the free space is
+//! measured again as each goes. Nothing is copied while the disk is under the reserve, nor does
+//! anything go while the build Mac runs a job (its jobs read this mirror), unless the disk is below
+//! half the reserve.
 //!
 //! **Copy order**, one file at a time in large sequential reads through the I/O pool: the
 //! essentials, then the kept files, then the rest; within each, small worldwide files, root and lo
@@ -185,8 +187,10 @@ struct Want {
 struct Victim {
     /// 0: the current catalog doesn't list it; 1: it does; 2: it's the current basemap.
     class: u8,
-    /// Its last use, or when it was copied if later (or never used).
-    recency: u64,
+    /// Whether the map has used it (its logical name): within a class, those never used go first.
+    used: bool,
+    /// Its last use; for one never used, when it was copied.
+    at: u64,
     size: u64,
     name: String,
     /// A copy in progress.
@@ -226,8 +230,8 @@ struct State {
     /// Complete local copies: content name → size.
     files: HashMap<String, u64>,
     /// When each complete copy was made (content name → milliseconds since 1970: the file's
-    /// modification time when the mirror was opened, the stamp of its copy since). A file never
-    /// used counts as used then (room first's order).
+    /// modification time when the mirror was opened, the stamp of its copy since). Of the files
+    /// never used, the first copied go first (room first's order).
     copied: HashMap<String, u64>,
     /// Logical name → last use (milliseconds since 1970, strictly increasing per touch).
     uses: HashMap<String, u64>,
@@ -553,8 +557,10 @@ impl Mirror {
 
     /// The local files `take` lets go to make room, sparing the essentials, the kept files and
     /// `fresh` (copied this sync), in the order they go: files the current catalog doesn't list,
-    /// then the current catalog's, then its basemap; by recency within each (a file never used
-    /// counts as used when it was copied). Copies in progress go as their files would.
+    /// then the current catalog's, then its basemap; within each, those never used, the first
+    /// copied first, then the used ones, the least recently used first (whenever they were copied:
+    /// a new catalog copies again the files used before it). Copies in progress go as their files
+    /// would (not copied yet: the first of those never used).
     fn victims(&self, ctx: &Ctx, take: Take, fresh: &HashSet<String>) -> Vec<Victim> {
         let mut partials = HashMap::new();
         if let Err(e) = scan(&self.root.join("mirror").join(PARTIAL), "", &mut partials) {
@@ -578,11 +584,11 @@ impl Mirror {
                     Take::Old => class == 0,
                     Take::Unused => class == 0 || (class == 1 && used.is_none()),
                 };
-                let recency = used.unwrap_or(0).max(st.copied.get(n).copied().unwrap_or(0));
-                may.then(|| Victim { class, recency, size, name: n.clone(), partial })
+                let at = used.unwrap_or_else(|| st.copied.get(n).copied().unwrap_or(0));
+                may.then(|| Victim { class, used: used.is_some(), at, size, name: n.clone(), partial })
             })
             .collect();
-        v.sort_by(|a, b| (a.class, a.recency, &a.name).cmp(&(b.class, b.recency, &b.name)));
+        v.sort_by(|a, b| (a.class, a.used, a.at, &a.name).cmp(&(b.class, b.used, b.at, &b.name)));
         v
     }
 
@@ -1419,9 +1425,9 @@ mod tests {
         m.on_evict(move |names| e2.lock().unwrap().extend(names.iter().cloned()));
 
         // A new catalog where only B's base pack changed, and the disk 150 kB short of the reserve
-        // (the user filled it): the old base pack goes first; then the current catalog's files
-        // least recently used first (those never used as when they were copied: the outlines, the
-        // road values, the hi data, A's hi pack), until the run covers the deficit (190 kB); of
+        // (the user filled it): the old base pack goes first; then the current catalog's files,
+        // those never used first, the first copied first (the outlines, the road values, the hi
+        // data, A's hi pack), until the run covers the deficit (190 kB); of
         // that run, the outlines and A's hi data are spared, the run less them covering it still.
         // Nothing is copied: there's no room for B's new base pack, and nothing else may go for it.
         let cat2 = two_areas(&nas, 2, 0, 99);
@@ -1642,7 +1648,7 @@ mod tests {
     }
 
     #[test]
-    fn a_file_never_used_counts_as_used_when_it_was_copied() {
+    fn files_never_used_go_in_the_order_they_were_copied() {
         let nas = nas();
         let home = tempfile::tempdir().unwrap();
         let cat = two_areas(&nas, 1, 0, 1);
@@ -1650,7 +1656,8 @@ mod tests {
         m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
         drop(m);
         // No use records (the old server noted a use only when a file was first mapped): when each
-        // was copied orders them. B's hi pack copied three hours ago, A's an hour ago, the rest now.
+        // was copied (its modification time) orders them. B's hi pack copied three hours ago, A's
+        // an hour ago, the rest now.
         let hours = |h: u64| SystemTime::now() - Duration::from_secs(h * 3600);
         let set = |l: &str, t: SystemTime| OpenOptions::new().write(true).open(home.path().join("mirror").join(cat.content(l).unwrap())).unwrap().set_modified(t).unwrap();
         set("layers/roads/hi/6-33-21", hours(3));
@@ -1875,9 +1882,11 @@ mod tests {
             m.touch(cat1.content(l).unwrap());
         }
 
-        // A new catalog where everything changed. As each new file needs room, old files go, least
-        // recently used (or copied) first, no more of them than it needs: the old lo pack for the
-        // hi data, the old base pack for the base pack, the old basemap for the hi pack.
+        // A new catalog where everything changed. As each new file needs room, old files go, those
+        // never used first (the first copied first), then the used ones, least recently used first,
+        // no more of them than it needs: the old lo pack for the hi data, the old base pack for the
+        // base pack (used, but none of the others together make room for it), the old basemap for
+        // the hi pack.
         let cat2 = catalog(&nas, 2, 100);
         let s = m.sync(&cat2, &none(), nas.root(), &nas.pool, &|| false).unwrap();
         assert_eq!((s.copied, s.skipped, s.evicted, s.end), (9, 0, 3, SyncEnd::Done));
@@ -1885,18 +1894,23 @@ mod tests {
         assert_eq!(kept, ["global/marks/summary", "global/pois", "global/roads/6-32-21", "hidata/6-32-21", "layers/roads/hi/6-32-21", "layers/roads/root"]);
 
         // The previous catalog's files aren't spared any more: with catalog 2 saved, catalog 3
-        // takes the room of catalog 1's leftovers and catalog 2's alike, least recently used
-        // first, and is copied whole.
+        // takes the room of catalog 1's leftovers and catalog 2's alike, and is copied whole. Those
+        // never used go first, the first copied first (catalog 1's, then catalog 2's), the used
+        // ones last: both catalogs' hi and root packs, and catalog 2's base pack (copied after
+        // their last use, they're used ones all the same).
         m.save_catalog(&cat1).unwrap();
         m.save_catalog(&cat2).unwrap();
         let cat3 = catalog(&nas, 3, 200);
         let s = m.sync(&cat3, &none(), nas.root(), &nas.pool, &|| false).unwrap();
-        assert_eq!((s.copied, s.skipped, s.evicted, s.pending), (9, 0, 8, 0));
+        assert_eq!((s.copied, s.skipped, s.evicted, s.pending), (9, 0, 7, 0));
         let old: Vec<&str> = cat1.files.iter().chain(&cat2.files).filter(|(_, f)| m.local(&f.file).is_some()).map(|(l, _)| l.as_str()).collect();
-        // (Of catalog 1's: its 1 kB places file, the 2 kB summary going with the hi pack and the
-        // road values for the new basemap's room: the run's spare was a little under 2 kB, the use
-        // times file taking the rest on this fake disk.)
-        assert_eq!(old, ["global/pois", "global/marks/summary", "global/pois", "global/roads/6-32-21", "hidata/6-32-21", "layers/roads/hi/6-32-21", "layers/roads/lo/3-4-2"]);
+        // Gone: for the new basemap's room (71 kB, and the use times file on this fake disk),
+        // catalog 1's places file and hi data and catalog 2's places file and lo pack (the run's
+        // spare, catalog 1's road values and both summaries, 24 kB, can't take a places file too:
+        // the use times file has the last kB); for the road values, catalog 1's; for the hi data,
+        // catalog 2's basemap; for the base pack, catalog 2's, the one used file to go (nothing
+        // else makes room for it). Of catalog 1's, its summary and its used hi and root packs stay.
+        assert_eq!(old, ["global/marks/summary", "layers/roads/hi/6-32-21", "layers/roads/root", "global/marks/summary", "global/roads/6-32-21", "hidata/6-32-21", "layers/roads/hi/6-32-21", "layers/roads/root"]);
         // None of the current catalog's files went.
         assert!(cat3.files.values().all(|f| m.local(&f.file).is_some()));
         // Within the budget throughout.
@@ -1984,5 +1998,40 @@ mod tests {
         m.save_catalog(&catalog(&nas, 5, 5)).unwrap();
         assert_eq!(m.saved_catalog().unwrap().unwrap().n, 5);
         assert_eq!(catalog::list(&home.path().join("catalog")).unwrap(), [5, 4, 3]);
+    }
+
+    /// The M1 after catalog 14: every file here was copied after its last use (the new catalog's
+    /// files were copied at 02:33–02:42, the owner's uses are from Oct 3), and the copy order puts
+    /// the most recently used first, so they have the oldest copy times. Counting a used file as
+    /// used when it was copied (if later) then has room first let go of the used files before the
+    /// never-used ones copied after them: on the M1, 8.25 GB of the 9.54 GB it lets go were used
+    /// (all of its hi data and road values go in the first round), while 5.17 GB never used stay.
+    #[test]
+    fn review_a_used_file_isnt_let_go_before_never_used_ones_copied_after_its_use() {
+        let nas = nas();
+        let home = tempfile::tempdir().unwrap();
+        let cat = two_areas(&nas, 1, 0, 1);
+        let m = mirror(home.path(), 1 << 40, 0);
+        m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        drop(m);
+        let ago = |h: u64| SystemTime::now() - Duration::from_secs(h * 3600);
+        let ms = |t: SystemTime| t.duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
+        // A's base pack and hi data used five hours ago, copied again three hours ago (a new
+        // catalog), first (the most recently used first); both hi packs, never used, copied after
+        // them, an hour ago; the rest just now.
+        let uses: BTreeMap<&str, u64> = [("base/6-32-21", ms(ago(5))), ("hidata/6-32-21", ms(ago(5)))].into();
+        fs::write(home.path().join("mirror").join(USES), serde_json::to_vec(&uses).unwrap()).unwrap();
+        let set = |l: &str, t: SystemTime| OpenOptions::new().write(true).open(home.path().join("mirror").join(cat.content(l).unwrap())).unwrap().set_modified(t).unwrap();
+        set("base/6-32-21", ago(3));
+        set("hidata/6-32-21", ago(3));
+        set("layers/roads/hi/6-32-21", ago(1));
+        set("layers/roads/hi/6-33-21", ago(1));
+        // 100 kB short: both never-used hi packs cover it.
+        let reserve = 300_000;
+        let m = mirror(home.path(), used(&home.path().join("mirror")) + reserve - 100_000, reserve);
+        let s = m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        let base_a = cat.content("base/6-32-21").unwrap();
+        assert!(m.has(base_a), "A's base pack, used, went before never-used hi packs copied after its use: {s:?}, here {:?}", here(&m, &cat));
+        assert!(!m.has(cat.content("layers/roads/hi/6-32-21").unwrap()) && !m.has(cat.content("layers/roads/hi/6-33-21").unwrap()));
     }
 }
