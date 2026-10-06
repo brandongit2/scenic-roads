@@ -1,11 +1,13 @@
-"""Drawing helpers for the pipeline diagrams (proposed.py, storage.py; page.py puts them together)."""
+"""Drawing helpers for the pipeline diagrams (proposed.py, storage.py, workers.py; page.py puts them together)."""
 from html import escape as E
 
 W = 1484
 COLS = {'src': (16, 180), 'd1': (224, 196), 'd2': (450, 196), 'd3': (676, 196), 'd4': (902, 196),
         'srv': (1124, 140), 'brw': (1286, 182)}
 CLASSES = ['base', 'place', 'terr', 'net', 'scen', 'land', 'bldg', 'osm', 'mix']
-TAB = {'area': 'PER AREA', 'pack': 'PER Z3 PACK', 'global': 'WORLDWIDE'}
+TAB = {'area': 'PER AREA', 'pack': 'PER Z3 PACK', 'global': 'WORLDWIDE', 'task': 'TASK'}
+# Before a step's language: the M1's helper may take its jobs (agent::claims::SHARED).
+SHARED = '⇄'
 
 
 class Bx:
@@ -45,12 +47,16 @@ class Diagram:
         m = f' data-max="{maxw:.0f}"' if self.check and maxw else ''
         return f'<text class="{cls}" x="{x:.1f}" y="{y:.1f}"{a}{m}>{E(s)}</text>'
 
-    def card(self, k, col, y, title, tool, subs, groups, kept=None, minh=0, scope=None, later=False):
+    def card(self, k, col, y, title, tool, subs, groups, kept=None, minh=0, scope=None, later=False, shared=False, task=False):
         """A build step (tinted header: name, language, what it does) over the files it writes
-        (body: names, then format and size); scope: a tab saying how it's divided; later: not built
-        yet, or built but off (a dashed outline)."""
+        (body: names, then format and size); scope: a tab saying how it's divided; later: planned,
+        not built yet (a dashed outline); shared: the M1's helper may take its jobs (⇄ before the
+        language); task: a second tab, the step is part of an area's last steps, which any worker
+        may run as a task (a device's page too)."""
         x, w = COLS[col]
         tx = self.tx
+        if shared:
+            tool = f'{SHARED} {tool}'
         ty = y + 18
         hh = ty + 13.5 * len(subs) + 9 - y
         body, yy = [], y + hh + 3
@@ -69,13 +75,14 @@ class Diagram:
         h = max(yy - y, minh)
         r = 5
         el = [f'<g class="c-{k}">']
-        if scope:
-            t = TAB[scope]
+        x1 = x + w - 8
+        for kind in ([scope] if scope else []) + (['task'] if task else []):
+            t = TAB[kind]
             tw = 5.6 * len(t) + 14
-            x1 = x + w - 8
             x0, ty0 = x1 - tw, y - 13
-            el.append(f'<path class="tab {scope}" d="M{x0:.1f},{y} V{ty0 + 3} Q{x0:.1f},{ty0} {x0 + 3:.1f},{ty0} H{x1 - 3} Q{x1},{ty0} {x1},{ty0 + 3} V{y} Z"/>')
+            el.append(f'<path class="tab {kind}" d="M{x0:.1f},{y} V{ty0 + 3} Q{x0:.1f},{ty0} {x0 + 3:.1f},{ty0} H{x1 - 3:.1f} Q{x1:.1f},{ty0} {x1:.1f},{ty0 + 3} V{y} Z"/>')
             el.append(tx('tab-t', x0 + tw / 2, y - 3.6, t, anchor='middle'))
+            x1 = x0 - 4
         el += [f'<rect class="card" x="{x}" y="{y}" width="{w}" height="{h:.1f}" rx="{r}"/>',
                f'<path class="card-hd" d="M{x},{y + hh:.1f} V{y + r} Q{x},{y} {x + r},{y} H{x + w - r} Q{x + w},{y} {x + w},{y + r} V{y + hh:.1f} Z"/>',
                f'<line class="card-sep" x1="{x}" y1="{y + hh:.1f}" x2="{x + w}" y2="{y + hh:.1f}"/>',
@@ -112,13 +119,13 @@ class Diagram:
         self.boxes.append(f'<g class="c-{k}"><rect class="src" x="{x}" y="{y}" width="{w}" height="{h:.1f}" rx="11"/>' + ''.join(el) + '</g>')
         return Bx(x, y, w, h)
 
-    def pill(self, k, cy, lines, note=None):
-        """Server routes, centred on cy; note: a line on how they're served."""
+    def pill(self, k, cy, lines, note=None, later=False):
+        """Server routes, centred on cy; note: a line on how they're served; later: planned."""
         x, w = COLS['srv']
         notes = [note] if isinstance(note, str) else list(note or [])
         h = 8 + 12.5 * len(lines) + 12 * len(notes)
         y = cy - h / 2
-        el = [f'<rect class="pill" x="{x}" y="{y:.1f}" width="{w}" height="{h:.1f}" rx="8"/>']
+        el = [f'<rect class="pill{" later" if later else ""}" x="{x}" y="{y:.1f}" width="{w}" height="{h:.1f}" rx="8"/>']
         for i, s in enumerate(lines):
             el.append(self.tx('route', x + 9, y + 3 + 12.5 * (i + 1), s, w - 18))
         for i, s in enumerate(notes):
@@ -126,14 +133,15 @@ class Diagram:
         self.boxes.append(f'<g class="c-{k}">' + ''.join(el) + '</g>')
         return Bx(x, y, w, h)
 
-    def layer(self, k, y, title, subs, computed=False, cy=None):
-        """A map layer in the browser (dotted: computed there); cy: centred there."""
+    def layer(self, k, y, title, subs, computed=False, cy=None, later=False):
+        """A map layer in the browser (dotted: computed there; dashed: planned); cy: centred there."""
         x, w = COLS['brw']
         h = 17 + 13.5 * len(subs) + 9
         if cy is not None:
             y = cy - h / 2
         ty = y + 17
-        el = [f'<rect class="layer{" computed" if computed else ""}" x="{x}" y="{y:.1f}" width="{w}" height="{h:.1f}" rx="6"/>',
+        cls = 'layer' + (' computed' if computed else '') + (' later' if later else '')
+        el = [f'<rect class="{cls}" x="{x}" y="{y:.1f}" width="{w}" height="{h:.1f}" rx="6"/>',
               self.tx('lt', x + 10, ty, title, w - 20)]
         for i, s in enumerate(subs):
             el.append(self.tx('sub', x + 10, ty + 13.5 * (i + 1), s, w - 20))
@@ -150,12 +158,12 @@ class Diagram:
         if label:
             self.labels.append(f'<g class="c-{k}">' + self.tx('lbl', at[0], at[1], label, anchor=anchor) + '</g>')
 
-    def to_layer(self, k, p, b, dx=12):
+    def to_layer(self, k, p, b, dx=12, dashed=False):
         """Pill → map layer: straight when level, else a dogleg just before the layer."""
         if abs(p.my - b.my) < 1:
-            self.arrow(k, (p.r, p.my), (b.l, b.my))
+            self.arrow(k, (p.r, p.my), (b.l, b.my), dashed=dashed)
         else:
-            self.arrow(k, (p.r, p.my), (b.l - dx, p.my), (b.l - dx, b.my), (b.l, b.my))
+            self.arrow(k, (p.r, p.my), (b.l - dx, p.my), (b.l - dx, b.my), (b.l, b.my), dashed=dashed)
 
     def lane(self, title, y0, y1):
         self.bands.append(f'<rect class="lane" x="6" y="{y0:.1f}" width="{W - 12}" height="{y1 - y0:.1f}" rx="10"/>')
@@ -244,11 +252,14 @@ svg .tab.pack{fill:color-mix(in srgb,var(--k) 55%,var(--surface))}
 svg .tab.pack+.tab-t{fill:var(--fg)}
 svg .tab.global{fill:var(--k)}
 svg .tab.global+.tab-t{fill:var(--surface)}
+svg .tab.task{fill:var(--surface)}
+svg .tab.task+.tab-t{fill:var(--k)}
 svg .src{fill:color-mix(in srgb,var(--k) 7%,var(--surface));stroke:var(--k);stroke-width:1.2}
 svg .kept{fill:none;stroke:var(--k);stroke-width:1;stroke-dasharray:3.5 2.5}
 svg .pill{fill:var(--surface);stroke:var(--k);stroke-width:1}
 svg .layer{fill:color-mix(in srgb,var(--k) 9%,var(--surface));stroke:var(--k);stroke-width:1.2}
 svg .layer.computed{stroke-dasharray:1.2 3;stroke-linecap:round;stroke-width:1.6}
+svg .pill.later,svg .layer.later{stroke-dasharray:5 3.5}
 svg .tt{font:600 12.5px var(--sans);fill:var(--fg)}
 svg .lt{font:600 12px var(--sans);fill:var(--fg)}
 svg .tool{font:600 9.5px var(--sans);letter-spacing:.04em;fill:var(--k)}
@@ -264,6 +275,8 @@ svg .mk{fill:var(--k)}
 svg .lbl{font:600 10.5px var(--sans);fill:var(--k);paint-order:stroke;stroke:var(--bg);stroke-width:4px;stroke-linejoin:round}
 svg .st-box{fill:var(--surface);stroke:var(--edge);stroke-width:1.2}
 svg .st-box.nas{stroke:var(--fg);stroke-width:1.5}
+svg .st-box.later{stroke-dasharray:5 3.5}
+svg .st-box.group{fill:var(--lane)}
 svg .st-t{font:600 13px var(--sans);fill:var(--fg)}
 svg .st-l{font:400 11.5px var(--sans);fill:var(--muted)}
 svg .st-f{font:500 11px var(--mono);fill:var(--fg)}

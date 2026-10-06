@@ -1,5 +1,6 @@
-"""Where the data lives (docs/plan.md v7): the NAS holds everything, only the build Mac writes it, the app Macs run
-the published app and copy what the catalog lists."""
+"""Where the data lives (docs/plan.md v7): the NAS holds everything; the build Mac leads the build and alone writes its
+records (the M1's helper puts its own jobs' files there too: workers.py); the app Macs run the published app and copy
+what the catalog lists."""
 from html import escape as E
 
 from diag import W, Diagram, rpath
@@ -22,18 +23,18 @@ def build(check=False):
             lb.append(tx('st-lbl', at[0], at[1], label, anchor=anchor))
 
     rows = [('translations/', 'your drop-ins (and descriptions/), shown within a minute or two'),
-            ('inputs/', 'your region recipes and outlines, ferry timetables, the catalog hold'),
-            ('sources/', 'the planet (the NAS fetches it), its filtered copy, pieces and sets; the registers'),
+            ('inputs/', 'your region recipes (88) and outlines, ferry timetables, keys'),
+            ('sources/', 'the planet (the NAS fetches it), its pieces and sets; every download, kept once'),
             ('base/ · hidata/', 'per area (z6 tile): its ways with elevations and scenic values; query parts'),
             ('markdata/ · ovdata/', 'landmark points per area; area and park details per z3 tile'),
             ('global/', 'worldwide results: whole roads per area, road → areas, trains a day, totals'),
             ('layers/', 'what the map draws, in packs (detail near the coverage); the worldwide basemap'),
-            ('work/', 'build intermediates: candidates, peaks, summits, heritage'),
-            ('app/ · catalog/', 'the app your Macs run; every file the map reads, by content name'),
-            ('state/', 'the build Mac’s heartbeat; what each file was made from; backups of your folders')]
+            ('work/ · cache/', 'build intermediates; what each area keeps for its next run, on either Mac'),
+            ('app/ · catalog/', 'the app your Macs run; a catalog a round: every file the map reads'),
+            ('state/', 'heartbeats; the build’s records: what each file was made from; backups')]
     top, hh = 16, 47 + 16.5 * len(rows) + 6
     box(16, top, 212, hh, 'Online sources', ['OSM planet, twice a year', 'AWS terrain tiles', 'DEMs · canopy · land cover',
-                                            'Wikidata · pageviews', 'registers (a snapshot)', 'timetables'])
+                                            'Overture buildings', 'Wikidata · pageviews', 'registers (a snapshot)', 'timetables'])
     nx, nw = 286, 560
     box(nx, top, nw, hh, 'NAS · the source of truth', nas=True)
     for i, (f, s) in enumerate(rows):
@@ -43,16 +44,16 @@ def build(check=False):
     ax, aw = 904, 360
     box(ax, top, aw, hh, 'Your Macs', ['the map is always on (a launcher)', 'copy every file the catalog lists,',
                                        'within a budget of free space', 'read the rest from the NAS (timeouts,', 'an offline banner)',
-                                       'Regions panel → recipes in inputs/', 'menu bar: what the build Mac is doing'])
+                                       'Regions panel → recipes in inputs/', 'menu bar: what the build Mac is doing', 'the M1 helps build (below)'])
     bx = 1326
-    box(bx, top, W - 16 - bx, hh, 'Browser', ['the map: MapLibre', 'and WebGL'])
+    box(bx, top, W - 16 - bx, hh, 'Browser', ['the map: MapLibre', 'and WebGL', 'the build page, on', 'any device (below)'])
     by, bh = top + hh + 52, 74
-    box(nx, by, nw, bh, 'Build Mac (M4) · the only builder', ['one job at a time, staged on its SSD; it pauses while asleep, away from',
-                                                                'the NAS or on battery below 30 %, and resumes after; nothing is lost'])
+    box(nx, by, nw, bh, 'Build Mac (M4) · leads the build', ['two jobs at once, staged on its SSD; it pauses while asleep, away from',
+                                                               'the NAS or on battery below 30 %, and resumes after; nothing is lost'])
 
     mid = top + hh / 2
     arrow((228, top + 46), (nx, top + 46), label='the planet', at=(257, top + 39), anchor='middle')
-    arrow((122, top + hh), (122, by + bh / 2), (nx, by + bh / 2), label='tiles, DEMs, canopy, Wikidata (cached)', at=(130, by + bh / 2 - 7))
+    arrow((122, top + hh), (122, by + bh / 2), (nx, by + bh / 2), label='downloads (kept on the NAS)', at=(130, by + bh / 2 - 7))
     arrow((nx + nw, top + 46), (ax, top + 46), label='copies', at=(875, top + 39), anchor='middle')
     arrow((nx + nw, top + 96), (ax, top + 96), label='on demand', at=(875, top + 89), anchor='middle', dashed=True)
     arrow((ax, top + hh - 50), (nx + nw, top + hh - 50), label='recipes', at=(875, top + hh - 57), anchor='middle', dashed=True)
@@ -62,11 +63,12 @@ def build(check=False):
 
     h = by + bh + 14
     aria = ('Where the data lives. The NAS is the source of truth: your translation and description folders, inputs with '
-            'your region recipes, sources (the planet the NAS fetches itself), base data and query data per area, landmark '
-            'points, worldwide results, the layers, build intermediates, the published app, the catalog and build state. '
-            'Only the build Mac writes there, one job at a time, staging on its SSD and caching what it downloads. Your Macs '
-            'run the map under a launcher, copy every file the catalog lists within a budget of free space, read the rest '
-            'from the NAS, and write region recipes from the Regions panel.')
+            'your 88 region recipes, sources (the planet the NAS fetches itself, and every download, kept once), base data and '
+            'query data per area, landmark points, worldwide results, the layers, build intermediates and what each area keeps '
+            'for its next run, the published app, a catalog per round, and the build’s records. The build Mac leads the build, '
+            'two jobs at once, staging on its SSD and caching what it downloads; the M1 helps (the next figure). Your Macs run '
+            'the map under a launcher, copy every file the catalog lists within a budget of free space, read the rest from the '
+            'NAS, and write region recipes from the Regions panel.')
     marker = ('<marker id="sm-a" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">'
               '<path class="st-mk" d="M0,0.8 L10,5 L0,9.2 z"/></marker>')
     return (f'<svg viewBox="0 0 {W} {h:.0f}" role="img" aria-label="{E(aria)}" xmlns="http://www.w3.org/2000/svg">'
