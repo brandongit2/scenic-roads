@@ -108,6 +108,7 @@ button:disabled { opacity: .5; }
 .sched .rounds > i { position: absolute; top: -3px; bottom: 0; width: 2px; margin-left: -1px; background: var(--mark); opacity: .55; pointer-events: auto; cursor: help; border-radius: 1px; }
 .sched .rounds > i:hover { opacity: 1; }
 .legend i.rmark { width: 2px; height: 11px; background: var(--mark); opacity: .7; border-radius: 1px; }
+.legend i.rhatch { width: 16px; background: repeating-linear-gradient(135deg, var(--mark) 0 2px, transparent 2px 4px); opacity: .7; }
 .pbar.dimbar > i { background: var(--dimbar); }
 .legend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 11px; color: var(--dim); }
 .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }

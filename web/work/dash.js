@@ -426,7 +426,10 @@ function schedule(m) {
     const say = `${r.last ? "Last round" : "Round"} ≈ ${clock(r.at)}: ${r.regions.length ? r.regions.slice(0, 6).map((id) => m.regionName[id] || id).join(", ") + (r.regions.length > 6 ? ` and ${r.regions.length - 6} more` : "") : "the rest"}`;
     marks.append(h("i", { style: { left: x(r.at) }, onmousemove: (e) => showTip(e, say), onmouseleave: hideTip, onclick: (e) => showTip(e, say) }));
   }
-  const legend = h("div", "legend", [...steps].filter((s) => s !== "round").map((s) => h("span", null, h("i", { style: { background: stepColour(s) } }), stepName(s))), h("span", null, h("i", { class: "rmark" }), "a round of publishing"));
+  // (A round of publishing being made, hatched: the map drawn for its regions, its catalog last;
+  // its mark, when it's out on the map. Two rounds one after the other: two hatched runs, a mark
+  // between.)
+  const legend = h("div", "legend", [...steps].filter((s) => s !== "round").map((s) => h("span", null, h("i", { style: { background: stepColour(s) } }), stepName(s))), steps.has("round") && h("span", null, h("i", { class: "rhatch" }), "a round of publishing being made"), h("span", null, h("i", { class: "rmark" }), "a round out on the map"));
   return h("div", "sched", h("div", "lanewrap", lanes, marks), legend);
 }
 
