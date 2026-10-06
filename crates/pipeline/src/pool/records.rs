@@ -210,18 +210,38 @@ impl Records {
 
 /// Makes term 1's first snapshot from today's three files, unless it has one: before term 1 is
 /// made (crate::pool::term::bootstrap), so every Mac that learns of term 1 reads its snapshot whole.
-/// (Made with create-new: of two Macs making it, the first's stays. One whose bytes didn't land is
-/// left as it is: term 1's lead saves over it, and `start` takes term 1 up from today's files
-/// meanwhile. Its maker finishing it later could land over that lead's snapshot.)
+/// Made with create-new: of two Macs making it, the first's stays. This call's create whose bytes
+/// didn't land is written whole, as `term::finish` does a term's, before term 1 is made. One there
+/// already that doesn't read whole (an earlier try's, its answer lost or its maker stopped; or
+/// another Mac's, its bytes not landed yet, or a stale read) is left as it is: written whole now, a
+/// stale read could land it over a snapshot term 1's lead saved since; `start` takes term 1 up
+/// from today's files once it has stayed unreadable longer than any stale read. (This call's
+/// finish landing late, its Mac asleep between its temporary file and its rename, could land over
+/// a snapshot a lead the owner forced meanwhile saved: plan §10.)
 pub fn first(nas: &dyn Nas) -> Result<()> {
     if nas.exists(&path(1))? {
         return Ok(());
     }
     let b = serde_json::to_vec(&Records { seq: 1, ..Records::today(nas)? })?;
     match nas.create_new(&path(1), &b)? {
-        Created::Made | Created::There | Created::Unwritten(_) => Ok(()),
+        Created::Made | Created::There => Ok(()),
+        Created::Unwritten(_) => nas.write_whole(&path(1), &b).context("finish term 1's first snapshot"),
     }
 }
+
+/// `start`'s error while term 1's first snapshot can't be read whole: tried again, as a handover's
+/// snapshot not readable yet is, until it has stayed so longer than any stale read (`start`'s
+/// `today`).
+#[derive(Debug)]
+pub struct FirstUnreadable;
+
+impl std::fmt::Display for FirstUnreadable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "term 1's first records can't be read whole yet: try again shortly")
+    }
+}
+
+impl std::error::Error for FirstUnreadable {}
 
 /// What a merge did, by journal key.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -313,9 +333,12 @@ pub fn by_lease(keys: &mut [String]) {
 /// take-up, its save failed, has its records numbered on). A handover's term (`t.seq`) starts only
 /// from the snapshot it names, or a later one of its term: an error until a read gives that one
 /// (a stale read gives an older), to try again shortly. Term 1's first snapshot that can't be read
-/// is today's files (`first`'s source, which nothing has written since: a lead's saves are whole).
-/// Numbered as `t`'s, on from a snapshot of `t`'s own, from 0 otherwise.
-pub fn start(nas: &dyn Nas, t: &Term, own: Option<&Records>) -> Result<Records> {
+/// whole is too (`FirstUnreadable`: a stale read of its cut create, or of today's files, pairs a
+/// manifest of one version with keys of another), until it has stayed so longer than any stale
+/// read (`today`): today's files then, `first`'s source, which no lead has written since (term 1's
+/// writes them after its saves, and none of its saves landed). Numbered as `t`'s, on from a
+/// snapshot of `t`'s own, from 0 otherwise.
+pub fn start(nas: &dyn Nas, t: &Term, own: Option<&Records>, today: bool) -> Result<Records> {
     let mut base = None;
     let mut f = t.term;
     while f >= 1 {
@@ -327,7 +350,8 @@ pub fn start(nas: &dyn Nas, t: &Term, own: Option<&Records>) -> Result<Records> 
             match nas.read(&path(1))? {
                 Some(b) => match serde_json::from_slice::<Records>(&b) {
                     Ok(r) if r.term == 1 => Some(r),
-                    _ => Some(Records { seq: 1, ..Records::today(nas)? }),
+                    _ if today => Some(Records { seq: 1, ..Records::today(nas)? }),
+                    _ => return Err(FirstUnreadable.into()),
                 },
                 None => None,
             }
@@ -381,13 +405,13 @@ pub fn handed(r: &mut Records, t: &Term) -> Option<serde_json::Value> {
     r.handed.clone()
 }
 
-/// Takes up term `t` (§6.2) in one go: `start` (from `own`, as it says), the journal entries `keys`
-/// (a listing of the journal) replayed where the records don't name them, `check`ed first; saved
-/// as `t`'s first snapshot, and the refusals noted. When the save fails, `own` keeps the
-/// records as tried, numbered: passed again, the next try numbers on (no two versions of a snapshot
-/// that may both land share a number).
-pub fn take_up(nas: &dyn Nas, t: &Term, own: &mut Option<Records>, keys: &[String], check: Check) -> Result<TakenUp> {
-    let mut r = start(nas, t, own.as_ref())?;
+/// Takes up term `t` (§6.2) in one go: `start` (from `own`, as it says; `today` as it says), the
+/// journal entries `keys` (a listing of the journal) replayed where the records don't name them,
+/// `check`ed first; saved as `t`'s first snapshot, and the refusals noted. When the save fails,
+/// `own` keeps the records as tried, numbered: passed again, the next try numbers on (no two
+/// versions of a snapshot that may both land share a number).
+pub fn take_up(nas: &dyn Nas, t: &Term, own: &mut Option<Records>, keys: &[String], check: Check, today: bool) -> Result<TakenUp> {
+    let mut r = start(nas, t, own.as_ref(), today)?;
     let handed = handed(&mut r, t);
     let merged = merge(nas, &mut r, keys, check);
     if let Err(e) = r.save(nas) {
@@ -430,9 +454,10 @@ mod tests {
         Member { id: "m-000000000000000a".into(), host: "Mac-mini".into(), app: app.into() }
     }
 
-    /// Takes up `t` in one go, the journal listed whole.
+    /// Takes up `t` in one go, the journal listed whole (term 1's first snapshot that can't be read
+    /// whole taken from today's files: it has stayed so longer than any stale read).
     fn up(nas: &dyn Nas, t: &Term, own: Option<Records>, check: Check) -> Result<TakenUp> {
-        take_up(nas, t, &mut own.clone(), &journal::list(nas, None)?, check)
+        take_up(nas, t, &mut own.clone(), &journal::list(nas, None)?, check, true)
     }
 
     #[test]
@@ -454,7 +479,7 @@ mod tests {
         first(&nas).unwrap();
         assert_eq!(Records::load(&nas, 1).unwrap(), Some(r.clone()));
         // Its maker stopped between its create and its bytes: readers can't read it, and term 1's
-        // take-up starts from today's files.
+        // take-up starts from today's files once it has stayed so longer than any stale read.
         let stopped = Mem::default();
         stopped.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
         stopped.create_new(&path(1), b"").unwrap();
@@ -805,13 +830,45 @@ mod tests {
         journal::write(&nas, &built(1, 1, "6-1-1", "k1")).unwrap();
         nas.lost.set(true);
         let mut own = None;
-        assert!(take_up(&nas, &t2, &mut own, &journal::list(&nas, None).unwrap(), &any).is_err());
+        assert!(take_up(&nas, &t2, &mut own, &journal::list(&nas, None).unwrap(), &any, false).is_err());
         let first = Records::load(&nas.mem, 2).unwrap().unwrap();
         assert_eq!(own.as_ref().map(|r| (r.term, r.seq)), Some((2, 1)), "kept as tried");
         journal::write(&nas, &built(1, 2, "6-1-2", "k2")).unwrap();
-        let again = take_up(&nas, &t2, &mut own, &journal::list(&nas, None).unwrap(), &any).unwrap().records;
+        let again = take_up(&nas, &t2, &mut own, &journal::list(&nas, None).unwrap(), &any, false).unwrap().records;
         assert_eq!((first.seq, again.seq, first.reflected.len(), again.reflected.len()), (1, 2, 1, 2));
         assert!(own.is_none());
+    }
+
+    #[test]
+    fn term_ones_first_snapshot_whose_create_is_cut_is_written_whole() {
+        // Its create made the file and its bytes didn't land. (Re-review 2, H1: term 1 was made all
+        // the same, and a take-up under stale reads paired today's files of two versions.)
+        struct Cut(Mem);
+        impl Nas for Cut {
+            fn create_new(&self, p: &str, _: &[u8]) -> Result<Created> {
+                self.0.create_new(p, b"")?;
+                Ok(Created::Unwritten(anyhow::anyhow!("write {p} (made, and left short)")))
+            }
+            fn write_whole(&self, p: &str, bytes: &[u8]) -> Result<()> {
+                self.0.write_whole(p, bytes)
+            }
+            fn read(&self, p: &str) -> Result<Option<Vec<u8>>> {
+                self.0.read(p)
+            }
+            fn exists(&self, p: &str) -> Result<bool> {
+                self.0.exists(p)
+            }
+            fn list(&self, dir: &str) -> Result<Vec<String>> {
+                self.0.list(dir)
+            }
+            fn remove(&self, p: &str) -> Result<()> {
+                self.0.remove(p)
+            }
+        }
+        let nas = Cut(Mem::default());
+        nas.0.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
+        first(&nas).unwrap();
+        assert_eq!(Records::load(&nas, 1).unwrap().map(|r| (r.seq, r.manifest.len())), Some((1, 1)));
     }
 
     #[test]

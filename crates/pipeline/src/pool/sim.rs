@@ -1848,6 +1848,17 @@ fn a_development_build_or_a_rollback_leaves_a_lead() {
 }
 
 #[test]
+fn term_ones_first_snapshot_cut_short_then_a_forced_takeover() {
+    // Seed 3090226 of the four-hour runs (re-review 2, H1): term 1's first snapshot's create cut
+    // short, term 1 made all the same, its lead's saves and today's files after them read stale by
+    // a Mac the owner then has take over: term 2's first snapshot paired a manifest of one version
+    // with keys of another (invariant 4).
+    let cfg = Cfg { faults: 14_400, end: 15_900, stale: 184, list_s: (3, 33), cuts: true, lose: true, ..Cfg::pool() };
+    let r = run(3_090_226, cfg, false);
+    assert!(r.wrong.is_empty(), "{:?}", r.wrong.iter().take(3).collect::<Vec<_>>());
+}
+
+#[test]
 fn an_entry_never_whole_is_refused_after_an_hour() {
     // Entries cut short on the share for good, in runs of four hours' faults: refused once the
     // lead's reads have found them not whole for an hour (driver::UNREADABLE_S), and no other.

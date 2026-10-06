@@ -99,6 +99,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const GAP_S: u64 = 60;
 /// A step running longer than this, awake: the NAS stalled, and its lead re-asserts (s).
 pub const STALL_S: u64 = 300;
+/// The longest a read is taken to stay stale (s; how long the share keeps reads stale is unchecked:
+/// plan §10): term 1's first snapshot that a take-up can't read whole for this long awake is taken
+/// for one that won't be, and the take-up starts from today's files.
+pub const STALE_S: u64 = 600;
 /// The time a step spends writing its jobs' entries, and reading entries to merge, before it leaves
 /// the rest to the next steps (on a share under load each takes seconds) (s).
 pub const BUSY_S: u64 = 60;
@@ -390,6 +394,8 @@ pub struct Driver {
     first: Option<u64>,
     /// The lead that stood down, as seen: its term, and since when (this Mac's clock).
     stood: Option<(u64, u64)>,
+    /// Since when (awake clock) a take-up has found term 1's first snapshot not whole.
+    first_unread: Option<u64>,
 }
 
 /// Whether the clocks went `was` → `now` (wall, awake) with more than `GAP_S` unaccounted for: the
@@ -429,7 +435,7 @@ impl Driver {
         let known = saved.member == me.id;
         let saved = if known { saved } else { Saved { member: me.id.clone(), mine: saved.mine.unwritten_only(), ..Default::default() } };
         let passing = saved.passing.clone().map(|(own, passed, hand)| Passing { own, passed, hand, records: None });
-        Driver { me, lock: None, stopped: None, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: None, asks: 0, swept: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None }
+        Driver { me, lock: None, stopped: None, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: None, asks: 0, swept: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None, first_unread: None }
     }
 
     /// What to keep for the next process (after every step that changed it).
@@ -753,9 +759,20 @@ impl Driver {
             Some(r) if r.term == t.term => Some(r.clone()),
             _ => self.spare.clone(),
         };
-        let mut r = match records::start(io, t, own.as_ref()) {
-            Ok(r) => r,
-            Err(e) => return out.events.push(Event::Waits { what: "take up", why: format!("term {}: {e:#}", t.term) }),
+        // (Term 1's first snapshot not whole: from today's files only once it has stayed so for
+        // `STALE_S` awake, no stale read of it, or of today's files, left.)
+        let today = self.first_unread.is_some_and(|at| io.awake().saturating_sub(at) >= STALE_S);
+        let mut r = match records::start(io, t, own.as_ref(), today) {
+            Ok(r) => {
+                self.first_unread = None;
+                r
+            }
+            Err(e) => {
+                if e.is::<records::FirstUnreadable>() {
+                    self.first_unread.get_or_insert(io.awake());
+                }
+                return out.events.push(Event::Waits { what: "take up", why: format!("term {}: {e:#}", t.term) });
+            }
         };
         let handed = records::handed(&mut r, t);
         // (Nothing merged yet: its members tell it of their entries once they know it leads, and a
@@ -1923,6 +1940,105 @@ mod tests {
         let l = again.expect("asked again");
         ia.pass(20);
         assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: l.n, keys: Vec::new() }), ..able() }).caught_up);
+    }
+
+    #[test]
+    fn rr2_term_ones_fallback_to_todays_files_pairs_versions_under_stale_reads() {
+        // Seed 3090226 of 100,000 four-hour schedules (re-review 2, H1): term 1's first snapshot's
+        // create cut short; term 1's lead saves twice, writing today's three files after each; the
+        // owner has B take over, its reads stale: term 1's snapshot as it was cut (empty),
+        // `jobs.json` as it was before the last save, `manifest.json` as it is now. Falling back to
+        // today's files at once paired a manifest of one version with keys of another (invariant
+        // 4). Term 1's maker now writes its snapshot whole before term 1 is made, and a take-up that
+        // can't read it whole tries again, until its reads aren't stale.
+        struct Stale<'a>(&'a Mem, Vec<(String, Vec<u8>)>);
+        impl Nas for Stale<'_> {
+            fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
+                self.0.create_new(path, bytes)
+            }
+            fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
+                self.0.write_whole(path, bytes)
+            }
+            fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+                Ok(match self.1.iter().find(|(p, _)| p == path) {
+                    Some((_, b)) => Some(b.clone()),
+                    None => self.0.read(path)?,
+                })
+            }
+            fn exists(&self, path: &str) -> Result<bool> {
+                self.0.exists(path)
+            }
+            fn list(&self, dir: &str) -> Result<Vec<String>> {
+                self.0.list(dir)
+            }
+            fn remove(&self, path: &str) -> Result<()> {
+                self.0.remove(path)
+            }
+        }
+        /// Its create of term 1's first snapshot cut short: made, its bytes not landed.
+        struct Cut<'a>(&'a Mem);
+        impl Nas for Cut<'_> {
+            fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
+                if path != records::path(1) {
+                    return self.0.create_new(path, bytes);
+                }
+                self.0.create_new(path, b"")?;
+                Ok(Created::Unwritten(anyhow::anyhow!("write {path} (made, and left short)")))
+            }
+            fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
+                self.0.write_whole(path, bytes)
+            }
+            fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+                self.0.read(path)
+            }
+            fn exists(&self, path: &str) -> Result<bool> {
+                self.0.exists(path)
+            }
+            fn list(&self, dir: &str) -> Result<Vec<String>> {
+                self.0.list(dir)
+            }
+            fn remove(&self, path: &str) -> Result<()> {
+                self.0.remove(path)
+            }
+        }
+        let mem = Mem::default();
+        setup(&mem);
+        let t1 = term::bootstrap(&Cut(&mem), &member(A, "Mac-mini", V1), T0, false).unwrap().unwrap();
+        assert!(Records::load(&mem, 1).unwrap().is_some(), "written whole before term 1 is made");
+        let mut r = records::start(&mem, &t1, None, false).unwrap();
+        r.save(&mem).unwrap();
+        let old_jobs = mem.read("state/build/jobs.json").unwrap().unwrap();
+        let e = entry(A, 1, 1, "6-1-4");
+        r.apply(&e.key().unwrap(), &e);
+        r.save(&mem).unwrap();
+        let t2 = term::forced(&mem, &term::current(&mem).unwrap(), &member(B, "MacBook-Air", V1), "taken over by MacBook-Air", T0 + 60, false).unwrap();
+        let stale = Stale(&mem, vec![(records::path(1), Vec::new()), ("state/build/jobs.json".into(), old_jobs)]);
+        let err = records::start(&stale, &t2, None, false).unwrap_err();
+        assert!(err.is::<records::FirstUnreadable>(), "tried again: {err:#}");
+        let r2 = records::start(&mem, &t2, None, false).unwrap();
+        let six = (r2.manifest.get("base/6-1-4").map(String::as_str), r2.keys.unit.get("6-1-4").map(String::as_str));
+        assert_eq!(six, (Some("base/6-1-4.k1.base"), Some("k1")), "one version, its last save's");
+    }
+
+    #[test]
+    fn term_ones_first_snapshot_never_whole_is_taken_from_todays_files_after_ten_minutes() {
+        // Term 1 made by a Mac that left before its first snapshot's bytes landed: A, named by term
+        // 1, can't read it whole, tries again, and takes term 1 up from today's files once it has
+        // stayed so `STALE_S` awake. (Re-review 2, H1.)
+        let mem = Mem::default();
+        setup(&mem);
+        mem.create_new(&records::path(1), b"").unwrap();
+        let t1 = Term { term: 1, member: A.into(), host: "Mac-mini".into(), app: V1.into(), since: T0, how: "the build Mac when the pool began".into(), from: 0, seq: None };
+        mem.create_new(&term::path(1), &serde_json::to_vec_pretty(&t1).unwrap()).unwrap();
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved { member: A.into(), ..Default::default() });
+        let led = (0..40).find(|_| {
+            let o = step(&mut a, &ia, able());
+            ia.pass(20);
+            o.leads.is_some()
+        });
+        assert_eq!(led, Some(30), "after ten minutes, not before");
+        assert_eq!(Records::load(&mem, 1).unwrap().map(|r| r.seq), Some(2), "from today's files, saved whole");
     }
 
     #[test]
