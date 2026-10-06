@@ -115,7 +115,7 @@ fn leaf_at(r: u32, c: u32) -> u32 {
 
 /// Square (50, 0)'s files, with data in the tiles of block 8/132/88's first rows of zoom-12 tiles
 /// (and the leaf type's), the rest none; the leaf-type square tagged complete.
-fn squares_dir() -> tempfile::TempDir {
+pub(crate) fn squares_dir() -> tempfile::TempDir {
     let d = tempfile::tempdir().unwrap();
     let chm = |tx: u32, ty: u32| (43..=45).contains(&tx) && ty == 8;
     std::fs::write(d.path().join(chm_name(50, 0, "cover5m")), tiff(40000, 16, &|tx, ty| chm(tx, ty).then(|| samples(tx, ty, 16, &cover_at)), &[])).unwrap();

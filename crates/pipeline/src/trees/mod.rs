@@ -26,7 +26,7 @@ pub mod mask;
 pub mod pyramid;
 pub mod squares;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use crate::fetch::{Fetch, Noted};
 use anyhow::{bail, ensure, Context, Result};

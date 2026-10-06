@@ -50,6 +50,27 @@ impl LayerOut {
 
 /// Write one pack of tiles (key, blob, raw_len) and upload it; returns its logical name.
 pub fn write_pack(out: &mut Out, layer: &str, encoding: &str, gzip: bool, scope: &str, root: (u8, u32, u32), tiles: &mut dyn Iterator<Item = (u8, u32, u32, Vec<u8>, u32)>) -> Result<Option<(String, (u8, u8))>> {
+    let Some(p) = write_pack_local(out, layer, encoding, gzip, scope, root, tiles)? else { return Ok(None) };
+    out.put_file(&p.logical, "pack", &p.local)?;
+    Ok(Some((p.logical, p.zooms)))
+}
+
+/// A pack written in the scratch folder (`write_pack_local`), not yet uploaded.
+pub struct LocalPack {
+    pub logical: String,
+    pub local: std::path::PathBuf,
+    pub zooms: (u8, u8),
+}
+
+impl LocalPack {
+    /// The content name it would be uploaded under (crate::out::Out::put_file).
+    pub fn content_name(&self) -> Result<String> {
+        Ok(store::naming::content_name(&self.logical, &store::naming::hash16_file(&self.local)?, "pack"))
+    }
+}
+
+/// `write_pack`'s pack, written in the scratch folder and not uploaded; None when it has no tiles.
+pub fn write_pack_local(out: &Out, layer: &str, encoding: &str, gzip: bool, scope: &str, root: (u8, u32, u32), tiles: &mut dyn Iterator<Item = (u8, u32, u32, Vec<u8>, u32)>) -> Result<Option<LocalPack>> {
     let logical = format!("layers/{layer}/{scope}/{}-{}-{}", root.0, root.1, root.2);
     let local = out.scratch_file(&format!("{logical}.pack"));
     let meta = serde_json::json!({"layer": layer, "scope": scope, "root": format!("{}/{}/{}", root.0, root.1, root.2), "encoding": encoding});
@@ -66,8 +87,7 @@ pub fn write_pack(out: &mut Out, layer: &str, encoding: &str, gzip: bool, scope:
         std::fs::remove_file(&local).ok();
         return Ok(None);
     }
-    out.put_file(&logical, "pack", &local)?;
-    Ok(Some((logical, (zmin, zmax))))
+    Ok(Some(LocalPack { logical, local, zooms: (zmin, zmax) }))
 }
 
 /// Split a legacy tile archive into packs, keeping zooms up to `max_z`, saying how far it is as

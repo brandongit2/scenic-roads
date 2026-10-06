@@ -826,7 +826,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     let terrain: Vec<(String, String)> = terrain.into_iter().filter(|(t, k)| stale(&done.terrain, t, k)).collect();
     let terrain_left: BTreeSet<String> = terrain.iter().map(|t| t.0.clone()).collect();
     let slope: Vec<(String, String)> = slope.into_iter().filter(|(t, k)| stale(&done.slope, t, k)).collect();
-    let trees: Vec<(String, String)> = crate::treepacks::targets(cov, m).into_iter().filter(|(t, k)| done.trees.get(t) != Some(k)).collect();
+    let trees: Vec<(String, String)> = crate::treepacks::area_targets(cov, m).into_iter().filter(|(t, k)| done.trees.get(t) != Some(k)).collect();
     // (What a region lacks before it's published: stale slope counts, built or not yet buildable.)
     let slope_left: BTreeSet<String> = slope.iter().map(|t| t.0.clone()).collect();
     let trees_left: BTreeSet<String> = trees.iter().map(|t| t.0.clone()).collect();
@@ -871,7 +871,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         all: Vec<usize>,
         stale: Vec<usize>,
         /// Its slope's areas (the z3 tiles within 20 km of it, as the terrain's and slope's targets
-        /// go) and its tree cover's (those it meets, as treepacks::targets goes).
+        /// go) and its tree cover's (those it meets, as treepacks::area_targets goes).
         areas: BTreeSet<String>,
         tree_areas: BTreeSet<String>,
         terrain: BTreeSet<String>,
@@ -1623,7 +1623,7 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     out.push(sites);
     out.push(per(TERRAIN, &["terrain"], &terrain, &done.terrain, "areas", true));
     out.push(per(SLOPE, &["slope"], &slope, &done.slope, "areas", true));
-    out.push(per(TREES, &["trees"], &crate::treepacks::targets(cov, m), &done.trees, "tiles", true));
+    out.push(per(TREES, &["trees"], &crate::treepacks::area_targets(cov, m), &done.trees, "tiles", true));
     let pieces = m.keys().any(|l| l.starts_with(&format!("sources/osm/{date}/pieces/")));
     let units = unit_keys(cov, date, m, reach, inputs, tiles);
     // (One whose key can't be worked out now isn't done.)
