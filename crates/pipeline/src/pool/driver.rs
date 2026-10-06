@@ -29,7 +29,8 @@
 //! - **takes what was heard since the last step** (`Heard`): the members' messages to it, its
 //!   owner's asks (its menu, `scenic lead`, the pages, as its member's API takes them), the
 //!   hand-offs of its jobs that ended, the listing it asked for, what settling a handover wrote,
-//!   whether this Mac can lead now (its disk, home, power: the agent's conditions);
+//!   whether this Mac can lead now (its disk, home, power: the agent's conditions), and the pool's
+//!   members as the agent knows them (the lead's status names them);
 //! - **gives what to do now** (`Out`): the messages to send, by member id, over the pool's API
 //!   (best effort: a message lost is told again or made up for); the pool's fields of this Mac's
 //!   heartbeat, to write with the rest of it, stamped as it's written; the term it leads, if it
@@ -61,7 +62,7 @@
 //! whether a takeover from this Mac needs the owner's force or downgrade, and why (`takeover`);
 //! whether the lead can be handed to a member, and why not (`hand_to`).
 //!
-//! # Re-asserting, and standing down
+//! # Re-asserting, standing down, and taking over a lead that stood down
 //!
 //! A lead's view can be old without its knowing (§6.6). It re-asserts (makes the next term naming
 //! itself, a create-new no stale read can fool) before acting again when, since its last step or
@@ -70,9 +71,12 @@
 //! operation, so a step's length short of that says nothing); after a restart; and when the agent
 //! asks (`Heard::reassert`, before a GC sweep). Time spent listing the journal, or waiting between
 //! loops, isn't a gap. A lead whose re-assertion the app rule refuses (it restarted into an older
-//! app or a development build) stands down, and says so in its heartbeat (`Beat::stood_down`), so
-//! another member can take over without forcing it; it takes its term up again once its app is new
-//! enough.
+//! app or a development build) stands down, and says so in its heartbeat (`Beat::stood_down`); it
+//! takes its term up again once its app is new enough. A member that has seen the lead's
+//! heartbeat stood down for `STOOD_DOWN_S` takes over by itself, if the app rule lets it: the
+//! members that can, newest app first, then lowest member id, try `AUTO_RANK_S` apart, and the
+//! next term's create-new decides between them (a lead gone or asleep is taken over only at the
+//! owner's ask: it may come back).
 
 use super::beat::Beat;
 use super::handover::{self, Do, Handover, Seen};
@@ -82,6 +86,7 @@ use super::records::{self, Check, Records};
 use super::term::{self, Current, Made, Term};
 use super::Member;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// More than this unaccounted for, between steps or within one, and a lead re-asserts before it
@@ -99,6 +104,10 @@ pub const SWEEP_S: u64 = 600;
 pub const SWEEP_DAYS: u64 = 2;
 /// How long a listing asked for may take before it's asked for again (s).
 pub const LISTING_S: u64 = 900;
+/// How long a member sees the lead's heartbeat stood down before it takes over by itself (s).
+pub const STOOD_DOWN_S: u64 = 120;
+/// The wait between the members that can take over a lead that stood down, by rank (s).
+pub const AUTO_RANK_S: u64 = 30;
 
 /// What the driver needs of the world: the NAS's operations, and this Mac's clocks.
 pub trait Io: Nas {
@@ -156,12 +165,15 @@ pub struct Heard {
     /// Settling a handover (`Out::settle`): the coordinator's state as the agent wrote it once it
     /// stopped granting and cancelled its duties in flight; handed over with the records.
     pub settled: Option<serde_json::Value>,
-    /// Whether this Mac can lead now if offered the lead (its disk, home and power; the app rule is
-    /// the driver's). The agent sets it.
+    /// Whether this Mac can lead now if offered the lead, or take over a lead that stood down (its
+    /// disk, home and power; the app rule is the driver's). The agent sets it.
     pub able: bool,
     /// Re-assert before the agent does what only a fresh lead may (a GC sweep): `Out::fresh` says
     /// it did.
     pub reassert: bool,
+    /// The pool's members, by id, as the agent knows them (the lead's status names them): who may
+    /// take over a lead that stood down, and in what order.
+    pub members: Vec<String>,
 }
 
 /// A listing of the journal to make, off the loop (crate::pool::journal::list).
@@ -343,6 +355,8 @@ pub struct Driver {
     /// The current term it learnt from the NAS at its first step (none before), not counting a
     /// term 1 its own first step made.
     first: Option<u64>,
+    /// The lead that stood down, as seen: its term, and since when (this Mac's clock).
+    stood: Option<(u64, u64)>,
 }
 
 /// Whether the clocks went `was` → `now` (wall, awake) with more than `GAP_S` unaccounted for: the
@@ -353,6 +367,16 @@ fn gap(was: (u64, u64), now: (u64, u64)) -> bool {
     (wall - awake).unsigned_abs() > GAP_S
 }
 
+/// The order in which members try to take over a lead that stood down: the newest app first, then
+/// the lowest member id.
+fn first_to_try(a: &Member, b: &Member) -> Ordering {
+    match (term::app_at_least(&a.app, &b.app), term::app_at_least(&b.app, &a.app)) {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        _ => a.id.cmp(&b.id),
+    }
+}
+
 impl Driver {
     /// The driver of member `me` (its app the process's), from what it saved last: nothing of it
     /// when it's another member's, or names none (lost, or never saved).
@@ -360,7 +384,7 @@ impl Driver {
         let known = saved.member == me.id;
         let saved = if known { saved } else { Saved { member: me.id.clone(), ..Default::default() } };
         let passing = saved.passing.clone().map(|(own, passed, hand)| Passing { own, passed, hand, records: None });
-        Driver { me, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, clocks: None, due: None, asked: None, asks: 0, swept: 0, handed_by: BTreeMap::new(), restarted: true, first: None }
+        Driver { me, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, clocks: None, due: None, asked: None, asks: 0, swept: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None }
     }
 
     /// What to keep for the next process (after every step that changed it).
@@ -466,6 +490,7 @@ impl Driver {
         if let Some((force, downgrade)) = takeover {
             self.take_over(io, &mut out, force, downgrade);
         }
+        self.auto_take_over(io, &mut out, &heard.members, heard.able);
         // Telling the lead it knows of its entries.
         if let Some(t) = self.cur.lead.as_ref().filter(|t| t.member != self.me.id) {
             let keys = self.saved.mine.to_tell(self.cur.term);
@@ -923,6 +948,59 @@ impl Driver {
         }
     }
 
+    /// A lead that stood down (its heartbeat says so: §6.6), seen so for `STOOD_DOWN_S`: taken over
+    /// by this Mac, if the app rule lets it, after the members that can and come first (newest app,
+    /// then lowest member id) had their turn, `AUTO_RANK_S` each.
+    fn auto_take_over(&mut self, io: &dyn Io, out: &mut Out, members: &[String], able: bool) {
+        let t = match &self.cur.lead {
+            Some(t) if t.member != self.me.id && self.lead.is_none() && self.passing.is_none() && self.saved.unfinished.is_none() => t.clone(),
+            _ => {
+                self.stood = None;
+                return;
+            }
+        };
+        // (A stand-down is its term's for good: in touch or not by this Mac's clock, which may be
+        // minutes off the lead's, its heartbeat saying so is enough.)
+        let b = Beat::read(io, &t.member).ok().flatten();
+        let now = io.now();
+        if !b.is_some_and(|b| b.stood_down == Some(t.term)) {
+            self.stood = None;
+            return;
+        }
+        let since = match self.stood {
+            Some((e, since)) if e == t.term => since,
+            _ => {
+                self.stood = Some((t.term, now));
+                now
+            }
+        };
+        if !able || !term::app_at_least(&self.me.app, &t.app) || now.saturating_sub(since) < STOOD_DOWN_S {
+            return;
+        }
+        let mut can = vec![self.me.clone()];
+        for m in members.iter().filter(|m| **m != self.me.id && **m != t.member) {
+            if let Ok(Some(b)) = Beat::read(io, m) {
+                if !b.out_of_touch(now) && b.leads.is_none() && b.stood_down.is_none() && term::app_at_least(&b.app, &t.app) {
+                    can.push(b.member());
+                }
+            }
+        }
+        can.sort_by(first_to_try);
+        let rank = can.iter().position(|m| m.id == self.me.id).unwrap_or(0) as u64;
+        if now.saturating_sub(since) < STOOD_DOWN_S + rank * AUTO_RANK_S {
+            return;
+        }
+        let how = format!("taken over by {}: {} stood down", self.me.host, t.host);
+        match Term::after(&self.cur, &self.me, &how, io.now()).and_then(|n| Ok((term::make(io, &n)?, n))) {
+            Ok((made, n)) => {
+                if !self.made(io, out, n, made) {
+                    out.events.push(Event::Waits { what: "take over", why: format!("term {} made by another first", self.cur.term + 1) });
+                }
+            }
+            Err(e) => out.events.push(Event::Failed { what: "take over", why: format!("{e:#}") }),
+        }
+    }
+
     /// What a takeover from this Mac needs now, and why (the controls: "Take Over the Build…",
     /// "Take it", `scenic lead take`; §6.5): as a step would decide `Ask::TakeOver`.
     pub fn takeover(&self, io: &dyn Io) -> Takeover {
@@ -1123,7 +1201,7 @@ mod tests {
     }
 
     fn able() -> Heard {
-        Heard { able: true, ..Default::default() }
+        Heard { able: true, members: vec![A.into(), B.into(), C.into()], ..Default::default() }
     }
 
     fn asks(a: Ask) -> Heard {
@@ -1360,6 +1438,48 @@ mod tests {
         let mut r = Records { term: 2, ..Default::default() };
         assert_eq!(records::merge(&mem, &mut r, std::slice::from_ref(&x), &any).applied, std::slice::from_ref(&x));
         assert!(journal::list(&mem, None).unwrap().contains(&x));
+    }
+
+    #[test]
+    fn a_lead_that_stood_down_is_taken_over_by_a_member_the_app_rule_lets() {
+        // A, on V2, restarts into a development build and stands down. B's app is older than term
+        // 1's: it can't lead it. C's is new enough: after seeing the stand-down for two minutes it
+        // takes over by itself (pool.md §14: a lead that stood down isn't coming back on its own).
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib, ic) = (Mac::new(&mem), Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::new(member(A, "Mac-mini", V2), Saved::default());
+        let mut b = Driver::new(member(B, "MacBook-Air", V1), Saved::default());
+        let mut c = Driver::new(member(C, "iMac", V2), Saved::default());
+        step(&mut a, &ia, able());
+        step(&mut b, &ib, able());
+        step(&mut c, &ic, able());
+        let mut a = Driver::new(member(A, "Mac-mini", "development"), a.saved());
+        ia.pass(20);
+        assert_eq!(step(&mut a, &ia, able()).beat.stood_down, Some(1));
+        let mut took = None;
+        for i in 0..12 {
+            for (d, io) in [(&mut b, &ib), (&mut c, &ic)] {
+                io.pass(20);
+                if let Some(e) = step(d, io, able()).leads {
+                    took.get_or_insert((d.member().id.clone(), e, i));
+                }
+            }
+            ia.pass(20);
+            step(&mut a, &ia, able());
+        }
+        let (who, e, i) = took.expect("taken over");
+        assert_eq!((who.as_str(), e), (C, 2));
+        assert!((6..=8).contains(&i), "after two minutes, not before: round {i}");
+        let t = term::read(&mem, 2).unwrap().unwrap();
+        assert_eq!(t.how, "taken over by iMac: Mac-mini stood down");
+        // Two that can: the newest app first, then the lowest member id; the create decides.
+        let one = member(B, "MacBook-Air", V2);
+        let two = member(C, "iMac", V2);
+        let newer = member(A, "Mac-mini", "20261007-0000-0000000");
+        let mut v = [two.clone(), newer.clone(), one.clone()];
+        v.sort_by(first_to_try);
+        assert_eq!(v.map(|m| m.id), [newer.id, one.id, two.id]);
     }
 
     #[test]

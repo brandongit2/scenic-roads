@@ -546,7 +546,10 @@ impl World {
             Some(t) => {
                 let gone = self.macs.get(mac_of(&t.member)).is_some_and(|m| m.gone);
                 let stood = self.files.get(&super::beat::path(&t.member)).and_then(|b| serde_json::from_slice::<Beat>(b).ok()).is_some_and(|b| b.stood_down == Some(h));
-                if !gone && !stood {
+                // (A lead that stood down is taken over by itself, by a member the app rule lets:
+                // the owner steps in only when none can.)
+                let auto = (0..self.macs.len()).any(|k| !self.macs[k].gone && self.macs[k].id != t.member && term::app_at_least(&app(self.macs[k].app), &t.app));
+                if !gone && !(stood && !auto) {
                     return;
                 }
                 gone
@@ -770,6 +773,9 @@ impl World {
             }
             if t.how.contains(term::DOWNGRADE) {
                 self.count("forced downgrades");
+            }
+            if t.how.ends_with("stood down") {
+                self.count("automatic takeovers");
             }
             if t.how.contains("saved state lost") {
                 self.count("re-assertions with a saved state lost");
@@ -1187,6 +1193,8 @@ struct Mac {
     leads: Option<u64>,
     /// The listing its driver asked for, made after its step, for its next.
     listed: Option<Listed>,
+    /// The Macs in the run (their ids: the pool's members).
+    n: usize,
     /// Its coordinator's state (what a handover hands on): the term it's of, and the jobs granted.
     coord: (u64, u64),
     /// Settling: the coordinator's state it wrote, and whether its driver has it.
@@ -1195,11 +1203,11 @@ struct Mac {
 }
 
 impl Mac {
-    fn new(sim: Sim, k: usize, seed: u64) -> Mac {
+    fn new(sim: Sim, k: usize, n: usize, seed: u64) -> Mac {
         let me = Member { id: id(k), host: format!("mac{k}"), app: app(0) };
         let rng = Rng(seed ^ (k as u64 + 1).wrapping_mul(0xA076_1D64_78BD_642F));
         let driver = Driver::new(me.clone(), driver::Saved::default());
-        Mac { sim, k, rng, me, driver, jobs: 0, term: 0, leads: None, listed: None, coord: (0, 0), settled: None, gave: false }
+        Mac { sim, k, rng, me, driver, jobs: 0, term: 0, leads: None, listed: None, n, coord: (0, 0), settled: None, gave: false }
     }
 
     fn run(mut self) {
@@ -1242,7 +1250,8 @@ impl Mac {
             }
         }
         let faulting = self.sim.faulting()?;
-        let mut heard = Heard { able: self.rng.chance(0.9), listed: self.listed.take(), ..Default::default() };
+        let members = (0..self.n).map(id).collect();
+        let mut heard = Heard { able: self.rng.chance(0.9), listed: self.listed.take(), members, ..Default::default() };
         for m in self.sim.inbox()? {
             match m {
                 Msg::Pool { from, msg } => heard.msgs.push((id(from), msg)),
@@ -1489,7 +1498,7 @@ fn run(seed: u64, cfg: Cfg, tracing: bool) -> Ran {
             let sh = sh.clone();
             std::thread::spawn(move || {
                 let sim = Sim { sh: sh.clone(), me: k };
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| if cfg.draft { Draft::new(sim, k, seed).run() } else { Mac::new(sim, k, seed).run() }));
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| if cfg.draft { Draft::new(sim, k, seed).run() } else { Mac::new(sim, k, macs, seed).run() }));
                 if let Err(p) = r {
                     let why = p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
                     let mut w = sh.lock();
@@ -1555,7 +1564,7 @@ fn check_all(seeds: Range<u64>, cfg: impl Fn(u64) -> Cfg + Sync) -> Counts {
 
 /// Each kind of change of lead and fault, and what the knobs bring, that the default runs must see
 /// at least three times (a simulator that never got there would pass too).
-const KINDS: [&str; 27] = [
+const KINDS: [&str; 28] = [
     "handed over",
     "taken back",
     "taken over",
@@ -1579,6 +1588,7 @@ const KINDS: [&str; 27] = [
     "entries passed over for a later lease's",
     "entries another lead refused, taken",
     "acknowledged entries merged again by a later lead",
+    "automatic takeovers",
     "operation seconds",
     "saved states lost",
     "re-assertions with a saved state lost",
@@ -1718,7 +1728,7 @@ fn the_knobs_one_at_a_time() {
     for (name, cfg) in knobs {
         let (bad, c) = run_all(0..n, |_| cfg);
         let get = |k: &str| c.get(k).copied().unwrap_or(0);
-        eprintln!("{name}: {} of {n} wrong; handed over {}, taken back {}, taken over {}, re-asserted {}, stood down {}{}", bad.len(), get("handed over"), get("taken back"), get("taken over"), get("re-asserted"), get("stood down"), bad.first().map(|(s, w)| format!("; seed {s}: {}", w[0])).unwrap_or_default());
+        eprintln!("{name}: {} of {n} wrong; handed over {}, taken back {}, taken over {} ({} automatically), re-asserted {}, stood down {}{}", bad.len(), get("handed over"), get("taken back"), get("taken over"), get("automatic takeovers"), get("re-asserted"), get("stood down"), bad.first().map(|(s, w)| format!("; seed {s}: {}", w[0])).unwrap_or_default());
     }
 }
 
