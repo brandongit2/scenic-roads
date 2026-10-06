@@ -559,9 +559,9 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
             continue;
         }
         if kind == BlobKind::Spike {
-            // Walled steeper than 45° (a quarter of the steps down its edge, at least: an islet
-            // comes out of the sea more gently all round), on flat ground or beside a blob taken or
-            // a void.
+            // Two of: walled steeper than 45° (a quarter of the steps down its edge, at least: an
+            // islet comes out of the sea more gently all round), on flat ground, beside a blob
+            // taken or a void.
             let (mut steps, mut beside) = (Vec::new(), false);
             for &p in &pixels {
                 let (x, y) = ((p % TS as u32) as i32, (p / TS as u32) as i32);
@@ -585,9 +585,10 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
             if traced {
                 eprintln!("    wall {wall:.2} beside {beside}");
             }
-            // (Steep over its width alone, a spike may be an island's top, Minami-Iwo-jima's at
-            // z8 (0.64), or a plug, Shiprock's at z10 (0.88): the wall tells them apart.)
-            if !(wall >= 1.0 && (flat || beside)) {
+            // (Two of three: steep over its width alone, a spike may be an island's top,
+            // Minami-Iwo-jima's at z8, or a plug, Shiprock's at z10, both on flat ground and walled
+            // less, 0.64 and 0.88; a lobe of an artifact is beside a blob taken.)
+            if [wall >= 1.0, flat, beside].iter().filter(|&&c| c).count() < 2 {
                 continue;
             }
         }
@@ -1410,6 +1411,91 @@ mod repair_tests {
         }
     }
 
+    /// 10/895/406 from pixel 236,208 (34.6 N, 134.9 E): the Akashi Strait at z10, a band of towers
+    /// to 2,605 m beside pits to −2,132 m, and nearer the shore its ringing, lobes of 55–268 m
+    /// beside pits.
+    const AKASHI_Z10: [[i16; 15]; 15] = [
+        [1, 1, 3, 4, 3, 3, 4, 4, 4, 4, 4, 4, 5, 4, 2],
+        [0, 2, 2, 2, 2, 2, 3, 3, 4, 5, 6, 6, 6, 6, 5],
+        [3, 2, 0, 0, 2, 2, 1, 3, 6, 6, 7, 7, 7, 8, 7],
+        [6, 0, -3, 0, 4, 3, -1, 3, 8, 5, 5, 7, 6, 6, 6],
+        [-14, 5, 14, 5, -8, -5, 4, -7, -15, -1, 7, 5, 4, 3, 4],
+        [1, 11, 31, 10, -20, -13, 11, -17, -37, -7, 9, 3, 1, 1, 1],
+        [1, -29, -85, -25, 55, 37, -25, 55, 110, 27, -16, 1, 2, 1, 1],
+        [-45, -45, -45, -46, 141, 94, -66, 130, 268, 64, -41, 0, 4, 3, 2],
+        [-53, -53, -53, -53, -162, -110, 79, -151, -312, -71, 53, 3, -2, 1, 2],
+        [-61, -61, -61, -61, -60, -59, -58, -57, -55, -53, -51, -48, -45, -41, -38],
+        [-69, -68, -68, -68, -67, -66, -65, -63, -62, -59, -57, -54, -51, -47, -44],
+        [2553, -799, -2132, -462, 1550, 1014, -671, 1228, 2605, 609, -426, -14, 32, 11, 2],
+        [-82, -1331, -81, -824, 2577, 1691, -1135, 2096, -73, 1033, -723, -24, 53, 18, 3],
+        [-88, -87, -86, -85, -84, -83, -82, -80, -78, -75, -73, -70, -67, -64, -61],
+        [-92, -92, -91, -90, -89, -87, -86, -84, -82, -80, -77, -75, -72, -69, -66],
+    ];
+
+    /// 8/228/110 from pixel 145,51 (24.23 N, 141.46 E): Minami-Iwo-jima at z8, 916 m up on 3.5 km²
+    /// of sea floor: as AWS draws it, steeper than 45° over its width, and less walled.
+    const MINAMI_IWO_Z8: [[i16; 15]; 15] = [
+        [-603, -472, -348, -243, -153, -83, -39, -23, -29, -53, -87, -127, -173, -227, -286],
+        [-561, -436, -335, -258, -175, -86, -27, -8, -15, -39, -76, -123, -178, -239, -306],
+        [-530, -415, -305, -203, -117, -53, -13, 4, -3, -32, -76, -132, -194, -261, -333],
+        [-517, -411, -267, -101, -8, -1, -1, 16, 12, -26, -84, -151, -220, -291, -366],
+        [-518, -413, -244, -41, 49, 16, 1, 38, 43, -12, -90, -169, -247, -324, -403],
+        [-534, -421, -248, -49, 36, 5, 6, 67, 76, 2, -97, -188, -274, -358, -444],
+        [-568, -446, -280, -99, 1, 16, 271, 512, 305, -20, -114, -214, -309, -399, -489],
+        [-616, -490, -338, -177, -52, 23, 399, 801, 369, -17, -153, -256, -355, -449, -540],
+        [-671, -551, -416, -278, -153, -58, 365, 450, 158, -2, -224, -322, -417, -508, -597],
+        [-724, -619, -507, -398, -303, -227, 1, -23, -182, -239, -317, -403, -489, -572, -656],
+        [-770, -682, -600, -532, -473, -420, -365, -319, -312, -349, -412, -485, -560, -635, -713],
+        [-809, -736, -684, -655, -626, -582, -521, -458, -431, -450, -498, -560, -627, -694, -768],
+        [-846, -786, -748, -732, -712, -674, -618, -560, -531, -542, -579, -631, -690, -755, -826],
+        [-884, -834, -794, -767, -740, -706, -666, -629, -613, -622, -652, -696, -751, -815, -886],
+        [-920, -875, -832, -793, -758, -727, -702, -685, -681, -691, -716, -754, -807, -871, -944],
+    ];
+
+    /// 10/202/399 from pixel 100,166 (36.69 N, 108.84 W): Shiprock at z10, 300 m above the plain.
+    const SHIPROCK_Z10: [[i16; 15]; 15] = [
+        [1675, 1673, 1668, 1666, 1667, 1670, 1674, 1675, 1672, 1670, 1669, 1668, 1665, 1663, 1663],
+        [1679, 1680, 1680, 1689, 1693, 1695, 1696, 1694, 1690, 1683, 1678, 1676, 1673, 1668, 1666],
+        [1680, 1685, 1694, 1712, 1723, 1728, 1731, 1724, 1708, 1695, 1688, 1684, 1679, 1673, 1669],
+        [1680, 1689, 1706, 1730, 1746, 1759, 1772, 1766, 1740, 1716, 1700, 1691, 1685, 1677, 1671],
+        [1679, 1690, 1709, 1734, 1751, 1769, 1793, 1800, 1778, 1743, 1714, 1699, 1690, 1680, 1673],
+        [1680, 1691, 1708, 1731, 1745, 1769, 1813, 1847, 1840, 1783, 1725, 1704, 1695, 1682, 1674],
+        [1686, 1694, 1708, 1732, 1743, 1779, 1860, 1935, 1935, 1834, 1729, 1704, 1700, 1686, 1677],
+        [1697, 1700, 1710, 1736, 1745, 1792, 1905, 2008, 2006, 1868, 1727, 1700, 1702, 1689, 1679],
+        [1712, 1711, 1713, 1734, 1739, 1784, 1897, 1995, 1987, 1851, 1719, 1698, 1702, 1688, 1678],
+        [1722, 1719, 1714, 1726, 1728, 1761, 1841, 1904, 1890, 1795, 1709, 1697, 1699, 1684, 1676],
+        [1719, 1718, 1714, 1718, 1720, 1740, 1781, 1808, 1794, 1745, 1704, 1696, 1693, 1681, 1674],
+        [1706, 1710, 1711, 1711, 1717, 1728, 1737, 1741, 1733, 1717, 1701, 1693, 1687, 1679, 1674],
+        [1697, 1703, 1706, 1707, 1714, 1720, 1714, 1707, 1703, 1701, 1696, 1688, 1682, 1677, 1673],
+        [1696, 1699, 1702, 1705, 1712, 1716, 1709, 1701, 1696, 1693, 1690, 1684, 1680, 1676, 1672],
+        [1696, 1698, 1701, 1706, 1714, 1719, 1712, 1703, 1698, 1692, 1687, 1683, 1680, 1677, 1674],
+    ];
+
+    #[test]
+    fn takes_lobes_beside_a_blob_taken_and_keeps_steep_islands_and_plugs() {
+        // The Akashi Strait: the band and its lobes (two of three: steep over its width beside a
+        // blob taken on flat ground, walled or not), the shore as it was.
+        let mut t = aws(&AKASHI_Z10, -60.0);
+        repaired(&mut t, 10, 34.6);
+        for (j, row) in AKASHI_Z10.iter().enumerate() {
+            for (i, &v) in row.iter().enumerate() {
+                let now = at(&t, i, j).max(0.0);
+                if j >= 6 {
+                    assert!(now <= 60.0, "{v} at {i},{j}: {now}");
+                } else if v >= 0 {
+                    assert_eq!(now, v as f32, "the shore at {i},{j}");
+                }
+            }
+        }
+        // An island and a plug as steep, but neither walled nor beside a blob taken: kept.
+        for (win, ground, z, lat) in [(&MINAMI_IWO_Z8, -700.0, 8, 24.23), (&SHIPROCK_Z10, 1690.0, 10, 36.69)] {
+            let mut t = aws(win, ground);
+            let before = t.clone();
+            repaired(&mut t, z, lat);
+            assert_eq!(t, before);
+        }
+    }
+
     #[test]
     fn keeps_a_summit_drawn_too_sharp_among_rough_ground() {
         // As AWS has a 3,534 m peak of the St. Elias (12/447/1143): a cone of 1,200 m, ten pixels
@@ -1499,6 +1585,30 @@ mod repair_debug {
         }
         let per = t0.elapsed().as_secs_f64() * 1e3 / tiles.len() as f64;
         eprintln!("{} tiles, {per:.2} ms a tile, {stages} stages", tiles.len());
+    }
+
+    /// SCENIC_BATCH="<folder in> <folder out>": every `z-x-y.raw.f32` of the folder (`terrain
+    /// --scan`'s views) repaired, written as `z-x-y.v2.f32` at sea level and over, as the packs
+    /// store it (for trying a change of the rules on many tiles).
+    #[test]
+    #[ignore]
+    fn batch() {
+        let Ok(spec) = std::env::var("SCENIC_BATCH") else { return };
+        let a: Vec<&str> = spec.split_whitespace().collect();
+        std::fs::create_dir_all(a[1]).unwrap();
+        for e in std::fs::read_dir(a[0]).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Some(stem) = name.strip_suffix(".raw.f32") else { continue };
+            let k: Vec<u32> = stem.split('-').filter_map(|v| v.parse().ok()).collect();
+            let b = std::fs::read(e.path()).unwrap();
+            let lat = (std::f64::consts::PI * (1.0 - 2.0 * (k[2] as f64 + 0.5) / (1u64 << k[0]) as f64)).sinh().atan().to_degrees();
+            let mut t: Vec<f32> = bytemuck::cast_slice(&b).to_vec();
+            repair_terrain(&mut t, k[0] as u8, lat);
+            for v in t.iter_mut() {
+                *v = v.max(0.0);
+            }
+            std::fs::write(format!("{}/{stem}.v2.f32", a[1]), bytemuck::cast_slice(&t)).unwrap();
+        }
     }
 
     /// SCENIC_STAGES="<raw .f32 file> <z> <lat>": the blobs each stage found in that tile.
