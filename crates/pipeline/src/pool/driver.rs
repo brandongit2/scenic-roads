@@ -39,10 +39,10 @@
 //!   leads, and what it may do as that now: grant jobs and plan (`duties`); settle a handover
 //!   (`settle`: stop granting, cancel its duties in flight, write the coordinator's state and hand
 //!   it back in `Heard::settled`); publish a catalog or sweep (GC) only once its records reflect
-//!   the journal (`caught_up`: the listing its take-up asked for merged and saved, nothing it was
-//!   told of waiting, a re-assertion keeping it), and sweep only on a step that re-asserted
-//!   (`fresh`: asked with `Heard::reassert`; it says no later term was made before, not that its
-//!   records are whole);
+//!   the journal (`caught_up`: a listing of every day under a day old merged and saved, its
+//!   take-up's or a daily one, `listed_at` saying when it began; nothing it was told of waiting; a
+//!   re-assertion keeping it), and sweep only on a step that re-asserted (`fresh`: asked with
+//!   `Heard::reassert`; it says no later term was made before, not that its records are whole);
 //!   a listing to make; and what happened (`Event`s: terms taken up, stepped down from, handed
 //!   over; errors), for the history and the log;
 //! - **never fails**: an error stops only the duty that met it (said in an `Event::Failed`), and

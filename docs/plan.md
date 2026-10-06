@@ -2009,13 +2009,18 @@ At each phase's end an Opus agent reviews the work against this plan.
    - an older lease's entry for targets of which some were set by a newer lease's is passed over
      whole: its other targets are built again (`Records::apply`; an entry's manifest changes aren't
      by target);
-   - a lead's sweeps list the journal's last two days: an older entry whose member never told a
-     current lead of it, the member gone since, waits for the next take-up's listing;
+   - a lead's sweeps list the journal's last two days, and it lists every day daily: an older
+     entry whose member never told a current lead of it, the member gone since, waits a day at
+     most (`RELIST_S`);
    - a handover's new lead must read its old lead's last snapshot within two minutes: how long the
      share keeps reads stale is unchecked (pool.md §3), and longer staleness has handovers taken
      back (nothing lost);
    - GC (removing the journal's old days, forgetting them) isn't built: the forget horizon is
-     checked by the modules' tests alone;
+     checked by the modules' tests alone. It must respect `caught_up`'s bound too: caught up, the
+     records reflect what a listing under a day old found (`Out::listed_at`), and an entry written
+     since by a member gone before telling, which may name uploads made days before (its Mac away),
+     is merged only by the next daily listing. GC must check the journal's entries itself before it
+     removes an upload, or keep uploads longer than an entry can wait unwritten, and a day more;
    - a records snapshot, saved whole after each merge, holds the lease that last set each target
      (one per step and target, as the job keys are: about as large as the keys again) and every
      entry's key back to the forget horizon: it grows with the build's targets and its week of
