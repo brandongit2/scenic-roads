@@ -520,10 +520,27 @@ struct Coverages {
 }
 
 /// What a coverage is made from, as keys: the recipes, the pass's outlines (their content name), and
-/// the outline files (names, sizes and times, the Geofabrik folder's too); and the same without the
-/// pass's, what the owner's edits change. None when the outline files can't be listed now.
+/// the outline files (names, sizes and times, the Geofabrik folder's too); and what the owner's
+/// edits change: the recipes and the outline files they name (any other file there, a Finder's
+/// .DS_Store or an editor's swap file, is none). None when the outline files can't be read now.
 fn coverage_key(recipes: &[recipes::Recipe], outlines: Option<&str>, dir: &Path) -> Option<(String, String)> {
     let mut parts: Vec<String> = recipes.iter().map(|r| format!("{} {}", r.id, r.outline.join(" "))).collect();
+    let mut edits = parts.clone();
+    for entry in recipes.iter().flat_map(|r| r.outline.iter()) {
+        let file = match recipes::parse_outline(entry) {
+            Ok(recipes::Outline::Poly(f)) => dir.join(f),
+            Ok(recipes::Outline::Geofabrik(g)) => dir.join("geofabrik").join(format!("{}.poly", g.replace('/', "-"))),
+            _ => continue,
+        };
+        match std::fs::metadata(&file) {
+            Ok(m) => {
+                let t = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+                edits.push(format!("{entry} {} {t}", m.len()));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => edits.push(format!("{entry} missing")),
+            Err(_) => return None,
+        }
+    }
     let pass = format!("outlines {}", outlines.unwrap_or("-"));
     for d in [dir.to_path_buf(), dir.join("geofabrik")] {
         let rd = match std::fs::read_dir(&d) {
@@ -543,15 +560,25 @@ fn coverage_key(recipes: &[recipes::Recipe], outlines: Option<&str>, dir: &Path)
         files.sort();
         parts.extend(files);
     }
-    let edits = store::naming::hash16(parts.join("\n").as_bytes());
+    edits.sort();
     parts.push(pass);
-    Some((store::naming::hash16(parts.join("\n").as_bytes()), edits))
+    Some((store::naming::hash16(parts.join("\n").as_bytes()), store::naming::hash16(edits.join("\n").as_bytes())))
 }
 
 /// How long the regions' work waits after the owner changes a recipe or an outline file, for more
 /// edits: three edits in a row built the same regions' heritage sites three times, and their
-/// terrain twice (2026-10-05).
+/// terrain twice (2026-10-05). At most `EDIT_HOLD_MAX` from the first of a run of edits, each within
+/// `EDIT_HOLD` of the last: something touching a file for ever holds nothing for ever.
 const EDIT_HOLD: Duration = Duration::from_secs(15 * 60);
+const EDIT_HOLD_MAX: Duration = Duration::from_secs(60 * 60);
+
+/// While a run of edits (its first and last: `Agent::edited_at`) holds the regions' work: how long
+/// ago the last was, and how long the hold has left.
+fn edit_held(edited: Option<(std::time::SystemTime, std::time::SystemTime)>) -> Option<(Duration, Duration)> {
+    let (first, last) = edited?;
+    let (run, age) = (first.elapsed().ok()?, last.elapsed().ok()?);
+    (age < EDIT_HOLD && run < EDIT_HOLD_MAX).then(|| (age, (EDIT_HOLD - age).min(EDIT_HOLD_MAX - run)))
+}
 
 pub struct Agent {
     o: Options,
@@ -578,10 +605,10 @@ pub struct Agent {
     reach: std::cell::RefCell<Option<(String, std::rc::Rc<crate::reach::Reaches>)>>,
     /// The coverage and each region's as last made, with what they were made from (`coverage`).
     coverage: std::cell::RefCell<Option<(String, std::rc::Rc<Coverages>)>>,
-    /// The recipes' and outline files' key as last seen, and when it last changed while this agent
-    /// ran (an edit: `EDIT_HOLD`).
+    /// The recipes' and outline files' key as last seen, and when it changed while this agent ran
+    /// (an edit: `EDIT_HOLD`): first in a run of edits, and last.
     edits: std::cell::RefCell<Option<String>>,
-    edited_at: std::cell::Cell<Option<std::time::SystemTime>>,
+    edited_at: std::cell::Cell<Option<(std::time::SystemTime, std::time::SystemTime)>>,
     /// Who this agent is in claims ("<host> <pid>"; its second job's, `me_of`).
     me: String,
     /// The OSM pieces' sizes by content name (the coordinator sizes units by them; content-named
@@ -2235,7 +2262,7 @@ impl Agent {
     /// chains), each step's targets in one run of `scenic-build`. The agent runs the first not
     /// waiting out a failure, so one failing job doesn't hold up the others.
     fn region_work(&self, root: &Path, pass: Option<&str>, newer: Option<&str>, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
-        let (recipes, _) = recipes::load(&root.join("inputs/regions"));
+        let (recipes, unread) = recipes::load(&root.join("inputs/regions"));
         // (The records unreadable now: nothing planned until they are, rather than everything again.)
         let (manifest, keys): (BTreeMap<String, String>, build::Keys) = match crate::out::read_record(&root.join("state/build/manifest.json")).and_then(|m| Ok((m, self.planning_keys(root)?))) {
             Ok(r) => r,
@@ -2309,7 +2336,7 @@ impl Agent {
         };
         // (The pass's worldwide jobs: the forecast's before the regions'.)
         let before = jobs.clone();
-        let covs = match self.coverage(root, &manifest, date, &recipes) {
+        let covs = match self.coverage(root, &manifest, date, &recipes, unread.is_empty()) {
             Ok(c) => c,
             Err(why) => {
                 waiting.push(Waiting { step: None, what: "Building the regions".into(), why });
@@ -2341,7 +2368,7 @@ impl Agent {
             let kept = self.round.borrow();
             build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), build::Rounds { each: &covs.each, on_map: &on_map, since_last, current: kept.as_ref().filter(|r| !r.over) })
         };
-        let edit_hold = self.edited_at.get().and_then(|t| t.elapsed().ok()).filter(|a| *a < EDIT_HOLD);
+        let edit_hold = edit_held(self.edited_at.get());
         // (Hand-offs of work done not yet merged: counted as built, their files not yet in the
         // manifest.)
         let unmerged = self.handoff_bases(root).iter().any(|b| crate::handoff::waiting_in(b).map(|w| w.iter().any(|(_, h)| h.done.is_some())).unwrap_or(false));
@@ -2377,8 +2404,8 @@ impl Agent {
         let mut plan = planned.work;
         // Just edited: the regions' work waits a while for more edits (each would build again what
         // the last started); what runs carries on.
-        if let Some(age) = edit_hold.filter(|_| !plan.is_empty()) {
-            let left = (EDIT_HOLD - age).as_secs().div_ceil(60);
+        if let Some((age, left)) = edit_hold.filter(|_| !plan.is_empty()) {
+            let left = left.as_secs().div_ceil(60);
             waiting.push(Waiting { step: None, what: "Building the regions".into(), why: format!("a region's recipe or outline changed {} min ago: their work starts in {left} min, after any more edits", age.as_secs() / 60) });
             plan.clear();
         }
@@ -2707,7 +2734,7 @@ impl Agent {
         if regions.is_empty() {
             return out;
         }
-        let Ok(covs) = self.coverage(root, &manifest, &date, regions) else { return out };
+        let Ok(covs) = self.coverage(root, &manifest, &date, regions, false) else { return out };
         let cov = &covs.all;
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         out.extend(build::checklist(&cov, &date, &manifest, &keys, &input_digests(root), root.join("inputs/hold-catalog").exists(), reach.as_deref(), &self.ready.borrow()));
@@ -2718,7 +2745,7 @@ impl Agent {
     fn region_progress(&self, root: &Path, regions: &[recipes::Recipe]) -> BTreeMap<String, build::RegionState> {
         let Some(date) = crate::osmpass::latest_pass(root) else { return BTreeMap::new() };
         let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        let Ok(covs) = self.coverage(root, &manifest, &date, regions) else { return BTreeMap::new() };
+        let Ok(covs) = self.coverage(root, &manifest, &date, regions, false) else { return BTreeMap::new() };
         let (cov, each) = (&covs.all, &covs.each);
         let keys = build::Keys::load(root);
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
@@ -2748,14 +2775,18 @@ impl Agent {
     /// The coverage of `recipes`, and each region's, as last made: made again only when the recipes,
     /// the pass's outlines or the outline files change. (An `osm:` outline is read from the pass's
     /// file on the NAS, 2.7 GB: made three times a loop, then each region's again, they had the loop
-    /// take a quarter of an hour once the US's states were in, 2026-10-05.)
-    fn coverage(&self, root: &Path, manifest: &BTreeMap<String, String>, date: &str, recipes: &[recipes::Recipe]) -> Result<std::rc::Rc<Coverages>, String> {
+    /// take a quarter of an hour once the US's states were in, 2026-10-05.) `edits`: the recipes
+    /// are all of them (every one read), and a change to them is the owner's edit (the plan's; not
+    /// the heartbeat's, whose read may have failed).
+    fn coverage(&self, root: &Path, manifest: &BTreeMap<String, String>, date: &str, recipes: &[recipes::Recipe], edits: bool) -> Result<std::rc::Rc<Coverages>, String> {
         let dir = root.join("inputs/outlines");
         let outlines = manifest.get(&format!("sources/osm/{date}/outlines")).cloned();
-        let (key, edits) = coverage_key(recipes, outlines.as_deref(), &dir).unzip();
-        if let Some(e) = edits {
+        let (key, seen) = coverage_key(recipes, outlines.as_deref(), &dir).unzip();
+        if let Some(e) = seen.filter(|_| edits) {
             if self.edits.borrow().as_ref().is_some_and(|last| *last != e) {
-                self.edited_at.set(Some(std::time::SystemTime::now()));
+                let now = std::time::SystemTime::now();
+                let first = self.edited_at.get().filter(|(_, last)| last.elapsed().is_ok_and(|a| a < EDIT_HOLD)).map_or(now, |(first, _)| first);
+                self.edited_at.set(Some((first, now)));
             }
             *self.edits.borrow_mut() = Some(e);
         }
@@ -3468,18 +3499,30 @@ mod tests {
         let (k1, e1) = coverage_key(&r("-21.9,64.13"), Some("sources/osm/a.outlines"), &outlines).unwrap();
         let (k2, e2) = coverage_key(&r("-21.9,64.13"), Some("sources/osm/b.outlines"), &outlines).unwrap();
         assert!(k1 != k2 && e1 == e2);
-        // A recipe's outline, or an outline file, changes both.
+        // A recipe's outline, or an outline file a recipe names, changes both; another file there
+        // (a Finder's .DS_Store) only the coverage's.
         assert_ne!(coverage_key(&r("-21.9,64.2"), Some("sources/osm/a.outlines"), &outlines).unwrap().1, e1);
+        let named = vec![recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["poly:x.poly".into()] }];
+        let (k0, n1) = coverage_key(&named, Some("sources/osm/a.outlines"), &outlines).unwrap();
+        std::fs::write(outlines.join(".DS_Store"), b"x").unwrap();
+        let (k3, n2) = coverage_key(&named, Some("sources/osm/a.outlines"), &outlines).unwrap();
+        assert!(n1 == n2 && k3 != k0);
         std::fs::write(outlines.join("x.poly"), b"x").unwrap();
-        assert_ne!(coverage_key(&r("-21.9,64.13"), Some("sources/osm/a.outlines"), &outlines).unwrap().1, e1);
-        // The agent: the first look isn't an edit; a change is.
+        assert_ne!(coverage_key(&named, Some("sources/osm/a.outlines"), &outlines).unwrap().1, n2);
+        // The agent: the first look isn't an edit; a change is (the plan's look, not the heartbeat's).
         let a = agent(&root, &home);
         let none = BTreeMap::new();
-        a.coverage(&root, &none, "2026-09-28", &r("-21.9,64.13")).unwrap();
-        a.coverage(&root, &none, "2026-09-28", &r("-21.9,64.13")).unwrap();
+        a.coverage(&root, &none, "2026-09-28", &r("-21.9,64.13"), true).unwrap();
+        a.coverage(&root, &none, "2026-09-28", &r("-21.9,64.13"), true).unwrap();
+        a.coverage(&root, &none, "2026-09-28", &[], false).unwrap();
         assert!(a.edited_at.get().is_none());
-        a.coverage(&root, &none, "2026-09-28", &r("-21.9,64.2")).unwrap();
-        assert!(a.edited_at.get().is_some_and(|t| t.elapsed().unwrap() < EDIT_HOLD));
+        a.coverage(&root, &none, "2026-09-28", &r("-21.9,64.2"), true).unwrap();
+        assert!(edit_held(a.edited_at.get()).is_some_and(|(age, left)| age < EDIT_HOLD && left <= EDIT_HOLD));
+        // A run of edits holds the work an hour at most.
+        let ago = |m: u64| std::time::SystemTime::now() - Duration::from_secs(m * 60);
+        assert!(edit_held(Some((ago(50), ago(1)))).is_some_and(|(_, left)| left <= Duration::from_secs(10 * 60)));
+        assert!(edit_held(Some((ago(61), ago(1)))).is_none());
+        assert!(edit_held(Some((ago(20), ago(16)))).is_none());
     }
 
     #[test]

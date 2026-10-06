@@ -70,8 +70,9 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   synchronous requests, a WASI call can't wait; 64 MB of blocks kept); a server's "none" is its
   `.none` file. The coordinator fetches the servers' files over HTTPS only, following no redirect
   (none of the five redirects), keeps a couple of dozen open, and serves 8 MB at most a request; a
-  NAS file it can't read now is a 503, never "not there" (a task fails rather than take FABDEM for
-  Taiwan's missing MOI DTM, as an unlistable folder would otherwise have it). A native worker reads
+  NAS file or folder it can't read now, or read whole, is a 503, never "not there" or fewer files (a
+  task fails rather than take FABDEM for Taiwan's missing MOI DTM, as an unlistable folder would
+  otherwise have it). A native worker reads
   the NAS at its own mount and the servers as the build Mac does, and, like a browser, only reads
   the NAS's stores (`Tools::stores_read_only`, `SCENIC_STORES_READ_ONLY`): a FABDEM tile the store
   hasn't whole is read in place inside Bristol's zip (`dem::fabdem::stored`, the same values the
@@ -80,8 +81,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 - **What comes back:** the files the steps changed; one written back as it was sent isn't sent (a
   hash of each input; the unit's folder has it). Checks compare them whole, what says how long a
   run took aside (`dem-stats.json`'s `seconds`).
-- **Memory:** a tail's task is predicted to take its files twice and a gigabyte more (what its
-  steps write meanwhile, and a step's own: 6/20/22's view took 1 GB), until a run of it says.
+- **Memory:** a tail's task is predicted to take its files three times over, 300 MB at least (a
+  worker holds them, a program reads them in, and room as much again for what its steps write
+  meanwhile and a step's own: 6/20/22's view took 1 GB), until a run of it says: then what that run
+  took, a tenth more.
 - **The unit job** (`pipeline::offload`) clones those files into the task's folder (copy-on-write,
   instant; the roadside buildings' links to the NAS stay links) and offers the task when a worker
   that takes tails is around and fewer than such are out (at most three: each holds a unit's folder
@@ -162,9 +165,9 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 ## 6. Fitting the work to the worker (built)
 
 - **Predicted peaks:** a unit's is what it took last time (each unit job notes its units' peaks,
-  `SCENIC_COSTS`), else about ten times its piece, never under 3.7 GB. A tail's is its files twice
-  (a web worker holds them, and a program reads them in) and 500 MB, raised to what a worker
-  measured for that unit's last time (6/20/22: 1,608 MB predicted, 1,603 measured).
+  `SCENIC_COSTS`), else about ten times its piece, never under 3.7 GB. A tail's is its files three
+  times over and 300 MB (a web worker holds them, a program reads them in, and what its steps
+  write), or what a worker measured for that unit's last time, a tenth more, in its place.
 - **Ceilings, enforced:** the programs are linked to import their memory, and the page gives each a
   `WebAssembly.Memory` capped at its task's budget less the files it holds: an overrun is a failed
   task, reported with the peak it reached, not a tab the OS kills.

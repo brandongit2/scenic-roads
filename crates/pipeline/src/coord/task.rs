@@ -52,7 +52,7 @@ pub struct Task {
 }
 
 /// A task as a job offers it (`POST /task/offer`).
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Offer {
     pub owner: u32,
     pub kind: String,

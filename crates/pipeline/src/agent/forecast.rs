@@ -385,8 +385,10 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             // The first of its steps it can do, in their order (a step's in the plan's).
             let steps: &[&str] = if t < mac.light_s { &LIGHT } else { &SECOND };
             let pick = steps.iter().find_map(|s| (0..items.len()).find(|&i| items[i].phase != Phase::Before && items[i].step == *s && items[i].cost.peak_mb <= mac.mem_mb && runnable(&items, i, t)));
+            // (With no network work while the Mac's in use, it looks again when that time's up.)
             free[m] = match pick {
                 Some(i) => take(&mut items, i, t),
+                None if t < mac.light_s => next_end(&items, &free, m, t).min(mac.light_s),
                 None => next_end(&items, &free, m, t),
             };
             continue;
@@ -889,6 +891,11 @@ mod tests {
         assert_eq!(took(0.0), 4);
         assert_eq!(took(f64::INFINITY), 0);
         assert_eq!(took(cost("unit", "6/8/0").secs), 3);
+        // The build Mac's first job two hours from done, the Mac in use for ten minutes: the second
+        // job takes the units from then, not once the first job ends.
+        let f = forecast(&input(&regions, vec![Machine { busy_s: 7200.0, ..mac("m4", 1.0, false) }, second(600.0)], &cost));
+        let lane = &f.lanes["m4 (second job)"];
+        assert_eq!((lane[0].step.as_str(), lane[0].from, lane.iter().filter(|x| x.step == "unit").map(|x| x.n).sum::<usize>()), ("unit", 1_000_000 + 600, 8));
     }
 
     #[test]

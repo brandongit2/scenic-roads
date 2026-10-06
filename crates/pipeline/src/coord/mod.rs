@@ -204,8 +204,10 @@ impl Shared {
 
     /// The targets of offer `o` that `a`'s worker may do now, as many as a job of it takes (units: as
     /// many as the worker asks), from the far end of the plan: none held, done, failed by it lately,
-    /// or needing more memory than it spares.
-    fn pick(&self, o: &Offer, a: &Ask, now: Instant) -> Vec<(String, String)> {
+    /// or needing more memory than it spares; `away`, those that fit the more it spares while its
+    /// owner's away, and end in the time it gives (none when it gives none: the ask's caller tries
+    /// every step's usual pick first).
+    fn pick(&self, o: &Offer, a: &Ask, now: Instant, away: bool) -> Vec<(String, String)> {
         let held = self.leases.held(&o.step, now);
         let backoff = |t: &str| match self.failed.get(&(a.worker.clone(), cost_key(&o.step, t))) {
             Some((at, n)) => now.duration_since(*at) < Duration::from_secs(3600) * 2u32.saturating_pow(n.saturating_sub(1).min(5)),
@@ -220,11 +222,10 @@ impl Shared {
             order.filter(|(t, k, _)| !held.contains(t) && self.done.get(&(o.step.clone(), t.clone())) != Some(k) && !backoff(t)).collect()
         };
         let take = |v: Vec<&(String, String, u64)>| v.into_iter().map(|(t, k, _)| (t.clone(), k.clone())).collect::<Vec<_>>();
-        let fits: Vec<_> = open.iter().copied().filter(|(t, _, size)| job_peak(&self.costs, &o.step, t, *size) <= a.mem_mb).take(n).collect();
-        let (Some(more), Some(max)) = (a.more_mb, a.max_secs) else { return take(fits) };
-        if !fits.is_empty() {
-            return take(fits);
+        if !away {
+            return take(open.iter().copied().filter(|(t, _, size)| job_peak(&self.costs, &o.step, t, *size) <= a.mem_mb).take(n).collect());
         }
+        let (Some(more), Some(max)) = (a.more_mb, a.max_secs) else { return Vec::new() };
         // Its owner away: a job that fits the more it spares then, as long as it ends in time.
         let mut left = max;
         take(
@@ -838,19 +839,24 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
             // The work only it can do first: a worker that mounts the NAS does a job of the plan (the
             // most work for what it fetches), the earliest step it can (what later steps wait on),
             // then a task; any other, a task.
+            // (What fits its usual memory first, of any step; then, its owner away, what fits the
+            // more it spares then.)
             if !s.pass.is_empty() {
                 let offers = s.offers.clone();
-                for o in offers.iter().filter(|o| a.can.contains(&o.step)) {
-                    let pick = s.pick(o, &a, now);
-                    if pick.is_empty() {
-                        continue;
+                let passes: &[bool] = if a.more_mb.is_some() && a.max_secs.is_some() { &[false, true] } else { &[false] };
+                for &away in passes {
+                    for o in offers.iter().filter(|o| a.can.contains(&o.step)) {
+                        let pick = s.pick(o, &a, now, away);
+                        if pick.is_empty() {
+                            continue;
+                        }
+                        let lease = s.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
+                        s.save_leases();
+                        eprintln!("coordinator: {} took {} {}", a.worker, o.step, pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" "));
+                        s.history.add(history::Event { worker: Some(a.worker.clone()), lease: Some(lease), step: Some(o.step.clone()), targets: pick.iter().map(|t| t.0.clone()).collect(), ..history::Event::new("lease") });
+                        let g = Grant { lease, ttl_s: TTL.as_secs(), work: Granted::Job { step: o.step.clone(), targets: pick, pass: s.pass.clone() } };
+                        return Ok((200, serde_json::to_value(g)?));
                     }
-                    let lease = s.leases.grant(&a.worker, Work::Job { step: o.step.clone(), targets: pick.clone() }, now);
-                    s.save_leases();
-                    eprintln!("coordinator: {} took {} {}", a.worker, o.step, pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" "));
-                    s.history.add(history::Event { worker: Some(a.worker.clone()), lease: Some(lease), step: Some(o.step.clone()), targets: pick.iter().map(|t| t.0.clone()).collect(), ..history::Event::new("lease") });
-                    let g = Grant { lease, ttl_s: TTL.as_secs(), work: Granted::Job { step: o.step.clone(), targets: pick, pass: s.pass.clone() } };
-                    return Ok((200, serde_json::to_value(g)?));
                 }
             }
             if let Some(id) = s.tasks.pick(&a.worker, &a.can, a.mem_mb) {
@@ -1079,9 +1085,10 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, local:
         "/task/offer" => {
             let mut o: task::Offer = serde_json::from_slice(body)?;
             let mut s = shared.lock().unwrap();
-            // What its unit's task took last time (a worker's measure, with some room), when that's more.
-            if let Some(c) = o.spec["unit"].as_str().and_then(|u| s.costs.get(&format!("tail {u}"))) {
-                o.mem_mb = o.mem_mb.max(c.peak_mb + c.peak_mb / 10);
+            // What its unit's task took last time (a worker's measure, with some room), in place of
+            // the guess.
+            if let Some(c) = o.spec["unit"].as_str().and_then(|u| s.costs.get(&format!("tail {u}"))).filter(|c| c.peak_mb > 0) {
+                o.mem_mb = c.peak_mb + c.peak_mb / 10;
             }
             let id = s.tasks.offer(o, now)?;
             Ok((200, serde_json::json!({ "id": id })))
@@ -1482,15 +1489,27 @@ mod http {
             return match query.as_str() {
                 "probe" => Json(if meta.is_dir() { serde_json::json!({ "kind": "dir" }) } else { serde_json::json!({ "kind": "file", "size": meta.len() }) }).into_response(),
                 "list" => {
-                    let mut entries: Vec<(String, &str, u64)> = Vec::new();
-                    if let Ok(rd) = std::fs::read_dir(&p) {
-                        for e in rd.flatten() {
-                            let Ok(m) = e.metadata() else { continue };
+                    // (A listing read in part, the NAS not answering, is an error, never fewer
+                    // entries: Taiwan's MOI DTM files listed as none would be FABDEM's elevations.
+                    // An entry gone since it was listed is just gone.)
+                    let listed = (|| -> std::io::Result<Vec<(String, &str, u64)>> {
+                        let mut entries = Vec::new();
+                        for e in std::fs::read_dir(&p)? {
+                            let e = e?;
+                            let m = match e.metadata() {
+                                Ok(m) => m,
+                                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                                Err(e) => return Err(e),
+                            };
                             entries.push((e.file_name().to_string_lossy().into_owned(), if m.is_dir() { "dir" } else { "file" }, m.len()));
                         }
+                        entries.sort();
+                        Ok(entries)
+                    })();
+                    match listed {
+                        Ok(entries) => Json(serde_json::json!({ "entries": entries })).into_response(),
+                        Err(e) => error(StatusCode::SERVICE_UNAVAILABLE, format!("the NAS didn't list it: {e}")),
                     }
-                    entries.sort();
-                    Json(serde_json::json!({ "entries": entries })).into_response()
                 }
                 _ => send_file(&p, "application/octet-stream", None, range.as_deref()).await,
             };
@@ -1797,8 +1816,9 @@ mod tests {
         assert_eq!(next(&away), "none");
         let fit = c.shared.lock().unwrap().fit(&away, Instant::now());
         assert_eq!((fit[0]["too_long"].as_u64(), fit[0]["held"].as_u64()), (Some(2), Some(1)));
-        // What fits its usual memory comes first, whatever its time.
-        c.offer("p", vec![o("pois", &[("6/1/1", 1500)], 12), o("slope", &[("3/2/1", 5000)], 3)]);
+        // What fits its usual memory comes first, whatever its time and its step (the agent offers
+        // slope before the candidates).
+        c.offer("p", vec![o("slope", &[("3/2/1", 5000)], 3), o("pois", &[("6/1/1", 1500)], 12)]);
         c.add_costs_by(&[(cost_key("slope", "3/2/1"), Cost { peak_mb: 5000, secs: 60, worker: None, v: 2 })], "m1");
         let both = Ask { more_mb: Some(10240), max_secs: Some(1200), ..can(&["slope", "pois"], 4096) };
         assert_eq!(next(&both), "pois 6/1/1");
@@ -2098,6 +2118,13 @@ mod tests {
         assert_eq!((code, json(&b)), (200, serde_json::json!({ "kind": "file", "size": 3000 })));
         assert_eq!(json(&get(&format!("{base}/nas/sources/canopy?probe"), "ipad", None).1), serde_json::json!({ "kind": "dir" }));
         assert_eq!(json(&get(&format!("{base}/nas/sources/canopy?list"), "ipad", None).1)["entries"], serde_json::json!([["sq.tif", "file", 3000]]));
+        // A folder that can't be read (as the NAS not answering): an error, not an empty listing.
+        let locked = nas.join("sources/canopy/locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
+        let (code, _) = get(&format!("{base}/nas/sources/canopy/locked?list"), "ipad", None);
+        std::fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        assert_eq!(code, 503);
         // A range of it, as a program reads it.
         let (code, b) = get(&format!("{base}/nas/sources/canopy/sq.tif"), "ipad", Some("1000-1099"));
         assert_eq!((code, b), (206, square[1000..1100].to_vec()));
@@ -2140,8 +2167,14 @@ mod tests {
         // The job's check found it different: the worker gets nothing more.
         job.post_json(&format!("/task/{id}/close"), &serde_json::json!({ "checked": false })).unwrap();
         assert!(!out.exists());
-        let id2 = job.post_json("/task/offer", &serde_json::to_value(&task::Offer { mem_mb: 100, ..offer }).unwrap()).unwrap().1["id"].as_u64().unwrap();
+        let id2 = job.post_json("/task/offer", &serde_json::to_value(&task::Offer { mem_mb: 100, ..offer.clone() }).unwrap()).unwrap().1["id"].as_u64().unwrap();
         assert!(ipad.ask(&web(1000)).unwrap().is_none());
         assert_eq!(job.post_json(&format!("/task/{id2}/withdraw"), &serde_json::json!({})).unwrap().1["withdrawn"], true);
+        // What a worker measured for the unit replaces the guess, more or less: 300 MB and a tenth.
+        let id3 = job.post_json("/task/offer", &serde_json::to_value(&task::Offer { mem_mb: 5000, ..offer }).unwrap()).unwrap().1["id"].as_u64().unwrap();
+        let phone = client::Client::at(w.urls().to_vec(), c.contact.token.clone(), "phone");
+        let g = phone.ask(&Ask { worker: "phone".into(), ..web(500) }).unwrap().unwrap();
+        let Granted::Task { id: tid, mem_mb, .. } = g.work else { panic!() };
+        assert_eq!((tid, mem_mb), (id3, 330));
     }
 }

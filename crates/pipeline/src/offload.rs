@@ -81,10 +81,10 @@ impl Offload {
             }
         }
         // Its memory: its files twice (a worker holds them, and a program reads them in), and room
-        // to work: what the steps write meanwhile, and a step's own (6/20/22's whole tail: 996 MB
-        // of files, 565 MB written, the view step 1 GB). The coordinator raises it to what the
-        // unit's task took last time.
-        let mem_mb = (inputs.values().sum::<u64>() >> 20) * 2 + 1000;
+        // to work as much again, what the steps write meanwhile and a step's own (6/20/22's whole
+        // tail: 996 MB of files, 565 MB written, the view step 1 GB), with 300 MB at least. What the
+        // unit's task took last time, when a worker measured it, replaces this (the coordinator's).
+        let mem_mb = (inputs.values().sum::<u64>() >> 20) * 3 + 300;
         let list: Vec<serde_json::Value> = inputs.iter().map(|(p, n)| serde_json::json!([p, n])).collect();
         let spec = serde_json::json!({ "unit": u.slash(), "version": self.version, "runs": runs, "inputs": list, "places": places() });
         let offer = crate::coord::task::Offer { owner: self.owner, kind: "tail".into(), spec, root: root.clone(), inputs, mem_mb };

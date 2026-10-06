@@ -331,7 +331,8 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   nothing while it runs another app than the build Mac's. While its owner is away (on mains power,
   not used for a quarter of an hour) it spares five eighths (10 GB) for a job that doesn't fit its
   usual memory, if the job's targets' last runs say it ends within twenty minutes (twice the build
-  Mac's time where only the build Mac ran it; never one not yet measured). A unit's predicted peak is the most memory one of its steps'
+  Mac's time where only the build Mac ran it; never one not yet measured), once no step's work fits
+  its usual memory. A unit's predicted peak is the most memory one of its steps'
   programs took last time (each unit job notes it; scenic-build's own isn't counted), else about ten
   times its piece, never under 3.7 GB: over the M1's first 205 units, pieces up to 150 MB, 3.7 GB at
   most, no more for the bigger pieces.
@@ -1015,10 +1016,11 @@ box function and the per-area folders go.
 ## 8. Building
 
 **Regions:** recipes in `inputs/regions/`. The agent works out what they change from job keys; there
-are no request files. After an edit (a recipe's outline, or an outline file in `inputs/outlines/`)
-the regions' work waits a quarter of an hour for more edits before it starts (what runs carries on;
-a new pass's outlines aren't an edit): three edits in a row on 2026-10-05 built the same regions'
-heritage sites three times and their terrain twice.
+are no request files. After an edit (a recipe's outline, or an outline file in `inputs/outlines/`
+that a recipe names) the regions' work waits a quarter of an hour for more edits before it starts,
+an hour at most from the first of a run of them (what runs carries on; a new pass's outlines aren't
+an edit, nor any other file there, nor a recipe that can't be read now): three edits in a row on
+2026-10-05 built the same regions' heritage sites three times and their terrain twice.
 
 **Scheduler.**
 - **The plan:** every step's targets come with their keys (`state/build/jobs.json`). A target is
