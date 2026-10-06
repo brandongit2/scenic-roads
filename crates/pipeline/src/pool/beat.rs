@@ -35,7 +35,11 @@ pub struct Beat {
     pub handing_to: Option<HandingTo>,
     /// The term it's ready to lead, answering a lead's offer (crate::pool::handover::ready_for).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ready_for: Option<u64>,
+    pub ready_for: Option<Ready>,
+    /// The term naming it that it stood down from and won't lead (its app is older than the
+    /// term's: it can't re-assert it): another member may take over without forcing it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stood_down: Option<u64>,
     /// Where it answers the pool's API: Tailscale's addresses, then the LAN's.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub addresses: Vec<String>,
@@ -48,10 +52,20 @@ pub struct HandingTo {
     pub to: String,
     /// The term handed over (the target leads the next).
     pub term: u64,
+    /// The offer: when it was made (the lead's clock), which the target's answer names.
+    pub offer: u64,
     /// Since when it's at this stage (the lead's clock).
     pub since: u64,
     /// Where it stands: offered, settling, or passed.
     pub stage: Stage,
+}
+
+/// A member's answer to a lead's offer (§6.4, Ready): the term it's ready to lead, and the offer
+/// it answers (`HandingTo::offer`), so an answer to an earlier offer doesn't answer a later one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ready {
+    pub term: u64,
+    pub offer: u64,
 }
 
 /// A handover's stage, for the views.
@@ -111,7 +125,7 @@ mod tests {
         assert_eq!((b.member.as_str(), b.beat, b.leads, b.ready_for), ("m-000000000000000a", 1000, None, None));
         assert!(!serde_json::to_string(&b).unwrap().contains("leads"), "what isn't so isn't written");
         let nas = Mem::default();
-        let h = Beat { leads: Some(4), handing_to: Some(HandingTo { to: "m-000000000000000b".into(), term: 4, since: 990, stage: Stage::Offered }), ..b.clone() };
+        let h = Beat { leads: Some(4), handing_to: Some(HandingTo { to: "m-000000000000000b".into(), term: 4, offer: 990, since: 990, stage: Stage::Offered }), ..b.clone() };
         h.write(&nas).unwrap();
         assert!(String::from_utf8(nas.read(&path("m-000000000000000a")).unwrap().unwrap()).unwrap().contains("\"stage\":\"offered\""));
         assert_eq!(Beat::read(&nas, "m-000000000000000a").unwrap(), Some(h));

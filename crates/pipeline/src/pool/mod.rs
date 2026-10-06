@@ -10,11 +10,15 @@
 //!   today's three files; the merge of journal entries into them, and taking up a term;
 //! - `journal`: the jobs' hand-offs, written by their members straight to the NAS as a log the lead
 //!   merges (§7.3), and what a member keeps telling the lead until it's acknowledged;
-//! - `handover`: handing the lead to another Mac, as pure transitions (§6.4), and the gaps after
-//!   which a lead re-asserts (§6.6);
+//! - `handover`: handing the lead to another Mac, as pure transitions (§6.4);
 //! - `beat`: the fields of a member's heartbeat the protocol reads and writes (§10);
-//! - `sim` (tests): the simulator, which runs two to four Macs on seeded schedules of sleeps, stale
-//!   reads, delayed renames and busy files, and checks the invariants of §4 at every step.
+//! - `driver`: what a member is in the pool and does as that, one step per loop of the agent's,
+//!   through an I/O trait (the NAS's operations and the clocks): taking up terms, leading,
+//!   re-asserting after a gap (§6.6), handing over and taking back, taking over, telling the lead
+//!   of its entries; the API the agent's loop calls;
+//! - `sim` (tests): the simulator, which runs the driver on two to four Macs on seeded schedules of
+//!   sleeps, stale reads, delayed renames, busy files, cut creates and lost answers, and checks the
+//!   invariants of §4 at every step and its progress at the end.
 //!
 //! Every file the protocol writes is one of three kinds (§2, principle 3): a member's own (its
 //! heartbeat, its journal entries), one made once with create-new and never changed (terms, notes
@@ -22,11 +26,13 @@
 //! truth. So a Mac that slept through a change and writes late writes where no one reads:
 //! nothing needs refusing (invariant 5).
 //!
-//! What the agent and the coordinator do around it (asks over HTTP, granting jobs, the write-set
-//! checks they pass to the merge, staying awake, the history) stays theirs; the simulator plays
-//! that part as the design has it (`sim::Mac`).
+//! What the agent and the coordinator do around it (messages over HTTP, granting jobs, the
+//! write-set checks they pass to the merge, the listings of the journal the driver asks for,
+//! staying awake, the history) stays theirs; the simulator plays that part as the design has it
+//! (`sim::Mac`).
 
 pub mod beat;
+pub mod driver;
 pub mod handover;
 pub mod journal;
 pub mod nas;
@@ -37,6 +43,7 @@ pub mod term;
 mod sim;
 
 pub use beat::Beat;
+pub use driver::Driver;
 pub use handover::Handover;
 pub use journal::{Entry, LeaseId, Mine};
 pub use nas::{Nas, Share};
