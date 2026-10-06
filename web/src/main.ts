@@ -29,6 +29,7 @@ import { initHosts } from './hosts';
 import { ferryMetricDef } from './ferry';
 import { cdfOf, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
+import { addBuildings, applyBuildings, buildingAt, hiddenByBuilding, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type Ray } from './buildings';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
@@ -1406,6 +1407,7 @@ async function main() {
     // Ferries next (car ferries are in the road layer too; their ferry details say more).
     const ferry = feats.point ? null : ferries.hoverAt(pt);
     if (ferry) {
+      hoverBuilding(null);
       hovered = null;
       roads.setHover(null);
       rails.setHover(null);
@@ -1416,6 +1418,11 @@ async function main() {
     const hr = feats.point ? null : roads.pick(pt.x, pt.y);
     const hl = feats.point || !store.s.rail.on ? null : rails.pick(pt.x, pt.y);
     hovered = hr && hl ? (hl.px <= hr.px ? hl : hr) : hr ?? hl;
+    // A road or rail line behind a building gives way to it (the lines are picked within a few
+    // pixels of the cursor, hidden or not).
+    const exag = store.s.terrain.on ? store.s.terrain.exaggeration : 0;
+    const ray: Ray = { at: (x, y, e) => cam3d.rayAt(map, x, y, e), camera: cam3d.cameraAltitude(map) };
+    if (hovered && store.s.buildings.on && hiddenByBuilding(map, hovered.lngLat, store.s.buildings, exag, ray)) hovered = null;
     const layer = hovered && hovered === hl ? rails : roads;
     (layer === rails ? roads : rails).setHover(null);
     // Highlight the whole road (or line), not just the way under the cursor (fetched once per road).
@@ -1429,9 +1436,19 @@ async function main() {
     map.getCanvas().style.cursor = viewshed.active || regions.picking ? 'crosshair' : hovered || feats.point ? 'pointer' : '';
     hoverAreas = feats.areas;
     if (!hovered) {
+      // A building, when no marker, road or rail line answers: the areas it's in as chips (a whole
+      // old town is a heritage area, which would otherwise hide every building in it).
+      const bf = feats.point ? null : buildingAt(map, pt, store.s.buildings, exag, ray)?.f ?? null;
+      hoverBuilding(bf);
+      if (bf) {
+        roads.setHover(null);
+        rails.setHover(null);
+        return strip.showFeature(buildingSummary(bf), feats.areas);
+      }
       const f = feats.point ?? feats.areas[0];
       return f ? showFeat(f, feats.areas) : strip.show(null, null);
     }
+    hoverBuilding(null);
     const hv = hovered;
     const known = peekWay(hv.way);
     strip.show(hv, known === undefined ? 'loading' : known, hoverAreas);
@@ -1442,6 +1459,14 @@ async function main() {
     }
   };
   let hoverAreas: FeatureSummary[] = [];
+  /** The hovered building highlighted (null: none), when it changed. */
+  let hoveredBuilding: unknown = null;
+  const hoverBuilding = (f: maplibregl.MapGeoJSONFeature | null) => {
+    const key = f ? JSON.stringify(f.geometry) : null;
+    if (key === hoveredBuilding) return;
+    hoveredBuilding = key;
+    setBuildingHover(map, f, store.s.buildings, store.s.terrain.on ? store.s.terrain.exaggeration : 0);
+  };
   // Last cursor position on the map (terrain-aware), for the Street View shortcut.
   let cursorLL: maplibregl.LngLat | null = null;
   map.on('mousemove', (e) => {
@@ -1462,6 +1487,7 @@ async function main() {
     hovered = null;
     roads.setHover(null);
     rails.setHover(null);
+    hoverBuilding(null);
     strip.show(null, null);
   });
 
@@ -1750,6 +1776,14 @@ async function main() {
       search.focus();
       return;
     }
+    // B: the 3D buildings on and off.
+    if (k === 'b' && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target)) {
+      e.preventDefault();
+      const on = !store.s.buildings.on;
+      store.set({ buildings: { ...store.s.buildings, on } });
+      toast(on ? 'Buildings on (B)' : 'Buildings off (B)');
+      return;
+    }
     // I: the HUD (panels, bottom bar, controls) off and on, the map filling the window.
     if (k === 'i' && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target)) {
       e.preventDefault();
@@ -1799,6 +1833,8 @@ async function main() {
   };
   let styleReady = false;
   let lastExaggeration = store.s.terrain.on ? store.s.terrain.exaggeration : 0;
+  /** The buildings' settings applied (the terrain's exaggeration and light are theirs too). */
+  const applyBuildingsNow = (s: AppState) => applyBuildings(map, s.buildings, s.terrain.on ? s.terrain.exaggeration : 0, s.terrain.light);
   store.on((s, ch) => {
     const st = roads.style;
     st.mode = s.mode;
@@ -1838,6 +1874,10 @@ async function main() {
     }
     if (ch.has('ferry')) ferryCard.sync();
     if (ch.has('trees') && styleReady) applyTrees(map, s.trees);
+    if ((ch.has('buildings') || ch.has('terrain')) && styleReady) {
+      applyBuildingsNow(s);
+      if (!s.buildings.on) hoverBuilding(null);
+    }
     if (ch.has('groups') || ch.has('unnamed') || ch.has('roadLen') || ch.has('roadLenOn') || ch.has('surface') || ch.has('toll') || ch.has('layers') || ch.has('mode') || ch.has('weights')) markDirty();
     if (ch.has('equalize') || ch.has('mode')) cdfKey = '';
     if (styleReady) {
@@ -1952,6 +1992,7 @@ async function main() {
   let watch: CatalogWatch | null = null;
   onVersions(['roads.tiles'], () => roads.setSource(version('roads.tiles'), roads.bounds));
   onVersions(['rails.tiles'], () => rails.setSource(version('rails.tiles'), rails.bounds));
+  onVersions(['buildings.tiles'], () => switchBuildings(map));
   onVersions(['rail-freq.bin'], () => {
     if (railFreqFor !== null && store.s.rail.on) loadRailFreq();
   });
@@ -1967,6 +2008,11 @@ async function main() {
     // labels come from our tiles (the style is made for one or the other).
     roads.setSource(version('roads.tiles'), m.bounds);
     rails.setSource(version('rails.tiles'), m.bounds);
+    // The buildings, once a catalog has them.
+    if (m.layers?.buildings && styleReady && !map.getSource('bld')) {
+      addBuildings(map, 'water-name-line', 'boundary-county');
+      applyBuildingsNow(store.s);
+    }
     if (!!m.labelTiles !== labelTilesOn() || !!m.ovTiles !== ovTilesOn() || !!m.stationTiles !== stationTilesOn() || !!m.smallWater !== smallWaterOn() || !!m.ferryBlocks !== ferries.byBlocks) watch?.wantReload('New map data');
     markDirty();
   };
@@ -1998,6 +2044,10 @@ async function main() {
     applyProjection();
     map.addLayer(roads, 'water-name-line');
     map.addLayer(rails, 'water-name-line');
+    // The 3D buildings after the road and rail layers (a road in front stays in front: it lies on
+    // the terrain, whose depth they're tested against), their footprints among the draped layers
+    // before the boundaries (docs/buildings3d.md §4.2).
+    if (meta.layers?.buildings) addBuildings(map, 'water-name-line', 'boundary-county');
     // Under the roads, above every layer draped on the terrain (one between them would split the
     // draping in two: the terrain drawn twice).
     map.addLayer(contours, 'roads');
@@ -2009,6 +2059,7 @@ async function main() {
     applyWater(map, store.s.water, basemapTiles, store.s.layers.water);
     applyLineWidths(map, store.s.lineWeights);
     applyTrees(map, store.s.trees);
+    applyBuildingsNow(store.s);
     applyLabelOpacity(map, store.s.labelOpacity, overlayLabelScale(store.s.poiOpacity));
     applyOverlayOpacity(map, store.s.poiOpacity);
     applyBoundaryOpacity(map, store.s.boundaryOpacity);

@@ -508,6 +508,7 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #layers .tree-chips .lg { display: flex; align-items: center; gap: 5px; }
 #layers .tree-chips i { width: 14px; height: 6px; border-radius: 2px; }
 #layers .tree-note { padding: 2px 0 4px 22px; font-size: 10.5px; line-height: 1.4; }
+#layers .bld-chips { flex-wrap: wrap; gap: 3px 10px; }
 #layers [hidden] { display: none !important; }
 .climbs-meta .show-map { margin-left: auto; display: flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--muted); cursor: pointer; }
 

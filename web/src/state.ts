@@ -5,6 +5,7 @@ import { FERRY_METRICS, NFERRY, ferryMetricDef, type FerryColour, type FerryMetr
 import { baseKey } from './palettes';
 import { STOP_FILTERS, filtersFromHash, filtersToHash, type StopFilter } from './stopfilters';
 import { TREE_PALETTES, type TreeState, type TreeStyle, type TreeVar } from './trees';
+import type { BuildingColour, BuildingState } from './buildings';
 import { BUILTIN, DEFAULT_PRESET, DEFAULT_WEIGHTS, RAIL_DEFAULT_PRESET, RAIL_DEFAULT_WEIGHTS, presets, railPresets, sameWeights } from './presets';
 import { MODES, migrateWeights, modeDef, type Mode } from './scenic';
 
@@ -392,6 +393,8 @@ export interface AppState {
   ferry: FerryState;
   /** Tree cover layer (Layers → Trees). */
   trees: TreeState;
+  /** 3D buildings (Layers → Buildings). */
+  buildings: BuildingState;
   surface: { paved: boolean; unpaved: boolean };
   /** Toll-free and toll roads shown (OSM toll=yes). */
   toll: { free: boolean; toll: boolean };
@@ -504,6 +507,8 @@ export const defaults: AppState = {
     on: true, variable: 'cover', style: 'mask', opacity: 0.05, palette: 'greens',
     cutCover: 20, cutHeight: 5, maskCover: 20, maskHeight: 10, maskColour: '#03a300',
   },
+  // (Opaque on a touch screen: one pass instead of two, docs/buildings3d.md §4.6.)
+  buildings: { on: true, flat: false, colour: 'plain', opacity: typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 1 : 0.85, scale: 1, skyline: false },
   ferry: { on: true, groups: new Array(NFERRY).fill(true), colour: 'freq', metric: 'freq', looks: {},
     ...scaleOfLook({ ...freshLook(FERRY_METRICS[0].range, 0.45), fit: [0, 100], palette: 'oslo', lowSpan: 0.5 }),
     opacity: 0.9, dashed: true, single: '#8fc8ff',
@@ -731,6 +736,8 @@ export function toHash(s: AppState): string {
   if (fy(s.ferry) !== fy(defaults.ferry)) p.set('fy', fy(s.ferry));
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
   if (tc(s.trees) !== tc(defaults.trees)) p.set('tc', tc(s.trees));
+  const bd = (b: BuildingState) => [b.on ? 1 : 0, b.flat ? 1 : 0, b.colour, +b.opacity.toFixed(2), +b.scale.toFixed(2), b.skyline ? 1 : 0].join(',');
+  if (bd(s.buildings) !== bd(defaults.buildings)) p.set('bd', bd(s.buildings));
   if (!(s.surface.paved && s.surface.unpaved)) p.set('sf', `${s.surface.paved ? 'p' : ''}${s.surface.unpaved ? 'u' : ''}`);
   if (!(s.toll.free && s.toll.toll)) p.set('tl', `${s.toll.free ? 'f' : ''}${s.toll.toll ? 't' : ''}`);
   const lw = (l: LineWeights) => [l.global, ...LINE_KINDS.map(([k]) => l[k])].map((v) => +v.toFixed(2)).join(',');
@@ -901,6 +908,19 @@ export function fromHash(hash: string): AppState {
       maskCover: n(tcv[7], t.maskCover, 1, 100),
       maskHeight: n(tcv[8], t.maskHeight, 1, 40),
       maskColour: /^[0-9a-f]{6}$/i.test(tcv[9]) ? `#${tcv[9]}` : t.maskColour,
+    };
+  }
+  const bdv = p.get('bd')?.split(',');
+  if (bdv && bdv.length >= 6) {
+    const b = s.buildings;
+    const n = (v: string, d: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
+    s.buildings = {
+      on: bdv[0] === '1',
+      flat: bdv[1] === '1',
+      colour: (['plain', 'height', 'source'] as BuildingColour[]).includes(bdv[2] as BuildingColour) ? (bdv[2] as BuildingColour) : b.colour,
+      opacity: n(bdv[3], b.opacity, 0.1, 1),
+      scale: n(bdv[4], b.scale, 0, 3),
+      skyline: bdv[5] === '1',
     };
   }
   const rw = p.get('rw')?.split(',').map(Number);
@@ -1109,6 +1129,9 @@ export function fromSaved(o: unknown): AppState {
   if (!RAIL_COLOURS.includes(s.rail.colour)) s.rail.colour = defaults.rail.colour;
   if (!RAIL_METRICS.some((m) => m.key === s.rail.metric)) s.rail.metric = defaults.rail.metric;
   if (!FERRY_COLOURS.includes(s.ferry.colour)) s.ferry.colour = defaults.ferry.colour;
+  if (!['plain', 'height', 'source'].includes(s.buildings.colour)) s.buildings.colour = defaults.buildings.colour;
+  s.buildings.opacity = Math.min(1, Math.max(0.1, s.buildings.opacity));
+  s.buildings.scale = Math.min(3, Math.max(0, s.buildings.scale));
   if (!FERRY_METRICS.some((m) => m.key === s.ferry.metric)) s.ferry.metric = defaults.ferry.metric;
   // Stops & sights filters (merge() only keeps keys the defaults have).
   const sfv = (rest.stopFilters ?? {}) as Record<string, Partial<StopFilter>>;

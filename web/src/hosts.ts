@@ -6,9 +6,9 @@
 // six connections each. Used when the page is on localhost and one of them answers a probe; else
 // (another browser, or a server elsewhere) everything comes from the page's origin.
 
-export type DataKind = 'roads' | 'rails' | 'terrain' | 'base' | 'trees' | 'layers';
+export type DataKind = 'roads' | 'rails' | 'terrain' | 'base' | 'trees' | 'layers' | 'buildings';
 
-const NAMES: Record<DataKind, string> = { roads: 'roads', rails: 'rails', terrain: 'terrain', base: 'base', trees: 'trees', layers: 'layers' };
+const NAMES: Record<DataKind, string> = { roads: 'roads', rails: 'rails', terrain: 'terrain', base: 'base', trees: 'trees', layers: 'layers', buildings: 'buildings' };
 let hosts: Record<DataKind, string> | null = null;
 
 /** Probes the data hosts (at most `timeoutMs`); call once before building any data URL. */

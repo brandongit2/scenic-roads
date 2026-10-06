@@ -11,6 +11,7 @@ import { fmt, h } from './dom';
 import { ScaleControls } from './scale';
 import { RangeFilter, Slider, pct, type SliderOpts } from './controls';
 import { TreeSection } from './trees';
+import { BuildingSection } from './buildings';
 import { toggleAllStops } from './stops';
 import { presets, railPresets } from '../presets';
 
@@ -54,6 +55,8 @@ export class LayersCard {
   private roadLen: RangeFilter;
   /** Tree cover layer controls. */
   readonly trees: TreeSection;
+  /** 3D buildings controls. */
+  readonly buildings: BuildingSection;
   private railSection: Node[];
   private rail!: HTMLInputElement;
   private railBoxes: HTMLInputElement[] = [];
@@ -180,6 +183,7 @@ export class LayersCard {
       fmt: (v) => (v >= 10 ? fmt.n(Math.round(v)) : String(+v.toPrecision(2))),
     });
     this.trees = new TreeSection(this.store);
+    this.buildings = new BuildingSection(this.store);
     // Passenger rail: the layer and its service groups (styling: top-left panel).
     this.rail = cb((v) => this.store.set({ rail: { ...this.store.s.rail, on: v } }));
     const railGroups = h('div', { class: 'grp' });
@@ -650,6 +654,7 @@ export class LayersCard {
         tog(this.t.sky, 'Sky & distance fog', '', 'tog', 'Visible when the map is tilted'),
       ),
       this.section('trees', 'Trees', this.trees.on, ...this.trees.nodes),
+      this.section('buildings', 'Buildings', this.buildings.on, ...this.buildings.nodes),
       this.section('map', 'Map', null,
         tog(this.globe, 'Globe', '', 'tog', 'Globe projection; flattens to Web Mercator as you zoom in'),
         tog(this.other.water, 'Water'),
@@ -800,6 +805,7 @@ export class LayersCard {
 
   sync(s: AppState) {
     this.trees.sync();
+    this.buildings.sync();
     queueMicrotask(() => {
       for (const t of this.root.querySelectorAll<HTMLInputElement & { syncOff?: () => void }>('input.switch')) t.syncOff?.();
     });

@@ -78,6 +78,8 @@ export interface Meta {
   ferryBlocks?: boolean;
   /** The catalog's number (catalog.ts follows it). */
   catalog?: number;
+  /** The catalog's tile layers and their zooms (the 3D buildings: `buildings`). */
+  layers?: Record<string, [number, number]>;
 }
 
 // Tiles and layers are cached by the browser, so their URLs carry the version of the file they

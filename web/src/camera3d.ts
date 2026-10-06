@@ -558,6 +558,17 @@ function probeGround(map: MLMap, tr: Tr, px: number, py: number): number | null 
   return e;
 }
 
+/** Where the view ray through screen point (px, py) is at `elev` metres (rendered heights: the
+ * terrain's exaggerated), on the globe or the flat map; null without the camera's transform, or
+ * at or above the camera (a ray goes down from it). */
+export function rayAt(map: MLMap, px: number, py: number, elev: number): LngLat | null {
+  const tr = transform(map);
+  return tr && elev < tr.getCameraAltitude() ? pointAt(map, tr, px, py, elev) : null;
+}
+
+/** The camera's altitude (m; Infinity without its transform). */
+export const cameraAltitude = (map: MLMap): number => transform(map)?.getCameraAltitude() ?? Infinity;
+
 function pointAt(map: MLMap, tr: Tr, px: number, py: number, elev: number): LngLat | null {
   if (globeOn(map)) {
     const sea = seaLevelAt(map, tr, px, py);
