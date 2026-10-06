@@ -109,6 +109,12 @@ pub const SWEEP_S: u64 = 600;
 pub const SWEEP_DAYS: u64 = 2;
 /// How long a listing asked for may take before it's asked for again (s).
 pub const LISTING_S: u64 = 900;
+/// A lead lists every day of the journal not forgotten at least this often (its take-up's listing,
+/// then again an hour before this one's a day old), and its records reflect the journal
+/// (`Out::caught_up`) only by such a listing begun this recently (s): an entry written late into an
+/// old day (kept unwritten while its Mac was away), its member gone before telling of it, waits no
+/// longer than this.
+pub const RELIST_S: u64 = 86_400;
 /// How long a member sees the lead's heartbeat stood down before it takes over by itself (s).
 pub const STOOD_DOWN_S: u64 = 120;
 /// The wait between the members that can take over a lead that stood down, by rank (s).
@@ -229,6 +235,9 @@ pub struct Out {
     /// re-assertion keeps it, but after a sleep. A catalog waits for it (and `duties`); GC too
     /// (and `fresh`): an entry not merged yet may hold uploads the records don't name.
     pub caught_up: bool,
+    /// Leading: when it asked for the listing of every day its records reflect (this Mac's clock;
+    /// within `RELIST_S` while `caught_up`): caught up, every entry written before it is merged.
+    pub listed_at: Option<u64>,
     /// This process isn't the member's only one (another took its lock: `MemberLock::check`), and
     /// why: the agent stops the pool. It writes no heartbeat (this step's is empty), sends nothing,
     /// and steps no more; a term it led is left to a takeover.
@@ -314,8 +323,9 @@ struct Lead {
     /// Of those, the ones its reads found not whole, since when (awake clock; a read that failed
     /// starts it again).
     unreadable: BTreeMap<String, u64>,
-    /// The listing its take-up asked for is merged.
-    listed: bool,
+    /// When it asked for the listing of every day it merged last (its take-up's, or a later one):
+    /// None before its take-up's is merged.
+    listed_at: Option<u64>,
     /// Changes not saved yet.
     dirty: bool,
     /// Entries refused: their refusals to note once that's saved.
@@ -338,8 +348,8 @@ struct Passing {
 struct Asked {
     n: u64,
     at: u64,
-    /// A take-up's (every day), for the term it leads.
-    full: Option<u64>,
+    /// Of every day not forgotten (a take-up's, or the daily one), not the last days' (a sweep's).
+    full: bool,
 }
 
 /// A member's part in the pool, one step at a time (see the module's doc: the contract).
@@ -561,7 +571,8 @@ impl Driver {
             out.duties = l.hand.grants() && self.must.is_none();
             out.settle = matches!(l.hand, Handover::Settling { .. });
             out.fresh &= self.must.is_none();
-            out.caught_up = l.listed && !l.dirty && l.waiting.is_empty();
+            out.caught_up = l.listed_at.is_some_and(|at| end.0.saturating_sub(at) < RELIST_S) && !l.dirty && l.waiting.is_empty() && self.must.is_none();
+            out.listed_at = l.listed_at;
         } else {
             out.fresh = false;
         }
@@ -682,8 +693,8 @@ impl Driver {
                 // meanwhile, told to it and lost, a listing finds.)
                 if let Some(n) = self.lead.as_mut() {
                     (n.told, n.waiting, n.unreadable) = (l.told, l.waiting, l.unreadable);
-                    if l.listed && !slept {
-                        n.listed = true;
+                    if l.listed_at.is_some() && !slept {
+                        n.listed_at = l.listed_at;
                         (self.due, self.asked) = (due, asked);
                     }
                 }
@@ -765,7 +776,7 @@ impl Driver {
         out.fresh = true;
         out.events.push(Event::TookUp { term: t.term, how: t.how.clone(), handed });
         let horizon = r.horizon.clone();
-        self.lead = Some(Lead { term: t.clone(), records: r, hand: Handover::Leading, told: BTreeMap::new(), waiting: BTreeSet::new(), unreadable: BTreeMap::new(), listed: false, dirty: false, refused: Vec::new() });
+        self.lead = Some(Lead { term: t.clone(), records: r, hand: Handover::Leading, told: BTreeMap::new(), waiting: BTreeSet::new(), unreadable: BTreeMap::new(), listed_at: None, dirty: false, refused: Vec::new() });
         // A take-up lists the journal: every day not forgotten.
         self.due = Some((Some(horizon).filter(|h| !h.is_empty()), true));
         self.asked = None;
@@ -807,11 +818,14 @@ impl Driver {
         let mut keys: Vec<String> = l.told.keys().chain(&l.waiting).filter(|k| !l.records.handles(k)).cloned().collect();
         let from_listing = listed.is_some();
         if let Some(listed) = listed {
-            // (The take-up's listing, for this term: once merged and saved, the records reflect the
-            // journal. An older ask's keys are merged as any.)
+            // (A listing of every day, its take-up's or the daily one: once merged and saved, the
+            // records reflect the journal as it was when it was asked for. An older ask's keys, a
+            // take-up past, are merged as any.)
             if let Some(a) = asked.filter(|a| a.n == listed.n) {
                 self.asked = None;
-                l.listed |= a.full == Some(e);
+                if a.full {
+                    l.listed_at = Some(a.at);
+                }
             }
             keys.extend(listed.keys.into_iter().filter(|k| !l.records.handles(k)));
         }
@@ -1157,8 +1171,8 @@ impl Driver {
         Ok(())
     }
 
-    /// The listings it asks for: a take-up's, then a sweep of the last days every `SWEEP_S`, one
-    /// at a time.
+    /// The listings it asks for, one at a time: of every day, a take-up's (asked again until one
+    /// is back), then daily (`RELIST_S`); and of the last days every `SWEEP_S`.
     fn listings(&mut self, io: &dyn Io, out: &mut Out) {
         let Some(l) = &self.lead else {
             self.due = None;
@@ -1168,13 +1182,17 @@ impl Driver {
         if self.asked.is_some_and(|a| now.abs_diff(a.at) < LISTING_S) {
             return;
         }
+        // (An hour ahead of the day: four of a listing's tries.)
+        if self.due.is_none() && l.listed_at.is_none_or(|at| now.saturating_sub(at) + 4 * LISTING_S >= RELIST_S) {
+            self.due = Some((Some(l.records.horizon.clone()).filter(|h| !h.is_empty()), true));
+        }
         if self.due.is_none() && now.abs_diff(self.swept) >= SWEEP_S {
             let since = journal::day(now.saturating_sub(SWEEP_DAYS * 86_400)).filter(|d| *d > l.records.horizon);
             self.due = Some((since.or_else(|| Some(l.records.horizon.clone()).filter(|h| !h.is_empty())), false));
         }
         if let Some((since, full)) = self.due.take() {
             self.asks += 1;
-            self.asked = Some(Asked { n: self.asks, at: now, full: full.then_some(l.term.term) });
+            self.asked = Some(Asked { n: self.asks, at: now, full });
             self.swept = now;
             out.list = Some(Listing { n: self.asks, since });
         }
@@ -1632,6 +1650,80 @@ mod tests {
         ia.pass(60);
         assert!(step(&mut a, &ia, able()).caught_up);
         assert!(Records::load(&mem, 1).unwrap().unwrap().reflected.contains(&key), "applied once the share answers");
+    }
+
+    #[test]
+    fn rr_caught_up_across_re_assertions_misses_an_old_days_entry_written_after_its_listing() {
+        // A's take-up listing is merged; then C (gone since, never telling) writes an entry of a
+        // day three days back (kept unwritten while its Mac was away, its key fixed by its first
+        // try). A's sweeps list the last two days, and its re-assertions before a sweep keep what
+        // it knew. (Re-review F3: fresh and caught up for days, the entry not merged.) A lists
+        // every day again daily: the entry is merged within the day, and A is caught up only by a
+        // listing less than a day old.
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let list = step(&mut a, &ia, able()).list.unwrap();
+        ia.pass(20);
+        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: journal::list(&mem, None).unwrap() }), ..able() }).caught_up);
+        let mut old = entry(C, 1, 9, "6-1-2");
+        old.at = T0 - 3 * 86_400;
+        let key = journal::write(&mem, &old).unwrap();
+        let (mut sweeps, mut merged) = (0, None);
+        for i in 0..(3 * 24 * 6) {
+            ia.pass(600);
+            let o = step(&mut a, &ia, Heard { reassert: i % 36 == 35, ..able() });
+            assert!(!o.caught_up || o.listed_at.is_some_and(|at| ia.now() - at < RELIST_S), "{:?}", o.listed_at);
+            if o.fresh && o.caught_up {
+                sweeps += 1;
+            }
+            if let Some(l) = &o.list {
+                ia.pass(20);
+                step(&mut a, &ia, Heard { listed: Some(Listed { n: l.n, keys: journal::list(&mem, l.since.as_deref()).unwrap() }), ..able() });
+            }
+            if merged.is_none() && Records::newest(&mem, a.leads().unwrap()).unwrap().unwrap().handles(&key) {
+                merged = Some(i);
+            }
+        }
+        assert!(sweeps >= 10, "{sweeps}");
+        assert!(merged.is_some_and(|i| i < 6 * 24), "merged within a day: {merged:?}");
+    }
+
+    #[test]
+    fn a_lead_lists_every_day_and_is_caught_up_only_by_a_listing_less_than_a_day_old() {
+        // Its take-up's listing merged; the daily one asked for an hour ahead and never handed
+        // back: not caught up once its listing is a day old; asked again, caught up once that's
+        // merged. (Re-review F3.)
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let list = step(&mut a, &ia, able()).list.unwrap();
+        let at = ia.now();
+        ia.pass(20);
+        assert_eq!(step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }).listed_at, Some(at));
+        let mut daily = None;
+        while ia.now() < at + RELIST_S {
+            ia.pass(300);
+            let o = step(&mut a, &ia, able());
+            assert_eq!(o.caught_up, ia.now() < at + RELIST_S, "{} s after its listing", ia.now() - at);
+            if o.list.as_ref().is_some_and(|l| l.since.is_none()) {
+                daily.get_or_insert(ia.now() - at);
+            }
+        }
+        let when = daily.expect("asked for");
+        assert!(when + 3600 >= RELIST_S && when < RELIST_S, "an hour ahead: {when}");
+        let mut again = None;
+        for _ in 0..6 {
+            ia.pass(300);
+            if let Some(l) = step(&mut a, &ia, able()).list.filter(|l| l.since.is_none()) {
+                again = Some(l);
+            }
+        }
+        let l = again.expect("asked again");
+        ia.pass(20);
+        assert!(step(&mut a, &ia, Heard { listed: Some(Listed { n: l.n, keys: Vec::new() }), ..able() }).caught_up);
     }
 
     #[test]
