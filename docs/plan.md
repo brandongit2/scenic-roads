@@ -382,19 +382,36 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   sectioned files read whole, 384 MB of pages, 1.5 GB of whole sections, and at most 128 open NAS
   files. What's read from the NAS is dropped once the mirror has the file.
 - **Place search** (`crates/server/src/places.rs`, `web/src/ui/search.ts`): the box at the top right,
-  left of the view controls (`/` opens it), finds the map's own place names (its labels layer:
-  every label of the map's areas, and worldwide what shows by zoom 8: towns and cities, lakes,
-  bays, parks, states) by any word of their name or their own English as typed (accents, case and
-  punctuation aside; inside a name written without spaces too): the whole name first, then a name
-  starting so, then a word inside one; among like ones the more important, then the nearer to the
-  view. Each place says what it is and how far it is; Return or a click flies there, at the zoom
-  that shows it, and marks it until the search is cleared (Esc). The server makes its index the
-  first time it's searched after a new catalog (the box, opened, asks for it: about 10 s for the
-  4.4 million places, some 350 MB), searches it in under a millisecond, and lets it go after half
-  an hour unsearched.
+  left of the view controls (`/` opens it; the viewshed's card goes under it where the map is too
+  narrow for both side by side).
+  - **What it finds:** the map's own place names (its labels layer: every label of the map's areas,
+    and worldwide what shows by zoom 8: towns and cities, lakes, bays, parks, states), by any word,
+    as typed, of the name the map shows (its translation's main and sub, §7) or of the place's own
+    name and English. Accents, case and punctuation aside; inside a Chinese, Japanese or Korean
+    name too (each ideograph, kana and hangul syllable starts a word), not inside a Thai one. Two
+    letters at least, or one ideograph or kana.
+  - **The order:** the whole name first, then a name starting so, then a word inside one; among
+    like ones the more important, then the nearer to the view.
+  - **The list:** each place as the map names it (its own name and English after it, muted, where
+    they're other), what it is and how far it is; a finger's drag scrolls it. Return (on what's
+    typed, searched first if the list isn't of it) or a click flies there, at the zoom that shows
+    it, and marks it until the box is emptied or cleared (Esc).
+  - **The index** is made on this Mac the first time it's searched after the labels or the
+    translations change (the box, opened, asks for it; a new catalog whose labels and areas are the
+    same keeps it), on three threads of its own, a label's copies at zooms 8 and 12 once (by its
+    feature id). It's let go after half an hour unsearched, and its memory with it: its arrays are
+    mapped for them alone, as macOS's allocator keeps the big blocks it frees.
+  - **Its cost,** measured on the build Mac with a synthetic set the size of the live build's (4.4
+    million places, no translations): made in 3–3.5 s, the server's memory some 500 MB more at
+    most while it's made and 340 MB more while it's kept, back to within about 50 MB once it's let
+    go; a two-letter search in about 5 ms, a word in about 1 ms.
+  - **Failures:** packs and tiles it can't read are passed over (logged, and the index made again
+    five minutes later if it's searched); a build that reads none fails, and the box says why and
+    when it's tried again (a minute later at the soonest). Until the index is made, the open box
+    asks again after a second, then two, four, up to ten; those asks aren't the map in use.
 - **Offline start:** the last catalog and every pack's index stay local.
 - **In use** means any request in the last ten minutes, except the status polls (`/api/catalog`,
-  `/api/ping`, `/api/build`).
+  `/api/ping`, `/api/build`) and the place search's asks while its index is made (`poll=1`).
   - An idle server loads nothing; warming starts at the first request (starting isn't a use).
   - It checks the NAS for a newer catalog every 30 s while in use, every 10 minutes otherwise.
 - **URLs and ETags:**
@@ -469,7 +486,8 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   that the button at the top left opens. The lists become a sheet along the bottom (on its side, a
   card at the right): its handle drags its height, and a tab tapped again folds it to its tabs. The
   bar sits clear of the home indicator. The camera's step buttons go, but the compass and the tilt still reset.
-  The place search sits between the settings button and the controls, the viewshed's card under it.
+  The place search sits between the settings button and the controls, the viewshed's card and the
+  toasts under it.
   - On a tablet the panel stays docked, folded by its ‹ (remembered).
   - Touch screens get bigger controls and the touch hints.
 
