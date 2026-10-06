@@ -422,6 +422,12 @@ impl Data {
         Ok(self.index(&content)?.find(z, x, y).map(|e| e.hash))
     }
 
+    /// The tiles at zoom `z` in pack `logical` (none when the catalog hasn't it).
+    pub fn pack_tiles(&self, logical: &str, z: u8) -> Result<Vec<(u32, u32)>> {
+        let Some(content) = self.content(logical) else { return Ok(Vec::new()) };
+        Ok(self.index(&content)?.entries.iter().map(|e| e.zxy()).filter(|t| t.0 == z).map(|t| (t.1, t.2)).collect())
+    }
+
     /// A version token for a layer's URLs: changes whenever any of its packs does.
     pub fn layer_version(&self, layer: &str) -> String {
         let cat = self.catalog();

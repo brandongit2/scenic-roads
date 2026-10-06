@@ -381,6 +381,17 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
 - **Memory:** caches are keyed by content name, with budgets: 512 MB of base-pack views, 1 GB of
   sectioned files read whole, 384 MB of pages, 1.5 GB of whole sections, and at most 128 open NAS
   files. What's read from the NAS is dropped once the mirror has the file.
+- **Place search** (`crates/server/src/places.rs`, `web/src/ui/search.ts`): the box at the top right,
+  left of the view controls (`/` opens it), finds the map's own place names (its labels layer:
+  every label of the map's areas, and worldwide what shows by zoom 8: towns and cities, lakes,
+  bays, parks, states) by any word of their name or their own English as typed (accents, case and
+  punctuation aside; inside a name written without spaces too): the whole name first, then a name
+  starting so, then a word inside one; among like ones the more important, then the nearer to the
+  view. Each place says what it is and how far it is; Return or a click flies there, at the zoom
+  that shows it, and marks it until the search is cleared (Esc). The server makes its index the
+  first time it's searched after a new catalog (the box, opened, asks for it: about 10 s for the
+  4.4 million places, some 350 MB), searches it in under a millisecond, and lets it go after half
+  an hour unsearched.
 - **Offline start:** the last catalog and every pack's index stay local.
 - **In use** means any request in the last ten minutes, except the status polls (`/api/catalog`,
   `/api/ping`, `/api/build`).
@@ -458,6 +469,7 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   that the button at the top left opens. The lists become a sheet along the bottom (on its side, a
   card at the right): its handle drags its height, and a tab tapped again folds it to its tabs. The
   bar sits clear of the home indicator. The camera's step buttons go, but the compass and the tilt still reset.
+  The place search sits between the settings button and the controls, the viewshed's card under it.
   - On a tablet the panel stays docked, folded by its ‹ (remembered).
   - Touch screens get bigger controls and the touch hints.
 

@@ -53,6 +53,7 @@ import { cap, fmt, h, toast } from './ui/dom';
 import { DrivesPane } from './ui/drives';
 import { LayersCard } from './ui/layers';
 import { NavControls } from './ui/nav';
+import { PlaceSearch } from './ui/search';
 import { installListsResize, installPanelResize } from './ui/resize';
 import { ProfilePanel } from './ui/profile';
 import { RegionsPanel } from './ui/regions';
@@ -626,6 +627,11 @@ async function main() {
   strip.railWeights = () => store.s.rail.weights;
   const profile = new ProfilePanel(document.getElementById('profile')!);
   new NavControls(document.getElementById('nav')!, map, cameraControls);
+  // Place search, beside the view controls (ui/search.ts): where it goes is marked below.
+  const search = new PlaceSearch(document.getElementById('search')!, () => {
+    const c = map.getCenter();
+    return [c.lng, c.lat];
+  });
   const viewshed = new ViewshedTool(document.getElementById('viewshed')!, map);
   // Regions (Layers → Regions): the regions the map is built for, their coverage on the map, and new
   // ones made of administrative areas.
@@ -759,8 +765,8 @@ async function main() {
   onSettled(() => overlays.prominence(store.s));
   duringMoves(() => overlays.prominenceSoon(store.s), 300);
 
-  // Markers: profile cursor, highest / lowest road in view, viewshed eye.
-  const marks: Record<string, GeoJSON.Feature | null> = { cursor: null, high: null, low: null, viewshed: null, ring: null };
+  // Markers: profile cursor, highest / lowest road in view, viewshed eye, a place searched for.
+  const marks: Record<string, GeoJSON.Feature | null> = { cursor: null, high: null, low: null, viewshed: null, ring: null, place: null };
   const setMarks = () => {
     const src = map.getSource<GeoJSONSource>('marks');
     src?.setData({ type: 'FeatureCollection', features: Object.values(marks).filter(Boolean) as GeoJSON.Feature[] });
@@ -774,6 +780,18 @@ async function main() {
     coords ? { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: coords } } : { type: 'FeatureCollection', features: [] };
   profile.onHover = (ll, label) => {
     marks.cursor = ll ? point(ll, 'cursor', label) : null;
+    setMarks();
+  };
+  // A place found: the map goes there, at the zoom that shows it, and marks it (named in English
+  // when it has that), until the search is cleared.
+  search.onGo = (p) => {
+    const ll = new maplibregl.LngLat(p.lon, p.lat);
+    marks.place = point([p.lon, p.lat], 'place', p.en || p.name);
+    setMarks();
+    map.flyTo({ ...cam3d.frame(map, ll, map.queryTerrainElevation(ll) ?? 0, p.zoom), duration: 1500 });
+  };
+  search.onClear = () => {
+    marks.place = null;
     setMarks();
   };
   statsCard.onMark = (x, kind) => {
@@ -1722,6 +1740,12 @@ async function main() {
       e.preventDefault();
       if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
       openLink(k, t);
+      return;
+    }
+    // /: the place search.
+    if (e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey && !isTyping(e.target)) {
+      e.preventDefault();
+      search.focus();
       return;
     }
     // I: the HUD (panels, bottom bar, controls) off and on, the map filling the window.

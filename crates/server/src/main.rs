@@ -18,6 +18,7 @@ mod ovdata;
 mod marks;
 mod markview;
 mod pages;
+mod places;
 mod query;
 mod regions;
 mod remote;
@@ -64,6 +65,8 @@ pub struct AppState {
     pub areas: regions::Areas,
     /// The user's descriptions, laid over popup details.
     pub descriptions: Arc<descriptions::Descriptions>,
+    /// The map's places, for its search (made when first searched, per catalog).
+    pub places: Arc<places::Index>,
     /// The current version tokens of the app's URLs, per (catalog generation, translations version).
     tokens: Mutex<Option<((u64, u64), Arc<std::collections::HashSet<String>>)>>,
 }
@@ -247,6 +250,7 @@ pub fn test_state(home: &std::path::Path, root: &std::path::Path) -> S {
         home: home.to_owned(),
         areas: regions::Areas::default(),
         descriptions: descriptions::Descriptions::new(home),
+        places: Default::default(),
         tokens: Mutex::new(None),
     })
 }
@@ -313,6 +317,7 @@ async fn main() -> Result<()> {
         home: home.clone(),
         areas: regions::Areas::default(),
         descriptions: descs,
+        places: Default::default(),
         tokens: Mutex::new(None),
     });
 
@@ -365,6 +370,7 @@ async fn main() -> Result<()> {
         .route("/api/raillines", get(query::lines))
         .route("/api/layer/{name}", get(layer_h))
         .route("/api/names", get(names_h))
+        .route("/api/places", get(places::search))
         .route("/api/regions", get(regions::list).post(regions::add))
         .route("/api/regions/{id}", axum::routing::put(regions::edit).delete(regions::remove))
         .route("/api/areas", get(regions::at))

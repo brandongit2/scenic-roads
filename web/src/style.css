@@ -28,7 +28,7 @@ html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
 #map { position: absolute; top: 0; left: var(--left-w); right: 0; bottom: var(--strip-h); }
 /* I hides the HUD (main.ts): the map takes the whole window. */
 body.hud-off { --left-w: 0px; --strip-h: 0px; }
-body.hud-off :is(#colour, #stats, #strip, #nav, #viewshed, #profile, .resizer) { display: none !important; }
+body.hud-off :is(#colour, #stats, #strip, #nav, #search, #viewshed, #profile, .resizer) { display: none !important; }
 .maplibregl-canvas { outline: none; }
 .maplibregl-ctrl-attrib { display: none; }
 
@@ -212,6 +212,29 @@ input.switch:indeterminate::after { transform: translateX(5.5px); }
 #nav .grp:first-child { border-top: 0; padding-top: 0; }
 #nav button.pitch { height: 18px; font-size: 9.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
 #nav .needle { display: block; width: 10px; height: 18px; background: linear-gradient(#ff6b5b 0 50%, #cfd6e0 50% 100%); clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); transition: transform 0.05s linear; }
+/* Place search (ui/search.ts): top right, left of the view controls (--nav-w: their card's width);
+   wider while it's open or holds words. Each place: its name and what it is, then its English and
+   how far it is from the middle of the view. */
+#search { --nav-w: 42px; top: 12px; right: calc(20px + var(--nav-w)); width: 210px; padding: 0; transition: width 0.15s ease; z-index: 4; }
+#search.open, #search.typed { width: 300px; }
+#search .row { display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 5px 0 11px; }
+#search input { flex: 1; min-width: 0; height: 100%; border: 0; padding: 0; background: none; outline: none; font-size: 12.5px; }
+#search input::placeholder { color: var(--faint); }
+#search input::-webkit-search-cancel-button, #search input::-webkit-search-decoration { -webkit-appearance: none; display: none; }
+#search .glass { flex: none; position: relative; width: 11px; height: 11px; margin: -2px 1px 0 0; border: 1.5px solid var(--muted); border-radius: 50%; }
+#search .glass::after { content: ''; position: absolute; right: -4px; bottom: -3px; width: 5px; height: 1.5px; border-radius: 1px; background: var(--muted); transform: rotate(45deg); }
+#search .x { flex: none; display: none; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 5px; padding: 0; background: none; color: var(--faint); font-size: 10px; }
+#search.typed .x { display: grid; }
+#search .x:hover { color: var(--text); background: var(--hover); }
+#search .hits { border-top: 1px solid var(--line); padding: 4px; max-height: min(60vh, 420px); overflow-y: auto; }
+#search .hit { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 10px; padding: 5px 7px; border-radius: 6px; cursor: pointer; }
+#search .hit.on { background: var(--hover); }
+#search .hit b { font-weight: 600; color: #fff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#search .hit :is(.what, .en, .far) { font-size: 11px; white-space: nowrap; }
+#search .hit .what { color: var(--muted); text-align: right; }
+#search .hit .en { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+#search .hit .far { color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
+#search .state { padding: 7px 8px; color: var(--muted); }
 
 /* viewshed ------------------------------------------------------------------- */
 #viewshed { top: 12px; left: calc(var(--left-w) + 12px); width: 236px; }
@@ -629,7 +652,11 @@ body.panel-off #viewshed { left: calc(60px + env(safe-area-inset-left)); }
   #strip .coord { display: none; }
   #strip .r2 { gap: 10px; }
   #nav { top: calc(10px + env(safe-area-inset-top)); right: calc(10px + env(safe-area-inset-right)); }
-  #viewshed { right: calc(64px + env(safe-area-inset-right)); width: auto; top: calc(10px + env(safe-area-inset-top)); }
+  /* (The search between the settings button and the controls; the viewshed's card under it.) */
+  #search { top: calc(10px + env(safe-area-inset-top)); right: calc(18px + var(--nav-w) + env(safe-area-inset-right));
+    width: min(190px, calc(100vw - var(--nav-w) - 84px - env(safe-area-inset-left) - env(safe-area-inset-right))); }
+  #search.open, #search.typed { width: calc(100vw - var(--nav-w) - 84px - env(safe-area-inset-left) - env(safe-area-inset-right)); }
+  #viewshed { right: calc(64px + env(safe-area-inset-right)); width: auto; top: calc(56px + env(safe-area-inset-top)); }
   #profile { left: 0; right: 0; bottom: var(--strip-h); border-radius: 16px 16px 0 0; z-index: 4; }
   #toast { left: 50%; top: calc(14px + env(safe-area-inset-top)); max-width: calc(100vw - 130px); text-align: center; }
   .maplibregl-popup { max-width: min(340px, calc(100vw - 24px)) !important; }
@@ -647,6 +674,8 @@ body.panel-off #viewshed { left: calc(60px + env(safe-area-inset-left)); }
   #stats.lists.folded { bottom: auto; }
   #stats .lists-grip { display: none !important; }
   #nav { right: calc(var(--lists-w) + 18px + env(safe-area-inset-right)); }
+  #search { right: calc(var(--lists-w) + 26px + var(--nav-w) + env(safe-area-inset-right)); }
+  #search.open, #search.typed { width: min(300px, calc(100vw - var(--lists-w) - var(--nav-w) - 92px)); }
   #viewshed { right: calc(var(--lists-w) + 74px + env(safe-area-inset-right)); }
   #profile { right: calc(var(--lists-w) + 16px); border-radius: 14px 14px 0 0; }
 }
@@ -664,6 +693,11 @@ body.panel-off #viewshed { left: calc(60px + env(safe-area-inset-left)); }
   #nav { gap: 8px; padding: 6px; }
   #nav button { width: 42px; height: 40px; font-size: 18px; }
   #nav button.pitch { height: 24px; font-size: 11px; }
+  #search { --nav-w: 56px; }
+  #search .row { height: 40px; }
+  #search input { font-size: 16px; }
+  #search .x { width: 30px; height: 30px; font-size: 12px; }
+  #search .hit { padding: 8px; }
   .seg button { padding: 9px 6px; }
   .seg.small button { padding: 7px 6px; }
   .pill { padding: 6px 12px; font-size: 12px; }
