@@ -56,6 +56,32 @@ P_COLS = ["id", "sources", "height", "num_floors", "min_height", "min_floor", "r
 I32_NONE = -(2 ** 31)
 
 
+def _str(t) -> bool:
+    return pa.types.is_string(t) or pa.types.is_large_string(t) or (pa.types.is_dictionary(t) and _str(t.value_type))
+
+
+def _struct(**fields):
+    def ok(t) -> bool:
+        if not pa.types.is_struct(t):
+            return False
+        have = {t.field(k).name: t.field(k).type for k in range(t.num_fields)}
+        return all(k in have and f(have[k]) for k, f in fields.items())
+    return ok
+
+
+# What each column read must be: Overture's types, or what reads them the same way (a float
+# column read as integers would be truncated, a string one as numbers fail late).
+TYPES = {
+    "id": _str, "building_id": _str, "class": _str, "subtype": _str, "roof_shape": _str,
+    "height": pa.types.is_floating, "min_height": pa.types.is_floating,
+    "num_floors": pa.types.is_integer, "min_floor": pa.types.is_integer,
+    "has_parts": pa.types.is_boolean, "is_underground": pa.types.is_boolean,
+    "geometry": lambda t: pa.types.is_binary(t) or pa.types.is_large_binary(t),
+    "bbox": _struct(xmin=pa.types.is_floating, xmax=pa.types.is_floating, ymin=pa.types.is_floating, ymax=pa.types.is_floating),
+    "sources": lambda t: (pa.types.is_list(t) or pa.types.is_large_list(t)) and _struct(property=_str, dataset=_str, record_id=_str)(t.value_type),
+}
+
+
 def log(msg: str) -> None:
     print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} bldprep: {msg}", file=sys.stderr, flush=True)
 
@@ -162,6 +188,9 @@ def read_rg(job):
     want = set(P_COLS if part else B_COLS)
     if want - names:
         raise SystemExit(f"{src}: Overture's columns changed: no {sorted(want - names)}")
+    retyped = [f"{c} ({t.schema.field(c).type})" for c in sorted(want) if not TYPES[c](t.schema.field(c).type)]
+    if retyped:
+        raise SystemExit(f"{src}: Overture's columns changed type: {', '.join(retyped)}")
     bb = t.column("bbox")
     f = lambda k: pc.struct_field(bb, k)
     keep = pc.and_(pc.and_(pc.less_equal(f("xmin"), box[2]), pc.greater_equal(f("xmax"), box[0])),

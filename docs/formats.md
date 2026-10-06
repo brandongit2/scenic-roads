@@ -263,16 +263,18 @@ rings per polygon (`u32`, the first the exterior), vertices per ring (`u32`), th
 (`[i32; 2]` E7, each ring's first absolute, the rest as deltas; a ring's closing point left
 out), `h` and `m` (`u16` dm: Overture's `height` and `min_height` as given, 0 none), `f` and `mf`
 (`u8`: `num_floors` and `min_floor`, 0 none, 255 for 255 or more), class, subtype and roof shape
-(`u8` codes), flags (`u8`: 1 a part, 2 a building whose parts were read: `has_parts`, and a part
-naming it read, parts being read 0.02° around the tile), the height's dataset (`u8` into `srcs`:
+(`u8` codes), flags (`u8`: 1 a part, 2 a building whose parts are drawn: `has_parts`, and a part
+naming it read that isn't underground and whose geometry reads, in the tile or 0.02° around it),
+the height's dataset (`u8` into `srcs`:
 the source whose property is `/properties/height`, else the footprint's), GHSL's ANBH at the
 centroid (`u16` dm, 0 none) and the OSM id where OSM gave the footprint (`u64`: 1 << 62 a way,
 2 << 62 a relation, or'ed with the id; 0 none).
 
 **bldprep.py's stream** (stdout to `scenic-build bldprep`, not a file): `BLDP1\n`, then frames, each
 `u8 kind, u32 header length, header JSON` (with `cols`: [[name, bytes], …]) and the columns' bytes
-in that order: GHSL windows (3), each row group's buildings (1) and parts (2), the end (9).
-dem/bldprep.py's docstring has the columns.
+in that order: GHSL windows (3; all before any row group's, which sample them as they come), each
+row group's buildings (1) and parts (2), the end (9). dem/bldprep.py's docstring has the columns;
+it checks their names and types against what it reads.
 
 **Tiles** `layers/buildings/hi/6-<x>-<y>` (RDPACK v1, encoding `mvt`, blobs gzip'd at level 6,
 z12–14; no lo or root packs), made by `bldtiles` from the tile's and its 8 neighbours' normalized

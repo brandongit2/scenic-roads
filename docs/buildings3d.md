@@ -708,7 +708,8 @@ tiles natively at the pilot's pace (its own CPU; the coverage read once a run).
 - **Disk on the build Mac** (17 GB free on 2026-10-05): neither step stages more than a tile's row
   groups or a z8 area locally; the downloads went straight to the NAS.
 - **Overture's schema** changes between releases (columns renamed or retyped): `bldprep` checks the
-  columns it reads and fails with their names.
+  columns it reads, their names and types (a float read as integers would be truncated), and fails
+  naming them.
 - **Overlapping footprints** left by conflation z-fight: none showed in B1's views; B1 didn't count
   them (B2's build can). If they show, `bldprep` drops the one from the lower-ranked source (OSM
   first, as Overture ranks them) where two overlap by nine-tenths of the smaller.

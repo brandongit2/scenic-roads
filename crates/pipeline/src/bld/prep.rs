@@ -348,7 +348,7 @@ pub struct Prepped {
     hsrc: Vec<u16>,
     ghsl: Vec<u16>,
     osm: Vec<u64>,
-    /// Every part's building, of the parts read.
+    /// The building of every part drawn (in T or a neighbour: not underground, its geometry read).
     parents: Vec<u128>,
     classes: Strings,
     subtypes: Strings,
@@ -445,10 +445,7 @@ impl Prepped {
         let has_parts: &[u8] = if part { &[] } else { col(f, "has_parts", n, 1)? };
         let cmap = if part { Vec::new() } else { self.classes.map(&dicts["class"])? };
         let smap = if part { Vec::new() } else { self.subtypes.map(&dicts["subtype"])? };
-        if part {
-            let parents = col(f, "parent", n, 36)?;
-            self.parents.extend(parents.as_chunks::<36>().0.iter().filter_map(|c| uuid(c)));
-        }
+        let parents: &[[u8; 36]] = if part { col(f, "parent", n, 36)?.as_chunks::<36>().0 } else { &[] };
         let osm_ds = dicts["dataset"].as_array().and_then(|a| a.iter().position(|v| v.as_str() == Some("OpenStreetMap")));
         let code = |m: &[u16], v: i32| -> u16 { if v >= 0 { m.get(v as usize).copied().unwrap_or(0) } else { 0 } };
         let dm = |v: f64| -> u16 { if v.is_finite() && v > 0.0 { (v * 10.0).round().min(65535.0) as u16 } else { 0 } };
@@ -514,6 +511,9 @@ impl Prepped {
                 }))
             })
             .collect();
+        // A building has parts when one is drawn: in T or a neighbour, not underground, its
+        // geometry read (an outline whose parts are all underground is drawn itself).
+        self.parents.extend(rows.iter().zip(parents).filter(|(r, _)| r.is_ok()).filter_map(|(_, c)| uuid(c)));
         for r in rows {
             match r {
                 Ok(Some(r)) => self.push(r, part),
@@ -678,19 +678,33 @@ pub fn read_stream(r: &mut dyn Read, t: Unit) -> Result<Prepped> {
     let mut p = Prepped::default();
     loop {
         let f = read_frame(r)?.context("bldprep.py's stream ended before its end frame")?;
+        if p.take(&f, t)? {
+            return Ok(p);
+        }
+    }
+}
+
+impl Prepped {
+    /// Takes a frame of bldprep.py's stream: whether it was the end.
+    fn take(&mut self, f: &Frame, t: Unit) -> Result<bool> {
         match f.kind {
-            kind::GHSL => p.ghsl_wins.add(&f)?,
-            kind::BUILDINGS => p.add_rows(&f, t, false).with_context(|| format!("buildings of {}", f.header["src"]))?,
-            kind::PARTS => p.add_rows(&f, t, true).with_context(|| format!("parts of {}", f.header["src"]))?,
+            kind::GHSL => {
+                // (The rows sample GHSL as they're read: none would have it.)
+                ensure!(self.stats.rows == 0, "bldprep.py sent a GHSL window after rows");
+                self.ghsl_wins.add(f)?;
+            }
+            kind::BUILDINGS => self.add_rows(f, t, false).with_context(|| format!("buildings of {}", f.header["src"]))?,
+            kind::PARTS => self.add_rows(f, t, true).with_context(|| format!("parts of {}", f.header["src"]))?,
             kind::END => {
-                p.read = f.header.clone();
-                if let Some(o) = p.read.as_object_mut() {
+                self.read = f.header.clone();
+                if let Some(o) = self.read.as_object_mut() {
                     o.remove("cols");
                 }
-                return Ok(p);
+                return Ok(true);
             }
-            k => bail!("a frame of kind {k}"),
+            k => bail!("a frame of kind {k} from bldprep.py"),
         }
+        Ok(false)
     }
 }
 
@@ -732,28 +746,30 @@ pub fn run(out: &mut Out, t: Unit, dem: &Path, release: &str) -> Result<Stats> {
     });
     let mut p = Prepped::default();
     let mut frames = 0u64;
-    let total = loop {
-        let f = rx.recv().context("bldprep.py's stream")??;
-        let f = f.context("bldprep.py's stream ended before its end frame")?;
-        frames += 1;
-        match f.kind {
-            kind::GHSL => p.ghsl_wins.add(&f)?,
-            kind::BUILDINGS | kind::PARTS => {
-                p.add_rows(&f, t, f.kind == kind::PARTS).with_context(|| format!("{}", f.header["src"]))?;
-                if let (Some(k), Some(n)) = (f.header["k"].as_u64(), f.header["of"].as_u64()) {
-                    if k % 25 == 0 || k + 1 == n {
-                        crate::agent::jobs::report(k + 1, n, "row groups read");
-                    }
+    let read = (|| -> Result<u64> {
+        loop {
+            let f = rx.recv().context("bldprep.py's stream")??;
+            let f = f.context("bldprep.py's stream ended before its end frame")?;
+            frames += 1;
+            if p.take(&f, t)? {
+                return Ok(frames);
+            }
+            if let (kind::BUILDINGS | kind::PARTS, Some(k), Some(n)) = (f.kind, f.header["k"].as_u64(), f.header["of"].as_u64()) {
+                if k % 25 == 0 || k + 1 == n {
+                    crate::agent::jobs::report(k + 1, n, "row groups read");
                 }
             }
-            kind::END => {
-                p.read = f.header.clone();
-                if let Some(o) = p.read.as_object_mut() {
-                    o.remove("cols");
-                }
-                break frames;
-            }
-            k => bail!("a frame of kind {k} from bldprep.py"),
+        }
+    })();
+    let total = match read {
+        Ok(n) => n,
+        Err(e) => {
+            // bldprep.py stopped, not left to find out at its next write; the reader thread ends
+            // at the next frame it reads (nothing takes it).
+            drop(rx);
+            child.kill().ok();
+            child.wait().ok();
+            return Err(e.context(format!("bldprep {}", t.slash())));
         }
     };
     reader.join().ok();
@@ -980,5 +996,31 @@ pub(crate) mod tests {
         let path2 = d.path().join("w2.sect");
         p2.write(t, "2026-09-23.1", &path2).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), std::fs::read(&path2).unwrap());
+    }
+
+    #[test]
+    fn parts_drawn_and_ghsl_first() {
+        let t = Unit { z: 6, x: 32, y: 22 };
+        let b = |id: u128, lon: f64, lat: f64| B { id, rings: vec![square(lon, lat, 0.0002)], ..Default::default() };
+        // An outline whose only part is underground: drawn itself, not as an outline with parts.
+        let mut s = MAGIC.to_vec();
+        frame(&mut s, false, &[B { has_parts: true, ..b(5, 2.3490, 48.8600) }]);
+        frame(&mut s, true, &[B { parent: 5, underground: true, ..b(7, 2.34905, 48.86005) }]);
+        end(&mut s);
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("w.sect");
+        read_stream(&mut &s[..], t).unwrap().write(t, "2026-09-23.1", &path).unwrap();
+        let w = work::WorkFile::open(&path).unwrap();
+        let k = w.block(&w.index[0]).unwrap();
+        assert_eq!((k.len(), k.flags[0]), (1, 0));
+        // A GHSL window after rows: refused (the rows sample GHSL as they're read).
+        let mut s = MAGIC.to_vec();
+        frame(&mut s, false, &[b(1, 2.3470, 48.8580)]);
+        let data = vec![0u8; 4];
+        let h = serde_json::json!({ "name": "g", "transform": [2.0, 0.001, 0.0, 49.0, 0.0, -0.001], "col_off": 0, "row_off": 0, "width": 1, "height": 1 });
+        write_frame(&mut s, kind::GHSL, h, &[("data", &data)]).unwrap();
+        end(&mut s);
+        let e = read_stream(&mut &s[..], t).err().expect("refused");
+        assert!(format!("{e:#}").contains("GHSL window after rows"), "{e:#}");
     }
 }
