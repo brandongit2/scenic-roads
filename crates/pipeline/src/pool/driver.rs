@@ -1298,6 +1298,43 @@ mod tests {
         }
     }
 
+    /// A Mac on a share under load: each create, read, stat and whole write takes `.1` s, awake.
+    struct Slow<'a>(Mac<'a>, Cell<u64>);
+
+    impl Nas for Slow<'_> {
+        fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
+            self.0.pass(self.1.get());
+            self.0.create_new(path, bytes)
+        }
+        fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
+            self.0.pass(self.1.get());
+            self.0.write_whole(path, bytes)
+        }
+        fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            self.0.pass(self.1.get());
+            self.0.read(path)
+        }
+        fn exists(&self, path: &str) -> Result<bool> {
+            self.0.pass(self.1.get());
+            self.0.exists(path)
+        }
+        fn list(&self, dir: &str) -> Result<Vec<String>> {
+            self.0.list(dir)
+        }
+        fn remove(&self, path: &str) -> Result<()> {
+            self.0.remove(path)
+        }
+    }
+
+    impl Io for Slow<'_> {
+        fn now(&self) -> u64 {
+            self.0.now()
+        }
+        fn awake(&self) -> u64 {
+            self.0.awake()
+        }
+    }
+
     fn any(_: &Entry, _: &Records) -> std::result::Result<(), String> {
         Ok(())
     }
@@ -1648,6 +1685,115 @@ mod tests {
     }
 
     #[test]
+    fn a_lead_asleep_or_gone_is_taken_over_only_at_the_owners_ask() {
+        // A leads, then sleeps (or is gone): B and C see its heartbeat out of touch for half an
+        // hour and take nothing over by themselves (pool.md §14: it may come back); the owner's
+        // ask does. (Re-review M21.)
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib, ic) = (Mac::new(&mem), Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        let mut c = Driver::unlocked(member(C, "iMac", V1), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        for _ in 0..90 {
+            for (d, io) in [(&mut b, &ib), (&mut c, &ic)] {
+                io.pass(20);
+                assert_eq!(step(d, io, able()).leads, None);
+            }
+        }
+        assert!(term::read(&mem, 2).unwrap().is_none(), "nothing taken over by itself");
+        ib.pass(20);
+        assert_eq!(step(&mut b, &ib, asks(Ask::TakeOver { force: false, downgrade: false })).leads, Some(2));
+    }
+
+    #[test]
+    fn a_stand_down_from_an_earlier_term_isnt_this_ones() {
+        // A stood down from term 1, then led term 2 by the owner's downgrade and slept before its
+        // heartbeat said so: C sees it say it stood down from term 1, not term 2, and takes nothing
+        // over by itself. (Re-review M17.)
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ic) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut c = Driver::unlocked(member(C, "iMac", V1), Saved::default());
+        step(&mut a, &ia, able());
+        step(&mut c, &ic, able());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", "development"), a.saved());
+        ia.pass(20);
+        assert_eq!(step(&mut a, &ia, able()).beat.stood_down, Some(1));
+        ia.pass(20);
+        let o = a.step(&ia, asks(Ask::TakeOver { force: true, downgrade: true }), &any);
+        assert_eq!(o.leads, Some(2), "{:?}", o.events);
+        for _ in 0..20 {
+            ic.pass(20);
+            assert_eq!(step(&mut c, &ic, able()).leads, None);
+        }
+        assert!(term::read(&mem, 3).unwrap().is_none(), "nothing taken over by itself");
+    }
+
+    #[test]
+    fn a_member_lets_those_ranked_before_it_try_first() {
+        // A stands down; B and C can take over, B first (the same app, the lower member id), and B
+        // can't lead now: C waits its turn, `AUTO_RANK_S` after the two minutes. (Re-review M22.)
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib, ic) = (Mac::new(&mem), Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        let mut c = Driver::unlocked(member(C, "iMac", V1), Saved::default());
+        step(&mut a, &ia, able());
+        step(&mut b, &ib, able());
+        step(&mut c, &ic, able());
+        let mut a = Driver::unlocked(member(A, "Mac-mini", "development"), a.saved());
+        ia.pass(10);
+        assert_eq!(step(&mut a, &ia, able()).beat.stood_down, Some(1));
+        let (mut seen, mut took) = (None, None);
+        for _ in 0..30 {
+            ib.pass(10);
+            step(&mut b, &ib, Heard { able: false, ..able() });
+            ic.pass(10);
+            let o = step(&mut c, &ic, able());
+            seen.get_or_insert(ic.now());
+            if o.leads.is_some() {
+                took = Some(ic.now() - seen.unwrap());
+                break;
+            }
+            ia.pass(20);
+            step(&mut a, &ia, able());
+        }
+        let took = took.expect("taken over");
+        assert!((STOOD_DOWN_S + AUTO_RANK_S..STOOD_DOWN_S + AUTO_RANK_S + 20).contains(&took), "{took} s after it saw the stand-down");
+    }
+
+    #[test]
+    fn a_step_reads_entries_to_merge_for_a_minute_at_most() {
+        // B tells the lead of twenty entries on a share taking five seconds an operation: a step
+        // reads them for a minute at most, leaving the rest to the next ones. (Re-review M20.)
+        let mem = Mem::default();
+        setup(&mem);
+        let io = Slow(Mac::new(&mem), Cell::new(0));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let list = a.step(&io, able(), &any).list.unwrap();
+        io.0.pass(20);
+        a.step(&io, Heard { listed: Some(Listed { n: list.n, keys: Vec::new() }), ..able() }, &any);
+        let keys: Vec<String> = (1..=20).map(|n| journal::write(&mem, &entry(B, 1, n, "6-1-1")).unwrap()).collect();
+        io.1.set(5);
+        io.0.pass(20);
+        let start = io.0.awake();
+        let o = a.step(&io, Heard { msgs: vec![(B.into(), Msg::Tell(keys.clone()))], ..able() }, &any);
+        let merged = |m: &Mem| keys.iter().filter(|k| Records::load(m, 1).unwrap().unwrap().handles(k)).count();
+        let first = merged(&mem);
+        assert!(first > 0 && first < 20 && !o.caught_up, "{first} merged in one step");
+        assert!(io.0.awake() - start < BUSY_S + 60, "{} s", io.0.awake() - start);
+        for _ in 0..10 {
+            io.0.pass(20);
+            a.step(&io, able(), &any);
+        }
+        assert_eq!(merged(&mem), 20);
+    }
+
+    #[test]
     fn rr_the_hour_rule_and_a_share_that_doesnt_answer() {
         // B tells A of an entry; A's reads of it fail for two hours (the share doesn't answer
         // them): not refused; then read whole, applied. (The re-review's.)
@@ -1898,39 +2044,6 @@ mod tests {
         // re-assert; one it slept through, or that stalled five minutes, does. (Review N3.)
         let mem = Mem::default();
         setup(&mem);
-        struct Slow<'a>(Mac<'a>, Cell<u64>);
-        impl Nas for Slow<'_> {
-            fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
-                self.0.pass(self.1.get());
-                self.0.create_new(path, bytes)
-            }
-            fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
-                self.0.pass(self.1.get());
-                self.0.write_whole(path, bytes)
-            }
-            fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
-                self.0.pass(self.1.get());
-                self.0.read(path)
-            }
-            fn exists(&self, path: &str) -> Result<bool> {
-                self.0.pass(self.1.get());
-                self.0.exists(path)
-            }
-            fn list(&self, dir: &str) -> Result<Vec<String>> {
-                self.0.list(dir)
-            }
-            fn remove(&self, path: &str) -> Result<()> {
-                self.0.remove(path)
-            }
-        }
-        impl Io for Slow<'_> {
-            fn now(&self) -> u64 {
-                self.0.now()
-            }
-            fn awake(&self) -> u64 {
-                self.0.awake()
-            }
-        }
         let io = Slow(Mac::new(&mem), Cell::new(0));
         let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
         let leads = |d: &mut Driver, h: Heard| {
