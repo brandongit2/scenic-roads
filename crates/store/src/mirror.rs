@@ -15,20 +15,27 @@
 //!
 //! **Room first.** The disk keeps a reserve of free space. When it's short of it, files go until
 //! it's back, in this order: those the current catalog doesn't list (an older catalog's), least
-//! recently used first; then the current catalog's, least recently used first (among those never
-//! used, the ones copied last first); never the essentials (`essentials`), nor the files the caller
-//! keeps (a Mac's kept areas'). Nothing is copied while the disk is under the reserve.
+//! recently used first; then the current catalog's, least recently used first, the basemap last
+//! (it's drawn at every zoom); never the essentials (`essentials`), nor the files the caller keeps
+//! (a Mac's kept areas'). A file never used counts as used when it was copied. Of the files in that
+//! order, the shortest run from the front that covers the deficit goes, less the biggest of them it
+//! can spare, so a round doesn't go far past the deficit; the free space is measured again as each
+//! goes. Nothing is copied while the disk is under the reserve, nor does anything go while the build
+//! Mac runs a job (its jobs read this mirror), unless the disk is below half the reserve.
 //!
 //! **Copy order**, one file at a time in large sequential reads through the I/O pool: the
 //! essentials, then the kept files, then the rest; within each, small worldwide files, root and lo
 //! packs and the basemap, hi data and road values (and the essentials' per-tile records), base
 //! packs, hi packs, and everything else; the most recently used first within each group. The budget
 //! is the free space less the reserve. An essential or kept file that doesn't fit takes the room of
-//! the files that may go, in the order above; any other file only that of files the current
-//! catalog doesn't list, so the mirror never trades one of the catalog's files for another. And
-//! those other files are copied only while a margin (a twentieth of the reserve) stays free above
-//! the reserve, and a file let go for room only once it's been used again: so the disk's comings
-//! and goings around the reserve don't have the same files copied and let go over and over.
+//! the files that may go, in room first's order, but only when that makes enough; while one waits
+//! for room, no other file is copied. Any other file takes only the room of files the current
+//! catalog doesn't list, and, when it's been used, of the current catalog's never used (the
+//! basemap aside), so the mirror comes round to what's used without ever trading a used file for
+//! another. Those other files are copied only while a margin (a twentieth of the reserve) stays
+//! free above the reserve, and a file let go for room only once it's been used again: so the
+//! disk's comings and goings around the reserve don't have the same files copied and let go over
+//! and over.
 
 use crate::catalog::{self, Catalog};
 use crate::iopool::{IoError, IoPool};
@@ -41,12 +48,14 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Bytes per NAS read while copying.
 const CHUNK: u64 = 4 << 20;
 /// Shortest timeout for one chunk: long enough that a slow link isn't taken for a dead one.
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(30);
+/// How often the use times are written out during a sync, at most (`flush_due`).
+const SAVE_EVERY: Duration = Duration::from_secs(60);
 /// Catalogs kept in `catalog/`.
 const KEEP_CATALOGS: usize = 3;
 /// Age past which a temporary file in `idx/` is left over from an interrupted write.
@@ -60,8 +69,8 @@ const LAST_GROUP: u8 = 5;
 const SLACK: u64 = 20;
 
 type FreeSpace = dyn Fn(&Path) -> io::Result<u64> + Send + Sync;
-/// Told the content names of the complete files a sync evicted, as soon as they're gone: the
-/// server drops its maps of them, so the disk gets their room back.
+/// Told the content names of the complete files a sync evicted, as each goes: the server drops its
+/// maps of them, so the disk gets their room back.
 type OnEvict = dyn Fn(&[String]) + Send + Sync;
 
 /// What a `sync` (or `keep_reserve`) did.
@@ -70,7 +79,7 @@ pub struct SyncStats {
     /// Files copied and verified.
     pub copied: u32,
     pub copied_bytes: u64,
-    /// Files left out because they don't fit the budget.
+    /// Files left out because they don't fit the budget (or a kept file waited for room).
     pub skipped: u32,
     pub skipped_bytes: u64,
     /// Of those, the files to keep (essentials and kept files), and the bytes they still lack.
@@ -95,7 +104,8 @@ pub enum SyncEnd {
     /// Went through every file.
     #[default]
     Done,
-    /// `pause` asked it to stop; a copy in progress resumes next time.
+    /// `pause` asked it to stop (nothing went, the disk above half the reserve); a copy in
+    /// progress resumes next time.
     Paused,
     /// The NAS went (or was) offline.
     Offline,
@@ -122,7 +132,8 @@ pub struct Room {
     /// The bytes the files to keep (the essentials and the kept files) still lack here, copies in
     /// progress counted.
     pub missing: u64,
-    /// The bytes of the mirror's other files: what may go to make room for them.
+    /// The bytes of the mirror's other files: what may go to make room for them (none when the
+    /// mirror can't let files go: `Mirror::evicts_here`).
     pub evictable: u64,
     /// How much more room they need than freeing all that would make: 0 when they fit.
     pub more: u64,
@@ -146,6 +157,18 @@ enum Tier {
     Rest,
 }
 
+/// What may go to make room.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Take {
+    /// Only files the current catalog doesn't list (for a file not kept and never used).
+    Old,
+    /// Those, and the current catalog's files never used, the basemap aside (for a file not kept
+    /// that's been used: the mirror comes round to what's used).
+    Unused,
+    /// Any but the essentials and the kept files (room first, and for an essential or kept file).
+    All,
+}
+
 /// A file the catalog references that isn't local yet.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Want {
@@ -153,22 +176,24 @@ struct Want {
     size: u64,
     tier: Tier,
     group: u8,
+    /// Its last use (0: none).
     used: u64,
 }
 
 /// A local file that may go to make room.
+#[derive(Clone, Debug)]
 struct Victim {
-    /// 0: the current catalog doesn't list it; 1: it does.
+    /// 0: the current catalog doesn't list it; 1: it does; 2: it's the current basemap.
     class: u8,
-    used: u64,
-    group: u8,
+    /// Its last use, or when it was copied if later (or never used).
+    recency: u64,
     size: u64,
     name: String,
     /// A copy in progress.
     partial: bool,
 }
 
-/// What a sync knows of the catalog's files: their copy groups, and which never go.
+/// What a sync knows of the catalog's files: their copy groups, which never go, the basemap.
 struct Ctx<'a> {
     /// The current catalog's files: content name → copy group.
     current: HashMap<&'a str, u8>,
@@ -176,6 +201,8 @@ struct Ctx<'a> {
     essential: HashSet<&'a str>,
     /// Never evicted: the essentials and the kept files (content names).
     never: HashSet<&'a str>,
+    /// The basemap's archives (content names).
+    basemap: HashSet<&'a str>,
 }
 
 impl<'a> Ctx<'a> {
@@ -190,17 +217,24 @@ impl<'a> Ctx<'a> {
                 never.insert(f.file.as_str());
             }
         }
-        Ctx { current, essential, never }
+        let basemap = cat.basemap.iter().filter_map(|l| cat.content(l)).collect();
+        Ctx { current, essential, never, basemap }
     }
 }
 
 struct State {
     /// Complete local copies: content name → size.
     files: HashMap<String, u64>,
+    /// When each complete copy was made (content name → milliseconds since 1970: the file's
+    /// modification time when the mirror was opened, the stamp of its copy since). A file never
+    /// used counts as used then (room first's order).
+    copied: HashMap<String, u64>,
     /// Logical name → last use (milliseconds since 1970, strictly increasing per touch).
     uses: HashMap<String, u64>,
     last_stamp: u64,
     dirty: bool,
+    /// When the use times were last written out.
+    saved: Instant,
     /// The copy under way.
     copying: Option<Copying>,
     /// What the last sync (or reserve check) did, and when.
@@ -208,6 +242,15 @@ struct State {
     /// The catalog's files let go to make room (content name → `last_stamp` then): not copied
     /// again, unless kept, until they're used again.
     let_go: HashMap<String, u64>,
+}
+
+impl State {
+    /// A new stamp: now, in milliseconds since 1970, and after every stamp before.
+    fn stamp(&mut self) -> u64 {
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        self.last_stamp = now.max(self.last_stamp + 1);
+        self.last_stamp
+    }
 }
 
 /// The local copy of the NAS's current files on one Mac.
@@ -228,6 +271,15 @@ impl Drop for CopyingGuard<'_> {
     }
 }
 
+/// A sync's files that may go for its wants, by what `Take` allows: worked out once, then again
+/// after files have come or gone.
+#[derive(Default)]
+struct Pool {
+    /// Bumped as files come or go.
+    epoch: u64,
+    lists: [Option<(u64, Vec<Victim>)>; 3],
+}
+
 impl Mirror {
     /// Opens (creating as needed) the mirror under `root`, the app's folder. `reserve_bytes` of
     /// the disk stay free (plan §4: 50 GB; 150 GB on the build Mac, so builds have room).
@@ -236,8 +288,11 @@ impl Mirror {
             let p = root.join(d);
             fs::create_dir_all(&p).with_context(|| format!("create {}", p.display()))?;
         }
-        let mut files = HashMap::new();
-        scan(&root.join("mirror"), "", &mut files).context("list the mirror")?;
+        let mut found = HashMap::new();
+        scan_meta(&root.join("mirror"), "", &mut found).context("list the mirror")?;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+        let files: HashMap<String, u64> = found.iter().map(|(n, &(size, _))| (n.clone(), size)).collect();
+        let copied: HashMap<String, u64> = found.into_iter().map(|(n, (_, at))| (n, at.min(now))).collect();
         let uses_path = root.join("mirror").join(USES);
         let uses: HashMap<String, u64> = match fs::read(&uses_path) {
             Ok(b) => serde_json::from_slice(&b).unwrap_or_else(|e| {
@@ -246,11 +301,11 @@ impl Mirror {
             }),
             Err(_) => HashMap::new(),
         };
-        let last_stamp = uses.values().copied().max().unwrap_or(0);
+        let last_stamp = uses.values().chain(copied.values()).copied().max().unwrap_or(0);
         Ok(Mirror {
             root,
             reserve: reserve_bytes,
-            state: Mutex::new(State { files, uses, last_stamp, dirty: false, copying: None, last: None, let_go: HashMap::new() }),
+            state: Mutex::new(State { files, copied, uses, last_stamp, dirty: false, saved: Instant::now(), copying: None, last: None, let_go: HashMap::new() }),
             free_space: Box::new(disk_free),
             on_evict: Mutex::new(None),
         })
@@ -274,8 +329,39 @@ impl Mirror {
         (self.free_space)(&self.root).with_context(|| format!("free space at {}", self.root.display()))
     }
 
-    /// Has `f` told the content names of complete files as soon as a sync evicts them (the server
-    /// drops what it mapped of them).
+    /// What this Mac can hold of the map: the free space and the mirror's files, less the
+    /// reserve.
+    pub fn hold(&self) -> Result<u64> {
+        let free = self.free()?;
+        let mut partials = HashMap::new();
+        let _ = scan(&self.root.join("mirror").join(PARTIAL), "", &mut partials);
+        let here: u64 = self.state().files.values().sum::<u64>() + partials.values().sum::<u64>();
+        Ok((free + here).saturating_sub(self.reserve))
+    }
+
+    /// Whether files deleted from `mirror/` give their room back on the disk the free space is
+    /// measured on: `mirror/` a folder of its own, not a link, on the app folder's disk. When it
+    /// isn't, nothing is let go (all of it might, with nothing to show for it).
+    pub fn evicts_here(&self) -> bool {
+        let m = self.root.join("mirror");
+        let (Ok(mm), Ok(rm)) = (fs::symlink_metadata(&m), fs::metadata(&self.root)) else { return false };
+        if mm.file_type().is_symlink() || !mm.is_dir() {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            mm.dev() == rm.dev()
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = rm;
+            true
+        }
+    }
+
+    /// Has `f` told the content names of complete files as a sync evicts them (the server drops
+    /// what it mapped of them).
     pub fn on_evict(&self, f: impl Fn(&[String]) + Send + Sync + 'static) {
         *self.on_evict.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
     }
@@ -299,7 +385,9 @@ impl Mirror {
             return Some(p);
         }
         // Deleted behind our back.
-        self.state().files.remove(content_name);
+        let mut st = self.state();
+        st.files.remove(content_name);
+        st.copied.remove(content_name);
         None
     }
 
@@ -333,14 +421,12 @@ impl Mirror {
 
     /// Records a use of `content_name` (its logical name, so a newer version of the same file
     /// inherits it): local or read from the NAS, it orders copies and evictions. Cheap, in memory:
-    /// `flush` writes the use times out (a sync does at its end; the server's mirror thread every
-    /// minute).
+    /// written out by `flush`, which a sync calls at most once a minute while it goes, and at its
+    /// end (the server's mirror thread every minute, and before it exits).
     pub fn touch(&self, content_name: &str) {
         let Some(c) = parse_content_name(content_name) else { return };
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
         let mut st = self.state();
-        let stamp = now.max(st.last_stamp + 1);
-        st.last_stamp = stamp;
+        let stamp = st.stamp();
         match st.uses.get_mut(c.logical) {
             Some(u) => *u = stamp,
             None => {
@@ -358,10 +444,21 @@ impl Mirror {
                 return Ok(());
             }
             st.dirty = false;
+            st.saved = Instant::now();
             st.uses.iter().map(|(k, v)| (k.clone(), *v)).collect()
         };
         let p = self.root.join("mirror").join(USES);
         replace_file(&p, &serde_json::to_vec(&snapshot)?, None).with_context(|| format!("write {}", p.display()))
+    }
+
+    /// `flush`, if a minute has passed since the use times were last written (in a sync's loops).
+    fn flush_due(&self) {
+        if self.state().saved.elapsed() < SAVE_EVERY {
+            return;
+        }
+        if let Err(e) = self.flush() {
+            eprintln!("mirror: {e:#}");
+        }
     }
 
     /// Whether pack `content_name`'s index is cached on this Mac.
@@ -454,31 +551,157 @@ impl Mirror {
         (v, let_go)
     }
 
+    /// The local files `take` lets go to make room, sparing the essentials, the kept files and
+    /// `fresh` (copied this sync), in the order they go: files the current catalog doesn't list,
+    /// then the current catalog's, then its basemap; by recency within each (a file never used
+    /// counts as used when it was copied). Copies in progress go as their files would.
+    fn victims(&self, ctx: &Ctx, take: Take, fresh: &HashSet<String>) -> Vec<Victim> {
+        let mut partials = HashMap::new();
+        if let Err(e) = scan(&self.root.join("mirror").join(PARTIAL), "", &mut partials) {
+            eprintln!("mirror: copies in progress: {e}");
+        }
+        let st = self.state();
+        let complete = st.files.iter().map(|(n, &s)| (n, s, false));
+        let started = partials.iter().map(|(n, &s)| (n, s, true));
+        let mut v: Vec<Victim> = complete
+            .chain(started)
+            .filter(|(n, _, _)| !ctx.never.contains(n.as_str()) && !fresh.contains(*n))
+            .filter_map(|(n, size, partial)| {
+                let used = parse_content_name(n).and_then(|c| st.uses.get(c.logical).copied());
+                let class = match ctx.current.get(n.as_str()) {
+                    None => 0,
+                    Some(_) if ctx.basemap.contains(n.as_str()) => 2,
+                    Some(_) => 1,
+                };
+                let may = match take {
+                    Take::All => true,
+                    Take::Old => class == 0,
+                    Take::Unused => class == 0 || (class == 1 && used.is_none()),
+                };
+                let recency = used.unwrap_or(0).max(st.copied.get(n).copied().unwrap_or(0));
+                may.then(|| Victim { class, recency, size, name: n.clone(), partial })
+            })
+            .collect();
+        v.sort_by(|a, b| (a.class, a.recency, &a.name).cmp(&(b.class, b.recency, &b.name)));
+        v
+    }
+
+    /// Frees space until `need` more bytes fit within the budget, from `victims` (in the order they
+    /// go: `victims`), sparing `sparing`'s copy in progress; with `whole`, nothing goes unless
+    /// that's enough. Each round of it takes the shortest run of victims from the front that covers
+    /// what's short, less the biggest of them it can spare (`choose`), and measures the free space
+    /// again as each goes (the server lets go of its maps of it at once). The bytes still short (0:
+    /// they fit), and whether any file went.
+    fn free_for(&self, need: u64, victims: &[Victim], sparing: Option<&str>, whole: bool, evicts: bool, stats: &mut SyncStats) -> Result<(u64, bool)> {
+        let target = self.reserve.saturating_add(need);
+        let mut free = self.free()?;
+        if free >= target {
+            return Ok((0, false));
+        }
+        if !evicts {
+            return Ok((target - free, false));
+        }
+        let mut left: Vec<&Victim> = victims.iter().filter(|v| !(v.partial && Some(v.name.as_str()) == sparing)).collect();
+        if whole && free.saturating_add(left.iter().map(|v| v.size).sum()) < target {
+            return Ok((target - free, false));
+        }
+        let mut went = false;
+        while free < target && !left.is_empty() {
+            let chosen = choose(&left, target - free);
+            let mut done = HashSet::new();
+            for i in chosen {
+                done.insert(i);
+                went |= self.evict(left[i], stats);
+                free = self.free()?;
+                if free >= target {
+                    break;
+                }
+            }
+            // (Short still: maps not let go yet, or the disk filled meanwhile.)
+            left = left.into_iter().enumerate().filter(|(i, _)| !done.contains(i)).map(|(_, v)| v).collect();
+        }
+        Ok((target.saturating_sub(free), went))
+    }
+
+    /// Deletes a victim; a complete file of the catalog is noted as let go, and the server told.
+    /// Whether it went.
+    fn evict(&self, v: &Victim, stats: &mut SyncStats) -> bool {
+        let p = if v.partial { self.partial_path(&v.name) } else { self.path(&v.name) };
+        match fs::remove_file(&p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => {
+                eprintln!("mirror: can't evict {}: {e}", p.display());
+                return false;
+            }
+        }
+        self.remove_empty_dirs(&p);
+        if !v.partial {
+            {
+                let mut st = self.state();
+                st.files.remove(&v.name);
+                st.copied.remove(&v.name);
+                if v.class != 0 {
+                    let at = st.last_stamp;
+                    st.let_go.insert(v.name.clone(), at);
+                }
+            }
+            let hook = self.on_evict.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(f) = hook {
+                f(std::slice::from_ref(&v.name));
+            }
+        }
+        stats.evicted += 1;
+        stats.evicted_bytes += v.size;
+        true
+    }
+
+    /// Room first: files go until the disk is back over the reserve (or all that may go has
+    /// gone). The bytes still short.
+    fn room_first(&self, ctx: &Ctx, evicts: bool, stats: &mut SyncStats) -> Result<u64> {
+        if self.free()? >= self.reserve {
+            return Ok(0);
+        }
+        let victims = self.victims(ctx, Take::All, &HashSet::new());
+        Ok(self.free_for(0, &victims, None, false, evicts, stats)?.0)
+    }
+
     /// Copies what `cat` references and isn't here yet from `nas_root`, through `pool`, until done,
     /// `pause()` says stop, or the NAS goes offline: room first (the reserve before any copy), then
     /// the essentials, the files in `keep` (content names: a Mac's kept areas'), and the rest
-    /// (module doc). Run it on a background thread; it never holds the mirror's lock while it waits
-    /// on the NAS.
+    /// (module doc). Nothing goes while `pause()` says stop at the start (the build Mac runs a job,
+    /// and its jobs read this mirror), unless the disk is below half the reserve. Run it on a
+    /// background thread; it never holds the mirror's lock while it waits on the NAS.
     pub fn sync(&self, cat: &Catalog, keep: &HashSet<String>, nas_root: &Path, pool: &IoPool, pause: &dyn Fn() -> bool) -> Result<SyncStats> {
         let mut stats = SyncStats::default();
         let recent = self.recent(cat)?;
         self.drop_mismatched(cat);
         let ctx = Ctx::new(cat, keep);
+        let evicts = self.evicts_here();
+        if !evicts {
+            eprintln!("mirror: {} is a link, or on another disk than {}: nothing is let go", self.root.join("mirror").display(), self.root.display());
+        }
+        if pause() && self.free()? >= self.reserve / 2 {
+            stats.end = SyncEnd::Paused;
+            let (plan, let_go) = self.plan(cat, &ctx);
+            return self.finish(cat, &recent, stats, plan.len() as u32 + let_go);
+        }
         // Room first: the user may have filled the disk since last time. Nothing is copied while
         // it's under the reserve.
-        stats.short = self.make_room(0, &ctx, true, None, &mut stats)?;
+        stats.short = self.room_first(&ctx, evicts, &mut stats)?;
         let (plan, let_go) = self.plan(cat, &ctx);
-        let left = plan.len() as u32 + let_go;
+        let mut left = plan.len() as u32 + let_go;
         if stats.short > 0 {
             for w in &plan {
                 skip(&mut stats, w, 0);
             }
             return self.finish(cat, &recent, stats, left);
         }
-        // Once a tier's make_room has failed, nothing more may go for it in this sync (copies
-        // only add files the earlier tiers may not take): its files then fit what's free or not.
-        let (mut keep_spent, mut rest_spent) = (false, false);
-        let mut left = left;
+        // Copied this sync (none of them goes for a later want); a kept file waiting for room
+        // (nothing else is copied then: what it'd take back).
+        let mut fresh: HashSet<String> = HashSet::new();
+        let mut waiting = false;
+        let mut pool_of = Pool::default();
         for w in &plan {
             if pause() {
                 stats.end = SyncEnd::Paused;
@@ -488,23 +711,33 @@ impl Mirror {
                 stats.end = SyncEnd::Offline;
                 break;
             }
+            self.flush_due();
             let have = fs::metadata(self.partial_path(&w.name)).map_or(0, |m| m.len()).min(w.size);
             let kept = w.tier != Tier::Rest;
+            if waiting && !kept {
+                skip(&mut stats, w, have);
+                continue;
+            }
             // (The rest keeps a margin free above the reserve.)
             let need = if kept { w.size - have } else { (w.size - have).saturating_add(self.reserve / SLACK) };
-            let spent = if kept { keep_spent } else { rest_spent };
-            let fits = if spent {
-                self.free()? >= self.reserve.saturating_add(need)
-            } else if self.make_room(need, &ctx, kept, Some(&w.name), &mut stats)? == 0 {
-                true
+            let take = if kept {
+                Take::All
+            } else if w.used > 0 {
+                Take::Unused
             } else {
-                // Everything that may go for it has gone (for a kept file, all a later file may
-                // take too).
-                rest_spent = true;
-                keep_spent |= kept;
-                false
+                Take::Old
             };
-            if !fits {
+            let k = take as usize;
+            if pool_of.lists[k].as_ref().is_none_or(|(e, _)| *e != pool_of.epoch) {
+                pool_of.lists[k] = Some((pool_of.epoch, self.victims(&ctx, take, &fresh)));
+            }
+            let victims = &pool_of.lists[k].as_ref().expect("just made").1;
+            let (short, went) = self.free_for(need, victims, Some(&w.name), true, evicts, &mut stats)?;
+            if went {
+                pool_of.epoch += 1;
+            }
+            if short > 0 {
+                waiting |= kept;
                 skip(&mut stats, w, have);
                 continue;
             }
@@ -513,6 +746,8 @@ impl Mirror {
                     stats.copied += 1;
                     stats.copied_bytes += w.size;
                     left -= 1;
+                    fresh.insert(w.name.clone());
+                    pool_of.epoch += 1;
                 }
                 Copy::Paused => {
                     stats.end = SyncEnd::Paused;
@@ -536,7 +771,8 @@ impl Mirror {
     pub fn keep_reserve(&self, cat: &Catalog, keep: &HashSet<String>) -> Result<SyncStats> {
         let ctx = Ctx::new(cat, keep);
         let mut stats = SyncStats { end: SyncEnd::Offline, ..Default::default() };
-        stats.short = self.make_room(0, &ctx, true, None, &mut stats)?;
+        let evicts = self.evicts_here();
+        stats.short = self.room_first(&ctx, evicts, &mut stats)?;
         self.state().last = Some((stats, SystemTime::now()));
         Ok(stats)
     }
@@ -559,6 +795,7 @@ impl Mirror {
         if let Err(e) = scan(&self.root.join("mirror").join(PARTIAL), "", &mut partials) {
             eprintln!("mirror: copies in progress: {e}");
         }
+        let evicts = self.evicts_here();
         let st = self.state();
         let missing: u64 = cat
             .files
@@ -566,7 +803,7 @@ impl Mirror {
             .filter(|f| ctx.never.contains(f.file.as_str()) && !st.files.contains_key(&f.file))
             .map(|f| f.size - partials.get(&f.file).copied().unwrap_or(0).min(f.size))
             .sum();
-        let evictable: u64 = st.files.iter().chain(partials.iter()).filter(|(n, _)| !ctx.never.contains(n.as_str())).map(|(_, &s)| s).sum();
+        let evictable: u64 = if evicts { st.files.iter().chain(partials.iter()).filter(|(n, _)| !ctx.never.contains(n.as_str())).map(|(_, &s)| s).sum() } else { 0 };
         let can = free as i128 + evictable as i128 - self.reserve as i128;
         let more = (missing as i128 - can).max(0) as u64;
         Ok(Room { free, reserve: self.reserve, missing, evictable, more })
@@ -583,82 +820,11 @@ impl Mirror {
             eprintln!("mirror: {name} is {have} bytes here but {want} in the catalog; copying it again");
             let p = self.path(&name);
             if fs::remove_file(&p).is_ok() || !p.exists() {
-                self.state().files.remove(&name);
-            }
-        }
-    }
-
-    /// Frees space until `need` more bytes fit within the budget: files the current catalog doesn't
-    /// list go first, least recently used first; then, with `take_current`, the current catalog's,
-    /// least recently used first (among those never used, the last groups first, then the biggest);
-    /// never the essentials or the kept files (`ctx.never`), nor `sparing`'s copy in progress. A
-    /// copy in progress goes as its file would. A file of the catalog let go is noted (`let_go`).
-    /// The bytes still short (0: they fit).
-    fn make_room(&self, need: u64, ctx: &Ctx, take_current: bool, sparing: Option<&str>, stats: &mut SyncStats) -> Result<u64> {
-        let mut free = self.free()?;
-        let target = self.reserve.saturating_add(need);
-        if free >= target {
-            return Ok(0);
-        }
-        let mut partials = HashMap::new();
-        if let Err(e) = scan(&self.root.join("mirror").join(PARTIAL), "", &mut partials) {
-            eprintln!("mirror: copies in progress: {e}");
-        }
-        let mut victims: Vec<Victim> = {
-            let st = self.state();
-            let complete = st.files.iter().map(|(n, &s)| (n, s, false));
-            let started = partials.iter().map(|(n, &s)| (n, s, true));
-            complete
-                .chain(started)
-                .filter(|(n, _, partial)| !ctx.never.contains(n.as_str()) && !(*partial && Some(n.as_str()) == sparing))
-                .filter_map(|(n, size, partial)| {
-                    let (class, group) = match ctx.current.get(n.as_str()) {
-                        Some(&g) if take_current => (1, g),
-                        Some(_) => return None,
-                        None => (0, LAST_GROUP + 1),
-                    };
-                    let used = parse_content_name(n).and_then(|c| st.uses.get(c.logical).copied()).unwrap_or(0);
-                    Some(Victim { class, used, group, size, name: n.clone(), partial })
-                })
-                .collect()
-        };
-        victims.sort_by(|a, b| (a.class, a.used, Reverse(a.group), Reverse(a.size), &a.name).cmp(&(b.class, b.used, Reverse(b.group), Reverse(b.size), &b.name)));
-        let mut gone = Vec::new();
-        for v in victims {
-            if free >= target {
-                break;
-            }
-            let p = if v.partial { self.partial_path(&v.name) } else { self.path(&v.name) };
-            match fs::remove_file(&p) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    eprintln!("mirror: can't evict {}: {e}", p.display());
-                    continue;
-                }
-            }
-            self.remove_empty_dirs(&p);
-            if !v.partial {
                 let mut st = self.state();
-                st.files.remove(&v.name);
-                if v.class == 1 {
-                    let at = st.last_stamp;
-                    st.let_go.insert(v.name.clone(), at);
-                }
-                drop(st);
-                gone.push(v.name);
-            }
-            free += v.size;
-            stats.evicted += 1;
-            stats.evicted_bytes += v.size;
-        }
-        if !gone.is_empty() {
-            let hook = self.on_evict.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            if let Some(f) = hook {
-                f(&gone);
+                st.files.remove(&name);
+                st.copied.remove(&name);
             }
         }
-        Ok(target.saturating_sub(free))
     }
 
     /// Removes the now-empty folders above a deleted file, up to `mirror/`.
@@ -715,6 +881,7 @@ impl Mirror {
                 out.sync_all()?;
                 return Ok(Copy::Paused);
             }
+            self.flush_due();
             let n = (w.size - have).min(CHUNK) as usize;
             let buf = match pool.read_at_timeout(&file, have, n, timeout) {
                 Ok(b) => b,
@@ -744,7 +911,10 @@ impl Mirror {
         }
         fs::rename(&part, &dest).with_context(|| format!("move {} into the mirror", part.display()))?;
         self.remove_empty_dirs(&part);
-        self.state().files.insert(w.name.clone(), w.size);
+        let mut st = self.state();
+        st.files.insert(w.name.clone(), w.size);
+        let at = st.stamp();
+        st.copied.insert(w.name.clone(), at);
         Ok(Copy::Done)
     }
 
@@ -799,6 +969,33 @@ impl Drop for Mirror {
             eprintln!("mirror: {e:#}");
         }
     }
+}
+
+/// Of `victims` (in the order they go), those to let go for `deficit` bytes: the shortest run
+/// from the front that covers it, less the biggest of the run it can spare, so a round doesn't go
+/// past the deficit when smaller files of the run cover it (and nothing later in the order goes
+/// instead of something earlier). All of them when they don't cover it.
+fn choose(victims: &[&Victim], deficit: u64) -> Vec<usize> {
+    let (mut sum, mut k) = (0u64, 0);
+    while k < victims.len() && sum < deficit {
+        sum += victims[k].size;
+        k += 1;
+    }
+    let mut chosen: Vec<usize> = (0..k).collect();
+    if sum > deficit {
+        let mut over = sum - deficit;
+        let mut by_size = chosen.clone();
+        by_size.sort_by_key(|&i| Reverse(victims[i].size));
+        let mut spared = HashSet::new();
+        for i in by_size {
+            if victims[i].size <= over {
+                over -= victims[i].size;
+                spared.insert(i);
+            }
+        }
+        chosen.retain(|i| !spared.contains(i));
+    }
+    chosen
 }
 
 /// A file left out of a sync for want of room (`have`: the bytes of its copy in progress).
@@ -874,6 +1071,14 @@ fn groups(cat: &Catalog) -> HashMap<&str, u8> {
 /// Adds every content-named file under `dir` (skipping dot entries) to `out`, by its name
 /// relative to the top.
 fn scan(dir: &Path, prefix: &str, out: &mut HashMap<String, u64>) -> io::Result<()> {
+    let mut found = HashMap::new();
+    scan_meta(dir, prefix, &mut found)?;
+    out.extend(found.into_iter().map(|(n, (size, _))| (n, size)));
+    Ok(())
+}
+
+/// `scan`, with each file's size and modification time (milliseconds since 1970).
+fn scan_meta(dir: &Path, prefix: &str, out: &mut HashMap<String, (u64, u64)>) -> io::Result<()> {
     let rd = match fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -888,9 +1093,11 @@ fn scan(dir: &Path, prefix: &str, out: &mut HashMap<String, u64>) -> io::Result<
         let rel = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
         let ft = e.file_type()?;
         if ft.is_dir() {
-            scan(&e.path(), &rel, out)?;
+            scan_meta(&e.path(), &rel, out)?;
         } else if ft.is_file() && parse_content_name(&rel).is_some() {
-            out.insert(rel, e.metadata()?.len());
+            let md = e.metadata()?;
+            let at = md.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
+            out.insert(rel, (md.len(), at));
         }
     }
     Ok(())
@@ -1213,33 +1420,34 @@ mod tests {
 
         // A new catalog where only B's base pack changed, and the disk 150 kB short of the reserve
         // (the user filled it): the old base pack goes first; then the current catalog's files
-        // least recently used first, those never used of the last groups first (A's hi pack, then
-        // the hi data, the biggest first), until the reserve is back. Nothing is copied: there's
-        // no room for B's new base pack, and nothing else may go for it.
+        // least recently used first (those never used as when they were copied: the outlines, the
+        // road values, the hi data, A's hi pack), until the run covers the deficit (190 kB); of
+        // that run, the outlines and A's hi data are spared, the run less them covering it still.
+        // Nothing is copied: there's no room for B's new base pack, and nothing else may go for it.
         let cat2 = two_areas(&nas, 2, 0, 99);
         let old_b = cat1.content("base/6-33-21").unwrap().to_string();
         cap.store(used(&home.path().join("mirror")) + reserve - 150_000, SeqCst);
         let s = m.sync(&cat2, &none(), nas.root(), &nas.pool, &|| false).unwrap();
-        assert_eq!((s.evicted, s.evicted_bytes, s.short, s.copied), (4, 150_000, 0, 0));
-        let gone = [old_b.as_str(), cat2.content("layers/roads/hi/6-32-21").unwrap(), cat2.content("hidata/6-32-21").unwrap(), cat2.content("hidata/6-33-21").unwrap()];
+        assert_eq!((s.evicted, s.evicted_bytes, s.short, s.copied), (5, 150_000, 0, 0));
+        let gone = [old_b.as_str(), cat2.content("global/roads/6-32-21").unwrap(), cat2.content("global/roads/6-33-21").unwrap(), cat2.content("hidata/6-33-21").unwrap(), cat2.content("layers/roads/hi/6-32-21").unwrap()];
         assert_eq!(*evicted.lock().unwrap(), gone, "told as they went, in that order");
         assert!(gone.iter().all(|c| !m.has(c)));
         // Those used stay, and the essentials.
         for l in ["base/6-32-21", "layers/roads/hi/6-33-21", "layers/basemap/world", "global/railfreq", "layers/roads/root", "markdata/6-32-21"] {
             assert!(m.has(cat2.content(l).unwrap()), "{l}");
         }
-        assert_eq!((s.skipped, s.pending), (1, 4), "B's new base pack waits for room; what was let go, to be used again");
+        assert_eq!((s.skipped, s.pending), (1, 5), "B's new base pack waits for room; what was let go, to be used again");
 
         // Fuller still, past what may go (the disk full, and a reserve of 1 MB): everything but the
-        // essentials goes (270 kB), and the disk stays short of the reserve, which the sync says.
-        // Nothing is copied.
+        // essentials goes (270 kB: the outlines, A's hi data and base pack, B's hi pack, the
+        // basemap), and the disk stays short of the reserve, which the sync says. Nothing is copied.
         cap.store(used(&home.path().join("mirror")), SeqCst);
         drop(m);
         let m = mirror_on(home.path(), &cap, 1_000_000);
         let s = m.sync(&cat2, &none(), nas.root(), &nas.pool, &|| false).unwrap();
         assert_eq!(here(&m, &cat2), ["global/railfreq", "layers/roads/lo/3-4-2", "layers/roads/root", "markdata/6-32-21", "ovdata/3-4-2"]);
-        assert_eq!((s.evicted, s.evicted_bytes, s.short), (6, 270_000, 730_000));
-        assert_eq!((s.copied, s.skipped, s.skipped_kept, s.pending), (0, 4, 0, 10));
+        assert_eq!((s.evicted, s.evicted_bytes, s.short), (5, 270_000, 730_000));
+        assert_eq!((s.copied, s.skipped, s.skipped_kept, s.pending), (0, 5, 0, 10));
         assert_eq!(m.last().unwrap().0.short, s.short);
     }
 
@@ -1267,10 +1475,12 @@ mod tests {
         cat3.layers.get_mut("roads").unwrap().hi.insert("6/34/21".into(), "layers/roads/hi/6-34-21".into());
         let s = m.sync(&cat3, &none(), nas.root(), &nas.pool, &|| false).unwrap();
         assert_eq!((s.copied, s.evicted, s.skipped, s.pending), (0, 0, 1, 1));
-        // Kept, it takes the room of the least recently used of the rest.
+        // Kept, it takes the room of the least recently used of the rest: none used, the first
+        // copied (the outlines and both road values: 40 kB).
         let keep: HashSet<String> = [cat3.content("layers/roads/hi/6-34-21").unwrap().to_string()].into();
         let s = m.sync(&cat3, &keep, nas.root(), &nas.pool, &|| false).unwrap();
-        assert_eq!((s.copied, s.evicted, s.evicted_bytes), (1, 1, 50_000), "a never-used hi pack went");
+        assert_eq!((s.copied, s.evicted, s.evicted_bytes), (1, 3, 40_000));
+        assert!(!m.has(cat3.content("sources/osm/2026-09-28/outlines").unwrap()));
     }
 
     #[test]
@@ -1286,9 +1496,11 @@ mod tests {
         nas.pool.mark_offline("test");
         cap.store(used(&home.path().join("mirror")) + reserve - 60_000, SeqCst);
         let s = m.keep_reserve(&cat, &keep_a).unwrap();
-        // B's hi pack (50 kB), then its base pack (80 kB): never used, the last groups first.
-        assert_eq!((s.evicted, s.evicted_bytes, s.short, s.end), (2, 130_000, 0, SyncEnd::Offline));
-        assert!(!m.has(cat.content("layers/roads/hi/6-33-21").unwrap()) && !m.has(cat.content("base/6-33-21").unwrap()));
+        // Of the files not kept, none used, the first copied go until they cover the deficit (the
+        // outlines, B's road values and hi data, then its base pack); the run less what it can
+        // spare is B's base pack alone (80 kB).
+        assert_eq!((s.evicted, s.evicted_bytes, s.short, s.end), (1, 80_000, 0, SyncEnd::Offline));
+        assert!(!m.has(cat.content("base/6-33-21").unwrap()) && m.has(cat.content("layers/roads/hi/6-33-21").unwrap()));
         assert!(keep_a.iter().all(|c| m.has(c)), "a kept area's files never go");
         assert_eq!(m.last().unwrap().0, s);
     }
@@ -1302,21 +1514,222 @@ mod tests {
         let m = mirror_on(home.path(), &cap, reserve);
         let cat = two_areas(&nas, 1, 0, 1);
         m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
-        // 50 kB short: A's hi pack goes (never used, of the last group, the first by name).
+        // 50 kB short: the first copied go (none used): the outlines, both road values and A's hi
+        // data, 50 kB.
         cap.store(used(&home.path().join("mirror")) + reserve - 50_000, SeqCst);
         let s = m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
-        let a_hi = cat.content("layers/roads/hi/6-32-21").unwrap();
-        assert_eq!((s.evicted, s.copied, s.pending), (1, 0, 1));
-        assert!(!m.has(a_hi));
-        // Room again (the user freed some): it isn't copied back, not having been used since.
+        let a_hidata = cat.content("hidata/6-32-21").unwrap();
+        assert_eq!((s.evicted, s.evicted_bytes, s.copied, s.pending), (4, 50_000, 0, 4));
+        assert!(!m.has(a_hidata));
+        // Room again (the user freed some): they aren't copied back, not having been used since.
         cap.fetch_add(500_000, SeqCst);
         let s = m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
-        assert_eq!((s.copied, s.pending), (0, 1));
+        assert_eq!((s.copied, s.pending), (0, 4));
         // Used again: it comes back.
-        m.touch(a_hi);
+        m.touch(a_hidata);
         let s = m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
-        assert_eq!((s.copied, s.pending), (1, 0));
-        assert!(m.has(a_hi));
+        assert_eq!((s.copied, s.pending), (1, 3));
+        assert!(m.has(a_hidata));
+    }
+
+    // ---- review scenarios (s5) -------------------------------------------------------------
+
+    /// The M1 at the upgrade, in small: a mirror holding the basemap with no use time (the old code
+    /// recorded a use only when a file was first mapped from the mirror, and the M1's basemap was
+    /// copied at 02:29 with the map unused since: its `.uses` has no entry for it), a few
+    /// never-used packs, and files used since. The disk is short of the reserve by a little more
+    /// than the never-used packs. Room first takes the never-used packs, then the basemap (drawn
+    /// on every view: 28.6 GB of catalog 14), though the used files would cover the rest of the
+    /// deficit. On the real M1 (54.5 GB mirror, 40.5 GB free, a reserve of 50 GB): 35.0 GB go,
+    /// the basemap among them, for a 9.5 GB deficit; and it never comes back while the room
+    /// above the reserve is short of 28.6 GB plus the margin (only an older catalog's files may
+    /// go for a file not kept).
+    #[test]
+    fn review_room_first_doesnt_let_the_basemap_go_for_a_deficit_smaller_files_cover() {
+        let nas = nas();
+        let home = tempfile::tempdir().unwrap();
+        // (A reserve bigger than the deficit: the fake disk's free space can't go below 0.)
+        let reserve = 300_000;
+        let cap = Arc::new(AtomicU64::new(1 << 40));
+        let m = mirror_on(home.path(), &cap, reserve);
+        let cat = two_areas(&nas, 1, 0, 1);
+        m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        assert_eq!(m.usage().0, 15);
+        // Used since (the outlines first, longest ago): 130 kB.
+        for l in ["sources/osm/2026-09-28/outlines", "base/6-32-21", "hidata/6-32-21", "hidata/6-33-21"] {
+            m.touch(cat.content(l).unwrap());
+        }
+        // Never used: both hi packs (100 kB), B's base pack (80 kB), the road values (10 kB),
+        // the basemap (100 kB). 195 kB short: 190 kB of never-used packs, then 5 kB more.
+        cap.store(used(&home.path().join("mirror")) + reserve - 195_000, SeqCst);
+        let s = m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        let basemap = cat.content("layers/basemap/world").unwrap();
+        assert!(m.has(basemap), "the basemap went for the last 5 kB of a 195 kB deficit: {s:?}");
+        assert!(s.evicted_bytes < 195_000 + 50_000, "overshot the deficit by {} bytes", s.evicted_bytes - 195_000);
+    }
+
+    /// A kept file that can't fit even once everything that may go has gone (here the basemap,
+    /// kept with any area: 28.6 GB, one file) has every other file evicted for it each round, and
+    /// the rest copied into the room it then can't use, to be evicted again next round: the same
+    /// bytes come from the NAS and go, round after round (each minute), until every file of the
+    /// catalog has been let go once; and a file used again comes back to go again.
+    #[test]
+    fn review_a_kept_file_waiting_for_room_doesnt_churn_the_rest() {
+        let nas = nas();
+        let home = tempfile::tempdir().unwrap();
+        let reserve = 100_000; // a margin of 5 kB
+        let cat = two_areas(&nas, 1, 0, 1);
+        // Room for the essentials (34 kB), A (145 kB) and 90 kB more.
+        let m = mirror(home.path(), reserve + 34_000 + 145_000 + 90_000, reserve);
+        // A kept without the basemap first: the essentials, A, and of the rest the outlines and
+        // B's road values and hi data (the basemap doesn't fit with its margin).
+        m.sync(&cat, &area(&cat, "6-32-21", false), nas.root(), &nas.pool, &|| false).unwrap();
+        let a_and_basemap = area(&cat, "6-32-21", true);
+        let mut before: HashSet<String> = cat.files.values().filter(|f| m.has(&f.file)).map(|f| f.file.clone()).collect();
+        let mut churned = Vec::new();
+        for round in 1..=3 {
+            // The basemap kept too (as keep.rs keeps it with any area): it needs 100 kB, and at
+            // most 90 kB can be made.
+            let s = m.sync(&cat, &a_and_basemap, nas.root(), &nas.pool, &|| false).unwrap();
+            assert!(!m.has(cat.content("layers/basemap/world").unwrap()));
+            let now: HashSet<String> = cat.files.values().filter(|f| m.has(&f.file)).map(|f| f.file.clone()).collect();
+            let copied: Vec<&String> = now.difference(&before).collect();
+            let gone: Vec<&String> = before.difference(&now).collect();
+            churned.push(format!("round {round}: copied {copied:?}, let go {gone:?} ({s:?})"));
+            before = now;
+        }
+        // Every round after the first let go what the round before had copied.
+        let copied_then_gone = churned.iter().filter(|r| r.contains("copied [\"")).count();
+        assert_eq!(copied_then_gone, 0, "the rest was copied into room a waiting kept file took back:\n{}", churned.join("\n"));
+    }
+
+    #[test]
+    fn a_used_file_takes_the_room_of_files_never_used_not_of_used_ones() {
+        let nas = nas();
+        let home = tempfile::tempdir().unwrap();
+        let reserve = 100_000; // a margin of 5 kB
+        let cap = Arc::new(AtomicU64::new(1 << 40));
+        let m = mirror_on(home.path(), &cap, reserve);
+        let cat = two_areas(&nas, 1, 0, 1);
+        m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        for l in ["base/6-32-21", "hidata/6-33-21", "layers/basemap/world"] {
+            m.touch(cat.content(l).unwrap());
+        }
+        cap.store(used(&home.path().join("mirror")) + reserve + 5_000, SeqCst);
+        // A new tile the map has read from the NAS (used): it takes the room of files never used,
+        // the first copied first (the outlines, both road values, A's hi data: 50 kB), never of
+        // the used ones nor the basemap.
+        let mut cat2 = cat.clone();
+        cat2.n = 2;
+        let new = nas.put(&mut cat2, "layers/roads/hi/6-34-21", "pack", &bytes(7, 50_000));
+        cat2.layers.get_mut("roads").unwrap().hi.insert("6/34/21".into(), "layers/roads/hi/6-34-21".into());
+        m.touch(&new);
+        let s = m.sync(&cat2, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        assert_eq!((s.copied, s.evicted, s.evicted_bytes), (1, 4, 50_000));
+        assert!(m.has(&new));
+        for l in ["base/6-32-21", "hidata/6-33-21", "layers/basemap/world"] {
+            assert!(m.has(cat2.content(l).unwrap()), "{l} is used");
+        }
+        // One that needs more than all the files never used (B's base pack and both hi packs,
+        // 180 kB): it waits, and nothing goes for it.
+        let mut cat3 = cat2.clone();
+        cat3.n = 3;
+        let big = nas.put(&mut cat3, "layers/roads/hi/6-35-21", "pack", &bytes(8, 200_000));
+        cat3.layers.get_mut("roads").unwrap().hi.insert("6/35/21".into(), "layers/roads/hi/6-35-21".into());
+        m.touch(&big);
+        let s = m.sync(&cat3, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        assert_eq!((s.copied, s.evicted, s.skipped), (0, 0, 1));
+    }
+
+    #[test]
+    fn a_file_never_used_counts_as_used_when_it_was_copied() {
+        let nas = nas();
+        let home = tempfile::tempdir().unwrap();
+        let cat = two_areas(&nas, 1, 0, 1);
+        let m = mirror(home.path(), 1 << 40, 0);
+        m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        drop(m);
+        // No use records (the old server noted a use only when a file was first mapped): when each
+        // was copied orders them. B's hi pack copied three hours ago, A's an hour ago, the rest now.
+        let hours = |h: u64| SystemTime::now() - Duration::from_secs(h * 3600);
+        let set = |l: &str, t: SystemTime| OpenOptions::new().write(true).open(home.path().join("mirror").join(cat.content(l).unwrap())).unwrap().set_modified(t).unwrap();
+        set("layers/roads/hi/6-33-21", hours(3));
+        set("layers/roads/hi/6-32-21", hours(1));
+        let reserve = 100_000;
+        let total: u64 = cat.files.values().map(|f| f.size).sum();
+        let m = mirror(home.path(), total + reserve - 50_000, reserve);
+        let s = m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        assert_eq!((s.evicted, s.evicted_bytes), (1, 50_000));
+        assert!(!m.has(cat.content("layers/roads/hi/6-33-21").unwrap()));
+        assert!(m.has(cat.content("layers/roads/hi/6-32-21").unwrap()));
+    }
+
+    #[test]
+    fn room_first_waits_while_the_build_mac_works_unless_the_disk_is_below_half_the_reserve() {
+        let nas = nas();
+        let home = tempfile::tempdir().unwrap();
+        let reserve = 200_000;
+        let cap = Arc::new(AtomicU64::new(1 << 40));
+        let m = mirror_on(home.path(), &cap, reserve);
+        let cat = two_areas(&nas, 1, 0, 1);
+        m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        // 50 kB short of the reserve, the build Mac at work (its jobs read this mirror): nothing
+        // goes.
+        cap.store(used(&home.path().join("mirror")) + reserve - 50_000, SeqCst);
+        let s = m.sync(&cat, &none(), nas.root(), &nas.pool, &|| true).unwrap();
+        assert_eq!((s.evicted, s.end), (0, SyncEnd::Paused));
+        // Below half the reserve: room first all the same (both base packs: of the run that covers
+        // it, what's left once the rest is spared), and nothing copied.
+        cap.store(used(&home.path().join("mirror")) + reserve - 150_000, SeqCst);
+        let s = m.sync(&cat, &none(), nas.root(), &nas.pool, &|| true).unwrap();
+        assert_eq!((s.evicted, s.evicted_bytes, s.short, s.copied), (2, 160_000, 0, 0));
+    }
+
+    #[test]
+    fn nothing_goes_when_the_mirror_is_a_link() {
+        let nas = nas();
+        let home = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), home.path().join("mirror")).unwrap();
+        let reserve = 100_000;
+        let cap = Arc::new(AtomicU64::new(1 << 40));
+        let m = mirror_on(home.path(), &cap, reserve);
+        let cat = two_areas(&nas, 1, 0, 1);
+        m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        assert!(!m.evicts_here());
+        // Short of the reserve: nothing goes (deleting there might not free this disk at all).
+        cap.store(used(&home.path().join("mirror")) + reserve - 50_000, SeqCst);
+        let s = m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        assert_eq!((s.evicted, s.short), (0, 50_000));
+        assert_eq!(m.usage().0, 15);
+        assert_eq!(m.room(&cat, &none()).unwrap().evictable, 0);
+    }
+
+    #[test]
+    fn use_times_are_written_out_once_a_minute_while_a_sync_goes() {
+        let nas = nas();
+        let home = tempfile::tempdir().unwrap();
+        let m = mirror(home.path(), 1 << 40, 0);
+        let cat = two_areas(&nas, 1, 0, 1);
+        let uses = home.path().join("mirror").join(USES);
+        m.touch(cat.content("base/6-32-21").unwrap());
+        m.flush_due();
+        assert!(!uses.exists(), "not a minute yet");
+        m.state().saved = Instant::now() - SAVE_EVERY;
+        m.flush_due();
+        assert!(fs::read_to_string(&uses).unwrap().contains("base/6-32-21"));
+    }
+
+    #[test]
+    fn what_this_mac_can_hold() {
+        let nas = nas();
+        let home = tempfile::tempdir().unwrap();
+        let cat = two_areas(&nas, 1, 0, 1);
+        let total: u64 = cat.files.values().map(|f| f.size).sum();
+        let m = mirror(home.path(), total + 1_000_000, 300_000);
+        m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        // The free space and the mirror's files, less the reserve.
+        assert_eq!(m.hold().unwrap(), total + 1_000_000 - 300_000);
     }
 
     #[test]
@@ -1462,25 +1875,30 @@ mod tests {
             m.touch(cat1.content(l).unwrap());
         }
 
-        // A new catalog where everything changed. When the base pack needs room, the old files go
-        // least recently used first: the never-used ones (the biggest first), then the old base
-        // pack, which is enough; the two most recently used old files stay.
+        // A new catalog where everything changed. As each new file needs room, old files go, least
+        // recently used (or copied) first, no more of them than it needs: the old lo pack for the
+        // hi data, the old base pack for the base pack, the old basemap for the hi pack.
         let cat2 = catalog(&nas, 2, 100);
         let s = m.sync(&cat2, &none(), nas.root(), &nas.pool, &|| false).unwrap();
-        assert_eq!((s.copied, s.skipped, s.evicted, s.end), (9, 0, 7, SyncEnd::Done));
+        assert_eq!((s.copied, s.skipped, s.evicted, s.end), (9, 0, 3, SyncEnd::Done));
         let kept: Vec<&str> = cat1.files.iter().filter(|(_, f)| m.local(&f.file).is_some()).map(|(l, _)| l.as_str()).collect();
-        assert_eq!(kept, ["layers/roads/hi/6-32-21", "layers/roads/root"]);
+        assert_eq!(kept, ["global/marks/summary", "global/pois", "global/roads/6-32-21", "hidata/6-32-21", "layers/roads/hi/6-32-21", "layers/roads/root"]);
 
         // The previous catalog's files aren't spared any more: with catalog 2 saved, catalog 3
         // takes the room of catalog 1's leftovers and catalog 2's alike, least recently used
-        // first, and is copied whole; what stays of the old ones is what was used last.
+        // first, and is copied whole.
         m.save_catalog(&cat1).unwrap();
         m.save_catalog(&cat2).unwrap();
         let cat3 = catalog(&nas, 3, 200);
         let s = m.sync(&cat3, &none(), nas.root(), &nas.pool, &|| false).unwrap();
-        assert_eq!((s.copied, s.skipped, s.evicted, s.pending), (9, 0, 7, 0));
+        assert_eq!((s.copied, s.skipped, s.evicted, s.pending), (9, 0, 8, 0));
         let old: Vec<&str> = cat1.files.iter().chain(&cat2.files).filter(|(_, f)| m.local(&f.file).is_some()).map(|(l, _)| l.as_str()).collect();
-        assert_eq!(old, ["layers/roads/hi/6-32-21", "layers/roads/root", "layers/roads/hi/6-32-21", "layers/roads/root"]);
+        // (Of catalog 1's: its 1 kB places file, the 2 kB summary going with the hi pack and the
+        // road values for the new basemap's room: the run's spare was a little under 2 kB, the use
+        // times file taking the rest on this fake disk.)
+        assert_eq!(old, ["global/pois", "global/marks/summary", "global/pois", "global/roads/6-32-21", "hidata/6-32-21", "layers/roads/hi/6-32-21", "layers/roads/lo/3-4-2"]);
+        // None of the current catalog's files went.
+        assert!(cat3.files.values().all(|f| m.local(&f.file).is_some()));
         // Within the budget throughout.
         assert!(used(&home.path().join("mirror")) <= total1 + 400_000);
     }
@@ -1495,14 +1913,15 @@ mod tests {
         m.sync(&cat1, &none(), nas.root(), &nas.pool, &|| false).unwrap();
         drop(m);
         // The disk filled up behind our back, to 4 MB short of a 5 MB reserve: the current
-        // catalog's files go too (the essentials aside), least recently used first, the last
-        // groups first among the never used: the hi pack, then the base pack, which is enough.
-        // Neither is copied back into the room left over: not until used again.
+        // catalog's files go too (the essentials aside), least recently used first (none used: the
+        // first copied, the road values, the hi data, then the base pack, which covers it); the run
+        // less what it can spare is the base pack alone. It isn't copied back into the room left
+        // over: not until used again.
         let reserve = 5_000_000;
         let m = mirror(home.path(), total1 + 1_000_000, reserve);
         let cat2 = Catalog { n: 2, ..cat1.clone() };
         let s = m.sync(&cat2, &none(), nas.root(), &nas.pool, &|| false).unwrap();
-        assert_eq!((s.evicted, s.short, s.copied, s.skipped, s.pending), (2, 0, 0, 0, 2));
+        assert_eq!((s.evicted, s.short, s.copied, s.skipped, s.pending), (1, 0, 0, 0, 1));
         assert!(m.local(cat2.content("base/6-32-21").unwrap()).is_none());
         assert!(essentials(&cat2).iter().all(|c| m.local(c).is_some()));
         // A catalog that lists none of them: they all go, and the reserve still isn't met (the
@@ -1513,7 +1932,7 @@ mod tests {
         nas.put(&mut cat3, "global/pois", "json", b"{}");
         cat3.global.insert("pois.json".into(), "global/pois".into());
         let s = m.sync(&cat3, &none(), nas.root(), &nas.pool, &|| false).unwrap();
-        assert_eq!((s.evicted, s.copied, s.skipped, s.skipped_kept), (7, 0, 1, 1), "the seven left");
+        assert_eq!((s.evicted, s.copied, s.skipped, s.skipped_kept), (8, 0, 1, 1), "the eight left");
         assert_eq!(s.short, 4_000_000);
     }
 
