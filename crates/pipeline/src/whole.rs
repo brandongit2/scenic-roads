@@ -21,6 +21,22 @@ pub fn is_tmp(p: &Path) -> bool {
     p.extension().is_some_and(|x| x == "tmp" || x == "part" || x == "adopt")
 }
 
+/// Renames `from` over `to`. On the NAS's SMB share a rename over a file another Mac (or process)
+/// has open fails as busy for a moment (EBUSY: a server reading the manifest, a job its keys): tried
+/// again for a few seconds before it's an error.
+pub fn rename_over(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(from, to) {
+            Err(e) if e.kind() == std::io::ErrorKind::ResourceBusy && tries < 20 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            r => return r,
+        }
+    }
+}
+
 /// Writes `b` as `path`, whole.
 pub fn write(path: &Path, b: &[u8]) -> Result<()> {
     let tmp = tmp_name(path);
@@ -31,7 +47,7 @@ pub fn write(path: &Path, b: &[u8]) -> Result<()> {
         drop(f);
         let n = std::fs::metadata(&tmp)?.len();
         ensure!(n == b.len() as u64, "{n} of {} bytes written", b.len());
-        std::fs::rename(&tmp, path)?;
+        rename_over(&tmp, path)?;
         Ok(())
     })();
     if r.is_err() {
@@ -61,7 +77,7 @@ pub fn copy(src: &Path, dst: &Path) -> Result<u64> {
         drop(to);
         let got = std::fs::metadata(&tmp)?.len();
         ensure!(n == want && got == want, "{got} of {want} bytes copied");
-        std::fs::rename(&tmp, dst)?;
+        rename_over(&tmp, dst)?;
         Ok(want)
     })();
     if r.is_err() {

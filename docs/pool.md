@@ -66,8 +66,9 @@ Checked: ✓; to check on this NAS between two Macs before phase 1 relies on it:
   renaming it renames when it wakes, hours later, whatever happened meanwhile.
 - **Reads can be stale:** macOS caches attributes and directory listings on SMB shares; a file
   renamed over on one Mac may read as before on the other for a while. ◻ How long.
-- ✓ **Renaming over a file another Mac has open fails** (EBUSY on this share: crate::agent's
-  heartbeat already retries).
+- ✓ **Renaming over a file another Mac has open fails** (EBUSY on this share: a map-tile job
+  failed so on 2026-10-05; crate::whole::rename_over retries, for the records, the keys and the
+  heartbeats).
 - **No conditional writes and no atomic appends** between clients: "check, then write" is two
   steps, and an append at a cached end of file overwrites.
 - ◻ **Exclusive rename** (store::naming's catalog numbering): server-side, or check-then-rename.

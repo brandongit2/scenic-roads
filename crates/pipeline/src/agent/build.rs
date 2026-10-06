@@ -97,11 +97,8 @@ impl Keys {
 
     pub fn save(&self, root: &Path) -> anyhow::Result<()> {
         let p = root.join("state/build/jobs.json");
-        let tmp = root.join(format!("state/build/jobs.json.{}.tmp", std::process::id()));
         std::fs::create_dir_all(p.parent().unwrap())?;
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
-        std::fs::rename(&tmp, &p)?;
-        Ok(())
+        crate::whole::write(&p, &serde_json::to_vec_pretty(self)?)
     }
 
     fn map(&mut self, step: &str) -> &mut BTreeMap<String, String> {

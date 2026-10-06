@@ -188,11 +188,14 @@ impl Out {
         self.checked.extend(h.checked.iter().cloned());
     }
 
-    /// `save`, under this Mac's build lock, held.
+    /// `save`, under this Mac's build lock, held. (A record its changes leave as it is isn't
+    /// written again: a step's last save often has none, and each write is a rename over a file
+    /// another Mac may have open.)
     pub fn save_held(&mut self, _lock: &BuildLock) -> Result<()> {
         let dir = self.manifest_path.parent().unwrap().to_path_buf();
         std::fs::create_dir_all(&dir)?;
-        let mut on_disk: BTreeMap<String, String> = read_record(&self.manifest_path)?;
+        let read: BTreeMap<String, String> = read_record(&self.manifest_path)?;
+        let mut on_disk = read.clone();
         for (k, v) in &self.changes {
             match v {
                 Some(n) => on_disk.insert(k.clone(), n.clone()),
@@ -200,13 +203,14 @@ impl Out {
             };
         }
         let pending_path = dir.join("pending.json");
-        let mut pending: BTreeMap<String, String> = read_record(&pending_path)?;
+        let pending_read: BTreeMap<String, String> = read_record(&pending_path)?;
+        let mut pending = pending_read.clone();
         pending.extend(self.pending.clone());
         pending.retain(|k, _| !self.checked.contains(k));
-        for (p, v) in [(&self.manifest_path, serde_json::to_vec_pretty(&on_disk)?), (&pending_path, serde_json::to_vec_pretty(&pending)?)] {
-            let tmp = p.with_extension(format!("json.{}.tmp", std::process::id()));
-            std::fs::write(&tmp, v)?;
-            std::fs::rename(&tmp, p)?;
+        for (p, v, was) in [(&self.manifest_path, &on_disk, &read), (&pending_path, &pending, &pending_read)] {
+            if v != was || !p.exists() {
+                crate::whole::write(p, &serde_json::to_vec_pretty(v)?)?;
+            }
         }
         self.manifest = on_disk;
         self.pending = pending;
@@ -361,6 +365,30 @@ mod tests {
         assert!(root.join("state/build/manifest.json").is_dir());
         // And opening with it unreadable fails too.
         assert!(Out::open(&root, &d.path().join("s")).is_err());
+    }
+
+    #[test]
+    fn a_save_with_nothing_new_writes_nothing_and_still_reads_what_others_saved() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("root");
+        let mut out = Out::open(&root, &d.path().join("s")).unwrap();
+        out.changes.insert("a".into(), Some("a.1111111111111111.x".into()));
+        out.save().unwrap();
+        let m = root.join("state/build/manifest.json");
+        let written = std::fs::metadata(&m).unwrap().modified().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        // Nothing new: the records stay as they were (no rename over a file another Mac may have
+        // open), and what another step saved meanwhile is read.
+        let mut other = Out::open(&root, &d.path().join("s2")).unwrap();
+        other.changes.insert("b".into(), Some("b.2222222222222222.x".into()));
+        other.save().unwrap();
+        let theirs = std::fs::metadata(&m).unwrap().modified().unwrap();
+        assert!(theirs > written);
+        out.save().unwrap();
+        assert_eq!(std::fs::metadata(&m).unwrap().modified().unwrap(), theirs);
+        assert_eq!(out.get("b"), Some("b.2222222222222222.x"));
+        // No temporary file left beside them.
+        assert!(std::fs::read_dir(root.join("state/build")).unwrap().all(|e| !crate::whole::is_tmp(&e.unwrap().path())));
     }
 
     #[test]
