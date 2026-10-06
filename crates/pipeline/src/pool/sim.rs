@@ -32,7 +32,7 @@
 //! finds what lost work there.
 
 use super::beat::Beat;
-use super::driver::{self, Ask, Driver, Event, Heard, Io, Out};
+use super::driver::{self, Ask, Driver, Event, Heard, Io, Listed, Out};
 use super::journal::{self, Entry, LeaseId};
 use super::nas::{Created, Nas};
 use super::records::{self, Records};
@@ -269,8 +269,9 @@ struct World {
     leaders: BTreeMap<u64, usize>,
     /// Each term's last snapshot landed: its number, and the entries it names.
     landed: BTreeMap<u64, (u64, BTreeSet<String>)>,
-    /// Every entry whose bytes landed whole, and what it is; those a lead acknowledged.
+    /// Every entry whose bytes landed whole, what it is, and when; those a lead acknowledged.
     written: BTreeMap<String, Kind>,
+    written_at: BTreeMap<String, u64>,
     writers: BTreeMap<String, usize>,
     acked: BTreeSet<String>,
     /// The coordinator's state each settle saved with its records, by term and snapshot.
@@ -279,6 +280,10 @@ struct World {
     looks: u64,
     /// The leases granted in each term (the lead grants in order: the coordinator isn't modelled).
     leases: BTreeMap<u64, u64>,
+    /// When each Mac began its last listing of every day of the journal (a take-up's), and the
+    /// terms whose lead was seen caught up.
+    full_at: Vec<Option<u64>>,
+    caught: BTreeSet<u64>,
     wrong: Vec<String>,
     counts: Counts,
     trace: Option<Vec<String>>,
@@ -383,7 +388,7 @@ impl World {
         }
         let n = macs.len();
         let looks = cfg.faults + 180;
-        let mut w = World { cfg, t: 0, rng, files, open: BTreeMap::new(), tmps: BTreeMap::new(), writes: BTreeMap::new(), caches: (0..n).map(|_| Cache::default()).collect(), macs, midway: false, turn: 0, done: false, drained: false, end: cfg.end, behind: None, made: BTreeMap::new(), leaders: BTreeMap::new(), landed: BTreeMap::new(), written, writers: BTreeMap::new(), acked: BTreeSet::new(), settles: BTreeMap::new(), looks, leases: BTreeMap::new(), wrong: Vec::new(), counts: BTreeMap::new(), trace: tracing.then(Vec::new) };
+        let mut w = World { cfg, t: 0, rng, files, open: BTreeMap::new(), tmps: BTreeMap::new(), writes: BTreeMap::new(), caches: (0..n).map(|_| Cache::default()).collect(), macs, midway: false, turn: 0, done: false, drained: false, end: cfg.end, behind: None, made: BTreeMap::new(), leaders: BTreeMap::new(), landed: BTreeMap::new(), written, written_at: BTreeMap::new(), writers: BTreeMap::new(), acked: BTreeSet::new(), settles: BTreeMap::new(), looks, leases: BTreeMap::new(), full_at: vec![None; n], caught: BTreeSet::new(), wrong: Vec::new(), counts: BTreeMap::new(), trace: tracing.then(Vec::new) };
         if cfg.old_days > 0 {
             w.count("old journal days");
         }
@@ -815,6 +820,7 @@ impl World {
                     _ => Kind::Taken,
                 };
                 self.writers.insert(key.clone(), mac_of(&en.member));
+                self.written_at.entry(key.clone()).or_insert(self.t);
                 self.written.insert(key, kind);
             }
         }
@@ -875,6 +881,27 @@ impl World {
                 self.wrong(format!("mac{me} took up term {e}, handed over at term {}'s {seq}, with the coordinator's state {handed:?}, not {v:?} as its old lead settled", t.from));
             }
         }
+    }
+
+    /// Mac `me` began a listing of every day of the journal.
+    fn full_listing(&mut self, me: usize) {
+        self.full_at[me] = Some(self.t);
+    }
+
+    /// Mac `me`, leading term `e`, says its records reflect the journal (review N2): its term's last
+    /// snapshot names every entry written before its take-up's listing began (a listing is stale up
+    /// to `Cfg::stale`).
+    fn caught_up(&mut self, me: usize, e: u64) {
+        if !self.caught.insert(e) {
+            return;
+        }
+        let Some(at) = self.full_at[me] else { return self.wrong(format!("mac{me} says term {e}'s records are caught up, and listed none")) };
+        let named = self.landed.get(&e).map(|(_, h)| h.clone()).unwrap_or_default();
+        let missing: Vec<String> = self.written_at.iter().filter(|(k, &w)| w + self.cfg.stale + 1 < at && !named.contains(*k)).map(|(k, _)| k.clone()).collect();
+        if let Some(k) = missing.first() {
+            self.wrong(format!("mac{me} says term {e}'s records are caught up; they lack {k}, written before its listing ({} in all)", missing.len()));
+        }
+        self.count("leads caught up");
     }
 
     /// Entries merged: counted by what they were.
@@ -1159,7 +1186,7 @@ struct Mac {
     /// The term it leads, as the world was told.
     leads: Option<u64>,
     /// The listing its driver asked for, made after its step, for its next.
-    listed: Option<Vec<String>>,
+    listed: Option<Listed>,
     /// Its coordinator's state (what a handover hands on): the term it's of, and the jobs granted.
     coord: (u64, u64),
     /// Settling: the coordinator's state it wrote, and whether its driver has it.
@@ -1248,6 +1275,9 @@ impl Mac {
             self.sim.leads(out.leads)?;
             self.leads = out.leads;
         }
+        if let (Some(e), true) = (out.leads, out.caught_up) {
+            self.sim.op(|w, me| w.caught_up(me, e))?;
+        }
         // Its coordinator: grants while its lead may; settling, writes its state once.
         if out.leads.is_some() && out.duties && faulting && self.rng.chance(P_GRANT) {
             self.coord.1 += 1;
@@ -1282,7 +1312,10 @@ impl Mac {
         // The listing its driver asked for, off its step.
         if let Some(l) = out.list {
             self.sim.count("listings");
-            self.listed = journal::list(&self.sim, l.since.as_deref()).ok();
+            if l.since.is_none() {
+                self.sim.op(|w, me| w.full_listing(me))?;
+            }
+            self.listed = journal::list(&self.sim, l.since.as_deref()).ok().map(|keys| Listed { n: l.n, keys });
         }
         self.sim.idle()
     }
@@ -1522,7 +1555,7 @@ fn check_all(seeds: Range<u64>, cfg: impl Fn(u64) -> Cfg + Sync) -> Counts {
 
 /// Each kind of change of lead and fault, and what the knobs bring, that the default runs must see
 /// at least three times (a simulator that never got there would pass too).
-const KINDS: [&str; 26] = [
+const KINDS: [&str; 27] = [
     "handed over",
     "taken back",
     "taken over",
@@ -1549,6 +1582,7 @@ const KINDS: [&str; 26] = [
     "operation seconds",
     "saved states lost",
     "re-assertions with a saved state lost",
+    "leads caught up",
 ];
 
 #[test]

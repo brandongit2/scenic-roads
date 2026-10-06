@@ -126,6 +126,25 @@ fn parse_uuid(ioreg: &str) -> Option<String> {
     ioreg.lines().find_map(|l| l.split_once("\"IOPlatformUUID\" = ")).map(|(_, v)| v.trim().trim_matches('"').to_string()).filter(|u| u.len() >= 32 && u.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
 }
 
+/// This process's hold on its member (crate::pool::driver's contract: one process per member): an
+/// exclusive flock on a file named by the member id in this user's temporary folder, held while
+/// the process runs, so a second process of the member (a second agent, or one started from a copy
+/// of the agent's folder) can't take it. Let go when dropped.
+pub struct MemberLock(#[allow(dead_code)] std::fs::File);
+
+impl MemberLock {
+    /// Member `id`'s lock; None when another process holds it.
+    pub fn take(id: &str) -> Result<Option<MemberLock>> {
+        anyhow::ensure!(is_member_id(id), "{id:?} isn't a member id");
+        let p = std::env::temp_dir().join(format!("scenic-pool-{id}.lock"));
+        let f = std::fs::File::options().create(true).truncate(false).write(true).open(&p).with_context(|| format!("open {}", p.display()))?;
+        if !crate::sys::lock(&f, false).with_context(|| format!("lock {}", p.display()))? {
+            return Ok(None);
+        }
+        Ok(Some(MemberLock(f)))
+    }
+}
+
 /// Whether `s` is a member id: `m-` and 16 lowercase hex digits.
 pub fn is_member_id(s: &str) -> bool {
     s.strip_prefix("m-").is_some_and(|h| h.len() == 16 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
@@ -168,6 +187,18 @@ mod tests {
         std::fs::create_dir(home.join(ID_FILE)).unwrap();
         assert!(member_id(&home).is_err());
         assert!(!is_member_id("m-3F9C000000000000") && !is_member_id("m-3f9c") && !is_member_id("3f9c000000000000"));
+    }
+
+    #[test]
+    fn a_member_is_one_process() {
+        // (Review N7: nothing kept a second process of a member from stepping a driver.)
+        let id = new_id();
+        let held = MemberLock::take(&id).unwrap().expect("free");
+        assert!(MemberLock::take(&id).unwrap().is_none(), "held by another");
+        assert!(MemberLock::take(&new_id()).unwrap().is_some(), "another member's is its own");
+        drop(held);
+        assert!(MemberLock::take(&id).unwrap().is_some(), "let go");
+        assert!(MemberLock::take("Mac-mini").is_err());
     }
 
     #[test]
