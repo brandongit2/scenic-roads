@@ -19,6 +19,10 @@ pub const HINT: &str = "state/build/lead.json";
 pub const WRITER: &str = "state/build/writer";
 /// What a forced term's `how` says when the term before it couldn't be read whole (`force`).
 pub const UNREAD: &str = "forced past";
+/// What a forced term's `how` says when its lead's app is older than the term it follows (`force`).
+pub const DOWNGRADE: &str = "the owner's downgrade";
+/// How a take-back's `how` begins (`back`): the app rule is checked against the term handed over.
+pub const BACK: &str = "taken back";
 
 /// A term's file.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,8 +165,8 @@ pub fn finish(nas: &dyn Nas, t: &Term) -> Result<()> {
     nas.write_whole(&path(t.term), &serde_json::to_vec_pretty(t)?).with_context(|| format!("finish term {}", t.term))
 }
 
-/// Makes the term after `cur` naming `me` (a takeover, a re-assertion, a take-back): the term when
-/// this Mac's create won, None when another's did. Refused by the app rule; an error when the term is made
+/// Makes the term after `cur` naming `me` (a takeover, a re-assertion): the term when this Mac's
+/// create won, None when another's did. Refused by the app rule; an error when the term is made
 /// but unfinished (`make` keeps the term, to finish it).
 pub fn claim(nas: &dyn Nas, cur: &Current, me: &Member, how: &str, now: u64) -> Result<Option<Term>> {
     let t = Term::after(cur, me, how, now)?;
@@ -173,25 +177,50 @@ pub fn claim(nas: &dyn Nas, cur: &Current, me: &Member, how: &str, now: u64) -> 
     }
 }
 
-/// The owner's forced takeover (§6.5, `scenic lead take --force`): `claim`, and also past a current
-/// term that can't be read whole (its maker stopped between its create and its bytes, and may never
-/// write them: no one leads it), the app rule then checked against the newest term that can be read,
-/// and the term's `how` saying so.
-pub fn force(nas: &dyn Nas, cur: &Current, me: &Member, how: &str, now: u64) -> Result<Option<Term>> {
-    if cur.lead.is_some() || cur.term == 0 {
-        return claim(nas, cur, me, how, now);
-    }
-    let mut known = None;
-    for e in (1..cur.term).rev() {
-        if let Some(t) = read(nas, e)? {
-            known = Some(t);
-            break;
+/// The take-back (§6.4, Taken back): the term after `passed`, the term this Mac made naming the
+/// Mac it handed over to, which didn't take up; naming this Mac, which led `own`, the term it
+/// handed over. The app rule is checked against `own`: the target never led, so nothing was built
+/// as its app would, and a target on a newer app that doesn't take up can't leave the build with
+/// no lead.
+pub fn back(own: &Term, passed: &Term, me: &Member, how: &str, now: u64) -> Result<Term> {
+    ensure!(own.member == me.id && passed.from == own.term && passed.term == own.term + 1, "term {} isn't the handover of term {} by {}", passed.term, own.term, me.host);
+    ensure!(app_at_least(&me.app, &own.app), "{} runs app {}, older than term {}'s {}: update it first", me.host, me.app, own.term, own.app);
+    ensure!(how.starts_with(BACK), "a take-back's how begins {BACK:?}");
+    Ok(Term { term: passed.term + 1, member: me.id.clone(), host: me.host.clone(), app: me.app.clone(), since: now, how: how.to_string(), from: passed.term, seq: None })
+}
+
+/// The owner's forced takeover (§6.5, `scenic lead take --force`): the term after `cur` naming
+/// `me`, also past a current term that can't be read whole (its maker stopped between its create
+/// and its bytes, and may never write them: no one leads it), the app rule then checked against
+/// the newest term that can be read; and with `downgrade` (`--downgrade`) past the app rule too,
+/// for a lead on an older app or a development build. Its `how` says what it passed.
+pub fn forced(nas: &dyn Nas, cur: &Current, me: &Member, how: &str, now: u64, downgrade: bool) -> Result<Term> {
+    ensure!(cur.term >= 1, "term 1 is made by `bootstrap`, its records first");
+    let mut how = how.to_string();
+    let known = match &cur.lead {
+        Some(t) => Some(t.clone()),
+        None => {
+            how = format!("{how} ({}: term {} unreadable)", UNREAD, cur.term);
+            let mut known = None;
+            for e in (1..cur.term).rev() {
+                if let Some(t) = read(nas, e)? {
+                    known = Some(t);
+                    break;
+                }
+            }
+            known
         }
+    };
+    if let Some(k) = known.filter(|k| !app_at_least(&me.app, &k.app)) {
+        ensure!(downgrade, "{} runs app {}, older than term {}'s {}: update it first", me.host, me.app, k.term, k.app);
+        how = format!("{how} ({DOWNGRADE}: app {}, older than term {}'s {})", me.app, k.term, k.app);
     }
-    if let Some(k) = &known {
-        ensure!(app_at_least(&me.app, &k.app), "{} runs app {}, older than term {}'s {}: update it first", me.host, me.app, k.term, k.app);
-    }
-    let t = Term { term: cur.term + 1, member: me.id.clone(), host: me.host.clone(), app: me.app.clone(), since: now, how: format!("{how} ({}: term {} unreadable)", UNREAD, cur.term), from: cur.term, seq: None };
+    Ok(Term { term: cur.term + 1, member: me.id.clone(), host: me.host.clone(), app: me.app.clone(), since: now, how, from: cur.term, seq: None })
+}
+
+/// `forced`, made: the term when this Mac's create won, None when another's did.
+pub fn force(nas: &dyn Nas, cur: &Current, me: &Member, how: &str, now: u64, downgrade: bool) -> Result<Option<Term>> {
+    let t = forced(nas, cur, me, how, now, downgrade)?;
     match make(nas, &t)? {
         Made::Ours => Ok(Some(t)),
         Made::Theirs => Ok(None),
@@ -331,11 +360,11 @@ mod tests {
         assert_eq!(cur, Current { term: 2, lead: None });
         assert!(claim(&nas, &cur, &b, "taken over by MacBook-Air", 200).is_err(), "unforced, it waits");
         let old = member("m-000000000000000b", "20261004-0000-61eb22c");
-        assert!(force(&nas, &cur, &old, "taken over by MacBook-Air", 200).is_err(), "older than term 1's app");
-        let t = force(&nas, &cur, &b, "taken over by MacBook-Air", 200).unwrap().unwrap();
+        assert!(force(&nas, &cur, &old, "taken over by MacBook-Air", 200, false).is_err(), "older than term 1's app");
+        let t = force(&nas, &cur, &b, "taken over by MacBook-Air", 200, false).unwrap().unwrap();
         assert_eq!((t.term, t.from, t.how.as_str()), (3, 2, "taken over by MacBook-Air (forced past: term 2 unreadable)"));
         // A term that can be read: as `claim`.
-        let t4 = force(&nas, &current(&nas).unwrap(), &a, "taken over by Mac-mini", 300).unwrap().unwrap();
+        let t4 = force(&nas, &current(&nas).unwrap(), &a, "taken over by Mac-mini", 300, false).unwrap().unwrap();
         assert_eq!((t4.term, t4.how.as_str()), (4, "taken over by Mac-mini"));
     }
 
@@ -444,5 +473,35 @@ mod tests {
         // Another Mac's term, the same but for its lead, is another's.
         let b = member("m-000000000000000b", "development");
         assert_eq!(claim(&nas, &cur, &b, "re-asserted after a gap", 230).unwrap(), None);
+    }
+
+    #[test]
+    fn a_take_back_from_a_newer_app_and_the_owners_downgrade_pass_the_app_rule() {
+        // Handed to a Mac on a newer app (what the app rule asks for), which then doesn't take up.
+        // (Review H2: the take-back was refused by the app rule, and so was every older Mac's
+        // takeover, forced or not: no lead until a Mac was updated or the target came back.)
+        let nas = Mem::default();
+        let a = member("m-000000000000000a", "20261005-2202-61eb22c");
+        let b = member("m-000000000000000b", "20261006-0900-1a2b3c4");
+        let t1 = bootstrap(&nas, &a, 100, false).unwrap().unwrap();
+        let mut t2 = Term::after(&Current { term: 1, lead: Some(t1.clone()) }, &b, "handed over by a-host", 160).unwrap();
+        t2.seq = Some(1);
+        assert!(matches!(make(&nas, &t2).unwrap(), Made::Ours));
+        let cur = current(&nas).unwrap();
+        assert!(claim(&nas, &cur, &a, "taken over by a-host", 300).is_err(), "unforced, the app rule holds");
+        assert!(force(&nas, &cur, &a, "taken over by a-host", 300, false).is_err(), "forced too");
+        // Taken back: checked against the term it handed over.
+        let t3 = back(&t1, &t2, &a, "taken back: b-host didn't take up", 300).unwrap();
+        assert_eq!((t3.term, t3.from, t3.member.as_str()), (3, 2, a.id.as_str()));
+        assert!(back(&t1, &t2, &b, "taken back: b-host didn't take up", 300).is_err(), "only by the Mac that handed it over");
+        assert!(back(&t1, &t2, &member("m-000000000000000a", "20261004-0000-61eb22c"), "taken back: b-host didn't take up", 300).is_err(), "older than its own term");
+        // The owner's downgrade: past the app rule, saying so.
+        let t3 = force(&nas, &cur, &a, "taken over by a-host", 300, true).unwrap().unwrap();
+        assert_eq!(t3.how, "taken over by a-host (the owner's downgrade: app 20261005-2202-61eb22c, older than term 2's 20261006-0900-1a2b3c4)");
+        // A development build follows only by it.
+        let dev = member("m-000000000000000c", "development");
+        let cur = current(&nas).unwrap();
+        assert!(forced(&nas, &cur, &dev, "taken over by c-host", 400, false).is_err());
+        assert!(forced(&nas, &cur, &dev, "taken over by c-host", 400, true).unwrap().how.contains(DOWNGRADE));
     }
 }

@@ -1106,7 +1106,7 @@ impl Mac {
             return Ok(());
         }
         let how = format!("taken over by {}", self.me.host);
-        let made = if self.cur.term == 0 { term::bootstrap(&self.sim, &self.me, now, true).map(|t| t.filter(|t| t.member == self.me.id)) } else { term::force(&self.sim, &self.cur, &self.me, &how, now) };
+        let made = if self.cur.term == 0 { term::bootstrap(&self.sim, &self.me, now, true).map(|t| t.filter(|t| t.member == self.me.id)) } else { term::force(&self.sim, &self.cur, &self.me, &how, now, false) };
         match made {
             Ok(Some(t)) => {
                 self.cur = Current { term: t.term, lead: Some(t.clone()) };
