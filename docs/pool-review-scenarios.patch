@@ -1,0 +1,543 @@
+diff -ruN pool-work/crates/pipeline/src/pool/mod.rs pool-review/crates/pipeline/src/pool/mod.rs
+--- pool-work/crates/pipeline/src/pool/mod.rs	2026-10-05 22:47:08
++++ pool-review/crates/pipeline/src/pool/mod.rs	2026-10-05 23:04:57
+@@ -35,6 +35,8 @@
+ 
+ #[cfg(test)]
+ mod sim;
++#[cfg(test)]
++mod review;
+ 
+ pub use beat::Beat;
+ pub use handover::Handover;
+diff -ruN pool-work/crates/pipeline/src/pool/review.rs pool-review/crates/pipeline/src/pool/review.rs
+--- pool-work/crates/pipeline/src/pool/review.rs	1969-12-31 19:00:00
++++ pool-review/crates/pipeline/src/pool/review.rs	2026-10-05 23:10:55
+@@ -0,0 +1,211 @@
++//! REVIEW scenarios (not part of the change): each shows a finding of the review on the in-memory
++//! NAS, or a wrapper of it with one fault.
++
++use super::journal::{self, Entry, LeaseId};
++use super::nas::{Mem, Nas};
++use super::records::{self, Records};
++use super::term::{self, Current};
++use super::Member;
++use crate::handoff::Handoff;
++use anyhow::{bail, Result};
++use std::cell::Cell;
++
++const DAY: u64 = 1_791_300_000;
++
++fn built(term: u64, n: u64, t: &str, k: &str, at: u64) -> Entry {
++    let content = format!("base/{t}.{k}.base");
++    let h = Handoff { changes: [(format!("base/{t}"), Some(content.clone()))].into(), pending: [(content, "sha".into())].into(), done: Some(("unit".into(), vec![(t.into(), k.into())])), ..Default::default() };
++    Entry { member: "m-000000000000000c".into(), lease: LeaseId { term, n }, step: "unit".into(), handoff: h, at }
++}
++
++fn any(_: &Entry, _: &Records) -> std::result::Result<(), String> {
++    Ok(())
++}
++
++fn mac(id: &str, host: &str) -> Member {
++    Member { id: id.into(), host: host.into(), app: "development".into() }
++}
++
++/// A corrupt entry's time panics whoever reads it: the merge, the take-up's replay.
++#[test]
++fn review_a_corrupt_entry_time_panics_the_reader() {
++    let nas = Mem::default();
++    let key = journal::write(&nas, &built(1, 1, "6-1-1", "k1", DAY)).unwrap();
++    let mut v: serde_json::Value = serde_json::from_slice(&nas.read(&journal::path(&key)).unwrap().unwrap()).unwrap();
++    v["at"] = serde_json::json!(u64::MAX);
++    nas.write_whole(&journal::path(&key), &serde_json::to_vec(&v).unwrap()).unwrap();
++    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        let mut rec = Records { term: 2, ..Default::default() };
++        records::merge(&nas, &mut rec, std::slice::from_ref(&key), &any)
++    }));
++    assert!(r.is_err(), "the merge panicked on a journal entry's `at`");
++}
++
++/// A stale lead's refusal (its own check: say, it leased the targets again after the lease lapsed,
++/// or its app's write-sets are older) sets the entry aside, and the current lead, whose check would
++/// take it, refuses it unread.
++#[test]
++fn review_a_stale_leads_refusal_binds_the_current_lead() {
++    let nas = Mem::default();
++    let (a, b) = (mac("m-000000000000000a", "Mac-mini"), mac("m-000000000000000b", "MacBook-Air"));
++    let t1 = term::bootstrap(&nas, &a, DAY, false).unwrap().unwrap();
++    let mut r1 = records::take_up(&nas, &t1, None, None, &any).unwrap().records;
++    let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &b, "taken over by MacBook-Air", DAY + 700).unwrap().unwrap();
++    let mut r2 = records::take_up(&nas, &t2, None, None, &any).unwrap().records;
++    // Its member, still on term 1, tells A of it; A, not yet knowing of term 2, refuses it.
++    let x = journal::write(&nas, &built(1, 5, "6-1-1", "k5", DAY + 710)).unwrap();
++    let a_check = |_: &Entry, _: &Records| Err::<(), String>("6-1-1 leased again since".into());
++    let m = records::merge(&nas, &mut r1, std::slice::from_ref(&x), &a_check);
++    r1.save(&nas).unwrap();
++    for (k, why) in &m.refused {
++        journal::set_aside(&nas, k, why).unwrap();
++    }
++    // Its member learns of term 2 and tells B, whose check takes anything.
++    let m2 = records::merge(&nas, &mut r2, std::slice::from_ref(&x), &any);
++    assert!(m2.applied.is_empty() && m2.refused.len() == 1, "{m2:?}");
++    assert!(!r2.keys.unit.contains_key("6-1-1"));
++}
++
++/// Replays and re-tellings apply an older lease's entry over a newer one's: lease order holds only
++/// within one merge.
++#[test]
++fn review_an_older_lease_replayed_after_a_newer_one_wins() {
++    let nas = Mem::default();
++    let mut r = Records { term: 3, ..Default::default() };
++    let newer = journal::write(&nas, &built(3, 9, "6-1-1", "k9", DAY)).unwrap();
++    let older = journal::write(&nas, &built(3, 5, "6-1-1", "k5", DAY)).unwrap();
++    records::merge(&nas, &mut r, std::slice::from_ref(&newer), &any);
++    records::merge(&nas, &mut r, std::slice::from_ref(&older), &any);
++    assert_eq!(r.keys.unit.get("6-1-1").map(String::as_str), Some("k5"), "the older lease's key");
++    assert_eq!(r.manifest.get("base/6-1-1").map(String::as_str), Some("base/6-1-1.k5.base"));
++}
++
++/// A NAS whose next create makes the file and then fails before its bytes (the share went away
++/// between the two).
++#[derive(Default)]
++struct CutCreate {
++    mem: Mem,
++    cut: Cell<bool>,
++    lost_answer: Cell<bool>,
++}
++
++impl Nas for CutCreate {
++    fn create_new(&self, path: &str, bytes: &[u8]) -> Result<bool> {
++        if self.cut.replace(false) {
++            self.mem.create_new(path, b"")?;
++            bail!("write {path} (made, and left short)");
++        }
++        if self.lost_answer.replace(false) {
++            self.mem.create_new(path, bytes)?;
++            bail!("create {path}: the answer was lost");
++        }
++        self.mem.create_new(path, bytes)
++    }
++    fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
++        self.mem.write_whole(path, bytes)
++    }
++    fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
++        self.mem.read(path)
++    }
++    fn exists(&self, path: &str) -> Result<bool> {
++        self.mem.exists(path)
++    }
++    fn list(&self, dir: &str) -> Result<Vec<String>> {
++        self.mem.list(dir)
++    }
++    fn remove(&self, path: &str) -> Result<()> {
++        self.mem.remove(path)
++    }
++}
++
++/// A lead re-asserting as the NAS comes back (what a gap is): its create made term 2, its bytes
++/// failed. Its next try reads the term as another's; nobody may follow it without the owner's force.
++#[test]
++fn review_a_create_cut_short_leaves_no_lead_until_forced() {
++    let nas = CutCreate::default();
++    let (a, b) = (mac("m-000000000000000a", "Mac-mini"), mac("m-000000000000000b", "MacBook-Air"));
++    let t1 = term::bootstrap(&nas, &a, DAY, false).unwrap().unwrap();
++    let cur = Current { term: 1, lead: Some(t1) };
++    nas.cut.set(true);
++    assert!(term::claim(&nas, &cur, &a, "re-asserted after a gap", DAY + 100).is_err());
++    assert_eq!(term::claim(&nas, &cur, &a, "re-asserted after a gap", DAY + 130).unwrap(), None, "its own term, read as another's");
++    let now = term::current(&nas).unwrap();
++    assert_eq!(now, Current { term: 2, lead: None });
++    assert!(term::claim(&nas, &now, &a, "re-asserted after a gap", DAY + 160).is_err());
++    assert!(term::claim(&nas, &now, &b, "taken over by MacBook-Air", DAY + 900).is_err());
++    assert!(term::force(&nas, &now, &b, "taken over by MacBook-Air", DAY + 900).unwrap().is_some());
++}
++
++/// The create made the term whole and its answer was lost: the retry, a moment later, reads the
++/// Mac's own term as another's (the bytes differ by `since`).
++#[test]
++fn review_a_retried_claim_disowns_its_own_term() {
++    let nas = CutCreate::default();
++    let a = mac("m-000000000000000a", "Mac-mini");
++    let t1 = term::bootstrap(&nas, &a, DAY, false).unwrap().unwrap();
++    let cur = Current { term: 1, lead: Some(t1) };
++    nas.lost_answer.set(true);
++    assert!(term::claim(&nas, &cur, &a, "re-asserted after a gap", DAY + 100).is_err());
++    assert_eq!(term::claim(&nas, &cur, &a, "re-asserted after a gap", DAY + 130).unwrap(), None);
++    assert_eq!(term::read(&nas, 2).unwrap().map(|t| t.member), Some(a.id.clone()), "yet term 2 names it");
++}
++
++/// A member back after more than a week tells of an entry whose day GC removed and the records
++/// forgot: it waits forever, and a lead that settles only with nothing waiting never hands over.
++#[test]
++fn review_a_forgotten_entry_waits_forever() {
++    let nas = Mem::default();
++    let mut r = Records { term: 4, ..Default::default() };
++    let x = journal::write(&nas, &built(4, 1, "6-1-1", "k1", DAY)).unwrap();
++    records::merge(&nas, &mut r, std::slice::from_ref(&x), &any);
++    // A week on: GC removes the day, the records forget it; the member was away and didn't.
++    nas.remove(&journal::path(&x)).unwrap();
++    r.forget_before("2026-10-14");
++    for _ in 0..3 {
++        let m = records::merge(&nas, &mut r, std::slice::from_ref(&x), &any);
++        assert_eq!(m.waiting, [x.clone()]);
++    }
++}
++
++/// An entry read while it's being written in more than one piece, a later piece landed first:
++/// a hole of zeros, not a short file. It's refused for good, and set aside (removed) while its
++/// member still writes it.
++#[test]
++fn review_an_entry_read_with_a_hole_is_refused_for_good() {
++    let nas = Mem::default();
++    let e = built(4, 2, "6-1-2", "k2", DAY);
++    let whole = serde_json::to_vec(&e).unwrap();
++    let mut holed = whole.clone();
++    for b in &mut holed[10..30] {
++        *b = 0;
++    }
++    nas.create_new(&journal::path(&e.key()), &holed).unwrap();
++    assert!(matches!(journal::read(&nas, &e.key()).unwrap(), journal::Read::Damaged(_)));
++    let mut r = Records { term: 4, ..Default::default() };
++    let m = records::merge(&nas, &mut r, &[e.key()], &any);
++    assert_eq!(m.refused.len(), 1);
++    // The member's write, once landed, can't undo it: its next try finds another entry there.
++    journal::set_aside(&nas, &e.key(), &m.refused[0].1).unwrap();
++    assert!(matches!(journal::read(&nas, &e.key()).unwrap(), journal::Read::SetAside(_)));
++}
++
++/// Handed to a Mac on a newer app (what the app rule asks for), which then doesn't take up: the
++/// take-back is refused by the app rule, and so is every older Mac's takeover, forced or not. No
++/// lead until a Mac is updated or the target comes back.
++#[test]
++fn review_a_take_back_from_a_newer_app_is_refused_and_so_is_force() {
++    let nas = Mem::default();
++    let a = Member { id: "m-000000000000000a".into(), host: "Mac-mini".into(), app: "20261005-2202-61eb22c".into() };
++    let b = Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "20261006-0900-1a2b3c4".into() };
++    let t1 = term::bootstrap(&nas, &a, DAY, false).unwrap().unwrap();
++    let r = records::take_up(&nas, &t1, None, None, &any).unwrap().records;
++    let mut t2 = super::term::Term::after(&Current { term: 1, lead: Some(t1) }, &b, "handed over by Mac-mini", DAY + 60).unwrap();
++    t2.seq = Some(r.seq);
++    assert!(term::make(&nas, &t2).unwrap());
++    // B's lid closes before it takes up; two minutes on, A takes the lead back:
++    let cur = term::current(&nas).unwrap();
++    let back = term::claim(&nas, &cur, &a, "taken back: MacBook-Air didn't take up", DAY + 200);
++    eprintln!("take-back: {:?}", back.as_ref().map_err(|e| e.to_string()));
++    assert!(back.is_err());
++    assert!(term::force(&nas, &cur, &a, "taken over by Mac-mini", DAY + 900).is_err());
++}
+diff -ruN pool-work/crates/pipeline/src/pool/sim.rs pool-review/crates/pipeline/src/pool/sim.rs
+--- pool-work/crates/pipeline/src/pool/sim.rs	2026-10-05 22:47:08
++++ pool-review/crates/pipeline/src/pool/sim.rs	2026-10-05 23:20:44
+@@ -80,11 +80,23 @@
+     stale: u64,
+     /// The first draft's scheme instead of the pool's.
+     draft: bool,
++    /// REVIEW: how long a listing takes (s), lo..=hi; (0, 0): instant.
++    list_s: (u64, u64),
++    /// REVIEW: a Mac leaves for good (never wakes) partway through.
++    leave: bool,
++    /// REVIEW: earlier days in the journal (a week's), an entry each, not yet in term 1's records.
++    old_days: u64,
++    /// REVIEW: a loop's length for re-asserting counts from its take-up's end, not its start.
++    fix_long: bool,
++    /// REVIEW: the clocks' skew, up to this either way (s); 0: the default ±1 s.
++    skew: u64,
++    /// REVIEW: now and then the owner runs a development build on a Mac (or rolls a bad app back).
++    downgrade: bool,
+ }
+ 
+ impl Cfg {
+     fn pool() -> Cfg {
+-        Cfg { faults: 2400, end: 3300, stale: 30, draft: false }
++        Cfg { faults: 2400, end: 3300, stale: 30, draft: false, list_s: (0, 0), leave: false, old_days: 0, fix_long: false, skew: 0, downgrade: false }
+     }
+ }
+ 
+@@ -141,6 +153,8 @@
+     view: u64,
+     leads: Option<u64>,
+     led: u64,
++    /// REVIEW: left for good.
++    gone: bool,
+ }
+ 
+ /// What a Mac keeps of what it read, stat'ed and listed: the bytes (None: no file) or names, and
+@@ -185,6 +199,9 @@
+ 
+ /// The app version of number `n`: a minute later each.
+ fn app(n: u64) -> String {
++    if n == u64::MAX {
++        return "development".into();
++    }
+     format!("20261006-{:02}{:02}-{n:07x}", 12 + n / 60, n % 60)
+ }
+ 
+@@ -249,12 +266,19 @@
+ impl World {
+     fn new(seed: u64, macs: usize, cfg: Cfg, tracing: bool) -> World {
+         let mut rng = Rng(seed);
+-        let macs: Vec<MacW> = (0..macs).map(|k| MacW { id: id(k), app: 0, skew: rng.below(3) as i64 - 1, asleep_until: 0, ready_at: 0, inbox: Vec::new(), view: 0, leads: None, led: 0 }).collect();
++        let macs: Vec<MacW> = (0..macs).map(|k| MacW { id: id(k), app: 0, skew: if cfg.skew > 0 { rng.below(2 * cfg.skew + 1) as i64 - cfg.skew as i64 } else { rng.below(3) as i64 - 1 }, asleep_until: 0, ready_at: 0, inbox: Vec::new(), view: 0, leads: None, led: 0, gone: false }).collect();
+         let mut files = BTreeMap::new();
+         // Today's build Mac (mac0) and records: one unit built.
+         files.insert(term::WRITER.to_string(), b"mac0\n".to_vec());
+         files.insert("state/build/manifest.json".to_string(), serde_json::to_vec(&BTreeMap::from([(logical(TARGETS[0]), content(TARGETS[0], "k0"))])).unwrap());
+         files.insert("state/build/jobs.json".to_string(), format!("{{\"unit\": {{\"{}\": \"k0\"}}}}", TARGETS[0]).into_bytes());
++        for d in 1..=cfg.old_days {
++            let t = TARGETS[(d as usize) % TARGETS.len()];
++            let k = format!("old{d}");
++            let h = Handoff { changes: [(logical(t), Some(content(t, &k)))].into(), done: Some(("unit".into(), vec![(t.into(), k.clone())])), ..Default::default() };
++            let e = Entry { member: id(0), lease: LeaseId { term: 0, n: d }, step: "unit".into(), handoff: h, at: T0 - d * 86_400 };
++            files.insert(journal::path(&e.key()), serde_json::to_vec(&e).unwrap());
++        }
+         let n = macs.len();
+         let mut w = World { cfg, t: 0, rng, files, open: BTreeMap::new(), tmps: BTreeMap::new(), writes: BTreeMap::new(), caches: (0..n).map(|_| Cache::default()).collect(), macs, midway: false, turn: 0, done: false, drained: false, made: BTreeMap::new(), leaders: BTreeMap::new(), landed: BTreeMap::new(), written: BTreeMap::new(), acked: BTreeSet::new(), wrong: Vec::new(), counts: BTreeMap::new(), trace: tracing.then(Vec::new) };
+         w.pick(0);
+@@ -313,7 +337,9 @@
+             self.drained = true;
+             let t = self.t;
+             for m in &mut self.macs {
+-                m.asleep_until = m.asleep_until.min(t);
++                if !m.gone {
++                    m.asleep_until = m.asleep_until.min(t);
++                }
+             }
+             self.note(|| "the faults stop: every Mac awake from now".into());
+         }
+@@ -330,7 +356,7 @@
+                 6..=8 => self.rng.range(90, 900),
+                 _ => self.rng.range(900, 2400),
+             };
+-            self.macs[me].asleep_until = self.t + d;
++            self.macs[me].asleep_until = if self.macs[me].gone { u64::MAX } else { self.t + d };
+             self.count("sleeps");
+             self.note(|| format!("mac{me} sleeps {d} s"));
+         }
+@@ -348,8 +374,8 @@
+         }
+         if self.rng.chance(P_APP) {
+             let at = self.rng.below(n) as usize;
+-            let newest = self.macs.iter().map(|m| m.app).max().unwrap_or(0);
+-            self.macs[at].app = newest + self.rng.range(1, 3);
++            let newest = self.macs.iter().map(|m| m.app).filter(|&a| a != u64::MAX).max().unwrap_or(0);
++            self.macs[at].app = if self.cfg.downgrade && self.rng.chance(0.5) { u64::MAX } else { newest + self.rng.range(1, 3) };
+             let v = app(self.macs[at].app);
+             self.note(|| format!("mac{at} gets app {v}"));
+         }
+@@ -418,6 +444,13 @@
+         let v: Vec<String> = names.into_iter().map(str::to_string).collect();
+         let until = self.t + self.rng.below(self.cfg.stale + 1);
+         self.caches[me].dirs.insert(dir.to_string(), (v.clone(), until));
++        // REVIEW: a listing takes its time (the share under load: 3 to 33 s a folder).
++        if self.cfg.list_s.1 > 0 {
++            let d = self.rng.range(self.cfg.list_s.0, self.cfg.list_s.1);
++            self.count("listing seconds");
++            *self.counts.entry("listing seconds").or_default() += d - 1;
++            self.advance(self.t + d);
++        }
+         v
+     }
+ 
+@@ -624,6 +657,16 @@
+         }
+         let lost: Vec<String> = self.written.iter().filter(|(k, bogus)| if **bogus { !r.rejected.contains_key(*k) } else { !r.reflected.contains(*k) }).map(|(k, _)| k.clone()).collect();
+         for k in lost {
++            // REVIEW: the entries of a Mac that left for good: only those a lead acknowledged count.
++            let writer = k.rsplit('-').next().and_then(|n| n.parse::<u64>().ok()).map(|n| (n % 8) as usize);
++            if let Some(g) = writer.filter(|&g| g < self.macs.len() && self.macs[g].gone) {
++                if self.acked.contains(&k) {
++                    self.wrong(format!("ACKED entry {k} of mac{g}, gone for good, is lost: {whose} don't name it"));
++                } else {
++                    self.count("untold entries of a Mac gone for good");
++                }
++                continue;
++            }
+             self.wrong(format!("entry {k} is lost: {whose} don't name it"));
+         }
+     }
+@@ -726,6 +769,18 @@
+         self.op(|w, me| {
+             let j = w.rng.below(5);
+             w.macs[me].ready_at = w.t + LOOP_S + j;
++            // REVIEW: a member (not leading, not named by the newest term) leaves for good, between
++            // two of its loops.
++            if w.cfg.leave && !w.macs.iter().any(|m| m.gone) && w.t > w.cfg.faults / 3 && w.t < w.cfg.faults && w.macs[me].leads.is_none() {
++                let h = w.made.keys().max().copied().unwrap_or(0);
++                let named = w.files.get(&term::path(h)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.member);
++                if named.as_deref() != Some(w.macs[me].id.as_str()) && w.rng.chance(0.02) {
++                    w.macs[me].gone = true;
++                    w.macs[me].asleep_until = u64::MAX;
++                    w.count("Macs gone for good");
++                    w.note(|| format!("mac{me} leaves for good"));
++                }
++            }
+         })
+     }
+ }
+@@ -813,13 +868,15 @@
+     last: u64,
+     long: bool,
+     jobs: u64,
++    /// REVIEW: when this loop's take-up ended.
++    took_up: Option<u64>,
+ }
+ 
+ impl Mac {
+     fn new(sim: Sim, k: usize, seed: u64, cfg: Cfg) -> Mac {
+         let me = Member { id: id(k), host: format!("mac{k}"), app: app(0) };
+         let rng = Rng(seed ^ (k as u64 + 1).wrapping_mul(0xA076_1D64_78BD_642F));
+-        Mac { sim, k, cfg, rng, me, cur: Current::default(), lead: None, passing: None, spare: None, led: 0, must: false, mine: Mine::default(), last: 0, long: false, jobs: 0 }
++        Mac { sim, k, cfg, rng, me, cur: Current::default(), lead: None, passing: None, spare: None, led: 0, must: false, mine: Mine::default(), last: 0, long: false, jobs: 0, took_up: None }
+     }
+ 
+     fn run(mut self) {
+@@ -850,6 +907,10 @@
+             self.step_down("a later term exists")?;
+         }
+         if self.lead.is_some() && (handover::gap(self.last, start) || self.long || restarted) {
++            // REVIEW: re-assertions owed to a long loop alone.
++            if self.long && !handover::gap(self.last, start) && !restarted {
++                self.sim.count("re-asserts for a long loop alone");
++            }
+             self.must = true;
+         }
+         if self.lead.is_none() {
+@@ -888,7 +949,8 @@
+         self.member_loop(start)?;
+         self.beat(start)?;
+         let end = self.sim.now()?;
+-        self.long = end.saturating_sub(start) > handover::GAP_S;
++        let from = if self.cfg.fix_long { self.took_up.take().unwrap_or(start).max(start) } else { start };
++        self.long = end.saturating_sub(from) > handover::GAP_S;
+         self.last = end;
+         self.sim.idle()
+     }
+@@ -954,6 +1016,9 @@
+                 }
+                 self.led = t.term;
+                 self.sim.leads(Some(t.term))?;
++                if self.cfg.fix_long {
++                    self.took_up = Some(self.sim.now()?);
++                }
+                 if let Err(e) = term::write_hint(&self.sim, &t) {
+                     if self.sim.over() {
+                         return Err(e);
+@@ -1126,7 +1191,8 @@
+ 
+     /// A job's entry now and then, a job reading the records, and telling the lead.
+     fn member_loop(&mut self, now: u64) -> Result<()> {
+-        if now < T0 + self.cfg.faults && self.rng.chance(P_JOB) {
++        let faulting = if self.cfg.skew > 0 { self.sim.op(|w, _| w.t < w.cfg.faults)? } else { now < T0 + self.cfg.faults };
++        if faulting && self.rng.chance(P_JOB) {
+             let e = self.job(now);
+             match journal::write(&self.sim, &e) {
+                 Ok(key) => self.mine.wrote(&key),
+@@ -1389,8 +1455,107 @@
+     // POOL_SIM_SEED's events (POOL_SIM_DRAFT=1: the first draft's; POOL_SIM_STALE: the longest a
+     // read is kept), to look into one.
+     let var = |v: &str| std::env::var(v).ok().and_then(|s| s.parse::<u64>().ok());
+-    let cfg = Cfg { draft: std::env::var_os("POOL_SIM_DRAFT").is_some(), stale: var("POOL_SIM_STALE").unwrap_or(30), ..Cfg::pool() };
++    let cfg = Cfg { draft: std::env::var_os("POOL_SIM_DRAFT").is_some(), stale: var("POOL_SIM_STALE").unwrap_or(30), list_s: (var("REVIEW_LIST_LO").unwrap_or(0), var("REVIEW_LIST_HI").unwrap_or(0)), leave: std::env::var_os("REVIEW_LEAVE").is_some(), old_days: var("REVIEW_OLD_DAYS").unwrap_or(0), fix_long: std::env::var_os("REVIEW_FIX_LONG").is_some(), downgrade: std::env::var_os("REVIEW_DOWNGRADE").is_some(), ..Cfg::pool() };
+     let seed = var("POOL_SIM_SEED").unwrap_or(0);
+     let r = run(seed, cfg, true);
+     eprintln!("{}\n\n{}\n\n{:#?}", r.trace.join("\n"), r.wrong.join("\n"), r.counts);
++}
++
++/// REVIEW: the same seeds with listings that take 3 to 33 s (the share under load, docs/pool.md §3).
++#[test]
++#[ignore]
++fn review_slow_listings() {
++    let var = |v: &str, or: u64| std::env::var(v).ok().and_then(|s| s.parse().ok()).unwrap_or(or);
++    let (lo, hi, n, days) = (var("REVIEW_LIST_LO", 3), var("REVIEW_LIST_HI", 33), var("REVIEW_SEEDS", 300), var("REVIEW_OLD_DAYS", 0));
++    let fix = std::env::var_os("REVIEW_FIX_LONG").is_some();
++    let base = run_all(0..n, Cfg { old_days: days, fix_long: fix, ..Cfg::pool() });
++    let slow = run_all(0..n, Cfg { list_s: (lo, hi), old_days: days, fix_long: fix, ..Cfg::pool() });
++    eprintln!("BASE: {} of {n} wrong\n{:#?}", base.0.len(), base.1);
++    eprintln!("SLOW ({lo}..={hi} s a listing): {} of {n} wrong\n{:#?}", slow.0.len(), slow.1);
++    for (s, w) in slow.0.iter().take(6) {
++        eprintln!("seed {s}: {:?}", &w[..w.len().min(4)]);
++    }
++}
++
++/// REVIEW: one member leaves for good partway (its lid closed for the week).
++#[test]
++#[ignore]
++fn review_a_member_leaves_for_good() {
++    let var = |v: &str, or: u64| std::env::var(v).ok().and_then(|s| s.parse().ok()).unwrap_or(or);
++    let (from, n) = (var("REVIEW_FROM", 0), var("REVIEW_SEEDS", 2000));
++    let cfg = Cfg { leave: true, ..Cfg::pool() };
++    let (bad, counts) = run_all(from..from + n, cfg);
++    eprintln!("{} of {n} wrong\n{counts:#?}", bad.len());
++    for (s, w) in bad.iter().take(10) {
++        eprintln!("seed {s}: {:?}", &w[..w.len().min(4)]);
++    }
++    if let Some((seed, _)) = bad.iter().find(|(_, w)| w.iter().any(|x| x.contains("ACKED"))) {
++        let r = run(*seed, cfg, true);
++        let key = r.wrong.iter().find(|x| x.contains("ACKED")).and_then(|x| x.split_whitespace().nth(5)).unwrap_or("").to_string();
++        eprintln!("seed {seed}, entry {key}:");
++        for l in r.trace.iter().filter(|l| l.contains("leaves") || l.contains("term ") && (l.contains("makes") || l.contains(": m-")) || l.contains("leads") || l.contains("steps down") || l.contains("no longer")) {
++            eprintln!("{l}");
++        }
++        eprintln!("{}", r.wrong.join("\n"));
++    }
++}
++
++/// REVIEW: longer stale reads than the default 30 s (how long the share reads stale is unchecked, §3).
++#[test]
++#[ignore]
++fn review_longer_staleness() {
++    let var = |v: &str, or: u64| std::env::var(v).ok().and_then(|s| s.parse().ok()).unwrap_or(or);
++    let n = var("REVIEW_SEEDS", 1000);
++    for stale in [60, 120, 300] {
++        let (bad, counts) = run_all(0..n, Cfg { stale, ..Cfg::pool() });
++        eprintln!("STALE {stale} s: {} of {n} wrong; handed over {:?}, taken back {:?}, re-asserted {:?}", bad.len(), counts.get("handed over"), counts.get("taken back"), counts.get("re-asserted"));
++        for (s, w) in bad.iter().take(4) {
++            eprintln!("  seed {s}: {:?}", &w[..w.len().min(3)]);
++        }
++    }
++}
++
++/// REVIEW: every seed of a range runs the same twice (traces, what went wrong, counts).
++#[test]
++#[ignore]
++fn review_determinism_over_many_seeds() {
++    let var = |v: &str, or: u64| std::env::var(v).ok().and_then(|s| s.parse().ok()).unwrap_or(or);
++    let n = var("REVIEW_SEEDS", 400);
++    let mut diff = Vec::new();
++    for seed in 0..n {
++        let (a, b) = (run(seed, Cfg::pool(), true), run(seed, Cfg::pool(), true));
++        if a.trace != b.trace || a.wrong != b.wrong || a.counts != b.counts {
++            let at = a.trace.iter().zip(&b.trace).position(|(x, y)| x != y);
++            diff.push((seed, a.trace.len(), b.trace.len(), at, a.counts == b.counts));
++        }
++    }
++    eprintln!("{} of {n} seeds differ between two runs: {diff:?}", diff.len());
++}
++
++/// REVIEW: clocks skewed by minutes (NTP off on one Mac, §6.7's "clock wrong").
++#[test]
++#[ignore]
++fn review_skewed_clocks() {
++    let var = |v: &str, or: u64| std::env::var(v).ok().and_then(|s| s.parse().ok()).unwrap_or(or);
++    let n = var("REVIEW_SEEDS", 1000);
++    for skew in [30, 300, 1200] {
++        let (bad, counts) = run_all(0..n, Cfg { skew, ..Cfg::pool() });
++        eprintln!("SKEW ±{skew} s: {} of {n} wrong; handed over {:?}, taken back {:?}, taken over {:?}", bad.len(), counts.get("handed over"), counts.get("taken back"), counts.get("taken over"));
++        for (s, w) in bad.iter().take(4) {
++            eprintln!("  seed {s}: {:?}", &w[..w.len().min(3)]);
++        }
++    }
++}
++
++/// REVIEW: a development build (or a rolled-back app) on a Mac now and then.
++#[test]
++#[ignore]
++fn review_downgrades() {
++    let var = |v: &str, or: u64| std::env::var(v).ok().and_then(|s| s.parse().ok()).unwrap_or(or);
++    let n = var("REVIEW_SEEDS", 2000);
++    let (bad, counts) = run_all(0..n, Cfg { downgrade: true, ..Cfg::pool() });
++    eprintln!("DOWNGRADES: {} of {n} wrong\n{counts:#?}", bad.len());
++    for (s, w) in bad.iter().take(8) {
++        eprintln!("  seed {s}: {:?}", &w[..w.len().min(3)]);
++    }
+ }

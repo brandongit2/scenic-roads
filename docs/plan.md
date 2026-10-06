@@ -1568,7 +1568,57 @@ At each phase's end an Opus agent reviews the work against this plan.
    serve`, its devices let help by the build Mac's owner (`coord::devices`). Next: OPFS, ranged
    reads, journaled group commits, retiring the claim and hand-off files.
 
-**Gaps:** none known between the code and the design.
+**Gaps:** the code falls short of the design here.
+1. **The pool's core** (`crate::pool`, `crates/pipeline/src/pool/`; `docs/pool.md` §12), not wired
+   into the agent: the open items of its review, to fix before the integration. The review's
+   scenarios are in `docs/pool-review-scenarios.patch`: a unit test showing each finding, and knobs
+   for the simulator (listing time, a week of journal folders, a Mac leaving, staleness, clock skew,
+   development builds and rollbacks).
+   - **H1, a lead re-asserts every loop when listings are slow** (sim.rs:852, 891; records.rs:274):
+     a take-up lists the whole journal, so its loop runs past `GAP_S` (60 s), and the next loop
+     re-asserts and takes up again. Fix: time a loop from the end of its take-up; re-assert only
+     after wall-clock gaps. Then a take-up slower than `TAKE_UP_S` (120 s, handover.rs) still has
+     its handover taken back: have B list the journal while Ready, and A count "term E+1 has a
+     snapshot" as taken up.
+   - **H2, the app rule can leave no working lead** (term.rs:54, 149): a lead restarted into an
+     older or development app has its re-assertion refused, and its loop stops there every time (it
+     should step down, an error stopping only the duty that met it); a handover to a Mac on a newer
+     app that never takes up can't be taken back, nor taken over by force from an older app. Fix:
+     exempt the take-back; give the owner an override for a downgrade.
+   - **M1, setting an entry aside is final, and a stale lead can do it** (journal.rs:180–188,
+     records.rs:195). Fix: let only a fenced lead set aside, or have later leads check again.
+   - **M2, a corrupt entry's `at` panics every reader** (journal.rs:93). Fix: `checked_add`, and
+     take such an entry as damaged.
+   - **M3, a torn read (a hole of zeros) is refused for good** (journal.rs:150–157). Fix: write
+     entries by a temporary name and rename them.
+   - **M4, a create cut short disowns its own term** (nas.rs:84–91, term.rs:123): tried again, its
+     maker reads the term as another's. Fix: have `create_new` report "made, bytes not written", for
+     its maker to finish; compare the parsed term in `make`.
+   - **M5, lease order holds only within one merge** (records.rs:179–215): an older lease's entry
+     merged later wins. Fix: keep the last `LeaseId` per (step, target).
+   - **M6, the driver that decides safety and liveness is test-only** (`sim::Mac`), with its one
+     `now` per loop, a `settled` that passes after `SETTLE_S` (handover.rs) and a `ready_for` not
+     tied to its offer. Fix: move it into the core behind an I/O trait, and fix those there.
+   - **M7, a handover's `seq` covers the records only** (term.rs:39–43): nothing makes B read the
+     coordinator's leases as A last wrote them.
+   - **M8, keys forgotten after GC's week block settling for good** (records.rs:146, 199): an entry
+     told again once its day is forgotten is in neither the records nor the journal, and waits. Fix:
+     keep the forget horizon, and acknowledge older keys.
+   - **Low:**
+     - L1, a retried `take_up` restarts `seq` at 1 (records.rs:270–273), so two versions of a
+       term's first snapshot can share a number;
+     - L2, `BUSY_TRIES` (nas.rs:12) gives a busy rename 8 tries 250 ms apart,
+       crate::whole::rename_over 20 retries;
+     - L3, the member id is a plain file (mod.rs:69, `member_id`), which Migration Assistant copies
+       to a new Mac: bind it to the Mac's IOPlatformUUID;
+     - L4, an entry's key takes the day of its `at` (journal.rs:86–88), so one made again for a
+       retry after midnight lands under another key: persist the `Entry` before the first try;
+     - L5, term 1's first snapshot torn mid-file (a hole, not a short end) can't be read, nor term
+       1 taken up (records.rs:247–250);
+     - L6, no reader falls back to an older term's snapshot while the current term has none
+       (records.rs:81, `Records::load`);
+     - L7, a gone Mac's entries it never told a lead of wait for the next take-up, the only listing
+       of the journal (records.rs:274).
 
 ## 11. Risks and checks
 
