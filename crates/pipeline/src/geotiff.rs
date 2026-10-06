@@ -35,6 +35,7 @@ const MODEL_TRANSFORMATION: u16 = 34264;
 const GEO_KEY_DIRECTORY: u16 = 34735;
 const GEO_DOUBLE_PARAMS: u16 = 34736;
 const GEO_ASCII_PARAMS: u16 = 34737;
+const GDAL_METADATA: u16 = 42112;
 const GDAL_NODATA: u16 = 42113;
 
 /// GeoKeys this crate reads.
@@ -203,6 +204,22 @@ impl Block {
         }
     }
 
+    /// The samples, row by row, when they're 16-bit unsigned.
+    pub fn u16s(&self) -> Option<&[u16]> {
+        match &self.data {
+            Samples::U16(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    /// The samples, row by row, when they're 8-bit unsigned.
+    pub fn u8s(&self) -> Option<&[u8]> {
+        match &self.data {
+            Samples::U8(v) => Some(v),
+            _ => None,
+        }
+    }
+
     fn bytes(&self) -> usize {
         let n = self.width * self.height;
         match &self.data {
@@ -255,6 +272,8 @@ pub struct Tiff {
     transform: [f64; 6],
     nodata: Option<f64>,
     keys: GeoKeys,
+    /// GDAL's metadata items for the dataset (its default domain): name, value.
+    metadata: Vec<(String, String)>,
     cache: Option<Mutex<Lru>>,
 }
 
@@ -331,7 +350,7 @@ impl Tiff {
             ifd = order.uint(&b[n * ent_sz..]);
         }
         ensure!(!dirs.is_empty(), "a TIFF without images");
-        let mut t = Tiff { src, order, images: Vec::new(), transform: [0.0, 1.0, 0.0, 0.0, 0.0, 1.0], nodata: None, keys: GeoKeys::default(), cache: None };
+        let mut t = Tiff { src, order, images: Vec::new(), transform: [0.0, 1.0, 0.0, 0.0, 0.0, 1.0], nodata: None, keys: GeoKeys::default(), metadata: Vec::new(), cache: None };
         let main = t.image(&dirs[0]).context("TIFF image")?;
         t.images.push(main);
         for d in &dirs[1..] {
@@ -387,6 +406,11 @@ impl Tiff {
 
     pub fn geo_keys(&self) -> &GeoKeys {
         &self.keys
+    }
+
+    /// GDAL's metadata item `name` for the dataset (as rasterio's `tags()` gives it), if any.
+    pub fn metadata_item(&self, name: &str) -> Option<&str> {
+        self.metadata.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
     }
 
     fn entry_bytes(&self, e: &Entry) -> Result<Vec<u8>> {
@@ -508,6 +532,9 @@ impl Tiff {
         } else {
             self.transform = [0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
         }
+        if let Some(x) = self.ascii(d, GDAL_METADATA)? {
+            self.metadata = metadata_items(&x);
+        }
         if let Some(s) = self.ascii(d, GDAL_NODATA)?.filter(|s| !s.is_empty()) {
             let mut v = atof(&s);
             let m = &self.images[0];
@@ -620,6 +647,38 @@ impl Tiff {
         let b = self.block(level, bx, by)?;
         Ok(b.f32_at((x - bx * img.block_w) as usize, (y - by * img.block_h) as usize))
     }
+}
+
+/// The dataset's items of GDAL's metadata XML (`<Item name="…">…</Item>`, those of no domain and no
+/// band), their text unescaped.
+fn metadata_items(xml: &str) -> Vec<(String, String)> {
+    let unescape = |s: &str| s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&");
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(i) = rest.find("<Item ") {
+        rest = &rest[i + 6..];
+        let Some(close) = rest.find('>') else { break };
+        let (attrs, body) = match rest[..close].strip_suffix('/') {
+            Some(a) => {
+                rest = &rest[close + 1..];
+                (a, "")
+            }
+            None => {
+                let Some(end) = rest.find("</Item>") else { break };
+                let (a, b) = (&rest[..close], rest.get(close + 1..end).unwrap_or(""));
+                rest = &rest[end + 7..];
+                (a, b)
+            }
+        };
+        let attr = |k: &str| attrs.split_once(&format!(" {k}=\"")).or_else(|| attrs.strip_prefix(&format!("{k}=\"")).map(|v| ("", v))).and_then(|(_, v)| v.split_once('"')).map(|(v, _)| v);
+        if attr("domain").is_some() || attr("sample").is_some() {
+            continue;
+        }
+        if let Some(name) = attr("name") {
+            out.push((unescape(name), unescape(body)));
+        }
+    }
+    out
 }
 
 /// A block filled with `v` (in the image's sample type).

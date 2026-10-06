@@ -37,11 +37,18 @@ pub trait Fetch: Send + Sync {
 struct Ranges(Vec<(u64, u64)>);
 
 impl Ranges {
+    #[cfg(test)]
     fn add(&mut self, s: u64, e: u64) {
         if s >= e {
             return;
         }
         self.0.push((s, e));
+        self.merge();
+    }
+
+    /// Sorts and merges the ranges.
+    fn merge(&mut self) {
+        self.0.retain(|r| r.0 < r.1);
         self.0.sort_unstable();
         let mut out: Vec<(u64, u64)> = Vec::with_capacity(self.0.len());
         for &(s, e) in &self.0 {
@@ -64,9 +71,10 @@ impl Ranges {
         for l in text.lines() {
             let mut it = l.split_ascii_whitespace().map(str::parse::<u64>);
             if let (Some(Ok(s)), Some(Ok(e))) = (it.next(), it.next()) {
-                r.add(s, e);
+                r.0.push((s, e));
             }
         }
+        r.merge();
         r
     }
 }
@@ -232,6 +240,67 @@ impl Fetch for Fetcher {
         }
         bail!("{url}: not supplied, and there's no network here")
     }
+}
+
+/// A file whose reads are noted, so they can be kept in a mirror folder (`save`): a run elsewhere
+/// given that folder (SCENIC_FETCH_MIRROR) reads just those bytes, without the file.
+pub struct Noted {
+    inner: Arc<dyn RangeRead>,
+    read: std::sync::Mutex<Vec<(u64, u64)>>,
+}
+
+impl Noted {
+    pub fn new(inner: Arc<dyn RangeRead>) -> Arc<Noted> {
+        Arc::new(Noted { inner, read: Default::default() })
+    }
+
+    /// Keeps the bytes read so far in mirror folder `root` as `url`'s (beside any it has): the file
+    /// at its length, holding them, and their ranges listed (`<path>.ranges`). The bytes kept.
+    pub fn save(&self, root: &Path, url: &str) -> Result<u64> {
+        let p = mirror_path(root, url)?;
+        if p.exists() && !beside(&p, ".ranges").exists() {
+            return Ok(0); // a whole file already
+        }
+        let mut read = Ranges(self.read.lock().unwrap().clone());
+        read.merge();
+        let mut all = std::fs::read_to_string(beside(&p, ".ranges")).map(|t| Ranges::parse(&t)).unwrap_or_default();
+        std::fs::create_dir_all(p.parent().context("a mirror path without a folder")?)?;
+        let len = self.inner.len()?;
+        let f = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(&p).with_context(|| p.display().to_string())?;
+        if f.metadata()?.len() != len {
+            f.set_len(len)?;
+        }
+        let mut n = 0;
+        for &(s, e) in &read.0 {
+            f.write_all_at(&self.inner.read_at(s, (e - s) as usize)?, s)?;
+            all.0.push((s, e));
+            n += e - s;
+        }
+        all.merge();
+        let text: String = all.0.iter().map(|(s, e)| format!("{s} {e}\n")).collect();
+        std::fs::write(beside(&p, ".ranges"), text)?;
+        Ok(n)
+    }
+}
+
+impl RangeRead for Noted {
+    fn len(&self) -> Result<u64, IoError> {
+        self.inner.len()
+    }
+
+    fn read_at(&self, off: u64, len: usize) -> Result<Vec<u8>, IoError> {
+        let b = self.inner.read_at(off, len)?;
+        self.read.lock().unwrap().push((off, off + len as u64));
+        Ok(b)
+    }
+}
+
+/// Keeps in mirror folder `root` that `url`'s file isn't there (`<path>.none`).
+pub fn save_none(root: &Path, url: &str) -> Result<()> {
+    let p = mirror_path(root, url)?;
+    std::fs::create_dir_all(p.parent().context("a mirror path without a folder")?)?;
+    std::fs::write(beside(&p, ".none"), b"")?;
+    Ok(())
 }
 
 /// Outside data held in memory (tests).

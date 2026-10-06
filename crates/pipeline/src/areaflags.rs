@@ -182,7 +182,7 @@ pub fn read_shapes(text: &str, b: [f64; 4]) -> Result<(Vec<Shape>, usize)> {
 
 /// OGR's ring orientation test (OGRLineString::isClockwise, as compiled: the cross product fused,
 /// and its fallback's sum vectorised in eights before a fused tail).
-fn is_clockwise(p: &[[f64; 2]]) -> bool {
+pub(crate) fn is_clockwise(p: &[[f64; 2]]) -> bool {
     let n = p.len();
     if n < 2 {
         return true;

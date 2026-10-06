@@ -15,6 +15,6 @@ export CC_wasm32_wasip1=$llvm/clang AR_wasm32_wasip1=$llvm/llvm-ar CFLAGS_wasm32
 # The page gives each program its memory, capped at what its task may use: one that needs more
 # fails cleanly (docs/workers.md §6).
 export CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS="-C link-arg=--import-memory"
-progs=(extract tile scenic-metrics areaflags elev landcover)
+progs=(extract tile scenic-metrics areaflags elev landcover trees)
 cargo build --release --target wasm32-wasip1 -p pipeline ${progs/#/--bin=} 2>&1 | tail -1
 for p in $progs; do ls -l target/wasm32-wasip1/release/$p.wasm; done

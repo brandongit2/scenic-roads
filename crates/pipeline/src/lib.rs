@@ -49,10 +49,12 @@ pub mod terrain_z8;
 pub mod trailends;
 pub mod tiling;
 pub mod treepacks;
+pub mod trees;
 pub mod unit;
 pub mod view;
 pub mod whole;
 pub mod vtgen;
+pub mod webp;
 
 use indicatif::{ProgressBar, ProgressStyle};
 use std::io::Read;

@@ -318,13 +318,13 @@ fn main() -> Result<()> {
             let chm = PathBuf::from(opt(&args, "--chm").unwrap_or_else(|| "data/cache/chm10".into()));
             let workers: usize = std::env::var("RAYON_NUM_THREADS").ok().and_then(|t| t.parse().ok()).unwrap_or(8);
             let qs: Vec<Unit> = positional(&args).iter().map(|t| Unit::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))).collect::<Result<_>>()?;
-            // Its parts, for the status (as terrain's): each area's tree cover mapped (trees.py, which
-            // says how far it is), then written.
+            // Its parts, for the status (as terrain's): each area's tree cover mapped (the trees
+            // program, which says how far it is), then written.
             let n = qs.len();
             let of = |k: usize| if n > 1 { format!(" ({} of {n})", k + 1) } else { String::new() };
             let mut names: Vec<String> = Vec::new();
             for k in 0..n {
-                names.push(format!("Mapping the area's tree cover (trees.py){}", of(k)));
+                names.push(format!("Mapping the area's tree cover{}", of(k)));
                 names.push(format!("Writing the area's tree cover to the NAS{}", of(k)));
             }
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
@@ -336,6 +336,16 @@ fn main() -> Result<()> {
                 pipeline::control::done("trees", &q.slash());
                 note_cost("trees", &q.slash(), t);
             }
+        }
+        "trees-coverage" => {
+            // trees-coverage <z3 tile> --out <file> [--pass d]: the coverage the trees program reads
+            // there (its cov.json), to run it by hand. It only reads: nothing is saved.
+            let cov = coverage_of(&out, &args)?;
+            let t = positional(&args).first().cloned().context("a z3 tile")?;
+            let q = Unit::parse(&t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))?;
+            let f = PathBuf::from(opt(&args, "--out").context("--out <file>")?);
+            std::fs::write(&f, serde_json::to_vec(&pipeline::treepacks::coverage_json(&cov, q))?)?;
+            return Ok(());
         }
         "prune" => prune_step(&mut out, &args)?,
         "convert-legacy-marks" => {

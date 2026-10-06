@@ -1,11 +1,11 @@
 //! The tree cover layers (docs/plan.md §6): tree cover, canopy height and leaf type, zoom 4–12, per
-//! z3 tile the coverage meets, clipped to it (`dem/trees.py --z3`: Meta's canopy squares, kept on the
-//! NAS, `sources/canopy/`, each downloaded once, and copied into the agent's cache the units read
-//! too; the leaf-type squares on the NAS, `sources/trees/leaf/`, made whole by `dem/leaftype.py`
-//! where missing), packed as the layers `trees-cover`, `trees-height` and `trees-leaf` (a lo pack per
-//! z3 tile, hi packs per z6 tile). A z3 tile's run makes all of its packs: those it no longer has
-//! (the coverage there shrank) leave the manifest, and a z3 tile the coverage has left loses them
-//! all.
+//! z3 tile the coverage meets, clipped to it (the `trees` program, crate::trees, dem/trees.py's port,
+//! with SCENIC_TREES_PY=1 trees.py itself, to compare the two: Meta's canopy squares, kept on the NAS,
+//! `sources/canopy/`, each downloaded once, and copied into the agent's cache the units read too;
+//! the leaf-type squares on the NAS, `sources/trees/leaf/`, made whole by `dem/leaftype.py` where
+//! missing), packed as the layers `trees-cover`, `trees-height` and `trees-leaf` (a lo pack per z3
+//! tile, hi packs per z6 tile). A z3 tile's run makes all of its packs: those it no longer has (the
+//! coverage there shrank) leave the manifest, and a z3 tile the coverage has left loses them all.
 
 use crate::coverage::Coverage;
 use crate::legacy::Unit;
@@ -13,8 +13,9 @@ use crate::out::Out;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-/// Bumped when how the layers are made changes (every z3 tile is made again).
-pub const TREES_V: u32 = 2;
+/// Bumped when how the layers are made changes (every z3 tile is made again). 3: by the `trees`
+/// program, trees.py's pixels in other WebP bytes (trees.py, switched to, makes the same pixels).
+pub const TREES_V: u32 = 3;
 pub const LAYERS: [&str; 3] = ["trees-cover", "trees-height", "trees-leaf"];
 
 /// The leaf-type squares on the NAS (`lat<top>_lon<left>.tif`).
@@ -42,10 +43,15 @@ pub fn targets(cov: &Coverage, m: &std::collections::BTreeMap<String, String>) -
     out
 }
 
-/// The coverage's shapes inside z3 tile `q`, for trees.py: each shape's rings whose box meets the
-/// tile, in degrees (inside by even–odd, as the shape has them; a ring that doesn't meet the tile
-/// can't change which of its points are inside).
-fn coverage_json(cov: &Coverage, q: Unit) -> serde_json::Value {
+/// Whether dem/trees.py makes the layers rather than its port (SCENIC_TREES_PY=1), to compare them.
+fn by_python() -> bool {
+    std::env::var("SCENIC_TREES_PY").is_ok_and(|v| !v.is_empty() && v != "0")
+}
+
+/// The coverage's shapes inside z3 tile `q`, for the trees program: each shape's rings whose box
+/// meets the tile, in degrees (inside by even–odd, as the shape has them; a ring that doesn't meet
+/// the tile can't change which of its points are inside).
+pub fn coverage_json(cov: &Coverage, q: Unit) -> serde_json::Value {
     let b = crate::hipack::tile_bounds(q.z, q.x, q.y);
     let deg = |v: i32| v as f64 * 1e-7;
     let shapes: Vec<Vec<Vec<[f64; 2]>>> = cov
@@ -75,8 +81,8 @@ pub fn build(out: &mut Out, cov: &Coverage, q: Unit, dem: &Path, chm: &Path, scr
     build_with(out, cov, q, dem, chm, scratch, workers, &|| {})
 }
 
-/// `build`, telling `writing` when it begins writing the packs (after trees.py), whose progress it
-/// says as `layers' packs written`.
+/// `build`, telling `writing` when it begins writing the packs (after the trees program), whose
+/// progress it says as `layers' packs written`.
 #[allow(clippy::too_many_arguments)]
 pub fn build_with(out: &mut Out, cov: &Coverage, q: Unit, dem: &Path, chm: &Path, scratch: &Path, workers: usize, writing: &dyn Fn()) -> Result<()> {
     let dir = scratch.join(format!("trees-{}", q.dash()));
@@ -91,9 +97,18 @@ pub fn build_with(out: &mut Out, cov: &Coverage, q: Unit, dem: &Path, chm: &Path
         return Ok(());
     }
     std::fs::write(dir.join("coverage.json"), serde_json::to_vec(&cj)?)?;
-    let st = std::process::Command::new("uv")
+    // (Either takes the same arguments, in the Python steps' folder: the port runs leaftype.py
+    // there for leaf-type squares to make.)
+    let (mut c, prog) = if by_python() {
+        let mut c = std::process::Command::new("uv");
+        c.args(["run", "python", "trees.py"]);
+        (c, "trees.py")
+    } else {
+        (std::process::Command::new(std::env::current_exe()?.parent().context("the programs' folder")?.join("trees")), "the trees program")
+    };
+    let st = c
         .current_dir(dem)
-        .args(["run", "python", "trees.py", "--z3", &format!("{},{}", q.x, q.y), "--coverage"])
+        .args(["--z3", &format!("{},{}", q.x, q.y), "--coverage"])
         .arg(dir.join("coverage.json"))
         .arg("--chm")
         .arg(chm)
@@ -105,8 +120,8 @@ pub fn build_with(out: &mut Out, cov: &Coverage, q: Unit, dem: &Path, chm: &Path
         .arg(&dir)
         .args(["--workers", &workers.to_string()])
         .status()
-        .context("run trees.py")?;
-    anyhow::ensure!(st.success(), "trees.py for {}: {st}", q.slash());
+        .with_context(|| format!("run {prog}"))?;
+    anyhow::ensure!(st.success(), "{prog} for {}: {st}", q.slash());
     writing();
     for (i, layer) in LAYERS.iter().enumerate() {
         let arc = roadcore::archive::Archive::open(&dir.join(format!("{layer}.tiles")))?;
@@ -178,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn a_z3_tiles_shapes_for_trees_py() {
+    fn a_z3_tiles_shapes_for_the_trees_program() {
         let c = cov("place:-21.9,64.13,20");
         let j = coverage_json(&c, Unit { z: 3, x: 3, y: 2 });
         let rings = j["shapes"][0].as_array().unwrap();
