@@ -1459,6 +1459,13 @@ impl Agent {
                 Err(e) => eprintln!("agent: merging other workers' hand-offs: {e:#}"),
             }
             self.merged = Some(Instant::now());
+            // Then the records re-keyed where a key scheme changed (agent::rekey; once done, and a
+            // merged record of an older app's job translated, it finds nothing).
+            match self.rekey_records(r) {
+                Ok(Some(k)) if k.changed() => eprintln!("agent: re-keyed the units' records: {} moved to their new keys ({} without outputs), {} to build again", k.moved.len(), k.empty.len(), k.left.len()),
+                Ok(_) => {}
+                Err(e) => eprintln!("agent: re-keying the records: {e:#}"),
+            }
         }
 
         // The plan: start the first job that can run. Made when one could start (the first job's
@@ -2716,7 +2723,7 @@ impl Agent {
             }
         };
         let cov = &covs.all;
-        let done = keys;
+        let mut done = keys;
         let inputs = input_digests(root);
         let held = root.join("inputs/hold-catalog").exists();
         let reach = self.current_reach(root, &manifest, &done, date).ok().flatten();
@@ -2739,6 +2746,9 @@ impl Agent {
         let mut planned = {
             let kept = self.round.borrow();
             let tiles = self.terrain_tiles(root, &manifest);
+            // (The records as re-keyed: what they are once the loop has re-keyed them, as a dry run,
+            // or a loop that couldn't take the build lock, plans too.)
+            rekey::rekey(&mut done, cov, date, &manifest, reach.as_deref(), &inputs, &tiles);
             build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), &tiles, build::Rounds { each: &covs.each, on_map: &on_map, since_last, current: kept.as_ref().filter(|r| !r.over), held })
         };
         // Units whose terrain can't be worked out now (a pack's index unread): they wait for it.
@@ -3124,7 +3134,11 @@ impl Agent {
         let cov = &covs.all;
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         let tiles = self.terrain_tiles(root, &manifest);
-        out.extend(build::checklist(&cov, &date, &manifest, &keys, &input_digests(root), root.join("inputs/hold-catalog").exists(), reach.as_deref(), &self.ready.borrow(), &tiles));
+        let inputs = input_digests(root);
+        // (As re-keyed: agent::rekey.)
+        let mut keys = keys;
+        rekey::rekey(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles);
+        out.extend(build::checklist(cov, &date, &manifest, &keys, &inputs, root.join("inputs/hold-catalog").exists(), reach.as_deref(), &self.ready.borrow(), &tiles));
         out
     }
 
@@ -3134,10 +3148,37 @@ impl Agent {
         let manifest: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let Ok(covs) = self.coverage(root, &manifest, &date, regions, false) else { return BTreeMap::new() };
         let (cov, each) = (&covs.all, &covs.each);
-        let keys = build::Keys::load(root);
+        let mut keys = build::Keys::load(root);
         let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
         let tiles = self.terrain_tiles(root, &manifest);
-        build::region_states(&cov, &each, &date, &manifest, &keys, reach.as_deref(), &input_digests(root), &tiles)
+        let inputs = input_digests(root);
+        // (As re-keyed: agent::rekey.)
+        rekey::rekey(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles);
+        build::region_states(cov, each, &date, &manifest, &keys, reach.as_deref(), &inputs, &tiles)
+    }
+
+    /// The records re-keyed (agent::rekey) under the build lock, as a merge takes it (a job saving
+    /// holds it), and written whole when that changed anything: the build Mac's agent's, after its
+    /// merge (the caller's: not a helper's, nor a dry run's). None when there's nothing to re-key by
+    /// now (no pass, regions or reaches; a recipe that can't be read now, which would leave the
+    /// coverage short), or the lock is held.
+    fn rekey_records(&self, root: &Path) -> Result<Option<rekey::Rekeyed>> {
+        let Some(date) = crate::osmpass::latest_pass(root) else { return Ok(None) };
+        let (recipes, unread) = recipes::load(&root.join("inputs/regions"));
+        if recipes.is_empty() || !unread.is_empty() {
+            return Ok(None);
+        }
+        let Some(_lock) = crate::out::BuildLock::try_take(root)? else { return Ok(None) };
+        let manifest: BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json"))?;
+        let mut keys = build::Keys::load_strict(root)?;
+        let covs = self.coverage(root, &manifest, &date, &recipes, false).map_err(anyhow::Error::msg)?;
+        let Some(reach) = self.current_reach(root, &manifest, &keys, &date).ok().flatten() else { return Ok(None) };
+        let tiles = self.terrain_tiles(root, &manifest);
+        let r = rekey::rekey(&mut keys, &covs.all, &date, &manifest, Some(&reach), &input_digests(root), &tiles);
+        if r.changed() {
+            keys.save(root)?;
+        }
+        Ok(Some(r))
     }
 
     /// The terrain packs' indexes `manifest` names, those not yet held read (from `pack-idx/`, else
@@ -4236,6 +4277,94 @@ mod tests {
         let (_, _, events, _) = a.coord.as_ref().unwrap().for_forecast();
         let noted: Vec<(Option<&str>, &str)> = events.iter().filter(|e| e.kind == "caches").map(|e| (e.worker.as_deref(), e.note.as_str())).collect();
         assert_eq!(noted, [(Some("m1"), "trimmed its caches after the build: 3.0 GB freed (canopy squares 3.0 GB)"), (Some("m1"), "trimmed its caches after the build: 0 MB freed; 2.0 GB kept (the NAS hasn't it yet)")]);
+    }
+
+    /// A root as the build has it before the units' keys changed: a pass whose reaches build
+    /// Reykjavik's unit (6/28/17) for region a, the heritage sites and the terrain made (the area's
+    /// lo pack a real pack), and the unit built under the old keys, with its outputs. Its old key.
+    fn rekey_root(root: &Path) -> String {
+        let date = "2026-09-28";
+        std::fs::create_dir_all(root.join("catalog")).unwrap();
+        put(&root.join(format!("sources/osm/{date}/pass.1111111111111111.json")), b"{}");
+        recipes::add(&root.join("inputs/regions"), &recipes::Recipe { id: "a".into(), name: "A".into(), outline: vec!["place:-21.9,64.13,20".into()] }).unwrap();
+        let (recipes, _) = recipes::load(&root.join("inputs/regions"));
+        let cov = crate::coverage::Coverage::from_recipes(&recipes, None, &root.join("inputs/outlines")).unwrap();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        let piece = format!("sources/osm/{date}/pieces/6-28-17");
+        m.insert(piece.clone(), format!("{piece}.4444444444444444.osm.pbf"));
+        let mut reaches = crate::reach::Reaches { fmt: 1, date: date.into(), ..Default::default() };
+        reaches.units.insert("6/28/17".into(), crate::reach::Reach { owned: Some([-220_000_000, 640_000_000, -217_000_000, 641_600_000]), long: vec![] });
+        let rc = format!("{}.5555555555555555.json.zst", crate::reach::logical(date));
+        put(&root.join(&rc), &reaches.encode().unwrap());
+        m.insert(crate::reach::logical(date), rc);
+        // (What the units wait for: the heritage sites' inputs and outputs, the buildings' index.)
+        m.insert(crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"));
+        m.insert("sources/registers/legacy".into(), "sources/registers/legacy.3434343434343434.tar.zst".into());
+        m.insert(crate::buildtiles::index_logical(), format!("{}.6767676767676767.json", crate::buildtiles::index_logical()));
+        m.insert(crate::heritage::base_logical(date, "heritage-sources"), format!("work/heritage/{date}/base/heritage-sources.5656565656565656.json"));
+        let lo = "layers/terrain/lo/3-3-2.1111111111111111.pack";
+        std::fs::create_dir_all(root.join(lo).parent().unwrap()).unwrap();
+        let mut w = store::pack::PackWriter::create(&root.join(lo), serde_json::json!({"layer": "terrain"}), false).unwrap();
+        for z in 3..=8u8 {
+            for x in 3 << (z - 3)..4 << (z - 3) {
+                for y in 2 << (z - 3)..3 << (z - 3) {
+                    w.add(z, x, y, format!("{z}/{x}/{y}").as_bytes(), 0).unwrap();
+                }
+            }
+        }
+        w.finish().unwrap();
+        m.insert("layers/terrain/lo/3-3-2".into(), lo.into());
+        m.insert("base/6-28-17".into(), "base/6-28-17.6666666666666666.base".into());
+        put(&root.join("state/build/manifest.json"), &serde_json::to_vec(&m).unwrap());
+        let mut keys = build::Keys::default();
+        keys.lo.insert("reach".into(), build::reach_key(date, &m).unwrap());
+        keys.record("heritage-sites", &build::heritage_sites_work(&cov, date, &m, &keys).unwrap().targets);
+        keys.record("terrain", &build::terrain_slope_targets(&cov, &m).0);
+        let old = rekey::v1::unit_keys(&cov, date, &m, Some(&reaches), &input_digests(root)).pop().unwrap();
+        assert_eq!(old.0.slash(), "6/28/17");
+        keys.record("unit", &[("6/28/17".into(), old.1.clone())]);
+        // (Under the new keys as recorded, it would be built again.)
+        let tiles = {
+            let mut t = tiles::TerrainTiles::new(None);
+            t.load(root, &m);
+            t
+        };
+        let plan = build::plan(&cov, date, &m, &keys, &input_digests(root), Some(&reaches), &tiles, build::Rounds { each: &cov.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false });
+        assert!(plan.work.iter().any(|w| w.step == "unit" && w.targets[0].0 == "6/28/17"), "{:?}", plan.work);
+        keys.save(root).unwrap();
+        old.1
+    }
+
+    #[test]
+    fn the_build_macs_loop_re_keys_the_records_once_a_dry_run_or_a_helper_never() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("nas");
+        let old = rekey_root(&root);
+        let jobs = root.join("state/build/jobs.json");
+        let before = std::fs::read(&jobs).unwrap();
+        // A dry run plans as the records will be (the unit built), and writes nothing.
+        let mut dry = agent(&root, &d.path().join("dry"));
+        dry.step().unwrap();
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        assert!(!dry.plan(&root, &cond, &mut Vec::new()).iter().any(|j| j.id.starts_with("unit ")));
+        assert_eq!(std::fs::read(&jobs).unwrap(), before);
+        // Nor a helper.
+        running_agent(&root, &d.path().join("helper"), true).step().unwrap();
+        assert_eq!(std::fs::read(&jobs).unwrap(), before);
+        // The build Mac's (paused: nothing starts): once, its indexes kept in its folder.
+        let home = d.path().join("m4");
+        let mut a = running_agent(&root, &home, false);
+        a.pause = Some(crate::control::Pause::new(crate::control::Mode::Drain, "the test"));
+        a.step().unwrap();
+        let k = build::Keys::load(&root).unit["6/28/17"].clone();
+        assert_ne!(k, old);
+        assert!(home.join("pack-idx/1111111111111111.idx").exists());
+        let (after, at) = (std::fs::read(&jobs).unwrap(), std::fs::metadata(&jobs).unwrap().modified().unwrap());
+        a.step().unwrap();
+        assert_eq!((std::fs::read(&jobs).unwrap(), std::fs::metadata(&jobs).unwrap().modified().unwrap()), (after, at), "not written again");
+        // Its new key is the plan's: nothing to build.
+        assert!(!a.plan(&root, &cond, &mut Vec::new()).iter().any(|j| j.id.starts_with("unit ")));
     }
 
     #[test]
