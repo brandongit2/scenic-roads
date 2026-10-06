@@ -7,8 +7,9 @@
 #   tools/app/install.sh --agent [--seed-cache DIR]  also the build agent (the build Mac only);
 #       DIR (today's data/cache: canopy files, the per-vertex elevation cache) moves into the
 #       agent's cache, so the first builds reuse it
-#   tools/app/install.sh --helper                   also a helper agent (the other Mac: it builds
-#       units beside the build Mac's agent; docs/plan.md §8, Two Macs)
+#   tools/app/install.sh --helper                   also a helper agent (the other Mac: it asks the
+#       build Mac's coordinator for the jobs that fit it of terrain, slope, tree cover, units and the
+#       landmarks' candidates and peaks, else units' last steps; docs/plan.md §8, Two Macs)
 set -euo pipefail
 agent=0 helper=0 seed=""
 while (( $# )); do

@@ -1,13 +1,16 @@
 //! The build agent (docs/plan.md §8): `scenic agent`, a login item on the build Mac under the
-//! launcher. It works out what needs doing, runs one job at a time when that job's conditions
-//! hold (mains power, the NAS), pauses it when they lapse, and writes a heartbeat the app shows.
+//! launcher. It works out what needs doing, runs two jobs at once at most (the plan's first, and a
+//! second beside it: `SLOTS`, `SECOND`) when their conditions hold (power, the NAS), pauses each
+//! when they lapse, and writes a heartbeat the app shows.
 //!
 //! Each loop (every 20 s, sooner when a job ends):
 //! 1. conditions: power, the NAS (mounting it when missing), the user's activity, sleep;
-//! 2. the running job: finished (recorded; failures retried with a growing delay), paused or
+//! 2. the running jobs: each finished (recorded; failures retried with a growing delay), paused or
 //!    resumed, restarted after sleep when it touches the NAS;
-//! 3. otherwise the first runnable job of the plan: the OSM pass when the NAS holds a newer planet,
-//!    then backups and cleanup once a day (later phases add layers, units and packs);
+//! 3. a free slot's job: the plan's first runnable job (the OSM pass when the NAS holds a newer
+//!    planet, the regions' work, the chains, the rounds; backups and cleanup once a day), and
+//!    beside it the first of `SECOND`'s steps that can run with it (docs/plan.md §8, Two jobs at
+//!    once);
 //! 4. this Mac's caches (`room`): the owner's ask to clear them taken up (cleared between jobs once
 //!    the build is done, else declined, why said), else, with no job running, a trim once the build
 //!    is done; either on a thread of its own, the loop beating meanwhile and no job starting here;
