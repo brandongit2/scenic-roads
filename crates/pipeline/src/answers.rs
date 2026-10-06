@@ -486,8 +486,13 @@ fn unpack(from: &Path, dir: &Path) -> Result<()> {
     let mut tar = Command::new("tar").arg("-xf").arg("-").arg("-C").arg(dir).stdin(Stdio::piped()).spawn().context("run tar")?;
     let r = (|| -> Result<()> {
         let mut z = zstd::Decoder::new(std::fs::File::open(from)?)?;
-        std::io::copy(&mut z, tar.stdin.as_mut().context("tar's input")?)?;
-        Ok(())
+        match std::io::copy(&mut z, tar.stdin.as_mut().context("tar's input")?) {
+            // (tar ends at the archive's end without reading the padding after it: written after
+            // that, as it can be on a loaded Mac, the padding meets a closed pipe. tar's status
+            // says whether the archive was unpacked.)
+            Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+            r => r.map(|_| ()).map_err(Into::into),
+        }
     })();
     drop(tar.stdin.take());
     let st = tar.wait()?;
@@ -805,6 +810,24 @@ mod tests {
         put(&m1.join("wp-2026-09-28.jsonl"), "w\n");
         assert_eq!(items(&root, &m1, "2026-09-28").sync(&items_files(&m1, "2026-09-28"), &scratch).unwrap(), Synced::Sent);
         assert_eq!(archived(&k, &scratch).keys().collect::<Vec<_>>(), ["wp-2026-09-28.jsonl"]);
+    }
+
+    #[test]
+    fn padding_written_after_tar_ended_is_no_error() {
+        // tar ends at the archive's end, not reading the padding after it. A loaded Mac can write
+        // the padding of tar's own records (up to 10 KB) after that; a megabyte of it, more than a
+        // pipe holds, is written after that every time.
+        let d = tempfile::tempdir().unwrap();
+        put(&d.path().join("in/facts.jsonl"), &qids(&["Q1"]));
+        let archive = d.path().join("answers.tar.zst");
+        pack(&d.path().join("in"), &["facts.jsonl".to_string()], &archive).unwrap();
+        let mut f = std::fs::File::options().append(true).open(&archive).unwrap();
+        std::io::Write::write_all(&mut f, &zstd::encode_all(&vec![0u8; 1 << 20][..], 1).unwrap()).unwrap();
+        drop(f);
+        let out = d.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        unpack(&archive, &out).unwrap();
+        assert_eq!(read(&out.join("facts.jsonl")), qids(&["Q1"]));
     }
 
     #[test]
