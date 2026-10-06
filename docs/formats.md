@@ -462,8 +462,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/coordinator.json`: how to reach the build Mac's coordinator, `{urls: [Tailscale's, then
     the LAN name's, "http://…:8090"], token}`; there while its agent runs.
   - On the build Mac, in the agent's folder, `coord/`: `token` (32 hex digits, mode 600), `page` (the
-    worker page's address with the token, mode 600, for the status bar's "Copy the Worker Page's
-    Address"),
+    build page's address with the token in its fragment, mode 600: the status bar copies the address
+    alone, "Copy the Build Page's Address", and the token, "Copy the Key for Helping"),
     `leases.json` (`{next, leases: [{id, worker, work: {Job: {step, targets: [[target, key], …]}},
     progress}]}`: the jobs' leases), `costs.json` (`{unit: {peak_mb, secs}}`, `"<step> <target>"` for
     another shared step's job, and `"tail <unit>"` for a unit's last steps as a task),

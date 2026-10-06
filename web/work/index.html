@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<!-- (The same page serves /work/ and /work/watch/: its files are /work/'s.) -->
+<!-- (Its files are /work/'s, whatever address led here.) -->
 <base href="/work/">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
@@ -17,7 +17,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Scenic">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
-<title>Scenic worker</title>
+<title>Scenic build</title>
 <style>
   /* The device's light or dark appearance: the dark palette, the light one where it's light. */
   :root {
@@ -65,13 +65,15 @@
 </head>
 <body>
 <main>
-  <header><h1 id="title">Scenic worker</h1><span id="state">starting…</span><span style="flex:1"></span><button id="install" hidden>Install</button></header>
+  <header><h1 id="title">Scenic build</h1><span id="state">starting…</span><span style="flex:1"></span><button id="install" hidden>Install</button></header>
   <p class="note" id="note" hidden></p>
   <p class="hint" id="hint" hidden></p>
   <!-- The whole build at a glance (dash.js): the verdict, the machines, the road to done, the activity. -->
   <div id="dash"></div>
   <section id="device">
-  <h2>This device <span><button id="toggle">Pause</button></span></h2>
+  <h2>This device <span><button id="toggle" hidden>Pause</button> <button id="help">Help with this tab</button></span></h2>
+  <p class="hint" id="helphint">Helping runs the build's tasks in this tab while it's open (on an iPhone or an iPad, while it's on screen). The first time, it asks for the key for helping.</p>
+  <div id="helping" hidden>
   <div class="grid">
     <div class="card"><div class="k">Memory to spare</div><div class="v" id="mem">–</div><select id="cap" title="The most this page takes on at once (lowered by itself if the page dies running tasks)"></select></div>
     <div class="card"><div class="k">Slots</div><div class="v" id="slots-n">–</div></div>
@@ -81,33 +83,32 @@
   <div class="slots" id="slots"></div>
   <p class="hint" id="slots-idle"></p>
   <div id="log"></div>
+  </div>
   </section>
 </main>
 <script type="module">
 import { dashboard } from "./dash.js";
-// The web worker page (docs/workers.md §7). This thread hands out work: it asks the coordinator
-// for tasks that fit the memory this tab can spare, gives each to a slot (a Web Worker running the
-// build's WebAssembly programs), and beats for every lease while its slot works. Nothing here asks
-// what device it is: it learns how much memory a tab may use (§6) and takes on what fits.
+// The build's page (docs/workers.md §7): the whole build at a glance for anyone it answers, without
+// a key; and, when this device helps (asked for here, and kept: never by default), this thread hands
+// out work: it asks the coordinator for tasks that fit the memory this tab can spare, gives each to a
+// slot (a Web Worker running the build's WebAssembly programs), and beats for every lease while its
+// slot works. Nothing here asks what device it is: it learns how much memory a tab may use (§6) and
+// takes on what fits.
 const $ = (id) => document.getElementById(id);
-// /work/watch/: the same page watching only. It shows the build and joins no work: no slots, no
-// asks, nothing of this browser's own tasks touched.
-const WATCH = /\/watch\/?$/.test(location.pathname);
-if (WATCH) {
-  document.title = "Scenic build";
-  $("title").textContent = "Scenic build";
-  $("manifest").href = "watch.webmanifest";
-  $("device").hidden = true;
-}
 const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
 
-// The token comes in the address's fragment (never sent to a server), then stays in this browser.
-// (A token is 32 hex digits: anything else, an address that lost its fragment, isn't one.)
+// The key for helping (and pausing): pasted when it's first needed, or in an older address's
+// fragment (never sent to a server); then it stays in this browser. (A key is 32 hex digits:
+// anything else, an address that lost its fragment, isn't one.)
 const tokenIn = (v) => /^[0-9a-f]{32}$/.test(v) ? v : (/[#&]k=([0-9a-f]{32})(?:&|$)/.exec(v) || [])[1] || null;
 const hashToken = tokenIn(location.hash);
 if (location.hash.includes("k=")) history.replaceState(null, "", location.pathname);
 if (hashToken) store.set("token", hashToken);
-const token = store.get("token", "");
+let token = store.get("token", "");
+// Whether this device helps: its owner's choice here, kept. (A device that helped before the page
+// asked, one that had learned its memory ceiling, keeps helping; any other starts out watching.)
+if (store.get("helping", null) === null) store.set("helping", !!token && store.get("ceiling", null) !== null);
+let helping = !!token && store.get("helping", false);
 const id = store.get("id", null) || (() => { const v = Math.random().toString(36).slice(2, 8); store.set("id", v); return v; })();
 const label = (() => {
   const ua = navigator.userAgent;
@@ -134,7 +135,7 @@ const START = navigator.deviceMemory ? navigator.deviceMemory * 256 : /on iPad$/
 let ceiling = Math.min(CAP, store.get("ceiling", START));
 // (An iPad's page that had learned less, from a start of 1 GB, takes the new start up once; one a
 // death lowered keeps what it learned.)
-if (!WATCH && /on iPad$/.test(label) && store.get("startV", 0) < 2) {
+if (/on iPad$/.test(label) && store.get("startV", 0) < 2) {
   if (!store.get("lowered", false)) ceiling = Math.min(CAP, Math.max(ceiling, START));
   store.set("ceiling", ceiling);
   store.set("startV", 2);
@@ -166,7 +167,7 @@ function notes() {
   return out;
 }
 function reap() {
-  if (WATCH) return false;
+  if (!token) return false;
   const [died, hidden, gone] = [[], [], []];
   for (const [t, n] of notes()) {
     if (t === tab || !n || (!n.gone && Date.now() - (n.at || 0) <= 120000)) continue;
@@ -192,12 +193,14 @@ reap();
 let nearMisses = store.get("near", 0);
 
 async function call(path, body) {
-  const r = await fetch(path, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Worker": worker }, body: JSON.stringify(body) });
+  const headers = { "Content-Type": "application/json", "X-Worker": worker };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const r = await fetch(path, { method: "POST", headers, body: JSON.stringify(body) });
   if (r.status === 204) return [204, null];
   const text = await r.text();
   if (r.status === 401) {
-    askToken("The coordinator refused this page's token (the build Mac's made a new one?): paste the page's address again");
-    throw new Error("the coordinator refused this page's token");
+    askToken(token ? "The build Mac refused this device's key (it made a new one?): paste it again" : "That needs the key for helping");
+    throw new Error(token ? "the build Mac refused this device's key" : "that needs the key for helping");
   }
   if (!r.ok && r.status !== 410) throw new Error(`${path}: ${r.status} ${text.slice(0, 200)}`);
   return [r.status, text ? JSON.parse(text) : null];
@@ -235,8 +238,6 @@ function makeSlot(i) {
   slots.push(s);
   return s;
 }
-for (let i = 0; i < (WATCH ? 0 : cores); i++) makeSlot(i);
-$("slots-n").textContent = `${slots.length}`;
 
 function show() {
   $("mem").textContent = `${Math.max(0, ceiling - reserved)} of ${ceiling} MB`;
@@ -265,7 +266,7 @@ function show() {
 let leaving = false;
 const leased = () => slots.filter((s) => s.lease).map((s) => ({ lease: s.lease, mem_mb: s.mem }));
 function remember() {
-  if (WATCH || leaving) return;
+  if (!helping || leaving) return;
   const r = leased();
   try {
     if (r.length) localStorage.setItem(NOTE + tab, JSON.stringify({ at: Date.now(), vis: document.visibilityState === "visible", tasks: r }));
@@ -279,7 +280,7 @@ document.addEventListener("visibilitychange", remember);
 // marked gone, so the next page gives them back again in case these didn't get through (the
 // network away, the coordinator restarting).
 window.addEventListener("pagehide", () => {
-  if (WATCH) return;
+  if (!helping) return;
   const r = leased();
   for (const t of r) {
     try {
@@ -295,7 +296,7 @@ window.addEventListener("pagehide", () => {
 // Back from the browser's back-forward cache (its leases given back as it went): its slots cleared
 // and their programs stopped, as when a task's taken back; then it asks again.
 window.addEventListener("pageshow", (e) => {
-  if (!e.persisted || WATCH) return;
+  if (!e.persisted || !helping) return;
   leaving = false;
   for (const s of slots) {
     if (!s.lease) continue;
@@ -345,7 +346,7 @@ async function fill() {
     location.reload();
     return;
   }
-  if (WATCH || asking || paused || !token || update) return;
+  if (!helping || asking || paused || !token || update) return;
   const idle = slots.find((s) => !s.lease);
   const free = ceiling - reserved;
   if (!idle || free < 200 || performance.now() - lastNone < 15000) return;
@@ -395,29 +396,72 @@ setInterval(async () => {
 // Keeping the screen on (where the browser allows it: a secure context).
 let lock = null;
 async function wake() {
-  if (!("wakeLock" in navigator) || document.visibilityState !== "visible") return;
+  if (!helping || !("wakeLock" in navigator) || document.visibilityState !== "visible") return;
   try { lock = await navigator.wakeLock.request("screen"); } catch {}
 }
 document.addEventListener("visibilitychange", wake);
-wake();
-if (!window.isSecureContext) {
-  $("note").hidden = false;
-  $("note").textContent = "Not a secure context: this browser won't keep the screen on for the page, so set the device to stay awake while it works.";
-}
-// No token yet (an app installed on an iPhone keeps its own storage, apart from Safari's), or the
-// coordinator refused it: its address pasted, from the build Mac's status menu.
-function askToken(why) {
+// The key, asked for when it's first needed (to help, or to pause the build), or when the build Mac
+// refused this one: from the build Mac's status menu (Copy the Key for Helping) or `scenic status`;
+// `then` once it's in.
+function askToken(why, then) {
   if ($("paste")) return;
   $("note").hidden = false;
-  $("note").innerHTML = `${esc(why)}, from the build Mac's status menu (Copy the Worker Page's Address).<input id="paste" placeholder="https://…/work/#k=…" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="use">Use it</button>`;
+  $("note").innerHTML = `${esc(why)}: paste the key, from the build Mac's status menu (Copy the Key for Helping) or <code>scenic status</code>.<input id="paste" placeholder="32 letters and digits" autocomplete="off" autocapitalize="off" spellcheck="false"><button id="use">Use it</button> <button id="nokey">Not now</button>`;
+  const close = () => { $("note").hidden = true; $("note").replaceChildren(); };
   $("use").onclick = () => {
     const k = tokenIn($("paste").value.trim());
-    if (!k) { $("paste").value = ""; $("paste").placeholder = "not the page's address with its #k=…: copy it again"; return; }
+    if (!k) { $("paste").value = ""; $("paste").placeholder = "not a key (32 letters and digits): copy it again"; return; }
     store.set("token", k);
-    location.replace(location.pathname);
+    token = k;
+    for (const s of slots) s.w?.postMessage({ init: { token, worker } });
+    close();
+    then?.();
   };
+  $("nokey").onclick = close;
+  // (It's at the top of the page, and the button that asked may be far below.)
+  $("paste").focus();
 }
-if (!token) askToken("No token yet: paste this page's full address");
+// Helping, as this device's owner asks (and kept): its slots, a Web Worker a core, made then. Stopping
+// gives back what it has under way at once (another worker takes it) and stops its programs.
+function startHelping() {
+  if (!token) { askToken("Helping needs the key", startHelping); return; }
+  helping = true;
+  store.set("helping", true);
+  $("helping").hidden = false;
+  $("toggle").hidden = false;
+  $("helphint").hidden = true;
+  $("help").textContent = "Stop helping";
+  if (!slots.length) for (let i = 0; i < cores; i++) makeSlot(i);
+  $("slots-n").textContent = `${slots.length}`;
+  if (!window.isSecureContext) {
+    $("note").hidden = false;
+    $("note").textContent = "Not a secure context: this browser won't keep the screen on for the page, so set the device to stay awake while it works.";
+  }
+  $("state").textContent = paused ? "paused (running tasks finish)" : "working";
+  wake();
+  reap();
+  show();
+  fill();
+}
+function stopHelping() {
+  for (const s of slots) {
+    if (s.lease) call("/work/fail", { worker, lease: s.lease, error: "this device stopped helping", interrupted: true }).catch(() => {});
+    s.w?.terminate();
+    s.row.remove();
+  }
+  slots.length = 0;
+  reserved = 0;
+  try { localStorage.removeItem(NOTE + tab); } catch {}
+  helping = false;
+  store.set("helping", false);
+  $("helping").hidden = true;
+  $("toggle").hidden = true;
+  $("helphint").hidden = false;
+  $("help").textContent = "Help with this tab";
+  $("state").textContent = buildState;
+  if (lock) { lock.release().catch(() => {}); lock = null; }
+}
+$("help").onclick = () => (helping ? stopHelping() : startHelping());
 
 // The page as an app (sw.js, manifest.webmanifest): kept for when the build Mac doesn't answer, its
 // programs kept by version. A new version taking over (a newly published app): reloaded into it
@@ -434,8 +478,8 @@ if ("serviceWorker" in navigator && window.isSecureContext) {
   navigator.serviceWorker.addEventListener("controllerchange", () => {
     if (!had) { had = true; return; }
     if (update) return;
-    // (Watching only: nothing running to wait for.)
-    if (WATCH) { location.reload(); return; }
+    // (Not helping, or nothing running: nothing to wait for.)
+    if (!helping || slots.every((s) => !s.lease)) { location.reload(); return; }
     update = true;
     log("A new version of the page is ready: reloading once the tasks running finish.");
     fill();
@@ -454,7 +498,7 @@ if (!standalone && window.isSecureContext && ios) {
   $("hint").textContent = "To keep it on your home screen as an app: Share, then Add to Home Screen.";
 }
 
-const setPaused = (v) => { paused = v; $("toggle").textContent = paused ? "Resume" : "Pause"; if (!WATCH) $("state").textContent = paused ? "paused (running tasks finish)" : "working"; if (!paused) fill(); };
+const setPaused = (v) => { paused = v; $("toggle").textContent = paused ? "Resume" : "Pause"; if (helping) $("state").textContent = paused ? "paused (running tasks finish)" : "working"; if (!paused) fill(); };
 $("toggle").onclick = () => setPaused(!paused);
 // Its ceiling, set here (this browser's own: kept, and learned from again, down after a death, up
 // after near misses).
@@ -470,15 +514,18 @@ $("cap").onchange = (e) => {
 // (Paused before the reload into a new version: still paused.)
 try { if (sessionStorage.getItem("paused") === "1") setPaused(true); sessionStorage.removeItem("paused"); } catch {}
 
-// ---- The whole build at a glance (both pages: dash.js) ------------------------------------------
+// ---- The whole build at a glance (dash.js) -------------------------------------------------------
+let buildState = "";
 dashboard({
-  root: $("dash"), call, token, label: WATCH ? `the build monitor (${label})` : label, store,
-  // (The watching page's state is the build's; the worker page's its own work.)
-  onState: (st) => { if (WATCH) $("state").textContent = st; },
+  root: $("dash"), call, label, store,
+  // (Pausing the build needs the key: asked for then.)
+  hasKey: () => !!token, needKey: (then) => askToken("Pausing the build needs the key", then),
+  // (The header says how the build goes; while this device helps, how its own work goes.)
+  onState: (st) => { buildState = st; if (!helping) $("state").textContent = st; },
   onError: (m) => log(`<span class="bad">${esc(m)}</span>`),
 });
+if (helping) startHelping();
 show();
-fill();
 </script>
 </body>
 </html>

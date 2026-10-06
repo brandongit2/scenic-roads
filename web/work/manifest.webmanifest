@@ -1,7 +1,7 @@
 {
-  "name": "Scenic worker",
+  "name": "Scenic build",
   "short_name": "Scenic",
-  "description": "Builds parts of the scenic-roads map for the build Mac while it's open.",
+  "description": "The scenic-roads map's build at a glance; a device can help build it while it's open.",
   "id": "/work/",
   "start_url": "/work/",
   "scope": "/work/",

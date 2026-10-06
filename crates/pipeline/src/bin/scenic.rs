@@ -117,9 +117,14 @@ fn status(args: &[String]) -> Result<()> {
         (None, Some(c)) => c.urls.first().map(|u| format!("{u}/work/#k={}", c.token)),
         _ => None,
     };
+    // The build's page (its dashboard, without a key), and the key a device's page asks for when it
+    // starts helping.
     if let Some(p) = page {
-        println!("Worker page: {p} (open it on a device on the tailnet)");
-        println!("Build monitor: {} (the same, watching only)", p.replace("/work/#", "/work/watch/#"));
+        let (url, key) = p.split_once("#k=").map_or((p.as_str(), None), |(u, k)| (u, Some(k)));
+        println!("Build page: {url} (open it on a device on the tailnet)");
+        if let Some(k) = key {
+            println!("Key for helping: {k} (a device's page asks for it once, when it starts helping)");
+        }
     }
     // The map on an iPhone or an iPad (docs/plan.md §4, Devices): its address with its key, which this
     // Mac's server writes.

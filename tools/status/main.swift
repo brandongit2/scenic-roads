@@ -644,18 +644,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             it.representedObject = page
             m.addItem(it)
         }
-        // The worker page's address, with its token (the build Mac's agent writes it, private to this
-        // user): pasted on another device (Universal Clipboard), its browser joins the build.
+        // The build's page (its dashboard: no key needed to see it) and, apart, the key a device's
+        // page asks for when it starts helping (the build Mac's agent writes them, private to this
+        // user): pasted on another device (Universal Clipboard).
         if let page = try? String(contentsOf: home.appendingPathComponent("agent/coord/page"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !page.isEmpty {
-            let it = NSMenuItem(title: "Copy the Worker Page's Address", action: #selector(copyPage), keyEquivalent: "")
+            let parts = page.components(separatedBy: "#k=")
+            let it = NSMenuItem(title: "Copy the Build Page's Address", action: #selector(copyPage), keyEquivalent: "")
             it.target = self
-            it.representedObject = page
+            it.representedObject = parts[0]
             m.addItem(it)
-            // The same page watching only: the build across every machine, joining no work.
-            let watch = NSMenuItem(title: "Copy the Build Monitor's Address", action: #selector(copyPage), keyEquivalent: "")
-            watch.target = self
-            watch.representedObject = page.replacingOccurrences(of: "/work/#", with: "/work/watch/#")
-            m.addItem(watch)
+            if parts.count == 2 {
+                let key = NSMenuItem(title: "Copy the Key for Helping", action: #selector(copyPage), keyEquivalent: "")
+                key.target = self
+                key.representedObject = parts[1]
+                m.addItem(key)
+            }
         }
         return m
     }

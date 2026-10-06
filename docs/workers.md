@@ -194,14 +194,22 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 
 ## 7. The web worker (built)
 
-- **The page** is served by the coordinator at `/work/`; its address carries the token in its
-  fragment (never sent to a server), and `scenic status` prints it. Its main thread asks for tasks
-  that fit the memory the tab spares and beats for every lease; each slot (a Web Worker per core,
-  less one) runs a task's programs over an in-memory filesystem (`web/work/runtime.js`, over
-  browser_wasi_shim) and sends back what they wrote.
-- **The build at a glance** (`web/work/dash.js`, `dash.css`): above its own work, the page shows the
-  whole build; `/work/watch/` shows it alone, watching only (no slots, no asks: it joins no work),
-  installable on its own (`watch.webmanifest`). Five parts, each answering many questions at once:
+- **The page** is served by the coordinator at `/work/` (the menu bar's Copy the Build Page's
+  Address, `scenic status`'s "Build page"): the build at a glance for anyone it answers (this Mac,
+  its LAN, the tailnet), with no key; the coordinator answers its reads (`/work/swarm`,
+  `/work/history`: nothing of a key's) without one. A device helps only when its owner asks there
+  ("Help with this tab", kept by that browser: never by default, though a device that helped before
+  the page asked, one that had learned its memory ceiling, keeps helping); the first time, the page
+  asks for the key for helping (the menu bar's Copy the Key for Helping, `scenic status`'s "Key for
+  helping"; an older address's `#k=` fragment, never sent to a server, works too), which it keeps,
+  and which pausing the build needs as well. "Stop helping" gives back what it has under way at
+  once. (The old watching-only address, `/work/watch/`, leads to `/work/`.) While it helps, its main
+  thread asks for tasks that fit the memory the tab spares and beats for every lease; each slot (a
+  Web Worker per core, less one) runs a task's programs over an in-memory filesystem
+  (`web/work/runtime.js`, over browser_wasi_shim) and sends back what they wrote.
+- **The build at a glance** (`web/work/dash.js`, `dash.css`): above its own work, if it helps, the
+  page shows the whole build, in the device's light or dark appearance. Five parts, each answering
+  many questions at once:
   - **The verdict**, pinned while the page scrolls (on a phone, not): going or not and on how many
     machines, when it'll all be done (and the range; or why it can't be told), when the map next
     gets new data and with what; what needs a look (a Mac out of touch, a job that hasn't moved on
@@ -262,10 +270,9 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   - Its version is the coordinator's hash of the page's files: a newly published page is a new
     service worker, which takes over, and the page reloads into it once no task is running (paused,
     it stays paused). The page asks for one whenever it comes back to the front and every half hour.
-  - An installed app on an iPhone keeps its own storage, apart from Safari's: the page asks for its
-    address (from the status menu's Copy the Worker Page's Address) and keeps the token, and asks
-    again if the coordinator refuses it. Only an address with its `#k=` (or the 32 hex digits
-    alone) is taken.
+  - An installed app on an iPhone keeps its own storage, apart from Safari's: when it's to help (or
+    pause the build), the page asks for the key there too, keeps it, and asks again if the
+    coordinator refuses it. Only the 32 hex digits (or an address with its `#k=`) are taken.
   - It still runs only while it's open on screen: neither iOS nor Android lets a web app work in
     the background.
 - **Planned:** inputs and outputs in OPFS, read through a `FileSystemSyncAccessHandle`, so a worker

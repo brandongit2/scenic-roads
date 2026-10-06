@@ -1,4 +1,4 @@
-// The whole build at a glance (docs/workers.md, The page): both pages' (/work/ and /work/watch/).
+// The whole build at a glance (docs/workers.md, The page): the page at /work/, for anyone it answers.
 // From the coordinator: /work/swarm every 10 s (the build Mac's heartbeat with its checklist,
 // forecast and resources, its helpers', every worker and lease, the hours' work), and
 // /work/history after the last event this page has (what happened). Five parts, each answering
@@ -696,7 +696,8 @@ function render() {
     pausing ? h("button", { class: "primary", onclick: () => ctx.ask(null) }, "Resume the build")
       : [h("button", { onclick: () => ctx.ask({ mode: "drain" }), title: "Every Mac's job stops at its next safe point; nothing new starts" }, "Pause the build"),
         h("button", { class: "quiet", onclick: () => confirm("Freeze every Mac's job where it is now? (It goes on from there when resumed.)") && ctx.ask({ mode: "freeze" }), title: "Freeze every Mac's job where it is, at once" }, "Pause it now")]);
-  if (!ctx.token) ctl.replaceChildren();
+  // (Pausing needs the key: without it here yet, a button that asks for it.)
+  if (!ctx.hasKey()) ctl.replaceChildren(h("button", { class: "quiet", onclick: () => ctx.needKey(render), title: "Pausing the build needs the key for helping" }, pausing ? "Resume the build…" : "Pause the build…"));
   const verdict = section("d-verdict", "verdict", null, null,
     h("div", "verdict", h("div", "say", verdictText(m)), ctl),
     h("div", "alerts", al.map((x) => h("span", { class: `alert ${x.cls}`, onclick: () => document.getElementById(x.to)?.scrollIntoView({ behavior: "smooth", block: "start" }) }, x.text))));
@@ -738,7 +739,7 @@ function poll() {
 }
 
 async function pollOnce() {
-  if (!ctx?.token) return;
+  if (!ctx) return;
   try {
     const [code, sw] = await ctx.call("/work/swarm", {});
     if (code !== 200 || !sw) return;

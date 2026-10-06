@@ -1179,9 +1179,6 @@ mod http {
         ("vendor/browser_wasi_shim/fs_opfs.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/fs_opfs.js")),
         ("vendor/browser_wasi_shim/debug.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/debug.js")),
         ("vendor/browser_wasi_shim/strace.js", "text/javascript", include_bytes!("../../../../web/work/vendor/browser_wasi_shim/strace.js")),
-        // The same page, watching only: it shows the build and joins no work (its script says so).
-        ("watch/", "text/html; charset=utf-8", include_bytes!("../../../../web/work/index.html")),
-        ("watch.webmanifest", "application/manifest+json", include_bytes!("../../../../web/work/watch.webmanifest")),
     ];
 
     /// The page's version: its files' hash, in its service worker (sw.js's VERSION), so a new
@@ -1269,7 +1266,9 @@ mod http {
         let app = Router::new()
             .route("/work", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/work/")]) }))
             .route("/work/", get(|| page(Url(String::new()))))
-            .route("/work/watch", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/work/watch/")]) }))
+            // (The watching page's old address: the page is the dashboard now, helping opt-in.)
+            .route("/work/watch", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/work/")]) }))
+            .route("/work/watch/", get(|| async { (StatusCode::FOUND, [(header::LOCATION, "/work/")]) }))
             .route("/work/{*file}", get(page))
             .route("/work/ask", any(json))
             .route("/work/beat", any(json))
@@ -1343,16 +1342,19 @@ mod http {
         (code, [(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "error": why.to_string() }))).into_response()
     }
 
-    /// Who may ask what: this Mac, its LAN and the tailnet only; the page without a token, workers'
-    /// requests with theirs, a job's (`/task/…`) with its own and from this Mac only.
+    /// Who may ask what: this Mac, its LAN and the tailnet only; the page, and what its dashboard
+    /// reads (the build at a glance and its history: nothing of a key's), without a token; workers'
+    /// requests (helping, pausing) with theirs; a job's (`/task/…`) with its own and from this Mac
+    /// only.
     async fn gate(State(c): State<Ctx>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request, next: Next) -> Response {
         let ip = peer.ip();
         if !allowed(ip) {
             return error(StatusCode::FORBIDDEN, "not from here");
         }
         let path = req.uri().path();
-        let is_page = req.method() == Method::GET && (path == "/work" || path.strip_prefix("/work/").is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p)));
-        if is_page {
+        let is_page = req.method() == Method::GET && (matches!(path, "/work" | "/work/watch" | "/work/watch/") || path.strip_prefix("/work/").is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p)));
+        let is_view = req.method() == Method::POST && matches!(path, "/work/swarm" | "/work/history");
+        if is_page || is_view {
             return next.run(req).await;
         }
         let job = path.starts_with("/task/");
@@ -1968,7 +1970,7 @@ mod tests {
         s.write_all(b"GET /work/ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").unwrap();
         let mut page = String::new();
         s.read_to_string(&mut page).unwrap();
-        assert!(page.starts_with("HTTP/1.1 200") && page.contains("Scenic worker"), "{}", &page[..page.len().min(200)]);
+        assert!(page.starts_with("HTTP/1.1 200") && page.contains("Scenic build"), "{}", &page[..page.len().min(200)]);
         // The page as an app: its manifest, service worker (its version filled in) and icons, likewise.
         let get = |path: &str| {
             let mut s = std::net::TcpStream::connect(&addr).unwrap();
@@ -2013,6 +2015,39 @@ mod tests {
         assert!(w2.beat(g.lease, None).unwrap(), "the helper's lease lives on");
         assert!(!c2.renew(own, None), "this Mac's own ended with its agent");
         assert_eq!(w2.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/1", "k1")])), ..Default::default() }).unwrap(), client::Handed::Taken);
+    }
+
+    #[test]
+    fn the_build_page_reads_without_a_key_and_helping_or_pausing_needs_it() {
+        let (_d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        // A request as a page makes it, with or without its key: the answer's status, and where a
+        // redirect leads.
+        let ask = |method: &str, path: &str, key: Option<&str>| -> (u16, String) {
+            use std::io::{Read, Write};
+            let mut s = std::net::TcpStream::connect(&addr).unwrap();
+            let auth = key.map(|k| format!("Authorization: Bearer {k}\r\n")).unwrap_or_default();
+            write!(s, "{method} {path} HTTP/1.1\r\nHost: x\r\n{auth}X-Worker: a page\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}").unwrap();
+            let mut b = Vec::new();
+            s.read_to_end(&mut b).unwrap();
+            let head = String::from_utf8_lossy(&b).to_string();
+            let code = head.split(' ').nth(1).unwrap().parse().unwrap();
+            let location = head.lines().find_map(|l| l.strip_prefix("location: ").or_else(|| l.strip_prefix("Location: "))).unwrap_or("").to_string();
+            (code, location)
+        };
+        // The page and what its dashboard reads: no key.
+        assert_eq!(ask("GET", "/work/", None).0, 200);
+        assert_eq!(ask("POST", "/work/swarm", None).0, 200);
+        assert_eq!(ask("POST", "/work/history", None).0, 200);
+        // The old watching-only address leads to it.
+        assert_eq!(ask("GET", "/work/watch/", None), (302, "/work/".to_string()));
+        // Helping and pausing: the key.
+        for path in ["/work/ask", "/work/beat", "/work/pause", "/work/status"] {
+            assert_eq!(ask("POST", path, None).0, 401, "{path}");
+        }
+        assert_eq!(ask("POST", "/work/pause", Some(&c.contact.token)).0, 200);
+        // (A wrong key is no key.)
+        assert_eq!(ask("POST", "/work/pause", Some("0123456789abcdef0123456789abcdef")).0, 401);
     }
 
     #[test]

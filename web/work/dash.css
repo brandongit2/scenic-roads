@@ -1,4 +1,4 @@
-/* The build at a glance (dash.js): both pages' (/work/ and /work/watch/). The page's own tokens
+/* The build at a glance (dash.js), the page at /work/. The page's own tokens
    (index.html's :root) are used throughout. */
 
 #dash { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr); grid-template-areas: "verdict" "overview" "machines" "road" "regions" "activity" "details"; }
