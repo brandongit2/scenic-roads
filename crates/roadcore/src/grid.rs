@@ -250,6 +250,8 @@ pub struct Blob {
     /// roughness (m: the middle half's spread).
     pub ground: f32,
     pub rough: f32,
+    /// The stage that found it (repair_terrain_blobs), from 1.
+    pub stage: u8,
 }
 
 /// Repairs a 256 × 256 terrain tile in place, in one pass: what is broken or undefined is filled
@@ -309,6 +311,7 @@ pub fn repair_terrain_blobs(t: &mut [f32], z: u8, lat: f64) -> (Repair, Vec<Blob
                 broken_blobs(v, if pit { -1.0 } else { 1.0 }, &before, px, &mut hole, &mut under, &mut blobs);
                 for b in &mut blobs[n..] {
                     b.pit = pit;
+                    b.stage = stage as u8;
                     if pit {
                         b.level = -b.level;
                     }
@@ -526,7 +529,10 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
         let at_sea = sign < 0.0 && -v[t0 as usize] <= 1.0;
         #[cfg(test)]
         let traced = pixels.contains(&TRACE.load(std::sync::atomic::Ordering::Relaxed));
-        if pixels.iter().all(|&p| out[p as usize] && !held[p as usize]) {
+        // (Only a blob that changes something is weighed: one with a pixel not taken yet, or, one
+        // the map shows, a pixel taken as under the sea, the part below zero of a pit in raised
+        // ground found first: what the map shows taken whole is filled from the ground around it.)
+        if !pixels.iter().any(|&p| !out[p as usize] || (kind != BlobKind::Unseen && under[p as usize])) {
             continue;
         }
         #[cfg(test)]
@@ -572,13 +578,18 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
         }
         let mut marked = 0;
         for &p in &pixels {
-            if !out[p as usize] {
-                out[p as usize] = true;
+            let p = p as usize;
+            if kind == BlobKind::Unseen {
+                under[p] |= !out[p];
+            } else {
+                under[p] = false;
+            }
+            if !out[p] {
+                out[p] = true;
                 marked += 1;
             }
-            under[p as usize] |= kind == BlobKind::Unseen;
         }
-        blobs.push(Blob { kind, top: t0, pit: false, pixels: marked, rise, level, reach, edge, ground: median, rough });
+        blobs.push(Blob { kind, top: t0, pit: false, pixels: marked, rise, level, reach, edge, ground: median, rough, stage: 0 });
     }
 }
 
@@ -1294,6 +1305,69 @@ mod repair_tests {
         }
     }
 
+    /// 12/3632/1593 from pixel 61,4 (37.06 N, 139.26 E): towers to 8,105 m and pits to −2,786 m
+    /// ringing on mountain ground 710–870 m up.
+    const AIZU_Z12: [[i16; 15]; 15] = [
+        [739, 768, 736, 727, 743, 752, 759, 768, 779, 794, 814, 829, 842, 853, 866],
+        [769, 795, 741, 712, 725, 737, 749, 760, 772, 787, 804, 817, 827, 836, 848],
+        [714, 715, 718, 722, 713, 723, 738, 749, 764, 779, 793, 804, 813, 823, 836],
+        [714, 713, 714, 717, 690, 716, 729, 740, 757, 772, 784, 793, 805, 818, 831],
+        [714, 712, 711, 713, 716, 721, 728, 733, 750, 764, 775, 785, 799, 815, 828],
+        [716, 712, 710, 710, 712, 717, 723, 1228, 1008, 704, 739, 797, 796, 812, 823],
+        [719, 714, 711, 709, 710, 714, 719, 1472, 1083, 671, 720, 800, 790, 804, 812],
+        [724, 717, 712, 710, 710, 712, 716, -2682, -932, 1033, 945, 679, 782, 793, 802],
+        [723, 717, 715, 711, 710, 711, 714, 720, -1052, 996, 924, 672, 771, 783, 794],
+        [731, 720, 718, 713, 710, 710, 713, 718, 8105, -319, 25, 1093, 766, 784, 793],
+        [740, 723, 721, 715, 711, 710, 711, 715, 721, -2086, -1063, 1619, 764, 785, 795],
+        [743, 723, 724, 717, 712, 709, 710, 712, 717, -2786, -1086, 1675, 762, 766, 794],
+        [743, 724, 715, 1048, 713, 710, 709, 710, 714, 720, -154, 1260, 756, 740, 785],
+        [746, 728, 718, 571, 715, 711, 709, 709, 712, 717, 597, 798, 748, 744, 770],
+        [754, 737, 723, 678, 719, 713, 710, 710, 711, 714, 720, 726, 737, 762, 754],
+    ];
+
+    /// 12/3627/1590 from pixel 69,37 (37.27 N, 138.82 E): a lake 142 m up, towers to 2,939 m and
+    /// pits to −280 m along its shore.
+    const NIIGATA_Z12: [[i16; 15]; 15] = [
+        [94, 102, 110, 114, 117, 118, 118, 118, 121, 126, 131, 133, 132, 131, 132],
+        [105, 110, 115, 120, 124, 126, 126, 120, 117, 127, 136, 133, 130, 130, 132],
+        [116, 116, 119, 124, 130, 134, 134, 134, 136, 137, 137, 134, 132, 133, 136],
+        [126, 123, 121, 125, 136, 137, 127, 190, 260, 199, 124, 132, 140, 137, 141],
+        [133, 128, 124, 127, 135, 142, 143, 153, 161, 150, 140, 143, 144, 144, 142],
+        [139, 132, 128, 130, 125, 150, 199, -29, -280, -66, 198, 170, 138, 142, 142],
+        [141, 134, 132, 135, 132, 139, 155, 80, -1, 79, 171, 159, 148, 142, 142],
+        [140, 136, 135, 137, 170, 98, -57, 700, 1514, 142, 142, 142, 142, 142, 142],
+        [137, 138, 138, 139, 205, 65, -238, 1263, 2918, 142, 142, 142, 142, 142, 142],
+        [135, 138, 140, 140, 207, 70, -189, 1186, 2939, 142, 142, 142, 142, 142, 142],
+        [136, 139, 141, 140, 181, 99, -77, 856, 143, 143, 142, 142, 142, 142, 142],
+        [141, 141, 142, 140, 156, 126, -40, 621, 143, 143, 142, 142, 142, 142, 142],
+        [146, 143, 142, 141, 142, 145, 144, 143, 143, 143, 142, 142, 142, 142, 143],
+        [146, 144, 144, 144, 140, 152, 143, 143, 143, 143, 142, 142, 142, 142, 143],
+        [143, 144, 146, 147, 146, 150, 143, 143, 143, 143, 142, 142, 142, 142, 142],
+    ];
+
+    #[test]
+    fn fills_pits_on_land_from_the_land_though_they_reach_below_zero() {
+        // A pit in raised ground whose deepest part is below zero is filled from the ground around
+        // it, as the map shows it whole (its part below zero, found on its own, isn't under the
+        // sea): no hole to sea level is left in the mountains or beside the lake.
+        let mut t = aws(&AIZU_Z12, 715.0);
+        repaired(&mut t, 12, 37.06);
+        for j in 0..15 {
+            for i in 0..15 {
+                let now = at(&t, i, j);
+                assert!((560.0..=900.0).contains(&now), "{} at {i},{j}: {now}", AIZU_Z12[j][i]);
+            }
+        }
+        let mut n = aws(&NIIGATA_Z12, 142.0);
+        repaired(&mut n, 12, 37.27);
+        for j in 0..15 {
+            for i in 0..15 {
+                let now = at(&n, i, j);
+                assert!((60.0..=270.0).contains(&now), "{} at {i},{j}: {now}", NIIGATA_Z12[j][i]);
+            }
+        }
+    }
+
     #[test]
     fn keeps_a_summit_drawn_too_sharp_among_rough_ground() {
         // As AWS has a 3,534 m peak of the St. Elias (12/447/1143): a cone of 1,200 m, ten pixels
@@ -1383,6 +1457,28 @@ mod repair_debug {
         }
         let per = t0.elapsed().as_secs_f64() * 1e3 / tiles.len() as f64;
         eprintln!("{} tiles, {per:.2} ms a tile, {stages} stages", tiles.len());
+    }
+
+    /// SCENIC_STAGES="<raw .f32 file> <z> <lat>": the blobs each stage found in that tile.
+    #[test]
+    #[ignore]
+    fn stages() {
+        let Ok(spec) = std::env::var("SCENIC_STAGES") else { return };
+        let a: Vec<&str> = spec.split_whitespace().collect();
+        let b = std::fs::read(a[0]).unwrap();
+        let mut t: Vec<f32> = bytemuck::cast_slice(&b).to_vec();
+        let (z, lat): (u8, f64) = (a[1].parse().unwrap(), a[2].parse().unwrap());
+        let (r, blobs) = repair_terrain_blobs(&mut t, z, lat);
+        eprintln!("{r:?}");
+        for b in &blobs {
+            eprintln!("  stage {} {:?}{} top {},{} px {} rise {:.0} level {:.0} reach {:.0} ground {:.0} rough {:.1}", b.stage, b.kind, if b.pit { " pit" } else { "" }, b.top % 256, b.top / 256, b.pixels, b.rise, b.level, b.reach, b.ground, b.rough);
+        }
+        let mut again = t.clone();
+        let (r2, b2) = repair_terrain_blobs(&mut again, z, lat);
+        eprintln!("again: {r2:?}");
+        for b in &b2 {
+            eprintln!("  stage {} {:?}{} top {},{} px {} rise {:.0} level {:.0} reach {:.0} ground {:.0} rough {:.1}", b.stage, b.kind, if b.pit { " pit" } else { "" }, b.top % 256, b.top / 256, b.pixels, b.rise, b.level, b.reach, b.ground, b.rough);
+        }
     }
 
     /// SCENIC_TRACE="<raw .f32 file> <z> <lat> <x> <y>": the blobs at pixel (x, y) of that tile,

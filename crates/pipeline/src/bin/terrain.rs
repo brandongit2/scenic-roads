@@ -222,7 +222,7 @@ fn scan() -> Result<()> {
     writeln!(sc.tiles.lock().unwrap(), "z\tx\ty\tlon\tlat\tv1_px\tv1_max\tv1b_px\tv1b_max\tv1c_px\tv1c_max\tvoids\tblobs\tv2_px\tv2_max\tv2b_any\tv2b_voids\tv2b_blobs\tv2b_px\tv2b_max\tdiff_px\tdiff_max\tstages\tunseen\tleft1\tleft1_max\tleft2\tleft2_max")?;
     writeln!(sc.changes.lock().unwrap(), "which,z,x,y,px,py,lon,lat,before,after")?;
     writeln!(sc.peaks.lock().unwrap(), "z\tx\ty\tid\tele\traw\tv2\tratio\tarea\trise\tlevel\tsteep\tsteep_flat\tspike\tspike_wall\tspike_flat\tspike_in\tspike_in_wall\tspike_in_flat")?;
-    writeln!(sc.blobs.lock().unwrap(), "z\tx\ty\tpx\tpy\tlon\tlat\tpit\tpixels\trise\tlevel\treach\tedge\tpx_m\tislope\twall\tring_iqr\ttop\tkind\trough\tground")?;
+    writeln!(sc.blobs.lock().unwrap(), "z\tx\ty\tpx\tpy\tlon\tlat\tpit\tpixels\trise\tlevel\treach\tedge\tpx_m\tislope\twall\tring_iqr\ttop\tkind\trough\tground\tstage")?;
     writeln!(sc.holes.lock().unwrap(), "z\tx\ty\tlon\tlat\tarea\tfloor_min\tfloor_med\tfloor_max\tones\tneg\trim_min\trim_med\trim_max\twall_med")?;
     let store = root.join("sources/aws-terrarium");
     let t0 = std::time::Instant::now();
@@ -670,7 +670,7 @@ impl Scan {
             let (tx, ty) = ((b.top % 256) as f64, (b.top / 256) as f64);
             let lon = (x as f64 + (tx + 0.5) / 256.0) / n2 * 360.0 - 180.0;
             let lat = (std::f64::consts::PI * (1.0 - 2.0 * (y as f64 + (ty + 0.5) / 256.0) / n2)).dsinh().datan().to_degrees();
-            rows += &format!("{z}\t{x}\t{y}\t{}\t{}\t{lon:.5}\t{lat:.5}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\t{}\t{px:.1}\t{islope:.2}\t{wall:.2}\t{iqr:.1}\t{:.0}\t{:?}\t{:.1}\t{:.0}\n", b.top % 256, b.top / 256, b.pit as u8, b.pixels, b.rise, b.level, b.reach, b.edge as u8, e[b.top as usize], b.kind, b.rough, b.ground);
+            rows += &format!("{z}\t{x}\t{y}\t{}\t{}\t{lon:.5}\t{lat:.5}\t{}\t{}\t{:.0}\t{:.0}\t{:.0}\t{}\t{px:.1}\t{islope:.2}\t{wall:.2}\t{iqr:.1}\t{:.0}\t{:?}\t{:.1}\t{:.0}\t{}\n", b.top % 256, b.top / 256, b.pit as u8, b.pixels, b.rise, b.level, b.reach, b.edge as u8, e[b.top as usize], b.kind, b.rough, b.ground, b.stage);
         }
         self.blobs.lock().unwrap().write_all(rows.as_bytes()).ok();
     }
