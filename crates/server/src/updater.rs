@@ -181,6 +181,12 @@ impl Updater {
                     }
                     if me.pending.load(Ordering::Relaxed) && now().saturating_sub(LAST_REQUEST.load(Ordering::Relaxed)) >= 60 {
                         eprintln!("exiting for the new app");
+                        // (What's used orders the mirror: written out first.)
+                        if let Some(m) = &data.mirror {
+                            if let Err(e) = m.flush() {
+                                eprintln!("mirror: {e:#}");
+                            }
+                        }
                         std::process::exit(0);
                     }
                     std::thread::sleep(Duration::from_secs(10));

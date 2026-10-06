@@ -264,12 +264,22 @@ impl Data {
             return Ok(Src::Local(m));
         }
         if let Some(p) = self.mirror.as_ref().and_then(|m| m.local(content)) {
-            let f = std::fs::File::open(&p).with_context(|| format!("open {}", p.display()))?;
-            // SAFETY: mirrored files are content-named and never modified; eviction unlinks them
-            // (and `forget_evicted` drops the maps).
-            let m = Arc::new(unsafe { Mmap::map(&f)? });
-            self.maps.lock().unwrap().put(content.to_string(), m.clone());
-            return Ok(Src::Local(m));
+            match std::fs::File::open(&p) {
+                Ok(f) => {
+                    // SAFETY: mirrored files are content-named and never modified; eviction
+                    // unlinks them (and `forget_evicted` drops the maps).
+                    let m = Arc::new(unsafe { Mmap::map(&f)? });
+                    // Not kept when the mirror let the file go meanwhile (after `forget_evicted`):
+                    // the map would hold its room.
+                    if self.mirror.as_ref().is_some_and(|mi| mi.has(content)) {
+                        self.maps.lock().unwrap().put(content.to_string(), m.clone());
+                    }
+                    return Ok(Src::Local(m));
+                }
+                // Let go just now: the NAS's copy.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e).with_context(|| format!("open {}", p.display())),
+            }
         }
         if let Some(r) = self.remotes.lock().unwrap().get(content) {
             return Ok(Src::Remote(r));
@@ -461,11 +471,13 @@ impl Data {
             Mirror(std::fs::File),
             Src(Src),
         }
-        let from = match self.mirror.as_ref().and_then(|m| m.local(content).map(|p| (m, p))) {
-            Some((m, p)) => {
-                m.touch(content);
-                From::Mirror(std::fs::File::open(&p).with_context(|| format!("open {}", p.display()))?)
-            }
+        // (Not a use of the pack: the server reads it on its own, for the place search.)
+        let local = self.mirror.as_ref().and_then(|m| m.local(content)).map(|p| (std::fs::File::open(&p), p));
+        let from = match local {
+            Some((Ok(f), _)) => From::Mirror(f),
+            // Let go just now: the NAS's copy.
+            Some((Err(e), _)) if e.kind() == std::io::ErrorKind::NotFound => From::Src(self.src(content)?),
+            Some((Err(e), p)) => return Err(e).with_context(|| format!("open {}", p.display())),
             None => From::Src(self.src(content)?),
         };
         let mut buf = Vec::new();

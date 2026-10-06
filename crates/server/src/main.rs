@@ -6,11 +6,10 @@
 //! Data comes from the NAS project folder (found and mounted by itself), read from this Mac's mirror
 //! when it's there. `--root` serves a local folder laid out like the project folder instead
 //! (development, tests), without a mirror unless `--mirror` (then copied into `--home`'s as from
-//! the NAS). `--reserve-gb`: the free space the mirror leaves on the disk, in GB (10⁹ bytes).
-//! `--listen`: the one address to answer on (a test server's 127.0.0.1), else every IPv4 address
-//! and IPv6's loopback.
-//! Nothing is loaded at start: the catalog says where everything is, and files are opened on
-//! first use.
+//! the NAS: a `--home` of its own, never this Mac's app folder). `--reserve-gb`: the free space the
+//! mirror leaves on the disk, in GB (10⁹ bytes). `--listen`: the one address to answer on (a test
+//! server's 127.0.0.1), else every IPv4 address and IPv6's loopback. Nothing is loaded at start:
+//! the catalog says where everything is, and files are opened on first use.
 
 mod cache;
 mod data;
@@ -284,6 +283,61 @@ pub fn test_state_from(home: &std::path::Path, data: Arc<data::Data>) -> S {
     })
 }
 
+/// `--mirror` with `--root` needs a `--home` of its own: mirrored into this Mac's own app folder
+/// (`default`), a root would let its mirror's files go, tidy its indexes away and add the root's
+/// catalog to its own.
+fn check_root_mirror(root: bool, mirror: bool, home: Option<&std::path::Path>, default: &std::path::Path) -> Result<()> {
+    if root && mirror {
+        anyhow::ensure!(home.is_some_and(|h| !same_dir(h, default)), "--mirror with --root needs a --home of its own, not this Mac's app folder ({})", default.display());
+    }
+    Ok(())
+}
+
+/// Whether two paths are the same folder (as given, when either isn't there).
+fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
+}
+
+/// The signal that asked the server to stop, once one has (0 until then).
+static STOP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+extern "C" fn on_stop(sig: libc::c_int) {
+    STOP.store(sig, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// On SIGTERM, SIGINT or SIGHUP (the launcher passes them on: a stop, or a restart), writes the
+/// mirror's use times out, then exits, as the updater does before it exits for a new app.
+fn exit_on_signals(data: Arc<data::Data>) {
+    for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+        // SAFETY: a handler that only stores to an atomic, which is async-signal-safe.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = on_stop as extern "C" fn(libc::c_int) as libc::sighandler_t;
+            libc::sigemptyset(&mut sa.sa_mask);
+            libc::sigaction(sig, &sa, std::ptr::null_mut());
+        }
+    }
+    let watch = std::thread::Builder::new().name("signals".into()).spawn(move || loop {
+        let sig = STOP.load(std::sync::atomic::Ordering::SeqCst);
+        if sig != 0 {
+            if let Some(m) = &data.mirror {
+                if let Err(e) = m.flush() {
+                    eprintln!("mirror: {e:#}");
+                }
+            }
+            eprintln!("stopping (signal {sig})");
+            std::process::exit(0);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    });
+    if let Err(e) = watch {
+        eprintln!("signals: {e}");
+    }
+}
+
 fn arg(name: &str) -> Option<String> {
     let a: Vec<String> = std::env::args().collect();
     a.iter().position(|x| x == name).and_then(|i| a.get(i + 1).cloned())
@@ -316,7 +370,9 @@ async fn main() -> Result<()> {
     anyhow::ensure!(reserve_gb.is_finite() && reserve_gb >= 0.0, "--reserve-gb: a number of GB");
     let no_mirror = std::env::args().any(|a| a == "--no-mirror");
     let root = arg("--root").map(PathBuf::from);
-    let mirror = !no_mirror && (root.is_none() || std::env::args().any(|a| a == "--mirror"));
+    let mirror_root = std::env::args().any(|a| a == "--mirror");
+    check_root_mirror(root.is_some(), mirror_root, arg("--home").map(PathBuf::from).as_deref(), &data::default_home())?;
+    let mirror = !no_mirror && (root.is_none() || mirror_root);
     // Soft mounts whichever name the share is mounted by.
     for host in [data::NAS_HOST, store::nas::LAN_HOST] {
         if let Err(e) = store::nas::ensure_nsmb_conf(host, data::NAS_SHARE) {
@@ -353,6 +409,8 @@ async fn main() -> Result<()> {
         tokens: Mutex::new(None),
     });
 
+    // A stop asked for by a signal (the launcher passes them on) writes the use times out first.
+    exit_on_signals(state.data.clone());
     // What the mirror evicts to make room is let go of at once (its maps would hold the room).
     if let Some(m) = &state.data.mirror {
         let s = Arc::downgrade(&state);
@@ -423,6 +481,7 @@ async fn main() -> Result<()> {
         .route("/api/keep", get(keep::get_status))
         .route("/api/keep/regions/{id}", axum::routing::put(keep::put_region))
         .route("/api/keep/views", axum::routing::post(keep::post_view))
+        .route("/api/keep/views/size", axum::routing::post(keep::post_view_size))
         .route("/api/keep/views/{id}", axum::routing::put(keep::put_view).delete(keep::delete_view))
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
         .route("/api/auth", axum::routing::post({
@@ -878,6 +937,17 @@ impl Region {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_root_is_mirrored_only_into_a_home_of_its_own() {
+        let (app, other) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let d = app.path();
+        assert!(check_root_mirror(true, true, None, d).is_err(), "no --home: this Mac's own");
+        assert!(check_root_mirror(true, true, Some(d), d).is_err());
+        assert!(check_root_mirror(true, true, Some(&d.join(".")), d).is_err(), "the same folder, written otherwise");
+        assert!(check_root_mirror(true, true, Some(other.path()), d).is_ok());
+        assert!(check_root_mirror(false, true, None, d).is_ok() && check_root_mirror(true, false, None, d).is_ok());
+    }
 
     #[test]
     fn polls_arent_use() {

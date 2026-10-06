@@ -7,20 +7,23 @@
 //!                                    every built region's size, how much of it is here and whether
 //!                                    it's kept, the kept views, the copy under way
 //!   PUT    /api/keep/regions/{id}    {keep}: keep a region on this Mac, or not
+//!   POST   /api/keep/views/size      {outline}: what keeping that view would take (its files, all
+//!                                    that would be kept with it, what this Mac can hold)
 //!   POST   /api/keep/views           {outline: [[lon, lat], …], name?}: keep an area (the ground in
 //!                                    view), named after the place search's nearest place unless
-//!                                    named
+//!                                    named; refused when what would be kept with it is more than
+//!                                    this Mac can hold
 //!   PUT    /api/keep/views/{id}      {name}: rename a kept view
 //!   DELETE /api/keep/views/{id}      stop keeping it
 //!
 //! What's kept is this Mac's alone: `<home>/keep.json` (docs/formats.md), never the NAS.
 //!
 //! An area's files (`files_of`): every layer's hi pack (zooms 9–14), and the base pack and road
-//! values, of each z6 tile within 2 km of it (its outlines are simplified), and the hi data of the
-//! z6 tiles within 50 km (what a view's lists read around it: a drive's window reaches 50 km). Every
-//! area needs the essentials too (store::mirror::essentials: worldwide files, root and lo packs,
-//! landmark points and area details, which every Mac keeps) and the basemap's archives, kept while
-//! any area is.
+//! values, of each z6 tile within 2 km of it (its outlines are simplified); the terrain's and the
+//! grids' hi packs within 25 km (the viewshed's reach); and the hi data of the z6 tiles within
+//! 50 km (what a view's lists read around it: a drive's window reaches 50 km). Every area needs the
+//! essentials too (store::mirror::essentials: worldwide files, root and lo packs, landmark points
+//! and area details, which every Mac keeps) and the basemap's archives, kept while any area is.
 
 use crate::data::Data;
 use crate::S;
@@ -47,6 +50,10 @@ const NEAR_KM: f64 = 2.0;
 /// How far around an area its hi data are kept: the lists of a view (scenic drives and rides, rail
 /// lines) read the tiles within half their window of it, 50 km at most.
 const LISTS_KM: f64 = 50.0;
+/// How far around an area the layers the viewshed reads are kept (its z11 terrain, canopy heights
+/// and land cover): its radius goes to 25 km (viewshed.rs), so one from inside works offline.
+const VIEWSHED_KM: f64 = 25.0;
+const VIEWSHED_LAYERS: [&str; 3] = ["terrain", "grid-canopy", "grid-class"];
 /// How long a new kept view waits for the place search to name it.
 const NAMING: Duration = Duration::from_secs(8);
 /// A view's outline: the ground on screen, a few dozen points.
@@ -264,6 +271,14 @@ pub fn files_of(cat: &Catalog, rings: &[Vec<[f64; 2]>]) -> Files {
         for m in [&cat.base, &cat.roads] {
             if let Some(l) = m.get(&key) {
                 add(l);
+            }
+        }
+    }
+    for (x, y) in tiles_meeting(rings, VIEWSHED_KM) {
+        let key = format!("6/{x}/{y}");
+        for l in VIEWSHED_LAYERS.iter().filter_map(|l| cat.layers.get(*l)) {
+            if let Some(h) = l.hi.get(&key) {
+                add(h);
             }
         }
     }
@@ -593,14 +608,58 @@ fn clean_name(n: &str) -> Result<String> {
     Ok(n.chars().take(80).collect())
 }
 
+/// Bytes in metric units, as the panel says them: 840 MB, 2.4 GB.
+fn size(b: u64) -> String {
+    if b < 1_000_000_000 {
+        format!("{} MB", (b as f64 / 1e6).round())
+    } else {
+        format!("{:.1} GB", b as f64 / 1e9)
+    }
+}
+
+/// What keeping the view `outline` would take: its own files (`bytes`, and how much of them is
+/// `here`), all that would be kept with it (`need`: the essentials, the kept areas', the basemap
+/// and its own), and what this Mac can hold (`hold`: store::mirror::Mirror::hold).
+fn view_size(s: &crate::AppState, outline: &[[f64; 2]]) -> Result<(Files, u64, u64, u64)> {
+    ensure!((3..=MAX_POINTS).contains(&outline.len()), "an outline of 3 to {MAX_POINTS} points");
+    ensure!(outline.iter().all(|p| p[0].is_finite() && p[1].is_finite() && p[0].abs() <= 540.0 && p[1].abs() <= 90.0), "points are [lon, lat] degrees");
+    let Some(m) = s.data.mirror.as_ref() else { bail!("this server keeps no mirror (--no-mirror)") };
+    let cat = s.data.catalog();
+    let plan = s.keep.plan(&s.data);
+    let own = files_of(&cat, &[outline.to_vec()]);
+    let here = m.bytes_here(own.names.iter().map(|(n, s)| (n.as_str(), *s)));
+    fn names(f: &Files) -> impl Iterator<Item = &str> {
+        f.names.iter().map(|(n, _)| n.as_str())
+    }
+    let with = Files::of_contents(&cat, names(&plan.essentials).chain(plan.keep.iter().map(String::as_str)).chain(names(&plan.basemap)).chain(names(&own)));
+    Ok((own, here, with.bytes, m.hold()?))
+}
+
+#[derive(Deserialize)]
+pub struct Outline {
+    outline: Vec<[f64; 2]>,
+}
+
+pub async fn post_view_size(State(s): State<S>, Json(o): Json<Outline>) -> Response {
+    blocking(s, move |s| {
+        let (own, here, need, hold) = view_size(s, &o.outline)?;
+        Ok(json!({ "bytes": own.bytes, "here": here, "need": need, "hold": hold, "fits": need <= hold }))
+    })
+    .await
+}
+
 /// Keeps an area (the ground in view): named as given, else after the most important place in it
 /// that the place search knows (waiting a few seconds for its index while it's made), else by
-/// where it is.
+/// where it is. Refused, with why, when what would be kept with it is more than this Mac can hold.
 pub async fn post_view(State(s): State<S>, Json(v): Json<NewView>) -> Response {
     blocking(s, move |s| {
-        ensure!(s.data.mirror.is_some(), "this server keeps no mirror (--no-mirror)");
-        ensure!((3..=MAX_POINTS).contains(&v.outline.len()), "an outline of 3 to {MAX_POINTS} points");
-        ensure!(v.outline.iter().all(|p| p[0].is_finite() && p[1].is_finite() && p[0].abs() <= 540.0 && p[1].abs() <= 90.0), "points are [lon, lat] degrees");
+        let (_, _, need, hold) = view_size(s, &v.outline)?;
+        ensure!(
+            need <= hold,
+            "Keeping this view takes {} on this Mac, with what's kept already and the files every Mac keeps, and it can hold {}: free some space, or keep a smaller view",
+            size(need),
+            size(hold)
+        );
         let name = match v.name.as_deref() {
             Some(n) => clean_name(n)?,
             None => name_of(s, &v.outline),
@@ -765,8 +824,10 @@ mod tests {
         let nas = tempfile::tempdir().unwrap();
         let cat = catalog(nas.path());
         let f = files_of(&cat, &[rect(-0.3, 51.4, -0.1, 51.6)]);
-        assert_eq!(logicals(&f), ["base/6-31-21", "global/roads/6-31-21", "hidata/6-31-21", "hidata/6-32-21", "layers/roads/hi/6-31-21", "layers/terrain/hi/6-31-21"]);
-        assert_eq!(f.bytes, 30_031 + 4_031 + 5_031 + 5_032 + 20_031 + 10_031);
+        // Its tile's packs, the terrain of the tile within 25 km across the meridian (for the
+        // viewshed), the hi data within 50 km.
+        assert_eq!(logicals(&f), ["base/6-31-21", "global/roads/6-31-21", "hidata/6-31-21", "hidata/6-32-21", "layers/roads/hi/6-31-21", "layers/terrain/hi/6-31-21", "layers/terrain/hi/6-32-21"]);
+        assert_eq!(f.bytes, 30_031 + 4_031 + 5_031 + 5_032 + 20_031 + 10_031 + 10_032);
         assert!(f.contains(cat.content("base/6-31-21").unwrap()) && !f.contains(cat.content("base/6-32-21").unwrap()));
     }
 
@@ -869,6 +930,30 @@ mod tests {
         let v = get(&s).await;
         assert_eq!(v["regions"]["london"]["state"].as_str(), Some("room"));
         assert!(v["kept"]["more"].as_u64().unwrap() > 0);
+    }
+
+    #[tokio::test]
+    async fn a_view_more_than_this_mac_can_hold_is_refused() {
+        let (home, nas) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        catalog(nas.path());
+        let outline = rect(-0.3, 51.4, -0.1, 51.6);
+        // Room for it: its size, and all that would be kept with it.
+        let s = crate::test_state_with(home.path(), nas.path(), true);
+        let (code, v) = call(post_view_size(State(s.clone()), Json(Outline { outline: outline.clone() })).await).await;
+        assert_eq!(code, StatusCode::OK, "{v}");
+        let own = files_of(&s.data.catalog(), std::slice::from_ref(&outline)).bytes;
+        assert_eq!((v["bytes"].as_u64(), v["here"].as_u64(), v["fits"].as_bool()), (Some(own), Some(0), Some(true)));
+        assert_eq!(v["need"].as_u64(), Some(3_300 + own + 50_000), "the essentials, its own files, the basemap");
+        // A reserve no disk has: this Mac can hold none of it, and keeping it is refused with why.
+        let home = tempfile::tempdir().unwrap();
+        let data = Data::open(crate::data::Options { home: home.path().to_owned(), nas_root: Some(nas.path().to_owned()), mirror: true, reserve: u64::MAX / 4 }).unwrap();
+        let s = crate::test_state_from(home.path(), data);
+        let (_, v) = call(post_view_size(State(s.clone()), Json(Outline { outline: outline.clone() })).await).await;
+        assert_eq!((v["hold"].as_u64(), v["fits"].as_bool()), (Some(0), Some(false)));
+        let (code, v) = call(post_view(State(s.clone()), Json(NewView { outline, name: Some("London".into()) })).await).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert!(v["error"].as_str().unwrap().contains("it can hold 0 MB"), "{v}");
+        assert!(s.keep.pins().views.is_empty());
     }
 
     #[test]
