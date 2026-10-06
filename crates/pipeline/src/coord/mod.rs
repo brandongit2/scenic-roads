@@ -1849,14 +1849,38 @@ mod http {
     }
 }
 
+/// A test's coordinator (its state in `dir`), listening on a port found free; and the port. Found
+/// free by listening on it as the coordinator does, the port can be another's by the time the
+/// coordinator listens on it, after its files are read and written (longer on a loaded Mac): then
+/// another, the history as it was before (the try added its start).
+#[cfg(test)]
+pub(crate) fn start_for_test(dir: &Path, me: &str, app: &str) -> (Coordinator, u16) {
+    let history = dir.join("history.jsonl");
+    let before = std::fs::read(&history).ok();
+    for _ in 0..10 {
+        let port = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap().local_addr().unwrap().port();
+        match Coordinator::start(dir, None, port, me, app) {
+            Ok(c) => return (c, port),
+            Err(e) if e.chain().any(|x| x.downcast_ref::<std::io::Error>().is_some_and(|x| x.kind() == std::io::ErrorKind::AddrInUse)) => {
+                eprintln!("{e:#}: another port");
+                match &before {
+                    Some(b) => std::fs::write(&history, b).unwrap(),
+                    None => std::fs::remove_file(&history).unwrap_or(()),
+                }
+            }
+            Err(e) => panic!("{e:#}"),
+        }
+    }
+    panic!("no port a coordinator could listen on, in 10 tries");
+}
+
 #[cfg(all(test, not(target_os = "wasi")))]
 mod tests {
     use super::*;
 
     fn start() -> (tempfile::TempDir, Coordinator, client::Client) {
         let d = tempfile::tempdir().unwrap();
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let c = Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap();
+        let (c, port) = start_for_test(&d.path().join("coord"), "m4", "");
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
         (d, c, w)
     }
@@ -1938,9 +1962,8 @@ mod tests {
         assert!(w.beat_paused(g.lease, None).unwrap().1.is_some());
         assert!(c.expire().is_empty());
         // A restart keeps it.
-        let port2 = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         drop(c);
-        let c = Coordinator::start(&d.path().join("coord"), None, port2, "m4", "").unwrap();
+        let (c, port2) = start_for_test(&d.path().join("coord"), "m4", "");
         assert!(c.pause().is_some());
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port2}")], c.contact.token.clone(), "m1");
         c.offer_units("2026-09-28", units.clone());
@@ -1980,8 +2003,7 @@ mod tests {
     #[test]
     fn an_agent_on_another_app_gets_no_work() {
         let d = tempfile::tempdir().unwrap();
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let c = Coordinator::start(&d.path().join("coord"), None, port, "m4", "20261005-1508-84142d3").unwrap();
+        let (c, port) = start_for_test(&d.path().join("coord"), "m4", "20261005-1508-84142d3");
         let w = client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1");
         c.offer_units("2026-09-28", vec![("6/1/1".into(), "k1".into(), 100 << 20)]);
         // One from before agents said (an older helper's ask), or on another: refused, why given.
@@ -2252,12 +2274,14 @@ mod tests {
         assert!(!sw.contains("__PAGE__") && sw.contains(r#"const PAGE = ["/work/","/work/index.html","/work/worker.js""#) && !sw.contains(r#""/work/sw.js""#));
         let icon = get("/work/icons/icon-192.png");
         assert!(icon.starts_with(b"HTTP/1.1 200") && icon.windows(8).any(|w| w == b"\x89PNG\r\n\x1a\n"));
-        // A connection whose headers don't come is closed once their time is up.
+        // A connection whose headers don't come is closed once their time is up. (Timed from before
+        // it's made: the server's clock can't start before this one, however slowly this test's
+        // thread goes on.)
+        let t = Instant::now();
         let mut slow = std::net::TcpStream::connect(&addr).unwrap();
         slow.write_all(b"GET /work/ HTTP/1.1\r\nHost").unwrap();
         slow.set_read_timeout(Some(Duration::from_secs(40))).unwrap();
         let mut b = [0u8; 64];
-        let t = Instant::now();
         let n = slow.read(&mut b).unwrap_or(0);
         assert!(t.elapsed() >= Duration::from_secs(15) && t.elapsed() < Duration::from_secs(35), "closed after {:?} with {n} bytes", t.elapsed());
         drop(held);
@@ -2272,8 +2296,7 @@ mod tests {
         let token = c.contact.token.clone();
         drop(c);
         // (A new port: the old listener's threads live on in this process.)
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let c2 = Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap();
+        let (c2, port) = start_for_test(&d.path().join("coord"), "m4", "");
         assert_eq!(c2.contact.token, token);
         let w2 = client::Client::at(vec![format!("http://127.0.0.1:{port}")], token, "m1");
         assert!(w2.beat(g.lease, None).unwrap(), "the helper's lease lives on");
@@ -2293,7 +2316,9 @@ mod tests {
             h.push(("Authorization".into(), format!("Bearer {k}")));
         }
         let head: String = h.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
-        write!(s, "{method} {path} HTTP/1.1\r\n{head}Content-Length: {}\r\nConnection: close\r\n\r\n{b}", b.len()).unwrap();
+        // (Written in one piece: a refusal answered once the head is in closes the connection, and
+        // a body written after it, as on a loaded Mac, has the connection reset, the answer lost.)
+        s.write_all(format!("{method} {path} HTTP/1.1\r\n{head}Content-Length: {}\r\nConnection: close\r\n\r\n{b}", b.len()).as_bytes()).unwrap();
         let mut r = Vec::new();
         s.read_to_end(&mut r).unwrap();
         let text = String::from_utf8_lossy(&r).to_string();
@@ -2360,8 +2385,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let old = "0123456789abcdef0123456789abcdef";
         std::fs::write(dir.join("token"), old).unwrap();
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let c = Coordinator::start(&dir, None, port, "m4", "").unwrap();
+        let (c, port) = start_for_test(&dir, "m4", "");
         assert!(c.contact.token != old && !dir.join("token").exists());
         let addr = format!("127.0.0.1:{port}");
         assert_eq!(send(&addr, "POST", "/work/pause", Some(old), &[], &serde_json::json!({})).0, 401);

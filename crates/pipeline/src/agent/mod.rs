@@ -3728,8 +3728,7 @@ mod tests {
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
         // The build Mac's coordinator offers slope, which this helper fits.
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let c = crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap();
+        let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
         c.offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
         let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: true }).unwrap();
         a.client = Some(crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m1"));
@@ -3765,9 +3764,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
-        a.coord = Some(crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap());
+        a.coord = Some(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
         a.free_set = Some(40 << 30);
         assert!(a.second_allowed());
         // (Each a shell waiting, given its scratch folder as the plan's jobs are.)
@@ -3810,9 +3808,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
-        a.coord = Some(crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap());
+        a.coord = Some(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
         a.free_set = Some(40 << 30);
         let job = |id: &str| {
             let step = id.split(' ').next().unwrap();
@@ -4200,9 +4197,8 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let (root, home) = (d.path().join("nas"), d.path().join("home"));
         std::fs::create_dir_all(&root).unwrap();
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
         let mut a = running_agent(&root, &home, false);
-        a.coord = Some(crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap());
+        a.coord = Some(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
         let helper = |at: u64, bytes: u64, left: u64| Status { host: "m1".into(), caches: Some(room::Caches { trimmed: Some(room::Freed { at, freed: BTreeMap::from([("canopy".to_string(), bytes)]), left, ..Default::default() }), ..Default::default() }), ..Default::default() };
         // One from before this agent started (the one before noted it), then a new one, twice; one
         // that freed nothing, keeping nothing new (none); one that freed nothing but keeps more.

@@ -259,10 +259,11 @@ mod tests {
         let held = crate::out::BuildLock::take(&root).unwrap();
         assert_eq!(merge(&root, &scratch).unwrap(), 0);
         drop(held);
-        // (A sibling test's child may hold the lock a moment, between its fork and its exec.)
+        // (A sibling test's child may hold the lock a moment, between its fork and its exec: longer
+        // on a loaded Mac. A minute at most.)
         let t0 = std::time::Instant::now();
         let mut merged = merge(&root, &scratch).unwrap();
-        while merged == 0 && t0.elapsed() < std::time::Duration::from_secs(5) {
+        while merged == 0 && t0.elapsed() < std::time::Duration::from_secs(60) {
             std::thread::sleep(std::time::Duration::from_millis(20));
             merged = merge(&root, &scratch).unwrap();
         }

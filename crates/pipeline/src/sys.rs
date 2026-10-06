@@ -285,16 +285,31 @@ mod tests {
 
     #[test]
     fn a_groups_memory_is_its_processes_together() {
-        // This test's process group: the test binary (and whatever else the runner started in it).
+        // Run again in a process and a group of its own, this test alone in it: in the runner's,
+        // the other tests' memory comes and goes meanwhile, by more than the check's margin.
+        const ALONE: &str = "SCENIC_TEST_ALONE";
+        if std::env::var_os(ALONE).is_none() {
+            let mut c = Command::new(std::env::current_exe().unwrap());
+            c.args(["--exact", "sys::tests::a_groups_memory_is_its_processes_together"]).env(ALONE, "1");
+            own_group(&mut c);
+            let out = c.output().unwrap();
+            let said = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success() && said.contains(" 1 passed"), "{said}{}", String::from_utf8_lossy(&out.stderr));
+            return;
+        }
+        // This test's process group: the test binary, running this test alone.
         let me = group_footprint().unwrap();
         assert!(me > 1 << 20, "{me}");
-        // A child holding 200 MB of its own (written, so it's resident) counts while it runs.
-        let mut c = Command::new("/usr/bin/python3").args(["-c", "import time; b = bytearray(200 << 20); b[::4096] = b'x' * len(b[::4096]); print(1, flush=True); time.sleep(3)"]).stdout(std::process::Stdio::piped()).spawn().unwrap();
+        // A child holding 200 MB of its own (written, so it's resident) counts while it runs. (It
+        // holds them until its input closes, after they're counted: not for a time a loaded Mac
+        // might take longer than to count them.)
+        let mut c = Command::new("/usr/bin/python3").args(["-c", "import sys; b = bytearray(200 << 20); b[::4096] = b'x' * len(b[::4096]); print(1, flush=True); sys.stdin.read()"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).spawn().unwrap();
         let mut line = String::new();
         std::io::BufRead::read_line(&mut std::io::BufReader::new(c.stdout.as_mut().unwrap()), &mut line).unwrap();
         reset_group_peak();
         std::thread::sleep(std::time::Duration::from_millis(600));
         let with = group_peak();
+        drop(c.stdin.take());
         c.wait().unwrap();
         assert!(with >= me + (190 << 20), "{with} vs {me}");
     }

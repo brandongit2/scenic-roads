@@ -370,8 +370,7 @@ mod tests {
     fn a_native_worker_runs_a_task_and_the_job_takes_it() {
         use std::os::unix::fs::PermissionsExt;
         let d = tempfile::tempdir().unwrap();
-        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
-        let c = crate::coord::Coordinator::start(&d.path().join("coord"), None, port, "m4", "").unwrap();
+        let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
         // The unit's folder, and a stand-in step: it writes one file, removes another, and writes
         // a third again as it was.
         let dir = d.path().join("unit");

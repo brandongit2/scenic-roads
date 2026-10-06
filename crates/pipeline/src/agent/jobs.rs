@@ -462,46 +462,66 @@ mod tests {
         JobSpec { id: "t".into(), what: "test".into(), cmd: cmd.iter().map(|s| s.to_string()).collect(), needs: Needs::default(), restart_after_sleep: false, record: None }
     }
 
+    /// What `f` finds of job `r`, once it does: the tests wait for what the job did, not for a
+    /// time. A job runs at utility priority, and on a loaded Mac (other builds beside it) its shell
+    /// can take seconds to start or to take its next step. A minute at most: then the job is
+    /// stopped, and the test fails.
+    fn wait_for<T>(r: &mut Running, what: &str, mut f: impl FnMut(&mut Running) -> Option<T>) -> T {
+        let t = Instant::now();
+        loop {
+            if let Some(x) = f(r) {
+                return x;
+            }
+            if t.elapsed() > Duration::from_secs(60) {
+                r.stop(Duration::from_secs(1));
+                panic!("{what}: not within a minute");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     #[test]
     fn runs_pauses_and_stops() {
         let d = tempfile::tempdir().unwrap();
         let rec = d.path().join("job.json");
         let mut r = Running::start(spec(&["/bin/sh", "-c", "echo hello; sleep 30"]), 2, &[], d.path().join("log"), &rec, None).unwrap();
         assert!(rec.exists());
-        std::thread::sleep(Duration::from_millis(300));
+        // Running: what it says reaches its log. Paused, it hasn't ended; stopped, it has, by the
+        // stop's signal.
+        wait_for(&mut r, "its hello in its log", |r| tail(&r.log, 5).contains("hello").then_some(()));
         r.pause("test");
         assert!(r.poll().unwrap().is_none());
         r.resume();
         r.stop(Duration::from_secs(5));
+        assert!(r.poll().unwrap().is_some_and(|st| st.code().is_none()), "stopped by a signal");
         assert!(tail(&r.log, 5).contains("hello"));
     }
 
     #[test]
     fn a_job_asked_to_stop_does_at_its_next_safe_point() {
-        // A job that builds a target a quarter of a second, noting each done, and stops at the next
-        // safe point once its channel says so (crate::control's protocol, as scenic-build's steps).
+        // A job that builds its targets in turn, noting each done, and stops at the next safe point
+        // once its channel says so (crate::control's protocol, as scenic-build's steps). It says
+        // which target it's on; its third takes until the ask comes (a minute at most), so the ask
+        // comes while it builds that one, whatever the Mac's load: it finishes that one, notes it
+        // done, and ends there, starting no other.
         let d = tempfile::tempdir().unwrap();
-        let (control, done) = (d.path().join("control"), d.path().join("done.txt"));
+        let (control, done, on) = (d.path().join("control"), d.path().join("done.txt"), d.path().join("on"));
         std::fs::write(&control, b"run").unwrap();
         let script = r#"for t in 6/1/1 6/1/2 6/1/3 6/1/4 6/1/5 6/1/6 6/1/7 6/1/8; do
             if grep -q drain "$SCENIC_CONTROL"; then exit 75; fi
-            sleep 0.25; echo "unit $t" >> "$SCENIC_DONE"
+            echo "$t" > "$ON"
+            if [ "$t" = 6/1/3 ]; then
+                i=0; until grep -q drain "$SCENIC_CONTROL"; do i=$((i + 1)); [ "$i" -le 6000 ] || exit 1; sleep 0.01; done
+            fi
+            echo "unit $t" >> "$SCENIC_DONE"
         done"#;
-        let env = [(crate::control::CONTROL_ENV, control.to_str().unwrap()), (crate::control::DONE_ENV, done.to_str().unwrap())];
+        let env = [(crate::control::CONTROL_ENV, control.to_str().unwrap()), (crate::control::DONE_ENV, done.to_str().unwrap()), ("ON", on.to_str().unwrap())];
         let mut r = Running::start(spec(&["/bin/sh", "-c", script]), 1, &env, d.path().join("log"), &d.path().join("job.json"), Some(&done)).unwrap();
-        std::thread::sleep(Duration::from_millis(600));
+        wait_for(&mut r, "on its third target", |_| std::fs::read_to_string(&on).is_ok_and(|s| s.trim() == "6/1/3").then_some(()));
         std::fs::write(&control, b"drain").unwrap();
-        let t = Instant::now();
-        let st = loop {
-            if let Some(st) = r.poll().unwrap() {
-                break st;
-            }
-            assert!(t.elapsed() < Duration::from_secs(5), "it stopped at its next safe point");
-            std::thread::sleep(Duration::from_millis(50));
-        };
+        let st = wait_for(&mut r, "stopped at its next safe point", |r| r.poll().unwrap());
         assert_eq!(st.code(), Some(crate::control::PAUSED_EXIT));
-        let finished = crate::control::read_done(&done, "unit");
-        assert!((2..=4).contains(&finished.len()) && finished[0] == "6/1/1", "{finished:?}");
+        assert_eq!(crate::control::read_done(&done, "unit"), ["6/1/1", "6/1/2", "6/1/3"]);
     }
 
     #[test]
@@ -576,16 +596,24 @@ mod tests {
 
     #[test]
     fn a_bar_redrawn_without_a_newline_is_seen_as_it_comes() {
-        // (osmium's: carriage returns alone, the newline only at its end.)
-        let t = Instant::now();
-        let mut first: Option<Duration> = None;
-        run_watched(Command::new("/bin/sh").args(["-c", "printf '[=>  ]  50%% \\r' >&2; sleep 1.5; printf '[===]  100%% \\n' >&2"]), |f| {
+        // (osmium's: carriage returns alone, the newline only at its end.) The program goes on past
+        // its first bar once that bar's been seen here: seen only at its end, it would wait for it
+        // in vain, give up after a minute and fail.
+        let d = tempfile::tempdir().unwrap();
+        let mark = d.path().join("seen");
+        let script = r#"printf '[=>  ]  50%% \r' >&2
+            i=0; until [ -e "$SEEN" ]; do i=$((i + 1)); [ "$i" -le 6000 ] || exit 1; sleep 0.01; done
+            printf '[===]  100%% \n' >&2"#;
+        let mut seen = Vec::new();
+        let st = run_watched(Command::new("/bin/sh").args(["-c", script]).env("SEEN", &mark), |f| {
             if f == 0.5 {
-                first = Some(t.elapsed());
+                std::fs::write(&mark, b"").unwrap();
             }
+            seen.push(f);
         })
         .unwrap();
-        assert!(first.is_some_and(|d| d < Duration::from_millis(1000)), "seen at {first:?}");
+        assert!(st.success(), "its first bar seen only as it ended");
+        assert_eq!(seen, [0.5, 1.0]);
     }
 
     #[test]
@@ -612,9 +640,11 @@ mod tests {
         }
         let pgid = r.pgid;
         assert!(crate::sys::signal_group(pgid, Signal::Probe), "the sleep is still in the group");
+        // (Before its 30 s grace is up, however loaded the Mac: a SIGTERM that didn't stop it would
+        // have it wait that out.)
         let t = Instant::now();
         stop_orphan(&rec);
-        assert!(t.elapsed() < Duration::from_secs(10), "stopped by SIGTERM, not after the grace");
+        assert!(t.elapsed() < Duration::from_secs(30), "stopped by SIGTERM, not after the grace");
         assert!(!crate::sys::signal_group(pgid, Signal::Probe));
         assert!(!rec.exists());
     }
