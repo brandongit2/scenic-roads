@@ -14,8 +14,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub const Z: u8 = 8;
-/// Its version: a change to how it's made is a new logical name.
-pub const V: u32 = 1;
+/// Its version: a change to how it's made is a new logical name. 2: the one-pass repair
+/// (roadcore::grid::repair_terrain, through terrain_pack::process).
+pub const V: u32 = 2;
 
 pub fn logical() -> String {
     format!("sources/terrain-z8-v{V}")

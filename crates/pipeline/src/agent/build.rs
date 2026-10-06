@@ -17,7 +17,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Step versions: bumping one rebuilds that step everywhere (oldest first, when idle).
-pub const TERRAIN_V: u32 = 1;
+/// Terrain 2: the one-pass repair (roadcore::grid::repair_terrain), on AWS's values before
+/// bathymetry goes to sea level.
+pub const TERRAIN_V: u32 = 2;
 pub const SLOPE_V: u32 = 1;
 /// 2: elevations up to 6,053 m (`final.u16`, base packs' `elevu`; were clamped at ±3,200 m).
 /// 3: heritage sites and area flags from the pass's heritage-sites job (crate::heritage), the
