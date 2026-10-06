@@ -14,6 +14,11 @@ native run recorded (a fetch mirror), and is compared byte for byte too. Only --
 trees-coverage 3/x/y --out … --root <NAS>`). --chm: the canopy squares (the agent's cache, or the
 NAS's `sources/canopy`); --leaf: the leaf-type squares (the NAS's `sources/trees/leaf`). Exits 1 if
 any tile's pixels differ, or the port's runs differ from each other.
+
+    cd dem && uv run python ../tools/check/trees-same.py --compare <trees.py's out> <the port's out>
+
+A whole z3 tile's archives (`trees-{cover,height,leaf}.tiles`), trees.py's `--z3` run's against the
+trees program's (the same arguments), compared the same way.
 """
 import io, json, shutil, struct, subprocess, sys, time
 from pathlib import Path
@@ -27,17 +32,6 @@ import trees  # noqa: E402
 
 def arg(name, default=None):
     return sys.argv[sys.argv.index(name) + 1] if name in sys.argv else default
-
-
-cov_dir, chm, leaf = Path(arg("--coverage")), arg("--chm"), arg("--leaf")
-blocks = [tuple(int(v) for v in b.split("/")[1:]) for b in arg("--blocks").split(",")]
-bin_dir = Path(arg("--bin", "../target/release")).resolve()
-wasm_dir = arg("--wasm")
-threads = [int(t) for t in arg("--threads", "1,4").split(",")]
-work = Path(arg("--work", "/tmp/trees-same")).resolve()
-here = Path(__file__).resolve().parent
-shutil.rmtree(work, ignore_errors=True)
-work.mkdir(parents=True)
 
 
 def archive(p):
@@ -91,6 +85,30 @@ def compare(py, rs, what):
                 bad += 1
 
 
+def summary():
+    print()
+    for v, s in stats.items():
+        print(f"{v}: {s['python']} tiles from trees.py, {s['rust']} from the port ({s['only python']} only trees.py's, {s['only rust']} only the port's); "
+              f"{s['bytes']} the same bytes, {s['pixels']} the same pixels, largest difference {s['max diff']}; "
+              f"{s['python bytes'] / 1e6:.2f} MB from trees.py, {s['rust bytes'] / 1e6:.2f} MB from the port")
+
+
+if "--compare" in sys.argv:
+    i = sys.argv.index("--compare")
+    py_dir, rs_dir = sys.argv[i + 1], sys.argv[i + 2]
+    compare({v: archive(Path(py_dir) / f"trees-{v}.tiles") for v in trees.VARS}, {v: archive(Path(rs_dir) / f"trees-{v}.tiles") for v in trees.VARS}, "z3")
+    summary()
+    sys.exit(1 if bad else 0)
+
+cov_dir, chm, leaf = Path(arg("--coverage")), arg("--chm"), arg("--leaf")
+blocks = [tuple(int(v) for v in b.split("/")[1:]) for b in arg("--blocks").split(",")]
+bin_dir = Path(arg("--bin", "../target/release")).resolve()
+wasm_dir = arg("--wasm")
+threads = [int(t) for t in arg("--threads", "1,4").split(",")]
+work = Path(arg("--work", "/tmp/trees-same")).resolve()
+here = Path(__file__).resolve().parent
+shutil.rmtree(work, ignore_errors=True)
+work.mkdir(parents=True)
 times = {"python": [], **{f"rust {t}": [] for t in threads}, "wasm": []}
 tops = {v: {} for v in trees.VARS}
 for bx, by in blocks:
@@ -172,11 +190,7 @@ if r.returncode != 0:
 lower = {v: {k: b for k, b in archive(asm / f"trees-{v}.tiles").items() if k[0] <= 7} for v in trees.VARS}
 compare({v: keep[v].tiles for v in trees.VARS}, lower, "zoom 7–4")
 
-print()
-for v, s in stats.items():
-    print(f"{v}: {s['python']} tiles from trees.py, {s['rust']} from the port ({s['only python']} only trees.py's, {s['only rust']} only the port's); "
-          f"{s['bytes']} the same bytes, {s['pixels']} the same pixels, largest difference {s['max diff']}; "
-          f"{s['python bytes'] / 1e6:.2f} MB from trees.py, {s['rust bytes'] / 1e6:.2f} MB from the port")
+summary()
 for k, ts in times.items():
     if ts:
         print(f"{k}: {sum(ts) / len(ts):.2f} s a block (" + ", ".join(f"{t:.2f}" for t in ts) + ")")

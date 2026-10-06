@@ -17,16 +17,19 @@ Sources:
   Hong Kong      none (no data).
 
 usage: leaftype.py [eu] [na] [--keep-nalcms]
+       leaftype.py --make <dir> <top>,<left>…
 
-The build agent's trees job calls `make` for the squares its z3 tile needs (dem/trees.py --z3):
-whole squares, tagged complete (squares made per region hold data only where its regions were,
-and are made again, keeping their chunks fetched whole; so is one that isn't whole), with NALCMS's
-GeoTIFF kept beside them so it's downloaded once. An EEA square's chunks are kept on the NAS as they come (`parts/`), so a square
-that fails part way asks again only for what it lacks.
+The build agent's trees job has `make` (--make) make the squares its z3 tile needs (the trees
+program, crates/pipeline/src/trees; dem/trees.py --z3 calls it too): whole squares, tagged complete
+(squares made per region hold data only where its regions were, and are made again, keeping their
+chunks fetched whole; so is one that isn't whole), with NALCMS's GeoTIFF kept beside them (in
+<dir>'s parent) so it's downloaded once. An EEA square's chunks are kept on the NAS as they come
+(`parts/`), so a square that fails part way asks again only for what it lacks.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import struct
@@ -403,7 +406,20 @@ def make(sqs: list, out: Path, store: Path, progress=None) -> None:
     north_america_squares(na, out, store / "nalcms-2020.tif", keep=True, whole=True, progress=lambda d: said(len(eea) + d))
 
 
+def progress(done: float, total: int, unit: str) -> None:
+    """A line the build agent shows as the job's progress (crates/pipeline/src/agent/jobs.rs): the
+    item under way counted by how much of it is done, to 3 decimals (down, as the agent's own)."""
+    d = math.floor(min(done, total) * 1000) / 1000
+    print(f"progress: {str(d).removesuffix('.0')}/{total} {unit}", file=sys.stderr, flush=True)
+
+
 def main():
+    if sys.argv[1:2] == ["--make"]:
+        # --make <dir> <top>,<left>…: the trees job's (crates/pipeline/src/trees/squares.rs).
+        out = Path(sys.argv[2])
+        sqs = [tuple(int(v) for v in a.split(",")) for a in sys.argv[3:]]
+        make(sqs, out, out.parent, lambda done, total: progress(done, total, "leaf-type squares"))
+        return
     args = set(sys.argv[1:])
     region = regions()
     if "eu" in args or not args - {"--keep-nalcms"}:
