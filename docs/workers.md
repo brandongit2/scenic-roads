@@ -102,7 +102,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   don't depend on the thread count; no hash-map order in outputs; the real zstd everywhere.
 - **Planned:** staging from packs as a task's (read where the packs lie); the heavy steps cut into
   sample ranges so a slow worker's lease is minutes; more kinds of task (map tiles, landmarks,
-  slope, terrain, tree cover).
+  slope, terrain, tree cover: its zoom-8 blocks already run on their own, `trees --block`, the
+  bytes they read recordable for a run elsewhere, docs/plan.md §6).
 
 ## 4. Data: the coordinator's plane
 
@@ -353,6 +354,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 - **The canopy step in bands (2026-10-05):** it reads only the strips and columns each band of 1,024
   rows needs: 3.4 GB → 0.55 GB natively and 3.5 → 0.55 GB in WebAssembly on 6/20/22, the same bytes
   (bands down to 5 rows, across 10° boundaries).
+- **Tree cover's blocks (2026-10-05):** ten zoom-8 blocks (coasts, dense forest, the tropics, one
+  across four canopy squares) gave the same bytes natively on 1 and 14 threads and in Node's
+  WebAssembly, the latter reading only the squares' bytes the native run recorded (3 to 280 MB),
+  in 130 to 180 MB of memory (`tools/check/trees-same.py`).
 
 ## 11. Steps
 
@@ -365,5 +370,5 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
    ranges, ranged reads *planned.*
 5. **Browsers:** the page, imported-memory ceilings, ramped verification. *Done;* HTTPS through
    Tailscale and OPFS *planned.*
-6. **The Python steps in Rust:** *done* (the same bytes; the units run them); then more kinds of
-   task, and the build Mac's own work as tasks.
+6. **The Python steps in Rust:** *done* (the same bytes; the units run them; tree cover's, the same
+   pixels); then more kinds of task, and the build Mac's own work as tasks.

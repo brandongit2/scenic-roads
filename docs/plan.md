@@ -628,14 +628,22 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     read from its pack or made afresh is the same (from fixed datasets: WorldCover, Meta's canopy
     squares), and a unit writing its tile's would otherwise make it and its neighbours stale.
 - **Trees** (cover, height, leaf type), zoom 4–12, per z3 tile the coverage meets, clipped to it
-  (`pipeline::treepacks`, `dem/trees.py --z3`), before the build Mac's units (the helper's run
-  meanwhile): from Meta's canopy squares (kept on the NAS, `sources/canopy/`, and copied into the
-  agent's cache, where the units read them too; a square both want is downloaded once, under a
-  `<file>.lock` in the store, the other waiting for it)
-  and the leaf-type squares on the NAS (`sources/trees/leaf/`), each made whole once (the EEA's
-  every chunk, a chunk without EEA data costing one small request; NALCMS's GeoTIFF kept beside
-  them) and tagged complete. A z3 tile's run makes all its packs and drops those it no longer has;
-  until its first run, today's converted packs serve.
+  (`pipeline::treepacks`, which runs the `trees` program, `pipeline::trees`), before the build
+  Mac's units (the helper's run meanwhile): from Meta's canopy squares (kept on the NAS,
+  `sources/canopy/`, and copied into the agent's cache, where the units read them too; a square
+  both want is downloaded once, under a `<file>.lock` in the store, the other waiting for it)
+  and the leaf-type squares on the NAS (`sources/trees/leaf/`), each made whole once by
+  `dem/leaftype.py` (the EEA's every chunk, a chunk without EEA data costing one small request;
+  NALCMS's GeoTIFF kept beside them) and tagged complete. A z3 tile's run makes all its packs and
+  drops those it no longer has (`TREES_V`); until its first run, today's converted packs serve.
+  - The program is `dem/trees.py --z3` in Rust: the same tiles, to the pixel, in another lossless
+    WebP encoder's bytes (`pipeline::webp`: about 1 % smaller than libwebp's on real tiles).
+    `tools/check/trees-same.py` compares the two (2026-10-05: ten blocks of every kind, and the
+    whole of 3/4/2 and 3/7/3, every tile the same); `SCENIC_TREES_PY=1` has the job run trees.py.
+  - A block runs on its own too (`trees --block`: a zoom-8 block's tiles and its zoom-8 values,
+    the same bytes natively, on any thread count, and in WebAssembly, its squares read from a
+    folder or through `pipeline::fetch`), and `trees --assemble` makes a z3 tile's archives from
+    blocks: tree cover as tasks (docs/workers.md) is planned.
 - **Area overlays:** see `docs/phase5.md`. The `overlays` job runs after marks, because it needs the
   World Heritage dots' ids. Until its first run, today's converted packs serve.
 - **Buildings (phase 7):** Overture plus official data, giving z13–14 within the coverage.
@@ -1226,10 +1234,10 @@ and, when none fits it, units' last steps.
   its z12 repairs while its z11 is made, and the area's zoomed-out tiles: 3.3 to 4.6 GB, where
   holding the whole area's until they were written took 32.9 GB for 3/0/2; a measure from that way,
   `v` 0, counts for nothing now:
-  `coord::cost_version`), else a first guess per step (tree cover 8 GB: six workers at once, each
-  with its block's canopy, so it doesn't go to the M1's 6 GB until a run shows it fits; slope 2,
-  holding a z6 tile's tiles at a time, its measures from when it held its whole area's, `v` 0,
-  counting for nothing now); peaks 2.5. A helper asks only for the steps its
+  `coord::cost_version`), else a first guess per step (tree cover 2.5 GB: its program held 1.05 GB
+  on 14 threads for 3/2/2's 792 blocks, its measures from trees.py's workers, `v` 0, 12 to 36 GB,
+  counting for nothing now; slope 2, holding a z6 tile's tiles at a time, its measures from when it
+  held its whole area's, `v` 0, counting for nothing now); peaks 2.5. A helper asks only for the steps its
   disk has room for (a terrain run 55 GB free, tree cover 30, the others 15, a task 5, and a sixth
   more, counting what its caches can free: not its loose raw tiles, which only its own jobs pack),
   never while a newer app waits to start, and takes the earliest step with a target that fits, from
@@ -1412,7 +1420,8 @@ mid-job. Nothing depends on it being available at a given time.
 outputs, no hash-map order, reductions that don't depend on the thread count, and every
 transcendental function from one implementation (the `det` crate, over `libm`: the platforms' own
 differ in the last bit). Checked by hand so far (terrain, slope, units, candidates, trains a day;
-a dense unit's Rust steps natively on 1 and 14 threads and as WebAssembly, docs/workers.md);
+a dense unit's Rust steps natively on 1 and 14 threads and as WebAssembly, docs/workers.md; tree
+cover's blocks the same way, `tools/check/trees-same.py`);
 planned: a "build twice, compare hashes" test per step.
 
 **Validation:**
@@ -1440,7 +1449,7 @@ everything is rebuilt.
 - `scenic-build` holds the build steps;
 - `server` serves the map;
 - `extract`, `tile` and `scenic-metrics` are today's steps, which units run (the rail job runs
-  `extract` and `railfreq`);
+  `extract` and `railfreq`, the tree cover job `trees`);
 - the app also carries `dem/` (the Python steps), Scenic.app (the menu bar item), `web/` and
   `fonts/`.
 
@@ -1541,7 +1550,8 @@ At each phase's end an Opus agent reviews the work against this plan.
    maths library on every target (outputs identical natively at any thread count and under WASI);
    the data plane's SSD copies and prefetch; the coordinator (leases, hand-offs over HTTP, learned
    memory, the shared steps' jobs for the M1); a unit's last steps as tasks for any worker, the web worker page and the M1 alike; the
-   units' Python steps in Rust (`elev`, `landcover`, `areaflags`: the same bytes). Next: HTTPS through
+   units' Python steps in Rust (`elev`, `landcover`, `areaflags`: the same bytes), and tree cover's
+   (`trees`: the same pixels). Next: HTTPS through
    `tailscale serve` (the owner's go-ahead), OPFS, ranged reads, journaled group commits, retiring the
    claim and hand-off files.
 
