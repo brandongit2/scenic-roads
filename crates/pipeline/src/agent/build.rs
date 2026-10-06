@@ -359,11 +359,14 @@ pub fn unit_terrain(u: Unit, r: &Reach, m: &BTreeMap<String, String>, tiles: &Te
         }
     }
     let from = [serde_json::to_string(r).unwrap_or_default(), packs.into_iter().collect::<Vec<_>>().join(",")].join("\n");
-    tiles.memo(&u.slash(), &store::naming::hash16(from.as_bytes()), || {
-        let lines: Vec<String> = unit_terrain_tiles(u, r, m, tiles)?.iter().map(|(z, x, y, t)| format!("{z}/{x}/{y} {t:016x}")).collect();
-        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-        Ok(h(&refs))
-    })
+    tiles.memo(&u.slash(), &store::naming::hash16(from.as_bytes()), || Ok(terrain_digest(&unit_terrain_tiles(u, r, m, tiles)?)))
+}
+
+/// Tiles (`unit_terrain_tiles`) as one digest.
+pub fn terrain_digest(tiles: &[Tile]) -> String {
+    let lines: Vec<String> = tiles.iter().map(|(z, x, y, t)| format!("{z}/{x}/{y} {t:016x}")).collect();
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    h(&refs)
 }
 
 /// The terrain tiles unit `u` reads, by their contents (from the packs' indexes: agent::tiles),
@@ -1691,12 +1694,12 @@ pub fn catalog_key(m: &BTreeMap<String, String>, inputs: &BTreeMap<String, Strin
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::agent::recipes::Recipe;
     use crate::reach::{LongWay, Reach};
 
-    fn e7box(w: f64, s: f64, e: f64, n: f64) -> [i32; 4] {
+    pub(crate) fn e7box(w: f64, s: f64, e: f64, n: f64) -> [i32; 4] {
         [(w * 1e7) as i32, (s * 1e7) as i32, (e * 1e7) as i32, (n * 1e7) as i32]
     }
 
@@ -1763,14 +1766,14 @@ mod tests {
     /// The heritage-sites job's inputs (the pass's areas set, the registers' snapshot).
     /// What the units wait for besides terrain and slope: the heritage-sites job's inputs, and the
     /// release's roadside buildings.
-    fn unit_inputs(m: &mut BTreeMap<String, String>, date: &str) {
+    pub(crate) fn unit_inputs(m: &mut BTreeMap<String, String>, date: &str) {
         m.insert(crate::osmpass::set_name(date, "areas"), format!("sources/osm/{date}/sets/areas.1212121212121212.osm.pbf"));
         m.insert("sources/registers/legacy".into(), "sources/registers/legacy.3434343434343434.tar.zst".into());
         m.insert(crate::buildtiles::index_logical(), format!("{}.6767676767676767.json", crate::buildtiles::index_logical()));
     }
 
     /// The heritage-sites job done: its key recorded, its outputs in the manifest.
-    fn heritage_done(m: &mut BTreeMap<String, String>, done: &mut Keys, date: &str, w: &Work) {
+    pub(crate) fn heritage_done(m: &mut BTreeMap<String, String>, done: &mut Keys, date: &str, w: &Work) {
         assert_eq!(w.step, "heritage-sites");
         done.record(&w.step, &w.targets);
         m.insert(crate::heritage::base_logical(date, "heritage-sources"), format!("work/heritage/{date}/base/heritage-sources.5656565656565656.json"));
@@ -1778,7 +1781,7 @@ mod tests {
 
     /// The rest of the heritage chain done too (it runs beside the regions' work from the start:
     /// the tests of the regions' order leave it out).
-    fn heritage_chain_done(c: &Coverage, m: &BTreeMap<String, String>, done: &mut Keys, date: &str) {
+    pub(crate) fn heritage_chain_done(c: &Coverage, m: &BTreeMap<String, String>, done: &mut Keys, date: &str) {
         let k = heritage_key(c, date, m).unwrap();
         done.record("heritage", &[("heritage".to_string(), k)]);
     }

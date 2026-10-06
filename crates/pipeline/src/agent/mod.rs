@@ -28,6 +28,7 @@ pub mod forecast;
 pub mod gc;
 pub mod jobs;
 pub mod recipes;
+pub mod rekey;
 pub mod room;
 pub mod tiles;
 
