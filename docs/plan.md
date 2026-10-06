@@ -213,8 +213,9 @@ program wrote, copied into the backups).
     (tile key, offset, length, raw length, 64-bit content hash) sorted by key.
   - **Root pack:** z0–2. **Lo packs:** z3–8, one per z3 tile (roads and rail z4–8). **Hi packs:**
     z9–14, one per z6 tile.
-  - Hi tiles exist only near the coverage: terrain and slope within 20 km of it, the rest for the
-    built units.
+  - Hi tiles exist only near the coverage for the layers built by area (terrain and slope within
+    20 km of it, the rest for the built units); the worldwide layers (labels, small islands and
+    lakes) have them wherever they have tiles.
 - **The basemap** is Planetiler's worldwide PMTiles file, one per pass. Its sea is deduplicated. The
   server serves it tile by tile.
 - **Base packs, hidata, markdata and ovdata** are sectioned files (named arrays): mapped when local,
@@ -729,11 +730,17 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
    on the NAS until the next pass, so a new tag needs no new download.
 4. **Sets and the basemap's input (b)**, both filtered from (a).
    - Sets are versioned (a changed filter is a new set, `summits-v2`).
-   - `pass-sets` makes a finished pass's missing sets from (a).
+   - `pass-sets` makes a finished pass's missing sets from (a): copied to the SSD first when that
+     leaves room for the sets and the agent's reserve (its size, 20 GB and 30: 111 GB for the
+     2026-09-28 pass's 60.6 GB), else read from the NAS, two or three times a set. The build Mac
+     (~40 GB free) reads it from the NAS: the water set took 65 min so (2026-10-06).
 5. **Outlines:** administrative levels 2–8 and ISO 3166 areas, assembled into polygons. They go in a
    sectioned file, with simplified copies for the panel.
 6. **Basemap:** Planetiler on (b), worldwide, giving `layers/basemap/world-<date>`. Its jar and data
-   (Natural Earth, water polygons, lake centerlines) are pinned in `sources/basemap/`.
+   (Natural Earth, water polygons, lake centerlines) are pinned in `sources/basemap/`. The pass
+   stops before drawing it with a jar of another version (its `buildinfo.properties`) than the one
+   the small islands and lakes' rule is read from (`pipeline::smallwater::PLANETILER_VERSION`,
+   0.10.2), until the rule is checked against the new one.
 7. **Cut (a) into z6 pieces.**
    - The cut is a depth-first quad tree, four outputs per osmium run. osmium keeps about 4 GB of id
      sets per output on a planet-sized input, so a wider cut wouldn't fit in 48 GB.
@@ -834,14 +841,17 @@ the map as the roads are kept: what's too small to draw is drawn as a dot of its
   (4 at the next zoom's edge) and a lake up to 4 (8) were missing. Sampled on its tiles (2026-10-06,
   against an exact copy of its simplification): the area so measured predicts 99.7 % of 91,537 sea
   islands near the minimum (five z6 tiles, z6–11) and 99.5 % of 159,208 lakes (the lakes north of
-  Mont-Laurier), the area before simplifying 98.1 % and 99.1 %.
+  Mont-Laurier), the area before simplifying 98.1 % and 99.1 %. The rule is Planetiler 0.10.2's
+  (pinned beside it, and the pass checks the jar: §6, The OSM pass), and the job checks it against
+  the basemap's tiles each time: 2,000 lakes and 2,000 sea islands near the minimum at z6–11, each
+  asked of the tile at a point inside it; under 98 % agreeing, the job fails.
 - **Measured** on the basemap's tiles over six places (2026-10-06, against their z13 tiles, the
-  Azores' z12: Maine's coast, the Thousand Islands, the lakes north of Mont-Laurier, the Seto
-  Inland Sea, Argyll, the Azores): 93–99 % of what the rule keeps by the area before simplifying
-  was there, 0–3 % of what it drops. At z9 Maine's coast had 464 of its 2,178 islands and 378 of its 3,269 lakes; at z6, 49
-  and 15; at z5 and under, the 12 islands and none of the lakes Natural Earth has. The Thousand
-  Islands had 41 of 1,662 at z9 and none below z5; the Seto Inland Sea 59 of its 11,261 ponds and
-  lakes at z9.
+  Azores' z12: Maine's coast, the Thousand Islands, the lakes north of Mont-Laurier, the Seto Inland
+  Sea, Argyll, the Azores): 93–99 % of what the rule keeps by the area before simplifying was there,
+  0–3 % of what it drops. At z9 Maine's coast had 464 of its 2,178 islands and 378 of its 3,269
+  lakes; at z6, 49 and 15; at z5 and under, the 12 islands and none of the lakes Natural Earth has.
+  The Thousand Islands had 41 of 1,662 at z9 and none below z5; the Seto Inland Sea 59 of its 11,261
+  ponds and lakes at z9.
 - **Reads** the pass's `water` set: what the basemap draws as water (natural=water, the reservoir,
   basin and salt pond land uses, docks, water=river … wastewater), through `osmium export` (areas
   assembled; osmium's index of the set's nodes in memory when the Mac has the memory free for it,
@@ -862,8 +872,9 @@ the map as the roads are kept: what's too small to draw is drawn as a dot of its
 - **Which zooms lack each:** z6–13 by the same rule, on the ring's area in Web Mercator, simplified
   as the basemap's where it's within a factor of four of the minimum (simplifying took 1–9 % off
   the rings sampled); z0–5 by asking the basemap's own tiles whether its water is there at a point
-  inside it (a lake or river is there when the point is in water, an island when it isn't; under
-  1 km², missing).
+  inside it (a lake or river is there when the point is in water, an island when it isn't). Every
+  island is asked, whatever its size (Natural Earth's coarse shores put many small ones on its
+  land); a lake or river under 1 km² is missing unasked.
 - **Tiles** (z0–12, `layers/smallwater`, packs as our other layers, served at `/tiles/smallwater`;
   docs/formats.md): at each zoom, what the basemap lacks there. Under 1 px², a point: those of one
   1-px cell and kind summed at the biggest one's place (their area-weighted centre drifted to the
@@ -873,7 +884,9 @@ the map as the roads are kept: what's too small to draw is drawn as a dot of its
   The app draws a circle a point, facing the screen (4 vertices; lying on the globe, MapLibre
   makes it 16): the densest views measured (1,200 × 800 CSS px: Hudson Bay at z3, Labrador at
   z4, Finland at z5, the lakes north of Mont-Laurier at z6) drew 63,000–70,000, under 280,000
-  vertices, about 12 MB with their attributes, an eighth of the roads' 100 MB at z6 over Maine.
+  vertices, about 12 MB with their attributes, an eighth of the roads' 100 MB at z6 over Maine;
+  pitched 60° in 3D on the globe over those lakes at z6, the 16 tiles in view held 452,000 (1.27
+  million in all the map's layers).
   From 1 px² (lakes and their islands at 1–4 px², z6–11; whatever Natural Earth lacks below z6),
   its outline, simplified as the basemap's; at z12, points alone (what the basemap lacks there is
   under 1 px², or a hair over and simplified under). z12's tiles serve z13 overzoomed, marking what
@@ -885,8 +898,9 @@ the map as the roads are kept: what's too small to draw is drawn as a dot of its
   across, its opacity its true diameter over that (at least 0.15), as a road under a pixel wide is
   drawn a pixel wide at its width's share; summed cells by their summed area, so a lake district
   reads by how much of it is water. Islands are land-coloured, lakes have the lakes' colour, and
-  where the coastal shading draws a shore (the sea's; lakes' and rivers' too with Lakes & rivers)
-  its shoreline goes round them (their shores aren't in the water it's measured from). Outlines
+  where the coastal shading draws a shore (from z4; the sea's, and lakes' and rivers' too with
+  Lakes & rivers) its shoreline goes round them (their shores aren't in the water it's measured
+  from); below z4 they have none (a dot ringed so read as a hollow ring on the bare water). Outlines
   are drawn as the basemap draws water, with the dots' colours. In a tile, bigger first, so what
   lies inside something (a pond on an island in a lake) is drawn over it.
   The dots hand over to the basemap's polygons at the zoom its tiles have them: a dot is round, so
