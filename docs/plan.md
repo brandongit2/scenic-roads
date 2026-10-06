@@ -501,16 +501,18 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   map as fast as from local files, and keeps it working away from home.
 - **Room first.** The disk keeps a reserve free (50 GB; 150 GB on the build Mac: the server's
   `--reserve-gb`, in GB of 10⁹ bytes). When it's under the reserve, at home or away, files go until
-  it's back: those the current catalog doesn't list (an older catalog's) first, least recently used
-  first; then the current catalog's, least recently used first, the basemap last (it's drawn at
-  every zoom); never the essentials nor a kept area's. A file never used counts as used when it was
-  copied (its modification time, for the files copied before uses were noted as now). Of the files
-  in that order, the shortest run from the front that covers the deficit goes, less the biggest of
-  them the run can spare, so a round doesn't go far past it; the free space is measured again as
-  each goes, and what the server mapped of it is dropped at once. Nothing is copied while the disk
-  is under the reserve. Nothing goes while the build Mac runs a job (a pack job reads this mirror's
-  base packs), unless the disk is below half the reserve; nor when `mirror/` is a link or on another
-  disk than the app's folder (deleting there might not free this disk).
+  it's back: those the current catalog doesn't list (an older catalog's) first; then the current
+  catalog's, the basemap last (it's drawn at every zoom); never the essentials nor a kept area's.
+  Within each, the files never used go first, the first copied first (a file's modification time),
+  then the used ones, least recently used first, whenever they were copied (a new catalog copies
+  again the files used before it). Of the files in that order, the shortest run from the front that
+  covers the deficit goes, less the biggest of them the run can spare, so a round doesn't go far
+  past it; the free space is measured again as each goes, and what the server mapped of it is
+  dropped at once. Nothing is copied while the disk is under the reserve. On the build Mac, nothing
+  goes while its agent runs a job (its pack and lo jobs read this mirror's base packs), unless the
+  disk is below half the reserve; another Mac's room doesn't wait for the build Mac's jobs (only its
+  copies do). Nothing goes either when `mirror/` is a link or on another disk than the app's folder
+  (deleting there might not free this disk).
 - **The essentials,** which every Mac keeps whatever its room: the build's worldwide files
   (`global/`: rail frequencies, the road → units index, landmark totals, heritage summaries,
   today's converted layer files and details, roads' English names), every layer's root and lo
