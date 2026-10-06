@@ -21,7 +21,7 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 /// The cookie the key is kept in.
@@ -53,51 +53,10 @@ impl Remote {
     }
 }
 
-/// Whether a request is this Mac's own: from loopback, and not handed over by a proxy on this Mac
-/// (any header a proxy adds).
-fn own(peer: IpAddr, h: &HeaderMap) -> bool {
-    pipeline::net::loopback(peer) && !["x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip", "forwarded", "tailscale-user-login"].iter().any(|k| h.contains_key(*k))
-}
-
-/// Whether a host (a `Host` header's, an `Origin`'s; a port after it is ignored) names this map: an
-/// IP address, localhost or a name under it, or a name only a tailnet or a local network resolves
-/// (one label, or under .local, .home, .lan, .internal, .ts.net). Never a public name.
-fn ours(host: &str) -> bool {
-    let h = host.trim().to_ascii_lowercase();
-    let name = match h.strip_prefix('[') {
-        Some(v6) => return v6.split(']').next().is_some_and(|a| a.parse::<std::net::Ipv6Addr>().is_ok()),
-        None => h.rsplit_once(':').filter(|(_, p)| p.bytes().all(|b| b.is_ascii_digit())).map_or(h.as_str(), |(n, _)| n),
-    };
-    let name = name.trim_end_matches('.');
-    !name.is_empty()
-        && (name.parse::<IpAddr>().is_ok()
-            || name == "localhost"
-            || !name.contains('.')
-            || [".localhost", ".local", ".home", ".lan", ".internal", ".ts.net"].iter().any(|s| name.ends_with(s)))
-}
-
-/// Whether a page's origin is one of this Mac's own (localhost, a name under it, a loopback
-/// address): the app's pages here, which spread their downloads over roads.localhost and the like.
-pub fn local_origin(origin: &str) -> bool {
-    let Some(rest) = origin.strip_prefix("http://").or_else(|| origin.strip_prefix("https://")) else { return false };
-    let h = rest.to_ascii_lowercase();
-    let name = match h.strip_prefix('[') {
-        Some(v6) => return v6.split(']').next().is_some_and(|a| a.parse::<std::net::Ipv6Addr>().is_ok_and(|ip| ip.is_loopback())),
-        None => h.rsplit_once(':').filter(|(_, p)| p.bytes().all(|b| b.is_ascii_digit())).map_or(h.as_str(), |(n, _)| n),
-    };
-    name == "localhost" || name.ends_with(".localhost") || name.parse::<std::net::Ipv4Addr>().is_ok_and(|ip| ip.is_loopback())
-}
-
-/// Whether a request's page, if it says one (`Origin`), is the map's: this Mac's own, or the
-/// address the request itself names (the map's page on a device), as it came or as a proxy on this
-/// Mac says it came (`X-Forwarded-Host`: a page can't set that without a preflight, which CORS
-/// answers for this Mac's own pages alone).
-fn from_the_map(h: &HeaderMap) -> bool {
-    let Some(o) = h.get(header::ORIGIN) else { return true };
-    let Ok(o) = o.to_str() else { return false };
-    let named = |k: &str| h.get(k).and_then(|v| v.to_str().ok()).is_some_and(|host| o.split_once("://").is_some_and(|(_, a)| a.eq_ignore_ascii_case(host)));
-    local_origin(o) || named("host") || named("x-forwarded-host")
-}
+// (Which requests are this Mac's own, what one must name, and the key's check: pipeline::net, the
+// build Mac's coordinator's too.)
+pub use pipeline::net::local_origin;
+use pipeline::net::{from_the_page, ours, own, same};
 
 /// What any device the server answers may have: the app itself, not the map's data.
 fn public(path: &str) -> bool {
@@ -106,9 +65,8 @@ fn public(path: &str) -> bool {
 
 /// Whether the request carries the key (its cookie, or `Authorization: Bearer`).
 fn carries(h: &HeaderMap, key: &str) -> bool {
-    let same = |v: &str| v.len() == key.len() && v.bytes().zip(key.bytes()).fold(0u8, |a, (x, y)| a | (x ^ y)) == 0;
-    let bearer = h.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).is_some_and(same);
-    bearer || h.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(';')).filter_map(|c| c.trim().strip_prefix(&format!("{COOKIE}="))).any(same)
+    let bearer = h.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer ")).is_some_and(|v| same(v, key));
+    bearer || h.get_all(header::COOKIE).iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(';')).filter_map(|c| c.trim().strip_prefix(&format!("{COOKIE}="))).any(|v| same(v, key))
 }
 
 /// Every request, first: refused from anywhere but this Mac, its LAN and the tailnet; another
@@ -121,7 +79,7 @@ pub async fn gate(State(r): State<std::sync::Arc<Remote>>, ConnectInfo(peer): Co
     if req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).is_some_and(|h| !ours(h)) {
         return (StatusCode::FORBIDDEN, "not this map's address").into_response();
     }
-    if !from_the_map(req.headers()) {
+    if !from_the_page(req.headers()) {
         return (StatusCode::FORBIDDEN, "not from the map's page").into_response();
     }
     if own(peer.ip(), req.headers()) || public(req.uri().path()) || carries(req.headers(), &r.key) {
@@ -149,20 +107,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn this_macs_own_and_another_devices() {
-        let mut h = HeaderMap::new();
-        assert!(own("127.0.0.1".parse().unwrap(), &h) && own("::1".parse().unwrap(), &h));
-        assert!(!own("100.70.85.80".parse().unwrap(), &h));
-        // Handed over by tailscale serve: a device's.
-        h.insert("x-forwarded-for", HeaderValue::from_static("100.101.1.2"));
-        assert!(!own("127.0.0.1".parse().unwrap(), &h));
-        // By any proxy saying it is one.
-        let mut x = HeaderMap::new();
-        x.insert("x-forwarded-host", HeaderValue::from_static("mac.tail1.ts.net:8443"));
-        assert!(!own("127.0.0.1".parse().unwrap(), &x));
-    }
-
-    #[test]
     fn the_key_in_its_cookie_or_a_bearer() {
         let key = "0123456789abcdef0123456789abcdef";
         let mut h = HeaderMap::new();
@@ -176,37 +120,5 @@ mod tests {
         b.insert(header::AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {key}")).unwrap());
         assert!(carries(&b, key));
         assert!(public("/assets/index-abc.js") && public("/") && public("/sw.js") && !public("/api/meta") && !public("/tiles/roads/1/0/0") && !public("/fonts/x/0-255.pbf"));
-    }
-
-    #[test]
-    fn a_page_elsewhere_is_never_the_maps() {
-        for h in ["127.0.0.1:8080", "localhost:8080", "roads.localhost:8080", "[::1]:8080", "100.70.85.80:18085", "192.168.1.20:8080", "mac.tail1.ts.net", "mac.tail1.ts.net:8443", "Brandons-MacBook-Pro.local:8080", "macbookpro:8080", "fe80::1"] {
-            assert!(ours(h), "{h}");
-        }
-        for h in ["evil.example:8080", "evil.example", "127.0.0.1.nip.io:8080", "localhost.evil.example", "", "[nonsense]:80"] {
-            assert!(!ours(h), "{h}");
-        }
-        for o in ["http://localhost:8080", "http://roads.localhost:8080", "http://127.0.0.1:5173", "http://[::1]:8080"] {
-            assert!(local_origin(o), "{o}");
-        }
-        for o in ["https://evil.example", "http://192.168.1.20:8080", "null", "http://localhost.evil.example", "http://127.0.0.1.nip.io"] {
-            assert!(!local_origin(o), "{o}");
-        }
-        let with = |pairs: &[(&str, &str)]| {
-            let mut h = HeaderMap::new();
-            for (k, v) in pairs {
-                h.insert(header::HeaderName::from_bytes(k.as_bytes()).unwrap(), HeaderValue::from_str(v).unwrap());
-            }
-            h
-        };
-        // No page; this Mac's page; the device's page at the address it asks; a page elsewhere.
-        assert!(from_the_map(&with(&[("host", "100.70.85.80:8080")])));
-        assert!(from_the_map(&with(&[("host", "roads.localhost:8080"), ("origin", "http://127.0.0.1:8080")])));
-        assert!(from_the_map(&with(&[("host", "mac.tail1.ts.net:8443"), ("origin", "https://mac.tail1.ts.net:8443")])));
-        assert!(!from_the_map(&with(&[("host", "127.0.0.1:8080"), ("origin", "https://evil.example")])));
-        assert!(!from_the_map(&with(&[("host", "127.0.0.1:8080"), ("origin", "null")])));
-        assert!(!from_the_map(&with(&[("host", "100.70.85.80:8080"), ("origin", "http://100.70.85.81:8080")])));
-        // Through tailscale serve, the address the device asked for in X-Forwarded-Host.
-        assert!(from_the_map(&with(&[("host", "127.0.0.1:8080"), ("x-forwarded-host", "mac.tail1.ts.net:8443"), ("origin", "https://mac.tail1.ts.net:8443")])));
     }
 }

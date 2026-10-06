@@ -349,10 +349,6 @@ pub struct Status {
     /// The last catalog the plan read: its number and when it went out (seconds since the epoch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog: Option<CatalogSeen>,
-    /// The devices asking to help through the build page, and those accepted (the build Mac's:
-    /// crate::coord::devices; its menu bar answers them).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub devices: Option<crate::coord::devices::View>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1499,7 +1495,6 @@ impl Agent {
             resources: Some(self.resources(root.as_deref())),
             forecast: if self.o.helper { None } else { self.forecast.borrow().clone() },
             catalog: self.catalog_seen.get(),
-            devices: self.coord.as_ref().map(|c| c.devices()),
         };
         let body = serde_json::to_vec_pretty(&status)?;
         if self._lock.is_none() {

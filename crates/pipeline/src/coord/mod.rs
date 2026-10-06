@@ -18,8 +18,11 @@
 //! this Mac's disk, so the agent restarting (a new app) is a pause to every worker, nothing more.
 //!
 //! Workers find it in `state/coordinator.json` on the NAS: its addresses (Tailscale's first, then
-//! the LAN's) and the token every request but the page's carries. It answers this Mac, its LAN and
-//! the tailnet only; a running job's requests (`/task/…`) from this Mac only.
+//! the LAN's) and the token the Macs' agents carry. A web page helps with a key of its own, its
+//! device's, once the build Mac's owner accepts it there (`devices`): for its own tasks and pausing
+//! the build, nothing more. It answers this Mac, its LAN and the tailnet only, a request naming this
+//! Mac and from no web page elsewhere (crate::net::ours, from_the_page); the owner's (the devices)
+//! and a running job's (`/task/…`) from this Mac itself, through no proxy (crate::net::own).
 
 pub mod client;
 pub mod devices;
@@ -198,8 +201,9 @@ impl Shared {
         }
     }
 
-    fn save_devices(&self) {
-        if let Err(e) = self.devices.save(&self.dir.join("devices.json")) {
+    /// The devices kept (`durable`: flushed to the disk, an answer's).
+    fn save_devices(&self, durable: bool) {
+        if let Err(e) = self.devices.save(&self.dir.join("devices.json"), durable) {
             eprintln!("coordinator: saving the devices: {e:#}");
         }
     }
@@ -455,6 +459,8 @@ impl Coordinator {
                 (p, at)
             }
         };
+        // (No later than a minute from now: an ask's time past that is passed over, `AHEAD_S`.)
+        let pause_at = pause_at.min(unix_now() + AHEAD_S);
         let mut history = history::History::load(Some(&dir.join("history.jsonl")));
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
         let devices = devices::Devices::load(&dir.join("devices.json"));
@@ -505,11 +511,6 @@ impl Coordinator {
             crate::whole::write(&contact_path(root), &serde_json::to_vec_pretty(&self.contact)?)?;
         }
         Ok(())
-    }
-
-    /// The devices asking to help and those accepted, for the build Mac's status (its menu bar).
-    pub fn devices(&self) -> devices::View {
-        self.shared.lock().unwrap().devices.view(unix_now())
     }
 
     /// Takes it off the NAS (the agent stopping), when it's this one's.
@@ -684,6 +685,7 @@ impl Coordinator {
 /// Whether an agent on app `theirs` may build for a coordinator on `ours`: the same, or a newer
 /// published one (a step a newer app changed is built again under the keys that say so, once this
 /// Mac runs it; an older app's work would be recorded as current). `ours` empty (tests): any.
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn app_ok(theirs: Option<&str>, ours: &str) -> bool {
     // (By bytes: a version is a worker's to say, and slicing a string mid-character would panic with
     // the coordinator's lock held.)
@@ -698,6 +700,7 @@ fn app_ok(theirs: Option<&str>, ours: &str) -> bool {
 
 /// An app version (`20261005-1508-84142d3`: its UTC publish time, then its commit) in words: "5 Oct
 /// 15:08 UTC"; as it is when it isn't one.
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn app_when(v: &str) -> String {
     let p: Vec<&str> = v.split('-').collect();
     let month = |m: &str| ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].get(m.parse::<usize>().ok()?.checked_sub(1)?).copied();
@@ -815,22 +818,32 @@ fn raw_again(journal: &Path, h: Option<&Handoff>) {
     }
 }
 
-/// What a request asks of the shared state (JSON in, JSON out): (status, body).
-#[cfg(not(target_os = "wasi"))]
 /// Seconds since the epoch.
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
 fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// Who's asking a JSON request: this Mac (`local`), with the build's own key (`owner`: an agent, a
-/// job, or a page from before devices asked), and from where.
+/// How far ahead of this Mac's clock an agent's ask to pause may say it was made (the Macs' clocks
+/// differ a little): later, it's taken as made a minute from now.
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
+const AHEAD_S: u64 = 60;
+
+/// Who's asking a request, as `http::gate` found: this Mac itself (`local`: from loopback, through
+/// no proxy), with the build's own key (`owner`: the Macs' agents, this Mac's menu bar and
+/// `scenic`), or as an accepted device (its page's id, and what it is); and from where
+/// (crate::net::source).
+#[cfg(not(target_os = "wasi"))]
 #[derive(Clone, Debug, Default)]
 struct Caller {
     local: bool,
     owner: bool,
+    device: Option<(String, String)>,
     from: String,
 }
 
+/// What a request asks of the shared state (JSON in, JSON out): (status, body).
+#[cfg(not(target_os = "wasi"))]
 fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller: &Caller) -> Result<(u16, serde_json::Value)> {
     let local = caller.local;
     let now = Instant::now();
@@ -842,50 +855,83 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
         }
     }
     let ok = serde_json::json!({ "ok": true });
+    // (An accepted device works as itself alone: a worker named for its page's id.)
+    let mine = |worker: &str| caller.device.as_ref().is_none_or(|(id, _)| devices::names(worker, id));
+    let not_mine = || -> Result<(u16, serde_json::Value)> { Ok((403, serde_json::json!({ "error": "a device helps with its own tasks, as itself, alone" }))) };
     match path {
-        // A page asking to help, with the secret it made (no key: an owner's answer gives it one);
-        // where its ask stands, and its code (shown on the build Mac with it).
-        "/work/join" | "/work/join/state" => {
+        // A page asking to help, with the secret it made (no key: the owner's answer makes the
+        // secret its key); where its ask stands, with its code while it waits (shown on the build
+        // Mac with it); its ask withdrawn.
+        "/work/join" | "/work/join/state" | "/work/join/cancel" => {
             let b: serde_json::Value = serde_json::from_slice(body)?;
             let (id, secret) = (b["id"].as_str().unwrap_or(""), b["secret"].as_str().unwrap_or(""));
-            let mut s = shared.lock().unwrap();
             let now = unix_now();
-            if path == "/work/join/state" {
-                let st = s.devices.state(id, secret, now);
-                return Ok((200, serde_json::json!({ "state": st.name() })));
-            }
-            let label = b["label"].as_str().unwrap_or("");
-            let had = s.devices.state(id, secret, now);
-            let (st, code) = s.devices.ask(id, label, secret, &caller.from, caller.owner, now)?;
-            s.save_devices();
-            if st != had {
-                let note = if st == devices::State::Accepted { "is a helper (it had the build's old key)" } else { "asks to help with the build" };
-                s.history.add(history::Event { worker: Some(label.to_string()), note: format!("{note} (code {code})"), ..history::Event::new("device") });
-            }
-            Ok((200, serde_json::json!({ "state": st.name(), "code": code })))
-        }
-        // The owner's, on this Mac: the asks and the devices; an ask answered, a device forgotten.
-        p if p.starts_with("/work/devices") && !local => anyhow::bail!("{p} is for this Mac's owner"),
-        "/work/devices" => Ok((200, serde_json::to_value(shared.lock().unwrap().devices.view(unix_now()))?)),
-        "/work/devices/accept" | "/work/devices/decline" | "/work/devices/forget" => {
-            let b: serde_json::Value = serde_json::from_slice(body)?;
-            let id = b["id"].as_str().unwrap_or("");
-            let mut s = shared.lock().unwrap();
-            let (label, note) = match path {
-                "/work/devices/forget" => (s.devices.forget(id), "forgotten: it no longer helps"),
-                p => {
-                    let accept = p.ends_with("accept");
-                    (s.devices.answer(id, accept, unix_now()), if accept { "accepted: it may help" } else { "declined" })
+            match path {
+                "/work/join/state" => {
+                    let (st, code) = shared.lock().unwrap().devices.state(id, secret, now);
+                    Ok((200, serde_json::json!({ "state": st.name(), "code": code })))
                 }
+                "/work/join/cancel" => {
+                    let mut s = shared.lock().unwrap();
+                    let cancelled = s.devices.cancel(id, secret);
+                    if cancelled {
+                        s.save_devices(false);
+                    }
+                    Ok((200, serde_json::json!({ "cancelled": cancelled })))
+                }
+                _ => {
+                    // (Its name and code from fresh randomness, read before the lock.)
+                    let rand = u128::from_str_radix(&crate::net::random()?, 16)?;
+                    let label = b["label"].as_str().unwrap_or("");
+                    let mut s = shared.lock().unwrap();
+                    match s.devices.ask(&devices::Asked { id, label, secret, from: &caller.from }, now, rand)? {
+                        devices::Joined::Stands { state, code, new } => {
+                            if new {
+                                s.save_devices(false);
+                            }
+                            Ok((200, serde_json::json!({ "state": state.name(), "code": code })))
+                        }
+                        devices::Joined::TooMany(why) => Ok((429, serde_json::json!({ "error": why }))),
+                    }
+                }
+            }
+        }
+        // The owner's, on this Mac itself (the menu bar, `scenic devices`): the asks and the devices;
+        // an ask answered by its code (with its name, from a notification: that ask alone), devices
+        // forgotten (by an ask's name, or their page's id).
+        p if p.starts_with("/work/devices") && !(local && caller.owner) => anyhow::bail!("{p} is for this Mac's owner"),
+        "/work/devices" => Ok((200, serde_json::to_value(shared.lock().unwrap().devices.view(unix_now()))?)),
+        "/work/devices/accept" | "/work/devices/decline" => {
+            let b: serde_json::Value = serde_json::from_slice(body)?;
+            let accept = path.ends_with("accept");
+            let mut s = shared.lock().unwrap();
+            let Some(d) = s.devices.answer(b["ask"].as_str(), b["code"].as_str().unwrap_or(""), accept, unix_now()) else {
+                return Ok((404, serde_json::json!({ "error": "no ask waits with that code: answered, lapsed or cancelled" })));
             };
-            let Some(label) = label else { return Ok((404, serde_json::json!({ "error": "no such ask or device" }))) };
-            s.save_devices();
-            s.history.add(history::Event { worker: Some(label), note: note.into(), ..history::Event::new("device") });
-            Ok((200, ok))
+            s.save_devices(true);
+            s.history.add(history::Event { worker: Some(format!("{} {}", d.label, d.id)), note: (if accept { "accepted: it may help" } else { "declined" }).into(), ..history::Event::new("device") });
+            Ok((200, serde_json::json!({ "id": d.id, "label": d.label })))
+        }
+        "/work/devices/forget" => {
+            let b: serde_json::Value = serde_json::from_slice(body)?;
+            let mut s = shared.lock().unwrap();
+            let gone = s.devices.forget(b["which"].as_str().unwrap_or(""));
+            if gone.is_empty() {
+                return Ok((404, serde_json::json!({ "error": "no such device" })));
+            }
+            s.save_devices(true);
+            for d in &gone {
+                s.history.add(history::Event { worker: Some(format!("{} {}", d.label, d.id)), note: "forgotten: it no longer helps".into(), ..history::Event::new("device") });
+            }
+            Ok((200, serde_json::json!({ "forgotten": gone.len() })))
         }
         "/work/ask" => {
             let a: Ask = serde_json::from_slice(body)?;
             anyhow::ensure!(!a.worker.is_empty() && a.worker.len() <= 120, "a worker needs a name");
+            // (A device: a page's tasks, the tails, as itself.)
+            if caller.device.is_some() && (a.kind != "web" || a.can.iter().any(|c| c != "tail") || !mine(&a.worker)) {
+                return not_mine();
+            }
             let mut s = shared.lock().unwrap();
             // The build paused: nothing (an agent told why, and the pause; a page, nothing now).
             if let Some(p) = s.paused.clone() {
@@ -943,6 +989,9 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
         }
         "/work/beat" => {
             let b: Beat = serde_json::from_slice(body)?;
+            if !mine(&b.worker) {
+                return not_mine();
+            }
             let mut s = shared.lock().unwrap();
             let alive = s.leases.renew_frac(b.lease, &b.worker, b.progress.clone(), b.frac, now);
             s.seen(&b.worker, b.progress.unwrap_or_else(|| "working".into()), None, now);
@@ -950,15 +999,16 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             Ok((200, serde_json::json!({ "ok": alive, "pause": s.paused })))
         }
         "/work/pause" => {
-            // A Mac's ask (its menu, `scenic pause`, the map), passed on by its agent: the build paused
-            // or going on, for every worker.
+            // A Mac's ask (its menu, `scenic pause`, the map), passed on by its agent, or an accepted
+            // device's (its page's Pause): the build paused or going on, for every worker.
             let b: serde_json::Value = serde_json::from_slice(body)?;
             let mut pause: Option<crate::control::Pause> = serde_json::from_value(b["pause"].clone())?;
-            // (When it was asked: an agent says, by its Mac's clock; a page or an older helper doesn't,
-            // and it's now, by this Mac's: a browser's clock isn't to be trusted with the order.)
-            let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-            let at = match b["at"].as_u64() {
-                Some(at) => at,
+            // (When it was asked: an agent says, by its Mac's clock, no later than AHEAD_S from now by
+            // this one's; a page or an older helper doesn't, and it's now, by this Mac's: a browser's
+            // clock isn't to be trusted with the order. A device's pause is by what it is.)
+            let unix = unix_now();
+            let at = match b["at"].as_u64().filter(|_| caller.device.is_none()) {
+                Some(at) => at.min(unix + AHEAD_S),
                 None => {
                     if let Some(p) = pause.as_mut() {
                         p.at = unix;
@@ -966,11 +1016,17 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     unix
                 }
             };
+            if let (Some(p), Some((_, label))) = (pause.as_mut(), &caller.device) {
+                p.by = label.clone();
+            }
             set_pause(&mut shared.lock().unwrap(), pause, at);
             Ok((200, ok))
         }
         "/work/done" => {
             let d: Done = serde_json::from_slice(body)?;
+            if !mine(&d.worker) {
+                return not_mine();
+            }
             let mut s = shared.lock().unwrap();
             let Some(l) = s.leases.get(d.lease, &d.worker, now).cloned() else {
                 // Its work was offered again (or done by another): this one's hand-off is dropped,
@@ -981,6 +1037,8 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 return Ok((410, serde_json::json!({ "error": "that lease is gone" })));
             };
             match &l.work {
+                // (A device hands back tasks alone.)
+                Work::Job { .. } if caller.device.is_some() => return not_mine(),
                 Work::Job { step, targets } => {
                     let h = d.handoff.unwrap_or_default();
                     // Refused (422): the worker gives the lease back as failed, and drops the work
@@ -1051,6 +1109,9 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
         }
         "/work/fail" => {
             let f: Fail = serde_json::from_slice(body)?;
+            if !mine(&f.worker) {
+                return not_mine();
+            }
             let mut s = shared.lock().unwrap();
             let Some(l) = s.leases.finish(f.lease, &f.worker, now) else { return Ok((410, serde_json::json!({ "error": "that lease is gone" }))) };
             match &l.work {
@@ -1329,11 +1390,15 @@ mod http {
     /// The most of a file one request reads (a page reads 1 MB blocks).
     const RANGE_MAX: u64 = 8 << 20;
 
-    pub use crate::net::{allowed, loopback, random, served_https, urls};
+    pub use crate::net::{allowed, random, served_https, urls};
 
-    /// The workers' token: made once and kept, so workers keep theirs across restarts.
+    /// The workers' token: made once and kept (`workers-token`), so workers keep theirs across
+    /// restarts. (`token`, the one pages carried before devices asked, in their address and their
+    /// storage, is no key any more: gone. The Macs' agents read the new one from the NAS once
+    /// theirs is refused.)
     pub fn token(dir: &Path) -> Result<String> {
-        crate::net::kept_token(&dir.join("token"))
+        std::fs::remove_file(dir.join("token")).ok();
+        crate::net::kept_token(&dir.join("workers-token"))
     }
 
     /// Listens on `port`, on a runtime of its own; this Mac's addresses for workers.
@@ -1357,6 +1422,7 @@ mod http {
             .route("/work/history", any(json))
             .route("/work/join", any(json))
             .route("/work/join/state", any(json))
+            .route("/work/join/cancel", any(json))
             .route("/work/devices", any(json))
             .route("/work/devices/accept", any(json))
             .route("/work/devices/decline", any(json))
@@ -1430,35 +1496,70 @@ mod http {
         h.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "))
     }
 
-    /// Who may ask what: this Mac, its LAN and the tailnet only; the page, what its dashboard reads
-    /// (the build at a glance and its history), and a page's ask to help, without a key; helping
-    /// and pausing with the build's own key (the Macs' agents) or an accepted device's (crate::coord
-    /// ::devices); the asks and devices with the build's key, from this Mac only (its owner's menu
-    /// bar, `scenic devices`); a job's (`/task/…`) with its own, from this Mac.
-    async fn gate(State(c): State<Ctx>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request, next: Next) -> Response {
+    /// Who may ask what. This Mac, its LAN and the tailnet alone, and a request naming this Mac and
+    /// from no web page elsewhere (crate::net::ours, from_the_page: DNS rebinding, a site's
+    /// requests through a browser that reaches here). Then: the page, what its dashboard reads (the
+    /// build at a glance, its history) and a page's ask to help, without a key; the Macs' agents'
+    /// requests, with the build's key; an accepted device's (crate::coord::devices), with its own,
+    /// for its own tasks (its asks, beats, hand-backs and failures, its tasks' files and the
+    /// programs: `route` sees the worker it names is its own) and pausing the build alone; the
+    /// owner's (the asks and the devices), with the build's key, and a job's (`/task/…`), with its
+    /// own, from this Mac itself (crate::net::own: `tailscale serve` hands the tailnet's requests
+    /// over from loopback). Who it is goes on to the request (`Caller`).
+    async fn gate(State(c): State<Ctx>, ConnectInfo(peer): ConnectInfo<SocketAddr>, mut req: Request, next: Next) -> Response {
         let ip = peer.ip();
         if !allowed(ip) {
             return error(StatusCode::FORBIDDEN, "not from here");
         }
-        let path = req.uri().path();
-        let is_page = req.method() == Method::GET && (matches!(path, "/work" | "/work/watch" | "/work/watch/") || path.strip_prefix("/work/").is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p)));
-        let is_view = req.method() == Method::POST && matches!(path, "/work/swarm" | "/work/history" | "/work/join" | "/work/join/state");
+        // (No Host at all: not a browser.)
+        if req.headers().get(header::HOST).and_then(|v| v.to_str().ok()).is_some_and(|h| !crate::net::ours(h)) {
+            return error(StatusCode::FORBIDDEN, "not this build Mac's address");
+        }
+        if !crate::net::from_the_page(req.headers()) {
+            return error(StatusCode::FORBIDDEN, "not from the build page");
+        }
+        let path = req.uri().path().to_string();
+        let key = bearer(req.headers()).map(str::to_string);
+        let owner = key.as_deref().is_some_and(|k| crate::net::same(k, &c.token));
+        let device = match key.as_deref() {
+            Some(k) if !owner => c.shared.lock().unwrap().devices.knows(k).map(|d| (d.id.clone(), d.label.clone())),
+            _ => None,
+        };
+        let caller = Caller { local: crate::net::own(ip, req.headers()), owner, device: device.clone(), from: crate::net::source(ip, req.headers()) };
+        let local = caller.local;
+        req.extensions_mut().insert(caller);
+        let is_page = req.method() == Method::GET && (matches!(path.as_str(), "/work" | "/work/watch" | "/work/watch/") || path.strip_prefix("/work/").is_some_and(|p| PAGE.iter().any(|(n, _, _)| *n == p)));
+        let is_view = req.method() == Method::POST && matches!(path.as_str(), "/work/swarm" | "/work/history" | "/work/join" | "/work/join/state" | "/work/join/cancel");
         if is_page || is_view {
             return next.run(req).await;
         }
-        let key = bearer(req.headers());
-        let job = path.starts_with("/task/");
-        let owners = path.starts_with("/work/devices");
-        let ok = if job {
-            key == Some(c.job_token.as_str())
-        } else {
-            key == Some(c.token.as_str()) || (!owners && key.is_some_and(|k| c.shared.lock().unwrap().devices.knows(k)))
+        // The owner's and a job's: with their key, from this Mac itself.
+        let job = key.as_deref().is_some_and(|k| crate::net::same(k, &c.job_token));
+        let theirs = match () {
+            _ if path.starts_with("/task/") => Some((job, "this Mac's job's")),
+            _ if path.starts_with("/work/devices") => Some((owner, "this Mac's owner's")),
+            _ => None,
         };
-        if !ok {
-            return error(StatusCode::UNAUTHORIZED, "not a helper's: ask the build Mac to let this device help");
+        if let Some((ok, whose)) = theirs {
+            return match () {
+                _ if !ok => error(StatusCode::UNAUTHORIZED, format!("not {whose}")),
+                _ if !local => error(StatusCode::FORBIDDEN, "that comes from the build Mac itself"),
+                _ => next.run(req).await,
+            };
         }
-        if (job || owners) && !loopback(ip) {
-            return error(StatusCode::FORBIDDEN, "that comes from the build Mac itself");
+        if owner {
+            return next.run(req).await;
+        }
+        let Some((id, _)) = device else { return error(StatusCode::UNAUTHORIZED, "not a helper's: ask the build Mac to let this device help") };
+        let files = ["/work/in/", "/work/net/", "/work/out/"].iter().any(|p| path.starts_with(p));
+        let theirs = match *req.method() {
+            Method::POST => matches!(path.as_str(), "/work/ask" | "/work/beat" | "/work/done" | "/work/fail" | "/work/pause"),
+            Method::GET => (files && !path.starts_with("/work/out/")) || path.starts_with("/work/prog/"),
+            Method::PUT => path.starts_with("/work/out/"),
+            _ => false,
+        };
+        if !theirs || (files && !devices::names(&worker(req.headers()), &id)) {
+            return error(StatusCode::FORBIDDEN, "a device helps with its own tasks, as itself, alone");
         }
         next.run(req).await
     }
@@ -1474,16 +1575,21 @@ mod http {
     /// How long a JSON request's body may take to arrive.
     const JSON_TIME: Duration = Duration::from_secs(120);
 
-    /// A JSON request, answered by `route` off the runtime (it takes the lock and may write a file).
-    async fn json(State(c): State<Ctx>, ConnectInfo(peer): ConnectInfo<SocketAddr>, req: Request) -> Response {
+    /// A JSON request, answered by `route` off the runtime (it takes the lock and may write a file):
+    /// a POST of JSON alone (a page elsewhere can't send that without asking first, which nothing
+    /// here answers), from whom the gate found.
+    async fn json(State(c): State<Ctx>, req: Request) -> Response {
         let path = req.uri().path().to_string();
-        let owner = bearer(req.headers()) == Some(c.token.as_str());
+        let is_json = req.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).and_then(|t| t.split(';').next()).is_some_and(|m| m.trim().eq_ignore_ascii_case("application/json"));
+        if req.method() != Method::POST || !is_json {
+            return error(StatusCode::UNSUPPORTED_MEDIA_TYPE, "a POST of JSON (application/json)");
+        }
+        let caller = req.extensions().get::<Caller>().cloned().unwrap_or_default();
         let body = match tokio::time::timeout(JSON_TIME, axum::body::to_bytes(req.into_body(), JSON_MAX)).await {
             Ok(Ok(b)) => b,
             Ok(Err(_)) => return error(StatusCode::PAYLOAD_TOO_LARGE, "too big, or cut short"),
             Err(_) => return error(StatusCode::REQUEST_TIMEOUT, "its body didn't come"),
         };
-        let caller = Caller { local: loopback(peer.ip()), owner, from: peer.ip().to_string() };
         match tokio::task::spawn_blocking(move || route(&path, &body, &c.shared, &c.journal, &caller)).await {
             Ok(Ok((204, _))) => (StatusCode::NO_CONTENT, [(header::CACHE_CONTROL, "no-store")]).into_response(),
             Ok(Ok((code, v))) => (StatusCode::from_u16(code).unwrap_or(StatusCode::OK), [(header::CACHE_CONTROL, "no-store")], Json(v)).into_response(),
@@ -2126,22 +2232,34 @@ mod tests {
         assert_eq!(w2.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/1", "k1")])), ..Default::default() }).unwrap(), client::Handed::Taken);
     }
 
+    /// A request as a browser, a page or a proxy sends it, straight to `addr`: `headers` over the
+    /// usual ones (Host x, JSON); the answer's status, where a redirect leads, and its JSON.
+    fn send(addr: &str, method: &str, path: &str, key: Option<&str>, headers: &[(&str, &str)], body: &serde_json::Value) -> (u16, String, serde_json::Value) {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(addr).unwrap();
+        let b = body.to_string();
+        let mut h: Vec<(String, String)> = [("Host", "x"), ("Content-Type", "application/json"), ("X-Worker", "a page")].iter().filter(|(k, _)| !headers.iter().any(|(o, _)| o.eq_ignore_ascii_case(k))).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        h.extend(headers.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        if let Some(k) = key {
+            h.push(("Authorization".into(), format!("Bearer {k}")));
+        }
+        let head: String = h.iter().map(|(k, v)| format!("{k}: {v}\r\n")).collect();
+        write!(s, "{method} {path} HTTP/1.1\r\n{head}Content-Length: {}\r\nConnection: close\r\n\r\n{b}", b.len()).unwrap();
+        let mut r = Vec::new();
+        s.read_to_end(&mut r).unwrap();
+        let text = String::from_utf8_lossy(&r).to_string();
+        let code = text.split(' ').nth(1).unwrap().parse().unwrap();
+        let location = text.lines().find_map(|l| l.strip_prefix("location: ").or_else(|| l.strip_prefix("Location: "))).unwrap_or("").trim().to_string();
+        let json = text.split("\r\n\r\n").nth(1).and_then(|b| serde_json::from_str(b.trim()).ok()).unwrap_or_default();
+        (code, location, json)
+    }
+
     #[test]
     fn the_build_page_reads_without_a_key_and_helping_or_pausing_needs_it() {
         let (_d, c, w) = start();
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
-        // A request as a page makes it, with or without its key: the answer's status, and where a
-        // redirect leads.
         let ask = |method: &str, path: &str, key: Option<&str>| -> (u16, String) {
-            use std::io::{Read, Write};
-            let mut s = std::net::TcpStream::connect(&addr).unwrap();
-            let auth = key.map(|k| format!("Authorization: Bearer {k}\r\n")).unwrap_or_default();
-            write!(s, "{method} {path} HTTP/1.1\r\nHost: x\r\n{auth}X-Worker: a page\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}").unwrap();
-            let mut b = Vec::new();
-            s.read_to_end(&mut b).unwrap();
-            let head = String::from_utf8_lossy(&b).to_string();
-            let code = head.split(' ').nth(1).unwrap().parse().unwrap();
-            let location = head.lines().find_map(|l| l.strip_prefix("location: ").or_else(|| l.strip_prefix("Location: "))).unwrap_or("").to_string();
+            let (code, location, _) = send(&addr, method, path, key, &[], &serde_json::json!({}));
             (code, location)
         };
         // The page and what its dashboard reads: no key.
@@ -2160,57 +2278,119 @@ mod tests {
     }
 
     #[test]
-    fn a_device_asks_to_help_and_helps_once_the_owner_accepts_it_here() {
+    fn only_a_request_naming_this_mac_from_its_own_page_and_the_owners_and_jobs_from_this_mac_itself() {
         let (_d, c, w) = start();
         let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let post = |path: &str, key: Option<&str>, headers: &[(&str, &str)]| send(&addr, "POST", path, key, headers, &serde_json::json!({ "kind": "tail" })).0;
+        // A name a web page elsewhere could point here (DNS rebinding), a page elsewhere, or a JSON
+        // request sent as a form is: refused, with the key or not.
+        assert_eq!(post("/work/swarm", None, &[("Host", "evil.example")]), 403);
+        assert_eq!(post("/work/swarm", None, &[("Origin", "https://evil.example")]), 403);
+        assert_eq!(post("/work/pause", Some(&c.contact.token), &[("Origin", "http://192.168.1.66:8000")]), 403);
+        assert_eq!(post("/work/swarm", None, &[("Content-Type", "text/plain")]), 415);
+        // The build page's own, at the address it asked for: straight, or through tailscale serve.
+        assert_eq!(post("/work/swarm", None, &[("Host", "100.70.85.80:8090"), ("Origin", "http://100.70.85.80:8090")]), 200);
+        assert_eq!(post("/work/swarm", None, &[("Host", "127.0.0.1:8090"), ("X-Forwarded-Host", "mac.tail1.ts.net"), ("X-Forwarded-For", "100.101.1.2"), ("Origin", "https://mac.tail1.ts.net")]), 200);
+        // A job's and the owner's, from this Mac itself: not handed over by a proxy, whatever key.
+        assert_eq!(post("/task/workers", Some(&c.job_token), &[]), 200);
+        assert_eq!(post("/task/workers", Some(&c.job_token), &[("X-Forwarded-For", "100.101.1.2")]), 403);
+        assert_eq!(post("/task/workers", Some(&c.contact.token), &[]), 401);
+        assert_eq!(post("/work/devices", Some(&c.contact.token), &[]), 200);
+        assert_eq!(post("/work/devices", Some(&c.contact.token), &[("Tailscale-User-Login", "someone@example.com")]), 403);
+        assert_eq!(post("/work/devices", Some(&c.job_token), &[]), 401);
+    }
+
+    #[test]
+    fn the_key_pages_carried_before_devices_asked_is_no_key() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("coord");
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = "0123456789abcdef0123456789abcdef";
+        std::fs::write(dir.join("token"), old).unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let c = Coordinator::start(&dir, None, port, "m4", "").unwrap();
+        assert!(c.contact.token != old && !dir.join("token").exists());
+        let addr = format!("127.0.0.1:{port}");
+        assert_eq!(send(&addr, "POST", "/work/pause", Some(old), &[], &serde_json::json!({})).0, 401);
+        assert_eq!(send(&addr, "POST", "/work/pause", Some(&c.contact.token), &[], &serde_json::json!({})).0, 200);
+    }
+
+    #[test]
+    fn a_device_asks_to_help_and_helps_as_itself_once_the_owner_accepts_its_code_here() {
+        let (_d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let token = c.contact.token.clone();
         // A JSON request as a page makes it: the answer's status and body.
-        let post = |path: &str, key: Option<&str>, body: serde_json::Value| -> (u16, serde_json::Value) {
-            use std::io::{Read, Write};
-            let mut s = std::net::TcpStream::connect(&addr).unwrap();
-            let auth = key.map(|k| format!("Authorization: Bearer {k}\r\n")).unwrap_or_default();
-            let b = body.to_string();
-            write!(s, "POST {path} HTTP/1.1\r\nHost: x\r\n{auth}X-Worker: a page\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{b}", b.len()).unwrap();
-            let mut r = Vec::new();
-            s.read_to_end(&mut r).unwrap();
-            let text = String::from_utf8_lossy(&r).to_string();
-            let code = text.split(' ').nth(1).unwrap().parse().unwrap();
-            let json = text.split("\r\n\r\n").nth(1).and_then(|b| serde_json::from_str(b.trim()).ok()).unwrap_or_default();
-            (code, json)
+        let page = |path: &str, key: Option<&str>, body: serde_json::Value| -> (u16, serde_json::Value) {
+            let (code, _, v) = send(&addr, "POST", path, key, &[], &body);
+            (code, v)
         };
         let secret = "00112233445566778899aabbccddeeff";
         let me = serde_json::json!({ "id": "ipad01", "label": "Safari on iPad", "secret": secret });
-        // Asked, with no key: its code, which the build Mac shows with the ask.
-        let (code, a) = post("/work/join", None, me.clone());
+        // Asked, with no key: its code, made here.
+        let (code, a) = page("/work/join", None, me.clone());
         assert_eq!((code, a["state"].as_str()), (200, Some("asking")));
         let shown = a["code"].as_str().unwrap().to_string();
-        // Not yet a helper.
-        assert_eq!(post("/work/pause", Some(secret), serde_json::json!({})).0, 401);
+        assert_eq!(shown.len(), 4);
+        assert_eq!(page("/work/join/state", None, me.clone()).1["code"].as_str(), Some(shown.as_str()));
+        // Not yet a helper; and the ask is the owner's to see alone: neither the build page's reads
+        // nor its history tell of it.
+        assert_eq!(page("/work/pause", Some(secret), serde_json::json!({})).0, 401);
+        for path in ["/work/swarm", "/work/history"] {
+            assert!(!page(path, None, serde_json::json!({})).1.to_string().contains("ipad01"), "{path}");
+        }
         // The owner's, here, with the build's key (the menu bar, `scenic devices`): not a device's.
-        let (code, v) = post("/work/devices", Some(&c.contact.token), serde_json::json!({}));
-        assert_eq!((code, v["asking"][0]["code"].as_str()), (200, Some(shown.as_str())));
-        assert_eq!(post("/work/devices", Some(secret), serde_json::json!({})).0, 401);
-        assert_eq!(post("/work/devices", None, serde_json::json!({})).0, 401);
-        assert_eq!(post("/work/devices/accept", Some(&c.contact.token), serde_json::json!({ "id": "ipad01" })).0, 200);
-        // Its page learns so, and its secret is its key.
-        assert_eq!(post("/work/join/state", None, me.clone()).1["state"], "accepted");
-        assert_eq!(post("/work/join/state", None, serde_json::json!({ "id": "ipad01", "secret": "ffffffffffffffffffffffffffffffff" })).1["state"], "none");
-        assert_eq!(post("/work/pause", Some(secret), serde_json::json!({ "pause": null, "at": 1 })).0, 200);
-        assert_eq!(post("/work/ask", Some(secret), serde_json::json!({ "worker": "Safari on iPad ipad01", "kind": "web", "can": ["tail"], "mem_mb": 1000, "cores": 4 })).0 / 100, 2);
-        // A page with the build's old key: a helper at once, with its own secret from then on.
-        let old = serde_json::json!({ "id": "phone1", "label": "Safari on iPhone", "secret": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" });
-        assert_eq!(post("/work/join", Some(&c.contact.token), old).1["state"], "accepted");
-        assert_eq!(post("/work/pause", Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), serde_json::json!({ "pause": null, "at": 2 })).0, 200);
-        // Forgotten: no longer.
-        assert_eq!(post("/work/devices/forget", Some(&c.contact.token), serde_json::json!({ "id": "ipad01" })).0, 200);
-        assert_eq!(post("/work/pause", Some(secret), serde_json::json!({})).0, 401);
-        assert_eq!(c.devices().accepted.len(), 1);
+        let (code, v) = page("/work/devices", Some(&token), serde_json::json!({}));
+        assert_eq!((code, v["asking"][0]["code"].as_str(), v["asking"][0]["label"].as_str()), (200, Some(shown.as_str()), Some("Safari on iPad")));
+        let name = v["asking"][0]["ask"].as_str().unwrap().to_string();
+        assert_eq!(page("/work/devices", Some(secret), serde_json::json!({})).0, 401);
+        // An answer naming another ask, or with another code, answers nothing; with its own, it.
+        let other = if shown == "0000" { "0001" } else { "0000" };
+        assert_eq!(page("/work/devices/accept", Some(&token), serde_json::json!({ "ask": "0000000000000000", "code": shown })).0, 404);
+        assert_eq!(page("/work/devices/accept", Some(&token), serde_json::json!({ "code": other })).0, 404);
+        assert_eq!(page("/work/devices/accept", Some(&token), serde_json::json!({ "ask": name, "code": shown })).0, 200);
+        assert_eq!(page("/work/devices", Some(secret), serde_json::json!({})).0, 401);
+        // Its page learns so, and its secret is its key: for its own tasks, as itself, alone.
+        assert_eq!(page("/work/join/state", None, me.clone()).1["state"], "accepted");
+        assert_eq!(page("/work/join/state", None, serde_json::json!({ "id": "ipad01", "secret": "ffffffffffffffffffffffffffffffff" })).1["state"], "none");
+        let asks = |worker: &str, kind: &str, can: &[&str]| serde_json::json!({ "worker": worker, "kind": kind, "can": can, "mem_mb": 1000, "cores": 4 });
+        assert_eq!(page("/work/ask", Some(secret), asks("Safari on iPad ipad01", "web", &["tail"])).0 / 100, 2);
+        assert_eq!(page("/work/ask", Some(secret), asks("m1", "web", &["tail"])).0, 403);
+        assert_eq!(page("/work/ask", Some(secret), asks("Safari on iPad ipad01", "native", &["unit"])).0, 403);
+        assert_eq!(page("/work/beat", Some(secret), serde_json::json!({ "worker": "m4", "lease": 1 })).0, 403);
+        assert_eq!(page("/work/fail", Some(secret), serde_json::json!({ "worker": "m4", "lease": 1, "error": "x" })).0, 403);
+        assert_eq!(page("/work/status", Some(secret), serde_json::json!({})).0, 403);
+        assert_eq!(send(&addr, "GET", "/work/in/1/a", Some(secret), &[("X-Worker", "m1")], &serde_json::json!({})).0, 403);
+        // Its pause: made now by this Mac's clock, by what it is, whatever it says.
+        let forever = serde_json::json!({ "pause": { "mode": "drain", "by": "the owner", "at": u64::MAX }, "at": u64::MAX });
+        assert_eq!(page("/work/pause", Some(secret), forever.clone()).0, 200);
+        let p = c.shared.lock().unwrap().paused.clone().unwrap();
+        assert!(p.by == "Safari on iPad" && p.at <= unix_now() && c.shared.lock().unwrap().pause_at <= unix_now());
+        // (So the owner's resume goes through. An agent's time is its own, a minute ahead at most.)
+        assert_eq!(page("/work/pause", Some(&token), serde_json::json!({ "pause": null })).0, 200);
+        assert!(c.shared.lock().unwrap().paused.is_none());
+        assert_eq!(page("/work/pause", Some(&token), forever).0, 200);
+        assert!(c.shared.lock().unwrap().pause_at <= unix_now() + AHEAD_S);
+        assert_eq!(page("/work/pause", Some(&token), serde_json::json!({ "pause": null, "at": unix_now() + AHEAD_S })).0, 200);
+        assert!(c.shared.lock().unwrap().paused.is_none());
+        // Another page with the device's id and another secret is another ask, the device kept;
+        // withdrawn by its page.
+        let theirs = serde_json::json!({ "id": "ipad01", "label": "Safari on iPad", "secret": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" });
+        assert_eq!(page("/work/join", None, theirs.clone()).1["state"], "asking");
+        assert_eq!(page("/work/join/cancel", None, theirs.clone()).1["cancelled"], true);
+        assert_eq!(page("/work/join/state", None, theirs).1["state"], "none");
+        assert_eq!(page("/work/join/state", None, me.clone()).1["state"], "accepted");
         // Declined: its page learns so.
-        post("/work/join", None, serde_json::json!({ "id": "mac01", "label": "Chrome on Mac", "secret": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }));
-        assert_eq!(post("/work/devices/decline", Some(&c.contact.token), serde_json::json!({ "id": "mac01" })).0, 200);
-        assert_eq!(post("/work/join/state", None, serde_json::json!({ "id": "mac01", "secret": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" })).1["state"], "declined");
-        // (The history says so.)
-        let kinds: Vec<String> = c.shared.lock().unwrap().history.since(0, 100).iter().filter(|e| e.kind == "device").map(|e| e.note.clone()).collect();
-        assert!(kinds.iter().any(|n| n.starts_with("asks to help")) && kinds.iter().any(|n| n.starts_with("accepted")) && kinds.iter().any(|n| n.starts_with("forgotten")), "{kinds:?}");
+        let mac = serde_json::json!({ "id": "mac01", "label": "Chrome on Mac", "secret": "cccccccccccccccccccccccccccccccc" });
+        let mc = page("/work/join", None, mac.clone()).1["code"].as_str().unwrap().to_string();
+        assert_eq!(page("/work/devices/decline", Some(&token), serde_json::json!({ "code": mc })).0, 200);
+        assert_eq!(page("/work/join/state", None, mac).1["state"], "declined");
+        // Forgotten: its secret no longer works.
+        assert_eq!(page("/work/devices/forget", Some(&token), serde_json::json!({ "which": "ipad01" })).0, 200);
+        assert_eq!(page("/work/pause", Some(secret), serde_json::json!({})).0, 401);
+        // (The history tells what the owner did, and nothing of the asks.)
+        let notes: Vec<String> = c.shared.lock().unwrap().history.since(0, 100).iter().filter(|e| e.kind == "device").map(|e| e.note.clone()).collect();
+        assert_eq!(notes, ["accepted: it may help", "declined", "forgotten: it no longer helps"]);
     }
 
     #[test]

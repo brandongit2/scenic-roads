@@ -1,17 +1,19 @@
 //! What happened in the build, in order (the worker page's activity: docs/workers.md, The page):
 //! each job the build Mac started and ended, each lease a worker took, handed back, failed or let
 //! lapse, each task done or failed, the rounds of publishing begun and their catalogs, the pauses,
-//! the workers first heard from, the agents started and the build Mac's conditions changing. Kept
-//! on the build Mac's disk (`history.jsonl`, a line an event, the last week's), served by
-//! `/work/history` (the events after a number) and summed by the hour for the page (`rates`).
+//! the workers first heard from, the devices let help or not, the agents started and the build
+//! Mac's conditions changing. Kept on the build Mac's disk (`history.jsonl`, a line an event, the
+//! last week's, KEEP_MAX at most), served by `/work/history` (the events after a number) and summed
+//! by the hour for the page (`rates`).
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// How long events are kept (seconds).
+/// How long events are kept (seconds), and the most kept (a week of a busy build is a few thousand).
 pub const KEEP_S: u64 = 7 * 86400;
+const KEEP_MAX: usize = 50_000;
 
 /// One thing that happened.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -24,9 +26,9 @@ pub struct Event {
     pub t: u64,
     /// What: "start" and "end" (a build Mac's job), "lease", "done", "fail" and "lapse" (a worker's
     /// job), "task" and "task-fail", "round" (a round of publishing began: its regions) and
-    /// "catalog", "pause" and "resume", "worker" (first heard from), "device" (a device asked to
-    /// help, was accepted, declined or forgotten), "agent" (one started), "conditions" (the build
-    /// Mac's changed).
+    /// "catalog", "pause" and "resume", "worker" (first heard from), "device" (a device's ask to
+    /// help accepted or declined, a device forgotten: its asks aren't), "agent" (one started),
+    /// "conditions" (the build Mac's changed).
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,
@@ -104,6 +106,9 @@ impl History {
                 h.events.push_back(e);
             }
         }
+        while h.events.len() > KEEP_MAX {
+            h.events.pop_front();
+        }
         h
     }
 
@@ -129,7 +134,7 @@ impl History {
         }
         self.events.push_back(e);
         let from = now_s().saturating_sub(KEEP_S);
-        while self.events.front().is_some_and(|e| e.t < from) {
+        while self.events.front().is_some_and(|e| e.t < from) || self.events.len() > KEEP_MAX {
             self.events.pop_front();
         }
         if self.lines > 2 * self.events.len() + 1000 {

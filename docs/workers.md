@@ -203,13 +203,21 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   `/work/history`) without one. A device helps only when its owner asks there ("Help with this
   tab", kept by that browser: never by default, though a device that helped before the page asked,
   one that had learned its memory ceiling, keeps helping). The first time, the page asks the build
-  Mac (`/work/join`, `pipeline::coord::devices`) with a secret it makes and alone keeps, and shows
-  the ask's code; the build Mac's menu bar shows the ask with the same code, and a notification with
-  Accept and Decline (or `scenic devices accept <id>`). Accepted, the secret is that device's key
-  for helping and pausing the build, until the owner forgets it there (Devices Helping); the page
-  waits for the answer, through a reload too. There's no key to copy: a page from before devices
-  asked, with the build's own key from its address, asks with that once and is accepted at once.
-  "Stop helping" gives back what it has under way at once. (The old watching-only address,
+  Mac (`/work/join`, `pipeline::coord::devices`) with a secret it makes and alone keeps; the build
+  Mac gives the ask a code of its own making, unlike any other ask's waiting, which only the page
+  and the build Mac show. Its menu bar shows the ask with that code, and a notification with Accept
+  and Decline for that ask alone (or `scenic devices accept <code>`): the owner accepts the ask whose
+  code the device's page shows. Accepted, the secret is that device's key, for its own tasks (as
+  itself: a page's tasks, under a worker name ending in its page's id) and to pause the build, until
+  the owner forgets it there (Devices Helping, or `scenic devices forget <id>`). The page waits for
+  the answer, through a reload too; Cancel withdraws the ask; one it couldn't send (the build Mac
+  away or restarting) is sent again, less and less often. A browser's tabs share its ask and its
+  key. Asks are few (eight waiting at most, three from one address, ten an hour from one address:
+  past these, refused, never one waiting dropped), lapse after a day, and are the owner's alone to
+  see: the dashboard's reads and the history don't show them (the history has the owner's answers).
+  There's no key to copy: the build's own key, which pages from before devices asked carried from
+  their address, is no key any more (replaced as the first app with devices started); such a page
+  that helped asks again as it opens. "Stop helping" gives back what it has under way at once. (The old watching-only address,
   `/work/watch/`, leads to `/work/`.) While it helps, its main thread asks for tasks that fit the
   memory the tab spares and beats for every lease; each slot (a Web Worker per core, less one) runs
   a task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim) and
@@ -261,8 +269,9 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 - **HTTPS:** the screen wake lock, the page as an app and OPFS (below) need a secure context. The
   coordinator is reached over HTTPS through `tailscale serve` (the owner turned it on, 2026-10-05:
   the tailnet has a certificate for the build Mac's name), and the page's address (the status
-  bar's, `scenic status`'s) is HTTPS while it proxies the coordinator; a job's requests can't come
-  through it (they need the agent's own token). Plain HTTP on the tailnet still works (WireGuard
+  bar's, `scenic status`'s) is HTTPS while it proxies the coordinator; the owner's requests (the
+  devices) and a job's can't come through it (they come from the build Mac itself, through no
+  proxy). Plain HTTP on the tailnet still works (WireGuard
   encrypts it), the device then kept awake by hand.
 - **The page as an app** (a PWA: `manifest.webmanifest`, `sw.js`, `icons/`, served without the
   token like the page): installable (the browser's own Install, or on an iPhone or iPad Share, Add
@@ -300,17 +309,33 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 
 ## 9. Security
 
-- **Built:** the coordinator answers this Mac, its LAN and the tailnet only; every request but the
-  page's carries the workers' token (128 random bits, kept on the build Mac and in the contact on
-  the NAS); a running job's requests (offering tasks) carry the agent's own token, never published,
-  and come from this Mac only; a worker is served only the files of the task it holds, and uploads
-  only into that task's folder; request bodies are capped; connections are bounded (at most 512 at
-  once, headers within 20 s, so idle ones close too, an upload cut after two minutes without a byte,
-  a connection's life at most three hours, a device gone without a word noticed by TCP keepalive),
-  and a slow one holds a task of the coordinator's runtime, not a thread; a hand-off may change only
-  the files a unit job saves for its lease's units, each to a content name of that file; lease ids
-  are never given twice, across restarts too.
-- **Planned:** per-device credentials that can be revoked, exchanged for a pairing token.
+- **Built:**
+  - The coordinator answers this Mac, its LAN and the tailnet only, and a request only when it names
+    this Mac (its `Host`: an address, or a name only a tailnet or a local network resolves, never a
+    public one a web page elsewhere could point here: DNS rebinding) and comes from no web page
+    elsewhere (its `Origin`, when it has one: this Mac's own, or the address it asks).
+    `crate::net::ours`, `from_the_page`, as the map's server. Its JSON requests are POSTs of
+    `application/json` alone, which a page elsewhere can't send without asking first (nothing here
+    answers that).
+  - Keys, compared in constant time: the Macs' agents carry the workers' token (128 random bits,
+    kept on the build Mac and in the contact on the NAS; the one pages carried before devices asked
+    was replaced once, 2026-10-06). A device that helps through the page carries its own secret,
+    good once the owner accepts it on the build Mac and until the owner forgets it: for its own
+    tasks (its asks, beats, hand-backs, failures and its tasks' files, under its own name: a
+    page's tasks alone) and to pause the build (made now by the build Mac's clock, by what it is),
+    nothing else.
+  - From the build Mac itself only, through no proxy (`tailscale serve` hands the tailnet's
+    requests over from loopback, and says so: `crate::net::own`): the owner's (the devices' asks and
+    answers, with the workers' token) and a running job's (offering tasks, with the agent's own
+    token, never published).
+  - A worker is served only the files of the task it holds, and uploads only into that task's
+    folder; request bodies are capped; connections are bounded (at most 512 at once, headers within
+    20 s, so idle ones close too, an upload cut after two minutes without a byte, a connection's
+    life at most three hours, a device gone without a word noticed by TCP keepalive), and a slow one
+    holds a task of the coordinator's runtime, not a thread; a hand-off may change only the files a
+    unit job saves for its lease's units, each to a content name of that file; lease ids are never
+    given twice, across restarts too; an agent's ask to pause can't say it was made more than a
+    minute ahead of the build Mac's clock.
 - Licensed data on the owner's own devices isn't redistribution (plan §3, sources' terms).
 
 ## 10. Results

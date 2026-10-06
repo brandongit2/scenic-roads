@@ -357,7 +357,9 @@ take it: a page, any member's slot. Jobs are for Macs; tasks are for everyone.
   name for several hosts, would give the iPad's home-screen app one address and no cross-site calls.)
 - **One page, any member.** The page loads from any member; it knows every member's address from the
   pool (the lead's answer, its heartbeats); when its member goes away it reloads from the next that
-  answers, its token with it. The token is the pool's (`state/coord/token`), the same everywhere.
+  answers, its device's key with it. The devices accepted are the pool's (`state/coord/devices.json`,
+  the same everywhere: every member answers a page's key from it), as is the agents' token
+  (`state/coord/token`).
 - **Versions.** The page and a broker may run different apps now: the API has a version, and a page
   reloads when its broker's is newer. A task names the programs' build it needs; a broker serves
   them.
@@ -416,8 +418,9 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
    a log, written by members directly; the coordinator's state per term, leases saved on grant and
    finish, wall-clock times, lease ids `<term>-<n>`; history per writer; `writer`, `check_writer`
    and `SCENIC_BUILD_MAC` gone; crate::whole and EBUSY retries for every records, term and
-   heartbeat write. **Seeding and draining** when it's switched on: the M4's token copied to
-   `state/coord/token` (open pages keep working); the M4's local `coord/journal/` and the M1's outbox
+   heartbeat write. **Seeding and draining** when it's switched on: the M4's workers' token and its
+   devices (`devices.json`: the accepted devices' hashes) copied to `state/coord/` (open pages keep
+   working); the M4's local `coord/journal/` and the M1's outbox
    merged; `state/build/handoff/<host>/` still merged until empty.
 2. **Handing over and taking over.** The state machine (§6.4) with take-back, takeover (§6.5),
    re-assertion and stepping down (§6.6), the app rule, staying awake, the lead's own jobs moved out

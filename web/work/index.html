@@ -100,14 +100,15 @@ const store = { get(k, d) { try { const v = localStorage.getItem(k); return v ==
 
 // This device's key for helping (and pausing): a secret it makes and alone keeps, which works once
 // the build Mac's owner accepts its ask there (`askToHelp`). (A page from before devices asked kept
-// the build's own key, from its address: it asks with that once, and is accepted at once.)
+// the build's own key, from its address: no key now, but a device that helped with it asks again
+// as it opens, to go on helping.)
 let secret = store.get("secret", "");
-let oldKey = store.get("token", "") || (/[#&]k=([0-9a-f]{32})(?:&|$)/.exec(location.hash) || [])[1] || "";
+const helpedBefore = !!store.get("token", "") || /[#&]k=/.test(location.hash);
 if (location.hash.includes("k=")) history.replaceState(null, "", location.pathname);
 // Whether this device helps: its owner's choice here, kept. (A device that helped before the page
 // asked, one that had learned its memory ceiling, keeps helping; any other starts out watching.)
-if (store.get("helping", null) === null) store.set("helping", !!(secret || oldKey) && store.get("ceiling", null) !== null);
-let helping = !!(secret || oldKey) && store.get("helping", false);
+if (store.get("helping", null) === null) store.set("helping", !!(secret || helpedBefore) && store.get("ceiling", null) !== null);
+let helping = !!(secret || helpedBefore) && store.get("helping", false);
 const id = store.get("id", null) || (() => { const v = Math.random().toString(36).slice(2, 8); store.set("id", v); return v; })();
 const label = (() => {
   const ua = navigator.userAgent;
@@ -198,8 +199,9 @@ async function call(path, body) {
   if (r.status === 204) return [204, null];
   const text = await r.text();
   if (r.status === 401) {
-    // (Forgotten on the build Mac: no longer a helper; the owner may let it again.)
-    if (secret) forgotten();
+    // (Forgotten on the build Mac, when its ask says so: no longer a helper; the owner may let it
+    // again.)
+    if (secret) checkForgotten();
     throw new Error("the build Mac hasn't accepted this device");
   }
   if (!r.ok && r.status !== 410) throw new Error(`${path}: ${r.status} ${text.slice(0, 200)}`);
@@ -401,82 +403,147 @@ async function wake() {
 }
 document.addEventListener("visibilitychange", wake);
 // Asks the build Mac to let this device help (and pause the build): the ask carries a secret made
-// here, and its code, the same four digits there, says which ask is this one. Its owner accepts it
-// there (the Scenic item in its menu bar, or `scenic devices accept`), and the secret is this
-// device's key from then on; `then` once it is. (The ask is kept here, with what it's for, so a
-// reload goes on waiting, and starts helping once it's accepted if that's what it was for.)
+// here, and the build Mac gives it a code, which only this page and the build Mac show. Its owner
+// accepts the ask with that code there (the Scenic item in its menu bar, or `scenic devices accept
+// <code>`), and the secret is this device's key from then on; then what it was asked for is done
+// (`waiters`: to help, to pause the build). The ask is kept here with what it's for, so a reload
+// goes on waiting and starts helping once it's accepted if that's what it was for; and it's this
+// browser's, every tab's of it (one device: a tab finds another's ask or key and takes it up).
 let request = store.get("asking", null);
-let polling = null;
+let polling = null, joining = false, waiters = [];
 const note = (html) => { $("note").hidden = !html; $("note").innerHTML = html || ""; };
 function hex(n) {
   const b = crypto.getRandomValues(new Uint8Array(n));
   return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 }
-function accepted(s, then) {
-  secret = s;
-  store.set("secret", s);
-  oldKey = "";
-  request = null;
-  try { localStorage.removeItem("token"); localStorage.removeItem("asking"); } catch {}
+const why = (r) => (r?.for === "pause" ? "To pause the build" : "To help");
+// (Another tab's key, or its ask, taken up: a key that came, accepted here too.)
+function adopt() {
+  const s = store.get("secret", "");
+  if (s && s !== secret) { accepted(s); return true; }
+  if (!secret && !request) request = store.get("asking", null);
+  return false;
+}
+function stopWaiting() {
   if (polling) { clearInterval(polling); polling = null; }
+  request = null;
+}
+// (The ask kept here dropped, when it's still this one's: another tab may have made a newer one.)
+function dropAsk(s) {
+  try { if (store.get("asking", null)?.secret === s) localStorage.removeItem("asking"); } catch {}
+}
+function accepted(s) {
+  secret = s;
+  if (store.get("secret", "") !== s) store.set("secret", s);
+  stopWaiting();
+  dropAsk(s);
+  try { localStorage.removeItem("token"); } catch {}
   note("");
   for (const sl of slots) sl.w?.postMessage({ init: { token: secret, worker } });
-  then?.();
+  // (What it was asked for, here.)
+  const run = waiters;
+  waiters = [];
+  for (const f of run) f();
 }
-async function askToHelp(why, then, purpose) {
-  if (secret) { then?.(); return; }
-  if (!request) {
-    const s = hex(16);
-    const headers = { "Content-Type": "application/json", "X-Worker": worker };
-    if (oldKey) headers.Authorization = `Bearer ${oldKey}`;
+// `purpose`: "help" or "pause" (what the page says it asks for); `then`, done once it's accepted.
+async function askToHelp(purpose, then) {
+  if (adopt() || secret) { then?.(); return; }
+  if (then && !waiters.includes(then)) waiters.push(then);
+  if (request) {
+    // (Waiting already: what this ask is for now too.)
+    if (purpose === "help" && request.for !== "help") { request.for = "help"; store.set("asking", request); }
+    waitForAnswer(why(request));
+    return;
+  }
+  if (joining) return;
+  joining = true;
+  const s = hex(16);
+  // (Not reached, or the build Mac's agent restarting: asked again, less and less often.)
+  for (let wait = 5000; ; wait = Math.min(2 * wait, 60000)) {
+    let status = 0, v = null;
     try {
-      const r = await fetch("/work/join", { method: "POST", headers, body: JSON.stringify({ id, label, secret: s }) });
-      const v = await r.json();
-      if (!r.ok) throw new Error(v?.error || r.status);
-      if (v.state === "accepted") { accepted(s, then); return; }
+      const r = await fetch("/work/join", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, label, secret: s }) });
+      status = r.status;
+      v = await r.json().catch(() => null);
+    } catch {}
+    if (status === 200 && v?.code) {
       request = { secret: s, code: v.code, for: purpose };
       store.set("asking", request);
-    } catch (e) {
-      note(`Couldn't ask the build Mac (${esc(e.message)}): try again in a moment.`);
+      break;
+    }
+    if (status >= 400 && status < 500) {
+      // Refused (too many asks waiting, or made lately): said, and not asked again by itself.
+      joining = false;
+      waiters = [];
+      note(`The build Mac didn't take this device's ask: ${esc(v?.error || `it answered ${status}`)}.`);
       return;
     }
+    note(`Couldn't reach the build Mac to ask it${status ? ` (it answered ${status})` : ""}: asking again in ${wait / 1000} s…`);
+    await new Promise((res) => setTimeout(res, wait));
+    if (adopt() || secret || request) break;
   }
-  waitForAnswer(why, then);
+  joining = false;
+  if (request && !secret) waitForAnswer(why(request));
 }
-function waitForAnswer(why, then) {
-  note(`${esc(why)}: asked the build Mac to let this ${esc(label.replace(/^\S+ on /, ""))} help. Accept it there, in the Scenic item in its menu bar or its notification: “${esc(label)} asks to help (code <b>${esc(request.code)}</b>)”. <button id="nohelp">Cancel</button>`);
-  $("nohelp").onclick = () => { if (polling) clearInterval(polling); polling = null; request = null; try { localStorage.removeItem("asking"); } catch {} note(""); };
+function waitForAnswer(says) {
+  const r = request;
+  note(`${esc(says)}: this ${esc(label.replace(/^\S+ on /, ""))} asked the build Mac to let it help. Accept the ask there, in the Scenic item in its menu bar or its notification (“${esc(label)} asks to help”), only if it shows this code: <b>${esc(r.code)}</b>. <button id="nohelp">Cancel</button>`);
+  $("nohelp").onclick = () => {
+    stopWaiting();
+    waiters = [];
+    dropAsk(r.secret);
+    note("");
+    fetch("/work/join/cancel", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, secret: r.secret }) }).catch(() => {});
+  };
   $("note").scrollIntoView({ block: "nearest" });
   if (polling) clearInterval(polling);
   const check = async () => {
-    if (!request) return;
+    if (request !== r) return;
     try {
-      const r = await fetch("/work/join/state", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, secret: request.secret }) });
-      const v = await r.json();
-      if (v.state === "accepted") accepted(request.secret, then);
+      const res = await fetch("/work/join/state", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, secret: r.secret }) });
+      const v = await res.json();
+      if (request !== r) return;
+      if (v.state === "accepted") accepted(r.secret);
       else if (v.state === "declined" || v.state === "none") {
-        clearInterval(polling);
-        polling = null;
-        request = null;
-        try { localStorage.removeItem("asking"); } catch {}
-        note(v.state === "declined" ? "The build Mac declined this device's ask to help." : "The ask lapsed on the build Mac: ask again with Help with this tab.");
+        stopWaiting();
+        waiters = [];
+        dropAsk(r.secret);
+        note(v.state === "declined" ? "The build Mac declined this device's ask to help." : "The ask lapsed on the build Mac, or was cancelled: ask again with Help with this tab.");
       }
     } catch {}
   };
   polling = setInterval(check, 3000);
   check();
 }
-// This device forgotten on the build Mac: it stops helping, and may ask again.
-function forgotten() {
+// (Another tab accepted, or its ask withdrawn or answered: this one follows.)
+addEventListener("storage", (e) => {
+  if (e.key === "secret" && e.newValue && !secret) accepted(JSON.parse(e.newValue));
+  else if (e.key === "asking" && !e.newValue && request && !secret && !store.get("asking", null)) { stopWaiting(); note(""); }
+});
+// This device forgotten on the build Mac, as its ask's state says (a refusal alone may be the build
+// Mac restarting): it stops helping, and may ask again.
+let checking = false;
+async function checkForgotten() {
+  if (checking) return;
+  checking = true;
+  const s = secret;
+  try {
+    const r = await fetch("/work/join/state", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, secret: s }) });
+    const v = r.ok ? await r.json() : null;
+    if (v?.state === "none" && secret === s) forgotten(s);
+  } catch {}
+  checking = false;
+}
+function forgotten(s) {
   secret = "";
-  try { localStorage.removeItem("secret"); } catch {}
+  try { if (store.get("secret", "") === s) localStorage.removeItem("secret"); } catch {}
   if (helping) stopHelping();
   note("The build Mac no longer knows this device (forgotten there): ask again with Help with this tab.");
 }
 // Helping, as this device's owner asks (and kept): its slots, a Web Worker a core, made then. Stopping
 // gives back what it has under way at once (another worker takes it) and stops its programs.
 function startHelping() {
-  if (!secret) { askToHelp("To help", startHelping, "help"); return; }
+  if (!secret) { askToHelp("help", startHelping); return; }
   helping = true;
   store.set("helping", true);
   $("helping").hidden = false;
@@ -571,14 +638,16 @@ let buildState = "";
 dashboard({
   root: $("dash"), call, label, store,
   // (Pausing the build needs this device accepted on the build Mac: asked then.)
-  hasKey: () => !!secret, needKey: (then) => askToHelp("To pause the build", then, "pause"),
+  hasKey: () => !!secret, needKey: (then) => askToHelp("pause", then),
   // (The header says how the build goes; while this device helps, how its own work goes.)
   onState: (st) => { buildState = st; if (!helping) $("state").textContent = st; },
   onError: (m) => log(`<span class="bad">${esc(m)}</span>`),
 });
 // (Still waiting for an answer from before a reload; or helping, as kept.)
-if (request && !secret) waitForAnswer(request.for === "pause" ? "To pause the build" : "To help", request.for === "pause" ? null : startHelping);
-else if (helping) startHelping();
+if (request && !secret) {
+  if (request.for !== "pause") waiters.push(startHelping);
+  waitForAnswer(why(request));
+} else if (helping) startHelping();
 show();
 </script>
 </body>

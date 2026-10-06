@@ -1197,8 +1197,8 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   how much of the time was measured. No finish when nothing's left, when a new pass comes first,
   or while the units wait for the pass's heritage sites, reaches or buildings (the regions' work
   can't be listed): why instead.
-- **The history** (`coord::history`): the coordinator keeps what happened, the last week's, on the
-  build Mac's disk (`coord/history.jsonl`, a line an event, numbered): each job the build Mac
+- **The history** (`coord::history`): the coordinator keeps what happened, the last week's (50,000
+  events at most), on the build Mac's disk (`coord/history.jsonl`, a line an event, numbered): each job the build Mac
   started and ended (what it does, what it finished, how long, how it ended), each lease a worker took, handed
   back, failed or let lapse, each task done or failed, the rounds begun (their regions), the
   catalogs (the regions they added), the
@@ -1242,8 +1242,8 @@ and, when none fits it, units' last steps.
   a job on the last) it builds, since a step the newer app changed is built again once the build
   Mac's keys say so.
 - **The contact:** `state/coordinator.json`: the coordinator's addresses (Tailscale's, then the LAN
-  name) and a token (kept on the build Mac) every request carries; taken off the NAS when the agent
-  stops. A worker reads it again when it can't reach the coordinator or its token is refused.
+  name) and the token (kept on the build Mac) the agents' requests carry (a page helps with its
+  device's own key: docs/workers.md §7); taken off the NAS when the agent stops. A worker reads it again when it can't reach the coordinator or its token is refused.
 - **Leases:** work goes out on a lease (ten minutes, on the coordinator's own clock), renewed by a
   beat each minute while the work goes on, not while it's paused for its conditions (a helper beats
   through its client without the NAS too); a lapsed lease's work is offered again. While the build

@@ -600,7 +600,7 @@ function eventText(m, e, k = 1) {
     case "pause": return [`The build was paused by ${e.note}`, "warn"];
     case "resume": return ["The build went on", "ok"];
     case "worker": return [`${who}${e.note && e.note !== who ? ` (${e.note})` : ""} joined`, "run"];
-    case "device": return [`${who} ${e.note}`, /^asks/.test(e.note || "") ? "warn" : /^accepted|is a helper/.test(e.note || "") ? "ok" : ""];
+    case "device": return [`${who} ${e.note}`, /^accepted/.test(e.note || "") ? "ok" : ""];
     case "agent": return [`${who}'s agent started (${e.note})`, "run"];
     case "conditions": return [`${who}: ${e.note}`, /doesn't answer|battery|away/.test(e.note) ? "warn" : ""];
     default: return [`${e.kind} ${who} ${what}`, ""];

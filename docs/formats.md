@@ -463,12 +463,15 @@ class, id) within a tile. The client sends the id with the clicked point.
 - **Two Macs and other workers** (`docs/workers.md`):
   - `state/coordinator.json`: how to reach the build Mac's coordinator, `{urls: [Tailscale's, then
     the LAN name's, "http://…:8090"], token}`; there while its agent runs.
-  - On the build Mac, in the agent's folder, `coord/`: `token` (the build's own key, 32 hex digits,
-    mode 600: the Macs' agents and this Mac's menu bar and `scenic devices` use it), `page` (the build
-    page's address: the status bar's "Copy the Build Page's Address"), `devices.json` (`{list: [{id,
-    label, hash, from, asked, accepted, declined}]}`, mode 600: the devices that asked to help through
-    the page, `pipeline::coord::devices`, each secret's SHA-256 only; an accepted one's secret is its
-    key, declined ones kept ten minutes, unanswered asks a day, eight at most),
+  - On the build Mac, in the agent's folder, `coord/`: `workers-token` (the build's own key, 32 hex
+    digits, mode 600: the Macs' agents and this Mac's menu bar and `scenic devices` use it; `token`,
+    the one pages carried before devices asked, is removed as the agent starts), `page` (the build
+    page's address: the status bar's "Copy the Build Page's Address"), `devices.json` (`{list: [{ask,
+    id, label, hash, code, from, asked, accepted, declined}]}`, mode 600 from the start: the devices
+    that asked to help through the page, `pipeline::coord::devices`; `ask`, the ask's name, 16 hex
+    digits made by the coordinator and never again; `code`, the four digits its page shows; each
+    secret's SHA-256 only; an accepted one's secret is its key, declined ones kept ten minutes,
+    unanswered asks a day; a file that doesn't read is set aside as `devices.json.bad`),
     `leases.json` (`{next, leases: [{id, worker, work: {Job: {step, targets: [[target, key], …]}},
     progress}]}`: the jobs' leases), `costs.json` (`{unit: {peak_mb, secs}}`, `"<step> <target>"` for
     another shared step's job, and `"tail <unit>"` for a unit's last steps as a task),
