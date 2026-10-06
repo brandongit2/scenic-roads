@@ -782,8 +782,9 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     it: broken when it stands out more than 100 m, steeper over its footprint than terrain can be
     and towering over the ground around it; small spikes go too when two of three hold: walled, on
     flat or smoothly sloping ground, beside a blob taken or a ringing's pit under the sea.
-    Each stage judges the tile with what was found filled in, until one finds nothing (eight at
-    most), so its own output has nothing left to repair (`terrain --scan` checks it: §10, phase 7).
+    Each stage judges the tile with what was found filled in, until one finds nothing in AWS's
+    values and then in the tile as stored, so its own output has nothing left to repair
+    (`terrain --scan` checks it: §10, phase 7).
     It reads AWS's values, bathymetry and all, so stored tiles (at sea level) are never inputs.
   - **AWS's Arctic tiles** (z10 and z11 north of about 60°) have their sea surface 9 to 20 m up (on
     the ellipsoid), blocks of cloud over the sea, and voids its coarse layer fills at sea level (a
