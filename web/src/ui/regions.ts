@@ -6,7 +6,7 @@
 // or redrawn since, or waiting on this Mac to go to the NAS) is listed as pending.
 // On this Mac (docs/plan.md §4, "Mirror, per Mac"): each region's size and how much of it is here,
 // kept for offline use or not, the views kept, and the mirror's state (keep.ts).
-import { dropView, keepRegion, keepStatus, keepView, renameView, size, stateText, pct, type KeepStatus, type KeptView, type RegionKeep } from '../keep';
+import { dropView, keepRegion, keepStatus, keepView, renameView, size, stateText, pct, viewSize, type KeepStatus, type KeptView, type RegionKeep } from '../keep';
 import * as prefs from '../prefs';
 import {
   QUEUED, RegionLayers, RegionsError, addRegion, areaName, areaOutline, areasAt, editRegion, entryLabel, getCoverage, km2, levelName, listRegions, removeRegion, searchAreas, slug, validId,
@@ -80,8 +80,11 @@ export class RegionsPanel {
   private keepBtn = h('button', { class: 'pill', type: 'button', title: 'Keep the area in view on this Mac, for when it’s away from the NAS: its files are copied first and never let go of' }, 'Keep this view');
   private keepViews = h('div', { class: 'rg-list kp-views' });
   private keepMsg = h('div', { class: 'rg-msg' });
-  /** The mirror's state, as last asked (null: not yet), or why it couldn't be. */
+  /** Keep this view's question: the view's size, and keep it or not. */
+  private keepAsk = h('div', { class: 'rg-ask kp-ask' });
+  /** The mirror's state, as last asked (null: not yet), when (ms), or why it couldn't be. */
   private keep: KeepStatus | null = null;
+  private keepAt = 0;
   private keepErr = '';
   private keepTok = 0;
   private keepTimer = 0;
@@ -147,6 +150,7 @@ export class RegionsPanel {
       h('div', { class: 'pills' }, this.saveBtn, h('button', { class: 'pill', type: 'button', onclick: () => this.clearDraft() }, 'Clear')),
     );
     this.draftBox.hidden = true;
+    this.keepAsk.hidden = true;
     this.keepBtn.addEventListener('click', () => void this.keepThisView());
     this.nodes = [
       h('label', { class: 'tog', title: 'Every region’s outline on the map: the map is built within them' }, this.covBox, h('span', {}, 'Coverage on the map'), this.covCount),
@@ -155,6 +159,7 @@ export class RegionsPanel {
       h('div', { class: 'subhd', title: 'This Mac’s copy of the map, for when it’s away from the NAS' }, 'On this Mac'),
       this.keepSum,
       h('div', { class: 'kp-act' }, this.keepBtn),
+      this.keepAsk,
       this.keepViews,
       this.keepMsg,
       h('div', { class: 'subhd' }, 'Add a region'),
@@ -401,6 +406,7 @@ export class RegionsPanel {
     const tok = ++this.keepTok;
     try {
       this.keep = await keepStatus();
+      this.keepAt = Date.now();
       this.keepErr = '';
     } catch (e) {
       if (tok !== this.keepTok) return;
@@ -452,13 +458,18 @@ export class RegionsPanel {
       return;
     }
     const lines: HTMLElement[] = [];
+    // The last state asked, if asking again fails.
+    if (this.keepErr) {
+      const at = new Date(this.keepAt).toLocaleTimeString('en-CA', { hour: '2-digit', minute: '2-digit', hour12: false });
+      lines.push(h('div', { class: 'kp-line faint', title: this.keepErr }, `As of ${at}: the map server isn’t answering`));
+    }
     const cat = k.catalog ?? { bytes: 0, here: 0 };
     lines.push(h('div', { class: 'kp-line', title: 'The map’s files on this Mac, the disk’s free space, and the free space the mirror leaves (it lets files go to keep it)' },
       'This Mac: ', h('b', {}, size(cat.here)), ` of the map here (of ${size(cat.bytes)}) · `, h('b', {}, size(k.free ?? 0)), ` free · reserve ${size(k.reserve ?? 0)}`));
     const kept = k.kept;
     if (kept && kept.areas > 0) {
       const all = kept.here >= kept.bytes;
-      const doing = all ? 'all here' : kept.more > 0 ? `waiting for room · ${pct(kept)} %` : !k.online ? `${pct(kept)} % here · away from the NAS` : k.busy ? `${pct(kept)} % here · paused while the build Mac works` : `copying ${pct(kept)} %`;
+      const doing = all ? 'all here' : kept.more > 0 ? `waiting for room · needs ${size(kept.more)} more` : !k.online ? `${pct(kept)} % here · away from the NAS` : k.busy ? `${pct(kept)} % here · paused while the build Mac works` : `copying ${pct(kept)} %`;
       lines.push(h('div', { class: 'kp-line', title: 'Kept areas, with the basemap and the files every Mac keeps: copied first, never let go of' },
         `Kept · ${kept.areas} area${kept.areas === 1 ? '' : 's'} · ${size(kept.bytes)} · `, h('span', { class: all ? 'ok' : kept.more > 0 ? 'warn' : 'on' }, doing)));
       if (!all) {
@@ -467,12 +478,15 @@ export class RegionsPanel {
         lines.push(bar);
       }
     }
-    // Room: what the kept areas still lack, else how far the disk is under the reserve with
-    // everything that may go gone (what's kept stays).
+    // Room: what the kept areas still lack, how far the disk is under the reserve with all that may
+    // go gone, or that it's nearly full; what's kept stays (nothing kept goes by itself), named.
     const lacking = !!kept && kept.areas > 0 && kept.here < kept.bytes && kept.more > 0;
     const short = k.last?.short ?? 0;
-    if (lacking) lines.push(h('div', { class: 'kp-line warn' }, `Kept areas need ${size(kept!.more)} more room: free some space on this Mac, or keep less.`));
-    else if (short > 0) lines.push(h('div', { class: 'kp-line warn' }, `The disk is ${size(short)} short of the reserve with every file that may go gone${kept && kept.areas > 0 ? ' (what’s kept stays)' : ''}: nothing more is copied.`));
+    const free = k.free ?? 0, reserve = k.reserve ?? 0;
+    if (lacking || short > 0 || free < reserve) {
+      const head = lacking ? `Kept areas need ${size(kept!.more)} more room` : short > 0 ? `The disk is ${size(short)} short of the reserve with all that may go gone` : `The disk is nearly full: ${size(free)} free, under the reserve`;
+      lines.push(h('div', { class: 'kp-line warn' }, `${head}. What’s kept stays: ${this.keptNames(k)}. Free some space on this Mac${kept && kept.areas > 0 ? ', or keep less' : ''}.`));
+    }
     // What's going on, unless the Kept line says it.
     const keptSays = !!kept && kept.areas > 0 && kept.here < kept.bytes;
     if (k.copying) {
@@ -493,6 +507,20 @@ export class RegionsPanel {
     }
     this.keepSum.replaceChildren(...lines);
     this.renderViews(k.views);
+  }
+
+  /** What's kept here, named with its size: the biggest kept areas, the basemap while it's kept,
+   * and what every Mac keeps. */
+  private keptNames(k: KeepStatus): string {
+    const areas: [string, number][] = [
+      ...Object.values(k.regions).filter((r) => r.kept && r.bytes > 0).map((r): [string, number] => [r.name, r.bytes]),
+      ...k.views.map((v): [string, number] => [v.name, v.bytes]),
+    ].sort((a, b) => b[1] - a[1]);
+    const named = areas.slice(0, 3).map(([n, b]) => `${n} ${size(b)}`);
+    if (areas.length > 3) named.push(`${areas.length - 3} more`);
+    if (k.basemap?.kept && k.basemap.bytes > 0) named.push(`the basemap ${size(k.basemap.bytes)}`);
+    named.push(`what every Mac keeps ${size(k.essentials?.bytes ?? 0)}`);
+    return named.join(', ');
   }
 
   /** The kept views: listed again when they change, else their lines updated in place. */
@@ -555,21 +583,41 @@ export class RegionsPanel {
     void this.pollKeep();
   }
 
+  /** Keep this view: what it would take first (the ground on screen now), then keep it or not. */
   private async keepThisView() {
     const outline = this.viewOutline();
     if (outline.length < 3) return this.sayKeep('No ground in view to keep', true);
     this.keepBtn.disabled = true;
-    this.keepBtn.textContent = 'Keeping…';
+    this.sayKeep('');
+    const done = () => {
+      this.keepAsk.hidden = true;
+      this.keepBtn.disabled = false;
+    };
     try {
-      const v = await keepView(outline);
-      this.sayKeep(`Keeping “${v.name}” on this Mac (✎ renames it).`);
+      const z = await viewSize(outline);
+      const keep = h('button', { class: 'pill on', type: 'button' }, 'Keep');
+      keep.addEventListener('click', () => {
+        keep.disabled = true;
+        keep.textContent = 'Keeping…';
+        void keepView(outline)
+          .then((v) => this.sayKeep(`Keeping “${v.name}” on this Mac (✎ renames it).`), (e) => this.sayKeep(says(e), true))
+          .finally(() => {
+            done();
+            void this.pollKeep();
+          });
+      });
+      const cancel = h('button', { class: 'pill', type: 'button', onclick: done }, z.fits ? 'Cancel' : 'OK');
+      this.keepAsk.replaceChildren(
+        z.fits
+          ? h('div', {}, `This view: ${size(z.bytes)}${z.here ? ` (${size(z.here)} here)` : ''}. With what’s kept, ${size(z.need)} of the ${size(z.hold)} this Mac can hold.`)
+          : h('div', { class: 'warn' }, `Keeping this view takes ${size(z.need)} with what’s kept, and this Mac can hold ${size(z.hold)}: free some space, or keep a smaller view.`),
+        h('div', { class: 'pills' }, ...(z.fits ? [keep] : []), cancel),
+      );
+      this.keepAsk.hidden = false;
     } catch (e) {
       this.sayKeep(says(e), true);
-    } finally {
-      this.keepBtn.disabled = false;
-      this.keepBtn.textContent = 'Keep this view';
+      done();
     }
-    void this.pollKeep();
   }
 
   private renameKept(v: KeptView, row: HTMLElement, back: () => void) {

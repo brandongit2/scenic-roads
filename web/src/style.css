@@ -555,6 +555,9 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #layers .kp-act { display: flex; gap: 6px; margin: 6px 0 2px; }
 #layers .kp-act .pill:disabled { opacity: 0.6; }
 #layers .kp-views:empty { display: none; }
+#layers .kp-ask { margin: 4px 0 2px; color: var(--muted); }
+#layers .kp-ask .warn { color: #f3c77a; }
+#layers .kp-ask[hidden] { display: none; }
 #layers .rg-ask { display: grid; gap: 6px; padding: 2px 0; font-size: 11px; line-height: 1.45; }
 #layers .rg-ask .pills .pill, #layers .rg-draft .pills .pill { flex: 1; padding: 3px 8px; }
 #layers .rg-bad { color: #f3c77a; font-size: 10.5px; line-height: 1.4; padding: 2px 0; overflow-wrap: anywhere; }

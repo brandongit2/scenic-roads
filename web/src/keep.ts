@@ -71,6 +71,9 @@ export const keepRegion = (id: string, keep: boolean) => call<{ ok: boolean }>(`
 /** Keeps the ground in view; named after its most important place unless `name` (the server may
  * take a few seconds to name it). */
 export const keepView = (outline: [number, number][], name?: string) => call<{ id: string; name: string }>('/api/keep/views', json('POST', { outline, name }));
+/** What keeping a view would take: its own files (`bytes`, `here` of them), all that would be kept
+ * with it (`need`), and what this Mac can hold (`hold`). */
+export const viewSize = (outline: [number, number][]) => call<{ bytes: number; here: number; need: number; hold: number; fits: boolean }>('/api/keep/views/size', json('POST', { outline }));
 export const renameView = (id: string, name: string) => call<{ ok: boolean; name: string }>(`/api/keep/views/${encodeURIComponent(id)}`, json('PUT', { name }));
 export const dropView = (id: string) => call<{ ok: boolean }>(`/api/keep/views/${encodeURIComponent(id)}`, { method: 'DELETE' });
 
