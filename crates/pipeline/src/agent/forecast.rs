@@ -7,15 +7,15 @@
 //! it can do now, the slope, tree cover and the chains' work), its second job the first of its
 //! steps (crate::agent::SECOND: the trains' and the landmarks' network steps, the candidates and
 //! peaks, then units and slope) that fits beside it, each helper the far end of the first shared
-//! step with work it can do that fits its memory (slope once its area's terrain is built, a unit
-//! once its region's terrain is). The trains' and the landmarks' chains run from the start, each
-//! step once what it reads is built. A round of publishing goes out as the plan makes one: once a
-//! region not on the map is done, at most hourly (its slope and tree cover first, then the round's
-//! chain); after the last unit and terrain area, the slope and tree cover left, the last round,
-//! then the overlays and a catalog with what the chains made since. Each target takes its last
-//! run's time (else its step's mean, else a first guess), at the speed measured for the machine
-//! doing it. It's run three times: as estimated, and for a range, the times measured a little off
-//! and those guessed much more.
+//! step with work it can do that fits its memory (terrain's near end: the next region's; slope once
+//! its area's terrain is built, a unit once its region's terrain is). The trains' and the
+//! landmarks' chains run from the start, each step once what it reads is built. A round of
+//! publishing goes out as the plan makes one: once a region not on the map is done, at most hourly
+//! (its slope and tree cover first, then the round's chain); after the last unit and terrain area,
+//! the slope and tree cover left, the last round, then the overlays and a catalog with what the
+//! chains made since. Each target takes its last run's time (else its step's mean, else a first
+//! guess), at the speed measured for the machine doing it. It's run three times: as estimated, and
+//! for a range, the times measured a little off and those guessed much more.
 
 use super::build::RegionLeft;
 use serde::{Deserialize, Serialize};
@@ -364,8 +364,12 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
             end
         };
         if mac.helper {
-            // The far end of the first shared step it can do.
-            let pick = SHARED.iter().find_map(|s| (0..items.len()).rev().find(|&i| items[i].shared && items[i].step == *s && items[i].cost.peak_mb <= mac.mem_mb && runnable(&items, i, t)));
+            // The far end of the first shared step it can do (terrain's near end: the build Mac's
+            // next units wait on it, as crate::coord picks).
+            let pick = SHARED.iter().find_map(|s| {
+                let fits = |&i: &usize| items[i].shared && items[i].step == *s && items[i].cost.peak_mb <= mac.mem_mb && runnable(&items, i, t);
+                if *s == "terrain" { (0..items.len()).find(fits) } else { (0..items.len()).rev().find(fits) }
+            });
             free[m] = match pick {
                 Some(i) => take(&mut items, i, t),
                 None => next_end(&items, &free, m, t),
@@ -688,6 +692,14 @@ mod tests {
         // b done at 1,800: the last of the regions', so the last round goes out at once after.
         assert_eq!((f.regions[1].ready_at, f.regions[1].map_at), (Some(1_000_000 + 1800), Some(1_000_000 + 2400)));
         assert!(!f.rounds[0].last && f.rounds[1].last && f.rounds[1].regions == ["b"]);
+    }
+
+    #[test]
+    fn a_helper_takes_the_next_regions_terrain_not_the_last_ones() {
+        let regions = [region("a", &["3/1/1"], &["6/8/8"], &[]), region("b", &["3/2/2"], &["6/16/16"], &[]), region("c", &["3/3/3"], &["6/24/24"], &[])];
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost));
+        // The build Mac takes a's terrain; the M1 b's (whose units the build Mac builds next), not c's.
+        assert_eq!(f.next["m1"].first().map(|n| (n.step.as_str(), n.targets[0].as_str())), Some(("terrain", "3/2/2")));
     }
 
     #[test]
