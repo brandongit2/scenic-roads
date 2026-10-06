@@ -56,6 +56,24 @@ a lead that vanishes loses no work.
    live as long as the job, whoever leads; a page takes them from that member directly.
 8. **Any number of Macs, any number of pages.** Nothing counts Macs or names "the other one".
 
+Principle 2 as the build stands (on a Mac, in `~/Library/Application Support/scenic/`: its agent's
+folder, `agent/`, and the app's, `app/`; plan.md §3–4 and formats.md say more). Of the last
+three rows, a job's progress is work in progress, as the principle allows; the coordinator's and
+the lead's own state are on the build Mac's disk alone, the coordinator's until phase 1 (§12) puts
+it on the NAS. The rest a new lead has from the NAS, or makes again.
+
+| State | Its truth | On a Mac | A new lead |
+| --- | --- | --- | --- |
+| The records (manifest, job keys, pending uploads), what's built, the catalogs | the NAS: `state/build/`, the content-named files | copies: the mirror, the pack cache (`agent/cache/base/`), `agent/cache/blobs/`, scenic-build's of the summits and the z8 terrain | reads them there |
+| Downloads: the planet, Planetiler's data, the canopy squares, AWS's raw terrain tiles, FABDEM, the leaf types, Overture's boxes, the pageview months, the rail feeds; and what today's build left, imported: the registers' snapshot, the DEM seed | the NAS: `sources/`, each fetched once | copies in its cache, filled from the NAS when missing (room-making empties the cheap ones) | nothing: they fill again |
+| The Wikidata and Wikipedia answers of a pass (the items job's, the heritage chain's) | the NAS: `sources/items/<date>/answers.tar.zst`, `heritage-<id>.tar.zst` (crate::answers) | `agent/cache/items/`, `agent/cache/heritage-<date>-<id>/`, made one with the NAS's as a run starts and sent as it ends | nothing: its first run takes them |
+| What units keep for their later runs | the NAS: `cache/dem-units/`, `cache/scenic-units/` | none (its next unit job moves any there) | nothing |
+| Made from the NAS's data and kept: the heritage chain's clip of the filtered planet (22 GB on the build Mac), the trains' stop pairs | made again from the NAS | its cache | its first runs make them again (the clip: an hour of osmium) |
+| The Python steps' environment | the app's lock file (`dem/uv.lock`) | `app/<version>/dem/.venv`, which uv makes from it (from uv's cache, else PyPI) | its first Python step makes it |
+| A job's progress: the OSM pass's stages, the buildings scan's parts (Overture's, ~40 GB), a rail-feeds run's zips not yet put, raw tiles not yet packed | the Mac running it, until the job puts its results on the NAS | its scratch folders and cache | planned: offered to that Mac alone (§7.2, Resuming); else done again |
+| The coordinator's: the workers' token and devices, leases, costs, the history, the hand-offs not yet merged, the pause (mirrored to `state/build/pause.json`) | the build Mac's disk alone (a helper's hand-off, the helper's until it's sent) | `agent/coord/` (`journal/`: the hand-offs taken); a helper's `agent/outbox/` | planned (phase 1): on the NAS, per term (§6.2, §7.3, §7.5, §8); today, none: pages ask again, costs are first guesses, unmerged hand-offs are built again |
+| The lead's own: the round under way, its retries, the daily jobs' last runs | the build Mac's disk alone | `agent/round.json`, `agent/state.json` | not in the phases yet: the next round begins afresh, failed jobs may run again at once |
+
 ## 3. What the NAS gives us
 
 The design rests on what the share (SMB 3, Synology, macOS clients) does and doesn't promise.
