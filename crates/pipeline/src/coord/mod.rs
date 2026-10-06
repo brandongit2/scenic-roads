@@ -77,10 +77,13 @@ fn is_zero(v: &u32) -> bool {
 
 /// The way a step runs now, as far as its memory goes: a cost measured another way says nothing of
 /// what a run takes now (terrain 2 and slope 2: each z6 tile's pack written as it's made, where
-/// they held their whole area's).
+/// they held their whole area's; tree cover 1: the trees program, a band of a block's rows at a
+/// time on each thread, where trees.py's workers each held a block's every zoom-12 value, 12 to
+/// 36 GB together).
 pub fn cost_version(step: &str) -> u32 {
     match step {
         "terrain" | "slope" => 2,
+        "trees" => 1,
         _ => 0,
     }
 }

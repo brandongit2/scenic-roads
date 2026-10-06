@@ -10,10 +10,11 @@ use anyhow::{ensure, Context, Result};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// A temporary name beside `path`.
+/// A temporary name beside `path` (in WebAssembly, which has no processes, process 0's: a task's
+/// folder is its own).
 pub fn tmp_name(path: &Path) -> PathBuf {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    path.with_file_name(format!("{name}.{}.{}.tmp", crate::agent::cond::host(), std::process::id()))
+    path.with_file_name(format!("{name}.{}.{}.tmp", crate::agent::cond::host(), store::sys::pid()))
 }
 
 /// Whether `p` is a temporary file (these, or another program's `.part`).

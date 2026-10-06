@@ -222,14 +222,16 @@ fn terrain_reads(id: &str, p: &Path) -> bool {
 }
 
 /// The memory a shared step's job is expected to take (MB) before one has run for its target and
-/// said (`SCENIC_COSTS`): tree cover runs six workers at once, each with its block's canopy, so it
-/// doesn't go to a helper until its own run shows it fits; slope holds a z6 tile's tiles at a time
-/// (crate::slope_pack: under a GB, where holding its whole area's took up to 20 GB), 2 GB; peaks,
-/// room to spare; a step shared later, 1.5 GB until it's measured. (Units and candidates are offered
-/// by their piece's size, crate::coord::job_peak; terrain by its area's size, `terrain_peak`.)
+/// said (`SCENIC_COSTS`): tree cover's program holds a band of a block's rows on each thread and
+/// the blocks made but not yet written (crate::trees: 1.05 GB on 14 threads for 3/2/2's 792 blocks
+/// and for 3/4/2's 79, 2026-10-05), 2.5 GB with the job's own; slope holds a z6 tile's tiles at a
+/// time (crate::slope_pack: under a GB, where holding its whole area's took up to 20 GB), 2 GB;
+/// peaks, room to spare; a step shared later, 1.5 GB until it's measured. (Units and candidates are
+/// offered by their piece's size, crate::coord::job_peak; terrain by its area's size,
+/// `terrain_peak`.)
 fn first_peak(step: &str) -> u64 {
     match step {
-        "trees" => 8000,
+        "trees" => 2500,
         "slope" => 2000,
         "peaks" => 2500,
         _ => 1500,
