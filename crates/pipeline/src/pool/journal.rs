@@ -248,6 +248,12 @@ impl Mine {
         self.unwritten.keys()
     }
 
+    /// Its hand-offs not written yet, alone: what another member id (this Mac's member file lost)
+    /// keeps of them, the same bytes whoever writes them.
+    pub fn unwritten_only(self) -> Mine {
+        Mine { entries: BTreeMap::new(), unwritten: self.unwritten }
+    }
+
     /// Notes entry `key` written.
     pub fn wrote(&mut self, key: &str) {
         self.entries.entry(key.to_string()).or_insert(None);

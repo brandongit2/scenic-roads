@@ -412,7 +412,9 @@ fn first_to_try(a: &Member, b: &Member) -> Ordering {
 
 impl Driver {
     /// The driver of member `me` (its app the process's), holding its lock, from what it saved
-    /// last: nothing of it when it's another member's, or names none (lost, or never saved).
+    /// last. Another member's state (a copy of the agent's folder, or this Mac's member file lost
+    /// and a new id made), or one naming none (lost, or never saved), counts for nothing but its
+    /// jobs' hand-offs not written yet: those are written, the same bytes whoever writes them.
     pub fn new(me: Member, saved: Saved, lock: MemberLock) -> Driver {
         Driver { lock: Some(lock), ..Driver::without(me, saved) }
     }
@@ -425,7 +427,7 @@ impl Driver {
 
     fn without(me: Member, saved: Saved) -> Driver {
         let known = saved.member == me.id;
-        let saved = if known { saved } else { Saved { member: me.id.clone(), ..Default::default() } };
+        let saved = if known { saved } else { Saved { member: me.id.clone(), mine: saved.mine.unwritten_only(), ..Default::default() } };
         let passing = saved.passing.clone().map(|(own, passed, hand)| Passing { own, passed, hand, records: None });
         Driver { me, lock: None, stopped: None, cur: Current::default(), saved, known, lead: None, passing, taking: None, spare: None, must: None, slept: false, clocks: None, due: None, asked: None, asks: 0, swept: 0, handed_by: BTreeMap::new(), restarted: true, first: None, stood: None }
     }
@@ -692,7 +694,7 @@ impl Driver {
                 // merged too, so a sweep's step is caught up. Not after a sleep: what was written
                 // meanwhile, told to it and lost, a listing finds.)
                 if let Some(n) = self.lead.as_mut() {
-                    (n.told, n.waiting, n.unreadable) = (l.told, l.waiting, l.unreadable);
+                    (n.told, n.waiting, n.unreadable, n.refused) = (l.told, l.waiting, l.unreadable, l.refused);
                     if l.listed_at.is_some() && !slept {
                         n.listed_at = l.listed_at;
                         (self.due, self.asked) = (due, asked);
@@ -871,17 +873,17 @@ impl Driver {
         }
         if l.dirty {
             match l.records.save(io) {
-                Ok(()) => {
-                    l.dirty = false;
-                    for (k, why) in std::mem::take(&mut l.refused) {
-                        // (Named refused in the records saved: a note not made now is only the
-                        // owner's loss.)
-                        if let Err(err) = journal::note_refusal(io, &k, &why) {
-                            out.events.push(Event::Failed { what: "note a refusal", why: format!("{k}: {err:#}") });
-                        }
-                    }
-                }
+                Ok(()) => l.dirty = false,
                 Err(err) => out.events.push(Event::Failed { what: "save the records", why: format!("term {e}: {err:#}") }),
+            }
+        }
+        // Refusals its saved records name (this step's, or an earlier one's, a re-assertion's take-up
+        // saving them): noted for the owner. (A note not made now is only the owner's loss.)
+        if !l.dirty {
+            for (k, why) in std::mem::take(&mut l.refused) {
+                if let Err(err) = journal::note_refusal(io, &k, &why) {
+                    out.events.push(Event::Failed { what: "note a refusal", why: format!("{k}: {err:#}") });
+                }
             }
         }
         // Acknowledged: what a saved snapshot names, and what's of days forgotten.
@@ -1237,18 +1239,20 @@ mod tests {
     const C: &str = "m-000000000000000c";
 
     /// One Mac's view of the shared NAS, with its own clocks; while `down`, its reads of paths
-    /// holding `fail` (of every path, when None) fail: the share doesn't answer them.
+    /// holding `fail` (of every path, when None) fail: the share doesn't answer them; and its whole
+    /// writes of paths holding `wfail` fail.
     struct Mac<'a> {
         mem: &'a Mem,
         wall: Cell<u64>,
         awake: Cell<u64>,
         down: Cell<bool>,
         fail: std::cell::RefCell<Option<String>>,
+        wfail: std::cell::RefCell<Option<String>>,
     }
 
     impl<'a> Mac<'a> {
         fn new(mem: &'a Mem) -> Mac<'a> {
-            Mac { mem, wall: Cell::new(T0), awake: Cell::new(1_000), down: Cell::new(false), fail: Default::default() }
+            Mac { mem, wall: Cell::new(T0), awake: Cell::new(1_000), down: Cell::new(false), fail: Default::default(), wfail: Default::default() }
         }
 
         /// Time passes, awake.
@@ -1263,6 +1267,9 @@ mod tests {
             self.mem.create_new(path, bytes)
         }
         fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
+            if self.wfail.borrow().as_deref().is_some_and(|f| path.contains(f)) {
+                anyhow::bail!("write {path}: the share doesn't answer");
+            }
             self.mem.write_whole(path, bytes)
         }
         fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
@@ -1563,6 +1570,52 @@ mod tests {
         assert!(why.as_deref().is_some_and(|w| w.contains("not read whole")), "{why:?}");
         assert_eq!(journal::refusal(&mem, &key).unwrap(), why, "noted for the owner");
         assert!(o.send.iter().any(|(to, m)| to == B && matches!(m, Msg::Ack { keys, .. } if keys.contains(&key))), "{:?}", o.send);
+    }
+
+    #[test]
+    fn a_lost_member_files_unwritten_hand_offs_are_kept() {
+        // This Mac's member file lost, a new id made (D), its saved state A's: a hand-off its
+        // jobs left unwritten is written and merged, the same bytes; what A led counts for nothing.
+        // (Re-review F5.)
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let e = entry(A, 1, 4, "6-1-1");
+        let key = e.key().unwrap();
+        let mut saved = Saved { member: A.into(), led: 3, stood_down: Some(3), ..Default::default() };
+        saved.mine.add(e).unwrap();
+        let d = "m-000000000000000d";
+        let mut dr = Driver::unlocked(member(d, "Mac-mini", V1), saved);
+        let s = dr.saved();
+        assert_eq!((s.member.as_str(), s.led, s.stood_down, s.mine.unwritten().count()), (d, 0, None, 1));
+        assert_eq!(step(&mut dr, &ia, able()).leads, Some(1));
+        assert!(matches!(journal::read(&mem, &key).unwrap(), journal::Read::Entry(_)), "written");
+        assert!(Records::load(&mem, 1).unwrap().unwrap().handles(&key), "merged");
+    }
+
+    #[test]
+    fn a_re_assertion_keeps_the_refusals_it_has_yet_to_note() {
+        // A refuses an entry B told it of, and its save of the records naming the refusal fails;
+        // it re-asserts before a sweep, its take-up saving them: the refusal is noted for the
+        // owner. (Re-review F6: dropped with what the re-assertion didn't keep.)
+        let mem = Mem::default();
+        setup(&mem);
+        let ia = Mac::new(&mem);
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let list = step(&mut a, &ia, able()).list.unwrap();
+        ia.pass(20);
+        step(&mut a, &ia, Heard { listed: Some(Listed { n: list.n, keys: vec![] }), ..able() });
+        let key = entry(B, 1, 3, "6-1-1").key().unwrap();
+        mem.write_whole(&journal::path(&key), b"{\"not\": \"an entry\"}").unwrap();
+        *ia.wfail.borrow_mut() = Some("records".into());
+        ia.pass(20);
+        step(&mut a, &ia, Heard { msgs: vec![(B.into(), Msg::Tell(vec![key.clone()]))], ..able() });
+        assert_eq!(journal::refusal(&mem, &key).unwrap(), None, "its records not saved");
+        *ia.wfail.borrow_mut() = None;
+        ia.pass(20);
+        let o = step(&mut a, &ia, Heard { reassert: true, ..able() });
+        assert_eq!(o.leads, Some(2), "{:?}", o.events);
+        assert!(journal::refusal(&mem, &key).unwrap().is_some_and(|w| w.contains("isn't an entry")), "noted");
     }
 
     #[test]
