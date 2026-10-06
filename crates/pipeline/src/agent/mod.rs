@@ -681,9 +681,9 @@ pub struct Agent {
     /// The build Mac's: the helpers' last trim, clear or declined ask noted in the history (its
     /// time), and what their last trim kept, by host.
     helper_caches: BTreeMap<String, (u64, u64)>,
-    /// Jobs an earlier agent left that couldn't be shown stopped (jobs::Orphan): their process groups
-    /// and ids, running work until they're gone.
-    orphans: Vec<(i32, String)>,
+    /// Jobs an earlier agent left that couldn't be shown stopped (jobs::Orphan): their process
+    /// groups, running work while they're still the jobs' (jobs::Group::is_the_jobs).
+    orphans: Vec<jobs::Group>,
     /// The conditions the last loop saw: a change is noted in the history (crate::coord::history).
     last_cond: Option<Conditions>,
     /// The last plan's forecast (crate::agent::forecast), and the last catalog it read, for the
@@ -1309,11 +1309,21 @@ impl Agent {
                 std::thread::sleep(Duration::from_secs(1));
             }
         }
-        // A trim or a clear under way: ended at its next file (also when a newer app takes over) and
-        // waited for; the next agent does it again, or takes the ask up again.
+        // A trim or a clear under way: asked to end at its next file (also when a newer app takes
+        // over), and waited for a minute at most: a call to a NAS that hangs may not return, and
+        // the launcher waits for the agent. Left mid-way, nothing's lost: copies are written by
+        // temporary names, a raw tile goes only once its archive is named in the index (one put up
+        // and never named goes a day later), and a clear's ask stays aside (`room::CLEAR_TAKEN`).
+        // The next agent trims again, or takes the ask up again.
         if let Some(t) = self.caches_task.take() {
             STOP.store(true, Ordering::SeqCst);
-            self.caches_done(t, None);
+            let waited = Instant::now();
+            while !t.thread.is_finished() && waited.elapsed() < Duration::from_secs(60) {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            if !t.thread.is_finished() {
+                eprintln!("agent: this Mac's caches' {} hasn't ended in a minute; left to the next agent", if t.ask.is_some() { "clear" } else { "trim" });
+            }
         }
         let root = self.o.root.clone().or_else(|| self.root());
         for k in 0..SLOTS {
@@ -2124,7 +2134,7 @@ impl Agent {
                 self.caches_task = Some(t);
                 return self.caches_busy();
             }
-            self.caches_done(t, root);
+            self.caches_done(t);
         }
         let why = self.caches_why_not(root);
         // (Not a dry run's, in another agent's folder: the real agent's to do.)
@@ -2134,28 +2144,28 @@ impl Agent {
         let (cache, sources) = (self.o.home.join("cache"), root.map(|r| r.join("sources")));
         if let Some(ask) = room::take_clear(&self.o.home) {
             match (&why, sources) {
-                (None, Some(s)) => self.caches_start(Some(ask), root, move || room::clear(&cache, &s)),
-                _ => self.caches_record(room::Freed { why_not: why.clone(), ..Default::default() }, Some(ask), root),
+                (None, Some(s)) => self.caches_start(Some(ask), move || room::clear(&cache, &s)),
+                _ => self.caches_record(room::Freed { why_not: why.clone(), ..Default::default() }, Some(ask)),
             }
         } else if let Some(s) = sources.filter(|_| why.is_none() && home && self.trim_due() && self.trim_failed.is_none_or(|t| t.elapsed() >= Duration::from_secs(600))) {
             // (The build Mac keeps its canopy squares: every pass's areas read them again.)
             let (squares, helper) = (cache.join("chm10"), self.o.helper);
-            self.caches_start(None, root, move || room::trim(&cache, &s, &|p| !helper && p.starts_with(&squares)));
+            self.caches_start(None, move || room::trim(&cache, &s, &|p| !helper && p.starts_with(&squares)));
         }
         // (One loop at a time, `--once`: waited for, so its heartbeat says what it did.)
         if self.o.once {
             if let Some(t) = self.caches_task.take() {
-                self.caches_done(t, root);
+                self.caches_done(t);
             }
         }
         self.caches_busy().or(why)
     }
 
     /// Starts a trim or a clear (`ask`) on a thread of its own; one that can't start is a failure.
-    fn caches_start(&mut self, ask: Option<room::ClearRequest>, root: Option<&Path>, work: impl FnOnce() -> Result<room::Freed> + Send + 'static) {
+    fn caches_start(&mut self, ask: Option<room::ClearRequest>, work: impl FnOnce() -> Result<room::Freed> + Send + 'static) {
         match std::thread::Builder::new().name("caches".into()).spawn(work) {
             Ok(thread) => self.caches_task = Some(CachesTask { ask, began: Instant::now(), thread }),
-            Err(e) => self.caches_failed(anyhow::anyhow!("its thread didn't start: {e}"), ask, root),
+            Err(e) => self.caches_failed(anyhow::anyhow!("its thread didn't start: {e}"), ask),
         }
     }
 
@@ -2165,25 +2175,24 @@ impl Agent {
         Some(format!("this Mac's caches are being {} ({} min so far): nothing starts here until that's done", if t.ask.is_some() { "cleared" } else { "trimmed" }, t.began.elapsed().as_secs() / 60))
     }
 
-    /// A trim or a clear done (waited for, when it isn't yet), its result recorded (the caches
-    /// counted again with the NAS at `root`). Asked to stop midway: nothing kept, the trim done
-    /// again by the next agent, the ask left for it.
-    fn caches_done(&mut self, t: CachesTask, root: Option<&Path>) {
+    /// A trim or a clear done (waited for, when it isn't yet), its result recorded. Asked to stop
+    /// midway: nothing kept, the trim done again by the next agent, the ask left for it.
+    fn caches_done(&mut self, t: CachesTask) {
         let r = t.thread.join().unwrap_or_else(|_| Err(anyhow::anyhow!("it failed midway")));
         if stopping() {
             return;
         }
         match r {
-            Ok(f) => self.caches_record(f, t.ask, root),
-            Err(e) => self.caches_failed(e, t.ask, root),
+            Ok(f) => self.caches_record(f, t.ask),
+            Err(e) => self.caches_failed(e, t.ask),
         }
     }
 
     /// A trim or a clear that failed: a clear's ask answered with why; a trim tried again in ten
     /// minutes.
-    fn caches_failed(&mut self, e: anyhow::Error, ask: Option<room::ClearRequest>, root: Option<&Path>) {
+    fn caches_failed(&mut self, e: anyhow::Error, ask: Option<room::ClearRequest>) {
         match ask {
-            Some(ask) => self.caches_record(room::Freed { why_not: Some(format!("{e:#}")), ..Default::default() }, Some(ask), root),
+            Some(ask) => self.caches_record(room::Freed { why_not: Some(format!("{e:#}")), ..Default::default() }, Some(ask)),
             None => {
                 eprintln!("agent: trimming the caches: {e:#}; trying again in ten minutes");
                 self.trim_failed = Some(Instant::now());
@@ -2194,7 +2203,7 @@ impl Agent {
     /// What a trim (`ask` None) or a clear did, or why a clear wasn't done: logged, kept for the
     /// status (a clear declined apart from the last one done), noted in the history (a trim only
     /// when it freed something or what it keeps changed), a clear's ask answered.
-    fn caches_record(&mut self, mut f: room::Freed, ask: Option<room::ClearRequest>, root: Option<&Path>) {
+    fn caches_record(&mut self, mut f: room::Freed, ask: Option<room::ClearRequest>) {
         f.at = now_s();
         if let Some(a) = &ask {
             (f.asked, f.by) = (Some(a.at), Some(a.by.clone()));
@@ -2215,7 +2224,7 @@ impl Agent {
             room::clear_answered(&self.o.home);
         }
         if done {
-            self.count_caches(root);
+            self.count_caches();
         }
     }
 
@@ -2243,9 +2252,9 @@ impl Agent {
         if let Some(r) = self.slots.iter().find_map(|s| s.running.as_ref()) {
             return Some(format!("a job runs here ({})", r.spec.what));
         }
-        self.orphans.retain(|(g, _)| !crate::sys::group_members(*g).is_empty());
-        if let Some((_, id)) = self.orphans.first() {
-            return Some(format!("a job an earlier agent left still runs here ({id})"));
+        self.orphans.retain(jobs::Group::is_the_jobs);
+        if let Some(g) = self.orphans.first() {
+            return Some(format!("a job an earlier agent left still runs here ({})", g.id));
         }
         let Some(root) = root else { return Some("the NAS isn't reachable".into()) };
         let since = self.mem.worked_at;
@@ -2283,10 +2292,11 @@ impl Agent {
         }
     }
 
-    /// Counts this Mac's caches again now (after a trim or a clear; the NAS at `root`), for the
-    /// status, and what a helper's can free before it next asks for work.
-    fn count_caches(&mut self, root: Option<&Path>) {
-        let n = room::sizes(&self.o.home.join("cache"), self.o.helper, root);
+    /// Counts this Mac's caches again now (after a trim or a clear), for the status, and what a
+    /// helper's can free before it next asks for work. (Not asking the NAS anything: on the loop, a
+    /// NAS hanging then would hold it; links aside, the counting thread's checks are its.)
+    fn count_caches(&mut self) {
+        let n = room::sizes(&self.o.home.join("cache"), self.o.helper, None);
         *self.cache_size.lock().unwrap() = (Some(Instant::now()), Some(n));
         self.cheap = None;
     }
@@ -3947,12 +3957,51 @@ mod tests {
         *a.forecast.borrow_mut() = Some(forecast_now(true));
         // (A process group of its own, as a job's.)
         let mut left = std::process::Command::new("/bin/sh").args(["-c", "sleep 30"]).process_group(0).spawn().unwrap();
-        a.orphans.push((left.id() as i32, "unit 6/1/1".into()));
+        let pgid = left.id() as i32;
+        let group = |leader_start: u64| jobs::Group { pgid, leader_start, started: now_s() - 5, id: "unit 6/1/1".into() };
+        // Its group's id another program's now (another leader's start time): not the job's.
+        a.orphans.push(group(1));
+        assert_eq!(a.tend_caches(Some(&root), true), None);
+        assert!(a.orphans.is_empty());
+        // The job's: held while it runs, not once it's gone.
+        a.orphans.push(group(crate::sys::process_start(pgid).unwrap()));
         assert_eq!(a.tend_caches(Some(&root), true).as_deref(), Some("a job an earlier agent left still runs here (unit 6/1/1)"));
         left.kill().unwrap();
         left.wait().unwrap();
         assert_eq!(a.tend_caches(Some(&root), true), None);
         assert!(a.orphans.is_empty());
+    }
+
+    #[test]
+    fn an_ask_during_a_trim_waits_for_it_then_clears() {
+        // (The review's case.)
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let c = home.join("cache");
+        put(&c.join("base/base/6-1-1.0000000000000001.base"), &[1; 500]);
+        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: false, helper: false }).unwrap();
+        *a.forecast.borrow_mut() = Some(forecast_now(true));
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        a.caches_task = Some(CachesTask { ask: None, began: Instant::now(), thread: std::thread::spawn(move || wait.recv().map(|()| room::Freed::default()).map_err(anyhow::Error::from)) });
+        room::request_clear(&home, "scenic clean on m4").unwrap();
+        let settle = |a: &mut Agent| {
+            while a.caches_task.as_ref().is_some_and(|t| !t.thread.is_finished()) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        };
+        // The ask waits for the trim under way; once it's done, it's taken up, and cleared.
+        a.tend_caches(Some(&root), true);
+        assert!(home.join(room::CLEAR_REQUEST).exists());
+        go.send(()).unwrap();
+        settle(&mut a);
+        a.tend_caches(Some(&root), true);
+        assert!(a.caches_task.as_ref().is_some_and(|t| t.ask.is_some()) && a.mem.trimmed.is_some());
+        settle(&mut a);
+        a.tend_caches(Some(&root), true);
+        assert!(a.mem.cleared.as_ref().is_some_and(|f| f.why_not.is_none() && f.freed.get("base") == Some(&500)));
+        assert!(!c.join("base").exists());
     }
 
     #[test]

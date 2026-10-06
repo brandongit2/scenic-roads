@@ -1219,10 +1219,13 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     answer.
   - A trim or a clear runs on a thread of the agent's own: its loop goes on beating, and no job
     starts on the Mac until it's done.
-  - Nothing goes through a link: a cache folder that's a link, or one in the NAS's project folder
-    by its real path, is left as it is (and not counted), so the NAS's own files never go.
-  - Room-making, a trim and a clear each end early when the agent is asked to stop (the trim runs
-    again under the next agent, and the ask stays for it).
+  - Nothing goes through a link: a folder or file of the caches that's a link, at any depth (the
+    raw tiles' packer passes them over too), or a folder in the NAS's project folder by its real
+    path, is left as it is (and not counted), so the NAS's own files never go.
+  - Room-making, a trim and a clear each end early when the agent is asked to stop (the raw tiles'
+    packing between tiles); an agent that exits waits a minute at most for a trim or a clear under
+    way (a hung NAS call may not return), since nothing's lost left mid-way. The trim runs again
+    under the next agent, and the ask stays for it.
 - **Units run in map order** (by 10° square, then tile), so what one unit fetches serves the next.
 - **Retries:** a failed job is retried after 10 minutes, doubling to 6 hours. The orphans of a crashed
   agent are stopped at start (only when their leader's start time proves them ours, or the leader is

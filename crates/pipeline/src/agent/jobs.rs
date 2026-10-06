@@ -204,13 +204,36 @@ fn stop_group(pgid: i32, grace: Duration, mut reap: impl FnMut()) {
 }
 
 /// What `stop_orphan` found of a job an earlier agent left: its step's targets and keys and where
-/// it noted those it finished (when it said), and its process group and id while it can't be shown
-/// stopped (some of it outlived the kill, or an old record can't tell it from another's): work
-/// still running here, until the group is gone.
+/// it noted those it finished (when it said), and its process group while it can't be shown
+/// stopped (some of it outlived the kill): work still running here, until the group is gone.
 #[derive(Default)]
 pub struct Orphan {
     pub done: Option<(super::build::Work, PathBuf)>,
-    pub left: Option<(i32, String)>,
+    pub left: Option<Group>,
+}
+
+/// A job's process group as its record has it: its id, its leader's start time and the job's own,
+/// and the job's id.
+#[derive(Clone, Debug)]
+pub struct Group {
+    pub pgid: i32,
+    pub leader_start: u64,
+    pub started: u64,
+    pub id: String,
+}
+
+impl Group {
+    /// Whether the group is still the job's: its leader the process the job started; or, the
+    /// leader gone, every member started after the job did (a group id isn't reused while any
+    /// member lives, and is once none does).
+    pub fn is_the_jobs(&self) -> bool {
+        let members = if self.pgid > 1 { group_members(self.pgid) } else { Vec::new() };
+        !members.is_empty()
+            && match process_start(self.pgid) {
+                Some(t) => self.leader_start != 0 && t == self.leader_start,
+                None => members.iter().all(|&p| process_start(p).is_some_and(|t| t + 2 >= self.started)),
+            }
+    }
 }
 
 /// Stops a job left running by an agent that ended without stopping it (a crash, a kill), from its
@@ -221,23 +244,11 @@ pub fn stop_orphan(record: &Path) -> Orphan {
     let mut found = Orphan::default();
     if let Ok(r) = serde_json::from_slice::<Record>(&b) {
         found.done = r.work.clone().zip(r.done_file.clone());
-        let members = if r.pgid > 1 { group_members(r.pgid) } else { Vec::new() };
-        // Ours when the leader is the process we started; or, the leader gone, when every member
-        // started after the job did (a group id isn't reused while any member lives).
-        let ours = !members.is_empty()
-            && match process_start(r.pgid) {
-                Some(t) => r.leader_start != 0 && t == r.leader_start,
-                None => members.iter().all(|&p| process_start(p).is_some_and(|t| t + 2 >= r.started)),
-            };
-        if ours {
-            eprintln!("agent: stopping {} left running by an earlier agent (group {})", r.id, r.pgid);
-            stop_group(r.pgid, Duration::from_secs(30), || {});
-        }
-        // (A record from before leaders' start times were kept can't tell the job's group from
-        // another's that took its id.)
-        let unknown = !members.is_empty() && r.leader_start == 0 && process_start(r.pgid).is_some();
-        if (ours || unknown) && !group_members(r.pgid).is_empty() {
-            found.left = Some((r.pgid, r.id));
+        let g = Group { pgid: r.pgid, leader_start: r.leader_start, started: r.started, id: r.id };
+        if g.is_the_jobs() {
+            eprintln!("agent: stopping {} left running by an earlier agent (group {})", g.id, g.pgid);
+            stop_group(g.pgid, Duration::from_secs(30), || {});
+            found.left = g.is_the_jobs().then_some(g);
         }
     }
     std::fs::remove_file(record).ok();

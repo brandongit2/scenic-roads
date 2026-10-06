@@ -403,6 +403,10 @@ impl Packer {
             return Ok(touched);
         }
         for (i, area) in touched.iter().enumerate() {
+            // (The agent asked to stop: the rest are merged when they next have new tiles.)
+            if crate::agent::stopping() {
+                break;
+            }
             progress("areas", i as u64, touched.len() as u64);
             if let Err(e) = self.merge_due(area) {
                 eprintln!("rawpack: {area}'s archives not merged now ({e:#})");
@@ -744,9 +748,10 @@ pub fn parse_tile(rel: &str) -> Option<(u8, u32, u32, bool)> {
 }
 
 /// Packs the tiles AWS gave that wait in the local cache `dir` (a minute old at least: a job may
-/// still be writing the newest) into archives on the NAS's `store`, and deletes them here once
-/// they're named there; how many were packed. The archives made stay here when `keep` (a job's
-/// tiles, which the next jobs read again), else go (room-making's: the disk is short).
+/// still be writing the newest; none through a link) into archives on the NAS's `store`, and
+/// deletes them here once they're named there; how many were packed. The archives made stay here
+/// when `keep` (a job's tiles, which the next jobs read again), else go (room-making's: the disk is
+/// short). The agent asked to stop: it stops between tiles, every loose tile kept.
 pub fn pack_local(dir: &Path, store: &Path, root: &Path, keep: bool) -> Result<usize> {
     pack_local_with(dir, store, root, keep, &|_, _, _| {})
 }
@@ -761,13 +766,15 @@ pub fn pack_local_with(dir: &Path, store: &Path, root: &Path, keep: bool, progre
 fn pack_local_to(dir: &Path, store: &Path, root: &Path, keep: bool, handoff: Option<PathBuf>, progress: Progress) -> Result<usize> {
     let mut loose: Vec<(PathBuf, u8, u32, u32, bool)> = Vec::new();
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
-    for z in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+    // (Not through a link, at any level: a tile packed is deleted where it lies.)
+    let real = |e: &std::fs::DirEntry| e.file_type().is_ok_and(|t| !t.is_symlink());
+    for z in std::fs::read_dir(dir).into_iter().flatten().flatten().filter(real) {
         let zname = z.file_name().to_string_lossy().into_owned();
         if zname.parse::<u8>().is_err() {
             continue;
         }
-        for x in std::fs::read_dir(z.path()).into_iter().flatten().flatten() {
-            for t in std::fs::read_dir(x.path()).into_iter().flatten().flatten() {
+        for x in std::fs::read_dir(z.path()).into_iter().flatten().flatten().filter(real) {
+            for t in std::fs::read_dir(x.path()).into_iter().flatten().flatten().filter(real) {
                 let rel = format!("{zname}/{}/{}", x.file_name().to_string_lossy(), t.file_name().to_string_lossy());
                 let Some((z, x, y, has)) = parse_tile(&rel) else { continue };
                 if t.metadata().and_then(|m| m.modified()).is_ok_and(|m| m < old) {
@@ -786,6 +793,9 @@ fn pack_local_to(dir: &Path, store: &Path, root: &Path, keep: bool, handoff: Opt
     let (n, mut said) = (loose.len() as u64, std::time::Instant::now());
     progress("raw tiles", 0, n);
     for (i, (path, z, x, y, has)) in loose.into_iter().enumerate() {
+        // (The agent asked to stop: what's put up is named; the rest, and every loose tile, waits
+        // for the next run. A tile at a time: a GB of archives at most goes up in between.)
+        anyhow::ensure!(!crate::agent::stopping(), "the agent is stopping");
         // (Every few seconds: a flush puts a GB of archives on the NAS in between.)
         if said.elapsed() >= std::time::Duration::from_secs(5) {
             progress("raw tiles", i as u64, n);

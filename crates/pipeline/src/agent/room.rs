@@ -54,9 +54,10 @@
 //! (`unit-stages.json`) and what units kept that isn't on the NAS yet (`dem-units/`,
 //! `scenic-units/`).
 //!
-//! Nothing goes through a link: a folder of the cache that's a link, or that's in the NAS's project
-//! folder by its real path, is left as it is and not counted (`ours`), so the NAS's own files never
-//! go. (The agent runs a trim or a clear on a thread of its own, starting no job meanwhile.)
+//! Nothing goes through a link: a folder or file of the cache that's a link, at any depth (`walk`;
+//! crate::rawpack's packer passes them over too), or a folder in the NAS's project folder by its
+//! real path (`ours`), is left as it is and not counted, so the NAS's own files never go. (The agent
+//! runs a trim or a clear on a thread of its own, starting no job meanwhile.)
 //!
 //! Each ends early when the agent is asked to stop. Nothing else of the cache is deleted here.
 
@@ -567,13 +568,13 @@ fn free_cheap(cache: &Path, sources: &Path, need: u64, target: u64, free_space: 
         return Ok(BTreeMap::new());
     }
     // Raw tiles the NAS lacks, packed onto it first (an archive an area: large writes), and gone
-    // here once they're there. (Not from a linked folder: what's packed is deleted where it lies.)
+    // here once they're there. (Not from a linked folder: what's packed is deleted where it lies;
+    // the packer passes links over inside it.)
     let tiles = cache.join("aws-terrarium");
     let packs = tiles.join("packs");
     let root = sources.parent();
     let mut packed = 0;
-    let linked = std::fs::read_dir(&tiles).into_iter().flatten().flatten().any(|e| e.file_type().is_ok_and(|t| t.is_symlink()));
-    if let Some(root) = root.filter(|r| ours(&tiles, Some(r)) && !linked) {
+    if let Some(root) = root.filter(|r| ours(&tiles, Some(r))) {
         let before = loose_bytes(&tiles);
         if let Err(e) = crate::rawpack::pack_local(&tiles, &sources.join("aws-terrarium"), root, false) {
             eprintln!("room: raw tiles not packed now ({e:#}); they stay");
@@ -995,7 +996,12 @@ mod tests {
         for p in &outside {
             assert!(p.exists(), "{} untouched", p.display());
         }
-        // A seed here cut short (a copy that stopped), the NAS's whole: it goes too.
+        // A seed here of another count than the NAS's (the review's case), or cut short (a copy that
+        // stopped), the NAS's whole: it goes too.
+        for (n, len) in [("keys.u64", 160), ("elev.f32", 80), ("src.u8", 20)] {
+            file(&c.join(format!("dem-cache.{n}")), len, 60);
+        }
+        assert_eq!(clear(c, nas).unwrap().freed.get("dem"), Some(&260));
         file(&c.join("dem-cache.keys.u64"), 80, 60);
         file(&c.join("dem-cache.elev.f32"), 12, 60);
         assert_eq!(clear(c, nas).unwrap().freed.get("dem"), Some(&92));
@@ -1033,28 +1039,81 @@ mod tests {
         assert!(take_clear(home).is_none() && !home.join(CLEAR_REQUEST).exists() && !home.join(CLEAR_TAKEN).exists());
     }
 
+    /// A helper's NAS (the records' writer named elsewhere): its project folder and `sources/`.
+    fn helpers_nas(d: &Path) -> (PathBuf, PathBuf) {
+        let root = d.join("nas");
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::write(root.join("state/build/writer"), "the-build-mac").unwrap();
+        (root.clone(), root.join("sources"))
+    }
+
     #[test]
     fn a_trim_leaves_a_linked_squares_folders_target() {
         // (The review's case.) The squares read where they lie: chm10 a link to the NAS's canopy
         // folder. Its files are the NAS's only copies: neither deleted nor counted.
         let d = tempfile::tempdir().unwrap();
         let c = &d.path().join("cache");
-        let root = &d.path().join("nas");
-        let nas = &root.join("sources");
-        std::fs::create_dir_all(root.join("state/build")).unwrap();
-        std::fs::write(root.join("state/build/writer"), "the-build-mac").unwrap();
+        let (root, nas) = helpers_nas(d.path());
         whole(&nas.join("canopy/a.tif"), 60);
         std::fs::create_dir_all(c).unwrap();
         std::os::unix::fs::symlink(nas.join("canopy"), c.join("chm10")).unwrap();
-        let f = trim(c, nas, &|_| false).unwrap();
+        let f = trim(c, &nas, &|_| false).unwrap();
+        let g = clear(c, &nas).unwrap();
         assert!(nas.join("canopy/a.tif").exists(), "the NAS's copy deleted through the link");
-        assert_eq!((f.bytes(), f.left, cheap_bytes(c), sizes(c, false, Some(root.as_path()))), (0, 0, 0, Sizes::default()));
-        // Nor a folder of the cache that is, by its real path, in the NAS's (the cache linked there).
-        let linked = d.path().join("linked-cache");
-        std::os::unix::fs::symlink(root.join("sources"), &linked).unwrap();
-        whole(&nas.join("blobs/x.0000000000000001.pack"), 60);
-        assert_eq!(trim(&linked, nas, &|_| false).unwrap().bytes(), 0);
-        assert!(nas.join("blobs/x.0000000000000001.pack").exists());
+        assert_eq!((f.bytes(), f.left, g.bytes(), cheap_bytes(c)), (0, 0, 0, 0));
+        assert_eq!((sizes(c, false, Some(root.as_path())), sizes(c, true, Some(root.as_path()))), (Sizes::default(), Sizes::default()));
+    }
+
+    #[test]
+    fn a_link_inside_the_squares_folder_keeps_the_nas_files() {
+        // (The review's case.) A folder of squares and a square in chm10/, links to the NAS's.
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let (_, nas) = helpers_nas(d.path());
+        whole(&nas.join("canopy/a.tif"), 60);
+        let own = whole(&c.join("chm10/b.tif"), 60);
+        std::os::unix::fs::symlink(nas.join("canopy"), c.join("chm10/sub")).unwrap();
+        std::os::unix::fs::symlink(nas.join("canopy/a.tif"), c.join("chm10/a.tif")).unwrap();
+        let f = trim(c, &nas, &|_| false).unwrap();
+        assert!(nas.join("canopy/a.tif").exists() && c.join("chm10/a.tif").exists());
+        // Its own square, copied there first, gone here.
+        assert_eq!((f.freed.get("canopy"), std::fs::metadata(nas.join("canopy/b.tif")).unwrap().len()), (Some(&own), own));
+    }
+
+    #[test]
+    fn a_cache_linked_into_the_nas_folder_loses_nothing_there() {
+        // (The review's case.) The cache itself a link into the NAS's project folder.
+        let d = tempfile::tempdir().unwrap();
+        let (root, nas) = helpers_nas(d.path());
+        let there = root.join("cache-of-m1");
+        whole(&there.join("chm10/a.tif"), 60);
+        file(&there.join("blobs/layers/x.0000000000000001.pack"), 100, 60);
+        file(&there.join("base/base/6-1-1.0000000000000001.base"), 100, 60);
+        let c = &d.path().join("cache");
+        std::os::unix::fs::symlink(&there, c).unwrap();
+        assert_eq!((trim(c, &nas, &|_| false).unwrap().bytes(), clear(c, &nas).unwrap().bytes()), (0, 0));
+        assert!(there.join("chm10/a.tif").exists() && there.join("blobs/layers/x.0000000000000001.pack").exists() && there.join("base/base/6-1-1.0000000000000001.base").exists());
+    }
+
+    #[test]
+    fn a_linked_tile_folder_is_neither_packed_nor_deleted() {
+        // (The review's case.) The build Mac's aws-terrarium/12/2048 a link to a folder elsewhere:
+        // its tiles aren't this cache's to pack, nor to delete where they lie.
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let root = &d.path().join("nas");
+        let nas = &root.join("sources");
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        let elsewhere = d.path().join("elsewhere/12/2048");
+        whole(&elsewhere.join("1365.png"), 9000);
+        std::fs::create_dir_all(c.join("aws-terrarium/12")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, c.join("aws-terrarium/12/2048")).unwrap();
+        // (And a tile of its own beside it, packed as ever.)
+        let own = whole(&c.join("aws-terrarium/12/2049/1365.png"), 9000);
+        let f = trim(c, nas, &|_| false).unwrap();
+        assert!(elsewhere.join("1365.png").exists(), "deleted through the link");
+        assert_eq!(f.freed.get("terrain"), Some(&own));
+        assert!(!c.join("aws-terrarium/12/2049/1365.png").exists());
     }
 
     #[test]
