@@ -290,6 +290,11 @@ idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trai
 catalog/<n>.json.zst    the last catalogs read
 translations/  descriptions/   local copies of the NAS folders, compiled by the server
 regions.json            the last regions read; regions-queue/: region edits waiting for the NAS
+keep.json               the areas this Mac keeps for offline use (crates/server/src/keep.rs; the
+                        Regions panel): {fmt: 1, regions: [{id, name, at}], views: [{id, name,
+                        outline: [[lon, lat], …] (the ground that was in view), at}]}, `at` in
+                        seconds since 1970; written through keep.json.tmp; one that doesn't read is
+                        set aside as keep.json.bad
 remote-key              the map's key for other devices (32 hex digits, made once, 0600: docs/plan.md
                         §4, Devices); map-page: the address to open on one, `<base>/#k=<key>` (0600,
                         rewritten when it changes: HTTPS where tailscale serve proxies the server)
@@ -377,6 +382,16 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
   tailnet is 403, as is one whose `Host` isn't the map's (a public name: "not this map's address")
   or whose `Origin` is another page's ("not from the map's page"). CORS answers only this Mac's own
   origins (localhost, `*.localhost`, a loopback address).
+- Kept areas (the Regions panel's On this Mac, `keep.rs`): `GET /api/keep`: `{mirror, online,
+  busy (the build Mac runs a job), free, reserve, catalog: {bytes, here}, essentials: {bytes, here},
+  basemap: {bytes, here, kept}, kept: {bytes, here, more (the room they lack beyond what may go),
+  areas}, copying: {file (logical), bytes, have, kept} or null, last: {at, copied, copied_bytes,
+  evicted, evicted_bytes, skipped, skipped_kept, pending, short, end} or null, regions: {id: {name,
+  bytes, here, kept, state}}, views: [{id, name, outline, at, bytes, here, state}]}`, a kept area's
+  `state` one of kept, copying, room, away, paused, missing (a kept region the catalog doesn't
+  have); `PUT /api/keep/regions/{id}` `{keep}`; `POST /api/keep/views` `{outline, name?}` (named
+  after the place search's most important place in it unless named) → `{id, name}`; `PUT
+  /api/keep/views/{id}` `{name}`; `DELETE /api/keep/views/{id}`. Refusals are 400 `{error}`.
 - Regions (the panel): `/api/regions` (GET, POST), `/api/regions/{id}` (PUT, DELETE),
   `/api/areas?at=`, `/api/areas/search?q=`, `/api/areas/{id}`, `/api/coverage` (the catalog's
   coverage as GeoJSON, one feature per outline entry, with `regions` and `catalog`; built from the

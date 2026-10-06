@@ -46,6 +46,13 @@ nothing built depends on how the coverage is divided into regions.
   - It renames regions (rebuilding nothing) and removes them: what only a removed region covered
     leaves the map with the next build.
   - Edits made away from home wait on the Mac and go to the NAS when it's back.
+  - **On this Mac** (§4, Mirror, per Mac): each region's size on disk and how much of it is here
+    ("136 MB; 52 MB here"), and a Keep on this Mac switch: a kept region's files are copied first
+    and never let go of, for trips away from the NAS. **Keep this view** keeps the ground on screen
+    the same way, named after the place search's most important place in it (renamed with ✎, let
+    go with ×). Each kept area says its state (kept, copying N %, waiting for room, paused while
+    the build Mac works, away), and the Mac its own: the map's files here, the free space and the
+    reserve, how much more room the kept areas need, the copy under way.
 - **From a terminal:** `scenic add` and `scenic remove` do the same, straight to the NAS.
 - **Planned:**
   - drawing and redrawing outlines (dragging points; saved as a `.poly`);
@@ -472,7 +479,8 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
     asks again after a second, then two, four, up to ten; those asks aren't the map in use.
 - **Offline start:** the last catalog and every pack's index stay local.
 - **In use** means any request in the last ten minutes, except the status polls (`/api/catalog`,
-  `/api/ping`, `/api/build`) and the place search's asks while its index is made (`poll=1`).
+  `/api/ping`, `/api/build`, the Regions panel's `/api/keep`) and the place search's asks while
+  its index is made (`poll=1`).
   - An idle server loads nothing; warming starts at the first request (starting isn't a use).
   - It checks the NAS for a newer catalog every 30 s while in use, every 10 minutes otherwise.
 - **URLs and ETags:**
@@ -484,16 +492,43 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
     use. The basemap's are its archives' content names and the tile's position, known from the
     catalog, so its 304s read nothing.
 
-**Mirror, per Mac.**
-- At home, each Mac copies every file the current catalog lists, in the background: one file at a
-  time, in large sequential reads, paused while the build Mac runs a job. That makes the map as fast
-  as from local files, and keeps it working away from home.
-- **Copy order:** small worldwide files, then root and lo packs, hidata and road values, base packs,
-  hi packs, and the rest (the basemap). The most recently used go first within each group.
-- **Budget:** the free space minus a reserve (50 GB; 150 GB on the build Mac).
-- **Eviction:** when space runs short, files no recent catalog references go, least recently used
-  first. Files of the last two catalogs never go.
-- Planned: "Keep this view", for trips, once the coverage outgrows the disks.
+**Mirror, per Mac** (`store::mirror`, `crates/server/src/keep.rs`).
+- At home, each Mac copies the current catalog's files in the background, as its room allows: one
+  file at a time, in large sequential reads, paused while the build Mac runs a job. That makes the
+  map as fast as from local files, and keeps it working away from home.
+- **Room first.** The disk keeps a reserve free (50 GB; 150 GB on the build Mac: the server's
+  `--reserve-gb`, in GB of 10⁹ bytes). When it's under the reserve, at home or away, files go until
+  it's back: those the current catalog doesn't list (an older catalog's) first, least recently used
+  first; then the current catalog's, least recently used first (among those never used, the last
+  groups of the copy order first); never the essentials nor a kept area's. Nothing is copied while
+  the disk is under the reserve. What the server mapped of a file let go is dropped at once.
+- **The essentials,** which every Mac keeps whatever its room: the build's worldwide files
+  (`global/`: rail frequencies, the road → units index, landmark totals, heritage summaries,
+  today's converted layer files and details, roads' English names), every layer's root and lo
+  packs (zooms 0–8), and the landmark points and area details (markdata, ovdata): 7.8 GB of
+  catalog 14's 251 GB (2026-10-06). Not the pass's area outlines (2.7 GB, read only to make
+  regions), nor the basemap (28.6 GB, kept while any area is).
+- **Kept areas** (the Regions panel, §1): the regions and views a Mac keeps for offline use, in
+  its own home (`keep.json`, never the NAS). An area's files: every layer's hi pack, and the base
+  pack and road values, of each z6 tile within 2 km of it (outlines are simplified), and the hi
+  data of the z6 tiles within 50 km (what the lists of a view inside it read around it); with the
+  essentials and the basemap's archives, that's what the map reads there, so a kept area works
+  fully offline (but §10, Gaps). A region's are worked out from the catalog's recorded coverage.
+- **Copy order:** the essentials, then the kept areas' files, then the rest; within each, small
+  worldwide files, root and lo packs and the basemap, hidata, road values and the small per-tile
+  records, base packs, hi packs, and the rest. The most recently used go first within each group: a
+  use is a read the map makes (a tile, a 304 too, a section, a base pack, the basemap), from the
+  mirror or the NAS, not the reads the server makes on its own.
+- **Budget:** the free space less the reserve. An essential or kept file that doesn't fit takes the
+  room of the files that may go, in room first's order; when that isn't enough, the panel says how
+  much more room the kept areas need. Any other file takes only the room of files the current
+  catalog doesn't list, so the mirror never trades one of the catalog's files for another; it's
+  copied only while a twentieth of the reserve stays free above it, and one let go for room only
+  once it's been used again (so the disk's comings and goings around the reserve don't have the same
+  files copied and let go over and over).
+- The state, for the panel (`/api/keep`): each region's size and how much of it is here, each kept
+  area's state, the free space, the reserve, how much more room the kept areas need, the copy under
+  way, the last round.
 
 **Devices: an iPhone, an iPad.** Either Mac's map opens on them, at home or away, over the tailnet.
 - **Who's answered:** the server listens on every IPv4 address (and IPv6's loopback) but answers
@@ -1686,10 +1721,10 @@ At each phase's end an Opus agent reviews the work against this plan.
      - landmarks, stations, ferries and overlays by view (In view answers equal to the legacy
        worker's in 163 views);
      - zoomed-out queries;
-     - the Regions panel (add, rename, remove);
+     - the Regions panel (add, rename, remove; regions and the view kept on each Mac);
      - the status bar;
      - catalog switching.
-   - **Not built:** drawing, splitting and merging regions; "Keep this view".
+   - **Not built:** drawing, splitting and merging regions.
 6. **Cutover: mostly done.**
    1. Done: today's 34 regions, as 34 recipes (`tools/cutover/regions`), built from the 2026-09-28
       pass into a held catalog and compared with today's map by `compare` (its report,
@@ -1745,6 +1780,13 @@ At each phase's end an Opus agent reviews the work against this plan.
    Python step shares: the published copy isn't left as published (the updater checks a version's
    files only as it copies them), and each version makes its own (~380 MB, kept with its version).
    Fix: one environment per lock file beside the app, made as an app is installed.
+
+3. **Kept areas offline** (§4, Mirror, per Mac): a whole road (`/api/road`) leaving a kept area
+   reads the base packs of every unit it crosses, and fails away from the NAS when one of them
+   isn't on the Mac; and a way that starts more than 2 km outside the area, in a unit whose tile
+   doesn't meet it, has no way info there away from the NAS. Fix: give a road leaving the area as
+   far as it's here (marked as cut), and keep the owners of the ways the area's hi data list (their
+   `here` records say).
 
 ## 11. Risks and checks
 
