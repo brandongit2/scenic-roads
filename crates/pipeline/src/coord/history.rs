@@ -1,9 +1,9 @@
 //! What happened in the build, in order (the worker page's activity: docs/workers.md, The page):
 //! each job the build Mac started and ended, each lease a worker took, handed back, failed or let
-//! lapse, each task done or failed, the catalogs, the pauses, the workers first heard from, the
-//! agents started and the build Mac's conditions changing. Kept on the build Mac's disk
-//! (`history.jsonl`, a line an event, the last week's), served by `/work/history` (the events after
-//! a number) and summed by the hour for the page (`rates`).
+//! lapse, each task done or failed, the rounds of publishing begun and their catalogs, the pauses,
+//! the workers first heard from, the agents started and the build Mac's conditions changing. Kept
+//! on the build Mac's disk (`history.jsonl`, a line an event, the last week's), served by
+//! `/work/history` (the events after a number) and summed by the hour for the page (`rates`).
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -23,8 +23,9 @@ pub struct Event {
     #[serde(default)]
     pub t: u64,
     /// What: "start" and "end" (a build Mac's job), "lease", "done", "fail" and "lapse" (a worker's
-    /// job), "task" and "task-fail", "catalog", "pause" and "resume", "worker" (first heard from),
-    /// "agent" (one started), "conditions" (the build Mac's changed).
+    /// job), "task" and "task-fail", "round" (a round of publishing began: its regions) and
+    /// "catalog", "pause" and "resume", "worker" (first heard from), "agent" (one started),
+    /// "conditions" (the build Mac's changed).
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker: Option<String>,

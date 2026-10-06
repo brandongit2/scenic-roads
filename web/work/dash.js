@@ -595,6 +595,7 @@ function eventText(m, e, k = 1) {
     case "task": return [k > 1 ? `${who} did ${k} areas' last steps` : `${who} did an area's last steps (${t[0] || ""}) in ${dur(e.secs || 0)}`, "dim"];
     // (Given back, not failed: the page reloaded or closed, or emptied in the background.)
     case "task-fail": return /^stopped:/.test(e.note || "") ? [`${who}: a task given back (${e.note.replace(/^stopped:\s*/, "")})`, "warn"] : [`${who}: a task failed: ${e.note}`, "bad"];
+    case "round": return [`A round of publishing began${t.length ? ` with ${t.length > 3 ? `${t.length} regions` : t.map(nm).join(", ")}` : ""}${e.note ? ` (${e.note})` : ""}: what's built since waits for the next`, "run"];
     case "catalog": return [t.length ? `The map got ${t.length > 3 ? `${t.length} regions` : t.map(nm).join(", ")}` : "The map was updated", "ok"];
     case "pause": return [`The build was paused by ${e.note}`, "warn"];
     case "resume": return ["The build went on", "ok"];
@@ -605,7 +606,7 @@ function eventText(m, e, k = 1) {
   }
 }
 
-const FILTERS = { all: () => true, problems: (e) => (e.ok === false && !/^stopped:/.test(e.note || "")) || e.kind === "lapse" || (e.kind === "task-fail" && !/^stopped:/.test(e.note || "")), publishing: (e) => e.kind === "catalog" || (e.kind === "end" && e.step === "catalog"), pauses: (e) => ["pause", "resume", "conditions", "agent"].includes(e.kind) };
+const FILTERS = { all: () => true, problems: (e) => (e.ok === false && !/^stopped:/.test(e.note || "")) || e.kind === "lapse" || (e.kind === "task-fail" && !/^stopped:/.test(e.note || "")), publishing: (e) => e.kind === "catalog" || e.kind === "round" || (e.kind === "end" && e.step === "catalog"), pauses: (e) => ["pause", "resume", "conditions", "agent"].includes(e.kind) };
 
 function feed(m, events, seen) {
   // (A job's start is shown only while it runs: once it's ended, its end says it all.)

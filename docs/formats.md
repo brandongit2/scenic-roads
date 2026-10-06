@@ -293,8 +293,10 @@ remote-key              the map's key for other devices (32 hex digits, made onc
                         §4, Devices); map-page: the address to open on one, `<base>/#k=<key>` (0600,
                         rewritten when it changes: HTTPS where tailscale serve proxies the server)
 agent/                  status.json (the build Mac's; a helper writes helper.json, which that Mac's
-                        server shows), state.json,
-                        job.json, agent.lock, logs/, cache/
+                        server shows), state.json, round.json (the last round of publishing:
+                        {began, regions, last, units: {logical: content name}, over},
+                        agent::build::Round; the jobs of the one under way read its units,
+                        SCENIC_UNITS_AS_OF), job.json, agent.lock, logs/, cache/
 agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and aws-terrarium/
                         (copies of the NAS's sources/canopy/; the raw tiles as fetched, until packed
                         onto the NAS, and aws-terrarium/packs/: copies of its archives, a job's own

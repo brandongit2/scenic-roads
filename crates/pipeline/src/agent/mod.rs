@@ -93,6 +93,10 @@ const SECOND: [&str; 10] = ["heritage", "items", "rail-feeds", "rail", "marks", 
 /// use too (the others only while it isn't).
 const LIGHT: [&str; 6] = ["heritage", "items", "rail-feeds", "rail", "marks", "overlays"];
 
+/// The last round of publishing, in the agent's folder (build::Round): its jobs read the units of
+/// the one under way there (crate::out::UNITS_AS_OF_ENV).
+const ROUND_FILE: &str = "round.json";
+
 /// Steps that run alone, never beside another job: the pass's worldwide jobs (the planet, the
 /// world's buildings, a whole set at a time) and removing replaced files from the NAS.
 const ALONE: [&str; 10] = ["osm-pass", "pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "heritage-sites", "gc"];
@@ -626,6 +630,9 @@ pub struct Agent {
     /// status.
     forecast: std::cell::RefCell<Option<forecast::Forecast>>,
     catalog_seen: std::cell::Cell<Option<CatalogSeen>>,
+    /// The last round of publishing (build::Round, its folder's `round.json`): the one under way,
+    /// which its jobs read the units of, or the last one over, for when it began.
+    round: std::cell::RefCell<Option<build::Round>>,
 }
 
 /// The last plan's view, kept for the heartbeat between plans.
@@ -675,7 +682,9 @@ impl Agent {
         // The build's pause as this agent last knew it (a helper that can't reach the build Mac stays
         // as it was).
         let pause: Option<crate::control::Pause> = std::fs::read(o.home.join("pause.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default() })
+        // (A round's file that doesn't read: none under way, the next begins afresh.)
+        let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round) })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1717,8 +1726,9 @@ impl Agent {
         if clash(&s, &b) {
             return Some(format!("waits for the job beside it ({beside}) to end: they don't run together"));
         }
+        // (Beside one that mostly waits on the network, room is made all the same: try_start_said.)
         let (need, free) = (self.need_of(0, spec), self.disk_free());
-        if free < need {
+        if free < need && !LIGHT.contains(&b.as_str()) {
             return Some(format!("needs {} GB free on the disk ({} GB free): room is made once the job beside it ({beside}) ends", need >> 30, free >> 30));
         }
         let res = cond::resources(&self.o.home, None, None, None);
@@ -1762,10 +1772,13 @@ impl Agent {
         // clears; a helper's Mac has less room). Made before its targets are claimed: it can take
         // minutes, and a claim is refreshed only while a job runs. Made only while no other job
         // runs here (one may read what's deleted, and the loop that looks after it waits
-        // meanwhile): beside one, a job starts only with the room there is.
+        // meanwhile), or one that mostly waits on the network (it reads none of the caches, and
+        // waits on its own: the first job doesn't wait hours for it): beside another, a job starts
+        // only with the room there is.
         let cache = self.o.home.join("cache");
         let need = self.need_of(k, &spec);
-        let other = self.slots.iter().enumerate().any(|(j, s)| j != k && s.running.is_some());
+        let others: Vec<String> = self.slots.iter().enumerate().filter(|(j, _)| *j != k).filter_map(|(_, s)| s.running.as_ref().map(|r| step_of(&r.spec.id).unwrap_or_default())).collect();
+        let other = !others.is_empty() && !(k == 0 && others.iter().all(|s| LIGHT.contains(&s.as_str())));
         if k > 0 || other {
             let free = self.disk_free();
             if !self.o.helper && free < need {
@@ -2024,6 +2037,11 @@ impl Agent {
                 env.push(("SCENIC_COORD".into(), format!("http://127.0.0.1:{}", crate::coord::PORT)));
                 env.push(("SCENIC_COORD_TOKEN".into(), c.job_token.clone()));
             }
+            // A round's step that reads the units: as they were when the round began.
+            let step = spec.record.as_ref().map(|w| w.step.as_str()).unwrap_or("");
+            if build::AS_OF_STEPS.contains(&step) && self.round.borrow().as_ref().is_some_and(|r| !r.over) {
+                env.push((crate::out::UNITS_AS_OF_ENV.into(), self.o.home.join(ROUND_FILE).to_string_lossy().into_owned()));
+            }
         }
         // Its channel, to stop at a safe point when the build pauses, and where it notes each target
         // done (crate::control), afresh.
@@ -2104,6 +2122,29 @@ impl Agent {
         self.mem.last_ok.get(id).is_none_or(|&t| now_s().saturating_sub(t) >= every.as_secs())
     }
 
+    /// A round begun (build::Plan::begins, its `began` set): written to its file, which its jobs read,
+    /// before any of them starts.
+    fn keep_round(&self, r: build::Round) -> Result<()> {
+        crate::whole::write(&self.o.home.join(ROUND_FILE), &serde_json::to_vec(&r)?)?;
+        eprintln!("agent: a round begins, publishing {} region(s){}", r.regions.len(), if r.last { " (the last)" } else { "" });
+        self.note(crate::coord::history::Event { targets: r.regions.clone(), note: if r.last { "the last".into() } else { String::new() }, ..crate::coord::history::Event::new("round") });
+        *self.round.borrow_mut() = Some(r);
+        Ok(())
+    }
+
+    /// The round under way is over (its catalog out, or nothing left it would publish): kept without
+    /// its units, for when it began.
+    fn end_round(&self) {
+        let mut kept = self.round.borrow_mut();
+        let Some(r) = kept.as_mut().filter(|r| !r.over) else { return };
+        r.over = true;
+        r.units.clear();
+        if let Err(e) = serde_json::to_vec(&*r).map_err(anyhow::Error::from).and_then(|b| crate::whole::write(&self.o.home.join(ROUND_FILE), &b)) {
+            eprintln!("agent: noting the round over: {e:#}");
+        }
+        eprintln!("agent: the round that began {} min ago is over", now_s().saturating_sub(r.began) / 60);
+    }
+
     /// The work there is, in order (docs/plan.md §8, Order).
     fn plan(&self, root: &Path, _c: &Conditions, waiting: &mut Vec<Waiting>) -> Vec<JobSpec> {
         let mut out = Vec::new();
@@ -2174,7 +2215,9 @@ impl Agent {
                 record: None,
             });
         }
-        if self.due("gc", Duration::from_secs(86400)) {
+        // (Not while a round is under way: the units it reads as they were may be gone from the
+        // manifest, and in no catalog yet.)
+        if self.due("gc", Duration::from_secs(86400)) && self.round.borrow().as_ref().is_none_or(|r| r.over) {
             out.push(JobSpec {
                 id: "gc".into(),
                 what: "Removing replaced files from the NAS".into(),
@@ -2291,7 +2334,39 @@ impl Agent {
         let (on_map, since_publish) = self.on_map(&dir, &recipes);
         // (The map's: the served catalog's, held ones aside.)
         self.catalog_seen.set(served_catalog(&root.join("catalog")));
-        let planned = build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), build::Rounds { each: &covs.each, on_map: &on_map, since_publish });
+        // The round under way, if one is; the next an hour after the last began (before the agent
+        // kept rounds, after the last catalog went out).
+        let since_last = self.round.borrow().as_ref().map(|r| now_s().saturating_sub(r.began)).or(since_publish);
+        let mut planned = {
+            let kept = self.round.borrow();
+            build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), build::Rounds { each: &covs.each, on_map: &on_map, since_last, current: kept.as_ref().filter(|r| !r.over) })
+        };
+        let edit_hold = self.edited_at.get().and_then(|t| t.elapsed().ok()).filter(|a| *a < EDIT_HOLD);
+        // (Hand-offs of work done not yet merged: counted as built, their files not yet in the
+        // manifest.)
+        let unmerged = self.handoff_bases(root).iter().any(|b| crate::handoff::waiting_in(b).map(|w| w.iter().any(|(_, h)| h.done.is_some())).unwrap_or(false));
+        if planned.ends {
+            self.end_round();
+        }
+        // A round begins: kept from now on, its work planned as such already. Not while a helper's
+        // work waits to be merged (the units it counts as built would be missing from the round's),
+        // nor while an edit is held: its own steps wait meanwhile.
+        if let Some(mut r) = planned.begins.take() {
+            let not_now = if unmerged {
+                Some("waits for a helper's work to be merged".to_string())
+            } else if edit_hold.is_some() {
+                Some("waits for the regions' edits to settle".to_string())
+            } else {
+                r.began = now_s();
+                self.keep_round(r).err().map(|e| format!("can't keep the round now ({e:#})"))
+            };
+            if let Some(why) = not_now {
+                waiting.push(Waiting { step: Some("catalog".into()), what: build::PUBLISH.into(), why: format!("the next round {why}") });
+                planned.work.retain(|w| !build::AS_OF_STEPS.contains(&w.step.as_str()) && w.step != "prune");
+            }
+        }
+        // (The round under way's own work left, for the forecast: its chain.)
+        let round_left: Vec<build::Work> = planned.work.iter().filter(|w| build::AS_OF_STEPS.contains(&w.step.as_str()) || w.step == "prune").cloned().collect();
         let ready = planned.ready;
         *self.ready.borrow_mut() = ready.clone();
         // (As the catalog's `--ready`: each with the outline it was built with.)
@@ -2302,7 +2377,7 @@ impl Agent {
         let mut plan = planned.work;
         // Just edited: the regions' work waits a while for more edits (each would build again what
         // the last started); what runs carries on.
-        if let Some(age) = self.edited_at.get().and_then(|t| t.elapsed().ok()).filter(|a| *a < EDIT_HOLD && !plan.is_empty()) {
+        if let Some(age) = edit_hold.filter(|_| !plan.is_empty()) {
             let left = (EDIT_HOLD - age).as_secs().div_ceil(60);
             waiting.push(Waiting { step: None, what: "Building the regions".into(), why: format!("a region's recipe or outline changed {} min ago: their work starts in {left} min, after any more edits", age.as_secs() / 60) });
             plan.clear();
@@ -2312,7 +2387,6 @@ impl Agent {
         // to be merged (its areas counted as built, their files not yet in the manifest).
         let held_by_others = |step: &str, t: &str| self.coord.as_ref().is_some_and(|c| c.held(step).contains(t)) || claims::others(root, step, &self.me).contains(t);
         let held_wait = planned.publish_waits.iter().find(|(st, t)| held_by_others(st, t));
-        let unmerged = crate::handoff::waiting_in(&self.o.home.join("coord/journal")).map(|w| w.iter().any(|(_, h)| h.done.is_some())).unwrap_or(false);
         if let Some((st, t)) = held_wait.filter(|_| plan.iter().any(|w| w.step == "catalog")) {
             let mine = self.slots.iter().filter_map(|s| s.running.as_ref()).any(|r| r.spec.record.as_ref().is_some_and(|w| w.step == *st && w.targets.iter().any(|x| x.0 == *t)));
             let who = if mine { "this Mac's job" } else { "another worker" };
@@ -2394,7 +2468,8 @@ impl Agent {
             before.extend(plan.iter().filter(|w| w.step == "heritage-sites").map(|w| job(format!("heritage-sites {date}"), "", "heritage-sites", Vec::new(), Some(w.clone()))));
             let chains = build::chains_left(cov, date, &manifest, &done, &inputs, reach.as_deref());
             // (A fault in it costs the status its forecast, never the agent.)
-            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.forecast_now(root, &before, &planned.regions, chains, since_publish, blind, &peak)));
+            let under_way = self.round.borrow().as_ref().filter(|r| !r.over).map(|r| (r.regions.clone(), r.last, round_left.clone()));
+            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.forecast_now(root, &before, &planned.regions, chains, since_last, under_way, blind, &peak)));
             match made {
                 Ok(f) => *self.forecast.borrow_mut() = Some(f),
                 Err(_) => {
@@ -2410,6 +2485,8 @@ impl Agent {
                 let k = w.targets.first().map(|t| t.1.clone()).unwrap_or_default();
                 if done.catalog_held.as_deref() == Some(k.as_str()) {
                     waiting.push(Waiting { step: None, what: build::PUBLISH.into(), why: "held for review (inputs/hold-catalog); its catalog is in catalog-held/".into() });
+                    // (Its round's done: the held catalog is its.)
+                    self.end_round();
                     continue;
                 }
                 let mut j = job("catalog-held".into(), "Publishing the new map data, held for review", "catalog", vec!["--held".into(), "--ready".into(), ready_arg.clone()], Some(build::Work { step: "catalog-held".into(), targets: vec![("catalog-held".into(), k)] }));
@@ -2450,7 +2527,8 @@ impl Agent {
     /// else its step's mean or a first guess (`first_secs`; `peak` for its memory); the helpers at
     /// their measured speed; each machine free once its job under way is done.
     #[allow(clippy::too_many_arguments)]
-    fn forecast_now(&self, root: &Path, before: &[JobSpec], regions: &[build::RegionLeft], chains: [Vec<build::Work>; 3], since_publish: Option<u64>, blind: Option<String>, peak: &dyn Fn(&str, &str) -> u64) -> forecast::Forecast {
+    #[allow(clippy::too_many_arguments)]
+    fn forecast_now(&self, root: &Path, before: &[JobSpec], regions: &[build::RegionLeft], chains: [Vec<build::Work>; 3], since_last: Option<u64>, under_way: Option<(Vec<String>, bool, Vec<build::Work>)>, blind: Option<String>, peak: &dyn Fn(&str, &str) -> u64) -> forecast::Forecast {
         use forecast::{Cost, Machine};
         let (costs, leased, events, mem) = match &self.coord {
             Some(c) => c.for_forecast(),
@@ -2578,7 +2656,9 @@ impl Agent {
                 running.extend(targets.into_iter().map(|t| ((step.clone(), t), m)));
             }
         }
-        forecast::forecast(&forecast::Input { now: now_s(), before, regions, cost: &cost, round_s, last_round_s, blind, chains: chain_jobs, after, since_publish, machines, running })
+        // (The round under way: its chain left as its steps take, a minute at least.)
+        let under_way = under_way.map(|(ids, last, left)| (ids, last, chain_s(&left).max(60.0)));
+        forecast::forecast(&forecast::Input { now: now_s(), before, regions, cost: &cost, round_s, last_round_s, blind, chains: chain_jobs, after, since_last, under_way, machines, running })
     }
 
     /// The build to the end (the status's checklist): the OSM pass (its stages, from the markers its
@@ -3321,10 +3401,20 @@ mod tests {
         a.start_first(&[job("gc gc"), job("pack 6/1/2")], &in_use, Some(&root), &mut w);
         assert!(a.slots[0].running.is_none());
         assert!(w.iter().any(|x| x.what == "gc gc" && x.why.contains("don't run together")), "{w:?}");
-        // Nor one that needs room made on the disk (made only with no job beside).
+        // One that needs room made on the disk: made beside the heritage chain (it reads none of the
+        // caches), and it starts...
+        a.free_set = Some(20 << 30);
+        a.start_first(&[job("pack 6/1/3")], &in_use, Some(&root), &mut Vec::new());
+        assert_eq!(a.slots[0].running.as_ref().map(|r| r.spec.id.as_str()), Some("pack 6/1/3"));
+        stop(&mut a);
+        // ...not beside a job that may read them (the landmarks' candidates, while the Mac's idle):
+        // it waits for that one.
+        let idle = Conditions { idle_s: 3600, ..in_use };
+        a.free_set = Some(40 << 30);
+        assert!(a.try_start(1, job("pois 6/9/9"), &idle, Some(&root), &mut Vec::new()));
         a.free_set = Some(20 << 30);
         let mut w = Vec::new();
-        a.start_first(&[job("pack 6/1/3")], &in_use, Some(&root), &mut w);
+        a.start_first(&[job("pack 6/1/3")], &idle, Some(&root), &mut w);
         assert!(a.slots[0].running.is_none() && w.iter().any(|x| x.why.contains("room is made once")), "{w:?}");
         a.free_set = Some(40 << 30);
         stop(&mut a);

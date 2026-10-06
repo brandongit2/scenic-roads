@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 
 pub struct Out {
     root: PathBuf,
-    /// Logical name → content name of every file this build wrote or reused.
+    /// Logical name → content name of every file this build wrote or reused (a round's job: with
+    /// the units as they were when the round began, `as_of`).
     pub manifest: BTreeMap<String, String>,
     /// This run's changes to the manifest (None: removed), merged into the file when saving.
     changes: BTreeMap<String, Option<String>>,
@@ -33,6 +34,39 @@ pub struct Out {
     pub scratch: PathBuf,
     /// A helper's job: where its saves go as hand-offs ($SCENIC_HANDOFF), never the manifest.
     handoff: Option<PathBuf>,
+    /// A round's job ($SCENIC_UNITS_AS_OF): the units' outputs as they were when the round began,
+    /// read in place of the manifest's own (`units_as_of`).
+    as_of: Option<BTreeMap<String, String>>,
+}
+
+/// The manifest entries a unit's job writes (a prune of a unit drops them).
+pub const UNIT_OUTPUTS: [&str; 3] = ["base/", "global/roads/", "global/roaden/"];
+
+/// Names the file of a round under way (agent::build::Round, in the agent's folder): a round's jobs
+/// (its map tiles, road index, rail stops and catalog) read the units as they were when it began
+/// (`units_as_of`), so what's built meanwhile changes nothing the round makes; it waits for the next.
+pub const UNITS_AS_OF_ENV: &str = "SCENIC_UNITS_AS_OF";
+
+/// `m` with its units' outputs (`UNIT_OUTPUTS`) as `then` had them: those built since left out,
+/// those rebuilt since as they were, those dropped since (a prune) still out.
+pub fn units_as_of(m: &BTreeMap<String, String>, then: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    m.iter()
+        .filter_map(|(l, c)| match UNIT_OUTPUTS.iter().any(|p| l.starts_with(p)) {
+            true => then.get(l).map(|t| (l.clone(), t.clone())),
+            false => Some((l.clone(), c.clone())),
+        })
+        .collect()
+}
+
+/// The units of a round's file (`UNITS_AS_OF_ENV`): an error when it can't be read, so a round's job
+/// fails rather than make its part from the units as they are now.
+fn read_as_of(p: &Path) -> Result<BTreeMap<String, String>> {
+    #[derive(serde::Deserialize)]
+    struct Round {
+        units: BTreeMap<String, String>,
+    }
+    let b = std::fs::read(p).with_context(|| format!("read the round's units, {}", p.display()))?;
+    Ok(serde_json::from_slice::<Round>(&b).with_context(|| format!("parse {}", p.display()))?.units)
 }
 
 /// A JSON record (the manifest, the unverified uploads): empty when there's none yet, an error when
@@ -63,13 +97,23 @@ fn sha256_file(p: &Path) -> Result<String> {
 impl Out {
     /// `root`: the NAS project folder (or a local folder standing in for it); `scratch`: local space.
     pub fn open(root: &Path, scratch: &Path) -> Result<Self> {
+        Self::open_as_of(root, scratch, std::env::var_os(UNITS_AS_OF_ENV).as_deref().map(Path::new))
+    }
+
+    /// `open`, a round's job's (`as_of`: the round's file, `UNITS_AS_OF_ENV`).
+    pub fn open_as_of(root: &Path, scratch: &Path, as_of: Option<&Path>) -> Result<Self> {
         std::fs::create_dir_all(scratch)?;
         let manifest_path = root.join("state/build/manifest.json");
-        let manifest = read_record(&manifest_path)?;
+        let as_of = as_of.map(read_as_of).transpose()?;
+        let manifest: BTreeMap<String, String> = read_record(&manifest_path)?;
+        let manifest = match &as_of {
+            Some(then) => units_as_of(&manifest, then),
+            None => manifest,
+        };
         let handoff = std::env::var_os("SCENIC_HANDOFF").map(PathBuf::from);
         // (A helper's job hands off only its own uploads.)
         let pending = if handoff.is_some() { BTreeMap::new() } else { read_record(&root.join("state/build/pending.json"))? };
-        Ok(Out { root: root.to_path_buf(), manifest, changes: BTreeMap::new(), checked: Default::default(), pending, manifest_path, scratch: scratch.to_path_buf(), handoff })
+        Ok(Out { root: root.to_path_buf(), manifest, changes: BTreeMap::new(), checked: Default::default(), pending, manifest_path, scratch: scratch.to_path_buf(), handoff, as_of })
     }
 
     pub fn root(&self) -> &Path {
@@ -212,7 +256,11 @@ impl Out {
                 crate::whole::write(p, &serde_json::to_vec_pretty(v)?)?;
             }
         }
-        self.manifest = on_disk;
+        // (What it reads next, a round's job's units still as they were.)
+        self.manifest = match &self.as_of {
+            Some(then) => units_as_of(&on_disk, then),
+            None => on_disk,
+        };
         self.pending = pending;
         self.changes.clear();
         self.checked.clear();
@@ -389,6 +437,47 @@ mod tests {
         assert_eq!(out.get("b"), Some("b.2222222222222222.x"));
         // No temporary file left beside them.
         assert!(std::fs::read_dir(root.join("state/build")).unwrap().all(|e| !crate::whole::is_tmp(&e.unwrap().path())));
+    }
+
+    #[test]
+    fn a_rounds_job_reads_the_units_as_they_were_and_saves_only_its_own_changes() {
+        let then: BTreeMap<String, String> = [("base/6-1-1", "base/6-1-1.1111111111111111.base"), ("global/roads/6-1-1", "global/roads/6-1-1.1111111111111111.roads"), ("base/6-3-3", "base/6-3-3.3333333333333333.base")].into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
+        // Since: 6/1/1 rebuilt, 6/2/2 built, 6/3/3 pruned; a tile drawn.
+        let now: BTreeMap<String, String> = [
+            ("base/6-1-1", "base/6-1-1.aaaaaaaaaaaaaaaa.base"),
+            ("global/roads/6-1-1", "global/roads/6-1-1.aaaaaaaaaaaaaaaa.roads"),
+            ("base/6-2-2", "base/6-2-2.2222222222222222.base"),
+            ("global/roadunits", "global/roadunits.4444444444444444.sect"),
+            ("hidata/6-1-1", "hidata/6-1-1.5555555555555555.hidata"),
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+        let seen = units_as_of(&now, &then);
+        assert_eq!(seen.get("base/6-1-1").map(String::as_str), Some("base/6-1-1.1111111111111111.base"));
+        assert_eq!(seen.get("global/roads/6-1-1").map(String::as_str), Some("global/roads/6-1-1.1111111111111111.roads"));
+        assert!(!seen.contains_key("base/6-2-2") && !seen.contains_key("base/6-3-3"));
+        assert_eq!(seen.get("global/roadunits"), now.get("global/roadunits"));
+        assert_eq!(seen.get("hidata/6-1-1"), now.get("hidata/6-1-1"));
+        // A job opened with the round's file reads them so, and its save leaves the units in the
+        // manifest as they are now.
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("root");
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::write(root.join("state/build/manifest.json"), serde_json::to_vec(&now).unwrap()).unwrap();
+        let round = d.path().join("round.json");
+        std::fs::write(&round, serde_json::to_vec(&serde_json::json!({ "began": 1, "regions": ["a"], "last": false, "units": then })).unwrap()).unwrap();
+        let mut out = Out::open_as_of(&root, &d.path().join("s"), Some(&round)).unwrap();
+        assert_eq!(out.manifest, seen);
+        out.changes.insert("hidata/6-1-1".into(), Some("hidata/6-1-1.6666666666666666.hidata".into()));
+        out.save().unwrap();
+        assert_eq!(out.get("base/6-1-1"), Some("base/6-1-1.1111111111111111.base"));
+        let on_disk: BTreeMap<String, String> = read_record(&root.join("state/build/manifest.json")).unwrap();
+        let mut want = now.clone();
+        want.insert("hidata/6-1-1".into(), "hidata/6-1-1.6666666666666666.hidata".into());
+        assert_eq!(on_disk, want);
+        // Its file unreadable: the job fails rather than read the units as they are now.
+        assert!(Out::open_as_of(&root, &d.path().join("s"), Some(&d.path().join("none.json"))).is_err());
     }
 
     #[test]
