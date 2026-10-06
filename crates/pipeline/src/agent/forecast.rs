@@ -84,6 +84,9 @@ pub struct Input<'a> {
     /// After the last round: the overlays (they read the built units) and a catalog with what the
     /// chains made since.
     pub after: Vec<Job>,
+    /// Last of all, in idle time: the tree cover pieces' mids (build::TreeWork::backfill), each
+    /// once everything else is done, side by side.
+    pub idle: Vec<Job>,
     /// Seconds since the last round began (None: none has).
     pub since_last: Option<u64>,
     /// The round under way (crate::agent::build::Round): its regions, whether it's the last, and its
@@ -165,7 +168,7 @@ pub struct RegionFc {
     /// Its place in the build order (0: the one being built).
     pub rank: usize,
     pub on_map: Option<bool>,
-    /// Its targets left by step ("unit", "terrain", "slope", "trees").
+    /// Its targets left by step ("unit", "terrain", "slope", "trees", "trees-lo").
     pub left: BTreeMap<String, usize>,
     /// When it'll be done, and when it'll be on the map (its round out).
     pub ready_at: Option<u64>,
@@ -294,15 +297,21 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
             let deps: Vec<usize> = terrain_of(&by_target, a).into_iter().collect();
             add(&mut out, &mut by_target, "slope", a, (inp.cost)("slope", a), Phase::Late, deps);
         }
-        for a in &r.trees {
-            add(&mut out, &mut by_target, "trees", a, (inp.cost)("trees", a), Phase::Late, Vec::new());
+        for t in &r.trees {
+            add(&mut out, &mut by_target, "trees", t, (inp.cost)("trees", t), Phase::Late, Vec::new());
+        }
+        // An area's tree cover assembled once its pieces are made (a region lists every piece of
+        // its areas: listed by now).
+        for q in &r.trees_lo {
+            let deps: Vec<usize> = (0..out.len()).filter(|&i| out[i].step == "trees" && crate::treepacks::area_of(&out[i].target).as_ref() == Some(q)).collect();
+            add(&mut out, &mut by_target, "trees-lo", q, (inp.cost)("trees-lo", q), Phase::Late, deps);
         }
     }
     // Each region's items: its terrain, all its units (some come with a region before it), its
     // slope and tree cover.
     for (k, r) in inp.regions.iter().enumerate() {
         let mut mine: Vec<usize> = Vec::new();
-        for (step, list) in [("terrain", &r.terrain), ("unit", &r.units), ("slope", &r.slope), ("trees", &r.trees)] {
+        for (step, list) in [("terrain", &r.terrain), ("unit", &r.units), ("slope", &r.slope), ("trees", &r.trees), ("trees-lo", &r.trees_lo)] {
             mine.extend(list.iter().filter_map(|t| by_target.get(&(step.to_string(), t.clone())).copied()));
         }
         region_items[k] = mine;
@@ -325,6 +334,10 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
     for (step, target, cost) in &inp.after {
         let i = add(&mut out, &mut by_target, step, target, *cost, Phase::After, all.clone());
         all.push(i);
+    }
+    // (After all that, not each other.)
+    for (step, target, cost) in &inp.idle {
+        add(&mut out, &mut by_target, step, target, *cost, Phase::After, all.clone());
     }
     (out, region_items)
 }
@@ -706,7 +719,31 @@ mod tests {
     }
 
     fn input<'a>(regions: &'a [RegionLeft], machines: Vec<Machine>, c: &'a dyn Fn(&str, &str) -> Cost) -> Input<'a> {
-        Input { now: 1_000_000, before: Vec::new(), regions, cost: c, round_s: 600.0, last_round_s: 600.0, blind: None, chains: Vec::new(), after: vec![("marks".into(), "marks".into(), Cost { secs: 300.0, known: true, peak_mb: 0 })], since_last: None, under_way: None, machines, running: BTreeMap::new() }
+        Input { now: 1_000_000, before: Vec::new(), regions, cost: c, round_s: 600.0, last_round_s: 600.0, blind: None, chains: Vec::new(), after: vec![("marks".into(), "marks".into(), Cost { secs: 300.0, known: true, peak_mb: 0 })], idle: Vec::new(), since_last: None, under_way: None, machines, running: BTreeMap::new() }
+    }
+
+    #[test]
+    fn a_tree_cover_assembly_after_its_pieces_and_mids_in_idle_time_last() {
+        // Region a: three tree cover pieces of z3 tile 3/3/2 and its assembly; a helper beside the
+        // build Mac; and a piece's mid made in idle time.
+        let mut a = region("a", &[], &[], &[]);
+        a.trees = vec!["6/28/16".into(), "6/28/17".into(), "6/29/16".into()];
+        a.trees_lo = vec!["3/3/2".into()];
+        let regions = [a];
+        let mut inp = input(&regions, vec![mac("m4", 1.0, false), mac("m1", 0.5, true)], &cost);
+        inp.idle = vec![("trees".into(), "6/40/20".into(), Cost { secs: 100.0, known: false, peak_mb: 1000 })];
+        let sim = run(&inp, &|c| c.secs);
+        let item = |step: &str, t: &str| sim.items.iter().find(|i| i.step == step && i.target == t).unwrap();
+        // The assembly once its pieces are made (the helper takes some), by the build Mac alone.
+        let lo = item("trees-lo", "3/3/2");
+        assert!(["6/28/16", "6/28/17", "6/29/16"].iter().all(|t| item("trees", t).end <= lo.from + 1e-9));
+        assert!(sim.items.iter().any(|i| i.step == "trees" && i.by == Some(1)), "the helper's pieces");
+        assert_eq!(lo.by, Some(0));
+        // The mid last, after everything else.
+        let idle = item("trees", "6/40/20");
+        assert!(sim.items.iter().filter(|i| i.target != "6/40/20").all(|i| i.end <= idle.from + 1e-9));
+        let f = forecast(&inp);
+        assert_eq!((f.regions[0].left.get("trees"), f.regions[0].left.get("trees-lo")), (Some(&3), Some(&1)));
     }
 
     #[test]

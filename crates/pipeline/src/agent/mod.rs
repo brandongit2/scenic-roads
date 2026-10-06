@@ -197,14 +197,13 @@ enum Outcome {
 const HELPER_RESERVE: u64 = 15 << 30;
 
 /// The free space a helper's job of `step` needs: a terrain run's as on the build Mac (its area's
-/// archives copied here and merged); tree cover's the build Mac's reserve (it copies every canopy
-/// square its tile's coverage touches here first, ~2 GB each: tens of GB for a large tile); a
-/// task's ("tail": a unit's last steps, its files fetched from the coordinator) 5 GB; the others'
-/// `HELPER_RESERVE`.
+/// archives copied here and merged); a task's ("tail": a unit's last steps, its files fetched from
+/// the coordinator) 5 GB; the others' `HELPER_RESERVE` (tree cover's a z6 tile a run: the one to
+/// four canopy squares its blocks touch copied here, ~2 GB each, where a z3 tile's whole run copied
+/// tens of GB).
 fn helper_need(step: &str) -> u64 {
     match step {
         "terrain" => room::RESERVE + TERRAIN_SPACE,
-        "trees" => room::RESERVE,
         "tail" => 5 << 30,
         _ => HELPER_RESERVE,
     }
@@ -238,17 +237,19 @@ fn terrain_reads(id: &str, p: &Path) -> bool {
     in_packs && (matches!(area, Some((3, ax, ay)) if (ax, ay) == (x, y)) || matches!(area, Some((6, ax, ay)) if (ax >> 3, ay >> 3) == (x, y)))
 }
 
-/// The memory a shared step's job is expected to take (MB) before one has run for its target and
-/// said (`SCENIC_COSTS`): tree cover's program holds a band of a block's rows on each thread and
-/// the blocks made but not yet written (crate::trees: 1.05 GB on 14 threads for 3/2/2's 792 blocks
-/// and for 3/4/2's 79, 2026-10-05), 2.5 GB with the job's own; slope holds a z6 tile's tiles at a
-/// time (crate::slope_pack: under a GB, where holding its whole area's took up to 20 GB), 2 GB;
+/// The memory a step's job is expected to take (MB) before one has run for its target and said
+/// (`SCENIC_COSTS`): tree cover's program holds a band of a block's rows on each thread and the
+/// blocks made but not yet written (crate::trees: 1.05 GB on 14 threads for 3/2/2's 792 blocks and
+/// for 3/4/2's 79, 2026-10-05), a piece's at most 16 of them, 1 GB with the job's own; an
+/// assembly its z3 tile's blocks' zoom-8 values, compressed, 0.5 GB; slope holds a z6 tile's tiles
+/// at a time (crate::slope_pack: under a GB, where holding its whole area's took up to 20 GB), 2 GB;
 /// peaks, room to spare; a step shared later, 1.5 GB until it's measured. (Units and candidates are
 /// offered by their piece's size, crate::coord::job_peak; terrain by its area's size,
 /// `terrain_peak`.)
 fn first_peak(step: &str) -> u64 {
     match step {
-        "trees" => 2500,
+        "trees" => 1000,
+        "trees-lo" => 500,
         "slope" => 2000,
         "peaks" => 2500,
         _ => 1500,
@@ -455,8 +456,8 @@ struct Memory {
     /// hour from it, whether or not it went out (build::PUBLISH_EVERY_S).
     #[serde(default)]
     catalog_at: u64,
-    /// About how long a target of each step takes here (seconds, as its jobs went lately): the
-    /// forecast's, for the steps no other worker does.
+    /// About how long a target of each step takes here (seconds, as its jobs went lately), by
+    /// `secs_key`: the forecast's, for the steps no other worker does.
     #[serde(default)]
     step_secs: BTreeMap<String, f64>,
     /// When a job last ended here (seconds since the epoch; not a daily one, which reads no cache),
@@ -934,6 +935,7 @@ impl Agent {
             "peaks" => vec!["--pass".into(), date.to_string(), "--raw".into(), s(&cache.join("aws-terrarium")), "--cache".into(), s(&cache), "--coarse-threads".into(), "6".into()],
             "unit" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache-dir".into(), s(&cache)],
             "trees" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--chm".into(), s(&cache.join("chm10"))],
+            "trees-lo" => vec!["--pass".into(), date.to_string()],
             // The server's mirror on this Mac (the agent's home is inside the app's) has the same
             // files: used instead of a second copy where it has them.
             "pack" | "lo" => {
@@ -1024,9 +1026,17 @@ impl Agent {
                 cmd.extend([s(&self.o.bin.join("scenic-build")), step.clone(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join(&step))]);
                 cmd.extend(targets.iter().map(|t| t.0.clone()));
                 cmd.extend(self.step_args(&step, &pass));
+                // (Tree cover pieces made again as they are, by the build's records: expected the
+                // same. Records that can't be read now expect nothing.)
+                if step == "trees" {
+                    let same = build::Keys::load_with_handoffs(root).map(|k| expect_same(&build::Work { step: step.clone(), targets: targets.clone() }, &k)).unwrap_or_default();
+                    if !same.is_empty() {
+                        cmd.extend(["--expect-same".to_string(), same.join(",")]);
+                    }
+                }
                 let n = targets.len();
                 let id = format!("{step} {}", targets.first().map(|t| t.0.as_str()).unwrap_or(""));
-                let what = format!("{} ({n} area{}, for the build Mac)", build::label(&step), if n == 1 { "" } else { "s" });
+                let what = format!("{} ({n} {}{}, for the build Mac)", build::label(&step), if step == "trees" { "tile" } else { "area" }, if n == 1 { "" } else { "s" });
                 self.slots[0].lease = Some(Held::Leased { lease, dir });
                 vec![JobSpec { id, what, cmd, needs, restart_after_sleep: true, record: Some(build::Work { step, targets }) }]
             }
@@ -1684,7 +1694,7 @@ impl Agent {
             // second's network work, whose time the job beside it doesn't change.)
             if ok && of > 0 && !step.is_empty() && (k == 0 || LIGHT.contains(&step.as_str())) {
                 let each = secs as f64 / of as f64;
-                let e = self.mem.step_secs.entry(step.clone()).or_insert(each);
+                let e = self.mem.step_secs.entry(secs_key(&step)).or_insert(each);
                 *e = 0.7 * *e + 0.3 * each;
             }
             if ok && step == "catalog" {
@@ -2900,7 +2910,7 @@ impl Agent {
             let chains = build::chains_left(cov, date, &manifest, &done, &inputs, reach.as_deref());
             // (A fault in it costs the status its forecast, never the agent.)
             let under_way = self.round.borrow().as_ref().filter(|r| !r.over).map(|r| (r.regions.clone(), r.last, round_left.clone()));
-            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.forecast_now(root, &before, &planned.regions, chains, since_last, under_way, blind, &peak)));
+            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.forecast_now(root, &before, &planned.regions, &planned.backfill, chains, since_last, under_way, blind, &peak)));
             match made {
                 Ok(f) => *self.forecast.borrow_mut() = Some(f),
                 Err(_) => {
@@ -2927,6 +2937,11 @@ impl Agent {
             }
             let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail") && !t.ends_with("-root")).collect();
             extra.extend(self.step_args(&w.step, date));
+            // (Tree cover pieces made again as they are, their mids made: expected the same.)
+            let same = expect_same(&w, &done);
+            if !same.is_empty() {
+                extra.extend(["--expect-same".to_string(), same.join(",")]);
+            }
             // (The regions a catalog records as built: the plan's.)
             if w.step == "catalog" {
                 extra.extend(["--ready".to_string(), ready_arg.clone()]);
@@ -2937,8 +2952,9 @@ impl Agent {
             // (The checklist names the steps alike: build::label.)
             let base = build::label(&w.step);
             let what = match w.step.as_str() {
-                "terrain" | "slope" | "unit" | "pois" | "peaks" | "pack" => format!("{base} ({areas})"),
-                "trees" => format!("{base} ({})", areas.replace("area", "large tile")),
+                "terrain" | "slope" | "unit" | "pois" | "peaks" | "pack" | "trees-lo" => format!("{base} ({areas})"),
+                "trees" if same.len() == n => format!("Making the tree cover's mids, checking it the same ({})", areas.replace("area", "tile")),
+                "trees" => format!("{base} ({})", areas.replace("area", "tile")),
                 _ => base.to_string(),
             };
             let id = format!("{} {}", w.step, w.targets.first().map(|t| t.0.as_str()).unwrap_or(""));
@@ -2952,14 +2968,14 @@ impl Agent {
     }
 
     /// The forecast (crate::agent::forecast) of the work left: `before`, the build Mac's jobs before
-    /// the regions'; `regions`, the plan's; `chains`, the roads', trains' and landmarks' work to come
+    /// the regions'; `regions`, the plan's; `backfill`, the tree cover pieces whose mids it makes in
+    /// idle time (build::Plan::backfill); `chains`, the roads', trains' and landmarks' work to come
     /// (build::chains_left); `blind`, why the work can't all be listed now. Each target's time (at
     /// the build Mac's pace: a time measured on a helper over its speed) and memory as last measured,
     /// else its step's mean or a first guess (`first_secs`; `peak` for its memory); the helpers at
     /// their measured speed; each machine free once its job under way is done.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    fn forecast_now(&self, root: &Path, before: &[JobSpec], regions: &[build::RegionLeft], chains: [Vec<build::Work>; 3], since_last: Option<u64>, under_way: Option<(Vec<String>, bool, Vec<build::Work>)>, blind: Option<String>, peak: &dyn Fn(&str, &str) -> u64) -> forecast::Forecast {
+    fn forecast_now(&self, root: &Path, before: &[JobSpec], regions: &[build::RegionLeft], backfill: &[(String, String)], chains: [Vec<build::Work>; 3], since_last: Option<u64>, under_way: Option<(Vec<String>, bool, Vec<build::Work>)>, blind: Option<String>, peak: &dyn Fn(&str, &str) -> u64) -> forecast::Forecast {
         use forecast::{Cost, Machine};
         let (costs, leased, events, mem) = match &self.coord {
             Some(c) => c.for_forecast(),
@@ -2984,14 +3000,19 @@ impl Agent {
         let pace = |worker: Option<&String>| worker.and_then(|w| speeds.get(w)).map_or(1.0, |s| s.0);
         // Each shared step's mean of the targets measured (a unit's are kept by its target alone);
         // else what its jobs here took a target; else a first guess.
+        // (Each measured the way its step runs now: crate::coord::cost_version. A z3 tile's tree
+        // cover isn't a z6 tile's.)
         let mut sums: BTreeMap<String, (f64, usize)> = BTreeMap::new();
         for (k, c) in &costs {
             let step = k.split_once(' ').map_or("unit", |(s, _)| s);
+            if c.v < crate::coord::cost_version(step) {
+                continue;
+            }
             let e = sums.entry(step.to_string()).or_default();
             (e.0, e.1) = (e.0 + c.secs as f64 * pace(c.worker.as_ref()), e.1 + 1);
         }
         let per = |step: &str| -> f64 {
-            match (sums.get(step).filter(|s| s.1 > 0), self.mem.step_secs.get(step)) {
+            match (sums.get(step).filter(|s| s.1 > 0), self.mem.step_secs.get(&secs_key(step))) {
                 (Some(s), _) => s.0 / s.1 as f64,
                 (None, Some(&t)) => t,
                 (None, None) => first_secs(step),
@@ -3006,7 +3027,7 @@ impl Agent {
         };
         // The build Mac's own steps: what a target took here lately (measured), else a first guess.
         let mine = |step: &str, n: usize| -> Cost {
-            let (each, known) = self.mem.step_secs.get(step).map_or((first_secs(step), false), |&t| (t, true));
+            let (each, known) = self.mem.step_secs.get(&secs_key(step)).map_or((first_secs(step), false), |&t| (t, true));
             Cost { secs: each * n.max(1) as f64, known, peak_mb: 0 }
         };
         let step_of = |id: &str| id.split(' ').next().unwrap_or("").to_string();
@@ -3095,7 +3116,9 @@ impl Agent {
         }
         // (The round under way: its chain left as its steps take, a minute at least.)
         let under_way = under_way.map(|(ids, last, left)| (ids, last, chain_s(&left).max(60.0)));
-        forecast::forecast(&forecast::Input { now: now_s(), before, regions, cost: &cost, round_s, last_round_s, blind, chains: chain_jobs, after, since_last, under_way, machines, running })
+        // (The tree cover pieces' mids made in idle time, last.)
+        let idle: Vec<forecast::Job> = backfill.iter().map(|(t, _)| ("trees".to_string(), t.clone(), cost("trees", t))).collect();
+        forecast::forecast(&forecast::Input { now: now_s(), before, regions, cost: &cost, round_s, last_round_s, blind, chains: chain_jobs, after, idle, since_last, under_way, machines, running })
     }
 
     /// The build to the end (the status's checklist): the OSM pass (its stages, from the markers its
@@ -3680,6 +3703,16 @@ pub fn read_status(root: Option<&Path>, home: &Path) -> Option<Status> {
         .and_then(|b| serde_json::from_slice(&b).ok())
 }
 
+/// The targets of `w` made again as they are, expected the same (scenic-build trees
+/// `--expect-same`): tree cover pieces the records (`done`) have under the key they're built with,
+/// their mids made (build::TreeWork::backfill, and those an assembly needs). Any other step's: none.
+fn expect_same(w: &build::Work, done: &build::Keys) -> Vec<String> {
+    if w.step != "trees" {
+        return Vec::new();
+    }
+    w.targets.iter().filter(|(t, k)| t.starts_with("6/") && done.trees.get(t) == Some(k)).map(|t| t.0.clone()).collect()
+}
+
 /// A step's targets in batches, each its own job recording its own targets (a failure or a restart
 /// into a new app costs one batch, not the whole wave), with the step's total.
 fn batches(plan: Vec<build::Work>) -> Vec<(build::Work, usize)> {
@@ -3729,8 +3762,19 @@ fn served_catalog(dir: &Path) -> Option<CatalogSeen> {
     })
 }
 
+/// What a step's time here is kept under (`Memory::step_secs`): its name, with the way it runs now
+/// once that's changed (crate::coord::cost_version), so a time measured another way (a z3 tile's
+/// tree cover, a z6 tile's now) is never taken for it.
+fn secs_key(step: &str) -> String {
+    match crate::coord::cost_version(step) {
+        0 => step.to_string(),
+        v => format!("{step} v{v}"),
+    }
+}
+
 /// About how long a target of `step` takes on the build Mac (seconds) until it's been timed there:
-/// the forecast's first guess (crate::agent::forecast), from the jobs' logs of 2026-10.
+/// the forecast's first guess (crate::agent::forecast), from the jobs' logs of 2026-10 (a tree cover
+/// piece's from its z3 tiles' whole runs: 8,171 s for ~370 z6 tiles).
 fn first_secs(step: &str) -> f64 {
     match step {
         "pass-sets" => 5000.0,
@@ -3743,7 +3787,8 @@ fn first_secs(step: &str) -> f64 {
         "heritage" => 5400.0,
         "terrain" => 900.0,
         "slope" => 400.0,
-        "trees" => 600.0,
+        "trees" => 25.0,
+        "trees-lo" => 10.0,
         "unit" => 400.0,
         "prune" => 30.0,
         "pack" => 35.0,
@@ -3763,11 +3808,14 @@ fn first_secs(step: &str) -> f64 {
     }
 }
 
-/// Targets per job for the steps whose work is per area (each z3 pack of terrain or slope takes
-/// tens of minutes; an area's roads and scenery minutes; candidates, peaks and map tiles less).
+/// Targets per job for the steps whose work is per area or tile (each z3 pack of terrain or slope
+/// takes tens of minutes; an area's roads and scenery minutes; a z6 tile's tree cover, a z3 tile's
+/// assembly of it, candidates, peaks and map tiles less: a job of a few minutes, for leases and
+/// pausing).
 fn batch_size(step: &str) -> usize {
     match step {
-        "terrain" | "trees" => 1,
+        "terrain" => 1,
+        "trees" | "trees-lo" => 4,
         "slope" | "lo" => 2,
         "unit" => 6,
         "peaks" => 12,
@@ -3822,9 +3870,9 @@ mod tests {
     #[test]
     fn a_helper_asks_only_for_what_its_disk_has_room_for() {
         let gb = |n: u64| n << 30;
-        // 20 GB free and 10 of caches it may empty: the 15 GB steps (and their margin) and tasks, not
-        // tree cover's 30 nor a terrain run's 55.
-        assert_eq!(helper_steps(gb(20), gb(10)), ["slope", "unit", "pois", "peaks", "tail"]);
+        // 20 GB free and 10 of caches it may empty: the 15 GB steps (and their margin: tree cover's
+        // pieces among them) and tasks, not a terrain run's 55.
+        assert_eq!(helper_steps(gb(20), gb(10)), ["slope", "trees", "unit", "pois", "peaks", "tail"]);
         assert_eq!(helper_steps(gb(70), 0), [claims::SHARED.to_vec(), vec!["tail"]].concat());
         assert_eq!(helper_steps(gb(10), gb(5)), ["tail"]);
         assert!(helper_steps(gb(3), gb(2)).is_empty());
@@ -4575,6 +4623,26 @@ mod tests {
         let units: Vec<&(String, String)> = b.iter().filter(|(w, _)| w.step == "unit").flat_map(|(w, _)| &w.targets).collect();
         assert_eq!(units.len(), 14);
         assert!(units.iter().enumerate().all(|(i, t)| t.0 == format!("6/{i}/0") && t.1 == format!("k{i}")));
+    }
+
+    #[test]
+    fn tree_pieces_made_again_under_their_recorded_key_are_expected_the_same() {
+        let mut done = build::Keys::default();
+        for (t, k) in [("6/28/16", "a"), ("6/28/17", "b"), ("3/3/2", "c")] {
+            done.trees.insert(t.into(), k.into());
+        }
+        done.trees_lo.insert("3/3/2".into(), "d".into());
+        let w = |step: &str, ts: &[(&str, &str)]| build::Work { step: step.into(), targets: ts.iter().map(|(t, k)| (t.to_string(), k.to_string())).collect() };
+        // One by one in a batch (a helper takes the far end of an offer, so a batch can mix them): a
+        // piece the records have under the key it's made with (its mid made), not one under another
+        // key (stale) nor one never made.
+        assert_eq!(expect_same(&w("trees", &[("6/28/16", "a"), ("6/28/17", "b2"), ("6/29/16", "e")]), &done), ["6/28/16"]);
+        // A z3 tile's whole run, an assembly, another step: never.
+        assert!(expect_same(&w("trees", &[("3/3/2", "c")]), &done).is_empty());
+        assert!(expect_same(&w("trees-lo", &[("3/3/2", "d")]), &done).is_empty());
+        assert!(expect_same(&w("unit", &[("6/28/16", "a")]), &done).is_empty());
+        // The times kept here go by the way a step runs now: a z3 tile's tree cover isn't a piece's.
+        assert_eq!([secs_key("trees"), secs_key("trees-lo"), secs_key("unit")], ["trees v2", "trees-lo v1", "unit"]);
     }
 
     #[test]
