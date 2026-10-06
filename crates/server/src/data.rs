@@ -111,13 +111,14 @@ pub struct Options {
     pub home: PathBuf,
     pub nas_root: Option<PathBuf>,
     pub mirror: bool,
-    pub reserve_gb: u64,
+    /// The free space the mirror leaves on the disk (bytes).
+    pub reserve: u64,
 }
 
 impl Data {
     pub fn open(o: Options) -> Result<Arc<Data>> {
         std::fs::create_dir_all(o.home.join("catalog"))?;
-        let mirror = if o.mirror { Some(Arc::new(store::mirror::Mirror::open(o.home.clone(), o.reserve_gb << 30)?)) } else { None };
+        let mirror = if o.mirror { Some(Arc::new(store::mirror::Mirror::open(o.home.clone(), o.reserve)?)) } else { None };
         let d = Arc::new(Data {
             home: o.home.clone(),
             nas: RwLock::new(None),
@@ -611,7 +612,8 @@ impl Data {
         self.mirror_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Start the background work: the NAS mount, new catalogs, the mirror.
+    /// Start the background work: the NAS mount, new catalogs. (The mirror's thread is
+    /// keep::spawn_mirror's.)
     pub fn spawn_background(self: &Arc<Self>) {
         let d = self.clone();
         std::thread::Builder::new()
@@ -632,50 +634,6 @@ impl Data {
                 }
             })
             .ok();
-        if let Some(m) = self.mirror.clone() {
-            let d = self.clone();
-            std::thread::Builder::new()
-                .name("mirror".into())
-                .spawn(move || loop {
-                    let cat = d.catalog();
-                    let keep = std::collections::HashSet::new();
-                    // (Nothing known of the map yet: no file is the catalog's, so none may go.)
-                    if cat.n > 0 {
-                        match (d.nas_root(), d.pool()) {
-                            (Some(root), Some(pool)) if pool.is_online() => {
-                                // Paused while the build Mac runs a job: its uploads have the NAS first.
-                                let pause = || d.agent_busy();
-                                match m.sync(&cat, &keep, &root, &pool, &pause) {
-                                    Ok(s) => {
-                                        if s.copied > 0 || s.evicted > 0 || s.short > 0 {
-                                            eprintln!("mirror: {s:?}");
-                                        }
-                                        if s.copied > 0 {
-                                            d.forget_remote();
-                                        }
-                                    }
-                                    Err(e) => eprintln!("mirror: {e:#}"),
-                                }
-                                // Every pack's index on this Mac too, for offline starts.
-                                if !d.agent_busy() {
-                                    d.keep_indexes(&cat);
-                                }
-                            }
-                            // Away from home: the reserve all the same.
-                            _ => match m.keep_reserve(&cat, &keep) {
-                                Ok(s) if s.evicted > 0 || s.short > 0 => eprintln!("mirror (away): {s:?}"),
-                                Ok(_) => {}
-                                Err(e) => eprintln!("mirror: {e:#}"),
-                            },
-                        }
-                    }
-                    if let Err(e) = m.flush() {
-                        eprintln!("mirror: {e:#}");
-                    }
-                    std::thread::sleep(Duration::from_secs(60));
-                })
-                .ok();
-        }
     }
 }
 

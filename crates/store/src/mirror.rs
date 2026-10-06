@@ -300,6 +300,12 @@ impl Mirror {
         self.state().files.contains_key(content_name)
     }
 
+    /// The bytes of these files (content name, size) the mirror holds complete copies of.
+    pub fn bytes_here<'a>(&self, files: impl IntoIterator<Item = (&'a str, u64)>) -> u64 {
+        let st = self.state();
+        files.into_iter().filter(|(n, _)| st.files.contains_key(*n)).map(|(_, s)| s).sum()
+    }
+
     /// Complete local copies and their total size.
     pub fn usage(&self) -> (usize, u64) {
         let st = self.state();

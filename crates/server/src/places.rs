@@ -613,6 +613,32 @@ impl Places {
         out
     }
 
+    /// What to call an area (`ring`: [lon, lat] degrees, read as a filled area; `c` its centre):
+    /// the most important place in it, nearness to the centre adding to like ones' ranks as in a
+    /// search (`NEAR`); towns and other places before water, parks and states. As the map names it.
+    /// None when the area holds none.
+    pub fn naming(&self, ring: &[[f64; 2]], c: (f64, f64)) -> Option<String> {
+        let (mut w, mut s, mut e, mut n) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for p in ring {
+            (w, e, s, n) = (w.min(p[0]), e.max(p[0]), s.min(p[1]), n.max(p[1]));
+        }
+        let mut best: Option<(f64, u32)> = None;
+        for (i, p) in self.places.as_slice().iter().enumerate() {
+            let (lon, lat) = (p.lon as f64, p.lat as f64);
+            // (A ring across the antimeridian has longitudes past ±180.)
+            let lon = if lon < w { lon + 360.0 } else if lon > e { lon - 360.0 } else { lon };
+            if lon < w || lon > e || lat < s || lat > n || !crate::keep::inside(ring, [lon, lat]) {
+                continue;
+            }
+            let r = if p.kind == 0 { 1000.0 } else { 0.0 } + p.score as f64 + (NEAR - 3.0 * (1.0 + km(c.0, c.1, lon, lat)).log10()).max(0.0);
+            if best.is_none_or(|(b, _)| r > b) {
+                best = Some((r, i as u32));
+            }
+        }
+        let f = self.place(&Hit { rank: 0.0, place: best?.1 });
+        Some(if f.main.is_empty() { f.name } else { f.main }.to_string())
+    }
+
     /// A place found: its names, kind and class, where, and the zoom to show it at.
     pub fn place(&self, h: &Hit) -> Found<'_> {
         let i = h.place as usize;
@@ -1230,7 +1256,7 @@ mod tests {
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
             std::fs::copy(nas.path().join(&c), p).unwrap();
         }
-        let data = crate::data::Data::open(crate::data::Options { home: home.path().to_owned(), nas_root: Some(nas.path().to_owned()), mirror: true, reserve_gb: 0 }).unwrap();
+        let data = crate::data::Data::open(crate::data::Options { home: home.path().to_owned(), nas_root: Some(nas.path().to_owned()), mirror: true, reserve: 0 }).unwrap();
         assert!(sources(&data.catalog()).iter().all(|(c, _)| data.mirror.as_ref().unwrap().local(c).is_some()));
         let m = build(&data, &sources(&data.catalog()), None).unwrap();
         let all = |p: &Places| (0..p.len()).map(|i| p.text_of(i).to_string()).collect::<Vec<_>>();
@@ -1346,7 +1372,7 @@ mod tests {
     fn the_builds_places() {
         let Some(root) = std::env::var_os("SCENIC_PLACES_ROOT") else { return };
         let home = tempfile::tempdir().unwrap();
-        let data = crate::data::Data::open(crate::data::Options { home: home.path().to_owned(), nas_root: Some(root.into()), mirror: false, reserve_gb: 0 }).unwrap();
+        let data = crate::data::Data::open(crate::data::Options { home: home.path().to_owned(), nas_root: Some(root.into()), mirror: false, reserve: 0 }).unwrap();
         let t = Instant::now();
         let b = build(&data, &sources(&data.catalog()), None).unwrap();
         let p = b.places;

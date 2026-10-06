@@ -1,17 +1,20 @@
 //! The map's server: tiles, layers and the APIs over the catalog's data (docs/plan.md §4).
 //!
 //! usage: server [--port 8080] [--web web/dist] [--fonts data/fonts] [--home <dir>] [--root <dir>]
-//!               [--no-mirror] [--reserve-gb 50]
+//!               [--no-mirror | --mirror] [--reserve-gb 50]
 //!
 //! Data comes from the NAS project folder (found and mounted by itself), read from this Mac's mirror
 //! when it's there. `--root` serves a local folder laid out like the project folder instead
-//! (development, tests). Nothing is loaded at start: the catalog says where everything is, and
-//! files are opened on first use.
+//! (development, tests), without a mirror unless `--mirror` (then copied into `--home`'s as from
+//! the NAS). `--reserve-gb`: the free space the mirror leaves on the disk, in GB (10⁹ bytes).
+//! Nothing is loaded at start: the catalog says where everything is, and files are opened on
+//! first use.
 
 mod cache;
 mod data;
 mod descriptions;
 mod details;
+mod keep;
 mod livefolder;
 mod names_live;
 mod ovdata;
@@ -68,6 +71,8 @@ pub struct AppState {
     /// The map's places, for its search (made when first searched, again when the labels or the
     /// translations change).
     pub places: Arc<places::Index>,
+    /// The areas this Mac keeps for offline use, and what the mirror keeps for them.
+    pub keep: Arc<keep::Keep>,
     /// The current version tokens of the app's URLs, per (catalog generation, translations version).
     tokens: Mutex<Option<((u64, u64), Arc<std::collections::HashSet<String>>)>>,
 }
@@ -245,7 +250,19 @@ impl AppState {
 /// the background.
 #[cfg(test)]
 pub fn test_state(home: &std::path::Path, root: &std::path::Path) -> S {
-    let data = data::Data::open(data::Options { home: home.to_owned(), nas_root: Some(root.to_owned()), mirror: false, reserve_gb: 0 }).unwrap();
+    test_state_with(home, root, false)
+}
+
+/// `test_state`, with a mirror in `home` when `mirror` (nothing copies into it unless a test
+/// syncs it).
+#[cfg(test)]
+pub fn test_state_with(home: &std::path::Path, root: &std::path::Path, mirror: bool) -> S {
+    test_state_from(home, data::Data::open(data::Options { home: home.to_owned(), nas_root: Some(root.to_owned()), mirror, reserve: 0 }).unwrap())
+}
+
+/// A server for tests over `data`, with this Mac's files in `home`.
+#[cfg(test)]
+pub fn test_state_from(home: &std::path::Path, data: Arc<data::Data>) -> S {
     Arc::new(AppState {
         updater: updater::Updater::new(home),
         data,
@@ -260,6 +277,7 @@ pub fn test_state(home: &std::path::Path, root: &std::path::Path) -> S {
         areas: regions::Areas::default(),
         descriptions: descriptions::Descriptions::new(home),
         places: Default::default(),
+        keep: keep::Keep::load(home),
         tokens: Mutex::new(None),
     })
 }
@@ -292,16 +310,18 @@ async fn main() -> Result<()> {
     let fonts = PathBuf::from(arg("--fonts").unwrap_or_else(|| "data/fonts".into()));
     let port: u16 = arg("--port").unwrap_or_else(|| "8080".into()).parse()?;
     let home = arg("--home").map(PathBuf::from).unwrap_or_else(data::default_home);
-    let reserve_gb: u64 = arg("--reserve-gb").map(|v| v.parse()).transpose()?.unwrap_or(50);
+    let reserve_gb: f64 = arg("--reserve-gb").map(|v| v.parse()).transpose()?.unwrap_or(50.0);
+    anyhow::ensure!(reserve_gb.is_finite() && reserve_gb >= 0.0, "--reserve-gb: a number of GB");
     let no_mirror = std::env::args().any(|a| a == "--no-mirror");
     let root = arg("--root").map(PathBuf::from);
+    let mirror = !no_mirror && (root.is_none() || std::env::args().any(|a| a == "--mirror"));
     // Soft mounts whichever name the share is mounted by.
     for host in [data::NAS_HOST, store::nas::LAN_HOST] {
         if let Err(e) = store::nas::ensure_nsmb_conf(host, data::NAS_SHARE) {
             eprintln!("nsmb.conf: {e:#}");
         }
     }
-    let d = data::Data::open(data::Options { home: home.clone(), nas_root: root.clone(), mirror: !no_mirror && root.is_none(), reserve_gb })?;
+    let d = data::Data::open(data::Options { home: home.clone(), nas_root: root.clone(), mirror, reserve: (reserve_gb * 1e9) as u64 })?;
     eprintln!("catalog {} · NAS {}", d.catalog().n, d.nas_root().map(|p| p.display().to_string()).unwrap_or_else(|| "not mounted".into()));
     if root.is_none() {
         d.spawn_background();
@@ -327,6 +347,7 @@ async fn main() -> Result<()> {
         areas: regions::Areas::default(),
         descriptions: descs,
         places: Default::default(),
+        keep: keep::Keep::load(&home),
         tokens: Mutex::new(None),
     });
 
@@ -339,6 +360,8 @@ async fn main() -> Result<()> {
             }
         });
     }
+    // The mirror: the essentials and the kept areas first (keep.rs).
+    keep::spawn_mirror(state.clone());
     tokio::spawn(warm(state.clone()));
     regions::spawn_flusher(state.clone());
     // Other devices (remote.rs): the key, and the address to open there, kept current (tailscale
@@ -395,6 +418,10 @@ async fn main() -> Result<()> {
         .route("/api/areas/search", get(regions::search))
         .route("/api/areas/{id}", get(regions::one))
         .route("/api/coverage", get(regions::coverage))
+        .route("/api/keep", get(keep::get_status))
+        .route("/api/keep/regions/{id}", axum::routing::put(keep::put_region))
+        .route("/api/keep/views", axum::routing::post(keep::post_view))
+        .route("/api/keep/views/{id}", axum::routing::put(keep::put_view).delete(keep::delete_view))
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
         .route("/api/auth", axum::routing::post({
             let r = remote.clone();
@@ -537,10 +564,11 @@ async fn warm(s: S) {
 
 /// Whether a request is the map in use. An open page's polls of the catalog aren't (a tab left open
 /// would hold an update off), nor the menu bar item's of the build's status (every five seconds),
-/// nor the place search's while its places are made (`poll=1`: places.rs).
+/// nor the Regions panel's of the mirror's (`/api/keep`), nor the place search's while its places
+/// are made (`poll=1`: places.rs).
 fn is_use(uri: &axum::http::Uri) -> bool {
     match uri.path() {
-        "/api/catalog" | "/api/ping" | "/api/build" => false,
+        "/api/catalog" | "/api/ping" | "/api/build" | "/api/keep" => false,
         "/api/places" => !uri.query().is_some_and(|q| q.split('&').any(|kv| kv == "poll=1")),
         _ => true,
     }
