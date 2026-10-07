@@ -764,10 +764,11 @@ pub fn run(out: &mut Out, t: Unit, dem: &Path, release: &str) -> Result<Stats> {
     let total = match read {
         Ok(n) => n,
         Err(e) => {
-            // bldprep.py stopped, not left to find out at its next write; the reader thread ends
-            // at the next frame it reads (nothing takes it).
+            // bldprep.py stopped, not left to find out at its next write: uv and the Python it
+            // started, killed as a tree (`uv` alone left Python running). The reader thread ends at
+            // the next frame it reads (nothing takes it).
             drop(rx);
-            child.kill().ok();
+            crate::sys::kill_tree(child.id() as i32);
             child.wait().ok();
             return Err(e.context(format!("bldprep {}", t.slash())));
         }
