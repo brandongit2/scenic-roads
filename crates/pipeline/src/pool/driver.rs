@@ -114,8 +114,8 @@ pub const GAP_S: u64 = 60;
 /// A step running longer than this, awake: the NAS stalled, and its lead re-asserts (s).
 pub const STALL_S: u64 = 300;
 /// The longest a read is taken to stay stale (s; how long the share keeps reads stale is unchecked:
-/// plan §10): term 1's first snapshot that a take-up can't read whole for this long awake is taken
-/// for one that won't be, and the take-up starts from today's files.
+/// plan §10): term 1 with no snapshot a take-up can read whole for this long awake (its lead's, or
+/// its first) has a first snapshot that won't be, and the take-up starts from today's files.
 pub const STALE_S: u64 = 600;
 /// The time a step spends writing its jobs' entries, and reading entries to merge, before it leaves
 /// the rest to the next steps (on a share under load each takes seconds) (s).
@@ -434,7 +434,8 @@ pub struct Driver {
     first: Option<u64>,
     /// The lead that stood down, as seen: its term, and since when (this Mac's clock).
     stood: Option<(u64, u64)>,
-    /// Since when (awake clock) a take-up has found term 1's first snapshot not whole.
+    /// Since when (awake clock) a take-up has found term 1 with no snapshot that reads whole (its
+    /// lead's, or its first).
     first_unread: Option<u64>,
 }
 
@@ -834,8 +835,9 @@ impl Driver {
             Some(r) if r.term == t.term => Some(r.clone()),
             _ => self.spare.clone(),
         };
-        // (Term 1's first snapshot not whole: from today's files only once it has stayed so for
-        // `STALE_S` awake, no stale read of it, or of today's files, left.)
+        // (Term 1 with no snapshot that reads whole, its lead's or its first: from today's files
+        // only once it has stayed so for `STALE_S` awake, no stale read of them, or of today's
+        // files, left.)
         let today = self.first_unread.is_some_and(|at| io.awake().saturating_sub(at) >= STALE_S);
         let mut r = match records::start(io, t, own.as_ref(), today) {
             Ok(r) => {
@@ -2119,7 +2121,7 @@ mod tests {
                 ia.pass(20);
                 step(&mut a, &ia, Heard { listed: Some(Listed { n: l.n, keys: journal::list(&mem, l.since.as_deref()).unwrap() }), ..able() });
             }
-            if merged.is_none() && Records::newest(&mem, a.leads().unwrap()).unwrap().unwrap().handles(&key) {
+            if merged.is_none() && Records::newest(&mem, a.leads().unwrap(), false).unwrap().unwrap().handles(&key) {
                 merged = Some(i);
             }
         }
@@ -2240,12 +2242,13 @@ mod tests {
     fn rr2_term_ones_fallback_to_todays_files_pairs_versions_under_stale_reads() {
         // Seed 3090226 of 100,000 four-hour schedules (re-review 2, H1): term 1's first snapshot's
         // create cut short; term 1's lead saves twice, writing today's three files after each; the
-        // owner has B take over, its reads stale: term 1's snapshot as it was cut (empty),
-        // `jobs.json` as it was before the last save, `manifest.json` as it is now. Falling back to
-        // today's files at once paired a manifest of one version with keys of another (invariant
-        // 4). Term 1's maker now writes its snapshot whole before term 1 is made, and a take-up
-        // that can't read it whole tries again, until its reads aren't stale.
-        struct Stale<'a>(&'a Mem, Vec<(String, Vec<u8>)>);
+        // owner has B take over, its reads stale: term 1's lead's snapshot not there yet, its
+        // first as it was cut (empty), `jobs.json` as it was before the last save, `manifest.json`
+        // as it is now. Falling back to today's files at once paired a manifest of one version with
+        // keys of another (invariant 4). Term 1's maker now writes its first snapshot whole before
+        // term 1 is made, and a take-up that can't read it whole tries again, until its reads
+        // aren't stale.
+        struct Stale<'a>(&'a Mem, Vec<(String, Option<Vec<u8>>)>);
         impl Nas for Stale<'_> {
             fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
                 self.0.create_new(path, bytes)
@@ -2255,7 +2258,7 @@ mod tests {
             }
             fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
                 Ok(match self.1.iter().find(|(p, _)| p == path) {
-                    Some((_, b)) => Some(b.clone()),
+                    Some((_, b)) => b.clone(),
                     None => self.0.read(path)?,
                 })
             }
@@ -2273,7 +2276,7 @@ mod tests {
         struct Cut<'a>(&'a Mem);
         impl Nas for Cut<'_> {
             fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
-                if path != records::path(1) {
+                if path != records::FIRST {
                     return self.0.create_new(path, bytes);
                 }
                 self.0.create_new(path, b"")?;
@@ -2298,7 +2301,7 @@ mod tests {
         let mem = Mem::default();
         setup(&mem);
         let t1 = term::bootstrap(&Cut(&mem), &member(A, "Mac-mini", V1), T0, false).unwrap().unwrap();
-        assert!(Records::load(&mem, 1).unwrap().is_some(), "written whole before term 1 is made");
+        assert!(Records::newest(&mem, 1, false).unwrap().is_some(), "written whole before term 1 is made");
         let mut r = records::start(&mem, &t1, None, false).unwrap();
         r.save(&mem).unwrap();
         let old_jobs = mem.read("state/build/jobs.json").unwrap().unwrap();
@@ -2306,7 +2309,7 @@ mod tests {
         r.apply(&e.key().unwrap(), &e);
         r.save(&mem).unwrap();
         let t2 = term::forced(&mem, &term::current(&mem).unwrap(), &member(B, "MacBook-Air", V1), "taken over by MacBook-Air", T0 + 60, false).unwrap();
-        let stale = Stale(&mem, vec![(records::path(1), Vec::new()), ("state/build/jobs.json".into(), old_jobs)]);
+        let stale = Stale(&mem, vec![(records::path(1), None), (records::FIRST.into(), Some(Vec::new())), ("state/build/jobs.json".into(), Some(old_jobs))]);
         let err = records::start(&stale, &t2, None, false).unwrap_err();
         assert!(err.is::<records::FirstUnreadable>(), "tried again: {err:#}");
         let r2 = records::start(&mem, &t2, None, false).unwrap();
@@ -2321,7 +2324,7 @@ mod tests {
         // stayed so `STALE_S` awake. (Re-review 2, H1.)
         let mem = Mem::default();
         setup(&mem);
-        mem.create_new(&records::path(1), b"").unwrap();
+        mem.create_new(records::FIRST, b"").unwrap();
         let t1 = Term { term: 1, member: A.into(), host: "Mac-mini".into(), app: V1.into(), since: T0, how: "the build Mac when the pool began".into(), from: 0, seq: None };
         mem.create_new(&term::path(1), &serde_json::to_vec_pretty(&t1).unwrap()).unwrap();
         let ia = Mac::new(&mem);

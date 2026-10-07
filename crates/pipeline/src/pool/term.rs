@@ -132,7 +132,7 @@ fn same(a: &Term, b: &Term) -> bool {
     Term { since: 0, ..a.clone() } == Term { since: 0, ..b.clone() }
 }
 
-/// Makes term `t` with create-new: whose it is. Term 1 only once its records are made
+/// Makes term `t` with create-new: whose it is. Term 1 only once its first snapshot is made
 /// (crate::pool::records::first). A create that made the file and couldn't write its bytes has
 /// them written whole over it (no other Mac's create of the name can succeed); an earlier try
 /// whose answer was lost is known by the term it reads (the same but for `since`). (One whose
@@ -140,7 +140,7 @@ fn same(a: &Term, b: &Term) -> bool {
 /// it reads as another's, and the term has no lead until the owner's `force`.)
 pub fn make(nas: &dyn Nas, t: &Term) -> Result<Made> {
     ensure!(t.term >= 1 && t.from + 1 == t.term, "term {} can't follow term {}", t.term, t.from);
-    ensure!(t.term > 1 || nas.exists(&super::records::path(1))?, "term 1's records aren't made yet");
+    ensure!(t.term > 1 || nas.exists(super::records::FIRST)?, "term 1's first snapshot isn't made yet");
     let b = serde_json::to_vec_pretty(t)?;
     Ok(match nas.create_new(&path(t.term), &b).with_context(|| format!("make term {}", t.term))? {
         Created::Made => Made::Ours,
@@ -230,7 +230,7 @@ pub fn force(nas: &dyn Nas, cur: &Current, me: &Member, how: &str, now: u64, dow
 
 /// Term 1 (§12, phase 1), once the pool is switched on: made by the Mac `state/build/writer` names
 /// (today's build Mac, by host name), naming itself, or by any Mac when none is named or the owner
-/// has this one take the lead (`force`); its records first, from today's files
+/// has this one take the lead (`force`); its first snapshot first, from today's files
 /// (crate::pool::records::first). The term once it's made (by this Mac or another); None while
 /// it's still the writer's to make, or being made.
 pub fn bootstrap(nas: &dyn Nas, me: &Member, now: u64, force: bool) -> Result<Option<Term>> {
@@ -375,12 +375,12 @@ mod tests {
         nas.write_whole(WRITER, b"Mac-mini\n").unwrap();
         nas.write_whole("state/build/manifest.json", br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
         assert_eq!(bootstrap(&nas, &m1, 10, false).unwrap(), None, "the M4's to make");
-        assert!(!nas.exists(&super::super::records::path(1)).unwrap());
+        assert!(!nas.exists(super::super::records::FIRST).unwrap());
         let t = bootstrap(&nas, &m4, 11, false).unwrap().unwrap();
         assert_eq!((t.term, t.member.as_str(), t.from), (1, "m-0000000000000004", 0));
         assert_eq!(bootstrap(&nas, &m1, 12, false).unwrap(), Some(t), "then every Mac sees it");
-        // Its records made first, from today's files.
-        let r = super::super::Records::load(&nas, 1).unwrap().unwrap();
+        // Its first snapshot made first, from today's files.
+        let r = super::super::Records::newest(&nas, 1, false).unwrap().unwrap();
         assert_eq!((r.term, r.seq, r.manifest.len()), (1, 1, 1));
         // No writer named, the first Mac to start makes it; the owner's say-so, any Mac.
         let fresh = Mem::default();

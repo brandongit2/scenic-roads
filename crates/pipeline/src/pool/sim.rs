@@ -901,7 +901,7 @@ impl World {
     }
 
     fn remove(&mut self, me: usize, path: &str) {
-        if term_of(path).is_some() || records_of(path).is_some() {
+        if term_of(path).is_some() || records_of(path).is_some() || path == records::FIRST {
             self.wrong(format!("mac{me} removed {path}"));
         }
         if let Some(key) = entry_of(path) {
@@ -966,10 +966,7 @@ impl World {
                 self.wrong(format!("term {e}'s records at {} aren't consistent: {why}", r.seq));
             }
             let lead = self.files.get(&term::path(e)).and_then(|b| serde_json::from_slice::<Term>(b).ok()).map(|t| t.member);
-            // (Term 1's first, made with create-new before term 1 is, its bytes landing when its
-            // maker gets to them: before any other write, which its open file holds off.)
-            let first = e == 1 && made;
-            if r.term != e || (!first && lead.as_deref() != Some(self.macs[me].id.as_str())) {
+            if r.term != e || lead.as_deref() != Some(self.macs[me].id.as_str()) {
                 self.wrong(format!("mac{me} wrote term {e}'s records (of term {}); term {e} names {lead:?}", r.term));
             }
             let handled: BTreeSet<String> = r.reflected.iter().chain(r.rejected.keys()).cloned().collect();
@@ -999,6 +996,22 @@ impl World {
                 self.settles.insert((e, r.seq), h.clone());
             }
             self.landed.insert(e, (r.seq, handled));
+        } else if path == records::FIRST {
+            // Term 1's first snapshot: made with create-new before term 1 is, its bytes landing
+            // when its maker gets to them (late at times, read by none once term 1's lead has
+            // saved), and written by none other.
+            if !made {
+                return self.wrong(format!("mac{me} wrote over term 1's first snapshot"));
+            }
+            match serde_json::from_slice::<Records>(b) {
+                Ok(r) if r.term == 1 && r.seq == 1 => {
+                    if let Err(why) = consistent(&r) {
+                        self.wrong(format!("term 1's first snapshot isn't consistent: {why}"));
+                    }
+                }
+                Ok(r) => self.wrong(format!("term 1's first snapshot is term {}'s at {}", r.term, r.seq)),
+                Err(err) => self.wrong(format!("term 1's first snapshot can't be parsed: {err}")),
+            }
         } else if let Some(key) = entry_of(path).filter(|_| !self.erroring.contains(path)) {
             if let Ok(en) = serde_json::from_slice::<Entry>(b) {
                 let kind = match en.step.as_str() {
@@ -1568,7 +1581,7 @@ impl Mac {
         }
         // A job reading the records.
         if out.term > 0 && self.rng.chance(P_READ) {
-            if let Ok(Some(r)) = Records::newest(&self.sim, out.term) {
+            if let Ok(Some(r)) = Records::newest(&self.sim, out.term, false) {
                 if let Err(why) = consistent(&r) {
                     self.sim.op(|w, me| w.wrong(format!("mac{me} read term {}'s records at {}, not consistent: {why}", r.term, r.seq)))?;
                 }

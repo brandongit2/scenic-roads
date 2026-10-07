@@ -2009,9 +2009,6 @@ At each phase's end an Opus agent reviews the work against this plan.
    - a create whose answer was lost before its bytes landed, or whose maker stopped for good between
      its create and its bytes, can't be told from another Mac's still being written: its term has
      no lead until the owner forces past it (`term::make`);
-   - term 1's first snapshot's maker, its create cut short, writes it whole before it makes term 1;
-     asleep between that write's temporary file and its rename, it could land the write late, over
-     a snapshot a lead the owner forced meanwhile saved (`records::first`);
    - an older lease's entry for targets of which some were set by a newer lease's is passed over
      whole: its other targets are built again (`Records::apply`; an entry's manifest changes aren't
      by target);
@@ -2021,8 +2018,8 @@ At each phase's end an Opus agent reviews the work against this plan.
    - a handover's new lead must read its old lead's last snapshot within two minutes: how long the
      share keeps reads stale is unchecked (pool.md §3), and longer staleness has handovers taken
      back (nothing lost). The hour rule rests on it too (an entry read not whole for an hour
-     awake is refused: `UNREADABLE_S`), and so does term 1's take-up from today's files (once its
-     first snapshot has stayed unreadable ten minutes: `STALE_S`);
+     awake is refused: `UNREADABLE_S`), and so does term 1's take-up from today's files (once
+     term 1 has had no snapshot that reads whole for ten minutes: `STALE_S`);
    - with reads lagging minutes, a lead settles few handovers: it settles none while entries wait
      to be read (pool.md §7.3), kept so until the share's lag is measured;
    - a refusal's note whose write fails isn't tried again: only the owner's loss, the records naming

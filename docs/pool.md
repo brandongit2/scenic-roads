@@ -215,15 +215,18 @@ A term is a file made once with create-new and never changed: `state/build/terms
   can't be.
 - **Term 1 starts from today's layout** (`state/build/manifest.json`, `jobs.json`, `pending.json`),
   so nothing moves at migration (§12): its first snapshot is made from those files
-  (`records::first`, with create-new; its maker's create cut short is written whole, as a term's
-  is) before term 1 itself is (`term::bootstrap`), and term 1's lead writes them after each of its
-  saves, for old readers. The pool reads them only to make that first snapshot, and to take term 1
-  up from them when the snapshot can't be read whole (its maker stopped midway, or its bytes landed
-  out of order, a hole mid-file): only once it has stayed so ten minutes awake (`STALE_S`), the
-  take-up tried again meanwhile, as a handover's is. A stale read of the snapshot, or of today's
-  three files (written one after another after each of term 1's saves), could pair a manifest of
-  one version with keys of another; by then none is stale, and none of term 1's saves landed, so
-  nothing has written them since.
+  (`records::first`, with create-new; its maker's create cut short is written whole, as a term's is)
+  before term 1 itself is (`term::bootstrap`), in a file of its own that no lead writes,
+  `state/build/term/1/first.json`, and term 1's lead writes them after each of its saves, for old
+  readers. Term 1's take-up, and a reader, read its lead's snapshot first, then the first one: its
+  maker's write landing late (its Mac asleep between its temporary file and its rename) lands where
+  no one reads once term 1's lead has saved. The pool reads today's files only to make that first
+  snapshot, and to take term 1 up from them when neither snapshot can be read whole (the first's
+  maker stopped midway, or its bytes landed out of order, a hole mid-file): only once it has stayed
+  so ten minutes awake (`STALE_S`), the take-up tried again meanwhile, as a handover's is. A stale
+  read of a snapshot, or of today's three files (written one after another after each of term 1's
+  saves), could pair a manifest of one version with keys of another; by then none is stale, and
+  term 1's lead has saved none, so nothing has written them since.
 - **Taking up term E+1** (`records::start`, crate::pool::driver): the new lead starts from the
   newest snapshot a read finds (about 3 MB), walking down the terms: E+1's own when an earlier try's
   landed, then E's, then E-1's, and so on (a term whose lead saved none has none). A lead
@@ -598,16 +601,17 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
 1. **Terms and records per term.**
    - **The core: built** (`crate::pool`, checked by the simulator: §13). Member ids (`member_id`,
      bound to the Mac); `terms/` and term 1 (`term`: made with create-new, naming the Mac
-     `state/build/writer` names, its records first; a create whose bytes didn't land finished by its
-     maker; the app rule, the take-back checked against the term handed over; the owner's forced
-     takeover, and downgrade); records per term (`records`: term 1's first snapshot from today's
-     layout, which its saves keep writing, its maker's create cut short written whole, and a take-up
-     that can't read it whole waiting ten minutes before today's files; the merge, in lease order
-     across merges; taking up, numbered on across tries; the forget horizon; readers' fallback to a
-     term before); the journal as a log, written whole by members directly (`journal`: entries by
-     lease id `<term>-<n>`, kept whole until written, one there already that says the same counting
-     as written; refusals noted beside it; what a member tells each lead); the NAS's operations
-     (`nas`: create-new, saying when its bytes didn't land, and whole writes by crate::whole); the
+     `state/build/writer` names, its first snapshot first; a create whose bytes didn't land finished
+     by its maker; the app rule, the take-back checked against the term handed over; the owner's
+     forced takeover, and downgrade); records per term (`records`: term 1's first snapshot from
+     today's layout, in a file of its own no lead writes, its maker's create cut short written
+     whole, and a take-up with no snapshot of term 1's it can read whole waiting ten minutes before
+     today's files, which term 1's saves keep writing; the merge, in lease order across merges;
+     taking up, numbered on across tries; the forget horizon; readers' fallback to a term before);
+     the journal as a log, written whole by members directly (`journal`: entries by lease id
+     `<term>-<n>`, kept whole until written, one there already that says the same counting as
+     written; refusals noted beside it; what a member tells each lead); the NAS's operations (`nas`:
+     create-new, saying when its bytes didn't land, and whole writes by crate::whole); the
      heartbeat's fields (`beat`); phase 2's transitions (`handover`: the state machine with
      take-back, an answer to its own offer); the member's lock (`MemberLock`: one process per
      member, in the folder it's given, checked every step); and **the driver** (`driver`): what a
@@ -689,43 +693,44 @@ switched on.
   state). Each run draws these knobs from its seed.
 - **What it checks,** at every step that could break one of §4's invariants: terms made in order,
   never written over (but by their maker finishing them), a created file unchanged between its
-  create and its bytes, no term or records file ever removed; terms by the app rule (a take-back's
-  checked against the term handed over; not the owner's downgrade, nor a term forced past one that
-  can't be read, whose maker checked it against the newest term it could read); a term led by the
-  Mac it names, and by no other, no Mac leading a term twice nor an older term after it; no Mac's
-  term going back, across its restarts too (but one that lost its saved state); a term's records
-  written by its lead alone, self-consistent (as members read them too), never going back in `seq`
-  or in the entries they name; an entry acknowledged only once a saved snapshot names it, and never
-  removed; a heartbeat's beat its Mac's clock as it's written; a handover's new lead taking up with
-  the coordinator's state its old lead settled with; a lead saying it's caught up only by a listing
-  of every day asked for under a day before, after it last woke and, but for a re-assertion that
-  kept what it knew, after its term began, its snapshot naming every entry written before it; an
-  entry refused as never read whole only if it never was, as its lead's reads could see; a handover
-  passed is over, taken back or dropped within fifteen minutes awake, and dropped by a forced
-  takeover its own query says suffices; an automatic takeover only of a lead whose heartbeat said it
-  stood down from the term, two minutes before at least. Then, the faults over and every Mac awake
-  for 25 minutes, the owner taking over a term the views would show with no lead that no member
-  takes by itself (its lead gone for good, or stood down where no member's app can lead the term, or
-  the term unreadable): the last term's lead leads it, alone, caught up, no term was made in those
-  25 minutes' last ten or after, and its records name every entry ever written, a Mac's gone for
-  good included. While they lack entries, fewer each time, or its lead isn't caught up yet (an entry
-  never whole waits its hour, a listing its agent lost two), the run goes on ten minutes at a time,
-  up to two hours: on a share taking seconds an operation a lead merges about a dozen entries a
-  loop, and hours of faults with no lead leave hundreds. The tests run 2,000 seeds, each kind of
-  change of lead and of fault, and what each knob brings, among them at least three times (a lead
-  caught up on a step it re-asserted for a sweep, and the owner's takeover, too); entries cut short
-  in four-hour runs, refused after an hour (200 schedules); runs of the faults' 40 minutes and a day
-  after, a lead listing every day again daily (50); slow listings with a week of the journal,
-  development builds and rollbacks with a Mac leaving, and a Mac leaving, alone (300 to 1,000 seeds
-  each); the schedule that found term 1's first snapshot paired with today's files of two versions
-  (seed 3090226), and the one that found whole entries waiting an hour behind others not whole
-  (1003691); left out by default, a long run of 100,000 schedules of four hours' faults, each knob
-  alone over 1,000 seeds, and 400 seeds run twice, the same; and the first draft's scheme (one
-  shared records file, the journal emptied as it's merged) on the same model, which finds its lost
-  update. The driver's own tests decide what the simulator can't: whom a member lets try first, that
-  a lead asleep or gone isn't taken over by itself, nor one whose stand-down is an earlier term's, a
-  step's minute of reads, the hour over a share that doesn't answer, a listing a day old, a listing
-  slower than any timeout, a saved state restored from a backup, the member's lock.
+  create and its bytes, no term or records file ever removed, term 1's first snapshot written by its
+  maker alone, self-consistent; terms by the app rule (a take-back's checked against the term handed
+  over; not the owner's downgrade, nor a term forced past one that can't be read, whose maker
+  checked it against the newest term it could read); a term led by the Mac it names, and by no
+  other, no Mac leading a term twice nor an older term after it; no Mac's term going back, across
+  its restarts too (but one that lost its saved state); a term's records written by its lead alone,
+  self-consistent (as members read them too), never going back in `seq` or in the entries they name;
+  an entry acknowledged only once a saved snapshot names it, and never removed; a heartbeat's beat
+  its Mac's clock as it's written; a handover's new lead taking up with the coordinator's state its
+  old lead settled with; a lead saying it's caught up only by a listing of every day asked for under
+  a day before, after it last woke and, but for a re-assertion that kept what it knew, after its
+  term began, its snapshot naming every entry written before it; an entry refused as never read
+  whole only if it never was, as its lead's reads could see; a handover passed is over, taken back
+  or dropped within fifteen minutes awake, and dropped by a forced takeover its own query says
+  suffices; an automatic takeover only of a lead whose heartbeat said it stood down from the term,
+  two minutes before at least. Then, the faults over and every Mac awake for 25 minutes, the owner
+  taking over a term the views would show with no lead that no member takes by itself (its lead gone
+  for good, or stood down where no member's app can lead the term, or the term unreadable): the last
+  term's lead leads it, alone, caught up, no term was made in those 25 minutes' last ten or after,
+  and its records name every entry ever written, a Mac's gone for good included. While they lack
+  entries, fewer each time, or its lead isn't caught up yet (an entry never whole waits its hour, a
+  listing its agent lost two), the run goes on ten minutes at a time, up to two hours: on a share
+  taking seconds an operation a lead merges about a dozen entries a loop, and hours of faults with
+  no lead leave hundreds. The tests run 2,000 seeds, each kind of change of lead and of fault, and
+  what each knob brings, among them at least three times (a lead caught up on a step it re-asserted
+  for a sweep, and the owner's takeover, too); entries cut short in four-hour runs, refused after an
+  hour (200 schedules); runs of the faults' 40 minutes and a day after, a lead listing every day
+  again daily (50); slow listings with a week of the journal, development builds and rollbacks with
+  a Mac leaving, and a Mac leaving, alone (300 to 1,000 seeds each); the schedule that found term
+  1's first snapshot paired with today's files of two versions (seed 3090226), and the one that
+  found whole entries waiting an hour behind others not whole (1003691); left out by default, a long
+  run of 100,000 schedules of four hours' faults, each knob alone over 1,000 seeds, and 400 seeds
+  run twice, the same; and the first draft's scheme (one shared records file, the journal emptied as
+  it's merged) on the same model, which finds its lost update. The driver's own tests decide what
+  the simulator can't: whom a member lets try first, that a lead asleep or gone isn't taken over by
+  itself, nor one whose stand-down is an earlier term's, a step's minute of reads, the hour over a
+  share that doesn't answer, a listing a day old, a listing slower than any timeout, a saved state
+  restored from a backup, the member's lock.
 - **What it doesn't model:** torn or holed reads (a file reads whole, empty or as an older version,
   and an entry cut short for good: the modules' tests read holes); I/O errors other than a busy
   rename, a create cut short, lost answers and failed reads; `remove` failing busy; the member's

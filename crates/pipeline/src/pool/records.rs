@@ -7,12 +7,13 @@
 //! (invariant 5).
 //!
 //! Term 1 is today's layout, `state/build/manifest.json`, `jobs.json` and `pending.json` (nothing
-//! moves when the pool begins): its first snapshot is made from them before term 1 itself is
-//! (`first`), and they're written after each of its snapshots, for today's readers. The pool reads
-//! them again only to take up from a first snapshot that can't be read (its maker stopped midway,
-//! or its bytes landed out of order), which no snapshot of a lead's has replaced: three files can
-//! be read half rewritten, one stale and another not, so term 1's snapshot exists before any Mac
-//! knows of term 1, and reads whole like any term's.
+//! moves when the pool begins): its first snapshot is made from them before term 1 itself is, in a
+//! file of its own that no lead writes (`first`: `term/1/first.json`), and they're written after
+//! each of term 1's snapshots, for today's readers. Term 1's take-up, and a reader, read its lead's
+//! snapshot, then its first, and today's files again only once the first has stayed unreadable
+//! longer than any stale read (its maker stopped midway, or its bytes landed out of order), no
+//! lead's snapshot there: three files can be read half rewritten, one stale and another not. Its
+//! maker finishing it late lands where no one reads once its lead has saved.
 //!
 //! Taking up a term (`start`, then the merge and the save) starts from the records of the term
 //! before (the newest snapshot a read finds, or the one a handover names), replays the journal
@@ -83,6 +84,9 @@ pub fn path(term: u64) -> String {
     format!("state/build/term/{term}/records.json")
 }
 
+/// The path of term 1's first snapshot (`first`), which only its maker writes.
+pub const FIRST: &str = "state/build/term/1/first.json";
+
 /// JSON file `p` parsed, or the default when there's none.
 fn read_or_default<T: Default + serde::de::DeserializeOwned>(nas: &dyn Nas, p: &str) -> Result<T> {
     match nas.read(p)? {
@@ -114,14 +118,18 @@ impl Records {
 
     /// The records a reader (a job, the map server, a catalog) has while term `term` is current:
     /// its snapshot, or while it has none yet (its lead taking it up, or gone before saving one)
-    /// the newest of a term before it. None before any.
-    pub fn newest(nas: &dyn Nas, term: u64) -> Result<Option<Records>> {
-        for f in (1..=term).rev() {
+    /// the newest of a term before it; for term 1, as `term_one` says (`today` as it says). None
+    /// before any.
+    pub fn newest(nas: &dyn Nas, term: u64, today: bool) -> Result<Option<Records>> {
+        for f in (2..=term).rev() {
             if let Some(r) = Records::load(nas, f)? {
                 return Ok(Some(r));
             }
         }
-        Ok(None)
+        if term == 0 {
+            return Ok(None);
+        }
+        term_one(nas, today).map(Some)
     }
 
     /// The build's records as today's three files hold them (term 1's, as the pool begins).
@@ -209,29 +217,44 @@ impl Records {
 }
 
 /// Makes term 1's first snapshot from today's three files, unless it has one: before term 1 is made
-/// (crate::pool::term::bootstrap), so every Mac that learns of term 1 reads its snapshot whole.
-/// Made with create-new: of two Macs making it, the first's stays. This call's create whose bytes
-/// didn't land is written whole, as `term::finish` does a term's, before term 1 is made. One there
-/// already that doesn't read whole (an earlier try's, its answer lost or its maker stopped; or
-/// another Mac's, its bytes not landed yet, or a stale read) is left as it is: written whole now, a
-/// stale read could land it over a snapshot term 1's lead saved since; `start` takes term 1 up from
-/// today's files once it has stayed unreadable longer than any stale read. (This call's finish
-/// landing late, its Mac asleep between its temporary file and its rename, could land over a
-/// snapshot a lead the owner forced meanwhile saved: plan §10.)
+/// (crate::pool::term::bootstrap), so every Mac that learns of term 1 reads it whole. In a file of
+/// its own (`FIRST`) that no lead writes: term 1's lead saves its snapshots to its records file
+/// (`path(1)`), read first. Made with create-new: of two Macs making it, the first's stays. This
+/// call's create whose bytes didn't land is written whole, as `term::finish` does a term's, before
+/// term 1 is made: landing late (its Mac asleep between its temporary file and its rename), it
+/// lands where no one reads once term 1's lead has saved. One there already that doesn't read
+/// whole (an earlier try's, its answer lost or its maker stopped; or another Mac's, its bytes not
+/// landed yet, or a stale read) is left as it is: `term_one` reads today's files once it has
+/// stayed so longer than any stale read.
 pub fn first(nas: &dyn Nas) -> Result<()> {
-    if nas.exists(&path(1))? {
+    if nas.exists(FIRST)? {
         return Ok(());
     }
     let b = serde_json::to_vec(&Records { seq: 1, ..Records::today(nas)? })?;
-    match nas.create_new(&path(1), &b)? {
+    match nas.create_new(FIRST, &b)? {
         Created::Made | Created::There => Ok(()),
-        Created::Unwritten(_) => nas.write_whole(&path(1), &b).context("finish term 1's first snapshot"),
+        Created::Unwritten(_) => nas.write_whole(FIRST, &b).context("finish term 1's first snapshot"),
     }
 }
 
-/// `start`'s error while term 1's first snapshot can't be read whole: tried again, as a handover's
-/// snapshot not readable yet is, until it has stayed so longer than any stale read (`start`'s
-/// `today`).
+/// Term 1's records as a take-up or a reader starts from them: its lead's newest snapshot; while it
+/// has none, its first (`first`); while that can't be read whole either (its maker stopped midway,
+/// or its bytes landed out of order; or a stale read), today's three files once it has stayed so
+/// longer than any stale read (`today`: the caller's to say), no lead having written them since
+/// (term 1's writes them after its snapshot, and none is there), else `FirstUnreadable`.
+fn term_one(nas: &dyn Nas, today: bool) -> Result<Records> {
+    if let Some(r) = Records::load(nas, 1)? {
+        return Ok(r);
+    }
+    match nas.read(FIRST)?.map(|b| serde_json::from_slice::<Records>(&b)) {
+        Some(Ok(r)) if r.term == 1 => Ok(r),
+        _ if today => Ok(Records { seq: 1, ..Records::today(nas)? }),
+        _ => Err(FirstUnreadable.into()),
+    }
+}
+
+/// `term_one`'s error while term 1 has no snapshot that reads whole: tried again, as a handover's
+/// snapshot not readable yet is, until it has stayed so longer than any stale read (`today`).
 #[derive(Debug)]
 pub struct FirstUnreadable;
 
@@ -328,16 +351,13 @@ pub fn by_lease(keys: &mut [String]) {
 }
 
 /// The records term `t` starts from (§6.2): the newest snapshot a read finds, walking down from
-/// `t`'s own (an earlier try's that landed) to the terms before it; `own` in place of a read for
-/// the term they're of (a lead re-asserting or taking back has its own; an earlier try of this
-/// take-up, its save failed, has its records numbered on). A handover's term (`t.seq`) starts only
-/// from the snapshot it names, or a later one of its term: an error until a read gives that one
-/// (a stale read gives an older), to try again shortly. Term 1's first snapshot that can't be read
-/// whole is too (`FirstUnreadable`: a stale read of its cut create, or of today's files, pairs a
-/// manifest of one version with keys of another), until it has stayed so longer than any stale
-/// read (`today`): today's files then, `first`'s source, which no lead has written since (term 1's
-/// writes them after its saves, and none of its saves landed). Numbered as `t`'s, on from a
-/// snapshot of `t`'s own, from 0 otherwise.
+/// `t`'s own (an earlier try's that landed) to the terms before it, term 1's as `term_one` says
+/// (`today` as it says: a stale read of today's files pairs a manifest of one version with keys of
+/// another); `own` in place of a read for the term they're of (a lead re-asserting or taking back
+/// has its own; an earlier try of this take-up, its save failed, has its records numbered on). A
+/// handover's term (`t.seq`) starts only from the snapshot it names, or a later one of its term:
+/// an error until a read gives that one (a stale read gives an older), to try again shortly.
+/// Numbered as `t`'s, on from a snapshot of `t`'s own, from 0 otherwise.
 pub fn start(nas: &dyn Nas, t: &Term, own: Option<&Records>, today: bool) -> Result<Records> {
     let mut base = None;
     let mut f = t.term;
@@ -346,18 +366,7 @@ pub fn start(nas: &dyn Nas, t: &Term, own: Option<&Records>, today: bool) -> Res
             base = Some(o.clone());
             break;
         }
-        let loaded = if f == 1 {
-            match nas.read(&path(1))? {
-                Some(b) => match serde_json::from_slice::<Records>(&b) {
-                    Ok(r) if r.term == 1 => Some(r),
-                    _ if today => Some(Records { seq: 1, ..Records::today(nas)? }),
-                    _ => return Err(FirstUnreadable.into()),
-                },
-                None => None,
-            }
-        } else {
-            Records::load(nas, f)?
-        };
+        let loaded = if f == 1 { Some(term_one(nas, today)?) } else { Records::load(nas, f)? };
         if let Some(r) = loaded {
             base = Some(r);
             break;
@@ -465,25 +474,28 @@ mod tests {
         let nas = Mem::default();
         nas.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
         nas.write_whole(TODAY[1], br#"{"unit": {"6-1-1": "k0"}}"#).unwrap();
-        assert_eq!(Records::load(&nas, 1).unwrap(), None);
+        assert!(Records::newest(&nas, 1, false).unwrap_err().is::<FirstUnreadable>(), "none made yet");
         first(&nas).unwrap();
-        let mut r = Records::load(&nas, 1).unwrap().unwrap();
+        let mut r = Records::newest(&nas, 1, false).unwrap().unwrap();
         assert_eq!((r.term, r.seq, r.manifest.len(), r.keys.unit.len(), r.pending.len()), (1, 1, 1, 1, 0));
         assert_eq!(r, Records { seq: 1, ..Records::today(&nas).unwrap() });
-        assert_eq!(Records::load(&nas, 2).unwrap(), None);
+        assert_eq!(Records::load(&nas, 1).unwrap(), None, "in a file of its own, no lead's snapshot yet");
         let e = built(1, 1, "6-1-2", "k1");
         r.apply(&e.key().unwrap(), &e);
         r.save(&nas).unwrap();
-        assert_eq!(Records::load(&nas, 1).unwrap(), Some(r.clone()), "its snapshot");
+        assert_eq!(Records::load(&nas, 1).unwrap(), Some(r.clone()), "its lead's snapshot");
+        assert_eq!(Records::newest(&nas, 1, false).unwrap(), Some(r.clone()), "read first");
         // Made once: a second Mac's try leaves it.
+        let made = nas.read(FIRST).unwrap();
         first(&nas).unwrap();
-        assert_eq!(Records::load(&nas, 1).unwrap(), Some(r.clone()));
+        assert_eq!(nas.read(FIRST).unwrap(), made);
         // Its maker stopped between its create and its bytes: readers can't read it, and term 1's
         // take-up starts from today's files once it has stayed so longer than any stale read.
         let stopped = Mem::default();
         stopped.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
-        stopped.create_new(&path(1), b"").unwrap();
-        assert!(Records::load(&stopped, 1).is_err());
+        stopped.create_new(FIRST, b"").unwrap();
+        assert!(Records::newest(&stopped, 1, false).unwrap_err().is::<FirstUnreadable>());
+        assert_eq!(Records::newest(&stopped, 1, true).unwrap().map(|r| r.manifest.len()), Some(1), "today's files after `STALE_S`");
         let a = lead("development");
         let t1 = term::bootstrap(&stopped, &a, DAY, true).unwrap().unwrap();
         let taken = up(&stopped, &t1, None, &any).unwrap();
@@ -649,17 +661,17 @@ mod tests {
         let b = Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "20261005-2202-61eb22c".into() };
         let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1.clone()) }, &b, "taken over", DAY + 60).unwrap().unwrap();
         // A reader while term 2 has no snapshot yet: term 1's.
-        assert_eq!(Records::newest(&nas, 2).unwrap().map(|r| (r.term, r.seq)), Some((1, 3)));
+        assert_eq!(Records::newest(&nas, 2, false).unwrap().map(|r| (r.term, r.seq)), Some((1, 3)));
         let up2 = up(&nas, &t2, None, &any).unwrap();
         assert_eq!(up2.merged.applied, [e2.key().unwrap()]);
         assert_eq!((up2.records.term, up2.records.seq), (2, 1));
         assert!(up2.records.handles(&e1.key().unwrap()) && up2.records.handles(&e2.key().unwrap()));
         assert_eq!(Records::load(&nas, 2).unwrap(), Some(up2.records.clone()));
-        assert_eq!(Records::newest(&nas, 2).unwrap(), Some(up2.records.clone()));
+        assert_eq!(Records::newest(&nas, 2, false).unwrap(), Some(up2.records.clone()));
         // Term 3 made, its lead gone before saving anything: term 4 starts from term 2's.
         let t3 = term::claim(&nas, &Current { term: 2, lead: Some(t2.clone()) }, &a, "taken over", DAY + 120).unwrap().unwrap();
         let t4 = term::claim(&nas, &Current { term: 3, lead: Some(t3) }, &b, "taken over", DAY + 900).unwrap().unwrap();
-        assert_eq!(Records::newest(&nas, 4).unwrap().map(|r| r.term), Some(2), "readers meanwhile: term 2's (review L6: none)");
+        assert_eq!(Records::newest(&nas, 4, false).unwrap().map(|r| r.term), Some(2), "readers meanwhile: term 2's (review L6: none)");
         let up4 = up(&nas, &t4, None, &any).unwrap();
         assert_eq!((up4.records.term, up4.records.reflected.len()), (4, 2));
         // Tried again after its save landed: from its own snapshot, its number going on.
@@ -868,7 +880,28 @@ mod tests {
         let nas = Cut(Mem::default());
         nas.0.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
         first(&nas).unwrap();
-        assert_eq!(Records::load(&nas, 1).unwrap().map(|r| (r.seq, r.manifest.len())), Some((1, 1)));
+        assert_eq!(Records::newest(&nas, 1, false).unwrap().map(|r| (r.seq, r.manifest.len())), Some((1, 1)));
+    }
+
+    #[test]
+    fn term_ones_first_snapshot_finished_late_lands_where_none_reads() {
+        // Its maker's create cut short, and its finish landing late, its Mac asleep between its
+        // temporary file and its rename: term 1's lead took up from today's files meanwhile, and
+        // saved. (Re-review 3: written to term 1's records file, it landed over that snapshot.)
+        let nas = Mem::default();
+        nas.write_whole(TODAY[0], br#"{"base/6-1-1": "base/6-1-1.k0.base"}"#).unwrap();
+        let late = serde_json::to_vec(&Records { seq: 1, ..Records::today(&nas).unwrap() }).unwrap();
+        nas.create_new(FIRST, b"").unwrap();
+        let t1 = term::bootstrap(&nas, &lead("development"), DAY, true).unwrap().unwrap();
+        let mut r = up(&nas, &t1, None, &any).unwrap().records;
+        let e = built(1, 1, "6-1-2", "k1");
+        r.apply(&e.key().unwrap(), &e);
+        r.save(&nas).unwrap();
+        nas.write_whole(FIRST, &late).unwrap();
+        assert_eq!(Records::newest(&nas, 1, false).unwrap(), Some(r.clone()), "its lead's");
+        let b = Member { id: "m-000000000000000b".into(), host: "MacBook-Air".into(), app: "development".into() };
+        let t2 = term::claim(&nas, &Current { term: 1, lead: Some(t1) }, &b, "taken over", DAY + 60).unwrap().unwrap();
+        assert!(start(&nas, &t2, None, false).unwrap().handles(&e.key().unwrap()), "term 2 from its lead's too");
     }
 
     #[test]
@@ -880,11 +913,11 @@ mod tests {
         let mut b = serde_json::to_vec(&Records { seq: 1, ..Records::today(&nas).unwrap() }).unwrap();
         let n = b.len();
         b[n / 4..n / 2].fill(0);
-        nas.create_new(&path(1), &b).unwrap();
+        nas.create_new(FIRST, &b).unwrap();
         let a = lead("development");
         let t1 = term::bootstrap(&nas, &a, DAY, true).unwrap().unwrap();
         let taken = up(&nas, &t1, None, &any).unwrap();
         assert_eq!((taken.records.seq, taken.records.manifest.len()), (2, 1));
-        assert_eq!(Records::load(&nas, 1).unwrap().map(|r| r.seq), Some(2), "replaced whole");
+        assert_eq!(Records::load(&nas, 1).unwrap().map(|r| r.seq), Some(2), "its lead's, saved whole");
     }
 }
