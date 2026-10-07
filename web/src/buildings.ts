@@ -178,6 +178,7 @@ export function addBuildings(map: MLMap, before: string, flatBefore: string) {
   if (map.getSource(SOURCE)) return;
   map.addSource(SOURCE, { type: 'vector', tiles: [buildingTiles()], minzoom: 12, maxzoom: 14 });
   keepWhole(map);
+  watchTall(map);
   map.addLayer({
     id: FLAT, type: 'fill', source: SOURCE, 'source-layer': 'b', minzoom: 12, filter: flatFilter(false),
     layout: { visibility: 'none' },
@@ -218,6 +219,7 @@ export function applyBuildings(map: MLMap, b: BuildingState, exaggeration: numbe
   map.setPaintProperty(LAYER, 'fill-extrusion-base', metres('m', k));
   map.setFilter(LAYER, extrudedFilter(b.skyline));
   map.setFilter(PICK, extrudedFilter(b.skyline, true));
+  tallOf(map).dirty = true;
   map.setFilter(FLAT, flatFilter(b.skyline));
   // Lit from the hill-shading's light, low, so the roofs are a little brighter than the walls.
   map.setLight({ anchor: 'map', position: [1.5, ((light % 360) + 360) % 360, 40], intensity: 0.35, color: '#ffffff' });
@@ -266,62 +268,214 @@ function firstCrossing(rings: Ring[], a: [number, number], b: [number, number]):
   return best;
 }
 
-/** A query box on the screen and the least height (dm) a footprint in it needs to reach the ray. */
-type TrackBox = { box: [[number, number], [number, number]]; minDm: number };
+/** The hover's footprints at least this tall (dm) are found on the ground (`tallOf`), the
+ * shorter ones by MapLibre's query on the screen, along the ray's ground track (`track`). */
+const TALL_DM = 300;
 
-/** The ray's ground track on the screen in boxes, each with the height a building in it must reach
- * to meet the ray there: points every 1/48 of the height from the ground `g0` to `top` (the ray at
- * that height, on the ground below it), cut where they leave the screen, grouped into boxes ~24 px
- * across and at most 160 px long (a query's own cost, its corners found on the terrain, is most of
- * it), 3 px around. A box's height is the ray's at its near end, less the ground there and some. */
-function trackBoxes(map: MLMap, p: { x: number; y: number }, ray: Ray, g0: number, top: number, k: number, slack: number): TrackBox[] {
-  const W = map.getCanvas().clientWidth, H = map.getCanvas().clientHeight;
-  const pts: { x: number; y: number; a: number; g: number }[] = [{ x: p.x, y: p.y, a: g0, g: g0 }];
-  for (let i = 1; i <= 48; i++) {
-    const a = g0 + ((top - g0) * i) / 48;
-    const ll = ray.at(p.x, p.y, a);
-    if (!ll) break;
-    const s = map.project([ll.lng, ll.lat]);
-    if (!Number.isFinite(s.x) || !Number.isFinite(s.y)) break;
-    const last = pts[pts.length - 1];
-    if (s.x < 0 || s.x > W || s.y < 0 || s.y > H) {
-      // (Off the screen: the track to the screen's edge.)
-      const c = clipTo(last, s, W, H);
-      if (Math.hypot(c.x - last.x, c.y - last.y) > 0.5) pts.push({ ...c, a, g: map.queryTerrainElevation(ll) ?? last.g });
-      break;
-    }
-    pts.push({ x: s.x, y: s.y, a, g: map.queryTerrainElevation(ll) ?? last.g });
+/** A tall footprint, and its box on the ground (w, s, e, n). */
+type Tall = { f: MapGeoJSONFeature; box: [number, number, number, number] };
+
+/** Per map: the loaded tiles' footprints of `TALL_DM` or more (the pick layer's), and the tallest
+ * (dm; the pipeline's bound until measured): read when the map is idle after the buildings' tiles
+ * or filter changed. */
+const talls = new WeakMap<MLMap, { dm: number; dirty: boolean; tall: Tall[] }>();
+
+function tallOf(map: MLMap) {
+  let t = talls.get(map);
+  if (!t) {
+    t = { dm: TALLEST_DM, dirty: true, tall: [] };
+    talls.set(map, t);
   }
-  const out: TrackBox[] = [];
-  let j = 0;
-  while (j < pts.length - 1) {
-    let m = j + 1;
-    const span = (to: number) => {
-      const xs = pts.slice(j, to + 1).map((q) => q.x), ys = pts.slice(j, to + 1).map((q) => q.y);
-      const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
-      return Math.min(w, h) <= 24 && Math.max(w, h) <= 160;
-    };
-    while (m + 1 < pts.length && span(m + 1)) m++;
-    const seg = pts.slice(j, m + 1);
-    const xs = seg.map((q) => q.x), ys = seg.map((q) => q.y);
-    const g = Math.max(...seg.map((q) => q.g));
-    const minDm = Math.floor(((pts[j].a - g - slack) / k) * 10);
-    out.push({ box: [[Math.min(...xs) - 3, Math.min(...ys) - 3], [Math.max(...xs) + 3, Math.max(...ys) + 3]], minDm });
-    j = m;
-  }
-  return out;
+  return t;
 }
 
-/** Segment p–q cut at the box 0–w × 0–h (p inside it): q, or where the segment leaves the box. */
-function clipTo(p: { x: number; y: number }, q: { x: number; y: number }, w: number, h: number): { x: number; y: number } {
-  let t = 1;
-  const dx = q.x - p.x, dy = q.y - p.y;
-  if (dx > 0) t = Math.min(t, (w - p.x) / dx);
-  if (dx < 0) t = Math.min(t, -p.x / dx);
-  if (dy > 0) t = Math.min(t, (h - p.y) / dy);
-  if (dy < 0) t = Math.min(t, -p.y / dy);
-  t = Math.max(0, t);
-  return { x: p.x + dx * t, y: p.y + dy * t };
+/** Keeps `tallOf` up to date (with the source added). */
+function watchTall(map: MLMap) {
+  const t = tallOf(map);
+  map.on('sourcedata', (e) => {
+    if (e.sourceId === SOURCE) t.dirty = true;
+  });
+  map.on('idle', () => {
+    if (!t.dirty || !map.getLayer(PICK)) return;
+    t.dirty = false;
+    const filter = ['all', map.getFilter(PICK) ?? true, ['>=', ['get', 'h'], TALL_DM]] as FilterSpecification;
+    const seen = new Set<string>();
+    t.tall = [];
+    t.dm = TALL_DM;
+    for (const f of map.querySourceFeatures(SOURCE, { sourceLayer: 'b', filter })) {
+      if (f.geometry.type !== 'Polygon' && f.geometry.type !== 'MultiPolygon') continue;
+      const box: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
+      for (const poly of f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates) {
+        for (const [x, y] of poly[0] ?? []) {
+          box[0] = Math.min(box[0], x);
+          box[1] = Math.min(box[1], y);
+          box[2] = Math.max(box[2], x);
+          box[3] = Math.max(box[3], y);
+        }
+      }
+      const h = (f.properties as { h?: number }).h ?? 0;
+      // (Each once: a building's copies, and the same building in tiles of two zooms.)
+      const key = `${h}/${box.map((v) => v.toFixed(6)).join(',')}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      // (A source's feature as the query's: properties and geometry are what the hover reads.)
+      t.tall.push({ f: f as unknown as MapGeoJSONFeature, box });
+      t.dm = Math.max(t.dm, h);
+    }
+  });
+}
+
+/** A query box on the screen, the least height (dm) a footprint in it needs to reach the ray, and
+ * the ray's height (rendered metres) at the box's end nearest the camera: no building in it can be
+ * met higher. */
+type TrackBox = { box: [[number, number], [number, number]]; minDm: number; top: number };
+
+/** A step of the ray's ground track (lng, lat) and the least height (dm) a building on it needs. */
+type Corridor = { a: [number, number]; b: [number, number]; minDm: number };
+
+/** Where the view ray through p first meets the terrain: its height there (rendered metres), or
+ * null without a ray. Stepped down from the camera in 64 heights (each the ground under the ray
+ * compared), then halved 8 times between the last above the ground and the first below; stepped
+ * again between the camera and that hit while that finds an earlier one (a ridge thinner than a
+ * step: 27 m steps over Honolulu, 3.5 m the second time), up to 4 times. Not a point fixed from sea
+ * level (camera3d's probe), which lands behind a hill; not MapLibre's unprojection, which puts the
+ * ground at the camera when it's near a hill. */
+function groundHit(map: MLMap, p: { x: number; y: number }, ray: Ray): number | null {
+  const ground = (a: number) => {
+    const ll = ray.at(p.x, p.y, a);
+    return ll ? map.queryTerrainElevation(ll) ?? 0 : null;
+  };
+  const top = ray.camera - 0.5;
+  // (Down to the lowest ground, an exaggerated Dead Sea's, the first time.)
+  let low = -1500;
+  let hit: number | null = null;
+  for (let pass = 0; pass < 4; pass++) {
+    let above = top, found: number | null = null;
+    for (let i = 1; i <= 64 && found === null; i++) {
+      const a = top - ((top - low) * i) / 64;
+      const g = ground(a);
+      if (g === null) return hit;
+      if (g >= a) {
+        let lo = a, hi = above;
+        for (let j = 0; j < 8; j++) {
+          const mid = (lo + hi) / 2;
+          const gm = ground(mid);
+          if (gm !== null && gm >= mid) lo = mid;
+          else hi = mid;
+        }
+        found = (lo + hi) / 2;
+      }
+      above = a;
+    }
+    // (None higher than the last: that's the first.)
+    if (found === null || (hit !== null && found <= hit + 0.5)) break;
+    hit = found;
+    low = found;
+  }
+  return hit ?? ground(0);
+}
+
+/** A hit this far (m) below where the ray meets the ground still counts: the terrain's own
+ * sampling, against the building standing on it at its centroid. */
+const UNDER_M = 1;
+
+/** A point of the ray's ground track: the ground under the ray (lng, lat) and on the screen, the
+ * ray's height there and the ground's (rendered metres). */
+type TrackPoint = { ll: [number, number]; x: number; y: number; a: number; g: number };
+
+/** The ray's ground track: the ground under the ray from just past where it meets the terrain
+ * (`g0`, groundHit; `UNDER_M` below) back toward the camera, in steps of a 32nd of the tallest top
+ * around (`tallest`, m, × `k`, with `slack`), until the ray is that far above the ground under it;
+ * then on to the camera in 32 steps, the ground under each compared, the stretches where it rises
+ * back within reach (a ridge under the camera; a step's rise allowed) taken at the first step. Each
+ * step has the least height (dm) a building on it must have to reach the ray: the ray's height at
+ * its far end, less the higher ground under it and the slack. The steps a building shorter than
+ * `TALL_DM` could reach come as boxes on the screen for MapLibre's query, off the screen too (below
+ * it, near the camera; not past 4 screens): at most 24 px wide and 96 px tall, the track running
+ * down the screen, toward the camera's nadir. MapLibre finds a box's ground from its corners on the
+ * terrain: lower rays in a column meet the ground no farther than higher ones, so a box's top and
+ * bottom bound every row between, over hills too, where a wide box's sides can meet different
+ * hills. The rest come as segments on the ground, for the tall footprints (`tallOf`). */
+function track(map: MLMap, p: { x: number; y: number }, ray: Ray, g0: number, tallest: number, k: number, slack: number) {
+  const H = map.getCanvas().clientHeight;
+  const reach = tallest * k + slack, step = reach / 32, top = ray.camera - 0.5;
+  const at = (a: number, s?: { x: number; y: number }, g?: number): TrackPoint | null => {
+    const ll = ray.at(p.x, p.y, a);
+    if (!ll) return null;
+    const q = s ?? map.project([ll.lng, ll.lat]);
+    return { ll: [ll.lng, ll.lat], x: q.x, y: q.y, a, g: g ?? map.queryTerrainElevation(ll) ?? g0 };
+  };
+  const first: TrackPoint[] = [];
+  for (let i = 0; i <= 512; i++) {
+    const a = i === 0 ? g0 - UNDER_M : g0 + step * (i - 1);
+    if (a >= top) break;
+    const q = i === 1 ? at(a, p, g0) : at(a);
+    if (!q) break;
+    first.push(q);
+    if (a - q.g > reach) break;
+  }
+  const runs = [first];
+  const last = first[first.length - 1];
+  if (last && last.a - last.g > reach) {
+    const coarse = (top - last.a) / 32;
+    let prev = { a: last.a, g: last.g };
+    for (let i = 1; i <= 32; i++) {
+      const a = last.a + coarse * i;
+      const ll = ray.at(p.x, p.y, a);
+      if (!ll) break;
+      const g = map.queryTerrainElevation(ll) ?? g0;
+      if (a - g <= reach + coarse || prev.a - prev.g <= reach + coarse) {
+        const n = Math.max(1, Math.ceil(coarse / step));
+        const run: TrackPoint[] = [];
+        for (let j = 0; j <= n; j++) {
+          const q = at(prev.a + (coarse * j) / n);
+          if (q) run.push(q);
+        }
+        // (Joined to the stretch before when they meet.)
+        const r = runs[runs.length - 1];
+        if (r.length && run.length && r[r.length - 1].a === run[0].a) r.push(...run.slice(1));
+        else runs.push(run);
+      }
+      prev = { a, g };
+    }
+  }
+  const boxes: TrackBox[] = [];
+  const corridor: Corridor[] = [];
+  for (const pts of runs) {
+    for (let j = 0; j + 1 < pts.length; j++) {
+      const [q0, q1] = [pts[j], pts[j + 1]];
+      const minDm = Math.floor(((q0.a - Math.max(q0.g, q1.g) - slack) / k) * 10);
+      // (Far below the screen: a ray there would be the camera's own nadir, near enough.)
+      if (minDm >= TALL_DM || !Number.isFinite(q1.x) || !Number.isFinite(q1.y) || q1.y > 4 * H) {
+        corridor.push({ a: q0.ll, b: q1.ll, minDm: Math.min(minDm, TALL_DM) });
+        continue;
+      }
+      // In pieces of at most 24 px across and 96 along, merged while the box stays within them.
+      const n = Math.max(1, Math.ceil(Math.max(Math.abs(q1.x - q0.x) / 24, Math.abs(q1.y - q0.y) / 96)));
+      for (let i = 0; i < n; i++) {
+        const x0 = q0.x + ((q1.x - q0.x) * i) / n, y0 = q0.y + ((q1.y - q0.y) * i) / n;
+        const x1 = q0.x + ((q1.x - q0.x) * (i + 1)) / n, y1 = q0.y + ((q1.y - q0.y) * (i + 1)) / n;
+        const lastBox = boxes[boxes.length - 1];
+        if (lastBox) {
+          const bx0 = Math.min(lastBox.box[0][0] + 3, x0, x1), by0 = Math.min(lastBox.box[0][1] + 3, y0, y1);
+          const bx1 = Math.max(lastBox.box[1][0] - 3, x0, x1), by1 = Math.max(lastBox.box[1][1] - 3, y0, y1);
+          if (bx1 - bx0 <= 24 && by1 - by0 <= 96) {
+            lastBox.box = [[bx0 - 3, by0 - 3], [bx1 + 3, by1 + 3]];
+            lastBox.minDm = Math.min(lastBox.minDm, minDm);
+            lastBox.top = q1.a;
+            continue;
+          }
+        }
+        boxes.push({ box: [[Math.min(x0, x1) - 3, Math.min(y0, y1) - 3], [Math.max(x0, x1) + 3, Math.max(y0, y1) + 3]], minDm, top: q1.a });
+      }
+    }
+  }
+  return { boxes, corridor };
+}
+
+/** Whether a footprint's box (w, s, e, n) meets a step's box, `m` degrees around. */
+function meets(box: [number, number, number, number], c: Corridor, m: number): boolean {
+  return box[0] <= Math.max(c.a[0], c.b[0]) + m && box[2] >= Math.min(c.a[0], c.b[0]) - m && box[1] <= Math.max(c.a[1], c.b[1]) + m && box[3] >= Math.min(c.a[1], c.b[1]) - m;
 }
 
 /** A feature's key for telling queries' answers apart: its tile and its place in the tile's data
@@ -333,13 +487,23 @@ function featureKey(f: MapGeoJSONFeature): string {
 }
 
 /** The building the cursor's view ray meets first, if any (in the flat mode, the footprint under
- * it). Candidates: the footprints under the ray's ground track, from the point it meets the ground
- * back toward the camera as far as the tallest building could reach: on the screen, from the
- * cursor toward the point under the ray at that height (toward the camera's nadir, below the
- * screen's middle), in boxes along it, each taking only footprints tall enough to reach the ray
- * there (`trackBoxes`); each tested against the ray between its roof and its base, as MapLibre
- * draws it (on the terrain at its centroid, a base of 0 sunk 10 m). The one met highest wins. */
+ * it). Candidates: the footprints along the ray's ground track (`track`), from where it meets the
+ * ground back toward the camera as far as the tallest building could reach, each tall enough to
+ * reach the ray there; each tested against the ray between its roof and its base, as MapLibre
+ * draws it (on the terrain at its centroid, a base of 0 sunk 10 m). The one met highest wins: the
+ * tall ones found on the ground first, then MapLibre's queries from the camera's end of the track,
+ * none once the ray there is below a building already met. */
 export function buildingAt(map: MLMap, p: { x: number; y: number }, b: BuildingState, exaggeration: number, ray: Ray): { f: MapGeoJSONFeature; alt: number } | null {
+  // (MapLibre's terrain queries can throw, a tile's height map not yet the view's after a jump:
+  // no building then, rather than no hover at all.)
+  try {
+    return pick(map, p, b, exaggeration, ray);
+  } catch {
+    return null;
+  }
+}
+
+function pick(map: MLMap, p: { x: number; y: number }, b: BuildingState, exaggeration: number, ray: Ray): { f: MapGeoJSONFeature; alt: number } | null {
   if (!b.on || !map.getLayer(PICK)) return null;
   if (map.getLayoutProperty(FLAT, 'visibility') === 'visible') {
     const f = map.queryRenderedFeatures([p.x, p.y], { layers: [FLAT] })[0];
@@ -349,22 +513,21 @@ export function buildingAt(map: MLMap, p: { x: number; y: number }, b: BuildingS
   const k = b.scale > 0 ? b.scale : Math.max(1, exaggeration);
   // (Heights a little under the camera's: the ray is only below it.)
   const cap = (e: number) => Math.min(e, ray.camera - 0.5);
-  const ground = ray.at(p.x, p.y, cap(0));
-  if (!ground) return null;
-  const g0 = map.queryTerrainElevation(ground) ?? 0;
-  // The track from the cursor to where the ray is at the tallest top (700 m), each box's footprints
-  // those tall enough to reach the ray over it (the terrain and its slopes allowed for).
+  const g0 = groundHit(map, p, ray);
+  if (g0 === null) return null;
+  // The track from where the ray meets the ground to where it's above the tallest building around,
+  // each step's footprints those tall enough to reach the ray over it (the terrain and its slopes
+  // allowed for).
   const slack = 20 * Math.max(1, exaggeration);
-  const cands = trackBoxes(map, p, ray, g0, cap(g0 + (TALLEST_DM / 10) * k), k, slack).flatMap(({ box, minDm }) =>
-    minDm > TALLEST_DM ? [] : map.queryRenderedFeatures(box, { layers: [PICK], ...(minDm > 0 ? { filter: ['>=', ['get', 'h'], minDm] as FilterSpecification } : {}) }),
-  );
+  const t = tallOf(map);
+  const { boxes, corridor } = track(map, p, ray, g0, t.dm / 10, k, slack);
   let best: MapGeoJSONFeature | null = null, bestAlt = -Infinity;
   const seen = new Set<string>();
-  for (const f of cands) {
+  const test = (f: MapGeoJSONFeature) => {
     const key = featureKey(f);
-    if (seen.has(key)) continue;
+    if (seen.has(key)) return;
     seen.add(key);
-    if (f.geometry.type !== 'Polygon' && f.geometry.type !== 'MultiPolygon') continue;
+    if (f.geometry.type !== 'Polygon' && f.geometry.type !== 'MultiPolygon') return;
     const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
     const pr = f.properties as Record<string, number>;
     const top0 = ((pr.h ?? 0) / 10) * k, base0 = ((pr.m ?? 0) / 10) * k;
@@ -388,14 +551,29 @@ export function buildingAt(map: MLMap, p: { x: number; y: number }, b: BuildingS
       const cos = Math.cos(((cy / n) * Math.PI) / 180);
       const rings: Ring[] = poly.map((r) => r.map(([x, y]) => [x * cos, y] as [number, number]));
       const A: [number, number] = [a.lng * cos, a.lat], Z: [number, number] = [z.lng * cos, z.lat];
-      const t = inside(rings, A) ? 0 : firstCrossing(rings, A, Z);
-      if (t === null) continue;
-      const alt = top - t * (top - base);
+      const u = inside(rings, A) ? 0 : firstCrossing(rings, A, Z);
+      if (u === null) continue;
+      const alt = top - u * (top - base);
+      // (Met below where the ray meets the ground: behind the terrain.)
+      if (alt < g0 - UNDER_M) continue;
       if (alt > bestAlt) {
         bestAlt = alt;
         best = f;
       }
     }
+  };
+  if (corridor.length) {
+    // (A few metres around the track: a footprint's box meeting a step's.)
+    const m = 5e-5;
+    for (const { f, box } of t.tall) {
+      const h = (f.properties as { h?: number }).h ?? 0;
+      if (corridor.some((c) => h >= c.minDm && meets(box, c, m))) test(f);
+    }
+  }
+  // From the camera's end: a box whose ray is below the building met so far has none higher.
+  for (let i = boxes.length - 1; i >= 0 && boxes[i].top > bestAlt; i--) {
+    const { box, minDm } = boxes[i];
+    for (const f of map.queryRenderedFeatures(box, { layers: [PICK], ...(minDm > 0 ? { filter: ['>=', ['get', 'h'], minDm] as FilterSpecification } : {}) })) test(f);
   }
   return best ? { f: best, alt: bestAlt } : null;
 }
@@ -403,9 +581,13 @@ export function buildingAt(map: MLMap, p: { x: number; y: number }, b: BuildingS
 /** Whether a point of a road or rail line under the cursor is hidden by a building: the view ray
  * to it meets one above it (a line drawn on the terrain; bridges and elevated rail aside). */
 export function hiddenByBuilding(map: MLMap, ll: [number, number], b: BuildingState, exaggeration: number, ray: Ray): boolean {
-  const q = map.project(ll);
-  const hit = buildingAt(map, q, b, exaggeration, ray);
-  return !!hit && hit.alt > (map.queryTerrainElevation(ll) ?? 0) + 2;
+  try {
+    const q = map.project(ll);
+    const hit = buildingAt(map, q, b, exaggeration, ray);
+    return !!hit && hit.alt > (map.queryTerrainElevation(ll) ?? 0) + 2;
+  } catch {
+    return false;
+  }
 }
 
 /** What the bottom bar says of a building: its height, where the height comes from ("from 6

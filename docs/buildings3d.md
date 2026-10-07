@@ -648,28 +648,47 @@ source's fill-extrusion: the hovered building, 1 m larger and taller, amber).
 
 - Hover (B1), at most once a frame: the building the cursor's view ray meets first. MapLibre's
   query of extrusions ignores the terrain and finds nothing on the globe, so the app picks itself
-  (`buildingAt`). The candidates are the footprints (`buildings-pick`, copies included) under the
-  ray's ground track, from where it meets the ground back toward the camera as far as the tallest
-  top (700 m × the scale, under the camera): on the screen, from the cursor toward the point under
-  the ray at that height (the camera's nadir, below the screen's middle), in boxes along it about
-  24 px across, each taking only the footprints tall enough to reach the ray over it (its height
-  there, less the ground and some for slopes: `trackBoxes`; a query's own cost, its corners found
-  on the terrain, is most of a box's). Each is tested against the ray between its roof and its base
-  as MapLibre draws it (on the terrain at its polygon's centroid, a base of 0 sunk 10 m), the ray
-  from camera3d (`rayAt`, globe or flat, the same as MapLibre's unprojection at the ground), and the
-  one met highest wins. Checked against the same ray test over every footprint in view, on 8 × 8
-  points a view: Tokyo at z13.9, 70° and Shinjuku at z14.5, 60° all 64 the same; Shinjuku at z16,
-  60° and Midtown at z15, 70° 62 (the other points: footprints the reference meets below the
-  terrain at the cursor, which hides them, or that its query of the whole screen misses near the
-  horizon); B1's first box, straight down the screen from the cursor, missed 3 of 12 at Shinjuku.
-  It costs (the M1, `buildingAt` alone) 0.8 ms in the median at Shinjuku, z16, 60° (p90 3.9 ms),
-  1.5 at Midtown, z15, 70° (9.7), 2.5 at Tokyo, z13.9, 70° (6.2, at most 13), the longer tracks over
-  tall towers the slowest; the hover's whole work a frame (the bottom bar, the highlight) 4.5–5.6
-  ms in the median: within a 60 Hz frame, a large share of a 120 Hz one while the cursor moves. A
-  road or rail line under the cursor gives way when the ray to its point meets a building above it
-  (a second call). The hovered building is drawn again in a small GeoJSON layer, 1 m larger and
+  (`buildingAt`):
+  - where the ray first meets the terrain: stepped down from the camera in 64 heights, then halved
+    8 times, and stepped again between the camera and that point while that finds an earlier one
+    (a ridge thinner than a step), up to 4 times. Not a point fixed from sea level, as camera3d's
+    probe takes it, which lands behind a hill with the terrain 3× tall; not MapLibre's
+    unprojection, which puts the ground at the camera when the camera is in a hill;
+  - the ground under the ray from a metre past that point (a building met up to 1 m below it
+    still counts: the terrain's sampling against the building's) back toward the camera, until
+    the ray is above the tallest top around (the loaded tiles' tallest × the scale, plus 20 m ×
+    the exaggeration for slopes), then on to the camera in 32 steps, where the ground rises back
+    within reach (a ridge under the camera); each step takes the footprints (`buildings-pick`,
+    copies included) tall enough to reach the ray over it;
+  - those of 30 m or more from an index of the loaded tiles' (remade when the map is idle after
+    their tiles or filter changed), by their boxes on the ground; the shorter by MapLibre's query
+    in boxes on the screen, at most 24 px wide and 96 px tall (the track runs down the screen,
+    toward the camera's nadir), below the screen's edge too. A box's ground comes from its corners
+    on the terrain: a lower ray in a screen column meets the ground no farther than a higher one,
+    so a box's top and bottom bound the rows between, over hills too, where a wide box's sides
+    can meet different hills;
+  - each tested against the ray between its roof and its base as MapLibre draws it (on the
+    terrain at its polygon's centroid, a base of 0 sunk 10 m), the ray from camera3d (`rayAt`,
+    globe or flat), the one met highest winning: the tall ones first, then the boxes from the
+    camera's end, none once the ray over a box is below a building already met (a query's own
+    cost, its corners found on the terrain, is most of a box's).
+
+  Checked against the same ray test over every footprint of the loaded tiles, met above where the
+  ray first meets the terrain (marched in 1,024 steps), at 9 × 9 points a view (1200 × 736, framed
+  from the ground, the terrain 3× tall): eleven hillside views of Honolulu at z16.8, 70° (Makiki,
+  St. Louis Heights, Pacific Heights, Wilhelmina Rise, Maunalani Heights, Waialae Iki, Aina Haina,
+  Alewa Heights, Manoa, Punchbowl, Kamilo Iki), Shinjuku at z16, 75° and Tokyo at z13.9, 70°:
+  1,050 of the 1,053 the same, the other 3 a camera inside a hill (below). A pointer move's hover
+  (the M1; the bottom bar and the highlight included, roads and rails left out) took 0.5–4.6 ms in
+  the median, 0.8–6.8 at p90 (Shinjuku 3.5 and 6.3, Tokyo 4.3 and 5.5), at most 10.5. A road or
+  rail line under the cursor gives way when the ray to its point meets a building above it (a
+  second call). The hovered building is drawn again in a small GeoJSON layer, 1 m larger and
   taller, amber; a tower's other parts and nearer buildings hide it where they're in front (B3: an
-  outline drawn over the buildings). The bottom bar's slots as in §1.
+  outline drawn over the buildings). The bottom bar's slots as in §1. Known: while the globe hands
+  over to the flat map (zoom 15.5–16.5), MapLibre draws a blend of the two that `rayAt` doesn't
+  follow: the hover can be off by up to 6.8 px there (at z16.4). Where the framing leaves the
+  camera inside a hill (2 m into Aina Haina's ridge), the rays start underground: MapLibre's
+  queries put every point at the camera, and the hover finds nothing near it.
 - Click: none in B1–B2. Later: **O** opens the OSM way where OSM gave the footprint (its id from the
   work file), served by `/api/building?at=` if wanted.
 - The In view summary may add the tallest building in view (from the loaded tiles): B3, optional.
