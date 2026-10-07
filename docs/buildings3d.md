@@ -477,13 +477,20 @@ manifest; a work file, not served; docs/formats.md has the bytes). Meta `{"fmt":
 - **No edge parallel to an axis beyond the extent:** MapLibre's extrusion takes such an edge for a
   clipped tile's cut and draws no wall on it (`isBoundaryEdge`), and in whole buildings they're
   walls: 0.12–1 % of buildings lost one in B1's first packs. Such an edge gets points between its
-  ends, every other one a unit further out: at MapLibre's subdivision lines (every 2,048 units on
-  the globe, where it cuts edges and rounds the cuts) and midway; a unit-long one a point a unit
-  out; a slanted edge out there a point at each line, where rounding would have made a piece
-  parallel. Its ends stay. Left in B1's rebuilt packs: none on the flat map, 5–8 features in a
-  sampled million on the globe (a cut's rounding elsewhere).
+  ends, every other one a unit off it, outside the ring (for a hole, into the building): at
+  MapLibre's subdivision lines (every 2,048 units on the globe, where it cuts edges and rounds the
+  cuts) and midway; a unit-long one a point a unit off; a slanted edge out there a point at each
+  line, where rounding would have made a piece parallel. Its ends stay. Where the points would
+  cross the ring or its polygon's other rings, they go inside the ring instead, else the edge is
+  left as it is (its wall not drawn): in every triangle and quadrilateral on small grids past an
+  edge (a unit test), 1.6 %, each a unit-long edge in a notch a unit wide. Left in B1's packs: none
+  on the flat map, 5–8 features in a sampled million on the globe (a cut's rounding elsewhere); and
+  five holes of no area in Vermont's z14, a unit across, made by the first rule (a unit away from
+  the tile), which the rule outside the ring can't make (packs not rebuilt since).
 - Quantized to the tile's grid (z14: 0.6 m at the equator); repeated points dropped, rings that
-  collapse dropped; at z12–13, simplified to one grid unit.
+  collapse dropped; at z12–13, simplified to one grid unit. Known: from zoom 18 the grid shows, a
+  unit a few pixels: curved and slanted walls in small sawtooth facets, and a wall past its tile's
+  edge with the points above a unit off its line.
 - Properties: `h` the top (dm), `m` the base (dm; parts; left out when 0), `s` the height's source
   (0–5, §2.3), `f` floors (when `s` is 1), `c` the kind (0 unknown, 1 residential, 2 outbuilding,
   3 commercial, 4 industrial, 5 religious, 6 civic, 7 agricultural, 8 transport, 9 other), `k` (1 a

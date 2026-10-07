@@ -280,14 +280,16 @@ it checks their names and types against what it reads.
 z12–14; no lo or root packs), made by `bldtiles` from the tile's and its 8 neighbours' normalized
 files and the coverage: MVT 2.1, extent 4096, one layer `b`, a feature per building or part that
 touches the coverage (its centroid or a vertex in it, with the 1 km buffer), whole in the tile of
-its centroid (not clipped), and copied whole into each other tile at that zoom its exteriors reach
-(`o` 1: for the flat footprints, which a fill cuts at its tile's edge; from up to 310 m beyond a z8
-area's edge); quantized to the tile's grid, at z12–13 simplified to one unit first; repeated points
-dropped, rings of fewer than 3 points or no area dropped (an exterior with its holes); exteriors
-positive, holes negative; no edge parallel to an axis beyond the extent (MapLibre takes one for a
-clip line and draws no wall on it: such an edge gets points between its ends a unit out, at
-MapLibre's subdivision lines every 2,048 units and midway, and a slanted edge out there a point at
-each such line). z14 every building and part, z13 those 20 m or more or
+its centroid (not clipped); a building or outline (not a part: parts aren't drawn flat) also
+copied whole into each other tile at that zoom its exteriors reach (`o` 1: for the flat
+footprints, which a fill cuts at its tile's edge; from up to 310 m beyond a z8 area's edge);
+quantized to the tile's grid, at z12–13 simplified to one unit first; repeated points dropped,
+rings of fewer than 3 points or no area dropped (an exterior with its holes); exteriors positive,
+holes negative; no edge parallel to an axis beyond the extent (MapLibre takes one for a clip line
+and draws no wall on it: such an edge gets points between its ends a unit off it, outside the
+ring, at MapLibre's subdivision lines every 2,048 units and midway, and a slanted edge out there a
+point at each such line; inside the ring where outside would cross the ring or its polygon's
+others, else none). z14 every building and part, z13 those 20 m or more or
 of 2,000 m² or more, z12 those 40 m or more. Properties (uint): `h` the top (dm), `m` the base (dm;
 parts; left out when 0), `s` where the height comes from (0 measured, 1 floors, 2 Microsoft's
 estimate, 3 neighbours, 4 GHSL, 5 size and kind), `f` floors (when `s` is 1), `c` the kind (0

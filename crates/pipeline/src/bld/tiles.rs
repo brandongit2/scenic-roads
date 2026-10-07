@@ -12,7 +12,8 @@
 //!   points or no area dropped (an exterior with its holes). Exteriors wind positive (y down), holes
 //!   negative.
 //! - No edge parallel to an axis beyond the extent ([`unclip`]): MapLibre takes such an edge for a
-//!   tile's clip line and draws no wall on it, and in whole buildings they're walls.
+//!   tile's clip line and draws no wall on it, and in whole buildings they're walls. Its points go
+//!   outside the ring (or inside, where outside would cross a ring of the polygon; else none).
 //! - Properties: `h` the top and `m` the base (dm; `m` left out when 0), `s` where the height comes
 //!   from (0–5), `f` the floors (when `s` is 1), `c` the kind, `k` (1 a part, 2 an outline with
 //!   parts; left out when 0), `o` 1 for a copy (left out otherwise). No feature ids.
@@ -156,72 +157,98 @@ fn grid_ring(r: &[[i32; 2]], z: u8, tx: u32, ty: u32, simplified: bool) -> Optio
 /// where they are; between them:
 /// - an edge parallel to an axis gets a point at each subdivision line it crosses (MapLibre cuts
 ///   it there and rounds the cut, which could leave a parallel piece; a piece ending on a line is
-///   left whole), and one more midway when their count is even, every other one a unit further
-///   out, so no piece is parallel; one a unit long gets a point a unit out beside its start (on a
-///   line along the other axis, inside the extent there), else a unit out beyond its end;
+///   left whole), and one more midway when their count is even, every other one a unit outside
+///   the ring, so no piece is parallel; one a unit long gets a point a unit outside beside its
+///   start (on a line along the other axis, inside the extent there), else beyond its end;
 /// - an edge beyond the extent at a slant gets a point at each subdivision line it crosses, where
-///   it crosses (rounded), or a unit further out than the points beside it where that would leave
-///   a piece parallel.
-pub fn unclip(r: &[[i64; 2]]) -> Vec<[i64; 2]> {
+///   it crosses (rounded outward), or a unit further outside than the points beside it where that
+///   would leave a piece parallel.
+///
+/// Outside: away from what the ring encloses (for a hole, into the building), so a ring a unit
+/// across can't fold to nothing (B1's first rule, a unit away from the tile, made five holes of no
+/// area in Vermont's z14). An edge's points must leave the ring simple and clear of its polygon's
+/// other rings (`others`): where they wouldn't, the same a unit inside, else none (the wall left
+/// out).
+pub fn unclip(r: &[[i64; 2]], others: &[&[[i64; 2]]]) -> Vec<[i64; 2]> {
+    let n = r.len();
+    // (Positive: clockwise on screen, what it encloses on the right of each edge.)
+    let wind = area2(r).signum() as i64;
+    let mut ins: Vec<Vec<[i64; 2]>> = vec![Vec::new(); n];
+    for i in 0..n {
+        for outward in [true, false] {
+            let Some(pts) = edge_points(r[i], r[(i + 1) % n], wind, outward) else {
+                break;
+            };
+            if fits(r, &ins, i, &pts, others) {
+                ins[i] = pts;
+                break;
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(n + ins.iter().map(Vec::len).sum::<usize>());
+    for (p, more) in r.iter().zip(&ins) {
+        out.push(*p);
+        out.extend(more);
+    }
+    out
+}
+
+/// The points [`unclip`] puts between edge a–b's ends (None: it needs none), off it toward the
+/// outside of a ring wound `wind`, or the inside.
+fn edge_points(a: [i64; 2], b: [i64; 2], wind: i64, outward: bool) -> Option<Vec<[i64; 2]>> {
     let e = EXTENT as i64;
     let beyond = |v: i64| v < 0 || v > e;
-    let n = r.len();
-    let mut out = Vec::with_capacity(n + 4);
-    for i in 0..n {
-        let (a, b) = (r[i], r[(i + 1) % n]);
-        out.push(a);
-        // (along: the axis it runs along, mostly; across: the other, beyond the extent at both ends.)
-        let side = |k: usize| (a[k] < 0 && b[k] < 0) || (a[k] > e && b[k] > e);
-        let (along, across) = if a[0] == b[0] && beyond(a[0]) {
-            (1, 0)
-        } else if a[1] == b[1] && beyond(a[1]) {
-            (0, 1)
-        } else if side(0) && (b[1] - a[1]).abs() >= (b[0] - a[0]).abs() {
-            (1, 0)
-        } else if side(1) && (b[0] - a[0]).abs() > (b[1] - a[1]).abs() {
-            (0, 1)
-        } else {
-            continue;
-        };
-        let (s, t) = (a[along], b[along]);
-        let dir = (t - s).signum();
-        let out_dir = if a[across] < 0 { -1 } else { 1 };
-        // The subdivision lines strictly between its ends, in order from a.
-        let mut at: Vec<i64> = Vec::new();
-        let mut l = if dir > 0 { s.div_euclid(SUBDIVISION) * SUBDIVISION + SUBDIVISION } else { (s - 1).div_euclid(SUBDIVISION) * SUBDIVISION };
-        while (t - l) * dir > 0 {
-            at.push(l);
-            l += dir * SUBDIVISION;
-        }
-        if a[across] != b[across] {
-            // At a slant: where it crosses each line, unless that leaves a piece parallel.
-            let mut prev = a[across];
-            for (j, &v) in at.iter().enumerate() {
-                let f = a[across] as f64 + (b[across] - a[across]) as f64 * (v - s) as f64 / (t - s) as f64;
-                let mut c = f.round() as i64;
-                let next = if j + 1 < at.len() { None } else { Some(b[across]) };
-                if c == prev || Some(c) == next {
-                    c = if out_dir < 0 { prev.min(next.unwrap_or(prev)) - 1 } else { prev.max(next.unwrap_or(prev)) + 1 };
-                }
-                let mut p = a;
-                p[along] = v;
-                p[across] = c;
-                out.push(p);
-                prev = c;
+    // (along: the axis it runs along, mostly; across: the other, beyond the extent at both ends.)
+    let side = |k: usize| (a[k] < 0 && b[k] < 0) || (a[k] > e && b[k] > e);
+    let (along, across) = if a[0] == b[0] && beyond(a[0]) {
+        (1, 0)
+    } else if a[1] == b[1] && beyond(a[1]) {
+        (0, 1)
+    } else if side(0) && (b[1] - a[1]).abs() >= (b[0] - a[0]).abs() {
+        (1, 0)
+    } else if side(1) && (b[0] - a[0]).abs() > (b[1] - a[1]).abs() {
+        (0, 1)
+    } else {
+        return None;
+    };
+    let (s, t) = (a[along], b[along]);
+    let dir = (t - s).signum();
+    // Outside, across it: the enclosed side is right of its direction when clockwise.
+    let out_dir = (if across == 1 { -wind * dir } else { wind * dir }) * if outward { 1 } else { -1 };
+    let mut pts = Vec::new();
+    // The subdivision lines strictly between its ends, in order from a.
+    let mut at: Vec<i64> = Vec::new();
+    let mut l = if dir > 0 { s.div_euclid(SUBDIVISION) * SUBDIVISION + SUBDIVISION } else { (s - 1).div_euclid(SUBDIVISION) * SUBDIVISION };
+    while (t - l) * dir > 0 {
+        at.push(l);
+        l += dir * SUBDIVISION;
+    }
+    if a[across] != b[across] {
+        // At a slant: where it crosses each line, unless that leaves a piece parallel.
+        let mut prev = a[across];
+        for (j, &v) in at.iter().enumerate() {
+            let f = a[across] as f64 + (b[across] - a[across]) as f64 * (v - s) as f64 / (t - s) as f64;
+            let mut c = if out_dir < 0 { f.floor() } else { f.ceil() } as i64;
+            let next = if j + 1 < at.len() { None } else { Some(b[across]) };
+            if c == prev || Some(c) == next {
+                c = if out_dir < 0 { prev.min(next.unwrap_or(prev)) - 1 } else { prev.max(next.unwrap_or(prev)) + 1 };
             }
-            continue;
-        }
-        if at.is_empty() && (t - s).abs() < 2 {
-            // A unit long: a point a unit out beside its start (the piece to it runs along the
-            // other axis, inside the extent there), or, with that beyond too, beyond its end.
             let mut p = a;
-            p[across] += out_dir;
-            if beyond(s) {
-                p[along] = t + dir;
-            }
-            out.push(p);
-            continue;
+            p[along] = v;
+            p[across] = c;
+            pts.push(p);
+            prev = c;
         }
+    } else if at.is_empty() && (t - s).abs() < 2 {
+        // A unit long: a point a unit off beside its start (the piece to it runs along the other
+        // axis, inside the extent there), or, with that beyond too, beyond its end.
+        let mut p = a;
+        p[across] += out_dir;
+        if beyond(s) {
+            p[along] = t + dir;
+        }
+        pts.push(p);
+    } else {
         if at.len().is_multiple_of(2) {
             // One more, midway in the longest gap (between lines: no line crossed).
             let mut stops = vec![s];
@@ -236,10 +263,95 @@ pub fn unclip(r: &[[i64; 2]]) -> Vec<[i64; 2]> {
             if j % 2 == 0 {
                 p[across] += out_dir;
             }
-            out.push(p);
+            pts.push(p);
         }
     }
-    out
+    (!pts.is_empty()).then_some(pts)
+}
+
+/// Which side of line a→b point c is on (0: on it).
+fn orient(a: [i64; 2], b: [i64; 2], c: [i64; 2]) -> i64 {
+    ((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])).signum()
+}
+
+/// Whether c is on segment a–b.
+fn on_segment(a: [i64; 2], b: [i64; 2], c: [i64; 2]) -> bool {
+    orient(a, b, c) == 0 && a[0].min(b[0]) <= c[0] && c[0] <= a[0].max(b[0]) && a[1].min(b[1]) <= c[1] && c[1] <= a[1].max(b[1])
+}
+
+/// Whether segments p–q and c–d have a point in common.
+fn meet(p: [i64; 2], q: [i64; 2], c: [i64; 2], d: [i64; 2]) -> bool {
+    let (d1, d2, d3, d4) = (orient(c, d, p), orient(c, d, q), orient(p, q, c), orient(p, q, d));
+    (d1 * d2 < 0 && d3 * d4 < 0) || on_segment(c, d, p) || on_segment(c, d, q) || on_segment(p, q, c) || on_segment(p, q, d)
+}
+
+/// Whether x→y then y→z turns back over itself.
+fn fold(x: [i64; 2], y: [i64; 2], z: [i64; 2]) -> bool {
+    orient(x, y, z) == 0 && (x[0] - y[0]) * (z[0] - y[0]) + (x[1] - y[1]) * (z[1] - y[1]) > 0
+}
+
+/// Whether ring r's edge i through `pts` (the other edges through theirs, `ins`) keeps the ring
+/// simple and clear of `others`: its pieces meet no other piece, but their neighbours, at their
+/// shared ends only.
+fn fits(r: &[[i64; 2]], ins: &[Vec<[i64; 2]>], i: usize, pts: &[[i64; 2]], others: &[&[[i64; 2]]]) -> bool {
+    let n = r.len();
+    let mut mine = Vec::with_capacity(pts.len() + 2);
+    mine.push(r[i]);
+    mine.extend(pts);
+    mine.push(r[(i + 1) % n]);
+    let m = mine.len() - 1;
+    let (mut lo, mut hi) = ([i64::MAX; 2], [i64::MIN; 2]);
+    for p in &mine {
+        for k in 0..2 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let away = |c: [i64; 2], d: [i64; 2]| (0..2).any(|k| c[k].max(d[k]) < lo[k] || c[k].min(d[k]) > hi[k]);
+    // Its own pieces.
+    for x in 0..m {
+        for y in x + 1..m {
+            let bad = if y == x + 1 { fold(mine[x], mine[y], mine[y + 1]) } else { meet(mine[x], mine[x + 1], mine[y], mine[y + 1]) };
+            if bad {
+                return false;
+            }
+        }
+    }
+    // The ring's other edges, with their points: the one before ends at its first point, the one
+    // after starts at its last.
+    let (before, after) = ((i + n - 1) % n, (i + 1) % n);
+    for j in (0..n).filter(|&j| j != i) {
+        let k = ins[j].len() + 1;
+        for y in 0..k {
+            let c = if y == 0 { r[j] } else { ins[j][y - 1] };
+            let d = if y + 1 == k { r[(j + 1) % n] } else { ins[j][y] };
+            if away(c, d) {
+                continue;
+            }
+            for x in 0..m {
+                let (p, q) = (mine[x], mine[x + 1]);
+                let bad = if j == before && y + 1 == k && x == 0 {
+                    fold(c, p, q)
+                } else if j == after && y == 0 && x + 1 == m {
+                    fold(p, q, d)
+                } else {
+                    meet(p, q, c, d)
+                };
+                if bad {
+                    return false;
+                }
+            }
+        }
+    }
+    for o in others {
+        for y in 0..o.len() {
+            let (c, d) = (o[y], o[(y + 1) % o.len()]);
+            if !away(c, d) && (0..m).any(|x| meet(mine[x], mine[x + 1], c, d)) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 /// Twice a ring's signed area in tile units (positive: clockwise on screen, y down).
@@ -258,6 +370,7 @@ fn geometry(f: &Feat, z: u8, tx: u32, ty: u32) -> Option<Vec<u32>> {
     let mut g = Vec::new();
     let (mut cx, mut cy) = (0i64, 0i64);
     for poly in &f.polys {
+        let mut rings: Vec<Vec<[i64; 2]>> = Vec::with_capacity(poly.len());
         for (k, ring) in poly.iter().enumerate() {
             let Some(mut r) = grid_ring(ring, z, tx, ty, simplified) else {
                 if k == 0 {
@@ -275,7 +388,14 @@ fn geometry(f: &Feat, z: u8, tx: u32, ty: u32) -> Option<Vec<u32>> {
             if (a > 0) != (k == 0) {
                 r[1..].reverse();
             }
-            let r = unclip(&r);
+            rings.push(r);
+        }
+        for k in 0..rings.len() {
+            let others: Vec<&[[i64; 2]]> = rings.iter().enumerate().filter(|&(j, _)| j != k).map(|(_, o)| o.as_slice()).collect();
+            let u = unclip(&rings[k], &others);
+            rings[k] = u;
+        }
+        for r in &rings {
             g.push(9); // MoveTo 1
             g.push(zz(r[0][0] - cx));
             g.push(zz(r[0][1] - cy));
@@ -522,7 +642,7 @@ mod tests {
         assert_eq!(skipped_walls(&rings[5]), 3, "its north wall cut in two, and the unit-long one");
         assert_eq!(skipped_walls(&rings[6]), 1, "MapLibre's own cut leaves one piece parallel");
         for (i, r) in rings.iter().enumerate() {
-            let u = unclip(r);
+            let u = unclip(r, &[]);
             let left = skipped_walls(&u);
             assert_eq!(left, 0, "ring {i}: {u:?}");
             // Its own points kept, in order; the others within a unit of its edges.
@@ -531,7 +651,94 @@ mod tests {
             assert_eq!(area2(&u).signum(), area2(r).signum());
             assert!((area2(&u) - area2(r)).abs() <= 2 * (u.len() as i128) * 8192, "ring {i}");
         }
-        assert_eq!(unclip(&rings[2]), rings[2], "inside: as it was");
+        assert_eq!(unclip(&rings[2], &[]), rings[2], "inside: as it was");
+    }
+
+    /// Whether a ring (no closing point) is simple: no point twice, no two edges meeting but
+    /// neighbours at their shared point, no neighbour folding back over the other.
+    fn simple(r: &[[i64; 2]]) -> bool {
+        let n = r.len();
+        for i in 0..n {
+            for j in i + 1..n {
+                let (a, b, c, d) = (r[i], r[(i + 1) % n], r[j], r[(j + 1) % n]);
+                let bad = if r[i] == r[j] {
+                    true
+                } else if j == i + 1 {
+                    fold(a, b, d)
+                } else if i == 0 && j == n - 1 {
+                    fold(c, a, b)
+                } else {
+                    meet(a, b, c, d)
+                };
+                if bad {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    #[test]
+    fn small_rings_stay_whole() {
+        // The rings B1's pilot packs had folded to no area (a unit away from the tile, the rule
+        // then): Vermont's five at z14, unit triangles out past an edge, and Paris's thin
+        // triangle, its point beside the middle of a two-unit edge.
+        let found: [Vec<[i64; 2]>; 6] = [
+            vec![[2450, -97], [2451, -97], [2451, -98]],
+            vec![[1138, 4117], [1137, 4117], [1138, 4118]],
+            vec![[1073, -19], [1072, -18], [1073, -18]],
+            vec![[4127, 2581], [4127, 2582], [4128, 2582]],
+            vec![[-57, 1082], [-56, 1083], [-56, 1082]],
+            vec![[4126, 4086], [4125, 4085], [4125, 4087]],
+        ];
+        for r in &found {
+            let u = unclip(r, &[]);
+            assert!(simple(&u) && area2(&u).signum() == area2(r).signum() && skipped_walls(&u) == 0, "{r:?} -> {u:?}");
+        }
+        // A hole a unit inside its exterior, both out past the west edge: its points stay clear.
+        let ext = vec![[-20, 100], [-10, 100], [-10, 110], [-20, 110]];
+        let hole = vec![[-19, 101], [-19, 109], [-11, 109], [-11, 101]];
+        let u = unclip(&hole, &[&ext]);
+        assert!((0..u.len()).all(|i| (0..4).all(|j| !meet(u[i], u[(i + 1) % u.len()], ext[j], ext[(j + 1) % 4]))), "{u:?}");
+        // Every triangle and quadrilateral on small grids out past an edge, across a subdivision
+        // line, and in a corner, both ways round: still simple, wound as it was. Walls left out
+        // where no points fit: 647 of 40,440, each a unit-long edge in a notch a unit wide.
+        let grids: [(std::ops::RangeInclusive<i64>, std::ops::RangeInclusive<i64>); 4] =
+            [(-3..=0, 2046..=2050), (-2..=1, -2..=1), (4095..=4098, 1000..=1003), (2046..=2050, 4096..=4099)];
+        let (mut checked, mut left) = (0, 0);
+        for (xs, ys) in grids {
+            let pts: Vec<[i64; 2]> = xs.clone().flat_map(|x| ys.clone().map(move |y| [x, y])).collect();
+            let n = pts.len();
+            let mut rings: Vec<Vec<[i64; 2]>> = Vec::new();
+            for i in 0..n {
+                for j in i + 1..n {
+                    for k in j + 1..n {
+                        rings.push(vec![pts[i], pts[j], pts[k]]);
+                        for l in k + 1..n {
+                            let (a, b, c, d) = (pts[i], pts[j], pts[k], pts[l]);
+                            rings.extend([vec![a, b, c, d], vec![a, b, d, c], vec![a, c, b, d]]);
+                        }
+                    }
+                }
+            }
+            for mut r in rings {
+                for _ in 0..2 {
+                    r.reverse();
+                    if area2(&r) == 0 || !simple(&r) {
+                        continue;
+                    }
+                    let u = unclip(&r, &[]);
+                    assert!(simple(&u), "{r:?} -> {u:?}");
+                    assert_eq!(area2(&u).signum(), area2(&r).signum(), "{r:?} -> {u:?}");
+                    if skipped_walls(&u) > 0 {
+                        left += 1;
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 10_000, "{checked}");
+        assert!(left * 50 < checked, "{left} of {checked}");
     }
 
     #[test]
