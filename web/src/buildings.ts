@@ -111,8 +111,8 @@ function flatFilter(skyline: boolean): FilterSpecification {
 
 /** The buildings' tiles kept out of view, at most: about a view's worth of z14 tiles. MapLibre's
  * own is five zooms' worth of the tiles in view (~60), which, with one whole z14 tile for every
- * zoom above, only keeps places panned away from: after panning around Tokyo it held 437 MB of
- * buffers against 63 MB in view; 8 hold 54 (docs/buildings3d.md §4.6). Further tiles come back
+ * zoom above, only keeps places panned away from: after panning around Tokyo it held 599 MB of
+ * buffers against 86 MB in view; 8 hold 73 (docs/buildings3d.md §4.6). Further tiles come back
  * from the browser's cache. */
 const CACHE_TILES = 8;
 
