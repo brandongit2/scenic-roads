@@ -715,23 +715,24 @@ switched on.
   term's lead leads it, alone, caught up, no term was made in those 25 minutes' last ten or after,
   and its records name every entry ever written, a Mac's gone for good included. While they lack
   entries, fewer each time, or its lead isn't caught up yet (an entry never whole waits its hour, a
-  listing its agent lost two), the run goes on ten minutes at a time, up to two hours: on a share
+  listing its agent lost two), the run goes on ten minutes at a time, up to four hours: on a share
   taking seconds an operation a lead merges about a dozen entries a loop, and hours of faults with
-  no lead leave hundreds. The tests run 2,000 seeds, each kind of change of lead and of fault, and
-  what each knob brings, among them at least three times (a lead caught up on a step it re-asserted
-  for a sweep, and the owner's takeover, too); entries cut short in four-hour runs, refused after an
-  hour (200 schedules); runs of the faults' 40 minutes and a day after, a lead listing every day
-  again daily (50); slow listings with a week of the journal, development builds and rollbacks with
-  a Mac leaving, and a Mac leaving, alone (300 to 1,000 seeds each); the schedule that found term
-  1's first snapshot paired with today's files of two versions (seed 3090226), and the one that
-  found whole entries waiting an hour behind others not whole (1003691); left out by default, a long
-  run of 100,000 schedules of four hours' faults, each knob alone over 1,000 seeds, and 400 seeds
-  run twice, the same; and the first draft's scheme (one shared records file, the journal emptied as
-  it's merged) on the same model, which finds its lost update. The driver's own tests decide what
-  the simulator can't: whom a member lets try first, that a lead asleep or gone isn't taken over by
-  itself, nor one whose stand-down is an earlier term's, a step's minute of reads, the hour over a
-  share that doesn't answer, a listing a day old, a listing slower than any timeout, a saved state
-  restored from a backup, the member's lock.
+  no lead leave hundreds; a listing lost as the faults end is asked for again two hours on, and an
+  entry never whole that only it finds is refused an hour after. The tests run 2,000 seeds, each
+  kind of change of lead and of fault, and what each knob brings, among them at least three times (a
+  lead caught up on a step it re-asserted for a sweep, and the owner's takeover, too); entries cut
+  short in four-hour runs, refused after an hour (200 schedules); runs of the faults' 40 minutes and
+  a day after, a lead listing every day again daily (50); slow listings with a week of the journal,
+  development builds and rollbacks with a Mac leaving, and a Mac leaving, alone (300 to 1,000 seeds
+  each); the schedule that found term 1's first snapshot paired with today's files of two versions
+  (seed 3090226), and the one that found whole entries waiting an hour behind others not whole
+  (1003691); left out by default, a long run of 100,000 schedules of four hours' faults, each knob
+  alone over 1,000 seeds, and 400 seeds run twice, the same; and the first draft's scheme (one
+  shared records file, the journal emptied as it's merged) on the same model, which finds its lost
+  update. The driver's own tests decide what the simulator can't: whom a member lets try first, that
+  a lead asleep or gone isn't taken over by itself, nor one whose stand-down is an earlier term's, a
+  step's minute of reads, the hour over a share that doesn't answer, a listing a day old, a listing
+  slower than any timeout, a saved state restored from a backup, the member's lock.
 - **What it doesn't model:** torn or holed reads (a file reads whole, empty or as an older version,
   and an entry cut short for good: the modules' tests read holes); I/O errors other than a busy
   rename, a create cut short, lost answers and failed reads; `remove` failing busy; the member's

@@ -108,9 +108,11 @@ const P_SWEEP: f64 = 0.01;
 const NO_LEAD_S: u64 = 300;
 const QUIET_S: u64 = 600;
 /// At most how long a run goes on past its end while its last term's lead still merges what the
-/// faults left (s): a share taking seconds an operation, a lead's minute of reads a loop merges a
-/// dozen entries, and hours of faults with no lead leave hundreds.
-const MERGING_S: u64 = 7200;
+/// faults left, or isn't caught up yet (s): a share taking seconds an operation, a lead's minute of
+/// reads a loop merges a dozen entries, and hours of faults with no lead leave hundreds; a listing
+/// its agent lost as the faults end is asked for again two hours on, and an entry never whole that
+/// only it finds is refused an hour after.
+const MERGING_S: u64 = driver::OVERDUE_S + driver::UNREADABLE_S + 3600;
 
 /// What a run is.
 #[derive(Clone, Copy, Debug)]
@@ -1936,7 +1938,7 @@ fn a_run_goes_on_only_while_its_lead_merges() {
     save(&mut w, &r);
     assert!(w.goes_on(), "one merged since: ten minutes more");
     (w.t, w.behind) = (w.cfg.end + MERGING_S, Some(2));
-    assert!(!w.goes_on(), "gone on two hours: the run ends");
+    assert!(!w.goes_on(), "gone on as long as it may: the run ends");
     (w.t, w.behind) = (w.cfg.end, None);
     r.reflected.insert(k2);
     save(&mut w, &r);
