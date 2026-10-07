@@ -70,7 +70,9 @@
 //! jobs' hand-offs not written yet: the driver then re-asserts a term naming it that it finds at
 //! its start rather than take it up again (it may have led it, its leases granted), and the state
 //! it saves says so, for the processes after it. So does an older state of its own (a backup
-//! restored) for a term it made that the state doesn't record (`Saved::made`).
+//! restored) for a term naming it that it made and the state doesn't record (`Saved::made`), or
+//! whose records are there already, a process before this one having taken it up (a handover's
+//! too), unless this process is taking it up.
 //!
 //! The controls (the menu, the pages, `scenic lead`) ask the driver what the step would decide:
 //! whether a takeover from this Mac needs the owner's force or downgrade, and why (`takeover`);
@@ -788,9 +790,11 @@ impl Driver {
     /// A member whose current term names it: takes it up (handed to it, its own claim, or the
     /// owner's takeover on this Mac); or, a term it led and doesn't lead now (restarted, or stood
     /// down), re-asserts it. One it found at its start with its past unknown (its saved state lost,
-    /// or another member's) counts as one it led: it may have, its leases granted. Not on an app
-    /// older than the term's (restarted into an older app or a development build): it stands down,
-    /// and says so, until its app is new enough.
+    /// or another member's) counts as one it led: it may have, its leases granted. So does one its
+    /// state is older than (a backup restored): one it made that the state doesn't record, and one
+    /// whose records are there already, taken up by a process before this one (a handover's too).
+    /// Not on an app older than the term's (restarted into an older app or a development build): it
+    /// stands down, and says so, until its app is new enough.
     fn own_term(&mut self, io: &dyn Io, out: &mut Out) {
         // (A term its create made and couldn't fill: finished first, then taken up.)
         if self.saved.unfinished.is_some() {
@@ -804,16 +808,24 @@ impl Driver {
             }
             return;
         }
-        // (Newer than it led: taken up, but for one it made that its state doesn't record, an older
-        // state of its own restored, which it may have led.)
+        // (Newer than it led: taken up, but for one it made that its state doesn't record, or one
+        // whose records are there and that this process isn't taking up: an older state of its own
+        // restored, which may have led it, its leases granted.)
         let unrecorded = t.seq.is_none() && t.term > self.saved.made;
-        if t.term > self.saved.led && !unrecorded {
+        let mut older = unrecorded;
+        if t.term > self.saved.led && !unrecorded && !self.taking.as_ref().is_some_and(|r| r.term == t.term) {
+            match io.exists(&records::path(t.term)) {
+                Ok(there) => older = there,
+                Err(e) => return out.events.push(Event::Waits { what: "take up", why: format!("term {}: whether its records are there: {e:#}", t.term) }),
+            }
+        }
+        if t.term > self.saved.led && !older {
             self.take_up(io, out, &t);
             return;
         }
         let how = match () {
             _ if !self.known => "re-asserted: its saved state lost",
-            _ if unrecorded => "re-asserted: its saved state older than the term",
+            _ if older => "re-asserted: its saved state older than the term",
             _ if self.restarted => "restarted: re-asserted",
             _ => "re-asserted: its app new enough",
         };
@@ -2380,6 +2392,89 @@ mod tests {
         assert_eq!(o.leads, Some(3), "{:?}", o.events);
         assert!(o.events.iter().any(|e| matches!(e, Event::Made { term: 3, how } if how.contains("older than the term"))), "{:?}", o.events);
         assert!(!o.events.iter().any(|e| matches!(e, Event::TookUp { term: 2, .. })), "{:?}", o.events);
+    }
+
+    #[test]
+    fn a_saved_state_restored_from_a_backup_re_asserts_a_handover_term_it_took_up() {
+        // A hands term 1 over to B, which takes term 2 up and leads it (granting leases 2-1, 2-2,
+        // …). B's agent's folder is then restored from a backup taken before (Time Machine): the
+        // state doesn't know it took term 2 up, and term 2 isn't one it made. (Re-review 3: it took
+        // term 2 up again, from the snapshot the handover names, and could grant 2-1 twice.) Term
+        // 2's records are there: it re-asserts.
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        step(&mut b, &ib, able());
+        let backup = b.saved();
+        hand_over(&mut a, &ia, &mut b, &ib);
+        ib.pass(20);
+        assert_eq!(step(&mut b, &ib, able()).leads, Some(2));
+        ib.pass(20);
+        let mut restored = Driver::unlocked(member(B, "MacBook-Air", V1), backup);
+        let o = step(&mut restored, &ib, able());
+        assert_eq!(o.leads, Some(3), "{:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::Made { term: 3, how } if how.contains("older than the term"))), "{:?}", o.events);
+        assert!(!o.events.iter().any(|e| matches!(e, Event::TookUp { term: 2, .. })), "{:?}", o.events);
+    }
+
+    #[test]
+    fn a_take_up_whose_save_landed_unanswered_is_tried_again() {
+        // B takes up the term A handed it, and its save of the records lands with its answer lost:
+        // the records there are this process's own try's, taken up again next step, numbered on,
+        // the coordinator's state with them. (Not re-asserted, as a term whose records are there
+        // is when its state is older: a backup restored.)
+        struct Lost<'a>(&'a Mac<'a>, Cell<bool>);
+        impl Nas for Lost<'_> {
+            fn create_new(&self, path: &str, bytes: &[u8]) -> Result<Created> {
+                self.0.create_new(path, bytes)
+            }
+            fn write_whole(&self, path: &str, bytes: &[u8]) -> Result<()> {
+                self.0.write_whole(path, bytes)?;
+                if path == records::path(2) && self.1.replace(false) {
+                    anyhow::bail!("write {path}: done, its answer lost");
+                }
+                Ok(())
+            }
+            fn read(&self, path: &str) -> Result<Option<Vec<u8>>> {
+                self.0.read(path)
+            }
+            fn exists(&self, path: &str) -> Result<bool> {
+                self.0.exists(path)
+            }
+            fn list(&self, dir: &str) -> Result<Vec<String>> {
+                self.0.list(dir)
+            }
+            fn remove(&self, path: &str) -> Result<()> {
+                self.0.remove(path)
+            }
+        }
+        impl Io for Lost<'_> {
+            fn now(&self) -> u64 {
+                self.0.now()
+            }
+            fn awake(&self) -> u64 {
+                self.0.awake()
+            }
+        }
+        let mem = Mem::default();
+        setup(&mem);
+        let (ia, ib) = (Mac::new(&mem), Mac::new(&mem));
+        let mut a = Driver::unlocked(member(A, "Mac-mini", V1), Saved::default());
+        let mut b = Driver::unlocked(member(B, "MacBook-Air", V1), Saved::default());
+        assert_eq!(step(&mut a, &ia, able()).leads, Some(1));
+        step(&mut b, &ib, able());
+        hand_over(&mut a, &ia, &mut b, &ib);
+        ib.pass(20);
+        let o = b.step(&Lost(&ib, Cell::new(true)), able(), &any);
+        assert!(o.leads.is_none() && Records::load(&mem, 2).unwrap().is_some_and(|r| r.seq == 1), "{:?}", o.events);
+        ib.pass(20);
+        let o = step(&mut b, &ib, able());
+        assert_eq!(o.leads, Some(2), "{:?}", o.events);
+        assert!(o.events.iter().any(|e| matches!(e, Event::TookUp { term: 2, handed: Some(_), .. })), "{:?}", o.events);
+        assert_eq!(Records::load(&mem, 2).unwrap().map(|r| r.seq), Some(2), "numbered on");
     }
 
     #[test]

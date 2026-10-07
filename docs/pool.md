@@ -346,9 +346,10 @@ re-asserts before a sweep is caught up (§6.2); after a sleep, the messages memb
 lost, it lists the journal again. A member whose saved state is lost, or another's (this Mac's
 member file lost and a new id made; or a copy of another Mac's folder), re-asserts a term naming it
 that it finds at its start, rather than take it up again: it may have led it, its leases granted. So
-does one whose saved state is older than a term it made (a backup restored: `Saved::made`, the
-newest term it made, doesn't name it). If the term it makes already exists, someone took over: it
-**steps down** at once.
+does one whose saved state is older than a term naming it (a backup restored): one it made that
+`Saved::made`, the newest term it made, doesn't name, or one whose records are there already,
+another process of this member having taken it up (a handover's too). If the term it makes already
+exists, someone took over: it **steps down** at once.
 
 A lead restarted into an older app or a development build can't re-assert (the app rule): it
 **stands down**, and its heartbeat says so (`stood_down`: its term, which no one then leads), so

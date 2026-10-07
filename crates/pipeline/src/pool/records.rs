@@ -404,9 +404,10 @@ pub struct TakenUp {
 }
 
 /// Whether records `r`, which `start` gave for term `t`, carry a coordinator's state handed over
-/// for `t` (`Records::handed`): `t` is a handover's term. Kept in the term's first snapshot (a try
-/// again, or a restart, of its take-up finds it there), and off its later ones; a takeover's term
-/// starts with none (one there is an earlier handover's, older than the term before's own state).
+/// for `t` (`Records::handed`): `t` is a handover's term. Kept in the term's first snapshot, for a
+/// take-up tried again, and off its later ones. A term that isn't a handover's starts with none:
+/// one there is an earlier handover's, older than the term before's own state (a re-assertion's
+/// after a restart too: crate::pool::driver re-asserts a handover's term a process before took up).
 pub fn handed(r: &mut Records, t: &Term) -> Option<serde_json::Value> {
     if t.seq.is_none() {
         r.handed = None;
