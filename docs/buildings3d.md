@@ -581,7 +581,10 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
   and caches each copy: zooming from 16 to 19 at Kyoto, the buildings' tiles grew from 84 to
   147 MB and the other sources' from 23 to 77 MB. For the buildings alone, with one z14 tile for
   every zoom above (`reparseOverscaled` off: an extrusion doesn't change with the zoom), it costs
-  about what slicing did (§4.6);
+  about what slicing did (§4.6). It reaches into MapLibre's tile manager, so `package.json` pins
+  MapLibre at 6.11.2 exactly (as `vite.config.ts`'s shader patches need), and it warns in the
+  console when what it hooks is missing, or when a tile deeper than z14 is in view once the map is
+  above z15 (sliced again: the hook no longer takes);
 - not picking: its `queryRenderedFeatures` projects extrusions from sea level with the flat map's
   matrix, ignoring the terrain, and finds nothing on the globe (§4.5);
 - on the GPU, ~27 bytes a vertex in B1's views (12-byte vertices, 4-byte centroids, the height and

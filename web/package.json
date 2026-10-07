@@ -8,9 +8,10 @@
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit"
   },
+  "//": "maplibre-gl is pinned exactly: the app reaches into its internals (vite.config.ts's shader patches; src/buildings.ts's keepWhole, which keeps z14's buildings whole above z14; the tile managers read in covers, contours, drape, maptasks, namefade and terrainstats). Upgrade it by hand and check each.",
   "dependencies": {
     "maplibre-contour": "^0.1.1",
-    "maplibre-gl": "^6.11.2"
+    "maplibre-gl": "6.11.2"
   },
   "devDependencies": {
     "@types/geojson": "^7946.0.16",

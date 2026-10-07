@@ -123,27 +123,52 @@ const CACHE_TILES = 8;
  * building crosses a slice's edge, its overhang past the z14 tile cut off, a hovered building lit in
  * part; and parses each again for every zoom. For this source only: slicing stays for the others
  * (the map-wide option made their re-parsed copies cost more than the buildings saved). Also its
- * cache bounded ([`CACHE_TILES`]).
+ * cache bounded ([`CACHE_TILES`]). MapLibre's internals, as 6.11.2 has them (package.json pins
+ * it): a warning in the console when they're missing, or when a tile deeper than z14 is in view
+ * once the map is above z15 (slices: the hook no longer takes).
  */
 function keepWhole(map: MLMap) {
-  type TM = { update: (tr: unknown, terrain?: unknown) => void; map?: { _zoomLevelsToOverscale?: number }; _maxTileCacheSize?: number | null };
+  type TileLike = { tileID?: { canonical?: { z?: number } } };
+  type TM = {
+    update: (...args: unknown[]) => void;
+    map?: { _zoomLevelsToOverscale?: number };
+    _maxTileCacheSize?: number | null;
+    _inViewTiles?: { getAllTiles?: () => TileLike[] };
+  };
   const src = map.getSource(SOURCE) as unknown as { reparseOverscaled?: boolean } | undefined;
   const tm = (map as unknown as { style?: { tileManagers?: Record<string, TM> } }).style?.tileManagers?.[SOURCE];
+  const missing = [
+    [!!src && 'reparseOverscaled' in src, "the source's reparseOverscaled"],
+    [!!tm, "the source's tile manager"],
+    [typeof tm?.update === 'function', 'its update'],
+    [!!tm?.map && '_zoomLevelsToOverscale' in tm.map, "the map's _zoomLevelsToOverscale"],
+    [!!tm && '_maxTileCacheSize' in tm, 'its _maxTileCacheSize'],
+    [typeof tm?._inViewTiles?.getAllTiles === 'function', 'its _inViewTiles'],
+  ].filter(([ok]) => !ok).map(([, what]) => what);
+  if (missing.length) console.warn(`Buildings: MapLibre's internals changed (${missing.join(', ')} missing): z14's buildings may be sliced above z14 (buildings.ts, keepWhole).`);
   if (!src || !tm || typeof tm.update !== 'function') return;
   // (Not parsed again for each zoom: an extrusion doesn't change with it.)
   src.reparseOverscaled = false;
   tm._maxTileCacheSize = CACHE_TILES;
   const update = tm.update;
-  tm.update = function (this: TM, tr: unknown, terrain?: unknown) {
+  tm.update = function (this: TM, ...args: unknown[]) {
     const m = this.map;
     const z = m?._zoomLevelsToOverscale;
     if (m) m._zoomLevelsToOverscale = undefined;
     try {
-      update.call(this, tr, terrain);
+      update.apply(this, args);
     } finally {
       if (m) m._zoomLevelsToOverscale = z;
     }
   };
+  const check = () => {
+    if (map.getZoom() <= 15) return;
+    map.off('render', check);
+    const tiles = tm._inViewTiles?.getAllTiles?.() ?? [];
+    const deep = tiles.filter((t) => (t.tileID?.canonical?.z ?? 0) > 14).length;
+    if (deep) console.warn(`Buildings: ${deep} of ${tiles.length} tiles in view are slices deeper than z14: keepWhole no longer takes (MapLibre changed?).`);
+  };
+  map.on('render', check);
 }
 
 /** Adds the source and layers (when the catalog has buildings): the extrusions after the road and
