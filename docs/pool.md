@@ -1,12 +1,12 @@
 # The pool: any Mac can lead the build
 
-Status: **phase 1's core built** (`crate::pool`, its driver and phase 2's transitions with it: §12),
-not wired into the agent, so nothing runs it yet; the rest is planned. It replaces the fixed "build
-Mac" and its "helpers" (plan.md §8, workers.md §8) with a pool of peer Macs, any number of them, one
-of which leads the build at a time, and makes the browsers' pages workers of the same standing, by
-one model of work. The lead can be handed to another Mac from any Mac's menu, the worker page, the
-map's build panel or `scenic lead`, and taken by another Mac when it's gone. Nothing about a Mac's
-role is fixed at install.
+Status: **phase 1's core built** (`crate::pool`, its driver and phase 2's transitions with it:
+§12), not wired into the agent, so nothing runs it yet; the rest is planned. It replaces the fixed
+"build Mac" and its "helpers" (plan.md §8, workers.md §8) with a pool of peer Macs, any number of
+them, one of which leads the build at a time, and makes the browsers' pages workers of the same
+standing, by one model of work. The lead can be handed to another Mac from any Mac's menu, the
+worker page, the map's build panel or `scenic lead`, and taken by another Mac when it's gone.
+Nothing about a Mac's role is fixed at install.
 
 ## 1. What changes, and why
 
