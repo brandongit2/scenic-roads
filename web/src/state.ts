@@ -797,7 +797,9 @@ export function toHash(s: AppState, buildings: boolean): string {
   return '#' + p.toString().replace(/%2F/g, '/').replace(/%2C/g, ',');
 }
 
-export function fromHash(hash: string): AppState {
+/** The state a link gives (`buildings`: whether the catalog has the 3D buildings; without, their
+ * `bd=` is left out, as `toHash` leaves it out). */
+export function fromHash(hash: string, buildings = true): AppState {
   const s: AppState = structuredClone(defaults);
   const p = new URLSearchParams(hash.replace(/^#/, ''));
   const map = p.get('map')?.split('/').map(Number);
@@ -912,16 +914,18 @@ export function fromHash(hash: string): AppState {
       maskColour: /^[0-9a-f]{6}$/i.test(tcv[9]) ? `#${tcv[9]}` : t.maskColour,
     };
   }
-  const bdv = p.get('bd')?.split(',');
+  const bdv = buildings ? p.get('bd')?.split(',') : undefined;
   if (bdv && bdv.length >= 6) {
     const b = s.buildings;
     const n = (v: string, d: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
+    // (The scale 0 means "× the terrain's exaggeration": a negative one is no scale, not that.)
+    const scale = Number(bdv[4]);
     s.buildings = {
       on: bdv[0] === '1',
       flat: bdv[1] === '1',
       colour: (['plain', 'height', 'source'] as BuildingColour[]).includes(bdv[2] as BuildingColour) ? (bdv[2] as BuildingColour) : b.colour,
       opacity: n(bdv[3], b.opacity, 0.1, 1),
-      scale: n(bdv[4], b.scale, 0, 3),
+      scale: bdv[4] !== '' && scale >= 0 ? n(bdv[4], b.scale, 0, 3) : b.scale,
       skyline: bdv[5] === '1',
     };
   }

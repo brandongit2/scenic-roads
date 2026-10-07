@@ -113,11 +113,13 @@ async function main() {
     return;
   }
 
-  // A link (URL hash) wins; otherwise restore the last session from localStorage.
-  const store = new Store(location.hash.length > 1 ? fromHash(location.hash) : fromSaved(prefs.load('state', null)));
   /** Whether the catalog has the 3D buildings: their settings section, the B key and `bd=` in
    * links only then (a catalog can gain them while the map is open: newCatalog). */
   let hasBuildings = !!meta.layers?.buildings;
+  // A link (URL hash) wins; otherwise restore the last session from localStorage. (A link's `bd=`
+  // only with the buildings: without, the saved settings stay.)
+  const saved = fromSaved(prefs.load('state', null));
+  const store = new Store(location.hash.length > 1 ? { ...fromHash(location.hash, hasBuildings), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved);
   history.replaceState(null, '', toHash(store.s, hasBuildings)); // the address bar holds the restored state
   boot.at(1);
   maplibregl.setWorkerUrl(mlWorkerUrl);
@@ -1976,9 +1978,9 @@ async function main() {
 
   // Pasted / edited links: apply the new state without a reload.
   window.addEventListener('hashchange', () => {
-    const next = fromHash(location.hash);
-    const { view, ...rest } = next;
-    store.set(rest);
+    const next = fromHash(location.hash, hasBuildings);
+    const { view, buildings, ...rest } = next;
+    store.set(hasBuildings ? { ...rest, buildings } : rest);
     if (view) map.jumpTo({ center: [view.lng, view.lat], zoom: view.zoom, bearing: view.bearing, pitch: view.pitch });
   });
   onSettled(() => {
