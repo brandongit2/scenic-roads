@@ -286,7 +286,15 @@ impl Side {
         let Some(lock) = MemberLock::take(locks, &id)? else { return Ok(None) };
         std::fs::create_dir_all(dir).with_context(|| format!("make {}", dir.display()))?;
         let me = Member { id: id.clone(), host: crate::agent::cond::host_name(), app: app.to_string() };
-        let (saved, written) = load_saved(&dir.join("saved.json"));
+        let (mut saved, written) = load_saved(&dir.join("saved.json"));
+        // (A state from an earlier time the pool was on, its terms since moved aside: it names terms
+        // no longer there, and would hold this member's view above them. Counted as lost: its jobs'
+        // hand-offs not written yet alone kept, as the driver keeps another member's.)
+        if saved.term > 0 && nas.list(crate::pool::term::DIR).is_ok_and(|t| t.is_empty()) {
+            eprintln!("pool: the NAS has no terms: this member's saved state, of term {}, is from an earlier time the pool was on; set aside", saved.term);
+            std::fs::rename(dir.join("saved.json"), dir.join("saved.earlier.json")).ok();
+            saved = Saved { mine: saved.mine.unwritten_only(), ..Default::default() };
+        }
         let mail: Mail = std::fs::read(dir.join("mail.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let known: Vec<String> = std::fs::read(dir.join("members.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         let mut members: BTreeSet<String> = known.into_iter().filter(|m| crate::pool::is_member_id(m)).collect();
@@ -610,7 +618,7 @@ pub fn check(e: &Entry, _r: &Records) -> std::result::Result<(), String> {
             return Err(format!("{l:?} isn't a logical name"));
         }
         if let Some(c) = v {
-            if !store::naming::parse_content_name(c).is_some_and(|n| n.logical == l) {
+            if store::naming::parse_content_name(c).is_none_or(|n| n.logical != l) {
                 return Err(format!("{c} isn't a content name of {l}"));
             }
         }
@@ -733,6 +741,13 @@ pub struct Run {
     /// The records (term, seq) last written to today's files; the raw tiles' archives named.
     pub today: Option<(u64, u64)>,
     pub named_raw: BTreeSet<String>,
+    /// Whether the pool's token and devices were copied as its coordinator started (else its own
+    /// devices are never written over the pool's).
+    pub seeded: bool,
+    /// The outbox drained (once a process), and the hand-off folders' last files drained, to mark
+    /// merged (handoff.rs's `<folder>.merged`) once a saved state holds them.
+    outbox_drained: bool,
+    marks: Vec<(PathBuf, String)>,
     /// The coordinator's state per term as last written, the history's last event written, the
     /// devices last copied to the NAS.
     pub state_written: Option<(u64, Vec<u8>)>,
@@ -745,7 +760,7 @@ pub struct Run {
 
 impl Run {
     pub fn new(side: Side, role: Role, gates: Gates) -> Run {
-        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), state_written: None, history_seq: 0, devices_written: None, led: BTreeSet::new() }
+        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), seeded: false, outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, devices_written: None, led: BTreeSet::new() }
     }
 
     /// A process's first step, which says its part (`Role`). (The jobs an earlier process left are
@@ -762,7 +777,24 @@ impl Run {
     /// restarts into its new part).
     pub fn step(&mut self, able: bool) -> Out {
         let give = Give { entries: std::mem::take(&mut self.entries), settled: self.settled.take(), able, reassert: self.reassert, asks: Vec::new() };
+        let marks = std::mem::take(&mut self.marks);
         let out = self.side.step(give, &check);
+        // (Drained hand-offs held by the state just saved: their folders marked merged, so one whose
+        // removal failed isn't drained again by a later process.)
+        let kept = out.stop.is_none() && !out.events.iter().any(|e| matches!(e, Event::Failed { what: "save the member's state", .. }));
+        if kept {
+            for (dir, name) in marks {
+                let marker = dir.with_extension("merged");
+                let was = std::fs::read_to_string(&marker).unwrap_or_default();
+                if name.as_str() > was.trim() {
+                    if let Err(e) = crate::whole::write(&marker, name.as_bytes()) {
+                        eprintln!("pool: marking {} drained: {e:#}", dir.display());
+                    }
+                }
+            }
+        } else {
+            self.marks = marks;
+        }
         if let Some(why) = &out.stop {
             self.restart.get_or_insert_with(|| format!("this process left the pool: {why}"));
         }
@@ -834,11 +866,18 @@ impl Run {
             let lease = self.next_drained();
             let step = h.done.as_ref().map_or_else(|| "handoff".to_string(), |d| d.0.clone());
             self.drained.insert(p.clone());
+            if let (Some(d), Some(n)) = (p.parent(), p.file_name().and_then(|n| n.to_str())) {
+                self.marks.push((d.to_path_buf(), n.to_string()));
+            }
             self.entries.push((Entry { member: me.clone(), lease, step, handoff: h, at: crate::agent::jobs::now_s() }, Some(p)));
         }
-        for (e, dir) in outbox_entries(outbox, &me) {
-            if self.drained.insert(dir.clone()) {
-                self.entries.push((e, Some(dir)));
+        // (A helper's outbox from before the pool: once a process. Its tasks' folders stay with the
+        // agent's sending.)
+        if !std::mem::replace(&mut self.outbox_drained, true) {
+            for (e, dir) in outbox_entries(outbox, &me) {
+                if self.drained.insert(dir.clone()) {
+                    self.entries.push((e, Some(dir)));
+                }
             }
         }
     }
@@ -1041,6 +1080,138 @@ pub fn append_history(root: &Path, member: &str, events: &[crate::coord::history
     Ok(())
 }
 
+/// The pool's files on the NAS, made while it's on (docs/formats.md, The pool): moved aside together
+/// once it's switched off (`switch_off`), so switching it on again begins afresh from today's files.
+pub const POOL_FILES: [&str; 7] = ["state/build/terms", "state/build/term", "state/build/lead.json", "state/journal", "state/pool/members", "state/pool/mail", "state/coord"];
+
+/// The agents' statuses on the NAS: the build Mac's (`state/status.json`) and the helpers'
+/// (`state/helpers/<host>.json`), by file name.
+fn statuses(root: &Path) -> Vec<(String, super::Status)> {
+    let mut out = Vec::new();
+    let read = |p: &Path| std::fs::read(p).ok().and_then(|b| serde_json::from_slice::<super::Status>(&b).ok());
+    if let Some(s) = read(&root.join("state/status.json")) {
+        out.push(("state/status.json".to_string(), s));
+    }
+    if let Ok(rd) = std::fs::read_dir(root.join("state/helpers")) {
+        let mut ps: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
+        ps.sort();
+        for p in ps {
+            if let Some(s) = read(&p) {
+                out.push((format!("state/helpers/{}", p.file_name().unwrap().to_string_lossy()), s));
+            }
+        }
+    }
+    out
+}
+
+/// The pool's files there now.
+fn pool_files(root: &Path) -> Vec<&'static str> {
+    POOL_FILES.iter().copied().filter(|f| root.join(f).exists()).collect()
+}
+
+/// `scenic pool on` (docs/pool.md §12, Switching it on): the switch made on the NAS at `root`, once
+/// the checks pass: it isn't on; none of the pool's files are there (an earlier time's: `scenic pool
+/// off` moves them aside); `state/build/writer` names the Mac that makes term 1; every agent heard
+/// from in ten minutes runs `app` (this program's: the one with the pool), unless `force`. What it
+/// did, or why not.
+pub fn switch_on(root: &Path, app: &str, force: bool) -> Result<String> {
+    anyhow::ensure!(!root.join(ENABLED).exists(), "the pool is on already ({})", root.join(ENABLED).display());
+    let left = pool_files(root);
+    anyhow::ensure!(left.is_empty(), "the pool's files from an earlier time are there ({}): `scenic pool off` moves them aside first", left.join(", "));
+    let writer = std::fs::read_to_string(root.join(crate::pool::term::WRITER)).unwrap_or_default().trim().to_string();
+    anyhow::ensure!(!writer.is_empty(), "state/build/writer names no Mac: it names the one that makes term 1 and leads it");
+    let now = crate::agent::jobs::now_s();
+    let mut said = vec![format!("term 1 will be made by {writer} (state/build/writer), from today's records")];
+    for (f, st) in statuses(root) {
+        if now.saturating_sub(st.beat) > 600 {
+            said.push(format!("{f}: {} not heard from for {} min (it joins the pool once it runs an app that has it)", st.host, now.saturating_sub(st.beat) / 60));
+            continue;
+        }
+        anyhow::ensure!(force || st.app == app, "{f}: {} runs app {}, not this one ({app}), which has the pool: update it first (or --force)", st.host, st.app);
+        if let Some(j) = st.job.as_ref().or(st.beside.as_ref()) {
+            said.push(format!("{} runs {}: it joins once that ends (its work is handed off then)", st.host, j.id));
+        }
+    }
+    std::fs::create_dir_all(root.join("state/pool")).context("make state/pool")?;
+    std::fs::OpenOptions::new().write(true).create_new(true).open(root.join(ENABLED)).with_context(|| format!("make {}", root.join(ENABLED).display()))?;
+    said.push(format!("switched on: {} made; each agent restarts into the pool between jobs (`scenic pool status`)", root.join(ENABLED).display()));
+    Ok(said.join("\n"))
+}
+
+/// `scenic pool off` (docs/pool.md §12, Switching it off): the switch removed once the lead is caught
+/// up, its members' entries all acknowledged and no job runs (unless `force`); then, once no agent
+/// says it's in the pool any more (they restart between jobs: run it again until they have), the
+/// pool's files moved aside, to `state/pool-off/<UTC time>/`. What it did, or why not.
+pub fn switch_off(root: &Path, force: bool) -> Result<String> {
+    let sts = statuses(root);
+    let mut said = Vec::new();
+    if root.join(ENABLED).exists() {
+        if !force {
+            let mut why = Vec::new();
+            for (f, st) in &sts {
+                let Some(p) = &st.pool else { continue };
+                if let Some(j) = st.job.as_ref().or(st.beside.as_ref()) {
+                    why.push(format!("{} runs {} (`scenic pause`, and wait)", st.host, j.id));
+                }
+                if p.role == Role::Lead && !p.gates.caught_up {
+                    why.push(format!("{f}: the lead's records don't reflect the journal yet"));
+                }
+                if p.unacked > 0 {
+                    why.push(format!("{f}: {} of {}'s entries not in the lead's records yet", p.unacked, st.host));
+                }
+            }
+            anyhow::ensure!(why.is_empty(), "not now (or --force, its unmerged work done again):\n{}", why.join("\n"));
+        }
+        std::fs::remove_file(root.join(ENABLED)).with_context(|| format!("remove {}", root.join(ENABLED).display()))?;
+        said.push("switched off: each agent restarts as before between jobs".to_string());
+    }
+    let still: Vec<String> = sts.iter().filter(|(_, st)| st.pool.is_some() && crate::agent::jobs::now_s().saturating_sub(st.beat) <= 600).map(|(f, st)| format!("{} ({f})", st.host)).collect();
+    if !still.is_empty() {
+        said.push(format!("still in the pool: {}; run `scenic pool off` again once they've restarted, to move the pool's files aside", still.join(", ")));
+        return Ok(said.join("\n"));
+    }
+    let left = pool_files(root);
+    if left.is_empty() {
+        said.push("none of the pool's files are there".to_string());
+        return Ok(said.join("\n"));
+    }
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let aside = root.join("state/pool-off").join(format!("{}-{t}", journal::day(t).unwrap_or_default()));
+    for f in &left {
+        let to = aside.join(f);
+        std::fs::create_dir_all(to.parent().unwrap())?;
+        std::fs::rename(root.join(f), &to).with_context(|| format!("move {f} aside"))?;
+    }
+    said.push(format!("the pool's files moved aside to {} ({}): switched on again, it begins from today's files", aside.display(), left.join(", ")));
+    Ok(said.join("\n"))
+}
+
+/// `scenic pool status`: the switch, the terms, the agents as their statuses say.
+pub fn status(root: &Path) -> String {
+    let mut out = Vec::new();
+    let m = mode(root).map_or("unknown (the NAS doesn't answer)".to_string(), |m| serde_json::to_value(m).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default());
+    out.push(format!("the pool: {m}"));
+    let nas = Share::new(root);
+    match crate::pool::term::current(&nas) {
+        Ok(c) if c.term > 0 => out.push(match &c.lead {
+            Some(t) => format!("term {}: {} ({}), app {}, since {} ({})", t.term, t.host, t.member, t.app, t.since, t.how),
+            None => format!("term {}: can't be read whole", c.term),
+        }),
+        Ok(_) => out.push("no terms".to_string()),
+        Err(e) => out.push(format!("the terms: {e:#}")),
+    }
+    let now = crate::agent::jobs::now_s();
+    for (f, st) in statuses(root) {
+        let p = st.pool.as_ref().map_or("not in the pool".to_string(), |p| format!("{} {}, term {}, leads {:?}, duties {}, caught up {}, unacked {}{}", serde_json::to_value(p.role).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default(), p.member, p.gates.term, p.gates.leads, p.gates.duties, p.gates.caught_up, p.unacked, p.restart.as_ref().map(|r| format!(", restarting: {r}")).unwrap_or_default()));
+        out.push(format!("{} ({f}, app {}, beat {} s ago, job {}): {p}", st.host, st.app, now.saturating_sub(st.beat), st.job.as_ref().map_or("none", |j| j.id.as_str())));
+    }
+    let left = pool_files(root);
+    if !left.is_empty() {
+        out.push(format!("its files: {}", left.join(", ")));
+    }
+    out.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1145,6 +1316,27 @@ mod tests {
         assert_eq!(saved.mine.unwritten().count(), 1, "its hand-off kept for the next process");
         assert!(!beat.exists());
         assert!(a.step(Give::default(), &any).stop.is_some(), "it steps no more");
+    }
+
+    #[test]
+    fn a_saved_state_of_an_earlier_time_the_pool_was_on_counts_for_nothing() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let home = d.path().join("a/agent");
+        let mut a = side(&r, &home);
+        until(&mut a, || Give { able: true, ..Default::default() }, |o| o.leads == Some(1));
+        drop(a);
+        // Switched off, its terms moved aside: the state of term 1 would hold this member above them.
+        std::fs::rename(r.join("state/build"), d.path().join("aside")).unwrap();
+        std::fs::create_dir_all(r.join("state/build")).unwrap();
+        for f in ["manifest.json", "jobs.json", "pending.json", "writer"] {
+            std::fs::copy(d.path().join("aside").join(f), r.join("state/build").join(f)).unwrap();
+        }
+        let mut a = side(&r, &home);
+        assert_eq!(a.driver().saved().term, 0);
+        assert!(home.join("pool/saved.earlier.json").exists());
+        let out = a.step(Give { able: true, ..Default::default() }, &any);
+        assert_eq!((out.term, out.leads), (1, Some(1)), "term 1 afresh");
     }
 
     #[test]
@@ -1297,6 +1489,8 @@ mod tests {
         assert_eq!((rec.keys.recorded("unit", "6/2/1"), rec.keys.recorded("unit", "6/2/2"), rec.keys.recorded("unit", "6/2/3")), (Some("k21"), Some("k22"), Some("k23")));
         assert_eq!(rec.manifest.get("base/6-2-3").map(String::as_str), Some("base/6-2-3.3333333333333333.base"));
         assert!(crate::handoff::waiting_in(&journal).unwrap().is_empty() && crate::handoff::waiting(&r).unwrap().is_empty() && !ob.exists());
+        // (Marked merged: a file whose removal had failed isn't drained again.)
+        assert!(crate::handoff::dir(&r, "old-m1").with_extension("merged").exists());
         assert!(home.join("outbox/1791328399375").exists() && !failed.exists());
         // Term 1's records written to today's files too, for their readers.
         assert_eq!(crate::agent::build::Keys::load(&r).recorded("unit", "6/2/2"), Some("k22"));

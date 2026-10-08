@@ -505,7 +505,8 @@ seconds, kept to one Mac as the build Mac keeps it now.
   still names its own addresses.
 - **Going:** `state/build/writer`, `check_writer` and `SCENIC_BUILD_MAC` (phase 1: while the pool
   is on, no agent names the writer, no job carries `SCENIC_BUILD_MAC`, and `check_writer` refuses
-  every save, so a step run by hand writes nothing; kept for the pool off); claims (leases alone,
+  every save, so a step run by hand writes nothing, `scenic-build verify`'s none either: unverified
+  uploads wait in the records; kept for the pool off); claims (leases alone,
   phase 4); every temporary name not from crate::whole.
 
 ### 7.6 The lead's own slots
@@ -642,14 +643,18 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
      the module's doc. The agent runs it while the pool is on (below).
    - **The integration: built, switched off** (crate::agent::pool; the agent, crate::agent). While
      `state/pool/enabled` is missing the agent is as it was (one stat more a loop, and one a save's
-     `check_writer`); a change of the switch restarts it, between jobs, into the other.
+     `check_writer`); a change of the switch, read so two loops in a row, restarts it, between
+     jobs, into the other. Until the switch is known (the NAS not read yet), today's coordination
+     (the writer named, hand-offs merged, re-keying) waits.
      - **A process's part** is the terms', decided as it starts (its member's first step): the lead
        plans and grants through its coordinator as the build Mac did; any other member works as a
        helper did, `--helper` or not. A member whose part changes (it took a term up, or stepped
        down) restarts into its new part once its first job's slot is free: phase 1's lead runs its
        own jobs in its process (phase 2 moves them out). A process whose member's lock another
-       holds runs dry; one the driver stops (its lock taken since) saves that step's state, starts
-       nothing, and exits between jobs.
+       holds starts nothing, tries the lock each loop, and restarts into the pool once it's free;
+       one the driver stops (its lock taken since) saves that step's state, starts nothing, and
+       exits between jobs. A saved state naming terms when the NAS has none (an earlier time the
+       pool was on, its files since moved aside) counts for nothing but its unwritten hand-offs.
      - **The loop:** the driver steps once a loop, after the loop's ended jobs are gathered and
        before the plan; its state (`Saved`) is written whole to the agent's folder whenever the
        step changed it, before anything the step said is done (a step whose state couldn't be
@@ -706,22 +711,25 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
        an outbox's under its old lease, the others numbered from `agent::pool::DRAINED`, apart).
      - **Going while it's on:** the writer named, `SCENIC_BUILD_MAC`, `check_writer`'s pass (it
        refuses every save). Kept for the pool off.
-   - **Switching it on** (once both agents run an app that has phase 1, the owner's word given):
-     `state/build/writer` names the build Mac (term 1's maker); none of the pool's files from an
-     earlier run are there (`state/build/terms/`, `state/build/term/`, `state/build/lead.json`,
-     `state/journal/`, `state/pool/members/`, `state/pool/mail/`, `state/coord/`); the build paused
-     at safe points (`scenic pause`) and no job running, so what's waiting is drained whole; then
-     `state/pool/enabled` made on the NAS. Each agent restarts into the pool: the build Mac makes
-     term 1 from today's files, takes it up and leads (its status's `pool`: `role` lead, `term` 1),
-     the M1 works as a member (its helper status's `pool`); `scenic resume`. Its first catalog waits
-     for its records to be caught up (a listing of every day merged), its first GC for a
-     re-assertion.
-   - **Switching it off:** the build paused at safe points, no job running, the lead caught up and
-     every member's `pool.unacked` 0 (each entry in the lead's records); `state/pool/enabled`
-     removed. Each agent restarts as before: the build Mac names the writer again and writes today's
-     files, which hold the last lead's records. An entry not merged by then is lost, its work done
-     again. Before the pool is switched on again, its files above are moved aside: it would take up
-     its newest snapshot, which knows nothing of what was built while it was off.
+   - **Switching it on:** `scenic pool on` (agent::pool::switch_on), once every agent runs the app
+     that has phase 1. It checks the switch isn't on, none of the pool's files from an earlier
+     time are there (`state/build/terms/`, `state/build/term/`, `state/build/lead.json`,
+     `state/journal/`, `state/pool/members/`, `state/pool/mail/`, `state/coord/`),
+     `state/build/writer` names a Mac (term 1's maker), and every agent heard from in ten minutes
+     runs this app (`--force` passes that over); then makes `state/pool/enabled`. Each agent
+     restarts into the pool between jobs: the build Mac makes term 1 from today's files, takes it
+     up and leads (its status's `pool`: `role` lead, `term` 1), the M1 works as a member (its helper
+     status's `pool`). `scenic pool status` says how it stands. The first catalog waits for the
+     records to be caught up (a listing of every day merged), the first GC for a re-assertion.
+   - **Switching it off:** `scenic pool off` (`switch_off`): once the lead is caught up, every
+     member's `pool.unacked` is 0 (each entry in the lead's records) and no job runs (`scenic
+     pause` first; `--force` passes these over, its unmerged work done again), it removes the
+     switch; each agent restarts as before between jobs (the build Mac names the writer again and
+     writes today's files, which hold the last lead's records). Run again once no agent's status
+     says it's in the pool, it moves the pool's files aside to `state/pool-off/<day>-<time>/`, so
+     a later switch-on begins afresh from today's files (each member's saved state then counts for
+     nothing: above). A member's hand-off said journaled to a coordinator whose pool is off is
+     journaled there, and merged as before.
    - **A shadow run** (crate::agent::shadow; `state/pool/shadow` on the agent, or `scenic
      pool-shadow` beside it): the driver beside today's coordination, shadowing this Mac's agent
      (the build Mac's by its coordinator's history, a helper's by its outbox), each of its jobs

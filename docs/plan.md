@@ -2036,8 +2036,8 @@ At each phase's end an Opus agent reviews the work against this plan.
    - the members' messages go by mailbox on the NAS, not the pool's API (pool.md §9);
    - switched off again, the pool's terms, records and journal stay on the NAS, and the records go
      on in today's files without them: switched on again, the pool would take up its newest
-     snapshot, older than today's files. Its folders are moved aside before it's switched on again
-     (pool.md §12, Switching it on and off).
+     snapshot, older than today's files. `scenic pool off` moves its files aside once the agents
+     have left it (pool.md §12, Switching it off).
    What the core leaves open, by design:
    - create-new between two Macs is unchecked on the real share (pool.md §3, ◻), and invariant 1
      (one lead a term) rests on it;

@@ -6,6 +6,11 @@
 //!   scenic remove <id>                  remove a region (its recipe is kept as .removed)
 //!   scenic agent [--once] [--dry-run] [--home <dir>] [--helper]  the build agent (the build Mac's
 //!                                       login item; --helper: the M1's, the shared steps' jobs)
+//!   scenic pool on|off|status [--force]  the pool's switch (docs/pool.md §12): on, after its checks
+//!                                       (no earlier pool's files, the writer named, every agent
+//!                                       on this app); off, once its lead is caught up and no job
+//!                                       runs, then (run again once the agents restarted) its files
+//!                                       moved aside; how it stands
 //!   scenic pool-shadow --home <dir> [--live <dir>] [--hours <h>] [--once]  the pool's shadow run
 //!                                       (docs/pool.md §12): its driver beside this Mac's agent (its
 //!                                       folder, `--live`, read only), writing only under the NAS's
@@ -311,6 +316,19 @@ fn main() -> Result<()> {
             eprintln!("agent: started (app {}, root {})", o.bin.display(), o.root.as_ref().map(|r| r.display().to_string()).unwrap_or_else(|| "the NAS share".into()));
             pipeline::sys::raise_open_files();
             agent::Agent::new(o)?.run()
+        }
+        "pool" => {
+            // The pool's switch (docs/pool.md §12): on, off, or how it stands.
+            let r = root(&args, false)?;
+            let force = flag(&args, "--force");
+            let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
+            match args.get(2).map(String::as_str) {
+                Some("on") => println!("{}", agent::pool::switch_on(&r, &agent::app_version(&bin), force)?),
+                Some("off") => println!("{}", agent::pool::switch_off(&r, force)?),
+                Some("status") | None => println!("{}", agent::pool::status(&r)),
+                Some(x) => bail!("scenic pool on|off|status [--force], not {x}"),
+            }
+            Ok(())
         }
         "pool-shadow" => {
             let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;

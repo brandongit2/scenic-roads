@@ -418,7 +418,8 @@ agent/pool/             the pool's part of the agent (crate::agent::pool; only w
                         saved.json (the driver's state, crate::pool::driver::Saved: {member, mine:
                         {entries: {key: term acknowledged or null}, unwritten: {key: entry}}, term,
                         led, made, unfinished?, stood_down?, passing?}, written whole after every
-                        step that changed it), mail.json ({read: {member: n}, the last message taken
+                        step that changed it; `saved.earlier.json`: one set aside, of an earlier time
+                        the pool was on, the NAS having no terms), mail.json ({read: {member: n}, the last message taken
                         from each; sent: {member: [[n, msg], …]}, the last sent each; n}),
                         members.json (the members it knows, by id), jobs/<term>-<n>/ (a job's
                         folder under its lease: work.json {step, targets: [[target, key], …],
@@ -704,6 +705,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     <member>.jsonl`: a lead's history events (as `history.jsonl`'s), its own file.
   - The coordinator's leases (`leases.json`) say their `term` and `granted_at` (unix seconds); a
     grant says its `term`; `/work/done {…, journaled: true}`: the hand-off is in the journal already.
+  - `state/pool-off/<day>-<unix seconds>/`: the pool's files above, moved aside by `scenic pool off`
+    once its agents left it, by their paths.
   - `state/pool-shadow/`: a shadow run's files, as the pool's above under it (its terms, records,
     journal, heartbeats, mail); it reads today's three files and `state/build/writer` from the real
     folder and writes nothing else.

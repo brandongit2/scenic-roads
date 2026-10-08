@@ -1203,9 +1203,12 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                             *e = (now, e.1 + 1);
                         }
                     }
+                    // (Its member wrote it to the pool's journal itself: nothing journaled here. Not
+                    // while this coordinator's pool is off (switched off with the member's job
+                    // under way): journaled, to be merged as any hand-off is.)
+                    let pooled = d.journaled && s.leases.term > 0;
                     drop(s);
-                    // (Its member wrote it to the pool's journal itself: nothing journaled here.)
-                    let wrote = if d.journaled { Ok(()) } else { crate::handoff::write(&journal.join(folder(&d.worker)), &h) };
+                    let wrote = if pooled { Ok(()) } else { crate::handoff::write(&journal.join(folder(&d.worker)), &h) };
                     if let Err(e) = wrote {
                         let mut s = shared.lock().unwrap();
                         for (t, _) in &targets {
