@@ -94,11 +94,13 @@ pub fn version(s: &crate::AppState) -> String {
 }
 
 /// The z14 tile x/y from each basemap archive that has it, keyed by its archive (by content name)
-/// and where its bytes are in it: tiles with the same bytes, the open sea's, share a key, and
-/// another basemap's never do.
+/// (or piece) and where its bytes are in it: tiles with the same bytes, the open sea's, share a
+/// key, and another basemap's never do.
 fn z14(s: &S, archives: &[String], x: u32, y: u32) -> Result<Vec<wt::Stored>> {
     let mut out = Vec::new();
-    for (pm, name) in s.basemap.opened(&s.data, archives)?.iter().zip(archives) {
+    for a in archives {
+        // (From the piece this Mac downloaded when it has it: keyed by the piece then.)
+        let (name, pm) = s.basemap.source(&s.data, a, wt::BASE_Z, x, y)?;
         if let Some((off, len)) = pm.locate(wt::BASE_Z, x, y)? {
             let bytes = pm.source().read_at(off, len as usize)?;
             let key = xxhash_rust::xxh3::xxh3_64_with_seed(name.as_bytes(), off);
@@ -241,9 +243,6 @@ pub async fn water_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)
         None => return StatusCode::BAD_REQUEST.into_response(),
     };
     let archives = s.data.basemap_names();
-    for a in &archives {
-        s.data.used(a);
-    }
     let from = made_from(&s, &archives);
     let etag = format!("\"w{from:016x}-{z}-{x}-{y}-{}\"", query.get("c").map_or("raw", String::as_str));
     if etag_match(&headers, &etag) {

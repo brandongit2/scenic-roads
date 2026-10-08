@@ -39,6 +39,29 @@ struct Reply: Decodable {
     let local: Bool
     let now: Int
     let log: String?
+    /// What this Mac has downloaded for offline use (servers from 2026-10-08 on).
+    let offline: Offline?
+}
+
+/// This Mac's downloads (crates/server/src/downloads.rs `summary`).
+struct Offline: Decodable {
+    let world: Bool
+    let areas: Int
+    let bytes: Int
+    let here: Int
+    /// The NAS is reachable from this Mac.
+    let nas: Bool
+}
+
+/// The menu's line on what this Mac can show without the NAS.
+func offlineText(_ o: Offline) -> String {
+    if !o.world {
+        return o.nas ? "Nothing downloaded: the map needs the NAS to show anything (Settings → Regions)" : "Away from the NAS with nothing downloaded: the map can't show anything"
+    }
+    var t = "Downloaded: the World, zoomed out"
+    if o.areas > 0 { t += " and \(o.areas) area\(o.areas == 1 ? "" : "s")" }
+    if o.here < o.bytes { t += o.nas ? " · \(min(99, o.here * 100 / max(1, o.bytes))) % here" : " · \(min(99, o.here * 100 / max(1, o.bytes))) % here, away from the NAS" }
+    return t
 }
 
 struct Status: Decodable {
@@ -383,6 +406,7 @@ func progressText(_ p: JobProgress, paused: Bool, now: Int) -> String {
 /// own status).
 func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     var out = [Line(text: line, style: .title)]
+    if let o = r?.offline { out.append(Line(text: offlineText(o), style: .small)) }
     guard let r = r, let s = r.status else { return out }
     // When it'll be done and the map next gets new data (as the worker page and the map say it).
     if let f = s.forecast, r.now - s.beat <= outOfTouch {

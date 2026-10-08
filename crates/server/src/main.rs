@@ -15,7 +15,7 @@ mod cache;
 mod data;
 mod descriptions;
 mod details;
-mod keep;
+mod downloads;
 mod livefolder;
 mod names_live;
 mod ovdata;
@@ -73,8 +73,8 @@ pub struct AppState {
     /// The map's places, for its search (made when first searched, again when the labels or the
     /// translations change).
     pub places: Arc<places::Index>,
-    /// The areas this Mac keeps for offline use, and what the mirror keeps for them.
-    pub keep: Arc<keep::Keep>,
+    /// What this Mac has downloaded for offline use, and what the mirror copies for it.
+    pub downloads: Arc<downloads::Downloads>,
     /// The current version tokens of the app's URLs, per (catalog generation, translations version).
     tokens: Mutex<Option<((u64, u64), Arc<std::collections::HashSet<String>>)>>,
 }
@@ -201,7 +201,8 @@ impl AppState {
 
     /// The build agent's status for the menu bar (tools/status): this Mac's own agent's when it runs
     /// here (written every few seconds), else the heartbeat it copies to the NAS (on change, and
-    /// every five minutes); whether it's this Mac's; and, for this Mac's, the running job's log.
+    /// every five minutes); whether it's this Mac's; for this Mac's, the running job's log; and
+    /// what this Mac has downloaded (downloads::summary).
     fn build_status(&self) -> serde_json::Value {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let own: Option<serde_json::Value> = std::fs::read(self.home.join("agent/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
@@ -227,13 +228,15 @@ impl AppState {
         };
         // This Mac's ask to pause or go on, while its agent hasn't taken it up (pipeline::control).
         let asked = pipeline::control::peek_request(&self.home.join("agent")).map(|r| serde_json::json!({ "pause": r.pause.is_some(), "at": r.at }));
-        serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked})
+        // What this Mac has downloaded (the menu says when the map needs the NAS).
+        let offline = downloads::summary(self);
+        serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked, "offline": offline})
     }
 
-    /// Lets go of everything mapped from files the mirror has just evicted (`names`, content
-    /// names), so the disk gets their room back.
-    fn forget_evicted(&self, names: &[String]) {
-        self.data.forget_evicted(names);
+    /// Lets go of everything mapped from what the mirror has just deleted (`names`: content
+    /// names, and basemap pieces by their paths in it), so the disk gets their room back.
+    fn forget_removed(&self, names: &[String]) {
+        self.data.forget_removed(names);
         self.basemap.forget(names);
         self.areas.forget(names);
     }
@@ -280,7 +283,7 @@ pub fn test_state_from(home: &std::path::Path, data: Arc<data::Data>) -> S {
         areas: regions::Areas::default(),
         descriptions: descriptions::Descriptions::new(home),
         places: Default::default(),
-        keep: keep::Keep::load(home),
+        downloads: downloads::Downloads::load(home),
         tokens: Mutex::new(None),
     })
 }
@@ -300,46 +303,6 @@ fn same_dir(a: &std::path::Path, b: &std::path::Path) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(x), Ok(y)) => x == y,
         _ => a == b,
-    }
-}
-
-/// The signal that asked the server to stop, once one has (0 until then).
-static STOP: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-
-extern "C" fn on_stop(sig: libc::c_int) {
-    STOP.store(sig, std::sync::atomic::Ordering::SeqCst);
-}
-
-/// On SIGTERM, SIGINT or SIGHUP (the launcher passes them on: a stop, or a restart), writes the
-/// mirror's use times out, then exits, as the updater does before it exits for a new app. The
-/// handlers only note the signal for the thread that acts on it: without that thread they'd
-/// swallow it, so they're set only once it runs (else the signals keep their default action).
-fn exit_on_signals(data: Arc<data::Data>) {
-    let watch = std::thread::Builder::new().name("signals".into()).spawn(move || loop {
-        let sig = STOP.load(std::sync::atomic::Ordering::SeqCst);
-        if sig != 0 {
-            if let Some(m) = &data.mirror {
-                if let Err(e) = m.flush() {
-                    eprintln!("mirror: {e:#}");
-                }
-            }
-            eprintln!("stopping (signal {sig})");
-            std::process::exit(0);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    });
-    if let Err(e) = watch {
-        eprintln!("signals: {e}: a stop won't write the mirror's use times out");
-        return;
-    }
-    for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
-        // SAFETY: a handler that only stores to an atomic, which is async-signal-safe.
-        unsafe {
-            let mut sa: libc::sigaction = std::mem::zeroed();
-            sa.sa_sigaction = on_stop as extern "C" fn(libc::c_int) as libc::sighandler_t;
-            libc::sigemptyset(&mut sa.sa_mask);
-            libc::sigaction(sig, &sa, std::ptr::null_mut());
-        }
     }
 }
 
@@ -443,23 +406,21 @@ async fn main() -> Result<()> {
         areas: regions::Areas::default(),
         descriptions: descs,
         places: Default::default(),
-        keep: keep::Keep::load(&home),
+        downloads: downloads::Downloads::load(&home),
         tokens: Mutex::new(None),
     });
 
-    // A stop asked for by a signal (the launcher passes them on) writes the use times out first.
-    exit_on_signals(state.data.clone());
-    // What the mirror evicts to make room is let go of at once (its maps would hold the room).
+    // What the mirror deletes is let go of at once (its maps would hold the room).
     if let Some(m) = &state.data.mirror {
         let s = Arc::downgrade(&state);
-        m.on_evict(move |names| {
+        m.on_remove(move |names| {
             if let Some(s) = s.upgrade() {
-                s.forget_evicted(names);
+                s.forget_removed(names);
             }
         });
     }
-    // The mirror: the essentials and the kept areas first (keep.rs).
-    keep::spawn_mirror(state.clone());
+    // The mirror: what's downloaded (downloads.rs).
+    downloads::spawn_mirror(state.clone());
     tokio::spawn(warm(state.clone()));
     regions::spawn_flusher(state.clone());
     // Other devices (remote.rs): the address to open there, kept current (tailscale serve may start
@@ -518,11 +479,12 @@ async fn main() -> Result<()> {
         .route("/api/areas/search", get(regions::search))
         .route("/api/areas/{id}", get(regions::one))
         .route("/api/coverage", get(regions::coverage))
-        .route("/api/keep", get(keep::get_status))
-        .route("/api/keep/regions/{id}", axum::routing::put(keep::put_region))
-        .route("/api/keep/views", axum::routing::post(keep::post_view))
-        .route("/api/keep/views/size", axum::routing::post(keep::post_view_size))
-        .route("/api/keep/views/{id}", axum::routing::put(keep::put_view).delete(keep::delete_view))
+        .route("/api/downloads", get(downloads::get_status))
+        .route("/api/downloads/world", axum::routing::put(downloads::put_world))
+        .route("/api/downloads/regions/{id}", axum::routing::put(downloads::put_region))
+        .route("/api/downloads/views", axum::routing::post(downloads::post_view))
+        .route("/api/downloads/views/size", axum::routing::post(downloads::post_view_size))
+        .route("/api/downloads/views/{id}", axum::routing::put(downloads::put_view).delete(downloads::delete_view))
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
         .route("/api/build", get(build_h))
         .route("/api/build/pause", axum::routing::post(build_pause_h))
@@ -664,11 +626,11 @@ async fn warm(s: S) {
 
 /// Whether a request is the map in use. An open page's polls of the catalog aren't (a tab left open
 /// would hold an update off), nor the menu bar item's of the build's status (every five seconds),
-/// nor the Regions panel's of the mirror's (`/api/keep`), nor the place search's while its places
+/// nor the Regions panel's of the downloads' (`/api/downloads`), nor the place search's while its places
 /// are made (`poll=1`: places.rs).
 fn is_use(uri: &axum::http::Uri) -> bool {
     match uri.path() {
-        "/api/catalog" | "/api/ping" | "/api/build" | "/api/keep" => false,
+        "/api/catalog" | "/api/ping" | "/api/build" | "/api/downloads" => false,
         "/api/places" => !uri.query().is_some_and(|q| q.split('&').any(|kv| kv == "poll=1")),
         _ => true,
     }

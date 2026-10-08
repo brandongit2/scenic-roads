@@ -640,7 +640,7 @@ impl Places {
             let (lon, lat) = (p.lon as f64, p.lat as f64);
             // (A ring across the antimeridian has longitudes past ±180.)
             let lon = if lon < w { lon + 360.0 } else if lon > e { lon - 360.0 } else { lon };
-            if lon < w || lon > e || lat < s || lat > n || !crate::keep::inside(ring, [lon, lat]) {
+            if lon < w || lon > e || lat < s || lat > n || !crate::downloads::inside(ring, [lon, lat]) {
                 continue;
             }
             let r = if p.kind == 0 { 1000.0 } else { 0.0 } + p.score as f64 + (NEAR - 3.0 * (1.0 + km(c.0, c.1, lon, lat)).log10()).max(0.0);

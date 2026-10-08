@@ -234,9 +234,6 @@ pub async fn base_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>
     if archives.is_empty() {
         return StatusCode::NO_CONTENT.into_response();
     }
-    for c in &archives {
-        s.data.used(c);
-    }
     let nv = s.names.version_for_tile(z, x, y, 1.0);
     let h = base_hash(&archives, z, x, y);
     let etag = format!("\"{h:016x}-{nv:x}\"");
@@ -277,55 +274,69 @@ pub async fn base_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>
     }
 }
 
-/// The basemap archives (PMTiles) of the current catalog, opened.
+/// The basemap's archives (PMTiles) and the pieces of them this Mac has downloaded
+/// (store::pieces), opened as they're read.
 #[derive(Default)]
 pub struct Basemap {
-    /// The archives opened, for (their content names, the mirror's generation then).
-    open: Mutex<Option<((Vec<String>, u64), Vec<Arc<store::pmtiles::PmTiles>>)>>,
+    /// The mirror's generation they were opened for, and the opened ones by their key
+    /// (`Data::basemap_key`: a piece's path in the mirror, or an archive's content name).
+    open: Mutex<(u64, HashMap<String, Arc<store::pmtiles::PmTiles>>)>,
 }
 
+/// Opened pieces and archives kept, at most.
+const OPEN: usize = 256;
+
 impl Basemap {
-    /// The archives `contents` (content names) opened, or the first failure (kept only when all
-    /// open).
-    fn archives(&self, data: &crate::data::Data, contents: &[String]) -> anyhow::Result<Vec<Arc<store::pmtiles::PmTiles>>> {
-        // Opened again once the mirror has copied files (an archive read from the NAS until then).
-        let key: (Vec<String>, u64) = (contents.to_vec(), data.mirror_gen.load(std::sync::atomic::Ordering::Relaxed));
-        if let Some((k, a)) = self.open.lock().unwrap().as_ref() {
-            if *k == key {
+    fn open(&self, data: &crate::data::Data, key: &str) -> anyhow::Result<Arc<store::pmtiles::PmTiles>> {
+        // (Opened again once the mirror has copied or deleted something: a piece may be here now.)
+        let gen = data.mirror_gen.load(std::sync::atomic::Ordering::Relaxed);
+        {
+            let mut g = self.open.lock().unwrap();
+            if g.0 != gen {
+                *g = (gen, HashMap::new());
+            }
+            if let Some(a) = g.1.get(key) {
                 return Ok(a.clone());
             }
         }
-        let mut out = Vec::new();
-        for (c, src) in data.basemaps(contents)? {
-            let pm = match src {
-                crate::views::Src::Local(m) => store::pmtiles::PmTiles::open(Box::new(crate::views::MapRange(m))),
-                crate::views::Src::Remote(r) => store::pmtiles::PmTiles::open(Box::new(r)),
-            };
-            out.push(Arc::new(pm.with_context(|| format!("basemap {c}"))?));
+        let pm = match data.basemap_src(key)? {
+            crate::views::Src::Local(m) => store::pmtiles::PmTiles::open(Box::new(crate::views::MapRange(m))),
+            crate::views::Src::Remote(r) => store::pmtiles::PmTiles::open(Box::new(r)),
+        };
+        let pm = Arc::new(pm.with_context(|| format!("basemap {key}"))?);
+        let mut g = self.open.lock().unwrap();
+        if g.1.len() >= OPEN {
+            g.1.clear();
         }
-        *self.open.lock().unwrap() = Some((key, out.clone()));
-        Ok(out)
+        g.1.insert(key.to_string(), pm.clone());
+        Ok(pm)
     }
 
-    /// Lets go of the archives opened when one of them is among `names` (content names the mirror
-    /// has just evicted): its map would hold the disk's room.
+    /// What tile z/x/y of `archive` (a content name) is read from: the piece of it this Mac has, else
+    /// the archive (from the NAS). Its key (a piece's path in the mirror, else the archive's name)
+    /// and the archive or piece opened.
+    pub fn source(&self, data: &crate::data::Data, archive: &str, z: u8, x: u32, y: u32) -> anyhow::Result<(String, Arc<store::pmtiles::PmTiles>)> {
+        let key = data.basemap_key(archive, z, x, y);
+        match self.open(data, &key) {
+            Ok(pm) => Ok((key, pm)),
+            // (A piece removed just now: the archive.)
+            Err(_) if key != archive => Ok((archive.to_string(), self.open(data, archive)?)),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Lets go of what's opened of `names` (what the mirror has just deleted): its map would hold
+    /// the disk's room.
     pub fn forget(&self, names: &[String]) {
-        let mut open = self.open.lock().unwrap();
-        if open.as_ref().is_some_and(|((contents, _), _)| contents.iter().any(|c| names.contains(c))) {
-            *open = None;
-        }
+        let mut g = self.open.lock().unwrap();
+        g.1.retain(|k, _| !names.contains(k));
     }
 
-    /// The archives `contents` (content names), opened (from the mirror, else the NAS).
-    pub fn opened(&self, data: &crate::data::Data, contents: &[String]) -> anyhow::Result<Vec<Arc<store::pmtiles::PmTiles>>> {
-        self.archives(data, contents)
-    }
-
-    /// The tile from each of the archives `contents` that has it, as stored.
+    /// The tile from each of the archives `contents` (content names) that has it, as stored.
     pub fn tiles(&self, data: &crate::data::Data, contents: &[String], z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Vec<u8>>> {
         let mut out = Vec::new();
-        for pm in self.archives(data, contents)? {
-            if let Some(b) = pm.get(z, x, y)? {
+        for a in contents {
+            if let Some(b) = self.source(data, a, z, x, y)?.1.get(z, x, y)? {
                 out.push(b);
             }
         }
@@ -432,5 +443,34 @@ mod tests {
         // A tile no archive has: 204, without an ETag.
         let r = get(&s, (1, 0, 0), None).await;
         assert_eq!((r.status(), etag_of(&r)), (StatusCode::NO_CONTENT, None));
+    }
+
+    #[tokio::test]
+    async fn a_downloaded_piece_serves_its_tiles_without_the_nas() {
+        // Tiles at z12 under the z6 tiles 31/21 and 32/21 (gzipped: as Planetiler stores them).
+        let t = |b: u8| names::mvt::gzip(&[0x1a, 0x05, 0x0a, 0x01, b, 0x78, 0x02]).unwrap();
+        let archive = store::pieces::archive(&[(12, 31 << 6, 21 << 6, t(b'a')), (12, 32 << 6, 21 << 6, t(b'b'))], store::pmtiles::Compression::Gzip);
+        let logical = "layers/basemap/world-piece";
+        let nas = tempfile::tempdir().unwrap();
+        let content = store::naming::write_atomic(nas.path(), logical, "pmtiles", store::naming::Source::Bytes(&archive)).unwrap();
+        let mut cat = store::catalog::Catalog::new(1);
+        cat.basemap = vec![logical.into()];
+        cat.files.insert(logical.into(), store::catalog::FileRef { file: content.clone(), size: archive.len() as u64, ..Default::default() });
+        store::catalog::write_copy(&nas.path().join("catalog"), &cat).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let s = crate::test_state_with(home.path(), nas.path(), true);
+        // 31/21's piece downloaded; then the NAS's archive gone.
+        let m = s.data.mirror.clone().unwrap();
+        let w = store::mirror::Wanted { items: vec![store::mirror::Item::Piece { archive: content.clone(), piece: store::pieces::Piece::Tile(31, 21) }] };
+        let st = m.sync(&cat, &w, nas.path(), &s.data.pool().unwrap(), &store::mirror::Control::FREE).unwrap();
+        assert_eq!(st.copied, 1);
+        s.data.forget_remote();
+        std::fs::remove_file(nas.path().join(&content)).unwrap();
+        let r = get(&s, (12, 31 << 6, 21 << 6), None).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(names::mvt::gunzip_if_gzip(&body).unwrap().as_ref(), &[0x1a, 0x05, 0x0a, 0x01, b'a', 0x78, 0x02][..]);
+        // The other z6 tile's: not here, and the NAS hasn't it.
+        assert_eq!(get(&s, (12, 32 << 6, 21 << 6), None).await.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

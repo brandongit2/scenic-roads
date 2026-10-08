@@ -414,7 +414,7 @@ mod tests {
 
     /// A world of tiles: z0–10 a few, and under the z6 tiles 32/21 and 33/21 some of z11–14; the
     /// sea, the same bytes, all over z14 (stored once).
-    fn world() -> (Vec<u8>, Vec<(u8, u32, u32, Vec<u8>)>) {
+    fn world() -> (Vec<u8>, Tiles) {
         let mut tiles = Vec::new();
         for (z, x, y) in [(0, 0, 0), (5, 16, 10), (8, 128, 85), (10, 512, 340), (10, 530, 341)] {
             tiles.push((z, x, y, gz(format!("{z}/{x}/{y}").as_bytes())));
@@ -431,6 +431,8 @@ mod tests {
         }
         (archive(&tiles, Compression::Gzip), tiles)
     }
+
+    type Tiles = Vec<(u8, u32, u32, Vec<u8>)>;
 
     fn pieces_of(tiles: &[(u8, u32, u32, Vec<u8>)], p: Piece) -> Vec<&(u8, u32, u32, Vec<u8>)> {
         tiles.iter().filter(|t| Piece::of(t.0, t.1, t.2) == Some(p)).collect()
@@ -477,7 +479,7 @@ mod tests {
         for x in 0..256u32 {
             for y in 0..256u32 {
                 let h = blake3::hash(&[x as u8, y as u8]).as_bytes()[0];
-                if h % 3 != 0 {
+                if !h.is_multiple_of(3) {
                     tiles.push((14, (32 << 8) + x, (21 << 8) + y, gz(&vec![h; usize::from(h) * 7 + (x as usize % 13)])));
                 }
             }

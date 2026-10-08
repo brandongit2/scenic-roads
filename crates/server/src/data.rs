@@ -252,15 +252,6 @@ impl Data {
         self.catalog().files.get(logical).map(|f| f.file.clone())
     }
 
-    /// Notes a use of a file the map reads, here or on the NAS: the mirror copies the most
-    /// recently used first, and lets the least recently used go first when it needs room. (Not
-    /// for reads the server makes on its own: indexes cached for offline, the place search's.)
-    pub fn used(&self, content: &str) {
-        if let Some(m) = &self.mirror {
-            m.touch(content);
-        }
-    }
-
     /// A content-named file: mapped from the mirror, else on the NAS.
     fn src(&self, content: &str) -> Result<Src> {
         if let Some(m) = self.maps.lock().unwrap().get(content) {
@@ -269,12 +260,12 @@ impl Data {
         if let Some((mi, p)) = self.mirror.as_ref().and_then(|mi| Some((mi, mi.local(content)?))) {
             match std::fs::File::open(&p) {
                 Ok(f) => {
-                    // SAFETY: mirrored files are content-named and never modified; eviction
-                    // unlinks them (and `forget_evicted` drops the maps).
+                    // SAFETY: mirrored files are content-named and never modified; removal
+                    // unlinks them (and `forget_removed` drops the maps).
                     let m = Arc::new(unsafe { Mmap::map(&f)? });
                     // Kept only while the mirror has the file: a map kept after it let the file go
-                    // would hold its room. An eviction drops the file from the mirror's list, then
-                    // what's cached of it (`forget_evicted`): asked again once cached, the list
+                    // would hold its room. A removal drops the file from the mirror's list, then
+                    // what's cached of it (`forget_removed`): asked again once cached, the list
                     // has dropped it, or the cache's drop is still to come.
                     if mi.has(content) {
                         self.maps.lock().unwrap().put(content.to_string(), m.clone());
@@ -303,7 +294,6 @@ impl Data {
     /// A sectioned file by logical name.
     pub fn sect(&self, logical: &str) -> Result<Option<Arc<SectView>>> {
         let Some(content) = self.content(logical) else { return Ok(None) };
-        self.used(&content);
         if let Some(s) = self.sects.lock().unwrap().get(&content) {
             return Ok(Some(s));
         }
@@ -319,8 +309,6 @@ impl Data {
         let cat = self.catalog();
         let (Some(b), Some(r)) = (cat.base.get(unit), cat.roads.get(unit)) else { return Ok(None) };
         let (Some(bc), Some(rc)) = (self.content(b), self.content(r)) else { return Ok(None) };
-        self.used(&bc);
-        self.used(&rc);
         let key = format!("{bc}|{rc}");
         if let Some(v) = self.bases.lock().unwrap().get(&key) {
             return Ok(Some(v));
@@ -336,7 +324,6 @@ impl Data {
         let cat = self.catalog();
         let Some(l) = cat.hidata.get(tile) else { return Ok(None) };
         let Some(content) = self.content(l) else { return Ok(None) };
-        self.used(&content);
         if let Some(v) = self.his.lock().unwrap().get(&content) {
             return Ok(Some(v));
         }
@@ -350,7 +337,6 @@ impl Data {
         let cat = self.catalog();
         let Some(l) = cat.markdata.get(tile) else { return Ok(None) };
         let Some(content) = self.content(l) else { return Ok(None) };
-        self.used(&content);
         if let Some(v) = self.marks.lock().unwrap().get(&content) {
             return Ok(Some(v));
         }
@@ -364,7 +350,6 @@ impl Data {
         let cat = self.catalog();
         let Some(l) = cat.ovdata.get(tile) else { return Ok(None) };
         let Some(content) = self.content(l) else { return Ok(None) };
-        self.used(&content);
         if let Some(v) = self.ovs.lock().unwrap().get(&content) {
             return Ok(Some(v));
         }
@@ -376,7 +361,6 @@ impl Data {
     /// The road → units index.
     pub fn roadunits(&self) -> Result<Option<Arc<RoadUnits>>> {
         let Some(content) = self.content("global/roadunits") else { return Ok(None) };
-        self.used(&content);
         if let Some((c, r)) = self.roadunits.lock().unwrap().as_ref() {
             if *c == content {
                 return Ok(Some(r.clone()));
@@ -391,7 +375,6 @@ impl Data {
     /// A whole small file by logical name (global/…), cached.
     pub fn global(&self, logical: &str) -> Result<Option<Arc<Vec<u8>>>> {
         let Some(content) = self.content(logical) else { return Ok(None) };
-        self.used(&content);
         if let Some(b) = self.globals.lock().unwrap().get(&content) {
             return Ok(Some(b));
         }
@@ -439,7 +422,6 @@ impl Data {
     pub fn tile(&self, layer: &str, z: u8, x: u32, y: u32) -> Result<Option<(Blob, u64)>> {
         let Some(logical) = self.pack_of(layer, z, x, y) else { return Ok(None) };
         let Some(content) = self.content(&logical) else { return Ok(None) };
-        self.used(&content);
         let idx = self.index(&content)?;
         let Some(e) = idx.find(z, x, y) else { return Ok(None) };
         let blob = match self.src(&content)? {
@@ -455,7 +437,6 @@ impl Data {
         let Some(logical) = self.pack_of(layer, z, x, y) else { return Ok(None) };
         let Some(content) = self.content(&logical) else { return Ok(None) };
         // (A 304 is a use too: the area is in view.)
-        self.used(&content);
         Ok(self.index(&content)?.find(z, x, y).map(|e| e.hash))
     }
 
@@ -534,9 +515,33 @@ impl Data {
         cat.basemap.iter().filter_map(|l| cat.files.get(l).map(|f| f.file.clone())).collect()
     }
 
-    /// Basemap archives by content name, each from the mirror or on the NAS.
-    pub fn basemaps(&self, contents: &[String]) -> Result<Vec<(String, Src)>> {
-        contents.iter().map(|c| Ok((c.clone(), self.src(c)?))).collect()
+    /// Where tile z/x/y of the basemap archive `archive` (a content name) is read from: the
+    /// mirror's piece holding it when it's here (its path in the mirror, `.basemap/…`), else the
+    /// archive itself (on the NAS, or whole in the mirror).
+    pub fn basemap_key(&self, archive: &str, z: u8, x: u32, y: u32) -> String {
+        let piece = self.mirror.as_ref().zip(store::pieces::Piece::of(z, x, y)).filter(|(m, p)| m.has_piece(archive, *p));
+        match piece {
+            Some((m, p)) => m.piece_path(archive, p).strip_prefix(m.root().join("mirror")).map_or_else(|_| archive.to_string(), |r| r.to_string_lossy().into_owned()),
+            None => archive.to_string(),
+        }
+    }
+
+    /// A basemap source by `basemap_key`: a piece mapped from the mirror, or the archive.
+    pub fn basemap_src(&self, key: &str) -> Result<Src> {
+        if !key.starts_with(".basemap/") {
+            return self.src(key);
+        }
+        if let Some(m) = self.maps.lock().unwrap().get(key) {
+            return Ok(Src::Local(m));
+        }
+        let mirror = self.mirror.as_ref().context("no mirror")?;
+        let p = mirror.root().join("mirror").join(key);
+        let f = std::fs::File::open(&p).with_context(|| format!("open {}", p.display()))?;
+        // SAFETY: a piece is never modified once in place; removal unlinks it (and
+        // `forget_removed` drops the map).
+        let m = Arc::new(unsafe { Mmap::map(&f)? });
+        self.maps.lock().unwrap().put(key.to_string(), m.clone());
+        Ok(Src::Local(m))
     }
 
     /// Whether the build Mac is running a job (its heartbeat on the NAS, fresh, with a job that
@@ -559,7 +564,7 @@ impl Data {
     }
 
     /// Whether this Mac's own agent runs a job: this is the build Mac, whose pack and lo jobs read
-    /// this mirror's base packs (room first waits for them: keep::once). Only the build Mac's
+    /// this mirror's base packs (nothing is deleted from it meanwhile: downloads::once). Only the build Mac's
     /// agent writes the heartbeat (a helper writes `helper.json`), and its copy in this home is
     /// fresh while it runs here, as the menu bar reads it (`build_status`). Read at most every
     /// 10 s.
@@ -573,29 +578,6 @@ impl Data {
         let b = job_in(&self.home);
         *g = Some((std::time::Instant::now(), b));
         b
-    }
-
-    /// Caches the index of every pack of the catalog that isn't on this Mac (a few at a time, so
-    /// the NAS isn't flooded), so an offline start can still answer 304s and find tiles.
-    pub fn keep_indexes(&self, cat: &Catalog) {
-        let Some(m) = &self.mirror else { return };
-        let mut n = 0;
-        for l in cat.layers.values() {
-            for logical in l.root.iter().chain(l.lo.values()).chain(l.hi.values()) {
-                let Some(content) = cat.files.get(logical).map(|f| f.file.clone()) else { continue };
-                if m.local(&content).is_some() || self.indexes.lock().unwrap().get(&content).is_some() || m.has_index(&content) {
-                    continue;
-                }
-                if let Err(e) = self.index(&content) {
-                    eprintln!("index {content}: {e:#}");
-                    return;
-                }
-                n += 1;
-                if n >= 200 {
-                    return;
-                }
-            }
-        }
     }
 
     /// Drops what was opened from the NAS and is now on this Mac, so the local copy serves it
@@ -627,10 +609,10 @@ impl Data {
         self.mirror_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// Drops what's mapped of files the mirror has just evicted (`names`, content names), and the
-    /// views over them, so the disk gets their room back; whatever needs them again reads them
-    /// from the NAS.
-    pub fn forget_evicted(&self, names: &[String]) {
+    /// Drops what's mapped of what the mirror has just deleted (`names`: content names, and
+    /// basemap pieces by their paths in it), and the views over them, so the disk gets their room
+    /// back; whatever needs them again reads them from the NAS.
+    pub fn forget_removed(&self, names: &[String]) {
         let gone: std::collections::HashSet<&str> = names.iter().map(String::as_str).collect();
         self.maps.lock().unwrap().retain(|c, _| !gone.contains(c));
         self.sects.lock().unwrap().retain(|c, _| !gone.contains(c));
@@ -647,7 +629,7 @@ impl Data {
     }
 
     /// Start the background work: the NAS mount, new catalogs. (The mirror's thread is
-    /// keep::spawn_mirror's.)
+    /// downloads::spawn_mirror's.)
     pub fn spawn_background(self: &Arc<Self>) {
         let d = self.clone();
         std::thread::Builder::new()
