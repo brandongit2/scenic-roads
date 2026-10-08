@@ -11,6 +11,7 @@
 !/tools/cutover/
 !/tools/status/
 !/tools/coastcheck/
+!/tools/names/
 node_modules/
 /web/dist/
 /web/dist-new/
