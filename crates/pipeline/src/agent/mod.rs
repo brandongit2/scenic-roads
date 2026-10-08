@@ -809,8 +809,9 @@ type CacheCount = (Option<Instant>, Option<room::Sizes>);
 struct CachesTask {
     /// The clear's ask (None: a trim, or a freeing toward the room target), and when it began.
     ask: Option<room::ClearRequest>,
-    /// A freeing toward the owner's disk room target (room::toward): the target (bytes).
-    toward: Option<u64>,
+    /// A freeing toward the owner's disk room target (room::toward): the target, and the room it
+    /// frees toward as it began (`goal`: the target, or more for a job waiting for it), bytes.
+    toward: Option<(u64, u64)>,
     began: Instant,
     thread: std::thread::JoinHandle<Result<room::Freed>>,
 }
@@ -2602,13 +2603,15 @@ impl Agent {
                 (None, Some(s)) => self.caches_start(Some(ask), move || room::clear(&cache, &s)),
                 _ => self.caches_record(room::Freed { why_not: why.clone(), ..Default::default() }, Some(ask)),
             }
-        } else if let (Some(target), Some(s)) = (self.toward_due(), sources.clone()) {
-            // The owner's disk room target: the caches freed toward it, as far as needed, whether
-            // or not the build has work left (only while no job runs here).
-            self.toward_tried = Some((target, now_s()));
-            self.toward_goal.store(target, std::sync::atomic::Ordering::Relaxed);
-            let goal = self.toward_goal.clone();
-            self.caches_start_toward(target, move || room::toward(&cache, &s, goal));
+        } else if let (Some(goal), Some(s)) = (self.toward_due(), sources.clone()) {
+            // The owner's disk room target: the caches freed toward it (or the room a job waiting
+            // for it needs), as far as needed, whether or not the build has work left (only while
+            // no job runs here).
+            self.toward_tried = Some((goal, now_s()));
+            self.toward_goal.store(goal, std::sync::atomic::Ordering::Relaxed);
+            let at = self.toward_goal.clone();
+            let target = self.floor();
+            self.caches_start_toward(target, goal, move || room::toward(&cache, &s, at));
         } else if let Some(s) = sources.filter(|_| why.is_none() && home && self.trim_due() && self.trim_failed.is_none_or(|t| t.elapsed() >= Duration::from_secs(600))) {
             // (The build Mac keeps its canopy squares: every pass's areas read them again.)
             let (squares, helper) = (cache.join("chm10"), self.o.helper);
@@ -2662,11 +2665,12 @@ impl Agent {
         }
     }
 
-    /// Starts a freeing toward the owner's disk room target (`target`, bytes) on a thread of its
-    /// own; one that can't start is tried again with the next (`toward_due`).
-    fn caches_start_toward(&mut self, target: u64, work: impl FnOnce() -> Result<room::Freed> + Send + 'static) {
+    /// Starts a freeing toward the owner's disk room target (`target`; `goal`, the room it frees
+    /// toward, bytes) on a thread of its own; one that can't start is tried again with the next
+    /// (`toward_due`).
+    fn caches_start_toward(&mut self, target: u64, goal: u64, work: impl FnOnce() -> Result<room::Freed> + Send + 'static) {
         match std::thread::Builder::new().name("caches".into()).spawn(work) {
-            Ok(thread) => self.caches_task = Some(CachesTask { ask: None, toward: Some(target), began: Instant::now(), thread }),
+            Ok(thread) => self.caches_task = Some(CachesTask { ask: None, toward: Some((target, goal)), began: Instant::now(), thread }),
             Err(e) => eprintln!("agent: freeing the caches toward the disk room target: its thread didn't start: {e}"),
         }
     }
@@ -2684,7 +2688,9 @@ impl Agent {
         if !self.orphans.is_empty() {
             return None;
         }
-        let fresh = self.toward_tried.is_some_and(|(t, at)| t == target && now_s().saturating_sub(at) < 600 && self.mem.worked_at <= at);
+        // (Tried lately toward as much or more: not again. The target and a held job's room past it
+        // don't take turns.)
+        let fresh = self.toward_tried.is_some_and(|(t, at)| t >= target && now_s().saturating_sub(at) < 600 && self.mem.worked_at <= at);
         (!fresh).then_some(target)
     }
 
@@ -2719,7 +2725,7 @@ impl Agent {
         let t = self.caches_task.as_ref()?;
         let doing = match (&t.ask, t.toward) {
             (Some(_), _) => "cleared".to_string(),
-            (None, Some(b)) => format!("freed toward the disk room target ({})", room::size(b)),
+            (None, Some((t, g))) => format!("freed toward the disk room target ({}){}", room::size(t), room_past(t, g)),
             (None, None) => "trimmed".to_string(),
         };
         Some(format!("this Mac's caches are being {doing} ({} min so far): nothing starts here until that's done", t.began.elapsed().as_secs() / 60))
@@ -2732,9 +2738,9 @@ impl Agent {
         if stopping() {
             return;
         }
-        if let Some(target) = t.toward {
+        if let Some((target, goal)) = t.toward {
             match r {
-                Ok(f) => self.toward_record(f, target),
+                Ok(f) => self.toward_record(f, target, goal),
                 Err(e) => eprintln!("agent: freeing the caches toward the disk room target: {e:#}; trying again in ten minutes"),
             }
             return;
@@ -2787,18 +2793,19 @@ impl Agent {
 
     /// What a freeing toward the owner's disk room target did: logged, kept for the status, noted in
     /// the history when it freed something, the caches counted again.
-    fn toward_record(&mut self, mut f: room::Freed, target: u64) {
+    fn toward_record(&mut self, mut f: room::Freed, target: u64, goal: u64) {
         f.at = now_s();
-        f.target = Some(target);
+        (f.target, f.goal) = (Some(target), (goal > target).then_some(goal));
         let free = self.disk_free();
-        let note = format!("freed its caches toward the disk room target ({}): {}; {} free", room::size(target), f.say(), room::size(free));
+        let note = format!("freed its caches toward the disk room target ({}){}: {}; {} free", room::size(target), room_past(target, goal), f.say(), room::size(free));
         eprintln!("agent: {note}");
         if f.bytes() > 0 {
             self.note(crate::coord::history::Event { worker: Some(self.host.clone()), note, ..crate::coord::history::Event::new("caches") });
         }
         self.mem.toward = Some(f);
-        // (The jobs held by the target try their room again.)
-        self.floor_short = None;
+        // (The jobs held by the target wait on: each starts once the disk has its room, and room-
+        // making, which frees no more than this did, isn't tried again for ten minutes, or until a
+        // job ends. Nor is a freeing toward as much: `toward_due`.)
         self.save();
         self.count_caches();
     }
@@ -4299,6 +4306,16 @@ fn caches_event(worker: &str, trimmed: bool, f: &room::Freed) -> crate::coord::h
     crate::coord::history::Event { worker: Some(worker.to_string()), note, ..crate::coord::history::Event::new("caches") }
 }
 
+/// A freeing toward the room target's goal past the target, in words: ", and the 30.0 GB a job
+/// waiting for it needs past it"; none when it's the target.
+fn room_past(target: u64, goal: u64) -> String {
+    if goal > target {
+        format!(", and the {} a job waiting for it needs past it", room::size(goal - target))
+    } else {
+        String::new()
+    }
+}
+
 /// A job's step: its id's first word ("unit 6/31/20": "unit").
 fn step_of(id: &str) -> Option<String> {
     id.split(' ').next().filter(|s| !s.is_empty()).map(str::to_string)
@@ -4657,6 +4674,49 @@ mod tests {
         room::set_target(&home, None, "a test").unwrap();
         a.room_target = room::target(&home);
         assert!(a.toward_due().is_none() && a.room_short(true).is_none());
+    }
+
+    #[test]
+    fn short_of_the_target_with_a_job_held_it_frees_once() {
+        room::TEST_FREE.with(|c| c.set(Some(40 << 30)));
+        let d = tempfile::tempdir().unwrap();
+        let (root, home) = (d.path().join("nas"), d.path().join("home"));
+        std::fs::create_dir_all(root.join("sources")).unwrap();
+        let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
+        a.free_set = Some(40 << 30);
+        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/bin/sh".into(), "-c".into(), "sleep 30".into()], needs: Needs { cpu: false, nas: false, home: false }, restart_after_sleep: false, record: None };
+        let cond = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 0 };
+        std::fs::create_dir_all(home.join("cache/base/base")).unwrap();
+        std::fs::write(home.join("cache/base/base/6-1-1.0000000000000001.base"), vec![0u8; 1000]).unwrap();
+        // A target past what's free (the freeing's thread sees this Mac's disk), and a unit held by
+        // it: the caches are due a freeing toward the unit's room past the target.
+        let target = cond::free_bytes(&home).unwrap() + (100 << 30);
+        let room = target + (30 << 30);
+        room::set_target(&home, Some(target), "a test").unwrap();
+        a.room_target = room::target(&home);
+        let mut w = Vec::new();
+        a.start_first(&[job("unit 6/1/1")], &cond, Some(&root), &mut w);
+        assert!(a.idle() && w[0].why.contains("disk room target"), "{w:?}");
+        assert_eq!(a.toward_due(), Some(room));
+        a.tend_caches(Some(&root), true);
+        let f = a.mem.toward.clone().unwrap();
+        assert_eq!((f.target, f.goal, f.bytes()), (Some(target), Some(room), 1000), "{f:?}");
+        // Done, and short of both: no freeing again within ten minutes, toward the unit's room nor
+        // toward the target, loop after loop (nor once the unit's wait is over).
+        for _ in 0..3 {
+            a.tend_caches(Some(&root), true);
+            assert!(a.caches_task.is_none());
+            assert_eq!(a.mem.toward.as_ref().map(|t| t.at), Some(f.at));
+            assert_eq!(a.toward_due(), None);
+        }
+        a.floor_short = None;
+        assert_eq!(a.toward_due(), None, "the target alone: tried lately toward more");
+        // The status says why it's short, of the target the owner set.
+        let short = a.room_short(true).unwrap();
+        assert!(short.contains("nothing more to free"), "{short}");
+        // A job ended since: tried again.
+        a.mem.worked_at = now_s() + 1;
+        assert_eq!(a.toward_due(), Some(target));
     }
 
     #[test]

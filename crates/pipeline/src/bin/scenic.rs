@@ -244,7 +244,8 @@ fn room(args: &[String]) -> Result<()> {
             match st.as_ref().and_then(|s| s.caches.as_ref()).and_then(|c| c.room.as_ref()) {
                 Some(r) => {
                     if let Some(f) = r.toward.as_ref().filter(|f| t.as_ref().is_some_and(|t| f.target == Some(t.bytes))) {
-                        println!("Freed toward it {}: {}", ago(f.at), f.say());
+                        let past = f.goal.map(|g| format!(" (and the {} a job waiting for it needs past it)", size(g.saturating_sub(f.target.unwrap_or(0))))).unwrap_or_default();
+                        println!("Freed toward it{past} {}: {}", ago(f.at), f.say());
                     }
                     if let Some(why) = &r.short {
                         println!("Short of it: {why}");

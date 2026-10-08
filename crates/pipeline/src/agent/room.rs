@@ -254,6 +254,10 @@ pub struct Freed {
     /// A freeing toward the owner's disk room target (`toward`): the target it was for (bytes).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<u64>,
+    /// And the room it freed toward, when more than the target: what a job waiting for the target
+    /// needs past it (bytes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal: Option<u64>,
 }
 
 impl Freed {
