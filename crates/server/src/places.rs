@@ -886,9 +886,9 @@ impl Index {
                 // (One catalog and one copy of the tables throughout: what its key says.)
                 let (cat, tables) = (data.catalog(), names.snapshot());
                 let packs = sources(&cat);
-                let key = key_of(&packs, names_live::version_all(tables.as_ref()));
+                let key = key_of(&packs, names_live::version_all(tables.as_deref()));
                 let t = Instant::now();
-                match build(&data, &packs, tables.as_ref()) {
+                match build(&data, &packs, tables.as_deref()) {
                     Ok(b) => {
                         let skipped = match (b.unread, b.bad) {
                             (0, 0) => String::new(),

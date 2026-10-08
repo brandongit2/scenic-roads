@@ -165,8 +165,8 @@ pub fn way_info(s: &AppState, f: &Found) -> anyhow::Result<WayInfo> {
     let name = bp.string(w.name).to_string();
     let name_en = s.road_en(w.id as u64);
     let mid = v[v.len() / 2];
-    // A rail line's name is filed as another thing's, a road's as a road's.
-    let kind = if class::is_rail(w.class) { names::Kind::Other } else { names::Kind::Road };
+    // A rail line's or a ferry's name is filed as another thing's, a road's as a road's.
+    let kind = if class::is_rail(w.class) || w.class == class::FERRY { names::Kind::Other } else { names::Kind::Road };
     let d = s.names.display(kind, &name, (!name_en.is_empty()).then_some(name_en.as_str()), &[], mid[0] as f64 * E7, mid[1] as f64 * E7);
     let rv = bp.road_val(f.index)?;
     Ok(WayInfo {

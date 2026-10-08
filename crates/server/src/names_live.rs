@@ -38,7 +38,12 @@ fn rules(r: Rules) -> &'static [names::mvt::LayerRule<'static>] {
 }
 
 pub struct NamesState {
+    /// The lines as last read (refreshed on a copy, then swapped in).
     names: RwLock<Option<Names>>,
+    /// What lookups read: the lines and the spoken languages together, behind an `Arc` (a lookup
+    /// takes a reference, never a copy). None until both are there: before the spoken languages
+    /// no line would be found but by OSM's tags, so names count as not loaded.
+    current: RwLock<Option<Arc<Namer>>>,
     /// The languages spoken where, and the outlines' content name they were made from.
     spoken: RwLock<Option<(String, Arc<Spoken>)>>,
     /// The local copy of the NAS folder.
@@ -59,6 +64,7 @@ impl NamesState {
     pub fn new(home: &Path) -> Arc<NamesState> {
         Arc::new(NamesState {
             names: RwLock::new(None),
+            current: RwLock::new(None),
             spoken: RwLock::new(None),
             dir: home.join("translations"),
             spoken_dir: home.join("names"),
@@ -72,15 +78,30 @@ impl NamesState {
         self.last_use.store(now(), Ordering::Relaxed);
     }
 
-    /// The lines and the spoken languages as they are now (a copy: cheap, the tables are shared,
-    /// and nothing waits on it); None before the lines have loaded.
-    pub fn snapshot(&self) -> Option<Namer> {
-        let names = self.names.read().unwrap().clone()?;
-        Some(Namer { names, spoken: self.spoken.read().unwrap().as_ref().map(|(_, s)| s.clone()) })
+    /// The lines and the spoken languages as they are now (shared: nothing is copied, and nothing
+    /// waits on it); None before both have loaded.
+    pub fn snapshot(&self) -> Option<Arc<Namer>> {
+        self.current.read().unwrap().clone()
+    }
+
+    /// Puts the lines and the spoken languages together for lookups, once both are there.
+    fn publish(&self) {
+        let names = self.names.read().unwrap().clone();
+        let spoken = self.spoken.read().unwrap().as_ref().map(|(_, s)| s.clone());
+        *self.current.write().unwrap() = match (names, spoken) {
+            (Some(names), Some(spoken)) => Some(Arc::new(Namer { names, spoken: Some(spoken) })),
+            _ => None,
+        };
+    }
+
+    /// Sets the spoken languages, made from `source` (a content name), and publishes them.
+    fn set_spoken_from(&self, source: String, s: Spoken) {
+        *self.spoken.write().unwrap() = Some((source, Arc::new(s)));
+        self.publish();
     }
 
     /// A name's display form (`osm`: the languages OSM gives it, where known). Before the lines
-    /// have loaded: the name and its own English.
+    /// and the spoken languages have loaded: the name and its own English.
     pub fn display(&self, kind: Kind, name: &str, own_en: Option<&str>, osm: &[Lang], lon: f64, lat: f64) -> names::Display {
         self.touch();
         match self.snapshot() {
@@ -112,12 +133,15 @@ impl NamesState {
         if self.only_old.load(Ordering::Relaxed) {
             out["warning"] = serde_json::Value::from(ONLY_OLD);
         }
+        if self.current.read().unwrap().is_none() {
+            out["waiting"] = serde_json::Value::from(if g.is_none() { "the translations" } else { "the spoken languages (names show their own English alone until then)" });
+        }
         out
     }
 
     /// A version over every language (for files that span them all).
     pub fn version_all(&self) -> u64 {
-        version_all(self.snapshot().as_ref())
+        version_all(self.snapshot().as_deref())
     }
 
     /// A gzip'd vector tile with main/sub attached (the original when nothing changed or it can't be
@@ -189,7 +213,7 @@ impl NamesState {
     /// Sets the spoken languages (tests: their catalogs have no outlines).
     #[cfg(test)]
     pub fn set_spoken(&self, s: Spoken) {
-        *self.spoken.write().unwrap() = Some(("test".into(), Arc::new(s)));
+        self.set_spoken_from("test".into(), s);
     }
 
     /// How long until a translation file waiting to settle may be read.
@@ -221,24 +245,45 @@ impl NamesState {
                     self.only_old.store(only_old, Ordering::Relaxed);
                 }
                 *self.names.write().unwrap() = Some(n);
+                if changed || self.current.read().unwrap().is_none() {
+                    self.publish();
+                }
             }
             Err(e) => eprintln!("translations: {e:#}"),
         }
     }
 
-    /// The spoken languages for the catalog's outlines: kept as they are when made from those;
-    /// else read back from the home, else made from the outlines (read from the mirror or the NAS)
-    /// and kept. Without the outlines (offline, never made here): the newest kept, else none.
+    /// The spoken languages: the catalog's `global/spoken` (the `spoken` job's, mirrored as an
+    /// essential: offline too); in a catalog without it, made from the catalog's outlines (read
+    /// from the mirror or the NAS) and kept in the home, or read back from there. Without either
+    /// (offline, never made here): the newest kept, else none, and names stay unloaded.
     fn ensure_spoken(&self, data: &Data) {
-        let want = data.catalog().global.get("outlines").and_then(|l| data.content(l));
+        let cat = data.catalog();
         let have = self.spoken.read().unwrap().as_ref().map(|(c, _)| c.clone());
+        if let Some(logical) = cat.global.get("spoken") {
+            let content = data.content(logical);
+            if content.is_some() && have == content {
+                return;
+            }
+            match data.global(logical).map(|b| b.map(|b| Spoken::from_bytes(&b))) {
+                Ok(Some(Ok(s))) => {
+                    eprintln!("names: the spoken languages from {} ({} regions)", content.as_deref().unwrap_or(logical), s.regions().count());
+                    self.set_spoken_from(content.unwrap_or_else(|| logical.clone()), s);
+                    return;
+                }
+                Ok(Some(Err(e))) => eprintln!("names: {logical}: {e:#}"),
+                Ok(None) => {}
+                Err(e) => eprintln!("names: {logical}: {e:#}"),
+            }
+        }
+        let want = cat.global.get("outlines").and_then(|l| data.content(l));
         if want.is_some() && have == want {
             return;
         }
         if let Some(content) = &want {
             let file = self.spoken_dir.join(format!("spoken-{}.bin", content.replace('/', "_")));
             if let Some(s) = std::fs::read(&file).ok().and_then(|b| Spoken::from_bytes(&b).ok()) {
-                *self.spoken.write().unwrap() = Some((content.clone(), Arc::new(s)));
+                self.set_spoken_from(content.clone(), s);
                 return;
             }
             let t = std::time::Instant::now();
@@ -258,7 +303,7 @@ impl NamesState {
                             }
                         }
                     }
-                    *self.spoken.write().unwrap() = Some((content.clone(), Arc::new(s)));
+                    self.set_spoken_from(content.clone(), s);
                     return;
                 }
                 Ok(None) => {}
@@ -275,7 +320,7 @@ impl NamesState {
             if let Some(e) = newest {
                 if let Some(s) = std::fs::read(e.path()).ok().and_then(|b| Spoken::from_bytes(&b).ok()) {
                     let content = e.file_name().to_string_lossy().trim_start_matches("spoken-").trim_end_matches(".bin").to_owned();
-                    *self.spoken.write().unwrap() = Some((content, Arc::new(s)));
+                    self.set_spoken_from(content, s);
                 }
             }
         }
@@ -291,7 +336,7 @@ impl NamesState {
 /// Said in the log and the status when the folder holds only the area tables' lines.
 pub const ONLY_OLD: &str = "the translations folder holds only the old area tables' lines (no kind or languages), which this server doesn't read: no translation shows until the converted lines (translations/0-converted/) are there";
 
-/// A version over every language of the lines and the raster (0 before the lines have loaded).
+/// A version over every language of the lines and the raster (0 before they have loaded).
 pub fn version_all(tables: Option<&Namer>) -> u64 {
     tables.map_or(0, Namer::version_all)
 }
@@ -310,6 +355,28 @@ mod tests {
     fn france() -> Spoken {
         let pt = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
         Spoken::build([names::spoken::Area { code: "FR".into(), area_km2: 1.0, polygons: vec![vec![vec![pt(-5.0, 42.0), pt(8.0, 42.0), pt(8.0, 51.0), pt(-5.0, 51.0)]]] }])
+    }
+
+    #[test]
+    fn names_wait_for_the_spoken_languages() {
+        let home = tempfile::tempdir().unwrap();
+        write_aged(&home.path().join("translations/0-converted/french.jsonl"), "{\"n\": \"Lac Bleu\", \"kind\": \"other\", \"langs\": [\"fr\"], \"sub\": \"Blue Lake\"}\n", 3600);
+        let st = NamesState::new(home.path());
+        st.reload();
+        // The lines, but no spoken languages: not loaded (own English alone), and said.
+        assert!(st.snapshot().is_none());
+        let d = st.display(Kind::Other, "Lac Bleu", Some("Own"), &[], 2.0, 46.0);
+        assert_eq!(d.sub.as_deref(), Some("Own"));
+        assert_eq!(st.display(Kind::Other, "Lac Bleu", None, &[], 2.0, 46.0).sub, None);
+        assert!(st.versions()["waiting"].as_str().is_some_and(|w| w.starts_with("the spoken languages")));
+        assert_eq!(st.version_for_tile(10, 517, 360, 0.0), 0);
+        // Once they're there: loaded, one shared copy.
+        st.set_spoken(france());
+        let (a, b) = (st.snapshot().unwrap(), st.snapshot().unwrap());
+        assert!(Arc::ptr_eq(&a, &b));
+        assert_eq!(st.display(Kind::Other, "Lac Bleu", None, &[], 2.0, 46.0).sub.as_deref(), Some("Blue Lake"));
+        assert!(st.versions()["waiting"].is_null());
+        assert_ne!(st.version_for_tile(10, 517, 360, 0.0), 0);
     }
 
     #[test]
