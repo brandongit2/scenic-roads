@@ -75,37 +75,12 @@ if (new URLSearchParams(location.search).has('bgrender')) {
 
 const boot = new Boot(['Loading dataset metadata', 'Starting map engine', 'Loading basemap style', 'Loading road tiles in view']);
 
-/** The map's key in an address (`#k=<32 hex>`, among the view's own fragment), if it has one. */
-const keyIn = (address: string): string | null => address.match(/(?:#|&)k=([0-9a-f]{32})(?=&|$)/)?.[1] ?? null;
-
-/** On another device (an iPhone, an iPad): the map's key, from its address (`#k=…`, never sent to
- * a server) once, given to the server, which keeps it in a cookie every request then carries
- * (crates/server/src/remote.rs); the address bar keeps the view alone. */
-async function giveKey(key = keyIn(location.hash)) {
-  if (!key) return;
-  const rest = location.hash.slice(1).split('&').filter((p) => p && !p.startsWith('k=')).join('&');
-  history.replaceState(null, '', location.pathname + location.search + (rest ? `#${rest}` : ''));
-  await fetch('/api/auth', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) }).catch(() => undefined);
-}
-
 async function main() {
   boot.at(0);
   let meta: Meta;
   try {
-    await giveKey();
     // The data hosts are probed while the metadata loads (hosts.ts).
     const [r] = await Promise.all([fetch('/api/meta'), initHosts()]);
-    // A device that hasn't given the map's key: its address asked for (an app on an iPhone's home
-    // screen keeps its own storage, apart from Safari's: once there too).
-    if (r.status === 401) {
-      boot.ask(0, 'this device needs the map\'s address once: from the Mac\'s status menu, Copy the Map\'s Address', 'https://…/#k=…', async (v) => {
-        const k = keyIn(v.includes('#') ? v.slice(v.indexOf('#')) : `#k=${v}`);
-        if (!k) return;
-        await giveKey(k);
-        location.reload();
-      });
-      return;
-    }
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     meta = await r.json();
     setVersions(meta.versions);

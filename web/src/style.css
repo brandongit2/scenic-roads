@@ -765,6 +765,3 @@ body.panel-off #viewshed { --vs-left: calc(60px + env(safe-area-inset-left)); }
 .press-menu .pm-hd { padding: 6px 10px 4px; color: var(--faint); font-size: 10.5px; }
 .press-menu button { display: block; width: 100%; padding: 11px 10px; border: 0; border-radius: 7px; background: none; color: var(--text); text-align: left; font-size: 14px; }
 .press-menu button:active, .press-menu button:hover { background: var(--hover); }
-.boot-ask { display: grid; gap: 8px; margin: 0 0 14px; }
-.boot-ask input { width: 100%; padding: 9px 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--card-solid); color: var(--text); font-size: 16px; }
-.boot-ask button { padding: 9px 10px; border: 0; border-radius: 8px; background: var(--accent); color: #0b0e13; font-weight: 600; font-size: 14px; }

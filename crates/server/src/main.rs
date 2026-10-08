@@ -428,11 +428,11 @@ async fn main() -> Result<()> {
     keep::spawn_mirror(state.clone());
     tokio::spawn(warm(state.clone()));
     regions::spawn_flusher(state.clone());
-    // Other devices (remote.rs): the key, and the address to open there, kept current (tailscale
-    // serve may start proxying the server any time).
-    let remote = Arc::new(remote::Remote::new(&home)?);
+    // Other devices (remote.rs): the address to open there, kept current (tailscale serve may start
+    // proxying the server any time). (A `remote-key` an older server kept: unused, removed.)
+    std::fs::remove_file(home.join("remote-key")).ok();
     {
-        let r = remote.clone();
+        let r = Arc::new(remote::Remote::new(&home));
         tokio::spawn(async move {
             loop {
                 let r2 = r.clone();
@@ -490,10 +490,6 @@ async fn main() -> Result<()> {
         .route("/api/keep/views/size", axum::routing::post(keep::post_view_size))
         .route("/api/keep/views/{id}", axum::routing::put(keep::put_view).delete(keep::delete_view))
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
-        .route("/api/auth", axum::routing::post({
-            let r = remote.clone();
-            move |h: HeaderMap, b: axum::body::Bytes| remote::auth(State(r.clone()), h, b)
-        }))
         .route("/api/build", get(build_h))
         .route("/api/build/pause", axum::routing::post(build_pause_h))
         .nest_service(
@@ -519,14 +515,14 @@ async fn main() -> Result<()> {
                 .allow_methods(tower_http::cors::Any)
                 .allow_headers(tower_http::cors::Any),
         )
-        // First of all: another device's request needs the map's key (remote.rs).
-        .layer(axum::middleware::from_fn_with_state(remote.clone(), remote::gate))
+        // First of all: this Mac, its LAN and the tailnet alone, never a page elsewhere (remote.rs).
+        .layer(axum::middleware::from_fn(remote::gate))
         .with_state(state);
 
     // This Mac, and devices on its LAN and the tailnet (the gate answers them alone).
     let listen: Option<std::net::Ipv4Addr> = arg("--listen").map(|a| a.parse()).transpose()?;
     let addr = std::net::SocketAddr::from((listen.unwrap_or(std::net::Ipv4Addr::UNSPECIFIED), port));
-    eprintln!("listening on http://{addr} (devices: the map's address with its key, <home>/map-page)");
+    eprintln!("listening on http://{addr} (devices: the map's address, <home>/map-page)");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let svc = app.into_make_service_with_connect_info::<std::net::SocketAddr>();
     if listen.is_none() {

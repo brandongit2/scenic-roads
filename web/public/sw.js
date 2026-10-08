@@ -8,11 +8,10 @@
 //   (`immutable`: a version that's still current), as the map asks for it, so what was looked at
 //   stays to look at again without the Mac (the last KEEP files kept);
 // - the catalog's metadata, from the Mac whenever it answers, else as kept, so the map opens.
-// Everything else (searches, the build's status, the key's exchange, any write) goes straight
-// through. A Mac that doesn't answer within WAIT_MS (asleep, or away) is taken for away for
-// AWAY_MS: what was kept is used at once meanwhile, and what the Mac sends later still replaces it.
-// A refusal (401, 403: the device's key isn't the map's any more) is never hidden behind what was
-// kept: the page then asks for the map's address again.
+// Everything else (searches, the build's status, any write) goes straight through. A Mac that
+// doesn't answer within WAIT_MS (asleep, or away) is taken for away for AWAY_MS: what was kept is
+// used at once meanwhile, and what the Mac sends later still replaces it. A refusal (403: not from
+// here, or not the map's address) is never hidden behind what was kept.
 const SHELL = "shell";
 const DATA = "data";
 const KEEP = 12000;
@@ -63,7 +62,7 @@ async function fresh(e, req, key) {
   if (Date.now() < awayUntil) return k;
   const late = new Promise((done) => setTimeout(() => done(null), WAIT_MS));
   const r = await Promise.race([net.catch(() => null), late]);
-  if (r && (r.ok || r.status === 401 || r.status === 403)) return r;
+  if (r && (r.ok || r.status === 403)) return r;
   // (Away, asleep or restarting: tailscale serve answers 502 for a server that's down.)
   awayUntil = Date.now() + AWAY_MS;
   return k;

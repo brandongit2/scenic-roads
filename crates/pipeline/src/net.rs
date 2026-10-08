@@ -1,9 +1,9 @@
 //! What this Mac's services share about the network: who may connect (this Mac, its LAN, the
-//! tailnet), which requests are this Mac's own and where the others came from, what a request must
-//! name to be one of theirs (never a web page elsewhere's), the addresses others reach it by,
-//! whether `tailscale serve` proxies a port over HTTPS, and the tokens a service keeps (made once,
-//! readable by its owner alone). The build Mac's coordinator (crate::coord) and the map's server
-//! (crates/server: devices, docs/plan.md §4) use them.
+//! tailnet, also through a proxy on this Mac), which requests are this Mac's own and where the
+//! others came from, what a request must name to be one of theirs (never a web page elsewhere's),
+//! the addresses others reach it by, whether `tailscale serve` proxies a port over HTTPS, and the
+//! tokens a service keeps (made once, readable by its owner alone). The build Mac's coordinator
+//! (crate::coord) and the map's server (crates/server, docs/plan.md §4) use them.
 
 use anyhow::{Context, Result};
 use axum::http::{header, HeaderMap};
@@ -87,6 +87,19 @@ pub fn source(peer: IpAddr, h: &HeaderMap) -> String {
     }
     let proxy_said = h.get_all("x-forwarded-for").iter().filter_map(|v| v.to_str().ok()).flat_map(|v| v.split(',')).next_back().and_then(|a| a.trim().parse::<IpAddr>().ok());
     proxy_said.map_or_else(|| "a proxy on this Mac".to_string(), |ip| ip.to_string())
+}
+
+/// Whether a request may be answered at all: from this Mac, its LAN or the tailnet; handed over by
+/// a proxy on this Mac (`tailscale serve`), from those alone, never the internet's (Tailscale
+/// Funnel's, or an address that isn't one of those).
+pub fn reached(peer: IpAddr, h: &HeaderMap) -> bool {
+    if !allowed(peer) {
+        return false;
+    }
+    if !loopback(peer) || own(peer, h) {
+        return true;
+    }
+    !h.contains_key("tailscale-funnel-request") && source(peer, h).parse().is_ok_and(allowed)
 }
 
 /// Whether a host (a `Host` header's, an `Origin`'s; a port after it is ignored) names this Mac: an
@@ -224,7 +237,18 @@ mod tests {
         let mut p = HeaderMap::new();
         p.insert("x-forwarded-for", HeaderValue::from_static("10.9.9.9, 100.64.0.9:5555"));
         assert_eq!(source("127.0.0.1".parse().unwrap(), &p), "a proxy on this Mac");
-        assert!(tailnet("100.101.1.2".parse().unwrap()) && tailnet("fd7a:115c:a1e0::5".parse().unwrap()) && !tailnet("192.168.1.20".parse().unwrap()) && !tailnet("127.0.0.1".parse().unwrap()));
+        // Reached: from here, the LAN, the tailnet, and through the proxy from those alone.
+        let none = HeaderMap::new();
+        assert!(reached("127.0.0.1".parse().unwrap(), &none) && reached("192.168.1.20".parse().unwrap(), &none) && reached("100.70.85.80".parse().unwrap(), &none));
+        assert!(!reached("8.8.8.8".parse().unwrap(), &none));
+        assert!(reached("127.0.0.1".parse().unwrap(), &h));
+        let mut far = HeaderMap::new();
+        far.insert("x-forwarded-for", HeaderValue::from_static("8.8.8.8"));
+        assert!(!reached("127.0.0.1".parse().unwrap(), &far));
+        let mut funnel = h.clone();
+        funnel.insert("tailscale-funnel-request", HeaderValue::from_static("?1"));
+        assert!(!reached("127.0.0.1".parse().unwrap(), &funnel));
+        assert!(!reached("127.0.0.1".parse().unwrap(), &p));
     }
 
     #[test]

@@ -32,27 +32,6 @@ export class Boot {
     this.items[i].textContent = `${this.steps[i]} — ${msg}`;
   }
 
-  /** Step i waits on the person: `msg`, and a field for what it needs (the map's address on a
-   * device that hasn't given its key), given to `submit`. */
-  ask(i: number, msg: string, placeholder: string, submit: (v: string) => void) {
-    this.items[i].className = 'err';
-    this.items[i].textContent = `${this.steps[i]} — ${msg}`;
-    const form = document.createElement('form');
-    form.className = 'boot-ask';
-    // (Text, not a URL field: the key alone, or a fragment, is fine too.)
-    const input = Object.assign(document.createElement('input'), { type: 'text', inputMode: 'url', placeholder, autocomplete: 'off', spellcheck: false });
-    input.setAttribute('autocapitalize', 'off');
-    input.setAttribute('autocorrect', 'off');
-    const go = Object.assign(document.createElement('button'), { type: 'submit', textContent: 'Open the map' });
-    form.append(input, go);
-    form.onsubmit = (e) => {
-      e.preventDefault();
-      if (input.value.trim()) submit(input.value.trim());
-    };
-    this.ol.after(form);
-    input.focus();
-  }
-
   done() {
     this.at(this.steps.length);
     document.getElementById('boot')!.classList.add('done');
