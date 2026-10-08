@@ -21,6 +21,10 @@
 //!                                       from the NAS or make again) once the build is done and no
 //!                                       job runs here, after a y/N (--yes: none): its agent does it,
 //!                                       and says what it freed
+//!   scenic room [<GB> | off]            this Mac's disk room target: the free space its agent
+//!                                       keeps, freeing its caches to it as far as needed and
+//!                                       starting no job that would cross it, until it's lowered or
+//!                                       off; with none, how it stands
 //!   scenic devices [accept|decline <code> | forget <id>]  on the build Mac: the devices asking to
 //!                                       help through the build page, and those helping; an ask
 //!                                       answered by the code its page shows, a device forgotten by
@@ -180,7 +184,77 @@ fn caches_line(c: &agent::room::Caches) -> String {
     if let Some(f) = c.declined.as_ref().filter(|d| c.cleared.as_ref().is_none_or(|c| d.at > c.at)) {
         s += &format!("; not cleared {}: {}", ago(f.at), f.why_not.as_deref().unwrap_or(""));
     }
+    if let Some(r) = &c.room {
+        if let Some(t) = &r.target {
+            s += &format!("; disk room target {} ({} free{})", agent::room::size(t.bytes), agent::room::size(r.free), if r.short.is_some() { ", short of it" } else { "" });
+        }
+    }
     s
+}
+
+/// `scenic room [<GB> | off]`: this Mac's disk room target (agent::room::Target), set in its agent's
+/// folder, which the agent reads each loop; and how it stands, as the agent's status says.
+fn room(args: &[String]) -> Result<()> {
+    use agent::room::{set_target, size, target};
+    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+    let by = format!("scenic room on {}", agent::cond::host_name());
+    match args.get(2).map(String::as_str).filter(|a| !a.starts_with("--")) {
+        Some("off") => {
+            set_target(&home, None, &by)?;
+            println!("the disk room target is off: this Mac's agent fills its caches again as its jobs need");
+        }
+        Some(gb) => {
+            let gb: f64 = gb.trim_end_matches("GB").trim_end_matches("gb").parse().ok().filter(|g: &f64| g.is_finite() && *g > 0.0).with_context(|| format!("scenic room <GB> | off, not {gb}"))?;
+            let bytes = (gb * (1u64 << 30) as f64) as u64;
+            anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
+            if let Some(n) = disk_size(&home) {
+                anyhow::ensure!(bytes < n, "a target of {} is more than this disk holds ({})", size(bytes), size(n));
+            }
+            let free = agent::room::disk_free(&home).ok();
+            set_target(&home, Some(bytes), &by)?;
+            let short = free.map(|f| bytes.saturating_sub(f)).unwrap_or(0);
+            if short > 0 {
+                println!("the disk room target is {}: this Mac's agent frees {} of its caches between jobs, as far as needed, and starts no job that would cross it (`scenic room` says how it stands)", size(bytes), size(short));
+            } else {
+                println!("the disk room target is {}: the disk has that free; this Mac's agent starts no job that would cross it", size(bytes));
+            }
+        }
+        None => {
+            let t = target(&home);
+            let free = agent::room::disk_free(&home).ok();
+            match &t {
+                Some(t) => println!("Disk room target: {} (set {} by {})", size(t.bytes), ago(t.at), t.by),
+                None => println!("Disk room target: off (`scenic room <GB>` sets one)"),
+            }
+            if let Some(f) = free {
+                println!("Free now: {}", size(f));
+            }
+            let st = own_status(&home).filter(|s| now_s().saturating_sub(s.beat) < 6 * 60);
+            match st.as_ref().and_then(|s| s.caches.as_ref()).and_then(|c| c.room.as_ref()) {
+                Some(r) => {
+                    if let Some(f) = r.toward.as_ref().filter(|f| t.as_ref().is_some_and(|t| f.target == Some(t.bytes))) {
+                        println!("Freed toward it {}: {}", ago(f.at), f.say());
+                    }
+                    if let Some(why) = &r.short {
+                        println!("Short of it: {why}");
+                    }
+                    for w in st.iter().flat_map(|s| &s.waiting).filter(|w| w.why.contains("disk room target")) {
+                        println!("Waiting: {} — {}", w.what, w.why);
+                    }
+                }
+                None if t.is_some() => println!("(this Mac's agent isn't running, or runs an older app: it keeps the target once it runs this one)"),
+                None => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The size of the disk holding `p` (bytes).
+fn disk_size(p: &Path) -> Option<u64> {
+    let c = std::ffi::CString::new(p.as_os_str().as_encoded_bytes()).ok()?;
+    let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
+    (unsafe { libc::statvfs(c.as_ptr(), &mut s) } == 0).then(|| s.f_blocks as u64 * s.f_frsize as u64)
 }
 
 /// This Mac's own agent's status, as it writes it in its folder `home`: the build Mac's
@@ -378,6 +452,7 @@ fn main() -> Result<()> {
         }
         "devices" => devices(&args),
         "clean" => clean(&args),
+        "room" => room(&args),
         "gc" => {
             let days: u64 = opt(&args, "--days").map(|d| d.parse()).transpose()?.unwrap_or(14);
             let r = gc::run(&root(&args, true)?, days, flag(&args, "--dry-run"))?;
@@ -391,6 +466,6 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
-        c => bail!("unknown command {c:?}: status, add, remove, agent, pause, resume, devices, clean, gc, backup"),
+        c => bail!("unknown command {c:?}: status, add, remove, agent, pause, resume, devices, clean, room, gc, backup"),
     }
 }
