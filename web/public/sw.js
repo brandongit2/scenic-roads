@@ -6,7 +6,9 @@
 //   none from the Mac; those the newest page no longer names go. And the fonts and the icons;
 // - the map's data whose address carries its version (`?v=`) and that the Mac says never changes
 //   (`immutable`: a version that's still current), as the map asks for it, so what was looked at
-//   stays to look at again without the Mac (the last KEEP files kept);
+//   stays to look at again without the Mac (the last KEEP files kept); the 3D buildings' tiles in a
+//   cache of their own (the last KEEP_BLD), so a city's buildings don't crowd out its roads and
+//   terrain;
 // - the catalog's metadata, from the Mac whenever it answers, else as kept, so the map opens.
 // Everything else (searches, the build's status, any write) goes straight through. A Mac that
 // doesn't answer within WAIT_MS (asleep, or away) is taken for away for AWAY_MS: what was kept is
@@ -14,7 +16,10 @@
 // here, or not the map's address) is never hidden behind what was kept.
 const SHELL = "shell";
 const DATA = "data";
+const BLD = "bld";
 const KEEP = 12000;
+// (A city's z14 building tiles are 50–300 KB, a view ~20 of them: a few hundred MB at most.)
+const KEEP_BLD = 2000;
 const WAIT_MS = 4000;
 const AWAY_MS = 60000;
 
@@ -37,6 +42,8 @@ self.addEventListener("fetch", (e) => {
     e.respondWith(fresh(e, req, url.href));
   } else if (p.startsWith("/assets/") || p.startsWith("/fonts/") || p.startsWith("/icons/") || p === "/manifest.webmanifest") {
     e.respondWith(kept(req, SHELL));
+  } else if (url.searchParams.has("v") && p.startsWith("/tiles/buildings/")) {
+    e.respondWith(kept(req, BLD));
   } else if (url.searchParams.has("v") && (p.startsWith("/tiles/") || p.startsWith("/api/"))) {
     e.respondWith(kept(req, DATA));
   }
@@ -71,17 +78,18 @@ async function fresh(e, req, key) {
 // What was kept, else the Mac's answer, kept when it's whole and may be (the map's data: when the
 // Mac says it never changes; a version no longer current is revalidated, not kept under its old
 // address).
-let puts = 0;
+const puts = {};
 async function kept(req, name) {
   const cache = await caches.open(name);
   const k = await cache.match(req.url);
   if (k) return k;
   const r = await fetch(req);
   const cc = r.headers.get("cache-control") ?? "";
-  if (r.status === 200 && !cc.includes("no-store") && (name !== DATA || cc.includes("immutable"))) {
+  if (r.status === 200 && !cc.includes("no-store") && (name === SHELL || cc.includes("immutable"))) {
     await put(cache, req.url, r.clone());
-    // (Trimmed with this worker's first file, and every 500 after: a worker doesn't live long.)
-    if (name === DATA && puts++ % 500 === 0) trim(cache);
+    // (Trimmed with this worker's first file of each, and every 500 after: a worker doesn't live
+    // long.)
+    if (name !== SHELL && (puts[name] = (puts[name] ?? 0) + 1) % 500 === 1) trim(cache, name === BLD ? KEEP_BLD : KEEP);
   }
   return r;
 }
@@ -148,9 +156,9 @@ const refs = (text, from = "/") =>
     .filter((n) => n.startsWith("/assets/") || n.startsWith("assets/") || (n.startsWith("./") && from.startsWith("/assets/")))
     .map((n) => (n.startsWith("./") ? `/assets/${n.slice(2)}` : n.startsWith("assets/") ? `/${n}` : n));
 
-// The oldest of the map's data kept go once there are more than KEEP files (a cache keeps them in
+// The oldest of the map's data kept go once there are more than `keep` files (a cache keeps them in
 // the order they came).
-async function trim(cache) {
+async function trim(cache, keep) {
   const keys = await cache.keys();
-  for (const k of keys.slice(0, Math.max(0, keys.length - KEEP))) await cache.delete(k);
+  for (const k of keys.slice(0, Math.max(0, keys.length - keep))) await cache.delete(k);
 }

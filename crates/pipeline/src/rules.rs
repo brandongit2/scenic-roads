@@ -430,6 +430,18 @@ pub const CREDITS: &[Credit] = &[
         terms: "ODbL · CDLA Permissive 2.0",
         areas: WORLD,
     },
+    Credit {
+        what: "3D buildings",
+        source: "Overture Maps Foundation buildings, release 2026-09-23.1 (© OpenStreetMap contributors, Microsoft, Esri Community Maps, USGS, IGN España, Google and others; each building's sources in the release)",
+        terms: "ODbL 1.0",
+        areas: WORLD,
+    },
+    Credit {
+        what: "Building heights where none are known",
+        source: "GHSL GHS-BUILT-H R2023A (EC JRC), © European Union, 1995-2026",
+        terms: "CC BY 4.0",
+        areas: WORLD,
+    },
 ];
 
 /// How far past the coverage a catalog's data reaches: heritage sites and terrain are made within
@@ -529,7 +541,10 @@ mod tests {
         assert!(has("Taiwan heritage", "Open Government Data License 1.0"));
         assert!(has("Road elevation, Japan", "Public Data License 1.0"));
         assert!(has("England heritage", "OGL v3"));
-        assert_eq!(CREDITS.len(), 42);
+        assert!(has("3D buildings", "ODbL 1.0") && has("Building heights where none are known", "CC BY 4.0"));
+        // (The 3D buildings' credit names the release they're built from.)
+        assert!(CREDITS.iter().any(|c| c.what == "3D buildings" && c.source.contains(crate::buildtiles::RELEASE)));
+        assert_eq!(CREDITS.len(), 44);
         // As catalogs carry them: areas only where a credit has some.
         let v = serde_json::to_value(&CREDITS[..2]).unwrap();
         assert!(v[0].get("areas").is_none() && v[1]["areas"][0][2] == -40.0);

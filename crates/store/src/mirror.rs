@@ -29,7 +29,8 @@
 //! **Copy order**, one file at a time in large sequential reads through the I/O pool: the
 //! essentials, then the kept files, then the rest; within each, small worldwide files, root and lo
 //! packs and the basemap, hi data and road values (and the essentials' per-tile records), base
-//! packs, hi packs, and everything else; the most recently used first within each group. The budget
+//! packs, hi packs, the 3D buildings' hi packs (a city's z6 tile is hundreds of MB: the roads and
+//! terrain first), and everything else; the most recently used first within each group. The budget
 //! is the free space less the reserve. An essential or kept file that doesn't fit takes the room of
 //! the files that may go, in room first's order, but only when that makes enough; while one waits
 //! for room, no other file is copied. Any other file takes only the room of files the current
@@ -65,8 +66,12 @@ const KEEP_CATALOGS: usize = 3;
 const STALE_TMP: Duration = Duration::from_secs(3600);
 const PARTIAL: &str = ".partial";
 const USES: &str = ".uses";
+/// The 3D buildings' hi packs' group (`groups`): after the other hi packs.
+const BUILDINGS_GROUP: u8 = 5;
+/// The 3D buildings' layer in the catalog (pipeline::bld::LAYER).
+const BUILDINGS_LAYER: &str = "buildings";
 /// The group of files no other group claims (the basemap's parts; anything newer).
-const LAST_GROUP: u8 = 5;
+const LAST_GROUP: u8 = 6;
 /// Files neither essential nor kept are copied only while this share of the reserve stays free
 /// above it (module doc).
 const SLACK: u64 = 20;
@@ -1059,7 +1064,7 @@ pub fn essentials(cat: &Catalog) -> Vec<String> {
 
 /// Copy order: 0 small worldwide files, 1 root and lo packs and the basemap (drawn on every view),
 /// 2 hi data and road values (and the essentials' landmark points and area details), 3 base packs,
-/// 4 hi packs; `LAST_GROUP` for the rest.
+/// 4 hi packs, 5 the 3D buildings' hi packs (`BUILDINGS_GROUP`); `LAST_GROUP` for the rest.
 fn groups(cat: &Catalog) -> HashMap<&str, u8> {
     fn set<'a>(g: &mut HashMap<&'a str, u8>, logical: &'a str, k: u8) {
         let e = g.entry(logical).or_insert(k);
@@ -1069,15 +1074,16 @@ fn groups(cat: &Catalog) -> HashMap<&str, u8> {
     for v in cat.global.values() {
         set(&mut g, v, 0);
     }
-    for l in cat.layers.values() {
+    for (name, l) in &cat.layers {
         if let Some(r) = &l.root {
             set(&mut g, r, 1);
         }
         for v in l.lo.values() {
             set(&mut g, v, 1);
         }
+        let hi = if name == BUILDINGS_LAYER { BUILDINGS_GROUP } else { 4 };
         for v in l.hi.values() {
-            set(&mut g, v, 4);
+            set(&mut g, v, hi);
         }
     }
     for v in &cat.basemap {
@@ -1285,6 +1291,25 @@ mod tests {
 
     fn none() -> HashSet<String> {
         HashSet::new()
+    }
+
+    #[test]
+    fn the_3d_buildings_come_after_the_other_hi_packs() {
+        let nas = nas();
+        let mut cat = two_areas(&nas, 1, 0, 1);
+        let mut lay = Layer { encoding: "mvt".into(), minzoom: 12, maxzoom: 14, ..Default::default() };
+        nas.put(&mut cat, "layers/buildings/hi/6-32-21", "pack", &bytes(7, 1_000));
+        lay.hi.insert("6/32/21".into(), "layers/buildings/hi/6-32-21".into());
+        cat.layers.insert(BUILDINGS_LAYER.into(), lay);
+        let g = groups(&cat);
+        assert_eq!((g["layers/roads/hi/6-32-21"], g["layers/buildings/hi/6-32-21"], g.get("layers/basemap/world").copied()), (4, BUILDINGS_GROUP, Some(1)));
+        // (Small, recently used or not: after every other hi pack, before the rest.)
+        let home = tempfile::tempdir().unwrap();
+        let m = mirror(home.path(), 1 << 40, 0);
+        let order = logicals(&m, &cat, &none());
+        let at = |l: &str| order.iter().position(|x| x == l).unwrap();
+        assert!(at("layers/buildings/hi/6-32-21") > at("layers/roads/hi/6-33-21"));
+        const { assert!(BUILDINGS_GROUP < LAST_GROUP) };
     }
 
     #[test]
