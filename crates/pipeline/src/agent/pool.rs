@@ -1006,3 +1006,381 @@ pub fn append_history(root: &Path, member: &str, events: &[crate::coord::history
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pool::driver::Ask;
+    use crate::pool::journal::LeaseId;
+
+    /// A NAS folder as the pool begins: today's records, and this Mac named their writer.
+    fn root(d: &Path) -> PathBuf {
+        let r = d.join("nas");
+        std::fs::create_dir_all(r.join("state/build")).unwrap();
+        std::fs::create_dir_all(r.join("catalog")).unwrap();
+        std::fs::write(r.join("state/build/manifest.json"), r#"{"base/6-1-1": "base/6-1-1.1111111111111111.base"}"#).unwrap();
+        std::fs::write(r.join("state/build/jobs.json"), r#"{"unit": {"6/1/1": "k1"}}"#).unwrap();
+        std::fs::write(r.join("state/build/pending.json"), "{}").unwrap();
+        std::fs::write(r.join("state/build/writer"), crate::agent::cond::host_name()).unwrap();
+        r
+    }
+
+    fn side(root: &Path, home: &Path) -> Side {
+        let nas: SharedNas = Arc::new(Share::new(root));
+        Side::open(home, &home.join("pool"), home.parent().unwrap(), "development", nas, false).unwrap().expect("its lock")
+    }
+
+    fn any(_: &Entry, _: &Records) -> std::result::Result<(), String> {
+        Ok(())
+    }
+
+    /// Steps `s` until `done` says so (each step's listings made off its loop meanwhile), at most
+    /// ten times.
+    fn until(s: &mut Side, give: impl Fn() -> Give, done: impl Fn(&Out) -> bool) -> Out {
+        for _ in 0..40 {
+            let out = s.step(give(), &any);
+            if done(&out) {
+                return out;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("not done in 40 steps");
+    }
+
+    fn unit_entry(member: &str, lease: LeaseId, target: &str, key: &str) -> Entry {
+        let l = format!("base/{}", target.replace('/', "-"));
+        let h = Handoff { changes: [(l.clone(), Some(format!("{l}.2222222222222222.base")))].into(), done: Some(("unit".into(), vec![(target.into(), key.into())])), ..Default::default() };
+        Entry { member: member.into(), lease, step: "unit".into(), handoff: h, at: crate::agent::jobs::now_s() }
+    }
+
+    #[test]
+    fn the_switch_is_a_file_on_the_nas() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        assert_eq!(mode(&r), Some(Mode::Off));
+        std::fs::create_dir_all(r.join("state/pool")).unwrap();
+        std::fs::write(r.join(SHADOW), "").unwrap();
+        assert_eq!(mode(&r), Some(Mode::Shadow));
+        std::fs::write(r.join(ENABLED), "").unwrap();
+        assert_eq!(mode(&r), Some(Mode::On), "on wins over shadow");
+    }
+
+    #[test]
+    fn a_member_steps_saves_its_state_beats_and_lists_off_its_loop() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let home = d.path().join("a/agent");
+        let mut a = side(&r, &home);
+        let id = a.member().id.clone();
+        // Its first step: term 1, its own (this Mac is the writer), taken up from today's records.
+        let out = a.step(Give { able: true, ..Default::default() }, &any);
+        assert_eq!((out.term, out.leads, out.duties, out.caught_up), (1, Some(1), true, false));
+        assert!(out.list.as_ref().is_some_and(|l| l.since.is_none()), "a take-up lists every day");
+        // Its saved state on disk before anything else: naming it, the term it led.
+        let saved: Saved = serde_json::from_slice(&std::fs::read(home.join("pool/saved.json")).unwrap()).unwrap();
+        assert_eq!((saved.member.as_str(), saved.led), (id.as_str(), 1));
+        // Its heartbeat: the driver's fields and the members it knows.
+        let hb: Heartbeat = serde_json::from_slice(&std::fs::read(r.join(crate::pool::beat::path(&id))).unwrap()).unwrap();
+        assert_eq!((hb.pool.leads, hb.members.clone()), (Some(1), vec![id.clone()]));
+        assert!(hb.pool.beat > 0 && !hb.shadow);
+        // The listing is made on a thread of its own and handed back: caught up.
+        let out = until(&mut a, || Give { able: true, ..Default::default() }, |o| o.caught_up);
+        assert!(out.listed_at.is_some() && a.listings_out() <= 1);
+    }
+
+    #[test]
+    fn a_member_whose_lock_another_process_holds_runs_no_driver_or_stops() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let home = d.path().join("a/agent");
+        let mut a = side(&r, &home);
+        let nas: SharedNas = Arc::new(Share::new(&r));
+        assert!(Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas, false).unwrap().is_none(), "a second process of the member runs none");
+        a.step(Give { able: true, ..Default::default() }, &any);
+        // Its lock file removed and taken by another process: it stops, its state saved, its
+        // hand-offs kept in it, no heartbeat written.
+        let lock = home.parent().unwrap().join(format!("pool-{}.lock", a.member().id));
+        std::fs::remove_file(&lock).unwrap();
+        let _other = MemberLock::take(home.parent().unwrap(), &a.member().id).unwrap().unwrap();
+        let beat = r.join(crate::pool::beat::path(&a.member().id));
+        std::fs::remove_file(&beat).unwrap();
+        let e = unit_entry(&a.member().id, LeaseId { term: 1, n: 7 }, "6/1/2", "k2");
+        let out = a.step(Give { entries: vec![(e, None)], able: true, ..Default::default() }, &any);
+        assert!(out.stop.is_some() && a.stopped.is_some());
+        let saved: Saved = serde_json::from_slice(&std::fs::read(home.join("pool/saved.json")).unwrap()).unwrap();
+        assert_eq!(saved.mine.unwritten().count(), 1, "its hand-off kept for the next process");
+        assert!(!beat.exists());
+        assert!(a.step(Give::default(), &any).stop.is_some(), "it steps no more");
+    }
+
+    #[test]
+    fn a_failed_listing_is_made_again_and_handed_back() {
+        // (A NAS whose first listing of the journal fails.)
+        struct Flaky(Share, std::sync::atomic::AtomicU32);
+        impl Nas for Flaky {
+            fn create_new(&self, p: &str, b: &[u8]) -> Result<Created> {
+                self.0.create_new(p, b)
+            }
+            fn write_whole(&self, p: &str, b: &[u8]) -> Result<()> {
+                self.0.write_whole(p, b)
+            }
+            fn read(&self, p: &str) -> Result<Option<Vec<u8>>> {
+                self.0.read(p)
+            }
+            fn exists(&self, p: &str) -> Result<bool> {
+                self.0.exists(p)
+            }
+            fn list(&self, dir: &str) -> Result<Vec<String>> {
+                if dir == journal::DIR && self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    anyhow::bail!("the share went away");
+                }
+                self.0.list(dir)
+            }
+            fn remove(&self, p: &str) -> Result<()> {
+                self.0.remove(p)
+            }
+        }
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let home = d.path().join("a/agent");
+        let nas = Arc::new(Flaky(Share::new(&r), Default::default()));
+        let mut a = Side::open(&home, &home.join("pool"), home.parent().unwrap(), "development", nas.clone(), false).unwrap().unwrap();
+        a.step(Give { able: true, ..Default::default() }, &any);
+        std::thread::sleep(Duration::from_millis(200));
+        let out = a.step(Give { able: true, ..Default::default() }, &any);
+        assert!(!out.caught_up && a.failed_at.is_some(), "the failed one isn't handed back");
+        a.failed_at = Some(Instant::now() - AGAIN);
+        let out = until(&mut a, || Give { able: true, ..Default::default() }, |o| o.caught_up);
+        assert!(out.listed_at.is_some());
+        assert!(nas.1.load(std::sync::atomic::Ordering::SeqCst) >= 2, "made again");
+    }
+
+    #[test]
+    fn two_members_mail_entries_acknowledge_and_hand_the_lead_over() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let (mut a, mut b) = (side(&r, &d.path().join("a/agent")), side(&r, &d.path().join("b/agent")));
+        let (ia, ib) = (a.member().id.clone(), b.member().id.clone());
+        let lead = until(&mut a, || Give { able: true, ..Default::default() }, |o| o.caught_up);
+        assert_eq!(lead.leads, Some(1));
+        // B's job's hand-off, in its folder: written to the journal, told to A by mail; the folder
+        // removed once B's saved state holds it.
+        let folder = d.path().join("b/agent/pool/jobs/1-5");
+        std::fs::create_dir_all(&folder).unwrap();
+        let e = unit_entry(&ib, LeaseId { term: 1, n: 5 }, "6/1/2", "k2");
+        let key = e.key().unwrap();
+        let out = b.step(Give { entries: vec![(e, Some(folder.clone()))], able: true, ..Default::default() }, &any);
+        assert_eq!(out.leads, None);
+        assert!(out.send.iter().any(|(to, m)| *to == ia && matches!(m, Msg::Tell(k) if k.contains(&key))), "{:?}", out.send);
+        assert!(!folder.exists() && r.join(journal::path(&key)).exists());
+        assert!(r.join(mail_path(&ia, &ib)).exists());
+        // A knows B (its heartbeats listed, or here: told), reads its mail, merges, acknowledges.
+        a.know(&ib);
+        let out = until(&mut a, || Give { able: true, ..Default::default() }, |o| o.events.iter().any(|e| matches!(e, Event::Merged { applied, .. } if applied.contains(&key))));
+        assert!(out.send.iter().any(|(to, m)| *to == ib && matches!(m, Msg::Ack { keys, .. } if keys.contains(&key))));
+        assert_eq!(a.driver().records().unwrap().keys.recorded("unit", "6/1/2"), Some("k2"));
+        b.step(Give { able: true, ..Default::default() }, &any);
+        assert!(b.driver().mine().to_tell(1).is_empty(), "acknowledged");
+        // The owner hands the lead to B: offered; B ready; A settles, the coordinator's state
+        // handed back; passed; B takes term 2 up with that state.
+        let out = a.step(Give { asks: vec![Ask::HandTo(ib.clone())], able: true, ..Default::default() }, &any);
+        assert!(out.events.iter().any(|e| matches!(e, Event::Handover { what: "offered", .. })), "{:?}", out.events);
+        b.step(Give { able: true, ..Default::default() }, &any);
+        let out = until(&mut a, || Give { able: true, ..Default::default() }, |o| o.settle);
+        assert!(!out.duties, "settling, it grants nothing");
+        let state = serde_json::json!({ "leases": { "next": 9, "leases": [] }, "costs": {}, "failed": [], "pause": null, "pause_at": 0 });
+        let out = until(&mut a, || Give { settled: Some(state.clone()), able: true, ..Default::default() }, |o| o.events.iter().any(|e| matches!(e, Event::Handover { what: "passed", .. })));
+        assert!(out.leads.is_none() && out.send.iter().any(|(to, m)| *to == ib && matches!(m, Msg::Passed(t) if t.term == 2)));
+        let out = until(&mut b, || Give { able: true, ..Default::default() }, |o| o.leads == Some(2));
+        let handed = out.events.iter().find_map(|e| match e {
+            Event::TookUp { term: 2, handed, .. } => Some(handed.clone()),
+            _ => None,
+        });
+        assert_eq!(handed, Some(Some(state)), "{:?}", out.events);
+        let out = until(&mut a, || Give { able: true, ..Default::default() }, |o| o.events.iter().any(|e| matches!(e, Event::Handover { what: "over", .. })));
+        assert_eq!(out.term, 2);
+    }
+
+    #[test]
+    fn a_jobs_entry_is_its_saves_and_the_targets_it_finished() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("1-3");
+        let save = |l: &str, c: &str| Handoff { changes: [(l.to_string(), Some(c.to_string()))].into(), pending: [(c.to_string(), "aa".to_string())].into(), ..Default::default() };
+        crate::handoff::write(&dir, &save("base/6-1-1", "base/6-1-1.1111111111111111.base")).unwrap();
+        crate::handoff::write(&dir, &save("base/6-1-2", "base/6-1-2.2222222222222222.base")).unwrap();
+        let lease = LeaseId { term: 1, n: 3 };
+        // A shared step's: only the files of the targets it finished.
+        let e = entry_of(&dir, "m-000000000000000a", lease, "unit", &[("6/1/1".into(), "k")].map(|(a, b): (String, &str)| (a, b.to_string())), 100_000).unwrap().unwrap();
+        assert_eq!(e.handoff.changes.keys().collect::<Vec<_>>(), ["base/6-1-1"]);
+        assert_eq!(e.handoff.pending.len(), 1);
+        assert_eq!(e.handoff.done, Some(("unit".into(), vec![("6/1/1".into(), "k".into())])));
+        // Another step's (the OSM pass's stages): all of them, done or not.
+        let e = entry_of(&dir, "m-000000000000000a", lease, "osm-pass", &[], 100_000).unwrap().unwrap();
+        assert_eq!((e.handoff.changes.len(), e.handoff.done.clone()), (2, None));
+        // Nothing done of a shared step: nothing to hand off.
+        assert!(entry_of(&dir, "m-000000000000000a", lease, "unit", &[], 100_000).unwrap().is_none());
+        // A damaged save: an error (its work is done again).
+        std::fs::write(dir.join("00000000000000000009-1.json"), b"{").unwrap();
+        assert!(entry_of(&dir, "m-000000000000000a", lease, "osm-pass", &[], 100_000).is_err());
+    }
+
+    #[test]
+    fn the_hand_offs_from_before_the_pool_are_drained_into_the_journal() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let home = d.path().join("a/agent");
+        let mut run = Run::new(side(&r, &home), Role::Lead, Gates::default());
+        let done = |u: &str, k: &str| Handoff { done: Some(("unit".into(), vec![(u.into(), k.into())])), ..Default::default() };
+        // The coordinator's journal here, the NAS's hand-off folders, a helper's outbox.
+        let journal = home.join("coord/journal");
+        crate::handoff::write(&journal.join("m1"), &done("6/2/1", "k21")).unwrap();
+        crate::handoff::write(&crate::handoff::dir(&r, "old-m1"), &done("6/2/2", "k22")).unwrap();
+        let ob = home.join("outbox/1791328399374");
+        std::fs::create_dir_all(&ob).unwrap();
+        std::fs::write(ob.join("work.json"), serde_json::to_vec(&crate::agent::build::Work { step: "unit".into(), targets: vec![("6/2/3".into(), "k23".into())] }).unwrap()).unwrap();
+        crate::handoff::write(&ob, &Handoff { changes: [("base/6-2-3".to_string(), Some("base/6-2-3.3333333333333333.base".to_string()))].into(), ..Default::default() }).unwrap();
+        std::fs::write(ob.join("result.json"), serde_json::json!({ "ok": true, "done": ["unit", [["6/2/3", "k23"]]] }).to_string()).unwrap();
+        // (A task's folder: left to its broker.)
+        std::fs::create_dir_all(home.join("outbox/1791328399375")).unwrap();
+        run.drain(Some(&journal), Some(&crate::handoff::nas_base(&r)), &home.join("outbox"));
+        let leases: Vec<LeaseId> = run.entries.iter().map(|(e, _)| e.lease).collect();
+        assert_eq!(leases.len(), 3, "{leases:?}");
+        assert!(leases.iter().all(|l| l.term == 0));
+        assert!(leases.contains(&LeaseId { term: 0, n: 1791328399374 }), "a helper's keeps its lease");
+        assert_eq!(leases.iter().filter(|l| l.n >= DRAINED).count(), 2);
+        // Drained once in this process, whatever the next look finds.
+        run.drain(Some(&journal), Some(&crate::handoff::nas_base(&r)), &home.join("outbox"));
+        assert_eq!(run.entries.len(), 3);
+        // Merged by the lead's step; their sources removed once its saved state holds them.
+        let out = run.step(true);
+        assert_eq!(out.leads, Some(1));
+        let rec = run.side.driver().records().unwrap();
+        assert_eq!((rec.keys.recorded("unit", "6/2/1"), rec.keys.recorded("unit", "6/2/2"), rec.keys.recorded("unit", "6/2/3")), (Some("k21"), Some("k22"), Some("k23")));
+        assert_eq!(rec.manifest.get("base/6-2-3").map(String::as_str), Some("base/6-2-3.3333333333333333.base"));
+        assert!(crate::handoff::waiting_in(&journal).unwrap().is_empty() && crate::handoff::waiting(&r).unwrap().is_empty() && !ob.exists());
+        assert!(home.join("outbox/1791328399375").exists());
+        // Term 1's records written to today's files too, for their readers.
+        assert_eq!(crate::agent::build::Keys::load(&r).recorded("unit", "6/2/2"), Some("k22"));
+    }
+
+    #[test]
+    fn jobs_an_earlier_process_left_are_handed_off() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("agent");
+        let lease = LeaseId { term: 3, n: 11 };
+        let dir = job_dir(&home, lease);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("work.json"), serde_json::to_vec(&JobKept { step: "unit".into(), targets: vec![("6/1/1".into(), "k1".into()), ("6/1/2".into(), "k2".into())], lease }).unwrap()).unwrap();
+        crate::handoff::write(&dir, &Handoff { changes: [("base/6-1-1".to_string(), Some("base/6-1-1.1111111111111111.base".to_string())), ("base/6-1-2".to_string(), Some("base/6-1-2.2222222222222222.base".to_string()))].into(), ..Default::default() }).unwrap();
+        std::fs::write(dir.join("done.txt"), "unit 6/1/1\n").unwrap();
+        // (A folder of no job: gone.)
+        std::fs::create_dir_all(home.join("pool/jobs/junk")).unwrap();
+        let left = left_jobs(&home, "m-000000000000000a");
+        assert_eq!(left.len(), 1);
+        let (e, d0) = &left[0];
+        assert_eq!((e.lease, d0), (lease, &dir));
+        assert_eq!(e.handoff.done, Some(("unit".into(), vec![("6/1/1".into(), "k1".into())])), "what it noted done");
+        assert_eq!(e.handoff.changes.keys().collect::<Vec<_>>(), ["base/6-1-1"]);
+        assert!(!home.join("pool/jobs/junk").exists());
+    }
+
+    #[test]
+    fn the_token_and_devices_are_the_pools() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path().join("nas");
+        let nas = Share::new(&r);
+        let (m4, m1) = (d.path().join("m4/coord"), d.path().join("m1/coord"));
+        std::fs::create_dir_all(&m4).unwrap();
+        std::fs::write(m4.join("workers-token"), "t0k3n").unwrap();
+        std::fs::write(m4.join("devices.json"), r#"{"accepted": []}"#).unwrap();
+        // The build Mac's, copied to the NAS as the pool begins.
+        seed(&nas, &m4).unwrap();
+        assert_eq!(nas.read(TOKEN).unwrap().as_deref(), Some(&b"t0k3n"[..]));
+        // Another lead's coordinator starts with them.
+        std::fs::create_dir_all(&m1).unwrap();
+        std::fs::write(m1.join("workers-token"), "other").unwrap();
+        seed(&nas, &m1).unwrap();
+        assert_eq!(std::fs::read_to_string(m1.join("workers-token")).unwrap(), "t0k3n");
+        assert_eq!(std::fs::read_to_string(m1.join("devices.json")).unwrap(), r#"{"accepted": []}"#);
+        // The first's stay.
+        seed(&nas, &m1).unwrap();
+        assert_eq!(nas.read(TOKEN).unwrap().as_deref(), Some(&b"t0k3n"[..]));
+    }
+
+    #[test]
+    fn a_shadow_run_writes_nothing_of_the_real_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let r = root(d.path());
+        let before: Vec<(PathBuf, Vec<u8>)> = walk(&r);
+        let home = d.path().join("s/agent");
+        let nas: SharedNas = Arc::new(Overlay::new(&r));
+        let mut s = Side::open(&home, &home.join("pool-shadow"), home.parent().unwrap(), "development", nas, true).unwrap().unwrap();
+        let id = s.member().id.clone();
+        let e = unit_entry(&id, LeaseId { term: 1, n: 1 }, "6/1/2", "k2");
+        until(&mut s, || Give { able: true, ..Default::default() }, |o| o.caught_up);
+        let out = until(&mut s, || Give { entries: vec![(e.clone(), None)], able: true, ..Default::default() }, |o| o.events.iter().any(|e| matches!(e, Event::Merged { .. })));
+        assert_eq!(out.leads, Some(1));
+        // Its records from the real today's files, its merge on top; written under the shadow.
+        let rec = s.driver().records().unwrap();
+        assert_eq!((rec.keys.recorded("unit", "6/1/1"), rec.keys.recorded("unit", "6/1/2")), (Some("k1"), Some("k2")));
+        let sh = r.join(SHADOW_ROOT);
+        assert!(sh.join("state/build/terms/1.json").exists() && sh.join("state/build/term/1/records.json").exists() && sh.join(crate::pool::beat::path(&id)).exists());
+        let after: Vec<(PathBuf, Vec<u8>)> = walk(&r).into_iter().filter(|(p, _)| !p.starts_with(&sh)).collect();
+        assert_eq!(after, before, "the real folder as it was");
+        let hb: Heartbeat = serde_json::from_slice(&std::fs::read(sh.join(crate::pool::beat::path(&id))).unwrap()).unwrap();
+        assert!(hb.shadow);
+    }
+
+    fn walk(d: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.extend(walk(&p));
+            } else {
+                out.push((p.clone(), std::fs::read(&p).unwrap()));
+            }
+        }
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn the_merges_checks() {
+        let e = unit_entry("m-000000000000000a", LeaseId { term: 1, n: 1 }, "6/1/2", "k2");
+        let r = Records::default();
+        assert!(check(&e, &r).is_ok());
+        let mut other = e.clone();
+        other.step = "pois".into();
+        assert!(check(&other, &r).unwrap_err().contains("done record is of unit"));
+        let mut bad = e.clone();
+        bad.handoff.changes.insert("base/6-1-3".into(), Some("base/6-1-4.3333333333333333.base".into()));
+        assert!(check(&bad, &r).unwrap_err().contains("isn't a content name of base/6-1-3"));
+        let mut raw = e.clone();
+        raw.handoff.raw.push(("3-1-2".into(), crate::rawpack::Pack { name: "3-1-3.0123456789abcdef.tiles".into(), bytes: 1 }));
+        assert!(check(&raw, &r).is_err());
+        let mut none = e;
+        none.handoff.done = Some(("unit".into(), Vec::new()));
+        assert!(check(&none, &r).is_err());
+    }
+
+    #[test]
+    fn todays_files_and_the_history_per_writer() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        let mut rec = Records { term: 2, seq: 4, ..Default::default() };
+        rec.manifest.insert("base/6-1-1".into(), "base/6-1-1.1111111111111111.base".into());
+        rec.keys.record("unit", &[("6/1/1".into(), "k1".into())]);
+        write_today(&Share::new(r), &rec).unwrap();
+        assert_eq!(crate::agent::build::Keys::load(r).recorded("unit", "6/1/1"), Some("k1"));
+        let m: BTreeMap<String, String> = crate::out::read_record(&r.join("state/build/manifest.json")).unwrap();
+        assert_eq!(m, rec.manifest);
+        let ev = |seq: u64, t: u64| crate::coord::history::Event { seq, t, ..crate::coord::history::Event::new("start") };
+        append_history(r, "m-000000000000000a", &[ev(1, 1_791_400_000), ev(2, 1_791_400_001)]).unwrap();
+        append_history(r, "m-000000000000000a", &[ev(3, 1_791_500_000)]).unwrap();
+        let day = |t| journal::day(t).unwrap();
+        let f = |t| std::fs::read_to_string(r.join("state/coord/history").join(day(t)).join("m-000000000000000a.jsonl")).unwrap();
+        assert_eq!(f(1_791_400_000).lines().count(), 2);
+        assert_eq!(f(1_791_500_000).lines().count(), 1);
+    }
+}

@@ -5131,3 +5131,244 @@ mod tests {
         assert!(old.cpu && old.nas);
     }
 }
+
+#[cfg(test)]
+mod pool_tests {
+    //! The agent with the pool (docs/pool.md §12, phase 1's integration): off, on (leading, and as
+    //! a member), its gates, its switch changing, and shadowed.
+    use super::*;
+    use crate::pool::journal::LeaseId;
+
+    /// A NAS folder as the pool begins: today's records, this Mac named their writer.
+    fn nas(d: &Path) -> PathBuf {
+        let r = d.join("nas");
+        std::fs::create_dir_all(r.join("state/build")).unwrap();
+        std::fs::create_dir_all(r.join("catalog")).unwrap();
+        std::fs::write(r.join("state/build/manifest.json"), r#"{"base/6-1-1": "base/6-1-1.1111111111111111.base"}"#).unwrap();
+        std::fs::write(r.join("state/build/jobs.json"), r#"{"unit": {"6/1/1": "k1"}}"#).unwrap();
+        std::fs::write(r.join("state/build/pending.json"), "{}").unwrap();
+        std::fs::write(r.join("state/build/writer"), format!("{}\n", cond::host_name())).unwrap();
+        r
+    }
+
+    fn switch_on(r: &Path, which: &str) {
+        std::fs::create_dir_all(r.join("state/pool")).unwrap();
+        std::fs::write(r.join(which), "").unwrap();
+    }
+
+    /// An app folder whose programs (`scenic`, `scenic-build`) hand off a save of their step's and
+    /// note what they were given (their environment, in `<app>/env-<step>`).
+    fn app(d: &Path) -> PathBuf {
+        let bin = d.join("app");
+        std::fs::create_dir_all(&bin).unwrap();
+        let script = format!(
+            "#!/bin/sh\nstep=\"$1\"\nenv > \"{bin}/env-$step\"\nif [ -n \"$SCENIC_HANDOFF\" ]; then\n  mkdir -p \"$SCENIC_HANDOFF\"\n  case \"$step\" in\n    slope) printf '{{\"changes\":{{\"layers/slope/lo/3-2-2\":\"layers/slope/lo/3-2-2.0123456789abcdef.pack\"}}}}' > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n    *) printf '{{\"changes\":{{\"work/%s\":\"work/%s.0123456789abcdef.json\"}}}}' \"$step\" \"$step\" > \"$SCENIC_HANDOFF/00000000000000000001-1.json\" ;;\n  esac\nfi\nexit 0\n",
+            bin = bin.display()
+        );
+        for p in ["scenic", "scenic-build"] {
+            std::fs::write(bin.join(p), &script).unwrap();
+            std::fs::set_permissions(bin.join(p), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        }
+        bin
+    }
+
+    fn free_port() -> u16 {
+        std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port()
+    }
+
+    /// Loops `a` until `done` says so, at most a minute.
+    fn until(a: &mut Agent, done: impl Fn(&Agent) -> bool) {
+        for _ in 0..240 {
+            a.step().unwrap();
+            if done(a) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        panic!("not done in a minute: {:?}", read_status(None, &a.o.home).map(|s| s.waiting));
+    }
+
+    fn stop_jobs(a: &mut Agent) {
+        for k in 0..SLOTS {
+            if let Some(r) = a.slots[k].running.as_mut() {
+                r.stop(Duration::from_secs(5));
+            }
+        }
+    }
+
+    #[test]
+    fn the_pool_off_leaves_the_agent_as_it_was() {
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let mut a = Agent::new(Options { root: Some(r.clone()), home: d.path().join("home"), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
+        assert!(a.pool.is_none() && a.pool_mode == Some(pool::Mode::Off));
+        a.step().unwrap();
+        // The build Mac named the writer, as before; nothing of the pool's written.
+        std::fs::write(r.join("state/build/writer"), "another-mac").unwrap();
+        a.writer_named = None;
+        a.step().unwrap();
+        assert_eq!(std::fs::read_to_string(r.join("state/build/writer")).unwrap(), cond::host_name());
+        assert!(!r.join("state/pool").exists() && !r.join("state/build/terms").exists());
+        assert!(read_status(Some(&r), &a.o.home).unwrap().pool.is_none());
+        assert!(a.pool_restart().is_none());
+    }
+
+    #[test]
+    fn the_switch_changing_restarts_the_agent_into_it() {
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let mut a = Agent::new(Options { root: Some(r.clone()), home: d.path().join("home"), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
+        a.step().unwrap();
+        assert!(a.pool_restart().is_none());
+        switch_on(&r, pool::ENABLED);
+        a.step().unwrap();
+        assert!(a.pool_restart().is_some_and(|w| w.contains("on")), "{:?}", a.pool_restart());
+        let st = read_status(Some(&r), &a.o.home).unwrap();
+        assert!(st.waiting.iter().any(|w| w.why.starts_with("restarting")), "{:?}", st.waiting);
+    }
+
+    #[test]
+    fn the_build_mac_leads_and_hands_its_jobs_off_once_the_pool_is_on() {
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        switch_on(&r, pool::ENABLED);
+        let bin = app(d.path());
+        let home = d.path().join("app-folder/agent");
+        // (`--helper` passed, as the M1's launch file does: the pool says what it is.)
+        let mut a = Agent::new(Options { root: Some(r.clone()), home: home.clone(), bin: bin.clone(), dry_run: false, once: true, helper: true }).unwrap();
+        let run = a.pool.as_ref().expect("the pool's part");
+        assert_eq!((run.role, run.gates.leads), (pool::Role::Lead, Some(1)));
+        assert!(!a.o.helper && a.coord.is_some(), "it leads: its coordinator runs");
+        let me = run.side.member().id.clone();
+        // (Its writer's file changed after term 1: no one names the writer any more.)
+        std::fs::write(r.join("state/build/writer"), "another-mac").unwrap();
+        // Its member's lock is in the app's folder; its saved state in its own.
+        assert!(d.path().join(format!("app-folder/pool-{me}.lock")).exists() && home.join("pool/saved.json").exists());
+        // Its first job (the daily backup) runs under a lease of its term, its saves handed off; the
+        // records it merges are today's files' too (term 1's saves write them).
+        until(&mut a, |a| crate::agent::build::Keys::load(a.o.root.as_ref().unwrap()).lo.is_empty() && crate::out::read_record::<BTreeMap<String, String>>(&a.o.root.as_ref().unwrap().join("state/build/manifest.json")).unwrap().contains_key("work/backup"));
+        let env = std::fs::read_to_string(bin.join("env-backup")).unwrap();
+        assert!(env.contains("SCENIC_HANDOFF=") && !env.contains("SCENIC_BUILD_MAC"), "{env}");
+        assert!(env.contains(&format!("{}", home.join("pool/jobs/1-").display())), "{env}");
+        let rec = a.pool.as_ref().unwrap().side.driver().records().unwrap().clone();
+        assert!(rec.reflected.iter().any(|k| k.ends_with(&format!("/1-{}", rec.reflected.iter().next().unwrap().rsplit('-').next().unwrap()))));
+        assert!(std::fs::read_dir(home.join("pool/jobs")).map_or(true, |mut d| d.next().is_none()), "its folder removed once its saved state held the entry");
+        // The writer isn't named any more (its file as it was), the coordinator's state of its term
+        // and its history are on the NAS, its heartbeat names it.
+        assert_eq!(std::fs::read_to_string(r.join("state/build/writer")).unwrap(), "another-mac");
+        assert!(r.join(pool::state_path(1)).exists());
+        assert!(std::fs::read_dir(r.join("state/coord/history")).unwrap().flatten().any(|day| day.path().join(format!("{me}.jsonl")).exists()));
+        assert!(r.join(crate::pool::beat::path(&me)).exists());
+        let st = read_status(Some(&r), &home).unwrap();
+        let pv = st.pool.expect("the pool in its status");
+        assert_eq!((pv.role, pv.member.as_str()), (pool::Role::Lead, me.as_str()));
+        // The daily sweep waits for a re-assertion, then runs on the step that made it, caught up:
+        // term 2, whose records are written to today's files too.
+        until(&mut a, |a| a.mem.last_ok.contains_key("gc"));
+        assert!(a.pool.as_ref().unwrap().gates.term >= 2);
+        assert!(r.join("state/build/terms/2.json").exists());
+        let m: BTreeMap<String, String> = crate::out::read_record(&r.join("state/build/manifest.json")).unwrap();
+        assert!(m.contains_key("work/gc"), "{m:?}");
+        stop_jobs(&mut a);
+    }
+
+    #[test]
+    fn a_member_asks_the_lead_and_its_job_reaches_the_records_through_the_journal() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        switch_on(&r, pool::ENABLED);
+        let bin = app(d.path());
+        // The lead (this Mac is the writer: term 1 is its), and a member, another process with a
+        // folder (and member) of its own; its `--helper` or not, the pool says.
+        let dry = Agent::new(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: true, once: true, helper: false }).unwrap();
+        assert!(dry.pool.is_none(), "a dry run takes no part");
+        drop(dry);
+        let mut lead = Agent::new(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        lead.mem.last_ok.insert("gc".into(), now_s());
+        lead.step().unwrap();
+        let mut m = Agent::new(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        assert_eq!(m.pool.as_ref().unwrap().role, pool::Role::Member);
+        assert!(m.o.helper && m.coord.is_none());
+        let (il, im) = (lead.pool.as_ref().unwrap().side.member().id.clone(), m.pool.as_ref().unwrap().side.member().id.clone());
+        assert_ne!(il, im);
+        // The lead's coordinator offers slope; the member asks, and runs it under `1-<lease>`.
+        lead.coord.as_ref().unwrap().offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
+        until(&mut m, |m| m.slots[0].running.is_some() || m.pool.as_ref().is_some_and(|p| !p.entries.is_empty()));
+        let env = std::fs::read_to_string(bin.join("env-slope")).unwrap_or_default();
+        until(&mut m, |m| m.slots[0].running.is_none() && m.pool.as_ref().is_some_and(|p| p.entries.is_empty()));
+        assert!(std::fs::read_to_string(bin.join("env-slope")).unwrap().contains(&format!("{}", d.path().join("m/agent/pool/jobs/1-").display())), "{env}");
+        // Its entry in the journal, told to the lead by mail; the lead, knowing the member, merges it.
+        lead.pool.as_mut().unwrap().side.know(&im);
+        until(&mut lead, |l| l.pool.as_ref().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k")));
+        let rec = lead.pool.as_ref().unwrap().side.driver().records().unwrap().clone();
+        assert_eq!(rec.manifest.get("layers/slope/lo/3-2-2").map(String::as_str), Some("layers/slope/lo/3-2-2.0123456789abcdef.pack"));
+        let key = rec.reflected.iter().find(|k| k.contains("/1-")).cloned().unwrap();
+        assert!(r.join(crate::pool::journal::path(&key)).exists());
+        // Acknowledged: the member tells it no more.
+        until(&mut m, |m| m.pool.as_ref().unwrap().side.driver().mine().to_tell(1).is_empty());
+        // The lead's coordinator ended the lease, its target kept out of offers until the plan shows
+        // it built; its own jobs hold none of it meanwhile.
+        assert!(lead.coord.as_ref().unwrap().held("slope").is_empty());
+        let lid = LeaseId { term: 1, n: key.rsplit('-').next().unwrap().parse().unwrap() };
+        assert_eq!(lid.term, 1);
+        stop_jobs(&mut lead);
+        stop_jobs(&mut m);
+    }
+
+    #[test]
+    fn the_leads_gates_hold_a_catalog_and_a_sweep() {
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        let home = d.path().join("home");
+        let mut a = agent_dry(&r, &home);
+        let nas_: pool::SharedNas = std::sync::Arc::new(crate::pool::nas::Share::new(&r));
+        let side = pool::Side::open(&home, &home.join("pool"), d.path(), "development", nas_, false).unwrap().unwrap();
+        a.pool = Some(pool::Run::new(side, pool::Role::Lead, pool::Gates { term: 1, leads: Some(1), duties: true, ..Default::default() }));
+        let c = Conditions { ac: true, battery: None, nas: true, home: true, idle_s: 9999 };
+        let job = |id: &str| JobSpec { id: id.into(), what: id.into(), cmd: vec!["/usr/bin/true".into()], needs: Needs { cpu: false, nas: true, home: false }, restart_after_sleep: false, record: None };
+        // Not caught up: no catalog; a sweep asks for a re-assertion first.
+        let mut w = Vec::new();
+        assert!(!a.try_start(0, job("catalog"), &c, Some(&r), &mut w));
+        assert!(w.iter().any(|w| w.why.contains("reflect the journal")), "{w:?}");
+        assert!(!a.try_start(0, job("gc"), &c, Some(&r), &mut w));
+        assert!(a.pool.as_ref().unwrap().reassert);
+        // Caught up: the catalog; the sweep only on a step that re-asserted.
+        a.pool.as_mut().unwrap().gates.caught_up = true;
+        assert!(a.try_start(0, job("catalog"), &c, Some(&r), &mut Vec::new()), "would start (dry run)");
+        assert!(!a.try_start(0, job("gc"), &c, Some(&r), &mut Vec::new()));
+        a.pool.as_mut().unwrap().gates.fresh = true;
+        assert!(a.try_start(0, job("gc"), &c, Some(&r), &mut Vec::new()));
+        // Other work as before.
+        a.pool.as_mut().unwrap().gates = pool::Gates::default();
+        assert!(a.try_start(0, job("backup"), &c, Some(&r), &mut Vec::new()));
+    }
+
+    fn agent_dry(root: &Path, home: &Path) -> Agent {
+        Agent::new(Options { root: Some(root.to_path_buf()), home: home.to_path_buf(), bin: PathBuf::from("/nonexistent/bin"), dry_run: true, once: true, helper: false }).unwrap()
+    }
+
+    #[test]
+    fn shadowed_the_agent_runs_the_pool_beside_and_writes_only_its_shadow() {
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        switch_on(&r, pool::SHADOW);
+        let home = d.path().join("home");
+        let mut a = Agent::new(Options { root: Some(r.clone()), home: home.clone(), bin: PathBuf::from("/nonexistent/bin"), dry_run: false, once: true, helper: false }).unwrap();
+        assert_eq!(a.pool_mode, Some(pool::Mode::Shadow));
+        assert!(a.pool.is_none());
+        a.step().unwrap();
+        assert!(a.shadow.is_some());
+        // Its terms and records under the shadow's folder; the build's own as they were, the writer
+        // named as before.
+        assert!(r.join(pool::SHADOW_ROOT).join("state/build/terms/1.json").exists());
+        assert!(!r.join("state/build/terms").exists() && !r.join("state/pool/members").exists());
+        assert_eq!(std::fs::read_to_string(r.join("state/build/writer")).unwrap().trim(), cond::host_name());
+        let log = std::fs::read_to_string(home.join("shadow/pool-shadow/shadow.jsonl")).unwrap();
+        assert!(log.contains("took up term 1"), "{log}");
+        assert!(a.pool_restart().is_none());
+    }
+}
