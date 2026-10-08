@@ -49,6 +49,33 @@ Per view, over the pixels drawn in both (the sky and the globe's limb left out):
 "Identical" here: no visible pixels and no features, which a view can't quite reach (the
 reference's own box filter against the app's bilinear one leaves |Δ| ≤ 0.25 on edges).
 
+## The screen (`--screen`)
+
+What the owner sees: the water, its coastal shading and the land as drawn, against the same view at
+full detail rendered and then shrunk to the screen's pixels in linear light (task #123: zoomed out,
+the map is to look exactly like that, small things faint as full detail makes them, never
+exaggerated nor dropped).
+
+- **The app**, in eval mode with `&look=bw` (land white, water black, the shading white over it:
+  the starkest contrast) and `&look=app` (the app's own colours, the land its background with no
+  hill-shading), the shading on at its default settings: the canvas's colours.
+- **The reference** (`referenceScreen`): the sea's and the inland water's exact coverage at 8
+  texels a CSS px, and the shading measured from the reference's shares at the same density
+  (every pixel holding any land a shore, web/src/coastdist.ts, as far as the band reaches), each
+  drawn at `--ss` × the pixel ratio. Each sample is coloured as the map colours a pixel (land, sea
+  and lake mixed by coverage in linear light, the shading blended over that as MapLibre blends),
+  and each device pixel is the mean of its samples in linear light. The same averaged as the
+  stored values (`bwS`, `appS`) tells how much of a difference is linear light's.
+- **The metric:** each pixel's lightness, L*/100; then as above (mean |Δ|, visible after the σ 1 px
+  blur past 0.1 in black and white, past 0.03 in the app's colours, about 3 L* where the whole map
+  spans about 25; regions darker or lighter than the reference).
+- **The jump:** for a flat, straight-down view at z.4 and its twin at z.6 (either side of a
+  half-zoom tile switch), the z.6 error (app − reference) scaled to the z.4 view's pixels about the
+  centre and compared with the z.4 error: how much the screen changes beyond what the zoom
+  explains. A steady error (the same at both zooms) is no jump.
+- **Images:** `<id>.bw.png` and `<id>.app.png`: the app, the reference and the difference (red where
+  the app is darker).
+
 ## The views
 
 `views.json`: Maine's coast, the Thousand Islands, the lakes north of Mont-Laurier, Finland's
@@ -59,6 +86,11 @@ Saimaa, Labrador's lakes, Argyll's lochs, the Seto Inland Sea, the Azores and La
 - `core` (27): a cross-section for trying designs.
 - `high` (10): z13–16, straight down, pitched and with 3D terrain.
 - `proof` (6): z13.5–14, for checking the reference against MapLibre's vectors (`--vector`).
+- `fade` (70, for `--screen`): places dense with small water (northern Quebec's lakes east of
+  task #124's data gap, Hudson Bay's Belcher Islands, Saimaa, Maine's coast, the Stockholm
+  archipelago), flat Web Mercator straight down at z4.4/4.6 … 8.4/8.6, and tilted 60° on the globe
+  at z5.4, 5.6, 7.4 and 7.6; `fadecore` (10) a cross-section of it; `owner` (5) the owner's own
+  comparisons: Hudson Bay at z4, 5 and 6, northern Quebec at z6.4 and 6.6.
 
 ## Running it
 
@@ -83,6 +115,7 @@ where the app lacks water, blue where it has water the reference doesn't), and `
 `index.html` over them. References are kept in `--cache` by the exact camera the app settled on: an
 unchanged view's is drawn once.
 
+- `--screen`: the screen against full detail shrunk (above); `--extra 'k=v'` adds to the app's query.
 - `--shade`: the coastal shading on (white over the black water), the reference's measured by the
   same code from the reference's own shares (`?raw=1`).
 - `--raster tileSize,size`: a trial, the water as coverage tiles from the reference's server drawn

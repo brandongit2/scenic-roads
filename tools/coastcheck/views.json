@@ -44,6 +44,26 @@
    "lon": -94.85,
    "lat": 49.35,
    "name": "Lake of the Woods"
+  },
+  "quebecn": {
+   "lat": 55.0,
+   "lon": -69.5,
+   "name": "Northern Quebec's lakes: Caniapiscau (east of task #124's gap)"
+  },
+  "hudson": {
+   "lat": 56.2,
+   "lon": -79.0,
+   "name": "Hudson Bay: the Belcher Islands"
+  },
+  "stockholm": {
+   "lat": 59.45,
+   "lon": 18.75,
+   "name": "The Stockholm archipelago"
+  },
+  "quebeco": {
+   "lat": 53.84,
+   "lon": -68.5,
+   "name": "Northern Quebec's lakes, the owner's comparison moved east of task #124's gap"
   }
  },
  "views": [
@@ -2074,6 +2094,1066 @@
    "globe": true,
    "sets": [
     "high"
+   ]
+  },
+  {
+   "id": "quebecn-f4.4",
+   "place": "quebecn",
+   "lon": -69.5,
+   "lat": 55.0,
+   "z": 4.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "quebecn-f4.6",
+   "place": "quebecn",
+   "lon": -69.5,
+   "lat": 55.0,
+   "z": 4.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "quebecn-f5.4",
+   "place": "quebecn",
+   "lon": -69.5,
+   "lat": 55.0,
+   "z": 5.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "quebecn-f5.6",
+   "place": "quebecn",
+   "lon": -69.5,
+   "lat": 55.0,
+   "z": 5.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "quebecn-f6.4",
+   "place": "quebecn",
+   "lon": -69.5,
+   "lat": 55.0,
+   "z": 6.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade",
+    "fadecore"
+   ]
+  },
+  {
+   "id": "quebecn-f6.6",
+   "place": "quebecn",
+   "lon": -69.5,
+   "lat": 55.0,
+   "z": 6.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade",
+    "fadecore"
+   ]
+  },
+  {
+   "id": "quebecn-f7.4",
+   "place": "quebecn",
+   "lon": -69.5,
+   "lat": 55.0,
+   "z": 7.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "quebecn-f7.6",
+   "place": "quebecn",
+   "lon": -69.5,
+   "lat": 55.0,
+   "z": 7.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "quebecn-f8.4",
+   "place": "quebecn",
+   "lon": -69.5,
+   "lat": 55.0,
+   "z": 8.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "quebecn-f8.6",
+   "place": "quebecn",
+   "lon": -69.5,
+   "lat": 55.0,
+   "z": 8.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "quebecn-t5.4",
+   "place": "quebecn",
+   "lon": -69.5,
+   "lat": 55.0,
+   "z": 5.4,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "quebecn-t5.6",
+   "place": "quebecn",
+   "lon": -69.5,
+   "lat": 55.0,
+   "z": 5.6,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "quebecn-t7.4",
+   "place": "quebecn",
+   "lon": -69.5,
+   "lat": 55.0,
+   "z": 7.4,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "quebecn-t7.6",
+   "place": "quebecn",
+   "lon": -69.5,
+   "lat": 55.0,
+   "z": 7.6,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade",
+    "fadecore"
+   ]
+  },
+  {
+   "id": "hudson-f4.4",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 4.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade",
+    "fadecore"
+   ]
+  },
+  {
+   "id": "hudson-f4.6",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 4.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade",
+    "fadecore"
+   ]
+  },
+  {
+   "id": "hudson-f5.4",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 5.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "hudson-f5.6",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 5.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "hudson-f6.4",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 6.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade",
+    "fadecore"
+   ]
+  },
+  {
+   "id": "hudson-f6.6",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 6.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade",
+    "fadecore"
+   ]
+  },
+  {
+   "id": "hudson-f7.4",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 7.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "hudson-f7.6",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 7.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "hudson-f8.4",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 8.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "hudson-f8.6",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 8.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "hudson-t5.4",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 5.4,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade",
+    "fadecore"
+   ]
+  },
+  {
+   "id": "hudson-t5.6",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 5.6,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "hudson-t7.4",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 7.4,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "hudson-t7.6",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 7.6,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "finland-f4.4",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 4.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "finland-f4.6",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 4.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "finland-f5.4",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 5.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade",
+    "fadecore"
+   ]
+  },
+  {
+   "id": "finland-f5.6",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 5.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade",
+    "fadecore"
+   ]
+  },
+  {
+   "id": "finland-f6.4",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 6.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "finland-f6.6",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 6.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "finland-f7.4",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 7.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "finland-f7.6",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 7.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "finland-f8.4",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 8.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "finland-f8.6",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 8.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "finland-t5.4",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 5.4,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "finland-t5.6",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 5.6,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "finland-t7.4",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 7.4,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "finland-t7.6",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 7.6,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "maine-f4.4",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 4.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "maine-f4.6",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 4.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "maine-f5.4",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 5.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "maine-f5.6",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 5.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "maine-f6.4",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 6.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "maine-f6.6",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 6.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "maine-f7.4",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 7.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "maine-f7.6",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 7.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "maine-f8.4",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 8.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "maine-f8.6",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 8.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "maine-t5.4",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 5.4,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "maine-t5.6",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 5.6,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "maine-t7.4",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 7.4,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "maine-t7.6",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 7.6,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "stockholm-f4.4",
+   "place": "stockholm",
+   "lon": 18.75,
+   "lat": 59.45,
+   "z": 4.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "stockholm-f4.6",
+   "place": "stockholm",
+   "lon": 18.75,
+   "lat": 59.45,
+   "z": 4.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "stockholm-f5.4",
+   "place": "stockholm",
+   "lon": 18.75,
+   "lat": 59.45,
+   "z": 5.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "stockholm-f5.6",
+   "place": "stockholm",
+   "lon": 18.75,
+   "lat": 59.45,
+   "z": 5.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "stockholm-f6.4",
+   "place": "stockholm",
+   "lon": 18.75,
+   "lat": 59.45,
+   "z": 6.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "stockholm-f6.6",
+   "place": "stockholm",
+   "lon": 18.75,
+   "lat": 59.45,
+   "z": 6.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "stockholm-f7.4",
+   "place": "stockholm",
+   "lon": 18.75,
+   "lat": 59.45,
+   "z": 7.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "stockholm-f7.6",
+   "place": "stockholm",
+   "lon": 18.75,
+   "lat": 59.45,
+   "z": 7.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "stockholm-f8.4",
+   "place": "stockholm",
+   "lon": 18.75,
+   "lat": 59.45,
+   "z": 8.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "stockholm-f8.6",
+   "place": "stockholm",
+   "lon": 18.75,
+   "lat": 59.45,
+   "z": 8.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "stockholm-t5.4",
+   "place": "stockholm",
+   "lon": 18.75,
+   "lat": 59.45,
+   "z": 5.4,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "stockholm-t5.6",
+   "place": "stockholm",
+   "lon": 18.75,
+   "lat": 59.45,
+   "z": 5.6,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "stockholm-t7.4",
+   "place": "stockholm",
+   "lon": 18.75,
+   "lat": 59.45,
+   "z": 7.4,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "stockholm-t7.6",
+   "place": "stockholm",
+   "lon": 18.75,
+   "lat": 59.45,
+   "z": 7.6,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "fade"
+   ]
+  },
+  {
+   "id": "hudson-o4",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "owner"
+   ]
+  },
+  {
+   "id": "hudson-o5",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 5,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "owner"
+   ]
+  },
+  {
+   "id": "hudson-o6",
+   "place": "hudson",
+   "lon": -79.0,
+   "lat": 56.2,
+   "z": 6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "owner"
+   ]
+  },
+  {
+   "id": "quebeco-o6.4",
+   "place": "quebeco",
+   "lon": -68.5,
+   "lat": 53.84,
+   "z": 6.4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "owner"
+   ]
+  },
+  {
+   "id": "quebeco-o6.6",
+   "place": "quebeco",
+   "lon": -68.5,
+   "lat": 53.84,
+   "z": 6.6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "owner"
    ]
   }
  ]

@@ -4,7 +4,11 @@
 //   node tools/coastcheck/check.mjs --app http://127.0.0.1:18094 --ref http://127.0.0.1:18095 \
 //     [--cdp 18099] [--views tools/coastcheck/views.json] [--only id,id|--set name] [--out dir] \
 //     [--cache dir] [--label name] [--ss 4] [--w 800 --h 600 --dpr 2] [--shade]
-//     [--vector | --raster tileSize,size[,maxzoom]]
+//     [--vector | --raster tileSize,size[,maxzoom] | --screen] [--extra 'k=v&…' (more of the app's query)]
+//
+// --screen: the screen as the owner sees it, against full detail rendered and then shrunk in linear
+// light (README.md, "The screen"), in black and white and in the app's colours, with the jump
+// between each view at z.4 and its twin at z.6.
 //
 // A Chrome with remote debugging on --cdp (README.md says how); the app's server on --app; the
 // reference's tiles (`coastcheck serve`) on --ref. Writes, per view, `<id>.json` (its numbers) and
@@ -37,7 +41,11 @@ const TOL = 0.25;
 /** The eye's blur at 1× on a 2× screen: a Gaussian of this sigma (device px). */
 const SIGMA = 1;
 /** After that blur, a difference of more than this is visible. */
-const SEEN = 0.1;
+const SEEN_BW = 0.1;
+/** In the app's own dark colours, where all of the map spans about 25 L*: 3 L* (a few times what
+ * the eye tells apart side by side). */
+const SEEN_APP = 0.03;
+const SEEN = SEEN_BW;
 /** A visible difference holding at least this much water (device px², summed |difference|) is a
  * feature: missing, extra or misplaced. */
 const FEATURE_PX = 1;
@@ -121,9 +129,9 @@ async function openTab() {
 }
 
 /** The app's address for a view. */
-const viewUrl = (v) => {
+const viewUrl = (v, look) => {
   const hash = `map=${v.z}/${v.lat}/${v.lon}/${v.bearing ?? 0}/${v.pitch ?? 0}${v.globe === false ? '&gb=0' : ''}`;
-  return `${APP}/?eval&terrain=${v.terrain ? 1 : 0}&dpr=${DPR}${args.shade ? '&shade=1' : ''}#${hash}`;
+  return `${APP}/?eval&terrain=${v.terrain ? 1 : 0}&dpr=${DPR}${args.shade ? '&shade=1' : ''}${look ? `&look=${look}` : ''}${args.extra ? `&${args.extra}` : ''}#${hash}`;
 };
 
 // ---- images ---------------------------------------------------------------------------------------
@@ -204,7 +212,7 @@ function blur(w, h, a, sigma) {
 
 /** The numbers for a view: coverage differences pixel by pixel, what's visible once blurred as
  * the eye blurs, and the features those make. */
-function measure(w, h, app, ref, drawn) {
+function measure(w, h, app, ref, drawn, SEEN = SEEN_BW) {
   const n = w * h;
   const d = new Float32Array(n);
   let px = 0, sum = 0, sum2 = 0, max = 0, off = 0, water = 0;
@@ -355,9 +363,205 @@ async function runView(v) {
   }
 }
 
+// ---- the screen (--screen) --------------------------------------------------------------------------
+const toLinear = (v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+const toSrgb = (v) => (v <= 0.0031308 ? v * 12.92 : 1.055 * v ** (1 / 2.4) - 0.055);
+const LIN = Float64Array.from({ length: 256 }, (_, i) => toLinear(i / 255));
+/** Each pixel's lightness as the eye has it (CIE L* of its luminance, over 100), turned so that 1
+ * is black: in black and white, about the water's share as the eye sees it. */
+function darkness(rgb, n) {
+  const out = new Float32Array(n);
+  const lstar = (y) => (y > 216 / 24389 ? 116 * Math.cbrt(y) - 16 : (24389 / 27) * y) / 100;
+  for (let i = 0; i < n; i++) out[i] = 1 - lstar(0.2126 * LIN[rgb[i * 3]] + 0.7152 * LIN[rgb[i * 3 + 1]] + 0.0722 * LIN[rgb[i * 3 + 2]]);
+  return out;
+}
+
+/** An RGB image of the app, the reference and their difference side by side. */
+function sideBySideRgb(w, h, app, ref, da, dr, drawn) {
+  const gap = 8, W3 = w * 3 + gap * 2;
+  const out = new Uint8Array(W3 * h * 3).fill(128);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      const put = (ox, r, g, b) => {
+        const o = (y * W3 + ox + x) * 3;
+        out[o] = r; out[o + 1] = g; out[o + 2] = b;
+      };
+      put(0, app[i * 3], app[i * 3 + 1], app[i * 3 + 2]);
+      put(w + gap, ref[i * 3], ref[i * 3 + 1], ref[i * 3 + 2]);
+      if (!drawn[i]) {
+        put(2 * (w + gap), 200, 220, 240);
+        continue;
+      }
+      // Red: the app darker than full detail (more water, less shading); blue: lighter.
+      const d = da[i] - dr[i], k = Math.min(1, Math.abs(d) * 4), base = 255 - Math.round(dr[i] * 40);
+      if (d > 0) put(2 * (w + gap), base, Math.round(base * (1 - k)), Math.round(base * (1 - k)));
+      else put(2 * (w + gap), Math.round(base * (1 - k)), Math.round(base * (1 - k)), base);
+    }
+  }
+  return png(W3, h, 3, out);
+}
+
+/** The jump between a view at z.4 (`a`) and its twin at z.6 (`b`; flat, straight down, the same
+ * centre): the change of the screen's error (app − reference) beyond what the zoom explains. The
+ * z.6 error is brought to the z.4 view's pixels (scaled about the centre, bilinear) and compared. */
+function jump(a, b, SEEN) {
+  const { w, h } = a, k = 2 ** (b.z - a.z), cx = w / 2, cy = h / 2;
+  const d = new Float32Array(w * h), valid = new Uint8Array(w * h);
+  let n = 0, sum = 0, sumApp = 0, sumRef = 0;
+  const at = (arr, x, y) => {
+    const x0 = Math.floor(x), y0 = Math.floor(y), tx = x - x0, ty = y - y0;
+    const g = (xx, yy) => arr[yy * w + xx];
+    return (g(x0, y0) * (1 - tx) + g(x0 + 1, y0) * tx) * (1 - ty) + (g(x0, y0 + 1) * (1 - tx) + g(x0 + 1, y0 + 1) * tx) * ty;
+  };
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const sx = cx + (x + 0.5 - cx) * k - 0.5, sy = cy + (y + 0.5 - cy) * k - 0.5;
+      if (sx < 0 || sy < 0 || sx >= w - 1 || sy >= h - 1) continue;
+      const i = y * w + x;
+      if (!a.drawn[i] || !b.drawn[Math.round(sy) * w + Math.round(sx)]) continue;
+      const appB = at(b.app, sx, sy), refB = at(b.ref, sx, sy);
+      d[i] = (appB - refB) - (a.app[i] - a.ref[i]);
+      valid[i] = 1;
+      n++;
+      sum += Math.abs(d[i]);
+      sumApp += Math.abs(appB - a.app[i]);
+      sumRef += Math.abs(refB - a.ref[i]);
+    }
+  }
+  const bl = blur(w, h, d, SIGMA);
+  let seen = 0;
+  for (let i = 0; i < w * h; i++) if (valid[i] && Math.abs(bl[i]) > SEEN) seen++;
+  return { px: n, mean: n ? +(sum / n).toFixed(5) : 0, seenShare: n ? +(seen / n).toFixed(5) : 0, appChange: n ? +(sumApp / n).toFixed(5) : 0, refChange: n ? +(sumRef / n).toFixed(5) : 0 };
+}
+
+async function runScreen(v) {
+  const t0 = Date.now();
+  const shots = {};
+  let camera;
+  let tab;
+  try {
+    for (const look of ['bw', 'app']) {
+      if (tab) await tab.close();
+      tab = await openTab();
+      const loaded = tab.next('Page.loadEventFired');
+      await tab.send('Page.navigate', { url: viewUrl(v, look) });
+      await loaded;
+      for (let i = 0; ; i++) {
+        if (await tab.evaluate('return !!window.__eval', 1).catch(() => false)) break;
+        if (i > 600) throw new Error('no eval mode (window.__eval) after 60 s');
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      const [iw, ih] = await tab.evaluate('return [innerWidth, innerHeight]', 5);
+      if (iw !== W || ih !== H) throw new Error(`the window is ${iw}×${ih}, not ${W}×${H}`);
+      shots[look] = await tab.fetchBig('return await window.__eval.screen()');
+      const cam = { ...(await tab.evaluate('return window.__eval.camera()')), pixelRatio: DPR };
+      if (camera && JSON.stringify(cam) !== JSON.stringify(camera)) throw new Error(`the two looks' cameras differ: ${JSON.stringify(camera)} ${JSON.stringify(cam)}`);
+      camera = cam;
+    }
+    const tApp = Date.now() - t0;
+    const ss = SS;
+    const key = crypto.createHash('sha256').update(JSON.stringify({ screen: 3, camera, globe: v.globe !== false, ss, w: W, h: H, dpr: DPR })).digest('hex').slice(0, 16);
+    const cached = path.join(CACHE, `${v.id}.screen.${key}.json.gz`);
+    let ref;
+    const refCached = fs.existsSync(cached);
+    if (refCached) ref = JSON.parse(zlib.gunzipSync(fs.readFileSync(cached)));
+    else {
+      ref = await tab.fetchBig(`return await window.__eval.referenceScreen(${JSON.stringify(REF)}, ${ss})`, 1800);
+      if (ref.w === shots.bw.w && ref.h === shots.bw.h) fs.writeFileSync(cached, zlib.gzipSync(JSON.stringify(ref)));
+    }
+    const { w, h } = shots.bw;
+    if (ref.w !== w || ref.h !== h) throw new Error(`sizes differ: app ${w}×${h}, reference ${ref.w}×${ref.h}`);
+    const dr = decode8(ref.drawn);
+    const res = { ...v, camera, ss, secs: { app: tApp / 1000 }, refCached, errors: tab.errors.slice(0, 5), gl: { ref: [ref.glError, ref.lost] } };
+    const keep = { z: v.z, w, h };
+    for (const look of ['bw', 'app']) {
+      const a = decode8(shots[look].rgb), r = decode8(ref[look]);
+      const da = decode8(shots[look].drawn);
+      const drawn = Uint8Array.from(da, (x, i) => (x === 255 && dr[i] === 255 ? 1 : 0));
+      const A = darkness(a, w * h), R = darkness(r, w * h);
+      res[look] = measure(w, h, A, R, drawn, look === 'bw' ? SEEN_BW : SEEN_APP);
+      // Against full detail averaged as the stored values (as MapLibre blends) rather than as light:
+      // what's left once linear light is set aside.
+      if (ref[`${look}S`]) res[`${look}S`] = measure(w, h, A, darkness(decode8(ref[`${look}S`]), w * h), drawn, look === 'bw' ? SEEN_BW : SEEN_APP);
+      res.gl[look] = [shots[look].glError, shots[look].lost];
+      fs.writeFileSync(path.join(OUT, `${v.id}.${look}.png`), sideBySideRgb(w, h, a, r, A, R, drawn));
+      keep[look] = { app: A, ref: R, drawn };
+    }
+    res.secs.all = (Date.now() - t0) / 1000;
+    fs.writeFileSync(path.join(OUT, `${v.id}.json`), JSON.stringify(res, null, 1));
+    return { res, keep };
+  } finally {
+    if (tab) await tab.close();
+  }
+}
+
 // (Node's WebSocket doesn't hold the process open while a page works.)
 const keepAlive = setInterval(() => {}, 1000);
 const results = [];
+if (args.screen) {
+  // Each view, and its twin's jump once both are done (a flat, straight-down view at z.4 and the
+  // same at z.6).
+  const kept = new Map();
+  const jumps = [];
+  const twin = (v) => `${v.place}|${v.lat}|${v.lon}|${Math.floor(v.z)}|${v.pitch ?? 0}|${v.globe === false}`;
+  for (const v of views) {
+    try {
+      const { res, keep } = await runScreen(v);
+      results.push(res);
+      const f = (m) => `mean ${m.mean.toFixed(4)} seen ${(100 * m.seenShare).toFixed(2)}% darker/lighter/both ${m.extra}/${m.missing}/${m.misplaced}`;
+      console.log(`${v.id.padEnd(26)} bw: ${f(res.bw)} | app: ${f(res.app)} (${res.secs.all.toFixed(0)} s${res.refCached ? ', ref cached' : ''})`);
+      if (!(v.pitch ?? 0) && v.globe === false) {
+        const t = twin(v), frac = +(v.z % 1).toFixed(2);
+        const other = kept.get(t);
+        if (other && Math.abs(other.z - v.z) < 0.5) {
+          const [a, b] = other.z < v.z ? [other, keep] : [keep, other];
+          const j = { place: v.place, z: [a.z, b.z] };
+          for (const look of ['bw', 'app']) j[look] = jump({ w: a.w, h: a.h, z: a.z, ...a[look] }, { w: b.w, h: b.h, z: b.z, ...b[look] }, look === 'bw' ? SEEN_BW : SEEN_APP);
+          jumps.push(j);
+          console.log(`  jump ${a.z}→${b.z}: bw ${j.bw.mean.toFixed(4)} (seen ${(100 * j.bw.seenShare).toFixed(2)}%), app ${j.app.mean.toFixed(4)} (seen ${(100 * j.app.seenShare).toFixed(2)}%)`);
+          kept.delete(t);
+        } else if (frac === 0.4 || frac === 0.6) kept.set(t, keep);
+      }
+    } catch (e) {
+      console.log(`${v.id.padEnd(26)} FAILED: ${e.message}`);
+      results.push({ ...v, failed: String(e.message) });
+    }
+  }
+  const ok = results.filter((r) => !r.failed);
+  const agg = (rs, look) => ({
+    views: rs.length,
+    mean: rs.reduce((s, r) => s + r[look].mean, 0) / (rs.length || 1),
+    seenShare: rs.reduce((s, r) => s + r[look].seenShare, 0) / (rs.length || 1),
+    darker: rs.reduce((s, r) => s + r[look].extra, 0), lighter: rs.reduce((s, r) => s + r[look].missing, 0), misplaced: rs.reduce((s, r) => s + r[look].misplaced, 0),
+    featureMass: +rs.reduce((s, r) => s + r[look].featureMass, 0).toFixed(1),
+  });
+  const groups = {};
+  for (const r of ok) (groups[`${r.pitch ? 'tilted' : 'flat'} z${Math.floor(r.z)}`] ??= []).push(r);
+  for (const r of ok) (groups[`place ${r.place}`] ??= []).push(r);
+  const jagg = (look) => ({ pairs: jumps.length, mean: jumps.reduce((s, j) => s + j[look].mean, 0) / (jumps.length || 1), seenShare: jumps.reduce((s, j) => s + j[look].seenShare, 0) / (jumps.length || 1) });
+  const summary = {
+    label: LABEL, viewport: { w: W, h: H, dpr: DPR, ss: SS }, thresholds: { sigma: SIGMA, seenBw: SEEN_BW, seenApp: SEEN_APP, featurePx: FEATURE_PX },
+    views: results.length, failed: results.filter((r) => r.failed).map((r) => r.id),
+    bw: agg(ok, 'bw'), app: agg(ok, 'app'), ...(ok.every((r) => r.bwS) ? { bwS: agg(ok, 'bwS'), appS: agg(ok, 'appS') } : {}), jump: { bw: jagg('bw'), app: jagg('app') },
+    groups: Object.fromEntries(Object.entries(groups).map(([g, rs]) => [g, { bw: agg(rs, 'bw'), app: agg(rs, 'app') }])),
+    jumps,
+  };
+  fs.writeFileSync(path.join(OUT, 'summary.json'), JSON.stringify({ ...summary, results }, null, 1));
+  const pct = (x) => `${(100 * x).toFixed(2)} %`;
+  const rows = results.map((r) => r.failed ? `<tr><td>${r.id}</td><td colspan=8>failed: ${r.failed}</td></tr>`
+    : `<tr><td>${r.id}</td><td>${r.z}</td><td>${r.pitch ?? 0}°</td>${['bw', 'app'].map((l) => `<td><a href="${r.id}.${l}.png">${r[l].mean.toFixed(4)}</a></td><td>${pct(r[l].seenShare)}</td><td>${r[l].extra} / ${r[l].missing} / ${r[l].misplaced}</td>`).join('')}</tr>`).join('\n');
+  fs.writeFileSync(path.join(OUT, 'index.html'), `<!doctype html><meta charset=utf-8><title>Screen check: ${LABEL}</title>
+<style>body{font:13px system-ui;background:#111;color:#ddd;margin:16px}td,th{padding:2px 8px;text-align:right}td:first-child{text-align:left}a{color:#9cf}</style>
+<h1>Screen check: ${LABEL}</h1>
+<p>${results.length} views, ${W}×${H} CSS px at ${DPR}×, the reference at ${SS}× and shrunk in linear light. Difference in lightness (L*/100); visible past ${SEEN_BW} (black and white) or ${SEEN_APP} (the app's colours) once blurred (σ ${SIGMA} px). Images: the app, full detail shrunk, the difference (red: the app darker).</p>
+<pre>${JSON.stringify({ bw: summary.bw, app: summary.app, jump: summary.jump }, null, 1)}</pre>
+<table><tr><th>view</th><th>zoom</th><th>pitch</th><th>bw mean</th><th>visible</th><th>darker / lighter / misplaced</th><th>app mean</th><th>visible</th><th>darker / lighter / misplaced</th></tr>
+${rows}</table>`);
+  console.log(JSON.stringify({ bw: summary.bw, app: summary.app, bwS: summary.bwS, appS: summary.appS, jump: summary.jump }));
+  clearInterval(keepAlive);
+  process.exit(0);
+}
 for (const v of views) {
   try {
     const r = await runView(v);
