@@ -785,7 +785,7 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     steeper than 63° over its width (buttes, plugs and islets aren't).
     Each stage judges the tile with what was found filled in, until one finds nothing in AWS's
     values and then in the tile as stored, so its own output has nothing left to repair
-    (`terrain --scan` checks it: §10, phase 7).
+    (`terrain --scan` checked it over the coverage: §10, phase 7).
     It reads AWS's values, bathymetry and all, so stored tiles (at sea level) are never inputs.
   - **AWS's Arctic tiles** (z10 and z11 north of about 60°) have their sea surface 9 to 20 m up (on
     the ellipsoid), blocks of cloud over the sea, and voids its coarse layer fills at sea level (a
@@ -2197,9 +2197,11 @@ At each phase's end an Opus agent reviews the work against this plan.
      as blobs of the tile's component tree judged against the ground they meet, fills them and the
      voids from the clean ground around them, and leaves real relief; repairing its own output
      changes nothing. Terrain is still made from AWS's tiles and the code alone.
-   - Planned: the repair's check over the whole coverage before the packs are made with it
-     (`terrain --scan`: its output repaired again unchanged; the sharpest summits and OSM's summits
-     with a height unchanged; what the first repair left that it takes).
+   - Checked over the whole coverage (`terrain --scan`, 7 October): its output repaired again
+     changes nothing at any zoom; the sharpest summits unchanged; 9 of OSM's summit pixels move,
+     inside clusters of AWS's towers and pits. Planned: single-pixel towers of 100–300 m left at
+     z7–z9, where a tile alone can't tell them from islands, judged against the finer level the
+     terrain job already has (its 2×2 means).
    - Under way: 3D buildings (`docs/buildings3d.md`: its sources on the NAS; B1 done, the steps
      built and piloted by hand on six z6 tiles, the layer and the map's side built, measured on the
      iPad; B2, the agent running them for every tile as a fourth chain, the mirror's group, the
