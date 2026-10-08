@@ -45,7 +45,7 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   slice of the per-vertex cache goes with it and its samples come back.)
 - **Workers** hold nothing the build depends on: a lost worker costs only its work in hand.
 
-## 3. Tasks (built for a unit's tail)
+## 3. Tasks (built for a unit's tail and the 3D buildings' z8 areas)
 
 - **Where the work splits:** a unit's tail (`unit::tail`) is a task from its elevations on:
   elevations, clean-up and grade, prep, canopy, view, buildings and flags. Each step says which of
@@ -99,13 +99,25 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 - **Source versions:** a task names the programs' build (the job's binary); a web worker fetches
   that build's WebAssembly programs from the coordinator (`/work/prog/<name>.wasm`, shipped in the
   app's `wasm/`). The native and WebAssembly builds of one source give the same bytes (§10).
+- **The 3D buildings' areas** (kind `bldtile`, docs/buildings3d.md §3.6, `pipeline::bld::task`): a
+  `bldtiles` job offers some of a z6 tile's z8 areas the same way, while workers that take them are
+  around (one per worker, three at most out at once, from the far end of the tile's list; topped up
+  before each area it makes itself). A task's files are cut from the work files on the build Mac
+  (only the blocks the area reads, as stored, and the coverage's shapes that can answer there:
+  docs/formats.md); its one run is the program `bldtile` over `{dir}` and the area; it writes the
+  area's tiles (`area.tiles`) and summary (`area.json`). Its spec has a tail's shape (`unit` the area
+  `8/x/y`, `version`, `runs`, `inputs`, `places`), so the page and `scenic run-task` run it
+  unchanged. Its memory: its files three times over, 256 MB and 280 B a building of the area, until
+  a worker measures it (the coordinator's `bldtile 8/x/y`). Settled in the area's turn as a tail is:
+  taken back and made here if no one took it, raced if someone holds it, a worker's result taken,
+  or checked against the job's own run byte for byte.
 - **Determinism rules:** one maths library (`det`, over `libm`) on every target; reductions that
   don't depend on the thread count; no hash-map order in outputs; the real zstd everywhere.
 - **Planned:** staging from packs as a task's (read where the packs lie); the heavy steps cut into
   sample ranges so a slow worker's lease is minutes; more kinds of task (map tiles, landmarks,
   slope, terrain, tree cover: a piece's zoom-8 blocks, which already run on their own, `trees
-  --block`, the bytes they read recordable for a run elsewhere, its mid the seam: docs/plan.md §6;
-  the 3D buildings' z8 areas, `bldtile` in WebAssembly: docs/buildings3d.md §3.6, phase B3).
+  --block`, the bytes they read recordable for a run elsewhere, its mid the seam: docs/plan.md §6);
+  the 3D buildings' areas cut smaller (z9, z10) for workers that spare less than a dense area needs.
 
 ## 4. Data: the coordinator's plane
 
@@ -127,7 +139,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 
 ## 5. Control: leases and trust (built)
 
-- **Asking:** a worker sends its name, kind, the work it does (the shared steps' jobs, `tail`), the
+- **Asking:** a worker sends its name, kind, the work it does (the shared steps' jobs; the tasks'
+  kinds, `tail` and `bldtile`: a page asks with those two, and may ask with no others), the
   memory it spares, its cores and (an agent) its app (`/work/ask`). One that mounts the NAS is given
   a job first (the most work for what it fetches), then a task; a web page, tasks. An agent on an
   older app than the build Mac's gets nothing (409, why in words) until it runs that one or a newer.
@@ -289,8 +302,9 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 ## 8. Native workers (built)
 
 - **The M1** asks for the shared steps' jobs (terrain, slope, tree cover's pieces, units,
-  candidates, peaks, the 3D buildings' bldprep and bldtiles: docs/plan.md §8, Two Macs) and tails over HTTP. A job runs the build Mac's own command for its step,
-  its saves handed back through the coordinator; a tail runs as `scenic run-task` (its files fetched
+  candidates, peaks, the 3D buildings' bldprep and bldtiles: docs/plan.md §8, Two Macs) and tasks
+  (tails, the 3D buildings' areas) over HTTP. A job runs the build Mac's own command for its step,
+  its saves handed back through the coordinator; a task runs as `scenic run-task` (its files fetched
   from the coordinator, its steps run natively, the files they wrote sent back).
 - **The build Mac's second job** (docs/plan.md §8, Two jobs at once) is a worker of its own in the
   history and the forecast ("<host> (second job)"): beside its first job, the network-bound steps
@@ -349,6 +363,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 - **The canopy step in bands (2026-10-05):** it reads only the strips and columns each band of 1,024
   rows needs: 3.4 GB → 0.55 GB natively and 3.5 → 0.55 GB in WebAssembly on 6/20/22, the same bytes
   (bands down to 5 rows, across 10° boundaries).
+- **The 3D buildings' areas (2026-10-08):** Paris's densest z8 area (8/129/88: 2.6 M buildings, a
+  task of 119 MB) made by `bldtile` from its task's files gave the same bytes natively on one thread
+  (11.5 s, 0.86 GB) and on all (6.4 s) and in Node's WebAssembly (28 s, 0.79 GB of memory), all on
+  the loaded M1, and the same tiles as the pack built whole (`tools/check/bldtile-same.mjs`).
 - **Tree cover's blocks (2026-10-05):** ten zoom-8 blocks (coasts, dense forest, the tropics, one
   across four canopy squares) gave the same bytes natively on 1 and 14 threads and in Node's
   WebAssembly, the latter reading only the squares' bytes the native run recorded (3 to 280 MB),
@@ -366,4 +384,5 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 5. **Browsers:** the page, imported-memory ceilings, ramped verification. *Done;* HTTPS through
    Tailscale and OPFS *planned.*
 6. **The Python steps in Rust:** *done* (the same bytes; the units run them; tree cover's, the same
-   pixels); then more kinds of task, and the build Mac's own work as tasks.
+   pixels); then more kinds of task: the 3D buildings' z8 areas (`bldtile`) *done* (B3); others,
+   and the build Mac's own work as tasks, *planned.*

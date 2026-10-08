@@ -599,14 +599,27 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
   largest z8 area taken as two fifths of them (Kantō's was 36 %): so Paris's 6/32/22 is offered at
   2.8 GB and 2.0 GB, and took 2.4 and 1.2 GB on the M1 (2026-10-08); Vermont's two tiles 1.3–1.4
   and 1.0 GB, and took 1.15–1.24 and 0.88–0.94.
-- **Pages** (`docs/workers.md`, B3: not built): a `bldtiles` job offers its z8 areas as tasks, as a unit job offers
-  its tail. A task's files: the z8 area's blocks and the blocks within 620 m around it (cut from the
-  work files on the Mac that runs the job), and the program `bldtile` (Rust, built for wasm32-wasi
-  with the others, `/work/prog/bldtile.wasm`). It writes the area's z12–14 tiles (an RDTILES archive);
-  the job assembles the pack. The densest z8 area (Tokyo's) is ~1–1.5 GB in memory, within the
-  iPad page's 3 GB; a smaller ceiling gets z9 or z10 areas (workers.md's planned cutting to the
-  worker). Nothing waits on a page: an area no page took runs on the job's Mac, one a page holds is
-  raced there, results are compared (the ramped verification).
+- **Pages** (`docs/workers.md` §3, built in B3: `pipeline::bld::task`): under the agent (the
+  coordinator's address in its environment, `offload::Offload::from_env`), a `bldtiles` job offers
+  some of each tile's z8 areas as tasks of kind `bldtile`, as a unit job offers its tail: while
+  workers that take them are around (`/task/workers`), up to one per worker and three at once, from
+  the far end of the tile's list (the job works from the near end, so an area out has the longest
+  before its turn), topped up before each area it makes itself. A task's files, cut on the build
+  Mac (docs/formats.md): of T's and its neighbours' work files only the blocks the area reads (its
+  own and those within 620 m around it), their bytes as stored, and the coverage's shapes that can
+  answer for its points, whole, in the recipes' order (France's outline: 0.6 MB). The program
+  `bldtile` (`/work/prog/bldtile.wasm` in a page, the app's `bldtile` on a helper Mac:
+  `scenic run-task`) writes the area's z12–14 tiles (an RDTILES archive) and its summary; the job
+  puts them into the pack in the area's turn. Nothing waits on a worker: in its turn an area no one
+  took is taken back and made here, one a worker holds is raced here, a worker's result is taken,
+  or checked (a worker's first three, then one in eight) against the job's own run byte for byte,
+  a difference marking the worker bad. Its memory is first guessed as its files three times over
+  and the model above (0.25 GB + 280 B a building of the area): Paris's densest area (8/129/88,
+  2.6 M buildings, 119 MB of files) 1.3 GB, which took 0.86 GB natively and 0.79 GB of WebAssembly
+  memory; a worker's measure replaces it (`bldtile 8/x/y` in the coordinator's costs). Tokyo's
+  area (10.8 M buildings) would be guessed at 4–5 GB, more than a page spares (3 GB on the iPad,
+  4 GB at most): a helper Mac with the room takes it, else the build Mac makes it, until z9 or z10
+  areas are cut for smaller workers (workers.md's planned cutting to the worker).
 - **The pool's steps table** (`docs/pool.md` §7.2, planned): `bldprep` {memory learned, disk 15 GB,
   the NAS, power}, `bldtiles` {memory learned, disk 15 GB, power}; neither needs home (`bldprep`'s
   reads are per tile, not the planet's). The pool's phase 1 (built, switched off) takes them as it
@@ -628,8 +641,11 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
 - **Checked in B1:** Paris (6/32/22) built twice on the build Mac, on 12 threads and on one, gave
   the same work file and the same pack byte for byte (content names `6-32-22.f07556cc02cd5298` and
   `6-32-22.4a4fb482a84227db`, the pack as rebuilt after the review: its copies' fills included);
-  the unit tests build a tile on one thread and on several and compare. WebAssembly waits for
-  `bldtile` (B3). B2's run on the M1 made Paris's work file again the same bytes
+  the unit tests build a tile on one thread and on several and compare. WebAssembly (B3,
+  2026-10-08, `tools/check/bldtile-same.mjs`): Paris's densest area (8/129/88, 2,623,485 buildings,
+  4,606 tiles) cut as a task and made by `bldtile` natively on one thread and on all, and as
+  WebAssembly under Node's WASI, gave the same bytes, and the same tiles as the pack built whole
+  (`6-32-22.627da12f3caf7b91`). B2's run on the M1 made Paris's work file again the same bytes
   (`6-32-22.f07556cc02cd5298`), another Mac and another Python process.
 
 ## 4. The map
