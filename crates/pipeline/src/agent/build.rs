@@ -321,8 +321,9 @@ pub fn reach_key(date: &str, m: &BTreeMap<String, String>) -> Option<String> {
 }
 
 /// The labels by importance, worldwide, once per pass (or labels step version): independent of the
-/// regions.
-pub const LABELS_V: u32 = 1;
+/// regions. (2: each label's OSM object, the languages OSM gives its name, its romanised name or
+/// kana reading: docs/plan.md §7.)
+pub const LABELS_V: u32 = 2;
 
 pub fn labels_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
     let set = m.get(&crate::osmpass::set_name(date, "labels"))?;

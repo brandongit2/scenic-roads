@@ -100,6 +100,47 @@ def population(v: str | None) -> float:
         return 0.0
 
 
+# Script and region subtags after a language that still name the name's language (name:zh-Hant equal
+# to name is Chinese); any other (-Latn, _rm, _kana) is a transliteration. (names::own, in Rust.)
+SAME_LANGUAGE = {"Hant", "Hans", "TW", "HK", "CN", "MO", "SG"}
+KANA_KEYS = ("name:ja-Hira", "name:ja_kana", "name:ja-Kana")
+
+
+def romanised(key: str) -> int | None:
+    """How much a name:… key that romanises the name is preferred (lower first), or None."""
+    if not key.startswith("name:"):
+        return None
+    rest = key[5:]
+    if rest.endswith("_rm"):
+        return 1
+    parts = rest.split("-")
+    if len(parts) == 2 and parts[1] == "Latn":
+        return 0
+    if len(parts) > 2 and parts[1] == "Latn":
+        return 2
+    return None
+
+
+def own(t, name: str) -> tuple[str | None, str | None, str | None]:
+    """A thing's own English (name:en, else its romanised name), its kana reading (when it has no
+    English), and the languages OSM gives its name (comma-separated), from its tags."""
+    tags = {tag.k: tag.v for tag in t}
+    en = (tags.get("name:en") or "").strip() or None
+    if not en:
+        best = min(((r, v) for k, v in tags.items() if v.strip() and (r := romanised(k)) is not None), default=None)
+        en = best[1].strip() if best else None
+    kana = None if en else next((tags[k] for k in KANA_KEYS if tags.get(k, "").strip()), None)
+    langs: list[str] = []
+    for k, v in tags.items():
+        if not k.startswith("name:") or v != name:
+            continue
+        parts = re.split(r"[-_]", k[5:])
+        base = parts[0].lower()
+        if 2 <= len(base) <= 4 and base.isascii() and base.isalpha() and all(p in SAME_LANGUAGE for p in parts[1:]) and base not in langs:
+            langs.append(base)
+    return en, kana, ",".join(langs) or None
+
+
 class Points(osmium.SimpleHandler):
     def __init__(self, rows: list):
         super().__init__()
@@ -111,19 +152,21 @@ class Points(osmium.SimpleHandler):
         name = t.get("name")
         if not name or not n.location.valid():
             return
-        lon, lat, p, en = n.location.lon, n.location.lat, t.get("place"), t.get("name:en")
+        lon, lat, p = n.location.lon, n.location.lat, t.get("place")
+        en, kana, langs = own(t, name)
+        more = (kana, langs, f"n{n.id}")
         if p in PLACE_RANK:
             cap = 0.95 if t.get("capital") in ("yes", "2", "3", "4") else 0.0
             pop = min(8.9, math.log10(population(t.get("population")) + 1))
             self.rows.append(("place", p, name, lon, lat, PLACE_RANK[p] * 10 + pop + cap, en, None,
-                              POP_ZOOM[0] - POP_ZOOM[1] * pop - (0.5 if cap else 0) if pop > 0 else None))
+                              POP_ZOOM[0] - POP_ZOOM[1] * pop - (0.5 if cap else 0) if pop > 0 else None, *more))
         elif p in ("state", "province"):
-            self.rows.append(("state", p, name, lon, lat, math.log10(population(t.get("population")) + 1), en, None, None))
+            self.rows.append(("state", p, name, lon, lat, math.log10(population(t.get("population")) + 1), en, None, None, *more))
         elif p in ("ocean", "sea"):
-            self.rows.append(("water", p, name, lon, lat, SEA_SCORE, en, None, None))
+            self.rows.append(("water", p, name, lon, lat, SEA_SCORE, en, None, None, *more))
         elif t.get("natural") in ("bay", "strait"):
             km2 = 10.0 if t.get("wikipedia") else 1.0
-            self.rows.append(("water", t["natural"], name, lon, lat, math.log10(km2) + 4, en, km2, None))
+            self.rows.append(("water", t["natural"], name, lon, lat, math.log10(km2) + 4, en, km2, None, *more))
 
 
 class Areas(osmium.SimpleHandler):
@@ -159,7 +202,9 @@ class Areas(osmium.SimpleHandler):
         pt = g.representative_point()  # inside it, not a centroid off in a bay
         km2 = g.area * 111.32 * 110.57 * math.cos(math.radians(pt.y))
         score = math.log10(km2 + 1e-4) + 4 + (1 if cls == "national_park" else 0)
-        self.rows.append((kind, cls, name, pt.x, pt.y, score, t.get("name:en"), km2, None))
+        en, kana, langs = own(t, name)
+        oid = f"{'w' if a.from_way() else 'r'}{a.orig_id()}"
+        self.rows.append((kind, cls, name, pt.x, pt.y, score, en, km2, None, kana, langs, oid))
 
 
 def dedupe(rows: list, score: np.ndarray, lon: np.ndarray, lat: np.ndarray) -> np.ndarray:
@@ -348,7 +393,9 @@ def main() -> None:
     run_osmium(["tags-filter", "--overwrite", str(SRC), *AREA_FILTERS, "-o", str(all_areas)], lambda f: progress((1 + f) / 3, 6, "steps (the label points)"))
     run_osmium(["tags-filter", "--overwrite", str(all_areas), "wr/name", "-o", str(AREAS)], lambda f: progress((2 + f) / 3, 6, "steps (the label points)"))
     all_areas.unlink(missing_ok=True)
-    rows: list[tuple[str, str, str, float, float, float, str | None, float | None, float | None]] = []
+    # kind, class, name, lon, lat, score, own English, area (km²), zoom by population, kana reading,
+    # OSM's languages, OSM object.
+    rows: list[tuple[str, str, str, float, float, float, str | None, float | None, float | None, str | None, str | None, str]] = []
     progress(1, 6, "steps (reading the points)")
     Points(rows).apply_file(str(NODES))
     print(f"{len(rows)} label points ({time.time() - t0:.0f} s)", file=sys.stderr)
@@ -417,7 +464,8 @@ def main() -> None:
         for i in ids:
             kind, cls, name = rows[i][0], rows[i][1], rows[i][2]
             pts.append((round((tx[i] * n - x) * EXTENT), round((ty[i] * n - y) * EXTENT), i,
-                        {"n": name, "en": english(i), "k": kind, "c": cls, "mz": round(float(mz[i]), 2),
+                        {"n": name, "en": english(i), "kana": rows[i][9] if english(i) is None else None, "l": rows[i][10], "o": rows[i][11],
+                         "k": kind, "c": cls, "mz": round(float(mz[i]), 2),
                          "ms": None if math.isnan(ms[i]) else round(float(ms[i]), 2), "s": round(float(score[i]), 2)}))
         raw = encode(pts)
         w.add(z, x, y, gzip.compress(raw, 6), len(raw))
