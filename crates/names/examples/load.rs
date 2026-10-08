@@ -31,7 +31,7 @@ fn files(dir: &Path, out: &mut Vec<PathBuf>) {
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let dir = PathBuf::from(args.get(1).map_or("/Volumes/personal/projects/scenic-roads/translations", String::as_str));
+    let dir = PathBuf::from(args.get(1).map_or("/Volumes/personal/projects/scenic-roads/translations/0-converted", String::as_str));
     let labels = args.get(2).map(PathBuf::from).unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/build/labels.tiles"));
 
     let before = rss_mb();
@@ -40,13 +40,11 @@ fn main() -> anyhow::Result<()> {
     let load = t0.elapsed();
     let after = rss_mb();
     println!("load: {} names in {load:.2?} (heap {:.0} MB; process RSS {before:.0} → {after:.0} MB)", names.entries(), names.heap_bytes() as f64 / 1048576.0);
-    for a in names.areas() {
-        println!("  {:>3}: {:>2} files, {:>9} names, {:>7} lines not translated yet, version {:016x}", a.code, a.files, a.entries, a.ignored, a.version);
-    }
-    // Names that are both a place and a road, read each way.
-    for (area, name) in [("fr", "Château"), ("fr", "Pont Vieux"), ("ib", "Castillo"), ("ib", "Iglesia"), ("jp", "中山道"), ("tw", "中山橋")] {
-        let show = |k| names.translation(k, area, name).map(|t| format!("{} / {}", t.main, t.sub.unwrap_or("-")));
-        println!("  {area} {name}: as a place {:?}, as a road {:?}", show(Kind::Place), show(Kind::Road));
+    println!("  {:?}", names.summary());
+    let l = |s: &str| names::Lang::parse(s).into_iter().collect::<Vec<_>>();
+    for (lang, name) in [("fr", "Château"), ("fr", "Pont Vieux"), ("es", "Castillo"), ("es", "Iglesia"), ("ja", "中山道"), ("zh", "中山橋")] {
+        let show = |k| names.translation(k, name, &l(lang)).map(|t| format!("{} / {}", t.main, t.sub.unwrap_or("-")));
+        println!("  {lang} {name}: as a settlement {:?}, as another thing {:?}, as a road {:?}", show(Kind::Settlement), show(Kind::Other), show(Kind::Road));
     }
     for w in names.take_warnings() {
         println!("  warning: {w}");
@@ -85,7 +83,7 @@ fn main() -> anyhow::Result<()> {
             let Some(gz) = a.get(z, x, y) else { continue };
             let t = Instant::now();
             let raw = mvt::gunzip_if_gzip(gz)?;
-            let out = mvt::attach(&raw, u32::from(z), x, y, &names, &[LABELS])?;
+            let out = mvt::attach(&raw, u32::from(z), x, y, &names, None, &[LABELS])?;
             if let Some(out) = &out {
                 mvt::gzip(out)?;
                 changed += 1;

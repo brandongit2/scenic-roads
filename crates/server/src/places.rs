@@ -229,6 +229,10 @@ struct Label<'a> {
     id: Option<u64>,
     name: &'a str,
     en: Option<&'a str>,
+    /// Its kana reading (romanised as its own English when it has no other) and the languages OSM
+    /// gives its name (`l`).
+    kana: Option<&'a str>,
+    langs: Option<&'a str>,
     kind: &'a str,
     class: &'a str,
     /// dem/labels.py's importance (its kind's own scale), the zoom it shows from at the default
@@ -276,7 +280,7 @@ fn each_label(tile: &[u8], z: u8, x: u32, y: u32, mut f: impl FnMut(&Label)) -> 
     let t = names::mvt::Tile::decode(&raw)?;
     for layer in t.layers.iter().filter(|l| l.name == "l" && l.extent > 0) {
         let key = |k: &str| layer.keys.iter().position(|x| x == k).map(|i| i as u32);
-        let (kn, ken, kk, kc, ks, kmz, kms) = (key("n"), key("en"), key("k"), key("c"), key("s"), key("mz"), key("ms"));
+        let (kn, ken, kk, kc, ks, kmz, kms, kkana, kl) = (key("n"), key("en"), key("k"), key("c"), key("s"), key("mz"), key("ms"), key("kana"), key("l"));
         for feat in &layer.features {
             let get = |k: Option<u32>| -> Option<&names::mvt::Value> {
                 let k = k?;
@@ -298,6 +302,8 @@ fn each_label(tile: &[u8], z: u8, x: u32, y: u32, mut f: impl FnMut(&Label)) -> 
                 id: feat.id,
                 name,
                 en: text(ken),
+                kana: text(kkana),
+                langs: text(kl),
                 kind: text(kk).unwrap_or_default(),
                 class: text(kc).unwrap_or_default(),
                 s: num(ks).unwrap_or(0.0),
@@ -402,7 +408,7 @@ impl Chunk {
     /// Adds a label (not an isolated dwelling's: a farm's name at most) with its names and the
     /// map's for it: `names`, the translations (plan §7; None before they've loaded), read where
     /// it is, as the map's server does for its tiles (names::mvt::attach).
-    fn add(&mut self, l: &Label, names: Option<&names::Names>) {
+    fn add(&mut self, l: &Label, names: Option<&names::Namer>) {
         let Some(kind) = KINDS.iter().position(|k| *k == l.kind) else { return };
         if l.class == "isolated_dwelling" {
             return;
@@ -415,14 +421,21 @@ impl Chunk {
             }
             None => return,
         };
+        // Its own English: its `en`, else its kana reading romanised.
+        let kana_en = if l.en.is_none() { l.kana.and_then(names::romaji::hepburn) } else { None };
+        let own = l.en.or(kana_en.as_deref());
         let shown = match names {
-            Some(n) => n.display_ref(names::Kind::Place, l.name, l.en, l.lon, l.lat),
-            None => names::DisplayRef::new(l.name, l.en),
+            Some(n) => {
+                let kind = if l.kind == "place" { names::Kind::of_place(l.class) } else { names::Kind::Other };
+                let osm: Vec<names::Lang> = l.langs.map(|v| v.split(',').filter_map(names::Lang::parse).collect()).unwrap_or_default();
+                n.display_at(kind, l.name, own, &osm, l.lon, l.lat)
+            }
+            None => names::DisplayRef::new(l.name, own),
         };
         // Folded, each name once (one that folds to nothing, or to one before it, not again).
         let mut buf = std::mem::take(&mut self.buf);
         buf.clear();
-        for s in [Some(l.name), l.en, Some(shown.main), shown.sub].into_iter().flatten() {
+        for s in [Some(l.name), own, Some(shown.main), shown.sub].into_iter().flatten() {
             let at = buf.len();
             fold_into(s, &mut buf);
             if at == buf.len() || buf[..at].split(SEP).any(|g| g == &buf[at..]) {
@@ -439,7 +452,7 @@ impl Chunk {
             self.starts.push(self.folded.len() as u32);
             self.folded.extend_from_slice(buf.as_bytes());
             buf.clear();
-            put_names(&mut buf, l.name, l.en, shown.main, shown.sub);
+            put_names(&mut buf, l.name, own, shown.main, shown.sub);
             self.places.push(Place {
                 lon: l.lon as f32,
                 lat: l.lat as f32,
@@ -470,7 +483,7 @@ impl Chunk {
 impl Places {
     /// The places among `labels` (as one pack's), named with `names`.
     #[cfg(test)]
-    fn from_labels(labels: &[Label], names: Option<&names::Names>) -> Places {
+    fn from_labels(labels: &[Label], names: Option<&names::Namer>) -> Places {
         let mut c = Chunk::default();
         for l in labels {
             c.add(l, names);
@@ -723,7 +736,7 @@ struct Built {
 /// The places in `packs` (`sources`), named with `names` (the translations; None before they've
 /// loaded), made on THREADS of their own. A pack or a tile that can't be read is passed over (and
 /// counted); a build that read none is a failure, with why.
-fn build(data: &Data, packs: &[(String, u8)], names: Option<&names::Names>) -> Result<Built> {
+fn build(data: &Data, packs: &[(String, u8)], names: Option<&names::Namer>) -> Result<Built> {
     if packs.is_empty() {
         return Ok(Built::default());
     }
@@ -757,7 +770,7 @@ fn build(data: &Data, packs: &[(String, u8)], names: Option<&names::Names>) -> R
 }
 
 /// The places in one pack's tiles at zoom `z`.
-fn read_pack(data: &Data, content: &str, z: u8, names: Option<&names::Names>) -> Result<Chunk> {
+fn read_pack(data: &Data, content: &str, z: u8, names: Option<&names::Namer>) -> Result<Chunk> {
     let mut c = Chunk::default();
     data.pack_tiles(content, z, |x, y, b| match each_label(b, z, x, y, |l| c.add(l, names)) {
         Ok(()) => c.tiles += 1,
@@ -975,7 +988,7 @@ mod tests {
     use super::*;
 
     fn label(name: &'static str, en: Option<&'static str>, kind: &'static str, class: &'static str, s: f64, lon: f64, lat: f64) -> Label<'static> {
-        Label { id: None, name, en, kind, class, s, mz: 10.0, ms: None, lon, lat }
+        Label { id: None, name, en, kana: None, langs: None, kind, class, s, mz: 10.0, ms: None, lon, lat }
     }
 
     /// Each hit's name as the map shows it, and its class.
@@ -1090,8 +1103,9 @@ mod tests {
         assert_eq!(Places::from_labels(&[banff, near, other, bare, bare], None).len(), 5);
     }
 
-    /// Translation tables, as the server reads them (`translations/<area>/…`), long settled.
-    fn tables(lines: &[(&str, &str)]) -> (tempfile::TempDir, names::Names) {
+    /// Translation lines, as the server reads them, long settled, with the languages spoken in a
+    /// box around Japan and one around France.
+    fn tables(lines: &[(&str, &str)]) -> (tempfile::TempDir, names::Namer) {
         let dir = tempfile::tempdir().unwrap();
         for (rel, text) in lines {
             let p = dir.path().join(rel);
@@ -1101,34 +1115,41 @@ mod tests {
             f.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))).unwrap();
         }
         let n = names::Names::load(dir.path()).unwrap();
-        (dir, n)
+        let pt = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
+        let rect = |code: &str, w: f64, s: f64, e: f64, n: f64| names::spoken::Area { code: code.into(), area_km2: (e - w) * (n - s), polygons: vec![vec![vec![pt(w, s), pt(e, s), pt(e, n), pt(w, n)]]] };
+        let spoken = names::Spoken::build([rect("JP", 128.0, 30.0, 146.0, 46.0), rect("FR", -5.0, 42.0, 8.0, 51.0)]);
+        (dir, names::Namer { names: n, spoken: Some(std::sync::Arc::new(spoken)) })
     }
 
     #[test]
     fn what_the_map_shows_is_found_and_said_with_the_places_own_names() {
-        assert_eq!((names::area_at(141.06, 38.37), names::area_at(1.0, 47.0)), (Some("jp"), Some("fr")));
-        let (_dir, n) = tables(&[
-            ("jp/places-jp.jsonl", "{\"n\": \"松島\", \"main\": \"松島\", \"sub\": \"Matsu-shima\"}\n"),
-            ("fr/places-fr.jsonl", "{\"n\": \"Château\", \"main\": \"Castle\", \"sub\": null}\n"),
-        ]);
+        let (_dir, n) = tables(&[(
+            "0-converted/all.jsonl",
+            "{\"n\": \"松島\", \"kind\": \"settlement\", \"langs\": \"ja\", \"main\": \"松島\", \"sub\": \"Matsu-shima\"}\n\
+             {\"n\": \"Château\", \"kind\": [\"settlement\", \"other\"], \"langs\": \"fr\", \"main\": \"Castle\", \"sub\": null}\n",
+        )]);
         let p = Places::from_labels(
             &[
                 label("松島", None, "place", "town", 60.0, 141.06, 38.37),
-                label("Château", Some("The Castle"), "place", "hamlet", 30.0, 1.0, 47.0),
-                // (No line for it: its own English the sub, as on the map.)
-                label("Banff", Some("Banff Townsite"), "place", "town", 62.0, -115.57, 51.18),
+                label("Château", None, "place", "hamlet", 30.0, 1.0, 47.0),
+                // Its own English the sub, over the name's line, as on the map.
+                label("Château", Some("The Castle"), "place", "hamlet", 30.0, 2.0, 47.0),
+                Label { kana: Some("ばんふ"), ..label("Banff", None, "place", "town", 62.0, -115.57, 51.18) },
             ],
             Some(&n),
         );
         let f = p.place(&p.search("shima", None, 1)[0]);
         assert_eq!((f.name, f.en, f.main, f.sub), ("松島", None, "松島", Some("Matsu-shima")));
         // The map's main, the place's own name, its own English: each finds it.
-        for q in ["castle", "chateau", "the castle"] {
+        for q in ["castle", "chateau"] {
             let f = p.place(&p.search(q, None, 1)[0]);
-            assert_eq!((f.name, f.en, f.main, f.sub), ("Château", Some("The Castle"), "Castle", None), "{q}");
+            assert_eq!((f.name, f.en, f.main, f.sub), ("Château", None, "Castle", None), "{q}");
         }
-        let f = p.place(&p.search("townsite", None, 1)[0]);
-        assert_eq!((f.name, f.en, f.main, f.sub), ("Banff", Some("Banff Townsite"), "Banff", Some("Banff Townsite")));
+        let f = p.place(&p.search("the castle", None, 1)[0]);
+        assert_eq!((f.name, f.en, f.main, f.sub), ("Château", Some("The Castle"), "Château", Some("The Castle")));
+        // A kana reading, romanised, is its own English.
+        let f = p.place(&p.search("banfu", None, 1)[0]);
+        assert_eq!((f.name, f.en, f.main, f.sub), ("Banff", Some("Banfu"), "Banff", Some("Banfu")));
         // Its whole main name is a whole name.
         assert_eq!(p.search("castle", None, 1)[0].rank, 330.0);
     }
@@ -1269,19 +1290,23 @@ mod tests {
         let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         // Yokohama's tile is in Japan's area (z8 130/70 isn't: a tile there instead).
         let (x, y) = (227, 101);
-        let lo = labels_tile(&[(2, "横浜", Some("Yokohama"), "place", "city", 76.0, (2048, 2048))]);
+        let lo = labels_tile(&[(2, "横浜", None, "place", "city", 76.0, (2048, 2048))]);
         catalog(nas.path(), 1, &[("3/7/3", 1, vec![(8, x, y, lo)])], &[]);
-        let p = home.path().join("translations/jp/places-jp.jsonl");
+        let p = home.path().join("translations/0-converted/japanese.jsonl");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(&p, "{\"n\": \"横浜\", \"main\": \"横浜\", \"sub\": \"Yokohama-shi\"}\n").unwrap();
+        std::fs::write(&p, "{\"n\": \"横浜\", \"kind\": \"settlement\", \"langs\": \"ja\", \"main\": \"横浜\", \"sub\": \"Yokohama-shi\"}\n").unwrap();
         std::fs::File::options().write(true).open(&p).unwrap().set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now() - Duration::from_secs(3600))).unwrap();
         let s = crate::test_state(home.path(), nas.path());
+        let pt = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
+        let japan = names::spoken::Area { code: "JP".into(), area_km2: 1.0, polygons: vec![vec![vec![pt(128.0, 30.0), pt(146.0, 30.0), pt(146.0, 46.0), pt(128.0, 46.0)]]] };
+        s.names.set_spoken(names::Spoken::build([japan]));
         let (lon, lat) = names::mvt::tile_to_lonlat(8, x, y, 4096, 2048.0, 2048.0);
-        assert_eq!(names::area_at(lon, lat), Some("jp"));
+        assert_eq!(s.names.snapshot().map(|n| n.here(lon, lat).iter().map(|l| l.as_str().to_owned()).collect::<Vec<_>>()), None);
         s.names.reload();
+        assert_eq!(s.names.snapshot().unwrap().here(lon, lat).iter().map(|l| l.as_str()).collect::<Vec<_>>(), ["ja"]);
         assert_eq!(ready(&s).await["ready"], true);
         let h = &ask(&s, "yokohama shi", None).await["hits"][0];
-        assert_eq!((h["name"].as_str(), h["en"].as_str(), h["main"].as_str(), h["sub"].as_str()), (Some("横浜"), Some("Yokohama"), Some("横浜"), Some("Yokohama-shi")));
+        assert_eq!((h["name"].as_str(), h["en"].as_str(), h["main"].as_str(), h["sub"].as_str()), (Some("横浜"), None, Some("横浜"), Some("Yokohama-shi")));
     }
 
     #[tokio::test]

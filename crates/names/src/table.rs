@@ -1,15 +1,18 @@
-//! One translation file, compiled: every line's name, main and sub packed into a single byte arena,
-//! found through an open-addressing index. About 1.5× the bytes of the strings themselves (95 MB
-//! for the 3.3 M lines of 2026-10, whose names, mains and subs come to 64 MB); a hash map of boxed
-//! strings would take about 300 MB.
+//! One translation file, compiled: every line's name, kinds, languages, main and sub packed into a
+//! single byte arena, found by name through an open-addressing index. A name's lines are chained,
+//! the latest first, so a later line wins for the same name, kind and language.
 //!
-//! A record is `varint(len n) n · varint(0 | len main + 1) [main] · varint(0 | len sub + 1) [sub]`:
-//! a main of 0 is the name itself (nearly every line), a sub of 0 is none.
+//! A record is `varint(len n) n · u8 kinds · u8 nlangs · nlangs × [u8; 4] · varint(0 or len main
+//! plus 1) [main] · varint(0 or len sub plus 1) [sub] · u32 previous (0 or offset plus 1)`: a main
+//! of 0 is the name itself (nearly every line), a sub of 0 is none.
 
+use crate::display::Kind;
+use crate::spoken::Lang;
 use anyhow::{bail, Result};
 use serde::de::{Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize;
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io::BufRead;
 
@@ -67,15 +70,28 @@ fn get_varint(buf: &[u8], pos: &mut usize) -> Option<usize> {
     None
 }
 
+/// The bit of a kind in a line's kinds.
+pub(crate) fn kind_bit(k: Kind) -> u8 {
+    match k {
+        Kind::Road => 1,
+        Kind::Settlement => 2,
+        Kind::Other => 4,
+    }
+}
+
 /// A compiled translation file.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct Table {
-    arena: Box<[u8]>,
-    ctrl: Box<[u8]>,
-    offs: Box<[u32]>,
-    len: usize,
-    /// Lines left out as not translated yet (`via` "todo" or "skipped").
-    ignored: usize,
+    arena: Vec<u8>,
+    ctrl: Vec<u8>,
+    /// Per slot, the name's latest record.
+    offs: Vec<u32>,
+    /// Distinct names.
+    names: usize,
+    /// Lines kept.
+    lines: usize,
+    /// The languages its lines hold for.
+    langs: BTreeSet<Lang>,
 }
 
 /// A line as stored: `main` is `None` when it is the name itself.
@@ -85,9 +101,32 @@ pub(crate) struct Rec<'a> {
     pub sub: Option<&'a str>,
 }
 
+/// A record's parts.
+struct Raw<'a> {
+    kinds: u8,
+    langs: &'a [u8],
+    rec: Rec<'a>,
+    prev: Option<usize>,
+}
+
 impl Table {
-    /// The line for `name`, whose [`hash`] is `h`.
-    pub fn get(&self, h: u64, name: &[u8]) -> Option<Rec<'_>> {
+    /// The latest line for `name` (whose [`hash`] is `h`) that holds for kind `k` and language
+    /// `lang`.
+    pub fn get(&self, h: u64, name: &[u8], k: Kind, lang: Lang) -> Option<Rec<'_>> {
+        let mut off = self.find(h, name)?;
+        let bit = kind_bit(k);
+        let want = lang_bytes(lang);
+        loop {
+            let r = self.raw_at(off)?;
+            if r.kinds & bit != 0 && r.langs.chunks_exact(4).any(|l| l == want) {
+                return Some(r.rec);
+            }
+            off = r.prev?;
+        }
+    }
+
+    /// The name's latest record's offset.
+    fn find(&self, h: u64, name: &[u8]) -> Option<usize> {
         if self.ctrl.is_empty() {
             return None;
         }
@@ -100,7 +139,7 @@ impl Table {
                 c if c == t => {
                     let off = self.offs[i] as usize;
                     if self.name_at(off) == Some(name) {
-                        return self.rec_at(off);
+                        return Some(off);
                     }
                 }
                 _ => {}
@@ -109,18 +148,23 @@ impl Table {
         }
     }
 
+    /// Distinct names.
     pub fn len(&self) -> usize {
-        self.len
+        self.names
     }
 
-    /// Lines left out as not translated yet.
-    pub fn ignored(&self) -> usize {
-        self.ignored
+    /// Lines kept.
+    pub fn lines(&self) -> usize {
+        self.lines
+    }
+
+    pub fn langs(&self) -> &BTreeSet<Lang> {
+        &self.langs
     }
 
     /// Heap bytes held.
     pub fn heap_bytes(&self) -> usize {
-        self.arena.len() + self.ctrl.len() + self.offs.len() * 4
+        self.arena.capacity() + self.ctrl.capacity() + self.offs.capacity() * 4
     }
 
     fn name_at(&self, off: usize) -> Option<&[u8]> {
@@ -129,11 +173,16 @@ impl Table {
         self.arena.get(p..p + n)
     }
 
-    fn rec_at(&self, off: usize) -> Option<Rec<'_>> {
+    fn raw_at(&self, off: usize) -> Option<Raw<'_>> {
         let a = &self.arena;
         let mut p = off;
         let n = get_varint(a, &mut p)?;
         p += n;
+        let kinds = *a.get(p)?;
+        let nl = *a.get(p + 1)? as usize;
+        p += 2;
+        let langs = a.get(p..p + nl * 4)?;
+        p += nl * 4;
         let part = |p: &mut usize| -> Option<Option<&str>> {
             let m = get_varint(a, p)?;
             if m == 0 {
@@ -145,13 +194,85 @@ impl Table {
         };
         let main = part(&mut p)?;
         let sub = part(&mut p)?;
-        Some(Rec { main, sub })
+        let prev = u32::from_le_bytes(a.get(p..p + 4)?.try_into().ok()?);
+        Some(Raw { kinds, langs, rec: Rec { main, sub }, prev: prev.checked_sub(1).map(|x| x as usize) })
     }
 
-    /// Compiles a file's lines (see [`parse_line`]); later lines win for the same name, and lines
-    /// not translated yet are left out (counted).
+    fn push(&mut self, e: &Entry) -> Result<()> {
+        let Ok(off) = u32::try_from(self.arena.len()) else {
+            bail!("over 4 GB of names in one file");
+        };
+        if (self.names + 1) as f64 > self.ctrl.len() as f64 * MAX_LOAD {
+            self.grow();
+        }
+        let h = hash(e.n.as_bytes());
+        let mask = self.ctrl.len() - 1;
+        let tg = tag(h);
+        let mut i = h as usize & mask;
+        let prev = loop {
+            let c = self.ctrl[i];
+            if c == 0 {
+                break None;
+            }
+            if c == tg && self.name_at(self.offs[i] as usize) == Some(e.n.as_bytes()) {
+                break Some(self.offs[i]);
+            }
+            i = (i + 1) & mask;
+        };
+        let a = &mut self.arena;
+        put_varint(a, e.n.len());
+        a.extend_from_slice(e.n.as_bytes());
+        a.push(e.kinds);
+        a.push(e.langs.len() as u8);
+        for l in &e.langs {
+            a.extend_from_slice(&lang_bytes(*l));
+        }
+        if e.main == e.n {
+            put_varint(a, 0);
+        } else {
+            put_varint(a, e.main.len() + 1);
+            a.extend_from_slice(e.main.as_bytes());
+        }
+        match &e.sub {
+            None => put_varint(a, 0),
+            Some(s) => {
+                put_varint(a, s.len() + 1);
+                a.extend_from_slice(s.as_bytes());
+            }
+        }
+        a.extend_from_slice(&prev.map_or(0, |p| p + 1).to_le_bytes());
+        if prev.is_none() {
+            self.ctrl[i] = tg;
+            self.names += 1;
+        }
+        self.offs[i] = off;
+        self.lines += 1;
+        self.langs.extend(e.langs.iter().copied());
+        Ok(())
+    }
+
+    fn grow(&mut self) {
+        let slots = (self.ctrl.len() * 2).max(1024);
+        let (old_ctrl, old_offs) = (std::mem::replace(&mut self.ctrl, vec![0; slots]), std::mem::replace(&mut self.offs, vec![0; slots]));
+        let mask = slots - 1;
+        for (c, off) in old_ctrl.into_iter().zip(old_offs) {
+            if c == 0 {
+                continue;
+            }
+            let h = self.name_at(off as usize).map_or(0, hash);
+            let mut i = h as usize & mask;
+            while self.ctrl[i] != 0 {
+                i = (i + 1) & mask;
+            }
+            self.ctrl[i] = c;
+            self.offs[i] = off;
+        }
+    }
+
+    /// Compiles a file's lines (see [`parse_line`]); later lines win for the same name, kind and
+    /// language, and lines not translated yet are left out (counted).
     pub fn read(r: &mut impl BufRead) -> Result<(Table, Report)> {
-        let mut b = Builder::default();
+        let mut t = Table::default();
         let mut report = Report::default();
         let mut line = Vec::new();
         loop {
@@ -171,108 +292,48 @@ impl Table {
                 continue;
             }
             match parse_line(text) {
-                Parsed::Entry(entry) => b.push(&entry.n, &entry.main, entry.sub.as_deref())?,
+                Parsed::Entry(entry) => t.push(&entry)?,
                 Parsed::NotYet => report.ignored += 1,
+                Parsed::Old if complete => report.old += 1,
                 Parsed::Bad if complete => {
                     report.malformed += 1;
                     report.first_malformed.get_or_insert(report.lines);
                 }
                 // Still being written, or cut short: not a line yet.
-                Parsed::Bad => report.unfinished = true,
+                Parsed::Bad | Parsed::Old => report.unfinished = true,
             }
         }
-        let mut table = b.finish();
-        table.ignored = report.ignored as usize;
-        Ok((table, report))
+        t.arena.shrink_to_fit();
+        Ok((t, report))
     }
 }
 
-/// What reading a file found besides its entries.
+fn lang_bytes(l: Lang) -> [u8; 4] {
+    let mut b = [0u8; 4];
+    b[..l.as_str().len()].copy_from_slice(l.as_str().as_bytes());
+    b
+}
+
+/// What reading a file found besides its lines.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Report {
     pub bytes: u64,
     pub lines: u64,
     /// Lines not translated yet, left out.
     pub ignored: u64,
+    /// Lines of the area tables' format (no kind or no languages), left out.
+    pub old: u64,
     pub malformed: u64,
     pub first_malformed: Option<u64>,
     pub unfinished: bool,
-}
-
-#[derive(Default)]
-struct Builder {
-    arena: Vec<u8>,
-    items: Vec<(u64, u32)>,
-}
-
-impl Builder {
-    fn push(&mut self, n: &str, main: &str, sub: Option<&str>) -> Result<()> {
-        let Ok(off) = u32::try_from(self.arena.len()) else {
-            bail!("over 4 GB of names in one file");
-        };
-        let a = &mut self.arena;
-        put_varint(a, n.len());
-        a.extend_from_slice(n.as_bytes());
-        if main == n {
-            put_varint(a, 0);
-        } else {
-            put_varint(a, main.len() + 1);
-            a.extend_from_slice(main.as_bytes());
-        }
-        match sub {
-            None => put_varint(a, 0),
-            Some(s) => {
-                put_varint(a, s.len() + 1);
-                a.extend_from_slice(s.as_bytes());
-            }
-        }
-        self.items.push((hash(n.as_bytes()), off));
-        Ok(())
-    }
-
-    fn finish(self) -> Table {
-        let Builder { arena, items } = self;
-        let slots = if items.is_empty() {
-            0
-        } else {
-            ((items.len() as f64 / MAX_LOAD).ceil() as usize + 1).next_power_of_two()
-        };
-        let mut t = Table { arena: Box::default(), ctrl: vec![0u8; slots].into(), offs: vec![0u32; slots].into(), len: 0, ignored: 0 };
-        let mask = slots.wrapping_sub(1);
-        for (h, off) in items {
-            let tg = tag(h);
-            let mut i = h as usize & mask;
-            loop {
-                let c = t.ctrl[i];
-                if c == 0 {
-                    t.ctrl[i] = tg;
-                    t.offs[i] = off;
-                    t.len += 1;
-                    break;
-                }
-                // The same name again: the later line wins.
-                if c == tg && name_in(&arena, t.offs[i]) == name_in(&arena, off) {
-                    t.offs[i] = off;
-                    break;
-                }
-                i = (i + 1) & mask;
-            }
-        }
-        t.arena = arena.into_boxed_slice();
-        t
-    }
-}
-
-fn name_in(arena: &[u8], off: u32) -> Option<&[u8]> {
-    let mut p = off as usize;
-    let n = get_varint(arena, &mut p)?;
-    arena.get(p..p + n)
 }
 
 /// A translation line, interpreted.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Entry<'a> {
     pub n: Cow<'a, str>,
+    pub kinds: u8,
+    pub langs: Vec<Lang>,
     pub main: Cow<'a, str>,
     pub sub: Option<Cow<'a, str>>,
 }
@@ -281,16 +342,18 @@ pub(crate) struct Entry<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Parsed<'a> {
     Entry(Entry<'a>),
-    /// A well-formed line not translated yet (`"via": "todo"` or `"skipped"`): as if absent, so it
-    /// doesn't hide the thing's own English.
+    /// A well-formed line not translated yet (`"via": "todo"` or `"skipped"`): as if absent.
     NotYet,
-    /// Not JSON, no name, or neither format.
+    /// A line of the area tables (`{"n", "main", "sub"}` or `{"n", "en"}`, no kind or languages).
+    Old,
+    /// Not JSON, no name, or a kind or language that can't be read.
     Bad,
 }
 
-/// Reads one line: the display format `{"n", "main", "sub"}` (a null or empty main is the name),
-/// else the older `{"n", "en"}` (main is the name, sub the English; null means checked, nothing to
-/// add). Other fields are ignored, but for `via`, which marks lines not translated yet.
+/// Reads one line: `{"n", "kind", "langs", "main", "sub"}`, `kind` one of road, settlement, other
+/// or a list of them, `langs` a language or a list (`zh_Hant` is `zh`). A null or empty main is the
+/// name, a null or empty sub none. Other fields are ignored, but for `via`, which marks lines not
+/// translated yet.
 pub(crate) fn parse_line<'a>(text: &'a [u8]) -> Parsed<'a> {
     let Ok(line) = serde_json::from_slice::<Line<'a>>(text) else { return Parsed::Bad };
     let Some(n) = line.n.filter(|n| !n.is_empty()) else { return Parsed::Bad };
@@ -300,19 +363,37 @@ pub(crate) fn parse_line<'a>(text: &'a [u8]) -> Parsed<'a> {
             _ => None,
         }
     };
-    let entry = if !matches!(line.main, Field::Missing) || !matches!(line.sub, Field::Missing) {
-        let main = nonempty(line.main).unwrap_or_else(|| n.clone());
-        Entry { n, main, sub: nonempty(line.sub) }
-    } else if !matches!(line.en, Field::Missing) {
-        Entry { main: n.clone(), n, sub: nonempty(line.en) }
-    } else {
+    if matches!(line.main, Field::Missing) && matches!(line.sub, Field::Missing) && matches!(line.en, Field::Missing) {
         return Parsed::Bad;
-    };
-    if line.not_yet {
-        Parsed::NotYet
-    } else {
-        Parsed::Entry(entry)
     }
+    let (Some(kinds), Some(langs)) = (line.kinds, line.langs) else {
+        return if line.kind_bad || line.langs_bad { Parsed::Bad } else { Parsed::Old };
+    };
+    let mut ls: Vec<Lang> = Vec::new();
+    for l in &langs {
+        match Lang::parse(l) {
+            Some(l) if !ls.contains(&l) => ls.push(l),
+            Some(_) => {}
+            None => return Parsed::Bad,
+        }
+    }
+    let mut bits = 0u8;
+    for k in &kinds {
+        bits |= match k.as_ref() {
+            "road" => 1,
+            "settlement" => 2,
+            "other" => 4,
+            _ => return Parsed::Bad,
+        };
+    }
+    if bits == 0 || ls.is_empty() || ls.len() > 255 {
+        return Parsed::Bad;
+    }
+    if line.not_yet {
+        return Parsed::NotYet;
+    }
+    let main = nonempty(line.main).unwrap_or_else(|| n.clone());
+    Parsed::Entry(Entry { n, kinds: bits, langs: ls, main, sub: nonempty(line.sub) })
 }
 
 /// A field of a line: absent, null, or a string (any other type fails the line).
@@ -330,8 +411,67 @@ struct Line<'a> {
     main: Field<'a>,
     sub: Field<'a>,
     en: Field<'a>,
+    kinds: Option<Vec<Cow<'a, str>>>,
+    kind_bad: bool,
+    langs: Option<Vec<Cow<'a, str>>>,
+    langs_bad: bool,
     /// `via` is "todo" or "skipped".
     not_yet: bool,
+}
+
+/// A string or a list of strings (`kind`, `langs`); anything else is `None`.
+struct OneOrMany<'a>(Option<Vec<Cow<'a, str>>>);
+
+impl<'de> Deserialize<'de> for OneOrMany<'de> {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct V;
+        impl<'de> Visitor<'de> for V {
+            type Value = OneOrMany<'de>;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a string or a list of strings")
+            }
+            fn visit_borrowed_str<E>(self, s: &'de str) -> Result<Self::Value, E> {
+                Ok(OneOrMany(Some(vec![Cow::Borrowed(s)])))
+            }
+            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E> {
+                Ok(OneOrMany(Some(vec![Cow::Owned(s.to_owned())])))
+            }
+            fn visit_string<E>(self, s: String) -> Result<Self::Value, E> {
+                Ok(OneOrMany(Some(vec![Cow::Owned(s)])))
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut out = Vec::new();
+                let mut ok = true;
+                while let Some(v) = seq.next_element::<serde_json::Value>()? {
+                    match v {
+                        serde_json::Value::String(s) => out.push(Cow::Owned(s)),
+                        _ => ok = false,
+                    }
+                }
+                Ok(OneOrMany(ok.then_some(out)))
+            }
+            fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(OneOrMany(None))
+            }
+            fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(OneOrMany(None))
+            }
+            fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(OneOrMany(None))
+            }
+            fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(OneOrMany(None))
+            }
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(OneOrMany(None))
+            }
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
+                Ok(OneOrMany(None))
+            }
+        }
+        d.deserialize_any(V)
+    }
 }
 
 /// The `via` field: whether it marks a line not translated yet. Any other value, of any type, is
@@ -419,6 +559,14 @@ impl<'de> Deserialize<'de> for Line<'de> {
                         "main" => line.main = field(map.next_value()?),
                         "sub" => line.sub = field(map.next_value()?),
                         "en" => line.en = field(map.next_value()?),
+                        "kind" => {
+                            line.kinds = map.next_value::<OneOrMany<'de>>()?.0;
+                            line.kind_bad = line.kinds.is_none();
+                        }
+                        "langs" => {
+                            line.langs = map.next_value::<OneOrMany<'de>>()?.0;
+                            line.langs_bad = line.langs.is_none();
+                        }
                         "via" => line.not_yet = map.next_value::<Via>()?.0,
                         _ => {
                             map.next_value::<IgnoredAny>()?;
@@ -436,101 +584,98 @@ impl<'de> Deserialize<'de> for Line<'de> {
 mod tests {
     use super::*;
 
-    fn entry(text: &str) -> Option<(String, String, Option<String>)> {
+    fn l(s: &str) -> Lang {
+        Lang::parse(s).unwrap()
+    }
+
+    type Owned = (String, u8, Vec<String>, String, Option<String>);
+
+    fn entry(text: &str) -> Option<Owned> {
         match parse_line(text.as_bytes()) {
-            Parsed::Entry(e) => Some((e.n.into_owned(), e.main.into_owned(), e.sub.map(Cow::into_owned))),
+            Parsed::Entry(e) => Some((e.n.into_owned(), e.kinds, e.langs.iter().map(|x| x.as_str().to_owned()).collect(), e.main.into_owned(), e.sub.map(Cow::into_owned))),
             _ => None,
         }
     }
 
-    fn owned(n: &str, main: &str, sub: Option<&str>) -> Option<(String, String, Option<String>)> {
-        Some((n.to_owned(), main.to_owned(), sub.map(str::to_owned)))
+    fn owned(n: &str, kinds: u8, langs: &[&str], main: &str, sub: Option<&str>) -> Option<Owned> {
+        Some((n.to_owned(), kinds, langs.iter().map(|x| x.to_string()).collect(), main.to_owned(), sub.map(str::to_owned)))
     }
 
     #[test]
     fn lines() {
         assert_eq!(
-            entry(r#"{"n": "松島", "main": "松島", "sub": "Matsu-shima", "case": "7 romanise", "via": "rule:roman"}"#),
-            owned("松島", "松島", Some("Matsu-shima"))
+            entry(r#"{"n": "Lac Bleu", "kind": "other", "langs": ["fr"], "main": "Lac Bleu", "sub": "Blue Lake", "via": "agent:haiku"}"#),
+            owned("Lac Bleu", 4, &["fr"], "Lac Bleu", Some("Blue Lake"))
         );
         assert_eq!(
-            entry(r#"{"n": "Château", "main": "Castle", "sub": null, "case": "3", "via": "rule:bare", "check": "wikipedia"}"#),
-            owned("Château", "Castle", None)
+            entry(r#"{"n": "Château", "kind": ["settlement", "other"], "langs": "fr", "main": "Castle", "sub": null}"#),
+            owned("Château", 6, &["fr"], "Castle", None)
         );
-        // The older format.
-        assert_eq!(entry(r#"{"n": "Lac Blanc", "en": "White Lake"}"#), owned("Lac Blanc", "Lac Blanc", Some("White Lake")));
-        assert_eq!(entry(r#"{"n": "Montréal", "en": null}"#), owned("Montréal", "Montréal", None));
+        assert_eq!(entry(r#"{"n": "中山", "kind": "road", "langs": ["zh_Hant", "zh", "nan"], "sub": "Zhongshan"}"#), owned("中山", 1, &["zh", "nan"], "中山", Some("Zhongshan")));
         // A missing or empty main is the name; an empty sub is none; escapes are read.
-        assert_eq!(entry(r#"{"n": "A", "sub": "B"}"#), owned("A", "A", Some("B")));
-        assert_eq!(entry(r#"{"n": "A", "main": "", "sub": ""}"#), owned("A", "A", None));
-        assert_eq!(entry(r#"{"n": "L’Anse", "main": null, "sub": "Cove \"x\""}"#), owned("L’Anse", "L’Anse", Some("Cove \"x\"")));
+        assert_eq!(entry(r#"{"n": "A", "kind": "other", "langs": "fr", "main": "", "sub": ""}"#), owned("A", 4, &["fr"], "A", None));
+        assert_eq!(entry(r#"{"n": "L’Anse", "kind": "other", "langs": "fr", "main": null, "sub": "Cove \"x\""}"#), owned("L’Anse", 4, &["fr"], "L’Anse", Some("Cove \"x\"")));
         // Extra fields of any type, in any order.
-        assert_eq!(entry(r#"{"x": [1, {"y": null}], "sub": "S", "n": "N", "z": 3.5}"#), owned("N", "N", Some("S")));
-        // Malformed: not JSON, not an object, no name, an empty name, neither format, wrong types.
+        assert_eq!(entry(r#"{"x": [1, {"y": null}], "sub": "S", "langs": ["fr"], "n": "N", "z": 3.5, "kind": "road"}"#), owned("N", 1, &["fr"], "N", Some("S")));
+        // The area tables' lines: told apart, left out.
+        assert_eq!(parse_line(br#"{"n": "Lac Blanc", "en": "White Lake"}"#), Parsed::Old);
+        assert_eq!(parse_line(br#"{"n": "A", "main": "A", "sub": "B", "via": "native"}"#), Parsed::Old);
+        assert_eq!(parse_line(br#"{"n": "A", "kind": "other", "main": "A", "sub": "B"}"#), Parsed::Old);
         for bad in [
             "",
             "{",
             "[1, 2]",
-            r#"{"main": "A", "sub": "B"}"#,
-            r#"{"n": "", "main": "A"}"#,
-            r#"{"n": null, "en": "A"}"#,
-            r#"{"n": "A"}"#,
-            r#"{"n": "A", "case": "latin"}"#,
-            r#"{"n": 5, "en": "A"}"#,
-            r#"{"n": "A", "sub": 5}"#,
-            r#"{"n": "A", "en": "B"} trailing"#,
+            r#"{"main": "A", "sub": "B", "kind": "other", "langs": "fr"}"#,
+            r#"{"n": "", "main": "A", "kind": "other", "langs": "fr"}"#,
+            r#"{"n": "A", "kind": "other", "langs": "fr"}"#,
+            r#"{"n": "A", "sub": 5, "kind": "other", "langs": "fr"}"#,
+            r#"{"n": "A", "sub": "a", "kind": "village", "langs": "fr"}"#,
+            r#"{"n": "A", "sub": "a", "kind": [], "langs": "fr"}"#,
+            r#"{"n": "A", "sub": "a", "kind": "other", "langs": []}"#,
+            r#"{"n": "A", "sub": "a", "kind": "other", "langs": ["français"]}"#,
+            r#"{"n": "A", "sub": "a", "kind": "other", "langs": 5}"#,
+            r#"{"n": "A", "sub": "a", "kind": 5, "langs": "fr"}"#,
+            r#"{"n": "A", "sub": "a", "kind": "other", "langs": ["fr", 5]}"#,
         ] {
-            assert_eq!(entry(bad), None, "{bad}");
+            assert_eq!(parse_line(bad.as_bytes()), Parsed::Bad, "{bad}");
         }
-        assert_eq!(parse_line(b"{\"n\": \"\xff\", \"en\": null}"), Parsed::Bad);
-        // Not translated yet: left out, whatever else the line holds; other `via` values are kept.
-        for not_yet in [
-            r#"{"n": "轆牛嶺", "main": "轆牛嶺", "sub": null, "case": "7 romanise", "via": "todo"}"#,
-            r#"{"n": "迎仙谷", "main": "迎仙谷", "sub": null, "via": "skipped"}"#,
-            r#"{"n": "TDK 歴史みらい館", "main": "TDK", "sub": null, "via": "skipped"}"#,
-            r#"{"via": "todo", "n": "A", "en": "a"}"#,
-        ] {
-            assert_eq!(parse_line(not_yet.as_bytes()), Parsed::NotYet, "{not_yet}");
+        assert_eq!(parse_line(br#"{"n": "A", "kind": "other", "langs": "fr", "sub": null, "via": "todo"}"#), Parsed::NotYet);
+        assert_eq!(parse_line(br#"{"n": "A", "kind": "other", "langs": "fr", "sub": null, "via": "skipped"}"#), Parsed::NotYet);
+        assert!(entry(r#"{"n": "A", "kind": "other", "langs": "fr", "sub": "a", "via": "osm"}"#).is_some());
+        for odd in [r#"5"#, r#"null"#, r#"true"#, r#"["todo"]"#, r#"{"x": "todo"}"#] {
+            let text = format!("{{\"n\": \"A\", \"kind\": \"other\", \"langs\": \"fr\", \"sub\": \"a\", \"via\": {odd}}}");
+            assert!(entry(&text).is_some(), "{text}");
         }
-        assert_eq!(entry(r#"{"n": "A", "main": "A", "sub": "a", "via": "osm"}"#), owned("A", "A", Some("a")));
-        assert_eq!(entry(r#"{"n": "A", "sub": "a", "via": "TODO"}"#), owned("A", "A", Some("a")));
-        for odd in [r#"5"#, r#"null"#, r#"true"#, r#"-1.5"#, r#"["todo"]"#, r#"{"x": "todo"}"#] {
-            let text = format!("{{\"n\": \"A\", \"sub\": \"a\", \"via\": {odd}}}");
-            assert_eq!(entry(&text), owned("A", "A", Some("a")), "{text}");
-        }
-        // A malformed line stays malformed, marked or not.
-        assert_eq!(parse_line(br#"{"n": "A", "via": "todo"}"#), Parsed::Bad);
     }
 
     #[test]
     fn table() {
-        let text = "\u{feff}{\"n\": \"松島\", \"main\": \"松島\", \"sub\": \"Matsu-shima\"}\n\
+        let text = "\u{feff}{\"n\": \"松島\", \"kind\": \"other\", \"langs\": \"ja\", \"sub\": \"Matsushima\"}\n\
             not json\n\
-            {\"n\": \"Église\", \"main\": \"Église\", \"sub\": null, \"via\": \"todo\"}\n\
+            {\"n\": \"Église\", \"kind\": \"other\", \"langs\": \"fr\", \"sub\": null, \"via\": \"todo\"}\n\
             \n\
-            {\"n\": \"Église\", \"main\": \"Church\", \"sub\": null}\r\n\
+            {\"n\": \"Église\", \"kind\": [\"settlement\", \"other\"], \"langs\": [\"fr\", \"br\"], \"main\": \"Church\", \"sub\": null}\r\n\
+            {\"n\": \"Église\", \"kind\": \"settlement\", \"langs\": \"fr\", \"main\": \"Église\", \"sub\": null}\n\
             {\"n\": \"Lac\", \"en\": \"Lake\"}\n\
-            {\"n\": \"Lac\", \"en\": \"Lake (again)\"}\n\
-            {\"n\": \"Unfinished\", \"main\":";
+            {\"n\": \"Unfinished\", \"kind\": \"other\", \"langs\": \"fr\", \"main\":";
         let (t, report) = Table::read(&mut text.as_bytes()).expect("read");
-        assert_eq!(t.len(), 3);
-        assert_eq!((t.ignored(), report.ignored), (1, 1));
-        assert_eq!(report.malformed, 1);
-        assert_eq!(report.first_malformed, Some(2));
+        assert_eq!((t.len(), t.lines()), (2, 3));
+        assert_eq!((report.ignored, report.old, report.malformed, report.first_malformed), (1, 1, 1, Some(2)));
         assert!(report.unfinished);
         assert_eq!(report.bytes, text.len() as u64);
-        let get = |n: &str| t.get(hash(n.as_bytes()), n.as_bytes());
-        assert_eq!(get("松島"), Some(Rec { main: None, sub: Some("Matsu-shima") }));
-        assert_eq!(get("Église"), Some(Rec { main: Some("Church"), sub: None }));
-        assert_eq!(get("Lac"), Some(Rec { main: None, sub: Some("Lake (again)") }));
-        assert_eq!(get("Unfinished"), None);
-        assert_eq!(get("松"), None);
-        // A complete last line without its newline counts.
-        let (t, report) = Table::read(&mut &b"{\"n\": \"A\", \"en\": \"B\"}"[..]).expect("read");
-        assert_eq!((t.len(), report.unfinished), (1, false));
-        // Empty files.
+        assert_eq!(t.langs().iter().map(Lang::as_str).collect::<Vec<_>>(), ["br", "fr", "ja"]);
+        let get = |n: &str, k: Kind, lang: &str| t.get(hash(n.as_bytes()), n.as_bytes(), k, l(lang));
+        assert_eq!(get("松島", Kind::Other, "ja"), Some(Rec { main: None, sub: Some("Matsushima") }));
+        assert_eq!(get("松島", Kind::Other, "zh"), None);
+        assert_eq!(get("松島", Kind::Road, "ja"), None);
+        // The later line wins for its kind and language only.
+        assert_eq!(get("Église", Kind::Settlement, "fr"), Some(Rec { main: None, sub: None }));
+        assert_eq!(get("Église", Kind::Settlement, "br"), Some(Rec { main: Some("Church"), sub: None }));
+        assert_eq!(get("Église", Kind::Other, "fr"), Some(Rec { main: Some("Church"), sub: None }));
+        assert_eq!(get("Lac", Kind::Other, "fr"), None);
+        assert_eq!(get("Unfinished", Kind::Other, "fr"), None);
         let (t, _) = Table::read(&mut &b""[..]).expect("read");
-        assert_eq!((t.len(), t.get(hash(b"A"), b"A")), (0, None));
+        assert_eq!((t.len(), t.get(hash(b"A"), b"A", Kind::Other, l("fr"))), (0, None));
     }
 
     #[test]
@@ -538,7 +683,7 @@ mod tests {
         let long = "x".repeat(300);
         let mut text = String::new();
         for i in 0..20_000 {
-            text.push_str(&format!("{{\"n\": \"name {i}\", \"main\": \"main {i}\", \"sub\": \"{long}{i}\"}}\n"));
+            text.push_str(&format!("{{\"n\": \"name {i}\", \"kind\": \"road\", \"langs\": [\"es\", \"ca\"], \"main\": \"main {i}\", \"sub\": \"{long}{i}\"}}\n"));
         }
         let (t, _) = Table::read(&mut text.as_bytes()).expect("read");
         assert_eq!(t.len(), 20_000);
@@ -546,10 +691,9 @@ mod tests {
             let n = format!("name {i}");
             let sub = format!("{long}{i}");
             let main = format!("main {i}");
-            assert_eq!(t.get(hash(n.as_bytes()), n.as_bytes()), Some(Rec { main: Some(&main), sub: Some(&sub) }));
+            assert_eq!(t.get(hash(n.as_bytes()), n.as_bytes(), Kind::Road, l("ca")), Some(Rec { main: Some(&main), sub: Some(&sub) }));
         }
-        assert_eq!(t.get(hash(b"name 20000"), b"name 20000"), None);
-        // The index stays under its load limit.
+        assert_eq!(t.get(hash(b"name 20000"), b"name 20000", Kind::Road, l("ca")), None);
         assert!(t.len() as f64 <= t.ctrl.len() as f64 * MAX_LOAD);
     }
 

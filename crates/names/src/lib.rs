@@ -1,21 +1,26 @@
-//! Display names (docs/plan.md §7): each name gets a main label and an optional sub line, from the
-//! user's translation files (the server's local copy of the NAS folder), else the thing's own
-//! English.
+//! Display names (docs/plan.md §7): each name gets a main label and an optional sub line: the
+//! thing's own English, else its name's translation in the languages OSM gives it and those spoken
+//! where it is, from the user's translation files (the server's local copy of the NAS folder).
 //! `mvt` attaches them to vector tiles as they're served.
 //!
-//! - [`area`]: which area's table a name is read by, from where the thing is ([`area_at`]).
-//! - [`display`]: the tables ([`Names`]: loading, refreshing, versions for ETags), places' and
-//!   roads' kept apart ([`Kind`]), and the display rule ([`Names::display`], [`same_name`]).
+//! - [`spoken`]: the languages spoken where a thing is (CLDR's territory data, refined, over the
+//!   pass's ISO 3166 outlines).
+//! - [`display`]: the lines ([`Names`]: loading, refreshing, versions per language for ETags), the
+//!   kinds ([`Kind`]), and the display rule ([`Names::display`], [`same_name`]).
+//! - [`own`]: a thing's own English from its tags (`name:en`, romanised names, kana by
+//!   [`romaji::hepburn`]) and the languages OSM gives its name.
 //! - [`mvt`]: vector tiles: decoding and encoding, [`mvt::attach`] and [`mvt::merge`].
 
-pub mod area;
 pub mod display;
 pub mod mvt;
+pub mod own;
 mod pbf;
+pub mod romaji;
+pub mod spoken;
 mod table;
 
-pub use area::{area_at, areas_in, is_area, AREAS};
-pub use display::{in_parts, same_name, AreaSummary, Display, DisplayRef, Kind, Names, Translation, STABLE};
+pub use display::{in_parts, same_name, Display, DisplayRef, Kind, Namer, Names, Summary, Translation, STABLE};
+pub use spoken::{Lang, Spoken};
 
 /// A temporary folder of translation files for tests.
 #[cfg(test)]

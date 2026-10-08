@@ -8,8 +8,9 @@
 //! [`gunzip_if_gzip`] and [`gzip`] convert.
 
 use det::Det;
-use crate::area::area_at;
 use crate::display::{Kind, Names};
+use crate::own::{osm_langs, own_english};
+use crate::spoken::Spoken;
 use crate::pbf::{packed_u32, put_bytes, put_key, put_packed, put_uint, unzigzag, zigzag, Field, Reader, Wire};
 use anyhow::{anyhow, bail, Context, Result};
 use flate2::read::MultiGzDecoder;
@@ -297,8 +298,8 @@ pub fn tile_to_lonlat(z: u32, x: u32, y: u32, extent: u32, px: f64, py: f64) -> 
 }
 
 /// Tile `z`/`x`/`y`'s bounds as `[west, south, east, north]` in degrees, grown by `buffer` tiles on
-/// every side (and kept within the Web Mercator world): the box to give [`crate::areas_in`] for the
-/// areas whose versions a tile's ETag must hold. Features are read where their first point is,
+/// every side (and kept within the Web Mercator world): the box whose spoken languages' versions a
+/// tile's ETag must hold ([`Spoken::langs_in`]). Features are read where their first point is,
 /// which can lie outside the tile: up to a whole tile out for the OpenMapTiles basemap's place,
 /// water and park label points (their label buffer), so use 1.0 there; our label tiles keep each
 /// label in its own tile (0.0).
@@ -310,7 +311,21 @@ pub fn tile_bounds(z: u32, x: u32, y: u32, buffer: f64) -> [f64; 4] {
     [lon(x - buffer), lat(y + 1.0 + buffer), lon(x + 1.0 + buffer), lat(y - buffer)]
 }
 
-/// Which layers [`attach`] names, and where a feature's name and own English are.
+/// What kind of name a layer's features have ([`Kind`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KindRule {
+    /// Every feature the same.
+    Fixed(Kind),
+    /// OpenMapTiles: its `place` layer's settlements by `class`, `transportation_name` roads,
+    /// anything else other.
+    OpenMapTiles,
+    /// Our label tiles: `k` place by its class `c`, anything else other.
+    Labels,
+}
+
+/// Which layers [`attach`] names, and where a feature's name, own English and kind are. Every
+/// string property is the feature's tags for [`own_english`] (romanised names, kana readings) and
+/// [`osm_langs`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayerRule<'a> {
     /// The layer's name, or `"*"` for every layer. The first rule matching a layer applies.
@@ -319,24 +334,26 @@ pub struct LayerRule<'a> {
     pub name_keys: &'a [&'a str],
     /// The properties holding the thing's own English, likewise.
     pub en_keys: &'a [&'a str],
+    pub kind: KindRule,
 }
 
 /// The OpenMapTiles basemap: `name`, with OSM's English in `name:en` or `name_en`.
-pub const OPENMAPTILES: LayerRule<'static> = LayerRule { layer: "*", name_keys: &["name"], en_keys: &["name:en", "name_en"] };
+pub const OPENMAPTILES: LayerRule<'static> = LayerRule { layer: "*", name_keys: &["name"], en_keys: &["name:en", "name_en"], kind: KindRule::OpenMapTiles };
 
-/// Our label tiles (layer `l`): `n`, with English in `en`.
-pub const LABELS: LayerRule<'static> = LayerRule { layer: "l", name_keys: &["n"], en_keys: &["en"] };
+/// Our label tiles (layer `l`): `n`, with its own English in `en`, its kana reading in `kana` and
+/// OSM's languages in `l`.
+pub const LABELS: LayerRule<'static> = LayerRule { layer: "l", name_keys: &["n"], en_keys: &["en"], kind: KindRule::Labels };
 
 /// Gives every named feature of the layers `rules` match its display name, as string properties
-/// [`MAIN`] and (when there is one) [`SUB`], replacing any it had: the name read as a place
-/// ([`Kind::Place`]: map labels name places, water, parks and the like, never roads) in the area at
-/// the feature's first point, with its own English (see [`Names::display`]).
+/// [`MAIN`] and (when there is one) [`SUB`], replacing any it had ([`Names::display`]): its own
+/// English, else its name's line in the languages OSM gives it, then those spoken at its first
+/// point (`spoken`; none known, OSM's alone).
 ///
 /// `tile` is raw protobuf (not gzip'd) for tile `z`/`x`/`y`. Returns the new tile, or `None` when
 /// nothing changed (no named features, or all already as they should be): serve the original
 /// bytes. Layers it doesn't change, and malformed layers, are copied byte for byte. Fails only when
 /// the tile itself can't be read; serve it as it is then.
-pub fn attach(tile: &[u8], z: u32, x: u32, y: u32, names: &Names, rules: &[LayerRule]) -> Result<Option<Vec<u8>>> {
+pub fn attach(tile: &[u8], z: u32, x: u32, y: u32, names: &Names, spoken: Option<&Spoken>, rules: &[LayerRule]) -> Result<Option<Vec<u8>>> {
     if tile.starts_with(&[0x1f, 0x8b]) {
         bail!("the tile is gzip'd (gunzip_if_gzip it first)");
     }
@@ -350,7 +367,7 @@ pub fn attach(tile: &[u8], z: u32, x: u32, y: u32, names: &Names, rules: &[Layer
         let Some(name) = layer_name(body) else { continue };
         let Some(rule) = rules.iter().find(|r| r.layer == "*" || r.layer.as_bytes() == name) else { continue };
         let Ok(mut layer) = Layer::decode(body) else { continue };
-        if attach_layer(&mut layer, rule, (z, x, y), names) {
+        if attach_layer(&mut layer, rule, (z, x, y), names, spoken) {
             rewritten[i] = Some(layer.encode());
         }
     }
@@ -390,13 +407,12 @@ fn layer_name(body: &[u8]) -> Option<&[u8]> {
 }
 
 /// [`attach`] for one decoded layer; whether anything changed.
-fn attach_layer(layer: &mut Layer, rule: &LayerRule, (z, x, y): (u32, u32, u32), names: &Names) -> bool {
+fn attach_layer(layer: &mut Layer, rule: &LayerRule, (z, x, y): (u32, u32, u32), names: &Names, spoken: Option<&Spoken>) -> bool {
     let rank = |list: &[&str]| -> Vec<Option<usize>> { layer.keys.iter().map(|k| list.iter().position(|c| c == k)).collect() };
     let name_rank = rank(rule.name_keys);
     if name_rank.iter().all(Option::is_none) {
         return false;
     }
-    let en_rank = rank(rule.en_keys);
     let is_main: Vec<bool> = layer.keys.iter().map(|k| k == MAIN).collect();
     let is_sub: Vec<bool> = layer.keys.iter().map(|k| k == SUB).collect();
 
@@ -407,7 +423,7 @@ fn attach_layer(layer: &mut Layer, rule: &LayerRule, (z, x, y): (u32, u32, u32),
             continue;
         }
         let mut name: Option<(usize, &str)> = None;
-        let mut en: Option<(usize, &str)> = None;
+        let mut tags: Vec<(&str, &str)> = Vec::new();
         let (mut mains, mut subs) = (Vec::new(), Vec::new());
         let mut valid = true;
         for pair in f.tags.chunks_exact(2) {
@@ -422,21 +438,35 @@ fn attach_layer(layer: &mut Layer, rule: &LayerRule, (z, x, y): (u32, u32, u32),
                     name = Some((r, s));
                 }
             }
-            if let (Some(r), Some(s)) = (en_rank[k], s) {
-                if en.is_none_or(|(best, _)| r < best) {
-                    en = Some((r, s));
-                }
-            }
             if is_main[k] {
                 mains.push(value);
-            }
-            if is_sub[k] {
+            } else if is_sub[k] {
                 subs.push(value);
+            } else if let Some(s) = s {
+                tags.push((layer.keys[k].as_str(), s));
             }
         }
         let (true, Some((_, name))) = (valid, name) else { continue };
+        let kind = match rule.kind {
+            KindRule::Fixed(k) => k,
+            KindRule::OpenMapTiles => match layer.name.as_str() {
+                "place" => tags.iter().find(|(k, _)| *k == "class").map_or(Kind::Other, |(_, c)| Kind::of_place(c)),
+                "transportation_name" => Kind::Road,
+                _ => Kind::Other,
+            },
+            KindRule::Labels => match (tags.iter().find(|(k, _)| *k == "k"), tags.iter().find(|(k, _)| *k == "c")) {
+                (Some((_, "place")), Some((_, c))) => Kind::of_place(c),
+                _ => Kind::Other,
+            },
+        };
+        let own = own_english(&tags, rule.en_keys);
+        let osm = osm_langs(name, &tags);
         let at = f.first_point().filter(|_| layer.extent > 0).map(|(px, py)| tile_to_lonlat(z, x, y, layer.extent, f64::from(px), f64::from(py)));
-        let d = names.display_in(Kind::Place, at.and_then(|(lon, lat)| area_at(lon, lat)), name, en.map(|(_, s)| s));
+        let here = match (spoken, at) {
+            (Some(sp), Some((lon, lat))) => sp.langs_at(lon, lat),
+            _ => &[],
+        };
+        let d = names.display(kind, name, own.as_deref(), &osm, here);
         let has = |vals: &[&Value], want: Option<&str>| match (vals, want) {
             ([], None) => true,
             ([v], Some(w)) => v.as_str() == Some(w),
@@ -692,46 +722,55 @@ mod tests {
         ((wx * 4096.0).round() as i32, (wy * 4096.0).round() as i32)
     }
 
-    fn names() -> (crate::testdir::Dir, Names) {
+    fn names() -> (crate::testdir::Dir, Names, Spoken) {
         let d = crate::testdir::Dir::new();
-        d.write("jp/places-jp.jsonl", "{\"n\": \"松島\", \"main\": \"松島\", \"sub\": \"Matsu-shima\"}\n{\"n\": \"東京\", \"en\": null}\n");
-        d.write("fr/places-fr.jsonl", "{\"n\": \"Église\", \"main\": \"Church\", \"sub\": null}\n");
+        d.write(
+            "0-converted/all.jsonl",
+            "{\"n\": \"松島\", \"kind\": \"other\", \"langs\": \"ja\", \"main\": \"松島\", \"sub\": \"Matsu-shima\"}\n\
+             {\"n\": \"東京\", \"kind\": \"settlement\", \"langs\": \"ja\", \"sub\": null}\n\
+             {\"n\": \"Église\", \"kind\": \"other\", \"langs\": \"fr\", \"main\": \"Church\", \"sub\": null}\n\
+             {\"n\": \"Moulin\", \"kind\": \"other\", \"langs\": \"fr\", \"main\": \"Mill\", \"sub\": null}\n\
+             {\"n\": \"Kêr\", \"kind\": \"other\", \"langs\": \"br\", \"sub\": \"Village\"}\n",
+        );
         let n = Names::load(&d.0).expect("load");
-        (d, n)
+        let p = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
+        let rect = |code: &str, w: f64, s: f64, e: f64, n: f64| crate::spoken::Area { code: code.into(), area_km2: (e - w) * (n - s), polygons: vec![vec![vec![p(w, s), p(e, s), p(e, n), p(w, n)]]] };
+        let sp = Spoken::build([rect("JP", 128.0, 30.0, 146.0, 46.0), rect("FR", -5.0, 42.0, 8.0, 51.0)]);
+        (d, n, sp)
     }
 
     #[test]
     fn attaches_main_and_sub() {
-        let (_d, names) = names();
+        let (_d, names, sp) = names();
         // z5 tile 28/12 holds northern Honshu; 16/11 holds Paris.
         let (mx, my) = at(5, 28, 12, 141.06, 38.37);
         let (tx, ty) = at(5, 28, 12, 139.69, 35.69);
         let jp = layer(
             "place",
             &["name", "name:en", "class"],
-            vec![s("松島"), s("Matsushima"), s("town"), s("東京"), s("Tokyo"), s("仙台"), s("Sendai"), Value::Int(3)],
+            vec![s("松島"), s("island"), s("東京"), s("city"), s("仙台"), s("Sendai"), Value::Int(3)],
             vec![
-                point(1, &[0, 0, 1, 1, 2, 2], mx, my),
-                point(2, &[0, 3, 1, 4], tx, ty),
-                point(3, &[0, 5, 1, 6], mx, my),
-                point(4, &[2, 2], mx, my),
-                point(5, &[0, 7], mx, my),
+                point(1, &[0, 0, 2, 1], mx, my),
+                point(2, &[0, 2, 2, 3], tx, ty),
+                point(3, &[0, 4, 1, 5, 2, 3], mx, my),
+                point(4, &[2, 3], mx, my),
+                point(5, &[0, 6], mx, my),
             ],
         );
         let other = layer("roads", &["name"], vec![s("松島")], vec![point(9, &[0, 0], mx, my)]);
         let tile = Tile { layers: vec![jp, other.clone()], unknown: vec![] };
         let bytes = tile.encode();
         let rules = [LayerRule { layer: "place", ..OPENMAPTILES }];
-        let out = attach(&bytes, 5, 28, 12, &names, &rules).expect("attach").expect("changed");
+        let out = attach(&bytes, 5, 28, 12, &names, Some(&sp), &rules).expect("attach").expect("changed");
         let t = Tile::decode(&out).expect("decode");
         let l = &t.layers[0];
-        // A translation line: its sub, over OSM's English.
+        // An island: the name's Japanese line for other things.
         assert_eq!(prop(l, 0, MAIN), Some(s("松島")));
         assert_eq!(prop(l, 0, SUB), Some(s("Matsu-shima")));
-        // A line with no sub: none, whatever OSM has.
+        // A city: the settlement's line, which has no sub.
         assert_eq!(prop(l, 1, MAIN), Some(s("東京")));
         assert_eq!(prop(l, 1, SUB), None);
-        // No line: the thing's own English.
+        // Its own English.
         assert_eq!(prop(l, 2, MAIN), Some(s("仙台")));
         assert_eq!(prop(l, 2, SUB), Some(s("Sendai")));
         // Unnamed, or named by a number: untouched.
@@ -748,41 +787,55 @@ mod tests {
         assert_eq!(l.values.iter().filter(|v| v.as_str() == Some("松島")).count(), 1);
 
         // Done again: nothing changes.
-        assert_eq!(attach(&out, 5, 28, 12, &names, &rules).expect("attach"), None);
+        assert_eq!(attach(&out, 5, 28, 12, &names, Some(&sp), &rules).expect("attach"), None);
         // Stale main and sub are replaced (and a sub removed).
         let mut stale = t.clone();
         let sk = stale.layers[0].keys.iter().position(|k| k == SUB).expect("sub key") as u32;
         stale.layers[0].values.push(s("Wrong"));
         let wrong = (stale.layers[0].values.len() - 1) as u32;
         stale.layers[0].features[1].tags.extend([sk, wrong]);
-        let fixed = attach(&stale.encode(), 5, 28, 12, &names, &rules).expect("attach").expect("changed");
+        let fixed = attach(&stale.encode(), 5, 28, 12, &names, Some(&sp), &rules).expect("attach").expect("changed");
         let fixed = Tile::decode(&fixed).expect("decode");
         assert_eq!(prop(&fixed.layers[0], 1, SUB), None);
         assert_eq!(props(&fixed.layers[0], 1).iter().filter(|(k, _)| k == MAIN).count(), 1);
+        // Without the spoken languages: no line is found but by OSM's own language tags.
+        let out = attach(&bytes, 5, 28, 12, &names, None, &rules).expect("attach").expect("changed");
+        let t = Tile::decode(&out).expect("decode");
+        assert_eq!((prop(&t.layers[0], 0, SUB), prop(&t.layers[0], 2, SUB)), (None, Some(s("Sendai"))));
     }
 
     #[test]
-    fn attach_reads_the_area_where_the_feature_is() {
-        let (_d, names) = names();
+    fn attach_reads_the_languages_where_the_feature_is() {
+        let (_d, names, sp) = names();
         // Église in Paris is a church; the same name in Tokyo's tile has no line there.
-        let (px, py) = at(5, 16, 11, 2.35, 48.86);
-        let paris = Tile { layers: vec![layer("l", &["n", "en"], vec![s("Église"), s("Saint Church")], vec![point(1, &[0, 0, 1, 1], px, py)])], unknown: vec![] };
-        let out = attach(&paris.encode(), 5, 16, 11, &names, &[LABELS]).expect("attach").expect("changed");
-        let t = Tile::decode(&out).expect("decode");
-        assert_eq!((prop(&t.layers[0], 0, MAIN), prop(&t.layers[0], 0, SUB)), (Some(s("Church")), None));
-        let (px, py) = at(5, 28, 12, 139.69, 35.69);
-        let tokyo = Tile { layers: vec![layer("l", &["n", "en"], vec![s("Église"), s("Saint Church")], vec![point(1, &[0, 0, 1, 1], px, py)])], unknown: vec![] };
-        let out = attach(&tokyo.encode(), 5, 28, 12, &names, &[LABELS]).expect("attach").expect("changed");
-        let t = Tile::decode(&out).expect("decode");
-        assert_eq!((prop(&t.layers[0], 0, MAIN), prop(&t.layers[0], 0, SUB)), (Some(s("Église")), Some(s("Saint Church"))));
+        let label = |lon: f64, lat: f64, x: u32, y: u32, keys: &[&str], vals: Vec<Value>, tags: &[u32]| {
+            let (px, py) = at(5, x, y, lon, lat);
+            let t = Tile { layers: vec![layer("l", keys, vals, vec![point(1, tags, px, py)])], unknown: vec![] };
+            let out = attach(&t.encode(), 5, x, y, &names, Some(&sp), &[LABELS]).expect("attach").expect("changed");
+            let t = Tile::decode(&out).expect("decode");
+            (prop(&t.layers[0], 0, MAIN), prop(&t.layers[0], 0, SUB))
+        };
+        assert_eq!(label(2.35, 48.86, 16, 11, &["n"], vec![s("Église")], &[0, 0]), (Some(s("Church")), None));
+        assert_eq!(label(139.69, 35.69, 28, 12, &["n"], vec![s("Église")], &[0, 0]), (Some(s("Église")), None));
+        // Its own English wins over the name's line.
+        assert_eq!(label(2.35, 48.86, 16, 11, &["n", "en"], vec![s("Église"), s("Leclerc tank")], &[0, 0, 1, 1]), (Some(s("Église")), Some(s("Leclerc tank"))));
+        // A kana reading, romanised.
+        assert_eq!(label(139.69, 35.69, 28, 12, &["n", "kana"], vec![s("新宿"), s("しんじゅく")], &[0, 0, 1, 1]), (Some(s("新宿")), Some(s("Shinjuku"))));
+        // A place by its class: a hamlet keeps "Moulin", a mill is translated.
+        assert_eq!(label(2.35, 48.86, 16, 11, &["n", "k", "c"], vec![s("Moulin"), s("place"), s("hamlet")], &[0, 0, 1, 1, 2, 2]), (Some(s("Moulin")), None));
+        assert_eq!(label(2.35, 48.86, 16, 11, &["n", "k", "c"], vec![s("Moulin"), s("water"), s("lake")], &[0, 0, 1, 1, 2, 2]), (Some(s("Mill")), None));
+        // OSM's language first: a Breton name (its `l`) in France.
+        assert_eq!(label(2.35, 48.86, 16, 11, &["n", "l"], vec![s("Kêr"), s("br")], &[0, 0, 1, 1]), (Some(s("Kêr")), Some(s("Village"))));
+        assert_eq!(label(2.35, 48.86, 16, 11, &["n"], vec![s("Kêr")], &[0, 0]), (Some(s("Kêr")), None));
     }
 
     #[test]
     fn attach_leaves_what_it_cannot_read() {
-        let (_d, names) = names();
+        let (_d, names, sp) = names();
+        let sp = Some(&sp);
         // No named features: None.
         let plain = Tile { layers: vec![layer("water", &["class"], vec![s("lake")], vec![point(1, &[0, 0], 1, 1)])], unknown: vec![] };
-        assert_eq!(attach(&plain.encode(), 0, 0, 0, &names, &[OPENMAPTILES]).expect("attach"), None);
+        assert_eq!(attach(&plain.encode(), 0, 0, 0, &names, sp, &[OPENMAPTILES]).expect("attach"), None);
         // A broken layer is copied as it is, the good one still named.
         let good = layer("place", &["name"], vec![s("Paris")], vec![point(1, &[0, 0], 1, 1)]);
         let mut broken = Vec::new();
@@ -792,16 +845,16 @@ mod tests {
         put_bytes(&mut bytes, 3, &broken);
         put_bytes(&mut bytes, 3, &good.encode());
         bytes.extend_from_slice(&[0x80, 0x01, 0x05]); // field 16
-        let out = attach(&bytes, 0, 0, 0, &names, &[OPENMAPTILES]).expect("attach").expect("changed");
+        let out = attach(&bytes, 0, 0, 0, &names, sp, &[OPENMAPTILES]).expect("attach").expect("changed");
         assert!(out.starts_with(&bytes[..broken.len() + 2]));
         assert!(out.ends_with(&[0x80, 0x01, 0x05]));
         // Bad input.
-        assert!(attach(&gzip(&bytes).expect("gzip"), 0, 0, 0, &names, &[OPENMAPTILES]).is_err());
-        assert!(attach(&bytes, 1, 2, 0, &names, &[OPENMAPTILES]).is_err());
-        assert!(attach(&[0x1a, 0x10, 0x00], 0, 0, 0, &names, &[OPENMAPTILES]).is_err());
+        assert!(attach(&gzip(&bytes).expect("gzip"), 0, 0, 0, &names, sp, &[OPENMAPTILES]).is_err());
+        assert!(attach(&bytes, 1, 2, 0, &names, sp, &[OPENMAPTILES]).is_err());
+        assert!(attach(&[0x1a, 0x10, 0x00], 0, 0, 0, &names, sp, &[OPENMAPTILES]).is_err());
         // Features with broken tags are skipped.
         let odd = layer("place", &["name"], vec![s("Paris")], vec![point(1, &[0, 0, 1], 1, 1), point(2, &[0, 5], 1, 1)]);
-        assert_eq!(attach(&Tile { layers: vec![odd], unknown: vec![] }.encode(), 0, 0, 0, &names, &[OPENMAPTILES]).expect("attach"), None);
+        assert_eq!(attach(&Tile { layers: vec![odd], unknown: vec![] }.encode(), 0, 0, 0, &names, sp, &[OPENMAPTILES]).expect("attach"), None);
     }
 
     #[test]

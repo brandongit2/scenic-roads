@@ -668,7 +668,7 @@ fn compute_drives(st: &AppState, q: Q, cancel: &Cancel) -> anyhow::Result<Option
             let rec = f.rec();
             let name = f.base.string(rec.name).to_string();
             let name_en = st.road_en(h.mid.0);
-            let d = st.names.display(names::Kind::Road, &name, (!name_en.is_empty()).then_some(name_en.as_str()), h.mid.1[0], h.mid.1[1]);
+            let d = st.names.display(names::Kind::Road, &name, (!name_en.is_empty()).then_some(name_en.as_str()), &[], h.mid.1[0], h.mid.1[1]);
             Some(Drive {
                 score: h.score * 100.0,
                 length_m: h.length_m,
@@ -1048,7 +1048,7 @@ fn compute_rides(st: &AppState, q: RQ, cancel: &Cancel) -> anyhow::Result<Option
     let rides = hits
         .into_iter()
         .map(|h| {
-            let d = st.names.display(names::Kind::Place, &h.info.ident, None, h.mid_pos[0], h.mid_pos[1]);
+            let d = st.names.display(names::Kind::Other, &h.info.ident, None, &[], h.mid_pos[0], h.mid_pos[1]);
             Ride {
                 score: h.score * 100.0,
                 length_m: h.length_m,
@@ -1237,7 +1237,7 @@ fn compute_lines(st: &AppState, q: RQ, cancel: &Cancel) -> anyhow::Result<Option
     let mut lines: Vec<Line> = accs
         .into_iter()
         .map(|a| {
-            let d = st.names.display(names::Kind::Place, &a.info.ident, None, a.at[0], a.at[1]);
+            let d = st.names.display(names::Kind::Other, &a.info.ident, None, &[], a.at[0], a.at[1]);
             Line {
                 name: a.info.ident.clone(),
                 main: d.main,

@@ -75,7 +75,7 @@ fn first_point(g: &serde_json::Value) -> Option<[f64; 2]> {
 /// object, for the name in `name_key`. Whether it set either.
 pub(crate) fn put_names(s: &AppState, o: &mut serde_json::Map<String, serde_json::Value>, name_key: &str, own: Option<&str>, at: [f64; 2], prefix: &str) -> bool {
     let Some(name) = o.get(name_key).and_then(|x| x.as_str()).filter(|x| !x.is_empty()).map(str::to_owned) else { return false };
-    let d = s.names.display(names::Kind::Place, &name, own, at[0], at[1]);
+    let d = s.names.display(names::Kind::Other, &name, own, &[], at[0], at[1]);
     let mut set = false;
     if d.main != name {
         o.insert(format!("{prefix}main"), serde_json::Value::from(d.main));
@@ -121,7 +121,7 @@ pub(crate) fn with_names(s: &AppState, raw: &[u8]) -> Vec<u8> {
         for e in peaks {
             let Some(a) = e.as_array_mut() else { continue };
             let (Some(lon), Some(lat), Some(name)) = (a.first().and_then(|x| x.as_f64()), a.get(1).and_then(|x| x.as_f64()), a.get(3).and_then(|x| x.as_str())) else { continue };
-            let d = s.names.display(names::Kind::Place, name, None, lon, lat);
+            let d = s.names.display(names::Kind::Other, name, None, &[], lon, lat);
             let main = if d.main != name { d.main } else { String::new() };
             a.truncate(4);
             a.push(main.into());

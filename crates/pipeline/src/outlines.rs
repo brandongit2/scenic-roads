@@ -479,6 +479,34 @@ impl Outlines {
     }
 }
 
+/// The outlines the languages spoken where a thing is are drawn from (`names::spoken`): each ISO
+/// 3166-1 territory under its own code ([`territory_code`]: Hong Kong's `CN-HK` is HK), and the
+/// subdivisions `names::spoken::REFINED` names (Quebec, Wales, …), with their simplified polygons
+/// (`polygons`: an outer ring, then its holes).
+pub fn spoken_areas(recs: &[OutlineRec], string: impl Fn(u32) -> String, mut polygons: impl FnMut(&OutlineRec) -> Result<Vec<Vec<Vec<[i32; 2]>>>>) -> Result<Vec<names::spoken::Area>> {
+    let mut out = Vec::new();
+    for o in recs {
+        let iso = string(o.iso);
+        let code = if o.flags & flag::ISO1 != 0 {
+            territory_code(&iso).map(str::to_owned)
+        } else if o.flags & flag::ISO2 != 0 {
+            Some(iso.clone())
+        } else {
+            None
+        };
+        let Some(code) = code.filter(|c| names::spoken::wanted(c) && names::spoken::languages_of(c).is_some()) else { continue };
+        out.push(names::spoken::Area { code, area_km2: f64::from(o.area_km2), polygons: polygons(o)? });
+    }
+    Ok(out)
+}
+
+impl Outlines {
+    /// The languages spoken where, from these outlines ([`spoken_areas`]).
+    pub fn spoken(&self) -> Result<names::Spoken> {
+        Ok(names::Spoken::build(spoken_areas(&self.recs, |i| self.string(i).to_owned(), |o| self.simple_polygons(o))?))
+    }
+}
+
 /// Countries whose ISO 3166-2 lists their territories by the territories' own ISO 3166-1 codes:
 /// CN-HK, CN-MO, CN-TW; FR-GF, FR-GP, FR-MQ, FR-NC, FR-PF, FR-PM, FR-RE, FR-YT…; NL-AW, NL-CW,
 /// NL-SX; US-AS, US-GU, US-MP, US-PR, US-VI.

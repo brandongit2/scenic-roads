@@ -165,9 +165,9 @@ pub fn way_info(s: &AppState, f: &Found) -> anyhow::Result<WayInfo> {
     let name = bp.string(w.name).to_string();
     let name_en = s.road_en(w.id as u64);
     let mid = v[v.len() / 2];
-    // Rail lines' names are in the places tables, roads' in the roads tables.
-    let kind = if class::is_rail(w.class) { names::Kind::Place } else { names::Kind::Road };
-    let d = s.names.display(kind, &name, (!name_en.is_empty()).then_some(name_en.as_str()), mid[0] as f64 * E7, mid[1] as f64 * E7);
+    // A rail line's name is filed as another thing's, a road's as a road's.
+    let kind = if class::is_rail(w.class) { names::Kind::Other } else { names::Kind::Road };
+    let d = s.names.display(kind, &name, (!name_en.is_empty()).then_some(name_en.as_str()), &[], mid[0] as f64 * E7, mid[1] as f64 * E7);
     let rv = bp.road_val(f.index)?;
     Ok(WayInfo {
         idx: w.id as u64,
@@ -589,7 +589,7 @@ fn climbs(s: &AppState, q: &ClimbQuery, region: &Region) -> anyhow::Result<Climb
             let mid = [c.mid[0] as f64 * E7, c.mid[1] as f64 * E7];
             let (name, rf) = find_way(s, c.label, mid)?.map(|f| (f.base.string(f.rec().name).to_string(), f.base.string(f.rec().ref_).to_string())).unwrap_or_default();
             let name_en = s.road_en(c.label);
-            let d = s.names.display(names::Kind::Road, &name, (!name_en.is_empty()).then_some(name_en.as_str()), mid[0], mid[1]);
+            let d = s.names.display(names::Kind::Road, &name, (!name_en.is_empty()).then_some(name_en.as_str()), &[], mid[0], mid[1]);
             Ok(ClimbOut {
                 way: c.way,
                 at: geom.first().copied().unwrap_or(mid),

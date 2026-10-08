@@ -2,8 +2,13 @@
 //! folder to this Mac (so they work offline and load fast), compiled by the `names` crate, and
 //! attached to everything the server serves. The folder is polled every minute, but only while the
 //! map is in use (a request in the last ten minutes), so an idle server leaves the NAS alone.
+//!
+//! The languages spoken where a thing is come from the catalog's outlines (the pass's), made into
+//! a raster once per outlines file and kept in the home (`names/spoken-<content>.bin`), so they
+//! hold offline too.
 
 use crate::data::Data;
+use names::{Kind, Lang, Namer, Names, Spoken};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -20,8 +25,8 @@ pub enum Rules {
     Stations,
 }
 
-const AREAS: names::mvt::LayerRule<'static> = names::mvt::LayerRule { layer: "a", name_keys: &["name", "n"], en_keys: &["en"] };
-const STATIONS: names::mvt::LayerRule<'static> = names::mvt::LayerRule { layer: "s", name_keys: &["n"], en_keys: &["en"] };
+const AREAS: names::mvt::LayerRule<'static> = names::mvt::LayerRule { layer: "a", name_keys: &["name", "n"], en_keys: &["en"], kind: names::mvt::KindRule::Fixed(Kind::Other) };
+const STATIONS: names::mvt::LayerRule<'static> = names::mvt::LayerRule { layer: "s", name_keys: &["n"], en_keys: &["en"], kind: names::mvt::KindRule::Fixed(Kind::Other) };
 
 fn rules(r: Rules) -> &'static [names::mvt::LayerRule<'static>] {
     match r {
@@ -33,11 +38,17 @@ fn rules(r: Rules) -> &'static [names::mvt::LayerRule<'static>] {
 }
 
 pub struct NamesState {
-    names: RwLock<Option<names::display::Names>>,
+    names: RwLock<Option<Names>>,
+    /// The languages spoken where, and the outlines' content name they were made from.
+    spoken: RwLock<Option<(String, Arc<Spoken>)>>,
     /// The local copy of the NAS folder.
     dir: PathBuf,
+    /// Where the rasters are kept.
+    spoken_dir: PathBuf,
     /// Seconds since the epoch of the last request that used names.
     last_use: AtomicU64,
+    /// The folder holds the area tables' lines and none by language (said in the status).
+    only_old: std::sync::atomic::AtomicBool,
 }
 
 fn now() -> u64 {
@@ -46,7 +57,14 @@ fn now() -> u64 {
 
 impl NamesState {
     pub fn new(home: &Path) -> Arc<NamesState> {
-        Arc::new(NamesState { names: RwLock::new(None), dir: home.join("translations"), last_use: AtomicU64::new(now()) })
+        Arc::new(NamesState {
+            names: RwLock::new(None),
+            spoken: RwLock::new(None),
+            dir: home.join("translations"),
+            spoken_dir: home.join("names"),
+            last_use: AtomicU64::new(now()),
+            only_old: Default::default(),
+        })
     }
 
     /// Record a use (keeps the folder polled).
@@ -54,56 +72,60 @@ impl NamesState {
         self.last_use.store(now(), Ordering::Relaxed);
     }
 
-    /// A name's display form: road names (`Kind::Road`) read the roads tables first, every other
-    /// name the places tables. Before the tables have loaded: the name and its own English.
-    pub fn display(&self, kind: names::Kind, name: &str, own_en: Option<&str>, lon: f64, lat: f64) -> names::display::Display {
+    /// The lines and the spoken languages as they are now (a copy: cheap, the tables are shared,
+    /// and nothing waits on it); None before the lines have loaded.
+    pub fn snapshot(&self) -> Option<Namer> {
+        let names = self.names.read().unwrap().clone()?;
+        Some(Namer { names, spoken: self.spoken.read().unwrap().as_ref().map(|(_, s)| s.clone()) })
+    }
+
+    /// A name's display form (`osm`: the languages OSM gives it, where known). Before the lines
+    /// have loaded: the name and its own English.
+    pub fn display(&self, kind: Kind, name: &str, own_en: Option<&str>, osm: &[Lang], lon: f64, lat: f64) -> names::Display {
         self.touch();
-        match self.names.read().unwrap().as_ref() {
-            Some(n) => n.display(kind, name, own_en, lon, lat),
+        match self.snapshot() {
+            Some(n) => n.display_at(kind, name, own_en, osm, lon, lat).to_display(),
             None => names::DisplayRef::new(name, own_en).to_display(),
         }
     }
 
-    /// A version for a tile's names: the versions of the reading areas its features can fall in
-    /// (so a drop for Japan doesn't change the ETags of tiles in France). `buffer`: how far, in
-    /// tiles, its features reach beyond it (the basemap's labels: a whole tile; ours: none).
+    /// A version for a tile's names: the versions of the languages spoken within it (so a drop
+    /// in Japanese doesn't change the ETags of tiles in France) and the raster's. `buffer`: how
+    /// far, in tiles, its features reach beyond it (the basemap's labels: a whole tile; ours: none).
     pub fn version_for_tile(&self, z: u8, x: u32, y: u32, buffer: f64) -> u64 {
         let [w, s, e, n] = names::mvt::tile_bounds(z as u32, x, y, buffer);
-        let areas = names::areas_in(w, s, e, n);
+        self.snapshot().map_or(0, |nm| nm.version_in(w, s, e, n))
+    }
+
+    /// Each language's version, the raster's, and whether only the area tables' lines are there
+    /// (for the catalog's status).
+    pub fn versions(&self) -> serde_json::Value {
         let g = self.names.read().unwrap();
-        let Some(nm) = g.as_ref() else { return 0 };
-        let mut h: u64 = 0xcbf29ce484222325;
-        for a in areas {
-            h ^= nm.version(a);
-            h = h.wrapping_mul(0x100000001b3);
+        let mut langs = serde_json::Map::new();
+        if let Some(n) = g.as_ref() {
+            for (l, v) in n.summary().langs {
+                langs.insert(l, serde_json::Value::from(v));
+            }
         }
-        h
+        let spoken = self.spoken.read().unwrap().as_ref().map(|(c, s)| serde_json::json!({"outlines": c, "version": s.version()}));
+        let mut out = serde_json::json!({"langs": langs, "spoken": spoken});
+        if self.only_old.load(Ordering::Relaxed) {
+            out["warning"] = serde_json::Value::from(ONLY_OLD);
+        }
+        out
     }
 
-    /// Each reading area's translations version (for the catalog's status).
-    pub fn versions(&self) -> std::collections::BTreeMap<&'static str, u64> {
-        let g = self.names.read().unwrap();
-        names::area::AREAS.iter().map(|a| (*a, g.as_ref().map(|n| n.version(a)).unwrap_or(0))).collect()
-    }
-
-    /// A version over every reading area (for files that span them all).
+    /// A version over every language (for files that span them all).
     pub fn version_all(&self) -> u64 {
-        version_all(self.names.read().unwrap().as_ref())
-    }
-
-    /// The tables as they are now, for work that reads many names (a copy: cheap, the tables are
-    /// shared, and nothing waits on it); None before they've loaded.
-    pub fn snapshot(&self) -> Option<names::display::Names> {
-        self.names.read().unwrap().clone()
+        version_all(self.snapshot().as_ref())
     }
 
     /// A gzip'd vector tile with main/sub attached (the original when nothing changed or it can't be
     /// read).
     pub fn attach_gz(&self, gz: &[u8], z: u8, x: u32, y: u32, r: Rules) -> Vec<u8> {
         let Ok(raw) = names::mvt::gunzip_if_gzip(gz) else { return gz.to_vec() };
-        let g = self.names.read().unwrap();
-        let Some(nm) = g.as_ref() else { return gz.to_vec() };
-        match names::mvt::attach(&raw, z as u32, x, y, nm, &rules(r)) {
+        let Some(nm) = self.snapshot() else { return gz.to_vec() };
+        match names::mvt::attach(&raw, z as u32, x, y, &nm.names, nm.spoken.as_deref(), rules(r)) {
             Ok(Some(t)) => names::mvt::gzip(&t).unwrap_or_else(|_| gz.to_vec()),
             _ => gz.to_vec(),
         }
@@ -111,16 +133,26 @@ impl NamesState {
 
     /// A raw (not gzip'd) vector tile with main/sub attached.
     pub fn attach_raw(&self, raw: &[u8], z: u8, x: u32, y: u32, r: Rules) -> Vec<u8> {
-        let g = self.names.read().unwrap();
-        let Some(nm) = g.as_ref() else { return raw.to_vec() };
-        match names::mvt::attach(raw, z as u32, x, y, nm, &rules(r)) {
+        let Some(nm) = self.snapshot() else { return raw.to_vec() };
+        match names::mvt::attach(raw, z as u32, x, y, &nm.names, nm.spoken.as_deref(), rules(r)) {
             Ok(Some(t)) => t,
             _ => raw.to_vec(),
         }
     }
 
-    /// Load the local copy, then keep it in step with the NAS while the map is in use.
+    /// Load the local copy, then keep it in step with the NAS while the map is in use; make (or
+    /// read back) the spoken languages for the catalog's outlines.
     pub fn spawn(self: &Arc<Self>, data: Arc<Data>) {
+        // The spoken languages on a thread of their own: made from the outlines on the NAS, they
+        // take minutes the first time, which the translations' sync shouldn't wait for.
+        let (me, d) = (self.clone(), data.clone());
+        std::thread::Builder::new()
+            .name("names-spoken".into())
+            .spawn(move || loop {
+                me.ensure_spoken(&d);
+                std::thread::sleep(Duration::from_secs(60));
+            })
+            .ok();
         let me = self.clone();
         std::thread::Builder::new()
             .name("names".into())
@@ -154,6 +186,12 @@ impl NamesState {
             .ok();
     }
 
+    /// Sets the spoken languages (tests: their catalogs have no outlines).
+    #[cfg(test)]
+    pub fn set_spoken(&self, s: Spoken) {
+        *self.spoken.write().unwrap() = Some(("test".into(), Arc::new(s)));
+    }
+
     /// How long until a translation file waiting to settle may be read.
     fn pending(&self) -> Option<Duration> {
         self.names.read().unwrap().as_ref().and_then(|n| n.pending())
@@ -166,7 +204,7 @@ impl NamesState {
         let cur = self.names.read().unwrap().clone();
         let res = match cur {
             Some(mut n) => n.refresh().map(|changed| (n, changed)),
-            None => names::display::Names::load(&self.dir).map(|n| (n, true)),
+            None => Names::load(&self.dir).map(|n| (n, true)),
         };
         match res {
             Ok((mut n, changed)) => {
@@ -174,7 +212,13 @@ impl NamesState {
                     eprintln!("translations: {w}");
                 }
                 if changed {
-                    eprintln!("translations: {} lines in {} areas ({:.1?})", n.entries(), n.areas().count(), t.elapsed());
+                    let s = n.summary();
+                    eprintln!("translations: {} lines, {} names in {} files, languages {:?} ({:.1?})", s.lines, s.names, s.files, s.langs.keys().collect::<Vec<_>>(), t.elapsed());
+                    let only_old = s.only_old();
+                    if only_old {
+                        eprintln!("translations: WARNING: {ONLY_OLD}");
+                    }
+                    self.only_old.store(only_old, Ordering::Relaxed);
                 }
                 *self.names.write().unwrap() = Some(n);
             }
@@ -182,6 +226,60 @@ impl NamesState {
         }
     }
 
+    /// The spoken languages for the catalog's outlines: kept as they are when made from those;
+    /// else read back from the home, else made from the outlines (read from the mirror or the NAS)
+    /// and kept. Without the outlines (offline, never made here): the newest kept, else none.
+    fn ensure_spoken(&self, data: &Data) {
+        let want = data.catalog().global.get("outlines").and_then(|l| data.content(l));
+        let have = self.spoken.read().unwrap().as_ref().map(|(c, _)| c.clone());
+        if want.is_some() && have == want {
+            return;
+        }
+        if let Some(content) = &want {
+            let file = self.spoken_dir.join(format!("spoken-{content}.bin"));
+            if let Some(s) = std::fs::read(&file).ok().and_then(|b| Spoken::from_bytes(&b).ok()) {
+                *self.spoken.write().unwrap() = Some((content.clone(), Arc::new(s)));
+                return;
+            }
+            let t = std::time::Instant::now();
+            match crate::regions::spoken_from_outlines(data) {
+                Ok(Some(s)) => {
+                    eprintln!("names: the spoken languages from {content} ({} regions, {:.1?})", s.regions().count(), t.elapsed());
+                    std::fs::create_dir_all(&self.spoken_dir).ok();
+                    let tmp = file.with_extension("tmp");
+                    if std::fs::write(&tmp, s.to_bytes()).and_then(|_| std::fs::rename(&tmp, &file)).is_ok() {
+                        // Older rasters go.
+                        if let Ok(rd) = std::fs::read_dir(&self.spoken_dir) {
+                            for e in rd.flatten() {
+                                let n = e.file_name().to_string_lossy().into_owned();
+                                if n.starts_with("spoken-") && e.path() != file {
+                                    std::fs::remove_file(e.path()).ok();
+                                }
+                            }
+                        }
+                    }
+                    *self.spoken.write().unwrap() = Some((content.clone(), Arc::new(s)));
+                    return;
+                }
+                Ok(None) => {}
+                Err(e) => eprintln!("names: the spoken languages: {e:#}"),
+            }
+        }
+        if have.is_none() {
+            // Offline: the newest kept.
+            let newest = std::fs::read_dir(&self.spoken_dir).ok().and_then(|rd| {
+                rd.flatten()
+                    .filter(|e| e.file_name().to_string_lossy().starts_with("spoken-") && e.file_name().to_string_lossy().ends_with(".bin"))
+                    .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
+            });
+            if let Some(e) = newest {
+                if let Some(s) = std::fs::read(e.path()).ok().and_then(|b| Spoken::from_bytes(&b).ok()) {
+                    let content = e.file_name().to_string_lossy().trim_start_matches("spoken-").trim_end_matches(".bin").to_owned();
+                    *self.spoken.write().unwrap() = Some((content, Arc::new(s)));
+                }
+            }
+        }
+    }
 
     /// Copy new and changed files from the NAS folder (once they've stopped changing), and drop
     /// local files gone from it. True when anything changed.
@@ -190,13 +288,10 @@ impl NamesState {
     }
 }
 
-/// A version over every reading area of the tables (0 before they've loaded).
-pub fn version_all(tables: Option<&names::display::Names>) -> u64 {
-    let Some(nm) = tables else { return 0 };
-    let mut h: u64 = 0xcbf29ce484222325;
-    for a in names::area::AREAS {
-        h ^= nm.version(a);
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
+/// Said in the log and the status when the folder holds only the area tables' lines.
+pub const ONLY_OLD: &str = "the translations folder holds only the old area tables' lines (no kind or languages), which this server doesn't read: no translation shows until the converted lines (translations/0-converted/) are there";
+
+/// A version over every language of the lines and the raster (0 before the lines have loaded).
+pub fn version_all(tables: Option<&Namer>) -> u64 {
+    tables.map_or(0, Namer::version_all)
 }

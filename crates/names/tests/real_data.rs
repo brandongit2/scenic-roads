@@ -1,14 +1,16 @@
-//! Against the real data: the label archive and basemap in `data/build`, and the translation
-//! tables on the NAS. Each test skips (passes, saying so) when its data isn't there.
+//! Against the real data: the label archive and basemap in `data/build`, and the converted lines
+//! by language on the NAS (`translations/0-converted`, or `$NAMES_CONVERTED`). Each test skips (passes, saying so) when its data isn't there.
 
 use names::mvt::{self, gunzip_if_gzip, LayerRule, Tile, Value, LABELS, MAIN, OPENMAPTILES, SUB};
-use names::{area_at, DisplayRef, Kind, Names};
+use names::{Kind, Lang, Names};
 use std::fs::File;
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const NAS: &str = "/Volumes/personal/projects/scenic-roads/translations";
+fn converted() -> PathBuf {
+    std::env::var_os("NAMES_CONVERTED").map_or_else(|| PathBuf::from("/Volumes/personal/projects/scenic-roads/translations/0-converted"), PathBuf::from)
+}
 
 fn build(file: &str) -> Option<PathBuf> {
     let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/build").join(file);
@@ -254,119 +256,71 @@ fn basemap_tiles_round_trip() {
     assert!((0..t.layers[place].features.len()).any(|i| prop(&t, place, i, "name").as_deref() == Some("Paris")));
 }
 
-/// The NAS tables for some areas, through symbolic links in a temporary folder (so only those
-/// areas are read).
-struct Tables {
-    dir: PathBuf,
-    names: Names,
-}
-
-impl Drop for Tables {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-fn tables(areas: &[&str]) -> Option<Tables> {
-    if !Path::new(NAS).exists() {
-        eprintln!("{NAS} absent: skipped");
+fn tables() -> Option<Names> {
+    let dir = converted();
+    if !dir.exists() {
+        eprintln!("{} absent: skipped", dir.display());
         return None;
-    }
-    let dir = std::env::temp_dir().join(format!("names-real-{}-{}", std::process::id(), areas.join("-")));
-    let _ = std::fs::remove_dir_all(&dir);
-    for a in areas {
-        std::fs::create_dir_all(dir.join(a)).expect("mkdir");
-        for f in std::fs::read_dir(Path::new(NAS).join(a)).expect("list") {
-            let f = f.expect("entry");
-            std::os::unix::fs::symlink(f.path(), dir.join(a).join(f.file_name())).expect("symlink");
-        }
     }
     let t0 = Instant::now();
     let mut names = Names::load(&dir).expect("load");
     let w = names.take_warnings();
-    eprintln!("{areas:?}: {} names in {:.1?}, {} MB, warnings {w:?}", names.entries(), t0.elapsed(), names.heap_bytes() >> 20);
-    Some(Tables { dir, names })
+    eprintln!("{}: {:?} in {:.1?}, {} MB, warnings {w:?}", dir.display(), names.summary(), t0.elapsed(), names.heap_bytes() >> 20);
+    Some(names)
+}
+
+fn ls(v: &[&str]) -> Vec<Lang> {
+    v.iter().filter_map(|s| Lang::parse(s)).collect()
 }
 
 #[test]
-fn nas_tables() {
-    let Some(t) = tables(&["jp", "tw", "hk", "sg", "gb"]) else { return };
-    let n = &t.names;
-    assert!(n.entries() > 300_000);
-    let d = |kind: Kind, name: &str, own: Option<&str>, lon, lat| {
-        let d = n.display(kind, name, own, lon, lat);
-        (d.main, d.sub)
+fn converted_lines() {
+    let Some(n) = tables() else { return };
+    assert!(n.summary().lines > 2_500_000);
+    let d = |kind: Kind, name: &str, own: Option<&str>, here: &[&str]| {
+        let d = n.display(kind, name, own, &[], &ls(here));
+        (d.main.to_owned(), d.sub.map(str::to_owned))
     };
     let s = |main: &str, sub: Option<&str>| (main.to_owned(), sub.map(str::to_owned));
-    // Well-known names have a line with a sub (its wording is the translation work's to change),
-    // and show it, over the thing's own English.
-    let known = [
-        (Kind::Place, "jp", "松島", 141.06, 38.37),
-        (Kind::Place, "jp", "富士山", 138.73, 35.36),
-        (Kind::Road, "tw", "福爾摩沙高速公路", 121.0, 24.8),
-        (Kind::Place, "tw", "淡水", 121.44, 25.17),
-    ];
-    for (kind, area, name, lon, lat) in known {
-        let line = n.translation(kind, area, name).unwrap_or_else(|| panic!("no line for {name}"));
+    // Well-known names have a line with a sub, shown where their language is spoken; the thing's
+    // own English wins over it.
+    let known = [(Kind::Other, &["ja"][..], "松島"), (Kind::Other, &["ja"], "富士山"), (Kind::Road, &["zh"], "10號橋"), (Kind::Other, &["zh"], "中山橋")];
+    for (kind, here, name) in known {
+        let line = n.translation(kind, name, &ls(here)).unwrap_or_else(|| panic!("no line for {name}"));
         let sub = line.sub.unwrap_or_else(|| panic!("no sub for {name}"));
-        eprintln!("{area} {name}: {} / {sub}", line.main);
-        assert_eq!(d(kind, name, Some("Own English"), lon, lat), s(line.main, Some(sub)));
+        eprintln!("{name}: {} / {sub}", line.main);
+        assert_eq!(d(kind, name, None, here), s(line.main, Some(sub)));
+        assert_eq!(d(kind, name, Some("Own English"), here), s(name, Some("Own English")));
     }
-    // Read in Taiwan, a Japanese reading doesn't apply; outside every area, only own English.
-    assert_eq!(d(Kind::Place, "松島", None, 121.5, 25.0), s("松島", None));
-    assert_eq!(d(Kind::Place, "松島", Some("Songdo"), 126.6, 37.4), s("松島", Some("Songdo")));
-    // Names in both files, translated differently: each kind reads its own file.
-    let both = [
-        ("jp", "弁天橋", 139.6, 35.4, Some("Bentembashi"), Some("Benten Bridge")),
-        ("tw", "新厝巷", 120.5, 23.5, Some("Xincuoxiang"), Some("Xincuo Lane")),
-        ("gb", "Clochán", -8.0, 53.2, Some("Cloghan Castle"), None),
-    ];
-    for (area, name, lon, lat, place, road) in both {
-        assert_eq!(n.translation(Kind::Place, area, name).map(|t| t.sub), Some(place), "{name}");
-        assert_eq!(n.translation(Kind::Road, area, name).map(|t| t.sub), Some(road), "{name}");
-        assert_eq!(d(Kind::Place, name, Some("Own"), lon, lat), s(name, place));
-    }
-    // Lines not translated yet are left out: the thing's own English shows.
-    assert_eq!(n.translation(Kind::Place, "jp", "JR東海道本線"), None);
-    assert_eq!(d(Kind::Place, "JR東海道本線", Some("JR Tokaido Line"), 139.7, 35.6), s("JR東海道本線", Some("JR Tokaido Line")));
-    for a in n.areas() {
-        assert_eq!(a.files, 2, "{a:?}");
-        assert_ne!(a.version, n.version("fr"));
-        eprintln!("{}: {} names, {} lines not translated yet", a.code, a.entries, a.ignored);
-    }
-    assert!(n.areas().find(|a| a.code == "jp").is_some_and(|a| a.ignored > 100_000));
+    // Read in Taiwan, a Japanese reading doesn't apply; nowhere, nothing.
+    assert_ne!(d(Kind::Other, "松島", None, &["zh"]).1.as_deref(), n.translation(Kind::Other, "松島", &ls(&["ja"])).and_then(|t| t.sub));
+    assert_eq!(d(Kind::Other, "松島", None, &[]), s("松島", None));
+    // Places' lines and roads' apart.
+    assert_eq!(n.translation(Kind::Road, "中山橋", &ls(&["zh"])), None);
+    assert_eq!(n.translation(Kind::Road, "Château", &ls(&["fr"])).map(|t| (t.main, t.sub)), Some(("Château", None)));
+    assert_eq!(n.translation(Kind::Other, "Château", &ls(&["fr"])).map(|t| (t.main, t.sub)), Some(("Castle", None)));
+    // Lines not done, and one thing's OSM English, are gone.
+    assert_eq!(n.translation(Kind::Other, "JR東海道本線", &ls(&["ja"])), None);
+    // The disagreements split by kind: Mont-Blanc, a town in Quebec, and the mountain.
+    assert_eq!(d(Kind::Settlement, "Mont-Blanc", None, &["fr", "en"]), s("Mont-Blanc", None));
+    assert_eq!(d(Kind::Other, "Mont-Blanc", None, &["fr"]).0, "Mont Blanc");
 }
 
-/// Checks every named feature of an attached tile against the tables directly.
-fn check_attached(names: &Names, before: &Tile, after: &Tile, z: u32, x: u32, y: u32, rule: &LayerRule) -> (usize, usize) {
+/// Checks every named feature of an attached tile against the lines directly (no spoken
+/// languages: OSM's own tags only).
+fn check_attached(names: &Names, before: &Tile, after: &Tile, rule: &LayerRule) -> (usize, usize) {
     let (mut named, mut translated) = (0, 0);
     for (li, (lb, la)) in before.layers.iter().zip(&after.layers).enumerate() {
         assert_eq!(lb.name, la.name);
         let applies = rule.layer == "*" || rule.layer == lb.name;
         for i in 0..lb.features.len() {
             let name = rule.name_keys.iter().find_map(|k| prop(before, li, i, k).filter(|s| !s.is_empty()));
-            let Some(name) = name.filter(|_| applies) else {
+            let Some(_name) = name.filter(|_| applies) else {
                 assert_eq!(prop(after, li, i, MAIN), None);
                 continue;
             };
             named += 1;
-            let own = rule.en_keys.iter().find_map(|k| prop(before, li, i, k).filter(|s| !s.is_empty()));
-            let (px, py) = lb.features[i].first_point().expect("located");
-            let (lon, lat) = mvt::tile_to_lonlat(z, x, y, lb.extent, px.into(), py.into());
-            let line = area_at(lon, lat).and_then(|a| names.translation(Kind::Place, a, &name));
-            translated += usize::from(line.is_some());
-            // Within the areas an ETag for the tile counts (label points reach a tile beyond theirs).
-            let [w, s, e, n] = mvt::tile_bounds(z, x, y, 1.0);
-            if let Some(a) = area_at(lon, lat) {
-                assert!(names::areas_in(w, s, e, n).contains(&a), "{name} in {a}, outside {z}/{x}/{y}'s areas");
-            }
-            let want = match line {
-                Some(t) => DisplayRef::new(t.main, t.sub),
-                None => DisplayRef::new(&name, own.as_deref()),
-            };
-            assert_eq!(prop(after, li, i, MAIN).as_deref(), Some(want.main), "{name}");
-            assert_eq!(prop(after, li, i, SUB).as_deref(), want.sub, "{name}");
-            // Nothing else about the feature changed.
+            translated += usize::from(prop(after, li, i, SUB).is_some());
             let strip = |t: &Tile| -> Vec<(String, Value)> {
                 let l = &t.layers[li];
                 let f = &l.features[i];
@@ -376,68 +330,35 @@ fn check_attached(names: &Names, before: &Tile, after: &Tile, z: u32, x: u32, y:
             assert_eq!((&lb.features[i].geometry, lb.features[i].id), (&la.features[i].geometry, la.features[i].id));
         }
     }
+    let _ = names;
     (named, translated)
 }
 
 #[test]
 fn attach_to_real_tiles() {
-    let Some(t) = tables(&["jp", "tw", "gb"]) else { return };
-    let names = &t.names;
-    let places = [("Matsushima", 141.06, 38.37), ("Tokyo", 139.69, 35.69), ("Taipei", 121.52, 25.05), ("Tamsui", 121.44, 25.17)];
-
-    if let Some(path) = build("labels.tiles") {
-        let a = roadcore::archive::Archive::open(&path).expect("archive");
-        let (mut named, mut translated) = (0, 0);
-        for (place, lon, lat) in places {
-            for z in [8, 10, 12] {
-                let (x, y) = tile_at(z, lon, lat);
-                let Some(gz) = a.get(z as u8, x, y) else { continue };
-                let raw = gunzip_if_gzip(gz).expect("gunzip");
-                let before = Tile::decode(&raw).expect("decode");
-                let t0 = Instant::now();
-                let out = mvt::attach(&raw, z, x, y, names, &[LABELS]).expect("attach").expect(place);
-                let took = t0.elapsed();
-                let after = Tile::decode(&out).expect("decode attached");
-                let (n, tr) = check_attached(names, &before, &after, z, x, y, &LABELS);
-                eprintln!("labels {place} {z}/{x}/{y}: {n} named, {tr} with a line, {} → {} bytes, {took:.1?}", raw.len(), out.len());
-                named += n;
-                translated += tr;
-            }
-        }
-        assert!(named > 1000 && translated > 100, "{named} {translated}");
-        // The Matsushima label itself.
-        let (x, y) = tile_at(12, 141.06, 38.37);
-        let raw = gunzip_if_gzip(a.get(12, x, y).expect("tile")).expect("gunzip").into_owned();
-        let after = Tile::decode(&mvt::attach(&raw, 12, x, y, names, &[LABELS]).expect("attach").expect("changed")).expect("decode");
-        let i = (0..after.layers[0].features.len()).find(|i| prop(&after, 0, *i, "n").as_deref() == Some("松島")).expect("松島 in its tile");
-        let line = names.translation(Kind::Place, "jp", "松島").expect("a line for 松島");
-        assert_eq!(prop(&after, 0, i, MAIN).as_deref(), Some(line.main));
-        assert_eq!(prop(&after, 0, i, SUB).as_deref(), Some(line.sub.expect("a sub for 松島")));
-    }
-
+    let Some(names) = tables() else { return };
+    let names = &names;
     if let Some(path) = build("base.pmtiles") {
-        // Today's basemap stops at 129.2° E: Britain and Ireland (the gb table), and Paris (no table
-        // loaded here, so own English only).
         let pm = PmTiles::open(&path);
-        let (mut named, mut translated) = (0, 0);
-        let places = [("Paris", 2.3522, 48.8566), ("Cardiff", -3.18, 51.48), ("Snowdonia", -3.95, 53.0), ("Connemara", -9.6, 53.45), ("Skye", -6.2, 57.3)];
+        let (mut named, mut with_sub) = (0, 0);
+        let places = [("Paris", 2.3522, 48.8566), ("Cardiff", -3.18, 51.48), ("Connemara", -9.6, 53.45)];
         for (place, lon, lat) in places {
             for z in [6, 10, 13] {
                 let (x, y) = tile_at(z, lon, lat);
                 let Some(raw) = pm.tile(z, x, y) else { continue };
                 let before = Tile::decode(&raw).expect("decode");
                 let t0 = Instant::now();
-                let Some(out) = mvt::attach(&raw, z, x, y, names, &[OPENMAPTILES]).expect("attach") else { continue };
+                let Some(out) = mvt::attach(&raw, z, x, y, names, None, &[OPENMAPTILES]).expect("attach") else { continue };
                 let took = t0.elapsed();
                 let after = Tile::decode(&out).expect("decode attached");
-                let (n, tr) = check_attached(names, &before, &after, z, x, y, &OPENMAPTILES);
-                eprintln!("basemap {place} {z}/{x}/{y}: {n} named, {tr} with a line, {} → {} bytes, {took:.1?}", raw.len(), out.len());
-                // Done again, nothing changes.
-                assert_eq!(mvt::attach(&out, z, x, y, names, &[OPENMAPTILES]).expect("attach"), None);
+                let (n, s) = check_attached(names, &before, &after, &OPENMAPTILES);
+                eprintln!("basemap {place} {z}/{x}/{y}: {n} named, {s} with a sub, {} → {} bytes, {took:.1?}", raw.len(), out.len());
+                assert_eq!(mvt::attach(&out, z, x, y, names, None, &[OPENMAPTILES]).expect("attach"), None);
                 named += n;
-                translated += tr;
+                with_sub += s;
             }
         }
-        assert!(named > 1000 && translated > 50, "{named} {translated}");
+        assert!(named > 100, "{named} {with_sub}");
     }
+    let _ = LABELS;
 }

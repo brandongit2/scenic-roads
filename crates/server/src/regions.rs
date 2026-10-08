@@ -51,11 +51,11 @@ fn fold(s: &str) -> String {
 }
 
 impl OutlineIndex {
-    fn open(s: &crate::AppState) -> Result<Option<OutlineIndex>> {
-        let cat = s.data.catalog();
+    fn open(data: &crate::data::Data) -> Result<Option<OutlineIndex>> {
+        let cat = data.catalog();
         let Some(logical) = cat.global.get("outlines") else { return Ok(None) };
-        let Some(sect) = s.data.sect(logical)? else { return Ok(None) };
-        let content = s.data.content(logical).unwrap_or_default();
+        let Some(sect) = data.sect(logical)? else { return Ok(None) };
+        let content = data.content(logical).unwrap_or_default();
         let recs: Vec<OutlineRec> = bytemuck::pod_collect_to_vec(sect.get("recs")?.bytes());
         let strings: Vec<String> = String::from_utf8_lossy(sect.get("strings")?.bytes()).split('\n').map(str::to_string).collect();
         let mut names: Vec<(String, u32)> = Vec::with_capacity(recs.len() * 2);
@@ -141,6 +141,24 @@ impl OutlineIndex {
     }
 }
 
+/// The languages spoken where (`names::spoken`), from the catalog's outlines: their simplified
+/// rings, read from the mirror or the NAS (None when the catalog has no outlines).
+pub fn spoken_from_outlines(data: &crate::data::Data) -> Result<Option<names::Spoken>> {
+    let Some(ix) = OutlineIndex::open(data)? else { return Ok(None) };
+    let polygons = |o: &OutlineRec| -> Result<Vec<Vec<Vec<[i32; 2]>>>> {
+        let mut out: Vec<Vec<Vec<[i32; 2]>>> = Vec::new();
+        for (kind, r) in ix.rings_kinds(o, true)? {
+            match out.last_mut() {
+                Some(p) if kind == 1 => p.push(r),
+                _ => out.push(vec![r]),
+            }
+        }
+        Ok(out)
+    };
+    let areas = pipeline::outlines::spoken_areas(&ix.recs, |i| ix.string(i).to_owned(), polygons)?;
+    Ok(Some(names::Spoken::build(areas)))
+}
+
 /// The outline index of the current catalog, opened once per catalog.
 #[derive(Default)]
 pub struct Areas {
@@ -157,7 +175,7 @@ impl Areas {
                 return Ok(Some(cur.clone()));
             }
         }
-        let opened = OutlineIndex::open(s)?.map(Arc::new);
+        let opened = OutlineIndex::open(&s.data)?.map(Arc::new);
         *g = opened.clone();
         Ok(opened)
     }

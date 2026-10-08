@@ -529,7 +529,7 @@ pub fn view_json(s: &S, q: &ViewQ) -> anyhow::Result<Value> {
         Some((v, i, r)) => {
             let (lon, lat) = (pm::deg(r.lon), pm::deg(r.lat));
             let name = v.summit_name(i)?;
-            let d = s.names.display(names::Kind::Place, name, None, lon, lat);
+            let d = s.names.display(names::Kind::Other, name, None, &[], lon, lat);
             let shown = match d.sub {
                 Some(sub) if !d.main.is_empty() => format!("{} ({sub})", d.main),
                 _ => d.main.to_string(),
