@@ -3632,14 +3632,17 @@ impl Agent {
                 self.slots[k].job_eta.map(|e| e as f64).into_iter().chain([left / speed.max(0.1)]).fold(60.0, f64::max)
             })
         };
-        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, second: false, light_s: 0.0, mem_mb: u64::MAX, busy_s: busy(0, 1.0) }];
+        // (A worker that takes tails around: each of this Mac's units the moment its job gives it to
+        // take its tail, crate::offload.)
+        let unit_extra_s = if self.coord.as_ref().is_some_and(|c| c.tail_takers()) { crate::offload::LEASE_WAIT.as_secs_f64() } else { 0.0 };
+        let mut machines = vec![Machine { name: self.host.clone(), speed: 1.0, measured: true, helper: false, second: false, light_s: 0.0, mem_mb: u64::MAX, busy_s: busy(0, 1.0), unit_extra_s }];
         // Its second job: what fits beside the first (a quarter of its memory, say); while the Mac's
         // in use, as it is now, its network work alone.
         if self.second_allowed() {
             let (speed, measured) = speeds.get(&second).copied().unwrap_or((0.8, false));
             let mem_mb = (cond::resources(&self.o.home, None, None, None).mem_gb * 256.0) as u64;
             let light_s = if self.last_cond.is_some_and(|c| c.user_active()) { forecast::IN_USE_S } else { 0.0 };
-            machines.push(Machine { name: second.clone(), speed, measured, helper: false, second: true, light_s, mem_mb, busy_s: busy(1, speed) });
+            machines.push(Machine { name: second.clone(), speed, measured, helper: false, second: true, light_s, mem_mb, busy_s: busy(1, speed), unit_extra_s });
         }
         for h in &helpers {
             let (speed, measured) = speeds.get(&h.host).copied().unwrap_or((0.5, false));
@@ -3648,7 +3651,7 @@ impl Agent {
             let lease_left = leased.iter().filter(|l| l.0 == h.host).map(|(_, step, ts, age)| ts.iter().map(|t| cost(step, t).secs).sum::<f64>() / speed - *age as f64).fold(0.0, f64::max);
             let eta = h.job.as_ref().map(|j| j.progress.as_ref().and_then(|p| p.eta_s).unwrap_or(600) as f64);
             let busy_s = eta.map_or(0.0, |e| e.max(lease_left).max(60.0));
-            machines.push(Machine { name: h.host.clone(), speed, measured, helper: true, second: false, light_s: 0.0, mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144), busy_s });
+            machines.push(Machine { name: h.host.clone(), speed, measured, helper: true, second: false, light_s: 0.0, mem_mb: mem.get(&h.host).copied().filter(|&m| m > 0).unwrap_or(6144), busy_s, unit_extra_s: 0.0 });
         }
         // What's being built now, and by which.
         let mut running: BTreeMap<(String, String), usize> = BTreeMap::new();

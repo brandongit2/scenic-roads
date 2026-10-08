@@ -69,7 +69,13 @@ pub struct Tasks {
     /// Where uploads go: a folder per task (on the same disk as the jobs' folders, so taking them is
     /// a rename).
     dir: PathBuf,
+    /// The memory of the last tasks offered of each kind (MB, at most `RECENT`): what one takes,
+    /// typically (`typical_mb`).
+    recent_mb: BTreeMap<String, std::collections::VecDeque<u64>>,
 }
+
+/// How many tasks' memory a kind's typical one is of.
+const RECENT: usize = 20;
 
 /// A path a worker names (an input it fetches, an output it uploads), when it stays inside the
 /// folder: relative, no `..`, nothing odd.
@@ -83,7 +89,7 @@ impl Tasks {
     pub fn new(dir: PathBuf) -> Tasks {
         // (Uploads left by a run before this one: their jobs are gone.)
         std::fs::remove_dir_all(&dir).ok();
-        Tasks { next: 1, by_id: BTreeMap::new(), dir }
+        Tasks { next: 1, by_id: BTreeMap::new(), dir, recent_mb: BTreeMap::new() }
     }
 
     /// Takes a job's offer; its id.
@@ -92,8 +98,21 @@ impl Tasks {
         self.next += 1;
         let out = self.dir.join(id.to_string());
         std::fs::create_dir_all(&out)?;
+        let recent = self.recent_mb.entry(o.kind.clone()).or_default();
+        recent.push_back(o.mem_mb);
+        if recent.len() > RECENT {
+            recent.pop_front();
+        }
         self.by_id.insert(id, Task { id, owner: o.owner, kind: o.kind, spec: o.spec, root: o.root, inputs: o.inputs, mem_mb: o.mem_mb, state: State::Offered, out, failed_on: BTreeSet::new(), offered: now });
         Ok(id)
+    }
+
+    /// What a task of `kind` takes, typically (MB): the median of the last offered (None: none
+    /// was, since this coordinator started).
+    pub fn typical_mb(&self, kind: &str) -> Option<u64> {
+        let mut v: Vec<u64> = self.recent_mb.get(kind)?.iter().copied().collect();
+        v.sort_unstable();
+        v.get(v.len() / 2).copied()
     }
 
     /// The task to give `worker` (who does `can`, and can spare `mem_mb`): the oldest offered that
@@ -224,6 +243,8 @@ mod tests {
         let big = offer(&mut ts, &root, 3000, t0);
         let small = offer(&mut ts, &root, 500, t0 + std::time::Duration::from_secs(1));
         let can = vec!["tail".to_string()];
+        // What one takes typically: the median of those offered.
+        assert_eq!((ts.typical_mb("tail"), ts.typical_mb("bldtile")), (Some(3000), None));
         // Who can spare 1 GB gets the small one; who can spare 4 GB the oldest.
         assert_eq!(ts.pick("phone", &can, 1000), Some(small));
         assert_eq!(ts.pick("ipad", &can, 4000), Some(big));

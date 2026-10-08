@@ -396,10 +396,11 @@ function schedule(m) {
     lanes.append(h("div", { class: "ln", title: nm }, nm), track);
   }
   // The pages: their work is an area's last steps, which the build Mac hands out as it builds its
-  // areas (a few at a time, one to each worker around; its second job's too): while its own areas
-  // run, so then.
+  // areas (a few at a time, one to each worker around that spares what one takes; its second job's
+  // too): while its own areas run, so then, if a page spares what a tail takes typically.
   const own = [...(fc.lanes[m.a.host] || []), ...(fc.lanes[secondOf(m.a.host)] || [])].sort((p, q) => p.from - q.from);
-  if (m.pages.length && own.some((l) => l.step === "unit" && l.until > t0)) {
+  const fits = m.pages.some((p) => (p.mem_mb || 0) >= (m.sw.task_mb?.tail || 0));
+  if (fits && own.some((l) => l.step === "unit" && l.until > t0)) {
     const track = h("div", "track");
     const who = m.pages.map((p) => p.label).join(", ");
     for (const l of own.filter((l) => l.step === "unit" && l.until > t0)) {

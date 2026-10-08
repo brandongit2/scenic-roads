@@ -47,6 +47,9 @@ pub struct Machine {
     pub mem_mb: u64,
     /// Seconds from now until it's free (its job under way's time left).
     pub busy_s: f64,
+    /// What each unit takes it more (seconds): the build Mac's, while a worker that takes tails is
+    /// around, the moment its job gives one to take its tail (crate::offload::LEASE_WAIT).
+    pub unit_extra_s: f64,
 }
 
 /// What a target takes: its time at the build Mac's pace (seconds), whether that time was measured,
@@ -390,7 +393,8 @@ fn run(inp: &Input, scale: &dyn Fn(&Cost) -> f64) -> Sim {
         }
         let mac = &inp.machines[m];
         let take = |items: &mut Vec<Item>, i: usize, from: f64| -> f64 {
-            let end = from + items[i].cost.secs / mac.speed.max(0.01);
+            let extra = if items[i].step == "unit" { mac.unit_extra_s } else { 0.0 };
+            let end = from + items[i].cost.secs / mac.speed.max(0.01) + extra;
             (items[i].by, items[i].from, items[i].end) = (Some(m), from, end);
             end
         };
@@ -707,7 +711,7 @@ mod tests {
     }
 
     fn mac(name: &str, speed: f64, helper: bool) -> Machine {
-        Machine { name: name.into(), speed, measured: true, helper, second: false, light_s: 0.0, mem_mb: 6000, busy_s: 0.0 }
+        Machine { name: name.into(), speed, measured: true, helper, second: false, light_s: 0.0, mem_mb: 6000, busy_s: 0.0, unit_extra_s: 0.0 }
     }
 
     fn cost(step: &str, _t: &str) -> Cost {
@@ -782,6 +786,14 @@ mod tests {
         // Free: nothing left.
         inp.machines[0].busy_s = 0.0;
         assert!(forecast(&inp).nothing_left());
+    }
+
+    #[test]
+    fn a_page_around_takes_each_unit_the_moment_its_job_gives_it() {
+        // As below, a worker that takes tails around: each of the two units 30 s longer.
+        let regions = [region("a", &["3/1/1"], &["6/8/8", "6/8/9"], &["3/1/1"])];
+        let f = forecast(&input(&regions, vec![Machine { unit_extra_s: 30.0, ..mac("m4", 1.0, false) }], &cost));
+        assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 1460));
     }
 
     #[test]

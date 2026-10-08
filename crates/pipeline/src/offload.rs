@@ -577,6 +577,7 @@ mod tests {
         assert!(m1.ask(&ask).unwrap().is_none());
         let t = o.offer(Unit::parse("6/1/1").unwrap(), &dir, None, &runs).unwrap();
         assert_eq!(o.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).unwrap().1["takers"], 1);
+        assert!(c.tail_takers(), "the forecast's units give it a moment too");
         let worker = {
             let (m1, ask, bin, home) = (Client::at(vec![url.clone()], c.contact.token.clone(), "m1"), ask.clone(), bin.clone(), d.path().join("m1"));
             std::thread::spawn(move || {

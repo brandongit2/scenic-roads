@@ -726,6 +726,15 @@ impl Coordinator {
         (s.costs.clone(), leased, s.history.since(0, usize::MAX), mem)
     }
 
+    /// Whether a worker around (not found wrong) takes tails and spares what one takes typically
+    /// (any, before one was offered): this Mac's unit jobs then give it a moment to take theirs
+    /// (crate::offload::LEASE_WAIT), the forecast's units that much longer.
+    pub fn tail_takers(&self) -> bool {
+        let s = self.shared.lock().unwrap();
+        let mb = s.tasks.typical_mb("tail").unwrap_or(0);
+        s.workers.values().any(|w| !w.bad && w.seen.elapsed() < AROUND && w.can.iter().any(|c| c == "tail") && w.mem_mb >= mb)
+    }
+
     /// The pool's term the leases it grants now are in (docs/pool.md §7.5; 0: the pool off).
     pub fn set_term(&self, term: u64) {
         self.shared.lock().unwrap().leases.term = term;
@@ -1351,7 +1360,10 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             let unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
             // The history's last number (the page asks `/work/history` for what's after the one it
             // has) and the last day by the hour.
-            Ok((200, serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "tasks": tasks, "seq": s.history.seq(), "rates": s.history.rates(unix, 24) })))
+            // (What a task of each kind takes, typically: whether a page can take the tails the
+            // schedule shows it.)
+            let task_mb = serde_json::json!({ "tail": s.tasks.typical_mb("tail"), "bldtile": s.tasks.typical_mb("bldtile") });
+            Ok((200, serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "tasks": tasks, "task_mb": task_mb, "seq": s.history.seq(), "rates": s.history.rates(unix, 24) })))
         }
         "/work/history" => {
             // What happened after event `since` (the oldest first, at most `max`, 500 by default).
