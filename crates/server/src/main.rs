@@ -343,6 +343,31 @@ fn exit_on_signals(data: Arc<data::Data>) {
     }
 }
 
+/// The options it takes, with a value or not (the usage above).
+const VALUED: [&str; 7] = ["--port", "--web", "--fonts", "--home", "--root", "--reserve-gb", "--listen"];
+const FLAGS: [&str; 2] = ["--no-mirror", "--mirror"];
+
+/// Why the arguments are refused, if they are: `--help`, `-h` or anything it doesn't take. Checked
+/// before anything starts, so a mistyped or unknown option never runs the server with its defaults
+/// (this Mac's own app folder and the real NAS).
+fn bad_args(a: &[String]) -> Option<String> {
+    let mut i = 0;
+    while i < a.len() {
+        match a[i].as_str() {
+            o if VALUED.contains(&o) => {
+                if a.get(i + 1).is_none_or(|v| v.starts_with("--")) {
+                    return Some(format!("{o} needs a value"));
+                }
+                i += 2;
+            }
+            o if FLAGS.contains(&o) => i += 1,
+            "--help" | "-h" => return Some(String::new()),
+            o => return Some(format!("unknown argument {o:?}")),
+        }
+    }
+    None
+}
+
 fn arg(name: &str) -> Option<String> {
     let a: Vec<String> = std::env::args().collect();
     a.iter().position(|x| x == name).and_then(|i| a.get(i + 1).cloned())
@@ -366,6 +391,14 @@ fn raise_open_files() {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(why) = bad_args(&args) {
+        if !why.is_empty() {
+            eprintln!("server: {why}");
+        }
+        eprintln!("usage: server [--port 8080] [--web web/dist] [--fonts data/fonts] [--home <dir>] [--root <dir>]\n              [--no-mirror | --mirror] [--reserve-gb 50] [--listen <IPv4 address>]");
+        std::process::exit(if why.is_empty() { 0 } else { 2 });
+    }
     raise_open_files();
     let web = PathBuf::from(arg("--web").unwrap_or_else(|| "web/dist".into()));
     let fonts = PathBuf::from(arg("--fonts").unwrap_or_else(|| "data/fonts".into()));
@@ -946,6 +979,18 @@ impl Region {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_and_unknown_options_never_start_it() {
+        let v = |a: &[&str]| bad_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(v(&[]), None);
+        assert_eq!(v(&["--port", "18150", "--home", "/tmp/h", "--root", "/tmp/r", "--no-mirror"]), None);
+        assert_eq!(v(&["--help"]), Some(String::new()));
+        assert_eq!(v(&["-h"]), Some(String::new()));
+        assert!(v(&["--verbose"]).is_some_and(|w| w.contains("unknown")));
+        assert!(v(&["--home"]).is_some_and(|w| w.contains("needs a value")));
+        assert!(v(&["--home", "--root", "/tmp/r"]).is_some_and(|w| w.contains("needs a value")));
+    }
 
     #[test]
     fn a_root_is_mirrored_only_into_a_home_of_its_own() {
