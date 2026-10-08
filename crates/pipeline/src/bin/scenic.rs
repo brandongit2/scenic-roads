@@ -6,6 +6,10 @@
 //!   scenic remove <id>                  remove a region (its recipe is kept as .removed)
 //!   scenic agent [--once] [--dry-run] [--home <dir>] [--helper]  the build agent (the build Mac's
 //!                                       login item; --helper: the M1's, the shared steps' jobs)
+//!   scenic pool-shadow --home <dir> [--live <dir>] [--hours <h>] [--once]  the pool's shadow run
+//!                                       (docs/pool.md §12): its driver beside this Mac's agent (its
+//!                                       folder, `--live`, read only), writing only under the NAS's
+//!                                       state/pool-shadow/, its log in <dir>/pool-shadow/
 //!   scenic pause [--now] | resume       pause the whole build (every Mac's jobs stop at their next
 //!                                       safe point; --now: frozen at once), or let it go on
 //!   scenic clean [--yes]                clear this Mac's build caches (what later jobs copy back
@@ -307,6 +311,16 @@ fn main() -> Result<()> {
             eprintln!("agent: started (app {}, root {})", o.bin.display(), o.root.as_ref().map(|r| r.display().to_string()).unwrap_or_else(|| "the NAS share".into()));
             pipeline::sys::raise_open_files();
             agent::Agent::new(o)?.run()
+        }
+        "pool-shadow" => {
+            let bin = std::env::current_exe()?.parent().map(Path::to_path_buf).context("the agent's folder")?;
+            let home = PathBuf::from(opt(&args, "--home").context("--home <its own folder>")?);
+            let live = opt(&args, "--live").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+            anyhow::ensure!(home.canonicalize().ok() != live.canonicalize().ok() && home != app_home().join("agent"), "the shadow's folder can't be an agent's");
+            let stop_after = opt(&args, "--hours").map(|h| h.parse::<f64>()).transpose()?.map(|h| std::time::Duration::from_secs_f64(h * 3600.0));
+            let o = agent::shadow::Options { root: opt(&args, "--root").map(PathBuf::from), home, live, app: agent::app_version(&bin), once: flag(&args, "--once"), stop_after };
+            pipeline::sys::raise_open_files();
+            agent::shadow::run(o)
         }
         "run-task" => {
             // A task the helper's agent leased (pipeline::offload::run_task), run here; its result

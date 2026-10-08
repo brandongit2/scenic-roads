@@ -339,8 +339,14 @@ impl Out {
 /// An error unless this Mac writes the build's records (docs/plan.md §8, Two Macs): the build Mac
 /// alone does, so a write from another Mac (a step run by hand there, not as a helper's job) is
 /// refused rather than let race it. Its agent's jobs are the build Mac's (SCENIC_BUILD_MAC); a step
-/// run by hand is, on the Mac `state/build/writer` names (on any, before one is named).
+/// run by hand is, on the Mac `state/build/writer` names (on any, before one is named). While the
+/// pool is on (`state/pool/enabled`), none: every job hands off, and the lead's merge alone writes
+/// them (docs/pool.md §7.3).
 pub fn check_writer(root: &Path) -> Result<()> {
+    // (The pool on, no one writes them but its lead's merge: a job hands off, docs/pool.md §7.3.)
+    if root.join(crate::agent::pool::ENABLED).exists() {
+        bail!("the pool is on ({}): the records are its lead's to write; a step saves only as a job's, handing off (SCENIC_HANDOFF)", root.join(crate::agent::pool::ENABLED).display());
+    }
     if std::env::var_os("SCENIC_BUILD_MAC").is_some() {
         return Ok(());
     }
@@ -512,5 +518,11 @@ mod tests {
         std::fs::write(root.join("state/build/writer"), crate::agent::cond::host()).unwrap();
         out.save().unwrap();
         assert!(root.join("state/build/manifest.json").exists());
+        // The pool on: no one's step writes them, the build Mac's job's neither (it hands off).
+        std::fs::create_dir_all(root.join("state/pool")).unwrap();
+        std::fs::write(root.join(crate::agent::pool::ENABLED), "").unwrap();
+        out.changes.insert("b".into(), Some("b.2222222222222222.x".into()));
+        assert!(format!("{:#}", out.save().unwrap_err()).contains("the pool is on"));
+        assert!(check_writer(&root).is_err());
     }
 }
