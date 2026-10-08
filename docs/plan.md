@@ -540,7 +540,9 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   (its free space and mirror, less the reserve).
 - **Copy order:** the essentials, then the kept areas' files, then the rest; within each, small
   worldwide files, root and lo packs and the basemap, hidata, road values and the small per-tile
-  records, base packs, hi packs, and the rest. The most recently used go first within each group: a
+  records, base packs, hi packs, the 3D buildings' hi packs (a city's z6 tile is a few hundred MB:
+  the roads and terrain first; on a Mac whose budget runs out, the server reads them from the NAS),
+  and the rest. The most recently used go first within each group: a
   use is a read the map makes (a tile, a 304 too, a section, a base pack, the basemap), from the
   mirror or the NAS, not the reads the server makes on its own (indexes cached for offline, the
   place search's). The use times are written out every minute, during a copy too, and before the
@@ -591,7 +593,9 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
     workers) and the catalog's metadata, kept as it installs and again with each new page; scripts
     and styles a newer page no longer names go;
   - the fonts and icons, and the map's versioned data (`?v=`) that the Mac says never changes
-    (`immutable`: its version still current), as it's looked at (the last 12,000 files kept).
+    (`immutable`: its version still current), as it's looked at (the last 12,000 files kept); the
+    3D buildings' tiles in a cache of their own (the last 2,000: a city's z14 tiles are 50–300 KB,
+    a view's ~20), so a city's buildings don't crowd out its roads and terrain.
   - The page and the metadata come from the Mac when it answers well within 4 s, else as kept. A
     Mac that doesn't (asleep, away, or restarting: `tailscale serve` answers 502) is taken for away
     for a minute, so what was kept is used at once. A refusal (401, 403) is never hidden.
@@ -821,8 +825,9 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   estimated from Microsoft's figure, its neighbours, GHSL or its size and kind; tiles z12–14 per z6
   tile. Built (B1): the steps `bldprep` and `bldtiles` (`pipeline::bld`, dem/bldprep.py), run by
   hand; the catalog's layer `buildings`, the server's `/tiles/buildings`, the map's layer and its
-  settings. Not built (B2): the agent running them, the mirror's group, credits; nothing published.
-  National heights (PLATEAU, BD TOPO) later.
+  settings. Built (B2, 2026-10-08, not yet published): the agent runs them for every tile, their
+  sources' fetch a network job (§8, Order: the fourth chain), shared with helpers; the mirror's
+  group, the iPad's budget, the credits. National heights (PLATEAU, BD TOPO) later.
 
 The server builds missing deeper terrain and slope tiles from their ancestors.
 
@@ -1126,7 +1131,21 @@ A job's key is its step version plus what it reads, mostly by content name. The 
   while `inputs/keys.env` can't be read;
 - **rail:** the feeds' list (each feed's zip by content name, and the day it counts from), the MTR's
   pairs, the pass's rail set and the coverage;
-- **water:** its version and the pass's basemap, by content name.
+- **water:** its version and the pass's basemap, by content name;
+- **bld-fetch** (the 3D buildings' sources, network): its version, the pinned Overture release and
+  the whole coverage. Not the footers it reads and writes (`footers.json.gz`): a release's files
+  never change, so the release names them, and a key on what it writes would run it again for its
+  own sake;
+- **bldprep (per z6 tile):** its version (`BLDPREP_V`), the release, and what it reads: each
+  downloaded file with a row group meeting the tile (a parts file's: the tile grown by 0.02°), by
+  name and ETag, with those row groups' indexes, and each GHSL tile meeting it by name and size,
+  from the sources' indexes on the NAS (`crate::bld::sources`, read as `inputs/` is: by digest, in
+  the plan's inputs, read again only when an index changes). A file fetched later (the coverage
+  grew) changes the keys of the tiles it meets;
+- **bldtiles (per z6 tile):** its version (`BUILDINGS_V`: the fill's rules, fits and defaults, and
+  the tiles), the normalized files of the tile and its 8 neighbours by content name ("-" none), and
+  the coverage's shapes over the tile grown by 1 km in the recipes' order with their countries
+  (`Coverage::shapes_key`: a building's shape sets its country's fits).
 
 The landmark jobs, stations, ferries and overlays: `docs/phase5.md`.
 
@@ -1368,7 +1387,9 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     catalog. The same four areas' pieces and assemblies made the program's z3 runs' packs byte for
     byte (and every one of their 129,455 tiles has trees.py's pixels).
 - **A job** is one step over a batch of stale targets: terrain 1, slope and lo 2, tree cover's
-  pieces and assemblies 4, unit 6, peaks 12, pack 16, pois 24, the worldwide steps all. So a failure
+  pieces and assemblies 4, unit 6, the 3D buildings' bldprep 8 and bldtiles 16 (z6 tiles: a dense
+  one's bldprep about a minute, its bldtiles about 10 s), peaks 12, pack 16, pois 24, the
+  worldwide steps all. So a failure
   or a new app costs one batch.
 - **Order:** the agent starts the first job that can run, in plan order. It plans when a job could
   start (its second slot's: each minute), when one ends, and otherwise every five minutes for the
@@ -1379,15 +1400,18 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   it reads or its reach changes); other workers' hand-offs are merged each loop while it waits, every
   two minutes while a job runs.
 - **Two jobs at once** (`agent::SECOND`): beside the first job, the build Mac runs a second, the
-  plan's first job of these steps, in this order: the trains' and the landmarks' steps that mostly
-  wait on the internet (the heritage chain, the items' facts, the rail feeds and trains a day, the
-  landmark points and overlays), then the candidates and peaks, then units and slope. A unit spent
+  plan's first job of these steps, in this order: the trains', the landmarks' and the 3D buildings'
+  steps that mostly wait on the internet (the heritage chain, the items' facts, the rail feeds and
+  trains a day, the 3D buildings' sources, the landmark points and overlays), then the candidates
+  and peaks, then units and slope, then the 3D buildings' bldprep and bldtiles (they hold up
+  neither the roads nor the terrain). A unit spent
   380 of its 860 s writing to the NAS and reading the caches (6/17/25, 2026-10-05): two at once build
   more. A second job:
   - never runs beside a job that runs alone (the OSM pass, the pass's worldwide jobs, GC), nor
     beside a job of the same step unless it's a shared one (its targets are held apart, as a
     helper's are), nor a reader of the raw terrain tiles beside another (terrain, peaks, the roots),
-    nor the items' facts beside the heritage chain (both ask Wikidata, each paced as if alone);
+    nor the items' facts beside the heritage chain (both ask Wikidata, each paced as if alone),
+    nor a bldprep beside another (each reads up to ~3 GB of the NAS's parquet a tile);
   - while the Mac is in use, only work that mostly waits on the network;
   - only when the two fit: the first job's memory as predicted (or as it is now, if more) and the
     second's within three quarters of the Mac's, and the second's free now with 2 GB to spare;
@@ -1624,7 +1648,8 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   the landmarks' chains run from the start, each step once what it reads is built (the candidates
   once the pass's hiking-route ends are made, the peaks once every candidate and the terrain are,
   the items' facts once every candidate is, the heritage chain once the heritage sites are, the
-  landmark points once those four are, trains a day once their feeds are). Each
+  landmark points once those four are, trains a day once their feeds are, the 3D buildings' tiles
+  once the normalized files are). Each
   target takes its last run's time at the build Mac's pace (one measured on a helper, over that
   helper's speed, asleep or not), else its step's mean, else what its jobs took here a target, else
   a first guess; each machine at its measured speed (a helper's: the build Mac's mean time a target
@@ -1658,11 +1683,13 @@ coordinator (`pipeline::coord`, port 8090) from which every other worker asks fo
 The M1's agent (`--helper`) plans nothing: it asks for the shared steps' jobs (it mounts the NAS)
 and, when none fits it, units' last steps.
 - **Shared steps** (`agent::claims::SHARED`, in this order of preference: what later steps wait on
-  first): terrain and slope (an area a job), tree cover's pieces (four z6 tiles a job), units, and
-  the landmarks' candidates and peaks. The rest stays the build Mac's: the pass, the worldwide sets,
-  tree cover's assemblies, map tiles, indexing, trains, Wikidata and pageviews, heritage,
-  publishing. The status marks each step a helper may take (⇄; the landmarks', its candidates and
-  peaks; tree cover's, its tiles).
+  first): terrain and slope (an area a job), tree cover's pieces (four z6 tiles a job), units, the
+  landmarks' candidates and peaks, and the 3D buildings' bldprep and bldtiles (8 and 16 z6 tiles a
+  job; bldprep reads the NAS, which every helper mounts). The rest stays the build Mac's: the
+  pass, the worldwide sets, tree cover's assemblies, map tiles, indexing, trains, Wikidata and
+  pageviews, heritage, the 3D buildings' sources, publishing. The status marks each step a helper
+  may take (⇄; the landmarks', its candidates and peaks; tree cover's, its tiles; the 3D
+  buildings', its sources read and tiles).
 - **What fits a helper:** each target is offered with the memory its job is expected to take: a
   unit's from its piece; another's what its last run took (the job notes, per target, the most its
   processes held together, sampled four times a second from the start of that target: a pool's
@@ -1676,7 +1703,10 @@ and, when none fits it, units' last steps.
   1.05 GB on 14 threads for a z3 tile's 792 blocks, a piece has 16 at most; its measures from a z3
   tile's whole run, `v` 1, and from trees.py's workers, `v` 0, 12 to 36 GB, counting for nothing
   now; slope 2, holding a z6 tile's tiles at a time, its measures from when it held its whole
-  area's, `v` 0, counting for nothing now); peaks 2.5. A helper asks only for the steps its disk
+  area's, `v` 0, counting for nothing now); peaks 2.5; the 3D buildings' by the rows of the row
+  groups a z6 tile's bldprep reads (`agent::bld_peak`, from `crate::bld::sources`): bldprep 0.3 GB
+  and 160 B a row, bldtiles 0.25 GB and 280 B for two fifths of them (its largest z8 area's
+  buildings; B1's six tiles each within 0.16 GB of it). A helper asks only for the steps its disk
   has room for (a terrain run 55 GB free, the others 15: a tree cover piece copies the one to four
   canopy squares its blocks touch; a task 5, and a sixth more, counting what its caches can free:
   not its loose raw tiles, which only its own jobs pack),
@@ -1819,7 +1849,7 @@ between jobs into the other way. On:
      round as their neighbours' units are built, and wait for a later one, or the last. A round
      with nothing to publish that isn't out already (after the last; with catalogs held, weighed
      against the last held one) is none.
-4. **Three chains:**
+4. **Four chains:**
    - **Roads**, in every round and after the last unit, its first stale step: a prune of map tiles
      no unit is near, road → units index, pack, lo, stations, ferries, terrain and slope roots.
      Stations and ferries drop the packs they no longer make.
@@ -1832,10 +1862,20 @@ between jobs into the other way. On:
      of each is built (a unit's at a time); the items' facts and pageviews once every candidate is;
      the rest of the heritage chain on the heritage sites alone; the landmark points once those four
      are; the overlays (they read the built units) after the last unit.
+   - **3D buildings** (`docs/buildings3d.md` §3.3), from the start (it reads no unit and no terrain:
+     `agent::build::bld_work`): the sources' fetch (`bld-fetch`, a network job: the release's files
+     and GHSL's tiles meeting the coverage, what's there skipped) when the release or the coverage
+     changed; what no target has any more pruned; each z6 tile's normalized file (`bldprep`, the
+     tiles within 1 km of the coverage that read a downloaded row group or GHSL tile: beside the
+     fetch, a file fetched later changing the keys of the tiles it meets); each tile's 3D buildings
+     (`bldtiles`, the tiles meeting the coverage) once it and its 8 neighbours are prepared, and
+     once the sources are here. Its tiles in the regions' order (those of the region built first,
+     first), each step's together.
 
-   The trains' and the landmarks' work is listed after the regions' (the build Mac's own job takes
-   it once the regions' work is done or waits): the second job takes it first, a helper the
-   candidates and peaks. Last of all, in idle time: the mids of tree cover pieces current without
+   The trains', the landmarks' and the 3D buildings' work is listed after the regions' (the build
+   Mac's own job takes it once the regions' work is done or waits), the 3D buildings' last: the
+   second job takes it first (the buildings after its other steps), a helper the candidates and
+   peaks, and the 3D buildings' tiles. Last of all, in idle time: the mids of tree cover pieces current without
    one (those a key scheme's switch recorded: §8, A new key scheme), each made again as it is and
    expected the same (`scenic-build trees --expect-same`: a pack coming out other than the manifest
    has it fails the job, nothing uploaded; so a change to a piece's bytes alone bumps `TREES_V`:
@@ -1851,8 +1891,10 @@ between jobs into the other way. On:
    counted. It waits while another worker builds a slope area or a tree cover piece of a region it
    would publish (it would go out without the region, which would then wait an hour), and while a
    helper's hand-offs wait to be merged (their areas counted as built, their files not yet in the
-   manifest). What the trains' and the landmarks' chains made goes out with the next round's
-   catalog; after the last unit, a catalog follows any chain's change. While
+   manifest). What the trains', the landmarks' and the 3D buildings' chains made goes out with the
+   next round's catalog; after the last unit, a catalog follows any chain's change, but while the
+   3D buildings' chain has work left, at most an hour after the last round began (not a catalog for
+   each of their jobs). While
    `inputs/hold-catalog` exists, it goes to `catalog-held/` instead (and the rounds go by the held
    ones; the first, by the served one).
 6. **Daily:** backup and GC (not while a round is under way: the units it reads as they were may
@@ -1967,6 +2009,7 @@ everything is rebuilt.
 | our layers (terrain and slope for roadless coverage too) | ~150 GB | ~1.2 TB, with buildings |
 | sources kept per pass | ~200 GB | the same |
 | roadside buildings (the world's, once per Overture release; ~2.5 billion boxes) | ~40 GB | the same |
+| 3D buildings (`docs/buildings3d.md` §2.5): their sources (62 GB, on the NAS since 2026-10-06), the normalized files (~440 M buildings in the coverage's 380 z6 tiles, at the 38–50 B each B1 and B2 measured) and the packs (~342 M, 13.5–20 B each) | 62 + 17–22 + 4.6–6.9 GB; a mirror the packs alone | not planned |
 | an app Mac's mirror | everything, ~200 GB (M1: budget-limited) | budget-limited |
 
 A retired pass's sources go 14 days after the next pass completes, so the NAS holds about two
@@ -2050,8 +2093,10 @@ At each phase's end an Opus agent reviews the work against this plan.
      ground around them, a cap on a blob's size), so that repairing its own output changes nothing;
      terrain still made from AWS's tiles and the code alone.
    - Under way: 3D buildings (`docs/buildings3d.md`: its sources on the NAS; B1 done, the steps
-     built and piloted by hand on six z6 tiles, the layer and the map's side built; B2, the agent
-     running them for every tile, next), then PLATEAU.
+     built and piloted by hand on six z6 tiles, the layer and the map's side built, measured on the
+     iPad; B2's code built, the agent running them for every tile as a fourth chain, the mirror's
+     group, the iPad's budget and the credits, not yet published: the next app published builds
+     every tile, ~30–70 min of the build Mac's, and puts them out with a catalog), then PLATEAU.
    - Planned: building heights in horizons and the viewshed tool; sharper terrain from national
      DEMs.
 8. **Builds anywhere: under way** (`docs/workers.md`). Done: the crates build for WebAssembly; one

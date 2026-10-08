@@ -270,6 +270,18 @@ the source whose property is `/properties/height`, else the footprint's), GHSL's
 centroid (`u16` dm, 0 none) and the OSM id where OSM gave the footprint (`u64`: 1 << 62 a way,
 2 << 62 a relation, or'ed with the id; 0 none).
 
+**The sources' indexes** (dem/bldfetch.py writes them beside the downloads, not through the
+manifest; `bld-fetch` runs it, the agent reads them to key `bldprep`: `pipeline::bld::sources`):
+`sources/overture/<release>/buildings.json` (`{"fmt": 1, "release", "source", "terms", "coverage":
+{"regions", "margin_km", "at"}, "files": {<name under the release's folder>: {"size", "etag",
+"rows", "row_groups", "rows_near", "bbox", "checked"}}}`: the files here, each checked);
+`footers.json.gz` (gzip'd JSON, every file of the release: `{"release/<release>/<name>": {"etag",
+"size", "rows", "rgs": [[w, s, e, n, rows], …]}}`, each row group's box and rows from its footer's
+statistics); `sources/ghsl/R2023A/index.json` (`{"fmt": 1, "product", "source", "terms", "tiles":
+{<zip>: {"size", "bbox", "checked"}}}`). `bld-fetch` hands bldfetch.py the coverage as GeoJSON
+(`--coverage`: a feature per outline, its rings as polygons in degrees, `buffer_m` its buffer, as
+the rail feeds' have it), in the job's scratch folder.
+
 **bldprep.py's stream** (stdout to `scenic-build bldprep`, not a file): `BLDP1\n`, then frames, each
 `u8 kind, u32 header length, header JSON` (with `cols`: [[name, bytes], …]) and the columns' bytes
 in that order: GHSL windows (3; all before any row group's, which sample them as they come), each

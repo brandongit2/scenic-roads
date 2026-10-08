@@ -32,7 +32,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   (§5), on port 8090.
 - **Two kinds of work,** by what a worker can reach:
   - **Jobs** of the plan (the shared steps': terrain, slope, tree cover's pieces, units, candidates
-    and peaks), for workers that mount the NAS (the M1's agent). A job saves into
+    and peaks, the 3D buildings' bldprep and bldtiles), for workers that mount the NAS (the M1's
+    agent). A job saves into
     the store's content-named files as before; its record changes come back as one hand-off.
   - **Tasks** (`coord::task`), pure work a running job offers to any worker: programs run over a
     folder of files, giving files back. What a task reads of its unit's folder was staged on the
@@ -103,7 +104,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 - **Planned:** staging from packs as a task's (read where the packs lie); the heavy steps cut into
   sample ranges so a slow worker's lease is minutes; more kinds of task (map tiles, landmarks,
   slope, terrain, tree cover: a piece's zoom-8 blocks, which already run on their own, `trees
-  --block`, the bytes they read recordable for a run elsewhere, its mid the seam: docs/plan.md §6).
+  --block`, the bytes they read recordable for a run elsewhere, its mid the seam: docs/plan.md §6;
+  the 3D buildings' z8 areas, `bldtile` in WebAssembly: docs/buildings3d.md §3.6, phase B3).
 
 ## 4. Data: the coordinator's plane
 
@@ -287,13 +289,13 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 ## 8. Native workers (built)
 
 - **The M1** asks for the shared steps' jobs (terrain, slope, tree cover's pieces, units,
-  candidates, peaks: docs/plan.md §8, Two Macs) and tails over HTTP. A job runs the build Mac's own command for its step,
+  candidates, peaks, the 3D buildings' bldprep and bldtiles: docs/plan.md §8, Two Macs) and tails over HTTP. A job runs the build Mac's own command for its step,
   its saves handed back through the coordinator; a tail runs as `scenic run-task` (its files fetched
   from the coordinator, its steps run natively, the files they wrote sent back).
 - **The build Mac's second job** (docs/plan.md §8, Two jobs at once) is a worker of its own in the
   history and the forecast ("<host> (second job)"): beside its first job, the network-bound steps
-  first, then the candidates and peaks, then units and slope; its units offer their tails as the
-  first job's do.
+  first, then the candidates and peaks, then units and slope, then the 3D buildings; its units
+  offer their tails as the first job's do.
 - **Planned:** the build Mac's own work as tasks too.
 
 ## 9. Security

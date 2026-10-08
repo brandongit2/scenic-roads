@@ -1,9 +1,11 @@
 # 3D buildings
 
 **Phases B0 and B1 done** (2026-10-06): the sources downloaded and measured (B0); the steps, the
-layer and the map built and piloted by hand on six z6 tiles (B1, §5.1), the iPad's measurements to
-come (§4.6's checklist). Nothing of B2–B4 built: the agent doesn't run the steps, nothing is
-published. The first of plan.md §10's phase 7 features ("3D buildings, then PLATEAU"); plan.md §6
+layer and the map built and piloted by hand on six z6 tiles (B1, §5.1), measured on the iPad
+(2026-10-08, §4.6). **B2's code built** (2026-10-08): the agent runs the steps for every tile as
+part of the build (§3.2–3.6), the mirror, the iPad's service worker and the credits know the
+layer; not yet published, so no agent runs it and no tile beyond B1's pilot is built: the next
+app published starts it (§5.1). Nothing of B3–B4 built. The first of plan.md §10's phase 7 features ("3D buildings, then PLATEAU"); plan.md §6
 (Global-source layers) points here. Companions: `docs/plan.md` (the pipeline, keys, order),
 `docs/formats.md` (files), `docs/workers.md` and `docs/pool.md` (sharing the work). Its sources are
 on the NAS (§2.6); `dem/bldmeasure.py` measured them (§2.2–2.5); `dem/bldprep.py` and
@@ -323,7 +325,9 @@ change every unit's key (every unit rebuilt), so they're decided on their own. T
 | tiles, encoded in B0 | 178 tiles encoded as §3.4 has them (gzip level 6), the fullest and heaviest by the estimate and a sample: 17.7 B a building at z14 (the median; 10.4–27.9), 35.7 at z13, 20.0 at z12. The fullest z14 tile holds 26,462 buildings (Kyoto, 14/14369/6488: 278 KB); 15 of the 30 heaviest by the estimate are over 300 KB (the rest of the tiles under ~290 KB), at most 490 KB (Valencia, 14/8174/6234: 24,183 buildings), all in old towns drawn on Spain's cadastral parcels (Barcelona's six, Valencia's, Granada's, Málaga's, Córdoba's, Santander's, the Garraf's) or in Tokyo's wards (three, 303–310 KB). Simplified to a grid unit (0.6 m), as z12–13 are, they lose ~18 % (490 → 400 KB); keeping only `h` and `k`, ~2 %. The fullest z13 tile: 17,842 (Valencia: 279 KB; Barcelona's 284 KB); z12: 10,339 (Manhattan: 148 KB; Singapore's 10,204, 176 KB) |
 | tiles, estimated | each building's command bytes (§3.4's quantizing, in the scan), calibrated by the encoded tiles: 5.69 GB at z14 (2.23 M tiles: median 21 buildings, p99 2,436), 0.13 GB at z13 (194 k tiles, 3.5 M buildings), 4 MB at z12 (4,679 tiles, 208 k): 5.8 GB; the largest hi pack 6/56/25 0.47 GB |
 | tiles, built (B1's pilot, the packs served) | 6/56/25 (Kantō): 30.3 M buildings and parts, 25,029 tiles, a 0.41 GB pack (13 B a building at z14); 6/32/22 (Paris): 15.3 M, 71,485 tiles, 0.27 GB; 6/18/24 (New York): 14.6 M, 47,658 tiles, 0.27 GB; 6/32/23 (Barcelona): 12.6 M, 50,825 tiles, 0.22 GB; 6/19/23 (Vermont and Boston): 6.1 M, 35,634 tiles, 0.12 GB; 6/3/28 (Oahu): 0.2 M, 410 tiles, 3.7 MB. 13–20 B a building at z14, copies included, as B0 estimated |
-| an app Mac's mirror | +6 GB |
+| tiles and files, built (B2, the M1, 2026-10-08: the agent's command lines, the whole coverage, a scratch root) | 6/18/23 (upstate New York, Vermont's west): 6.03 M rows read, 5.74 M buildings and 0.29 M parts, `bldprep` 79 s and 1.15 GB, a 274 MB work file, `bldtiles` 13 s and 0.88 GB, a 116 MB pack (57,689 tiles); 6/19/23 (Vermont, New Hampshire, Boston): 6.14 M, 72 s and 1.24 GB, 306 MB, 13 s and 0.94 GB, 124 MB; 6/32/22 (Paris): 15.29 M, 183 s and 2.39 GB, 671 MB (the same bytes as B1's on the build Mac), 65 s and 1.17 GB, 269 MB. 44–50 B a building in the work files, 18–20 B in the packs. This Mac (the M1, loaded 20–40) read ~80 k rows a second where the build Mac read 210–450 k in B1 |
+| the coverage's 380 tiles, from these (B2's estimate) | the row groups meeting them hold 489 M rows, of which a tile keeps 82–97 % (the pilot's and B2's tiles): ~440 M buildings and parts in the work files (those beyond the coverage in its tiles too), 17–22 GB at 38–50 B each; the packs ~342 M (the coverage's), 4.6–6.9 GB at 13.5–20 B each (B0's 5.8 GB between) |
+| an app Mac's mirror | +4.6–6.9 GB (the packs; the work files aren't served) |
 
 ### 2.6 Downloads (done 2026-10-06, for the 88 regions: 194 files, 61.8 GB)
 
@@ -361,19 +365,26 @@ next pinned release (§5.2).
 
 | Step | Target | Reads | Writes | Runs on |
 |---|---|---|---|---|
-| `bld-fetch` | the release | S3, JRC, the coverage | `sources/overture/<release>/`, `sources/ghsl/R2023A/` | the network slot; by hand until B2 |
+| `bld-fetch` | the release | S3, JRC, the coverage | `sources/overture/<release>/`, `sources/ghsl/R2023A/` | the build Mac, a network job (its second slot's) |
 | `bldprep` | a z6 tile T | Overture's row groups meeting T, the GHSL tiles meeting T | `work/bld/6-x-y` | any Mac with the NAS |
 | `bldtiles` | a z6 tile T | `work/bld/` of T and its 8 neighbours, the coverage over T | `layers/buildings/hi/6-x-y` | any Mac; its z8 areas as tasks for pages |
 
 (`bldtiles` is the design's `buildings T`: `buildings` is already the roadside buildings' step,
-`pipeline::buildtiles`, in scenic-build and the agent.) Built in B1, run by hand:
+`pipeline::buildtiles`, in scenic-build and the agent.) Built in B1:
 `scenic-build bldprep <6/x/y …> [--dem dir]` and `scenic-build bldtiles <6/x/y …> [--pass d]
-[--regions dir]`; the agent's part is B2's.
+[--regions dir]`; in B2, `scenic-build bld-fetch [--pass d] [--dem dir]`, and the agent runs all
+three (§3.2–3.3).
 
-- **`bld-fetch`** is `dem/bldfetch.py` (§2.6). From B2 the agent runs it as a network job (the
-  second slot's first kind, with the heritage chain and the rail feeds) when its key changes: the
-  release, `coverage_all` and the release's footers. It skips what's there, so a run is cheap.
-- **`bldprep T`**, per z6 tile meeting the coverage (1 km buffer): `dem/bldprep.py` reads the row
+- **`bld-fetch`** is `dem/bldfetch.py` (§2.6), run by `scenic-build bld-fetch` with the coverage
+  written as GeoJSON (`--coverage`, from the pass's outlines, as the rail feeds have it). The agent
+  runs it as a network job (one of the second slot's, with the heritage chain and the rail feeds:
+  `agent::LIGHT`) when its key changes (§3.2). It skips what's there, so a run is a listing of S3
+  and of JRC's tiles. Once the release has left S3 (§5.2), it goes by the footers read before: what
+  the coverage needs and is here passes, a file it needs and lacks fails the job (the tiles it
+  would have fed wait for the next pinned release).
+- **`bldprep T`**, per z6 tile within 1 km of the coverage (so a tile's neighbours within the
+  fill's 620 m are read too) that has a downloaded row group or GHSL tile meeting it (380 tiles
+  for the 88 regions, 344 with a row group): `dem/bldprep.py` reads the row
   groups meeting T from the downloaded files (pyarrow, four at a time), their rows whose box meets
   T (parts: T grown by 0.02°, so an outline finds its parts), and the GHSL windows under T
   (rasterio, out of the zips), and writes their columns to stdout, the geometry as Overture's WKB;
@@ -383,7 +394,8 @@ next pinned release (§5.2).
   centroid, sorts by (z14 tile, id) and writes the normalized file (§3.4). Python only decodes;
   every number that ends up in a file is computed in Rust. Reads ~60 GB over all tiles, once per
   release.
-- **`bldtiles T`**, per z6 tile meeting the coverage, a z8 area at a time (`pipeline::bld::job`):
+- **`bldtiles T`**, per z6 tile meeting the coverage (its buffers included), a z8 area at a time
+  (`pipeline::bld::job`):
   the buildings of T that touch the coverage, heights filled (§2.3, `pipeline::bld::fill`; it reads
   the buildings within 620 m beyond the area, T's or its neighbours', by their z14 blocks), the
   z12–14 tiles encoded (§3.4, `pipeline::bld::tiles`), the hi pack written. A building within 310 m
@@ -397,18 +409,24 @@ don't change, and no unit's key reads them.
 
 ### 3.2 Keys and versions
 
-In `agent::build`, beside the others (B2):
+In `agent::build` (B2), beside the others (`bld_targets`, `bld_work`):
 - `BLDPREP_V = 2`, `BUILDINGS_V = 2` (the fill's rules, fits and defaults, and the tiles, are in
   `BUILDINGS_V`; both 2 since B1's review: an outline whose parts are all underground is no longer
   flagged as having parts; rule 3's bound, the copies, the walls): defined in `pipeline::bld` (B1),
-  as `TREES_V` is in `pipeline::treepacks`.
-- `Keys` gains `bldprep` and `buildings`, maps by z6 tile as `unit` and `pack` are; `Keys::map`,
-  `recorded` and `record` take them, and a prune forgets them ("bldprep 6/x/y", "buildings 6/x/y").
+  as `TREES_V` is in `pipeline::treepacks`; `BLD_FETCH_V = 1` in `agent::build`.
+- `Keys` has `bldprep` and `buildings` (the step `bldtiles`'s: `buildings` is the roadside
+  buildings' worldwide step, kept with the lo keys), maps by z6 tile as `unit` and `pack` are;
+  `Keys::map`, `recorded` and `record` take them, and a prune forgets them ("bldprep 6/x/y",
+  "bldtiles 6/x/y").
 - **`bldprep T`'s key:** `bldprep {BLDPREP_V}`, the release, and for each downloaded file with a row
-  group meeting T its name, ETag and those row groups' indexes (from `footers.json.gz` and
-  `buildings.json`, which the agent reads as it reads `inputs/`: a digest in `plan`'s `inputs`),
-  and the GHSL tiles meeting T by name and size. A file fetched later (the coverage grew) changes the
-  key of the tiles it meets; an unchanged result keeps its content name, so nothing after it reruns.
+  group meeting T (a parts file's: T grown by 0.02°, as bldprep.py reads it) its name, ETag and
+  those row groups' indexes, and the GHSL tiles meeting T by name and size: `pipeline::bld::sources`
+  reads `buildings.json`, `footers.json.gz` and GHSL's `index.json`, a file listed only when its
+  footer has its ETag, and `agent::input_digests` puts each tile's as "bldprep 6/x/y" in the plan's
+  `inputs` (worked out again only when an index's size or time changes; "bld-release" says whether
+  they read: the release, "" before any download, "?" when they can't be read now, the chain then
+  waiting and the status saying why). A file fetched later (the coverage grew) changes the key of
+  the tiles it meets; an unchanged result keeps its content name, so nothing after it reruns.
 - **`bldtiles T`'s key:** `bldtiles {BUILDINGS_V}`, the content names of `work/bld/` for T and its
   8 neighbours ("-" for none), and `Coverage::shapes_key` of T's box grown by 1 km (B1): the
   coverage's shapes meeting the box in the recipes' order, each as its fingerprint there with its
@@ -422,31 +440,53 @@ In `agent::build`, beside the others (B2):
   two letters); the coverage's fits where none is known. B1's probe of the 88 regions' 122 outlines
   gave B0's country for each, and for 44 points at borders and in enclaves and territories
   (Monaco, Gibraltar, Llívia, Windsor, Derby Line, Tui, Ceuta, the Canaries, Hong Kong).
-- **`bld-fetch`'s key:** the release, `coverage_all`, the footers' digest; kept with the lo keys under
-  its own name, as `rail-feeds` is.
+- **`bld-fetch`'s key:** its version, the release and `coverage_all`; kept with the lo keys under
+  its own name, as `rail-feeds` is. Not the footers' digest the design had: the job reads and
+  writes `footers.json.gz`, a release's files never change (the release names them), and a key on
+  what a job writes runs it again for its own sake.
 - The pinned release is `buildtiles::RELEASE` for both the roadside and the 3D buildings: a new one
   re-keys every unit (the roadside index) and every buildings tile together, never a mix.
 
 ### 3.3 Order, rounds, the chain
 
+Built in B2 (`agent::build::bld_work`, listed by `plan`):
 - **A fourth chain**, beside the roads', the trains' and the landmarks': it reads no unit and no
-  terrain (the map puts buildings on its terrain), so it runs from the start, each step once what it
-  reads is built: `bldprep T` once T's files are on the NAS; `bldtiles T` once T and its neighbours
-  are prepared. Its work is listed after the landmarks' in `plan` (the build Mac's first job takes it
-  when the regions' work is done or waits), its tiles in the regions' order (the region with the
-  fewest units left first, then `spatial_order`), so the buildings of the region being built come
-  first.
-- **The second job** takes it beside the regions' work, as CPU work (not while the Mac is in use);
-  never `bldprep` beside the OSM pass or another job that reads the planet through the NAS.
+  terrain (the map puts buildings on its terrain), so it runs from the start: `bld-fetch` when its
+  key changed; a prune of the normalized files and packs no target has any more (the coverage
+  shrank: "bldprep 6/x/y", "bldtiles 6/x/y"; the files only while the sources' indexes read, else
+  every tile would seem to read nothing); every stale `bldprep T` beside the fetch (a file fetched
+  later changes the keys of the tiles it meets: those run again); `bldtiles T` once T and its 8
+  neighbours are prepared as they'll stay (none of them a stale `bldprep` target), and once the
+  sources are here. Its work is listed after the landmarks' in `plan` (the build Mac's first job
+  takes it when the regions' work is done or waits), each step's tiles in the regions' order (the
+  first region in the order they're built whose coverage meets the tile, then `spatial_order`), so
+  the buildings of the region being built come first. With no "bld-release" in the plan's inputs
+  (a caller that didn't read the sources) or "?" (unreadable now), no buildings work at all.
+- **The second job** (`agent::SECOND`) takes `bld-fetch` with the network steps (`agent::LIGHT`:
+  while the Mac is in use too), and `bldprep` and `bldtiles` last, after units and slope, as CPU
+  work (not while the Mac is in use). Never `bldprep` beside another `bldprep` (`agent::NAS_READS`:
+  each reads up to ~3 GB of the NAS's parquet), nor anything beside a job that runs alone (the OSM
+  pass, the pass's worldwide jobs, the water, GC: `agent::ALONE`), so never beside the planet's
+  reads.
 - **Rounds:** buildings don't hold a round, and a region's readiness (`ready`) doesn't wait for
-  them: their packs go out with the next round's catalog, as the trains' and landmarks' outputs do;
-  after the last unit, a catalog follows any chain's change. A region can reach the map before its
-  buildings, which follow with a later round.
-- **Batches:** about fifteen minutes of work a job, by the tiles' building counts (the densest tile
-  alone).
-- **Status:** the checklist gets "Raising the 3D buildings"; `label("bldprep")` "Reading the regions'
-  buildings", `label("bldtiles")` "Raising the 3D buildings"; parts and progress lines as the other
-  steps' (row groups read; z8 areas done; packs written).
+  them: their packs go out with the next round's catalog, as the trains' and landmarks' outputs do.
+  After the last unit a catalog follows any chain's change, but while the 3D buildings' chain has
+  work left, a round (and its catalog) at most an hour after the last began: the worldwide build's
+  ~25 `bldtiles` jobs don't each make a catalog. A region can reach the map before its buildings,
+  which follow with a later round.
+- **Batches:** a fixed number of z6 tiles a job, as the other steps have (`agent::batch_size`):
+  `bldprep` 8, `bldtiles` 16. The design weighed them by building counts; B1–B2's runs make a dense
+  tile's `bldprep` about a minute on the build Mac (68 s for Kantō's 30.3 M rows) and its
+  `bldtiles` about 10 s, so a fixed count keeps a job within minutes, as leases and pausing want.
+- **Status:** the checklist's line "Raising the 3D buildings" (`build::BUILDINGS`: the tiles'
+  normalized files and tiles, done of all, known once the sources read; next, the fetch and each
+  step's tiles); `label("bld-fetch")` "Fetching the 3D buildings' sources", `label("bldprep")`
+  "Reading the regions' buildings", `label("bldtiles")` "Raising the 3D buildings"; parts and
+  progress lines as the other steps' (row groups read; z8 areas done). The forecast takes the chain
+  with the others (`chains_left`: bldtiles after bldprep, `forecast::chain_deps`); first guesses
+  6 s a `bldprep`, 2 s a `bldtiles` (a tile on average: most are sparse; §5.1's estimate), 5 min a
+  fetch until timed. A helper is counted on for both (the forecast's shared steps are
+  `claims::SHARED`, no longer a copy of its list). The worker page names the steps.
 
 ### 3.4 Formats
 
@@ -512,30 +552,41 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
   hash, `?v=` the layer's version: `buildings.tiles` in `/api/meta`'s versions), 204 where there's
   none. No names attached. Built in B1, with the catalog's layer `buildings` (encoding `mvt`, zooms
   12–14); the app reads the tiles from a host of their own (`buildings.localhost` on this Mac).
-- **Mirror:** a copy group of its own after the hi packs (`store::mirror::groups`), so a Mac's
-  mirror has the roads and terrain first; the M1's budget may leave buildings out, which the server
-  then reads from the NAS.
-- **Devices:** the iPad's service worker keeps versioned tiles it has shown (12,000 files at most);
-  building tiles would crowd out the rest in a city, so they get a budget of their own (B2).
-- **Credits** (`pipeline::rules::CREDITS`): "3D buildings: Overture Maps Foundation
-  (OpenStreetMap, Microsoft, Esri Community Maps, USGS, IGN España, Google and others), ODbL" over
-  the coverage; "Building heights where none are known: GHSL GHS-BUILT-H R2023A, © European Union,
-  CC BY 4.0".
+- **Mirror** (B2): a copy group of its own after the other hi packs (`store::mirror::groups`,
+  group 5), so a Mac's mirror has the roads and terrain first; on a Mac whose budget runs out first
+  (the M1's) buildings are left out, and the server reads them from the NAS. They're never
+  essentials (no root or lo packs); a kept area keeps them as every layer's hi packs (plan.md §4).
+- **Devices** (B2): the iPad's service worker keeps versioned tiles it has shown (12,000 files at
+  most); the building tiles have a cache of their own (`bld`, the last 2,000 files: a city's z14
+  tiles are 50–300 KB, a view's ~20), so a city's buildings don't crowd out its roads and terrain.
+- **Credits** (B2, `pipeline::rules::CREDITS`): "3D buildings: Overture Maps Foundation buildings,
+  release 2026-09-23.1 (© OpenStreetMap contributors, Microsoft, Esri Community Maps, USGS, IGN
+  España, Google and others; each building's sources in the release), ODbL 1.0"; "Building heights
+  where none are known: GHSL GHS-BUILT-H R2023A (EC JRC), © European Union, 1995-2026, CC BY 4.0";
+  both for anywhere, so in every catalog's © Credits (a test holds the release named there to
+  `buildtiles::RELEASE`).
 - Nothing is published or redistributed: the tiles stay on the NAS and the owner's Macs and devices
   (plan.md §3, the README's Terms).
 
 ### 3.6 Sharing the work
 
-- **Helper Macs** (today's M1; any member in `docs/pool.md`): both steps are shared steps
-  (`agent::claims::SHARED`), offered from the far end as terrain and units are. `bldprep` needs the
+- **Helper Macs** (today's M1; any member in `docs/pool.md`): both steps are shared steps (B2,
+  `agent::claims::SHARED`, last in its order), offered from the far end as terrain and units are;
+  a hand-off may save only its tiles' files (`coord::saves`: `work/bld/6-x-y` for `bldprep`,
+  `layers/buildings/hi/6-x-y` for `bldtiles`). `bldprep` needs the
   NAS (it reads up to ~3 GB of row groups a tile) and, in B1's pilot, 5.1 GB of memory at most for
   the densest tile (Kantō; 0.4–2.8 GB for the others); `bldtiles` holds a z8 area at a time (3.3 GB
   at most for Kantō's run, 0.4–1.3 GB for the others). Each target's memory is learned
   (`SCENIC_COSTS`: both steps note their targets' costs, `bldprep 6/x/y` and `bldtiles 6/x/y`);
   first guesses, from B1's six runs: 0.3 GB + 160 B a row read for `bldprep` (each run within
   0.16 GB of it; Kantō's 30.3 M rows 5.08 GB), 0.25 GB + 280 B a building of its largest z8 area
-  for `bldtiles` (each within 0.11 GB; Tokyo's area, 10.8 M, 3.3 GB).
-- **Pages** (`docs/workers.md`): a `bldtiles` job offers its z8 areas as tasks, as a unit job offers
+  for `bldtiles` (each within 0.11 GB; Tokyo's area, 10.8 M, 3.3 GB). The agent offers each target
+  with them (`agent::bld_peak`), by the rows of the row groups its `bldprep` reads
+  (`bld::sources`: 8–20 % over the rows it keeps, since a row group reaches past the tile), its
+  largest z8 area taken as two fifths of them (Kantō's was 36 %): so Paris's 6/32/22 is offered at
+  2.8 GB and 2.0 GB, and took 2.4 and 1.2 GB on the M1 (2026-10-08); Vermont's two tiles 1.3–1.4
+  and 1.0 GB, and took 1.15–1.24 and 0.88–0.94.
+- **Pages** (`docs/workers.md`, B3: not built): a `bldtiles` job offers its z8 areas as tasks, as a unit job offers
   its tail. A task's files: the z8 area's blocks and the blocks within 620 m around it (cut from the
   work files on the Mac that runs the job), and the program `bldtile` (Rust, built for wasm32-wasi
   with the others, `/work/prog/bldtile.wasm`). It writes the area's z12–14 tiles (an RDTILES archive);
@@ -543,9 +594,10 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
   iPad page's 3 GB; a smaller ceiling gets z9 or z10 areas (workers.md's planned cutting to the
   worker). Nothing waits on a page: an area no page took runs on the job's Mac, one a page holds is
   raced there, results are compared (the ramped verification).
-- **The pool's steps table** (`docs/pool.md` §6): `bldprep` {memory learned, disk 15 GB, the NAS,
-  power}, `bldtiles` {memory learned, disk 15 GB, power}; neither needs home (`bldprep`'s reads are
-  per tile, not the planet's).
+- **The pool's steps table** (`docs/pool.md` §7.2, planned): `bldprep` {memory learned, disk 15 GB,
+  the NAS, power}, `bldtiles` {memory learned, disk 15 GB, power}; neither needs home (`bldprep`'s
+  reads are per tile, not the planet's). The pool's phase 1 (built, switched off) takes them as it
+  takes every shared step, their write-sets `coord::saves`'.
 - `bldprep` isn't a task: it reads 60 GB of parquet from the NAS, which pages can't reach and the
   coordinator shouldn't relay.
 
@@ -564,7 +616,8 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
   the same work file and the same pack byte for byte (content names `6-32-22.f07556cc02cd5298` and
   `6-32-22.4a4fb482a84227db`, the pack as rebuilt after the review: its copies' fills included);
   the unit tests build a tile on one thread and on several and compare. WebAssembly waits for
-  `bldtile` (B3).
+  `bldtile` (B3). B2's run on the M1 made Paris's work file again the same bytes
+  (`6-32-22.f07556cc02cd5298`), another Mac and another Python process.
 
 ## 4. The map
 
@@ -839,19 +892,25 @@ artefacts call for it (B4):
 |---|---|---|
 | **B0 Data** (done 2026-10-06) | The downloads (§2.6). `dem/bldmeasure.py` over the files: heights, floors and their sources by country (§2.2); the storey heights fitted, and the fill's order, fits and defaults set from a held-out tenth (§2.3); the tiles' counts and sizes at z12–14, the fullest and heaviest encoded (§2.5); this document's numbers updated. On the build Mac: 13 minutes to read 44.6 GB of row groups from the NAS, 4 to fill and count, 5 to encode. | 1 day |
 | **B1 Pilot** (done 2026-10-06, but the iPad) | `dem/bldprep.py`, `pipeline::bld` (prep, fill, tiles, job), `scenic-build bldprep` and `bldtiles`, run by hand on the build Mac into a scratch root (the NAS's sources read only) on 6/56/25 (Kantō), 6/32/22 (Paris), 6/18/24 (New York), 6/32/23 (Barcelona), 6/19/23 (Vermont, with Boston) and 6/3/28 (Oahu); formats.md entries; the catalog layer, the server's route; `web/src/buildings.ts` with the settings section, the toggle and hover; checked on this Mac in a test server (§4.6). `bldprep`: 88–153 s a tile on the first run (Kantō: 30.3 M rows read in 130 s; one thread: Paris in 71 s), 29–68 s on the run after the review that made the packs served (Oahu 3 s; 5.1 GB at most, Kantō's); `bldtiles`: 3–10 s a tile in that run (Kantō 10 s, 3.3 GB at most; Oahu 0.5 s), 10–43 s in an earlier run of the same code with the build Mac busier. The reviews' fixes: §2.3 (rule 3's bound), §3.2 (countries, keys), §3.4 (copies, walls, their points outside the ring), §4.1 (whole tiles, MapLibre pinned), §4.5 (the hover, on hills too), §4.6 (the cache, memory counted). The iPad's measurements are the owner's (§4.6's checklist). | 6 days |
-| **B2 In the build** | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job; the mirror's group, the service worker's budget, credits; every tile built and published. plan.md (§6, §8, §9, §10), workers.md, formats.md and the README updated. | 4 days |
+| **B2 In the build** (code built 2026-10-08; not yet published, nor run by an agent) | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job (§3.1–3.3, 3.6); the mirror's group, the service worker's budget, credits (§3.5); plan.md (§4, §6, §8, §9, §10), workers.md, pool.md, formats.md and the README updated. Measured on the M1 in a scratch root (§2.5): Vermont's two z6 tiles and Paris's, with the agent's command lines; the agent's coverage asks bldfetch.py for exactly the 103 files on the NAS. Left: every tile built and published, which the next app published starts (§5.2). | 4 days |
 | **B3 Sharing and polish** | `bldtile` tasks for pages (WebAssembly, byte-identical); bridges and elevated rail over buildings; walls on the terrain under each corner; fog on the extrusions; the camera's clearance; colour by height, by source, heritage tint. | 5 days |
 | **B4 Each on its own measurement** | A custom layer (§4.7); measured heights from BD TOPO (France) and PLATEAU (Japan's cities); building heights in the horizons and the viewshed tool (every unit rebuilt). | 2–3 weeks |
 
-B1–B3: about 15 days of work, the build's own time aside: `bldprep` reads 60 GB from the NAS (B1:
-about 45 minutes over the 339 M buildings at the pilot's pace), `bldtiles` ~6 minutes over all
-tiles natively at the pilot's pace (its own CPU; the coverage read once a run).
+B1–B3: about 15 days of work, the build's own time aside. The build's (B2's estimate, the build
+Mac's pace in B1 over the 380 tiles' ~440 M rows): `bldprep` 2.2–4.7 s a million rows (Kantō's
+pace to Vermont's) and ~2.5 s a tile to start (its Python), 27–51 min in all; `bldtiles` 0.5–2.9 s
+a million buildings (~342 M) and a few seconds a job to read the coverage, 5–18 min: 30–70 min of
+one slot, less with the second job and the M1 beside it (the M1 at a quarter of the build Mac's
+pace when busy, B2). The first `bld-fetch` fetches nothing (a listing of S3 and of JRC's tiles,
+and the coverage's 65 MB of GeoJSON unioned by shapely: 10 min on the busy M1).
 
 ### 5.2 Risks
 
-- **The release leaves S3 on 2026-11-25.** The coverage's files are being kept now. A region added
-  later whose files aren't here waits for the next pinned release ("its buildings wait for the next
-  Overture release", in the status); pinning one (~6-monthly, plan.md §8 Planned) fetches 62 GB again
+- **The release leaves S3 on 2026-11-25.** The coverage's files are kept on the NAS. A region added
+  later whose files aren't here waits for the next pinned release: `bld-fetch` then fails, naming
+  the files it couldn't fetch (the release's footers, read before, list them), and is tried again
+  with a growing delay; the rest of the chain goes on with the files here. (The status says the
+  fetch failed; it doesn't yet say "its buildings wait for the next Overture release".) pinning one (~6-monthly, plan.md §8 Planned) fetches 62 GB again
   (~7 hours on this line), rebuilds every unit (the roadside index) and every buildings tile. The old
   release's files are deleted by hand afterwards (GC never sweeps `sources/`).
 - **Estimated heights:** 88 % of the buildings (Microsoft's estimates 36 %; Japan's 91 %, France's
@@ -921,3 +980,8 @@ None blocks the work; each has a default below.
 9. **MapLibre's fill-extrusion** first, after the road and rail layers; a custom layer only if the
    measurements call for it.
 10. **True heights** by default, with a scale setting; buildings on by default.
+11. **B2's changes to the plan:** `bld-fetch`'s key leaves the footers out (it writes them; the
+    release names its files); `bldprep`'s targets are the tiles within 1 km of the coverage, so the
+    fill's neighbours are read at a tile's edge, where the coverage meets a tile but not its
+    neighbour; batches are a fixed count of tiles (8 and 16), not weighed by buildings; after the
+    last unit, a catalog at most each hour while the chain has work left.

@@ -414,6 +414,14 @@ scheme before pieces, a z3 tile's whole run, its lo pack and its z6 tiles' hi pa
 release), any member, four a job; `trees-lo`, an assembly per z3 tile (its lo packs of the three),
 seconds, kept to one Mac as the build Mac keeps it now.
 
+The 3D buildings' rows (docs/buildings3d.md §3.6): `bldprep`, per z6 tile (it may add, change or
+remove `work/bld/6-x-y`), memory learned (0.3 GB and 160 B a row read until then), disk 15 GB, the
+NAS (up to ~3 GB of parquet read a tile), power, any member, eight a job, never two on one Mac;
+`bldtiles`, per z6 tile (`layers/buildings/hi/6-x-y`), memory learned, disk 15 GB, power, any
+member, sixteen a job. Neither needs home. `bld-fetch` (the sources, onto the NAS) is network work,
+the build Mac's today. Phase 1 takes both shared steps as it takes the others (their write-sets
+are `coord::saves`'), with no row of its own.
+
 - **Order and locality.** A slot gets the first work in plan order that fits it, as a contiguous run
   of targets (a slot walks a region in spatial order, as one Mac does now, so what one unit fetches
   serves the next), with a preference for work next to its Mac's last.
