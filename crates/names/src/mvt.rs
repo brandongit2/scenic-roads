@@ -337,8 +337,9 @@ pub struct LayerRule<'a> {
     pub kind: KindRule,
 }
 
-/// The OpenMapTiles basemap: `name`, with OSM's English in `name:en` or `name_en`.
-pub const OPENMAPTILES: LayerRule<'static> = LayerRule { layer: "*", name_keys: &["name"], en_keys: &["name:en", "name_en"], kind: KindRule::OpenMapTiles };
+/// The OpenMapTiles basemap: `name`, with OSM's English in `name:en`. (Not `name_en`, which
+/// OpenMapTiles fills with the name itself where there's no `name:en`.)
+pub const OPENMAPTILES: LayerRule<'static> = LayerRule { layer: "*", name_keys: &["name"], en_keys: &["name:en"], kind: KindRule::OpenMapTiles };
 
 /// Our label tiles (layer `l`): `n`, with its own English in `en`, its kana reading in `kana` and
 /// OSM's languages in `l`.
@@ -827,6 +828,24 @@ mod tests {
         // OSM's language first: a Breton name (its `l`) in France.
         assert_eq!(label(2.35, 48.86, 16, 11, &["n", "l"], vec![s("Kêr"), s("br")], &[0, 0, 1, 1]), (Some(s("Kêr")), Some(s("Village"))));
         assert_eq!(label(2.35, 48.86, 16, 11, &["n"], vec![s("Kêr")], &[0, 0]), (Some(s("Kêr")), None));
+    }
+
+    #[test]
+    fn a_basemap_name_en_that_is_the_name_is_no_english() {
+        let (_d, names, sp) = names();
+        // OpenMapTiles' water_name and place features: name_en is the name where OSM has no
+        // name:en, so the name's line shows; a real name:en is the thing's own.
+        let (px, py) = at(5, 16, 11, 2.35, 48.86);
+        let water = layer(
+            "water_name",
+            &["name", "name_en", "class", "name:en"],
+            vec![s("Église"), s("lake"), s("Moulin"), s("Mill Pond")],
+            vec![point(1, &[0, 0, 1, 0, 2, 1], px, py), point(2, &[0, 2, 1, 2, 3, 3], px, py)],
+        );
+        let out = attach(&Tile { layers: vec![water], unknown: vec![] }.encode(), 5, 16, 11, &names, Some(&sp), &[OPENMAPTILES]).expect("attach").expect("changed");
+        let t = Tile::decode(&out).expect("decode");
+        assert_eq!((prop(&t.layers[0], 0, MAIN), prop(&t.layers[0], 0, SUB)), (Some(s("Church")), None));
+        assert_eq!((prop(&t.layers[0], 1, MAIN), prop(&t.layers[0], 1, SUB)), (Some(s("Moulin")), Some(s("Mill Pond"))));
     }
 
     #[test]

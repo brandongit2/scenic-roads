@@ -296,7 +296,10 @@ fn converted_lines() {
     assert_ne!(d(Kind::Other, "松島", None, &["zh"]).1.as_deref(), n.translation(Kind::Other, "松島", &ls(&["ja"])).and_then(|t| t.sub));
     assert_eq!(d(Kind::Other, "松島", None, &[]), s("松島", None));
     // Places' lines and roads' apart.
-    assert_eq!(n.translation(Kind::Road, "中山橋", &ls(&["zh"])), None);
+    // A name with no roads line: its places line holds for roads too (the old lookup's fallback).
+    assert_eq!(n.translation(Kind::Road, "中山橋", &ls(&["zh"])).map(|t| t.sub), n.translation(Kind::Other, "中山橋", &ls(&["zh"])).map(|t| t.sub));
+    // Names the old boxes read in another area's table: northern Spain's in France's.
+    assert_eq!(n.translation(Kind::Other, "Playa de Cueva", &ls(&["es"])).map(|t| t.main), Some("Cave Beach"));
     assert_eq!(n.translation(Kind::Road, "Château", &ls(&["fr"])).map(|t| (t.main, t.sub)), Some(("Château", None)));
     assert_eq!(n.translation(Kind::Other, "Château", &ls(&["fr"])).map(|t| (t.main, t.sub)), Some(("Castle", None)));
     // Lines not done, and one thing's OSM English, are gone.
@@ -334,31 +337,68 @@ fn check_attached(names: &Names, before: &Tile, after: &Tile, rule: &LayerRule) 
     (named, translated)
 }
 
+/// The basemap's tiles: `$NAMES_BASEMAP` (the pass's world PMTiles), else `data/build/base.pmtiles`;
+/// the spoken languages: `$NAMES_SPOKEN` (a `Spoken::to_bytes` file), else none.
+fn basemap() -> Option<PathBuf> {
+    match std::env::var_os("NAMES_BASEMAP") {
+        Some(p) => Some(PathBuf::from(p)),
+        None => build("base.pmtiles"),
+    }
+}
+
 #[test]
 fn attach_to_real_tiles() {
     let Some(names) = tables() else { return };
     let names = &names;
-    if let Some(path) = build("base.pmtiles") {
-        let pm = PmTiles::open(&path);
-        let (mut named, mut with_sub) = (0, 0);
-        let places = [("Paris", 2.3522, 48.8566), ("Cardiff", -3.18, 51.48), ("Connemara", -9.6, 53.45)];
-        for (place, lon, lat) in places {
-            for z in [6, 10, 13] {
-                let (x, y) = tile_at(z, lon, lat);
-                let Some(raw) = pm.tile(z, x, y) else { continue };
-                let before = Tile::decode(&raw).expect("decode");
-                let t0 = Instant::now();
-                let Some(out) = mvt::attach(&raw, z, x, y, names, None, &[OPENMAPTILES]).expect("attach") else { continue };
-                let took = t0.elapsed();
-                let after = Tile::decode(&out).expect("decode attached");
-                let (n, s) = check_attached(names, &before, &after, &OPENMAPTILES);
-                eprintln!("basemap {place} {z}/{x}/{y}: {n} named, {s} with a sub, {} → {} bytes, {took:.1?}", raw.len(), out.len());
-                assert_eq!(mvt::attach(&out, z, x, y, names, None, &[OPENMAPTILES]).expect("attach"), None);
-                named += n;
-                with_sub += s;
+    let Some(path) = basemap() else { return };
+    let spoken = std::env::var_os("NAMES_SPOKEN").map(|p| names::Spoken::from_bytes(&std::fs::read(p).expect("spoken")).expect("spoken"));
+    let pm = PmTiles::open(&path);
+    let (mut named, mut with_sub, mut copied_en, mut copied_en_lined) = (0, 0, 0, 0);
+    // Montréal, Paris, Quimper, Barcelona, Bilbao, Seville, Lisbon.
+    let places = [("Montréal", -73.6, 45.55), ("Paris", 2.3522, 48.8566), ("Quimper", -4.10, 48.0), ("Barcelona", 2.17, 41.39), ("Bilbao", -2.93, 43.26), ("Seville", -5.98, 37.39), ("Lisbon", -9.14, 38.72)];
+    for (place, lon, lat) in places {
+        for z in [8, 10, 12, 13] {
+            let (x, y) = tile_at(z, lon, lat);
+            let Some(raw) = pm.tile(z, x, y) else { continue };
+            let before = Tile::decode(&raw).expect("decode");
+            let t0 = Instant::now();
+            let Some(out) = mvt::attach(&raw, z, x, y, names, spoken.as_ref(), &[OPENMAPTILES]).expect("attach") else { continue };
+            let took = t0.elapsed();
+            let after = Tile::decode(&out).expect("decode attached");
+            let (n, s) = check_attached(names, &before, &after, &OPENMAPTILES);
+            // Features whose name_en is the name itself (no name:en): never their "own English".
+            for (li, l) in before.layers.iter().enumerate() {
+                for i in 0..l.features.len() {
+                    let (Some(name), Some(en)) = (prop(&before, li, i, "name"), prop(&before, li, i, "name_en")) else { continue };
+                    if en != name || prop(&before, li, i, "name:en").is_some() {
+                        continue;
+                    }
+                    copied_en += 1;
+                    let sub = prop(&after, li, i, SUB);
+                    let main = prop(&after, li, i, MAIN);
+                    assert_ne!(sub.as_deref(), Some(name.as_str()), "{name}: its name_en shown as its English");
+                    copied_en_lined += usize::from(sub.is_some() || main.as_deref() != Some(name.as_str()));
+                }
             }
+            eprintln!("basemap {place} {z}/{x}/{y}: {n} named, {s} with a sub, {} → {} bytes, {took:.1?}", raw.len(), out.len());
+            assert_eq!(mvt::attach(&out, z, x, y, names, spoken.as_ref(), &[OPENMAPTILES]).expect("attach"), None);
+            named += n;
+            with_sub += s;
         }
-        assert!(named > 100, "{named} {with_sub}");
+    }
+    eprintln!("{named} named, {with_sub} with a sub; {copied_en} with name_en = name, {copied_en_lined} of them shown with their name's line");
+    assert!(named > 100, "{named} {with_sub}");
+    if spoken.is_some() {
+        // Montréal's Rivière des Prairies: its line, not its name_en.
+        let (x, y) = (302, 366);
+        let raw = pm.tile(10, x, y).expect("10/302/366");
+        let after = Tile::decode(&mvt::attach(&raw, 10, x, y, names, spoken.as_ref(), &[OPENMAPTILES]).expect("attach").expect("changed")).expect("decode");
+        let found = after.layers.iter().enumerate().flat_map(|(li, l)| (0..l.features.len()).map(move |i| (li, i))).find(|&(li, i)| prop(&after, li, i, "name").as_deref() == Some("Rivière des Prairies"));
+        if let Some((li, i)) = found {
+            let shown = (prop(&after, li, i, MAIN), prop(&after, li, i, SUB));
+            eprintln!("Rivière des Prairies: {shown:?}");
+            assert!(shown.0.as_deref() != Some("Rivière des Prairies") || shown.1.is_some(), "{shown:?}");
+        }
     }
     let _ = LABELS;
 }
