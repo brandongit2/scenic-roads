@@ -1294,6 +1294,8 @@ async function main() {
 
   // ---- hover & selection -----------------------------------------------------------
   let hovered: HoverInfo | null = null;
+  // With the HUD off (I) the map is only for looking: nothing is hovered or selected.
+  const hudOff = () => document.body.classList.contains('hud-off');
   let pickAt: { x: number; y: number } | null = null;
   const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
   const colourOf = (hv: HoverInfo) => {
@@ -1395,7 +1397,7 @@ async function main() {
     pickAt = null;
     // Not while the camera moves: the map's queries project through the 3D terrain, and a
     // hover readout mid-gesture is of no use.
-    if (!pt || driving || moving) return;
+    if (!pt || driving || moving || hudOff()) return;
     featKey = '';
     // Markers first (small targets), then the nearest road or rail line, then the highlighted
     // areas under the cursor.
@@ -1479,13 +1481,16 @@ async function main() {
     const num = a instanceof HTMLInputElement && a.type === 'number';
     if (a instanceof HTMLElement && a !== document.body && (num || !isTyping(a)) && !a.closest('.maplibregl-canvas-container')) a.blur();
   });
-  map.getCanvas().addEventListener('mouseleave', () => {
+  /** No hover: the cursor left the map, or the HUD went off. */
+  const unhover = () => {
+    pickAt = null;
     hovered = null;
     roads.setHover(null);
     rails.setHover(null);
     hoverBuilding(null);
     strip.show(null, null);
-  });
+  };
+  map.getCanvas().addEventListener('mouseleave', unhover);
 
   let profileAbort: AbortController | null = null;
   const select = async (sel: Selection | null) => {
@@ -1590,6 +1595,7 @@ async function main() {
   // (A finger's tap once it's not the first of a double tap: trackpad.ts, single.)
   map.on('click', (e) => cameraControls.single(() => click(e)));
   const click = (e: maplibregl.MapMouseEvent) => {
+    if (hudOff()) return;
     if (viewshed.active) {
       viewshed.run([e.lngLat.lng, e.lngLat.lat]);
       return;
@@ -1785,7 +1791,15 @@ async function main() {
       e.preventDefault();
       const off = document.body.classList.toggle('hud-off');
       map.resize();
-      if (off) toast('Press I to bring the panels back');
+      if (off) {
+        // Nothing stays hovered or selected (no popup either) while it's off.
+        unhover();
+        map.getCanvas().style.cursor = '';
+        overlays.closePopup();
+        ferries.closePopup();
+        store.set({ selected: null, stretch: null });
+        toast('Press I to bring the panels back');
+      }
       return;
     }
     if (e.key !== 'Escape') return;
