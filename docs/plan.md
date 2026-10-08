@@ -1507,8 +1507,42 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     hasn't written its status for six minutes, or they hold nothing; "Clearing…" while the ask
     waits or is under way; and "Freed N GB" once it's done. `scenic clean` waits for the same
     answer.
-  - A trim or a clear runs on a thread of the agent's own: its loop goes on beating, and no job
-    starts on the Mac until it's done.
+  - **The owner's room target** (`room::Target`, `room::toward`): set at any moment, right before
+    something that needs disk, with `scenic room <GB>` (`scenic room` shows it and how it stands,
+    `scenic room off` clears it) or the menu bar item's Disk Room (the free space and the target,
+    with presets of 50 to 300 GB and Off). It's per Mac, in its agent's folder
+    (`room-target.json`), since each Mac's disk is its own.
+    - While the disk is short of it and no job runs on the Mac (nor one an earlier agent left), the
+      agent frees its caches toward it, whether or not the build has work left, on a thread of its
+      own as a trim's: the copies by room-making's rules and order (the canopy squares too), then
+      the others a clear empties, the cheapest to fill again first: the copies of the NAS's files,
+      the base packs a file at a time (the least recently used first), the DEM seed whole (only
+      while the NAS has it whole), the heritage clip last (an hour of osmium to make again). Each
+      only as far as needed: the free space is measured again as they go.
+    - It keeps that floor: a job starts only with the target free past its own room (room-making
+      makes both, a sixth of the job's room past them; a job beside another needs both free
+      already), so what a job copies back never crosses it. A job that can't have it waits,
+      saying why in the status's `waiting`, and the jobs after it with it (room-making isn't tried
+      again for ten minutes, or until a job ends); a helper asks the build Mac for no work its disk
+      can't fit past the target, and gives back a lease that can't start for it without a
+      failure held against its targets. Until the target is lowered or off: nothing else refills
+      the caches.
+    - A freeing is tried again when a job has ended since, after ten minutes, or when the target
+      changes. Short of it with nothing more to free (what the NAS hasn't, kept), the status says
+      so (`caches.room.short`, and a line in `waiting`); it's logged and, when it freed anything,
+      in the history.
+    - It never deletes what a job uses: only while none runs here, and no job starts until it's
+      done.
+    - **With the mirror's reserve** (`--reserve-gb` in `tools/app/install.sh`: 50 GB on the M1,
+      150 GB on the build Mac): the server's mirror copies only while that much stays free, and
+      lets its own files go to keep it. The two floors are apart: the mirror never frees for the
+      agent's target, and the agent never touches the mirror. A target at or under the mirror's
+      reserve is the agent's alone to make (the mirror already stays out of it). Above it, the
+      mirror may fill the room between its reserve and the target that the agent freed; the agent
+      then stays short of the target, with nothing more of its own to free, and says so (§10,
+      Gaps).
+  - A trim, a clear or a freeing toward the target runs on a thread of the agent's own: its loop
+    goes on beating, and no job starts on the Mac until it's done.
   - Nothing goes through a link: a folder or file of the caches that's a link, at any depth (the
     raw tiles' packer passes them over too), or a folder in the NAS's project folder by its real
     path, is left as it is (and not counted), so the NAS's own files never go.
@@ -1560,7 +1594,8 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   free space and the caches it may drop (counted every ten minutes on a thread of its own), how
   long the NAS took to answer and the NAS's free space. Beside them, its build caches (`caches`):
   what a clear would free (counted with them, and again after a trim or a clear), why they can't
-  be cleared now, and the last trim and clear (Room on the disk).
+  be cleared now, and the last trim and clear, and the owner's room target with the disk's free
+  space (`caches.room`; Room on the disk).
 - **The forecast** (`agent::forecast`), made with each plan (at most each minute) and in the
   heartbeat: the work left run through in the order the agent runs it. The build Mac takes the first
   it can (the pass's worldwide jobs, then a region at a time: its terrain, then its units; with
@@ -1842,8 +1877,8 @@ mid-job. Nothing depends on it being available at a given time.
 - **Caches are disposable:** they refill from the NAS and the original sources.
 
 **Status.**
-- `scenic status` (each Mac's build caches too); `scenic clean` clears this Mac's (Room on the
-  disk, above).
+- `scenic status` (each Mac's build caches too); `scenic clean` clears this Mac's, and `scenic room`
+  sets its disk room target (Room on the disk, above).
 - The app's status bar: the build Mac's state, the NAS, and new data or a new app in.
 - The menu bar item. It asks the local server (`/api/build`): this Mac's agent's status when it runs
   here, else the NAS's copy. Each agent writes its status at least every two minutes; one not heard
@@ -1851,7 +1886,8 @@ mid-job. Nothing depends on it being available at a given time.
   resumes the build (Pausing, above), as does the map's build panel. From this Mac's agent's own
   status, read in its folder (the build Mac's `status.json`, a helper's `helper.json`), it shows
   what that Mac's build caches hold and their last trim and clear, and offers Clear the Build's
-  Caches, after a confirmation (Room on the disk, above).
+  Caches, after a confirmation, and Disk Room: the disk's free space and the room target, set
+  from a few presets or Off (Room on the disk, above).
 - Each says what's waiting and why ("Build Mac last seen yesterday; Kanto waits for it to be plugged
   in at home").
 
@@ -2120,6 +2156,11 @@ At each phase's end an Opus agent reviews the work against this plan.
    brings them) (a loch at the bottom of the view missing: 1.9 % of the pixels in the
    shoreline check's Scotland z15 view; the basemap's coarser polygon tiles covered it). Fix:
    have the sources' tiles worked out again once the terrain under the camera has loaded.
+9. **The mirror doesn't know the room target** (§8, Room on the disk): a disk room target above the
+   mirror's reserve (50 GB on the M1, 150 GB on the build Mac) can be filled by the mirror's copies
+   once the agent frees toward it, leaving the agent short of it with nothing of its own to free
+   (it says so). Fix: the server reads the agent's `room-target.json` and keeps its mirror's
+   reserve at the larger of the two while one is set.
 
 ## 11. Risks and checks
 

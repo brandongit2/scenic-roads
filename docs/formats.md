@@ -382,7 +382,10 @@ agent/                  status.json (the build Mac's; a helper writes helper.jso
                         pack-idx/; clear-request.json (the owner's ask to clear this Mac's build
                         caches, from its menu or `scenic clean`: {by, at}, agent::room::ClearRequest;
                         renamed clear-request.json.taken as the agent takes it up, removed once it's
-                        answered in the agent's status)
+                        answered in the agent's status); room-target.json (the owner's disk room
+                        target on this Mac, from `scenic room` or its menu: {bytes, by, at},
+                        agent::room::Target; the agent reads it each loop, and keeps that much free;
+                        no file: off)
 agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and aws-terrarium/
                         (copies of the NAS's sources/canopy/; the raw tiles as fetched, until packed
                         onto the NAS, and aws-terrarium/packs/: copies of its archives, a job's own
@@ -720,7 +723,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   `why_not`, why they can't be cleared now; `trimmed`, `cleared` and `declined`, the last trim
   after the build, the last clear done and the last ask declined, each `{at, asked (a clear's
   ask's at), by, freed: {cache: bytes}, left, why_not}`, the caches named canopy, terrain, blobs,
-  months (the pageview months' indexes), base, dem, copies and heritage); with the pool on, `pool`:
+  months (the pageview months' indexes), base, dem, copies and heritage; `room`, the owner's disk
+  room target: `{target: {bytes, by, at}, free (bytes), toward (the last freeing toward it, a
+  Freed with its `target`), short (why the disk is short of it and stays so)}`); with the pool on, `pool`:
   `{member, role: lead | member, gates: {term, leads, duties, settle, caught_up, fresh, listed_at},
   members, unacked, restart}`, a helper's status too);
   `state/build/{manifest,jobs,pending,summaries,pause}.json` (`jobs.json`: the job keys, by step,

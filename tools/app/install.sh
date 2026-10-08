@@ -39,7 +39,8 @@ if (( agent && helper )); then
   exit 2
 fi
 # The build Mac keeps room for its builds (the OSM pass starts with 80 GB free, the pack cache holds
-# the base packs): its mirror fills only what's left past 150 GB.
+# the base packs): its mirror fills only what's left past 150 GB. (Apart from the agent's disk room
+# target, `scenic room`: the mirror never frees for it, nor the agent for the mirror; docs/plan.md §8.)
 reserve=50
 if (( agent )); then reserve=150; fi
 printf '%s\n' "$HOME_S/app/current/server" --web "$HOME_S/app/current/web" --fonts "$HOME_S/app/current/fonts" --reserve-gb $reserve > "$HOME_S/run/server"
