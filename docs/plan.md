@@ -2060,7 +2060,7 @@ At each phase's end an Opus agent reviews the work against this plan.
    memory, the shared steps' jobs for the M1); a unit's last steps as tasks for any worker, the web worker page and the M1 alike; the
    units' Python steps in Rust (`elev`, `landcover`, `areaflags`: the same bytes), and tree cover's
    (`trees`: the same pixels); the build page, a dashboard for anyone and HTTPS through `tailscale
-   serve`, its devices let help by the build Mac's owner (`coord::devices`). Next: OPFS, ranged
+   serve`, any page on the LAN or the tailnet helping, with no key. Next: OPFS, ranged
    reads, journaled group commits, retiring the claim and hand-off files.
 
 **Gaps:** the code falls short of the design here.

@@ -81,7 +81,7 @@ PHASES = [
      'Left: deleting the converted data, once nothing the map reads comes from it (global/legacy/: popups’ details, roads’ English).'),
     ('planned', 'Features', '3D buildings first (docs/buildings3d.md): every building in the coverage extruded on the terrain, its height measured, else from its floors, its neighbours or GHSL; their sources are on the NAS (Overture’s 103 files and GHSL’s 91 tiles, 61.8 GB). Then PLATEAU’s and BD TOPO’s measured heights, building heights in the horizons and the viewshed tool, and sharper terrain from national DEMs.',
      None),
-    ('active', 'Builds anywhere', 'The build Mac’s coordinator lends work out on leases: the M1 takes the jobs of terrain, slope, tree cover, areas, landmark candidates and peaks that fit it, and any device that opens the build page, once you accept it, takes an area’s last steps as WebAssembly (its first three results checked against the build Mac’s own run, then one in eight). The areas’ Python steps are Rust ports giving the same bytes, tree cover’s the same pixels. The build page shows the whole build to anyone on the LAN or the tailnet, over HTTPS through tailscale serve.',
+    ('active', 'Builds anywhere', 'The build Mac’s coordinator lends work out on leases: the M1 takes the jobs of terrain, slope, tree cover, areas, landmark candidates and peaks that fit it, and any device that opens the build page takes an area’s last steps as WebAssembly (its first three results checked against the build Mac’s own run, then one in eight). The areas’ Python steps are Rust ports giving the same bytes, tree cover’s the same pixels. The build page shows the whole build to anyone on the LAN or the tailnet, over HTTPS through tailscale serve.',
      'Next: the pool, in which any Mac can lead (docs/pool.md: its core and simulator built, not yet wired in); ranged reads; a page’s files kept in the browser’s storage (OPFS); journaled group commits; the claim and hand-off files retired.'),
 ]
 GAPS = ('The plan’s gaps (docs/plan.md §10): the pool’s core, built but not wired into the agent, has its review’s open items to fix before '
@@ -143,7 +143,7 @@ page = head + f'''<title>Scenic Roads Data Pipeline</title>
 <div><code>localhost:8080</code><span>view the map: it’s always running on both Macs; the menu bar item shows what the build Mac is doing (as does <code>scenic status</code>), and pauses or resumes the build</span></div>
 <div><code>Regions panel</code><span>add a region: find an area by name or click the map, then take it or a bigger one around it (county, province, country); it reaches the map with the round after it’s built</span></div>
 <div><code>translations/</code><span>drop finished translations in this NAS folder; both Macs show them within a minute or two. <code>descriptions/</code> likewise. Lists of what’s missing will appear in their <code>todo/</code></span></div>
-<div><code>Build page</code><span>the whole build at a glance, on any device (the menu bar’s Copy the Build Page’s Address); “Help with this tab” lends the device to the build once you accept it on the build Mac</span></div>
+<div><code>Build page</code><span>the whole build at a glance, on any device (the menu bar’s Copy the Build Page’s Address); “Help with this tab” lends the device to the build</span></div>
 </div>
 <p>Now and then: rename or remove a region in the panel (what only it covered leaves the map with the next build). Everything else (building, refreshing, copying, backups) happens on its own.</p>
 </section>

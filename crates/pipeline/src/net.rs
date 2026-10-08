@@ -48,18 +48,6 @@ pub fn allowed(ip: IpAddr) -> bool {
     }
 }
 
-/// Whether `ip` is on the tailnet (100.64.0.0/10, fd7a:115c:a1e0::/48): what it sends goes through
-/// WireGuard, sealed.
-pub fn tailnet(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v) => v.octets()[0] == 100 && (64..128).contains(&v.octets()[1]),
-        IpAddr::V6(v) => match v.to_ipv4_mapped() {
-            Some(v4) => tailnet(IpAddr::V4(v4)),
-            None => v.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
-        },
-    }
-}
-
 /// Whether `ip` is this Mac's own (loopback).
 pub fn loopback(ip: IpAddr) -> bool {
     match ip {

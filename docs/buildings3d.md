@@ -776,8 +776,8 @@ source's fill-extrusion: the hovered building, 1 m larger and taller, amber).
   1. Serve the pilot: a server from this branch with `--root` a folder laid out like the NAS's
      whose newest catalog has the pilot's `buildings` layer (B1 made one: catalog 14 with the
      pilot's six packs added, the rest of the folder linked to the NAS read only), a scratch
-     `--home`, listening on every address (no `--listen`) so the iPad reaches it; the address with
-     its key is in `<home>/map-page`.
+     `--home`, listening on every address (no `--listen`) so the iPad reaches it; the address is in
+     `<home>/map-page`.
   2. On the iPad, open that address in Safari; on the Mac, Safari → Develop → the iPad → the
      map's page (Web Inspector).
   3. At each view (the hash after the address): `#map=16/35.69/139.70/20/60` (Shinjuku),

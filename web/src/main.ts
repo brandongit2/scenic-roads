@@ -94,6 +94,11 @@ async function main() {
   let hasBuildings = !!meta.layers?.buildings;
   // A link (URL hash) wins; otherwise restore the last session from localStorage. (A link's `bd=`
   // only with the buildings: without, the saved settings stay.)
+  // (An address from when the map had a key, `#k=…`: the key dropped, the view kept.)
+  if (/(^#|&)k=/.test(location.hash)) {
+    const rest = location.hash.slice(1).split('&').filter((p) => p && !p.startsWith('k=')).join('&');
+    history.replaceState(null, '', location.pathname + location.search + (rest ? `#${rest}` : ''));
+  }
   const saved = fromSaved(prefs.load('state', null));
   const linked = location.hash.length > 1 ? { ...fromHash(location.hash, hasBuildings), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
   // The shoreline check's eval mode (evalmode.ts): the link's view, nothing but land and water.

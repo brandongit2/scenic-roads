@@ -48,6 +48,9 @@ const AROUND: Duration = Duration::from_secs(120);
 const WHAT_MAX: usize = 200;
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
 const WHY_MAX: usize = 3000;
+/// The most pages (by name) a day's workers hold: a new one past it is refused.
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
+const PAGES_MAX: usize = 32;
 /// The most memory (MB) a page's task can say it took: a page's WebAssembly addresses 4 GB.
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
 const DEVICE_MB: u64 = 4096;
@@ -992,6 +995,11 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 a.label = a.label.map(|l| plain(&l, 80));
             }
             let mut s = shared.lock().unwrap();
+            // (Pages at once a day at most, by name: a page that names itself anew at every ask
+            // can't fill the history or the workers.)
+            if caller.page && !s.workers.contains_key(&a.worker) && s.workers.keys().filter(|n| n.starts_with("page ")).count() >= PAGES_MAX {
+                return Ok((429, serde_json::json!({ "error": "too many pages have helped today: ask again tomorrow, or as one of them" })));
+            }
             // The pool's lead moving or not fresh: nothing now (docs/pool.md §6.4).
             if let Some(why) = s.moving.clone() {
                 s.seen(&a.worker, format!("waiting: {why}"), None, now);
@@ -2446,6 +2454,8 @@ mod tests {
             let w = &s.workers["page ipad01"];
             assert!(w.label == "Safari on iPad" && w.what.chars().count() <= WHAT_MAX, "{:?} {}", w.label, w.what.len());
         }
+        // (An empty key is none: a page.)
+        assert_eq!(send(&addr, "POST", "/work/ask", Some(""), &[], &asks("ipad01", "web", &["tail"])).0 / 100, 2);
         // Not the agents' own requests, and not a job's.
         assert_eq!(page("/work/status", None, serde_json::json!({})).0, 403);
         assert_eq!(page("/task/workers", None, serde_json::json!({})).0, 401);
@@ -2461,6 +2471,14 @@ mod tests {
         assert!(c.shared.lock().unwrap().pause_at <= unix_now() + AHEAD_S);
         assert_eq!(page("/work/pause", Some(&token), serde_json::json!({ "pause": null, "at": unix_now() + AHEAD_S })).0, 200);
         assert!(c.shared.lock().unwrap().paused.is_none());
+        // Pages that name themselves anew at every ask: a day's few, then refused (as one already
+        // known, still answered).
+        let known = c.shared.lock().unwrap().workers.keys().filter(|n| n.starts_with("page ")).count();
+        for i in known..PAGES_MAX {
+            assert_eq!(page("/work/ask", None, asks(&format!("p{i}"), "web", &["tail"])).0 / 100, 2, "{i}");
+        }
+        assert_eq!(page("/work/ask", None, asks("one-too-many", "web", &["tail"])).0, 429);
+        assert_eq!(page("/work/ask", None, asks("ipad01", "web", &["tail"])).0 / 100, 2);
     }
 
     #[test]

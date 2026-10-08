@@ -69,7 +69,7 @@ async function page(e, key) {
   return kept;
 }
 
-// A program's WebAssembly: as kept for its version, else fetched (with the device's key) and kept,
+// A program's WebAssembly: as kept for its version, else fetched and kept,
 // its other versions dropped.
 async function program(req, url) {
   const cache = await caches.open(PROGS);

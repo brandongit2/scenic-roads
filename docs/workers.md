@@ -258,8 +258,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 - **HTTPS:** the screen wake lock, the page as an app and OPFS (below) need a secure context. The
   coordinator is reached over HTTPS through `tailscale serve` (the owner turned it on, 2026-10-05:
   the tailnet has a certificate for the build Mac's name), and the page's address (the status
-  bar's, `scenic status`'s) is HTTPS while it proxies the coordinator; the owner's requests (the
-  devices) and a job's can't come through it (they come from the build Mac itself, through no
+  bar's, `scenic status`'s) is HTTPS while it proxies the coordinator; a job's requests can't come
+  through it (they come from the build Mac itself, through no
   proxy). Plain HTTP on the tailnet still works (WireGuard
   encrypts it), the device then kept awake by hand.
 - **The page as an app** (a PWA: `manifest.webmanifest`, `sw.js`, `icons/`, served without the

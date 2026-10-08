@@ -57,8 +57,8 @@ def build(check=False):
 
     # The workers: a device's page (tasks), the M1's helper (jobs, and tasks when no job fits it).
     wx, ww = 1148, W - 16 - 1148
-    page = box(wx, top, ww, 'Any device · the build page', ['/work/ on the build Mac: anyone on its LAN or', 'the tailnet sees the build there; a tab helps',
-                                                            'once you accept it on the build Mac: an area’s', 'last steps, run as WebAssembly'])
+    page = box(wx, top, ww, 'Any device · the build page', ['/work/ on the build Mac: anyone on its LAN or', 'the tailnet sees the build there; a tab helps,',
+                                                            'with no key: an area’s last steps, run as', 'WebAssembly'])
     m1 = box(wx, page[1] + page[3] + 22, ww, 'The M1 (16 GB) · a helper', ['its agent (install.sh --helper) takes the jobs',
                                                                         'that fit the 6 GB it spares (10 for a short one',
                                                                         'while you’re away): terrain, slope, tree cover,',
@@ -99,7 +99,7 @@ def build(check=False):
             'at a time, runs two jobs at once, merges what workers hand back and publishes a round about hourly. Its coordinator, '
             'on port 8090, lends work out on ten-minute leases renewed each minute: jobs to the M1’s helper, which uploads their '
             'files to the NAS itself and hands their record changes back, and an area’s last steps as tasks to any worker, a '
-            'device’s build page too once you accept it; a worker’s first three tasks, then one in eight, are checked against the '
+            'device’s build page too; a worker’s first three tasks, then one in eight, are checked against the '
             'build Mac’s own run. Planned: the pool, in which any Mac can lead.')
     marker = ('<marker id="wm-a" viewBox="0 0 10 10" refX="9.5" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">'
               '<path class="st-mk" d="M0,0.8 L10,5 L0,9.2 z"/></marker>')
