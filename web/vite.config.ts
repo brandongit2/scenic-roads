@@ -150,11 +150,53 @@ const maplibreBuildingFeet = () =>
     ],
   ]);
 
+/**
+ * Fog on the extrusions (docs/buildings3d.md §1, Fog): MapLibre fogs the terrain toward the horizon
+ * (the sky's fog-ground-blend, from 60° of pitch, on the flat map: on the globe it fogs nothing),
+ * and its fill-extrusion shader drew the colour alone, so a far skyline stood sharp against a
+ * fogged ground. Here the extrusions take the terrain's fog: its uniforms bound and set as the
+ * terrain's are (the same fog matrix of the tile, colours, blends and opacity), its fog depth from
+ * the vertex, its blend in the fragment shader, in linear light, on the colour before its opacity.
+ */
+const EXTRUSION_FOG_FS = [
+  'uniform vec4 u_fog_color;uniform vec4 u_horizon_color;uniform float u_fog_ground_blend;uniform float u_fog_ground_blend_opacity;',
+  'uniform float u_horizon_fog_blend;uniform float u_is_globe_mode;in float v_fog_depth;',
+  'in vec4 v_color;void main() {fragColor=v_color;',
+  'if (u_is_globe_mode < 0.5 && u_fog_ground_blend_opacity > 0.0 && v_fog_depth > u_fog_ground_blend && v_color.a > 0.0) {',
+  'vec3 c=pow(v_color.rgb/v_color.a,vec3(2.2));',
+  'float blend_color=smoothstep(0.0,1.0,max((v_fog_depth-u_horizon_fog_blend)/(1.0-u_horizon_fog_blend),0.0));',
+  'vec3 fog=mix(pow(u_fog_color.rgb,vec3(2.2)),pow(u_horizon_color.rgb,vec3(2.2)),blend_color);',
+  'float f=max(v_fog_depth-u_fog_ground_blend,0.0)/(1.0-u_fog_ground_blend);',
+  'fragColor=vec4(pow(mix(c,fog,pow(f,2.0)*u_fog_ground_blend_opacity),vec3(1.0/2.2))*v_color.a,v_color.a);}',
+].join('');
+
+const maplibreExtrusionFog = () =>
+  maplibrePatch('maplibre-extrusion-fog', [
+    ['fillExtrusion:Y(`in vec4 v_color;void main() {fragColor=v_color;', 'fillExtrusion:Y(`' + EXTRUSION_FOG_FS, 1],
+    ['out vec4 v_color;\n#pragma maplibre: define highp float base', 'out vec4 v_color;uniform mat4 u_fog_matrix;out float v_fog_depth;\n#pragma maplibre: define highp float base', 1],
+    [
+      '#else\ngl_Position=u_projection_matrix*vec4(posInTile,elevation,1.0);\n#endif\nfloat colorvalue',
+      '#else\ngl_Position=u_projection_matrix*vec4(posInTile,elevation,1.0);\n#endif\nvec4 fog_pos=u_fog_matrix*vec4(posInTile,elevation,1.0);v_fog_depth=fog_pos.z/fog_pos.w*0.5+0.5;\nfloat colorvalue',
+      1,
+    ],
+    // Its uniforms bound (as the terrain's: kr a mat4, le a colour, V a float) and set.
+    [
+      'u_opacity:new V(e,t.u_opacity),u_fill_translate:new L(e,t.u_fill_translate)}),au=(e,t)=>',
+      'u_opacity:new V(e,t.u_opacity),u_fill_translate:new L(e,t.u_fill_translate),u_fog_matrix:new kr(e,t.u_fog_matrix),u_fog_color:new le(e,t.u_fog_color),u_fog_ground_blend:new V(e,t.u_fog_ground_blend),u_fog_ground_blend_opacity:new V(e,t.u_fog_ground_blend_opacity),u_horizon_color:new le(e,t.u_horizon_color),u_horizon_fog_blend:new V(e,t.u_horizon_fog_blend),u_is_globe_mode:new V(e,t.u_is_globe_mode)}),au=(e,t)=>',
+      1,
+    ],
+    [
+      'w=f?su(e,C,m,S,d,p,r):ou(e,C,m,S);',
+      'w=f?su(e,C,m,S,d,p,r):ou(e,C,m,S);if(!f){let G=!!s.isRenderingGlobe,K=e.style.sky;Object.assign(w,{u_fog_matrix:G?new Float32Array(16):g.calculateFogMatrix(d.toUnwrapped()),u_fog_color:K?K.properties.get(`fog-color`):z.white,u_fog_ground_blend:K?K.properties.get(`fog-ground-blend`):1,u_fog_ground_blend_opacity:G||!K?0:K.calculateFogBlendOpacity(g.pitch),u_horizon_color:K?K.properties.get(`horizon-color`):z.white,u_horizon_fog_blend:K?K.properties.get(`horizon-fog-blend`):1,u_is_globe_mode:+G})}',
+      1,
+    ],
+  ]);
+
 // In development the Rust backend serves data; Vite serves the app with HMR.
 const backend = 'http://127.0.0.1:8080';
 
 export default defineConfig({
-  plugins: [maplibreTerrainVisibility(), maplibreSlopeColours(), maplibreGlobePrecision(), maplibreBuildingFeet()],
+  plugins: [maplibreTerrainVisibility(), maplibreSlopeColours(), maplibreGlobePrecision(), maplibreBuildingFeet(), maplibreExtrusionFog()],
   server: {
     port: 5173,
     proxy: { '/api': backend, '/tiles': backend, '/fonts': backend },
