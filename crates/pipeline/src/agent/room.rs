@@ -61,6 +61,17 @@
 //! trains' stop pairs, under a MB), the agent's own timings (`unit-stages.json`) and what units kept
 //! that isn't on the NAS yet (`dem-units/`, `scenic-units/`).
 //!
+//! The owner's room target (`Target`: `scenic room <GB>`, the menu bar's Disk Room; `toward`): the
+//! free space this Mac's agent keeps, set at any moment, in its folder (each Mac's disk is its own).
+//! While the disk is short of it and no job runs here, the agent frees its caches toward it, on a
+//! thread of its own as a trim's, whether or not the build has work left: the cheap caches by
+//! room-making's rules and order (the canopy squares too), then a clear's others, the cheapest to
+//! fill again first (`TOWARD_ORDER`: copies of the NAS's files, the base packs a file at a time, the
+//! least recently used first, the DEM seed whole, the heritage clip last), each only as far as
+//! needed. A job starts only with the target free past its own room (room-making makes both), so
+//! nothing a job copies back crosses it: the jobs wait, saying why, until it's lowered or off. It
+//! never deletes what a job uses: only while none runs.
+//!
 //! Nothing goes through a link: a folder or file of the cache that's a link, at any depth (`walk`;
 //! crate::rawpack's packer passes them over too), or a folder in the NAS's project folder by its
 //! real path (`ours`), is left as it is and not counted, so the NAS's own files never go. (The agent
@@ -238,6 +249,9 @@ pub struct Freed {
     /// build had work left).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why_not: Option<String>,
+    /// A freeing toward the owner's disk room target (`toward`): the target it was for (bytes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<u64>,
 }
 
 impl Freed {
@@ -284,6 +298,10 @@ pub struct Caches {
     pub cleared: Option<Freed>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declined: Option<Freed>,
+    /// The owner's disk room target and the free space now (`RoomView`); None on an agent from
+    /// before targets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room: Option<RoomView>,
 }
 
 /// A cache a clear would empty: its name (`kind`) and in words, its bytes, and how it comes back.
@@ -392,10 +410,7 @@ pub fn clear(cache: &Path, sources: &Path) -> Result<Freed> {
     }
     let mut freed = free_cheap(cache, sources, u64::MAX, u64::MAX, &disk_free, &|_| false)?;
     let mut left = cheap_left(cache, sources.parent(), &|_| false);
-    // (Whole as unit::dem_seed takes it: its three files, of one count. Then every local file of
-    // it goes, whole or cut short; else only a temporary one.)
-    let len = |n: &str| std::fs::metadata(sources.join("dem-cache").join(n)).ok().filter(|m| m.is_file()).map(|m| m.len());
-    let seed_whole = matches!((len("dem-cache.keys.u64"), len("dem-cache.elev.f32"), len("dem-cache.src.u8")), (Some(k), Some(e), Some(s)) if k == 8 * s && e == 4 * s);
+    let seed_whole = seed_whole(sources);
     let mut others: Vec<(PathBuf, &str)> = std::fs::read_dir(cache).into_iter().flatten().flatten().filter_map(|e| Some((e.path(), kind(&e.file_name().to_string_lossy()).filter(|k| !cheap(k))?))).collect();
     others.sort();
     for (p, k) in others {
@@ -419,6 +434,174 @@ pub fn clear(cache: &Path, sources: &Path) -> Result<Freed> {
         left += after;
     }
     Ok(Freed { freed, left, ..Default::default() })
+}
+
+/// Whether the NAS's `sources` has the DEM seed whole, as unit::dem_seed takes it: its three files,
+/// of one count. (Then every local file of it may go, whole or cut short; else only a temporary one.)
+fn seed_whole(sources: &Path) -> bool {
+    let len = |n: &str| std::fs::metadata(sources.join("dem-cache").join(n)).ok().filter(|m| m.is_file()).map(|m| m.len());
+    matches!((len("dem-cache.keys.u64"), len("dem-cache.elev.f32"), len("dem-cache.src.u8")), (Some(k), Some(e), Some(s)) if k == 8 * s && e == 4 * s)
+}
+
+/// The owner's disk room target on this Mac (`scenic room <GB>`, the menu bar's Disk Room): the
+/// free space its agent keeps (the module's doc, The room target). In the agent's folder
+/// (`TARGET`): each Mac's disk is its own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Target {
+    /// The free space to keep (bytes).
+    pub bytes: u64,
+    /// Who set it, in words ("scenic room on m4", "the menu bar on m4"), and when (unix seconds).
+    pub by: String,
+    pub at: u64,
+}
+
+/// The target's file, in the agent's folder.
+pub const TARGET: &str = "room-target.json";
+
+/// Sets this Mac's disk room target (its agent's folder `home`) to `bytes`, or clears it (None).
+pub fn set_target(home: &Path, bytes: Option<u64>, by: &str) -> Result<Option<Target>> {
+    let p = home.join(TARGET);
+    let Some(bytes) = bytes else {
+        match std::fs::remove_file(&p) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        return Ok(None);
+    };
+    std::fs::create_dir_all(home)?;
+    let t = Target { bytes, by: by.to_string(), at: super::jobs::now_s() };
+    crate::whole::write(&p, &serde_json::to_vec(&t)?)?;
+    Ok(Some(t))
+}
+
+/// This Mac's disk room target, when one is set (one that doesn't parse, or of 0 bytes, is none).
+pub fn target(home: &Path) -> Option<Target> {
+    std::fs::read(home.join(TARGET)).ok().and_then(|b| serde_json::from_slice::<Target>(&b).ok()).filter(|t| t.bytes > 0)
+}
+
+/// The disk room target as the agent's status says it (`Caches::room`): the target, the disk's
+/// free space when the status was written, and the last time the agent freed its caches toward it
+/// (`toward`: what it freed, and when it couldn't reach it, what stays and why). Its jobs and their
+/// refills wait meanwhile, each saying why in the status's `waiting`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<Target>,
+    pub free: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub toward: Option<Freed>,
+    /// Why the disk is short of the target and stays so, when it is (None: it has the target, or
+    /// the agent is making it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub short: Option<String>,
+}
+
+/// The caches a freeing toward the target empties after the cheap ones, in this order: the
+/// cheapest to fill again first (copies of the NAS's files and the base packs, minutes from the
+/// NAS; the DEM seed, 9 GB; the heritage jobs' planet clip, an hour of osmium, last).
+const TOWARD_ORDER: [&str; 4] = ["copies", "base", "dem", "heritage"];
+
+/// Frees this Mac's build caches at `cache` until the disk has `target` free (the owner's room
+/// target): the cheap caches first, by room-making's rules and in its order (each file once the
+/// NAS's `sources` has it; the canopy squares too), then the others a clear empties
+/// (`TOWARD_ORDER`), only as far as needed: the base packs a file at a time, the least recently
+/// used first; the others whole (the DEM seed only while the NAS has it whole, its files together).
+/// Only while no job runs here (the agent's to see to). What it freed, and when it falls short,
+/// what stays of what it may free.
+pub fn toward(cache: &Path, sources: &Path, target: u64) -> Result<Freed> {
+    toward_with(cache, sources, target, &disk_free)
+}
+
+fn toward_with(cache: &Path, sources: &Path, target: u64, free_space: &dyn Fn(&Path) -> std::io::Result<u64>) -> Result<Freed> {
+    if !cache.is_dir() || free_space(cache)? >= target {
+        return Ok(Freed::default());
+    }
+    let mut freed = free_cheap(cache, sources, target, target, free_space, &|_| false)?;
+    let root = sources.parent();
+    let enough = || free_space(cache).map(|f| f >= target);
+    let whole_seed = seed_whole(sources);
+    let mut left = 0;
+    let mut short = !enough()?;
+    for k in TOWARD_ORDER {
+        if !short || super::stopping() {
+            break;
+        }
+        let mut entries: Vec<PathBuf> = std::fs::read_dir(cache).into_iter().flatten().flatten().filter(|e| kind(&e.file_name().to_string_lossy()) == Some(k)).map(|e| e.path()).filter(|p| ours(p, root)).collect();
+        entries.sort();
+        // The base packs a file at a time, the least recently used first (each file of the pack
+        // cache is one a round reads, or copies again); the free space measured again once what
+        // was short is deleted, or every 2 GB (as room-making's `Room`).
+        if k == "base" {
+            let mut files = Vec::new();
+            for e in &entries {
+                if std::fs::symlink_metadata(e).is_ok_and(|m| m.is_dir()) {
+                    walk(e, &mut files);
+                } else if let Ok(m) = std::fs::metadata(e) {
+                    files.push((m.modified().unwrap_or(SystemTime::UNIX_EPOCH), m.len(), e.clone()));
+                }
+            }
+            files.sort();
+            let (mut since, mut lack) = (0, target.saturating_sub(free_space(cache)?));
+            for (_, len, p) in files {
+                if super::stopping() {
+                    break;
+                }
+                if std::fs::remove_file(&p).is_ok() {
+                    *freed.entry(k.to_string()).or_default() += len;
+                    since += len;
+                }
+                if since >= lack.min(2 << 30) {
+                    let free = free_space(cache)?;
+                    if free >= target {
+                        short = false;
+                        break;
+                    }
+                    (since, lack) = (0, target - free);
+                }
+            }
+            short = short && !enough()?;
+            continue;
+        }
+        // (The DEM seed's files together, whole or none: one of them alone is no seed.)
+        if k == "dem" && !whole_seed {
+            for p in entries {
+                let b = bytes_under(&p);
+                if crate::whole::is_tmp(&p) {
+                    std::fs::remove_file(&p).ok();
+                    *freed.entry(k.to_string()).or_default() += b.saturating_sub(bytes_under(&p));
+                } else {
+                    left += b;
+                }
+            }
+            short = !enough()?;
+            continue;
+        }
+        let together = k == "dem";
+        for p in entries {
+            if super::stopping() {
+                break;
+            }
+            let bytes = bytes_under(&p);
+            let gone = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+            if let Err(e) = gone {
+                eprintln!("room: {}: {e}", p.display());
+            }
+            let after = bytes_under(&p);
+            *freed.entry(k.to_string()).or_default() += bytes.saturating_sub(after);
+            left += after;
+            if !together && enough()? {
+                short = false;
+                break;
+            }
+        }
+        short = short && !enough()?;
+    }
+    if short {
+        left += cheap_left(cache, root, &|_| false);
+    }
+    freed.retain(|_, b| *b > 0);
+    Ok(Freed { freed, left: if short { left } else { 0 }, target: Some(target), ..Default::default() })
 }
 
 /// What this Mac's caches hold (`sizes`): what room-making can free, and what a clear would, by
@@ -1166,6 +1349,100 @@ mod tests {
         let f = clear(c, nas).unwrap();
         assert_eq!((f.bytes(), f.left), (30, 130 + 100));
         assert!(c.join("dem-cache.keys.u64").exists() && !c.join("dem-cache.keys.u64.m1.123.tmp").exists());
+    }
+
+    #[test]
+    fn toward_the_target_frees_only_as_far_as_needed_the_cheapest_to_refill_first() {
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("app/agent/cache");
+        let nas = &d.path().join("nas/sources");
+        std::fs::create_dir_all(d.path().join("nas/state/build")).unwrap();
+        // The cheap caches (copies of the records' files), then the others: the copies of the
+        // NAS's files, three base packs (the oldest used longest ago), the DEM seed (the NAS has it
+        // whole) and the heritage clip.
+        file(&c.join("blobs/layers/terrain/hi/6-1-2.0000000000000001.pack"), 1000, 60);
+        file(&c.join("sources-terrain-z8-v1/terrain-z8-v1.0000000000000001.pack"), 500, 60);
+        for (i, age) in [(1, 300), (2, 200), (3, 100)] {
+            file(&c.join(format!("base/base/6-1-{i}.0000000000000001.base")), 2000, age);
+        }
+        for (n, len) in [("keys.u64", 80), ("elev.f32", 40), ("src.u8", 10)] {
+            file(&c.join(format!("dem-cache.{n}")), len, 60);
+            file(&nas.join(format!("dem-cache/dem-cache.{n}")), len, 60);
+        }
+        file(&c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf"), 700, 60);
+        let all = |p: &Path| {
+            let mut fs = Vec::new();
+            walk(p, &mut fs);
+            fs.iter().map(|f| f.1).sum::<u64>()
+        };
+        let held = all(c);
+        // A disk of `held` bytes, with what's deleted free: a target of 3500 takes the blobs (1000),
+        // the copies (500), then base packs a file at a time, the oldest first, as far as needed:
+        // one.
+        let disk = move |p: &Path| Ok(held - all(p));
+        let f = toward_with(c, nas, 3500, &disk).unwrap();
+        assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 2000), ("blobs".to_string(), 1000), ("copies".to_string(), 500)]));
+        assert_eq!((f.target, f.left), (Some(3500), 0));
+        assert!(!c.join("base/base/6-1-1.0000000000000001.base").exists() && c.join("base/base/6-1-2.0000000000000001.base").exists());
+        assert!(c.join("dem-cache.keys.u64").exists() && c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf").exists());
+        // A little more: the next base pack.
+        assert_eq!(toward_with(c, nas, 4000, &disk).unwrap().freed, BTreeMap::from([("base".to_string(), 2000)]));
+        // Already there: nothing goes.
+        assert_eq!(toward_with(c, nas, 3500, &disk).unwrap(), Freed::default());
+        // A target past everything: the DEM seed whole, then the heritage clip; short, and what
+        // stays said (nothing here).
+        let f = toward_with(c, nas, u64::MAX, &disk).unwrap();
+        assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 2000), ("dem".to_string(), 130), ("heritage".to_string(), 700)]));
+        assert_eq!(f.left, 0);
+        assert!(!c.join("dem-cache.src.u8").exists());
+        // A seed the NAS hasn't whole stays, counted as left.
+        for (n, len) in [("keys.u64", 80), ("elev.f32", 40), ("src.u8", 10)] {
+            file(&c.join(format!("dem-cache.{n}")), len, 60);
+        }
+        std::fs::write(nas.join("dem-cache/dem-cache.src.u8"), b"x").unwrap();
+        let f = toward_with(c, nas, u64::MAX, &disk).unwrap();
+        assert_eq!((f.bytes(), f.left), (0, 130));
+    }
+
+    #[test]
+    fn toward_the_target_stops_once_its_there() {
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let nas = &d.path().join("nas/sources");
+        std::fs::create_dir_all(nas).unwrap();
+        file(&c.join("sources-a/x.pack"), 500, 60);
+        file(&c.join("sources-b/x.pack"), 500, 60);
+        file(&c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf"), 700, 60);
+        let held = 1700;
+        let all = |p: &Path| {
+            let mut fs = Vec::new();
+            walk(p, &mut fs);
+            fs.iter().map(|f| f.1).sum::<u64>()
+        };
+        let disk = move |p: &Path| Ok(held - all(p));
+        let f = toward_with(c, nas, 400, &disk).unwrap();
+        assert_eq!(f.freed, BTreeMap::from([("copies".to_string(), 500)]));
+        assert!(!c.join("sources-a").exists() && c.join("sources-b/x.pack").exists() && c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf").exists());
+    }
+
+    #[test]
+    fn the_room_target_is_set_read_and_cleared_in_the_agents_folder() {
+        let d = tempfile::tempdir().unwrap();
+        let home = &d.path().join("agent");
+        assert!(target(home).is_none());
+        let t = set_target(home, Some(100 << 30), "scenic room on m4").unwrap().unwrap();
+        assert_eq!(target(home), Some(t));
+        // The menu bar's, as it writes it.
+        std::fs::write(home.join(TARGET), br#"{"bytes":53687091200,"by":"the menu bar on m4","at":1791300000}"#).unwrap();
+        assert_eq!(target(home).map(|t| (t.bytes, t.by)), Some((50 << 30, "the menu bar on m4".to_string())));
+        // None of 0 bytes, nor a damaged one; off, it goes (twice, no error).
+        std::fs::write(home.join(TARGET), br#"{"bytes":0,"by":"x","at":1}"#).unwrap();
+        assert!(target(home).is_none());
+        std::fs::write(home.join(TARGET), b"{").unwrap();
+        assert!(target(home).is_none());
+        assert_eq!(set_target(home, None, "x").unwrap(), None);
+        assert_eq!(set_target(home, None, "x").unwrap(), None);
+        assert!(!home.join(TARGET).exists());
     }
 
     #[test]
