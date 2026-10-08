@@ -5,7 +5,7 @@
 //! and water missing from the detailed source is filled from a coarse one that blurs the hills into
 //! it. GLO-30 is one source, heights above EGM2008 (sea level), 30 m, its water bodies flattened.
 //!
-//! Each terrain tile is resampled from GLO-30's 1° tiles (bilinear between its pixel centres, the
+//! Each terrain tile of z9 and finer (coarser ones are made from them) is resampled from GLO-30's 1° tiles (bilinear between its pixel centres, the
 //! mean of k × k such samples over a pixel wider than 30 m), and blended into AWS's (repaired) tile
 //! by latitude: AWS's alone south of 59.5°N, GLO-30's alone from 60°N, a smoothstep between (55 km:
 //! the band lies south of 60°, where AWS's sources are sea-level ones too, so the two agree to a few

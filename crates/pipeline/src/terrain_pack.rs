@@ -158,8 +158,13 @@ pub struct Prepared {
     pub e: Vec<f32>,
     pub before: Vec<f32>,
     pub water: Option<std::sync::Arc<crate::terrain_water::WaterTile>>,
+    /// AWS's z9 tile over it (the walled patches' rule), for the repair after the water, and
+    /// whether GLO-30 was blended in (then AWS's z9 tile, on another datum, isn't its coarser view).
+    coarse: Option<Vec<f32>>,
+    north: bool,
     decoded: bool,
     z: u8,
+    y: u32,
 }
 
 impl Prepared {
@@ -178,11 +183,11 @@ impl Prepared {
 /// (`quads`: AWS's coarse levels come from coarser sources, and lost peaks: Fuji's summit pixel
 /// 3,106 m at z6, 2,368 m at z5, 2,134 m at z4; from z9, 3,378, 2,715 and 2,337 m); repaired
 /// (`repair`, on AWS's values, bathymetry and all, so a pit reads as deep as AWS made it, with AWS's
-/// z9 tile over it when `src` has them); GLO-30 blended in north of 59.5°N, but for the pixels made
-/// from the children (blended there already). Then `finish` flattens its water.
+/// z9 tile over it when `src` has them); GLO-30 blended in north of 59.5°N at z9 and finer, but for
+/// the pixels made from the children (blended there already; z8 and coarser are made from them). Then `finish` flattens its water.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare(png: Vec<u8>, z: u8, x: u32, y: u32, below: &HashMap<(u32, u32), Repaired>, quads: &HashMap<(u32, u32), Vec<f32>>, src: &Sources, repair: &dyn Fn(&mut [f32], u8, f64, Option<&[f32]>)) -> Prepared {
-    let Ok(mut e) = decode_terrain_png(&png) else { return Prepared { png, e: Vec::new(), before: Vec::new(), water: None, decoded: false, z } };
+    let Ok(mut e) = decode_terrain_png(&png) else { return Prepared { png, e: Vec::new(), before: Vec::new(), water: None, coarse: None, north: false, decoded: false, z, y } };
     let before = e.clone();
     let mut kept = vec![false; e.len()];
     for k in 0..4u32 {
@@ -210,7 +215,9 @@ pub fn prepare(png: Vec<u8>, z: u8, x: u32, y: u32, below: &HashMap<(u32, u32), 
     }
     let coarse = src.coarse.and_then(|c| c.over(z, x, y));
     repair(&mut e, z, tile_lat(z, y), coarse.as_deref());
-    if let Some(n) = src.north.and_then(|c| crate::terrain_north::north_tile(c, z, x, y)) {
+    // (From z9 up: coarser tiles are made from their children in the coverage, and GLO-30 is only
+    // in the store there, so a z3 tile's would decode hundreds of its 1° tiles for nothing.)
+    if let Some(n) = src.north.filter(|_| z > REBUILD_Z).and_then(|c| crate::terrain_north::north_tile(c, z, x, y)) {
         crate::terrain_north::blend(&mut e, &n, Some(&kept));
     }
     let water = src.water.and_then(|w| match crate::terrain_water::tile_water(w, z, x, y) {
@@ -220,15 +227,37 @@ pub fn prepare(png: Vec<u8>, z: u8, x: u32, y: u32, below: &HashMap<(u32, u32), 
             None
         }
     });
-    Prepared { png, e, before, water, decoded: true, z }
+    let north = blends_north(src, z, y);
+    Prepared { png, e, before, water, coarse, north, decoded: true, z, y }
+}
+
+/// Whether GLO-30 is blended into tile z/·/y (`prepare`): z9 and finer, north of SOUTH.
+pub fn blends_north(src: &Sources, z: u8, y: u32) -> bool {
+    let n = (1u64 << z) as f64;
+    let top = (std::f64::consts::PI * (1.0 - 2.0 * y as f64 / n)).dsinh().datan().to_degrees();
+    src.north.is_some() && z > REBUILD_Z && top > crate::terrain_north::SOUTH
+}
+
+/// The repair of a tile as stored (`finish`'s last step, and what `terrain --scan` checks it
+/// against): repair_terrain_with, AWS's z9 tile for the walled patches only where GLO-30 isn't
+/// blended in, then bathymetry to sea level.
+pub fn repair_stored(e: &mut [f32], z: u8, y: u32, coarse: Option<&[f32]>, north: bool) -> roadcore::grid::Repair {
+    let (r, _) = repair_terrain_with(e, z, tile_lat(z, y), if north { None } else { coarse });
+    for v in e.iter_mut() {
+        if *v < 0.0 {
+            *v = 0.0;
+        }
+    }
+    r
 }
 
 /// A prepared tile finished: its water flattened (`levels`: the lakes' levels,
-/// crate::terrain_water), then bathymetry to sea level. Returns the PNG to store (the original
+/// crate::terrain_water), bathymetry to sea level, and repaired once more as stored
+/// (`repair_stored`). Returns the PNG to store (the original
 /// bytes when nothing changes), its elevations and the pixels that moved if it changed, and from
 /// REBUILD_Z + 1 down its 2×2 means for the level above.
 pub fn finish(p: Prepared, levels: &HashMap<u64, f32>) -> (Vec<u8>, Option<Repaired>, Option<Vec<f32>>) {
-    let Prepared { png, mut e, before, water, decoded, z } = p;
+    let Prepared { png, mut e, before, water, coarse, north, decoded, z, y } = p;
     if !decoded {
         return (png, None, None);
     }
@@ -240,6 +269,10 @@ pub fn finish(p: Prepared, levels: &HashMap<u64, f32>) -> (Vec<u8>, Option<Repai
             *v = 0.0;
         }
     }
+    // The repair once more, on the tile as stored: what it left on a shore stands on a flat sea now
+    // (a stub on Casco Bay's), GLO-30's fills and AWS's moved into them can stand broken among the
+    // St. Elias's ice (walls of 26 m a metre), and the tile stored must be one it changes nothing in.
+    repair_stored(&mut e, z, y, coarse.as_deref(), north);
     let quad = (z >= 1 && z <= REBUILD_Z + 1).then(|| {
         let mut q = vec![0f32; 128 * 128];
         for j in 0..128 {
