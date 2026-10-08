@@ -230,7 +230,11 @@ impl AppState {
         let asked = pipeline::control::peek_request(&self.home.join("agent")).map(|r| serde_json::json!({ "pause": r.pause.is_some(), "at": r.at }));
         // What this Mac has downloaded (the menu says when the map needs the NAS).
         let offline = downloads::summary(self);
-        serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked, "offline": offline})
+        // This Mac in the pool (docs/pool.md §10, §11), as its own agent says (fresh), and its lead
+        // ask while its agent hasn't taken it up.
+        let pool = pipeline::agent::lead::own_status(&self.home.join("agent")).filter(|s| now.saturating_sub(s.beat) < 120).and_then(|s| s.pool).map_or(serde_json::Value::Null, |p| serde_json::to_value(p).unwrap_or_default());
+        let lead_asked = pipeline::control::peek_lead(&self.home.join("agent")).map(|r| serde_json::to_value(r).unwrap_or_default());
+        serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked, "offline": offline, "pool": pool, "lead_asked": lead_asked})
     }
 
     /// Lets go of everything mapped from what the mirror has just deleted (`names`: content
@@ -488,6 +492,7 @@ async fn main() -> Result<()> {
         .route("/api/ping", get(|| async { ([(header::CACHE_CONTROL, "no-store")], "ok") }))
         .route("/api/build", get(build_h))
         .route("/api/build/pause", axum::routing::post(build_pause_h))
+        .route("/api/build/lead", axum::routing::post(build_lead_h))
         .nest_service(
             "/fonts",
             tower::ServiceBuilder::new()
@@ -793,6 +798,30 @@ async fn build_pause_h(State(s): State<S>, b: axum::body::Bytes) -> Response {
     }
 }
 
+/// An ask of the pool's lead from the map (docs/pool.md §11): hand it to a member (`{"to": <member
+/// id or host name>}`: "Make this Mac lead" names this Mac's), or have this Mac take it over
+/// (`{"take": true}`) when the lead is out of touch. Never forced: the owner's force and downgrade
+/// come from this Mac's menu or `scenic lead` alone. An ask to this Mac's agent (pipeline::control).
+async fn build_lead_h(State(s): State<S>, b: axum::body::Bytes) -> Response {
+    use pipeline::control::LeadAsk;
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap_or_default();
+    if v.get("force").is_some() || v.get("downgrade").is_some() {
+        return (StatusCode::FORBIDDEN, "forcing a takeover is for this Mac's menu or `scenic lead take` alone").into_response();
+    }
+    let ask = match (v.get("to").and_then(|t| t.as_str()), v.get("take").and_then(|t| t.as_bool())) {
+        (Some(to), None) if !to.is_empty() && to.len() <= 100 => LeadAsk::Give { to: to.to_string() },
+        (None, Some(true)) => LeadAsk::Take { force: false, downgrade: false },
+        _ => return (StatusCode::BAD_REQUEST, "{\"to\": <member>} or {\"take\": true}").into_response(),
+    };
+    let home = s.home.join("agent");
+    let by = format!("the map on {}", pipeline::agent::cond::host_name());
+    match tokio::task::spawn_blocking(move || pipeline::control::request_lead(&home, ask, &by)).await {
+        Ok(Ok(_)) => ([(header::CACHE_CONTROL, "no-store")], Json(serde_json::json!({ "ok": true }))).into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 async fn catalog_h(State(s): State<S>) -> Response {
     let s2 = s.clone();
     let agent = tokio::task::spawn_blocking(move || s2.agent_status()).await.unwrap_or(serde_json::Value::Null);
@@ -963,6 +992,28 @@ mod tests {
         assert!(check_root_mirror(true, true, Some(&d.join(".")), d).is_err(), "the same folder, written otherwise");
         assert!(check_root_mirror(true, true, Some(other.path()), d).is_ok());
         assert!(check_root_mirror(false, true, None, d).is_ok() && check_root_mirror(true, false, None, d).is_ok());
+    }
+
+    #[tokio::test]
+    async fn the_maps_lead_asks_reach_the_agent_never_forced() {
+        let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let s = test_state(home.path(), nas.path());
+        let ask = |v: serde_json::Value| {
+            let s = s.clone();
+            async move { build_lead_h(State(s), axum::body::Bytes::from(v.to_string())).await.status() }
+        };
+        let agent = home.path().join("agent");
+        assert_eq!(ask(serde_json::json!({ "to": "m-0123456789abcdef" })).await, StatusCode::OK);
+        assert_eq!(pipeline::control::take_lead(&agent).map(|r| r.ask), Some(pipeline::control::LeadAsk::Give { to: "m-0123456789abcdef".into() }));
+        assert_eq!(ask(serde_json::json!({ "take": true })).await, StatusCode::OK);
+        let r = pipeline::control::take_lead(&agent).unwrap();
+        assert!(r.ask == pipeline::control::LeadAsk::Take { force: false, downgrade: false } && r.by.starts_with("the map on"));
+        // Forced or downgraded: this Mac's menu or `scenic lead` alone.
+        assert_eq!(ask(serde_json::json!({ "take": true, "force": true })).await, StatusCode::FORBIDDEN);
+        assert_eq!(ask(serde_json::json!({ "take": true, "downgrade": true })).await, StatusCode::FORBIDDEN);
+        assert_eq!(ask(serde_json::json!({ "to": "" })).await, StatusCode::BAD_REQUEST);
+        assert_eq!(ask(serde_json::json!({ "take": false })).await, StatusCode::BAD_REQUEST);
+        assert!(pipeline::control::take_lead(&agent).is_none());
     }
 
     #[test]

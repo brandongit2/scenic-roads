@@ -2,7 +2,8 @@
 // data not mirrored on this Mac may be missing), the build Mac's state from its heartbeat ("Build
 // Mac · building …", "· paused: on battery", "· idle", "· last seen 3 h ago"), and new map data or
 // a new app that wants a reload. A click opens the details: the job and its log, what waits and
-// why, the last jobs to finish, the conditions.
+// why, the last jobs to finish, the conditions; and the pool (docs/pool.md §10, §11): who leads, each
+// Mac's state, "Make this Mac lead", and "Take over…" when the lead is out of touch.
 import type { Agent, CatalogWatch } from '../catalog';
 import { h } from './dom';
 
@@ -11,6 +12,20 @@ import { h } from './dom';
 const STALE_S = 360;
 
 const now = () => Date.now() / 1000;
+
+/** The pool as this Mac's agent shows it (`/api/build`'s `pool.lead`: crates/pipeline/src/agent/
+ * lead.rs View). */
+interface PoolView {
+  term: number;
+  lead?: { term: number; member: string; host: string; since: number; how: string };
+  leading: boolean;
+  members: { member: string; host: string; app: string; beat: number; me?: boolean; leads?: boolean; state: string; out_of_touch?: boolean; away?: boolean; can_lead: boolean; why_not?: string }[];
+  takeover?: { refused?: string; force?: string; downgrade?: string };
+  no_lead?: string;
+  handing?: { host: string; stage: string; since: number };
+  asked?: { by: string; at: number; state: string; said: string };
+  change?: { at: number; said: string };
+}
 
 /** A span of seconds: "40 s", "12 min", "3 h 5 min", "2 days". */
 function span(s: number): string {
@@ -73,6 +88,8 @@ export class BuildStatus {
   private reload = h('button', { class: 'bs-reload', type: 'button', onclick: () => location.reload() });
   private pop: HTMLDivElement | null = null;
   private off: (() => void)[] = [];
+  /** This Mac in the pool (its member, the view), as `/api/build` last said, while the details are open. */
+  private pool: { member: string; lead?: PoolView } | null = null;
 
   constructor(root: HTMLElement, private watch: CatalogWatch) {
     root.classList.add('build');
@@ -100,7 +117,69 @@ export class BuildStatus {
       const said = (j: { what: string; paused?: string | null }) => `${j.what}${j.paused ? ` (paused: ${j.paused})` : ''}`;
       this.agent.title = a.job || a.beside ? [a.job, a.beside].filter((j) => j).map((j) => said(j!)).join('\nBeside it: ') : 'The build Mac: what it does, what waits and why (click)';
     }
-    if (this.pop) this.fill(this.pop);
+    if (this.pop) {
+      this.fill(this.pop);
+      void this.poolPoll();
+    }
+  }
+
+  /** This Mac's own view of the pool (the map server's `/api/build`), for the details. */
+  private async poolPoll() {
+    try {
+      const r = await fetch('/api/build', { cache: 'no-store' });
+      const pool = r.ok ? ((await r.json()) as { pool?: { member: string; lead?: PoolView } | null }).pool ?? null : null;
+      if (JSON.stringify(pool) === JSON.stringify(this.pool)) return;
+      this.pool = pool;
+      if (this.pop) this.fill(this.pop);
+    } catch {
+      // (The server away: the status bar says so.)
+    }
+  }
+
+  /** An ask of the pool's lead from this Mac's map (`{to}`: hand it to a member; `{take: true}`:
+   * this Mac takes it over), through the map's server to this Mac's agent. Never forced: that's the
+   * menu bar's or `scenic lead take`'s. */
+  private async askLead(body: { to: string } | { take: true }) {
+    try {
+      const r = await fetch('/api/build/lead', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    } catch (e) {
+      alert(`Couldn't ask about the build's lead: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    setTimeout(() => void this.poolPoll(), 3000);
+  }
+
+  /** The pool's part of the details: who leads, each Mac, this Mac's controls. */
+  private poolPart(hd: (t: string, right?: Node | string) => HTMLElement): Node[] {
+    const v = this.pool?.lead;
+    if (!v) return [];
+    const out: Node[] = [hd('The pool', v.no_lead ? `term ${v.term} · no lead` : v.lead ? `term ${v.lead.term}` : '')];
+    if (v.no_lead) out.push(h('div', { class: 'bs-row warn' }, `No lead: ${v.no_lead}`));
+    else if (v.lead) out.push(h('div', { class: 'bs-row' }, `${v.lead.host}${v.leading ? ' (this Mac)' : ''} leads, since ${ago(v.lead.since)} · ${v.lead.how}`));
+    if (v.handing) out.push(h('div', { class: 'bs-row' }, `Handing over to ${v.handing.host}: ${v.handing.stage}, ${ago(v.handing.since)}`));
+    for (const m of v.members) {
+      const heard = m.out_of_touch && m.beat ? `, last heard ${ago(m.beat)}` : '';
+      out.push(h('div', { class: 'bs-item' },
+        h('div', {}, `${m.host}${m.me ? ' (this Mac)' : ''}${m.leads ? ' · leads' : ''}`),
+        h('div', { class: /out of touch|battery|away|too old|stood down/.test(m.state) ? 'warn' : 'faint' }, `${m.state}${heard}${!m.leads && !m.can_lead && m.why_not ? ` · can’t lead: ${m.why_not}` : ''}`)));
+    }
+    const me = v.members.find((m) => m.me);
+    if (!v.leading && !v.no_lead && me) {
+      out.push(h('div', { class: 'bs-row' }, h('button', {
+        class: 'bs-btn', type: 'button', disabled: !me.can_lead, title: me.can_lead ? `Asks ${v.lead?.host ?? 'the lead'} to hand the build to this Mac` : me.why_not ?? '',
+        onclick: () => { if (confirm('Make this Mac the build’s lead?\n\nThe lead hands over between saves: nothing running stops.')) void this.askLead({ to: this.pool!.member }); },
+      }, 'Make this Mac lead')));
+    }
+    if (v.no_lead && v.takeover) {
+      const t = v.takeover, can = !t.refused && !t.force && !t.downgrade;
+      out.push(h('div', { class: 'bs-row' }, h('button', {
+        class: 'bs-btn', type: 'button', disabled: !can, title: can ? 'This Mac makes the next term and leads from the records on the NAS' : t.refused ?? `needs the owner’s ${t.force ? 'force' : 'downgrade'} (the menu bar, or scenic lead take): ${t.force ?? t.downgrade}`,
+        onclick: () => { if (confirm(`Take the build over on this Mac?\n\nNo lead: ${v.no_lead}.\n\nNothing built is lost.`)) void this.askLead({ take: true }); },
+      }, 'Take over…')));
+    }
+    if (v.asked) out.push(h('div', { class: `bs-row ${['failed', 'refused'].includes(v.asked.state) ? 'warn' : 'faint'}` }, `The last ask (${v.asked.by}, ${ago(v.asked.at)}): ${v.asked.said}`));
+    if (v.change && now() - v.change.at < 86400) out.push(h('div', { class: 'bs-row faint' }, `${v.change.said} (${ago(v.change.at)})`));
+    return out;
   }
 
   private open() {
@@ -130,6 +209,7 @@ export class BuildStatus {
     ];
     // Fresh details.
     void this.watch.poll();
+    void this.poolPoll();
   }
 
   private close = () => {
@@ -231,6 +311,7 @@ export class BuildStatus {
         out.push(hd('Recipes that don’t parse'), ...a.bad_recipes.map(([f, e]) => h('div', { class: 'bs-item' }, h('div', {}, f), h('div', { class: 'warn' }, e))));
       }
     }
+    out.push(...this.poolPart(hd));
     if (c) {
       out.push(
         hd('Map data', `catalog ${c.n}`),
