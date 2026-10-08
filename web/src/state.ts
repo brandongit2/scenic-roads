@@ -508,7 +508,11 @@ export const defaults: AppState = {
     cutCover: 20, cutHeight: 5, maskCover: 20, maskHeight: 10, maskColour: '#03a300',
   },
   // (Opaque on a touch screen: one pass instead of two, docs/buildings3d.md §4.6.)
-  buildings: { on: true, flat: false, colour: 'plain', opacity: typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 1 : 0.85, scale: 1 },
+  // By height: auto-fit to the buildings in view, the low ones faded toward the plain colour.
+  buildings: {
+    on: true, flat: false, colour: 'plain', opacity: typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 1 : 0.85, scale: 1,
+    height: scaleOfLook({ ...freshLook([0, 100], 0.6), fit: [5, 99.5], lowSpan: 0.4, thrValue: 50 }), heritage: true,
+  },
   ferry: { on: true, groups: new Array(NFERRY).fill(true), colour: 'freq', metric: 'freq', looks: {},
     ...scaleOfLook({ ...freshLook(FERRY_METRICS[0].range, 0.45), fit: [0, 100], palette: 'oslo', lowSpan: 0.5 }),
     opacity: 0.9, dashed: true, single: '#8fc8ff',
@@ -738,8 +742,9 @@ export function toHash(s: AppState, buildings: boolean): string {
   if (fy(s.ferry) !== fy(defaults.ferry)) p.set('fy', fy(s.ferry));
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
   if (tc(s.trees) !== tc(defaults.trees)) p.set('tc', tc(s.trees));
-  const bd = (b: BuildingState) => [b.on ? 1 : 0, b.flat ? 1 : 0, b.colour, +b.opacity.toFixed(2), +b.scale.toFixed(2)].join(',');
+  const bd = (b: BuildingState) => [b.on ? 1 : 0, b.flat ? 1 : 0, b.colour, +b.opacity.toFixed(2), +b.scale.toFixed(2), b.heritage ? 1 : 0].join(',');
   if (buildings && bd(s.buildings) !== bd(defaults.buildings)) p.set('bd', bd(s.buildings));
+  if (buildings && scaleStr(s.buildings.height) !== scaleStr(defaults.buildings.height)) p.set('bh', scaleStr(s.buildings.height));
   if (!(s.surface.paved && s.surface.unpaved)) p.set('sf', `${s.surface.paved ? 'p' : ''}${s.surface.unpaved ? 'u' : ''}`);
   if (!(s.toll.free && s.toll.toll)) p.set('tl', `${s.toll.free ? 'f' : ''}${s.toll.toll ? 't' : ''}`);
   const lw = (l: LineWeights) => [l.global, ...LINE_KINDS.map(([k]) => l[k])].map((v) => +v.toFixed(2)).join(',');
@@ -921,13 +926,18 @@ export function fromHash(hash: string, buildings = true): AppState {
     // (The scale 0 means "× the terrain's exaggeration": a negative one is no scale, not that.)
     const scale = Number(bdv[4]);
     s.buildings = {
+      ...b,
       on: bdv[0] === '1',
       flat: bdv[1] === '1',
       colour: (['plain', 'height', 'source'] as BuildingColour[]).includes(bdv[2] as BuildingColour) ? (bdv[2] as BuildingColour) : b.colour,
       opacity: n(bdv[3], b.opacity, 0.1, 1),
       scale: bdv[4] !== '' && scale >= 0 ? n(bdv[4], b.scale, 0, 3) : b.scale,
+      // (Links from before the heritage tint have five fields: it on.)
+      heritage: bdv[5] !== '0',
     };
   }
+  const bhv = buildings ? p.get('bh')?.split(',') : undefined;
+  if (bhv) s.buildings = { ...s.buildings, height: parseScale(bhv, s.buildings.height) };
   const rw = p.get('rw')?.split(',').map(Number);
   // Links from before the service-frequency factor carry one weight fewer.
   if (rw && rw.length === RNCOMP - 1) rw.push(FREQ_WEIGHT_ADDED);
@@ -1137,6 +1147,12 @@ export function fromSaved(o: unknown): AppState {
   if (!['plain', 'height', 'source'].includes(s.buildings.colour)) s.buildings.colour = defaults.buildings.colour;
   s.buildings.opacity = Math.min(1, Math.max(0.1, s.buildings.opacity));
   s.buildings.scale = Math.min(3, Math.max(0, s.buildings.scale));
+  // (Saved by an app from before the height scale and the heritage tint.)
+  const bh = s.buildings.height as Partial<ScaleFields> | undefined;
+  if (!bh || typeof bh.palette !== 'string' || !pair(bh.range) || !pair(bh.fit) || typeof bh.auto !== 'boolean' || !num(bh.lowFade) || !num(bh.lowSpan) || typeof bh.threshold !== 'object') {
+    s.buildings.height = { ...defaults.buildings.height };
+  }
+  if (typeof s.buildings.heritage !== 'boolean') s.buildings.heritage = defaults.buildings.heritage;
   if (!FERRY_METRICS.some((m) => m.key === s.ferry.metric)) s.ferry.metric = defaults.ferry.metric;
   // Stops & sights filters (merge() only keeps keys the defaults have).
   const sfv = (rest.stopFilters ?? {}) as Record<string, Partial<StopFilter>>;

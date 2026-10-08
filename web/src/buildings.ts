@@ -13,10 +13,14 @@
 // colour (plain, by height, by where the height comes from), opacity, height scale.
 
 import type { ExpressionSpecification, FilterSpecification, GeoJSONSource, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
-import { paletteRgb } from './palettes';
+import { paletteFn } from './palettes';
 import { hostFor } from './hosts';
 import { ver } from './api';
 import type { FeatureSummary } from './overlays';
+import type { ScaleFields } from './state';
+import { Dist } from './roads/stats';
+import { fadeAlpha, scaleU } from './ui/scale';
+import { HERITAGE_GROUPS } from './basemap';
 
 export type BuildingColour = 'plain' | 'height' | 'source';
 
@@ -28,12 +32,26 @@ export interface BuildingState {
   opacity: number;
   /** Heights × this (1–3), or 0: × the terrain's exaggeration. */
   scale: number;
+  /** Colour by height: the shared colour scale (ui/scale.ts) over the buildings in view, metres. */
+  height: ScaleFields;
+  /** Buildings holding a heritage site's point tinted by its group (the heritage overlay's colours),
+   * while that overlay shows. */
+  heritage: boolean;
+}
+
+/** The height scale as the frame has it: its range (metres; auto-fit or the user's) and, when
+ * equalised, its lookup over the buildings in view (main.ts). */
+export interface HeightLook {
+  range: [number, number];
+  cdf: Uint8Array | null;
 }
 
 export const SOURCE = 'bld';
 export const LAYER = 'buildings';
 export const FLAT = 'buildings-flat';
 export const HOVER = 'buildings-hover';
+/** The buildings holding a heritage site's point, drawn again a little larger in its colour. */
+export const HERITAGE = 'buildings-heritage';
 /** The extruded buildings' footprints, transparent (a fill at opacity 0 isn't drawn): what the
  * hover finds candidates in (MapLibre's own query of extrusions ignores the terrain, and finds
  * nothing on the globe). */
@@ -55,34 +73,42 @@ export const SOURCES: [string, string, string][] = [
 export const KINDS = ['', 'residential', 'outbuilding', 'commercial', 'industrial', 'religious', 'civic', 'agricultural', 'transportation', 'other'];
 
 const PLAIN = '#566173';
-const HEIGHT_PALETTE = 'viridis';
-/** By height: the colour ramp's top (m). */
-export const HEIGHT_TOP_M = 150;
+const PLAIN_RGB = [0x56 / 255, 0x61 / 255, 0x73 / 255];
+/** By height: the scale's domain (m). */
+export const HEIGHT_DOMAIN: [number, number] = [0, 400];
 
 /** The tiles' URL (versioned: the catalog's `buildings.tiles`). */
 export const buildingTiles = (): string => `${hostFor('buildings')}/tiles/buildings/{z}/{x}/{y}${ver('buildings.tiles')}`;
 
-/** The colour expression of a mode. */
-function colourOf(mode: BuildingColour): ExpressionSpecification | string {
-  if (mode === 'source') return ['match', ['get', 's'], ...SOURCES.flatMap(([, c], i) => [i, c]), PLAIN] as unknown as ExpressionSpecification;
-  if (mode === 'height') {
-    const stops: (number | string)[] = [];
-    for (let i = 0; i <= 8; i++) {
-      const t = i / 8;
-      // (A square-root ramp: most buildings are low.)
-      stops.push(Math.round(HEIGHT_TOP_M * 10 * t * t), paletteRgb(HEIGHT_PALETTE, 0.08 + 0.92 * t));
-    }
-    return ['interpolate', ['linear'], ['get', 'h'], ...stops] as unknown as ExpressionSpecification;
-  }
-  return PLAIN;
+/** By height: the colour at height v (m) on the scale, faded toward the plain colour at its low
+ * end (the low-end fade: extrusions have no per-building opacity), as an rgb() string. */
+export function heightColour(v: number, sc: ScaleFields, look: HeightLook): string {
+  const u = scaleU(v, look.range, look.cdf);
+  const a = fadeAlpha(u, sc.lowFade, sc.lowSpan);
+  const c = paletteFn(sc.palette)(u);
+  return `rgb(${c.map((x, i) => Math.round(Math.max(0, Math.min(1, PLAIN_RGB[i] + (x - PLAIN_RGB[i]) * a)) * 255)).join(',')})`;
 }
 
-/** The height colouring's legend stops (m, colour). */
-export function heightLegend(): [number, string][] {
-  return Array.from({ length: 9 }, (_, i) => {
-    const t = i / 8;
-    return [HEIGHT_TOP_M * t * t, paletteRgb(HEIGHT_PALETTE, 0.08 + 0.92 * t)] as [number, string];
-  });
+/** The colour expression of a mode. By height: the scale's colours at 33 heights across its
+ * range (equalised or not), the highlight's misses plain. */
+function colourOf(b: BuildingState, look: HeightLook): ExpressionSpecification | string {
+  if (b.colour === 'source') return ['match', ['get', 's'], ...SOURCES.flatMap(([, c], i) => [i, c]), PLAIN] as unknown as ExpressionSpecification;
+  if (b.colour === 'height') {
+    const sc = b.height;
+    const [lo, hi] = look.range;
+    const stops: (number | string)[] = [];
+    for (let i = 0; i <= 32; i++) {
+      const v = lo + ((hi - lo) * i) / 32;
+      stops.push(v, heightColour(v, sc, look));
+    }
+    const m: ExpressionSpecification = ['/', ['coalesce', ['get', 'h'], 0], 10];
+    const ramp = ['interpolate', ['linear'], m, ...stops] as unknown as ExpressionSpecification;
+    const t = sc.threshold;
+    if (!t.on) return ramp;
+    const pass = t.dir === 'below' ? ['<=', m, t.value] : ['>=', m, t.dir === 'low' ? lo : t.value];
+    return ['case', pass, ramp, PLAIN] as unknown as ExpressionSpecification;
+  }
+  return PLAIN;
 }
 
 /** Heights × the scale (`s`: the state's, or the terrain's exaggeration). */
@@ -185,6 +211,11 @@ export function addBuildings(map: MLMap, before: string, flatBefore: string) {
     id: LAYER, type: 'fill-extrusion', source: SOURCE, 'source-layer': 'b', minzoom: 12, filter: extrudedFilter(),
     paint: { 'fill-extrusion-color': PLAIN, 'fill-extrusion-height': metres('h', 1), 'fill-extrusion-base': metres('m', 1), 'fill-extrusion-vertical-gradient': true },
   }, before);
+  map.addSource('bld-heritage', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+  map.addLayer({
+    id: HERITAGE, type: 'fill-extrusion', source: 'bld-heritage',
+    paint: { 'fill-extrusion-color': ['get', 'c'], 'fill-extrusion-height': ['get', 'top'], 'fill-extrusion-base': ['get', 'base'], 'fill-extrusion-vertical-gradient': true },
+  }, before);
   map.addSource('bld-hover', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
   map.addLayer({
     id: HOVER, type: 'fill-extrusion', source: 'bld-hover',
@@ -194,29 +225,60 @@ export function addBuildings(map: MLMap, before: string, flatBefore: string) {
 
 /** The settings applied: visibility, colour, opacity, scale, filters, light. `exaggeration`: the
  * terrain's (0: no 3D terrain, the footprints then drawn flat); `light`: the hill-shading's
- * azimuth (degrees). */
-export function applyBuildings(map: MLMap, b: BuildingState, exaggeration: number, light: number) {
+ * azimuth (degrees); `look`: the height scale's range now (main.ts). */
+export function applyBuildings(map: MLMap, b: BuildingState, exaggeration: number, light: number, look: HeightLook) {
   if (!map.getLayer(LAYER)) return;
   const flat = b.flat || exaggeration <= 0;
   const k = b.scale > 0 ? b.scale : Math.max(1, exaggeration);
-  map.setLayoutProperty(LAYER, 'visibility', b.on && !flat ? 'visible' : 'none');
-  map.setLayoutProperty(FLAT, 'visibility', b.on && flat ? 'visible' : 'none');
-  map.setLayoutProperty(HOVER, 'visibility', b.on && !flat ? 'visible' : 'none');
-  map.setLayoutProperty(PICK, 'visibility', b.on && !flat ? 'visible' : 'none');
-  const c = colourOf(b.colour);
+  const vis = (on: boolean) => (on ? 'visible' : 'none');
+  map.setLayoutProperty(LAYER, 'visibility', vis(b.on && !flat));
+  map.setLayoutProperty(FLAT, 'visibility', vis(b.on && flat));
+  map.setLayoutProperty(HOVER, 'visibility', vis(b.on && !flat));
+  map.setLayoutProperty(PICK, 'visibility', vis(b.on && !flat));
+  map.setLayoutProperty(HERITAGE, 'visibility', vis(b.on && !flat && b.heritage));
+  const c = colourOf(b, look);
   map.setPaintProperty(LAYER, 'fill-extrusion-color', c);
   map.setPaintProperty(FLAT, 'fill-color', c);
   map.setPaintProperty(LAYER, 'fill-extrusion-opacity', b.opacity);
+  map.setPaintProperty(HERITAGE, 'fill-extrusion-opacity', b.opacity);
   map.setPaintProperty(FLAT, 'fill-opacity', 0.65 * b.opacity);
   map.setPaintProperty(LAYER, 'fill-extrusion-height', metres('h', k));
   map.setPaintProperty(LAYER, 'fill-extrusion-base', metres('m', k));
-  map.setFilter(LAYER, extrudedFilter());
-  map.setFilter(PICK, extrudedFilter(true));
-  tallOf(map).dirty = true;
-  tallOf(map).k = b.on && !flat ? k : 0;
-  map.setFilter(FLAT, flatFilter());
+  // (What the idle reads depend on: read again only when they change, not for a colour.)
+  const t = tallOf(map);
+  const sig = `${b.on}|${flat}|${k}|${b.colour}|${b.heritage}`;
+  if (sig !== t.sig) {
+    t.sig = sig;
+    map.setFilter(LAYER, extrudedFilter());
+    map.setFilter(PICK, extrudedFilter(true));
+    map.setFilter(FLAT, flatFilter());
+    t.dirty = true;
+    t.k = b.on && !flat ? k : 0;
+    t.wantDist = b.on && b.colour === 'height';
+    t.heritage = b.on && !flat && b.heritage;
+    map.triggerRepaint();
+  }
   // Lit from the hill-shading's light, low, so the roofs are a little brighter than the walls.
   map.setLight({ anchor: 'map', position: [1.5, ((light % 360) + 360) % 360, 40], intensity: 0.35, color: '#ffffff' });
+}
+
+/** The buildings' heights in view changed (colour by height: main.ts fits the scale to them). */
+export function onHeights(map: MLMap, f: (d: Dist | null) => void) {
+  tallOf(map).onDist = f;
+}
+
+/** Where the heritage tint takes the sites' points from (the landmark dots: dots.ts points). */
+export function heritagePoints(map: MLMap, f: Talls['points']) {
+  tallOf(map).points = f;
+}
+
+/** The heritage sites shown changed (`shown`: their overlay on; their points or filters): the
+ * tint is read again. */
+export function heritageChanged(map: MLMap, shown: boolean) {
+  const t = tallOf(map);
+  t.sites = shown;
+  t.dirty = true;
+  map.triggerRepaint();
 }
 
 /** A new catalog's tiles. */
@@ -272,12 +334,30 @@ type Tall = { f: MapGeoJSONFeature; box: [number, number, number, number] };
 /** Per map: the loaded tiles' footprints of `TALL_DM` or more (the pick layer's), and the tallest
  * (dm; the pipeline's bound until measured): read when the map is idle after the buildings' tiles
  * or filter changed. */
-const talls = new WeakMap<MLMap, { dm: number; dirty: boolean; tall: Tall[]; roofs: Tall[]; k: number }>();
+type Talls = {
+  dm: number;
+  dirty: boolean;
+  tall: Tall[];
+  roofs: Tall[];
+  k: number;
+  /** What applyBuildings last set that the reads depend on. */
+  sig: string;
+  /** Colour by height: the heights in view wanted, and who's told. */
+  wantDist: boolean;
+  onDist: ((d: Dist | null) => void) | null;
+  /** The heritage tint on, and the heritage overlay shown (its dots: dots.ts). */
+  heritage: boolean;
+  sites: boolean;
+  /** The heritage sites' points shown within a box (w, s, e, n): lng, lat and their dots' class
+   * (size + 3 × group: dotlayout.ts). */
+  points: ((box: [number, number, number, number]) => { lng: number; lat: number; cls: number }[]) | null;
+};
+const talls = new WeakMap<MLMap, Talls>();
 
 function tallOf(map: MLMap) {
   let t = talls.get(map);
   if (!t) {
-    t = { dm: TALLEST_DM, dirty: true, tall: [], roofs: [], k: 1 };
+    t = { dm: TALLEST_DM, dirty: true, tall: [], roofs: [], k: 1, sig: '', wantDist: false, onDist: null, heritage: false, sites: false, points: null };
     talls.set(map, t);
   }
   return t;
@@ -323,6 +403,8 @@ function watchTall(map: MLMap) {
       t.tall.push(x);
       t.dm = Math.max(t.dm, h);
     }
+    if (t.wantDist) t.onDist?.(heightsInView(map));
+    setHeritage(map, t);
   });
 }
 
@@ -359,6 +441,100 @@ export function roofAt(map: MLMap, ll: { lng: number; lat: number }): number {
     }
   }
   return best;
+}
+
+/** The heights (m) of the buildings in the tiles in view, one count each (parts and buildings
+ * without parts: what the extrusions draw), for colour by height's scale. */
+function heightsInView(map: MLMap): Dist | null {
+  const [lo, hi] = HEIGHT_DOMAIN;
+  const n = 800;
+  const bins = new Float64Array(n);
+  let total = 0;
+  const seen = new Set<string>();
+  for (const f of map.querySourceFeatures(SOURCE, { sourceLayer: 'b', filter: extrudedFilter() })) {
+    const p = f.properties as { h?: number };
+    const v = (p.h ?? 0) / 10;
+    // (Each once: the same building in tiles of two zooms.)
+    const g = f.geometry as { coordinates?: unknown };
+    const key = `${p.h}/${JSON.stringify(g.coordinates).slice(0, 48)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    bins[Math.max(0, Math.min(n - 1, Math.floor(((v - lo) / (hi - lo)) * n)))] += 1;
+    total += 1;
+  }
+  return total > 0 ? new Dist(lo, hi, bins, total) : null;
+}
+
+/** How much larger and taller a heritage building is drawn again than itself (m): enough to show
+ * over it, as the hover's. */
+const HERITAGE_GROW_M = 0.4;
+/** How far a heritage building's colour goes from the plain one toward its group's. */
+const HERITAGE_TINT = 0.6;
+
+/** A group's colour (#rrggbb) as a heritage building's tint: part way from the plain colour. */
+function tint(hex: string): string {
+  const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  return `rgb(${c.map((x, i) => Math.round((PLAIN_RGB[i] + (x - PLAIN_RGB[i]) * HERITAGE_TINT) * 255)).join(',')})`;
+}
+
+/** The heritage tint: the loaded buildings (extruded) holding a heritage site's point as the
+ * heritage overlay shows it (its dots, filtered), each drawn again in its site's group colour (World
+ * Heritage, national, provincial, municipal), a little larger. The highest group wins where sites
+ * share a building. */
+function setHeritage(map: MLMap, t: Talls) {
+  const src = map.getSource<GeoJSONSource>('bld-heritage');
+  if (!src) return;
+  const shown = t.heritage && t.sites && !!t.points;
+  const features: GeoJSON.Feature[] = [];
+  if (shown && t.points) {
+    // The points around the view, in a grid of ~100 m cells.
+    const cell = 0.001;
+    const grid = new Map<string, { x: number; y: number; g: number }[]>();
+    const b = map.getBounds();
+    for (const p of t.points([b.getWest(), b.getSouth(), b.getEast(), b.getNorth()])) {
+      const key = `${Math.floor(p.lng / cell)}/${Math.floor(p.lat / cell)}`;
+      let l = grid.get(key);
+      if (!l) grid.set(key, (l = []));
+      l.push({ x: p.lng, y: p.lat, g: Math.min(3, Math.floor(p.cls / 3)) });
+    }
+    if (grid.size) {
+      const seen = new Set<string>();
+      for (const f of map.querySourceFeatures(SOURCE, { sourceLayer: 'b', filter: extrudedFilter() })) {
+        if (f.geometry.type !== 'Polygon' && f.geometry.type !== 'MultiPolygon') continue;
+        const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
+        let best = -1;
+        for (const poly of polys) {
+          const ring = poly[0] ?? [];
+          let w = Infinity, so = Infinity, e = -Infinity, n = -Infinity;
+          for (const [x, y] of ring) {
+            w = Math.min(w, x);
+            so = Math.min(so, y);
+            e = Math.max(e, x);
+            n = Math.max(n, y);
+          }
+          for (let cx = Math.floor(w / cell); cx <= Math.floor(e / cell); cx++) {
+            for (let cy = Math.floor(so / cell); cy <= Math.floor(n / cell); cy++) {
+              for (const pt of grid.get(`${cx}/${cy}`) ?? []) {
+                if ((best < 0 || pt.g < best) && pt.x >= w && pt.x <= e && pt.y >= so && pt.y <= n && inside(poly as Ring[], [pt.x, pt.y])) best = pt.g;
+              }
+            }
+          }
+        }
+        if (best < 0) continue;
+        const p = f.properties as Record<string, number>;
+        const key = `${p.h}/${p.m ?? 0}/${JSON.stringify(polys[0]?.[0]?.[0])}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const grown = polys.map((poly) => poly.map((ring, i) => offsetRing(ring, HERITAGE_GROW_M, i === 0)));
+        features.push({
+          type: 'Feature',
+          properties: { c: tint(HERITAGE_GROUPS[best].colour), top: ((p.h ?? 0) / 10) * t.k + HERITAGE_GROW_M, base: ((p.m ?? 0) / 10) * t.k },
+          geometry: { type: 'MultiPolygon', coordinates: grown },
+        });
+      }
+    }
+  }
+  src.setData({ type: 'FeatureCollection', features });
 }
 
 /** A query box on the screen, the least height (dm) a footprint in it needs to reach the ray, and

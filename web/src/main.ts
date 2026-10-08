@@ -29,7 +29,7 @@ import { initHosts } from './hosts';
 import { ferryMetricDef } from './ferry';
 import { cdfOf, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
-import { addBuildings, applyBuildings, buildingAt, hiddenByBuilding, roofAt, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type Ray } from './buildings';
+import { addBuildings, applyBuildings, buildingAt, heritageChanged, heritagePoints, hiddenByBuilding, onHeights, roofAt, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type HeightLook, type Ray } from './buildings';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
@@ -638,6 +638,11 @@ async function main() {
   layers.addSection('regions', 'Regions', regions.nodes, (open) => regions.setOpen(open));
   // The landmark dots, drawn on the GPU (dots.ts); the overlays feed them.
   const dots = new LandmarkDots();
+  // The 3D buildings' heritage tint takes the heritage sites' points from the dots, as shown.
+  heritagePoints(map, (box) => dots.points('heritage', box));
+  dots.onChange = (id) => {
+    if (id === 'heritage') heritageChanged(map, store.s.overlays.heritage);
+  };
   dots.setTerrain({ on: store.s.terrain.on, exaggeration: store.s.terrain.exaggeration, occlude: store.s.occlude });
   // Contour lines (contours.ts), from the terrain settings and the global line weight.
   const contours = new ContourLayer();
@@ -1845,8 +1850,31 @@ async function main() {
   };
   let styleReady = false;
   let lastExaggeration = store.s.terrain.on ? store.s.terrain.exaggeration : 0;
+  // Colour by height: the shared colour scale over the buildings in view (their tiles' heights,
+  // read when the map is idle: buildings.onHeights), auto-fit to its percentiles as the roads'.
+  let bldDist: Dist | null = null;
+  let bldLook: HeightLook = { range: [...store.s.buildings.height.range], cdf: null };
+  let bldPreview: string | null = null;
+  const bldLookNow = (): HeightLook => {
+    const sc = store.s.buildings.height;
+    const range: [number, number] = !sc.auto ? [...sc.range] : bldDist && bldDist.total > 0 ? spread(bldDist.quantile(sc.fit[0] / 100), bldDist.quantile(sc.fit[1] / 100), 4) : bldLook.range;
+    return { range, cdf: sc.equalize ? cdfOf(bldDist, range) : null };
+  };
   /** The buildings' settings applied (the terrain's exaggeration and light are theirs too). */
-  const applyBuildingsNow = (s: AppState) => applyBuildings(map, s.buildings, s.terrain.on ? s.terrain.exaggeration : 0, s.terrain.light);
+  const applyBuildingsNow = (s: AppState) => {
+    bldLook = bldLookNow();
+    const b = bldPreview ? { ...s.buildings, height: { ...s.buildings.height, palette: bldPreview } } : s.buildings;
+    applyBuildings(map, b, s.terrain.on ? s.terrain.exaggeration : 0, s.terrain.light, bldLook);
+    layers.buildings.updateHeights(bldDist, bldLook);
+  };
+  onHeights(map, (d) => {
+    bldDist = d;
+    if (styleReady && store.s.buildings.colour === 'height') applyBuildingsNow(store.s);
+  });
+  layers.buildings.onPalettePreview = (k) => {
+    bldPreview = k;
+    if (styleReady) applyBuildingsNow(store.s);
+  };
   store.on((s, ch) => {
     const st = roads.style;
     st.mode = s.mode;
@@ -1931,6 +1959,8 @@ async function main() {
       if (ch.has('poiOpacity') || ch.has('poiEmphasis') || ch.has('landmarks') || ch.has('labelOpacity')) overlays.prominence(s);
       if (ch.has('globe')) applyProjection();
       if (ch.has('overlays') || ch.has('heritageOff') || ch.has('stopFilters') || ch.has('stopUnknown')) overlays.apply(s);
+      // (The buildings' heritage tint follows the sites shown.)
+      if (ch.has('overlays') || ch.has('heritageOff') || ch.has('stopFilters') || ch.has('stopUnknown')) heritageChanged(map, s.overlays.heritage);
     }
     if (ch.has('groups') || ch.has('unnamed') || ch.has('roadLen') || ch.has('roadLenOn') || ch.has('surface') || ch.has('toll')) drives.refresh();
     if (ch.has('weights')) drives.refresh();
@@ -2029,6 +2059,7 @@ async function main() {
     if (m.layers?.buildings && styleReady && !map.getSource('bld')) {
       addBuildings(map, 'water-name-line', 'boundary-county');
       applyBuildingsNow(store.s);
+      heritageChanged(map, store.s.overlays.heritage);
     }
     if (!!m.labelTiles !== labelTilesOn() || !!m.ovTiles !== ovTilesOn() || !!m.stationTiles !== stationTilesOn() || !!m.water !== waterTilesOn() || !!m.ferryBlocks !== ferries.byBlocks) watch?.wantReload('New map data');
     markDirty();
@@ -2064,7 +2095,10 @@ async function main() {
     // The 3D buildings after the road and rail layers (a road in front stays in front: it lies on
     // the terrain, whose depth they're tested against), their footprints among the draped layers
     // before the boundaries (docs/buildings3d.md §4.2).
-    if (meta.layers?.buildings) addBuildings(map, 'water-name-line', 'boundary-county');
+    if (meta.layers?.buildings) {
+      addBuildings(map, 'water-name-line', 'boundary-county');
+      heritageChanged(map, store.s.overlays.heritage);
+    }
     // Under the roads, above every layer draped on the terrain (one between them would split the
     // draping in two: the terrain drawn twice).
     map.addLayer(contours, 'roads');

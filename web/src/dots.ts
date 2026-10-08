@@ -348,6 +348,11 @@ export class LandmarkDots implements CustomLayerInterface {
   private inViewFrom3D = false;
   /** Sources whose overlay is on. */
   private shown = new Set<string>();
+  /** Each source's points as last laid out, and their filter flags: `points` reads them (the 3D
+   * buildings' heritage tint). */
+  private data = new Map<string, { d: DotData; vis: Uint32Array | null }>();
+  /** A source's points or flags changed (its id). */
+  onChange: (id: string) => void = () => {};
 
   onAdd(map: MLMap, gl: WebGL2RenderingContext) {
     this.map = map;
@@ -364,6 +369,8 @@ export class LandmarkDots implements CustomLayerInterface {
 
   /** A source's points, laid out by the landmarks worker (dotlayout.ts). */
   setSource(id: string, d: DotData) {
+    this.data.set(id, { d, vis: null });
+    this.onChange(id);
     const old = this.srcs.get(id);
     if (old) this.free(old);
     const s: Src = {
@@ -378,6 +385,11 @@ export class LandmarkDots implements CustomLayerInterface {
 
   /** A source's filter flags (dotlayout.ts visWords). */
   setMask(id: string, mask: Uint32Array) {
+    const kept = this.data.get(id);
+    if (kept && mask.length === kept.d.n * VIS_WORDS) {
+      kept.vis = mask.slice();
+      this.onChange(id);
+    }
     const s = this.srcs.get(id);
     if (!s || mask.length !== s.n * VIS_WORDS) return;
     s.vis = mask;
@@ -392,8 +404,30 @@ export class LandmarkDots implements CustomLayerInterface {
     this.map?.triggerRepaint();
   }
 
+  /** A shown source's points that pass its filters (all of them before its flags come), in
+   * lng, lat and class (dotlayout.ts), within a box (w, s, e, n). */
+  points(id: string, box: [number, number, number, number]): { lng: number; lat: number; cls: number }[] {
+    const kept = this.data.get(id);
+    if (!kept || !this.shown.has(id)) return [];
+    const { d, vis } = kept;
+    const f32 = new Float32Array(d.draw), u8 = new Uint8Array(d.draw);
+    const W = DRAW_STRIDE / 4, K = 1 << CHUNK_Z;
+    const out: { lng: number; lat: number; cls: number }[] = [];
+    for (let j = 0; j < d.n; j++) {
+      if (vis && !(vis[j * VIS_WORDS] & 1)) continue;
+      const mx = (u8[j * DRAW_STRIDE + 20] + f32[j * W] / 8192) / K, my = (u8[j * DRAW_STRIDE + 21] + f32[j * W + 1] / 8192) / K;
+      const lng = mx * 360 - 180;
+      if (lng < box[0] || lng > box[2]) continue;
+      const lat = (Math.atan(Math.sinh(Math.PI * (1 - 2 * my))) * 180) / Math.PI;
+      if (lat < box[1] || lat > box[3]) continue;
+      out.push({ lng, lat, cls: u8[j * DRAW_STRIDE + 22] });
+    }
+    return out;
+  }
+
   setShown(id: string, on: boolean) {
     if (this.shown.has(id) === on) return;
+    this.onChange(id);
     if (on) this.shown.add(id);
     else this.shown.delete(id);
     this.map?.triggerRepaint();

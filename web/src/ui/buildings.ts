@@ -1,10 +1,12 @@
 // The settings panel's Buildings section (ui/layers.ts): the 3D buildings and how they're drawn
-// (buildings.ts): 3D or flat, colour (plain, by height, by where the height comes from), opacity,
-// height scale.
-import { SOURCES, heightLegend, type BuildingColour, type BuildingState } from '../buildings';
-import type { Store } from '../state';
+// (buildings.ts): 3D or flat, colour (plain, by height on the shared colour scale, by where the
+// height comes from), the heritage tint, opacity, height scale.
+import { HEIGHT_DOMAIN, SOURCES, heightColour, type BuildingColour, type BuildingState, type HeightLook } from '../buildings';
+import type { Dist } from '../roads/stats';
+import type { ScaleFields, Store } from '../state';
 import { Slider, pct } from './controls';
 import { h } from './dom';
+import { ScaleControls } from './scale';
 
 export class BuildingSection {
   readonly nodes: HTMLElement[];
@@ -18,6 +20,13 @@ export class BuildingSection {
   private legend: HTMLDivElement;
   private ticks: HTMLDivElement;
   private body: HTMLDivElement;
+  private heritage: HTMLInputElement;
+  /** Colour by height: the shared colour scale over the buildings in view. */
+  private scaleCtl: ScaleControls;
+  private scaleBox: HTMLDivElement;
+  private look: HeightLook = { range: [0, 100], cdf: null };
+  /** Live preview of a colour map while hovering the list (null: back to the chosen one). */
+  onPalettePreview: (palette: string | null) => void = () => {};
 
   constructor(private store: Store) {
     const B = (patch: Partial<BuildingState>) => store.set({ buildings: { ...store.s.buildings, ...patch } });
@@ -47,11 +56,28 @@ export class BuildingSection {
     this.withTerrain.addEventListener('change', () => B({ scale: this.withTerrain.checked ? 0 : 1 }));
     this.legend = h('div', { class: 'tint-bar' });
     this.ticks = h('div', { class: 'tint-ticks' });
+    this.heritage = h('input', { type: 'checkbox' });
+    this.heritage.addEventListener('change', () => B({ heritage: this.heritage.checked }));
+    const H = () => store.s.buildings.height;
+    this.scaleCtl = new ScaleControls({
+      get: H,
+      set: (patch: Partial<ScaleFields>) => B({ height: { ...H(), ...patch } }),
+      metric: () => ({ domain: HEIGHT_DOMAIN, step: 1, fmt: (v: number) => `${Math.round(v)} m`, hiPlus: true }),
+      noun: 'buildings',
+      measure: 'buildings',
+      fadeDefault: 0.6,
+      spanDefault: 0.4,
+      colourAt: (v) => [heightColour(v, H(), this.look), 1],
+      onPreview: (k) => this.onPalettePreview(k),
+    });
+    this.scaleBox = h('div', { class: 'tint-scale' }, this.scaleCtl.legend, this.scaleCtl.palRow, this.scaleCtl.fadeRow, this.scaleCtl.thrRow);
     const row = (label: string, input: HTMLElement) => h('div', { class: 'row' }, h('span', { class: 'muted' }, label), input, h('span'));
     this.body = h('div', { class: 'tree-body' },
       row('Show', show),
       row('Colour', colour),
       h('div', { class: 'tint-legend' }, this.legend, this.ticks),
+      this.scaleBox,
+      h('label', { class: 'tog sub', title: 'Buildings holding a heritage site drawn in its colour (World Heritage, national, provincial, municipal) while Heritage sites show' }, this.heritage, h('span', {}, 'Heritage sites in their colour')),
       this.op.el,
       this.scale.el,
       h('label', { class: 'tog sub', title: 'Heights × the terrain’s exaggeration, so buildings keep their proportion to the hills' }, this.withTerrain, h('span', {}, 'With the terrain’s exaggeration')),
@@ -70,21 +96,22 @@ export class BuildingSection {
     this.op.sync();
     this.scale.sync();
     this.withTerrain.checked = b.scale === 0;
+    this.heritage.checked = b.heritage;
     const legendBox = this.legend.parentElement as HTMLElement | null;
-    if (legendBox) legendBox.hidden = b.colour === 'plain';
+    if (legendBox) legendBox.hidden = b.colour !== 'source';
+    this.scaleBox.hidden = b.colour !== 'height';
     if (b.colour === 'source') {
       this.legend.className = 'tree-chips bld-chips';
       this.legend.style.background = 'none';
       this.legend.replaceChildren(...SOURCES.map(([label, c, help], i) => h('span', { class: 'lg', title: help }, h('i', { style: `background:${c}` }), ['measured', 'floors', 'Microsoft', 'neighbours', 'GHSL', 'size'][i] ?? label)));
       this.ticks.replaceChildren();
-    } else if (b.colour === 'height') {
-      const stops = heightLegend();
-      const top = stops[stops.length - 1][0];
-      this.legend.className = 'tint-bar';
-      this.legend.replaceChildren();
-      // (The ramp is by the square root of the height: the bar is even in that.)
-      this.legend.style.background = `linear-gradient(90deg, ${stops.map(([m, c]) => `${c} ${Math.sqrt(m / top) * 100}%`).join(', ')})`;
-      this.ticks.replaceChildren(h('span', {}, '0 m'), h('span', {}, `${top}+ m`));
     }
+    this.scaleCtl.sync();
+  }
+
+  /** Colour by height: the buildings' heights in view, the scale's range now and its lookup. */
+  updateHeights(dist: Dist | null, look: HeightLook) {
+    this.look = look;
+    this.scaleCtl.update(dist, look.range, look.cdf);
   }
 }
