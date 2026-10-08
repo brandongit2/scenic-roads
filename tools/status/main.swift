@@ -955,8 +955,11 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
             var req = URLRequest(url: u)
             req.timeoutInterval = 2.5
             req.cachePolicy = .reloadIgnoringLocalCacheData
-            URLSession.shared.dataTask(with: req) { _, resp, _ in
-                if (resp as? HTTPURLResponse)?.statusCode == 200 {
+            URLSession.shared.dataTask(with: req) { _, resp, err in
+                let code = (resp as? HTTPURLResponse)?.statusCode
+                // (Each address tried, and why one didn't do: the log says why a panel stayed empty.)
+                NSLog("scenic-status: build page %@: %@", u.absoluteString, code.map { "HTTP \($0)" } ?? err.map { "\($0.localizedDescription)" } ?? "no answer")
+                if code == 200 {
                     DispatchQueue.main.async { if n == self.opening && self.popover.isShown { self.showPage(self.pages[i]) } }
                 } else {
                     attempt(i + 1)
@@ -1092,12 +1095,15 @@ final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelega
     /// The page's own addresses stay in it; any other (the map, another site) opens in the browser.
     func webView(_ w: WKWebView, decidePolicyFor a: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let u = a.request.url, let base = loaded else { return decisionHandler(.allow) }
-        let inPage = u.scheme == base.scheme && u.host == base.host && u.port == base.port && u.path.hasPrefix("/work")
+        // (Host names compared without case: WebKit gives them in lowercase, the addresses we load
+        // keep the Mac's own spelling, "Brandons-MacBook-Pro.local".)
+        let inPage = u.scheme == base.scheme && u.host?.lowercased() == base.host?.lowercased() && u.port == base.port && u.path.hasPrefix("/work")
         if inPage || ["about", "blob", "data"].contains(u.scheme ?? "") {
             decisionHandler(.allow)
             return
         }
         decisionHandler(.cancel)
+        NSLog("scenic-status: %@ isn't the build page's (%@): in the browser", u.absoluteString, base.absoluteString)
         if a.targetFrame?.isMainFrame ?? true { NSWorkspace.shared.open(u) }
     }
 

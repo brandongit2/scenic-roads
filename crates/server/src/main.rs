@@ -215,9 +215,15 @@ impl AppState {
         #[derive(serde::Deserialize)]
         struct Urls {
             urls: Vec<String>,
+            #[serde(default)]
+            page: Option<String>,
         }
         let v = match (self.data.nas_root(), self.data.pool()) {
-            (Some(root), Some(pool)) if pool.is_online() => pool.read_all(&pipeline::coord::contact_path(&root)).ok().and_then(|b| serde_json::from_slice::<Urls>(&b).ok()).map(|u| u.urls).unwrap_or_default(),
+            (Some(root), Some(pool)) if pool.is_online() => pool.read_all(&pipeline::coord::contact_path(&root)).ok().and_then(|b| serde_json::from_slice::<Urls>(&b).ok())
+                // (The HTTPS page first, as its address alone: the menu bar's web view loads no
+                // plain HTTP to a tailnet address.)
+                .map(|u| u.page.as_deref().and_then(|p| p.strip_suffix("work/")).map(str::to_string).into_iter().chain(u.urls).collect())
+                .unwrap_or_default(),
             _ => Vec::new(),
         };
         *cur = Some((std::time::Instant::now(), v.clone()));
@@ -1087,6 +1093,12 @@ mod tests {
         std::fs::remove_file(pipeline::coord::contact_path(nas.path())).unwrap();
         std::fs::remove_file(home.path().join("agent/status.json")).unwrap();
         assert_eq!(test_state(home.path(), nas.path()).build_status()["pages"], serde_json::json!([]));
+        // The page over HTTPS (`tailscale serve`): first, then the addresses.
+        let contact = serde_json::json!({ "urls": ["http://100.70.85.80:8090"], "token": key, "page": "https://lead.tail0.ts.net/work/" });
+        std::fs::write(pipeline::coord::contact_path(nas.path()), contact.to_string()).unwrap();
+        let body = test_state(home.path(), nas.path()).build_status();
+        assert_eq!(body["pages"], serde_json::json!(["https://lead.tail0.ts.net/work/", "http://100.70.85.80:8090/work/"]));
+        assert!(!body.to_string().contains(key));
     }
 
     #[test]

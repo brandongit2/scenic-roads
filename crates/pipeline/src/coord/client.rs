@@ -55,7 +55,7 @@ impl Client {
 
     /// A coordinator at fixed addresses.
     pub fn at(urls: Vec<String>, token: String, worker: &str) -> Client {
-        Client { root: None, contact: Mutex::new(Contact { urls, token }), worker: worker.to_string() }
+        Client { root: None, contact: Mutex::new(Contact { urls, token, page: None }), worker: worker.to_string() }
     }
 
     pub fn urls(&self) -> Vec<String> {

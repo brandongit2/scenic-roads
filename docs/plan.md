@@ -2154,8 +2154,10 @@ mid-job. Nothing depends on it being available at a given time.
   Caches, after a confirmation, and Disk Room: the disk's free space and the room target, set
   from a few presets or Off (Room on the disk, above).
   - **Its panel:** a click on the icon opens the build page in a popover, the lead's: `/api/build`'s
-    `pages`, the lead's own coordinator first on the lead, then the lead's addresses from its
-    contact on the NAS (their URLs alone, never its key), the first that answers. Loaded with
+    `pages`, the lead's own coordinator first on the lead, then from its contact on the NAS (their
+    URLs alone, never its key) the page over HTTPS when `tailscale serve` proxies it, then the
+    lead's addresses, the first that answers. (The web view's App Transport Security loads no plain
+    HTTP to a tailnet address, only the LAN's `.local`; host names are compared without case.) Loaded with
     `?view` in a web view that keeps nothing, so it only watches, never helps (docs/workers.md §7);
     made as the popover opens and dropped as it closes. As tall as the page, within the screen;
     light or dark with the system; links out of the page open in the browser. While the page can't

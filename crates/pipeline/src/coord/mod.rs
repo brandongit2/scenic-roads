@@ -64,6 +64,10 @@ pub struct Contact {
     /// Its addresses, in the order to try.
     pub urls: Vec<String>,
     pub token: String,
+    /// The build page's address over HTTPS when `tailscale serve` proxies the coordinator (a Mac's
+    /// menu bar opens it: its web view loads no plain HTTP but the LAN's). None otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
 }
 
 pub fn contact_path(root: &Path) -> PathBuf {
@@ -527,7 +531,7 @@ impl Coordinator {
         let job_token = http::random()?;
         let root = Arc::new(Mutex::new(None));
         let urls = http::serve(port, http::Ctx { shared: shared.clone(), token: token.clone(), job_token: job_token.clone(), journal: dir.join("journal"), wasm, root: root.clone(), remote: Default::default() })?;
-        let c = Coordinator { shared, contact: Contact { urls, token }, job_token, port, me: me.to_string(), root };
+        let c = Coordinator { shared, contact: Contact { urls, token, page: None }, job_token, port, me: me.to_string(), root };
         c.write_page();
         Ok(c)
     }
@@ -562,9 +566,15 @@ impl Coordinator {
     pub fn publish(&self, root: &Path) -> Result<()> {
         #[cfg(not(target_os = "wasi"))]
         self.write_page();
+        // (With the page's HTTPS address as it is now: `tailscale serve` may come or go.)
+        let mut contact = self.contact.clone();
+        #[cfg(not(target_os = "wasi"))]
+        {
+            contact.page = http::served_https(self.port).map(|b| format!("{b}work/"));
+        }
         let there = std::fs::read(contact_path(root)).ok().and_then(|b| serde_json::from_slice::<Contact>(&b).ok());
-        if there.as_ref() != Some(&self.contact) {
-            crate::whole::write(&contact_path(root), &serde_json::to_vec_pretty(&self.contact)?)?;
+        if there.as_ref() != Some(&contact) {
+            crate::whole::write(&contact_path(root), &serde_json::to_vec_pretty(&contact)?)?;
         }
         Ok(())
     }

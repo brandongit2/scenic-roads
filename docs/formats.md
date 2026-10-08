@@ -712,7 +712,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   basis: [[[x, y], hash16 of the z11 tile's terrain and land cover], …]}).
 - **Two Macs and other workers** (`docs/workers.md`):
   - `state/coordinator.json`: how to reach the build Mac's coordinator, `{urls: [Tailscale's, then
-    the LAN name's, "http://…:8090"], token}`; there while its agent runs.
+    the LAN name's, "http://…:8090"], token, page}`; there while its agent runs. `page`, when
+    `tailscale serve` proxies the coordinator: the build page over HTTPS (`https://<its tailnet
+    name>/work/`), which the menu bar's web view can load (it loads no plain HTTP but the LAN's).
   - On the build Mac, in the agent's folder, `coord/`: `workers-token` (the build's own key, 32 hex
     digits, mode 600: the Macs' agents use it; `token`, the one pages carried long ago, and
     `devices.json`, the devices pages once had to be accepted as, are removed as the agent starts),
