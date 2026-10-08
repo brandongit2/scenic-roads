@@ -192,9 +192,18 @@ pub const SPIKE_MAX: u32 = 16;
 /// 81° cone, 1,204 m tall), and stays. A pit down to sea level in raised ground needs no such
 /// margin: it's AWS's filler where its source had none.
 pub const ROUGH: f64 = 20.0;
-/// The same for a spike (BlobKind::Spike), small and walled: 10, against the plane through the
-/// ground around it (a spike on a smooth slope is on flat ground).
+/// The same for a spike (BlobKind::Spike), small: 10.
 pub const ROUGH_SPIKE: f64 = 10.0;
+/// How steep a spike must be over its width (its height as the map shows it over its inradius)
+/// when it stands alone, walled on flat ground but beside nothing taken: 2 (63°). AWS draws
+/// buttes, plugs and islets less steep at the scale of its pixels (in the coverage: Monument
+/// Valley's and Lake Powell's buttes at z11, 1.6 to 2; Beacon Rock, 2.2 its upper part, as a
+/// spike only on the plane through the Columbia's gorge; islets off Japan and Hong Kong, 1.1 to 1.4).
+pub const ALONE: f64 = 2.0;
+/// How steep a spike must be over its width to stand on flat ground on a smooth slope (out of the
+/// plane through the ground around it, ROUGH_SPIKE times that ground's spread about the plane): 4
+/// (76°), a needle (Ogasawara's of 290 m on a slope at z12: 5.6).
+pub const NEEDLE: f64 = 4.0;
 /// How many times steeper than terrain can be (`steepest`) a blob that stands more than BLOB_RISE
 /// out is broken whatever the ground around it: no summit AWS draws comes near (the sharpest in
 /// the coverage, a 3,534 m peak of the St. Elias, is 3.1 times; of OSM's summits with a height
@@ -232,10 +241,11 @@ pub enum BlobKind {
     /// Steeper over its footprint than terrain can be, and towering over the ground around it.
     Broken,
     /// A small blob, not cut by the tile's edge, steeper than 45° over its width (its inradius)
-    /// and two of: walled so on a quarter of its edge at least, on flat ground (or a smooth slope),
-    /// beside a blob taken, a void or a pit of a ringing under the sea: a spike over water or
-    /// lowland, or a lobe of an artifact's ringing (a resampling's overshoot beside an edge of
-    /// AWS's source, a tower beside a pit).
+    /// and two of: walled so on a quarter of its edge at least, on flat ground, beside a blob
+    /// taken, a void or a pit of a ringing under the sea; beside nothing, steeper than 63° (ALONE),
+    /// as buttes, plugs and islets aren't. A spike over water or lowland, a needle (NEEDLE) on a
+    /// smooth slope, or a lobe of an artifact's ringing (a resampling's overshoot beside an edge
+    /// of AWS's source, a tower beside a pit); or a pit down to sea level in raised ground.
     Spike,
     /// Broken, but under the sea: the map shows sea level there either way.
     Unseen,
@@ -275,11 +285,12 @@ pub struct Blob {
 ///   it does most, the flanks of a smooth bump with it) and towers over the ground around it
 ///   (ROUGH: a summit AWS drew too sharp, among rough ground, stays) or is far steeper than any
 ///   summit AWS draws (STEEP_ANYWAY), or when it's a pit down to sea level in raised ground (AWS's
-///   filler); a small one steeper than 45° over its width is a
-///   spike when two of three hold: walled, on flat ground, beside a blob taken (an island's top or
-///   a plug as steep is on flat ground alone); one under the sea is filled there. A summit or a
-///   ridge widens as it goes down, a cliff is the edge of something larger, and an island, a sea
-///   stack or a mesa larger than BLOB_MAX pixels stays whatever it is.
+///   filler); a small one steeper than 45° over its width is a spike when two of three hold:
+///   walled, on flat ground, beside a blob taken, and when it's beside nothing it must be steeper
+///   than 63° (buttes, plugs and islets aren't: Monument Valley's, Beacon Rock, islets off Japan);
+///   one under the sea is filled there. A summit or a ridge widens as it goes down, a cliff is the
+///   edge of something larger, and an island, a sea stack or a mesa larger than BLOB_MAX pixels
+///   stays whatever it is.
 /// The tile is taken as AWS has it, before bathymetry goes to sea level: a pit in a lake reads as
 /// deep as AWS made it (−655 m in Shumarinai's, 274 m up, where a tower of 2,740 m rings).
 /// It's judged in stages, each on AWS's tile with what was found before filled in (the smoothest
@@ -600,9 +611,12 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
         let g = ground(v, sign, &pixels, out, held, &mut stamp, b, t0);
         let (median, rough) = (g.median, g.rough);
         let out_of = sign as f64 * (shown(t0 as usize) - median as f64);
-        // (A spike's ground may slope: it's flat when the spike stands out of the plane through it.)
+        // (How far a spike stands out of the level it meets, as the map shows it, over its width:
+        // a needle, steeper than 76°, stands on flat ground on a smooth slope too, out of the plane
+        // through it.)
+        let steep = (shown(t0 as usize) - (sign * level).max(0.0) as f64).abs() / (reach as f64).max(1.0);
         let flat = if kind == BlobKind::Spike {
-            sign as f64 * (shown(t0 as usize) - g.plane as f64) > ROUGH_SPIKE * g.plane_rough as f64
+            out_of > ROUGH_SPIKE * rough as f64 || (steep > NEEDLE && sign as f64 * (shown(t0 as usize) - g.plane as f64) > ROUGH_SPIKE * g.plane_rough as f64)
         } else {
             out_of > ROUGH * rough as f64
         };
@@ -655,7 +669,11 @@ fn broken_blobs(v: &[f32], sign: f32, held: &[bool], px: f64, out: &mut [bool], 
             // (Two of three: steep over its width alone, a spike may be an island's top,
             // Minami-Iwo-jima's at z8, or a plug, Shiprock's at z10, both on flat ground and walled
             // less, 0.64 and 0.88; a lobe of an artifact is beside a blob taken.)
-            if [wall >= 1.0, flat, beside].iter().filter(|&&c| c).count() < 2 {
+            // (Beside nothing, walled on flat ground, it must be steeper than 63° over its width:
+            // buttes, plugs and islets, as AWS draws them, aren't. A pit down to sea level in
+            // raised ground is AWS's filler, steep enough as it is.)
+            let two = [wall >= 1.0, flat, beside].iter().filter(|&&c| c).count() >= 2;
+            if !(at_sea || (two && (beside || steep > ALONE))) {
                 continue;
             }
         }
@@ -1387,16 +1405,18 @@ mod repair_tests {
 
     #[test]
     fn takes_spikes_on_flat_ground_whole() {
-        // Odaiba at z9: the tower, and the column standing on the waterfront beside it; the rest
-        // as it was (as the map shows it: at or above sea level).
+        // Odaiba at z9: the tower; the rest as it was (as the map shows it: at or above sea level).
+        // The column of 468 m on the waterfront, 1.8 times as tall as it's wide at z9's 250 m
+        // pixels, stays in this tile alone, as a butte or an islet would: the terrain job takes
+        // it at z10, and makes z9 again from there.
         let mut t = aws(&ODAIBA_Z9, 3.0);
         repaired(&mut t, 9, 35.65);
         for (j, row) in ODAIBA_Z9.iter().enumerate() {
             for (i, &v) in row.iter().enumerate() {
                 let now = at(&t, i, j).max(0.0);
-                if v >= 225 {
+                if v >= 1000 {
                     assert!(now < 60.0, "{v} at {i},{j}: {now}");
-                } else if (0..100).contains(&v) {
+                } else if (0..100).contains(&v) && !(7..=9).contains(&i) {
                     assert_eq!(now, v as f32, "{i},{j}");
                 }
             }
@@ -1682,6 +1702,86 @@ mod repair_tests {
         repaired(&mut h, 12, 60.3);
         for (x, y) in block() {
             assert!(h[y * TS + x] < base[y * TS + x] + 300.0, "{x},{y}: {}", h[y * TS + x]);
+        }
+    }
+
+    /// 11/391/796 from pixel 48,185 (37.05 N, 111.23 W): Gunsight Butte in Lake Powell, 1,129 m
+    /// up, at z11.
+    const GUNSIGHT_BUTTE_Z11: [[i16; 15]; 15] = [
+        [1129, 1129, 1129, 1128, 1128, 1128, 1127, 1124, 1124, 1129, 1129, 1129, 1129, 1129, 1129],
+        [1129, 1129, 1129, 1131, 1132, 1130, 1130, 1134, 1133, 1122, 1129, 1129, 1129, 1129, 1129],
+        [1129, 1129, 1129, 1133, 1139, 1142, 1160, 1205, 1209, 1153, 1126, 1128, 1129, 1129, 1129],
+        [1129, 1129, 1129, 1131, 1138, 1140, 1162, 1238, 1281, 1228, 1141, 1126, 1129, 1129, 1129],
+        [1129, 1129, 1129, 1128, 1129, 1123, 1126, 1194, 1294, 1307, 1186, 1127, 1127, 1130, 1129],
+        [1129, 1129, 1129, 1128, 1130, 1125, 1123, 1182, 1299, 1357, 1237, 1137, 1127, 1130, 1129],
+        [1129, 1129, 1129, 1129, 1130, 1126, 1146, 1230, 1323, 1385, 1306, 1155, 1125, 1131, 1130],
+        [1129, 1129, 1129, 1130, 1129, 1124, 1164, 1283, 1376, 1417, 1378, 1215, 1127, 1123, 1130],
+        [1129, 1129, 1129, 1130, 1130, 1125, 1154, 1269, 1399, 1434, 1419, 1311, 1162, 1121, 1129],
+        [1129, 1129, 1129, 1129, 1130, 1127, 1134, 1201, 1322, 1390, 1413, 1380, 1258, 1155, 1127],
+        [1129, 1129, 1129, 1129, 1129, 1128, 1125, 1148, 1210, 1251, 1285, 1294, 1257, 1202, 1155],
+        [1129, 1129, 1129, 1129, 1129, 1129, 1129, 1134, 1141, 1135, 1152, 1162, 1174, 1194, 1169],
+        [1129, 1129, 1129, 1129, 1129, 1129, 1129, 1128, 1127, 1129, 1132, 1134, 1130, 1133, 1138],
+        [1129, 1129, 1129, 1129, 1129, 1129, 1129, 1129, 1128, 1130, 1128, 1127, 1125, 1123, 1126],
+        [1129, 1129, 1129, 1129, 1129, 1129, 1129, 1129, 1130, 1130, 1130, 1130, 1131, 1131, 1128],
+    ];
+
+    /// 11/329/731 from pixel 206,156 (45.63 N, 122.02 W): Beacon Rock on the Columbia at z11.
+    const BEACON_ROCK_Z11: [[i16; 15]; 15] = [
+        [119, 102, 89, 106, 125, 143, 152, 148, 133, 117, 101, 77, 68, 57, 38],
+        [113, 90, 87, 108, 131, 143, 139, 129, 116, 94, 85, 72, 65, 57, 36],
+        [108, 84, 89, 110, 137, 136, 118, 100, 96, 79, 69, 58, 53, 47, 32],
+        [97, 78, 86, 112, 125, 119, 100, 85, 70, 60, 56, 42, 41, 38, 28],
+        [83, 74, 78, 102, 107, 95, 76, 60, 65, 46, 40, 35, 43, 37, 26],
+        [72, 70, 71, 94, 94, 74, 87, 102, 32, 41, 38, 39, 46, 31, 17],
+        [66, 68, 70, 81, 77, 79, 107, 234, 117, 31, 20, 26, 30, 17, 8],
+        [65, 66, 68, 77, 76, 88, 115, 244, 201, 115, 35, 10, 14, 8, 9],
+        [65, 65, 66, 79, 88, 89, 99, 185, 229, 199, 72, 7, 9, 10, 8],
+        [64, 63, 65, 71, 87, 86, 80, 103, 182, 128, 27, 9, 10, 7, 6],
+        [63, 62, 65, 68, 78, 79, 63, 53, 60, 25, 6, 9, 6, 4, 5],
+        [62, 62, 64, 69, 76, 71, 51, 35, 15, 9, 11, 5, 4, 4, 4],
+        [62, 62, 64, 71, 75, 64, 45, 29, 28, 14, 4, 4, 4, 4, 4],
+        [62, 64, 64, 69, 65, 51, 40, 34, 25, 5, 4, 4, 4, 4, 4],
+        [57, 63, 61, 58, 49, 43, 44, 39, 14, 3, 5, 4, 4, 4, 4],
+    ];
+
+    /// 12/3665/1726 from pixel 181,155 (27.18 N, 142.16 E): on Ototojima's smooth slope at z12, a
+    /// needle of 290 m and towers to 591 m ringing with pits to −2,607 m.
+    const OTOTOJIMA_Z12: [[i16; 15]; 15] = [
+        [0, 0, 0, 0, 2, 6, 11, 19, 30, 43, 58, 91, 98, 104, 112],
+        [0, 0, 0, 1, 3, 7, 13, 22, 33, 46, 62, 82, 89, 104, 117],
+        [-1, -1, 0, 1, 4, 8, 15, 24, 36, 50, 67, 82, 88, 110, 126],
+        [-1, -1, 0, 1, 5, 10, 17, 27, 39, 54, 72, 93, 98, 120, 138],
+        [-2, -2, -1, 2, 5, 11, 19, 29, 43, 591, -125, 109, 114, 131, 150],
+        [-3, -2, -1, 2, 6, 12, 21, -2607, 502, 412, -39, 118, 125, 138, 157],
+        [-3, -3, -1, 2, 7, 13, 22, -75, 98, 104, 95, 120, 129, 140, 157],
+        [-3, -3, -1, 2, 7, 14, 23, 290, 20, 52, 114, 120, 130, 140, 154],
+        [-3, -3, -1, 2, 7, 14, 23, -18, 35, 72, 96, 116, 130, 143, 158],
+        [-3, -2, -1, 2, 7, 14, 11, 19, 25, 59, 88, 109, 128, 149, 168],
+        [-2, -2, 0, 2, 7, 13, -42, -21, 30, 56, 77, 102, 124, 147, 171],
+        [-2, -2, 0, 2, 6, 12, -7, 6, 23, 47, 71, 96, 116, 139, 163],
+        [-2, -1, 0, 2, 5, 11, -2, 14, 14, 42, 67, 86, 105, 129, 155],
+        [-2, -1, 0, 1, 4, 9, -3, 16, 13, 41, 62, 79, 101, 129, 154],
+        [-1, -1, -1, 1, 3, 8, 14, 8, 24, 43, 57, 77, 112, 144, 160],
+    ];
+
+    #[test]
+    fn keeps_buttes_and_plugs_and_takes_a_needle_on_a_slope() {
+        // Gunsight Butte stands 300 m out of Lake Powell and Beacon Rock 240 m over the Columbia:
+        // walled, on flat ground, beside nothing, and as AWS draws them less steep than 63° over
+        // their width. Kept.
+        for (win, ground, lat) in [(&GUNSIGHT_BUTTE_Z11, 1129.0, 37.05), (&BEACON_ROCK_Z11, 60.0, 45.63)] {
+            let mut t = aws(win, ground);
+            let before = t.clone();
+            repaired(&mut t, 11, lat);
+            assert_eq!(t, before);
+        }
+        // On Ototojima's slope, the needle of 290 m (76° and more over its width) and the towers
+        // ringing beside their pits go.
+        let mut o = aws(&OTOTOJIMA_Z12, 0.0);
+        repaired(&mut o, 12, 27.18);
+        for (i, j) in [(7, 7), (9, 4), (8, 5), (9, 5)] {
+            let now = at(&o, i, j);
+            assert!(now < 150.0, "{} at {i},{j}: {now}", OTOTOJIMA_Z12[j][i]);
         }
     }
 

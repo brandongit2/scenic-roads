@@ -781,7 +781,8 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     tile's component tree, taken whole and weighed against the ground it meets, as the map shows
     it: broken when it stands out more than 100 m, steeper over its footprint than terrain can be
     and towering over the ground around it; small spikes go too when two of three hold: walled, on
-    flat or smoothly sloping ground, beside a blob taken or a ringing's pit under the sea.
+    flat ground, beside a blob taken or a ringing's pit under the sea; beside nothing, only one
+    steeper than 63° over its width (buttes, plugs and islets aren't).
     Each stage judges the tile with what was found filled in, until one finds nothing in AWS's
     values and then in the tile as stored, so its own output has nothing left to repair
     (`terrain --scan` checks it: §10, phase 7).
