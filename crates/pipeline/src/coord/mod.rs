@@ -215,6 +215,9 @@ pub struct Shared {
     /// The pool's lead (docs/pool.md §6.4): why it grants nothing now (settling a handover, its view
     /// not fresh, no longer leading), workers told to ask again in a moment.
     pub moving: Option<String>,
+    /// The build page's asks of the pool's lead (`/work/lead`), for the agent to take up
+    /// (crate::agent::lead).
+    pub lead_asks: Vec<crate::control::LeadRequest>,
     /// Where the token, leases, costs and journal are kept.
     dir: PathBuf,
 }
@@ -494,7 +497,7 @@ impl Coordinator {
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
         // (The devices a page once had to be accepted as: no more, `devices.json` with them.)
         std::fs::remove_file(dir.join("devices.json")).ok();
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, app: app.to_string(), paused, pause_at, history, moving: None, dir: dir.to_path_buf() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, app: app.to_string(), paused, pause_at, history, moving: None, lead_asks: Vec::new(), dir: dir.to_path_buf() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -734,6 +737,11 @@ impl Coordinator {
     /// longer leading); None: granting again.
     pub fn set_moving(&self, why: Option<String>) {
         self.shared.lock().unwrap().moving = why;
+    }
+
+    /// The build page's asks of the pool's lead since the last call (`/work/lead`).
+    pub fn take_lead_asks(&self) -> Vec<crate::control::LeadRequest> {
+        std::mem::take(&mut self.shared.lock().unwrap().lead_asks)
     }
 
     /// Its state as the pool keeps it per term (docs/pool.md §6.2, §7.5): the jobs' leases (each
@@ -1111,6 +1119,21 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             set_pause(&mut shared.lock().unwrap(), pause, at);
             Ok((200, ok))
         }
+        "/work/lead" => {
+            // The build page's ask of the pool's lead (docs/pool.md §11): hand it to a member
+            // (`{"to": <member>}`), or have this Mac take it over (`{"take": true}`), unforced: the
+            // owner's force and downgrade come from the Mac's own menu or `scenic lead` alone.
+            let b: serde_json::Value = serde_json::from_slice(body)?;
+            anyhow::ensure!(b.get("force").is_none() && b.get("downgrade").is_none(), "forcing a takeover is for the Mac's own menu or `scenic lead take` alone");
+            let ask = match (b["to"].as_str(), b["take"].as_bool()) {
+                (Some(to), None) if !to.is_empty() => crate::control::LeadAsk::Give { to: plain(to, 100) },
+                (None, Some(true)) => crate::control::LeadAsk::Take { force: false, downgrade: false },
+                _ => anyhow::bail!("{{\"to\": <member>}} or {{\"take\": true}}"),
+            };
+            let by = format!("the build page ({})", caller.from);
+            shared.lock().unwrap().lead_asks.push(crate::control::LeadRequest { ask, by, at: unix_now() });
+            Ok((200, ok))
+        }
         "/work/done" => {
             let mut d: Done = serde_json::from_slice(body)?;
             // (A page's measures as a page's can be: its memory, its time.)
@@ -1414,6 +1437,7 @@ mod http {
         ("runtime.js", "text/javascript", include_bytes!("../../../../web/work/runtime.js")),
         // The build at a glance, both pages': its script and styles.
         ("dash.js", "text/javascript", include_bytes!("../../../../web/work/dash.js")),
+        ("pool.js", "text/javascript", include_bytes!("../../../../web/work/pool.js")),
         ("dash.css", "text/css; charset=utf-8", include_bytes!("../../../../web/work/dash.css")),
         ("sw.js", "text/javascript", include_bytes!("../../../../web/work/sw.js")),
         ("manifest.webmanifest", "application/manifest+json", include_bytes!("../../../../web/work/manifest.webmanifest")),
@@ -1526,6 +1550,7 @@ mod http {
             .route("/work/ask", any(json))
             .route("/work/beat", any(json))
             .route("/work/pause", any(json))
+            .route("/work/lead", any(json))
             .route("/work/done", any(json))
             .route("/work/fail", any(json))
             .route("/work/status", any(json))
@@ -1651,7 +1676,7 @@ mod http {
         // A page: its own tasks, and pausing.
         let files = ["/work/in/", "/work/net/", "/work/out/"].iter().any(|p| path.starts_with(p));
         let theirs = match *req.method() {
-            Method::POST => matches!(path.as_str(), "/work/ask" | "/work/beat" | "/work/done" | "/work/fail" | "/work/pause"),
+            Method::POST => matches!(path.as_str(), "/work/ask" | "/work/beat" | "/work/done" | "/work/fail" | "/work/pause" | "/work/lead"),
             Method::GET => (files && !path.starts_with("/work/out/")) || path.starts_with("/work/prog/"),
             Method::PUT => path.starts_with("/work/out/"),
             _ => false,
@@ -2451,6 +2476,28 @@ mod tests {
         let addr = format!("127.0.0.1:{port}");
         assert_eq!(send(&addr, "POST", "/work/pause", Some(old), &[], &serde_json::json!({})).0, 401);
         assert_eq!(send(&addr, "POST", "/work/pause", Some(&c.contact.token), &[], &serde_json::json!({})).0, 200);
+    }
+
+    #[test]
+    fn a_page_asks_the_lead_handed_over_or_taken_never_forced() {
+        let (_d, c, w) = start();
+        let addr = w.urls()[0].trim_start_matches("http://").to_string();
+        let page = |body: serde_json::Value| send(&addr, "POST", "/work/lead", None, &[], &body).0;
+        assert_eq!(page(serde_json::json!({ "to": "MacBook-Air" })), 200);
+        assert_eq!(page(serde_json::json!({ "take": true })), 200);
+        // The owner's force and downgrade: from the Mac's own menu or `scenic lead` alone, never a
+        // page (nor with the build's key).
+        assert_eq!(page(serde_json::json!({ "take": true, "force": true })) / 100, 4);
+        assert_eq!(page(serde_json::json!({ "take": true, "downgrade": false })) / 100, 4);
+        assert_eq!(send(&addr, "POST", "/work/lead", Some(&c.contact.token), &[], &serde_json::json!({ "take": true, "force": true })).0 / 100, 4);
+        assert_eq!(page(serde_json::json!({ "to": "" })) / 100, 4);
+        assert_eq!(page(serde_json::json!({})) / 100, 4);
+        // From a site elsewhere: no.
+        assert_eq!(send(&addr, "POST", "/work/lead", None, &[("Origin", "https://evil.example")], &serde_json::json!({ "to": "MacBook-Air" })).0, 403);
+        let asks = c.take_lead_asks();
+        assert_eq!(asks.iter().map(|a| a.ask.clone()).collect::<Vec<_>>(), [crate::control::LeadAsk::Give { to: "MacBook-Air".into() }, crate::control::LeadAsk::Take { force: false, downgrade: false }]);
+        assert!(asks.iter().all(|a| a.by.starts_with("the build page")));
+        assert!(c.take_lead_asks().is_empty());
     }
 
     #[test]

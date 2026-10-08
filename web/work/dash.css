@@ -160,3 +160,11 @@ table.t th { text-align: left; color: var(--dim); font-weight: 500; padding: 3px
 table.t td { padding: 3px 6px; border-bottom: 1px solid var(--row-line); vertical-align: top; }
 table.t td.num, table.t th.num { text-align: right; }
 .fresh { color: var(--dim); font-size: 11px; margin-top: 8px; }
+
+/* The pool (pool.js): who leads, each member, its controls. */
+.d-pool .pool-top { display: grid; gap: 4px; margin-bottom: 8px; }
+.pool-ctl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.pool-ctl .sub { margin: 0; }
+.pool-ctl.warnline > span { color: var(--warn); }
+.mc .hand { color: var(--accent); }
+button[disabled] { opacity: .5; }

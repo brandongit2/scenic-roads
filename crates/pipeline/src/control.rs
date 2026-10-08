@@ -92,6 +92,58 @@ pub fn clear_request(home: &Path, r: &Request) {
     }
 }
 
+/// An ask of the pool's lead (docs/pool.md §6.3, §6.5, §11), from this Mac's menu, `scenic lead`,
+/// the map or the build page: hand the lead to a member (`give`: its member id, or its host name),
+/// or have this Mac take it over (`take`: the owner's force and downgrade, from this Mac's menu or
+/// `scenic lead take` alone).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum LeadAsk {
+    Give { to: String },
+    Take {
+        #[serde(default)]
+        force: bool,
+        #[serde(default)]
+        downgrade: bool,
+    },
+}
+
+/// A lead ask, who asked (in words) and when: kept in the agent's folder (`LEAD_REQUEST`, replaced
+/// by a later ask) until the agent takes it up, at its next loop.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeadRequest {
+    pub ask: LeadAsk,
+    #[serde(default)]
+    pub by: String,
+    #[serde(default)]
+    pub at: u64,
+}
+
+/// The lead ask's file, in the agent's folder.
+pub const LEAD_REQUEST: &str = "lead-request.json";
+
+/// Asks this Mac's agent (its folder `home`) to hand the lead over, or take it.
+pub fn request_lead(home: &Path, ask: LeadAsk, by: &str) -> anyhow::Result<LeadRequest> {
+    std::fs::create_dir_all(home)?;
+    let r = LeadRequest { ask, by: by.to_string(), at: now() };
+    crate::whole::write(&home.join(LEAD_REQUEST), &serde_json::to_vec(&r)?)?;
+    Ok(r)
+}
+
+/// The lead ask waiting in `home`, taken (its file removed; one that doesn't parse: none, and it
+/// goes).
+pub fn take_lead(home: &Path) -> Option<LeadRequest> {
+    let p = home.join(LEAD_REQUEST);
+    let b = std::fs::read(&p).ok()?;
+    std::fs::remove_file(&p).ok();
+    serde_json::from_slice(&b).ok()
+}
+
+/// The lead ask waiting in `home`, read only.
+pub fn peek_lead(home: &Path) -> Option<LeadRequest> {
+    serde_json::from_slice(&std::fs::read(home.join(LEAD_REQUEST)).ok()?).ok()
+}
+
 /// The running job's channel: a file the agent writes ("run" or "drain"), named by this variable.
 pub const CONTROL_ENV: &str = "SCENIC_CONTROL";
 
@@ -168,6 +220,13 @@ mod tests {
         let r2 = take_request(d.path()).unwrap();
         clear_request(d.path(), &r2);
         assert!(take_request(d.path()).is_none());
+        // A lead ask: the menu's JSON as written by hand, taken once.
+        std::fs::write(d.path().join(LEAD_REQUEST), r#"{"ask": {"kind": "take", "force": true}, "by": "the menu bar on m1", "at": 5}"#).unwrap();
+        assert_eq!(peek_lead(d.path()).map(|r| r.ask), Some(LeadAsk::Take { force: true, downgrade: false }));
+        assert_eq!(take_lead(d.path()).map(|r| (r.ask, r.at)), Some((LeadAsk::Take { force: true, downgrade: false }, 5)));
+        assert!(take_lead(d.path()).is_none());
+        request_lead(d.path(), LeadAsk::Give { to: "MacBook-Air".into() }, "scenic lead on m1").unwrap();
+        assert_eq!(take_lead(d.path()).map(|r| r.ask), Some(LeadAsk::Give { to: "MacBook-Air".into() }));
         // A damaged one goes.
         std::fs::write(d.path().join(REQUEST), b"{").unwrap();
         assert!(take_request(d.path()).is_none() && !d.path().join(REQUEST).exists());

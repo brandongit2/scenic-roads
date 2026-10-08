@@ -7,6 +7,8 @@
 // one waits, its power, disk, memory and pace), the road to done (each machine's schedule, the
 // steps, the regions and when each reaches the map) and the activity (the hours, what happened).
 
+import { poolSection, termText } from "./pool.js";
+
 const POLL_MS = 10000;
 const STALE_S = 360;
 const STUCK_S = 900;
@@ -608,6 +610,7 @@ function eventText(m, e, k = 1) {
     case "conditions": return [`${who}: ${e.note}`, /doesn't answer|battery|away/.test(e.note) ? "warn" : ""];
     // (A Mac's build caches trimmed after the build, or cleared on its owner's ask: what was freed.)
     case "caches": return [`${who} ${e.note}`, /^didn't/.test(e.note || "") ? "warn" : ""];
+    case "term": return termText(e);
     default: return [`${e.kind} ${who} ${what}`, ""];
   }
 }
@@ -722,7 +725,8 @@ function render() {
       sinceLine(m, events, seenSeq), feed(m, events, seenSeq)));
   const scrollY = window.scrollY;
   const feedTop = root.querySelector(".feed")?.scrollTop || 0;
-  const next = [verdict, section("d-overview", "overview", "Overview", null, overview(m)), machines, road, regions, activity, section("d-details", "details", null, null, details(m))];
+  const pool = poolSection(last.agent, m.now, (body) => ctx.call("/work/lead", body).then(poll, (e) => ctx.onError?.(`couldn't ask about the lead: ${e.message}`))) || section("d-pool", "pool", null, null);
+  const next = [verdict, section("d-overview", "overview", "Overview", null, overview(m)), machines, pool, road, regions, activity, section("d-details", "details", null, null, details(m))];
   // (A section where the user is typing or has text selected stays as it was until they're done:
   // a refresh would take their keyboard or selection away.)
   const sel = window.getSelection();

@@ -144,6 +144,8 @@ impl Nas for Overlay {
 struct Clocked<'a> {
     nas: &'a dyn Nas,
     start: Instant,
+    /// Both clocks moved on this far (s): the tests' way of letting time pass.
+    ahead: u64,
 }
 
 impl Nas for Clocked<'_> {
@@ -169,10 +171,10 @@ impl Nas for Clocked<'_> {
 
 impl Io for Clocked<'_> {
     fn now(&self) -> u64 {
-        crate::agent::jobs::now_s()
+        crate::agent::jobs::now_s() + self.ahead
     }
     fn awake(&self) -> u64 {
-        self.start.elapsed().as_secs()
+        self.start.elapsed().as_secs() + self.ahead
     }
 }
 
@@ -212,6 +214,25 @@ pub struct Heartbeat {
     /// Whether this is a shadow run's (§12: acting on nothing).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shadow: bool,
+    /// Its Mac's conditions, for the controls (§11: whether it's home on power, on battery, away;
+    /// whether it can lead now). Left out by apps before phase 3, and ignored by them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conds: Option<Conds>,
+}
+
+/// A member's conditions, as its heartbeat says them (§10, §11).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Conds {
+    /// At home: the NAS answers on the LAN.
+    pub home: bool,
+    /// On mains power.
+    pub ac: bool,
+    /// The battery's charge (%), when it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battery: Option<u8>,
+    /// It can lead now (its disk, home and power: `Heard::able`).
+    pub able: bool,
 }
 
 /// A listing made off the loop: its kind, and the thread making it.
@@ -239,6 +260,8 @@ pub struct Give {
     pub reassert: bool,
     /// Its owner's asks.
     pub asks: Vec<driver::Ask>,
+    /// Its Mac's conditions, for its heartbeat (None: left out).
+    pub conds: Option<Conds>,
 }
 
 /// One member's part in the pool, in this process.
@@ -270,10 +293,14 @@ pub struct Side {
     making: Option<Making>,
     made: VecDeque<Listed>,
     failed_at: Option<Instant>,
-    /// The heartbeat as last written (beat left out), and when.
-    beat: Option<(Heartbeat, Instant)>,
+    /// The heartbeat as last written (beat left out), and when (and `ahead` then).
+    beat: Option<(Heartbeat, Instant, u64)>,
     /// It stopped for good (another process holds its lock): why.
     pub stopped: Option<String>,
+    /// Its Mac's conditions as last given, for its heartbeat.
+    conds: Option<Conds>,
+    /// Both its clocks moved on this far (s): tests let time pass so.
+    pub ahead: u64,
 }
 
 impl Side {
@@ -300,7 +327,7 @@ impl Side {
         let mut members: BTreeSet<String> = known.into_iter().filter(|m| crate::pool::is_member_id(m)).collect();
         members.insert(id);
         let driver = Driver::new(me.clone(), saved, lock);
-        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), shadow, written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None }))
+        Ok(Some(Side { me, driver: Some(driver), nas, start: Instant::now(), dir: dir.to_path_buf(), shadow, written, folders: Vec::new(), mail, mail_written: Vec::new(), mail_dirty: BTreeSet::new(), told: BTreeMap::new(), members, members_listed: None, members_queued: false, asked: VecDeque::new(), making: None, made: VecDeque::new(), failed_at: None, beat: None, stopped: None, conds: None, ahead: 0 }))
     }
 
     /// Its member.
@@ -328,6 +355,30 @@ impl Side {
         if crate::pool::is_member_id(m) {
             self.members.insert(m.to_string());
         }
+    }
+
+    /// Whether the lead can be handed to member `to` now, and why not (`Driver::hand_to`, §11).
+    pub fn hand_to(&self, to: &str) -> std::result::Result<(), String> {
+        self.driver().hand_to(&self.io(), to)
+    }
+
+    /// What a takeover from this Mac needs now, and why (`Driver::takeover`, §11).
+    pub fn takeover(&self) -> driver::Takeover {
+        self.driver().takeover(&self.io())
+    }
+
+    /// Member `m`'s heartbeat as it wrote it (None: none, or one that can't be read now).
+    pub fn heartbeat(&self, m: &str) -> Option<Heartbeat> {
+        self.nas.read(&crate::pool::beat::path(m)).ok().flatten().and_then(|b| serde_json::from_slice(&b).ok())
+    }
+
+    /// This Mac's wall clock, as its steps read it.
+    pub fn now(&self) -> u64 {
+        self.io().now()
+    }
+
+    fn io(&self) -> Clocked<'_> {
+        Clocked { nas: &*self.nas, start: self.start, ahead: self.ahead }
     }
 
     /// The listings asked for and not handed back yet (asked, being made, made).
@@ -381,7 +432,8 @@ impl Side {
         let (entries, folders): (Vec<Entry>, Vec<Option<PathBuf>>) = give.entries.into_iter().unzip();
         self.folders.extend(folders.into_iter().flatten());
         let heard = Heard { msgs, asks: give.asks, entries, listed: self.made.pop_front(), settled: give.settled, able: give.able, reassert: give.reassert, members: self.members.iter().cloned().collect() };
-        let io = Clocked { nas: &*self.nas, start: self.start };
+        self.conds = give.conds;
+        let io = Clocked { nas: &*self.nas, start: self.start, ahead: self.ahead };
         let Some(driver) = self.driver.as_mut() else { return Out { stop: self.stopped.clone(), ..Default::default() } };
         let mut out = driver.step(&io, heard, check);
         let kept = self.keep();
@@ -511,17 +563,17 @@ impl Side {
 
     /// Its heartbeat, when it changed or every two minutes: stamped as it's written.
     fn write_beat(&mut self, out: &Out) {
-        let hb = Heartbeat { pool: Beat { beat: 0, ..out.beat.clone() }, members: self.members.iter().cloned().collect(), shadow: self.shadow };
+        let hb = Heartbeat { pool: Beat { beat: 0, ..out.beat.clone() }, members: self.members.iter().cloned().collect(), shadow: self.shadow, conds: self.conds };
         if hb.pool.member.is_empty() {
             return;
         }
-        if self.beat.as_ref().is_some_and(|(b, at)| *b == hb && at.elapsed() < BEAT_EVERY) {
+        if self.beat.as_ref().is_some_and(|(b, at, ahead)| *b == hb && at.elapsed() + Duration::from_secs(self.ahead - ahead) < BEAT_EVERY) {
             return;
         }
         let mut stamped = hb.clone();
-        stamped.pool.beat = crate::agent::jobs::now_s();
+        stamped.pool.beat = crate::agent::jobs::now_s() + self.ahead;
         match serde_json::to_vec(&stamped).map_err(anyhow::Error::from).and_then(|b| self.nas.write_whole(&crate::pool::beat::path(&self.me.id), &b)) {
-            Ok(()) => self.beat = Some((hb, Instant::now())),
+            Ok(()) => self.beat = Some((hb, Instant::now(), self.ahead)),
             Err(e) => eprintln!("pool: heartbeat: {e:#}"),
         }
     }
@@ -751,11 +803,18 @@ pub struct Run {
     /// The terms this process led (a take-up of the next one after them keeps its coordinator's
     /// state; one after another lead's loads that lead's).
     pub led: BTreeSet<u64>,
+    /// The owner's asks for the next step (crate::agent::lead), and this Mac's conditions for its
+    /// heartbeat.
+    pub asks: Vec<driver::Ask>,
+    pub conds: Option<Conds>,
+    /// The owner's controls: their asks, where each stands, the view (crate::agent::lead).
+    pub controls: super::lead::Controls,
 }
 
 impl Run {
     pub fn new(side: Side, role: Role, gates: Gates) -> Run {
-        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new() }
+        let controls = super::lead::Controls::open(&side.dir);
+        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new(), asks: Vec::new(), conds: None, controls }
     }
 
     /// A process's first step, which says its part (`Role`). (The jobs an earlier process left are
@@ -771,7 +830,7 @@ impl Run {
     /// One step: what the agent gathered handed over, the gates kept; the role's change noted (it
     /// restarts into its new part).
     pub fn step(&mut self, able: bool) -> Out {
-        let give = Give { entries: std::mem::take(&mut self.entries), settled: self.settled.take(), able, reassert: self.reassert, asks: Vec::new() };
+        let give = Give { entries: std::mem::take(&mut self.entries), settled: self.settled.take(), able, reassert: self.reassert, asks: std::mem::take(&mut self.asks), conds: self.conds };
         let marks = std::mem::take(&mut self.marks);
         let out = self.side.step(give, &check);
         // (Drained hand-offs held by the state just saved: their folders marked merged, so one whose
@@ -1253,6 +1312,33 @@ mod tests {
         let l = format!("base/{}", target.replace('/', "-"));
         let h = Handoff { changes: [(l.clone(), Some(format!("{l}.2222222222222222.base")))].into(), done: Some(("unit".into(), vec![(target.into(), key.into())])), ..Default::default() };
         Entry { member: member.into(), lease, step: "unit".into(), handoff: h, at: crate::agent::jobs::now_s() }
+    }
+
+    #[test]
+    fn heartbeats_of_apps_before_and_after_the_controls_read_each_other() {
+        // The heartbeat as the apps before phase 3 have it (1fa03d8), and as they write it.
+        #[derive(Debug, PartialEq, Serialize, Deserialize)]
+        struct Before {
+            #[serde(flatten)]
+            pool: Beat,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            members: Vec<String>,
+            #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+            shadow: bool,
+        }
+        let pool = Beat { member: "m-000000000000000a".into(), host: "Mac-mini".into(), app: "20261008-1500-1fa03d8".into(), beat: 1000, leads: Some(3), ..Default::default() };
+        let new = Heartbeat { pool: pool.clone(), members: vec!["m-000000000000000b".into()], shadow: false, conds: Some(Conds { home: true, ac: false, battery: Some(54), able: false }) };
+        let b = serde_json::to_vec(&new).unwrap();
+        // An older app reads the newer's: its fields, the conditions passed over.
+        let old: Before = serde_json::from_slice(&b).unwrap();
+        assert_eq!((old.pool.clone(), old.members.clone()), (pool.clone(), new.members.clone()));
+        assert_eq!(Beat::read(&{ let m = crate::pool::nas::Mem::default(); m.write_whole(&crate::pool::beat::path(&pool.member), &b).unwrap(); m }, &pool.member).unwrap(), Some(pool.clone()));
+        // A newer app reads the older's: no conditions ("conditions unknown" in the views).
+        let back: Heartbeat = serde_json::from_slice(&serde_json::to_vec(&old).unwrap()).unwrap();
+        assert_eq!(back, Heartbeat { conds: None, ..new.clone() });
+        assert!(crate::agent::lead::state_of(&back, 1000, None).starts_with("conditions unknown"));
+        // And its own, back as written.
+        assert_eq!(serde_json::from_slice::<Heartbeat>(&b).unwrap(), new);
     }
 
     #[test]

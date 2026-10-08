@@ -27,6 +27,7 @@ pub mod cond;
 pub mod forecast;
 pub mod gc;
 pub mod jobs;
+pub mod lead;
 pub mod pool;
 pub mod recipes;
 pub mod rekey;
@@ -431,6 +432,9 @@ pub struct PoolView {
     pub unacked: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart: Option<String>,
+    /// The pool as the controls show it (crate::agent::lead: docs/pool.md §10, §11).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lead: Option<lead::View>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -560,6 +564,8 @@ fn coord_port() -> u16 {
 #[cfg(test)]
 thread_local! {
     static TEST_PORT: std::cell::Cell<Option<u16>> = const { std::cell::Cell::new(None) };
+    /// Whether this Mac can lead, whatever its conditions say (the pool's tests).
+    static TEST_ABLE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
 /// The NAS project folder: the share's mount, by whatever name it's mounted. When it's missing and
@@ -880,7 +886,7 @@ impl Agent {
         // (as the build Mac did) or works as a member (as a helper did), whatever `--helper` says.
         let mut pool_mode = None;
         let mut run: Option<pool::Run> = None;
-        let mut first: Option<crate::pool::driver::Out> = None;
+        let mut first: Option<(crate::pool::driver::Out, PathBuf)> = None;
         if lock.is_some() && !o.dry_run {
             if let Some(r) = o.root.clone().or_else(|| find_root(false)).filter(|r| answers(r)) {
                 pool_mode = pool::mode(&r);
@@ -893,7 +899,7 @@ impl Agent {
                             o.helper = r1.role == pool::Role::Member;
                             eprintln!("agent: the pool is on: this Mac's member {} {} (term {})", r1.side.member().id, if o.helper { "works as a member" } else { "leads" }, out.term);
                             run = Some(r1);
-                            first = Some(out);
+                            first = Some((out, r.clone()));
                         }
                         // (Its lock held by another process: this one starts nothing, and tries the
                         // lock again each loop, restarting into the pool once it has it.)
@@ -927,8 +933,14 @@ impl Agent {
         } else {
             None
         };
-        if let (Some(r), Some(out)) = (run.as_mut(), &first) {
+        if let (Some(r), Some((out, root))) = (run.as_mut(), &first) {
             pool::took_up(r, coord.as_ref(), out, &cond::host_name());
+            // (The terms' events a member's process before this one kept, for this coordinator's
+            // history; and this first step's.)
+            if let Some(c) = &coord {
+                lead::replay(&o.home.join("pool"), c);
+            }
+            lead::after(r, out, root, &o.home, coord.as_ref());
         }
         // The build's pause as this agent last knew it (a helper that can't reach the build Mac stays
         // as it was).
@@ -1956,7 +1968,7 @@ impl Agent {
             forecast: if self.o.helper { None } else { self.forecast.borrow().clone() },
             catalog: self.catalog_seen.get(),
             caches: Some(self.caches_view(caches_why, c.home, c.nas)),
-            pool: self.pool.as_ref().map(|p| PoolView { member: p.side.member().id.clone(), role: p.role, gates: p.gates.clone(), members: p.side.members().iter().cloned().collect(), unacked: p.side.driver().mine().to_tell(p.gates.term).len(), restart: p.restart.clone() }),
+            pool: self.pool.as_ref().map(|p| PoolView { member: p.side.member().id.clone(), role: p.role, gates: p.gates.clone(), members: p.side.members().iter().cloned().collect(), unacked: p.side.driver().mine().to_tell(p.gates.term).len(), restart: p.restart.clone(), lead: p.controls.view.clone() }),
         };
         let body = serde_json::to_vec_pretty(&status)?;
         if let Some(sh) = self.shadow.as_mut() {
@@ -4139,13 +4151,22 @@ impl Agent {
             }
         }
         let able = c.home && (c.ac || c.battery.is_none_or(|b| b >= cond::BATTERY_MIN)) && self.disk_free() >= room::RESERVE;
+        #[cfg(test)]
+        let able = TEST_ABLE.with(|t| t.get()).unwrap_or(able);
         let home = self.o.home.clone();
         let run = self.pool.as_mut()?;
         // (The jobs an earlier process left, once `run` stopped any still running.)
         run.take_left(&home);
         run.drain(lead.then(|| home.join("coord/journal")).as_deref(), lead.then(|| crate::handoff::nas_base(r)).as_deref(), &home.join("outbox"));
+        // The owner's lead asks (crate::agent::lead): this Mac's, and the build page's.
+        run.conds = Some(pool::Conds { home: c.home, ac: c.ac, battery: c.battery, able });
+        if let Some(co) = &self.coord {
+            run.controls.page.extend(co.take_lead_asks());
+        }
+        lead::take(run, &home);
         let out = run.step(able);
         pool::took_up(run, self.coord.as_ref(), &out, &self.host);
+        lead::after(run, &out, r, &home, self.coord.as_ref());
         for e in &out.events {
             if let crate::pool::driver::Event::Failed { what, why } | crate::pool::driver::Event::Waits { what, why } = e {
                 waiting.push(Waiting { step: None, what: "The pool".into(), why: format!("couldn't {what} yet: {why}") });
@@ -5841,6 +5862,61 @@ mod pool_tests {
     }
 
     #[test]
+    fn the_owners_ask_mid_job_hands_the_lead_over_and_the_job_reaches_the_new_lead() {
+        room::TEST_FREE.with(|c| c.set(Some(400 << 30)));
+        TEST_PORT.with(|p| p.set(Some(free_port())));
+        TEST_ABLE.with(|c| c.set(Some(true)));
+        let d = tempfile::tempdir().unwrap();
+        let r = nas(d.path());
+        switch_on(&r, pool::ENABLED);
+        let bin = app(d.path());
+        // (Its slope job takes a few seconds: the ask comes while it runs.)
+        let script = std::fs::read_to_string(bin.join("scenic-build")).unwrap().replace("step=\"$1\"\n", "step=\"$1\"\n[ \"$step\" = slope ] && sleep 4\n");
+        std::fs::write(bin.join("scenic-build"), script).unwrap();
+        let mut lead = Agent::new(Options { root: Some(r.clone()), home: d.path().join("l/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        lead.mem.last_ok.insert("backup".into(), now_s());
+        lead.mem.last_ok.insert("gc".into(), now_s());
+        lead.step().unwrap();
+        let mut m = Agent::new(Options { root: Some(r.clone()), home: d.path().join("m/agent"), bin: bin.clone(), dry_run: false, once: true, helper: false }).unwrap();
+        let im = m.pool.as_ref().unwrap().side.member().id.clone();
+        lead.pool.as_mut().unwrap().side.know(&im);
+        lead.coord.as_ref().unwrap().offer("2026-09-28", vec![crate::coord::Offer { step: "slope".into(), targets: vec![("3/2/2".into(), "k".into(), 100)], batch: 2 }]);
+        until(&mut m, |m| m.slots[0].running.is_some());
+        // The owner asks the lead, from its menu, to hand the build to the member, mid-job.
+        crate::control::request_lead(&lead.o.home, crate::control::LeadAsk::Give { to: im.clone() }, "the menu bar on l").unwrap();
+        fn both(lead: &mut Agent, m: &mut Agent, done: &dyn Fn(&Agent, &Agent) -> bool) {
+            for _ in 0..240 {
+                lead.step().unwrap();
+                m.step().unwrap();
+                if done(lead, m) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            panic!("not done in a minute: {:?}", lead.pool.as_ref().unwrap().controls.kept.asked);
+        }
+        both(&mut lead, &mut m, &|_, m| m.pool.as_ref().unwrap().side.driver().leads() == Some(2));
+        // The member leads term 2 in this process (it restarts into its part once its slot is free);
+        // the lead's ask is done, its process restarting into a member's.
+        let asked = lead.pool.as_ref().unwrap().controls.kept.asked.clone().unwrap();
+        assert_eq!(asked.ask, crate::control::LeadAsk::Give { to: im.clone() });
+        both(&mut lead, &mut m, &|l, _| l.pool.as_ref().unwrap().controls.kept.asked.as_ref().is_some_and(|a| a.state == lead::State::Done));
+        assert!(lead.pool_restart().is_some_and(|w| w.contains("no longer leads")), "{:?}", lead.pool_restart());
+        assert!(m.pool_restart().is_some_and(|w| w.contains("leads term 2")));
+        // The job, granted in term 1, ran on: its entry reached the new lead's records.
+        both(&mut lead, &mut m, &|_, m| m.slots[0].running.is_none() && m.pool.as_ref().unwrap().side.driver().records().is_some_and(|r| r.keys.recorded("slope", "3/2/2") == Some("k")));
+        // The statuses say so: the old lead's view, the history's terms.
+        let st = read_status(None, &lead.o.home).unwrap();
+        let v = st.pool.and_then(|p| p.lead).expect("the controls' view");
+        assert_eq!(v.lead.as_ref().map(|l| l.member.as_str()), Some(im.as_str()));
+        let events = lead.coord.as_ref().unwrap().history_since(0);
+        assert!(events.iter().any(|e| e.kind == "term" && e.note.starts_with("term 2: handed over by")), "{:?}", events.iter().filter(|e| e.kind == "term").collect::<Vec<_>>());
+        stop_jobs(&mut lead);
+        stop_jobs(&mut m);
+        TEST_ABLE.with(|c| c.set(None));
+    }
+
+    #[test]
     fn the_leads_gates_hold_a_catalog_and_a_sweep() {
         let d = tempfile::tempdir().unwrap();
         let r = nas(d.path());
@@ -5923,7 +5999,7 @@ mod pool_tests {
         // On, in the pool: off waits for the lead to be caught up and the job to end.
         std::fs::create_dir_all(r.join("state/build/terms")).unwrap();
         std::fs::write(r.join("state/build/terms/1.json"), "{}").unwrap();
-        let lead = PoolView { member: "m-000000000000000a".into(), role: pool::Role::Lead, gates: pool::Gates { term: 1, leads: Some(1), ..Default::default() }, members: Vec::new(), unacked: 0, restart: None };
+        let lead = PoolView { member: "m-000000000000000a".into(), role: pool::Role::Lead, gates: pool::Gates { term: 1, leads: Some(1), ..Default::default() }, members: Vec::new(), unacked: 0, restart: None, lead: None };
         write(&st(Some(lead.clone()), true));
         assert!(pool::status(&r).contains("the pool: on"));
         let e = pool::switch_off(&r, false).unwrap_err().to_string();
