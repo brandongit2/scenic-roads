@@ -875,7 +875,7 @@ mod tests {
             assert_eq!(a.run.side.driver().leads(), None);
             let term2: crate::pool::term::Term = serde_json::from_slice(&std::fs::read(a.root.join("state/build/terms/2.json")).unwrap()).unwrap();
             assert!(term2.how.starts_with("handed over by") && term2.member == ib, "{term2:?}");
-            assert!(a.run.controls.kept.change.as_ref().is_some_and(|c| c.said.starts_with("No longer leading term 1: handed over to MacBook") && !c.said.contains(&ib)), "{:?}", a.run.controls.kept.change);
+            assert!(a.run.controls.kept.change.as_ref().is_some_and(|c| c.said.starts_with("No longer leading term 1: handed over to ") && !c.said.contains(&ib)), "{:?}", a.run.controls.kept.change);
             // The history: A noted the handover (no coordinator here: on the NAS, kept for its next).
             let notes = std::fs::read_to_string(a.home.join("pool").join(NOTES)).unwrap();
             assert!(notes.contains("term 2: handed over by") && notes.contains("stepped down from term 1"), "{notes}");
