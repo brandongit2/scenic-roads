@@ -508,7 +508,7 @@ export const defaults: AppState = {
     cutCover: 20, cutHeight: 5, maskCover: 20, maskHeight: 10, maskColour: '#03a300',
   },
   // (Opaque on a touch screen: one pass instead of two, docs/buildings3d.md §4.6.)
-  buildings: { on: true, flat: false, colour: 'plain', opacity: typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 1 : 0.85, scale: 1, skyline: false },
+  buildings: { on: true, flat: false, colour: 'plain', opacity: typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches ? 1 : 0.85, scale: 1 },
   ferry: { on: true, groups: new Array(NFERRY).fill(true), colour: 'freq', metric: 'freq', looks: {},
     ...scaleOfLook({ ...freshLook(FERRY_METRICS[0].range, 0.45), fit: [0, 100], palette: 'oslo', lowSpan: 0.5 }),
     opacity: 0.9, dashed: true, single: '#8fc8ff',
@@ -738,7 +738,7 @@ export function toHash(s: AppState, buildings: boolean): string {
   if (fy(s.ferry) !== fy(defaults.ferry)) p.set('fy', fy(s.ferry));
   const tc = (t: TreeState) => [t.on ? 1 : 0, t.variable, t.style, +t.opacity.toFixed(2), t.palette, t.cutCover, t.cutHeight, t.maskCover, t.maskHeight, t.maskColour.replace('#', '')].join(',');
   if (tc(s.trees) !== tc(defaults.trees)) p.set('tc', tc(s.trees));
-  const bd = (b: BuildingState) => [b.on ? 1 : 0, b.flat ? 1 : 0, b.colour, +b.opacity.toFixed(2), +b.scale.toFixed(2), b.skyline ? 1 : 0].join(',');
+  const bd = (b: BuildingState) => [b.on ? 1 : 0, b.flat ? 1 : 0, b.colour, +b.opacity.toFixed(2), +b.scale.toFixed(2)].join(',');
   if (buildings && bd(s.buildings) !== bd(defaults.buildings)) p.set('bd', bd(s.buildings));
   if (!(s.surface.paved && s.surface.unpaved)) p.set('sf', `${s.surface.paved ? 'p' : ''}${s.surface.unpaved ? 'u' : ''}`);
   if (!(s.toll.free && s.toll.toll)) p.set('tl', `${s.toll.free ? 'f' : ''}${s.toll.toll ? 't' : ''}`);
@@ -915,7 +915,7 @@ export function fromHash(hash: string, buildings = true): AppState {
     };
   }
   const bdv = buildings ? p.get('bd')?.split(',') : undefined;
-  if (bdv && bdv.length >= 6) {
+  if (bdv && bdv.length >= 5) {
     const b = s.buildings;
     const n = (v: string, d: number, lo: number, hi: number) => (v !== '' && Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
     // (The scale 0 means "× the terrain's exaggeration": a negative one is no scale, not that.)
@@ -926,7 +926,6 @@ export function fromHash(hash: string, buildings = true): AppState {
       colour: (['plain', 'height', 'source'] as BuildingColour[]).includes(bdv[2] as BuildingColour) ? (bdv[2] as BuildingColour) : b.colour,
       opacity: n(bdv[3], b.opacity, 0.1, 1),
       scale: bdv[4] !== '' && scale >= 0 ? n(bdv[4], b.scale, 0, 3) : b.scale,
-      skyline: bdv[5] === '1',
     };
   }
   const rw = p.get('rw')?.split(',').map(Number);

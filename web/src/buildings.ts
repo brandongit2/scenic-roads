@@ -9,7 +9,7 @@
 // A source and three layers: `buildings` (fill-extrusion: the parts, and the buildings without
 // parts), `buildings-flat` (fill, draped: footprints, the flat mode and 2D maps) and
 // `buildings-hover` (the hovered building, a little larger, lit). Settings → Buildings: 3D or flat,
-// colour (plain, by height, by where the height comes from), opacity, height scale, skyline only.
+// colour (plain, by height, by where the height comes from), opacity, height scale.
 
 import type { ExpressionSpecification, FilterSpecification, GeoJSONSource, Map as MLMap, MapGeoJSONFeature } from 'maplibre-gl';
 import { paletteRgb } from './palettes';
@@ -27,8 +27,6 @@ export interface BuildingState {
   opacity: number;
   /** Heights × this (1–3), or 0: × the terrain's exaggeration. */
   scale: number;
-  /** Only the skyline: buildings 40 m tall or more. */
-  skyline: boolean;
 }
 
 export const SOURCE = 'bld';
@@ -39,8 +37,6 @@ export const HOVER = 'buildings-hover';
  * hover finds candidates in (MapLibre's own query of extrusions ignores the terrain, and finds
  * nothing on the globe). */
 export const PICK = 'buildings-pick';
-/** The skyline (the z12 tiles' threshold), dm. */
-export const SKYLINE_DM = 400;
 /** The tallest a building can be (the pipeline's bound on heights taken), dm. */
 const TALLEST_DM = 7000;
 
@@ -93,20 +89,16 @@ const metres = (prop: 'h' | 'm', k: number): ExpressionSpecification => ['*', ['
 
 /** The extruded layer's filter: parts and buildings without parts (an outline with parts is drawn
  * by them), not the copies (`o`: a building reaching into a tile next to its own is copied there,
- * whole, for the flat footprints, which are cut at their tile's edge), and only the skyline when
- * asked. The pick layer's takes the copies too: a building is found from the tile it reaches into. */
-function extrudedFilter(skyline: boolean, copies = false): FilterSpecification {
+ * whole, for the flat footprints, which are cut at their tile's edge). The pick layer's takes the copies too: a building is found from the tile it reaches into. */
+function extrudedFilter(copies = false): FilterSpecification {
   const f: unknown[] = ['all', ['!=', ['coalesce', ['get', 'k'], 0], 2]];
   if (!copies) f.push(['!', ['has', 'o']]);
-  if (skyline) f.push(['>=', ['get', 'h'], SKYLINE_DM]);
   return f as FilterSpecification;
 }
 
 /** The flat layer's filter: footprints (buildings and outlines, not parts; copies too). */
-function flatFilter(skyline: boolean): FilterSpecification {
-  const f: unknown[] = ['all', ['!=', ['coalesce', ['get', 'k'], 0], 1]];
-  if (skyline) f.push(['>=', ['get', 'h'], SKYLINE_DM]);
-  return f as FilterSpecification;
+function flatFilter(): FilterSpecification {
+  return ['!=', ['coalesce', ['get', 'k'], 0], 1];
 }
 
 /** The buildings' tiles kept out of view, at most: about a view's worth of z14 tiles. MapLibre's
@@ -180,16 +172,16 @@ export function addBuildings(map: MLMap, before: string, flatBefore: string) {
   keepWhole(map);
   watchTall(map);
   map.addLayer({
-    id: FLAT, type: 'fill', source: SOURCE, 'source-layer': 'b', minzoom: 12, filter: flatFilter(false),
+    id: FLAT, type: 'fill', source: SOURCE, 'source-layer': 'b', minzoom: 12, filter: flatFilter(),
     layout: { visibility: 'none' },
     paint: { 'fill-color': PLAIN, 'fill-opacity': 0.55, 'fill-outline-color': 'rgba(20,24,30,0.6)' },
   }, flatBefore);
   map.addLayer({
-    id: PICK, type: 'fill', source: SOURCE, 'source-layer': 'b', minzoom: 12, filter: extrudedFilter(false, true),
+    id: PICK, type: 'fill', source: SOURCE, 'source-layer': 'b', minzoom: 12, filter: extrudedFilter(true),
     paint: { 'fill-color': '#000000', 'fill-opacity': 0 },
   }, flatBefore);
   map.addLayer({
-    id: LAYER, type: 'fill-extrusion', source: SOURCE, 'source-layer': 'b', minzoom: 12, filter: extrudedFilter(false),
+    id: LAYER, type: 'fill-extrusion', source: SOURCE, 'source-layer': 'b', minzoom: 12, filter: extrudedFilter(),
     paint: { 'fill-extrusion-color': PLAIN, 'fill-extrusion-height': metres('h', 1), 'fill-extrusion-base': metres('m', 1), 'fill-extrusion-vertical-gradient': true },
   }, before);
   map.addSource('bld-hover', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
@@ -217,10 +209,10 @@ export function applyBuildings(map: MLMap, b: BuildingState, exaggeration: numbe
   map.setPaintProperty(FLAT, 'fill-opacity', 0.65 * b.opacity);
   map.setPaintProperty(LAYER, 'fill-extrusion-height', metres('h', k));
   map.setPaintProperty(LAYER, 'fill-extrusion-base', metres('m', k));
-  map.setFilter(LAYER, extrudedFilter(b.skyline));
-  map.setFilter(PICK, extrudedFilter(b.skyline, true));
+  map.setFilter(LAYER, extrudedFilter());
+  map.setFilter(PICK, extrudedFilter(true));
   tallOf(map).dirty = true;
-  map.setFilter(FLAT, flatFilter(b.skyline));
+  map.setFilter(FLAT, flatFilter());
   // Lit from the hill-shading's light, low, so the roofs are a little brighter than the walls.
   map.setLight({ anchor: 'map', position: [1.5, ((light % 360) + 360) % 360, 40], intensity: 0.35, color: '#ffffff' });
 }

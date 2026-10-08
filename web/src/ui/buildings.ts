@@ -1,7 +1,7 @@
 // The settings panel's Buildings section (ui/layers.ts): the 3D buildings and how they're drawn
 // (buildings.ts): 3D or flat, colour (plain, by height, by where the height comes from), opacity,
-// height scale, skyline only.
-import { SKYLINE_DM, SOURCES, heightLegend, type BuildingColour, type BuildingState } from '../buildings';
+// height scale.
+import { SOURCES, heightLegend, type BuildingColour, type BuildingState } from '../buildings';
 import type { Store } from '../state';
 import { Slider, pct } from './controls';
 import { h } from './dom';
@@ -12,7 +12,6 @@ export class BuildingSection {
   readonly on: HTMLInputElement;
   private showBtns: HTMLButtonElement[] = [];
   private colourBtns: HTMLButtonElement[] = [];
-  private detailBtns: HTMLButtonElement[] = [];
   private op: Slider;
   private scale: Slider;
   private withTerrain: HTMLInputElement;
@@ -39,7 +38,6 @@ export class BuildingSection {
       ['height', 'Height', 'Coloured by height'],
       ['source', 'Source', 'Coloured by where the height comes from: measured, from floors, or estimated (and how)'],
     ], (k) => B({ colour: k as BuildingColour }), this.colourBtns);
-    const detail = seg([['all', 'All', 'Every building from zoom 14 (the tall and large from 12–13)'], ['skyline', 'Skyline', `Only buildings ${SKYLINE_DM / 10} m tall or more`]], (k) => B({ skyline: k === 'skyline' }), this.detailBtns);
     this.op = new Slider({ label: 'Opacity', min: 0.1, max: 1, step: 0.05, reset: 0.85, get: () => store.s.buildings.opacity, set: (opacity) => B({ opacity }), fmt: pct, title: 'Under 100 %, roads behind a building show through it faintly (and the buildings take two passes to draw)' });
     this.scale = new Slider({
       label: 'Height', min: 1, max: 3, step: 0.1, reset: 1, get: () => store.s.buildings.scale || 1, set: (scale) => B({ scale }),
@@ -57,7 +55,6 @@ export class BuildingSection {
       this.op.el,
       this.scale.el,
       h('label', { class: 'tog sub', title: 'Heights × the terrain’s exaggeration, so buildings keep their proportion to the hills' }, this.withTerrain, h('span', {}, 'With the terrain’s exaggeration')),
-      row('Detail', detail),
       h('div', { class: 'faint note tree-note' }, 'Overture Maps’ buildings (OpenStreetMap, Microsoft, Esri, USGS and others). Where no height is known it is estimated: colour by source to see how. B: on and off.'),
     );
     this.nodes = [this.body];
@@ -70,7 +67,6 @@ export class BuildingSection {
     this.body.classList.toggle('off', !b.on);
     this.showBtns.forEach((x, i) => x.classList.toggle('on', i === (b.flat ? 1 : 0)));
     this.colourBtns.forEach((x, i) => x.classList.toggle('on', ['plain', 'height', 'source'][i] === b.colour));
-    this.detailBtns.forEach((x, i) => x.classList.toggle('on', i === (b.skyline ? 1 : 0)));
     this.op.sync();
     this.scale.sync();
     this.withTerrain.checked = b.scale === 0;

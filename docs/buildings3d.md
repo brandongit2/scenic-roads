@@ -77,8 +77,7 @@ from.
 
 **The toggle:** Settings → Buildings, a section after Trees with its switch in the header, on by
 default. In it: 3D or flat (footprints only, also what a map without 3D terrain shows); colour
-mode; opacity; height scale (1–3×, or with the terrain's exaggeration); detail (all, or the skyline:
-40 m or more). In the link with the other settings (`bd=`); **B** toggles the layer. All three only
+mode; opacity; height scale (1–3×, or with the terrain's exaggeration). In the link with the other settings (`bd=`); **B** toggles the layer. All three only
 with a catalog that has the layer: until then the section is hidden, B does nothing and links
 leave `bd=` out (a catalog that gains the layer while the map is open shows them then).
 
@@ -701,8 +700,7 @@ source's fill-extrusion: the hovered building, 1 m larger and taller, amber).
 ### 4.6 Levels of detail and the iPad
 
 - Detail comes from the tiles (§1): z12 and z13 tiles hold only the tall and large buildings, and a
-  tilted view takes them toward the horizon. "Skyline only" filters `h` (MapLibre filters before it
-  builds the buckets, so filtered buildings cost no GPU memory).
+  tilted view takes them toward the horizon.
 - **The iPad's budget** (8 GB iPad Pro; Safari gives a tab ~4 GB, the map's roads, terrain and
   basemap take a share): buildings ≤ 300 MB in the densest view, ≤ 8 ms of GPU a frame. What counts
   is everything the source holds, for the tiles in view **and in its cache**: its buffers
@@ -755,8 +753,25 @@ source's fill-extrusion: the hovered building, 1 m larger and taller, amber).
   | Barcelona's old town | 14.1 + 53.8 MB | 30.2 + 43.8 MB | 3.1 / 3.3 / 1.5 ms | 3.3 / 3.9 / 2.1 ms |
 
   B1's first measurements, before the review: opacity 1 (one pass) saved little (Shinjuku 2.9
-  against 3.0 ms); "skyline only" cut Shinjuku's buffers by 95 %; the whole map's frame took 5–6 ms
+  against 3.0 ms); the whole map's frame took 5–6 ms
   of GPU at Shinjuku with or without the buildings within the noise.
+- **Measured on the iPad** (the owner, 8 Oct; frames timed by `requestAnimationFrame` over 10 s of
+  two-finger orbiting, memory from Safari's Web Inspector, buffers by the console snippet below):
+
+  | View | Buildings | fps | median / p90 / worst frame | page max | buildings' buffers in view + cached |
+  |---|---|---|---|---|---|
+  | Shinjuku | on | 25 | 37 / 61 / 410 ms | 192 MB | 46.3 + 10.2 MB (6 + 4 tiles) |
+  | Shinjuku | off | 24.6 | 41 / 57 / 95 ms | 151 MB | — |
+  | Midtown | on | 22.8 | 38 / 76 / 137 ms | 439 MB | 39.8 + 11.1 MB (15 + 5 tiles) |
+  | Midtown | off | 13.5 | 78 / 123 / 190 ms | 422 MB | — |
+  | Châtelet | on | 17.8 | 51 / 103 / 171 ms | 163 MB | 72.4 + 15.4 MB (10 + 3 tiles) |
+  | Châtelet | off | 21.2 | 44 / 77 / 132 ms | 187 MB | — |
+
+  The buildings fit the memory budget by far (at most ~88 MB of buffers against 300), and cost
+  little frame time beside the map's own: with them off the map runs at 13–25 fps in these tilted
+  city views too (one run each; tiles still loading as the view turns weigh on both). The iPad's
+  frame rate is the whole map's, not the buildings'. Safari's JavaScript heap peaked at 760–910 MB
+  either way.
 - **The iPad checklist** (the owner's):
   1. Serve the pilot: a server from this branch with `--root` a folder laid out like the NAS's
      whose newest catalog has the pilot's `buildings` layer (B1 made one: catalog 14 with the
@@ -795,12 +810,12 @@ source's fill-extrusion: the hovered building, 1 m larger and taller, amber).
            cached: sum(Object.values(tm._outOfViewCache.data).flat().map((e) => e.value)) }; })()
        ```
   4. Each view with Buildings on, then off (B on a keyboard, or the switch), then opacity 100 %
-     (the iPad's default already: a touch screen's is 100 %), then Skyline; and once after panning
+     (the iPad's default already: a touch screen's is 100 %); and once after panning
      around Shinjuku for a while (the cache full).
   5. Over budget (300 MB of buildings, 8 ms a frame) anywhere: the fallbacks below, and
      Barcelona's old-town tiles simplified (~18 % off).
 - **If over budget**, on touch devices: opacity 1 (one pass, the default there anyway), z14 tiles only
-  from zoom 15 ("skyline" between 13 and 15), a smaller cache still (4 tiles held 41 MB of buffers
+  from zoom 15 (the tall and large only between 13 and 15), a smaller cache still (4 tiles held 41 MB of buffers
   after the Tokyo panning, 8 held 73 MB), and, if it comes to it, the extrusions' centroids freed in the page once
   uploaded, as MapLibre frees the rest (a patch, as `vite.config.ts` patches its shaders; MapLibre
   marks their buffer dynamic, so what updates it to be checked first).
