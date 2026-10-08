@@ -102,20 +102,42 @@ fn is_kana(c: char) -> bool {
 /// articles of the coverage's languages (tools/names/check.py's, and the roads' own).
 const OTHER_WORDS: &[&str] = &[
     // French
-    "lac", "lacs", "rivière", "riviere", "fleuve", "ruisseau", "étang", "etang", "baie", "anse", "cap", "pointe", "île", "ile", "îles", "iles", "mont", "monts", "montagne", "col", "pic", "forêt", "foret", "parc", "réserve", "chute", "chutes", "vallée", "vallee", "plage", "marais", "château", "chateau", "église", "eglise", "chapelle", "pont", "gare", "musée", "musee", "moulin", "rue", "chemin", "rang", "côte", "cote", "allée", "allee", "impasse", "boulevard", "de", "du", "des", "la", "le", "les", "aux", "et", "saint", "sainte",
+    "lac", "lacs", "rivière", "riviere", "fleuve", "ruisseau", "étang", "etang", "baie", "anse", "cap", "pointe", "île", "ile", "îles", "iles", "mont", "monts", "montagne", "col", "pic", "forêt", "foret", "parc", "réserve", "chute", "chutes", "vallée", "vallee", "plage", "marais", "château", "chateau", "église", "eglise", "chapelle", "pont", "gare", "musée", "musee", "moulin", "rue", "chemin", "rang", "côte", "cote", "allée", "allee", "impasse", "de", "du", "des", "la", "le", "les", "aux", "et", "saint", "sainte",
     // Spanish, Portuguese, Catalan, Galician
     "río", "rio", "lago", "laguna", "embalse", "sierra", "monte", "isla", "playa", "parque", "pico", "puerto", "castillo", "iglesia", "puente", "calle", "carrera", "camino", "avenida", "plaza", "del", "el", "los", "las", "y", "lagoa", "serra", "ilha", "praia", "castelo", "igreja", "rua", "estrada", "praça", "da", "do", "dos", "das", "carrer", "riu", "camí", "plaça", "dels", "rúa", "san", "santa", "santo", "são",
     // Welsh, Irish, Scottish Gaelic
     "afon", "llyn", "mynydd", "coed", "eglwys", "ffordd", "heol", "stryd", "lôn", "nant", "pen", "bryn", "cwm", "sliabh", "abhainn", "inis", "oileán", "bóthar", "sráid", "baile", "cnoc", "rathad", "sràid", "beinn", "gleann", "allt", "eilean",
 ];
 
+/// Words that mark a Latin-script name as English where English isn't spoken: its articles and
+/// joining words, and the generic words of the names English-language registers and maps give
+/// ("Temples, Gardens and Archaeological Sites", "a Historic International Settlement").
+const ENGLISH_WORDS: &[&str] = &[
+    "the", "of", "and", "in", "on", "at", "lake", "river", "mount", "mountain", "mountains", "island", "islands", "bay", "park", "national", "historic", "historical", "site", "sites", "temple", "temples", "shrine", "garden", "gardens", "castle", "church", "cathedral", "museum", "bridge", "station", "line", "street", "road", "avenue", "tower", "house", "hall", "palace", "ruins", "settlement", "monument", "memorial", "district", "town", "city", "village", "world", "heritage", "international", "archaeological", "falls", "beach", "harbour", "harbor", "port", "trail", "valley", "forest", "reserve", "observatory", "school", "university", "airport", "market", "square", "centre", "center", "building", "estate", "farm", "mill", "lighthouse", "viewpoint", "peak", "hill", "point", "cape", "north", "south", "east", "west", "old", "new", "upper", "lower", "great", "little",
+];
+
 /// Whether a name reads as English: Latin letters without accents, and none of the coverage's
-/// other languages' words.
-fn reads_english(name: &str) -> bool {
-    if name.chars().any(|c| c.is_alphabetic() && !c.is_ascii()) {
+/// other languages' words; where English isn't spoken (`english_spoken` false), an English word
+/// too. A name in CJK script with a Latin part (Hong Kong's "文武廟 Man Mo Temple Compound") reads
+/// as English when its Latin part does: it carries its English.
+fn reads_english(name: &str, english_spoken: bool) -> bool {
+    let latin: String = if name.chars().any(is_cjk) {
+        let l: String = name.chars().filter(|c| !is_cjk(*c)).collect();
+        if l.chars().filter(|c| c.is_ascii_alphabetic()).count() < 4 {
+            return false;
+        }
+        l
+    } else {
+        name.to_owned()
+    };
+    if latin.chars().any(|c| c.is_alphabetic() && !c.is_ascii()) {
         return false;
     }
-    !name.split(|c: char| !c.is_alphanumeric()).any(|w| OTHER_WORDS.contains(&w.to_lowercase().as_str()))
+    let words: Vec<String> = latin.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect();
+    if words.iter().any(|w| OTHER_WORDS.contains(&w.as_str())) {
+        return false;
+    }
+    english_spoken || words.iter().any(|w| ENGLISH_WORDS.contains(&w.as_str()))
 }
 
 impl Lists<'_> {
@@ -123,6 +145,11 @@ impl Lists<'_> {
     fn add(&mut self, t: Thing) {
         if t.own {
             self.report.own += 1;
+            return;
+        }
+        // Nothing to translate in a name without letters ("66-91").
+        if !t.name.chars().any(char::is_alphabetic) {
+            self.report.english += 1;
             return;
         }
         let here = self.spoken.langs_at(t.lon, t.lat);
@@ -153,15 +180,14 @@ impl Lists<'_> {
             self.report.nowhere += 1;
             return;
         }
-        // Where English is spoken, a name without another language's signs is English.
-        if cands.contains(&en) {
-            if reads_english(t.name) {
-                self.report.english += 1;
-                return;
-            }
-            if cands.len() > 1 {
-                cands.retain(|l| *l != en);
-            }
+        // Where English is spoken, a name without another language's signs is English; elsewhere,
+        // one with English words too.
+        if reads_english(t.name, cands.contains(&en)) {
+            self.report.english += 1;
+            return;
+        }
+        if cands.contains(&en) && cands.len() > 1 {
+            cands.retain(|l| *l != en);
         }
         let e = self.entries.entry((t.name.to_owned(), t.kind, cands[0])).or_default();
         for l in cands {
@@ -443,7 +469,7 @@ fn landmarks(root: &Path, cat: &store::catalog::Catalog, lists: &mut Lists, done
                 lon,
                 lat,
                 id: osm.clone().or_else(|| qid.clone()).unwrap_or_default(),
-                priority: 30.0 + 20.0 * fame.min(3.0),
+                priority: 30.0 + 8.0 * fame,
             });
             // A description, when it has an English article or a register entry and none yet.
             let register = inf.pointer("/props/url").and_then(Value::as_str).map(str::to_owned);
@@ -608,14 +634,27 @@ mod tests {
 
     #[test]
     fn english_or_not() {
-        assert!(reads_english("Lake Louise"));
-        assert!(reads_english("Main Street"));
-        assert!(reads_english("O'Connell Bridge"));
-        assert!(!reads_english("Rue Principale"));
-        assert!(!reads_english("Lac des Sables"));
-        assert!(!reads_english("Montréal"));
-        assert!(!reads_english("Ffordd Caergybi"));
-        assert!(!reads_english("中山"));
+        for (name, spoken, english) in [
+            ("Lake Louise", true, true),
+            ("Main Street", true, true),
+            ("O'Connell Bridge", true, true),
+            ("Shiplett Boulevard", true, true),
+            ("Rue Principale", true, false),
+            ("Lac des Sables", true, false),
+            ("Montréal", true, false),
+            ("Ffordd Caergybi", true, false),
+            ("中山", true, false),
+            ("文武廟 Man Mo Temple Compound", true, true),
+            ("文武廟 Man Mo", true, true),
+            ("文武廟 Man Mo", false, false),
+            ("Hiraizumi – Temples, Gardens and Archaeological Sites Representing the Buddhist Pure Land", false, true),
+            ("Kulangsu, a Historic International Settlement", false, true),
+            ("Hiraizumi", false, false),
+            ("Le Clivet", false, false),
+            ("Stany", false, false),
+        ] {
+            assert_eq!(reads_english(name, spoken), english, "{name}");
+        }
     }
 
     fn spoken() -> Spoken {

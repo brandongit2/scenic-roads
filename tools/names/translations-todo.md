@@ -21,11 +21,13 @@ every build, so don't edit them; answers go elsewhere (below).
   Wikidata item (`qid`), else its label's row (`label`, labels made before they carried their OSM
   object), and where it is (`at`: lon, lat).
 - `priority`: fame, place class and population, road class (a city about 70, a village 50, a
-  hamlet 30, a motorway 45, a residential street 20), plus the log of `things`.
+  hamlet 30; a landmark 30 plus 8 times its fame, Mount Rushmore about 70; a motorway 45, a
+  residential street 20), plus the log of `things`.
 
 Names with English of their own (OSM's `name:en`, a romanised name, a kana reading, a register's
 English) aren't listed: that English belongs to its thing, and shows. Nor are names already in
-English where English is spoken.
+English (where English is spoken, a name without another language's accents or words; elsewhere
+one with English words too), bilingual names with their English part, or names without letters.
 
 ## The answer
 

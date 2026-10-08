@@ -498,11 +498,11 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   - It checks the NAS for a newer catalog every 30 s while in use, every 10 minutes otherwise.
 - **URLs and ETags:**
   - Data URLs carry a content version (`?v=`: a file's hash, a layer's packs' content names, plus
-    the translations version for named data).
+    the translations' version over every language for named data).
   - A versioned response is cached for good (`immutable`) while that version is current, else it's
     revalidated.
-  - ETags are content hashes, combined for named tiles with the versions of the translations they
-    use. The basemap's are its archives' content names and the tile's position, known from the
+  - ETags are content hashes, combined for named tiles with the versions of the languages spoken
+    within them and of the spoken-languages raster (§7). The basemap's are its archives' content names and the tile's position, known from the
     catalog, so its 304s read nothing.
 
 **Mirror, per Mac** (`store::mirror`, `crates/server/src/keep.rs`).
@@ -1326,13 +1326,15 @@ them).
     (rivers' names), stations, ferries, the area overlays' names.
   - Names already in English aren't listed: where English is spoken, a name without another
     candidate language's signs (accents, the coverage's generic words and articles) counts as
-    English.
+    English; elsewhere one with English words too ("Hiraizumi – Temples, Gardens and
+    Archaeological Sites…"); a name in Chinese or Japanese script with an English part (Hong
+    Kong's "文武廟 Man Mo Temple Compound") carries its English. Nor are names without letters.
   - **Each entry:** the name and its kind; the candidate languages: those spoken where the things
     lacking English are, narrowed by OSM's language tags and the name's script (kana Japanese, other
     CJK the CJK languages spoken there, Latin the others); how many things lack English, and one of
     them (its OSM id and position); a priority (labels: places by class and population, about 70 a
-    city, 50 a village, 30 a hamlet; states 50 and up, water and parks 30 and up; landmarks 30 + 20
-    × fame; roads by class, 45 a motorway to 20 a residential street; plus log₁₀ of the count).
+    city, 50 a village, 30 a hamlet; states 50 and up, water and parks 30 and up; landmarks 30 + 8 ×
+    fame; roads by class, 45 a motorway to 20 a residential street; plus log₁₀ of the count).
   - Entries are sorted by priority. Each goes on its first candidate's list, and the answer says
     which candidates it holds for. Entries carry no other thing's sourced English.
   - **The brief:** `translations/todo/README.md` (`tools/names/translations-todo.md`): the entry
