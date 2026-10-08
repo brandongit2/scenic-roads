@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 
 /// The steps both Macs run: a helper's agent does their jobs as the build Mac's coordinator leases
 /// them (crate::coord), in this order of preference (what later steps wait on first).
-pub const SHARED: [&str; 6] = ["terrain", "slope", "trees", "unit", "pois", "peaks"];
+pub const SHARED: [&str; 8] = ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles"];
 /// How long a claim lasts without being kept fresh.
 pub const STALE: Duration = Duration::from_secs(15 * 60);
 

@@ -826,13 +826,17 @@ pub fn folder(w: &str) -> String {
 /// English and the grids its packs lacked; candidates' and peaks' own files; a tree cover piece's (a
 /// z6 tile's) hi packs of the tree layers and its mid, an assembly's (a z3 tile's) lo packs of them;
 /// an area's (a z3 tile's) lo pack and its z6 tiles' hi packs of terrain, slope, or the tree layers
-/// (a z3 tile's whole run: a lease of the scheme before pieces).
+/// (a z3 tile's whole run: a lease of the scheme before pieces); a z6 tile's normalized buildings
+/// (`bldprep`) or 3D buildings' hi pack (`bldtiles`).
 pub fn saves(step: &str, target: &str, l: &str) -> bool {
     let dash = target.replace('/', "-");
     let tile = crate::legacy::Unit::parse(target);
     match step {
         "unit" => crate::unit::saved_files(&dash).iter().any(|f| f == l),
         "pois" | "peaks" => l == format!("work/{step}/{dash}"),
+        // (A z6 tile's normalized buildings, and its 3D buildings' hi pack.)
+        "bldprep" => tile.is_some_and(|t| t.z == 6 && l == crate::bld::work_logical(t.x, t.y)),
+        "bldtiles" => tile.is_some_and(|t| t.z == 6 && l == crate::bld::pack_logical(t.x, t.y)),
         "trees" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| l == crate::treepacks::mid_logical(t.x, t.y) || crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/hi/{dash}"))),
         "trees-lo" => tile.is_some_and(|u| u.z == 3) && crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/lo/{dash}")),
         "terrain" | "slope" | "trees" => {

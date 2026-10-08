@@ -22,8 +22,8 @@ use super::build::RegionLeft;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The shared steps a helper takes, in its order of preference (crate::agent::claims::SHARED).
-const SHARED: [&str; 6] = ["terrain", "slope", "trees", "unit", "pois", "peaks"];
+// The shared steps a helper takes, in its order of preference.
+use super::claims::SHARED;
 
 // The steps the build Mac's second job takes, in its order of preference, and those it takes while
 // the Mac is in use: the agent's.
@@ -207,7 +207,8 @@ enum Phase {
 /// What a chain's step waits for (crate::agent::build::landmarks_work): the candidates for the
 /// pass's hiking-route ends; the peaks for every candidate, the pass's summits and the terrain; the
 /// items' facts for every candidate; the rest of the heritage chain for the heritage sites; the
-/// landmark points for those four; trains a day for their feeds. By step: (the jobs before the
+/// landmark points for those four; trains a day for their feeds; the 3D buildings' tiles for the
+/// normalized files. By step: (the jobs before the
 /// regions', the chains', the terrain's).
 fn chain_deps(step: &str) -> (&'static [&'static str], &'static [&'static str], bool) {
     match step {
@@ -217,6 +218,7 @@ fn chain_deps(step: &str) -> (&'static [&'static str], &'static [&'static str], 
         "heritage" => (&["heritage-sites"], &[], false),
         "marks" => (&[], &["pois", "peaks", "items", "heritage"], false),
         "rail" => (&[], &["rail-feeds"], false),
+        "bldtiles" => (&[], &["bldprep"], false),
         _ => (&[], &[], false),
     }
 }

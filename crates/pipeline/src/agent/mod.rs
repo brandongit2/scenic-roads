@@ -93,15 +93,16 @@ const DRAIN_GRACE: Duration = Duration::from_secs(15 * 60);
 /// can run, and a second beside it (`SECOND`). A helper runs one, as the build Mac leases them.
 const SLOTS: usize = 2;
 
-/// The steps the second job takes, in its order of preference: the trains' and the landmarks'
-/// steps that mostly wait on the internet first, then the candidates and peaks (the landmarks wait
-/// for them), then units and slope. A unit spent 380 of its 860 s writing to the NAS and reading
-/// the caches, not computing (6/17/25, 2026-10-05): two at once build more.
-const SECOND: [&str; 10] = ["heritage", "items", "rail-feeds", "rail", "marks", "overlays", "pois", "peaks", "unit", "slope"];
+/// The steps the second job takes, in its order of preference: the trains', the landmarks' and the
+/// 3D buildings' steps that mostly wait on the internet first, then the candidates and peaks (the
+/// landmarks wait for them), then units and slope, then the 3D buildings (they hold up neither the
+/// roads nor the terrain). A unit spent 380 of its 860 s writing to the NAS and reading the caches,
+/// not computing (6/17/25, 2026-10-05): two at once build more.
+const SECOND: [&str; 13] = ["heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays", "pois", "peaks", "unit", "slope", "bldprep", "bldtiles"];
 
 /// Those of them that mostly wait on the network, and run beside the first job while the Mac is in
 /// use too (the others only while it isn't).
-const LIGHT: [&str; 6] = ["heritage", "items", "rail-feeds", "rail", "marks", "overlays"];
+const LIGHT: [&str; 7] = ["heritage", "items", "rail-feeds", "rail", "bld-fetch", "marks", "overlays"];
 
 /// The last round of publishing, in the agent's folder (build::Round): its jobs read the units of
 /// the one under way there (crate::out::UNITS_AS_OF_ENV).
@@ -133,13 +134,17 @@ const WIKI: [&str; 2] = ["items", "heritage"];
 /// none starts while the agent sends them as it starts (`Agent::seed_answers`).
 const ANSWERED: [&str; 3] = ["items", "heritage-sites", "heritage"];
 
+/// Steps that read gigabytes of the NAS's sources a target (the 3D buildings' parquet: up to ~3 GB
+/// a z6 tile): never two at once on one Mac, the NAS being the build's bottleneck.
+const NAS_READS: [&str; 1] = ["bldprep"];
+
 /// Whether jobs of steps `a` and `b` can't run at once: either runs alone, both read the raw tiles,
-/// both ask Wikidata, or they're the same step and it isn't a shared one (one job's work: its
-/// targets held by nothing else). A shared step's targets are held apart (crate::coord), and each
-/// slot has a scratch folder of its own.
+/// both ask Wikidata, both read the NAS's sources in bulk, or they're the same step and it isn't a
+/// shared one (one job's work: its targets held by nothing else). A shared step's targets are held
+/// apart (crate::coord), and each slot has a scratch folder of its own.
 fn clash(a: &str, b: &str) -> bool {
     let both = |set: &[&str]| set.contains(&a) && set.contains(&b);
-    ALONE.contains(&a) || ALONE.contains(&b) || both(&RAW) || both(&WIKI) || (a == b && !claims::SHARED.contains(&a))
+    ALONE.contains(&a) || ALONE.contains(&b) || both(&RAW) || both(&WIKI) || both(&NAS_READS) || (a == b && !claims::SHARED.contains(&a))
 }
 
 /// The memory a job of `step` is expected to take beside another (MB) before its own run has said:
@@ -149,7 +154,7 @@ fn second_peak(step: &str) -> u64 {
     match step {
         "heritage" | "rail" => 6144,
         "items" => 3072,
-        "rail-feeds" => 1024,
+        "rail-feeds" | "bld-fetch" => 1024,
         "marks" | "overlays" => 4096,
         "unit" => 8600,
         "pois" => 2048,
@@ -267,7 +272,23 @@ fn first_peak(step: &str) -> u64 {
         // (The worldwide water: its z14 directory and stored tiles held, 7.7 GB at most measured,
         // 2026-10-08.)
         "water" => 8192,
+        // (The 3D buildings, until a target's own run says: the densest tile's, B1's Kantō 6/56/25:
+        // 5.1 GB to read its 30.3 M rows, 3.3 GB to raise its tiles. Offered by the rows they read:
+        // `bld_peak`.)
+        "bldprep" => 5200,
+        "bldtiles" => 3400,
         _ => 1500,
+    }
+}
+
+/// The memory a 3D buildings job of a z6 tile is expected to take (MB), before one has said, by the
+/// rows of the row groups its normalized file is read from (`rows`: crate::bld::sources): B1's six
+/// tiles took 0.3 GB and 160 B a row read for `bldprep`, 0.25 GB and 280 B a building of its
+/// largest z8 area for `bldtiles` (Kantō's 10.8 M of 30.3 M; taken as two fifths of the rows).
+fn bld_peak(step: &str, rows: u64) -> u64 {
+    match step {
+        "bldprep" => 300 + rows * 160 / (1 << 20),
+        _ => 250 + rows * 2 / 5 * 280 / (1 << 20),
     }
 }
 
@@ -1060,6 +1081,10 @@ impl Agent {
             "terrain" | "terrain-root" => vec!["--raw".into(), s(&cache.join("aws-terrarium"))],
             "pois" | "marks" | "stations" | "overlays" => vec!["--pass".into(), date.to_string()],
             "ferries" | "rail-feeds" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem()],
+            // (bld-fetch's coverage, and bldtiles' countries, from the pass's outlines.)
+            "bld-fetch" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem()],
+            "bldprep" => vec!["--dem".into(), dem()],
+            "bldtiles" => vec!["--pass".into(), date.to_string()],
             "items" | "heritage-sites" | "heritage" | "rail" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache".into(), s(&cache)],
             "peaks" => vec!["--pass".into(), date.to_string(), "--raw".into(), s(&cache.join("aws-terrarium")), "--cache".into(), s(&cache), "--coarse-threads".into(), "6".into()],
             "unit" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem(), "--cache-dir".into(), s(&cache)],
@@ -3254,6 +3279,9 @@ impl Agent {
         } else if inputs.get("keys").map(String::as_str) == Some("?") {
             waiting.push(Waiting { step: None, what: build::TRAINS.into(), why: "inputs/keys.env can't be read now".into() });
         }
+        if inputs.get("bld-release").map(String::as_str) == Some("?") {
+            waiting.push(Waiting { step: None, what: build::BUILDINGS.into(), why: "the 3D buildings' sources' indexes on the NAS can't be read now".into() });
+        }
         // The regions the map's catalog has (or the held one's, when catalogs are held for review)
         // and how long ago it went out: what the plan publishes regions by.
         // (The held ones, once there are any: the first goes by what's served.)
@@ -3348,6 +3376,8 @@ impl Agent {
             }
             n
         };
+        // A 3D buildings tile's rows read (crate::bld::sources::digests), for its jobs' memory.
+        let bld_rows = |t: &str| inputs.get(&format!("bldprep-rows {t}")).and_then(|v| v.parse::<u64>().ok());
         let mut offers: Vec<crate::coord::Offer> = Vec::new();
         // (A terrain area's z6 tiles near the coverage, for its run's expected memory: only when
         // there's terrain to offer.)
@@ -3370,6 +3400,7 @@ impl Agent {
             let guess = |t: &str| match w.step.as_str() {
                 "unit" | "pois" => size(t),
                 "terrain" => terrain_peak(z6.get(t).copied().unwrap_or(64)),
+                s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
                 s => first_peak(s),
             };
             offers.push(crate::coord::Offer { step: w.step.clone(), targets: w.targets.iter().map(|(t, k)| (t.clone(), k.clone(), guess(t))).collect(), batch: batch_size(&w.step) });
@@ -3402,6 +3433,7 @@ impl Agent {
             let peak = |step: &str, t: &str| match step {
                 "unit" | "pois" => crate::coord::unit_peak(&BTreeMap::new(), t, size(t)),
                 "terrain" => terrain_peak(z6.get(t).copied().unwrap_or(64)),
+                s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
                 s => first_peak(s),
             };
             let mut before = before;
@@ -3434,7 +3466,7 @@ impl Agent {
                 jobs.push(j);
                 continue;
             }
-            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail") && !t.ends_with("-root")).collect();
+            let mut extra: Vec<String> = w.targets.iter().map(|t| t.0.clone()).filter(|t| !matches!(t.as_str(), "catalog" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch") && !t.ends_with("-root")).collect();
             extra.extend(self.step_args(&w.step, date));
             // (Tree cover pieces made again as they are, their mids made: expected the same.)
             let same = expect_same(&w, &done);
@@ -3453,7 +3485,7 @@ impl Agent {
             let what = match w.step.as_str() {
                 "terrain" | "slope" | "unit" | "pois" | "peaks" | "pack" | "trees-lo" => format!("{base} ({areas})"),
                 "trees" if same.len() == n => format!("Making the tree cover's mids, checking it the same ({})", areas.replace("area", "tile")),
-                "trees" => format!("{base} ({})", areas.replace("area", "tile")),
+                "trees" | "bldprep" | "bldtiles" => format!("{base} ({})", areas.replace("area", "tile")),
                 _ => base.to_string(),
             };
             let id = format!("{} {}", w.step, w.targets.first().map(|t| t.0.as_str()).unwrap_or(""));
@@ -3474,7 +3506,7 @@ impl Agent {
     /// else its step's mean or a first guess (`first_secs`; `peak` for its memory); the helpers at
     /// their measured speed; each machine free once its job under way is done.
     #[allow(clippy::too_many_arguments)]
-    fn forecast_now(&self, root: &Path, before: &[JobSpec], regions: &[build::RegionLeft], backfill: &[(String, String)], chains: [Vec<build::Work>; 3], since_last: Option<u64>, under_way: Option<(Vec<String>, bool, Vec<build::Work>)>, blind: Option<String>, peak: &dyn Fn(&str, &str) -> u64) -> forecast::Forecast {
+    fn forecast_now(&self, root: &Path, before: &[JobSpec], regions: &[build::RegionLeft], backfill: &[(String, String)], chains: [Vec<build::Work>; 4], since_last: Option<u64>, under_way: Option<(Vec<String>, bool, Vec<build::Work>)>, blind: Option<String>, peak: &dyn Fn(&str, &str) -> u64) -> forecast::Forecast {
         use forecast::{Cost, Machine};
         let (costs, leased, events, mem) = match &self.coord {
             Some(c) => c.for_forecast(),
@@ -3537,7 +3569,7 @@ impl Agent {
         // times; the last round, the roads' chain as it stands now, if more (none when it's done),
         // less what the round under way still does (the roads' chain counts its work too, which
         // goes out with it).
-        let [roads, rail, landmarks] = chains;
+        let [roads, rail, landmarks, buildings] = chains;
         let chain_s = |works: &[build::Work]| -> f64 { works.iter().map(|w| if claims::SHARED.contains(&w.step.as_str()) { w.targets.iter().map(|t| cost(&w.step, &t.0).secs).sum() } else { mine(&w.step, w.targets.len()).secs }).sum() };
         let round_s = forecast::round_secs(&events).unwrap_or_else(|| ["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root", "catalog"].iter().map(|s| mine(s, 1).secs).sum::<f64>() + mine("pack", 8).secs + mine("lo", 2).secs);
         let ahead = under_way.as_ref().map_or(0.0, |u| chain_s(&u.2));
@@ -3546,7 +3578,7 @@ impl Agent {
         // built: forecast::chain_deps), but the overlays (they read the built units) after the last
         // round; and a catalog after it with what the chains made since.
         let (mut chain_jobs, mut after): (Vec<forecast::Job>, Vec<forecast::Job>) = (Vec::new(), Vec::new());
-        for w in rail.iter().chain(landmarks.iter()) {
+        for w in rail.iter().chain(landmarks.iter()).chain(buildings.iter()) {
             let jobs: Vec<forecast::Job> = if claims::SHARED.contains(&w.step.as_str()) {
                 w.targets.iter().map(|t| (w.step.clone(), t.0.clone(), cost(&w.step, &t.0))).collect()
             } else {
@@ -3554,7 +3586,7 @@ impl Agent {
             };
             if w.step == "overlays" { after.extend(jobs) } else { chain_jobs.extend(jobs) }
         }
-        if !rail.is_empty() || !landmarks.is_empty() {
+        if !rail.is_empty() || !landmarks.is_empty() || !buildings.is_empty() {
             after.push(("catalog".into(), "after the chains".into(), mine("catalog", 1)));
         }
         // Each slot's job's time left: its pace says only its part's; its targets not yet done, as
@@ -4503,6 +4535,13 @@ fn first_secs(step: &str) -> f64 {
         "peaks" => 15.0,
         "marks" => 190.0,
         "overlays" => 50.0,
+        // (A z6 tile on average, B2's estimate from B1's pilot on the build Mac: bldprep 2.2–4.7 s a
+        // million rows and ~2.5 s to start, ~440 M rows over 380 tiles; bldtiles 0.5–2.9 s a
+        // million buildings, ~342 M. Fetching what's there already: listings, and the coverage
+        // unioned.)
+        "bld-fetch" => 300.0,
+        "bldprep" => 6.0,
+        "bldtiles" => 2.0,
         "catalog" => 60.0,
         _ => 300.0,
     }
@@ -4516,6 +4555,10 @@ fn batch_size(step: &str) -> usize {
     match step {
         "terrain" => 1,
         "trees" | "trees-lo" => 4,
+        // (A dense z6 tile's bldprep about a minute, its bldtiles about 10 s: a job of a few
+        // minutes at most.)
+        "bldprep" => 8,
+        "bldtiles" => 16,
         "slope" | "lo" => 2,
         "unit" => 6,
         "peaks" => 12,
@@ -4579,8 +4622,8 @@ mod tests {
     fn a_helper_asks_only_for_what_its_disk_has_room_for() {
         let gb = |n: u64| n << 30;
         // 20 GB free and 10 of caches it may empty: the 15 GB steps (and their margin: tree cover's
-        // pieces among them) and tasks, not a terrain run's 55.
-        assert_eq!(helper_steps(gb(20), gb(10), 0), ["slope", "trees", "unit", "pois", "peaks", "tail"]);
+        // pieces and the 3D buildings' among them) and tasks, not a terrain run's 55.
+        assert_eq!(helper_steps(gb(20), gb(10), 0), ["slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles", "tail"]);
         assert_eq!(helper_steps(gb(70), 0, 0), [claims::SHARED.to_vec(), vec!["tail"]].concat());
         assert_eq!(helper_steps(gb(10), gb(5), 0), ["tail"]);
         assert!(helper_steps(gb(3), gb(2), 0).is_empty());
@@ -4749,6 +4792,22 @@ mod tests {
         assert!(clash("osm-pass", "items") && clash("items", "gc") && clash("heritage-sites", "unit"));
         // Two asking Wikidata, each paced as if alone: not at once.
         assert!(clash("items", "heritage") && !clash("items", "rail-feeds"));
+        // The 3D buildings: their tiles two at once, their parquet read one tile at a time; the
+        // fetch beside them; nothing beside the water or the pass.
+        assert!(!clash("bldtiles", "bldtiles") && clash("bldprep", "bldprep") && !clash("bldprep", "bldtiles"));
+        assert!(!clash("bld-fetch", "bldprep") && clash("water", "bldtiles") && clash("bldprep", "osm-pass"));
+        assert!(LIGHT.contains(&"bld-fetch") && SECOND.ends_with(&["bldprep", "bldtiles"]));
+    }
+
+    #[test]
+    fn a_3d_buildings_job_is_offered_by_the_rows_it_reads() {
+        // B2's runs on the M1: Paris's 6/32/22 (16.5 M rows in its row groups) took 2.4 GB to read
+        // and 1.2 GB to raise; Vermont's 6/19/23 (6.8 M) 1.2 and 0.9 GB. Offered above each.
+        assert_eq!((bld_peak("bldprep", 16_505_246), bld_peak("bldtiles", 16_505_246)), (2818, 2012));
+        assert!(bld_peak("bldprep", 6_771_191) > 1243 && bld_peak("bldtiles", 6_771_191) > 935);
+        // A tile reading nothing (a GHSL tile alone): its fixed part.
+        assert_eq!((bld_peak("bldprep", 0), bld_peak("bldtiles", 0)), (300, 250));
+        assert_eq!((batch_size("bldprep"), batch_size("bldtiles")), (8, 16));
     }
 
     #[test]

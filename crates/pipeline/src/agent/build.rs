@@ -87,6 +87,12 @@ pub struct Keys {
     /// Their assemblies, per z3 tile ("3/x/y").
     #[serde(default)]
     pub trees_lo: BTreeMap<String, String>,
+    /// The 3D buildings' normalized files (`bldprep`) and tiles (`bldtiles`), per z6 tile ("6/x/y":
+    /// `bld_targets`).
+    #[serde(default)]
+    pub bldprep: BTreeMap<String, String>,
+    #[serde(default)]
+    pub buildings: BTreeMap<String, String>,
     /// The served files the last catalog was made from.
     #[serde(default)]
     pub catalog: Option<String>,
@@ -158,6 +164,8 @@ impl Keys {
             "pack" => &mut self.pack,
             "trees" => &mut self.trees,
             "trees-lo" => &mut self.trees_lo,
+            "bldprep" => &mut self.bldprep,
+            "bldtiles" => &mut self.buildings,
             _ => &mut self.lo,
         }
     }
@@ -174,13 +182,16 @@ impl Keys {
             "lo" => &self.lo,
             "trees" => &self.trees,
             "trees-lo" => &self.trees_lo,
+            "bldprep" => &self.bldprep,
+            "bldtiles" => &self.buildings,
             _ => return None,
         };
         m.get(target).map(String::as_str)
     }
 
     /// Records a job's targets as done with their keys. A prune forgets its targets' keys instead
-    /// ("unit 6/x/y", "pois 6/x/y", "pack 6/x/y", "lo 3/x/y"), so a region added back is built again.
+    /// ("unit 6/x/y", "pois 6/x/y", "pack 6/x/y", "lo 3/x/y", "bldprep 6/x/y", "bldtiles 6/x/y"), so a
+    /// region added back is built again.
     pub fn record(&mut self, step: &str, done: &[(String, String)]) {
         if step == "prune" {
             for (t, _) in done {
@@ -199,6 +210,12 @@ impl Keys {
                     "lo" => {
                         self.lo.remove(at);
                     }
+                    "bldprep" => {
+                        self.bldprep.remove(at);
+                    }
+                    "bldtiles" => {
+                        self.buildings.remove(at);
+                    }
                     _ => {}
                 }
             }
@@ -212,7 +229,7 @@ impl Keys {
             self.catalog_held = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || matches!(step, "labels" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail") {
+        if step.ends_with("-root") || matches!(step, "labels" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -882,6 +899,10 @@ pub struct RegionLeft {
 ///   after all that in the order (a second job beside the regions' takes them: crate::agent), the
 ///   overlays after the last unit; what they make goes out with the next round's catalog, or one
 ///   of its own after the last;
+/// - the 3D buildings' chain from the start too (`bld_work`: the sources' fetch, each z6 tile's
+///   normalized file, then its tiles once it and its neighbours are prepared), listed after the
+///   other chains, its tiles in the regions' order; it holds no round and no region, and while it
+///   has work left after the last unit, a round (and its catalog) at most an hour after the last;
 /// - last, in idle time, the mids of current tree cover pieces without one (`TreeWork::backfill`).
 #[allow(clippy::too_many_arguments)]
 pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>, tiles: &TerrainTiles, rounds: Rounds) -> Plan {
@@ -929,6 +950,8 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
         push(&mut work, "trees", trees);
         push(&mut work, "trees-lo", trees_lo);
         work.extend(chains(false));
+        let each: Vec<&Coverage> = rounds.each.iter().map(|(_, c)| c).collect();
+        work.extend(bld_work(cov, m, done, inputs, &bld_rank(&each)));
         push(&mut work, "trees", backfill.clone());
         return Plan { work, backfill, ..Default::default() };
     };
@@ -1067,7 +1090,14 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     // (Done, and not on the map as it is now: what a round publishes.)
     let to_publish: Vec<&Region> = regions.iter().filter(|r| done_now(r) && rounds.on_map.get(r.id) != Some(&true)).collect();
     let last_now = !unit_stale.iter().any(|&s| s) && terrain_left.is_empty();
-    if rounds.current.is_none() && (last_now || (!to_publish.is_empty() && rounds.since_last.is_none_or(|s| s >= PUBLISH_EVERY_S))) {
+    // The 3D buildings' chain (`bld_work`): its tiles in the regions' order, those the regions
+    // being built first.
+    let bld_regions: Vec<&Coverage> = order.iter().map(|r| r.id).chain(regions.iter().map(|r| r.id)).filter_map(|id| rounds.each.iter().find(|(x, _)| x == id).map(|(_, c)| c)).collect();
+    let bld = bld_work(cov, m, done, inputs, &bld_rank(&bld_regions));
+    // (After the last unit, a round as soon as anything changed; but while the 3D buildings are
+    // being raised, at most an hour after the last began: not a catalog for each of their jobs.)
+    let hourly = rounds.since_last.is_none_or(|s| s >= PUBLISH_EVERY_S);
+    if rounds.current.is_none() && ((last_now && (bld.is_empty() || hourly)) || (!to_publish.is_empty() && hourly)) {
         let units_now = m.iter().filter(|(l, _)| crate::out::UNIT_OUTPUTS.iter().any(|p| l.starts_with(p))).map(|(l, c)| (l.clone(), c.clone())).collect();
         let begun = Round { began: 0, regions: to_publish.iter().map(|r| r.id.to_string()).collect(), last: last_now, units: units_now, over: false };
         let p = plan(cov, date, m, done, inputs, Some(reach), tiles, Rounds { current: Some(&begun), ..rounds });
@@ -1154,6 +1184,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     push(&mut work, "trees", trees);
     push(&mut work, "trees-lo", trees_lo);
     work.extend(chains(last_now));
+    work.extend(bld);
     // Last of all, in idle time: the mids of current pieces that have none (expected the same).
     push(&mut work, "trees", backfill.clone());
     Plan { work, ready, publish_waits, regions: lefts, begins: None, ends, round_left, unknown, backfill }
@@ -1541,6 +1572,205 @@ fn landmarks_work(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done
     out
 }
 
+/// The 3D buildings' sources fetched onto the NAS (dem/bldfetch.py, `scenic-build bld-fetch`): the
+/// pinned release's files and GHSL's tiles meeting the coverage grown by 20 km.
+pub const BLD_FETCH_V: u32 = 1;
+
+/// bld-fetch's key (network): the release and the whole coverage. Not the footers it reads and
+/// writes (`footers.json.gz`): a release's files never change, so the release names them, and a key
+/// on what the job writes would run it a second time for its own sake.
+fn bld_fetch_key(cov: &Coverage) -> String {
+    h(&[&format!("bld-fetch {BLD_FETCH_V}"), crate::buildtiles::RELEASE, &coverage_all(cov)])
+}
+
+/// Whether the release's sources are here (`inputs` "bld-release", crate::bld::sources::digests:
+/// the release when its indexes read, "" before anything was downloaded); None when they can't be
+/// read now ("?"), or weren't asked about (no entry): no 3D buildings' work then.
+fn bld_sources(inputs: &BTreeMap<String, String>) -> Option<bool> {
+    match inputs.get("bld-release").map(String::as_str) {
+        None | Some("?") => None,
+        Some(r) => Some(r == crate::buildtiles::RELEASE),
+    }
+}
+
+/// The 3D buildings' targets (docs/buildings3d.md §3.1–3.2), each with its key, done or not.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BldTargets {
+    /// `bldprep T`: the z6 tiles within 1 km of the coverage (so a tile's neighbours within the
+    /// fill's 620 m are prepared too) with a downloaded row group or GHSL tile meeting them
+    /// (`inputs` "bldprep 6/x/y": what it reads, crate::bld::sources). Its key: the version, the
+    /// release and that.
+    pub prep: Vec<(String, String)>,
+    /// `bldtiles T`: the z6 tiles meeting the coverage (its buffers included). Its key: the version,
+    /// the content names of T's and its 8 neighbours' normalized files ("-" none), and the coverage's
+    /// shapes over T grown by 1 km in the recipes' order with their countries
+    /// (`Coverage::shapes_key`: which shape a building is in sets its country's fits).
+    pub tiles: Vec<(String, String)>,
+}
+
+/// The 3D buildings' targets for the coverage `cov`, the manifest `m` and the sources (`inputs`).
+pub fn bld_targets(cov: &Coverage, m: &BTreeMap<String, String>, inputs: &BTreeMap<String, String>) -> BldTargets {
+    use crate::bld::{work_logical, BLDPREP_V, BUILDINGS_V};
+    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
+    let sources = bld_sources(inputs) == Some(true);
+    let mut out = BldTargets::default();
+    for (x, y, shapes) in bld_tiles(cov).iter() {
+        let t = format!("6/{x}/{y}");
+        if let Some(d) = inputs.get(&format!("bldprep {t}")).filter(|_| sources) {
+            out.prep.push((t.clone(), h(&[&format!("bldprep {BLDPREP_V}"), crate::buildtiles::RELEASE, d])));
+        }
+        if let Some(shapes) = shapes {
+            let mut ins = vec![format!("bldtiles {BUILDINGS_V}")];
+            for (nx, ny) in bld_around(*x, *y) {
+                ins.push(match (nx, ny) {
+                    (Some(nx), Some(ny)) => get(&work_logical(nx, ny)).to_string(),
+                    _ => "-".to_string(),
+                });
+            }
+            ins.push(shapes.clone());
+            let refs: Vec<&str> = ins.iter().map(String::as_str).collect();
+            out.tiles.push((t, h(&refs)));
+        }
+    }
+    out
+}
+
+/// The z6 tiles within 1 km of the coverage, each with, when it meets the coverage itself, the
+/// coverage's shapes over it grown by 1 km (`Coverage::shapes_key`): what `bld_targets` reads of
+/// the coverage. Kept for the coverage last asked about (the plan, the checklist and the forecast
+/// each ask, several times a loop; the shapes' fingerprints over 380 tiles are seconds of work).
+type BldTiles = std::sync::Arc<Vec<(u32, u32, Option<String>)>>;
+fn bld_tiles(cov: &Coverage) -> BldTiles {
+    static KEPT: std::sync::Mutex<Option<(String, BldTiles)>> = std::sync::Mutex::new(None);
+    // (The coverage by what shapes_key and meets_rect read: each shape's outline, buffer and
+    // country, in order.)
+    let mut id = Vec::new();
+    for s in &cov.shapes {
+        id.extend_from_slice(s.buffer_m.to_le_bytes().as_slice());
+        id.extend_from_slice(s.country.as_bytes());
+        id.push(0);
+        for r in &s.rings {
+            id.extend_from_slice(bytemuck::cast_slice(r));
+            id.push(1);
+        }
+        id.push(2);
+    }
+    let id = store::naming::hash16(&id);
+    let mut g = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((k, v)) = g.as_ref() {
+        if *k == id {
+            return v.clone();
+        }
+    }
+    let mut v = Vec::new();
+    for x in 0..64u32 {
+        for y in 0..64u32 {
+            let b = crate::hipack::tile_bounds(6, x, y);
+            let near = crate::hipack::grow(b, 1.0);
+            if cov.meets_rect(near) {
+                v.push((x, y, cov.meets_rect(b).then(|| cov.shapes_key(near))));
+            }
+        }
+    }
+    let v = std::sync::Arc::new(v);
+    *g = Some((id, v.clone()));
+    v
+}
+
+/// Z6 tile (x, y) and its 8 neighbours, rows from the north (None past the world's edge: not
+/// wrapped across the antimeridian, as bldtiles reads them: crate::bld::job::work_files).
+fn bld_around(x: u32, y: u32) -> Vec<(Option<u32>, Option<u32>)> {
+    let c = |v: u32, d: i64| u32::try_from(v as i64 + d).ok().filter(|&v| v < 64);
+    (-1i64..=1).flat_map(|dy| (-1i64..=1).map(move |dx| (dx, dy))).map(|(dx, dy)| (c(x, dx), c(y, dy))).map(|(a, b)| if a.is_some() && b.is_some() { (a, b) } else { (None, None) }).collect()
+}
+
+/// The normalized files and tiles no target has any more (the coverage shrank): prune targets
+/// ("bldprep 6/x/y", "bldtiles 6/x/y"). The files only while the sources read (an index missing
+/// would make every tile seem to read nothing).
+fn prune_bld(m: &BTreeMap<String, String>, tt: &BldTargets, sources: bool) -> Option<Work> {
+    let prep: BTreeSet<String> = tt.prep.iter().map(|t| t.0.replace('/', "-")).collect();
+    let tiles: BTreeSet<String> = tt.tiles.iter().map(|t| t.0.replace('/', "-")).collect();
+    let mut t: BTreeSet<String> = BTreeSet::new();
+    let pack = format!("layers/{}/hi/", crate::bld::LAYER);
+    for (prefix, keep, kind) in [("work/bld/", &prep, "bldprep"), (pack.as_str(), &tiles, "bldtiles")] {
+        if kind == "bldprep" && !sources {
+            continue;
+        }
+        for (l, _) in m.range(prefix.to_string()..).take_while(|(l, _)| l.starts_with(prefix)) {
+            let d = &l[prefix.len()..];
+            if Unit::parse(d).is_some() && !keep.contains(d) {
+                t.insert(format!("{kind} {}", d.replace('-', "/")));
+            }
+        }
+    }
+    (!t.is_empty()).then(|| Work { step: "prune".into(), targets: t.into_iter().map(|x| (x, String::new())).collect() })
+}
+
+/// The 3D buildings' chain (docs/buildings3d.md §3.3), the work that can run now: the sources'
+/// fetch when its key changed (beside the rest: what's here is prepared meanwhile, a file fetched
+/// later changes the keys of the tiles it meets), what no target has any more pruned, the stale
+/// `bldprep` targets, then the stale `bldtiles` targets whose tile and neighbours are prepared as
+/// they will stay (none before the sources are here); each step's tiles by `rank` (the regions' order). None of it while the sources'
+/// indexes can't be read now.
+pub fn bld_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, rank: &dyn Fn(&str) -> BldRank) -> Vec<Work> {
+    let Some(sources) = bld_sources(inputs) else { return Vec::new() };
+    let mut out = Vec::new();
+    let k = bld_fetch_key(cov);
+    if done.lo.get("bld-fetch") != Some(&k) {
+        out.push(Work { step: "bld-fetch".into(), targets: vec![("bld-fetch".into(), k)] });
+    }
+    let tt = bld_targets(cov, m, inputs);
+    out.extend(prune_bld(m, &tt, sources));
+    let mut prep: Vec<(String, String)> = tt.prep.iter().filter(|(t, k)| done.bldprep.get(t) != Some(k)).cloned().collect();
+    let unprepared: BTreeSet<&str> = prep.iter().map(|t| t.0.as_str()).collect();
+    let ready = |t: &str| {
+        Unit::parse(t).is_some_and(|u| bld_around(u.x, u.y).into_iter().all(|n| match n {
+            (Some(x), Some(y)) => !unprepared.contains(format!("6/{x}/{y}").as_str()),
+            _ => true,
+        }))
+    };
+    // (None before anything's downloaded: every tile would come out empty.)
+    let mut tiles: Vec<(String, String)> = tt.tiles.iter().filter(|(t, k)| sources && done.buildings.get(t) != Some(k) && ready(t)).cloned().collect();
+    prep.sort_by_cached_key(|t| rank(&t.0));
+    tiles.sort_by_cached_key(|t| rank(&t.0));
+    for (step, targets) in [("bldprep", prep), ("bldtiles", tiles)] {
+        if !targets.is_empty() {
+            out.push(Work { step: step.into(), targets });
+        }
+    }
+    out
+}
+
+/// The 3D buildings' chain's first stale step, as if each before it succeeded (`remaining`: the
+/// checklist's and the forecast's view): the fetch, every stale `bldprep`, every stale `bldtiles`.
+fn bld_next(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>) -> Option<Work> {
+    bld_sources(inputs)?;
+    let k = bld_fetch_key(cov);
+    if done.lo.get("bld-fetch") != Some(&k) {
+        return Some(Work { step: "bld-fetch".into(), targets: vec![("bld-fetch".into(), k)] });
+    }
+    let tt = bld_targets(cov, m, inputs);
+    let prep: Vec<(String, String)> = tt.prep.into_iter().filter(|(t, k)| done.bldprep.get(t) != Some(k)).collect();
+    if !prep.is_empty() {
+        return Some(Work { step: "bldprep".into(), targets: prep });
+    }
+    let tiles: Vec<(String, String)> = tt.tiles.into_iter().filter(|(t, k)| done.buildings.get(t) != Some(k)).collect();
+    (!tiles.is_empty()).then(|| Work { step: "bldtiles".into(), targets: tiles })
+}
+
+/// A z6 tile's place in the 3D buildings' order (`bld_rank`).
+pub type BldRank = (usize, (i32, i32, u32, u32));
+
+/// A z6 tile's place in the 3D buildings' order: the first of `regions` (in the order they're
+/// built) whose coverage meets it, then `spatial_order`.
+fn bld_rank<'a>(regions: &'a [&'a Coverage]) -> impl Fn(&str) -> BldRank + 'a {
+    move |t: &str| {
+        let Some(u) = Unit::parse(t) else { return (usize::MAX, (0, 0, 0, 0)) };
+        let b = crate::hipack::tile_bounds(6, u.x, u.y);
+        (regions.iter().position(|c| c.meets_rect(b)).unwrap_or(usize::MAX), spatial_order(u))
+    }
+}
+
 /// One line of the build's checklist (the status, the menu bar): a step to the end, with how much of
 /// it is done: targets done of all (`total` None until an earlier step makes them known), or for a
 /// group of single jobs how many are left (`left`).
@@ -1600,6 +1830,9 @@ pub fn label(step: &str) -> &'static str {
         "ferries" => "Mapping the world's ferries",
         "rail-feeds" => "Fetching the regions' rail timetables",
         "rail" => "Counting trains a day on the regions' rail",
+        "bld-fetch" => "Fetching the 3D buildings' sources",
+        "bldprep" => "Reading the regions' buildings",
+        "bldtiles" => "Raising the 3D buildings",
         "terrain-root" | "slope-root" => "Building the world-level terrain and slope",
         "prune" => "Removing what the regions no longer cover",
         _ => "Publishing the new map data",
@@ -1618,7 +1851,7 @@ fn next_of(works: &[Work]) -> Vec<String> {
     runs.into_iter()
         .map(|(s, n)| match s {
             "pois" | "peaks" | "terrain" | "slope" | "unit" | "pack" | "trees-lo" if n > 1 => format!("{}: {n} areas", label(s)),
-            "trees" if n > 1 => format!("{}: {n} tiles", label(s)),
+            "trees" | "bldprep" | "bldtiles" if n > 1 => format!("{}: {n} tiles", label(s)),
             _ => label(s).to_string(),
         })
         .collect()
@@ -1634,6 +1867,7 @@ pub const TILES: &str = "Drawing the map tiles";
 pub const ROADS: &str = "Indexing the roads; placing rail stops and ferries; building world terrain";
 pub const TRAINS: &str = "Counting trains a day";
 pub const LANDMARKS: &str = "Choosing and drawing the landmarks";
+pub const BUILDINGS: &str = "Raising the 3D buildings";
 pub const PUBLISH: &str = "Publishing the new map data";
 
 /// Marks each step whose jobs a helper may do: all of them, or which.
@@ -1644,6 +1878,8 @@ pub fn mark_shared(steps: &mut [Step]) {
             "unit" => "areas",
             // (Tree cover's pieces, not its assemblies.)
             "trees" => "tiles",
+            "bldprep" => "sources read",
+            "bldtiles" => "tiles",
             other => other,
         }
     }
@@ -1669,6 +1905,7 @@ pub fn checklist_to_come() -> Vec<Step> {
         (ROADS, &["prune", "roadunits", "stations", "ferries", "terrain-root", "slope-root"]),
         (TRAINS, &["rail-feeds", "rail"]),
         (LANDMARKS, &["pois", "peaks", "items", "heritage", "marks", "overlays"]),
+        (BUILDINGS, &["bld-fetch", "bldprep", "bldtiles"]),
         (PUBLISH, &["catalog", "catalog-held"]),
     ]
     .iter()
@@ -1694,15 +1931,20 @@ fn remaining(done: &Keys, next: impl Fn(&Keys) -> Option<Work>) -> Vec<Work> {
 }
 
 /// The chains' work still to run, as if each step succeeded (`remaining`): the roads' (the map
-/// tiles, the road index, rail stops and ferries, the world-level terrain and slope), the trains'
-/// and the landmarks', for the forecast (crate::agent::forecast).
-pub fn chains_left(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>) -> [Vec<Work>; 3] {
-    [remaining(done, |d| roads_chain(date, m, d, inputs, reach)), remaining(done, |d| rail_chain(cov, date, m, d, inputs)), remaining(done, |d| landmarks_chain(cov, date, m, d))]
+/// tiles, the road index, rail stops and ferries, the world-level terrain and slope), the trains',
+/// the landmarks' and the 3D buildings', for the forecast (crate::agent::forecast).
+pub fn chains_left(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Keys, inputs: &BTreeMap<String, String>, reach: Option<&Reaches>) -> [Vec<Work>; 4] {
+    [
+        remaining(done, |d| roads_chain(date, m, d, inputs, reach)),
+        remaining(done, |d| rail_chain(cov, date, m, d, inputs)),
+        remaining(done, |d| landmarks_chain(cov, date, m, d)),
+        remaining(done, |d| bld_next(cov, m, d, inputs)),
+    ]
 }
 
 /// The regions' build to the end, step by step (the pass's own steps are the agent's): the
 /// heritage sites, terrain, slope, tree cover, the areas, the map tiles, the road index, rail stops
-/// and ferries, trains a day, the landmarks, publishing.
+/// and ferries, trains a day, the landmarks, the 3D buildings, publishing.
 /// `held`: the catalog is held for review (inputs/hold-catalog): publishing is its held copy.
 /// `ready`: the regions a catalog would record as built now (`Plan::ready`).
 #[allow(clippy::too_many_arguments)]
@@ -1766,6 +2008,13 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     let mut marks = group(LANDMARKS, &["pois", "peaks", "items", "heritage", "marks", "overlays"], pieces.then_some(landmarks.len()));
     marks.next = next_of(&landmarks);
     out.push(marks);
+    // (Its tiles' normalized files and tiles together; known once the sources' indexes read.)
+    let bt = bld_targets(cov, m, inputs);
+    let mut bld = per(BUILDINGS, &["bld-fetch", "bldprep", "bldtiles"], &bt.prep, &done.bldprep, "tiles", bld_sources(inputs) == Some(true));
+    bld.done += count(&bt.tiles, &done.buildings);
+    bld.total = bld.total.map(|t| t + bt.tiles.len());
+    bld.next = next_of(&remaining(done, |d| bld_next(cov, m, d, inputs)));
+    out.push(bld);
     let key = catalog_key(m, inputs, ready);
     let publish_left = if held { done.catalog_held.as_deref() != Some(key.as_str()) } else { done.catalog.as_deref() != Some(key.as_str()) } as usize;
     // (Its one job is the line itself: no `next`.)
@@ -2563,7 +2812,8 @@ pub(crate) mod tests {
         m.insert("sources/osm/d/pieces/6-28-16".into(), "sources/osm/d/pieces/6-28-16.4444444444444444.osm.pbf".into());
         unit_inputs(&mut m, "d");
         let l = checklist(&c, "d", &m, &done, &BTreeMap::new(), false);
-        assert_eq!(l.len(), 10);
+        assert_eq!(l.len(), 11);
+        assert_eq!(line(&l, BUILDINGS).total, None, "no sources asked about: not known");
         assert_eq!(line(&l, TRAINS).left, None, "no rail sources: not known");
         assert_eq!((line(&l, TERRAIN).done, line(&l, TERRAIN).total), (0, Some(1)));
         assert_eq!((line(&l, UNITS).done, line(&l, UNITS).total), (0, Some(1)));
@@ -3072,5 +3322,153 @@ pub(crate) mod tests {
         let peaks = plan(&m, &done).into_iter().find(|x| x.step == "peaks").unwrap();
         done.record("peaks", &peaks.targets);
         assert_eq!(marks(&m, &done), ["marks"]);
+    }
+
+    /// The 3D buildings' sources as agent::input_digests has them: every z6 tile within 1 km of
+    /// `c` reading something (its digest `d`), and their rows.
+    fn bld_inputs(c: &Coverage, d: &str) -> BTreeMap<String, String> {
+        let mut inputs = BTreeMap::from([("bld-release".to_string(), crate::buildtiles::RELEASE.to_string())]);
+        for x in 0..64u32 {
+            for y in 0..64u32 {
+                if c.meets_rect(crate::hipack::grow(crate::hipack::tile_bounds(6, x, y), 1.0)) {
+                    inputs.insert(format!("bldprep 6/{x}/{y}"), format!("{d}{x}{y}"));
+                    inputs.insert(format!("bldprep-rows 6/{x}/{y}"), "1000".into());
+                }
+            }
+        }
+        inputs
+    }
+
+    fn by_spatial(t: &str) -> BldRank {
+        (0, spatial_order(Unit::parse(t).unwrap()))
+    }
+
+    #[test]
+    fn the_3d_buildings_targets_and_keys() {
+        // Reykjavik's 20 km circle: within 1 km of z6 tiles 6/28/16 and 6/28/17 (its southern
+        // edge), meeting 6/28/16 alone.
+        let c = cov();
+        let m: BTreeMap<String, String> = BTreeMap::new();
+        let inputs = bld_inputs(&c, "a");
+        let tt = bld_targets(&c, &m, &inputs);
+        let names = |v: &[(String, String)]| v.iter().map(|t| t.0.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&tt.prep), names(&bld_targets(&c, &m, &inputs).prep), "the same each time");
+        assert!(names(&tt.prep).contains(&"6/28/16".to_string()));
+        assert!(names(&tt.tiles).iter().all(|t| names(&tt.prep).contains(t)), "every tile prepared");
+        assert!(tt.prep.len() >= tt.tiles.len());
+        // No sources asked about, or none readable now: no bldprep target. (Its tiles still known.)
+        assert!(bld_targets(&c, &m, &BTreeMap::new()).prep.is_empty());
+        assert_eq!(bld_targets(&c, &m, &BTreeMap::from([("bld-release".to_string(), "?".to_string())])).tiles.len(), tt.tiles.len());
+        // A source file fetched for a tile changes its bldprep key alone.
+        let mut more = inputs.clone();
+        more.insert("bldprep 6/28/16".into(), "b".into());
+        let t2 = bld_targets(&c, &m, &more);
+        for ((t, k), (_, k2)) in tt.prep.iter().zip(&t2.prep) {
+            assert_eq!(k == k2, t != "6/28/16", "{t}");
+        }
+        // A tile's normalized file, or a neighbour's, changes its bldtiles key; a file further
+        // away doesn't.
+        let tile = tt.tiles[0].0.clone();
+        let u = Unit::parse(&tile).unwrap();
+        for (l, changes) in [(crate::bld::work_logical(u.x, u.y), true), (crate::bld::work_logical(u.x + 1, u.y + 1), true), (crate::bld::work_logical(u.x + 2, u.y), false)] {
+            let mut m2 = m.clone();
+            m2.insert(l.clone(), format!("{l}.0123456789abcdef.sect"));
+            let k2 = bld_targets(&c, &m2, &inputs).tiles.iter().find(|t| t.0 == tile).unwrap().1.clone();
+            assert_eq!(k2 != tt.tiles[0].1, changes, "{l}");
+        }
+        // So does the coverage's country there (the fill's fits go by it).
+        let mut c2 = c.clone();
+        c2.shapes[0].country = "IS".into();
+        assert_ne!(bld_targets(&c2, &m, &inputs).tiles[0].1, tt.tiles[0].1);
+        assert_eq!(bld_targets(&c2, &m, &inputs).prep, tt.prep, "not what bldprep reads");
+    }
+
+    #[test]
+    fn the_3d_buildings_chain() {
+        let c = cov();
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        let inputs = bld_inputs(&c, "a");
+        let mut done = Keys::default();
+        let steps = |w: &[Work]| w.iter().map(|x| x.step.clone()).collect::<Vec<_>>();
+        // Not asked about (no "bld-release"), or the indexes unreadable: nothing.
+        assert!(bld_work(&c, &m, &done, &BTreeMap::new(), &by_spatial).is_empty());
+        assert!(bld_work(&c, &m, &done, &BTreeMap::from([("bld-release".to_string(), "?".to_string())]), &by_spatial).is_empty());
+        // Nothing downloaded yet: the fetch alone.
+        assert_eq!(steps(&bld_work(&c, &m, &done, &BTreeMap::from([("bld-release".to_string(), String::new())]), &by_spatial)), ["bld-fetch"]);
+        // The sources here: the fetch, and every tile's normalized file beside it; no tile until
+        // it and its neighbours are prepared.
+        let w = bld_work(&c, &m, &done, &inputs, &by_spatial);
+        assert_eq!(steps(&w), ["bld-fetch", "bldprep"]);
+        done.record("bld-fetch", &w[0].targets);
+        // One tile prepared, a neighbour not: still no tile.
+        let prep = w[1].targets.clone();
+        done.record("bldprep", &prep[..1]);
+        let w = bld_work(&c, &m, &done, &inputs, &by_spatial);
+        if prep.len() > 1 {
+            assert_eq!(steps(&w), ["bldprep"]);
+        }
+        // All prepared (their files in the manifest): the tiles, keyed on those files.
+        done.record("bldprep", &prep);
+        for (t, k) in &prep {
+            let u = Unit::parse(t).unwrap();
+            let l = crate::bld::work_logical(u.x, u.y);
+            m.insert(l.clone(), format!("{l}.{k}.sect"));
+        }
+        let w = bld_work(&c, &m, &done, &inputs, &by_spatial);
+        assert_eq!(steps(&w), ["bldtiles"]);
+        assert_eq!(w[0].targets, bld_targets(&c, &m, &inputs).tiles);
+        done.record("bldtiles", &w[0].targets);
+        for (t, k) in &w[0].targets {
+            let u = Unit::parse(t).unwrap();
+            let l = crate::bld::pack_logical(u.x, u.y);
+            m.insert(l.clone(), format!("{l}.{k}.pack"));
+        }
+        assert!(bld_work(&c, &m, &done, &inputs, &by_spatial).is_empty());
+        assert!(remaining(&done, |d| bld_next(&c, &m, d, &inputs)).is_empty());
+        // A tile no longer in the coverage (its pack and file left from a bigger one) is pruned;
+        // its records forgotten with it.
+        m.insert("work/bld/6-40-20".into(), "work/bld/6-40-20.0123456789abcdef.sect".into());
+        m.insert("layers/buildings/hi/6-40-20".into(), "layers/buildings/hi/6-40-20.0123456789abcdef.pack".into());
+        done.record("bldtiles", &[("6/40/20".to_string(), "k".to_string())]);
+        let w = bld_work(&c, &m, &done, &inputs, &by_spatial);
+        assert_eq!(w, [Work { step: "prune".into(), targets: vec![("bldprep 6/40/20".into(), String::new()), ("bldtiles 6/40/20".into(), String::new())] }]);
+        done.record("prune", &w[0].targets);
+        assert!(!done.buildings.contains_key("6/40/20"));
+        // (Not the normalized files while the sources aren't here: every tile would seem to read
+        // nothing.)
+        let none = BTreeMap::from([("bld-release".to_string(), String::new())]);
+        assert_eq!(bld_work(&c, &m, &done, &none, &by_spatial).iter().flat_map(|w| w.targets.iter().map(|t| t.0.clone())).filter(|t| t.starts_with("bldprep")).count(), 0);
+        // A new fit (BUILDINGS_V) or a neighbour's file made again: its tiles again, nothing else.
+        let (t, _) = prep[0].clone();
+        let u = Unit::parse(&t).unwrap();
+        m.insert(crate::bld::work_logical(u.x, u.y), "work/bld/again.1111111111111111.sect".into());
+        let w = bld_work(&c, &m, &done, &inputs, &by_spatial);
+        assert!(steps(&w).iter().all(|s| s == "bldtiles" || s == "prune"), "{w:?}");
+    }
+
+    #[test]
+    fn the_3d_buildings_come_after_the_other_chains_and_in_the_checklist() {
+        let c = cov();
+        let date = "2026-09-28";
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        unit_inputs(&mut m, date);
+        let done = Keys::default();
+        let inputs = bld_inputs(&c, "a");
+        let w = plan(&c, date, &m, &done, &inputs);
+        let s: Vec<&str> = w.iter().map(|x| x.step.as_str()).collect();
+        assert_eq!(&s[s.len() - 2..], ["bld-fetch", "bldprep"], "{s:?}");
+        assert_eq!(s[0], "heritage-sites");
+        // The checklist's line: its tiles' files and tiles, none done; what's next.
+        let cl = checklist(&c, date, &m, &done, &inputs, false);
+        let b = cl.iter().find(|x| x.what == BUILDINGS).unwrap();
+        let tt = bld_targets(&c, &m, &inputs);
+        assert_eq!((b.done, b.total), (0, Some(tt.prep.len() + tt.tiles.len())));
+        assert_eq!(b.next[0], label("bld-fetch"));
+        assert!(b.next[1].starts_with(label("bldprep")));
+        // Its steps' targets go by tile in the jobs' names.
+        assert_eq!(next_of(&[Work { step: "bldtiles".into(), targets: vec![("6/1/1".into(), "k".into()), ("6/1/2".into(), "k".into())] }]), ["Raising the 3D buildings: 2 tiles"]);
+        let mut st = checklist_to_come();
+        mark_shared(&mut st);
+        assert_eq!(st.iter().find(|x| x.what == BUILDINGS).unwrap().shared.as_deref(), Some("sources read and tiles"));
     }
 }

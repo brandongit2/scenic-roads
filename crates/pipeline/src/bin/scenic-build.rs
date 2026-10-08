@@ -33,9 +33,13 @@
 //!   prune <target …>             drops from the manifest what the coverage no longer builds:
 //!                                "unit U" (its base pack, road values, English), "pois U" (its
 //!                                candidates, peaks), "pack T" (hidata, road and rail hi packs),
-//!                                "lo Q" (road and rail lo packs)
+//!                                "lo Q" (road and rail lo packs), "bldprep T" (its normalized
+//!                                buildings), "bldtiles T" (its 3D buildings' hi pack)
 //!   buildings [--dem dir] [--workers n]  the world's roadside buildings (pipeline::buildtiles):
 //!                                Overture's release, in z8 tiles, onto the NAS with their index
+//!   bld-fetch [--pass d] [--dem dir]  the 3D buildings' sources onto the NAS (dem/bldfetch.py):
+//!                                the pinned Overture release's files and GHSL's tiles meeting the
+//!                                coverage grown by 20 km; what's there already skipped
 //!   bldprep <T …> [--dem dir]    the 3D buildings' normalized files of z6 tiles T (pipeline::bld::prep:
 //!                                dem/bldprep.py reads the downloaded Overture row groups and the
 //!                                GHSL windows under T), as work/bld/6-x-y
@@ -346,6 +350,7 @@ fn main() -> Result<()> {
             let workers = opt(&args, "--workers").map(|w| w.parse()).transpose()?.unwrap_or((threads * 2).clamp(4, 32));
             pipeline::buildtiles::build(&mut out, &dem, &scratch, workers)?;
         }
+        "bld-fetch" => bld_fetch_step(&mut out, &args, &scratch)?,
         "bldprep" => bldprep_step(&mut out, &args)?,
         "bldtiles" => bldtiles_step(&mut out, &args)?,
         "trees" => {
@@ -2639,6 +2644,8 @@ fn prune_step(out: &mut Out, args: &[String]) -> Result<()> {
             "pois" => vec![format!("work/pois/{d}"), format!("work/peaks/{d}")],
             "pack" => vec![format!("hidata/{d}"), format!("layers/roads/hi/{d}"), format!("layers/rails/hi/{d}")],
             "lo" => vec![format!("layers/roads/lo/{d}"), format!("layers/rails/lo/{d}")],
+            "bldprep" => vec![format!("work/bld/{d}")],
+            "bldtiles" => vec![format!("layers/{}/hi/{d}", pipeline::bld::LAYER)],
             k => bail!("{t:?}: unknown prune target {k:?}"),
         };
         for l in logicals {
@@ -2732,6 +2739,30 @@ fn z6_tiles(args: &[String], step: &str) -> Result<Vec<Unit>> {
     let ts: Vec<Unit> = positional(args).iter().map(|t| Unit::parse(t).filter(|u| u.z == 6 && u.x < 64 && u.y < 64).with_context(|| format!("not a z6 tile: {t}"))).collect::<Result<_>>()?;
     anyhow::ensure!(!ts.is_empty(), "{step} <6/x/y …>");
     Ok(ts)
+}
+
+/// bld-fetch [--pass d] [--dem dir]: the 3D buildings' sources onto the NAS (docs/buildings3d.md
+/// §2.6): dem/bldfetch.py with the coverage written here (its outlines, rail::coverage_geojson),
+/// the pinned release's files and GHSL's tiles that meet it grown by 20 km, each fetched once,
+/// checked and put in place whole; what's there already skipped. Not through the manifest: the
+/// sources are read where they are (`sources/overture/<release>/`, `sources/ghsl/R2023A/`), and
+/// their indexes key bldprep (crate::bld::sources).
+fn bld_fetch_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
+    let cov = coverage_of(out, args)?;
+    let dem = std::fs::canonicalize(opt(args, "--dem").unwrap_or_else(|| "dem".into()))?;
+    std::fs::create_dir_all(scratch)?;
+    let cover = scratch.join("bld-coverage.geojson");
+    std::fs::write(&cover, serde_json::to_vec(&pipeline::rail::coverage_geojson(&cov))?)?;
+    let st = std::process::Command::new("uv")
+        .current_dir(&dem)
+        .args(["run", "python", "bldfetch.py", "--root"])
+        .arg(out.root())
+        .args(["--release", pipeline::buildtiles::RELEASE, "--coverage"])
+        .arg(&cover)
+        .status()
+        .context("run bldfetch.py")?;
+    anyhow::ensure!(st.success(), "bldfetch.py: {st}");
+    Ok(())
 }
 
 /// bldprep <T …> [--dem dir]: the 3D buildings' normalized files of z6 tiles T (docs/buildings3d.md

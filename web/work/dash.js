@@ -44,15 +44,16 @@ const STEP = {
   roadunits: ["Road index", "#4fb3c6"], stations: ["Rail stops", "#4fb3c6"], ferries: ["Ferries", "#4fb3c6"], "terrain-root": ["World terrain", "#c98b4a"], "slope-root": ["World slope", "#d9c35a"],
   "rail-feeds": ["Rail timetables", "#8fa2b5"], rail: ["Trains a day", "#8fa2b5"], pois: ["Landmark candidates", "#9b7be0"], peaks: ["Peaks", "#b48ae8"],
   items: ["Wikidata facts", "#c47fb5"], heritage: ["Heritage details", "#c47fb5"], marks: ["Landmarks", "#c47fb5"], overlays: ["Area overlays", "#c47fb5"],
+  "bld-fetch": ["3D buildings' sources", "#8fa2b5"], bldprep: ["Buildings read", "#a39a8c"], bldtiles: ["3D buildings", "#a39a8c"],
   catalog: ["Publishing", "var(--mark)"], "catalog-held": ["Publishing (held)", "var(--mark)"], round: ["Publishing round", "var(--mark)"], gc: ["Clean-up", "#8fa2b5"], backup: ["Backup", "#8fa2b5"],
 };
 const stepName = (s) => (STEP[s] || [s])[0];
 const stepColour = (s) => (STEP[s] || [0, "#7b8590"])[1];
 // The noun a step's targets are counted in.
-const NOUN = { unit: "area", terrain: "area", slope: "area", trees: "tile", "trees-lo": "area", pois: "area", peaks: "area", pack: "tile", lo: "tile", tail: "task" };
+const NOUN = { unit: "area", terrain: "area", slope: "area", trees: "tile", "trees-lo": "area", pois: "area", peaks: "area", pack: "tile", lo: "tile", tail: "task", bldprep: "tile", bldtiles: "tile" };
 const targets = (step, k) => plural(k, NOUN[step] || "job");
 // What was finished, in words: "3 areas", "1 terrain area", "5 map tiles".
-const DID = { unit: ["area", "areas"], terrain: ["terrain area", "terrain areas"], slope: ["slope area", "slope areas"], trees: ["tree-cover tile", "tree-cover tiles"], "trees-lo": ["zoomed-out tree-cover area", "zoomed-out tree-cover areas"], pack: ["map tile", "map tiles"], lo: ["zoomed-out tile", "zoomed-out tiles"], pois: ["area's candidates", "areas' candidates"], peaks: ["area's peaks", "areas' peaks"], tail: ["area's last steps", "areas' last steps"], catalog: ["map update", "map updates"] };
+const DID = { unit: ["area", "areas"], terrain: ["terrain area", "terrain areas"], slope: ["slope area", "slope areas"], trees: ["tree-cover tile", "tree-cover tiles"], "trees-lo": ["zoomed-out tree-cover area", "zoomed-out tree-cover areas"], pack: ["map tile", "map tiles"], lo: ["zoomed-out tile", "zoomed-out tiles"], pois: ["area's candidates", "areas' candidates"], peaks: ["area's peaks", "areas' peaks"], tail: ["area's last steps", "areas' last steps"], bldprep: ["buildings tile read", "buildings tiles read"], bldtiles: ["3D buildings tile", "3D buildings tiles"], catalog: ["map update", "map updates"] };
 const did = (step, k) => (DID[step] ? plural(k, ...DID[step]) : `${stepName(step)}${k > 1 ? ` ×${k}` : ""}`);
 // Machines' colours, the build Mac first.
 const MACHINE_COLOURS = ["#5b8fd8", "#b48ae8", "#e0a36a", "#e07a9a", "#6cc28a"];
