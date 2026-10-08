@@ -635,7 +635,9 @@ pub fn run(root: &Path, out: &Path, translations: &Path, scratch: &Path, progres
         }
     }
     put(&dir.join("README.md"), TRANSLATORS.as_bytes())?;
-    put(&dir.join("check.py"), CHECK.as_bytes())?;
+    // (The checker, named without a quoted `.py`: publish.sh takes every quoted one in the pipeline
+    // for a Python step of the app's dem/, and this one isn't.)
+    put(&dir.join("check").with_extension("py"), CHECK.as_bytes())?;
 
     // The descriptions' lists.
     let ddir = out.join("descriptions/todo");
