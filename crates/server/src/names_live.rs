@@ -295,3 +295,58 @@ pub const ONLY_OLD: &str = "the translations folder holds only the old area tabl
 pub fn version_all(tables: Option<&Namer>) -> u64 {
     tables.map_or(0, Namer::version_all)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_aged(p: &Path, text: &str, secs: u64) {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+        let f = std::fs::File::options().write(true).open(p).unwrap();
+        f.set_modified(SystemTime::now() - Duration::from_secs(secs)).unwrap();
+    }
+
+    fn france() -> Spoken {
+        let pt = |x: f64, y: f64| [(x * 1e7) as i32, (y * 1e7) as i32];
+        Spoken::build([names::spoken::Area { code: "FR".into(), area_km2: 1.0, polygons: vec![vec![vec![pt(-5.0, 42.0), pt(8.0, 42.0), pt(8.0, 51.0), pt(-5.0, 51.0)]]] }])
+    }
+
+    #[test]
+    fn a_drop_on_the_nas_shows_and_the_old_tables_alone_are_said() {
+        let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        // Only the area tables: nothing shows, and the status says why.
+        write_aged(&nas.path().join("translations/fr/places-fr.jsonl"), "{\"n\": \"Lac Bleu\", \"main\": \"Lac Bleu\", \"sub\": \"Blue Lake\", \"via\": \"agent:haiku\"}\n", 3600);
+        let s = crate::test_state(home.path(), nas.path());
+        s.names.set_spoken(france());
+        assert!(s.names.sync(&s.data).unwrap());
+        s.names.reload();
+        let d = s.names.display(Kind::Other, "Lac Bleu", None, &[], 2.0, 46.0);
+        assert_eq!((d.main.as_str(), d.sub.as_deref()), ("Lac Bleu", None));
+        assert_eq!(s.names.versions()["warning"].as_str(), Some(ONLY_OLD));
+        // A line by language, dropped on the NAS (settled): copied, read, shown; the warning goes.
+        write_aged(&nas.path().join("translations/answers/fr-001.jsonl"), "{\"n\": \"Lac Bleu\", \"kind\": \"other\", \"langs\": [\"fr\"], \"main\": \"Lac Bleu\", \"sub\": \"Blue Lake\", \"via\": \"agent:haiku\"}\n", 20);
+        let before = s.names.version_for_tile(10, 517, 360, 0.0);
+        assert!(s.names.sync(&s.data).unwrap());
+        // Seen, then read once it has held for ten seconds (the names thread sleeps until then).
+        s.names.reload();
+        let wait = s.names.pending().expect("waiting to settle");
+        assert!(wait <= names::STABLE, "{wait:?}");
+        std::thread::sleep(wait + Duration::from_millis(200));
+        s.names.reload();
+        let d = s.names.display(Kind::Other, "Lac Bleu", None, &[], 2.0, 46.0);
+        assert_eq!((d.main.as_str(), d.sub.as_deref()), ("Lac Bleu", Some("Blue Lake")));
+        assert!(s.names.versions()["warning"].is_null());
+        assert!(s.names.versions()["langs"]["fr"].is_u64());
+        // A French tile's ETag part changed.
+        assert_ne!(s.names.version_for_tile(10, 517, 360, 0.0), before);
+        // Not where French isn't spoken, nor as another kind.
+        let d = s.names.display(Kind::Other, "Lac Bleu", None, &[], -30.0, 40.0);
+        assert_eq!(d.sub, None);
+        let d = s.names.display(Kind::Road, "Lac Bleu", None, &[], 2.0, 46.0);
+        assert_eq!(d.sub, None);
+        // A file still being written isn't copied.
+        write_aged(&nas.path().join("translations/answers/fr-002.jsonl"), "{\"n\": \"Lac Noir\", \"kind\": \"other\", \"langs\": [\"fr\"], \"sub\": \"Black Lake\"}\n", 0);
+        assert!(!s.names.sync(&s.data).unwrap());
+    }
+}
