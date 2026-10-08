@@ -328,6 +328,16 @@ order. The program `bldtile` writes there `area.tiles` (RDTILES, meta `{"layer":
 "area": "8/x/y", "encoding": "mvt"}`: the area's z12–14 tiles as the pack holds them, gzip'd) and
 `area.json` (what it made: `bld::job::Summary`, as `bldtiles` logs a tile's).
 
+**A row of tree cover blocks' task** (`pipeline::trees::task`, docs/plan.md §6 Trees; a folder on
+the build Mac, its file sent to the worker as `u/…`, not in the manifest): `coverage.json`, the
+piece's coverage as the trees program reads one (`{"shapes": [[ring, …], …]}`, a ring
+`[[lon, lat], …]` in degrees) with only the rings whose box meets the row's box, a hundredth of a
+degree around it (a shape left with none goes). The program `trees --blocks` writes there
+`8-<x>-<y>/` for each of the row's blocks: `trees-cover.tiles`, `trees-height.tiles`,
+`trees-leaf.tiles` (RDTILES, meta trees.py's, `trees::META`: the block's zoom 8–12 tiles, in the
+order it made them) and `trees-tops.bin` (its zoom-8 values, `pyramid::Tops::to_bytes`), as `trees
+--block` writes one block's.
+
 ## Names (docs/plan.md §7)
 
 - **Translation lines** (`translations/**/*.jsonl`, not `todo/`): `{"n", "kind", "langs", "main",
@@ -722,7 +732,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     `leases.json` (`{next, leases: [{id, worker, work: {Job: {step, targets: [[target, key], …]}},
     progress}]}`: the jobs' leases), `costs.json` (`{unit: {peak_mb, secs}}`, `"<step> <target>"` for
     another shared step's job, and `"<kind> <unit>"` for a task: `"tail 6/x/y"` a unit's last
-    steps, `"bldtile 8/x/y"` a 3D buildings' z8 area),
+    steps, `"bldtile 8/x/y"` a 3D buildings' z8 area, `"treeblock 8/x/y"` a row of tree cover blocks,
+    by its first),
     `journal/<worker>/` (the hand-offs taken, as below; `journal/raw-tiles/`, raw tiles' archives to
     name on their own), `tasks/<id>/` (a task's uploads), `pause.json` (the build's pause:
     `{pause: {mode: "drain" | "freeze", by, at} or null, at}`, `pipeline::control::Pause`, `at` when

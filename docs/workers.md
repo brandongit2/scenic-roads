@@ -45,7 +45,7 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   slice of the per-vertex cache goes with it and its samples come back.)
 - **Workers** hold nothing the build depends on: a lost worker costs only its work in hand.
 
-## 3. Tasks (built for a unit's tail and the 3D buildings' z8 areas)
+## 3. Tasks (built for a unit's tail, the 3D buildings' z8 areas and tree cover's rows of blocks)
 
 - **Where the work splits:** a unit's tail (`unit::tail`) is a task from its elevations on:
   elevations, clean-up and grade, prep, canopy, view, buildings and flags. Each step says which of
@@ -131,12 +131,41 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   with the same patience (this Mac's own time for it: its buildings at the pace of the areas the
   job made here; a worker's pace at `bldtile` its own): taken back and made here if no one took it, raced if someone holds it, a
   worker's result taken, or checked against the job's own run byte for byte.
+- **Tree cover's rows of blocks** (kind `treeblock`, docs/plan.md §6 Trees, `pipeline::trees::task`):
+  a tree cover piece's run (`trees --z6`, the program the `trees` job runs; it inherits the job's
+  coordinator) offers some of its rows the same way: a row is the piece's z8 blocks in one z8 row
+  (up to four), which read the same canopy rows (a canopy square's strips are rows of its whole 10°
+  width, ~18 kB each). Offered when the run begins, from its last rows, one per worker that takes
+  them around, three at most, never every row; settled when the run comes to a row's first block
+  (the blocks go in column order, so the run's other blocks are made meanwhile), with the same
+  patience (this Mac's own time for the row: its blocks at the pace of the blocks made here so far,
+  as many at once as there are threads; a worker's pace at `treeblock` its own), a worker's result
+  taken or checked byte for byte against the run's own of the row, and taken into the piece as if
+  made here. Its one run is `trees --blocks <8/x/y,…> --coverage {dir}/coverage.json --chm {chm}
+  --leaf {sources}/trees/leaf --squares <top,left;…> --out {dir}`: the row's blocks made together a
+  band at a time, so each canopy strip is read and decoded once for the row (each block fed the
+  same bands in the same order as alone: the same bytes, `trees::blocks`); `--squares` names the
+  canopy squares the job found there (one a worker doesn't find fails the task, never a block
+  without its trees). Its only file is the piece's coverage cut to the row (docs/formats.md;
+  41 kB–1.2 MB on the rows checked, against 6–15 MB for a z3 tile's); the squares are read where
+  they lie, never whole (187–289 MB through `/net` for a row of three or four blocks: the strips of
+  its latitudes in each canopy square it meets, and the leaf-type tiles over it). Its memory: 120 MB
+  and 120 a block until a worker measures it (`treeblock 8/x/y`, the row's first block): measured
+  as WebAssembly 141–160 MB for a block, 233 for three, 365–505 for four (the most where they meet
+  four squares), and 3–14 MB a block of archives written. `tools/check/treeblock-same.mjs` checks a
+  row (2026-10-08, on the M4, its native and WebAssembly builds from one compiler: a coast's two
+  rows of one block, a dense forest's of four across a canopy square's edge in longitude, the
+  tropics' of three, and four across the edges of four squares): natively on one thread and on all,
+  each block alone, as WebAssembly under Node's WASI and under the page's own runtime, every block
+  the same bytes, and the same tiles and values as the NAS's packs and mid. A helper takes them too
+  (1 GB of disk: it reads the squares where they lie). They pay off only for a worker measured
+  faster than the build Mac at them: a page on the M1 took 20 s for a row the M1's own run made in
+  about as long (its pace 1.07), and the build Mac makes a row on its threads in about 3 s.
 - **Determinism rules:** one maths library (`det`, over `libm`) on every target; reductions that
   don't depend on the thread count; no hash-map order in outputs; the real zstd everywhere.
 - **Planned:** staging from packs as a task's (read where the packs lie); the heavy steps cut into
   sample ranges so a slow worker's lease is minutes; more kinds of task (map tiles, landmarks,
-  slope, terrain, tree cover: a piece's zoom-8 blocks, which already run on their own, `trees
-  --block`, the bytes they read recordable for a run elsewhere, its mid the seam: docs/plan.md §6);
+  slope, terrain);
   the 3D buildings' areas cut smaller (z9, z10) for workers that spare less than a dense area needs.
 
 ## 4. Data: the coordinator's plane
@@ -160,7 +189,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 ## 5. Control: leases and trust (built)
 
 - **Asking:** a worker sends its name, kind, the work it does (the shared steps' jobs; the tasks'
-  kinds, `tail` and `bldtile`: a page asks with those two, and may ask with no others), the
+  kinds, `tail`, `bldtile` and `treeblock`: a page asks with those three, and may ask with no
+  others, `coord::PAGE_TASKS`), the
   memory it spares, its cores and (an agent) its app (`/work/ask`). One that mounts the NAS is given
   a job first (the most work for what it fetches), then a task; a web page, tasks. An agent on an
   older app than the build Mac's gets nothing (409, why in words) until it runs that one or a newer.
@@ -282,9 +312,11 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     a colour, each round of publishing marked: pointed at, the regions it adds; the build Mac's
     second job's lane under its own; the pages' lane is the build Mac's area runs, both jobs',
     whose last steps it hands them as it builds them, drawn while a page around is measured faster
-    than the build Mac at tails (`/work/swarm`'s workers' `tail_pace`) and spares what a tail takes
-    typically (the last tails offered, `task_mb`); with such a worker around, the forecast gives
-    each of the build Mac's units the 30 s it gives one to take its tail); the map updates
+    than the build Mac at tails (`/work/swarm`'s workers' `paces`, by kind) and spares what a tail
+    takes typically (the last tails offered, `task_mb`, by kind), and its tree cover pieces, whose
+    rows of blocks it hands them, while one is likewise faster at `treeblock`; with a worker faster
+    at tails around, the forecast gives each of the build Mac's units the 30 s it gives one to take
+    its tail; a piece gets nothing more: its run makes its other blocks while it waits); the map updates
     (the last, the next with its regions, the rounds to come); the steps (done of all, the work
     left, done when, why one waits); the regions, in the order they reach the map with the rounds
     between (or by name, or by what's left), each with its state, its work left, when it's done and
@@ -417,5 +449,6 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 5. **Browsers:** the page, imported-memory ceilings, ramped verification. *Done;* HTTPS through
    Tailscale and OPFS *planned.*
 6. **The Python steps in Rust:** *done* (the same bytes; the units run them; tree cover's, the same
-   pixels); then more kinds of task: the 3D buildings' z8 areas (`bldtile`) *done* (B3); others,
+   pixels); then more kinds of task: the 3D buildings' z8 areas (`bldtile`) *done* (B3), tree
+   cover's rows of blocks (`treeblock`) *done*; others,
    and the build Mac's own work as tasks, *planned.*

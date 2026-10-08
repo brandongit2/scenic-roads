@@ -899,7 +899,13 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   - A block runs on its own too (`trees --block`: a zoom-8 block's tiles and its zoom-8 values,
     the same bytes natively, on any thread count, and in WebAssembly, its squares read from a
     folder or through `pipeline::fetch`), and `trees --assemble` makes a z3 tile's archives from
-    blocks: tree cover as tasks (docs/workers.md) is planned.
+    blocks. A row of a piece's blocks (one z8 row, up to four) runs together too (`trees
+    --blocks`: each canopy strip, a row of its square's whole width, read and decoded once for the
+    row; each block the same bytes as alone), and is a task (`treeblock`, docs/workers.md §3): a
+    piece's run with the job's coordinator offers some of its last rows to pages and helpers,
+    reading the squares where they lie, and takes their blocks into the piece in their turn, the
+    same bytes (`tools/check/treeblock-same.mjs`: four real rows, natively and as WebAssembly, and
+    the NAS's packs).
 - **Area overlays:** see `docs/phase5.md`. The `overlays` job runs after marks, because it needs the
   World Heritage dots' ids. Until its first run, today's converted packs serve.
 - **3D buildings (phase 7, under way):** `docs/buildings3d.md`. Every building in the coverage, from
@@ -1869,7 +1875,8 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   what it's spent; if longer than its part's pace says; a helper's lease likewise); with a worker
   around that takes tails, spares what one takes typically and is measured faster than the build
   Mac at them, each of the build Mac's units 30 s more, the moment its job gives that worker to
-  take its tail (docs/workers.md §3). Run three times: as
+  take its tail (docs/workers.md §3; a tree cover piece nothing more for a worker that takes its
+  rows of blocks: its run makes its other blocks meanwhile). Run three times: as
   estimated, and for a range, the measured times a little off and the guessed much more. It says
   when each step, each region and everything will be done, when each region reaches the map, the
   rounds to come, what each machine does next (not what it's on) and its schedule to the end, and
@@ -1921,7 +1928,8 @@ and, when none fits it, units' last steps.
   and 160 B a row, bldtiles 0.25 GB and 280 B for two fifths of them (its largest z8 area's
   buildings; B1's six tiles each within 0.16 GB of it). A helper asks only for the steps its disk
   has room for (a terrain run 55 GB free, the others 15: a tree cover piece copies the one to four
-  canopy squares its blocks touch; a task 5, and a sixth more, counting what its caches can free:
+  canopy squares its blocks touch; a task 5, a row of tree cover blocks 1 (it reads the squares
+  where they lie), and a sixth more, counting what its caches can free:
   not its loose raw tiles, which only its own jobs pack),
   never while a newer app waits to start, and takes the earliest step with a target that fits, from
   the far end of the plan (terrain from the near end: the build Mac's next units wait on it), a
