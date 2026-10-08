@@ -4240,8 +4240,11 @@ impl Agent {
             // (From this process's start: what came before is in the coordinator's own history.)
             run.history_seq = events.last().map_or(0, |e| e.seq).max(1);
         } else if !events.is_empty() {
+            // (The terms' events are on the NAS already: crate::agent::lead appends them as they come.)
+            let last = events.last().map_or(run.history_seq, |e| e.seq);
+            let events: Vec<crate::coord::history::Event> = events.into_iter().filter(|e| e.kind != "term").collect();
             match pool::append_history(root, &run.side.member().id, &events) {
-                Ok(()) => run.history_seq = events.last().map_or(run.history_seq, |e| e.seq),
+                Ok(()) => run.history_seq = last,
                 Err(e) => eprintln!("agent: the history on the NAS: {e:#}"),
             }
         }
@@ -5911,6 +5914,12 @@ mod pool_tests {
         assert_eq!(v.lead.as_ref().map(|l| l.member.as_str()), Some(im.as_str()));
         let events = lead.coord.as_ref().unwrap().history_since(0);
         assert!(events.iter().any(|e| e.kind == "term" && e.note.starts_with("term 2: handed over by")), "{:?}", events.iter().filter(|e| e.kind == "term").collect::<Vec<_>>());
+        // And on the NAS, in the old lead's own history file, once each, with its step down.
+        let il = lead.pool.as_ref().unwrap().side.member().id.clone();
+        let day = crate::pool::journal::day(now_s()).unwrap();
+        let mine = std::fs::read_to_string(r.join("state/coord/history").join(day).join(format!("{il}.jsonl"))).unwrap();
+        assert_eq!(mine.matches("term 2: handed over by").count(), 1, "{mine}");
+        assert!(mine.contains("stepped down from term 1: handed over to"), "{mine}");
         stop_jobs(&mut lead);
         stop_jobs(&mut m);
         TEST_ABLE.with(|c| c.set(None));

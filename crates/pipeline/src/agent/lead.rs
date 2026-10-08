@@ -237,13 +237,20 @@ impl Controls {
     }
 }
 
-/// A member named `name` (its id, or its host name, any case): its id.
-fn resolve(run: &Run, name: &str) -> Option<String> {
+/// A member named `name` (its id, or its host name, any case): its id; or why there's none.
+fn resolve(run: &Run, name: &str) -> Result<String, String> {
     if crate::pool::is_member_id(name) {
-        return Some(name.to_string());
+        return Ok(name.to_string());
     }
-    let m = run.controls.view.as_ref().and_then(|v| v.members.iter().find(|m| m.host.eq_ignore_ascii_case(name)).map(|m| m.member.clone()));
-    m.or_else(|| run.side.members().iter().find(|id| run.side.heartbeat(id).is_some_and(|h| h.pool.host.eq_ignore_ascii_case(name))).cloned())
+    let found: Vec<String> = match run.controls.view.as_ref().map(|v| v.members.iter().filter(|m| m.host.eq_ignore_ascii_case(name)).map(|m| m.member.clone()).collect::<Vec<_>>()).filter(|f| !f.is_empty()) {
+        Some(f) => f,
+        None => run.side.members().iter().filter(|id| run.side.heartbeat(id).is_some_and(|h| h.pool.host.eq_ignore_ascii_case(name))).cloned().collect(),
+    };
+    match found.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => Err(format!("no member of the pool is called {name}")),
+        _ => Err(format!("{} members are called {name}: name it by its member id ({})", found.len(), found.join(", "))),
+    }
 }
 
 fn host_of(run: &Run, id: &str) -> String {
@@ -263,8 +270,8 @@ pub fn take(run: &mut Run, home: &Path) {
         let lead_host = run.side.driver().current().lead.as_ref().map(|t| t.host.clone());
         let (state, said, to, ask) = match &r.ask {
             LeadAsk::Give { to } => match resolve(run, to) {
-                None => (State::Refused, format!("no member of the pool is called {to}"), None, None),
-                Some(id) => {
+                Err(why) => (State::Refused, why, None, None),
+                Ok(id) => {
                     let host = host_of(run, &id);
                     match run.side.hand_to(&id) {
                         Err(why) => (State::Refused, format!("the lead can't be handed to {host}: {why}"), Some(id), None),
@@ -489,7 +496,7 @@ fn view(run: &Run, auto: bool) -> View {
         (Some(t), _) if leading || t.member == me => None,
         (Some(t), None) => Some(format!("no heartbeat from {}", t.host)),
         (Some(t), Some(h)) if h.pool.beat == 0 => Some(format!("no heartbeat from {}", t.host)),
-        (Some(t), Some(h)) if h.pool.out_of_touch(now) => Some(format!("{} is out of touch: last heard from {} s ago", t.host, now.saturating_sub(h.pool.beat))),
+        (Some(t), Some(h)) if h.pool.out_of_touch(now) => Some(format!("{} is out of touch: last heard from {}", t.host, ago(now, h.pool.beat))),
         (Some(t), Some(h)) if h.pool.stood_down == Some(t.term) => Some(format!("{} stood down from term {} (its app is older than the term's)", t.host, t.term)),
         _ => None,
     };
@@ -557,18 +564,19 @@ pub fn notes(events: &[Event], me: &str, host: impl Fn(&str) -> String, now: u64
     out
 }
 
-/// The terms' events noted: into this process's coordinator's history, when it has one; else
-/// appended to this member's history on the NAS (`root`), and kept in its pool folder `dir` for its
-/// next process's coordinator (`replay`).
+/// The terms' events noted: appended to this member's history on the NAS (`root`) at once (a lead
+/// stepping down appends its coordinator's history no more: crate::agent's `pool_lead_files`
+/// leaves them out); and into this process's coordinator's history, when it has one, else kept in
+/// its pool folder `dir` for its next process's coordinator (`replay`).
 fn note(events: &[history::Event], coord: Option<&crate::coord::Coordinator>, root: &Path, member: &str, dir: &Path) {
+    if let Err(e) = super::pool::append_history(root, member, events) {
+        eprintln!("pool: the terms in the history on the NAS: {e:#}");
+    }
     if let Some(c) = coord {
         for e in events {
             c.note(e.clone());
         }
         return;
-    }
-    if let Err(e) = super::pool::append_history(root, member, events) {
-        eprintln!("pool: the terms in the history on the NAS: {e:#}");
     }
     let mut b = Vec::new();
     for e in events {
@@ -583,7 +591,7 @@ fn note(events: &[history::Event], coord: Option<&crate::coord::Coordinator>, ro
 }
 
 /// The terms' events an earlier process of this member kept (`note`), into this process's
-/// coordinator's history (the build page's activity); their file removed.
+/// coordinator's history (the build page's activity; on the NAS already); their file removed.
 pub fn replay(dir: &Path, coord: &crate::coord::Coordinator) {
     let p: PathBuf = dir.join(NOTES);
     let Ok(text) = std::fs::read_to_string(&p) else { return };
@@ -871,6 +879,9 @@ mod tests {
             // The history: A noted the handover (no coordinator here: on the NAS, kept for its next).
             let notes = std::fs::read_to_string(a.home.join("pool").join(NOTES)).unwrap();
             assert!(notes.contains("term 2: handed over by") && notes.contains("stepped down from term 1"), "{notes}");
+            let day = crate::pool::journal::day(a.run.side.now()).unwrap();
+            let nas = std::fs::read_to_string(a.root.join("state/coord/history").join(day).join(format!("{ia}.jsonl"))).unwrap();
+            assert!(nas.contains("term 2: handed over by") && nas.contains("stepped down from term 1"), "{nas}");
             // And back: "Hand the Build To ▸ A" on the lead, B.
             until(&mut [&mut a, &mut b], |m| m[1].view().members.iter().any(|x| x.member == ia && x.can_lead));
             b.ask(LeadAsk::Give { to: ia.clone() });
@@ -890,6 +901,10 @@ mod tests {
             a.go();
             assert_eq!(a.asked().state, State::Refused);
             assert!(a.asked().said.contains("no member of the pool is called Nobodys-Mac"));
+            // (Both of this test's members have this Mac's host name: named by it, neither.)
+            a.ask(LeadAsk::Give { to: a.run.side.member().host.to_lowercase() });
+            a.go();
+            assert!(a.asked().state == State::Refused && a.asked().said.contains("2 members are called"), "{:?}", a.asked());
             // To the lead itself.
             a.ask(LeadAsk::Give { to: a.id() });
             let o = a.go();
