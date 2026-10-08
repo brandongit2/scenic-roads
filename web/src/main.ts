@@ -65,6 +65,11 @@ import { Strip } from './ui/strip';
 import { ViewshedTool } from './ui/viewshed';
 import { installPanel } from './ui/touch';
 
+// The small islands and lakes' layer is switched off while it's redone (backlog #113): the server and
+// the catalog still have it, the map leaves it out.
+const SMALL_WATER_SHOWN = false;
+const smallWaterShown = (m: { smallWater?: boolean }): boolean => SMALL_WATER_SHOWN && !!m.smallWater;
+
 // Debug: ?bgrender keeps the map rendering in a hidden/background tab (timer-driven frames),
 // for automated checks. No effect otherwise.
 if (new URLSearchParams(location.search).has('bgrender')) {
@@ -133,7 +138,7 @@ async function main() {
   const v = store.s.view;
   const map = new maplibregl.Map({
     container: 'map',
-    style: baseStyle(!!meta.labelTiles, store.s.labelDensity, !!meta.ovTiles, !!meta.stationTiles, !!meta.smallWater),
+    style: baseStyle(!!meta.labelTiles, store.s.labelDensity, !!meta.ovTiles, !!meta.stationTiles, smallWaterShown(meta)),
     center: v ? [v.lng, v.lat] : [-70, 46],
     zoom: v ? v.zoom : 5,
     bearing: v?.bearing ?? 0,
@@ -2024,7 +2029,7 @@ async function main() {
       addBuildings(map, 'water-name-line', 'boundary-county');
       applyBuildingsNow(store.s);
     }
-    if (!!m.labelTiles !== labelTilesOn() || !!m.ovTiles !== ovTilesOn() || !!m.stationTiles !== stationTilesOn() || !!m.smallWater !== smallWaterOn() || !!m.ferryBlocks !== ferries.byBlocks) watch?.wantReload('New map data');
+    if (!!m.labelTiles !== labelTilesOn() || !!m.ovTiles !== ovTilesOn() || !!m.stationTiles !== stationTilesOn() || smallWaterShown(m) !== smallWaterOn() || !!m.ferryBlocks !== ferries.byBlocks) watch?.wantReload('New map data');
     markDirty();
   };
   regions.onFit = (b) => fitGround(new maplibregl.LngLatBounds([b[0], b[1]], [b[2], b[3]]), { top: 60, bottom: 60, left: 60, right: 340 });

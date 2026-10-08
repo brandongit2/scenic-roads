@@ -831,6 +831,10 @@ The server builds missing deeper terrain and slope tiles from their ancestors.
 
 ### Small islands and lakes (per pass, worldwide)
 
+**Switched off in the app** while it's redone (the build still makes the layer; the map leaves it
+out): the owner judged the dots and outlines below too poor, and a rewrite measured against
+full-detail geometry, tilted views included, is under way.
+
 Zoomed out, the basemap leaves small polygons out, so small islands vanished from the sea and from
 lakes, and small lakes from the land. The `smallwater` job (`pipeline::smallwater`) keeps them on
 the map as the roads are kept: what's too small to draw is drawn as a dot of its true size.
