@@ -48,6 +48,7 @@ uniform float u_extScale;
 uniform float u_lift;
 uniform vec4 u_camTile;      // the camera in this tile's units (xy) and metres (z); metres per tile unit (w)
 uniform vec2 u_ztol;
+uniform vec2 u_ztolB;      // the same for bridge pieces (setProjFrame)
 uniform float u_camDist;
 uniform float u_p22;         // the perspective matrix's z row (NDC depth = -p22 - p23 / view z)
 // MapLibre's terrain depth (packed, the terrain surface seen from the camera; CSS resolution), to
@@ -122,8 +123,9 @@ void projectPiece(out vec4 s, out vec4 z) {
   if (u_zmul > 0.0) {
     vec3 to0 = vec3((u_camTile.xy - q0) * u_camTile.w, u_camTile.z - h0);
     vec3 to1 = vec3((u_camTile.xy - q1) * u_camTile.w, u_camTile.z - h1);
-    float m0 = clamp(max(u_ztol.x, u_ztol.y / max(length(to0), 1.0)), 0.0, 0.5);
-    float m1 = clamp(max(u_ztol.x, u_ztol.y / max(length(to1), 1.0)), 0.0, 0.5);
+    vec2 tol = bridge ? u_ztolB : u_ztol;
+    float m0 = clamp(max(tol.x, tol.y / max(length(to0), 1.0)), 0.0, 0.5);
+    float m1 = clamp(max(tol.x, tol.y / max(length(to1), 1.0)), 0.0, 0.5);
     z0 = -u_p22 + (c0.z / c0.w + u_p22) / (1.0 - m0);
     z1 = -u_p22 + (c1.z / c1.w + u_p22) / (1.0 - m1);
   }
@@ -1071,7 +1073,7 @@ export class RoadLayer implements CustomLayerInterface {
       const head = `#version 300 es\nprecision highp float;\nprecision highp int;\n${sd.vertexShaderPrelude}\n${sd.define}\n`;
       const prep = link(gl, head + PREP_VS, PREP_FS, ['o_s', 'o_z']);
       const pu: Record<string, WebGLUniformLocation | null> = {};
-      for (const n of ['u_extScale', 'u_viewport', 'u_zmul', 'u_lift', 'u_camTile', 'u_ztol', 'u_camDist', 'u_p22', 'u_depth', 'u_depthOn', 'u_clipN', 'u_clip', 'u_projection_matrix',
+      for (const n of ['u_extScale', 'u_viewport', 'u_zmul', 'u_lift', 'u_camTile', 'u_ztol', 'u_ztolB', 'u_camDist', 'u_p22', 'u_depth', 'u_depthOn', 'u_clipN', 'u_clip', 'u_projection_matrix',
         'u_projection_tile_mercator_coords', 'u_projection_clipping_plane', 'u_projection_transition', 'u_projection_fallback_matrix']) pu[n] = gl.getUniformLocation(prep, n);
       this.preps.set(sd.variantName, { prog: prep, u: pu });
       const draw = (sprite: boolean, accum = false): Prog => {
@@ -1080,7 +1082,7 @@ export class RoadLayer implements CustomLayerInterface {
         const u: Record<string, WebGLUniformLocation | null> = {};
         for (const n of [
           'u_extScale', 'u_viewport', 'u_tile', 'u_cell', 'u_zoom', 'u_wz', 'u_wv', 'u_fz', 'u_fv', 'u_cz', 'u_cv', 'u_gz', 'u_gv', 'u_casing', 'u_glow', 'u_casingPass', 'u_casingMask',
-          'u_classMask', 'u_surfaceMask', 'u_tollMask', 'u_unnamedHide', 'u_lsOn', 'u_hlOn', 'u_hovSel', 'u_thinSel', 'u_ls', 'u_dpr', 'u_mode', 'u_w', 'u_wsum', 'u_zmul', 'u_lift', 'u_camTile', 'u_ztol',
+          'u_classMask', 'u_surfaceMask', 'u_tollMask', 'u_unnamedHide', 'u_lsOn', 'u_hlOn', 'u_hovSel', 'u_thinSel', 'u_ls', 'u_dpr', 'u_mode', 'u_w', 'u_wsum', 'u_zmul', 'u_lift', 'u_camTile', 'u_ztol', 'u_ztolB',
           'u_lut', 'u_cdf', 'u_eq', 'u_palRow', 'u_range', 'u_bg', 'u_dim', 'u_thr', 'u_lowFade', 'u_lowSpan',
           'u_projection_matrix', 'u_projection_tile_mercator_coords', 'u_projection_clipping_plane',
           'u_projection_transition', 'u_projection_fallback_matrix', 'u_camDist', 'u_part', 'u_occluded', 'u_passVis', 'u_tunnelsOnly',
@@ -1900,8 +1902,31 @@ export class RoadLayer implements CustomLayerInterface {
   render(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput) {
     if (!this.prepared) this.prerender(gl, opts);
     this.prepared = false;
-    this.drawFrame(gl, opts, false);
+    this.drawFrame(gl, opts, false, this.bridgesApart ? 'base' : 'all');
     this.summed = false;
+  }
+
+  /**
+   * Bridges and elevated rail drawn apart, after the 3D buildings (docs/buildings3d.md §4.2): the
+   * buildings, drawn after the road and rail layers, painted over a viaduct in front of them. While
+   * on (main.ts: buildings shown in 3D), this layer leaves out its zoomed-in tiles' bridge pieces
+   * and the layer `bridgeLayer` gives, placed after the buildings, draws them: tested against the
+   * terrain as before and against the buildings' depth too, so one in front of a tower stays in
+   * front and one behind it stays hidden. (Zoomed out, where pieces are drawn as points, nothing
+   * changes: the buildings are too.)
+   */
+  bridgesApart = false;
+
+  /** The layer drawing this one's bridges after the buildings (see bridgesApart). */
+  bridgeLayer(id: string): CustomLayerInterface {
+    return {
+      id,
+      type: 'custom',
+      renderingMode: '3d',
+      render: (gl: WebGL2RenderingContext | WebGLRenderingContext, opts: CustomRenderMethodInput) => {
+        if (this.bridgesApart && this.style.terrain3d) this.drawFrame(gl as WebGL2RenderingContext, opts, false, 'bridges');
+      },
+    };
   }
 
   /** The sums filled this frame (prerender), for render to put on the map. */
@@ -1913,7 +1938,7 @@ export class RoadLayer implements CustomLayerInterface {
    * of targets split the pass, the GPU storing the whole framebuffer and loading it back, a
    * millisecond and more a frame. Else (render) the rest, with the sums put on the map in their place.
    */
-  private drawFrame(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput, sums: boolean) {
+  private drawFrame(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput, sums: boolean, which: 'all' | 'base' | 'bridges' = 'all') {
     const draw = this.drawn;
     const frame = this.frame;
     if (!this.style.visible || draw.length === 0 || !frame) return;
@@ -2121,6 +2146,11 @@ export class RoadLayer implements CustomLayerInterface {
         if (!sprite) gl.uniform1i(u.u_thinSel, thinApart ? (phase === 'casing' ? 1 : 2) : 0);
         for (const x of tileSetup) {
           if (x.sprite !== sprite) continue;
+          // (Bridges apart: the quads' bridge pieces in the bridges' layer, but for the faint pass
+          // behind the terrain, which stays here, under the buildings: after them its test would
+          // find them too, and show a viaduct faintly through every building in front of it.)
+          if (which === 'bridges' && (sprite || !bridges || occluded)) continue;
+          if (which === 'base' && bridges && !sprite && !occluded) continue;
           if (phase === 'casing' && !casing) continue;
           if (phase === 'hover' && sprite && (casing || !(road || x.hover >= 0))) continue;
           const d = x.d, t = x.t;
@@ -2352,7 +2382,7 @@ export class RoadLayer implements CustomLayerInterface {
         drawGroup(bridges, part, occluded, casing);
       }
     };
-    if (acc || overThin) {
+    if ((acc || overThin) && which !== 'bridges') {
       // The sprites' casings first (under their fills), then the sums (or the quads' thin pieces
       // over the map), then the rest.
       phase = 'casing';
@@ -2431,7 +2461,7 @@ export class RoadLayer implements CustomLayerInterface {
     const m = map as unknown as { terrain?: { _fboDepthTexture?: { texture: WebGLTexture } }; painter?: { terrainFacilitator?: { renderTime: number } } };
     const depthTex = three ? m.terrain?._fboDepthTexture?.texture ?? null : null;
     const p = map.getPadding();
-    const key = `${opts.shaderData.variantName}|${gl.drawingBufferWidth}x${gl.drawingBufferHeight}|${zoom}|${c.lng},${c.lat}|${map.getBearing()}|${map.getPitch()}|${p.top},${p.bottom},${p.left},${p.right}|${map.getCenterElevation()}|${three ? s.exaggeration : 0}|${depthTex ? m.painter?.terrainFacilitator?.renderTime : ''}`;
+    const key = `${opts.shaderData.variantName}|${gl.drawingBufferWidth}x${gl.drawingBufferHeight}|${zoom}|${c.lng},${c.lat}|${map.getBearing()}|${map.getPitch()}|${p.top},${p.bottom},${p.left},${p.right}|${map.getCenterElevation()}|${three ? s.exaggeration : 0}|${depthTex ? m.painter?.terrainFacilitator?.renderTime : ''}|${this.bridgesApart}`;
     const tr = (map as unknown as { _camera?: { transform?: { cameraToCenterDistance?: number; getCameraLngLat?: () => LngLat; getCameraAltitude?: () => number } } })._camera?.transform;
     const camLL = tr?.getCameraLngLat?.();
     return {
@@ -2456,6 +2486,12 @@ export class RoadLayer implements CustomLayerInterface {
     // 1.5 % of the distance, at least 75 m × exaggeration: the terrain mesh (a vertex every two DEM
     // pixels) and the roads' own drape heights differ by that much on the steepest slopes.
     gl.uniform2f(u.u_ztol, 0.015, 75 * s.exaggeration);
+    // Bridges drawn apart, after the 3D buildings (bridgeLayer), are tested against those with it
+    // too, and one that much behind a building's wall would show through it: 0.2 %, at least
+    // 3 m × exaggeration for them, their decks standing above the terrain, clear of its mesh's
+    // error but at their ends.
+    if (this.bridgesApart) gl.uniform2f(u.u_ztolB, 0.002, 3 * s.exaggeration);
+    else gl.uniform2f(u.u_ztolB, 0.015, 75 * s.exaggeration);
     gl.uniform1f(u.u_camDist, f.camDist);
     gl.uniform1i(u.u_depthOn, f.depthTex ? 1 : 0);
     if (f.depthTex) {

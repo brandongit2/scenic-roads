@@ -1862,6 +1862,16 @@ async function main() {
   };
   /** The buildings' settings applied (the terrain's exaggeration and light are theirs too). */
   const applyBuildingsNow = (s: AppState) => {
+    // Bridges and elevated rail drawn after the buildings while they stand in 3D (roads/layer.ts
+    // bridgeLayer): placed after them, before the first symbol layer.
+    const apart = !!map.getLayer('buildings') && s.buildings.on && !s.buildings.flat && s.terrain.on;
+    for (const [l, id] of [[roads, 'roads-bridges'], [rails, 'rails-bridges']] as const) {
+      if (!map.getLayer(id) && map.getLayer('buildings')) map.addLayer(l.bridgeLayer(id), 'water-name-line');
+      if (l.bridgesApart !== apart) {
+        l.bridgesApart = apart;
+        map.triggerRepaint();
+      }
+    }
     bldLook = bldLookNow();
     const b = bldPreview ? { ...s.buildings, height: { ...s.buildings.height, palette: bldPreview } } : s.buildings;
     applyBuildings(map, b, s.terrain.on ? s.terrain.exaggeration : 0, s.terrain.light, bldLook);
