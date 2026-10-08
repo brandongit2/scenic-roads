@@ -45,7 +45,11 @@
 //!                                GHSL windows under T), as work/bld/6-x-y
 //!   bldtiles <T …> [--pass d] [--regions dir]  the 3D buildings' tiles of z6 tiles T
 //!                                (pipeline::bld::job): the buildings touching the coverage, their
-//!                                heights filled, z12–14, as the hi pack layers/buildings/hi/6-x-y
+//!                                heights filled, z12–14, as the hi pack layers/buildings/hi/6-x-y;
+//!                                under the agent, some z8 areas offered to workers as tasks
+//!   bldtile-task <8/x/y | 6/x/y> --out dir [--pass d] [--regions dir]  a z8 area's task folder
+//!                                as a bldtiles job cuts it (pipeline::bld::task; a z6 tile: its
+//!                                densest area), for the `bldtile` program and the checks
 //!   trees <T …> [--pass d] [--dem dir] [--chm dir] [--expect-same T,…]  the tree cover layers
 //!                                (pipeline::treepacks), clipped to the coverage: of z6 tiles T (a
 //!                                piece: its hi packs and its mid; --expect-same, those made again
@@ -379,6 +383,7 @@ fn main() -> Result<()> {
         "bld-fetch" => bld_fetch_step(&mut out, &args, &scratch)?,
         "bldprep" => bldprep_step(&mut out, &args)?,
         "bldtiles" => bldtiles_step(&mut out, &args)?,
+        "bldtile-task" => bldtile_task_step(&mut out, &args)?,
         "trees" => {
             // trees <tile …> [--pass d] [--dem dir] [--chm dir] [--expect-same T,…]: the tree cover
             // of z6 tiles (pieces: their hi packs and mids; pipeline::treepacks::build_piece), or a
@@ -2818,15 +2823,45 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
     let names: Vec<String> = ts.iter().map(|t| format!("Raising the 3D buildings of {}", t.slash())).collect();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    // Other workers, through the build Mac's coordinator (the agent's jobs there): some of a tile's
+    // z8 areas offered as tasks while it builds the others.
+    let offload = pipeline::offload::Offload::from_env(&out.scratch);
     for (k, &t) in ts.iter().enumerate() {
         pipeline::control::safe_point("bldtiles");
         pipeline::agent::jobs::part(k, &names);
         let c = cost_start();
-        let sum = pipeline::bld::job::build(out, &cov, t)?;
+        let sum = pipeline::bld::job::build(out, &cov, t, offload.as_ref())?;
         eprintln!("bldtiles {}: {}", t.slash(), serde_json::to_string(&sum)?);
         pipeline::control::done("bldtiles", &t.slash());
         note_cost("bldtiles", &t.slash(), c);
     }
+    Ok(())
+}
+
+/// bldtile-task <8/x/y | 6/x/y> --out dir [--pass d] [--regions dir]: a z8 area's task folder, as a
+/// `bldtiles` job cuts it for a worker (pipeline::bld::task::cut; for the checks: the `bldtile`
+/// program then runs over it). A z6 tile: its area with the most buildings.
+fn bldtile_task_step(out: &mut Out, args: &[String]) -> Result<()> {
+    let u = positional(args).first().and_then(|s| Unit::parse(s)).filter(|u| u.z == 6 || u.z == 8).context("bldtile-task <8/x/y | 6/x/y> --out dir")?;
+    let dir = PathBuf::from(opt(args, "--out").context("--out dir")?);
+    let cov = coverage_of(out, args)?;
+    let t = pipeline::bld::task::tile_of(Unit { z: 8, x: if u.z == 6 { u.x << 2 } else { u.x }, y: if u.z == 6 { u.y << 2 } else { u.y } });
+    let files = pipeline::bld::job::work_files(out, t)?;
+    let a = if u.z == 8 {
+        (u.x, u.y)
+    } else {
+        // (The area whose blocks hold the most records.)
+        let own = files[4].as_ref().context("no work file for that tile")?;
+        let mut by: BTreeMap<(u32, u32), u64> = BTreeMap::new();
+        for e in &own.index {
+            let (_, x, y) = pipeline::bld::key_zxy(e.key);
+            *by.entry((x >> 6, y >> 6)).or_default() += e.count as u64;
+        }
+        by.into_iter().max_by_key(|(a, n)| (*n, std::cmp::Reverse(*a))).context("no buildings in that tile")?.0
+    };
+    let t0 = std::time::Instant::now();
+    let c = pipeline::bld::task::cut(&files, &cov, t, a, &dir)?;
+    println!("{}", serde_json::json!({ "area": format!("8/{}/{}", a.0, a.1), "bytes": c.bytes, "records": c.records, "mem_mb": c.mem_mb(), "secs": t0.elapsed().as_secs_f64() }));
     Ok(())
 }
 

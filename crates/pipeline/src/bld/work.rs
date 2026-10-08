@@ -272,9 +272,14 @@ impl WorkFile {
         self.index.binary_search_by_key(&key, |e| e.key).ok().map(|i| &self.index[i])
     }
 
+    /// A block's bytes as stored (zstd'd).
+    pub fn stored(&self, e: &IndexEntry) -> Result<Vec<u8>> {
+        self.r.read_part("blocks", e.offset, e.len as usize)
+    }
+
     /// A block, read and decoded.
     pub fn block(&self, e: &IndexEntry) -> Result<Block> {
-        let z = self.r.read_part("blocks", e.offset, e.len as usize)?;
+        let z = self.stored(e)?;
         let raw = zstd::decode_all(&z[..]).context("a building block's zstd")?;
         let b = Block::decode(&raw)?;
         if b.len() != e.count as usize {

@@ -48,18 +48,49 @@ impl Offload {
     pub fn from_env(scratch: &Path) -> Option<Offload> {
         let url = std::env::var("SCENIC_COORD").ok()?;
         let token = std::env::var("SCENIC_COORD_TOKEN").ok()?;
+        Some(Offload::at(url, token, scratch))
+    }
+
+    /// Offering through the coordinator at `url` with the job's token; tasks' folders under
+    /// `scratch` (emptied).
+    pub fn at(url: String, token: String, scratch: &Path) -> Offload {
         let owner = std::process::id();
         let version = std::env::current_exe().and_then(std::fs::metadata).map(|m| format!("{:x}-{:x}", m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs()))).unwrap_or_default();
         let dir = scratch.join("tasks");
         std::fs::remove_dir_all(&dir).ok();
-        Some(Offload { client: Client::at(vec![url], token, &format!("job {owner}")), owner, version, dir })
+        Offload { client: Client::at(vec![url], token, &format!("job {owner}")), owner, version, dir }
     }
 
     /// How many tails may be out at once now: one per worker around that takes them, at most three
     /// (each holds a unit's folder on this disk until it's back); none when no one's there.
     pub fn depth(&self) -> usize {
-        let v = self.client.post_json("/task/workers", &serde_json::json!({ "kind": "tail" })).map(|r| r.1);
-        v.ok().and_then(|v| v["workers"].as_u64()).map_or(0, |n| n.min(3) as usize)
+        self.workers("tail").min(3)
+    }
+
+    /// How many workers that take tasks of `kind` are around (none when the coordinator can't say).
+    pub fn workers(&self, kind: &str) -> usize {
+        let v = self.client.post_json("/task/workers", &serde_json::json!({ "kind": kind })).map(|r| r.1);
+        v.ok().and_then(|v| v["workers"].as_u64()).map_or(0, |n| n as usize)
+    }
+
+    /// The programs' version a task names (a worker fetches their WebAssembly builds by it).
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    /// The folder for task `name`'s files (its `u/` what a worker is sent), emptied.
+    pub fn task_root(&self, name: &str) -> PathBuf {
+        let root = self.dir.join(name);
+        std::fs::remove_dir_all(&root).ok();
+        root
+    }
+
+    /// Offers a task of `kind` (`spec` what a worker is given, `inputs` its files in `root`, its
+    /// predicted memory `mem_mb`: the coordinator's measure of its last run replaces it).
+    pub fn offer_spec(&self, kind: &str, spec: serde_json::Value, root: &Path, inputs: BTreeMap<String, u64>, mem_mb: u64) -> Result<Offered> {
+        let offer = crate::coord::task::Offer { owner: self.owner, kind: kind.into(), spec, root: root.to_path_buf(), inputs, mem_mb };
+        let (_, v) = self.client.post_json("/task/offer", &serde_json::to_value(&offer)?)?;
+        Ok(Offered { id: v["id"].as_u64().context("the coordinator gave no task id")?, root: root.to_path_buf() })
     }
 
     /// Offers `runs` over unit `u`'s folder `dir` (and its roadside buildings `bdir`).
@@ -87,27 +118,35 @@ impl Offload {
         let mem_mb = (inputs.values().sum::<u64>() >> 20) * 3 + 300;
         let list: Vec<serde_json::Value> = inputs.iter().map(|(p, n)| serde_json::json!([p, n])).collect();
         let spec = serde_json::json!({ "unit": u.slash(), "version": self.version, "runs": runs, "inputs": list, "places": places() });
-        let offer = crate::coord::task::Offer { owner: self.owner, kind: "tail".into(), spec, root: root.clone(), inputs, mem_mb };
-        let (_, v) = self.client.post_json("/task/offer", &serde_json::to_value(&offer)?)?;
-        Ok(Offered { id: v["id"].as_u64().context("the coordinator gave no task id")?, root })
+        self.offer_spec("tail", spec, &root, inputs, mem_mb)
     }
 
     /// Settles task `t` of the unit in `dir`; with `wait` false only when a worker finished or failed
     /// it (None otherwise). `here` runs its steps in `dir`.
     pub fn settle(&self, t: &Offered, dir: &Path, wait: bool, here: &mut dyn FnMut() -> Result<()>) -> Result<Option<Settled>> {
+        let root = t.root.clone();
+        self.settle_with(t, wait, here, &mut |st| take(st, dir), &mut |st, since| same(st, dir, &root, since))
+    }
+
+    /// Settles task `t`, any kind's: with `wait` false only when a worker finished or failed it
+    /// (None otherwise). A worker's result unchecked is taken (`take`, with the task's status: its
+    /// outputs in `out`); else it's run here (`here`), and a worker's result that came in too
+    /// compared with this Mac's run (`same`, with the status and when that run began). Its folder
+    /// goes.
+    pub fn settle_with(&self, t: &Offered, wait: bool, here: &mut dyn FnMut() -> Result<()>, take: &mut dyn FnMut(&serde_json::Value) -> Result<()>, same: &mut dyn FnMut(&serde_json::Value, std::time::SystemTime) -> Result<bool>) -> Result<Option<Settled>> {
         let st = self.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({}))?.1;
         let state = st["state"].as_str().unwrap_or("gone").to_string();
         let worker = st["worker"].as_str().unwrap_or("").to_string();
         let mut checked = None;
         let how = match state.as_str() {
             "done" if st["check"].as_bool() != Some(true) => {
-                take(&st, dir)?;
+                take(&st)?;
                 Settled::Remote(worker)
             }
             "done" => {
                 let since = std::time::SystemTime::now();
                 here()?;
-                let same = same(&st, dir, &t.root, since)?;
+                let same = same(&st, since)?;
                 checked = Some(same);
                 Settled::Here(Some((worker, same)))
             }
@@ -124,7 +163,7 @@ impl Offload {
                 let late = if withdrawn { None } else { self.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).ok().map(|r| r.1) };
                 match late.filter(|s| s["state"] == "done") {
                     Some(s) => {
-                        let same = same(&s, dir, &t.root, since)?;
+                        let same = same(&s, since)?;
                         checked = Some(same);
                         Settled::Here(Some((s["worker"].as_str().unwrap_or("").to_string(), same)))
                     }

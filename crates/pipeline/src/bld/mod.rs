@@ -22,6 +22,7 @@ pub mod fill;
 pub mod job;
 pub mod prep;
 pub mod sources;
+pub mod task;
 pub mod tiles;
 pub mod work;
 

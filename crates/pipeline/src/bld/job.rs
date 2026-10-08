@@ -37,7 +37,7 @@ const COPY_M: f64 = 310.0;
 const MARGIN_M: f64 = COPY_M + fill::FAR_M + 10.0;
 
 /// What a run made.
-#[derive(Clone, Debug, Default, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Summary {
     /// Buildings and parts drawn (touching the coverage), and those left out (not touching it).
     pub buildings: u64,
@@ -65,12 +65,41 @@ impl Summary {
         self.bytes[k] += bytes as u64;
         self.features[k] += n as u64;
         let t = (format!("{z}/{x}/{y}"), bytes, n);
-        for (list, by) in [(&mut self.heaviest, 1usize), (&mut self.fullest, 2)] {
-            list.push(t.clone());
-            list.sort_by(|a, b| if by == 1 { (b.1, b.2).cmp(&(a.1, a.2)) } else { (b.2, b.1).cmp(&(a.2, a.1)) }.then(a.0.cmp(&b.0)));
-            list.truncate(8);
+        keep(&mut self.heaviest, t.clone(), 1);
+        keep(&mut self.fullest, t, 2);
+    }
+
+    /// Another run's (another area's) added: the counts, and the heaviest and fullest tiles of both
+    /// (each list the eight first of the two, as one run noting every tile would have them).
+    pub fn merge(&mut self, o: &Summary) {
+        self.buildings += o.buildings;
+        self.parts += o.parts;
+        self.outside += o.outside;
+        self.copies += o.copies;
+        for k in 0..6 {
+            self.by_src[k] += o.by_src[k];
+        }
+        for k in 0..3 {
+            self.tiles[k] += o.tiles[k];
+            self.bytes[k] += o.bytes[k];
+            self.features[k] += o.features[k];
+        }
+        for t in &o.heaviest {
+            keep(&mut self.heaviest, t.clone(), 1);
+        }
+        for t in &o.fullest {
+            keep(&mut self.fullest, t.clone(), 2);
         }
     }
+}
+
+/// A tile put in a list of the eight first, heaviest first (`by` 1: by bytes, then features) or
+/// fullest (2: by features, then bytes), ties by name: an order of its own, so a list is the same
+/// whatever order its tiles came in.
+fn keep(list: &mut Vec<(String, u32, u32)>, t: (String, u32, u32), by: usize) {
+    list.push(t);
+    list.sort_by(|a, b| if by == 1 { (b.1, b.2).cmp(&(a.1, a.2)) } else { (b.2, b.1).cmp(&(a.2, a.1)) }.then(a.0.cmp(&b.0)));
+    list.truncate(8);
 }
 
 /// A block's file's codes, as the rules need them.
@@ -100,14 +129,14 @@ fn country(cov: &Coverage, s: Option<usize>) -> &str {
 }
 
 /// A z14 tile's box in E7.
-fn box14(key: u64) -> [i32; 4] {
+pub(super) fn box14(key: u64) -> [i32; 4] {
     let (_, x, y) = key_zxy(key);
     crate::hipack::tile_bounds(14, x, y)
 }
 
 /// The blocks area `a` (a z8 tile of T) reads: its own (T's blocks in it), then those within
 /// [`MARGIN_M`] around it, as (file, entry) with `files` T and its neighbours ((dy + 1) × 3 + dx + 1).
-fn area_blocks(files: &[Option<WorkFile>], t: Unit, a: (u32, u32)) -> (Vec<(usize, IndexEntry)>, usize) {
+pub(super) fn area_blocks(files: &[Option<WorkFile>], t: Unit, a: (u32, u32)) -> (Vec<(usize, IndexEntry)>, usize) {
     let own: Vec<(usize, IndexEntry)> = files[4].as_ref().map_or(Vec::new(), |f| f.index.iter().filter(|e| {
         let (_, x, y) = key_zxy(e.key);
         (x >> 6, y >> 6) == a
@@ -149,200 +178,217 @@ struct Filled {
 /// Where `tiles_of` gives each tile: (z, x, y, the gzip'd tile, its raw length).
 pub type AddTile<'a> = dyn FnMut(u8, u32, u32, &[u8], u32) -> Result<()> + 'a;
 
-/// Every tile of T (its work file and its neighbours' in `files`, as `area_blocks` has them), in
-/// order (each z8 area's, by zoom, x, y), given to `add`.
-pub fn tiles_of(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, add: &mut AddTile) -> Result<Summary> {
-    ensure!(files.len() == 9, "T and its 8 neighbours");
-    let mut sum = Summary::default();
-    let Some(own) = files[4].as_ref() else { return Ok(sum) };
+/// T's z8 areas with buildings (T's work file's, as `area_blocks` has them), in order.
+pub fn areas_of(files: &[Option<WorkFile>]) -> Vec<(u32, u32)> {
+    let Some(own) = files.get(4).and_then(Option::as_ref) else { return Vec::new() };
     let mut areas: Vec<(u32, u32)> = own.index.iter().map(|e| {
         let (_, x, y) = key_zxy(e.key);
         (x >> 6, y >> 6)
     }).collect();
     areas.sort_unstable();
     areas.dedup();
-    let codes: Vec<Option<Codes>> = files.iter().map(|f| f.as_ref().map(|f| Codes::of(&f.meta))).collect();
+    areas
+}
+
+/// Every tile of T (its work file and its neighbours' in `files`, as `area_blocks` has them), in
+/// order (each z8 area's, by zoom, x, y), given to `add`.
+pub fn tiles_of(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, add: &mut AddTile) -> Result<Summary> {
+    ensure!(files.len() == 9, "T and its 8 neighbours");
+    let mut sum = Summary::default();
+    let areas = areas_of(files);
     for (k, &a) in areas.iter().enumerate() {
         crate::agent::jobs::report(k as u64, areas.len() as u64, "z8 areas done");
-        let (list, n_own) = area_blocks(files, t, a);
-        let blocks: Vec<Block> = list.par_iter().map(|(fi, e)| files[*fi].as_ref().unwrap().block(e)).collect::<Result<_>>()?;
-        // The records filled here: the area's own, and those within COPY_M around it (copied into
-        // its tiles where they reach them).
-        let reach = grown_area(a, COPY_M);
-        let filled_here: Vec<Vec<bool>> = blocks
-            .par_iter()
-            .enumerate()
-            .map(|(bi, b)| {
-                (0..b.len())
-                    .map(|i| {
-                        bi < n_own || {
-                            let (wx, wy) = world7(b.cen[i]);
-                            wx >= reach[0] && wx <= reach[2] && wy >= reach[1] && wy <= reach[3]
-                        }
-                    })
-                    .collect()
-            })
-            .collect();
-        // Their shapes (None: not touching the coverage, or not filled here).
-        let shapes: Vec<Vec<Option<usize>>> = blocks
-            .par_iter()
-            .zip(&list)
-            .zip(&filled_here)
-            .map(|((b, (_, e)), here)| {
-                if !here.iter().any(|&h| h) {
-                    return vec![None; b.len()];
-                }
-                match cov.box_shape(box14(e.key)) {
-                    Some(s) => here.iter().map(|&h| h.then_some(s)).collect(),
-                    None => (0..b.len()).map(|i| if here[i] { shape_of(cov, b, i) } else { None }).collect(),
-                }
-            })
-            .collect();
-        // Rules 0–2 for every building read.
-        let first: Vec<Vec<Option<(u16, u8)>>> = blocks
-            .par_iter()
-            .zip(&list)
-            .enumerate()
-            .map(|(bi, (b, (fi, _)))| {
-                let est = codes[*fi].as_ref().unwrap().est;
-                (0..b.len())
-                    .map(|i| {
-                        if b.flags[i] & flag::PART != 0 {
-                            return None;
-                        }
-                        let (h, f) = (b.h[i], b.f[i]);
-                        let is_est = est != 0 && b.hsrc[i] == est;
-                        let taken = (fill::H_MIN_DM..=fill::H_MAX_DM).contains(&h);
-                        if taken && !is_est {
-                            Some((h, src::MEASURED))
-                        } else if (1..=fill::F_MAX).contains(&f) {
-                            let s = if filled_here[bi][i] { shapes[bi][i] } else { shape_of(cov, b, i) };
-                            Some((fill::floors_dm(f, fill::storey(country(cov, s))), src::FLOORS))
-                        } else if taken {
-                            Some((h, src::MICROSOFT))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-            })
-            .collect();
-        let mut pts = Vec::new();
-        for (b, hs) in blocks.iter().zip(&first) {
-            for (i, h) in hs.iter().enumerate() {
-                if let Some((h, _)) = h {
-                    let (wx, wy) = world7(b.cen[i]);
-                    pts.push(Point { x: wx * EQ, y: wy * EQ, area: b.area[i], h: *h });
-                }
-            }
-        }
-        let bb = tile_box_deg(8, a.0, a.1);
-        let near = Near::new(pts, (bb[1].abs().max(bb[3].abs()) + 0.05).min(85.0).to_radians().dcos());
-        // The records filled here, filled (a record within COPY_M of the area has every building
-        // within 300 m of it read: the same as its own area makes it).
-        let filled: Vec<Vec<Option<Filled>>> = blocks
-            .par_iter()
-            .zip(&list)
-            .enumerate()
-            .map(|(bi, (b, (fi, _)))| {
-                let cd = codes[*fi].as_ref().unwrap();
-                let (mut s1, mut s2) = (Vec::new(), Vec::new());
-                (0..b.len())
-                    .map(|i| {
-                        let sh = shapes[bi][i]?;
-                        let cc = country(cov, Some(sh));
-                        let subtype = Meta::name(cd.subtypes, b.subtype[i]);
-                        let part = b.flags[i] & flag::PART != 0;
-                        let (h, m, s) = if part {
-                            fill::part(b.h[i], cd.est != 0 && b.hsrc[i] == cd.est, b.f[i], b.m[i], b.mf[i], b.area[i], cc)
-                        } else {
-                            let (h, s) = first[bi][i]
-                                .or_else(|| {
-                                    let (wx, wy) = world7(b.cen[i]);
-                                    let cos = (b.cen[i][1] as f64 * 1e-7).to_radians().dcos();
-                                    near.height(wx * EQ, wy * EQ, cos, b.area[i], &mut s1, &mut s2).map(|(h, _)| (h, src::NEIGHBOURS))
-                                })
-                                .unwrap_or_else(|| {
-                                    let class = Meta::name(cd.classes, b.class[i]);
-                                    fill::last_rules(b.ghsl[i], b.area[i], fill::size_bin(class, subtype, b.area[i]), cc)
-                                });
-                            (h, 0, s)
-                        };
-                        let k = if part { 1 } else if b.flags[i] & flag::HAS_PARTS != 0 { 2 } else { 0 };
-                        Some(Filled { h, m, s, f: if s == src::FLOORS { b.f[i] } else { 0 }, c: tiles::kind_of(subtype), k })
-                    })
-                    .collect()
-            })
-            .collect();
-        // The area's tiles: its own records, in the tiles of their centroids; and the copies, for
-        // the flat footprints, of every building filled here into the area's tiles it reaches.
-        let mut by_tile: BTreeMap<(u8, u32, u32), Vec<Feat>> = BTreeMap::new();
-        for (bi, (b, (_, e))) in blocks.iter().zip(&list).enumerate() {
-            let (_, x, y) = key_zxy(e.key);
-            for (i, fl) in filled[bi].iter().enumerate() {
-                let own = bi < n_own;
-                let Some(fl) = fl else {
-                    if own {
-                        sum.outside += 1;
+        sum.merge(&area_tiles(files, cov, t, a, add)?);
+    }
+    crate::agent::jobs::report(areas.len() as u64, areas.len() as u64, "z8 areas done");
+    Ok(sum)
+}
+
+/// Area `a`'s tiles (a z8 tile of T: its buildings, and copies of those around it reaching into its
+/// tiles), by zoom, x, y, given to `add`: what `tiles_of` makes of it. It reads only the blocks
+/// `area_blocks` names, and the coverage where they are: a task's files (`super::task::cut`) give
+/// the same tiles.
+pub fn area_tiles(files: &[Option<WorkFile>], cov: &Coverage, t: Unit, a: (u32, u32), add: &mut AddTile) -> Result<Summary> {
+    ensure!(files.len() == 9, "T and its 8 neighbours");
+    let mut sum = Summary::default();
+    let codes: Vec<Option<Codes>> = files.iter().map(|f| f.as_ref().map(|f| Codes::of(&f.meta))).collect();
+    let (list, n_own) = area_blocks(files, t, a);
+    let blocks: Vec<Block> = list.par_iter().map(|(fi, e)| files[*fi].as_ref().unwrap().block(e)).collect::<Result<_>>()?;
+    // The records filled here: the area's own, and those within COPY_M around it (copied into
+    // its tiles where they reach them).
+    let reach = grown_area(a, COPY_M);
+    let filled_here: Vec<Vec<bool>> = blocks
+        .par_iter()
+        .enumerate()
+        .map(|(bi, b)| {
+            (0..b.len())
+                .map(|i| {
+                    bi < n_own || {
+                        let (wx, wy) = world7(b.cen[i]);
+                        wx >= reach[0] && wx <= reach[2] && wy >= reach[1] && wy <= reach[3]
                     }
-                    continue;
-                };
-                if own {
-                    if fl.k == 1 {
-                        sum.parts += 1;
+                })
+                .collect()
+        })
+        .collect();
+    // Their shapes (None: not touching the coverage, or not filled here).
+    let shapes: Vec<Vec<Option<usize>>> = blocks
+        .par_iter()
+        .zip(&list)
+        .zip(&filled_here)
+        .map(|((b, (_, e)), here)| {
+            if !here.iter().any(|&h| h) {
+                return vec![None; b.len()];
+            }
+            match cov.box_shape(box14(e.key)) {
+                Some(s) => here.iter().map(|&h| h.then_some(s)).collect(),
+                None => (0..b.len()).map(|i| if here[i] { shape_of(cov, b, i) } else { None }).collect(),
+            }
+        })
+        .collect();
+    // Rules 0–2 for every building read.
+    let first: Vec<Vec<Option<(u16, u8)>>> = blocks
+        .par_iter()
+        .zip(&list)
+        .enumerate()
+        .map(|(bi, (b, (fi, _)))| {
+            let est = codes[*fi].as_ref().unwrap().est;
+            (0..b.len())
+                .map(|i| {
+                    if b.flags[i] & flag::PART != 0 {
+                        return None;
+                    }
+                    let (h, f) = (b.h[i], b.f[i]);
+                    let is_est = est != 0 && b.hsrc[i] == est;
+                    let taken = (fill::H_MIN_DM..=fill::H_MAX_DM).contains(&h);
+                    if taken && !is_est {
+                        Some((h, src::MEASURED))
+                    } else if (1..=fill::F_MAX).contains(&f) {
+                        let s = if filled_here[bi][i] { shapes[bi][i] } else { shape_of(cov, b, i) };
+                        Some((fill::floors_dm(f, fill::storey(country(cov, s))), src::FLOORS))
+                    } else if taken {
+                        Some((h, src::MICROSOFT))
                     } else {
-                        sum.buildings += 1;
-                        sum.by_src[fl.s as usize] += 1;
+                        None
                     }
-                }
-                let polys: Vec<Vec<&[[i32; 2]]>> = b.polygons(i).map(|p| p.collect()).collect();
-                let feat = |copy: bool| Feat {
-                    polys: polys.clone(),
-                    cen: b.cen[i],
-                    order: (e.key, i as u32),
-                    h: fl.h,
-                    m: fl.m,
-                    s: fl.s,
-                    f: fl.f,
-                    c: fl.c,
-                    k: fl.k,
-                    copy,
-                };
-                for z in [14u8, 13, 12] {
-                    let drawn = match z {
-                        14 => true,
-                        13 => fl.h >= 200 || b.area[i] >= 2000.0,
-                        _ => fl.h >= 400,
-                    };
-                    if !drawn {
-                        continue;
-                    }
-                    let tile = (x >> (14 - z), y >> (14 - z));
-                    if own {
-                        by_tile.entry((z, tile.0, tile.1)).or_default().push(feat(false));
-                    }
-                    if fl.k == 1 {
-                        continue; // (parts aren't drawn flat)
-                    }
-                    for (tx, ty) in tiles::reached(&polys, z, tile) {
-                        if (tx >> (z - 8), ty >> (z - 8)) == a {
-                            by_tile.entry((z, tx, ty)).or_default().push(feat(true));
-                            sum.copies += 1;
-                        }
-                    }
-                }
-            }
-        }
-        let list: Vec<((u8, u32, u32), Vec<Feat>)> = by_tile.into_iter().collect();
-        let made: Vec<Option<(Vec<u8>, u32, u32)>> = list.par_iter().map(|((z, x, y), feats)| tiles::encode(*z, *x, *y, feats)).collect::<Result<_>>()?;
-        for (((z, x, y), _), m) in list.iter().zip(made) {
-            if let Some((gz, raw, n)) = m {
-                add(*z, *x, *y, &gz, raw)?;
-                sum.note(*z, *x, *y, gz.len() as u32, n);
+                })
+                .collect()
+        })
+        .collect();
+    let mut pts = Vec::new();
+    for (b, hs) in blocks.iter().zip(&first) {
+        for (i, h) in hs.iter().enumerate() {
+            if let Some((h, _)) = h {
+                let (wx, wy) = world7(b.cen[i]);
+                pts.push(Point { x: wx * EQ, y: wy * EQ, area: b.area[i], h: *h });
             }
         }
     }
-    crate::agent::jobs::report(areas.len() as u64, areas.len() as u64, "z8 areas done");
+    let bb = tile_box_deg(8, a.0, a.1);
+    let near = Near::new(pts, (bb[1].abs().max(bb[3].abs()) + 0.05).min(85.0).to_radians().dcos());
+    // The records filled here, filled (a record within COPY_M of the area has every building
+    // within 300 m of it read: the same as its own area makes it).
+    let filled: Vec<Vec<Option<Filled>>> = blocks
+        .par_iter()
+        .zip(&list)
+        .enumerate()
+        .map(|(bi, (b, (fi, _)))| {
+            let cd = codes[*fi].as_ref().unwrap();
+            let (mut s1, mut s2) = (Vec::new(), Vec::new());
+            (0..b.len())
+                .map(|i| {
+                    let sh = shapes[bi][i]?;
+                    let cc = country(cov, Some(sh));
+                    let subtype = Meta::name(cd.subtypes, b.subtype[i]);
+                    let part = b.flags[i] & flag::PART != 0;
+                    let (h, m, s) = if part {
+                        fill::part(b.h[i], cd.est != 0 && b.hsrc[i] == cd.est, b.f[i], b.m[i], b.mf[i], b.area[i], cc)
+                    } else {
+                        let (h, s) = first[bi][i]
+                            .or_else(|| {
+                                let (wx, wy) = world7(b.cen[i]);
+                                let cos = (b.cen[i][1] as f64 * 1e-7).to_radians().dcos();
+                                near.height(wx * EQ, wy * EQ, cos, b.area[i], &mut s1, &mut s2).map(|(h, _)| (h, src::NEIGHBOURS))
+                            })
+                            .unwrap_or_else(|| {
+                                let class = Meta::name(cd.classes, b.class[i]);
+                                fill::last_rules(b.ghsl[i], b.area[i], fill::size_bin(class, subtype, b.area[i]), cc)
+                            });
+                        (h, 0, s)
+                    };
+                    let k = if part { 1 } else if b.flags[i] & flag::HAS_PARTS != 0 { 2 } else { 0 };
+                    Some(Filled { h, m, s, f: if s == src::FLOORS { b.f[i] } else { 0 }, c: tiles::kind_of(subtype), k })
+                })
+                .collect()
+        })
+        .collect();
+    // The area's tiles: its own records, in the tiles of their centroids; and the copies, for
+    // the flat footprints, of every building filled here into the area's tiles it reaches.
+    let mut by_tile: BTreeMap<(u8, u32, u32), Vec<Feat>> = BTreeMap::new();
+    for (bi, (b, (_, e))) in blocks.iter().zip(&list).enumerate() {
+        let (_, x, y) = key_zxy(e.key);
+        for (i, fl) in filled[bi].iter().enumerate() {
+            let own = bi < n_own;
+            let Some(fl) = fl else {
+                if own {
+                    sum.outside += 1;
+                }
+                continue;
+            };
+            if own {
+                if fl.k == 1 {
+                    sum.parts += 1;
+                } else {
+                    sum.buildings += 1;
+                    sum.by_src[fl.s as usize] += 1;
+                }
+            }
+            let polys: Vec<Vec<&[[i32; 2]]>> = b.polygons(i).map(|p| p.collect()).collect();
+            let feat = |copy: bool| Feat {
+                polys: polys.clone(),
+                cen: b.cen[i],
+                order: (e.key, i as u32),
+                h: fl.h,
+                m: fl.m,
+                s: fl.s,
+                f: fl.f,
+                c: fl.c,
+                k: fl.k,
+                copy,
+            };
+            for z in [14u8, 13, 12] {
+                let drawn = match z {
+                    14 => true,
+                    13 => fl.h >= 200 || b.area[i] >= 2000.0,
+                    _ => fl.h >= 400,
+                };
+                if !drawn {
+                    continue;
+                }
+                let tile = (x >> (14 - z), y >> (14 - z));
+                if own {
+                    by_tile.entry((z, tile.0, tile.1)).or_default().push(feat(false));
+                }
+                if fl.k == 1 {
+                    continue; // (parts aren't drawn flat)
+                }
+                for (tx, ty) in tiles::reached(&polys, z, tile) {
+                    if (tx >> (z - 8), ty >> (z - 8)) == a {
+                        by_tile.entry((z, tx, ty)).or_default().push(feat(true));
+                        sum.copies += 1;
+                    }
+                }
+            }
+        }
+    }
+    let list: Vec<((u8, u32, u32), Vec<Feat>)> = by_tile.into_iter().collect();
+    let made: Vec<Option<(Vec<u8>, u32, u32)>> = list.par_iter().map(|((z, x, y), feats)| tiles::encode(*z, *x, *y, feats)).collect::<Result<_>>()?;
+    for (((z, x, y), _), m) in list.iter().zip(made) {
+        if let Some((gz, raw, n)) = m {
+            add(*z, *x, *y, &gz, raw)?;
+            sum.note(*z, *x, *y, gz.len() as u32, n);
+        }
+    }
     Ok(sum)
 }
 
@@ -375,8 +421,10 @@ pub fn work_files(out: &Out, t: Unit) -> Result<Vec<Option<WorkFile>>> {
 }
 
 /// Runs `bldtiles T`: its hi pack made and uploaded (or, with no building touching the coverage,
-/// the one it had dropped).
-pub fn build(out: &mut Out, cov: &Coverage, t: Unit) -> Result<Summary> {
+/// the one it had dropped). With `offload` (the build Mac's coordinator), some of its z8 areas are
+/// offered to workers as tasks (`super::task::Offers`) while the others are made here, in order;
+/// every area's tiles go into the pack in its turn, the same bytes wherever it was made.
+pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::offload::Offload>) -> Result<Summary> {
     ensure!(t.z == 6, "bldtiles takes z6 tiles ({} isn't one)", t.slash());
     let t0 = std::time::Instant::now();
     let files = work_files(out, t)?;
@@ -385,10 +433,27 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit) -> Result<Summary> {
     let meta = serde_json::json!({"layer": super::LAYER, "scope": "hi", "root": t.slash(), "encoding": "mvt"});
     let mut w = store::pack::PackWriter::create(&local, meta, true)?;
     let mut n = 0u64;
-    let mut sum = tiles_of(&files, cov, t, &mut |z, x, y, gz, raw| {
-        n += 1;
-        w.add(z, x, y, gz, raw)
-    })?;
+    let areas = areas_of(&files);
+    let mut offers = super::task::Offers::new(offload, &out.scratch, t, areas.len());
+    let mut sum = Summary::default();
+    for (k, &a) in areas.iter().enumerate() {
+        crate::agent::jobs::report(k as u64, areas.len() as u64, "z8 areas done");
+        offers.top_up(&files, cov, &areas, k)?;
+        let mut add = |z: u8, x: u32, y: u32, gz: &[u8], raw: u32| {
+            n += 1;
+            w.add(z, x, y, gz, raw)
+        };
+        let s = match offers.result(&files, cov, &areas, k)? {
+            Some(dir) => {
+                let s = super::task::take_area(&dir, Unit { z: 8, x: a.0, y: a.1 }, &mut add)?;
+                std::fs::remove_dir_all(&dir).ok();
+                s
+            }
+            None => area_tiles(&files, cov, t, a, &mut add)?,
+        };
+        sum.merge(&s);
+    }
+    crate::agent::jobs::report(areas.len() as u64, areas.len() as u64, "z8 areas done");
     w.finish()?;
     if n == 0 {
         std::fs::remove_file(&local).ok();
