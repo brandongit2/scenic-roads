@@ -1939,7 +1939,8 @@ export class RoadLayer implements CustomLayerInterface {
    * millisecond and more a frame. Else (render) the rest, with the sums put on the map in their place.
    */
   private drawFrame(gl: WebGL2RenderingContext, opts: CustomRenderMethodInput, sums: boolean, which: 'all' | 'base' | 'bridges' = 'all') {
-    const draw = this.drawn;
+    // (The bridges' layer: only the zoomed-in tiles that have bridges, set up and drawn.)
+    const draw = which === 'bridges' ? this.drawn.filter((t) => !t.sprite && (t.data?.bridgeEnd ?? 0) > 1) : this.drawn;
     const frame = this.frame;
     if (!this.style.visible || draw.length === 0 || !frame) return;
 
