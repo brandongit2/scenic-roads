@@ -70,9 +70,12 @@ pub struct Report {
     pub langs: BTreeMap<String, usize>,
     /// Things read, by source.
     pub read: BTreeMap<&'static str, u64>,
-    /// Things with English of their own; with a line; in English; nowhere a language is known.
+    /// Things with English of their own; with a line; in English (or no letters); nowhere a
+    /// language is known.
     pub own: u64,
     pub lined: u64,
+    /// Settlements in Latin script, which keep their own name.
+    pub settlements: u64,
     pub english: u64,
     pub nowhere: u64,
     /// Descriptions to write: landmarks, areas.
@@ -116,9 +119,9 @@ const ENGLISH_WORDS: &[&str] = &[
     "the", "of", "and", "in", "on", "at", "lake", "river", "mount", "mountain", "mountains", "island", "islands", "bay", "park", "national", "historic", "historical", "site", "sites", "temple", "temples", "shrine", "garden", "gardens", "castle", "church", "cathedral", "museum", "bridge", "station", "line", "street", "road", "avenue", "tower", "house", "hall", "palace", "ruins", "settlement", "monument", "memorial", "district", "town", "city", "village", "world", "heritage", "international", "archaeological", "falls", "beach", "harbour", "harbor", "port", "trail", "valley", "forest", "reserve", "observatory", "school", "university", "airport", "market", "square", "centre", "center", "building", "estate", "farm", "mill", "lighthouse", "viewpoint", "peak", "hill", "point", "cape", "north", "south", "east", "west", "old", "new", "upper", "lower", "great", "little",
 ];
 
-/// Whether a name reads as English: Latin letters without accents, and none of the coverage's
-/// other languages' words; where English isn't spoken (`english_spoken` false), an English word
-/// too. A name in CJK script with a Latin part (Hong Kong's "文武廟 Man Mo Temple Compound") reads
+/// Whether a name reads as English: Latin letters without accents, and more English words than
+/// the coverage's other languages' (`ENGLISH_WORDS`, `OTHER_WORDS`), or, where English is spoken
+/// (`english_spoken`), none of the others'. A name in CJK script with a Latin part (Hong Kong's "文武廟 Man Mo Temple Compound") reads
 /// as English when its Latin part does: it carries its English.
 fn reads_english(name: &str, english_spoken: bool) -> bool {
     let latin: String = if name.chars().any(is_cjk) {
@@ -134,10 +137,11 @@ fn reads_english(name: &str, english_spoken: bool) -> bool {
         return false;
     }
     let words: Vec<String> = latin.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect();
-    if words.iter().any(|w| OTHER_WORDS.contains(&w.as_str())) {
-        return false;
-    }
-    english_spoken || words.iter().any(|w| ENGLISH_WORDS.contains(&w.as_str()))
+    let other = words.iter().filter(|w| OTHER_WORDS.contains(&w.as_str())).count();
+    let english = words.iter().filter(|w| ENGLISH_WORDS.contains(&w.as_str())).count();
+    // More English words than another language's ("The Architectural Work of Le Corbusier…");
+    // else, where English is spoken, none of another language's.
+    english > other || (english_spoken && other == 0)
 }
 
 impl Lists<'_> {
@@ -180,9 +184,15 @@ impl Lists<'_> {
             self.report.nowhere += 1;
             return;
         }
+        // A settlement in Latin script keeps its own name (a well-known English one would be its
+        // own English): nothing to ask.
+        if t.kind == Kind::Settlement && !t.name.chars().any(is_cjk) && t.name.chars().all(|c| !c.is_alphabetic() || c.is_ascii() || c.to_lowercase().all(|l| (l as u32) < 0x250)) {
+            self.report.settlements += 1;
+            return;
+        }
         // Where English is spoken, a name without another language's signs is English; elsewhere,
-        // one with English words too.
-        if reads_english(t.name, cands.contains(&en)) {
+        // one with more English words than another language's.
+        if reads_english(t.name, here.contains(&en) || cands.contains(&en)) {
             self.report.english += 1;
             return;
         }
@@ -647,6 +657,9 @@ mod tests {
             ("文武廟 Man Mo Temple Compound", true, true),
             ("文武廟 Man Mo", true, true),
             ("文武廟 Man Mo", false, false),
+            ("The Architectural Work of Le Corbusier, an Outstanding Contribution to the Modern Movement", false, true),
+            ("Church of Saint-Martin", false, true),
+            ("Rue de la Paix", false, false),
             ("Hiraizumi – Temples, Gardens and Archaeological Sites Representing the Buddhist Pure Land", false, true),
             ("Kulangsu, a Historic International Settlement", false, true),
             ("Hiraizumi", false, false),
@@ -681,7 +694,8 @@ mod tests {
         l.add(t("Lake Louise", Kind::Other, false, &[], -76.0, 44.0, 30.0)); // English in Canada
         l.add(t("Rue Haute", Kind::Road, false, &[], -79.0, 44.0, 20.0)); // French signs in Ontario
         l.add(t("中山", Kind::Other, false, &[], 139.0, 35.0, 40.0));
-        l.add(t("Kêr", Kind::Settlement, false, &["br"], 2.0, 46.0, 50.0)); // OSM's language
+        l.add(t("Kêr Vraz", Kind::Other, false, &["br"], 2.0, 46.0, 50.0)); // OSM's language
+        l.add(t("Le Moulin", Kind::Settlement, false, &[], 2.0, 46.0, 50.0)); // keeps its name
         l.add(t("Sea", Kind::Other, false, &[], -30.0, 40.0, 50.0)); // nowhere
         let r = &l.report;
         assert_eq!((r.own, r.lined, r.english, r.nowhere), (1, 1, 1, 1));
@@ -690,7 +704,8 @@ mod tests {
         assert_eq!((e.things, e.best, e.langs.iter().map(Lang::as_str).collect::<Vec<_>>()), (2, 35.0, vec!["fr"]));
         assert_eq!(get("Rue Haute", Kind::Road, "fr").map(|e| e.langs.len()), Some(1));
         assert!(get("中山", Kind::Other, "ja").is_some());
-        assert!(get("Kêr", Kind::Settlement, "br").is_some());
+        assert!(get("Kêr Vraz", Kind::Other, "br").is_some());
+        assert_eq!(l.report.settlements, 1);
         assert_eq!(l.entries.len(), 4);
     }
 }

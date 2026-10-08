@@ -27,7 +27,9 @@ every build, so don't edit them; answers go elsewhere (below).
 Names with English of their own (OSM's `name:en`, a romanised name, a kana reading, a register's
 English) aren't listed: that English belongs to its thing, and shows. Nor are names already in
 English (where English is spoken, a name without another language's accents or words; elsewhere
-one with English words too), bilingual names with their English part, or names without letters.
+one with more English words than another language's), bilingual names with their English part,
+names without letters, or settlements in Latin script, which keep their own name (a well-known
+English one is OSM's `name:en`, their own).
 
 ## The answer
 

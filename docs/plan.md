@@ -1328,9 +1328,11 @@ them).
     (rivers' names), stations, ferries, the area overlays' names.
   - Names already in English aren't listed: where English is spoken, a name without another
     candidate language's signs (accents, the coverage's generic words and articles) counts as
-    English; elsewhere one with English words too ("Hiraizumi – Temples, Gardens and
-    Archaeological Sites…"); a name in Chinese or Japanese script with an English part (Hong
-    Kong's "文武廟 Man Mo Temple Compound") carries its English. Nor are names without letters.
+    English; elsewhere one with more English words than another language's ("Hiraizumi – Temples,
+    Gardens and Archaeological Sites…"); a name in Chinese or Japanese script with an English part (Hong
+    Kong's "文武廟 Man Mo Temple Compound") carries its English. Nor are names without letters, nor
+    settlements in Latin script, which keep their own name by the brief's rule (a well-known
+    English one would be their own English, OSM's `name:en`).
   - **Each entry:** the name and its kind; the candidate languages: those spoken where the things
     lacking English are, narrowed by OSM's language tags and the name's script (kana Japanese, other
     CJK the CJK languages spoken there, Latin the others); how many things lack English, and one of

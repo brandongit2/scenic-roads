@@ -171,7 +171,7 @@ fn main() -> Result<()> {
         let tr = opt(&args, "--translations").map_or_else(|| root.join("translations"), PathBuf::from);
         let t0 = std::time::Instant::now();
         let r = pipeline::namestodo::run(&root, &out, &tr, &scratch, &|what, done, total| pipeline::agent::jobs::report(done, total, what))?;
-        eprintln!("names-todo: {} in {:.0} s", serde_json::json!({"langs": r.langs, "read": r.read, "own": r.own, "lined": r.lined, "english": r.english, "nowhere": r.nowhere, "landmarks": r.landmarks, "areas": r.areas}), t0.elapsed().as_secs_f64());
+        eprintln!("names-todo: {} in {:.0} s", serde_json::json!({"langs": r.langs, "read": r.read, "own": r.own, "lined": r.lined, "settlements": r.settlements, "english": r.english, "nowhere": r.nowhere, "landmarks": r.landmarks, "areas": r.areas}), t0.elapsed().as_secs_f64());
         return Ok(());
     }
     let scratch = PathBuf::from(opt(&args, "--scratch").unwrap_or_else(|| "/tmp/scenic-build".into()));
