@@ -3474,7 +3474,7 @@ impl Agent {
         if let Some((st, t)) = held_wait.filter(|_| plan.iter().any(|w| w.step == "catalog")) {
             let mine = self.slots.iter().filter_map(|s| s.running.as_ref()).any(|r| r.spec.record.as_ref().is_some_and(|w| w.step == *st && w.targets.iter().any(|x| x.0 == *t)));
             let who = if mine { "this Mac's job" } else { "another worker" };
-            waiting.push(Waiting { step: Some("catalog".into()), what: build::PUBLISH.into(), why: format!("waits for {who} building the {} of {t}", if st == "slope" { "slope" } else { "tree cover" }) });
+            waiting.push(Waiting { step: Some("catalog".into()), what: build::PUBLISH.into(), why: format!("waits for {who} building the {} of {t}", if st.starts_with("slope") { "slope" } else { "tree cover" }) });
             plan.retain(|w| w.step != "catalog");
         } else if unmerged && plan.iter().any(|w| w.step == "catalog") {
             waiting.push(Waiting { step: Some("catalog".into()), what: build::PUBLISH.into(), why: "waits for a helper's work to be merged".into() });
