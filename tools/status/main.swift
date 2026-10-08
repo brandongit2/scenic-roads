@@ -7,7 +7,8 @@
 // build's key its agent keeps: the owner's alone to see and answer, here). This Mac's own agent's
 // status, read from its file, says what its build caches hold, whether they can be cleared now,
 // and the last trim and clear (crates/pipeline/src/agent/room.rs): Clear the Build's Caches asks
-// that agent to clear them.
+// that agent to clear them. Disk Room shows the disk's free space and the owner's room target, and
+// sets it (a few presets, or Off): the free space that agent keeps, freeing its caches to it.
 //
 // The launcher runs it (`scenic-launcher status`, from ~/Library/LaunchAgents/local.scenic.status.plist)
 // from the installed app; it quits when a newer app is installed, and the launcher starts that one.
@@ -111,6 +112,24 @@ struct Caches: Decodable {
     let trimmed: Freed?
     let cleared: Freed?
     let declined: Freed?
+    let room: RoomView?
+}
+
+/// The owner's disk room target as the agent keeps it (room.rs RoomView): the target, the disk's
+/// free space as its status was written, its last freeing toward it, and why the disk is short of
+/// it and stays so.
+struct RoomView: Decodable {
+    let target: RoomTarget?
+    let free: Int
+    let toward: Freed?
+    let short: String?
+}
+
+/// The target (room.rs Target): bytes to keep free, who set it and when.
+struct RoomTarget: Decodable {
+    let bytes: Int
+    let by: String
+    let at: Int
 }
 
 /// A cache a clear would empty (room.rs Gone): its name in words, its bytes, how it comes back.
@@ -621,6 +640,40 @@ func clearAsked() -> Bool {
     [clearFile, "\(clearFile).taken"].contains { FileManager.default.fileExists(atPath: home.appendingPathComponent("agent").appendingPathComponent($0).path) }
 }
 
+/// The owner's disk room target on this Mac (room.rs Target, `scenic room`), in its agent's folder:
+/// its bytes, as set now (nil: off).
+let targetFile = "room-target.json"
+func roomTarget() -> Int? {
+    guard let d = try? Data(contentsOf: home.appendingPathComponent("agent").appendingPathComponent(targetFile)),
+          let t = try? JSONDecoder().decode(RoomTarget.self, from: d), t.bytes > 0 else { return nil }
+    return t.bytes
+}
+
+/// The free space on the disk of the agent's folder, now (as its agent measures it: statfs's).
+func diskFree() -> Int? {
+    (try? FileManager.default.attributesOfFileSystem(forPath: home.path))?[.systemFreeSize] as? Int
+}
+
+/// The room target's presets (GB).
+let roomPresets = [50, 100, 150, 200, 300]
+
+/// The menu's Disk Room item (none without an agent here): its title, with the free space and the
+/// target; its tooltip (why the disk is short of it, when it stays so); and its submenu's choices
+/// (a preset's GB, 0 for Off), with the one set checked.
+func roomItem(_ own: Own?, target: Int?, free: Int?) -> (title: String, tip: String, choices: [(title: String, gb: Int, on: Bool)])? {
+    guard own?.caches != nil else { return nil }
+    var title = "Disk Room: \(free.map(gb) ?? "?") free"
+    title += target.map { " · target \(gb($0))" } ?? " · no target"
+    let r = own?.caches?.room
+    var tip = "The free space this Mac's agent keeps: it frees its build caches to it, as far as needed, and starts no job that would cross it, until it's lowered or off."
+    if let t = target, r?.target?.bytes == t, let why = r?.short { tip = "Short of it: \(why)" }
+    if let t = target, r?.target?.bytes == t, let f = r?.toward, f.bytes > 0 { tip += "\nFreed toward it \(clock(f.at)): \(freedText(f))" }
+    var choices = roomPresets.map { (title: "Keep \($0) GB Free", gb: $0, on: target == $0 << 30) }
+    if let t = target, !choices.contains(where: \.on) { choices.append((title: "Keep \(gb(t)) Free", gb: -1, on: true)) }
+    choices.append((title: "Off", gb: 0, on: target == nil))
+    return (title, tip, choices)
+}
+
 /// "51.2 GB", or under a GB, "350 MB" (number and unit never split across lines).
 func gb(_ b: Int) -> String {
     b >= 1 << 30 ? String(format: "%.1f\u{00A0}GB", Double(b) / Double(1 << 30)) : "\(b >> 20)\u{00A0}MB"
@@ -784,6 +837,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             if !c.tip.isEmpty { it.toolTip = c.tip }
             m.addItem(it)
         }
+        // This Mac's disk room target (room.rs Target): its agent keeps that much free.
+        if let r = roomItem(own, target: roomTarget(), free: diskFree()) {
+            let it = NSMenuItem(title: r.title, action: nil, keyEquivalent: "")
+            it.toolTip = r.tip
+            let sub = NSMenu()
+            for c in r.choices {
+                let ci = NSMenuItem(title: c.title, action: c.gb >= 0 ? #selector(setRoom) : nil, keyEquivalent: "")
+                ci.target = self
+                ci.tag = c.gb
+                ci.state = c.on ? .on : .off
+                if c.gb == 0 { sub.addItem(.separator()) }
+                sub.addItem(ci)
+            }
+            it.submenu = sub
+            m.addItem(it)
+        }
         // Devices asking to help through the build page: accepted or declined here, by the code their
         // page shows; and those helping, to forget.
         if let d = devices, !(d.asking.isEmpty && d.accepted.isEmpty) {
@@ -933,6 +1002,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         } catch {
             post("Couldn't ask to clear the build's caches", "\(error.localizedDescription)")
+            return
+        }
+        poll()
+    }
+
+    /// Sets this Mac's disk room target to the item's GB (its tag; 0: off): the target's file in
+    /// the agent's folder (room.rs Target), written whole, which the agent reads each loop; signed
+    /// with the name the agent goes by.
+    @objc func setRoom(_ sender: NSMenuItem) {
+        let dir = home.appendingPathComponent("agent")
+        let dst = dir.appendingPathComponent(targetFile)
+        do {
+            if sender.tag == 0 {
+                if FileManager.default.fileExists(atPath: dst.path) { try FileManager.default.removeItem(at: dst) }
+            } else {
+                let name = SCDynamicStoreCopyLocalHostName(nil) as String? ?? "this Mac"
+                let tmp = dir.appendingPathComponent("\(targetFile).menu.tmp")
+                try JSONSerialization.data(withJSONObject: ["bytes": sender.tag << 30, "by": "the menu bar on \(name)", "at": Int(Date().timeIntervalSince1970)] as [String: Any]).write(to: tmp)
+                guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            }
+        } catch {
+            post("Couldn't set the disk room target", "\(error.localizedDescription)")
             return
         }
         poll()
@@ -1118,6 +1209,9 @@ if args.contains("--print") {
     if let c = cachesItem(own, now: Int(Date().timeIntervalSince1970), asked: clearAsked()) {
         print("item: \(c.title)\(c.enabled || c.tip.isEmpty ? "" : " (disabled: \(c.tip))")")
     }
+    if let r = roomItem(own, target: roomTarget(), free: diskFree()) {
+        print("item: \(r.title) [\(r.choices.map { ($0.on ? "✓" : "") + $0.title }.joined(separator: " | "))]")
+    }
 } else if let i = args.firstIndex(of: "--render"), i + 1 < args.count {
     // The menu's information lines as views, stacked as the menu stacks them, drawn into a PNG.
     let done = DispatchSemaphore(value: 0)
@@ -1174,6 +1268,11 @@ if args.contains("--print") {
             print("  item: \(c.title)\(c.enabled || c.tip.isEmpty ? "" : " (disabled: \(c.tip))")")
             // (What its confirmation lists.)
             for g in (c.enabled ? d.own?.caches?.each : nil) ?? [] { print("    \(g.what) \(gb(g.bytes)): \(g.back)") }
+        }
+        // (The target and free space as the agent's status says them.)
+        if let r = roomItem(d.own, target: d.own?.caches?.room?.target?.bytes, free: d.own?.caches?.room?.free) {
+            print("  item: \(r.title) [\(r.choices.map { ($0.on ? "✓" : "") + $0.title }.joined(separator: " | "))]")
+            print("    tip: \(r.tip)")
         }
         d.notifyChanges()
     }
