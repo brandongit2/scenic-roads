@@ -16,7 +16,7 @@ by language (docs/plan.md §7): {"n", "kind", "langs", "main", "sub", "via"}.
 
 Output: <out>/<language>.jsonl (a line goes in its first language's file; English names of the
 languages, so the area tables' loader, which reads area codes in file names, skips them), and
-<out>/../conversion-log.jsonl.
+<out>/conversion-log.txt (JSON lines, but not .jsonl: no loader reads it).
 
 usage: convert-tables.py <old translations folder> <out folder>
 """
@@ -89,7 +89,7 @@ def main(src: str, out: str) -> None:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
         os.replace(path + ".tmp", path)
         stats[("out", lang)] = len(rows)
-    with open(os.path.join(os.path.dirname(out.rstrip("/")), "conversion-log.jsonl"), "w", encoding="utf-8") as f:
+    with open(os.path.join(out, "conversion-log.txt"), "w", encoding="utf-8") as f:
         for e in log:
             f.write(json.dumps(e, ensure_ascii=False) + "\n")
     stats[("disagreements", "settled")] = len(log)

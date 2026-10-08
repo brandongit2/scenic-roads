@@ -3253,6 +3253,11 @@ impl Agent {
                 jobs.push(job(format!("water {date}"), "Drawing the world's water at every zoom", "water", p.clone(), Some(w)));
             }
         }
+        // After each catalog the map serves: the names to translate and descriptions to write.
+        if let Some(w) = build::names_todo_work(served_catalog(&root.join("catalog")).map(|c| c.n), &keys) {
+            let n = w.targets[0].1.clone();
+            jobs.push(job(format!("names-todo {n}"), "Listing the names to translate and the descriptions to write", "names-todo", Vec::new(), Some(w)));
+        }
         if recipes.is_empty() {
             return jobs;
         }
@@ -4545,6 +4550,7 @@ fn first_secs(step: &str) -> f64 {
         "bldprep" => 6.0,
         "bldtiles" => 2.0,
         "catalog" => 60.0,
+        "names-todo" => 900.0,
         _ => 300.0,
     }
 }

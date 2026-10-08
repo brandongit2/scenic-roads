@@ -311,6 +311,28 @@ parts: the flat layer's only; left out when 0), `o` (1 a copy; left out otherwis
 order in every tile, values in order of first use. No feature ids, no names. Features sorted by their centroid's Morton code in the
 tile (12 bits an axis), then id.
 
+## Names (docs/plan.md §7)
+
+- **Translation lines** (`translations/**/*.jsonl`, not `todo/`): `{"n", "kind", "langs", "main",
+  "sub", "via"}`: `kind` road, settlement or other, or a list; `langs` a language (ISO 639: its first
+  subtag counts) or a list; `main` null or empty for the name; `sub` null for none; `via` free text,
+  "todo" or "skipped" leaving the line out. Lines without `kind` or `langs` (the area tables'
+  `{"n", "main", "sub"}` and `{"n", "en"}`) are left out. The converted area tables are
+  `translations/0-converted/<language's English name>.jsonl`, with `conversion-log.txt` (JSON lines:
+  each disagreement settled).
+- **Labels** (`layers/labels`, layer `l`): `n` name, `en` its own English (`name:en`, else its
+  romanised name), `kana` its kana reading (when it has no English), `l` the languages OSM gives its
+  name (comma-separated), `o` its OSM object (`n123`, `w123`, `r123`), `k` kind, `c` class, `mz`,
+  `ms`, `s` (dem/labels.py). Labels made before `LABELS_V` 2 have `n`, `en`, `k`, `c`, `mz`, `ms`,
+  `s`.
+- **To translate** (`translations/todo/<language>.jsonl`, the `names-todo` job's, rewritten whole
+  after each catalog): `{"n", "kind", "langs", "things", "example": {"osm", "at": [lon, lat]},
+  "priority"}`, by priority; with `README.md` and `check.py`.
+- **To describe** (`descriptions/todo/landmarks.jsonl`, `areas.jsonl`, likewise): `{"qid", "id",
+  "name", "en", "kind", "designation", "at", "enwiki", "wiki", "register", "source", "fame"}`
+  (landmarks) and `{"qid", "id", "name", "kind", "bbox", "area_km2", "enwiki", "fame"}` (areas), by
+  fame; with `README.md`.
+
 ## Catalog (`catalog/<n>.json.zst`)
 
 zstd with its content checksum on; written as `<n>.json.zst.tmp`, then renamed. Readers list
@@ -377,6 +399,11 @@ mirror/<content name>   local copies, by the same names as on the NAS (.partial/
 idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trailer)
 catalog/<n>.json.zst    the last catalogs read
 translations/  descriptions/   local copies of the NAS folders, compiled by the server
+names/spoken-<content>.bin   the languages spoken where (names::spoken::Spoken::to_bytes: "SPOKEN01",
+                        u32 head length, head (the rules' version, then a line per region: its ISO
+                        code, a tab, its languages comma-separated; region 0 none), u32 run count,
+                        23,041 u32 row starts, runs of (u32 first column, u16 region)), made from
+                        the catalog's outlines of that content name
 regions.json            the last regions read; regions-queue/: region edits waiting for the NAS
 keep.json               the areas this Mac keeps for offline use (crates/server/src/keep.rs; the
                         Regions panel): {fmt: 1, regions: [{id, name, at}], views: [{id, name,
@@ -464,7 +491,8 @@ agent/pack-idx/         <hash16>.idx: the indexes of the terrain packs the build
   (`buildings`: the 3D buildings' MVT as stored, versioned `buildings.tiles` in `/api/meta`).
   `/api/meta` says `water` when the catalog has the water layer (`versions.water`: the drawing's version,
   its packs' and the basemap's, as deeper tiles are drawn from the basemap).
-  Strong `ETag`: the stored blob's hash, plus the translations versions for named tiles;
+  Strong `ETag`: the stored blob's hash, plus for named tiles the versions of the languages spoken
+  within them and of the spoken-languages raster (docs/plan.md §7);
   `/tiles/base`'s is a hash of the catalog's basemap archives' content names and the tile's z/x/y, plus
   the names version (a 304 reads no archive); terrain
   and slope tiles the server makes (missing ones, slope z12) carry none. A request with `?v=` (the
@@ -490,9 +518,13 @@ agent/pack-idx/         <hash16>.idx: the indexes of the terrain packs the build
   least 2 km; the answer says `approx`.
 - `/api/catalog`: `n`, `created`, `units` (a count), `layers` (encoding, zoom range, version),
   `coverage` (the regions it was built for, without outlines), `credits` (every credit for a
-  catalog that has none), `online`, `nas`, `held`, `app`, `agent`, `names` (translation versions),
+  catalog that has none), `online`, `nas`, `held`, `app`, `agent`, `names` (`langs`: each language's version; `spoken`:
+  the raster's outlines and version, or null; `warning` when only the area tables' lines are
+  there),
   `v`, `marks`. The map's meta is `/api/meta`.
-- `/api/names`; `/api/build` (the agent's status: this Mac's when it runs here, else the NAS's copy).
+- `/api/names?n=<name>&at=lon,lat` repeated (each optionally with `en=<own English>`,
+  `k=road|settlement|other`, `l=<OSM's languages, comma-separated>` before its `at`): `[{main,
+  sub}]`; `/api/build` (the agent's status: this Mac's when it runs here, else the NAS's copy).
 - Other devices (docs/plan.md §4, Devices): no key. A request from anywhere but this Mac, its LAN
   and the tailnet (through `tailscale serve` too, from those alone: never Tailscale Funnel's) is 403
   ("not from here"), as is one whose `Host` isn't the map's (a public name: "not this map's address")
@@ -538,7 +570,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   road, u64 unit key); `global/railfreq` (as `/api/railfreq`: the `rail` job's, by OSM way id from
   `railfreq`'s per-way-index output; each way once); `global/marks/summary`
   (`{fmt, kinds, tiers}`); `global/roaden/<u>` (JSON `{OSM way id: English}`: the unit's roads whose
-  `name:en` isn't their name); `global/heritage/*`; `global/legacy/*` (today's converted files).
+  `name:en` isn't their name; the server's roads' own English); `global/heritage/*`; `global/legacy/*`
+  (today's converted files; `road-en` is no longer read).
 - **Grid layers:** `grid-{class,canopy,cover}` hi packs of z11 tiles, encoding `u8-zstd`, not served.
 - **Worldwide z8 terrain:** `sources/terrain-z8-v1` (one RDPACK of every z8 tile, meta without scope
   or root) and `sources/terrain-z8-v1-max` (each tile's maximum, f32).

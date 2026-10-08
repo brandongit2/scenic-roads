@@ -28,6 +28,7 @@ pub mod markconv;
 pub mod offload;
 pub mod marksjob;
 pub mod marks;
+pub mod namestodo;
 pub mod osmpass;
 pub mod outlines;
 pub mod rawpack;

@@ -233,7 +233,7 @@ impl Keys {
             self.catalog_held = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || matches!(step, "labels" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch") {
+        if step.ends_with("-root") || matches!(step, "labels" | "names-todo" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -329,6 +329,14 @@ pub fn labels_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Opt
     let set = m.get(&crate::osmpass::set_name(date, "labels"))?;
     let k = h(&[&format!("labels {LABELS_V}"), set]);
     (done.lo.get("labels").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "labels".into(), targets: vec![("labels".into(), k)] })
+}
+
+/// The to-do lists of names to translate and descriptions to write (crate::namestodo), once per
+/// catalog the map serves (or step version): after each build.
+pub fn names_todo_work(served: Option<u64>, done: &Keys) -> Option<Work> {
+    let n = served?;
+    let k = h(&[&format!("names-todo {}", crate::namestodo::VERSION), &n.to_string()]);
+    (done.lo.get("names-todo").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "names-todo".into(), targets: vec![("names-todo".into(), k)] })
 }
 
 /// The water layer (crate::water), worldwide, once per pass (or layer version): drawn from the

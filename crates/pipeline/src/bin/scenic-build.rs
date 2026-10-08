@@ -162,6 +162,18 @@ fn main() -> Result<()> {
     if step == "p5-check" {
         return p5_check(&root, &args);
     }
+    if step == "names-todo" {
+        // names-todo [--out <dir>] [--translations <dir>]: the translations' and descriptions' to-do
+        // lists from the newest catalog (pipeline::namestodo), into the root's translations/todo/
+        // and descriptions/todo/ (or --out's); it writes nothing else.
+        let scratch = PathBuf::from(opt(&args, "--scratch").unwrap_or_else(|| "/tmp/scenic-build".into()));
+        let out = opt(&args, "--out").map_or_else(|| root.clone(), PathBuf::from);
+        let tr = opt(&args, "--translations").map_or_else(|| root.join("translations"), PathBuf::from);
+        let t0 = std::time::Instant::now();
+        let r = pipeline::namestodo::run(&root, &out, &tr, &scratch, &|what, done, total| pipeline::agent::jobs::report(done, total, what))?;
+        eprintln!("names-todo: {} in {:.0} s", serde_json::json!({"langs": r.langs, "read": r.read, "own": r.own, "lined": r.lined, "english": r.english, "nowhere": r.nowhere, "landmarks": r.landmarks, "areas": r.areas}), t0.elapsed().as_secs_f64());
+        return Ok(());
+    }
     let scratch = PathBuf::from(opt(&args, "--scratch").unwrap_or_else(|| "/tmp/scenic-build".into()));
     let mut out = Out::open(&root, &scratch)?;
     let t0 = std::time::Instant::now();

@@ -74,8 +74,8 @@ nothing built depends on how the coverage is divided into regions.
 - `translations/` holds finished translation files: the map shows them within a minute or two of
   being dropped there, with nothing rebuilt.
 - `descriptions/` likewise holds descriptions.
-- Planned: the agent will list what still lacks English, or a description, in each folder's
-  `todo/`.
+- After each build the agent lists what still lacks English, or a description, in each folder's
+  `todo/`, with the translators' and writers' briefs.
 
 **Everything else is automatic:**
 - **Building and refreshing:** whenever the build Mac is awake, reaches the NAS, and has power
@@ -152,7 +152,7 @@ NAS root: `personal/projects/scenic-roads/`, on the `personal` share. Its Recycl
 deletions over SMB bypass it (tested 2026-10-02).
 
 ```
-translations/  descriptions/  the user's drop-ins (descriptions/README.md; todo/: planned)
+translations/  descriptions/  the user's drop-ins (descriptions/README.md); todo/: the agent's lists (§7)
 inputs/        regions/<id>.toml, outlines/ (.poly; geofabrik/), ferries/freq/ (timetables), moi-dtm/
                (Taiwan's DTM, put there by hand), keys.env (API keys, KEY=value lines: the rail
                feeds'), hold-catalog
@@ -692,7 +692,8 @@ rule (its version bumped) reruns only the units it applies to. The plan is modul
 - road network codes (`extract`) and their colours (`web/src/mapschemes.ts`);
 - leaf-type source: EEA in Europe, NALCMS in North America, none elsewhere (`dem/leaftype.py`,
   made by the trees job where a square is missing, not tagged complete, or not whole);
-- the languages spoken there, for names (§7; today `names::area`'s boxes);
+- the languages spoken there, for names (§7: CLDR's per territory, refined per subdivision in
+  `names::spoken::REFINED`);
 - credits (`pipeline::rules::CREDITS`, each with the areas whose data comes from its source; a
   catalog lists those meeting its coverage, 20 km around it, or its units' ways).
 
@@ -1000,16 +1001,16 @@ one pinned release (2026-09-23.1), before any unit runs:
 
 - **Road → units index** (`global/roadunits`): for whole-road hover.
 - **Labels** (per pass, worldwide): places, states, seas, lakes and parks from the pass's labels set
-  (`dem/labels.py`, with each thing's own English).
+  (`dem/labels.py`, with each thing's own English, kana reading, OSM languages and OSM object:
+  §7).
 - **Water** (per pass, worldwide): above.
 - **Rail stops:** from the rail set, for the built units' tiles + 20 km.
 - **Ferries:** worldwide, from the ferries set and `inputs/ferries/freq`.
 - **Rail service:** trains a day on the coverage's rail ways (below).
 - **Landmarks:** candidates and peaks per unit, then Wikidata facts and pageviews, marks, and
   overlays (`docs/phase5.md`).
-- **Planned:**
-  - names todo (§7);
-  - descriptions todo (§7).
+- **The to-do lists** (`names-todo`, after each catalog the map serves): names to translate and
+  descriptions to write (§7).
 
 ### Rail service
 
@@ -1187,60 +1188,64 @@ map labels, "main (sub)" in the app's text. Sub shows only when it truly differs
 - not the same but for accents, case, punctuation or spacing (Montréal);
 - not one of main's own parts ("Alba / Scotland" and "Scotland").
 
-**Today (built).**
-- **Tables:** the server reads the translation work's nine area tables: `translations/<area>/`,
-  `places-<area>.jsonl` and `roads-<area>.jsonl`, for jp, tw, hk, sg, fr, ib, pt, na and gb.
-- **A name's area** comes from where its thing is (`names::area`). That is the translation work's
-  box function, within rectangles around today's coverage; elsewhere there's no area, and only own
-  English shows.
-- **Lookup:** the translation line comes first, else the thing's own English as sub.
-  - A road reads the roads table first, then the places table; everything else reads the reverse.
-  - Lines not done (`via` todo or skipped) are left out.
-- **Arrival:**
-  - The server copies files from the NAS once they've held still for 10 s, and compiles the local
-    copy.
-  - It checks every minute while names are being shown, and for ten minutes after it starts. A drop
-    shows within about a minute and a half, with nothing rebuilt.
-  - Tiles' ETags include the versions of the tables they use.
-
-**The design (v7, not built yet): names by language.**
-
-**A thing's English, in order:**
-1. **Its own, from a source about that thing.** The sources:
-   - OSM's `name:en`;
-   - its romanised name (`name:ja-Latn`, `name:zh-Latn-pinyin`…), or its kana reading romanised by
-     rule (Hepburn);
-   - its Wikidata item's English label;
-   - its English Wikipedia article's title;
-   - a heritage register's or UNESCO's English.
-
-   It belongs to that thing alone. It wins over its name's translation, and it's never copied to
-   other things with the same name. A citable source is shown even where it's wrong ("Leclerc tank"
-   for one "Monument aux Morts"): the user prefers that to overwriting it.
+**A thing's English, in order** (`names::display`):
+1. **Its own, from a source about that thing.** It belongs to that thing alone, wins over its
+   name's translation, and is never copied to other things with the same name. A citable source is
+   shown even where it's wrong ("Leclerc tank" for one "Monument aux Morts"): the user prefers that
+   to overwriting it. The sources, as the build carries them (`names::own`):
+   - OSM's `name:en` (the basemap's `name:en`/`name_en`; our tiles' and records' `en`);
+   - its romanised name (`name:ja-Latn`, `name:ja_rm`, `name:zh-Latn-pinyin`…);
+   - its kana reading (`name:ja-Hira`, `name:ja_kana`; the labels' `kana`), romanised by rule:
+     modified Hepburn without macrons (`names::romaji`);
+   - a heritage register's or UNESCO's English, or its English Wikipedia article's title, where the
+     heritage and landmark jobs put it in a record's `en`.
 2. **Its name's translation:** the line for its name, kind and language. The lookup tries first the
-   language OSM gives the name (a `name:br` equal to `name` makes it Breton), then each language
-   spoken where the thing is, in order.
-3. **Else none,** and the name goes on the to-do list.
+   languages OSM gives the name (each `name:<language>` equal to `name`: a `name:br` equal to
+   `name` makes it Breton; our labels' `l`), then each language spoken where the thing is, in order.
+   A name OSM tags Chinese is read in Cantonese where Cantonese is spoken and Mandarin isn't (Hong
+   Kong, Macau).
+3. **Else none:** the name alone, and the name goes on the to-do list.
 
 **Translations are keyed by name, kind and language, the same way in every script.**
-- **Kind:** road, settlement (city to hamlet) or other. The same words can be a hamlet that keeps its
-  name and a mill to translate ("Moulin").
-- **Language:** the language the name is read in.
+- **Kind:** road, settlement (city, town, village, hamlet, suburb, quarter, neighbourhood, isolated
+  dwelling) or other. The same words can be a hamlet that keeps its name and a mill to translate
+  ("Moulin"). A name is looked up in its own kind only.
+  - Labels: a place by its class, states, water and parks other; the basemap: its `place` layer by
+    class, `transportation_name` road, the rest other; roads (drives, climbs, way details) road;
+    rail lines, ferries, stations, landmarks, area overlays, summits: other.
+- **Language:** the language the name is read in (ISO 639, its first subtag: `zh_Hant` is `zh`).
   - A line holds for one language or several. A name that could be in any of the local languages,
     with the same English in each, is filed under all of them, so nothing claims a language it can't
     know.
-  - 中山 has a Chinese line (Zhongshan, as Taiwan reads it) and a Japanese one (Nakayama). "Lac Bleu"
-    has one French line, used in France and Quebec alike.
+  - 中山 has a Chinese line (Zhongshan, as Taiwan reads it), a Japanese one (Nakayama) and a
+    Cantonese one (Chung Shan). "Lac Bleu" has one French line, used in France and Quebec alike.
 - **The languages describe the name, not a region.** So a line serves every place where they're
   spoken, and stays valid when a region gains a language.
 - **The cost:** the same name in two languages (a "Hotel Central" in Spain and another in Italy) is
   translated once in each.
 
-**Languages spoken where a thing is**, in order:
-- Per ISO 3166-1 country and, where it matters, 3166-2 subdivision (the pass's outlines).
-- From CLDR's territory data (official and widely used languages), refined by the country modules
-  (§5): Quebec French then English, Catalonia Catalan then Spanish, Wales English then Welsh,
-  Brittany French then Breton.
+**Languages spoken where a thing is** (`names::spoken`), in order:
+- **Per territory:** CLDR's territory data (`crates/names/src/territory-languages.tsv`, made from
+  CLDR 47's `territoryInfo.json` by `tools/names/cldr-languages.py`): the languages official or de
+  facto official there, most spoken first, script subtags dropped. Languages official only in a
+  region are left to the refinements.
+- **Refined** (`spoken::REFINED`): Quebec French then English, New Brunswick English then French;
+  Catalonia and the Balearics Catalan then Spanish, Valencia Spanish then Catalan, Galicia Galician
+  then Spanish, the Basque Country and Navarre Spanish then Basque; Wales English then Welsh,
+  Scotland English then Gaelic; Brittany French then Breton; Hong Kong Cantonese then English,
+  Macau Cantonese then Portuguese (their names are read in Cantonese, the government's
+  romanisation, not Mandarin's Pinyin).
+- **Where:** the pass's outlines of ISO 3166-1 territories (Hong Kong's `CN-HK` is HK) and of the
+  refined subdivisions, simplified (1 km for countries, 250 m for subdivisions), as a raster of
+  1/128° cells (about 870 m at the equator), run-length coded by row, the smallest outline winning
+  where they overlap (Hong Kong over China, Quebec over Canada). Beyond every territory (the high
+  seas) no language is spoken: only OSM's tags lead to a line.
+  - From the 2026-09-28 pass: 250 regions, 266,957 points, the raster made in 0.9 s and 3.4 MB;
+    reading the simplified rings from the NAS takes about five minutes.
+  - The server makes it from the catalog's outlines on a thread of its own and keeps it in its home
+    (`names/spoken-<outlines' content name>.bin`), so it's there offline after the first time;
+    until then only OSM's language tags lead to a line. The `names-todo` job keeps its own in its
+    scratch.
 - It's the only place location enters: it sets the lookup order and which to-do list a name goes on.
 
 **Files:** `translations/**/*.jsonl` (not `todo/`), one line per translation, wherever the file is:
@@ -1249,70 +1254,111 @@ map labels, "main (sub)" in the app's text. Sub shows only when it truly differs
 - **Fields:**
   - `n`: the name exactly as in OSM.
   - `kind`: road, settlement or other, or a list of them.
-  - `langs`: the languages it holds for.
-  - `main`, `sub`: the display (`sub` null: nothing under main).
-  - `via`: how it was made (free text, for the record).
-- Where lines share a name, kind and language, the later file name wins.
+  - `langs`: the languages it holds for (one, or a list).
+  - `main`, `sub`: the display (`main` null or empty: the name; `sub` null: nothing under main).
+  - `via`: how it was made (free text, for the record); "todo" and "skipped" mark lines not done,
+    which are left out.
+- Where lines share a name, kind and language, the later file (by path) wins, and within a file
+  the later line.
+- Lines without `kind` or `langs` (the area tables' format) are left out and counted. When the
+  folder holds those and none by language, the server says so in its log and in `/api/catalog`'s
+  `names.warning`.
 - A file is read once its size and modification time have held for 10 s; an unfinished last line is
-  ignored.
-- A tile's ETag includes the versions of the languages spoken within it.
+  ignored. The server copies the NAS folder to this Mac (`livefolder`), checking every minute while
+  the map is in use and for ten minutes after it starts: a drop shows within about a minute and a
+  half, with nothing rebuilt.
+- Compiled per file into one arena with an index by name (`names::table`): the converted lines
+  (2.78 M, 389 MB of JSON) load in about 1.1 s into 123 MB.
+- **Versions:** each language's is a hash of the files holding lines in it (paths, sizes,
+  modification times). A tile's ETag includes the versions of the languages spoken within it (a
+  tile wider than 40°, or 1,000 raster rows, takes every language's) and the raster's. A line in a
+  language not spoken in a tile, which only OSM's tag on a thing there leads to, shows once the
+  tile is asked for again for another reason.
 
-**To-do:** `translations/todo/<language>.jsonl`, written by the agent after each build.
-- **What's listed:** a name, when something in the coverage has it, no English of its own and no line
-  in any language spoken there.
-  - Names already in English aren't listed. Where English is spoken, a name without another
-    candidate language's signs (script, accents, words) counts as English.
-- **Each entry:**
-  - the name and its kind;
-  - the candidate languages: those spoken where the things lacking English are, narrowed by OSM's
-    language tags;
-  - how many things lack English, and one of them (its OSM id and position);
-  - a priority (fame, place class and population, road class).
-- Entries are sorted by priority. Each goes on its first candidate's list, and the answer says which
-  candidates it holds for.
-- Entries carry no other thing's sourced English: that belongs to its thing.
-- **The brief:** `translations/todo/README.md` holds the line format and the conventions:
-  - title case;
-  - settlements keep their own name unless they have a well-known English one;
-  - Hepburn without macrons in Japan, Hanyu Pinyin in Taiwan, the Hong Kong government's
-    romanisation.
-
-**Today's tables are converted once.** They come from the translation work (`place-translations`,
-branch `claude/exciting-cori-x46sfk`, `out/display/`, copied 2026-10-02). After the conversion, the
-box function and the per-area folders go.
-- **Lines made from the name itself become lines in the new format.** That covers names kept as they
-  are, split, rules on their words, Taiwan's romanisation of the characters, and agents'
-  translations.
-  - Each holds for the languages spoken where its name's things are.
+**Today's tables were converted once** (`tools/names/convert-tables.py`), from the translation
+work's nine area tables (`place-translations`, branch `claude/exciting-cori-x46sfk`, `out/display/`,
+copied 2026-10-02 into `translations/<area>/`), into `translations/0-converted/<language>.jsonl`
+(the languages' English names: the area tables' loader, which reads area codes in paths, skips
+them).
+- **Lines made from the name itself became lines in the new format:** names kept as they are,
+  rules on their words, Taiwan's romanisation of the characters, and agents' translations (`via`
+  native, rule, agent).
+  - Each holds for the languages spoken in its area: jp Japanese; tw Chinese; hk Cantonese; sg
+    English, Chinese, Malay, Tamil; fr French; ib Spanish, Portuguese, Catalan, Galician, Basque;
+    pt Portuguese; na English and French; gb English, Welsh, Irish, Gaelic.
   - Places' lines hold for settlements and other things; roads' lines for roads.
-- **Lines taken from particular things' sources are dropped.**
-  - `via: osm` lines carry the `name:en` that most things with the name agreed on: about 197,000
-    lines, most in Japan and Taiwan. Japan's romanisations of OSM's kana readings go too.
-  - Each of those things shows its own English from its own tags. Things with the name but no
-    English of their own go on the to-do list.
-- **Lines not done** (`todo`, `skipped`) are dropped.
-- **Names whose converted lines disagree** are split by kind or corrected one by one: a settlement's
-  line against a feature's, one thing's English filed for the name, typos.
-- **The build must also carry each thing's own English and its language tags** into what it serves.
-  Roads' own English comes with each unit (`global/roaden/<u>`, OSM's `name:en`), laid over today's
-  converted table (`global/legacy/road-en`) until that goes with the cutover's converted data: until
-  then a road whose `name:en` was removed since keeps today's. No job reads Wikidata's English labels
-  or the language tags yet.
+- **Lines taken from particular things' sources were dropped:** `via: osm`, the `name:en` most
+  things with the name agreed on, Japan's romanisations of OSM's kana readings among them (197,595
+  lines). Each of those things shows its own English from its own tags; things with the name but no
+  English of their own go on the to-do list.
+- **Lines not done** (`todo`, `skipped`) were dropped: 274,756.
+- **Kept:** 2,814,841 lines, which became 2,778,927 (lines with the same name, kind, display and
+  languages merged).
+- **Names whose lines disagreed** (96 lines, 93 names: places in France and in Quebec, in mainland
+  Portugal and on its islands, in Britain and North America) were settled by rule, each logged
+  (`translations/0-converted/conversion-log.txt`): a name kept as it is in one area
+  and translated in the other is split by kind, the kept line the settlement's (Mont-Blanc, a town
+  in Quebec) and the translation other things' (Mont Blanc); else the language's home area wins.
+- **Planned:** removing the per-area folders from the NAS once a published server shows the
+  converted lines (§10).
+
+**The build carries each thing's own English and its language tags:**
+- **Labels** (`dem/labels.py`, `LABELS_V` 2): `en` (its `name:en`, else its romanised name),
+  `kana` (its kana reading, when it has no English), `l` (the languages OSM gives its name), `o`
+  (its OSM object).
+- **The basemap:** `name:en` and `name:fr` in the 2026-09-28 pass's; from the next pass, Planetiler
+  keeps `osmpass::BASEMAP_LANGUAGES` (the coverage's languages and its neighbours', `ja-Latn`,
+  `ja_rm`, `ja-Hira`, `ja_kana`, `zh-Latn-pinyin`…).
+- **Roads:** their own English is each unit's `global/roaden/<u>` (OSM's `name:en`). Not today's
+  converted table, `global/legacy/road-en`, which filed one road's English for every road of its
+  name: of its 36,673 ways the units' English lacks, the units hold 5 (2026-10-08). Roads carry no
+  language tags: they're looked up in the languages spoken where they are.
+- **Not carried yet:** Wikidata's English labels (the landmark jobs keep the English Wikipedia
+  title, `w_en`, in the popup records, not as the thing's English), roads' language tags (§10).
+
+**To-do** (`pipeline::namestodo`, the `names-todo` job, after each catalog the map serves):
+- **`translations/todo/<language>.jsonl`:** a name, when something in the coverage has it, no
+  English of its own and no line in any language spoken there (or OSM gives it).
+  - **Read:** labels (the labels layer's zoom-12 tiles in the units' z6 tiles), roads and rail lines
+    (each unit's base pack, placed by their boxes' centres in the hidata's ways-here index; their
+    own English from `global/roaden/<u>`), landmarks (the markdata). Not yet: the basemap's things
+    (rivers' names), stations, ferries, the area overlays' names.
+  - Names already in English aren't listed: where English is spoken, a name without another
+    candidate language's signs (accents, the coverage's generic words and articles) counts as
+    English.
+  - **Each entry:** the name and its kind; the candidate languages: those spoken where the things
+    lacking English are, narrowed by OSM's language tags and the name's script (kana Japanese, other
+    CJK the CJK languages spoken there, Latin the others); how many things lack English, and one of
+    them (its OSM id and position); a priority (labels: places by class and population, about 70 a
+    city, 50 a village, 30 a hamlet; states 50 and up, water and parks 30 and up; landmarks 30 + 20
+    × fame; roads by class, 45 a motorway to 20 a residential street; plus log₁₀ of the count).
+  - Entries are sorted by priority. Each goes on its first candidate's list, and the answer says
+    which candidates it holds for. Entries carry no other thing's sourced English.
+  - **The brief:** `translations/todo/README.md` (`tools/names/translations-todo.md`): the entry
+    and answer formats and the conventions (title case; settlements keep their own name unless they
+    have a well-known English one; Hepburn without macrons in Japan, Hanyu Pinyin in Taiwan, the
+    Hong Kong government's romanisation), from the translation work's brief. `check.py` beside it
+    (`tools/names/check.py`, the translation work's checker on the new lines) checks an answer
+    file.
+- **`descriptions/todo/`:** `landmarks.jsonl` (the markdata's points of every kind) and
+  `areas.jsonl` (the ovdata's parks and protected areas) with an English Wikipedia article or a
+  register entry and no description (in `descriptions/`, or the record's own), by fame
+  (landmarks: the map's fame; areas: Wikidata's sitelinks, else the log of the area), so how far
+  down to go is a choice; `README.md` (`tools/names/descriptions-todo.md`) is the writers' brief: a
+  noun phrase opening on the claim to fame, at most 55 words, mundane places not inflated, sources
+  credited. Not yet listed: heritage areas, Indigenous lands, special areas and World Heritage
+  outlines (their records hold no article or register entry).
+- The lists are the NAS's alone (not the translation work's repository). Running the translators
+  and writers (Haiku for names, Sonnet for descriptions, a pilot, then checks) is done on request.
 
 **Descriptions.**
-- **Today (built):**
-  - Descriptions are `descriptions/**/*.jsonl`, lines `{"qid", "long", "src"}`, or `{"id":
-    "n123"|"w123"|"r123", "long"}` for things without a Wikidata item. `"drop": true` removes one.
-  - They're laid over the popups of details, landmarks and area overlays when serving: matched by
-    the record's `qid`, else its first `wikidata`, else its `osm`. Later file names win, and `src`
-    is credited.
-  - Today's written descriptions are in `descriptions/heritage/`, prefixed 1–4 to keep their order.
-  - They arrive as translations do.
-- **Planned:** `descriptions/todo/`, written by the agent.
-  - It lists the landmarks and areas that have an English Wikipedia article or a register entry and
-    no description, by fame, so how far down to go is a choice.
-  - I write them on request with Sonnet writers: from the article, or researched with credited
-    sources where the article is about something else.
+- Descriptions are `descriptions/**/*.jsonl`, lines `{"qid", "long", "src"}`, or `{"id":
+  "n123"|"w123"|"r123", "long"}` for things without a Wikidata item. `"drop": true` removes one.
+- They're laid over the popups of details, landmarks and area overlays when serving: matched by the
+  record's `qid`, else its first `wikidata`, else its `osm`. Later file names win, and `src` is
+  credited.
+- Today's written descriptions are in `descriptions/heritage/`, prefixed 1–4 to keep their order.
+- They arrive as translations do.
 
 ## 8. Building
 
@@ -2068,7 +2114,8 @@ At each phase's end an Opus agent reviews the work against this plan.
        same 38,445 stop pairs with the same trains, and 185,557 of today's 185,604 rail ways with
        the same trains a day (34 differ and 13 have none, where the same trains take a parallel
        track or OSM changed since); two runs give the same bytes.
-   - **Not built:** names and descriptions todo, determinism tests, validation.
+   - **Built:** the names and descriptions to-do lists (§7).
+   - **Not built:** determinism tests, validation.
 5. **Browser: done.**
    - Built:
      - landmarks, stations, ferries and overlays by view (In view answers equal to the legacy
@@ -2222,6 +2269,26 @@ At each phase's end an Opus agent reviews the work against this plan.
    once the agent frees toward it, leaving the agent short of it with nothing of its own to free
    (it says so). Fix: the server reads the agent's `room-target.json` and keeps its mirror's
    reserve at the larger of the two while one is set.
+10. **Names by language** (§7), what's short of the design:
+   - **The area tables are still on the NAS** (`translations/<area>/`, 342 MB): each server copies
+     them and leaves their lines out. Fix: delete the nine folders once a published server shows
+     the converted lines (`translations/0-converted/`).
+   - **The converted lines hold for their area's languages,** not those spoken where their names'
+     things are (the area tables kept no places): Iberia's lines hold for Spanish, Portuguese,
+     Catalan, Galician and Basque alike.
+   - **Roads carry no language tags** (only the spoken languages lead to their lines). Planned: the
+     unit job writing them beside `global/roaden/<u>`, which rebuilds every unit, so with the next
+     pass.
+   - **The basemap** carries `name:en` and `name:fr` alone until the next pass
+     (`osmpass::BASEMAP_LANGUAGES`).
+   - **Wikidata's English labels** aren't carried; a landmark's English Wikipedia title (`w_en`) is
+     in its popup record, not its English.
+   - **The to-do lists** don't read the basemap's things (rivers' names), stations, ferries or the
+     area overlays' names; the descriptions' list lacks heritage areas, Indigenous lands, special
+     areas and World Heritage outlines (their records hold no article or register entry).
+   - **The refinements** cover the coverage's subdivisions only: Switzerland's cantons aren't
+     (Geneva reads German first), and Åland comes out Finnish (OSM's outline of it has no ISO
+     3166-1 code).
 
 ## 11. Risks and checks
 
@@ -2247,6 +2314,16 @@ At each phase's end an Opus agent reviews the work against this plan.
 - **Disk:** for 14 days after a pass completes, the NAS holds two passes' sources (~400 GB).
 
 ## 12. Changes
+
+**v7, names as built (2026-10-08):** §7's design built, with these choices:
+- Hong Kong's and Macau's names are read in Cantonese (`yue`), a language of its own: Chinese lines
+  carry Mandarin's Pinyin (Taiwan's readings), which Hong Kong's romanisation isn't.
+- A name is looked up in its own kind only (road, settlement, other), with no fallback to another
+  kind's line: the kind is the point of the key.
+- Roads' own English is the units' `global/roaden/<u>` alone: today's converted table copied one
+  road's English to every road of its name, the copying the design removes, and its ways the units
+  lack English for are gone from them (5 of 36,673 remain).
+- The converted lines hold for their area's languages (the area tables kept no places).
 
 **v7 (2026-10-03):**
 - **Names by language (§7).**
