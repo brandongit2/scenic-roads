@@ -108,6 +108,14 @@ pub fn unit_peak(costs: &BTreeMap<String, Cost>, unit: &str, piece: u64) -> u64 
     costs.get(unit).map(|c| c.peak_mb).unwrap_or_else(|| (piece >> 20).saturating_mul(10).max(3700))
 }
 
+/// The kinds of task a page may take: a unit's tail, a 3D buildings' z8 area (`bld::task::KIND`).
+pub const PAGE_TASKS: [&str; 2] = ["tail", crate::bld::task::KIND];
+
+/// What a task of `kind` for `unit` (its spec's) costs is kept under: "tail 6/x/y", "bldtile 8/x/y".
+pub fn task_cost_key(kind: &str, unit: &str) -> String {
+    format!("{kind} {unit}")
+}
+
 /// What a job of `step` for `target` costs is kept under: a unit's by its target alone (as before
 /// other steps were offered), another step's as "<step> <target>".
 pub fn cost_key(step: &str, target: &str) -> String {
@@ -152,7 +160,7 @@ pub struct Worker {
     /// "native" (an agent) or "web" (a page).
     pub kind: String,
     pub label: String,
-    /// The work it does (the shared steps it builds: crate::agent::claims::SHARED; "tail": tasks),
+    /// The work it does (the shared steps it builds: crate::agent::claims::SHARED; "tail", "bldtile": tasks),
     /// the memory it spares (MB) and its cores.
     pub can: Vec<String>,
     pub mem_mb: u64,
@@ -349,7 +357,7 @@ pub struct Ask {
     #[serde(default)]
     pub label: Option<String>,
     /// The kinds of work it does: a shared step's jobs (crate::agent::claims::SHARED: it mounts
-    /// the NAS), "tail" (a task).
+    /// the NAS), "tail" or "bldtile" (tasks: a unit's tail, a 3D buildings' z8 area).
     pub can: Vec<String>,
     /// The memory it spares now (MB).
     pub mem_mb: u64,
@@ -626,13 +634,13 @@ impl Coordinator {
         }
         let gone = s.leases.expire(Instant::now());
         for l in &gone {
+            let (step, targets) = match &l.work {
+                Work::Job { step, targets } => (Some(step.clone()), targets.iter().map(|t| t.0.clone()).collect()),
+                Work::Task { id } => (Some(s.tasks.kind_of(*id)), Vec::new()),
+            };
             if let Work::Task { .. } = l.work {
                 s.tasks.lapsed(l.id);
             }
-            let (step, targets) = match &l.work {
-                Work::Job { step, targets } => (Some(step.clone()), targets.iter().map(|t| t.0.clone()).collect()),
-                Work::Task { .. } => (Some("tail".to_string()), Vec::new()),
-            };
             s.history.add(history::Event { worker: Some(l.worker.clone()), lease: Some(l.id), step, targets, note: l.what(), ..history::Event::new("lapse") });
         }
         if gone.iter().any(|l| matches!(l.work, Work::Job { .. })) {
@@ -990,9 +998,9 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
         "/work/ask" => {
             let mut a: Ask = serde_json::from_slice(body)?;
             anyhow::ensure!(!a.worker.is_empty() && a.worker.len() <= 120, "a worker needs a name");
-            // (A page: a page's tasks, the tails, under a page's name.)
+            // (A page: a page's tasks, the tails and the 3D buildings' areas, under a page's name.)
             if let Some(n) = own_name(&a.worker) {
-                if a.kind != "web" || a.can.iter().any(|c| c != "tail") {
+                if a.kind != "web" || a.can.iter().any(|c| !PAGE_TASKS.contains(&c.as_str())) {
                     return not_mine();
                 }
                 a.worker = n;
@@ -1175,18 +1183,19 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     let secs = now.duration_since(l.granted).as_secs_f64();
                     s.history.add(history::Event { worker: Some(d.worker.clone()), lease: Some(d.lease), step: Some(step.clone()), targets: targets.iter().map(|t| t.0.clone()).collect(), secs: Some(secs.round()), ok: Some(!d.failed), ..history::Event::new("done") });
                 }
-                Work::Task { .. } => {
+                Work::Task { id } => {
+                    let kind = s.tasks.kind_of(*id);
                     let unit = match s.tasks.done(d.lease, &d.worker, d.outputs, d.removed, d.secs, d.peak_mb) {
                         Ok(u) => u,
                         Err(e) => return Ok((422, serde_json::json!({ "error": format!("{e:#}") }))),
                     };
                     // What its unit's task takes, for the next time it's offered.
                     if let Some(u) = &unit {
-                        s.costs.insert(format!("tail {u}"), Cost { peak_mb: d.peak_mb, secs: d.secs as u64, worker: Some(d.worker.clone()), v: 0 });
+                        s.costs.insert(task_cost_key(&kind, u), Cost { peak_mb: d.peak_mb, secs: d.secs as u64, worker: Some(d.worker.clone()), v: 0 });
                         s.save_costs();
                     }
                     s.leases.finish(d.lease, &d.worker, now);
-                    s.history.add(history::Event { worker: Some(d.worker.clone()), lease: Some(d.lease), step: Some("tail".into()), targets: unit.into_iter().collect(), secs: Some(d.secs.round()), ok: Some(true), ..history::Event::new("task") });
+                    s.history.add(history::Event { worker: Some(d.worker.clone()), lease: Some(d.lease), step: Some(kind), targets: unit.into_iter().collect(), secs: Some(d.secs.round()), ok: Some(true), ..history::Event::new("task") });
                 }
             }
             s.workers.get_mut(&d.worker).map(|w| w.done += 1);
@@ -1202,6 +1211,10 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             f.error = f.error.chars().take(WHY_MAX).collect();
             let mut s = shared.lock().unwrap();
             let Some(l) = s.leases.finish(f.lease, &f.worker, now) else { return Ok((410, serde_json::json!({ "error": "that lease is gone" }))) };
+            let kind = match &l.work {
+                Work::Task { id } => s.tasks.kind_of(*id),
+                Work::Job { .. } => String::new(),
+            };
             match &l.work {
                 Work::Job { step, targets } => {
                     if !f.interrupted {
@@ -1216,7 +1229,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     if let (Some(id), Some(peak)) = (s.tasks.fail_how(f.lease, &f.worker, &f.error, f.oom_mb, f.interrupted), f.oom_mb.filter(|_| !f.interrupted)) {
                         // Out of memory at `peak`: it takes more than that, next time too.
                         if let Some(u) = s.tasks.by_id.get(&id).and_then(|t| t.spec["unit"].as_str().map(str::to_string)) {
-                            let c = s.costs.entry(format!("tail {u}")).or_default();
+                            let c = s.costs.entry(task_cost_key(&kind, &u)).or_default();
                             c.peak_mb = c.peak_mb.max(peak + peak / 4);
                             s.save_costs();
                         }
@@ -1229,7 +1242,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             let why: String = f.error.chars().take(300).collect();
             let e = match &l.work {
                 Work::Job { step, targets } => history::Event { step: Some(step.clone()), targets: targets.iter().map(|t| t.0.clone()).collect(), ..history::Event::new("fail") },
-                Work::Task { .. } => history::Event { step: Some("tail".into()), ..history::Event::new("task-fail") },
+                Work::Task { .. } => history::Event { step: Some(kind.clone()), ..history::Event::new("task-fail") },
             };
             let note = if f.interrupted { format!("stopped: {why}") } else { why.clone() };
             s.history.add(history::Event { worker: Some(f.worker.clone()), lease: Some(f.lease), secs: Some(now.duration_since(l.granted).as_secs_f64().round()), ok: Some(false), note, ..e });
@@ -1239,7 +1252,18 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
         }
         "/work/status" => {
             let s = shared.lock().unwrap();
-            let leases: Vec<serde_json::Value> = s.leases.all(now).iter().map(|l| serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "for_s": now.duration_since(l.granted).as_secs(), "progress": l.progress })).collect();
+            let leases: Vec<serde_json::Value> = s
+                .leases
+                .all(now)
+                .iter()
+                .map(|l| {
+                    let step = match &l.work {
+                        Work::Job { step, .. } => step.clone(),
+                        Work::Task { id } => s.tasks.kind_of(*id),
+                    };
+                    serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "for_s": now.duration_since(l.granted).as_secs(), "progress": l.progress })
+                })
+                .collect();
             let workers: BTreeMap<&String, serde_json::Value> = s.workers.iter().map(|(n, w)| (n, serde_json::json!({ "worker": w, "seen_s": now.duration_since(w.seen).as_secs() }))).collect();
             let tasks: Vec<serde_json::Value> = s.tasks.by_id.values().map(|t| serde_json::json!({ "id": t.id, "kind": t.kind, "mem_mb": t.mem_mb, "state": format!("{:?}", t.state).split([' ', '{']).next().unwrap_or("") })).collect();
             let offered: BTreeMap<&str, usize> = s.offers.iter().map(|o| (o.step.as_str(), o.targets.len())).collect();
@@ -1261,7 +1285,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 .map(|l| {
                     let (step, n) = match &l.work {
                         Work::Job { step, targets } => (step.clone(), targets.len()),
-                        Work::Task { .. } => ("tail".to_string(), 1),
+                        Work::Task { id } => (s.tasks.kind_of(*id), 1),
                     };
                     let left = l.left(now).as_secs();
                     serde_json::json!({ "id": l.id, "worker": l.worker, "what": l.what(), "step": step, "n": n, "for_s": now.duration_since(l.granted).as_secs(), "progress": l.progress, "frac": l.frac, "beat_s": TTL.as_secs().saturating_sub(left), "lapses_in_s": left })
@@ -1306,7 +1330,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             let mut s = shared.lock().unwrap();
             // What its unit's task took last time (a worker's measure, with some room), in place of
             // the guess.
-            if let Some(c) = o.spec["unit"].as_str().and_then(|u| s.costs.get(&format!("tail {u}"))).filter(|c| c.peak_mb > 0) {
+            if let Some(c) = o.spec["unit"].as_str().and_then(|u| s.costs.get(&task_cost_key(&o.kind, u))).filter(|c| c.peak_mb > 0) {
                 o.mem_mb = c.peak_mb + c.peak_mb / 10;
             }
             let id = s.tasks.offer(o, now)?;

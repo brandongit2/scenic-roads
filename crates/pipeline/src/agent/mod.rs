@@ -210,24 +210,24 @@ const HELPER_RESERVE: u64 = 15 << 30;
 
 /// The free space a helper's job of `step` needs: a terrain run's as on the build Mac (its area's
 /// archives copied here and merged); a task's ("tail": a unit's last steps, its files fetched from
-/// the coordinator) 5 GB; the others' `HELPER_RESERVE` (tree cover's a z6 tile a run: the one to
+/// the coordinator; "bldtile": a 3D buildings' z8 area, its blocks) 5 GB; the others' `HELPER_RESERVE` (tree cover's a z6 tile a run: the one to
 /// four canopy squares its blocks touch copied here, ~2 GB each, where a z3 tile's whole run copied
 /// tens of GB).
 fn helper_need(step: &str) -> u64 {
     match step {
         "terrain" => room::RESERVE + TERRAIN_SPACE,
-        "tail" => 5 << 30,
+        "tail" | "bldtile" => 5 << 30,
         _ => HELPER_RESERVE,
     }
 }
 
-/// The work a helper asks for (the shared steps, and "tail" for tasks): what its disk has free for
+/// The work a helper asks for (the shared steps, and "tail" and "bldtile" for tasks): what its disk has free for
 /// (a step's need and its margin), or can have, from the caches it may empty (`free` the disk's free
 /// bytes, `cheap` what `make_room` can delete there: room::helper_cheap_bytes). A job granted that
 /// still can't have its room once the caches are emptied is given back (`run_once`). With the
 /// owner's disk room target (`floor`, room::Target), that much more stays free.
 fn helper_steps(free: u64, cheap: u64, floor: u64) -> Vec<String> {
-    claims::SHARED.iter().copied().chain(["tail"]).filter(|s| free.saturating_add(cheap) >= floor.saturating_add(helper_need(s) + room::margin(helper_need(s)))).map(str::to_string).collect()
+    claims::SHARED.iter().copied().chain(["tail", crate::bld::task::KIND]).filter(|s| free.saturating_add(cheap) >= floor.saturating_add(helper_need(s) + room::margin(helper_need(s)))).map(str::to_string).collect()
 }
 
 /// What a terrain run needs past the others' room: its area's raw tiles held twice while they're
@@ -1217,9 +1217,9 @@ impl Agent {
                 vec![JobSpec { id, what, cmd, needs, restart_after_sleep: true, record: Some(build::Work { step, targets }) }]
             }
             Ok(Some(crate::coord::Grant { lease, work: crate::coord::Granted::Task { id, task, .. }, .. })) => {
-                // A task (a unit's tail for the build Mac's job), run here by `scenic run-task` over
-                // its files fetched from the coordinator, reading the NAS's data where it lies
-                // (only reading it: crate::unit::Tools::stores_read_only).
+                // A task (a unit's tail, or a 3D buildings' z8 area, for the build Mac's job), run here
+                // by `scenic run-task` over its files fetched from the coordinator, reading the NAS's
+                // data where it lies (only reading it: crate::unit::Tools::stores_read_only).
                 let dir = self.outbox().join(lease.to_string());
                 let spec = dir.join("spec.json");
                 if let Err(e) = std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&spec, task.to_string())) {
@@ -1250,7 +1250,8 @@ impl Agent {
                 ];
                 let unit = task["unit"].as_str().unwrap_or("").to_string();
                 self.slots[0].lease = Some(Held::Leased { lease, dir });
-                vec![JobSpec { id: format!("task {id}"), what: format!("Scenery for the build Mac's area {unit}"), cmd, needs: Needs { cpu: true, nas: true, home: false }, restart_after_sleep: false, record: None }]
+                let what = if task["runs"][0]["prog"] == crate::bld::task::KIND { format!("3D buildings of the build Mac's area {unit}") } else { format!("Scenery for the build Mac's area {unit}") };
+                vec![JobSpec { id: format!("task {id}"), what, cmd, needs: Needs { cpu: true, nas: true, home: false }, restart_after_sleep: false, record: None }]
             }
             Ok(Some(g)) => {
                 fail(self, g.lease, "this helper can't do that work");
@@ -4652,13 +4653,13 @@ mod tests {
         let gb = |n: u64| n << 30;
         // 20 GB free and 10 of caches it may empty: the 15 GB steps (and their margin: tree cover's
         // pieces and the 3D buildings' among them) and tasks, not a terrain run's 55.
-        assert_eq!(helper_steps(gb(20), gb(10), 0), ["slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles", "tail"]);
-        assert_eq!(helper_steps(gb(70), 0, 0), [claims::SHARED.to_vec(), vec!["tail"]].concat());
-        assert_eq!(helper_steps(gb(10), gb(5), 0), ["tail"]);
+        assert_eq!(helper_steps(gb(20), gb(10), 0), ["slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles", "tail", "bldtile"]);
+        assert_eq!(helper_steps(gb(70), 0, 0), [claims::SHARED.to_vec(), vec!["tail", "bldtile"]].concat());
+        assert_eq!(helper_steps(gb(10), gb(5), 0), ["tail", "bldtile"]);
         assert!(helper_steps(gb(3), gb(2), 0).is_empty());
         // The owner's disk room target stays free past them: 70 GB free with a 60 GB target leaves
         // room for a task alone.
-        assert_eq!(helper_steps(gb(70), 0, gb(60)), ["tail"]);
+        assert_eq!(helper_steps(gb(70), 0, gb(60)), ["tail", "bldtile"]);
         assert!(helper_steps(gb(70), 0, gb(66)).is_empty());
     }
 

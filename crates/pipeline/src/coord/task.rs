@@ -102,6 +102,11 @@ impl Tasks {
         self.by_id.values().filter(|t| matches!(t.state, State::Offered) && can.contains(&t.kind) && t.mem_mb <= mem_mb && !t.failed_on.contains(worker)).min_by_key(|t| (t.offered, t.id)).map(|t| t.id)
     }
 
+    /// Task `id`'s kind ("tail" when it's gone: the kind tasks had before there were others).
+    pub fn kind_of(&self, id: u64) -> String {
+        self.by_id.get(&id).map_or_else(|| "tail".to_string(), |t| t.kind.clone())
+    }
+
     /// How many tasks of `kind` wait for a worker.
     pub fn waiting(&self, kind: &str) -> usize {
         self.by_id.values().filter(|t| t.kind == kind && matches!(t.state, State::Offered)).count()

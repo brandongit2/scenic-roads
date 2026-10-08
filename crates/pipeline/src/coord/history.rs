@@ -81,7 +81,7 @@ pub struct Rates {
 pub struct Row {
     /// The hour's start (unix seconds).
     pub t: u64,
-    /// By worker, by step: the targets it finished (a task: one of "tail").
+    /// By worker, by step: the targets it finished (a task: one of its kind's, "tail" or "bldtile").
     pub done: BTreeMap<String, BTreeMap<String, u32>>,
     /// By worker: the seconds of the hour it was working.
     pub busy_s: BTreeMap<String, u64>,
@@ -221,7 +221,7 @@ impl History {
             // What it finished.
             let finished = match e.kind.as_str() {
                 "end" | "done" if e.ok != Some(false) || !e.targets.is_empty() => Some((e.step.clone().unwrap_or_default(), e.targets.len() as u32)),
-                "task" => Some(("tail".to_string(), 1)),
+                "task" => Some((e.step.clone().unwrap_or_else(|| "tail".into()), 1)),
                 _ => None,
             };
             if let Some((step, n)) = finished.filter(|(_, n)| e.t >= first && *n > 0) {
