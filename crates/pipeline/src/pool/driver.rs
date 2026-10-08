@@ -504,6 +504,18 @@ impl Driver {
         self.lead.as_ref().map(|l| l.term.term)
     }
 
+    /// The current term as it knows it, and its lead when the term reads whole (its members' mail
+    /// goes to that lead).
+    pub fn current(&self) -> &Current {
+        &self.cur
+    }
+
+    /// The records of the term it leads, as it last merged them (saved or not: `Records::seq` says
+    /// which snapshot they are), for the agent to read; never to change.
+    pub fn records(&self) -> Option<&Records> {
+        self.lead.as_ref().map(|l| &l.records)
+    }
+
     /// One step (see the module's doc: the contract).
     pub fn step(&mut self, io: &dyn Io, heard: Heard, check: Check) -> Out {
         let mut out = Out::default();
