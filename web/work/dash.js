@@ -41,7 +41,7 @@ const plural = (k, one, many = `${one}s`) => `${n(k)} ${k === 1 ? one : many}`;
 const STEP = {
   "osm-pass": ["OpenStreetMap pass", "#8fa2b5"], "pass-sets": ["The pass's sets", "#8fa2b5"], trailends: ["Route ends", "#8fa2b5"], reach: ["Roads' reach", "#8fa2b5"],
   "terrain-z8": ["World terrain", "#c98b4a"], buildings: ["Roadside buildings", "#8fa2b5"], summits: ["Summits", "#8fa2b5"], labels: ["Place labels", "#8fa2b5"],
-  "heritage-sites": ["Heritage sites", "#c47fb5"], terrain: ["Terrain", "#c98b4a"], slope: ["Slope", "#d9c35a"], trees: ["Tree cover", "#5fae6b"], "trees-lo": ["Zoomed-out tree cover", "#5fae6b"],
+  "heritage-sites": ["Heritage sites", "#c47fb5"], terrain: ["Terrain", "#c98b4a"], "terrain-lo": ["Zoomed-out terrain", "#c98b4a"], slope: ["Slope", "#d9c35a"], "slope-lo": ["Zoomed-out slope", "#d9c35a"], trees: ["Tree cover", "#5fae6b"], "trees-lo": ["Zoomed-out tree cover", "#5fae6b"],
   unit: ["Areas", "#5b8fd8"], tail: ["Areas' last steps", "#6cc28a"], pack: ["Map tiles", "#4fb3c6"], lo: ["Zoomed-out tiles", "#4fb3c6"], prune: ["Pruning", "#8fa2b5"],
   roadunits: ["Road index", "#4fb3c6"], stations: ["Rail stops", "#4fb3c6"], ferries: ["Ferries", "#4fb3c6"], "terrain-root": ["World terrain", "#c98b4a"], "slope-root": ["World slope", "#d9c35a"],
   "rail-feeds": ["Rail timetables", "#8fa2b5"], rail: ["Trains a day", "#8fa2b5"], pois: ["Landmark candidates", "#9b7be0"], peaks: ["Peaks", "#b48ae8"],
@@ -52,10 +52,10 @@ const STEP = {
 const stepName = (s) => (STEP[s] || [s])[0];
 const stepColour = (s) => (STEP[s] || [0, "#7b8590"])[1];
 // The noun a step's targets are counted in.
-const NOUN = { unit: "area", terrain: "area", slope: "area", trees: "tile", "trees-lo": "area", pois: "area", peaks: "area", pack: "tile", lo: "tile", tail: "task", bldprep: "tile", bldtiles: "tile", bldtile: "task", treeblock: "task" };
+const NOUN = { unit: "area", terrain: "tile", "terrain-lo": "area", slope: "tile", "slope-lo": "area", trees: "tile", "trees-lo": "area", pois: "area", peaks: "area", pack: "tile", lo: "tile", tail: "task", bldprep: "tile", bldtiles: "tile", bldtile: "task", treeblock: "task" };
 const targets = (step, k) => plural(k, NOUN[step] || "job");
 // What was finished, in words: "3 areas", "1 terrain area", "5 map tiles".
-const DID = { unit: ["area", "areas"], terrain: ["terrain area", "terrain areas"], slope: ["slope area", "slope areas"], trees: ["tree-cover tile", "tree-cover tiles"], "trees-lo": ["zoomed-out tree-cover area", "zoomed-out tree-cover areas"], pack: ["map tile", "map tiles"], lo: ["zoomed-out tile", "zoomed-out tiles"], pois: ["area's candidates", "areas' candidates"], peaks: ["area's peaks", "areas' peaks"], tail: ["area's last steps", "areas' last steps"], bldprep: ["buildings tile read", "buildings tiles read"], bldtiles: ["3D buildings tile", "3D buildings tiles"], bldtile: ["3D buildings area", "3D buildings areas"], treeblock: ["row of tree-cover blocks", "rows of tree-cover blocks"], catalog: ["map update", "map updates"] };
+const DID = { unit: ["area", "areas"], terrain: ["terrain tile", "terrain tiles"], "terrain-lo": ["zoomed-out terrain area", "zoomed-out terrain areas"], slope: ["slope tile", "slope tiles"], "slope-lo": ["zoomed-out slope area", "zoomed-out slope areas"], trees: ["tree-cover tile", "tree-cover tiles"], "trees-lo": ["zoomed-out tree-cover area", "zoomed-out tree-cover areas"], pack: ["map tile", "map tiles"], lo: ["zoomed-out tile", "zoomed-out tiles"], pois: ["area's candidates", "areas' candidates"], peaks: ["area's peaks", "areas' peaks"], tail: ["area's last steps", "areas' last steps"], bldprep: ["buildings tile read", "buildings tiles read"], bldtiles: ["3D buildings tile", "3D buildings tiles"], bldtile: ["3D buildings area", "3D buildings areas"], treeblock: ["row of tree-cover blocks", "rows of tree-cover blocks"], catalog: ["map update", "map updates"] };
 const did = (step, k) => (DID[step] ? plural(k, ...DID[step]) : `${stepName(step)}${k > 1 ? ` ×${k}` : ""}`);
 // Machines' colours, the build Mac first.
 const MACHINE_COLOURS = ["#5b8fd8", "#b48ae8", "#e0a36a", "#e07a9a", "#6cc28a"];
@@ -522,8 +522,8 @@ function regionRows(m, rerender) {
     else [state, cls] = [`#${r.rank + 1} in line`, ""];
     if (r.on_map === false) state += " · on the map as it was";
     const when = lft ? `done ≈ ${clock(r.ready_at)} · on the map ≈ ${clock(r.map_at)}` : r.map_at ? `on the map ≈ ${clock(r.map_at)}` : "";
-    const order = ["unit", "terrain", "slope", "trees", "trees-lo"];
-    const words = { unit: ["area", "areas"], terrain: ["terrain area", "terrain areas"], slope: ["slope area", "slope areas"], trees: ["tree-cover tile", "tree-cover tiles"], "trees-lo": ["zoomed-out tree-cover area", "zoomed-out tree-cover areas"] };
+    const order = ["unit", "terrain", "terrain-lo", "slope", "slope-lo", "trees", "trees-lo"];
+    const words = { unit: ["area", "areas"], terrain: ["terrain tile", "terrain tiles"], "terrain-lo": ["zoomed-out terrain area", "zoomed-out terrain areas"], slope: ["slope tile", "slope tiles"], "slope-lo": ["zoomed-out slope area", "zoomed-out slope areas"], trees: ["tree-cover tile", "tree-cover tiles"], "trees-lo": ["zoomed-out tree-cover area", "zoomed-out tree-cover areas"] };
     const leftWords = order.filter((s) => r.left[s]).map((s) => plural(r.left[s], ...words[s])).join(", ");
     const tot = r.built?.total || 0;
     const stack = h("div", "stack");

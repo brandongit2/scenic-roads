@@ -125,7 +125,7 @@ const WORLDWIDE_STEPS: [&str; 8] = ["pass-sets", "trailends", "reach", "terrain-
 
 /// Steps that read AWS's raw terrain tiles here, which a terrain run packs onto the NAS and
 /// deletes here: never two at once.
-const RAW: [&str; 4] = ["terrain", "terrain-root", "terrain-z8", "peaks"];
+const RAW: [&str; 5] = ["terrain", "terrain-lo", "terrain-root", "terrain-z8", "peaks"];
 
 /// Steps that ask Wikidata and Wikipedia a great deal from this Mac's address, each pacing itself
 /// as if it were alone (heritagedetails: under ten a minute): never two at once.
@@ -217,7 +217,6 @@ const HELPER_RESERVE: u64 = 15 << 30;
 /// tens of GB).
 fn helper_need(step: &str) -> u64 {
     match step {
-        "terrain" => room::RESERVE + TERRAIN_SPACE,
         "tail" | "bldtile" => 5 << 30,
         "treeblock" => 1 << 30,
         _ => HELPER_RESERVE,
@@ -240,21 +239,38 @@ fn helper_steps(free: u64, cheap: u64, floor: u64) -> Vec<String> {
 /// once, are spared (`terrain_reads`).
 const TERRAIN_SPACE: u64 = 25 << 30;
 
+/// What a job of terrain's pieces (or assemblies) needs past the others' room: each z6 tile's raw
+/// tiles' archive copied here (up to ~0.3 GB) and the raw tiles AWS gives it held twice while
+/// they're packed onto the NAS, eight a job (`batch_size`); an assembly its z3 tile's archive.
+const PIECES_SPACE: u64 = 5 << 30;
+
 /// What the water layer's job needs past the others' room: its tiles' archive (1.8 GB worldwide,
 /// measured 2026-10-08) and their packs, written here before they're uploaded, and a margin.
 const WATER_SPACE: u64 = 5 << 30;
 
-/// Whether `p` is an archive copy a terrain run (`id`: "terrain 3/x/y") reads at once: its z3
-/// area's own (`3-x-y.…`) and its z6 tiles' (`6-X-Y.…` within it), crate::rawpack's areas.
+/// Whether `p` is an archive copy a terrain job's target (`id`: "terrain 3/x/y", an area's whole
+/// run; "terrain 6/x/y", a piece; "terrain-lo 3/x/y", an assembly) reads at once: an area's run its
+/// z3 area's own (`3-x-y.…`) and its z6 tiles' (`6-X-Y.…` within it), a piece its z6 tile's, an
+/// assembly its z3 area's (crate::rawpack's areas).
 fn terrain_reads(id: &str, p: &Path) -> bool {
     let tile = |s: &str| -> Option<(u32, u32, u32)> {
         let mut v = s.split(['/', '-']).map(|t| t.parse::<u32>().ok());
         Some((v.next()??, v.next()??, v.next()??))
     };
-    let Some((3, x, y)) = id.strip_prefix("terrain ").and_then(tile) else { return false };
     let in_packs = p.parent().and_then(Path::file_name).is_some_and(|d| d == "packs");
     let area = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.split('.').next()).and_then(tile);
-    in_packs && (matches!(area, Some((3, ax, ay)) if (ax, ay) == (x, y)) || matches!(area, Some((6, ax, ay)) if (ax >> 3, ay >> 3) == (x, y)))
+    if !in_packs {
+        return false;
+    }
+    match (id.split_once(' '), area) {
+        (Some(("terrain", t)), Some(a)) => match tile(t) {
+            Some((3, x, y)) => matches!(a, (3, ax, ay) if (ax, ay) == (x, y)) || matches!(a, (6, ax, ay) if (ax >> 3, ay >> 3) == (x, y)),
+            Some((6, x, y)) => a == (6, x, y),
+            _ => false,
+        },
+        (Some(("terrain-lo", t)), Some(a)) => tile(t).is_some_and(|(z, x, y)| z == 3 && a == (3, x, y)),
+        _ => false,
+    }
 }
 
 /// The memory a step's job is expected to take (MB) before one has run for its target and said
@@ -270,7 +286,12 @@ fn first_peak(step: &str) -> u64 {
     match step {
         "trees" => 1000,
         "trees-lo" => 500,
-        "slope" => 2000,
+        // (Terrain's assembly: its z3 tile's 1,365 zoomed-out tiles (~270 KB each made), its pieces'
+        // z9 means (up to 4 MB a piece) and half a GB besides. Slope's piece a z6 tile's tiles,
+        // under a GB; its assembly the area's lo tiles.)
+        "terrain-lo" => 1200,
+        "slope" => 1500,
+        "slope-lo" => 1000,
         "peaks" => 2500,
         // (The worldwide water: its z14 directory and stored tiles held, 7.7 GB at most measured,
         // 2026-10-08.)
@@ -301,6 +322,7 @@ fn bld_peak(step: &str, rows: u64) -> u64 {
 /// (up to 4,096 at 256 KB), each z6 tile's z9 repairs and quarters (~20 MB) and the area's zoomed-out
 /// tiles (z3–8, 1,365), and half a GB besides: 3.3 to 4.6 GB, what a helper spares. (Measured
 /// before it wrote a z6 tile at a time: 32.9 GB for 3/0/2's whole area at once.)
+/// (A piece: one z6 tile, `terrain_peak(1)`.)
 fn terrain_peak(z6: usize) -> u64 {
     500 + 5440 * 270 / 1024 + 4096 / 4 + 1365 * 270 / 1024 + z6 as u64 * 20
 }
@@ -1103,7 +1125,7 @@ impl Agent {
         let cache = self.o.home.join("cache");
         let dem = || s(&self.o.bin.join("dem"));
         match step {
-            "terrain" | "terrain-root" => vec!["--raw".into(), s(&cache.join("aws-terrarium"))],
+            "terrain" | "terrain-lo" | "terrain-root" => vec!["--raw".into(), s(&cache.join("aws-terrarium"))],
             "pois" | "marks" | "stations" | "overlays" => vec!["--pass".into(), date.to_string()],
             "ferries" | "rail-feeds" => vec!["--pass".into(), date.to_string(), "--dem".into(), dem()],
             // (bld-fetch's coverage, and bldtiles' countries, from the pass's outlines.)
@@ -1224,17 +1246,17 @@ impl Agent {
                 cmd.extend([s(&self.o.bin.join("scenic-build")), step.clone(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join(&step))]);
                 cmd.extend(targets.iter().map(|t| t.0.clone()));
                 cmd.extend(self.step_args(&step, &pass));
-                // (Tree cover pieces made again as they are, by the build's records: expected the
+                // (Pieces made again as they are, by the build's records as read: expected the
                 // same. Records that can't be read now expect nothing.)
-                if step == "trees" {
-                    let same = build::Keys::load_with_handoffs(root).map(|k| expect_same(&build::Work { step: step.clone(), targets: targets.clone() }, &k)).unwrap_or_default();
+                if matches!(step.as_str(), "trees" | "terrain" | "slope") {
+                    let same = build::Keys::load_with_handoffs(root).map(|k| expect_same(&build::Work { step: step.clone(), targets: targets.clone() }, &self.as_read(root, k))).unwrap_or_default();
                     if !same.is_empty() {
                         cmd.extend(["--expect-same".to_string(), same.join(",")]);
                     }
                 }
                 let n = targets.len();
                 let id = format!("{step} {}", targets.first().map(|t| t.0.as_str()).unwrap_or(""));
-                let what = format!("{} ({n} {}{}, for the build Mac)", build::label(&step), if step == "trees" { "tile" } else { "area" }, if n == 1 { "" } else { "s" });
+                let what = format!("{} ({n} {}{}, for the build Mac)", build::label(&step), if matches!(step.as_str(), "trees" | "terrain" | "slope") { "tile" } else { "area" }, if n == 1 { "" } else { "s" });
                 self.slots[0].lease = Some(match pooled {
                     Some(l) => Held::Pooled { id: lease, term: l.term, dir, own: false },
                     None => Held::Leased { lease, dir },
@@ -2337,8 +2359,10 @@ impl Agent {
             second_need(&step)
         } else if spec.id.starts_with("osm-pass") {
             PASS_SPACE.saturating_sub(dir_bytes(&self.o.home.join("cache").join("base"))).max(room::RESERVE)
-        } else if spec.id.starts_with("terrain ") {
+        } else if spec.id.starts_with("terrain 3/") {
             room::RESERVE + TERRAIN_SPACE
+        } else if spec.id.starts_with("terrain ") || spec.id.starts_with("terrain-lo ") {
+            room::RESERVE + PIECES_SPACE
         } else if spec.id.starts_with("water ") {
             room::RESERVE + WATER_SPACE
         } else {
@@ -3391,7 +3415,7 @@ impl Agent {
             // (The records as re-keyed: what they are once the loop has re-keyed them, as a dry run,
             // or a loop that couldn't take the build lock, plans too.)
             let times = rekey::FileTimes::new(root);
-            rekey::rekey(&mut done, cov, date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
+            rekey::as_read(&mut done, cov, date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
             build::plan(&cov, date, &manifest, &done, &inputs, reach.as_deref(), &tiles, build::Rounds { each: &covs.each, on_map: &on_map, since_last, current: kept.as_ref().filter(|r| !r.over), held })
         };
         // Units whose terrain can't be worked out now (a pack's index unread): they wait for it.
@@ -3494,7 +3518,7 @@ impl Agent {
             // each worker takes what fits its memory.
             let guess = |t: &str| match w.step.as_str() {
                 "unit" | "pois" => size(t),
-                "terrain" => terrain_peak(z6.get(t).copied().unwrap_or(64)),
+                "terrain" => terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }),
                 s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
                 s => first_peak(s),
             };
@@ -3527,7 +3551,7 @@ impl Agent {
             let z6: BTreeMap<String, usize> = build::coverage_tiles(cov).into_iter().map(|(q, ts)| (format!("3/{}/{}", q.0, q.1), ts.len())).collect();
             let peak = |step: &str, t: &str| match step {
                 "unit" | "pois" => crate::coord::unit_peak(&BTreeMap::new(), t, size(t)),
-                "terrain" => terrain_peak(z6.get(t).copied().unwrap_or(64)),
+                "terrain" => terrain_peak(if t.starts_with("6/") { 1 } else { z6.get(t).copied().unwrap_or(64) }),
                 s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
                 s => first_peak(s),
             };
@@ -3578,9 +3602,11 @@ impl Agent {
             // (The checklist names the steps alike: build::label.)
             let base = build::label(&w.step);
             let what = match w.step.as_str() {
-                "terrain" | "slope" | "unit" | "pois" | "peaks" | "pack" | "trees-lo" => format!("{base} ({areas})"),
+                "unit" | "pois" | "peaks" | "pack" | "trees-lo" | "terrain-lo" | "slope-lo" => format!("{base} ({areas})"),
                 "trees" if same.len() == n => format!("Making the tree cover's mids, checking it the same ({})", areas.replace("area", "tile")),
-                "trees" | "bldprep" | "bldtiles" => format!("{base} ({})", areas.replace("area", "tile")),
+                "terrain" if same.len() == n => format!("Making the terrain's mids, checking it the same ({})", areas.replace("area", "tile")),
+                "slope" if same.len() == n => format!("Making the slope's mids, checking it the same ({})", areas.replace("area", "tile")),
+                "trees" | "terrain" | "slope" | "bldprep" | "bldtiles" => format!("{base} ({})", areas.replace("area", "tile")),
                 _ => base.to_string(),
             };
             let id = format!("{} {}", w.step, w.targets.first().map(|t| t.0.as_str()).unwrap_or(""));
@@ -3594,14 +3620,14 @@ impl Agent {
     }
 
     /// The forecast (crate::agent::forecast) of the work left: `before`, the build Mac's jobs before
-    /// the regions'; `regions`, the plan's; `backfill`, the tree cover pieces whose mids it makes in
+    /// the regions'; `regions`, the plan's; `backfill`, the pieces whose mids it makes in
     /// idle time (build::Plan::backfill); `chains`, the roads', trains' and landmarks' work to come
     /// (build::chains_left); `blind`, why the work can't all be listed now. Each target's time (at
     /// the build Mac's pace: a time measured on a helper over its speed) and memory as last measured,
     /// else its step's mean or a first guess (`first_secs`; `peak` for its memory); the helpers at
     /// their measured speed; each machine free once its job under way is done.
     #[allow(clippy::too_many_arguments)]
-    fn forecast_now(&self, root: &Path, before: &[JobSpec], regions: &[build::RegionLeft], backfill: &[(String, String)], chains: [Vec<build::Work>; 4], since_last: Option<u64>, under_way: Option<(Vec<String>, bool, Vec<build::Work>)>, blind: Option<String>, peak: &dyn Fn(&str, &str) -> u64) -> forecast::Forecast {
+    fn forecast_now(&self, root: &Path, before: &[JobSpec], regions: &[build::RegionLeft], backfill: &[build::Work], chains: [Vec<build::Work>; 4], since_last: Option<u64>, under_way: Option<(Vec<String>, bool, Vec<build::Work>)>, blind: Option<String>, peak: &dyn Fn(&str, &str) -> u64) -> forecast::Forecast {
         use forecast::{Cost, Machine};
         let (costs, leased, events, mem) = match &self.coord {
             Some(c) => c.for_forecast(),
@@ -3745,8 +3771,8 @@ impl Agent {
         }
         // (The round under way: its chain left as its steps take, a minute at least.)
         let under_way = under_way.map(|(ids, last, left)| (ids, last, chain_s(&left).max(60.0)));
-        // (The tree cover pieces' mids made in idle time, last.)
-        let idle: Vec<forecast::Job> = backfill.iter().map(|(t, _)| ("trees".to_string(), t.clone(), cost("trees", t))).collect();
+        // (The pieces' mids made in idle time, last.)
+        let idle: Vec<forecast::Job> = backfill.iter().flat_map(|w| w.targets.iter().map(|(t, _)| (w.step.clone(), t.clone(), cost(&w.step, t)))).collect();
         forecast::forecast(&forecast::Input { now: now_s(), before, regions, cost: &cost, round_s, last_round_s, blind, chains: chain_jobs, after, idle, since_last, under_way, machines, running })
     }
 
@@ -3805,7 +3831,7 @@ impl Agent {
         // (As re-keyed: agent::rekey.)
         let mut keys = keys;
         let times = rekey::FileTimes::new(root);
-        rekey::rekey(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
+        rekey::as_read(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
         out.extend(build::checklist(cov, &date, &manifest, &keys, &inputs, root.join("inputs/hold-catalog").exists(), reach.as_deref(), &self.ready.borrow(), &tiles));
         out
     }
@@ -3822,7 +3848,7 @@ impl Agent {
         let inputs = input_digests(root);
         // (As re-keyed: agent::rekey.)
         let times = rekey::FileTimes::new(root);
-        rekey::rekey(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
+        rekey::as_read(&mut keys, cov, &date, &manifest, reach.as_deref(), &inputs, &tiles, &times);
         build::region_states(cov, each, &date, &manifest, &keys, reach.as_deref(), &inputs, &tiles)
     }
 
@@ -3875,6 +3901,23 @@ impl Agent {
             keys.save(root)?;
         }
         Ok(r)
+    }
+
+    /// `keys` as every reader reads them (agent::rekey::as_read: re-keyed, terrain's and slope's
+    /// derived), for a job's `--expect-same`; as they are when what that reads can't be told now.
+    fn as_read(&self, root: &Path, mut keys: build::Keys) -> build::Keys {
+        let Some(date) = crate::osmpass::latest_pass(root) else { return keys };
+        let (recipes, unread) = recipes::load(&root.join("inputs/regions"));
+        if recipes.is_empty() || !unread.is_empty() {
+            return keys;
+        }
+        let Ok(manifest) = crate::out::read_record::<BTreeMap<String, String>>(&root.join("state/build/manifest.json")) else { return keys };
+        let Ok(covs) = self.coverage(root, &manifest, &date, &recipes, false) else { return keys };
+        let reach = self.current_reach(root, &manifest, &keys, &date).ok().flatten();
+        let tiles = self.terrain_tiles(root, &manifest);
+        let times = rekey::FileTimes::new(root);
+        rekey::as_read(&mut keys, &covs.all, &date, &manifest, reach.as_deref(), &input_digests(root), &tiles, &times);
+        keys
     }
 
     /// The terrain packs' indexes `manifest` names, those not yet held read (from `pack-idx/`, else
@@ -4545,14 +4588,16 @@ pub fn read_status(root: Option<&Path>, home: &Path) -> Option<Status> {
         .and_then(|b| serde_json::from_slice(&b).ok())
 }
 
-/// The targets of `w` made again as they are, expected the same (scenic-build trees
-/// `--expect-same`): tree cover pieces the records (`done`) have under the key they're built with,
-/// their mids made (build::TreeWork::backfill, and those an assembly needs). Any other step's: none.
+/// The targets of `w` made again as they are, expected the same (scenic-build trees, terrain and
+/// slope `--expect-same`): tree cover's, terrain's and slope's pieces the records as read (`done`:
+/// agent::rekey::as_read) have under the key they're built with, their mids made
+/// (build::TreeWork::backfill, build::TerrainWork::backfill, and those an assembly needs). Any
+/// other step's: none.
 fn expect_same(w: &build::Work, done: &build::Keys) -> Vec<String> {
-    if w.step != "trees" {
+    if !matches!(w.step.as_str(), "trees" | "terrain" | "slope") {
         return Vec::new();
     }
-    w.targets.iter().filter(|(t, k)| t.starts_with("6/") && done.trees.get(t) == Some(k)).map(|t| t.0.clone()).collect()
+    w.targets.iter().filter(|(t, k)| t.starts_with("6/") && done.recorded(&w.step, t) == Some(k.as_str())).map(|t| t.0.clone()).collect()
 }
 
 /// A step's targets in batches, each its own job recording its own targets (a failure or a restart
@@ -4629,8 +4674,12 @@ fn first_secs(step: &str) -> f64 {
         "water" => 3600.0,
         "heritage-sites" => 240.0,
         "heritage" => 5400.0,
-        "terrain" => 900.0,
-        "slope" => 400.0,
+        // (Terrain's and slope's pieces a z6 tile, their assemblies a z3 tile's zoomed-out levels:
+        // the areas' last runs, 9,707 s and ~4,100 s over ~400 z6 tiles, 2026-10.)
+        "terrain" => 25.0,
+        "terrain-lo" => 60.0,
+        "slope" => 10.0,
+        "slope-lo" => 15.0,
         "trees" => 25.0,
         "trees-lo" => 10.0,
         "unit" => 400.0,
@@ -4664,7 +4713,7 @@ fn first_secs(step: &str) -> f64 {
 /// Whether the regions' own work is in `plan` (terrain, slope, tree cover, units): the 3D buildings
 /// then go in smaller jobs (`job_size`).
 fn regions_left(plan: &[build::Work]) -> bool {
-    plan.iter().any(|w| matches!(w.step.as_str(), "terrain" | "slope" | "trees" | "trees-lo" | "unit"))
+    plan.iter().any(|w| matches!(w.step.as_str(), "terrain" | "terrain-lo" | "slope" | "slope-lo" | "trees" | "trees-lo" | "unit"))
 }
 
 /// Targets per job of `step` (`batch_size`), but the 3D buildings' while the regions' own work is
@@ -4684,13 +4733,13 @@ fn job_size(step: &str, regions: bool) -> usize {
 /// pausing).
 fn batch_size(step: &str) -> usize {
     match step {
-        "terrain" => 1,
-        "trees" | "trees-lo" => 4,
+        "terrain" | "slope" => 8,
+        "terrain-lo" | "slope-lo" | "trees" | "trees-lo" => 4,
         // (A dense z6 tile's bldprep about a minute, its bldtiles about 10 s: a job of a few
         // minutes at most.)
         "bldprep" => 8,
         "bldtiles" => 16,
-        "slope" | "lo" => 2,
+        "lo" => 2,
         "unit" => 6,
         "peaks" => 12,
         "pack" => 16,
@@ -4713,6 +4762,9 @@ mod tests {
         assert!(!terrain_reads("unit 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles")));
         assert!(!terrain_reads("terrain-root terrain-root", &packs.join("root.0123456789abcdef.tiles")));
         assert!(!terrain_reads("terrain 3/1/2", Path::new("/c/aws-terrarium/12/2048/1500.png")));
+        // A piece its z6 tile's; an assembly its area's.
+        assert!(terrain_reads("terrain 6/8/16", &packs.join("6-8-16.0123456789abcdef.tiles")) && !terrain_reads("terrain 6/8/16", &packs.join("6-8-17.0123456789abcdef.tiles")) && !terrain_reads("terrain 6/8/16", &packs.join("3-1-2.0123456789abcdef.tiles")));
+        assert!(terrain_reads("terrain-lo 3/1/2", &packs.join("3-1-2.0123456789abcdef.tiles")) && !terrain_reads("terrain-lo 3/1/2", &packs.join("6-8-16.0123456789abcdef.tiles")));
     }
 
     #[test]
@@ -4753,8 +4805,8 @@ mod tests {
     fn a_helper_asks_only_for_what_its_disk_has_room_for() {
         let gb = |n: u64| n << 30;
         // 20 GB free and 10 of caches it may empty: the 15 GB steps (and their margin: tree cover's
-        // pieces and the 3D buildings' among them) and tasks, not a terrain run's 55.
-        assert_eq!(helper_steps(gb(20), gb(10), 0), ["slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles", "tail", "bldtile", "treeblock"]);
+        // pieces, terrain's and slope's, and the 3D buildings' among them) and tasks.
+        assert_eq!(helper_steps(gb(20), gb(10), 0), ["terrain", "slope", "trees", "unit", "pois", "peaks", "bldprep", "bldtiles", "tail", "bldtile", "treeblock"]);
         assert_eq!(helper_steps(gb(70), 0, 0), [claims::SHARED.to_vec(), vec!["tail", "bldtile", "treeblock"]].concat());
         assert_eq!(helper_steps(gb(10), gb(5), 0), ["tail", "bldtile", "treeblock"]);
         // (Tree cover's rows need 1 GB: read where they lie.)
@@ -5495,7 +5547,7 @@ mod tests {
         let mut keys = build::Keys::default();
         keys.lo.insert("reach".into(), build::reach_key(date, &m).unwrap());
         keys.record("heritage-sites", &build::heritage_sites_work(&cov, date, &m, &keys).unwrap().targets);
-        keys.record("terrain", &build::terrain_slope_targets(&cov, &m).0);
+        keys.record("terrain", &rekey::v1::terrain_slope_targets(&cov, &m).0);
         keys.record("trees", &rekey::v1::trees_targets(&cov, &m));
         let old = rekey::v1::unit_keys(&cov, date, &m, Some(&reaches), &input_digests(root)).pop().unwrap();
         assert_eq!(old.0.slash(), "6/28/17");
@@ -5506,7 +5558,10 @@ mod tests {
             t.load(root, &m);
             t
         };
-        let plan = build::plan(&cov, date, &m, &keys, &input_digests(root), Some(&reaches), &tiles, build::Rounds { each: &cov.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false });
+        // (Terrain's z3 record read as its pieces and assembly, as every reader reads it.)
+        let mut read = keys.clone();
+        rekey::derive(&mut read, &cov, &m, &tiles);
+        let plan = build::plan(&cov, date, &m, &read, &input_digests(root), Some(&reaches), &tiles, build::Rounds { each: &cov.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false });
         assert!(plan.work.iter().any(|w| w.step == "unit" && w.targets[0].0 == "6/28/17"), "{:?}", plan.work);
         keys.save(root).unwrap();
         old.1
@@ -5558,6 +5613,8 @@ mod tests {
         let k = build::Keys::load(&root).unit["6/28/17"].clone();
         let keys = build::Keys::load(&root);
         assert!(!keys.trees.contains_key("3/3/2") && keys.trees.contains_key("6/28/17") && keys.trees_lo.contains_key("3/3/2"), "{:?} {:?}", keys.trees, keys.trees_lo);
+        // Terrain's z3 record read as its pieces and assembly, in memory only: never written.
+        assert_eq!((keys.terrain.keys().map(String::as_str).collect::<Vec<_>>(), keys.terrain_lo.len(), keys.slope_lo.len()), (vec!["3/3/2"], 0, 0));
         assert_eq!(std::fs::read(root.join(REKEY_COPY)).unwrap(), before);
         let (after, at) = (std::fs::read(&jobs).unwrap(), std::fs::metadata(&jobs).unwrap().modified().unwrap());
         a.step().unwrap();
@@ -5579,7 +5636,8 @@ mod tests {
         let mut steps = build::checklist_to_come();
         build::mark_shared(&mut steps);
         let shared = |what: &str| steps.iter().find(|s| s.what == what).and_then(|s| s.shared.clone());
-        assert_eq!(shared(build::TERRAIN).as_deref(), Some("all"));
+        assert_eq!(shared(build::TERRAIN).as_deref(), Some("tiles"), "the pieces, not the assemblies");
+        assert_eq!(shared(build::SLOPE).as_deref(), Some("tiles"));
         assert_eq!(shared(build::UNITS).as_deref(), Some("all"));
         assert_eq!(shared(build::LANDMARKS).as_deref(), Some("candidates and peaks"));
         assert_eq!(shared(build::TREES).as_deref(), Some("tiles"), "the pieces, not the assemblies");
@@ -5697,7 +5755,7 @@ mod tests {
         let shape: Vec<(String, usize, usize)> = b.iter().map(|(w, t)| (w.step.clone(), w.targets.len(), *t)).collect();
         assert_eq!(
             shape,
-            [("unit", 6, 14), ("unit", 6, 14), ("unit", 2, 14), ("roadunits", 1, 1), ("terrain", 1, 2), ("terrain", 1, 2), ("pois", 3, 3)].map(|(s, n, t)| (s.to_string(), n, t))
+            [("unit", 6, 14), ("unit", 6, 14), ("unit", 2, 14), ("roadunits", 1, 1), ("terrain", 2, 2), ("pois", 3, 3)].map(|(s, n, t)| (s.to_string(), n, t))
         );
         // Every target once, in order, with its key.
         let units: Vec<&(String, String)> = b.iter().filter(|(w, _)| w.step == "unit").flat_map(|(w, _)| &w.targets).collect();

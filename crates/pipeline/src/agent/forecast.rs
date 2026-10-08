@@ -288,17 +288,25 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
     // (The units wait for the pass's heritage sites, reaches and roadside buildings, as the plan's
     // do; terrain for nothing.)
     let units_need: Vec<usize> = before.iter().copied().filter(|&i| UNITS_NEED.contains(&out[i].step.as_str())).collect();
-    // A region at a time: its own terrain, then its own units (each once its region's terrain is
-    // built: the terrain it reads); then every region's slope (once its area's terrain is) and
-    // tree cover.
+    // A region at a time: its own terrain (the pieces, then each area's assembly once its pieces
+    // are made), then its own units (each once its region's terrain is built: the terrain it
+    // reads); then every region's slope (a piece once the terrain of its area and its neighbours'
+    // is, an area's assembly once its pieces are) and tree cover.
     let mut region_items: Vec<Vec<usize>> = vec![Vec::new(); inp.regions.len()];
-    let terrain_of = |by: &BTreeMap<(String, String), usize>, t: &str| by.get(&("terrain".to_string(), t.to_string())).copied();
+    let item_of = |by: &BTreeMap<(String, String), usize>, step: &str, t: &str| by.get(&(step.to_string(), t.to_string())).copied();
+    // (A step's items in z3 tile `q`: its pieces there, or its target that's the area itself.)
+    let of_area = |out: &Vec<Item>, step: &str, q: &str| -> Vec<usize> { (0..out.len()).filter(|&i| out[i].step == step && (out[i].target == q || crate::agent::build::area_of(&out[i].target).as_deref() == Some(q))).collect() };
     for r in inp.regions {
         for t in &r.own_terrain {
             add(&mut out, &mut by_target, "terrain", t, (inp.cost)("terrain", t), Phase::Region, Vec::new());
         }
+        for q in &r.own_terrain_lo {
+            let deps = of_area(&out, "terrain", q);
+            add(&mut out, &mut by_target, "terrain-lo", q, (inp.cost)("terrain-lo", q), Phase::Region, deps);
+        }
         // (Its terrain is its own or a region's before it: listed by now.)
-        let mut deps: Vec<usize> = r.terrain.iter().filter_map(|t| terrain_of(&by_target, t)).collect();
+        let mut deps: Vec<usize> = r.terrain.iter().filter_map(|t| item_of(&by_target, "terrain", t)).collect();
+        deps.extend(r.terrain_lo.iter().filter_map(|q| item_of(&by_target, "terrain-lo", q)));
         deps.extend(&units_need);
         for u in &r.own_units {
             add(&mut out, &mut by_target, "unit", u, (inp.cost)("unit", u), Phase::Region, deps.clone());
@@ -311,9 +319,26 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
         }
     }
     for r in inp.regions {
-        for a in &r.slope {
-            let deps: Vec<usize> = terrain_of(&by_target, a).into_iter().collect();
-            add(&mut out, &mut by_target, "slope", a, (inp.cost)("slope", a), Phase::Late, deps);
+        for t in &r.slope {
+            // (The terrain of its area and its edge neighbours' areas.)
+            let mut deps: Vec<usize> = Vec::new();
+            let areas: Vec<String> = match crate::legacy::Unit::parse(t) {
+                Some(u) if u.z == 6 => std::iter::once((u.x, u.y)).chain(crate::agent::build::edge_neighbours(6, u.x, u.y)).map(|(x, y)| format!("3/{}/{}", x >> 3, y >> 3)).collect(),
+                _ => vec![t.clone()],
+            };
+            for q in areas {
+                deps.extend(of_area(&out, "terrain", &q));
+                deps.extend(item_of(&by_target, "terrain-lo", &q));
+            }
+            deps.sort_unstable();
+            deps.dedup();
+            add(&mut out, &mut by_target, "slope", t, (inp.cost)("slope", t), Phase::Late, deps);
+        }
+        for q in &r.slope_lo {
+            let mut deps = of_area(&out, "slope", q);
+            deps.extend(of_area(&out, "terrain", q));
+            deps.extend(item_of(&by_target, "terrain-lo", q));
+            add(&mut out, &mut by_target, "slope-lo", q, (inp.cost)("slope-lo", q), Phase::Late, deps);
         }
         for t in &r.trees {
             add(&mut out, &mut by_target, "trees", t, (inp.cost)("trees", t), Phase::Late, Vec::new());
@@ -329,13 +354,13 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
     // slope and tree cover.
     for (k, r) in inp.regions.iter().enumerate() {
         let mut mine: Vec<usize> = Vec::new();
-        for (step, list) in [("terrain", &r.terrain), ("unit", &r.units), ("unit", &r.expected), ("slope", &r.slope), ("trees", &r.trees), ("trees-lo", &r.trees_lo)] {
+        for (step, list) in [("terrain", &r.terrain), ("terrain-lo", &r.terrain_lo), ("unit", &r.units), ("unit", &r.expected), ("slope", &r.slope), ("slope-lo", &r.slope_lo), ("trees", &r.trees), ("trees-lo", &r.trees_lo)] {
             mine.extend(list.iter().filter_map(|t| by_target.get(&(step.to_string(), t.clone())).copied()));
         }
         region_items[k] = mine;
     }
     // The chains: from the start, each step once what it reads is built.
-    let terrain: Vec<usize> = (0..out.len()).filter(|&i| out[i].step == "terrain").collect();
+    let terrain: Vec<usize> = (0..out.len()).filter(|&i| out[i].step == "terrain" || out[i].step == "terrain-lo").collect();
     let mut chain: Vec<usize> = Vec::new();
     for (step, target, cost) in &inp.chains {
         let (pre, earlier, reads_terrain) = chain_deps(step);
@@ -720,7 +745,7 @@ mod tests {
 
     fn region(id: &str, terrain: &[&str], units: &[&str], slope: &[&str]) -> RegionLeft {
         let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-        RegionLeft { id: id.into(), on_map: None, units: v(units), own_units: v(units), terrain: v(terrain), own_terrain: v(terrain), slope: v(slope), trees: Vec::new(), trees_lo: Vec::new(), expected: Vec::new() }
+        RegionLeft { id: id.into(), on_map: None, units: v(units), own_units: v(units), terrain: v(terrain), own_terrain: v(terrain), slope: v(slope), ..Default::default() }
     }
 
     fn mac(name: &str, speed: f64, helper: bool) -> Machine {

@@ -665,7 +665,8 @@ fn toward_with(cache: &Path, sources: &Path, goal: &dyn Fn() -> u64, free_space:
 /// a running job uses it holds (store::cachefile), and a stale hint costs only a fetch.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Hints {
-    /// Terrain runs ("terrain 3/x/y"): their area's archive copies (`terrain_reads`).
+    /// Terrain jobs' targets ("terrain 3/x/y", an area's whole run; "terrain 6/x/y", a piece;
+    /// "terrain-lo 3/x/y", an assembly): the archive copies they read (`terrain_reads`).
     pub terrain: Vec<String>,
     /// An items or heritage job: the pageview months.
     pub months: bool,
@@ -704,6 +705,7 @@ impl Hints {
                 }
             }
             "terrain" => self.terrain.extend(targets.iter().map(|t| format!("terrain {t}"))),
+            "terrain-lo" => self.terrain.extend(targets.iter().map(|t| format!("terrain-lo {t}"))),
             "items" | "heritage" => self.months = true,
             _ => {}
         }

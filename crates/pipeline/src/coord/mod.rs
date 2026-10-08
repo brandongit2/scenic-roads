@@ -100,11 +100,12 @@ fn is_zero64(v: &u64) -> bool {
 /// where they held their whole area's; tree cover 2: a z6 tile a run (a piece), where 1 was a z3
 /// tile's whole run with the trees program, a band of a block's rows at a time on each thread, and
 /// before that trees.py's workers each held a block's every zoom-12 value, 12 to 36 GB together;
-/// its assemblies 1).
+/// its assemblies 1; terrain 3 and slope 3: a z6 tile a run (a piece), their assemblies 1).
 pub fn cost_version(step: &str) -> u32 {
     match step {
-        "terrain" | "slope" | "trees" => 2,
-        "trees-lo" => 1,
+        "terrain" | "slope" => 3,
+        "trees" => 2,
+        "trees-lo" | "terrain-lo" | "slope-lo" => 1,
         _ => 0,
     }
 }
@@ -903,8 +904,10 @@ pub fn folder(w: &str) -> String {
 /// Whether `l` is a file a job of `step` saves for `target`: a unit's base pack, road values, roads'
 /// English and the grids its packs lacked; candidates' and peaks' own files; a tree cover piece's (a
 /// z6 tile's) hi packs of the tree layers and its mid, an assembly's (a z3 tile's) lo packs of them;
-/// an area's (a z3 tile's) lo pack and its z6 tiles' hi packs of terrain, slope, or the tree layers
-/// (a z3 tile's whole run: a lease of the scheme before pieces); a z6 tile's normalized buildings
+/// terrain's and slope's pieces (a z6 tile's) hi pack of their layer and its mid, an assembly's (a
+/// z3 tile's) lo pack; an area's (a z3 tile's) lo pack and its z6 tiles' hi packs of terrain,
+/// slope, or the tree layers (a z3 tile's whole run: a lease of the scheme before pieces); a z6
+/// tile's normalized buildings
 /// (`bldprep`) or 3D buildings' hi pack (`bldtiles`).
 pub fn saves(step: &str, target: &str, l: &str) -> bool {
     let dash = target.replace('/', "-");
@@ -917,6 +920,9 @@ pub fn saves(step: &str, target: &str, l: &str) -> bool {
         "bldtiles" => tile.is_some_and(|t| t.z == 6 && l == crate::bld::pack_logical(t.x, t.y)),
         "trees" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| l == crate::treepacks::mid_logical(t.x, t.y) || crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/hi/{dash}"))),
         "trees-lo" => tile.is_some_and(|u| u.z == 3) && crate::treepacks::LAYERS.iter().any(|layer| l == format!("layers/{layer}/lo/{dash}")),
+        "terrain" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| l == crate::terrain_pack::mid_logical(t.x, t.y) || l == format!("layers/terrain/hi/{dash}")),
+        "slope" if tile.is_some_and(|u| u.z == 6) => tile.is_some_and(|t| l == crate::slope_pack::mid_logical(t.x, t.y) || l == format!("layers/slope/hi/{dash}")),
+        "terrain-lo" | "slope-lo" => tile.is_some_and(|u| u.z == 3) && l == format!("layers/{}/lo/{dash}", step.trim_end_matches("-lo")),
         "terrain" | "slope" | "trees" => {
             let Some(q) = tile.filter(|u| u.z == 3) else { return false };
             let layers: &[&str] = match step {
@@ -2280,7 +2286,7 @@ mod tests {
         assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "pois 6/1/1");
         assert_eq!(next(&["terrain", "slope", "unit", "pois"]), "none");
         // Terrain once a run said it fits.
-        c.add_costs(&[(cost_key("terrain", "3/1/2"), Cost { peak_mb: 3500, secs: 1, worker: None, v: 2 })]);
+        c.add_costs(&[(cost_key("terrain", "3/1/2"), Cost { peak_mb: 3500, secs: 1, worker: None, v: 3 })]);
         assert_eq!(next(&["terrain"]), "terrain 3/1/2");
         // A worker that can't do a step gets none of it.
         c.offer("p", vec![o("trees", &[("3/1/1", 1000)], 1)]);
@@ -2302,7 +2308,7 @@ mod tests {
         // Slope's three areas: one needs 5 GB, measured at 10 minutes for this helper; one 8 GB,
         // an hour; one 5 GB, never run the way slope runs now.
         c.offer("p", vec![o("slope", &[("3/1/1", 5000), ("3/1/2", 8000), ("3/1/3", 5000)], 3)]);
-        c.add_costs_by(&[(cost_key("slope", "3/1/1"), Cost { peak_mb: 5000, secs: 600, worker: None, v: 2 }), (cost_key("slope", "3/1/2"), Cost { peak_mb: 8000, secs: 3600, worker: None, v: 2 })], "m1");
+        c.add_costs_by(&[(cost_key("slope", "3/1/1"), Cost { peak_mb: 5000, secs: 600, worker: None, v: 3 }), (cost_key("slope", "3/1/2"), Cost { peak_mb: 8000, secs: 3600, worker: None, v: 3 })], "m1");
         // At its desk: none fits its 4 GB.
         assert_eq!(next(&can(&["slope"], 4096)), "none");
         // Away, sparing 10 GB for twenty minutes: the short one alone (the hour-long one, and the
@@ -2315,7 +2321,7 @@ mod tests {
         // What fits its usual memory comes first, whatever its time and its step (the agent offers
         // slope before the candidates).
         c.offer("p", vec![o("slope", &[("3/2/1", 5000)], 3), o("pois", &[("6/1/1", 1500)], 12)]);
-        c.add_costs_by(&[(cost_key("slope", "3/2/1"), Cost { peak_mb: 5000, secs: 60, worker: None, v: 2 })], "m1");
+        c.add_costs_by(&[(cost_key("slope", "3/2/1"), Cost { peak_mb: 5000, secs: 60, worker: None, v: 3 })], "m1");
         let both = Ask { more_mb: Some(10240), max_secs: Some(1200), ..can(&["slope", "pois"], 4096) };
         assert_eq!(next(&both), "pois 6/1/1");
     }
@@ -2345,6 +2351,14 @@ mod tests {
         assert!(check_handoff(&h("trees", "6/17/17", &["work/trees-mid/6-17-18"], &[]), "trees", &ts("6/17/17")).is_err());
         assert!(check_handoff(&h("trees-lo", "3/2/2", &["layers/trees-cover/lo/3-2-2"], &[]), "trees-lo", &ts("3/2/2")).is_err());
         assert!(saves("trees-lo", "3/2/2", "layers/trees-leaf/lo/3-2-2") && !saves("trees-lo", "3/2/2", "layers/trees-leaf/hi/6-16-16"));
+        // Terrain's and slope's pieces: their hi pack and mid; their assemblies: their lo pack.
+        assert!(saves("terrain", "6/16/16", "layers/terrain/hi/6-16-16") && saves("terrain", "6/16/16", "work/terrain-mid/6-16-16"));
+        assert!(!saves("terrain", "6/16/16", "layers/terrain/lo/3-2-2") && !saves("terrain", "6/16/16", "layers/terrain/hi/6-16-17") && !saves("terrain", "6/16/16", "work/slope-mid/6-16-16"));
+        assert!(saves("slope", "6/16/16", "layers/slope/hi/6-16-16") && saves("slope", "6/16/16", "work/slope-mid/6-16-16") && !saves("slope", "6/16/16", "layers/slope/lo/3-2-2"));
+        assert!(saves("terrain-lo", "3/2/2", "layers/terrain/lo/3-2-2") && !saves("terrain-lo", "3/2/2", "layers/slope/lo/3-2-2") && !saves("terrain-lo", "3/2/2", "layers/terrain/hi/6-16-16"));
+        assert!(saves("slope-lo", "3/2/2", "layers/slope/lo/3-2-2") && !saves("slope-lo", "3/2/2", "work/slope-mid/6-16-16"));
+        // (A z3 tile's whole run, a lease of the scheme before: as it was.)
+        assert!(saves("terrain", "3/2/2", "layers/terrain/lo/3-2-2") && saves("terrain", "3/2/2", "layers/terrain/hi/6-16-16"));
         assert!(check_handoff(&h("pois", "6/1/3", &["work/pois/6-1-3"], &[]), "pois", &ts("6/1/3")).is_ok());
         assert!(check_handoff(&h("pois", "6/1/3", &["work/peaks/6-1-3"], &[]), "pois", &ts("6/1/3")).is_err());
         // Raw tiles' archives: its own areas, named by their content.

@@ -91,6 +91,27 @@ pub mod v1 {
         out
     }
 
+    /// Terrain's and slope's targets as they were, a z3 tile's whole run: each z3 tile with z6 tiles
+    /// near the coverage, terrain keyed on its version, those z6 tiles, the coverage within 20 km,
+    /// GLO-30 and the basemap; slope on its version, the area's terrain lo pack and its z6 tiles'
+    /// hi packs.
+    pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>) -> (Vec<(String, String)>, Vec<(String, String)>) {
+        use super::super::build::{coverage_tiles, grown_e7, SLOPE_V, TERRAIN_V};
+        let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
+        let (mut terrain, mut slope) = (Vec::new(), Vec::new());
+        let water = crate::terrain_pack::water_pin(m).map_or("-", |(_, c)| c);
+        for (q, ts) in &coverage_tiles(cov) {
+            let qs = format!("3/{}/{}", q.0, q.1);
+            let tlist: Vec<String> = ts.iter().map(|t| format!("6/{}/{}", t.0, t.1)).collect();
+            terrain.push((qs.clone(), h(&[&format!("terrain {TERRAIN_V}"), &tlist.join(" "), &cov.fingerprint(grown_e7(3, q.0, q.1, 20.0)), crate::terrain_pack::NORTH_PIN, water])));
+            let mut inputs = vec![format!("slope {SLOPE_V}"), get(&format!("layers/terrain/lo/3-{}-{}", q.0, q.1)).to_string()];
+            inputs.extend(ts.iter().map(|t| get(&format!("layers/terrain/hi/6-{}-{}", t.0, t.1)).to_string()));
+            let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+            slope.push((qs, h(&refs)));
+        }
+        (terrain, slope)
+    }
+
     /// A z3 tile's "none" key under the old scheme (the coverage gone from it).
     pub fn trees_none(t: &str) -> String {
         store::naming::hash16(format!("trees {TREES_V}|{t}|none").as_bytes())
@@ -261,8 +282,11 @@ pub fn rekey(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, S
         return out;
     }
     let pieces: BTreeSet<(u32, u32)> = build::coverage_tiles(cov).into_values().flatten().collect();
-    let (terrain, _) = build::terrain_slope_targets(cov, m);
-    let terrain_now: BTreeSet<String> = terrain.into_iter().filter(|(q, k)| keys.terrain.get(q) == Some(k)).map(|(q, _)| q).collect();
+    // (An area's terrain is current by its whole run's record, or by its pieces' and assembly's.)
+    let (terrain, _) = v1::terrain_slope_targets(cov, m);
+    let mut terrain_now: BTreeSet<String> = terrain.into_iter().filter(|(q, k)| keys.terrain.get(q) == Some(k)).map(|(q, _)| q).collect();
+    let tw = build::terrain_work(&build::terrain_slope_targets(cov, m, tiles), m, keys);
+    terrain_now.extend(build::coverage_tiles(cov).into_keys().map(|q| format!("3/{}/{}", q.0, q.1)).filter(|q| !tw.terrain_left.contains(q) && keys.terrain_lo.contains_key(q)));
     for u in current {
         let t = u.slash();
         let (Some(r), Some(piece)) = (reach.get(u), m.get(&format!("sources/osm/{date}/pieces/{}", u.dash()))) else { continue };
@@ -397,6 +421,138 @@ fn unpinned(u: Unit, read: &[Tile], m: &BTreeMap<String, String>, pieces: &BTree
     Ok(kinds.into_iter().map(|(k, (n, (z, x, y)))| format!("{k}: {n}, {z}/{x}/{y} first")).collect())
 }
 
+
+/// What `derive` made of terrain's and slope's records of a z3 tile's whole run.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Derived {
+    /// Terrain's z3 tiles current under the old scheme: read as their pieces and assembly.
+    pub terrain: Vec<String>,
+    /// Slope's z3 tiles current under the old scheme: read as their pieces (those that read their
+    /// area's terrain alone) and, with no other piece, their assembly.
+    pub slope: Vec<String>,
+    /// Slope's pieces in those that read terrain in another area's packs or the root, or none:
+    /// left to make, each with the first such tile.
+    pub slope_left: Vec<(String, String)>,
+    /// The old records stale under the old scheme (or "none"): passed over, each with why.
+    pub stale: Vec<(String, String)>,
+    /// Slope's z3 tiles whose pieces' reads can't be told now (a terrain pack's index unread).
+    pub unknown: Vec<(String, String)>,
+}
+
+/// The records as every reader reads them (the plan, the checklist, the regions' state, the jobs'
+/// `--expect-same`, `scenic-build p5-check`): re-keyed (`rekey`), then terrain's and slope's
+/// derived (`derive`). The one way to read them.
+#[allow(clippy::too_many_arguments)]
+pub fn as_read(keys: &mut Keys, cov: &Coverage, date: &str, m: &BTreeMap<String, String>, reach: Option<&Reaches>, digests: &BTreeMap<String, String>, tiles: &TerrainTiles, times: &dyn Times) -> (Rekeyed, Derived) {
+    let r = rekey(keys, cov, date, m, reach, digests, tiles, times);
+    let d = derive(keys, cov, m, tiles);
+    (r, d)
+}
+
+/// Terrain's and slope's records of a z3 tile's whole run ("3/x/y", `v1::terrain_slope_targets`)
+/// read as its pieces and assemblies (build::terrain_slope_targets), in memory only: never saved
+/// (the records, `jobs.json` or the pool's terms', change only by a job's save), so applied again
+/// by every reader (`as_read`), the same each time. A record of the new scheme is never written
+/// over: what a job recorded wins over what's derived. The z3 record itself is dropped from the
+/// keys read.
+///
+/// A z3 tile's terrain record current under the old scheme (its key: the version, its z6 tiles near
+/// the coverage, the coverage within 20 km of it, GLO-30 and the basemap) pins its pieces' inputs
+/// (the coverage within 20 km of a z6 tile in it is a function of that), and its packs are what its
+/// pieces and assembly make from them, byte for byte (terrain_pack::build_q_with is made of them):
+/// each piece without a record of its own is read as current under its key, and the assembly, with
+/// none, under its key with every mid "-" (as when no piece had one): a mid made since (a piece made
+/// again, or backfilled) makes it stale, and it's made again, from all its pieces' mids (the mids
+/// needed: build::terrain_work).
+///
+/// A z3 tile's slope record current under the old scheme (its key: the version, the area's terrain
+/// lo pack and its pieces' hi packs) pins the reads of its pieces whose every terrain tile read
+/// (build::slope_piece_reads) is in its area's packs: each without a record of its own is read as
+/// current. Those reading another area's terrain, or the root's, or none, which the old key didn't
+/// name (and a slope area's run could read a neighbour's terrain before it was made again), are
+/// left to make; the assembly is read as current (every mid "-") only when none is.
+pub fn derive(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Derived {
+    let mut out = Derived::default();
+    let z3 = |map: &BTreeMap<String, String>| -> Vec<(String, String)> { map.iter().filter(|(t, _)| Unit::parse(t).is_some_and(|u| u.z == 3)).map(|(t, k)| (t.clone(), k.clone())).collect() };
+    let (tz3, sz3) = (z3(&keys.terrain), z3(&keys.slope));
+    if tz3.is_empty() && sz3.is_empty() {
+        return out;
+    }
+    let (old_t, old_s) = v1::terrain_slope_targets(cov, m);
+    let (old_t, old_s): (BTreeMap<String, String>, BTreeMap<String, String>) = (old_t.into_iter().collect(), old_s.into_iter().collect());
+    let by_q = build::coverage_tiles(cov);
+    let water = crate::terrain_pack::water_pin(m).map_or("-", |(_, c)| c);
+    let tt = build::terrain_slope_targets(cov, m, tiles);
+    let pieces = |q: &str| -> Vec<(u32, u32)> { Unit::parse(q).and_then(|u| by_q.get(&(u.x, u.y)).cloned()).unwrap_or_default() };
+    let none_mids = |q: &str| -> Vec<String> { pieces(q).iter().map(|(x, y)| format!("6/{x}/{y}=-")).collect() };
+    for (q, k) in tz3 {
+        keys.terrain.remove(&q);
+        if old_t.get(&q) != Some(&k) {
+            out.stale.push((format!("terrain {q}"), "stale under the old scheme: its pieces made".into()));
+            continue;
+        }
+        let Some(u) = Unit::parse(&q) else { continue };
+        for (t, kt) in tt.terrain.iter().filter(|(t, _)| build::area_of(t).as_deref() == Some(q.as_str())) {
+            keys.terrain.entry(t.clone()).or_insert_with(|| kt.clone());
+        }
+        keys.terrain_lo.entry(q.clone()).or_insert_with(|| build::terrain_lo_key((u.x, u.y), water, &none_mids(&q)));
+        out.terrain.push(q);
+    }
+    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
+    for (q, k) in sz3 {
+        if old_s.get(&q) != Some(&k) {
+            keys.slope.remove(&q);
+            out.stale.push((format!("slope {q}"), "stale under the old scheme: its pieces made".into()));
+            continue;
+        }
+        let Some(u) = Unit::parse(&q) else { continue };
+        // (A tile in the area's packs: its lo pack, or the hi pack of one of its z6 tiles.)
+        let ours = |z: u8, x: u32, y: u32| z >= 3 && (x >> (z - 3), y >> (z - 3)) == (u.x, u.y);
+        // (Every piece's reads told first: one that can't be leaves the record for the next pass.)
+        let mut reads: Vec<(String, Option<String>, Vec<Option<super::tiles::Tile>>)> = Vec::new();
+        let mut unread = None;
+        for (t, kt) in tt.slope.iter().filter(|(t, _)| build::area_of(t).as_deref() == Some(q.as_str())) {
+            let p = Unit::parse(t).unwrap();
+            match build::slope_piece_reads((p.x, p.y), m, tiles) {
+                Ok(r) => reads.push((t.clone(), kt.clone(), r)),
+                Err(e) => {
+                    unread = Some(e.0);
+                    break;
+                }
+            }
+        }
+        if let Some(e) = unread {
+            out.unknown.push((q, e));
+            continue;
+        }
+        keys.slope.remove(&q);
+        let mut left = 0;
+        for (t, kt, r) in reads {
+            match r.iter().find(|x| !x.is_some_and(|(z, x, y, _)| ours(z, x, y))) {
+                None => {
+                    if let Some(kt) = kt {
+                        keys.slope.entry(t).or_insert(kt);
+                    }
+                }
+                Some(first) => {
+                    left += 1;
+                    let why = match first {
+                        Some((z, x, y, _)) if *z <= 2 => format!("reads the terrain's root ({z}/{x}/{y})"),
+                        Some((z, x, y, _)) => format!("reads another area's terrain ({z}/{x}/{y})"),
+                        None => "reads where there's no terrain tile".to_string(),
+                    };
+                    out.slope_left.push((t, why));
+                }
+            }
+        }
+        if left == 0 {
+            keys.slope_lo.entry(q.clone()).or_insert_with(|| build::slope_lo_key((u.x, u.y), &none_mids(&q), get(&format!("layers/terrain/lo/3-{}-{}", u.x, u.y))));
+        }
+        out.slope.push(q);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,17 +598,16 @@ mod tests {
         }
         unit_inputs(&mut m, "d");
         let mut done = Keys::default();
+        // (The terrain made by its area's whole run, as before its pieces.)
+        m.insert("layers/terrain/lo/3-3-2".into(), "layers/terrain/lo/3-3-2.1111111111111111.pack".into());
+        for (x, y) in build::coverage_tiles(&c).into_values().flatten() {
+            m.insert(format!("layers/terrain/hi/6-{x}-{y}"), format!("layers/terrain/hi/6-{x}-{y}.2222222222222222.pack"));
+        }
+        done.record("terrain", &v1::terrain_slope_targets(&c, &m).0);
         loop {
             let w = plan(&c, &reach, &m, &done, &tiles_for(&m)).work;
             match w[0].step.as_str() {
                 "heritage-sites" => heritage_done(&mut m, &mut done, "d", &w[0]),
-                "terrain" => {
-                    done.record("terrain", &w[0].targets);
-                    m.insert("layers/terrain/lo/3-3-2".into(), "layers/terrain/lo/3-3-2.1111111111111111.pack".into());
-                    for (x, y) in build::coverage_tiles(&c).into_values().flatten() {
-                        m.insert(format!("layers/terrain/hi/6-{x}-{y}"), format!("layers/terrain/hi/6-{x}-{y}.2222222222222222.pack"));
-                    }
-                }
                 _ => break,
             }
         }
@@ -464,13 +619,117 @@ mod tests {
         (c, reach, m, done)
     }
 
+    /// The plan, with the records as read (terrain's and slope's derived: `derive`).
     fn plan(c: &Coverage, reach: &Reaches, m: &BTreeMap<String, String>, done: &Keys, tiles: &TerrainTiles) -> build::Plan {
-        build::plan(c, "d", m, done, &BTreeMap::new(), Some(reach), tiles, Rounds { each: &c.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false })
+        let mut done = done.clone();
+        derive(&mut done, c, m, tiles);
+        build::plan(c, "d", m, &done, &BTreeMap::new(), Some(reach), tiles, Rounds { each: &c.by_region(), on_map: &BTreeMap::new(), since_last: None, current: None, held: false })
     }
 
     /// The units the plan builds.
     fn units(p: &build::Plan) -> Vec<String> {
         p.work.iter().filter(|w| w.step == "unit").flat_map(|w: &Work| w.targets.iter().map(|t| t.0.clone())).collect()
+    }
+
+    /// Terrain's and slope's work (build::terrain_work) for the records as read.
+    fn tw(c: &Coverage, m: &BTreeMap<String, String>, done: &Keys) -> build::TerrainWork {
+        let tiles = tiles_for(m);
+        let mut read = done.clone();
+        derive(&mut read, c, m, &tiles);
+        build::terrain_work(&build::terrain_slope_targets(c, m, &tiles), m, &read)
+    }
+
+    fn names(v: &[(String, String)]) -> Vec<String> {
+        v.iter().map(|t| t.0.clone()).collect()
+    }
+
+    #[test]
+    fn terrain_current_under_the_old_scheme_is_read_as_its_pieces_and_assembly() {
+        let (c, _, m, done) = iceland(&|_| {});
+        let tiles = tiles_for(&m);
+        let tt = build::terrain_slope_targets(&c, &m, &tiles);
+        let pieces = names(&tt.terrain);
+        assert!(pieces.len() >= 3, "{pieces:?}");
+        let mut read = done.clone();
+        let d = derive(&mut read, &c, &m, &tiles);
+        assert_eq!(d.terrain, ["3/3/2"]);
+        assert!(!read.terrain.contains_key("3/3/2"));
+        assert!(tt.terrain.iter().all(|(t, k)| read.terrain.get(t) == Some(k)));
+        // Nothing to make: the assembly current with its mids "-", its pieces' mids made in idle
+        // time.
+        let w = tw(&c, &m, &done);
+        assert!(w.terrain.is_empty() && w.terrain_lo.is_empty() && w.terrain_left.is_empty(), "{w:?}");
+        assert_eq!(w.backfill.iter().find(|b| b.step == "terrain").map(|b| names(&b.targets)), Some(pieces.clone()));
+        // Twice is once.
+        let mut twice = read.clone();
+        assert_eq!(derive(&mut twice, &c, &m, &tiles), Derived::default());
+        assert_eq!(twice, read);
+        // A record of the new scheme wins over what's derived: a piece recorded under another key
+        // is stale, and every other piece of its area is made again for its mid, the assembly then.
+        let mut rec = done.clone();
+        rec.terrain.insert(pieces[0].clone(), "0000000000000000".into());
+        let mut r2 = rec.clone();
+        derive(&mut r2, &c, &m, &tiles);
+        assert_eq!(r2.terrain[&pieces[0]], "0000000000000000");
+        let w = tw(&c, &m, &rec);
+        assert_eq!(names(&w.terrain), pieces);
+        assert!(w.terrain_left.contains("3/3/2") && w.terrain_lo.is_empty());
+        // A mid backfilled: the assembly's key names it, so it's stale, and the other pieces' mids
+        // are made for it (not idle work now).
+        let mut m2 = m.clone();
+        let l = crate::terrain_pack::mid_logical(28, 16);
+        m2.insert(l.clone(), format!("{l}.5555555555555555.sect"));
+        let w = tw(&c, &m2, &done);
+        assert_eq!(names(&w.terrain), pieces.iter().filter(|t| *t != "6/28/16").cloned().collect::<Vec<_>>());
+        assert!(w.backfill.iter().all(|b| b.step != "terrain") && w.terrain_lo.is_empty());
+        // Every mid made: the assembly runs.
+        for (x, y) in build::coverage_tiles(&c).into_values().flatten() {
+            let l = crate::terrain_pack::mid_logical(x, y);
+            m2.insert(l.clone(), format!("{l}.5555555555555555.sect"));
+        }
+        let w = tw(&c, &m2, &done);
+        assert!(w.terrain.is_empty() && names(&w.terrain_lo) == ["3/3/2"], "{w:?}");
+        // Stale under the old scheme: passed over, its pieces made.
+        let mut stale = done.clone();
+        stale.terrain.insert("3/3/2".into(), "0000000000000000".into());
+        let mut s2 = stale.clone();
+        let d = derive(&mut s2, &c, &m, &tiles);
+        assert_eq!(d.stale.len(), 1);
+        assert!(s2.terrain.is_empty() && s2.terrain_lo.is_empty());
+        assert_eq!(names(&tw(&c, &m, &stale).terrain), pieces);
+    }
+
+    #[test]
+    fn slope_current_under_the_old_scheme_keeps_its_pieces_that_read_their_area_alone() {
+        let (c, reach, mut m, mut done) = iceland(&|_| {});
+        m.insert("layers/slope/lo/3-3-2".into(), "layers/slope/lo/3-3-2.9999999999999999.pack".into());
+        done.record("slope", &v1::terrain_slope_targets(&c, &m).1);
+        let tiles = tiles_for(&m);
+        let mut read = done.clone();
+        let d = derive(&mut read, &c, &m, &tiles);
+        assert_eq!(d.slope, ["3/3/2"]);
+        // Those on the area's top row read 3/3/1's terrain (none: no pack there): made again.
+        let left: Vec<&str> = d.slope_left.iter().map(|(t, _)| t.as_str()).collect();
+        let pieces: Vec<(u32, u32)> = build::coverage_tiles(&c).into_values().flatten().collect();
+        let top: Vec<String> = pieces.iter().filter(|p| p.1 == 16).map(|(x, y)| format!("6/{x}/{y}")).collect();
+        assert_eq!(left, top.iter().map(String::as_str).collect::<Vec<_>>(), "{:?}", d.slope_left);
+        assert!(pieces.iter().filter(|p| p.1 != 16).all(|(x, y)| read.slope.contains_key(&format!("6/{x}/{y}"))));
+        assert!(!read.slope_lo.contains_key("3/3/2"), "its assembly after them");
+        let p = plan(&c, &reach, &m, &done, &tiles);
+        let slope: Vec<String> = p.work[..p.work.len() - p.backfill.len()].iter().filter(|w| w.step == "slope").flat_map(|w| names(&w.targets)).collect();
+        assert_eq!(slope, top);
+        // The others' mids made in idle time, expected the same.
+        let idle: Vec<String> = p.backfill.iter().filter(|w| w.step == "slope").flat_map(|w| names(&w.targets)).collect();
+        assert_eq!(idle, pieces.iter().filter(|p| p.1 != 16).map(|(x, y)| format!("6/{x}/{y}")).collect::<Vec<_>>());
+        // Twice is once; a record of the new scheme wins.
+        let mut twice = read.clone();
+        assert_eq!(derive(&mut twice, &c, &m, &tiles), Derived::default());
+        assert_eq!(twice, read);
+        let (x, y) = *pieces.iter().find(|p| p.1 != 16).unwrap();
+        let mut rec = done.clone();
+        rec.slope.insert(format!("6/{x}/{y}"), "0000000000000000".into());
+        derive(&mut rec, &c, &m, &tiles);
+        assert_eq!(rec.slope[&format!("6/{x}/{y}")], "0000000000000000");
     }
 
     #[test]
