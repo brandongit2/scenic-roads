@@ -1785,11 +1785,11 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     asks (an agent: refused, with the pause; a page: nothing now) and beats; each agent keeps what it
     last heard (`pause.json`), so a helper that can't reach the build Mac stays as it last heard.
   - **At a safe point** (the default): each running job finishes the target it's on (an area, a map
-    tile, a terrain or slope area, a batch's candidates or peaks), saves it, notes it done
+    tile, a terrain, slope or tree cover piece, a batch's candidates or peaks), saves it, notes it done
     (`SCENIC_DONE`) and ends as paused (exit 75; its channel, `SCENIC_CONTROL`, said "drain"). The
     agent records what it noted done (a helper hands those off: the coordinator takes part of a
     lease's targets) and starts nothing new; on resume the plan picks up the rest. A job that hasn't
-    reached a safe point in 15 minutes (a terrain area mid-way) is frozen where it is instead, and
+    reached a safe point in 15 minutes (an area's whole terrain run mid-way) is frozen where it is instead, and
     goes on from there. **Now:** every running job frozen where it is at once (SIGSTOP), going on
     from there.
   - **While paused:** no lease lapses (a paused or asleep worker's work isn't given to another);
@@ -2300,7 +2300,7 @@ between jobs into the other way. On:
    since the plan said so isn't; of those,
    the round's own and those on the map as they are), and the others as the last catalog had them,
    if it had them (on the map as they were); the Regions panel shows the rest as pending, or building with their areas
-   counted. It waits while another worker builds a slope area or a tree cover piece of a region it
+   counted. It waits while another worker builds a slope or tree cover piece of a region it
    would publish (it would go out without the region, which would then wait an hour), and while a
    helper's hand-offs wait to be merged (their areas counted as built, their files not yet in the
    manifest). What the trains', the landmarks' and the 3D buildings' chains made goes out with the

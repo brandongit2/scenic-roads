@@ -22,7 +22,8 @@
 //!                                tiles T near the coverage (pieces: each one's hi pack, z9–12, and
 //!                                its mid; --expect-same, those made again as the manifest has them,
 //!                                else it fails, uploading nothing), or of z3 tiles' whole (default:
-//!                                all of them; by hand, and a lease of the scheme before pieces)
+//!                                all of them; by hand, and a lease of the scheme before pieces);
+//!                                --pieces-of Q,…: every piece of z3 tiles Q
 //!   terrain-lo <Q …> [--raw dir]  z3 tiles Q's zoomed-out terrain (lo packs, z3–8) from their
 //!                                pieces' mids
 //!   slope [T …] [--regions dir] [--expect-same T,…]  the slope from the terrain packs: of z6 tiles
@@ -3249,7 +3250,16 @@ fn terrain_targets(cov: &pipeline::coverage::Coverage, args: &[String]) -> Resul
 /// none is (an area's whole run, of z3 tiles or of all); an error when z6 tiles are named with
 /// others, or one isn't near the coverage. `--expect-same`'s, those of them made again as they are.
 fn pieces_named(cov: &pipeline::coverage::Coverage, args: &[String]) -> Result<Option<(Vec<Unit>, BTreeSet<String>)>> {
-    let named: Vec<Unit> = positional(args).iter().map(|s| Unit::parse(s).with_context(|| format!("not a tile: {s}"))).collect::<Result<_>>()?;
+    let mut named: Vec<Unit> = positional(args).iter().map(|s| Unit::parse(s).with_context(|| format!("not a tile: {s}"))).collect::<Result<_>>()?;
+    // (`--pieces-of Q,…`: every piece of those z3 tiles, by hand.)
+    if let Some(qs) = opt(args, "--pieces-of") {
+        let near = pipeline::agent::build::coverage_tiles(cov);
+        for q in qs.split(',').filter(|q| !q.is_empty()) {
+            let u = Unit::parse(q).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {q}"))?;
+            let ts = near.get(&(u.x, u.y)).with_context(|| format!("{q}: no tile of it is near the coverage"))?;
+            named.extend(ts.iter().map(|&(x, y)| Unit { z: 6, x, y }));
+        }
+    }
     let same: BTreeSet<String> = opt(args, "--expect-same").map(|v| v.split(',').filter(|t| !t.is_empty()).map(String::from).collect()).unwrap_or_default();
     if named.is_empty() || named.iter().all(|u| u.z != 6) {
         anyhow::ensure!(same.is_empty(), "--expect-same is for pieces (z6 tiles)");

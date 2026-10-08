@@ -306,7 +306,7 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
    - pieces per z6 tile, with a 10 km buffer;
    - every way's whole road, from one chaining of the planet.
 2. **Heritage sites and designated areas** over the coverage: `dem/heritage.py`, on the registers' snapshot.
-3. **Terrain, slope and tree cover** per z3 pack near the coverage; terrain from AWS's raw tiles, repaired (above):
+3. **Terrain, slope and tree cover** per z6 tile near the coverage (pieces, a helper's too), each z3 tile's zoomed-out levels assembled from them; terrain from AWS's raw tiles, repaired (above):
    - **Terrain:** Terrarium tiles, z9–12 within 20 km of the coverage (capped by latitude: z12 to 67°, z11 to 79°). z8 and coarser are made again from the finer tiles where they exist (2×2 means), since AWS's coarse levels come from coarser sources: Fuji's summit pixel is 3,106 m at z6 and 2,368 m at z5, against 3,378 and 2,715 m from z9.
    - **Slope:** z11 and coarser are stored, as RGBA PNG with four slopes a pixel: the quarter means of the sixteen z12 Horn slopes beneath it, sorted.
      - Each channel is 255 × √(slope ÷ 400 %), so the gentle slopes most ground has get finer steps.
