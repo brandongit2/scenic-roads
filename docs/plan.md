@@ -1240,8 +1240,10 @@ map labels, "main (sub)" in the app's text. Sub shows only when it truly differs
   1/128° cells (about 870 m at the equator), run-length coded by row, the smallest outline winning
   where they overlap (Hong Kong over China, Quebec over Canada). Beyond every territory (the high
   seas) no language is spoken: only OSM's tags lead to a line.
-  - From the 2026-09-28 pass: 250 regions, 266,957 points, the raster made in 0.9 s and 3.4 MB;
-    reading the simplified rings from the NAS takes about five minutes.
+  - From the 2026-09-28 pass: 250 regions, 266,957 points, the raster 3.4 MB, made in 1–6 s
+    (this Mac, busy); reading the outlines' records and simplified rings from the NAS took 20 s (five
+    minutes while the NAS was busy), so a server's first start with new outlines has no spoken
+    languages for that long.
   - The server makes it from the catalog's outlines on a thread of its own and keeps it in its home
     (`names/spoken-<outlines' content name>.bin`, its slashes as underscores), so it's there offline after the first time;
     until then only OSM's language tags lead to a line. The `names-todo` job keeps its own in its
