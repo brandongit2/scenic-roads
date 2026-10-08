@@ -915,6 +915,24 @@ mod tests {
         assert_eq!(names.translation(Kind::Place, "jp", "A").and_then(|t| t.sub), Some("a"));
     }
 
+    /// The converted lines by language (translations/0-converted/<language>.jsonl) are skipped by
+    /// these area tables: neither the folder nor the file name holds an area code.
+    #[test]
+    fn converted_files_by_language_are_skipped() {
+        let d = Dir::new();
+        let line = "{\"n\": \"Lac Noir\", \"kind\": [\"settlement\", \"other\"], \"langs\": [\"fr\"], \"main\": \"Lac Noir\", \"sub\": \"Black Lake\", \"via\": \"rule:described\"}\n";
+        for f in ["cantonese", "chinese", "english", "french", "japanese", "portuguese", "spanish", "welsh", "irish", "scottish-gaelic", "catalan", "galician", "basque", "malay", "tamil"] {
+            d.write(&format!("0-converted/{f}.jsonl"), line);
+        }
+        let mut names = Names::load(&d.0).expect("load");
+        assert_eq!(names.entries(), 0);
+        assert_eq!(names.areas().count(), 0);
+        let w = names.take_warnings();
+        assert_eq!(w.len(), 15, "{w:?}");
+        assert!(w.iter().all(|w| w.contains(": skipped, no area")), "{w:?}");
+        assert_eq!(show(&names, "Lac Noir", None, PARIS), ds("Lac Noir", None));
+    }
+
     #[test]
     fn warnings_for_bad_lines() {
         let d = Dir::new();
