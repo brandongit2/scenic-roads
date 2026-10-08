@@ -64,6 +64,9 @@ pub struct AppState {
     rail_freq: Mutex<Option<(u64, Arc<Vec<(u32, f32)>>)>>,
     /// The build agent's heartbeat (state/status.json), re-read at most every 30 s.
     agent: Mutex<Option<(std::time::Instant, serde_json::Value)>>,
+    /// The lead's coordinator's addresses (state/coordinator.json's `urls`, never its key), re-read
+    /// at most every 30 s.
+    contact: Mutex<Option<(std::time::Instant, Vec<String>)>>,
     /// This Mac's app folder (`~/Library/Application Support/scenic`): its own agent's status.
     home: PathBuf,
     /// The outlines of the latest OSM pass (the Regions panel).
@@ -199,10 +202,49 @@ impl AppState {
         v
     }
 
+    /// The lead's coordinator's addresses as it publishes them on the NAS (pipeline::coord
+    /// `contact_path`): its `urls` alone, never its key; none while the NAS is away.
+    fn lead_urls(&self) -> Vec<String> {
+        let mut cur = self.contact.lock().unwrap();
+        if let Some((t, v)) = cur.as_ref() {
+            if t.elapsed() < std::time::Duration::from_secs(30) {
+                return v.clone();
+            }
+        }
+        // (Read into the addresses alone: the key and anything else in it are never kept.)
+        #[derive(serde::Deserialize)]
+        struct Urls {
+            urls: Vec<String>,
+        }
+        let v = match (self.data.nas_root(), self.data.pool()) {
+            (Some(root), Some(pool)) if pool.is_online() => pool.read_all(&pipeline::coord::contact_path(&root)).ok().and_then(|b| serde_json::from_slice::<Urls>(&b).ok()).map(|u| u.urls).unwrap_or_default(),
+            _ => Vec::new(),
+        };
+        *cur = Some((std::time::Instant::now(), v.clone()));
+        v
+    }
+
+    /// The build page's addresses for the menu bar's panel, in the order to try: on the lead (its
+    /// agent runs here) its own coordinator first, then the lead's addresses from the NAS. No key:
+    /// the page asks for none.
+    fn build_pages(&self, local: bool) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        if local {
+            out.push(format!("http://127.0.0.1:{}/work/", pipeline::coord::PORT));
+        }
+        for u in self.lead_urls() {
+            let page = format!("{}/work/", u.trim_end_matches('/'));
+            if (page.starts_with("http://") || page.starts_with("https://")) && !out.contains(&page) {
+                out.push(page);
+            }
+        }
+        out
+    }
+
     /// The build agent's status for the menu bar (tools/status): this Mac's own agent's when it runs
     /// here (written every few seconds), else the heartbeat it copies to the NAS (on change, and
     /// every five minutes); whether it's this Mac's; for this Mac's, the running job's log; and
-    /// what this Mac has downloaded (downloads::summary).
+    /// what this Mac has downloaded (downloads::summary); and the build page's addresses (`pages`).
     fn build_status(&self) -> serde_json::Value {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let own: Option<serde_json::Value> = std::fs::read(self.home.join("agent/status.json")).ok().and_then(|b| serde_json::from_slice(&b).ok());
@@ -234,7 +276,9 @@ impl AppState {
         // ask while its agent hasn't taken it up.
         let pool = pipeline::agent::lead::own_status(&self.home.join("agent")).filter(|s| now.saturating_sub(s.beat) < 120).and_then(|s| s.pool).map_or(serde_json::Value::Null, |p| serde_json::to_value(p).unwrap_or_default());
         let lead_asked = pipeline::control::peek_lead(&self.home.join("agent")).map(|r| serde_json::to_value(r).unwrap_or_default());
-        serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked, "offline": offline, "pool": pool, "lead_asked": lead_asked})
+        // Where the menu bar's panel finds the build page.
+        let pages = self.build_pages(local);
+        serde_json::json!({"status": status, "local": local, "now": now, "log": log, "asked": asked, "offline": offline, "pool": pool, "lead_asked": lead_asked, "pages": pages})
     }
 
     /// Lets go of everything mapped from what the mirror has just deleted (`names`: content
@@ -283,6 +327,7 @@ pub fn test_state_from(home: &std::path::Path, data: Arc<data::Data>) -> S {
         road_en: Mutex::new(None),
         rail_freq: Mutex::new(None),
         agent: Mutex::new(None),
+        contact: Mutex::new(None),
         home: home.to_owned(),
         areas: regions::Areas::default(),
         descriptions: descriptions::Descriptions::new(home),
@@ -406,6 +451,7 @@ async fn main() -> Result<()> {
         road_en: Mutex::new(None),
         rail_freq: Mutex::new(None),
         agent: Mutex::new(None),
+        contact: Mutex::new(None),
         home: home.clone(),
         areas: regions::Areas::default(),
         descriptions: descs,
@@ -1014,6 +1060,33 @@ mod tests {
         assert_eq!(ask(serde_json::json!({ "to": "" })).await, StatusCode::BAD_REQUEST);
         assert_eq!(ask(serde_json::json!({ "take": false })).await, StatusCode::BAD_REQUEST);
         assert!(pipeline::control::take_lead(&agent).is_none());
+    }
+
+    #[test]
+    fn the_build_pages_addresses_carry_the_leads_urls_alone() {
+        let (nas, home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let key = "the-owners-key-0123456789";
+        let contact = serde_json::json!({ "urls": ["http://100.70.85.80:8090", "http://lead.local:8090/"], "token": key, "other": "never-sent" });
+        std::fs::create_dir_all(nas.path().join("state")).unwrap();
+        std::fs::write(pipeline::coord::contact_path(nas.path()), contact.to_string()).unwrap();
+        // A member: the lead's addresses from the NAS, nothing else of its contact.
+        let body = test_state(home.path(), nas.path()).build_status();
+        assert_eq!(body["pages"], serde_json::json!(["http://100.70.85.80:8090/work/", "http://lead.local:8090/work/"]));
+        let text = body.to_string();
+        assert!(!text.contains(key) && !text.contains("never-sent") && !text.contains("token"));
+        // The lead (its agent's status here, fresh): its own coordinator first.
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        std::fs::create_dir_all(home.path().join("agent")).unwrap();
+        std::fs::write(home.path().join("agent/status.json"), serde_json::json!({ "host": "lead", "beat": now }).to_string()).unwrap();
+        let body = test_state(home.path(), nas.path()).build_status();
+        assert_eq!(body["local"], true);
+        assert_eq!(body["pages"][0], format!("http://127.0.0.1:{}/work/", pipeline::coord::PORT));
+        assert_eq!(body["pages"].as_array().unwrap().len(), 3);
+        assert!(!body.to_string().contains(key));
+        // No contact (the NAS away, or no lead running): none.
+        std::fs::remove_file(pipeline::coord::contact_path(nas.path())).unwrap();
+        std::fs::remove_file(home.path().join("agent/status.json")).unwrap();
+        assert_eq!(test_state(home.path(), nas.path()).build_status()["pages"], serde_json::json!([]));
     }
 
     #[test]
