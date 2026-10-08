@@ -12,6 +12,22 @@
 // back into MapLibre's centre / zoom / pivot (applyCamera on the flat map, placeGlobe on the globe).
 import { LngLat, MercatorCoordinate, Point, type Map as MLMap } from 'maplibre-gl';
 
+/** How far the camera stays above the ground under it (m). */
+const GROUND_CLEAR_M = 30;
+/** How far it stays above a building's roof under it (m). */
+export const ROOF_CLEAR_M = 4;
+/** The highest roof under a point (rendered metres; -Infinity: none): the 3D buildings' (main.ts
+ * sets it, buildings.roofAt), so the camera stops above a tower rather than inside it. */
+let roofUnder: (ll: LngLat) => number = () => -Infinity;
+export function setRoofs(f: (ll: LngLat) => number): void {
+  roofUnder = f;
+}
+
+/** The lowest the camera may be over a point: 30 m above the ground, and a few above any roof. */
+function floorAt(map: MLMap, ll: LngLat): number {
+  return Math.max((map.queryTerrainElevation(ll) ?? 0) + GROUND_CLEAR_M, roofUnder(ll) + ROOF_CLEAR_M);
+}
+
 export interface Anchor {
   ll: LngLat;
   /** Rendered height of the point (terrain × exaggeration), metres. */
@@ -120,7 +136,7 @@ export const isGlobe = (map: MLMap) => transform(map)?.isGlobeRendering === true
  * close to the terrain or past a limit, before touching the map.
  */
 function globeMove(map: MLMap, tr: Tr, a: Anchor, px: number, py: number, C: V3, pitch: number, bearing: number, level = false): boolean | null {
-  const clear = (P: V3) => Math.hypot(P[0], P[1], P[2]) - R >= (map.queryTerrainElevation(toLngLat(P)) ?? 0) + 30;
+  const clear = (P: V3) => Math.hypot(P[0], P[1], P[2]) - R >= floorAt(map, toLngLat(P));
   if (!clear(C)) return false;
   let pl = placeGlobe(tr, C, pitch, bearing);
   if (!pl) return null; // no globe camera has this orientation here: caller falls back
@@ -190,8 +206,7 @@ function globeMoveMapLibre(map: MLMap, tr: Tr, a: Anchor, px: number, py: number
     map.panBy([(-ex * J[3] + ey * J[1]) / det, (-ey * J[0] + ex * J[2]) / det], { animate: false });
   }
   const q = map.project(a.ll);
-  const ground = map.queryTerrainElevation(tr.getCameraLngLat()) ?? 0;
-  if (Math.hypot(q.x - px, q.y - py) > 3 || tr.getCameraAltitude() < ground + 30) {
+  if (Math.hypot(q.x - px, q.y - py) > 3 || tr.getCameraAltitude() < floorAt(map, tr.getCameraLngLat())) {
     map.jumpTo(before);
     return false;
   }
@@ -677,9 +692,9 @@ function applyCamera(map: MLMap, m: MercatorCoordinate, bearing: number, pitch: 
   const deg = Math.PI / 180;
   const alt = m.toAltitude();
   const camLL = m.toLngLat();
-  // Clearance above the ground under the camera.
+  // Clearance above the ground (and any roof) under the camera.
   const ground = map.queryTerrainElevation(camLL) ?? 0;
-  if (alt < ground + 30) return false;
+  if (alt < floorAt(map, camLL)) return false;
   const p = Math.min(pitch, 85) * deg, b = bearing * deg;
   let E = Math.min(pivot, alt - Math.max(30, (alt - ground) * 0.25));
   // Below groundPivotZoom the pivot stays at sea level (see there).

@@ -213,6 +213,7 @@ export function applyBuildings(map: MLMap, b: BuildingState, exaggeration: numbe
   map.setFilter(LAYER, extrudedFilter());
   map.setFilter(PICK, extrudedFilter(true));
   tallOf(map).dirty = true;
+  tallOf(map).k = b.on && !flat ? k : 0;
   map.setFilter(FLAT, flatFilter());
   // Lit from the hill-shading's light, low, so the roofs are a little brighter than the walls.
   map.setLight({ anchor: 'map', position: [1.5, ((light % 360) + 360) % 360, 40], intensity: 0.35, color: '#ffffff' });
@@ -271,12 +272,12 @@ type Tall = { f: MapGeoJSONFeature; box: [number, number, number, number] };
 /** Per map: the loaded tiles' footprints of `TALL_DM` or more (the pick layer's), and the tallest
  * (dm; the pipeline's bound until measured): read when the map is idle after the buildings' tiles
  * or filter changed. */
-const talls = new WeakMap<MLMap, { dm: number; dirty: boolean; tall: Tall[] }>();
+const talls = new WeakMap<MLMap, { dm: number; dirty: boolean; tall: Tall[]; roofs: Tall[]; k: number }>();
 
 function tallOf(map: MLMap) {
   let t = talls.get(map);
   if (!t) {
-    t = { dm: TALLEST_DM, dirty: true, tall: [] };
+    t = { dm: TALLEST_DM, dirty: true, tall: [], roofs: [], k: 1 };
     talls.set(map, t);
   }
   return t;
@@ -291,9 +292,13 @@ function watchTall(map: MLMap) {
   map.on('idle', () => {
     if (!t.dirty || !map.getLayer(PICK)) return;
     t.dirty = false;
-    const filter = ['all', map.getFilter(PICK) ?? true, ['>=', ['get', 'h'], TALL_DM]] as FilterSpecification;
+    // The roofs the camera stays above (`roofAt`): those that, drawn, rise more than the camera's
+    // own clearance above the ground could reach (camera3d).
+    const roofDm = Math.floor((ROOF_MIN_M / Math.max(1, t.k)) * 10);
+    const filter = ['all', map.getFilter(PICK) ?? true, ['>=', ['get', 'h'], Math.min(TALL_DM, roofDm)]] as FilterSpecification;
     const seen = new Set<string>();
     t.tall = [];
+    t.roofs = [];
     t.dm = TALL_DM;
     for (const f of map.querySourceFeatures(SOURCE, { sourceLayer: 'b', filter })) {
       if (f.geometry.type !== 'Polygon' && f.geometry.type !== 'MultiPolygon') continue;
@@ -312,10 +317,48 @@ function watchTall(map: MLMap) {
       if (seen.has(key)) continue;
       seen.add(key);
       // (A source's feature as the query's: properties and geometry are what the hover reads.)
-      t.tall.push({ f: f as unknown as MapGeoJSONFeature, box });
+      const x = { f: f as unknown as MapGeoJSONFeature, box };
+      if (h >= roofDm) t.roofs.push(x);
+      if (h < TALL_DM) continue;
+      t.tall.push(x);
       t.dm = Math.max(t.dm, h);
     }
   });
+}
+
+/** The least height (rendered m) of a roof the camera is kept above: under this, its clearance
+ * above the ground already does (camera3d's 30 m, less its 4 m above a roof). */
+const ROOF_MIN_M = 26;
+
+/** The highest roof (rendered metres: its centroid's ground plus its height × the scale) of the
+ * loaded buildings whose footprint holds `ll`, or -Infinity: the camera stays a few metres above it
+ * (camera3d.setRoofs). From the footprints read when the map was last idle (`watchTall`). */
+export function roofAt(map: MLMap, ll: { lng: number; lat: number }): number {
+  const t = talls.get(map);
+  if (!t || !t.k) return -Infinity;
+  let best = -Infinity;
+  for (const { f, box } of t.roofs) {
+    if (ll.lng < box[0] || ll.lng > box[2] || ll.lat < box[1] || ll.lat > box[3]) continue;
+    if (f.geometry.type !== 'Polygon' && f.geometry.type !== 'MultiPolygon') continue;
+    const polys = f.geometry.type === 'Polygon' ? [f.geometry.coordinates] : f.geometry.coordinates;
+    const p = f.properties as Record<string, number>;
+    for (const poly of polys) {
+      if (!inside(poly as Ring[], [ll.lng, ll.lat])) continue;
+      // (MapLibre's centroid: the rings' vertices' mean, the closing ones left out.)
+      let cx = 0, cy = 0, n = 0;
+      for (const ring of poly) {
+        const m = ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1] ? ring.length - 1 : ring.length;
+        for (let i = 0; i < m; i++) {
+          cx += ring[i][0];
+          cy += ring[i][1];
+          n++;
+        }
+      }
+      if (!n) continue;
+      best = Math.max(best, (map.queryTerrainElevation([cx / n, cy / n]) ?? 0) + ((p.h ?? 0) / 10) * t.k);
+    }
+  }
+  return best;
 }
 
 /** A query box on the screen, the least height (dm) a footprint in it needs to reach the ray, and

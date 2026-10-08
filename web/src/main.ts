@@ -29,7 +29,7 @@ import { initHosts } from './hosts';
 import { ferryMetricDef } from './ferry';
 import { cdfOf, passes, scaleU } from './ui/scale';
 import { applyTrees } from './trees';
-import { addBuildings, applyBuildings, buildingAt, hiddenByBuilding, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type Ray } from './buildings';
+import { addBuildings, applyBuildings, buildingAt, hiddenByBuilding, roofAt, setHovered as setBuildingHover, summarise as buildingSummary, switchBuildings, type Ray } from './buildings';
 import { distFromSamples, viewStatsGen, type Dist, type Extreme, type ViewStats } from './roads/stats';
 import { metricOf, modeDef } from './scenic';
 import * as prefs from './prefs';
@@ -210,6 +210,8 @@ async function main() {
   // Depth precision on the globe (see cam3d.tuneDepth): before every frame the camera moved for.
   map.on('move', () => cam3d.tuneDepth(map));
   map.on('load', () => cam3d.tuneDepth(map));
+  // The camera stays a few metres above the 3D buildings' roofs, as above the ground.
+  cam3d.setRoofs((ll) => roofAt(map, ll));
   map.on('terrain', () => cam3d.tuneDepth(map));
 
   // ---- road layer & range animation ----------------------------------------------
