@@ -233,10 +233,12 @@ drawn from its 256 z14 tiles (`pipeline::watercov::Raster`: the area inside each
 coarser tile's pixel the mean of the four under it. A tile one value throughout isn't stored: its
 stored ancestor's pixels over it say which.
 
-Served at `/tiles/water/{z}/{x}/{y}` (z0–18, crates/server/src/water.rs): stored tiles as they are;
-deeper ones drawn from the z14 tiles under or over them as the build draws them. `?c=<sea>,<lake>`
-(hex): an RGBA PNG, the water in those colours (mixed by the two shares) and alpha their sum (at most
-whole); `?raw=1`: an RGB PNG, red the sea's share, green the inland water's.
+Served at `/tiles/water/{z}/{x}/{y}` (z0–18, crates/server/src/water.rs): stored tiles decoded and
+encoded again in the form asked for; deeper ones drawn from the z14 tiles under or over them as the
+build draws them (or, when the basemap can't be read, the nearest stored zoom's scaled up, not to
+be cached). `?c=<sea>,<lake>`
+(hex; anything else a 400): an RGBA PNG, the water in those colours (mixed by the two shares;
+the sea's where there's none) and alpha their sum (at most whole); `?raw=1`: an RGB PNG, red the sea's share, green the inland water's.
 
 ## 3D buildings (pipeline::bld; docs/buildings3d.md §3.4)
 
@@ -424,8 +426,8 @@ agent/pack-idx/         <hash16>.idx: the indexes of the terrain packs the build
 
 - Tiles: `/tiles/{roads,rails,terrain,slope,labels,water,base,buildings}/{z}/{x}/{y}`, `/tiles/trees/{var}/{z}/{x}/{y}`
   (`buildings`: the 3D buildings' MVT as stored, versioned `buildings.tiles` in `/api/meta`).
-  `/api/meta` says `water` when the catalog has the water layer (`versions.water`: its packs' and the
-  basemap's, as deeper tiles are drawn from the basemap).
+  `/api/meta` says `water` when the catalog has the water layer (`versions.water`: the drawing's version,
+  its packs' and the basemap's, as deeper tiles are drawn from the basemap).
   Strong `ETag`: the stored blob's hash, plus the translations versions for named tiles;
   `/tiles/base`'s is a hash of the catalog's basemap archives' content names and the tile's z/x/y, plus
   the names version (a 304 reads no archive); terrain

@@ -839,8 +839,8 @@ and lakes went missing, and a district of ponds disappeared. The water layer (`p
 gives each pixel its exact share of water at every zoom, sea and inland water apart. The map draws
 it as a raster at the screen's density, so a tilted view, 3D terrain and the globe treat it as
 they treat any raster.
-- **The water** is the basemap's own at its deepest zoom, z14: simplified by 0.1 px of a 256-px
-  z14 tile (about 0.25 m), nothing over 1/256 px² left out. The sea is OpenMapTiles' class `ocean`
+- **The water** is the basemap's own at its deepest zoom, z14: simplified by 0.0625 px of a 256-px
+  z14 tile (one unit of its 4,096, about 0.6 m at the equator), nothing over 1/256 px² left out. The sea is OpenMapTiles' class `ocean`
   (the pinned water polygons), the rest inland. Water in tunnels is left out, as the map leaves
   it out.
 - **Coverage is exact:** a pixel gets the area of that water inside its square
@@ -864,7 +864,10 @@ they treat any raster.
   - a tile not stored takes its stored ancestor's value over it;
   - a stored zoom whose pack can't be read (offline, or let go by the mirror) is drawn from the
     basemap at z9 (1,024 z14 tiles);
-  - drawn tiles are kept (192, about 0.5 MB each), and at most 4 are drawn at once;
+  - drawn tiles are kept (192, about 0.5 MB each); at most 4 are drawn at once, on 4 threads of
+    their own (not the queries' pool), a draw the map stopped waiting for still kept, and stored
+    tiles never wait for draws; the open sea's z14 tile, shared by thousands, is drawn once (at
+    most 4,096 such kept, by archive and offset);
   - a tile drawn here reading the basemap from the NAS (2026-10-08, this Mac): z10 70–200 ms,
     z11 25–185 ms, z12 20–45 ms, z13 30–250 ms (the first in an area), z14–16 2–3 ms; one kept,
     2 ms.
@@ -2055,10 +2058,16 @@ At each phase's end an Opus agent reviews the work against this plan.
 
 6. **The water's deeper zooms need the basemap** (§6, Water): z10 and deeper are drawn by the
    server from the basemap's z14 tiles, so a Mac away from the NAS draws them only when its mirror
-   has the basemap (kept while any area is, §4 Mirror); without it, the water shows to z8 (its
-   root and lo packs are essentials), z9 where a kept area's hi packs are, and nothing deeper.
-   Fix, if it's wanted: the vector water polygons as the fallback there.
-7. **The water near the camera in steep 3D terrain, before the view first moves** (§6, Water):
+   has the basemap (kept while any area is, §4 Mirror). Without it, the server answers with the
+   nearest stored zoom's water over the tile, scaled up (z8 from the essentials' lo packs, z9 where
+   a kept area's hi packs are), not to be cached, so nothing fails and nothing is asked for again;
+   the coastal shading leaves out a neighbouring tile it can't have. The shores are then z8's or
+   z9's, blurred close up. Fix, if it's wanted: keep the basemap's water polygons where it's away.
+7. **The pass's `water` set serves only the shoreline check** (§6, Water): about 6 GB on the NAS a
+   pass and its share of `pass-sets` (65 min over the LAN for this set), for a reference read apart
+   from the basemap. Dropping it from `osmpass::SETS` would leave the check to build its store from
+   the basemap's own z14 tiles (then not an independent reference).
+8. **The water near the camera in steep 3D terrain, before the view first moves** (§6, Water):
    MapLibre works out a source's tiles as the camera moves, culling with the elevations it has
    then; tilted at z14–15 over the Highlands with 3D terrain, the water's tiles on the slopes
    nearest the camera were left out and not asked for until the camera moved (a no-op `jumpTo`

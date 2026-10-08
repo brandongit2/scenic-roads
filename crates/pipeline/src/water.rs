@@ -3,7 +3,8 @@
 //!
 //! The basemap (Planetiler's OpenMapTiles profile) simplifies its water and leaves small polygons
 //! out zoomed out, and below z6 has only Natural Earth's. Its z14 tiles have everything (simplified
-//! by 0.1 px of a 256-px z14 tile, about 0.25 m; nothing over 1/256 px² left out). Here each
+//! by 0.0625 px of a 256-px z14 tile, one unit of its 4,096, about 0.6 m at the equator; nothing
+//! over 1/256 px² left out). Here each
 //! output pixel gets the area of that water inside it over its own (watercov::Raster: exact,
 //! however small the water), so a tile of any zoom shows the shore exactly as the full detail
 //! would, anti-aliased, and a district of ponds too small to draw one by one reads by how much of
@@ -42,8 +43,8 @@ pub const STORED_MAXZ: u8 = 9;
 /// The deepest zoom served (deeper, the map overzooms it): 0.3 m a pixel, past the basemap's
 /// detail.
 pub const MAXZ: u8 = 18;
-/// The Planetiler whose z14 water this takes as full detail (simplified by 0.0625 px of a z14 tile,
-/// nothing over 1/256 px² left out), checked against the shoreline check's reference
+/// The Planetiler whose z14 water this takes as full detail (simplified by 0.0625 px of a 256-px z14
+/// tile, one unit of its 4,096, about 0.6 m at the equator; nothing over 1/256 px² left out), checked against the shoreline check's reference
 /// (tools/coastcheck: 0.0002–0.002 mean difference at z14, 2026-10-08). The pass stops on another
 /// one's jar (pipeline::osmpass::check_planetiler) until it's checked again.
 pub const PLANETILER_VERSION: &str = "0.10.2";
@@ -292,17 +293,36 @@ fn draw(w: &TileWater, sea: &mut Raster, inland: &mut Raster, ox: f64, oy: f64, 
 
 // ---- drawing a tile ---------------------------------------------------------------------------------
 
-/// A basemap tile as stored, with a key for the bytes (tiles with the same bytes share it: the
-/// open sea's), or none.
+/// A basemap tile as stored, with a key for its bytes: the same key only for the same bytes (the
+/// open sea's tile, shared by thousands), across archives too (a key names its archive: it outlives
+/// none of them in `Blocks`).
 pub struct Stored {
     pub key: u64,
     pub bytes: Arc<Vec<u8>>,
 }
 
 /// The z14 tiles' water drawn at some size, where it's one value throughout (the open sea's tile,
-/// shared by thousands): by (key, size).
+/// shared by thousands): by (key, size). At most `BLOCKS_KEPT`: past that, emptied (the few that
+/// matter come back at once).
 #[derive(Default)]
 pub struct Blocks(Mutex<HashMap<(u64, usize), (f32, f32)>>);
+
+/// The most `Blocks` keeps.
+pub const BLOCKS_KEPT: usize = 4096;
+
+impl Blocks {
+    fn get(&self, k: (u64, usize)) -> Option<(f32, f32)> {
+        self.0.lock().unwrap().get(&k).copied()
+    }
+
+    fn put(&self, k: (u64, usize), v: (f32, f32)) {
+        let mut m = self.0.lock().unwrap();
+        if m.len() >= BLOCKS_KEPT {
+            m.clear();
+        }
+        m.insert(k, v);
+    }
+}
 
 /// Tile z/x/y's coverage (z ≥ 5), from the z14 tiles under it or the one over it: `get(x, y)`, the
 /// z14 tile's water in each of the basemap's archives that has it (summed, as abutting water).
@@ -333,7 +353,7 @@ pub fn cover(z: u8, x: u32, y: u32, get: &(dyn Fn(u32, u32) -> Result<Vec<Stored
             let tiles = get(cx, cy)?;
             // A tile shared by many (the open sea's): drawn once.
             let key = (tiles.len() == 1).then(|| (tiles[0].key, side));
-            if let Some((s, i)) = key.and_then(|k| blocks.0.lock().unwrap().get(&k).copied()) {
+            if let Some((s, i)) = key.and_then(|k| blocks.get(k)) {
                 return Ok((vec![s; side * side], vec![i; side * side]));
             }
             let (mut s, mut i) = (Raster::new(side, side), Raster::new(side, side));
@@ -343,7 +363,7 @@ pub fn cover(z: u8, x: u32, y: u32, get: &(dyn Fn(u32, u32) -> Result<Vec<Stored
             let (s, i) = (s.coverage(), i.coverage());
             if let Some(k) = key {
                 if s.iter().all(|&v| v == s[0]) && i.iter().all(|&v| v == i[0]) {
-                    blocks.0.lock().unwrap().insert(k, (s[0], i[0]));
+                    blocks.put(k, (s[0], i[0]));
                 }
             }
             Ok((s, i))
@@ -681,6 +701,17 @@ mod tests {
         assert!(back.sea.iter().zip(&p.sea).all(|(a, b)| byte(*a) == byte(*b)));
         assert_eq!(p.png(), p.png());
         assert_eq!(combine(&[Node::Uniform(3, 4), Node::Uniform(3, 4), Node::Uniform(3, 4), Node::Uniform(3, 4)]), Node::Uniform(3, 4));
+    }
+
+    #[test]
+    fn the_blocks_kept_are_capped() {
+        let b = Blocks::default();
+        for k in 0..BLOCKS_KEPT as u64 + 10 {
+            b.put((k, 32), (1.0, 0.0));
+        }
+        assert!(b.0.lock().unwrap().len() <= BLOCKS_KEPT);
+        assert_eq!(b.get((BLOCKS_KEPT as u64 + 9, 32)), Some((1.0, 0.0)));
+        assert_eq!(b.get((BLOCKS_KEPT as u64 + 9, 16)), None);
     }
 
     #[test]

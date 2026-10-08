@@ -3126,6 +3126,9 @@ fn water_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
             Some((x.parse().ok()?, y.parse().ok()?))
         }).collect()
     });
+    // (A part of the world isn't a layer: its packs would stand in for the whole one's, the rest of
+    // the world and z0–4 gone.)
+    anyhow::ensure!(only.is_none() || opt(args, "--archive").is_some(), "water: --only makes part of the layer: give --archive too (nothing written to the NAS)");
     let parts = Parts(&["Reading the basemap's z14 directory", "Drawing the water", "Cutting it into packs"]);
     parts.start(0);
     let pm = store::pmtiles::PmTiles::open(Box::new(store::range::PlainFile::open(&basemap).with_context(|| format!("open {}", basemap.display()))?))?;

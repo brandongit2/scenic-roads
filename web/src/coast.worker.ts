@@ -119,7 +119,12 @@ async function paintCoverage(z: number, x: number, y: number, lakes: boolean) {
       const tx = (((x + dx) % n) + n) % n;
       jobs.push((async () => {
         const r = await fetch(cov.replace('{z}', String(z)).replace('{x}', String(tx)).replace('{y}', String(ty)));
-        if (!r.ok) throw new Error(`coverage tile ${z}/${tx}/${ty}: HTTP ${r.status}`);
+        // (A neighbour that can't be had is left out: its shore, just past the tile's edge, is
+        // missed rather than the whole tile failing.)
+        if (!r.ok) {
+          if (dx === 0 && dy === 0) throw new Error(`coverage tile ${z}/${tx}/${ty}: HTTP ${r.status}`);
+          return;
+        }
         const img = await createImageBitmap(await r.blob());
         const c = new OffscreenCanvas(SIZE, SIZE), g = c.getContext('2d')!;
         g.drawImage(img, 0, 0);

@@ -261,6 +261,9 @@ fn first_peak(step: &str) -> u64 {
         "trees-lo" => 500,
         "slope" => 2000,
         "peaks" => 2500,
+        // (The worldwide water: its z14 directory and stored tiles held, 7.7 GB at most measured,
+        // 2026-10-08.)
+        "water" => 8192,
         _ => 1500,
     }
 }
@@ -2698,7 +2701,7 @@ impl Agent {
         };
         // Per pass, worldwide: the sets it lacks in their current filters (a set added or changed
         // since it ran), the hiking routes' ends, AWS's z8 (once), Overture's buildings (once per
-        // release), the summits, the labels, the small islands and lakes.
+        // release), the summits, the labels, the water.
         if let Some(date) = pass {
             let p = vec!["--pass".to_string(), date.to_string()];
             if !crate::osmpass::SETS.iter().all(|st| manifest.contains_key(&crate::osmpass::set_name(date, st.0))) {

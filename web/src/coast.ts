@@ -8,7 +8,7 @@
 // the ground does. Draped on the terrain like the water itself.
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
-import { BASEMAP_MAXZOOM, setWaterColours, waterTiles, waterTilesOn } from './basemap';
+import { BASEMAP_MAXZOOM, lakeColour, setWaterColours, waterTiles, waterTilesOn } from './basemap';
 import type { WaterLook } from './state';
 import type { CoastMessage, CoastResponse } from './coast.worker';
 
@@ -109,7 +109,7 @@ let rampKey = '';
  */
 export function applyWater(map: MLMap, w: WaterLook, input: () => CoastInput, waterShown: boolean) {
   const c = rgb(w.colour);
-  const lake = hexOf([c[0] + 3, c[1] + 4, c[2] + 5]), river = hexOf([c[0] + 5, c[1] + 10, c[2] + 13]);
+  const lake = lakeColour(w.colour), river = hexOf([c[0] + 5, c[1] + 10, c[2] + 13]);
   if (waterTilesOn()) {
     // The water's tiles carry their colours: asked for again in the new ones.
     setWaterColours(w.colour, lake);

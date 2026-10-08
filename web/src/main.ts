@@ -6,7 +6,7 @@ import mlWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import './style.css';
 import { getProfile, getRoadWays, getWay, keepable, onVersions, peekWay, roadWays, setVersions, ver, version, type Drive, type Meta, type Profile, type Ride } from './api';
 import { displayName, displayOf, lineName } from './names';
-import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, labelTilesOn, ovTilesOn, waterTilesOn, stationTilesOn, versionedTiles } from './basemap';
+import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, lakeColour, setWaterColours, labelTilesOn, ovTilesOn, waterTilesOn, stationTilesOn, versionedTiles } from './basemap';
 import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
 import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, summariseFeature, withDetails } from './overlays';
@@ -136,6 +136,8 @@ async function main() {
   const v = store.s.view;
   // (Eval mode: the map fills the window, the panels under it.)
   if (EVAL) document.getElementById('map')!.style.cssText = 'position:fixed;inset:0;z-index:1000';
+  // (The water's tiles carry its colours: the user's from the start, so they're fetched once.)
+  setWaterColours(store.s.water.colour, lakeColour(store.s.water.colour));
   const map = new maplibregl.Map({
     container: 'map',
     style: baseStyle(!!meta.labelTiles, store.s.labelDensity, !!meta.ovTiles, !!meta.stationTiles, !!meta.water),

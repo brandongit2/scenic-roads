@@ -189,6 +189,9 @@ export const waterTilesOn = () => WATER_TILES;
 /** The water's colours in its tiles: the sea's and the lakes' (coast.ts applyWater sets them). */
 let waterColours = ['#0c1622', '#0f1a27'];
 export const setWaterColours = (sea: string, lake: string) => (waterColours = [sea, lake]);
+/** The lakes' colour for a water colour: a shade lighter. */
+export const lakeColour = (sea: string): string =>
+  `#${[1, 3, 5].map((i, k) => Math.min(255, parseInt(sea.slice(i, i + 2), 16) + [3, 4, 5][k]).toString(16).padStart(2, '0')).join('')}`;
 /** The water's tiles, in its colours. */
 export const waterTiles = (): string =>
   `${hostFor('base')}/tiles/water/{z}/{x}/{y}?c=${waterColours.map((c) => c.replace('#', '')).join(',')}${ver('water').replace('?', '&')}`;
@@ -201,8 +204,6 @@ export const coastInput = () => ({ tiles: basemapTiles(), cov: WATER_TILES ? wat
  * 2×), and their deepest zoom (the server's; the map overzooms past it). */
 export const WATER_TILE_SIZE = 256;
 export const WATER_MAXZOOM = 18;
-/** The land: the map's background. */
-export const LAND = '#0b0e13';
 
 /** Labels thinned to the label spacing (Layers → Map → Label density): the place, water and park
  * labels from our label tiles (the landmarks' and stations' are set with their layers). */
