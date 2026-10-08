@@ -947,6 +947,10 @@ pub const SEAM_OUT: f32 = 100.0;
 /// a z9 pixel at 60°N), while the tower AWS's interpolation leaves where a missing-data marker
 /// meets the sea reaches 6,097 m off Yakutat, 6 km over its neighbours.
 pub const SEAM_LONE: f32 = 1000.0;
+/// How many pixel widths out of every pixel beside it a needle stands (`seam_spikes`): 2.5, 68°
+/// all round over a pixel; no ground stands so (the St. Elias's 81° cone, 1,204 m, is 115 m over
+/// the z12 pixel beside its top).
+pub const NEEDLE_OUT: f32 = 2.5;
 /// The most pixels such a lone seam spike may have.
 pub const SEAM_LONE_MAX: usize = 16;
 /// How far below the ground beside it a ringing's pit is (m: its eight neighbours but other pits):
@@ -975,7 +979,8 @@ pub const SEAM_MIN_Z: u8 = 9;
 /// and a pit to sea level or below, SEAM_PIT under the pixels beside it (a resampling's ringing),
 /// SEAM_CLUSTER_MAX pixels at most; or when it's small (SEAM_LONE_MAX), on the sea's edge (within
 /// two pixels of a pixel at 1 m or less) and a tower in it stands SEAM_LONE out of the pixels
-/// beside it. (A narrow fjord or canyon at z9 is a pit between towers by the 5 × 5 median, but its
+/// beside it; or when it's small and a tower in it stands NEEDLE_OUT pixel widths and SEAM_TOWER
+/// out of every pixel beside it (a needle no ground makes). (A narrow fjord or canyon at z9 is a pit between towers by the 5 × 5 median, but its
 /// towers are mountains, never so far out of the pixel beside them.) Each of its
 /// pixels is clamped into the range of the pixels around it that aren't candidates (their middle
 /// half, ring by ring out to four pixels until there are eight): its neighbours on both
@@ -983,10 +988,11 @@ pub const SEAM_MIN_Z: u8 = 9;
 /// ground's range. It runs after the blobs' rules (repair_terrain_with), on what they left: the
 /// towers and pits that neighbouring spikes' roughness let stand, only shortened. Returns the
 /// pixels changed (by more than half a metre).
-pub fn seam_spikes(t: &mut [f32], z: u8) -> usize {
+pub fn seam_spikes(t: &mut [f32], z: u8, lat: f64) -> usize {
     if z < SEAM_MIN_Z {
         return 0;
     }
+    let px = (40_075_016.7 * lat.to_radians().dcos() / ((1u64 << z) as f64 * TS as f64)) as f32;
     let w = TS as i32;
     let ok = |v: f32| v.is_finite() && (MIN_ELEV..=MAX_ELEV).contains(&v);
     // Candidates: out of their 5 × 5 median by more than SEAM_OUT (+1 a tower, −1 a pit).
@@ -1077,13 +1083,30 @@ pub fn seam_spikes(t: &mut [f32], z: u8) -> usize {
         let pit = members.iter().any(|&p| cand[p] < 0 && orig[p] <= 1.0 && out_of(p, -1).is_some_and(|d| d > SEAM_PIT));
         let ringing = tower && pit && members.len() <= SEAM_CLUSTER_MAX;
         // Or a tower alone, SEAM_LONE out of the ground beside it (no ground is so steep), by the sea.
-        let lone = !ringing && members.len() <= SEAM_LONE_MAX && members.iter().any(|&p| cand[p] > 0 && out_of(p, 1).is_some_and(|d| d > SEAM_LONE)) && members.iter().any(|&p| {
+        // Or a needle: a tower NEEDLE_OUT pixel widths (and SEAM_TOWER) out of every pixel beside
+        // it, towers too (Maryland's 880 m at z9 once its pit is made from the finer tiles).
+        let needle = members.len() <= SEAM_LONE_MAX && members.iter().any(|&p| {
+            if cand[p] <= 0 {
+                return false;
+            }
+            let (x, y) = ((p % TS) as i32, (p / TS) as i32);
+            let mut most = f32::MIN;
+            for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+                let (a, b) = (x + dx, y + dy);
+                if a < 0 || b < 0 || a >= w || b >= w || !ok(orig[(b * w + a) as usize]) {
+                    return false;
+                }
+                most = most.max(orig[(b * w + a) as usize]);
+            }
+            orig[p] - most > SEAM_TOWER.max(NEEDLE_OUT * px)
+        });
+        let lone = !ringing && (needle || members.len() <= SEAM_LONE_MAX && members.iter().any(|&p| cand[p] > 0 && out_of(p, 1).is_some_and(|d| d > SEAM_LONE)) && members.iter().any(|&p| {
             let (x, y) = ((p % TS) as i32, (p / TS) as i32);
             (-2..=2).any(|dy| (-2..=2).any(|dx| {
                 let (a, b) = (x + dx, y + dy);
                 a >= 0 && b >= 0 && a < w && b < w && cand[(b * w + a) as usize] == 0 && orig[(b * w + a) as usize] <= 1.0
             }))
-        });
+        }));
         if !(ringing || lone) {
             continue;
         }
@@ -1310,7 +1333,7 @@ pub fn repair_terrain_with(t: &mut [f32], z: u8, lat: f64, coarse: Option<&[f32]
     let mut all = Vec::new();
     for round in 0..8 {
         let (r, b) = repair_terrain_blobs(t, z, lat);
-        let seam = seam_spikes(t, z);
+        let seam = seam_spikes(t, z, lat);
         let patches = coarse.map_or(0, |c| walled_patches(t, z, c));
         if round == 0 {
             total = r;
@@ -2346,28 +2369,36 @@ mod repair_tests {
         // pixel beside it.
         let mut t = tile(|x, _| ((x - 128.0).abs() * 400.0).min(1600.0));
         let before = t.clone();
-        assert_eq!(seam_spikes(&mut t, 9), 0);
+        assert_eq!(seam_spikes(&mut t, 9, 50.0), 0);
         assert_eq!(t, before);
         // A canyon 300 m deep a pixel wide in a plateau at 1,200 m, meandering (Glen Canyon at z9).
         let mut c = tile(|x, y| if (x - 128.0 - 6.0 * (y * 0.2).sin()).abs() < 0.6 { 900.0 } else { 1200.0 });
         let before = c.clone();
-        assert_eq!(seam_spikes(&mut c, 9), 0);
+        assert_eq!(seam_spikes(&mut c, 9, 37.0), 0);
         assert_eq!(c, before);
-        // A sea stack of 250 m a pixel wide (z12), and an island's top of 900 m at z9: towers alone
-        // by the sea, but not SEAM_LONE out of the pixel beside them.
+        // A sea stack of 250 m a pixel wide (z12), and an island's top of 900 m at z9 (its
+        // shoulders 600 m, a pixel of 160 m away: 62°): towers alone by the sea, but not SEAM_LONE out
+        // of the pixel beside them, nor so steep as a needle.
         let mut s = vec![-5f32; TS * TS];
         s[100 * TS + 100] = 250.0;
+        let before = s.clone();
+        assert_eq!(seam_spikes(&mut s, 12, 58.0), 0);
+        assert_eq!(s, before);
         s[50 * TS + 50] = 900.0;
         for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-            s[((50 + dy) * TS as i32 + 50 + dx) as usize] = 300.0;
+            s[((50 + dy) * TS as i32 + 50 + dx) as usize] = 600.0;
         }
         let before = s.clone();
-        assert_eq!(seam_spikes(&mut s, 12), 0);
-        assert_eq!(seam_spikes(&mut s, 9), 0);
+        assert_eq!(seam_spikes(&mut s, 9, 58.0), 0);
         assert_eq!(s, before);
+        // Maryland's tower once its pit is made from the finer tiles (130 m): a needle, taken.
+        let mut m = aws(&MARYLAND_Z9, 150.0);
+        m[(100 + 7) * TS + 100 + 6] = 130.0;
+        assert!(seam_spikes(&mut m, 9, 39.6) > 0);
+        assert!(at(&m, 7, 7) <= 200.0, "{}", at(&m, 7, 7));
         // Coarser than z9: never weighed.
         let mut m = aws(&MARYLAND_Z9, 150.0);
-        assert_eq!(seam_spikes(&mut m, 8), 0);
+        assert_eq!(seam_spikes(&mut m, 8, 39.6), 0);
     }
 
     /// What AWS's z9 tile over a z12 tile shows: the means of its 8 × 8 blocks.
