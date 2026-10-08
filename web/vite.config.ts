@@ -193,8 +193,20 @@ const maplibreExtrusionFog = () =>
 // In development the Rust backend serves data; Vite serves the app with HMR.
 const backend = 'http://127.0.0.1:8080';
 
+/**
+ * The water's raster (layer `water`, basemap.ts) minified between its two nearest mipmap levels
+ * (trilinear) rather than from the nearer one: shrunk 1.3× its tiles took their own level and
+ * shrunk 1.5× the half as fine, so the small lakes' look jumped at each half zoom (task #123,
+ * tools/coastcheck --screen's jump). Every other raster as before.
+ */
+const maplibreWaterMip = () =>
+  maplibrePatch('maplibre-water-mip', [
+    ['x=n.paint.get(`raster-fade-duration`),S=!!e.style.map.terrain;for(let C of r){', 'x=n.paint.get(`raster-fade-duration`),S=!!e.style.map.terrain,MIP=n.id===`water`?m.LINEAR_MIPMAP_LINEAR:m.LINEAR_MIPMAP_NEAREST;for(let C of r){', 1],
+    ['(b,m.CLAMP_TO_EDGE,m.LINEAR_MIPMAP_NEAREST)', '(b,m.CLAMP_TO_EDGE,MIP)', 3],
+  ]);
+
 export default defineConfig({
-  plugins: [maplibreTerrainVisibility(), maplibreSlopeColours(), maplibreGlobePrecision(), maplibreBuildingFeet(), maplibreExtrusionFog()],
+  plugins: [maplibreTerrainVisibility(), maplibreSlopeColours(), maplibreGlobePrecision(), maplibreBuildingFeet(), maplibreExtrusionFog(), maplibreWaterMip()],
   server: {
     port: 5173,
     proxy: { '/api': backend, '/tiles': backend, '/fonts': backend },
