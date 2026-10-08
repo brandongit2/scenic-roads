@@ -63,14 +63,16 @@
 //!
 //! The owner's room target (`Target`: `scenic room <GB>`, the menu bar's Disk Room; `toward`): the
 //! free space this Mac's agent keeps, set at any moment, in its folder (each Mac's disk is its own).
-//! While the disk is short of it and no job runs here, the agent frees its caches toward it, on a
-//! thread of its own as a trim's, whether or not the build has work left: the cheap caches by
-//! room-making's rules and order (the canopy squares too), then a clear's others, the cheapest to
-//! fill again first (`TOWARD_ORDER`: copies of the NAS's files, the base packs a file at a time, the
-//! least recently used first, the DEM seed whole, the heritage clip last), each only as far as
-//! needed. A job starts only with the target free past its own room (room-making makes both), so
-//! nothing a job copies back crosses it: the jobs wait, saying why, until it's lowered or off. It
-//! never deletes what a job uses: only while none runs.
+//! A job starts only with the target free past its own room, so nothing a job copies back crosses
+//! it; the jobs wait, saying why, until it's lowered or off (the daily backup and GC keep none).
+//! While no job runs here and the disk is short of the target, or of the room a job waiting for it
+//! needs past it, the agent frees its caches toward that on a thread of its own as a trim's,
+//! whether or not the build has work left: the cheap caches by room-making's rules and order (the
+//! canopy squares too), then a clear's others, the cheapest to fill again first (`TOWARD_ORDER`:
+//! copies of the NAS's files, the base packs a file at a time, the least recently used first, the
+//! DEM seed whole, the heritage clip last, and only while it can be made again:
+//! `heritage_remade`), each only as far as needed, the goal read again as it goes (lowered or
+//! off: it stops). It never deletes what a job uses: only while none runs.
 //!
 //! Nothing goes through a link: a folder or file of the cache that's a link, at any depth (`walk`;
 //! crate::rawpack's packer passes them over too), or a folder in the NAS's project folder by its
@@ -395,7 +397,7 @@ pub fn trim(cache: &Path, sources: &Path, spare: &dyn Fn(&Path) -> bool) -> Resu
     if !cache.is_dir() {
         return Ok(Freed::default());
     }
-    let freed = free_cheap(cache, sources, u64::MAX, u64::MAX, &disk_free, spare)?;
+    let freed = free_cheap(cache, sources, u64::MAX, u64::MAX, &disk_free, spare, None)?;
     Ok(Freed { freed, left: cheap_left(cache, sources.parent(), spare), ..Default::default() })
 }
 
@@ -408,7 +410,7 @@ pub fn clear(cache: &Path, sources: &Path) -> Result<Freed> {
     if !cache.is_dir() {
         return Ok(Freed::default());
     }
-    let mut freed = free_cheap(cache, sources, u64::MAX, u64::MAX, &disk_free, &|_| false)?;
+    let mut freed = free_cheap(cache, sources, u64::MAX, u64::MAX, &disk_free, &|_| false, None)?;
     let mut left = cheap_left(cache, sources.parent(), &|_| false);
     let seed_whole = seed_whole(sources);
     let mut others: Vec<(PathBuf, &str)> = std::fs::read_dir(cache).into_iter().flatten().flatten().filter_map(|e| Some((e.path(), kind(&e.file_name().to_string_lossy()).filter(|k| !cheap(k))?))).collect();
@@ -421,7 +423,7 @@ pub fn clear(cache: &Path, sources: &Path) -> Result<Freed> {
             continue;
         }
         let bytes = bytes_under(&p);
-        if k == "dem" && !seed_whole && !crate::whole::is_tmp(&p) {
+        if (k == "dem" && !seed_whole && !crate::whole::is_tmp(&p)) || (k == "heritage" && !heritage_remade(sources.parent(), &p)) {
             left += bytes;
             continue;
         }
@@ -475,10 +477,14 @@ pub fn set_target(home: &Path, bytes: Option<u64>, by: &str) -> Result<Option<Ta
     Ok(Some(t))
 }
 
-/// This Mac's disk room target, when one is set (one that doesn't parse, or of 0 bytes, is none).
+/// This Mac's disk room target, when one is set (one that doesn't parse, or of 0 bytes, is none;
+/// one past `MAX_TARGET` is that).
 pub fn target(home: &Path) -> Option<Target> {
-    std::fs::read(home.join(TARGET)).ok().and_then(|b| serde_json::from_slice::<Target>(&b).ok()).filter(|t| t.bytes > 0)
+    std::fs::read(home.join(TARGET)).ok().and_then(|b| serde_json::from_slice::<Target>(&b).ok()).filter(|t| t.bytes > 0).map(|t| Target { bytes: t.bytes.min(MAX_TARGET), ..t })
 }
+
+/// The largest target (1 PB: a hand-edited file's past any disk), so sums with it can't overflow.
+pub const MAX_TARGET: u64 = 1 << 50;
 
 /// The disk room target as the agent's status says it (`Caches::room`): the target, the disk's
 /// free space when the status was written, and the last time the agent freed its caches toward it
@@ -502,24 +508,42 @@ pub struct RoomView {
 /// NAS; the DEM seed, 9 GB; the heritage jobs' planet clip, an hour of osmium, last).
 const TOWARD_ORDER: [&str; 4] = ["copies", "base", "dem", "heritage"];
 
-/// Frees this Mac's build caches at `cache` until the disk has `target` free (the owner's room
-/// target): the cheap caches first, by room-making's rules and in its order (each file once the
-/// NAS's `sources` has it; the canopy squares too), then the others a clear empties
-/// (`TOWARD_ORDER`), only as far as needed: the base packs a file at a time, the least recently
-/// used first; the others whole (the DEM seed only while the NAS has it whole, its files together).
-/// Only while no job runs here (the agent's to see to). What it freed, and when it falls short,
-/// what stays of what it may free.
-pub fn toward(cache: &Path, sources: &Path, target: u64) -> Result<Freed> {
-    toward_with(cache, sources, target, &disk_free)
+/// Whether the heritage jobs' clip of the planet at `p` (`heritage-merged-<date>-<cover>.osm.pbf`)
+/// can be made again: the NAS's build manifest (under `root`) names the pass's filtered planet of
+/// its date (`sources/osm/<date>/filtered`, what scenic-build's merged_over_cover clips), and it's
+/// there. A temporary one is no use either way.
+fn heritage_remade(root: Option<&Path>, p: &Path) -> bool {
+    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if name.contains(".tmp") {
+        return true;
+    }
+    let Some(date) = name.strip_prefix("heritage-merged-").and_then(|r| r.get(..10)) else { return false };
+    let Some(root) = root else { return false };
+    let m: BTreeMap<String, String> = std::fs::read(root.join("state/build/manifest.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    m.get(&format!("sources/osm/{date}/filtered")).is_some_and(|c| root.join(c).is_file())
 }
 
-fn toward_with(cache: &Path, sources: &Path, target: u64, free_space: &dyn Fn(&Path) -> std::io::Result<u64>) -> Result<Freed> {
-    if !cache.is_dir() || free_space(cache)? >= target {
+/// Frees this Mac's build caches at `cache` until the disk has `goal()` free (the owner's room
+/// target, or what a job held by it needs past it; read again as it goes, so a target lowered or
+/// cleared midway (0) stops it): the cheap caches first, by room-making's rules and in its order
+/// (each file once the NAS's `sources` has it; the canopy squares too), then the others a clear
+/// empties (`TOWARD_ORDER`), only as far as needed: the base packs a file at a time, the least
+/// recently used first; the others whole (the DEM seed only while the NAS has it whole, its files
+/// together; the heritage clip only while the pass's filtered planet it's clipped from is there).
+/// Only while no job runs here (the agent's to see to). What it freed, and when it falls short,
+/// what stays of what it may free.
+pub fn toward(cache: &Path, sources: &Path, goal: std::sync::Arc<std::sync::atomic::AtomicU64>) -> Result<Freed> {
+    toward_with(cache, sources, &|| goal.load(std::sync::atomic::Ordering::Relaxed), &disk_free)
+}
+
+fn toward_with(cache: &Path, sources: &Path, goal: &dyn Fn() -> u64, free_space: &dyn Fn(&Path) -> std::io::Result<u64>) -> Result<Freed> {
+    let first = goal();
+    if !cache.is_dir() || free_space(cache)? >= first {
         return Ok(Freed::default());
     }
-    let mut freed = free_cheap(cache, sources, target, target, free_space, &|_| false)?;
+    let mut freed = free_cheap(cache, sources, first, first, free_space, &|_| false, Some(goal))?;
     let root = sources.parent();
-    let enough = || free_space(cache).map(|f| f >= target);
+    let enough = || free_space(cache).map(|f| f >= goal());
     let whole_seed = seed_whole(sources);
     let mut left = 0;
     let mut short = !enough()?;
@@ -531,7 +555,7 @@ fn toward_with(cache: &Path, sources: &Path, target: u64, free_space: &dyn Fn(&P
         entries.sort();
         // The base packs a file at a time, the least recently used first (each file of the pack
         // cache is one a round reads, or copies again); the free space measured again once what
-        // was short is deleted, or every 2 GB (as room-making's `Room`).
+        // was short is deleted, every 2 GB (as room-making's `Room`), or when the goal changes.
         if k == "base" {
             let mut files = Vec::new();
             for e in &entries {
@@ -542,7 +566,8 @@ fn toward_with(cache: &Path, sources: &Path, target: u64, free_space: &dyn Fn(&P
                 }
             }
             files.sort();
-            let (mut since, mut lack) = (0, target.saturating_sub(free_space(cache)?));
+            let mut aim = goal();
+            let (mut since, mut lack) = (0, aim.saturating_sub(free_space(cache)?));
             for (_, len, p) in files {
                 if super::stopping() {
                     break;
@@ -551,13 +576,14 @@ fn toward_with(cache: &Path, sources: &Path, target: u64, free_space: &dyn Fn(&P
                     *freed.entry(k.to_string()).or_default() += len;
                     since += len;
                 }
-                if since >= lack.min(2 << 30) {
+                if since >= lack.min(2 << 30) || goal() != aim {
+                    aim = goal();
                     let free = free_space(cache)?;
-                    if free >= target {
+                    if free >= aim {
                         short = false;
                         break;
                     }
-                    (since, lack) = (0, target - free);
+                    (since, lack) = (0, aim - free);
                 }
             }
             short = short && !enough()?;
@@ -579,10 +605,16 @@ fn toward_with(cache: &Path, sources: &Path, target: u64, free_space: &dyn Fn(&P
         }
         let together = k == "dem";
         for p in entries {
-            if super::stopping() {
+            if super::stopping() || (!together && enough()?) {
+                short = short && !enough()?;
                 break;
             }
             let bytes = bytes_under(&p);
+            // (A heritage clip that can't be made again stays.)
+            if k == "heritage" && !heritage_remade(root, &p) {
+                left += bytes;
+                continue;
+            }
             let gone = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
             if let Err(e) = gone {
                 eprintln!("room: {}: {e}", p.display());
@@ -590,10 +622,6 @@ fn toward_with(cache: &Path, sources: &Path, target: u64, free_space: &dyn Fn(&P
             let after = bytes_under(&p);
             *freed.entry(k.to_string()).or_default() += bytes.saturating_sub(after);
             left += after;
-            if !together && enough()? {
-                short = false;
-                break;
-            }
         }
         short = short && !enough()?;
     }
@@ -601,7 +629,7 @@ fn toward_with(cache: &Path, sources: &Path, target: u64, free_space: &dyn Fn(&P
         left += cheap_left(cache, root, &|_| false);
     }
     freed.retain(|_, b| *b > 0);
-    Ok(Freed { freed, left: if short { left } else { 0 }, target: Some(target), ..Default::default() })
+    Ok(Freed { freed, left: if short { left } else { 0 }, target: Some(first), ..Default::default() })
 }
 
 /// What this Mac's caches hold (`sizes`): what room-making can free, and what a clear would, by
@@ -791,11 +819,12 @@ fn copy_there(p: &Path, dest: &Path, made: &mut HashSet<PathBuf>) -> bool {
 /// `make_room` with the disk's free space from `free_space`: nothing when it has `need`, else
 /// deleting until it has `target`.
 fn make_room_with(cache: &Path, sources: &Path, need: u64, target: u64, free_space: &dyn Fn(&Path) -> std::io::Result<u64>, spare: &dyn Fn(&Path) -> bool) -> Result<u64> {
-    Ok(free_cheap(cache, sources, need, target, free_space, spare)?.values().sum())
+    Ok(free_cheap(cache, sources, need, target, free_space, spare, None)?.values().sum())
 }
 
 /// `make_room_with`'s work: the bytes deleted, by cache (`kind`).
-fn free_cheap(cache: &Path, sources: &Path, need: u64, target: u64, free_space: &dyn Fn(&Path) -> std::io::Result<u64>, spare: &dyn Fn(&Path) -> bool) -> Result<BTreeMap<String, u64>> {
+/// (`goal`: the target as it is now, when it may change midway: room::toward's, the owner's to lower.)
+fn free_cheap(cache: &Path, sources: &Path, need: u64, target: u64, free_space: &dyn Fn(&Path) -> std::io::Result<u64>, spare: &dyn Fn(&Path) -> bool, goal: Option<&dyn Fn() -> u64>) -> Result<BTreeMap<String, u64>> {
     let free = free_space(cache)?;
     if free >= need {
         return Ok(BTreeMap::new());
@@ -841,7 +870,7 @@ fn free_cheap(cache: &Path, sources: &Path, need: u64, target: u64, free_space: 
         (!idle_square, newest)
     });
     let by = if packed > 0 { BTreeMap::from([("terrain".to_string(), packed)]) } else { BTreeMap::new() };
-    let mut room = Room { cache, free_space, target, short: target.saturating_sub(free), since: packed, by };
+    let mut room = Room { cache, free_space, target, goal, short: target.saturating_sub(free), since: packed, by };
     let (mut listed, mut made) = (Listed::new(), HashSet::new());
     for ahead in groups.chunks(LIST_AHEAD) {
         // (Asked to stop: the room made so far does.)
@@ -874,6 +903,9 @@ struct Room<'a> {
     cache: &'a Path,
     free_space: &'a dyn Fn(&Path) -> std::io::Result<u64>,
     target: u64,
+    /// The target as it is now, when it may change midway (`free_cheap`'s `goal`): a change has the
+    /// free space measured again at once.
+    goal: Option<&'a dyn Fn() -> u64>,
     /// What was short of `target` when the free space was last measured, and the bytes deleted
     /// since.
     short: u64,
@@ -886,7 +918,14 @@ impl Room<'_> {
     /// Whether the disk has `target` free: measured again once what was short is deleted, or
     /// every 2 GB (what a file held isn't always what deleting it frees: snapshots keep it).
     fn enough(&mut self) -> Result<bool> {
-        if self.since < self.short.min(2 << 30) {
+        let changed = match self.goal.map(|g| g()) {
+            Some(t) if t != self.target => {
+                self.target = t;
+                true
+            }
+            _ => false,
+        };
+        if !changed && self.since < self.short.min(2 << 30) {
             return Ok(false);
         }
         let free = (self.free_space)(self.cache)?;
@@ -1316,6 +1355,7 @@ mod tests {
         for p in &outside {
             file(p, 100, 60);
         }
+        filtered_planet(&d.path().join("nas"));
         let f = clear(c, nas).unwrap();
         assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 200), ("blobs".to_string(), 1000), ("canopy".to_string(), square), ("copies".to_string(), 200), ("dem".to_string(), 130), ("heritage".to_string(), 100)]));
         assert_eq!(f.left, 100, "the month the NAS lacks");
@@ -1370,6 +1410,8 @@ mod tests {
             file(&nas.join(format!("dem-cache/dem-cache.{n}")), len, 60);
         }
         file(&c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf"), 700, 60);
+        // (The pass's filtered planet it's clipped from, on the NAS.)
+        filtered_planet(&d.path().join("nas"));
         let all = |p: &Path| {
             let mut fs = Vec::new();
             walk(p, &mut fs);
@@ -1380,18 +1422,18 @@ mod tests {
         // the copies (500), then base packs a file at a time, the oldest first, as far as needed:
         // one.
         let disk = move |p: &Path| Ok(held - all(p));
-        let f = toward_with(c, nas, 3500, &disk).unwrap();
+        let f = toward_with(c, nas, &|| 3500, &disk).unwrap();
         assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 2000), ("blobs".to_string(), 1000), ("copies".to_string(), 500)]));
         assert_eq!((f.target, f.left), (Some(3500), 0));
         assert!(!c.join("base/base/6-1-1.0000000000000001.base").exists() && c.join("base/base/6-1-2.0000000000000001.base").exists());
         assert!(c.join("dem-cache.keys.u64").exists() && c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf").exists());
         // A little more: the next base pack.
-        assert_eq!(toward_with(c, nas, 4000, &disk).unwrap().freed, BTreeMap::from([("base".to_string(), 2000)]));
+        assert_eq!(toward_with(c, nas, &|| 4000, &disk).unwrap().freed, BTreeMap::from([("base".to_string(), 2000)]));
         // Already there: nothing goes.
-        assert_eq!(toward_with(c, nas, 3500, &disk).unwrap(), Freed::default());
+        assert_eq!(toward_with(c, nas, &|| 3500, &disk).unwrap(), Freed::default());
         // A target past everything: the DEM seed whole, then the heritage clip; short, and what
         // stays said (nothing here).
-        let f = toward_with(c, nas, u64::MAX, &disk).unwrap();
+        let f = toward_with(c, nas, &|| u64::MAX, &disk).unwrap();
         assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 2000), ("dem".to_string(), 130), ("heritage".to_string(), 700)]));
         assert_eq!(f.left, 0);
         assert!(!c.join("dem-cache.src.u8").exists());
@@ -1400,8 +1442,69 @@ mod tests {
             file(&c.join(format!("dem-cache.{n}")), len, 60);
         }
         std::fs::write(nas.join("dem-cache/dem-cache.src.u8"), b"x").unwrap();
-        let f = toward_with(c, nas, u64::MAX, &disk).unwrap();
+        let f = toward_with(c, nas, &|| u64::MAX, &disk).unwrap();
         assert_eq!((f.bytes(), f.left), (0, 130));
+    }
+
+    /// The pass's filtered planet of 2026-09-28 in the NAS's manifest under `root`, and there.
+    fn filtered_planet(root: &Path) {
+        file(&root.join("sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"), 10, 60);
+        std::fs::create_dir_all(root.join("state/build")).unwrap();
+        std::fs::write(root.join("state/build/manifest.json"), br#"{"sources/osm/2026-09-28/filtered":"sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"}"#).unwrap();
+    }
+
+    #[test]
+    fn the_heritage_clip_stays_while_it_cant_be_made_again() {
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let nas = &d.path().join("nas/sources");
+        std::fs::create_dir_all(nas).unwrap();
+        let clip = c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf");
+        file(&clip, 700, 60);
+        let all = |p: &Path| {
+            let mut fs = Vec::new();
+            walk(p, &mut fs);
+            fs.iter().map(|f| f.1).sum::<u64>()
+        };
+        let disk = move |p: &Path| Ok(700 - all(p));
+        // No manifest naming the planet it's clipped from: kept, by a clear too.
+        let f = toward_with(c, nas, &|| u64::MAX, &disk).unwrap();
+        assert_eq!((f.bytes(), f.left), (0, 700));
+        assert_eq!((clear(c, nas).unwrap().bytes(), clip.exists()), (0, true));
+        // Named, but not there: kept.
+        std::fs::create_dir_all(d.path().join("nas/state/build")).unwrap();
+        std::fs::write(d.path().join("nas/state/build/manifest.json"), br#"{"sources/osm/2026-09-28/filtered":"sources/osm/2026-09-28/filtered.0000000000000001.osm.pbf"}"#).unwrap();
+        assert!(toward_with(c, nas, &|| u64::MAX, &disk).unwrap().freed.is_empty() && clip.exists());
+        // There: it goes.
+        filtered_planet(&d.path().join("nas"));
+        assert_eq!(toward_with(c, nas, &|| u64::MAX, &disk).unwrap().freed.get("heritage"), Some(&700));
+    }
+
+    #[test]
+    fn a_target_lowered_midway_stops_the_freeing() {
+        let d = tempfile::tempdir().unwrap();
+        let c = &d.path().join("cache");
+        let nas = &d.path().join("nas/sources");
+        std::fs::create_dir_all(nas).unwrap();
+        filtered_planet(&d.path().join("nas"));
+        file(&c.join("sources-a/x.pack"), 500, 60);
+        for (i, age) in [(1, 300), (2, 200), (3, 100)] {
+            file(&c.join(format!("base/base/6-1-{i}.0000000000000001.base")), 2000, age);
+        }
+        file(&c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf"), 700, 60);
+        let all = |p: &Path| {
+            let mut fs = Vec::new();
+            walk(p, &mut fs);
+            fs.iter().map(|f| f.1).sum::<u64>()
+        };
+        let held = all(c);
+        // A target past everything, lowered to nothing (off) once the first base pack has gone.
+        let first = c.join("base/base/6-1-1.0000000000000001.base");
+        let goal = || if first.exists() { u64::MAX } else { 0 };
+        let disk = move |p: &Path| Ok(held - all(p));
+        let f = toward_with(c, nas, &goal, &disk).unwrap();
+        assert_eq!(f.freed, BTreeMap::from([("base".to_string(), 2000), ("copies".to_string(), 500)]));
+        assert!(c.join("base/base/6-1-2.0000000000000001.base").exists() && c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf").exists());
     }
 
     #[test]
@@ -1420,7 +1523,7 @@ mod tests {
             fs.iter().map(|f| f.1).sum::<u64>()
         };
         let disk = move |p: &Path| Ok(held - all(p));
-        let f = toward_with(c, nas, 400, &disk).unwrap();
+        let f = toward_with(c, nas, &|| 400, &disk).unwrap();
         assert_eq!(f.freed, BTreeMap::from([("copies".to_string(), 500)]));
         assert!(!c.join("sources-a").exists() && c.join("sources-b/x.pack").exists() && c.join("heritage-merged-2026-09-28-0123456789ab.osm.pbf").exists());
     }
