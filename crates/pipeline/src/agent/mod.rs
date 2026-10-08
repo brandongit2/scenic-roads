@@ -397,13 +397,16 @@ pub struct Status {
 }
 
 /// This Mac in the pool, for the status: its member, its part, what the driver lets it do, the
-/// members it knows, and why it restarts once its first job's slot is free.
+/// members it knows, its jobs' entries the current lead hasn't acknowledged (none: every one is in
+/// its records), and why it restarts once its first job's slot is free.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PoolView {
     pub member: String,
     pub role: pool::Role,
     pub gates: pool::Gates,
     pub members: Vec<String>,
+    #[serde(default)]
+    pub unacked: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart: Option<String>,
 }
@@ -1815,7 +1818,7 @@ impl Agent {
             forecast: if self.o.helper { None } else { self.forecast.borrow().clone() },
             catalog: self.catalog_seen.get(),
             caches: Some(self.caches_view(caches_why, c.home)),
-            pool: self.pool.as_ref().map(|p| PoolView { member: p.side.member().id.clone(), role: p.role, gates: p.gates.clone(), members: p.side.members().iter().cloned().collect(), restart: p.restart.clone() }),
+            pool: self.pool.as_ref().map(|p| PoolView { member: p.side.member().id.clone(), role: p.role, gates: p.gates.clone(), members: p.side.members().iter().cloned().collect(), unacked: p.side.driver().mine().to_tell(p.gates.term).len(), restart: p.restart.clone() }),
         };
         let body = serde_json::to_vec_pretty(&status)?;
         if let Some(sh) = self.shadow.as_mut() {
