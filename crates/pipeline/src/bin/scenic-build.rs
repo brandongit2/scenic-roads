@@ -59,6 +59,12 @@
 //!                                mids
 //!   trees-coverage <Q> --out <file> [--pass d]  the coverage the trees program reads for z3 tile
 //!                                Q (its cov.json), to run it by hand; nothing written to the NAS
+//!   treeblock-task <6/x/y> --row y --out dir [--pass d]  a row of tree cover blocks' task folder as a
+//!                                piece's run cuts it (pipeline::trees::task: out/task/u/), its
+//!                                arguments (out/task.json: the blocks, the canopy squares the NAS
+//!                                has there) and the blocks' tiles as the manifest's packs and mid
+//!                                have them (out/packs/8-x-y/, as `trees --blocks` writes them), for
+//!                                the checks; nothing written to the NAS
 //!   reach [--pass d] [U …]       every unit's reach (pipeline::reach): the boxes of its piece's
 //!                                roads, rail and ferries, owned and all (units named: printed,
 //!                                nothing written)
@@ -447,6 +453,20 @@ fn main() -> Result<()> {
             let q = Unit::parse(&t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))?;
             let f = PathBuf::from(opt(&args, "--out").context("--out <file>")?);
             std::fs::write(&f, serde_json::to_vec(&pipeline::treepacks::coverage_json(&cov, q))?)?;
+            return Ok(());
+        }
+        "treeblock-task" => {
+            // treeblock-task <6/x/y> --row y --out dir [--pass d]: a row's task folder (z6 tile
+            // 6/x/y's blocks in zoom-8 row y that the coverage meets), its arguments and its blocks'
+            // tiles as the NAS has them (for tools/check/treeblock-same.mjs). It only reads.
+            let cov = coverage_of(&out, &args)?;
+            let t = positional(&args).first().and_then(|t| Unit::parse(t)).filter(|u| u.z == 6).context("treeblock-task <6/x/y> --row y")?;
+            let y: u32 = opt(&args, "--row").context("--row y")?.parse()?;
+            let shapes = pipeline::trees::mask::Shapes::parse(&serde_json::to_string(&pipeline::treepacks::coverage_json(&cov, t))?)?;
+            let row: Vec<(u32, u32)> = pipeline::trees::task::rows_of(&pipeline::trees::blocks_of(&shapes, 6, t.x, t.y)).into_iter().flatten().filter(|b| b.1 == y).collect();
+            anyhow::ensure!(!row.is_empty(), "{}: no block of row {y} meets the coverage", t.slash());
+            let dir = PathBuf::from(opt(&args, "--out").context("--out dir")?);
+            treeblock_task(&out, &cov, &row, &dir)?;
             return Ok(());
         }
         "prune" => prune_step(&mut out, &args)?,
@@ -2848,6 +2868,62 @@ fn bldtiles_step(out: &mut Out, args: &[String]) -> Result<()> {
         pipeline::control::done("bldtiles", &t.slash());
         note_cost("bldtiles", &t.slash(), c);
     }
+    Ok(())
+}
+
+/// treeblock-task's work: row `row`'s task folder in `dir/task` (cut from its piece's coverage as
+/// the piece's run cuts it), `dir/task.json` (its blocks and the canopy squares the NAS's store
+/// has whole there), and `dir/packs/8-x-y/` its blocks' tiles from the manifest's hi packs (zoom
+/// 9–12) and its piece's mid (zoom 8, the values), written as the trees program writes a block.
+fn treeblock_task(out: &Out, cov: &pipeline::coverage::Coverage, row: &[(u32, u32)], dir: &Path) -> Result<()> {
+    use pipeline::trees::{self, task};
+    anyhow::ensure!(!row.is_empty() && row.iter().all(|b| b.1 == row[0].1 && (b.0 >> 2, b.1 >> 2) == (row[0].0 >> 2, row[0].1 >> 2)), "a row: blocks of one z6 tile and one row");
+    let piece = Unit { z: 6, x: row[0].0 >> 2, y: row[0].1 >> 2 };
+    std::fs::remove_dir_all(dir).ok();
+    let cj = serde_json::to_string(&pipeline::treepacks::coverage_json(cov, piece))?;
+    task::cut(&cj, row, &dir.join("task"))?;
+    let store = out.root().join("sources/canopy");
+    let whole = |top: i32, left: i32| ["cover5m", "p95"].iter().all(|k| std::fs::metadata(store.join(trees::chm_name(top, left, k))).is_ok_and(|m| m.len() > 0));
+    let mut squares: Vec<(i32, i32)> = row.iter().flat_map(|&(x, y)| trees::squares_of(trees::tile_bounds(trees::ZBLOCK, x, y))).filter(|&(t, l)| whole(t, l)).collect();
+    squares.sort_unstable();
+    squares.dedup();
+    std::fs::write(dir.join("task.json"), serde_json::to_vec(&serde_json::json!({ "blocks": task::blocks_arg(row), "squares": task::squares_arg(&squares), "piece": piece.slash() }))?)?;
+    // The NAS's tiles of each block.
+    let mid = out.get(&pipeline::treepacks::mid_logical(piece.x, piece.y)).with_context(|| format!("{} has no mid", piece.slash()))?;
+    let mid = trees::read_mid(&out.path(mid))?;
+    let mut packs = Vec::new();
+    for l in pipeline::treepacks::LAYERS {
+        packs.push(match out.get(&format!("layers/{l}/hi/{}", piece.dash())) {
+            Some(c) => {
+                let f = store::range::PlainFile::open(&out.path(c))?;
+                let idx = store::pack::PackIndex::read_from(&f)?;
+                Some((f, idx))
+            }
+            None => None,
+        });
+    }
+    for &(bx, by) in row {
+        let mut tiles: Vec<trees::pyramid::Tile> = mid.z8.iter().filter(|t| (t.x, t.y) == (bx, by)).cloned().collect();
+        for (layer, p) in packs.iter().enumerate() {
+            let Some((f, idx)) = p else { continue };
+            for e in &idx.entries {
+                let (z, x, y) = e.zxy();
+                if z > trees::ZBLOCK && (x >> (z - trees::ZBLOCK), y >> (z - trees::ZBLOCK)) == (bx, by) {
+                    tiles.push(trees::pyramid::Tile { layer: layer as u8, z, x, y, webp: idx.read_blob(f, e)? });
+                }
+            }
+        }
+        let tops = mid.tops.get(&(bx, by)).with_context(|| format!("the mid has no values of 8/{bx}/{by}"))?;
+        let d = trees::block_dir(&dir.join("packs"), (bx, by));
+        std::fs::create_dir_all(&d)?;
+        let mut w = trees::Writers::create(&d)?;
+        for t in &tiles {
+            w.add(t)?;
+        }
+        w.finish()?;
+        std::fs::write(d.join(trees::TOPS), tops)?;
+    }
+    println!("{}", serde_json::json!({ "piece": piece.slash(), "blocks": task::blocks_arg(row), "squares": task::squares_arg(&squares), "coverage_bytes": std::fs::metadata(dir.join("task/u").join(task::COVERAGE))?.len() }));
     Ok(())
 }
 
