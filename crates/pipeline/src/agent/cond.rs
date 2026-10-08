@@ -41,8 +41,12 @@ impl Conditions {
 /// On mains power, and the battery's charge: `pmset -g ps` names the source ("Now drawing from
 /// 'AC Power'") and lists the battery ("-InternalBattery-0 (id=…)	89%; charging; …"). A Mac without
 /// a battery says AC too. When pmset can't be read, mains is assumed (a broken probe shouldn't stop
-/// all work).
+/// all work). In tests, always mains: the agents they run mustn't wait on the battery of whichever
+/// Mac runs them (a build Mac unplugged at 18 % failed the pool's tests, 8 Oct).
 pub fn power() -> (bool, Option<u8>) {
+    if cfg!(test) {
+        return (true, None);
+    }
     match Command::new("/usr/bin/pmset").args(["-g", "ps"]).output() {
         Ok(o) => parse_power(&String::from_utf8_lossy(&o.stdout)),
         Err(_) => (true, None),
