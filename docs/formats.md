@@ -488,7 +488,11 @@ agent/pool/             the pool's part of the agent (crate::agent::pool; only w
                         members.json (the members it knows, by id), jobs/<term>-<n>/ (a job's
                         folder under its lease: work.json {step, targets: [[target, key], …],
                         lease: "<term>-<n>"}, its saves as hand-offs, done.txt, costs.jsonl; removed
-                        once a saved state holds its entry)
+                        once a saved state holds its entry), lead.json (the owner's lead asks, crate::
+                        agent::lead::Kept: {asked: {ask, by, at, since, state: refused | passed |
+                        going | done | failed, said, to}, change: {at, said}, offered: [member,
+                        since], auto_at}), notes.jsonl (the terms' history events a member kept for
+                        its next process's coordinator, removed once noted there)
 agent/shadow/           a shadow run beside the agent (`state/pool/shadow`; crate::agent::shadow):
                         member, and pool-shadow/ with saved.json, mail.json, members.json as pool/'s,
                         watch.json ({seq: the agent's history read up to, jobs: {id: the jobs under
@@ -735,6 +739,13 @@ class, id) within a tile. The client sends the id with the clicked point.
     passes a Mac's ask on (one older than the last change is passed over); a helper's leased job
     keeps `work.json` (its step and targets) and `done.txt` in its outbox folder; `/work/fail {…, interrupted}` gives a lease back unheld.
     `state/build/pause.json` on the NAS mirrors the build Mac's.
+  - **The pool's lead asks** (`pipeline::control::LeadRequest`, docs/pool.md §6.3), in each Mac's
+    agent's folder: `lead-request.json`, `{ask: {kind: "give", to: member id or host name} or
+    {kind: "take", force, downgrade}, by, at}`, from its menu, `scenic lead` or the map's `POST
+    /api/build/lead {to} | {take: true}` (never forced); taken up and removed by its agent at its
+    next loop. The build page's go to its coordinator, `POST /work/lead {to} | {take: true}` (a
+    page's, with no key; never forced), which its agent takes up the same way. `/api/build` says
+    this Mac's `pool` (its agent's `PoolView`, fresh) and `lead_asked` (its ask not yet taken up).
   - A hand-off (`pipeline::handoff`): JSON `{changes: {logical: content name, or null when removed},
     pending: {content name: SHA-256}, checked: [content name], done: [step, [[target, key], …]] or
     null, raw: [[area, {name, bytes}], …] (a helper's raw tiles' archives, on the NAS, for the build
@@ -764,7 +775,10 @@ class, id) within a tile. The client sends the id with the clicked point.
     numbered from 2⁶² up. `state/journal/rejected/<day>/<term>-<n>.why`: a refusal's why.
   - `state/pool/members/<id>.json`: a member's heartbeat, `{member, host, app, beat, leads,
     handing_to: {to, term, offer, since, stage: offered | settling | passed}, ready_for: {term,
-    offer}, stood_down, addresses, members: [ids it knows], shadow}`, what isn't so left out.
+    offer}, stood_down, addresses, members: [ids it knows], shadow, conds: {home, ac, battery,
+    able}}`, what isn't so left out (`conds`: apps from phase 3's controls on; older ones ignore it).
+  - `state/pool/auto-handover`: the owner's switch for the proactive offer to be taken by itself
+    (`scenic lead auto on|off`; a line saying who turned it on), off while missing.
   - `state/pool/mail/<to>/<from>.json`: the messages `from` sent `to`, its last 64, `{msgs: [[n,
     msg], …]}`, `n` rising (the sender's clock in ms, and on), `msg` one of `{"Tell": [keys]}`,
     `{"Ack": {term, keys, horizon}}`, `{"Passed": term}`, `{"Leads": E}`, `{"HandTo": member}`.
@@ -772,7 +786,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     granted_at, worker, work, progress}]}, costs, failed: [[worker, cost key, unix seconds, times]],
     pause, pause_at}`; `state/coord/token`: the workers' token, the pool's (copied to each lead's
     `coord/`); `state/coord/history/<day>/
-    <member>.jsonl`: a lead's history events (as `history.jsonl`'s), its own file.
+    <member>.jsonl`: a member's history events (as `history.jsonl`'s), its own file: a lead's
+    coordinator's, and the terms' events (`kind: term`, `note` in words), every member's as they come.
   - The coordinator's leases (`leases.json`) say their `term` and `granted_at` (unix seconds); a
     grant says its `term`; `/work/done {…, journaled: true}`: the hand-off is in the journal already.
   - `state/pool-off/<day>-<unix seconds>/`: the pool's files above, moved aside by `scenic pool off`
@@ -795,7 +810,11 @@ class, id) within a tile. The client sends the id with the clicked point.
   Freed with its `target` and, when it freed toward a held job's room past it, that room as
   `goal`), short (why the disk is short of it and stays so)}`); with the pool on, `pool`:
   `{member, role: lead | member, gates: {term, leads, duties, settle, caught_up, fresh, listed_at},
-  members, unacked, restart}`, a helper's status too);
+  members, unacked, restart, lead}`, a helper's status too; `lead`, the pool as the controls show
+  it, crate::agent::lead::View: `{at, term, lead: {term, member, host, app, since, how}, leading,
+  members: [{member, host, app, beat, me, leads, state, out_of_touch, away, can_lead, why_not,
+  conds}], takeover: {refused, force, downgrade}, no_lead, handing: {to, host, term, stage, since},
+  offer: {to, host, why}, auto, asked, change}`);
   `state/build/{manifest,jobs,pending,summaries,pause}.json` (`jobs.json`: the job keys, by step,
   target → key: `terrain`, `slope` (z3 tiles), `unit`, `pois`, `peaks`, `pack` (z6 tiles), `lo`
   (z3 tiles, and the worldwide steps' under their names), `trees` (tree cover's pieces, z6 tiles),

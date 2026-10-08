@@ -6,7 +6,11 @@
 // from its file, says what its build caches hold, whether they can be cleared now,
 // and the last trim and clear (crates/pipeline/src/agent/room.rs): Clear the Build's Caches asks
 // that agent to clear them. Disk Room shows the disk's free space and the owner's room target, and
-// sets it (a few presets, or Off): the free space that agent keeps, freeing its caches to it.
+// sets it (a few presets, or Off): the free space that agent keeps, freeing its caches to it. With
+// the pool on (docs/pool.md §11), its agent's view of the pool: who leads, each Mac and its state,
+// and the lead's items: Hand the Build To ▸ on the lead, Make This Mac Lead and Take Over the
+// Build… (confirming) on another Mac, the proactive offer; each an ask to that agent
+// (`lead-request.json`), which checks it as its driver would.
 //
 // The launcher runs it (`scenic-launcher status`, from ~/Library/LaunchAgents/local.scenic.status.plist)
 // from the installed app; it quits when a newer app is installed, and the launcher starts that one.

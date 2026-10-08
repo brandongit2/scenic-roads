@@ -1927,7 +1927,7 @@ and, when none fits it, units' last steps.
 - **Temporary names** are each Mac's own (kept results), and each process's too (uploads), so the
   two never write into the same one.
 
-**The pool** (`docs/pool.md`, phase 1, `crate::agent::pool`): built and switched off. While
+**The pool** (`docs/pool.md`, phase 1, `crate::agent::pool`): built, and switched on since 8 Oct 2026. While
 `state/pool/enabled` isn't on the NAS, all of the above holds; a change of it restarts each agent
 between jobs into the other way. On:
 - **Who leads** is the terms' (`state/build/terms/`): the Mac `state/build/writer` names makes term
@@ -2280,11 +2280,14 @@ At each phase's end an Opus agent reviews the work against this plan.
 
 **Gaps:** the code falls short of the design here.
 1. **The pool** (`crate::pool`, `crates/pipeline/src/pool/`; `docs/pool.md` §12): phase 1 is built
-   and switched off (`state/pool/enabled`, §8, The pool), the agent's part with it
-   (`crate::agent::pool`), and a shadow run beside today's agents (`crate::agent::shadow`). What phase
-   1's integration leaves open:
-   - the owner's asks (hand the lead over, take it over) don't reach the agent: controls are phase
-     3, so a handover is never asked; a lead that stood down is taken over by itself;
+   and switched on since 8 Oct 2026 (`state/pool/enabled`, §8, The pool), the agent's part with it
+   (`crate::agent::pool`), phase 3's controls (`crate::agent::lead`: the owner's asks to hand the
+   lead over or take it, the menu bar, the build page, the map's panel, `scenic lead`), and a shadow
+   run beside today's agents (`crate::agent::shadow`). What they leave open:
+   - the build page is served by the lead's coordinator alone (any member serving it is phase 4),
+     so its "Take it" can't reach a Mac while the lead is gone: the menu bar and `scenic lead take`
+     do;
+   - members joining, leaving and coming back aren't in the history (the terms are);
    - a process whose member takes a term up, or steps down, restarts into its new part between
      jobs: the lead's own jobs run in its process until phase 2;
    - the records' readers read today's three files, which the lead writes from its records after

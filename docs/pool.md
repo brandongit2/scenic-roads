@@ -1,8 +1,9 @@
 # The pool: any Mac can lead the build
 
-Status: **phase 1 built and switched off** (`crate::pool`, its driver and phase 2's transitions
-with it; the agent's part, crate::agent::pool: §12); a shadow run beside today's agents
-(crate::agent::shadow); the rest is planned. It replaces the fixed
+Status: **phase 1 built and switched on** (since 8 Oct 2026: `crate::pool`, its driver and phase
+2's transitions with it; the agent's part, crate::agent::pool: §12); **phase 3's controls built**
+(crate::agent::lead: §11); a shadow run beside today's agents (crate::agent::shadow); the rest is
+planned. It replaces the fixed
 "build Mac" and its "helpers" (plan.md §8, workers.md §8) with a pool of peer Macs, any number of
 them, one of which leads the build at a time, and makes the browsers' pages workers of the same
 standing, by one model of work. The lead can be handed to another Mac from any Mac's menu, the
@@ -272,12 +273,20 @@ A term is a file made once with create-new and never changed: `state/build/terms
 
 ### 6.3 Asking
 
-Any member asks the lead over HTTP (§9): `POST /pool/lead {to, by, how}`. Its menu ("Hand the Build
-To ▸", "Make This Mac Lead"), `scenic lead`, the map's build panel and the worker page all send one,
-through their own member. A member that can't reach the lead can't hand anything over; it can only
-take over (§6.5). An ask naming a Mac that isn't a live member (heartbeat beat within ten minutes,
-app new enough: `Driver::hand_to`; the NAS reachable, planned, the heartbeat saying nothing of it
-yet) is refused, saying why.
+Any member asks the lead. Its menu ("Hand the Build To ▸", "Make This Mac Lead"), `scenic lead` and
+the map's build panel ask their own Mac's agent (an ask file in its folder, `lead-request.json`,
+crate::control::LeadRequest; the map through its server's `/api/build/lead`), the worker page the
+agent of the Mac serving it (its coordinator's `/work/lead`); the agent takes the ask up at its next
+loop (crate::agent::lead). It checks it as the driver's step would (`Driver::hand_to`,
+`Driver::takeover`): one refused never reaches the driver, and its status says why. On the lead the
+driver hands over (§6.4); on another member it passes the ask on to the lead by mail
+(`Msg::HandTo`, §9: the pool's HTTP API, `POST /pool/lead`, is planned), and the lead checks it
+again. A member that can't reach the lead can't hand anything over; it can only take over (§6.5).
+An ask naming a Mac that isn't a live member (heartbeat beat within ten minutes, app new enough:
+`Driver::hand_to`; the NAS reachable, planned, the heartbeat saying nothing of it yet) is refused,
+saying why. Where an ask stands (refused, passed on, under way, done, came to nothing, with why)
+is in the asking Mac's status, kept across its agent's restarts (`agent/pool/lead.json`), and every
+control shows it.
 
 ### 6.4 Handing over (the lead is there): a state machine
 
@@ -294,10 +303,11 @@ what the lead's step saw, driven by crate::pool::driver.
 | **Passed** | A makes `terms/<E+1>.json` naming B, with `seq`: the number of the snapshot it saved settling (§6.1), and tells B of it. A is now a member; its own member API sends lead asks on to B | B takes up within 2 min (B tells A it leads, or A reads it in B's heartbeat, or E+1 has a snapshot): **Leading** (B, E+1); else **Taken back** |
 | **Taken back** | A makes `terms/<E+2>.json` naming itself ("B didn't take up"), the app rule checked against term E (§6.1) | **Leading** (A, E+2) |
 
-- **The agent's parts** (§12, built, switched off): settling stops grants (its coordinator answers
-  asks "the lead is moving; ask again in a moment"), stops a catalog or a sweep in flight, and
-  hands the coordinator's state to the step; the transitions themselves are the driver's. The
-  owner's asks don't reach the agent yet (phase 3's controls), so nothing starts a handover.
+- **The agent's parts** (§12, built): settling stops grants (its coordinator answers asks "the
+  lead is moving; ask again in a moment"), stops a catalog or a sweep in flight, and hands the
+  coordinator's state to the step; the transitions themselves are the driver's. The owner's asks
+  reach it (§6.3), so a handover starts only when someone asks, or by itself when the owner turned
+  the proactive offer's switch on (§6.5).
 - **Nothing running stops,** on any Mac: leases keep their ids (`<term>-<n>`, unique by
   construction) and deadlines (wall-clock times) in the state B loads, as A wrote it last (it's in
   the snapshot the term's `seq` names: crate::pool::records::Records::handed), so every job, A's
@@ -328,9 +338,14 @@ in later is still taken if its targets weren't leased again since); its coordina
 
 Automatic takeover of a lead that's gone or asleep is left out for now (the owner asked for buttons;
 a lead that's only asleep would lose the role every night, and it may come back). In its place,
-**a proactive offer:** when the lead leaves home or goes on battery while another member is home on
-power, every member's menu offers "Hand the build to <Mac>" in one click (automatic if the owner
-turns it on).
+**a proactive offer:** when the lead's heartbeat says it's away from home or on battery while
+another member's says it's home on power and able to lead, and the lead can be handed to it, every
+member's menu, the worker page and `scenic lead` offer "Hand the Build to <Mac>" in one click
+(crate::agent::lead::offer; the first such Mac by name). Automatic when the owner turns it on
+(`scenic lead auto on`: `state/pool/auto-handover` on the NAS, off while missing): the lead hands
+over by itself once the same offer has stood five minutes, never while a handover or an ask is under
+way, nor within half an hour of the last change of lead or of its last automatic ask, so the lead
+can't flap between two Macs on the edge of their conditions (`auto`).
 
 **A lead that stood down is taken over automatically** (§6.6): awake, it has declared it won't lead.
 A member that can lead now (`Heard::able`: its disk, home and power) and has seen its heartbeat
@@ -371,9 +386,9 @@ for its target or a takeover; the owner's forced takeover drops a handover waiti
 
 Every loop it also checks `<E+1>.json`. Stepping down: it stops granting, planning, merging and its
 duties, writes nothing more, and goes on as a member: its slots carry on (a lease the new lead knows
-is renewed; one that lapsed is stopped, its done targets handed off). The history and its menu
-will say so, planned (§12): "No longer leading: MacBook-Pro-de-Brandon took over at 14:12 while
-this Mac was asleep".
+is renewed; one that lapsed is stopped, its done targets handed off). The history and its menu say
+so: "No longer leading term 4: a later term exists; term 5 is MacBook-Pro-de-Brandon's (taken over
+by MacBook-Pro-de-Brandon)", with when.
 
 A write already past its last check when the Mac froze lands in its own term's files (§6.2), which
 nobody reads: invariant 5.
@@ -573,8 +588,9 @@ take it: a page, any member's slot. Jobs are for Macs; tasks are for everyone.
 Planned. In phase 1 the members' messages go by mailbox on the NAS (crate::agent::pool:
 `state/pool/mail/<to>/<from>.json`, its sender's alone, its last messages there numbered; read by
 member id, never by listing, so a lead reads the mail of the members its listing of the heartbeats
-found, every two minutes), best effort as the driver's messages are; jobs go out through the lead's
-coordinator as today's helpers' do (`/work/*`).
+found, every two minutes), best effort as the driver's messages are, an owner's ask passed on to
+the lead among them (`HandTo`, §6.3); jobs go out through the lead's coordinator as today's
+helpers' do (`/work/*`), and the worker page's lead asks to it (`/work/lead`).
 
 Every member answers on the pool's port (8090): the worker page and its files; `/pool/status` (its
 heartbeat); `/work/*` for its own tasks; and, on the lead, `/lead/*`: jobs (ask, beat, done), lead
@@ -594,27 +610,61 @@ hand-offs go to the journal) and starts nothing new; its brokered tasks carry on
   checklist, the forecast, the regions, what waits and why, the jobs that ended lately (any
   member's), the pause, the last catalog, the lead and its term, a handover under way.
 - **Everywhere it's shown** (the menu bar on every Mac, the map's build panel, the worker page,
-  `scenic status`): the pool, a line or card per member, the lead marked; out-of-touch members with
-  when they were last heard from; a handover's states as they happen; "No lead" with "Take it". Each
-  Mac's map server reads the pool from the NAS, keeps the app its own agent runs, and keeps its
+  `scenic lead` and `scenic status`): the pool, a line or card per member, the lead marked;
+  out-of-touch members with when they were last heard from; a handover's states as they happen; "No
+  lead" with "Take it". They read it from the agent's status (`pool.lead`: crate::agent::lead::View,
+  made again every half minute, and at once after an ask or a change of lead): the term's lead,
+  each member it knows read by id from its heartbeat (never listed), with its state (home on power,
+  on battery, away, out of touch, clock wrong, stood down, app too old) and whether the lead can be
+  handed to it and why not (`Driver::hand_to`), what a takeover from this Mac needs
+  (`Driver::takeover`), "no lead" and why (the term unreadable, its lead's heartbeat missing, out of
+  touch or stood down), the offer, the last ask and the last change of lead. The members' states
+  come from their heartbeats' conditions (`conds`: home, mains power, battery, able to lead), which
+  apps before phase 3 leave out ("conditions unknown"). The menu bar and the map show this Mac's
+  agent's view (the map server's `/api/build` `pool`), the worker page the serving Mac's (in
+  `/work/swarm`'s agent). Each Mac's map server keeps the app its own agent runs, and keeps its
   downloads' copies to 20 MB/s while the build Mac runs a job.
-- **The history** notes each term (handed over, taken back, taken over, re-asserted, stepped down),
-  each member joining, leaving and coming back.
+- **The history** notes each term (handed over, taken back, taken over, re-asserted), each step
+  down, and a handover's offer, end, giving up and drop, as `term` events (crate::agent::lead::notes):
+  appended as they come to the member's own file on the NAS (`state/coord/history/<day>/
+  <member>.jsonl`), and into its coordinator's history (the worker page's activity), or, a member
+  without one, kept for the coordinator of its next process (`agent/pool/notes.jsonl`: it restarts
+  into the lead after a takeover). Members joining,
+  leaving and coming back: planned.
 
 ## 11. Controls
+
+Built (crate::agent::lead, `tools/status/main.swift`, `web/work/pool.js`, `web/src/ui/buildstatus.ts`,
+`scenic lead`):
 
 - **The menu bar, on every Mac:**
   - on the lead: "Hand the Build To ▸", the other members, each with its state (home on power, on
     battery, away, out of touch, app too old); those that can't lead now greyed with why. Handing to
     a Mac that's away warns that its duties run slowly over Tailscale;
-  - on any other member: "Make This Mac Lead" (an ask to the lead); when the lead is out of touch,
-    "Take Over the Build…", confirming;
-  - the proactive offer (§6.5) when it applies; Pause/Resume, as now (any member).
-- **The worker page:** on each member's card, "Make lead" (confirming); on the lead's, a handover's
-  progress; "Take it" when there's no lead.
-- **`scenic lead`** (who leads, the term, since when, a handover under way), `scenic lead give
-  <member>`, `scenic lead take [--force] [--downgrade]`.
-- **The map's build panel:** who leads, and "Make this Mac lead" for the Mac it runs on.
+  - on any other member: "Make This Mac Lead" (an ask to the lead), greyed with why when the lead
+    can't be handed to it; when there's no lead in touch, "Take Over the Build…", confirming: it says
+    why there's no lead, and what the takeover forces or downgrades when `Driver::takeover` says it
+    needs that (the menu, on the Mac itself, may);
+  - the proactive offer (§6.5) when it applies; an ask under way, and how the last one ended; the
+    pool's members and the last change of lead among its lines; a notification when the lead
+    changes or an ask ends; Pause/Resume, as now (any member).
+- **The worker page** (`pool.js`, served by the lead's coordinator): on each member's card, "Make
+  lead" (confirming); on the lead's, a handover's progress; "Take it" when there's no lead, unforced.
+  Until any member serves the page (phase 4), only the lead's coordinator does: "Take it" shows only
+  when the Mac serving it knows the term has no lead it's in touch with (its process stepped down,
+  say), and asks that Mac to take over. With the lead truly gone the page isn't served at all, so
+  the menu bar and `scenic lead take` are the ways to take over.
+- **`scenic lead`** (who leads, the term, since when, a handover under way, each member and whether
+  it can lead, the offer, what a takeover needs, the last ask), `scenic lead give <member>` (its host
+  name or member id), `scenic lead take [--force] [--downgrade]` (refused at once with the driver's
+  why when it needs a flag not given), each followed until it's done or refused; `scenic lead auto
+  on|off`, the offer's switch. `scenic status` shows the pool too.
+- **The map's build panel:** who leads, each Mac, and "Make this Mac lead" for the Mac it runs on;
+  "Take over…" when there's no lead, unforced.
+- **Forcing stays on the Mac:** a takeover with the owner's force or downgrade comes only from the
+  Mac's own menu or `scenic lead take`; the map's `/api/build/lead` and the coordinator's
+  `/work/lead` refuse one (each behind the same gate as pausing: this Mac, its LAN and the tailnet,
+  from no page elsewhere).
 - **Each asks the driver** (crate::pool::driver) what its step would decide, rather than check it
   again: whom the lead can be handed to, and why not (`Driver::hand_to`); what a takeover from this
   Mac needs, the owner's force or downgrade, and why (`Driver::takeover`).
@@ -655,7 +705,7 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
      ago, a sweep only when fresh), and when it must stop (another process holds its lock); it
      answers the controls (whom the lead can be handed to, what a takeover needs). Its contract is
      the module's doc. The agent runs it while the pool is on (below).
-   - **The integration: built, switched off** (crate::agent::pool; the agent, crate::agent). While
+   - **The integration: built, switched on since 8 Oct 2026** (crate::agent::pool; the agent, crate::agent). While
      `state/pool/enabled` is missing the agent is as it was (one stat more a loop, and one a save's
      `check_writer`); a change of the switch, read so two loops in a row, restarts it, between
      jobs, into the other. Until the switch is known (the NAS not read yet), today's coordination
@@ -715,7 +765,7 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
        lead that no longer leads stops a catalog or GC in flight, and takes its coordinator's
        contact (`state/coordinator.json`) off the NAS.
      - **Settling** (§6.4) stops a catalog or GC in flight, stops granting and hands the
-       coordinator's state to the step. Nothing asks a handover yet (phase 3).
+       coordinator's state to the step. The owner's asks start a handover (phase 3).
      - **Seeding and draining** when it's switched on: the workers' token copied to `state/coord/` by
        the first lead (create-new) and from there by every lead's coordinator before it starts; the coordinator's local `coord/journal/` (the lead's) and the NAS's
        `state/build/handoff/<host>/` (every two minutes) and a helper's `outbox/` (a folder with
@@ -752,10 +802,15 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
      terms, take-ups, merges, gates against the catalogs and GC the agent ran, and its records
      against the build's.
 2. **Handing over and taking over.** The driver does them (§6.4 to §6.6: phase 1's core, built);
-   the agent's part, planned: the owner's asks reaching it (phase 3's controls), staying awake, the
-   lead's own jobs moved out of its process into its slots (so nothing pins the lead).
-3. **Controls: planned.** The menu bar, the worker page, the map's panel, `scenic lead` and
-   `status`, the history's terms, the proactive offer.
+   the owner's asks reach the agent (phase 3); the agent's part, planned: staying awake, the lead's
+   own jobs moved out of its process into its slots (so nothing pins the lead: in phase 1 a lead
+   handing over mid-job keeps running its job, which hands off to the journal under its lease, and
+   restarts into a member once its slot is free).
+3. **Controls: built** (crate::agent::lead; §6.3, §10, §11). The owner's asks reaching the agent
+   and the driver (an ask file in the agent's folder; the build page's through its coordinator; a
+   member's passed on to the lead by mail), checked as the driver would; where each stands; the
+   view in the agent's status; the menu bar, the worker page, the map's panel, `scenic lead` and
+   `status`; the history's terms; the proactive offer, and its switch (off).
 4. **Every job hands off, placement and pages: planned.** The steps table with floors and
    write-sets, every step offered to every member's slots, contiguous runs, the alone reservation,
    sticky resuming, the resume overlay and records-only planning; tasks brokered by every member,
@@ -860,6 +915,23 @@ switched on.
   was, the switch changing restarting it, on the build Mac leading with its jobs handing off under
   its term's leases and its sweep after a re-assertion, a member's job reaching the lead's records
   through the journal and its mail, the lead's gates on catalogs and sweeps, the shadow beside it.
+- **The controls' tests** (phase 3; crate::agent::lead's, and the agent's `pool_tests`): two
+  members in one process, their clocks moved on by the test (`Side::ahead`): the lead handed over
+  each way (a member's "Make This Mac Lead" passed on by mail, and the lead's own "Hand the Build
+  To"); refused asks with their reasons (a Mac that isn't a member, the lead itself, one out of
+  touch; a takeover unforced while the lead is in touch), none reaching the driver; an offer whose
+  target never answers, given up after a minute; a pass not taken up, taken back after two; a
+  takeover of a lead out of touch; the proactive offer on battery, taken by itself only switched on,
+  after it stood five minutes, and never back within half an hour (the flap guard, also alone); an
+  ask's state across a restart; heartbeats of the apps before and after the controls read by each
+  other; the history's terms; and two agents, the owner's ask arriving while the member's job runs:
+  handed over, the job's entry reaching the new lead's records, both restarting into their parts.
+  The coordinator's `/work/lead` and the map server's `/api/build/lead` take a page's ask and
+  refuse a forced one. **Two agents on one Mac as processes** (8 Oct 2026, a scratch folder, its
+  build paused): a member's "Make This Mac Lead" by `scenic lead give`, handed over in about two
+  minutes (the agents' loops and the lead's reading of its members' mail); handed back from the new
+  lead; the build page's "Make lead"; and a takeover of a lead stopped (SIGSTOP) out of touch, by
+  `scenic lead take`.
 - **Two agents in one process** (the agent's tests): a lead and a member, each with its folder and
   member, the lead's coordinator on a port of its own. **Two agents on one Mac** as processes, with
   SIGSTOP and SIGCONT for sleep and fault points (`merge:before-rename=600s`,
@@ -870,8 +942,8 @@ switched on.
   drained, the lead's jobs and a sweep, the member's entry merged and acknowledged by mail, the lead
   restarted re-asserting, then standing down on an older app and the member taking over by itself
   and leading. Planned: the ◻ checks of §3 (create-new between two Macs contended, exclusive
-  rename, how long a renamed-over file reads stale), a handover (phase 3's controls ask it) and
-  load. (One Mac mounting the share twice shares one SMB client cache, so it can't show stale
+  rename, how long a renamed-over file reads stale), a handover (phase 3's controls ask it; run on
+  one Mac with two scratch agents: §13, the controls) and load. (One Mac mounting the share twice shares one SMB client cache, so it can't show stale
   reads between clients.)
 - **A shadow run on the real NAS** (§12), beside both Macs' agents, before the switch: what the
   pool decides against what the agents did.

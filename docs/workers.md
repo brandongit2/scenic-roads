@@ -219,7 +219,9 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   `/work/history`) without one. A device helps only when its owner asks there ("Help with this
   tab", kept by that browser: never by default, though a device that helped before, one that had
   learned its memory ceiling, keeps helping). Helping and pausing need no key either: any page the
-  coordinator answers may take a page's tasks and pause the build, and works under "page" and the
+  coordinator answers may take a page's tasks, pause the build, and ask about the pool's lead
+  (`/work/lead`: hand it to a Mac, or have the Mac serving the page take it over, never forced:
+  docs/pool.md §11), and works under "page" and the
   name it gives (what it is and its browser's id: never an agent's). "Stop helping" gives back what
   it has under way at once. (The old watching-only address,
   `/work/watch/`, leads to `/work/`.) While it helps, its main thread asks for tasks that fit the
@@ -249,6 +251,12 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     failed it, too large for its memory); its power, the NAS's answer (and room), its disk and
     caches, memory, load, whether it's in use, its app and pace (measured, or a guess); its last day
     by the hour. The helpers' statuses are read each loop.
+  - **The pool** (with it on: `web/work/pool.js`, docs/pool.md §11): who leads and since when; a
+    card per Mac in the pool, with its state (home on power, on battery, away, out of touch, app
+    too old), "Make lead" (confirming; greyed with why when the lead can't be handed to it), on the
+    lead's a handover's progress as it happens; "Take it" when there's no lead in touch; the
+    proactive offer; the last ask and the last change of lead. From the serving Mac's agent's
+    status (`/work/swarm`'s `agent.pool.lead`).
   - **The road to done:** each machine's schedule from now to the end (the forecast's lanes, a step
     a colour, each round of publishing marked: pointed at, the regions it adds; the build Mac's
     second job's lane under its own; the pages' lane is the build Mac's area runs, both jobs',
@@ -259,7 +267,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     when it's on the map, found by name.
   - **The activity:** the last day by the hour (areas an hour, or busy minutes, each machine a
     colour; paused hours shaded), and what happened, newest first (all, problems, map updates,
-    pauses and conditions), what came since this browser last showed it highlighted and summed.
+    pauses and conditions), what came since this browser last showed it highlighted and summed; the
+    pool's terms (handed over, taken back, taken over, re-asserted, stepped down) among them.
   - A refresh leaves what the user's doing alone: a part where they're typing or have text
     selected stays until they're done, the feed keeps its place, the region search redraws its rows
     alone.
