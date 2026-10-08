@@ -10,8 +10,8 @@
 //!   folder) until a saved state holding it is on disk.
 //! - **The listings** the driver asks for, made on a thread of their own one at a time, every one
 //!   handed back once, a failed one made again a minute later; and a listing of the members'
-//!   heartbeats every ten minutes the same way (the members a lead hears from: nothing lists a
-//!   folder in the loop).
+//!   heartbeats every ten minutes the same way, a lead's every two (the members whose mail it
+//!   reads: nothing lists a folder in the loop).
 //! - **The messages** between members, by mailbox on the NAS (`MAIL`: `<to>/<from>.json`, written
 //!   whole by its sender alone, the last `KEPT` it sent there, each numbered; read by member id,
 //!   never by listing): best effort, as the driver's are (a message lost is told again or made up
@@ -51,8 +51,10 @@ pub const MAIL: &str = "state/pool/mail";
 pub const MEMBERS: &str = "state/pool/members";
 /// The messages a sender keeps in a mailbox: its last.
 const KEPT: usize = 64;
-/// How often the members' heartbeats are listed (off the loop), for the members it knows.
+/// How often the members' heartbeats are listed (off the loop), for the members it knows: a lead
+/// more often (it reads their mail), a member less (the terms name its lead).
 const MEMBERS_EVERY: Duration = Duration::from_secs(600);
+const MEMBERS_EVERY_LEAD: Duration = Duration::from_secs(120);
 /// A failed listing is made again after this.
 const AGAIN: Duration = Duration::from_secs(60);
 /// The heartbeat is written at least this often.
@@ -516,9 +518,10 @@ impl Side {
         }
     }
 
-    /// The members' heartbeats listed every ten minutes, off the loop.
+    /// The members' heartbeats listed every ten minutes (a lead's, two), off the loop.
     fn list_members(&mut self) {
-        if self.members_listed.is_none_or(|t| t.elapsed() >= MEMBERS_EVERY) && !self.members_queued {
+        let every = if self.driver().leads().is_some() { MEMBERS_EVERY_LEAD } else { MEMBERS_EVERY };
+        if self.members_listed.is_none_or(|t| t.elapsed() >= every) && !self.members_queued {
             self.members_queued = true;
         }
     }
@@ -546,7 +549,7 @@ impl Side {
             (Kind::Members, Err(e)) => {
                 eprintln!("pool: listing the members: {e:#}");
                 self.members_queued = false;
-                self.members_listed = Some(Instant::now() - MEMBERS_EVERY + AGAIN);
+                self.members_listed = Some(Instant::now());
             }
         }
     }
@@ -587,7 +590,11 @@ fn load_saved(p: &Path) -> (Saved, Vec<u8>) {
 
 /// The merge's checks of a journal entry, phase 1's (docs/pool.md §7.3; the steps' write-sets are
 /// phase 4's): its done record is its own step's and names targets; every change is to a logical
-/// name, as a content name of it; each raw tiles' archive it names is one of its area.
+/// name, as a content name of it; each raw tiles' archive it names is one of its area. A shared
+/// step's (what a helper's coordinator checked of its hand-off: crate::coord, `check_handoff`):
+/// every change is to a file its step saves for one of the targets it did, every upload it says
+/// is pending one of its saves, every one it says it checked one of those. (Not that its targets
+/// are its lease's: a lead after the one that granted it may not know the lease.)
 pub fn check(e: &Entry, _r: &Records) -> std::result::Result<(), String> {
     let h = &e.handoff;
     if let Some((s, ts)) = &h.done {
@@ -611,6 +618,21 @@ pub fn check(e: &Entry, _r: &Records) -> std::result::Result<(), String> {
     for (area, p) in &h.raw {
         if !crate::rawpack::is_area(area) || !crate::rawpack::named_for(&p.name, area) {
             return Err(format!("{} isn't an archive of {area}", p.name));
+        }
+    }
+    if crate::agent::claims::SHARED.contains(&e.step.as_str()) {
+        let did: &[(String, String)] = h.done.as_ref().map_or(&[], |d| &d.1);
+        for l in h.changes.keys() {
+            if !did.iter().any(|(t, _)| crate::coord::saves(&e.step, t, l)) {
+                return Err(format!("{l} isn't one of the files of the targets it did"));
+            }
+        }
+        let saved: BTreeSet<&String> = h.changes.values().flatten().collect();
+        if let Some(c) = h.pending.keys().find(|c| !saved.contains(c)) {
+            return Err(format!("{c} isn't one of its saves"));
+        }
+        if let Some(c) = h.checked.iter().find(|c| !h.pending.contains_key(*c)) {
+            return Err(format!("{c} isn't one of its uploads"));
         }
     }
     Ok(())
@@ -818,8 +840,8 @@ impl Run {
 }
 
 /// A term taken up (`Event::TookUp`), as the lead's coordinator takes it (§6.2, §7.5): the leases it
-/// grants from now in that term; the state handed over with it (a handover's), else the term
-/// before's own (a takeover's, or its own before a restart), loaded; its own host's leases from
+/// grants from now in that term; the state handed over with it (a handover's), else the newest a
+/// term before has (a takeover's, or its own before a restart), loaded; its own host's leases from
 /// before dropped (its jobs ended with the process that ran them).
 pub fn took_up(run: &mut Run, coord: Option<&crate::coord::Coordinator>, out: &Out, host: &str) {
     let Some(c) = coord else { return };
@@ -830,9 +852,11 @@ pub fn took_up(run: &mut Run, coord: Option<&crate::coord::Coordinator>, out: &O
         if run.led.contains(&(term - 1)) && handed.is_none() {
             continue;
         }
+        // (The newest a term before has: one whose lead had no coordinator, a member that took it
+        // over before restarting into its lead, wrote none.)
         let state: Option<crate::coord::PoolState> = match handed {
             Some(v) => serde_json::from_value(v.clone()).ok(),
-            None => run.side.nas().read(&state_path(term - 1)).ok().flatten().and_then(|b| serde_json::from_slice(&b).ok()),
+            None => (1..*term).rev().find_map(|e| run.side.nas().read(&state_path(e)).ok().flatten().and_then(|b| serde_json::from_slice(&b).ok())),
         };
         if let Some(st) = state {
             match c.load_pool_state(&st) {
@@ -1359,9 +1383,22 @@ mod tests {
         let mut raw = e.clone();
         raw.handoff.raw.push(("3-1-2".into(), crate::rawpack::Pack { name: "3-1-3.0123456789abcdef.tiles".into(), bytes: 1 }));
         assert!(check(&raw, &r).is_err());
-        let mut none = e;
+        let mut none = e.clone();
         none.handoff.done = Some(("unit".into(), Vec::new()));
         assert!(check(&none, &r).is_err());
+        // A shared step's: only its targets' files, its own uploads.
+        let mut other = e.clone();
+        other.handoff.changes.insert("base/6-1-9".into(), Some("base/6-1-9.3333333333333333.base".into()));
+        assert!(check(&other, &r).unwrap_err().contains("isn't one of the files of the targets it did"));
+        let mut up = e.clone();
+        up.handoff.pending.insert("base/6-1-9.3333333333333333.base".into(), "aa".into());
+        assert!(check(&up, &r).unwrap_err().contains("isn't one of its saves"));
+        // Another step's (the OSM pass's stages): any logical name.
+        let mut pass = e;
+        pass.step = "osm-pass".into();
+        pass.handoff.done = None;
+        pass.handoff.changes.insert("sources/osm/2026-10-01/pass".into(), Some("sources/osm/2026-10-01/pass.4444444444444444.json".into()));
+        assert!(check(&pass, &r).is_ok());
     }
 
     #[test]

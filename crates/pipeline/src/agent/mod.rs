@@ -931,7 +931,9 @@ impl Agent {
             Some(Held::Leased { dir, .. }) => Some(dir.clone()),
             _ => None,
         };
-        let dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir() && Some(p) != running.as_ref()).collect();
+        // (In the pool a job's folder from before it is drained into the journal: tasks' alone here.)
+        let pooled = self.pool.is_some();
+        let dirs: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir() && Some(p) != running.as_ref() && !(pooled && p.join("work.json").exists())).collect();
         if dirs.is_empty() {
             return;
         }
