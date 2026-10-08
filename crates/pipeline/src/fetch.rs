@@ -20,7 +20,7 @@ use store::sys::PosIo;
 use store::IoError;
 
 /// Every request names the map, as the steps' own do.
-pub const USER_AGENT: &str = "road-elevations/0.1 (personal offline map)";
+pub const USER_AGENT: &str = "scenic-roads/0.1 (personal offline map)";
 
 /// Outside data by URL.
 pub trait Fetch: Send + Sync {

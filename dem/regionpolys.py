@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 POLY = ROOT / "data" / "trees" / "poly"
-UA = "road-elevations/0.1 (personal offline map)"
+UA = "scenic-roads/0.1 (personal offline map)"
 
 
 def main():

@@ -760,7 +760,7 @@ fn canopy(dir: &Path) -> Result<()> {
     let band = std::env::var("SCENIC_CANOPY_BAND").ok().and_then(|v| v.parse().ok()).filter(|&b: &usize| b > 0).unwrap_or(BAND_ROWS);
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(std::time::Duration::from_secs(1800)))
-        .user_agent("road-elevations/0.1 (personal offline map)")
+        .user_agent("scenic-roads/0.1 (personal offline map)")
         .build()
         .into();
 

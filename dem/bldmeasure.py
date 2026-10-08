@@ -82,7 +82,7 @@ H_MIN, H_MAX = 2.0, 700.0          # a measured height taken (§2.3, rule 0)
 ESTIMATES = {"Microsoft ML Buildings"}
 GHSL_TALL = 20.0                   # B0's rule 4: GHSL only where its cell is this tall
 F_MAX = 200                        # floors taken: 1-200
-UA = "road-elevations/0.1 (personal offline map)"
+UA = "scenic-roads/0.1 (personal offline map)"
 
 # A region's country: its parent's code, else its own (ISO 3166), but for these.
 SPECIAL = {"french-guiana": "GF", "hong-kong": "HK", "puerto-rico": "PR", "saint-pierre-et-miquelon": "PM"}

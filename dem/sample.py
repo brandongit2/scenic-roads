@@ -53,7 +53,7 @@ os.environ.update(
     VSI_CACHE="FALSE",
     GDAL_CACHEMAX="256",
     # (Every request names the map, as the steps' own do: UA below.)
-    GDAL_HTTP_USERAGENT="road-elevations/0.1 (personal offline map)",
+    GDAL_HTTP_USERAGENT="scenic-roads/0.1 (personal offline map)",
 )
 
 import numpy as np  # noqa: E402
@@ -69,7 +69,7 @@ USGS = "/vsicurl/https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TI
 FABDEM = "/vsizip//vsicurl/https://data.bris.ac.uk/datasets/s5hqmjcdj8yo2ibzi9b4ew3sn/{z}_FABDEM_V1-2.zip/{t}_FABDEM_V1-2.tif"
 
 GSI = "cyberjapandata.gsi.go.jp"
-UA = "road-elevations/0.1 (personal offline map)"
+UA = "scenic-roads/0.1 (personal offline map)"
 GSI_WORKERS = 16  # concurrent tile requests to GSI (S3 behind CloudFront; latency-bound)
 # Taiwan's MOI 20 m DTM, put by hand (see above). Changing its files changes Taiwan's units' keys
 # (crates/pipeline/src/rules.rs, "moi-dtm").

@@ -21,7 +21,7 @@ const spec = JSON.parse(execFileSync("target/release/scenic-build", ["tail-spec"
 // What crate::coord's `net` serves: the NAS's paths a task reads, and the data servers.
 const NAS_PATHS = ["sources/", "inputs/moi-dtm/"];
 const WEB_HOSTS = spec.web_hosts;
-const UA = "road-elevations/0.1 (personal offline map)";
+const UA = "scenic-roads/0.1 (personal offline map)";
 
 let opened = new Map();
 const open = OpenDirectory.prototype.path_open;

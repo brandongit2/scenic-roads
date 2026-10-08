@@ -462,7 +462,7 @@ lies near it.
     not seen yet.
   - **Output:** `sources/items/<d>/{facts,views,meta}`. meta holds the months, and the first and last
     days anything was fetched (QLever's index is whatever it serves those days).
-  - **Requests:** User-Agent "road-elevations/0.1 (personal offline map)" (no contact address:
+  - **Requests:** User-Agent "scenic-roads/0.1 (personal offline map)" (no contact address:
     identifying details stay out of requests), within the APIs' rate limits.
     - With no contact, Wikimedia may refuse by User-Agent, so a 403 or any failed batch fails the job
       loudly.

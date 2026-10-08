@@ -45,7 +45,7 @@ ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
 W = ROOT / "data" / "heritage" / "wd"
 OUT = ROOT / "data" / "pageviews"
-UA = "road-elevations/0.1 (personal offline map)"
+UA = "scenic-roads/0.1 (personal offline map)"
 LANGS = {"en", "fr", "es", "ca", "pt", "zh", "zh-yue", "ja", "cy", "ga", "gd", "gl", "eu", "oc", "br", "co", "ast", "an", "gv"}
 # The languages of the indexes made before they said theirs (the first line, "#langs<TAB>en,fr,…"):
 # LANGS as it was then, written out (LANGS may grow; these indexes don't).

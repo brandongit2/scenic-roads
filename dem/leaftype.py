@@ -51,7 +51,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CACHE = ROOT / "data" / "cache" / "chm10"
 T = ROOT / "data" / "trees"
 OUT = T / "leaf"
-UA = "road-elevations/0.1 (personal offline map)"
+UA = "scenic-roads/0.1 (personal offline map)"
 RES = 0.0005
 N = int(round(10 / RES))
 

@@ -10,7 +10,7 @@ set -u
 ROOT=/volume1/personal/projects/scenic-roads
 LIST=https://planet.openstreetmap.org/pbf/
 MIRRORS="https://ftpmirror.your.org/pub/openstreetmap/pbf https://ftp.fau.de/osm-planet/pbf https://ftp5.gwdg.de/pub/misc/openstreetmap/planet.openstreetmap.org/pbf https://planet.openstreetmap.org/pbf"
-UA='road-elevations/0.1 (personal offline map)'
+UA='scenic-roads/0.1 (personal offline map)'
 mkdir -p "$ROOT/state/logs" "$ROOT/sources/osm"
 exec >>"$ROOT/state/logs/fetch-planet.log" 2>&1
 log() { echo "$(date '+%F %T') $*"; }

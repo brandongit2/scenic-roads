@@ -63,7 +63,7 @@ from tqdm import tqdm
 
 import heritage_eu
 
-UA = {"User-Agent": "road-elevations/0.1 (personal offline map)"}
+UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
 H = Path(__file__).resolve().parent.parent / "data" / "heritage"
 NRHP = "https://mapservices.nps.gov/arcgis/rest/services/cultural_resources/nrhp_locations/MapServer/0/query"
 STATES = ["NEW YORK", "VERMONT", "NEW HAMPSHIRE", "MAINE", "MASSACHUSETTS", "CONNECTICUT", "RHODE ISLAND"]

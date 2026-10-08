@@ -103,7 +103,7 @@ fn main() -> Result<()> {
     let aw = Mutex::new(ArchiveWriter::create(&roadcore::tmp(&dir, "terrain.tiles"), r#"{"format":"png","encoding":"terrarium"}"#)?);
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(60)))
-        .user_agent("road-elevations/0.1 (personal offline map)")
+        .user_agent("scenic-roads/0.1 (personal offline map)")
         .build()
         .into();
     let pb = count_bar(want.len() as u64, "terrain tiles");

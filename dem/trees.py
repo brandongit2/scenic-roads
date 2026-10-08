@@ -424,7 +424,7 @@ def lower_zooms(tops: dict, want, writers: dict, said=None) -> None:
 # ---- the build agent's: one z3 tile of the coverage ----------------------------------------
 
 CHM10_URL = "https://dataforgood-fb-data.s3.amazonaws.com/forests/v1/alsgedi_global_v6_float_epsg4326_v3_10deg"
-UA = "road-elevations/0.1 (personal offline map)"
+UA = "scenic-roads/0.1 (personal offline map)"
 
 
 def progress(done: float, total: int, unit: str) -> None:

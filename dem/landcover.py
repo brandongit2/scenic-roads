@@ -23,7 +23,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-UA = "road-elevations/0.1 (personal offline map)"
+UA = "scenic-roads/0.1 (personal offline map)"
 os.environ.update(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", GDAL_HTTP_MAX_RETRY="10", GDAL_HTTP_RETRY_DELAY="2", VSI_CACHE="FALSE", GDAL_HTTP_USERAGENT=UA)
 
 import numpy as np  # noqa: E402

@@ -72,7 +72,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
-UA = "road-elevations/0.1 (personal offline map)"
+UA = "scenic-roads/0.1 (personal offline map)"
 S3 = "https://overturemaps-us-west-2.s3.us-west-2.amazonaws.com/"
 TYPES = ("building_part", "building")
 GHSL_RELEASE = "R2023A"

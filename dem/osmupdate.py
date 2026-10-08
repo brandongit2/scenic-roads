@@ -24,7 +24,7 @@ OSM = ROOT / "data" / "osm"
 BUILD = ROOT / "data" / "build"
 MERGED = OSM / "merged.osm.pbf"
 LIST = OSM / "merged.regions"
-UA = "road-elevations/0.1 (personal offline map)"
+UA = "scenic-roads/0.1 (personal offline map)"
 
 
 def run(*cmd: str) -> None:

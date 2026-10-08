@@ -65,7 +65,7 @@ from shapely.ops import unary_union
 
 import railgtfs
 
-UA = "road-elevations/0.1 (personal offline map)"
+UA = "scenic-roads/0.1 (personal offline map)"
 # A stale cached zip is fetched again when this runs this many days or more after its day.
 REFETCH_DAYS = 7
 # Tries of a request that gets no answer, and the waits between them.

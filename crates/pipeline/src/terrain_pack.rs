@@ -22,7 +22,7 @@ const FETCH_THREADS: usize = 64;
 pub fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(60)))
-        .user_agent("road-elevations/0.1 (personal offline map)")
+        .user_agent("scenic-roads/0.1 (personal offline map)")
         .max_idle_connections(FETCH_THREADS * 2)
         .max_idle_connections_per_host(FETCH_THREADS * 2)
         .build()

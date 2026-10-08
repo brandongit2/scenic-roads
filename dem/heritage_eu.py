@@ -68,7 +68,7 @@ from pyproj import Transformer
 from shapely.geometry import shape
 
 H = Path(__file__).resolve().parent.parent / "data" / "heritage"
-UA = {"User-Agent": "road-elevations/0.1 (personal offline map)"}
+UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
 csv.field_size_limit(1 << 26)
 
 

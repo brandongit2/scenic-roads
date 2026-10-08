@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
 W = ROOT / "data" / "heritage" / "wd"
 D = ROOT / "data" / "heritage" / "desc"
-UA = "road-elevations/0.1 (personal offline map)"
+UA = "scenic-roads/0.1 (personal offline map)"
 LOCAL = ["fr", "es", "pt", "ca"]
 BATCH = 250
 

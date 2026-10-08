@@ -42,7 +42,7 @@ def regions() -> dict[str, list[tuple]]:
 
 
 def connect(threads: int | None = None):
-    config = {"custom_user_agent": "road-elevations/0.1 (personal offline map)"}
+    config = {"custom_user_agent": "scenic-roads/0.1 (personal offline map)"}
     if threads:
         config["threads"] = threads
     con = duckdb.connect(config=config)

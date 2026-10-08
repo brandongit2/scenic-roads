@@ -39,7 +39,7 @@ F = ROOT / "data" / "ferries"
 CACHE = F / "gtfs"
 OUT = F / "freq"
 R_KM = 0.4
-UA = "road-elevations/0.1 (personal offline map)"
+UA = "scenic-roads/0.1 (personal offline map)"
 DAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 

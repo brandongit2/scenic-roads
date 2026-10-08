@@ -33,7 +33,7 @@ from tqdm import tqdm
 H = Path(__file__).resolve().parent.parent / "data" / "heritage"
 CACHE = H / "crhp"
 BASE = "https://www.historicplaces.ca/en/"
-UA = {"User-Agent": "road-elevations/0.1 (personal offline map)"}
+UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
 PROVINCES = {
     "New Brunswick": ("CA-NB", (-69.1, 44.5, -63.7, 48.1)),
     "Prince Edward Island": ("CA-PE", (-64.5, 45.9, -61.9, 47.1)),

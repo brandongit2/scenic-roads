@@ -45,7 +45,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 B = ROOT / "data" / "build"
 W = ROOT / "data" / "heritage" / "wd"
-UA = "road-elevations/0.1 (personal offline map)"
+UA = "scenic-roads/0.1 (personal offline map)"
 WDQS = "https://qlever.dev/api/wikidata"
 PREFIXES = ("PREFIX wd: <http://www.wikidata.org/entity/> PREFIX wdt: <http://www.wikidata.org/prop/direct/> "
             "PREFIX schema: <http://schema.org/> PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#> "
