@@ -1500,7 +1500,10 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     agent goes by), which the agent takes up within seconds, renaming it aside as it does (an ask
     written meanwhile waits its turn): between jobs, once the build is done, it empties every
     cache a later job fills again from the NAS or makes again from it (§4, Caches), the canopy
-    squares too, by the same rules, and says what it freed (`caches.cleared`); else it says why
+    squares too, by the same rules (the DEM seed only while the NAS has it whole; the heritage
+    jobs' planet clip only while the pass's filtered planet it's clipped from is in the NAS's
+    manifest and there, else it stays, said as kept: a safety the owner accepted on 2026-10-08),
+    and says what it freed (`caches.cleared`); else it says why
     not (`caches.declined`, the last clear done kept apart); the ask goes either way. The menu
     shows the item with what it would free (`caches.clearable`, and cache by cache,
     `caches.each`), disabled with why while the build has work, a job runs there, its agent
@@ -1533,8 +1536,10 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
       filtered planet it's clipped from is on the NAS, which a clear checks too). Each only as
       far as needed: the free space is measured again as they go, and the goal read again, so a
       target lowered or cleared midway stops it.
-    - A freeing is tried again when a job has ended since, after ten minutes, or when what it's
-      for changes. Short of the target with nothing more to free (what the NAS hasn't, kept), the
+    - A freeing isn't tried again toward as much room or less (the target, or a held job's room
+      past it: the two don't take turns) until a job has ended since, ten minutes have passed, or
+      the target changes; toward more (a job held for more room), it is. Its record says the
+      target and, apart, the room past it it freed toward (`goal`). Short of the target with nothing more to free (what the NAS hasn't, kept), the
       status says so (`caches.room.short`, and a line in `waiting`), as it does while the NAS
       isn't reachable (what goes must be kept there); it's logged and, when it freed anything, in
       the history. Until the target is lowered or off, nothing else refills the caches.

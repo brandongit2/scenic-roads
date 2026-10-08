@@ -725,7 +725,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   ask's at), by, freed: {cache: bytes}, left, why_not}`, the caches named canopy, terrain, blobs,
   months (the pageview months' indexes), base, dem, copies and heritage; `room`, the owner's disk
   room target: `{target: {bytes, by, at}, free (bytes), toward (the last freeing toward it, a
-  Freed with its `target`), short (why the disk is short of it and stays so)}`); with the pool on, `pool`:
+  Freed with its `target` and, when it freed toward a held job's room past it, that room as
+  `goal`), short (why the disk is short of it and stays so)}`); with the pool on, `pool`:
   `{member, role: lead | member, gates: {term, leads, duties, settle, caught_up, fresh, listed_at},
   members, unacked, restart}`, a helper's status too);
   `state/build/{manifest,jobs,pending,summaries,pause}.json` (`jobs.json`: the job keys, by step,
