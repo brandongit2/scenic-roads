@@ -3249,6 +3249,9 @@ impl Agent {
             if let Some(w) = build::labels_work(date, &manifest, &keys) {
                 jobs.push(job(format!("labels {date}"), "Ranking the world's place labels", "labels", [p.clone(), vec!["--dem".into(), s(&self.o.bin.join("dem"))]].concat(), Some(w)));
             }
+            if let Some(w) = build::spoken_work(date, &manifest, &keys) {
+                jobs.push(job(format!("spoken {date}"), "Mapping the languages spoken where, for names", "spoken", p.clone(), Some(w)));
+            }
             if let Some(w) = build::water_work(date, &manifest, &keys) {
                 jobs.push(job(format!("water {date}"), "Drawing the world's water at every zoom", "water", p.clone(), Some(w)));
             }
@@ -4551,6 +4554,7 @@ fn first_secs(step: &str) -> f64 {
         "bldtiles" => 2.0,
         "catalog" => 60.0,
         "names-todo" => 900.0,
+        "spoken" => 60.0,
         _ => 300.0,
     }
 }

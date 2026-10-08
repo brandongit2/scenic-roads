@@ -312,6 +312,20 @@ fn main() -> Result<()> {
         "registers-import" => registers_import(&mut out, &args, &scratch)?,
         "slope" => slope_step(&mut out, &args)?,
         "labels" => labels_step(&mut out, &args, &scratch)?,
+        "spoken" => {
+            // spoken [--pass <date>]: the languages spoken where (names::spoken), from the pass's
+            // outlines, as global/spoken, which the servers read.
+            let date = opt(&args, "--pass").or_else(|| pipeline::osmpass::latest_pass(out.root())).context("no complete OSM pass")?;
+            let outlines = out.path(out.get(&format!("sources/osm/{date}/outlines")).context("the pass's outlines")?);
+            let s = pipeline::outlines::Outlines::open(&outlines)?.spoken()?;
+            std::fs::create_dir_all(&scratch)?;
+            let local = scratch.join("spoken.bin");
+            std::fs::write(&local, s.to_bytes())?;
+            let name = out.put_file("global/spoken", "bin", &local)?;
+            std::fs::remove_file(&local).ok();
+            out.save()?;
+            eprintln!("spoken: {} regions, {name}", s.regions().count());
+        }
         "water" => water_step(&mut out, &args, &scratch)?,
         "pass-sets" => {
             // pass-sets [--pass <date>]: the sets the pass lacks in their current filters

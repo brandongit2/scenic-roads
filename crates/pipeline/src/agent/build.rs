@@ -233,7 +233,7 @@ impl Keys {
             self.catalog_held = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || matches!(step, "labels" | "names-todo" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch") {
+        if step.ends_with("-root") || matches!(step, "labels" | "spoken" | "names-todo" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail" | "bld-fetch") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -329,6 +329,14 @@ pub fn labels_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Opt
     let set = m.get(&crate::osmpass::set_name(date, "labels"))?;
     let k = h(&[&format!("labels {LABELS_V}"), set]);
     (done.lo.get("labels").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "labels".into(), targets: vec![("labels".into(), k)] })
+}
+
+/// The languages spoken where (names::spoken), worldwide, once per pass's outlines (or rules
+/// version): `global/spoken`, which the servers read.
+pub fn spoken_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
+    let outlines = m.get(&format!("sources/osm/{date}/outlines"))?;
+    let k = h(&[names::spoken::RULES, outlines]);
+    (done.lo.get("spoken").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "spoken".into(), targets: vec![("spoken".into(), k)] })
 }
 
 /// The to-do lists of names to translate and descriptions to write (crate::namestodo), once per
