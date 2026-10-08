@@ -1849,6 +1849,76 @@ mod tests {
         assert!(build_lo(&mut parts, &raw, q, ts, &src, &|_, _, _| {}).unwrap_err().to_string().contains("no mid"));
     }
 
+    /// Byte identity on the build's own data, by hand on the build Mac (§10): the terrain and slope
+    /// packs of the z3 tiles `P5_AREAS` ("3/2/2,3/0/2") in two roots' manifests, `P5_A` (an area's
+    /// whole run, main's) and `P5_B` (its pieces and assembly), and `P5_LIVE` (the NAS's, if set):
+    /// each pack's content name, and every tile's pixels (terrain's heights, slope's quarters),
+    /// those along a z6 tile's edge counted apart.
+    #[test]
+    #[ignore]
+    fn p5_compare_real() {
+        let env = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k} isn't set"));
+        let roots: Vec<(String, std::path::PathBuf)> = ["P5_A", "P5_B", "P5_LIVE"].iter().filter_map(|k| std::env::var(k).ok().map(|v| (k.to_string(), std::path::PathBuf::from(v)))).collect();
+        let manifests: Vec<std::collections::BTreeMap<String, String>> = roots.iter().map(|(_, r)| crate::out::read_record(&r.join("state/build/manifest.json")).unwrap()).collect();
+        let mut failed = false;
+        for a in env("P5_AREAS").split(',') {
+            let q = crate::legacy::Unit::parse(a).filter(|u| u.z == 3).unwrap();
+            for layer in ["terrain", "slope"] {
+                let of_q = |l: &str| l.strip_prefix(&format!("layers/{layer}/")).is_some_and(|r| r == format!("lo/3-{}-{}", q.x, q.y) || r.strip_prefix("hi/").and_then(|t| crate::legacy::Unit::parse(&t.replace('-', "/"))).is_some_and(|u| (u.x >> 3, u.y >> 3) == (q.x, q.y)));
+                let logicals: std::collections::BTreeSet<&String> = manifests.iter().flat_map(|m| m.keys().filter(|l| of_q(l))).collect();
+                let (mut packs, mut same_names, mut tiles, mut same_px, mut edge, mut edge_same) = (0, 0, 0usize, 0usize, 0usize, 0usize);
+                for l in logicals {
+                    packs += 1;
+                    let names: Vec<Option<&String>> = manifests.iter().map(|m| m.get(l)).collect();
+                    if names.iter().all(|n| *n == names[0]) {
+                        same_names += 1;
+                    } else {
+                        failed = true;
+                        eprintln!("{l}: {:?}", roots.iter().zip(&names).map(|((k, _), n)| format!("{k} {}", n.map_or("none", |s| s.as_str()))).collect::<Vec<_>>());
+                    }
+                    // Every tile of the first root's pack, against the others'.
+                    let open = |(r, n): (&std::path::PathBuf, Option<&String>)| n.map(|n| {
+                        let f = store::range::PlainFile::open(&r.join(n)).unwrap();
+                        let ix = store::pack::PackIndex::read_from(&f).unwrap();
+                        (f, ix)
+                    });
+                    let opened: Vec<_> = roots.iter().map(|(_, r)| r).zip(names.iter().copied()).map(open).collect();
+                    let Some((f0, ix0)) = &opened[0] else { continue };
+                    for e in &ix0.entries {
+                        let (z, x, y) = e.zxy();
+                        let px = |f: &store::range::PlainFile, ix: &store::pack::PackIndex| -> Option<Vec<u32>> {
+                            let e = ix.find(z, x, y)?;
+                            let b = ix.read_blob(f, &e).ok()?;
+                            if layer == "terrain" {
+                                decode_terrain_png(&b).ok().map(|v| v.iter().map(|f| f.to_bits()).collect())
+                            } else {
+                                roadcore::slope::decode_slope4(&b).map(|v| v.iter().flat_map(|q| q.map(f32::to_bits)).collect())
+                            }
+                        };
+                        let first = px(f0, ix0);
+                        let same = opened[1..].iter().all(|o| o.as_ref().is_some_and(|(f, ix)| px(f, ix) == first));
+                        tiles += 1;
+                        same_px += same as usize;
+                        // (Along a z6 tile's edge: its first or last column or row, z6 and finer.)
+                        if z >= 6 {
+                            let s = 1u32 << (z - 6);
+                            if x % s == 0 || x % s == s - 1 || y % s == 0 || y % s == s - 1 {
+                                edge += 1;
+                                edge_same += same as usize;
+                            }
+                        }
+                        if !same {
+                            failed = true;
+                            eprintln!("{l} {z}/{x}/{y}: pixels differ");
+                        }
+                    }
+                }
+                eprintln!("{a} {layer}: {packs} packs, {same_names} with the same content name in {}; {tiles} tiles, {same_px} with the same pixels; along the z6 tiles' edges {edge}, {edge_same} the same", roots.iter().map(|r| r.0.as_str()).collect::<Vec<_>>().join(", "));
+            }
+        }
+        assert!(!failed);
+    }
+
     #[test]
     fn the_north_from_glo30_and_a_lakes_one_level_across_tiles() {
         use crate::terrain_north::tests::FnCells;
