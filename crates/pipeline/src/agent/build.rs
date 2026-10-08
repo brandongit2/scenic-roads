@@ -904,6 +904,12 @@ pub struct RegionLeft {
     pub trees: Vec<String>,
     #[serde(default)]
     pub trees_lo: Vec<String>,
+    /// Its units built as the coverage wants them now but reading terrain that's stale: whether
+    /// each goes stale too is known only once that terrain is built (its key names the tiles'
+    /// contents). For the forecast, which takes a share of them as work to come
+    /// (`forecast::EXPECTED_STALE`).
+    #[serde(default)]
+    pub expected: Vec<String>,
 }
 
 /// The plan for the coverage `cov`, the pass of `date`, the build manifest `m` (logical → content)
@@ -1090,6 +1096,7 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
             slope: r.areas.iter().filter(|a| slope_left.contains(*a)).cloned().collect(),
             trees: trees.iter().filter(|t| r.tree_areas.contains(&tree_area(t))).map(|t| t.0.clone()).collect(),
             trees_lo: r.tree_areas.iter().filter(|a| trees_lo_left.contains(*a)).cloned().collect(),
+            expected: r.all.iter().copied().filter(|&i| !unit_stale[i] && !reads[i].is_disjoint(&terrain_left)).map(|i| units[i].0.slash()).collect(),
         });
     }
 

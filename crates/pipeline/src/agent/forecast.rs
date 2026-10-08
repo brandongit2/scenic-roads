@@ -258,6 +258,13 @@ const HOUR: f64 = 3600.0;
 /// How long a Mac in use now is taken to stay in use, for its second job's work (`Machine::light_s`).
 pub const IN_USE_S: f64 = 30.0 * 60.0;
 
+/// The share of a region's units reading stale terrain, built as the coverage wants them now, taken
+/// to go stale once that terrain is built (`RegionLeft::expected`; which ones is known only then).
+/// A round figure, not measured each time: the terrain fix (8 Oct 2026) made most of the north's and
+/// every coast's units stale, a little over half of those reading changed terrain, and the forecast
+/// had counted none of them until their terrain was built (32 units at 17:00, 149 by 19:00).
+pub const EXPECTED_STALE: f64 = 0.6;
+
 /// The jobs before the regions' that the units wait for (build::plan).
 const UNITS_NEED: [&str; 3] = ["heritage-sites", "reach", "buildings"];
 
@@ -296,6 +303,12 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
         for u in &r.own_units {
             add(&mut out, &mut by_target, "unit", u, (inp.cost)("unit", u), Phase::Region, deps.clone());
         }
+        // Those its stale terrain may make stale: a share, the first in its order (`add` lists a
+        // unit two regions expect once).
+        let n = (r.expected.len() as f64 * EXPECTED_STALE).round() as usize;
+        for u in r.expected.iter().take(n) {
+            add(&mut out, &mut by_target, "unit", u, (inp.cost)("unit", u), Phase::Region, deps.clone());
+        }
     }
     for r in inp.regions {
         for a in &r.slope {
@@ -316,7 +329,7 @@ fn items(inp: &Input) -> (Vec<Item>, Vec<Vec<usize>>) {
     // slope and tree cover.
     for (k, r) in inp.regions.iter().enumerate() {
         let mut mine: Vec<usize> = Vec::new();
-        for (step, list) in [("terrain", &r.terrain), ("unit", &r.units), ("slope", &r.slope), ("trees", &r.trees), ("trees-lo", &r.trees_lo)] {
+        for (step, list) in [("terrain", &r.terrain), ("unit", &r.units), ("unit", &r.expected), ("slope", &r.slope), ("trees", &r.trees), ("trees-lo", &r.trees_lo)] {
             mine.extend(list.iter().filter_map(|t| by_target.get(&(step.to_string(), t.clone())).copied()));
         }
         region_items[k] = mine;
@@ -707,7 +720,7 @@ mod tests {
 
     fn region(id: &str, terrain: &[&str], units: &[&str], slope: &[&str]) -> RegionLeft {
         let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-        RegionLeft { id: id.into(), on_map: None, units: v(units), own_units: v(units), terrain: v(terrain), own_terrain: v(terrain), slope: v(slope), trees: Vec::new(), trees_lo: Vec::new() }
+        RegionLeft { id: id.into(), on_map: None, units: v(units), own_units: v(units), terrain: v(terrain), own_terrain: v(terrain), slope: v(slope), trees: Vec::new(), trees_lo: Vec::new(), expected: Vec::new() }
     }
 
     fn mac(name: &str, speed: f64, helper: bool) -> Machine {
@@ -816,6 +829,22 @@ mod tests {
         assert_eq!(f.next["m4"].iter().map(|n| (n.step.as_str(), n.targets.len())).collect::<Vec<_>>(), [("terrain", 1), ("unit", 2), ("slope", 1)]);
         let lane: Vec<(&str, u64, u64, usize)> = f.lanes["m4"].iter().map(|l| (l.step.as_str(), l.from - 1_000_000, l.until - 1_000_000, l.n)).collect();
         assert_eq!(lane, [("terrain", 0, 600, 1), ("unit", 600, 1200, 2), ("slope", 1200, 1400, 1), ("round", 1400, 2000, 1), ("marks", 2000, 2300, 1)]);
+    }
+
+    #[test]
+    fn a_share_of_the_units_reading_stale_terrain_is_counted_as_work_to_come() {
+        // One unit stale, five more reading the stale terrain: three of them (0.6) counted too.
+        let expected = ["6/9/8", "6/9/9", "6/10/8", "6/10/9", "6/11/8"].map(String::from).to_vec();
+        let regions = [RegionLeft { expected, ..region("a", &["3/1/1"], &["6/8/8"], &[]) }];
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
+        let unit = f.steps.iter().find(|s| s.step == "unit").unwrap();
+        assert_eq!((unit.left, unit.work_s), (4, 1200));
+        // The region's ready once they're built too: terrain 600, four units 1200.
+        assert_eq!(f.regions[0].ready_at, Some(1_000_000 + 1800));
+        // None once the terrain's built (none expected).
+        let regions = [region("a", &[], &["6/8/8"], &[])];
+        let f = forecast(&input(&regions, vec![mac("m4", 1.0, false)], &cost));
+        assert_eq!(f.steps.iter().find(|s| s.step == "unit").unwrap().left, 1);
     }
 
     #[test]

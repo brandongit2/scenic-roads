@@ -1839,7 +1839,11 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   none it can do now, the chains' work), its second job the first of its steps that fits beside it,
   each helper the far end of the first shared step with work it can do that fits its memory (terrain's
   near end): terrain at once, a unit once its region's terrain is built and the pass's heritage sites, reaches and
-  roadside buildings are made (as the plan's units wait for), slope once its area's terrain is. A
+  roadside buildings are made (as the plan's units wait for), slope once its area's terrain is.
+  Units built now but reading stale terrain (`RegionLeft::expected`) go stale or not only once that
+  terrain is built (their keys name its tiles' contents), so a round share of them,
+  `forecast::EXPECTED_STALE` (0.6), is counted as work to come, after their terrain. (Without it
+  the 8 Oct terrain rebuild's forecast counted 32 units at 17:00 and 149 by 19:00.) A
   machine with nothing it can do waits for the next work to end or another machine to be free. The
   round under way goes first, with its own regions (their slope and tree cover left, then its chain
   as its steps take). A round goes out as the plan makes one: a region done that the map hasn't as
