@@ -233,8 +233,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 
 ## 7. The web worker (built)
 
-- **The page** is served by the coordinator at `/work/` (the menu bar's Copy the Build Page's
-  Address, `scenic status`'s "Build page"): the build at a glance for anyone it answers (this Mac,
+- **The page** is served by the coordinator at `/work/` (the menu bar's panel, a click on its icon;
+  its menu's Copy the Build Page's Address; `scenic status`'s "Build page"): the build at a glance for anyone it answers (this Mac,
   its LAN, the tailnet), with no key; the coordinator answers its reads (`/work/swarm`,
   `/work/history`) without one. A device helps only when its owner asks there ("Help with this
   tab", kept by that browser: never by default, though a device that helped before, one that had
@@ -243,7 +243,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   (`/work/lead`: hand it to a Mac, or have the Mac serving the page take it over, never forced:
   docs/pool.md §11), and works under "page" and the
   name it gives (what it is and its browser's id: never an agent's). "Stop helping" gives back what
-  it has under way at once. (The old watching-only address,
+  it has under way at once. `/work/?view` (the menu bar's panel) only watches: it never helps,
+  whatever its browser kept or a click asks, and hides "This device". (The old watching-only address,
   `/work/watch/`, leads to `/work/`.) While it helps, its main thread asks for tasks that fit the
   memory the tab spares and beats for every lease; each slot (a Web Worker per core, less one) runs
   a task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim) and

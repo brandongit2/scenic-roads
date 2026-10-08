@@ -32,10 +32,11 @@ nothing built depends on how the coverage is divided into regions.
   islands and lakes).
 - `scenic status` shows what the build Mac is doing, and so does the menu bar item on both Macs
   (Scenic.app, `tools/status`). It shows the state as an icon: building, paused, waiting, nothing to
-  build, a problem, or out of touch. Its menu holds the job's progress bar with the time left and a
-  checklist of every step to the end, pauses and resumes the whole build, and clears that Mac's
-  build caches once the build is done (`scenic clean` too); it sends a notification for every
-  change.
+  build, a problem, or out of touch. A click opens the build page in a popover (the jobs, the
+  machines, the schedule, every step to the end); a right-click opens its menu, which pauses and
+  resumes the whole build, hands over the lead, sets the disk room and clears that Mac's build
+  caches once the build is done (`scenic clean` too). It sends a notification for every change, on
+  time even while a menu is open.
 - The server mounts the NAS itself when it's missing, at home: at start, then from its periodic
   check.
 
@@ -2101,6 +2102,20 @@ mid-job. Nothing depends on it being available at a given time.
   what that Mac's build caches hold and their last trim and clear, and offers Clear the Build's
   Caches, after a confirmation, and Disk Room: the disk's free space and the room target, set
   from a few presets or Off (Room on the disk, above).
+  - **Its panel:** a click on the icon opens the build page in a popover, the lead's: `/api/build`'s
+    `pages`, the lead's own coordinator first on the lead, then the lead's addresses from its
+    contact on the NAS (their URLs alone, never its key), the first that answers. Loaded with
+    `?view` in a web view that keeps nothing, so it only watches, never helps (docs/workers.md §7);
+    made as the popover opens and dropped as it closes. As tall as the page, within the screen;
+    light or dark with the system; links out of the page open in the browser. While the page can't
+    be shown, the status's first lines (with this Mac's downloads) and Retry.
+  - **Its menu** (a right-click, or the panel's "⋯"): the state in a line, this Mac's downloads and
+    build caches; Pause Building (Option: Pause Building Now) or Resume Building, and an ask under
+    way; the pool's lead items (docs/pool.md §11); Clear the Build's Caches; Disk Room ▸; Open the
+    Build Log (on the build Mac, while a job runs); Open the Map; Copy the Map's Address; Open the
+    Build Page in the Browser; Copy the Build Page's Address.
+  - Its timers run in the run loop's common modes: the polls, the icon and the notifications go on
+    while a menu is open (`scenic-status --menu-proof` shows it).
 - Each says what's waiting and why ("Build Mac last seen yesterday; Kanto waits for it to be plugged
   in at home").
 

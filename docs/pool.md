@@ -637,7 +637,7 @@ hand-offs go to the journal) and starts nothing new; its brokered tasks carry on
 Built (crate::agent::lead, `tools/status/main.swift`, `web/work/pool.js`, `web/src/ui/buildstatus.ts`,
 `scenic lead`):
 
-- **The menu bar, on every Mac:**
+- **The menu bar's menu** (a right-click on its icon, or its panel's "⋯"), on every Mac:
   - on the lead: "Hand the Build To ▸", the other members, each with its state (home on power, on
     battery, away, out of touch, app too old); those that can't lead now greyed with why. Handing to
     a Mac that's away warns that its duties run slowly over Tailscale;
@@ -653,7 +653,8 @@ Built (crate::agent::lead, `tools/status/main.swift`, `web/work/pool.js`, `web/s
   Until any member serves the page (phase 4), only the lead's coordinator does: "Take it" shows only
   when the Mac serving it knows the term has no lead it's in touch with (its process stepped down,
   say), and asks that Mac to take over. With the lead truly gone the page isn't served at all, so
-  the menu bar and `scenic lead take` are the ways to take over.
+  the menu bar and `scenic lead take` are the ways to take over. A click on the menu bar's icon shows
+  this page in a popover, with its buttons.
 - **`scenic lead`** (who leads, the term, since when, a handover under way, each member and whether
   it can lead, the offer, what a takeover needs, the last ask), `scenic lead give <member>` (its host
   name or member id), `scenic lead take [--force] [--downgrade]` (refused at once with the driver's
