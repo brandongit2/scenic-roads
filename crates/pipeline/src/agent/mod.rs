@@ -4271,7 +4271,8 @@ impl Agent {
 pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
     let mut inputs: BTreeMap<String, String> = BTreeMap::new();
     if let Ok(rd) = std::fs::read_dir(root.join("inputs/ferries/freq")) {
-        let mut files: Vec<(String, Vec<u8>)> = rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), std::fs::read(e.path()).ok()?))).collect();
+        // (Read as kept while unchanged: crate::smallfiles.)
+        let mut files: Vec<(String, std::sync::Arc<Vec<u8>>)> = rd.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).filter_map(|e| Some((e.file_name().to_string_lossy().into_owned(), crate::smallfiles::read(&e.path()).ok()?))).collect();
         files.sort();
         let all: Vec<u8> = files.iter().flat_map(|(n, b)| n.bytes().chain(b.iter().copied())).collect();
         inputs.insert("ferries-freq".into(), store::naming::hash16(&all));
@@ -4322,7 +4323,7 @@ fn regions_digest(root: &Path) -> Option<String> {
         if !name.ends_with(".toml") {
             continue;
         }
-        let text = std::fs::read_to_string(e.path()).ok()?;
+        let text = crate::smallfiles::read_to_string(&e.path()).ok()?;
         for entry in recipes::parse(&name, &text).map(|r| r.outline).unwrap_or_default() {
             let file = match recipes::parse_outline(&entry) {
                 Ok(recipes::Outline::Poly(f)) => root.join("inputs/outlines").join(f),

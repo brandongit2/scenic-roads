@@ -87,7 +87,7 @@ pub fn load(dir: &Path) -> (Vec<Recipe>, Vec<(String, String)>) {
         if !name.ends_with(".toml") {
             continue;
         }
-        let r = std::fs::read_to_string(e.path()).map_err(anyhow::Error::from).and_then(|s| parse(&name, &s));
+        let r = crate::smallfiles::read_to_string(&e.path()).map_err(anyhow::Error::from).and_then(|s| parse(&name, &s));
         match r {
             Ok(r) => ok.push(r),
             Err(e) => bad.push((name, format!("{e:#}"))),

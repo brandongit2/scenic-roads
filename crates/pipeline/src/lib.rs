@@ -42,6 +42,7 @@ pub mod roads;
 pub mod rules;
 pub mod scache;
 pub mod slope_pack;
+pub mod smallfiles;
 pub mod stage;
 pub mod stations;
 pub mod summary;

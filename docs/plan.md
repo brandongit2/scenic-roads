@@ -214,6 +214,11 @@ and the share refuses a copy's attempt to set one that differs from its folder's
 program wrote, copied into the backups).
 
 **Packs, never one file per tile.** SMB manages about 80 random reads per second per file.
+- **Small inputs read again and again** (the region recipes, the ferries' timetables): the agent
+  and the map server keep each in memory and read it again only when its size or time changes
+  (`pipeline::smallfiles`; a file changed in the last 5 s is always read). Opening and reading
+  them took 1–11 s for each set under load (8 Oct 2026), stat'ing them a fraction of a second,
+  and a plan read them twice.
 - **Our layers** (roads, rails, terrain, slope, trees, labels, water, overlays,
   marks, stations, ferries) use packs.
   - A pack is a header and meta, then the blobs (identical blobs are stored once), then an index of
