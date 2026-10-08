@@ -513,7 +513,8 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   `--reserve-gb`, in GB of 10⁹ bytes). When it's under the reserve, at home or away, files go until
   it's back: those the current catalog doesn't list (an older catalog's) first; then the current
   catalog's, the basemap last (it's drawn at every zoom); never the essentials nor a kept area's.
-  Within each, the files never used go first, the first copied first (a file's modification time),
+  Within each, the 3D buildings' packs first (copied last, they go first), then the rest; within
+  those, the files never used go first, the first copied first (a file's modification time),
   then the used ones, least recently used first, whenever they were copied (a new catalog copies
   again the files used before it). Of the files in that order, the shortest run from the front that
   covers the deficit goes, less the biggest of them the run can spare, so a round doesn't go far
@@ -1388,8 +1389,9 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     byte (and every one of their 129,455 tiles has trees.py's pixels).
 - **A job** is one step over a batch of stale targets: terrain 1, slope and lo 2, tree cover's
   pieces and assemblies 4, unit 6, the 3D buildings' bldprep 8 and bldtiles 16 (z6 tiles: a dense
-  one's bldprep about a minute, its bldtiles about 10 s), peaks 12, pack 16, pois 24, the
-  worldwide steps all. So a failure
+  one's bldprep about a minute, its bldtiles about 10 s; 2 and 4 while the regions' terrain,
+  slope, tree cover or units are left, so theirs come back within minutes), peaks 12, pack 16,
+  pois 24, the worldwide steps all. So a failure
   or a new app costs one batch.
 - **Order:** the agent starts the first job that can run, in plan order. It plans when a job could
   start (its second slot's: each minute), when one ends, and otherwise every five minutes for the
@@ -1714,7 +1716,10 @@ and, when none fits it, units' last steps.
   the far end of the plan (terrain from the near end: the build Mac's next units wait on it), a
   job's worth (units: as many as it asks). A job it still has no room for
   once its caches are emptied goes back.
-- **The same app:** a helper says which app it runs; on an older one than the build Mac's agent
+- **The same app** (with the pool on, its app rule: docs/pool.md §6.1; an app from before the 3D
+  buildings drops their records and refuses their hand-offs, so both Macs run one with them before
+  the lead may move; from it on, the records keep the steps' they don't know, `build::Keys::other`):
+  a helper says which app it runs; on an older one than the build Mac's agent
   (its updater hasn't run yet) it gets nothing (409, why in words: its status shows it), since its
   work would be recorded under keys newer code made; on a newer one (the build Mac's agent finishing
   a job on the last) it builds, since a step the newer app changed is built again once the build
@@ -1893,8 +1898,12 @@ between jobs into the other way. On:
    helper's hand-offs wait to be merged (their areas counted as built, their files not yet in the
    manifest). What the trains', the landmarks' and the 3D buildings' chains made goes out with the
    next round's catalog; after the last unit, a catalog follows any chain's change, but while the
-   3D buildings' chain has work left, at most an hour after the last round began (not a catalog for
-   each of their jobs). While
+   3D buildings' chain has work left (their sources' fetch aside: it changes nothing served, and
+   one failing for good would hold every catalog to the hour), at most an hour after the last
+   round began (not a catalog for each of their jobs), unless a region waits to go out: the
+   buildings never hold a region back. A round fixes the 3D buildings' packs as it begins, with
+   the units (`out::AS_OF_OUTPUTS`): those made meanwhile go out with the next, so its catalog isn't
+   made again as their jobs end. While
    `inputs/hold-catalog` exists, it goes to `catalog-held/` instead (and the rounds go by the held
    ones; the first, by the served one).
 6. **Daily:** backup and GC (not while a round is under way: the units it reads as they were may

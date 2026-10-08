@@ -414,8 +414,8 @@ In `agent::build` (B2), beside the others (`bld_targets`, `bld_work`):
   `BUILDINGS_V`; both 2 since B1's review: an outline whose parts are all underground is no longer
   flagged as having parts; rule 3's bound, the copies, the walls): defined in `pipeline::bld` (B1),
   as `TREES_V` is in `pipeline::treepacks`; `BLD_FETCH_V = 1` in `agent::build`.
-- `Keys` has `bldprep` and `buildings` (the step `bldtiles`'s: `buildings` is the roadside
-  buildings' worldwide step, kept with the lo keys), maps by z6 tile as `unit` and `pack` are;
+- `Keys` has `bldprep` and `bldtiles` (the design's `buildings`: that's the roadside buildings'
+  worldwide step, kept with the lo keys), maps by z6 tile as `unit` and `pack` are;
   `Keys::map`, `recorded` and `record` take them, and a prune forgets them ("bldprep 6/x/y",
   "bldtiles 6/x/y").
 - **`bldprep T`'s key:** `bldprep {BLDPREP_V}`, the release, and for each downloaded file with a row
@@ -423,7 +423,10 @@ In `agent::build` (B2), beside the others (`bld_targets`, `bld_work`):
   those row groups' indexes, and the GHSL tiles meeting T by name and size: `pipeline::bld::sources`
   reads `buildings.json`, `footers.json.gz` and GHSL's `index.json`, a file listed only when its
   footer has its ETag, and `agent::input_digests` puts each tile's as "bldprep 6/x/y" in the plan's
-  `inputs` (worked out again only when an index's size or time changes; "bld-release" says whether
+  `inputs` (worked out again only when an index's size or time changes, a file far from a tile
+  passed over by its box first; a listed file whose footer is missing or another object's named
+  "stale" in the reads of the tiles its listed box meets, where bldprep.py fails on it, and passed
+  over elsewhere, as bldprep.py passes it over; no GHSL index, no GHSL tile; "bld-release" says whether
   they read: the release, "" before any download, "?" when they can't be read now, the chain then
   waiting and the status saying why). A file fetched later (the coverage grew) changes the key of
   the tiles it meets; an unchanged result keeps its content name, so nothing after it reruns.
@@ -472,10 +475,16 @@ Built in B2 (`agent::build::bld_work`, listed by `plan`):
   them: their packs go out with the next round's catalog, as the trains' and landmarks' outputs do.
   After the last unit a catalog follows any chain's change, but while the 3D buildings' chain has
   work left, a round (and its catalog) at most an hour after the last began: the worldwide build's
-  ~25 `bldtiles` jobs don't each make a catalog. A region can reach the map before its buildings,
-  which follow with a later round.
+  ~25 `bldtiles` jobs don't each make a catalog. Never for a region done that the map lacks: its
+  round begins at once. Nor for the fetch alone (it changes nothing served, and one failing once
+  the release has left S3 would hold every catalog to the hour). A round fixes the buildings'
+  packs as it begins, with the units (`out::AS_OF_OUTPUTS`), so a `bldtiles` job ending meanwhile
+  doesn't change its catalog; they go out with the next. A region can reach the map before its
+  buildings, which follow with a later round.
 - **Batches:** a fixed number of z6 tiles a job, as the other steps have (`agent::batch_size`):
-  `bldprep` 8, `bldtiles` 16. The design weighed them by building counts; B1–B2's runs make a dense
+  `bldprep` 8, `bldtiles` 16; 2 and 4 while the regions' own work (terrain, slope, tree cover,
+  units) is left (`agent::job_size`), so a job of theirs beside it or a helper's ends within
+  minutes. The design weighed them by building counts; B1–B2's runs make a dense
   tile's `bldprep` about a minute on the build Mac (68 s for Kantō's 30.3 M rows) and its
   `bldtiles` about 10 s, so a fixed count keeps a job within minutes, as leases and pausing want.
 - **Status:** the checklist's line "Raising the 3D buildings" (`build::BUILDINGS`: the tiles'
@@ -554,7 +563,8 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
   12–14); the app reads the tiles from a host of their own (`buildings.localhost` on this Mac).
 - **Mirror** (B2): a copy group of its own after the other hi packs (`store::mirror::groups`,
   group 5), so a Mac's mirror has the roads and terrain first; on a Mac whose budget runs out first
-  (the M1's) buildings are left out, and the server reads them from the NAS. They're never
+  (the M1's) buildings are left out, and the server reads them from the NAS; when room runs short,
+  they're let go first within their class (before the never-used roads and terrain). They're never
   essentials (no root or lo packs); a kept area keeps them as every layer's hi packs (plan.md §4).
 - **Devices** (B2): the iPad's service worker keeps versioned tiles it has shown (12,000 files at
   most); the building tiles have a cache of their own (`bld`, the last 2,000 files: a city's z14
@@ -570,6 +580,9 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
 
 ### 3.6 Sharing the work
 
+- **Older apps:** an app from before B2 drops the steps' records when it saves `jobs.json` and
+  refuses a hand-off of them: both Macs run B2's app before the pool's lead may move (pool.md
+  §6.1). From B2 on, `Keys` keeps records it doesn't know (`other`).
 - **Helper Macs** (today's M1; any member in `docs/pool.md`): both steps are shared steps (B2,
   `agent::claims::SHARED`, last in its order), offered from the far end as terrain and units are;
   a hand-off may save only its tiles' files (`coord::saves`: `work/bld/6-x-y` for `bldprep`,

@@ -200,6 +200,13 @@ A term is a file made once with create-new and never changed: `state/build/terms
   development build (`scenic lead take --force --downgrade`: `term::forced`, its `how` saying "the
   owner's downgrade"). A lead that sees a newer app installed restarts into it (as now) and
   re-asserts; one restarted into an older app stands down (§6.6).
+- **The 3D buildings and older apps** (docs/buildings3d.md §3.6): an app from before them doesn't
+  know their steps. Leading, it drops their records from `jobs.json` as it saves it (their tiles
+  then built again, about an hour of the build Mac's, once a newer app leads), and refuses a
+  member's hand-off of them (not a step it shares). So both Macs run an app with them before the
+  lead may move to either, and an owner's downgrade past them costs that rebuild. From that app on,
+  the records keep what they don't know (`build::Keys::other`), so a later step's records outlive
+  a downgrade.
 
 ### 6.2 Records per term
 
