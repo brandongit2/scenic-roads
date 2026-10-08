@@ -712,8 +712,10 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
      that has phase 1. It checks the switch isn't on, none of the pool's files from an earlier
      time are there (`state/build/terms/`, `state/build/term/`, `state/build/lead.json`,
      `state/journal/`, `state/pool/members/`, `state/pool/mail/`, `state/coord/`),
-     `state/build/writer` names a Mac (term 1's maker), and every agent heard from in ten minutes
-     runs this app (`--force` passes that over); then makes `state/pool/enabled`. Each agent
+     `state/build/writer` names a Mac (term 1's maker), every agent heard from in ten minutes
+     runs this app, and none runs a job (a job started before the switch saves as before, which
+     the pool refuses: `scenic pause` and wait; `--force` passes these two over); then makes
+     `state/pool/enabled`. Each agent
      restarts into the pool between jobs: the build Mac makes term 1 from today's files, takes it
      up and leads (its status's `pool`: `role` lead, `term` 1), the M1 works as a member (its helper
      status's `pool`). `scenic pool status` says how it stands. The first catalog waits for the

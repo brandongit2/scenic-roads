@@ -1122,8 +1122,11 @@ pub fn switch_on(root: &Path, app: &str, force: bool) -> Result<String> {
             continue;
         }
         anyhow::ensure!(force || st.app == app, "{f}: {} runs app {}, not this one ({app}), which has the pool: update it first (or --force)", st.host, st.app);
+        // (A job started before the switch saves as before when it ends, which the pool refuses:
+        // its work would be lost and done again.)
         if let Some(j) = st.job.as_ref().or(st.beside.as_ref()) {
-            said.push(format!("{} runs {}: it joins once that ends (its work is handed off then)", st.host, j.id));
+            anyhow::ensure!(force, "{} runs {}: its save would be refused once the pool is on (`scenic pause`, wait for it to end, then switch on; or --force, its work done again)", st.host, j.id);
+            said.push(format!("{} runs {}: forced, its save is refused and it's done again under the pool", st.host, j.id));
         }
     }
     std::fs::create_dir_all(root.join("state/pool")).context("make state/pool")?;
