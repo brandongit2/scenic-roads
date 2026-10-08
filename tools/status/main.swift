@@ -102,6 +102,163 @@ struct Own: Decodable {
     let host: String
     let beat: Int
     let caches: Caches?
+    /// This Mac in the pool, while it's on (crates/pipeline/src/agent/mod.rs PoolView).
+    let pool: OwnPool?
+}
+
+/// This Mac in the pool: its member, and the pool as the controls show it (docs/pool.md §10, §11;
+/// crates/pipeline/src/agent/lead.rs View; agents from 2026-10-08 on).
+struct OwnPool: Decodable {
+    let member: String
+    let lead: PoolView?
+}
+
+struct PoolView: Decodable {
+    let at: Int
+    let term: Int
+    let lead: LeadOf?
+    let leading: Bool
+    let members: [PoolMember]
+    let takeover: TakeoverNeeds?
+    let no_lead: String?
+    let handing: Handing?
+    let offer: PoolOffer?
+    let auto: Bool?
+    let asked: LeadAsked?
+    let change: LeadChange?
+}
+
+struct LeadOf: Decodable {
+    let term: Int
+    let member: String
+    let host: String
+    let app: String
+    let since: Int
+    let how: String
+}
+
+struct PoolMember: Decodable {
+    let member: String
+    let host: String
+    let app: String
+    let beat: Int
+    let me: Bool?
+    let leads: Bool?
+    let state: String
+    let out_of_touch: Bool?
+    let away: Bool?
+    let can_lead: Bool
+    let why_not: String?
+}
+
+struct TakeoverNeeds: Decodable {
+    let refused: String?
+    let force: String?
+    let downgrade: String?
+}
+
+struct Handing: Decodable {
+    let to: String
+    let host: String
+    let term: Int
+    let stage: String
+    let since: Int
+}
+
+struct PoolOffer: Decodable {
+    let to: String
+    let host: String
+    let why: String
+}
+
+struct LeadAsked: Decodable {
+    let by: String
+    let at: Int
+    let since: Int
+    let state: String
+    let said: String
+}
+
+struct LeadChange: Decodable {
+    let at: Int
+    let said: String
+}
+
+/// What a lead item does when chosen.
+enum LeadAction {
+    /// Hand the lead to a member (its id; its host; whether it's away, to warn).
+    case give(String, String, Bool)
+    /// This Mac takes the lead over, confirming first: since when the lead's been gone, and the
+    /// owner's force and downgrade, each with why, when they're needed.
+    case take(String, String?, String?)
+}
+
+/// A lead item of the menu (docs/pool.md §11): its title, whether it can be chosen and why not, what
+/// it does, and its submenu's items.
+struct LeadItem {
+    let title: String
+    var enabled = true
+    var tip = ""
+    var action: LeadAction? = nil
+    var children: [LeadItem] = []
+}
+
+/// The pool's items for this Mac's menu: on the lead, "Hand the Build To ▸" its members, each with
+/// its state, those that can't lead greyed with why; on another member, "Make This Mac Lead" and,
+/// with no lead in touch, "Take Over the Build…"; the proactive offer on every Mac; an ask under way.
+func leadItems(_ v: PoolView, me: String) -> [LeadItem] {
+    var out: [LeadItem] = []
+    if let a = v.asked, a.state == "passed" || a.state == "going" {
+        out.append(LeadItem(title: "\(a.said)…", enabled: false))
+    }
+    if let o = v.offer {
+        out.append(LeadItem(title: "Hand the Build to \(o.host)", tip: "\(o.why), and \(o.host) is home on power\((v.auto ?? false) ? "; handed over by itself after five minutes" : "")", action: .give(o.to, o.host, false)))
+    }
+    if v.leading {
+        let others = v.members.filter { $0.me != true }
+        var it = LeadItem(title: "Hand the Build To", enabled: !others.isEmpty && v.handing == nil, tip: v.handing.map { "A handover to \($0.host) is under way" } ?? (others.isEmpty ? "No other Mac in the pool" : ""))
+        it.children = others.map { m in
+            LeadItem(title: "\(m.host) — \(m.state)", enabled: m.can_lead, tip: m.can_lead ? ((m.away ?? false) ? "Away from home: the build's duties run slowly over Tailscale" : "") : (m.why_not ?? ""), action: .give(m.member, m.host, m.away ?? false))
+        }
+        out.append(it)
+    } else {
+        let mine = v.members.first { $0.me == true }
+        if v.no_lead == nil {
+            out.append(LeadItem(title: "Make This Mac Lead", enabled: mine?.can_lead ?? false, tip: (mine?.can_lead ?? false) ? "Asks \(v.lead?.host ?? "the lead") to hand the build to this Mac" : (mine?.why_not ?? "not in the pool yet"), action: .give(me, mine?.host ?? "this Mac", false)))
+        }
+        if let why = v.no_lead, let t = v.takeover {
+            out.append(LeadItem(title: "Take Over the Build…", enabled: t.refused == nil, tip: t.refused ?? why, action: .take(why, t.force, t.downgrade)))
+        }
+    }
+    return out
+}
+
+/// The pool's lines for the menu: who leads, a handover under way, each member and its state, the
+/// last change of lead, the ask's end.
+func poolLines(_ v: PoolView, now: Int) -> [Line] {
+    var out = [Line(text: "", style: .separator)]
+    if let why = v.no_lead {
+        out.append(Line(text: "The pool · term \(v.term) · no lead: \(why)", style: .header))
+    } else if let l = v.lead {
+        out.append(Line(text: "The pool · \(l.host) leads term \(l.term)\(v.leading ? " (this Mac)" : "") since \(clock(l.since))", style: .header))
+    }
+    if let h = v.handing {
+        out.append(Line(text: "Handing over to \(h.host): \(h.stage) since \(clock(h.since))", style: .plain))
+    }
+    for m in v.members {
+        let who = m.me == true ? "\(m.host) (this Mac)" : m.host
+        let lead = m.leads == true ? " · leads" : ""
+        let heard = m.out_of_touch == true && m.beat > 0 ? ", last heard \(duration(now - m.beat)) ago" : ""
+        let why = m.leads != true && !m.can_lead ? " · can't lead: \(m.why_not ?? "")" : ""
+        out.append(Line(text: "\(who)\(lead): \(m.state)\(heard)\(why)", style: .small))
+    }
+    if let a = v.asked, ["done", "failed", "refused"].contains(a.state) {
+        out.append(Line(text: "\(a.state == "done" ? "Done" : a.state == "refused" ? "Refused" : "Came to nothing"): \(a.said) (\(clock(a.since)))", style: .small))
+    }
+    if let c = v.change, now - c.at < 24 * 3600 {
+        out.append(Line(text: "\(c.said) (\(clock(c.at)))", style: .small))
+    }
+    return out
 }
 
 /// This Mac's build caches (crates/pipeline/src/agent/room.rs Caches): what a clear would free
@@ -487,6 +644,8 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         if let f = c.cleared, f.why_not == nil { t += " · cleared \(clock(f.at)), \(gb(f.bytes)) freed" }
         out.append(Line(text: t, style: .small))
     }
+    // The pool: who leads, each member (this Mac's agent's view).
+    if let v = own?.pool?.lead { out += poolLines(v, now: r.now) }
     // The build to the end: each step done, under way, or to come.
     if let steps = s.checklist, !steps.isEmpty {
         let now = [s.job, s.beside].compactMap { $0.map { String($0.id.split(separator: " ").first ?? "") } }
@@ -614,6 +773,12 @@ final class LineView: NSView {
     required init?(coder: NSCoder) {
         fatalError("not from a nib")
     }
+}
+
+/// A lead item's action, carried by its menu item.
+final class LeadBox: NSObject {
+    let action: LeadAction
+    init(_ a: LeadAction) { action = a }
 }
 
 /// What notifications compare: the job, whether it's paused, the last finished job, out of touch.
@@ -829,6 +994,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             now.toolTip = "Every Mac's running job frozen where it is at once; it goes on from there when you resume"
             m.addItem(now)
         }
+        // The pool's lead (docs/pool.md §11): handed over, asked for, taken over; asks to this
+        // Mac's agent (crates/pipeline/src/agent/lead.rs), which checks each as its driver would.
+        if let p = own?.pool, let v = p.lead {
+            for li in leadItems(v, me: p.member) { m.addItem(leadMenuItem(li)) }
+        }
         // This Mac's build caches, cleared on an ask to its agent (crates/pipeline/src/agent/
         // room.rs), which does it between jobs once the build is done, and says what it freed.
         if let c = cachesItem(own, now: Int(Date().timeIntervalSince1970), asked: clearAsked()) {
@@ -885,6 +1055,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
         done([.banner, .sound])
+    }
+
+    func leadMenuItem(_ li: LeadItem) -> NSMenuItem {
+        let it = NSMenuItem(title: li.title, action: li.action != nil && li.enabled ? #selector(leadChosen) : nil, keyEquivalent: "")
+        it.target = self
+        it.isEnabled = li.enabled
+        if !li.tip.isEmpty { it.toolTip = li.tip }
+        it.representedObject = li.action.map { LeadBox($0) }
+        if !li.children.isEmpty {
+            let sub = NSMenu()
+            sub.autoenablesItems = false
+            for c in li.children { sub.addItem(leadMenuItem(c)) }
+            it.submenu = sub
+        }
+        return it
+    }
+
+    /// A lead item chosen: confirmed when it needs it (a Mac away; a takeover, saying since when
+    /// the lead's been gone and what it forces), then asked of this Mac's agent.
+    @objc func leadChosen(_ sender: NSMenuItem) {
+        guard let a = (sender.representedObject as? LeadBox)?.action else { return }
+        switch a {
+        case let .give(id, host, away):
+            if away {
+                let alert = NSAlert()
+                alert.messageText = "Hand the build to \(host)?"
+                alert.informativeText = "\(host) is away from home: the build's duties (planning, merging, publishing) run slowly over Tailscale until it's back."
+                alert.addButton(withTitle: "Hand It Over")
+                alert.addButton(withTitle: "Cancel")
+                NSApp.activate()
+                guard alert.runModal() == .alertFirstButtonReturn else { return }
+            }
+            askLead(["kind": "give", "to": id])
+        case let .take(why, force, downgrade):
+            let alert = NSAlert()
+            alert.messageText = "Take over the build on this Mac?"
+            var info = "No lead: \(why).\n\nThis Mac makes the next term naming itself and leads from the build's records on the NAS; nothing built is lost (the old lead's jobs hand off to the journal, and its leases lapse and go back out)."
+            if let f = force { info += "\n\nForced: \(f)." }
+            if let d = downgrade { info += "\n\nA downgrade: \(d) (its steps may build again what a newer app built)." }
+            alert.informativeText = info
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Take Over")
+            alert.addButton(withTitle: "Cancel")
+            NSApp.activate()
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            askLead(["kind": "take", "force": force != nil, "downgrade": downgrade != nil])
+        }
+    }
+
+    /// Asks this Mac's agent of the pool's lead: its ask file (crates/pipeline/src/control.rs
+    /// LeadRequest), written whole, which the agent takes up within seconds.
+    func askLead(_ ask: [String: Any]) {
+        let name = SCDynamicStoreCopyComputerName(nil, nil) as String? ?? "this Mac"
+        let dir = home.appendingPathComponent("agent")
+        let (tmp, dst) = (dir.appendingPathComponent("lead-request.json.menu.tmp"), dir.appendingPathComponent("lead-request.json"))
+        do {
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: ["ask": ask, "by": "the menu bar on \(name)", "at": Int(Date().timeIntervalSince1970)] as [String: Any]).write(to: tmp)
+            guard rename(tmp.path, dst.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        } catch {
+            post("Couldn't ask about the build's lead", "\(error.localizedDescription)")
+            return
+        }
+        poll()
     }
 
     @objc func pauseBuild(_ sender: NSMenuItem) { ask("drain") }
@@ -980,6 +1214,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func notifyChanges() {
         tellCaches()
+        tellLead()
         guard let r = reply, let s = r.status else { return }
         let now = Seen(job: s.job?.id, paused: s.job?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch, buildPaused: s.pause != nil)
         defer { seen = now }
@@ -1014,6 +1249,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func post(_ title: String, _ body: String) {
         sink(title, body)
+    }
+
+    /// The pool's lead changing, and this Mac's ask of it ending, each told once (the first look
+    /// only sets where they're told from).
+    var seenLead: (term: Int, asked: Int)?
+    func tellLead() {
+        guard let v = own?.pool?.lead else { return }
+        let asked = v.asked.map { ["done", "failed", "refused"].contains($0.state) ? $0.since : 0 } ?? 0
+        defer { seenLead = (v.term, asked) }
+        guard let was = seenLead else { return }
+        if v.term > was.term, let l = v.lead {
+            post("\(l.host) leads the build", "Term \(l.term): \(l.how)")
+        }
+        if asked > was.asked, let a = v.asked {
+            post(a.state == "done" ? "Lead: done" : "Lead: \(a.state == "refused" ? "refused" : "came to nothing")", a.said)
+        }
     }
 
     /// This Mac's caches trimmed after the build, cleared, or not cleared and why, each told once
@@ -1076,6 +1327,12 @@ if args.contains("--print") {
     if let r = roomItem(own, target: roomTarget(), free: diskFree(), disk: diskSize()) {
         print("item: \(r.title) [\(r.choices.map { ($0.on ? "✓" : "") + $0.title }.joined(separator: " | "))]")
     }
+    if let p = own?.pool, let v = p.lead {
+        for li in leadItems(v, me: p.member) {
+            print("item: \(li.title)\(li.enabled ? "" : " (disabled\(li.tip.isEmpty ? "" : ": \(li.tip)"))")\(li.enabled && !li.tip.isEmpty ? " — \(li.tip)" : "")")
+            for c in li.children { print("    ▸ \(c.title)\(c.enabled ? "" : " (disabled: \(c.tip))")") }
+        }
+    }
 } else if let i = args.firstIndex(of: "--render"), i + 1 < args.count {
     // The menu's information lines as views, stacked as the menu stacks them, drawn into a PNG.
     let done = DispatchSemaphore(value: 0)
@@ -1091,6 +1348,9 @@ if args.contains("--print") {
     let (kind, line) = classify(r)
     let views: [NSView] = lines(r, line, own: ownStatus()).map { l in
         l.style == .separator ? NSView(frame: NSRect(x: 0, y: 0, width: LineView.width, height: 11)) : l.style == .bar ? BarView(l.text, fraction: l.fraction) : LineView(l.text, font: fontFor(l.style).0, color: fontFor(l.style).1, wrapAnywhere: l.style == .mono)
+    } + (ownStatus()?.pool.flatMap { p in p.lead.map { leadItems($0, me: p.member) } } ?? []).flatMap { li in
+        [LineView(li.title + (li.children.isEmpty ? "" : "  ▸"), font: .menuFont(ofSize: 0), color: li.enabled ? .labelColor : .tertiaryLabelColor, wrapAnywhere: false)]
+            + li.children.map { c in LineView("      \(c.title)\(c.enabled ? "" : " — \(c.tip)")", font: .menuFont(ofSize: NSFont.smallSystemFontSize), color: c.enabled ? .labelColor : .tertiaryLabelColor, wrapAnywhere: false) }
     } + (r?.log != nil ? ["Open the Build Log"] : []).map { LineView($0, font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false) }
         + [LineView("Open the Map", font: .menuFont(ofSize: 0), color: .labelColor, wrapAnywhere: false)]
     _ = (d, kind)
@@ -1137,6 +1397,12 @@ if args.contains("--print") {
         if let r = roomItem(d.own, target: d.own?.caches?.room?.target?.size, free: d.own?.caches?.room?.free, disk: nil) {
             print("  item: \(r.title) [\(r.choices.map { ($0.on ? "✓" : "") + $0.title }.joined(separator: " | "))]")
             print("    tip: \(r.tip)")
+        }
+        if let p = d.own?.pool, let v = p.lead {
+            for li in leadItems(v, me: p.member) {
+                print("  item: \(li.title)\(li.enabled ? "" : " (disabled: \(li.tip))")")
+                for c in li.children { print("    ▸ \(c.title)\(c.enabled ? "" : " (disabled: \(c.tip))")") }
+            }
         }
         d.notifyChanges()
     }
