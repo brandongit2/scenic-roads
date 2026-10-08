@@ -434,7 +434,12 @@ Tree cover's rows (plan.md §6, Trees): `trees`, a piece per z6 tile (it may add
 that tile's hi packs of the three tree layers and its mid, `work/trees-mid/6-x-y`; a lease of the
 scheme before pieces, a z3 tile's whole run, its lo pack and its z6 tiles' hi packs, for one
 release), any member, four a job; `trees-lo`, an assembly per z3 tile (its lo packs of the three),
-seconds, kept to one Mac as the build Mac keeps it now.
+seconds, kept to one Mac as the build Mac keeps it now. Terrain's and slope's likewise (plan.md §6,
+Global-source layers): `terrain` and `slope`, a piece per z6 tile (its layer's hi pack and its mid,
+`work/terrain-mid/6-x-y` or `work/slope-mid/6-x-y`; a lease of the scheme before, an area's whole
+run, its lo pack and its z6 tiles' hi packs, for one release), any member, eight a job, disk 15 GB;
+`terrain-lo` and `slope-lo`, an assembly per z3 tile (its lo pack), kept to one Mac, terrain-lo
+apart from the other steps reading raw tiles (RAW).
 
 The 3D buildings' rows (docs/buildings3d.md §3.6): `bldprep`, per z6 tile (it may add, change or
 remove `work/bld/6-x-y`), memory learned (0.3 GB and 160 B a row read until then), disk 15 GB, the

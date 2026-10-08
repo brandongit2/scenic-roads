@@ -31,7 +31,7 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   before), the one writer of the records (as before), the data plane (§4) and the broker of work
   (§5), on port 8090.
 - **Two kinds of work,** by what a worker can reach:
-  - **Jobs** of the plan (the shared steps': terrain, slope, tree cover's pieces, units, candidates
+  - **Jobs** of the plan (the shared steps': terrain's, slope's and tree cover's pieces, units, candidates
     and peaks, the 3D buildings' bldprep and bldtiles), for workers that mount the NAS (the M1's
     agent). A job saves into
     the store's content-named files as before; its record changes come back as one hand-off.
@@ -165,7 +165,8 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   don't depend on the thread count; no hash-map order in outputs; the real zstd everywhere.
 - **Planned:** staging from packs as a task's (read where the packs lie); the heavy steps cut into
   sample ranges so a slow worker's lease is minutes; more kinds of task (map tiles, landmarks,
-  slope, terrain);
+  slope, terrain: a terrain or slope piece's z9 subtrees, its mid the seam, which no program runs
+  alone yet: docs/plan.md §6);
   the 3D buildings' areas cut smaller (z9, z10) for workers that spare less than a dense area needs.
 
 ## 4. Data: the coordinator's plane
@@ -366,7 +367,7 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
 
 ## 8. Native workers (built)
 
-- **The M1** asks for the shared steps' jobs (terrain, slope, tree cover's pieces, units,
+- **The M1** asks for the shared steps' jobs (terrain's, slope's and tree cover's pieces, units,
   candidates, peaks, the 3D buildings' bldprep and bldtiles: docs/plan.md §8, Two Macs) and tasks
   (tails, the 3D buildings' areas) over HTTP. A job runs the build Mac's own command for its step,
   its saves handed back through the coordinator; a task runs as `scenic run-task` (its files fetched

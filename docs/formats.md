@@ -677,7 +677,12 @@ class, id) within a tile. The client sends the id with the clicked point.
   of the tile, by column then row, `<layer>-8-<x>-<y>` for each of cover, height and leaf whose
   zoom-8 WebP tile it made, then `tops-8-<x>-<y>`, its zoom-8 values: "TREETOP1", u32 x, u32 y, then
   zstd of cover and height, f32 × 65,536 each, and the five leaf-type counts, u16 × 65,536 each,
-  little-endian).
+  little-endian); `work/terrain-mid/6-x-y` (sectioned: a terrain piece's mid, what its z3 tile's
+  assembly reads; meta `{fmt: 1, step: "terrain", tile: "6/x/y", v}`, `v` `TERRAIN_V`; per z9 tile
+  of the piece made, by column then row, `quad-9-<x>-<y>`: its 2×2 means, f32 × 128 × 128 row by
+  row, little-endian; then `lake-ids`, u64, and `lake-levels`, f32, the piece's lakes' levels by
+  id); `work/slope-mid/6-x-y` (sectioned: a slope piece's mid; meta `{fmt: 1, step: "slope", tile,
+  v}`, `v` `SLOPE_V`; `<z>-<x>-<y>`, each of its z6–8 tiles' PNG as stored, by zoom, column, row).
 - **Other sources:** `sources/items/<date>/{facts,views,meta}.json`; the answers Wikidata and
   Wikipedia gave for the pass (pipeline::answers; not content-named, rewritten whole as a step
   starts and ends, tar then zstd with its checksum; one that doesn't read whole moved aside as
@@ -876,7 +881,8 @@ class, id) within a tile. The client sends the id with the clicked point.
   conds}], takeover: {refused, force, downgrade}, no_lead, handing: {to, host, term, stage, since},
   offer: {to, host, why}, auto, asked, change}`);
   `state/build/{manifest,jobs,pending,summaries,pause}.json` (`jobs.json`: the job keys, by step,
-  target → key: `terrain`, `slope` (z3 tiles), `unit`, `pois`, `peaks`, `pack` (z6 tiles), `lo`
-  (z3 tiles, and the worldwide steps' under their names), `trees` (tree cover's pieces, z6 tiles),
-  `trees_lo` (their assemblies, z3 tiles), `catalog`, `catalog_held`).
+  target → key: `terrain`, `slope` (their pieces, z6 tiles; an area's whole run's records, z3 tiles,
+  from before), `terrain_lo`, `slope_lo` (their assemblies, z3 tiles), `unit`, `pois`, `peaks`,
+  `pack` (z6 tiles), `lo` (z3 tiles, and the worldwide steps' under their names), `trees` (tree
+  cover's pieces, z6 tiles), `trees_lo` (their assemblies, z3 tiles), `catalog`, `catalog_held`).
 - **The app:** `app/current.json` and `previous.json`: `{version, files, sha256}`.
