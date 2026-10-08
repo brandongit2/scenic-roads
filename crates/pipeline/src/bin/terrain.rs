@@ -219,6 +219,15 @@ fn scan() -> Result<()> {
         let v: Vec<u32> = q.split('/').filter_map(|s| s.parse().ok()).collect();
         (v.len() == 3 && v[0] == 3).then(|| (v[1], v[2]))
     }).collect());
+    // (`--z6 <file>`: only those z6 tiles made, `6/x/y` a line; the others' z9 tiles, for their z3
+    // pack's coarser levels, read from `--fixed-out` where it has them made by an earlier run.)
+    let z6: Option<HashSet<(u32, u32)>> = match opt("--z6") {
+        Some(f) => Some(std::fs::read_to_string(f)?.lines().filter_map(|l| {
+            let v: Vec<u32> = l.trim().split('/').filter_map(|s| s.parse().ok()).collect();
+            (v.len() == 3 && v[0] == 6).then(|| (v[1], v[2]))
+        }).collect()),
+        None => None,
+    };
     // (The sources, as the terrain job opens them, from the NAS read only: nothing fetched.)
     let opened = if args.iter().any(|a| a == "--bare") {
         None
@@ -315,6 +324,34 @@ fn scan() -> Result<()> {
             let mut nine = Levels::default();
             let mut lakes_q: HashMap<u64, f32> = HashMap::new();
             for &(tx, ty) in ts {
+                if z6.as_ref().is_some_and(|s| !s.contains(&(tx, ty))) {
+                    // (Made before: its z9 tiles as stored there, against AWS's.)
+                    if let Some(out) = fixed.as_ref() {
+                        let mt = pipeline::terrain_pack::ManifestTiles::new(out, "terrain");
+                        if mt.has(6, tx, ty).unwrap_or(false) || out.get(&format!("layers/terrain/hi/6-{tx}-{ty}")).is_some() {
+                            let raw = fresh();
+                            for x in tx * 8..(tx + 1) * 8 {
+                                for y in ty * 8..(ty + 1) * 8 {
+                                    let (Some(st), Some(rw)) = (mt.get(9, x, y)?, raw.get(9, x, y)?.0) else { continue };
+                                    let (Ok(e), Ok(before)) = (decode_terrain_png(&st), decode_terrain_png(&rw)) else { continue };
+                                    let mut q = vec![0f32; 128 * 128];
+                                    for j in 0..128 {
+                                        for i in 0..128 {
+                                            q[j * 128 + i] = (e[2 * j * 256 + 2 * i] + e[2 * j * 256 + 2 * i + 1] + e[(2 * j + 1) * 256 + 2 * i] + e[(2 * j + 1) * 256 + 2 * i + 1]) * 0.25;
+                                        }
+                                    }
+                                    let moved: Vec<u16> = e.iter().zip(&before).enumerate().filter(|(_, (a, b))| !((*a - *b).abs() <= 0.5)).map(|(i, _)| i as u16).collect();
+                                    nine.3.insert((x, y), q);
+                                    if !moved.is_empty() {
+                                        nine.2.insert((x, y), Repaired { e, moved });
+                                    }
+                                }
+                            }
+                            done_with(raw);
+                        }
+                    }
+                    continue;
+                }
                 let raw = fresh();
                 let mut b = Levels::default();
                 let mut lakes = HashMap::new();
@@ -337,6 +374,8 @@ fn scan() -> Result<()> {
                         (z, x, y, b, n)
                     });
                     pipeline::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, tx, ty), &mut it)?;
+                    // (Saved at once: a viewer of the folder sees each z6 tile as it's made.)
+                    out.save()?;
                 }
                 nine.0.extend(b.0);
                 nine.1.extend(b.1);
@@ -673,7 +712,8 @@ impl Scan {
         let o2 = decode_terrain_png(&png2).unwrap_or_default();
         let mut again = o2.clone();
         let cz = coarse.over(z, x, y);
-        let (rb, bb) = repair_terrain_with(&mut again, z, lat, cz.as_deref());
+        let north = self.opened.as_ref().is_some_and(|o| pipeline::terrain_pack::blends_north(&o.sources(None), z, y));
+        let (rb, bb) = repair_terrain_with(&mut again, z, lat, if north { None } else { cz.as_deref() });
         if !bb.is_empty() {
             // (Its second pass's blobs too, marked: rows with pixels negated.)
             let bb: Vec<Blob> = bb.into_iter().map(|b| Blob { pixels: b.pixels, rise: -b.rise, ..b }).collect();

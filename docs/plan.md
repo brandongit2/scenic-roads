@@ -800,16 +800,19 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     `repair_terrain_with`, after the blobs' rules, in rounds until one changes nothing): where AWS's
     sources meet, a missing-data marker interpolated in leaves a tower 300 m and more out of the
     pixel beside it next to a pit to sea level (Maryland's 880 m tower at z9, Casco Bay's ±700 m),
-    or a tower alone on the shore 1 km out of the pixels beside it (Yakutat's 6,097 m): the cluster
-    is clamped into the middle half of the ground around it. A region of a z10–12 tile walled all
+    or a tower alone on the shore 1 km out of the pixels beside it (Yakutat's 6,097 m), or a needle
+    2.5 pixel widths and 300 m out of every pixel beside it: the cluster is clamped into the middle
+    half of the ground around it. A region of a z10–12 tile walled all
     round by sharp steps of one height, standing up out of ground that isn't water, that AWS's z9
     tile over it doesn't show (a patch of a source with another datum, or a coarse fill standing
-    up off the shore) is moved down by its step. AWS's tiles alone.
+    up off the shore) is moved down by its step. AWS's tiles alone. The whole repair runs once more
+    on each tile as stored, after GLO-30 and the water (`terrain_pack::repair_stored`), so the
+    stored tile is one it changes nothing in.
   - **North of 60°N, GLO-30** (crate::terrain_north): AWS mixes an ellipsoidal source (ArcticDEM's,
     most likely) with sea-level ones there, so lakes and patches stand the geoid's height (10–50 m)
     off the land around them (Kivalliq's lakes 47 m up, Ellesmere's terraces 12.4 m), its sea
     surface is 9 to 20 m up, and voids its coarse layer fills at sea level (Hans Island's top). Each
-    terrain tile is resampled from GLO-30 (EGM2008 heights, 30 m, its water flattened; bilinear
+    terrain tile of z9 and finer (z8 and coarser are made from them) is resampled from GLO-30 (EGM2008 heights, 30 m, its water flattened; bilinear
     between its pixel centres, the mean of up to 6 × 6 samples over a wider pixel) and blended in by
     latitude, a smoothstep from 59.5°N (AWS's) to 60°N (GLO-30's): the band lies south of 60°,
     where AWS's sources are sea-level ones too, so it shows no seam. Where GLO-30 was filled from an
