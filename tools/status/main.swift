@@ -127,9 +127,13 @@ struct RoomView: Decodable {
 
 /// The target (room.rs Target): bytes to keep free, who set it and when.
 struct RoomTarget: Decodable {
-    let bytes: Int
+    /// (A Double: a hand-edited file's past Int's range doesn't drop the whole status.)
+    let bytes: Double
     let by: String
     let at: Int
+
+    /// The bytes, at most the agent's largest target (room.rs MAX_TARGET, 1 PB).
+    var size: Int { Int(min(max(bytes, 0), Double(1 << 50))) }
 }
 
 /// A cache a clear would empty (room.rs Gone): its name in words, its bytes, how it comes back.
@@ -645,8 +649,8 @@ func clearAsked() -> Bool {
 let targetFile = "room-target.json"
 func roomTarget() -> Int? {
     guard let d = try? Data(contentsOf: home.appendingPathComponent("agent").appendingPathComponent(targetFile)),
-          let t = try? JSONDecoder().decode(RoomTarget.self, from: d), t.bytes > 0 else { return nil }
-    return t.bytes
+          let t = try? JSONDecoder().decode(RoomTarget.self, from: d), t.size > 0 else { return nil }
+    return t.size
 }
 
 /// The free space on the disk of the agent's folder, now (as its agent measures it: statfs's).
@@ -654,21 +658,27 @@ func diskFree() -> Int? {
     (try? FileManager.default.attributesOfFileSystem(forPath: home.path))?[.systemFreeSize] as? Int
 }
 
+/// The size of the disk of the agent's folder.
+func diskSize() -> Int? {
+    (try? FileManager.default.attributesOfFileSystem(forPath: home.path))?[.systemSize] as? Int
+}
+
 /// The room target's presets (GB).
 let roomPresets = [50, 100, 150, 200, 300]
 
 /// The menu's Disk Room item (none without an agent here): its title, with the free space and the
 /// target; its tooltip (why the disk is short of it, when it stays so); and its submenu's choices
-/// (a preset's GB, 0 for Off), with the one set checked.
-func roomItem(_ own: Own?, target: Int?, free: Int?) -> (title: String, tip: String, choices: [(title: String, gb: Int, on: Bool)])? {
+/// (a preset's GB, 0 for Off), with the one set checked: none the disk (`disk`, its size) can't hold,
+/// as `scenic room` refuses them.
+func roomItem(_ own: Own?, target: Int?, free: Int?, disk: Int?) -> (title: String, tip: String, choices: [(title: String, gb: Int, on: Bool)])? {
     guard own?.caches != nil else { return nil }
     var title = "Disk Room: \(free.map(gb) ?? "?") free"
     title += target.map { " · target \(gb($0))" } ?? " · no target"
     let r = own?.caches?.room
     var tip = "The free space this Mac's agent keeps: it frees its build caches to it, as far as needed, and starts no job that would cross it, until it's lowered or off."
-    if let t = target, r?.target?.bytes == t, let why = r?.short { tip = "Short of it: \(why)" }
-    if let t = target, r?.target?.bytes == t, let f = r?.toward, f.bytes > 0 { tip += "\nFreed toward it \(clock(f.at)): \(freedText(f))" }
-    var choices = roomPresets.map { (title: "Keep \($0) GB Free", gb: $0, on: target == $0 << 30) }
+    if let t = target, r?.target?.size == t, let why = r?.short { tip = "Short of it: \(why)" }
+    if let t = target, r?.target?.size == t, let f = r?.toward, f.bytes > 0 { tip += "\nFreed toward it \(clock(f.at)): \(freedText(f))" }
+    var choices = roomPresets.filter { p in disk.map { p << 30 < $0 } ?? true }.map { (title: "Keep \($0) GB Free", gb: $0, on: target == $0 << 30) }
     if let t = target, !choices.contains(where: \.on) { choices.append((title: "Keep \(gb(t)) Free", gb: -1, on: true)) }
     choices.append((title: "Off", gb: 0, on: target == nil))
     return (title, tip, choices)
@@ -838,7 +848,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             m.addItem(it)
         }
         // This Mac's disk room target (room.rs Target): its agent keeps that much free.
-        if let r = roomItem(own, target: roomTarget(), free: diskFree()) {
+        if let r = roomItem(own, target: roomTarget(), free: diskFree(), disk: diskSize()) {
             let it = NSMenuItem(title: r.title, action: nil, keyEquivalent: "")
             it.toolTip = r.tip
             let sub = NSMenu()
@@ -1209,7 +1219,7 @@ if args.contains("--print") {
     if let c = cachesItem(own, now: Int(Date().timeIntervalSince1970), asked: clearAsked()) {
         print("item: \(c.title)\(c.enabled || c.tip.isEmpty ? "" : " (disabled: \(c.tip))")")
     }
-    if let r = roomItem(own, target: roomTarget(), free: diskFree()) {
+    if let r = roomItem(own, target: roomTarget(), free: diskFree(), disk: diskSize()) {
         print("item: \(r.title) [\(r.choices.map { ($0.on ? "✓" : "") + $0.title }.joined(separator: " | "))]")
     }
 } else if let i = args.firstIndex(of: "--render"), i + 1 < args.count {
@@ -1270,7 +1280,7 @@ if args.contains("--print") {
             for g in (c.enabled ? d.own?.caches?.each : nil) ?? [] { print("    \(g.what) \(gb(g.bytes)): \(g.back)") }
         }
         // (The target and free space as the agent's status says them.)
-        if let r = roomItem(d.own, target: d.own?.caches?.room?.target?.bytes, free: d.own?.caches?.room?.free) {
+        if let r = roomItem(d.own, target: d.own?.caches?.room?.target?.size, free: d.own?.caches?.room?.free, disk: nil) {
             print("  item: \(r.title) [\(r.choices.map { ($0.on ? "✓" : "") + $0.title }.joined(separator: " | "))]")
             print("    tip: \(r.tip)")
         }
