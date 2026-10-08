@@ -352,7 +352,7 @@ pub(crate) enum Parsed<'a> {
 
 /// Reads one line: `{"n", "kind", "langs", "main", "sub"}`, `kind` one of road, settlement, other
 /// or a list of them, `langs` a language or a list (`zh_Hant` is `zh`). A null or empty main is the
-/// name, a null or empty sub none. Other fields are ignored, but for `via`, which marks lines not
+/// name, a null or empty sub none; an `en` stands for a missing `sub`. Other fields are ignored, but for `via`, which marks lines not
 /// translated yet.
 pub(crate) fn parse_line<'a>(text: &'a [u8]) -> Parsed<'a> {
     let Ok(line) = serde_json::from_slice::<Line<'a>>(text) else { return Parsed::Bad };
@@ -393,7 +393,9 @@ pub(crate) fn parse_line<'a>(text: &'a [u8]) -> Parsed<'a> {
         return Parsed::NotYet;
     }
     let main = nonempty(line.main).unwrap_or_else(|| n.clone());
-    Parsed::Entry(Entry { n, kinds: bits, langs: ls, main, sub: nonempty(line.sub) })
+    // The area tables' `en` on a line by language is its sub (when it has no sub of its own).
+    let sub = if matches!(line.sub, Field::Missing) { nonempty(line.en) } else { nonempty(line.sub) };
+    Parsed::Entry(Entry { n, kinds: bits, langs: ls, main, sub })
 }
 
 /// A field of a line: absent, null, or a string (any other type fails the line).
@@ -617,6 +619,9 @@ mod tests {
         assert_eq!(entry(r#"{"n": "L’Anse", "kind": "other", "langs": "fr", "main": null, "sub": "Cove \"x\""}"#), owned("L’Anse", 4, &["fr"], "L’Anse", Some("Cove \"x\"")));
         // Extra fields of any type, in any order.
         assert_eq!(entry(r#"{"x": [1, {"y": null}], "sub": "S", "langs": ["fr"], "n": "N", "z": 3.5, "kind": "road"}"#), owned("N", 1, &["fr"], "N", Some("S")));
+        // The old `en` is the sub, unless there's a sub.
+        assert_eq!(entry(r#"{"n": "Lac", "kind": "other", "langs": "fr", "en": "Lake"}"#), owned("Lac", 4, &["fr"], "Lac", Some("Lake")));
+        assert_eq!(entry(r#"{"n": "Lac", "kind": "other", "langs": "fr", "en": "Lake", "sub": null}"#), owned("Lac", 4, &["fr"], "Lac", None));
         // The area tables' lines: told apart, left out.
         assert_eq!(parse_line(br#"{"n": "Lac Blanc", "en": "White Lake"}"#), Parsed::Old);
         assert_eq!(parse_line(br#"{"n": "A", "main": "A", "sub": "B", "via": "native"}"#), Parsed::Old);

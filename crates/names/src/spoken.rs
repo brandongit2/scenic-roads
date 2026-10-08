@@ -25,7 +25,7 @@ const ROWS: u32 = 180 * RES;
 
 /// Bumped with any change to the table, the refinements or the raster, so versions made under the
 /// old ones stop matching.
-const RULES: &str = "spoken 1";
+pub const RULES: &str = "spoken 1";
 
 /// A language: its base subtag (`fr`, `yue`), lower-case ASCII, at most four letters (NUL-padded).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -115,15 +115,24 @@ pub fn languages_of(code: &str) -> Option<&'static [Lang]> {
 }
 
 /// The order a name's lines are looked up in: the languages OSM gives the name (`osm`, as read where
-/// it is: [`READ_AS`]), then those spoken where it is (`here`), each once.
+/// it is: [`READ_AS`]; those spoken there first, in the order they're spoken, then the rest as
+/// tagged), then those spoken where it is (`here`), each once.
 pub fn lookup_order(osm: &[Lang], here: &[Lang]) -> Vec<Lang> {
     let mut out: Vec<Lang> = Vec::with_capacity(osm.len() + here.len());
-    for &l in osm {
-        let l = READ_AS
-            .iter()
-            .find(|(from, to)| Lang::parse(from) == Some(l) && Lang::parse(to).is_some_and(|t| here.contains(&t)) && !here.contains(&l))
-            .and_then(|(_, to)| Lang::parse(to))
-            .unwrap_or(l);
+    let mapped: Vec<Lang> = osm
+        .iter()
+        .map(|&l| {
+            READ_AS
+                .iter()
+                .find(|(from, to)| Lang::parse(from) == Some(l) && Lang::parse(to).is_some_and(|t| here.contains(&t)) && !here.contains(&l))
+                .and_then(|(_, to)| Lang::parse(to))
+                .unwrap_or(l)
+        })
+        .collect();
+    let mut osm: Vec<Lang> = mapped;
+    // (Stable: those not spoken here keep their tag order, after.)
+    osm.sort_by_key(|l| here.iter().position(|h| h == l).unwrap_or(usize::MAX));
+    for l in osm {
         if !out.contains(&l) {
             out.push(l);
         }
@@ -420,7 +429,9 @@ mod tests {
         assert_eq!(strs(&lookup_order(&[l("zh")], tw)), ["zh", "nan", "hak"]);
         let fr = languages_of("FR-BRE").unwrap();
         assert_eq!(strs(&lookup_order(&[l("br")], fr)), ["br", "fr"]);
-        assert_eq!(strs(&lookup_order(&[l("de"), l("fr")], fr)), ["de", "fr", "br"]);
+        assert_eq!(strs(&lookup_order(&[l("de"), l("fr")], fr)), ["fr", "de", "br"]);
+        // OSM's languages in the order they're spoken here, whatever the tags' order.
+        assert_eq!(strs(&lookup_order(&[l("br"), l("fr")], fr)), ["fr", "br"]);
         assert_eq!(strs(&lookup_order(&[], &[])), Vec::<&str>::new());
     }
 

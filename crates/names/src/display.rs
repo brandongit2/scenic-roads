@@ -166,7 +166,7 @@ pub struct Translation<'a> {
 /// What the folder holds, for the status and the logs.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Summary {
-    /// Files read.
+    /// Files with lines read (not those of the area tables' lines alone).
     pub files: usize,
     /// Distinct names per file, summed.
     pub names: usize,
@@ -287,6 +287,9 @@ impl Names {
         }
 
         let outcomes = read_all(&jobs);
+        // The area tables' files read now: told once, together.
+        let mut old_files: Vec<String> = Vec::new();
+        let mut old_lines = 0u64;
         for ((rel, _, stat), outcome) in jobs.into_iter().zip(outcomes) {
             match outcome {
                 Outcome::Read(table, report) => {
@@ -298,7 +301,8 @@ impl Names {
                         self.warnings.push(format!("{rel}: unfinished last line ignored"));
                     }
                     if report.old > 0 {
-                        self.warnings.push(format!("{rel}: {} lines of the area tables' format (no kind or languages) left out", report.old));
+                        old_files.push(rel.clone());
+                        old_lines += report.old;
                     }
                     if let Some(t) = self.files.get_mut(&rel) {
                         t.loaded = Some((stat, Arc::new(table), report.ignored, report.old));
@@ -326,6 +330,11 @@ impl Names {
                 }
             }
         }
+        if !old_files.is_empty() {
+            let shown: Vec<&str> = old_files.iter().take(3).map(String::as_str).collect();
+            let more = if old_files.len() > 3 { format!(" and {} more", old_files.len() - 3) } else { String::new() };
+            self.warnings.push(format!("{old_lines} lines of the area tables' format (no kind or languages) left out, in {} files ({}{more})", old_files.len(), shown.join(", ")));
+        }
         if changed {
             self.rebuild();
         }
@@ -337,6 +346,10 @@ impl Names {
         self.tables.clear();
         for (rel, t) in &self.files {
             let Some((stat, table, _, _)) = &t.loaded else { continue };
+            // (A file of the area tables' lines alone is passed over: no empty table kept.)
+            if table.lines() == 0 {
+                continue;
+            }
             self.tables.push(table.clone());
             for l in table.langs() {
                 let key = keys.entry(*l).or_insert_with(|| RULES.to_vec());
@@ -381,7 +394,7 @@ impl Names {
         let mut s = Summary::default();
         for t in self.files.values() {
             let Some((_, table, ignored, old)) = &t.loaded else { continue };
-            s.files += 1;
+            s.files += usize::from(table.lines() > 0);
             s.names += table.len();
             s.lines += table.lines();
             s.ignored += *ignored as usize;
@@ -442,9 +455,10 @@ impl Names {
     }
 
     /// How a `kind` of name shows: `own_en` is the thing's own English (step 1), `osm` the
-    /// languages OSM gives its name, `here` the languages spoken where it is.
+    /// languages OSM gives its name, `here` the languages spoken where it is. An own English that
+    /// is the name itself ([`same_name`]: OpenMapTiles' `name_en` falls back to the name) is none.
     pub fn display<'a>(&'a self, kind: Kind, name: &'a str, own_en: Option<&'a str>, osm: &[Lang], here: &[Lang]) -> DisplayRef<'a> {
-        if let Some(en) = own_en.filter(|e| !e.trim().is_empty()) {
+        if let Some(en) = own_en.filter(|e| !e.trim().is_empty() && !same_name(e, name)) {
             return DisplayRef::new(name, Some(en));
         }
         match self.translation(kind, name, &lookup_order(osm, here)) {
@@ -788,6 +802,10 @@ mod tests {
         assert_eq!(show(&names, Kind::Other, "Église", Some("Leclerc tank"), &[], FR), ds("Église", Some("Leclerc tank")));
         assert_eq!(show(&names, Kind::Other, "Église", Some(" "), &[], FR), ds("Church", None));
         assert_eq!(show(&names, Kind::Settlement, "Montréal", Some("Montreal"), &[], QC), ds("Montréal", None));
+        // An "own English" that is the name itself (OpenMapTiles' name_en without name:en) is none:
+        // the name's line shows.
+        assert_eq!(show(&names, Kind::Other, "Lac Bleu", Some("Lac Bleu"), &[], FR), ds("Lac Bleu", Some("Blue Lake")));
+        assert_eq!(show(&names, Kind::Other, "Église", Some("eglise"), &[], FR), ds("Church", None));
         // Nowhere (the high seas): OSM's languages only.
         assert_eq!(show(&names, Kind::Other, "Lac Bleu", None, &[], &[]), ds("Lac Bleu", None));
         assert_eq!(show(&names, Kind::Other, "Lac Bleu", None, &["fr"], &[]), ds("Lac Bleu", Some("Blue Lake")));
@@ -834,10 +852,11 @@ mod tests {
         d.write("fr/readme.txt", "not a table");
         let mut names = Names::load(&d.0).expect("load");
         let s = names.summary();
-        assert_eq!((s.files, s.lines, s.old), (1, 0, 2));
+        assert_eq!((s.files, s.lines, s.old), (0, 0, 2));
         assert!(s.only_old());
         let w = names.take_warnings();
-        assert_eq!(w, ["fr/places-fr.jsonl: 2 lines of the area tables' format (no kind or languages) left out"]);
+        assert_eq!(w, ["2 lines of the area tables' format (no kind or languages) left out, in 1 files (fr/places-fr.jsonl)"]);
+        assert!(names.tables.is_empty());
         assert_eq!(show(&names, Kind::Other, "Château", None, &[], FR), ds("Château", None));
         d.write("0-converted/french.jsonl", &line("Château", "\"other\"", "[\"fr\"]", Some("Castle"), None));
         let names = Names::load(&d.0).expect("load");
