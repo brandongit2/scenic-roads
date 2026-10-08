@@ -1508,29 +1508,36 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     waits or is under way; and "Freed N GB" once it's done. `scenic clean` waits for the same
     answer.
   - **The owner's room target** (`room::Target`, `room::toward`): set at any moment, right before
-    something that needs disk, with `scenic room <GB>` (`scenic room` shows it and how it stands,
-    `scenic room off` clears it) or the menu bar item's Disk Room (the free space and the target,
-    with presets of 50 to 300 GB and Off). It's per Mac, in its agent's folder
-    (`room-target.json`), since each Mac's disk is its own.
-    - While the disk is short of it and no job runs on the Mac (nor one an earlier agent left), the
-      agent frees its caches toward it, whether or not the build has work left, on a thread of its
-      own as a trim's: the copies by room-making's rules and order (the canopy squares too), then
-      the others a clear empties, the cheapest to fill again first: the copies of the NAS's files,
-      the base packs a file at a time (the least recently used first), the DEM seed whole (only
-      while the NAS has it whole), the heritage clip last (an hour of osmium to make again). Each
-      only as far as needed: the free space is measured again as they go.
+    something that needs disk, with `scenic room <GB>` (1 GB or more, and less than the disk;
+    `scenic room` shows it and how it stands, `scenic room off` clears it) or the menu bar item's
+    Disk Room (the free space and the target, with presets of 50 to 300 GB the disk can hold, and
+    Off). It's per Mac, in its agent's folder (`room-target.json`; a hand-edited one past 1 PB
+    counts as 1 PB), since each Mac's disk is its own.
     - It keeps that floor: a job starts only with the target free past its own room (room-making
       makes both, a sixth of the job's room past them; a job beside another needs both free
-      already), so what a job copies back never crosses it. A job that can't have it waits,
-      saying why in the status's `waiting`, and the jobs after it with it (room-making isn't tried
-      again for ten minutes, or until a job ends); a helper asks the build Mac for no work its disk
-      can't fit past the target, and gives back a lease that can't start for it without a
-      failure held against its targets. Until the target is lowered or off: nothing else refills
-      the caches.
-    - A freeing is tried again when a job has ended since, after ten minutes, or when the target
-      changes. Short of it with nothing more to free (what the NAS hasn't, kept), the status says
-      so (`caches.room.short`, and a line in `waiting`); it's logged and, when it freed anything,
-      in the history.
+      already), so what a job copies back never crosses it. The daily backup and GC keep no
+      target (they read no cache; the NAS's backup doesn't stop for this Mac's disk). A job that
+      can't have it waits, saying why in the status's `waiting`; the jobs after it that need as
+      much room wait with it, unsaid, and one that needs less is tried. Room-making isn't tried
+      again for those for ten minutes, or until a job ends, or the caches have been freed toward
+      them. A helper asks the build Mac for no work its disk can't fit past the target; a lease it
+      can't start for the target alone it gives back without a failure held against its targets,
+      and asks for none for ten minutes (or until a job ends, or the disk has the room).
+    - While no job runs on the Mac (nor one an earlier agent left) and the disk is short of the
+      target, or of the least room a job waiting for it needs past it, the agent frees its caches
+      toward that, whether or not the build has work left, on a thread of its own as a trim's: the
+      copies by room-making's rules and order (the canopy squares too), then the others a clear
+      empties, the cheapest to fill again first: the copies of the NAS's files, the base packs a
+      file at a time (the least recently used first), the DEM seed whole (only while the NAS has
+      it whole), the heritage clip last (an hour of osmium to make again; only while the pass's
+      filtered planet it's clipped from is on the NAS, which a clear checks too). Each only as
+      far as needed: the free space is measured again as they go, and the goal read again, so a
+      target lowered or cleared midway stops it.
+    - A freeing is tried again when a job has ended since, after ten minutes, or when what it's
+      for changes. Short of the target with nothing more to free (what the NAS hasn't, kept), the
+      status says so (`caches.room.short`, and a line in `waiting`), as it does while the NAS
+      isn't reachable (what goes must be kept there); it's logged and, when it freed anything, in
+      the history. Until the target is lowered or off, nothing else refills the caches.
     - It never deletes what a job uses: only while none runs here, and no job starts until it's
       done.
     - **With the mirror's reserve** (`--reserve-gb` in `tools/app/install.sh`: 50 GB on the M1,
