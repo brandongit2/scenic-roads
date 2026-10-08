@@ -539,14 +539,26 @@ dialog.credits p { margin: 8px 0 0; font-size: 10.5px; }
 #layers .rg-act:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
 #layers .rg2 { display: flex; gap: 8px; margin-top: 1px; color: var(--faint); font-size: 10.5px; }
 #layers .rg2s { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* On this Mac (ui/regions.ts, keep.ts): each region's size and whether it's kept, the mirror's
-   state, the kept views. */
+/* Downloads (ui/regions.ts, downloads.ts): the World, each region's size and its Download or Remove,
+   this Mac's room, the downloaded views. */
 #layers .rg-size { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 #layers :is(.rg-size, .kp-line) .ok, #layers .rg-size.ok { color: var(--accent); }
 #layers :is(.rg-size, .kp-line) .on, #layers .rg-size.on { color: var(--text); }
 #layers :is(.rg-size, .kp-line) .warn, #layers :is(.rg-size, .kp-line).warn { color: #f3c77a; }
-#layers .rg1 .rg-keep { margin-left: 2px; }
-#layers .rg1 .rg-keep[hidden] { display: none; }
+#layers .rg-dlslot { display: contents; }
+#layers .rg-dl { flex: none; margin-left: 2px; padding: 0 6px; height: 16px; border: 1px solid var(--line-strong); border-radius: 4px; background: none; color: var(--muted); font-size: 10px; line-height: 14px; white-space: nowrap; }
+#layers .rg-dl:hover:not(:disabled) { color: #fff; border-color: rgba(255, 255, 255, 0.3); background: rgba(255, 255, 255, 0.06); }
+#layers .rg-dl:not(.rm) { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+#layers .rg-dl.arm { color: #f3c77a; border-color: #f3c77a; }
+#layers .rg-dl:disabled { opacity: 0.45; }
+#layers .rg-dl[hidden] { display: none; }
+#layers .rg-static { cursor: default; }
+#layers .rg-static:hover { color: var(--text); }
+#layers .dl-world { margin-top: 3px; }
+#layers .dl-world[hidden] { display: none; }
+#layers .rg2s.warn { color: #f3c77a; white-space: normal; }
+#layers .rg-rowmsg { margin-top: 2px; font-size: 10.5px; line-height: 1.45; color: var(--muted); }
+#layers .rg-rowmsg.warn { color: #f3c77a; }
 #layers .kp-sum { display: grid; gap: 2px; }
 #layers .kp-line { font-size: 10.5px; line-height: 1.45; color: var(--muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 #layers .kp-line b { color: var(--text); font-weight: 500; }
@@ -748,6 +760,7 @@ body.panel-off #viewshed { --vs-left: calc(60px + env(safe-area-inset-left)); }
   #layers .levels .lv { padding: 7px 0; }
   #layers .rg, #layers .cand { padding: 8px 6px; }
   #layers .rg-act { opacity: 1; width: 30px; height: 30px; font-size: 15px; }
+  #layers .rg-dl { height: 30px; padding: 0 10px; font-size: 12px; }
   .climb { padding: 11px 6px; }
   #stats dd a, #stats dt { padding: 3px 0; }
   .resizer { width: 22px; }
