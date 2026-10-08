@@ -18,8 +18,10 @@ use std::path::Path;
 
 /// Step versions: bumping one rebuilds that step everywhere (oldest first, when idle).
 /// Terrain 2: the one-pass repair (roadcore::grid::repair_terrain), on AWS's values before
-/// bathymetry goes to sea level.
-pub const TERRAIN_V: u32 = 2;
+/// bathymetry goes to sea level. 3: GLO-30 north of 60°N, the water flattened from the pass's
+/// basemap (whose content name is in the key: terrain_slope_targets), the seam spikes and walled
+/// patches (docs/plan.md §6, Terrain).
+pub const TERRAIN_V: u32 = 3;
 pub const SLOPE_V: u32 = 1;
 /// 2: elevations up to 6,053 m (`final.u16`, base packs' `elevu`; were clamped at ±3,200 m).
 /// 3: heritage sites and area flags from the pass's heritage-sites job (crate::heritage), the
@@ -736,10 +738,12 @@ pub fn region_states(cov: &Coverage, regions: &[(String, Coverage)], date: &str,
 pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>) -> (Vec<(String, String)>, Vec<(String, String)>) {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     let (mut terrain, mut slope) = (Vec::new(), Vec::new());
+    // (The water's basemap: the latest pass's, pinned by its content name.)
+    let water = crate::terrain_pack::water_pin(m).map_or("-", |(_, c)| c);
     for (q, ts) in &coverage_tiles(cov) {
         let qs = format!("3/{}/{}", q.0, q.1);
         let tlist: Vec<String> = ts.iter().map(|t| format!("6/{}/{}", t.0, t.1)).collect();
-        terrain.push((qs.clone(), h(&[&format!("terrain {TERRAIN_V}"), &tlist.join(" "), &cov.fingerprint(grown_e7(3, q.0, q.1, 20.0))])));
+        terrain.push((qs.clone(), h(&[&format!("terrain {TERRAIN_V}"), &tlist.join(" "), &cov.fingerprint(grown_e7(3, q.0, q.1, 20.0)), crate::terrain_pack::NORTH_PIN, water])));
         // Slope reads the terrain packs of q (as they are now; a terrain job changes them first).
         let mut inputs = vec![format!("slope {SLOPE_V}"), get(&format!("layers/terrain/lo/3-{}-{}", q.0, q.1)).to_string()];
         inputs.extend(ts.iter().map(|t| get(&format!("layers/terrain/hi/6-{}-{}", t.0, t.1)).to_string()));

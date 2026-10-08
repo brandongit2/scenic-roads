@@ -490,7 +490,8 @@ fn main() -> Result<()> {
         "terrain-root" => {
             let raw_dir = PathBuf::from(opt(&args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
             let raw = raw_tiles(&out, &raw_dir);
-            let n = pipeline::terrain_pack::build_root(&mut out, &raw)?;
+            let opened = pipeline::terrain_pack::SourceFiles::open(&out, true)?;
+            let n = pipeline::terrain_pack::build_root(&mut out, &raw, &opened.sources(None))?;
             eprintln!("terrain root: {n} tiles");
             pack_raw(&out, &raw_dir);
         }
@@ -2899,6 +2900,11 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
     // AWS's raw tiles: this Mac's cache, filled from the NAS's store.
     let raw_dir = PathBuf::from(opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
     let raw = raw_tiles(out, &raw_dir);
+    // GLO-30 north of 60°N and the pass's basemap's water (docs/plan.md §6, Terrain), and AWS's z9
+    // tiles for the walled patches.
+    let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;
+    let coarse = pipeline::terrain_pack::Coarse::new(&raw);
+    let src = opened.sources(Some(&coarse));
     // Its parts, for the status (agent::jobs::part): each area's tiles fetched and shaded, then its
     // terrain written; then the raw tiles AWS gave packed onto the NAS. Each says how far it is.
     let n = by_q.len();
@@ -2916,7 +2922,7 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
         pipeline::agent::jobs::part(2 * k, &names);
         let writing = std::sync::atomic::AtomicBool::new(false);
         let t = cost_start();
-        let r = pipeline::terrain_pack::build_q_with(out, &raw, q, &list, &cov, &|what, done, total| {
+        let r = pipeline::terrain_pack::build_q_with(out, &raw, q, &list, &cov, &src, &|what, done, total| {
             if what == "packs" && !writing.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 pipeline::agent::jobs::part(2 * k + 1, &names);
             }

@@ -15,8 +15,9 @@ use std::sync::{Arc, Mutex};
 
 pub const Z: u8 = 8;
 /// Its version: a change to how it's made is a new logical name. 2: the one-pass repair
-/// (roadcore::grid::repair_terrain, through terrain_pack::process).
-pub const V: u32 = 2;
+/// (roadcore::grid::repair_terrain, through terrain_pack::process). 3: with the seam spikes'
+/// rule (AWS's tiles alone: not GLO-30 nor the water, docs/plan.md §10).
+pub const V: u32 = 3;
 
 pub fn logical() -> String {
     format!("sources/terrain-z8-v{V}")
@@ -41,7 +42,7 @@ pub fn build(out: &mut Out, raw: &RawTiles) -> Result<(usize, usize)> {
                 crate::agent::jobs::report(k as u64, (n * n) as u64, "z8 tiles");
             }
             let Some(b) = b else { return Ok((x, y, None)) };
-            let (png, _, _) = process(b, Z, x, y, &HashMap::new(), &HashMap::new());
+            let (png, _, _) = process(b, Z, x, y, &HashMap::new(), &HashMap::new(), &crate::terrain_pack::Sources::default());
             let mut e = decode_terrain_png(&png).with_context(|| format!("8/{x}/{y}"))?;
             crate::peaks::despike(&mut e, Z, crate::peaks::tile_lat(Z, y));
             let mx = e.iter().cloned().fold(0f32, f32::max);

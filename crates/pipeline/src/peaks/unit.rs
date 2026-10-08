@@ -97,7 +97,7 @@ impl UnitZ12 {
                         // A cached tile that doesn't decode is fetched again, once.
                         let b = if decode_terrain_png(&b).is_ok() { b } else { raw.refetch(Z12, x, y)?.with_context(|| format!("AWS's z12 {x}/{y} is gone"))? };
                         anyhow::ensure!(decode_terrain_png(&b).is_ok(), "AWS's z12 {x}/{y} doesn't decode");
-                        let (png, _, _) = crate::terrain_pack::process(b, Z12, x, y, &HashMap::new(), &HashMap::new());
+                        let (png, _, _) = crate::terrain_pack::process(b, Z12, x, y, &HashMap::new(), &HashMap::new(), &crate::terrain_pack::Sources::default());
                         Ok(((x, y), Some(Arc::new(png)), 1))
                     }
                     None => Ok(((x, y), None, 2)),

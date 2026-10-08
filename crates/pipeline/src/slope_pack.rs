@@ -718,7 +718,7 @@ mod tests {
         }
         let raw = RawTiles::with_store(&local, &d.path().join("store"));
         let terrain = d.path().join("terrain");
-        crate::terrain_pack::build_q(&mut Out::open(&terrain, &d.path().join("terrain-scratch")).unwrap(), &raw, q, ts, &cov).unwrap();
+        crate::terrain_pack::build_q(&mut Out::open(&terrain, &d.path().join("terrain-scratch")).unwrap(), &raw, q, ts, &cov, &crate::terrain_pack::Sources::default()).unwrap();
         // Its slope, both ways, each over a copy of the terrain's root: the area's first, then one of
         // its z6 tiles again (as after a change there), the others' slope read as stored (their
         // z6 tiles' quadrants, and their z7–8 tiles kept in the lo pack).
