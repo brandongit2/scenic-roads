@@ -1534,7 +1534,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   - **The owner's room target** (`room::Target`, `room::toward`): set at any moment, right before
     something that needs disk, with `scenic room <GB>` (1 GB or more, and less than the disk;
     `scenic room` shows it and how it stands, `scenic room off` clears it) or the menu bar item's
-    Disk Room (the free space and the target, with presets of 50 to 300 GB the disk can hold, and
+    Disk Room (the free space and the target, with presets of 10 to 300 GB the disk can hold, and
     Off). It's per Mac, in its agent's folder (`room-target.json`; a hand-edited one past 1 PB
     counts as 1 PB), since each Mac's disk is its own.
     - It keeps that floor: a job starts only with the target free past its own room (room-making

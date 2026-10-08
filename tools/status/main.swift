@@ -643,7 +643,7 @@ func diskSize() -> Int? {
 }
 
 /// The room target's presets (GB).
-let roomPresets = [50, 100, 150, 200, 300]
+let roomPresets = [10, 20, 50, 100, 150, 200, 300]
 
 /// The menu's Disk Room item (none without an agent here): its title, with the free space and the
 /// target; its tooltip (why the disk is short of it, when it stays so); and its submenu's choices
