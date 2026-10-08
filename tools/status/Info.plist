@@ -20,5 +20,14 @@
 	<string>14.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<!-- The build page in the panel: the lead's coordinator over plain HTTP, at its Tailscale and
+	     LAN addresses. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Scenic shows the build page from the Mac that leads the build.</string>
 </dict>
 </plist>

@@ -1,6 +1,10 @@
 // Scenic's menu bar item: the build agent's state at a glance (docs/plan.md §8, Status). An icon for
-// the state (building, paused, waiting, nothing to do, a problem, the build Mac out of touch), a
-// menu with the details, and a notification for every change. It asks the map's server on this Mac
+// the state (building, paused, waiting, nothing to do, a problem, the build Mac out of touch); a
+// click opens the panel, the build page in a popover (`Panel`: the lead's `/work/?view`, a viewer
+// only), and a right-click, or the panel's "⋯", the menu: the state in a line, this Mac's downloads
+// and build caches, and the controls below; and a notification for every change. Its timers run in
+// the run loop's common modes, so the polls, the icon and the notifications go on while a menu is
+// open. It asks the map's server on this Mac
 // (`/api/build`), which answers with this Mac's own agent's status when the agent runs here and
 // with the heartbeat the agent copies to the NAS otherwise. This Mac's own agent's status, read
 // from its file, says what its build caches hold, whether they can be cleared now,
@@ -16,20 +20,25 @@
 // from the installed app; it quits when a newer app is installed, and the launcher starts that one.
 //
 //   swiftc -O -swift-version 5 -o Scenic.app/Contents/MacOS/scenic-status tools/status/main.swift
-//   scenic-status --print                   the icon and menu for the status now, as text
+//   scenic-status --print                   the icon, the status's lines and the menu's items now, as text
 //   scenic-status --replay a.json b.json …  the notifications a sequence of answers would send (each
 //                                           file /api/build's answer, with this Mac's agent's
 //                                           own status beside it as "own", and "clear_asked"
 //                                           while an ask to clear its caches waits), and the
 //                                           caches' item
-//   scenic-status --render menu.png          the menu's lines drawn as they lay out (dark), for checking
+//   scenic-status --render lines.png         the status's lines drawn as they lay out (dark), for checking
+//   scenic-status --show panel|menu         runs, and opens the panel (closed 20 s later) or the menu
+//   scenic-status --menu-proof              runs, its polls and notifications printed with the time,
+//                                           a menu held open 25 s between: they go on while it's open
 //   scenic-status --wait-replaced           waits, without a window, until a newer app is installed
-// SCENIC_STATUS_SERVER overrides the server (http://127.0.0.1:8080), SCENIC_HOME the app folder.
+// SCENIC_STATUS_SERVER overrides the server (http://127.0.0.1:8080), SCENIC_HOME the app folder,
+// SCENIC_STATUS_APPEARANCE (light, dark) the system's appearance.
 
 import AppKit
 import CoreServices
 import SystemConfiguration
 import UserNotifications
+import WebKit
 
 let server = URL(string: ProcessInfo.processInfo.environment["SCENIC_STATUS_SERVER"] ?? "http://127.0.0.1:8080")!
 let home = ProcessInfo.processInfo.environment["SCENIC_HOME"].map { URL(fileURLWithPath: $0) } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/scenic")
@@ -45,6 +54,8 @@ struct Reply: Decodable {
     let log: String?
     /// What this Mac has downloaded for offline use (servers from 2026-10-08 on).
     let offline: Offline?
+    /// The build page's addresses, in the order to try (servers from 2026-10-08 on).
+    let pages: [String]?
 }
 
 /// This Mac's downloads (crates/server/src/downloads.rs `summary`).
@@ -642,12 +653,7 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
     out.append(Line(text: "\(s.host) · \(r.local ? "this Mac" : "via the NAS") · heard from \(duration(r.now - s.beat)) ago", style: .small))
     if let app = s.app { out.append(Line(text: "App \(app)", style: .small)) }
     // This Mac's build caches: what a clear would free, and the last trim after the build and clear.
-    if let c = own?.caches {
-        var t = "Build caches here: \(c.clearable.map(gb) ?? "not counted yet")"
-        if let f = c.trimmed, f.why_not == nil { t += " · trimmed \(clock(f.at)), \(gb(f.bytes)) freed" }
-        if let f = c.cleared, f.why_not == nil { t += " · cleared \(clock(f.at)), \(gb(f.bytes)) freed" }
-        out.append(Line(text: t, style: .small))
-    }
+    if let c = own?.caches { out.append(Line(text: cachesLine(c), style: .small)) }
     // The pool: who leads, each member (this Mac's agent's view).
     if let v = own?.pool?.lead { out += poolLines(v, now: r.now) }
     // The build to the end: each step done, under way, or to come.
@@ -714,6 +720,43 @@ func lines(_ r: Reply?, _ line: String, own: Own? = nil) -> [Line] {
         out.append(Line(text: "Regions built: \(done) of \(built.count)", style: .small))
     }
     return out
+}
+
+/// This Mac's build caches in a line: what a clear would free, and the last trim after the build
+/// and clear.
+func cachesLine(_ c: Caches) -> String {
+    var t = "Build caches here: \(c.clearable.map(gb) ?? "not counted yet")"
+    if let f = c.trimmed, f.why_not == nil { t += " · trimmed \(clock(f.at)), \(gb(f.bytes)) freed" }
+    if let f = c.cleared, f.why_not == nil { t += " · cleared \(clock(f.at)), \(gb(f.bytes)) freed" }
+    return t
+}
+
+/// The status's first block, up to its first separator (the state, this Mac's downloads, the
+/// forecast, the jobs, the helpers, power and NAS, this Mac's caches): the panel's own lines while
+/// the build page can't be shown.
+func shortLines(_ all: [Line]) -> [Line] {
+    Array(all.prefix { $0.style != .separator })
+}
+
+/// A repeating timer on the main run loop in its common modes: it fires while a menu is open or a
+/// popover tracks the mouse too (the default mode alone is suspended then, and what it held up all
+/// came at once when the menu closed).
+@discardableResult
+func every(_ secs: TimeInterval, _ f: @escaping () -> Void) -> Timer {
+    let t = Timer(timeInterval: secs, repeats: true) { _ in f() }
+    RunLoop.main.add(t, forMode: .common)
+    return t
+}
+
+/// Once, after `secs`, on the main run loop in its common modes. (Not a block on the main queue: a
+/// menu opened from one would hold that queue, the polls' answers with it, until it closed.)
+func after(_ secs: TimeInterval, _ f: @escaping () -> Void) {
+    RunLoop.main.add(Timer(timeInterval: secs, repeats: false) { _ in f() }, forMode: .common)
+}
+
+/// Where a menu opens under a view: its bottom left corner, a few points down.
+func under(_ v: NSView) -> NSPoint {
+    NSPoint(x: 0, y: v.isFlipped ? v.bounds.height + 4 : -4)
 }
 
 /// A line's font and colour in the menu.
@@ -783,6 +826,298 @@ final class LineView: NSView {
 final class LeadBox: NSObject {
     let action: LeadAction
     init(_ a: LeadAction) { action = a }
+}
+
+/// The panel's background: the window's colour in the panel's appearance (the popover's own
+/// material takes the menu bar's, which follows the wallpaper).
+final class Backdrop: NSView {
+    override func draw(_ r: NSRect) {
+        NSColor.windowBackgroundColor.setFill()
+        r.fill()
+    }
+}
+
+/// A view whose subviews lay out from the top.
+final class Flipped: NSView {
+    override var isFlipped: Bool { true }
+}
+
+/// The panel: the build page in a popover under the icon (docs/plan.md §8, Status). The lead's
+/// page (`/api/build`'s `pages`, the first that answers) with `?view`, so it only ever watches
+/// (web/work/index.html), in a web view of its own that keeps nothing (no stored data: never a page
+/// that helps); made as the popover opens and dropped as it closes, so it costs nothing at rest.
+/// Its height is the page's, within the screen; its links out of the page open in the browser.
+/// While the page can't be shown, the status's first lines, as the menu had them, with a retry. A
+/// footer: the state in a line, Reload, and "⋯", the menu.
+final class Panel: NSObject, NSPopoverDelegate, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    static let pageWidth: CGFloat = 780
+    static let footerHeight: CGFloat = 30
+    let popover = NSPopover()
+    let menu: () -> NSMenu
+    var web: WKWebView?
+    /// The page being shown (its address as `/api/build` gives it), once it answered.
+    var shown: String?
+    var loaded: URL?
+    weak var anchor: NSView?
+    /// When it last closed: the click on the icon that closed it doesn't open it again.
+    var closedAt = Date.distantPast
+    /// Each opening's number: a late answer for an earlier one is dropped.
+    var opening = 0
+    var pages: [String] = []
+    /// The status as last polled: the footer's line, and the lines the fallback shows.
+    var line = ""
+    var all: [Line] = []
+    /// Why the page isn't shown (nil: it is, or it's being looked for).
+    var why: String?
+    let root = Backdrop(frame: NSRect(x: 0, y: 0, width: Panel.pageWidth, height: 400))
+    let state = NSTextField(labelWithString: "")
+    let reload = NSButton(title: "Reload", target: nil, action: nil)
+    let more = NSButton(title: "⋯", target: nil, action: nil)
+    var fallback: NSScrollView?
+
+    init(menu: @escaping () -> NSMenu) {
+        self.menu = menu
+        super.init()
+        popover.behavior = .transient
+        popover.animates = false
+        popover.delegate = self
+        let footer = NSView(frame: NSRect(x: 0, y: 0, width: root.frame.width, height: Panel.footerHeight))
+        footer.autoresizingMask = [.width]
+        state.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        state.textColor = .secondaryLabelColor
+        state.lineBreakMode = .byTruncatingTail
+        state.frame = NSRect(x: 12, y: 7, width: footer.frame.width - 130, height: 16)
+        state.autoresizingMask = [.width]
+        for (b, x, w) in [(reload, 112, 64), (more, 44, 32)] as [(NSButton, CGFloat, CGFloat)] {
+            b.bezelStyle = .accessoryBarAction
+            b.controlSize = .small
+            b.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            b.target = self
+            b.frame = NSRect(x: footer.frame.width - x, y: 4, width: w, height: 22)
+            b.autoresizingMask = [.minXMargin]
+            footer.addSubview(b)
+        }
+        reload.action = #selector(reloadPage)
+        reload.toolTip = "Load the build page again"
+        more.action = #selector(showMenu)
+        more.toolTip = "Pause, the lead, disk room, the map…"
+        footer.addSubview(state)
+        root.addSubview(footer)
+        let vc = NSViewController()
+        vc.view = root
+        popover.contentViewController = vc
+    }
+
+    func toggle(from button: NSView, pages: [String]) {
+        if popover.isShown {
+            close()
+            return
+        }
+        if Date().timeIntervalSince(closedAt) < 0.3 { return }
+        anchor = button
+        self.pages = pages
+        NSApp.activate()
+        popover.contentSize = NSSize(width: Panel.pageWidth, height: 400)
+        // (The system's light or dark, not the menu bar's, which follows the wallpaper.)
+        popover.appearance = NSApp.effectiveAppearance
+        root.appearance = NSApp.effectiveAppearance
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        find()
+    }
+
+    func close() {
+        if popover.isShown { popover.performClose(nil) }
+    }
+
+    /// The tallest the panel's content may be: the screen's room under the menu bar.
+    var maxHeight: CGFloat {
+        ((anchor?.window?.screen ?? NSScreen.main)?.visibleFrame.height ?? 800) - 40
+    }
+
+    /// Asks each address in turn, briefly, and shows the first that answers.
+    func find() {
+        opening += 1
+        let n = opening
+        why = nil
+        dropWeb()
+        guard !pages.isEmpty else {
+            showFallback("No address for the build page: this Mac's server knows none (the NAS out of reach, or no lead running)")
+            return
+        }
+        showFallback(nil)
+        func attempt(_ i: Int) {
+            guard i < pages.count, let u = URL(string: pages[i]) else {
+                DispatchQueue.main.async {
+                    if n == self.opening { self.showFallback("The build page isn't answering (\(self.pages.compactMap { URL(string: $0)?.host }.joined(separator: ", ")))") }
+                }
+                return
+            }
+            var req = URLRequest(url: u)
+            req.timeoutInterval = 2.5
+            req.cachePolicy = .reloadIgnoringLocalCacheData
+            URLSession.shared.dataTask(with: req) { _, resp, _ in
+                if (resp as? HTTPURLResponse)?.statusCode == 200 {
+                    DispatchQueue.main.async { if n == self.opening && self.popover.isShown { self.showPage(self.pages[i]) } }
+                } else {
+                    attempt(i + 1)
+                }
+            }.resume()
+        }
+        attempt(0)
+    }
+
+    func showPage(_ page: String) {
+        guard var c = URLComponents(string: page) else { return }
+        // (A viewer only: index.html's `?view`.)
+        c.queryItems = (c.queryItems ?? []) + [URLQueryItem(name: "view", value: nil)]
+        guard let url = c.url else { return }
+        fallback?.removeFromSuperview()
+        fallback = nil
+        let conf = WKWebViewConfiguration()
+        // Nothing kept from one opening to the next, nor shared with Safari: no "helping" kept.
+        conf.websiteDataStore = .nonPersistent()
+        // The page's height, as it changes, for the panel's.
+        let measure = "new ResizeObserver(() => webkit.messageHandlers.size.postMessage(Math.ceil(document.body.getBoundingClientRect().height))).observe(document.body);"
+        conf.userContentController.addUserScript(WKUserScript(source: measure, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
+        conf.userContentController.add(self, name: "size")
+        let w = WKWebView(frame: NSRect(x: 0, y: Panel.footerHeight, width: root.frame.width, height: root.frame.height - Panel.footerHeight), configuration: conf)
+        w.autoresizingMask = [.width, .height]
+        w.navigationDelegate = self
+        w.uiDelegate = self
+        root.addSubview(w)
+        web = w
+        shown = page
+        loaded = url
+        w.load(URLRequest(url: url))
+    }
+
+    /// `--show panel`: once the page has loaded, whether it scrolls sideways at the panel's width.
+    var checkWidth = false
+
+    func webView(_ w: WKWebView, didFinish n: WKNavigation!) {
+        guard checkWidth else { return }
+        after(3) {
+            w.evaluateJavaScript("[document.documentElement.scrollWidth, document.documentElement.clientWidth, document.getElementById('device')?.hidden, !!document.getElementById('help')]") { r, _ in
+                print("page width (scroll, client), This device hidden, help button: \(r ?? "?")")
+                fflush(stdout)
+            }
+        }
+    }
+
+    /// The web view gone, and its page with it.
+    func dropWeb() {
+        guard let w = web else { return }
+        w.stopLoading()
+        w.navigationDelegate = nil
+        w.uiDelegate = nil
+        w.configuration.userContentController.removeScriptMessageHandler(forName: "size")
+        w.removeFromSuperview()
+        web = nil
+        shown = nil
+        loaded = nil
+    }
+
+    /// The native lines in place of the page: why it isn't shown (nil: it's being looked for), then
+    /// the status's first lines.
+    func showFallback(_ why: String?) {
+        dropWeb()
+        self.why = why
+        fallback?.removeFromSuperview()
+        let lines = [Line(text: why ?? "Looking for the build page…", style: .small)] + shortLines(all)
+        let doc = Flipped(frame: .zero)
+        var y: CGFloat = 8
+        for (i, l) in lines.enumerated() {
+            let v: NSView = l.style == .bar ? BarView(l.text, fraction: l.fraction) : LineView(l.text, font: fontFor(l.style).0, color: fontFor(l.style).1, wrapAnywhere: l.style == .mono)
+            v.setFrameOrigin(NSPoint(x: 0, y: y))
+            doc.addSubview(v)
+            y += v.frame.height + (i == 0 ? 6 : 0)
+        }
+        doc.frame = NSRect(x: 0, y: 0, width: LineView.width, height: y + 8)
+        let h = min(doc.frame.height, maxHeight - Panel.footerHeight)
+        popover.contentSize = NSSize(width: LineView.width, height: h + Panel.footerHeight)
+        let sv = NSScrollView(frame: NSRect(x: 0, y: Panel.footerHeight, width: root.frame.width, height: root.frame.height - Panel.footerHeight))
+        sv.autoresizingMask = [.width, .height]
+        sv.drawsBackground = false
+        sv.hasVerticalScroller = doc.frame.height > h
+        sv.documentView = doc
+        root.addSubview(sv)
+        fallback = sv
+        reload.title = why == nil ? "Reload" : "Retry"
+    }
+
+    /// The status polled again: the footer's line, and the fallback's lines while it shows.
+    func update(reply: Reply?, line: String, all: [Line]) {
+        self.line = line
+        self.all = all
+        state.stringValue = line
+        if let p = reply?.pages, p != pages, popover.isShown, why != nil {
+            // (Addresses it didn't have: tried at once.)
+            pages = p
+            find()
+            return
+        }
+        if let p = reply?.pages { pages = p }
+        if popover.isShown, fallback != nil, web == nil, why != nil { showFallback(why) }
+    }
+
+    @objc func reloadPage() {
+        if let w = web, why == nil { w.reload() } else { find() }
+    }
+
+    @objc func showMenu(_ sender: NSButton) {
+        menu().popUp(positioning: nil, at: under(sender), in: sender)
+    }
+
+    // MARK: the popover
+
+    func popoverDidClose(_ n: Notification) {
+        opening += 1
+        dropWeb()
+        fallback?.removeFromSuperview()
+        fallback = nil
+        why = nil
+        closedAt = Date()
+    }
+
+    // MARK: the page
+
+    func userContentController(_ c: WKUserContentController, didReceive m: WKScriptMessage) {
+        guard m.name == "size", let h = (m.body as? NSNumber).map({ CGFloat($0.doubleValue) }), web != nil else { return }
+        let height = min(max(h, 160), maxHeight - Panel.footerHeight) + Panel.footerHeight
+        if abs(popover.contentSize.height - height) >= 1 || popover.contentSize.width != Panel.pageWidth {
+            popover.contentSize = NSSize(width: Panel.pageWidth, height: height)
+        }
+    }
+
+    /// The page's own addresses stay in it; any other (the map, another site) opens in the browser.
+    func webView(_ w: WKWebView, decidePolicyFor a: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let u = a.request.url, let base = loaded else { return decisionHandler(.allow) }
+        let inPage = u.scheme == base.scheme && u.host == base.host && u.port == base.port && u.path.hasPrefix("/work")
+        if inPage || ["about", "blob", "data"].contains(u.scheme ?? "") {
+            decisionHandler(.allow)
+            return
+        }
+        decisionHandler(.cancel)
+        if a.targetFrame?.isMainFrame ?? true { NSWorkspace.shared.open(u) }
+    }
+
+    /// A link to a new window: in the browser.
+    func webView(_ w: WKWebView, createWebViewWith c: WKWebViewConfiguration, for a: WKNavigationAction, windowFeatures f: WKWindowFeatures) -> WKWebView? {
+        if let u = a.request.url, ["http", "https", "mailto"].contains(u.scheme ?? "") { NSWorkspace.shared.open(u) }
+        return nil
+    }
+
+    func webView(_ w: WKWebView, didFailProvisionalNavigation n: WKNavigation!, withError e: Error) {
+        if w === web { showFallback("The build page didn't load: \(e.localizedDescription)") }
+    }
+
+    func webView(_ w: WKWebView, didFail n: WKNavigation!, withError e: Error) {
+        if w === web, (e as NSError).code != NSURLErrorCancelled { showFallback("The build page stopped: \(e.localizedDescription)") }
+    }
+
+    func webViewWebContentProcessDidTerminate(_ w: WKWebView) {
+        if w === web { showFallback("The build page stopped (its process ended)") }
+    }
 }
 
 /// What notifications compare: the job, whether it's paused, the last finished job, out of touch.
@@ -893,6 +1228,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var own: Own?
     var seenCaches: (trimmed: Int, cleared: Int, declined: Int)?
     var polling = false
+    /// `--menu-proof`: its polls and notifications printed with the time, a menu held open between.
+    var proof = false
+    /// `--show panel|menu`: opened once the first answer is in, the panel closed 20 s later (for
+    /// screenshots, and what the panel costs open and closed).
+    var showAtStart: String?
     /// Whether notifications are posted (not printed, as --replay's are).
     var sinkIsCenter = true
     /// Where notifications go: posted, or printed (--replay).
@@ -917,10 +1257,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             if !asks.isEmpty { center.removeDeliveredNotifications(withIdentifiers: asks) }
         }
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // (SCENIC_STATUS_APPEARANCE: light or dark whatever the system's, for screenshots.)
+        switch ProcessInfo.processInfo.environment["SCENIC_STATUS_APPEARANCE"] {
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        default: break
+        }
+        if let b = item.button {
+            // A click opens the panel (the build page); a right-click, or Control-click, the menu.
+            b.target = self
+            b.action = #selector(clicked)
+            b.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
         show()
         poll()
-        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.poll() }
-        Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in quitIfReplaced() }
+        every(5) { [weak self] in self?.poll() }
+        every(60) { quitIfReplaced() }
+        if proof { menuProof() }
+        if let what = showAtStart {
+            after(2) {
+                self.panel.checkWidth = true
+                if what == "menu" { self.popMenu() } else if let b = self.item.button { self.panel.toggle(from: b, pages: self.reply?.pages ?? []) }
+                // (The panel closed again after 20 s: what it leaves behind measured.)
+                after(20) {
+                    self.panel.close()
+                    print("\(stamp()) panel closed")
+                    fflush(stdout)
+                }
+            }
+        }
+    }
+
+    /// `--menu-proof`: after a few seconds the menu opens and stays open 25 s (closed by a timer of
+    /// its own), then it quits 12 s later; each poll and notification printed with the time. With
+    /// the timers in the common modes the polls go on every 5 s while the menu is open, and each
+    /// notification comes as its answer does, not all at once as the menu closes.
+    func menuProof() {
+        sink = { title, body in print("\(stamp()) notify: \(title) — \(body)") }
+        sinkIsCenter = false
+        after(6) {
+            print("\(stamp()) menu opens")
+            let menu = self.currentMenu()
+            after(25) { menu.cancelTracking() }
+            self.popMenu(menu)
+            print("\(stamp()) menu closed")
+            after(12) { exit(0) }
+        }
     }
 
     func poll() {
@@ -932,6 +1314,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let ok = (resp as? HTTPURLResponse)?.statusCode == 200
             let r = ok ? data.flatMap { try? JSONDecoder().decode(Reply.self, from: $0) } : nil
             DispatchQueue.main.async {
+                if self.proof { print("\(stamp()) poll: \(r.map { classify($0).1 } ?? "no answer")") }
                 self.polling = false
                 self.reply = r
                 self.own = ownStatus()
@@ -951,22 +1334,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             b.image = img
             b.toolTip = line
         }
-        item.menu = menu(kind, line)
+        panel.update(reply: reply, line: line, all: lines(reply, line, own: own))
     }
 
+    /// The panel: the build page in a popover, while it's open.
+    lazy var panel = Panel(menu: { [weak self] in self?.currentMenu() ?? NSMenu() })
+
+    @objc func clicked(_ sender: NSStatusBarButton) {
+        let e = NSApp.currentEvent
+        if e?.type == .rightMouseUp || e?.modifierFlags.contains(.control) == true {
+            panel.close()
+            popMenu()
+        } else {
+            panel.toggle(from: sender, pages: reply?.pages ?? [])
+        }
+    }
+
+    /// The menu, under the icon, where the system puts a status item's menu (given to the item for
+    /// this click alone: a click opens the panel).
+    func popMenu(_ m: NSMenu? = nil) {
+        item.menu = m ?? currentMenu()
+        item.button?.performClick(nil)
+        item.menu = nil
+    }
+
+    func currentMenu() -> NSMenu {
+        let (kind, line) = classify(reply)
+        return menu(kind, line)
+    }
+
+    /// The build page's address for another device: the one the lead's coordinator writes on the
+    /// lead (HTTPS through Tailscale when it's served so), else the first of the lead's addresses
+    /// that isn't this Mac's own.
+    func pageToShare() -> String? {
+        if let page = try? String(contentsOf: home.appendingPathComponent("agent/coord/page"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !page.isEmpty { return page }
+        return (reply?.pages ?? []).first { !$0.contains("://127.0.0.1") }
+    }
+
+    /// The menu (a right-click on the icon, or the panel's "⋯"): what the page can't say (the state
+    /// in a line, this Mac's downloads and its build caches), then the controls.
     func menu(_ kind: Kind, _ line: String) -> NSMenu {
         let m = NSMenu()
         m.autoenablesItems = false
-        for l in lines(reply, line, own: own) {
-            if l.style == .separator {
-                m.addItem(.separator())
-                continue
-            }
+        var info = [Line(text: line, style: .title)]
+        if let o = reply?.offline { info.append(Line(text: offlineText(o), style: .small)) }
+        if let c = own?.caches { info.append(Line(text: cachesLine(c), style: .small)) }
+        for l in info {
             let (font, color) = fontFor(l.style)
             // A line of information, not a button: it wraps rather than being cut short, and
             // neither highlights nor does anything when clicked.
             let it = NSMenuItem(title: l.text, action: nil, keyEquivalent: "")
-            it.view = l.style == .bar ? BarView(l.text, fraction: l.fraction) : LineView(l.text, font: font, color: color, wrapAnywhere: l.style == .mono)
+            it.view = LineView(l.text, font: font, color: color, wrapAnywhere: false)
             m.addItem(it)
         }
         m.addItem(.separator())
@@ -1046,9 +1464,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             it.representedObject = page
             m.addItem(it)
         }
-        // The build's page (its dashboard, and where a device helps), which the build Mac's agent
-        // writes: pasted on another device (Universal Clipboard).
-        if let page = try? String(contentsOf: home.appendingPathComponent("agent/coord/page"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !page.isEmpty {
+        // The build's page (its dashboard, and where a device helps): opened in the browser (the
+        // one the panel shows, else the first address), or pasted on another device (Universal
+        // Clipboard).
+        if let page = panel.shown ?? reply?.pages?.first ?? pageToShare() {
+            let it = NSMenuItem(title: "Open the Build Page in the Browser", action: #selector(openPage), keyEquivalent: "")
+            it.target = self
+            it.representedObject = page
+            m.addItem(it)
+        }
+        if let page = pageToShare() {
             let it = NSMenuItem(title: "Copy the Build Page's Address", action: #selector(copyPage), keyEquivalent: "")
             it.target = self
             it.representedObject = page
@@ -1210,6 +1635,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if let p = sender.representedObject as? String { NSWorkspace.shared.open(URL(fileURLWithPath: p)) }
     }
 
+    @objc func openPage(_ sender: NSMenuItem) {
+        guard let p = sender.representedObject as? String, let u = URL(string: p) else { return }
+        panel.close()
+        NSWorkspace.shared.open(u)
+    }
+
     @objc func openMap(_ sender: NSMenuItem) {
         NSWorkspace.shared.open(server.deletingLastPathComponent())
     }
@@ -1290,6 +1721,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
+}
+
+/// "17:04:05.123", for --menu-proof's log.
+func stamp() -> String {
+    let f = DateFormatter()
+    f.dateFormat = "HH:mm:ss.SSS"
+    return f.string(from: Date())
 }
 
 /// The app version folder this process was started from, resolved when it starts (it's run through
@@ -1413,6 +1851,8 @@ if args.contains("--print") {
 } else {
     let app = NSApplication.shared
     let delegate = AppDelegate()
+    delegate.proof = args.contains("--menu-proof")
+    if let i = args.firstIndex(of: "--show"), i + 1 < args.count { delegate.showAtStart = args[i + 1] }
     app.delegate = delegate
     app.setActivationPolicy(.accessory)
     app.run()
