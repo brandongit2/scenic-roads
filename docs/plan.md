@@ -561,7 +561,10 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
 
 **Devices: an iPhone, an iPad.** Either Mac's map opens on them, at home or away, over the tailnet.
 - **Who's answered:** the server listens on every IPv4 address (and IPv6's loopback) but answers
-  only this Mac, its LAN and the tailnet (`pipeline::net::allowed`); anything else is refused (403).
+  only this Mac, its LAN and the tailnet, also through a proxy on this Mac (`tailscale serve`) from
+  those alone (`pipeline::net::reached`): anything else is refused (403), Tailscale Funnel's requests
+  (the internet's, handed over from loopback) and a forwarded address that isn't one of those
+  included. No key: a device it answers gets the map (the owner's choice, 2026-10-08).
 - **A page elsewhere is never the map's,** in a browser on this Mac or on a device:
   - A request must name the map in its `Host`: an address, localhost or a name under it, or a name
     only a tailnet or a local network resolves (one label; `.local`, `.home`, `.lan`, `.internal`,
@@ -570,24 +573,16 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
   - Cross-origin reads (CORS) are allowed only to this Mac's own pages, whose downloads go to
     `roads.localhost` and the like.
   - So no site can read the map's data or change its regions through a browser that reaches it.
-- **The key** (`crates/server/src/remote.rs`): a request that isn't this Mac's own needs the map's
-  key (`<home>/remote-key`, made once, 0600), except for the app itself (its page, scripts,
-  styles, manifest, service worker and icons). One handed over by a proxy on this Mac (`tailscale
-  serve`: any of `X-Forwarded-For`, `-Host`, `-Proto`, `X-Real-IP`, `Forwarded` or
-  `Tailscale-User-Login` set) is another device's.
-  - The key comes once, in the map's address (`#k=<key>`: a fragment, never sent). The page gives it
-    to `POST /api/auth`, which keeps it in an HttpOnly cookie (`scenic_k`), and drops it from the
-    address. A device without the cookie (an app on the home screen has its own storage), or whose
-    key is refused (a new `remote-key`, the only way to shut devices out), is asked for the address
-    again.
-  - The address is `<home>/map-page`, which the server rewrites when it changes: HTTPS where
-    `tailscale serve` proxies the server's port at the root of an HTTPS port of its own (the app asks
-    for `/api/…`, so not under a path: `tailscale serve --bg --https=8443 http://127.0.0.1:8080`),
-    else the tailnet address. The status menu's Copy the Map's Address and `scenic status` give it.
-  - Only a proxy that says it is one (`tailscale serve`'s HTTPS sets `X-Forwarded-For`) keeps a
-    device's requests from passing for this Mac's own. A plain TCP forward on this Mac would let
-    devices in without the key.
-  - The map's data stays its owner's alone (the licences): without the key, only the app itself.
+- **The address** to open on a device is `<home>/map-page` (`crates/server/src/remote.rs`), which
+  the server rewrites when it changes: HTTPS where `tailscale serve` proxies the server's port at the
+  root of an HTTPS port of its own (the app asks for `/api/…`, so not under a path: `tailscale serve
+  --bg --https=8443 http://127.0.0.1:8080`), else the tailnet address. The status menu's Copy the
+  Map's Address and `scenic status` give it.
+  - Only a proxy that says it is one (`tailscale serve`'s HTTPS sets `X-Forwarded-For`) keeps the
+    requests it hands over from passing for this Mac's own. A plain TCP forward on this Mac would let
+    anything it forwards in.
+  - The map's data stays on the owner's own devices (the licences): anyone on the LAN or the tailnet
+    can open the map, so the LAN is a trusted one.
 - **An app** (`web/public/manifest.webmanifest`, the icons): Share, then Add to Home Screen, full
   screen. Its service worker (`web/public/sw.js`) is registered only over HTTPS (so with `tailscale
   serve`), and never on this Mac's own address (localhost: the Macs have the data themselves). What
@@ -1695,8 +1690,8 @@ and, when none fits it, units' last steps.
   a job on the last) it builds, since a step the newer app changed is built again once the build
   Mac's keys say so.
 - **The contact:** `state/coordinator.json`: the coordinator's addresses (Tailscale's, then the LAN
-  name) and the token (kept on the build Mac) the agents' requests carry (a page helps with its
-  device's own key: docs/workers.md §7); taken off the NAS when the agent stops. A worker reads it again when it can't reach the coordinator or its token is refused.
+  name) and the token (kept on the build Mac) the agents' requests carry (a page helps with no key:
+  docs/workers.md §7); taken off the NAS when the agent stops. A worker reads it again when it can't reach the coordinator or its token is refused.
 - **Leases:** work goes out on a lease (ten minutes, on the coordinator's own clock), renewed by a
   beat each minute while the work goes on, not while it's paused for its conditions (a helper beats
   through its client without the NAS too); a lapsed lease's work is offered again. While the build

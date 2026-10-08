@@ -545,9 +545,8 @@ take it: a page, any member's slot. Jobs are for Macs; tasks are for everyone.
   name for several hosts, would give the iPad's home-screen app one address and no cross-site calls.)
 - **One page, any member.** The page loads from any member; it knows every member's address from the
   pool (the lead's answer, its heartbeats); when its member goes away it reloads from the next that
-  answers, its device's key with it. The devices accepted are the pool's (`state/coord/devices.json`,
-  the same everywhere: every member answers a page's key from it), as is the agents' token
-  (`state/coord/token`).
+  answers (a page carries no key). The agents' token is the pool's (`state/coord/token`, the same
+  everywhere).
 - **Versions.** The page and a broker may run different apps now: the API has a version, and a page
   reloads when its broker's is newer. A task names the programs' build it needs; a broker serves
   them.
@@ -702,10 +701,8 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
        contact (`state/coordinator.json`) off the NAS.
      - **Settling** (§6.4) stops a catalog or GC in flight, stops granting and hands the
        coordinator's state to the step. Nothing asks a handover yet (phase 3).
-     - **Seeding and draining** when it's switched on: the workers' token and the accepted devices
-       copied to `state/coord/` by the first lead (create-new) and from there by every lead's
-       coordinator before it starts, its devices copied back as they change (open pages keep
-       working); the coordinator's local `coord/journal/` (the lead's) and the NAS's
+     - **Seeding and draining** when it's switched on: the workers' token copied to `state/coord/` by
+       the first lead (create-new) and from there by every lead's coordinator before it starts; the coordinator's local `coord/journal/` (the lead's) and the NAS's
        `state/build/handoff/<host>/` (every two minutes) and a helper's `outbox/` (a folder with
        nothing to hand off removed) drained into the journal as its member's entries (term 0: from before the pool;
        an outbox's under its old lease, the others numbered from `agent::pool::DRAINED`, apart).

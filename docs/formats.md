@@ -371,9 +371,9 @@ keep.json               the areas this Mac keeps for offline use (crates/server/
                         outline: [[lon, lat], …] (the ground that was in view), at}]}, `at` in
                         seconds since 1970; written through keep.json.tmp; one that doesn't read is
                         set aside as keep.json.bad
-remote-key              the map's key for other devices (32 hex digits, made once, 0600: docs/plan.md
-                        §4, Devices); map-page: the address to open on one, `<base>/#k=<key>` (0600,
-                        rewritten when it changes: HTTPS where tailscale serve proxies the server)
+map-page                the address to open the map on another device (docs/plan.md §4, Devices;
+                        0600, rewritten when it changes: HTTPS where tailscale serve proxies the
+                        server)
 agent/                  status.json (the build Mac's; a helper writes helper.json, which that Mac's
                         server shows), state.json, round.json (the last round of publishing:
                         {began, regions, last, units: {logical: content name}, over},
@@ -481,13 +481,9 @@ agent/pack-idx/         <hash16>.idx: the indexes of the terrain packs the build
   catalog that has none), `online`, `nas`, `held`, `app`, `agent`, `names` (translation versions),
   `v`, `marks`. The map's meta is `/api/meta`.
 - `/api/names`; `/api/build` (the agent's status: this Mac's when it runs here, else the NAS's copy).
-- Other devices (docs/plan.md §4, Devices): every request but this Mac's own needs the map's key, in
-  the `scenic_k` cookie or `Authorization: Bearer <key>` (else 401, JSON `{"error"}`), but for the
-  app itself: `/`, `/index.html`, `/manifest.webmanifest`, `/sw.js`, `/assets/*`, `/icons/*`,
-  `/api/ping`, `/api/auth`. `POST /api/auth` `{"key": "<key>"}`: 204 with `Set-Cookie:
-  scenic_k=<key>; Path=/; HttpOnly; SameSite=Strict; Max-Age=315360000` (`; Secure` when
-  `X-Forwarded-Proto: https`), else 401. A request from anywhere but this Mac, its LAN and the
-  tailnet is 403, as is one whose `Host` isn't the map's (a public name: "not this map's address")
+- Other devices (docs/plan.md §4, Devices): no key. A request from anywhere but this Mac, its LAN
+  and the tailnet (through `tailscale serve` too, from those alone: never Tailscale Funnel's) is 403
+  ("not from here"), as is one whose `Host` isn't the map's (a public name: "not this map's address")
   or whose `Origin` is another page's ("not from the map's page"). CORS answers only this Mac's own
   origins (localhost, `*.localhost`, a loopback address).
 - Kept areas (the Regions panel's On this Mac, `keep.rs`): `GET /api/keep`: `{mirror, online,
@@ -634,14 +630,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/coordinator.json`: how to reach the build Mac's coordinator, `{urls: [Tailscale's, then
     the LAN name's, "http://…:8090"], token}`; there while its agent runs.
   - On the build Mac, in the agent's folder, `coord/`: `workers-token` (the build's own key, 32 hex
-    digits, mode 600: the Macs' agents and this Mac's menu bar and `scenic devices` use it; `token`,
-    the one pages carried before devices asked, is removed as the agent starts), `page` (the build
-    page's address: the status bar's "Copy the Build Page's Address"), `devices.json` (`{list: [{ask,
-    id, label, hash, code, from, asked, accepted, declined}]}`, mode 600 from the start: the devices
-    that asked to help through the page, `pipeline::coord::devices`; `ask`, the ask's name, 16 hex
-    digits made by the coordinator and never again; `code`, the four digits its page shows; each
-    secret's SHA-256 only; an accepted one's secret is its key, declined ones kept ten minutes,
-    unanswered asks a day; a file that doesn't read is set aside as `devices.json.bad`),
+    digits, mode 600: the Macs' agents use it; `token`, the one pages carried long ago, and
+    `devices.json`, the devices pages once had to be accepted as, are removed as the agent starts),
+    `page` (the build page's address: the status bar's "Copy the Build Page's Address"),
     `leases.json` (`{next, leases: [{id, worker, work: {Job: {step, targets: [[target, key], …]}},
     progress}]}`: the jobs' leases), `costs.json` (`{unit: {peak_mb, secs}}`, `"<step> <target>"` for
     another shared step's job, and `"tail <unit>"` for a unit's last steps as a task),
@@ -703,8 +694,8 @@ class, id) within a tile. The client sends the id with the clicked point.
     `{"Ack": {term, keys, horizon}}`, `{"Passed": term}`, `{"Leads": E}`, `{"HandTo": member}`.
   - `state/coord/term/<E>/state.json`: term E's coordinator, `{leases: {next, leases: [{id, term,
     granted_at, worker, work, progress}]}, costs, failed: [[worker, cost key, unix seconds, times]],
-    pause, pause_at}`; `state/coord/token` and `state/coord/devices.json`: the workers' token and
-    accepted devices, the pool's (copied to each lead's `coord/`); `state/coord/history/<day>/
+    pause, pause_at}`; `state/coord/token`: the workers' token, the pool's (copied to each lead's
+    `coord/`); `state/coord/history/<day>/
     <member>.jsonl`: a lead's history events (as `history.jsonl`'s), its own file.
   - The coordinator's leases (`leases.json`) say their `term` and `granted_at` (unix seconds); a
     grant says its `term`; `/work/done {…, journaled: true}`: the hand-off is in the journal already.

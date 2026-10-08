@@ -202,26 +202,11 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   Address, `scenic status`'s "Build page"): the build at a glance for anyone it answers (this Mac,
   its LAN, the tailnet), with no key; the coordinator answers its reads (`/work/swarm`,
   `/work/history`) without one. A device helps only when its owner asks there ("Help with this
-  tab", kept by that browser: never by default, though a device that helped before the page asked,
-  one that had learned its memory ceiling, keeps helping). The first time, the page asks the build
-  Mac (`/work/join`, `pipeline::coord::devices`) with a secret it makes and alone keeps; the build
-  Mac gives the ask a code of its own making, unlike any other ask's waiting, which only the page
-  and the build Mac show. Its menu bar shows the ask with that code, and a notification with Accept
-  and Decline for that ask alone (or `scenic devices accept <code>`): the owner accepts the ask whose
-  code the device's page shows. Accepted, the secret is that device's key, for a page's tasks and
-  to pause the build, until the owner forgets it there (Devices Helping, or `scenic devices forget
-  <id>`); the device works under one name, what it is and its page's id, whatever it says, and a
-  page's id is one device's (a page whose id another device has takes another and asks again). The
-  page asks, and helps, over the tailnet alone (or HTTPS through `tailscale serve`), never a LAN's
-  plain HTTP, which anyone on its Wi-Fi could read the key from. It waits for the answer, through a
-  reload too; Cancel withdraws the ask; one it couldn't send (the build Mac away or restarting) is
-  sent again, less and less often, until cancelled. A browser's tabs share its ask and its key, one
-  asking at a time; declined, a page from before devices asked stops asking as it opens. Asks are few (eight waiting at most, three from one address, ten an hour from one address:
-  past these, refused, never one waiting dropped), lapse after a day, and are the owner's alone to
-  see: the dashboard's reads and the history don't show them (the history has the owner's answers).
-  There's no key to copy: the build's own key, which pages from before devices asked carried from
-  their address, is no key any more (replaced as the first app with devices started); such a page
-  that helped asks again as it opens. "Stop helping" gives back what it has under way at once. (The old watching-only address,
+  tab", kept by that browser: never by default, though a device that helped before, one that had
+  learned its memory ceiling, keeps helping). Helping and pausing need no key either: any page the
+  coordinator answers may take a page's tasks and pause the build, and works under "page" and the
+  name it gives (what it is and its browser's id: never an agent's). "Stop helping" gives back what
+  it has under way at once. (The old watching-only address,
   `/work/watch/`, leads to `/work/`.) While it helps, its main thread asks for tasks that fit the
   memory the tab spares and beats for every lease; each slot (a Web Worker per core, less one) runs
   a task's programs over an in-memory filesystem (`web/work/runtime.js`, over browser_wasi_shim) and
@@ -324,16 +309,14 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     `application/json` alone, which a page elsewhere can't send without asking first (nothing here
     answers that).
   - Keys, compared in constant time: the Macs' agents carry the workers' token (128 random bits,
-    kept on the build Mac and in the contact on the NAS; the one pages carried before devices asked
-    was replaced once, 2026-10-06). A device that helps through the page carries its own secret,
-    good once the owner accepts it on the build Mac and until the owner forgets it, over the tailnet
-    or HTTPS alone: for a page's tasks (its asks, beats, hand-backs, failures and its tasks' files,
-    all under its one name; what its tasks took no more than a page's 4 GB) and to pause the build
-    (made now by the build Mac's clock, by what it is), nothing else.
+    kept on the build Mac and in the contact on the NAS); a wrong one is refused (401), so an agent
+    with an old one reads the new one. A page carries none: it may take a page's tasks (its asks,
+    beats, hand-backs, failures and its tasks' files, under "page <its name>", never an agent's; what
+    its tasks took no more than a page's 4 GB) and pause the build (made now by the build Mac's
+    clock, said to be the build page's), nothing else.
   - From the build Mac itself only, through no proxy (`tailscale serve` hands the tailnet's
-    requests over from loopback, and says so: `crate::net::own`): the owner's (the devices' asks and
-    answers, with the workers' token) and a running job's (offering tasks, with the agent's own
-    token, never published).
+    requests over from loopback, and says so: `crate::net::own`): a running job's (offering tasks,
+    with the agent's own token, never published).
   - A worker is served only the files of the task it holds, and uploads only into that task's
     folder; request bodies are capped; connections are bounded (at most 512 at once, headers within
     20 s, so idle ones close too, an upload cut after two minutes without a byte, a connection's
@@ -343,9 +326,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
     given twice, across restarts too; an agent's ask to pause can't say it was made more than a
     minute ahead of the build Mac's clock; what a worker says it's doing is kept to 200
     characters, and a worker not heard from for a day, holding nothing, is dropped.
-- **Known limits:** a host on the LAN with several addresses can keep the asks waiting full (eight;
-  three from an address, ten an hour) for a while, an ask refused meanwhile telling its page so; an
-  accepted device's uploads are bounded by the file (8 GB), not by the task.
+- **Known limits:** any device on the LAN or the tailnet can take a page's tasks, hand back wrong
+  outputs for them (a worker's first results are checked against the build Mac's, then one in
+  eight: §7), or pause the build: no keys, the owner's choice (2026-10-08). A page's uploads are
+  bounded by the file (8 GB), not by the task.
 - Licensed data on the owner's own devices isn't redistribution (plan §3, sources' terms).
 
 ## 10. Results
