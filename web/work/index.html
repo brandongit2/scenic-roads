@@ -95,16 +95,21 @@ import { dashboard } from "./dash.js";
 // slot (a Web Worker running the build's WebAssembly programs), and beats for every lease while its
 // slot works. Nothing here asks what device it is: it learns how much memory a tab may use (§6) and
 // takes on what fits.
+//
+// `?view` (the menu bar's panel, tools/status): a viewer only. It never helps, whatever this browser
+// kept or a click asks: "This device" is hidden, no task is asked for, and no other tab's tasks are
+// given back; the page as an app (its service worker) isn't installed either.
 const $ = (id) => document.getElementById(id);
+const viewer = new URLSearchParams(location.search).has("view");
 const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
 
 // Whether this device helps: its owner's choice here, kept. (A device that helped when a page needed
 // the build Mac's yes, one that had learned its memory ceiling, keeps helping; any other starts out
 // watching. The key such a page kept is no more: no key is asked for now.)
-if (store.get("helping", null) === null) store.set("helping", !!(store.get("secret", "") || store.get("token", "")) && store.get("ceiling", null) !== null);
-let helping = store.get("helping", false);
+if (!viewer && store.get("helping", null) === null) store.set("helping", !!(store.get("secret", "") || store.get("token", "")) && store.get("ceiling", null) !== null);
+let helping = !viewer && store.get("helping", false);
 for (const k of ["secret", "token", "asking"]) { try { localStorage.removeItem(k); } catch {} }
-if (location.hash.includes("k=")) history.replaceState(null, "", location.pathname);
+if (location.hash.includes("k=")) history.replaceState(null, "", location.pathname + location.search);
 // (This browser's id, in its name among the build's workers.)
 const newId = () => { const v = Math.random().toString(36).slice(2, 8); store.set("id", v); return v; };
 let id = store.get("id", null) || newId();
@@ -165,6 +170,7 @@ function notes() {
   return out;
 }
 function reap() {
+  if (viewer) return false;
   const [died, hidden, gone] = [[], [], []];
   for (const [t, n] of notes()) {
     if (t === tab || !n || (!n.gone && Date.now() - (n.at || 0) <= 120000)) continue;
@@ -395,6 +401,7 @@ document.addEventListener("visibilitychange", wake);
 // Helping, as this device's owner asks (and kept): its slots, a Web Worker a core, made then. Stopping
 // gives back what it has under way at once (another worker takes it) and stops its programs.
 function startHelping() {
+  if (viewer) return;
   helping = true;
   store.set("helping", true);
   $("helping").hidden = false;
@@ -432,11 +439,12 @@ function stopHelping() {
   if (lock) { lock.release().catch(() => {}); lock = null; }
 }
 $("help").onclick = () => (helping ? stopHelping() : startHelping());
+if (viewer) { $("device").hidden = true; $("help").remove(); }
 
 // The page as an app (sw.js, manifest.webmanifest): kept for when the build Mac doesn't answer, its
 // programs kept by version. A new version taking over (a newly published app): reloaded into it
 // once no task is running. (A first install takes over too: that's no reason to reload.)
-if ("serviceWorker" in navigator && window.isSecureContext) {
+if (!viewer && "serviceWorker" in navigator && window.isSecureContext) {
   let had = !!navigator.serviceWorker.controller;
   // (Asked about whenever the page comes back to the front, and every half hour: an installed app
   // stays open for days.)
