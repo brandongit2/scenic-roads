@@ -3379,6 +3379,7 @@ impl Agent {
         // A 3D buildings tile's rows read (crate::bld::sources::digests), for its jobs' memory.
         let bld_rows = |t: &str| inputs.get(&format!("bldprep-rows {t}")).and_then(|v| v.parse::<u64>().ok());
         let mut offers: Vec<crate::coord::Offer> = Vec::new();
+        let regions = regions_left(&plan);
         // (A terrain area's z6 tiles near the coverage, for its run's expected memory: only when
         // there's terrain to offer.)
         let z6: BTreeMap<String, usize> = if plan.iter().any(|w| w.step == "terrain") {
@@ -3403,7 +3404,7 @@ impl Agent {
                 s @ ("bldprep" | "bldtiles") => bld_rows(t).map_or(first_peak(s), |n| bld_peak(s, n)),
                 s => first_peak(s),
             };
-            offers.push(crate::coord::Offer { step: w.step.clone(), targets: w.targets.iter().map(|(t, k)| (t.clone(), k.clone(), guess(t))).collect(), batch: batch_size(&w.step) });
+            offers.push(crate::coord::Offer { step: w.step.clone(), targets: w.targets.iter().map(|(t, k)| (t.clone(), k.clone(), guess(t))).collect(), batch: job_size(&w.step, regions) });
         }
         // A step's targets offered together, in plan order (the plan lists a step's work by region:
         // a helper takes from the far end of all of it). (A step with nothing left: none offered.)
@@ -4447,9 +4448,10 @@ fn expect_same(w: &build::Work, done: &build::Keys) -> Vec<String> {
 /// A step's targets in batches, each its own job recording its own targets (a failure or a restart
 /// into a new app costs one batch, not the whole wave), with the step's total.
 fn batches(plan: Vec<build::Work>) -> Vec<(build::Work, usize)> {
+    let regions = regions_left(&plan);
     let mut out = Vec::new();
     for w in plan {
-        let (n, total) = (batch_size(&w.step), w.targets.len());
+        let (n, total) = (job_size(&w.step, regions), w.targets.len());
         if total <= n {
             out.push((w, total));
             continue;
@@ -4544,6 +4546,23 @@ fn first_secs(step: &str) -> f64 {
         "bldtiles" => 2.0,
         "catalog" => 60.0,
         _ => 300.0,
+    }
+}
+
+/// Whether the regions' own work is in `plan` (terrain, slope, tree cover, units): the 3D buildings
+/// then go in smaller jobs (`job_size`).
+fn regions_left(plan: &[build::Work]) -> bool {
+    plan.iter().any(|w| matches!(w.step.as_str(), "terrain" | "slope" | "trees" | "trees-lo" | "unit"))
+}
+
+/// Targets per job of `step` (`batch_size`), but the 3D buildings' while the regions' own work is
+/// left (`regions`): 2 bldprep and 4 bldtiles, so a job of theirs, the second job's beside the
+/// regions', or a helper's, ends within a couple of minutes and the regions' work comes back first.
+fn job_size(step: &str, regions: bool) -> usize {
+    match step {
+        "bldprep" if regions => 2,
+        "bldtiles" if regions => 4,
+        s => batch_size(s),
     }
 }
 
@@ -4808,6 +4827,11 @@ mod tests {
         // A tile reading nothing (a GHSL tile alone): its fixed part.
         assert_eq!((bld_peak("bldprep", 0), bld_peak("bldtiles", 0)), (300, 250));
         assert_eq!((batch_size("bldprep"), batch_size("bldtiles")), (8, 16));
+        // While the regions' own work is left, smaller jobs of them.
+        let w = |step: &str, n: usize| build::Work { step: step.into(), targets: (0..n).map(|i| (format!("6/{i}/0"), format!("k{i}"))).collect() };
+        let sizes = |plan: Vec<build::Work>| batches(plan).into_iter().filter(|(w, _)| w.step.starts_with("bld")).map(|(w, _)| (w.step, w.targets.len())).collect::<Vec<_>>();
+        assert_eq!(sizes(vec![w("bldprep", 3), w("bldtiles", 5)]), [("bldprep".to_string(), 3), ("bldtiles".to_string(), 5)]);
+        assert_eq!(sizes(vec![w("unit", 1), w("bldprep", 3), w("bldtiles", 5)]), [("bldprep".to_string(), 2), ("bldprep".to_string(), 1), ("bldtiles".to_string(), 4), ("bldtiles".to_string(), 1)]);
     }
 
     #[test]
