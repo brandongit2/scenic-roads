@@ -1696,6 +1696,33 @@ and, when none fits it, units' last steps.
 - **Temporary names** are each Mac's own (kept results), and each process's too (uploads), so the
   two never write into the same one.
 
+**The pool** (`docs/pool.md`, phase 1, `crate::agent::pool`): built and switched off. While
+`state/pool/enabled` isn't on the NAS, all of the above holds; a change of it restarts each agent
+between jobs into the other way. On:
+- **Who leads** is the terms' (`state/build/terms/`): the Mac `state/build/writer` names makes term
+  1, and leads it as the build Mac did (it plans, its coordinator grants); any other Mac's agent works
+  as a helper did, `--helper` or not. A lead restarting, waking from a sleep, or before GC makes the
+  next term naming itself; one on an app older than its term's stands down, and another member able
+  to lead takes over after two minutes. A process whose part changes restarts into it between jobs.
+- **Every job hands off**, the lead's too: under a lease `<term>-<id>` of the lead's coordinator, its
+  saves into `agent/pool/jobs/<term>-<id>/` (`SCENIC_HANDOFF`), then, as an entry, to the journal on
+  the NAS (`state/journal/<day>/<term>-<id>.json`), which the lead merges into its term's records
+  (`state/build/term/<E>/records.json`) and writes into today's three files for their readers. No
+  agent records keys, merges hand-offs or names the writer; no job carries `SCENIC_BUILD_MAC`; every
+  save outside a job's hand-off is refused.
+- **A catalog** goes out only once the lead's records reflect the journal (a listing of every day,
+  under a day old, merged, nothing told or listed waiting); **GC** only on a step that re-asserted
+  the lead's term, so caught up.
+- **The coordinator's state** (leases, costs, failures, the pause) is the term's, on the NAS
+  (`state/coord/term/<E>/state.json`), loaded by the next lead; the workers' token and accepted
+  devices are the pool's (`state/coord/`), so pages keep working whoever leads; its history is
+  each lead's own file per day (`state/coord/history/`).
+- **As it's switched on**, what waits from before is drained into the journal: the build Mac's
+  coordinator's journal, the NAS's hand-off folders, a helper's outbox.
+- **A shadow run** (`state/pool/shadow`, or `scenic pool-shadow` beside an agent) runs the pool's
+  driver beside today's coordination, writing only under `state/pool-shadow/`, and logs what it would
+  decide.
+
 **Order:**
 1. **The OSM pass**, when the NAS holds a newer planet than the newest pass.
 2. **The pass's worldwide jobs:**
@@ -1992,9 +2019,26 @@ At each phase's end an Opus agent reviews the work against this plan.
    reads, journaled group commits, retiring the claim and hand-off files.
 
 **Gaps:** the code falls short of the design here.
-1. **The pool's core** (`crate::pool`, `crates/pipeline/src/pool/`; `docs/pool.md` §12) is built,
-   its driver included, and not wired into the agent: the integration (pool.md §12, phase 1) is to
-   do. What the core leaves open, by design:
+1. **The pool** (`crate::pool`, `crates/pipeline/src/pool/`; `docs/pool.md` §12): phase 1 is built
+   and switched off (`state/pool/enabled`, §8, The pool), the agent's part with it
+   (`crate::agent::pool`), and a shadow run beside today's agents (`crate::agent::shadow`). What phase
+   1's integration leaves open:
+   - the owner's asks (hand the lead over, take it over) don't reach the agent: controls are phase
+     3, so a handover is never asked; a lead that stood down is taken over by itself;
+   - a process whose member takes a term up, or steps down, restarts into its new part between
+     jobs: the lead's own jobs run in its process until phase 2;
+   - the records' readers read today's three files, which the lead writes from its records after
+     each save; the snapshot itself is read by no reader yet;
+   - with the pool on, nothing re-keys the records (`agent::rekey`): a new key scheme builds its
+     targets again;
+   - the raw tiles' archives the lead names stay in its records (nothing takes them off);
+   - the coordinator's state per term is written on the loop after a grant, not in it;
+   - the members' messages go by mailbox on the NAS, not the pool's API (pool.md §9);
+   - switched off again, the pool's terms, records and journal stay on the NAS, and the records go
+     on in today's files without them: switched on again, the pool would take up its newest
+     snapshot, older than today's files. Its folders are moved aside before it's switched on again
+     (pool.md §12, Switching it on and off).
+   What the core leaves open, by design:
    - create-new between two Macs is unchecked on the real share (pool.md §3, ◻), and invariant 1
      (one lead a term) rests on it;
    - a create whose answer was lost before its bytes landed, or whose maker stopped for good between

@@ -1,7 +1,8 @@
 # The pool: any Mac can lead the build
 
-Status: **phase 1's core built** (`crate::pool`, its driver and phase 2's transitions with it:
-§12), not wired into the agent, so nothing runs it yet; the rest is planned. It replaces the fixed
+Status: **phase 1 built and switched off** (`crate::pool`, its driver and phase 2's transitions
+with it; the agent's part, crate::agent::pool: §12); a shadow run beside today's agents
+(crate::agent::shadow); the rest is planned. It replaces the fixed
 "build Mac" and its "helpers" (plan.md §8, workers.md §8) with a pool of peer Macs, any number of
 them, one of which leads the build at a time, and makes the browsers' pages workers of the same
 standing, by one model of work. The lead can be handed to another Mac from any Mac's menu, the
@@ -73,7 +74,7 @@ it on the NAS. The rest a new lead has from the NAS, or makes again.
 | Made from the NAS's data and kept: the heritage chain's clip of the filtered planet (22 GB on the build Mac), the trains' stop pairs | made again from the NAS | its cache | its first runs make them again (the clip: an hour of osmium) |
 | The Python steps' environment | the app's lock file (`dem/uv.lock`) | `app/<version>/dem/.venv`, which uv makes from it (from uv's cache, else PyPI) | its first Python step makes it |
 | A job's progress: the OSM pass's stages, the buildings scan's parts (Overture's, ~40 GB), a rail-feeds run's zips not yet put, raw tiles not yet packed | the Mac running it, until the job puts its results on the NAS | its scratch folders and cache | planned: offered to that Mac alone (§7.2, Resuming); else done again |
-| The coordinator's: the workers' token and devices, leases, costs, the history, the hand-offs not yet merged, the pause (mirrored to `state/build/pause.json`) | the build Mac's disk alone (a helper's hand-off, the helper's until it's sent) | `agent/coord/` (`journal/`: the hand-offs taken); a helper's `agent/outbox/` | planned (phase 1): on the NAS, per term (§6.2, §7.3, §7.5, §8); today, none: pages ask again, costs are first guesses, unmerged hand-offs are built again |
+| The coordinator's: the workers' token and devices, leases, costs, the history, the hand-offs not yet merged, the pause (mirrored to `state/build/pause.json`) | the build Mac's disk alone (a helper's hand-off, the helper's until it's sent); with the pool on (§12), the NAS: `state/coord/` (the token, the devices, the state per term, the history per writer), the journal | `agent/coord/` (`journal/`: the hand-offs taken); a helper's `agent/outbox/` | with the pool on, loads the state a handover hands it, else the newest a term before has (§6.2, §7.5); off, none: pages ask again, costs are first guesses, unmerged hand-offs are built again |
 | The lead's own: the round under way, its retries, the daily jobs' last runs | the build Mac's disk alone | `agent/round.json`, `agent/state.json` | not in the phases yet: the next round begins afresh, failed jobs may run again at once |
 
 ## 3. What the NAS gives us
@@ -126,8 +127,8 @@ them, and the simulator (§13) checks them:
   host name is a label (renaming a Mac, or macOS adding "-2" after a clash, changes nothing). One
   process of a member runs the pool at a time: it holds the member's lock (crate::pool::MemberLock,
   `pool-<id>.lock` in the folder the agent gives it: the app's folder, above every copy of its home
-  on the Mac, and not the temporary folder, which macOS empties of files three days old; the
-  integration's to pass, planned), and a second can't take it. Its driver checks the lock every
+  on the Mac, and not the temporary folder, which macOS empties of files three days old: the
+  agent passes it, crate::agent::pool::Side), and a second can't take it. Its driver checks the lock every
   loop: a lock file removed is taken again while no other process holds it; a check that can't
   tell (the folder unreadable a moment) holds that loop's duties; a process another holds it from
   stops for good, saving its state (the hand-offs handed to that loop in it) and leaving the pool.
@@ -286,8 +287,10 @@ what the lead's step saw, driven by crate::pool::driver.
 | **Passed** | A makes `terms/<E+1>.json` naming B, with `seq`: the number of the snapshot it saved settling (§6.1), and tells B of it. A is now a member; its own member API sends lead asks on to B | B takes up within 2 min (B tells A it leads, or A reads it in B's heartbeat, or E+1 has a snapshot): **Leading** (B, E+1); else **Taken back** |
 | **Taken back** | A makes `terms/<E+2>.json` naming itself ("B didn't take up"), the app rule checked against term E (§6.1) | **Leading** (A, E+2) |
 
-- **The agent's parts are planned** (§12): settling's (stopping grants, answering asks, cancelling
-  the duties in flight, writing the coordinator's state); the transitions themselves are built.
+- **The agent's parts** (§12, built, switched off): settling stops grants (its coordinator answers
+  asks "the lead is moving; ask again in a moment"), stops a catalog or a sweep in flight, and
+  hands the coordinator's state to the step; the transitions themselves are the driver's. The
+  owner's asks don't reach the agent yet (phase 3's controls), so nothing starts a handover.
 - **Nothing running stops,** on any Mac: leases keep their ids (`<term>-<n>`, unique by
   construction) and deadlines (wall-clock times) in the state B loads, as A wrote it last (it's in
   the snapshot the term's `seq` names: crate::pool::records::Records::handed), so every job, A's
@@ -500,8 +503,10 @@ seconds, kept to one Mac as the build Mac keeps it now.
   reading by (time, writer, number): no two Macs append to one file.
 - **The contact** (`state/coordinator.json`, for old apps): a lead stopping removes it only if it
   still names its own addresses.
-- **Going:** `state/build/writer`, `check_writer` and `SCENIC_BUILD_MAC` (phase 1); claims (leases
-  alone, phase 4); every temporary name not from crate::whole.
+- **Going:** `state/build/writer`, `check_writer` and `SCENIC_BUILD_MAC` (phase 1: while the pool
+  is on, no agent names the writer, no job carries `SCENIC_BUILD_MAC`, and `check_writer` refuses
+  every save, so a step run by hand writes nothing; kept for the pool off); claims (leases alone,
+  phase 4); every temporary name not from crate::whole.
 
 ### 7.6 The lead's own slots
 
@@ -549,6 +554,12 @@ take it: a page, any member's slot. Jobs are for Macs; tasks are for everyone.
   broker on the NAS (`state/coord/trust/<member>.json`), read by every broker.
 
 ## 9. The pool's API
+
+Planned. In phase 1 the members' messages go by mailbox on the NAS (crate::agent::pool:
+`state/pool/mail/<to>/<from>.json`, its sender's alone, its last messages there numbered; read by
+member id, never by listing, so a lead reads the mail of the members its listing of the heartbeats
+found, every two minutes), best effort as the driver's messages are; jobs go out through the lead's
+coordinator as today's helpers' do (`/work/*`).
 
 Every member answers on the pool's port (8090): the worker page and its files; `/pool/status` (its
 heartbeat); `/work/*` for its own tasks; and, on the lead, `/lead/*`: jobs (ask, beat, done), lead
@@ -628,21 +639,93 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
      settle; publish and sweep once its records are caught up, by a listing asked for under a day
      ago, a sweep only when fresh), and when it must stop (another process holds its lock); it
      answers the controls (whom the lead can be handed to, what a takeover needs). Its contract is
-     the module's doc. Nothing runs it yet.
-   - **The integration: planned.** The agent's loop calling the driver each loop, made with the
-     member's lock in the app's folder (and, when the driver says another process holds it, saving
-     that step's state and leaving the pool): its messages over the pool's API (§9), the listings it
-     asks for on a thread of their own, every one handed back, a failed one made again; settling
-     (cancelling the duties in flight, writing the coordinator's state) and loading the state handed
-     over; its saved state in the agent's folder after every step that changed it, before acting on
-     the step's output (a job's hand-off kept until one holding it is on disk); its heartbeat's
-     fields in the agent's heartbeat, the members it knows, the merge's checks; jobs handing off to
-     the journal through it; the coordinator's state per term, leases saved on grant and finish,
-     wall-clock times, lease ids `<term>-<n>`; history per writer; `writer`, `check_writer` and
-     `SCENIC_BUILD_MAC` gone. **Seeding and draining** when it's switched on: the M4's workers'
-     token and its devices (`devices.json`: the accepted devices' hashes) copied to `state/coord/`
-     (open pages keep working); the M4's local `coord/journal/` and the M1's outbox merged;
-     `state/build/handoff/<host>/` still merged until empty.
+     the module's doc. The agent runs it while the pool is on (below).
+   - **The integration: built, switched off** (crate::agent::pool; the agent, crate::agent). While
+     `state/pool/enabled` is missing the agent is as it was (one stat more a loop, and one a save's
+     `check_writer`); a change of the switch restarts it, between jobs, into the other.
+     - **A process's part** is the terms', decided as it starts (its member's first step): the lead
+       plans and grants through its coordinator as the build Mac did; any other member works as a
+       helper did, `--helper` or not. A member whose part changes (it took a term up, or stepped
+       down) restarts into its new part once its first job's slot is free: phase 1's lead runs its
+       own jobs in its process (phase 2 moves them out). A process whose member's lock another
+       holds runs dry; one the driver stops (its lock taken since) saves that step's state, starts
+       nothing, and exits between jobs.
+     - **The loop:** the driver steps once a loop, after the loop's ended jobs are gathered and
+       before the plan; its state (`Saved`) is written whole to the agent's folder whenever the
+       step changed it, before anything the step said is done (a step whose state couldn't be
+       written does nothing of it, its duties held); a job's folder stays until a saved state holds
+       its hand-off.
+     - **The listings** it asks for are made on a thread, one at a time, each handed back, a failed
+       one made again a minute on; the members' heartbeats are listed the same way, every two
+       minutes on the lead (whose mail it reads), ten on a member.
+     - **Messages** by mailbox on the NAS (§9: the pool's API is planned).
+     - **The heartbeat**, `state/pool/members/<id>.json`: the driver's fields and the members it
+       knows, written when it changes and every two minutes; the agent's status says the member,
+       its part and what the driver lets it do (`pool`).
+     - **Jobs hand off:** every job, the lead's too, runs under a lease of the lead's coordinator,
+       `<term>-<id>` (its folder `agent/pool/jobs/<term>-<id>/`, `SCENIC_HANDOFF`), and its saves,
+       the targets it finished (all of them, or what it noted done when it stopped or failed) and
+       for a shared step only those targets' files become its entry, handed to the driver, which
+       writes it to the journal and tells the lead; a member's tells the lead's coordinator too
+       (`/work/done` with `journaled`: the lease ends, its targets kept out of offers until merged,
+       nothing journaled there). Jobs an earlier process left are handed off as it starts. No agent
+       records keys, merges hand-offs or re-keys the records (phase 1 has no entry for a re-keying:
+       a new key scheme while the pool is on builds its targets again).
+     - **The merge's checks** (`agent::pool::check`): a done record of the entry's step naming
+       targets, content names of their logical names, raw archives of their areas, and for a
+       shared step the coordinator's check of a helper's hand-off (its done targets' files, its own
+       uploads); not the lease's targets (a later lead may not know the lease), nor write-sets
+       (phase 4).
+     - **The lead's coordinator:** leases granted in its term (`Lease::term`, `granted_at`), its
+       state per term (`state/coord/term/<E>/state.json`: the jobs' leases, costs, failures by the
+       wall clock, the pause) written each loop it changed, on the NAS; "the lead is moving" while
+       the driver says no duties; a take-up loads the state handed over, else the newest a term
+       before has; its own host's leases from before dropped; its history's new events appended to
+       `state/coord/history/<day>/<member>.jsonl`. Saved on the loop after a grant or a finish, not
+       in the grant (the coordinator's lock is never held over the NAS): a lead gone between loses
+       that grant's record, and its job's entry merges all the same.
+     - **The records' readers** read today's three files as before: term 1's saves write them, and
+       the lead writes them from its records after each save of a later term
+       (`agent::pool::write_today`); reading the snapshot itself (§6.2's readers) is planned. The
+       lead names the raw tiles' archives its records hold in the raw store's index; they stay in
+       its records (phase 1 has no way to take them off).
+     - **Gates:** nothing new starts on the lead while the driver says no duties; a catalog only
+       when it says the records are caught up; GC only on a step that re-asserted, caught up (the
+       agent asks the re-assertion, and the next loop's sweep runs).
+     - **Settling** (§6.4) stops a catalog or GC in flight, stops granting and hands the
+       coordinator's state to the step. Nothing asks a handover yet (phase 3).
+     - **Seeding and draining** when it's switched on: the workers' token and the accepted devices
+       copied to `state/coord/` by the first lead (create-new) and from there by every lead's
+       coordinator before it starts, its devices copied back as they change (open pages keep
+       working); the coordinator's local `coord/journal/` (the lead's) and the NAS's
+       `state/build/handoff/<host>/` (every two minutes until found empty) and a helper's
+       `outbox/` drained into the journal as its member's entries (term 0: from before the pool;
+       an outbox's under its old lease, the others numbered from `agent::pool::DRAINED`, apart).
+     - **Going while it's on:** the writer named, `SCENIC_BUILD_MAC`, `check_writer`'s pass (it
+       refuses every save). Kept for the pool off.
+   - **Switching it on** (once both agents run an app that has phase 1, the owner's word given):
+     `state/build/writer` names the build Mac (term 1's maker); none of the pool's files from an
+     earlier run are there (`state/build/terms/`, `state/build/term/`, `state/build/lead.json`,
+     `state/journal/`, `state/pool/members/`, `state/pool/mail/`, `state/coord/`); the build paused
+     at safe points (`scenic pause`) and no job running, so what's waiting is drained whole; then
+     `state/pool/enabled` made on the NAS. Each agent restarts into the pool: the build Mac makes
+     term 1 from today's files, takes it up and leads (its status's `pool`: `role` lead, `term` 1),
+     the M1 works as a member (its helper status's `pool`); `scenic resume`. Its first catalog waits
+     for its records to be caught up (a listing of every day merged), its first GC for a
+     re-assertion.
+   - **Switching it off:** the build paused at safe points, no job running, the lead caught up and
+     every member's `pool.unacked` 0 (each entry in the lead's records); `state/pool/enabled`
+     removed. Each agent restarts as before: the build Mac names the writer again and writes today's
+     files, which hold the last lead's records. An entry not merged by then is lost, its work done
+     again. Before the pool is switched on again, its files above are moved aside: it would take up
+     its newest snapshot, which knows nothing of what was built while it was off.
+   - **A shadow run** (crate::agent::shadow; `state/pool/shadow` on the agent, or `scenic
+     pool-shadow` beside it): the driver beside today's coordination, shadowing this Mac's agent
+     (the build Mac's by its coordinator's history, a helper's by its outbox), each of its jobs
+     that ended an entry of the shadow's member; reading the build's records where today's files
+     keep them, writing only under `state/pool-shadow/` (`agent::pool::Overlay`); its log says the
+     terms, take-ups, merges, gates against the catalogs and GC the agent ran, and its records
+     against the build's.
 2. **Handing over and taking over.** The driver does them (§6.4 to §6.6: phase 1's core, built);
    the agent's part, planned: the owner's asks reaching it (phase 3's controls), staying awake, the
    lead's own jobs moved out of its process into its slots (so nothing pins the lead).
@@ -742,16 +825,33 @@ switched on.
   driver's tests); refusal notes (no check reads them); GC (removing the journal's old days,
   forgetting them: the forget horizon is the modules' tests'); the coordinator (leases are numbered
   in order per term, granted by no one, and the lead's check depends on its term alone).
-- **Two agents on one Mac** (planned): overrides for the member id, port and root, so two agents run
-  against a scratch folder (today the coordinator starts only without a root, and both would bind
-  8090 and share a host name). Sleep is SIGSTOP and SIGCONT of an agent's process group, with fault
-  points (`merge:before-rename=600s`, `handover:after-ready`, `takeup:after-copy`).
-- **Two Macs on the real NAS** (planned), a scratch folder: the ◻ checks of §3 first (create-new
-  between two Macs, exclusive rename, how long a renamed-over file reads stale), then a handover and
-  a takeover under load. (One Mac mounting the share twice shares one SMB client cache, so it can't
-  show stale reads between clients.)
-- **Each phase end to end** (planned) on the scratch folder with both Macs before
-  `state/pool/enabled` is made on the real one.
+- **The integration's tests** (phase 1; crate::agent::pool's, and the agent's `pool_tests`): the
+  switch; a member's step, its state saved before anything is done, its heartbeat, its listing made
+  off its loop and a failed one made again; a second process of a member running no driver, and
+  one whose lock was taken stopping with its hand-offs kept; two members' mail, entries,
+  acknowledgements and a handover settled with the coordinator's state handed over; a job's entry,
+  the jobs a process left, draining, the token and devices, the merge's checks, today's files and
+  the history per writer; a shadow run writing nothing of the real folder; and the agent: off as it
+  was, the switch changing restarting it, on the build Mac leading with its jobs handing off under
+  its term's leases and its sweep after a re-assertion, a member's job reaching the lead's records
+  through the journal and its mail, the lead's gates on catalogs and sweeps, the shadow beside it.
+- **Two agents in one process** (the agent's tests): a lead and a member, each with its folder and
+  member, the lead's coordinator on a port of its own. **Two agents on one Mac** as processes, with
+  SIGSTOP and SIGCONT for sleep and fault points (`merge:before-rename=600s`,
+  `handover:after-ready`, `takeup:after-copy`): planned.
+- **Two Macs on the real NAS** (`tools/check/pool-two-macs.sh`): the real agents on both Macs, over
+  a scratch folder of the NAS, each in a folder of its own, their jobs played by a script that
+  hands off. Run on 2026-10-08: term 1 the build Mac's, both Macs' hand-offs from before the pool
+  drained, the lead's jobs and a sweep, the member's entry merged and acknowledged by mail, the lead
+  restarted re-asserting, then standing down on an older app and the member taking over by itself
+  and leading. Planned: the ◻ checks of §3 (create-new between two Macs contended, exclusive
+  rename, how long a renamed-over file reads stale), a handover (phase 3's controls ask it) and
+  load. (One Mac mounting the share twice shares one SMB client cache, so it can't show stale
+  reads between clients.)
+- **A shadow run on the real NAS** (§12), beside both Macs' agents, before the switch: what the
+  pool decides against what the agents did.
+- **Each phase end to end** on the scratch folder with both Macs before `state/pool/enabled` is
+  made on the real one: phase 1's as above.
 
 ## 14. Decisions
 

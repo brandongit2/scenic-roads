@@ -412,6 +412,26 @@ agent/cache/            dem-cache.* (the seed), chm10/ (canopy 10° files) and a
                         chm10/); on the owner's ask, it clears them, base/, the seed (while the NAS
                         has it whole), sources-*/, work-*/ and heritage-merged-* (docs/plan.md §4
                         and §8, agent::room). Never through a link, nor in the NAS's folder.
+agent/member            this Mac's member id in the pool (docs/pool.md §5): `m-<16 hex>`, then the
+                        Mac's hardware UUID, a line each (crate::pool::member_id; made once)
+agent/pool/             the pool's part of the agent (crate::agent::pool; only with the pool on):
+                        saved.json (the driver's state, crate::pool::driver::Saved: {member, mine:
+                        {entries: {key: term acknowledged or null}, unwritten: {key: entry}}, term,
+                        led, made, unfinished?, stood_down?, passing?}, written whole after every
+                        step that changed it), mail.json ({read: {member: n}, the last message taken
+                        from each; sent: {member: [[n, msg], …]}, the last sent each; n}),
+                        members.json (the members it knows, by id), jobs/<term>-<n>/ (a job's
+                        folder under its lease: work.json {step, targets: [[target, key], …],
+                        lease: "<term>-<n>"}, its saves as hand-offs, done.txt, costs.jsonl; removed
+                        once a saved state holds its entry)
+agent/shadow/           a shadow run beside the agent (`state/pool/shadow`; crate::agent::shadow):
+                        member, and pool-shadow/ with saved.json, mail.json, members.json as pool/'s,
+                        watch.json ({seq: the agent's history read up to, jobs: {id: the jobs under
+                        way as seen}, started}) and shadow.jsonl (its log: a JSON line each, {t,
+                        kind: start, observed, handed, event, sent, list, gate, compare, restarted,
+                        …}); `scenic pool-shadow --home <dir>` keeps the same in <dir>/pool-shadow/
+pool-<id>.lock          (in the app's folder) the lock of this Mac's member `<id>`: one process runs
+                        it (crate::pool::MemberLock)
 agent/pack-idx/         <hash16>.idx: the indexes of the terrain packs the build manifest names
                         (RDPKIDX1, as idx/), by each pack's content name, which the units' keys read
                         (agent::tiles): each read once from its pack on the NAS, and never stale.
@@ -656,6 +676,37 @@ class, id) within a tile. The client sends the id with the clicked point.
   - `state/build/writer` (the build Mac's name: the records' one writer); `state/helpers/<host>.json`
     (a helper's status, as the heartbeat's; the heartbeat lists those fresh within ten minutes as
     `helpers`, and the workers the coordinator heard from in two minutes as `workers`).
+- **The pool** (docs/pool.md; `state/pool/enabled`, an empty file, switches it on; `state/pool/shadow`
+  runs it in the shadow, below). Its files are made only while it's on:
+  - `state/build/terms/<E>.json`: term E, made once with create-new, `{term, member, host, app,
+    since (unix seconds), how, from, seq (a handover's: the snapshot of term from to take up)}`;
+    `state/build/lead.json`, a copy of the newest a lead took up (a hint, never the truth).
+  - `state/build/term/1/first.json` (term 1's first snapshot, made from today's three files) and
+    `state/build/term/<E>/records.json` (term E's lead's, written whole after each merge): `{term,
+    seq, manifest, keys (as jobs.json), pending, raw: [[area, {name, bytes}], …], reflected: [entry
+    keys], rejected: {key: why}, last: {step: {target: lease}}, horizon, handed (the coordinator's
+    state, a handover's)}`. Term 1's saves also write today's `manifest.json`, `jobs.json` and
+    `pending.json`; a later term's lead writes them after each of its saves.
+  - `state/journal/<day>/<term>-<n>.json`: a job's entry, written whole by its member, `{member,
+    lease: "<term>-<n>", step, handoff (a hand-off, as below), at}`, `<day>` its UTC day by its
+    member's clock; term 0, from before the pool: a helper's outbox under its old lease, the rest
+    numbered from 2⁶² up. `state/journal/rejected/<day>/<term>-<n>.why`: a refusal's why.
+  - `state/pool/members/<id>.json`: a member's heartbeat, `{member, host, app, beat, leads,
+    handing_to: {to, term, offer, since, stage: offered | settling | passed}, ready_for: {term,
+    offer}, stood_down, addresses, members: [ids it knows], shadow}`, what isn't so left out.
+  - `state/pool/mail/<to>/<from>.json`: the messages `from` sent `to`, its last 64, `{msgs: [[n,
+    msg], …]}`, `n` rising (the sender's clock in ms, and on), `msg` one of `{"Tell": [keys]}`,
+    `{"Ack": {term, keys, horizon}}`, `{"Passed": term}`, `{"Leads": E}`, `{"HandTo": member}`.
+  - `state/coord/term/<E>/state.json`: term E's coordinator, `{leases: {next, leases: [{id, term,
+    granted_at, worker, work, progress}]}, costs, failed: [[worker, cost key, unix seconds, times]],
+    pause, pause_at}`; `state/coord/token` and `state/coord/devices.json`: the workers' token and
+    accepted devices, the pool's (copied to each lead's `coord/`); `state/coord/history/<day>/
+    <member>.jsonl`: a lead's history events (as `history.jsonl`'s), its own file.
+  - The coordinator's leases (`leases.json`) say their `term` and `granted_at` (unix seconds); a
+    grant says its `term`; `/work/done {…, journaled: true}`: the hand-off is in the journal already.
+  - `state/pool-shadow/`: a shadow run's files, as the pool's above under it (its terms, records,
+    journal, heartbeats, mail); it reads today's three files and `state/build/writer` from the real
+    folder and writes nothing else.
 - **State:** `state/status.json` (the agent's heartbeat, written on a change and at least every two
   minutes: conditions, the job, its parts (`parts`, `part`: the one it's on) and its progress, why
   it's frozen (`paused`) or stopping at its next safe point (`pausing`), what waits (one about a
@@ -666,7 +717,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   `why_not`, why they can't be cleared now; `trimmed`, `cleared` and `declined`, the last trim
   after the build, the last clear done and the last ask declined, each `{at, asked (a clear's
   ask's at), by, freed: {cache: bytes}, left, why_not}`, the caches named canopy, terrain, blobs,
-  months (the pageview months' indexes), base, dem, copies and heritage));
+  months (the pageview months' indexes), base, dem, copies and heritage); with the pool on, `pool`:
+  `{member, role: lead | member, gates: {term, leads, duties, settle, caught_up, fresh, listed_at},
+  members, unacked, restart}`, a helper's status too);
   `state/build/{manifest,jobs,pending,summaries,pause}.json` (`jobs.json`: the job keys, by step,
   target → key: `terrain`, `slope` (z3 tiles), `unit`, `pois`, `peaks`, `pack` (z6 tiles), `lo`
   (z3 tiles, and the worldwide steps' under their names), `trees` (tree cover's pieces, z6 tiles),
