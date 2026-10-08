@@ -2,10 +2,12 @@
 
 **Phases B0 and B1 done** (2026-10-06): the sources downloaded and measured (B0); the steps, the
 layer and the map built and piloted by hand on six z6 tiles (B1, §5.1), measured on the iPad
-(2026-10-08, §4.6). **B2's code built** (2026-10-08): the agent runs the steps for every tile as
+(2026-10-08, §4.6). **B2 published** (2026-10-08): the agent runs the steps for every tile as
 part of the build (§3.2–3.6), the mirror, the iPad's service worker and the credits know the
-layer; not yet published, so no agent runs it and no tile beyond B1's pilot is built: the next
-app published starts it (§5.1). Nothing of B3–B4 built. The first of plan.md §10's phase 7 features ("3D buildings, then PLATEAU"); plan.md §6
+layer; the tiles building since. **B3 built** (2026-10-08, not yet published): a tile's z8 areas as
+tasks for pages and helper Macs (§3.6), and on the map the walls on the terrain under each corner,
+the globe's feet without their saw (task #115), fog, bridges after the buildings, the camera above
+roofs, colour by height on the shared scale, the heritage tint (§4). Nothing of B4 built. The first of plan.md §10's phase 7 features ("3D buildings, then PLATEAU"); plan.md §6
 (Global-source layers) points here. Companions: `docs/plan.md` (the pipeline, keys, order),
 `docs/formats.md` (files), `docs/workers.md` and `docs/pool.md` (sharing the work). Its sources are
 on the NAS (§2.6); `dem/bldmeasure.py` measured them (§2.2–2.5); `dem/bldprep.py` and
@@ -49,22 +51,21 @@ its 19.5 (§4.1).
   14/8292/6115 is 484 KB (25,483 buildings), the heaviest of Tokyo's 313 KB.
 
 **Beside the terrain.**
-- A building stands on the 3D terrain at its centroid's height (MapLibre samples the terrain there),
-  its base sunk 10 m so that it doesn't float on a slope. Phase B3 sets each wall's foot on the
-  terrain under its own corner, the roof level (§4.3).
+- A building's roof is level, at its centroid's ground (MapLibre samples the terrain there) plus
+  its height; each wall's foot stands on the terrain under its own corner, 2 m below it (B3, §4.3).
 - Heights are true, not exaggerated: at the default 3× terrain a house looks low beside the hills,
   as in Google Earth. A setting scales them (1–3×) or makes them follow the terrain's exaggeration.
 - The hill-shading, slope tint, tree cover and contours lie on the ground under the buildings.
-- Fog: MapLibre fogs the terrain, not extrusions (its fill-extrusion fragment shader is the colour
-  alone, checked in 6.11.2); B3 patches it as `vite.config.ts` patches the circle and symbol
-  shaders, so the far skyline fades with the ground.
+- Fog: the extrusions take the terrain's fog (B3: `vite.config.ts` patches MapLibre's fill-extrusion
+  shaders, which drew the colour alone), so the far skyline fades with the ground behind it. MapLibre
+  fogs only the flat map (from zoom 16.5 here) from 60° of pitch: on the globe neither is fogged.
 
 **Beside the roads and rail.** Buildings are drawn after the road and rail layers (§4.2):
 - a road behind a building is hidden by it (faint through it with an opacity under 1);
 - a road in front of a building stays in front, because a road lies on the terrain, and anything
   behind the terrain's surface at a pixel fails the depth test against the terrain;
-- the exceptions are what stands above the terrain: bridges and elevated rail in front of a
-  building are painted over by it. B3 draws bridge and elevated pieces again after the buildings.
+- what stands above the terrain, bridges and elevated rail, is drawn after the buildings (B3,
+  §4.2), so a viaduct in front of a building stays in front.
 
 **Beside the landmarks and labels.** The landmark dots (`dots.ts`) draw without a depth test, after
 the buildings, so a heritage site's dot stays visible on its own cathedral. Labels are symbols,
@@ -74,12 +75,15 @@ layers: a building in front of them hides them, as it should.
 **The look:** a muted blue-grey made for the dark map, lit from the hill-shading's light direction
 (Settings → Terrain), the walls darker toward the ground (MapLibre's vertical gradient), so the
 coloured roads and the landmarks stay what the eye goes to. Colour modes (§4.4): plain; by height
-(B1: a fixed ramp; with the shared colour-map picker and scale in B3); by where the height comes
-from.
+(the shared colour scale and colour-map picker over the buildings in view); by where the height
+comes from. The buildings holding a heritage site are tinted in its group's colour while Heritage
+sites show.
 
 **The toggle:** Settings → Buildings, a section after Trees with its switch in the header, on by
 default. In it: 3D or flat (footprints only, also what a map without 3D terrain shows); colour
-mode; opacity; height scale (1–3×, or with the terrain's exaggeration). In the link with the other settings (`bd=`); **B** toggles the layer. All three only
+mode (by height with its colour scale); heritage sites in their colour; opacity; height scale
+(1–3×, or with the terrain's exaggeration). In the link with the other settings (`bd=`, and `bh=`
+for the height scale); **B** toggles the layer. All three only
 with a catalog that has the layer: until then the section is hidden, B does nothing and links
 leave `bd=` out (a catalog that gains the layer while the map is open shows them then).
 
@@ -653,8 +657,8 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
 ### 4.1 Rendering
 
 **MapLibre's fill-extrusion** (6.11.2), not a layer of our own, in the first phases:
-- it handles the globe (its vertex shader projects to the sphere) and the 3D terrain (the centroid's
-  elevation, a base of 0 sunk 10 m: `get_elevation(a_centroid)` in its shader, as 6.11.2 has it),
+- it handles the globe (its vertex shader projects to the sphere) and the 3D terrain (the roof at
+  the centroid's elevation, `get_elevation(a_centroid)` in its shader; the feet patched, §4.3),
   tiles and their cache, and data-driven paint;
 - **the z14 tiles whole above z14** (`keepWhole` in `buildings.ts`, for this source only): MapLibre
   6 slices a vector source's deepest tiles into z15–16 pieces up to the map's maximum zoom less
@@ -682,8 +686,11 @@ Same inputs, same bytes, on any machine and in WebAssembly (plan.md §8, Determi
 `m / 10`, colour by the mode, vertical gradient on; parts and buildings without parts, not the
 copies), `buildings-flat` (fill: buildings and outlines, not parts; the copies too, so a footprint
 past its tile is drawn whole) for the flat mode, `buildings-pick` (fill at opacity 0, which MapLibre
-doesn't draw: the footprints the hover queries, copies too) and `buildings-hover` (a GeoJSON
-source's fill-extrusion: the hovered building, 1 m larger and taller, amber).
+doesn't draw: the footprints the hover queries, copies too), `buildings-heritage` (a GeoJSON
+source's fill-extrusion: the loaded buildings holding a heritage site, 0.4 m larger and taller, in
+its colour, §4.4) and `buildings-hover` (likewise: the hovered building, 1 m larger and taller,
+amber). And two custom layers of the roads' code after them, `roads-bridges` and `rails-bridges`
+(§4.2).
 
 ### 4.2 Where in the style
 
@@ -699,36 +706,80 @@ source's fill-extrusion: the hovered building, 1 m larger and taller, amber).
   and were drawn before: so the buildings paint over what's behind them and, a road being on the
   terrain, never over a road in front (§1). The dots and labels come after, without a depth test
   against extrusions.
-- **B3, bridges and elevated rail:** their pieces (the tiles' bridge flag) drawn again in a small
-  custom layer after the buildings, with the same occlusion against the terrain, so a viaduct in
-  front of a tower stays in front.
+- **Bridges and elevated rail** (B3): while the buildings stand in 3D, the road and rail layers
+  leave out their zoomed-in (quad) tiles' bridge pieces (the tiles' bridge flag) and a small custom
+  layer of each (`RoadLayer.bridgeLayer`: `roads-bridges`, `rails-bridges`), after the buildings,
+  draws them: tested against the terrain as before and, now that the buildings' depth is there,
+  against them, with a depth tolerance of 0.2 % of the distance, at least 3 m × exaggeration (the
+  roads' 1.5 % and 75 m would let a viaduct 200 m behind a building show through it). So a viaduct
+  in front of a building stays in front and one behind it stays hidden; Paris's line 6 along the
+  boulevard de Grenelle, painted over but for the gaps between the buildings before, shows whole.
+  The faint pass of what's behind the terrain stays in the road layer, under the buildings (after
+  them its depth test showed a viaduct faintly through every building in front of it). Zoomed out,
+  where the pieces are drawn as points, nothing changes. Known: a bridge's deck within that
+  tolerance of a building's wall behind it can show over the wall's edge.
 
 ### 4.3 On the terrain and the globe
 
 - The 3D terrain is the z12 repaired Terrarium, 20–38 m pixels; MapLibre samples it at the
-  centroid. **B3:** a shader patch (`vite.config.ts`) puts each wall's foot on the terrain under its
-  own corner (`get_elevation(a_pos)` for the base vertices) and keeps the roof level at the
-  centroid's ground plus the height, as a building on a slope is; the 10 m sink becomes 2 m.
+  centroid. **Walls on the terrain under each corner** (B3, `vite.config.ts`'s building-feet
+  patch): a base of 0 is the ground under each corner (`get_elevation(a_pos)`, the DEM sampling the
+  terrain's mesh takes) less 2 m, never above the roof, where MapLibre sank every foot 10 m below
+  the centroid's ground (on a slope the uphill walls buried, the downhill ones floating once the
+  10 m ran out). The roof stays level at the centroid's ground plus the height, as a building on a
+  slope is: on Barcelona's El Carmel at 3× terrain, the downhill walls reach far down to the
+  ground, no foot floats and no roof shears. A part with a base of its own (a setback) keeps it
+  above its centroid's ground. The hover tests a building's walls down to the lowest foot of its
+  outline (sampled at 16 corners at most).
+- **No saw at the feet on the globe** (B3, task #115, `vite.config.ts`'s globe-precision patch).
+  The owner's report: where the buildings meet the terrain the edges were "super wobbly", and the
+  wobbles changed as the camera moved. Reproduced on Honolulu's St. Louis Heights and Barcelona's El
+  Carmel at zoom 15–16.3, tilted 60–70°: the feet a saw of spikes a few pixels across, different in
+  every frame of a pan; the same view on the flat map (or the globe forced onto the tiles' flat
+  matrices) had clean feet. The cause: on the globe (below zoom 16.5 here) MapLibre places the
+  terrain's mesh and the extrusions on the unit sphere and multiplies by the view matrix in
+  float32, each vertex up to a metre or two off, differently for every vertex and every camera, so
+  the terrain's surface was bumpy at its mesh's spacing where the walls meet it. Now
+  `interpolateProjectionFor3D` (the terrain, its depth, the extrusions, the circles' and symbols'
+  visibility) takes the tile's flat projection, exact in small numbers, plus the globe's difference
+  from it, interpolated across the vertex's z14 cell from its four corners: a corner's mercator
+  coordinates are exact, so every layer gets the same difference near it, and its float32 error
+  moves terrain and buildings together, a smooth fraction of a metre (the sphere's own curve,
+  bilinear across a z14 cell, is off by ~0.1 m at most). The feet are now as clean as the flat
+  map's, frame after frame (the frame sequences are B3's report's). Placing each vertex from one
+  anchor in the cell instead didn't help (the shader compiler may fold its two matrix products back
+  into one).
 - Exaggeration: MapLibre exaggerates the ground, not the height; the scale setting multiplies the
   height (1–3×, or the terrain's exaggeration).
 - The globe: extrusions follow it to the hand-over at 15.5–16.5; the depth precision tuning
   (`camera3d.tuneDepth`) covers them.
-- The camera stops 30 m short of the ground (camera3d): inside a tall building. B3 keeps it a few
-  metres above the highest roof under it, from the loaded tiles.
+- The camera's clearance (B3): camera3d refuses a move that takes it within 30 m of the ground, or
+  within 4 m of the highest roof under it (`buildings.roofAt`: the loaded footprints that, drawn at
+  the height scale, rise more than 26 m, read when the map is idle; a roof at its centroid's ground
+  plus its height). Over a 235 m tower in Shinjuku, from straight above, the dolly stops 23 m above
+  its roof, where it went on to the zoom limit inside the tower before. A camera beside a tower,
+  not over its footprint, can still come up to its wall.
 
 ### 4.4 Styling
 
 - **Plain** (default): one blue-grey (#566173; on screen #31363f–#4f5967 as lit), lighter roofs,
   lit by `map.setLight` from the hill-shading's azimuth, intensity 0.35. (The first, #8d9aad, drew
   the eye from the roads.)
-- **By height:** B1 has a fixed ramp (viridis, by the square root of the height, 0–150 m), with its
-  legend. B3: the shared colour scale (Auto / Lock / Full, the colour-map picker, the low-end fade)
-  over the buildings in view, as the terrain tint's.
+- **By height** (B3, replacing B1's fixed viridis ramp): the colour-scale controls the roads and
+  the terrain tint use (`ui/scale.ts`): a histogram of the heights of the buildings in the tiles in
+  view (one count a building or part drawn, read when the map is idle), auto-fit to its
+  percentiles (5 and 99.5 by default), Lock / Full / Equalise, the colour-map picker with its
+  preview, the low-end fade (toward the plain colour, an extrusion having no opacity of its own a
+  building) and the highlight (the rest plain). In Paris at zoom 15 it fits 5–43 m.
 - **By where the height comes from:** measured (green), floors (blue), Microsoft's estimate
   (violet), neighbours (amber), GHSL (red-orange), size (grey), so the fill can be judged on the map
   (B1).
-- B3: buildings holding a heritage site's point tinted by its tier (the heritage overlay's colours),
-  for the landmarks' sake.
+- **Heritage tint** (B3): the loaded buildings holding a heritage site's point, as the heritage
+  overlay's dots show it (its tiers and filters applied: `dots.points`), drawn again 0.4 m larger
+  in its group's colour (World Heritage, national, provincial, municipal), 60 % of the way from the
+  plain colour, the highest group where sites share a building. Read when the map is idle; on by
+  default while Heritage sites show (Settings → Buildings, `bd=`'s sixth field). Over the other
+  colour modes too.
 
 ### 4.5 Interaction
 
@@ -753,8 +804,9 @@ source's fill-extrusion: the hovered building, 1 m larger and taller, amber).
     on the terrain: a lower ray in a screen column meets the ground no farther than a higher one,
     so a box's top and bottom bound the rows between, over hills too, where a wide box's sides
     can meet different hills;
-  - each tested against the ray between its roof and its base as MapLibre draws it (on the
-    terrain at its polygon's centroid, a base of 0 sunk 10 m), the ray from camera3d (`rayAt`,
+  - each tested against the ray between its roof and its base as drawn (the roof over the terrain
+    at its polygon's centroid, a base of 0 at the lowest foot of its outline: §4.3; B1's measure
+    below was of the 10 m sink then drawn), the ray from camera3d (`rayAt`,
     globe or flat), the one met highest winning: the tall ones first, then the boxes from the
     camera's end, none once the ray over a box is below a building already met (a query's own
     cost, its corners found on the terrain, is most of a box's).
@@ -769,15 +821,16 @@ source's fill-extrusion: the hovered building, 1 m larger and taller, amber).
   the median, 0.8–6.8 at p90 (Shinjuku 3.5 and 6.3, Tokyo 4.3 and 5.5), at most 10.5. A road or
   rail line under the cursor gives way when the ray to its point meets a building above it (a
   second call). The hovered building is drawn again in a small GeoJSON layer, 1 m larger and
-  taller, amber; a tower's other parts and nearer buildings hide it where they're in front (B3: an
-  outline drawn over the buildings). The bottom bar's slots as in §1. Known: while the globe hands
+  taller, amber; a tower's other parts and nearer buildings hide it where they're in front (later:
+  an outline drawn over the buildings). The bottom bar's slots as in §1. Known: while the globe hands
   over to the flat map (zoom 15.5–16.5), MapLibre draws a blend of the two that `rayAt` doesn't
   follow: the hover can be off by up to 6.8 px there (at z16.4). Where the framing leaves the
   camera inside a hill (2 m into Aina Haina's ridge), the rays start underground: MapLibre's
   queries put every point at the camera, and the hover finds nothing near it.
 - Click: none in B1–B2. Later: **O** opens the OSM way where OSM gave the footprint (its id from the
   work file), served by `/api/building?at=` if wanted.
-- The In view summary may add the tallest building in view (from the loaded tiles): B3, optional.
+- The In view summary may add the tallest building in view (from the loaded tiles): later,
+  optional.
 
 ### 4.6 Levels of detail and the iPad
 
@@ -837,6 +890,25 @@ source's fill-extrusion: the hovered building, 1 m larger and taller, amber).
   B1's first measurements, before the review: opacity 1 (one pass) saved little (Shinjuku 2.9
   against 3.0 ms); the whole map's frame took 5–6 ms
   of GPU at Shinjuku with or without the buildings within the noise.
+- **B3 against B2, measured on the M1** (2026-10-08: Chrome 154 headless on the real GPU, Metal, the
+  window 1200 × 736 at 2×; B1's pilot packs; each view framed from the ground as in B1, the page
+  fresh, the two builds alternately, twice; this Mac loaded by other work). The buildings' GPU time
+  is the extrusion layer's timer query as B1 took it; whole frames are timed the same way, with the
+  buildings on and then off, five times each, medians:
+
+  | View | buffers in view | extrusion layer GPU, B2 / B3 | whole frame, buildings on, B2 / B3 | CPU a frame, B2 / B3 |
+  |---|---|---|---|---|
+  | Shinjuku, z15.6, 60° | 1.43 M vertices, 42.2 MB, both | 2.66, 2.55 / 3.33, 3.12 ms | 5.79, 5.55 / 5.76, 5.59 ms | 2.1, 1.9 / 1.9, 2.1 ms |
+  | Midtown, z14.9, 70° | 1.01 M, 30.4 MB, both | 3.88, 3.54 / 3.70, 3.63 ms | 6.34, 6.06 / 6.81, 6.43 ms | 3.1, 3.2 / 3.3, 3.3 ms |
+  | Châtelet, z14.8, 60° | 1.08 M, 32.7 MB, both | 3.52, 2.88 / 3.74, 3.62 ms | 5.79, 5.61 / 5.48, 5.49 ms | 1.9, 2.0 / 2.1, 2.1 ms |
+
+  So the corner feet, the fog and the globe's precision cost the extrusions up to ~0.6 ms of GPU
+  (the four corners' globe positions a vertex), lost in the frames' noise (± 1 ms between runs of
+  the same build: with the buildings off, frames took 4.0–7.9 ms). The heritage tint adds 110
+  vertices at Shinjuku, 5,014 at Midtown, 34,665 at Châtelet (~1 MB of buffers); the buildings'
+  buffers are unchanged, far within the 300 MB budget. The timer on the heritage and bridge layers
+  alone gave 3–9 ms for a hundred vertices, as no whole frame did: on Metal a timer query around a
+  small layer also counts the work queued before it, so those aren't figures.
 - **Measured on the iPad** (the owner, 8 Oct; frames timed by `requestAnimationFrame` over 10 s of
   two-finger orbiting, memory from Safari's Web Inspector, buffers by the console snippet below):
 
@@ -921,8 +993,8 @@ artefacts call for it (B4):
 |---|---|---|
 | **B0 Data** (done 2026-10-06) | The downloads (§2.6). `dem/bldmeasure.py` over the files: heights, floors and their sources by country (§2.2); the storey heights fitted, and the fill's order, fits and defaults set from a held-out tenth (§2.3); the tiles' counts and sizes at z12–14, the fullest and heaviest encoded (§2.5); this document's numbers updated. On the build Mac: 13 minutes to read 44.6 GB of row groups from the NAS, 4 to fill and count, 5 to encode. | 1 day |
 | **B1 Pilot** (done 2026-10-06, but the iPad) | `dem/bldprep.py`, `pipeline::bld` (prep, fill, tiles, job), `scenic-build bldprep` and `bldtiles`, run by hand on the build Mac into a scratch root (the NAS's sources read only) on 6/56/25 (Kantō), 6/32/22 (Paris), 6/18/24 (New York), 6/32/23 (Barcelona), 6/19/23 (Vermont, with Boston) and 6/3/28 (Oahu); formats.md entries; the catalog layer, the server's route; `web/src/buildings.ts` with the settings section, the toggle and hover; checked on this Mac in a test server (§4.6). `bldprep`: 88–153 s a tile on the first run (Kantō: 30.3 M rows read in 130 s; one thread: Paris in 71 s), 29–68 s on the run after the review that made the packs served (Oahu 3 s; 5.1 GB at most, Kantō's); `bldtiles`: 3–10 s a tile in that run (Kantō 10 s, 3.3 GB at most; Oahu 0.5 s), 10–43 s in an earlier run of the same code with the build Mac busier. The reviews' fixes: §2.3 (rule 3's bound), §3.2 (countries, keys), §3.4 (copies, walls, their points outside the ring), §4.1 (whole tiles, MapLibre pinned), §4.5 (the hover, on hills too), §4.6 (the cache, memory counted). The iPad's measurements are the owner's (§4.6's checklist). | 6 days |
-| **B2 In the build** (code built 2026-10-08; not yet published, nor run by an agent) | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job (§3.1–3.3, 3.6); the mirror's group, the service worker's budget, credits (§3.5); plan.md (§4, §6, §8, §9, §10), workers.md, pool.md, formats.md and the README updated. Measured on the M1 in a scratch root (§2.5): Vermont's two z6 tiles and Paris's, with the agent's command lines; the agent's coverage asks bldfetch.py for exactly the 103 files on the NAS. Left: every tile built and published, which the next app published starts (§5.2). | 4 days |
-| **B3 Sharing and polish** | `bldtile` tasks for pages (WebAssembly, byte-identical); bridges and elevated rail over buildings; walls on the terrain under each corner; fog on the extrusions; the camera's clearance; colour by height, by source, heritage tint. | 5 days |
+| **B2 In the build** (published 2026-10-08) | The agent: keys, targets, the chain's order, prunes, status and forecast labels, shared steps, `bld-fetch` as a job (§3.1–3.3, 3.6); the mirror's group, the service worker's budget, credits (§3.5); plan.md (§4, §6, §8, §9, §10), workers.md, pool.md, formats.md and the README updated. Measured on the M1 in a scratch root (§2.5): Vermont's two z6 tiles and Paris's, with the agent's command lines; the agent's coverage asks bldfetch.py for exactly the 103 files on the NAS. Every tile building since it was published. | 4 days |
+| **B3 Sharing and polish** (built 2026-10-08, not yet published) | `bldtile` tasks for pages and helper Macs, the same bytes in WebAssembly (§3.6, §3.7); bridges and elevated rail drawn after the buildings (§4.2); walls on the terrain under each corner, and the globe's 3D positions without float32's noise, which made the saw at the buildings' feet (task #115, §4.3); fog on the extrusions (§1); the camera kept above roofs (§4.3); colour by height on the shared colour scale, the heritage tint (§4.4). Measured on the M1 in a headless Chrome on the real GPU (§4.6). Not done: the hover's outline over the buildings, the tallest building in the In view summary (both optional, §4.5). | 5 days |
 | **B4 Each on its own measurement** | A custom layer (§4.7); measured heights from BD TOPO (France) and PLATEAU (Japan's cities); building heights in the horizons and the viewshed tool (every unit rebuilt). | 2–3 weeks |
 
 B1–B3: about 15 days of work, the build's own time aside. The build's (B2's estimate, the build
@@ -947,9 +1019,9 @@ and the coverage's 65 MB of GeoJSON unioned by shapely: 10 min on the busy M1).
   heights aren't measured (central Tokyo: 11 % have a height or floors). Mitigated by the measured
   rules first, the hold-out checks, the "where the height comes from" colouring, and national data
   later.
-- **Occlusion artefacts** with MapLibre's extrusions: viaducts and elevated rail painted over (B3);
-  places where the terrain mesh lies above a road, so a building behind the road shows over it (the
-  roads' 75 m × exaggeration tolerance exists for that mesh error).
+- **Occlusion artefacts** with MapLibre's extrusions: places where the terrain mesh lies above a
+  road, so a building behind the road shows over it (the roads' 75 m × exaggeration tolerance exists
+  for that mesh error); a bridge's deck within its smaller tolerance (§4.2) of a wall behind it.
 - **The iPad:** dense views may exceed the budget (§4.6's fallbacks).
 - **The NAS:** `bldprep` reads 60 GB; with the units' writes, the NAS is the bottleneck (workers.md
   §1). Paced per tile and kept off the OSM pass.

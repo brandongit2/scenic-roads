@@ -827,9 +827,14 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   estimated from Microsoft's figure, its neighbours, GHSL or its size and kind; tiles z12–14 per z6
   tile. Built (B1): the steps `bldprep` and `bldtiles` (`pipeline::bld`, dem/bldprep.py), run by
   hand; the catalog's layer `buildings`, the server's `/tiles/buildings`, the map's layer and its
-  settings. Built (B2, 2026-10-08, not yet published): the agent runs them for every tile, their
-  sources' fetch a network job (§8, Order: the fourth chain), shared with helpers; the mirror's
-  group, the iPad's budget, the credits. National heights (PLATEAU, BD TOPO) later.
+  settings. Built (B2, published 2026-10-08): the agent runs them for every tile, their sources'
+  fetch a network job (§8, Order: the fourth chain), shared with helpers; the mirror's group, the
+  iPad's budget, the credits. Built (B3, 2026-10-08, not yet published): a tile's z8 areas offered
+  as tasks to pages and helpers (`bldtile`, the same bytes in WebAssembly: workers.md §3); on the
+  map, walls on the terrain under each corner, the globe's 3D positions without float32's noise
+  (the saw at the buildings' feet), fog, bridges and elevated rail drawn after the buildings, the
+  camera kept above roofs, colour by height on the shared colour scale, heritage sites in their
+  colour. National heights (PLATEAU, BD TOPO) later.
 
 The server builds missing deeper terrain and slope tiles from their ancestors.
 
@@ -2180,9 +2185,9 @@ At each phase's end an Opus agent reviews the work against this plan.
      terrain still made from AWS's tiles and the code alone.
    - Under way: 3D buildings (`docs/buildings3d.md`: its sources on the NAS; B1 done, the steps
      built and piloted by hand on six z6 tiles, the layer and the map's side built, measured on the
-     iPad; B2's code built, the agent running them for every tile as a fourth chain, the mirror's
-     group, the iPad's budget and the credits, not yet published: the next app published builds
-     every tile, ~30–70 min of the build Mac's, and puts them out with a catalog), then PLATEAU.
+     iPad; B2, the agent running them for every tile as a fourth chain, the mirror's group, the
+     iPad's budget and the credits, published 2026-10-08, the tiles building; B3's sharing with
+     pages and the map's polish built, not yet published), then PLATEAU.
    - Planned: building heights in horizons and the viewshed tool; sharper terrain from national
      DEMs.
 8. **Builds anywhere: under way** (`docs/workers.md`). Done: the crates build for WebAssembly; one
