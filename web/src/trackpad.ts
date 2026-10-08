@@ -394,7 +394,10 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
   el.addEventListener('pointerup', release);
   el.addEventListener('pointercancel', release);
 
-  // Safari pinch (relative to the previous event: the zoom number itself can be re-levelled).
+  // Safari pinch (relative to the previous event: the zoom number itself can be re-levelled): a
+  // trackpad's. On a touch screen Safari sends these gesture events for two fingers as well; that
+  // pinch, turn and tilt are MapLibre's (above), so these only keep Safari from zooming the page:
+  // zooming here too fought MapLibre's gesture, and the turn and tilt never came.
   let lastScale = 1;
   let gx = 0, gy = 0;
   let ga: Anchor | null = null;
@@ -409,12 +412,14 @@ export function installTrackpad(map: MLMap, opts: { onLongPress?: (px: number, p
   }, { passive: false });
   g.addEventListener('gesturechange', (e: any) => {
     e.preventDefault();
+    if (touches.size > 0) return;
     const dz = Math.log2(e.scale / lastScale);
     lastScale = e.scale;
     pinchStep(gx, gy, dz, ga);
   }, { passive: false });
   g.addEventListener('gestureend', (e: any) => {
     e.preventDefault();
+    if (touches.size > 0) return;
     clearTimeout(pinchEnd);
     pinchRelease();
   }, { passive: false });
