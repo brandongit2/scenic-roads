@@ -81,6 +81,8 @@ async function exec({ lease, task, mem_mb }) {
       while (queue.length) {
         const [path, size] = queue.shift();
         const r = await fetch(`/work/in/${lease}/${path}`, { headers: headers() });
+        // (Not an input of this lease any more: the job took its task back and ended it.)
+        if (r.status === 404 || r.status === 410) throw new Error("taken back");
         if (!r.ok) throw new Error(`input ${path}: ${r.status}`);
         const b = new Uint8Array(await r.arrayBuffer());
         if (b.byteLength !== size) throw new Error(`input ${path}: ${b.byteLength} bytes, not ${size}`);

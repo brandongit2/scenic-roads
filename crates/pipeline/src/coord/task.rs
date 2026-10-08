@@ -140,9 +140,13 @@ impl Tasks {
     }
 
     /// The task to give `worker` (who does `can`, and can spare `mem_mb`): the oldest offered that
-    /// fits.
+    /// fits. Never one of a kind it's measured slower at than the jobs' own runs: the job would run
+    /// it at once anyway and end it, and the worker's work be thrown away (a page 8× slower at tails
+    /// was given one, 8 Oct, and saw it "fail" as the job took it back). Measured again after the
+    /// coordinator restarts (paces are kept in memory).
     pub fn pick(&self, worker: &str, can: &[String], mem_mb: u64) -> Option<u64> {
-        self.by_id.values().filter(|t| matches!(t.state, State::Offered) && can.contains(&t.kind) && t.mem_mb <= mem_mb && !t.failed_on.contains(worker)).min_by_key(|t| (t.offered, t.id)).map(|t| t.id)
+        let slow = |kind: &str| self.paces.get(&(worker.to_string(), kind.to_string())).is_some_and(|&p| !beats(p));
+        self.by_id.values().filter(|t| matches!(t.state, State::Offered) && can.contains(&t.kind) && t.mem_mb <= mem_mb && !t.failed_on.contains(worker) && !slow(&t.kind)).min_by_key(|t| (t.offered, t.id)).map(|t| t.id)
     }
 
     /// Task `id`'s kind ("tail" when it's gone: the kind tasks had before there were others).
@@ -335,6 +339,13 @@ mod tests {
         assert_eq!(ts.pick("phone", &can, 1000), Some(small));
         assert_eq!(ts.pick("ipad", &can, 4000), Some(big));
         assert_eq!(ts.pick("ipad", &["unit".to_string()], 4000), None);
+        // Measured slower than the jobs at tails: given none (they'd be run here at once, its work
+        // thrown away); measured faster, or not yet: as before.
+        ts.paces.insert(("ipad".into(), "tail".into()), 7.8);
+        assert_eq!(ts.pick("ipad", &can, 4000), None);
+        ts.paces.insert(("ipad".into(), "tail".into()), 0.5);
+        assert_eq!(ts.pick("ipad", &can, 4000), Some(big));
+        ts.paces.remove(&("ipad".to_string(), "tail".to_string()));
         ts.by_id.get_mut(&small).unwrap().state = State::Leased { lease: 1, worker: "phone".into() };
         // Only its inputs, only to its worker, nothing outside its folder.
         assert_eq!(ts.input(1, "phone", "u/a.bin").map(|x| x.1), Some(3));

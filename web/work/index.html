@@ -325,11 +325,15 @@ function finish(s, ok, m = {}) {
       store.set("near", nearMisses);
     }
     log(`${esc(s.task.unit || s.task.kind)} done in ${(ms / 1000).toFixed(0)} s (${m.peak_mb || "?"} MB at most)`);
+  } else if (m.error === "taken back") {
+    // (The job ran it itself and ended it, or gave it to another worker: not this device's failure.)
+    log(`${esc(s.task?.unit || "task")}: taken back (the build Mac finished it first)`);
   } else if (m.error) {
     log(`<span class="bad">${esc(s.task?.unit || "task")} failed: ${esc(m.error)}</span>`);
   }
+  const back = m.error === "taken back";
   reserved -= s.mem;
-  Object.assign(s, { lease: null, task: null, mem: 0, state: ok ? "ok" : "bad", detail: ok ? "idle" : `failed: ${m.error || ""}`.slice(0, 120), frac: 0 });
+  Object.assign(s, { lease: null, task: null, mem: 0, state: ok || back ? "ok" : "bad", detail: ok || back ? "idle" : `failed: ${m.error || ""}`.slice(0, 120), frac: 0 });
   remember();
   show();
   setTimeout(fill, 100);
