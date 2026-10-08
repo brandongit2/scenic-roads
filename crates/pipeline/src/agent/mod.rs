@@ -642,6 +642,9 @@ pub struct Agent {
     beside_why: Option<String>,
     /// The disk's free bytes as a test sets them (`disk_free`).
     free_set: Option<u64>,
+    /// The memory's total and free MB as a test sets them (`start_second`), so a test doesn't
+    /// depend on what the Mac running it has free.
+    mem_set: Option<(u64, u64)>,
     sleep: SleepWatch,
     last_mount_try: Option<Instant>,
     /// The heartbeat last written to the NAS (without its time) and when: written again only when it
@@ -800,7 +803,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round) })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, mem_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round) })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -2084,8 +2087,10 @@ impl Agent {
             }
         }
         let res = cond::resources(&self.o.home, None, None, None);
-        let total_mb = (res.mem_gb * 1024.0) as u64;
-        let free_mb = res.mem_free_pct.map_or(0, |p| total_mb * p as u64 / 100);
+        let (total_mb, free_mb) = self.mem_set.unwrap_or_else(|| {
+            let total_mb = (res.mem_gb * 1024.0) as u64;
+            (total_mb, res.mem_free_pct.map_or(0, |p| total_mb * p as u64 / 100))
+        });
         let first_mb = first.as_ref().map_or(0, |f| f.2.max(f.3));
         let mut why: Option<String> = None;
         for spec in picks {
@@ -3951,6 +3956,7 @@ mod tests {
         let mut a = Agent::new(Options { root: Some(root.clone()), home: home.clone(), bin: PathBuf::from("/app"), dry_run: false, once: true, helper: false }).unwrap();
         a.coord = Some(crate::coord::start_for_test(&d.path().join("coord"), "m4", "").0);
         a.free_set = Some(40 << 30);
+        a.mem_set = Some((16 << 10, 12 << 10));
         assert!(a.second_allowed());
         // (Each a shell waiting, given its scratch folder as the plan's jobs are.)
         let job = |id: &str| {
