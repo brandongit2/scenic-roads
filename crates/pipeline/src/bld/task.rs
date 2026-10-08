@@ -598,7 +598,9 @@ mod tests {
             assert_eq!(s.costs["bldtile 8/131/88"].peak_mb, 300);
         }
         // Offered again (another job), with the cost learned; a spoilt result: checked, run here,
-        // and the worker gets no more work.
+        // and the worker gets no more work. (Its pace forgotten first: measured slower than this
+        // Mac's run on its first area, it would be given none, coord::task::Tasks::pick.)
+        c.shared.lock().unwrap().tasks.paces.clear();
         let mut offers = Offers::new(Some(&o), &scratch, t, areas.len());
         offers.top_up(&files, &cov, &areas, 0).unwrap();
         assert_eq!(offers.out.len(), 1);
