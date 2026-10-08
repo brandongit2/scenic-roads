@@ -350,13 +350,6 @@ def overture_jobs(args, cov) -> tuple[list[dict], Path, dict]:
     rel = args.release
     base = Path(args.root) / "sources/overture" / rel.replace(".", "-")
     base.mkdir(parents=True, exist_ok=True)
-    listed = []
-    for t in TYPES:
-        files = s3_list(f"release/{rel}/theme=buildings/type={t}/")
-        if not files:
-            raise SystemExit(f"Overture's release {rel} has no {t} files on S3 (gone, or another name?)")
-        listed += files
-    log(f"overture {rel}: {len(listed)} files listed, {gb(sum(f['size'] for f in listed))}")
     # Every file's row groups (cached: a release's files never change).
     cache_path = base / "footers.json.gz"
     cache = {}
@@ -365,6 +358,20 @@ def overture_jobs(args, cov) -> tuple[list[dict], Path, dict]:
             cache = json.loads(gzip.decompress(cache_path.read_bytes()))
         except (OSError, ValueError) as e:
             log(f"{cache_path}: unreadable ({e}); reading the footers again")
+    listed = []
+    for t in TYPES:
+        prefix = f"release/{rel}/theme=buildings/type={t}/"
+        files = s3_list(prefix)
+        if not files and cache:
+            # The release gone from S3 (Overture keeps about two months): the footers read before
+            # list its files, so the coverage's files here are known whole and skipped; one the
+            # coverage needs and that isn't here fails (it waits for the next pinned release).
+            files = [{"key": k, "size": v["size"], "etag": v["etag"]} for k, v in sorted(cache.items()) if k.startswith(prefix)]
+            log(f"overture {rel}: no {t} files on S3 now; going by the {len(files)} footers read before")
+        if not files:
+            raise SystemExit(f"Overture's release {rel} has no {t} files on S3 (gone, or another name?)")
+        listed += files
+    log(f"overture {rel}: {len(listed)} files listed, {gb(sum(f['size'] for f in listed))}")
     todo = [f for f in listed if cache.get(f["key"], {}).get("etag") != f["etag"]]
     if todo:
         log(f"reading {len(todo)} files' footers")
