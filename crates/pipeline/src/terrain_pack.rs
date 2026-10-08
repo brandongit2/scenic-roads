@@ -813,64 +813,125 @@ pub fn build_q(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], 
     build_q_with(out, raw, q, ts, cov, src, &|_, _, _| {})
 }
 
-/// `build_q`, saying how far it is (`progress`): the area's tiles, every level's, each half done once
-/// it's here (fetched from AWS, or read from the NAS's archives) and done once shaded ("tiles",
-/// every few seconds; each z6 tile's hi pack written as its tiles are done), then its lo pack
-/// written ("packs").
-///
-/// A z6 tile at a time: its levels z12 → z9 made, then its hi pack written, so only its tiles are
-/// held (an area's were all held until they were written: 33 GB for the largest, more than a
-/// helper spares); its z9 tiles' repairs and quarters kept for q's z8. A tile's making reads only
-/// its own raw tile and its children's (`process`): the same bytes in any order.
-pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], cov: &Coverage, src: &Sources, progress: crate::rawpack::Progress) -> anyhow::Result<PackReport> {
-    let mut rep = PackReport::default();
-    // Each z6 tile's levels' tiles, z12 → z9, near the coverage, as fine as the latitude allows; then
-    // q's, z8 → z3, the whole of it.
-    let own = |tx: u32, ty: u32| -> Vec<(u8, Vec<(u32, u32)>)> {
-        (9..=12u8)
-            .rev()
-            .map(|z| {
-                let s = 1u32 << (z - 6);
-                let tiles = (tx * s..(tx + 1) * s).flat_map(|x| (ty * s..(ty + 1) * s).map(move |y| (x, y))).filter(|&(x, y)| z <= max_zoom_at(tile_lat(z, y)) && near_coverage(cov, z, x, y, 20.0)).collect();
-                (z, tiles)
-            })
-            .collect()
-    };
-    let mine: Vec<Vec<(u8, Vec<(u32, u32)>)>> = ts.iter().map(|&(tx, ty)| own(tx, ty)).collect();
-    let upper: Vec<(u8, Vec<(u32, u32)>)> = (3..=8u8)
-        .rev()
-        .map(|z| {
-            let s = 1u32 << (z - 3);
-            (z, (q.0 * s..(q.0 + 1) * s).flat_map(|x| (q.1 * s..(q.1 + 1) * s).map(move |y| (x, y))).collect())
-        })
-        .collect();
-    let total: u64 = mine.iter().flatten().chain(&upper).map(|(_, t)| t.len() as u64).sum();
-    // (Here, and shaded: each tile counts in both.)
-    let (here, processed) = (std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0));
-    let done = || (here.load(std::sync::atomic::Ordering::Relaxed) + processed.load(std::sync::atomic::Ordering::Relaxed)) / 2;
-    let fetched = std::sync::atomic::AtomicUsize::new(0);
-    let missing = std::sync::atomic::AtomicUsize::new(0);
-    let repaired = std::sync::atomic::AtomicUsize::new(0);
-    let get = |z: u8, x: u32, y: u32| -> anyhow::Result<Option<Vec<u8>>> {
-        let (b, new) = raw.get(z, x, y)?;
+/// What a terrain piece (a z6 tile's run: `build_piece`) keeps for its area's assembly
+/// (`build_lo`), its mid: its z9 tiles' 2×2 means (128 × 128, f32: each a quarter of the z8 tile
+/// above), and its lakes' levels as its own levels gave them (crate::terrain_water). Its z8–z6
+/// can't be made with it: a lake's level at z8 is gathered from the whole area's z8 tiles, and the
+/// area's levels start from every piece's lakes, the first piece's (in column, then row order)
+/// kept for a lake two of them have.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Mid {
+    pub quads: std::collections::BTreeMap<(u32, u32), Vec<f32>>,
+    pub levels: std::collections::BTreeMap<u64, f32>,
+}
+
+/// Z6 tile (`x`, `y`)'s terrain mid in the manifest (`Mid`).
+pub fn mid_logical(x: u32, y: u32) -> String {
+    format!("work/terrain-mid/6-{x}-{y}")
+}
+
+/// The mid's format.
+const MID_FMT: u64 = 1;
+
+/// Writes z6 tile `t`'s mid to `path`: a sectioned file (store::sect), meta `{"fmt": 1, "step":
+/// "terrain", "tile": "6/x/y", "v": TERRAIN_V}`; a section `quad-9-<x>-<y>` for each z9 tile's
+/// means (f32, little-endian, row by row), by column then row, then `lake-ids` (u64) and
+/// `lake-levels` (f32), by id.
+pub fn write_mid(path: &std::path::Path, t: (u32, u32), mid: &Mid) -> anyhow::Result<()> {
+    let meta = serde_json::json!({ "fmt": MID_FMT, "step": "terrain", "tile": format!("6/{}/{}", t.0, t.1), "v": crate::agent::build::TERRAIN_V });
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let mut w = store::sect::SectWriter::create(path, meta)?;
+    for (&(x, y), q) in &mid.quads {
+        anyhow::ensure!((x >> 3, y >> 3) == t && q.len() == 128 * 128, "z9 tile 9/{x}/{y}'s means aren't z6 tile 6/{}/{}'s", t.0, t.1);
+        w.add(&format!("quad-9-{x}-{y}"), &q.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())?;
+    }
+    w.add("lake-ids", &mid.levels.keys().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())?;
+    w.add("lake-levels", &mid.levels.values().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())?;
+    w.finish()?;
+    Ok(())
+}
+
+/// A mid (`write_mid`), read and checked: its format, step and version (one made for another
+/// version of the terrain isn't one to assemble), every section whole. Its z6 tile and the mid.
+pub fn read_mid(path: &std::path::Path) -> anyhow::Result<((u32, u32), Mid)> {
+    use anyhow::Context;
+    let what = || path.display().to_string();
+    let r = store::sect::SectReader::open(store::range::PlainFile::open(path).with_context(what)?).with_context(what)?;
+    let m = r.meta();
+    anyhow::ensure!(m["fmt"].as_u64() == Some(MID_FMT) && m["step"] == "terrain", "{}: not a terrain mid", what());
+    anyhow::ensure!(m["v"].as_u64() == Some(crate::agent::build::TERRAIN_V as u64), "{}: a mid of terrain version {}, not {}", what(), m["v"], crate::agent::build::TERRAIN_V);
+    let t = m["tile"].as_str().and_then(crate::legacy::Unit::parse).filter(|u| u.z == 6).with_context(|| format!("{}: no z6 tile", what()))?;
+    let t = (t.x, t.y);
+    let mut mid = Mid::default();
+    let (mut ids, mut levels): (Vec<u64>, Vec<f32>) = (Vec::new(), Vec::new());
+    for s in r.sections() {
+        let b = r.read(&s.name).with_context(what)?;
+        match s.name.as_str() {
+            "lake-ids" => ids = b.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect(),
+            "lake-levels" => levels = b.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect(),
+            n => {
+                let xy: Vec<u32> = n.strip_prefix("quad-9-").with_context(|| format!("{}: a section {n:?}", what()))?.split('-').map(|v| v.parse::<u32>()).collect::<Result<_, _>>().with_context(|| format!("{}: a section {n:?}", what()))?;
+                anyhow::ensure!(xy.len() == 2 && (xy[0] >> 3, xy[1] >> 3) == t && b.len() == 128 * 128 * 4, "{}: a section {n:?}", what());
+                mid.quads.insert((xy[0], xy[1]), b.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect());
+            }
+        }
+    }
+    anyhow::ensure!(ids.len() == levels.len(), "{}: {} lakes and {} levels", what(), ids.len(), levels.len());
+    mid.levels = ids.into_iter().zip(levels).collect();
+    Ok((t, mid))
+}
+
+/// A tile as made: zoom, column, row, its bytes.
+type Made = (u8, u32, u32, Vec<u8>);
+/// A level as made: its tiles, the ones repaired (for the pixels above them), the 2×2 means.
+type Level = (Vec<(u32, u32, Vec<u8>)>, HashMap<(u32, u32), Repaired>, HashMap<(u32, u32), Vec<f32>>);
+
+/// What makes the terrain's levels: the raw tiles, the sources, and the counts of what it did (each
+/// tile counts once here and once shaded: `done`).
+struct Maker<'a> {
+    raw: &'a RawTiles,
+    src: &'a Sources<'a>,
+    here: std::sync::atomic::AtomicU64,
+    processed: std::sync::atomic::AtomicU64,
+    fetched: std::sync::atomic::AtomicUsize,
+    missing: std::sync::atomic::AtomicUsize,
+    repaired: std::sync::atomic::AtomicUsize,
+}
+
+impl<'a> Maker<'a> {
+    fn new(raw: &'a RawTiles, src: &'a Sources<'a>) -> Self {
+        Maker { raw, src, here: Default::default(), processed: Default::default(), fetched: Default::default(), missing: Default::default(), repaired: Default::default() }
+    }
+
+    /// The tiles fetched (or reused) and shaded, each counted once.
+    fn done(&self) -> u64 {
+        (self.here.load(std::sync::atomic::Ordering::Relaxed) + self.processed.load(std::sync::atomic::Ordering::Relaxed)) / 2
+    }
+
+    fn get(&self, z: u8, x: u32, y: u32) -> anyhow::Result<Option<Vec<u8>>> {
+        let (b, new) = self.raw.get(z, x, y)?;
         if new {
-            fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         if b.is_none() {
-            missing.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.missing.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         Ok(b)
-    };
-    // One level: every tile fetched or reused, then made with what the level below made: first all
-    // but their water (`prepare`), then each lake's level from all its shore in the level (those
-    // known from finer levels kept: `levels`), then their water (`finish`).
-    let level = |z: u8, tiles: Vec<(u32, u32)>, below: &HashMap<(u32, u32), Repaired>, quads: &HashMap<(u32, u32), Vec<f32>>, levels: &mut HashMap<u64, f32>| -> anyhow::Result<(Vec<(u32, u32, Vec<u8>)>, HashMap<(u32, u32), Repaired>, HashMap<(u32, u32), Vec<f32>>)> {
-        fetched.fetch_add(raw.prefetch_counted(z, &tiles, FETCH_THREADS, &here)?, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// One level: every tile fetched or reused, then made with what the level below made: first all
+    /// but their water (`prepare`), then each lake's level from all its shore in the level (those
+    /// known from finer levels kept: `levels`), then their water (`finish`).
+    fn level(&self, z: u8, tiles: Vec<(u32, u32)>, below: &HashMap<(u32, u32), Repaired>, quads: &HashMap<(u32, u32), Vec<f32>>, levels: &mut HashMap<u64, f32>) -> anyhow::Result<Level> {
+        self.fetched.fetch_add(self.raw.prefetch_counted(z, &tiles, FETCH_THREADS, &self.here)?, std::sync::atomic::Ordering::Relaxed);
+        let src = self.src;
         let prepared: Vec<anyhow::Result<Option<(u32, u32, Prepared)>>> = tiles
             .par_iter()
             .map(|&(x, y)| {
-                let Some(b) = get(z, x, y)? else {
-                    processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(b) = self.get(z, x, y)? else {
+                    self.processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     return Ok(None);
                 };
                 Ok(Some((x, y, prepare(b, z, x, y, below, quads, src, &|e, z, lat, c| {
@@ -889,14 +950,14 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
             .par_drain(..)
             .map(|(x, y, p)| {
                 let (b, r, q) = finish(p, levels);
-                processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 (x, y, b, r, q)
             })
             .collect();
         let (mut outs, mut nb, mut nq) = (Vec::new(), HashMap::new(), HashMap::new());
         for (x, y, b, r, q) in done {
             if let Some(r) = r {
-                repaired.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.repaired.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 nb.insert((x, y), r);
             }
             if let Some(q) = q {
@@ -905,75 +966,215 @@ pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u3
             outs.push((x, y, b));
         }
         Ok((outs, nb, nq))
-    };
-    let mut lo: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
-    // The z6 tiles, each written as it's done, then q's levels (z8 → z3 fold in the levels above
-    // what was made just before them); the tiles done said every few seconds meanwhile.
+    }
+
+    /// A piece (z6 tile `t`): its levels z12 → z9 (`levels`, `piece_levels`), its lakes' levels
+    /// from them alone. Its hi tiles, sorted, and its mid.
+    fn piece(&self, levels: Vec<(u8, Vec<(u32, u32)>)>) -> anyhow::Result<(Vec<Made>, Mid)> {
+        let (mut below, mut quads) = (HashMap::new(), HashMap::new());
+        let mut hi: Vec<Made> = Vec::new();
+        let mut lakes: HashMap<u64, f32> = HashMap::new();
+        for (z, tiles) in levels {
+            let (outs, nb, nq) = self.level(z, tiles, &below, &quads, &mut lakes)?;
+            hi.extend(outs.into_iter().map(|(x, y, b)| (z, x, y, b)));
+            (below, quads) = (nb, nq);
+        }
+        hi.sort_by_key(|t| (t.0, t.1, t.2));
+        Ok((hi, Mid { quads: quads.into_iter().collect(), levels: lakes.into_iter().collect() }))
+    }
+
+    /// An area's assembly (z3 tile `q`): its levels z8 → z3, the whole of it, from its pieces' mids
+    /// (`mids`, in column then row order: their z9 tiles' means taken in, each lake's level the
+    /// first of them that has one, the levels' lakes added below them). Its lo tiles, sorted.
+    ///
+    /// (A z8 tile's quarter over a piece's z9 tile is made again whole from that tile's means: the
+    /// pixels a z9 tile's repair moved, which `prepare` takes in first, are written over by them;
+    /// so the mid needn't hold those.)
+    fn lo(&self, q: (u32, u32), mids: &[((u32, u32), &Mid)]) -> anyhow::Result<Vec<Made>> {
+        let mut quads: HashMap<(u32, u32), Vec<f32>> = HashMap::new();
+        let mut lakes: HashMap<u64, f32> = HashMap::new();
+        for (_, m) in mids {
+            quads.extend(m.quads.iter().map(|(k, v)| (*k, v.clone())));
+            for (k, v) in &m.levels {
+                lakes.entry(*k).or_insert(*v);
+            }
+        }
+        let mut below = HashMap::new();
+        let mut lo: Vec<Made> = Vec::new();
+        for (z, tiles) in upper_levels(q) {
+            let (outs, nb, nq) = self.level(z, tiles, &below, &quads, &mut lakes)?;
+            lo.extend(outs.into_iter().map(|(x, y, b)| (z, x, y, b)));
+            (below, quads) = (nb, nq);
+        }
+        lo.sort_by_key(|t| (t.0, t.1, t.2));
+        Ok(lo)
+    }
+
+    fn report(&self, rep: &mut PackReport) {
+        rep.fetched = self.fetched.load(std::sync::atomic::Ordering::Relaxed);
+        rep.missing = self.missing.load(std::sync::atomic::Ordering::Relaxed);
+        rep.repaired = self.repaired.load(std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// A piece's levels (z6 tile `t`'s), z12 → z9: the tiles near the coverage (20 km), as fine as the
+/// latitude allows.
+pub fn piece_levels(cov: &Coverage, t: (u32, u32)) -> Vec<(u8, Vec<(u32, u32)>)> {
+    let (tx, ty) = t;
+    (9..=12u8)
+        .rev()
+        .map(|z| {
+            let s = 1u32 << (z - 6);
+            let tiles = (tx * s..(tx + 1) * s).flat_map(|x| (ty * s..(ty + 1) * s).map(move |y| (x, y))).filter(|&(x, y)| z <= max_zoom_at(tile_lat(z, y)) && near_coverage(cov, z, x, y, 20.0)).collect();
+            (z, tiles)
+        })
+        .collect()
+}
+
+/// An area's levels (z3 tile `q`'s), z8 → z3, the whole of it.
+fn upper_levels(q: (u32, u32)) -> Vec<(u8, Vec<(u32, u32)>)> {
+    (3..=8u8)
+        .rev()
+        .map(|z| {
+            let s = 1u32 << (z - 3);
+            (z, (q.0 * s..(q.0 + 1) * s).flat_map(|x| (q.1 * s..(q.1 + 1) * s).map(move |y| (x, y))).collect())
+        })
+        .collect()
+}
+
+/// `run` with `mk`'s tiles said to `progress` as "tiles" (of `total`) every few seconds, and once
+/// at the end.
+fn saying<T>(mk: &Maker, total: u64, progress: crate::rawpack::Progress, run: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
     let finished = std::sync::atomic::AtomicBool::new(false);
-    // (Set however the levels end, a panic too: the scope waits for the reporter before it goes on.)
+    // (Set however the run ends, a panic too: the scope waits for the reporter before it goes on.)
     struct Finished<'a>(&'a std::sync::atomic::AtomicBool);
     impl Drop for Finished<'_> {
         fn drop(&mut self) {
             self.0.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     }
-    std::thread::scope(|s| {
+    let r = std::thread::scope(|s| {
         s.spawn(|| {
             let mut said = std::time::Instant::now();
             while !finished.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(200));
                 if said.elapsed() >= Duration::from_secs(5) {
-                    progress("tiles", done().min(total), total);
+                    progress("tiles", mk.done().min(total), total);
                     said = std::time::Instant::now();
                 }
             }
         });
         let _finished = Finished(&finished);
-        let r = (|| -> anyhow::Result<()> {
-            let (mut below9, mut quads9): (HashMap<(u32, u32), Repaired>, HashMap<(u32, u32), Vec<f32>>) = (HashMap::new(), HashMap::new());
-            // (The lakes' levels: each z6 tile's, finest first, then all of them for q's levels.)
-            let mut lakes_q: HashMap<u64, f32> = HashMap::new();
-            for (&(tx, ty), levels) in ts.iter().zip(mine) {
-                let (mut below, mut quads) = (HashMap::new(), HashMap::new());
-                let mut hi: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
-                let mut lakes: HashMap<u64, f32> = HashMap::new();
-                for (z, tiles) in levels {
-                    let (outs, nb, nq) = level(z, tiles, &below, &quads, &mut lakes)?;
-                    hi.extend(outs.into_iter().map(|(x, y, b)| (z, x, y, b)));
-                    (below, quads) = (nb, nq);
-                }
-                for (k, v) in lakes {
-                    lakes_q.entry(k).or_insert(v);
-                }
-                // (Its z9 tiles': what q's z8 reads.)
-                below9.extend(below);
-                quads9.extend(quads);
-                hi.sort_by_key(|t| (t.0, t.1, t.2));
-                rep.hi_tiles += hi.len();
-                let mut it = hi.into_iter().map(|(z, x, y, b)| {
-                    let n = b.len() as u32;
-                    (z, x, y, b, n)
-                });
-                crate::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, tx, ty), &mut it)?;
-            }
-            let (mut below, mut quads) = (below9, quads9);
-            for (z, tiles) in upper {
-                let (outs, nb, nq) = level(z, tiles, &below, &quads, &mut lakes_q)?;
-                lo.extend(outs.into_iter().map(|(x, y, b)| (z, x, y, b)));
-                (below, quads) = (nb, nq);
-            }
-            Ok(())
-        })();
-        drop(_finished);
-        r
+        run()
     })?;
     progress("tiles", total, total);
-    rep.fetched = fetched.into_inner();
-    rep.missing = missing.into_inner();
-    rep.repaired = repaired.into_inner();
+    Ok(r)
+}
+
+/// `build_q`, saying how far it is (`progress`): the area's tiles, every level's, each half done once
+/// it's here (fetched from AWS, or read from the NAS's archives) and done once shaded ("tiles",
+/// every few seconds; each z6 tile's hi pack written as its tiles are done), then its lo pack
+/// written ("packs").
+///
+/// Its pieces, a z6 tile at a time (`build_piece`'s run: its levels z12 → z9 made, then its hi pack
+/// written, so only its tiles are held), then its assembly (`build_lo`'s, from the pieces' mids held
+/// here): the same bytes as the pieces' jobs and the assembly's. A tile's making reads only its own
+/// raw tile and its children's (`process`): the same bytes in any order.
+pub fn build_q_with(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], cov: &Coverage, src: &Sources, progress: crate::rawpack::Progress) -> anyhow::Result<PackReport> {
+    let mut rep = PackReport::default();
+    let mine: Vec<Vec<(u8, Vec<(u32, u32)>)>> = ts.iter().map(|&t| piece_levels(cov, t)).collect();
+    let total: u64 = mine.iter().flatten().map(|(_, t)| t.len() as u64).sum::<u64>() + 1365;
+    let mk = Maker::new(raw, src);
+    let lo = saying(&mk, total, progress, || {
+        let mut mids: Vec<((u32, u32), Mid)> = Vec::new();
+        for (&t, levels) in ts.iter().zip(mine) {
+            let (hi, mid) = mk.piece(levels)?;
+            rep.hi_tiles += hi.len();
+            let mut it = hi.into_iter().map(|(z, x, y, b)| {
+                let n = b.len() as u32;
+                (z, x, y, b, n)
+            });
+            crate::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, t.0, t.1), &mut it)?;
+            mids.push((t, mid));
+        }
+        let refs: Vec<((u32, u32), &Mid)> = mids.iter().map(|(t, m)| (*t, m)).collect();
+        mk.lo(q, &refs)
+    })?;
+    mk.report(&mut rep);
     // Then q's lo pack.
     progress("packs", 0, 1);
-    lo.sort_by_key(|t| (t.0, t.1, t.2));
+    rep.lo_tiles = lo.len();
+    let mut it = lo.into_iter().map(|(z, x, y, b)| {
+        let n = b.len() as u32;
+        (z, x, y, b, n)
+    });
+    crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut it)?;
+    out.save()?;
+    progress("packs", 1, 1);
+    Ok(rep)
+}
+
+/// Makes z6 tile `t`'s terrain (a piece: its levels z12 → z9, `piece_levels`) and uploads it: its hi
+/// pack (none when it made no tile: an earlier one stays, as an area's run leaves it) and its mid
+/// (`Mid`, `mid_logical`), which its area's assembly reads (`build_lo`). `expect_same`: a piece made
+/// again as it is (its mid made), whose hi pack must come out as the manifest has it, else an error
+/// and nothing uploaded. Says how far it is as `build_q_with` does.
+#[allow(clippy::too_many_arguments)]
+pub fn build_piece(out: &mut Out, raw: &RawTiles, t: (u32, u32), cov: &Coverage, src: &Sources, expect_same: bool, progress: crate::rawpack::Progress) -> anyhow::Result<PackReport> {
+    let mut rep = PackReport::default();
+    let levels = piece_levels(cov, t);
+    let total: u64 = levels.iter().map(|(_, t)| t.len() as u64).sum();
+    let mk = Maker::new(raw, src);
+    let (hi, mid) = saying(&mk, total, progress, || mk.piece(levels))?;
+    mk.report(&mut rep);
+    progress("packs", 0, 1);
+    rep.hi_tiles = hi.len();
+    let mut it = hi.into_iter().map(|(z, x, y, b)| {
+        let n = b.len() as u32;
+        (z, x, y, b, n)
+    });
+    let pack = crate::layers::write_pack_local(out, "terrain", "terrarium-png", false, "hi", (6, t.0, t.1), &mut it)?;
+    let ml = mid_logical(t.0, t.1);
+    let mid_path = out.scratch_file(&format!("{ml}.sect"));
+    write_mid(&mid_path, t, &mid)?;
+    if expect_same {
+        if let Some(p) = &pack {
+            let made = p.content_name()?;
+            if out.get(&p.logical) != Some(made.as_str()) {
+                std::fs::remove_file(&p.local).ok();
+                std::fs::remove_file(&mid_path).ok();
+                anyhow::bail!("piece 6/{}/{} was expected the same as the manifest has it, and isn't (nothing uploaded): {}: made {made}, the manifest has {}", t.0, t.1, p.logical, out.get(&p.logical).unwrap_or("none"));
+            }
+        }
+    }
+    if let Some(p) = pack {
+        out.put_file(&p.logical, "pack", &p.local)?;
+    }
+    out.put_file(&ml, "sect", &mid_path)?;
+    out.save()?;
+    progress("packs", 1, 1);
+    Ok(rep)
+}
+
+/// Makes z3 tile `q`'s zoomed-out terrain (an assembly: its levels z8 → z3, the whole of it) from
+/// its pieces' mids (`ts`: its z6 tiles near the coverage, in column then row order, each with its
+/// mid in the manifest), and uploads its lo pack. Says how far it is as `build_q_with` does.
+pub fn build_lo(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], src: &Sources, progress: crate::rawpack::Progress) -> anyhow::Result<PackReport> {
+    use anyhow::Context;
+    let mut rep = PackReport::default();
+    let mut mids: Vec<((u32, u32), Mid)> = Vec::new();
+    for &t in ts {
+        anyhow::ensure!((t.0 >> 3, t.1 >> 3) == q, "6/{}/{} isn't in 3/{}/{}", t.0, t.1, q.0, q.1);
+        let c = out.get(&mid_logical(t.0, t.1)).with_context(|| format!("6/{}/{} has no mid yet: its area can't be assembled", t.0, t.1))?;
+        let (of, mid) = read_mid(&out.path(c))?;
+        anyhow::ensure!(of == t, "{c} is 6/{}/{}'s mid", of.0, of.1);
+        mids.push((t, mid));
+    }
+    let mk = Maker::new(raw, src);
+    let refs: Vec<((u32, u32), &Mid)> = mids.iter().map(|(t, m)| (*t, m)).collect();
+    let lo = saying(&mk, 1365, progress, || mk.lo(q, &refs))?;
+    mk.report(&mut rep);
+    progress("packs", 0, 1);
     rep.lo_tiles = lo.len();
     let mut it = lo.into_iter().map(|(z, x, y, b)| {
         let n = b.len() as u32;
@@ -1372,6 +1573,280 @@ mod tests {
         }
         assert!(!d.path().join("fresh/12/2048/1365.png").exists() && !d.path().join("fresh/packs").exists());
         assert_eq!(fresh.get(12, 2048, 1365).unwrap(), (Some(png.clone()), false));
+    }
+
+    /// The area's terrain as main made it at 1fa03d8 (TERRAIN_V 3), before it was made as pieces and an
+    /// assembly: the reference the pieces and assembly must match, byte for byte.
+    fn area_v3(out: &mut Out, raw: &RawTiles, q: (u32, u32), ts: &[(u32, u32)], cov: &Coverage, src: &Sources, progress: crate::rawpack::Progress) -> anyhow::Result<PackReport> {
+        let mut rep = PackReport::default();
+        // Each z6 tile's levels' tiles, z12 → z9, near the coverage, as fine as the latitude allows; then
+        // q's, z8 → z3, the whole of it.
+        let own = |tx: u32, ty: u32| -> Vec<(u8, Vec<(u32, u32)>)> {
+            (9..=12u8)
+                .rev()
+                .map(|z| {
+                    let s = 1u32 << (z - 6);
+                    let tiles = (tx * s..(tx + 1) * s).flat_map(|x| (ty * s..(ty + 1) * s).map(move |y| (x, y))).filter(|&(x, y)| z <= max_zoom_at(tile_lat(z, y)) && near_coverage(cov, z, x, y, 20.0)).collect();
+                    (z, tiles)
+                })
+                .collect()
+        };
+        let mine: Vec<Vec<(u8, Vec<(u32, u32)>)>> = ts.iter().map(|&(tx, ty)| own(tx, ty)).collect();
+        let upper: Vec<(u8, Vec<(u32, u32)>)> = (3..=8u8)
+            .rev()
+            .map(|z| {
+                let s = 1u32 << (z - 3);
+                (z, (q.0 * s..(q.0 + 1) * s).flat_map(|x| (q.1 * s..(q.1 + 1) * s).map(move |y| (x, y))).collect())
+            })
+            .collect();
+        let total: u64 = mine.iter().flatten().chain(&upper).map(|(_, t)| t.len() as u64).sum();
+        // (Here, and shaded: each tile counts in both.)
+        let (here, processed) = (std::sync::atomic::AtomicU64::new(0), std::sync::atomic::AtomicU64::new(0));
+        let done = || (here.load(std::sync::atomic::Ordering::Relaxed) + processed.load(std::sync::atomic::Ordering::Relaxed)) / 2;
+        let fetched = std::sync::atomic::AtomicUsize::new(0);
+        let missing = std::sync::atomic::AtomicUsize::new(0);
+        let repaired = std::sync::atomic::AtomicUsize::new(0);
+        let get = |z: u8, x: u32, y: u32| -> anyhow::Result<Option<Vec<u8>>> {
+            let (b, new) = raw.get(z, x, y)?;
+            if new {
+                fetched.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            if b.is_none() {
+                missing.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            Ok(b)
+        };
+        // One level: every tile fetched or reused, then made with what the level below made: first all
+        // but their water (`prepare`), then each lake's level from all its shore in the level (those
+        // known from finer levels kept: `levels`), then their water (`finish`).
+        let level = |z: u8, tiles: Vec<(u32, u32)>, below: &HashMap<(u32, u32), Repaired>, quads: &HashMap<(u32, u32), Vec<f32>>, levels: &mut HashMap<u64, f32>| -> anyhow::Result<(Vec<(u32, u32, Vec<u8>)>, HashMap<(u32, u32), Repaired>, HashMap<(u32, u32), Vec<f32>>)> {
+            fetched.fetch_add(raw.prefetch_counted(z, &tiles, FETCH_THREADS, &here)?, std::sync::atomic::Ordering::Relaxed);
+            let prepared: Vec<anyhow::Result<Option<(u32, u32, Prepared)>>> = tiles
+                .par_iter()
+                .map(|&(x, y)| {
+                    let Some(b) = get(z, x, y)? else {
+                        processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return Ok(None);
+                    };
+                    Ok(Some((x, y, prepare(b, z, x, y, below, quads, src, &|e, z, lat, c| {
+                        repair_terrain_with(e, z, lat, c);
+                    }))))
+                })
+                .collect();
+            let mut prepared: Vec<(u32, u32, Prepared)> = prepared.into_iter().filter_map(|r| r.transpose()).collect::<anyhow::Result<_>>()?;
+            let mut lakes = HashMap::new();
+            for (_, _, p) in &prepared {
+                crate::terrain_water::gather(&mut lakes, p.lake_samples());
+            }
+            crate::terrain_water::add_levels(levels, &lakes);
+            let levels: &HashMap<u64, f32> = levels;
+            let done: Vec<(u32, u32, Vec<u8>, Option<Repaired>, Option<Vec<f32>>)> = prepared
+                .par_drain(..)
+                .map(|(x, y, p)| {
+                    let (b, r, q) = finish(p, levels);
+                    processed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    (x, y, b, r, q)
+                })
+                .collect();
+            let (mut outs, mut nb, mut nq) = (Vec::new(), HashMap::new(), HashMap::new());
+            for (x, y, b, r, q) in done {
+                if let Some(r) = r {
+                    repaired.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    nb.insert((x, y), r);
+                }
+                if let Some(q) = q {
+                    nq.insert((x, y), q);
+                }
+                outs.push((x, y, b));
+            }
+            Ok((outs, nb, nq))
+        };
+        let mut lo: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
+        // The z6 tiles, each written as it's done, then q's levels (z8 → z3 fold in the levels above
+        // what was made just before them); the tiles done said every few seconds meanwhile.
+        let finished = std::sync::atomic::AtomicBool::new(false);
+        // (Set however the levels end, a panic too: the scope waits for the reporter before it goes on.)
+        struct Finished<'a>(&'a std::sync::atomic::AtomicBool);
+        impl Drop for Finished<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                let mut said = std::time::Instant::now();
+                while !finished.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(200));
+                    if said.elapsed() >= Duration::from_secs(5) {
+                        progress("tiles", done().min(total), total);
+                        said = std::time::Instant::now();
+                    }
+                }
+            });
+            let _finished = Finished(&finished);
+            let r = (|| -> anyhow::Result<()> {
+                let (mut below9, mut quads9): (HashMap<(u32, u32), Repaired>, HashMap<(u32, u32), Vec<f32>>) = (HashMap::new(), HashMap::new());
+                // (The lakes' levels: each z6 tile's, finest first, then all of them for q's levels.)
+                let mut lakes_q: HashMap<u64, f32> = HashMap::new();
+                for (&(tx, ty), levels) in ts.iter().zip(mine) {
+                    let (mut below, mut quads) = (HashMap::new(), HashMap::new());
+                    let mut hi: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
+                    let mut lakes: HashMap<u64, f32> = HashMap::new();
+                    for (z, tiles) in levels {
+                        let (outs, nb, nq) = level(z, tiles, &below, &quads, &mut lakes)?;
+                        hi.extend(outs.into_iter().map(|(x, y, b)| (z, x, y, b)));
+                        (below, quads) = (nb, nq);
+                    }
+                    for (k, v) in lakes {
+                        lakes_q.entry(k).or_insert(v);
+                    }
+                    // (Its z9 tiles': what q's z8 reads.)
+                    below9.extend(below);
+                    quads9.extend(quads);
+                    hi.sort_by_key(|t| (t.0, t.1, t.2));
+                    rep.hi_tiles += hi.len();
+                    let mut it = hi.into_iter().map(|(z, x, y, b)| {
+                        let n = b.len() as u32;
+                        (z, x, y, b, n)
+                    });
+                    crate::layers::write_pack(out, "terrain", "terrarium-png", false, "hi", (6, tx, ty), &mut it)?;
+                }
+                let (mut below, mut quads) = (below9, quads9);
+                for (z, tiles) in upper {
+                    let (outs, nb, nq) = level(z, tiles, &below, &quads, &mut lakes_q)?;
+                    lo.extend(outs.into_iter().map(|(x, y, b)| (z, x, y, b)));
+                    (below, quads) = (nb, nq);
+                }
+                Ok(())
+            })();
+            drop(_finished);
+            r
+        })?;
+        progress("tiles", total, total);
+        rep.fetched = fetched.into_inner();
+        rep.missing = missing.into_inner();
+        rep.repaired = repaired.into_inner();
+        // Then q's lo pack.
+        progress("packs", 0, 1);
+        lo.sort_by_key(|t| (t.0, t.1, t.2));
+        rep.lo_tiles = lo.len();
+        let mut it = lo.into_iter().map(|(z, x, y, b)| {
+            let n = b.len() as u32;
+            (z, x, y, b, n)
+        });
+        crate::layers::write_pack(out, "terrain", "terrarium-png", false, "lo", (3, q.0, q.1), &mut it)?;
+        out.save()?;
+        progress("packs", 1, 1);
+        Ok(rep)
+    }
+
+    /// Raw tiles for the area of `ts` (z3 tile `q`): every z9–12 tile near `cov` and every z3–8 tile
+    /// of q; smooth slopes, every third with a spike and a pit (repairs, which the level above takes
+    /// in), every seventh missing (the open sea).
+    fn synthetic_raw(local: &std::path::Path, cov: &Coverage, q: (u32, u32), ts: &[(u32, u32)]) {
+        let mut want: Vec<(u8, u32, u32)> = Vec::new();
+        for z in 9..=12u8 {
+            let s = 1u32 << (z - 6);
+            for &(tx, ty) in ts {
+                for x in tx * s..(tx + 1) * s {
+                    for y in ty * s..(ty + 1) * s {
+                        if near_coverage(cov, z, x, y, 20.0) {
+                            want.push((z, x, y));
+                        }
+                    }
+                }
+            }
+        }
+        want.extend(upper_levels(q).into_iter().flat_map(|(z, t)| t.into_iter().map(move |(x, y)| (z, x, y))));
+        for &(z, x, y) in &want {
+            std::fs::create_dir_all(local.join(format!("{z}/{x}"))).unwrap();
+            let k = z as u32 + x + y;
+            if k % 7 == 0 {
+                std::fs::write(local.join(format!("{z}/{x}/{y}.none")), b"").unwrap();
+                continue;
+            }
+            let mut e: Vec<f32> = (0..256 * 256).map(|i| 400.0 + (i % 256) as f32 * 0.7 + (i / 256) as f32 * 0.4 + (k % 11) as f32 * 30.0).collect();
+            if k % 3 == 0 {
+                e[128 * 256 + 128] += 900.0;
+                e[64 * 256 + 200] -= 700.0;
+            }
+            std::fs::write(local.join(format!("{z}/{x}/{y}.png")), encode_terrain_png(&e, 256, 256).unwrap()).unwrap();
+        }
+    }
+
+    /// A lake across two z6 tiles' edge (lon 11.25°, 6/33 and 6/34) and the sea north of it, in every
+    /// zoom's tiles from z6 (as the basemap draws them).
+    fn lake_across(z: u8, x: u32, y: u32) -> Vec<crate::terrain_water::Poly> {
+        use crate::terrain_water::{Kind, Poly};
+        if z < 6 {
+            return Vec::new();
+        }
+        let n = (1u64 << z) as f64 * 256.0;
+        let px = |lon: f64| (lon + 180.0) / 360.0 * n - x as f64 * 256.0;
+        let py = |lat: f64| (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0 * n - y as f64 * 256.0;
+        let rect = |kind, id, w: f64, s: f64, e: f64, nn: f64| Poly { kind, id, rings: vec![vec![[px(w), py(nn)], [px(e), py(nn)], [px(e), py(s)], [px(w), py(s)]]] };
+        vec![rect(Kind::Lake, 5, 11.0, 70.42, 11.5, 70.5), rect(Kind::Sea, 0, 10.9, 70.56, 11.6, 70.6)]
+    }
+
+    /// The pieces and the assembly (each from the mids as uploaded) make what main's area run made,
+    /// byte for byte, with GLO-30, the water (a lake across two pieces: its level the first's) and
+    /// AWS's z9 tiles for the walled patches; so does the area run made of them. A piece made again
+    /// expecting the same changes nothing; one that isn't the same uploads nothing.
+    #[test]
+    fn pieces_and_their_assembly_make_the_area_runs_packs() {
+        use crate::terrain_north::tests::FnCells;
+        let d = tempfile::tempdir().unwrap();
+        let local = d.path().join("local");
+        let cov = Coverage::from_recipes(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:11.25,70.5,2".into()] }], None, d.path()).unwrap();
+        let by_q = crate::agent::build::coverage_tiles(&cov);
+        let (&q, ts) = by_q.iter().next().unwrap();
+        assert!(ts.len() >= 2, "{ts:?}");
+        synthetic_raw(&local, &cov, q, ts);
+        let raw = RawTiles::with_store(&local, &d.path().join("store"));
+        let cells = FnCells::new(|lat, lon| (200.0 + (lat - 70.0) * 100.0 + (lon - 10.0) * 50.0) as f32);
+        let water = crate::terrain_water::tests::Fixed(lake_across);
+        let coarse = Coarse::new(&raw);
+        let src = Sources { north: Some(&cells), water: Some(&water), coarse: Some(&coarse) };
+        let open = |root: &str| Out::open(&d.path().join(root), &d.path().join(format!("{root}-scratch"))).unwrap();
+        let terrain = |o: &Out| o.manifest.iter().filter(|(l, _)| l.starts_with("layers/terrain/")).map(|(l, c)| (l.clone(), c.clone())).collect::<Vec<_>>();
+        let mut v3 = open("v3");
+        let r = area_v3(&mut v3, &raw, q, ts, &cov, &src, &|_, _, _| {}).unwrap();
+        assert!(r.repaired > 0, "{r:?}");
+        let mut area = open("area");
+        build_q(&mut area, &raw, q, ts, &cov, &src).unwrap();
+        let mut parts = open("parts");
+        for &t in ts {
+            build_piece(&mut parts, &raw, t, &cov, &src, false, &|_, _, _| {}).unwrap();
+        }
+        // (The lake's level, from each of the two pieces' own shore.)
+        let mids: Vec<Mid> = ts.iter().map(|t| read_mid(&parts.path(parts.get(&mid_logical(t.0, t.1)).unwrap())).unwrap().1).collect();
+        assert!(mids.iter().filter(|m| m.levels.contains_key(&5)).count() >= 2, "{:?}", mids.iter().map(|m| &m.levels).collect::<Vec<_>>());
+        assert!(mids.iter().any(|m| !m.quads.is_empty()));
+        build_lo(&mut parts, &raw, q, ts, &src, &|_, _, _| {}).unwrap();
+        assert_eq!(terrain(&v3).len(), ts.len() + 1);
+        assert_eq!(terrain(&area), terrain(&v3), "the area run as pieces and an assembly in memory");
+        assert_eq!(terrain(&parts), terrain(&v3), "the pieces' jobs and the assembly's");
+        // A mid as written reads back bit for bit.
+        let p = d.path().join("again.sect");
+        write_mid(&p, ts[0], &mids[0]).unwrap();
+        let (t, back) = read_mid(&p).unwrap();
+        let bits = |m: &Mid| (m.quads.iter().map(|(k, v)| (*k, v.iter().map(|f| f.to_bits()).collect::<Vec<_>>())).collect::<Vec<_>>(), m.levels.iter().map(|(k, v)| (*k, v.to_bits())).collect::<Vec<_>>());
+        assert_eq!((t, bits(&back)), (ts[0], bits(&mids[0])));
+        // Made again expecting the same (its mid made again): nothing changes.
+        let before = parts.manifest.clone();
+        let (t, ml) = (ts[1], mid_logical(ts[1].0, ts[1].1));
+        parts.remove(&ml);
+        build_piece(&mut parts, &raw, t, &cov, &src, true, &|_, _, _| {}).unwrap();
+        assert_eq!(parts.manifest, before);
+        // A hi pack that isn't what the manifest has: refused, nothing uploaded.
+        let hi = format!("layers/terrain/hi/6-{}-{}", t.0, t.1);
+        parts.manifest.insert(hi.clone(), format!("{hi}.0000000000000000.pack"));
+        parts.remove(&ml);
+        let e = build_piece(&mut parts, &raw, t, &cov, &src, true, &|_, _, _| {}).unwrap_err().to_string();
+        assert!(e.contains(&hi) && e.contains("nothing uploaded"), "{e}");
+        assert!(parts.get(&ml).is_none(), "its mid wasn't uploaded");
+        // An assembly without a piece's mid: refused.
+        assert!(build_lo(&mut parts, &raw, q, ts, &src, &|_, _, _| {}).unwrap_err().to_string().contains("no mid"));
     }
 
     #[test]
