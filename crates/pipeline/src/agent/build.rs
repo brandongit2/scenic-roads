@@ -813,18 +813,8 @@ pub fn slope_lo_key(q: (u32, u32), mids: &[String], terrain_lo: &str) -> String 
 /// (`slope_piece_reads`). Kept by `tiles` with the packs those can be in.
 pub fn slope_piece_key(t: (u32, u32), m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> Result<String, Unread> {
     let ts = format!("6/{}/{}", t.0, t.1);
-    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-").to_string();
-    let hi = get(&format!("layers/terrain/hi/6-{}-{}", t.0, t.1));
-    // (The packs its reads can be in: its own and its edge neighbours' hi packs, their areas' lo
-    // packs, the root.)
-    let mut packs: BTreeSet<String> = BTreeSet::new();
-    for (x, y) in std::iter::once(t).chain(edge_neighbours(6, t.0, t.1)) {
-        packs.insert(get(&format!("layers/terrain/hi/6-{x}-{y}")));
-        packs.insert(get(&format!("layers/terrain/lo/3-{}-{}", x >> 3, y >> 3)));
-    }
-    packs.insert(get("layers/terrain/root/0-0-0"));
-    let from = format!("{hi}\n{}", packs.into_iter().collect::<Vec<_>>().join(","));
-    tiles.memo(&format!("slope {ts}"), &store::naming::hash16(from.as_bytes()), || {
+    let hi = m.get(&format!("layers/terrain/hi/6-{}-{}", t.0, t.1)).map(String::as_str).unwrap_or("-").to_string();
+    tiles.memo(&format!("slope {ts}"), &slope_piece_from(t, m), || {
         let reads = slope_piece_reads(t, m, tiles)?;
         let lines: Vec<String> = reads.iter().map(|r| r.map_or("-".to_string(), |(z, x, y, h)| format!("{z}/{x}/{y} {h:016x}"))).collect();
         let mut parts = vec![format!("slope {SLOPE_V}"), ts.clone(), hi.clone()];
@@ -832,6 +822,21 @@ pub fn slope_piece_key(t: (u32, u32), m: &BTreeMap<String, String>, tiles: &Terr
         let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
         Ok(h(&refs))
     })
+}
+
+/// What slope piece `t`'s reads (`slope_piece_reads`) are worked out from, as a digest, for
+/// `TerrainTiles::memo`: the content names of the packs they can be in (its own and its edge
+/// neighbours' hi packs, their areas' lo packs, the root).
+pub fn slope_piece_from(t: (u32, u32), m: &BTreeMap<String, String>) -> String {
+    let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-").to_string();
+    let mut packs: BTreeSet<String> = BTreeSet::new();
+    for (x, y) in std::iter::once(t).chain(edge_neighbours(6, t.0, t.1)) {
+        packs.insert(get(&format!("layers/terrain/hi/6-{x}-{y}")));
+        packs.insert(get(&format!("layers/terrain/lo/3-{}-{}", x >> 3, y >> 3)));
+    }
+    packs.insert(get("layers/terrain/root/0-0-0"));
+    let from = format!("{}\n{}", get(&format!("layers/terrain/hi/6-{}-{}", t.0, t.1)), packs.into_iter().collect::<Vec<_>>().join(","));
+    store::naming::hash16(from.as_bytes())
 }
 
 /// The tiles west, east, north and south of (z, x, y) (x wrapping, none past the poles), as

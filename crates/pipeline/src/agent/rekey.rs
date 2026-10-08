@@ -508,13 +508,24 @@ pub fn derive(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, til
         let Some(u) = Unit::parse(&q) else { continue };
         // (A tile in the area's packs: its lo pack, or the hi pack of one of its z6 tiles.)
         let ours = |z: u8, x: u32, y: u32| z >= 3 && (x >> (z - 3), y >> (z - 3)) == (u.x, u.y);
-        // (Every piece's reads told first: one that can't be leaves the record for the next pass.)
-        let mut reads: Vec<(String, Option<String>, Vec<Option<super::tiles::Tile>>)> = Vec::new();
+        // (Every piece's reads told first: one that can't be leaves the record for the next pass.
+        // Whether a piece reads outside its area, and the first such tile, kept with the packs it
+        // read: a plan works it out again only when they change.)
+        let mut reads: Vec<(String, Option<String>, String)> = Vec::new();
         let mut unread = None;
         for (t, kt) in tt.slope.iter().filter(|(t, _)| build::area_of(t).as_deref() == Some(q.as_str())) {
             let p = Unit::parse(t).unwrap();
-            match build::slope_piece_reads((p.x, p.y), m, tiles) {
-                Ok(r) => reads.push((t.clone(), kt.clone(), r)),
+            let outside = tiles.memo(&format!("slope-outside {t}"), &build::slope_piece_from((p.x, p.y), m), || {
+                let r = build::slope_piece_reads((p.x, p.y), m, tiles)?;
+                Ok(match r.iter().find(|x| !x.is_some_and(|(z, x, y, _)| ours(z, x, y))) {
+                    None => String::new(),
+                    Some(Some((z, x, y, _))) if *z <= 2 => format!("reads the terrain's root ({z}/{x}/{y})"),
+                    Some(Some((z, x, y, _))) => format!("reads another area's terrain ({z}/{x}/{y})"),
+                    Some(None) => "reads where there's no terrain tile".to_string(),
+                })
+            });
+            match outside {
+                Ok(why) => reads.push((t.clone(), kt.clone(), why)),
                 Err(e) => {
                     unread = Some(e.0);
                     break;
@@ -527,22 +538,14 @@ pub fn derive(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, til
         }
         keys.slope.remove(&q);
         let mut left = 0;
-        for (t, kt, r) in reads {
-            match r.iter().find(|x| !x.is_some_and(|(z, x, y, _)| ours(z, x, y))) {
-                None => {
-                    if let Some(kt) = kt {
-                        keys.slope.entry(t).or_insert(kt);
-                    }
+        for (t, kt, why) in reads {
+            if why.is_empty() {
+                if let Some(kt) = kt {
+                    keys.slope.entry(t).or_insert(kt);
                 }
-                Some(first) => {
-                    left += 1;
-                    let why = match first {
-                        Some((z, x, y, _)) if *z <= 2 => format!("reads the terrain's root ({z}/{x}/{y})"),
-                        Some((z, x, y, _)) => format!("reads another area's terrain ({z}/{x}/{y})"),
-                        None => "reads where there's no terrain tile".to_string(),
-                    };
-                    out.slope_left.push((t, why));
-                }
+            } else {
+                left += 1;
+                out.slope_left.push((t, why));
             }
         }
         if left == 0 {
