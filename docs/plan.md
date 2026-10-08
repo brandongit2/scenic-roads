@@ -435,6 +435,8 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
 - **The updater** checks the NAS's `app/current.json` every five minutes.
   - It copies a newer app to local disk, checking every file's SHA-256.
   - It restarts into it when the map is idle, and keeps checking while it waits.
+  - It keeps the current version, its own, the agent's and one to roll back to, and removes the
+    rest. A half-copied `<version>.tmp/` that nothing has written to for an hour goes too.
 - The app reads the current and the previous form of every file kind: by format version, or by which
   sections a file has.
 

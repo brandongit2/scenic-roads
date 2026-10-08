@@ -52,6 +52,48 @@ fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// How long a `<version>.tmp/` folder goes untouched before it's a leftover: no copy in progress
+/// (this updater's, or `tools/app/install.sh`'s rsync) pauses that long.
+const STALE_COPY: Duration = Duration::from_secs(3600);
+
+/// The newest modification time in a folder's tree (the folder itself included).
+fn newest_mtime(p: &Path) -> Option<SystemTime> {
+    let md = std::fs::symlink_metadata(p).ok()?;
+    let mut t = md.modified().ok()?;
+    if md.is_dir() {
+        for e in std::fs::read_dir(p).ok()?.flatten() {
+            if let Some(m) = newest_mtime(&e.path()) {
+                t = t.max(m);
+            }
+        }
+    }
+    Some(t)
+}
+
+/// Removes the half-copied `<version>.tmp/` folders in `<home>/app/` nothing has written to for
+/// `age`: an updater's copy that failed or was superseded, or an install that was stopped. A copy
+/// under way writes a file at least every few seconds, so it's never one of them.
+fn remove_stale_copies(dir: &Path, age: Duration) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !(name.ends_with(".tmp") && name.as_bytes().first().is_some_and(u8::is_ascii_digit)) {
+            continue;
+        }
+        // Folders only (`current.tmp` is a link, and isn't a version's).
+        if !e.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let idle = newest_mtime(&e.path()).and_then(|t| SystemTime::now().duration_since(t).ok());
+        if idle.is_some_and(|d| d >= age) {
+            match std::fs::remove_dir_all(e.path()) {
+                Ok(()) => eprintln!("app {name}: removed (a copy left unfinished)"),
+                Err(err) => eprintln!("app {name}: can't remove it: {err}"),
+            }
+        }
+    }
+}
+
 impl Updater {
     pub fn new(home: &Path) -> Arc<Updater> {
         // Running from <home>/app/<version>/server? (Through the `current` link, the executable's
@@ -74,6 +116,9 @@ impl Updater {
     /// Copy a newer published app here and switch `current` to it. True when it switched.
     fn check(&self, data: &Data) -> Result<bool> {
         let Some(running) = self.running.as_deref() else { return Ok(false) };
+        // (A copy that failed, or a version superseded before its copy finished, leaves its
+        // `.tmp` folder; checked at every check, NAS or not, not only after a switch.)
+        remove_stale_copies(&self.home.join("app"), STALE_COPY);
         let (Some(root), Some(pool)) = (data.nas_root(), data.pool()) else { return Ok(false) };
         let cur_path = root.join("app/current.json");
         let bytes = match pool.read_all(&cur_path) {
@@ -130,9 +175,10 @@ impl Updater {
     /// Removes app versions nothing needs: keeps the current one, this server's, the build
     /// agent's (its jobs run programs from its folder; `agent/status.json` says which), and the
     /// newest other one (to roll back to). Versions are named from their UTC publish time, so they
-    /// sort by age.
+    /// sort by age. Unfinished copies (`.tmp`) an hour old go too.
     fn prune(&self, current: &str, running: &str) {
         let dir = self.home.join("app");
+        remove_stale_copies(&dir, STALE_COPY);
         let agent: Option<String> = std::fs::read(self.home.join("agent/status.json"))
             .ok()
             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
@@ -193,5 +239,66 @@ impl Updater {
                 }
             })
             .ok();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn age(p: &Path, secs: u64) {
+        let t = SystemTime::now() - Duration::from_secs(secs);
+        let f = std::fs::File::options().read(true).open(p).unwrap();
+        f.set_modified(t).unwrap();
+    }
+
+    #[test]
+    fn stale_copies_go_and_live_ones_stay() {
+        let d = tempfile::tempdir().unwrap();
+        let app = d.path();
+        // A copy left two hours ago (the M1's app/20261005-1328-ace4faa.tmp).
+        let old = app.join("20261005-1328-ace4faa.tmp");
+        std::fs::create_dir_all(old.join("web")).unwrap();
+        std::fs::write(old.join("server"), b"half").unwrap();
+        std::fs::write(old.join("web/index.html"), b"x").unwrap();
+        for p in [old.join("server"), old.join("web/index.html"), old.join("web"), old.clone()] {
+            age(&p, 7200);
+        }
+        // A copy under way: an old folder that got a file a moment ago, deep inside.
+        let live = app.join("20261008-0100-abc1234.tmp");
+        std::fs::create_dir_all(live.join("wasm")).unwrap();
+        std::fs::write(live.join("wasm/tile.wasm"), b"x").unwrap();
+        age(&live.join("wasm"), 7200);
+        age(&live, 7200);
+        // An installed version and the `current.tmp` link are no copies.
+        let inst = app.join("20261001-0000-0000000");
+        std::fs::create_dir_all(&inst).unwrap();
+        age(&inst, 7200);
+        std::os::unix::fs::symlink("20261001-0000-0000000", app.join("current.tmp")).unwrap();
+
+        remove_stale_copies(app, STALE_COPY);
+        assert!(!old.exists());
+        assert!(live.join("wasm/tile.wasm").exists());
+        assert!(inst.exists());
+        assert!(std::fs::symlink_metadata(app.join("current.tmp")).is_ok());
+    }
+
+    #[test]
+    fn prune_removes_a_stale_copy() {
+        let d = tempfile::tempdir().unwrap();
+        let app = d.path().join("app");
+        for v in ["20261001-0000-aaaaaaa", "20261002-0000-bbbbbbb", "20261003-0000-ccccccc"] {
+            std::fs::create_dir_all(app.join(v)).unwrap();
+        }
+        let tmp = app.join("20261002-1200-ddddddd.tmp");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("server"), b"half").unwrap();
+        age(&tmp.join("server"), 7200);
+        age(&tmp, 7200);
+        let u = Updater { home: d.path().to_path_buf(), running: Some("20261003-0000-ccccccc".into()), pending: AtomicBool::new(false) };
+        u.prune("20261003-0000-ccccccc", "20261003-0000-ccccccc");
+        assert!(!tmp.exists());
+        assert!(!app.join("20261001-0000-aaaaaaa").exists());
+        assert!(app.join("20261002-0000-bbbbbbb").exists());
     }
 }
