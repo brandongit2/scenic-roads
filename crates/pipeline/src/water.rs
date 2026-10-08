@@ -14,6 +14,10 @@
 //! - A tile is `SIZE` px a side, two channels: the sea's share (OpenMapTiles' class `ocean`, from
 //!   the water polygons) and the inland water's (lakes, reservoirs, rivers' and canals' areas, the
 //!   rest of the basemap's `water` layer, water in tunnels left out as the map leaves it out).
+//! - Whether a pixel holds anything but sea, and any land, however little, survives the bytes
+//!   (`bytes`): a sea byte of 255 is sea throughout, and the two bytes summing to 255 or more is
+//!   water throughout. An island a millionth of a pixel is thus still there zoomed out, for the
+//!   coastal shading to measure its shore from (web/src/coastdist.ts), as full detail would.
 //! - Zooms to `STORED_MAXZ` are made once (`build`): every z`DRAW_Z` tile drawn from its 256 z14
 //!   tiles, each coarser tile the mean of its four children's pixels (exact, as a pixel is the
 //!   mean of the four under it), stored as PNG (grey the sea, alpha the inland water) where not
@@ -31,7 +35,7 @@ use std::sync::{Arc, Mutex};
 pub const LAYER: &str = "water";
 /// The layer's version: a change to what it holds or how it's drawn makes the agent build it
 /// again.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 /// A tile's pixels a side.
 pub const SIZE: usize = 512;
 /// The basemap's deepest zoom, whose water is drawn.
@@ -51,12 +55,22 @@ pub const PLANETILER_VERSION: &str = "0.10.2";
 
 // ---- a tile's coverage -----------------------------------------------------------------------------
 
-/// A tile's coverage: per pixel, row by row, the sea's share and the inland water's (0–1).
+/// A tile's coverage: per pixel, row by row, the sea's share and the inland water's (0–1), and
+/// what else it holds at all (`SOME_NOT_SEA`, `SOME_LAND`), however little.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Cov {
     pub sea: Vec<f32>,
     pub inland: Vec<f32>,
+    pub some: Vec<u8>,
 }
+
+/// A pixel holds something other than sea (land or inland water).
+pub const SOME_NOT_SEA: u8 = 1;
+/// A pixel holds some land.
+pub const SOME_LAND: u8 = 2;
+/// Less than this share (of the drawn pixel, z`DRAW_Z` or deeper) isn't counted as there: the
+/// coverage's rounding (about 1 m² of a z10 pixel).
+const SOME: f32 = 1e-4;
 
 /// Coverage as stored: one share each throughout, or per pixel.
 #[derive(Clone, Debug, PartialEq)]
@@ -70,31 +84,82 @@ pub fn byte(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
+/// A pixel's shares as bytes (sea, inland), saying what else it holds (`some`): a sea of 255 only
+/// when there's nothing but sea, and the two summing to 255 or more only when there's no land.
+/// (An island too small to round to a byte costs the water a 255th of the pixel.)
+pub fn bytes(sea: f32, inland: f32, some: u8) -> (u8, u8) {
+    let (mut s, mut i) = (byte(sea), byte(inland));
+    if some & SOME_NOT_SEA == 0 {
+        s = 255;
+    } else if s == 255 {
+        s = 254;
+    }
+    let sum = u16::from(s) + u16::from(i);
+    if some & SOME_LAND != 0 {
+        if sum >= 255 {
+            i = 254 - s;
+        }
+    } else if sum < 255 {
+        i = 255 - s;
+    }
+    (s, i)
+}
+
+/// What a pixel's bytes say it holds besides sea (`bytes`).
+pub fn some_of(s: u8, i: u8) -> u8 {
+    (if s < 255 { SOME_NOT_SEA } else { 0 }) | (if u16::from(s) + u16::from(i) < 255 { SOME_LAND } else { 0 })
+}
+
+/// What a drawn pixel holds besides sea, from its shares.
+pub fn some_drawn(sea: f32, inland: f32) -> u8 {
+    (if 1.0 - sea > SOME { SOME_NOT_SEA } else { 0 }) | (if 1.0 - sea - inland > SOME { SOME_LAND } else { 0 })
+}
+
 impl Cov {
-    pub fn uniform(sea: f32, inland: f32) -> Cov {
-        Cov { sea: vec![sea; SIZE * SIZE], inland: vec![inland; SIZE * SIZE] }
+    /// One value throughout (its bytes: what else it holds is theirs).
+    pub fn uniform(s: u8, i: u8) -> Cov {
+        Cov { sea: vec![f32::from(s) / 255.0; SIZE * SIZE], inland: vec![f32::from(i) / 255.0; SIZE * SIZE], some: vec![some_of(s, i); SIZE * SIZE] }
+    }
+
+    /// Drawn shares, what else each pixel holds read from them.
+    pub fn drawn(sea: Vec<f32>, inland: Vec<f32>) -> Cov {
+        let some = sea.iter().zip(&inland).map(|(&s, &i)| some_drawn(s, i)).collect();
+        Cov { sea, inland, some }
+    }
+
+    /// Pixel `k`'s bytes.
+    pub fn bytes_at(&self, k: usize) -> (u8, u8) {
+        bytes(self.sea[k], self.inland[k], self.some[k])
     }
 
     /// Its bytes' one value each, if it has one.
     pub fn uniform_bytes(&self) -> Option<(u8, u8)> {
-        let (s, i) = (byte(self.sea[0]), byte(self.inland[0]));
-        (self.sea.iter().all(|&v| byte(v) == s) && self.inland.iter().all(|&v| byte(v) == i)).then_some((s, i))
+        let first = self.bytes_at(0);
+        (0..SIZE * SIZE).all(|k| self.bytes_at(k) == first).then_some(first)
+    }
+
+    /// Its bytes, two a pixel (sea, inland).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        (0..SIZE * SIZE).flat_map(|k| <[u8; 2]>::from(self.bytes_at(k))).collect()
     }
 
     /// The tile whose four quarters are `kids` (top left, top right, bottom left, bottom right):
     /// each pixel the mean of the four under it.
+    /// What else it holds: the four's together.
     pub fn average(kids: [&Node; 4]) -> Cov {
         let h = SIZE / 2;
-        let mut out = Cov::uniform(0.0, 0.0);
+        let mut out = Cov::uniform(0, 0);
         for (k, kid) in kids.iter().enumerate() {
             let (qx, qy) = ((k % 2) * h, (k / 2) * h);
             match kid {
                 Node::Uniform(s, i) => {
+                    let some = some_of(*s, *i);
                     let (s, i) = (f32::from(*s) / 255.0, f32::from(*i) / 255.0);
                     for y in 0..h {
                         let o = (qy + y) * SIZE + qx;
                         out.sea[o..o + h].fill(s);
                         out.inland[o..o + h].fill(i);
+                        out.some[o..o + h].fill(some);
                     }
                 }
                 Node::Cov(c) => {
@@ -105,6 +170,7 @@ impl Cov {
                             let o = (qy + y) * SIZE + qx + x;
                             out.sea[o] = m(&c.sea);
                             out.inland[o] = m(&c.inland);
+                            out.some[o] = c.some[i0] | c.some[i0 + 1] | c.some[i0 + SIZE] | c.some[i0 + SIZE + 1];
                         }
                     }
                 }
@@ -115,7 +181,7 @@ impl Cov {
 
     /// As stored: an 8-bit grey-and-alpha PNG, grey the sea's share, alpha the inland water's.
     pub fn png(&self) -> Vec<u8> {
-        let px: Vec<u8> = self.sea.iter().zip(&self.inland).flat_map(|(&s, &i)| [byte(s), byte(i)]).collect();
+        let px = self.to_bytes();
         let mut out = Vec::new();
         let mut e = png::Encoder::new(&mut out, SIZE as u32, SIZE as u32);
         e.set_color(png::ColorType::GrayscaleAlpha);
@@ -135,19 +201,19 @@ impl Cov {
         if info.width as usize != SIZE || info.height as usize != SIZE || info.color_type != png::ColorType::GrayscaleAlpha || info.bit_depth != png::BitDepth::Eight {
             bail!("a water tile of another kind ({}×{} {:?} {:?})", info.width, info.height, info.color_type, info.bit_depth);
         }
-        let (mut sea, mut inland) = (Vec::with_capacity(SIZE * SIZE), Vec::with_capacity(SIZE * SIZE));
+        let (mut sea, mut inland, mut some) = (Vec::with_capacity(SIZE * SIZE), Vec::with_capacity(SIZE * SIZE), Vec::with_capacity(SIZE * SIZE));
         for p in px[..SIZE * SIZE * 2].as_chunks::<2>().0 {
             sea.push(f32::from(p[0]) / 255.0);
             inland.push(f32::from(p[1]) / 255.0);
+            some.push(some_of(p[0], p[1]));
         }
-        Ok(Cov { sea, inland })
+        Ok(Cov { sea, inland, some })
     }
 
     /// The pixels `ox`, `oy` (and `side` a side) of this tile, scaled up to a whole tile (nearest:
     /// for a uniform region of a stored ancestor, all one value).
     pub fn value_at(&self, x: usize, y: usize) -> (u8, u8) {
-        let i = y.min(SIZE - 1) * SIZE + x.min(SIZE - 1);
-        (byte(self.sea[i]), byte(self.inland[i]))
+        self.bytes_at(y.min(SIZE - 1) * SIZE + x.min(SIZE - 1))
     }
 }
 
@@ -340,7 +406,7 @@ pub fn cover(z: u8, x: u32, y: u32, get: &(dyn Fn(u32, u32) -> Result<Vec<Stored
         for t in get(bx, by)? {
             draw(&tile_water(&t.bytes)?, &mut s, &mut i, ox, oy, side);
         }
-        return Ok(Cov { sea: s.coverage(), inland: i.coverage() });
+        return Ok(Cov::drawn(s.coverage(), i.coverage()));
     }
     // The z14 tiles under it, each a square of `side` px drawn on its own.
     let d = BASE_Z - z;
@@ -369,16 +435,16 @@ pub fn cover(z: u8, x: u32, y: u32, get: &(dyn Fn(u32, u32) -> Result<Vec<Stored
             Ok((s, i))
         })
         .collect::<Result<_>>()?;
-    let mut out = Cov::uniform(0.0, 0.0);
+    let (mut sea, mut inland) = (vec![0.0; SIZE * SIZE], vec![0.0; SIZE * SIZE]);
     for (k, (s, i)) in blocks_of.iter().enumerate() {
         let (bx, by) = ((k as u32 % n) as usize * side, (k as u32 / n) as usize * side);
         for r in 0..side {
             let o = (by + r) * SIZE + bx;
-            out.sea[o..o + side].copy_from_slice(&s[r * side..(r + 1) * side]);
-            out.inland[o..o + side].copy_from_slice(&i[r * side..(r + 1) * side]);
+            sea[o..o + side].copy_from_slice(&s[r * side..(r + 1) * side]);
+            inland[o..o + side].copy_from_slice(&i[r * side..(r + 1) * side]);
         }
     }
-    Ok(out)
+    Ok(Cov::drawn(sea, inland))
 }
 
 /// A tile not stored, from its nearest stored ancestor (`stored(z, x, y)`): one value throughout,
@@ -685,11 +751,12 @@ mod tests {
 
     #[test]
     fn averaging_down_keeps_the_area_and_the_png_keeps_the_bytes() {
-        let mut c = Cov::uniform(0.0, 0.0);
+        let mut c = Cov::uniform(0, 0);
         for (i, v) in c.sea.iter_mut().enumerate() {
             *v = ((i * 7919) % 256) as f32 / 255.0;
         }
         c.inland[5] = 0.5;
+        let c = Cov::drawn(c.sea, c.inland);
         let kids = [Node::Cov(c.clone()), Node::Uniform(255, 0), Node::Uniform(0, 0), Node::Uniform(0, 255)];
         let p = Cov::average([&kids[0], &kids[1], &kids[2], &kids[3]]);
         let mean = |v: &[f32]| v.iter().map(|&a| f64::from(a)).sum::<f64>() / v.len() as f64;
@@ -717,15 +784,55 @@ mod tests {
     #[test]
     fn a_tile_not_stored_takes_its_ancestor_s_value() {
         // z3's top left quarter sea, the rest land: z5 tile 1/1 is in the sea, 6/6 on land.
-        let mut c = Cov::uniform(0.0, 0.0);
+        let mut c = Cov::uniform(0, 0);
         for y in 0..SIZE / 2 {
             for x in 0..SIZE / 2 {
                 c.sea[y * SIZE + x] = 1.0;
             }
         }
+        let c = Cov::drawn(c.sea, c.inland);
         let stored = |z: u8, x: u32, y: u32| -> Result<Option<Cov>> { Ok((z == 3 && x == 0 && y == 0).then(|| c.clone())) };
         assert_eq!(uniform_from_ancestor(5, 1, 1, &stored).unwrap(), Some((255, 0)));
         assert_eq!(uniform_from_ancestor(5, 3, 3, &stored).unwrap(), Some((0, 0)));
         assert_eq!(uniform_from_ancestor(2, 0, 0, &stored).unwrap(), None);
+    }
+
+    #[test]
+    fn the_bytes_keep_any_land_and_anything_but_sea() {
+        // Whole sea; sea with a speck of land; sea with a speck of lake; half and half; all land.
+        assert_eq!(bytes(1.0, 0.0, some_drawn(1.0, 0.0)), (255, 0));
+        assert_eq!(bytes(0.99999, 0.0, some_drawn(0.99999, 0.0)), (255, 0), "rounding isn't land");
+        assert_eq!(bytes(0.9995, 0.0, some_drawn(0.9995, 0.0)), (254, 0));
+        assert_eq!(bytes(0.9995, 0.0005, some_drawn(0.9995, 0.0005)), (254, 1));
+        assert_eq!(bytes(0.5, 0.4995, some_drawn(0.5, 0.4995)), (128, 126));
+        assert_eq!(bytes(0.0, 0.0, some_drawn(0.0, 0.0)), (0, 0));
+        // An overlap (sea and lake both) is still all water.
+        assert_eq!(some_of(200, 100), SOME_NOT_SEA);
+        // Read back, the same.
+        for (s, i) in [(255, 0), (254, 0), (254, 1), (128, 126), (0, 0), (0, 255), (3, 4)] {
+            assert_eq!(bytes(f32::from(s) / 255.0, f32::from(i) / 255.0, some_of(s, i)), (s, i));
+        }
+    }
+
+    #[test]
+    fn an_island_a_millionth_of_a_pixel_is_still_land_zoomed_out() {
+        // A z10 tile all sea but a 1-m² rock (a 1.5e-4 share of one pixel), averaged up five
+        // zooms: its pixel's share rounds to the sea's 255, but the bytes still say land.
+        let mut sea = vec![1.0f32; SIZE * SIZE];
+        sea[100 * SIZE + 200] = 1.0 - 1.5e-4;
+        let c = Cov::drawn(sea, vec![0.0; SIZE * SIZE]);
+        let mut node = Node::Cov(c);
+        for _ in 0..5 {
+            let sea = Node::Uniform(255, 0);
+            node = combine(&[node, sea.clone(), sea.clone(), sea]);
+        }
+        let Node::Cov(c) = node else { panic!("one value throughout: the rock lost") };
+        let land: Vec<usize> = (0..SIZE * SIZE).filter(|&k| some_of(c.bytes_at(k).0, c.bytes_at(k).1) & SOME_LAND != 0).collect();
+        assert_eq!(land, vec![(100 >> 5) * SIZE + (200 >> 5)]);
+        assert_eq!(c.bytes_at(land[0]), (254, 0));
+        // Stored and read back, the same.
+        let back = Cov::from_png(&c.png()).unwrap();
+        assert_eq!(back.bytes_at(land[0]), (254, 0));
+        assert_eq!(back.some[land[0]], SOME_NOT_SEA | SOME_LAND);
     }
 }

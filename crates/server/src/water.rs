@@ -72,7 +72,7 @@ fn keep(key: (u8, u32, u32, u64), sh: Shares) {
 }
 
 fn shares(c: &Cov) -> Vec<u8> {
-    c.sea.iter().zip(&c.inland).flat_map(|(&s, &i)| [wt::byte(s), wt::byte(i)]).collect()
+    c.to_bytes()
 }
 
 /// What the tiles are made from: how they're drawn (`wt::VERSION`), the water layer's packs and the
@@ -345,7 +345,7 @@ mod tests {
     async fn stored_tiles_and_their_uniform_children_coloured_or_raw() {
         // A catalog whose water layer is one root pack holding z0: its left half sea, its bottom
         // right quarter a lake.
-        let mut c = Cov::uniform(0.0, 0.0);
+        let mut c = Cov::uniform(0, 0);
         for y in 0..wt::SIZE {
             for x in 0..wt::SIZE {
                 if x < wt::SIZE / 2 {
@@ -355,6 +355,7 @@ mod tests {
                 }
             }
         }
+        let c = Cov::drawn(c.sea, c.inland);
         let png0 = c.png();
         let nas = tempfile::tempdir().unwrap();
         let content = "layers/water/root/0-0-0.0123456789abcdef.pack";
