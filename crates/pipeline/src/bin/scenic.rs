@@ -83,7 +83,17 @@ fn lead(args: &[String]) -> Result<()> {
     let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
     let host = agent::cond::host_name();
     let view = || l::own_status(&home).and_then(|s| s.pool).and_then(|p| p.lead);
-    let ask = match args.get(2).map(String::as_str) {
+    // (Its words, the options and their values aside.)
+    let mut pos: Vec<&str> = Vec::new();
+    let mut it = args.iter().skip(2);
+    while let Some(a) = it.next() {
+        if a == "--home" || a == "--root" {
+            it.next();
+        } else if !a.starts_with("--") {
+            pos.push(a);
+        }
+    }
+    let ask = match pos.first().copied() {
         None | Some("status") => {
             let v = view().context("this Mac's agent isn't in the pool (`scenic pool status`), or hasn't said yet")?;
             for line in l::said(&v, now_s()) {
@@ -94,7 +104,7 @@ fn lead(args: &[String]) -> Result<()> {
         Some("auto") => {
             let r = root(args, false)?;
             let p = r.join(l::AUTO);
-            match args.get(3).map(String::as_str) {
+            match pos.get(1).copied() {
                 Some("on") => {
                     pipeline::whole::write(&p, format!("turned on by scenic lead on {host}\n").as_bytes())?;
                     println!("on: when the lead is away or on battery and another Mac is home on power for five minutes, the lead hands the build to it by itself (never within half an hour of the last change of lead)");
@@ -110,9 +120,9 @@ fn lead(args: &[String]) -> Result<()> {
             return Ok(());
         }
         Some("give") => {
-            let to = args.get(3).filter(|a| !a.starts_with("--")).context("scenic lead give <member: its host name or member id>")?;
+            let to = pos.get(1).map(|s| s.to_string()).context("scenic lead give <member: its host name or member id>")?;
             // (What the agent would say, said at once when it says so already.)
-            if let Some(m) = view().and_then(|v| v.members.into_iter().find(|m| m.member == *to || m.host.eq_ignore_ascii_case(to))) {
+            if let Some(m) = view().and_then(|v| v.members.into_iter().find(|m| m.member == to || m.host.eq_ignore_ascii_case(&to))) {
                 if !m.can_lead {
                     bail!("the lead can't be handed to {}: {}", m.host, m.why_not.unwrap_or_default());
                 }
