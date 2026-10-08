@@ -92,7 +92,7 @@ pub struct Keys {
     #[serde(default)]
     pub bldprep: BTreeMap<String, String>,
     #[serde(default)]
-    pub buildings: BTreeMap<String, String>,
+    pub bldtiles: BTreeMap<String, String>,
     /// The served files the last catalog was made from.
     #[serde(default)]
     pub catalog: Option<String>,
@@ -100,6 +100,10 @@ pub struct Keys {
     /// catalog-held/, not served).
     #[serde(default)]
     pub catalog_held: Option<String>,
+    /// Records of steps this app doesn't know (a newer app's), kept as they are when the keys are
+    /// saved again: an older app's agent leading the build doesn't drop them.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, serde_json::Value>,
     /// For planning (`load_with`; never saved): the files the hand-offs waiting to be merged save,
     /// by logical name. A tree cover piece's mid there counts as made (`tree_work`).
     #[serde(skip)]
@@ -165,7 +169,7 @@ impl Keys {
             "trees" => &mut self.trees,
             "trees-lo" => &mut self.trees_lo,
             "bldprep" => &mut self.bldprep,
-            "bldtiles" => &mut self.buildings,
+            "bldtiles" => &mut self.bldtiles,
             _ => &mut self.lo,
         }
     }
@@ -183,7 +187,7 @@ impl Keys {
             "trees" => &self.trees,
             "trees-lo" => &self.trees_lo,
             "bldprep" => &self.bldprep,
-            "bldtiles" => &self.buildings,
+            "bldtiles" => &self.bldtiles,
             _ => return None,
         };
         m.get(target).map(String::as_str)
@@ -214,7 +218,7 @@ impl Keys {
                         self.bldprep.remove(at);
                     }
                     "bldtiles" => {
-                        self.buildings.remove(at);
+                        self.bldtiles.remove(at);
                     }
                     _ => {}
                 }
@@ -790,8 +794,9 @@ pub struct Round {
     pub regions: Vec<String>,
     /// Whether it's the last: nothing was left to build when it began.
     pub last: bool,
-    /// The units' outputs in the manifest when it began (crate::out::UNIT_OUTPUTS): its map tiles,
-    /// road index, rail stops and catalog are made from them (crate::out::units_as_of; its jobs,
+    /// The units' outputs and the 3D buildings' packs in the manifest when it began
+    /// (crate::out::AS_OF_OUTPUTS): its map tiles, road index, rail stops and catalog are made from
+    /// them (crate::out::units_as_of; its jobs,
     /// `AS_OF_STEPS`, read them through crate::out::UNITS_AS_OF_ENV).
     pub units: BTreeMap<String, String>,
     /// It's over (its catalog made, or nothing left it would publish): kept, without its units, for
@@ -1095,10 +1100,14 @@ pub fn plan(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done: &Key
     let bld_regions: Vec<&Coverage> = order.iter().map(|r| r.id).chain(regions.iter().map(|r| r.id)).filter_map(|id| rounds.each.iter().find(|(x, _)| x == id).map(|(_, c)| c)).collect();
     let bld = bld_work(cov, m, done, inputs, &bld_rank(&bld_regions));
     // (After the last unit, a round as soon as anything changed; but while the 3D buildings are
-    // being raised, at most an hour after the last began: not a catalog for each of their jobs.)
+    // being raised, at most an hour after the last began, not a catalog for each of their jobs,
+    // unless a region waits to be published: the buildings never hold one up. Their sources'
+    // fetch doesn't count: it changes nothing served, and one failing and tried again (the release
+    // gone from S3) would keep the catalogs hourly for good.)
     let hourly = rounds.since_last.is_none_or(|s| s >= PUBLISH_EVERY_S);
-    if rounds.current.is_none() && ((last_now && (bld.is_empty() || hourly)) || (!to_publish.is_empty() && hourly)) {
-        let units_now = m.iter().filter(|(l, _)| crate::out::UNIT_OUTPUTS.iter().any(|p| l.starts_with(p))).map(|(l, c)| (l.clone(), c.clone())).collect();
+    let raising = bld.iter().any(|w| w.step != "bld-fetch");
+    if rounds.current.is_none() && ((last_now && (!raising || hourly || !to_publish.is_empty())) || (!to_publish.is_empty() && hourly)) {
+        let units_now = m.iter().filter(|(l, _)| crate::out::AS_OF_OUTPUTS.iter().any(|p| l.starts_with(p))).map(|(l, c)| (l.clone(), c.clone())).collect();
         let begun = Round { began: 0, regions: to_publish.iter().map(|r| r.id.to_string()).collect(), last: last_now, units: units_now, over: false };
         let p = plan(cov, date, m, done, inputs, Some(reach), tiles, Rounds { current: Some(&begun), ..rounds });
         // (One with nothing to publish that isn't out already, after the last: none.)
@@ -1730,7 +1739,7 @@ pub fn bld_work(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, input
         }))
     };
     // (None before anything's downloaded: every tile would come out empty.)
-    let mut tiles: Vec<(String, String)> = tt.tiles.iter().filter(|(t, k)| sources && done.buildings.get(t) != Some(k) && ready(t)).cloned().collect();
+    let mut tiles: Vec<(String, String)> = tt.tiles.iter().filter(|(t, k)| sources && done.bldtiles.get(t) != Some(k) && ready(t)).cloned().collect();
     prep.sort_by_cached_key(|t| rank(&t.0));
     tiles.sort_by_cached_key(|t| rank(&t.0));
     for (step, targets) in [("bldprep", prep), ("bldtiles", tiles)] {
@@ -1754,7 +1763,7 @@ fn bld_next(cov: &Coverage, m: &BTreeMap<String, String>, done: &Keys, inputs: &
     if !prep.is_empty() {
         return Some(Work { step: "bldprep".into(), targets: prep });
     }
-    let tiles: Vec<(String, String)> = tt.tiles.into_iter().filter(|(t, k)| done.buildings.get(t) != Some(k)).collect();
+    let tiles: Vec<(String, String)> = tt.tiles.into_iter().filter(|(t, k)| done.bldtiles.get(t) != Some(k)).collect();
     (!tiles.is_empty()).then(|| Work { step: "bldtiles".into(), targets: tiles })
 }
 
@@ -2011,7 +2020,7 @@ pub fn checklist(cov: &Coverage, date: &str, m: &BTreeMap<String, String>, done:
     // (Its tiles' normalized files and tiles together; known once the sources' indexes read.)
     let bt = bld_targets(cov, m, inputs);
     let mut bld = per(BUILDINGS, &["bld-fetch", "bldprep", "bldtiles"], &bt.prep, &done.bldprep, "tiles", bld_sources(inputs) == Some(true));
-    bld.done += count(&bt.tiles, &done.buildings);
+    bld.done += count(&bt.tiles, &done.bldtiles);
     bld.total = bld.total.map(|t| t + bt.tiles.len());
     bld.next = next_of(&remaining(done, |d| bld_next(cov, m, d, inputs)));
     out.push(bld);
@@ -3433,7 +3442,7 @@ pub(crate) mod tests {
         let w = bld_work(&c, &m, &done, &inputs, &by_spatial);
         assert_eq!(w, [Work { step: "prune".into(), targets: vec![("bldprep 6/40/20".into(), String::new()), ("bldtiles 6/40/20".into(), String::new())] }]);
         done.record("prune", &w[0].targets);
-        assert!(!done.buildings.contains_key("6/40/20"));
+        assert!(!done.bldtiles.contains_key("6/40/20"));
         // (Not the normalized files while the sources aren't here: every tile would seem to read
         // nothing.)
         let none = BTreeMap::from([("bld-release".to_string(), String::new())]);
@@ -3470,5 +3479,58 @@ pub(crate) mod tests {
         let mut st = checklist_to_come();
         mark_shared(&mut st);
         assert_eq!(st.iter().find(|x| x.what == BUILDINGS).unwrap().shared.as_deref(), Some("sources read and tiles"));
+    }
+
+    #[test]
+    fn the_3d_buildings_never_hold_up_a_region_nor_change_a_rounds_catalog() {
+        let (c, reach, mut m, mut done) = three();
+        let each = c.by_region();
+        let inputs = bld_inputs(&c, "a");
+        let plan = |m: &BTreeMap<String, String>, done: &Keys, on_map: &BTreeMap<String, bool>, since: Option<u64>, current: Option<&Round>| super::plan(&c, "d", m, done, &inputs, Some(&reach), &tiles_for(m), Rounds { each: &each, on_map, since_last: since, current, held: false });
+        for u in ["6/28/16", "6/29/16", "6/30/16", "6/31/16"] {
+            rbuild(&c, &reach, &mut m, &mut done, u, "6666666666666666");
+        }
+        let on = |ids: &[&str]| -> BTreeMap<String, bool> { ids.iter().map(|i| (i.to_string(), true)).collect() };
+        // Every unit built, every region on the map, the 3D buildings being raised: no round ten
+        // minutes after the last, one an hour after.
+        let p = plan(&m, &done, &on(&["a", "b", "c"]), Some(600), None);
+        assert!(p.begins.is_none() && p.work.iter().any(|w| w.step == "bldprep"), "{:?}", p.work);
+        assert!(plan(&m, &done, &on(&["a", "b", "c"]), Some(PUBLISH_EVERY_S), None).begins.is_some());
+        // A region done that the map lacks: its round at once, the buildings or not.
+        let p = plan(&m, &done, &on(&["a", "b"]), Some(600), None);
+        assert_eq!(p.begins.map(|r| r.regions), Some(vec!["c".to_string()]));
+        // Only their sources' fetch left (failing, say, once the release has left S3): it holds
+        // nothing back.
+        let tt = bld_targets(&c, &m, &inputs);
+        done.record("bldprep", &tt.prep);
+        done.record("bldtiles", &tt.tiles);
+        let p = plan(&m, &done, &on(&["a", "b", "c"]), Some(600), None);
+        assert!(p.work.iter().any(|w| w.step == "bld-fetch"), "{:?}", p.work);
+        assert!(p.begins.is_some());
+        // A round fixes the 3D buildings' packs as it begins: one made meanwhile goes out with the
+        // next, its catalog's key unchanged.
+        let tile = tt.tiles[0].0.replace('/', "-");
+        let pack = format!("layers/buildings/hi/{tile}");
+        m.insert(pack.clone(), format!("{pack}.1111111111111111.pack"));
+        let mut r = plan(&m, &done, &on(&["a", "b"]), Some(600), None).begins.expect("c's round");
+        r.began = 1;
+        assert!(r.units.contains_key(&pack));
+        m.insert(pack.clone(), format!("{pack}.2222222222222222.pack"));
+        let then = crate::out::units_as_of(&m, &r.units);
+        assert_eq!(then.get(&pack).map(String::as_str), Some(format!("{pack}.1111111111111111.pack").as_str()));
+        let other = format!("layers/buildings/hi/{}", tt.tiles.last().unwrap().0.replace('/', "-"));
+        m.insert(other.clone(), format!("{other}.3333333333333333.pack"));
+        assert!(!crate::out::units_as_of(&m, &r.units).contains_key(&other) || other == pack);
+    }
+
+    #[test]
+    fn the_records_keep_what_this_app_doesnt_know() {
+        // A newer app's step's records, saved again by this one: kept as they were.
+        let json = r#"{"unit": {"6/1/1": "k"}, "bldtiles": {"6/2/2": "b"}, "someday": {"6/3/3": "s"}, "catalog": "c"}"#;
+        let mut k: Keys = serde_json::from_str(json).unwrap();
+        assert_eq!((k.bldtiles.get("6/2/2").map(String::as_str), k.other.len()), (Some("b"), 1));
+        k.record("unit", &[("6/4/4".to_string(), "k4".to_string())]);
+        let v: serde_json::Value = serde_json::to_value(&k).unwrap();
+        assert_eq!((&v["someday"]["6/3/3"], &v["bldtiles"]["6/2/2"], &v["unit"]["6/4/4"]), (&serde_json::json!("s"), &serde_json::json!("b"), &serde_json::json!("k4")));
     }
 }

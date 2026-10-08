@@ -44,18 +44,23 @@ pub struct Out {
 /// nothing a round makes reads).
 pub const UNIT_OUTPUTS: [&str; 3] = ["base/", "global/roads/", "global/roaden/"];
 
+/// What a round fixes as it begins (`units_as_of`): the units' outputs, and the 3D buildings' hi
+/// packs, so a bldtiles job ending meanwhile doesn't change the round's catalog (made again and
+/// again as their jobs end); they go out with the next.
+pub const AS_OF_OUTPUTS: [&str; 4] = ["base/", "global/roads/", "global/roaden/", "layers/buildings/hi/"];
+
 /// Names the file of a round under way and when it began, `<path>#<began>` (agent::build::Round, in
 /// the agent's folder): a round's jobs (its map tiles, road index, rail stops and catalog) read the
 /// units as they were when it began (`units_as_of`), so what's built meanwhile changes nothing the
 /// round makes; it waits for the next.
 pub const UNITS_AS_OF_ENV: &str = "SCENIC_UNITS_AS_OF";
 
-/// `m` with its units' outputs (`UNIT_OUTPUTS`) as `then` had them: those built since left out,
-/// those rebuilt since as they were, those dropped since (a prune, or a rebuild that left a unit no
-/// ways) still out.
+/// `m` with its units' outputs and 3D buildings' packs (`AS_OF_OUTPUTS`) as `then` had them: those
+/// built since left out, those rebuilt since as they were, those dropped since (a prune, or a
+/// rebuild that left a unit no ways) still out.
 pub fn units_as_of(m: &BTreeMap<String, String>, then: &BTreeMap<String, String>) -> BTreeMap<String, String> {
     m.iter()
-        .filter_map(|(l, c)| match UNIT_OUTPUTS.iter().any(|p| l.starts_with(p)) {
+        .filter_map(|(l, c)| match AS_OF_OUTPUTS.iter().any(|p| l.starts_with(p)) {
             true => then.get(l).map(|t| (l.clone(), t.clone())),
             false => Some((l.clone(), c.clone())),
         })
