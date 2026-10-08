@@ -91,11 +91,20 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   that takes tails is around and fewer than such are out (at most three: each holds a unit's folder
   on the build Mac's disk), then prepares the next unit. Tails back from workers are committed
   between units.
-- **Nothing waits on a worker:** at the end of the job, a task no one took is taken back and run on
-  the build Mac, and one a worker still holds is raced there (the build Mac's result counts; a
-  worker's that comes in too is compared: each file it sent with this Mac's, and each this Mac's
-  run changed that it didn't send with the copy it was sent). With no worker around, a unit
-  builds as before.
+- **Nothing waits on a worker longer than the build Mac would take:** at the end of the job (with
+  one unit, at once after its offer), a task no one took waits up to 30 s while a worker that could
+  take it asks for work (`offload::LEASE_WAIT`: around, not found wrong, doing its kind, sparing
+  its memory, not one it failed on, and asked in the last 30 s, as a page with a slot idle does
+  every 15–20 s: the task's `takers` in `/task/<id>`), then is taken back and run on the build Mac.
+  One a worker holds is waited on while the worker will be back before the build Mac's own run of
+  it, begun when the waiting began, would end (`offload::Patience`: its time held over how far it
+  says it is, from its beats; until it says, for the whole of that run). That run's time is the
+  tail's stages as this Mac has timed them (`unit-stages.json`), else 120 s. Past that, it's raced
+  there (the build Mac's result counts; a worker's that comes in too is compared: each file it sent
+  with this Mac's, and each this Mac's run changed that it didn't send with the copy it was sent).
+  So a worker never makes a unit later than running its tail here would, but for those 30 s; it
+  frees the build Mac's cores for the job beside. While the build pauses, nothing is waited on.
+  With no worker around, a unit builds as before.
 - **Source versions:** a task names the programs' build (the job's binary); a web worker fetches
   that build's WebAssembly programs from the coordinator (`/work/prog/<name>.wasm`, shipped in the
   app's `wasm/`). The native and WebAssembly builds of one source give the same bytes (§10).
@@ -108,9 +117,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   area's tiles (`area.tiles`) and summary (`area.json`). Its spec has a tail's shape (`unit` the area
   `8/x/y`, `version`, `runs`, `inputs`, `places`), so the page and `scenic run-task` run it
   unchanged. Its memory: its files three times over, 256 MB and 280 B a building of the area, until
-  a worker measures it (the coordinator's `bldtile 8/x/y`). Settled in the area's turn as a tail is:
-  taken back and made here if no one took it, raced if someone holds it, a worker's result taken,
-  or checked against the job's own run byte for byte.
+  a worker measures it (the coordinator's `bldtile 8/x/y`). Settled in the area's turn as a tail is,
+  with the same patience (this Mac's own time for it: its buildings at the pace of the areas the
+  job made here): taken back and made here if no one took it, raced if someone holds it, a
+  worker's result taken, or checked against the job's own run byte for byte.
 - **Determinism rules:** one maths library (`det`, over `libm`) on every target; reductions that
   don't depend on the thread count; no hash-map order in outputs; the real zstd everywhere.
 - **Planned:** staging from packs as a task's (read where the packs lie); the heavy steps cut into
@@ -260,7 +270,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   - **The road to done:** each machine's schedule from now to the end (the forecast's lanes, a step
     a colour, each round of publishing marked: pointed at, the regions it adds; the build Mac's
     second job's lane under its own; the pages' lane is the build Mac's area runs, both jobs',
-    whose last steps it hands them as it builds them); the map updates
+    whose last steps it hands them as it builds them, drawn while a page around spares what a
+    tail takes typically: the last tails offered, `/work/swarm`'s `task_mb`; with a worker that
+    takes tails around, the forecast gives each of the build Mac's units the 30 s it gives one to
+    take its tail); the map updates
     (the last, the next with its regions, the rounds to come); the steps (done of all, the work
     left, done when, why one waits); the regions, in the order they reach the map with the rounds
     between (or by name, or by what's left), each with its state, its work left, when it's done and

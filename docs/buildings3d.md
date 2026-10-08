@@ -613,8 +613,11 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
   answer for its points, whole, in the recipes' order (France's outline: 0.6 MB). The program
   `bldtile` (`/work/prog/bldtile.wasm` in a page, the app's `bldtile` on a helper Mac:
   `scenic run-task`) writes the area's z12–14 tiles (an RDTILES archive) and its summary; the job
-  puts them into the pack in the area's turn. Nothing waits on a worker: in its turn an area no one
-  took is taken back and made here, one a worker holds is raced here, a worker's result is taken,
+  puts them into the pack in the area's turn. Nothing waits on a worker longer than the job would
+  take (docs/workers.md §3): in its turn an area no one took gets 30 s while a worker that could
+  take it asks for work, then is taken back and made here; one a worker holds is waited on while
+  it'll be back before the job's own run would end (its buildings at the pace of the areas the job
+  made here), then raced here; a worker's result is taken,
   or checked (a worker's first three, then one in eight) against the job's own run byte for byte,
   a difference marking the worker bad. Its memory is first guessed as its files three times over
   and the model above (0.25 GB + 280 B a building of the area): Paris's densest area (8/129/88,
