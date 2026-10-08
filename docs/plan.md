@@ -1811,8 +1811,9 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
   guess); each free once its job under way is done (its targets not yet done as they took last
   time, less what it's spent on the one under way; a job with no record, its step's time here, less
   what it's spent; if longer than its part's pace says; a helper's lease likewise); with a worker
-  that takes tails around (sparing what one takes typically), each of the build Mac's units 30 s
-  more, the moment its job gives that worker to take its tail (docs/workers.md §3). Run three times: as
+  around that takes tails, spares what one takes typically and is measured faster than the build
+  Mac at them, each of the build Mac's units 30 s more, the moment its job gives that worker to
+  take its tail (docs/workers.md §3). Run three times: as
   estimated, and for a range, the measured times a little off and the guessed much more. It says
   when each step, each region and everything will be done, when each region reaches the map, the
   rounds to come, what each machine does next (not what it's on) and its schedule to the end, and
@@ -2413,9 +2414,10 @@ At each phase's end an Opus agent reviews the work against this plan.
      neighbour's languages (the ruins of Wasigenstein, in Alsace 300 m from the border, read German).
      Fix, if it matters: the outlines' full rings near borders.
 11. **A worker's tail in a one-unit job only frees the build Mac's cores** (docs/workers.md §3):
-   the job waits on a worker holding its tail only while it'll be back before the build Mac's own
-   run would end, so a worker slower than the build Mac (no page's tail is timed yet) is raced,
-   and the build Mac runs the tail anyway. Fix: the job ends while a worker holds its tail,
+   the job waits on a worker holding its tail only while its measured pace says it'll be back
+   before the build Mac's own run would end, so a worker slower than the build Mac is raced at once
+   (and kept to finish only to measure it), and the build Mac runs the tail anyway. The paces live
+   in the coordinator alone: a restart measures each worker again. Fix: the job ends while a worker holds its tail,
    its slot free for new work, and the agent commits the unit when the tail is back (or runs it
    then, past its time): planned with the pool's phase 4.
 

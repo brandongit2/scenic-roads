@@ -2495,9 +2495,10 @@ fn unit_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         // Units whose last steps came back from other workers: committed before the next.
         settle_tails(out, &date, offload.as_ref(), &mut out_now, false)?;
     }
-    // The rest: given a moment to be taken, and waited on while a worker holding one will be back
-    // with it before this Mac's run would end; then taken back and run here where no one took
-    // them, raced here where someone did.
+    // The rest: given a moment to be taken by a worker whose pace beats this Mac's (or isn't
+    // measured, once an hour), and waited on while a worker holding one will be back with it
+    // before this Mac's run would end; then taken back and run here where no one took them, raced
+    // here where someone did.
     settle_tails(out, &date, offload.as_ref(), &mut out_now, true)?;
     if paused {
         if let Some(h) = ahead.take() {
@@ -2529,7 +2530,7 @@ const TAIL_GUESS_S: f64 = 120.0;
 
 /// Settles the units whose last steps are out with other workers (pipeline::offload), in order,
 /// and commits them: with `wait` false only those a worker finished or failed; with it, each after
-/// the patience its steps' time here allows (pipeline::offload::Patience).
+/// the patience its steps' time here and its worker's pace allow (pipeline::offload::Patience).
 fn settle_tails(out: &mut Out, date: &str, offload: Option<&pipeline::offload::Offload>, waiting: &mut std::collections::VecDeque<(Built, pipeline::offload::Offered)>, wait: bool) -> Result<()> {
     let Some(o) = offload else { return Ok(()) };
     let mut i = 0;
@@ -2539,14 +2540,12 @@ fn settle_tails(out: &mut Out, date: &str, offload: Option<&pipeline::offload::O
         areas(|a| a.on(&b.u.slash()));
         let (dir, tools, anywhere) = (b.dir.clone(), b.tools.clone(), b.anywhere.clone());
         let mut here = || pipeline::unit::run_tail(&anywhere, &dir, &tools);
-        // (Waited on as long as this Mac's own run of its steps would take, as its stages have
-        // taken here: a worker never makes the unit later than running them here would.)
-        let patience = wait.then(|| {
-            let mut here_s = None;
-            areas(|a| here_s = a.here_s(&anywhere.iter().map(|r| r.what.as_str()).collect::<Vec<_>>()));
-            pipeline::offload::Patience { here_s: Some(here_s.unwrap_or(TAIL_GUESS_S)) }
-        });
-        match o.settle(task, &b.dir, patience, &mut here)? {
+        // (This Mac's own run of its steps, as its stages have taken here: a worker is waited on
+        // only while its pace says it'll be back sooner, and measured against it.)
+        let mut here_s = None;
+        areas(|a| here_s = a.here_s(&anywhere.iter().map(|r| r.what.as_str()).collect::<Vec<_>>()));
+        let patience = pipeline::offload::Patience { here_s: Some(here_s.unwrap_or(TAIL_GUESS_S)) };
+        match o.settle(task, &b.dir, wait, patience, &mut here)? {
             None => i += 1,
             Some(how) => {
                 let (mut b, _) = waiting.remove(i).unwrap();

@@ -49,6 +49,12 @@ pub struct Task {
     /// Workers it failed on or went quiet on: not offered to them again.
     pub failed_on: BTreeSet<String>,
     pub offered: Instant,
+    /// When a worker last leased it, and how long that worker took (lease to done, seconds).
+    pub leased_at: Option<Instant>,
+    pub wall_s: Option<f64>,
+    /// Kept for its worker to finish after the job ran it itself (the job's run took this long,
+    /// seconds): the worker's pace measured, its result not used (`measure`).
+    pub measuring: Option<f64>,
 }
 
 /// A task as a job offers it (`POST /task/offer`).
@@ -72,7 +78,25 @@ pub struct Tasks {
     /// The memory of the last tasks offered of each kind (MB, at most `RECENT`): what one takes,
     /// typically (`typical_mb`).
     recent_mb: BTreeMap<String, std::collections::VecDeque<u64>>,
+    /// Each worker's pace at each kind of task: its time over the job's own for the same task
+    /// (lease to done, against the job's run), weighed in as they come (`note_pace`).
+    pub paces: BTreeMap<(String, String), f64>,
+    /// When the jobs last waited for a worker whose pace isn't measured to take a task (`explore`).
+    explored: BTreeMap<String, Instant>,
 }
+
+/// The margin a worker's pace is taken with: it's waited on only if its time, a quarter more,
+/// comes before the job's own run would end.
+pub const MARGIN: f64 = 1.25;
+
+/// Whether a worker at `pace` is faster than the job's own run, with the margin.
+pub fn beats(pace: f64) -> bool {
+    pace * MARGIN < 1.0
+}
+
+/// How often the jobs wait for a worker whose pace isn't measured to take a task, at most: once an
+/// hour a worker.
+pub const EXPLORE_EVERY: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// How many tasks' memory a kind's typical one is of.
 const RECENT: usize = 20;
@@ -89,7 +113,7 @@ impl Tasks {
     pub fn new(dir: PathBuf) -> Tasks {
         // (Uploads left by a run before this one: their jobs are gone.)
         std::fs::remove_dir_all(&dir).ok();
-        Tasks { next: 1, by_id: BTreeMap::new(), dir, recent_mb: BTreeMap::new() }
+        Tasks { next: 1, by_id: BTreeMap::new(), dir, recent_mb: BTreeMap::new(), paces: BTreeMap::new(), explored: BTreeMap::new() }
     }
 
     /// Takes a job's offer; its id.
@@ -103,7 +127,7 @@ impl Tasks {
         if recent.len() > RECENT {
             recent.pop_front();
         }
-        self.by_id.insert(id, Task { id, owner: o.owner, kind: o.kind, spec: o.spec, root: o.root, inputs: o.inputs, mem_mb: o.mem_mb, state: State::Offered, out, failed_on: BTreeSet::new(), offered: now });
+        self.by_id.insert(id, Task { id, owner: o.owner, kind: o.kind, spec: o.spec, root: o.root, inputs: o.inputs, mem_mb: o.mem_mb, state: State::Offered, out, failed_on: BTreeSet::new(), offered: now, leased_at: None, wall_s: None, measuring: None });
         Ok(id)
     }
 
@@ -159,6 +183,7 @@ impl Tasks {
             anyhow::ensure!(n == o.size, "{}: {} bytes here, {} said", o.path, n, o.size);
         }
         anyhow::ensure!(removed.iter().all(|r| t.inputs.contains_key(r)), "it removed what it wasn't given");
+        t.wall_s = t.leased_at.map(|at| at.elapsed().as_secs_f64());
         t.state = State::Done { worker: worker.to_string(), outputs, removed, secs, peak_mb };
         Ok(t.spec["unit"].as_str().map(str::to_string))
     }
@@ -173,6 +198,12 @@ impl Tasks {
     /// background): offered again to any worker, this one too.
     pub fn fail_how(&mut self, lease: u64, worker: &str, why: &str, oom_mb: Option<u64>, interrupted: bool) -> Option<u64> {
         let t = self.by_lease(lease, worker)?;
+        // (One kept to measure its worker: no more to it.)
+        if t.measuring.is_some() {
+            let id = t.id;
+            self.close(id);
+            return None;
+        }
         match oom_mb {
             _ if interrupted => {}
             Some(peak) => t.mem_mb = t.mem_mb.max(peak + peak / 4),
@@ -187,6 +218,11 @@ impl Tasks {
     /// The worker holding task lease `lease` went quiet: offered again, not to it.
     pub fn lapsed(&mut self, lease: u64) {
         if let Some(t) = self.by_id.values_mut().find(|t| matches!(&t.state, State::Leased { lease: l, .. } if *l == lease)) {
+            if t.measuring.is_some() {
+                let id = t.id;
+                self.close(id);
+                return;
+            }
             if let State::Leased { worker, .. } = std::mem::replace(&mut t.state, State::Offered) {
                 t.failed_on.insert(worker);
             }
@@ -210,10 +246,60 @@ impl Tasks {
     pub fn close(&mut self, id: u64) -> Option<u64> {
         let t = self.by_id.remove(&id)?;
         std::fs::remove_dir_all(&t.out).ok();
+        // (One kept to measure its worker: its files moved here, `measure`.)
+        if t.measuring.is_some() {
+            std::fs::remove_dir_all(&t.root).ok();
+        }
         match t.state {
             State::Leased { lease, .. } => Some(lease),
             _ => None,
         }
+    }
+
+    /// A worker's pace at a kind of task, when measured.
+    pub fn pace(&self, worker: &str, kind: &str) -> Option<f64> {
+        self.paces.get(&(worker.to_string(), kind.to_string())).copied()
+    }
+
+    /// `worker` took `wall_s` for a task of `kind` the job's own run took `here_s` for: weighed into
+    /// its pace (half the last, half the new).
+    pub fn note_pace(&mut self, worker: &str, kind: &str, wall_s: f64, here_s: f64) {
+        if !(wall_s.is_finite() && here_s.is_finite() && wall_s > 0.0 && here_s > 0.0) {
+            return;
+        }
+        let r = wall_s / here_s;
+        let p = self.paces.entry((worker.to_string(), kind.to_string())).or_insert(r);
+        *p = 0.5 * *p + 0.5 * r;
+    }
+
+    /// Whether the jobs may wait for `worker` (its pace not measured) to take a task now: not in the
+    /// last hour (`EXPLORE_EVERY`).
+    pub fn may_explore(&self, worker: &str, now: Instant) -> bool {
+        self.explored.get(worker).is_none_or(|at| now.duration_since(*at) >= EXPLORE_EVERY)
+    }
+
+    /// A job waits for `worker` (its pace not measured) to take a task now.
+    pub fn explore(&mut self, worker: &str, now: Instant) {
+        self.explored.insert(worker.to_string(), now);
+    }
+
+    /// The job ran task `id` itself (in `here_s`) while its worker, whose pace at its kind isn't
+    /// measured, still holds it: kept for that worker to finish, its files moved into this
+    /// coordinator's folder (the job removes its own) and no longer the job's, so its time is
+    /// measured. Whether it was kept.
+    pub fn measure(&mut self, id: u64, here_s: f64) -> bool {
+        let Some(t) = self.by_id.get_mut(&id) else { return false };
+        let State::Leased { worker, .. } = &t.state else { return false };
+        if self.paces.contains_key(&(worker.clone(), t.kind.clone())) || !(here_s > 0.0) {
+            return false;
+        }
+        let root = self.dir.join(format!("{id}-in"));
+        std::fs::remove_dir_all(&root).ok();
+        if std::fs::rename(&t.root, &root).is_err() {
+            return false;
+        }
+        (t.root, t.owner, t.measuring) = (root, 0, Some(here_s));
+        true
     }
 
     /// Ends every task of job `owner` (it ended); their leases.
@@ -292,5 +378,45 @@ mod tests {
         offer(&mut ts, &root, 100, t0);
         assert_eq!(ts.close_owner(9), vec![5]);
         assert!(ts.by_id.is_empty());
+    }
+
+    #[test]
+    fn a_worker_not_measured_finishes_a_task_the_job_ran_and_is_measured() {
+        let d = tempfile::tempdir().unwrap();
+        let mut ts = Tasks::new(d.path().join("tasks"));
+        let t0 = Instant::now();
+        let job = |n: &str| {
+            let root = d.path().join(n);
+            std::fs::create_dir_all(root.join("u")).unwrap();
+            std::fs::write(root.join("u/a.bin"), b"abc").unwrap();
+            root
+        };
+        // Leased by a worker not measured, run by the job: kept, its files the coordinator's, no
+        // longer the job's.
+        let id = offer(&mut ts, &job("j1"), 100, t0);
+        ts.by_id.get_mut(&id).unwrap().state = State::Leased { lease: 1, worker: "ipad".into() };
+        assert!(ts.measure(id, 40.0));
+        assert!(!d.path().join("j1").exists());
+        assert_eq!(ts.input(1, "ipad", "u/a.bin").map(|x| x.1), Some(3));
+        assert!(ts.close_owner(9).is_empty());
+        // It fails: closed, its files gone.
+        assert_eq!(ts.fail(1, "ipad", "no", None), None);
+        assert!(ts.by_id.is_empty() && !d.path().join("tasks").join(format!("{id}-in")).exists());
+        // Measured: not kept; one that goes quiet: closed.
+        ts.note_pace("ipad", "tail", 80.0, 40.0);
+        ts.note_pace("ipad", "tail", 40.0, 40.0);
+        assert_eq!(ts.pace("ipad", "tail"), Some(1.5));
+        let id = offer(&mut ts, &job("j2"), 100, t0);
+        ts.by_id.get_mut(&id).unwrap().state = State::Leased { lease: 2, worker: "ipad".into() };
+        assert!(!ts.measure(id, 40.0));
+        ts.by_id.get_mut(&id).unwrap().state = State::Leased { lease: 3, worker: "phone".into() };
+        assert!(ts.measure(id, 40.0));
+        ts.lapsed(3);
+        assert!(ts.by_id.is_empty());
+        // Waited for once an hour a worker.
+        assert!(ts.may_explore("phone", t0));
+        ts.explore("phone", t0);
+        assert!(!ts.may_explore("phone", t0 + std::time::Duration::from_secs(3599)) && ts.may_explore("phone", t0 + EXPLORE_EVERY));
+        assert!(beats(0.79) && !beats(0.8));
     }
 }

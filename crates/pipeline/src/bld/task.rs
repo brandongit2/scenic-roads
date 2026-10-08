@@ -269,7 +269,7 @@ impl<'a> Offers<'a> {
     pub fn top_up(&mut self, files: &[Option<WorkFile>], cov: &Coverage, areas: &[(u32, u32)], k: usize) -> Result<()> {
         let Some(o) = self.offload else { return Ok(()) };
         for i in self.out.keys().copied().collect::<Vec<_>>() {
-            self.settle(files, cov, areas, i, None)?;
+            self.settle(files, cov, areas, i, false)?;
         }
         if self.far <= k + 1 || self.out.len() >= self.most {
             return Ok(());
@@ -304,15 +304,14 @@ impl<'a> Offers<'a> {
     /// into the pack (`take_area`) and remove. None: it's to run here.
     pub fn result(&mut self, files: &[Option<WorkFile>], cov: &Coverage, areas: &[(u32, u32)], k: usize) -> Result<Option<PathBuf>> {
         if self.out.contains_key(&k) {
-            let p = crate::offload::Patience { here_s: self.here_s(k) };
-            self.settle(files, cov, areas, k, Some(p))?;
+            self.settle(files, cov, areas, k, true)?;
         }
         Ok(self.ready.remove(&k))
     }
 
-    /// Settles area `i`'s task (with `wait` None, only when a worker finished or failed it; else
-    /// after that patience): its results put in its folder.
-    fn settle(&mut self, files: &[Option<WorkFile>], cov: &Coverage, areas: &[(u32, u32)], i: usize, wait: Option<crate::offload::Patience>) -> Result<()> {
+    /// Settles area `i`'s task (with `wait` false, only when a worker finished or failed it; else
+    /// with the patience its time here allows): its results put in its folder.
+    fn settle(&mut self, files: &[Option<WorkFile>], cov: &Coverage, areas: &[(u32, u32)], i: usize, wait: bool) -> Result<()> {
         let (Some(o), Some(task)) = (self.offload, self.out.get(&i)) else { return Ok(()) };
         let a = self.area(areas, i);
         let mine = results_dir(&self.scratch, a);
@@ -347,7 +346,7 @@ impl<'a> Offers<'a> {
             }
             Ok(same)
         };
-        let Some(how) = o.settle_with(task, wait, &mut || here(), &mut take, &mut same)? else { return Ok(()) };
+        let Some(how) = o.settle_with(task, wait, crate::offload::Patience { here_s: self.here_s(i) }, &mut || here(), &mut take, &mut same)? else { return Ok(()) };
         let how = match how {
             crate::offload::Settled::Remote(w) => format!("by {w}"),
             crate::offload::Settled::Here(None) => "here".into(),

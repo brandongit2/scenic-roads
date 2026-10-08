@@ -91,20 +91,30 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   that takes tails is around and fewer than such are out (at most three: each holds a unit's folder
   on the build Mac's disk), then prepares the next unit. Tails back from workers are committed
   between units.
-- **Nothing waits on a worker longer than the build Mac would take:** at the end of the job (with
-  one unit, at once after its offer), a task no one took waits up to 30 s while a worker that could
-  take it asks for work (`offload::LEASE_WAIT`: around, not found wrong, doing its kind, sparing
-  its memory, not one it failed on, and asked in the last 30 s, as a page with a slot idle does
-  every 15–20 s: the task's `takers` in `/task/<id>`), then is taken back and run on the build Mac.
-  One a worker holds is waited on while the worker will be back before the build Mac's own run of
-  it, begun when the waiting began, would end (`offload::Patience`: its time held over how far it
-  says it is, from its beats; until it says, for the whole of that run). That run's time is the
-  tail's stages as this Mac has timed them (`unit-stages.json`), else 120 s. Past that, it's raced
-  there (the build Mac's result counts; a worker's that comes in too is compared: each file it sent
-  with this Mac's, and each this Mac's run changed that it didn't send with the copy it was sent).
-  So a worker never makes a unit later than running its tail here would, but for those 30 s; it
-  frees the build Mac's cores for the job beside. While the build pauses, nothing is waited on.
-  With no worker around, a unit builds as before.
+- **Nothing waits on a worker that's slower than the build Mac:** the coordinator measures each
+  worker's pace at each kind of task, its time from lease to done over the job's own run of the same
+  task (the job's run when it made one, else what it takes it to be), weighed in half and half as
+  they come (`Tasks::note_pace`; kept while the coordinator runs). When the job needs a task (at the
+  end of the job; with one unit, at once after its offer):
+  - **No one took it:** it waits up to 30 s (`offload::LEASE_WAIT`) only while a worker that could
+    take it asks for work (around, not found wrong, doing its kind, sparing its memory, not one it
+    failed on, asked in the last 30 s, as a page with a slot idle does every 15–20 s: the task's
+    `takers` in `/task/<id>`, each with its pace) and that worker's pace beats the build Mac's with
+    a quarter's margin (`task::beats`), or isn't measured yet and wasn't waited for in the last hour
+    (`EXPLORE_EVERY`, `/task/<id>/explore`). Then it's taken back and run on the build Mac.
+  - **A worker holds it:** waited on only while that worker's pace says it'll be back, with the
+    margin, before the build Mac's own run of it, begun when the waiting began, would end
+    (`offload::Patience`; that run is the tail's stages as this Mac has timed them,
+    `unit-stages.json`, else 120 s). A worker not measured is raced at once. Past that it's raced
+    there (the build Mac's result counts; a worker's that comes in too is compared: each file it
+    sent with this Mac's, and each this Mac's run changed that it didn't send with the copy it was
+    sent).
+  - **Measured by finishing:** a task the job ran itself while a worker not measured holds it is
+    kept for that worker to finish (`Tasks::measure`: its files moved into the coordinator's folder,
+    no longer the job's, so the job may end), its result not used, its time its pace.
+  - So a slow worker costs a unit nothing, and an unmeasured one 30 s once an hour; a fast one
+    frees the build Mac's cores for the job beside. While the build pauses, nothing is waited on.
+    With no worker around, a unit builds as before.
 - **Source versions:** a task names the programs' build (the job's binary); a web worker fetches
   that build's WebAssembly programs from the coordinator (`/work/prog/<name>.wasm`, shipped in the
   app's `wasm/`). The native and WebAssembly builds of one source give the same bytes (§10).
@@ -119,7 +129,7 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   unchanged. Its memory: its files three times over, 256 MB and 280 B a building of the area, until
   a worker measures it (the coordinator's `bldtile 8/x/y`). Settled in the area's turn as a tail is,
   with the same patience (this Mac's own time for it: its buildings at the pace of the areas the
-  job made here): taken back and made here if no one took it, raced if someone holds it, a
+  job made here; a worker's pace at `bldtile` its own): taken back and made here if no one took it, raced if someone holds it, a
   worker's result taken, or checked against the job's own run byte for byte.
 - **Determinism rules:** one maths library (`det`, over `libm`) on every target; reductions that
   don't depend on the thread count; no hash-map order in outputs; the real zstd everywhere.
@@ -270,10 +280,10 @@ is 15–20% of its time. So the data plane came first, and paid off on the Macs 
   - **The road to done:** each machine's schedule from now to the end (the forecast's lanes, a step
     a colour, each round of publishing marked: pointed at, the regions it adds; the build Mac's
     second job's lane under its own; the pages' lane is the build Mac's area runs, both jobs',
-    whose last steps it hands them as it builds them, drawn while a page around spares what a
-    tail takes typically: the last tails offered, `/work/swarm`'s `task_mb`; with a worker that
-    takes tails around, the forecast gives each of the build Mac's units the 30 s it gives one to
-    take its tail); the map updates
+    whose last steps it hands them as it builds them, drawn while a page around is measured faster
+    than the build Mac at tails (`/work/swarm`'s workers' `tail_pace`) and spares what a tail takes
+    typically (the last tails offered, `task_mb`); with such a worker around, the forecast gives
+    each of the build Mac's units the 30 s it gives one to take its tail); the map updates
     (the last, the next with its regions, the rounds to come); the steps (done of all, the work
     left, done when, why one waits); the regions, in the order they reach the map with the rounds
     between (or by name, or by what's left), each with its state, its work left, when it's done and

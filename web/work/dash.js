@@ -397,9 +397,11 @@ function schedule(m) {
   }
   // The pages: their work is an area's last steps, which the build Mac hands out as it builds its
   // areas (a few at a time, one to each worker around that spares what one takes; its second job's
-  // too): while its own areas run, so then, if a page spares what a tail takes typically.
+  // too), and waits for only from a worker measured faster than itself (its time a quarter more
+  // still under the build Mac's, crate::offload): while its own areas run, so then, if such a page
+  // spares what a tail takes typically.
   const own = [...(fc.lanes[m.a.host] || []), ...(fc.lanes[secondOf(m.a.host)] || [])].sort((p, q) => p.from - q.from);
-  const fits = m.pages.some((p) => (p.mem_mb || 0) >= (m.sw.task_mb?.tail || 0));
+  const fits = m.pages.some((p) => (p.mem_mb || 0) >= (m.sw.task_mb?.tail || 0) && p.tail_pace != null && p.tail_pace * 1.25 < 1);
   if (fits && own.some((l) => l.step === "unit" && l.until > t0)) {
     const track = h("div", "track");
     const who = m.pages.map((p) => p.label).join(", ");

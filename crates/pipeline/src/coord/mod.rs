@@ -316,9 +316,18 @@ impl Shared {
     /// heard from: the history says so, and those not heard from for a day, holding nothing, go.
     /// How many workers could take task `t` now: around, asking for work lately (`ASKING`), not
     /// found wrong, doing its kind, sparing its memory, and not ones it failed on.
-    fn takers(&self, t: &task::Task, now: Instant) -> usize {
+    /// Each with its pace at the kind (None: not measured) and whether a job may wait for it to take
+    /// one while its pace isn't measured (once an hour: task::EXPLORE_EVERY).
+    fn takers(&self, t: &task::Task, now: Instant) -> Vec<serde_json::Value> {
         let fits = |(n, w): &(&String, &Worker)| !w.bad && now.duration_since(w.seen) < AROUND && w.asked.is_some_and(|a| now.duration_since(a) < ASKING) && w.can.contains(&t.kind) && w.mem_mb >= t.mem_mb && !t.failed_on.contains(*n);
-        self.workers.iter().filter(fits).count()
+        self.workers
+            .iter()
+            .filter(fits)
+            .map(|(n, _)| {
+                let pace = self.tasks.pace(n, &t.kind);
+                serde_json::json!({ "worker": n, "pace": pace, "explore": pace.is_none() && self.tasks.may_explore(n, now) })
+            })
+            .collect()
     }
 
     fn seen(&mut self, worker: &str, what: String, a: Option<&Ask>, now: Instant) {
@@ -726,13 +735,14 @@ impl Coordinator {
         (s.costs.clone(), leased, s.history.since(0, usize::MAX), mem)
     }
 
-    /// Whether a worker around (not found wrong) takes tails and spares what one takes typically
-    /// (any, before one was offered): this Mac's unit jobs then give it a moment to take theirs
-    /// (crate::offload::LEASE_WAIT), the forecast's units that much longer.
+    /// Whether a worker around (not found wrong) takes tails, spares what one takes typically (any,
+    /// before one was offered) and is measured faster than this Mac at them (task::beats): this
+    /// Mac's unit jobs then give it a moment to take theirs (crate::offload::LEASE_WAIT), the
+    /// forecast's units that much longer.
     pub fn tail_takers(&self) -> bool {
         let s = self.shared.lock().unwrap();
         let mb = s.tasks.typical_mb("tail").unwrap_or(0);
-        s.workers.values().any(|w| !w.bad && w.seen.elapsed() < AROUND && w.can.iter().any(|c| c == "tail") && w.mem_mb >= mb)
+        s.workers.iter().any(|(n, w)| !w.bad && w.seen.elapsed() < AROUND && w.can.iter().any(|c| c == "tail") && w.mem_mb >= mb && s.tasks.pace(n, "tail").is_some_and(task::beats))
     }
 
     /// The pool's term the leases it grants now are in (docs/pool.md §7.5; 0: the pool off).
@@ -1096,6 +1106,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 s.save_leases();
                 let t = s.tasks.by_id.get_mut(&id).unwrap();
                 t.state = task::State::Leased { lease, worker: a.worker.clone() };
+                t.leased_at = Some(now);
                 let g = Grant { lease, term: 0, ttl_s: TTL.as_secs(), work: Granted::Task { id, task: t.spec.clone(), mem_mb: t.mem_mb } };
                 eprintln!("coordinator: {} took task {id} ({})", a.worker, t.kind);
                 return Ok((200, serde_json::to_value(g)?));
@@ -1235,6 +1246,13 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                         Ok(u) => u,
                         Err(e) => return Ok((422, serde_json::json!({ "error": format!("{e:#}") }))),
                     };
+                    // One kept to measure its worker (the job ran it itself): its pace, and no more.
+                    let measured = s.tasks.by_id.get(id).and_then(|t| t.measuring.zip(t.wall_s));
+                    if let Some((here_s, wall_s)) = measured {
+                        s.tasks.note_pace(&d.worker, &kind, wall_s, here_s);
+                        s.tasks.close(*id);
+                        eprintln!("coordinator: {} took {wall_s:.0} s for a {kind} this Mac took {here_s:.0} s for", d.worker);
+                    }
                     // What its unit's task takes, for the next time it's offered.
                     if let Some(u) = &unit {
                         s.costs.insert(task_cost_key(&kind, u), Cost { peak_mb: d.peak_mb, secs: d.secs as u64, worker: Some(d.worker.clone()), v: 0 });
@@ -1343,7 +1361,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 .iter()
                 .map(|(n, w)| {
                     let fit = w.ask.as_ref().filter(|a| a.kind == "native").map(|a| s.fit(a, now)).unwrap_or_default();
-                    serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "checked": w.checked, "bad": w.bad, "app": w.app, "visible": w.visible, "can": w.can, "fit": fit, "seen_s": now.duration_since(w.seen).as_secs() })
+                    serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "checked": w.checked, "bad": w.bad, "app": w.app, "visible": w.visible, "can": w.can, "fit": fit, "seen_s": now.duration_since(w.seen).as_secs(), "tail_pace": s.tasks.pace(n, "tail") })
                 })
                 .collect();
             // The tasks, by state.
@@ -1408,7 +1426,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                         // job waits for it only while it'll be back sooner than its own run.)
                         task::State::Leased { worker, lease } => {
                             let l = s.leases.of(*lease);
-                            serde_json::json!({ "state": "leased", "worker": worker, "age_s": l.map(|l| now.duration_since(l.granted).as_secs_f64()), "frac": l.and_then(|l| l.frac) })
+                            serde_json::json!({ "state": "leased", "worker": worker, "age_s": l.map(|l| now.duration_since(l.granted).as_secs_f64()), "frac": l.and_then(|l| l.frac), "pace": s.tasks.pace(worker, &t.kind) })
                         }
                         task::State::Done { worker, outputs, removed, secs, peak_mb } => {
                             // A worker's first results are all checked, then one in eight.
@@ -1421,9 +1439,32 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                     Ok((200, v))
                 }
                 Some("withdraw") => Ok((200, serde_json::json!({ "withdrawn": s.tasks.withdraw(id) }))),
+                Some("explore") => {
+                    // The job waits for the workers that could take it whose pace isn't measured:
+                    // not again for an hour each.
+                    let Some(t) = s.tasks.by_id.get(&id) else { return Ok((404, serde_json::json!({ "error": "no such task" }))) };
+                    let names: Vec<String> = s.takers(t, now).iter().filter(|w| w["explore"] == true).filter_map(|w| w["worker"].as_str().map(str::to_string)).collect();
+                    for n in &names {
+                        s.tasks.explore(n, now);
+                    }
+                    Ok((200, serde_json::json!({ "workers": names })))
+                }
                 Some("close") => {
-                    // With the job's check of the result, if it made one.
-                    let checked: Option<bool> = serde_json::from_slice::<serde_json::Value>(body).ok().and_then(|v| v["checked"].as_bool());
+                    // With the job's check of the result, if it made one, and its own run's time (or
+                    // what it takes it to be): the worker's pace.
+                    let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+                    let (checked, here_s) = (b["checked"].as_bool(), b["here_s"].as_f64());
+                    if let (Some(here_s), Some(t)) = (here_s, s.tasks.by_id.get(&id)) {
+                        if let (task::State::Done { worker, .. }, Some(wall_s)) = (t.state.clone(), t.wall_s) {
+                            let kind = t.kind.clone();
+                            s.tasks.note_pace(&worker, &kind, wall_s, here_s);
+                        }
+                    }
+                    // Run by the job while a worker whose pace isn't measured holds it: kept for that
+                    // worker to finish, to measure it.
+                    if here_s.is_some_and(|h| s.tasks.measure(id, h)) {
+                        return Ok((200, serde_json::json!({ "ok": true, "measuring": true })));
+                    }
                     if let (Some(c), Some(task::State::Done { worker, .. })) = (checked, s.tasks.by_id.get(&id).map(|t| t.state.clone())) {
                         if let Some(w) = s.workers.get_mut(&worker) {
                             w.checked += 1;
