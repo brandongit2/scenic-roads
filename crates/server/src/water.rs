@@ -4,8 +4,9 @@
 //! - z0–9 are the water layer's packs (a tile not stored is one value throughout: its stored
 //!   ancestor's over it); deeper, or a stored zoom whose pack can't be read (offline, let go by the
 //!   mirror), drawn here from the basemap's z14 tiles under or over it, as the build draws them.
-//! - `?c=<sea>,<lake>` (hex colours): a PNG of the water in those colours, alpha its share (the
-//!   map's raster layer); `?raw=1`: the shares themselves, red the sea's and green the inland
+//! - `?c=<sea>,<lake>[,<land>]` (hex colours): a PNG of the water in those colours, alpha its share
+//!   (the map's raster layer); with the land's colour, the alpha that mixes water and land as light
+//!   mixes (linear light: `alpha_for`), since the map blends the stored values; `?raw=1`: the shares themselves, red the sea's and green the inland
 //!   water's (the coastal shading measures the shore from them, coast.worker.ts).
 //! - Drawn tiles are kept (`KEPT` of them, most recently used, about 0.5 MB each), so the map's
 //!   raster and the shading's asking for the same tile draw it once. At most `DRAWING` are drawn at
@@ -201,9 +202,41 @@ fn hex(c: &str) -> Option<[f32; 3]> {
     Some([0, 2, 4].map(|i| f32::from(u8::from_str_radix(&c[i..i + 2], 16).unwrap_or(0))))
 }
 
+fn to_linear(v: f32) -> f32 {
+    if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+}
+
+fn to_srgb(v: f32) -> f32 {
+    if v <= 0.003_130_8 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 }
+}
+
+/// A colour's luminance (linear light), from 0–255 sRGB.
+fn luminance(c: [f32; 3]) -> f32 {
+    0.2126 * to_linear(c[0] / 255.0) + 0.7152 * to_linear(c[1] / 255.0) + 0.0722 * to_linear(c[2] / 255.0)
+}
+
+/// The alpha (0–255) that shows `share` (0–1) of water `w` over land `l` as the light of the two
+/// mixed would look. The map blends the stored (sRGB) values, `l + alpha (w − l)`, which in light
+/// gives the darker of the two more than its share: half a pixel of dark water on light land looks
+/// three quarters water. Here the blend's lightness (its luminance, sRGB-encoded, which the stored
+/// blend follows closely) is the mixed light's.
+pub fn alpha_for(share: f32, w: [f32; 3], l: [f32; 3]) -> f32 {
+    let (yw, yl) = (luminance(w), luminance(l));
+    let (ew, el) = (to_srgb(yw), to_srgb(yl));
+    if (ew - el).abs() < 1e-3 {
+        return share * 255.0;
+    }
+    let target = to_srgb(share * yw + (1.0 - share) * yl);
+    ((target - el) / (ew - el)).clamp(0.0, 1.0) * 255.0
+}
+
+/// The colours a tile is drawn in: the sea's, the lakes', and the land's under them if known.
+type Colours = ([f32; 3], [f32; 3], Option<[f32; 3]>);
+
 /// The tile as the map's raster (water in `sea`/`lake`, alpha its share; the sea's and the inland
-/// water's shares summed, overlaps at most whole) or raw (red the sea, green the inland water).
-fn encode(sh: &[u8], colours: Option<([f32; 3], [f32; 3])>) -> Result<Vec<u8>> {
+/// water's shares summed, overlaps at most whole; over a known land, the share as light mixes it)
+/// or raw (red the sea, green the inland water).
+fn encode(sh: &[u8], colours: Option<Colours>) -> Result<Vec<u8>> {
     let n = wt::SIZE * wt::SIZE;
     match colours {
         None => {
@@ -213,7 +246,10 @@ fn encode(sh: &[u8], colours: Option<([f32; 3], [f32; 3])>) -> Result<Vec<u8>> {
             }
             png(&px, wt::SIZE, png::ColorType::Rgb)
         }
-        Some((sea, lake)) => {
+        Some((sea, lake, land)) => {
+            // The alpha for each share, sea and lake (a pixel of both: mixed by their shares).
+            let lut = |w: [f32; 3]| -> Vec<u8> { (0..=255).map(|t| land.map_or(t as u8, |l| alpha_for(t as f32 / 255.0, w, l).round() as u8)).collect() };
+            let (sea_a, lake_a) = (lut(sea), lut(lake));
             let mut px = Vec::with_capacity(n * 4);
             for p in sh.chunks_exact(2) {
                 let (s, i) = (f32::from(p[0]), f32::from(p[1]));
@@ -221,7 +257,9 @@ fn encode(sh: &[u8], colours: Option<([f32; 3], [f32; 3])>) -> Result<Vec<u8>> {
                 // (Where there's none, the sea's colour: a pixel sampled between it and water then
                 // blends no black in.)
                 let rgb = if t > 0.0 { [0, 1, 2].map(|k| ((sea[k] * s + lake[k] * i) / t).round() as u8) } else { sea.map(|v| v as u8) };
-                px.extend_from_slice(&[rgb[0], rgb[1], rgb[2], t.min(255.0) as u8]);
+                let k = t.min(255.0) as usize;
+                let a = if t > 0.0 { ((f32::from(sea_a[k]) * s + f32::from(lake_a[k]) * i) / t).round() as u8 } else { 0 };
+                px.extend_from_slice(&[rgb[0], rgb[1], rgb[2], a]);
             }
             png(&px, wt::SIZE, png::ColorType::Rgba)
         }
@@ -235,10 +273,14 @@ pub async fn water_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)
     let v = versioned(q.as_deref());
     let query: std::collections::HashMap<String, String> = q.as_deref().map(|q| url_pairs(q)).unwrap_or_default();
     let colours = match query.get("c") {
-        Some(c) => match c.split_once(',').and_then(|(a, b)| Some((hex(a)?, hex(b)?))) {
-            Some(cs) => Some(cs),
-            None => return StatusCode::BAD_REQUEST.into_response(),
-        },
+        Some(c) => {
+            let cs: Vec<Option<[f32; 3]>> = c.split(',').map(hex).collect();
+            match cs[..] {
+                [Some(a), Some(b)] => Some((a, b, None)),
+                [Some(a), Some(b), Some(l)] => Some((a, b, Some(l))),
+                _ => return StatusCode::BAD_REQUEST.into_response(),
+            }
+        }
         None if query.contains_key("raw") => None,
         None => return StatusCode::BAD_REQUEST.into_response(),
     };
@@ -404,10 +446,34 @@ mod tests {
             let (_, px) = pixels(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap());
             assert!(px.chunks_exact(4).all(|p| p == want), "10/{x}/{y}");
         }
+        // With the land's colour: whole pixels as before; four colours are too many.
+        let r = get(1, 0, 0, "c=010203,040506,ffffff").await;
+        let (_, px) = pixels(&axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap());
+        assert!(px.chunks_exact(4).all(|p| p == [1, 2, 3, 255]));
+        assert_eq!(get(0, 0, 0, "c=010203,040506,ffffff,000000").await.status(), StatusCode::BAD_REQUEST);
         // A colour is needed, or raw.
         assert_eq!(get(0, 0, 0, "").await.status(), StatusCode::BAD_REQUEST);
         assert_eq!(get(0, 0, 0, "c=0x0102,040506").await.status(), StatusCode::BAD_REQUEST);
         assert_eq!(get(0, 0, 0, "c=zz0203,040506").await.status(), StatusCode::BAD_REQUEST);
         assert_eq!(crate::meta_json(&s)["water"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn the_alpha_mixes_water_and_land_as_light_mixes() {
+        let (black, white, grey) = ([0.0; 3], [255.0; 3], [128.0; 3]);
+        // Half a pixel of black water on white land: as light, a quarter of the way in sRGB
+        // (255 × (1 − 0.735)), not halfway.
+        assert!((alpha_for(0.5, black, white) - 67.5).abs() < 0.5, "{}", alpha_for(0.5, black, white));
+        // White water on black land: the other way.
+        assert!((alpha_for(0.5, white, black) - 187.5).abs() < 0.5);
+        // Whole pixels, and colours alike, as they were.
+        for (w, l) in [(black, white), (white, black), (grey, grey)] {
+            assert_eq!(alpha_for(0.0, w, l), 0.0);
+            assert!((alpha_for(1.0, w, l) - 255.0).abs() < 1e-3);
+        }
+        assert_eq!(alpha_for(0.3, grey, grey), 0.3 * 255.0);
+        // The map's own dark colours: barely changed.
+        let (sea, land) = ([12.0, 22.0, 34.0], [11.0, 14.0, 19.0]);
+        assert!((alpha_for(0.5, sea, land) - 127.5).abs() < 15.0);
     }
 }

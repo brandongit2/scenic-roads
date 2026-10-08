@@ -83,7 +83,8 @@ export function enforce(map: MLMap) {
   paint('bg', 'background-color', EVAL_LAND);
   if (waterTilesOn()) {
     // (The water tiles carry their colours.)
-    setWaterColours(EVAL_WATER, EVAL_WATER);
+    // (No land's colour: each pixel's grey its coverage.)
+    setWaterColours(EVAL_WATER, EVAL_WATER, '');
     const src = map.getSource('water') as { tiles?: string[]; setTiles(t: string[]): void } | undefined;
     if (src && src.tiles?.[0] !== waterTiles()) {
       src.setTiles([waterTiles()]);

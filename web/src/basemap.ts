@@ -186,9 +186,14 @@ export const STATION_LAYER = 's';
  * Natural Earth's below z6). */
 let WATER_TILES = false;
 export const waterTilesOn = () => WATER_TILES;
-/** The water's colours in its tiles: the sea's and the lakes' (coast.ts applyWater sets them). */
-let waterColours = ['#0c1622', '#0f1a27'];
-export const setWaterColours = (sea: string, lake: string) => (waterColours = [sea, lake]);
+/** The land's colour (the map's background). */
+export const LAND_COLOUR = '#0b0e13';
+/** The water's colours in its tiles: the sea's, the lakes' and the land's under them (coast.ts
+ * applyWater sets them): the server mixes water and land as light mixes for that land
+ * (crates/server/src/water.rs alpha_for). No land (''): alpha the share itself (the shoreline
+ * check's coverage, evalmode.ts). */
+let waterColours = ['#0c1622', '#0f1a27', LAND_COLOUR];
+export const setWaterColours = (sea: string, lake: string, land = LAND_COLOUR) => (waterColours = [sea, lake, land].filter(Boolean));
 /** The lakes' colour for a water colour: a shade lighter. */
 export const lakeColour = (sea: string): string =>
   `#${[1, 3, 5].map((i, k) => Math.min(255, parseInt(sea.slice(i, i + 2), 16) + [3, 4, 5][k]).toString(16).padStart(2, '0')).join('')}`;
@@ -197,8 +202,9 @@ export const waterTiles = (): string =>
   `${hostFor('base')}/tiles/water/{z}/{x}/{y}?c=${waterColours.map((c) => c.replace('#', '')).join(',')}${ver('water').replace('?', '&')}`;
 /** The water's shares themselves (red the sea's, green the inland water's), for the coastal shading. */
 export const waterShareTiles = (): string => `${hostFor('base')}/tiles/water/{z}/{x}/{y}?raw=1${ver('water').replace('?', '&')}`;
-/** Where the coastal shading measures the shore from (coast.ts): the water's shares, else the
- * basemap's polygons. */
+/** Where the coastal shading measures the shore from (coast.ts): the water's shares (every pixel
+ * holding any land a shore, as full detail would have it: coastdist.ts), else the basemap's
+ * polygons. */
 export const coastInput = () => ({ tiles: basemapTiles(), cov: WATER_TILES ? waterShareTiles() : '' });
 /** The water tiles' size for their pixels (512 px tiles drawn 256 CSS px: a texel a device pixel at
  * 2×), and their deepest zoom (the server's; the map overzooms past it). */
@@ -485,7 +491,7 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       whs: ovTiles ? { type: 'vector' as const, tiles: [tiles.whs], maxzoom: 12, attribution: '' } : empty,
     },
     layers: [
-      { id: 'bg', type: 'background', paint: { 'background-color': '#0b0e13' } },
+      { id: 'bg', type: 'background', paint: { 'background-color': LAND_COLOUR } },
       {
         id: 'tint',
         type: 'color-relief',
