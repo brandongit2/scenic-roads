@@ -16,6 +16,12 @@
 //!            one zoom-8 block: out/trees-*.tiles holding its zoom 8–12 tiles and out/trees-tops.bin
 //!            its zoom-8 values; its squares read from a folder, or URLs (a prefix: through the
 //!            fetch layer); `--record`: the bytes it read kept in that mirror folder
+//!        trees --blocks 8/x/y,… --coverage cov.json --chm dir|url --leaf dir|url --out dir
+//!              [--squares top,left;…] [--record dir] [--workers n]
+//!            blocks of one row made together, each strip of the canopy read once for them all
+//!            (a row's task, pipeline::trees::task): out/8-x-y/ for each, as --block's out;
+//!            `--squares`: the canopy squares the job found there (one not found fails the run,
+//!            never a block without its trees)
 //!        trees --assemble --out dir <block out dir>…
 //!            the blocks' archives and zoom 7–4 from their values: the z3 tile's archives
 //!
@@ -31,6 +37,7 @@ const USAGE: &str = "usage: trees --z3 x,y --coverage cov.json --chm dir --chm-s
        trees --z6 x,y --coverage cov.json --chm dir --chm-store dir --leaf dir --out dir [--workers n] [--dem dir]
        trees --assemble-lo --out dir [--workers n] <mid>…
        trees --block 8/x/y --coverage cov.json --chm dir|url --leaf dir|url --out dir [--record dir]
+       trees --blocks 8/x/y,… --coverage cov.json --chm dir|url --leaf dir|url --out dir [--squares top,left;…] [--record dir] [--workers n]
        trees --assemble --out dir <block out dir>…";
 
 fn main() -> Result<()> {
@@ -48,7 +55,7 @@ fn main() -> Result<()> {
                 Some((k, v)) => (k.to_string(), v.to_string()),
                 None => (f.to_string(), args.next().with_context(|| format!("--{f} needs a value\n{USAGE}"))?),
             };
-            if !["z3", "z6", "block", "coverage", "chm", "chm-store", "leaf", "out", "workers", "dem", "record"].contains(&k.as_str()) {
+            if !["z3", "z6", "block", "blocks", "squares", "coverage", "chm", "chm-store", "leaf", "out", "workers", "dem", "record"].contains(&k.as_str()) {
                 bail!("unknown option --{k}\n{USAGE}");
             }
             opts.insert(k, v);
@@ -95,13 +102,23 @@ fn main() -> Result<()> {
         };
         return within(&|| (if z == 3 { trees::z3(&a) } else { trees::z6(&a) }).map(|_| ()));
     }
-    let b = get("block")?;
-    let u = pipeline::legacy::Unit::parse(b).filter(|u| u.z == trees::ZBLOCK).with_context(|| format!("--block 8/x/y, not {b}"))?;
     let cov = PathBuf::from(get("coverage")?);
     let shapes = Shapes::parse(&std::fs::read_to_string(&cov).with_context(|| cov.display().to_string())?)?;
     let fetch = Fetcher::from_env();
-    let inp = Inputs { chm: Source::parse(get("chm")?), leaf: Source::parse(get("leaf")?), fetch: &fetch, record: opts.get("record").map(PathBuf::from), there: None };
+    let there = opts.get("squares").map(|v| trees::task::parse_squares(v)).transpose().context("--squares top,left;…")?;
+    let inp = Inputs { chm: Source::parse(get("chm")?), leaf: Source::parse(get("leaf")?), fetch: &fetch, record: opts.get("record").map(PathBuf::from), there };
     let t0 = std::time::Instant::now();
+    if let Some(list) = opts.get("blocks") {
+        let list = trees::task::parse_blocks(list).with_context(|| format!("--blocks 8/x/y,…, not {list}"))?;
+        return within(&|| {
+            let kept = trees::blocks_files(&shapes, &inp, &list, &out)?;
+            let kept = if inp.record.is_some() { format!(", {:.1} MB of squares kept", kept as f64 / 1e6) } else { String::new() };
+            eprintln!("trees: {} blocks in {:.1} s{kept}", list.len(), t0.elapsed().as_secs_f64());
+            Ok(())
+        });
+    }
+    let b = get("block")?;
+    let u = pipeline::legacy::Unit::parse(b).filter(|u| u.z == trees::ZBLOCK).with_context(|| format!("--block 8/x/y, not {b}"))?;
     within(&|| {
         let r = trees::block_files(&shapes, &inp, u.x, u.y, &out)?;
         let n = |l: u8| r.tiles.iter().filter(|t| t.layer == l).count();

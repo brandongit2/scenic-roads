@@ -25,6 +25,7 @@
 pub mod mask;
 pub mod pyramid;
 pub mod squares;
+pub mod task;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -62,6 +63,10 @@ const LEAF_RES: f64 = 0.0005;
 /// row serves several bands.
 const CHM_CACHE: usize = 4 << 20;
 const LEAF_CACHE: usize = 8 << 20;
+/// The same for a row's blocks made together (`blocks`): a band's canopy rows (up to ~360 of
+/// 80 kB at the equator), so each is decoded once for the row, and its leaf-type tile rows.
+const CHM_ROW_CACHE: usize = 32 << 20;
+const LEAF_ROW_CACHE: usize = 16 << 20;
 
 /// A pixel column's longitude at zoom `z` (trees.py's `lon_of`).
 fn lon_of(px: f64, z: u8) -> f64 {
@@ -210,9 +215,9 @@ impl Inputs<'_> {
 }
 
 /// One square's band of a layer, sampled: each block row's source row, each block column's source
-/// column, and the decoded TIFF.
+/// column, and the decoded TIFF (shared by the blocks of a run that read it: `Files`).
 struct Layer {
-    tiff: crate::geotiff::Tiff,
+    tiff: Arc<crate::geotiff::Tiff>,
     rows: Vec<Option<u32>>,
     cols: Vec<Option<u32>>,
 }
@@ -235,19 +240,57 @@ fn indices(top: i32, left: i32, res: f64, lon: &[f64], lat: &[f64]) -> Pixels {
     Pixels { n: n as u32, rows: lat.iter().map(|&l| at((top as f64 - l) / res)).collect(), cols: lon.iter().map(|&l| at((l - left as f64) / res)).collect() }
 }
 
-impl Layer {
-    /// The square's layer in `src` at pixels `at`; None when the block doesn't meet the square.
-    fn new(src: Arc<dyn RangeRead>, cache: usize, at: &Pixels, what: &str) -> Result<Option<Layer>> {
+/// The squares' files a run of blocks opens, each once: one block's, or a row's (`blocks`), whose
+/// blocks read the same canopy rows (a canopy square's strips are a row of its whole width), so
+/// each strip is read and decoded once for them all.
+struct Files<'a> {
+    inp: &'a Inputs<'a>,
+    raw: BTreeMap<String, Option<Arc<dyn RangeRead>>>,
+    tiffs: BTreeMap<String, Arc<crate::geotiff::Tiff>>,
+    opened: Opened,
+    /// Decoded strips and tiles kept per file (`CHM_CACHE`, `LEAF_CACHE`; a row's more).
+    chm_cache: usize,
+    leaf_cache: usize,
+}
+
+impl<'a> Files<'a> {
+    fn new(inp: &'a Inputs<'a>, blocks: usize) -> Files<'a> {
+        let (chm_cache, leaf_cache) = if blocks > 1 { (CHM_ROW_CACHE, LEAF_ROW_CACHE) } else { (CHM_CACHE, LEAF_CACHE) };
+        Files { inp, raw: BTreeMap::new(), tiffs: BTreeMap::new(), opened: Vec::new(), chm_cache, leaf_cache }
+    }
+
+    /// File `name` of `src`: None when it isn't there.
+    fn file(&mut self, src: &Source, name: &str) -> Result<Option<Arc<dyn RangeRead>>> {
+        if let Some(f) = self.raw.get(name) {
+            return Ok(f.clone());
+        }
+        let f = self.inp.open(src, name, &mut self.opened)?;
+        self.raw.insert(name.to_string(), f.clone());
+        Ok(f)
+    }
+
+    /// The square's layer in `f` (file `what`) at pixels `at`; None when the block doesn't meet
+    /// the square.
+    fn layer(&mut self, f: Arc<dyn RangeRead>, cache: usize, at: &Pixels, what: &str) -> Result<Option<Layer>> {
         if at.rows.iter().all(Option::is_none) || at.cols.iter().all(Option::is_none) {
             return Ok(None);
         }
-        let tiff = crate::geotiff::Tiff::open(src).with_context(|| what.to_string())?.with_cache(cache);
+        let tiff = match self.tiffs.get(what) {
+            Some(t) => t.clone(),
+            None => {
+                let t = Arc::new(crate::geotiff::Tiff::open(f).with_context(|| what.to_string())?.with_cache(cache));
+                self.tiffs.insert(what.to_string(), t.clone());
+                t
+            }
+        };
         let img = tiff.level(0)?;
         let n = at.n;
         ensure!(img.width == n && img.height == n, "{what}: {}x{} pixels, not {n}x{n}", img.width, img.height);
         Ok(Some(Layer { tiff, rows: at.rows.clone(), cols: at.cols.clone() }))
     }
+}
 
+impl Layer {
     /// Block rows `r0..r0 + out.len() / BS` from this square, into `out` (BS a row) where it's still
     /// `fill`, a decoded block's samples as `get` gives them.
     fn sample<T: Copy + PartialEq>(&self, r0: usize, out: &mut [T], fill: T, get: impl Fn(&crate::geotiff::Block) -> Option<&[T]>, what: &str) -> Result<()> {
@@ -290,12 +333,13 @@ struct Sources {
 
 /// Opens block (`bx`, `by`)'s squares (trees.py's `z3_block`): a canopy square is there when both
 /// its files are, and not empty (Meta's "none"); a leaf-type square, when it is.
-fn sources(inp: &Inputs, bx: u32, by: u32, lon: &[f64], lat: &[f64], opened: &mut Opened) -> Result<Sources> {
+fn sources(files: &mut Files, bx: u32, by: u32, lon: &[f64], lat: &[f64]) -> Result<Sources> {
+    let inp = files.inp;
     let mut squares = Vec::new();
     for (top, left) in sorted(squares_of(tile_bounds(ZBLOCK, bx, by))) {
         let (cn, hn) = (chm_name(top, left, "cover5m"), chm_name(top, left, "p95"));
         let expected = inp.there.as_ref().is_some_and(|t| t.contains(&(top, left)));
-        let (Some(c), Some(h)) = (inp.open(&inp.chm, &cn, opened)?, inp.open(&inp.chm, &hn, opened)?) else {
+        let (Some(c), Some(h)) = (files.file(&inp.chm, &cn)?, files.file(&inp.chm, &hn)?) else {
             anyhow::ensure!(!expected, "canopy square {cn} is gone since this run found it");
             continue;
         };
@@ -304,10 +348,11 @@ fn sources(inp: &Inputs, bx: u32, by: u32, lon: &[f64], lat: &[f64], opened: &mu
             continue;
         }
         let at = indices(top, left, CHM_RES, lon, lat);
-        let (Some(c), Some(h)) = (Layer::new(c, CHM_CACHE, &at, &cn)?, Layer::new(h, CHM_CACHE, &at, &hn)?) else { continue };
+        let (chm, leaf_cache) = (files.chm_cache, files.leaf_cache);
+        let (Some(c), Some(h)) = (files.layer(c, chm, &at, &cn)?, files.layer(h, chm, &at, &hn)?) else { continue };
         let ln = leaf_name(top, left);
-        let l = match inp.open(&inp.leaf, &ln, opened)? {
-            Some(f) => Layer::new(f, LEAF_CACHE, &indices(top, left, LEAF_RES, lon, lat), &ln)?,
+        let l = match files.file(&inp.leaf, &ln)? {
+            Some(f) => files.layer(f, leaf_cache, &indices(top, left, LEAF_RES, lon, lat), &ln)?,
             None => None,
         };
         squares.push((c, h, l));
@@ -325,40 +370,65 @@ fn sorted(mut v: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
 pub struct BlockOut {
     pub tiles: Vec<Tile>,
     pub tops: Tops,
-    /// Bytes read of the squares (kept in the mirror, with `record`).
+    /// Bytes read of the squares (kept in the mirror, with `record`; a row's: all its blocks', said
+    /// by its first).
     pub kept: u64,
 }
 
 /// Zoom-8 block (`bx`, `by`)'s tiles, zoom 12 to 8, inside the coverage's shapes (trees.py's
 /// `z3_block`), and its zoom-8 values.
 pub fn block(shapes: &mask::Shapes, inp: &Inputs, bx: u32, by: u32) -> Result<BlockOut> {
+    Ok(blocks(shapes, inp, &[(bx, by)])?.pop().expect("a block"))
+}
+
+/// A block under way in `blocks`: its squares, which of its pixels are inside, its pyramid.
+struct Doing {
+    src: Sources,
+    inside: Vec<u64>,
+    pyr: pyramid::Pyramid,
+}
+
+/// Blocks `list`'s tiles and values (`block`'s each), made together a band at a time: blocks of
+/// one row (the same `by`) read the same canopy rows, read and decoded once for all of them
+/// (`Files`; a row's task, crate::trees::task). Each block's pyramid is fed the same bands in the
+/// same order as on its own, so its bytes are `block`'s. The blocks of a band on rayon's threads.
+pub fn blocks(shapes: &mask::Shapes, inp: &Inputs, list: &[(u32, u32)]) -> Result<Vec<BlockOut>> {
+    use rayon::prelude::*;
     let px = |i: usize, b: u32| (i + b as usize * BS) as f64 + 0.5;
-    let lon: Vec<f64> = (0..BS).map(|j| lon_of(px(j, bx), ZMAX)).collect();
-    let lat: Vec<f64> = (0..BS).map(|i| lat_of(px(i, by), ZMAX)).collect();
-    let b = tile_bounds(ZBLOCK, bx, by);
-    let mut opened = Vec::new();
-    let src = sources(inp, bx, by, &lon, &lat, &mut opened)?;
-    let inside = mask::inside(&shapes.meeting(b), b);
-    let mut pyr = pyramid::Pyramid::new(bx, by);
+    let mut files = Files::new(inp, list.len());
+    let mut doing = Vec::with_capacity(list.len());
+    for &(bx, by) in list {
+        let lon: Vec<f64> = (0..BS).map(|j| lon_of(px(j, bx), ZMAX)).collect();
+        let lat: Vec<f64> = (0..BS).map(|i| lat_of(px(i, by), ZMAX)).collect();
+        let b = tile_bounds(ZBLOCK, bx, by);
+        let src = sources(&mut files, bx, by, &lon, &lat)?;
+        doing.push(Doing { src, inside: mask::inside(&shapes.meeting(b), b), pyr: pyramid::Pyramid::new(bx, by) });
+    }
     const BAND: usize = TS;
-    let (mut cover, mut height, mut leaf) = (vec![0u16; BAND * BS], vec![0u16; BAND * BS], vec![255u8; BAND * BS]);
     for band in 0..BS / BAND {
         let r0 = band * BAND;
-        cover.fill(0);
-        height.fill(0);
-        leaf.fill(255);
-        for (c, h, l) in &src.squares {
-            c.sample(r0, &mut cover, 0, |b| b.u16s(), "canopy cover")?;
-            h.sample(r0, &mut height, 0, |b| b.u16s(), "canopy height")?;
-            if let Some(l) = l {
-                l.sample(r0, &mut leaf, 255, |b| b.u8s(), "leaf type")?;
+        doing.par_iter_mut().try_for_each(|d| -> Result<()> {
+            let (mut cover, mut height, mut leaf) = (vec![0u16; BAND * BS], vec![0u16; BAND * BS], vec![255u8; BAND * BS]);
+            for (c, h, l) in &d.src.squares {
+                c.sample(r0, &mut cover, 0, |b| b.u16s(), "canopy cover")?;
+                h.sample(r0, &mut height, 0, |b| b.u16s(), "canopy height")?;
+                if let Some(l) = l {
+                    l.sample(r0, &mut leaf, 255, |b| b.u8s(), "leaf type")?;
+                }
             }
-        }
-        pyr.band(&cover, &height, &leaf, &inside[r0 * BS / 64..(r0 + BAND) * BS / 64]);
+            d.pyr.band(&cover, &height, &leaf, &d.inside[r0 * BS / 64..(r0 + BAND) * BS / 64]);
+            Ok(())
+        })?;
     }
-    let (tiles, tops) = pyr.finish();
-    let kept = inp.keep(&opened)?;
-    Ok(BlockOut { tiles, tops, kept })
+    let kept = inp.keep(&files.opened)?;
+    Ok(doing
+        .into_iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let (tiles, tops) = d.pyr.finish();
+            BlockOut { tiles, tops, kept: if i == 0 { kept } else { 0 } }
+        })
+        .collect())
 }
 
 /// The tile archives being written, one a layer (by a temporary name, renamed when finished).
@@ -394,17 +464,40 @@ impl Writers {
 }
 
 /// Writes block (`bx`, `by`)'s tiles to `out`'s archives and its zoom-8 values beside them
-/// (`TOPS`): the task a worker runs.
+/// (`TOPS`).
 pub fn block_files(shapes: &mask::Shapes, inp: &Inputs, bx: u32, by: u32, out: &Path) -> Result<BlockOut> {
-    std::fs::create_dir_all(out)?;
     let b = block(shapes, inp, bx, by)?;
+    write_block(&b, out)?;
+    Ok(b)
+}
+
+/// A block's tiles in `out`'s archives, in the order it made them, and its zoom-8 values beside
+/// them (`TOPS`): what `assemble` reads, and a row's task writes for each of its blocks.
+pub fn write_block(b: &BlockOut, out: &Path) -> Result<()> {
+    std::fs::create_dir_all(out)?;
     let mut w = Writers::create(out)?;
     for t in &b.tiles {
         w.add(t)?;
     }
     w.finish()?;
     crate::whole::write(&out.join(TOPS), &b.tops.to_bytes()?)?;
-    Ok(b)
+    Ok(())
+}
+
+/// A block's folder in a row's results (`blocks_files`): `8-<x>-<y>`.
+pub fn block_dir(out: &Path, (x, y): (u32, u32)) -> PathBuf {
+    out.join(format!("{ZBLOCK}-{x}-{y}"))
+}
+
+/// Blocks `list` made together (`blocks`), each written to its folder in `out` (`block_dir`,
+/// `write_block`): the task a worker runs (crate::trees::task). The bytes read of the squares.
+pub fn blocks_files(shapes: &mask::Shapes, inp: &Inputs, list: &[(u32, u32)], out: &Path) -> Result<u64> {
+    let made = blocks(shapes, inp, list)?;
+    let kept = made.first().map_or(0, |b| b.kept);
+    for (b, &at) in made.iter().zip(list) {
+        write_block(b, &block_dir(out, at))?;
+    }
+    Ok(kept)
 }
 
 /// Makes the z3 tile's archives in `out` from its blocks' folders (`block_files`): each block's
@@ -654,21 +747,66 @@ pub fn z3(a: &Run) -> Result<[usize; 3]> {
 /// as `z3` runs them, its zoom 9–12 tiles into `out`'s three archives (its hi packs' tiles), and
 /// its blocks' zoom-8 tiles and values into its mid, `out/MID` (`write_mid`), from which its z3
 /// tile's assembly (`assemble_lo`) makes zoom 8 to 4. A z3 run's tiles are its z6 tiles' runs' and
-/// their assembly's, the same bytes.
+/// their assembly's, the same bytes. With a coordinator to offer tasks through (the job's,
+/// crate::offload), some of its rows of blocks go to workers that take them (`task::Offers`),
+/// taken in their blocks' turn: the same bytes.
 pub fn z6(a: &Run) -> Result<[usize; 3]> {
+    let offload = crate::offload::Offload::from_env(&a.out.join("offload"));
+    z6_with(a, offload.as_ref())
+}
+
+/// `z6`, its rows offered through `offload` (none: all made here).
+pub fn z6_with(a: &Run, offload: Option<&crate::offload::Offload>) -> Result<[usize; 3]> {
     ensure!(a.tile.0 == 6, "a z6 run of a zoom-{} tile", a.tile.0);
     let t0 = std::time::Instant::now();
     let (shapes, blocks, sqs) = begin(a)?;
+    z6_blocks(a, &shapes, &blocks, sqs, offload, t0)
+}
+
+/// `z6_with`'s blocks once begun (`begin`: the coverage's `shapes`, the `blocks` they meet, the
+/// canopy squares there `sqs`), its run begun at `t0`.
+pub fn z6_blocks(a: &Run, shapes: &mask::Shapes, blocks: &[(u32, u32)], sqs: Vec<(i32, i32)>, offload: Option<&crate::offload::Offload>, t0: std::time::Instant) -> Result<[usize; 3]> {
+    let coverage = std::fs::read_to_string(&a.coverage).with_context(|| a.coverage.display().to_string())?;
+    let offers = task::Offers::offer(offload, (a.tile.1, a.tile.2), &coverage, blocks, &sqs, &a.out.join("offload").join("results"));
+    let fetch = crate::fetch::MapFetch::default();
+    let inp = Inputs { chm: Source::Dir(a.chm.clone()), leaf: Source::Dir(a.leaf.clone()), fetch: &fetch, record: None, there: Some(sqs) };
+    let here = task::here_run(shapes, &inp);
     let mut w = Writers::create(&a.out)?;
     let mut mid: MidBlocks = BTreeMap::new();
-    each_block(a, &shapes, &blocks, sqs, |at, b| {
-        let (z8, hi): (Vec<Tile>, Vec<Tile>) = b.tiles.into_iter().partition(|t| t.z == ZBLOCK);
-        for t in &hi {
-            w.add(t)?;
-        }
-        mid.insert(at, (z8, b.tops.to_bytes()?));
-        Ok(())
-    })?;
+    crate::agent::jobs::report(0, blocks.len() as u64, "zoom-8 blocks");
+    let finished = std::sync::atomic::AtomicUsize::new(0);
+    let offers_ref = &offers;
+    in_order(
+        blocks.len(),
+        |i| -> Result<Option<BlockOut>> {
+            if offers_ref.is_out(blocks[i]) {
+                return Ok(None);
+            }
+            let t = std::time::Instant::now();
+            let b = block(shapes, &inp, blocks[i].0, blocks[i].1)?;
+            offers_ref.made_here(t.elapsed().as_secs_f64());
+            Ok(Some(b))
+        },
+        |_| {
+            let k = finished.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            crate::agent::jobs::report(k as u64, blocks.len() as u64, "zoom-8 blocks");
+        },
+        |i, b| {
+            let at = blocks[i];
+            let (tiles, tops) = match b {
+                Some(b) => (b.tiles, b.tops.to_bytes()?),
+                // (Its row's task: its worker's result, or made here, in its turn.)
+                None => offers.take(at, &here)?,
+            };
+            let (z8, hi): (Vec<Tile>, Vec<Tile>) = tiles.into_iter().partition(|t| t.z == ZBLOCK);
+            for t in &hi {
+                w.add(t)?;
+            }
+            mid.insert(at, (z8, tops));
+            Ok(())
+        },
+    )?;
+    std::fs::remove_dir_all(a.out.join("offload")).ok();
     write_mid(&a.out.join(MID), (a.tile.1, a.tile.2), &mid)?;
     Ok(end(a, w.finish()?, t0))
 }

@@ -94,11 +94,16 @@ impl Offload {
     /// Offering through the coordinator at `url` with the job's token; tasks' folders under
     /// `scratch` (emptied).
     pub fn at(url: String, token: String, scratch: &Path) -> Offload {
-        let owner = std::process::id();
+        let owner = owner();
         let version = std::env::current_exe().and_then(std::fs::metadata).map(|m| format!("{:x}-{:x}", m.len(), m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs()))).unwrap_or_default();
         let dir = scratch.join("tasks");
         std::fs::remove_dir_all(&dir).ok();
         Offload { client: Client::at(vec![url], token, &format!("job {owner}")), owner, version, dir, lease_wait: LEASE_WAIT }
+    }
+
+    /// The job its tasks are kept under (`Offer::owner`).
+    pub fn owner(&self) -> u32 {
+        self.owner
     }
 
     /// How many tails may be out at once now: one per worker around that takes them, at most three
@@ -277,6 +282,21 @@ impl Offload {
         }
         std::fs::remove_dir_all(&t.root).ok();
         Ok(Some(how))
+    }
+}
+
+/// Whose tasks a job's are (the coordinator ends them when that job ends: the agent's
+/// `close_tasks` with the job's process group): its process group, which a job the agent starts
+/// leads (so its process id, as a job's tasks were kept under before), and which a program it runs
+/// is in (the tree cover's `trees`, offering its rows of blocks), so theirs end with the job too.
+pub fn owner() -> u32 {
+    #[cfg(unix)]
+    {
+        (unsafe { libc::getpgrp() }) as u32
+    }
+    #[cfg(not(unix))]
+    {
+        std::process::id()
     }
 }
 
@@ -552,6 +572,31 @@ mod tests {
         assert_eq!(std::fs::read(dir.join("kept.bin")).unwrap(), b"as it was");
         assert!(!dir.join("gone.bin").exists());
         assert!(!t.root.exists(), "the task's folder goes");
+    }
+
+    #[test]
+    fn a_jobs_tasks_and_its_programs_end_with_its_process_group() {
+        // A program the job runs (the tree cover's `trees`) is in the job's process group: its
+        // tasks are kept under the same owner.
+        let child = std::process::Command::new("/bin/sh").args(["-c", "ps -o pgid= -p $$"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&child.stdout).trim().parse::<u32>().unwrap(), owner());
+        let d = tempfile::tempdir().unwrap();
+        let (c, port) = crate::coord::start_for_test(&d.path().join("coord"), "m4", "");
+        let url = format!("http://127.0.0.1:{port}");
+        let job = Offload::at(url.clone(), c.job_token.clone(), &d.path().join("job"));
+        let prog = Offload::at(url, c.job_token.clone(), &d.path().join("prog"));
+        assert_eq!((job.owner(), prog.owner()), (owner(), owner()));
+        for (o, name) in [(&job, "a"), (&prog, "b")] {
+            let root = o.task_root(name);
+            std::fs::create_dir_all(root.join("u")).unwrap();
+            std::fs::write(root.join("u/x"), b"x").unwrap();
+            o.offer_spec("tail", serde_json::json!({ "unit": "6/1/1" }), &root, [("u/x".to_string(), 1)].into(), 100).unwrap();
+        }
+        assert_eq!(c.shared.lock().unwrap().tasks.by_id.len(), 2);
+        // The agent ends a job's tasks by its process group (a job it starts leads one, so its
+        // process id, as an older job's tasks were kept under): both end.
+        c.close_tasks(owner());
+        assert!(c.shared.lock().unwrap().tasks.by_id.is_empty());
     }
 
     #[test]
