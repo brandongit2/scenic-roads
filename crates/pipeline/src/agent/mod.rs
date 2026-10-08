@@ -887,12 +887,10 @@ impl Agent {
         let lockless = pool_mode == Some(pool::Mode::On) && run.is_none();
         let coord = if !o.helper && lock.is_some() && !o.dry_run && !lockless && (o.root.is_none() || pooled) {
             let port = coord_port();
-            // (The pool's token and accepted devices, the same on every lead: copied here first. One
-            // that couldn't be never writes its own over the pool's.)
-            if let Some(r) = run.as_mut() {
-                match pool::seed(r.side.nas(), &o.home.join("coord")) {
-                    Ok(()) => r.seeded = true,
-                    Err(e) => eprintln!("agent: the pool's token and devices: {e:#}; its devices not written to the NAS"),
+            // (The pool's token, the same on every lead: copied here first.)
+            if let Some(r) = run.as_ref() {
+                if let Err(e) = pool::seed(r.side.nas(), &o.home.join("coord")) {
+                    eprintln!("agent: the pool's token: {e:#}");
                 }
             }
             match crate::coord::Coordinator::start(&o.home.join("coord"), Some(o.bin.join("wasm")), port, &cond::host_name(), &app) {
@@ -4063,7 +4061,7 @@ impl Agent {
     /// into the journal, settling's state handed over, the driver's step; then, leading, its
     /// coordinator told the term and whether it grants, and the files the lead keeps written (today's
     /// records for their readers, the raw tiles' archives named, the coordinator's state per term,
-    /// its history, the accepted devices). What it may do now; None when the pool isn't on.
+    /// its history). What it may do now; None when the pool isn't on.
     fn pool_step(&mut self, root: Option<&Path>, c: &Conditions, waiting: &mut Vec<Waiting>) -> Option<pool::Gates> {
         let lead = self.pool.as_ref()?.role == pool::Role::Lead;
         let Some(r) = root else {
@@ -4138,7 +4136,7 @@ impl Agent {
     /// What the lead keeps written besides its records (docs/pool.md §12): today's three files from
     /// a term's records after the first (term 1's own saves write them; `saved`: this step's
     /// records are on the NAS), the raw tiles' archives its records hold named in the raw store's
-    /// index, the coordinator's state of its term, its history's new events, the devices accepted.
+    /// index, the coordinator's state of its term, its history's new events.
     fn pool_lead_files(&mut self, root: &Path, saved: bool) {
         let Some(run) = self.pool.as_mut() else { return };
         if let Some(rec) = run.side.driver().records() {
@@ -4182,14 +4180,6 @@ impl Agent {
             match pool::append_history(root, &run.side.member().id, &events) {
                 Ok(()) => run.history_seq = events.last().map_or(run.history_seq, |e| e.seq),
                 Err(e) => eprintln!("agent: the history on the NAS: {e:#}"),
-            }
-        }
-        if let (Ok(b), true) = (std::fs::read(self.o.home.join("coord/devices.json")), run.seeded) {
-            if run.devices_written.as_ref() != Some(&b) {
-                match run.side.nas().write_whole(pool::DEVICES, &b) {
-                    Ok(()) => run.devices_written = Some(b),
-                    Err(e) => eprintln!("agent: the accepted devices on the NAS: {e:#}"),
-                }
             }
         }
     }

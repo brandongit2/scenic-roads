@@ -741,18 +741,13 @@ pub struct Run {
     /// The records (term, seq) last written to today's files; the raw tiles' archives named.
     pub today: Option<(u64, u64)>,
     pub named_raw: BTreeSet<String>,
-    /// Whether the pool's token and devices were copied as its coordinator started (else its own
-    /// devices are never written over the pool's).
-    pub seeded: bool,
     /// The outbox drained (once a process), and the hand-off folders' last files drained, to mark
     /// merged (handoff.rs's `<folder>.merged`) once a saved state holds them.
     outbox_drained: bool,
     marks: Vec<(PathBuf, String)>,
-    /// The coordinator's state per term as last written, the history's last event written, the
-    /// devices last copied to the NAS.
+    /// The coordinator's state per term as last written, and the history's last event written.
     pub state_written: Option<(u64, Vec<u8>)>,
     pub history_seq: u64,
-    pub devices_written: Option<Vec<u8>>,
     /// The terms this process led (a take-up of the next one after them keeps its coordinator's
     /// state; one after another lead's loads that lead's).
     pub led: BTreeSet<u64>,
@@ -760,7 +755,7 @@ pub struct Run {
 
 impl Run {
     pub fn new(side: Side, role: Role, gates: Gates) -> Run {
-        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), seeded: false, outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, devices_written: None, led: BTreeSet::new() }
+        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), outbox_drained: false, marks: Vec::new(), state_written: None, history_seq: 0, led: BTreeSet::new() }
     }
 
     /// A process's first step, which says its part (`Role`). (The jobs an earlier process left are
@@ -1021,17 +1016,16 @@ pub fn state_path(term: u64) -> String {
     format!("state/coord/term/{term}/state.json")
 }
 
-/// The pool's copies of the workers' token and the accepted devices (§8: the same on every member).
+/// The pool's copy of the workers' token (§8: the same on every member).
 pub const TOKEN: &str = "state/coord/token";
-pub const DEVICES: &str = "state/coord/devices.json";
 
-/// The workers' token and the accepted devices made the pool's (§12, seeding): this Mac's (the
-/// build Mac's, as the pool is switched on) copied to the NAS when it has none (create-new: the
-/// first lead's stay), else the NAS's copied here before its coordinator starts, so a page a lead
-/// before accepted keeps working with this one.
+/// The workers' token made the pool's (§12, seeding): this Mac's (the build Mac's, as the pool is
+/// switched on) copied to the NAS when it has none (create-new: the first lead's stays), else the
+/// NAS's copied here before its coordinator starts, so the Macs' agents keep working with this
+/// one.
 pub fn seed(nas: &dyn Nas, coord: &Path) -> Result<()> {
     std::fs::create_dir_all(coord)?;
-    for (theirs, ours) in [(TOKEN, "workers-token"), (DEVICES, "devices.json")] {
+    for (theirs, ours) in [(TOKEN, "workers-token")] {
         let here = coord.join(ours);
         match nas.read(theirs)? {
             Some(b) if !b.is_empty() => {
@@ -1518,14 +1512,13 @@ mod tests {
     }
 
     #[test]
-    fn the_token_and_devices_are_the_pools() {
+    fn the_token_is_the_pools() {
         let d = tempfile::tempdir().unwrap();
         let r = d.path().join("nas");
         let nas = Share::new(&r);
         let (m4, m1) = (d.path().join("m4/coord"), d.path().join("m1/coord"));
         std::fs::create_dir_all(&m4).unwrap();
         std::fs::write(m4.join("workers-token"), "t0k3n").unwrap();
-        std::fs::write(m4.join("devices.json"), r#"{"accepted": []}"#).unwrap();
         // The build Mac's, copied to the NAS as the pool begins.
         seed(&nas, &m4).unwrap();
         assert_eq!(nas.read(TOKEN).unwrap().as_deref(), Some(&b"t0k3n"[..]));
@@ -1534,7 +1527,6 @@ mod tests {
         std::fs::write(m1.join("workers-token"), "other").unwrap();
         seed(&nas, &m1).unwrap();
         assert_eq!(std::fs::read_to_string(m1.join("workers-token")).unwrap(), "t0k3n");
-        assert_eq!(std::fs::read_to_string(m1.join("devices.json")).unwrap(), r#"{"accepted": []}"#);
         // The first's stay.
         seed(&nas, &m1).unwrap();
         assert_eq!(nas.read(TOKEN).unwrap().as_deref(), Some(&b"t0k3n"[..]));

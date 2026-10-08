@@ -25,10 +25,6 @@
 //!                                       keeps, freeing its caches to it as far as needed and
 //!                                       starting no job that would cross it, until it's lowered or
 //!                                       off; with none, how it stands
-//!   scenic devices [accept|decline <code> | forget <id>]  on the build Mac: the devices asking to
-//!                                       help through the build page, and those helping; an ask
-//!                                       answered by the code its page shows, a device forgotten by
-//!                                       its page's id (its page no longer helps)
 //!   scenic gc [--dry-run] [--days 14]   remove replaced files from the NAS (the agent runs it daily)
 //!   scenic backup [--local <dir>]       back up the user's folders (the agent runs it daily)
 //!
@@ -144,23 +140,12 @@ fn status(args: &[String]) -> Result<()> {
         (None, Some(c)) => c.urls.first().map(|u| format!("{u}/work/")),
         _ => None,
     };
-    // The build's page (its dashboard; a device that's to help asks the build Mac from there).
+    // The build's page (its dashboard, and where a device helps).
     if let Some(p) = page {
-        // (An address from before devices asked carried a key: not shown.)
-        println!("Build page: {} (open it on a device on the tailnet)", p.split("#k=").next().unwrap_or(&p));
+        println!("Build page: {p} (open it on a device on the LAN or the tailnet)");
     }
-    // Devices asking to help, answered here on the build Mac (its menu bar, or `scenic devices`):
-    // its coordinator says, to its owner alone.
-    if let Some(d) = coordinator().ok().and_then(|c| c.post_json("/work/devices", &serde_json::json!({})).ok()).filter(|r| r.0 == 200).and_then(|r| serde_json::from_value::<pipeline::coord::devices::View>(r.1).ok()) {
-        for a in &d.asking {
-            println!("Asking to help: {} from {}, its page shows code {}: `scenic devices accept {}` or `decline {}`", a.label, a.from, a.code, a.code, a.code);
-        }
-        if !d.accepted.is_empty() {
-            println!("Devices helping: {}", d.accepted.iter().map(|a| format!("{} {}", a.label, a.id)).collect::<Vec<_>>().join(", "));
-        }
-    }
-    // The map on an iPhone or an iPad (docs/plan.md §4, Devices): its address with its key, which this
-    // Mac's server writes.
+    // The map on an iPhone or an iPad (docs/plan.md §4, Devices): its address, which this Mac's
+    // server writes.
     if let Some(m) = std::fs::read_to_string(app_home().join("map-page")).ok().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) {
         println!("Map on a device: {m} (open it once on an iPhone or an iPad on the tailnet)");
     }
@@ -324,49 +309,6 @@ fn clean(args: &[String]) -> Result<()> {
     }
 }
 
-/// This Mac's coordinator, as its owner reaches it: here, with the build's key its agent keeps
-/// (the build Mac's alone answers).
-fn coordinator() -> Result<pipeline::coord::client::Client> {
-    let token = std::fs::read_to_string(app_home().join("agent/coord/workers-token")).context("this Mac's coordinator's key (agent/coord/workers-token): devices are answered on the build Mac")?;
-    Ok(pipeline::coord::client::Client::at(vec![format!("http://127.0.0.1:{}", pipeline::coord::PORT)], token.trim().to_string(), "scenic devices"))
-}
-
-/// The devices asking to help through the build page and those helping, from this Mac's
-/// coordinator (the build Mac's: crate::coord::devices); an ask accepted or declined by the code
-/// its page shows, a device forgotten by its page's id.
-fn devices(args: &[String]) -> Result<()> {
-    let c = coordinator()?;
-    match (args.get(2).map(String::as_str), args.get(3)) {
-        (Some(verb @ ("accept" | "decline")), Some(code)) => {
-            let r = c.post_json(&format!("/work/devices/{verb}"), &serde_json::json!({ "code": code }))?;
-            anyhow::ensure!(r.0 == 200, "{}", r.1["error"].as_str().unwrap_or("no ask waits with that code"));
-            let what = format!("{} {}", r.1["label"].as_str().unwrap_or(""), r.1["id"].as_str().unwrap_or(""));
-            println!("{what}: {}", if verb == "accept" { "accepted: it may help and pause the build from its page now" } else { "declined" });
-            Ok(())
-        }
-        (Some("forget"), Some(id)) => {
-            let r = c.post_json("/work/devices/forget", &serde_json::json!({ "which": id }))?;
-            anyhow::ensure!(r.0 == 200, "{}", r.1["error"].as_str().unwrap_or("no such device"));
-            println!("forgotten: its page no longer helps (it may ask again)");
-            Ok(())
-        }
-        (None, _) => {
-            let v: pipeline::coord::devices::View = serde_json::from_value(c.post_json("/work/devices", &serde_json::json!({}))?.1)?;
-            if v.asking.is_empty() && v.accepted.is_empty() {
-                println!("No device asks to help, and none helps through the build page.");
-            }
-            for a in &v.asking {
-                println!("asking   code {}  {} from {}, {}: `scenic devices accept {}`", a.code, a.label, a.from, ago(a.at), a.code);
-            }
-            for a in &v.accepted {
-                println!("helping  {} {}  from {}, accepted {}: `scenic devices forget {}`", a.label, a.id, a.from, ago(a.at), a.id);
-            }
-            Ok(())
-        }
-        _ => bail!("scenic devices [accept|decline <code> | forget <id>]"),
-    }
-}
-
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let cmd = args.get(1).cloned().unwrap_or_else(|| "status".into());
@@ -462,7 +404,6 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        "devices" => devices(&args),
         "clean" => clean(&args),
         "room" => room(&args),
         "gc" => {
@@ -478,6 +419,6 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
-        c => bail!("unknown command {c:?}: status, add, remove, agent, pause, resume, devices, clean, room, gc, backup"),
+        c => bail!("unknown command {c:?}: status, add, remove, agent, pause, resume, clean, room, gc, backup"),
     }
 }

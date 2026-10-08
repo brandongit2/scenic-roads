@@ -6,12 +6,11 @@
 // coordinator then gives it to a worker that spares more).
 import { filesystem, run, bytes, changes, Net } from "./runtime.js";
 
-let token = "";
 let worker = "";
 const modules = new Map();
 
 function headers(extra = {}) {
-  return { Authorization: `Bearer ${token}`, "X-Worker": worker, ...extra };
+  return { "X-Worker": worker, ...extra };
 }
 
 async function post(path, body) {
@@ -135,7 +134,7 @@ async function exec({ lease, task, mem_mb }) {
 
 onmessage = async (e) => {
   if (e.data.init) {
-    ({ token, worker } = e.data.init);
+    ({ worker } = e.data.init);
     return;
   }
   const job = e.data.run;

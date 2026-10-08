@@ -2,10 +2,8 @@
 // the state (building, paused, waiting, nothing to do, a problem, the build Mac out of touch), a
 // menu with the details, and a notification for every change. It asks the map's server on this Mac
 // (`/api/build`), which answers with this Mac's own agent's status when the agent runs here and
-// with the heartbeat the agent copies to the NAS otherwise. On the build Mac it also asks its
-// coordinator for the devices asking to help through the build page (`/work/devices`, with the
-// build's key its agent keeps: the owner's alone to see and answer, here). This Mac's own agent's
-// status, read from its file, says what its build caches hold, whether they can be cleared now,
+// with the heartbeat the agent copies to the NAS otherwise. This Mac's own agent's status, read
+// from its file, says what its build caches hold, whether they can be cleared now,
 // and the last trim and clear (crates/pipeline/src/agent/room.rs): Clear the Build's Caches asks
 // that agent to clear them. Disk Room shows the disk's free space and the owner's room target, and
 // sets it (a few presets, or Off): the free space that agent keeps, freeing its caches to it.
@@ -16,10 +14,10 @@
 //   swiftc -O -swift-version 5 -o Scenic.app/Contents/MacOS/scenic-status tools/status/main.swift
 //   scenic-status --print                   the icon and menu for the status now, as text
 //   scenic-status --replay a.json b.json …  the notifications a sequence of answers would send (each
-//                                           file /api/build's answer, with what /work/devices
-//                                           answered beside it as "devices", this Mac's agent's
-//                                           own status as "own", and "clear_asked" while an ask
-//                                           to clear its caches waits), and the caches' item
+//                                           file /api/build's answer, with this Mac's agent's
+//                                           own status beside it as "own", and "clear_asked"
+//                                           while an ask to clear its caches waits), and the
+//                                           caches' item
 //   scenic-status --render menu.png          the menu's lines drawn as they lay out (dark), for checking
 //   scenic-status --wait-replaced           waits, without a window, until a newer app is installed
 // SCENIC_STATUS_SERVER overrides the server (http://127.0.0.1:8080), SCENIC_HOME the app folder.
@@ -68,28 +66,9 @@ struct Status: Decodable {
     let forecast: Forecast?
 }
 
-/// A device asking to help, or one accepted (crates/pipeline/src/coord/devices.rs Shown): its ask's
-/// name (made by the coordinator, never again), its page's id, what it is, the code its page shows,
-/// where it asked from, and when it asked or was accepted.
-struct Device: Decodable {
-    let ask: String
-    let id: String
-    let label: String
-    let code: String
-    let from: String
-    let at: Int
-}
-
-/// What the build Mac's coordinator answers its owner (`/work/devices`).
-struct Devices: Decodable {
-    let asking: [Device]
-    let accepted: [Device]
-}
-
-/// A --replay file's devices, this Mac's agent's own status and whether an ask to clear its caches
-/// waits, beside its answer.
+/// A --replay file's this Mac's agent's own status and whether an ask to clear its caches waits,
+/// beside its answer.
 struct Replay: Decodable {
-    let devices: Devices?
     let own: Own?
     let clear_asked: Bool?
 }
@@ -715,13 +694,6 @@ func cachesItem(_ own: Own?, now: Int, asked: Bool) -> (title: String, enabled: 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     lazy var item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     var reply: Reply?
-    /// The asks to help and the devices helping, on the build Mac (nil elsewhere, or while its
-    /// coordinator doesn't answer); and the asks told (by name: an ask's is never made again).
-    var devices: Devices?
-    var told: Set<String> = []
-    /// Whether the notifications of asks no longer waiting, from before this process, were taken
-    /// away (once, with the first answer).
-    var tidied = false
     var seen: Seen?
     /// This Mac's agent's own status (its caches), read with each answer, and its last trim's and
     /// clear's times as last told.
@@ -744,13 +716,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // executable inside it directly.
         LSRegisterURL(Bundle.main.bundleURL as CFURL, true)
         _ = launchedFrom
-        // (A device's ask to help comes with its answers: accepted or declined from the notification.)
         let center = UNUserNotificationCenter.current()
         center.delegate = self
-        // (Accepting from a notification asks for the Mac unlocked: its key goes to a device.)
-        let accept = UNNotificationAction(identifier: "accept", title: "Accept", options: [.authenticationRequired])
-        let decline = UNNotificationAction(identifier: "decline", title: "Decline", options: [.destructive])
-        center.setNotificationCategories([UNNotificationCategory(identifier: "ask", actions: [accept, decline], intentIdentifiers: [], options: [])])
+        // (A device's asks to help, from before pages helped with no key: taken away.)
+        center.getDeliveredNotifications { ns in
+            let asks = ns.map(\.request.identifier).filter { $0.hasPrefix("ask-") }
+            if !asks.isEmpty { center.removeDeliveredNotifications(withIdentifiers: asks) }
+        }
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
         show()
         poll()
@@ -766,18 +738,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         URLSession.shared.dataTask(with: req) { data, resp, _ in
             let ok = (resp as? HTTPURLResponse)?.statusCode == 200
             let r = ok ? data.flatMap { try? JSONDecoder().decode(Reply.self, from: $0) } : nil
-            let then = { (d: Devices?) in
-                DispatchQueue.main.async {
-                    self.polling = false
-                    self.reply = r
-                    self.own = ownStatus()
-                    // (The build Mac's alone; kept as they were while its coordinator doesn't answer.)
-                    self.devices = r?.local == true ? d ?? self.devices : nil
-                    self.notifyChanges()
-                    self.show()
-                }
+            DispatchQueue.main.async {
+                self.polling = false
+                self.reply = r
+                self.own = ownStatus()
+                self.notifyChanges()
+                self.show()
             }
-            if r?.local == true { fetchDevices(then) } else { then(nil) }
         }.resume()
     }
 
@@ -863,37 +830,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             it.submenu = sub
             m.addItem(it)
         }
-        // Devices asking to help through the build page: accepted or declined here, by the code their
-        // page shows; and those helping, to forget.
-        if let d = devices, !(d.asking.isEmpty && d.accepted.isEmpty) {
-            m.addItem(.separator())
-            for a in d.asking {
-                let head = NSMenuItem(title: "\(a.label) asks to help · code \(a.code)", action: nil, keyEquivalent: "")
-                head.isEnabled = false
-                head.toolTip = "From \(a.from), at \(clock(a.at)). Accept it only if its page shows code \(a.code)."
-                m.addItem(head)
-                for (verb, title) in [("accept", "Accept Code \(a.code)"), ("decline", "Decline")] {
-                    let it = NSMenuItem(title: title, action: #selector(answer), keyEquivalent: "")
-                    it.target = self
-                    it.indentationLevel = 1
-                    it.representedObject = [verb, a.ask, a.code]
-                    m.addItem(it)
-                }
-            }
-            if !d.accepted.isEmpty {
-                let sub = NSMenu()
-                for a in d.accepted {
-                    let it = NSMenuItem(title: "Forget \(a.label) \(a.id)", action: #selector(answer), keyEquivalent: "")
-                    it.target = self
-                    it.representedObject = ["forget", a.ask, ""]
-                    it.toolTip = "Accepted \(clock(a.at)), from \(a.from). Its page no longer helps once forgotten; it may ask again"
-                    sub.addItem(it)
-                }
-                let it = NSMenuItem(title: "Devices Helping (\(d.accepted.count))", action: nil, keyEquivalent: "")
-                it.submenu = sub
-                m.addItem(it)
-            }
-        }
         m.addItem(.separator())
         if let log = reply?.log {
             let it = NSMenuItem(title: "Open the Build Log", action: #selector(openLog), keyEquivalent: "")
@@ -904,60 +840,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let map = NSMenuItem(title: "Open the Map", action: #selector(openMap), keyEquivalent: "")
         map.target = self
         m.addItem(map)
-        // The map's address for an iPhone or an iPad, with its key (this Mac's server writes it,
-        // private to this user): pasted there (Universal Clipboard), the map opens on the device.
+        // The map's address for an iPhone or an iPad (this Mac's server writes it): pasted there
+        // (Universal Clipboard), the map opens on the device.
         if let page = try? String(contentsOf: home.appendingPathComponent("map-page"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !page.isEmpty {
             let it = NSMenuItem(title: "Copy the Map's Address", action: #selector(copyPage), keyEquivalent: "")
             it.target = self
             it.representedObject = page
             m.addItem(it)
         }
-        // The build's page (its dashboard; a device that's to help asks this Mac from there), which the
-        // build Mac's agent writes: pasted on another device (Universal Clipboard).
+        // The build's page (its dashboard, and where a device helps), which the build Mac's agent
+        // writes: pasted on another device (Universal Clipboard).
         if let page = try? String(contentsOf: home.appendingPathComponent("agent/coord/page"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines), !page.isEmpty {
             let it = NSMenuItem(title: "Copy the Build Page's Address", action: #selector(copyPage), keyEquivalent: "")
             it.target = self
-            it.representedObject = page.components(separatedBy: "#k=")[0]
+            it.representedObject = page
             m.addItem(it)
         }
         return m
-    }
-
-    @objc func answer(_ sender: NSMenuItem) {
-        guard let a = sender.representedObject as? [String], a.count == 3 else { return }
-        device(a[0], ask: a[1], code: a[2])
-    }
-
-    /// An ask accepted or declined (that ask alone, by its name and the code its page shows), or a
-    /// device forgotten: this Mac's coordinator told, with the build's key.
-    func device(_ verb: String, ask: String, code: String) {
-        guard let req = coordinator("devices/\(verb)", verb == "forget" ? ["which": ask] : ["ask": ask, "code": code]) else {
-            post("Couldn't answer the device", "This Mac's coordinator isn't running here")
-            return
-        }
-        URLSession.shared.dataTask(with: req) { _, resp, err in
-            let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            DispatchQueue.main.async {
-                if status != 200 {
-                    let why = switch status {
-                    case 404: "Its ask is gone (answered, lapsed or cancelled)"
-                    case 409: "A device of its page's id helps already: forget that one first (Devices Helping)"
-                    default: err?.localizedDescription ?? "The coordinator answered \(status)"
-                    }
-                    self.post("Couldn't \(verb) the device", why)
-                }
-                self.poll()
-            }
-        }.resume()
-    }
-
-    // A notification's answer: its ask accepted or declined.
-    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler done: @escaping () -> Void) {
-        let info = response.notification.request.content.userInfo
-        if let ask = info["ask"] as? String, let code = info["code"] as? String, ["accept", "decline"].contains(response.actionIdentifier) {
-            device(response.actionIdentifier, ask: ask, code: code)
-        }
-        done()
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
@@ -1056,7 +955,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // MARK: notifications, for every change
 
     func notifyChanges() {
-        tellAsks()
         tellCaches()
         guard let r = reply, let s = r.status else { return }
         let now = Seen(job: s.job?.id, paused: s.job?.paused != nil, lastEnded: s.recent.map(\.ended).max() ?? 0, outOfTouch: r.now - s.beat > outOfTouch, buildPaused: s.pause != nil)
@@ -1113,74 +1011,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    /// The asks to help, each told once, with its answers; an ask no longer waiting (answered,
-    /// lapsed, cancelled), its notification taken away.
-    func tellAsks() {
-        guard let d = devices else { return }
-        if !tidied && sinkIsCenter {
-            tidied = true
-            let waiting = Set(d.asking.map { "ask-\($0.ask)" })
-            let center = UNUserNotificationCenter.current()
-            center.getDeliveredNotifications { ns in
-                let stale = ns.map(\.request.identifier).filter { $0.hasPrefix("ask-") && !waiting.contains($0) }
-                if !stale.isEmpty { center.removeDeliveredNotifications(withIdentifiers: stale) }
-            }
-        }
-        for a in d.asking where !told.contains(a.ask) {
-            told.insert(a.ask)
-            ask(a)
-        }
-        let gone = told.subtracting(d.asking.map(\.ask))
-        told.subtract(gone)
-        if gone.isEmpty { return }
-        if sinkIsCenter {
-            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: gone.map { "ask-\($0)" })
-        } else {
-            for g in gone.sorted() { print("taken away: ask-\(g)") }
-        }
-    }
-
-    /// A device asks to help: told, with its answers (Accept, Decline) on the notification, for that
-    /// ask alone.
-    func ask(_ a: Device) {
-        guard sinkIsCenter else {
-            sink("\(a.label) asks to help with the build", "Code \(a.code), from \(a.from)")
-            return
-        }
-        let c = UNMutableNotificationContent()
-        c.title = "\(a.label) asks to help with the build"
-        c.body = "From \(a.from). Accept it only if its page shows code \(a.code): it then takes the build's tasks there, and may pause the build."
-        c.categoryIdentifier = "ask"
-        c.userInfo = ["ask": a.ask, "code": a.code]
-        c.threadIdentifier = "devices"
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ask-\(a.ask)", content: c, trigger: nil))
-    }
-}
-
-/// A request to this Mac's coordinator, as its owner makes it (`/work/<path>`, JSON, with the
-/// build's key its agent keeps, private to this user); nil when there's no key here (not the build
-/// Mac).
-func coordinator(_ path: String, _ body: [String: String]) -> URLRequest? {
-    guard let token = try? String(contentsOf: home.appendingPathComponent("agent/coord/workers-token"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
-          !token.isEmpty, let url = URL(string: "http://127.0.0.1:8090/work/\(path)") else { return nil }
-    var req = URLRequest(url: url)
-    req.httpMethod = "POST"
-    req.timeoutInterval = 10
-    req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-    req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-    return req
-}
-
-/// The asks to help and the devices helping, as this Mac's coordinator tells its owner (nil when it
-/// doesn't answer).
-func fetchDevices(_ done: @escaping (Devices?) -> Void) {
-    guard var req = coordinator("devices", [:]) else { return done(nil) }
-    req.timeoutInterval = 4
-    URLSession.shared.dataTask(with: req) { data, resp, _ in
-        let ok = (resp as? HTTPURLResponse)?.statusCode == 200
-        done(ok ? data.flatMap { try? JSONDecoder().decode(Devices.self, from: $0) } : nil)
-    }.resume()
 }
 
 /// The app version folder this process was started from, resolved when it starts (it's run through
@@ -1272,7 +1102,7 @@ if args.contains("--print") {
         let data = (try? Data(contentsOf: URL(fileURLWithPath: f))) ?? Data()
         d.reply = try? JSONDecoder().decode(Reply.self, from: data)
         let beside = try? JSONDecoder().decode(Replay.self, from: data)
-        (d.devices, d.own) = (beside?.devices, beside?.own)
+        d.own = beside?.own
         print("\(f): \(classify(d.reply).1)")
         if let c = cachesItem(d.own, now: d.reply?.now ?? Int(Date().timeIntervalSince1970), asked: beside?.clear_asked ?? false) {
             print("  item: \(c.title)\(c.enabled || c.tip.isEmpty ? "" : " (disabled: \(c.tip))")")

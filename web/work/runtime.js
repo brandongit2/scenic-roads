@@ -113,7 +113,7 @@ const BLOCK = 1 << 20;
 const KEEP = 64 << 20;
 
 export class Net {
-  // `base`: where the coordinator answers for the task ("/work/net/<lease>"); `headers`: its token.
+  // `base`: where the coordinator answers for the task ("/work/net/<lease>"); `headers`: who it is.
   constructor(base, headers, request = xhr) {
     this.base = base;
     this.headers = headers;
