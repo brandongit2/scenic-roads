@@ -2480,6 +2480,41 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_slope_pieces_key_reads_its_neighbours_edges_alone() {
+        // Piece 6/28/16 (its z9 tiles, no finer) beside 6/29/16, in area 3/3/2: its z9 tiles on
+        // the east edge read 6/29/16's west column of z9 tiles, not its others.
+        let mut m: BTreeMap<String, String> = BTreeMap::new();
+        for (l, c) in [("layers/terrain/hi/6-28-16", "a"), ("layers/terrain/hi/6-29-16", "b"), ("layers/terrain/lo/3-3-2", "l")] {
+            m.insert(l.into(), c.into());
+        }
+        let key = |edge: u64, inside: u64, own: u64| {
+            let mut t = TerrainTiles::new(None);
+            t.hold("a", (224..232u32).flat_map(|x| (128..136u32).map(move |y| (9, x, y, own))));
+            t.hold("b", (232..240u32).flat_map(|x| (128..136u32).map(move |y| (9, x, y, if x == 232 { edge } else { inside }))));
+            t.hold("l", (3..=8u8).flat_map(|z| {
+                let s = 1u32 << (z - 3);
+                (3 * s..4 * s).flat_map(move |x| (2 * s..3 * s).map(move |y| (z, x, y, 7)))
+            }));
+            slope_piece_key((28, 16), &m, &t).unwrap()
+        };
+        let k = key(1, 1, 1);
+        assert_eq!(key(1, 2, 1), k, "the neighbour's inside: not read");
+        assert_ne!(key(2, 1, 1), k, "its edge: read");
+        assert_ne!(key(1, 1, 2), k, "its own");
+        // The tiles it reads: its own z9 tiles and z6–8 (from the lo pack), the neighbours' edges.
+        let mut t = TerrainTiles::new(None);
+        t.hold("a", (224..232u32).flat_map(|x| (128..136u32).map(move |y| (9, x, y, 1))));
+        t.hold("b", (232..240u32).flat_map(|x| (128..136u32).map(move |y| (9, x, y, 1))));
+        assert!(slope_piece_reads((28, 16), &m, &t).is_err(), "the lo pack's index not read yet: can't be told");
+        t.hold("l", [(6, 28, 16, 6)]);
+        let reads = slope_piece_reads((28, 16), &m, &t).unwrap();
+        assert!(reads.contains(&Some((9, 232, 130, 1))) && !reads.contains(&Some((9, 233, 130, 1))), "{reads:?}");
+        // (Its z6–8 tiles are each covered whole by their children: worked out from them, their
+        // terrain unread. Its other edges' neighbours have no tile: read as none.)
+        assert!(!reads.contains(&Some((6, 28, 16, 6))) && reads.contains(&None), "{reads:?}");
+    }
+
+    #[test]
     fn terrain_first_then_slope_then_catalog() {
         let c = cov();
         let mut m: BTreeMap<String, String> = BTreeMap::new();
