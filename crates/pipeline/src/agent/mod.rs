@@ -4196,7 +4196,9 @@ impl Agent {
 
 /// What jobs read from inputs/ beside the manifest, by digest: the ferry timetables
 /// ("ferries-freq", by content), Taiwan's MOI DTM ("moi-dtm", by names, sizes and times: large
-/// files, put there by hand), and which keys inputs/keys.env holds ("keys", `key_names`).
+/// files, put there by hand), which keys inputs/keys.env holds ("keys", `key_names`), and the 3D
+/// buildings' downloaded sources ("bld-release", "bldprep 6/x/y", "bldprep-rows 6/x/y":
+/// crate::bld::sources::digests).
 pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
     let mut inputs: BTreeMap<String, String> = BTreeMap::new();
     if let Ok(rd) = std::fs::read_dir(root.join("inputs/ferries/freq")) {
@@ -4224,6 +4226,8 @@ pub fn input_digests(root: &Path) -> BTreeMap<String, String> {
         }
     }
     inputs.insert("keys".into(), key_names(&root.join("inputs/keys.env")).unwrap_or_else(|| "?".into()));
+    // The 3D buildings' sources: what each z6 tile's bldprep reads, and its rows.
+    inputs.extend(crate::bld::sources::digests(root, crate::buildtiles::RELEASE));
     inputs
 }
 
