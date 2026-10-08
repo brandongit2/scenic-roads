@@ -2,9 +2,10 @@
 // the 3D terrain by MapLibre's fill-extrusion, from the z12–14 tiles of /tiles/buildings (layer `b`:
 // h top and m base in dm, s where the height comes from, f floors, c kind, k 1 a part / 2 an outline
 // with parts, o 1 a copy for the flat footprints; crates/pipeline/src/bld). A building is whole in
-// its centroid's tile, and the z14 tiles stay whole at every zoom above (keepWhole). MapLibre
-// stands each building on the terrain at its centroid, a base of 0 sunk 10 m so it doesn't float
-// on a slope.
+// its centroid's tile, and the z14 tiles stay whole at every zoom above (keepWhole). Its roof is
+// level, at the terrain under its centroid plus its height (MapLibre's); a base of 0 puts each
+// wall's foot on the terrain under its own corner, 2 m below it (vite.config.ts's building-feet
+// patch, where MapLibre sank every foot 10 m below the centroid's ground).
 //
 // A source and three layers: `buildings` (fill-extrusion: the parts, and the buildings without
 // parts), `buildings-flat` (fill, draped: footprints, the flat mode and 2D maps) and
@@ -367,6 +368,10 @@ function groundHit(map: MLMap, p: { x: number; y: number }, ray: Ray): number | 
   return hit ?? ground(0);
 }
 
+/** How far a wall's foot is sunk below the ground under its corner (m): vite.config.ts's
+ * building-feet patch. */
+const FOOT_M = 2;
+
 /** A hit this far (m) below where the ray meets the ground still counts: the terrain's own
  * sampling, against the building standing on it at its centroid. */
 const UNDER_M = 1;
@@ -482,7 +487,8 @@ function featureKey(f: MapGeoJSONFeature): string {
  * it). Candidates: the footprints along the ray's ground track (`track`), from where it meets the
  * ground back toward the camera as far as the tallest building could reach, each tall enough to
  * reach the ray there; each tested against the ray between its roof and its base, as MapLibre
- * draws it (on the terrain at its centroid, a base of 0 sunk 10 m). The one met highest wins: the
+ * draws it (its roof over the terrain at its centroid, its feet on the ground under its corners).
+ * The one met highest wins: the
  * tall ones found on the ground first, then MapLibre's queries from the camera's end of the track,
  * none once the ray there is below a building already met. */
 export function buildingAt(map: MLMap, p: { x: number; y: number }, b: BuildingState, exaggeration: number, ray: Ray): { f: MapGeoJSONFeature; alt: number } | null {
@@ -536,7 +542,16 @@ function pick(map: MLMap, p: { x: number; y: number }, b: BuildingState, exagger
       }
       if (!n) continue;
       const g = map.queryTerrainElevation([cx / n, cy / n]) ?? 0;
-      const top = cap(g + top0), base = cap(g + (base0 > 0 ? base0 : -10));
+      // (A base of 0: each wall's foot on the ground under its corner, 2 m below it: the lowest of
+      // the outline's, sampled at 16 corners at most. Met below the ground nearer the camera, the
+      // ray is behind the terrain there: `alt` below.)
+      let foot = g;
+      if (base0 <= 0) {
+        const ring = poly[0] ?? [];
+        const every = Math.max(1, Math.ceil(ring.length / 16));
+        for (let i = 0; i < ring.length; i += every) foot = Math.min(foot, map.queryTerrainElevation(ring[i] as [number, number]) ?? g);
+      }
+      const top = cap(g + top0), base = cap(base0 > 0 ? g + base0 : Math.min(foot - FOOT_M, g + top0));
       if (top <= base) continue;
       const a = ray.at(p.x, p.y, top), z = ray.at(p.x, p.y, base);
       if (!a || !z) continue;

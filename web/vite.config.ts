@@ -62,11 +62,99 @@ function maplibreSlopeColours(): Plugin {
   };
 }
 
+/** Applies `fixes` (from, to, how many times it must occur) to MapLibre's bundle, warning when one
+ * isn't found exactly so (MapLibre changed: package.json pins it). */
+function maplibrePatch(name: string, fixes: [string, string, number][]): Plugin {
+  return {
+    name,
+    enforce: 'pre',
+    transform(code, id) {
+      if (!/maplibre-gl\/dist\/maplibre-gl(-dev)?\.mjs/.test(id)) return null;
+      let out = code;
+      for (const [from, to, n] of fixes) {
+        const found = out.split(from).length - 1;
+        if (found !== n) {
+          this.warn(`${name}: "${from.slice(0, 80)}" found ${found} times, not ${n} (MapLibre changed?): left as it was`);
+          continue;
+        }
+        out = out.split(from).join(to);
+      }
+      return { code: out, map: null };
+    },
+  };
+}
+
+/**
+ * The globe's 3D positions without float32's noise (docs/buildings3d.md §4.3). On the globe (below
+ * zoom 16.5 here) MapLibre places the terrain's mesh and the extrusions on the unit sphere and
+ * multiplies by the view matrix in float32, so each vertex lands up to a metre or two off, a
+ * different way for every vertex and for every camera: the terrain's surface is bumpy at its
+ * mesh's spacing, and where a wall meets it the edge was a saw of spikes that changed as the camera
+ * moved (task #115; the flat map, from 16.5, never had it: its tiles' matrices take small numbers).
+ * Here the globe's position is the tile's flat (fallback) projection, which is exact in small
+ * numbers, plus the difference between the two, interpolated across the z14 cell the vertex is in
+ * from its four corners: a corner's mercator coordinates are exact, so every vertex of every layer
+ * near it gets the same difference, and its float32 error moves terrain and buildings together, a
+ * smooth fraction of a metre. (Bilinear across a z14 cell, the sphere's own curve is off by ~0.1 m
+ * at most.) The elevation's share is added from the vertex's own sphere point, in small numbers.
+ * Placing each vertex from one anchor in the cell instead didn't help (the shader compiler is free
+ * to fold its two matrix products back into one). Used by everything 3D that MapLibre draws through
+ * `interpolateProjectionFor3D`: the terrain and its depth, the extrusions, the circles' and
+ * symbols' visibility (as patched above).
+ */
+const GLOBE_PRECISE = [
+  // The lattice: z14 cells.
+  'const float LATTICE=16384.0;',
+  // A lattice point's globe position (its mercator coordinates exact).
+  'vec4 globeAtLattice(vec2 merc) {float sx=merc.x*PI*2.0+PI;float t=exp(PI-(merc.y*PI*2.0));float t2=t*t;float den=t2+1.0;',
+  'return u_projection_matrix*vec4(sin(sx)*(2.0*t)/den,(t2-1.0)/den,cos(sx)*(2.0*t)/den,1.0);}',
+  'vec4 interpolateProjectionFor3D(vec2 posInTile,vec3 spherePos,float elevation) {v_projection_tile_x=posInTile.x;',
+  'vec4 globePosition;',
+  'if ((posInTile.y <-32767.5) || (posInTile.y > 32766.5)) {globePosition=u_projection_matrix*vec4(spherePos*(1.0+elevation/GLOBE_RADIUS),1.0);} else {',
+  'vec2 o=u_projection_tile_mercator_coords.xy;vec2 k=u_projection_tile_mercator_coords.zw;',
+  'vec2 g=floor((o+k*posInTile)*LATTICE);',
+  'vec2 f=((o-g/LATTICE)+k*posInTile)*LATTICE;',
+  'vec2 c0=(g/LATTICE-o)/k;vec2 c1=((g+1.0)/LATTICE-o)/k;',
+  'mat4 F=u_projection_fallback_matrix;',
+  'vec4 a00=globeAtLattice(g/LATTICE)-F*vec4(c0.x,c0.y,0.0,1.0);',
+  'vec4 a10=globeAtLattice(vec2(g.x+1.0,g.y)/LATTICE)-F*vec4(c1.x,c0.y,0.0,1.0);',
+  'vec4 a01=globeAtLattice(vec2(g.x,g.y+1.0)/LATTICE)-F*vec4(c0.x,c1.y,0.0,1.0);',
+  'vec4 a11=globeAtLattice((g+1.0)/LATTICE)-F*vec4(c1.x,c1.y,0.0,1.0);',
+  'vec4 a=mix(mix(a00,a10,f.x),mix(a01,a11,f.x),f.y);',
+  'globePosition=F*vec4(posInTile,0.0,1.0)+a+(elevation/GLOBE_RADIUS)*(u_projection_matrix*vec4(spherePos,0.0));}',
+].join('');
+
+const maplibreGlobePrecision = () =>
+  maplibrePatch('maplibre-globe-precision', [
+    [
+      'vec4 interpolateProjectionFor3D(vec2 posInTile,vec3 spherePos,float elevation) {v_projection_tile_x=posInTile.x;vec3 elevatedPos=spherePos*(1.0+elevation/GLOBE_RADIUS);vec4 globePosition=u_projection_matrix*vec4(elevatedPos,1.0);',
+      GLOBE_PRECISE,
+      1,
+    ],
+  ]);
+
+/**
+ * Each wall on the terrain under its own corner (docs/buildings3d.md §4.3): MapLibre stands a
+ * building on the terrain at its centroid, its base (when 0) sunk 10 m, so on a slope its uphill
+ * walls are buried to their foot and its downhill ones float until the 10 m runs out. Here a base
+ * of 0 is the ground under each corner (the same DEM sampling the terrain's mesh takes) less 2 m,
+ * never above the roof; the roof stays level, at the centroid's ground plus the height. A part
+ * with a base of its own (a tower's setback) keeps it above its centroid's ground, as before.
+ */
+const maplibreBuildingFeet = () =>
+  maplibrePatch('maplibre-building-feet', [
+    [
+      'float base_terrain3d_offset=height_terrain3d_offset-(base > 0.0 ? 0.0 : 10.0);',
+      'float base_terrain3d_offset=base > 0.0 ? height_terrain3d_offset : min(get_elevation(a_pos)-2.0,height_terrain3d_offset+max(0.0,height));',
+      2,
+    ],
+  ]);
+
 // In development the Rust backend serves data; Vite serves the app with HMR.
 const backend = 'http://127.0.0.1:8080';
 
 export default defineConfig({
-  plugins: [maplibreTerrainVisibility(), maplibreSlopeColours()],
+  plugins: [maplibreTerrainVisibility(), maplibreSlopeColours(), maplibreGlobePrecision(), maplibreBuildingFeet()],
   server: {
     port: 5173,
     proxy: { '/api': backend, '/tiles': backend, '/fonts': backend },
