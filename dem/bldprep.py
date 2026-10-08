@@ -123,7 +123,9 @@ def ghsl(root: Path, box: list[float], out: Out) -> list[str]:
     """The window under `box` of each GHSL tile meeting it, as frames; the tiles' names."""
     import rasterio
     from rasterio.windows import Window
-    index = json.loads((root / GHSL_DIR / "index.json").read_text())["tiles"]
+    # (No index: no GHSL tile downloaded, as the agent's keys take it.)
+    path = root / GHSL_DIR / "index.json"
+    index = json.loads(path.read_text())["tiles"] if path.exists() else {}
     used = []
     for name in sorted(index):
         if not meets(index[name]["bbox"], box):
@@ -271,10 +273,14 @@ def main() -> None:
     jobs, files = [], []
     for name in sorted(listed):
         part = "type=building_part/" in name
+        b = pbox if part else box
         foot = footers.get(f"release/{a.release}/{name}")
         if foot is None or foot.get("etag") != listed[name]["etag"]:
+            # (Far from T, it isn't read: skipped, as the agent's keys skip it,
+            # pipeline::bld::sources. Its listed box, else taken as meeting T.)
+            if not meets(listed[name].get("bbox") or [-180.0, -90.0, 180.0, 90.0], b):
+                continue
             raise SystemExit(f"{name}: footers.json.gz doesn't list it as downloaded (etag)")
-        b = pbox if part else box
         rgs = [k for k, g in enumerate(foot["rgs"]) if meets(g, b)]
         if rgs:
             files.append([name, listed[name]["etag"], rgs])

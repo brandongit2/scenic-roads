@@ -4,7 +4,9 @@
 //! `buildings.json` and `footers.json.gz`, `sources/ghsl/R2023A/index.json`). Chosen as
 //! `dem/bldprep.py` chooses them: a file listed as downloaded whose footer has the same ETag; its row
 //! groups whose box meets T (a parts file's: T grown by `PART_MARGIN_DEG`); the GHSL tiles whose box
-//! meets T.
+//! meets T (none without an index). A listed file whose footer is missing or another object's is
+//! skipped where its listed box is far from T, and fails bldprep.py where it meets T: there it's
+//! named in T's reads (`stale`), so the tile's key changes once it's fetched again.
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -29,6 +31,8 @@ pub struct File {
     pub etag: String,
     pub part: bool,
     pub rgs: Vec<([f64; 4], u64)>,
+    /// Its row groups' boxes together: what's far from it is skipped at once.
+    pub bbox: [f64; 4],
 }
 
 /// What `bldprep` can read: the release's downloaded files and the GHSL tiles (name, size, box).
@@ -36,6 +40,9 @@ pub struct File {
 pub struct Sources {
     pub release: String,
     pub files: Vec<File>,
+    /// Listed files whose footer is missing or of another ETag (bldprep.py refuses them where they
+    /// meet the tile): their names and listed boxes.
+    pub stale: Vec<(String, [f64; 4])>,
     pub ghsl: Vec<(String, u64, [f64; 4])>,
 }
 
@@ -46,6 +53,8 @@ struct Listed {
 #[derive(Deserialize)]
 struct ListedFile {
     etag: String,
+    #[serde(default)]
+    bbox: Option<[f64; 4]>,
 }
 #[derive(Deserialize)]
 struct Footer {
@@ -69,7 +78,7 @@ fn meets(a: [f64; 4], b: [f64; 4]) -> bool {
 impl Sources {
     /// Reads the indexes under `root`: None when the release has no `buildings.json` (nothing
     /// downloaded yet); an error when one is there and can't be read. A listed file whose footer is
-    /// missing or of another ETag is left out (bldprep.py refuses it: fetched again first).
+    /// missing or of another ETag is `stale` (bldprep.py refuses it where it meets a tile).
     pub fn read(root: &Path, release: &str) -> Result<Option<Sources>> {
         let base = root.join(release_dir(release));
         let listed = match std::fs::read(base.join("buildings.json")) {
@@ -82,18 +91,23 @@ impl Sources {
         let mut json = Vec::new();
         std::io::Read::read_to_end(&mut flate2::read::GzDecoder::new(&gz[..]), &mut json).context("footers.json.gz")?;
         let footers: BTreeMap<String, Footer> = serde_json::from_slice(&json).context("footers.json.gz")?;
-        let mut files = Vec::new();
+        let (mut files, mut stale) = (Vec::new(), Vec::new());
         for (name, f) in listed.files {
-            let Some(ft) = footers.get(&format!("release/{release}/{name}")).filter(|ft| ft.etag == f.etag) else { continue };
-            let rgs = ft.rgs.iter().filter(|g| g.len() >= 4).map(|g| ([g[0], g[1], g[2], g[3]], g.get(4).copied().unwrap_or(0.0) as u64)).collect();
-            files.push(File { part: name.contains("type=building_part/"), name, etag: f.etag, rgs });
+            let Some(ft) = footers.get(&format!("release/{release}/{name}")).filter(|ft| ft.etag == f.etag) else {
+                // (No box listed: taken as meeting every tile, as bldprep.py takes it.)
+                stale.push((name, f.bbox.unwrap_or([-180.0, -90.0, 180.0, 90.0])));
+                continue;
+            };
+            let rgs: Vec<([f64; 4], u64)> = ft.rgs.iter().filter(|g| g.len() >= 4).map(|g| ([g[0], g[1], g[2], g[3]], g.get(4).copied().unwrap_or(0.0) as u64)).collect();
+            let bbox = rgs.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, (g, _)| [b[0].min(g[0]), b[1].min(g[1]), b[2].max(g[2]), b[3].max(g[3])]);
+            files.push(File { part: name.contains("type=building_part/"), name, etag: f.etag, rgs, bbox });
         }
         let ghsl = match std::fs::read(root.join(GHSL_DIR).join("index.json")) {
             Ok(b) => serde_json::from_slice::<GhslIndex>(&b).context("GHSL's index.json")?.tiles.into_iter().map(|(n, t)| (n, t.size, t.bbox)).collect(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(e).context("GHSL's index.json"),
         };
-        Ok(Some(Sources { release: release.to_string(), files, ghsl }))
+        Ok(Some(Sources { release: release.to_string(), files, stale, ghsl }))
     }
 
     /// What `bldprep` reads for z6 tile (x, y), as lines: each file with a row group meeting it, by
@@ -105,9 +119,17 @@ impl Sources {
         let mut out = Vec::new();
         for f in &self.files {
             let bx = if f.part { pb } else { b };
+            if !meets(f.bbox, bx) {
+                continue;
+            }
             let hit: Vec<String> = f.rgs.iter().enumerate().filter(|(_, g)| meets(g.0, bx)).map(|(k, _)| k.to_string()).collect();
             if !hit.is_empty() {
                 out.push(format!("{} {} {}", f.name, f.etag, hit.join(",")));
+            }
+        }
+        for (n, bb) in &self.stale {
+            if meets(*bb, if n.contains("type=building_part/") { pb } else { b }) {
+                out.push(format!("stale {n}"));
             }
         }
         for (n, size, bb) in &self.ghsl {
@@ -123,7 +145,7 @@ impl Sources {
     pub fn rows_for(&self, x: u32, y: u32) -> u64 {
         let b = super::tile_box_deg(6, x, y);
         let pb = [b[0] - PART_MARGIN_DEG, b[1] - PART_MARGIN_DEG, b[2] + PART_MARGIN_DEG, b[3] + PART_MARGIN_DEG];
-        self.files.iter().flat_map(|f| f.rgs.iter().filter(move |g| meets(g.0, if f.part { pb } else { b })).map(|g| g.1)).sum()
+        self.files.iter().filter(|f| meets(f.bbox, if f.part { pb } else { b })).flat_map(|f| f.rgs.iter().filter(move |g| meets(g.0, if f.part { pb } else { b })).map(|g| g.1)).sum()
     }
 }
 
@@ -207,7 +229,8 @@ pub(crate) mod tests {
         let listed = serde_json::json!({"files": {
             "theme=buildings/type=building/a.parquet": {"etag": "ea"},
             "theme=buildings/type=building_part/p.parquet": {"etag": "ep"},
-            "theme=buildings/type=building/stale.parquet": {"etag": "new"},
+            "theme=buildings/type=building/stale.parquet": {"etag": "new", "bbox": [0.0, 0.0, 1.0, 1.0]},
+            "theme=buildings/type=building/stale-near.parquet": {"etag": "new", "bbox": [b[0], b[1], b[0] + 0.5, b[1] + 0.5]},
         }});
         std::fs::write(base.join("buildings.json"), serde_json::to_vec(&listed).unwrap()).unwrap();
         let footers = serde_json::json!({
@@ -229,12 +252,13 @@ pub(crate) mod tests {
         assert_eq!(Sources::read(d.path(), "2026-09-23.1").unwrap(), None, "nothing downloaded");
         write(d.path(), "2026-09-23.1");
         let s = Sources::read(d.path(), "2026-09-23.1").unwrap().unwrap();
-        // (The stale file left out: its footer is another object's.)
-        assert_eq!(s.files.len(), 2);
-        assert_eq!(s.read_for(56, 25), ["theme=buildings/type=building/a.parquet ea 0", "theme=buildings/type=building_part/p.parquet ep 0", "ghsl G_R5_C30.zip 123"]);
+        // (The stale files left out of what's read; the one meeting the tile named in its reads,
+        // bldprep.py failing on it there; the far one not.)
+        assert_eq!((s.files.len(), s.stale.len()), (2, 2));
+        assert_eq!(s.read_for(56, 25), ["theme=buildings/type=building/a.parquet ea 0", "theme=buildings/type=building_part/p.parquet ep 0", "stale theme=buildings/type=building/stale-near.parquet", "ghsl G_R5_C30.zip 123"]);
         assert_eq!(s.rows_for(56, 25), 1020);
         // The tile west of it: the parts' row group only (it meets that tile itself), no building's.
-        assert_eq!(s.read_for(55, 25), ["theme=buildings/type=building_part/p.parquet ep 0", "ghsl G_R5_C30.zip 123"]);
+        assert_eq!(s.read_for(55, 25), ["theme=buildings/type=building_part/p.parquet ep 0", "stale theme=buildings/type=building/stale-near.parquet", "ghsl G_R5_C30.zip 123"]);
         assert!(s.read_for(10, 10).is_empty());
         // Kept while the indexes stay as they are; read again once one changes.
         let mut m = Memo::default();

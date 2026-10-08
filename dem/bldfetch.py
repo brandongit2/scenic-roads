@@ -708,9 +708,11 @@ def main() -> None:
     known = sum(j["size"] for j in jobs)
     here = {j["name"] for j in jobs if j["dest"].exists() and j["dest"].stat().st_size == j["size"]}
     log(f"{len(jobs)} files, {len(here)} already here; {gb(known - sum(j['size'] for j in jobs if j['name'] in here))} to fetch")
+    # (What's left to fetch: the files here already take no more room.)
+    left = known - sum(j["size"] for j in jobs if j["name"] in here)
     free = os.statvfs(root)
-    if free.f_bavail * free.f_frsize < known + (100 << 30):
-        raise SystemExit(f"the NAS has {gb(free.f_bavail * free.f_frsize)} free: too little for {gb(known)} and 100 GB to spare")
+    if free.f_bavail * free.f_frsize < left + (100 << 30):
+        raise SystemExit(f"the NAS has {gb(free.f_bavail * free.f_frsize)} free: too little for {gb(left)} and 100 GB to spare")
     if args.dry_run:
         for j in jobs:
             print(f"  {'here ' if j['name'] in here else 'fetch'} {j['src']:8s} {j['size'] / 1e6:9.1f} MB  {j['name']}")
