@@ -165,8 +165,9 @@ sources/       osm/<date>/ (planet, filtered, pieces/, sets/, roads/, outlines, 
                (Overture's building boxes for the world, in z8 tiles, and their index), trees/
                (leaf/: the leaf-type squares; NALCMS's GeoTIFF), canopy/ (Meta's canopy squares),
                aws-terrarium/ (AWS's raw terrain tiles), fabdem/ (FABDEM's 1° tiles), rail/ (the
-               rail feeds: the catalogue, their zips, the MTR's lines; §6), terrain-z8-v2, legacy/
-               (today's map's build inputs, until the cutover)
+               rail feeds: the catalogue, their zips, the MTR's lines; §6), terrain-z8-v3,
+               copernicus-dem/ (GLO-30's 1° tiles north of 59.5°N), legacy/ (today's map's build
+               inputs, until the cutover)
 base/          base packs, one per unit
 hidata/        per z6 tile: the ways-here index, query parts, climbs, rail lines, zoomed-out summaries
 markdata/      per z6 tile: landmark points
@@ -773,9 +774,17 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
   - **z3–8:** the whole z3 tile. z8 and coarser are made again from their children where those
     exist, since AWS's coarse levels come from coarser sources.
   - **The root (z0–2):** from the lo packs.
-  - **Source:** always AWS's raw tiles, each downloaded once (64 at a time) into the build Mac's
-    cache and packed onto the NAS (`sources/aws-terrarium/packs/`: §3 Downloads), which fills the
-    cache when it lacks one.
+  - **Sources:** AWS's raw tiles, each downloaded once (64 at a time) into the build Mac's cache
+    and packed onto the NAS (`sources/aws-terrarium/packs/`: §3 Downloads), which fills the cache
+    when it lacks one; north of 60°N, Copernicus DEM GLO-30 (`sources/copernicus-dem/`, below); and
+    the water of the latest pass's basemap (below). **The terrain depends on AWS's tiles, GLO-30's
+    tiles, the basemap and the code**, each pinned in the terrain job's key (agent::build:
+    `TERRAIN_V`, `terrain_pack::NORTH_PIN`, the basemap's content name), so a rebuild with the same
+    key gives identical packs. A new pass makes a new basemap, whose content name changes every
+    terrain job's key: the terrain is made again after each pass (all 18 jobs and the root, about
+    2 h), and the steps after it again where its tiles' bytes changed (slope everywhere; units and
+    peaks where a tile they read changed). GLO-30's tiles don't change (the bucket's of May 2022);
+    a tile the coverage newly wants is fetched into the store by the job.
   - **Repair** (`roadcore::grid::repair_terrain`, README "Terrain repair"): one pass that takes what
     is broken or undefined and nothing else. Voids are filled; a tower or a pit is a blob of the
     tile's component tree, taken whole and weighed against the ground it meets, as the map shows
@@ -787,20 +796,45 @@ Planned for a country without a module: defaults (FABDEM, no register, colours b
     values and then in the tile as stored, so its own output has nothing left to repair
     (`terrain --scan` checked it over the coverage: §10, phase 7).
     It reads AWS's values, bathymetry and all, so stored tiles (at sea level) are never inputs.
-  - **AWS's Arctic tiles** (z10 and z11 north of about 60°) have their sea surface 9 to 20 m up (on
-    the ellipsoid), blocks of cloud over the sea, and voids its coarse layer fills at sea level (a
-    flat 1 m, or the sea floor): Hans Island's top is such a hole, down to 1 m and −181 m inside a
-    rim 10–51 m high, across two z10 tiles, and the coarse levels show the island as a flat 1 m. The
-    repair takes the blocks and the holes that stand out more than 100 m as broken blobs; Hans
-    Island's hole, at most 51 m below its rim, stays. Planned: a DEM for the Arctic without them
-    (§10, phase 7).
-  - **Below zero:** values are clamped to 0, after the repair. Planned: a sea mask from the pass's
-    water polygons, so that polders and depressions keep their depth.
+  - **Seam spikes and walled patches** (`roadcore::grid::seam_spikes`, `walled_patches`, in
+    `repair_terrain_with`, after the blobs' rules, in rounds until one changes nothing): where AWS's
+    sources meet, a missing-data marker interpolated in leaves a tower 300 m and more out of the
+    pixel beside it next to a pit to sea level (Maryland's 880 m tower at z9, Casco Bay's ±700 m),
+    or a tower alone on the shore 1 km out of the pixels beside it (Yakutat's 6,097 m): the cluster
+    is clamped into the middle half of the ground around it. A region of a z10–12 tile walled all
+    round by sharp steps of one height, standing up out of ground that isn't water, that AWS's z9
+    tile over it doesn't show (a patch of a source with another datum, or a coarse fill standing
+    up off the shore) is moved down by its step. AWS's tiles alone.
+  - **North of 60°N, GLO-30** (crate::terrain_north): AWS mixes an ellipsoidal source (ArcticDEM's,
+    most likely) with sea-level ones there, so lakes and patches stand the geoid's height (10–50 m)
+    off the land around them (Kivalliq's lakes 47 m up, Ellesmere's terraces 12.4 m), its sea
+    surface is 9 to 20 m up, and voids its coarse layer fills at sea level (Hans Island's top). Each
+    terrain tile is resampled from GLO-30 (EGM2008 heights, 30 m, its water flattened; bilinear
+    between its pixel centres, the mean of up to 6 × 6 samples over a wider pixel) and blended in by
+    latitude, a smoothstep from 59.5°N (AWS's) to 60°N (GLO-30's): the band lies south of 60°,
+    where AWS's sources are sea-level ones too, so it shows no seam. Where GLO-30 was filled from an
+    ancillary DEM (its filling mask, 3 and up), AWS's repaired tile is taken, moved onto GLO-30's
+    datum by the median difference over the tile's other pixels. GLO-30 is a surface model: the
+    boreal forest reads 1.4–2.7 m over FABDEM's bare earth at the median, 4–8 m at p90, as soft
+    patches; FABDEM draws blocky stair-steps over flat ground instead and stops at 80°N, so GLO-30
+    it is (8 October). Licence: the Copernicus notice, in the map's credits.
+  - **Water flattened** (crate::terrain_water): from the basemap's `water` layer at the tile's zoom
+    (z6–12), rasterized at 4 × 4 samples a pixel. The sea (the pinned water polygons) goes to 0;
+    each lake, pond, reservoir or dock to its level, the 10th percentile of its shore's dry pixels
+    (the lowest of the shore is the outlet's level; the very lowest are pits and the next lake), or
+    its own level where its source already flattened it and it's no higher (a forested shore would
+    raise it); rivers (they slope), intermittent water and pools are left. One level a lake, by its
+    OSM id, from all the tiles made together (a z6 tile's levels, finest first, then its z3 pack's);
+    a lake across two z6 tiles may take a metre or two apart in each (§10). A pixel partly water is
+    blended by its shares. AWS fills water its detailed source lacks from a coarse one whose cells
+    mix the hills in (57 % of the sea off Yakutat above 20 m): that goes.
+  - **Below zero:** values are clamped to 0, after the water. Planned: polders and depressions
+    keeping their depth (the sea is the water polygons' now; land below zero is still clamped).
   - Deterministic: reruns give identical packs.
 - **Slope:** z11 and coarser are stored, from transient z12 Horn slope. The server makes z12 on
   demand with the same encoder and an LRU (56 % of the full archive).
-- **Worldwide z8 terrain** (`sources/terrain-z8-v2`, once, not served): every z8 tile, repaired, with
-  each tile's maximum. Peaks read it, so their prominence and isolation don't depend on coverage.
+- **Worldwide z8 terrain** (`sources/terrain-z8-v3`, once, not served): every z8 tile, repaired, with
+  each tile's maximum (AWS's tiles alone: not GLO-30 nor the water, §10). Peaks read it, so their prominence and isolation don't depend on coverage.
 - **Grids (z11):** land cover, canopy and cover, for analysis only (not served).
   - Each unit's job makes the grid tiles its packs lack: `landcover --only`, and the scenic canopy
     step.
@@ -2196,7 +2230,7 @@ At each phase's end an Opus agent reviews the work against this plan.
      worldwide z8: §6, README "Terrain repair"). One pass that takes broken towers and pits whole,
      as blobs of the tile's component tree judged against the ground they meet, fills them and the
      voids from the clean ground around them, and leaves real relief; repairing its own output
-     changes nothing. Terrain is still made from AWS's tiles and the code alone.
+     changes nothing.
    - Checked over the whole coverage (`terrain --scan`, 7 October): its output repaired again
      changes nothing at any zoom; the sharpest summits unchanged; 9 of OSM's summit pixels move,
      inside clusters of AWS's towers and pits. Planned: single-pixel towers of 100–300 m left at
@@ -2207,9 +2241,14 @@ At each phase's end an Opus agent reviews the work against this plan.
      iPad; B2, the agent running them for every tile as a fourth chain, the mirror's group, the
      iPad's budget and the credits, published 2026-10-08, the tiles building; B3's sharing with
      pages and the map's polish built, not yet published), then PLATEAU.
+   - Built (8 October): the terrain fix (§6, Terrain): GLO-30 north of 60°N, the water flattened
+     from the basemap, the seam spikes' and walled patches' rules. Terrain now depends on AWS's
+     tiles, GLO-30's and the pass's basemap (pinned in its key: a new pass makes it again). Gaps: a
+     lake across two z6 tiles may take two levels a metre or two apart; the worldwide z8 and the
+     peaks' z12 outside the packs take the new rules but not GLO-30 nor the water; rivers are left
+     as AWS has them.
    - Planned: building heights in horizons and the viewshed tool; sharper terrain from national
-     DEMs, and for the Arctic a DEM without AWS's voids filled at sea level (Hans Island's top: §6,
-     Terrain).
+     DEMs.
 8. **Builds anywhere: under way** (`docs/workers.md`). Done: the crates build for WebAssembly; one
    maths library on every target (outputs identical natively at any thread count and under WASI);
    the data plane's SSD copies and prefetch; the coordinator (leases, hand-offs over HTTP, learned
