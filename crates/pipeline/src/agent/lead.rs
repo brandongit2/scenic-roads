@@ -307,6 +307,8 @@ pub fn after(run: &mut Run, out: &Out, root: &Path, home: &Path, coord: Option<&
     let cur = run.side.driver().current().lead.clone();
     for e in &out.events {
         if let Event::SteppedDown { term, why } = e {
+            // (Members by their host names, not their ids.)
+            let why = run.side.members().iter().fold(why.clone(), |w, id| if w.contains(id.as_str()) { w.replace(id.as_str(), &host_of(run, id)) } else { w });
             let next = cur.as_ref().filter(|t| t.term > *term).map(|t| format!("; term {} is {}'s ({})", t.term, t.host, t.how)).unwrap_or_default();
             run.controls.kept.change = Some(Change { at: now, said: format!("No longer leading term {term}: {why}{next}") });
         }
@@ -543,7 +545,10 @@ pub fn notes(events: &[Event], me: &str, host: impl Fn(&str) -> String, now: u64
     for e in events {
         let note = match e {
             Event::Made { term, how } => format!("term {term}: {how}"),
-            Event::SteppedDown { term, why } => format!("stepped down from term {term}: {why}"),
+            Event::SteppedDown { term, why } => match why.strip_prefix("handed over to ") {
+                Some(to) => format!("stepped down from term {term}: handed over to {}", host(to)),
+                None => format!("stepped down from term {term}: {why}"),
+            },
             Event::Handover { term, to, what } if matches!(*what, "offered" | "over" | "given up" | "dropped") => format!("its handover of term {term} to {}: {what}", host(to)),
             _ => continue,
         };
@@ -752,7 +757,7 @@ mod tests {
         ];
         let n = notes(&events, "mini", |id| id.trim_start_matches("m-").to_string(), 5);
         let said: Vec<&str> = n.iter().map(|e| e.note.as_str()).collect();
-        assert_eq!(said, ["term 4: handed over by mini", "its handover of term 3 to air: over", "stepped down from term 3: handed over to m-air"]);
+        assert_eq!(said, ["term 4: handed over by mini", "its handover of term 3 to air: over", "stepped down from term 3: handed over to air"]);
         assert!(n.iter().all(|e| e.kind == "term" && e.worker.as_deref() == Some("mini") && e.t == 5));
     }
 
@@ -862,7 +867,7 @@ mod tests {
             assert_eq!(a.run.side.driver().leads(), None);
             let term2: crate::pool::term::Term = serde_json::from_slice(&std::fs::read(a.root.join("state/build/terms/2.json")).unwrap()).unwrap();
             assert!(term2.how.starts_with("handed over by") && term2.member == ib, "{term2:?}");
-            assert!(a.run.controls.kept.change.as_ref().is_some_and(|c| c.said.starts_with("No longer leading term 1")), "{:?}", a.run.controls.kept.change);
+            assert!(a.run.controls.kept.change.as_ref().is_some_and(|c| c.said.starts_with("No longer leading term 1: handed over to MacBook") && !c.said.contains(&ib)), "{:?}", a.run.controls.kept.change);
             // The history: A noted the handover (no coordinator here: on the NAS, kept for its next).
             let notes = std::fs::read_to_string(a.home.join("pool").join(NOTES)).unwrap();
             assert!(notes.contains("term 2: handed over by") && notes.contains("stepped down from term 1"), "{notes}");
