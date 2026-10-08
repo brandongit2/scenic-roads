@@ -11,6 +11,7 @@
 use det::Det;
 use anyhow::{bail, Result};
 use crate::Mmap;
+use std::collections::HashMap;
 use std::path::Path;
 
 pub const Z: u8 = 11;
@@ -227,11 +228,15 @@ pub struct Repair {
     pub unseen: usize,
     /// The stages it took (repair_terrain_blobs): one when it found nothing, or nothing more.
     pub stages: usize,
+    /// Pixels of seam spikes clamped (`seam_spikes`) and of walled patches moved
+    /// (`walled_patches`): `repair_terrain_with`.
+    pub seam: usize,
+    pub patches: usize,
 }
 
 impl Repair {
     pub fn changed(&self) -> bool {
-        self.voids + self.blob_pixels + self.unseen > 0
+        self.voids + self.blob_pixels + self.unseen + self.seam + self.patches > 0
     }
 }
 
@@ -300,7 +305,7 @@ pub struct Blob {
 /// lobe of its ringing, is judged on the ground beneath it, and the tile returned is one it finds
 /// nothing in as stored. Deterministic.
 pub fn repair_terrain(t: &mut [f32], z: u8, lat: f64) -> Repair {
-    repair_terrain_blobs(t, z, lat).0
+    repair_terrain_with(t, z, lat, None).0
 }
 
 /// `repair_terrain`, and the blobs it flattened.
@@ -930,6 +935,400 @@ fn ground(v: &[f32], sign: f32, pixels: &[u32], out: &[bool], held: &[bool], sta
     let r1 = *res.select_nth_unstable_by(n / 4, |a, b| a.total_cmp(b)).1;
     let r3 = *res.select_nth_unstable_by(n * 3 / 4, |a, b| a.total_cmp(b)).1;
     Ground { median, rough: q3 - q1, plane: c[0] as f32, plane_rough: r3 - r1 }
+}
+
+// ---- the seam spikes and the walled patches (8 October) ------------------------------------------
+
+/// How far out of its 5 × 5 neighbourhood's median a pixel must be (m) to be weighed as a seam
+/// spike: BLOB_RISE.
+pub const SEAM_OUT: f32 = 100.0;
+/// A seam spike beside the sea that rings with nothing must stand out this far (m) of every pixel
+/// beside it (but other towers): no ground stands a kilometre out of the pixel beside it (81° over
+/// a z9 pixel at 60°N), while the tower AWS's interpolation leaves where a missing-data marker
+/// meets the sea reaches 6,097 m off Yakutat, 6 km over its neighbours.
+pub const SEAM_LONE: f32 = 1000.0;
+/// The most pixels such a lone seam spike may have.
+pub const SEAM_LONE_MAX: usize = 16;
+/// How far below the ground beside it a ringing's pit is (m: its eight neighbours but other pits):
+/// Maryland's, beside its 880 m tower at z9, is 78 m below the lowest; Casco Bay's, hundreds.
+pub const SEAM_PIT: f32 = 50.0;
+/// How far above the ground beside it a ringing's tower is (m: its eight neighbours but other
+/// towers): 688 m in Maryland, 700 m and more on Casco Bay. Over a z9 pixel (230–300 m) that's
+/// steeper than 45° all round, and than 80° at z12: no summit, butte or stack stands so out of
+/// every pixel beside it.
+pub const SEAM_TOWER: f32 = 300.0;
+/// The most pixels a ringing may have (a resampling's ringing is a band a pixel or two wide along a
+/// seam: Casco Bay's is ~100 in a tile; rugged ground, a mountain range at z9, makes larger clusters
+/// of pixels out of their medians).
+pub const SEAM_CLUSTER_MAX: usize = 256;
+/// The finest zooms the seam rule weighs: coarser ones are made from them in the coverage, and
+/// there a whole island is a pixel or two (Minami-Iwo-jima, 916 m, at z8).
+pub const SEAM_MIN_Z: u8 = 9;
+
+/// The seam spikes of tile `t` (z9 and finer) clamped back into the range of the ground around
+/// them, whole clusters at once: where AWS's sources meet (land and sea, or two sources), a
+/// missing-data marker in one is interpolated into the other, leaving towers and pits side by side
+/// (±700 m and more along Casco Bay's shore, an 821 m tower beside a pit to sea level in Maryland)
+/// or a tower alone on the shore (6,097 m off Yakutat). A pixel more than SEAM_OUT from the median of
+/// its 5 × 5 neighbourhood is a candidate; candidates within two pixels of each other are one
+/// cluster; a cluster is a seam spike when it holds a tower SEAM_TOWER out of the pixels beside it
+/// and a pit to sea level or below, SEAM_PIT under the pixels beside it (a resampling's ringing),
+/// SEAM_CLUSTER_MAX pixels at most; or when it's small (SEAM_LONE_MAX), on the sea's edge (within
+/// two pixels of a pixel at 1 m or less) and a tower in it stands SEAM_LONE out of the pixels
+/// beside it. (A narrow fjord or canyon at z9 is a pit between towers by the 5 × 5 median, but its
+/// towers are mountains, never so far out of the pixel beside them.) Each of its
+/// pixels is clamped into the range of the pixels around it that aren't candidates (their middle
+/// half, ring by ring out to four pixels until there are eight): its neighbours on both
+/// sides, so a real cliff top or a sea floor flagged beside it stays as it is, within its own
+/// ground's range. It runs after the blobs' rules (repair_terrain_with), on what they left: the
+/// towers and pits that neighbouring spikes' roughness let stand, only shortened. Returns the
+/// pixels changed (by more than half a metre).
+pub fn seam_spikes(t: &mut [f32], z: u8) -> usize {
+    if z < SEAM_MIN_Z {
+        return 0;
+    }
+    let w = TS as i32;
+    let ok = |v: f32| v.is_finite() && (MIN_ELEV..=MAX_ELEV).contains(&v);
+    // Candidates: out of their 5 × 5 median by more than SEAM_OUT (+1 a tower, −1 a pit).
+    let mut cand = vec![0i8; t.len()];
+    let mut win: Vec<f32> = Vec::with_capacity(25);
+    for p in 0..t.len() {
+        if !ok(t[p]) {
+            continue;
+        }
+        let (x, y) = ((p % TS) as i32, (p / TS) as i32);
+        win.clear();
+        for dy in -2..=2 {
+            for dx in -2..=2 {
+                let (a, b) = (x + dx, y + dy);
+                if a >= 0 && b >= 0 && a < w && b < w && ok(t[(b * w + a) as usize]) {
+                    win.push(t[(b * w + a) as usize]);
+                }
+            }
+        }
+        if win.len() < 9 {
+            continue;
+        }
+        let m = win.len() / 2;
+        let med = *win.select_nth_unstable_by(m, |a, b| a.total_cmp(b)).1;
+        let d = t[p] - med;
+        if d > SEAM_OUT {
+            cand[p] = 1;
+        } else if d < -SEAM_OUT {
+            cand[p] = -1;
+        }
+    }
+    if cand.iter().all(|&c| c == 0) {
+        return 0;
+    }
+    // Clusters: candidates within two pixels of each other.
+    let mut comp = vec![u32::MAX; t.len()];
+    let mut changed = 0;
+    let mut stack = Vec::new();
+    let mut members: Vec<usize> = Vec::new();
+    let orig = t.to_vec();
+    for s in 0..t.len() {
+        if cand[s] == 0 || comp[s] != u32::MAX {
+            continue;
+        }
+        members.clear();
+        comp[s] = s as u32;
+        stack.push(s);
+        while let Some(p) = stack.pop() {
+            members.push(p);
+            let (x, y) = ((p % TS) as i32, (p / TS) as i32);
+            for dy in -2..=2 {
+                for dx in -2..=2 {
+                    let (a, b) = (x + dx, y + dy);
+                    if a >= 0 && b >= 0 && a < w && b < w {
+                        let q = (b * w + a) as usize;
+                        if cand[q] != 0 && comp[q] == u32::MAX {
+                            comp[q] = s as u32;
+                            stack.push(q);
+                        }
+                    }
+                }
+            }
+        }
+        // How far a pixel stands out of its eight neighbours that aren't candidates of its own sign
+        // (towers up, pits down; None when it has none): a resampling's spike stands out of the
+        // pixel beside it, where real ground can't, steep as it is.
+        let out_of = |p: usize, sg: i8| -> Option<f32> {
+            let (x, y) = ((p % TS) as i32, (p / TS) as i32);
+            let mut best: Option<f32> = None;
+            for (dx, dy) in [(-1, -1), (0, -1), (1, -1), (-1, 0), (1, 0), (-1, 1), (0, 1), (1, 1)] {
+                let (a, b) = (x + dx, y + dy);
+                if a < 0 || b < 0 || a >= w || b >= w {
+                    return None;
+                }
+                let q = (b * w + a) as usize;
+                if cand[q] == sg || !ok(orig[q]) {
+                    continue;
+                }
+                let d = sg as f32 * (orig[p] - orig[q]);
+                best = Some(best.map_or(d, |b: f32| b.min(d)));
+            }
+            best
+        };
+        // A ringing: a tower SEAM_TOWER out of the ground beside it, and a pit to sea level or below
+        // SEAM_PIT under the ground beside it (the missing-data marker pulled in: Maryland's −3 m
+        // beside its 880 m tower, Casco Bay's −755 m).
+        let tower = members.iter().any(|&p| cand[p] > 0 && out_of(p, 1).is_some_and(|d| d > SEAM_TOWER));
+        let pit = members.iter().any(|&p| cand[p] < 0 && orig[p] <= 1.0 && out_of(p, -1).is_some_and(|d| d > SEAM_PIT));
+        let ringing = tower && pit && members.len() <= SEAM_CLUSTER_MAX;
+        // Or a tower alone, SEAM_LONE out of the ground beside it (no ground is so steep), by the sea.
+        let lone = !ringing && members.len() <= SEAM_LONE_MAX && members.iter().any(|&p| cand[p] > 0 && out_of(p, 1).is_some_and(|d| d > SEAM_LONE)) && members.iter().any(|&p| {
+            let (x, y) = ((p % TS) as i32, (p / TS) as i32);
+            (-2..=2).any(|dy| (-2..=2).any(|dx| {
+                let (a, b) = (x + dx, y + dy);
+                a >= 0 && b >= 0 && a < w && b < w && cand[(b * w + a) as usize] == 0 && orig[(b * w + a) as usize] <= 1.0
+            }))
+        });
+        if !(ringing || lone) {
+            continue;
+        }
+        for &p in &members {
+            let (x, y) = ((p % TS) as i32, (p / TS) as i32);
+            // (The ground around it: the pixels that aren't candidates, ring by ring out to four
+            // pixels until there are eight; its range, its middle half, so a pixel the
+            // interpolation lifted or sank less, beside it, doesn't count.)
+            let mut around: Vec<f32> = Vec::new();
+            for r in 1..=4i32 {
+                for dy in -r..=r {
+                    for dx in -r..=r {
+                        if dx.abs() != r && dy.abs() != r {
+                            continue;
+                        }
+                        let (a, b) = (x + dx, y + dy);
+                        if a >= 0 && b >= 0 && a < w && b < w {
+                            let q = (b * w + a) as usize;
+                            if cand[q] == 0 && ok(orig[q]) {
+                                around.push(orig[q]);
+                            }
+                        }
+                    }
+                }
+                if around.len() >= 8 {
+                    break;
+                }
+            }
+            if around.is_empty() {
+                continue;
+            }
+            around.sort_by(f32::total_cmp);
+            let k = around.len() - 1;
+            let (lo, hi) = (around[(k as f64 * 0.25).round() as usize], around[(k as f64 * 0.75).round() as usize]);
+            let v = orig[p].clamp(lo, hi);
+            if (v - t[p]).abs() > 0.5 {
+                changed += 1;
+                t[p] = v;
+            }
+        }
+    }
+    changed
+}
+
+/// The least step (m) a wall of a walled patch has: AWS's source patches stand the geoid's height
+/// out (12.4 m on Ellesmere's terraces, 47 m under Kivalliq's lakes).
+pub const WALL_MIN: f32 = 5.0;
+/// How much steeper a wall is than the ground on either side of it.
+pub const WALL_SHARP: f32 = 3.0;
+/// The least share of a walled patch's edge that's wall.
+pub const WALLED: f64 = 0.9;
+/// The least pixels a walled patch has (smaller ones are the spikes' and blobs' rules').
+pub const PATCH_MIN: usize = 16;
+
+/// Walled patches: a region of tile `t` (z10–z12) walled all round by steep one-pixel steps
+/// (WALL_MIN or more, WALL_SHARP times the ground's slope on either side: a source's edge on
+/// otherwise smooth ground) of one height (their middle half within half their median), standing
+/// up out of the ground around it, which AWS's z9 tile over it (`coarse`, upsampled onto this
+/// tile) doesn't show (its step there under 30 % of the one here): a patch of a source with its
+/// own datum (ArcticDEM's ellipsoidal heights among sea-level ones, the Yukon's and the St.
+/// Elias's raised patches at z10–12, gone at z9). It's moved down by its step, so it meets the
+/// ground around it and keeps its own relief. Kept: anything walled by the sea or a lake (the
+/// ground around it flat or at sea level: an island, a lake's island), the tile's largest region,
+/// regions under PATCH_MIN pixels, and anything whose walls vary in height or which the z9 tile
+/// shows too (mesas, buttes, a plateau's real escarpments, which AWS's coarser tiles have). The
+/// tile's edge counts as an unwalled part of a region's edge: a region it cuts is moved only where
+/// a tenth of its edge, at most, lies on it.
+/// Returns the pixels changed.
+pub fn walled_patches(t: &mut [f32], z: u8, coarse: &[f32]) -> usize {
+    if !(10..=12).contains(&z) || coarse.len() != t.len() {
+        return 0;
+    }
+    let w = TS as i32;
+    let ok = |v: f32| v.is_finite() && (MIN_ELEV..=MAX_ELEV).contains(&v);
+    // Walls: between 4-neighbours p and q = p + d, |t[p] − t[q]| ≥ WALL_MIN and WALL_SHARP times the
+    // steps beyond them on each side (p − d to p, q to q + d).
+    let wall = |p: usize, q: usize, d: isize| -> bool {
+        let (a, b) = (t[p], t[q]);
+        if !ok(a) || !ok(b) {
+            return false;
+        }
+        let s = (a - b).abs();
+        if s < WALL_MIN {
+            return false;
+        }
+        let (pb, qb) = (p as isize - d, q as isize + d);
+        let side = |i: isize, j: usize| -> f32 {
+            if i < 0 || i as usize >= t.len() || (d == 1 || d == -1) && (i / TS as isize != j as isize / TS as isize) {
+                return 0.0;
+            }
+            let v = t[i as usize];
+            if ok(v) { (v - t[j]).abs() } else { 0.0 }
+        };
+        s >= WALL_SHARP * side(pb, p).max(side(qb, q)).max(0.5)
+    };
+    // Regions: 4-connected, never across a wall.
+    let mut parent: Vec<u32> = (0..t.len() as u32).collect();
+    fn find(parent: &mut [u32], mut a: u32) -> u32 {
+        while parent[a as usize] != a {
+            parent[a as usize] = parent[parent[a as usize] as usize];
+            a = parent[a as usize];
+        }
+        a
+    }
+    let mut right = vec![false; t.len()];
+    let mut down = vec![false; t.len()];
+    for p in 0..t.len() {
+        let (x, y) = (p % TS, p / TS);
+        if x + 1 < TS {
+            right[p] = wall(p, p + 1, 1);
+            if !right[p] {
+                let (a, b) = (find(&mut parent, p as u32), find(&mut parent, p as u32 + 1));
+                if a != b {
+                    parent[a.max(b) as usize] = a.min(b);
+                }
+            }
+        }
+        if y + 1 < TS {
+            down[p] = wall(p, p + TS, TS as isize);
+            if !down[p] {
+                let (a, b) = (find(&mut parent, p as u32), find(&mut parent, (p + TS) as u32));
+                if a != b {
+                    parent[a.max(b) as usize] = a.min(b);
+                }
+            }
+        }
+    }
+    let root: Vec<u32> = (0..t.len() as u32).map(|p| find(&mut parent, p)).collect();
+    let mut size: HashMap<u32, usize> = HashMap::new();
+    for &r in &root {
+        *size.entry(r).or_default() += 1;
+    }
+    let largest = size.iter().max_by_key(|(r, n)| (**n, std::cmp::Reverse(**r))).map(|(r, _)| *r);
+    // Each region's edge: its steps (inside − outside) where walled, and its edges in all.
+    let mut steps: HashMap<u32, Vec<f32>> = HashMap::new();
+    let mut edges: HashMap<u32, usize> = HashMap::new();
+    let mut ring: HashMap<u32, Vec<usize>> = HashMap::new();
+    for p in 0..t.len() {
+        let (x, y) = (p % TS, p / TS);
+        let mut pairs: Vec<(usize, bool)> = Vec::with_capacity(2);
+        if x + 1 < TS {
+            pairs.push((p + 1, right[p]));
+        }
+        if y + 1 < TS {
+            pairs.push((p + TS, down[p]));
+        }
+        for (q, walled) in pairs {
+            let (a, b) = (root[p], root[q]);
+            if a == b {
+                continue;
+            }
+            for (r, inn, out) in [(a, p, q), (b, q, p)] {
+                if size[&r] < PATCH_MIN || Some(r) == largest {
+                    continue;
+                }
+                *edges.entry(r).or_default() += 1;
+                ring.entry(r).or_default().push(out);
+                if walled {
+                    steps.entry(r).or_default().push(t[inn] - t[out]);
+                }
+            }
+        }
+    }
+    // (The tile's edge counts as its edge, unwalled: what lies beyond is unknown.)
+    for p in 0..t.len() {
+        let (x, y) = (p % TS, p / TS);
+        let sides = (x == 0) as usize + (x == TS - 1) as usize + (y == 0) as usize + (y == TS - 1) as usize;
+        if sides > 0 {
+            if let Some(e) = edges.get_mut(&root[p]) {
+                *e += sides;
+            }
+        }
+    }
+    let mut changed = 0;
+    let mut regions: Vec<u32> = steps.keys().copied().collect();
+    regions.sort_unstable();
+    for r in regions {
+        let s = steps.get_mut(&r).unwrap();
+        let n_edges = edges[&r];
+        if (s.len() as f64) < WALLED * n_edges as f64 {
+            continue;
+        }
+        s.sort_by(f32::total_cmp);
+        let med = s[s.len() / 2];
+        let iqr = s[s.len() * 3 / 4] - s[s.len() / 4];
+        let up = s.iter().filter(|&&v| v > 0.0).count() as f64 / s.len() as f64;
+        if med < WALL_MIN || up < 0.9 || iqr > 0.5 * med {
+            continue;
+        }
+        // The ground around it: not water (flat, or at sea level).
+        let mut g: Vec<f32> = ring[&r].iter().map(|&q| t[q]).collect();
+        g.sort_by(f32::total_cmp);
+        let (gmed, giqr) = (g[g.len() / 2], g[g.len() * 3 / 4] - g[g.len() / 4]);
+        if gmed <= 1.0 || giqr < 0.5 {
+            continue;
+        }
+        // AWS's z9 tile doesn't show it: the step of (this tile − z9) between it and its ground.
+        let mut inner: Vec<f32> = (0..t.len()).filter(|&p| root[p] == r).map(|p| t[p] - coarse[p]).collect();
+        let mut outer: Vec<f32> = ring[&r].iter().map(|&q| t[q] - coarse[q]).collect();
+        let mi = inner.len() / 2;
+        let mo = outer.len() / 2;
+        let di = *inner.select_nth_unstable_by(mi, |a, b| a.total_cmp(b)).1;
+        let dout = *outer.select_nth_unstable_by(mo, |a, b| a.total_cmp(b)).1;
+        if di - dout < 0.7 * med {
+            continue;
+        }
+        for p in 0..t.len() {
+            if root[p] == r {
+                t[p] -= med;
+                changed += 1;
+            }
+        }
+    }
+    let _ = w;
+    changed
+}
+
+/// The whole repair of a terrain tile (what the terrain is made with): `repair_terrain_blobs`, then
+/// the seam spikes it left (`seam_spikes`) and the walled patches (`walled_patches`, with AWS's z9
+/// tile over it, `coarse`, when there's one), in rounds until one changes nothing (at most
+/// eight), so the tile returned is one none of them changes: repairing its output changes nothing.
+pub fn repair_terrain_with(t: &mut [f32], z: u8, lat: f64, coarse: Option<&[f32]>) -> (Repair, Vec<Blob>) {
+    let mut total = Repair::default();
+    let mut all = Vec::new();
+    for round in 0..8 {
+        let (r, b) = repair_terrain_blobs(t, z, lat);
+        let seam = seam_spikes(t, z);
+        let patches = coarse.map_or(0, |c| walled_patches(t, z, c));
+        if round == 0 {
+            total = r;
+        } else {
+            total.blobs += r.blobs;
+            total.blob_pixels += r.blob_pixels;
+            total.unseen += r.unseen;
+            total.voids += r.voids;
+            total.stages = total.stages.max(r.stages);
+        }
+        total.seam += seam;
+        total.patches += patches;
+        all.extend(b);
+        if seam == 0 && patches == 0 && !r.changed() {
+            break;
+        }
+    }
+    (total, all)
 }
 
 /// Fills the pixels of `hole` from the others (a 256 × 256 tile with some of them): the smoothest
@@ -1845,6 +2244,237 @@ mod repair_tests {
                 assert_eq!(v, c, "{i}");
             }
         }
+    }
+
+    /// 9/145/195 around pixel 113,22 (39.6 N, 77.7 W): an 880 m tower beside a pit to −3 m, on ground at 80–350 m, where AWS's sources meet (the first repair took it; the blobs' rules left it, 688 m over the pixel beside it).
+    const MARYLAND_Z9: [[i16; 15]; 15] = [
+        [88, 75, 76, 80, 97, 138, 132, 160, 184, 186, 212, 267, 355, 416, 355],
+        [121, 97, 80, 77, 82, 89, 95, 147, 171, 191, 233, 292, 382, 398, 324],
+        [179, 154, 114, 93, 80, 72, 79, 91, 133, 189, 257, 332, 387, 338, 248],
+        [166, 147, 145, 147, 116, 90, 94, 93, 80, 124, 222, 320, 322, 294, 207],
+        [155, 147, 151, 148, 139, 138, 128, 114, 75, 99, 138, 254, 233, 237, 178],
+        [154, 153, 152, 134, 135, 164, 159, 144, 113, 81, 92, 143, 124, 112, 93],
+        [153, 150, 142, 111, 115, 117, 105, 82, 108, 75, 71, 64, 62, 63, 73],
+        [149, 141, 117, 84, 93, 81, -3, 880, 71, 182, 153, 146, 161, 144, 90],
+        [147, 134, 88, 91, 109, 116, 118, 139, 192, 264, 273, 268, 258, 188, 125],
+        [146, 97, 101, 128, 175, 173, 215, 212, 299, 330, 305, 256, 209, 163, 143],
+        [96, 87, 132, 190, 189, 213, 266, 318, 338, 312, 266, 213, 175, 142, 143],
+        [117, 116, 165, 204, 220, 271, 322, 348, 311, 250, 204, 175, 155, 126, 131],
+        [106, 152, 179, 202, 256, 321, 358, 330, 262, 211, 165, 144, 134, 130, 135],
+        [138, 170, 171, 208, 286, 349, 355, 293, 232, 196, 170, 138, 136, 148, 146],
+        [163, 179, 171, 223, 307, 350, 324, 257, 206, 176, 167, 143, 140, 159, 156],
+    ];
+
+    /// 12/1249/1494 around pixel 89,136 (43.68 N, 70.2 W): Casco Bay's shore, towers and pits of ±700 m along it.
+    const CASCO_Z12: [[i16; 15]; 15] = [
+        [33, 34, 34, 34, 35, 38, 40, 40, 37, 28, 37, 58, 7, -50, -9],
+        [30, 31, 31, 34, 29, 42, 83, 79, 27, -44, 64, 285, -27, -429, -9],
+        [26, 28, 29, 32, 31, 39, 59, 53, 24, -2, 55, 116, -297, -9, -9],
+        [23, 25, 26, 23, 67, 14, -191, -233, -27, 317, 58, -8, -8, -9, -9],
+        [21, 24, 24, 18, 84, -2, -333, -383, -62, 445, -182, -8, -8, -8, -9],
+        [21, 24, 29, 35, -7, 42, 225, 441, 357, -115, -7, -7, -8, -8, -9],
+        [21, 23, 31, 48, -80, 79, 659, -6, 594, -6, -7, -7, -8, -8, -9],
+        [19, 20, 28, 49, -129, 112, -5, 723, -755, -6, -7, -7, -8, -8, -8],
+        [15, 15, 15, 13, -24, 66, 291, -5, -6, -6, -7, -7, -7, -8, -8],
+        [9, 8, -26, -129, 673, -327, -5, -5, -6, -6, -7, -7, -7, -8, -8],
+        [4, 3, -77, -326, -4, -5, -5, -5, -6, -6, -6, -7, -7, -8, -8],
+        [1, 1, -114, -466, -4, -4, -5, -5, -6, -6, -6, -7, -7, -8, -8],
+        [1, 1, -171, -615, -4, -4, -5, -5, -5, -6, -6, -7, -7, -7, -8],
+        [-3, -3, -3, -4, -4, -4, -5, -5, -5, -6, -6, -7, -7, -7, -8],
+        [-3, -3, -3, -4, -4, -4, -5, -5, -5, -6, -6, -6, -7, -7, -8],
+    ];
+
+    /// 12/462/1192 around pixel 194,119 (59.6 N, 139.6 W): a tower of 4,497–6,097 m alone on the shore, a pixel wide.
+    const YAKUTAT_Z12: [[i16; 15]; 15] = [
+        [17, 8, 2, 16, 14, 23, 18, 14, 10, 76, 68, 60, 53, 46, 39],
+        [24, 13, 5, 1, 0, 25, 20, 15, 11, 77, 69, 61, 53, 46, 39],
+        [52, 19, 8, 2, 0, 27, 21, 17, 12, 77, 69, 61, 53, 46, 39],
+        [53, 23, 12, 4, 1, 0, 24, 18, 13, 78, 70, 62, 54, 46, 39],
+        [55, 28, 17, 8, 2, 0, 26, 20, 15, 79, 70, 62, 54, 46, 39],
+        [58, 34, 48, 12, 5, 1, 0, 22, 16, 80, 71, 62, 54, 46, 39],
+        [62, 55, 51, 50, 8, 2, 0, 4860, 18, 80, 71, 63, 55, 46, 39],
+        [67, 59, 54, 52, 12, 4, 1, 6097, 19, 81, 72, 63, 55, 47, 39],
+        [72, 63, 57, 53, 16, 6, 1, 5933, 21, 81, 72, 64, 55, 47, 39],
+        [77, 67, 59, 55, 20, 10, 3, 4497, 23, 82, 73, 64, 55, 47, 39],
+        [82, 70, 61, 56, 25, 14, 5, 1, 25, 82, 73, 64, 56, 47, 39],
+        [88, 75, 64, 58, 29, 18, 8, 2, 27, 82, 73, 64, 56, 47, 39],
+        [95, 80, 68, 60, 33, 21, 11, 3, 29, 82, 73, 65, 56, 48, 40],
+        [103, 86, 72, 63, 58, 56, 14, 5, 77, 83, 74, 65, 56, 48, 40],
+        [109, 91, 76, 66, 59, 56, 18, 8, 2, 13, 74, 65, 56, 48, 40],
+    ];
+
+    #[test]
+    fn seam_spikes_go_whole_in_one_pass() {
+        // Maryland: the tower and its pit, into the ground's range; nothing else moves.
+        let mut t = aws(&MARYLAND_Z9, 150.0);
+        let before = t.clone();
+        repaired(&mut t, 9, 39.6);
+        assert!(at(&t, 7, 7) <= 200.0 && at(&t, 6, 7) >= 70.0, "{} {}", at(&t, 7, 7), at(&t, 6, 7));
+        for (j, row) in MARYLAND_Z9.iter().enumerate() {
+            for (i, _) in row.iter().enumerate() {
+                if (j, i) != (7, 7) && (j, i) != (7, 6) {
+                    assert_eq!(at(&t, i, j), at(&before, i, j), "{i},{j}");
+                }
+            }
+        }
+        // Casco Bay: every tower and pit along the shore, as the map shows it, within the ground's
+        // range (the land at 13–84 m), in one pass that its own output doesn't move.
+        let mut t = aws(&CASCO_Z12, -9.0);
+        repaired(&mut t, 12, 43.68);
+        for (j, row) in CASCO_Z12.iter().enumerate() {
+            for (i, &v) in row.iter().enumerate() {
+                let now = at(&t, i, j).max(0.0);
+                assert!(now <= 90.0, "{v} at {i},{j}: {now}");
+                if (0..=60).contains(&v) && i <= 2 {
+                    assert_eq!(now, v as f32, "the land at {i},{j}");
+                }
+            }
+        }
+        // Yakutat: the tower alone on the shore, to the shore's height.
+        let mut t = aws(&YAKUTAT_Z12, 30.0);
+        repaired(&mut t, 12, 59.6);
+        for j in 6..=9 {
+            assert!(at(&t, 7, j) <= 30.0, "{j}: {}", at(&t, 7, j));
+        }
+        assert_eq!(at(&t, 9, 7), 81.0);
+    }
+
+    #[test]
+    fn seam_rule_keeps_fjords_canyons_and_stacks() {
+        // A fjord a pixel wide at sea level between walls rising 400 m a pixel (z9): its water is
+        // a pit by the 5 × 5 median and its walls towers, but no wall stands 300 m out of the
+        // pixel beside it.
+        let mut t = tile(|x, _| ((x - 128.0).abs() * 400.0).min(1600.0));
+        let before = t.clone();
+        assert_eq!(seam_spikes(&mut t, 9), 0);
+        assert_eq!(t, before);
+        // A canyon 300 m deep a pixel wide in a plateau at 1,200 m, meandering (Glen Canyon at z9).
+        let mut c = tile(|x, y| if (x - 128.0 - 6.0 * (y * 0.2).sin()).abs() < 0.6 { 900.0 } else { 1200.0 });
+        let before = c.clone();
+        assert_eq!(seam_spikes(&mut c, 9), 0);
+        assert_eq!(c, before);
+        // A sea stack of 250 m a pixel wide (z12), and an island's top of 900 m at z9: towers alone
+        // by the sea, but not SEAM_LONE out of the pixel beside them.
+        let mut s = vec![-5f32; TS * TS];
+        s[100 * TS + 100] = 250.0;
+        s[50 * TS + 50] = 900.0;
+        for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            s[((50 + dy) * TS as i32 + 50 + dx) as usize] = 300.0;
+        }
+        let before = s.clone();
+        assert_eq!(seam_spikes(&mut s, 12), 0);
+        assert_eq!(seam_spikes(&mut s, 9), 0);
+        assert_eq!(s, before);
+        // Coarser than z9: never weighed.
+        let mut m = aws(&MARYLAND_Z9, 150.0);
+        assert_eq!(seam_spikes(&mut m, 8), 0);
+    }
+
+    /// What AWS's z9 tile over a z12 tile shows: the means of its 8 × 8 blocks.
+    fn z9_of(t: &[f32]) -> Vec<f32> {
+        let mut c = vec![0f32; TS * TS];
+        for by in 0..TS / 8 {
+            for bx in 0..TS / 8 {
+                let m: f32 = (0..64).map(|k| t[(by * 8 + k / 8) * TS + bx * 8 + k % 8]).sum::<f32>() / 64.0;
+                for k in 0..64 {
+                    c[(by * 8 + k / 8) * TS + bx * 8 + k % 8] = m;
+                }
+            }
+        }
+        c
+    }
+
+    /// Rough ground, and AWS's z9 tile over it: the same ground, smoothed.
+    fn ground_and_coarse() -> (Vec<f32>, Vec<f32>) {
+        let g = tile(|x, y| 300.0 + 40.0 * ((x * 0.05).sin() * (y * 0.04).cos()) + 6.0 * ((x * 0.7).sin() + (y * 0.9).cos()));
+        let c = tile(|x, y| 300.0 + 40.0 * ((x * 0.05).sin() * (y * 0.04).cos()));
+        (g, c)
+    }
+
+    #[test]
+    fn walled_patches_meet_the_ground_and_keep_their_relief() {
+        // A patch of another datum, 47 m up (Kivalliq's), 30 × 20 pixels, walled all round, that the
+        // z9 tile doesn't show: moved down by its step, back onto the ground, its relief as it was.
+        let (g, c) = ground_and_coarse();
+        let mut t = g.clone();
+        for y in 80..100 {
+            for x in 60..90 {
+                t[y * TS + x] += 47.0;
+            }
+        }
+        let n = walled_patches(&mut t, 11, &c);
+        assert_eq!(n, 600);
+        // (Back within the ground's own roughness: its step is the median across its walls.)
+        for (a, b) in t.iter().zip(&g) {
+            assert!((a - b).abs() < 3.0, "{a} vs {b}");
+        }
+        // Its own output: nothing more.
+        assert_eq!(walled_patches(&mut t, 11, &c), 0);
+        // Through the whole repair too, which ends on a tile it changes nothing in.
+        let mut t2 = g.clone();
+        for y in 80..100 {
+            for x in 60..90 {
+                t2[y * TS + x] += 47.0;
+            }
+        }
+        let (r, _) = repair_terrain_with(&mut t2, 11, 62.0, Some(&c));
+        assert_eq!(r.patches, 600);
+        let mut again = t2.clone();
+        let (r2, _) = repair_terrain_with(&mut again, 11, 62.0, Some(&c));
+        assert!(!r2.changed() && again == t2, "{r2:?}");
+    }
+
+    #[test]
+    fn walled_patches_keep_mesas_islands_and_what_z9_shows() {
+        let (g, c) = ground_and_coarse();
+        let raised = |g: &[f32]| {
+            let mut t = g.to_vec();
+            for y in 80..100 {
+                for x in 60..90 {
+                    t[y * TS + x] += 47.0;
+                }
+            }
+            t
+        };
+        // The z9 tile shows it too: a real step (a plateau's escarpment), kept.
+        let mut t = raised(&g);
+        let shown = z9_of(&t);
+        let before = t.clone();
+        assert_eq!(walled_patches(&mut t, 12, &shown), 0);
+        assert_eq!(t, before);
+        // A mesa: flat on top, its walls of every height as the ground around falls away.
+        let mut m = tile(|x, y| 300.0 + 0.8 * x + 6.0 * ((x * 0.7).sin() + (y * 0.9).cos()));
+        for y in 80..100 {
+            for x in 60..90 {
+                m[y * TS + x] = 420.0;
+            }
+        }
+        let before = m.clone();
+        let mc = z9_of(&m);
+        assert_eq!(walled_patches(&mut m, 12, &mc), 0);
+        assert_eq!(m, before);
+        // An island in the sea (at 0) and one in a lake (flat at 210 m): kept.
+        for water in [0f32, 210.0] {
+            let mut s = vec![water; TS * TS];
+            for y in 80..100 {
+                for x in 60..90 {
+                    s[y * TS + x] = water + 12.0 + ((x * 3 + y) % 5) as f32;
+                }
+            }
+            let before = s.clone();
+            assert_eq!(walled_patches(&mut s, 12, &vec![water; TS * TS]), 0, "water at {water}");
+            assert_eq!(s, before);
+        }
+        // Cut by the tile's edge for more than a tenth of its edge: not judged here.
+        let mut e = g.clone();
+        for y in 0..20 {
+            for x in 0..30 {
+                e[y * TS + x] += 47.0;
+            }
+        }
+        let before = e.clone();
+        assert_eq!(walled_patches(&mut e, 11, &c), 0);
+        assert_eq!(e, before);
     }
 }
 
