@@ -193,6 +193,9 @@ struct Want {
 struct Victim {
     /// 0: the current catalog doesn't list it; 1: it does; 2: it's the current basemap.
     class: u8,
+    /// A 3D buildings' pack (`BUILDINGS_LAYER`'s): within a class, those go first, the roads and
+    /// terrain kept longer, as they're copied first.
+    bld: bool,
     /// Whether the map has used it (its logical name): within a class, those never used go first.
     used: bool,
     /// Its last use; for one never used, when it was copied.
@@ -563,7 +566,8 @@ impl Mirror {
 
     /// The local files `take` lets go to make room, sparing the essentials, the kept files and
     /// `fresh` (copied this sync), in the order they go: files the current catalog doesn't list,
-    /// then the current catalog's, then its basemap; within each, those never used, the first
+    /// then the current catalog's, then its basemap; within each, the 3D buildings' packs first
+    /// (copied last, so let go first), then the rest; within those, those never used, the first
     /// copied first, then the used ones, the least recently used first (whenever they were copied:
     /// a new catalog copies again the files used before it). Copies in progress go as their files
     /// would (not copied yet: the first of those never used).
@@ -591,10 +595,11 @@ impl Mirror {
                     Take::Unused => class == 0 || (class == 1 && used.is_none()),
                 };
                 let at = used.unwrap_or_else(|| st.copied.get(n).copied().unwrap_or(0));
-                may.then(|| Victim { class, used: used.is_some(), at, size, name: n.clone(), partial })
+                let bld = parse_content_name(n).is_some_and(|c| c.logical.strip_prefix("layers/").and_then(|l| l.strip_prefix(BUILDINGS_LAYER)).is_some_and(|r| r.starts_with('/')));
+                may.then(|| Victim { class, bld, used: used.is_some(), at, size, name: n.clone(), partial })
             })
             .collect();
-        v.sort_by(|a, b| (a.class, a.used, a.at, &a.name).cmp(&(b.class, b.used, b.at, &b.name)));
+        v.sort_by(|a, b| (a.class, !a.bld, a.used, a.at, &a.name).cmp(&(b.class, !b.bld, b.used, b.at, &b.name)));
         v
     }
 
@@ -1309,6 +1314,18 @@ mod tests {
         let order = logicals(&m, &cat, &none());
         let at = |l: &str| order.iter().position(|x| x == l).unwrap();
         assert!(at("layers/buildings/hi/6-32-21") > at("layers/roads/hi/6-33-21"));
+        // Let go first when room is short: before the roads' packs, never used as they all are.
+        let reserve = 100_000;
+        let cap = Arc::new(AtomicU64::new(1 << 40));
+        let home = tempfile::tempdir().unwrap();
+        let m = mirror_on(home.path(), &cap, reserve);
+        m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        let evicted: Arc<Mutex<Vec<String>>> = Default::default();
+        let e2 = evicted.clone();
+        m.on_evict(move |names| e2.lock().unwrap().extend(names.iter().cloned()));
+        cap.store(used(&home.path().join("mirror")) + reserve - 1_000, SeqCst);
+        m.sync(&cat, &none(), nas.root(), &nas.pool, &|| false).unwrap();
+        assert_eq!(*evicted.lock().unwrap(), [cat.content("layers/buildings/hi/6-32-21").unwrap()]);
         const { assert!(BUILDINGS_GROUP < LAST_GROUP) };
     }
 
