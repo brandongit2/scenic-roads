@@ -9,7 +9,7 @@ every build, so don't edit them; answers go elsewhere (below).
 
 ## An entry
 
-`{"n", "kind", "langs", "things", "example": {"osm", "at"}, "priority"}`
+`{"n", "kind", "langs", "things", "example": {"osm" | "qid" | "label", "at"}, "priority"}`
 
 - `n`: the name exactly as in OpenStreetMap.
 - `kind`: `road`, `settlement` (a city, town, village, hamlet, suburb, quarter, neighbourhood or
@@ -17,8 +17,9 @@ every build, so don't edit them; answers go elsewhere (below).
 - `langs`: the languages the name may be in, the list's own first: those spoken where the things
   lacking English are, narrowed by OpenStreetMap's language tags and the name's script.
 - `things`: how many things with the name lack English; `example`: one of them, its OSM object
-  (`n123` a node, `w123` a way, `r123` a relation: openstreetmap.org/node/123) and where it is
-  (lon, lat).
+  (`osm`: `n123` a node, `w123` a way, `r123` a relation: openstreetmap.org/node/123), else its
+  Wikidata item (`qid`), else its label's row (`label`, labels made before they carried their OSM
+  object), and where it is (`at`: lon, lat).
 - `priority`: fame, place class and population, road class (a city about 70, a village 50, a
   hamlet 30, a motorway 45, a residential street 20), plus the log of `things`.
 

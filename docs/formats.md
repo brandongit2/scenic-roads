@@ -326,8 +326,8 @@ tile (12 bits an axis), then id.
   `ms`, `s` (dem/labels.py). Labels made before `LABELS_V` 2 have `n`, `en`, `k`, `c`, `mz`, `ms`,
   `s`.
 - **To translate** (`translations/todo/<language>.jsonl`, the `names-todo` job's, rewritten whole
-  after each catalog): `{"n", "kind", "langs", "things", "example": {"osm", "at": [lon, lat]},
-  "priority"}`, by priority; with `README.md` and `check.py`.
+  after each catalog): `{"n", "kind", "langs", "things", "example": {"osm" (n123, w123, r123) | "qid" | "label"
+  (its row, labels before `LABELS_V` 2), "at": [lon, lat]}, "priority"}`, by priority; with `README.md` and `check.py`.
 - **To describe** (`descriptions/todo/landmarks.jsonl`, `areas.jsonl`, likewise): `{"qid", "id",
   "name", "en", "kind", "designation", "at", "enwiki", "wiki", "register", "source", "fame"}`
   (landmarks) and `{"qid", "id", "name", "kind", "bbox", "area_km2", "enwiki", "fame"}` (areas), by
@@ -399,11 +399,11 @@ mirror/<content name>   local copies, by the same names as on the NAS (.partial/
 idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trailer)
 catalog/<n>.json.zst    the last catalogs read
 translations/  descriptions/   local copies of the NAS folders, compiled by the server
-names/spoken-<content>.bin   the languages spoken where (names::spoken::Spoken::to_bytes: "SPOKEN01",
+names/spoken-<content>.bin   the languages spoken where, made from the catalog's outlines of that
+                        content name (its slashes as underscores) (names::spoken::Spoken::to_bytes: "SPOKEN01",
                         u32 head length, head (the rules' version, then a line per region: its ISO
                         code, a tab, its languages comma-separated; region 0 none), u32 run count,
-                        23,041 u32 row starts, runs of (u32 first column, u16 region)), made from
-                        the catalog's outlines of that content name
+                        23,041 u32 row starts, runs of (u32 first column, u16 region))
 regions.json            the last regions read; regions-queue/: region edits waiting for the NAS
 keep.json               the areas this Mac keeps for offline use (crates/server/src/keep.rs; the
                         Regions panel): {fmt: 1, regions: [{id, name, at}], views: [{id, name,

@@ -9,9 +9,9 @@
 //!   sorted by fame; with `README.md`, the writers' brief.
 //!
 //! What it reads, all from the newest catalog:
-//! - **Labels** (places, states, water, parks): the labels layer's zoom-12 tiles in the coverage's
-//!   units' z6 tiles, each label once (its feature id). Own English: `en`, else `kana` romanised;
-//!   OSM's languages: `l`.
+//! - **Labels** (places, states, water, parks): the labels layer's zoom-12 tiles in the units' z6
+//!   tiles, each label inside the coverage the catalog records once (its feature id). Own English:
+//!   `en`, else `kana` romanised; OSM's languages: `l`.
 //! - **Roads and rail lines:** each unit's base pack (ways, names) and its roads' own English
 //!   (`global/roaden/<u>`); where each is, the centre of its box from the hidata's ways-here
 //!   index. Roads carry no OSM language tags yet.
@@ -216,8 +216,21 @@ fn tile_of(key: &str) -> Option<(u32, u32)> {
     Some((p.next()?.parse().ok()?, p.next()?.parse().ok()?))
 }
 
-/// Labels: the zoom-12 tiles of the labels layer's hi packs in the units' tiles.
-fn labels(root: &Path, cat: &store::catalog::Catalog, units: &HashSet<(u32, u32)>, lists: &mut Lists, progress: &dyn Fn(&str, u64, u64)) -> Result<()> {
+/// The coverage the catalog records, as shapes for point tests (none: a catalog that records none).
+fn coverage(cat: &store::catalog::Catalog) -> Vec<crate::coverage::Shape> {
+    let regions: Vec<crate::coverage::DrawnRegion> = cat.coverage.get("regions").and_then(|r| serde_json::from_value(r.clone()).ok()).unwrap_or_default();
+    let e7 = |p: &[f64; 2]| [(p[0] * 1e7).round() as i32, (p[1] * 1e7).round() as i32];
+    regions
+        .iter()
+        .flat_map(|r| r.shapes.iter().map(move |(entry, polys)| (format!("{}: {entry}", r.id), polys)))
+        .filter(|(_, polys)| !polys.is_empty())
+        .map(|(source, polys)| crate::coverage::Shape::new(source, polys.iter().flatten().map(|ring| ring.iter().map(e7).collect()).collect(), 0.0))
+        .collect()
+}
+
+/// Labels: the zoom-12 tiles of the labels layer's hi packs in the units' tiles, the labels inside
+/// the coverage (`cov`; empty: all).
+fn labels(root: &Path, cat: &store::catalog::Catalog, units: &HashSet<(u32, u32)>, cov: &[crate::coverage::Shape], lists: &mut Lists, progress: &dyn Fn(&str, u64, u64)) -> Result<()> {
     let Some(layer) = cat.layers.get("labels") else { return Ok(()) };
     let packs: Vec<&String> = layer.hi.iter().filter(|(k, _)| tile_of(k).is_some_and(|t| units.contains(&t))).map(|(_, v)| v).collect();
     let mut seen: HashSet<(u64, u64)> = HashSet::new();
@@ -252,8 +265,12 @@ fn labels(root: &Path, cat: &store::catalog::Catalog, units: &HashSet<(u32, u32)
                     if !seen.insert((f.id.unwrap_or(u64::MAX), h)) {
                         continue;
                     }
-                    *lists.report.read.entry("labels").or_default() += 1;
                     let (lon, lat) = names::mvt::tile_to_lonlat(u32::from(z), x, y, l.extent, f64::from(px), f64::from(py));
+                    let p = [(lon * 1e7).round() as i32, (lat * 1e7).round() as i32];
+                    if !cov.is_empty() && !cov.iter().any(|s| s.inside(p)) {
+                        continue;
+                    }
+                    *lists.report.read.entry("labels").or_default() += 1;
                     let (k, c) = (get("k").unwrap_or_default(), get("c").unwrap_or_default());
                     let kind = if k == "place" { Kind::of_place(c) } else { Kind::Other };
                     let own = names::own::own_english(&tags, &["en"]).is_some();
@@ -490,6 +507,22 @@ fn areas(root: &Path, cat: &store::catalog::Catalog, done: &HashSet<String>, wan
     Ok(())
 }
 
+/// An entry's example: its OSM object (`osm`: n123, w123, r123), else its Wikidata item (`qid`), else
+/// its label's row (`label`: labels made before they carried their OSM object), and where it is.
+fn example((id, lon, lat): &(String, f64, f64)) -> Value {
+    let at = json!([(lon * 1e5).round() / 1e5, (lat * 1e5).round() / 1e5]);
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if id.len() > 1 && matches!(&id[..1], "n" | "w" | "r") && digits(&id[1..]) {
+        json!({"osm": id, "at": at})
+    } else if id.len() > 1 && id.starts_with('Q') && digits(&id[1..]) {
+        json!({"qid": id, "at": at})
+    } else if let Some(row) = id.strip_prefix("label ") {
+        json!({"label": row.parse::<u64>().unwrap_or(0), "at": at})
+    } else {
+        json!({"at": at})
+    }
+}
+
 /// Writes a file whole (a temporary name, then renamed).
 fn put(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension(format!("{}.tmp", path.extension().and_then(|e| e.to_str()).unwrap_or("")));
@@ -507,7 +540,7 @@ pub fn run(root: &Path, out: &Path, translations: &Path, scratch: &Path, progres
     names.take_warnings();
     let units = unit_tiles(&cat);
     let mut lists = Lists { names: &names, spoken: &spoken, entries: HashMap::new(), report: Report::default() };
-    labels(root, &cat, &units, &mut lists, progress)?;
+    labels(root, &cat, &units, &coverage(&cat), &mut lists, progress)?;
     roads(root, &cat, &mut lists, progress)?;
     let done = described(&root.join("descriptions"));
     let mut want = Vec::new();
@@ -531,7 +564,7 @@ pub fn run(root: &Path, out: &Path, translations: &Path, scratch: &Path, progres
         for (n, k, e) in &es {
             let line = json!({
                 "n": n, "kind": k.as_str(), "langs": e.langs.iter().map(Lang::as_str).collect::<Vec<_>>(),
-                "things": e.things, "example": {"osm": e.example.0, "at": [(e.example.1 * 1e5).round() / 1e5, (e.example.2 * 1e5).round() / 1e5]},
+                "things": e.things, "example": example(&e.example),
                 "priority": (pri(e) * 100.0).round() / 100.0,
             });
             text.push_str(&line.to_string());

@@ -236,7 +236,7 @@ impl NamesState {
             return;
         }
         if let Some(content) = &want {
-            let file = self.spoken_dir.join(format!("spoken-{content}.bin"));
+            let file = self.spoken_dir.join(format!("spoken-{}.bin", content.replace('/', "_")));
             if let Some(s) = std::fs::read(&file).ok().and_then(|b| Spoken::from_bytes(&b).ok()) {
                 *self.spoken.write().unwrap() = Some((content.clone(), Arc::new(s)));
                 return;

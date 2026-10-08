@@ -1243,7 +1243,7 @@ map labels, "main (sub)" in the app's text. Sub shows only when it truly differs
   - From the 2026-09-28 pass: 250 regions, 266,957 points, the raster made in 0.9 s and 3.4 MB;
     reading the simplified rings from the NAS takes about five minutes.
   - The server makes it from the catalog's outlines on a thread of its own and keeps it in its home
-    (`names/spoken-<outlines' content name>.bin`), so it's there offline after the first time;
+    (`names/spoken-<outlines' content name>.bin`, its slashes as underscores), so it's there offline after the first time;
     until then only OSM's language tags lead to a line. The `names-todo` job keeps its own in its
     scratch.
 - It's the only place location enters: it sets the lookup order and which to-do list a name goes on.
@@ -1319,7 +1319,8 @@ them).
 **To-do** (`pipeline::namestodo`, the `names-todo` job, after each catalog the map serves):
 - **`translations/todo/<language>.jsonl`:** a name, when something in the coverage has it, no
   English of its own and no line in any language spoken there (or OSM gives it).
-  - **Read:** labels (the labels layer's zoom-12 tiles in the units' z6 tiles), roads and rail lines
+  - **Read:** labels (the labels layer's zoom-12 tiles in the units' z6 tiles, the labels inside
+    the coverage the catalog records), roads and rail lines
     (each unit's base pack, placed by their boxes' centres in the hidata's ways-here index; their
     own English from `global/roaden/<u>`), landmarks (the markdata). Not yet: the basemap's things
     (rivers' names), stations, ferries, the area overlays' names.
@@ -2289,6 +2290,10 @@ At each phase's end an Opus agent reviews the work against this plan.
    - **The refinements** cover the coverage's subdivisions only: Switzerland's cantons aren't
      (Geneva reads German first), and Åland comes out Finnish (OSM's outline of it has no ISO
      3166-1 code).
+   - **Near a border** the raster is as good as the simplified outlines (1 km for countries): where
+     two overlap the smaller wins, so a thing within about a kilometre of a border may take its
+     neighbour's languages (the ruins of Wasigenstein, in Alsace 300 m from the border, read German).
+     Fix, if it matters: the outlines' full rings near borders.
 
 ## 11. Risks and checks
 
