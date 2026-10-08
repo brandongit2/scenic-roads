@@ -507,7 +507,8 @@ export class ContourLayer implements CustomLayerInterface {
       gl.uniform4f(u.u_projection_tile_mercator_coords, m[0], m[1], m[2], m[3]);
       gl.uniform4f(u.u_projection_clipping_plane, cp[0], cp[1], cp[2], cp[3]);
       gl.uniform1f(u.u_projection_transition, pd.projectionTransition);
-      if (pd.projectionTransition < 0.999) gl.uniformMatrix4fv(u.u_projection_fallback_matrix, false, pd.fallbackMatrix as Float32List);
+      // (Always: the globe's 3D positions start from it, vite.config.ts's globe-precision patch.)
+      gl.uniformMatrix4fv(u.u_projection_fallback_matrix, false, pd.fallbackMatrix as Float32List);
       gl.uniform1f(u.u_p22, perspectiveP22(pd.mainMatrix as ArrayLike<number>));
       if (camM) {
         const n = 2 ** d.z, lat = Math.atan(Math.sinh(Math.PI * (1 - (2 * (d.y + 0.5)) / n)));

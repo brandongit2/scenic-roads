@@ -2536,7 +2536,8 @@ export class RoadLayer implements CustomLayerInterface {
       gl.uniform1f(u.u_extScale, p.ext);
       gl.uniform1f(u.u_p22, p.p22);
     }
-    if (pd.projectionTransition < 0.999) gl.uniformMatrix4fv(u.u_projection_fallback_matrix, false, pd.fallbackMatrix as Float32List);
+    // (Always: the globe's 3D positions start from it, vite.config.ts's globe-precision patch.)
+    gl.uniformMatrix4fv(u.u_projection_fallback_matrix, false, pd.fallbackMatrix as Float32List);
     if (p.cam) gl.uniform4f(u.u_camTile, p.cam[0], p.cam[1], p.cam[2], p.cam[3]);
   }
 

@@ -62,8 +62,9 @@ function maplibreSlopeColours(): Plugin {
   };
 }
 
-/** Applies `fixes` (from, to, how many times it must occur) to MapLibre's bundle, warning when one
- * isn't found exactly so (MapLibre changed: package.json pins it). */
+/** Applies `fixes` (from, to, how many times it must occur) to MapLibre's bundle (6.11.2:
+ * package.json pins it). One not found exactly so fails the build: MapLibre changed, and the map
+ * would silently draw without it (the saw at the buildings' feet back, task #115). */
 function maplibrePatch(name: string, fixes: [string, string, number][]): Plugin {
   return {
     name,
@@ -73,10 +74,7 @@ function maplibrePatch(name: string, fixes: [string, string, number][]): Plugin 
       let out = code;
       for (const [from, to, n] of fixes) {
         const found = out.split(from).length - 1;
-        if (found !== n) {
-          this.warn(`${name}: "${from.slice(0, 80)}" found ${found} times, not ${n} (MapLibre changed?): left as it was`);
-          continue;
-        }
+        if (found !== n) this.error(`${name}: "${from.slice(0, 80)}" found ${found} times in MapLibre, not ${n} (MapLibre changed? package.json pins 6.11.2)`);
         out = out.split(from).join(to);
       }
       return { code: out, map: null };

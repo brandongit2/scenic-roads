@@ -723,7 +723,8 @@ export class LandmarkDots implements CustomLayerInterface {
     const cp = pd.clippingPlane as ArrayLike<number>;
     gl.uniform4f(u.u_projection_clipping_plane, cp[0], cp[1], cp[2], cp[3]);
     gl.uniform1f(u.u_projection_transition, pd.projectionTransition);
-    if (pd.projectionTransition < 0.999) gl.uniformMatrix4fv(u.u_projection_fallback_matrix, false, pd.fallbackMatrix as Float32List);
+    // (Always: the globe's 3D positions start from it, vite.config.ts's globe-precision patch.)
+    gl.uniformMatrix4fv(u.u_projection_fallback_matrix, false, pd.fallbackMatrix as Float32List);
     gl.uniform1f(u.u_p22, perspectiveP22(pd.mainMatrix as ArrayLike<number>));
   }
 
