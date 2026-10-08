@@ -82,6 +82,10 @@ fn is_zero(v: &u32) -> bool {
     *v == 0
 }
 
+fn is_zero64(v: &u64) -> bool {
+    *v == 0
+}
+
 /// The way a step runs now, as far as its memory and time go: a cost measured another way says
 /// nothing of what a run takes now (terrain 2 and slope 2: each z6 tile's pack written as it's made,
 /// where they held their whole area's; tree cover 2: a z6 tile a run (a piece), where 1 was a z3
@@ -200,6 +204,9 @@ pub struct Shared {
     pub history: history::History,
     /// The devices that asked to help through the build page, and those accepted (`devices`).
     pub devices: devices::Devices,
+    /// The pool's lead (docs/pool.md §6.4): why it grants nothing now (settling a handover, its view
+    /// not fresh, no longer leading), workers told to ask again in a moment.
+    pub moving: Option<String>,
     /// Where the token, leases, costs and journal are kept.
     dir: PathBuf,
 }
@@ -376,6 +383,9 @@ pub struct Ask {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Grant {
     pub lease: u64,
+    /// The pool's term it's granted in (0: the pool off): its id there is `<term>-<lease>`.
+    #[serde(default, skip_serializing_if = "is_zero64")]
+    pub term: u64,
     pub ttl_s: u64,
     #[serde(flatten)]
     pub work: Granted,
@@ -425,6 +435,10 @@ pub struct Done {
     pub secs: f64,
     #[serde(default)]
     pub peak_mb: u64,
+    /// A job's hand-off its member wrote to the pool's journal itself (docs/pool.md §7.3): its lease
+    /// ends and its targets are kept out of offers, but nothing is journaled here.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub journaled: bool,
 }
 
 /// Work failed: why, and for a task out of memory, the peak it reached (MB).
@@ -478,7 +492,7 @@ impl Coordinator {
         let mut history = history::History::load(Some(&dir.join("history.jsonl")));
         history.add(history::Event { worker: Some(me.to_string()), note: format!("app {app}"), ..history::Event::new("agent") });
         let devices = devices::Devices::load(&dir.join("devices.json"));
-        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, app: app.to_string(), paused, pause_at, history, devices, dir: dir.to_path_buf() };
+        let shared = Shared { leases, pass: String::new(), offers: Vec::new(), done: BTreeMap::new(), failed: BTreeMap::new(), tasks: task::Tasks::new(dir.join("tasks")), workers: BTreeMap::new(), costs, app: app.to_string(), paused, pause_at, history, devices, moving: None, dir: dir.to_path_buf() };
         shared.save_leases();
         let shared = Arc::new(Mutex::new(shared));
         // This agent's jobs' own token (they offer tasks): never published, and gone with them.
@@ -542,6 +556,10 @@ impl Coordinator {
         let mut s = self.shared.lock().unwrap();
         let held = s.leases.held(step, now);
         if targets.iter().any(|t| held.contains(&t.0)) {
+            return None;
+        }
+        // (In the pool, a target a member did under this key, its entry not merged yet: as held.)
+        if s.leases.term > 0 && targets.iter().any(|(t, k)| s.done.get(&(step.to_string(), t.clone())) == Some(k)) {
             return None;
         }
         let id = s.leases.grant(&self.me, Work::Job { step: step.to_string(), targets: targets.to_vec() }, now);
@@ -689,11 +707,89 @@ impl Coordinator {
         (s.costs.clone(), leased, s.history.since(0, usize::MAX), mem)
     }
 
+    /// The pool's term the leases it grants now are in (docs/pool.md §7.5; 0: the pool off).
+    pub fn set_term(&self, term: u64) {
+        self.shared.lock().unwrap().leases.term = term;
+    }
+
+    /// The pool's term lease `id` was granted in (0: none, or the pool off).
+    pub fn lease_term(&self, id: u64) -> u64 {
+        self.shared.lock().unwrap().leases.of(id).map_or(0, |l| l.term)
+    }
+
+    /// Ends the leases of `workers` (this Mac's own, whose jobs ended with the process before);
+    /// those ended.
+    pub fn drop_workers(&self, workers: &[String]) -> Vec<Lease> {
+        let mut s = self.shared.lock().unwrap();
+        let gone = s.leases.drop_where(|l| workers.contains(&l.worker));
+        if !gone.is_empty() {
+            s.save_leases();
+        }
+        gone
+    }
+
+    /// The pool's lead granting nothing now, and why (settling a handover, its view not fresh, no
+    /// longer leading); None: granting again.
+    pub fn set_moving(&self, why: Option<String>) {
+        self.shared.lock().unwrap().moving = why;
+    }
+
+    /// Its state as the pool keeps it per term (docs/pool.md §6.2, §7.5): the jobs' leases (each
+    /// with its term and when it was granted), what each target cost, the workers' failures (when,
+    /// by this Mac's wall clock), the pause. Taken under the lock, written by the caller without it.
+    pub fn pool_state(&self) -> PoolState {
+        let s = self.shared.lock().unwrap();
+        let (now, unix) = (Instant::now(), unix_now());
+        let failed = s.failed.iter().map(|((w, k), (at, n))| (w.clone(), k.clone(), unix.saturating_sub(now.duration_since(*at).as_secs()), *n)).collect();
+        PoolState { leases: s.leases.snapshot(), costs: s.costs.clone(), failed, pause: s.paused.clone(), pause_at: s.pause_at }
+    }
+
+    /// Takes up `p`, another lead's state (a handover's, or the term before's): its leases over
+    /// these, its costs and failures added, its pause if it's the later.
+    pub fn load_pool_state(&self, p: &PoolState) -> Result<usize> {
+        let mut s = self.shared.lock().unwrap();
+        let (now, unix) = (Instant::now(), unix_now());
+        let n = s.leases.restore(&p.leases, now)?;
+        s.costs.extend(p.costs.clone());
+        for (w, k, at, n) in &p.failed {
+            let at = now.checked_sub(Duration::from_secs(unix.saturating_sub(*at))).unwrap_or(now);
+            s.failed.insert((w.clone(), k.clone()), (at, *n));
+        }
+        if p.pause_at >= s.pause_at {
+            set_pause(&mut s, p.pause.clone(), p.pause_at);
+        }
+        s.save_leases();
+        s.save_costs();
+        Ok(n)
+    }
+
+    /// The history's events after number `seq` (the pool's history per writer: docs/pool.md §7.5).
+    pub fn history_since(&self, seq: u64) -> Vec<history::Event> {
+        self.shared.lock().unwrap().history.since(seq, usize::MAX)
+    }
+
     /// The workers around now (asked within two minutes), for the heartbeat: (name, worker).
     pub fn workers(&self) -> Vec<(String, Worker)> {
         let s = self.shared.lock().unwrap();
         s.workers.iter().filter(|(_, w)| w.seen.elapsed() < AROUND).map(|(n, w)| (n.clone(), w.clone())).collect()
     }
+}
+
+/// The coordinator's state as the pool keeps it per term (`Coordinator::pool_state`):
+/// `state/coord/term/<E>/state.json`, and what a lead settling a handover hands over.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PoolState {
+    #[serde(default)]
+    pub leases: serde_json::Value,
+    #[serde(default)]
+    pub costs: BTreeMap<String, Cost>,
+    /// (worker, cost key, when it last failed: unix seconds, how many times).
+    #[serde(default)]
+    pub failed: Vec<(String, String, u64, u32)>,
+    #[serde(default)]
+    pub pause: Option<crate::control::Pause>,
+    #[serde(default)]
+    pub pause_at: u64,
 }
 
 /// Whether an agent on app `theirs` may build for a coordinator on `ours`: the same, or a newer
@@ -958,6 +1054,11 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 (a.worker, a.label) = (n.clone(), Some(label.clone()));
             }
             let mut s = shared.lock().unwrap();
+            // The pool's lead moving or not fresh: nothing now (docs/pool.md §6.4).
+            if let Some(why) = s.moving.clone() {
+                s.seen(&a.worker, format!("waiting: {why}"), None, now);
+                return Ok(if a.kind == "native" { (409, serde_json::json!({ "error": format!("the lead is moving ({why}); ask again in a moment") })) } else { (204, serde_json::Value::Null) });
+            }
             // The build paused: nothing (an agent told why, and the pause; a page, nothing now).
             if let Some(p) = s.paused.clone() {
                 s.seen(&a.worker, format!("waiting: {}", p.why()), None, now);
@@ -995,7 +1096,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                         s.save_leases();
                         eprintln!("coordinator: {} took {} {}", a.worker, o.step, pick.iter().map(|t| t.0.as_str()).collect::<Vec<_>>().join(" "));
                         s.history.add(history::Event { worker: Some(a.worker.clone()), lease: Some(lease), step: Some(o.step.clone()), targets: pick.iter().map(|t| t.0.clone()).collect(), ..history::Event::new("lease") });
-                        let g = Grant { lease, ttl_s: TTL.as_secs(), work: Granted::Job { step: o.step.clone(), targets: pick, pass: s.pass.clone() } };
+                        let g = Grant { lease, term: s.leases.term, ttl_s: TTL.as_secs(), work: Granted::Job { step: o.step.clone(), targets: pick, pass: s.pass.clone() } };
                         return Ok((200, serde_json::to_value(g)?));
                     }
                 }
@@ -1006,7 +1107,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 s.save_leases();
                 let t = s.tasks.by_id.get_mut(&id).unwrap();
                 t.state = task::State::Leased { lease, worker: a.worker.clone() };
-                let g = Grant { lease, ttl_s: TTL.as_secs(), work: Granted::Task { id, task: t.spec.clone(), mem_mb: t.mem_mb } };
+                let g = Grant { lease, term: 0, ttl_s: TTL.as_secs(), work: Granted::Task { id, task: t.spec.clone(), mem_mb: t.mem_mb } };
                 eprintln!("coordinator: {} took task {id} ({})", a.worker, t.kind);
                 return Ok((200, serde_json::to_value(g)?));
             }
@@ -1103,7 +1204,9 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                         }
                     }
                     drop(s);
-                    if let Err(e) = crate::handoff::write(&journal.join(folder(&d.worker)), &h) {
+                    // (Its member wrote it to the pool's journal itself: nothing journaled here.)
+                    let wrote = if d.journaled { Ok(()) } else { crate::handoff::write(&journal.join(folder(&d.worker)), &h) };
+                    if let Err(e) = wrote {
                         let mut s = shared.lock().unwrap();
                         for (t, _) in &targets {
                             s.done.remove(&(step.clone(), t.clone()));

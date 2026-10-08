@@ -4,6 +4,10 @@
 //! quiet: its work is offered again. While the build is paused every lease is held (`hold_all`),
 //! beats or not, and each has a whole TTL again when it goes on. A job's leases are saved on this Mac's disk, so the agent restarting (a new app)
 //! costs no worker its work; a task's die with the job that offered it.
+//!
+//! In the pool (docs/pool.md §7.5) a lease is also the term it was granted in (`Lease::term`: its
+//! id there is `<term>-<id>`, crate::pool::journal::LeaseId), and when (`granted_at`: this Mac's
+//! wall clock), so a lead after this one knows it as this one did (`snapshot`, `restore`).
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,6 +26,12 @@ pub enum Work {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Lease {
     pub id: u64,
+    /// The pool's term it was granted in (0: none, the pool off).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub term: u64,
+    /// When it was granted (unix seconds, this Mac's clock), kept across leads.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub granted_at: u64,
     pub worker: String,
     pub work: Work,
     /// (Restarted from the load when read back from disk.)
@@ -58,12 +68,18 @@ impl Lease {
     }
 }
 
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
 #[derive(Debug)]
 pub struct Leases {
     next: u64,
     by_id: BTreeMap<u64, Lease>,
     /// How long a lease lasts without a heartbeat.
     pub ttl: Duration,
+    /// The pool's term the leases granted now are in (0: the pool off).
+    pub term: u64,
 }
 
 /// What's saved: the next id (ids never repeat across restarts) and the jobs' leases.
@@ -75,7 +91,7 @@ struct Saved {
 
 impl Leases {
     pub fn new(ttl: Duration) -> Leases {
-        Leases { next: 1, by_id: BTreeMap::new(), ttl }
+        Leases { next: 1, by_id: BTreeMap::new(), ttl, term: 0 }
     }
 
     /// The leases saved at `path` (none when there's no file), each live for a whole `ttl` from
@@ -96,8 +112,32 @@ impl Leases {
 
     /// Saves the jobs' leases (whole: a crash never leaves half a file).
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        let leases: Vec<Lease> = self.by_id.values().filter(|l| matches!(l.work, Work::Job { .. })).cloned().collect();
-        crate::whole::write(path, &serde_json::to_vec_pretty(&Saved { next: self.next, leases })?)
+        crate::whole::write(path, &serde_json::to_vec_pretty(&self.saved())?)
+    }
+
+    fn saved(&self) -> Saved {
+        Saved { next: self.next, leases: self.by_id.values().filter(|l| matches!(l.work, Work::Job { .. })).cloned().collect() }
+    }
+
+    /// The jobs' leases as `save` writes them, for the pool's state per term (docs/pool.md §7.5):
+    /// each with its term and when it was granted.
+    pub fn snapshot(&self) -> serde_json::Value {
+        serde_json::to_value(self.saved()).unwrap_or_default()
+    }
+
+    /// Takes the jobs' leases of `snapshot` (another lead's, or this one's own earlier term's), each
+    /// live for a whole `ttl` from `now` (its worker beats again once it reaches this one), over
+    /// any it has of the same id; ids go on from the highest given.
+    pub fn restore(&mut self, v: &serde_json::Value, now: Instant) -> anyhow::Result<usize> {
+        let s: Saved = serde_json::from_value(v.clone())?;
+        self.next = self.next.max(s.next);
+        let n = s.leases.len();
+        for mut x in s.leases {
+            (x.granted, x.deadline) = (now, now + self.ttl);
+            self.next = self.next.max(x.id + 1);
+            self.by_id.insert(x.id, x);
+        }
+        Ok(n)
     }
 
     fn live(&self, now: Instant) -> impl Iterator<Item = &Lease> {
@@ -113,8 +153,14 @@ impl Leases {
     pub fn grant(&mut self, worker: &str, work: Work, now: Instant) -> u64 {
         let id = self.next;
         self.next += 1;
-        self.by_id.insert(id, Lease { id, worker: worker.to_string(), work, granted: now, deadline: now + self.ttl, progress: None, frac: None });
+        let granted_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        self.by_id.insert(id, Lease { id, term: self.term, granted_at, worker: worker.to_string(), work, granted: now, deadline: now + self.ttl, progress: None, frac: None });
         id
+    }
+
+    /// Lease `id`, live or not yet expired, whoever holds it.
+    pub fn of(&self, id: u64) -> Option<&Lease> {
+        self.by_id.get(&id)
     }
 
     /// `worker`'s live lease `id`, if it is one.
@@ -242,5 +288,31 @@ mod tests {
         assert!(back.finish(a, "m4", t3).is_none());
         assert_eq!(back.drop_where(|x| x.worker == "m1").len(), 2);
         assert!(back.all(t3).is_empty());
+    }
+
+    #[test]
+    fn a_lease_says_its_term_and_another_lead_takes_it_up() {
+        // (docs/pool.md §7.5: leases `<term>-<n>`, wall-clock times, saved per term.)
+        let t0 = Instant::now();
+        let mut a = Leases::new(Duration::from_secs(600));
+        a.term = 4;
+        let id = a.grant("m1", job(&[("6/1/1", "k1")]), t0);
+        a.grant("ipad", Work::Task { id: 1 }, t0);
+        let l = a.of(id).unwrap().clone();
+        assert_eq!(l.term, 4);
+        assert!(l.granted_at > 1_700_000_000);
+        let snap = a.snapshot();
+        assert!(snap.to_string().contains("\"term\":4"), "{snap}");
+        // Another lead, in term 5: its jobs' leases (not the task's), each live a whole ttl; its own
+        // ids go on past them.
+        let t1 = t0 + Duration::from_secs(900);
+        let mut b = Leases::new(Duration::from_secs(600));
+        b.term = 5;
+        assert_eq!(b.restore(&snap, t1).unwrap(), 1);
+        assert!(b.get(id, "m1", t1).is_some() && b.held("unit", t1).contains("6/1/1"));
+        assert_eq!((b.of(id).unwrap().term, b.of(id).unwrap().granted_at), (4, l.granted_at));
+        let mine = b.grant("m4", job(&[("6/2/2", "k2")]), t1);
+        assert!(mine > id && b.of(mine).unwrap().term == 5);
+        assert!(b.restore(&serde_json::json!({"leases": 3}), t1).is_err());
     }
 }
