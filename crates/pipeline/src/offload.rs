@@ -5,9 +5,12 @@
 //! own folder (copy-on-write: instant, and the job may go on in the unit's), the coordinator serves
 //! them to the worker that takes the task, and takes back what it wrote.
 //!
-//! Nothing is waited on that this Mac could do itself: a task no one took is taken back and run
-//! here, and one a worker still holds when the job needs it is run here too (whichever finishes
-//! first counts; a worker's result that comes in too is compared). A worker's first results are all
+//! Nothing is waited on longer than this Mac would take itself: when the job needs a task, one no
+//! one took waits up to half a minute while a worker that could take it is asking for work (a page
+//! asks every 15–20 s), and one a worker holds waits only while that worker will be back with it
+//! sooner than this Mac's own run of it would end (`Patience`); then it's taken back and run here,
+//! or, a worker holding it, run here too (whichever finishes first counts; a worker's result that
+//! comes in too is compared). A worker's first results are all
 //! checked against this Mac's own run of the same steps, then one in eight (the coordinator says
 //! which): the steps are deterministic, so any difference is the worker's fault, and it gets no
 //! more work.
@@ -32,6 +35,38 @@ pub struct Offload {
 pub struct Offered {
     pub id: u64,
     pub root: PathBuf,
+}
+
+/// How long the job gives a task no one took, while a worker that could take it is asking for
+/// work, before taking it back (a page with a slot idle asks every 15–20 s).
+pub const LEASE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long this Mac's own run of a task is taken to be when it doesn't know (seconds): what a
+/// worker holding it may take at most.
+pub const UNKNOWN_HERE_S: f64 = 180.0;
+
+/// How long the job waits on a task when it needs it, before running it here.
+#[derive(Clone, Copy, Debug)]
+pub struct Patience {
+    /// This Mac's own run of it (seconds; None: not known, `UNKNOWN_HERE_S`).
+    pub here_s: Option<f64>,
+}
+
+impl Patience {
+    /// Whether to go on waiting on a worker that has held the task `age_s` and says it's `frac`
+    /// through (None: not said yet), `waited_s` after the job began waiting on it: while its
+    /// projected end (its time so far over how far it is) comes before this Mac's own run, begun
+    /// when the waiting began, would end. Not said yet: for the whole of this Mac's time.
+    pub fn wait_on(&self, waited_s: f64, age_s: f64, frac: Option<f64>) -> bool {
+        let budget = self.here_s.unwrap_or(UNKNOWN_HERE_S);
+        if waited_s >= budget {
+            return false;
+        }
+        match frac.filter(|f| *f > 0.0) {
+            Some(f) => age_s * (1.0 - f.min(1.0)) / f <= budget - waited_s,
+            None => true,
+        }
+    }
 }
 
 /// How a unit's tail went, for its log line.
@@ -121,20 +156,55 @@ impl Offload {
         self.offer_spec("tail", spec, &root, inputs, mem_mb)
     }
 
-    /// Settles task `t` of the unit in `dir`; with `wait` false only when a worker finished or failed
-    /// it (None otherwise). `here` runs its steps in `dir`.
-    pub fn settle(&self, t: &Offered, dir: &Path, wait: bool, here: &mut dyn FnMut() -> Result<()>) -> Result<Option<Settled>> {
+    /// Settles task `t` of the unit in `dir`; with `wait` None only when a worker finished or failed
+    /// it (None otherwise), else after the patience given. `here` runs its steps in `dir`.
+    pub fn settle(&self, t: &Offered, dir: &Path, wait: Option<Patience>, here: &mut dyn FnMut() -> Result<()>) -> Result<Option<Settled>> {
         let root = t.root.clone();
         self.settle_with(t, wait, here, &mut |st| take(st, dir), &mut |st, since| same(st, dir, &root, since))
     }
 
-    /// Settles task `t`, any kind's: with `wait` false only when a worker finished or failed it
-    /// (None otherwise). A worker's result unchecked is taken (`take`, with the task's status: its
-    /// outputs in `out`); else it's run here (`here`), and a worker's result that came in too
-    /// compared with this Mac's run (`same`, with the status and when that run began). Its folder
-    /// goes.
-    pub fn settle_with(&self, t: &Offered, wait: bool, here: &mut dyn FnMut() -> Result<()>, take: &mut dyn FnMut(&serde_json::Value) -> Result<()>, same: &mut dyn FnMut(&serde_json::Value, std::time::SystemTime) -> Result<bool>) -> Result<Option<Settled>> {
-        let st = self.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({}))?.1;
+    /// Task `t`'s status, after waiting on it as `p` allows (the build pausing: not at all): a
+    /// moment for a worker to take it (`LEASE_WAIT`, while one that could is asking for work), and
+    /// then, a worker holding it, while it'll be back before this Mac's own run would end.
+    fn wait_on(&self, t: &Offered, mut st: serde_json::Value, p: Patience) -> Result<serde_json::Value> {
+        let status = || self.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).map(|r| r.1);
+        let began = std::time::Instant::now();
+        let mut held: Option<(std::time::Instant, String)> = None;
+        loop {
+            if crate::control::draining() {
+                return Ok(st);
+            }
+            match st["state"].as_str() {
+                Some("offered") if held.is_none() && began.elapsed() < LEASE_WAIT && st["takers"].as_u64().unwrap_or(0) > 0 => {}
+                Some("leased") => {
+                    let since = held.get_or_insert_with(|| (std::time::Instant::now(), st["worker"].as_str().unwrap_or("").to_string())).0;
+                    if !p.wait_on(since.elapsed().as_secs_f64(), st["age_s"].as_f64().unwrap_or(0.0), st["frac"].as_f64()) {
+                        eprintln!("offload: task {}: {} still has it after {:.0} s, not back before this Mac's run would be: run here too", t.id, st["worker"].as_str().unwrap_or(""), since.elapsed().as_secs_f64());
+                        return Ok(st);
+                    }
+                }
+                _ => {
+                    if let Some((since, w)) = &held {
+                        eprintln!("offload: task {}: waited {:.0} s on {w} ({})", t.id, since.elapsed().as_secs_f64(), st["state"].as_str().unwrap_or("gone"));
+                    }
+                    return Ok(st);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+            st = status()?;
+        }
+    }
+
+    /// Settles task `t`, any kind's: with `wait` None only when a worker finished or failed it
+    /// (None otherwise), else after the patience given (`wait_on`). A worker's result unchecked is
+    /// taken (`take`, with the task's status: its outputs in `out`); else it's run here (`here`),
+    /// and a worker's result that came in too compared with this Mac's run (`same`, with the status
+    /// and when that run began). Its folder goes.
+    pub fn settle_with(&self, t: &Offered, wait: Option<Patience>, here: &mut dyn FnMut() -> Result<()>, take: &mut dyn FnMut(&serde_json::Value) -> Result<()>, same: &mut dyn FnMut(&serde_json::Value, std::time::SystemTime) -> Result<bool>) -> Result<Option<Settled>> {
+        let mut st = self.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({}))?.1;
+        if let Some(p) = wait {
+            st = self.wait_on(t, st, p)?;
+        }
         let state = st["state"].as_str().unwrap_or("gone").to_string();
         let worker = st["worker"].as_str().unwrap_or("").to_string();
         let mut checked = None;
@@ -154,7 +224,7 @@ impl Offload {
                 here()?;
                 Settled::Here(None)
             }
-            _ if !wait => return Ok(None),
+            _ if wait.is_none() => return Ok(None),
             _ => {
                 // Taken back if no one has it; raced if someone does.
                 let withdrawn = self.client.post_json(&format!("/task/{}/withdraw", t.id), &serde_json::json!({}))?.1["withdrawn"].as_bool() == Some(true);
@@ -443,12 +513,115 @@ mod tests {
             ran = true;
             crate::unit::run_tail(&runs, &dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, moi_dtm: None, sources: None, shared: None, chm: None, stores_read_only: false, spacing_m: 8, snap: None })
         };
-        let s = o.settle(&t, &dir, false, &mut here).unwrap().unwrap();
+        let s = o.settle(&t, &dir, None, &mut here).unwrap().unwrap();
         assert!(ran && matches!(s, Settled::Here(Some((ref w, true))) if w == "m1"));
         assert_eq!(std::fs::read(dir.join("out.bin")).unwrap(), b"inmore\n");
         assert_eq!(std::fs::read(dir.join("kept.bin")).unwrap(), b"as it was");
         assert!(!dir.join("gone.bin").exists());
         assert!(!t.root.exists(), "the task's folder goes");
+    }
+
+    #[test]
+    fn a_worker_is_waited_on_while_it_beats_this_macs_own_run() {
+        let p = Patience { here_s: Some(100.0) };
+        // Nothing said yet: the whole of this Mac's time.
+        assert!(p.wait_on(0.0, 5.0, None) && p.wait_on(99.0, 120.0, None) && !p.wait_on(100.0, 120.0, None));
+        // Half through after 40 s: 40 s more, within the 100.
+        assert!(p.wait_on(10.0, 40.0, Some(0.5)));
+        // A tenth through after 40 s: 360 s more, not.
+        assert!(!p.wait_on(10.0, 40.0, Some(0.1)));
+        // Waited 80 s: only 20 s left, and it needs 40.
+        assert!(!p.wait_on(80.0, 40.0, Some(0.5)));
+        // Not known here: three minutes.
+        assert!(Patience { here_s: None }.wait_on(170.0, 1.0, None) && !Patience { here_s: None }.wait_on(UNKNOWN_HERE_S, 1.0, None));
+    }
+
+    /// A coordinator, a job's Offload and a unit's folder with a stand-in step (it writes one file),
+    /// in `d`: (the coordinator, its address, the job's Offload, the folder, the step's programs,
+    /// its runs).
+    fn setup(d: &Path) -> (crate::coord::Coordinator, String, Offload, PathBuf, PathBuf, Vec<Run>) {
+        use std::os::unix::fs::PermissionsExt;
+        let (c, port) = crate::coord::start_for_test(&d.join("coord"), "m4", "");
+        let dir = d.join("unit");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("in.bin"), b"in").unwrap();
+        let bin = d.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("step"), "#!/bin/sh\ncat \"$1/in.bin\" > \"$1/out.bin\"\n").unwrap();
+        std::fs::set_permissions(bin.join("step"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let runs = vec![Run { what: "a step".into(), prog: "step".into(), args: vec!["{dir}".into()], env: vec![], reads: vec!["{dir}/in.bin".into()] }];
+        let url = format!("http://127.0.0.1:{port}");
+        let o = Offload { client: Client::at(vec![url.clone()], c.job_token.clone(), "job"), owner: 1, version: "v".into(), dir: d.join("tasks") };
+        (c, url, o, dir, bin, runs)
+    }
+
+    #[test]
+    fn a_single_units_tail_waits_for_a_worker_asking_for_work() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, url, o, dir, bin, runs) = setup(d.path());
+        let ask = crate::coord::Ask { kind: "native".into(), can: vec!["tail".into()], mem_mb: 4096, ..Default::default() };
+        let here = |dir: &Path| crate::unit::run_tail(&runs, dir, &crate::unit::Tools { bin: bin.clone(), dem: PathBuf::new(), cache: d.path().join("cache"), buildings: None, moi_dtm: None, sources: None, shared: None, chm: None, stores_read_only: false, spacing_m: 8, snap: None });
+        let p = Patience { here_s: Some(30.0) };
+        // No one asking but a page sparing too little for it (300 MB at least): taken back at once,
+        // run here.
+        let small = Client::at(vec![url.clone()], c.contact.token.clone(), "phone");
+        assert!(small.ask(&crate::coord::Ask { kind: "web".into(), can: vec!["tail".into()], mem_mb: 200, ..Default::default() }).unwrap().is_none());
+        let t = o.offer(Unit::parse("6/1/1").unwrap(), &dir, None, &runs).unwrap();
+        assert_eq!(o.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).unwrap().1["takers"], 0);
+        let began = std::time::Instant::now();
+        let s = o.settle(&t, &dir, Some(p), &mut || here(&dir)).unwrap().unwrap();
+        assert!(matches!(s, Settled::Here(None)) && began.elapsed() < std::time::Duration::from_secs(2));
+        // A worker asking for work (nothing then), a moment later asking again: it takes the task
+        // the job offered as its one unit's, runs it and hands it back, and the job waited for it.
+        let m1 = Client::at(vec![url.clone()], c.contact.token.clone(), "m1");
+        assert!(m1.ask(&ask).unwrap().is_none());
+        let t = o.offer(Unit::parse("6/1/1").unwrap(), &dir, None, &runs).unwrap();
+        assert_eq!(o.client.post_json(&format!("/task/{}", t.id), &serde_json::json!({})).unwrap().1["takers"], 1);
+        let worker = {
+            let (m1, ask, bin, home) = (Client::at(vec![url.clone()], c.contact.token.clone(), "m1"), ask.clone(), bin.clone(), d.path().join("m1"));
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let g = m1.ask(&ask).unwrap().unwrap();
+                let crate::coord::Granted::Task { task, .. } = g.work else { panic!("not a task") };
+                let r = run_task(&m1, g.lease, &task, &home, &bin, None).unwrap();
+                let done = crate::coord::Done { lease: g.lease, outputs: serde_json::from_value(r["outputs"].clone()).unwrap(), secs: 1.0, ..Default::default() };
+                assert_eq!(m1.done(&done).unwrap(), crate::coord::client::Handed::Taken);
+            })
+        };
+        let began = std::time::Instant::now();
+        let s = o.settle(&t, &dir, Some(p), &mut || here(&dir)).unwrap().unwrap();
+        worker.join().unwrap();
+        // (Its first results are checked: run here too once it was back, and the same.)
+        assert!(matches!(s, Settled::Here(Some((ref w, true))) if w == "m1"), "{:?}", matches!(s, Settled::Here(None)));
+        assert!(began.elapsed() >= std::time::Duration::from_secs(2));
+        assert_eq!(std::fs::read(dir.join("out.bin")).unwrap(), b"in");
+    }
+
+    #[test]
+    fn a_worker_slower_than_this_mac_is_raced() {
+        let d = tempfile::tempdir().unwrap();
+        let (c, url, o, dir, _bin, runs) = setup(d.path());
+        let ask = crate::coord::Ask { kind: "web".into(), can: vec!["tail".into()], mem_mb: 4096, ..Default::default() };
+        let page = Client::at(vec![url], c.contact.token.clone(), "ipad");
+        let mut ran = 0;
+        // It holds the task and says nothing of how far it is: waited on for this Mac's time (2 s),
+        // then raced.
+        let t = o.offer(Unit::parse("6/1/1").unwrap(), &dir, None, &runs).unwrap();
+        let g = page.ask(&ask).unwrap().unwrap();
+        let began = std::time::Instant::now();
+        let s = o.settle(&t, &dir, Some(Patience { here_s: Some(2.0) }), &mut || Ok(ran += 1)).unwrap().unwrap();
+        assert!(matches!(s, Settled::Here(None)) && ran == 1);
+        assert!((2.0..4.0).contains(&began.elapsed().as_secs_f64()));
+        // It says it's a hundredth through: it wouldn't be back before this Mac's run (60 s) would
+        // end, so it's raced at once.
+        let t = o.offer(Unit::parse("6/1/1").unwrap(), &dir, None, &runs).unwrap();
+        let g2 = page.ask(&ask).unwrap().unwrap();
+        assert_ne!(g.lease, g2.lease);
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        page.post_json("/work/beat", &serde_json::json!({ "worker": "ipad", "lease": g2.lease, "frac": 0.01 })).unwrap();
+        let began = std::time::Instant::now();
+        let s = o.settle(&t, &dir, Some(Patience { here_s: Some(60.0) }), &mut || Ok(ran += 1)).unwrap().unwrap();
+        assert!(matches!(s, Settled::Here(None)) && ran == 2 && began.elapsed().as_secs_f64() < 1.5);
     }
 
     #[test]

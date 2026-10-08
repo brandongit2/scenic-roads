@@ -218,9 +218,12 @@ pub fn results_dir(scratch: &Path, a: Unit) -> PathBuf {
 
 /// A `bldtiles` job's areas out as tasks (crate::offload), as a unit job's tails are: offered from
 /// the far end of T's list while workers that take them are around (at most three out at once),
-/// settled in their turn. Nothing waits on a worker: an area no one took is taken back and run here,
-/// one a worker holds is raced here; a worker's result is taken, or (the coordinator says when)
-/// checked against this Mac's run byte for byte, a difference marking the worker bad.
+/// settled in their turn. Nothing waits on a worker longer than this Mac would take: an area no one
+/// took is given a moment, then taken back and run here; one a worker holds is waited on while the
+/// worker will be back with it before this Mac's run would end (crate::offload::Patience: its
+/// buildings at the pace of the areas made here), then raced here; a worker's result is taken, or
+/// (the coordinator says when) checked against this Mac's run byte for byte, a difference marking
+/// the worker bad.
 pub struct Offers<'a> {
     offload: Option<&'a crate::offload::Offload>,
     t: Unit,
@@ -233,13 +236,28 @@ pub struct Offers<'a> {
     far: usize,
     /// At most this many out at once.
     most: usize,
+    /// The buildings each area out has (its work files' records), and the areas made here so far:
+    /// their time and buildings (what an area takes here, `Patience`).
+    records: BTreeMap<usize, u64>,
+    here: (f64, u64),
 }
 
 impl<'a> Offers<'a> {
     pub fn new(offload: Option<&'a crate::offload::Offload>, scratch: &Path, t: Unit, areas: usize) -> Offers<'a> {
         let scratch = scratch.to_path_buf();
         std::fs::remove_dir_all(scratch.join("bldtile-results")).ok();
-        Offers { offload, t, scratch, out: BTreeMap::new(), ready: BTreeMap::new(), far: areas, most: 3 }
+        Offers { offload, t, scratch, out: BTreeMap::new(), ready: BTreeMap::new(), far: areas, most: 3, records: BTreeMap::new(), here: (0.0, 0) }
+    }
+
+    /// An area made here took `secs` for its `records` buildings (and parts, and those outside).
+    pub fn made_here(&mut self, records: u64, secs: f64) {
+        self.here = (self.here.0 + secs, self.here.1 + records);
+    }
+
+    /// About how long area `i` would take here (seconds), at the pace of those made here so far.
+    fn here_s(&self, i: usize) -> Option<f64> {
+        let (secs, n) = self.here;
+        (n > 0).then(|| secs / n as f64 * self.records.get(&i).copied().unwrap_or(0) as f64)
     }
 
     fn area(&self, areas: &[(u32, u32)], i: usize) -> Unit {
@@ -251,7 +269,7 @@ impl<'a> Offers<'a> {
     pub fn top_up(&mut self, files: &[Option<WorkFile>], cov: &Coverage, areas: &[(u32, u32)], k: usize) -> Result<()> {
         let Some(o) = self.offload else { return Ok(()) };
         for i in self.out.keys().copied().collect::<Vec<_>>() {
-            self.settle(files, cov, areas, i, false)?;
+            self.settle(files, cov, areas, i, None)?;
         }
         if self.far <= k + 1 || self.out.len() >= self.most {
             return Ok(());
@@ -264,11 +282,12 @@ impl<'a> Offers<'a> {
                 let root = o.task_root(&format!("bldtile-{}", a.dash()));
                 let c = cut(files, cov, self.t, (a.x, a.y), &root.join("u"))?;
                 let inputs = inputs_of(&root)?;
-                o.offer_spec(KIND, spec(a, o.version(), &inputs), &root, inputs, c.mem_mb())
+                o.offer_spec(KIND, spec(a, o.version(), &inputs), &root, inputs, c.mem_mb()).map(|t| (t, c.records))
             })();
             match offered {
-                Ok(task) => {
+                Ok((task, records)) => {
                     self.out.insert(self.far, task);
+                    self.records.insert(self.far, records);
                 }
                 Err(e) => {
                     // (Run here in its turn, and none offered after it.)
@@ -285,14 +304,15 @@ impl<'a> Offers<'a> {
     /// into the pack (`take_area`) and remove. None: it's to run here.
     pub fn result(&mut self, files: &[Option<WorkFile>], cov: &Coverage, areas: &[(u32, u32)], k: usize) -> Result<Option<PathBuf>> {
         if self.out.contains_key(&k) {
-            self.settle(files, cov, areas, k, true)?;
+            let p = crate::offload::Patience { here_s: self.here_s(k) };
+            self.settle(files, cov, areas, k, Some(p))?;
         }
         Ok(self.ready.remove(&k))
     }
 
-    /// Settles area `i`'s task (with `wait` false, only when a worker finished or failed it): its
-    /// results put in its folder.
-    fn settle(&mut self, files: &[Option<WorkFile>], cov: &Coverage, areas: &[(u32, u32)], i: usize, wait: bool) -> Result<()> {
+    /// Settles area `i`'s task (with `wait` None, only when a worker finished or failed it; else
+    /// after that patience): its results put in its folder.
+    fn settle(&mut self, files: &[Option<WorkFile>], cov: &Coverage, areas: &[(u32, u32)], i: usize, wait: Option<crate::offload::Patience>) -> Result<()> {
         let (Some(o), Some(task)) = (self.offload, self.out.get(&i)) else { return Ok(()) };
         let a = self.area(areas, i);
         let mine = results_dir(&self.scratch, a);
@@ -336,6 +356,7 @@ impl<'a> Offers<'a> {
         };
         eprintln!("bldtiles {}: area {} made {how}", self.t.slash(), a.slash());
         self.out.remove(&i);
+        self.records.remove(&i);
         self.ready.insert(i, mine);
         Ok(())
     }
@@ -589,13 +610,20 @@ mod tests {
         take_area(&dir, a8, &mut collect(&mut again)).unwrap();
         assert_eq!(again, want, "this Mac's");
         assert!(c.shared.lock().unwrap().workers["m1"].bad);
-        // A task no one took: taken back and run here.
+        // A task no one took (a worker asking, sparing too little for it): taken back and run here
+        // at once. (What it would take here: its buildings at the pace of those made here.)
         let m2 = crate::coord::client::Client::at(vec![format!("http://127.0.0.1:{port}")], c.contact.token.clone(), "m2");
         m2.ask(&crate::coord::Ask { kind: "native".into(), can: vec![KIND.into()], mem_mb: 10, ..Default::default() }).unwrap();
         let mut offers = Offers::new(Some(&o), &scratch, t, areas.len());
         offers.top_up(&files, &cov, &areas, 0).unwrap();
         assert_eq!(offers.out.len(), 1);
+        assert_eq!(offers.here_s(1), None);
+        offers.made_here(10, 2.0);
+        assert!(offers.records[&1] > 0);
+        assert_eq!(offers.here_s(1), Some(0.2 * offers.records[&1] as f64));
+        let began = std::time::Instant::now();
         let dir = offers.result(&files, &cov, &areas, 1).unwrap().unwrap();
+        assert!(began.elapsed() < std::time::Duration::from_secs(2));
         let mut third: Tiles = Vec::new();
         take_area(&dir, a8, &mut collect(&mut third)).unwrap();
         assert_eq!(third, want);

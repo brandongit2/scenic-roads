@@ -466,8 +466,9 @@ pub struct Areas {
     under_way: BTreeMap<String, f64>,
     /// The area whose stages are said now.
     current: Option<String>,
-    /// About how long each stage takes here (seconds).
+    /// About how long each stage takes here (seconds), and those this Mac has timed (kept or now).
     secs: BTreeMap<String, f64>,
+    learned: std::collections::BTreeSet<String>,
     file: Option<PathBuf>,
     said_at: Option<std::time::Instant>,
 }
@@ -476,10 +477,19 @@ impl Areas {
     /// `n` areas, their stages' times learned in `file` (when there is one).
     pub fn new(n: usize, file: Option<PathBuf>) -> Areas {
         let mut secs: BTreeMap<String, f64> = STAGES.iter().map(|(s, t)| (s.to_string(), *t)).collect();
+        let mut learned = std::collections::BTreeSet::new();
         if let Some(kept) = file.as_ref().and_then(|f| std::fs::read(f).ok()).and_then(|b| serde_json::from_slice::<BTreeMap<String, f64>>(&b).ok()) {
-            secs.extend(kept.into_iter().filter(|(s, t)| STAGES.iter().any(|x| x.0 == s) && t.is_finite() && *t >= 0.0));
+            for (s, t) in kept.into_iter().filter(|(s, t)| STAGES.iter().any(|x| x.0 == s) && t.is_finite() && *t >= 0.0) {
+                learned.insert(s.clone());
+                secs.insert(s, t);
+            }
         }
-        Areas { n, finished: Default::default(), under_way: BTreeMap::new(), current: None, secs, file, said_at: None }
+        Areas { n, finished: Default::default(), under_way: BTreeMap::new(), current: None, secs, learned, file, said_at: None }
+    }
+
+    /// About how long `stages` take here together (seconds), when this Mac has timed each.
+    pub fn here_s(&self, stages: &[&str]) -> Option<f64> {
+        stages.iter().map(|s| self.learned.contains(*s).then(|| self.secs.get(*s).copied()).flatten()).sum()
     }
 
     /// Stages said from now on are area `u`'s.
@@ -498,6 +508,7 @@ impl Areas {
         if let (Some(t), true) = (took, frac >= 1.0) {
             let e = self.secs.entry(stage.to_string()).or_insert(t.as_secs_f64());
             *e = 0.75 * *e + 0.25 * t.as_secs_f64();
+            self.learned.insert(stage.to_string());
         }
         let w = |s: &str| self.secs.get(s).copied().unwrap_or(1.0).max(0.1);
         let total: f64 = STAGES.iter().map(|(s, _)| w(s)).sum();
@@ -984,8 +995,12 @@ mod tests {
         a.finished("6/1/2");
         let kept: BTreeMap<String, f64> = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
         assert_eq!(kept["DEM cache slice"], 0.75 * 30.0 + 0.25 * 70.0);
-        assert_eq!(Areas::new(4, Some(file)).secs["DEM cache slice"], 40.0);
+        assert_eq!(Areas::new(4, Some(file.clone())).secs["DEM cache slice"], 40.0);
         assert_eq!(a.done(), 2.0);
+        // How long stages take here, once this Mac has timed each (kept or now): a tail's patience.
+        assert_eq!(a.here_s(&["DEM cache slice"]), Some(40.0));
+        assert_eq!(a.here_s(&["DEM cache slice", "scenic view"]), None);
+        assert_eq!(Areas::new(4, Some(file)).here_s(&["DEM cache slice"]), Some(40.0));
     }
 
     #[test]

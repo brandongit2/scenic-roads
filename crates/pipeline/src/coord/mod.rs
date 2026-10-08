@@ -44,6 +44,9 @@ pub const PORT: u16 = 8090;
 pub const TTL: Duration = Duration::from_secs(600);
 /// How long a worker counts as around after its last request.
 const AROUND: Duration = Duration::from_secs(120);
+/// How long a worker counts as looking for work after its last ask (a page with a slot idle asks
+/// every 15–20 s; an agent's idle slot every few seconds): a task's `takers`.
+const ASKING: Duration = Duration::from_secs(30);
 /// The most of what a worker says it's doing (its progress, a failure's why) kept: characters.
 const WHAT_MAX: usize = 200;
 #[cfg_attr(target_os = "wasi", allow(dead_code))]
@@ -175,6 +178,9 @@ pub struct Worker {
     pub ask: Option<Ask>,
     #[serde(skip)]
     pub seen: Instant,
+    /// When it last asked for work.
+    #[serde(skip)]
+    pub asked: Option<Instant>,
     pub what: String,
     pub done: u32,
     pub failed: u32,
@@ -308,6 +314,13 @@ impl Shared {
 
     /// Marks `worker`'s request (what it said, and itself as `a` describes it). A worker first
     /// heard from: the history says so, and those not heard from for a day, holding nothing, go.
+    /// How many workers could take task `t` now: around, asking for work lately (`ASKING`), not
+    /// found wrong, doing its kind, sparing its memory, and not ones it failed on.
+    fn takers(&self, t: &task::Task, now: Instant) -> usize {
+        let fits = |(n, w): &(&String, &Worker)| !w.bad && now.duration_since(w.seen) < AROUND && w.asked.is_some_and(|a| now.duration_since(a) < ASKING) && w.can.contains(&t.kind) && w.mem_mb >= t.mem_mb && !t.failed_on.contains(*n);
+        self.workers.iter().filter(fits).count()
+    }
+
     fn seen(&mut self, worker: &str, what: String, a: Option<&Ask>, now: Instant) {
         if !self.workers.contains_key(worker) {
             let note = a.and_then(|a| a.label.as_deref()).map(|l| l.chars().take(80).collect()).unwrap_or_default();
@@ -315,12 +328,13 @@ impl Shared {
             let holding: BTreeSet<String> = self.leases.all(now).iter().map(|l| l.worker.clone()).collect();
             self.workers.retain(|n, w| now.duration_since(w.seen) < Duration::from_secs(86400) || holding.contains(n));
         }
-        let w = self.workers.entry(worker.to_string()).or_insert_with(|| Worker { kind: String::new(), label: worker.to_string(), can: Vec::new(), mem_mb: 0, cores: 0, app: None, visible: None, ask: None, seen: now, what: String::new(), done: 0, failed: 0, checked: 0, bad: false });
+        let w = self.workers.entry(worker.to_string()).or_insert_with(|| Worker { kind: String::new(), label: worker.to_string(), can: Vec::new(), mem_mb: 0, cores: 0, app: None, visible: None, ask: None, seen: now, asked: None, what: String::new(), done: 0, failed: 0, checked: 0, bad: false });
         w.seen = now;
         w.what = what.chars().take(WHAT_MAX).collect();
         if let Some(a) = a {
             (w.kind, w.can, w.mem_mb, w.cores, w.app, w.visible) = (a.kind.clone(), a.can.clone(), a.mem_mb, a.cores, a.app.clone(), a.visible);
             w.ask = Some(a.clone());
+            w.asked = Some(now);
             if let Some(l) = &a.label {
                 w.label = l.chars().take(80).collect();
             }
@@ -1375,8 +1389,15 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 None => {
                     let Some(t) = s.tasks.by_id.get(&id) else { return Ok((404, serde_json::json!({ "error": "no such task" }))) };
                     let v = match &t.state {
-                        task::State::Offered => serde_json::json!({ "state": "offered" }),
-                        task::State::Leased { worker, .. } => serde_json::json!({ "state": "leased", "worker": worker }),
+                        // (With how many workers asking lately could take it now: a job about
+                        // to take it back gives them a moment, crate::offload.)
+                        task::State::Offered => serde_json::json!({ "state": "offered", "takers": s.takers(t, now) }),
+                        // (With how long it's been held and how far it is, as its worker says: a
+                        // job waits for it only while it'll be back sooner than its own run.)
+                        task::State::Leased { worker, lease } => {
+                            let l = s.leases.of(*lease);
+                            serde_json::json!({ "state": "leased", "worker": worker, "age_s": l.map(|l| now.duration_since(l.granted).as_secs_f64()), "frac": l.and_then(|l| l.frac) })
+                        }
                         task::State::Done { worker, outputs, removed, secs, peak_mb } => {
                             // A worker's first results are all checked, then one in eight.
                             let w = s.workers.get(worker);

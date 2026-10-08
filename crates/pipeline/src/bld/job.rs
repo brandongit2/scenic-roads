@@ -449,7 +449,12 @@ pub fn build(out: &mut Out, cov: &Coverage, t: Unit, offload: Option<&crate::off
                 std::fs::remove_dir_all(&dir).ok();
                 s
             }
-            None => area_tiles(&files, cov, t, a, &mut add)?,
+            None => {
+                let here = std::time::Instant::now();
+                let s = area_tiles(&files, cov, t, a, &mut add)?;
+                offers.made_here(s.buildings + s.parts + s.outside, here.elapsed().as_secs_f64());
+                s
+            }
         };
         sum.merge(&s);
     }
