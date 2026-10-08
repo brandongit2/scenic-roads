@@ -407,9 +407,15 @@ run/<name>              what the launcher runs, one argument per line: server, a
 app/<version>/          server, scenic, scenic-build, extract, tile, scenic-metrics, dem/, Scenic.app,
                         web/, fonts/   (app/current → the one in use); dem/.venv: the Python steps'
                         environment, which uv makes from dem/uv.lock the first time a step runs here
-mirror/<content name>   local copies, by the same names as on the NAS (.partial/: in progress;
-                        .uses: when each file was last used)
-idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trailer)
+mirror/<content name>   what's downloaded (docs/plan.md §4, Mirror), by the same names as on the NAS
+                        (.partial/: in progress)
+mirror/.basemap/<hash16>/  the basemap's pieces (store::pieces), of the archive with that content
+                        hash: lo.pmtiles (zooms 0–10), 6-<x>-<y>.pmtiles (a z6 tile's zooms 11–14),
+                        each a PMTiles v3 archive (clustered, gzipped directories, the source's
+                        metadata, its tiles as stored); <piece>.pmtiles.part while one is made;
+                        sizes.json: {piece: bytes}, each piece's size, worked out from the archive's
+                        directory
+idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trailer), as they're read
 catalog/<n>.json.zst    the last catalogs read
 translations/  descriptions/   local copies of the NAS folders, compiled by the server
 names/spoken-<content>.bin   the languages spoken where, made from the catalog's outlines of that
@@ -419,11 +425,13 @@ names/spoken-<content>.bin   the languages spoken where, made from the catalog's
                         code, a tab, its languages comma-separated; region 0 none), u32 run count,
                         23,041 u32 row starts, runs of (u32 first column, u16 region))
 regions.json            the last regions read; regions-queue/: region edits waiting for the NAS
-keep.json               the areas this Mac keeps for offline use (crates/server/src/keep.rs; the
-                        Regions panel): {fmt: 1, regions: [{id, name, at}], views: [{id, name,
-                        outline: [[lon, lat], …] (the ground that was in view), at}]}, `at` in
-                        seconds since 1970; written through keep.json.tmp; one that doesn't read is
-                        set aside as keep.json.bad
+downloads.json          what this Mac has downloaded (crates/server/src/downloads.rs; the Regions
+                        panel): {fmt: 2, world: at or null, regions: [{id, name, at}], views: [{id,
+                        name, outline: [[lon, lat], …] (the ground that was in view), at}]}, `at` in
+                        seconds since 1970; written through downloads.json.tmp; one that doesn't
+                        read is set aside as downloads.json.bad. A keep.json (fmt 1: {regions,
+                        views}, what a Mac kept before downloads) is read once, made downloads.json
+                        (with the World when it kept anything), and removed
 map-page                the address to open the map on another device (docs/plan.md §4, Devices;
                         0600, rewritten when it changes: HTTPS where tailscale serve proxies the
                         server)
@@ -544,19 +552,25 @@ agent/pack-idx/         <hash16>.idx: the indexes of the terrain packs the build
   ("not from here"), as is one whose `Host` isn't the map's (a public name: "not this map's address")
   or whose `Origin` is another page's ("not from the map's page"). CORS answers only this Mac's own
   origins (localhost, `*.localhost`, a loopback address).
-- Kept areas (the Regions panel's On this Mac, `keep.rs`): `GET /api/keep`: `{mirror, online,
-  busy (the build Mac runs a job), free, reserve, catalog: {bytes, here}, essentials: {bytes, here},
-  basemap: {bytes, here, kept}, kept: {bytes, here, more (the room they lack beyond what may go),
-  areas}, copying: {file (logical), bytes, have, kept} or null, last: {at, copied, copied_bytes,
-  evicted, evicted_bytes, skipped, skipped_kept, pending, short, end} or null, regions: {id: {name,
-  bytes, here, kept, state}}, views: [{id, name, outline, at, bytes, here, state}]}`, a kept area's
-  `state` one of kept, copying, room, away, paused, missing (a kept region the catalog doesn't
-  have); `PUT /api/keep/regions/{id}` `{keep}`; `POST /api/keep/views/size` `{outline}` →
-  `{bytes, here (of them), need (all that would be kept with it), hold (what this Mac can hold: its
-  free space and mirror, less the reserve), fits}`; `POST /api/keep/views` `{outline, name?}` (named
-  after the place search's most important place in it unless named; refused when it doesn't fit)
-  → `{id, name}`; `PUT /api/keep/views/{id}` `{name}`; `DELETE /api/keep/views/{id}`. Refusals
-  are 400 `{error}`, the reason in words.
+- Downloads (the Regions panel's Downloads on this Mac, `downloads.rs`): `GET /api/downloads`:
+  `{mirror, online, slow (the build is running: copies keep to rate), rate (bytes a second),
+  free, reserve, here (bytes downloaded), world: {bytes, here, unknown, on, at, state}, wanted:
+  {bytes, here, more (the room they lack above the reserve), unknown}, copying: {what, bytes,
+  have, slow} or null, last: {at, copied, copied_bytes, removed, removed_bytes, waiting,
+  waiting_bytes, failed, pending, end} or null, regions: {id: {name, bytes, here, unknown, on,
+  state}}, views: [{id, name, outline, at, bytes, here, unknown, state}]}`; `unknown` counts the
+  basemap pieces not sized yet (their bytes not counted); a download's `state` one of done,
+  copying, queued, room, away, missing (a region the catalog doesn't have); `PUT
+  /api/downloads/world` `{on}` (off refused while a region or view is downloaded); `PUT
+  /api/downloads/regions/{id}` `{on}` (on downloads the World too); `POST
+  /api/downloads/views/size` `{outline}` → `{bytes, here (of them), with_world (the World's bytes
+  still to copy when it isn't downloaded), need (all that would still be copied), room (the free
+  space above the reserve), fits}`; `POST /api/downloads/views` `{outline, name?}` (named after the
+  place search's most important place in it unless named) → `{id, name}`; `PUT
+  /api/downloads/views/{id}` `{name}`; `DELETE /api/downloads/views/{id}`. A download that wouldn't
+  fit is refused. Refusals are 400 `{error}`, the reason in words.
+- The menu bar (`/api/build`): beside the build's status, `offline: {world, areas, bytes, here,
+  nas}` (what's downloaded; null without a mirror).
 - Regions (the panel): `/api/regions` (GET, POST), `/api/regions/{id}` (PUT, DELETE),
   `/api/areas?at=`, `/api/areas/search?q=`, `/api/areas/{id}`, `/api/coverage` (the catalog's
   coverage as GeoJSON, one feature per outline entry, with `regions` and `catalog`; built from the

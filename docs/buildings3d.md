@@ -331,7 +331,7 @@ change every unit's key (every unit rebuilt), so they're decided on their own. T
 | tiles, built (B1's pilot, the packs served) | 6/56/25 (Kantō): 30.3 M buildings and parts, 25,029 tiles, a 0.41 GB pack (13 B a building at z14); 6/32/22 (Paris): 15.3 M, 71,485 tiles, 0.27 GB; 6/18/24 (New York): 14.6 M, 47,658 tiles, 0.27 GB; 6/32/23 (Barcelona): 12.6 M, 50,825 tiles, 0.22 GB; 6/19/23 (Vermont and Boston): 6.1 M, 35,634 tiles, 0.12 GB; 6/3/28 (Oahu): 0.2 M, 410 tiles, 3.7 MB. 13–20 B a building at z14, copies included, as B0 estimated |
 | tiles and files, built (B2, the M1, 2026-10-08: the agent's command lines, the whole coverage, a scratch root) | 6/18/23 (upstate New York, Vermont's west): 6.03 M rows read, 5.74 M buildings and 0.29 M parts, `bldprep` 79 s and 1.15 GB, a 274 MB work file, `bldtiles` 13 s and 0.88 GB, a 116 MB pack (57,689 tiles); 6/19/23 (Vermont, New Hampshire, Boston): 6.14 M, 72 s and 1.24 GB, 306 MB, 13 s and 0.94 GB, 124 MB; 6/32/22 (Paris): 15.29 M, 183 s and 2.39 GB, 671 MB (the same bytes as B1's on the build Mac), 65 s and 1.17 GB, 269 MB. 44–50 B a building in the work files, 18–20 B in the packs. This Mac (the M1, loaded 20–40) read ~80 k rows a second where the build Mac read 210–450 k in B1 |
 | the coverage's 380 tiles, from these (B2's estimate) | the row groups meeting them hold 489 M rows, of which a tile keeps 82–97 % (the pilot's and B2's tiles): ~440 M buildings and parts in the work files (those beyond the coverage in its tiles too), 17–22 GB at 38–50 B each; the packs ~342 M (the coverage's), 4.6–6.9 GB at 13.5–20 B each (B0's 5.8 GB between) |
-| an app Mac's mirror | +4.6–6.9 GB (the packs; the work files aren't served) |
+| a Mac with every region downloaded | +4.6–6.9 GB (the packs; the work files aren't served) |
 
 ### 2.6 Downloads (done 2026-10-06, for the 88 regions: 194 files, 61.8 GB)
 
@@ -566,10 +566,9 @@ tile. No lo or root packs. The catalog lists the layer `buildings`, encoding `mv
   none. No names attached. Built in B1, with the catalog's layer `buildings` (encoding `mvt`, zooms
   12–14); the app reads the tiles from a host of their own (`buildings.localhost` on this Mac).
 - **Mirror** (B2): a copy group of its own after the other hi packs (`store::mirror::groups`,
-  group 5), so a Mac's mirror has the roads and terrain first; on a Mac whose budget runs out first
-  (the M1's) buildings are left out, and the server reads them from the NAS; when room runs short,
-  they're let go first within their class (before the never-used roads and terrain). They're never
-  essentials (no root or lo packs); a kept area keeps them as every layer's hi packs (plan.md §4).
+  group 5), so a downloaded area's roads and terrain come first. They're never in the World
+  download (no root or lo packs); a downloaded area has them as every layer's hi packs (plan.md
+  §4).
 - **Devices** (B2): the iPad's service worker keeps versioned tiles it has shown (12,000 files at
   most); the building tiles have a cache of their own (`bld`, the last 2,000 files: a city's z14
   tiles are 50–300 KB, a view's ~20), so a city's buildings don't crowd out its roads and terrain.

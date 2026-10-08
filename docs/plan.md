@@ -49,16 +49,21 @@ nothing built depends on how the coverage is divided into regions.
   - It renames regions (rebuilding nothing) and removes them: what only a removed region covered
     leaves the map with the next build.
   - Edits made away from home wait on the Mac and go to the NAS when it's back.
-  - **On this Mac** (§4, Mirror, per Mac): each region's size on disk and how much of it is here
-    ("136 MB; 52 MB here"), and a Keep on this Mac switch: a kept region's files are copied first
-    and never let go of, for trips away from the NAS. **Keep this view** keeps the ground on screen
-    the same way, named after the place search's most important place in it (renamed with ✎, let
-    go with ×); it first says what the view takes and what this Mac can hold, and one this Mac
-    can't hold isn't kept. Each kept area says its state (kept, copying N %, waiting for room,
-    paused while the build Mac works, away), and the Mac its own: the map's files here, the free
-    space and the reserve, how much more room the kept areas need, the copy under way. Nothing kept
-    goes by itself: when the disk is nearly full, the panel says so, naming what's kept and its
-    size.
+  - **Downloads on this Mac** (§4, Mirror, per Mac): nothing is copied to a Mac unless it's
+    downloaded there, and nothing downloaded goes until it's removed.
+    - **World, zoomed out**: a row of its own with its size and a Download or Remove button. Not
+      downloaded, it says so: the map needs the NAS to show anything.
+    - **Each region**: its size, and Download or Remove; downloaded, its state (downloaded, copying
+      N %, next, waiting for room, away). A region's download brings the World too (away from the
+      NAS it needs it), and the World can't be removed while a region or view is downloaded.
+    - **Download this view** downloads the ground on screen the same way, named after the place
+      search's most important place in it (renamed with ✎); it first says what the view takes and
+      the free space above the reserve.
+    - Remove asks once more, with the size that goes. A download that wouldn't fit (all that's
+      downloaded and not here yet, more than the free space above the reserve) is refused, saying
+      so with the numbers.
+    - The Mac's own line: what's downloaded, the free space and the reserve; the copy under way,
+      and when the build runs, that downloads keep to 20 MB/s.
 - **From a terminal:** `scenic add` and `scenic remove` do the same, straight to the NAS.
 - **Planned:**
   - drawing and redrawing outlines (dragging points; saved as a `.poly`);
@@ -82,7 +87,7 @@ nothing built depends on how the coverage is divided into regions.
   (plugged in, or on battery down to 30 %). Away from home it builds through Tailscale, slowly; the
   OpenStreetMap pass and the other jobs that move the whole planet or world through the NAS wait
   for home.
-- Mirroring to each Mac.
+- Copying what's downloaded to each Mac, and keeping it current with each new catalog.
 - Emptying each Mac's build caches once the build is done (§8, Room on the disk).
 - **Installing a newly published app:** each Mac's server picks it up and restarts into it when the
   map is idle.
@@ -391,7 +396,8 @@ record changes back through the build Mac's coordinator, which journals them for
     next to nothing); the trains' stop pairs (`rail/`, under a MB); the unit stages' timings
     (`unit-stages.json`); and what a unit kept that isn't on the NAS yet (`dem-units/`,
     `scenic-units/`).
-- **Its own map** is served from its mirror, which keeps a 150 GB reserve so builds have room.
+- **Its own map** is served from the NAS and what it has downloaded (§4, Mirror, per Mac); its
+  downloads keep a 150 GB reserve so builds have room.
 - **An OSM pass** starts with 80 GB free (the pack cache counting as free). It copies the planet to
   the SSD first when there's room for the planet, a filtered file of up to 75 % of it, and 10 GB;
   otherwise it reads the planet from the NAS.
@@ -491,9 +497,9 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
     five minutes later if it's searched); a build that reads none fails, and the box says why and
     when it's tried again (a minute later at the soonest). Until the index is made, the open box
     asks again after a second, then two, four, up to ten; those asks aren't the map in use.
-- **Offline start:** the last catalog and every pack's index stay local.
+- **Offline start:** the last catalog and the pack indexes read so far stay local.
 - **In use** means any request in the last ten minutes, except the status polls (`/api/catalog`,
-  `/api/ping`, `/api/build`, the Regions panel's `/api/keep`) and the place search's asks while
+  `/api/ping`, `/api/build`, the Regions panel's `/api/downloads`) and the place search's asks while
   its index is made (`poll=1`).
   - An idle server loads nothing; warming starts at the first request (starting isn't a use).
   - It checks the NAS for a newer catalog every 30 s while in use, every 10 minutes otherwise.
@@ -506,62 +512,74 @@ like the build Mac's; `tools/app/install.sh --helper` sets it up).
     within them and of the spoken-languages raster (§7). The basemap's are its archives' content names and the tile's position, known from the
     catalog, so its 304s read nothing.
 
-**Mirror, per Mac** (`store::mirror`, `crates/server/src/keep.rs`).
-- At home, each Mac copies the current catalog's files in the background, as its room allows: one
-  file at a time, in large sequential reads, paused while the build Mac runs a job. That makes the
-  map as fast as from local files, and keeps it working away from home.
-- **Room first.** The disk keeps a reserve free (50 GB; 150 GB on the build Mac: the server's
-  `--reserve-gb`, in GB of 10⁹ bytes). When it's under the reserve, at home or away, files go until
-  it's back: those the current catalog doesn't list (an older catalog's) first; then the current
-  catalog's, the basemap last (it's drawn at every zoom); never the essentials nor a kept area's.
-  Within each, the 3D buildings' packs first (copied last, they go first), then the rest; within
-  those, the files never used go first, the first copied first (a file's modification time),
-  then the used ones, least recently used first, whenever they were copied (a new catalog copies
-  again the files used before it). Of the files in that order, the shortest run from the front that
-  covers the deficit goes, less the biggest of them the run can spare, so a round doesn't go far
-  past it; the free space is measured again as each goes, and what the server mapped of it is
-  dropped at once. Nothing is copied while the disk is under the reserve. On the build Mac, nothing
-  goes while its agent runs a job (its pack and lo jobs read this mirror's base packs), unless the
-  disk is below half the reserve; another Mac's room doesn't wait for the build Mac's jobs (only its
-  copies do). Nothing goes either when `mirror/` is a link or on another disk than the app's folder
-  (deleting there might not free this disk).
-- **The essentials,** which every Mac keeps whatever its room: the build's worldwide files
-  (`global/`: rail frequencies, the road → units index, landmark totals, heritage summaries,
-  today's converted layer files and details, roads' English names), every layer's root and lo
-  packs (zooms 0–8), and the landmark points and area details (markdata, ovdata): 7.8 GB of
-  catalog 14's 251 GB (2026-10-06). Not the pass's area outlines (2.7 GB, read only to make
-  regions), nor the basemap (28.6 GB, kept while any area is).
-- **Kept areas** (the Regions panel, §1): the regions and views a Mac keeps for offline use, in
-  its own home (`keep.json`, never the NAS). An area's files: every layer's hi pack, and the base
-  pack and road values, of each z6 tile within 2 km of it (outlines are simplified); the terrain's
-  and the grids' hi packs within 25 km (the viewshed's reach, so one from inside the area works);
-  and the hi data of the z6 tiles within 50 km (what the lists of a view inside it read around
-  it). With the essentials and the basemap's archives, that's what the map reads there, so a kept
-  area works fully offline (but §10, Gaps). A region's are worked out from the catalog's recorded
-  coverage. A view isn't kept when all that would be kept with it is more than this Mac can hold
-  (its free space and mirror, less the reserve).
-- **Copy order:** the essentials, then the kept areas' files, then the rest; within each, small
-  worldwide files, root and lo packs and the basemap, hidata, road values and the small per-tile
-  records, base packs, hi packs, the 3D buildings' hi packs (a city's z6 tile is a few hundred MB:
-  the roads and terrain first; on a Mac whose budget runs out, the server reads them from the NAS),
-  and the rest. The most recently used go first within each group: a
-  use is a read the map makes (a tile, a 304 too, a section, a base pack, the basemap), from the
-  mirror or the NAS, not the reads the server makes on its own (indexes cached for offline, the
-  place search's). The use times are written out every minute, during a copy too, and before the
-  server exits (for a new app, or on a signal).
-- **Budget:** the free space less the reserve. An essential or kept file that doesn't fit takes the
-  room of the files that may go, in room first's order, but only when that makes enough room for
-  it; when it doesn't, nothing goes for it, no other file is copied that round (it would take that
-  room back), and the panel says how much more room the kept areas need. Any other file takes only
-  the room of files the current catalog doesn't list, and, once it's been used, of the current
-  catalog's never used (the basemap aside): so the mirror comes round to what's used, without ever
-  trading a used file for another. Such a file is copied only while a twentieth of the reserve stays
-  free above it, and one let go for room only once it's been used again (so the disk's comings and
-  goings around the reserve don't have the same files copied and let go over and over); none goes
-  in the round that copied it.
-- The state, for the panel (`/api/keep`): each region's size and how much of it is here, each kept
-  area's state, the free space, the reserve, how much more room the kept areas need, the copy under
-  way, the last round.
+**Mirror, per Mac** (`store::mirror`, `store::pieces`, `crates/server/src/downloads.rs`).
+- **Only what's downloaded** (the owner's ask, 2026-10-06; decided 2026-10-08). Nothing is copied
+  to a Mac by itself: the owner downloads it in the Regions panel (§1), and it stays until it's
+  removed. The map reads a file from the Mac when it's there, else from the NAS: with nothing
+  downloaded, the map works only while the NAS is reachable. What's downloaded is this Mac's alone
+  (`downloads.json` in its home, never the NAS).
+- **The World, zoomed out:** the essentials, and the basemap's zooms 0–10. The essentials are the
+  build's worldwide files (`global/`: rail frequencies, the road → units index, landmark totals,
+  heritage summaries, today's converted layer files and details, roads' English names, the spoken
+  languages), every layer's root and lo packs (zooms 0–8), and the landmark points and area
+  details (markdata, ovdata): 7.8 GB of catalog 14's 251 GB (2026-10-06). Not the pass's area
+  outlines (2.7 GB, read only to make regions). The basemap's zooms 0–10 are 1.7 GB of its 28.5.
+- **A region, or a view** (the ground on screen when it was downloaded): every layer's hi pack,
+  and the base pack and road values, of each z6 tile within 2 km of it (outlines are simplified);
+  the basemap's zooms 11–14 over those tiles; the terrain's and the grids' hi packs within 25 km
+  (the viewshed's reach, so one from inside the area works); and the hi data of the z6 tiles
+  within 50 km (what the lists of a view inside it read around it). With the World, that's what the
+  map reads there, so a downloaded area works fully offline (but §10, Gaps). A region's files are
+  worked out from the catalog's recorded coverage. Downloading a region or a view downloads the
+  World too, and the World isn't removed while one is downloaded.
+- **The basemap's pieces.** The basemap is one PMTiles file of 28.5 GB, so a download takes pieces
+  of it, each a PMTiles archive of its own (`store::pieces`, `mirror/.basemap/<archive's
+  hash>/`): `lo` (zooms 0–10, the World's) and `6-x-y` (a z6 tile's zooms 11–14, a region's, shared
+  by every download that meets that tile). On PMTiles' Hilbert curve a z6 tile's tiles at each
+  zoom are one run of tile ids, and the archive is clustered, so a piece is four runs of the
+  directory and mostly sequential reads of the data: large ranged reads, never the whole file.
+  - A piece is laid out from the archive's directory before any tile is read: its size is known
+    ahead (each piece's size kept in `sizes.json`; the server works out every region's while it's
+    idle: catalog 16's regions take 381, sized in 78 s by a development build on the M1), and a piece cut short
+    resumes where it stopped. Each tile's bytes are copied as stored, its gzip checksum checked.
+  - The server reads a basemap tile from the piece holding it when this Mac has it, else from the
+    NAS's archive, as before (the water's deeper zooms, drawn from the basemap's z14, alike).
+  - Why pieces rather than a sparse copy of the whole file: a piece is removed by deleting it (no
+    holes punched in a sparse file, whose room APFS gives back unevenly), its size adds up as the
+    packs' do, two regions share a z6 tile's piece, and the reader opens it as any archive.
+- **Kept current.** Each new catalog's files that a download names are copied, and what no
+  download names any more goes: the files it replaced, the pieces of a replaced basemap, a removed
+  download's files. Nothing else goes, ever.
+- **Copies:** one file or piece at a time, in large sequential reads through the I/O pool, in
+  the order the downloads were made, the World first; within each, small worldwide files, root and
+  lo packs, hi data and road values (and the per-tile records), base packs, hi packs, the 3D
+  buildings' hi packs (a city's z6 tile is a few hundred MB: the roads and terrain first), then the
+  basemap's pieces. While the build runs (the build Mac's heartbeat on the NAS says a job runs,
+  as the copies' pause read it before downloads), copies keep to 20 MB/s, so the build's uploads
+  have the NAS first, and the panel says why a download is slower; the rest of the time, at full
+  speed. A copy is checked (a file against its content hash, a piece tile by tile) before it's
+  moved into place.
+- **Room.** The disk keeps a reserve free (50 GB; 150 GB on the build Mac: the server's
+  `--reserve-gb`, in GB of 10⁹ bytes). A download that wouldn't fit (all that's downloaded and not
+  here yet, more than the free space above the reserve) is refused, saying so. When the disk
+  fills later, what doesn't fit waits ("waiting for room"), and nothing downloaded goes for it.
+- **The build Mac:** its jobs don't need the mirror. The pack and lo jobs read a base pack from it
+  where it has one (a downloaded region's), else from their own cache (`agent/cache/base`, copied
+  from the NAS); the heritage and landmark conversion reads today's converted files from it where
+  it has them, else from the NAS. Nothing is deleted from the mirror while that Mac's own agent runs
+  a job, so a job never loses a file it's opening.
+- **Pack indexes** are cached on a Mac as they're read (`idx/`), for offline starts; none is
+  fetched ahead.
+- **From before downloads** (the switch, 2026-10-08): a Mac's kept regions and views
+  (`keep.json`) become downloads, with the World; the use times (`mirror/.uses`) go. At its first
+  round the new server lets go of whatever no download names (with nothing downloaded, all of it:
+  the M1's 7.3 GB of essentials, the build Mac's 1.8 GB) and copies the rest; what a download
+  names and the Mac has stays as it is, never copied again. A whole basemap kept before goes too,
+  its pieces copied from the NAS.
+- The state, for the panel (`/api/downloads`): the World's and each region's size and how much of
+  it is here, each download's state, the free space, the reserve, how much more room the downloads
+  need, the copy under way and whether it's slowed, the last round. The menu bar says what's
+  downloaded, and when nothing is, that the map needs the NAS.
 
 **Devices: an iPhone, an iPad.** Either Mac's map opens on them, at home or away, over the tailnet.
 - **Who's answered:** the server listens on every IPv4 address (and IPv6's loopback) but answers
@@ -925,7 +943,7 @@ they treat any raster.
   - `?raw=1` gives the shares themselves (red the sea's, green the inland water's), for the coastal
     shading;
   - a tile not stored takes its stored ancestor's value over it;
-  - a stored zoom whose pack can't be read (offline, or let go by the mirror) is drawn from the
+  - a stored zoom whose pack can't be read (offline, and not downloaded) is drawn from the
     basemap at z9 (1,024 z14 tiles);
   - drawn tiles are kept (192, about 0.5 MB each); at most 4 are drawn at once, on 4 threads of
     their own (not the queries' pool), a draw the map stopped waiting for still kept, and stored
@@ -1310,8 +1328,8 @@ map labels, "main (sub)" in the app's text. Sub shows only when it truly differs
     (this Mac, busy); reading the outlines' records and simplified rings from the NAS took 20 s (five
     minutes while the NAS was busy).
   - **Made once per pass** by the `spoken` job (worldwide, keyed by the outlines and
-    `spoken::RULES`): `global/spoken`, in the catalog and mirrored as an essential, so every Mac
-    reads it in milliseconds, offline too.
+    `spoken::RULES`): `global/spoken`, in the catalog and among the World download's files, so a Mac
+    that has downloaded the World reads it in milliseconds, offline too.
   - **The server** reads the catalog's `global/spoken`. A catalog without it (made before the job
     first ran): the server makes the raster from the catalog's outlines on a thread of its own and
     keeps it in its home (`names/spoken-<outlines' content name>.bin`, its slashes as
@@ -1644,7 +1662,7 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     build Mac's running, nor one beside it. Not down to the reserve: room-making makes that much
     room before each job, so the build ends with about that free (36 GB, with 39 GB of archive
     copies and copies of the records' files, once it was done on 2026-10-06), and a trim to it
-    would free little or nothing, while that Mac's mirror copies nothing until 150 GB are free.
+    would free little or nothing, while that Mac's downloads copy nothing past a 150 GB reserve.
     It's logged, in the agent's status (`caches.trimmed`: when, what it freed by cache, what
     stayed) and, when it freed anything or what it keeps changed, in the history (a helper's, as
     the build Mac reads it in its status).
@@ -1702,13 +1720,12 @@ an edit, nor any other file there, nor a recipe that can't be read now): three e
     - It never deletes what a job uses: only while none runs here, and no job starts until it's
       done.
     - **With the mirror's reserve** (`--reserve-gb` in `tools/app/install.sh`: 50 GB on the M1,
-      150 GB on the build Mac): the server's mirror copies only while that much stays free, and
-      lets its own files go to keep it. The two floors are apart: the mirror never frees for the
-      agent's target, and the agent never touches the mirror. A target at or under the mirror's
-      reserve is the agent's alone to make (the mirror already stays out of it). Above it, the
-      mirror may fill the room between its reserve and the target that the agent freed; the agent
-      then stays short of the target, with nothing more of its own to free, and says so (§10,
-      Gaps).
+      150 GB on the build Mac): the server's mirror copies downloads only while that much stays
+      free (nothing downloaded goes for it). The two floors are apart: the mirror never frees for
+      the agent's target, and the agent never touches the mirror. A target at or under the
+      mirror's reserve is the agent's alone to make. Above it, a download may fill the room between
+      its reserve and the target that the agent freed; the agent then stays short of the target,
+      with nothing more of its own to free, and says so (§10, Gaps).
   - A trim, a clear or a freeing toward the target runs on a thread of the agent's own: its loop
     goes on beating, and no job starts on the Mac until it's done.
   - Nothing goes through a link: a folder or file of the caches that's a link, at any depth (the
@@ -2154,7 +2171,7 @@ everything is rebuilt.
 | sources kept per pass | ~200 GB | the same |
 | roadside buildings (the world's, once per Overture release; ~2.5 billion boxes) | ~40 GB | the same |
 | 3D buildings (`docs/buildings3d.md` §2.5): their sources (62 GB, on the NAS since 2026-10-06), the normalized files (~440 M buildings in the coverage's 380 z6 tiles, at the 38–50 B each B1 and B2 measured) and the packs (~342 M, 13.5–20 B each) | 62 + 17–22 + 4.6–6.9 GB; a mirror the packs alone | not planned |
-| an app Mac's mirror | everything, ~200 GB (M1: budget-limited) | budget-limited |
+| an app Mac's mirror | what's downloaded: the World ~9.5 GB (the essentials 7.8, the basemap's zooms 0–10 1.7), a region from tens of MB to ~20 GB | as downloaded |
 
 A retired pass's sources go 14 days after the next pass completes, so the NAS holds about two
 passes' sources at most.
@@ -2319,7 +2336,7 @@ At each phase's end an Opus agent reviews the work against this plan.
    files only as it copies them), and each version makes its own (~380 MB, kept with its version).
    Fix: one environment per lock file beside the app, made as an app is installed.
 
-3. **Kept areas offline** (§4, Mirror, per Mac): a whole road (`/api/road`) leaving a kept area
+3. **Downloaded areas offline** (§4, Mirror, per Mac): a whole road (`/api/road`) leaving a downloaded area
    reads the base packs of every unit it crosses, and fails away from the NAS when one of them
    isn't on the Mac; and a way that starts more than 2 km outside the area, in a unit whose tile
    doesn't meet it, has no way info there away from the NAS. Fix: give a road leaving the area as
@@ -2344,10 +2361,10 @@ At each phase's end an Opus agent reviews the work against this plan.
    caches, before any region reaches south of the equator.
 
 6. **The water's deeper zooms need the basemap** (§6, Water): z10 and deeper are drawn by the
-   server from the basemap's z14 tiles, so a Mac away from the NAS draws them only when its mirror
-   has the basemap (kept while any area is, §4 Mirror). Without it, the server answers with the
-   nearest stored zoom's water over the tile, scaled up (z8 from the essentials' lo packs, z9 where
-   a kept area's hi packs are), not to be cached, so nothing fails and nothing is asked for again;
+   server from the basemap's z14 tiles, so a Mac away from the NAS draws them only where it has
+   the basemap's pieces of zooms 11–14 (a downloaded area's z6 tiles, §4 Mirror). Elsewhere, the
+   server answers with the nearest stored zoom's water over the tile, scaled up (z8 from the
+   World's lo packs, z9 where a downloaded area's hi packs are), not to be cached, so nothing fails and nothing is asked for again;
    the coastal shading leaves out a neighbouring tile it can't have. The shores are then z8's or
    z9's, blurred close up. Fix, if it's wanted: keep the basemap's water polygons where it's away.
 7. **The pass's `water` set serves only the shoreline check** (§6, Water): about 6 GB on the NAS a
@@ -2362,7 +2379,7 @@ At each phase's end an Opus agent reviews the work against this plan.
    shoreline check's Scotland z15 view; the basemap's coarser polygon tiles covered it). Fix:
    have the sources' tiles worked out again once the terrain under the camera has loaded.
 9. **The mirror doesn't know the room target** (§8, Room on the disk): a disk room target above the
-   mirror's reserve (50 GB on the M1, 150 GB on the build Mac) can be filled by the mirror's copies
+   mirror's reserve (50 GB on the M1, 150 GB on the build Mac) can be filled by a download's copies
    once the agent frees toward it, leaving the agent short of it with nothing of its own to free
    (it says so). Fix: the server reads the agent's `room-target.json` and keeps its mirror's
    reserve at the larger of the two while one is set.
@@ -2415,6 +2432,15 @@ At each phase's end an Opus agent reviews the work against this plan.
 - **Disk:** for 14 days after a pass completes, the NAS holds two passes' sources (~400 GB).
 
 ## 12. Changes
+
+**Downloads (2026-10-08):** the mirror copies only what the owner downloads (§1, §4 Mirror),
+by the owner's ask: the World, zoomed out (the essentials and the basemap's zooms 0–10), and each
+region or view (its packs and the basemap's zooms 11–14 over it). Before, each Mac copied the
+whole catalog as its room allowed, the essentials first, then kept areas, then the rest by recent
+use, and let files go for room. Why the rest of the design: the basemap is split into pieces by z6
+tile rather than copied whole (28.5 GB for any area) or kept as a sparse copy (§4); a region needs
+the World offline, so it brings it; copies keep to 20 MB/s while the build runs rather than
+pausing, which with the pool on would hold an owner's download off for hours.
 
 **v7, names as built (2026-10-08):** §7's design built, with these choices:
 - Hong Kong's and Macau's names are read in Cantonese (`yue`), a language of its own: Chinese lines

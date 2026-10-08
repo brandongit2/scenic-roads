@@ -596,8 +596,8 @@ hand-offs go to the journal) and starts nothing new; its brokered tasks carry on
 - **Everywhere it's shown** (the menu bar on every Mac, the map's build panel, the worker page,
   `scenic status`): the pool, a line or card per member, the lead marked; out-of-touch members with
   when they were last heard from; a handover's states as they happen; "No lead" with "Take it". Each
-  Mac's map server reads the pool from the NAS, keeps the app its own agent runs, and holds its
-  mirror's copying while any member's job runs.
+  Mac's map server reads the pool from the NAS, keeps the app its own agent runs, and keeps its
+  downloads' copies to 20 MB/s while the build Mac runs a job.
 - **The history** notes each term (handed over, taken back, taken over, re-asserted, stepped down),
   each member joining, leaving and coming back.
 
