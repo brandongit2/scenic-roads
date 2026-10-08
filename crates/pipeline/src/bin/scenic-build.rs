@@ -17,11 +17,19 @@
 //!                                tools/check/same.py and tail.mjs)
 //!   tail-spec U                  unit U's tail as a task gives it a worker (tools/check/tail.mjs)
 //!   roadunits                    the road → units index from every unit's road values
-//!   terrain [T …] [--regions dir] [--pass d] [--raw dir]  terrain packs for z6 tiles T near the
-//!                                coverage (default: all of them): hi z9–12, then their z3 lo packs,
-//!                                from AWS's raw tiles (cached in --raw)
-//!   slope [T …] [--regions dir]  slope packs (z3–11) of z6 tiles T from the terrain packs
-//!                                (default: every z6 tile near the coverage)
+//!   terrain [T …] [--regions dir] [--pass d] [--raw dir] [--expect-same T,…]  the terrain from AWS's
+//!                                raw tiles (cached in --raw), GLO-30 and the basemap's water: of z6
+//!                                tiles T near the coverage (pieces: each one's hi pack, z9–12, and
+//!                                its mid; --expect-same, those made again as the manifest has them,
+//!                                else it fails, uploading nothing), or of z3 tiles' whole (default:
+//!                                all of them; by hand, and a lease of the scheme before pieces)
+//!   terrain-lo <Q …> [--raw dir]  z3 tiles Q's zoomed-out terrain (lo packs, z3–8) from their
+//!                                pieces' mids
+//!   slope [T …] [--regions dir] [--expect-same T,…]  the slope from the terrain packs: of z6 tiles
+//!                                T (pieces: each one's hi pack, z9–11, and its mid), or of z3 tiles'
+//!                                whole (default: all of them)
+//!   slope-lo <Q …>               z3 tiles Q's zoomed-out slope (lo packs, z3–8) from their pieces'
+//!                                mids and the lo pack as it is
 //!   terrain-root, slope-root     their z0–2 root packs, from the lo packs' z3 tiles
 //!   raw-pack [--from-tar -] [--cache dir]  AWS's raw tiles packed into the NAS's archives
 //!                                (pipeline::rawpack): a tar of them on stdin (tools/nas/raw-pack.sh),
@@ -87,6 +95,11 @@
 //!                                (pipeline::agent::rekey) would do now: the units re-keyed, and
 //!                                those left to build again, each with why; and the times that show
 //!                                its one assumption holds. Reads only: writes nothing, keeps no index
+//!   p5-check terrain [--pass d] [--costs f]  what switching terrain and slope to pieces and
+//!                                assemblies (pipeline::agent::rekey::derive) does now: each z3
+//!                                tile read as its pieces and assembly or not, slope's pieces left
+//!                                to make and why, the work after it and its time, what deriving
+//!                                costs a plan. Reads only (the terrain packs' indexes into memory)
 //!   p5-check trees [--pass d] [--costs f]  what switching tree cover to pieces and assemblies
 //!                                (pipeline::agent::rekey) would do now: each z3 tile re-keyed, or
 //!                                made again as pieces and why, the work left and its time by the
@@ -316,6 +329,8 @@ fn step_main(args: &[String], step: &str) -> Result<()> {
         }
         "registers-import" => registers_import(&mut out, &args, &scratch)?,
         "slope" => slope_step(&mut out, &args)?,
+        "terrain-lo" => terrain_lo_step(&mut out, &args)?,
+        "slope-lo" => slope_lo_step(&mut out, &args)?,
         "labels" => labels_step(&mut out, &args, &scratch)?,
         "spoken" => {
             // spoken [--pass <date>]: the languages spoken where (names::spoken), from the pass's
@@ -1306,9 +1321,139 @@ fn rekey_check(root: &Path, args: &[String]) -> Result<()> {
 /// pieces; then the work the plan has (agent::build::tree_work), and its time by the z3 tiles' last
 /// runs (`--costs`: the coordinator's costs.json; a helper's at the build Mac's pace, twice its
 /// speed) and the packs made again (their size now).
+/// `p5-check terrain`: what switching terrain and slope from a z3 tile's whole run to pieces and
+/// assemblies (pipeline::agent::rekey::derive) does now: each z3 tile's records read as its pieces
+/// and assembly, or not and why; slope's pieces left to make (reading another area's terrain); the
+/// work after the switch, and its time by the areas' last runs (`--costs`: the coordinator's
+/// costs.json); and what deriving costs a plan. Reads only: the terrain packs' indexes into memory.
+fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
+    use pipeline::agent::{build, rekey, tiles::TerrainTiles};
+    let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(root)).context("no complete OSM pass")?;
+    let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
+    let keys = build::Keys::load_strict(root)?;
+    let (recipes, bad) = pipeline::agent::recipes::load(&root.join("inputs/regions"));
+    anyhow::ensure!(bad.is_empty(), "regions that can't be read now: {bad:?}");
+    let outlines = m.get(&format!("sources/osm/{date}/outlines")).map(|c| pipeline::outlines::Outlines::open(&root.join(c))).transpose()?;
+    let cov = pipeline::coverage::Coverage::from_recipes(&recipes, outlines.as_ref(), &root.join("inputs/outlines"))?;
+    let costs: BTreeMap<String, pipeline::coord::Cost> = match opt(args, "--costs") {
+        Some(p) => pipeline::out::read_record(Path::new(&p))?,
+        None => BTreeMap::new(),
+    };
+    let me = pipeline::agent::cond::host();
+    // (An area's last whole run of `step`, at the build Mac's pace.)
+    let last_run = |step: &str, q: &str| costs.get(&pipeline::coord::cost_key(step, q)).map(|c| if c.worker.as_deref().is_none_or(|w| w == me) { c.secs as f64 } else { c.secs as f64 / 2.0 });
+    let t0 = std::time::Instant::now();
+    let mut tiles = TerrainTiles::new(None);
+    let n = tiles.load(root, &m);
+    anyhow::ensure!(tiles.unread().next().is_none(), "terrain packs' indexes unread: {:?}", tiles.unread().collect::<Vec<_>>());
+    println!("pass {date}, {} regions; the terrain packs' {n} indexes read into memory ({:.1} s)", recipes.len(), t0.elapsed().as_secs_f64());
+    let z3 = |map: &BTreeMap<String, String>| map.keys().filter(|t| Unit::parse(t).is_some_and(|u| u.z == 3)).count();
+    println!(
+        "records: terrain {} z3 tiles' whole runs (the old scheme), {} pieces, {} assemblies; slope {} z3, {} pieces, {} assemblies",
+        z3(&keys.terrain),
+        keys.terrain.len() - z3(&keys.terrain),
+        keys.terrain_lo.len(),
+        z3(&keys.slope),
+        keys.slope.len() - z3(&keys.slope),
+        keys.slope_lo.len()
+    );
+    // Deriving, as a plan does: the first time (the slope pieces' reads worked out), then again (as
+    // each plan after: kept with the packs they read).
+    let t1 = std::time::Instant::now();
+    let mut read = keys.clone();
+    let d = rekey::derive(&mut read, &cov, &m, &tiles);
+    let first = t1.elapsed();
+    let t2 = std::time::Instant::now();
+    let mut again = keys.clone();
+    let d2 = rekey::derive(&mut again, &cov, &m, &tiles);
+    let next = t2.elapsed();
+    let mut twice = read.clone();
+    let d3 = rekey::derive(&mut twice, &cov, &m, &tiles);
+    println!(
+        "derived: terrain {} z3 tiles as their pieces and assembly, slope {}; {} slope pieces left to make; passed over (stale under the old scheme): {}; unknown now: {}",
+        d.terrain.len(),
+        d.slope.len(),
+        d.slope_left.len(),
+        d.stale.len(),
+        d.unknown.len()
+    );
+    println!(
+        "deriving took {:.0} ms the first time, {:.0} ms again (a plan's); again from the records: {}; on what it read: {}",
+        first.as_secs_f64() * 1e3,
+        next.as_secs_f64() * 1e3,
+        if d2 == d && again == read { "the same" } else { "DIFFERENT" },
+        if d3 == rekey::Derived::default() && twice == read { "nothing to do" } else { "IT CHANGED THEM AGAIN" }
+    );
+    for (t, why) in &d.stale {
+        println!("  {t}: {why}");
+    }
+    for (q, why) in &d.unknown {
+        println!("  slope {q}: kept for the next pass: {why}");
+    }
+    // Each area.
+    let by_q = build::coverage_tiles(&cov);
+    let (mut piece_s, mut slope_left_s, mut backfill_t, mut backfill_s, mut mids_needed) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, Vec::new());
+    for (q, ts) in &by_q {
+        let qs = format!("3/{}/{}", q.0, q.1);
+        let left: Vec<&(String, String)> = d.slope_left.iter().filter(|(t, _)| build::area_of(t).as_deref() == Some(qs.as_str())).collect();
+        let (tr, sr) = (last_run("terrain", &qs), last_run("slope", &qs));
+        let n = ts.len() as f64;
+        if let Some(s) = tr {
+            piece_s += s / n;
+            backfill_t += s;
+        }
+        if let Some(s) = sr {
+            slope_left_s += s / n * left.len() as f64;
+            backfill_s += s / n * (n - left.len() as f64);
+        }
+        mids_needed.push(ts.len() - 1);
+        println!(
+            "  {qs}: {} pieces; terrain {}; slope {}{}; last runs: terrain {}, slope {}",
+            ts.len(),
+            if d.terrain.contains(&qs) { "derived" } else { "not derived" },
+            if d.slope.contains(&qs) { format!("derived, {} of its pieces left to make", left.len()) } else { "not derived".into() },
+            left.first().map_or(String::new(), |(t, why)| format!(" (first: {t}, {why})")),
+            tr.map_or("unknown".into(), |s| format!("{s:.0} s")),
+            sr.map_or("unknown".into(), |s| format!("{s:.0} s"))
+        );
+    }
+    // The work the plan has after the switch.
+    let tt = build::terrain_slope_targets(&cov, &m, &tiles);
+    let w = build::terrain_work(&tt, &m, &read);
+    let idle = |step: &str| w.backfill.iter().filter(|b| b.step == step).map(|b| b.targets.len()).sum::<usize>();
+    println!(
+        "after the switch: terrain {} pieces and {} assemblies to make now; slope {} pieces runnable now ({} stale), {} assemblies runnable ({} stale); mids to make in idle time: terrain {}, slope {}",
+        w.terrain.len(),
+        w.terrain_lo.len(),
+        w.slope.len(),
+        w.slope_pieces_left.len(),
+        w.slope_lo.len(),
+        w.slope_lo_left.len(),
+        idle("terrain"),
+        idle("slope")
+    );
+    let mean = mids_needed.iter().sum::<usize>() as f64 / mids_needed.len().max(1) as f64;
+    println!(
+        "a stale terrain piece before its area's mids are made: its area's other pieces made again for their mids, {mean:.1} on average (at most {}); after the backfill, none",
+        mids_needed.iter().max().unwrap_or(&0)
+    );
+    println!(
+        "its time by the areas' last runs (at the build Mac's pace, a piece its area's share): slope's pieces left {:.2} h; the backfill: terrain {:.1} h, slope {:.1} h; a terrain piece {:.0} s on average; the assemblies a minute each",
+        slope_left_s / 3600.0,
+        backfill_t / 3600.0,
+        backfill_s / 3600.0,
+        piece_s / by_q.len().max(1) as f64
+    );
+    Ok(())
+}
+
 fn p5_check(root: &Path, args: &[String]) -> Result<()> {
     use pipeline::agent::{build, rekey, tiles::TerrainTiles};
-    anyhow::ensure!(positional(args).first().map(String::as_str) == Some("trees"), "p5-check trees (terrain and slope come later)");
+    match positional(args).first().map(String::as_str) {
+        Some("trees") => {}
+        Some("terrain") => return p5_check_terrain(root, args),
+        _ => anyhow::bail!("p5-check <trees | terrain>"),
+    }
     let date = opt(args, "--pass").or_else(|| pipeline::osmpass::latest_pass(root)).context("no complete OSM pass")?;
     let m: BTreeMap<String, String> = pipeline::out::read_record(&root.join("state/build/manifest.json"))?;
     let keys = build::Keys::load_strict(root)?;
@@ -3074,9 +3219,9 @@ fn bldtile_task_step(out: &mut Out, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// The z6 tiles a terrain or slope run makes, by z3 pack: those near the coverage (as the agent's
-/// keys list them, `build::coverage_tiles`) of each z3 pack named (`3/x/y`, as the agent asks), or
-/// the z6 tiles named, or with none named every z6 tile near the coverage.
+/// The z6 tiles an area's whole terrain or slope run makes, by z3 pack: those near the coverage (as
+/// the agent's keys list them, `build::coverage_tiles`) of each z3 pack named (`3/x/y`), or with
+/// none named every z6 tile near the coverage. (Z6 tiles named are pieces: `pieces_named`.)
 fn terrain_targets(cov: &pipeline::coverage::Coverage, args: &[String]) -> Result<BTreeMap<(u32, u32), Vec<(u32, u32)>>> {
     let near = pipeline::agent::build::coverage_tiles(cov);
     let named: Vec<Unit> = positional(args).iter().map(|s| Unit::parse(s).with_context(|| format!("not a tile: {s}"))).collect::<Result<_>>()?;
@@ -3090,8 +3235,7 @@ fn terrain_targets(cov: &pipeline::coverage::Coverage, args: &[String]) -> Resul
                 let list = near.get(&(t.x, t.y)).with_context(|| format!("3/{}/{}: no tile of it is near the coverage", t.x, t.y))?;
                 by_q.entry((t.x, t.y)).or_default().extend(list);
             }
-            6 => by_q.entry((t.x >> 3, t.y >> 3)).or_default().push((t.x, t.y)),
-            z => anyhow::bail!("{z}/{}/{}: terrain and slope take z3 packs or z6 tiles", t.x, t.y),
+            z => anyhow::bail!("{z}/{}/{}: an area's whole run takes z3 tiles", t.x, t.y),
         }
     }
     for list in by_q.values_mut() {
@@ -3101,8 +3245,129 @@ fn terrain_targets(cov: &pipeline::coverage::Coverage, args: &[String]) -> Resul
     Ok(by_q)
 }
 
+/// The z6 tiles named (pieces: `terrain` and `slope` of z6 tiles), each near the coverage; None when
+/// none is (an area's whole run, of z3 tiles or of all); an error when z6 tiles are named with
+/// others, or one isn't near the coverage. `--expect-same`'s, those of them made again as they are.
+fn pieces_named(cov: &pipeline::coverage::Coverage, args: &[String]) -> Result<Option<(Vec<Unit>, BTreeSet<String>)>> {
+    let named: Vec<Unit> = positional(args).iter().map(|s| Unit::parse(s).with_context(|| format!("not a tile: {s}"))).collect::<Result<_>>()?;
+    let same: BTreeSet<String> = opt(args, "--expect-same").map(|v| v.split(',').filter(|t| !t.is_empty()).map(String::from).collect()).unwrap_or_default();
+    if named.is_empty() || named.iter().all(|u| u.z != 6) {
+        anyhow::ensure!(same.is_empty(), "--expect-same is for pieces (z6 tiles)");
+        return Ok(None);
+    }
+    anyhow::ensure!(named.iter().all(|u| u.z == 6), "z6 tiles (pieces) or z3 tiles (areas' whole runs), not both");
+    let near = pipeline::agent::build::coverage_tiles(cov);
+    for u in &named {
+        anyhow::ensure!(near.get(&(u.x >> 3, u.y >> 3)).is_some_and(|ts| ts.contains(&(u.x, u.y))), "{}: not near the coverage (no piece)", u.slash());
+    }
+    let slashes: BTreeSet<String> = named.iter().map(Unit::slash).collect();
+    anyhow::ensure!(same.is_subset(&slashes), "--expect-same names z6 tiles not given: {:?}", same.difference(&slashes).collect::<Vec<_>>());
+    Ok(Some((named, same)))
+}
+
+/// The z3 tiles named (assemblies: `terrain-lo`, `slope-lo`), each with its pieces (its z6 tiles
+/// near the coverage, in column then row order).
+fn areas_named(cov: &pipeline::coverage::Coverage, args: &[String], step: &str) -> Result<Vec<(Unit, Vec<(u32, u32)>)>> {
+    let near = pipeline::agent::build::coverage_tiles(cov);
+    let qs: Vec<Unit> = positional(args).iter().map(|t| Unit::parse(t).filter(|u| u.z == 3).with_context(|| format!("not a z3 tile: {t}"))).collect::<Result<_>>()?;
+    anyhow::ensure!(!qs.is_empty(), "{step} <3/x/y …>");
+    qs.into_iter().map(|q| Ok((q, near.get(&(q.x, q.y)).cloned().with_context(|| format!("{}: no tile of it is near the coverage", q.slash()))?))).collect()
+}
+
+/// terrain <6/x/y …> [--expect-same T,…]: terrain's pieces (pipeline::terrain_pack::build_piece:
+/// each z6 tile's hi pack and mid), then the raw tiles AWS gave packed onto the NAS.
+fn terrain_pieces(out: &mut Out, args: &[String], cov: &pipeline::coverage::Coverage, ts: &[Unit], same: &BTreeSet<String>) -> Result<()> {
+    let raw_dir = PathBuf::from(opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
+    let raw = raw_tiles(out, &raw_dir);
+    let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;
+    let coarse = pipeline::terrain_pack::Coarse::new(&raw);
+    let src = opened.sources(Some(&coarse));
+    let n = ts.len();
+    let mut names: Vec<String> = ts.iter().map(|t| format!("Fetching, shading and writing {}'s terrain tiles", t.slash())).collect();
+    names.push("Packing the new raw tiles onto the NAS".into());
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let say = |what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what);
+    for (k, t) in ts.iter().enumerate() {
+        pipeline::control::safe_point("terrain");
+        pipeline::agent::jobs::part(k, &names);
+        let c = cost_start();
+        let r = pipeline::terrain_pack::build_piece(out, &raw, (t.x, t.y), cov, &src, same.contains(&t.slash()), &say)?;
+        eprintln!("terrain {} ({} of {n}): {r:?} ({:.0?})", t.slash(), k + 1, c.elapsed());
+        pipeline::control::done("terrain", &t.slash());
+        note_cost("terrain", &t.slash(), c);
+    }
+    pipeline::control::safe_point("terrain");
+    pipeline::agent::jobs::part(names.len() - 1, &names);
+    pack_raw_with(out, &raw_dir, &say);
+    Ok(())
+}
+
+/// terrain-lo <3/x/y …>: terrain's assemblies (pipeline::terrain_pack::build_lo: each z3 tile's lo
+/// pack from its pieces' mids), then the raw tiles AWS gave packed onto the NAS.
+fn terrain_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
+    let cov = coverage_of(out, args)?;
+    let qs = areas_named(&cov, args, "terrain-lo")?;
+    let raw_dir = PathBuf::from(opt(args, "--raw").unwrap_or_else(|| out.scratch.join("aws-terrarium").to_string_lossy().into_owned()));
+    let raw = raw_tiles(out, &raw_dir);
+    let opened = pipeline::terrain_pack::SourceFiles::open(out, true)?;
+    let src = opened.sources(None);
+    let mut names: Vec<String> = qs.iter().map(|(q, _)| format!("Assembling {}'s zoomed-out terrain", q.slash())).collect();
+    names.push("Packing the new raw tiles onto the NAS".into());
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let say = |what: &str, done: u64, total: u64| pipeline::agent::jobs::report(done, total, what);
+    for (k, (q, ts)) in qs.iter().enumerate() {
+        pipeline::control::safe_point("terrain-lo");
+        pipeline::agent::jobs::part(k, &names);
+        let c = cost_start();
+        let r = pipeline::terrain_pack::build_lo(out, &raw, (q.x, q.y), ts, &src, &say)?;
+        eprintln!("terrain-lo {}: {r:?} ({:.0?})", q.slash(), c.elapsed());
+        pipeline::control::done("terrain-lo", &q.slash());
+        note_cost("terrain-lo", &q.slash(), c);
+    }
+    pipeline::control::safe_point("terrain-lo");
+    pipeline::agent::jobs::part(names.len() - 1, &names);
+    pack_raw_with(out, &raw_dir, &say);
+    Ok(())
+}
+
+/// slope <6/x/y …> [--expect-same T,…]: slope's pieces (pipeline::slope_pack::build_piece).
+fn slope_pieces(out: &mut Out, ts: &[Unit], same: &BTreeSet<String>) -> Result<()> {
+    let names: Vec<String> = ts.iter().map(|t| format!("Working out {}'s slope", t.slash())).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    for (k, t) in ts.iter().enumerate() {
+        pipeline::control::safe_point("slope");
+        pipeline::agent::jobs::part(k, &names);
+        let c = cost_start();
+        let r = pipeline::slope_pack::build_piece(out, (t.x, t.y), same.contains(&t.slash()), &|what, done, total| pipeline::agent::jobs::report(done, total, what))?;
+        eprintln!("slope {}: {r:?} ({:.0?})", t.slash(), c.elapsed());
+        pipeline::control::done("slope", &t.slash());
+        note_cost("slope", &t.slash(), c);
+    }
+    Ok(())
+}
+
+/// slope-lo <3/x/y …>: slope's assemblies (pipeline::slope_pack::build_lo).
+fn slope_lo_step(out: &mut Out, args: &[String]) -> Result<()> {
+    let cov = coverage_of(out, args)?;
+    let qs = areas_named(&cov, args, "slope-lo")?;
+    for (k, (q, ts)) in qs.iter().enumerate() {
+        pipeline::control::safe_point("slope-lo");
+        pipeline::agent::jobs::report(k as u64, qs.len() as u64, "areas");
+        let c = cost_start();
+        let r = pipeline::slope_pack::build_lo(out, (q.x, q.y), ts, &|_, _, _| {})?;
+        eprintln!("slope-lo {}: {r:?} ({:.0?})", q.slash(), c.elapsed());
+        pipeline::control::done("slope-lo", &q.slash());
+        note_cost("slope-lo", &q.slash(), c);
+    }
+    pipeline::agent::jobs::report(qs.len() as u64, qs.len() as u64, "areas");
+    Ok(())
+}
+
 fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
+    if let Some((ts, same)) = pieces_named(&cov, args)? {
+        return terrain_pieces(out, args, &cov, &ts, &same);
+    }
     let by_q = terrain_targets(&cov, args)?;
     eprintln!("terrain: {} z6 tiles in {} z3 packs", by_q.values().map(Vec::len).sum::<usize>(), by_q.len());
     // AWS's raw tiles: this Mac's cache, filled from the NAS's store.
@@ -3150,6 +3415,9 @@ fn terrain_step(out: &mut Out, args: &[String]) -> Result<()> {
 
 fn slope_step(out: &mut Out, args: &[String]) -> Result<()> {
     let cov = coverage_of(out, args)?;
+    if let Some((ts, same)) = pieces_named(&cov, args)? {
+        return slope_pieces(out, &ts, &same);
+    }
     let by_q = terrain_targets(&cov, args)?;
     eprintln!("slope: {} z6 tiles in {} z3 packs", by_q.values().map(Vec::len).sum::<usize>(), by_q.len());
     // Its parts, for the status (as terrain's): each area's slope worked out, then written. Each
