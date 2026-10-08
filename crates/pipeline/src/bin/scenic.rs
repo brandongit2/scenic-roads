@@ -198,13 +198,24 @@ fn room(args: &[String]) -> Result<()> {
     use agent::room::{set_target, size, target};
     let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
     let by = format!("scenic room on {}", agent::cond::host_name());
-    match args.get(2).map(String::as_str).filter(|a| !a.starts_with("--")) {
+    // (The first word after `room` that isn't an option or an option's value: `--home X 50`.)
+    let mut words = args.iter().skip(2);
+    let mut what = None;
+    while let Some(a) = words.next() {
+        if a == "--home" || a == "--root" {
+            words.next();
+        } else if !a.starts_with("--") {
+            what = Some(a.as_str());
+            break;
+        }
+    }
+    match what {
         Some("off") => {
             set_target(&home, None, &by)?;
             println!("the disk room target is off: this Mac's agent fills its caches again as its jobs need");
         }
         Some(gb) => {
-            let gb: f64 = gb.trim_end_matches("GB").trim_end_matches("gb").parse().ok().filter(|g: &f64| g.is_finite() && *g > 0.0).with_context(|| format!("scenic room <GB> | off, not {gb}"))?;
+            let gb: f64 = gb.trim_end_matches("GB").trim_end_matches("gb").parse().ok().filter(|g: &f64| g.is_finite() && *g >= 1.0).with_context(|| format!("scenic room <GB> | off, not {gb}: a target of 1 GB or more"))?;
             let bytes = (gb * (1u64 << 30) as f64) as u64;
             anyhow::ensure!(home.is_dir(), "no agent here ({} isn't there)", home.display());
             if let Some(n) = disk_size(&home) {
