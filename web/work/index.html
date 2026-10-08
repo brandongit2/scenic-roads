@@ -354,7 +354,7 @@ async function fill() {
   if (!idle || free < 200 || performance.now() - lastNone < 15000) return;
   asking = true;
   try {
-    const [code, g] = await call("/work/ask", { worker, kind: "web", label, can: ["tail", "bldtile"], mem_mb: free, cores, visible: document.visibilityState === "visible" });
+    const [code, g] = await call("/work/ask", { worker, kind: "web", label, can: ["tail", "bldtile", "treeblock"], mem_mb: free, cores, visible: document.visibilityState === "visible" });
     if (code === 204 || !g) { lastNone = performance.now(); $("state").textContent = "waiting for work"; return; }
     Object.assign(idle, { lease: g.lease, task: g.task, mem: g.mem_mb, started: performance.now(), state: "run", detail: `${g.task.unit}: fetching`, frac: 0 });
     reserved += g.mem_mb;

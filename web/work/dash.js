@@ -46,16 +46,16 @@ const STEP = {
   roadunits: ["Road index", "#4fb3c6"], stations: ["Rail stops", "#4fb3c6"], ferries: ["Ferries", "#4fb3c6"], "terrain-root": ["World terrain", "#c98b4a"], "slope-root": ["World slope", "#d9c35a"],
   "rail-feeds": ["Rail timetables", "#8fa2b5"], rail: ["Trains a day", "#8fa2b5"], pois: ["Landmark candidates", "#9b7be0"], peaks: ["Peaks", "#b48ae8"],
   items: ["Wikidata facts", "#c47fb5"], heritage: ["Heritage details", "#c47fb5"], marks: ["Landmarks", "#c47fb5"], overlays: ["Area overlays", "#c47fb5"],
-  "bld-fetch": ["3D buildings' sources", "#8fa2b5"], bldprep: ["Buildings read", "#a39a8c"], bldtiles: ["3D buildings", "#a39a8c"], bldtile: ["3D buildings' areas", "#b8ad9c"],
+  "bld-fetch": ["3D buildings' sources", "#8fa2b5"], bldprep: ["Buildings read", "#a39a8c"], bldtiles: ["3D buildings", "#a39a8c"], bldtile: ["3D buildings' areas", "#b8ad9c"], treeblock: ["Tree cover's blocks", "#7fa37a"],
   catalog: ["Publishing", "var(--mark)"], "catalog-held": ["Publishing (held)", "var(--mark)"], round: ["Publishing round", "var(--mark)"], gc: ["Clean-up", "#8fa2b5"], backup: ["Backup", "#8fa2b5"],
 };
 const stepName = (s) => (STEP[s] || [s])[0];
 const stepColour = (s) => (STEP[s] || [0, "#7b8590"])[1];
 // The noun a step's targets are counted in.
-const NOUN = { unit: "area", terrain: "area", slope: "area", trees: "tile", "trees-lo": "area", pois: "area", peaks: "area", pack: "tile", lo: "tile", tail: "task", bldprep: "tile", bldtiles: "tile", bldtile: "task" };
+const NOUN = { unit: "area", terrain: "area", slope: "area", trees: "tile", "trees-lo": "area", pois: "area", peaks: "area", pack: "tile", lo: "tile", tail: "task", bldprep: "tile", bldtiles: "tile", bldtile: "task", treeblock: "task" };
 const targets = (step, k) => plural(k, NOUN[step] || "job");
 // What was finished, in words: "3 areas", "1 terrain area", "5 map tiles".
-const DID = { unit: ["area", "areas"], terrain: ["terrain area", "terrain areas"], slope: ["slope area", "slope areas"], trees: ["tree-cover tile", "tree-cover tiles"], "trees-lo": ["zoomed-out tree-cover area", "zoomed-out tree-cover areas"], pack: ["map tile", "map tiles"], lo: ["zoomed-out tile", "zoomed-out tiles"], pois: ["area's candidates", "areas' candidates"], peaks: ["area's peaks", "areas' peaks"], tail: ["area's last steps", "areas' last steps"], bldprep: ["buildings tile read", "buildings tiles read"], bldtiles: ["3D buildings tile", "3D buildings tiles"], bldtile: ["3D buildings area", "3D buildings areas"], catalog: ["map update", "map updates"] };
+const DID = { unit: ["area", "areas"], terrain: ["terrain area", "terrain areas"], slope: ["slope area", "slope areas"], trees: ["tree-cover tile", "tree-cover tiles"], "trees-lo": ["zoomed-out tree-cover area", "zoomed-out tree-cover areas"], pack: ["map tile", "map tiles"], lo: ["zoomed-out tile", "zoomed-out tiles"], pois: ["area's candidates", "areas' candidates"], peaks: ["area's peaks", "areas' peaks"], tail: ["area's last steps", "areas' last steps"], bldprep: ["buildings tile read", "buildings tiles read"], bldtiles: ["3D buildings tile", "3D buildings tiles"], bldtile: ["3D buildings area", "3D buildings areas"], treeblock: ["row of tree-cover blocks", "rows of tree-cover blocks"], catalog: ["map update", "map updates"] };
 const did = (step, k) => (DID[step] ? plural(k, ...DID[step]) : `${stepName(step)}${k > 1 ? ` ×${k}` : ""}`);
 // Machines' colours, the build Mac first.
 const MACHINE_COLOURS = ["#5b8fd8", "#b48ae8", "#e0a36a", "#e07a9a", "#6cc28a"];
@@ -397,21 +397,26 @@ function schedule(m) {
   }
   // The pages: their work is an area's last steps, which the build Mac hands out as it builds its
   // areas (a few at a time, one to each worker around that spares what one takes; its second job's
-  // too), and waits for only from a worker measured faster than itself (its time a quarter more
-  // still under the build Mac's, crate::offload): while its own areas run, so then, if such a page
-  // spares what a tail takes typically.
+  // too), and rows of a tree cover piece's blocks, as it builds the piece; it waits for either only
+  // from a worker measured faster than itself at that kind (its time a quarter more still under the
+  // build Mac's, crate::offload): while its own areas or pieces run, so then, if such a page spares
+  // what one takes typically.
   const own = [...(fc.lanes[m.a.host] || []), ...(fc.lanes[secondOf(m.a.host)] || [])].sort((p, q) => p.from - q.from);
-  const fits = m.pages.some((p) => (p.mem_mb || 0) >= (m.sw.task_mb?.tail || 0) && p.tail_pace != null && p.tail_pace * 1.25 < 1);
-  if (fits && own.some((l) => l.step === "unit" && l.until > t0)) {
+  const pace = (p, kind) => (p.paces ? p.paces[kind] : kind === "tail" ? p.tail_pace : null);
+  const fast = (kind) => m.pages.some((p) => (p.mem_mb || 0) >= (m.sw.task_mb?.[kind] || 0) && pace(p, kind) != null && pace(p, kind) * 1.25 < 1);
+  const helps = [["unit", "tail", "the last steps of the build Mac's areas as it builds them"], ["trees", "treeblock", "rows of the build Mac's tree cover blocks as it builds them"]].filter(([step, kind]) => fast(kind) && own.some((l) => l.step === step && l.until > t0));
+  if (helps.length) {
     const track = h("div", "track");
     const who = m.pages.map((p) => p.label).join(", ");
-    for (const l of own.filter((l) => l.step === "unit" && l.until > t0)) {
-      const say = `${who}: the last steps of the build Mac's areas as it builds them (${targets("unit", l.n)}), ${clock(l.from)}–${clock(l.until)}`;
-      const seg = h("i", { onmousemove: (e) => showTip(e, say), onmouseleave: hideTip, onclick: (e) => showTip(e, say) });
-      Object.assign(seg.style, { left: x(l.from), width: `calc(${x(l.until)} - ${x(l.from)})`, background: stepColour("tail") });
-      track.append(seg);
+    for (const [step, kind, what] of helps) {
+      for (const l of own.filter((l) => l.step === step && l.until > t0)) {
+        const say = `${who}: ${what} (${targets(step, l.n)}), ${clock(l.from)}–${clock(l.until)}`;
+        const seg = h("i", { onmousemove: (e) => showTip(e, say), onmouseleave: hideTip, onclick: (e) => showTip(e, say) });
+        Object.assign(seg.style, { left: x(l.from), width: `calc(${x(l.until)} - ${x(l.from)})`, background: stepColour(kind) });
+        track.append(seg);
+      }
+      steps.add(kind);
     }
-    steps.add("tail");
     lanes.append(h("div", { class: "ln", title: who }, m.pages.length > 1 ? `Pages (${m.pages.length})` : m.pages[0].label), track);
   }
   // Ticks: every 1, 2, 3, 6, 12 or 24 hours, on the local hour (midnight a day's name).

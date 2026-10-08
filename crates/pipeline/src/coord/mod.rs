@@ -115,10 +115,12 @@ pub fn unit_peak(costs: &BTreeMap<String, Cost>, unit: &str, piece: u64) -> u64 
     costs.get(unit).map(|c| c.peak_mb).unwrap_or_else(|| (piece >> 20).saturating_mul(10).max(3700))
 }
 
-/// The kinds of task a page may take: a unit's tail, a 3D buildings' z8 area (`bld::task::KIND`).
-pub const PAGE_TASKS: [&str; 2] = ["tail", crate::bld::task::KIND];
+/// The kinds of task a page may take: a unit's tail, a 3D buildings' z8 area (`bld::task::KIND`),
+/// a row of a tree cover piece's z8 blocks (`trees::task::KIND`).
+pub const PAGE_TASKS: [&str; 3] = ["tail", crate::bld::task::KIND, crate::trees::task::KIND];
 
-/// What a task of `kind` for `unit` (its spec's) costs is kept under: "tail 6/x/y", "bldtile 8/x/y".
+/// What a task of `kind` for `unit` (its spec's) costs is kept under: "tail 6/x/y", "bldtile 8/x/y",
+/// "treeblock 8/x/y" (a row's first block).
 pub fn task_cost_key(kind: &str, unit: &str) -> String {
     format!("{kind} {unit}")
 }
@@ -387,7 +389,8 @@ pub struct Ask {
     #[serde(default)]
     pub label: Option<String>,
     /// The kinds of work it does: a shared step's jobs (crate::agent::claims::SHARED: it mounts
-    /// the NAS), "tail" or "bldtile" (tasks: a unit's tail, a 3D buildings' z8 area).
+    /// the NAS), "tail", "bldtile" or "treeblock" (tasks: a unit's tail, a 3D buildings' z8 area, a
+    /// row of tree cover's z8 blocks).
     pub can: Vec<String>,
     /// The memory it spares now (MB).
     pub mem_mb: u64,
@@ -1049,7 +1052,8 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
         "/work/ask" => {
             let mut a: Ask = serde_json::from_slice(body)?;
             anyhow::ensure!(!a.worker.is_empty() && a.worker.len() <= 120, "a worker needs a name");
-            // (A page: a page's tasks, the tails and the 3D buildings' areas, under a page's name.)
+            // (A page: a page's tasks, the tails, the 3D buildings' areas and tree cover's rows, under a
+                // page's name.)
             if let Some(n) = own_name(&a.worker) {
                 if a.kind != "web" || a.can.iter().any(|c| !PAGE_TASKS.contains(&c.as_str())) {
                     return not_mine();
@@ -1371,7 +1375,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
                 .iter()
                 .map(|(n, w)| {
                     let fit = w.ask.as_ref().filter(|a| a.kind == "native").map(|a| s.fit(a, now)).unwrap_or_default();
-                    serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "checked": w.checked, "bad": w.bad, "app": w.app, "visible": w.visible, "can": w.can, "fit": fit, "seen_s": now.duration_since(w.seen).as_secs(), "tail_pace": s.tasks.pace(n, "tail") })
+                    serde_json::json!({ "name": n, "label": w.label, "kind": w.kind, "what": w.what, "mem_mb": w.mem_mb, "cores": w.cores, "done": w.done, "failed": w.failed, "checked": w.checked, "bad": w.bad, "app": w.app, "visible": w.visible, "can": w.can, "fit": fit, "seen_s": now.duration_since(w.seen).as_secs(), "tail_pace": s.tasks.pace(n, "tail"), "paces": PAGE_TASKS.iter().map(|k| (k.to_string(), s.tasks.pace(n, k))).collect::<BTreeMap<String, Option<f64>>>() })
                 })
                 .collect();
             // The tasks, by state.
@@ -1390,7 +1394,7 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             // has) and the last day by the hour.
             // (What a task of each kind takes, typically: whether a page can take the tails the
             // schedule shows it.)
-            let task_mb = serde_json::json!({ "tail": s.tasks.typical_mb("tail"), "bldtile": s.tasks.typical_mb("bldtile") });
+            let task_mb: BTreeMap<&str, Option<u64>> = PAGE_TASKS.iter().map(|k| (*k, s.tasks.typical_mb(k))).collect();
             Ok((200, serde_json::json!({ "now": unix, "pause": s.paused, "agent": agent, "leases": leases, "workers": workers, "tasks": tasks, "task_mb": task_mb, "seq": s.history.seq(), "rates": s.history.rates(unix, 24) })))
         }
         "/work/history" => {
