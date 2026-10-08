@@ -278,7 +278,7 @@ pub(crate) fn h(parts: &[&str]) -> String {
 /// rings) alone. (Jobs that read part of it are keyed on `Coverage::fingerprint` of their box.)
 /// Which region or outline entry a shape came from never enters a key, so renaming a region's id,
 /// or splitting and merging regions with the same outlines, reruns nothing.
-fn coverage_all(cov: &Coverage) -> String {
+pub(crate) fn coverage_all(cov: &Coverage) -> String {
     let mut v: Vec<String> = cov.shapes.iter().map(|s| format!("{}:{}", s.buffer_m, store::naming::hash16(bytemuck::cast_slice(&s.rings.concat())))).collect();
     v.sort();
     v.dedup();
@@ -752,7 +752,7 @@ pub const SLOPE_LO_V: u32 = 1;
 
 /// Terrain's and slope's targets, each with its key, done or not (docs/plan.md §6, Terrain): a
 /// piece per z6 tile near the coverage (`coverage_tiles`), an assembly per z3 tile with pieces.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TerrainTargets {
     /// Terrain's pieces ("6/x/y"): keyed on the terrain's version, the coverage within 20 km of the
     /// tile (which decides its tiles), GLO-30 and the basemap its water comes from (by content).
@@ -776,6 +776,29 @@ pub fn area_of(piece: &str) -> Option<String> {
 /// Terrain's and slope's targets (`TerrainTargets`) for the coverage and the build manifest `m`;
 /// `tiles`, the terrain packs' indexes the slope pieces' keys read.
 pub fn terrain_slope_targets(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> TerrainTargets {
+    // (Kept by `tiles` with what they're worked out from: the coverage's shapes, the terrain packs
+    // and the mids by content, the basemap. A plan works them out again only when one changes; not
+    // kept while a slope piece's key can't be told.)
+    let named = |prefix: &str| m.range(prefix.to_string()..).take_while(|(l, _)| l.starts_with(prefix)).map(|(l, c)| format!("{l}={c}")).collect::<Vec<_>>().join(",");
+    let water = crate::terrain_pack::water_pin(m).map_or("-", |(_, c)| c);
+    let from = h(&[&coverage_all(cov), &named("layers/terrain/"), &named("work/terrain-mid/"), &named("work/slope-mid/"), water]);
+    let made = std::cell::RefCell::new(None);
+    let kept = tiles.memo("terrain-targets", &from, || {
+        let t = terrain_slope_targets_made(cov, m, tiles);
+        let whole = t.slope.iter().all(|(_, k)| k.is_some());
+        let json = serde_json::to_string(&t).unwrap_or_default();
+        *made.borrow_mut() = Some(t);
+        if whole { Ok(json) } else { Err(Unread("a slope piece's key".into())) }
+    });
+    match (made.into_inner(), kept) {
+        (Some(t), _) => t,
+        (None, Ok(json)) => serde_json::from_str(&json).unwrap_or_else(|_| terrain_slope_targets_made(cov, m, tiles)),
+        (None, Err(_)) => terrain_slope_targets_made(cov, m, tiles),
+    }
+}
+
+/// `terrain_slope_targets`, worked out.
+fn terrain_slope_targets_made(cov: &Coverage, m: &BTreeMap<String, String>, tiles: &TerrainTiles) -> TerrainTargets {
     let get = |l: &str| m.get(l).map(String::as_str).unwrap_or("-");
     // (The water's basemap: the latest pass's, pinned by its content name.)
     let water = crate::terrain_pack::water_pin(m).map_or("-", |(_, c)| c);

@@ -478,7 +478,12 @@ pub fn derive(keys: &mut Keys, cov: &Coverage, m: &BTreeMap<String, String>, til
     if tz3.is_empty() && sz3.is_empty() {
         return out;
     }
-    let (old_t, old_s) = v1::terrain_slope_targets(cov, m);
+    // (The old scheme's keys, kept by `tiles` with what they're worked out from, as the new.)
+    let named = |prefix: &str| m.range(prefix.to_string()..).take_while(|(l, _)| l.starts_with(prefix)).map(|(l, c)| format!("{l}={c}")).collect::<Vec<_>>().join(",");
+    let water = crate::terrain_pack::water_pin(m).map_or("-", |(_, c)| c);
+    let from = store::naming::hash16([build::coverage_all(cov), named("layers/terrain/"), water.to_string()].join("\n").as_bytes());
+    let old = tiles.memo("terrain-targets v1", &from, || Ok(serde_json::to_string(&v1::terrain_slope_targets(cov, m)).unwrap_or_default()));
+    let (old_t, old_s): (Vec<(String, String)>, Vec<(String, String)>) = old.ok().and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_else(|| v1::terrain_slope_targets(cov, m));
     let (old_t, old_s): (BTreeMap<String, String>, BTreeMap<String, String>) = (old_t.into_iter().collect(), old_s.into_iter().collect());
     let by_q = build::coverage_tiles(cov);
     let water = crate::terrain_pack::water_pin(m).map_or("-", |(_, c)| c);

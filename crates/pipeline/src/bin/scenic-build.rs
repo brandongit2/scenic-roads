@@ -1370,6 +1370,10 @@ fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
     let next = t2.elapsed();
     let mut twice = read.clone();
     let d3 = rekey::derive(&mut twice, &cov, &m, &tiles);
+    // (What a plan works out anyway: the pieces' and assemblies' keys.)
+    let t3 = std::time::Instant::now();
+    let _ = build::terrain_slope_targets(&cov, &m, &tiles);
+    let targets = t3.elapsed();
     println!(
         "derived: terrain {} z3 tiles as their pieces and assembly, slope {}; {} slope pieces left to make; passed over (stale under the old scheme): {}; unknown now: {}",
         d.terrain.len(),
@@ -1379,9 +1383,10 @@ fn p5_check_terrain(root: &Path, args: &[String]) -> Result<()> {
         d.unknown.len()
     );
     println!(
-        "deriving took {:.0} ms the first time, {:.0} ms again (a plan's); again from the records: {}; on what it read: {}",
+        "deriving took {:.0} ms the first time, {:.0} ms again (a plan's; of which the targets' keys, which the plan works out anyway, {:.0} ms); again from the records: {}; on what it read: {}",
         first.as_secs_f64() * 1e3,
         next.as_secs_f64() * 1e3,
+        targets.as_secs_f64() * 1e3,
         if d2 == d && again == read { "the same" } else { "DIFFERENT" },
         if d3 == rekey::Derived::default() && twice == read { "nothing to do" } else { "IT CHANGED THEM AGAIN" }
     );
