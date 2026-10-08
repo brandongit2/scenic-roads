@@ -315,7 +315,8 @@ tile (12 bits an axis), then id.
 
 - **Translation lines** (`translations/**/*.jsonl`, not `todo/`): `{"n", "kind", "langs", "main",
   "sub", "via"}`: `kind` road, settlement or other, or a list; `langs` a language (ISO 639: its first
-  subtag counts) or a list; `main` null or empty for the name; `sub` null for none; `via` free text,
+  subtag counts) or a list; `main` null or empty for the name; `sub` null for none (an `en` stands
+  for a missing `sub`); `via` free text,
   "todo" or "skipped" leaving the line out. Lines without `kind` or `langs` (the area tables'
   `{"n", "main", "sub"}` and `{"n", "en"}`) are left out. The converted area tables are
   `translations/0-converted/<language's English name>.jsonl`, with `conversion-log.txt` (JSON lines:
@@ -400,7 +401,8 @@ idx/<hash16>.idx        pack indexes (RDPKIDX1: header, meta, entries, XXH3 trai
 catalog/<n>.json.zst    the last catalogs read
 translations/  descriptions/   local copies of the NAS folders, compiled by the server
 names/spoken-<content>.bin   the languages spoken where, made from the catalog's outlines of that
-                        content name (its slashes as underscores) (names::spoken::Spoken::to_bytes: "SPOKEN01",
+                        content name (its slashes as underscores), for a catalog without
+                        `global/spoken` (same format: names::spoken::Spoken::to_bytes: "SPOKEN01",
                         u32 head length, head (the rules' version, then a line per region: its ISO
                         code, a tab, its languages comma-separated; region 0 none), u32 run count,
                         23,041 u32 row starts, runs of (u32 first column, u16 region))
@@ -519,8 +521,8 @@ agent/pack-idx/         <hash16>.idx: the indexes of the terrain packs the build
 - `/api/catalog`: `n`, `created`, `units` (a count), `layers` (encoding, zoom range, version),
   `coverage` (the regions it was built for, without outlines), `credits` (every credit for a
   catalog that has none), `online`, `nas`, `held`, `app`, `agent`, `names` (`langs`: each language's version; `spoken`:
-  the raster's outlines and version, or null; `warning` when only the area tables' lines are
-  there),
+  the raster's source and version, or null; `warning` when only the area tables' lines are
+  there; `waiting`, what names wait for before they're loaded),
   `v`, `marks`. The map's meta is `/api/meta`.
 - `/api/names?n=<name>&at=lon,lat` repeated (each optionally with `en=<own English>`,
   `k=road|settlement|other`, `l=<OSM's languages, comma-separated>` before its `at`): `[{main,
@@ -570,7 +572,9 @@ class, id) within a tile. The client sends the id with the clicked point.
   road, u64 unit key); `global/railfreq` (as `/api/railfreq`: the `rail` job's, by OSM way id from
   `railfreq`'s per-way-index output; each way once); `global/marks/summary`
   (`{fmt, kinds, tiers}`); `global/roaden/<u>` (JSON `{OSM way id: English}`: the unit's roads whose
-  `name:en` isn't their name; the server's roads' own English); `global/heritage/*`; `global/legacy/*`
+  `name:en` isn't their name; the server's roads' own English); `global/spoken` (the `spoken` job's: the languages spoken where, as
+  `names::spoken::Spoken::to_bytes`, the format of a Mac's `names/spoken-*.bin`); `global/heritage/*`;
+  `global/legacy/*`
   (today's converted files; `road-en` is no longer read).
 - **Grid layers:** `grid-{class,canopy,cover}` hi packs of z11 tiles, encoding `u8-zstd`, not served.
 - **Worldwide z8 terrain:** `sources/terrain-z8-v1` (one RDPACK of every z8 tile, meta without scope

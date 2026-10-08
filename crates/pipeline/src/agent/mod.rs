@@ -4553,7 +4553,7 @@ fn first_secs(step: &str) -> f64 {
         "bldprep" => 6.0,
         "bldtiles" => 2.0,
         "catalog" => 60.0,
-        "names-todo" => 900.0,
+        "names-todo" => 1070.0,
         "spoken" => 60.0,
         _ => 300.0,
     }

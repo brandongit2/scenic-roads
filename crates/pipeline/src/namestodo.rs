@@ -12,9 +12,10 @@
 //! - **Labels** (places, states, water, parks): the labels layer's zoom-12 tiles in the units' z6
 //!   tiles, each label inside the coverage the catalog records once (its feature id). Own English:
 //!   `en`, else `kana` romanised; OSM's languages: `l`.
-//! - **Roads and rail lines:** each unit's base pack (ways, names) and its roads' own English
-//!   (`global/roaden/<u>`); where each is, the centre of its box from the hidata's ways-here
-//!   index. Roads carry no OSM language tags yet.
+//! - **Roads, rail lines and ferries:** each unit's base pack (ways, names) and its roads' own
+//!   English (`global/roaden/<u>`), read first; then each named way placed once, at the centre of
+//!   its box, from the hidata's ways-here index (its owner and index there). Roads carry no OSM
+//!   language tags yet.
 //! - **Landmarks:** the markdata's points (all eight kinds), their `en`, fame, and popup records
 //!   (Wikidata item, Wikipedia article, register entry, written description).
 //! - **Parks:** the ovdata's park records.
@@ -339,11 +340,33 @@ fn road_priority(c: u8) -> f64 {
     }
 }
 
-/// Roads and rail lines: each unit's ways, placed by their boxes in the hidata.
+/// Roads and rail lines: each unit's named ways, then placed by their boxes in the hidata's
+/// ways-here index (each way once: its first tile's record).
 fn roads(root: &Path, cat: &store::catalog::Catalog, lists: &mut Lists, progress: &dyn Fn(&str, u64, u64)) -> Result<()> {
-    // Where each way is: its box's centre, from the ways-here index (a way drawn in several tiles
-    // is in each: the first).
-    let mut at: HashMap<u64, [i32; 2]> = HashMap::new();
+    /// One unit's ways, by index: their names (into `strings`), classes, ids, own English, and
+    /// whether placed yet.
+    struct UnitWays {
+        ways: Vec<WayRec>,
+        strings: Vec<String>,
+        own: Vec<bool>,
+        placed: Vec<bool>,
+    }
+    let mut units: HashMap<u64, UnitWays> = HashMap::new();
+    let n = cat.base.len() as u64;
+    for (i, (unit, logical)) in cat.base.iter().enumerate() {
+        progress("units' ways read", i as u64, n);
+        let (Some(path), Some(u)) = (path_of(root, cat, logical), crate::legacy::Unit::parse(unit)) else { continue };
+        let s = sect(&path)?;
+        let ways: Vec<WayRec> = s.read_pod("ways")?;
+        let strings: Vec<String> = String::from_utf8_lossy(&s.read("strings")?).split('\n').map(str::to_owned).collect();
+        let roaden: HashMap<String, String> = path_of(root, cat, &format!("global/roaden/{}", unit.replace('/', "-")))
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        let own: Vec<bool> = ways.iter().map(|w| roaden.contains_key(&w.id.to_string())).collect();
+        let placed = vec![false; ways.len()];
+        units.insert(u.key(), UnitWays { ways, strings, own, placed });
+    }
     let n = cat.hidata.len() as u64;
     for (i, logical) in cat.hidata.values().enumerate() {
         progress("ways-here indexes read", i as u64, n);
@@ -353,36 +376,29 @@ fn roads(root: &Path, cat: &store::catalog::Catalog, lists: &mut Lists, progress
             continue;
         }
         for h in s.read_pod::<roadcore::packs::Here>("here")? {
-            at.entry(h.id).or_insert([((h.bbox[0] as i64 + h.bbox[2] as i64) / 2) as i32, ((h.bbox[1] as i64 + h.bbox[3] as i64) / 2) as i32]);
-        }
-    }
-    let n = cat.base.len() as u64;
-    for (i, (unit, logical)) in cat.base.iter().enumerate() {
-        progress("units' ways read", i as u64, n);
-        let Some(path) = path_of(root, cat, logical) else { continue };
-        let s = sect(&path)?;
-        let ways: Vec<WayRec> = s.read_pod("ways")?;
-        let strings = String::from_utf8_lossy(&s.read("strings")?).into_owned();
-        let strings: Vec<&str> = strings.split('\n').collect();
-        let own: HashMap<String, String> = path_of(root, cat, &format!("global/roaden/{}", unit.replace('/', "-")))
-            .and_then(|p| std::fs::read(p).ok())
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        for w in &ways {
-            let name = strings.get(w.name as usize).copied().unwrap_or("");
+            if h.extra & roadcore::packs::here_extra::UNNAMED != 0 {
+                continue;
+            }
+            let Some(u) = units.get_mut(&h.owner) else { continue };
+            let k = h.index as usize;
+            let (Some(w), Some(placed)) = (u.ways.get(k), u.placed.get_mut(k)) else { continue };
+            if *placed {
+                continue;
+            }
+            *placed = true;
+            let name = u.strings.get(w.name as usize).map(String::as_str).unwrap_or("");
             if name.is_empty() {
                 continue;
             }
             *lists.report.read.entry("ways").or_default() += 1;
-            let Some(p) = at.get(&(w.id as u64)) else { continue };
             let kind = if class::is_rail(w.class) || w.class == class::FERRY { Kind::Other } else { Kind::Road };
             lists.add(Thing {
                 name,
                 kind,
-                own: own.contains_key(&w.id.to_string()),
+                own: u.own[k],
                 osm: Vec::new(),
-                lon: f64::from(p[0]) * 1e-7,
-                lat: f64::from(p[1]) * 1e-7,
+                lon: (h.bbox[0] as f64 + h.bbox[2] as f64) * 0.5e-7,
+                lat: (h.bbox[1] as f64 + h.bbox[3] as f64) * 0.5e-7,
                 id: format!("w{}", w.id),
                 priority: road_priority(w.class),
             });
