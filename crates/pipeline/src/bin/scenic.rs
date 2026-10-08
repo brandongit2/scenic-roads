@@ -15,6 +15,16 @@
 //!                                       (docs/pool.md §12): its driver beside this Mac's agent (its
 //!                                       folder, `--live`, read only), writing only under the NAS's
 //!                                       state/pool-shadow/, its log in <dir>/pool-shadow/
+//!   scenic lead                         who leads the build, its term, since when, a handover
+//!                                       under way, each member and whether it can lead (docs/pool.md
+//!                                       §11)
+//!   scenic lead give <member>           hand the lead to a member (its host name or member id)
+//!   scenic lead take [--force] [--downgrade]  this Mac takes the lead over: once the lead is out
+//!                                       of touch or stood down; --force with it in touch, past a
+//!                                       term that can't be read, or over this Mac's own handover;
+//!                                       --downgrade on an app older than the term's
+//!   scenic lead auto on|off             the proactive offer taken by itself (the lead away or on
+//!                                       battery five minutes, another Mac home on power)
 //!   scenic pause [--now] | resume       pause the whole build (every Mac's jobs stop at their next
 //!                                       safe point; --now: frozen at once), or let it go on
 //!   scenic clean [--yes]                clear this Mac's build caches (what later jobs copy back
@@ -63,6 +73,90 @@ fn ago(t: u64) -> String {
         5400..=129599 => format!("{} h ago", s / 3600),
         _ => format!("{} days ago", s / 86400),
     }
+}
+
+/// `scenic lead`: the pool's lead as this Mac's agent sees it; an ask of it, followed until it's
+/// done or refused (docs/pool.md §11).
+fn lead(args: &[String]) -> Result<()> {
+    use pipeline::agent::lead::{self as l, State};
+    use pipeline::control::LeadAsk;
+    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+    let host = agent::cond::host_name();
+    let view = || l::own_status(&home).and_then(|s| s.pool).and_then(|p| p.lead);
+    let ask = match args.get(2).map(String::as_str) {
+        None | Some("status") => {
+            let v = view().context("this Mac's agent isn't in the pool (`scenic pool status`), or hasn't said yet")?;
+            for line in l::said(&v, now_s()) {
+                println!("{line}");
+            }
+            return Ok(());
+        }
+        Some("auto") => {
+            let r = root(args, false)?;
+            let p = r.join(l::AUTO);
+            match args.get(3).map(String::as_str) {
+                Some("on") => {
+                    pipeline::whole::write(&p, format!("turned on by scenic lead on {host}\n").as_bytes())?;
+                    println!("on: when the lead is away or on battery and another Mac is home on power for five minutes, the lead hands the build to it by itself (never within half an hour of the last change of lead)");
+                }
+                Some("off") => {
+                    if let Err(e) = std::fs::remove_file(&p) {
+                        anyhow::ensure!(e.kind() == std::io::ErrorKind::NotFound, "{e}");
+                    }
+                    println!("off: the offer waits for a click");
+                }
+                _ => println!("{}", if p.exists() { "on" } else { "off" }),
+            }
+            return Ok(());
+        }
+        Some("give") => {
+            let to = args.get(3).filter(|a| !a.starts_with("--")).context("scenic lead give <member: its host name or member id>")?;
+            // (What the agent would say, said at once when it says so already.)
+            if let Some(m) = view().and_then(|v| v.members.into_iter().find(|m| m.member == *to || m.host.eq_ignore_ascii_case(to))) {
+                if !m.can_lead {
+                    bail!("the lead can't be handed to {}: {}", m.host, m.why_not.unwrap_or_default());
+                }
+            }
+            LeadAsk::Give { to: to.clone() }
+        }
+        Some("take") => {
+            let (force, downgrade) = (flag(args, "--force"), flag(args, "--downgrade"));
+            if let Some(t) = view().and_then(|v| v.takeover) {
+                if let Some(w) = t.refused {
+                    bail!("this Mac can't take the lead over: {w}");
+                }
+                if let (Some(w), false) = (&t.force, force) {
+                    bail!("taking the lead over needs --force: {w}");
+                }
+                if let (Some(w), false) = (&t.downgrade, downgrade) {
+                    bail!("taking the lead over needs --downgrade: {w}");
+                }
+            }
+            LeadAsk::Take { force, downgrade }
+        }
+        Some(x) => bail!("scenic lead [give <member> | take [--force] [--downgrade] | auto on|off], not {x}"),
+    };
+    let r = pipeline::control::request_lead(&home, ask, &format!("scenic lead on {host}"))?;
+    println!("asked this Mac's agent; it takes the ask up within seconds");
+    // Followed as the agent's status says, two minutes at most.
+    let start = std::time::Instant::now();
+    let mut last = String::new();
+    while start.elapsed() < std::time::Duration::from_secs(150) {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let Some(a) = view().and_then(|v| v.asked).filter(|a| a.ask == r.ask && a.at >= r.at.saturating_sub(1)) else { continue };
+        let now = format!("{:?}: {}", a.state, a.said);
+        if now != last {
+            println!("{}", a.said);
+            last = now;
+        }
+        match a.state {
+            State::Done => return Ok(()),
+            State::Refused | State::Failed => bail!("{}", a.said),
+            _ => {}
+        }
+    }
+    println!("still under way: `scenic lead` says how it stands");
+    Ok(())
 }
 
 fn status(args: &[String]) -> Result<()> {
@@ -116,6 +210,15 @@ fn status(args: &[String]) -> Result<()> {
     println!("Regions: {}", if st.regions.is_empty() { "none yet".to_string() } else { st.regions.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", ") });
     for (f, e) in &st.bad_recipes {
         println!("  {f} isn't a valid region: {e}");
+    }
+    // The pool (docs/pool.md §10): who leads, each member, as this Mac's agent sees it (else as the
+    // status read says).
+    let own = agent::lead::own_status(&app_home().join("agent")).and_then(|s| s.pool).and_then(|p| p.lead);
+    if let Some(v) = own.or_else(|| st.pool.as_ref().and_then(|p| p.lead.clone())) {
+        println!("The pool:");
+        for l in agent::lead::said(&v, now_s()) {
+            println!("  {l}");
+        }
     }
     // Each Mac's build caches (agent::room): what a clear would free, the last trim and clear.
     for (host, c) in std::iter::once((&st.host, &st.caches)).chain(st.helpers.iter().map(|h| (&h.host, &h.caches))) {
@@ -314,6 +417,7 @@ fn main() -> Result<()> {
     let cmd = args.get(1).cloned().unwrap_or_else(|| "status".into());
     match cmd.as_str() {
         "status" => status(&args),
+        "lead" => lead(&args),
         "add" => {
             let (Some(id), Some(name)) = (args.get(2), args.get(3)) else { bail!("scenic add <id> \"<name>\" <outline>…") };
             // (The outline is what follows the name, but for --root and the folder after it.)
