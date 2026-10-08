@@ -776,6 +776,7 @@ pub struct Agent {
     pool_mode: Option<pool::Mode>,
     pool: Option<pool::Run>,
     shadow: Option<shadow::Shadow>,
+    shadow_failed: bool,
     restart_for: Option<String>,
 }
 
@@ -890,7 +891,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, mem_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, restart_for: None })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, mem_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round), pool_mode, pool: run, shadow: None, shadow_failed: false, restart_for: None })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1630,7 +1631,16 @@ impl Agent {
         if let Some(c) = &self.coord {
             c.set_root(root.as_deref());
         }
-        if let (Some(c), Some(r)) = (&self.coord, &root) {
+        // (In the pool, only while this Mac leads: a lead that stepped down takes its contact off,
+        // so members find the new lead's.)
+        let leading = self.pool.as_ref().is_none_or(|p| p.gates.leads.is_some());
+        if let (Some(c), Some(r), false) = (&self.coord, &root, leading) {
+            if self.published.is_some() {
+                c.unpublish(r);
+                self.published = None;
+            }
+        }
+        if let (Some(c), Some(r), true) = (&self.coord, &root, leading) {
             if self.published.is_none_or(|t| t.elapsed() >= Duration::from_secs(300)) {
                 match c.publish(r) {
                     Ok(()) => self.published = Some(Instant::now()),
@@ -2694,7 +2704,7 @@ impl Agent {
             }
             env.push(("SCENIC_COSTS".into(), self.costs_path(k).to_string_lossy().into_owned()));
             if let Some(c) = &self.coord {
-                env.push(("SCENIC_COORD".into(), format!("http://127.0.0.1:{}", crate::coord::PORT)));
+                env.push(("SCENIC_COORD".into(), format!("http://127.0.0.1:{}", coord_port())));
                 env.push(("SCENIC_COORD_TOKEN".into(), c.job_token.clone()));
             }
             // A round's step that reads the units: as they were when the round began.
@@ -3773,13 +3783,13 @@ impl Agent {
                 }
             }
         }
-        if self.pool_mode == Some(pool::Mode::Shadow) && self.shadow.is_none() && self.restart_for.is_none() {
+        if self.pool_mode == Some(pool::Mode::Shadow) && self.shadow.is_none() && !self.shadow_failed && self.restart_for.is_none() {
             match shadow::Shadow::open(r, &self.o.home.join("shadow"), &self.o.home, &self.app) {
                 Ok(Some(sh)) => self.shadow = Some(sh),
                 Ok(None) => {}
                 Err(e) => {
-                    eprintln!("agent: the pool's shadow run: {e:#}");
-                    self.pool_mode = Some(pool::Mode::Off);
+                    eprintln!("agent: the pool's shadow run: {e:#}; not tried again in this process");
+                    self.shadow_failed = true;
                 }
             }
         }
@@ -3803,19 +3813,23 @@ impl Agent {
         };
         // Settling a handover: the duties in flight cancelled (a catalog killed: it writes once at
         // its end; a sweep stopped), then the coordinator's state written, for the next step.
-        if self.pool.as_ref().is_some_and(|p| p.gates.settle && p.settled.is_none()) {
+        // (So too when it no longer leads: a catalog or a sweep of a term it lost.)
+        let settling = self.pool.as_ref().is_some_and(|p| p.gates.settle && p.settled.is_none());
+        let lost = lead && self.pool.as_ref().is_some_and(|p| p.gates.leads.is_none());
+        if settling || lost {
             for k in 0..SLOTS {
                 let duty = self.slots[k].running.as_ref().and_then(|j| step_of(&j.spec.id)).is_some_and(|st| pool::PUBLISHES.contains(&st.as_str()) || pool::SWEEPS.contains(&st.as_str()));
                 if duty {
                     let j = self.slots[k].running.as_mut().unwrap();
-                    eprintln!("agent: {} stopped: the lead hands the build over", j.spec.id);
+                    let why = if settling { "the lead hands the build over" } else { "this Mac no longer leads" };
+                    eprintln!("agent: {} stopped: {why}", j.spec.id);
                     j.stop(Duration::from_secs(30));
-                    self.stopped(k, root, "stopped: the lead hands the build over");
+                    self.stopped(k, root, &format!("stopped: {why}"));
                     self.slots[k].running = None;
                     std::fs::remove_file(self.record_path(k)).ok();
                 }
             }
-            if let (Some(co), Some(run)) = (&self.coord, self.pool.as_mut()) {
+            if let (Some(co), Some(run), true) = (&self.coord, self.pool.as_mut(), settling) {
                 co.set_moving(Some("settling a handover".into()));
                 run.settled = serde_json::to_value(co.pool_state()).ok();
             }
@@ -3823,6 +3837,8 @@ impl Agent {
         let able = c.home && (c.ac || c.battery.is_none_or(|b| b >= cond::BATTERY_MIN)) && self.disk_free() >= room::RESERVE;
         let home = self.o.home.clone();
         let run = self.pool.as_mut()?;
+        // (The jobs an earlier process left, once `run` stopped any still running.)
+        run.take_left(&home);
         run.drain(lead.then(|| home.join("coord/journal")).as_deref(), lead.then(|| crate::handoff::nas_base(r)).as_deref(), &home.join("outbox"));
         let out = run.step(able);
         pool::took_up(run, self.coord.as_ref(), &out, &self.host);
@@ -3843,6 +3859,14 @@ impl Agent {
         if lead && g.leads.is_some() {
             let saved = !out.events.iter().any(|e| matches!(e, crate::pool::driver::Event::Failed { what: "save the records", .. }));
             self.pool_lead_files(r, saved);
+            // (A catalog and GC read today's files: caught up only once they hold these records.)
+            let run = self.pool.as_mut()?;
+            let behind = run.side.driver().records().is_some_and(|rec| rec.term >= 2 && run.today != Some((rec.term, rec.seq)));
+            if behind {
+                (run.gates.caught_up, run.gates.fresh) = (false, false);
+                waiting.push(Waiting { step: None, what: "The pool".into(), why: "today's records files aren't written from the lead's yet".into() });
+            }
+            return Some(run.gates.clone());
         }
         Some(g)
     }

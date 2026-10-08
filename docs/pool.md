@@ -668,7 +668,8 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
        for a shared step only those targets' files become its entry, handed to the driver, which
        writes it to the journal and tells the lead; a member's tells the lead's coordinator too
        (`/work/done` with `journaled`: the lease ends, its targets kept out of offers until merged,
-       nothing journaled there). Jobs an earlier process left are handed off as it starts. No agent
+       nothing journaled there). Jobs an earlier process left are handed off at its first loop,
+       once any still running is stopped. No agent
        records keys, merges hand-offs or re-keys the records (phase 1 has no entry for a re-keying:
        a new key scheme while the pool is on builds its targets again).
      - **The merge's checks** (`agent::pool::check`): a done record of the entry's step naming
@@ -690,16 +691,18 @@ file passes `--helper` (install.sh), so the pool's app accepts it (and ignores i
        lead names the raw tiles' archives its records hold in the raw store's index; they stay in
        its records (phase 1 has no way to take them off).
      - **Gates:** nothing new starts on the lead while the driver says no duties; a catalog only
-       when it says the records are caught up; GC only on a step that re-asserted, caught up (the
-       agent asks the re-assertion, and the next loop's sweep runs).
+       when it says the records are caught up and today's files hold them; GC only on a step that
+       re-asserted, caught up (the agent asks the re-assertion, and the next loop's sweep runs). A
+       lead that no longer leads stops a catalog or GC in flight, and takes its coordinator's
+       contact (`state/coordinator.json`) off the NAS.
      - **Settling** (§6.4) stops a catalog or GC in flight, stops granting and hands the
        coordinator's state to the step. Nothing asks a handover yet (phase 3).
      - **Seeding and draining** when it's switched on: the workers' token and the accepted devices
        copied to `state/coord/` by the first lead (create-new) and from there by every lead's
        coordinator before it starts, its devices copied back as they change (open pages keep
        working); the coordinator's local `coord/journal/` (the lead's) and the NAS's
-       `state/build/handoff/<host>/` (every two minutes until found empty) and a helper's
-       `outbox/` drained into the journal as its member's entries (term 0: from before the pool;
+       `state/build/handoff/<host>/` (every two minutes) and a helper's `outbox/` (a folder with
+       nothing to hand off removed) drained into the journal as its member's entries (term 0: from before the pool;
        an outbox's under its old lease, the others numbered from `agent::pool::DRAINED`, apart).
      - **Going while it's on:** the writer named, `SCENIC_BUILD_MAC`, `check_writer`'s pass (it
        refuses every save). Kept for the pool off.

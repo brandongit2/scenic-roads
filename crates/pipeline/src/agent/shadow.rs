@@ -157,6 +157,10 @@ impl Shadow {
 
     /// One loop: what the agent did, handed to the driver; its step; what it decided, logged.
     pub fn tick(&mut self) -> Out {
+        // (Stopped for good: its member's lock another process's, or not taken again.)
+        if let Some(why) = &self.side.stopped {
+            return Out { stop: Some(why.clone()), ..Default::default() };
+        }
         let keys = build::Keys::load_strict(&self.root).ok();
         let saw = self.look(keys.as_ref());
         for n in saw.notes {

@@ -729,7 +729,7 @@ pub struct Run {
     drain_n: u64,
     /// When the NAS's folder of hand-offs was last drained, and whether it was found empty.
     nas_drained: Option<Instant>,
-    nas_empty: bool,
+    left_taken: bool,
     /// The records (term, seq) last written to today's files; the raw tiles' archives named.
     pub today: Option<(u64, u64)>,
     pub named_raw: BTreeSet<String>,
@@ -745,15 +745,13 @@ pub struct Run {
 
 impl Run {
     pub fn new(side: Side, role: Role, gates: Gates) -> Run {
-        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, nas_empty: false, today: None, named_raw: BTreeSet::new(), state_written: None, history_seq: 0, devices_written: None, led: BTreeSet::new() }
+        Run { side, role, gates, entries: Vec::new(), settled: None, reassert: false, restart: None, drained: BTreeSet::new(), drain_n: 0, nas_drained: None, left_taken: false, today: None, named_raw: BTreeSet::new(), state_written: None, history_seq: 0, devices_written: None, led: BTreeSet::new() }
     }
 
-    /// A process's first step, which says its part (`Role`): the jobs an earlier process left handed
-    /// over (`left_jobs`, in the agent's folder `home`).
-    pub fn start(side: Side, home: &Path) -> (Run, Out) {
+    /// A process's first step, which says its part (`Role`). (The jobs an earlier process left are
+    /// handed over later, `take_left`, once the agent has stopped any still running.)
+    pub fn start(side: Side, _home: &Path) -> (Run, Out) {
         let mut r = Run::new(side, Role::Member, Gates::default());
-        let me = r.side.member().id.clone();
-        r.entries = left_jobs(home, &me).into_iter().map(|(e, d)| (e, Some(d))).collect();
         let out = r.step(false);
         r.role = if out.leads.is_some() { Role::Lead } else { Role::Member };
         r.restart = out.stop.as_ref().map(|why| format!("this process left the pool: {why}"));
@@ -790,6 +788,16 @@ impl Run {
         out
     }
 
+    /// The jobs an earlier process left in the agent's folder `home` (`left_jobs`), handed to the
+    /// next step: once a process, after the agent stopped those still running.
+    pub fn take_left(&mut self, home: &Path) {
+        if std::mem::replace(&mut self.left_taken, true) {
+            return;
+        }
+        let me = self.side.member().id.clone();
+        self.entries.extend(left_jobs(home, &me).into_iter().map(|(e, d)| (e, Some(d))));
+    }
+
     /// The next number for a hand-off drained from before the pool (`DRAINED` on, by the clock).
     fn next_drained(&mut self) -> journal::LeaseId {
         let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
@@ -800,7 +808,7 @@ impl Run {
     /// The hand-offs from before the pool this member holds, drained into its journal entries
     /// (§12, seeding and draining): a lead's coordinator's journal on its disk (`journal`: the
     /// helpers' hand-offs it took and didn't merge), and every two minutes the NAS's hand-off
-    /// folders (`nas`: an older helper's), until that's found empty; any member's outbox
+    /// folders (`nas`: an older helper's); any member's outbox
     /// (`outbox`: a helper's jobs not handed back). Each is removed once a saved state holding its
     /// entry is on disk.
     pub fn drain(&mut self, journal: Option<&Path>, nas: Option<&Path>, outbox: &Path) {
@@ -812,13 +820,10 @@ impl Run {
                 Err(e) => eprintln!("pool: draining {}: {e:#}", j.display()),
             }
         }
-        if let Some(n) = nas.filter(|_| !self.nas_empty && self.nas_drained.is_none_or(|t| t.elapsed() >= Duration::from_secs(120))) {
+        if let Some(n) = nas.filter(|_| self.nas_drained.is_none_or(|t| t.elapsed() >= Duration::from_secs(120))) {
             self.nas_drained = Some(Instant::now());
             match crate::handoff::waiting_in(n) {
-                Ok(hs) => {
-                    self.nas_empty = hs.iter().all(|(p, _)| self.drained.contains(p));
-                    found.extend(hs);
-                }
+                Ok(hs) => found.extend(hs),
                 Err(e) => eprintln!("pool: draining {}: {e:#}", n.display()),
             }
         }
@@ -960,8 +965,13 @@ fn outbox_entries(outbox: &Path, member: &str) -> Vec<(Entry, PathBuf)> {
                 w.targets.iter().filter(|(t, _)| names.contains(t)).cloned().collect()
             }
         };
-        if let Ok(Some(e)) = entry_of(&d, member, journal::LeaseId { term: 0, n: lease }, &w.step, &done, crate::agent::jobs::now_s()) {
-            out.push((e, d));
+        match entry_of(&d, member, journal::LeaseId { term: 0, n: lease }, &w.step, &done, crate::agent::jobs::now_s()) {
+            Ok(Some(e)) => out.push((e, d)),
+            // (Nothing to hand off, or its saves damaged: its work is done again; the folder goes,
+            // or this member would never ask for work.)
+            Ok(None) | Err(_) => {
+                std::fs::remove_dir_all(&d).ok();
+            }
         }
     }
     out
@@ -1264,8 +1274,13 @@ mod tests {
         std::fs::write(ob.join("work.json"), serde_json::to_vec(&crate::agent::build::Work { step: "unit".into(), targets: vec![("6/2/3".into(), "k23".into())] }).unwrap()).unwrap();
         crate::handoff::write(&ob, &Handoff { changes: [("base/6-2-3".to_string(), Some("base/6-2-3.3333333333333333.base".to_string()))].into(), ..Default::default() }).unwrap();
         std::fs::write(ob.join("result.json"), serde_json::json!({ "ok": true, "done": ["unit", [["6/2/3", "k23"]]] }).to_string()).unwrap();
-        // (A task's folder: left to its broker.)
+        // (A task's folder: left to its broker. A failed job's with nothing to hand off: gone, or
+        // the member would never ask for work again.)
         std::fs::create_dir_all(home.join("outbox/1791328399375")).unwrap();
+        let failed = home.join("outbox/1791328399376");
+        std::fs::create_dir_all(&failed).unwrap();
+        std::fs::write(failed.join("work.json"), serde_json::to_vec(&crate::agent::build::Work { step: "unit".into(), targets: vec![("6/2/4".into(), "k24".into())] }).unwrap()).unwrap();
+        std::fs::write(failed.join("result.json"), r#"{"ok": false, "done": null, "error": "it failed"}"#).unwrap();
         run.drain(Some(&journal), Some(&crate::handoff::nas_base(&r)), &home.join("outbox"));
         let leases: Vec<LeaseId> = run.entries.iter().map(|(e, _)| e.lease).collect();
         assert_eq!(leases.len(), 3, "{leases:?}");
@@ -1282,7 +1297,7 @@ mod tests {
         assert_eq!((rec.keys.recorded("unit", "6/2/1"), rec.keys.recorded("unit", "6/2/2"), rec.keys.recorded("unit", "6/2/3")), (Some("k21"), Some("k22"), Some("k23")));
         assert_eq!(rec.manifest.get("base/6-2-3").map(String::as_str), Some("base/6-2-3.3333333333333333.base"));
         assert!(crate::handoff::waiting_in(&journal).unwrap().is_empty() && crate::handoff::waiting(&r).unwrap().is_empty() && !ob.exists());
-        assert!(home.join("outbox/1791328399375").exists());
+        assert!(home.join("outbox/1791328399375").exists() && !failed.exists());
         // Term 1's records written to today's files too, for their readers.
         assert_eq!(crate::agent::build::Keys::load(&r).recorded("unit", "6/2/2"), Some("k22"));
     }
