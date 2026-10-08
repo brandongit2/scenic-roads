@@ -27,9 +27,11 @@ nothing built depends on how the coverage is divided into regions.
 - A launcher (`tools/launcher`, a LaunchAgent) keeps the server running on both Macs. An idle server
   loads nothing, so it costs almost nothing.
 - The user opens `http://localhost:8080`.
-- Zoomed out, nothing small leaves the map: every road is drawn at every zoom, and every island and
-  lake too, a faint dot of its true size where the basemap is too coarse to draw it (§6, Small
-  islands and lakes).
+- Zoomed out, nothing small leaves the map: every road is drawn at every zoom. The water zoomed out
+  looks as the full-detail map would rendered and then shrunk to the screen (the owner's choice,
+  2026-10-08): an island or lake smaller than a pixel is as faint as its share of the pixel, the
+  same at every zoom, never exaggerated nor dropped, and keeps the coastal shading full detail would
+  give it (§6, Water).
 - `scenic status` shows what the build Mac is doing, and so does the menu bar item on both Macs
   (Scenic.app, `tools/status`). It shows the state as an icon: building, paused, waiting, nothing to
   build, a problem, or out of touch. A click opens the build page in a popover (the jobs, the
@@ -933,7 +935,12 @@ they treat any raster.
 - **Coverage is exact:** a pixel gets the area of that water inside its square
   (`pipeline::watercov::Raster`: each edge adds its area to the pixels it crosses, as font
   renderers do). A pond a hundredth of a pixel across counts a hundredth.
-- **Tiles:** 512 px, two channels (the sea's share, the inland water's).
+- **Tiles:** 512 px, two channels (the sea's share, the inland water's). The bytes also say
+  whether a pixel holds anything but sea, and any land, however little (`water::bytes`): a sea
+  byte of 255 only for sea throughout, the two summing to 255 or more only for water throughout.
+  So an island a millionth of a pixel is still land zoomed out, for the coastal shading (each
+  coarser pixel holds what any of its four does; an island too small to round to a byte costs the
+  water a 255th of its pixel).
   - **Stored for z0–9:** each z10 tile is drawn from its 256 z14 tiles, and each coarser tile is the
     mean of its four children's pixels, which is exact. A tile is stored only where it isn't one
     value throughout, as an 8-bit grey-and-alpha PNG (`layers/water/{root,lo,hi}`; docs/formats.md).
@@ -944,8 +951,11 @@ they treat any raster.
     - z0–8: 0.56 GB, the root and lo packs;
     - z9: 0.82 GB, 52,398 tiles, hi packs.
 - **Served** at `/tiles/water/{z}/{x}/{y}`:
-  - `?c=<sea>,<lake>` gives a PNG in those colours, alpha the water's share (the two shares summed,
-    an overlap at most whole);
+  - `?c=<sea>,<lake>[,<land>]` gives a PNG in those colours, alpha the water's share (the two
+    shares summed, an overlap at most whole); with the land's colour, the alpha that mixes water
+    and land as light mixes (`alpha_for`: the map blends the stored values, which gives the darker
+    of the two more than its share, so half a pixel of dark water on light land looked three
+    quarters water);
   - `?raw=1` gives the shares themselves (red the sea's, green the inland water's), for the coastal
     shading;
   - a tile not stored takes its stored ancestor's value over it;
@@ -961,10 +971,20 @@ they treat any raster.
 - **Drawn** (`web/src/basemap.ts`) as a raster source of 256-CSS-px tiles to z18 (a texel a device
   pixel at 2×), linear resampling, no cross-fade (with 3D terrain a draped texture drawn mid-fade
   would keep it). Under the Water switch.
-  - The colours are in the tiles' URL (Settings → Map → Water, lakes a shade lighter): a new colour
-    asks for the tiles again, with no rebuild.
+  - Shrunk, the tiles are sampled between their two nearest mipmap levels (trilinear, a MapLibre
+    patch in `web/vite.config.ts`): from the nearer level alone, the small lakes' look jumped at
+    each half zoom.
+  - The colours are in the tiles' URL (Settings → Map → Water, lakes a shade lighter), with the
+    land's (the map's background, which no setting changes): a new colour asks for the tiles
+    again, with no rebuild. The water and the land mix as light mixes over the background; over
+    hill-shading, whose light differs pixel by pixel, the mix is the background's (in the default
+    colours at most 3.7 L* off on the brightest lit slopes at a partly covered pixel, against 2.9
+    with the plain share; 0.3 against 0.6 in the deepest shadow).
   - The coastal shading (`web/src/coast.ts`, at every zoom) measures its shore from the same
-    tiles' shares: the sea's alone, or the inland water's too with Lakes & rivers.
+    tiles' shares (the sea's alone, or the inland water's too with Lakes & rivers), at their own
+    density (2 texels a CSS px: its tiles are the water layer's tiles): every pixel holding any land
+    is a shore, placed within the pixel by its share (`web/src/coastdist.ts`), so an island smaller
+    than a pixel keeps its shore and its glow, as full detail would give them.
   - Without the layer in the catalog (until the agent first builds it), the basemap's water
     polygons are drawn as before.
   - Masking other layers by the water (the depth layers planned, any water overlay) takes the
@@ -976,15 +996,41 @@ they treat any raster.
   water black, nothing else) against the same view drawn from the full detail (the water polygons
   and the pass's `water` set), pixel by pixel, over 137 views: zooms 2–16, pitches to 80°, 3D
   terrain, the globe and flat Mercator, nine places.
-  - Visible difference (2026-10-08): 0.04 % of the pixels, against 7.7 % with the small islands
-    and lakes' dots of before; tilted 0.01 % against 13.1 %, z2–5 0.03 % against 9.4 %.
-  - Islands and lakes missing, extra or misplaced: 5,809 against 467,520. The shore's mean shift:
+  - Visible difference (2026-10-08, with the trilinear mipmaps): 0.03 % of the pixels, against
+    7.7 % with the small islands and lakes' dots of before; tilted 0.01 % against 13.1 %, z2–5
+    0.02 % against 9.4 %.
+  - Islands and lakes missing, extra or misplaced: 5,386 against 467,520. The shore's mean shift:
     0.00–0.02 px against +0.10 to +0.43 px.
   - Its README has the metric and the views.
+- **Checked as the owner sees it** (`tools/coastcheck --screen`, 2026-10-08): the screen (the water,
+  its coastal shading and the land, in the app's colours and in black and white) against the same
+  view at full detail rendered and then shrunk in linear light, 70 views where small water is
+  densest (northern Quebec, Hudson Bay's Belcher Islands, Saimaa, Maine, the Stockholm
+  archipelago), flat at z4.4/4.6 … 8.4/8.6 either side of each half-zoom tile switch and tilted
+  60°, the stored tiles of those places built with the bytes that keep any land.
+  - Visibly different (3 L* in the app's colours): 0.15 % of the pixels, against 3.29 % with the
+    shading measured from the pixels over half land at a texel a CSS px (Stockholm 9.1 %), the
+    blend of the stored values and the nearer mipmap level; in black and white 0.22 % against
+    8.26 %.
+  - The jump between z.4 and z.6 beyond what the zoom explains: 0.04 % of the pixels in the app's
+    colours against 2.23 % (Stockholm z8 8.6 %), 0.45 % against 0.82 % in black and white.
+  - What each part did, on ten of the views: the shading's every-land shore 2.35 → 0.41 %, its 2
+    texels a CSS px → 0.08 %; mixing as light, in black and white 10.3 → 0.19 % (in the app's
+    dark colours under 0.05 % either way); trilinear mipmaps, the black-and-white jump 0.80 →
+    0.50 %; the bytes' any land, Saimaa at z5.4 0.25 → 0.15 %. Always taking the finer tile level
+    as well (never magnified) took the black-and-white jump to 0.01 %, but doubles the water's
+    tiles in view (12 → 30) and changes nothing in the app's colours: not done.
 - **Cost on the map** (this Mac's Chrome, 1,180 × 820 CSS px at 2×, 2026-10-08): the densest
   views' water takes 24–55 MB of textures (17–39 tiles), against 10–22 MB of the polygons and dots
   of before. The frames' GPU and CPU times are the same within the runs' spread (GPU 2.6–8.5 ms a
   frame at rest against 2.5–8.2).
+  - The coastal shading at 2 texels a CSS px (2026-10-08): about 3 times the tiles (9–20 in an
+    800 × 600 view, against 4–6 at a texel), each 40–70 ms on its two workers and about 2 MB of
+    texture and elevations. Its share tiles are the water layer's own, so it adds no server draws,
+    and a pan's shading is in sooner than before: after a pan of half the view onto new ground
+    (Stockholm z7.6, Maine z9.6, Hudson Bay z5.6; this Mac, its test server reading the NAS) the
+    last shaded tile came 0.1–0.9 s after in a map of 488 × 536 CSS px (0.4–1.2 s before) and
+    0.4–3.2 s in one of 1,488 × 1,036 (1.2–3.9 s).
 
 ### Worldwide road values (in the OSM pass)
 
@@ -2577,3 +2623,11 @@ pausing, which with the pool on would hold an owner's download off for hours.
   texel a CSS pixel 1.1 % (against 0.10 % there). Vectors can't reach it: a polygon under a pixel draws nothing or too much, and a fill's
   anti-aliasing isn't its area. The pass's `water` set stays, as the check's reference, read apart
   from the basemap.
+- **Zoomed out, the water is full detail shrunk** (2026-10-08, the owner's choice, §6 Water): no
+  visibility floor and no exaggeration, small islands and lakes as faint as their share of a pixel,
+  with the coastal shading full detail gives them, the same at every zoom. Measured on the screen
+  in the app's colours against full detail rendered and shrunk in linear light, the shading
+  measured from coarse pixels over half land, the stored values' blend and the nearer mipmap level
+  left 3.29 % of the pixels visibly different and a jump at each half zoom on 2.23 %; the
+  shading from every pixel holding any land at the water's density, light's mix, trilinear
+  mipmaps and bytes that keep any land leave 0.15 % and 0.04 %.

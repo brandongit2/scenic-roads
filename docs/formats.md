@@ -228,7 +228,11 @@ heritage-sources}`.
 Each pixel's exact share of water, z0–9, made per pass from the basemap's z14 water (docs/plan.md
 §6, Water). Packs as the other layers', encoding `water-png`, blobs not gzip'd: each tile a 512 ×
 512 8-bit grey-and-alpha PNG, grey the sea's share (OpenMapTiles' class `ocean`) and alpha the
-inland water's (the rest of the basemap's `water` layer, tunnels left out), 255 whole. A z10 tile is
+inland water's (the rest of the basemap's `water` layer, tunnels left out), 255 whole. The bytes
+keep what a pixel holds however little (`water::bytes`): grey 255
+only where there's nothing but sea (anything else, grey at most 254), and grey + alpha 255 or more
+only where there's no land (any land, at most 254); a share under half a byte rounds the other
+way to keep that. Each coarser pixel holds what any of its four does. A z10 tile is
 drawn from its 256 z14 tiles (`pipeline::watercov::Raster`: the area inside each pixel), each
 coarser tile's pixel the mean of the four under it. A tile one value throughout isn't stored: its
 stored ancestor's pixels over it say which.
@@ -236,9 +240,10 @@ stored ancestor's pixels over it say which.
 Served at `/tiles/water/{z}/{x}/{y}` (z0–18, crates/server/src/water.rs): stored tiles decoded and
 encoded again in the form asked for; deeper ones drawn from the z14 tiles under or over them as the
 build draws them (or, when the basemap can't be read, the nearest stored zoom's scaled up, not to
-be cached). `?c=<sea>,<lake>`
+be cached). `?c=<sea>,<lake>[,<land>]`
 (hex; anything else a 400): an RGBA PNG, the water in those colours (mixed by the two shares;
-the sea's where there's none) and alpha their sum (at most whole); `?raw=1`: an RGB PNG, red the sea's share, green the inland water's.
+the sea's where there's none) and alpha their sum (at most whole), or with the land's colour the
+alpha whose blend over that land has the lightness of the two mixed as light (`alpha_for`); `?raw=1`: an RGB PNG, red the sea's share, green the inland water's.
 
 ## 3D buildings (pipeline::bld; docs/buildings3d.md §3.4)
 
