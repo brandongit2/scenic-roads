@@ -15,6 +15,7 @@
 import type { Map as MLMap, LayerSpecification } from 'maplibre-gl';
 import type { AppState } from './state';
 import { switchCoast } from './coast';
+import { setWaterColours, waterTiles, waterTilesOn } from './basemap';
 
 const q = new URLSearchParams(location.search);
 /** The eval mode's settings, or null outside it. */
@@ -30,9 +31,9 @@ export const EVAL = q.has('eval')
 export const EVAL_LAND = '#ffffff';
 export const EVAL_WATER = '#000000';
 
-/** The layers drawn in eval mode: the background (land) and the water's, by id (the basemap's
- * water polygons and the small islands and lakes it leaves out). */
-const KEEP = new Set(['bg', 'water', 'small-water-fill', 'small-water']);
+/** The layers drawn in eval mode: the background (land) and the water (basemap.ts: its coverage
+ * tiles, or the basemap's polygons). */
+const KEEP = new Set(['bg', 'water']);
 
 /** The state with everything but land and water off. */
 export function evalState(s: AppState): AppState {
@@ -80,12 +81,17 @@ export function enforce(map: MLMap) {
     }
   };
   paint('bg', 'background-color', EVAL_LAND);
-  paint('water', 'fill-color', EVAL_WATER);
-  // The small islands and lakes (k: 1 a lake, else an island).
-  paint('small-water-fill', 'fill-color', ['match', ['get', 'k'], 1, EVAL_WATER, EVAL_LAND]);
-  paint('small-water-fill', 'fill-outline-color', ['match', ['get', 'k'], 1, EVAL_WATER, EVAL_LAND]);
-  paint('small-water', 'circle-color', ['match', ['get', 'k'], 1, EVAL_WATER, EVAL_LAND]);
-  paint('small-water', 'circle-stroke-width', 0);
+  if (waterTilesOn()) {
+    // (The water tiles carry their colours.)
+    setWaterColours(EVAL_WATER, EVAL_WATER);
+    const src = map.getSource('water') as { tiles?: string[]; setTiles(t: string[]): void } | undefined;
+    if (src && src.tiles?.[0] !== waterTiles()) {
+      src.setTiles([waterTiles()]);
+      changed = true;
+    }
+  } else {
+    paint('water', 'fill-color', EVAL_WATER);
+  }
   if (map.getSky()) map.setSky(undefined as never);
   // (3D terrain's draped textures don't follow a paint change by themselves: redrawn.)
   if (changed) (map as unknown as { terrain?: { tileManager: { releaseAllRTT(): void } } }).terrain?.tileManager.releaseAllRTT();
@@ -186,7 +192,7 @@ export function installEval(map: MLMap) {
      * outlines, box-filtered back: MapLibre's own projection of the vectors, for checking the
      * reference against (README.md, "The reference"). */
     supersampled: async (ss: number) => {
-      for (const id of ['water', 'small-water-fill']) if (map.getLayer(id)) map.setPaintProperty(id, 'fill-antialias', false);
+      if (map.getLayer('water')?.type === 'fill') map.setPaintProperty('water', 'fill-antialias', false);
       const rtt = (map as unknown as { painter: { renderToTexture?: { rttSize: number } } }).painter.renderToTexture;
       if (rtt) rtt.rttSize = 1024 * ss;
       map.setPixelRatio(dpr * ss);

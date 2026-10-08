@@ -19,7 +19,7 @@ interface ManagerLike {
 
 function labelOf(id: string): string | null {
   if (id === 'base') return 'Basemap';
-  if (id === 'smallwater') return 'Small islands & lakes';
+  if (id === 'water') return 'Water';
   if (id === 'dem' || id === 'dem-hs') return 'Terrain';
   if (id === 'slope') return 'Slope';
   if (id === 'contours') return 'Contours';

@@ -29,6 +29,83 @@ fn main() -> Result<()> {
         Some("build") => build(&args),
         Some("serve") => serve(&args),
         Some("stats") => stats(&args),
+        Some("water-packs") => {
+            // water-packs --tiles <dir> --catalog <n.json.zst> --root <dir>: water-build's tiles as
+            // the water layer's packs (pipeline::layers' scopes) in a test root, and a catalog one
+            // newer than --catalog with them (written into <root>/catalog). Never the NAS's.
+            let tiles = PathBuf::from(opt(&args, "--tiles").context("--tiles")?);
+            let root = PathBuf::from(opt(&args, "--root").context("--root")?);
+            let mut cat = store::catalog::read(&PathBuf::from(opt(&args, "--catalog").context("--catalog")?))?;
+            let mut all: Vec<(u8, u32, u32, PathBuf)> = Vec::new();
+            for z in 0..=pipeline::water::STORED_MAXZ {
+                let zd = tiles.join(z.to_string());
+                let Ok(xs) = std::fs::read_dir(&zd) else { continue };
+                for xe in xs {
+                    let xe = xe?;
+                    let x: u32 = xe.file_name().to_string_lossy().parse()?;
+                    for ye in std::fs::read_dir(xe.path())? {
+                        let ye = ye?;
+                        let y: u32 = ye.file_name().to_string_lossy().trim_end_matches(".png").parse()?;
+                        all.push((z, x, y, ye.path()));
+                    }
+                }
+            }
+            all.sort_by_key(|t| (t.0, t.1, t.2));
+            let mut groups: std::collections::BTreeMap<(&str, u8, u32, u32), Vec<(u8, u32, u32, PathBuf)>> = Default::default();
+            for t in all {
+                let (scope, pz, px, py) = pipeline::layers::pack_of(t.0, t.1, t.2);
+                groups.entry((scope, pz, px, py)).or_default().push(t);
+            }
+            let mut layer = store::catalog::Layer { encoding: "water-png".into(), minzoom: 0, maxzoom: pipeline::water::STORED_MAXZ, ..Default::default() };
+            for ((scope, pz, px, py), ts) in groups {
+                let logical = format!("layers/water/{scope}/{pz}-{px}-{py}");
+                let tmp = root.join(format!("{logical}.tmp"));
+                std::fs::create_dir_all(tmp.parent().unwrap())?;
+                let mut w = store::pack::PackWriter::create(&tmp, serde_json::json!({"layer": "water", "scope": scope, "root": format!("{pz}/{px}/{py}"), "encoding": "water-png"}), false)?;
+                for (z, x, y, p) in ts {
+                    let b = std::fs::read(p)?;
+                    w.add(z, x, y, &b, b.len() as u32)?;
+                }
+                w.finish()?;
+                let content = store::naming::content_name(&logical, &store::naming::hash16_file(&tmp)?, "pack");
+                std::fs::rename(&tmp, root.join(&content))?;
+                cat.files.insert(logical.clone(), store::catalog::FileRef { file: content.clone(), size: std::fs::metadata(root.join(&content))?.len(), ..Default::default() });
+                match scope {
+                    "root" => layer.root = Some(logical),
+                    "lo" => {
+                        layer.lo.insert(format!("{pz}/{px}/{py}"), logical);
+                    }
+                    _ => {
+                        layer.hi.insert(format!("{pz}/{px}/{py}"), logical);
+                    }
+                }
+            }
+            cat.layers.insert("water".into(), layer);
+            cat.n += 1;
+            let p = store::catalog::write_copy(&root.join("catalog"), &cat)?;
+            eprintln!("coastcheck: {}", p.display());
+            Ok(())
+        }
+        Some("water-build") => {
+            // water-build --basemap <pmtiles> [--only x/y,…] --out <dir>: pipeline::water's build
+            // as the step runs it, its tiles written as files (<dir>/z/x/y.png), for a regional run
+            // measured without the NAS.
+            use pipeline::water as wt;
+            let t = std::time::Instant::now();
+            let pm = store::pmtiles::PmTiles::open(Box::new(store::range::PlainFile::open(&PathBuf::from(opt(&args, "--basemap").context("--basemap")?))?))?;
+            let z14 = wt::Z14::read(&pm)?;
+            eprintln!("coastcheck: z14 directory read in {:.0} s", t.elapsed().as_secs_f64());
+            let only: Option<Vec<(u32, u32)>> = opt(&args, "--only").map(|o| o.split(',').filter_map(|t| t.split_once('/').and_then(|(x, y)| Some((x.parse().ok()?, y.parse().ok()?)))).collect());
+            let (tiles, made) = wt::build(&pm, &z14, only.as_deref(), &|d, n| eprintln!("coastcheck: {d}/{n} z5 tiles"))?;
+            let dir = PathBuf::from(opt(&args, "--out").context("--out")?);
+            for (z, x, y, png) in &tiles {
+                let f = dir.join(format!("{z}/{x}/{y}.png"));
+                std::fs::create_dir_all(f.parent().unwrap())?;
+                std::fs::write(f, png)?;
+            }
+            println!("{}", serde_json::to_string(&serde_json::json!({"made": made, "secs": t.elapsed().as_secs_f64()}))?);
+            Ok(())
+        }
         Some("mark-sea") => {
             // mark-sea --store <dir> --water-polygons <zip>: a store made before it recorded which
             // rings are the sea's (they're the first: as many as the zip gives).

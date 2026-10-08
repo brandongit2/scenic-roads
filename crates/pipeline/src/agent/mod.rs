@@ -113,11 +113,11 @@ pub const REKEY_COPY: &str = "state/build/jobs.pre-rekey.json";
 
 /// Steps that run alone, never beside another job: the pass's worldwide jobs (the planet, the
 /// world's buildings, a whole set at a time) and removing replaced files from the NAS.
-const ALONE: [&str; 11] = ["osm-pass", "pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "smallwater", "heritage-sites", "gc"];
+const ALONE: [&str; 11] = ["osm-pass", "pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "water", "heritage-sites", "gc"];
 
 /// The pass's worldwide jobs, as the checklist says them.
-const WORLDWIDE: &str = "Preparing the worldwide data: sets, route ends, roads' reach, buildings, summits, labels, small islands and lakes";
-const WORLDWIDE_STEPS: [&str; 8] = ["pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "smallwater"];
+const WORLDWIDE: &str = "Preparing the worldwide data: sets, route ends, roads' reach, buildings, summits, labels, water";
+const WORLDWIDE_STEPS: [&str; 8] = ["pass-sets", "trailends", "reach", "terrain-z8", "buildings", "summits", "labels", "water"];
 
 /// Steps that read AWS's raw terrain tiles here, which a terrain run packs onto the NAS and
 /// deletes here: never two at once.
@@ -229,17 +229,9 @@ fn helper_steps(free: u64, cheap: u64) -> Vec<String> {
 /// once, are spared (`terrain_reads`).
 const TERRAIN_SPACE: u64 = 25 << 30;
 
-/// The pass's water set's size until the plan finds it: about 6 GB for 2026-09-28's planet (6.5 GB
-/// with its coastline, which this set no longer holds: ~9 % of its nodes).
-const SMALLWATER_SET: u64 = 6 << 30;
-
-/// What the small islands and lakes' job needs past the others' room (crate::smallwater::disk_bytes):
-/// the pass's water set (`set`, its size as the plan last found it) copied here, and osmium's index
-/// of its nodes' places when this Mac hasn't the memory free for it now (`mem_free`).
-fn smallwater_space(set: Option<u64>, mem_free: Option<u64>) -> u64 {
-    let set = set.unwrap_or(SMALLWATER_SET);
-    crate::smallwater::disk_bytes(set, mem_free.is_some_and(|m| crate::smallwater::index_in_memory(set, m)))
-}
+/// What the water layer's job needs past the others' room: its tiles' archive (1.8 GB worldwide,
+/// measured 2026-10-08) and their packs, written here before they're uploaded, and a margin.
+const WATER_SPACE: u64 = 5 << 30;
 
 /// Whether `p` is an archive copy a terrain run (`id`: "terrain 3/x/y") reads at once: its z3
 /// area's own (`3-x-y.…`) and its z6 tiles' (`6-X-Y.…` within it), crate::rawpack's areas.
@@ -670,9 +662,6 @@ pub struct Agent {
     /// The OSM pieces' sizes by content name (the coordinator sizes units by them; content-named
     /// files never change).
     piece_sizes: std::cell::RefCell<std::collections::HashMap<String, u64>>,
-    /// The pass's water set's size, as the plan last found it (the small islands and lakes' room:
-    /// `smallwater_space`).
-    smallwater_set: std::cell::Cell<Option<u64>>,
     /// Whether this Mac's earlier agent's claims were dropped (once the NAS answers), and when this
     /// Mac was last named the records' writer.
     claims_dropped: bool,
@@ -808,7 +797,7 @@ impl Agent {
         // (A round's file that doesn't read: none under way, the next begins afresh.)
         let round: Option<build::Round> = std::fs::read(o.home.join(ROUND_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
         let tiles = std::cell::RefCell::new(tiles::TerrainTiles::new(Some(o.home.join("pack-idx"))));
-        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), smallwater_set: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round) })
+        Ok(Agent { host: cond::host_name(), app, started: now_s(), mem, slots: Default::default(), beside_why: None, free_set: None, sleep: SleepWatch::default(), last_mount_try: None, last_beat: None, progress: None, reach: Default::default(), tiles, coverage: Default::default(), edits: Default::default(), edited_at: Default::default(), _lock: lock, o, me, piece_sizes: Default::default(), claims_dropped: false, writer_named: None, planned: None, merged: None, coord, published: None, client: None, cheap: None, last_catalog: Default::default(), ready: Default::default(), pause, pause_local: false, mirrored: None, pause_pushed: false, orphan_done: Vec::new(), cache_size: Default::default(), heard: None, caches_task: None, trim_failed: None, answers_seed: None, answers_seeded: false, helper_caches: BTreeMap::new(), orphans: Vec::new(), last_cond: None, forecast: Default::default(), catalog_seen: Default::default(), round: std::cell::RefCell::new(round) })
     }
 
     /// The keys to plan with: on the NAS, with the done records of the hand-offs waiting to be merged
@@ -1932,8 +1921,8 @@ impl Agent {
             PASS_SPACE.saturating_sub(dir_bytes(&self.o.home.join("cache").join("base"))).max(room::RESERVE)
         } else if spec.id.starts_with("terrain ") {
             room::RESERVE + TERRAIN_SPACE
-        } else if spec.id.starts_with("smallwater ") {
-            room::RESERVE + smallwater_space(self.smallwater_set.get(), cond::resources(&self.o.home, None, None, None).mem_free())
+        } else if spec.id.starts_with("water ") {
+            room::RESERVE + WATER_SPACE
         } else {
             room::RESERVE
         }
@@ -2750,10 +2739,8 @@ impl Agent {
             if let Some(w) = build::labels_work(date, &manifest, &keys) {
                 jobs.push(job(format!("labels {date}"), "Ranking the world's place labels", "labels", [p.clone(), vec!["--dem".into(), s(&self.o.bin.join("dem"))]].concat(), Some(w)));
             }
-            if let Some(w) = build::smallwater_work(date, &manifest, &keys) {
-                let set = manifest.get(&crate::osmpass::set_name(date, "water")).and_then(|c| std::fs::metadata(root.join(c)).ok());
-                self.smallwater_set.set(set.map(|m| m.len()));
-                jobs.push(job(format!("smallwater {date}"), "Finding the world's small islands and lakes", "smallwater", p.clone(), Some(w)));
+            if let Some(w) = build::water_work(date, &manifest, &keys) {
+                jobs.push(job(format!("water {date}"), "Drawing the world's water at every zoom", "water", p.clone(), Some(w)));
             }
         }
         if recipes.is_empty() {
@@ -3181,7 +3168,7 @@ impl Agent {
             !manifest.contains_key(&crate::buildtiles::index_logical()),
             build::summits_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&format!("work/summits/{date}")),
             build::labels_work(&date, &manifest, &keys).is_some(),
-            build::smallwater_work(&date, &manifest, &keys).is_some() || !manifest.contains_key(&crate::osmpass::set_name(&date, "water")),
+            build::water_work(&date, &manifest, &keys).is_some(),
         ]
         .iter()
         .filter(|&&l| l)
@@ -3811,7 +3798,7 @@ fn first_secs(step: &str) -> f64 {
         "terrain-z8" | "buildings" | "items" => 3600.0,
         "summits" => 30.0,
         "labels" => 2200.0,
-        "smallwater" => 2000.0,
+        "water" => 3600.0,
         "heritage-sites" => 240.0,
         "heritage" => 5400.0,
         "terrain" => 900.0,

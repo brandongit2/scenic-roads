@@ -30,6 +30,7 @@ mod terrain;
 mod tiles;
 mod updater;
 mod views;
+mod water;
 mod viewshed;
 mod ways;
 
@@ -445,7 +446,7 @@ async fn main() -> Result<()> {
         .route("/tiles/roads/{z}/{x}/{y}", get(tiles::road_tile))
         .route("/tiles/rails/{z}/{x}/{y}", get(tiles::rail_tile))
         .route("/tiles/labels/{z}/{x}/{y}", get(tiles::label_tile))
-        .route("/tiles/smallwater/{z}/{x}/{y}", get(tiles::smallwater_tile))
+        .route("/tiles/water/{z}/{x}/{y}", get(water::water_tile))
         .route("/tiles/ov/{name}/{z}/{x}/{y}", get(ovdata::ov_tile))
         .route("/tiles/stations/{z}/{x}/{y}", get(tiles::station_tile))
         .route("/tiles/ferries/{z}/{x}/{y}", get(tiles::ferry_block))
@@ -725,6 +726,8 @@ fn meta_json(s: &AppState) -> serde_json::Value {
     let bmv = bm.finalize().to_hex()[..12].to_string();
     versions.insert("basemap".into(), named(bmv.clone()));
     versions.insert("base.pmtiles".into(), named(bmv));
+    // The water's tiles: its packs and the basemap they're drawn from deeper.
+    versions.insert("water".into(), serde_json::Value::from(water::version(s)));
     let zooms: serde_json::Map<String, serde_json::Value> = cat.layers.iter().map(|(k, l)| (k.clone(), serde_json::json!([l.minzoom, l.maxzoom]))).collect();
     if let Some(m) = meta.as_object_mut() {
         m.insert("versions".into(), serde_json::Value::Object(versions));
@@ -732,7 +735,8 @@ fn meta_json(s: &AppState) -> serde_json::Value {
         m.insert("catalog".into(), serde_json::json!(cat.n));
         m.insert("online".into(), serde_json::json!(s.data.online()));
         m.insert("labelTiles".into(), serde_json::json!(cat.layers.contains_key("labels")));
-        m.insert("smallWater".into(), serde_json::json!(cat.layers.contains_key("smallwater")));
+        // The water as exact coverage (pipeline::water; water.rs), where the catalog has it.
+        m.insert("water".into(), serde_json::json!(cat.layers.contains_key("water")));
         // The area overlays as vector tiles by view (all of them, or today's files).
         m.insert("stationTiles".into(), serde_json::json!(cat.layers.contains_key("stations")));
         m.insert("ferryBlocks".into(), serde_json::json!(cat.layers.contains_key("ferries")));

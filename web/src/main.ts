@@ -6,7 +6,7 @@ import mlWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import './style.css';
 import { getProfile, getRoadWays, getWay, keepable, onVersions, peekWay, roadWays, setVersions, ver, version, type Drive, type Meta, type Profile, type Ride } from './api';
 import { displayName, displayOf, lineName } from './names';
-import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, labelTilesOn, ovTilesOn, smallWaterOn, stationTilesOn, versionedTiles } from './basemap';
+import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, labelTilesOn, ovTilesOn, waterTilesOn, stationTilesOn, versionedTiles } from './basemap';
 import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
 import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, summariseFeature, withDetails } from './overlays';
@@ -65,11 +65,6 @@ import { Strip } from './ui/strip';
 import { ViewshedTool } from './ui/viewshed';
 import { installPanel } from './ui/touch';
 import { EVAL, evalState, installEval } from './evalmode';
-
-// The small islands and lakes' layer is switched off while it's redone (backlog #113): the server and
-// the catalog still have it, the map leaves it out.
-const SMALL_WATER_SHOWN = false;
-const smallWaterShown = (m: { smallWater?: boolean }): boolean => SMALL_WATER_SHOWN && !!m.smallWater;
 
 // Debug: ?bgrender keeps the map rendering in a hidden/background tab (timer-driven frames),
 // for automated checks. No effect otherwise.
@@ -143,7 +138,7 @@ async function main() {
   if (EVAL) document.getElementById('map')!.style.cssText = 'position:fixed;inset:0;z-index:1000';
   const map = new maplibregl.Map({
     container: 'map',
-    style: baseStyle(!!meta.labelTiles, store.s.labelDensity, !!meta.ovTiles, !!meta.stationTiles, smallWaterShown(meta)),
+    style: baseStyle(!!meta.labelTiles, store.s.labelDensity, !!meta.ovTiles, !!meta.stationTiles, !!meta.water),
     center: v ? [v.lng, v.lat] : [-70, 46],
     zoom: v ? v.zoom : 5,
     bearing: v?.bearing ?? 0,
@@ -2019,7 +2014,7 @@ async function main() {
     for (const t of versionedTiles()) {
       if (files.includes(t.file)) (map.getSource(t.source) as { setTiles?: (tiles: string[]) => void } | undefined)?.setTiles?.([t.url]);
     }
-    if (files.includes('base.pmtiles')) switchCoast(map, coastInput());
+    if (files.includes('base.pmtiles') || files.includes('water')) switchCoast(map, coastInput());
     if (files.includes('terrain.tiles')) switchContours(map);
   });
   const newCatalog = (m: Meta) => {
@@ -2037,7 +2032,7 @@ async function main() {
       addBuildings(map, 'water-name-line', 'boundary-county');
       applyBuildingsNow(store.s);
     }
-    if (!!m.labelTiles !== labelTilesOn() || !!m.ovTiles !== ovTilesOn() || !!m.stationTiles !== stationTilesOn() || smallWaterShown(m) !== smallWaterOn() || !!m.ferryBlocks !== ferries.byBlocks) watch?.wantReload('New map data');
+    if (!!m.labelTiles !== labelTilesOn() || !!m.ovTiles !== ovTilesOn() || !!m.stationTiles !== stationTilesOn() || !!m.water !== waterTilesOn() || !!m.ferryBlocks !== ferries.byBlocks) watch?.wantReload('New map data');
     markDirty();
   };
   regions.onFit = (b) => fitGround(new maplibregl.LngLatBounds([b[0], b[1]], [b[2], b[3]]), { top: 60, bottom: 60, left: 60, right: 340 });

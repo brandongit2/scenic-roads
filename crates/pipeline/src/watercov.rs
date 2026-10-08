@@ -211,7 +211,7 @@ pub struct Geom {
 fn map(p: &Path) -> Result<memmap2::Mmap> {
     let f = std::fs::File::open(p).with_context(|| format!("open {}", p.display()))?;
     // SAFETY: the store's files are written once and not changed while read.
-    Ok(unsafe { memmap2::Mmap::map(&f) }.with_context(|| format!("map {}", p.display()))?)
+    unsafe { memmap2::Mmap::map(&f) }.with_context(|| format!("map {}", p.display()))
 }
 
 impl Geom {
@@ -308,8 +308,7 @@ impl Raster {
         ts.sort_by(f64::total_cmp);
         let at = |t: f64| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
         let mut p = a;
-        for k in 1..=n {
-            let q = if k == n { b } else { at(ts[k]) };
+        for q in ts[1..].iter().map(|&t| at(t)).chain(std::iter::once(b)) {
             let mid = (p[0] + q[0]) / 2.0;
             if mid < w {
                 let c = |v: f64| v.clamp(0.0, w);
@@ -482,9 +481,12 @@ pub fn drawn(p: &serde_json::Map<String, serde_json::Value>) -> bool {
         || matches!(tag("water"), "river" | "stream" | "canal" | "ditch" | "drain" | "pond" | "basin" | "wastewater")
 }
 
+/// Polygons, each its outer ring then its holes (world units).
+pub type Polygons = Vec<Vec<Vec<[f64; 2]>>>;
+
 /// One line of `osmium export`'s GeoJSON sequence: its polygons (each its outer ring then its
 /// holes, world units), if it's water the basemap draws.
-pub fn parse_export_line(line: &str) -> Option<Vec<Vec<Vec<[f64; 2]>>>> {
+pub fn parse_export_line(line: &str) -> Option<Polygons> {
     let line = line.trim_matches(|c: char| c == '\u{1e}' || c.is_whitespace());
     if line.is_empty() {
         return None;
@@ -520,7 +522,7 @@ pub fn read_export(r: impl BufRead, w: &mut GeomWriter, said: &dyn Fn(u64)) -> R
             break;
         }
         n += batch.len() as u64;
-        let polys: Vec<Option<Vec<Vec<Vec<[f64; 2]>>>>> = batch.par_iter().map(|l| parse_export_line(l)).collect();
+        let polys: Vec<Option<Polygons>> = batch.par_iter().map(|l| parse_export_line(l)).collect();
         for p in polys.into_iter().flatten() {
             for poly in &p {
                 w.add_polygon(poly)?;

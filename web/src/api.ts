@@ -68,8 +68,8 @@ export interface Meta {
   versions?: Record<string, string | number>;
   /** Whether the labels by importance are served (labels.tiles, /tiles/labels). */
   labelTiles?: boolean;
-  /** Whether the small islands and lakes the basemap leaves out are served (/tiles/smallwater). */
-  smallWater?: boolean;
+  /** Whether the water is served as exact coverage (/tiles/water: pipeline::water). */
+  water?: boolean;
   /** The area overlays come as vector tiles by view (docs/phase5.md "Areas"). */
   ovTiles?: boolean;
   /** The rail stops come as vector tiles by view. */

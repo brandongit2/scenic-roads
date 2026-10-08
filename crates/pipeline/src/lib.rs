@@ -45,7 +45,7 @@ pub mod stage;
 pub mod stations;
 pub mod summary;
 pub mod summits;
-pub mod smallwater;
+pub mod water;
 pub mod watercov;
 pub mod sys;
 pub mod terr;

@@ -85,12 +85,6 @@ pub async fn rail_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>
     plain(s, "rails".into(), z, x, y, q, headers, "application/octet-stream", true).await
 }
 
-/// The small islands and lakes the basemap leaves out zoomed out (pipeline::smallwater): gzip'd
-/// MVT, no names, served as stored.
-pub async fn smallwater_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
-    plain(s, "smallwater".into(), z, x, y, q, headers, "application/x-protobuf", true).await
-}
-
 /// The 3D buildings (pipeline::bld): gzip'd MVT, layer `b`, served as stored (no names).
 pub async fn building_tile(State(s): State<S>, Path((z, x, y)): Path<(u8, u32, u32)>, RawQuery(q): RawQuery, headers: HeaderMap) -> Response {
     plain(s, "buildings".into(), z, x, y, q, headers, "application/x-protobuf", true).await
@@ -322,6 +316,11 @@ impl Basemap {
         }
     }
 
+    /// The archives `contents` (content names), opened (from the mirror, else the NAS).
+    pub fn opened(&self, data: &crate::data::Data, contents: &[String]) -> anyhow::Result<Vec<Arc<store::pmtiles::PmTiles>>> {
+        self.archives(data, contents)
+    }
+
     /// The tile from each of the archives `contents` that has it, as stored.
     pub fn tiles(&self, data: &crate::data::Data, contents: &[String], z: u8, x: u32, y: u32) -> anyhow::Result<Vec<Vec<u8>>> {
         let mut out = Vec::new();
@@ -411,35 +410,6 @@ mod tests {
         // Without the browser's copy, or with another tile's, it has to read, and can't.
         assert_eq!(get(&s, (3, 4, 2), None).await.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(get(&s, (3, 4, 3), Some(&etag)).await.status(), StatusCode::SERVICE_UNAVAILABLE);
-    }
-
-    #[tokio::test]
-    async fn the_small_islands_and_lakes_are_served_as_stored() {
-        // A catalog whose smallwater layer is one root pack holding tile 0/0/0.
-        let nas = tempfile::tempdir().unwrap();
-        let tile = [0x1a, 0x05, 0x0a, 0x01, b'w', 0x78, 0x02];
-        let gz = names::mvt::gzip(&tile).unwrap();
-        let content = "layers/smallwater/root/0-0-0.0123456789abcdef.pack";
-        let path = nas.path().join(content);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        let mut w = store::pack::PackWriter::create(&path, serde_json::json!({"layer": "smallwater", "scope": "root", "root": "0/0/0", "encoding": "mvt"}), true).unwrap();
-        w.add(0, 0, 0, &gz, tile.len() as u32).unwrap();
-        w.finish().unwrap();
-        let mut cat = store::catalog::Catalog::new(1);
-        cat.files.insert("layers/smallwater/root/0-0-0".into(), store::catalog::FileRef { file: content.into(), size: std::fs::metadata(&path).unwrap().len(), ..Default::default() });
-        cat.layers.insert("smallwater".into(), store::catalog::Layer { encoding: "mvt".into(), minzoom: 0, maxzoom: 12, root: Some("layers/smallwater/root/0-0-0".into()), ..Default::default() });
-        store::catalog::write_copy(&nas.path().join("catalog"), &cat).unwrap();
-        let home = tempfile::tempdir().unwrap();
-        let s = crate::test_state(home.path(), nas.path());
-        let get = |z, x, y| smallwater_tile(State(s.clone()), Path((z, x, y)), RawQuery(None), HeaderMap::new());
-        let r = get(0, 0, 0).await;
-        assert_eq!(r.status(), StatusCode::OK);
-        assert_eq!(r.headers().get(header::CONTENT_ENCODING).unwrap(), "gzip");
-        let body = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(names::mvt::gunzip_if_gzip(&body).unwrap().as_ref(), &tile[..]);
-        assert_eq!(get(1, 0, 0).await.status(), StatusCode::NO_CONTENT);
-        // The app knows to draw them.
-        assert_eq!(crate::meta_json(&s)["smallWater"], serde_json::json!(true));
     }
 
     #[tokio::test]

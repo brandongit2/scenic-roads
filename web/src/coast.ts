@@ -8,7 +8,7 @@
 // the ground does. Draped on the terrain like the water itself.
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
-import { BASEMAP_MAXZOOM, LAND, SMALL_SHORE_PX, smallDotOpacity } from './basemap';
+import { BASEMAP_MAXZOOM, setWaterColours, waterTiles, waterTilesOn } from './basemap';
 import type { WaterLook } from './state';
 import type { CoastMessage, CoastResponse } from './coast.worker';
 
@@ -19,9 +19,8 @@ let next = 0;
 let seq = 0;
 const waiting = new Map<number, { resolve: (b: ArrayBuffer) => void; reject: (e: Error) => void }>();
 
-/** Where the shading measures the shore from: the basemap's vector tiles (`tiles`), or water
- * shares (`cov`: PNG tiles, red the sea's share and green the inland water's; the shoreline
- * check's reference, evalmode.ts). */
+/** Where the shading measures the shore from: the water's shares (`cov`, the water tiles' raw
+ * shares: the same water the map draws, at every zoom), else the basemap's vector tiles (`tiles`). */
 export type CoastInput = { tiles: string; cov: string };
 
 /** The tiles' protocol and its workers (two: a tile is a burst of CPU, MapLibre asks for many). */
@@ -57,21 +56,16 @@ function setupProtocol(input: CoastInput) {
 }
 
 const tilesUrl = (lakes: boolean) => `coast://{z}/{x}/{y}?l=${lakes ? 1 : 0}`;
-/** The zoom the shore lines round the small islands' and lakes' dots start at (below it, a dot
- * ringed with the shading's colour read as a hollow ring). The shading itself is drawn at every
- * zoom. */
-const SHADE_MINZOOM = 4;
 let lakesShown: boolean | null = null;
 
-/** The source and its layer, the first time the shading shows: over the water, under the small
- * islands and lakes the basemap leaves out (their shores aren't in its water) and the rivers drawn
- * as lines. */
+/** The source and its layer, the first time the shading shows: over the water, under the rivers
+ * drawn as lines. At every zoom (its shore the same water the map draws). */
 function setupShading(map: MLMap, w: WaterLook, input: CoastInput) {
   if (map.getSource('coast')) return;
   setupProtocol(input);
   lakesShown = w.lakes;
   map.addSource('coast', { type: 'raster-dem', tiles: [tilesUrl(w.lakes)], tileSize: 512, maxzoom: 14, encoding: 'mapbox' });
-  map.addLayer({ id: 'coast-shade', type: 'color-relief', source: 'coast', paint: { 'color-relief-opacity': 1, resampling: 'linear' } as never }, map.getLayer('small-water-fill') ? 'small-water-fill' : 'waterway');
+  map.addLayer({ id: 'coast-shade', type: 'color-relief', source: 'coast', paint: { 'color-relief-opacity': 1, resampling: 'linear' } as never }, 'waterway');
 }
 
 const rgb = (hex: string): [number, number, number] => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
@@ -116,29 +110,15 @@ let rampKey = '';
 export function applyWater(map: MLMap, w: WaterLook, input: () => CoastInput, waterShown: boolean) {
   const c = rgb(w.colour);
   const lake = hexOf([c[0] + 3, c[1] + 4, c[2] + 5]), river = hexOf([c[0] + 5, c[1] + 10, c[2] + 13]);
-  if (map.getLayer('water')) map.setPaintProperty('water', 'fill-color', ['match', ['get', 'class'], 'ocean', w.colour, lake]);
+  if (waterTilesOn()) {
+    // The water's tiles carry their colours: asked for again in the new ones.
+    setWaterColours(w.colour, lake);
+    const src = map.getSource('water') as maplibregl.RasterTileSource | undefined;
+    if (src && src.tiles?.[0] !== waterTiles()) src.setTiles([waterTiles()]);
+  } else if (map.getLayer('water')) {
+    map.setPaintProperty('water', 'fill-color', ['match', ['get', 'class'], 'ocean', w.colour, lake]);
+  }
   if (map.getLayer('waterway')) map.setPaintProperty('waterway', 'line-color', river);
-  // The small islands and lakes the basemap leaves out: land and the lakes' colour, and where the
-  // coastal shading is drawn (from `SHADE_MINZOOM`), its shore line round the islands (and the
-  // lakes, with Lakes & rivers): their shores aren't in the basemap's water it's measured from.
-  // (k: 0 an island of the sea, 1 a lake, 2 an island of a lake or river: the sea's shores have the
-  // shading, the others' only with Lakes & rivers.)
-  const sea = w.shade && waterShown && w.shore > 0, inland = sea && w.lakes;
-  const [sr, sg, sb] = rgb(w.shadeColour);
-  const line = `rgba(${sr},${sg},${sb},${w.shore})`;
-  const colour: ExpressionSpecification = ['match', ['get', 'k'], 1, lake, LAND];
-  if (map.getLayer('small-water-fill')) {
-    map.setPaintProperty('small-water-fill', 'fill-color', colour);
-    const outline: ExpressionSpecification = ['match', ['get', 'k'], 0, sea ? line : LAND, 1, inland ? line : lake, inland ? line : LAND];
-    map.setPaintProperty('small-water-fill', 'fill-outline-color', ['step', ['zoom'], colour, SHADE_MINZOOM, outline]);
-  }
-  if (map.getLayer('small-water')) {
-    map.setPaintProperty('small-water', 'circle-color', colour);
-    map.setPaintProperty('small-water', 'circle-stroke-color', w.shadeColour);
-    const shore: ExpressionSpecification = ['match', ['get', 'k'], 0, sea ? SMALL_SHORE_PX : 0, inland ? SMALL_SHORE_PX : 0];
-    map.setPaintProperty('small-water', 'circle-stroke-width', ['step', ['zoom'], 0, SHADE_MINZOOM, shore]);
-    map.setPaintProperty('small-water', 'circle-stroke-opacity', smallDotOpacity(w.shore));
-  }
   const on = w.shade && waterShown;
   if (on) setupShading(map, w, input());
   if (!map.getLayer('coast-shade')) return;

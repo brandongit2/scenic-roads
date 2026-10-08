@@ -7,7 +7,7 @@ import { DEFAULT_DENSITY, kindSpacing, type DensityKind, type LabelDensity, type
 // Planetiler tiles, designation / stop overlays (GeoJSON, loaded on demand) and labels.
 // Layer ids are grouped so the UI can toggle them.
 export const LAYER_GROUPS: Record<string, string[]> = {
-  water: ['water', 'waterway', 'small-water-fill', 'small-water'],
+  water: ['water', 'waterway'],
   // Countries, provinces & states, counties & regions (order of AppState.boundaryLevels).
   boundaries: ['boundary-country', 'boundary-state', 'boundary-county'],
 };
@@ -179,43 +179,30 @@ export const OV_LAYER = 'a';
 let STATION_TILES = false;
 export const stationTilesOn = () => STATION_TILES;
 export const STATION_LAYER = 's';
-/** The small islands and lakes the basemap leaves out zoomed out (`/tiles/smallwater`, layer `w`:
- * pipeline::smallwater), where the catalog has them. */
-let SMALL_WATER = false;
-export const smallWaterOn = () => SMALL_WATER;
-
-// The small islands and lakes, kept on the map at every zoom as the roads are: what the basemap
-// leaves out at a zoom (under 1 px² in its 256-px tiles, lakes and their islands under 4 px² below
-// z12; below z6 all but Natural Earth's) comes in their tiles, a point where it's under 1 px² (the
-// points of a 1-px cell summed) and its outline above that. A point is a dot of its true area,
-// never under SMALL_DOT_PX across, faded with its size below that: opacity its true diameter over
-// SMALL_DOT_PX (a road under a pixel wide is drawn a pixel wide at its width's share), at least
-// SMALL_FADE_MIN, so the smallest rock stays faintly there, and a cell of many ponds reads by their
-// summed area. `k`: 0 an island of the sea, 1 a lake, 2 an island of a lake or river. Islands are
-// land-coloured, lakes the lakes' colour, with the coastal shading's shoreline where it's drawn
-// (coast.ts applyWater); bigger first in a tile, so what lies inside something is drawn over it.
-/** The smallest dot, CSS px across. */
-export const SMALL_DOT_PX = 1.25;
-/** The faintest dot's opacity. */
-export const SMALL_FADE_MIN = 0.15;
-/** The islands' colour: the map's background (they're drawn over the water, so none of the
- * hill-shading or tree cover the land has elsewhere is under them). */
+/** The water as exact coverage (`/tiles/water`: pipeline::water, crates/server/src/water.rs),
+ * where the catalog has it: each pixel's share of sea and of inland water at every zoom, from the
+ * basemap's full-detail z14 water, drawn as a raster at the screen's density (512 px for 256 CSS
+ * px). Without it, the basemap's own water polygons (simplified, small ones left out zoomed out,
+ * Natural Earth's below z6). */
+let WATER_TILES = false;
+export const waterTilesOn = () => WATER_TILES;
+/** The water's colours in its tiles: the sea's and the lakes' (coast.ts applyWater sets them). */
+let waterColours = ['#0c1622', '#0f1a27'];
+export const setWaterColours = (sea: string, lake: string) => (waterColours = [sea, lake]);
+/** The water's tiles, in its colours. */
+export const waterTiles = (): string =>
+  `${hostFor('base')}/tiles/water/{z}/{x}/{y}?c=${waterColours.map((c) => c.replace('#', '')).join(',')}${ver('water').replace('?', '&')}`;
+/** The water's shares themselves (red the sea's, green the inland water's), for the coastal shading. */
+export const waterShareTiles = (): string => `${hostFor('base')}/tiles/water/{z}/{x}/{y}?raw=1${ver('water').replace('?', '&')}`;
+/** Where the coastal shading measures the shore from (coast.ts): the water's shares, else the
+ * basemap's polygons. */
+export const coastInput = () => ({ tiles: basemapTiles(), cov: WATER_TILES ? waterShareTiles() : '' });
+/** The water tiles' size for their pixels (512 px tiles drawn 256 CSS px: a texel a device pixel at
+ * 2×), and their deepest zoom (the server's; the map overzooms past it). */
+export const WATER_TILE_SIZE = 256;
+export const WATER_MAXZOOM = 18;
+/** The land: the map's background. */
 export const LAND = '#0b0e13';
-const WORLD_M = 40075016.685578488;
-/** A dot's true radius at integer zoom z (CSS px): from `q`, round(8 log2 of its area in Web
- * Mercator m²), at 512 px a tile. */
-const dotR = (z: number): ExpressionSpecification =>
-  ['*', (512 * 2 ** z) / WORLD_M / Math.sqrt(Math.PI), ['^', 2, ['/', ['get', 'q'], 16]]];
-/** Zoom stops (exponential, base 2: a true size doubles each zoom) from 0 to 14. */
-const dotStops = (at: (z: number) => ExpressionSpecification | number): ExpressionSpecification =>
-  ['interpolate', ['exponential', 2], ['zoom'], ...Array.from({ length: 15 }, (_, z) => [z, at(z)]).flat()] as unknown as ExpressionSpecification;
-export const smallDotRadius = (): ExpressionSpecification => dotStops((z) => ['max', SMALL_DOT_PX / 2, dotR(z)]);
-/** A dot's opacity, times `k`. */
-export const smallDotOpacity = (k = 1): ExpressionSpecification =>
-  dotStops((z) => ['*', k, ['max', SMALL_FADE_MIN, ['min', 1, ['/', ['*', 2, dotR(z)], SMALL_DOT_PX]]]]);
-/** The shoreline round a dot where the coastal shading draws one (coast.ts applyWater), CSS px:
- * a little narrower than the shading's own, and as faint as its dot. */
-export const SMALL_SHORE_PX = 0.6;
 
 /** Labels thinned to the label spacing (Layers → Map → Label density): the place, water and park
  * labels from our label tiles (the landmarks' and stations' are set with their layers). */
@@ -234,8 +221,6 @@ export const HYPSO: [number, string][] = [
 /** The basemap's vector tiles (OpenMapTiles schema; the server merges its archives per tile and
  * attaches the display names), as its source and the coast worker (coast.worker.ts) read them. */
 export const basemapTiles = (): string => `${hostFor('base')}/tiles/base/{z}/{x}/{y}${ver('base.pmtiles')}`;
-/** Where the coastal shading measures the shore from (coast.ts): the basemap's water. */
-export const coastInput = () => ({ tiles: basemapTiles(), cov: '' });
 /** The terrain tiles (Terrarium), as the terrain sources and the contours (terrain.ts) read them. */
 export const terrainTiles = (): string => `${hostFor('terrain')}/tiles/terrain/{z}/{x}/{y}${ver('terrain.tiles')}`;
 
@@ -253,7 +238,7 @@ export function versionedTiles(): { source: string; file: string; url: string }[
     // (The area overlays only when they're vector tiles: a whole file's source has no tiles.)
     ...(OV_TILES ? Object.entries(OV_SOURCES).map(([source, name]) => ({ source, file: `ov-${name}.tiles`, url: `${hostFor('layers')}/tiles/ov/${name}/{z}/{x}/{y}${ver(`ov-${name}.tiles`)}` })) : []),
     ...(STATION_TILES ? [{ source: 'stations', file: 'stations.tiles', url: `${hostFor('layers')}/tiles/stations/{z}/{x}/{y}${ver('stations.tiles')}` }] : []),
-    ...(SMALL_WATER ? [{ source: 'smallwater', file: 'smallwater', url: `${hostFor('base')}/tiles/smallwater/{z}/{x}/{y}${ver('smallwater')}` }] : []),
+    ...(WATER_TILES ? [{ source: 'water', file: 'water', url: waterTiles() }] : []),
   ];
 }
 /** The basemap's deepest tiles (finer zooms reuse them). */
@@ -379,10 +364,10 @@ const LANDMARK_LABEL_IDS = new Set(Object.values(LANDMARK_LABELS));
  * landmark names alone (set with their dots). */
 export const overlayLabelScale = (f: number) => (id: string) => (LANDMARK_LABEL_IDS.has(id) ? NaN : OVERLAY_IDS.has(id) ? f : 1);
 
-export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DENSITY, ovTiles = false, stationTiles = false, smallWater = false): StyleSpecification {
+export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DENSITY, ovTiles = false, stationTiles = false, waterTiles = false): StyleSpecification {
   OV_TILES = ovTiles;
   STATION_TILES = stationTiles;
-  SMALL_WATER = smallWater;
+  WATER_TILES = waterTiles;
   const base = hostFor('base');
   const tiles = Object.fromEntries(versionedTiles().map((t) => [t.source, t.url]));
   // Places, water and parks from the labels by importance, where the server has them: name n (with
@@ -493,8 +478,8 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
       // Ids for feature state (terminal and stop colours, see ferries.ts and stations.ts).
       ferries: { ...empty, generateId: true },
       stations: stationTiles ? { type: 'vector' as const, tiles: [tiles.stations], maxzoom: 12, attribution: '' } : { ...empty, generateId: true },
-      // The small islands and lakes (tiles to z12; z13 overzoomed, `o` marking what's still missing there).
-      ...(smallWater ? { smallwater: { type: 'vector' as const, tiles: [tiles.smallwater], maxzoom: 12, attribution: '' } } : {}),
+      // The water's coverage (raster tiles; their colours in the URL).
+      ...(waterTiles ? { water: { type: 'raster' as const, tiles: [tiles.water], tileSize: WATER_TILE_SIZE, maxzoom: WATER_MAXZOOM, attribution: '' } } : {}),
       whs: ovTiles ? { type: 'vector' as const, tiles: [tiles.whs], maxzoom: 12, attribution: '' } : empty,
     },
     layers: [
@@ -548,24 +533,19 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
           'hillshade-accent-color': 'rgba(0,0,0,0.35)',
         },
       } as LayerSpecification,
-      {
-        id: 'water',
-        type: 'fill',
-        source: 'base',
-        'source-layer': 'water',
-        filter: ['!=', ['get', 'brunnel'], 'tunnel'],
-        paint: { 'fill-color': ['match', ['get', 'class'], 'ocean', '#0c1622', '#0f1a27'] },
-      },
-      // The small islands and lakes from 1 px²: their outlines, as the basemap would draw them.
-      ...(smallWater ? [{
-        id: 'small-water-fill',
-        type: 'fill',
-        source: 'smallwater',
-        'source-layer': 'w',
-        maxzoom: 12,
-        filter: ['==', ['geometry-type'], 'Polygon'],
-        paint: { 'fill-color': ['match', ['get', 'k'], 1, '#0f1a27', LAND] },
-      } as LayerSpecification] : []),
+      // The water: its exact coverage where the catalog has it (draped and tilted as any raster, its
+      // texture mipmapped), else the basemap's polygons.
+      waterTiles
+        // (No cross-fade: with 3D terrain a draped texture drawn mid-fade would keep it.)
+        ? ({ id: 'water', type: 'raster', source: 'water', paint: { 'raster-resampling': 'linear', 'raster-fade-duration': 0 } } as LayerSpecification)
+        : {
+          id: 'water',
+          type: 'fill',
+          source: 'base',
+          'source-layer': 'water',
+          filter: ['!=', ['get', 'brunnel'], 'tunnel'],
+          paint: { 'fill-color': ['match', ['get', 'class'], 'ocean', '#0c1622', '#0f1a27'] },
+        },
       {
         id: 'waterway',
         type: 'line',
@@ -773,27 +753,6 @@ export function baseStyle(labelTiles = false, density: LabelDensity = DEFAULT_DE
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: { 'line-color': '#ffffff', 'line-opacity': 0.9, 'line-width': ['interpolate', ['linear'], ['zoom'], 5, 3.2, 14, 7] },
       },
-      // The small islands and lakes under 1 px²: dots of their true area (smallDotRadius). Not
-      // draped on the terrain: here, after every layer that is (one between them would split the
-      // draping in two, the terrain drawn twice), under the contours and roads (main.ts).
-      ...(smallWater ? [{
-        id: 'small-water',
-        type: 'circle',
-        source: 'smallwater',
-        'source-layer': 'w',
-        maxzoom: 14,
-        // Overzoomed past z12: only what the basemap still lacks at z13.
-        filter: ['all', ['==', ['geometry-type'], 'Point'], ['<', ['zoom'], ['+', 13, ['coalesce', ['get', 'o'], 0]]]],
-        paint: {
-          'circle-color': ['match', ['get', 'k'], 1, '#0f1a27', LAND],
-          'circle-radius': smallDotRadius(),
-          'circle-opacity': smallDotOpacity(),
-          // Facing the screen (a few px across, the same), sized by distance: MapLibre draws a
-          // circle lying on the globe as 16 vertices, one facing the screen as 4.
-          'circle-pitch-alignment': 'viewport',
-          'circle-pitch-scale': 'map',
-        },
-      } as LayerSpecification] : []),
       // (custom road layer is inserted here, below 'water-name-line')
       {
         id: 'water-name-line',

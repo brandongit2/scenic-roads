@@ -212,7 +212,7 @@ impl Keys {
             self.catalog_held = done.first().map(|d| d.1.clone());
             return;
         }
-        if step.ends_with("-root") || matches!(step, "labels" | "smallwater" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail") {
+        if step.ends_with("-root") || matches!(step, "labels" | "water" | "trailends" | "reach" | "summits" | "items" | "marks" | "roadunits" | "stations" | "ferries" | "heritage-sites" | "heritage" | "overlays" | "rail-feeds" | "rail") {
             // Kept with the lo keys, under the step's own name.
             for (t, k) in done {
                 self.lo.insert(t.clone(), k.clone());
@@ -309,16 +309,12 @@ pub fn labels_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Opt
     (done.lo.get("labels").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "labels".into(), targets: vec![("labels".into(), k)] })
 }
 
-/// The small islands and lakes the basemap leaves out zoomed out (crate::smallwater), worldwide,
-/// once per pass (or step version): from the pass's water set and its basemap, which it asks which
-/// zooms have what.
-pub const SMALLWATER_V: u32 = 1;
-
-pub fn smallwater_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
-    let set = m.get(&crate::osmpass::set_name(date, "water"))?;
+/// The water layer (crate::water), worldwide, once per pass (or layer version): drawn from the
+/// pass's basemap's z14 water.
+pub fn water_work(date: &str, m: &BTreeMap<String, String>, done: &Keys) -> Option<Work> {
     let basemap = m.get(&format!("layers/basemap/world-{date}"))?;
-    let k = h(&[&format!("smallwater {SMALLWATER_V}"), set, basemap]);
-    (done.lo.get("smallwater").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "smallwater".into(), targets: vec![("smallwater".into(), k)] })
+    let k = h(&[&format!("water {}", crate::water::VERSION), basemap]);
+    (done.lo.get("water").map(String::as_str) != Some(k.as_str())).then(|| Work { step: "water".into(), targets: vec![("water".into(), k)] })
 }
 
 /// Whether unit `u` is built for the coverage: some road it owns may touch it (`Reach::builds`;

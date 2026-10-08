@@ -42,9 +42,10 @@ pub const SETS: &[(&str, u32, &[&str])] = &[
     ("summits", 2, &["nw/natural=peak,volcano"]),
     // Hiking and foot routes with their member ways, for the routes' ends (pipeline::trailends).
     ("hikes", 1, &["r/route=hiking,foot"]),
-    // What the basemap draws as water, and the coastline: the small islands and lakes it leaves
-    // out zoomed out (pipeline::smallwater).
-    ("water", 1, crate::smallwater::SET_FILTER),
+    // What the basemap draws as water: the shoreline check's full-detail reference
+    // (pipeline::watercov, tools/coastcheck), read from the pass's set rather than the basemap so the
+    // check doesn't take the basemap's word for the water.
+    ("water", 1, crate::watercov::SET_FILTER),
     // Today's heritage filter (Makefile: named.osm.pbf), and World Heritage objects, for locating
     // register records.
     ("named", 1, &[
@@ -888,16 +889,16 @@ fn buildinfo_version(props: &str) -> Option<&str> {
     props.lines().find_map(|l| l.trim().strip_prefix("version=")).map(str::trim)
 }
 
-/// Stops on a Planetiler jar other than the one the small islands and lakes' rule is read from
-/// (pipeline::smallwater::PLANETILER_VERSION: its own `buildinfo.properties` says which it is), so
-/// a new one's basemap isn't drawn until the rule is checked against it and pinned again.
+/// Stops on a Planetiler jar other than the one the water layer was checked against
+/// (pipeline::water::PLANETILER_VERSION: its own `buildinfo.properties` says which it is), so a
+/// new one's basemap isn't drawn until its z14 water is checked again as full detail.
 pub fn check_planetiler(jar: &Path) -> Result<()> {
     let o = Command::new("/usr/bin/unzip").arg("-p").arg(jar).arg("buildinfo.properties").output().with_context(|| format!("read {}", jar.display()))?;
     ensure!(o.status.success(), "no buildinfo.properties in {}", jar.display());
     let props = String::from_utf8_lossy(&o.stdout);
     let v = buildinfo_version(&props).with_context(|| format!("no version in {}'s buildinfo.properties", jar.display()))?;
-    let pinned = crate::smallwater::PLANETILER_VERSION;
-    ensure!(v == pinned, "{} is Planetiler {v}, but the small islands and lakes' rule is Planetiler {pinned}'s (pipeline::smallwater, docs/plan.md §6): check the rule against {v}'s source and tiles, then pin it", jar.display());
+    let pinned = crate::water::PLANETILER_VERSION;
+    ensure!(v == pinned, "{} is Planetiler {v}, but the water layer was checked against Planetiler {pinned}'s z14 water (pipeline::water, docs/plan.md §6): check {v}'s with tools/coastcheck, then pin it", jar.display());
     Ok(())
 }
 
@@ -919,7 +920,7 @@ mod tests {
     fn planetilers_version_is_read_from_its_buildinfo() {
         let props = "githash=0e5588c4a6e8c29a270a33afe8df62027d889604\ntimestamp=1774708536815\nversion=0.10.2\n";
         assert_eq!(buildinfo_version(props), Some("0.10.2"));
-        assert_eq!(buildinfo_version(props), Some(crate::smallwater::PLANETILER_VERSION));
+        assert_eq!(buildinfo_version(props), Some(crate::water::PLANETILER_VERSION));
         assert_eq!(buildinfo_version("githash=x\n"), None);
     }
 
