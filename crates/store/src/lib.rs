@@ -9,6 +9,7 @@ pub mod mirror;
 pub mod naming;
 pub mod nas;
 pub mod pack;
+pub mod pieces;
 pub mod pmtiles;
 pub mod range;
 pub mod sect;

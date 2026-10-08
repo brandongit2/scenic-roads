@@ -51,6 +51,17 @@ impl Compression {
         }
     }
 
+    fn to_u8(self) -> u8 {
+        match self {
+            Self::Unknown => 0,
+            Self::None => 1,
+            Self::Gzip => 2,
+            Self::Brotli => 3,
+            Self::Zstd => 4,
+            Self::Other(v) => v,
+        }
+    }
+
     /// The HTTP `Content-Encoding` of data compressed this way, if any.
     pub fn content_encoding(self) -> Option<&'static str> {
         match self {
@@ -84,6 +95,18 @@ impl TileType {
             4 => Self::Webp,
             5 => Self::Avif,
             v => Self::Other(v),
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            Self::Unknown => 0,
+            Self::Mvt => 1,
+            Self::Png => 2,
+            Self::Jpeg => 3,
+            Self::Webp => 4,
+            Self::Avif => 5,
+            Self::Other(v) => v,
         }
     }
 
@@ -174,6 +197,37 @@ impl Header {
     /// Longitude and latitude in degrees, and zoom.
     pub fn center(&self) -> (f64, f64, u8) {
         (f64::from(self.center_lon_e7) / 1e7, f64::from(self.center_lat_e7) / 1e7, self.center_zoom)
+    }
+
+    /// The 127 bytes of this header (`parse`'s inverse).
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut h = Vec::with_capacity(HEADER_LEN);
+        h.extend_from_slice(MAGIC);
+        h.push(self.version);
+        for v in [
+            self.root_offset,
+            self.root_length,
+            self.metadata_offset,
+            self.metadata_length,
+            self.leaf_offset,
+            self.leaf_length,
+            self.data_offset,
+            self.data_length,
+            self.addressed_tiles,
+            self.tile_entries,
+            self.tile_contents,
+        ] {
+            h.extend_from_slice(&v.to_le_bytes());
+        }
+        h.extend_from_slice(&[u8::from(self.clustered), self.internal_compression.to_u8(), self.tile_compression.to_u8(), self.tile_type.to_u8(), self.min_zoom, self.max_zoom]);
+        for v in [self.min_lon_e7, self.min_lat_e7, self.max_lon_e7, self.max_lat_e7] {
+            h.extend_from_slice(&v.to_le_bytes());
+        }
+        h.push(self.center_zoom);
+        h.extend_from_slice(&self.center_lon_e7.to_le_bytes());
+        h.extend_from_slice(&self.center_lat_e7.to_le_bytes());
+        debug_assert_eq!(h.len(), HEADER_LEN);
+        h
     }
 }
 
@@ -294,6 +348,39 @@ pub fn parse_directory(b: &[u8]) -> Result<Vec<DirEntry>> {
         };
     }
     Ok(entries)
+}
+
+/// Encodes a directory (`parse_directory`'s inverse; not compressed): offsets that follow on from
+/// the previous entry's data are written as 0.
+pub fn encode_directory(entries: &[DirEntry]) -> Vec<u8> {
+    fn put(out: &mut Vec<u8>, mut v: u64) {
+        while v >= 0x80 {
+            out.push(v as u8 | 0x80);
+            v >>= 7;
+        }
+        out.push(v as u8);
+    }
+    let mut b = Vec::with_capacity(entries.len() * 6 + 8);
+    put(&mut b, entries.len() as u64);
+    let mut last = 0;
+    for e in entries {
+        put(&mut b, e.tile_id - last);
+        last = e.tile_id;
+    }
+    for e in entries {
+        put(&mut b, u64::from(e.run_length));
+    }
+    for e in entries {
+        put(&mut b, u64::from(e.length));
+    }
+    for (i, e) in entries.iter().enumerate() {
+        if i > 0 && e.offset == entries[i - 1].offset + u64::from(entries[i - 1].length) {
+            put(&mut b, 0);
+        } else {
+            put(&mut b, e.offset + 1);
+        }
+    }
+    b
 }
 
 /// The entry holding `id`: an exact match, else the entry before it when that is a leaf
@@ -477,6 +564,34 @@ impl PmTiles {
         self.walk(&self.root.clone(), 1, &mut f)
     }
 
+    /// Calls `f` with the tile entries for the ids in `lo..hi`, in tile id order, each cut to that
+    /// range (a run reaching past either end is shortened): only the leaf directories that reach
+    /// into it are read.
+    pub fn entries_in(&self, lo: u64, hi: u64, f: &mut impl FnMut(DirEntry)) -> Result<()> {
+        self.walk_in(&self.root.clone(), lo, hi, 1, f)
+    }
+
+    fn walk_in(&self, dir: &[DirEntry], lo: u64, hi: u64, depth: usize, f: &mut impl FnMut(DirEntry)) -> Result<()> {
+        let start = dir.partition_point(|e| e.tile_id <= lo).saturating_sub(1);
+        for i in start..dir.len() {
+            let e = dir[i];
+            if e.tile_id >= hi {
+                break;
+            }
+            if e.run_length > 0 {
+                let (s, end) = (e.tile_id.max(lo), (e.tile_id + u64::from(e.run_length)).min(hi));
+                if s < end {
+                    f(DirEntry { tile_id: s, run_length: (end - s) as u32, ..e });
+                }
+            } else if dir.get(i + 1).is_none_or(|n| n.tile_id > lo) {
+                ensure!(depth < MAX_DEPTH, "directories nested deeper than {MAX_DEPTH} levels");
+                let leaf = self.leaf(e)?;
+                self.walk_in(&leaf, lo, hi, depth + 1, f)?;
+            }
+        }
+        Ok(())
+    }
+
     fn walk(&self, dir: &[DirEntry], depth: usize, f: &mut impl FnMut(&DirEntry) -> Result<()>) -> Result<()> {
         for e in dir {
             if e.run_length > 0 {
@@ -547,36 +662,8 @@ mod tests {
         (26, 12345678, 54321098, 3154909521354637),
     ];
 
-    fn put_varint(out: &mut Vec<u8>, mut v: u64) {
-        while v >= 0x80 {
-            out.push(v as u8 | 0x80);
-            v >>= 7;
-        }
-        out.push(v as u8);
-    }
-
     fn encode_dir(entries: &[DirEntry]) -> Vec<u8> {
-        let mut b = Vec::new();
-        put_varint(&mut b, entries.len() as u64);
-        let mut last = 0;
-        for e in entries {
-            put_varint(&mut b, e.tile_id - last);
-            last = e.tile_id;
-        }
-        for e in entries {
-            put_varint(&mut b, u64::from(e.run_length));
-        }
-        for e in entries {
-            put_varint(&mut b, u64::from(e.length));
-        }
-        for (i, e) in entries.iter().enumerate() {
-            if i > 0 && e.offset == entries[i - 1].offset + u64::from(entries[i - 1].length) {
-                put_varint(&mut b, 0);
-            } else {
-                put_varint(&mut b, e.offset + 1);
-            }
-        }
-        b
+        encode_directory(entries)
     }
 
     fn gzip(b: &[u8]) -> Vec<u8> {
