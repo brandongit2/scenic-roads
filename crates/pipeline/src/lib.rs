@@ -46,6 +46,7 @@ pub mod stations;
 pub mod summary;
 pub mod summits;
 pub mod smallwater;
+pub mod watercov;
 pub mod sys;
 pub mod terr;
 pub mod terrain_pack;

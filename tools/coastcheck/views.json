@@ -1,0 +1,2080 @@
+{
+ "places": {
+  "maine": {
+   "lon": -68.8,
+   "lat": 44.2,
+   "name": "Maine's coast: Penobscot Bay"
+  },
+  "thousand": {
+   "lon": -75.98,
+   "lat": 44.33,
+   "name": "The Thousand Islands"
+  },
+  "quebec": {
+   "lon": -75.55,
+   "lat": 46.95,
+   "name": "Lakes north of Mont-Laurier"
+  },
+  "finland": {
+   "lon": 28.7,
+   "lat": 61.75,
+   "name": "Finland's lakes: Saimaa"
+  },
+  "labrador": {
+   "lon": -64.6,
+   "lat": 53.9,
+   "name": "Labrador's lakes"
+  },
+  "scotland": {
+   "lon": -5.45,
+   "lat": 56.3,
+   "name": "Argyll's lochs"
+  },
+  "seto": {
+   "lon": 133.2,
+   "lat": 34.3,
+   "name": "The Seto Inland Sea"
+  },
+  "azores": {
+   "lon": -28.3,
+   "lat": 38.55,
+   "name": "The Azores: Faial, Pico, S\u00e3o Jorge"
+  },
+  "woods": {
+   "lon": -94.85,
+   "lat": 49.35,
+   "name": "Lake of the Woods"
+  }
+ },
+ "views": [
+  {
+   "id": "maine-z4",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "maine-z5",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 5,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "maine-z6",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "maine-z7",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 7,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "maine-z8",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 8,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "maine-z9",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 9,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "maine-z10",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 10,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "maine-z11",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 11,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "maine-z12",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 12,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "thousand-z4",
+   "place": "thousand",
+   "lon": -75.98,
+   "lat": 44.33,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "thousand-z5",
+   "place": "thousand",
+   "lon": -75.98,
+   "lat": 44.33,
+   "z": 5,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "thousand-z6",
+   "place": "thousand",
+   "lon": -75.98,
+   "lat": 44.33,
+   "z": 6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "thousand-z7",
+   "place": "thousand",
+   "lon": -75.98,
+   "lat": 44.33,
+   "z": 7,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "thousand-z8",
+   "place": "thousand",
+   "lon": -75.98,
+   "lat": 44.33,
+   "z": 8,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "thousand-z9",
+   "place": "thousand",
+   "lon": -75.98,
+   "lat": 44.33,
+   "z": 9,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "thousand-z10",
+   "place": "thousand",
+   "lon": -75.98,
+   "lat": 44.33,
+   "z": 10,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "thousand-z11",
+   "place": "thousand",
+   "lon": -75.98,
+   "lat": 44.33,
+   "z": 11,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "thousand-z12",
+   "place": "thousand",
+   "lon": -75.98,
+   "lat": 44.33,
+   "z": 12,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "quebec-z4",
+   "place": "quebec",
+   "lon": -75.55,
+   "lat": 46.95,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "quebec-z5",
+   "place": "quebec",
+   "lon": -75.55,
+   "lat": 46.95,
+   "z": 5,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "quebec-z6",
+   "place": "quebec",
+   "lon": -75.55,
+   "lat": 46.95,
+   "z": 6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "quebec-z7",
+   "place": "quebec",
+   "lon": -75.55,
+   "lat": 46.95,
+   "z": 7,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "quebec-z8",
+   "place": "quebec",
+   "lon": -75.55,
+   "lat": 46.95,
+   "z": 8,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "quebec-z9",
+   "place": "quebec",
+   "lon": -75.55,
+   "lat": 46.95,
+   "z": 9,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "quebec-z10",
+   "place": "quebec",
+   "lon": -75.55,
+   "lat": 46.95,
+   "z": 10,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "quebec-z11",
+   "place": "quebec",
+   "lon": -75.55,
+   "lat": 46.95,
+   "z": 11,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "quebec-z12",
+   "place": "quebec",
+   "lon": -75.55,
+   "lat": 46.95,
+   "z": 12,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z4",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "finland-z5",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 5,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z6",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z7",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 7,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "finland-z8",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 8,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z9",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 9,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z10",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 10,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z11",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 11,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z12",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 12,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "labrador-z4",
+   "place": "labrador",
+   "lon": -64.6,
+   "lat": 53.9,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "labrador-z5",
+   "place": "labrador",
+   "lon": -64.6,
+   "lat": 53.9,
+   "z": 5,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "labrador-z6",
+   "place": "labrador",
+   "lon": -64.6,
+   "lat": 53.9,
+   "z": 6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "labrador-z7",
+   "place": "labrador",
+   "lon": -64.6,
+   "lat": 53.9,
+   "z": 7,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "labrador-z8",
+   "place": "labrador",
+   "lon": -64.6,
+   "lat": 53.9,
+   "z": 8,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "labrador-z9",
+   "place": "labrador",
+   "lon": -64.6,
+   "lat": 53.9,
+   "z": 9,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "labrador-z10",
+   "place": "labrador",
+   "lon": -64.6,
+   "lat": 53.9,
+   "z": 10,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "labrador-z11",
+   "place": "labrador",
+   "lon": -64.6,
+   "lat": 53.9,
+   "z": 11,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "labrador-z12",
+   "place": "labrador",
+   "lon": -64.6,
+   "lat": 53.9,
+   "z": 12,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "scotland-z4",
+   "place": "scotland",
+   "lon": -5.45,
+   "lat": 56.3,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "scotland-z5",
+   "place": "scotland",
+   "lon": -5.45,
+   "lat": 56.3,
+   "z": 5,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "scotland-z6",
+   "place": "scotland",
+   "lon": -5.45,
+   "lat": 56.3,
+   "z": 6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "scotland-z7",
+   "place": "scotland",
+   "lon": -5.45,
+   "lat": 56.3,
+   "z": 7,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "scotland-z8",
+   "place": "scotland",
+   "lon": -5.45,
+   "lat": 56.3,
+   "z": 8,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "scotland-z9",
+   "place": "scotland",
+   "lon": -5.45,
+   "lat": 56.3,
+   "z": 9,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "scotland-z10",
+   "place": "scotland",
+   "lon": -5.45,
+   "lat": 56.3,
+   "z": 10,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "scotland-z11",
+   "place": "scotland",
+   "lon": -5.45,
+   "lat": 56.3,
+   "z": 11,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "scotland-z12",
+   "place": "scotland",
+   "lon": -5.45,
+   "lat": 56.3,
+   "z": 12,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "seto-z4",
+   "place": "seto",
+   "lon": 133.2,
+   "lat": 34.3,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "seto-z5",
+   "place": "seto",
+   "lon": 133.2,
+   "lat": 34.3,
+   "z": 5,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "seto-z6",
+   "place": "seto",
+   "lon": 133.2,
+   "lat": 34.3,
+   "z": 6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "seto-z7",
+   "place": "seto",
+   "lon": 133.2,
+   "lat": 34.3,
+   "z": 7,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "seto-z8",
+   "place": "seto",
+   "lon": 133.2,
+   "lat": 34.3,
+   "z": 8,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "seto-z9",
+   "place": "seto",
+   "lon": 133.2,
+   "lat": 34.3,
+   "z": 9,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "seto-z10",
+   "place": "seto",
+   "lon": 133.2,
+   "lat": 34.3,
+   "z": 10,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "seto-z11",
+   "place": "seto",
+   "lon": 133.2,
+   "lat": 34.3,
+   "z": 11,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "seto-z12",
+   "place": "seto",
+   "lon": 133.2,
+   "lat": 34.3,
+   "z": 12,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "azores-z4",
+   "place": "azores",
+   "lon": -28.3,
+   "lat": 38.55,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "azores-z5",
+   "place": "azores",
+   "lon": -28.3,
+   "lat": 38.55,
+   "z": 5,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "azores-z6",
+   "place": "azores",
+   "lon": -28.3,
+   "lat": 38.55,
+   "z": 6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "azores-z7",
+   "place": "azores",
+   "lon": -28.3,
+   "lat": 38.55,
+   "z": 7,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "azores-z8",
+   "place": "azores",
+   "lon": -28.3,
+   "lat": 38.55,
+   "z": 8,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "azores-z9",
+   "place": "azores",
+   "lon": -28.3,
+   "lat": 38.55,
+   "z": 9,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "azores-z10",
+   "place": "azores",
+   "lon": -28.3,
+   "lat": 38.55,
+   "z": 10,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "azores-z11",
+   "place": "azores",
+   "lon": -28.3,
+   "lat": 38.55,
+   "z": 11,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "azores-z12",
+   "place": "azores",
+   "lon": -28.3,
+   "lat": 38.55,
+   "z": 12,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "woods-z4",
+   "place": "woods",
+   "lon": -94.85,
+   "lat": 49.35,
+   "z": 4,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "woods-z5",
+   "place": "woods",
+   "lon": -94.85,
+   "lat": 49.35,
+   "z": 5,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "woods-z6",
+   "place": "woods",
+   "lon": -94.85,
+   "lat": 49.35,
+   "z": 6,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "woods-z7",
+   "place": "woods",
+   "lon": -94.85,
+   "lat": 49.35,
+   "z": 7,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "woods-z8",
+   "place": "woods",
+   "lon": -94.85,
+   "lat": 49.35,
+   "z": 8,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "woods-z9",
+   "place": "woods",
+   "lon": -94.85,
+   "lat": 49.35,
+   "z": 9,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "woods-z10",
+   "place": "woods",
+   "lon": -94.85,
+   "lat": 49.35,
+   "z": 10,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "woods-z11",
+   "place": "woods",
+   "lon": -94.85,
+   "lat": 49.35,
+   "z": 11,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "woods-z12",
+   "place": "woods",
+   "lon": -94.85,
+   "lat": 49.35,
+   "z": 12,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "maine-z2",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 2,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "maine-z3",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 3,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "finland-z2",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 2,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z3",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 3,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "labrador-z2",
+   "place": "labrador",
+   "lon": -64.6,
+   "lat": 53.9,
+   "z": 2,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "labrador-z3",
+   "place": "labrador",
+   "lon": -64.6,
+   "lat": 53.9,
+   "z": 3,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "maine-z6-p45b20",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 6,
+   "pitch": 45,
+   "bearing": 20,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "maine-z9-p75b20",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 9,
+   "pitch": 75,
+   "bearing": 20,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "thousand-z6-p45b300",
+   "place": "thousand",
+   "lon": -75.98,
+   "lat": 44.33,
+   "z": 6,
+   "pitch": 45,
+   "bearing": 300,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "thousand-z9-p75b300",
+   "place": "thousand",
+   "lon": -75.98,
+   "lat": 44.33,
+   "z": 9,
+   "pitch": 75,
+   "bearing": 300,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "quebec-z6-p45b135",
+   "place": "quebec",
+   "lon": -75.55,
+   "lat": 46.95,
+   "z": 6,
+   "pitch": 45,
+   "bearing": 135,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "quebec-z9-p75b135",
+   "place": "quebec",
+   "lon": -75.55,
+   "lat": 46.95,
+   "z": 9,
+   "pitch": 75,
+   "bearing": 135,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z6-p45b60",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 6,
+   "pitch": 45,
+   "bearing": 60,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "finland-z9-p75b60",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 9,
+   "pitch": 75,
+   "bearing": 60,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "labrador-z6-p45b250",
+   "place": "labrador",
+   "lon": -64.6,
+   "lat": 53.9,
+   "z": 6,
+   "pitch": 45,
+   "bearing": 250,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "labrador-z9-p75b250",
+   "place": "labrador",
+   "lon": -64.6,
+   "lat": 53.9,
+   "z": 9,
+   "pitch": 75,
+   "bearing": 250,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "scotland-z6-p45b340",
+   "place": "scotland",
+   "lon": -5.45,
+   "lat": 56.3,
+   "z": 6,
+   "pitch": 45,
+   "bearing": 340,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "scotland-z9-p75b340",
+   "place": "scotland",
+   "lon": -5.45,
+   "lat": 56.3,
+   "z": 9,
+   "pitch": 75,
+   "bearing": 340,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "seto-z6-p45b90",
+   "place": "seto",
+   "lon": 133.2,
+   "lat": 34.3,
+   "z": 6,
+   "pitch": 45,
+   "bearing": 90,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "seto-z9-p75b90",
+   "place": "seto",
+   "lon": 133.2,
+   "lat": 34.3,
+   "z": 9,
+   "pitch": 75,
+   "bearing": 90,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "azores-z6-p45b200",
+   "place": "azores",
+   "lon": -28.3,
+   "lat": 38.55,
+   "z": 6,
+   "pitch": 45,
+   "bearing": 200,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "azores-z9-p75b200",
+   "place": "azores",
+   "lon": -28.3,
+   "lat": 38.55,
+   "z": 9,
+   "pitch": 75,
+   "bearing": 200,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "woods-z6-p45b160",
+   "place": "woods",
+   "lon": -94.85,
+   "lat": 49.35,
+   "z": 6,
+   "pitch": 45,
+   "bearing": 160,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "woods-z9-p75b160",
+   "place": "woods",
+   "lon": -94.85,
+   "lat": 49.35,
+   "z": 9,
+   "pitch": 75,
+   "bearing": 160,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z7-p30b30",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 7,
+   "pitch": 30,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "maine-z9-p30b110",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 9,
+   "pitch": 30,
+   "bearing": 110,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z7-p45b30",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 7,
+   "pitch": 45,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "maine-z9-p45b110",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 9,
+   "pitch": 45,
+   "bearing": 110,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z7-p60b30",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 7,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "maine-z9-p60b110",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 9,
+   "pitch": 60,
+   "bearing": 110,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z7-p75b30",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 7,
+   "pitch": 75,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "maine-z9-p75b110",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 9,
+   "pitch": 75,
+   "bearing": 110,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z7-p80b30",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 7,
+   "pitch": 80,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "maine-z9-p80b110",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 9,
+   "pitch": 80,
+   "bearing": 110,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "scotland-z8-p60b40-3d",
+   "place": "scotland",
+   "lon": -5.45,
+   "lat": 56.3,
+   "z": 8,
+   "pitch": 60,
+   "bearing": 40,
+   "terrain": true,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "scotland-z10-p75b300-3d",
+   "place": "scotland",
+   "lon": -5.45,
+   "lat": 56.3,
+   "z": 10,
+   "pitch": 75,
+   "bearing": 300,
+   "terrain": true,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "azores-z9-p60b200-3d",
+   "place": "azores",
+   "lon": -28.3,
+   "lat": 38.55,
+   "z": 9,
+   "pitch": 60,
+   "bearing": 200,
+   "terrain": true,
+   "globe": true,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "quebec-z8-p60b135-3d",
+   "place": "quebec",
+   "lon": -75.55,
+   "lat": 46.95,
+   "z": 8,
+   "pitch": 60,
+   "bearing": 135,
+   "terrain": true,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "seto-z9-p45b90-3d",
+   "place": "seto",
+   "lon": 133.2,
+   "lat": 34.3,
+   "z": 9,
+   "pitch": 45,
+   "bearing": 90,
+   "terrain": true,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z6-p70b60-3d",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 6,
+   "pitch": 70,
+   "bearing": 60,
+   "terrain": true,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "maine-z10-p60b20-3d",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 10,
+   "pitch": 60,
+   "bearing": 20,
+   "terrain": true,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "woods-z7-3d",
+   "place": "woods",
+   "lon": -94.85,
+   "lat": 49.35,
+   "z": 7,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": true,
+   "globe": true,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z5-flat",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 5,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "finland-z7-p60b30-flat",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 7,
+   "pitch": 60,
+   "bearing": 30,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "all",
+    "core"
+   ]
+  },
+  {
+   "id": "maine-z8-flat",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 8,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "thousand-z10-p45b300-flat",
+   "place": "thousand",
+   "lon": -75.98,
+   "lat": 44.33,
+   "z": 10,
+   "pitch": 45,
+   "bearing": 300,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "all"
+   ]
+  },
+  {
+   "id": "proof-maine-z14",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 14,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "proof"
+   ]
+  },
+  {
+   "id": "proof-maine-z14-p60b20",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 14,
+   "pitch": 60,
+   "bearing": 20,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "proof"
+   ]
+  },
+  {
+   "id": "proof-finland-z14-flat",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 14,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": false,
+   "sets": [
+    "proof"
+   ]
+  },
+  {
+   "id": "proof-finland-z13.5-p75b200",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 13.5,
+   "pitch": 75,
+   "bearing": 200,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "proof"
+   ]
+  },
+  {
+   "id": "proof-scotland-z14-p45b300-3d",
+   "place": "scotland",
+   "lon": -5.45,
+   "lat": 56.3,
+   "z": 14,
+   "pitch": 45,
+   "bearing": 300,
+   "terrain": true,
+   "globe": true,
+   "sets": [
+    "proof"
+   ]
+  },
+  {
+   "id": "proof-seto-z14-p30b90",
+   "place": "seto",
+   "lon": 133.2,
+   "lat": 34.3,
+   "z": 14,
+   "pitch": 30,
+   "bearing": 90,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "proof"
+   ]
+  },
+  {
+   "id": "maine-z13",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 13,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "high"
+   ]
+  },
+  {
+   "id": "maine-z14",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 14,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "high"
+   ]
+  },
+  {
+   "id": "maine-z15",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 15,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "high"
+   ]
+  },
+  {
+   "id": "maine-z16",
+   "place": "maine",
+   "lon": -68.8,
+   "lat": 44.2,
+   "z": 16,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "high"
+   ]
+  },
+  {
+   "id": "thousand-z16",
+   "place": "thousand",
+   "lon": -75.98,
+   "lat": 44.33,
+   "z": 16,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "high"
+   ]
+  },
+  {
+   "id": "seto-z14-p60b90",
+   "place": "seto",
+   "lon": 133.2,
+   "lat": 34.3,
+   "z": 14,
+   "pitch": 60,
+   "bearing": 90,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "high"
+   ]
+  },
+  {
+   "id": "finland-z13-p75b30",
+   "place": "finland",
+   "lon": 28.7,
+   "lat": 61.75,
+   "z": 13,
+   "pitch": 75,
+   "bearing": 30,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "high"
+   ]
+  },
+  {
+   "id": "scotland-z15-p45b300-3d",
+   "place": "scotland",
+   "lon": -5.45,
+   "lat": 56.3,
+   "z": 15,
+   "pitch": 45,
+   "bearing": 300,
+   "terrain": true,
+   "globe": true,
+   "sets": [
+    "high"
+   ]
+  },
+  {
+   "id": "azores-z13-p60b200-3d",
+   "place": "azores",
+   "lon": -28.3,
+   "lat": 38.55,
+   "z": 13,
+   "pitch": 60,
+   "bearing": 200,
+   "terrain": true,
+   "globe": true,
+   "sets": [
+    "high"
+   ]
+  },
+  {
+   "id": "quebec-z14",
+   "place": "quebec",
+   "lon": -75.55,
+   "lat": 46.95,
+   "z": 14,
+   "pitch": 0,
+   "bearing": 0,
+   "terrain": false,
+   "globe": true,
+   "sets": [
+    "high"
+   ]
+  }
+ ]
+}

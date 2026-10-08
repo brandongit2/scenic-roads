@@ -19,13 +19,17 @@ let next = 0;
 let seq = 0;
 const waiting = new Map<number, { resolve: (b: ArrayBuffer) => void; reject: (e: Error) => void }>();
 
-/** The tiles' protocol and its workers (two: a tile is a burst of CPU, MapLibre asks for many);
- * `tiles`: the basemap's tile URL. */
-function setupProtocol(tiles: string) {
+/** Where the shading measures the shore from: the basemap's vector tiles (`tiles`), or water
+ * shares (`cov`: PNG tiles, red the sea's share and green the inland water's; the shoreline
+ * check's reference, evalmode.ts). */
+export type CoastInput = { tiles: string; cov: string };
+
+/** The tiles' protocol and its workers (two: a tile is a burst of CPU, MapLibre asks for many). */
+function setupProtocol(input: CoastInput) {
   if (workers.length) return;
   for (let i = 0; i < 2; i++) {
     const w = new Worker(new URL('./coast.worker.ts', import.meta.url), { type: 'module' });
-    w.postMessage({ type: 'init', tiles, maxzoom: BASEMAP_MAXZOOM } satisfies CoastMessage);
+    w.postMessage({ type: 'init', tiles: input.tiles, maxzoom: BASEMAP_MAXZOOM, cov: input.cov } satisfies CoastMessage);
     w.onmessage = (ev: MessageEvent<CoastResponse>) => {
       const p = waiting.get(ev.data.id);
       if (!p) return;
@@ -53,20 +57,21 @@ function setupProtocol(tiles: string) {
 }
 
 const tilesUrl = (lakes: boolean) => `coast://{z}/{x}/{y}?l=${lakes ? 1 : 0}`;
-/** The zoom the shading starts at, and with it the shore lines round the small islands and lakes
- * (below it, a dot ringed with the shading's colour read as a hollow ring on the bare water). */
+/** The zoom the shore lines round the small islands' and lakes' dots start at (below it, a dot
+ * ringed with the shading's colour read as a hollow ring). The shading itself is drawn at every
+ * zoom. */
 const SHADE_MINZOOM = 4;
 let lakesShown: boolean | null = null;
 
 /** The source and its layer, the first time the shading shows: over the water, under the small
  * islands and lakes the basemap leaves out (their shores aren't in its water) and the rivers drawn
  * as lines. */
-function setupShading(map: MLMap, w: WaterLook, tiles: string) {
+function setupShading(map: MLMap, w: WaterLook, input: CoastInput) {
   if (map.getSource('coast')) return;
-  setupProtocol(tiles);
+  setupProtocol(input);
   lakesShown = w.lakes;
   map.addSource('coast', { type: 'raster-dem', tiles: [tilesUrl(w.lakes)], tileSize: 512, maxzoom: 14, encoding: 'mapbox' });
-  map.addLayer({ id: 'coast-shade', type: 'color-relief', source: 'coast', minzoom: SHADE_MINZOOM, paint: { 'color-relief-opacity': 1, resampling: 'linear' } as never }, map.getLayer('small-water-fill') ? 'small-water-fill' : 'waterway');
+  map.addLayer({ id: 'coast-shade', type: 'color-relief', source: 'coast', paint: { 'color-relief-opacity': 1, resampling: 'linear' } as never }, map.getLayer('small-water-fill') ? 'small-water-fill' : 'waterway');
 }
 
 const rgb = (hex: string): [number, number, number] => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
@@ -105,10 +110,10 @@ let rampKey = '';
 /**
  * The water's colour (lakes a shade lighter, rivers drawn as lines lighter again, as the basemap
  * had them) and the coastal shading: its layer, its ramp for the view centre's scale (redone when
- * that changes by 5 % or more), sea only or every shore. `tiles`: the basemap's tile URL, whose
- * water the shading is measured from.
+ * that changes by 5 % or more), sea only or every shore. `input`: the water the shading is
+ * measured from.
  */
-export function applyWater(map: MLMap, w: WaterLook, tiles: () => string, waterShown: boolean) {
+export function applyWater(map: MLMap, w: WaterLook, input: () => CoastInput, waterShown: boolean) {
   const c = rgb(w.colour);
   const lake = hexOf([c[0] + 3, c[1] + 4, c[2] + 5]), river = hexOf([c[0] + 5, c[1] + 10, c[2] + 13]);
   if (map.getLayer('water')) map.setPaintProperty('water', 'fill-color', ['match', ['get', 'class'], 'ocean', w.colour, lake]);
@@ -135,7 +140,7 @@ export function applyWater(map: MLMap, w: WaterLook, tiles: () => string, waterS
     map.setPaintProperty('small-water', 'circle-stroke-opacity', smallDotOpacity(w.shore));
   }
   const on = w.shade && waterShown;
-  if (on) setupShading(map, w, tiles());
+  if (on) setupShading(map, w, input());
   if (!map.getLayer('coast-shade')) return;
   map.setLayoutProperty('coast-shade', 'visibility', on ? 'visible' : 'none');
   if (!on) return;
@@ -147,13 +152,16 @@ export function applyWater(map: MLMap, w: WaterLook, tiles: () => string, waterS
   updateCoastRamp(map, w);
 }
 
-/** The basemap's tiles under a new URL (a new catalog): the workers measure the shore from them,
- * and the shading's tiles are made again. */
-export function switchCoast(map: MLMap, tiles: string) {
+/** The water under new URLs (a new catalog; the shoreline check's reference, evalmode.ts): the
+ * workers measure the shore from it, and the shading's tiles are made again. */
+export function switchCoast(map: MLMap, input: CoastInput) {
   if (!workers.length) return;
-  for (const w of workers) w.postMessage({ type: 'init', tiles, maxzoom: BASEMAP_MAXZOOM } satisfies CoastMessage);
-  (map.getSource('coast') as maplibregl.RasterDEMTileSource | undefined)?.setTiles([tilesUrl(!!lakesShown)]);
+  for (const w of workers) w.postMessage({ type: 'init', tiles: input.tiles, maxzoom: BASEMAP_MAXZOOM, cov: input.cov } satisfies CoastMessage);
+  const src = map.getSource('coast') as maplibregl.RasterDEMTileSource | undefined;
+  // (A fresh URL: MapLibre would keep the old tiles under the same one.)
+  src?.setTiles([`${tilesUrl(!!lakesShown)}&s=${++switched}`]);
 }
+let switched = 0;
 
 /** The ramp again for the view centre's scale, if it changed by 5 % or more (zooming). */
 export function updateCoastRamp(map: MLMap, w: WaterLook) {

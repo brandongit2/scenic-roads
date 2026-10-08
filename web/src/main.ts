@@ -6,7 +6,7 @@ import mlWorkerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import './style.css';
 import { getProfile, getRoadWays, getWay, keepable, onVersions, peekWay, roadWays, setVersions, ver, version, type Drive, type Meta, type Profile, type Ride } from './api';
 import { displayName, displayOf, lineName } from './names';
-import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, basemapTiles, labelTilesOn, ovTilesOn, smallWaterOn, stationTilesOn, versionedTiles } from './basemap';
+import { applyBoundaryOpacity, applyLabelDensity, applyLineWidths, applyOverlayOpacity, baseStyle, HER_R, LABEL_LAYERS, SLOPE4_MAX, LAYER_GROUPS, overlayLabelScale, POI_STYLE, coastInput, labelTilesOn, ovTilesOn, smallWaterOn, stationTilesOn, versionedTiles } from './basemap';
 import { setHorizonThinning } from './horizon';
 import { LandmarkDots } from './dots';
 import { AREA_LAYERS, landmarkRef, Overlays, POINT_LAYERS, summariseFeature, withDetails } from './overlays';
@@ -64,6 +64,7 @@ import { LinesPane, RidesPane } from './ui/rides';
 import { Strip } from './ui/strip';
 import { ViewshedTool } from './ui/viewshed';
 import { installPanel } from './ui/touch';
+import { EVAL, evalState, installEval } from './evalmode';
 
 // The small islands and lakes' layer is switched off while it's redone (backlog #113): the server and
 // the catalog still have it, the map leaves it out.
@@ -124,7 +125,9 @@ async function main() {
   // A link (URL hash) wins; otherwise restore the last session from localStorage. (A link's `bd=`
   // only with the buildings: without, the saved settings stay.)
   const saved = fromSaved(prefs.load('state', null));
-  const store = new Store(location.hash.length > 1 ? { ...fromHash(location.hash, hasBuildings), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved);
+  const linked = location.hash.length > 1 ? { ...fromHash(location.hash, hasBuildings), ...(hasBuildings ? {} : { buildings: saved.buildings }) } : saved;
+  // The shoreline check's eval mode (evalmode.ts): the link's view, nothing but land and water.
+  const store = new Store(EVAL ? evalState(fromHash(location.hash, hasBuildings)) : linked);
   history.replaceState(null, '', toHash(store.s, hasBuildings)); // the address bar holds the restored state
   boot.at(1);
   maplibregl.setWorkerUrl(mlWorkerUrl);
@@ -136,6 +139,8 @@ async function main() {
   // that each kind has connections of its own (hosts.ts).
   maplibregl.setMaxParallelImageRequests(32);
   const v = store.s.view;
+  // (Eval mode: the map fills the window, the panels under it.)
+  if (EVAL) document.getElementById('map')!.style.cssText = 'position:fixed;inset:0;z-index:1000';
   const map = new maplibregl.Map({
     container: 'map',
     style: baseStyle(!!meta.labelTiles, store.s.labelDensity, !!meta.ovTiles, !!meta.stationTiles, smallWaterShown(meta)),
@@ -154,7 +159,10 @@ async function main() {
     fadeDuration: 120,
     // The camera does not ride up and down with the terrain under the view centre.
     centerClampedToGround: false,
+    // (Eval mode reads the canvas back, at its own pixel ratio, its reference finer: evalmode.ts.)
+    ...(EVAL ? { canvasContextAttributes: { preserveDrawingBuffer: true }, maxCanvasSize: [16384, 16384] as [number, number], ...(EVAL.dpr ? { pixelRatio: EVAL.dpr } : {}) } : {}),
   });
+  if (EVAL) installEval(map);
   // Debug: ?checks hands the map to automated checks (window.__map: its camera, after gestures).
   if (new URLSearchParams(location.search).has('checks')) (window as unknown as { __map: maplibregl.Map }).__map = map;
   // Tiles the NAS couldn't answer are asked for again (retry.ts).
@@ -1905,7 +1913,7 @@ async function main() {
       }
       // Label sizes lay the labels out again: at most every 150 ms while a slider is dragged.
       if (ch.has('labelSize') || ch.has('terrain')) labelSizeSoon();
-      if (ch.has('water') || ch.has('layers')) applyWater(map, s.water, basemapTiles, s.layers.water);
+      if (ch.has('water') || ch.has('layers')) applyWater(map, s.water, coastInput, s.layers.water);
       // (after the terrain: contour lines are added when first shown)
       if (ch.has('lineWeights') || ch.has('terrain')) applyLineWidths(map, s.lineWeights);
       if (ch.has('terrain') || ch.has('palette') || ch.has('mode')) {
@@ -2011,7 +2019,7 @@ async function main() {
     for (const t of versionedTiles()) {
       if (files.includes(t.file)) (map.getSource(t.source) as { setTiles?: (tiles: string[]) => void } | undefined)?.setTiles?.([t.url]);
     }
-    if (files.includes('base.pmtiles')) switchCoast(map, basemapTiles());
+    if (files.includes('base.pmtiles')) switchCoast(map, coastInput());
     if (files.includes('terrain.tiles')) switchContours(map);
   });
   const newCatalog = (m: Meta) => {
@@ -2072,7 +2080,7 @@ async function main() {
     applyLayers();
     applyTerrain(map, store.s.terrain);
     applyLabelSize(map, store.s.labelSize, store.s.terrain.contour.labelSize);
-    applyWater(map, store.s.water, basemapTiles, store.s.layers.water);
+    applyWater(map, store.s.water, coastInput, store.s.layers.water);
     applyLineWidths(map, store.s.lineWeights);
     applyTrees(map, store.s.trees);
     applyBuildingsNow(store.s);

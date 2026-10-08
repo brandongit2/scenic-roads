@@ -10,6 +10,7 @@
 !/tools/golden-marks/
 !/tools/cutover/
 !/tools/status/
+!/tools/coastcheck/
 node_modules/
 /web/dist/
 /web/dist-new/

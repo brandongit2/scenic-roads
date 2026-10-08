@@ -234,6 +234,8 @@ export const HYPSO: [number, string][] = [
 /** The basemap's vector tiles (OpenMapTiles schema; the server merges its archives per tile and
  * attaches the display names), as its source and the coast worker (coast.worker.ts) read them. */
 export const basemapTiles = (): string => `${hostFor('base')}/tiles/base/{z}/{x}/{y}${ver('base.pmtiles')}`;
+/** Where the coastal shading measures the shore from (coast.ts): the basemap's water. */
+export const coastInput = () => ({ tiles: basemapTiles(), cov: '' });
 /** The terrain tiles (Terrarium), as the terrain sources and the contours (terrain.ts) read them. */
 export const terrainTiles = (): string => `${hostFor('terrain')}/tiles/terrain/{z}/{x}/{y}${ver('terrain.tiles')}`;
 

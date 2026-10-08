@@ -13,7 +13,7 @@ import { readPolygons } from './mvt';
 export type CoastMessage =
   /** `tiles`: the basemap's tile URL ({z}, {x}, {y}); `maxzoom`: its deepest tiles. Sent again
    * when they change. */
-  | { type: 'init'; tiles: string; maxzoom: number }
+  | { type: 'init'; tiles: string; maxzoom: number; cov?: string }
   | { type: 'tile'; id: number; z: number; x: number; y: number; lakes: boolean }
   | { type: 'cancel'; id: number };
 export interface CoastResponse {
@@ -33,6 +33,9 @@ const EARTH = 40075016.686;
 /** The basemap's tile URL and its deepest zoom (init). */
 let tiles = '';
 let vectorMaxZoom = 14;
+/** Instead of the basemap's water: the water's shares (PNG, 512 px, red the sea's share, green the
+ * inland water's: the server's `/tiles/water/…?raw=1`, or the shoreline check's reference). */
+let cov = '';
 const cancelled = new Set<number>();
 let queue = Promise.resolve();
 
@@ -42,6 +45,7 @@ self.onmessage = (ev: MessageEvent<CoastMessage>) => {
     // (Again for new basemap tiles: their water is read anew.)
     tiles = m.tiles;
     vectorMaxZoom = m.maxzoom;
+    cov = m.cov ?? '';
     waterCache.clear();
   } else if (m.type === 'cancel') {
     cancelled.add(m.id);
@@ -102,7 +106,39 @@ const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
 const outCanvas = new OffscreenCanvas(SIZE, SIZE);
 const outCtx = outCanvas.getContext('2d')!;
 
+/** The 3 × 3 share tiles around z/x/y painted into the canvas: water opaque. */
+async function paintCoverage(z: number, x: number, y: number, lakes: boolean) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, N, N);
+  const n = 2 ** z;
+  const jobs: Promise<void>[] = [];
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -1; dx <= 1; dx++) {
+      const ty = y + dy;
+      if (ty < 0 || ty >= n) continue;
+      const tx = (((x + dx) % n) + n) % n;
+      jobs.push((async () => {
+        const r = await fetch(cov.replace('{z}', String(z)).replace('{x}', String(tx)).replace('{y}', String(ty)));
+        if (!r.ok) throw new Error(`coverage tile ${z}/${tx}/${ty}: HTTP ${r.status}`);
+        const img = await createImageBitmap(await r.blob());
+        const c = new OffscreenCanvas(SIZE, SIZE), g = c.getContext('2d')!;
+        g.drawImage(img, 0, 0);
+        const d = g.getImageData(0, 0, SIZE, SIZE);
+        // Water (more than half covered: the sea, or with lakes all of it) opaque, land clear.
+        for (let i = 0; i < SIZE * SIZE; i++) d.data[i * 4 + 3] = d.data[i * 4] + (lakes ? d.data[i * 4 + 1] : 0) >= 128 ? 255 : 0;
+        ctx.putImageData(d, MARGIN + dx * SIZE, MARGIN + dy * SIZE);
+      })());
+    }
+  }
+  const failed = (await Promise.allSettled(jobs)).find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failed) throw failed.reason;
+}
+
 async function coastTile(z: number, x: number, y: number, lakes: boolean): Promise<ArrayBuffer> {
+  if (cov) {
+    await paintCoverage(z, x, y, lakes);
+    return encode(z, y);
+  }
   // Past the basemap's zoom: the deepest tile's water, cut to this one.
   const zv = Math.min(z, vectorMaxZoom), dz = z - zv;
   const n = 2 ** zv;
@@ -138,6 +174,11 @@ async function coastTile(z: number, x: number, y: number, lakes: boolean): Promi
   // tile (its coast would be drawn where its water is missing).
   const failed = (await Promise.allSettled(jobs)).find((r): r is PromiseRejectedResult => r.status === 'rejected');
   if (failed) throw failed.reason;
+  return encode(z, y);
+}
+
+/** The canvas's water (opaque pixels) as the tile's signed distance, Terrain-RGB. */
+async function encode(z: number, y: number): Promise<ArrayBuffer> {
   const px = ctx.getImageData(0, 0, N, N).data;
   const wet = new Uint8Array(N * N);
   let nWet = 0;
