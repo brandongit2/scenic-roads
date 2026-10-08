@@ -260,64 +260,121 @@ pub struct Report {
     pub lo_tiles: usize,
 }
 
-/// The slope of the z6 tiles `ts` (in z3 tile `q`) from the build's terrain packs: each one's hi pack
-/// (z9–11), written as soon as it's worked out (an area holds a z6 tile's tiles at a time, under a
-/// GB, where all of them took up to 20 GB), and `q`'s lo pack (z3–8), the other z6 tiles of `q`
-/// taken from the slope lo pack as it is.
-pub fn build_q(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<Report> {
-    build_q_with(out, q, ts, &|_, _, _| {})
+/// A tile as made: zoom, column, row, its bytes.
+type Made = (u8, u32, u32, Vec<u8>);
+
+/// Z6 tile (`x`, `y`)'s slope mid in the manifest: its z6–8 tiles as made (`build_piece`), which its
+/// area's assembly reads (`build_lo`).
+pub fn mid_logical(x: u32, y: u32) -> String {
+    format!("work/slope-mid/6-{x}-{y}")
 }
 
-/// `build_q`, saying how far it is to `on` as (what, done, total): the slope tiles worked out (each z6
-/// tile's hi pack written with them), then the lo pack written.
-pub fn build_q_with(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
-    let mut rep = Report::default();
-    let terr = ManifestTiles::new(out, "terrain");
-    let slope_now = ManifestTiles::new(out, "slope");
-    let get = |z: u8, x: u32, y: u32| -> Option<Vec<u8>> { terr.get(z, x, y).ok().flatten() };
-    let has = |z: u8, x: u32, y: u32| terr.has(z, x, y).unwrap_or(false);
-    let terrain = Terrain::new(&get, &has);
-    // Each z6 tile: the terrain tiles it has (z9–12) and their ancestors down to z6.
-    let mut z6q: HashMap<(u32, u32), Vec<[u16; 4]>> = HashMap::new();
-    let mut sets: Vec<((u32, u32), HashSet<(u8, u32, u32)>)> = Vec::new();
-    for &(tx, ty) in ts {
-        let mut tiles: HashSet<(u8, u32, u32)> = HashSet::new();
-        for z in 9..=12u8 {
-            let s = 1u32 << (z - 6);
-            for x in tx * s..(tx + 1) * s {
-                for y in ty * s..(ty + 1) * s {
-                    if has(z, x, y) {
-                        for dz in 0..=(z - 6) {
-                            tiles.insert((z - dz, x >> dz, y >> dz));
-                        }
+/// The mid's format.
+const MID_FMT: u64 = 1;
+
+/// Writes z6 tile `t`'s mid to `path`: a sectioned file (store::sect), meta `{"fmt": 1, "step":
+/// "slope", "tile": "6/x/y", "v": SLOPE_V}`, a section `<z>-<x>-<y>` for each of its z6–8 tiles (its
+/// PNG as stored), in (z, x, y) order.
+pub fn write_mid(path: &std::path::Path, t: (u32, u32), tiles: &[Made]) -> Result<()> {
+    let meta = serde_json::json!({ "fmt": MID_FMT, "step": "slope", "tile": format!("6/{}/{}", t.0, t.1), "v": crate::agent::build::SLOPE_V });
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d)?;
+    }
+    let mut w = store::sect::SectWriter::create(path, meta)?;
+    let mut tiles: Vec<&Made> = tiles.iter().collect();
+    tiles.sort_by_key(|t| (t.0, t.1, t.2));
+    for (z, x, y, b) in tiles {
+        anyhow::ensure!((6..=8).contains(z) && (x >> (z - 6), y >> (z - 6)) == t, "{z}/{x}/{y} isn't one of 6/{}/{}'s z6–8 tiles", t.0, t.1);
+        w.add(&format!("{z}-{x}-{y}"), b)?;
+    }
+    w.finish()?;
+    Ok(())
+}
+
+/// A mid (`write_mid`), read and checked (its format, step and version, every section whole): its
+/// z6 tile and its tiles, in (z, x, y) order.
+pub fn read_mid(path: &std::path::Path) -> Result<((u32, u32), Vec<Made>)> {
+    use anyhow::Context;
+    let what = || path.display().to_string();
+    let r = store::sect::SectReader::open(store::range::PlainFile::open(path).with_context(what)?).with_context(what)?;
+    let m = r.meta();
+    anyhow::ensure!(m["fmt"].as_u64() == Some(MID_FMT) && m["step"] == "slope", "{}: not a slope mid", what());
+    anyhow::ensure!(m["v"].as_u64() == Some(crate::agent::build::SLOPE_V as u64), "{}: a mid of slope version {}, not {}", what(), m["v"], crate::agent::build::SLOPE_V);
+    let t = m["tile"].as_str().and_then(crate::legacy::Unit::parse).filter(|u| u.z == 6).with_context(|| format!("{}: no z6 tile", what()))?;
+    let mut out = Vec::new();
+    for s in r.sections() {
+        let u = crate::legacy::Unit::parse(&s.name.replace('-', "/")).filter(|u| (6..=8).contains(&u.z) && (u.x >> (u.z - 6), u.y >> (u.z - 6)) == (t.x, t.y)).with_context(|| format!("{}: a section {:?}", what(), s.name))?;
+        out.push((u.z, u.x, u.y, r.read(&s.name).with_context(what)?));
+    }
+    out.sort_by_key(|t| (t.0, t.1, t.2));
+    Ok(((t.x, t.y), out))
+}
+
+/// The tiles a piece (z6 tile `t`) works out: the terrain tiles it has (z9–12, `has`) and their
+/// ancestors down to z6, and its z6 tile.
+fn piece_set(has: &(dyn Fn(u8, u32, u32) -> bool + Sync), t: (u32, u32)) -> HashSet<(u8, u32, u32)> {
+    let (tx, ty) = t;
+    let mut tiles: HashSet<(u8, u32, u32)> = HashSet::new();
+    for z in 9..=12u8 {
+        let s = 1u32 << (z - 6);
+        for x in tx * s..(tx + 1) * s {
+            for y in ty * s..(ty + 1) * s {
+                if has(z, x, y) {
+                    for dz in 0..=(z - 6) {
+                        tiles.insert((z - dz, x >> dz, y >> dz));
                     }
                 }
             }
         }
-        tiles.insert((6, tx, ty));
-        sets.push(((tx, ty), tiles));
     }
-    // (Every tile worked out counts, the rest of q's z6 tiles and its z5–z3 too, and each z6 tile's
-    // pack written: its upload to the NAS takes seconds.)
-    let total = sets.iter().map(|s| s.1.len() as u64 + 1).sum::<u64>() + 64 - ts.len().min(64) as u64 + 16 + 4 + 1;
-    let count = Count { done: Default::default(), total, said: std::sync::Mutex::new(std::time::Instant::now()), on };
-    on("slope tiles worked out", 0, total);
-    // Each z6 tile's hi pack (z9–11) written once it's worked out; its z6–8 tiles kept for the lo
-    // pack. (In each pack its tiles in order, as when all were written at the end: the same bytes.)
-    let mut made: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
-    for ((tx, ty), tiles) in &sets {
-        let mine = std::sync::Mutex::new(Vec::new());
-        if let Some(qd) = build(&terrain, tiles, 6, *tx, *ty, &mine, &count) {
-            z6q.insert((*tx, *ty), qd);
+    tiles.insert((6, tx, ty));
+    tiles
+}
+
+/// A piece's slope (z6 tile `t`): its hi tiles (z9–11), sorted, and its z6–8 tiles (its mid's).
+fn piece(terrain: &Terrain, has: &(dyn Fn(u8, u32, u32) -> bool + Sync), t: (u32, u32), count: &Count) -> (Vec<Made>, Vec<Made>) {
+    let tiles = piece_set(has, t);
+    let mine = std::sync::Mutex::new(Vec::new());
+    build(terrain, &tiles, 6, t.0, t.1, &mine, count);
+    let (mut hi, mut lo): (Vec<Made>, Vec<Made>) = mine.into_inner().unwrap().into_iter().partition(|t| t.0 >= 9);
+    hi.sort_by_key(|t| (t.0, t.1, t.2));
+    hi.dedup_by_key(|t| (t.0, t.1, t.2));
+    lo.sort_by_key(|t| (t.0, t.1, t.2));
+    lo.dedup_by_key(|t| (t.0, t.1, t.2));
+    (hi, lo)
+}
+
+/// An area's assembly (z3 tile `q`, its pieces `ts`): its lo tiles (z3–8), sorted. Each piece's
+/// z6–8 tiles from `mids` (its mid, or the slope lo pack's for one that has none: a piece current
+/// without one has its tiles there), its z6 tile's quadrant read from its stored z6 tile; the other
+/// z6 tiles of q as the lo pack has them (a z6 tile's quadrant from its stored tile, or where it has
+/// none its terrain's own slope; its z7–8 tiles kept), then z5–z3.
+fn assemble(out: &Out, terrain: &Terrain, q: (u32, u32), ts: &[(u32, u32)], mids: &BTreeMap<(u32, u32), Vec<Made>>, count: &Count) -> Result<Vec<Made>> {
+    let slope_now = ManifestTiles::new(out, "slope");
+    let mut made: Vec<Made> = Vec::new();
+    let mut z6q: HashMap<(u32, u32), Vec<[u16; 4]>> = HashMap::new();
+    for &(tx, ty) in ts {
+        let tiles: Vec<Made> = match mids.get(&(tx, ty)) {
+            Some(m) => m.clone(),
+            None => {
+                let mut v = Vec::new();
+                for z in 6..=8u8 {
+                    let s = 1u32 << (z - 6);
+                    for x in tx * s..(tx + 1) * s {
+                        for y in ty * s..(ty + 1) * s {
+                            if let Some(b) = slope_now.get(z, x, y)? {
+                                v.push((z, x, y, b));
+                            }
+                        }
+                    }
+                }
+                v
+            }
+        };
+        if let Some(v) = tiles.iter().find(|t| t.0 == 6).and_then(|t| decode_slope4(&t.3)) {
+            z6q.insert((tx, ty), quadrant(&v));
         }
-        let (mut hi, lo): (Vec<_>, Vec<_>) = mine.into_inner().unwrap().into_iter().partition(|t| t.0 >= 9);
-        made.extend(lo);
-        hi.sort_by_key(|t| (t.0, t.1, t.2));
-        hi.dedup_by_key(|t| (t.0, t.1, t.2));
-        rep.hi_tiles += hi.len();
-        let mut it = hi.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
-        crate::layers::write_pack(out, "slope", "slope4-png", false, "hi", (6, *tx, *ty), &mut it)?;
-        count.one();
+        made.extend(tiles);
     }
     // The other z6 tiles of q: their stored slope's quadrant, else their terrain's own slope.
     for x in q.0 * 8..(q.0 + 1) * 8 {
@@ -333,7 +390,7 @@ pub fn build_q_with(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn F
                     made.push((6, x, y, kept.unwrap()));
                     v
                 }
-                None => match compose(&terrain, 6, x, y, &[]) {
+                None => match compose(terrain, 6, x, y, &[]) {
                     Some(v) => {
                         let (blob, v) = stored(&v);
                         made.push((6, x, y, blob));
@@ -357,7 +414,7 @@ pub fn build_q_with(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn F
                     below.get(&c).map(|q| (c, q.clone()))
                 }).collect();
                 count.one();
-                if let Some(v) = compose(&terrain, z, x, y, &kids) {
+                if let Some(v) = compose(terrain, z, x, y, &kids) {
                     let (blob, v) = stored(&v);
                     made.push((z, x, y, blob));
                     next.insert((x, y), quadrant(&v));
@@ -366,16 +423,11 @@ pub fn build_q_with(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn F
         }
         below = next;
     }
-    drop(terrain);
-    drop((terr, slope_now));
-    // The lo pack: q's z3–8 (this run's z6 tiles' z6–8 with the rest of q's).
     made.sort_by_key(|t| (t.0, t.1, t.2));
     made.dedup_by_key(|t| (t.0, t.1, t.2));
-    on("packs written", 0, 1);
     // The lo pack keeps the z7–8 tiles of the other z6 tiles of q as they are.
-    let lo_old = ManifestTiles::new(out, "slope");
     let ours: HashSet<(u32, u32)> = ts.iter().copied().collect();
-    let mut lo: Vec<(u8, u32, u32, Vec<u8>)> = made.into_iter().filter(|t| t.0 <= 8).collect();
+    let mut lo: Vec<Made> = made.into_iter().filter(|t| t.0 <= 8).collect();
     for z in 7..=8u8 {
         let s = 1u32 << (z - 3);
         for x in q.0 * s..(q.0 + 1) * s {
@@ -383,14 +435,124 @@ pub fn build_q_with(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn F
                 if ours.contains(&(x >> (z - 6), y >> (z - 6))) {
                     continue;
                 }
-                if let Some(b) = lo_old.get(z, x, y)? {
+                if let Some(b) = slope_now.get(z, x, y)? {
                     lo.push((z, x, y, b));
                 }
             }
         }
     }
-    drop(lo_old);
     lo.sort_by_key(|t| (t.0, t.1, t.2));
+    Ok(lo)
+}
+
+/// The build's terrain as a job reads it (`Terrain`), from the manifest's packs as it opened them.
+fn terrain_reads(terr: &ManifestTiles) -> (impl Fn(u8, u32, u32) -> Option<Vec<u8>> + Sync + '_, impl Fn(u8, u32, u32) -> bool + Sync + '_) {
+    (move |z: u8, x: u32, y: u32| terr.get(z, x, y).ok().flatten(), move |z: u8, x: u32, y: u32| terr.has(z, x, y).unwrap_or(false))
+}
+
+/// The slope of the z6 tiles `ts` (in z3 tile `q`) from the build's terrain packs: each one's hi pack
+/// (z9–11), written as soon as it's worked out (an area holds a z6 tile's tiles at a time, under a
+/// GB, where all of them took up to 20 GB), and `q`'s lo pack (z3–8), the other z6 tiles of `q`
+/// taken from the slope lo pack as it is: its pieces (`build_piece`'s runs) and its assembly
+/// (`build_lo`'s, from the pieces' z6–8 tiles held here), the same bytes as their jobs make.
+pub fn build_q(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)]) -> Result<Report> {
+    build_q_with(out, q, ts, &|_, _, _| {})
+}
+
+/// `build_q`, saying how far it is to `on` as (what, done, total): the slope tiles worked out (each z6
+/// tile's hi pack written with them), then the lo pack written.
+pub fn build_q_with(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
+    let mut rep = Report::default();
+    let terr = ManifestTiles::new(out, "terrain");
+    let (get, has) = terrain_reads(&terr);
+    let terrain = Terrain::new(&get, &has);
+    // (Every tile worked out counts, the rest of q's z6 tiles and its z5–z3 too, and each z6 tile's
+    // pack written: its upload to the NAS takes seconds.)
+    let total = ts.iter().map(|&t| piece_set(&has, t).len() as u64 + 1).sum::<u64>() + 64 - ts.len().min(64) as u64 + 16 + 4 + 1;
+    let count = Count { done: Default::default(), total, said: std::sync::Mutex::new(std::time::Instant::now()), on };
+    on("slope tiles worked out", 0, total);
+    let mut mids: BTreeMap<(u32, u32), Vec<Made>> = BTreeMap::new();
+    for &t in ts {
+        let (hi, lo) = piece(&terrain, &has, t, &count);
+        rep.hi_tiles += hi.len();
+        let mut it = hi.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
+        crate::layers::write_pack(out, "slope", "slope4-png", false, "hi", (6, t.0, t.1), &mut it)?;
+        count.one();
+        mids.insert(t, lo);
+    }
+    let lo = assemble(out, &terrain, q, ts, &mids, &count)?;
+    drop(terrain);
+    on("packs written", 0, 1);
+    rep.lo_tiles = lo.len();
+    let mut it = lo.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
+    crate::layers::write_pack(out, "slope", "slope4-png", false, "lo", (3, q.0, q.1), &mut it)?;
+    out.save()?;
+    on("packs written", 1, 1);
+    Ok(rep)
+}
+
+/// Makes z6 tile `t`'s slope (a piece) from the build's terrain packs and uploads it: its hi pack
+/// (z9–11; none when it made no tile: an earlier one stays, as an area's run leaves it) and its mid
+/// (`mid_logical`: its z6–8 tiles), which its area's assembly reads. `expect_same`: a piece made
+/// again as it is (its mid made), whose hi pack must come out as the manifest has it, else an error
+/// and nothing uploaded.
+pub fn build_piece(out: &mut Out, t: (u32, u32), expect_same: bool, on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
+    let mut rep = Report::default();
+    let terr = ManifestTiles::new(out, "terrain");
+    let (get, has) = terrain_reads(&terr);
+    let terrain = Terrain::new(&get, &has);
+    let total = piece_set(&has, t).len() as u64 + 1;
+    let count = Count { done: Default::default(), total, said: std::sync::Mutex::new(std::time::Instant::now()), on };
+    on("slope tiles worked out", 0, total);
+    let (hi, lo) = piece(&terrain, &has, t, &count);
+    drop(terrain);
+    rep.hi_tiles = hi.len();
+    rep.lo_tiles = lo.len();
+    let mut it = hi.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
+    let pack = crate::layers::write_pack_local(out, "slope", "slope4-png", false, "hi", (6, t.0, t.1), &mut it)?;
+    let ml = mid_logical(t.0, t.1);
+    let mid = out.scratch_file(&format!("{ml}.sect"));
+    write_mid(&mid, t, &lo)?;
+    if expect_same {
+        if let Some(p) = &pack {
+            let made = p.content_name()?;
+            if out.get(&p.logical) != Some(made.as_str()) {
+                std::fs::remove_file(&p.local).ok();
+                std::fs::remove_file(&mid).ok();
+                anyhow::bail!("piece 6/{}/{} was expected the same as the manifest has it, and isn't (nothing uploaded): {}: made {made}, the manifest has {}", t.0, t.1, p.logical, out.get(&p.logical).unwrap_or("none"));
+            }
+        }
+    }
+    if let Some(p) = pack {
+        out.put_file(&p.logical, "pack", &p.local)?;
+    }
+    out.put_file(&ml, "sect", &mid)?;
+    out.save()?;
+    count.one();
+    Ok(rep)
+}
+
+/// Makes z3 tile `q`'s zoomed-out slope (an assembly: its lo pack, z3–8) from its pieces' mids (`ts`:
+/// its z6 tiles near the coverage; one current without a mid has its z6–8 tiles in the lo pack as it
+/// is) and the lo pack as it is, and uploads it.
+pub fn build_lo(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
+    let mut rep = Report::default();
+    let mut mids: BTreeMap<(u32, u32), Vec<Made>> = BTreeMap::new();
+    for &t in ts {
+        anyhow::ensure!((t.0 >> 3, t.1 >> 3) == q, "6/{}/{} isn't in 3/{}/{}", t.0, t.1, q.0, q.1);
+        if let Some(c) = out.get(&mid_logical(t.0, t.1)) {
+            let (of, tiles) = read_mid(&out.path(c))?;
+            anyhow::ensure!(of == t, "{c} is 6/{}/{}'s mid", of.0, of.1);
+            mids.insert(t, tiles);
+        }
+    }
+    let terr = ManifestTiles::new(out, "terrain");
+    let (get, has) = terrain_reads(&terr);
+    let terrain = Terrain::new(&get, &has);
+    let count = Count { done: Default::default(), total: 64 + 16 + 4 + 1, said: std::sync::Mutex::new(std::time::Instant::now()), on };
+    let lo = assemble(out, &terrain, q, ts, &mids, &count)?;
+    drop(terrain);
+    on("packs written", 0, 1);
     rep.lo_tiles = lo.len();
     let mut it = lo.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
     crate::layers::write_pack(out, "slope", "slope4-png", false, "lo", (3, q.0, q.1), &mut it)?;
@@ -655,6 +817,231 @@ mod tests {
         out.save()?;
         on("packs written", packs, packs);
         Ok(rep)
+    }
+
+    /// An area's slope as main made it at 1fa03d8, before it was made as pieces and an assembly: the
+    /// reference they must match, byte for byte.
+    fn area_v1(out: &mut Out, q: (u32, u32), ts: &[(u32, u32)], on: &(dyn Fn(&str, u64, u64) + Sync)) -> Result<Report> {
+        let mut rep = Report::default();
+        let terr = ManifestTiles::new(out, "terrain");
+        let slope_now = ManifestTiles::new(out, "slope");
+        let get = |z: u8, x: u32, y: u32| -> Option<Vec<u8>> { terr.get(z, x, y).ok().flatten() };
+        let has = |z: u8, x: u32, y: u32| terr.has(z, x, y).unwrap_or(false);
+        let terrain = Terrain::new(&get, &has);
+        // Each z6 tile: the terrain tiles it has (z9–12) and their ancestors down to z6.
+        let mut z6q: HashMap<(u32, u32), Vec<[u16; 4]>> = HashMap::new();
+        let mut sets: Vec<((u32, u32), HashSet<(u8, u32, u32)>)> = Vec::new();
+        for &(tx, ty) in ts {
+            let mut tiles: HashSet<(u8, u32, u32)> = HashSet::new();
+            for z in 9..=12u8 {
+                let s = 1u32 << (z - 6);
+                for x in tx * s..(tx + 1) * s {
+                    for y in ty * s..(ty + 1) * s {
+                        if has(z, x, y) {
+                            for dz in 0..=(z - 6) {
+                                tiles.insert((z - dz, x >> dz, y >> dz));
+                            }
+                        }
+                    }
+                }
+            }
+            tiles.insert((6, tx, ty));
+            sets.push(((tx, ty), tiles));
+        }
+        // (Every tile worked out counts, the rest of q's z6 tiles and its z5–z3 too, and each z6 tile's
+        // pack written: its upload to the NAS takes seconds.)
+        let total = sets.iter().map(|s| s.1.len() as u64 + 1).sum::<u64>() + 64 - ts.len().min(64) as u64 + 16 + 4 + 1;
+        let count = Count { done: Default::default(), total, said: std::sync::Mutex::new(std::time::Instant::now()), on };
+        on("slope tiles worked out", 0, total);
+        // Each z6 tile's hi pack (z9–11) written once it's worked out; its z6–8 tiles kept for the lo
+        // pack. (In each pack its tiles in order, as when all were written at the end: the same bytes.)
+        let mut made: Vec<(u8, u32, u32, Vec<u8>)> = Vec::new();
+        for ((tx, ty), tiles) in &sets {
+            let mine = std::sync::Mutex::new(Vec::new());
+            if let Some(qd) = build(&terrain, tiles, 6, *tx, *ty, &mine, &count) {
+                z6q.insert((*tx, *ty), qd);
+            }
+            let (mut hi, lo): (Vec<_>, Vec<_>) = mine.into_inner().unwrap().into_iter().partition(|t| t.0 >= 9);
+            made.extend(lo);
+            hi.sort_by_key(|t| (t.0, t.1, t.2));
+            hi.dedup_by_key(|t| (t.0, t.1, t.2));
+            rep.hi_tiles += hi.len();
+            let mut it = hi.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
+            crate::layers::write_pack(out, "slope", "slope4-png", false, "hi", (6, *tx, *ty), &mut it)?;
+            count.one();
+        }
+        // The other z6 tiles of q: their stored slope's quadrant, else their terrain's own slope.
+        for x in q.0 * 8..(q.0 + 1) * 8 {
+            for y in q.1 * 8..(q.1 + 1) * 8 {
+                if z6q.contains_key(&(x, y)) {
+                    continue;
+                }
+                count.one();
+                let kept = slope_now.get(6, x, y)?;
+                let v = match kept.as_ref().and_then(|b| decode_slope4(b)) {
+                    Some(v) => {
+                        // Kept as stored (byte for byte), its quadrant read from it.
+                        made.push((6, x, y, kept.unwrap()));
+                        v
+                    }
+                    None => match compose(&terrain, 6, x, y, &[]) {
+                        Some(v) => {
+                            let (blob, v) = stored(&v);
+                            made.push((6, x, y, blob));
+                            v
+                        }
+                        None => continue,
+                    },
+                };
+                z6q.insert((x, y), quadrant(&v));
+            }
+        }
+        // z5 → z3 of q from the z6 quadrants.
+        let mut below = z6q;
+        for z in (3..=5u8).rev() {
+            let s = 1u32 << (z - 3);
+            let mut next = HashMap::new();
+            for x in q.0 * s..(q.0 + 1) * s {
+                for y in q.1 * s..(q.1 + 1) * s {
+                    let kids: Vec<((u32, u32), Vec<[u16; 4]>)> = (0..4u32).filter_map(|k| {
+                        let c = (2 * x + (k & 1), 2 * y + (k >> 1));
+                        below.get(&c).map(|q| (c, q.clone()))
+                    }).collect();
+                    count.one();
+                    if let Some(v) = compose(&terrain, z, x, y, &kids) {
+                        let (blob, v) = stored(&v);
+                        made.push((z, x, y, blob));
+                        next.insert((x, y), quadrant(&v));
+                    }
+                }
+            }
+            below = next;
+        }
+        drop(terrain);
+        drop((terr, slope_now));
+        // The lo pack: q's z3–8 (this run's z6 tiles' z6–8 with the rest of q's).
+        made.sort_by_key(|t| (t.0, t.1, t.2));
+        made.dedup_by_key(|t| (t.0, t.1, t.2));
+        on("packs written", 0, 1);
+        // The lo pack keeps the z7–8 tiles of the other z6 tiles of q as they are.
+        let lo_old = ManifestTiles::new(out, "slope");
+        let ours: HashSet<(u32, u32)> = ts.iter().copied().collect();
+        let mut lo: Vec<(u8, u32, u32, Vec<u8>)> = made.into_iter().filter(|t| t.0 <= 8).collect();
+        for z in 7..=8u8 {
+            let s = 1u32 << (z - 3);
+            for x in q.0 * s..(q.0 + 1) * s {
+                for y in q.1 * s..(q.1 + 1) * s {
+                    if ours.contains(&(x >> (z - 6), y >> (z - 6))) {
+                        continue;
+                    }
+                    if let Some(b) = lo_old.get(z, x, y)? {
+                        lo.push((z, x, y, b));
+                    }
+                }
+            }
+        }
+        drop(lo_old);
+        lo.sort_by_key(|t| (t.0, t.1, t.2));
+        rep.lo_tiles = lo.len();
+        let mut it = lo.into_iter().map(|(z, x, y, b)| (z, x, y, b, (TS * TS * 4) as u32));
+        crate::layers::write_pack(out, "slope", "slope4-png", false, "lo", (3, q.0, q.1), &mut it)?;
+        out.save()?;
+        on("packs written", 1, 1);
+        Ok(rep)
+    }
+
+    /// Two areas' slope (3/3/1 and 3/4/1: a coverage on lon 0° at 70.5°N, their border pieces reading
+    /// each other's terrain) as pieces and assemblies, each from the mids as uploaded, and as main's
+    /// area runs made it: the same packs, byte for byte; an assembly with a piece's mid missing takes
+    /// its tiles from the lo pack, the same; a piece made again expecting the same changes nothing.
+    #[test]
+    fn pieces_and_their_assembly_make_the_area_runs_packs_across_areas() {
+        use crate::terrain_pack::{near_coverage, RawTiles};
+        let d = tempfile::tempdir().unwrap();
+        let local = d.path().join("local");
+        let cov = crate::coverage::Coverage::from_recipes(&[crate::agent::recipes::Recipe { id: "r".into(), name: "R".into(), outline: vec!["place:0.0,70.5,2".into()] }], None, d.path()).unwrap();
+        let by_q = crate::agent::build::coverage_tiles(&cov);
+        assert_eq!(by_q.keys().copied().collect::<Vec<_>>(), [(3, 1), (4, 1)]);
+        for (&q, ts) in &by_q {
+            let mut want: Vec<(u8, u32, u32)> = Vec::new();
+            for z in 9..=12u8 {
+                let s = 1u32 << (z - 6);
+                for &(tx, ty) in ts {
+                    for x in tx * s..(tx + 1) * s {
+                        for y in ty * s..(ty + 1) * s {
+                            if near_coverage(&cov, z, x, y, 20.0) {
+                                want.push((z, x, y));
+                            }
+                        }
+                    }
+                }
+            }
+            for z in 3..=8u8 {
+                let s = 1u32 << (z - 3);
+                for x in q.0 * s..(q.0 + 1) * s {
+                    for y in q.1 * s..(q.1 + 1) * s {
+                        want.push((z, x, y));
+                    }
+                }
+            }
+            for &(z, x, y) in &want {
+                std::fs::create_dir_all(local.join(format!("{z}/{x}"))).unwrap();
+                let k = z as u32 + x + y;
+                if k % 7 == 0 {
+                    std::fs::write(local.join(format!("{z}/{x}/{y}.none")), b"").unwrap();
+                    continue;
+                }
+                let e: Vec<f32> = (0..256 * 256).map(|i| 400.0 + ((i % 256) as f32 * 0.07 + x as f32).sin() * 90.0 + (i / 256) as f32 * 0.4 + (k % 11) as f32 * 30.0).collect();
+                std::fs::write(local.join(format!("{z}/{x}/{y}.png")), encode_terrain_png(&e, 256, 256).unwrap()).unwrap();
+            }
+        }
+        let raw = RawTiles::with_store(&local, &d.path().join("store"));
+        let terrain = d.path().join("terrain");
+        for (&q, ts) in &by_q {
+            crate::terrain_pack::build_q(&mut Out::open(&terrain, &d.path().join("terrain-scratch")).unwrap(), &raw, q, ts, &cov, &crate::terrain_pack::Sources::default()).unwrap();
+        }
+        let slope = |root: &std::path::Path| Out::open(root, &d.path().join("s")).unwrap().manifest.into_iter().filter(|(l, _)| l.starts_with("layers/slope/")).collect::<Vec<_>>();
+        let made = |name: &str, way: &dyn Fn(&mut Out, (u32, u32), &[(u32, u32)])| {
+            let root = d.path().join(name);
+            copy_dir(&terrain, &root);
+            for (&q, ts) in &by_q {
+                way(&mut Out::open(&root, &d.path().join(format!("{name}-scratch"))).unwrap(), q, ts);
+            }
+            root
+        };
+        let v1 = made("v1", &|out, q, ts| {
+            area_v1(out, q, ts, &|_, _, _| {}).unwrap();
+        });
+        let area = made("area", &|out, q, ts| {
+            build_q(out, q, ts).unwrap();
+        });
+        let parts = made("parts", &|out, q, ts| {
+            for &t in ts {
+                build_piece(out, t, false, &|_, _, _| {}).unwrap();
+            }
+            build_lo(out, q, ts, &|_, _, _| {}).unwrap();
+        });
+        assert_eq!(slope(&v1).len(), by_q.values().map(Vec::len).sum::<usize>() + 2);
+        assert_eq!(slope(&area), slope(&v1), "the area runs as pieces and an assembly in memory");
+        assert_eq!(slope(&parts), slope(&v1), "the pieces' jobs and the assemblies'");
+        // A mid gone (a piece current without one): its tiles from the lo pack, the same lo pack.
+        let (&q, ts) = by_q.iter().next().unwrap();
+        let mut out = Out::open(&parts, &d.path().join("p2")).unwrap();
+        let before = out.manifest.clone();
+        out.remove(&mid_logical(ts[0].0, ts[0].1));
+        build_lo(&mut out, q, ts, &|_, _, _| {}).unwrap();
+        let lo = format!("layers/slope/lo/3-{}-{}", q.0, q.1);
+        assert_eq!(out.get(&lo), before.get(&lo).map(String::as_str));
+        // Made again expecting the same: its mid back, nothing else changed; a hi pack that isn't the
+        // manifest's: refused, nothing uploaded.
+        build_piece(&mut out, ts[0], true, &|_, _, _| {}).unwrap();
+        assert_eq!(out.manifest, before);
+        let hi = format!("layers/slope/hi/6-{}-{}", ts[0].0, ts[0].1);
+        out.manifest.insert(hi.clone(), format!("{hi}.0000000000000000.pack"));
+        out.remove(&mid_logical(ts[0].0, ts[0].1));
+        let e = build_piece(&mut out, ts[0], true, &|_, _, _| {}).unwrap_err().to_string();
+        assert!(e.contains(&hi) && e.contains("nothing uploaded"), "{e}");
+        assert!(out.get(&mid_logical(ts[0].0, ts[0].1)).is_none());
     }
 
     fn copy_dir(from: &std::path::Path, to: &std::path::Path) {
