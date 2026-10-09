@@ -61,6 +61,42 @@ function digest(b) {
   return `${fin(h1).toString(16)}.${fin(h2).toString(16)}`;
 }
 
+// A task's timings, as pipeline::timings records a job's (docs/formats.md, timings.jsonl): its
+// phases, each its wall time, class, spans, bytes and files (no CPU time: a page can't tell it),
+// with its done, which the coordinator keeps by this page's name. The same phases as a Mac's
+// `scenic run-task`: its files fetched, each program by its step, what they wrote sent back.
+class Timings {
+  constructor(kind, id) {
+    this.rec = { v: 1, kind, id, start: Math.floor(Date.now() / 1000), wall_s: 0, ok: true, untimed_s: 0, overhead_s: 0, phases: [] };
+    this.t0 = performance.now();
+  }
+  // Adds a span of `ms` to phase `name` of `cls` (with `bytes` and `files` moved).
+  add(name, cls, ms, bytes = 0, files = 0) {
+    let p = this.rec.phases.find((q) => q.name === name);
+    if (!p) this.rec.phases.push((p = { name, class: cls, wall_s: 0, n: 0, bytes: 0, files: 0 }));
+    p.wall_s += ms / 1000;
+    p.n += 1;
+    p.bytes += bytes;
+    p.files += files;
+  }
+  done() {
+    this.rec.wall_s = (performance.now() - this.t0) / 1000;
+    this.rec.untimed_s = Math.max(0, this.rec.wall_s - this.rec.phases.reduce((s, p) => s + p.wall_s, 0));
+    return this.rec;
+  }
+}
+
+// A task's kind, as pipeline::offload::task_kind names it.
+function taskKind(task) {
+  const first = task.runs[0] || {};
+  return first.prog === "bldtile" ? "bldtile" : first.what === "treeblock" ? "treeblock" : "tail";
+}
+
+// A step program's class, as pipeline::unit::program_class has it.
+function programClass(what) {
+  return what === "elevations (elev)" ? "mixed" : what === "land cover (landcover)" ? "net" : "compute";
+}
+
 function fill(v, places) {
   let out = v;
   for (const [k, p] of Object.entries(places)) if (p !== null) out = out.split(k).join(p);
@@ -69,6 +105,7 @@ function fill(v, places) {
 
 async function exec({ lease, task, mem_mb }) {
   const say = (state, frac) => postMessage({ state: `${task.unit}: ${state}`, frac });
+  const timings = new Timings(`task ${taskKind(task)}`, `task ${lease}`);
   const t0 = performance.now();
   // Its inputs, a few at a time.
   const files = [];
@@ -94,6 +131,7 @@ async function exec({ lease, task, mem_mb }) {
     }),
   );
   const fetchS = (performance.now() - t0) / 1000;
+  timings.add("its files fetched from the coordinator", "net", fetchS * 1000, got, task.inputs.length);
   const root = filesystem(files);
   files.length = 0;
   // What it reads where it lies (`/net`: the NAS's data and the data servers' files, through the
@@ -107,7 +145,12 @@ async function exec({ lease, task, mem_mb }) {
     if (args.includes(null)) throw new Error(`${r.what}: names a place this worker doesn't have`);
     const env = Object.fromEntries(r.env.map(([k, v]) => [k, fill(v, task.places)]).filter(([, v]) => v !== null));
     const held = bytes(root) / 1048576;
-    const res = run(await program(r.prog, task.version), args, env, root, mem_mb - held, net);
+    const tc = performance.now();
+    const module = await program(r.prog, task.version);
+    const tr = performance.now();
+    timings.add("the programs fetched and compiled", "net", tr - tc);
+    const res = run(module, args, env, root, mem_mb - held, net);
+    timings.add(r.what, programClass(r.what), performance.now() - tr);
     peak = Math.max(peak, res.mb + held);
     if (res.oom) {
       const e = new Error(`${r.what} ran out of memory at ${Math.round(res.mb + held)} MB`);
@@ -122,14 +165,18 @@ async function exec({ lease, task, mem_mb }) {
   const { written: all, removed } = changes(root, "u", task.inputs.map(([p]) => p));
   const written = all.filter(([path, data]) => !(sent.has(path) && sent.get(path) === digest(data)));
   const outputs = [];
+  const ts = performance.now();
+  let sentBytes = 0;
   for (const [i, [path, data]] of written.entries()) {
     say(`sending ${path}`, 0.9 + (0.1 * i) / written.length);
     const r = await fetch(`/work/out/${lease}/${path}`, { method: "PUT", headers: headers({ "Content-Type": "application/octet-stream" }), body: data });
     if (r.status === 410) throw new Error("taken back");
     if (!r.ok) throw new Error(`sending ${path}: ${r.status}`);
     outputs.push({ path, size: data.byteLength });
+    sentBytes += data.byteLength;
   }
-  const status = await post("/work/done", { worker, lease, outputs, removed, secs: runS, fetch_s: fetchS, peak_mb: Math.round(peak) });
+  timings.add("what they wrote sent back", "net", performance.now() - ts, sentBytes, outputs.length);
+  const status = await post("/work/done", { worker, lease, outputs, removed, secs: runS, fetch_s: fetchS, peak_mb: Math.round(peak), timings: timings.done() });
   if (status === 410) throw new Error("taken back");
   return { peak: Math.round(peak), runS };
 }

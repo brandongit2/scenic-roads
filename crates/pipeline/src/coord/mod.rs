@@ -474,7 +474,7 @@ pub struct Done {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub journaled: bool,
     /// Its run's timings (crate::timings), kept in `timings.jsonl` (an older worker sends none).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "crate::timings::lenient")]
     pub timings: Option<crate::timings::RunRec>,
 }
 
@@ -2158,9 +2158,16 @@ mod tests {
         assert_eq!(code, 200);
         let runs: Vec<RunRec> = serde_json::from_value(v["runs"].clone()).unwrap();
         assert_eq!(runs, kept[..1]);
-        // An older worker's done, without them: nothing kept, nothing refused.
+        // An older worker's done, without them, or one whose don't read: nothing kept, nothing refused.
         let body = serde_json::json!({ "worker": "m1", "lease": 999 });
         assert!(serde_json::from_value::<Done>(body).unwrap().timings.is_none());
+        let body = serde_json::json!({ "worker": "m1", "lease": 999, "timings": { "kind": 5 } });
+        assert!(serde_json::from_value::<Done>(body).unwrap().timings.is_none());
+        // A page's, as web/work/worker.js writes it (no CPU time).
+        let page = serde_json::json!({ "v": 1, "kind": "task tail", "id": "task 7", "start": 1, "wall_s": 9.5, "ok": true, "untimed_s": 0.5, "overhead_s": 0, "phases": [{ "name": "its files fetched from the coordinator", "class": "net", "wall_s": 2.0, "n": 1, "bytes": 1000, "files": 3 }, { "name": "elevations (elev)", "class": "mixed", "wall_s": 7.0, "n": 1, "bytes": 0, "files": 0 }] });
+        let d: Done = serde_json::from_value(serde_json::json!({ "worker": "ipad", "lease": 999, "timings": page })).unwrap();
+        let t = d.timings.unwrap();
+        assert_eq!((t.kind.as_str(), t.phases.len(), t.phases[1].class, t.phases[0].cpu_s), ("task tail", 2, crate::timings::Class::Mixed, None));
     }
 
     #[test]

@@ -656,6 +656,13 @@ pub fn job<T>(kind: &str, f: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Resu
     r
 }
 
+/// A record as another worker sent it (a page's, a helper's): None where it doesn't read, so a
+/// done is never refused for its timings.
+pub fn lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<RunRec>, D::Error> {
+    let v: Option<serde_json::Value> = Option::deserialize(d)?;
+    Ok(v.and_then(|v| serde_json::from_value(v).ok()))
+}
+
 /// Seconds, readably: "412 ms", "9.1 s", "12 min 3 s", "2 h 4 min".
 pub fn secs(s: f64) -> String {
     if s < 1.0 {
