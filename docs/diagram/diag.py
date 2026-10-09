@@ -269,14 +269,6 @@ figure{margin:0 0 18px}
 .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:12px}
 .scroll svg{display:block;width:100%;min-width:1180px;height:auto}
 figcaption{margin-top:8px;color:var(--muted);font-size:12.5px}
-.you{margin:0 0 16px;padding:12px 14px;border:1px solid var(--rule);border-radius:10px;background:var(--surface)}
-.you h3{font:600 10.5px/1 var(--sans);letter-spacing:.08em;color:var(--faint);text-transform:uppercase;margin:0 0 10px}
-.you-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
-.you-grid>div{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border-radius:8px;background:color-mix(in srgb,var(--fg) 5%,var(--surface))}
-.you code{font:500 13px var(--mono);color:var(--fg)}
-.you-grid span{color:var(--muted);font-size:13px}
-.you p{margin:10px 0 0;color:var(--muted);font-size:12.5px}
-.you p code{font-size:12px}
 figure h3{font:600 10.5px/1 var(--sans);letter-spacing:.08em;color:var(--faint);text-transform:uppercase;margin:0 0 8px}
 @media (max-width:760px){.legend .cols2{grid-template-columns:1fr}.legend li{white-space:normal;align-items:flex-start}.legend li>svg,.legend .dot{margin-top:2px}}
 .c-base{--k:var(--c-base)}.c-place{--k:var(--c-place)}.c-terr{--k:var(--c-terr)}.c-net{--k:var(--c-net)}
