@@ -208,7 +208,7 @@ struct DemRange {
 /// On the NAS a file is read in a few large reads where reading it whole moved hundreds of MB that
 /// the box doesn't need (a unit's neighbours to the east and west).
 fn dem_range(p: &Path, b: [i32; 4]) -> std::io::Result<Option<DemRange>> {
-    use std::os::unix::fs::FileExt;
+    use store::sys::PosIo;
     let f = std::fs::File::open(p)?;
     let len = f.metadata()?.len();
     let mut head = [0u8; DEM_HEAD];

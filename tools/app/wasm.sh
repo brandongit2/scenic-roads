@@ -16,5 +16,14 @@ export CC_wasm32_wasip1=$llvm/clang AR_wasm32_wasip1=$llvm/llvm-ar CFLAGS_wasm32
 # fails cleanly (docs/workers.md §6).
 export CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS="-C link-arg=--import-memory"
 progs=(extract tile scenic-metrics areaflags elev landcover trees bldtile)
-cargo build --release --target wasm32-wasip1 -p pipeline ${progs/#/--bin=} 2>&1 | tail -1
+# (Its whole output kept, ~/Library/Logs/scenic/wasm-<time>.log; shown: the last line, or on
+# standard error the errors.)
+mkdir -p ~/Library/Logs/scenic
+wasm_log=~/Library/Logs/scenic/wasm-$(date +%Y%m%d-%H%M%S).log
+if ! cargo build --release --target wasm32-wasip1 -p pipeline ${progs/#/--bin=} > $wasm_log 2>&1; then
+  grep -A12 '^error' $wasm_log | head -80 >&2
+  echo "WebAssembly build failed; its whole output: $wasm_log" >&2
+  exit 1
+fi
+tail -1 $wasm_log
 for p in $progs; do ls -l target/wasm32-wasip1/release/$p.wasm; done
