@@ -101,6 +101,7 @@ fn copy_atomic(src: &Path, dst: &Path) -> Result<u64> {
     let tmp = dst.with_extension("tmp");
     let n = store::sys::copy_data(src, &tmp).with_context(|| format!("copy {} to {}", src.display(), tmp.display()))?;
     std::fs::rename(&tmp, dst)?;
+    crate::timings::count(n, 1);
     Ok(n)
 }
 
@@ -116,11 +117,20 @@ fn write_atomic(dst: &Path, bytes: &[u8]) -> Result<()> {
 pub fn run(root: &Path, local: Option<&Path>, today: &str, keep_days: u64) -> Result<Report> {
     let dir = root.join("state/backups");
     let blobs = dir.join("blobs");
+    use crate::timings::{phase, Class};
     std::fs::create_dir_all(&blobs)?;
-    let prev = latest(&dir).map(|(_, m)| m).unwrap_or_default();
+    let prev = {
+        let _p = phase("last backup read", Class::NasRead);
+        latest(&dir).map(|(_, m)| m).unwrap_or_default()
+    };
     let mut rep = Report::default();
     let mut now: Manifest = BTreeMap::new();
-    let files = scan(root, &prev)?;
+    let files = {
+        let _p = phase("folders scanned", Class::NasRead);
+        scan(root, &prev)?
+    };
+    // (Each changed file copied into the blobs and hashed there: the NAS read and written.)
+    let copying = phase("changed files copied", Class::NasWrite);
     let (n, mut said) = (files.len() as u64, std::time::Instant::now());
     for (k, (rel, p, size, mtime, known)) in files.into_iter().enumerate() {
         // (How far it is, for the status, at most once a second.)
@@ -135,6 +145,7 @@ pub fn run(root: &Path, local: Option<&Path>, today: &str, keep_days: u64) -> Re
                 // up under another content's name.
                 let tmp = blobs.join(format!(".incoming-{}.tmp", std::process::id()));
                 let n = store::sys::copy_data(&p, &tmp).with_context(|| format!("copy {}", p.display()))?;
+                copying.count(n, 1);
                 let h = store::naming::hash16_file(&tmp)?;
                 let dst = blobs.join(&h);
                 if dst.exists() {
@@ -149,15 +160,21 @@ pub fn run(root: &Path, local: Option<&Path>, today: &str, keep_days: u64) -> Re
         };
         now.insert(rel, Entry { size, mtime, blob });
     }
+    drop(copying);
     rep.files = now.len();
     if now != prev {
+        let _p = phase("day's list written", Class::NasWrite);
         write_atomic(&dir.join(format!("{today}.json")), &serde_json::to_vec_pretty(&now)?)?;
         rep.written = Some(today.to_string());
     }
-    let (d, b) = prune(&dir, today, keep_days)?;
+    let (d, b) = {
+        let _p = phase("old days pruned", Class::NasWrite);
+        prune(&dir, today, keep_days)?
+    };
     rep.days_removed = d;
     rep.blobs_removed = b;
     if let Some(l) = local {
+        let _p = phase("mirrored to this Mac", Class::Disk);
         mirror(&dir, l, today, keep_days)?;
     }
     Ok(rep)

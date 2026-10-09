@@ -473,6 +473,9 @@ pub struct Done {
     /// ends and its targets are kept out of offers, but nothing is journaled here.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub journaled: bool,
+    /// Its run's timings (crate::timings), kept in `timings.jsonl` (an older worker sends none).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timings: Option<crate::timings::RunRec>,
 }
 
 /// Work failed: why, and for a task out of memory, the peak it reached (MB).
@@ -699,6 +702,12 @@ impl Coordinator {
         }
     }
 
+    /// A job's timings (crate::timings), kept with the build's (`timings.jsonl`).
+    pub fn add_timings(&self, rec: &crate::timings::RunRec) {
+        let dir = self.shared.lock().unwrap().dir.clone();
+        keep_timings(&dir, rec);
+    }
+
     /// What this Mac's job's units cost (measured here).
     pub fn add_costs(&self, costs: &[(String, Cost)]) {
         self.add_costs_by(costs, &self.me.clone());
@@ -880,6 +889,13 @@ fn app_when(v: &str) -> String {
 }
 
 /// A worker's name as a folder name.
+/// Keeps `rec` in the coordinator's `dir`'s timings log.
+fn keep_timings(dir: &Path, rec: &crate::timings::RunRec) {
+    if let Err(e) = crate::timings::append(&dir.join("timings.jsonl"), rec) {
+        eprintln!("coordinator: keeping a run's timings: {e}");
+    }
+}
+
 pub fn folder(w: &str) -> String {
     w.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
@@ -1188,6 +1204,11 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             if let Some(n) = own_name(&d.worker) {
                 (d.worker, d.peak_mb, d.secs) = (n, d.peak_mb.min(DEVICE_MB), d.secs.clamp(0.0, 86400.0));
             }
+            // Its timings kept, whatever became of its lease (by who ran it, as the lease says).
+            if let Some(t) = d.timings.take() {
+                let dir = shared.lock().unwrap().dir.clone();
+                keep_timings(&dir, &crate::timings::RunRec { host: d.worker.clone(), ..t });
+            }
             let mut s = shared.lock().unwrap();
             let Some(l) = s.leases.get(d.lease, &d.worker, now).cloned() else {
                 // Its work was offered again (or done by another): this one's hand-off is dropped,
@@ -1404,6 +1425,14 @@ fn route(path: &str, body: &[u8], shared: &Mutex<Shared>, journal: &Path, caller
             let max = b["max"].as_u64().map_or(500, |m| m.min(5000)) as usize;
             let s = shared.lock().unwrap();
             Ok((200, serde_json::json!({ "seq": s.history.seq(), "events": s.history.since(since, max) })))
+        }
+        "/work/timings" => {
+            // The runs' timings kept (crate::timings), the last `last` of each kind (or of `kind`):
+            // `scenic timings` on another Mac.
+            let b: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
+            let last = b["last"].as_u64().map_or(20, |m| m.min(500)) as usize;
+            let dir = shared.lock().unwrap().dir.clone();
+            Ok((200, serde_json::json!({ "runs": crate::timings::last_runs(&crate::timings::read_log(&dir.join("timings.jsonl")), b["kind"].as_str(), last) })))
         }
         p if p.starts_with("/task/") && !local => anyhow::bail!("{p} is for this Mac's jobs"),
         "/task/offer" => {
@@ -1644,6 +1673,7 @@ mod http {
             .route("/work/status", any(json))
             .route("/work/swarm", any(json))
             .route("/work/history", any(json))
+            .route("/work/timings", any(json))
             .route("/work/in/{lease}/{*path}", get(input))
             .route("/work/net/{lease}/{*path}", get(net))
             .route("/work/out/{lease}/{*path}", put(output))
@@ -2109,6 +2139,28 @@ mod tests {
         let fit = &m1["fit"][0];
         assert_eq!((fit["offered"].as_u64(), fit["done"].as_u64(), fit["too_big"].as_u64(), fit["fits"].as_u64()), (Some(3), Some(1), Some(1), Some(1)));
         assert!(sw["tasks"].is_object() && sw["leases"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_runs_timings_come_with_its_hand_off_and_are_read_from_another_mac() {
+        use crate::timings::{PhaseRec, RunRec};
+        let (d, c, w) = start();
+        c.offer_units("2026-09-28", vec![("6/1/1".into(), "k1".into(), 100 << 20)]);
+        let g = w.ask(&ask(4096)).unwrap().unwrap();
+        let run = |kind: &str, host: &str| RunRec { v: 1, kind: kind.into(), host: host.into(), wall_s: 10.0, ok: true, phases: vec![PhaseRec { name: "records read".into(), wall_s: 1.0, n: 1, ..Default::default() }], ..Default::default() };
+        // A helper's, with its hand-off (its host as its lease says, whatever it said); this Mac's own.
+        assert_eq!(w.done(&Done { lease: g.lease, handoff: Some(handoff(&[("6/1/1", "k1")])), timings: Some(run("unit", "someone")), ..Default::default() }).unwrap(), client::Handed::Taken);
+        c.add_timings(&run("gc", "m4"));
+        let kept = crate::timings::read_log(&d.path().join("coord/timings.jsonl"));
+        assert_eq!(kept.iter().map(|r| (r.kind.as_str(), r.host.as_str())).collect::<Vec<_>>(), [("unit", "m1"), ("gc", "m4")]);
+        // Asked from another Mac: a kind's last runs.
+        let (code, v) = w.post_json("/work/timings", &serde_json::json!({ "kind": "unit", "last": 5 })).unwrap();
+        assert_eq!(code, 200);
+        let runs: Vec<RunRec> = serde_json::from_value(v["runs"].clone()).unwrap();
+        assert_eq!(runs, kept[..1]);
+        // An older worker's done, without them: nothing kept, nothing refused.
+        let body = serde_json::json!({ "worker": "m1", "lease": 999 });
+        assert!(serde_json::from_value::<Done>(body).unwrap().timings.is_none());
     }
 
     #[test]

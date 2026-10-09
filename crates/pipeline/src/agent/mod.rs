@@ -350,6 +350,14 @@ pub struct WorkerView {
     pub bad: bool,
 }
 
+/// A helper's job's timings' record, in its outbox folder (`SCENIC_TIMINGS`).
+const TIMINGS_FILE: &str = "timings.json";
+
+/// The timings' record a helper's job left in its folder `dir`, for its hand-off.
+fn read_timings(dir: &Path) -> Option<crate::timings::RunRec> {
+    std::fs::read(dir.join(TIMINGS_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok())
+}
+
 /// What a unit job's units cost (`SCENIC_COSTS`: a JSON line per unit).
 fn read_costs(p: &Path) -> Vec<(String, crate::coord::Cost)> {
     let Ok(s) = std::fs::read_to_string(p) else { return Vec::new() };
@@ -1044,7 +1052,7 @@ impl Agent {
                             h.checked.retain(|c| pending.contains_key(c));
                         }
                         let costs = read_costs(&d.join("costs.jsonl"));
-                        client.done(&crate::coord::Done { lease, handoff: Some(h), costs, failed: r["failed"].as_bool() == Some(true), ..Default::default() })
+                        client.done(&crate::coord::Done { lease, handoff: Some(h), costs, failed: r["failed"].as_bool() == Some(true), timings: read_timings(&d), ..Default::default() })
                     }
                     _ => {
                         let why = match &result {
@@ -1212,7 +1220,7 @@ impl Agent {
                 }
                 let s = |p: &Path| p.to_string_lossy().into_owned();
                 // The build Mac's own command for it, its saves handed off (SCENIC_HANDOFF).
-                let mut cmd = vec!["/usr/bin/env".to_string(), format!("SCENIC_HANDOFF={}", dir.display()), format!("SCENIC_COSTS={}", dir.join("costs.jsonl").display())];
+                let mut cmd = vec!["/usr/bin/env".to_string(), format!("SCENIC_HANDOFF={}", dir.display()), format!("SCENIC_COSTS={}", dir.join("costs.jsonl").display()), format!("{}={}", crate::timings::TIMINGS_ENV, dir.join(TIMINGS_FILE).display())];
                 cmd.extend([s(&self.o.bin.join("scenic-build")), step.clone(), "--root".into(), s(root), "--scratch".into(), s(&self.o.home.join("scratch").join(&step))]);
                 cmd.extend(targets.iter().map(|t| t.0.clone()));
                 cmd.extend(self.step_args(&step, &pass));
@@ -1355,7 +1363,7 @@ impl Agent {
                     // built.)
                     let failed = outcome == Outcome::Failed;
                     let r = match entry.as_ref().filter(|e| e.handoff.done.is_some()) {
-                        Some(e) => c.done(&crate::coord::Done { lease: id, handoff: Some(e.handoff.clone()), costs, failed, journaled: true, ..Default::default() }).map(|_| ()),
+                        Some(e) => c.done(&crate::coord::Done { lease: id, handoff: Some(e.handoff.clone()), costs, failed, journaled: true, timings: read_timings(&dir), ..Default::default() }).map(|_| ()),
                         None if matches!(outcome, Outcome::Paused | Outcome::Interrupted) => c.give_back(id, note),
                         None => c.fail(id, note, None),
                     };
@@ -1483,6 +1491,33 @@ impl Agent {
 
     fn record_path(&self, k: usize) -> PathBuf {
         self.o.home.join(if k == 0 { "job.json" } else { "job-2.json" })
+    }
+
+    /// Where slot `k`'s job leaves its timings' record (`SCENIC_TIMINGS`).
+    fn timings_path(&self, k: usize) -> PathBuf {
+        self.o.home.join(if k == 0 { "timings-run.json" } else { "timings-run-2.json" })
+    }
+
+    /// Slot `k`'s ended job's timings (crate::timings): kept in this Mac's log (`timings.jsonl`),
+    /// and in the build's, its coordinator's (`coord/timings.jsonl`), here; a helper's go with its
+    /// hand-off (`send_outbox`, `end_lease`), from its folder.
+    fn take_timings(&self, k: usize) {
+        let handed = match &self.slots[k].lease {
+            Some(Held::Leased { dir, .. } | Held::Pooled { dir, own: false, .. }) => Some(dir.join(TIMINGS_FILE)),
+            _ => None,
+        };
+        let rec = match &handed {
+            // (Read, not taken: it goes with the hand-off.)
+            Some(_) => handed.as_deref().and_then(|p| p.parent()).and_then(read_timings).map(|r| crate::timings::RunRec { host: self.worker_of(k), ..r }),
+            None => crate::timings::take_record(&self.timings_path(k), &self.worker_of(k)),
+        };
+        let Some(rec) = rec else { return };
+        if let Err(e) = crate::timings::append(&self.o.home.join("timings.jsonl"), &rec) {
+            eprintln!("agent: keeping a job's timings: {e}");
+        }
+        if let (Some(c), None) = (&self.coord, &handed) {
+            c.add_timings(&rec);
+        }
     }
 
     /// Where slot `k`'s job notes what its units cost (`SCENIC_COSTS`).
@@ -2085,6 +2120,7 @@ impl Agent {
             if self.pool.is_some() && ok && matches!(step.as_str(), "catalog" | "catalog-held") {
                 self.end_round();
             }
+            self.take_timings(k);
             self.end_lease(k, outcome, &handed, &note);
             self.finished(&id, &what, ok || paused, secs, note);
             self.slots[k].drain_since = None;
@@ -3029,6 +3065,12 @@ impl Agent {
         self.slots[k].drain_since = None;
         env.push((crate::control::CONTROL_ENV.into(), control.to_string_lossy().into_owned()));
         env.push((crate::control::DONE_ENV.into(), done.to_string_lossy().into_owned()));
+        // Where it leaves its timings' record (crate::timings; a helper's leased job: its outbox
+        // folder, in its command), taken in as it ends (`take_timings`).
+        let timings = self.timings_path(k);
+        std::fs::remove_file(&timings).ok();
+        env.push((crate::timings::TIMINGS_ENV.into(), timings.to_string_lossy().into_owned()));
+        env.push((crate::timings::JOB_ID_ENV.into(), spec.id.clone()));
         let env: Vec<(&str, &str)> = env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let (step, targets) = spec.record.as_ref().map_or((spec.id.split(' ').next().map(str::to_string), Vec::new()), |w| (Some(w.step.clone()), w.targets.iter().map(|t| t.0.clone()).collect()));
         let what = spec.what.clone();
@@ -4895,7 +4937,9 @@ mod tests {
         // The build Mac's own command for slope, its saves handed off to its lease's outbox.
         assert_eq!(j.id, "slope 3/2/2");
         assert!(j.cmd[1].starts_with("SCENIC_HANDOFF=") && j.cmd[2].starts_with("SCENIC_COSTS="));
-        assert_eq!(&j.cmd[3..6], ["/app/scenic-build", "slope", "--root"]);
+        // (Its timings' record in its folder too, to go with its hand-off.)
+        assert!(j.cmd[3].starts_with("SCENIC_TIMINGS=") && j.cmd[3].ends_with("/timings.json"));
+        assert_eq!(&j.cmd[4..7], ["/app/scenic-build", "slope", "--root"]);
         assert!(j.cmd.contains(&"3/2/2".to_string()));
         assert_eq!(j.record.as_ref().map(|r| r.step.as_str()), Some("slope"));
         assert!(j.what.contains("for the build Mac"), "{}", j.what);

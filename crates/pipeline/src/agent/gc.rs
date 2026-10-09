@@ -39,6 +39,7 @@ pub struct Report {
 const NEVER: [&str; 7] = ["translations", "descriptions", "inputs", "state", "app", "nas", "sources"];
 
 pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
+    use crate::timings::{phase, Class};
     let keep = Duration::from_secs(keep_days * 86400);
     let now = SystemTime::now();
     let old = |t: SystemTime| now.duration_since(t).is_ok_and(|d| d > keep);
@@ -46,6 +47,7 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
 
     // Catalogs: the newest always, and every one of the last `keep_days`.
     let cat_dir = root.join("catalog");
+    let read = phase("catalogs read", Class::NasRead);
     let ns = if cat_dir.exists() { store::catalog::list(&cat_dir).context("list catalogs")? } else { Vec::new() };
     // Before the first catalog there's nothing to keep track of, so nothing is removed.
     let Some(&latest) = ns.iter().max() else { return Ok(rep) };
@@ -63,18 +65,25 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
         }
         // A catalog in the window that can't be read stops the sweep: its files might be in use.
         let cat = store::catalog::read(&p).with_context(|| format!("read {}", p.display()))?;
+        read.count(std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0), 1);
         referenced.extend(cat.files.values().map(|f| f.file.clone()));
         rep.catalogs_kept += 1;
     }
     // The build's manifest: everything a build has uploaded and may publish next (work in flight,
     // and outputs reused by name). Unreadable, nothing is removed.
     // (Not `exists()`: it's false on an I/O error too, and then the manifest's files would go.)
-    let m: std::collections::BTreeMap<String, String> = crate::out::read_record(&root.join("state/build/manifest.json")).context("the build manifest")?;
+    drop(read);
+    let m: std::collections::BTreeMap<String, String> = {
+        let _p = phase("build manifest read", Class::NasRead);
+        crate::out::read_record(&root.join("state/build/manifest.json")).context("the build manifest")?
+    };
     referenced.extend(m.into_values());
     rep.referenced = referenced.len();
     let tops: BTreeSet<String> = referenced.iter().filter_map(|f| f.split('/').next()).filter(|t| !NEVER.contains(t)).map(str::to_string).collect();
 
     crate::agent::jobs::stage(1, 2, "steps (sweeping the folders)");
+    // (Listing the folders and removing what's due, file by file: one phase, the removals counted.)
+    let sweep = phase("folders swept", Class::NasWrite);
     for (k, top) in tops.iter().enumerate() {
         crate::agent::jobs::within(k as f64 / tops.len() as f64);
         let mut stack = vec![root.join(top)];
@@ -109,11 +118,14 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
                 remove(&p, dry_run)?;
                 rep.removed += 1;
                 rep.removed_bytes += md.len();
+                sweep.count(md.len(), 1);
             }
         }
     }
+    drop(sweep);
     // Retired passes' sources: passes older than the newest complete one.
     if let Some(latest) = crate::osmpass::latest_pass(root) {
+        let _p = phase("retired passes swept", Class::NasWrite);
         // When the newest pass completed (its summary's time): a retired pass's plain files (the
         // planet download) go once that's `keep_days` ago, so a fresh pass can still be compared.
         let done_at = std::fs::read_dir(root.join("sources/osm").join(&latest))
@@ -131,6 +143,7 @@ pub fn run(root: &Path, keep_days: u64, dry_run: bool) -> Result<Report> {
             }
         }
     }
+    let _p = phase("old catalogs removed", Class::NasWrite);
     for p in drop_cats {
         remove(&p, dry_run)?;
         rep.catalogs_removed += 1;
@@ -159,6 +172,7 @@ fn sweep_retired(root: &Path, dir: &Path, referenced: &BTreeSet<String>, old: &d
             let due = if named { !referenced.contains(&rel) && old(md.modified().unwrap_or(SystemTime::now())) } else { plain_due };
             if due {
                 remove(&p, dry_run)?;
+                crate::timings::count(md.len(), 1);
                 rep.removed += 1;
                 rep.removed_bytes += md.len();
                 rep.retired_removed += 1;

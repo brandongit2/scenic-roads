@@ -38,6 +38,11 @@
 //!                                       how it stands
 //!   scenic gc [--dry-run] [--days 14]   remove replaced files from the NAS (the agent runs it daily)
 //!   scenic backup [--local <dir>]       back up the user's folders (the agent runs it daily)
+//!   scenic timings [<kind>] [--last N] [--host <mac>] [--here | --file <f>] [--json]  the jobs'
+//!                                       timings (pipeline::timings): each kind's phases over its
+//!                                       last N runs (20), with their totals and shares; the
+//!                                       build's (its coordinator's log, asked of it from another
+//!                                       Mac), or with --here this Mac's own jobs' alone
 //!
 //! `--root <dir>` points at the NAS project folder (default: the mounted share).
 
@@ -74,6 +79,50 @@ fn ago(t: u64) -> String {
         5400..=129599 => format!("{} h ago", s / 3600),
         _ => format!("{} days ago", s / 86400),
     }
+}
+
+/// `scenic timings`: the jobs' phases, summed by kind (pipeline::timings::summary).
+fn timings(args: &[String]) -> Result<()> {
+    use pipeline::timings::{read_log, summary, summary_text, RunRec};
+    let kind = args.get(2).filter(|a| !a.starts_with("--")).map(String::as_str);
+    let last: usize = opt(args, "--last").map(|n| n.parse()).transpose()?.unwrap_or(20);
+    let home = opt(args, "--home").map(PathBuf::from).unwrap_or_else(|| app_home().join("agent"));
+    // The build's log: this Mac's coordinator's, else the coordinator's answer; --here, this Mac's
+    // own jobs'.
+    let (runs, from): (Vec<RunRec>, String) = if let Some(f) = opt(args, "--file") {
+        (read_log(Path::new(&f)), f)
+    } else if flag(args, "--here") {
+        (read_log(&home.join("timings.jsonl")), "this Mac's jobs".into())
+    } else if home.join("coord/timings.jsonl").exists() {
+        (read_log(&home.join("coord/timings.jsonl")), "the build's jobs (this Mac's coordinator)".into())
+    } else {
+        let asked = (|| -> Result<Vec<RunRec>> {
+            let root = root(args, false)?;
+            let c = pipeline::coord::client::Client::from_nas(&root, &agent::cond::host_name())?.context("no coordinator to ask")?;
+            let (code, v) = c.post_json("/work/timings", &serde_json::json!({ "kind": kind, "last": last }))?;
+            anyhow::ensure!(code == 200, "the coordinator answered {code} (an older app?)");
+            Ok(serde_json::from_value(v["runs"].clone())?)
+        })();
+        match asked {
+            Ok(r) => (r, "the build's jobs (asked of its coordinator)".into()),
+            Err(e) => {
+                eprintln!("(the build's coordinator can't be asked: {e:#}; this Mac's jobs alone)");
+                (read_log(&home.join("timings.jsonl")), "this Mac's jobs".into())
+            }
+        }
+    };
+    let sums = summary(&runs, kind, last, opt(args, "--host").as_deref());
+    if flag(args, "--json") {
+        println!("{}", serde_json::to_string_pretty(&sums)?);
+        return Ok(());
+    }
+    if sums.is_empty() {
+        println!("no timings yet ({from}{})", kind.map(|k| format!(", kind {k}")).unwrap_or_default());
+        return Ok(());
+    }
+    println!("Timings of {from}, the last {last} runs of each kind (CPU/wall marked ~: approximate, the phase overlapped another thread's work)\n");
+    print!("{}", summary_text(&sums));
+    Ok(())
 }
 
 /// `scenic lead`: the pool's lead as this Mac's agent sees it; an ask of it, followed until it's
@@ -523,17 +572,18 @@ fn main() -> Result<()> {
         "room" => room(&args),
         "gc" => {
             let days: u64 = opt(&args, "--days").map(|d| d.parse()).transpose()?.unwrap_or(14);
-            let r = gc::run(&root(&args, true)?, days, flag(&args, "--dry-run"))?;
+            let r = pipeline::timings::job("gc", || gc::run(&root(&args, true)?, days, flag(&args, "--dry-run")))?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
         "backup" => {
             let local = opt(&args, "--local").map(PathBuf::from);
             let today = backup::format_day(std::time::SystemTime::now());
-            let r = backup::run(&root(&args, true)?, local.as_deref(), &today, 30)?;
+            let r = pipeline::timings::job("backup", || backup::run(&root(&args, true)?, local.as_deref(), &today, 30))?;
             println!("{}", serde_json::to_string_pretty(&r)?);
             Ok(())
         }
-        c => bail!("unknown command {c:?}: status, add, remove, agent, pause, resume, clean, room, gc, backup"),
+        "timings" => timings(&args),
+        c => bail!("unknown command {c:?}: status, add, remove, agent, pause, resume, clean, room, gc, backup, timings"),
     }
 }
