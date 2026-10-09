@@ -3,6 +3,7 @@
 //! share, the per-Mac mirror and PMTiles reading.
 
 pub mod blobs;
+pub mod cachefile;
 pub mod catalog;
 pub mod iopool;
 pub mod mirror;
