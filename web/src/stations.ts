@@ -1,4 +1,4 @@
-// Rail stops on the map (dem/stations.py): a dot per stop of a passenger line, shown once its
+// Rail stops on the map (pipeline::stations): a dot per stop of a passenger line, shown once its
 // lines' stop spacing spans STOP_PX on screen and sized by it, so intercity stations show from far
 // out and large, metro and tram stops only close in and small (raildraw.ts stopFactor; the rail
 // card's stop size and size contrast scale it); shown with the rail layer and its group toggles,

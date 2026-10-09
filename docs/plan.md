@@ -1102,8 +1102,7 @@ they treat any raster.
 The unit job runs today's steps on a unit-sized folder, wiped at each run:
 1. **extract:** on U's piece, U's ways that touch the coverage, by today's rules. Rail tracks without
    a route relation are kept by type.
-2. **Elevations:** `elev` (`pipeline::dem`: `dem/sample.py`'s port, the same bytes but where a
-   source needs a projection, within 3.1e-5 m), DEMs by location, on U's slice of the per-vertex DEM
+2. **Elevations:** `elev` (`pipeline::dem`), DEMs by location, on U's slice of the per-vertex DEM
    cache (the seed, and the units' kept samples, which win); FABDEM's tiles from the NAS (`sources/fabdem/`, each
    copied there from Bristol's zips once). U's samples are kept afterwards for its later runs and
    its neighbours'.

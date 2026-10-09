@@ -1,4 +1,4 @@
-//! Elevations at every road vertex from national DEMs: dem/sample.py's port (the `elev` program),
+//! Elevations at every road vertex from national DEMs: the `elev` program,
 //! its command line and outputs, so a unit's build can run anywhere (docs/workers.md).
 //!
 //! Priority per vertex (the first source with valid data wins; the numbers are `src.u8`'s codes):
@@ -181,7 +181,7 @@ fn crs_of(t: &Tiff) -> Result<Crs> {
     })
 }
 
-/// The run's settings: sample.py's arguments and environment.
+/// The run's settings: the `elev` program's arguments and environment.
 pub struct Config {
     pub build: PathBuf,
     /// Threads reading DEM blocks (they mostly wait on the servers).

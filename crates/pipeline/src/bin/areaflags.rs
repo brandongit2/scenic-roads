@@ -1,5 +1,5 @@
 //! A unit's area flags (`grid.areas.u8`) on its own z11 grid (`grid.idx`), from the flagged
-//! polygons near it: the same bytes as dem/areaflags.py (pipeline::areaflags).
+//! polygons near it: pipeline::areaflags.
 //!
 //! usage: areaflags <unit_dir> <area-shapes.geojsonseq>
 

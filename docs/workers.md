@@ -19,7 +19,7 @@ work that fits, does it, and hands it back.
   at any thread count. Results can then be re-run anywhere and checked by running them twice.
 
 **Measured:** in the build Mac's dense units of 2026-10-04, the Rust steps were 18% of a unit's wall
-time and elevation sampling (`sample.py`) 39%; the rest was staging from packs, the DEM cache slice
+time and elevation sampling (then in Python) 39%; the rest was staging from packs, the DEM cache slice
 and copies to and from the NAS. A dense unit's tail after its canopy step (view, buildings, flags)
 is 15–20% of its time. So the data plane came first, and paid off on the Macs before any browser.
 

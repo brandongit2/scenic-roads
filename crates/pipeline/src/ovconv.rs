@@ -602,7 +602,7 @@ fn station_feature(lon: f64, lat: f64, props: &serde_json::Map<String, Value>) -
     Feature { id: 0, geom: Geom::Points(vec![[lon, lat]]), props: mvt, minzoom }
 }
 
-/// A stop's properties as the map reads them (stations.py's: n, g, m, sp rounded, mz to 2 places,
+/// A stop's properties as the map reads them (n, g, m, sp rounded, mz to 2 places,
 /// en where OSM's English differs).
 pub fn station_props(s: &crate::stations::Stop) -> serde_json::Map<String, Value> {
     let mut p = serde_json::Map::new();

@@ -1,5 +1,4 @@
-//! A raster sampled at points, as sample.py's `sample_raster` and `bilinear` sampled it, to the
-//! bit: points grouped by 512-pixel block (whatever the file's own tiling), each block read whole,
+//! A raster sampled at points, to the bit as the DEM cache's samples were made: points grouped by 512-pixel block (whatever the file's own tiling), each block read whole,
 //! nodata marked, and a bilinear sample in 32-bit floats in numpy's order of operations, edges
 //! clamping to the block's, falling back to the nearest pixel where a neighbour has no data.
 

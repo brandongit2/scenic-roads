@@ -1,5 +1,5 @@
-//! Land cover on the z11 analysis grid (`grid.idx`) from ESA WorldCover 2021 (10 m): dem/landcover.py's
-//! port (the `landcover` program). WorldCover's 1/4 overview (~40 m) is read over each grid tile
+//! Land cover on the z11 analysis grid (`grid.idx`) from ESA WorldCover 2021 (10 m): the
+//! `landcover` program. WorldCover's 1/4 overview (~40 m) is read over each grid tile
 //! and sampled at the cells' centres (the pixel they fall in); its classes collapse to
 //! `roadcore::grid::class`: 1 trees (and mangroves), 2 shrub, 3 open (grass, crop, bare,
 //! moss/lichen), 4 built-up, 5 water, 6 herbaceous wetland, 7 snow/ice, 0 no data.
@@ -126,7 +126,7 @@ fn count(cells: &[u8], counts: &mut Counts) {
     }
 }
 
-/// The classes' shares, as landcover.py printed them.
+/// The classes' shares, printed.
 pub fn report(counts: &Counts) {
     let names = ["none", "trees", "shrub", "open", "built", "water", "wetland", "snow"];
     let tot = counts.iter().sum::<u64>().max(1);

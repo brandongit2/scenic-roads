@@ -319,10 +319,10 @@ The build Mac's agent (`scenic agent`, `crates/pipeline/src/agent`) builds the m
    | Step | What it does |
    |---|---|
    | `extract` | Roads and passenger rail, access rules, densification (8 m in North America and Japan, 15 m elsewhere), scenic routes, route-network codes and line colours; each rail track's primary route relation (the service that names it, which the Rail lines and Rides lists open on OSM). |
-   | `elev` | DEM sampling by location, from a per-vertex cache of today's samples and of what each area sampled on its last run (`cache/dem-units/` on the NAS) (`dem/sample.py`'s port). |
+   | `elev` | DEM sampling by location, from a per-vertex cache of today's samples and of what each area sampled on its last run (`cache/dem-units/` on the NAS) |
    | `tile … elev` | Elevation clean-up and grade (`final.u16`: decimetres + 5,000, so −500 to 6,053.5 m), which the scenic samples need. |
-   | `areaflags` | The designated areas rasterised onto the area's grid (`dem/areaflags.py`'s port). |
-   | `landcover` | WorldCover classes for the grid tiles the packs lack (`dem/landcover.py`'s port). |
+   | `areaflags` | The designated areas rasterised onto the area's grid |
+   | `landcover` | WorldCover classes for the grid tiles the packs lack |
    | `scenic prep` | 100 m samples and drape heights. |
    | `scenic canopy` | Near-field horizons from Meta's 10° canopy files. |
    | `scenic view` | 32-ray far-field viewsheds (roads and rail). |

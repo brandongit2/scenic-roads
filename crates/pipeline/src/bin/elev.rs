@@ -1,5 +1,5 @@
-//! Elevations at every road vertex from national DEMs (`pipeline::dem`): dem/sample.py's port, its
-//! command line and outputs (elev.f32, src.u8, dem-stats.json, the cache's dem-cache.*).
+//! Elevations at every road vertex from national DEMs (`pipeline::dem`): its
+//! outputs (elev.f32, src.u8, dem-stats.json, the cache's dem-cache.*).
 //!
 //! usage: elev <build_dir> [--workers N] [--cache DIR] [--no-cache]
 //!

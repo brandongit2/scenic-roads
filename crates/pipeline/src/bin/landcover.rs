@@ -1,5 +1,5 @@
 //! Land cover on the z11 analysis grid from ESA WorldCover (`pipeline::landcover`):
-//! dem/landcover.py's port, its command line and output (grid.class.u8).
+//! its command line and output (grid.class.u8).
 //!
 //! usage: landcover <build_dir> [--workers N] [--only <slots.u32>]
 //!

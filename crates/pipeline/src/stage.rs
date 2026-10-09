@@ -214,7 +214,7 @@ pub fn stage(src: &Source, b: [f64; 4], dir: &Path) -> Result<Staged> {
     }
     write_file(dir, "grid.terrain.i16", bytemuck::cast_slice(&terr))?;
     st.grids.push("terrain".into());
-    // (The area flags are rasterised per unit: crate::heritage, areaflags.py.)
+    // (The area flags are rasterised per unit: crate::heritage, crate::areaflags.)
     for var in ["class", "canopy", "cover"] {
         let mut l = LayerReader::new(src, &format!("grid-{var}"));
         let mut data = vec![0u8; tiles.len() * CELLS];
@@ -230,8 +230,8 @@ pub fn stage(src: &Source, b: [f64; 4], dir: &Path) -> Result<Staged> {
             }
         }
         write_file(dir, &format!("grid.{var}.u8"), &data)?;
-        // The slots (grid.idx order) the packs lack, for the step that makes them (landcover.py
-        // --only for class).
+        // The slots (grid.idx order) the packs lack, for the step that makes them (the `landcover`
+        // program's --only, for class).
         write_file(dir, &format!("grid.{var}.missing.u32"), bytemuck::cast_slice(&missing))?;
         st.grids.push(var.into());
         st.missing.insert(var.into(), missing.len());

@@ -41,7 +41,7 @@ proper names, the same in English.
               map's place, water and park names are drawn from; a lookup table in the map style
               instead stalls MapLibre at this size)
 
-english_at() gives the English our layers carry (layers.py, stations.py, ferries.py: `en`).
+english_at() gives the English our layers carry (layers.py, ferries.py: `en`).
 
 usage: names.py filter | inventory | batches | check <batch> | table | patch [<pbf> <osc>]
 """

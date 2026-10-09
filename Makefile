@@ -30,7 +30,7 @@ UV    := cd dem && uv run python
 .PHONY: all data osm fonts web run dev clean-build heritage ferries
 all: data web
 
-data: $(BUILD)/roads.tiles $(BUILD)/slope.tiles basemap-parts $(BUILD)/names-en.json $(BUILD)/road-en.json $(BUILD)/labels.pmtiles $(BUILD)/labels.tiles $(BUILD)/ferries.json $(BUILD)/stations.json $(BUILD)/whs-shapes.json $(BUILD)/trees-cover.tiles details fonts
+data: $(BUILD)/roads.tiles $(BUILD)/slope.tiles basemap-parts $(BUILD)/names-en.json $(BUILD)/road-en.json $(BUILD)/labels.pmtiles $(BUILD)/labels.tiles $(BUILD)/ferries.json $(BUILD)/whs-shapes.json $(BUILD)/trees-cover.tiles details fonts
 
 # Conditional download: curl -z only fetches when the server copy is newer than ours.
 # OSM: data/osm/merged.osm.pbf holds every region; a region added to regions.json is downloaded
@@ -58,8 +58,8 @@ $(BUILD)/ways.bin: $(OSM)/merged.osm.pbf | target/release/extract
 	./target/release/extract $(BUILD) $(SPACING_M) $<
 
 # 2. national DEMs (HRDEM lidar → USGS 3DEP → MRDEM), cached per vertex
-$(BUILD)/elev.f32: $(BUILD)/ways.bin dem/sample.py
-	cd dem && uv run python sample.py ../$(BUILD)
+$(BUILD)/elev.f32: $(BUILD)/ways.bin | target/release/elev
+	./target/release/elev $(BUILD)
 
 # 3. terrain tiles (3D mesh, hillshade, contours) and the z11 analysis grid
 $(BUILD)/terrain.tiles: $(BUILD)/ways.bin | target/release/terrain
@@ -70,8 +70,8 @@ $(BUILD)/slope.tiles: $(BUILD)/terrain.tiles | target/release/slope
 	./target/release/slope $(BUILD)
 
 # 4. land cover (ESA WorldCover) on the analysis grid
-$(BUILD)/grid.class.u8: $(BUILD)/terrain.tiles dem/landcover.py
-	$(UV) landcover.py ../$(BUILD)
+$(BUILD)/grid.class.u8: $(BUILD)/terrain.tiles | target/release/landcover
+	./target/release/landcover $(BUILD)
 
 # 5. scenic analysis: 100 m road samples → tree canopy (Meta/WRI) near-field horizons →
 #    15 km viewsheds and landscape metrics. The samples need the processed elevations (the tile
@@ -160,16 +160,6 @@ $(RAIL)/hk-stations.geojsonseq: | $(OSM)/merged.osm.pbf
 	rm -f $(RAIL)/hk.osm.pbf
 $(RAIL)/pairs-mtr.bin: $(RAIL)/mtr.json $(RAIL)/hk-stations.geojsonseq dem/mtrpairs.py
 	$(UV) mtrpairs.py
-# Rail stops: every stop of a passenger route relation, with its lines' stop spacing (which sets
-# when and how big its dot shows).
-$(RAIL)/stops/relations.opl: $(OSM)/merged.osm.pbf
-	@mkdir -p $(RAIL)/stops
-	osmium tags-filter $< r/route=train,subway,tram,light_rail,monorail,funicular -o $(RAIL)/stops/routes.osm.pbf --overwrite
-	osmium tags-filter $(RAIL)/stops/routes.osm.pbf nw/public_transport nw/railway=station,halt,stop,tram_stop,platform -o $(RAIL)/stops/stopobj.osm.pbf --overwrite
-	osmium export $(RAIL)/stops/stopobj.osm.pbf -f geojsonseq -a type,id -o $(RAIL)/stops/stops.geojsonseq --overwrite
-	osmium cat $(RAIL)/stops/routes.osm.pbf -t relation -f opl -o $@ --overwrite
-$(BUILD)/stations.json: $(RAIL)/stops/relations.opl dem/stations.py $(wildcard $(BUILD)/names-en.json)
-	$(UV) stations.py
 
 # English for non-English names (see README, English names): OSM's names and the English they
 # have, the ones to translate in batches (Claude Haiku, by hand: `make names-batches`, then

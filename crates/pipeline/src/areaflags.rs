@@ -4,7 +4,7 @@
 //! heritage.py rasterises them for a whole build (docs/phase5.md "Heritage and area flags"). Each
 //! tile is the union of its polygons' burns, so units agree wherever their grids overlap.
 //!
-//! The bytes are dem/areaflags.py's, which burns with rasterio (GDAL 3.12):
+//! The bytes are those rasterio (GDAL 3.12) burns:
 //! - **Choice:** a polygon is read when its bounding box in degrees meets the grid's (Web Mercator
 //!   is monotone on each axis, so one whose box misses the grid's misses it in Mercator too), and
 //!   drawn on a tile when its Mercator envelope (of its shells, as GEOS's) meets the tile's.

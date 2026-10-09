@@ -1,7 +1,7 @@
-//! The coordinate conversions sample.py took from PROJ 9.8 (through pyproj), computed as PROJ
+//! The coordinate conversions the DEMs need, computed as PROJ 9.8
 //! computes them, with the deterministic maths (`det`): WGS 84 to Canada Atlas Lambert (EPSG:3979,
 //! NRCan's HRDEM and MRDEM) through NAD83(CSRS), by EPSG's 7-parameter "NAD83(CSRS) to WGS 84 (2)"
-//! (the transformation pyproj picks, everywhere: it needs no grid); and WGS 84 to a transverse
+//! (the transformation PROJ picks, everywhere: it needs no grid); and WGS 84 to a transverse
 //! Mercator (Taiwan's TM2 zones, for the MOI DTM; TWD97 taken as WGS 84, as PROJ does), by
 //! Poder–Engsager's series (PROJ's default, its proj.ini's `tmerc_default_algo`).
 //!
@@ -292,8 +292,8 @@ impl TransverseMercator {
     }
 }
 
-/// Web Mercator tile coordinates (fractional tiles at zoom `z`) of `lon`, `lat` (degrees), as
-/// sample.py computed them with numpy.
+/// Web Mercator tile coordinates (fractional tiles at zoom `z`) of `lon`, `lat` (degrees), in
+/// numpy's order of operations (as the DEM cache's samples were made).
 pub fn mercator_tile(lon: f64, lat: f64, z: u32) -> (f64, f64) {
     let n = (1u64 << z) as f64;
     let r = lat.to_radians();

@@ -324,7 +324,7 @@ fetched fails the job (retried later), never counts as "none".
 | heritagewd.py, heritagedetails.py, areadetails.py, whsshapes.py (on the filtered planet within the cover), filterprops.py, pageviews.py, interest.py, layers.py | `heritage` | Python, unchanged |
 | pageviews.py, for the candidates | `items` (dem/items.py) | Python |
 | filterprops.py, interest.py, layers.py, for stops & sights | `marks` | Rust, sorted so it's deterministic, rounding as Python does (half-even on the exact binary value; mz from the unrounded ia), distances across the antimeridian |
-| stations.py | `stations` | Rust |
+| rail stops | `stations` (`pipeline::stations`) | Rust |
 | ferries.py, hand timetables | `ferries` (gtfs.py's results among the timetables) | Python |
 
 ### The landmark jobs, step by step
@@ -533,7 +533,7 @@ part, layers.py) runs unchanged.
     today's regions.
 - **The units** (`UNIT_V` 3) read the slices of the z6 tiles within U + 30 km.
   - `heritage.json` feeds the flags step.
-  - The `areaflags` program (pipeline::areaflags, areaflags.py's port: the same bytes) rasterises the
+  - The `areaflags` program (pipeline::areaflags) rasterises the
     polygons onto the unit's own grid, chosen by bounding box. Mercator is monotone per axis, so no
     polygon touching an edge tile is dropped.
   - Their keys name those slices.

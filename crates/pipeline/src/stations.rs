@@ -1,4 +1,4 @@
-//! Rail stops for the map (today's dem/stations.py, docs/phase5.md "Stations"): every stop of a
+//! Rail stops for the map (docs/phase5.md "Stations"): every stop of a
 //! passenger route relation, with the stop spacing of the lines calling there (how far apart their
 //! stops are on average), which sets when a stop's dot appears and how big it is.
 //!
@@ -30,7 +30,7 @@ const INTERCITY_WORDS: &[&str] = &[
     "shinkansen", "新幹線", "特急", "limited express", "高鐵", "自強", "thsr",
 ];
 
-/// A route relation's service group (extract.rs rail_route; stations.py group).
+/// A route relation's service group (extract.rs rail_route).
 pub fn group(t: &HashMap<String, String>) -> Option<u8> {
     let get = |k: &str| t.get(k).map(String::as_str);
     let tourist = matches!(get("service"), Some("tourism" | "heritage"))
@@ -59,7 +59,7 @@ pub fn group(t: &HashMap<String, String>) -> Option<u8> {
     }
 }
 
-/// Great-circle distance (m), as stations.py's.
+/// Great-circle distance (m).
 pub fn dist(a: (f64, f64), b: (f64, f64)) -> f64 {
     let (la1, la2) = (a.1.to_radians(), b.1.to_radians());
     let h = ((la2 - la1) / 2.0).dsin().powi(2) + la1.dcos() * la2.dcos() * ((b.0 - a.0).to_radians() / 2.0).dsin().powi(2);

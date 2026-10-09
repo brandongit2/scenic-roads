@@ -31,7 +31,7 @@ const SINGAPORE: &[[f64; 4]] = &[[103.5, 1.1, 104.2, 1.5]];
 const ANDORRA: &[[f64; 4]] = &[[1.40, 42.42, 1.79, 42.66]];
 
 pub const RULES: &[Rule] = &[
-    // dem/sample.py: the DEM sources and their order.
+    // pipeline::dem: the DEM sources and their order.
     Rule { name: "dem-north-america", version: 1, areas: NORTH_AMERICA },
     Rule { name: "dem-japan", version: 1, areas: JAPAN },
     Rule { name: "dem-taiwan", version: 1, areas: TAIWAN },
@@ -58,7 +58,7 @@ pub fn version(name: &str) -> u32 {
 /// The DEM rules, in the order the units' kept samples record their versions (`unit`'s DEM cache).
 pub const DEM_RULES: [&str; 4] = ["dem-north-america", "dem-japan", "dem-taiwan", "dem-fabdem"];
 
-/// The DEM rules a sample depends on, by its source (dem/sample.py's `SRC_*`) and place (E7): the
+/// The DEM rules a sample depends on, by its source (pipeline::dem's sources) and place (E7): the
 /// rule that chose its source, and for FABDEM (the fallback) also the rule of the area whose own
 /// DEMs it stood in for. Unknown sources depend on every rule. Indexes into `DEM_RULES`.
 pub fn dem_rules_of(src: u8, lon: i32, lat: i32) -> Vec<usize> {

@@ -1,6 +1,6 @@
 //! Japan: the Geospatial Information Authority's elevation tiles (256 × 256 PNGs on Web Mercator
 //! tiles: x = R·2¹⁶ + G·2⁸ + B, h = 0.01·x below 2²³, 0.01·(x − 2²⁴) above, 2²³ no data), sampled
-//! as sample.py's `gsi_pass` did: values at pixel centres, a point near a tile's edge clamping to it.
+//! at pixel centres, a point near a tile's edge clamping to it.
 
 use super::proj::mercator_tile;
 use super::sample::{bilinear, within};

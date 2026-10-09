@@ -31,7 +31,7 @@ With --tiles <file> --zoom <z> (the `heritage-sites` job, docs/phase5.md "Herita
 flags"): what is covered is that file's tiles (uint32 x, y pairs at zoom z: those within 20 km of
 the coverage), not the build's analysis grid (grid.idx, zoom 11), and the areas aren't rasterised:
 their polygons, each with its flag bit, go to area-shapes.geojsonseq for the units to rasterise
-onto their own grids (areaflags.py). --date stamps heritage-sources.json with the pass's date
+onto their own grids (the `areaflags` program). --date stamps heritage-sources.json with the pass's date
 instead of the time of the run.
 
 usage: heritage.py <build_dir> [--tiles <tiles.u32> --zoom <z>] [--date YYYY-MM-DD]
