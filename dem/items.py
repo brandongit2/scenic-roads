@@ -10,7 +10,7 @@ scenic-build `items` step writes it.
 Per epoch (--epoch, the pass's date): everything is fetched again at a new epoch; within one,
 only items not seen yet (a run started by new coverage doesn't move anyone else's fame). Caches
 under --cache, appended a chunk at a time (a run stopped midway keeps what it fetched):
-  facts-<epoch>.jsonl      QID → poidetails.py's record (sitelinks, descriptions, heights …)
+  facts-<epoch>.jsonl      QID → its facts (`wikidata`: sitelinks, descriptions, heights …)
   wp-<epoch>.jsonl         QID → its Wikipedia articles (heritagewd.wikipedias)
   fetched-<epoch>.json     the first and last days anything was fetched for the epoch
   months/<m>.tsv.zst       one month's index: every article of the map's languages with its
@@ -42,14 +42,63 @@ from pathlib import Path
 
 import heritagewd
 import pageviews
-import poidetails
+from heritagewd import sparql, val
 
 # Items fetched between cache writes.
 CHUNK = 5000
+# Items per Wikidata query.
+WD_BATCH = 250
 
 
 # The epoch's four months (pageviews.months_before, shared with the heritage chain).
 months_before = pageviews.months_before
+
+
+def wikidata(qids: list[str], progress=None) -> dict[str, dict]:
+    """Facts of these items from QLever's Wikidata endpoint, WD_BATCH at a time: sitelinks, short
+    descriptions (English, else French, Spanish, Portuguese or Catalan), English article, inception,
+    height, elevation, prominence, isolation, discharge, focal height, water body (P206) and mountain
+    range (P4552)."""
+    out: dict[str, dict] = {}
+    q_props = {
+        "height": "P2048", "elevation": "P2044", "prominence": "P2660", "isolation": "P2659", "discharge": "P2225", "focal": "P2923",
+    }
+    for k in range(0, len(qids), WD_BATCH):
+        chunk = qids[k:k + WD_BATCH]
+        values = " ".join(f"wd:{q}" for q in chunk)
+        num = "\n".join(
+            f"OPTIONAL {{ ?item p:{p} ?st_{n} . ?st_{n} psn:{p} ?nv_{n} . ?nv_{n} wikibase:quantityAmount ?v_{n}0 }}" for n, p in q_props.items())
+        q = f"""PREFIX psn: <http://www.wikidata.org/prop/statement/value-normalized/> PREFIX p: <http://www.wikidata.org/prop/>
+        SELECT ?item (SAMPLE(?sl0) AS ?sl) (SAMPLE(?den) AS ?d_en) (SAMPLE(?dloc) AS ?d_loc) (SAMPLE(?wen) AS ?w_en) (SAMPLE(?inc0) AS ?inc)
+          {" ".join(f"(MAX(?v_{n}0) AS ?v_{n})" for n in q_props)}
+          (GROUP_CONCAT(DISTINCT ?waterL; SEPARATOR="|") AS ?water) (GROUP_CONCAT(DISTINCT ?rangeL; SEPARATOR="|") AS ?range) WHERE {{
+          VALUES ?item {{ {values} }}
+          OPTIONAL {{ ?item wikibase:sitelinks ?sl0 }}
+          OPTIONAL {{ ?item schema:description ?den FILTER(LANG(?den) = "en") }}
+          OPTIONAL {{ ?item schema:description ?dloc FILTER(LANG(?dloc) IN ("fr", "es", "pt", "ca")) }}
+          OPTIONAL {{ ?a schema:about ?item ; schema:isPartOf <https://en.wikipedia.org/> ; schema:name ?wen }}
+          OPTIONAL {{ ?item wdt:P571 ?inc0 }}
+          {num}
+          OPTIONAL {{ ?item wdt:P206 ?w . ?w rdfs:label ?waterL FILTER(LANG(?waterL) = "en") }}
+          OPTIONAL {{ ?item wdt:P4552 ?r . ?r rdfs:label ?rangeL FILTER(LANG(?rangeL) = "en") }}
+        }} GROUP BY ?item"""
+        for b in sparql(q):
+            qid = val(b, "item").rsplit("/", 1)[1]
+            rec = {"sl": int(val(b, "sl") or 0)}
+            for k2 in ("d_en", "d_loc", "w_en", "water", "range"):
+                if val(b, k2):
+                    rec[k2] = val(b, k2)
+            if val(b, "inc"):
+                rec["inception"] = val(b, "inc")[:10]
+            for n in q_props:
+                if val(b, f"v_{n}"):
+                    rec[n] = round(float(val(b, f"v_{n}")), 2)
+            out[qid] = rec
+        print(f"  wikidata {min(k + WD_BATCH, len(qids))}/{len(qids)}", file=sys.stderr, flush=True)
+        # (And to `progress`, when given, how many are done: the items job's progress line.)
+        if progress:
+            progress(min(k + WD_BATCH, len(qids)))
+    return out
 
 
 def load_json(p: Path, default):
@@ -130,7 +179,7 @@ def main() -> None:
         print(f"progress: {k}/{len(todo)} items' facts fetched from Wikidata", file=sys.stderr, flush=True)
         chunk = todo[k:k + CHUNK]
         said = lambda n, k=k: print(f"progress: {k + n}/{len(todo)} items' facts fetched from Wikidata", file=sys.stderr, flush=True)
-        got = poidetails.wikidata(chunk, said)
+        got = wikidata(chunk, said)
         # Items QLever doesn't know (merged, deleted) are remembered as such, not asked again.
         rows = [{"qid": q, **got.get(q, {"sl": 0, "missing": True})} for q in chunk]
         append_jsonl(fpath, rows)

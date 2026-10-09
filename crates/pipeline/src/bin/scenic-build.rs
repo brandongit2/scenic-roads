@@ -3302,7 +3302,6 @@ fn labels_step(out: &mut Out, args: &[String], scratch: &Path) -> Result<()> {
         .arg(&tiles)
         .arg("--work")
         .arg(&work)
-        .arg("--own-english")
         .status()
         .context("run labels.py")?;
     anyhow::ensure!(st.success(), "labels.py failed: {st}");

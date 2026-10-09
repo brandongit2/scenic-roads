@@ -13,7 +13,7 @@ then computed.
                   wp (has a Wikipedia article), t (kind of designation, heritagetiers.py)
   heritage-areas.json, special.json, indigenous.json   a (area km²)
 
-usage: filterprops.py   (after poidetails.py, peaks, heritagedetails.py, areadetails.py)
+usage: filterprops.py   (after heritagedetails.py and areadetails.py)
 """
 from __future__ import annotations
 

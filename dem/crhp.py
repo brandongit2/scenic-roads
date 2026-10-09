@@ -7,14 +7,15 @@ dataset with coordinates (Quebec, Ontario and Nova Scotia do: heritage.py reads 
 1. A map-bounds search per province (all results on one page) lists every place with its
    coordinates.
 2. Each place page gives the recognition: jurisdiction, authority (province or municipality),
-   statute, type and date. Pages are cached in data/heritage/crhp/, so reruns are quick.
+   statute, type and date. Pages are cached in <dir>/crhp/, so reruns are quick.
 
 Terms (historicplaces.ca "Important notices"): non-commercial reproduction with credit to the
 source; not presented as an official version. The register is no longer actively maintained.
 
-Output: data/heritage/crhp.json (GeoJSON points), level 4 provincial / 5 municipal.
+Output: <dir>/crhp.json (GeoJSON points), level 4 provincial / 5 municipal, which heritage.py
+reads; --dir is a registers' snapshot folder (docs/plan.md "Hand-made inputs").
 
-usage: crhp.py
+usage: crhp.py --dir <registers folder>
 """
 from __future__ import annotations
 
@@ -30,8 +31,8 @@ from pathlib import Path
 
 from tqdm import tqdm
 
-H = Path(__file__).resolve().parent.parent / "data" / "heritage"
-CACHE = H / "crhp"
+H = Path()
+CACHE = Path()
 BASE = "https://www.historicplaces.ca/en/"
 UA = {"User-Agent": "scenic-roads/0.1 (personal offline map)"}
 PROVINCES = {
@@ -116,6 +117,11 @@ def place(pid: str) -> dict:
 
 
 def main():
+    global H, CACHE
+    if sys.argv[1:2] != ["--dir"] or len(sys.argv) != 3:
+        sys.exit("usage: crhp.py --dir <registers folder>")
+    H = Path(sys.argv[2])
+    CACHE = H / "crhp"
     feats = []
     for prov, (iso, bbox) in PROVINCES.items():
         lst = [p for p in list_places(bbox) if p.get("location", "").endswith(prov)]

@@ -55,7 +55,7 @@ done
 [[ $ok == 1 ]] || { cat $home/server.log | tail -20; exit 1; }
 kill $pid; wait $pid 2>/dev/null || true
 # The Python steps the build agent runs load from the app's dem/, which has nothing of the
-# repository around it: each must import there (one read the repository's regions.json once).
+# repository around it: each must import there.
 pyt=$(mktemp -d)
 mkdir -p $pyt/dem
 git ls-files dem | while read f; do cp -X "$f" "$pyt/$f"; done

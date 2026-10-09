@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Tree cover layer tiles: tree cover, canopy height and leaf type on the Web-Mercator grid.
+"""Tree cover layer tiles for one z3 tile of the coverage: tree cover, canopy height and leaf type
+on the Web-Mercator grid. The build runs the `trees` program, its port (crates/pipeline/src/trees);
+this runs instead with SCENIC_TREES_PY=1 (crates/pipeline/src/treepacks.rs).
 
-Sources: Meta / WRI global canopy height (1.2 m imagery, aggregated to 0.00025° in the cached
-10° files, data/cache/chm10: cover5m = share of ground under trees over 5 m, ‰; p95 = canopy
-height, cm) and the leaf-type squares from leaftype.py (data/trees/leaf). Only ground inside
-our regions (Geofabrik region outlines, data/trees/poly) is kept.
+Sources: Meta / WRI global canopy height (1.2 m imagery, aggregated to 0.00025° in its 10° files:
+cover5m = share of ground under trees over 5 m, ‰; p95 = canopy height, cm) and the leaf-type
+squares (leaftype.py). Only ground inside the coverage's shapes is kept.
 
-Writes three tile archives (build dir), zoom 4–12, 256 px Terrarium-encoded lossless WebP (about
-half the size of PNG) so the app colours them on the GPU (MapLibre color-relief), like the slope
-tint:
+Writes three tile archives, zoom 4–12, 256 px Terrarium-encoded lossless WebP (about half the size
+of PNG) so the app colours them on the GPU (MapLibre color-relief), like the slope tint:
   trees-cover.tiles   tree cover, % in 2 % steps
   trees-height.tiles  canopy height where cover ≥ 5 %, m in 2 m steps
   trees-leaf.tiles    leaf type: 1 broadleaf, 2 conifer, 3 mixed (0 none; no tile = no data)
@@ -16,19 +16,8 @@ Zoom 12 samples the sources (nearest); coarser zooms average (leaf type: each cl
 averaged, and a pixel shows the commonest leaf type where forest is at least half of it). Tiles with
 nothing to show are left out.
 
-Incremental: each zoom-8 block's inputs (the region outline inside it, the source files) are
-fingerprinted in data/cache/trees/blocks.json and its zoom-8 values kept in data/cache/trees/tops;
-a block whose fingerprint is unchanged has its zoom 8–12 tiles copied from the previous archives,
-so adding a region only computes its own blocks (zoom 7–4 are rebuilt from the kept values).
-
-A canopy square the last build used and no longer in the cache stops the run (data/cache/trees/
-squares.json): its blocks would come out empty (a build on a machine holding only part of the
-cache). --allow-missing builds anyway.
-
-usage: trees.py <build_dir> [workers] [--bbox=w,s,e,n] [--vars=cover,height,leaf] [--allow-missing]
-       trees.py --z3 x,y --coverage cov.json --chm dir --chm-store dir --leaf dir --out dir [--workers n]
-           the build agent's (crates/pipeline/src/treepacks.rs): one z3 tile of the coverage, its
-           canopy squares in `chm` (the units' cache, the same names), filled from the NAS's
+usage: trees.py --z3 x,y --coverage cov.json --chm dir --chm-store dir --leaf dir --out dir [--workers n]
+           its canopy squares in `chm` (the units' cache, the same names), filled from the NAS's
            `chm-store`, where each is downloaded once, and its leaf-type squares made in `leaf`
            where it lacks them whole (leaftype.py); out/trees-*.tiles hold its zoom 4–12 tiles.
            cov.json: {"shapes": [[ring, …], …]}, each shape's rings in degrees, inside by even–odd
@@ -36,11 +25,9 @@ usage: trees.py <build_dir> [workers] [--bbox=w,s,e,n] [--vars=cover,height,leaf
 """
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import math
-import re
 import struct
 import sys
 import time
@@ -53,17 +40,7 @@ from rasterio.features import rasterize
 from rasterio.transform import from_bounds
 from rasterio.windows import Window
 from PIL import Image
-from shapely.geometry import box
-from shapely.ops import transform as shp_transform
-from shapely.prepared import prep
 
-from leaftype import regions
-
-ROOT = Path(__file__).resolve().parent.parent
-CHM = ROOT / "data" / "cache" / "chm10"
-CACHE = ROOT / "data" / "cache" / "trees"
-VERSION = 2  # bump when the tile computation changes (invalidates the block cache)
-LEAF = ROOT / "data" / "trees" / "leaf"
 ZMAX, ZBLOCK, ZMIN = 12, 8, 4
 TS = 256
 BS = TS << (ZMAX - ZBLOCK)  # block size in z12 pixels (4096)
@@ -103,14 +80,6 @@ def terrarium(v: np.ndarray, step: float) -> bytes:
     return bio.getvalue()
 
 
-def squares() -> list[tuple[int, int]]:
-    out = []
-    for f in sorted(CHM.glob("*_cover5m.tif")):
-        m = re.search(r"lat=(-?[\d.]+)_lon=(-?[\d.]+)_", f.name)
-        out.append((int(float(m[1])), int(float(m[2]))))
-    return out
-
-
 def sample(path: Path, top: int, left: int, res: float, lon: np.ndarray, lat: np.ndarray, out: np.ndarray, fill_ok) -> None:
     """Nearest-neighbour samples of one 10° square into `out` (rows = lat, cols = lon)."""
     cols = np.floor((lon - left) / res).astype(np.int64)
@@ -129,38 +98,6 @@ def sample(path: Path, top: int, left: int, res: float, lon: np.ndarray, lat: np
     keep = fill_ok(view)
     view[keep] = sub[keep]
     out[np.ix_(ri, ci)] = view
-
-
-def block(args):
-    """One zoom-8 block: sample at zoom 12 inside the regions, then average down to zoom 8."""
-    bx, by, region_wkb, *rest = args
-    want = rest[0] if rest else VARS
-    from shapely import wkb
-
-    region = wkb.loads(region_wkb)
-    px = (np.arange(BS) + bx * BS + 0.5).astype(np.float64)
-    py = (np.arange(BS) + by * BS + 0.5).astype(np.float64)
-    lon, lat = lon_of(px, ZMAX), lat_of(py, ZMAX)
-    w, s, e, n = tile_bounds(ZBLOCK, bx, by)
-    cover = np.zeros((BS, BS), np.uint16)
-    height = np.zeros((BS, BS), np.uint16)
-    leaf = np.full((BS, BS), 255, np.uint8)
-    for top, left in squares():
-        if left >= e or left + 10 <= w or top <= s or top - 10 >= n:
-            continue
-        stem = CHM / f"meta_chm_lat={top}.0_lon={left}.0"
-        sample(Path(f"{stem}_cover5m.tif"), top, left, 0.00025, lon, lat, cover, lambda v: v == 0)
-        if "height" in want:
-            sample(Path(f"{stem}_p95.tif"), top, left, 0.00025, lon, lat, height, lambda v: v == 0)
-        lf = LEAF / f"lat{top}_lon{left}.tif"
-        if lf.exists():
-            sample(lf, top, left, 0.0005, lon, lat, leaf, lambda v: v == 255)
-    # Inside our regions only (per pixel, in Mercator).
-    inside = rasterize([(shp_transform(lambda x, y: merc(np.asarray(x), np.asarray(y)), region.intersection(box(w, s, e, n))), 1)],
-                       out_shape=(BS, BS), transform=from_bounds(*merc(w, s), *merc(e, n), BS, BS), fill=0, dtype="uint8").astype(bool) \
-        if not region.contains(box(w, s, e, n)) else np.ones((BS, BS), bool)
-    out, tops = pyramid(bx, by, cover, height, leaf, inside, want)
-    return (bx, by), out, tops
 
 
 def pyramid(bx: int, by: int, cover: np.ndarray, height: np.ndarray, leaf: np.ndarray, inside: np.ndarray, want) -> tuple[list, dict]:
@@ -227,41 +164,6 @@ def down_leaf(a: np.ndarray) -> np.ndarray:
     return out.astype(np.uint8)
 
 
-class Reader:
-    """The previous archive (roadcore::archive format), for copying tiles of unchanged blocks."""
-
-    def __init__(self, path: Path):
-        import mmap
-        self.f = path.open("rb")
-        self.m = mmap.mmap(self.f.fileno(), 0, access=mmap.ACCESS_READ)
-        off, n = struct.unpack_from("<QQ", self.m, 8)
-        self.index = {}
-        for i in range(n):
-            k, o, ln, raw = struct.unpack_from("<QQII", self.m, off + i * 24)
-            self.index[k] = (o, ln, raw)
-
-    def get(self, z: int, x: int, y: int):
-        e = self.index.get((z << 58) | (x << 29) | y)
-        return (self.m[e[0]:e[0] + e[1]], e[2]) if e else None
-
-
-def block_sig(bx: int, by: int, region, want) -> str:
-    """Fingerprint of a block's inputs: the region outline inside it and the source files."""
-    w, s, e, n = tile_bounds(ZBLOCK, bx, by)
-    h = hashlib.sha1(f"{VERSION}|{bx},{by}|{','.join(want)}".encode())
-    part = region.intersection(box(w, s, e, n))
-    h.update(part.wkb if not part.is_empty else b"")
-    for top, left in squares():
-        if left >= e or left + 10 <= w or top <= s or top - 10 >= n:
-            continue
-        for f in (CHM / f"meta_chm_lat={top}.0_lon={left}.0_cover5m.tif", CHM / f"meta_chm_lat={top}.0_lon={left}.0_p95.tif",
-                  LEAF / f"lat{top}_lon{left}.tif"):
-            if f.exists():
-                st = f.stat()
-                h.update(f"{f.name}:{st.st_size}:{int(st.st_mtime)}".encode())
-    return h.hexdigest()
-
-
 class Writer:
     """roadcore::archive format: magic, index offset, count, metadata JSON, blobs (here WebP, not
     gzip'd), index."""
@@ -291,90 +193,6 @@ class Writer:
         self.f.close()
         self.tmp.rename(self.path)
         return len(self.index)
-
-
-def main():
-    if "--z3" in sys.argv:
-        a = sys.argv[1:]
-        z3_main({a[i]: a[i + 1] for i in range(0, len(a) - 1, 2) if a[i].startswith("--")})
-        return
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    build = Path(args[0])
-    workers = int(args[1]) if len(args) > 1 else 6
-    # --bbox=w,s,e,n: only blocks there (for trying styles out; the archives then hold just that).
-    only = next((box(*map(float, a.split("=", 1)[1].split(","))) for a in sys.argv[1:] if a.startswith("--bbox=")), None)
-    # --vars=leaf,…: rebuild only these archives (the others are left as they are).
-    want = next((tuple(a.split("=", 1)[1].split(",")) for a in sys.argv[1:] if a.startswith("--vars=")), VARS)
-    t0 = time.time()
-    region = regions()
-    rp = prep(region)
-    # Zoom-8 blocks touching the regions.
-    blocks = []
-    for bx in range(1 << ZBLOCK):
-        for by in range(1 << ZBLOCK):
-            b = tile_bounds(ZBLOCK, bx, by)
-            if rp.intersects(box(*b)) and (only is None or only.intersects(box(*b))):
-                blocks.append((bx, by))
-    print(f"{len(blocks)} zoom-{ZBLOCK} blocks")
-    # The canopy squares touching the regions: any the last build had and the cache hasn't now?
-    have = sorted(sq for sq in squares() if rp.intersects(box(sq[1], sq[0] - 10, sq[1] + 10, sq[0])))
-    used_path = CACHE / "squares.json"
-    gone = sorted({tuple(x) for x in json.loads(used_path.read_text())} - set(have)) if used_path.exists() else []
-    if gone and "--allow-missing" not in sys.argv:
-        sys.exit(f"canopy squares used by the last build are missing from {CHM} (top, left): {gone}; copy them in, or --allow-missing")
-    meta = '{"source":"Meta/WRI canopy height; Copernicus HRL DLT 2018; NALCMS 2020","encoding":"terrarium","format":"webp"}'
-    # Blocks unchanged since the last run: tiles copied from the previous archives, zoom-8 values
-    # from the cache (not for --bbox trial runs).
-    use_cache = only is None and tuple(want) == VARS
-    (CACHE / "tops").mkdir(parents=True, exist_ok=True)
-    sig_path = CACHE / "blocks.json"
-    old_sigs = json.loads(sig_path.read_text()) if use_cache and sig_path.exists() else {}
-    readers = {}
-    for v in want:
-        p = build / f"trees-{v}.tiles"
-        if use_cache and p.exists():
-            readers[v] = Reader(p)
-    sigs = {f"{bx},{by}": block_sig(bx, by, region, want) for bx, by in blocks} if use_cache else {}
-    reuse, todo = [], []
-    for bx, by in blocks:
-        k = f"{bx},{by}"
-        top_file = CACHE / "tops" / f"{bx}_{by}.npz"
-        (reuse if use_cache and len(readers) == len(want) and old_sigs.get(k) == sigs[k] and top_file.exists() else todo).append((bx, by))
-    print(f"{len(reuse)} blocks unchanged (copied), {len(todo)} to compute")
-    writers = {v: Writer(build / f"trees-{v}.tiles", meta) for v in want}
-    tops: dict[str, dict[tuple[int, int], np.ndarray]] = {v: {} for v in want}
-    for bx, by in reuse:
-        with np.load(CACHE / "tops" / f"{bx}_{by}.npz") as f:
-            for v in want:
-                tops[v][(bx, by)] = f[v].astype(np.float32)
-        for z in range(ZBLOCK, ZMAX + 1):
-            k = 1 << (z - ZBLOCK)
-            for y in range(by * k, (by + 1) * k):
-                for x in range(bx * k, (bx + 1) * k):
-                    for v in want:
-                        t = readers[v].get(z, x, y)
-                        if t:
-                            writers[v].add(z, x, y, bytes(t[0]), t[1])
-    rw = region.wkb
-    with Pool(workers) as pool:
-        for i, ((bx, by), out, t) in enumerate(pool.imap_unordered(block, [(bx, by, rw, want) for bx, by in todo])):
-            for name, z, x, y, blob, raw in out:
-                writers[name].add(z, x, y, blob, raw)
-            for v in want:
-                tops[v][(bx, by)] = t[v]
-            if use_cache:
-                np.savez_compressed(CACHE / "tops" / f"{bx}_{by}.npz", **{v: t[v].astype(np.float16) for v in want})
-            if i % 10 == 0:
-                print(f"\r  {i + 1}/{len(todo)} blocks ({time.time() - t0:.0f} s)", end="", flush=True)
-    print()
-    if use_cache:
-        sig_path.write_text(json.dumps(sigs))
-        used_path.write_text(json.dumps(have))
-    lower_zooms(tops, want, writers)
-    for v, wtr in writers.items():
-        n = wtr.finish()
-        print(f"trees-{v}.tiles: {n} tiles, {(build / f'trees-{v}.tiles').stat().st_size / 1e9:.2f} GB")
-    print(f"done in {time.time() - t0:.0f} s")
 
 
 def lower_zooms(tops: dict, want, writers: dict, said=None) -> None:
@@ -697,4 +515,5 @@ def z3_main(args: dict) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    a = sys.argv[1:]
+    z3_main({a[i]: a[i + 1] for i in range(0, len(a) - 1, 2) if a[i].startswith("--")})

@@ -103,12 +103,12 @@ struct Poi {
     osm: Option<String>,
     /// A reference for one that isn't an OSM object: a hiking route's end ("trail:<relation>:<node>").
     key: Option<String>,
-    /// The tags its details show (dem/poidetails.py KEEP and COMMON).
+    /// The tags its details show (KEEP_COMMON and its kind's own).
     tags: Vec<(String, String)>,
     /// A way's own nodes (points of interest mapped as ways, covered bridges): for the candidates'
     /// coverage clip.
     nodes: Vec<[i32; 2]>,
-    /// A covered bridge's length, as dem/poidetails.py measured it.
+    /// A covered bridge's length (line_m).
     length_m: Option<u32>,
 }
 
@@ -130,12 +130,12 @@ impl Poi {
     }
 }
 
-/// Tags every stop & sight keeps for its details, and each kind's own (dem/poidetails.py; plus the
-/// Japanese romanisations, the English name where there's no name:en).
+/// Tags every stop & sight keeps for its details, and each kind's own (marksjob::detail_keys; plus
+/// the Japanese romanisations, the English name where there's no name:en).
 const KEEP_COMMON: &[&str] = &["name", "ele", "description", "website", "wikipedia", "wikidata", "operator", "access", "fee", "opening_hours", "start_date", "heritage", "alt_name", "name:en", "name:ja-Latn", "name:ja_rm"];
 
-/// A line's length as dem/poidetails.py measured it (`line_km`: planar, 111.32 km per degree of
-/// longitude at the segment's mean latitude, 110.57 of latitude), in metres rounded half-even.
+/// A line's length, planar (111.32 km per degree of longitude at the segment's mean latitude,
+/// 110.57 of latitude), in metres rounded half-even.
 fn line_m(nodes: &[[i32; 2]]) -> u32 {
     let mut km = 0f64;
     for w in nodes.windows(2) {
@@ -229,7 +229,7 @@ fn trail_parking(t: &Tags) -> bool {
 }
 
 /// A point's kind. `candidates`: as the landmark candidates have them (docs/phase5.md "pois"): a
-/// viewpoint that is also a volcano is a peak, as dem/poidetails.py made it (the unit's own
+/// viewpoint that is also a volcano is a peak (the unit's own
 /// points keep it a viewpoint, for the road flags).
 fn poi_kind(t: &Tags, candidates: bool) -> Option<&'static str> {
     if t.is("highway", "rest_area") {
@@ -1204,7 +1204,7 @@ fn main() -> Result<()> {
         if w.flags & flag::COVERED != 0 {
             let m = b.pts[b.pts.len() / 2];
             let tags = bridge_tags.binary_search_by_key(&w.id, |b| b.0).map(|i| bridge_tags[i].1.clone()).unwrap_or_default();
-            // Its own nodes (the points are densified): what poidetails.py measured, for a line
+            // Its own nodes (the points are densified): what its length is measured on, for a line
             // (not a closed way) of some length.
             let nodes: Vec<[i32; 2]> = w.refs.iter().filter_map(|&r| lookup(r).map(|(_, lat, lon)| [lon, lat])).collect();
             let line = w.refs.first() != w.refs.last() && nodes.windows(2).any(|p| p[0] != p[1]);

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Dominant leaf type of forests, on the canopy files' 10° squares (for the tree cover layer).
 
-Classes (u8): 0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data. Written per 10° square
-of the Meta canopy cache (data/cache/chm10) that touches our regions, at 0.0005° (~50 m):
-data/trees/leaf/lat<top>_lon<left>.tif.
+Classes (u8): 0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data. Written per 10° square,
+at 0.0005° (~50 m): <dir>/lat<top>_lon<left>.tif.
 
 Sources:
   Europe         Copernicus HRL Dominant Leaf Type 2018, 10 m (broadleaf / coniferous), read at
@@ -11,27 +10,22 @@ Sources:
   North America  NALCMS 2020 land cover, 30 m (CEC; NRCan, USGS, INEGI…): needleleaf forest →
                  conifer, broadleaf deciduous → broadleaf, mixed forest → mixed. The GeoTIFF is
                  streamed out of CEC's 3.9 GB zip by byte range, its size and CRC checked against
-                 the zip's (only the TIFF is kept: by the agent for good, in the NAS's
-                 sources/trees/, so it's downloaded once; by hand, while squares are made unless
-                 --keep-nalcms).
+                 the zip's, and kept beside the squares (in <dir>'s parent: the NAS's
+                 sources/trees/), so it's downloaded once.
   Hong Kong      none (no data).
 
-usage: leaftype.py [eu] [na] [--keep-nalcms]
-       leaftype.py --make <dir> <top>,<left>…
+usage: leaftype.py --make <dir> <top>,<left>…
 
-The build agent's trees job has `make` (--make) make the squares its z3 tile needs (the trees
-program, crates/pipeline/src/trees; dem/trees.py --z3 calls it too): whole squares, tagged complete
-(squares made per region hold data only where its regions were, and are made again, keeping their
-chunks fetched whole; so is one that isn't whole), with NALCMS's GeoTIFF kept beside them (in
-<dir>'s parent) so it's downloaded once. An EEA square's chunks are kept on the NAS as they come
-(`parts/`), so a square that fails part way asks again only for what it lacks.
+The build agent's trees job has it make the squares its z3 tile needs (the trees program,
+crates/pipeline/src/trees; dem/trees.py --z3 calls it too): whole squares, tagged complete (a square
+not tagged so, or not whole, is made again, keeping its chunks fetched whole). An EEA square's
+chunks are kept on the NAS as they come (`parts/`), so a square that fails part way asks again only
+for what it lacks.
 """
 from __future__ import annotations
 
-import json
 import math
 import os
-import re
 import struct
 import subprocess
 import sys
@@ -44,13 +38,7 @@ import numpy as np
 import rasterio
 from rasterio.transform import from_origin
 from rasterio.warp import Resampling, reproject
-from shapely.geometry import Polygon, box
-from shapely.ops import unary_union
 
-ROOT = Path(__file__).resolve().parent.parent
-CACHE = ROOT / "data" / "cache" / "chm10"
-T = ROOT / "data" / "trees"
-OUT = T / "leaf"
 UA = "scenic-roads/0.1 (personal offline map)"
 RES = 0.0005
 N = int(round(10 / RES))
@@ -60,59 +48,12 @@ MAX_W, MAX_H = 7500, 4100
 NALCMS_ZIP = "https://www.cec.org/files/atlas_layers/1_terrestrial_ecosystems/1_01_0_land_cover_2020_30m/land_cover_2020v2_30m_tif.zip"
 NALCMS_MEMBER_OFFSET = 38952  # local header of …/data/NA_NALCMS_landcover_2020v2_30m.tif
 NALCMS_COMPRESSED = 2668629085
-NALCMS_TIF = T / "nalcms-2020.tif"
 # NALCMS classes → ours.
 NA_MAP = np.zeros(256, np.uint8)
 NA_MAP[[1, 2]] = 2
 NA_MAP[[3, 4, 5]] = 1
 NA_MAP[6] = 3
 NA_MAP[[0, 127, 255]] = 255
-
-
-def read_poly(path: Path):
-    """Geofabrik .poly → shapely geometry (outer rings minus '!' holes)."""
-    outer, holes, cur, name = [], [], None, None
-    for line in path.read_text().splitlines()[1:]:
-        s = line.strip()
-        if not s:
-            continue
-        if cur is None:
-            if s == "END":
-                break
-            name, cur = s, []
-        elif s == "END":
-            (holes if name.startswith("!") else outer).append(Polygon(cur))
-            cur = None
-        else:
-            x, y = s.split()[:2]
-            cur.append((float(x), float(y)))
-    g = unary_union([p.buffer(0) for p in outer])
-    return g.difference(unary_union([p.buffer(0) for p in holes])) if holes else g
-
-
-def regions():
-    """Union of the regions' outlines (regions.json): Geofabrik's .poly (data/trees/poly, fetched by
-    regionpolys.py), or the bbox of regions taken from Overpass."""
-    cfg = json.loads((ROOT / "regions.json").read_text())["regions"]
-    polys = []
-    for r in cfg:
-        p = T / "poly" / f"{r['id']}.poly"
-        if p.exists():
-            polys.append(read_poly(p))
-        elif "bbox" in r:
-            polys.append(box(*r["bbox"]))
-    return unary_union(polys)
-
-
-def squares(region):
-    """(top, left) of the canopy cache's 10° squares that touch the regions."""
-    out = []
-    for f in sorted(CACHE.glob("*_cover5m.tif")):
-        m = re.search(r"lat=(-?[\d.]+)_lon=(-?[\d.]+)_", f.name)
-        top, left = float(m[1]), float(m[2])
-        if region.intersects(box(left, top - 10, left + 10, top)):
-            out.append((int(top), int(left)))
-    return out
 
 
 # The sources' extents (w, s, e, n): a square outside both has no leaf type.
@@ -135,9 +76,9 @@ def complete(path: Path) -> bool:
     return t.get("complete") == "1" or t.get("source", "").startswith("NALCMS")
 
 
-def save(top: int, left: int, a: np.ndarray, source: str, out: Path = OUT, whole: bool = False):
-    """A square, written by a temporary name (this Mac's and the process's), flushed and checked
-    whole before it takes its name."""
+def save(top: int, left: int, a: np.ndarray, source: str, out: Path):
+    """A square, tagged complete, written by a temporary name (this Mac's and the process's), flushed
+    and checked whole before it takes its name."""
     import socket
 
     import whole as wh
@@ -150,7 +91,7 @@ def save(top: int, left: int, a: np.ndarray, source: str, out: Path = OUT, whole
                            transform=from_origin(left, top, RES, RES), nodata=255, compress="deflate", tiled=True,
                            blockxsize=512, blockysize=512) as d:
             d.write(a, 1)
-            d.update_tags(source=source, classes="0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data", **({"complete": "1"} if whole else {}))
+            d.update_tags(source=source, classes="0 not forest, 1 broadleaf, 2 conifer, 3 mixed, 255 no data", complete="1")
         wh.sync(tmp)
         if not wh.tiff_whole(tmp):
             raise OSError(f"{tmp}: written short")
@@ -162,9 +103,9 @@ def save(top: int, left: int, a: np.ndarray, source: str, out: Path = OUT, whole
     print(f"  lat{top}_lon{left}: broadleaf {counts[1] / a.size:.1%}, conifer {counts[2] / a.size:.1%}, mixed {counts[3] / a.size:.1%}, no data {counts[255] / a.size:.1%}")
 
 
-def eea_chunk(w, s, e, n, width, height, strict: bool = False) -> np.ndarray | None:
-    """One exportImage request; a request that keeps failing is split in four. With `strict`, any
-    part that fails fails it all (None)."""
+def eea_chunk(w, s, e, n, width, height) -> np.ndarray | None:
+    """One exportImage request; a request that keeps failing is split in four, and any part that
+    fails fails it all (None)."""
     a = eea_request(w, s, e, n, width, height)
     if a is not None or width < 1000 or height < 1000:
         return a
@@ -173,11 +114,10 @@ def eea_chunk(w, s, e, n, width, height, strict: bool = False) -> np.ndarray | N
     out = np.full((height, width), 255, np.uint8)
     for (r0, c0, h, wd, bb) in [(0, 0, hh, hw, (w, ym, xm, n)), (0, hw, hh, width - hw, (xm, ym, e, n)),
                                 (hh, 0, height - hh, hw, (w, s, xm, ym)), (hh, hw, height - hh, width - hw, (xm, s, e, ym))]:
-        part = eea_chunk(*bb, wd, h, strict)
-        if part is not None:
-            out[r0:r0 + h, c0:c0 + wd] = part
-        elif strict:
+        part = eea_chunk(*bb, wd, h)
+        if part is None:
             return None
+        out[r0:r0 + h, c0:c0 + wd] = part
     return out
 
 
@@ -195,21 +135,11 @@ def eea_request(w, s, e, n, width, height) -> np.ndarray | None:
     return None
 
 
-def europe(region):
-    eu = region.intersection(box(-40, 20, 40, 75))
-    for top, left in squares(region):
-        if left < -40 or left >= 40 or (OUT / f"lat{top}_lon{left}.tif").exists():
-            continue
-        europe_square(top, left, OUT, lambda *bb: eu.intersects(box(*bb)), strict=False)
-
-
-def europe_square(top: int, left: int, out: Path, meets, strict: bool, progress=None) -> None:
-    """One square from the EEA, requested over the boxes `meets(w, s, e, n)` says matter. With
-    `strict` (the agent's whole squares): every chunk in the EEA's box, each first asked at a
-    twentieth of the resolution, so a chunk with no EEA data at all (Russia, the open sea) costs one
-    small request; a chunk that keeps failing fails the square (to be tried again). Without it, a
-    failing chunk is left without data. `progress`, when given, is told how much of the square is
-    done (0–1) as its chunks come."""
+def europe_square(top: int, left: int, out: Path, progress=None) -> None:
+    """One square from the EEA, whole: every chunk in the EEA's box, each first asked at a fifth of
+    the resolution, so a chunk with no EEA data at all (Russia, the open sea) costs one small
+    request; a chunk that keeps failing fails the square (to be tried again). `progress`, when given,
+    is told how much of the square is done (0–1) as its chunks come."""
     a = np.full((N, N), 255, np.uint8)
     lut = np.full(256, 255, np.uint8)
     lut[[0, 1, 2]] = [0, 1, 2]
@@ -218,10 +148,10 @@ def europe_square(top: int, left: int, out: Path, meets, strict: bool, progress=
         for c0 in range(0, N, MAX_W):
             h, w = min(MAX_H, N - r0), min(MAX_W, N - c0)
             bb = (left + c0 * RES, top - (r0 + h) * RES, left + (c0 + w) * RES, top - r0 * RES)
-            if bb[0] < EEA_BOX[2] and bb[2] > EEA_BOX[0] and bb[1] < EEA_BOX[3] and bb[3] > EEA_BOX[1] and meets(*bb):
+            if bb[0] < EEA_BOX[2] and bb[2] > EEA_BOX[0] and bb[1] < EEA_BOX[3] and bb[3] > EEA_BOX[1]:
                 jobs.append((r0, c0, h, w, bb))
 
-    # The agent's chunks, kept on the NAS as they come (a chunk: its array, or `.none` where the
+    # The chunks, kept on the NAS as they come (a chunk: its array, or `.none` where the
     # EEA has no data), until the square is saved.
     parts = out / "parts" / f"lat{top}_lon{left}"
     # Today's square, made over some regions only (not tagged complete): a chunk of it fetched whole
@@ -231,7 +161,7 @@ def europe_square(top: int, left: int, out: Path, meets, strict: bool, progress=
     # so its classes aren't compared, only where there's data.
     old = None
     path = out / f"lat{top}_lon{left}.tif"
-    if strict and path.exists():
+    if path.exists():
         import whole
 
         if whole.tiff_whole(path):
@@ -245,8 +175,6 @@ def europe_square(top: int, left: int, out: Path, meets, strict: bool, progress=
 
     def fetch(j):
         r0, c0, h, w, bb = j
-        if not strict:
-            return eea_chunk(*bb, w, h, strict)
         kept = parts / f"{r0}-{c0}.npy"
         if (parts / f"{r0}-{c0}.none").exists():
             return np.full((h, w), 255, np.uint8)
@@ -258,7 +186,7 @@ def europe_square(top: int, left: int, out: Path, meets, strict: bool, progress=
             pass
         # Asked first at a fifth of the resolution (~250 m): a chunk with no EEA data at all (Russia,
         # the open sea) costs one small request; land of a quarter kilometre shows.
-        probe = eea_chunk(*bb, max(1, w // 5), max(1, h // 5), strict)
+        probe = eea_chunk(*bb, max(1, w // 5), max(1, h // 5))
         if probe is None:
             return None
         parts.mkdir(parents=True, exist_ok=True)
@@ -273,7 +201,7 @@ def europe_square(top: int, left: int, out: Path, meets, strict: bool, progress=
                 nonlocal kept_old
                 kept_old += 1
                 return here.copy()
-        a = eea_chunk(*bb, w, h, strict)
+        a = eea_chunk(*bb, w, h)
         if a is not None:
             import whole
 
@@ -289,24 +217,20 @@ def europe_square(top: int, left: int, out: Path, meets, strict: bool, progress=
     with ThreadPoolExecutor(2) as ex:
         for i, ((r0, c0, h, w, bb), chunk) in enumerate(zip(jobs, ex.map(fetch, jobs))):
             if chunk is None:
-                if strict:
-                    raise RuntimeError(f"EEA leaf type: the request for {bb} keeps failing")
-                print(f"  failed chunk {bb}", file=sys.stderr)
-                continue
+                raise RuntimeError(f"EEA leaf type: the request for {bb} keeps failing")
             a[r0:r0 + h, c0:c0 + w] = lut[chunk]
             # (The square's save counts as one chunk more.)
             if progress:
                 progress((i + 1) / (len(jobs) + 1))
     if kept_old:
         print(f"  {kept_old} chunks kept from today's square", flush=True)
-    save(top, left, a, "Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m, read at 0.0005°", out, whole=strict)
-    if strict:
-        import shutil
+    save(top, left, a, "Copernicus HRL Dominant Leaf Type 2018 (EEA), 10 m, read at 0.0005°", out)
+    import shutil
 
-        shutil.rmtree(parts, ignore_errors=True)
+    shutil.rmtree(parts, ignore_errors=True)
 
 
-def fetch_nalcms(tif: Path = NALCMS_TIF):
+def fetch_nalcms(tif: Path):
     """NALCMS's GeoTIFF, streamed out of CEC's zip, whole: the deflate stream to its end, and its
     size and CRC-32 those the zip records, before it takes its name."""
     import whole
@@ -355,13 +279,8 @@ def fetch_nalcms(tif: Path = NALCMS_TIF):
         raise
 
 
-def north_america(region, keep: bool):
-    todo = [(t, l) for t, l in squares(region) if l < -40 and not (OUT / f"lat{t}_lon{l}.tif").exists()]
-    north_america_squares(todo, OUT, NALCMS_TIF, keep)
-
-
-def north_america_squares(todo: list, out: Path, tif: Path, keep: bool, whole: bool = False, progress=None) -> None:
-    """Squares from NALCMS (its GeoTIFF streamed to `tif` first, deleted after unless `keep`).
+def north_america_squares(todo: list, out: Path, tif: Path, progress=None) -> None:
+    """Squares from NALCMS (its GeoTIFF streamed to `tif` first, and kept).
     `progress`, when given, is told how many are done after each."""
     if not todo:
         return
@@ -373,12 +292,10 @@ def north_america_squares(todo: list, out: Path, tif: Path, keep: bool, whole: b
             # NALCMS has no class 0: it is the background outside the continent (no data).
             reproject(rasterio.band(src, 1), dst, dst_transform=from_origin(left, top, RES, RES), dst_crs="EPSG:4326",
                       resampling=Resampling.nearest, src_nodata=0, dst_nodata=255, num_threads=4)
-            save(top, left, NA_MAP[dst], "NALCMS 2020 land cover 30 m (CEC), resampled to 0.0005°", out, whole=whole)
+            save(top, left, NA_MAP[dst], "NALCMS 2020 land cover 30 m (CEC), resampled to 0.0005°", out)
             print(f"    ({time.time() - t0:.0f} s)")
             if progress:
                 progress(k + 1)
-    if not keep:
-        tif.unlink()
 
 
 def make(sqs: list, out: Path, store: Path, progress=None) -> None:
@@ -400,10 +317,10 @@ def make(sqs: list, out: Path, store: Path, progress=None) -> None:
 
     for k, (top, left) in enumerate(eea):
         said(k)
-        europe_square(top, left, out, lambda *bb: True, strict=True, progress=lambda f, k=k: said(k + f))
+        europe_square(top, left, out, progress=lambda f, k=k: said(k + f))
     # (The EEA's squares made: all of them, when NALCMS has none to make.)
     said(len(eea))
-    north_america_squares(na, out, store / "nalcms-2020.tif", keep=True, whole=True, progress=lambda d: said(len(eea) + d))
+    north_america_squares(na, out, store / "nalcms-2020.tif", progress=lambda d: said(len(eea) + d))
 
 
 def progress(done: float, total: int, unit: str) -> None:
@@ -414,18 +331,12 @@ def progress(done: float, total: int, unit: str) -> None:
 
 
 def main():
-    if sys.argv[1:2] == ["--make"]:
-        # --make <dir> <top>,<left>…: the trees job's (crates/pipeline/src/trees/squares.rs).
-        out = Path(sys.argv[2])
-        sqs = [tuple(int(v) for v in a.split(",")) for a in sys.argv[3:]]
-        make(sqs, out, out.parent, lambda done, total: progress(done, total, "leaf-type squares"))
-        return
-    args = set(sys.argv[1:])
-    region = regions()
-    if "eu" in args or not args - {"--keep-nalcms"}:
-        europe(region)
-    if "na" in args or not args - {"--keep-nalcms"}:
-        north_america(region, "--keep-nalcms" in args)
+    # --make <dir> <top>,<left>…: the trees job's (crates/pipeline/src/trees/squares.rs).
+    if sys.argv[1:2] != ["--make"] or len(sys.argv) < 3:
+        raise SystemExit("usage: leaftype.py --make <dir> <top>,<left>…")
+    out = Path(sys.argv[2])
+    sqs = [tuple(int(v) for v in a.split(",")) for a in sys.argv[3:]]
+    make(sqs, out, out.parent, lambda done, total: progress(done, total, "leaf-type squares"))
 
 
 if __name__ == "__main__":

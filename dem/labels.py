@@ -27,15 +27,13 @@ zoomed out for want of a lake near. Water and parks of the same name within DEDU
 important one are left out (a lake mapped twice).
 Rivers keep the basemap's labels (along their lines).
 
-Output: data/build/labels.tiles (roadcore archive of gzip'd Mapbox vector tiles, layer "l",
-z0–12, z12 overzoomed beyond): a label is in the tiles from the zoom where it could show at
-MIN_PX, and in every z12 tile. Properties: n (name), en (English: its own name:en, else names.py's
-table), k, c, mz, ms (areas), s (importance, the placement order).
+Output: a roadcore archive of gzip'd Mapbox vector tiles, layer "l", z0–12, z12 overzoomed
+beyond: a label is in the tiles from the zoom where it could show at MIN_PX, and in every z12 tile.
+Properties: n (name), en (English: its own name:en only, as the server attaches the translations
+when serving), k, c, mz, ms (areas), s (importance, the placement order).
 
-usage: labels.py   (reads data/names/named.osm.pbf: names.py filter)
-       labels.py --src <pbf> --out <labels.tiles> --work <dir> --own-english
-                  (the new pipeline: the OSM pass's labels set; English only the places' own, as
-                  the server attaches the translations when serving)
+usage: labels.py --src <pbf> --out <labels.tiles> --work <dir>
+           the build's labels job (scenic-build labels): the OSM pass's labels set
 """
 from __future__ import annotations
 
@@ -55,14 +53,8 @@ import osmium
 from shapely import wkb as swkb
 
 from interest import isolation, min_zoom
-from names import differs, english_at
+from names import differs
 
-ROOT = Path(__file__).resolve().parent.parent
-N = ROOT / "data" / "names"
-SRC = N / "named.osm.pbf"
-NODES = N / "labels-nodes.osm.pbf"
-AREAS = N / "labels-areas.osm.pbf"
-OUT = ROOT / "data" / "build" / "labels.tiles"
 MAXZ = 12
 # The smallest spacing the app allows (px): a label is in the tiles from the zoom it could show at it.
 MIN_PX = 16
@@ -321,23 +313,16 @@ class Writer:
         return len(self.index)
 
 
-def args() -> None:
-    """--src, --out, --work, --own-english: where to read and write (else the legacy paths)."""
-    global SRC, NODES, AREAS, OUT, OWN_ENGLISH
+def args() -> tuple[Path, Path, Path, Path]:
+    """--src, --out, --work: the labels set, the archive, and the work folder (the filtered points
+    and areas: NODES, AREAS)."""
     a = sys.argv[1:]
     opt = lambda k: a[a.index(k) + 1] if k in a and a.index(k) + 1 < len(a) else None  # noqa: E731
-    if opt("--src"):
-        SRC = Path(opt("--src"))
-    if opt("--work"):
-        w = Path(opt("--work"))
-        w.mkdir(parents=True, exist_ok=True)
-        NODES, AREAS = w / "labels-nodes.osm.pbf", w / "labels-areas.osm.pbf"
-    if opt("--out"):
-        OUT = Path(opt("--out"))
-    OWN_ENGLISH = "--own-english" in a
-
-
-OWN_ENGLISH = False
+    if not (opt("--src") and opt("--out") and opt("--work")):
+        sys.exit("usage: labels.py --src <pbf> --out <labels.tiles> --work <dir>")
+    w = Path(opt("--work"))
+    w.mkdir(parents=True, exist_ok=True)
+    return Path(opt("--src")), Path(opt("--out")), w / "labels-nodes.osm.pbf", w / "labels-areas.osm.pbf"
 
 
 def progress(done: float, total: int, unit: str) -> None:
@@ -382,7 +367,7 @@ def run_osmium(args: list[str], said) -> None:
 
 
 def main() -> None:
-    args()
+    SRC, OUT, NODES, AREAS = args()
     t0 = time.time()
     progress(0, 6, "steps (the label points)")
     # (osmium's bars say how far the step is: a third of it each.)
@@ -445,11 +430,8 @@ def main() -> None:
 
     def english(i: int) -> str | None:
         if i not in en_cache:
-            if OWN_ENGLISH:
-                own = rows[i][6]
-                en_cache[i] = own.strip() if own and differs(rows[i][2], own) else None
-            else:
-                en_cache[i] = english_at(rows[i][2], (lon[i], lat[i]), rows[i][6])
+            own = rows[i][6]
+            en_cache[i] = own.strip() if own and differs(rows[i][2], own) else None
         return en_cache[i]
 
     OUT.parent.mkdir(parents=True, exist_ok=True)

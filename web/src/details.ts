@@ -262,7 +262,7 @@ export function enrichPoi(kind: string, props: Record<string, any>, d: Detail): 
   const ol = osmLink(d.osm);
   if (ol) links.push(ol);
   if (d.wikidata) links.push(['Wikidata', `https://www.wikidata.org/wiki/${d.wikidata}`]);
-  // A written description (desctargets.py) replaces the one-line Wikidata description, which
+  // A written description replaces the one-line Wikidata description, which
   // moves to the facts.
   if (d.long) {
     if (desc) facts.unshift(desc);

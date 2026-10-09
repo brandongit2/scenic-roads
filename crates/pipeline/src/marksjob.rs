@@ -172,7 +172,7 @@ pub fn poi_points(cands: &[Candidate], views: &HashMap<String, f64>) -> Vec<Poin
     out
 }
 
-/// The tags today's popups keep, per kind (dem/poidetails.py COMMON and KEEP).
+/// The tags the popups keep: every kind's, and each kind's own.
 pub fn detail_keys(kind: &str) -> Vec<&'static str> {
     let common = ["description", "website", "wikipedia", "wikidata", "operator", "access", "fee", "opening_hours", "start_date", "heritage", "alt_name", "name:en"];
     let own: &[&str] = match kind {
@@ -192,8 +192,7 @@ pub fn detail_keys(kind: &str) -> Vec<&'static str> {
     common.iter().chain(own).copied().collect()
 }
 
-/// A unit's candidate (crate::candidates) as the job's: its details record as dem/poidetails.py
-/// made it (the kept tags of its kind's lists, `osm`, `length_m`, `viewpoint`, and the facts of a
+/// A unit's candidate (crate::candidates) as the job's: its details record (the kept tags of its kind's lists, `osm`, `length_m`, `viewpoint`, and the facts of a
 /// single-QID tag as `wd`), its peak result (a `work/peaks` record), its key as the reference.
 pub fn from_unit(c: &crate::candidates::Cand, peak: Option<Value>, facts: &HashMap<String, Value>) -> Candidate {
     let mut d = Map::new();

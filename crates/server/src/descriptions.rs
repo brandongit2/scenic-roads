@@ -109,10 +109,9 @@ impl Descriptions {
     }
 }
 
-/// The popup's credit line for a description, as the builds write it (dem/heritagedetails.py,
-/// dem/poidetails.py): `{"refs": sources}` for a researched one, else the Wikipedia article it
-/// summarises, `{"lang", "title"}`: the record's own (built with the same article), else the
-/// article the record links (`wiki` for heritage sites, `wikipedia` = "lang:Title" for sights).
+/// The popup's credit line for a description: `{"refs": sources}` for a researched one, else the
+/// Wikipedia article it summarises, `{"lang", "title"}`: the record's own (built with the same
+/// article, dem/heritagedetails.py), else the article the record links (`wiki` for heritage sites, `wikipedia` = "lang:Title" for sights).
 fn credit(record: &serde_json::Map<String, Value>, d: &Value) -> Option<Value> {
     if let Some(src) = d.get("src").filter(|s| s.as_array().is_some_and(|a| !a.is_empty())) {
         return Some(serde_json::json!({ "refs": src }));

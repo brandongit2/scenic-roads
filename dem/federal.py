@@ -11,10 +11,13 @@ matched by normalised English/French name, within the same province, to:
 Anything still unlocated is flagged. Wikidata items claiming a federal designation that is not
 in the official list are flagged too, and left off the map.
 
-Outputs (data/heritage/): federal.json (located places), federal-report.csv (every record with
-its status), and a summary on stdout.
+Reads, in --dir (a registers' snapshot folder: docs/plan.md "Hand-made inputs"): fhd.xlsx (the
+DFHD's open data), wd-canada.csv (Wikidata's Canadian heritage items), osm/prov.geojsonseq (the
+provinces) and osm/named.geojsonseq (named OSM features). Writes there federal.json (located
+places), which heritage.py reads, and federal-report.csv (every record with its status), with a
+summary on stdout.
 
-usage: federal.py
+usage: federal.py --dir <registers folder>
 """
 from __future__ import annotations
 
@@ -31,7 +34,7 @@ import openpyxl
 from shapely.geometry import Point, shape
 from shapely.prepared import prep
 
-H = Path(__file__).resolve().parent.parent / "data" / "heritage"
+H = Path()
 PROVINCES = {
     "Ontario": "CA-ON", "Quebec": "CA-QC", "New Brunswick": "CA-NB", "Nova Scotia": "CA-NS",
     "Prince Edward Island": "CA-PE", "Newfoundland and Labrador": "CA-NL",
@@ -123,6 +126,10 @@ def province_of(provs, lon, lat):
 
 
 def main():
+    global H
+    if sys.argv[1:2] != ["--dir"] or len(sys.argv) != 3:
+        sys.exit("usage: federal.py --dir <registers folder>")
+    H = Path(sys.argv[2])
     provs = load_provinces()
     print(f"provinces: {sorted(provs)}")
 

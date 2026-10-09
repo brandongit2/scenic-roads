@@ -1,7 +1,7 @@
 //! A unit's landmark candidates (docs/phase5.md "pois"): extract's points of interest from the
 //! unit's piece (`extract --candidates`, with the pass's hiking-route ends), clipped to the points
-//! the unit owns that are in the coverage, with what dem/poidetails.py added, written sorted by
-//! key as `work/pois/<u>` (zstd JSON lines).
+//! the unit owns that are in the coverage, with their kept tags and covered bridges' lengths, written
+//! sorted by key as `work/pois/<u>` (zstd JSON lines).
 
 use crate::coverage::Coverage;
 use crate::legacy::Unit;
@@ -44,7 +44,7 @@ pub struct Cand {
     pub qid: Option<String>,
     /// The tags its details show.
     pub tags: BTreeMap<String, String>,
-    /// A covered bridge's length (dem/poidetails.py).
+    /// A covered bridge's length, metres.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub length_m: Option<u32>,
     /// A peak tagged as a viewpoint too (its details say so).

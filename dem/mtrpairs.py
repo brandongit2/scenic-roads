@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """MTR (Hong Kong) trains a day, researched by hand from MTR's published frequencies
-(data/rail/mtr.json), as stop pairs for `railfreq` (data/rail/pairs-mtr.bin, same format as
-railgtfs.py's). Stations are placed by their English names in OSM (data/rail/hk-stations.geojsonseq);
-each consecutive pair of a line's stations gets the line's trains a day in both directions.
+(--mtr: the NAS's sources/rail/mtr), as stop pairs for `railfreq` (--out: the rail job's
+sources/rail/mtr-pairs, same format as railgtfs.py's). Stations are placed by their English names in
+OSM (--stations: Hong Kong's stations as GeoJSON lines, docs/plan.md "Hand-made inputs"); each consecutive pair of a line's stations gets the line's trains a day in both directions.
 
 MTR counts are exact only for the Airport Express and High Speed Rail, whose timetables MTR
 publishes in full. For the other lines MTR publishes average headways per named period (morning
@@ -10,7 +10,7 @@ peak, off-peak…) without the periods' clock times, plus first and last trains,
 day are a lower bound: the service hours at the slowest published weekday off-peak headway. Those
 pairs carry mode bit 0x80 (shown as "at least").
 
-usage: mtrpairs.py
+usage: mtrpairs.py --mtr mtr.json --stations hk-stations.geojsonseq --out pairs-mtr.bin
 """
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ import struct
 import sys
 from pathlib import Path
 
-R = Path(__file__).resolve().parent.parent / "data" / "rail"
 
 
 def norm(s: str) -> str:
@@ -43,9 +42,13 @@ def lower_bound(L: dict) -> tuple[int, str] | None:
 
 
 def main():
-    lines = json.loads((R / "mtr.json").read_text())
+    a = sys.argv[1:]
+    opts = {k: a[i + 1] for i, k in enumerate(a[:-1]) if k in ("--mtr", "--stations", "--out")}
+    if len(opts) != 3:
+        sys.exit("usage: mtrpairs.py --mtr mtr.json --stations hk-stations.geojsonseq --out pairs-mtr.bin")
+    lines = json.loads(Path(opts["--mtr"]).read_text())
     places: dict[str, list[tuple[float, float, int]]] = {}
-    for line in (R / "hk-stations.geojsonseq").open(encoding="utf-8"):
+    for line in Path(opts["--stations"]).open(encoding="utf-8"):
         line = line.lstrip("\x1e").strip()
         if not line:
             continue
@@ -95,7 +98,7 @@ def main():
                 for p, q in ((a, b), (b, a)):
                     out += struct.pack("<ffffBf", p[0], p[1], q[0], q[1], mode | (0x80 if lower else 0), float(per_day))
                     n_pairs += 1
-    (R / "pairs-mtr.bin").write_bytes(bytes(out))
+    Path(opts["--out"]).write_bytes(bytes(out))
     print(f"{n_pairs} MTR stop pairs; stations not found in OSM: {len(missing)}", file=sys.stderr)
     for m in missing[:40]:
         print("  ", m, file=sys.stderr)

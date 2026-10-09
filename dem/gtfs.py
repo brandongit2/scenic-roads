@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Ferry sailings from operators' published timetables (GTFS).
 
-For every ferry line in data/ferries/lines.json (ferries.py), counts the timetabled ferry trips
+For every ferry line in --lines (ferries.py's lines.json), counts the timetabled ferry trips
 that call at both of its ports, i.e. stop within 400 m (at most 30 % of the distance between them) of each end of the line, from the feeds
-listed in data/ferries/gtfs-feeds.json. Per day of service: departures each way (both
+listed in --feeds (gtfs-feeds.json). Per day of service: departures each way (both
 directions averaged). Reported per line:
   per_day      median over the days the line runs; lines not sailing both ways most days: the
                weekly count ÷ 7 (a weekly crossing reads "1 a week"),
@@ -16,9 +16,11 @@ Only service dates from a year ago onwards count (older feeds are skipped as sta
 routes are counted (route_type 4, 1000–1099, 1200–1299, or the route ids a feed entry
 lists under "ferry_route_ids" when the feed labels its ferries as something else).
 
-Outputs data/ferries/freq/gtfs-<feed>.json, read by ferries.py.
+Writes <out>/gtfs-<feed>.json, which the ferries job reads (the NAS's inputs/ferries/freq). Run by
+hand (docs/plan.md "Hand-made inputs").
 
-usage: gtfs.py [--refresh] [feed-id ...]
+usage: gtfs.py --feeds gtfs-feeds.json --lines lines.json --cache dir --out dir [--refresh] [feed-id ...]
+  --cache: the feeds' zips (downloaded once; --refresh asks for newer ones)
 """
 from __future__ import annotations
 
@@ -34,10 +36,8 @@ from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-F = ROOT / "data" / "ferries"
-CACHE = F / "gtfs"
-OUT = F / "freq"
+CACHE = Path()
+OUT = Path()
 R_KM = 0.4
 UA = "scenic-roads/0.1 (personal offline map)"
 DAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]
@@ -275,10 +275,16 @@ def process(feed: dict, zpath: Path, lines: dict) -> list[dict]:
 
 
 def main() -> None:
-    args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    refresh = "--refresh" in sys.argv
-    feeds = json.loads((F / "gtfs-feeds.json").read_text())
-    lines = json.loads((F / "lines.json").read_text())
+    global CACHE, OUT
+    a = sys.argv[1:]
+    opts = {k: a[i + 1] for i, k in enumerate(a[:-1]) if k in ("--feeds", "--lines", "--cache", "--out")}
+    if len(opts) != 4:
+        sys.exit("usage: gtfs.py --feeds gtfs-feeds.json --lines lines.json --cache dir --out dir [--refresh] [feed-id ...]")
+    args = [x for i, x in enumerate(a) if not x.startswith("--") and (i == 0 or a[i - 1] not in opts)]
+    refresh = "--refresh" in a
+    CACHE, OUT = Path(opts["--cache"]), Path(opts["--out"])
+    feeds = json.loads(Path(opts["--feeds"]).read_text())
+    lines = json.loads(Path(opts["--lines"]).read_text())
     OUT.mkdir(parents=True, exist_ok=True)
     for feed in feeds:
         if args and feed["id"] not in args:

@@ -2,13 +2,13 @@
 """Passenger ferries: lines, their service groups, and how often they sail.
 
 Geometry and descriptions come from OpenStreetMap: ways tagged route=ferry and ferry route
-relations (osmium extracts in data/ferries/, see the Makefile). A *line* is one service in both
+relations (the ferries job's osmium exports of the pass's ferries set: pipeline::ovconv::ferries_job). A *line* is one service in both
 directions: the relations of a route_master, or the direction variants of the same ref / the same
 pair of ports, or a named route=ferry way (or run of them) that no route relation uses.
 
 Frequencies are never estimated. Each line's sailings come from, in order:
-  1. a timetable feed (GTFS) the operator publishes (data/ferries/freq/gtfs-*.json, gtfs.py),
-  2. a published timetable looked up by hand (data/ferries/freq/timetables-*.json, with the page
+  1. a timetable feed (GTFS) the operator publishes (freq/gtfs-*.json, gtfs.py),
+  2. a published timetable looked up by hand (freq/timetables-*.json, with the page
      it came from),
   3. the line's OSM interval and opening_hours tags, when they give both the headway and the day's
      span of service.
@@ -17,14 +17,14 @@ Lines with none of these stay "unknown".
 Service groups: urban & commuter (city water buses and commuter boats), short crossings, long-
 distance & overnight (2 h 30 or more), cable & chain ferries.
 
-Outputs (data/build/): ferries.json (GeoJSON: one feature per way, plus terminals) and
+Outputs (--out): ferries.json (GeoJSON: one feature per way, plus terminals) and
 ferry-lines.json (every line's details, for the hover card). Names carry en, their English where it
 truly differs (names.py english_at).
 
-usage: ferries.py [--src DIR] [--out DIR]
-  --src: the OSM exports (ways.geojsonseq, relations.opl, terminals.geojsonseq) and freq/ (default
-         data/ferries; the build's ferries job passes its work folder)
-  --out: where ferries.json and ferry-lines.json go (default data/build)
+usage: ferries.py --src DIR --out DIR
+  --src: the OSM exports (ways.geojsonseq, relations.opl, terminals.geojsonseq) and freq/ (the
+         NAS's inputs/ferries/freq)
+  --out: where ferries.json and ferry-lines.json go
 """
 from __future__ import annotations
 
@@ -37,9 +37,8 @@ from pathlib import Path
 
 import names
 
-ROOT = Path(__file__).resolve().parent.parent
-F = ROOT / "data" / "ferries"
-OUT = ROOT / "data" / "build"
+F = Path()
+OUT = Path()
 
 URBAN, CROSSING, LONG, CABLE = 0, 1, 2, 3
 GROUP_NAMES = ["Urban & commuter", "Short crossing", "Long-distance & overnight", "Cable & chain ferry"]
@@ -506,8 +505,8 @@ def rank(rec: dict) -> int:
 
 if __name__ == "__main__":
     args = sys.argv[1:]
-    if "--src" in args:
-        F = Path(args[args.index("--src") + 1])
-    if "--out" in args:
-        OUT = Path(args[args.index("--out") + 1])
+    if "--src" not in args or "--out" not in args:
+        sys.exit("usage: ferries.py --src DIR --out DIR")
+    F = Path(args[args.index("--src") + 1])
+    OUT = Path(args[args.index("--out") + 1])
     sys.exit(main())
