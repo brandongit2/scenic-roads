@@ -533,11 +533,14 @@ pub fn assemble(blocks: &[PathBuf], out: &Path, said: &(dyn Fn(u64, u64) + Sync)
     w.finish()
 }
 
-/// Runs `f` on each of `n` items on as many threads as rayon's pool has (in WebAssembly, or with one,
-/// in turn), giving `sink` their results in order, `done` told of each as it finishes: at most `2 ×`
-/// threads are held at once. An item that panics on a thread fails the run as one that errs. (On
-/// threads of its own, never the pool's: one of the pool's waiting here for room could be one an
-/// item's own parallel work was waiting on, and the run would hang.)
+/// Runs `f` on each of `n` items in rayon's current pool (the job's, as `--workers` sized it; in
+/// WebAssembly, or with one thread, in turn), giving `sink` their results in order, `done` told of
+/// each as it finishes: at most `2 ×` threads are under way or waiting to be written at once. The
+/// items are the pool's tasks, so their own parallel work stays in the pool too, within the cores
+/// the job was given. The thread calling it (one of the pool's) writes the results in order and,
+/// while it waits for the next, runs the pool's other work; it never blocks on a lock while it has
+/// any (a thread of the pool's waiting with work of an item's beneath it would hang the run). An
+/// item that panics fails the run as one that errs.
 fn in_order<T: Send>(n: usize, f: impl Fn(usize) -> Result<T> + Sync, done: impl Fn(usize) + Sync, mut sink: impl FnMut(usize, T) -> Result<()>) -> Result<()> {
     let threads = rayon::current_num_threads();
     if threads <= 1 {
@@ -548,77 +551,63 @@ fn in_order<T: Send>(n: usize, f: impl Fn(usize) -> Result<T> + Sync, done: impl
         }
         return Ok(());
     }
+    use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
     use std::sync::{Condvar, Mutex};
-    struct State<T> {
-        next: usize,
-        written: usize,
-        ready: BTreeMap<usize, Result<T>>,
-        stop: bool,
-    }
     let window = 2 * threads;
-    let st = Mutex::new(State { next: 0, written: 0, ready: BTreeMap::new(), stop: false });
+    let ready: Mutex<BTreeMap<usize, Result<T>>> = Mutex::new(BTreeMap::new());
     let cv = Condvar::new();
-    std::thread::scope(|s| {
-        for _ in 0..threads {
-            s.spawn(|| loop {
-                let i = {
-                    let mut g = st.lock().unwrap();
-                    loop {
-                        if g.stop || g.next >= n {
+    let stop = AtomicBool::new(false);
+    let (f, done) = (&f, &done);
+    let (ready, cv, stop) = (&ready, &cv, &stop);
+    rayon::in_place_scope(|s| {
+        // However the loop ends (a panic in `sink` too), the items not begun are passed over: the
+        // scope waits for those under way.
+        struct Stop<'a>(&'a AtomicBool);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Relaxed);
+            }
+        }
+        let _stop = Stop(stop);
+        let mut next = 0;
+        for i in 0..n {
+            let r = loop {
+                while next < n && next < i + window {
+                    let k = next;
+                    s.spawn(move |_| {
+                        if stop.load(Relaxed) {
                             return;
                         }
-                        if g.next < g.written + window {
-                            g.next += 1;
-                            break g.next - 1;
+                        // (A panic as an error: the loop below would wait for its result for ever.)
+                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(k))).unwrap_or_else(|p| {
+                            let why = p.downcast_ref::<String>().map(String::as_str).or_else(|| p.downcast_ref::<&str>().copied()).unwrap_or("a panic");
+                            Err(anyhow::anyhow!("item {k} panicked: {why}"))
+                        });
+                        if r.is_ok() {
+                            done(k);
                         }
-                        g = cv.wait(g).unwrap();
-                    }
-                };
-                // (A panic as an error: the loop below would wait for its result for ever.)
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(i))).unwrap_or_else(|p| {
-                    let why = p.downcast_ref::<String>().map(String::as_str).or_else(|| p.downcast_ref::<&str>().copied()).unwrap_or("a panic");
-                    Err(anyhow::anyhow!("item {i} panicked: {why}"))
-                });
-                if r.is_ok() {
-                    done(i);
+                        ready.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(k, r);
+                        cv.notify_all();
+                    });
+                    next += 1;
                 }
-                st.lock().unwrap().ready.insert(i, r);
-                cv.notify_all();
-            });
-        }
-        // However the loop ends (a panic in `sink` too), the threads stop: the scope waits for them.
-        struct Stop<'a, U>(&'a Mutex<State<U>>, &'a Condvar);
-        impl<U> Drop for Stop<'_, U> {
-            fn drop(&mut self) {
-                self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).stop = true;
-                self.1.notify_all();
-            }
-        }
-        let _stop = Stop(&st, &cv);
-        let mut out = Ok(());
-        for i in 0..n {
-            let r = {
-                let mut g = st.lock().unwrap();
-                loop {
-                    if let Some(r) = g.ready.remove(&i) {
-                        break r;
+                if let Some(r) = ready.lock().unwrap().remove(&i) {
+                    break r;
+                }
+                // (The pool's other work meanwhile; with none to do, a moment's wait for a result.)
+                if !matches!(rayon::yield_now(), Some(rayon::Yield::Executed)) {
+                    let g = ready.lock().unwrap();
+                    if !g.contains_key(&i) {
+                        drop(cv.wait_timeout(g, std::time::Duration::from_millis(2)).unwrap());
                     }
-                    g = cv.wait(g).unwrap();
                 }
             };
-            out = r.and_then(|v| sink(i, v));
-            let mut g = st.lock().unwrap();
-            g.written = i + 1;
-            if out.is_err() {
-                g.stop = true;
-            }
-            drop(g);
-            cv.notify_all();
-            if out.is_err() {
-                break;
+            if let Err(e) = r.and_then(|v| sink(i, v)) {
+                stop.store(true, Relaxed);
+                return Err(e);
             }
         }
-        out
+        Ok(())
     })
 }
 

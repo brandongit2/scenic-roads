@@ -630,3 +630,41 @@ fn room_making_mid_run_never_reads_a_square_as_none_there() {
         assert_eq!(std::fs::read(o.path().join("busy").join(&f)).unwrap(), std::fs::read(o.path().join("calm").join(&f)).unwrap(), "{l}: the same with room-making under way");
     }
 }
+
+#[test]
+fn a_runs_work_stays_within_the_threads_it_was_given() {
+    // (The trees program's `--workers n`: its pool of n, in which `in_order` runs the blocks; their
+    // own parallel work, rows and pyramids, ran in rayon's global pool, every core, until it was
+    // the pool's tasks.)
+    use rayon::prelude::*;
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    for workers in [2usize, 3] {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(workers).build().unwrap();
+        let (busy, most) = (AtomicUsize::new(0), AtomicUsize::new(0));
+        let ids = std::sync::Mutex::new(std::collections::BTreeSet::new());
+        let work = |x: u64| {
+            let now = busy.fetch_add(1, SeqCst) + 1;
+            most.fetch_max(now, SeqCst);
+            ids.lock().unwrap().insert(format!("{:?}", std::thread::current().id()));
+            std::thread::sleep(std::time::Duration::from_micros(300));
+            busy.fetch_sub(1, SeqCst);
+            x
+        };
+        let mut sums = Vec::new();
+        pool.install(|| {
+            in_order(
+                40,
+                |i| Ok((0..32u64).into_par_iter().map(|x| work(x * i as u64)).sum::<u64>()),
+                |_| {},
+                |_, v| {
+                    sums.push(v);
+                    Ok(())
+                },
+            )
+        })
+        .unwrap();
+        assert_eq!(sums, (0..40u64).map(|i| (0..32).map(|x| x * i).sum::<u64>()).collect::<Vec<_>>());
+        assert!(most.load(SeqCst) <= workers, "{} at once with {workers} workers", most.load(SeqCst));
+        assert!(ids.lock().unwrap().len() <= workers, "{} threads with {workers} workers", ids.lock().unwrap().len());
+    }
+}
