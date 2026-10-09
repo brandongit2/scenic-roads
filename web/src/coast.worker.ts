@@ -1,7 +1,8 @@
 // Distance from the shore, off the main thread, for the coastal shading (coast.ts): per map tile,
-// a raster-DEM tile (Mapbox Terrain-RGB encoding) whose "elevation" is the signed distance to the
-// coast in metres: positive over water, negative over land (only a few pixels' worth: enough for
-// the shoreline to fall between pixels where the colour ramp crosses zero).
+// a raster-DEM tile (coastdist.ts's encoding) whose "elevation" is the signed distance to the coast
+// in metres: positive over water, negative over land. Measured exactly within the window (MARGIN
+// pixels); beyond it, land is "deep" (the ramp needs less than a pixel of it) and water comes from
+// a coarser level where the window holds too few metres (toward the poles: farLevels), else "far".
 //
 // From the water's shares (the water layer's tiles, the tile and its eight neighbours): every pixel
 // holding any land is a shore, placed within it by its share (coastdist.ts), so zoomed out an
@@ -11,15 +12,17 @@
 // source reads them): the tile's polygons and its eight neighbours', painted into a canvas MARGIN
 // pixels wider than the tile on every side (a coast just across a tile edge still counts), then an
 // exact Euclidean distance transform (Felzenszwalb & Huttenlocher) each way. Either way, metres per
-// pixel follow each row's latitude, so neighbouring tiles agree along their edges.
+// pixel follow each row's latitude, so neighbouring tiles agree along their edges, and tiles of
+// different zooms (the globe takes coarser ones toward the poles) agree in metres.
 import { readPolygons } from './mvt';
-import { signedDistance } from './coastdist';
+import { coastCode, farLevels, signedDistance, withFarField } from './coastdist';
 
 export type CoastMessage =
   /** An input by name (`key`; coast.ts): `tiles`, the basemap's tile URL ({z}, {x}, {y});
    * `maxzoom`, its deepest tiles; `cov`, the water's shares instead; `margin`, how far the distance
-   * is measured; `landPx`, how deep into the land. Sent again when they change. */
-  | { type: 'init'; key: string; tiles: string; maxzoom: number; cov?: string; margin?: number; landPx?: number }
+   * is measured exactly (pixels of the tile); `far`, at least this many levels coarser beyond it
+   * (else only toward the poles: farLevels). Sent again when they change. */
+  | { type: 'init'; key: string; tiles: string; maxzoom: number; cov?: string; margin?: number; far?: number }
   | { type: 'tile'; id: number; key: string; z: number; x: number; y: number; lakes: boolean }
   | { type: 'cancel'; id: number };
 export interface CoastResponse {
@@ -30,16 +33,14 @@ export interface CoastResponse {
 
 const SIZE = 512;
 /** Pixels of the neighbouring tiles taken in around the tile by default: the farthest distance
- * measured. */
+ * measured exactly. */
 const MARGIN = 192;
-/** Land pixels: their distance to the water, at most this many pixels (by default). */
-const LAND_PX = 2;
 const EARTH = 40075016.686;
 
 /** An input (init): the basemap's tile URL and its deepest zoom, or instead the water's shares
  * (PNG, 512 px, red the sea's share, green the inland water's: the server's
  * `/tiles/water/…?raw=1`, or the shoreline check's reference). */
-type Input = { tiles: string; maxzoom: number; cov: string; margin: number; landPx: number };
+type Input = { tiles: string; maxzoom: number; cov: string; margin: number; far: number };
 const inputs = new Map<string, Input>();
 const cancelled = new Set<number>();
 let queue = Promise.resolve();
@@ -48,7 +49,7 @@ self.onmessage = (ev: MessageEvent<CoastMessage>) => {
   const m = ev.data;
   if (m.type === 'init') {
     // (Again for new tiles: their water is read anew.)
-    inputs.set(m.key, { tiles: m.tiles, maxzoom: m.maxzoom, cov: m.cov ?? '', margin: Math.min(SIZE, m.margin ?? MARGIN), landPx: m.landPx ?? LAND_PX });
+    inputs.set(m.key, { tiles: m.tiles, maxzoom: m.maxzoom, cov: m.cov ?? '', margin: Math.min(SIZE, m.margin ?? MARGIN), far: m.far ?? 0 });
     waterCache.clear();
     covCache.clear();
   } else if (m.type === 'cancel') {
@@ -195,8 +196,24 @@ const outCanvas = new OffscreenCanvas(SIZE, SIZE);
 const outCtx = outCanvas.getContext('2d')!;
 
 async function coastTile(input: Input, z: number, x: number, y: number, lakes: boolean): Promise<ArrayBuffer> {
+  const M = input.margin;
+  const sd = await distances(input, z, x, y, lakes);
+  // Toward the poles, the water beyond the window from a coarser level (none within 60°). Should
+  // that level fail to load, the water beyond is far: the tile itself is still good.
+  const k = Math.min(z, Math.max(input.far, farLevels(z, y)));
+  if (k > 0 && sd.some((d) => d >= 0.75 * M)) {
+    const coarse = await distances(input, z - k, x >> k, y >> k, lakes).catch(() => null);
+    const part = SIZE / 2 ** k;
+    if (coarse) withFarField(sd, SIZE, M, coarse, k, (x % 2 ** k) * part, (y % 2 ** k) * part);
+  }
+  return encode(sd, z, y);
+}
+
+/** The tile's signed distance in pixels (coastdist.ts signedDistance: ±Infinity beyond the
+ * window). */
+async function distances(input: Input, z: number, x: number, y: number, lakes: boolean): Promise<Float32Array> {
   const M = input.margin, n = SIZE + 2 * M;
-  if (input.cov) return encode(signedDistance(await landShares(input, z, x, y, lakes), n, M, input.landPx), z, y);
+  if (input.cov) return signedDistance(await landShares(input, z, x, y, lakes), n, M);
   const ctx = canvasOf(n);
   // Past the basemap's zoom: the deepest tile's water, cut to this one.
   const zv = Math.min(z, input.maxzoom), dz = z - zv;
@@ -240,11 +257,11 @@ async function coastTile(input: Input, z: number, x: number, y: number, lakes: b
     pastThePoles(img.data, n, M, top, bottom, 4);
     ctx.putImageData(img, 0, 0);
   }
-  return encode(thresholded(ctx, M), z, y);
+  return thresholded(ctx, M);
 }
 
 /** The canvas's water (opaque pixels) as the tile's signed distance in pixels: water + (to the
- * nearest land), land − (to the nearest water). */
+ * nearest land), land − (to the nearest water), ±Infinity beyond the window. */
 function thresholded(ctx: OffscreenCanvasRenderingContext2D, M: number): Float32Array {
   const N = SIZE + 2 * M;
   const px = ctx.getImageData(0, 0, N, N).data;
@@ -252,31 +269,31 @@ function thresholded(ctx: OffscreenCanvasRenderingContext2D, M: number): Float32
   let nWet = 0;
   for (let i = 0; i < N * N; i++) if (px[i * 4 + 3] >= 128) (wet[i] = 1), nWet++;
   const sd = new Float32Array(SIZE * SIZE);
-  if (nWet === 0) sd.fill(-LAND_PX);
-  else if (nWet === N * N) sd.fill(M);
+  if (nWet === 0) sd.fill(-Infinity);
+  else if (nWet === N * N) sd.fill(Infinity);
   else {
     const toLand = edt(wet, 0, N), toWater = edt(wet, 1, N);
     for (let r = 0; r < SIZE; r++) {
       for (let c = 0; c < SIZE; c++) {
         const i = (r + M) * N + c + M;
-        sd[r * SIZE + c] = wet[i] ? Math.min(M, Math.sqrt(toLand[i]) - 0.5) : -Math.min(LAND_PX, Math.sqrt(toWater[i]) - 0.5);
+        const d = wet[i] ? Math.sqrt(toLand[i]) - 0.5 : -(Math.sqrt(toWater[i]) - 0.5);
+        sd[r * SIZE + c] = Math.abs(d) > M ? d * Infinity : d;
       }
     }
   }
   return sd;
 }
 
-/** A signed distance (pixels) as the tile's Terrain-RGB, in metres. */
+/** A signed distance (pixels) as the tile's raster-DEM, in metres (coastdist.ts coastCode). */
 async function encode(sd: Float32Array, z: number, y: number): Promise<ArrayBuffer> {
-  // Terrain-RGB: metres = -10000 + (R·65536 + G·256 + B) / 10. Each row's metres per pixel.
+  // Each row's metres per pixel.
   const img = outCtx.createImageData(SIZE, SIZE), o = img.data;
   const world = SIZE * 2 ** z;
   for (let r = 0; r < SIZE; r++) {
     const latR = Math.atan(Math.sinh(Math.PI * (1 - (2 * (y * SIZE + r + 0.5)) / world)));
     const mpp = (EARTH * Math.cos(latR)) / world;
     for (let c = 0; c < SIZE; c++) {
-      const v = sd[r * SIZE + c] * mpp;
-      const code = Math.max(0, Math.min(16777215, Math.round((v + 10000) * 10)));
+      const code = coastCode(sd[r * SIZE + c] * mpp);
       const j = (r * SIZE + c) * 4;
       o[j] = code >> 16;
       o[j + 1] = (code >> 8) & 255;

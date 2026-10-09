@@ -461,7 +461,7 @@ async function runScreen(v) {
     }
     const tApp = Date.now() - t0;
     const ss = SS;
-    const key = crypto.createHash('sha256').update(JSON.stringify({ screen: 3, camera, globe: v.globe !== false, ss, w: W, h: H, dpr: DPR })).digest('hex').slice(0, 16);
+    const key = crypto.createHash('sha256').update(JSON.stringify({ screen: 4, camera, globe: v.globe !== false, ss, w: W, h: H, dpr: DPR })).digest('hex').slice(0, 16);
     const cached = path.join(CACHE, `${v.id}.screen.${key}.json.gz`);
     let ref;
     const refCached = fs.existsSync(cached);

@@ -5,12 +5,15 @@
 // every setting is a colour ramp over that distance: changing one restyles the layer at once,
 // nothing is computed again. The ramp is in metres for the view centre's scale (the band is so
 // many CSS px wide there), redone as the zoom changes; tilted, the band narrows with distance as
-// the ground does. Draped on the terrain like the water itself.
+// the ground does. On the globe a metre is as wide everywhere but for the sphere's foreshortening
+// (toward the poles too); on flat Mercator the band widens toward the poles with the ground. Draped
+// on the terrain like the water itself.
 import * as maplibregl from 'maplibre-gl';
 import type { ExpressionSpecification, Map as MLMap } from 'maplibre-gl';
 import { BASEMAP_MAXZOOM, lakeColour, setWaterColours, WATER_TILE_SIZE, waterTiles, waterTilesOn } from './basemap';
 import type { WaterLook } from './state';
 import type { CoastMessage, CoastResponse } from './coast.worker';
+import { COAST_ENCODING, COAST_LINEAR, coastElevation } from './coastdist';
 
 const EARTH = 40075016.686;
 
@@ -22,15 +25,15 @@ const waiting = new Map<number, { resolve: (b: ArrayBuffer) => void; reject: (e:
 /** Where the shading measures the shore from: the water's shares (`cov`, the water tiles' raw
  * shares: the same water the map draws, at every zoom; every pixel holding any land is a shore,
  * placed within the pixel by its share: coastdist.ts), else the basemap's vector tiles (`tiles`).
- * `margin`: how far the distance is measured, pixels of the tile (192 by default); `landPx`, how
- * deep into the land (2 by default: the shading's ramp reaches 0.7 CSS px into it, so finer tiles
- * need more). */
-export type CoastInput = { tiles: string; cov: string; margin?: number; landPx?: number };
+ * `margin`: how far the distance is measured exactly, pixels of the tile (192 by default; past it
+ * land is deep and water far, or measured coarser toward the poles: coast.worker.ts); `far`, the
+ * water past it measured at least that many levels coarser everywhere. */
+export type CoastInput = { tiles: string; cov: string; margin?: number; far?: number };
 
 /** The inputs by name: the map's own (`app`), and the shoreline check's reference (evalmode.ts). */
 const inputs = new Map<string, CoastInput>();
 
-const initMessage = (key: string, input: CoastInput): CoastMessage => ({ type: 'init', key, tiles: input.tiles, maxzoom: BASEMAP_MAXZOOM, cov: input.cov, margin: input.margin, landPx: input.landPx });
+const initMessage = (key: string, input: CoastInput): CoastMessage => ({ type: 'init', key, tiles: input.tiles, maxzoom: BASEMAP_MAXZOOM, cov: input.cov, margin: input.margin, far: input.far });
 
 /** The tiles' protocol and its workers (two: a tile is a burst of CPU, MapLibre asks for many). */
 function setupProtocol() {
@@ -86,7 +89,7 @@ function setupShading(map: MLMap, w: WaterLook, input: CoastInput) {
   setInput('app', input);
   setupProtocol();
   lakesShown = w.lakes;
-  map.addSource('coast', { type: 'raster-dem', tiles: [tilesUrl(w.lakes)], tileSize: COAST_TILE_SIZE, maxzoom: 15, encoding: 'mapbox' });
+  map.addSource('coast', { type: 'raster-dem', tiles: [tilesUrl(w.lakes)], tileSize: COAST_TILE_SIZE, maxzoom: 15, ...COAST_ENCODING });
   map.addLayer({ id: 'coast-shade', type: 'color-relief', source: 'coast', paint: { 'color-relief-opacity': 1, resampling: 'linear' } as never }, 'waterway');
 }
 
@@ -95,14 +98,15 @@ function setupShading(map: MLMap, w: WaterLook, input: CoastInput) {
 export function addCoastSource(map: MLMap, id: string, input: CoastInput, lakes: boolean, tileSize: number, before?: string) {
   setInput(id, input);
   setupProtocol();
-  map.addSource(id, { type: 'raster-dem', tiles: [tilesUrl(lakes, id)], tileSize, maxzoom: 22, encoding: 'mapbox' });
+  map.addSource(id, { type: 'raster-dem', tiles: [tilesUrl(lakes, id)], tileSize, maxzoom: 22, ...COAST_ENCODING });
   map.addLayer({ id, type: 'color-relief', source: id, paint: { 'color-relief-opacity': 1, resampling: 'linear' } as never }, before);
 }
 
 const rgb = (hex: string): [number, number, number] => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
 const hexOf = (c: number[]) => `#${c.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')}`;
 
-/** The shading's colour ramp over the distance to the shore (m), for `mpp` metres per CSS px. */
+/** The shading's colour ramp over the distance to the shore (m), for `mpp` metres per CSS px: its
+ * stops at the elevations the tiles store those distances as (coastdist.ts coastElevation). */
 export function coastRamp(w: WaterLook, mpp: number): ExpressionSpecification {
   const W = Math.max(1, w.width) * mpp, px = mpp;
   const fade = (d: number) => (d >= W ? 0 : Math.pow(1 - d / W, w.falloff));
@@ -118,13 +122,15 @@ export function coastRamp(w: WaterLook, mpp: number): ExpressionSpecification {
   const pts = new Set<number>([0, px, W]);
   for (let i = 1; i < 24; i++) pts.add((W * i) / 24);
   for (const l of lines) for (const o of [-0.8, 0, 0.8]) pts.add(l + o * px);
+  // (The encoding's bend, where it falls within the band: the ramp linear in metres either side.)
+  if (COAST_LINEAR < W) pts.add(COAST_LINEAR);
   const ds = [...pts].filter((d) => d >= 0 && d <= W).sort((a, b) => a - b);
   const [r, g, b] = rgb(w.shadeColour);
   const col = (a: number) => `rgba(${r},${g},${b},${+a.toFixed(4)})`;
   // Land: clear; the shoreline falls where the ramp crosses from −0.7 px to 0 (antialiased).
-  const expr: unknown[] = ['interpolate', ['linear'], ['elevation'], -0.7 * px, col(0)];
-  for (const d of ds) expr.push(d, col(alpha(d)));
-  expr.push(W + px, col(0));
+  const expr: unknown[] = ['interpolate', ['linear'], ['elevation'], coastElevation(-0.7 * px), col(0)];
+  for (const d of ds) expr.push(coastElevation(d), col(alpha(d)));
+  expr.push(coastElevation(W + px), col(0));
   return expr as ExpressionSpecification;
 }
 

@@ -327,9 +327,11 @@ export function installEval(map: MLMap) {
         map.addSource(`eval-${k}`, { type: 'raster', tiles: [`${url}/cov/{z}/{x}/{y}?s=512&k=${k}`], tileSize: 64, maxzoom: 22 });
         map.addLayer({ id: `eval-${k}`, type: 'raster', source: `eval-${k}`, paint: { 'raster-fade-duration': 0, 'raster-resampling': 'linear' } } as LayerSpecification);
       }
-      // The shading measured at 8 pixels a CSS px from every pixel holding any land, as far as
-      // its band reaches (32 CSS px), and into the land as far as its ramp (0.7 CSS px).
-      addCoastSource(map, 'eval-coast', { tiles: '', cov: `${url}/cov/{z}/{x}/{y}?s=512&raw=1`, margin: 256, landPx: 8 }, look.lakes, 64);
+      // The shading measured at 8 pixels a CSS px from every pixel holding any land, exactly as
+      // far as 256 of them (16–32 CSS px, less than the band at its default 28), beyond that from
+      // 4 × coarser tiles (or coarser yet toward the poles: coast.worker.ts), as far as 64–128 CSS
+      // px; the land deeper than measured clear.
+      addCoastSource(map, 'eval-coast', { tiles: '', cov: `${url}/cov/{z}/{x}/{y}?s=512&raw=1`, margin: 256, far: 2 }, look.lakes, 64);
     }
     map.setPaintProperty('eval-coast', 'color-relief-color', coastRamp({ ...look, shadeColour: '#ffffff' }, centreMpp(map)), { validate: false });
     const rtt = (map as unknown as { painter: { renderToTexture?: { rttSize: number } } }).painter.renderToTexture;

@@ -61,7 +61,8 @@ exaggerated nor dropped).
   hill-shading), the shading on at its default settings: the canvas's colours.
 - **The reference** (`referenceScreen`): the sea's and the inland water's exact coverage at 8
   texels a CSS px, and the shading measured from the reference's shares at the same density
-  (every pixel holding any land a shore, web/src/coastdist.ts, as far as the band reaches), each
+  (every pixel holding any land a shore, web/src/coastdist.ts; exactly within 256 of its pixels,
+  beyond that from 4 × coarser tiles, coarser yet toward the poles: coast.worker.ts), each
   drawn at `--ss` × the pixel ratio. Each sample is coloured as the map colours a pixel (land, sea
   and lake mixed by coverage in linear light, the shading blended over that as MapLibre blends),
   and each device pixel is the mean of its samples in linear light. The same averaged as the
