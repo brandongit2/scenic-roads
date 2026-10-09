@@ -190,6 +190,91 @@ fn dem_head(m: &[u8]) -> Option<(usize, [i32; 4], [u32; 4])> {
     (m.len() == DEM_HEAD + 13 * n).then(|| (n, [i32_at(16), i32_at(20), i32_at(24), i32_at(28)], [u32_at(32), u32_at(36), u32_at(40), u32_at(44)]))
 }
 
+/// The part of a units' DEM samples file (`dem_samples_keep`) whose longitudes are within box `b`'s:
+/// its box and versions, and those entries (its keys sorted, lon first, so a run of them), with the
+/// bytes read for them.
+struct DemRange {
+    bx: [i32; 4],
+    made: [u32; 4],
+    keys: Vec<u64>,
+    elev: Vec<f32>,
+    srcs: Vec<u8>,
+    read: u64,
+}
+
+/// A units' DEM samples file read for box `b`: its header, the bounds of the entries within `b`'s
+/// longitudes found by a binary search over its keys (read a page at a time), then those entries
+/// alone, from each of its three arrays. None when it isn't whole (its length not its header's).
+/// On the NAS a file is read in a few large reads where reading it whole moved hundreds of MB that
+/// the box doesn't need (a unit's neighbours to the east and west).
+fn dem_range(p: &Path, b: [i32; 4]) -> std::io::Result<Option<DemRange>> {
+    use std::os::unix::fs::FileExt;
+    let f = std::fs::File::open(p)?;
+    let len = f.metadata()?.len();
+    let mut head = [0u8; DEM_HEAD];
+    if len < DEM_HEAD as u64 {
+        return Ok(None);
+    }
+    f.read_exact_at(&mut head, 0)?;
+    if &head[..8] != DEM_MAGIC {
+        return Ok(None);
+    }
+    let n = u64::from_le_bytes(head[8..16].try_into().unwrap());
+    if len != DEM_HEAD as u64 + 13 * n {
+        return Ok(None);
+    }
+    let i32_at = |i: usize| i32::from_le_bytes(head[i..i + 4].try_into().unwrap());
+    let u32_at = |i: usize| u32::from_le_bytes(head[i..i + 4].try_into().unwrap());
+    let bx = [i32_at(16), i32_at(20), i32_at(24), i32_at(28)];
+    let made = [u32_at(32), u32_at(36), u32_at(40), u32_at(44)];
+    let mut read = DEM_HEAD as u64;
+    // (Pages of keys, 64 KB: a search's last steps fall in one.)
+    const PAGE: u64 = 8192;
+    let mut pages: std::collections::HashMap<u64, Vec<u64>> = Default::default();
+    let mut key = |i: u64| -> std::io::Result<u64> {
+        let pg = i / PAGE;
+        if !pages.contains_key(&pg) {
+            let (from, to) = (pg * PAGE, ((pg + 1) * PAGE).min(n));
+            let mut buf = vec![0u8; 8 * (to - from) as usize];
+            f.read_exact_at(&mut buf, DEM_HEAD as u64 + 8 * from)?;
+            read += buf.len() as u64;
+            pages.insert(pg, bytemuck::pod_collect_to_vec(&buf));
+        }
+        Ok(pages[&pg][(i % PAGE) as usize])
+    };
+    // The first entry whose key isn't below `k`.
+    let mut first = |k: u64| -> std::io::Result<u64> {
+        let (mut lo, mut hi) = (0u64, n);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if key(mid)? < k {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        Ok(lo)
+    };
+    let lo = first(dem_key(b[0], i32::MIN))?;
+    let hi = match dem_key(b[2], i32::MAX).checked_add(1) {
+        Some(k) => first(k)?,
+        None => n,
+    };
+    drop(first);
+    drop(key);
+    let m = hi.saturating_sub(lo);
+    let mut take = |at: u64, size: u64| -> std::io::Result<Vec<u8>> {
+        let mut buf = vec![0u8; (size * m) as usize];
+        f.read_exact_at(&mut buf, at + size * lo)?;
+        read += buf.len() as u64;
+        Ok(buf)
+    };
+    let keys = bytemuck::pod_collect_to_vec(&take(DEM_HEAD as u64, 8)?);
+    let elev = bytemuck::pod_collect_to_vec(&take(DEM_HEAD as u64 + 8 * n, 4)?);
+    let srcs = take(DEM_HEAD as u64 + 12 * n, 1)?;
+    Ok(Some(DemRange { bx, made, keys, elev, srcs, read }))
+}
+
 /// The entries of sorted DEM cache arrays inside `b` still valid: those whose DEM rules (by their
 /// source and place, `rules::dem_rules_of`) have the versions they were sampled under (`made`) now;
 /// the rest are left out, so elev samples them again under the changed rule.
@@ -250,22 +335,18 @@ pub fn dem_cache_slice(cache: &Path, units_dir: &Path, b: [i32; 4], dst: &Path) 
             continue;
         }
         // (Read, not mapped: they're on the NAS, where a mapped page lost with the share would end
-        // the job.)
-        let Ok(m) = std::fs::read(p) else {
-            eprintln!("  DEM cache: {} can't be read now; passed over", p.display());
-            continue;
-        };
-        reading.count(m.len() as u64, 1);
-        let Some((n, ub, made)) = dem_head(&m) else {
-            eprintln!("  DEM cache: {} isn't whole; passed over", p.display());
-            continue;
-        };
-        if !meets(ub) {
-            continue;
+        // the job. Only the box's longitudes: `dem_range`.)
+        match dem_range(p, b) {
+            Ok(Some(r)) => {
+                reading.count(r.read, 1);
+                if !meets(r.bx) {
+                    continue;
+                }
+                dem_valid_in_box(&r.keys, &r.elev, &r.srcs, b, r.made, &mut newer);
+            }
+            Ok(None) => eprintln!("  DEM cache: {} isn't whole; passed over", p.display()),
+            Err(_) => eprintln!("  DEM cache: {} can't be read now; passed over", p.display()),
         }
-        let keys: Vec<u64> = bytemuck::pod_collect_to_vec(&m[DEM_HEAD..DEM_HEAD + 8 * n]);
-        let elev: Vec<f32> = bytemuck::pod_collect_to_vec(&m[DEM_HEAD + 8 * n..DEM_HEAD + 12 * n]);
-        dem_valid_in_box(&keys, &elev, &m[DEM_HEAD + 12 * n..], b, made, &mut newer);
     }
     drop(reading);
     let _p = sub("merged and written", Class::Disk);
@@ -1232,6 +1313,58 @@ mod tests {
         assert_eq!(el[1], 30.0, "the unit's sample, not the seed's");
         // A box away from them: the seed's only.
         assert_eq!(dem_cache_slice(d.path(), &d.path().join(DEM_UNITS), [-15, -15, -5, 10], &d.path().join("v")).unwrap(), 2);
+    }
+
+    #[test]
+    fn a_kept_file_read_by_its_range_is_its_whole_read() {
+        let d = tempfile::tempdir().unwrap();
+        let run = d.path().join("run");
+        std::fs::create_dir_all(&run).unwrap();
+        // (Points in clumps, many on one longitude, over several pages of keys.)
+        let mut s = 1u64;
+        let mut r = |m: i64| {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((s >> 33) as i64 % m) as i32
+        };
+        for n in [0usize, 1, 5, 8191, 8192, 8193, 40_000] {
+            let mut keys: Vec<u64> = (0..n).map(|_| dem_key(r(2000) - 1000 + if r(3) == 0 { 0 } else { r(50) }, r(2000) - 1000)).collect();
+            keys.sort_unstable();
+            keys.dedup();
+            let m = keys.len();
+            std::fs::write(run.join("dem-cache.keys.u64"), bytemuck::cast_slice(&keys)).unwrap();
+            std::fs::write(run.join("dem-cache.elev.f32"), bytemuck::cast_slice(&(0..m).map(|i| i as f32 * 0.5).collect::<Vec<_>>())).unwrap();
+            std::fs::write(run.join("dem-cache.src.u8"), (0..m).map(|i| (i % 7) as u8).collect::<Vec<_>>()).unwrap();
+            let units = d.path().join(format!("u{n}"));
+            dem_samples_keep(&units, Unit { z: 6, x: 1, y: 2 }, &run).unwrap();
+            let file = std::fs::read_dir(&units).unwrap().flatten().next().map(|e| e.path());
+            let Some(file) = file else { continue };
+            let whole = std::fs::read(&file).unwrap();
+            let (wn, wbx, wmade) = dem_head(&whole).unwrap();
+            for _ in 0..50 {
+                let (w, e) = (r(2400) - 1200, r(2400) - 1200);
+                let (s, nn) = (r(2400) - 1200, r(2400) - 1200);
+                let b = [w.min(e), s.min(nn), w.max(e), s.max(nn)];
+                for b in [b, [i32::MIN, i32::MIN, i32::MAX, i32::MAX], [0, 0, 0, 0]] {
+                    let mut want = Vec::new();
+                    let kk: Vec<u64> = bytemuck::pod_collect_to_vec(&whole[DEM_HEAD..DEM_HEAD + 8 * wn]);
+                    let ee: Vec<f32> = bytemuck::pod_collect_to_vec(&whole[DEM_HEAD + 8 * wn..DEM_HEAD + 12 * wn]);
+                    dem_valid_in_box(&kk, &ee, &whole[DEM_HEAD + 12 * wn..], b, wmade, &mut want);
+                    let got = dem_range(&file, b).unwrap().unwrap();
+                    assert_eq!((got.bx, got.made), (wbx, wmade));
+                    let mut have = Vec::new();
+                    dem_valid_in_box(&got.keys, &got.elev, &got.srcs, b, got.made, &mut have);
+                    assert_eq!(have, want, "{n} points, box {b:?}");
+                    // (The search's pages of keys at most again.)
+                    assert!(got.read <= whole.len() as u64 + 8 * wn as u64);
+                }
+            }
+        }
+        // Not whole: None.
+        let p = d.path().join("cut.dem");
+        let f = std::fs::read_dir(d.path().join("u40000")).unwrap().flatten().next().unwrap().path();
+        let b = std::fs::read(&f).unwrap();
+        std::fs::write(&p, &b[..b.len() - 1]).unwrap();
+        assert!(dem_range(&p, [0, 0, 1, 1]).unwrap().is_none());
     }
 
     #[test]
